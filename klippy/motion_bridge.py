@@ -139,6 +139,7 @@ class MotionBridgeWrapper:
         invert_mask,
         steps_per_mm,
         step_modes=None,
+        phase_configs=None,
         timeout_s=2.0,
     ):
         """Send the kalico-native ConfigureAxes message to an attached MCU.
@@ -146,6 +147,18 @@ class MotionBridgeWrapper:
         step_modes: optional list of 4 ints (0=Modulated/phase-stepping,
         1=StepTime/classic). When supplied the bridge emits the 25-byte
         extended format (spec §4 C1). Omit for the legacy 20-byte path.
+
+        phase_configs: optional variable-length list of
+        (bus_id, cs_pin_id, slot_idx) triples — one entry per phase-stepped
+        motor. When supplied (alongside step_modes), the bridge emits the
+        variable-length format (byte 25 = phase_motor_count = N,
+        bytes 26+3i carry (bus_id, cs_pin_id, slot_idx) for motor i).
+        `slot_idx` is the kinematic-slot index (0..4) whose commanded
+        motors[slot_idx] position drives that motor's XDIRECT output.
+        Multiple motors may share a slot (AWD pairs, N-motor-per-axis
+        configs). Up to 16 entries; firmware caps at MAX_STEPPER_OIDS=16.
+        Pass None (not an empty list) when no motor is phase stepped — the
+        bridge then emits the 25-byte body.
         """
         return self._bridge.configure_axes(
             mcu_handle,
@@ -155,7 +168,22 @@ class MotionBridgeWrapper:
             invert_mask,
             list(steps_per_mm),
             list(step_modes) if step_modes is not None else None,
+            list(phase_configs) if phase_configs is not None else None,
             timeout_s,
+        )
+
+    def register_phase_bus(
+        self, mcu_handle, bus_id, cs_pin_id, rate, timeout_s=5.0
+    ):
+        """Register an SPI bus with the MCU's phase-stepping subsystem.
+
+        Wraps the runtime_register_phase_bus wire command. Must be called
+        once per unique (bus_id) on each phase-stepping-capable MCU BEFORE
+        configure_axes for that MCU. Stock-Klipper MCUs (no kalico runtime)
+        are no-op via bridge.rs's early-return.
+        """
+        return self._bridge.register_phase_bus(
+            mcu_handle, bus_id, cs_pin_id, rate, timeout_s,
         )
 
     def bridge_call(self, mcu_handle, msg, response, timeout_s=15.0):

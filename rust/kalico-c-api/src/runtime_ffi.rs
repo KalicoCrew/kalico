@@ -28,7 +28,8 @@ pub mod exports {
     use runtime::error::{
         KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_ARG,
         KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION, KALICO_ERR_INVALID_HANDLE,
-        KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
+        KALICO_ERR_INVALID_KINEMATICS,
+        KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
         KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_ERR_QUEUE_FULL,
         KALICO_ERR_SEGMENT_ID_NON_MONOTONIC, KALICO_ERR_ZERO_DURATION_SEGMENT, KALICO_OK,
     };
@@ -1307,7 +1308,8 @@ pub mod exports {
         }
     }
 
-    /// Extended blob layout (25 bytes):
+    /// Extended blob layout (25 bytes) and phase-stepping blob layout
+    /// (33 bytes — Task 4 / spec §4.1):
     ///
     /// ```text
     /// byte  0     kinematics_tag  (0 = CoreXY+E, 1 = Cartesian+E)
@@ -1324,10 +1326,18 @@ pub mod exports {
     /// byte 22     step_mode[1]
     /// byte 23     step_mode[2]
     /// byte 24     step_mode[3]
+    ///             -- present only in phase-stepping (26+3N-byte) format --
+    /// byte 25                 phase_motor_count = N (1..=MAX_STEPPER_OIDS)
+    /// bytes 26+3i..26+3i+2    motor i: (bus_id, cs_pin_id, slot_idx)
     /// ```
     ///
     /// Legacy hosts emit the 20-byte format; the MCU defaults all steppers to
-    /// `StepTime` in that case. Any other `blob_len` is rejected.
+    /// `StepTime` in that case. Any `blob_len` not in
+    /// `{20, 25, 26 + 3·N for 0 <= N <= MAX_STEPPER_OIDS}` is rejected. The
+    /// variable-length format requires `step_mode[slot_idx] == Modulated`
+    /// for every motor entry (spec §4.1). N is bounded by MAX_STEPPER_OIDS
+    /// (16); the earlier audible-band ≤2 cap is no longer enforced here —
+    /// per-shared-SPI-bus bandwidth derating is a separate future change.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_configure_axes_blob(
         rt: *mut KalicoRuntime,
@@ -1343,8 +1353,18 @@ pub mod exports {
         if !INIT_DONE.load(Ordering::Acquire) {
             return KALICO_ERR_NOT_INIT;
         }
-        // Accept 20-byte (legacy) or 25-byte (extended, with StepMode array).
-        if blob_len != 20 && blob_len != 25 {
+        // Accept 20-byte (legacy), 25-byte (extended with StepMode array),
+        // or 26+3·N-byte (variable-length per-motor phase-stepping SPI
+        // config; 0 <= N <= MAX_STEPPER_OIDS). Any other length is
+        // rejected. The N=0 case (blob_len == 26) is accepted as a
+        // "clear all phase config" signal, but practically the host emits
+        // a 25-byte body in that case — see motion_toolhead.py.
+        let blob_len_usize = blob_len as usize;
+        let phase_len_ok = blob_len_usize >= 26
+            && (blob_len_usize - 26) % 3 == 0
+            && ((blob_len_usize - 26) / 3) <= runtime::state::MAX_STEPPER_OIDS;
+        if blob_len != 20 && blob_len != 25 && !phase_len_ok {
+            diag_progress(0xCA, 10, blob_len);
             return KALICO_ERR_INVALID_KINEMATICS;
         }
         let blob = unsafe { core::slice::from_raw_parts(blob_ptr, blob_len as usize) };
@@ -1441,8 +1461,9 @@ pub mod exports {
         //
         // Legacy 20-byte blobs land here with no step_mode bytes; SharedState
         // already initialises every step_modes[i] to StepTime (default), so no
-        // further action is needed for the legacy path.
-        if blob_len == 25 {
+        // further action is needed for the legacy path. Both the 25-byte
+        // extended and 33-byte phase-config blobs carry the StepMode array.
+        if blob_len >= 25 {
             let mcu_caps = blob[20];
             let mcu_supports_phase = (mcu_caps & 0x01) != 0;
             unsafe {
@@ -1481,14 +1502,131 @@ pub mod exports {
             diag_progress(0xCA, 10, u32::from(mcu_caps));
         }
 
-        // Spec §6.3: after all step_modes are written, atomically decide
-        // whether TIM5 should be armed. `runtime_tick_enable` will no-op on
-        // the C side when the Modulated count is zero (F4 with all-StepTime
-        // config never starts TIM5 here). This covers both the legacy
-        // 20-byte path (all-StepTime default, count == 0, no-op enable) and
-        // the extended 25-byte path (enables TIM5 only if at least one
-        // Modulated stepper was configured).
-        unsafe { runtime_tick_enable() };
+        // --- Variable-length format: parse per-motor phase-stepping SPI
+        // config (one entry per phase-stepped motor; topology-agnostic).
+        //
+        // Layout (3 bytes per motor starting at offset 26):
+        //   byte 25                 phase_motor_count = N (0..=MAX_STEPPER_OIDS=16)
+        //   bytes 26+3i..26+3i+2    motor i: (bus_id, cs_pin_id, slot_idx)
+        //
+        // `bus_id == 0xFF` is a sentinel marking "motor entry intentionally
+        // empty" (rare — the host emits dense entries). Each non-sentinel
+        // entry's slot_idx must be < 4 (kinematic-slot count) and
+        // `step_mode[slot_idx]` must be `Modulated` (validated against the
+        // step_modes already-installed above).
+        //
+        // Errors do NOT clear previously-stored slots — the runtime is
+        // single-shot configured before TIM5 runs, so a rejected blob
+        // leaves the runtime in its pre-call state for the host to inspect
+        // and retry with a corrected blob.
+        if blob_len_usize >= 26 {
+            let count = blob[25] as usize;
+            let expected_len = 26 + 3 * count;
+            if blob_len_usize != expected_len
+                || count > runtime::state::MAX_STEPPER_OIDS
+            {
+                diag_progress(0xCA, 10, blob_len);
+                return KALICO_ERR_INVALID_KINEMATICS;
+            }
+            // Pre-validate per-entry before mutating SharedState.
+            let mut parsed: [Option<(runtime::phase_config::PhaseConfig, u8)>;
+                runtime::state::MAX_STEPPER_OIDS] =
+                [None; runtime::state::MAX_STEPPER_OIDS];
+            for i in 0..count {
+                let off = 26 + i * 3;
+                let bus = blob[off];
+                let cs = blob[off + 1];
+                let slot_idx = blob[off + 2];
+                if bus == 0xFF {
+                    // Sentinel entries inside count are allowed but skipped.
+                    parsed[i] = None;
+                    continue;
+                }
+                if slot_idx >= 4 {
+                    diag_progress(0xCA, 11, slot_idx as u32);
+                    return KALICO_ERR_INVALID_KINEMATICS;
+                }
+                // step_mode[slot_idx] must be Modulated. The step_modes
+                // bytes from the same blob were just installed above;
+                // check the source byte directly so the rejection is
+                // independent of SharedState mutation order.
+                let mode_byte = blob[21 + slot_idx as usize];
+                if mode_byte != (runtime::state::StepMode::Modulated as u8) {
+                    diag_progress(0xCA, 11, slot_idx as u32);
+                    return KALICO_ERR_INVALID_KINEMATICS;
+                }
+                parsed[i] = Some((
+                    runtime::phase_config::PhaseConfig {
+                        spi_bus_id: bus,
+                        cs_pin_id: cs,
+                    },
+                    slot_idx,
+                ));
+            }
+            // Commit. The per-motor count is also stored so the ISR can
+            // loop 0..count rather than scanning all MAX_STEPPER_OIDS
+            // entries.
+            unsafe {
+                let shared_ptr: *const runtime::state::SharedState =
+                    core::ptr::addr_of!((*ctx).shared);
+                let shared: &runtime::state::SharedState = &*shared_ptr;
+                for i in 0..runtime::state::MAX_STEPPER_OIDS {
+                    if i < count {
+                        if let Some(slot) = shared.phase_config.get(i) {
+                            runtime::phase_config::store(
+                                slot,
+                                parsed[i].map(|(c, _)| c),
+                            );
+                        }
+                        if let Some(s) = shared.phase_slot_idx.get(i) {
+                            s.store(
+                                parsed[i].map(|(_, idx)| idx).unwrap_or(0xFF),
+                                Ordering::Release,
+                            );
+                        }
+                    } else {
+                        // Clear unused motor entries past `count` so a
+                        // shrinking re-configure can't leave stale slots.
+                        if let Some(slot) = shared.phase_config.get(i) {
+                            runtime::phase_config::store(slot, None);
+                        }
+                        if let Some(s) = shared.phase_slot_idx.get(i) {
+                            s.store(0xFF, Ordering::Release);
+                        }
+                    }
+                }
+                shared.phase_motor_count.store(count as u8, Ordering::Release);
+            }
+            diag_progress(0xCA, 13, count as u32);
+        } else if blob_len == 25 {
+            // step_modes only, no phase config — clear any prior phase
+            // state so a "configure axes without phase stepping" call
+            // doesn't leave stale phase config behind.
+            unsafe {
+                let shared_ptr: *const runtime::state::SharedState =
+                    core::ptr::addr_of!((*ctx).shared);
+                let shared: &runtime::state::SharedState = &*shared_ptr;
+                for i in 0..runtime::state::MAX_STEPPER_OIDS {
+                    if let Some(slot) = shared.phase_config.get(i) {
+                        runtime::phase_config::store(slot, None);
+                    }
+                    if let Some(s) = shared.phase_slot_idx.get(i) {
+                        s.store(0xFF, Ordering::Release);
+                    }
+                }
+                shared.phase_motor_count.store(0, Ordering::Release);
+            }
+        }
+        // blob_len == 20 (legacy) doesn't touch phase config; left as-is.
+
+        // 2026-05-19: TIM5 is no longer armed here. configure_axes_blob now
+        // sets up state but leaves the phase-stepping ISR off; the first
+        // successful `push_segment_impl` arms TIM5 (it's idempotent on the
+        // C side after the 2026-05-19 guard). Pre-fix, arming at
+        // configure_axes meant the ISR fired at 40 kHz writing zero-delta
+        // XDIRECT for the entire idle period between config and first
+        // motion, starving USB CDC and causing "No such device"
+        // disconnects within ~1 s of any sustained load.
 
         KALICO_OK
     }
@@ -2215,6 +2353,46 @@ pub mod exports {
                 Err(runtime::state::SetStepModeError::OutOfRange) => KALICO_ERR_INVALID_HANDLE,
             }
         }
+    }
+
+    /// Flip the `phase_trace_enabled` gate (2026-05-18 plan Task 5).
+    ///
+    /// When enabled, `Engine::producer_step` / `runtime_modulated_tick`
+    /// push one `TRACE_FLAG_PHASE_STEP`-flagged `TraceSample` per
+    /// phase-stepping tick per motor (Task 6 wiring). Default is `false`;
+    /// production builds leave it off so the trace ring isn't burned by
+    /// the 80 kHz per-motor PhaseStep stream when no diagnostic is active.
+    ///
+    /// `enabled`: non-zero → true, zero → false. The store uses `Release`
+    /// ordering; the ISR-side load pairs with `Acquire`.
+    ///
+    /// Returns:
+    /// - `KALICO_OK` on success.
+    /// - `KALICO_ERR_NULL_PTR` if `rt` is null.
+    /// - `KALICO_ERR_NOT_INIT` if the runtime has not been initialised.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_set_phase_trace_enabled(
+        rt: *mut KalicoRuntime,
+        enabled: u8,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState is atomics-only; no `&mut` is formed. The
+        // `phase_trace_enabled` atomic is designed for foreground writes
+        // and ISR reads, same discipline as `step_modes` / `phase_config`.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let shared: &SharedState = &*shared_ptr;
+            shared
+                .phase_trace_enabled
+                .store(enabled != 0, Ordering::Release);
+        }
+        KALICO_OK
     }
 
     // ---- Step-emission rewrite FFI surface (Task 6) -----------------------
@@ -3194,6 +3372,41 @@ pub mod exports {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
             let shared: &SharedState = &*shared_ptr;
             shared.step_modes[stepper_idx as usize].load(Ordering::Acquire)
+        }
+    }
+
+    /// Read back the parsed phase-stepping SPI config for motor `motor_idx`
+    /// (Task 4 / spec §4.1 introspection).
+    ///
+    /// Returns the packed `AtomicU16` payload: high byte = `spi_bus_id`, low
+    /// byte = `cs_pin_id`. `0xFFFF` means no phase config is installed on
+    /// that motor (the default), and is also returned for a null `rt`,
+    /// uninitialised runtime, or `motor_idx >= 4`.
+    ///
+    /// Use `runtime::phase_config::PhaseConfig::unpack` on the host side to
+    /// decode.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_query_phase_config(
+        rt: *mut KalicoRuntime,
+        motor_idx: u8,
+    ) -> u16 {
+        if rt.is_null() || motor_idx >= 4 {
+            return 0xFFFF;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0xFFFF;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `rt` is the published RT_CELL pointer; `phase_config` is a
+        // shared array of `AtomicU16` slots accessed via a shared
+        // `&SharedState` — no `&mut` is formed.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let shared: &SharedState = &*shared_ptr;
+            match shared.phase_config.get(motor_idx as usize) {
+                Some(slot) => slot.load(Ordering::Acquire),
+                None => 0xFFFF,
+            }
         }
     }
 

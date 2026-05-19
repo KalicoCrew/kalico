@@ -38,6 +38,9 @@ pub mod engine;
 pub use engine::arm_step_timer_for_stepper;
 pub mod error;
 pub mod kinematics;
+pub mod modulator;
+pub mod phase_config;
+pub mod phase_lut;
 pub mod queue;
 pub mod reclaim;
 pub mod segment;
@@ -51,6 +54,7 @@ pub mod step_producer;
 pub mod step_ring;
 pub mod step_time;
 pub mod stream;
+pub mod test_xdirect_capture;
 pub mod trace;
 pub mod wire;
 

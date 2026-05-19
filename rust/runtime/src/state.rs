@@ -21,7 +21,7 @@
 #![allow(unsafe_code)]
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU32};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32};
 // `AtomicU64` comes from `portable-atomic` because thumbv7em-none-eabi[hf]
 // (Cortex-M7) lacks native 64-bit CAS — `core::sync::atomic::AtomicU64` is
 // not provided on that target. `portable-atomic`'s `fallback` feature
@@ -68,12 +68,16 @@ impl StepMode {
     }
 }
 
-/// Per-MCU stepper oid counter slots for homing snapshots.
+/// Per-MCU stepper oid counter slots for homing snapshots and the
+/// phase-stepping per-motor (bus_id, cs_pin_id, slot_idx) table.
 ///
-/// The MVP firmware owns at most four motors per MCU today; eight slots keep
-/// room for AWD pairs and match `endstop::MAX_STEPPERS` without growing the
-/// ISR hot-path scan beyond a small fixed array.
-pub const MAX_STEPPER_OIDS: usize = 8;
+/// 16 entries support a CoreXY+AWD (4 phase-stepped motors), full-Cartesian
+/// (4 motors with no AWD), and headroom for N-motor-per-slot industrial
+/// configurations up to a hard cap of 16 phase-stepped motors per MCU.
+/// Memory cost is modest: each entry adds 1 (`AtomicU8` phase_slot_idx) +
+/// 2 (`AtomicU16` phase_config) + 4 (`AtomicI32` stepper_counts) +
+/// 1 (`AtomicU8` step_modes) ≈ 8 bytes; bumping 8 → 16 costs ~64 bytes.
+pub const MAX_STEPPER_OIDS: usize = 16;
 
 /// Per-tick state shared with PA/IS slots. Spec §3.1.
 #[derive(Debug, Clone, Copy)]
@@ -247,6 +251,41 @@ pub struct SharedState {
     /// the driver's internal sequencer, which the direct/phase-stepping
     /// path bypasses). Default `StepTime` (enum value 1).
     pub step_modes: [AtomicU8; MAX_STEPPER_OIDS],
+    /// Per-motor phase-stepping SPI config. Packed (`spi_bus_id << 8 |
+    /// cs_pin_id`). `0xFFFF` means "no phase config — use the StepPulse
+    /// output path." Populated by `kalico_runtime_configure_axes_blob`'s
+    /// variable-length parse branch; read by `runtime_modulated_tick`.
+    /// See `crate::phase_config` for the helpers.
+    ///
+    /// In the variable-length layout (≥26-byte body), entry `motor_idx`
+    /// describes the SPI bus / CS pin for the physical motor at
+    /// `motor_idx`. The kinematic slot whose commanded `motors[slot_idx]`
+    /// position drives this motor's XDIRECT output is in
+    /// `phase_slot_idx[motor_idx]`. Multiple motors may share a slot
+    /// (AWD pairs, N-motor-per-axis industrial configs).
+    pub phase_config: [AtomicU16; MAX_STEPPER_OIDS],
+    /// Per-motor kinematic-slot mapping. `phase_slot_idx[motor_idx]` is
+    /// the slot whose commanded `motors[slot_idx]` position drives motor
+    /// `motor_idx`'s XDIRECT output. Multiple motors can share a slot
+    /// (AWD pairs, or industrial multi-motor-per-axis configs).
+    /// Populated by `configure_axes_blob` alongside `phase_config`.
+    /// Unused entries hold `0xFF`.
+    pub phase_slot_idx: [AtomicU8; MAX_STEPPER_OIDS],
+    /// Number of valid entries in `phase_config` / `phase_slot_idx`. The
+    /// ISR loops `0..phase_motor_count` rather than scanning the full
+    /// `MAX_STEPPER_OIDS` array. Stored as `AtomicU8` so the foreground
+    /// can re-publish a fresh count from `configure_axes_blob`. `0`
+    /// disables phase stepping entirely on this MCU.
+    pub phase_motor_count: AtomicU8,
+
+    /// Per-print enable for `TRACE_FLAG_PHASE_STEP` trace pushes. Default
+    /// `false`. Production builds default to off so they don't burn the
+    /// 80 kHz of trace bandwidth that per-tick PhaseStep samples would
+    /// generate; the foreground flips this on through
+    /// `kalico_runtime_set_phase_trace_enabled` when a phase-stepping
+    /// diagnostic trace is requested. Read in `runtime_modulated_tick` /
+    /// `Engine::producer_step` (Task 6).
+    pub phase_trace_enabled: AtomicBool,
 
     // ─── Step 7-emission (Task 5) diagnostics ─────────────────────────────
     // Spec: docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md §6.
@@ -423,6 +462,14 @@ impl SharedState {
                 AtomicI32::new(0),
                 AtomicI32::new(0),
                 AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
+                AtomicI32::new(0),
             ],
             step_modes: [
                 AtomicU8::new(StepMode::StepTime as u8),
@@ -433,7 +480,53 @@ impl SharedState {
                 AtomicU8::new(StepMode::StepTime as u8),
                 AtomicU8::new(StepMode::StepTime as u8),
                 AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
+                AtomicU8::new(StepMode::StepTime as u8),
             ],
+            phase_config: [
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+                AtomicU16::new(crate::phase_config::NONE_SENTINEL),
+            ],
+            phase_slot_idx: [
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+                AtomicU8::new(0xFF),
+            ],
+            phase_motor_count: AtomicU8::new(0),
+            phase_trace_enabled: AtomicBool::new(false),
             producer_pending: AtomicBool::new(false),
             producer_runs_total: AtomicU64::new(0),
             consumer_pulses_total: [

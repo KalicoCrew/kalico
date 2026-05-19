@@ -268,15 +268,24 @@ GLOBALSCALER_ERROR = (
 
 
 class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
-    def __init__(self, config, mcu_tmc):
+    def __init__(self, config, mcu_tmc, direct_mode=False):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
+
+        # In direct mode (phase stepping) the chip's current scaling is
+        # selected by step pulses (IRUN on a step event, decay to IHOLD
+        # via IHOLDDELAY). With no step pulses ever asserted in phase
+        # stepping, IHOLD is the effective ceiling — set both equal so
+        # the effective current is identical regardless of which the
+        # chip internally selects (protects against unexpected step
+        # events).
+        self._direct_mode = direct_mode
 
         self.cs = config.getint("driver_CS", None, minval=0, maxval=31)
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
         )
         self.fields.set_field("globalscaler", gscaler)
-        self.fields.set_field("ihold", ihold)
+        self.fields.set_field("ihold", irun if self._direct_mode else ihold)
         self.fields.set_field("irun", irun)
 
     def _calc_globalscaler(self, current):
@@ -354,7 +363,8 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         )
         val = self.fields.set_field("globalscaler", gscaler)
         self.mcu_tmc.set_register("GLOBALSCALER", val, print_time)
-        self.fields.set_field("ihold", ihold)
+        # See __init__ comment: IHOLD = IRUN in direct mode.
+        self.fields.set_field("ihold", irun if self._direct_mode else ihold)
         val = self.fields.set_field("irun", irun)
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
 
@@ -364,17 +374,72 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
 ######################################################################
 
 
+def _enable_direct_mode(config, stepper_section, fields):
+    """Configure a TMC5160 for phase stepping (direct_mode=1).
+
+    Sets GCONF.direct_mode via the field collector so the value lands in
+    the connect-time SPI burst. Validates that incompatible options
+    (stealthchop_threshold > 0, microsteps != 256) are absent — raises
+    config.error on violation.
+
+    Note: ``stealthchop_threshold`` is read from the ``[tmc5160 *]``
+    section (i.e. ``config``) per existing TMCStealthchopHelper
+    convention. ``microsteps`` is read from the ``[stepper_*]`` section
+    (``stepper_section``) per TMCMicrostepHelper convention.
+    """
+    fields.set_field("direct_mode", 1)
+    sct = config.getfloat("stealthchop_threshold", 0.0, minval=0.0)
+    if sct > 0.0:
+        raise config.error(
+            "phase_stepping=True is incompatible with stealthchop_threshold "
+            "(StealthChop is bypassed in direct mode). Remove "
+            "stealthchop_threshold from [%s] or disable phase_stepping."
+            % config.get_name()
+        )
+    mres = stepper_section.getint("microsteps", 256)
+    if mres != 256:
+        raise config.error(
+            "phase_stepping=True requires microsteps: 256; [%s] has "
+            "microsteps: %d." % (stepper_section.get_name(), mres)
+        )
+
+
 class TMC5160:
     def __init__(self, config):
         # Setup mcu communication
+        self.printer = config.get_printer()
         self.fields = tmc.FieldHelper(Fields, SignedFields, FieldFormatters)
         self.mcu_tmc = tmc2130.MCU_TMC_SPI(
             config, Registers, self.fields, TMC_FREQUENCY
         )
         # Allow virtual pins to be created
         tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
+        # 2026-05-18 phase-stepping integration: when the matching
+        # [stepper_*] section sets phase_stepping=True, queue
+        # GCONF.direct_mode=1 and validate incompatible options. The TMC
+        # SPI burst at klippy connect time will write the bit before any
+        # motion starts. Detected *before* the current helper is built
+        # so the helper can switch to IHOLD=IRUN mapping (direct mode
+        # uses step pulses to select between IRUN/IHOLD; with no step
+        # pulses ever asserted in phase stepping, the two must be equal
+        # to guarantee deterministic effective current).
+        stepper_name = " ".join(config.get_name().split()[1:])  # "stepper_x"
+        if config.has_section(stepper_name):
+            stepper_section = config.getsection(stepper_name)
+        else:
+            stepper_section = None
+        self._phase_stepping = False
+        self._phase_bus_id = None
+        self._phase_cs_pin_id = None
+        if stepper_section is not None and stepper_section.getboolean(
+            "phase_stepping", False
+        ):
+            _enable_direct_mode(config, stepper_section, self.fields)
+            self._phase_stepping = True
         # Register commands
-        current_helper = TMC5160CurrentHelper(config, self.mcu_tmc)
+        current_helper = TMC5160CurrentHelper(
+            config, self.mcu_tmc, direct_mode=self._phase_stepping,
+        )
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)
         cmdhelper.setup_register_dump(ReadRegisters)
         self.get_phase_offset = cmdhelper.get_phase_offset
@@ -443,6 +508,27 @@ class TMC5160:
         set_config_field(config, "pwm_lim", 12)
         #   TPOWERDOWN
         set_config_field(config, "tpowerdown", 10)
+
+    def get_phase_config(self):
+        """Return (bus_id, cs_pin_id) for phase-stepping integration.
+
+        Raises if this TMC5160 is not configured for phase stepping.
+        Resolves the integer IDs lazily on first call (the MCU must
+        have completed identify before this fires, which is guaranteed
+        by motion_toolhead._configure_axes_per_mcu running in a
+        klippy:connect handler).
+        """
+        if not self._phase_stepping:
+            raise self.printer.config_error(
+                "get_phase_config called on a TMC5160 without "
+                "phase_stepping=True on the matching stepper section"
+            )
+        if self._phase_bus_id is None or self._phase_cs_pin_id is None:
+            # Lazy resolution: pull integer IDs from the now-identified MCU.
+            self._phase_bus_id, self._phase_cs_pin_id = (
+                self.mcu_tmc.tmc_spi.get_bus_and_cs_ids()
+            )
+        return (self._phase_bus_id, self._phase_cs_pin_id)
 
 
 def load_config_prefix(config):

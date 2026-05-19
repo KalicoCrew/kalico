@@ -10,6 +10,7 @@
 #include "internal.h" // gpio_peripheral
 #include "sched.h" // sched_shutdown
 #include "board/misc.h" // timer_is_before
+#include "phase_stepping_spi.h" // phase_spi_try_acquire / phase_spi_release
 
 struct spi_info {
     SPI_TypeDef *spi;
@@ -124,9 +125,18 @@ spi_prepare(struct spi_config config)
             ;
 }
 
+// Bare SPI3 transfer — caller is responsible for holding phase_spi_busy
+// and serializing access to the SPI peripheral. Used by both
+// spi_transfer (task-context, takes the lock itself) and
+// phase_stepping_write_xdirect (ISR-context, already holds the lock).
+//
+// Note: the shutdown("spi rx timeout") / shutdown("spi eot timeout")
+// calls below are __noreturn -- leaving phase_spi_busy=1 latched is
+// intentional. The ISR-side phase_stepping_write_xdirect skip path
+// remains safe during MCU halt.
 void
-spi_transfer(struct spi_config config, uint8_t receive_data,
-             uint8_t len, uint8_t *data)
+spi_transfer_locked(struct spi_config config, uint8_t receive_data,
+                    uint8_t len, uint8_t *data)
 {
     uint8_t rdata = 0;
     SPI_TypeDef *spi = config.spi;
@@ -171,4 +181,32 @@ spi_transfer(struct spi_config config, uint8_t receive_data,
     // Clear flags and disable SPI
     spi->IFCR = 0xFFFFFFFF;
     spi->CR1 = SPI_CR1_SSI;
+}
+
+void
+spi_transfer(struct spi_config config, uint8_t receive_data,
+             uint8_t len, uint8_t *data)
+{
+    // 2026-05-18 phase-stepping SPI3 contention: Klipper's task-context
+    // SPI access must coordinate with the TIM5-rate XDIRECT ISR. The
+    // busy-flag is per-MCU global (one SPI3 instance per H723), so we
+    // gate every spi_transfer call. Non-SPI3 transfers see the flag
+    // uncontested and acquire/release with negligible overhead (~10
+    // cycles per pair). The wait path is bounded: the TIM5 ISR releases
+    // within ~25 us of acquiring.
+    //
+    // 2026-05-19 deadlock fix: this entry point is for task-context
+    // callers only. ISR-context callers (phase_stepping_write_xdirect)
+    // already hold phase_spi_busy and MUST call spi_transfer_locked
+    // directly — otherwise the spin-acquire below loops forever against
+    // the lock the ISR itself owns, USB CDC pump starves, the H7
+    // re-enumerates, and klippy aborts via EXIT_ON_FAULT.
+    while (!phase_spi_try_acquire()) {
+        // Spin; the ISR-side write completes within one TIM5 period
+        // (25 us at 40 kHz). On real hardware the CPU is not idle here
+        // -- the next TIM5 ISR fire will release. In Renode sim, the
+        // virtual time advances under the spin loop.
+    }
+    spi_transfer_locked(config, receive_data, len, data);
+    phase_spi_release();
 }

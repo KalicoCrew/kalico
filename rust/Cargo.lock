@@ -807,6 +807,7 @@ dependencies = [
  "arc-swap",
  "compat",
  "crossbeam-channel",
+ "env_logger",
  "gcode",
  "geometry",
  "heapless",

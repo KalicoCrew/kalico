@@ -247,7 +247,8 @@ int32_t kalico_runtime_get_stepper_count(kalico_nurbs_KalicoRuntime *rt, uint8_t
 int32_t kalico_configure_axes(kalico_nurbs_KalicoRuntime *rt, uint8_t kinematics_tag);
 
 /**
- * Extended blob layout (25 bytes):
+ * Extended blob layout (25 bytes) and phase-stepping blob layout
+ * (33 bytes — Task 4 / spec §4.1):
  *
  * ```text
  * byte  0     kinematics_tag  (0 = CoreXY+E, 1 = Cartesian+E)
@@ -264,10 +265,18 @@ int32_t kalico_configure_axes(kalico_nurbs_KalicoRuntime *rt, uint8_t kinematics
  * byte 22     step_mode[1]
  * byte 23     step_mode[2]
  * byte 24     step_mode[3]
+ *             -- present only in phase-stepping (26+3N-byte) format --
+ * byte 25                 phase_motor_count = N (1..=MAX_STEPPER_OIDS)
+ * bytes 26+3i..26+3i+2    motor i: (bus_id, cs_pin_id, slot_idx)
  * ```
  *
  * Legacy hosts emit the 20-byte format; the MCU defaults all steppers to
- * `StepTime` in that case. Any other `blob_len` is rejected.
+ * `StepTime` in that case. Any `blob_len` not in
+ * `{20, 25, 26 + 3·N for 0 <= N <= MAX_STEPPER_OIDS}` is rejected. The
+ * variable-length format requires `step_mode[slot_idx] == Modulated`
+ * for every motor entry (spec §4.1). N is bounded by MAX_STEPPER_OIDS
+ * (16); the earlier audible-band ≤2 cap is no longer enforced here —
+ * per-shared-SPI-bus bandwidth derating is a separate future change.
  */
 int32_t kalico_runtime_configure_axes_blob(kalico_nurbs_KalicoRuntime *rt,
                                            const uint8_t *blob_ptr,
@@ -488,6 +497,25 @@ int32_t kalico_runtime_set_step_mode(kalico_nurbs_KalicoRuntime *rt,
                                      uint8_t stepper_idx,
                                      uint8_t mode,
                                      uint8_t mcu_supports_phase);
+
+/**
+ * Flip the `phase_trace_enabled` gate (2026-05-18 plan Task 5).
+ *
+ * When enabled, `Engine::producer_step` / `runtime_modulated_tick`
+ * push one `TRACE_FLAG_PHASE_STEP`-flagged `TraceSample` per
+ * phase-stepping tick per motor (Task 6 wiring). Default is `false`;
+ * production builds leave it off so the trace ring isn't burned by
+ * the 80 kHz per-motor PhaseStep stream when no diagnostic is active.
+ *
+ * `enabled`: non-zero → true, zero → false. The store uses `Release`
+ * ordering; the ISR-side load pairs with `Acquire`.
+ *
+ * Returns:
+ * - `KALICO_OK` on success.
+ * - `KALICO_ERR_NULL_PTR` if `rt` is null.
+ * - `KALICO_ERR_NOT_INIT` if the runtime has not been initialised.
+ */
+int32_t kalico_runtime_set_phase_trace_enabled(kalico_nurbs_KalicoRuntime *rt, uint8_t enabled);
 
 /**
  * Producer Klipper-timer callback entry. Runs one `Engine::producer_step`
@@ -913,6 +941,20 @@ int32_t kalico_runtime_apply_step(kalico_nurbs_KalicoRuntime *rt,
  * - `0xFF` — null `rt`, `INIT_DONE == false`, or `stepper_idx` out of range.
  */
 uint8_t kalico_runtime_get_step_mode(kalico_nurbs_KalicoRuntime *rt, uint8_t stepper_idx);
+
+/**
+ * Read back the parsed phase-stepping SPI config for motor `motor_idx`
+ * (Task 4 / spec §4.1 introspection).
+ *
+ * Returns the packed `AtomicU16` payload: high byte = `spi_bus_id`, low
+ * byte = `cs_pin_id`. `0xFFFF` means no phase config is installed on
+ * that motor (the default), and is also returned for a null `rt`,
+ * uninitialised runtime, or `motor_idx >= 4`.
+ *
+ * Use `runtime::phase_config::PhaseConfig::unpack` on the host side to
+ * decode.
+ */
+uint16_t kalico_runtime_query_phase_config(kalico_nurbs_KalicoRuntime *rt, uint8_t motor_idx);
 
 /**
  * Count how many steppers are currently in `StepMode::Modulated`.

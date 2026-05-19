@@ -72,10 +72,31 @@ runtime_tick_enable(void)
         return;
     }
 
-    // Modulated motors present — arm TIM5 at 40 kHz for current synthesis
-    // (Step 10 future) and the polled-tick StepAccumulator path.
+    // 2026-05-19: idempotent re-arm guard. push_segment_impl calls this on
+    // every successful enqueue so the first segment lazily starts TIM5; if
+    // TIM5 is already counting (CR1.CEN==1), short-circuit to avoid the
+    // disable→reenable glitch and the dead-cycle USB-CDC bandwidth cost.
+    // The pre-2026-05-19 path was called from configure_axes_blob alone,
+    // which armed TIM5 immediately on connect — even before any segment
+    // existed — so the ISR fired at 40 kHz writing zero-delta XDIRECT to
+    // SPI3 for the entire idle period, starving the USB CDC pump and
+    // eventually causing "No such device" disconnects under sustained load.
+    if (TIM5->CR1 & TIM_CR1_CEN) {
+        return;
+    }
+
+    // 2026-05-19: lower modulation rate from 40 kHz → 10 kHz to leave
+    // CPU headroom for the USB CDC pump during motion. Per-tick ISR cost
+    // (one round-robin SPI write + 4 modulator computes) at 40 kHz left
+    // ~20% CPU for USB which was enough to drop the bulk-out endpoint
+    // under any sustained jog. At 10 kHz the same per-tick work yields
+    // ~80% CPU free for USB and other tasks. Per-motor write rate drops
+    // from 10 kHz → 2.5 kHz (round-robin across 4 motors), which is
+    // still above mass3d's "smooth" threshold for slow jogs but limits
+    // top speed — fine as a v1 mitigation; the long-term answer is
+    // either DMA SPI or per-tick write-coalescing.
     TIM5->CR1 &= ~TIM_CR1_CEN;
-    TIM5->ARR  = (runtime_clock_freq / 40000U) - 1U;
+    TIM5->ARR  = (runtime_clock_freq / 10000U) - 1U;
     TIM5->EGR  = TIM_EGR_UG;
     TIM5->SR   = 0;
     TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
@@ -103,9 +124,10 @@ runtime_tick_init(void)
     TIM5->CR1 &= ~TIM_CR1_CEN;
     TIM5->SR = 0;
 
-    // 40 kHz tick: PSC = 0, ARR = (clock_freq / 40000) - 1.
+    // 10 kHz tick (see comment in runtime_tick_enable for rationale).
+    // PSC = 0, ARR = (clock_freq / 10000) - 1.
     TIM5->PSC = 0;
-    TIM5->ARR = (runtime_clock_freq / 40000U) - 1U;
+    TIM5->ARR = (runtime_clock_freq / 10000U) - 1U;
 
     // Auto-reload, update interrupt enable.
     TIM5->CR1 = TIM_CR1_ARPE;

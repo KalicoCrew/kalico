@@ -410,6 +410,79 @@ pub struct PyMotionBridge {
     homing: Arc<HomingState>,
 }
 
+/// Build the kalico-native `ConfigureAxes` wire body.
+///
+/// Body layouts (length-discriminated; the firmware parser branches on
+/// `blob_len`):
+///   - 20 bytes when `step_modes` and `phase_configs` are both None
+///     (legacy path; kinematics + 3 masks + 4 × f32 steps_per_mm).
+///   - 25 bytes when `step_modes` is Some, `phase_configs` is None
+///     (Step 7-B: adds phase_capable flag + 4-byte step_mode array).
+///   - 26 + 3·N bytes when both `step_modes` and `phase_configs` are Some
+///     (true phase stepping): byte 25 is `phase_motor_count = N`,
+///     bytes 26 + 3·i .. 26 + 3·i + 2 carry `(bus_id, cs_pin_id, slot_idx)`
+///     for motor `i`. `1 ≤ N ≤ MAX_STEPPER_OIDS` (firmware-side cap of 16
+///     phase-stepped motors per MCU).
+///
+/// `phase_capable` is the identify-time PHASE_STEPPING bit (bit 0 of
+/// `identify_caps`). It is purely an MCU-side sanity check; the wire
+/// position is fixed at byte 20 for the 25-byte and ≥26-byte layouts.
+///
+/// "No phase stepping" emits the 25-byte body — callers should pass
+/// `phase_configs = None` in that case rather than `Some(&[])`.
+pub(crate) fn build_configure_axes_body(
+    kinematics: u8,
+    present_mask: u8,
+    awd_mask: u8,
+    invert_mask: u8,
+    steps_per_mm: &[f32; 4],
+    step_modes: Option<&[u8; 4]>,
+    phase_configs: Option<&[(u8, u8, u8)]>,
+    phase_capable: u8,
+) -> Vec<u8> {
+    // Worst-case body length: 26 (header + step_modes + count byte) +
+    // 3 × MAX (16) = 74 bytes. Pre-size to that ceiling.
+    let mut body = Vec::with_capacity(26 + 3 * 16);
+    body.push(kinematics);
+    body.push(present_mask);
+    body.push(awd_mask);
+    body.push(invert_mask);
+    for v in steps_per_mm {
+        body.extend_from_slice(&v.to_le_bytes());
+    }
+    if let Some(sm) = step_modes {
+        body.push(phase_capable);
+        for &m in sm.iter() {
+            body.push(m);
+        }
+    }
+    if let Some(pc) = phase_configs {
+        // Promoted from debug_assert! to assert! so release builds also
+        // enforce this invariant. The PyO3 wrapper checks at the boundary,
+        // but this helper is pub(crate) and could be called from other
+        // in-crate sites; a malformed phase-config body without
+        // step_modes must never silently leave this function.
+        assert!(
+            step_modes.is_some(),
+            "phase_configs requires step_modes (variable-length format extends 25-byte)"
+        );
+        // Cap mirrors firmware-side MAX_STEPPER_OIDS=16 (see
+        // `runtime::state::MAX_STEPPER_OIDS`).
+        assert!(
+            pc.len() <= 16,
+            "phase_configs.len()={} exceeds MAX_STEPPER_OIDS=16",
+            pc.len(),
+        );
+        body.push(pc.len() as u8);
+        for &(bus_id, cs_pin_id, slot_idx) in pc.iter() {
+            body.push(bus_id);
+            body.push(cs_pin_id);
+            body.push(slot_idx);
+        }
+    }
+    body
+}
+
 #[pymethods]
 impl PyMotionBridge {
     // ── Task 31: constructor ────────────────────────────────────────────
@@ -948,7 +1021,17 @@ impl PyMotionBridge {
     /// stepping, 1 = StepTime / classic). When supplied the bridge emits the
     /// 25-byte extended format (spec §4 C1); when omitted it emits the
     /// legacy 20-byte format. Firmware accepts both.
-    #[pyo3(signature = (mcu_handle, kinematics, present_mask, awd_mask, invert_mask, steps_per_mm, step_modes = None, timeout_s = 2.0))]
+    ///
+    /// `phase_configs`: optional variable-length list of
+    /// `(bus_id, cs_pin_id, slot_idx)` triples — one entry per
+    /// phase-stepped motor. When supplied (and `step_modes` is also Some),
+    /// the bridge emits the variable-length format (byte 25 =
+    /// phase_motor_count, bytes 26+3·i = per-motor entry). Up to 16 motors
+    /// per MCU (mirrors firmware-side `MAX_STEPPER_OIDS`). `slot_idx` must
+    /// be in 0..4 (kinematic-slot index) and `step_modes[slot_idx]` must
+    /// be 0 (Modulated). Pass `None` (not an empty list) when no motors
+    /// are phase stepped — the bridge then emits the 25-byte body.
+    #[pyo3(signature = (mcu_handle, kinematics, present_mask, awd_mask, invert_mask, steps_per_mm, step_modes = None, phase_configs = None, timeout_s = 2.0))]
     fn configure_axes(
         &self,
         py: Python<'_>,
@@ -959,6 +1042,7 @@ impl PyMotionBridge {
         invert_mask: u8,
         steps_per_mm: Vec<f32>,
         step_modes: Option<Vec<u8>>,
+        phase_configs: Option<Vec<(u8, u8, u8)>>,
         timeout_s: f64,
     ) -> PyResult<()> {
         use std::io::Write;
@@ -975,6 +1059,27 @@ impl PyMotionBridge {
                 return Err(PyRuntimeError::new_err(
                     "configure_axes: step_modes must be a list of 4 ints (0=Modulated, 1=StepTime)",
                 ));
+            }
+        }
+        if let Some(ref pc) = phase_configs {
+            // Cap mirrors firmware-side runtime::state::MAX_STEPPER_OIDS.
+            if pc.len() > 16 {
+                return Err(PyRuntimeError::new_err(format!(
+                    "configure_axes: phase_configs.len()={} exceeds MAX_STEPPER_OIDS=16",
+                    pc.len(),
+                )));
+            }
+            if step_modes.is_none() {
+                return Err(PyRuntimeError::new_err(
+                    "configure_axes: phase_configs requires step_modes (variable-length format extends 25-byte)",
+                ));
+            }
+            for (i, &(_, _, slot_idx)) in pc.iter().enumerate() {
+                if slot_idx >= 4 {
+                    return Err(PyRuntimeError::new_err(format!(
+                        "configure_axes: phase_configs[{i}].slot_idx={slot_idx} must be < 4",
+                    )));
+                }
             }
         }
         log::debug!("[trace-bridge-cax] enter mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x} step_modes={step_modes:?}");
@@ -1010,23 +1115,19 @@ impl PyMotionBridge {
         // stepping capability bit from the identify response so the firmware
         // can double-check the host's understanding. Bytes 21-24 are the per-
         // motor StepMode array (0=Modulated, 1=StepTime).
-        let mut body = Vec::with_capacity(25);
-        body.push(kinematics);
-        body.push(present_mask);
-        body.push(awd_mask);
-        body.push(invert_mask);
-        for v in &steps_per_mm {
-            body.extend_from_slice(&v.to_le_bytes());
-        }
-        if let Some(ref sm) = step_modes {
-            // byte 20: phase_capable flag (bit 0 from identify capabilities)
-            let phase_capable: u8 = if identify_caps & 0x1 != 0 { 1 } else { 0 };
-            body.push(phase_capable);
-            // bytes 21-24: step_mode[0..4]
-            for &m in sm.iter().take(4) {
-                body.push(m);
-            }
-        }
+        let phase_capable: u8 = if identify_caps & 0x1 != 0 { 1 } else { 0 };
+        let steps_arr: [f32; 4] = [steps_per_mm[0], steps_per_mm[1], steps_per_mm[2], steps_per_mm[3]];
+        let step_modes_arr: Option<[u8; 4]> = step_modes.as_ref().map(|sm| [sm[0], sm[1], sm[2], sm[3]]);
+        let body = build_configure_axes_body(
+            kinematics,
+            present_mask,
+            awd_mask,
+            invert_mask,
+            &steps_arr,
+            step_modes_arr.as_ref(),
+            phase_configs.as_deref(),
+            phase_capable,
+        );
         let timeout = std::time::Duration::from_secs_f64(timeout_s);
         let result = py.allow_threads(|| {
             io.kalico_call(
@@ -1054,6 +1155,79 @@ impl PyMotionBridge {
                 "configure_axes: transport error: {e:?}"
             ))),
         }
+    }
+
+    /// Register a phase-stepping SPI bus with the MCU. Must be called once
+    /// per unique `bus_id` BEFORE `configure_axes` for that MCU. Wraps the
+    /// `runtime_register_phase_bus bus_id=%c cs_pin_id=%c rate=%u` wire
+    /// command defined at `src/runtime_commands.c:556`. `cs_pin_id` is the
+    /// firmware's GPIO encoding (port * 16 + pin); the firmware-side
+    /// command handler calls `spi_setup(bus_id, mode=3, rate)` and
+    /// `gpio_out_setup(cs_pin_id, 1 /* idle high */)`.
+    ///
+    /// `cs_pin_id` argument here is "an anchor pin to identify the bus";
+    /// real per-motor CS routing comes from `phase_configs` in the
+    /// `configure_axes` 33-byte body. The firmware caches one CS per bus
+    /// in `phase_buses[bus_id].cs` (see `phase_stepping_spi.c:43`); for
+    /// the v1 single-bus-per-axis case the anchor pin == the per-motor pin.
+    #[pyo3(signature = (mcu_handle, bus_id, cs_pin_id, rate, timeout_s = 5.0))]
+    fn register_phase_bus(
+        &self,
+        py: Python<'_>,
+        mcu_handle: u32,
+        bus_id: u8,
+        cs_pin_id: u8,
+        rate: u32,
+        timeout_s: f64,
+    ) -> PyResult<()> {
+        let io = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            let conn = mcus.get(&mcu_handle).ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "register_phase_bus: unknown mcu_handle {mcu_handle}"
+                ))
+            })?;
+            // Stock-Klipper firmware (no kalico runtime) does not implement
+            // runtime_register_phase_bus. Silently no-op so multi-MCU setups
+            // where one board is stock Klipper (e.g. F446 on Z) still complete
+            // the per-MCU iteration cleanly.
+            if !conn.kalico_native_supported {
+                return Ok(());
+            }
+            conn.host_io.as_ref().ok_or_else(|| {
+                PyRuntimeError::new_err(
+                    "register_phase_bus: attach_serial has not been called for this MCU",
+                )
+            })?.clone()
+        };
+        let timeout = std::time::Duration::from_secs_f64(timeout_s);
+        let msg = format!(
+            "runtime_register_phase_bus bus_id={bus_id} cs_pin_id={cs_pin_id} rate={rate}"
+        );
+        let params = py.allow_threads(|| -> PyResult<_> {
+            use kalico_host_rt::transport::Transport;
+            io.call(&msg, "kalico_register_phase_bus_response", timeout)
+                .map_err(|e| PyRuntimeError::new_err(format!(
+                    "register_phase_bus: transport error: {e:?}"
+                )))
+        })?;
+        // Firmware emits `result=%i` (signed i32). `try_get_i32` accepts
+        // either I32 or U32 (parser may surface a non-negative %i value as
+        // U32 when it fits in u31) and returns None on missing/wrong-type,
+        // so a firmware-side schema drift surfaces as an explicit error
+        // instead of being silently coerced to 0.
+        let result = params.try_get_i32("result").ok_or_else(|| {
+            PyRuntimeError::new_err(
+                "register_phase_bus: response missing or non-integer result field",
+            )
+        })?;
+        if result != 0 {
+            return Err(PyRuntimeError::new_err(format!(
+                "register_phase_bus: MCU returned error {result} \
+                 (bus_id={bus_id} cs_pin_id={cs_pin_id})"
+            )));
+        }
+        Ok(())
     }
 
     /// Return the raw identify bytes (zlib-compressed firmware data-dict)
@@ -2623,6 +2797,115 @@ mod credit_freed_tests {
             .on_credit_freed(mcu, 7, 0)
             .expect("on_credit_freed must not error");
         assert_eq!(arm2, None);
+    }
+}
+
+#[cfg(test)]
+mod build_configure_axes_body_tests {
+    //! Unit tests for the pure `build_configure_axes_body` byte builder.
+    //!
+    //! These exercise the three wire layouts (20 / 25 / 26+3N bytes)
+    //! without standing up a PyO3 transport or mock MCU.
+
+    use super::*;
+
+    #[test]
+    fn build_configure_axes_body_legacy_20() {
+        let body = build_configure_axes_body(
+            /* kinematics */ 0,
+            /* present_mask */ 0x0F,
+            /* awd_mask */ 0x03,
+            /* invert_mask */ 0,
+            &[160.0, 160.0, 800.0, 800.0],
+            /* step_modes */ None,
+            /* phase_configs */ None,
+            /* phase_capable */ 0,
+        );
+        assert_eq!(body.len(), 20, "legacy body is 20 bytes");
+        assert_eq!(body[0], 0);
+        assert_eq!(body[1], 0x0F);
+        assert_eq!(body[2], 0x03);
+        assert_eq!(body[3], 0);
+        assert_eq!(&body[4..8], &160.0f32.to_le_bytes());
+        assert_eq!(&body[16..20], &800.0f32.to_le_bytes());
+    }
+
+    #[test]
+    fn build_configure_axes_body_step_modes_25() {
+        let body = build_configure_axes_body(
+            0, 0x0F, 0x03, 0,
+            &[160.0, 160.0, 800.0, 800.0],
+            Some(&[0, 0, 1, 1]),
+            None,
+            /* phase_capable */ 1,
+        );
+        assert_eq!(body.len(), 25, "step-modes body is 25 bytes");
+        assert_eq!(body[20], 1, "byte 20 carries phase_capable");
+        assert_eq!(&body[21..25], &[0u8, 0, 1, 1], "step_modes array");
+    }
+
+    #[test]
+    fn build_configure_axes_body_phase_configs_variable_n1() {
+        // Single phase-stepped motor on slot 0.
+        let body = build_configure_axes_body(
+            1, 0x0F, 0x00, 0,
+            &[160.0, 160.0, 800.0, 800.0],
+            Some(&[0, 1, 1, 1]),
+            Some(&[(3, 5, 0)]),
+            /* phase_capable */ 1,
+        );
+        assert_eq!(body.len(), 26 + 3 * 1, "N=1 body is 29 bytes");
+        assert_eq!(body[20], 1, "byte 20 carries phase_capable");
+        assert_eq!(&body[21..25], &[0u8, 1, 1, 1], "step_modes array");
+        assert_eq!(body[25], 1, "byte 25 is phase_motor_count");
+        assert_eq!(&body[26..29], &[3u8, 5, 0], "(bus, cs, slot_idx)");
+    }
+
+    #[test]
+    fn build_configure_axes_body_phase_configs_variable_n4_corexy_awd() {
+        // CoreXY+AWD: 4 motors driving 2 kinematic slots — slot 0 is
+        // motor pair (stepper_x, stepper_x1), slot 1 is (stepper_y,
+        // stepper_y1). slot_idx layout [0,0,1,1].
+        let body = build_configure_axes_body(
+            0, 0x0F, 0x03, 0,
+            &[160.0, 160.0, 800.0, 800.0],
+            Some(&[0, 0, 1, 1]),
+            Some(&[(3, 5, 0), (3, 6, 0), (3, 7, 1), (3, 8, 1)]),
+            /* phase_capable */ 1,
+        );
+        assert_eq!(body.len(), 26 + 3 * 4, "N=4 body is 38 bytes");
+        assert_eq!(body[20], 1);
+        assert_eq!(&body[21..25], &[0u8, 0, 1, 1]);
+        assert_eq!(body[25], 4, "phase_motor_count");
+        assert_eq!(
+            &body[26..38],
+            &[3u8, 5, 0, 3, 6, 0, 3, 7, 1, 3, 8, 1],
+            "(bus, cs, slot_idx) triples for AWD-paired CoreXY motors",
+        );
+    }
+
+    #[test]
+    fn build_configure_axes_body_phase_configs_variable_n8() {
+        // High-motor-count config: 8 motors. Verifies the count byte and
+        // full 50-byte body encode correctly.
+        let entries: Vec<(u8, u8, u8)> = (0u8..8u8)
+            .map(|i| (3, 0x10 + i, i % 4))
+            .collect();
+        let body = build_configure_axes_body(
+            1, 0x0F, 0x00, 0,
+            &[160.0, 160.0, 800.0, 800.0],
+            Some(&[0, 0, 0, 0]),
+            Some(&entries),
+            /* phase_capable */ 1,
+        );
+        assert_eq!(body.len(), 26 + 3 * 8, "N=8 body is 50 bytes");
+        assert_eq!(body[25], 8, "phase_motor_count");
+        for (i, (bus, cs, slot)) in entries.iter().enumerate() {
+            let off = 26 + i * 3;
+            assert_eq!(body[off], *bus, "entry[{i}].bus");
+            assert_eq!(body[off + 1], *cs, "entry[{i}].cs");
+            assert_eq!(body[off + 2], *slot, "entry[{i}].slot");
+        }
     }
 }
 

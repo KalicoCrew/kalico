@@ -8,12 +8,15 @@
 
 #include <stdint.h>
 #include "autoconf.h"
-#include "board/gpio.h"           // gpio_in_setup / gpio_in_read
+#include "board/gpio.h"           // gpio_in_setup / gpio_in_read / spi_setup
 #include "command.h"              // DECL_COMMAND, sendf, command_decode_ptr
 #include "sched.h"                // DECL_TASK
 #include "board/misc.h"           // timer_read_time
 #include "kalico_runtime.h"       // FFI export prototypes
 #include "kalico_dispatch.h"      // kalico_native_emit_*
+#if CONFIG_MACH_STM32
+#include "stm32/phase_stepping_spi.h"  // phase_stepping_register_bus
+#endif
 
 #if CONFIG_KALICO_RUNTIME
 
@@ -27,12 +30,24 @@ void
 command_runtime_query_status(uint32_t *args)
 {
     if (!runtime_handle) {
-        sendf("kalico_status status=%c last_err=%i", (uint8_t)255, -7);
+        sendf("kalico_status status=%c last_err=%i phase_spi_skip_count=%u",
+              (uint8_t)255, -7, 0u);
         return;
     }
     uint8_t status = runtime_handle_status(runtime_handle);
     int32_t last_err = runtime_handle_last_error(runtime_handle);
-    sendf("kalico_status status=%c last_err=%i", status, last_err);
+    uint32_t phase_skip = 0;
+#if CONFIG_MACH_STM32
+    // Cooperative SPI3 contention counter, incremented from the TIM5 ISR
+    // when the phase-stepping write loses the busy-flag race vs Klipper's
+    // low-priority TMC SPI register access. Surface on the periodic
+    // status frame so the host (and the bench acceptance gate) can
+    // monitor that contention stays inside the expected envelope
+    // (<100/s sustained per spec §8.4 / Task 13).
+    phase_skip = phase_spi_get_skip_count();
+#endif
+    sendf("kalico_status status=%c last_err=%i phase_spi_skip_count=%u",
+          status, last_err, phase_skip);
 }
 DECL_COMMAND(command_runtime_query_status, "runtime_query_status");
 
@@ -361,5 +376,235 @@ command_runtime_query_pool_state(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_query_pool_state,
     "runtime_query_pool_state slot=%hu");
+
+// ---- 2026-05-18 phase-stepping diagnostic gate -----------------------------
+// Exposes `kalico_runtime_set_phase_trace_enabled` on the wire so host-side
+// sim tests (tools/test_sim_phase_stepping.py) can flip the per-print
+// PhaseStep trace push without going through the Klippy bridge crate.
+// Production builds default to off; tests turn it on for the duration of a
+// jog, drain the trace ring via the existing `kalico_trace` output frame,
+// and turn it off again.
+void
+command_runtime_set_phase_trace(uint32_t *args)
+{
+    if (!runtime_handle) {
+        sendf("kalico_set_phase_trace_response result=%i", -7);
+        return;
+    }
+    uint8_t enabled = (uint8_t)args[0];
+    int32_t r = kalico_runtime_set_phase_trace_enabled(runtime_handle, enabled);
+    sendf("kalico_set_phase_trace_response result=%i", r);
+}
+DECL_COMMAND(command_runtime_set_phase_trace,
+    "runtime_set_phase_trace enabled=%c");
+
+// ---- 2026-05-18 configure_axes binary blob via msgproto --------------------
+// Production routes configure_axes through the kalico-native binary frame
+// transport (KALICO_MSG_CONFIGURE_AXES, see src/kalico_dispatch.c). That
+// path requires a separate sync byte (0x55) and CRC scheme that the
+// standalone host-io helper (tools/kalico_host_io.py) does not demux —
+// responses never reach Python callers driving the sim from a plain
+// pyserial socket. This DECL_COMMAND surfaces the same Rust FFI through
+// the standard Klipper msgproto path so sim tests can install per-motor
+// phase config (33-byte blob) without standing up the full bridge crate.
+// Accepts 20-byte (legacy), 25-byte (extended StepMode), or 33-byte
+// (phase-stepping per-motor SPI config) blobs.
+void
+command_runtime_configure_axes_blob(uint32_t *args)
+{
+    if (!runtime_handle) {
+        sendf("kalico_configure_axes_blob_response result=%i", -7);
+        return;
+    }
+    uint32_t blob_len = args[0];
+    uint8_t *blob_ptr = command_decode_ptr(args[1]);
+    // Accept 20 / 25 / 26+3N (N in 0..=16). Rust parser validates the
+    // per-motor entries; wrapper only gates length to a recognized shape.
+    int accept = (blob_len == 20) || (blob_len == 25);
+    if (!accept && blob_len >= 26) {
+        uint32_t tail = blob_len - 26;
+        if (tail % 3 == 0 && (tail / 3) <= 16) {
+            accept = 1;
+        }
+    }
+    if (!accept) {
+        sendf("kalico_configure_axes_blob_response result=%i", -1);
+        return;
+    }
+    int32_t r = kalico_runtime_configure_axes_blob(runtime_handle,
+                                                   blob_ptr,
+                                                   blob_len);
+    if (r == 0) {
+        extern void init_step_time_timers(void);
+        init_step_time_timers();
+    }
+    sendf("kalico_configure_axes_blob_response result=%i", r);
+}
+DECL_COMMAND(command_runtime_configure_axes_blob,
+    "runtime_configure_axes_blob blob=%*s");
+
+// ---- 2026-05-18 sim test driver: load_curve via msgproto -------------------
+// Mirrors KALICO_MSG_LOAD_CURVE (kalico_dispatch.c::handle_load_curve) but
+// surfaces through Klipper msgproto so tools/test_sim_phase_stepping.py can
+// install a curve without the kalico-native binary frame transport (which
+// the standalone host-io helper does not demux).
+//
+// Wire body matches the binary-frame layout:
+//   slot u16 | degree u8 | n_cps u32 | cps×f32 | n_knots u32 | knots×f32
+#include <string.h>
+extern float runtime_aligned_cps[];
+extern float runtime_aligned_knots[];
+
+void
+command_runtime_load_curve_msgproto(uint32_t *args)
+{
+    if (!runtime_handle) {
+        sendf(
+            "kalico_load_curve_msgproto_response result=%i curve_handle_packed=%u",
+            -7, 0);
+        return;
+    }
+    uint16_t slot = (uint16_t)args[0];
+    uint8_t degree = (uint8_t)args[1];
+    uint32_t n_cps = args[2];
+    uint32_t cps_len = args[3];
+    uint8_t *cps_ptr = command_decode_ptr(args[4]);
+    uint32_t n_knots = args[5];
+    uint32_t knots_len = args[6];
+    uint8_t *knots_ptr = command_decode_ptr(args[7]);
+    if (cps_len != n_cps * 4u || knots_len != n_knots * 4u) {
+        sendf(
+            "kalico_load_curve_msgproto_response result=%i curve_handle_packed=%u",
+            -1, 0);
+        return;
+    }
+    if (n_cps > (uint32_t)CONFIG_RUNTIME_MAX_CONTROL_POINTS
+        || n_knots > (uint32_t)CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN) {
+        sendf(
+            "kalico_load_curve_msgproto_response result=%i curve_handle_packed=%u",
+            -1, 0);
+        return;
+    }
+    memcpy(runtime_aligned_cps, cps_ptr, cps_len);
+    memcpy(runtime_aligned_knots, knots_ptr, knots_len);
+    uint32_t handle_packed = 0;
+    int32_t r = runtime_handle_load_curve(
+        runtime_handle, slot,
+        runtime_aligned_cps, (uint16_t)n_cps,
+        runtime_aligned_knots, (uint16_t)n_knots,
+        degree, &handle_packed);
+    sendf(
+        "kalico_load_curve_msgproto_response result=%i curve_handle_packed=%u",
+        r, handle_packed);
+}
+DECL_COMMAND(command_runtime_load_curve_msgproto,
+    "runtime_load_curve_msgproto slot=%hu degree=%c "
+    "n_cps=%u cps=%*s n_knots=%u knots=%*s");
+
+// ---- 2026-05-18 sim test driver: push_segment via msgproto -----------------
+// Mirrors KALICO_MSG_PUSH_SEGMENT through Klipper msgproto. The full 42-byte
+// segment body is encoded as a single %*s blob to keep the framed packet
+// under MESSAGE_MAX = 64 bytes (12 separate PT_uint32 args at max-varint
+// width would exceed the cap).
+//
+// Wire body layout matches kalico_dispatch.c::handle_push_segment §7.4:
+//   id u32 | x/y/z/e u32 each | t_start u64 | t_end u64 |
+//   kinematics u8 | e_mode u8 | extrusion_ratio_bits u32  (42 bytes total)
+void
+command_runtime_push_segment_msgproto(uint32_t *args)
+{
+    if (!runtime_handle) {
+        sendf(
+            "kalico_push_segment_msgproto_response result=%i "
+            "accepted_segment_id=%u credit_epoch=%u",
+            -7, 0, 0);
+        return;
+    }
+    uint32_t body_len = args[0];
+    uint8_t *body = command_decode_ptr(args[1]);
+    if (body_len != 42) {
+        sendf(
+            "kalico_push_segment_msgproto_response result=%i "
+            "accepted_segment_id=%u credit_epoch=%u",
+            -1, 0, 0);
+        return;
+    }
+    uint32_t id = (uint32_t)body[0] | ((uint32_t)body[1] << 8)
+                | ((uint32_t)body[2] << 16) | ((uint32_t)body[3] << 24);
+    uint32_t x_handle = (uint32_t)body[4] | ((uint32_t)body[5] << 8)
+                      | ((uint32_t)body[6] << 16) | ((uint32_t)body[7] << 24);
+    uint32_t y_handle = (uint32_t)body[8] | ((uint32_t)body[9] << 8)
+                      | ((uint32_t)body[10] << 16) | ((uint32_t)body[11] << 24);
+    uint32_t z_handle = (uint32_t)body[12] | ((uint32_t)body[13] << 8)
+                      | ((uint32_t)body[14] << 16) | ((uint32_t)body[15] << 24);
+    uint32_t e_handle = (uint32_t)body[16] | ((uint32_t)body[17] << 8)
+                      | ((uint32_t)body[18] << 16) | ((uint32_t)body[19] << 24);
+    uint64_t t_start = 0;
+    for (int i = 0; i < 8; i++)
+        t_start |= ((uint64_t)body[20 + i]) << (8 * i);
+    uint64_t t_end = 0;
+    for (int i = 0; i < 8; i++)
+        t_end |= ((uint64_t)body[28 + i]) << (8 * i);
+    uint8_t kinematics = body[36];
+    uint8_t e_mode = body[37];
+    uint32_t extrusion_ratio_bits = (uint32_t)body[38] | ((uint32_t)body[39] << 8)
+                                  | ((uint32_t)body[40] << 16) | ((uint32_t)body[41] << 24);
+    uint32_t accepted_id = 0, credit_epoch = 0;
+    int32_t r = runtime_handle_push_segment(
+        runtime_handle, id, x_handle, y_handle, z_handle, e_handle,
+        t_start, t_end, kinematics, e_mode, extrusion_ratio_bits,
+        &accepted_id, &credit_epoch);
+    if (r == 0) {
+        extern void arm_producer_timer_if_kicked(void);
+        arm_producer_timer_if_kicked();
+    }
+    sendf(
+        "kalico_push_segment_msgproto_response result=%i "
+        "accepted_segment_id=%u credit_epoch=%u",
+        r, accepted_id, credit_epoch);
+}
+DECL_COMMAND(command_runtime_push_segment_msgproto,
+    "runtime_push_segment_msgproto body=%*s");
+
+// ---- 2026-05-18 phase-stepping SPI bus registration ----------------------
+// Closes the gap between the Rust runtime's per-motor phase_config storage
+// (installed via runtime_configure_axes_blob) and the C-side
+// `phase_stepping_register_bus` that `phase_stepping_write_xdirect` checks
+// before emitting a TMC5160 XDIRECT datagram. Without this command, every
+// XDIRECT write from the modulator hits the `if (!configured) return;`
+// early-exit in src/stm32/phase_stepping_spi.c and silently drops.
+//
+// The host should send one `runtime_register_phase_bus` per phase-stepped
+// motor BEFORE `runtime_configure_axes_blob`. SPI mode is fixed at 3
+// (CPOL=1, CPHA=1) per the TMC5160 datasheet; rate is host-supplied so
+// future hardware bring-up can tune it without re-flashing.
+//
+// STM32-only because the underlying phase_stepping_spi.c is STM32-only.
+// On linux/sim hosts (non-STM32 mach) this returns -88 ("not supported on
+// this target"); the Renode sim is STM32H7 so this is a no-op for it.
+void
+command_runtime_register_phase_bus(uint32_t *args)
+{
+#if CONFIG_MACH_STM32
+    uint8_t bus_id = (uint8_t)args[0];
+    uint8_t cs_pin = (uint8_t)args[1];
+    uint32_t rate = args[2];
+    struct spi_config cfg = spi_setup(bus_id, 3 /* mode 3, TMC SPI */, rate);
+    phase_stepping_register_bus(bus_id, cfg, cs_pin);
+    sendf("kalico_register_phase_bus_response result=%i", 0);
+#else
+    (void)args;
+    sendf("kalico_register_phase_bus_response result=%i", -88);
+#endif
+}
+// NOTE: param is `cs_pin_id` not `cs_pin` deliberately. Klipper's msgproto
+// matches param names against the `pin` enumeration via
+// `name.endswith("_pin")` (see klippy/msgproto.py::lookup_params), which
+// would force the host to send symbolic pin names ("PA5") instead of the
+// raw stm32 GPIO encoding (port*16+pin = 5) used by the rest of the
+// phase_config wire surface. The `_id` suffix sidesteps the enum lookup
+// and keeps the encoding consistent with the 33-byte configure_axes blob.
+DECL_COMMAND(command_runtime_register_phase_bus,
+    "runtime_register_phase_bus bus_id=%c cs_pin_id=%c rate=%u");
 
 #endif // CONFIG_KALICO_RUNTIME
