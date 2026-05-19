@@ -3485,7 +3485,13 @@ pub mod exports {
         // `*const RuntimeContext`. The const_assert above guarantees the
         // struct fits.
         #[cfg(target_os = "none")]
-        let rt_ptr: *const RuntimeContext = rt_storage.get().cast::<RuntimeContext>();
+        let rt_ptr: *const RuntimeContext = {
+            // SAFETY: `rt_storage` is a C-declared extern static; reading
+            // its address (`.get()`) does not form an aliasing reference.
+            // The actual access is gated by `INIT_DONE` above.
+            #[allow(unsafe_code)]
+            unsafe { rt_storage.get().cast::<RuntimeContext>() }
+        };
         #[cfg(not(target_os = "none"))]
         let rt_ptr: *const RuntimeContext = rt_storage.0.get().cast::<RuntimeContext>();
         Some(rt_ptr)

@@ -23,8 +23,6 @@
 //! 800 spm. The EPS values below are sized for `f32` ulp at the maximum
 //! 300 mm bed scale; see each constant for the derivation.
 
-#![cfg_attr(not(feature = "host"), no_std)]
-
 /// Maximum Newton iterations before falling through to bisection.
 /// WebKit/Chromium use 4 with an 11-sample spline seed; Gecko uses 8
 /// with a naive `t=x` seed. Our `t = (target - P0) / (P3 - P0)` seed

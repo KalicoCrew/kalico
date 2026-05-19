@@ -157,7 +157,7 @@ fn dispatch_pulse(
     // [-2^31, 2^31) would also fail the `checked_add` downstream and
     // raise PositionCountOverflow, which is the correct response.
     #[allow(clippy::cast_possible_truncation)]
-    let target_step_count = (p_end / microstep_distance).round() as i32;
+    let target_step_count = libm::roundf(p_end / microstep_distance) as i32;
     let signed_steps = target_step_count.wrapping_sub(prev_step_count);
     // Update the axis cache regardless of whether we found any steps to
     // schedule — Phase-mode keeps it in lockstep too.
@@ -315,7 +315,7 @@ fn dispatch_phase(
     // Quantize the axis position to integer microsteps. This is the base
     // against which per-stepper phase offsets are added.
     #[allow(clippy::cast_possible_truncation)]
-    let target_microsteps_axis = (p_end / microstep_distance).round() as i32;
+    let target_microsteps_axis = libm::roundf(p_end / microstep_distance) as i32;
     axis.last_step_count = target_microsteps_axis;
 
     // u16 -> i32 widening; cannot truncate or lose sign.

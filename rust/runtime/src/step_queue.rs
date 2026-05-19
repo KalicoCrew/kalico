@@ -97,7 +97,7 @@ const _: () = {
 // `UnsafeCell` wrapper is purely a marker that interior mutation is
 // expected. Host / test builds construct queues directly via `new()`.
 #[cfg(not(any(test, feature = "host")))]
-extern "C" {
+unsafe extern "C" {
     pub static step_queues: core::cell::UnsafeCell<[StepQueue; N_AXIS_STEP_QUEUES]>;
 }
 
