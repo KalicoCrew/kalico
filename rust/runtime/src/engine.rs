@@ -350,11 +350,14 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// CoreXY: [A=0, B=1, Z=2, E=3]. Step pulse emission deferred to 7-D;
     /// update() is called but results are logged/ignored for now.
     step_state: [crate::step::StepMotorState; 4],
-    /// Per-motor phase-stepping state (Task 6 of 2026-05-18 phase-stepping
-    /// plan). Populated lazily on the first phase tick when
-    /// `shared.phase_config[motor_idx]` reports a phase config; cleared by
-    /// `runtime_force_idle` so a re-stream after flush re-seeds from scratch.
-    phase_modulators: [Option<crate::modulator::PhaseDirectModulator>; 4],
+    /// Per-motor phase-stepping state. Populated lazily on the first phase
+    /// tick when `shared.phase_config[motor_idx]` reports a phase config;
+    /// cleared by `runtime_force_idle` so a re-stream after flush re-seeds
+    /// from scratch. Sized `MAX_STEPPER_OIDS` so the per-motor walk (which
+    /// allows up to 16 phase-stepped motors per MCU; AWD partners + N-per-
+    /// slot industrial configs) can index it directly by `motor_idx`.
+    phase_modulators:
+        [Option<crate::modulator::PhaseDirectModulator>; crate::state::MAX_STEPPER_OIDS],
     /// Monotonic tick counter for phase-stepping round-robin SPI scheduling.
     /// Wraps after 2^32 ticks; mod-by-N indexing handles the wrap.
     phase_tick_counter: u32,
@@ -432,7 +435,7 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             debug_last_tstart: 0,
             debug_last_duration: 0,
             step_state: [crate::step::StepMotorState::default(); 4],
-            phase_modulators: [None, None, None, None],
+            phase_modulators: [const { None }; crate::state::MAX_STEPPER_OIDS],
             phase_tick_counter: 0,
             mcu_config: None,
             step_rings: [
@@ -3220,19 +3223,32 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             return;
         }
 
-        // Phase-stepping round-robin scheduling (Task 6 of the 2026-05-18
-        // phase-stepping plan). Each Modulated motor with a phase config
-        // computes its `(mscount, i_a, i_b)` every tick, but only ONE phase
-        // motor writes SPI per tick to keep the bus bandwidth bounded — the
-        // schedule is `phase_tick_counter % phase_motor_count`. With at
-        // most N=2 phase motors in the MVP scope (X, Y on H7) this is four
-        // atomic loads; cost is negligible.
-        let mut phase_motor_count: u32 = 0;
-        let mut phase_motor_ordinals: [Option<usize>; 4] = [None; 4];
-        for i in 0..4_usize {
+        // Phase-stepping round-robin scheduling (variable-length per-motor
+        // table). The phase_motor_count and per-motor (config, slot_idx)
+        // entries are populated by configure_axes_blob's variable-length
+        // branch. Each Modulated motor with a phase config computes its
+        // `(mscount, i_a, i_b)` every tick, but only ONE phase motor
+        // writes SPI per tick to keep the bus bandwidth bounded — the
+        // schedule is `phase_tick_counter % phase_motor_count`. With up
+        // to 16 phase motors the loop bound stays small; cost is
+        // negligible.
+        let count = shared.phase_motor_count.load(Ordering::Acquire) as usize;
+        let mut phase_motor_ordinals: [Option<usize>; crate::state::MAX_STEPPER_OIDS] =
+            [None; crate::state::MAX_STEPPER_OIDS];
+        let mut active_phase_motors: u32 = 0;
+        for motor_idx in 0..count {
+            // Each phase entry is keyed by its slot_idx into step_modes.
+            let slot_idx = shared
+                .phase_slot_idx
+                .get(motor_idx)
+                .map(|s| s.load(Ordering::Acquire))
+                .unwrap_or(0xFF) as usize;
+            if slot_idx >= 4 {
+                continue;
+            }
             let mode_i = shared
                 .step_modes
-                .get(i)
+                .get(slot_idx)
                 .map(|m| m.load(Ordering::Acquire))
                 .unwrap_or(StepMode::StepTime as u8);
             if mode_i != StepMode::Modulated as u8 {
@@ -3240,162 +3256,199 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             }
             let has_phase_cfg = shared
                 .phase_config
-                .get(i)
+                .get(motor_idx)
                 .and_then(|s| crate::phase_config::load(s))
                 .is_some();
             if has_phase_cfg {
-                if let Some(slot) = phase_motor_ordinals.get_mut(phase_motor_count as usize) {
-                    *slot = Some(i);
+                if let Some(slot) = phase_motor_ordinals
+                    .get_mut(active_phase_motors as usize)
+                {
+                    *slot = Some(motor_idx);
                 }
-                phase_motor_count = phase_motor_count.saturating_add(1);
+                active_phase_motors = active_phase_motors.saturating_add(1);
             }
         }
-        let phase_motor_due = if phase_motor_count > 0 {
-            let idx = (self.phase_tick_counter % phase_motor_count) as usize;
+        let phase_motor_due = if active_phase_motors > 0 {
+            let idx = (self.phase_tick_counter % active_phase_motors) as usize;
             phase_motor_ordinals.get(idx).copied().flatten()
         } else {
             None
         };
         let trace_enabled = shared.phase_trace_enabled.load(Ordering::Acquire);
 
+        // Walk the per-motor phase table (motor_idx → motors[slot_idx]).
+        // Each motor writes its own TMC chip's XDIRECT register; multiple
+        // motors may share a slot (AWD partners) and consume identical
+        // commanded positions but emit to distinct CS pins.
+        for motor_idx in 0..count {
+            let phase_cfg = shared
+                .phase_config
+                .get(motor_idx)
+                .and_then(|s| crate::phase_config::load(s));
+            let Some(cfg) = phase_cfg else {
+                continue;
+            };
+            let slot_idx = shared
+                .phase_slot_idx
+                .get(motor_idx)
+                .map(|s| s.load(Ordering::Acquire))
+                .unwrap_or(0xFF) as usize;
+            if slot_idx >= 4 {
+                continue;
+            }
+            let mode = shared
+                .step_modes
+                .get(slot_idx)
+                .map(|m| m.load(Ordering::Acquire))
+                .unwrap_or(StepMode::StepTime as u8);
+            if mode != StepMode::Modulated as u8 {
+                continue;
+            }
+            let Some(&m) = motors.get(slot_idx) else {
+                continue;
+            };
+
+            // Phase-stepping output path. Seed the per-motor modulator
+            // from the engine's configured steps_per_mm (looked up from
+            // the kinematic slot's `step_state`) on first use
+            // post-configure / post-flush. The accumulator inside the
+            // modulator carries the sub-microstep residual across ticks
+            // the same way `StepMotorState` does.
+            //
+            // Note: when 2+ motors share a slot (AWD pair), each motor
+            // has its own modulator instance. They consume the same
+            // motors[slot_idx] commanded position each tick and produce
+            // identical (mscount, i_a, i_b) — i.e. their state stays in
+            // lockstep, by construction. The only divergence is the SPI
+            // round-robin: only one motor writes XDIRECT per tick, while
+            // the others still advance their own accumulators.
+            let steps_per_mm = self
+                .step_state
+                .get(slot_idx)
+                .map(|s| s.debug_steps_per_mm())
+                .unwrap_or(0.0);
+            let modulator = self
+                .phase_modulators
+                .get_mut(motor_idx)
+                .and_then(|slot| {
+                    Some(slot.get_or_insert_with(|| {
+                        crate::modulator::PhaseDirectModulator::new(steps_per_mm)
+                    }))
+                });
+            let Some(modulator) = modulator else {
+                continue;
+            };
+
+            match modulator.compute(m) {
+                Ok(r) => {
+                    // Maintain `stepper_counts` so homing snapshots and
+                    // host position queries keep working for phase-stepped
+                    // axes (spec §3.1 step 1). Indexed by motor_idx so
+                    // each physical motor has its own counter.
+                    if r.steps_delta != 0 {
+                        if let Some(counter) = shared.stepper_counts.get(motor_idx) {
+                            counter.fetch_add(r.steps_delta, Ordering::AcqRel);
+                        }
+                    }
+
+                    // SPI write: only the round-robin-due motor writes
+                    // its XDIRECT register this tick. Non-due phase
+                    // motors still trace their computed values with
+                    // `wrote_spi=false` so the host can reconstruct the
+                    // full per-tick state even though the bus only
+                    // carries one write.
+                    let wrote_spi = phase_motor_due == Some(motor_idx);
+                    if wrote_spi {
+                        write_xdirect(cfg.spi_bus_id, cfg.cs_pin_id, r.i_a, r.i_b);
+                    }
+
+                    if trace_enabled {
+                        let sample = TraceSample::phase_step(
+                            self.phase_tick_counter,
+                            motor_idx as u8,
+                            r.mscount,
+                            r.i_a,
+                            r.i_b,
+                            wrote_spi,
+                        );
+                        // Match the existing pattern: trace pushes are
+                        // best-effort, and the `sample_drop_pending`
+                        // latch carries the overflow signal forward.
+                        let _ = trace.enqueue(sample);
+                    }
+                }
+                Err(()) => {
+                    shared.last_error.store(
+                        crate::error::KALICO_ERR_STEP_BURST_EXCEEDED,
+                        Ordering::Release,
+                    );
+                    shared.runtime_status.store(
+                        RuntimeStatus::Fault as u8,
+                        Ordering::Release,
+                    );
+                    self.last_error.store(
+                        crate::error::KALICO_ERR_STEP_BURST_EXCEEDED,
+                        Ordering::Release,
+                    );
+                    self.status
+                        .store(RuntimeStatus::Fault as u8, Ordering::Release);
+                    return;
+                }
+            }
+        }
+
+        // StepPulse output path for non-phase-stepped slots (independent
+        // of the per-motor phase table). Indexed by kinematic slot —
+        // motors[slot_idx] drives stepper_counts[slot_idx] via
+        // StepAccumulator + emit_step_pulses. Slots that are Modulated
+        // (i.e. phase-stepped) skip this branch.
         for motor_idx in 0..4_usize {
             let mode = shared
                 .step_modes
                 .get(motor_idx)
                 .map(|m| m.load(Ordering::Acquire))
                 .unwrap_or(StepMode::StepTime as u8);
-            if mode != StepMode::Modulated as u8 {
+            if mode == StepMode::Modulated as u8 {
+                // Phase-stepped slot — the per-motor walk above already
+                // updated XDIRECT + stepper_counts for every motor on
+                // this slot.
                 continue;
             }
             let Some(&m) = motors.get(motor_idx) else {
                 continue;
             };
 
-            // Branch on whether this motor has a phase-stepping config
-            // installed. Present → phase-direct output (XDIRECT SPI + LUT);
-            // absent → existing StepPulse path (StepAccumulator +
-            // emit_step_pulses).
-            let phase_cfg = shared
-                .phase_config
-                .get(motor_idx)
-                .and_then(|s| crate::phase_config::load(s));
-
-            match phase_cfg {
-                Some(cfg) => {
-                    // Phase-stepping output path. Seed the per-motor
-                    // modulator from the engine's configured steps_per_mm
-                    // on first use (post-configure or post-flush). The
-                    // accumulator inside the modulator carries the
-                    // sub-microstep residual across ticks the same way
-                    // `StepMotorState` does.
-                    let steps_per_mm = self
-                        .step_state
-                        .get(motor_idx)
-                        .map(|s| s.debug_steps_per_mm())
-                        .unwrap_or(0.0);
-                    let modulator =
-                        self.phase_modulators.get_mut(motor_idx).and_then(|slot| {
-                            Some(slot.get_or_insert_with(|| {
-                                crate::modulator::PhaseDirectModulator::new(steps_per_mm)
-                            }))
-                        });
-                    let Some(modulator) = modulator else {
-                        continue;
-                    };
-
-                    match modulator.compute(m) {
-                        Ok(r) => {
-                            // Maintain `stepper_counts` so homing snapshots
-                            // and host position queries keep working for
-                            // phase-stepped axes (spec §3.1 step 1).
-                            if r.steps_delta != 0 {
-                                if let Some(counter) = shared.stepper_counts.get(motor_idx) {
-                                    counter.fetch_add(r.steps_delta, Ordering::AcqRel);
-                                }
-                            }
-
-                            // SPI write: only the round-robin-due motor
-                            // writes its XDIRECT register this tick. Non-
-                            // due phase motors still trace their computed
-                            // values with `wrote_spi=false` so the host
-                            // can reconstruct the full per-tick state
-                            // even though the bus only carries one write.
-                            let wrote_spi = phase_motor_due == Some(motor_idx);
-                            if wrote_spi {
-                                write_xdirect(cfg.spi_bus_id, cfg.cs_pin_id, r.i_a, r.i_b);
-                            }
-
-                            if trace_enabled {
-                                let sample = TraceSample::phase_step(
-                                    self.phase_tick_counter,
-                                    motor_idx as u8,
-                                    r.mscount,
-                                    r.i_a,
-                                    r.i_b,
-                                    wrote_spi,
-                                );
-                                // Match the existing pattern: trace pushes
-                                // are best-effort, and the
-                                // `sample_drop_pending` latch carries the
-                                // overflow signal forward.
-                                let _ = trace.enqueue(sample);
-                            }
+            // Existing StepPulse output path — unchanged.
+            let Some(ss) = self.step_state.get_mut(motor_idx) else {
+                continue;
+            };
+            match ss.update(m) {
+                Ok(step_result) => {
+                    if step_result.n_steps != 0 {
+                        if let Some(counter) = shared.stepper_counts.get(motor_idx) {
+                            counter.fetch_add(step_result.n_steps, Ordering::AcqRel);
                         }
-                        Err(()) => {
-                            shared.last_error.store(
-                                crate::error::KALICO_ERR_STEP_BURST_EXCEEDED,
-                                Ordering::Release,
-                            );
-                            shared.runtime_status.store(
-                                RuntimeStatus::Fault as u8,
-                                Ordering::Release,
-                            );
-                            self.last_error.store(
-                                crate::error::KALICO_ERR_STEP_BURST_EXCEEDED,
-                                Ordering::Release,
-                            );
-                            self.status
-                                .store(RuntimeStatus::Fault as u8, Ordering::Release);
-                            return;
-                        }
+                        emit_step_pulses(motor_idx as u8, step_result.n_steps);
                     }
                 }
-                None => {
-                    // Existing StepPulse output path — unchanged from
-                    // pre-Task-6 behaviour.
-                    let Some(ss) = self.step_state.get_mut(motor_idx) else {
-                        continue;
-                    };
-                    match ss.update(m) {
-                        Ok(step_result) => {
-                            if step_result.n_steps != 0 {
-                                if let Some(counter) = shared.stepper_counts.get(motor_idx) {
-                                    counter.fetch_add(step_result.n_steps, Ordering::AcqRel);
-                                }
-                                emit_step_pulses(motor_idx as u8, step_result.n_steps);
-                            }
-                        }
-                        Err(()) => {
-                            // T10 simplification: latch the fault via
-                            // atomics only (no trace marker — see method-
-                            // level doc comment).
-                            shared.last_error.store(
-                                crate::error::KALICO_ERR_STEP_BURST_EXCEEDED,
-                                Ordering::Release,
-                            );
-                            shared.runtime_status.store(
-                                RuntimeStatus::Fault as u8,
-                                Ordering::Release,
-                            );
-                            self.last_error.store(
-                                crate::error::KALICO_ERR_STEP_BURST_EXCEEDED,
-                                Ordering::Release,
-                            );
-                            self.status
-                                .store(RuntimeStatus::Fault as u8, Ordering::Release);
-                            return;
-                        }
-                    }
+                Err(()) => {
+                    // T10 simplification: latch the fault via atomics only
+                    // (no trace marker — see method-level doc comment).
+                    shared.last_error.store(
+                        crate::error::KALICO_ERR_STEP_BURST_EXCEEDED,
+                        Ordering::Release,
+                    );
+                    shared.runtime_status.store(
+                        RuntimeStatus::Fault as u8,
+                        Ordering::Release,
+                    );
+                    self.last_error.store(
+                        crate::error::KALICO_ERR_STEP_BURST_EXCEEDED,
+                        Ordering::Release,
+                    );
+                    self.status
+                        .store(RuntimeStatus::Fault as u8, Ordering::Release);
+                    return;
                 }
             }
         }

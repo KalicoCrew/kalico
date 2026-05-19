@@ -233,11 +233,13 @@ fn extended_blob_modulated_without_capability_rejected() {
     );
 }
 
-/// Any blob length other than 20 or 25 is rejected.
+/// Any blob length not in {20, 25, 26 + 3·N for 0 ≤ N ≤ MAX_STEPPER_OIDS}
+/// is rejected. (26 itself is a valid phase-length with N=0; 27 / 28 are not
+/// since they don't satisfy `(len - 26) % 3 == 0`.)
 #[test]
 fn invalid_blob_lengths_rejected() {
     let rt = get_runtime();
-    for bad_len in [0u32, 1, 19, 21, 24, 26, 100] {
+    for bad_len in [0u32, 1, 19, 21, 24, 27, 28, 100] {
         let buf = vec![0u8; bad_len as usize];
         let rc = unsafe {
             kalico_c_api::kalico_runtime_configure_axes_blob(rt, buf.as_ptr(), bad_len)

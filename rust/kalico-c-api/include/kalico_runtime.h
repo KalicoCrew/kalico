@@ -400,18 +400,18 @@ int32_t kalico_configure_axes(struct KalicoRuntime *rt, uint8_t kinematics_tag);
  * byte 22     step_mode[1]
  * byte 23     step_mode[2]
  * byte 24     step_mode[3]
- *             -- present only in phase-stepping (33-byte) format --
- * bytes 25-26 phase_config[0] (spi_bus_id, cs_pin_id; 0xFF = no config)
- * bytes 27-28 phase_config[1]
- * bytes 29-30 phase_config[2]
- * bytes 31-32 phase_config[3]
+ *             -- present only in phase-stepping (26+3N-byte) format --
+ * byte 25                 phase_motor_count = N (1..=MAX_STEPPER_OIDS)
+ * bytes 26+3i..26+3i+2    motor i: (bus_id, cs_pin_id, slot_idx)
  * ```
  *
  * Legacy hosts emit the 20-byte format; the MCU defaults all steppers to
- * `StepTime` in that case. Any `blob_len` other than 20, 25, or 33 is
- * rejected. The 33-byte format requires `step_mode[i] == Modulated` for
- * every motor `i` that carries phase config (spec §4.1); at most two
- * motors may carry phase config (spec §3.2 audible-band protection).
+ * `StepTime` in that case. Any `blob_len` not in
+ * `{20, 25, 26 + 3·N for 0 <= N <= MAX_STEPPER_OIDS}` is rejected. The
+ * variable-length format requires `step_mode[slot_idx] == Modulated`
+ * for every motor entry (spec §4.1). N is bounded by MAX_STEPPER_OIDS
+ * (16); the earlier audible-band ≤2 cap is no longer enforced here —
+ * per-shared-SPI-bus bandwidth derating is a separate future change.
  */
 int32_t kalico_runtime_configure_axes_blob(struct KalicoRuntime *rt,
                                            const uint8_t *blob_ptr,

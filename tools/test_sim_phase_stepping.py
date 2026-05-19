@@ -148,16 +148,16 @@ KALICO_ERR_INVALID_DURATION = -23
 # ---- Helpers ----------------------------------------------------------------
 
 
-def build_33_byte_blob(
+def build_phase_blob(
     kinematics=1,
     present_mask=0b0000_1111,
     step_modes=(0, 0, 1, 1),  # X+Y Modulated, Z+E StepTime
-    phase_configs=((0, 5), (0, 6), None, None),
+    phase_entries=((0, 5, 0), (0, 6, 1)),
 ):
-    """Build the 33-byte configure_axes blob.
+    """Build the variable-length configure_axes blob: 26 + 3·N bytes.
 
     Layout (matches `rust/kalico-c-api/src/runtime_ffi.rs`'s
-    `kalico_runtime_configure_axes_blob` 33-byte parse branch):
+    `kalico_runtime_configure_axes_blob` variable-length parse branch):
       byte  0     kinematics (0 = CoreXyAndE, 1 = CartesianXyzAndE)
       byte  1     present_mask
       byte  2     awd_mask
@@ -165,10 +165,12 @@ def build_33_byte_blob(
       bytes 4-19  steps_per_mm[0..4] (f32 LE, 4 bytes each)
       byte  20    mcu_caps (bit 0 = PHASE_STEPPING_CAPABLE)
       bytes 21-24 step_mode[0..4]
-      bytes 25-32 (spi_bus_id[i], cs_pin_id[i]) for i=0..3, 0xFFFF means "no
-                  phase config — use existing StepPulse path".
+      byte  25    phase_motor_count = N
+      bytes 26 + 3i .. 26 + 3i + 2  motor i: (bus_id, cs_pin_id, slot_idx)
     """
-    blob = bytearray(33)
+    n = len(phase_entries)
+    body_len = 26 + 3 * n
+    blob = bytearray(body_len)
     blob[0] = kinematics
     blob[1] = present_mask
     blob[2] = 0  # awd_mask
@@ -178,15 +180,16 @@ def build_33_byte_blob(
     blob[20] = 0x01  # mcu_caps: PHASE_STEPPING_CAPABLE
     for i in range(4):
         blob[21 + i] = step_modes[i]
-    for i in range(4):
-        cfg = phase_configs[i]
-        if cfg is None:
-            blob[25 + i * 2] = 0xFF
-            blob[26 + i * 2] = 0xFF
-        else:
-            blob[25 + i * 2] = cfg[0]
-            blob[26 + i * 2] = cfg[1]
+    blob[25] = n
+    for i, (bus_id, cs_pin, slot_idx) in enumerate(phase_entries):
+        blob[26 + i * 3] = bus_id
+        blob[26 + i * 3 + 1] = cs_pin
+        blob[26 + i * 3 + 2] = slot_idx
     return bytes(blob)
+
+
+# Compat alias for older call sites; prefer `build_phase_blob`.
+build_33_byte_blob = build_phase_blob
 
 
 def python_ground_truth_for_position(motor_position_mm,
@@ -296,20 +299,22 @@ def query_status(io, timeout=5.0):
 
 def send_configure_axes_blob(io, kinematics, present_mask, awd_mask,
                              invert_mask, steps_per_mm, step_modes,
-                             phase_configs, mcu_caps=0x01, timeout=5.0):
-    """Pack and send a configure_axes_blob with caller-supplied per-axis
-    fields, returning the on-wire body length.
+                             phase_entries, mcu_caps=0x01, timeout=5.0):
+    """Pack and send a variable-length configure_axes_blob, returning the
+    on-wire body length.
 
-    The 33-byte blob layout matches `build_33_byte_blob` and the Rust
-    parser (`rust/kalico-c-api/src/runtime_ffi.rs`'s 33-byte branch). This
-    helper is the test-12 wire-format verification path: it constructs the
-    body fresh from arguments rather than calling the default-arg helper
-    so the assertion `body_len == 33` actually verifies the encoder, not
-    the helper.
+    The 26+3N blob layout matches `build_phase_blob` and the Rust parser
+    (`rust/kalico-c-api/src/runtime_ffi.rs`'s variable-length branch).
+    `phase_entries` is a list of (bus_id, cs_pin_id, slot_idx) triples;
+    pass `[]` to emit a 25-byte body with no phase config.
     """
     assert len(steps_per_mm) == 4 and len(step_modes) == 4
-    assert len(phase_configs) == 4
-    blob = bytearray(33)
+    n = len(phase_entries)
+    if n == 0:
+        body_len = 25
+    else:
+        body_len = 26 + 3 * n
+    blob = bytearray(body_len)
     blob[0] = int(kinematics)
     blob[1] = int(present_mask) & 0xFF
     blob[2] = int(awd_mask) & 0xFF
@@ -319,15 +324,17 @@ def send_configure_axes_blob(io, kinematics, present_mask, awd_mask,
     blob[20] = int(mcu_caps) & 0xFF
     for i, mode in enumerate(step_modes):
         blob[21 + i] = int(mode) & 0xFF
-    for i, cfg in enumerate(phase_configs):
-        bus_id, cs_pin = cfg
-        blob[25 + i * 2] = int(bus_id) & 0xFF
-        blob[26 + i * 2] = int(cs_pin) & 0xFF
+    if n > 0:
+        blob[25] = n
+        for i, (bus_id, cs_pin, slot_idx) in enumerate(phase_entries):
+            blob[26 + i * 3] = int(bus_id) & 0xFF
+            blob[26 + i * 3 + 1] = int(cs_pin) & 0xFF
+            blob[26 + i * 3 + 2] = int(slot_idx) & 0xFF
     body = bytes(blob)
     rc = configure_axes_blob(io, body, timeout=timeout)
     if rc != 0:
         raise HostIoError(
-            f"configure_axes_blob returned {rc} for 33-byte body")
+            f"configure_axes_blob returned {rc} for {body_len}-byte body")
     return len(body)
 
 
@@ -336,15 +343,16 @@ def _bring_up_phase_stepping(io):
 
       1. register_phase_bus(bus=0, cs=5) for X
       2. register_phase_bus(bus=0, cs=6) for Y
-      3. 33-byte configure_axes_blob (CartesianXyzAndE, X+Y Modulated,
-         Z+E StepTime, present_mask=0b1111)
+      3. Variable-length configure_axes_blob (CartesianXyzAndE, X+Y
+         Modulated, Z+E StepTime, two phase entries at slot_idx 0 and 1)
 
-    Returns the on-wire body length of the configure_axes blob (33).
+    Returns the on-wire body length of the configure_axes blob
+    (26 + 3*2 = 32 for two phase motors).
     Raises HostIoError if any step returns a non-zero rc.
 
-    All three Task-12 regression tests share this exact bring-up;
-    factoring it here keeps the sequence in one place and makes the
-    individual tests focus on their distinguishing assertions.
+    All three regression tests share this exact bring-up; factoring it
+    here keeps the sequence in one place and makes the individual tests
+    focus on their distinguishing assertions.
     """
     for cs in (5, 6):
         rc = register_phase_bus(io, bus_id=0, cs_pin=cs, rate=2_000_000,
@@ -360,9 +368,14 @@ def _bring_up_phase_stepping(io):
         invert_mask=0x00,
         steps_per_mm=[STEPS_PER_MM] * 4,
         step_modes=[0, 0, 1, 1],  # X+Y Modulated, Z+E StepTime
-        phase_configs=[(0, 5), (0, 6), (0xFF, 0xFF), (0xFF, 0xFF)],
+        phase_entries=[(0, 5, 0), (0, 6, 1)],
         timeout=15.0,
     )
+
+
+# Expected body length for the default _bring_up_phase_stepping call
+# (two phase entries: X on slot 0, Y on slot 1).
+PHASE_BRINGUP_BODY_LEN = 26 + 3 * 2
 
 
 # ---- Renode monitor (telnet-style on port 3335) -----------------------------
@@ -706,16 +719,19 @@ def test_phase_stepping_wire_format(port, verbose=False):
         if int(status.get("status", 255)) != 0:
             return ("FAIL", f"initial status not IDLE: {status}")
 
-        # Bring up phase stepping (register_phase_bus ×2 + 33-byte
+        # Bring up phase stepping (register_phase_bus ×2 + variable-length
         # configure_axes blob). The helper packs the body fresh from its
-        # args (not from build_33_byte_blob's default set), so the
-        # `body_len == 33` assertion below exercises the actual encoder.
+        # args (not from build_phase_blob's default set), so the
+        # `body_len == PHASE_BRINGUP_BODY_LEN` assertion below exercises
+        # the actual encoder.
         body_len = _bring_up_phase_stepping(io)
-        if body_len != 33:
-            return ("FAIL", f"expected 33-byte body, got {body_len}")
+        if body_len != PHASE_BRINGUP_BODY_LEN:
+            return ("FAIL",
+                    f"expected {PHASE_BRINGUP_BODY_LEN}-byte body, "
+                    f"got {body_len}")
         if verbose:
-            print("  register_phase_bus(X+Y) + "
-                  "configure_axes_blob(33 bytes) accepted")
+            print(f"  register_phase_bus(X+Y) + "
+                  f"configure_axes_blob({body_len} bytes) accepted")
 
         # Ordering invariant: register_phase_bus is synchronous (returns
         # only after the MCU's response). Since rc == 0 in the helper
@@ -726,9 +742,10 @@ def test_phase_stepping_wire_format(port, verbose=False):
         # the ordering proof.
 
         return ("PASS",
-                "wire format: 33-byte body accepted; "
-                "register_phase_bus completed before configure_axes "
-                "(proven by synchronous request/response semantics).")
+                f"wire format: {PHASE_BRINGUP_BODY_LEN}-byte body "
+                "accepted; register_phase_bus completed before "
+                "configure_axes (proven by synchronous request/response "
+                "semantics).")
     finally:
         io.disconnect()
 
@@ -780,11 +797,12 @@ def test_phase_stepping_gconf_xdirect(port, mon_port=RENODE_MONITOR_PORT,
         if int(status.get("status", 255)) != 0:
             return ("FAIL", f"initial status not IDLE: {status}")
 
-        # Bring up phase stepping: register the bus, then push the 33-byte
-        # configure_axes blob with X+Y Modulated.
-        _bring_up_phase_stepping(io)
+        # Bring up phase stepping: register the bus, then push the
+        # variable-length configure_axes blob with X+Y Modulated.
+        body_len = _bring_up_phase_stepping(io)
         if verbose:
-            print("  configure_axes_blob(33 bytes, X+Y Modulated) accepted")
+            print(f"  configure_axes_blob({body_len} bytes, "
+                  f"X+Y Modulated) accepted")
 
         # Sanity-check the new accessor is reachable BEFORE we try to push
         # a segment. The accessor's reachability is the part of this test
@@ -1125,13 +1143,14 @@ def run_test(port, mon_port=RENODE_MONITOR_PORT, verbose=False):
         #    further multi-arg USART frames may time out before they
         #    finish assembling — we do not push a real segment here. See
         #    module docstring (Limitation 2) for the full reasoning.
-        blob = build_33_byte_blob()
+        blob = build_phase_blob()
         rc = configure_axes_blob(io, blob, timeout=15.0)
         if rc != 0:
-            return ("FAIL", f"configure_axes_blob(33-byte) returned {rc}")
+            return ("FAIL",
+                    f"configure_axes_blob({len(blob)}-byte) returned {rc}")
         if verbose:
-            print(f"  configure_axes_blob(33-byte) → ok (Modulated X+Y, "
-                  f"phase config (bus=0,cs=5/6))")
+            print(f"  configure_axes_blob({len(blob)}-byte) → ok "
+                  f"(Modulated X+Y, phase config (bus=0,cs=5/6))")
 
         # 5. Best-effort Renode peripheral query. With register_phase_bus
         #    now called pre-configure, XDIRECT writes WOULD reach the
@@ -1402,8 +1421,8 @@ def run_test(port, mon_port=RENODE_MONITOR_PORT, verbose=False):
         return (
             "PASS",
             f"phase-stepping integration ok: msgproto wrappers respond, "
-            f"33-byte configure_axes accepted.{renode_note}{sinusoid_note}"
-            f"{motion_attempt_note}")
+            f"variable-length configure_axes accepted."
+            f"{renode_note}{sinusoid_note}{motion_attempt_note}")
 
     finally:
         io.disconnect()

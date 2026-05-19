@@ -29,7 +29,7 @@ pub mod exports {
     use runtime::error::{
         KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_ARG,
         KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION, KALICO_ERR_INVALID_HANDLE,
-        KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_INVALID_PHASE_AXIS_COUNT,
+        KALICO_ERR_INVALID_KINEMATICS,
         KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
         KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_ERR_QUEUE_FULL,
         KALICO_ERR_SEGMENT_ID_NON_MONOTONIC, KALICO_ERR_ZERO_DURATION_SEGMENT, KALICO_OK,
@@ -1264,18 +1264,18 @@ pub mod exports {
     /// byte 22     step_mode[1]
     /// byte 23     step_mode[2]
     /// byte 24     step_mode[3]
-    ///             -- present only in phase-stepping (33-byte) format --
-    /// bytes 25-26 phase_config[0] (spi_bus_id, cs_pin_id; 0xFF = no config)
-    /// bytes 27-28 phase_config[1]
-    /// bytes 29-30 phase_config[2]
-    /// bytes 31-32 phase_config[3]
+    ///             -- present only in phase-stepping (26+3N-byte) format --
+    /// byte 25                 phase_motor_count = N (1..=MAX_STEPPER_OIDS)
+    /// bytes 26+3i..26+3i+2    motor i: (bus_id, cs_pin_id, slot_idx)
     /// ```
     ///
     /// Legacy hosts emit the 20-byte format; the MCU defaults all steppers to
-    /// `StepTime` in that case. Any `blob_len` other than 20, 25, or 33 is
-    /// rejected. The 33-byte format requires `step_mode[i] == Modulated` for
-    /// every motor `i` that carries phase config (spec §4.1); at most two
-    /// motors may carry phase config (spec §3.2 audible-band protection).
+    /// `StepTime` in that case. Any `blob_len` not in
+    /// `{20, 25, 26 + 3·N for 0 <= N <= MAX_STEPPER_OIDS}` is rejected. The
+    /// variable-length format requires `step_mode[slot_idx] == Modulated`
+    /// for every motor entry (spec §4.1). N is bounded by MAX_STEPPER_OIDS
+    /// (16); the earlier audible-band ≤2 cap is no longer enforced here —
+    /// per-shared-SPI-bus bandwidth derating is a separate future change.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_configure_axes_blob(
         rt: *mut KalicoRuntime,
@@ -1291,10 +1291,18 @@ pub mod exports {
         if !INIT_DONE.load(Ordering::Acquire) {
             return KALICO_ERR_NOT_INIT;
         }
-        // Accept 20-byte (legacy), 25-byte (extended with StepMode array), or
-        // 33-byte (with per-motor phase-stepping SPI config). Any other length
-        // is rejected.
-        if blob_len != 20 && blob_len != 25 && blob_len != 33 {
+        // Accept 20-byte (legacy), 25-byte (extended with StepMode array),
+        // or 26+3·N-byte (variable-length per-motor phase-stepping SPI
+        // config; 0 <= N <= MAX_STEPPER_OIDS). Any other length is
+        // rejected. The N=0 case (blob_len == 26) is accepted as a
+        // "clear all phase config" signal, but practically the host emits
+        // a 25-byte body in that case — see motion_toolhead.py.
+        let blob_len_usize = blob_len as usize;
+        let phase_len_ok = blob_len_usize >= 26
+            && (blob_len_usize - 26) % 3 == 0
+            && ((blob_len_usize - 26) / 3) <= runtime::state::MAX_STEPPER_OIDS;
+        if blob_len != 20 && blob_len != 25 && !phase_len_ok {
+            diag_progress(0xCA, 10, blob_len);
             return KALICO_ERR_INVALID_KINEMATICS;
         }
         let blob = unsafe { core::slice::from_raw_parts(blob_ptr, blob_len as usize) };
@@ -1393,7 +1401,7 @@ pub mod exports {
         // already initialises every step_modes[i] to StepTime (default), so no
         // further action is needed for the legacy path. Both the 25-byte
         // extended and 33-byte phase-config blobs carry the StepMode array.
-        if blob_len == 25 || blob_len == 33 {
+        if blob_len >= 25 {
             let mcu_caps = blob[20];
             let mcu_supports_phase = (mcu_caps & 0x01) != 0;
             unsafe {
@@ -1432,71 +1440,122 @@ pub mod exports {
             diag_progress(0xCA, 10, u32::from(mcu_caps));
         }
 
-        // --- 33-byte format: parse per-motor phase-stepping SPI config ----
-        // (Task 4 / spec §4.1, §3.2).
+        // --- Variable-length format: parse per-motor phase-stepping SPI
+        // config (one entry per phase-stepped motor; topology-agnostic).
         //
-        // Layout (8 bytes starting at offset 25):
-        //   bytes 25, 26: spi_bus_id[0], cs_pin_id[0]
-        //   bytes 27, 28: spi_bus_id[1], cs_pin_id[1]
-        //   bytes 29, 30: spi_bus_id[2], cs_pin_id[2]
-        //   bytes 31, 32: spi_bus_id[3], cs_pin_id[3]
+        // Layout (3 bytes per motor starting at offset 26):
+        //   byte 25                 phase_motor_count = N (0..=MAX_STEPPER_OIDS=16)
+        //   bytes 26+3i..26+3i+2    motor i: (bus_id, cs_pin_id, slot_idx)
         //
-        // `spi_bus_id == 0xFF` is the sentinel for "no phase config on this
-        // motor — use the existing StepPulse output path." Each motor that
-        // carries phase config MUST be in `StepMode::Modulated` (validated
-        // here against the step_modes already-installed above). At most
-        // two motors may carry phase config (spec §3.2 audible-band rule);
-        // a third triggers `KALICO_ERR_INVALID_PHASE_AXIS_COUNT`.
+        // `bus_id == 0xFF` is a sentinel marking "motor entry intentionally
+        // empty" (rare — the host emits dense entries). Each non-sentinel
+        // entry's slot_idx must be < 4 (kinematic-slot count) and
+        // `step_mode[slot_idx]` must be `Modulated` (validated against the
+        // step_modes already-installed above).
         //
         // Errors do NOT clear previously-stored slots — the runtime is
         // single-shot configured before TIM5 runs, so a rejected blob
         // leaves the runtime in its pre-call state for the host to inspect
         // and retry with a corrected blob.
-        if blob_len == 33 {
-            // Pre-validate so we don't half-install before reporting failure.
-            let mut phase_motor_count: u32 = 0;
-            let mut parsed: [Option<runtime::phase_config::PhaseConfig>; 4] =
-                [None, None, None, None];
-            for i in 0..4usize {
-                let off = 25 + i * 2;
+        if blob_len_usize >= 26 {
+            let count = blob[25] as usize;
+            let expected_len = 26 + 3 * count;
+            if blob_len_usize != expected_len
+                || count > runtime::state::MAX_STEPPER_OIDS
+            {
+                diag_progress(0xCA, 10, blob_len);
+                return KALICO_ERR_INVALID_KINEMATICS;
+            }
+            // Pre-validate per-entry before mutating SharedState.
+            let mut parsed: [Option<(runtime::phase_config::PhaseConfig, u8)>;
+                runtime::state::MAX_STEPPER_OIDS] =
+                [None; runtime::state::MAX_STEPPER_OIDS];
+            for i in 0..count {
+                let off = 26 + i * 3;
                 let bus = blob[off];
                 let cs = blob[off + 1];
+                let slot_idx = blob[off + 2];
                 if bus == 0xFF {
+                    // Sentinel entries inside count are allowed but skipped.
                     parsed[i] = None;
                     continue;
                 }
-                // Phase config requires step_mode[i] == Modulated. The
-                // step_modes byte from the same blob was just installed
-                // above; check the source byte directly so the rejection
-                // is independent of SharedState mutation order.
-                let mode_byte = blob[21 + i];
-                if mode_byte != (runtime::state::StepMode::Modulated as u8) {
-                    diag_progress(0xCA, 11, i as u32);
+                if slot_idx >= 4 {
+                    diag_progress(0xCA, 11, slot_idx as u32);
                     return KALICO_ERR_INVALID_KINEMATICS;
                 }
-                parsed[i] = Some(runtime::phase_config::PhaseConfig {
-                    spi_bus_id: bus,
-                    cs_pin_id: cs,
-                });
-                phase_motor_count += 1;
+                // step_mode[slot_idx] must be Modulated. The step_modes
+                // bytes from the same blob were just installed above;
+                // check the source byte directly so the rejection is
+                // independent of SharedState mutation order.
+                let mode_byte = blob[21 + slot_idx as usize];
+                if mode_byte != (runtime::state::StepMode::Modulated as u8) {
+                    diag_progress(0xCA, 11, slot_idx as u32);
+                    return KALICO_ERR_INVALID_KINEMATICS;
+                }
+                parsed[i] = Some((
+                    runtime::phase_config::PhaseConfig {
+                        spi_bus_id: bus,
+                        cs_pin_id: cs,
+                    },
+                    slot_idx,
+                ));
             }
-            if phase_motor_count > 2 {
-                diag_progress(0xCA, 12, phase_motor_count);
-                return KALICO_ERR_INVALID_PHASE_AXIS_COUNT;
-            }
-            // All-valid: commit per-motor slots.
+            // Commit. The per-motor count is also stored so the ISR can
+            // loop 0..count rather than scanning all MAX_STEPPER_OIDS
+            // entries.
             unsafe {
                 let shared_ptr: *const runtime::state::SharedState =
                     core::ptr::addr_of!((*ctx).shared);
                 let shared: &runtime::state::SharedState = &*shared_ptr;
-                for i in 0..4usize {
-                    if let Some(slot) = shared.phase_config.get(i) {
-                        runtime::phase_config::store(slot, parsed[i]);
+                for i in 0..runtime::state::MAX_STEPPER_OIDS {
+                    if i < count {
+                        if let Some(slot) = shared.phase_config.get(i) {
+                            runtime::phase_config::store(
+                                slot,
+                                parsed[i].map(|(c, _)| c),
+                            );
+                        }
+                        if let Some(s) = shared.phase_slot_idx.get(i) {
+                            s.store(
+                                parsed[i].map(|(_, idx)| idx).unwrap_or(0xFF),
+                                Ordering::Release,
+                            );
+                        }
+                    } else {
+                        // Clear unused motor entries past `count` so a
+                        // shrinking re-configure can't leave stale slots.
+                        if let Some(slot) = shared.phase_config.get(i) {
+                            runtime::phase_config::store(slot, None);
+                        }
+                        if let Some(s) = shared.phase_slot_idx.get(i) {
+                            s.store(0xFF, Ordering::Release);
+                        }
                     }
                 }
+                shared.phase_motor_count.store(count as u8, Ordering::Release);
             }
-            diag_progress(0xCA, 13, phase_motor_count);
+            diag_progress(0xCA, 13, count as u32);
+        } else if blob_len == 25 {
+            // step_modes only, no phase config — clear any prior phase
+            // state so a "configure axes without phase stepping" call
+            // doesn't leave stale phase config behind.
+            unsafe {
+                let shared_ptr: *const runtime::state::SharedState =
+                    core::ptr::addr_of!((*ctx).shared);
+                let shared: &runtime::state::SharedState = &*shared_ptr;
+                for i in 0..runtime::state::MAX_STEPPER_OIDS {
+                    if let Some(slot) = shared.phase_config.get(i) {
+                        runtime::phase_config::store(slot, None);
+                    }
+                    if let Some(s) = shared.phase_slot_idx.get(i) {
+                        s.store(0xFF, Ordering::Release);
+                    }
+                }
+                shared.phase_motor_count.store(0, Ordering::Release);
+            }
         }
+        // blob_len == 20 (legacy) doesn't touch phase config; left as-is.
 
         // Spec §6.3: after all step_modes are written, atomically decide
         // whether TIM5 should be armed. `runtime_tick_enable` will no-op on

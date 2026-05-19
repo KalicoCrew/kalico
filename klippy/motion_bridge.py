@@ -148,10 +148,17 @@ class MotionBridgeWrapper:
         1=StepTime/classic). When supplied the bridge emits the 25-byte
         extended format (spec §4 C1). Omit for the legacy 20-byte path.
 
-        phase_configs: optional list of 4 (bus_id, cs_pin_id) tuples. When
-        supplied (alongside step_modes), the bridge emits the 33-byte
-        extended format with bytes 25..32 = per-motor SPI bus + CS pin.
-        Sentinel value (0xFF, 0xFF) means 'no phase config for this slot'.
+        phase_configs: optional variable-length list of
+        (bus_id, cs_pin_id, slot_idx) triples — one entry per phase-stepped
+        motor. When supplied (alongside step_modes), the bridge emits the
+        variable-length format (byte 25 = phase_motor_count = N,
+        bytes 26+3i carry (bus_id, cs_pin_id, slot_idx) for motor i).
+        `slot_idx` is the kinematic-slot index (0..4) whose commanded
+        motors[slot_idx] position drives that motor's XDIRECT output.
+        Multiple motors may share a slot (AWD pairs, N-motor-per-axis
+        configs). Up to 16 entries; firmware caps at MAX_STEPPER_OIDS=16.
+        Pass None (not an empty list) when no motor is phase stepped — the
+        bridge then emits the 25-byte body.
         """
         return self._bridge.configure_axes(
             mcu_handle,
