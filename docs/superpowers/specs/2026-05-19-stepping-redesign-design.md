@@ -372,29 +372,29 @@ consumer logic" hybrid: queue storage stays C-owned per B2/B3, while the
 drain logic gets Rust type safety on `StepEntry` decode and direct access
 to the engine's atomic fault flags.
 
-Body **drains multiple due entries per fire** (mainline-pattern but batching
-when entries cluster):
+Body matches mainline's `stepper_event_edge` pattern: **one entry per
+fire, fire at-or-after `cycle_abs`, never before.**
 
 ```
 fn per_axis_step_event(t: &mut struct timer) -> u_fast8_t {
   let now = timer_read_time();
-  let drain_window = now.wrapping_add(DRAIN_WINDOW_CYCLES);
-  let floor_time   = now.wrapping_add(DISPATCHER_FLOOR_CYCLES);
-  let next_sample  = now.wrapping_add(sample_period_cycles);
+  let floor_time  = now.wrapping_add(DISPATCHER_FLOOR_CYCLES);
+  let next_sample = now.wrapping_add(sample_period_cycles);
 
   // All u32 cycle-counter comparisons use Klipper's `timer_is_before(a, b)`,
   // which evaluates `(int32_t)(a - b) < 0` — wrap-aware on the 32-bit cycle
   // counter. NEVER compare cycle counters with plain `<`, `>`, or `max` —
   // they wrap every ~8.3 seconds on H7 (520 MHz / 2³² cycles) and ~4 minutes
   // on F446 (180 MHz / 2³² cycles), within a single print.
-  //
-  // Successive back-to-back step pulses are ~60-100 ns apart via the
-  // existing runtime_emit_step_pulses GPIO inner loop — sub-µs timing
-  // accuracy, well inside motor mechanical bandwidth.
-  while entry = axis.step_queue.peek_head() {
-    if timer_is_before(drain_window, entry.cycle_abs) break;  // entry too far future
-    axis.step_queue.pop();
-    runtime_emit_step_pulses(axis_idx, sign=entry.dir);
+
+  // Pop exactly one entry if its scheduled time has arrived (cycle_abs <= now).
+  // Mainline invariant: pulses fire at-or-after cycle_abs, never before.
+  // If the head entry is still in the future, leave it for the next dispatch.
+  if let Some(entry) = axis.step_queue.peek_head() {
+    if !timer_is_before(now, entry.cycle_abs) {       // entry.cycle_abs <= now
+      axis.step_queue.pop();
+      runtime_emit_step_pulses(axis_idx, sign=entry.dir);
+    }
   }
 
   match axis.step_queue.peek_head() {
@@ -407,26 +407,23 @@ fn per_axis_step_event(t: &mut struct timer) -> u_fast8_t {
         next.cycle_abs
       };
     },
-    None => t.waketime = next_sample,                          // re-check next TIM5
+    None => t.waketime = next_sample,                  // re-check next TIM5
   }
   return SF_RESCHEDULE;
 }
 ```
 
-**Constants to measure, not pick:**
+**Timing contract.** Pulses fire at `cycle_abs + dispatcher_jitter`, where
+`dispatcher_jitter >= 0` (i.e., never early; potentially late by the time
+between the cycle_abs and the next dispatcher dispatch). This matches
+mainline Klipper's invariant. The < 500 ns klipper-sim test threshold
+(Section 6) is the spec of acceptable dispatcher jitter, measured on the
+target MCU.
 
-- `DISPATCHER_FLOOR_CYCLES`: minimum reschedule gap, set to the *measured*
-  Klipper scheduler dispatch overhead on the target MCU. Profiled during
-  bring-up Stage 1. Expected ~1-2 µs on H7 (~700 cycles), ~3-4 µs on F446
-  (~600 cycles). Not the previous arbitrary 5 µs.
-- `DRAIN_WINDOW_CYCLES`: drain horizon, set to ~`DISPATCHER_FLOOR_CYCLES`
-  (entries clustered tighter than dispatcher can re-dispatch get batched
-  back-to-back). Same measurement campaign.
-
-**No artificial step-rate ceiling.** The consumer rate is bounded by
-dispatcher overhead + emission-body cost, not by a hand-picked floor. With
-batched drain, even step rates above the per-fire ceiling are sustained
-(consecutive due entries emit back-to-back within drain_window).
+**`DISPATCHER_FLOOR_CYCLES`** is the only constant here: minimum reschedule
+gap, set to the *measured* Klipper scheduler dispatch overhead on the
+target MCU. Profiled during bring-up Stage 1. Expected ~1-2 µs on H7
+(~700 cycles), ~3-4 µs on F446 (~600 cycles).
 
 **Per-MCU step-rate ceilings (measured during bring-up):**
 
@@ -458,20 +455,26 @@ produces audible torque-ripple artifacts and frame resonance at exactly the
 sample rate. This is the same back-to-back-at-sample-start failure mode
 the velocity-extrapolated timing was designed to avoid.
 
-The **consumer-side batched drain** (above) captures the queue-pressure
-benefit without the motion-quality cost. When the producer's math placed
-two entries close together (a few µs apart, which happens at very high step
-rates), the consumer drains them in one fire via back-to-back GPIO toggles.
-When entries are math-spread (low/medium step rates), the consumer fires
-once per entry at the entry's precise time. We get the cheap-batch benefit
-only when the math itself says the steps are nearly co-located — never as
-an enforced re-clustering.
+The consumer fires **one entry per dispatch**, mainline-style, matching
+the timing contract above (fire at-or-after `cycle_abs`, never before).
+This preserves the producer's velocity-extrapolated precision through the
+emission side, at the cost of more dispatcher fires per second at high
+step rates than a burst-based design would need.
 
 In music-score terms: per-edge entries are a score with each note's exact
-time written. Burst entries would be "play 8 notes starting at t=8.3 µs"
-— a 40-times-per-second machine-gun cadence. The consumer's adaptive
-batching is "if two notes are already next to each other, read one cue
-covering both" — preserves the melody, just lowers the conductor's overhead.
+time written, and the consumer plays each note at its written time. Burst
+entries would be "play 8 notes starting at t=8.3 µs" — a 40-times-per-second
+machine-gun cadence with no within-burst timing. We chose the former because
+the motor doesn't tolerate the burst pattern (40 kHz beat artifacts) and
+the cost of per-edge dispatching is acceptable on our hardware.
+
+**If high-rate dispatcher cost becomes a profiling concern** during
+bench bring-up (e.g., F446 hitting >50% CPU on dispatcher alone at peak
+step rate), revisit by optimizing the consumer body (inline-style hot
+path, fewer atomic ops, reduce volatile reads) rather than re-introducing
+batching. Batching is a last resort, not the first optimization, because
+it costs motion quality. The current design priority is mainline-quality
+per-step timing.
 
 Producer cost stays at ~4% CPU on H7 at peak (52 entries/sample × 4 axes ×
 40 kHz × ~10 cycles/push), well inside budget.
