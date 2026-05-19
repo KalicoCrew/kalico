@@ -348,7 +348,7 @@ fn dispatch_phase(
 
 use crate::stepping_state::TickCaches;
 
-pub const N_AXES: usize = 4;
+pub use crate::stepping_state::N_AXES;
 pub const AXIS_A: usize = 0;
 pub const AXIS_B: usize = 1;
 pub const AXIS_Z: usize = 2;
