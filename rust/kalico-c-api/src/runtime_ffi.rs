@@ -35,6 +35,7 @@ pub mod exports {
     use runtime::segment::{KinematicTag, Segment};
     use runtime::state::{FgState, IsrState, RuntimeContext, SharedState};
     use runtime::trace::TraceSample;
+    use runtime::RT_STORAGE_SIZE;
 
     /// The opaque type C sees — never dereferenced on the C side.
     /// Matches spec §3.2 / §5.6 handle discipline.
@@ -58,8 +59,6 @@ pub mod exports {
     // RuntimeContext::init.
     //
     // Spec: docs/superpowers/specs/2026-05-19-mcu-c-rust-boundary-refactor-design.md.
-    use runtime::RT_STORAGE_SIZE;
-
     unsafe extern "C" {
         static rt_storage: UnsafeCell<[u8; RT_STORAGE_SIZE]>;
     }
