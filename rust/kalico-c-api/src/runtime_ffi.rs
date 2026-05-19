@@ -1493,6 +1493,52 @@ pub mod exports {
         KALICO_OK
     }
 
+    /// Seed the engine's `prev_x/y/z` position origin and `StepMotorState`
+    /// accumulators so the first segment after `SET_KINEMATIC_POSITION`
+    /// computes its delta against the correct origin rather than `(0, 0, 0)`.
+    ///
+    /// Called by the C `DECL_COMMAND` handler for `runtime_seed_position`
+    /// immediately before the host sends the first `PushSegment` of the
+    /// new stream. Fire-and-forget from the host side; no response is
+    /// required because the following `PushSegment` provides ordering.
+    ///
+    /// `x_q16`, `y_q16`, `z_q16` are Q16.16 fixed-point mm values
+    /// (`i32 = mm * 65536`). Decoded to `f32` here; the precision loss
+    /// (≈ 15 µm at 1 m) is negligible relative to the step-size floor.
+    ///
+    /// Foreground-only. Projects `&mut IsrState` under the same
+    /// single-threaded-foreground precondition as `configure_axes_blob`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_seed_position(
+        rt: *mut KalicoRuntime,
+        x_q16: i32,
+        y_q16: i32,
+        z_q16: i32,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let x = x_q16 as f32 / 65536.0;
+        let y = y_q16 as f32 / 65536.0;
+        let z = z_q16 as f32 / 65536.0;
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground-only projection. `engine` lives in `IsrState`;
+        // we project `&mut IsrState` under the same single-threaded-foreground
+        // precondition documented for `configure_axes_blob` — no ISR is running
+        // when the host sends this command (it arrives before the first
+        // PushSegment). No other `&mut IsrState` or `&mut FgState` may be live
+        // on this call path.
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.seed_position([x, y, z]);
+        }
+        KALICO_OK
+    }
+
     /// Phase 11 Task 11.2 foreground reclaim drain pipeline. Drains up to
     /// `limit` trace samples from the ring, calls `pool.confirm_retired`
     /// for each `SEGMENT_END` observed, and returns a 32-bit packed
