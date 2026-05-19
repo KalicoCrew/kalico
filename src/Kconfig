@@ -450,6 +450,30 @@ config RUNTIME_CURVE_POOL_N
     range 1 64
     depends on KALICO_RUNTIME
 
+config RUNTIME_STORAGE_SIZE_LARGE
+    int "rt_storage byte ceiling (large profile, H7)"
+    default 327680
+    range 65536 524288
+    depends on KALICO_RUNTIME
+    help
+      Byte ceiling for rt_storage (the C-declared backing buffer that
+      replaces RT_CELL's Rust-side #[link_section] placement). Default
+      is 320 KB, tuned to fit H7's AXI SRAM with headroom for other
+      .axi_bss occupants. Const_assert on Rust + _Static_assert on C
+      catch contract violations at compile time.
+
+config RUNTIME_STORAGE_SIZE_SMALL
+    int "rt_storage byte ceiling (small profile, F4)"
+    default 65536
+    range 32768 131072
+    depends on KALICO_RUNTIME
+    help
+      Byte ceiling for rt_storage (the C-declared backing buffer that
+      replaces RT_CELL's Rust-side #[link_section] placement). Default
+      is 64 KB, tuned to fit F4's main SRAM with headroom. Const_assert
+      on Rust + _Static_assert on C catch contract violations at
+      compile time.
+
 config KALICO_SIM
     bool "Build for simulator (disables IWDG, enables Linux sim shims)"
     default n
