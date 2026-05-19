@@ -527,6 +527,8 @@ command_config_runtime_stepper(uint32_t *args)
     runtime_motor_steppers[motor_idx][cnt].invert_dir = invert_dir ? 1 : 0;
     runtime_motor_stepper_count[motor_idx] = cnt + 1;
     runtime_motor_last_dir[motor_idx] = -1;
+    extern void init_step_time_timers(void);
+    init_step_time_timers();
     // Snapshot every per-motor count immediately after the write completes,
     // packed as 4-bits-per-motor (matches 0xE2 tag layout). Captures the
     // table state visible from `command_config_runtime_stepper`'s vantage

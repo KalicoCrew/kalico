@@ -1530,6 +1530,7 @@ DECL_CTR("_DECL_OUTPUT "
 // promoted to error under the sim build's stricter flags, so a header-less
 // extern is required here.
 extern void runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps);
+extern uint8_t runtime_motor_binding_count(uint8_t motor_idx);
 
 struct step_timer_ctx {
     struct timer timer;
@@ -1908,6 +1909,7 @@ init_step_time_timers(void)
         // stays unregistered.
         uint8_t mode = kalico_runtime_get_step_mode(runtime_handle, i);
         if (mode != 1 /* StepMode::StepTime */) continue;
+        if (runtime_motor_binding_count(i) == 0) continue;
 
         step_timers[i].enabled = 1;
         step_timers[i].timer.waketime = now + boot_poll;
