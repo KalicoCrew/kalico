@@ -694,7 +694,7 @@ runtime_status_drain(void)
         // + curve-resolve tag (0xB8) + demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 37) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 38) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 0:
             // 0xE3 — step_time_event fires (low 24 bits).
@@ -1248,6 +1248,19 @@ runtime_status_drain(void)
             fault_detail = 0xFD000000u
                          | ((suc & 0xFFFu) << 12)
                          | (att & 0xFFFu);
+            break;
+        }
+        case 37: {
+            // 0x9D — durable monotonic bitmap of oids that have entered
+            // command_config_stepper. Set by stepper.c at the start of the
+            // handler, never cleared. Unlike runtime_diag_last_packed it
+            // survives all subsequent runtime_diag_progress writes, so we
+            // can definitively confirm whether the F4/H7 dispatcher routes
+            // msgid 24 (config_stepper) to command_config_stepper for each
+            // expected oid. Low 24 bits = bits 0..23 of the seen bitmap.
+            extern volatile uint32_t config_stepper_oids_seen;
+            uint32_t seen = config_stepper_oids_seen;
+            fault_detail = 0x9D000000u | (seen & 0x00FFFFFFu);
             break;
         }
         }

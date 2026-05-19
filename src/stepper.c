@@ -217,14 +217,24 @@ stepper_event(struct timer *t)
     return stepper_event_full(t);
 }
 
+// Durable monotonic bitmap — bit N set when command_config_stepper(oid=N)
+// has been entered. Survives runtime_diag_progress overwrites; readable via
+// the status-drain rotation tag 0x9D.
+volatile uint32_t config_stepper_oids_seen
+    __attribute__((used, externally_visible));
+
 void
 command_config_stepper(uint32_t *args)
 {
-    // Diag: confirm command_config_stepper is being entered for each oid the
-    // host advertises in its "Dumping config commands" output. Tag 0xCD,
-    // stage = oid (args[0]), value low byte = low byte of command_config_stepper
-    // (so we can sanity-check that the type pointer we're about to stamp
-    // matches what command_config_runtime_stepper later expects).
+    // Latch oid into the durable bitmap BEFORE oid_alloc — so if oid_alloc
+    // shutdowns (out of range / already allocated / finalized), we still
+    // know command_config_stepper was entered for this oid.
+    {
+        uint8_t oid = args[0] & 0xFFu;
+        if (oid < 32)
+            config_stepper_oids_seen |= (1u << oid);
+    }
+    // Also fire the prior tag 0xCD probe (best-effort, may be overwritten).
     {
         extern void runtime_diag_progress(uint32_t tag, uint32_t stage,
                                           uint32_t value);
