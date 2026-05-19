@@ -138,11 +138,24 @@ TIM5 ISR fires every (1 / sample_rate) µs:
     # (3) Endstop sample (existing hook, cheap when no arm)
     kalico_endstop_tick_step_time(handle, now)
 
-    # (4) E-follows-XY arc-length integration (CLAUDE.md §extruder)
-    if axis == A or axis == B:
-      ds_xy += polynomial-integrated |v_xy| over sample
+    # (4) E-follows-XY arc-length integration (CLAUDE.md §extruder).
+    # IMPORTANT: arc length must be Cartesian XY, not motor-space A/B.
+    # For CoreXY: |v_xy| = sqrt(vA² + vB²) / sqrt(2); for cartesian: = sqrt(vA² + vB²).
+    # Host pushes the kinematic factor K_xy at configure_axes time:
+    #   K_xy = 1.0           for cartesian (A=X, B=Y trivially)
+    #   K_xy = 1.0/sqrt(2)   for CoreXY
+    # (Delta and other non-orthogonal kinematics need K computed per pose, out
+    # of scope here; CoreXY + Cartesian cover the bench and all CLAUDE.md
+    # target machines.)
+    # Computed once per sample after A and B have both been evaluated.
+    if axis == B:    # last of the XY pair; A already evaluated this sample
+      v_motor_sq = v_A_cached² + v_B_cached²
+      v_xy = sqrt(v_motor_sq) · K_xy
+      ds_xy += v_xy · sample_period
+      v_xy_delta = v_xy - v_xy_prev_sample
     if axis == E:
-      P_end += extrusion_per_xy_mm · ds_xy + pressure_advance · v_xy_delta
+      P_end += extrusion_per_xy_mm · ds_xy
+              + pressure_advance(sign(v_xy_delta)) · v_xy_delta
 
     # (5) Per-axis dispatch on stepping mode
     match axis.mode.load(Acquire):
@@ -173,12 +186,15 @@ TIM5 ISR fires every (1 / sample_rate) µs:
               .or_else(|| fault(PositionCountOverflow, stepper))
 
       Phase:
-        # Per-stepper SPI dispatch (each TMC has its own CS)
+        # Per-stepper SPI dispatch (each TMC has its own CS).
+        # TMC5160 electrical cycle = 1024 microsteps (10-bit MSCNT) =
+        # 4 full steps. Coil-current LUT is 1024 entries spanning one
+        # electrical cycle.
         for stepper in axis.steppers:
           target_microsteps = round(P_end / axis.microstep_distance)
                             + stepper.phase_offset_microsteps
-          frac = target_microsteps & 0xFF                # 256-entry LUT
-          (coil_A, coil_B) = phase_lut[frac]
+          phase = target_microsteps & 0x3FF              # 10-bit, 1024 entries
+          (coil_A, coil_B) = phase_lut[phase]
           spi_queue.push(stepper.tmc_cs, XDIRECT_REG, pack(coil_A, coil_B))
           stepper.last_coil_A.store(coil_A)
           stepper.last_coil_B.store(coil_B)
@@ -390,6 +406,17 @@ sub-message per stepper in the axis config.
 
 Per-axis uniform-mode constraint enforced here: rejected if `steppers` carries
 steppers with incompatible drivers for the requested mode.
+
+### `kalico_configure_kinematics(k_xy: f32)`
+
+Sets the Cartesian-arc-length kinematic factor K_xy. Called once at startup,
+before any motion. Values:
+- Cartesian: 1.0
+- CoreXY: 1.0 / sqrt(2) ≈ 0.7071068
+
+Used by the TIM5 ISR's E-follows-XY integration to convert motor-space
+velocity into Cartesian XY arc length: `|v_xy| = sqrt(vA² + vB²) · K_xy`.
+Without this, CoreXY moves over-extrude by ~41%.
 
 ---
 
