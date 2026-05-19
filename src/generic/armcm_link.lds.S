@@ -56,6 +56,25 @@ SECTIONS
     {
         . = ALIGN(4);
         _data_start = .;
+
+        // MPU-protected scheduler bookkeeping. The single SchedState struct
+        // in src/sched.c (containing all foundation timers + dispatcher head
+        // / last_insert pointers) is tagged
+        // `__attribute__((section(".sched_protected")))` and placed here.
+        // The region is 128-byte
+        // aligned and 128-byte sized so it fits a single MPU comparator on
+        // both Cortex-M4 and M7 (PMSAv7: region size must be power-of-2 ≥ 32 B
+        // and naturally aligned). 60 B used + padding. Initialised normally
+        // via the .data copy in armcm_boot.c — we don't need a separate
+        // load path. The MPU is configured later (after the .data copy)
+        // to mark this section read-only; sched.c opens it briefly around
+        // its own writes via sched_writable_begin()/end().
+        . = ALIGN(128);
+        _sched_protected_start = .;
+        *(.sched_protected .sched_protected.*)
+        . = _sched_protected_start + 128;
+        _sched_protected_end = .;
+
         *(.ramfunc .ramfunc.*);
         *(.data .data.*);
         . = ALIGN(4);

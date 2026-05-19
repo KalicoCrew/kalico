@@ -106,24 +106,25 @@ udelay(uint32_t usecs)
         ;
 }
 
-// Dummy timer to avoid scheduling a SysTick irq greater than 0xffffff
-static uint_fast8_t
+// Wrap-event handler. Drives SchedState.wrap_timer on CPUs whose SysTick
+// LOAD register can't cover a full 100 ms period. The struct itself lives
+// in sched.c (inside SchedState, MPU-protected); we just provide the
+// callback. Caller (timer_dispatch_many's dispatch loop) holds the
+// .sched_protected MPU window open, so the waketime write is permitted.
+uint_fast8_t
 timer_wrap_event(struct timer *t)
 {
     t->waketime += 0xffffff;
     return SF_RESCHEDULE;
 }
-static struct timer wrap_timer = {
-    .func = timer_wrap_event,
-    .waketime = 0xffffff,
-};
+
 void
 timer_reset(void)
 {
     if (timer_from_us(100000) <= 0xffffff)
         // Timer in sched.c already ensures SysTick wont overflow
         return;
-    sched_add_timer(&wrap_timer);
+    sched_add_timer(sched_get_wrap_timer());
 }
 DECL_SHUTDOWN(timer_reset);
 
@@ -155,58 +156,97 @@ static uint32_t timer_repeat_until;
 #define TIMER_DEFER_REPEAT_TICKS timer_from_us(5)
 
 // Invoke timers
+//
+// The dispatch loop opens the .sched_protected MPU window once at entry
+// and closes it before each return. sched_timer_dispatch (called inside
+// the loop) and periodic_event / sentinel_event / deleted_event / the
+// wrap_timer callback all write to SchedState inside that single window,
+// avoiding per-call MPU toggle jitter on this hot path.
 static uint32_t
 timer_dispatch_many(void)
 {
     uint32_t tru = timer_repeat_until;
+    sched_writable_begin();
     for (;;) {
         // Run the next software timer
         uint32_t next = sched_timer_dispatch();
 
         uint32_t now = timer_read_time();
         int32_t diff = next - now;
-        if (diff > (int32_t)TIMER_MIN_TRY_TICKS)
+        if (diff > (int32_t)TIMER_MIN_TRY_TICKS) {
             // Schedule next timer normally.
+            sched_writable_end();
             return diff;
+        }
 
         if (unlikely(timer_is_before(tru, now))) {
             // Check if there are too many repeat timers
             if (diff < (int32_t)(-timer_from_us(1000))) {
-                // Diagnostic: capture which timer's reschedule landed in the
-                // past. The head of the dispatch list is whoever owns the
-                // stale waketime; decode `func` via `nm out/klipper.elf`.
-                // Space-separated (no `name=%type`) so the host bridge takes
-                // the free-form decode path and surfaces the formatted msg
-                // through klippy's `#output:` handler — `name=%type` markers
-                // route through the structured path, which drops msg for
-                // unrecognized output names.
-                //
-                // Emit head pointer + head->next + head->next->func too so
-                // we can disambiguate "head's func field was clobbered" from
-                // "head pointer itself is stale" (e.g. list points into a
-                // freed/never-allocated struct).
-                // Print head + the just-dispatched timer (last_insert).
-                // last_insert is the timer whose .next was just used to
-                // update SchedStatus.timer_list — so if head is bogus,
-                // last_insert is the predecessor that owned the bad .next.
-                struct timer *head = sched_get_head_timer();
-                struct timer *li   = sched_get_last_insert();
-                output("rsched_past head %u hfunc %u hwake %u"
-                       " li %u lifunc %u liwake %u linext %u"
-                       " now %u diff_us %i",
-                       (uint32_t)head,
-                       head ? (uint32_t)head->func : 0u,
-                       head ? head->waketime : 0u,
-                       (uint32_t)li,
-                       li ? (uint32_t)li->func : 0u,
-                       li ? li->waketime : 0u,
-                       li ? (uint32_t)li->next : 0u,
-                       now,
+                // Emit the last N dispatched (addr, func) pairs so the
+                // host log identifies which timer fed the bogus `.next`
+                // into SchedState.timer_list. addr2line on `f*` names
+                // the timer event handler; the `a*` heap address tells
+                // us which struct instance owned the bad pointer.
+                // Split into two output lines because Klipper's MESSAGE_MAX
+                // (64 B) doesn't fit all 6 (addr, func) pairs in one msg.
+                uint32_t hidx;
+                uint32_t haddrs[SCHED_DISPATCH_HISTORY_N];
+                uint32_t hfuncs[SCHED_DISPATCH_HISTORY_N];
+                sched_get_dispatch_history(&hidx, haddrs, hfuncs);
+                output("rsched_past idx %u a0 %u f0 %u a1 %u f1 %u"
+                       " a2 %u f2 %u diff_us %i",
+                       hidx,
+                       haddrs[0], hfuncs[0],
+                       haddrs[1], hfuncs[1],
+                       haddrs[2], hfuncs[2],
                        (int32_t)(diff / (int32_t)timer_from_us(1)));
+                output("rsched_past_more a3 %u f3 %u a4 %u f4 %u"
+                       " a5 %u f5 %u",
+                       haddrs[3], hfuncs[3],
+                       haddrs[4], hfuncs[4],
+                       haddrs[5], hfuncs[5]);
+                // First sched_add_timer caller that passed a pointer
+                // into the known scratch ranges. Zero if no such call
+                // happened (then the corruption isn't via sched_add_timer's
+                // public API, and we have to look at .next field writes
+                // elsewhere).
+                extern volatile uint32_t sched_bad_add_caller;
+                extern volatile uint32_t sched_bad_add_value;
+                extern volatile uint32_t sched_bad_add_stack0;
+                extern volatile uint32_t sched_bad_add_stack1;
+                extern volatile uint32_t sched_bad_add_stack2;
+                extern volatile uint32_t sched_bad_add_blocked_count;
+                output("rsched_bad_add caller %u value %u blocked %u"
+                       " sp0 %u sp1 %u sp2 %u",
+                       sched_bad_add_caller, sched_bad_add_value,
+                       sched_bad_add_blocked_count,
+                       sched_bad_add_stack0,
+                       sched_bad_add_stack1,
+                       sched_bad_add_stack2);
+                // Walk the chain forward from periodic_timer. First entry
+                // whose `n*` (the .next pointer) is in scratch range
+                // identifies the timer whose .next was corrupted.
+                uint32_t cwa[SCHED_CHAIN_WALK_N];
+                uint32_t cwn[SCHED_CHAIN_WALK_N];
+                uint32_t cws;
+                sched_walk_chain(cwa, cwn, &cws);
+                output("rsched_chain steps %u"
+                       " a0 %u n0 %u a1 %u n1 %u a2 %u n2 %u",
+                       cws, cwa[0], cwn[0], cwa[1], cwn[1],
+                       cwa[2], cwn[2]);
+                output("rsched_chain_more"
+                       " a3 %u n3 %u a4 %u n4 %u a5 %u n5 %u",
+                       cwa[3], cwn[3], cwa[4], cwn[4],
+                       cwa[5], cwn[5]);
+                // Close the writable window before try_shutdown longjmps
+                // out of this scope, so the rest of the shutdown path
+                // doesn't accidentally observe RW protected memory.
+                sched_writable_end();
                 try_shutdown("Rescheduled timer in the past");
             }
             if (sched_check_set_tasks_busy()) {
                 timer_repeat_until = now + TIMER_REPEAT_TICKS;
+                sched_writable_end();
                 return TIMER_DEFER_REPEAT_TICKS;
             }
             timer_repeat_until = tru = now + TIMER_REPEAT_TICKS;

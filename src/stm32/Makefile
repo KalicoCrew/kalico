@@ -61,6 +61,7 @@ src-y += stm32/watchdog.c stm32/clockline.c stm32/dfu_reboot.c
 src-y += generic/crc16_ccitt.c
 src-y += generic/armcm_boot.c generic/armcm_irq.c generic/armcm_reset.c
 src-y += generic/fault_handler.c
+src-y += generic/mpu_protect.c
 
 # Kalico runtime glue. Per-family TIM5 backend selected by CONFIG_MACH_STM32*.
 ifeq ($(CONFIG_KALICO_RUNTIME),y)

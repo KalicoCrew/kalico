@@ -957,11 +957,25 @@ struct PlannerCtx {
 
 impl PlannerCtx {
     fn build() -> Result<Self, String> {
-        Self::build_inner([80.0_f32, 80.0_f32, 0.0_f32, 0.0_f32], false)
+        Self::build_inner([80.0_f32, 80.0_f32, 0.0_f32, 0.0_f32], false, false)
     }
 
     fn build_with_spm(steps_per_mm: [f32; 4]) -> Result<Self, String> {
-        Self::build_inner(steps_per_mm, false)
+        Self::build_inner(steps_per_mm, false, false)
+    }
+
+    /// Same as `build_with_spm` but additionally registers Klipper-side
+    /// stepper bindings (allocate_oids + config_stepper + config_runtime_stepper)
+    /// for motor 0 on PB5/PB6 before the kalico-native ConfigureAxes.
+    ///
+    /// Used by tests that need to observe actual step/dir GPIO emission via
+    /// the `runtime_emit_calls` / `runtime_emit_pulses` / motor binding count
+    /// diagnostics surfaced through `kalico_status_v6::fault_detail`. Without
+    /// these bindings `runtime_emit_step_pulses` early-returns on `cnt == 0`,
+    /// `runtime_emit_pulses` stays zero, and no GPIO toggles happen — which
+    /// is the steady-state for the other tests in this file.
+    fn build_with_stepper_bindings(steps_per_mm: [f32; 4]) -> Result<Self, String> {
+        Self::build_inner(steps_per_mm, false, true)
     }
 
     /// Same as [`Self::build_with_spm`] but configures the firmware with
@@ -970,10 +984,14 @@ impl PlannerCtx {
     /// runtime_modulated_tick (TIM5 on H7) handles step output instead of
     /// per-stepper step-time ISRs.
     fn build_with_phase_stepping(steps_per_mm: [f32; 4]) -> Result<Self, String> {
-        Self::build_inner(steps_per_mm, true)
+        Self::build_inner(steps_per_mm, true, false)
     }
 
-    fn build_inner(steps_per_mm: [f32; 4], phase_stepping: bool) -> Result<Self, String> {
+    fn build_inner(
+        steps_per_mm: [f32; 4],
+        phase_stepping: bool,
+        with_klipper_stepper_bindings: bool,
+    ) -> Result<Self, String> {
         let harness = SimHarness::new()?;
 
         // Configure the firmware's kinematics + steps_per_mm. Default tests
@@ -984,6 +1002,19 @@ impl PlannerCtx {
             configure_sim_axes_phase_stepping(&harness.host_io, steps_per_mm)?;
         } else {
             configure_sim_axes_with_spm(&harness.host_io, steps_per_mm)?;
+        }
+
+        // Klipper-side stepper bindings (allocate_oids / config_stepper /
+        // config_runtime_stepper) MUST come AFTER ConfigureAxes. The
+        // kalico-native `kalico_runtime_configure_axes` calls
+        // `runtime_reset_stepper_bindings()` which zeros
+        // `runtime_motor_stepper_count[]` — running the bindings first
+        // would have them wiped out. Reset order matches the production
+        // bridge: klippy sends `configure_axes` first, then iterates the
+        // per-MCU stepper list and sends `config_runtime_stepper` for each.
+        // See klippy/motion_toolhead.py:753-783.
+        if with_klipper_stepper_bindings {
+            setup_klipper_stepper_bindings(&harness.host_io)?;
         }
 
         let host_io = Arc::clone(&harness.host_io);
@@ -1133,6 +1164,255 @@ fn configure_sim_axes_inner(
         extended.is_some(),
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Klipper-side stepper bindings — register OID 0 as a stepper on PB5
+// (step_pin) / PB6 (dir_pin), then bind kalico runtime motor 0 to that OID
+// so `runtime_emit_step_pulses(0, n_steps)` in src/stepper.c actually
+// toggles step/dir GPIOs instead of returning early on `cnt == 0`.
+//
+// The wire-level encoding matches:
+//   - DECL_COMMAND(command_allocate_oids,
+//                  "allocate_oids count=%c") in src/basecmd.c
+//   - DECL_COMMAND(command_config_stepper,
+//                  "config_stepper oid=%c step_pin=%c dir_pin=%c \
+//                   invert_step=%c step_pulse_ticks=%u") in src/stepper.c
+//   - DECL_COMMAND(command_config_runtime_stepper,
+//                  "config_runtime_stepper motor_idx=%c stepper_oid=%c \
+//                   invert_dir=%c") in src/runtime_tick.c
+//
+// Pin names use the firmware's data-dictionary enum ("PB5", "PB6", etc.) —
+// Klipper's command parser does NOT accept numeric STM32 IDs on the wire.
+// PB5 (step) and PB6 (dir) are not used by Renode's stm32h743 platform
+// definition for any reserved purpose, so we can safely toggle them.
+//
+// We do NOT call `finalize_config` afterwards: the kalico runtime's
+// `runtime_emit_step_pulses` path doesn't gate on `is_finalized()`, and
+// the existing tests in this file already work without it. Skipping
+// finalize keeps the MCU's pre-config invariants flexible for future
+// extension (e.g., binding additional OIDs mid-test).
+// ---------------------------------------------------------------------------
+
+const STEP_PIN_NAME: &str = "PB5";
+const DIR_PIN_NAME: &str = "PB6";
+
+fn setup_klipper_stepper_bindings(host_io: &KalicoHostIo) -> Result<(), String> {
+    // 1. Pre-allocate one OID slot. `command_allocate_oids` shutdowns the
+    //    MCU if called twice, so this must run exactly once per boot.
+    host_io
+        .send_fire_and_forget("allocate_oids count=1")
+        .map_err(|e| format!("allocate_oids: {e:?}"))?;
+
+    // 2. Register stepper OID 0 with PB5 step / PB6 dir. step_pulse_ticks
+    //    is only consulted by the legacy stepper.c queue_step path; the
+    //    kalico runtime computes its own pulse timing in
+    //    `runtime_emit_step_pulses`. The value here only needs to satisfy
+    //    the %u field parser.
+    let cmd = format!(
+        "config_stepper oid=0 step_pin={STEP_PIN_NAME} dir_pin={DIR_PIN_NAME} \
+         invert_step=0 step_pulse_ticks=100"
+    );
+    host_io
+        .send_fire_and_forget(&cmd)
+        .map_err(|e| format!("config_stepper: {e:?}"))?;
+
+    // 3. Bind kalico runtime motor 0 to stepper OID 0. After this,
+    //    `runtime_motor_stepper_count[0] == 1` and
+    //    `runtime_emit_step_pulses(0, n)` toggles PB5 (and writes PB6 on
+    //    direction change) instead of early-returning on `cnt == 0`.
+    host_io
+        .send_fire_and_forget(
+            "config_runtime_stepper motor_idx=0 stepper_oid=0 invert_dir=0",
+        )
+        .map_err(|e| format!("config_runtime_stepper: {e:?}"))?;
+
+    // 4. Barrier: send a request/response command so we know all three
+    //    fire-and-forget commands have been processed by the MCU's main
+    //    loop before we return. `get_uptime` always responds with
+    //    `uptime clock=%u high=%u`, regardless of finalize state.
+    host_io
+        .send_with_response("get_uptime", "uptime", Duration::from_secs(5))
+        .map_err(|e| format!("get_uptime barrier: {e:?}"))?;
+
+    eprintln!(
+        "[sim] Klipper stepper bindings ok: \
+         OID 0 on {STEP_PIN_NAME} step / {DIR_PIN_NAME} dir, motor 0 → OID 0",
+    );
+    Ok(())
+}
+
+// ===========================================================================
+//
+// Test G — G1 X50 → observable step/dir GPIO emission on the sim.
+//
+// This is the only test in this file that registers Klipper-side stepper
+// bindings (PB5 step / PB6 dir for motor 0) before dispatching motion.
+// Without those bindings `runtime_emit_step_pulses` early-returns on
+// `cnt == 0` and no GPIO toggles happen — segments retire and
+// `current_segment_id` advances, but the TMC driver wired downstream
+// sees nothing.
+//
+// Pass condition: after a 50 mm pure-X jog at F=100, the firmware-side
+// diagnostic counters surfaced via `kalico_status_v6::fault_detail`
+// (high byte = tag, low 24 bits = payload) show:
+//
+//   * tag 0xE1 (`runtime_emit_calls`) > 0
+//       — the Rust step producer called `runtime_emit_step_pulses`.
+//   * tag 0xE2 low 4 bits (`runtime_motor_binding_count(0)`) >= 1
+//       — the runtime sees motor 0 → stepper-OID-0 binding.
+//   * tag 0xE2 bits 16..23 (`runtime_emit_pulses & 0xFF`) > 0
+//       — the C-side `gpio_out_toggle_noirq` ran on at least one pulse.
+//
+// Together these prove the full chain in `src/stepper.c` ran:
+// `runtime_emit_calls++` → bounds check passed → `cnt > 0` →
+// `runtime_emit_pulses += |n_steps|` → `gpio_out_write(dir_pin)` →
+// loop of `gpio_out_toggle_noirq(step_pin)`. That is the wire-level
+// signal a TMC2209 / TMC5160 / similar step+dir driver reads.
+//
+// On a CoreXY at present_mask=0b0011 the X-only jog drives motor 0 (A)
+// and motor 1 (B) equally. We only bind motor 0 here — that's sufficient
+// to prove the GPIO path works without needing to set up a second OID.
+//
+// ===========================================================================
+
+#[test]
+#[ignore = "spawns Renode subprocess; run with --ignored --test-threads=1"]
+fn g1_x50_emits_step_pulses_on_sim() {
+    let ctx = PlannerCtx::build_with_stepper_bindings(
+        [80.0_f32, 80.0_f32, 0.0_f32, 0.0_f32],
+    )
+    .expect("build sim harness with stepper bindings");
+
+    // Wait for the status-frame rotation to publish at least one of the
+    // 0xB0/0xB1/0xE2/0xE6 binding-state tags so Stage 1's diag is visible
+    // even when the engine subsequently wedges before further rotation
+    // cycles complete. The diag rotates at the 10 Hz status cadence;
+    // 3 s wall ≈ 30 frames is plenty to hit several tags.
+    {
+        let deadline = Instant::now() + Duration::from_secs(8);
+        while Instant::now() < deadline {
+            let has_binding_tag =
+                ctx.harness.fault_detail_max(0xE2).is_some()
+                    || ctx.harness.fault_detail_max(0xB1).is_some()
+                    || ctx.harness.fault_detail_max(0xE6).is_some();
+            if has_binding_tag {
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    // 50 mm X jog at F=100 mm/s → ~500 ms trajectory at peak velocity,
+    // 4000 steps on motor A (80 spm × 50 mm). On a CoreXY the same count
+    // shows up on motor B too (opposite sign), but we only bound motor 0
+    // so only A's pulses are observable through the diag counters.
+    if let Err(e) = ctx.submit_jog([0.0; 3], 50.0, 0.0, 0.0, 100.0) {
+        eprintln!("[test-G] submit_jog returned err (continuing): {e}");
+    }
+    if let Err(e) = ctx.flush() {
+        // The sim's USART2 model under Renode has known RX overrun on
+        // 700+ byte frames (see h723_sim.resc). LoadCurve timeouts here
+        // do NOT invalidate the test — the goal is to surface the
+        // step-emission counters, which advance independently of any
+        // single LoadCurve failure.
+        eprintln!("[test-G] flush returned err (continuing): {e}");
+    }
+
+    let dispatched = ctx.dispatched_segments();
+    eprintln!(
+        "[test-G] dispatched_segments={} last_seg_id_observed={}",
+        dispatched, ctx.harness.last_segment_id(),
+    );
+
+    // Wait up to 180 s for the MCU to retire at least one segment. Renode
+    // runs ~150-200x slower than wall clock; a 50 mm jog at F=100 produces
+    // ~500 ms of trajectory ≈ 75-100 s of wall time. The wait does not
+    // panic — if the engine never advances we still print full diagnostics
+    // below so the failure mode is visible.
+    let _ = ctx
+        .harness
+        .wait_for_segment_id(dispatched.max(1) as u32, Duration::from_secs(180));
+
+    let status = ctx.harness.status();
+    eprintln!(
+        "[test-G] final status: engine_status={} seg_id={} last_fault={} \
+         fault_detail=0x{:08x}",
+        status.engine_status, status.current_segment_id,
+        status.last_fault, status.fault_detail,
+    );
+    for (tag, payload) in ctx.harness.fault_detail_summary() {
+        eprintln!("[test-G]   fault_detail tag=0x{tag:02X} max_payload=0x{payload:06X}");
+    }
+
+    // ---- Step/dir GPIO emission diagnostics ----
+    //
+    // The three counters surface different layers of the chain:
+    //   * tag 0xE2 low nibble    = config_runtime_stepper landed (binding)
+    //   * tag 0xE1               = Rust step producer called the FFI emit
+    //   * tag 0xE2 bits 16..23   = C-side `runtime_emit_pulses` advanced
+    //
+    // Each assertion's failure message says exactly WHICH stage broke,
+    // so the panic surfaces the root cause without follow-up debugging.
+
+    let emit_calls = ctx.harness.fault_detail_max(0xE1).unwrap_or(0);
+    let e2 = ctx.harness.fault_detail_max(0xE2).unwrap_or(0);
+    let pulses_lo = (e2 >> 16) & 0xFF;
+    let motor0_binding = e2 & 0xF;
+
+    // Engine-status diag (tag 0xE4 = step_time_producer_kicks).
+    let producer_kicks = ctx.harness.fault_detail_max(0xE4).unwrap_or(0);
+    let empty_polls = ctx.harness.fault_detail_max(0xE5).unwrap_or(0);
+
+    eprintln!(
+        "[test-G] step-emission diag:\n  \
+         runtime_emit_calls           (tag 0xE1)       = {}\n  \
+         motor 0 binding count        (tag 0xE2 nib0)  = {}\n  \
+         runtime_emit_pulses & 0xFF   (tag 0xE2 b16-23) = {}\n  \
+         step_time_producer_kicks     (tag 0xE4)       = {}\n  \
+         step_time_empty_polls        (tag 0xE5)       = {}",
+        emit_calls, motor0_binding, pulses_lo, producer_kicks, empty_polls,
+    );
+
+    assert!(
+        motor0_binding >= 1,
+        "STAGE 1 FAILED (Klipper-protocol stepper binding did not land): \
+         tag 0xE2 low nibble = 0, so `runtime_motor_stepper_count[0] == 0`. \
+         The firmware never accepted `config_runtime_stepper motor_idx=0 \
+         stepper_oid=0` — check `runtime_bind_calls_total` (tag 0xB0 bits 8..15) \
+         to confirm the command reached the firmware."
+    );
+
+    assert!(
+        emit_calls >= 1,
+        "STAGE 2 FAILED (Rust step producer never ran): \
+         tag 0xE1 = 0, so `runtime_emit_step_pulses` was never called for \
+         any motor. Motor 0 has {} binding(s) registered, but the engine \
+         didn't reach the per-motor emit loop. \
+         engine_status={} (0=Idle, 1=Running, 2=Drained, 3=Fault); \
+         producer_kicks={}; empty_polls={}. \
+         This is the H7-wedge-after-motion symptom — the engine accepts \
+         segments on the wire (push_segment OK) but never transitions out \
+         of Idle. See recent runtime_tick.c producer-timer fixes.",
+        motor0_binding, status.engine_status, producer_kicks, empty_polls,
+    );
+
+    assert!(
+        pulses_lo > 0,
+        "STAGE 3 FAILED (no GPIO toggles despite {} emit calls and \
+         motor 0 bound to OID 0): runtime_emit_pulses stayed 0, meaning \
+         the per-motor `gpio_out_toggle_noirq(step_pin)` loop in \
+         src/stepper.c didn't execute. Either every emit had n_steps==0 \
+         (engine produced zero-step segments) or the bounds check at \
+         line 587 (`motor_idx >= RUNTIME_MOTOR_COUNT`) rejected.",
+        emit_calls,
+    );
+
+    eprintln!(
+        "[test-G] PASS: G1 X50 produced runtime_emit_calls={}, \
+         pulses_lo={} (toggles on {}), motor 0 binding count={}",
+        emit_calls, pulses_lo, STEP_PIN_NAME, motor0_binding,
+    );
 }
 
 // ===========================================================================

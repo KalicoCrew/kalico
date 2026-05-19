@@ -49,9 +49,11 @@ case "${1:-all}" in
   g28|g)        FILTER="g28_shaped_xy_two_pass_homing_via_renode_monitor" ;;
   phase|f|phase_stepping)
                 FILTER="phase_stepping_rapid_g1_x25_after_set_position_no_crash" ;;
+  tmc|step|g1x50)
+                FILTER="g1_x50_emits_step_pulses_on_sim" ;;
   all|"")       FILTER="" ;;
   *)
-    echo "Usage: $0 [smoke|first|alternating|rapid|home|g28|phase|all]" >&2
+    echo "Usage: $0 [smoke|first|alternating|rapid|home|g28|phase|tmc|all]" >&2
     exit 2 ;;
 esac
 
@@ -74,6 +76,13 @@ fi
 # `RUST_BACKTRACE=1` makes any panic show file:line — useful when the test
 # fails in a helper deep in the call stack.
 export RUST_BACKTRACE=1
+# Production behavior: KalicoHostIo aborts the process on transport fault
+# so systemd restarts klippy. In tests we want the panic to come from the
+# test's assertion (with full diag captured), not SIGABRT from the reactor
+# thread that bypasses test cleanup. The env var only affects the
+# production `EXIT_ON_FAULT` abort branch; transport errors still surface
+# as `Closed` to test code.
+export KALICO_NO_EXIT_ON_FAULT=1
 
 if [[ -n "${FILTER}" ]]; then
   exec cargo test -p motion-bridge --test sim_motion_jogs -- \
