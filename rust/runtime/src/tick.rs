@@ -42,7 +42,7 @@
 use core::sync::atomic::Ordering;
 
 use crate::fault_helpers::{
-    raise_position_count_overflow, raise_step_queue_overflow,
+    raise_math_non_finite, raise_position_count_overflow, raise_step_queue_overflow,
 };
 use crate::phase_lut::PHASE_LUT;
 use crate::state::SharedState;
@@ -312,6 +312,269 @@ fn dispatch_phase(
         };
         stepper.position_count.store(next, Ordering::Release);
     }
+}
+
+// =====================================================================
+// Task 8 — full per-sample evaluator (phases 1-5 of the TIM5 ISR body).
+// =====================================================================
+//
+// `runtime_tick_sample` is the single per-sample entry point that the TIM5
+// ISR top-half (Task 6) and the host integration tests call. It runs the
+// five canonical phases laid out in the spec:
+//
+//   1. Evaluate the cubic Bezier for motion axes A, B, Z; dispatch each.
+//   2. Compute XY-derived quantities (motor-frame speed → cartesian XY
+//      speed via `k_xy`; accumulate segment arc length).
+//   3. Evaluate the extruder axis with the E-follows-XY + PA correction.
+//   4. Publish (`p_end`, `v_end`) into `TickCaches` for the next tick.
+//   5. (Deferred to Task 9) Segment retirement.
+//
+// ### Plan deviations
+//
+// - `TickContext` carries `queues: [*mut StepQueue; N_AXES]` instead of a
+//   global queue array. This matches the explicit-pointer threading
+//   landed in Task 7: on the MCU the caller resolves each entry from the
+//   C-side `step_queues[axis_idx]`; on host the test owns the storage.
+//   The pointer-array shape avoids re-borrowing `ctx.queues[axis_idx]`
+//   while another borrow on `ctx.axes` is live.
+// - `axes` is `&mut [AxisConfig; N_AXES]`; we index inside each phase
+//   (`let axis = &mut ctx.axes[idx]`) rather than splitting the array
+//   into per-axis borrows up front, because Phase 1 and Phase 3 access
+//   non-overlapping indices in series.
+// - Fault publication uses `raise_math_non_finite` from `fault_helpers`
+//   (Task 7), not the plan's pseudo-symbol `shared::set_fault_...`.
+// - `libm::sqrtf` provides arc-length computation; `f32::sqrt` is not in
+//   `core`, so this keeps the body `no_std`-clean for the MCU build.
+
+use crate::stepping_state::TickCaches;
+
+pub const N_AXES: usize = 4;
+pub const AXIS_A: usize = 0;
+pub const AXIS_B: usize = 1;
+pub const AXIS_Z: usize = 2;
+pub const AXIS_E: usize = 3;
+
+/// Per-sample inputs to [`runtime_tick_sample`].
+///
+/// The caller (TIM5 ISR top-half on MCU, integration test on host) owns
+/// all referenced storage for the duration of the call. `queues` is an
+/// array of raw pointers because each per-axis [`StepQueue`] lives in a
+/// disjoint backing store (C-owned `.axi_bss` on MCU, stack/heap on
+/// host); a `&mut [&mut StepQueue; N_AXES]` form would force the caller
+/// to materialize four simultaneous mutable references, which the C-side
+/// layout cannot express.
+///
+/// Field semantics:
+/// - `axes`: per-axis configuration + scratch state (Task 5 shape).
+/// - `queues`: per-axis step queue pointer; producer-side, sole writer
+///   is this ISR.
+/// - `shared`: cross-half fault publication + telemetry counters.
+/// - `caches`: tick-private scratch (Task 5's [`TickCaches`]).
+/// - `sample_period_sec` / `sample_period_cycles` / `cycles_per_second`:
+///   sample-window scalars used by dispatch + XY arc-length.
+/// - `k_xy`: motor→cartesian XY speed scale. 1.0 for cartesian; 1/√2
+///   for `CoreXY`.
+/// - `advance_accel` / `advance_decel`: PA coefficients (s); the active
+///   one is selected per-tick from `vdot_xy_accelerating`.
+/// - `now_cycles`: sample-start absolute cycle counter (already widened
+///   by Task 6); passed through to `dispatch_axis`.
+/// - `t_sample_end_global`: wall-clock time at the end of this sample,
+///   in seconds, in the same epoch as `piece_start_time_cycles`.
+#[derive(Debug)]
+pub struct TickContext<'a> {
+    pub axes: &'a mut [AxisConfig; N_AXES],
+    pub queues: [*mut StepQueue; N_AXES],
+    pub shared: &'a SharedState,
+    pub caches: &'a mut TickCaches,
+    pub sample_period_sec: f32,
+    pub sample_period_cycles: u32,
+    pub cycles_per_second: f32,
+    pub k_xy: f32,
+    pub advance_accel: f32,
+    pub advance_decel: f32,
+    pub now_cycles: u32,
+    pub t_sample_end_global: f32,
+}
+
+/// Run one TIM5 sample across all four axes.
+///
+/// Caller responsibility:
+/// - `TickContext::queues` entries are valid producer pointers for the
+///   single-producer SPSC discipline (ISR is sole writer per axis).
+/// - `TickContext::axes` is consistent across the call (the foreground
+///   only mutates `mode` atomically and `piece` under the producer's
+///   exclusive-access contract).
+///
+/// Behavior on a non-finite cubic evaluation: the offending axis's
+/// dispatch is skipped and a [`MathNonFinite`](crate::error::FaultCode::MathNonFinite)
+/// fault is latched via [`raise_math_non_finite`]. Other axes proceed.
+///
+/// Phase 5 (segment retirement) is deferred to Task 9.
+//
+// Every `[...]` index in this body is statically bounded by `N_AXES`:
+// the iteration set `[AXIS_A, AXIS_B, AXIS_Z]` and the constant `AXIS_E`
+// are all `< N_AXES`, and the bookkeeping loop's `0..N_AXES` bound is
+// exactly the array length. The blanket `allow(clippy::indexing_slicing)`
+// is justified — every individual index would otherwise need its own
+// inline annotation, which would obscure the per-phase structure that
+// the spec calls out.
+#[allow(clippy::indexing_slicing)]
+pub fn runtime_tick_sample(ctx: &mut TickContext) {
+    let mut p_end_axis = [0.0_f32; N_AXES];
+    let mut v_end_axis = [0.0_f32; N_AXES];
+
+    // -----------------------------------------------------------------
+    // Phase 1: evaluate motion axes A, B, Z and dispatch each.
+    // -----------------------------------------------------------------
+    for axis_idx in [AXIS_A, AXIS_B, AXIS_Z] {
+        let axis = &mut ctx.axes[axis_idx];
+        let p_sample_start = ctx.caches.p_prev[axis_idx];
+
+        let Some(piece) = axis.piece else {
+            // No active piece on this axis: hold position, zero velocity.
+            // p_prev stays as last published (kept implicit by writing
+            // p_sample_start back into p_end_axis below).
+            p_end_axis[axis_idx] = p_sample_start;
+            v_end_axis[axis_idx] = 0.0;
+            continue;
+        };
+
+        // Local piece time = wall-clock now minus when this piece started.
+        // Both quantities are in seconds; subtraction in f32 is fine at
+        // sample granularity because Task 6 hands us already-aligned
+        // values (and the piece duration is in milliseconds for a
+        // typical 1mm-at-100mm/s move).
+        let piece_start_sec =
+            (axis.piece_start_time_cycles as f32) / ctx.cycles_per_second;
+        let t_local = ctx.t_sample_end_global - piece_start_sec;
+
+        let (p_end, v_end) =
+            crate::monomial::eval_position_velocity(&piece, t_local);
+        if !p_end.is_finite() || !v_end.is_finite() {
+            raise_math_non_finite(ctx.shared, axis_idx);
+            // Hold previous position to keep downstream caches sane.
+            p_end_axis[axis_idx] = p_sample_start;
+            v_end_axis[axis_idx] = 0.0;
+            continue;
+        }
+
+        p_end_axis[axis_idx] = p_end;
+        v_end_axis[axis_idx] = v_end;
+
+        dispatch_axis(
+            axis_idx,
+            axis,
+            ctx.queues[axis_idx],
+            ctx.shared,
+            p_end,
+            v_end,
+            p_sample_start,
+            ctx.sample_period_sec,
+            ctx.now_cycles,
+            ctx.cycles_per_second,
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 2: XY-derived quantities.
+    //
+    // Motor-frame speed → cartesian XY speed via `k_xy`. Arc length
+    // accumulates per segment so the extruder follower (Phase 3) can
+    // integrate it directly; pressure-advance polarity is derived from
+    // the sign of dv_xy/dt.
+    // -----------------------------------------------------------------
+    let xy_active =
+        ctx.axes[AXIS_A].piece.is_some() || ctx.axes[AXIS_B].piece.is_some();
+    if xy_active {
+        let va = v_end_axis[AXIS_A];
+        let vb = v_end_axis[AXIS_B];
+        let v_motor_sq = va * va + vb * vb;
+        let v_xy_this = libm::sqrtf(v_motor_sq) * ctx.k_xy;
+        ctx.caches.vdot_xy_accelerating = v_xy_this >= ctx.caches.v_xy_prev;
+        ctx.caches.ds_xy_segment += v_xy_this * ctx.sample_period_sec;
+        ctx.caches.v_xy_prev = v_xy_this;
+        ctx.caches.v_xy_this = v_xy_this;
+    } else {
+        ctx.caches.v_xy_this = 0.0;
+        ctx.caches.vdot_xy_accelerating = false;
+        // Note: ds_xy_segment is *not* reset here. The segment-retirement
+        // phase (Task 9) is what zeroes it; an XY-idle tick mid-segment
+        // (e.g., a Z-only hop between extrusions) must not clobber the
+        // accumulated arc length that the next segment's E follower may
+        // still consume.
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 3: evaluate the extruder axis with E-follows-XY + PA.
+    //
+    // The intrinsic extrusion from the E NURBS piece (retract/prime/
+    // filament-change) is summed with:
+    //   - extrusion_per_xy_mm × ds_xy_segment   (E follows XY arc length)
+    //   - pa_k × extrusion_per_xy_mm × v_xy_this (pressure advance)
+    // where `pa_k` is `advance_accel` while v_xy is rising and
+    // `advance_decel` while it is falling (asymmetric PA, see bleeding-
+    // edge-v2 Step 9 lineage in the CLAUDE.md scope).
+    // -----------------------------------------------------------------
+    {
+        let axis = &mut ctx.axes[AXIS_E];
+        let p_sample_start = ctx.caches.p_prev[AXIS_E];
+        if let Some(piece) = axis.piece {
+            let piece_start_sec =
+                (axis.piece_start_time_cycles as f32) / ctx.cycles_per_second;
+            let t_local = ctx.t_sample_end_global - piece_start_sec;
+            let (p_end_intrinsic, v_end) =
+                crate::monomial::eval_position_velocity(&piece, t_local);
+
+            if !p_end_intrinsic.is_finite() || !v_end.is_finite() {
+                raise_math_non_finite(ctx.shared, AXIS_E);
+                p_end_axis[AXIS_E] = p_sample_start;
+                v_end_axis[AXIS_E] = 0.0;
+            } else {
+                let pa_k = if ctx.caches.vdot_xy_accelerating {
+                    ctx.advance_accel
+                } else {
+                    ctx.advance_decel
+                };
+                let p_end = p_end_intrinsic
+                    + axis.extrusion_per_xy_mm * ctx.caches.ds_xy_segment
+                    + pa_k * axis.extrusion_per_xy_mm * ctx.caches.v_xy_this;
+
+                p_end_axis[AXIS_E] = p_end;
+                v_end_axis[AXIS_E] = v_end;
+
+                dispatch_axis(
+                    AXIS_E,
+                    axis,
+                    ctx.queues[AXIS_E],
+                    ctx.shared,
+                    p_end,
+                    v_end,
+                    p_sample_start,
+                    ctx.sample_period_sec,
+                    ctx.now_cycles,
+                    ctx.cycles_per_second,
+                );
+            }
+        } else {
+            p_end_axis[AXIS_E] = p_sample_start;
+            v_end_axis[AXIS_E] = 0.0;
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 4: publish (p_end, v_end) into per-axis caches for the next
+    // tick's secant-slope sub-sample timing.
+    // -----------------------------------------------------------------
+    ctx.caches.p_prev = p_end_axis;
+    ctx.caches.v_prev = v_end_axis;
+
+    // -----------------------------------------------------------------
+    // Phase 5: segment retirement — deferred to Task 9.
+    //
+    // That task will check piece duration vs `t_local`, advance to the
+    // next piece (or clear `axis.piece` to `None`), and reset
+    // `ds_xy_segment` at the start of every new XY segment.
+    // -----------------------------------------------------------------
 }
 
 #[cfg(test)]
