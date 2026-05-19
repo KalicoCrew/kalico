@@ -2436,17 +2436,22 @@ pub mod exports {
             return false;
         }
         let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: `rt` non-null + INIT_DONE=true above. The projection
-        // mirrors `runtime_handle_tick` (the long-running ISR-half mutator):
-        // we materialise `&mut IsrState` once via `UnsafeCell::raw_get`,
-        // then field-disjoint-borrow `engine` and `queue_consumer` out of
-        // it; the curve pool and shared half are projected through
-        // `addr_of!` as `&` references (atomics-only access on those
-        // halves). The §11.1 ownership discipline says the producer timer
-        // and the TIM5 ISR never run concurrently against the same
-        // `IsrState` (foreground producer timer fires from `sched_check_periodic`
-        // with IRQs disabled; TIM5 ISR is suspended on entry to the same
-        // critical section — Task 8 wires the gating).
+        // SAFETY: `rt` non-null + INIT_DONE=true above. We materialise
+        // `&mut IsrState` once via `UnsafeCell::raw_get`, then
+        // field-disjoint-borrow `engine` and `queue_consumer` out of it;
+        // the curve pool and shared half are projected through `addr_of!`
+        // as `&` references (atomics-only access on those halves).
+        //
+        // Aliasing invariant vs the TIM5 ISR
+        // (`kalico_runtime_modulated_tick`, which also forms `&mut
+        // IsrState`): both entry points are dispatched from priority-2
+        // Cortex-M interrupts (SysTick for the producer via
+        // `timer_dispatch_many`; TIM5 directly). Same-priority Cortex-M
+        // interrupts do not nest, so the two paths cannot be concurrently
+        // live. Priority pairing is set in
+        // `src/stm32/runtime_tick_{h7,f4}.c:runtime_tick_init` and
+        // `src/generic/armcm_timer.c:timer_init`. See `IsrState` in
+        // `rust/runtime/src/state.rs` for the full invariant.
         unsafe {
             use runtime::step_producer::ProducerTickResult;
             let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));

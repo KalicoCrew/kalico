@@ -140,7 +140,26 @@ pub struct FgState {
     pub retirement_table: crate::reclaim::RetirementTable,
 }
 
-/// ISR-only state. Touched exclusively by the TIM5 ISR.
+/// ISR-half state. Touched by two MCU-side contexts:
+///
+/// 1. The TIM5 ISR (`kalico_runtime_modulated_tick`), which runs the
+///    polled-tick StepAccumulator path.
+/// 2. The SysTick-dispatched `runtime_producer_event` Klipper timer
+///    (`kalico_runtime_producer_step`), which Newton-fills the per-motor
+///    step rings and retires drained segments.
+///
+/// Mutual exclusion is enforced by Cortex-M NVIC priority arbitration:
+/// TIM5 and SysTick are both at priority 2, and same-priority interrupts
+/// on Cortex-M do not nest. Whichever fires first runs to completion
+/// before the other dispatches. This is what permits both entry points
+/// to form `&mut IsrState` soundly. The priority pairing is established
+/// in `src/stm32/runtime_tick_{h7,f4}.c:runtime_tick_init` and
+/// `src/generic/armcm_timer.c:timer_init`; if either drifts, the
+/// aliasing invariant breaks.
+///
+/// Host builds serialise the two paths through `runtime_tick_host.c`'s
+/// pthread + the foreground producer task running on the same OS thread,
+/// so the invariant holds without hardware help.
 #[allow(missing_debug_implementations)] // Producer/Consumer don't implement Debug.
 pub struct IsrState {
     /// 2026-05-18: segment SPSC moved to C-backed queue. See

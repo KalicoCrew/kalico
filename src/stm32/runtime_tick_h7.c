@@ -138,9 +138,17 @@ runtime_tick_init(void)
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-    // Set IRQ priority 3 (Cortex-M: lower number = higher urgency).
-    // Below SysTick (2) and USB (1) per spec §2.4.
-    NVIC_SetPriority(TIM5_IRQn, 3);
+    // Set IRQ priority 2 — same as SysTick (the Klipper scheduler dispatch
+    // ISR, set in armcm_timer.c). Same-priority Cortex-M interrupts do not
+    // nest: whichever fires first runs to completion before the other.
+    // This is the mutual-exclusion guarantee that lets TIM5 and the
+    // SysTick-dispatched `runtime_producer_event` both form `&mut IsrState`
+    // soundly — neither can preempt the other. Promoting from 3 to 2 trades
+    // at most "TIM5 ISR worst-case duration" of scheduler-dispatch latency,
+    // which is bounded by motion correctness (must fit in the 25 µs
+    // modulation period at 40 kHz) and orders of magnitude below the 3 s
+    // heater deadline / 500 ms IWDG window.
+    NVIC_SetPriority(TIM5_IRQn, 2);
 
     // Don't enable yet — runtime_init pushes segments first; first push triggers
     // runtime_tick_enable() via the producer protocol.
