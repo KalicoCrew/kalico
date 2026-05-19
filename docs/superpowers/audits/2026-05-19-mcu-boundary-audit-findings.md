@@ -11,9 +11,9 @@
 
 **Command:** `rg -n '#\[link_section\|link_section\b' rust/`
 
-**Result:** TBD — fill in during audit run (after Phase 3 migration completed in commits `641e552fb` + `9c7ca0060`).
+**Result (2026-05-19, post-Phase 3 migration):** Zero matches. The only active `#[link_section]` attribute pre-refactor (`RT_CELL`'s `.axi_bss` placement) was deleted in commit `641e552fb`. All shared-memory placement decisions now live on the C side.
 
-**Decision:** Expected: only RT_CELL's link_section attribute existed pre-refactor; after migration there should be zero active `#[link_section]` attributes outside of comments and docs.
+**Decision:** PASS. No B2 violations on the Rust side.
 
 ### A1.2 — `.axi_bss` C occupant inventory (H7)
 
@@ -31,14 +31,14 @@ Total .axi_bss budget: 308640 bytes. With 16 KB headroom (16384) the total again
 
 Targets: `rust/kalico-c-api/src/runtime_ffi.rs` (82 functions per `rg -c 'extern "C"'`).
 
-**Commands:**
-- `rg -n 'extern "C".*&\[|extern "C".*&mut \[' rust/kalico-c-api/src/runtime_ffi.rs` — slices crossing the ABI.
-- `rg -n 'pub.*extern "C".*->.*\(.*,.*\)' rust/kalico-c-api/src/runtime_ffi.rs` — tuple returns.
-- `rg -n 'extern "C".*Option<&' rust/kalico-c-api/src/runtime_ffi.rs` — Option<&T>.
+**Commands run (2026-05-19):**
+- `rg -n 'extern "C".*&\[|extern "C".*&mut \[' rust/kalico-c-api/src/runtime_ffi.rs` → **zero matches**
+- `rg -n 'pub.*extern "C".*->.*\(.*,.*\)' rust/kalico-c-api/src/runtime_ffi.rs` → **zero matches**
+- `rg -n 'extern "C".*Option<&' rust/kalico-c-api/src/runtime_ffi.rs` → **zero matches**
 
-**Result:** TBD.
+**Result:** PASS. The opaque-handle API uses `*mut KalicoRuntime` plus primitive types and raw pointers (`*const T` / `*mut T`); no Rust-typed fat pointers, lifetime-carrying references, or tuple returns cross the boundary. `bool` returns at lines 2145, 2234, 2400, 2985 are addressed in A2 (ratified as permitted; B4 doc update lands in Task 17).
 
-**Decision:** Expected zero results across all three patterns (the opaque-handle API uses `*mut KalicoRuntime` and primitive types). Any hits get evaluated case-by-case: refactor to pointer+length, or accept with documented exception.
+**Decision:** No signature-level B3/B4 violations. The 82-function surface is structurally clean.
 
 ## A2 — `bool`-FFI policy ratification
 
