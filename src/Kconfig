@@ -434,6 +434,21 @@ config RUNTIME_CURVE_POOL_N
     default 4
     range 1 64
 
+config KALICO_MOTION_SAMPLE_RATE_HZ
+    int "Motion engine sample rate in Hz (TIM5 ISR fire rate)"
+    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_LINUX
+    default 40000 if MACH_STM32H7
+    default 20000 if MACH_STM32F4
+    default 10000
+    range 1000 100000
+    help
+      Rate at which the TIM5 ISR evaluates motion curves and emits step
+      pulses. Higher rates give better velocity-extrapolation accuracy
+      but cost more CPU. Defaults to 40 kHz on H7 (520 MHz) and 20 kHz
+      on F4 (180 MHz); see docs/superpowers/specs/2026-05-19-stepping-
+      redesign-design.md for the per-MCU step-rate ceilings these
+      enable.
+
 config RUNTIME_STORAGE_SIZE_LARGE
     int "rt_storage byte ceiling (large profile, H7)"
     default 307200
