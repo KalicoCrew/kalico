@@ -1006,6 +1006,24 @@ impl Reactor {
             ReactorCommand::FireAndForget { cmd } => {
                 match self.parser.encode(&cmd) {
                     Ok(payload) => {
+                        // Diag 2026-05-19: log every fire-and-forget so we can
+                        // confirm config-phase commands like config_stepper
+                        // are actually reaching the wire encoder and
+                        // producing payload bytes. Cap quoted cmd at 80 chars
+                        // and dump payload's leading bytes (msgid prefix +
+                        // first args) so we can verify the encoded msgid
+                        // matches the dictionary entry the host believes.
+                        let cmd_disp = if cmd.len() > 80 {
+                            &cmd[..80]
+                        } else {
+                            cmd.as_str()
+                        };
+                        let head: Vec<String> = payload.iter().take(12)
+                            .map(|b| format!("{:02x}", b)).collect();
+                        log::info!(
+                            "[firewire] FireAndForget cmd=\"{}\" payload_len={} head=[{}]",
+                            cmd_disp, payload.len(), head.join(",")
+                        );
                         if let Err(e) = self.dispatch_fire_and_forget(payload) {
                             let is_io = matches!(e, TransportError::Io(_));
                             eprintln!("[bridge-error] FireAndForget send: {e}");

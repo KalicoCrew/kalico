@@ -1409,9 +1409,13 @@ class MCU:
                     "Sending MCU '%s' printer configuration...", self._name
                 )
                 for c in local_config_cmds:
+                    logging.info("[config-send] mcu=%s cmd=%s",
+                                 self._name, c)
                     self._serial.send(c)
             else:
                 for c in self._restart_cmds:
+                    logging.info("[config-send-restart] mcu=%s cmd=%s",
+                                 self._name, c)
                     self._serial.send(c)
             # Transmit init messages
             for c in self._init_cmds:
