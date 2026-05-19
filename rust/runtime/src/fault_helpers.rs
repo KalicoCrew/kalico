@@ -85,6 +85,23 @@ pub fn raise_piece_advance_underflow(shared: &SharedState, axis_idx: usize) {
         .store(FaultCode::PieceAdvanceUnderflow.as_i32(), Ordering::Release);
 }
 
+/// Latch a `JogParametersInvalid` fault.
+///
+/// Raised by the command-dispatcher entry points for jog-style mutations
+/// (`set_stepper_offset` is the first Task-12 caller) when the supplied
+/// parameters are out of range (e.g. `max_microsteps_per_sample` outside
+/// `1..=256`, or `stepper_idx` not bound to any configured axis). No
+/// per-event detail is carried — the foreground knows which command it
+/// just sent and the host-visible error code is enough to localize the
+/// fault for surfacing through `kalico_status_v6`.
+#[inline]
+pub fn raise_jog_parameters_invalid(shared: &SharedState) {
+    shared.fault_detail.store(0, Ordering::Release);
+    shared
+        .last_error
+        .store(FaultCode::JogParametersInvalid.as_i32(), Ordering::Release);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -673,6 +673,187 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.advance_decel = advance_decel;
         0
     }
+
+    // ─── Stepping-redesign Task 12 — axis-mode + stepper-offset commands ─
+    //
+    // Spec: docs/superpowers/specs/2026-05-19-stepping-redesign-design.md
+    //
+    // `set_axis_mode` flips a single axis between Pulse and Phase output
+    // modes. The spec sequence (§6.5) requires four ordered side-effects
+    // before the mode-swap is published:
+    //
+    //   1. Motion-active gate. The flip is only legal between segments
+    //      because the sample ISR's per-axis state assumes one mode for
+    //      the lifetime of an active Bezier piece. A non-`None`
+    //      `axis.piece` is the runtime's "segment is in flight" signal.
+    //   2. Per-axis step-queue flush. The ISR-side StepQueue feeds the
+    //      Pulse-path per-axis timer (Task 7) and is meaningless under
+    //      Phase mode; flushing it on every flip prevents stale entries
+    //      from firing once we switch back.
+    //   3. SPI queue flush (Task 14). Stubbed here as a no-op; the
+    //      placeholder marks the spec step so the Task-14 patch can
+    //      hook in without re-locating the call site.
+    //   4. Counter resync on `Pulse → Phase`. The Phase ISR consumes
+    //      `last_phase_target` deltas; if we enter Phase mode without
+    //      seeding it from `last_step_count + phase_offset`, the first
+    //      Phase tick computes a multi-microstep delta and slams the
+    //      coil-current target which the TMC5160 cannot track.
+    //
+    // Finally the mode atomic is published with `Release` ordering — the
+    // ISR's `Acquire` load synchronises against the queue resets and
+    // counter-resync stores above.
+    //
+    // `set_stepper_offset` adds `delta_microsteps` to a single stepper's
+    // `phase_offset_target`. The TIM5 ramp helper (Task 13) walks
+    // `phase_offset_microsteps` toward this target at no more than
+    // `max_microsteps_per_sample` per sample. Task 12 only owns parameter
+    // validation + target publish; Task 13 owns the ramp itself, so the
+    // ramp-rate argument is validated and stashed on `SharedState` for the
+    // ramp helper to read. Invalid arguments latch
+    // `FaultCode::JogParametersInvalid` so the host sees the rejection.
+    //
+    // Return convention: `0` = success; `-1` = bad argument; `-2` =
+    // `set_axis_mode` rejected because a segment is in flight. The C
+    // handler treats any non-zero return as a shutdown trigger.
+    pub fn set_axis_mode(&mut self, axis_idx: u8, new_mode_byte: u8) -> i32 {
+        const ERR_MOTION_IN_PROGRESS: i32 = -2;
+        const KALICO_OK: i32 = 0;
+
+        if (axis_idx as usize) >= crate::stepping_state::N_AXES {
+            return -1;
+        }
+        let new_mode = match new_mode_byte {
+            0 => crate::stepping_state::StepMode::Pulse,
+            1 => crate::stepping_state::StepMode::Phase,
+            _ => return -1,
+        };
+
+        // Step 1: motion-active gate. Any axis with an active piece means
+        // the engine is mid-segment; reject the flip rather than tear
+        // state out from under the ISR.
+        let motion_active = self.stepping_axes.iter().any(|a| a.piece.is_some());
+        if motion_active {
+            return ERR_MOTION_IN_PROGRESS;
+        }
+
+        // Step 2: flush per-axis step queue. The C-declared `step_queues`
+        // symbol owns the storage (one queue per axis, ring-buffer with
+        // `head == tail` indicating empty). Reset both counters to zero
+        // with volatile stores — the matching ISR-side reads also use
+        // volatile, so the ordering relative to the mode-publish below is
+        // sufficient without an explicit fence.
+        #[cfg(not(any(test, feature = "host")))]
+        {
+            use crate::step_queue::{step_queues, StepQueue};
+            // SAFETY: `step_queues` is a C-owned static of size
+            // `N_AXIS_STEP_QUEUES` (asserted at compile time to be ≥
+            // `N_AXES`); `axis_idx < N_AXES` was verified above so the
+            // pointer arithmetic stays in-bounds. The volatile writes are
+            // race-safe against the ISR's volatile reads — both sides
+            // share the same ordering model that the ring uses normally.
+            unsafe {
+                let q = step_queues
+                    .get()
+                    .cast::<StepQueue>()
+                    .add(axis_idx as usize);
+                core::ptr::write_volatile(&mut (*q).head, 0);
+                core::ptr::write_volatile(&mut (*q).tail, 0);
+            }
+        }
+
+        // Step 3: SPI queue flush — Task 14 wires the actual reset.
+        // Intentional no-op here so the spec sequence is preserved at
+        // this call site.
+
+        // Step 4: counter resync. Only `Pulse → Phase` needs it; the
+        // Phase tick maintains `last_step_count` on the Pulse-bound
+        // `axis.last_step_count` field as a side-effect, so going the
+        // other direction is already in sync.
+        let axis = &mut self.stepping_axes[axis_idx as usize];
+        match new_mode {
+            crate::stepping_state::StepMode::Phase => {
+                use core::sync::atomic::Ordering;
+                for stepper in &axis.steppers {
+                    let offset = stepper.phase_offset_microsteps.load(Ordering::Acquire);
+                    let target = axis.last_step_count.wrapping_add(offset);
+                    stepper.last_phase_target.store(target, Ordering::Release);
+                }
+            }
+            crate::stepping_state::StepMode::Pulse => {
+                // `last_step_count` stays valid — Phase samples maintain it.
+            }
+        }
+
+        // Step 5: publish the new mode atomically.
+        axis.mode
+            .store(new_mode as u8, core::sync::atomic::Ordering::Release);
+        KALICO_OK
+    }
+
+    /// Apply an additive target-phase offset to a single stepper.
+    ///
+    /// `stepper_idx` is the global index across all configured axes (sum
+    /// of `axis.steppers.len()` for each axis in `0..N_AXES`).
+    /// `delta_microsteps` is added to `phase_offset_target` so callers can
+    /// chain incremental nudges without first reading the current target.
+    /// `max_microsteps_per_sample` bounds the ramp rate the Task-13 helper
+    /// applies; validated `1..=256` so a runaway value can't slam the
+    /// coils between samples.
+    ///
+    /// `shared` is the runtime's [`SharedState`]; the method uses it only
+    /// on rejection paths to latch `FaultCode::JogParametersInvalid`. The
+    /// FFI projects it from `RuntimeContext::shared` (same pattern as the
+    /// existing `kalico_runtime_set_step_mode` entry point).
+    pub fn set_stepper_offset(
+        &mut self,
+        shared: &SharedState,
+        stepper_idx: u8,
+        delta_microsteps: i32,
+        max_microsteps_per_sample: u16,
+    ) -> i32 {
+        use core::sync::atomic::Ordering;
+
+        // Zero-delta is a no-op; reject only on truly invalid parameters
+        // so callers can issue repeated `set_stepper_offset` commands
+        // without first reading state to detect "nothing to do."
+        if delta_microsteps == 0 {
+            return 0;
+        }
+        if max_microsteps_per_sample == 0 || max_microsteps_per_sample > 256 {
+            crate::fault_helpers::raise_jog_parameters_invalid(shared);
+            return -1;
+        }
+
+        // Walk axes accumulating per-axis stepper counts until we hit the
+        // requested global index. `stepping_axes.iter_mut()` so the
+        // borrow-checker permits the `let stepper = &axis.steppers[..]`
+        // projection without a re-borrow gymnastic.
+        let mut remaining = stepper_idx as usize;
+        for axis in &mut self.stepping_axes {
+            if remaining < axis.steppers.len() {
+                let stepper = &axis.steppers[remaining];
+                let new_target = stepper
+                    .phase_offset_target
+                    .load(Ordering::Acquire)
+                    .wrapping_add(delta_microsteps);
+                stepper
+                    .phase_offset_target
+                    .store(new_target, Ordering::Release);
+                // Task 13 owns the ramp itself; for Task 12 the only
+                // contract is that `max_microsteps_per_sample` is in
+                // range. Stash on `SharedState` so the ramp helper has
+                // a single source of truth.
+                shared
+                    .max_phase_offset_ramp_per_sample
+                    .store(max_microsteps_per_sample, Ordering::Release);
+                return 0;
+            }
+            remaining -= axis.steppers.len();
+        }
+        // Out of range across every configured axis.
+        crate::fault_helpers::raise_jog_parameters_invalid(shared);
+        -1
+    }
 }
 
 // Engine::Default impl for tests where slot types implement Default.

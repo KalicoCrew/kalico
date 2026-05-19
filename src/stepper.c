@@ -362,6 +362,63 @@ DECL_COMMAND(command_kalico_configure_pressure_advance,
              "kalico_configure_pressure_advance advance_accel=%u"
              " advance_decel=%u");
 
+// === Task 12: stepping-redesign axis-mode + stepper-offset handlers ===
+//
+// `kalico_set_axis_mode` flips one logical axis between Pulse-step and
+// Phase-step output modes. Rejected by Rust (non-zero return) if any axis
+// has an active Bezier piece (must be issued between segments) or if the
+// axis index / mode byte is out of range. Spec sequence (engine-side):
+// motion-active gate → flush per-axis step queue → SPI flush (Task 14
+// stub) → resync `last_phase_target` on Pulse→Phase → atomic mode publish.
+//
+// `kalico_set_stepper_offset` adds a target-phase nudge to a single
+// stepper's `phase_offset_target`. The Task-13 TIM5 ramp helper walks
+// `phase_offset_microsteps` toward the target at most
+// `max_microsteps_per_sample` microsteps per sample. Rust latches
+// `JogParametersInvalid` on bad arguments before returning non-zero.
+//
+// Both commands shutdown the MCU on non-zero return — these are
+// configuration-class operations, so a host that issues them with bad
+// arguments is a hard misconfiguration rather than a recoverable runtime
+// condition.
+
+extern int32_t kalico_runtime_set_axis_mode(
+    void *handle, uint8_t axis_idx, uint8_t new_mode);
+extern int32_t kalico_runtime_set_stepper_offset(
+    void *handle, uint8_t stepper_idx, int32_t delta_microsteps,
+    uint16_t max_microsteps_per_sample);
+
+void
+command_kalico_set_axis_mode(uint32_t *args)
+{
+    if (!runtime_handle)
+        shutdown("kalico_set_axis_mode before runtime init");
+    uint8_t axis_idx = args[0];
+    uint8_t mode = args[1];
+    int32_t rc = kalico_runtime_set_axis_mode(runtime_handle, axis_idx, mode);
+    if (rc != 0)
+        shutdown("kalico_set_axis_mode rejected (motion in progress or bad arg)");
+}
+DECL_COMMAND(command_kalico_set_axis_mode,
+             "kalico_set_axis_mode axis_idx=%c mode=%c");
+
+void
+command_kalico_set_stepper_offset(uint32_t *args)
+{
+    if (!runtime_handle)
+        shutdown("kalico_set_stepper_offset before runtime init");
+    uint8_t stepper_idx = args[0];
+    int32_t delta = (int32_t)args[1];
+    uint16_t max_per_sample = args[2];
+    int32_t rc = kalico_runtime_set_stepper_offset(
+        runtime_handle, stepper_idx, delta, max_per_sample);
+    if (rc != 0)
+        shutdown("kalico_set_stepper_offset rejected (bad parameters)");
+}
+DECL_COMMAND(command_kalico_set_stepper_offset,
+             "kalico_set_stepper_offset stepper_idx=%c delta_microsteps=%i"
+             " max_microsteps_per_sample=%hu");
+
 // Called from the TIM5 ISR (priority 3 on H7) after `runtime_handle_tick`
 // produces this tick's step delta. Emits |n_steps| edges on every stepper
 // bound to this motor index (primary + AWD partners — e.g. Voron 2.4-style

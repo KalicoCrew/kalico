@@ -3647,6 +3647,81 @@ pub mod exports {
         }
     }
 
+    /// Stepping-redesign Task 12. Flip a logical axis between `Pulse` and
+    /// `Phase` output modes. `axis_idx` is `0..N_AXES` (X=0, Y=1, Z=2,
+    /// E=3); `new_mode` is `0` for Pulse, `1` for Phase. Rejected (returns
+    /// `-2`) if any axis currently has an active Bezier piece — the flip
+    /// must happen between segments. Other validation failures return
+    /// `-1`. On success, the engine flushes the per-axis step queue,
+    /// resyncs the Phase-side `last_phase_target` counters when entering
+    /// Phase mode, and publishes the new mode atomically. See
+    /// `Engine::set_axis_mode` for the full spec-step sequence.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_set_axis_mode(
+        rt: *mut KalicoRuntime,
+        axis_idx: u8,
+        new_mode: u8,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: see `kalico_runtime_configure_axis` SAFETY note. The
+        // command dispatcher is single-threaded and serialised against
+        // the modulated tick — projecting `&mut IsrState` here is sound
+        // under that precondition (foreground-only entry point, never
+        // re-entered from the TIM5 ISR).
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.set_axis_mode(axis_idx, new_mode)
+        }
+    }
+
+    /// Stepping-redesign Task 12. Add `delta_microsteps` to a single
+    /// physical stepper's `phase_offset_target`. The Task-13 TIM5 ramp
+    /// helper walks `phase_offset_microsteps` toward this target at no
+    /// more than `max_microsteps_per_sample` microsteps per sample.
+    /// `stepper_idx` is the global stepper index across all configured
+    /// axes (sum of per-axis stepper counts in axis order). Validated
+    /// `max_microsteps_per_sample ∈ 1..=256`; an invalid argument latches
+    /// `FaultCode::JogParametersInvalid` and returns `-1`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_set_stepper_offset(
+        rt: *mut KalicoRuntime,
+        stepper_idx: u8,
+        delta_microsteps: i32,
+        max_microsteps_per_sample: u16,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: see `kalico_runtime_configure_axis` SAFETY note. The
+        // `&SharedState` borrow uses `addr_of!` (no `&mut` ever formed —
+        // SharedState is atomics-only) and is independent of the
+        // `&mut IsrState` projection.
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let shared_ptr: *const SharedState =
+                core::ptr::addr_of!((*ctx).shared);
+            let shared: &SharedState = &*shared_ptr;
+            (*isr_ptr).engine.set_stepper_offset(
+                shared,
+                stepper_idx,
+                delta_microsteps,
+                max_microsteps_per_sample,
+            )
+        }
+    }
+
     /// Returns 1 if motor `stepper_idx` is configured (has step_distance > 0
     /// in its `ProducerState`), 0 otherwise. Used by C-side
     /// `init_step_time_timers` to avoid enabling consumer Klipper timers

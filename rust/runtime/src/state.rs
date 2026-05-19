@@ -479,6 +479,17 @@ pub struct SharedState {
     // then, 0 means "always reschedule for next sample without floor."
     pub dispatcher_floor_cycles: AtomicU32,
     pub sample_period_cycles: AtomicU32,
+
+    // Stepping-redesign Task 12: ramp rate for `set_stepper_offset`.
+    //
+    // Published by the foreground command handler; consumed by the Task-13
+    // ramp helper that walks `phase_offset_microsteps` toward
+    // `phase_offset_target` at most `max_phase_offset_ramp_per_sample`
+    // microsteps per sample. Validated `1..=256` at the command boundary.
+    // `0` means "Task-13 helper not configured yet" — the helper treats
+    // that as a hard skip (no ramp happens) so an unconfigured runtime
+    // can't run away with a stale target.
+    pub max_phase_offset_ramp_per_sample: AtomicU16,
 }
 
 impl SharedState {
@@ -638,6 +649,11 @@ impl SharedState {
             // (no floor, immediate-resample empty-queue wake).
             dispatcher_floor_cycles: AtomicU32::new(0),
             sample_period_cycles: AtomicU32::new(0),
+
+            // Task 12 ramp rate. `0` is "unconfigured"; Task 13's ramp
+            // helper does nothing until a `set_stepper_offset` command
+            // has validated and published a value in `1..=256`.
+            max_phase_offset_ramp_per_sample: AtomicU16::new(0),
         }
     }
 }
