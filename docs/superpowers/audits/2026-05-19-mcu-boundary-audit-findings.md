@@ -160,13 +160,16 @@ Both options preserve the user-visible behavior; option 2 is simpler if the diag
 
 ### A8.1 — `runtime_irq_save` / `runtime_irq_restore`
 
-**Discovery command:** `rg -n 'runtime_irq_save\|runtime_irq_restore' rust/ src/`
+**Discovery command:** `grep -rn 'runtime_irq_save\|runtime_irq_restore' rust/ src/`
 
-**Result:** TBD — fill in during audit run.
+**Result (2026-05-19):** The functions ARE used:
+- `rust/runtime/src/stream.rs:84` — `use crate::state::{runtime_irq_restore, runtime_irq_save};`
+- `rust/runtime/src/stream.rs:346-348` — `let irq_flags = unsafe { runtime_irq_save() };` and the matching restore further down. This is the Phase 7 §8.5 force_idle handshake path.
+- Three test files (`flush_basic.rs`, `flush_drains_queue.rs`, `stream_lifecycle.rs`) define stub implementations (`pub extern "C" fn runtime_irq_save() -> u32 { 0 }`).
 
-**Decision:** If unused, delete the declarations from `rust/runtime/src/state.rs:103-106`. If still used (Phase 7 §8.5 flush path), remove the `dead_code` allow attribute.
+**Decision:** **Remove the `#[allow(dead_code)]` attribute** at `state.rs:102` — the functions are not dead, the `allow` was stale. The `extern "C"` block stays.
 
-Lands in Task 20.
+**Action:** Landed in this commit. Cleaner: future readers see the actual liveness without the misleading `dead_code` allow.
 
 ### A8.2 — Other dead-code candidates
 
