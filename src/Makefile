@@ -4,7 +4,7 @@ src-y += sched.c command.c basecmd.c debugcmds.c
 # Kalico-native transport — stream-level demuxer + Layer 4 dispatcher.
 # Spec: docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md.
 src-$(CONFIG_KALICO_RUNTIME) += kalico_demux.c kalico_dispatch.c \
-    kalico_segment_queue.c
+    kalico_segment_queue.c runtime_storage.c runtime_panic.c
 src-y += runtime_tick_weak.c
 src-$(CONFIG_RUNTIME_BENCH) += generic/runtime_bench.c
 src-$(CONFIG_HAVE_GPIO) += initial_pins.c gpiocmds.c stepper.c endstop.c \
@@ -80,6 +80,7 @@ rust/target/thumbv7em-none-eabi/release/libkalico_c_api.a: FORCE
 		KALICO_RUNTIME_MAX_KNOT_VECTOR_LEN=$(CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN) \
 		KALICO_RUNTIME_MAX_DEGREE=$(CONFIG_RUNTIME_MAX_DEGREE) \
 		KALICO_RUNTIME_CURVE_POOL_N=$(CONFIG_RUNTIME_CURVE_POOL_N) \
+		KALICO_RUNTIME_STORAGE_SIZE=$(if $(filter y,$(CONFIG_RUNTIME_TARGET_LARGE)),$(CONFIG_RUNTIME_STORAGE_SIZE_LARGE),$(CONFIG_RUNTIME_STORAGE_SIZE_SMALL)) \
 		cargo build -p kalico-c-api \
 		--no-default-features \
 		--features $(KALICO_RUST_FEATURES) \

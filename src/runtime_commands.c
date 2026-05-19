@@ -222,6 +222,37 @@ command_runtime_configure_axes(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_configure_axes, "runtime_configure_axes kinematics=%c");
 
+// ---- Seed position: SET_KINEMATIC_POSITION → MCU engine origin fix --------
+//
+// When klippy issues SET_KINEMATIC_POSITION the host-side ShaperState is
+// re-anchored but the MCU engine's prev_x/y/z stay at their boot values
+// (0.0). The first segment after the anchor change carries the correct
+// endpoint but the engine's delta = (endpoint - 0) instead of
+// (endpoint - anchor), blowing past MAX_STEPS_PER_TICK_DEFAULT (65 536)
+// and raising FaultCode::StepBurstExceeded (65515).
+//
+// This command seeds the MCU engine's position origin so its
+// prev_x/y/z match the host's commanded position before the first
+// segment arrives.
+//
+// Positions are Q16.16 fixed-point (i32 = mm * 65536). Decoded to f32
+// in the Rust FFI. No response is sent — this is fire-and-forget;
+// the following PushSegment provides the real sequencing guarantee.
+// kalico_runtime_seed_position is declared in kalico_runtime.h (included above).
+
+void
+command_runtime_seed_position(uint32_t *args)
+{
+    int32_t x_q16 = (int32_t)args[0];
+    int32_t y_q16 = (int32_t)args[1];
+    int32_t z_q16 = (int32_t)args[2];
+    if (!runtime_handle)
+        return;
+    (void)kalico_runtime_seed_position(runtime_handle, x_q16, y_q16, z_q16);
+}
+DECL_COMMAND(command_runtime_seed_position,
+    "runtime_seed_position x_q16=%i y_q16=%i z_q16=%i");
+
 // ---- Step-6 §8.3 stream lifecycle commands ----------------------------
 // Phase 3.2 declares the wire surface; Phase 6 wires the actual state-
 // machine transitions in `runtime::stream`. The FFIs return -140

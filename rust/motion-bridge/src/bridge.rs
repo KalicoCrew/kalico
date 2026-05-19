@@ -2430,6 +2430,61 @@ impl PyMotionBridge {
                 .kalico_stream_open([x, y, z, 0.0])
                 .map_err(planner_err)?;
         }
+
+        // Seed the MCU engine's prev_x/y/z so the first segment after
+        // SET_KINEMATIC_POSITION computes its delta against the correct
+        // origin rather than the boot-time (0, 0, 0). Without this the
+        // delta for a move starting at e.g. Y=100 is computed as
+        // (Y_end - 0) instead of (Y_end - 100), which exceeds
+        // MAX_STEPS_PER_TICK_DEFAULT and raises FaultCode::StepBurstExceeded.
+        //
+        // Q16.16 fixed-point encoding: i32 = round(mm * 65536), clamped to
+        // i32 bounds. The Klipper command compiler treats %i as a signed int.
+        // send_typed is fire-and-forget — no response is awaited; ordering
+        // is guaranteed by the PushSegment that follows.
+        let encode_q16 = |mm: f64| -> i32 {
+            let raw = mm * 65536.0;
+            raw.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
+        };
+        let x_q16 = encode_q16(x);
+        let y_q16 = encode_q16(y);
+        let z_q16 = encode_q16(z);
+
+        // Collect the set of MCU ids that have been configured for motion.
+        // mcu_axis_configs is the authoritative list of kalico-runtime MCUs.
+        let mcu_ids: Vec<u32> = {
+            self.mcu_axis_configs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .map(|c| c.mcu_id)
+                .collect()
+        };
+
+        for mcu_id in mcu_ids {
+            let io = {
+                let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+                let Some(conn) = mcus.get(&mcu_id) else { continue };
+                if !conn.kalico_native_supported {
+                    continue;
+                }
+                let Some(io) = conn.host_io.as_ref() else { continue };
+                io.clone()
+            };
+            use kalico_host_rt::host_io::parser::FieldValue;
+            // Ignore send errors — if the channel is closed the next
+            // PushSegment will surface the failure through the normal
+            // credit / fault path.
+            let _ = io.send_typed(
+                "runtime_seed_position",
+                &[
+                    ("x_q16", FieldValue::I32(x_q16)),
+                    ("y_q16", FieldValue::I32(y_q16)),
+                    ("z_q16", FieldValue::I32(z_q16)),
+                ],
+            );
+        }
+
         Ok(())
     }
 

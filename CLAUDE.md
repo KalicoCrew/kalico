@@ -34,6 +34,7 @@ We are working on a complete rewrite of the motion planner and more:
 
 - **Target hardware + nice-to-haves:** [`docs/kalico-rewrite/hardware.md`](docs/kalico-rewrite/hardware.md)
 - **Layered dependency graph + completed-step detail + critical-path observations:** [`docs/kalico-rewrite/dependency-graph.md`](docs/kalico-rewrite/dependency-graph.md). Read this when reasoning about cross-layer impact, picking up a layer for the first time, or when a step's historical detail matters.
+- **MCU C/Rust boundary — architectural invariant:** [`docs/kalico-rewrite/mcu-c-rust-boundary.md`](docs/kalico-rewrite/mcu-c-rust-boundary.md). Read this before adding shared state between C and Rust on the MCU, or before reaching for `#[link_section]` on a Rust static. Rules: C owns boot, safety-critical paths, and all shared-memory placement; Rust owns the motion engine; the seam is `extern "C"` + `#[repr(C)]` only.
 
 # Build order (current status)
 

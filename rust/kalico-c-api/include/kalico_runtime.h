@@ -418,6 +418,28 @@ int32_t kalico_runtime_configure_axes_blob(struct KalicoRuntime *rt,
                                            uint32_t blob_len);
 
 /**
+ * Seed the engine's `prev_x/y/z` position origin and `StepMotorState`
+ * accumulators so the first segment after `SET_KINEMATIC_POSITION`
+ * computes its delta against the correct origin rather than `(0, 0, 0)`.
+ *
+ * Called by the C `DECL_COMMAND` handler for `runtime_seed_position`
+ * immediately before the host sends the first `PushSegment` of the
+ * new stream. Fire-and-forget from the host side; no response is
+ * required because the following `PushSegment` provides ordering.
+ *
+ * `x_q16`, `y_q16`, `z_q16` are Q16.16 fixed-point mm values
+ * (`i32 = mm * 65536`). Decoded to `f32` here; the precision loss
+ * (≈ 15 µm at 1 m) is negligible relative to the step-size floor.
+ *
+ * Foreground-only. Projects `&mut IsrState` under the same
+ * single-threaded-foreground precondition as `configure_axes_blob`.
+ */
+int32_t kalico_runtime_seed_position(struct KalicoRuntime *rt,
+                                     int32_t x_q16,
+                                     int32_t y_q16,
+                                     int32_t z_q16);
+
+/**
  * Phase 11 Task 11.2 foreground reclaim drain pipeline. Drains up to
  * `limit` trace samples from the ring, calls `pool.confirm_retired`
  * for each `SEGMENT_END` observed, and returns a 32-bit packed

@@ -103,7 +103,6 @@ pub type EngineImpl = Engine<NoopPa, NoopIs>;
 // bodies get inlined at every Klipper callsite) — leaving the kalico
 // staticlib's references unresolvable at the final link. The wrappers are
 // marked `used + externally_visible` on the C side so LTO keeps them.
-#[allow(dead_code)]
 unsafe extern "C" {
     pub fn runtime_irq_save() -> u32;
     pub fn runtime_irq_restore(flags: u32);
