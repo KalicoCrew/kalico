@@ -181,27 +181,11 @@ console_task(void)
     // Drive the kalico-native demuxer over the freshly-read bytes,
     // dispatching klipper and kalico frames as they surface. State
     // persists across console_task firings for partial frames.
-#if CONFIG_KALICO_RUNTIME
     if (ret > 0)
         kalico_demux_pump(&receive_buf[receive_pos], (uint16_t)ret);
     // Linux receive_buf is task-only; the demuxer fully consumes the
     // bytes it was handed.
     receive_pos = 0;
-#else
-    if (ret > 0)
-        receive_pos += ret;
-    while (receive_pos > 0) {
-        uint_fast8_t pop_count;
-        uint_fast8_t msglen = receive_pos > MESSAGE_MAX ? MESSAGE_MAX : receive_pos;
-        int_fast8_t r = command_find_and_dispatch(receive_buf, msglen, &pop_count);
-        if (!r)
-            break;
-        int needcopy = receive_pos - pop_count;
-        if (needcopy)
-            memmove(receive_buf, &receive_buf[pop_count], needcopy);
-        receive_pos = needcopy;
-    }
-#endif
 }
 DECL_TASK(console_task);
 

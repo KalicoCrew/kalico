@@ -23,7 +23,6 @@
 #include "sched.h"     // sched_shutdown prototype (referenced by the macro)
 #include "compiler.h"  // __noreturn
 
-#if CONFIG_KALICO_RUNTIME
 
 __attribute__((used, externally_visible))
 void __noreturn
@@ -32,4 +31,3 @@ rust_panic_latch(void)
     shutdown("Rust panic");
 }
 
-#endif // CONFIG_KALICO_RUNTIME

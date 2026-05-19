@@ -55,11 +55,7 @@ sim_uart_lookup_fd(uint8_t oid) {
     // TMC2209 (also oid=0) talk to distinct emulators. The orchestrator
     // binds matching paths in conftest.py before klippy attaches.
     char path[64];
-#if CONFIG_KALICO_RUNTIME
     const char *flavor = "h7";
-#else
-    const char *flavor = "f4";
-#endif
     snprintf(path, sizeof(path), "/tmp/klipper_sim_%s_chip_uart%u",
              flavor, (unsigned)oid);
     sim_tmcuart_register_route(oid, path);

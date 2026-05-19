@@ -382,24 +382,12 @@ config HAVE_LIMITED_CODE_SIZE
 config HAVE_SOFTWARE_DIVIDE_REQUIRED
     bool
 
-config KALICO_RUNTIME
-    bool "Enable kalico Rust runtime (Layer 4 motion planner)"
-    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_LINUX
-    default n
-    help
-      Links libkalico_c_api.a (Rust staticlib) and enables the
-      40 kHz trajectory-evaluation tick. Production targets are
-      STM32H7 (TIM5 ISR; large profile, RT_CELL in AXI SRAM) and
-      STM32F4 (TIM5 ISR; small profile, RT_CELL in main SRAM).
-      MACH_LINUX builds a host-process simulator (pthread tick)
-      for klippy-in-loop testing.
-
 choice
     prompt "Runtime sizing profile"
     default RUNTIME_TARGET_LARGE if MACH_STM32H7
     default RUNTIME_TARGET_SMALL if MACH_STM32F4
     default RUNTIME_TARGET_LARGE
-    depends on KALICO_RUNTIME
+    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_LINUX
     help
       Selects per-MCU runtime sizing presets. `large` is the H7-class
       profile that places the curve pool in AXI SRAM. `small` is the
@@ -422,7 +410,6 @@ config RUNTIME_MAX_CONTROL_POINTS
     default 512 if RUNTIME_TARGET_SMALL
     default 512
     range 16 4096
-    depends on KALICO_RUNTIME
 
 config RUNTIME_MAX_KNOT_VECTOR_LEN
     int "Max knot-vector length per curve slot"
@@ -430,7 +417,6 @@ config RUNTIME_MAX_KNOT_VECTOR_LEN
     default 524 if RUNTIME_TARGET_SMALL
     default 524
     range 27 4108
-    depends on KALICO_RUNTIME
     help
       Must satisfy: RUNTIME_MAX_KNOT_VECTOR_LEN >= RUNTIME_MAX_CONTROL_POINTS
       + RUNTIME_MAX_DEGREE + 1. The Rust runtime asserts this at compile
@@ -440,7 +426,6 @@ config RUNTIME_MAX_DEGREE
     int "Max polynomial degree"
     default 10
     range 1 16
-    depends on KALICO_RUNTIME
 
 config RUNTIME_CURVE_POOL_N
     int "Curve-pool slot count (planner look-ahead depth)"
@@ -448,13 +433,11 @@ config RUNTIME_CURVE_POOL_N
     default 4 if RUNTIME_TARGET_SMALL
     default 4
     range 1 64
-    depends on KALICO_RUNTIME
 
 config RUNTIME_STORAGE_SIZE_LARGE
     int "rt_storage byte ceiling (large profile, H7)"
     default 307200
     range 65536 524288
-    depends on KALICO_RUNTIME
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
       replaces RT_CELL's Rust-side #[link_section] placement). Default
@@ -471,7 +454,6 @@ config RUNTIME_STORAGE_SIZE_SMALL
     int "rt_storage byte ceiling (small profile, F4)"
     default 106496
     range 32768 131072
-    depends on KALICO_RUNTIME
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
       replaces RT_CELL's Rust-side #[link_section] placement). Default
@@ -516,7 +498,7 @@ config KALICO_SIM_TMCUART_BYPASS
 
 config RUNTIME_BENCH
     bool "Cycle-count benchmark for runtime tick"
-    depends on KALICO_RUNTIME && MACH_STM32H7
+    depends on MACH_STM32H7
     default y if MACH_STM32H7
     help
       Captures per-tick cycle counts for performance regression tracking.

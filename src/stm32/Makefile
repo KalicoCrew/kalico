@@ -32,9 +32,7 @@ CFLAGS-$(CONFIG_MACH_STM32L4) += -mcpu=cortex-m4 -Ilib/stm32l4/include
 CFLAGS-$(CONFIG_MACH_AT32F403) = -mcpu=cortex-m4 -Ilib/stm32f1/include
 CFLAGS += $(CFLAGS-y) -D$(MCU_UPPER) -mthumb -Ilib/cmsis-core -Ilib/fast-hash
 
-ifeq ($(CONFIG_KALICO_RUNTIME),y)
 CFLAGS += -Irust/kalico-c-api/include
-endif
 
 CFLAGS_klipper.elf += -nostdlib -lgcc -lc_nano
 CFLAGS_klipper.elf += -T $(OUT)src/generic/armcm_link.ld
@@ -50,12 +48,10 @@ $(OUT)klipper.elf: $(OUT)src/generic/armcm_link.ld
 # reference C symbols (e.g. `timer_read_time`, `stats_send_time`) that GNU ld
 # has already passed in its single forward sweep. The grouped pair forces ld
 # to iterate archives until cross-references settle. Matches src/linux/Makefile.
-ifeq ($(CONFIG_KALICO_RUNTIME),y)
 # KALICO_LIB is set by src/Makefile based on the active MCU (target-h7 vs
 # target-f4 cargo target dir); see comments there.
 CFLAGS_klipper.elf := -Wl,--start-group $(KALICO_LIB) -Wl,--end-group $(CFLAGS_klipper.elf)
 $(OUT)klipper.elf: $(KALICO_LIB)
-endif
 
 # Add source files
 src-y += stm32/watchdog.c stm32/clockline.c stm32/dfu_reboot.c
@@ -65,15 +61,13 @@ src-y += generic/fault_handler.c
 src-y += generic/mpu_protect.c
 
 # Kalico runtime glue. Per-family TIM5 backend selected by CONFIG_MACH_STM32*.
-ifeq ($(CONFIG_KALICO_RUNTIME),y)
 src-$(CONFIG_MACH_STM32H7) += stm32/runtime_tick_h7.c
 src-$(CONFIG_MACH_STM32F4) += stm32/runtime_tick_f4.c
-endif
-src-$(CONFIG_KALICO_RUNTIME) += runtime_tick.c
-src-$(CONFIG_KALICO_RUNTIME) += runtime_commands.c
+src-y += runtime_tick.c
+src-y += runtime_commands.c
 # Phase-stepping XDIRECT SPI helper (Step 7-D / phase-stepping sim slice).
 # Called from the Rust modulator via FFI; see src/stm32/phase_stepping_spi.h.
-src-$(CONFIG_KALICO_RUNTIME) += stm32/phase_stepping_spi.c
+src-y += stm32/phase_stepping_spi.c
 # Sim-only: software CYCCNT under CONFIG_KALICO_SIM. Per Step-6 spec §3.1.
 src-$(CONFIG_KALICO_SIM) += stm32/kalico_sim_clock.c
 # Note: runtime_sim_commands.c was retired in 085b4b16f (feat(build): drop

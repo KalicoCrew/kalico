@@ -252,7 +252,7 @@ armcm_main(void)
     SystemInit();
     SCB->VTOR = (uint32_t)VectorTable;
 
-#if CONFIG_KALICO_RUNTIME && __FPU_PRESENT == 1
+#if __FPU_PRESENT == 1
     // Enable the FPU (CP10/CP11 = Full Access). SystemInit() only does this
     // when __FPU_USED == 1, which is gated on -mfloat-abi=hard|softfp at
     // build time — Klipper compiles -mfloat-abi=soft so SystemInit skips it.

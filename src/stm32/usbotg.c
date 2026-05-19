@@ -171,17 +171,13 @@ fifo_read_packet(uint8_t *dest, uint_fast8_t max_len)
 static void
 enable_rx_endpoint(uint32_t ep)
 {
-#if CONFIG_KALICO_RUNTIME
     extern volatile uint32_t *diag_slot_enable_rx(void);
     extern volatile uint32_t *diag_slot_enable_rx_rearm(void);
     (*diag_slot_enable_rx())++;
-#endif
     USB_OTG_OUTEndpointTypeDef *epo = EPOUT(ep);
     uint32_t ctl = epo->DOEPCTL;
     if (!(ctl & USB_OTG_DOEPCTL_EPENA) || ctl & USB_OTG_DOEPCTL_NAKSTS) {
-#if CONFIG_KALICO_RUNTIME
         (*diag_slot_enable_rx_rearm())++;
-#endif
         epo->DOEPTSIZ = 64 | (1 << USB_OTG_DOEPTSIZ_PKTCNT_Pos);
         epo->DOEPCTL = ctl | USB_OTG_DOEPCTL_EPENA | USB_OTG_DOEPCTL_CNAK;
     }
@@ -229,18 +225,14 @@ usb_read_bulk_out(void *data, uint_fast8_t max_len)
     uint32_t grx = peek_rx_queue(USB_CDC_EP_BULK_OUT);
     if (!grx) {
         // Wait for packet
-#if CONFIG_KALICO_RUNTIME
         extern volatile uint32_t *diag_slot_peek_empty(void);
         (*diag_slot_peek_empty())++;
-#endif
         OTG->GINTMSK |= USB_OTG_GINTMSK_RXFLVLM;
         usb_irq_enable();
         return -1;
     }
-#if CONFIG_KALICO_RUNTIME
     extern volatile uint32_t *diag_slot_peek_data(void);
     (*diag_slot_peek_data())++;
-#endif
     int_fast8_t ret = fifo_read_packet(data, max_len);
     enable_rx_endpoint(USB_CDC_EP_BULK_OUT);
     usb_irq_enable();
@@ -424,7 +416,6 @@ usb_set_configure(void)
 void
 OTG_FS_IRQHandler(void)
 {
-#if CONFIG_KALICO_RUNTIME
     // Diag accounting — DWT is enabled by runtime_tick_h7.c::runtime_tick_init
     // (and the F4 equivalent). DWT->CYCCNT is free-running once enabled, so
     // a simple read at entry/exit is sufficient. The handler runs at NVIC
@@ -432,21 +423,16 @@ OTG_FS_IRQHandler(void)
     // by other sources we instrument.
     extern void diag_otg_account(uint32_t enter, uint32_t exit);
     uint32_t diag_enter = DWT->CYCCNT;
-#endif
 
     uint32_t sts = OTG->GINTSTS;
-#if CONFIG_KALICO_RUNTIME
     extern volatile uint32_t *diag_slot_otg_rxflvl(void);
     extern volatile uint32_t *diag_slot_otg_iepint(void);
     extern volatile uint32_t *diag_slot_otg_other(void);
     extern volatile uint32_t *diag_slot_otg_other_sts(void);
     uint32_t diag_handled = 0;
-#endif
     if (sts & USB_OTG_GINTSTS_RXFLVL) {
-#if CONFIG_KALICO_RUNTIME
         (*diag_slot_otg_rxflvl())++;
         diag_handled = 1;
-#endif
         // Received data - disable irq and notify endpoint
         OTG->GINTMSK &= ~USB_OTG_GINTMSK_RXFLVLM;
         uint32_t grx = OTG->GRXSTSR, ep = grx & USB_OTG_GRXSTSP_EPNUM_Msk;
@@ -456,10 +442,8 @@ OTG_FS_IRQHandler(void)
             usb_notify_bulk_out();
     }
     if (sts & USB_OTG_GINTSTS_IEPINT) {
-#if CONFIG_KALICO_RUNTIME
         (*diag_slot_otg_iepint())++;
         diag_handled = 1;
-#endif
         // Can transmit data - disable irq and notify endpoint
         uint32_t daint = OTGD->DAINT, msk = OTGD->DAINTMSK, pend = daint & msk;
         OTGD->DAINTMSK = msk & ~daint;
@@ -468,7 +452,6 @@ OTG_FS_IRQHandler(void)
         if (pend & (1 << USB_CDC_EP_BULK_IN))
             usb_notify_bulk_in();
     }
-#if CONFIG_KALICO_RUNTIME
     if (!diag_handled) {
         // OTG IRQ fired but neither RXFLVL nor IEPINT was set. Could be
         // SOF, USBSUSP, USBRST, or a flag we don't service. Capture sts
@@ -478,11 +461,8 @@ OTG_FS_IRQHandler(void)
         (*diag_slot_otg_other())++;
         *diag_slot_otg_other_sts() = sts;
     }
-#endif
 
-#if CONFIG_KALICO_RUNTIME
     diag_otg_account(diag_enter, DWT->CYCCNT);
-#endif
 }
 
 // Initialize the usb controller

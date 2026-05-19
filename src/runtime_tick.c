@@ -38,7 +38,6 @@
 // src/linux/runtime_tick_host.c.
 #endif
 
-#if CONFIG_KALICO_RUNTIME
 
 // H7 CMSIS only defines IWDG1/IWDG2; map the generic name to IWDG1
 // (matching src/stm32/watchdog.c's pattern) so the bench-loop kick
@@ -1954,4 +1953,3 @@ init_step_time_timers(void)
     }
 }
 
-#endif // CONFIG_KALICO_RUNTIME

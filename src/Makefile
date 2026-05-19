@@ -3,7 +3,7 @@
 src-y += sched.c command.c basecmd.c debugcmds.c
 # Kalico-native transport — stream-level demuxer + Layer 4 dispatcher.
 # Spec: docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md.
-src-$(CONFIG_KALICO_RUNTIME) += kalico_demux.c kalico_dispatch.c \
+src-y += kalico_demux.c kalico_dispatch.c \
     kalico_segment_queue.c runtime_storage.c runtime_panic.c
 src-y += runtime_tick_weak.c
 src-$(CONFIG_RUNTIME_BENCH) += generic/runtime_bench.c
@@ -42,7 +42,6 @@ src-$(CONFIG_NEED_LOAD_CELL_PROBE) += load_cell_probe.c
 # tells Make how to build the staticlib in the first place. FORCE ensures
 # cargo is invoked every build — cargo itself handles up-to-date checks
 # (incremental compilation), so this is cheap on no-op builds.
-ifeq ($(CONFIG_KALICO_RUNTIME),y)
 # Production firmware: thumbv7em + per-MCU-family Rust features. Sim build
 # (CONFIG_KALICO_SIM=y) appends `kalico-sim` to compile in the sim-only
 # fixture path (sim_fixtures.rs + kalico_runtime_load_fixture FFI), per
@@ -116,4 +115,3 @@ rust/target/release/libkalico_c_api.a: FORCE
 endif
 
 .PHONY: FORCE
-endif

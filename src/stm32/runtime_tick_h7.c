@@ -9,7 +9,7 @@
 #include "generic/runtime_tick.h"   // interface contract
 #include "generic/runtime_bench.h" // runtime_bench_capture hook
 
-#if CONFIG_KALICO_RUNTIME && CONFIG_MACH_STM32H7
+#if CONFIG_MACH_STM32H7
 
 extern const uint32_t runtime_clock_freq;
 
@@ -224,4 +224,4 @@ TIM5_IRQHandler(void)
 // into the vector table and the IRQ silently drops.
 DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
 
-#endif // CONFIG_KALICO_RUNTIME && CONFIG_MACH_STM32H7
+#endif

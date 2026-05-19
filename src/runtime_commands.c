@@ -18,7 +18,6 @@
 #include "stm32/phase_stepping_spi.h"  // phase_stepping_register_bus
 #endif
 
-#if CONFIG_KALICO_RUNTIME
 
 extern void *runtime_handle;      // defined in src/runtime_tick.c
 
@@ -626,4 +625,3 @@ command_runtime_register_phase_motor(uint32_t *args)
 DECL_COMMAND(command_runtime_register_phase_motor,
     "runtime_register_phase_motor motor_idx=%c bus_id=%c cs_pin_id=%c");
 
-#endif // CONFIG_KALICO_RUNTIME

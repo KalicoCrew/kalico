@@ -19,7 +19,6 @@
 #include "command.h"
 #include "sched.h"
 
-#if CONFIG_KALICO_RUNTIME
 extern volatile uint8_t runtime_liveness_ok;
 extern void *runtime_handle;
 extern uint32_t runtime_handle_tick_counter(void *handle);
@@ -35,7 +34,6 @@ struct rt_diag_persistent {
     uint32_t fault_count;
 };
 extern volatile struct rt_diag_persistent rt_diag_persistent;
-#endif
 
 // Magic word marks "fault record valid". Chosen unlikely to occur as
 // random SRAM contents on power-on (when contents are undefined).
@@ -329,7 +327,6 @@ static uint32_t             prior_ring_emit_idx;
 void
 diag_ring_push(uint8_t tag, uint32_t a, uint32_t b)
 {
-#if CONFIG_KALICO_RUNTIME
     // timer_read_time is generally IRQ-safe on Cortex-M (read of a 32-bit
     // counter or a snapshot routine that itself disables IRQs). Per
     // armcm_timer.c the H7 implementation reads SysTick + a 32-bit
@@ -355,9 +352,6 @@ diag_ring_push(uint8_t tag, uint32_t a, uint32_t b)
     // alternative is losing ring data to cache eviction lag.
     diag_cache_clean();
     irq_restore(flag);
-#else
-    (void)tag; (void)a; (void)b;
-#endif
 }
 
 // Update a task heartbeat. Called at the START of a task body, BEFORE the
@@ -373,7 +367,6 @@ diag_task_heartbeat(volatile uint32_t *calls,
                     uint32_t threshold_ticks,
                     uint8_t event_tag)
 {
-#if CONFIG_KALICO_RUNTIME
     extern uint32_t timer_read_time(void);
     uint32_t now = timer_read_time();
     uint32_t prev = *last_tick;
@@ -386,10 +379,6 @@ diag_task_heartbeat(volatile uint32_t *calls,
         if (event_tag && gap > threshold_ticks)
             diag_ring_push(event_tag, gap, prev);
     }
-#else
-    (void)calls; (void)last_tick; (void)max_gap;
-    (void)threshold_ticks; (void)event_tag;
-#endif
 }
 
 // =============================================================================
@@ -404,37 +393,24 @@ diag_task_heartbeat(volatile uint32_t *calls,
 uint32_t
 diag_get_tim5_count(void)
 {
-#if CONFIG_KALICO_RUNTIME
     return diag.tim5_irq_count;
-#else
-    return 0;
-#endif
 }
 
 uint32_t
 diag_get_tx_drops_kalico(void)
 {
-#if CONFIG_KALICO_RUNTIME
     return diag.tx_drops_kalico;
-#else
-    return 0;
-#endif
 }
 
 uint32_t
 diag_get_tx_drops_klipper(void)
 {
-#if CONFIG_KALICO_RUNTIME
     return diag.tx_drops_klipper;
-#else
-    return 0;
-#endif
 }
 
 void
 diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
 {
-#if CONFIG_KALICO_RUNTIME
     uint32_t dur = exit_cycles - enter_cycles;
     diag.tim5_irq_count++;
     diag.tim5_irq_cycles_total += dur;
@@ -448,9 +424,6 @@ diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
     // cycles. 50us ≈ 8x normal — a real outlier worth recording.
     if (dur > 26000u)
         diag_ring_push(DIAG_EV_TIM5_LONG, dur, enter_cycles);
-#else
-    (void)enter_cycles; (void)exit_cycles;
-#endif
 }
 
 // Per-stage timing inside runtime_handle_tick. Called from Rust at each
@@ -460,14 +433,10 @@ __attribute__((used, externally_visible))
 void
 diag_rt_eval_account(uint32_t cycles)
 {
-#if CONFIG_KALICO_RUNTIME
     diag.rt_eval_n++;
     diag.rt_eval_cycles_total += cycles;
     if (cycles > diag.rt_eval_cycles_max)
         diag.rt_eval_cycles_max = cycles;
-#else
-    (void)cycles;
-#endif
 }
 
 // Curve-shape capture: called from the Rust engine on segment activation
@@ -478,28 +447,20 @@ void
 diag_rt_curve_meta(uint32_t axis_idx, uint32_t degree,
                    uint32_t cps_len, uint32_t knots_len)
 {
-#if CONFIG_KALICO_RUNTIME
     if (axis_idx >= 3) return;
     diag.rt_curve_degree[axis_idx]    = (uint8_t)(degree & 0xFFu);
     diag.rt_curve_cps_len[axis_idx]   = (uint16_t)(cps_len & 0xFFFFu);
     diag.rt_curve_knots_len[axis_idx] = (uint16_t)(knots_len & 0xFFFFu);
-#else
-    (void)axis_idx; (void)degree; (void)cps_len; (void)knots_len;
-#endif
 }
 
 __attribute__((used, externally_visible))
 void
 diag_rt_dvel_account(uint32_t cycles)
 {
-#if CONFIG_KALICO_RUNTIME
     diag.rt_dvel_n++;
     diag.rt_dvel_cycles_total += cycles;
     if (cycles > diag.rt_dvel_cycles_max)
         diag.rt_dvel_cycles_max = cycles;
-#else
-    (void)cycles;
-#endif
 }
 
 // Histogram-only sibling for the runtime_handle_tick subwindow. Caller
@@ -509,7 +470,6 @@ diag_rt_dvel_account(uint32_t cycles)
 void
 diag_runtime_tick_account(uint32_t cycles)
 {
-#if CONFIG_KALICO_RUNTIME
     diag.rt_tick_count++;
     diag.rt_tick_cycles_total += cycles;
     if (cycles > diag.rt_tick_cycles_max)
@@ -518,15 +478,11 @@ diag_runtime_tick_account(uint32_t cycles)
     if (bucket >= DIAG_HIST_NBUCKETS)
         bucket = DIAG_HIST_NBUCKETS - 1;
     diag.rt_tick_buckets[bucket]++;
-#else
-    (void)cycles;
-#endif
 }
 
 void
 diag_otg_account(uint32_t enter_cycles, uint32_t exit_cycles)
 {
-#if CONFIG_KALICO_RUNTIME
     uint32_t dur = exit_cycles - enter_cycles;
     diag.otg_irq_count++;
     diag.otg_irq_cycles_total += dur;
@@ -534,9 +490,6 @@ diag_otg_account(uint32_t enter_cycles, uint32_t exit_cycles)
         diag.otg_irq_cycles_max = dur;
     if (dur > 26000u)
         diag_ring_push(DIAG_EV_OTG_LONG, dur, enter_cycles);
-#else
-    (void)enter_cycles; (void)exit_cycles;
-#endif
 }
 
 // =============================================================================
@@ -558,7 +511,6 @@ struct diag_snapshot {
 void
 diag_take_snapshot(struct diag_snapshot *s)
 {
-#if CONFIG_KALICO_RUNTIME
     irqstatus_t flag = irq_save();
     s->tim5_n      = diag.tim5_irq_count;
     // Snapshot truncates u64 totals to u32 — this snapshot only feeds the
@@ -591,9 +543,6 @@ diag_take_snapshot(struct diag_snapshot *s)
     diag.runtime_status_max_gap_ticks = 0;
     diag_cache_clean();
     irq_restore(flag);
-#else
-    memset(s, 0, sizeof(*s));
-#endif
 }
 
 // Heartbeat slot accessors — exposed so other compilation units can pass
@@ -616,37 +565,25 @@ volatile uint32_t *diag_slot_rt_status_max_gap(void)    { return &diag.runtime_s
 void
 diag_record_tx_drop_kalico(uint32_t len, uint32_t tpos)
 {
-#if CONFIG_KALICO_RUNTIME
     diag.tx_drops_kalico++;
     diag.tx_drops_kalico_last_len = len;
     diag_ring_push(DIAG_EV_TX_DROP_KAL, len, tpos);
-#else
-    (void)len; (void)tpos;
-#endif
 }
 
 void
 diag_record_tx_drop_klipper(uint32_t max_size, uint32_t tpos)
 {
-#if CONFIG_KALICO_RUNTIME
     diag.tx_drops_klipper++;
     diag.tx_drops_klipper_last_max = max_size;
     diag_ring_push(DIAG_EV_TX_DROP_KLP, max_size, tpos);
-#else
-    (void)max_size; (void)tpos;
-#endif
 }
 
 void
 diag_record_engine_xition(uint8_t prev, uint8_t cur, uint32_t samples_taken)
 {
-#if CONFIG_KALICO_RUNTIME
     diag_ring_push(DIAG_EV_ENGINE_XITION,
                    ((uint32_t)prev << 8) | (uint32_t)cur,
                    samples_taken);
-#else
-    (void)prev; (void)cur; (void)samples_taken;
-#endif
 }
 
 // Round 2 — wedge instrumentation accessors. All increments via volatile
@@ -667,12 +604,8 @@ volatile uint32_t *diag_slot_read_data(void)          { return &diag.usb_read_da
 void
 diag_snapshot_otg_regs(uint32_t gintmsk, uint32_t gintsts)
 {
-#if CONFIG_KALICO_RUNTIME
     diag.otg_gintmsk_now = gintmsk;
     diag.otg_gintsts_now = gintsts;
-#else
-    (void)gintmsk; (void)gintsts;
-#endif
 }
 
 // Round 2 — extended snapshot accessors.
@@ -696,13 +629,9 @@ volatile uint32_t *diag_slot_peek_data(void)        { return &diag.peek_data_n; 
 void
 diag_snapshot_out_ep(uint32_t doepctl, uint32_t doeptsiz, uint32_t doepint)
 {
-#if CONFIG_KALICO_RUNTIME
     diag.out_ep_doepctl  = doepctl;
     diag.out_ep_doeptsiz = doeptsiz;
     diag.out_ep_doepint  = doepint;
-#else
-    (void)doepctl; (void)doeptsiz; (void)doepint;
-#endif
 }
 
 uint32_t diag_get_out_ep_doepctl(void)    { return diag.out_ep_doepctl; }
@@ -996,7 +925,6 @@ fault_handler_report_task(void)
     // iteration) so the snapshot is fresh when the IWDG fires. Saving
     // here rather than gated on `emits_done` ensures we capture state
     // right up to the crash, not just every 2 s.
-#if CONFIG_KALICO_RUNTIME
     {
         uint32_t live_now = runtime_liveness_ok;
         uint8_t engine_now = 0xFF;
@@ -1016,7 +944,6 @@ fault_handler_report_task(void)
             live_snap.last_engine_running_tick = tick_now;
         live_snap.magic = LIVE_MAGIC;
     }
-#endif
     // Emit every 2 seconds for the first 6 seconds of boot. This is enough
     // for one full pass over the 32-entry diag ring (12 entries per cycle
     // below) plus modest summary-line redundancy, while leaving the USB
@@ -1067,7 +994,6 @@ fault_handler_report_task(void)
     // .persistent_diag linker section. Inlined here rather than a separate
     // function because whole-program LTO was stripping the standalone helper
     // even with `__attribute__((used, externally_visible))`.
-#if CONFIG_KALICO_RUNTIME
     output("rt_diag_prior magic=%u packed=%u us=%u faults=%u",
            rt_diag_persistent.magic,
            rt_diag_persistent.last_packed,
@@ -1095,7 +1021,6 @@ fault_handler_report_task(void)
            sched_bad_add_stack0,
            sched_bad_add_stack1,
            sched_bad_add_stack2);
-#endif
 
     // Prior-run diag dump: one summary line each emit cycle, plus a few
     // ring entries per cycle (throttled to avoid flooding `transmit_buf`

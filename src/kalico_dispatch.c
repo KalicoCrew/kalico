@@ -14,9 +14,8 @@
 #include "kalico_protocol_schema.h" // KALICO_MSG_*, KALICO_SCHEMA_HASH
 #include "board/misc.h"             // crc16_ccitt
 #include "sched.h"                  // DECL_INIT
-#include "autoconf.h"               // CONFIG_KALICO_RUNTIME
+#include "autoconf.h"
 
-#if CONFIG_KALICO_RUNTIME
 #include "kalico_runtime.h"
 extern void *runtime_handle;
 
@@ -24,7 +23,6 @@ extern void *runtime_handle;
 // path retired in runtime_tick.c. Defined there.
 extern float runtime_aligned_cps[CONFIG_RUNTIME_MAX_CONTROL_POINTS];
 extern float runtime_aligned_knots[CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN];
-#endif
 
 // Forward decl: platform-specific raw byte output. The Linux sim implements
 // this in linux/console.c; firmware builds will implement it on top of the
@@ -216,17 +214,13 @@ handle_identify(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
     body_out[59] = (uint8_t)((epoch >> 16) & 0xFF);
     body_out[60] = (uint8_t)((epoch >> 24) & 0xFF);
     // capabilities: bit 0 = PHASE_STEPPING_CAPABLE. Advertised
-    // unconditionally on any MCU built with CONFIG_KALICO_RUNTIME=y —
-    // H7 runs the modulated tick at 40 kHz (runtime_tick_h7.c); F4 runs
-    // it at 10 kHz (runtime_tick_f4.c). Until Step 10 wires true coil-
-    // current synthesis to TMC5160 XDIRECT, both chips route Modulated
-    // mode through the same `emit_step_pulses` GPIO path; the bit
-    // reflects "this firmware can service a Modulated motor at this
-    // chip's tick cadence", not "this firmware drives coil currents".
-    // An MCU built without CONFIG_KALICO_RUNTIME=y has no kalico-native
-    // dispatch path at all and the host's kalico_identify times out
-    // for it, which leaves identify_caps=0 on the host side and is what
-    // the motion_toolhead gate actually catches.
+    // unconditionally — every supported MCU runs the kalico runtime
+    // (H7 modulates at 40 kHz via runtime_tick_h7.c, F4 at 10 kHz via
+    // runtime_tick_f4.c). Until Step 10 wires true coil-current
+    // synthesis to TMC5160 XDIRECT, both chips route Modulated mode
+    // through the same `emit_step_pulses` GPIO path; the bit reflects
+    // "this firmware can service a Modulated motor at this chip's tick
+    // cadence", not "this firmware drives coil currents".
     memset(&body_out[61], 0, 8);
     body_out[61] = 0x01;
     // mcu_serial: zero-fill (Phase D wires this).
@@ -370,7 +364,6 @@ send_push_segment_response(uint32_t correlation_id, int32_t result,
 static void
 handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
 {
-#if CONFIG_KALICO_RUNTIME
     // §7.3 body: slot u16 | degree u8 | n_cps u32 | n_knots u32 | cps×f32 | knots×f32
     if (body_len < 11) {
         send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
@@ -408,16 +401,11 @@ handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_le
         runtime_aligned_knots, (uint16_t)n_knots,
         degree, &handle_packed);
     send_load_curve_response(correlation_id, r, handle_packed);
-#else
-    (void)body; (void)body_len;
-    send_load_curve_response(correlation_id, KALICO_ERR_NOT_INIT, 0);
-#endif
 }
 
 static void
 handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
 {
-#if CONFIG_KALICO_RUNTIME
     extern volatile uint32_t handle_push_segment_calls_total;
     extern volatile uint32_t handle_push_segment_invalid_body_total;
     extern volatile uint32_t handle_push_segment_no_handle_total;
@@ -486,10 +474,6 @@ handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_
         arm_producer_timer_if_kicked();
     }
     send_push_segment_response(correlation_id, r, accepted_id, credit_epoch);
-#else
-    (void)body; (void)body_len;
-    send_push_segment_response(correlation_id, KALICO_ERR_NOT_INIT, 0, 0);
-#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -514,7 +498,6 @@ send_configure_axes_response(uint32_t correlation_id, int32_t result)
 static void
 handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
 {
-#if CONFIG_KALICO_RUNTIME
     // C-side diag breadcrumbs. tag=0xCB = "C-side dispatch". The Rust FFI
     // uses tag=0xCA. Both update runtime_diag_last_packed which the 10 Hz
     // status drain surfaces in fault_detail.
@@ -555,10 +538,6 @@ handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t bod
     }
     send_configure_axes_response(correlation_id, r);
     runtime_diag_progress(0xCB, 5, 0);
-#else
-    (void)body; (void)body_len;
-    send_configure_axes_response(correlation_id, KALICO_ERR_NOT_INIT);
-#endif
 }
 
 // ---------------------------------------------------------------------------

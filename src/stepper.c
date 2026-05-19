@@ -428,7 +428,6 @@ DECL_SHUTDOWN(stepper_shutdown);
 // not by queueing future timer events.
 // ---------------------------------------------------------------------------
 
-#if CONFIG_KALICO_RUNTIME
 
 #define RUNTIME_MOTOR_COUNT 4
 // Max steppers physically driven by a single runtime motor index. CoreXY-
@@ -668,4 +667,3 @@ runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps)
 }
 
 
-#endif // CONFIG_KALICO_RUNTIME

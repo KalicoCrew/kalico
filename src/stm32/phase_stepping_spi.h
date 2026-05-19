@@ -100,7 +100,7 @@ uint32_t phase_spi_get_skip_count(void);
 // the bare transfer simply forwards to spi_transfer — there's no
 // SPI3-style multi-writer contention to mediate. Declared as a static
 // inline for non-H7 builds so phase_stepping_spi.c links cleanly on
-// every CONFIG_KALICO_RUNTIME target.
+// every target.
 #ifdef CONFIG_MACH_STM32H7
 void spi_transfer_locked(struct spi_config config, uint8_t receive_data,
                          uint8_t len, uint8_t *data);
