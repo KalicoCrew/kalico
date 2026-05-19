@@ -444,6 +444,41 @@ batched drain, even step rates above the per-fire ceiling are sustained
 For Phase-mode axes the step queue is unused; the per-axis timer fires but
 its body sees an empty queue and reschedules. ~0.5% CPU per idle axis on H7.
 
+### Queue granularity: per-edge entries, not bursts
+
+The queue stores **one entry per step pulse** (`(cycle_abs, dir)`), not one
+entry per burst (`(cycle_abs, n_steps, dir)`). This is deliberate.
+
+A burst-style entry would carry `n_steps` pulses to emit back-to-back
+starting at one `cycle_abs`. That would reduce queue pressure (1 entry per
+sample instead of up to 13) and consumer fire count — `runtime_emit_step_pulses`
+already takes `n_steps` and could be called once per burst — but it would
+discard the per-step timing the velocity extrapolation produces. All N
+pulses in a burst would fire essentially at the same moment (~100 ns
+back-to-back), then nothing until the next sample. At constant high
+velocity, the motor would see a 40 kHz burst-then-silence pattern, which
+produces audible torque-ripple artifacts and frame resonance at exactly the
+sample rate. This is the same back-to-back-at-sample-start failure mode
+the velocity-extrapolated timing was designed to avoid.
+
+The **consumer-side batched drain** (above) captures the queue-pressure
+benefit without the motion-quality cost. When the producer's math placed
+two entries close together (a few µs apart, which happens at very high step
+rates), the consumer drains them in one fire via back-to-back GPIO toggles.
+When entries are math-spread (low/medium step rates), the consumer fires
+once per entry at the entry's precise time. We get the cheap-batch benefit
+only when the math itself says the steps are nearly co-located — never as
+an enforced re-clustering.
+
+In music-score terms: per-edge entries are a score with each note's exact
+time written. Burst entries would be "play 8 notes starting at t=8.3 µs"
+— a 40-times-per-second machine-gun cadence. The consumer's adaptive
+batching is "if two notes are already next to each other, read one cue
+covering both" — preserves the melody, just lowers the conductor's overhead.
+
+Producer cost stays at ~4% CPU on H7 at peak (52 entries/sample × 4 axes ×
+40 kHz × ~10 cycles/push), well inside budget.
+
 ### SPI write queue (Phase mode)
 
 Per SPI bus, a small SPSC queue of `(cs_pin, register, value)` writes pushed
