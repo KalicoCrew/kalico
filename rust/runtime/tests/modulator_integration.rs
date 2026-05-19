@@ -179,6 +179,14 @@ fn build_engine_two_phase_motors() -> (Engine<NoopPa, NoopIs>, SharedState) {
     shared.step_modes[2].store(StepMode::StepTime as u8, Ordering::Release);
     shared.step_modes[3].store(StepMode::StepTime as u8, Ordering::Release);
 
+    // Bind per-motor slot_idx and announce the phase motor count, so
+    // runtime_modulated_tick's `for motor_idx in 0..count` loop visits both
+    // entries. Production sets this via configure_axes_blob; the test
+    // installs the same state directly.
+    shared.phase_slot_idx[0].store(0, Ordering::Release);
+    shared.phase_slot_idx[1].store(1, Ordering::Release);
+    shared.phase_motor_count.store(2, Ordering::Release);
+
     (engine, shared)
 }
 
@@ -225,24 +233,26 @@ fn two_phase_motors_round_robin_xdirect_capture() {
         captures.iter().take(4).collect::<Vec<_>>()
     );
 
-    // 2) Both bus ids appear — neither motor was starved.
-    let bus0 = captures.iter().filter(|r| r.bus_id == 0).count();
-    let bus1 = captures.iter().filter(|r| r.bus_id == 1).count();
-    assert!(bus0 > 0, "motor 0 (bus 0) never wrote XDIRECT");
-    assert!(bus1 > 0, "motor 1 (bus 1) never wrote XDIRECT");
+    // 2) Both motors appear — neither was starved. Records are keyed by
+    // motor_idx now (2026-05-19 per-motor-CS refactor); the C side resolves
+    // bus/CS from the per-motor table.
+    let m0 = captures.iter().filter(|r| r.motor_idx == 0).count();
+    let m1 = captures.iter().filter(|r| r.motor_idx == 1).count();
+    assert!(m0 > 0, "motor 0 never wrote XDIRECT");
+    assert!(m1 > 0, "motor 1 never wrote XDIRECT");
     // 3) Approximately balanced (off-by-one is fine — depends on whether
     // the trip endstop / retirement check runs on the boundary tick).
     assert!(
-        (bus0 as i64 - bus1 as i64).abs() <= 2,
-        "round-robin should balance bus 0 ({}) vs bus 1 ({})",
-        bus0,
-        bus1
+        (m0 as i64 - m1 as i64).abs() <= 2,
+        "round-robin should balance motor 0 ({}) vs motor 1 ({})",
+        m0,
+        m1
     );
 
-    // 4) Round-robin alternation: consecutive captures alternate buses.
+    // 4) Round-robin alternation: consecutive captures alternate motors.
     for window in captures.windows(2) {
         assert_ne!(
-            window[0].bus_id, window[1].bus_id,
+            window[0].motor_idx, window[1].motor_idx,
             "consecutive XDIRECT writes must alternate between the two phase \
              motors; got {:?} then {:?}",
             window[0], window[1]
@@ -250,11 +260,11 @@ fn two_phase_motors_round_robin_xdirect_capture() {
     }
 
     // 5) Each capture's coil currents come from the identity LUT — verify
-    // by re-running the LUT on the recorded buses and comparing.
+    // by re-running the LUT on the recorded motors and comparing.
     for r in &captures {
         // For our motor 1 (Y) on a pure-X segment, Y stays at prev_y = 0.0,
         // so its mscount stays at 0, and the LUT returns (0, +amplitude).
-        if r.bus_id == 1 {
+        if r.motor_idx == 1 {
             let (a, b) = phase_lut::lookup(0, 0);
             assert_eq!(
                 (r.coil_a, r.coil_b), (a, b),
@@ -264,7 +274,7 @@ fn two_phase_motors_round_robin_xdirect_capture() {
         }
         // Motor 0 (X) advances mscount with the curve. Coil values are
         // bounded by CURRENT_AMPLITUDE = 248 either way.
-        if r.bus_id == 0 {
+        if r.motor_idx == 0 {
             assert!(
                 r.coil_a.abs() <= phase_lut::CURRENT_AMPLITUDE,
                 "coil_A out of LUT bounds: {}",
@@ -313,10 +323,13 @@ fn two_phase_motors_round_robin_xdirect_capture() {
         "at least some trace samples should have wrote_spi=true"
     );
     for trace in written_traces.iter().take(5) {
-        // For motor 0 the expected bus is 0; for motor 1 the expected bus is 1.
-        let expected_bus = trace.motor;
+        // Records are now keyed by motor_idx (2026-05-19 per-motor-CS
+        // refactor); the trace sample's `motor` field is that index.
+        let expected_motor = trace.motor;
         let matching_cap = captures.iter().find(|c| {
-            c.bus_id == expected_bus && c.coil_a == trace.i_a && c.coil_b == trace.i_b
+            c.motor_idx == expected_motor
+                && c.coil_a == trace.i_a
+                && c.coil_b == trace.i_b
         });
         assert!(
             matching_cap.is_some(),
@@ -397,6 +410,8 @@ fn phase_motor_uses_phase_path_steptime_motor_uses_emit() {
         Some(PhaseConfig { spi_bus_id: 0, cs_pin_id: 10 }),
     );
     shared.step_modes[0].store(StepMode::Modulated as u8, Ordering::Release);
+    shared.phase_slot_idx[0].store(0, Ordering::Release);
+    shared.phase_motor_count.store(1, Ordering::Release);
 
     let pool = CurvePool::new();
     let mut trace_h = TraceHarness::new();
@@ -419,10 +434,12 @@ fn phase_motor_uses_phase_path_steptime_motor_uses_emit() {
         "single phase motor should write XDIRECT every tick; got {} captures",
         captures.len()
     );
-    // All captures must be on bus 0 (the only registered phase bus).
+    // Only motor 0 has a phase config; every capture must be its motor_idx.
     for r in &captures {
-        assert_eq!(r.bus_id, 0, "only phase motor 0 (bus 0) should write; got {:?}", r);
-        assert_eq!(r.cs_pin, 10);
+        assert_eq!(
+            r.motor_idx, 0,
+            "only phase motor 0 should write XDIRECT; got {:?}", r
+        );
     }
 
     // Motor 0 stepper count advanced — modulator's steps_delta hooked into
@@ -434,35 +451,89 @@ fn phase_motor_uses_phase_path_steptime_motor_uses_emit() {
     );
 }
 
-/// Ensure that XDIRECT records carry the configured CS pin (not just the
-/// bus id). Important so that the C-side SPI helper hands the right pin
-/// to the GPIO write.
+/// 2026-05-19 regression test — two phase motors sharing a single SPI bus
+/// must surface DISTINCT `motor_idx` values in the XDIRECT capture stream.
+/// Prior to this fix, the C side cached one CS per bus and the wire API
+/// dedup'd registration by bus_id, so multi-TMC5160-per-bus configs (e.g.
+/// dual-Y `b_y` + `b_y2` on SPI3) silently aliased every motor's writes
+/// onto the first registered motor's CS line. With the per-motor-CS
+/// dispatch the C side resolves CS from `phase_motors[motor_idx]`; this
+/// test pins the host-side contract that the runtime forwards a distinct
+/// motor_idx per phase-stepped motor regardless of bus sharing.
 #[test]
-fn xdirect_record_carries_cs_pin() {
+fn two_motors_on_same_bus_have_distinct_motor_idx() {
     let _lock = test_lock();
     test_xdirect_capture::clear();
-    let (mut engine, shared) = build_engine_two_phase_motors();
+
+    let mut engine = Engine::<NoopPa, NoopIs>::new(CLOCK_FREQ);
+    engine.configure(McuAxisConfig {
+        motors: [
+            Some(MotorConfig {
+                steps_per_mm: STEPS_PER_MM,
+                is_awd: false,
+                invert_dir: false,
+            }),
+            Some(MotorConfig {
+                steps_per_mm: STEPS_PER_MM,
+                is_awd: false,
+                invert_dir: false,
+            }),
+            None,
+            None,
+        ],
+        kinematics: KinematicTag::CartesianXyzAndE,
+    });
+
+    let shared = SharedState::new();
+    // BOTH motors on bus 0 with distinct CS pins. This is the configuration
+    // the original bug aliased into a single driver.
+    phase_config::store(
+        &shared.phase_config[0],
+        Some(PhaseConfig { spi_bus_id: 0, cs_pin_id: 10 }),
+    );
+    phase_config::store(
+        &shared.phase_config[1],
+        Some(PhaseConfig { spi_bus_id: 0, cs_pin_id: 11 }),
+    );
+    shared.step_modes[0].store(StepMode::Modulated as u8, Ordering::Release);
+    shared.step_modes[1].store(StepMode::Modulated as u8, Ordering::Release);
+    shared.phase_slot_idx[0].store(0, Ordering::Release);
+    shared.phase_slot_idx[1].store(1, Ordering::Release);
+    shared.phase_motor_count.store(2, Ordering::Release);
+
     let pool = CurvePool::new();
     let mut trace_h = TraceHarness::new();
     let mut q = empty_seg_consumer();
 
     const DURATION: u64 = 200 * 13_000;
-    let seg = build_segment_linear_x(&pool, 0.25, 0, DURATION, 0, 4);
+    const N_TICKS: u64 = 30;
+    let seg = build_segment_linear_x(&pool, 0.5, 0, DURATION, 0, 5);
     engine.producer_current = Some(seg);
 
-    for i in 1..=8_u64 {
-        let now = (DURATION / 10) * i;
-        engine.runtime_modulated_tick(now, &mut q, &pool, &mut trace_h.producer, &shared);
+    for i in 1..=N_TICKS {
+        let now = (DURATION / (N_TICKS + 2)) * i;
+        engine.runtime_modulated_tick(
+            now, &mut q, &pool, &mut trace_h.producer, &shared,
+        );
     }
 
     let captures: Vec<XDirectRecord> = test_xdirect_capture::drain();
-    // X (bus 0) → cs 10; Y (bus 1) → cs 11. Both bus / cs pairings must
-    // match what we configured.
-    for r in &captures {
-        match r.bus_id {
-            0 => assert_eq!(r.cs_pin, 10, "bus 0 must carry cs_pin=10; got {:?}", r),
-            1 => assert_eq!(r.cs_pin, 11, "bus 1 must carry cs_pin=11; got {:?}", r),
-            other => panic!("unexpected bus_id {other}"),
-        }
+    assert!(!captures.is_empty(), "no XDIRECT writes captured");
+
+    let m0 = captures.iter().filter(|r| r.motor_idx == 0).count();
+    let m1 = captures.iter().filter(|r| r.motor_idx == 1).count();
+    assert!(
+        m0 > 0 && m1 > 0,
+        "both motors on the shared bus must produce XDIRECT writes; \
+         got motor_idx=0: {m0}, motor_idx=1: {m1}",
+    );
+    // Round-robin: consecutive writes alternate motors even on a shared bus.
+    for window in captures.windows(2) {
+        assert_ne!(
+            window[0].motor_idx, window[1].motor_idx,
+            "consecutive XDIRECT writes on the shared bus must alternate \
+             motors; got {:?} then {:?}",
+            window[0], window[1],
+        );
     }
 }

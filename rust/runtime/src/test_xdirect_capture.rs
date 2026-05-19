@@ -8,13 +8,16 @@
 //!
 //! On `target_os = "none"` the host helpers compile to no-op stubs so the
 //! module can stay `pub` without leaking host-only state into firmware.
+//!
+//! 2026-05-19 — record now carries `motor_idx` (and only motor_idx) for the
+//! per-motor-CS dispatch refactor. Bus / CS resolution is the C side's job
+//! via the `phase_motors[]` table; host tests assert on motor identity.
 
-/// One captured XDIRECT write — the four parameters of
+/// One captured XDIRECT write — the three parameters of
 /// `phase_stepping_write_xdirect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct XDirectRecord {
-    pub bus_id: u8,
-    pub cs_pin: u8,
+    pub motor_idx: u8,
     pub coil_a: i16,
     pub coil_b: i16,
 }
@@ -30,14 +33,13 @@ mod host {
     }
 
     /// Append a record. Called by `engine::write_xdirect` in host builds.
-    pub fn record(bus_id: u8, cs_pin: u8, coil_a: i16, coil_b: i16) {
+    pub fn record(motor_idx: u8, coil_a: i16, coil_b: i16) {
         // Lock poisoning means a prior test panicked while holding the
         // mutex — recover the inner Vec anyway so subsequent tests are
         // not collateral damage. Mirrors `c_segment_queue`'s host-backend.
         let mut g = sink().lock().unwrap_or_else(|p| p.into_inner());
         g.push(XDirectRecord {
-            bus_id,
-            cs_pin,
+            motor_idx,
             coil_a,
             coil_b,
         });
@@ -69,7 +71,7 @@ pub use host::{clear, drain, record};
 // `engine::write_xdirect`'s `#[cfg]` gates send target builds straight to
 // the C FFI).
 #[cfg(target_os = "none")]
-pub fn record(_bus_id: u8, _cs_pin: u8, _coil_a: i16, _coil_b: i16) {}
+pub fn record(_motor_idx: u8, _coil_a: i16, _coil_b: i16) {}
 
 #[cfg(target_os = "none")]
 pub fn drain() -> &'static [XDirectRecord] {

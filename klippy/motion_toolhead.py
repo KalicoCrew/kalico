@@ -855,15 +855,35 @@ class MotionToolhead(ToolHead):
                                 "ordering race or an SPI failure."
                                 % (stepper_name, gconf_val, stepper_name)
                             )
+                # 2026-05-19 phase-stepping two-stage registration. SPI bus
+                # cfg is shared across all TMC5160s on a bus and registered
+                # once per unique bus_id. Per-motor CS GPIOs are registered
+                # separately so multiple drivers on one bus (e.g. dual-Y
+                # b_y + b_y2 on SPI3) each get their own addressable CS —
+                # the previous single-call API silently aliased every motor
+                # on a bus to one cached CS. See
+                # docs/superpowers/specs/2026-05-19-phase-stepping-per-motor-cs-design.md.
+                # `motor_idx` MUST match the list position in phase_configs,
+                # because the configure_axes blob is parsed in the same
+                # order and assigns the same motor_idx to each entry
+                # (rust/kalico-c-api/src/runtime_ffi.rs:1535).
                 seen_buses = set()
-                for (bus_id, cs_pin_id, _slot_idx) in phase_configs:
+                for (bus_id, _cs_pin_id, _slot_idx) in phase_configs:
                     if bus_id == 0xFF:
                         continue
                     if bus_id in seen_buses:
                         continue
                     seen_buses.add(bus_id)
                     self.bridge.register_phase_bus(
-                        mcu_handle, bus_id, cs_pin_id, rate=2_000_000,
+                        mcu_handle, bus_id, rate=2_000_000,
+                    )
+                for motor_idx, (bus_id, cs_pin_id, _slot_idx) in enumerate(
+                    phase_configs,
+                ):
+                    if bus_id == 0xFF:
+                        continue
+                    self.bridge.register_phase_motor(
+                        mcu_handle, motor_idx, bus_id, cs_pin_id,
                     )
             self.bridge.configure_axes(
                 mcu_handle, kin_tag, present_mask, awd_mask,

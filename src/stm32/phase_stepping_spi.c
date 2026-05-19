@@ -13,7 +13,8 @@
                     // struct gpio_out, gpio_out_setup, gpio_out_write
 #include "board/irq.h" // irq_save, irq_restore, irqstatus_t
 
-#define MAX_PHASE_BUSES 4
+#define MAX_PHASE_BUSES  4
+#define MAX_PHASE_MOTORS 16   // matches Rust state::MAX_STEPPER_OIDS
 
 // ---------- 2026-05-18 SPI3 contention arbitration ----------------------
 // See phase_stepping_spi.h for the rationale and contract.
@@ -52,43 +53,57 @@ phase_spi_get_skip_count(void)
 
 struct phase_bus_state {
     struct spi_config cfg;
+    uint8_t configured;
+};
+
+struct phase_motor_state {
     struct gpio_out cs;
+    uint8_t bus_id;
     uint8_t configured;
 };
 
 // Static, zero-initialized (.bss). `configured == 0` means "not registered".
-static struct phase_bus_state phase_buses[MAX_PHASE_BUSES];
+static struct phase_bus_state  phase_buses[MAX_PHASE_BUSES];
+static struct phase_motor_state phase_motors[MAX_PHASE_MOTORS];
 
 // `used + externally_visible`: Klipper's MCU build uses
 // `-flto=auto -fwhole-program`, which DCEs symbols not referenced from
-// any C translation unit. Both helpers are called exclusively from the
-// Rust `runtime` staticlib (via FFI), so without these attributes the
-// LTO inliner drops the function bodies and the final link fails with
-// `undefined reference to phase_stepping_write_xdirect`. Same pattern
-// used by `runtime_emit_step_pulses` in src/stepper.c and
-// `runtime_irq_save` / `runtime_irq_restore` in src/runtime_tick.c.
+// any C translation unit. All three helpers are called exclusively from
+// the Rust `runtime` staticlib (via FFI), so without these attributes
+// the LTO inliner drops the function bodies and the final link fails
+// with `undefined reference to ...`. Same pattern used by
+// `runtime_emit_step_pulses` in src/stepper.c and `runtime_irq_save` /
+// `runtime_irq_restore` in src/runtime_tick.c.
 __attribute__((used, externally_visible))
 void
-phase_stepping_register_bus(uint8_t bus_id, struct spi_config cfg,
-                            uint8_t cs_pin)
+phase_stepping_register_bus(uint8_t bus_id, struct spi_config cfg)
 {
     if (bus_id >= MAX_PHASE_BUSES)
         return;
     phase_buses[bus_id].cfg = cfg;
-    phase_buses[bus_id].cs = gpio_out_setup(cs_pin, 1); // idle high
     phase_buses[bus_id].configured = 1;
 }
 
 __attribute__((used, externally_visible))
 void
-phase_stepping_write_xdirect(uint8_t bus_id, uint8_t cs_pin,
+phase_stepping_register_motor(uint8_t motor_idx, uint8_t bus_id,
+                              uint8_t cs_pin_id)
+{
+    if (motor_idx >= MAX_PHASE_MOTORS || bus_id >= MAX_PHASE_BUSES)
+        return;
+    phase_motors[motor_idx].cs = gpio_out_setup(cs_pin_id, 1); // idle high
+    phase_motors[motor_idx].bus_id = bus_id;
+    phase_motors[motor_idx].configured = 1;
+}
+
+__attribute__((used, externally_visible))
+void
+phase_stepping_write_xdirect(uint8_t motor_idx,
                              int16_t coil_a, int16_t coil_b)
 {
-    // cs_pin is informational; the actual CS handle was cached in
-    // phase_stepping_register_bus(). Marked unused to silence the
-    // -Wunused-parameter warning that kalico builds with -Wall.
-    (void)cs_pin;
-
+    if (motor_idx >= MAX_PHASE_MOTORS || !phase_motors[motor_idx].configured)
+        return;
+    uint8_t bus_id = phase_motors[motor_idx].bus_id;
     if (bus_id >= MAX_PHASE_BUSES || !phase_buses[bus_id].configured)
         return;
 
@@ -115,13 +130,13 @@ phase_stepping_write_xdirect(uint8_t bus_id, uint8_t cs_pin,
     };
 
     spi_prepare(phase_buses[bus_id].cfg);
-    gpio_out_write(phase_buses[bus_id].cs, 0); // CS low (assert)
+    gpio_out_write(phase_motors[motor_idx].cs, 0); // CS low (assert)
     // 2026-05-19: call the unlocked variant — we already own
     // phase_spi_busy via phase_spi_try_acquire() above. Calling the
     // public spi_transfer here would deadlock the ISR on its own lock.
     spi_transfer_locked(phase_buses[bus_id].cfg, 0,
                         sizeof(datagram), datagram);
-    gpio_out_write(phase_buses[bus_id].cs, 1); // CS high (deassert)
+    gpio_out_write(phase_motors[motor_idx].cs, 1); // CS high (deassert)
 
     phase_spi_release();
 }

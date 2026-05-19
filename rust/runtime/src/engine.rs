@@ -211,27 +211,31 @@ fn emit_step_pulses(motor_idx: u8, n_steps: i32) {
 /// into `src/stm32/phase_stepping_spi.c`'s blocking helper (Task 3); on
 /// host-test builds, the call is recorded into `test_xdirect_capture` so
 /// integration tests can assert on the SPI traffic without a real bus.
+///
+/// 2026-05-19 — keyed by `motor_idx` instead of `(bus_id, cs_pin)` to fix
+/// the multi-TMC5160-on-one-SPI-bus CS-aliasing bug; the C side now
+/// looks up both bus cfg and CS handle from a per-motor table. See
+/// docs/superpowers/specs/2026-05-19-phase-stepping-per-motor-cs-design.md.
 #[inline]
 #[allow(unsafe_code)]
-fn write_xdirect(bus_id: u8, cs_pin: u8, coil_a: i16, coil_b: i16) {
+fn write_xdirect(motor_idx: u8, coil_a: i16, coil_b: i16) {
     #[cfg(target_os = "none")]
     {
         unsafe extern "C" {
             fn phase_stepping_write_xdirect(
-                bus_id: u8,
-                cs_pin: u8,
+                motor_idx: u8,
                 coil_a: i16,
                 coil_b: i16,
             );
         }
-        // SAFETY: stable C ABI symbol provided by src/stm32/phase_stepping_spi.c
-        // (Task 3). Four scalar args by value, no aliasing. Bus / CS validity
-        // is the C side's responsibility.
-        unsafe { phase_stepping_write_xdirect(bus_id, cs_pin, coil_a, coil_b) }
+        // SAFETY: stable C ABI symbol provided by src/stm32/phase_stepping_spi.c.
+        // Three scalar args by value, no aliasing. Motor / bus validity is the
+        // C side's responsibility (no-op on out-of-range or unregistered).
+        unsafe { phase_stepping_write_xdirect(motor_idx, coil_a, coil_b) }
     }
     #[cfg(not(target_os = "none"))]
     {
-        crate::test_xdirect_capture::record(bus_id, cs_pin, coil_a, coil_b);
+        crate::test_xdirect_capture::record(motor_idx, coil_a, coil_b);
     }
 }
 
@@ -3369,7 +3373,10 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                     // carries one write.
                     let wrote_spi = phase_motor_due == Some(motor_idx);
                     if wrote_spi {
-                        write_xdirect(cfg.spi_bus_id, cfg.cs_pin_id, r.i_a, r.i_b);
+                        let _ = cfg; // PhaseConfig still drives round-robin
+                                     // scheduling; the C side now resolves
+                                     // bus/CS from the per-motor table.
+                        write_xdirect(motor_idx as u8, r.i_a, r.i_b);
                     }
 
                     if trace_enabled {

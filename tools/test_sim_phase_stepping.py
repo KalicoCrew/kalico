@@ -251,25 +251,40 @@ def configure_axes_blob(io, blob, timeout=5.0):
     return int(r["result"])
 
 
-def register_phase_bus(io, bus_id, cs_pin, rate, timeout=5.0):
-    """Wire up the C-side phase_stepping bus/CS state so that subsequent
-    XDIRECT writes from the modulator are not silent no-ops. Must be called
-    BEFORE runtime_configure_axes_blob for every phase-stepped motor.
+def register_phase_bus(io, bus_id, rate, timeout=5.0):
+    """Wire up the C-side phase_stepping SPI bus cfg. Must be called once
+    per unique bus_id BEFORE the matching `register_phase_motor` calls
+    and BEFORE `runtime_configure_axes_blob`.
 
     SPI mode is fixed at 3 (CPOL=1, CPHA=1) on the MCU per the TMC5160
     datasheet. The rate is host-supplied — 2 MHz is well under the
     TMC5160's fCLK/2 = 6 MHz limit and conservative for the sim.
     """
-    # Param is `cs_pin_id` (not `cs_pin`) deliberately — see the comment
-    # on the DECL_COMMAND in src/runtime_commands.c. The `_id` suffix
-    # sidesteps msgproto's pin-enum lookup so we can send the raw stm32
-    # GPIO encoding (port*16+pin) used by the rest of the phase_config
-    # wire surface.
+    io.send(f"runtime_register_phase_bus bus_id={bus_id} rate={rate}")
+    r = io.wait_for_response("kalico_register_phase_bus_response", timeout)
+    return int(r["result"])
+
+
+def register_phase_motor(io, motor_idx, bus_id, cs_pin, timeout=5.0):
+    """Wire up the per-motor CS GPIO for one phase-stepped motor. Must be
+    called once per phase-stepped motor, AFTER `register_phase_bus` for
+    the referenced bus_id and BEFORE `runtime_configure_axes_blob`.
+
+    `motor_idx` matches the per-motor slot used by the runtime's phase
+    config storage and the configure_axes blob's variable-length phase
+    section (entry order == motor_idx).
+
+    Param is `cs_pin_id` (not `cs_pin`) deliberately — see the comment
+    on the DECL_COMMAND in src/runtime_commands.c. The `_id` suffix
+    sidesteps msgproto's pin-enum lookup so we can send the raw stm32
+    GPIO encoding (port*16+pin) used by the rest of the phase_config
+    wire surface.
+    """
     io.send(
-        f"runtime_register_phase_bus bus_id={bus_id} cs_pin_id={cs_pin} "
-        f"rate={rate}")
-    r = io.wait_for_response(
-        "kalico_register_phase_bus_response", timeout)
+        f"runtime_register_phase_motor motor_idx={motor_idx} "
+        f"bus_id={bus_id} cs_pin_id={cs_pin}"
+    )
+    r = io.wait_for_response("kalico_register_phase_motor_response", timeout)
     return int(r["result"])
 
 
@@ -341,9 +356,10 @@ def send_configure_axes_blob(io, kinematics, present_mask, awd_mask,
 def _bring_up_phase_stepping(io):
     """Run the canonical phase-stepping bring-up sequence:
 
-      1. register_phase_bus(bus=0, cs=5) for X
-      2. register_phase_bus(bus=0, cs=6) for Y
-      3. Variable-length configure_axes_blob (CartesianXyzAndE, X+Y
+      1. register_phase_bus(bus=0) for the shared SPI bus
+      2. register_phase_motor(motor=0, bus=0, cs=5) for X
+      3. register_phase_motor(motor=1, bus=0, cs=6) for Y
+      4. Variable-length configure_axes_blob (CartesianXyzAndE, X+Y
          Modulated, Z+E StepTime, two phase entries at slot_idx 0 and 1)
 
     Returns the on-wire body length of the configure_axes blob
@@ -354,12 +370,18 @@ def _bring_up_phase_stepping(io):
     here keeps the sequence in one place and makes the individual tests
     focus on their distinguishing assertions.
     """
-    for cs in (5, 6):
-        rc = register_phase_bus(io, bus_id=0, cs_pin=cs, rate=2_000_000,
-                                timeout=5.0)
+    rc = register_phase_bus(io, bus_id=0, rate=2_000_000, timeout=5.0)
+    if rc != 0:
+        raise HostIoError(f"register_phase_bus(bus=0) returned {rc}")
+    for motor_idx, cs in ((0, 5), (1, 6)):
+        rc = register_phase_motor(
+            io, motor_idx=motor_idx, bus_id=0, cs_pin=cs, timeout=5.0,
+        )
         if rc != 0:
             raise HostIoError(
-                f"register_phase_bus(cs={cs}) returned {rc}")
+                f"register_phase_motor(motor={motor_idx}, cs={cs}) "
+                f"returned {rc}"
+            )
     return send_configure_axes_blob(
         io,
         kinematics=1,  # CartesianXyzAndE
@@ -1114,23 +1136,33 @@ def run_test(port, mon_port=RENODE_MONITOR_PORT, verbose=False):
         if verbose:
             print(f"  phase_trace_enabled = false: ok")
 
-        # 4a. Register the SPI bus + CS handles on the C side for each
-        #     phase-stepped motor. Without this, every XDIRECT write from
-        #     the modulator is a silent no-op (the C helper checks
-        #     phase_buses[bus_id].configured before driving CS / spi).
+        # 4a. Register the SPI bus cfg + per-motor CS handles on the C
+        #     side. Without this, every XDIRECT write from the modulator
+        #     is a silent no-op (the C helper checks both
+        #     phase_buses[bus_id].configured and
+        #     phase_motors[motor_idx].configured before driving CS / spi).
         #     Per TMC5160 datasheet, SPI mode is 3 (CPOL=1, CPHA=1); the
-        #     wire command's MCU handler hardcodes the mode and accepts
-        #     the rate from the host. 2 MHz is well under the TMC5160's
+        #     bus cfg's MCU handler hardcodes the mode and accepts the
+        #     rate from the host. 2 MHz is well under the TMC5160's
         #     fCLK/2 = 6 MHz limit and conservative for sim.
-        for bus_id, cs_pin in ((0, 5), (0, 6)):
-            rc = register_phase_bus(io, bus_id, cs_pin, 2_000_000, timeout=5.0)
+        #     2026-05-19 split into bus + per-motor commands to fix the
+        #     multi-TMC5160-on-one-bus CS aliasing bug.
+        rc = register_phase_bus(io, bus_id=0, rate=2_000_000, timeout=5.0)
+        if rc != 0:
+            return ("FAIL", f"register_phase_bus(bus=0) returned {rc}")
+        if verbose:
+            print("  register_phase_bus(bus=0, rate=2_000_000) → ok")
+        for motor_idx, cs_pin in ((0, 5), (1, 6)):
+            rc = register_phase_motor(
+                io, motor_idx, bus_id=0, cs_pin=cs_pin, timeout=5.0,
+            )
             if rc != 0:
                 return ("FAIL",
-                        f"register_phase_bus(bus={bus_id}, cs={cs_pin}) "
-                        f"returned {rc}")
+                        f"register_phase_motor(motor={motor_idx}, "
+                        f"cs={cs_pin}) returned {rc}")
             if verbose:
-                print(f"  register_phase_bus(bus={bus_id}, cs={cs_pin}, "
-                      f"rate=2_000_000) → ok")
+                print(f"  register_phase_motor(motor={motor_idx}, "
+                      f"bus=0, cs={cs_pin}) → ok")
 
         # 4. Install the 33-byte configure_axes blob (X+Y Modulated, Z+E
         #    StepTime). Two assertions: the result code is KALICO_OK, AND

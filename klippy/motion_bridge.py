@@ -172,18 +172,37 @@ class MotionBridgeWrapper:
             timeout_s,
         )
 
-    def register_phase_bus(
-        self, mcu_handle, bus_id, cs_pin_id, rate, timeout_s=5.0
-    ):
-        """Register an SPI bus with the MCU's phase-stepping subsystem.
+    def register_phase_bus(self, mcu_handle, bus_id, rate, timeout_s=5.0):
+        """Register an SPI bus cfg with the MCU's phase-stepping subsystem.
 
         Wraps the runtime_register_phase_bus wire command. Must be called
-        once per unique (bus_id) on each phase-stepping-capable MCU BEFORE
-        configure_axes for that MCU. Stock-Klipper MCUs (no kalico runtime)
-        are no-op via bridge.rs's early-return.
+        once per unique bus_id on each phase-stepping-capable MCU BEFORE
+        any register_phase_motor for that bus and BEFORE configure_axes.
+        Per-motor CS GPIOs are registered separately via
+        register_phase_motor — multiple TMC5160s on the same bus each
+        need their own CS line (2026-05-19 per-motor-CS refactor; see
+        docs/superpowers/specs/2026-05-19-phase-stepping-per-motor-cs-design.md).
+        Stock-Klipper MCUs (no kalico runtime) are no-op via the bridge's
+        early-return.
         """
         return self._bridge.register_phase_bus(
-            mcu_handle, bus_id, cs_pin_id, rate, timeout_s,
+            mcu_handle, bus_id, rate, timeout_s,
+        )
+
+    def register_phase_motor(
+        self, mcu_handle, motor_idx, bus_id, cs_pin_id, timeout_s=5.0
+    ):
+        """Register the CS GPIO for one phase-stepped motor.
+
+        Wraps the runtime_register_phase_motor wire command. Must be
+        called once per phase-stepped motor, AFTER register_phase_bus
+        for the referenced bus_id, and BEFORE configure_axes. motor_idx
+        is the Rust runtime per-motor slot index (matches the order of
+        entries in the configure_axes blob's variable-length phase
+        section).
+        """
+        return self._bridge.register_phase_motor(
+            mcu_handle, motor_idx, bus_id, cs_pin_id, timeout_s,
         )
 
     def bridge_call(self, mcu_handle, msg, response, timeout_s=15.0):
