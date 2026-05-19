@@ -46,9 +46,9 @@ Targets: `rust/kalico-c-api/src/runtime_ffi.rs` (82 functions per `rg -c 'extern
 - `runtime_ffi.rs:2145, 2234, 2400, 2985` return `bool` today.
 - Boundary doc B4 says "no `bool` (use `uint8_t`)" — contradicts code.
 
-**Decision: Accept `bool`.** Rust's `bool` and C99 `_Bool` are layout-compatible (both 1 byte, both 0/1). Update boundary doc B4 to permit `bool` with the `_Bool` contract.
+**Decision: Accept `bool`.** Rust's `bool` and C99 `_Bool` are layout-compatible (both 1 byte, both 0/1). Boundary doc B4 updated to permit `bool` with the `_Bool` contract.
 
-**Action:** B4 rewording lands in Task 17.
+**Action:** B4 rewording landed in this commit.
 
 ## A3 — `kalico_producer_current_present` static-mut import
 

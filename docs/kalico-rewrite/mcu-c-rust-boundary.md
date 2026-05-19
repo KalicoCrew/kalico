@@ -53,7 +53,9 @@ This rule is uncomfortable because it costs duplication: a queue type is declare
 
 ### B4. `extern "C"` + `#[repr(C)]` everywhere across the boundary
 
-Any function visible across the boundary is `extern "C"` and listed in a header. Any struct visible across the boundary is `#[repr(C)]` on the Rust side and defined in a C header on the C side. No `#[repr(Rust)]` types, no `enum`-with-payloads, no `Option<&T>` in signatures, no zero-sized types, no `bool` (use `uint8_t`). Slices cross as pointer + length.
+Any function visible across the boundary is `extern "C"` and listed in a header. Any struct visible across the boundary is `#[repr(C)]` on the Rust side and defined in a C header on the C side. No `#[repr(Rust)]` types, no `enum`-with-payloads, no `Option<&T>` in signatures, no zero-sized types. Slices cross as pointer + length.
+
+`bool` is permitted. Rust's `bool` and C99 `_Bool` are layout-compatible (both 1 byte, both 0/1); the C side must `#include <stdbool.h>` to consume it. The audit pass on 2026-05-19 (A2 finding) ratified this against existing `runtime_handle_*` accessor sites that already return `bool` (`runtime_ffi.rs:2145, 2234, 2400, 2985`).
 
 ### B5. Atomicity and memory ordering follow the C model
 
