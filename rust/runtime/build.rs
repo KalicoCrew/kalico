@@ -10,13 +10,16 @@
 //!    prevents per-crate `[lints.rust]` overrides, so the registration goes
 //!    here.
 //!
-//! 2. Emit sizing constants that vary per target MCU build. Reads four env
+//! 2. Emit sizing constants that vary per target MCU build. Reads five env
 //!    vars exported by Klipper's Makefile (which sources them from the
 //!    matching `CONFIG_RUNTIME_*` Kconfig values). Defaults match the H7
 //!    `large` profile so host-only / sim builds (which don't go through the
 //!    Klipper Makefile) still compile.
 //!
-//!    Spec: docs/superpowers/specs/2026-05-06-runtime-sizing-per-mcu-design.md §4.3.
+//!    The fifth constant, `RT_STORAGE_SIZE`, is the byte ceiling for the
+//!    C-declared `rt_storage` buffer (replaces the prior Rust-side `RT_CELL`
+//!    with `#[link_section]`). See
+//!    `docs/superpowers/specs/2026-05-19-mcu-c-rust-boundary-refactor-design.md`.
 
 use std::env;
 use std::fs;
