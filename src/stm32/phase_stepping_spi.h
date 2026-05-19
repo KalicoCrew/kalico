@@ -74,7 +74,24 @@ uint32_t phase_spi_get_skip_count(void);
 // concurrent task-context spi_transfer; calling spi_transfer while
 // already holding phase_spi_busy deadlocks on the spin-acquire (see
 // 2026-05-19 fix in stm32h7_spi.c).
+//
+// H7-only symbol: only the H7's stm32h7_spi.c implements the busy-flag
+// gating. On other targets (F4, G4, etc.) the busy-flag is a no-op and
+// the bare transfer simply forwards to spi_transfer — there's no
+// SPI3-style multi-writer contention to mediate. Declared as a static
+// inline for non-H7 builds so phase_stepping_spi.c links cleanly on
+// every CONFIG_KALICO_RUNTIME target.
+#ifdef CONFIG_MACH_STM32H7
 void spi_transfer_locked(struct spi_config config, uint8_t receive_data,
                          uint8_t len, uint8_t *data);
+#else
+#include "gpio.h" // spi_transfer
+static inline void
+spi_transfer_locked(struct spi_config config, uint8_t receive_data,
+                    uint8_t len, uint8_t *data)
+{
+    spi_transfer(config, receive_data, len, data);
+}
+#endif
 
 #endif // phase_stepping_spi.h
