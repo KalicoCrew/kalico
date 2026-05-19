@@ -520,9 +520,18 @@ handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t bod
     // status drain surfaces in fault_detail.
     extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
     runtime_diag_progress(0xCB, 1, body_len);
-    // Accept 20-byte (legacy), 25-byte (extended StepMode array), and 33-byte
-    // (phase-stepping SPI per-motor config) blobs. Spec §4.1 / plan Task 4.
-    if (body_len != 20 && body_len != 25 && body_len != 33) {
+    // Accept 20-byte (legacy), 25-byte (extended StepMode array), or
+    // 26+3N-byte (variable-length per-motor phase config; N in 0..=16
+    // motors). The Rust parser validates the per-motor entries; this
+    // wrapper only gates the length to a recognized shape.
+    int accept = (body_len == 20) || (body_len == 25);
+    if (!accept && body_len >= 26) {
+        uint16_t tail = body_len - 26;
+        if (tail % 3 == 0 && (tail / 3) <= 16) {
+            accept = 1;
+        }
+    }
+    if (!accept) {
         send_configure_axes_response(correlation_id, KALICO_ERR_INVALID_CURVE);
         return;
     }

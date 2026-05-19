@@ -387,7 +387,16 @@ command_runtime_configure_axes_blob(uint32_t *args)
     }
     uint32_t blob_len = args[0];
     uint8_t *blob_ptr = command_decode_ptr(args[1]);
-    if (blob_len != 20 && blob_len != 25 && blob_len != 33) {
+    // Accept 20 / 25 / 26+3N (N in 0..=16). Rust parser validates the
+    // per-motor entries; wrapper only gates length to a recognized shape.
+    int accept = (blob_len == 20) || (blob_len == 25);
+    if (!accept && blob_len >= 26) {
+        uint32_t tail = blob_len - 26;
+        if (tail % 3 == 0 && (tail / 3) <= 16) {
+            accept = 1;
+        }
+    }
+    if (!accept) {
         sendf("kalico_configure_axes_blob_response result=%i", -1);
         return;
     }
