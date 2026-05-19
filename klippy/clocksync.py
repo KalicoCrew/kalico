@@ -227,9 +227,10 @@ class ClockSync:
         # "Unable to issue reset command on MCU '<name>'" for every bridge
         # MCU after the first ~5 seconds, and the only recovery from a
         # latched MCU shutdown is a power cycle.
-        if self.serial is not None and getattr(self.serial, "_use_bridge", False):
-            return True
-        return self.queries_pending <= 4
+        # Bridge owns clocksync timing for every MCU on this fork; always
+        # report "active" so callers like mcu._restart_via_command can
+        # still issue reset commands.
+        return True
 
     def dump_debug(self):
         sample_time, clock, freq = self.clock_est

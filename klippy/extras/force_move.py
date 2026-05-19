@@ -36,26 +36,13 @@ class ForceMove:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.steppers = {}
-        # Detect motion bridge — skip C FFI if active
-        self._use_bridge = (
-            self.printer.lookup_object("motion_bridge", None) is not None
-        )
-        if self._use_bridge:
-            self.trapq = None
-            self.trapq_append = lambda *a: None
-            self.trapq_finalize_moves = lambda *a: None
-            self.stepper_kinematics = None
-        else:
-            # Setup iterative solver
-            ffi_main, ffi_lib = chelper.get_ffi()
-            self.trapq = ffi_main.gc(
-                ffi_lib.trapq_alloc(), ffi_lib.trapq_free
-            )
-            self.trapq_append = ffi_lib.trapq_append
-            self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
-            self.stepper_kinematics = ffi_main.gc(
-                ffi_lib.cartesian_stepper_alloc(b"x"), ffi_lib.free
-            )
+        # Bridge mode: STEPPER_BUZZ / FORCE_MOVE are gated below until the
+        # Rust planner supports them; the C iterative-solver / trapq state
+        # is not allocated.
+        self.trapq = None
+        self.trapq_append = lambda *a: None
+        self.trapq_finalize_moves = lambda *a: None
+        self.stepper_kinematics = None
         # Register commands
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command(
@@ -148,11 +135,11 @@ class ForceMove:
     cmd_STEPPER_BUZZ_help = "Oscillate a given stepper to help id it"
 
     def cmd_STEPPER_BUZZ(self, gcmd):
-        if self._use_bridge:
-            raise gcmd.error(
-                "STEPPER_BUZZ is not yet supported under the new "
-                "motion path until Phase 5"
-            )
+        # Bridge mode owns motion; STEPPER_BUZZ is not yet wired through.
+        raise gcmd.error(
+            "STEPPER_BUZZ is not yet supported under the new "
+            "motion path until Phase 5"
+        )
         stepper = self._lookup_stepper(gcmd)
         logging.info("Stepper buzz %s", stepper.get_name())
         was_enable = self._force_enable(stepper)
@@ -170,11 +157,11 @@ class ForceMove:
     cmd_FORCE_MOVE_help = "Manually move a stepper; invalidates kinematics"
 
     def cmd_FORCE_MOVE(self, gcmd):
-        if self._use_bridge:
-            raise gcmd.error(
-                "FORCE_MOVE is not yet supported under the new "
-                "motion path until Phase 5"
-            )
+        # Bridge mode owns motion; FORCE_MOVE is not yet wired through.
+        raise gcmd.error(
+            "FORCE_MOVE is not yet supported under the new "
+            "motion path until Phase 5"
+        )
         stepper = self._lookup_stepper(gcmd)
         distance = gcmd.get_float("DISTANCE")
         speed = gcmd.get_float("VELOCITY", above=0.0)

@@ -28,18 +28,10 @@ class ExtruderStepper:
         )
         # Setup stepper
         self.stepper = stepper.PrinterStepper(config)
-        # Detect motion bridge — skip C FFI extruder kinematics alloc
-        self._use_bridge = (
-            hasattr(self.stepper, "_use_bridge") and self.stepper._use_bridge
-        )
-        if self._use_bridge:
-            self.sk_extruder = None
-        else:
-            ffi_main, ffi_lib = chelper.get_ffi()
-            self.sk_extruder = ffi_main.gc(
-                ffi_lib.extruder_stepper_alloc(), ffi_lib.free
-            )
-            self.stepper.set_stepper_kinematics(self.sk_extruder)
+        # Motion bridge owns extruder kinematics in Rust; the C FFI
+        # extruder_stepper_alloc allocation goes away with the rest of
+        # the host-side kinematic solvers.
+        self.sk_extruder = None
         self.motion_queue = None
         # Register commands
         self.printer.register_event_handler(
@@ -126,11 +118,8 @@ class ExtruderStepper:
         toolhead.note_step_generation_scan_time(
             new_smooth_time * 0.5, old_delay=old_smooth_time * 0.5
         )
-        if not self._use_bridge:
-            ffi_main, ffi_lib = chelper.get_ffi()
-            espa = ffi_lib.extruder_set_pressure_advance
-            espa(self.sk_extruder, pressure_advance, new_smooth_time)
-        # Always store the values regardless of bridge mode
+        # Pressure-advance handling lives on the Rust side; just store
+        # the requested values so get_status reports them.
         self.pressure_advance = pressure_advance
         self.pressure_advance_smooth_time = smooth_time
 
@@ -244,20 +233,12 @@ class PrinterExtruder:
         self.instant_corner_v = config.getfloat(
             "instantaneous_corner_velocity", 1.0, minval=0.0
         )
-        # Setup extruder trapq (trapezoidal motion queue)
-        # Detect motion bridge
-        self._use_bridge = (
-            self.printer.lookup_object("motion_bridge", None) is not None
-        )
-        if self._use_bridge:
-            self.trapq = None
-            self.trapq_append = lambda *a: None
-            self.trapq_finalize_moves = lambda *a: None
-        else:
-            ffi_main, ffi_lib = chelper.get_ffi()
-            self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
-            self.trapq_append = ffi_lib.trapq_append
-            self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
+        # Setup extruder trapq (trapezoidal motion queue). Bridge mode:
+        # planner / kinematic state lives in Rust, the host stub is
+        # callable but never queues real moves.
+        self.trapq = None
+        self.trapq_append = lambda *a: None
+        self.trapq_finalize_moves = lambda *a: None
 
         # Setup extruder stepper
         self.extruder_stepper = None
@@ -267,8 +248,6 @@ class PrinterExtruder:
             or config.get("rotation_distance", None) is not None
         ):
             self.extruder_stepper = ExtruderStepper(config)
-            if not self._use_bridge:
-                self.extruder_stepper.stepper.set_trapq(self.trapq)
         # Register commands
         gcode = self.printer.lookup_object("gcode")
         if self.name == "extruder":

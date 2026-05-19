@@ -360,8 +360,8 @@ class MotionBridgeWrapper:
 # Step 7-D: BridgeTriggerDispatch
 # ----------------------------------------------------------------------
 #
-# Stand-in for klippy's legacy `TriggerDispatch` (klippy/mcu.py:336) when
-# `MCU_endstop._use_bridge=True`. Owns the arm_id, sources, stepper oids
+# Stand-in for klippy's legacy `TriggerDispatch` (klippy/mcu.py:336).
+# Bridge mode is unconditional; this class owns the arm_id, sources, stepper oids
 # associated with one homing operation, and bridges the (future) async
 # trip event back to a reactor completion. Spec §5.2.
 #

@@ -656,7 +656,12 @@ class TMCVirtualPinHelper:
         # bridge-mode home_start path picks ArmPolicy::IgnoreUntilMoving
         # (with velocity latch) by default, and let the user opt out via
         # `homing_trip_immediately: True` for stress / debug profiles.
-        if hasattr(self.mcu_endstop, "_use_bridge") and self.mcu_endstop._use_bridge:
+        # Bridge owns endstop dispatch unconditionally; tag the endstop
+        # as a sensorless DIAG source so the bridge home_start picks
+        # ArmPolicy::IgnoreUntilMoving (with velocity latch) by default,
+        # and let the user opt out via `homing_trip_immediately: True`
+        # for stress / debug profiles.
+        if True:
             self.mcu_endstop._is_sensorless_diag = True
             try:
                 self.mcu_endstop._sensorless_trip_immediately = (
