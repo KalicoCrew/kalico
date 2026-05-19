@@ -469,18 +469,23 @@ config RUNTIME_STORAGE_SIZE_LARGE
 
 config RUNTIME_STORAGE_SIZE_SMALL
     int "rt_storage byte ceiling (small profile, F4)"
-    default 90112
+    default 106496
     range 32768 131072
     depends on KALICO_RUNTIME
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
       replaces RT_CELL's Rust-side #[link_section] placement). Default
-      is 88 KB. Measured size_of::<RuntimeContext>() on the SMALL profile
-      (MAX_CONTROL_POINTS=512, MAX_KNOT_VECTOR_LEN=524, CURVE_POOL_N=4)
-      is 86808 bytes (85 KB); 88 KB gives ~3 KB of growth room.
-      F4's total SRAM is 128 KB so this leaves ~40 KB for Klipper's own
-      .bss + stack + heap. Const_assert on Rust catches RuntimeContext
-      growth at compile time.
+      is 104 KB. Bench-measured size_of::<RuntimeContext>() with the
+      user's actual F4 config (MAX_CONTROL_POINTS=512,
+      MAX_KNOT_VECTOR_LEN=524, CURVE_POOL_N=8 — overridden up from the
+      Kconfig SMALL default of 4) is 103432 bytes (101 KB); 104 KB
+      gives ~3 KB of growth room. F4's total SRAM is 128 KB so this
+      leaves ~24 KB for Klipper's own .bss + stack + heap.
+      Const_assert on Rust catches RuntimeContext growth at compile
+      time. If a user bumps CURVE_POOL_N past ~8, they'll need to bump
+      this value too — at CURVE_POOL_N=10 RuntimeContext approaches
+      120 KB and starts crowding stack/heap; at CURVE_POOL_N=12+ it
+      no longer fits in F4 SRAM at all.
 
 config KALICO_SIM
     bool "Build for simulator (disables IWDG, enables Linux sim shims)"
