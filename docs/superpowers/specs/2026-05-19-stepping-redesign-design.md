@@ -115,7 +115,9 @@ motor positioning resolution.
 
 ### TIM5 ISR — the unified evaluator
 
-**Per-sample state caches** (held across ISR fires):
+**Per-sample state caches.** Carried across ISR fires; the `*_this`
+fields are populated within a single ISR pass for cross-axis use within
+the same sample:
 
 ```rust
 struct TickCaches {
@@ -125,128 +127,243 @@ struct TickCaches {
     P_prev: [f32; N_AXES],
     v_prev: [f32; N_AXES],
 
-    // Cartesian XY arc-length velocity sampled at end of PREVIOUS sample.
-    // Used by E-follows-XY pressure-advance velocity-delta term. Scalar,
-    // because |v_xy| is a single derived quantity per sample (not per
-    // motor axis).
+    // Cartesian XY arc-length velocity from end of PREVIOUS sample.
+    // Persists across ISR fires.
     v_xy_prev: f32,
 
     // Accumulated Cartesian XY arc length since segment start. Reset on
     // segment retire; running sum across samples within a segment.
     ds_xy_segment: f32,
+
+    // Computed once per sample after A and B are evaluated, BEFORE E
+    // is evaluated. Lives only for one ISR pass (overwritten next fire).
+    v_xy_this: f32,                  // |v_xy(t)| at this sample's end
+    vdot_xy_accelerating: bool,      // sign of (v_xy_this - v_xy_prev)
 }
 ```
 
 ```
 TIM5 ISR fires every (1 / sample_rate) µs:
 
-  v_A_sample_end = 0; v_B_sample_end = 0;   # captured per axis below
+  # Phase 1: evaluate motion axes A, B, Z (NOT E yet — E needs XY-derived
+  # quantities computed after A/B finish).
+  P_end_axis = [0.0; N_AXES]; v_end_axis = [0.0; N_AXES]
 
-  for axis in [A, B, Z, E]:
+  for axis in [A, B, Z]:
     P_sample_start = caches.P_prev[axis]
     v_sample_start = caches.v_prev[axis]
+
     # (1) Advance piece if sample straddles boundary
     while t_local_for_axis(t_sample_end) > axis.piece.duration:
       advance to next piece (or break if segment retiring)
 
     if axis.piece is None:
-      skip (axis idle this sample)
+      P_end_axis[axis] = P_sample_start    # axis idle: position unchanged
+      v_end_axis[axis] = 0
+      continue
 
     # (2) Per-axis polynomial eval (one per axis per sample)
     (P_end, v_end) = monomial_horner_eval(axis.piece, t_local_for_axis)
     if !P_end.is_finite() || !v_end.is_finite():
-      fault(MathNonFinite, axis)
-      continue
+      fault(MathNonFinite, axis); continue
 
     # (3) Endstop sample (existing hook, cheap when no arm)
     kalico_endstop_tick_step_time(handle, now)
 
-    # Capture per-axis velocity for the XY-arc-length step below.
-    if axis == A: v_A_sample_end = v_end
-    if axis == B: v_B_sample_end = v_end
+    P_end_axis[axis] = P_end
+    v_end_axis[axis] = v_end
 
-    # (4) E-follows-XY arc-length integration (CLAUDE.md §extruder).
-    # Arc length is Cartesian XY, not motor-space A/B.
-    # For CoreXY: |v_xy| = sqrt(vA² + vB²) / sqrt(2); for cartesian: = sqrt(vA² + vB²).
-    # Host sets K_xy at configure_kinematics time:
-    #   K_xy = 1.0           for cartesian (A=X, B=Y trivially)
-    #   K_xy = 1.0/sqrt(2)   for CoreXY
-    # (Delta and other non-orthogonal kinematics need K computed per pose,
-    # out of scope here; CoreXY + Cartesian cover the bench and all
-    # CLAUDE.md target machines.)
-    # Run once after axis B (so both vA and vB are known this sample).
-    if axis == B:
-      v_motor_sq = v_A_sample_end² + v_B_sample_end²
-      v_xy = sqrt(v_motor_sq) · K_xy                       # scalar derived
-      caches.ds_xy_segment += v_xy · sample_period
-      v_xy_delta = v_xy - caches.v_xy_prev
-      caches.v_xy_prev = v_xy                              # for next sample
+    # (4) Per-axis dispatch on stepping mode — see "Per-axis dispatch" below
+    dispatch_axis(axis, P_end, v_end, P_sample_start, v_sample_start)
 
-    if axis == E:
-      # E_target uses the XY arc length accumulated this segment plus
-      # pressure-advance term keyed off the XY velocity DELTA between
-      # this sample and the previous sample.
-      P_end += extrusion_per_xy_mm · caches.ds_xy_segment
-              + pressure_advance(sign(v_xy_delta)) · v_xy_delta
+  # Phase 2: XY-derived quantities (Cartesian arc length + acceleration sign).
+  # See K_xy notes below: 1.0 cartesian, 1/sqrt(2) CoreXY.
+  if axis A or axis B had an active piece this sample:
+    v_motor_sq = v_end_axis[A]² + v_end_axis[B]²
+    caches.v_xy_this = sqrt(v_motor_sq) · K_xy                # |v_xy(t)|
+    caches.vdot_xy_accelerating = caches.v_xy_this >= caches.v_xy_prev
+    caches.ds_xy_segment += caches.v_xy_this · sample_period  # Cartesian arc len
+    caches.v_xy_prev = caches.v_xy_this                       # for next sample
+  else:
+    caches.v_xy_this = 0
+    caches.vdot_xy_accelerating = false  # no motion; PA term zeroes anyway
 
-    # (5) Per-axis dispatch on stepping mode
-    match axis.mode.load(Acquire):
-      Pulse:
-        prev_step_count = axis.last_step_count
-        target_step_count = round(P_end / axis.microstep_distance)
-        n_steps = target_step_count - prev_step_count
-        axis.last_step_count = target_step_count
+  # Phase 3: evaluate E with full XY context.
+  # CLAUDE.md formula:
+  #   E_target = extrusion_per_xy_mm · ds_xy_segment
+  #            + advance · ratio_per_xy_mm · |v_xy(t)|
+  # where `advance` is K_accel or K_decel depending on sign(v̇_xy)
+  # (asymmetric PA from bleeding-edge kalico Step 9). For the spec
+  # `ratio_per_xy_mm == extrusion_per_xy_mm` (both are the XY-arc-length-to-
+  # filament-length conversion).
+  axis = E
+  P_sample_start = caches.P_prev[axis]
+  v_sample_start = caches.v_prev[axis]
+  # ...piece advance + polynomial eval as in phase 1...
+  (P_end_intrinsic, v_end) = monomial_horner_eval(axis.piece, t_local_for_axis)
 
-        if |n_steps| > 0:
-          v_avg = (v_sample_start + v_end) / 2
-          # NOTE: cycle_abs is u32 = lower 32 bits of the cycle counter.
-          # Wraps every ~8.3 s on H7, ~4 min on F446. Always use wrapping_add
-          # when computing absolute cycle times. The consumer-side comparison
-          # uses Klipper's timer_is_before (signed-delta), wrap-safe.
-          if |v_avg| > V_EXTRAPOLATION_THRESHOLD:    # default 1 mm/s
-            # Velocity-extrapolated sub-sample times
-            for k in 0..|n_steps|:
-              step_pos_k = (prev_step_count + (k+1) · sign(n_steps))
-                           · axis.microstep_distance
-              t_local_sec = (step_pos_k - P_sample_start) / v_avg
-              dt_cycles = (t_local_sec · cycles_per_second) as u32
-              cycle_abs = sample_start_cycles.wrapping_add(dt_cycles)
-              push (cycle_abs, sign(n_steps)) to axis.step_queue
-          else:
-            # Near-zero velocity fallback: uniform within sample
-            for k in 0..|n_steps|:
-              dt_cycles = (sample_period_cycles · (k+1)) / (|n_steps|+1)
-              cycle_abs = sample_start_cycles.wrapping_add(dt_cycles)
-              push (cycle_abs, sign(n_steps)) to axis.step_queue
+  pa_K = if caches.vdot_xy_accelerating then advance_accel else advance_decel
+  P_end = P_end_intrinsic
+        + extrusion_per_xy_mm · caches.ds_xy_segment        # baseline follow
+        + pa_K · extrusion_per_xy_mm · caches.v_xy_this      # PA, instantaneous
 
-          for stepper in axis.steppers:
-            stepper.position_count.checked_add(n_steps)
-              .or_else(|| fault(PositionCountOverflow, stepper))
+  P_end_axis[E] = P_end; v_end_axis[E] = v_end
+  dispatch_axis(E, P_end, v_end, P_sample_start, v_sample_start)
 
-      Phase:
-        # Per-stepper SPI dispatch (each TMC has its own CS).
-        # TMC5160 electrical cycle = 1024 microsteps (10-bit MSCNT) =
-        # 4 full steps. Coil-current LUT is 1024 entries spanning one
-        # electrical cycle.
+  # Phase 4: per-sample bookkeeping
+  for axis in [A, B, Z, E]:
+    caches.P_prev[axis] = P_end_axis[axis]
+    caches.v_prev[axis] = v_end_axis[axis]
+
+  # Phase 5: segment retirement check
+  if all participating axes' cursors have reached segment.duration:
+    retire segment (host sync via existing retired_through_segment_id)
+    caches.ds_xy_segment = 0      # reset XY arc length for next segment
+    advance to next segment
+
+
+# Per-axis dispatch subroutine — called from phase 1 (A,B,Z) and phase 3 (E)
+fn dispatch_axis(axis, P_end, v_end, P_sample_start, v_sample_start):
+  match axis.mode.load(Acquire):
+    Pulse:
+      prev_step_count = axis.last_step_count
+      target_step_count = round(P_end / axis.microstep_distance)
+      n_steps = target_step_count - prev_step_count
+      axis.last_step_count = target_step_count
+
+      if |n_steps| > 0:
+        v_avg = (v_sample_start + v_end) / 2
+        # cycle_abs is u32 = lower 32 bits of cycle counter. Wraps every
+        # ~8.3 s on H7, ~4 min on F446. Use wrapping_add for absolute time
+        # computation. Consumer side uses timer_is_before (signed-delta).
+        if |v_avg| > V_EXTRAPOLATION_THRESHOLD:    # default 1 mm/s
+          # Velocity-extrapolated sub-sample times
+          for k in 0..|n_steps|:
+            step_pos_k = (prev_step_count + (k+1) · sign(n_steps))
+                         · axis.microstep_distance
+            t_local_sec = (step_pos_k - P_sample_start) / v_avg
+            dt_cycles = (t_local_sec · cycles_per_second) as u32
+            cycle_abs = sample_start_cycles.wrapping_add(dt_cycles)
+            push (cycle_abs, sign(n_steps)) to step_queues[axis]
+        else:
+          # Near-zero velocity fallback: uniform within sample
+          for k in 0..|n_steps|:
+            dt_cycles = (sample_period_cycles · (k+1)) / (|n_steps|+1)
+            cycle_abs = sample_start_cycles.wrapping_add(dt_cycles)
+            push (cycle_abs, sign(n_steps)) to step_queues[axis]
+
         for stepper in axis.steppers:
-          target_microsteps = round(P_end / axis.microstep_distance)
-                            + stepper.phase_offset_microsteps
-          phase = target_microsteps & 0x3FF              # 10-bit, 1024 entries
-          (coil_A, coil_B) = phase_lut[phase]
-          spi_queue.push(stepper.tmc_cs, XDIRECT_REG, pack(coil_A, coil_B))
-          stepper.last_coil_A.store(coil_A)
-          stepper.last_coil_B.store(coil_B)
-          stepper.position_count.checked_add(target_microsteps - prev_target)
+          stepper.position_count.checked_add(n_steps)
             .or_else(|| fault(PositionCountOverflow, stepper))
 
-    # (6) Segment retirement check
-    if all participating axes' cursors have reached segment.duration:
-      retire segment (host sync via existing retired_through_segment_id)
-      advance to next segment
+    Phase:
+      # Per-stepper SPI dispatch (each TMC has its own CS).
+      # TMC5160 electrical cycle = 1024 microsteps (10-bit MSCNT) =
+      # 4 full steps. Coil-current LUT is 1024 entries spanning one
+      # electrical cycle.
+      target_microsteps_axis = round(P_end / axis.microstep_distance)
+      axis.last_step_count = target_microsteps_axis    # kept in sync even in Phase
 
-  P_sample_end_cache = P_end
-  v_sample_end_cache = v_end
+      # Per-stepper target = axis position + this stepper's phase offset.
+      # Tracked per-stepper because phase_offset can change between samples
+      # (motors-sync / Z tilt) and the change-vs-axis-motion distinction
+      # matters for position_count accounting.
+      for stepper in axis.steppers:
+        target_stepper = target_microsteps_axis
+                       + stepper.phase_offset_microsteps.load(Acquire)
+        prev_stepper = stepper.last_phase_target.load(Acquire)
+        delta_stepper = target_stepper - prev_stepper
+        stepper.last_phase_target.store(target_stepper, Release)
+
+        phase = target_stepper & 0x3FF                 # 10-bit, 1024 entries
+        (coil_A, coil_B) = phase_lut[phase]
+        spi_queue.push(stepper.tmc_cs, XDIRECT_REG, pack(coil_A, coil_B))
+        stepper.last_coil_A.store(coil_A)
+        stepper.last_coil_B.store(coil_B)
+
+        # position_count tracks the stepper's actual commanded position,
+        # which combines axis motion and offset changes. delta_stepper
+        # naturally captures both because it's computed from the per-stepper
+        # target (which includes offset).
+        stepper.position_count.checked_add(delta_stepper)
+          .or_else(|| fault(PositionCountOverflow, stepper))
 ```
+
+### Position counters: invariants and update rules
+
+Three counters per axis/stepper, each with a specific job:
+
+- **`axis.last_step_count: i32`** — axis-level quantized position in
+  microsteps, ignoring per-stepper offsets. Updated every sample in BOTH
+  Pulse and Phase modes from `round(P_end / microstep_distance)`. Mode-
+  agnostic — Pulse reads it to compute axis-level step deltas; Phase reads
+  it as the base for per-stepper target computation. **No mode-switch
+  resync needed in the engine** because both modes maintain it.
+
+- **`stepper.last_phase_target: AtomicI32`** — per-stepper Phase-mode target
+  position (= `axis.last_step_count + phase_offset_microsteps` at the
+  last sample). Used only in Phase mode to compute per-stepper delta and
+  thus update `position_count` correctly when offsets change between
+  samples. Initialized at `kalico_set_axis_mode(Phase)` time to
+  `axis.last_step_count + phase_offset_microsteps`.
+
+- **`stepper.position_count: AtomicI32`** — the physical stepper's
+  commanded position. Updated by:
+  - Pulse mode: `axis_delta` per sample (lockstep with other paired steppers
+    unless a single-stepper-jog segment masks this stepper out)
+  - Phase mode: `delta_stepper` per sample (combines axis motion + any
+    offset change picked up this sample)
+
+### `phase_offset_microsteps` update semantics
+
+`kalico_set_stepper_offset(stepper_idx, delta, max_microsteps_per_sample)`
+in **Phase mode** atomically updates `phase_offset_microsteps` by `delta`.
+The next TIM5 sample's Phase dispatch reads the new value, recomputes
+`target_stepper`, and the resulting `delta_stepper` for that sample
+includes the offset change. The motor physically slews to the new position
+within that one sample (or several, if rate-limited).
+
+**Rate limiting:** to honor `max_microsteps_per_sample`, the firmware
+clamps how much `phase_offset_microsteps` may change per sample. If
+the host requests a large delta in one call, the firmware ramps it
+across multiple samples internally. (Engine-side ramping rather than
+host-iterative offset writes — avoids host/firmware latency in the
+loop and keeps the rate-limit guarantee firmly enforced.)
+
+Specifically, each TIM5 sample, Phase-mode steppers run a ramp step
+before the dispatch loop:
+
+```
+for stepper in all_steppers (Phase-mode axes):
+  if stepper.phase_offset_target != stepper.phase_offset_microsteps:
+    step = sign(target - current) · min(|target - current|, max_per_sample)
+    stepper.phase_offset_microsteps += step
+    # Next iteration of dispatch uses the new value automatically
+```
+
+This adds a small additional per-stepper field (`phase_offset_target`)
+distinct from the current value. Total per-stepper Phase-mode state:
+`phase_offset_microsteps`, `phase_offset_target`, `last_phase_target`,
+`position_count`, `last_coil_A`, `last_coil_B`.
+
+### Mode-switch counter resync
+
+`kalico_set_axis_mode` sequence updated to include explicit counter
+resync after the engine flushes its queues:
+
+1. Verify idle (no segment in flight) → else `Err(MotionInProgress)`.
+2. Flush `step_queues[axis]` and SPI writes for this axis's TMCs.
+3. **Resync counters before unblocking:**
+   - When entering Phase mode: for each stepper, initialize
+     `last_phase_target = axis.last_step_count + phase_offset_microsteps`.
+     This makes the first Phase sample compute `delta_stepper = 0`
+     unless an offset is in flight, avoiding a one-shot burst.
+   - When entering Pulse mode: no resync needed.
+     `axis.last_step_count` was being updated during Phase mode too, so
+     the first Pulse sample's `n_steps = target - last_step_count`
+     reflects only motion since the last sample — no burst.
+4. Atomic store on `axis.mode` (Release).
+5. Return Ok.
 
 ### Per-axis Klipper timer (consumer, Pulse mode)
 
@@ -361,7 +478,10 @@ pub struct StepperRef {
     pub tmc_cs: Option<GpioPin>,
     pub last_coil_A: AtomicI16,           // re-write on motor re-energize
     pub last_coil_B: AtomicI16,
-    pub phase_offset_microsteps: AtomicI32, // for motors-sync-style alignment
+    pub phase_offset_microsteps: AtomicI32,  // CURRENT offset (ramped toward target)
+    pub phase_offset_target: AtomicI32,      // TARGET offset (set by host)
+    pub last_phase_target: AtomicI32,        // axis.last_step_count + phase_offset
+                                              // at last Phase-mode sample
 }
 ```
 
@@ -414,8 +534,19 @@ script — see open question Q-LINKER below.
 
 **C definitions (`src/step_queue.h`):**
 
+Depth sized for the stated per-MCU step-rate ceilings:
+- H7 peak: 500 kHz / 40 kHz sample = ⌈13⌉ entries per sample peak production
+- F446 peak: 250 kHz / 20 kHz sample = ⌈13⌉ entries per sample peak production
+- Choose **32** (power of 2): holds 2.5 samples of headroom against
+  consumer preemption (USB ISR, status drain, etc.). Power-of-2 mask
+  (`& 0x1F`) replaces software modulo on the hot path.
+- SPSC convention uses absolute u16 head/tail counters with wrapping
+  subtraction for length; all 32 slots are usable (no empty-slot
+  reservation needed).
+
 ```c
-#define STEP_QUEUE_DEPTH 16
+#define STEP_QUEUE_DEPTH      32
+#define STEP_QUEUE_DEPTH_MASK 0x1F   // depth - 1; depth must be power of 2
 
 typedef struct {
     uint32_t cycle_abs;   // lower 32 bits of DWT CYCCNT; wrap-aware compare only
@@ -428,7 +559,7 @@ typedef struct {
     volatile uint16_t head;   // consumer-owned (per-axis timer writes)
     uint8_t _pad[4];          // align buf to 8 bytes
     StepEntry buf[STEP_QUEUE_DEPTH];
-} StepQueue;                  // sizeof == 136, 8-byte aligned
+} StepQueue;                  // sizeof == 8 + 8*32 == 264, 8-byte aligned
 
 extern StepQueue step_queues[4];   // one per motor axis (A, B, Z, E)
 ```
@@ -441,9 +572,13 @@ __attribute__((section(".dtcm_bss")))    // exact section name pending Q-LINKER
 StepQueue step_queues[4];
 
 _Static_assert(sizeof(StepEntry)  == 8,   "StepEntry layout drift");
-_Static_assert(sizeof(StepQueue)  == 136, "StepQueue layout drift");
+_Static_assert(sizeof(StepQueue)  == 264, "StepQueue layout drift");
 _Static_assert(offsetof(StepQueue, buf) == 8, "StepQueue.buf offset drift");
+_Static_assert((STEP_QUEUE_DEPTH & STEP_QUEUE_DEPTH_MASK) == 0,
+               "STEP_QUEUE_DEPTH must be power of 2");
 ```
+
+Storage: 4 × 264 = 1056 B in DTCM (H7) / `.bss` (F4). Negligible.
 
 **Rust mirror (`rust/runtime/src/step_queue.rs`):**
 
@@ -457,18 +592,22 @@ pub struct StepEntry {
     _pad: [u8; 3],
 }
 
+pub const STEP_QUEUE_DEPTH: usize = 32;
+pub const STEP_QUEUE_DEPTH_MASK: u16 = (STEP_QUEUE_DEPTH as u16) - 1;
+
 #[repr(C)]
 pub struct StepQueue {
     pub tail: u16,   // accessed via ptr::{read,write}_volatile from Rust
     pub head: u16,
     _pad: [u8; 4],
-    pub buf: [StepEntry; 16],
+    pub buf: [StepEntry; STEP_QUEUE_DEPTH],
 }
 
 const _: () = {
     assert!(core::mem::size_of::<StepEntry>() == 8);
-    assert!(core::mem::size_of::<StepQueue>() == 136);
+    assert!(core::mem::size_of::<StepQueue>() == 264);
     assert!(core::mem::offset_of!(StepQueue, buf) == 8);
+    assert!(STEP_QUEUE_DEPTH.is_power_of_two());
 };
 
 extern "C" {
