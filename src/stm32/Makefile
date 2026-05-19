@@ -51,7 +51,8 @@ $(OUT)klipper.elf: $(OUT)src/generic/armcm_link.ld
 # has already passed in its single forward sweep. The grouped pair forces ld
 # to iterate archives until cross-references settle. Matches src/linux/Makefile.
 ifeq ($(CONFIG_KALICO_RUNTIME),y)
-KALICO_LIB := rust/target/thumbv7em-none-eabi/release/libkalico_c_api.a
+# KALICO_LIB is set by src/Makefile based on the active MCU (target-h7 vs
+# target-f4 cargo target dir); see comments there.
 CFLAGS_klipper.elf := -Wl,--start-group $(KALICO_LIB) -Wl,--end-group $(CFLAGS_klipper.elf)
 $(OUT)klipper.elf: $(KALICO_LIB)
 endif

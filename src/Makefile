@@ -50,25 +50,35 @@ ifeq ($(CONFIG_KALICO_RUNTIME),y)
 # the fixture path skips curve validation; it's safe only under sim.
 ifeq ($(CONFIG_MACH_STM32H7),y)
 KALICO_RUST_FEATURES := mcu-h7,header-nurbs,header-runtime
+# Per-MCU cargo target dir. H7 and F4 both use the thumbv7em-none-eabi
+# rustc triple but emit different `#[link_section]` attributes (`.axi_bss`
+# vs `.bss` for RT_CELL); a shared incremental cache forces a full rebuild
+# on every MCU switch (~minutes on the Pi). Separate dirs keep both caches
+# warm so each MCU switch is incremental, not from-scratch.
+KALICO_CARGO_TARGET_DIR := target-h7
 else ifeq ($(CONFIG_MACH_STM32F4),y)
 KALICO_RUST_FEATURES := mcu-f4,header-nurbs,header-runtime
+KALICO_CARGO_TARGET_DIR := target-f4
 endif
 ifeq ($(CONFIG_KALICO_SIM),y)
 KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),kalico-sim
 endif
 
 ifneq (,$(filter y,$(CONFIG_MACH_STM32H7) $(CONFIG_MACH_STM32F4)))
-# Critical: track which MCU target's `.a` is in the cargo target dir.
-# When switching H7 <-> F4, cargo's incremental cache does NOT reliably
-# rebuild from `--features` differences alone, so the previously-built `.a`
-# (with the wrong RT_CELL section attribute, .axi_bss vs .bss) gets linked.
-# On F4 this puts RT_CELL at 0x24003da0 (invalid F4 address) and crashes on
-# the first FFI write. We stamp the features hash into a marker file inside
-# the cargo target dir; if the hash changes, we `cargo clean` before build.
-rust/target/thumbv7em-none-eabi/release/libkalico_c_api.a: FORCE
+# Exported so src/stm32/Makefile depends on (and links against) the right
+# archive without re-deriving the path.
+KALICO_LIB := rust/$(KALICO_CARGO_TARGET_DIR)/thumbv7em-none-eabi/release/libkalico_c_api.a
+
+# Per-MCU target dir gives H7 and F4 their own caches (see above). Within
+# a single MCU's dir, the kalico-sim feature toggle is the only remaining
+# feature-set change cargo sees; the stamp guard catches the rare case
+# where cargo's incremental cache misses a feature flip and forces a
+# targeted clean of just the affected crates.
+$(KALICO_LIB): FORCE
 	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" && \
-		mkdir -p target && \
-		PREV=$$(cat target/.kalico-features-stamp 2>/dev/null || echo ""); \
+		export CARGO_TARGET_DIR="$(KALICO_CARGO_TARGET_DIR)" && \
+		mkdir -p "$$CARGO_TARGET_DIR" && \
+		PREV=$$(cat "$$CARGO_TARGET_DIR/.kalico-features-stamp" 2>/dev/null || echo ""); \
 		if [ "$$PREV" != "$(KALICO_RUST_FEATURES)" ]; then \
 			echo "kalico-c-api features changed ($$PREV -> $(KALICO_RUST_FEATURES)); cargo clean"; \
 			cargo clean -p kalico-c-api 2>/dev/null || true; \
@@ -85,7 +95,7 @@ rust/target/thumbv7em-none-eabi/release/libkalico_c_api.a: FORCE
 		--no-default-features \
 		--features $(KALICO_RUST_FEATURES) \
 		--target thumbv7em-none-eabi --release && \
-		echo "$(KALICO_RUST_FEATURES)" > target/.kalico-features-stamp
+		echo "$(KALICO_RUST_FEATURES)" > "$$CARGO_TARGET_DIR/.kalico-features-stamp"
 endif
 
 ifeq ($(CONFIG_MACH_LINUX),y)
