@@ -192,8 +192,23 @@ static uint8_t oid_count;
 void *
 oid_lookup(uint8_t oid, void *type)
 {
-    if (oid >= oid_count || type != oids[oid].type)
+    if (oid >= oid_count || type != oids[oid].type) {
+        // Capture state before crashing so we can identify which oid_lookup
+        // site fired the shutdown. tag=0xCF, stage=oid, value packs
+        // (actual_type_lo << 8) | expected_type_lo. The expected_type_lo
+        // is the low byte of the caller's expected type function pointer;
+        // map it back via `arm-none-eabi-nm out/klipper.elf` to identify
+        // which command_* handler was on the stack.
+        extern void runtime_diag_progress(uint32_t tag, uint32_t stage,
+                                          uint32_t value);
+        uint32_t actual_lo = (oid < oid_count)
+            ? (uint32_t)((uintptr_t)oids[oid].type & 0xFFu)
+            : 0xFFu;
+        uint32_t expected_lo = (uint32_t)((uintptr_t)type & 0xFFu);
+        runtime_diag_progress(0xCF, (uint32_t)oid,
+                              (actual_lo << 8) | expected_lo);
         shutdown("Invalid oid type");
+    }
     return oids[oid].data;
 }
 
