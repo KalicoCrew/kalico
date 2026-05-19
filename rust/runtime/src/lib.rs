@@ -37,6 +37,7 @@ pub mod endstop;
 pub mod engine;
 pub use engine::arm_step_timer_for_stepper;
 pub mod error;
+pub mod fault_helpers;
 pub mod kinematics;
 pub mod modulator;
 pub mod monomial;
@@ -59,6 +60,7 @@ pub mod stepping_state;
 pub mod stream;
 pub mod sub_sample_timing;
 pub mod test_xdirect_capture;
+pub mod tick;
 pub mod trace;
 pub mod wire;
 
