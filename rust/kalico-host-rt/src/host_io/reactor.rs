@@ -1004,33 +1004,39 @@ impl Reactor {
                 }
             }
             ReactorCommand::FireAndForget { cmd } => {
+                // Diag 2026-05-19: write every FireAndForget event to a
+                // dedicated trace file at /tmp/kalico-firewire.log because
+                // log::info/eprintln stderr output is getting swallowed by
+                // klippy's systemd wrapper. Append-only, line-per-event.
+                use std::io::Write as _;
+                let mut trace = std::fs::OpenOptions::new()
+                    .create(true).append(true)
+                    .open("/tmp/kalico-firewire.log")
+                    .ok();
                 match self.parser.encode(&cmd) {
                     Ok(payload) => {
-                        // Diag 2026-05-19: log every fire-and-forget so we can
-                        // confirm config-phase commands like config_stepper
-                        // are actually reaching the wire encoder and
-                        // producing payload bytes. Cap quoted cmd at 80 chars
-                        // and dump payload's leading bytes (msgid prefix +
-                        // first args) so we can verify the encoded msgid
-                        // matches the dictionary entry the host believes.
-                        let cmd_disp = if cmd.len() > 80 {
-                            &cmd[..80]
-                        } else {
-                            cmd.as_str()
-                        };
-                        let head: Vec<String> = payload.iter().take(12)
+                        let cmd_disp = if cmd.len() > 120 { &cmd[..120] } else { cmd.as_str() };
+                        let head: Vec<String> = payload.iter().take(16)
                             .map(|b| format!("{:02x}", b)).collect();
-                        log::info!(
-                            "[firewire] FireAndForget cmd=\"{}\" payload_len={} head=[{}]",
-                            cmd_disp, payload.len(), head.join(",")
-                        );
+                        if let Some(ref mut f) = trace {
+                            let _ = writeln!(f, "[firewire] OK cmd=\"{}\" payload_len={} head=[{}]",
+                                cmd_disp, payload.len(), head.join(","));
+                        }
                         if let Err(e) = self.dispatch_fire_and_forget(payload) {
                             let is_io = matches!(e, TransportError::Io(_));
+                            if let Some(ref mut f) = trace {
+                                let _ = writeln!(f, "[firewire] dispatch_err cmd=\"{}\" err={}",
+                                    cmd_disp, e);
+                            }
                             eprintln!("[bridge-error] FireAndForget send: {e}");
                             if is_io { self.transition_closed_on_io_fault(); }
                         }
                     }
                     Err(e) => {
+                        if let Some(ref mut f) = trace {
+                            let _ = writeln!(f, "[firewire] ENCODE_FAILED cmd=\"{}\" err={:?}",
+                                cmd, e);
+                        }
                         eprintln!(
                             "[bridge-error] FireAndForget encode failed for cmd={cmd:?}: {e:?}"
                         );
