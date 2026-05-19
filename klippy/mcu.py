@@ -181,11 +181,7 @@ class CommandQueryWrapper:
             raise
 
     def send(self, data=(), minclock=0, reqclock=0, retry=True):
-        if self._serial._use_bridge:
-            return self._bridge_send(data)
-        return self._do_send(
-            [self._cmd.encode(data)], minclock, reqclock, retry
-        )
+        return self._bridge_send(data)
 
     def send_with_preface(
         self,
@@ -196,15 +192,12 @@ class CommandQueryWrapper:
         reqclock=0,
         retry=True,
     ):
-        if self._serial._use_bridge:
-            # Bridge has no serialqueue; route preface as a fire-and-forget
-            # command (bridge_send) and the data as a request expecting a
-            # response (bridge_call). Used by SPI flows that need a bus
-            # selection before the transfer (tmc2130 chain reads/writes).
-            preface_cmd.send(preface_data, minclock=minclock)
-            return self._bridge_send(data)
-        cmds = [preface_cmd._cmd.encode(preface_data), self._cmd.encode(data)]
-        return self._do_send(cmds, minclock, reqclock, retry)
+        # Bridge has no serialqueue; route preface as a fire-and-forget
+        # command (bridge_send) and the data as a request expecting a
+        # response (bridge_call). Used by SPI flows that need a bus
+        # selection before the transfer (tmc2130 chain reads/writes).
+        preface_cmd.send(preface_data, minclock=minclock)
+        return self._bridge_send(data)
 
 
 # Wrapper around command sending
@@ -219,24 +212,16 @@ class CommandWrapper:
         self._msgtag = msgparser.lookup_msgid(msgformat) & 0xFFFFFFFF
 
     def send(self, data=(), minclock=0, reqclock=0):
-        if self._serial._use_bridge:
-            # Bridge mode has no serialqueue — raw_send is a no-op. Format
-            # the command as a string and route through bridge_send so
-            # fire-and-forget commands (e.g. spi_send used as a SPI bus-
-            # selection preface) actually reach the firmware.
-            self._serial.send(_format_bridge_msg(self._cmd, data), minclock)
-            return
-        cmd = self._cmd.encode(data)
-        self._serial.raw_send(cmd, minclock, reqclock, self._cmd_queue)
+        # Bridge mode has no serialqueue — raw_send is a no-op. Format
+        # the command as a string and route through bridge_send so
+        # fire-and-forget commands (e.g. spi_send used as a SPI bus-
+        # selection preface) actually reach the firmware.
+        self._serial.send(_format_bridge_msg(self._cmd, data), minclock)
 
     def send_wait_ack(self, data=(), minclock=0, reqclock=0):
-        if self._serial._use_bridge:
-            # Bridge has no per-frame ack semantics — bridge_send is already
-            # wire-level ACKed. Treat send_wait_ack as a plain send.
-            self._serial.send(_format_bridge_msg(self._cmd, data), minclock)
-            return
-        cmd = self._cmd.encode(data)
-        self._serial.raw_send_wait_ack(cmd, minclock, reqclock, self._cmd_queue)
+        # Bridge has no per-frame ack semantics — bridge_send is already
+        # wire-level ACKed. Treat send_wait_ack as a plain send.
+        self._serial.send(_format_bridge_msg(self._cmd, data), minclock)
 
     def get_command_tag(self):
         return self._msgtag
@@ -317,36 +302,8 @@ class MCU_trsync:
         self._stepper_stop_cmd = mcu.lookup_command(
             "stepper_stop_on_trigger oid=%c trsync_oid=%c", cq=self._cmd_queue
         )
-        # Detect motion bridge — skip C FFI trdispatch allocation
-        _use_bridge = (
-            hasattr(mcu, "_motion_bridge") and mcu._motion_bridge is not None
-        )
-        if _use_bridge:
-            self._trdispatch_mcu = None
-            return
-        # Create trdispatch_mcu object
-        set_timeout_tag = mcu.lookup_command(
-            "trsync_set_timeout oid=%c clock=%u"
-        ).get_command_tag()
-        trigger_cmd = mcu.lookup_command("trsync_trigger oid=%c reason=%c")
-        trigger_tag = trigger_cmd.get_command_tag()
-        state_cmd = mcu.lookup_command(
-            "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u"
-        )
-        state_tag = state_cmd.get_command_tag()
-        ffi_main, ffi_lib = chelper.get_ffi()
-        self._trdispatch_mcu = ffi_main.gc(
-            ffi_lib.trdispatch_mcu_alloc(
-                self._trdispatch,
-                mcu._serial.get_serialqueue(),  # XXX
-                self._cmd_queue,
-                self._oid,
-                set_timeout_tag,
-                trigger_tag,
-                state_tag,
-            ),
-            ffi_lib.free,
-        )
+        # Motion bridge owns trigger dispatch; no C trdispatch_mcu needed.
+        self._trdispatch_mcu = None
 
     def _shutdown(self):
         tc = self._trigger_completion
@@ -432,16 +389,8 @@ class TriggerDispatch:
     def __init__(self, mcu):
         self._mcu = mcu
         self._trigger_completion = None
-        self._use_bridge = (
-            hasattr(mcu, "_motion_bridge") and mcu._motion_bridge is not None
-        )
-        if self._use_bridge:
-            self._trdispatch = None
-        else:
-            ffi_main, ffi_lib = chelper.get_ffi()
-            self._trdispatch = ffi_main.gc(
-                ffi_lib.trdispatch_alloc(), ffi_lib.free
-            )
+        # Motion bridge owns trigger dispatch; no C trdispatch allocation.
+        self._trdispatch = None
         self._trsyncs = [MCU_trsync(mcu, self._trdispatch)]
 
     def get_oid(self):
@@ -473,28 +422,13 @@ class TriggerDispatch:
         return [s for trsync in self._trsyncs for s in trsync.get_steppers()]
 
     def start(self, print_time):
-        if self._use_bridge:
-            raise error(
-                "TriggerDispatch.start() not yet supported under the new "
-                "motion path (Phase 4)"
-            )
-        reactor = self._mcu.get_printer().get_reactor()
-        self._trigger_completion = reactor.completion()
-        expire_timeout = get_danger_options().multi_mcu_trsync_timeout
-        if len(self._trsyncs) == 1:
-            expire_timeout = get_danger_options().single_mcu_trsync_timeout
-        for i, trsync in enumerate(self._trsyncs):
-            report_offset = float(i) / len(self._trsyncs)
-            trsync.start(
-                print_time,
-                report_offset,
-                self._trigger_completion,
-                expire_timeout,
-            )
-        etrsync = self._trsyncs[0]
-        ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.trdispatch_start(self._trdispatch, etrsync.REASON_HOST_REQUEST)
-        return self._trigger_completion
+        # Bridge owns trigger dispatch; the legacy entry point is unreachable
+        # via the live homing path (BridgeTriggerDispatch in motion_bridge.py
+        # replaces it). Raise loudly if anything in the tree still calls it.
+        raise error(
+            "TriggerDispatch.start() not yet supported under the new "
+            "motion path (Phase 4)"
+        )
 
     def wait_end(self, end_time):
         etrsync = self._trsyncs[0]
@@ -504,18 +438,10 @@ class TriggerDispatch:
         self._trigger_completion.wait()
 
     def stop(self):
-        if self._use_bridge:
-            raise error(
-                "TriggerDispatch.stop() not yet supported under the new "
-                "motion path (Phase 4)"
-            )
-        ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.trdispatch_stop(self._trdispatch)
-        res = [trsync.stop() for trsync in self._trsyncs]
-        err_res = [r for r in res if r >= MCU_trsync.REASON_COMMS_TIMEOUT]
-        if err_res:
-            return err_res[0]
-        return res[0]
+        raise error(
+            "TriggerDispatch.stop() not yet supported under the new "
+            "motion path (Phase 4)"
+        )
 
 
 class MCU_endstop:
@@ -527,19 +453,11 @@ class MCU_endstop:
         self._oid = self._mcu.create_oid()
         self._home_cmd = self._query_cmd = None
         self._rest_ticks = 0
-        # Step 7-D: bridge-mode endstop uses BridgeTriggerDispatch instead of
-        # the legacy trsync-backed TriggerDispatch + endstop_home / config_endstop
-        # commands (spec §5.4). The legacy commands are not registered for
-        # bridge MCUs since the kalico firmware does not implement them.
-        self._use_bridge = (
-            hasattr(mcu, "_motion_bridge") and mcu._motion_bridge is not None
-        )
-        logging.info(
-            "[bridge-trace] MCU_endstop pin=%s _motion_bridge=%s _use_bridge=%s",
-            pin_params.get("pin"),
-            getattr(mcu, "_motion_bridge", "missing"),
-            self._use_bridge,
-        )
+        # Bridge-mode endstop uses BridgeTriggerDispatch (motion_bridge.py)
+        # instead of the legacy trsync-backed TriggerDispatch +
+        # endstop_home / config_endstop commands. The legacy commands are
+        # not registered for bridge MCUs since the kalico firmware does
+        # not implement them.
         # Sensorless-DIAG opt-out flag, populated by extras/tmc.py via
         # `homing_trip_immediately: True` config option (default False).
         self._sensorless_trip_immediately = False
@@ -548,30 +466,25 @@ class MCU_endstop:
         # (e.g. Z stepper) override before home_start.
         self._sensorless_velocity_axis = 0x03  # X | Y
         self._sensorless_v_min_q16 = 0  # 0 = no lower-bound gate
-        if self._use_bridge:
-            from . import motion_bridge as _mb
+        from . import motion_bridge as _mb
 
-            # NB: at MCU_endstop construction time the bridge has not yet
-            # identified the MCU, so `_bridge_handle` is None and we
-            # cannot allocate a bridge command queue here. Defer both
-            # the handle and the queue to BridgeTriggerDispatch.start().
-            bridge_wrapper = mcu._motion_bridge
-            self._dispatch = _mb.BridgeTriggerDispatch(
-                bridge_wrapper, None, None, mcu.get_printer().get_reactor()
-            )
-            # Resolve the numeric GPIO index the firmware-side endstop
-            # sampler will read. The Linux MCU uses GPIO(port,num) =
-            # port*288+num (src/linux/internal.h::GPIO); on STM32 the
-            # pin name (e.g. "PA10") is resolved by the firmware's pin
-            # table and is not yet plumbed through here. For the sim
-            # (gpiochipN/gpioM) we parse directly. tmc.py overrides
-            # _bridge_gpio_index for sensorless DIAG endstops.
-            self._bridge_gpio_index = self._resolve_bridge_gpio_index(
-                pin_params.get("pin", "")
-            )
-        else:
-            self._mcu.register_config_callback(self._build_config)
-            self._dispatch = TriggerDispatch(mcu)
+        # NB: at MCU_endstop construction time the bridge has not yet
+        # identified the MCU, so `_bridge_handle` is None and we
+        # cannot allocate a bridge command queue here. Defer both
+        # the handle and the queue to BridgeTriggerDispatch.start().
+        bridge_wrapper = mcu._motion_bridge
+        self._dispatch = _mb.BridgeTriggerDispatch(
+            bridge_wrapper, None, None, mcu.get_printer().get_reactor()
+        )
+        # Resolve the numeric GPIO index the firmware-side endstop
+        # sampler will read. The Linux MCU uses GPIO(port,num) =
+        # port*288+num (src/linux/internal.h::GPIO); on STM32 the
+        # pin name (e.g. "PA10") is resolved by the firmware's pin
+        # table. tmc.py overrides _bridge_gpio_index for sensorless
+        # DIAG endstops.
+        self._bridge_gpio_index = self._resolve_bridge_gpio_index(
+            pin_params.get("pin", "")
+        )
 
     def get_mcu(self):
         return self._mcu
@@ -608,32 +521,6 @@ class MCU_endstop:
     def get_steppers(self):
         return self._dispatch.get_steppers()
 
-    def _build_config(self):
-        # Setup config
-        self._mcu.add_config_cmd(
-            "config_endstop oid=%d pin=%s pull_up=%d"
-            % (self._oid, self._pin, self._pullup)
-        )
-        self._mcu.add_config_cmd(
-            "endstop_home oid=%d clock=0 sample_ticks=0 sample_count=0"
-            " rest_ticks=0 pin_value=0 trsync_oid=0 trigger_reason=0"
-            % (self._oid,),
-            on_restart=True,
-        )
-        # Lookup commands
-        cmd_queue = self._dispatch.get_command_queue()
-        self._home_cmd = self._mcu.lookup_command(
-            "endstop_home oid=%c clock=%u sample_ticks=%u sample_count=%c"
-            " rest_ticks=%u pin_value=%c trsync_oid=%c trigger_reason=%c",
-            cq=cmd_queue,
-        )
-        self._query_cmd = self._mcu.lookup_query_command(
-            "endstop_query_state oid=%c",
-            "endstop_state oid=%c homing=%c next_clock=%u pin_value=%c",
-            oid=self._oid,
-            cq=cmd_queue,
-        )
-
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
     ):
@@ -642,25 +529,7 @@ class MCU_endstop:
             self._mcu.print_time_to_clock(print_time + rest_time) - clock
         )
         self._rest_ticks = rest_ticks
-        if self._use_bridge:
-            return self._home_start_bridge(
-                print_time, sample_count, triggered
-            )
-        trigger_completion = self._dispatch.start(print_time)
-        self._home_cmd.send(
-            [
-                self._oid,
-                clock,
-                self._mcu.seconds_to_clock(sample_time),
-                sample_count,
-                rest_ticks,
-                triggered ^ self._invert,
-                self._dispatch.get_oid(),
-                MCU_trsync.REASON_ENDSTOP_HIT,
-            ],
-            reqclock=clock,
-        )
-        return trigger_completion
+        return self._home_start_bridge(print_time, sample_count, triggered)
 
     def _home_start_bridge(self, print_time, sample_count, triggered):
         # Spec §5.3: map legacy params (sample_time / rest_time ignored —
@@ -709,21 +578,7 @@ class MCU_endstop:
         return self._dispatch.start(print_time, self._mcu)
 
     def home_wait(self, home_end_time):
-        if self._use_bridge:
-            return self._home_wait_bridge(home_end_time)
-        self._dispatch.wait_end(home_end_time)
-        self._home_cmd.send([self._oid, 0, 0, 0, 0, 0, 0, 0])
-        res = self._dispatch.stop()
-        if res >= MCU_trsync.REASON_COMMS_TIMEOUT:
-            cmderr = self._mcu.get_printer().command_error
-            raise cmderr("Communication timeout during homing")
-        if res != MCU_trsync.REASON_ENDSTOP_HIT:
-            return 0.0
-        if self._mcu.is_fileoutput():
-            return home_end_time
-        params = self._query_cmd.send([self._oid])
-        next_clock = self._mcu.clock32_to_clock64(params["next_clock"])
-        return self._mcu.clock_to_print_time(next_clock - self._rest_ticks)
+        return self._home_wait_bridge(home_end_time)
 
     def _home_wait_bridge(self, home_end_time):
         # MCU-driven terminals: trip → REASON_ENDSTOP_HIT (via
@@ -809,15 +664,10 @@ class MCU_endstop:
         return None
 
     def query_endstop(self, print_time):
-        clock = self._mcu.print_time_to_clock(print_time)
-        if self._mcu.is_fileoutput():
-            return 0
-        # Bridge-mode: _query_cmd is None (no legacy endstop_query_state command).
-        # Return unpressed (0) as a safe stub — real query is Phase 5.
-        if self._use_bridge:
-            return 0
-        params = self._query_cmd.send([self._oid], minclock=clock)
-        return params["pin_value"] ^ self._invert
+        # Bridge-mode: _query_cmd is None (no legacy endstop_query_state
+        # command). Return unpressed (0) as a safe stub — real query is
+        # Phase 5.
+        return 0
 
 
 class MCU_digital_out:
@@ -1536,23 +1386,8 @@ class MCU:
         move_count = config_params["move_count"]
         if move_count < self._reserved_move_slots:
             raise error("Too few moves available on MCU '%s'" % (self._name,))
-        if self._motion_bridge is not None:
-            # Bridge mode: skip C steppersync allocation
-            self._steppersync = None
-        else:
-            ffi_main, ffi_lib = chelper.get_ffi()
-            self._steppersync = ffi_main.gc(
-                ffi_lib.steppersync_alloc(
-                    self._serial.get_serialqueue(),
-                    self._stepqueues,
-                    len(self._stepqueues),
-                    move_count - self._reserved_move_slots,
-                ),
-                ffi_lib.steppersync_free,
-            )
-            ffi_lib.steppersync_set_time(
-                self._steppersync, 0.0, self._mcu_freq
-            )
+        # Bridge mode: step emission lives in Rust, no C steppersync.
+        self._steppersync = None
         # Log config information
         move_msg = "Configured MCU '%s' (%d moves)" % (self._name, move_count)
         logging.info(move_msg)
@@ -1654,46 +1489,45 @@ class MCU:
         # Phase 2: hand the msgproto data dictionary and serial path to the
         # motion bridge so RouterTransport can encode/decode passthrough
         # commands and own the wire.
-        if self._motion_bridge is not None:
-            try:
-                raw_dict = msgparser.get_raw_data_dictionary()
-                if raw_dict:
-                    if isinstance(raw_dict, str):
-                        raw_dict = raw_dict.encode("utf-8")
-                    self._motion_bridge.set_msgproto_dict(raw_dict)
-                if self._bridge_handle is None:
-                    self._bridge_handle = self._motion_bridge.claim_mcu(
-                        self._name,
-                        self._serialport or "",
-                        int(self._baud or 0),
-                    )
-                # Mirror clocksync regression updates into the bridge so
-                # its print-time-to-clock converter doesn't stay on the
-                # t*1e6 fallback.  Captured as a closure so the bridge
-                # wrapper and handle stay alive for the callback.
-                bridge = self._motion_bridge
-                handle = self._bridge_handle
-                if handle is not None:
-
-                    def _bridge_clock_est_cb(
-                        freq, offset, last_clock, b=bridge, h=handle
-                    ):
-                        try:
-                            b.set_clock_est(
-                                h, float(freq), float(offset), int(last_clock)
-                            )
-                        except Exception:
-                            logging.exception(
-                                "motion_bridge: set_clock_est failed"
-                            )
-
-                    self._clocksync.set_clock_est_callback(
-                        _bridge_clock_est_cb
-                    )
-            except Exception:
-                logging.exception(
-                    "motion_bridge: failed to register MCU '%s'", self._name
+        try:
+            raw_dict = msgparser.get_raw_data_dictionary()
+            if raw_dict:
+                if isinstance(raw_dict, str):
+                    raw_dict = raw_dict.encode("utf-8")
+                self._motion_bridge.set_msgproto_dict(raw_dict)
+            if self._bridge_handle is None:
+                self._bridge_handle = self._motion_bridge.claim_mcu(
+                    self._name,
+                    self._serialport or "",
+                    int(self._baud or 0),
                 )
+            # Mirror clocksync regression updates into the bridge so
+            # its print-time-to-clock converter doesn't stay on the
+            # t*1e6 fallback.  Captured as a closure so the bridge
+            # wrapper and handle stay alive for the callback.
+            bridge = self._motion_bridge
+            handle = self._bridge_handle
+            if handle is not None:
+
+                def _bridge_clock_est_cb(
+                    freq, offset, last_clock, b=bridge, h=handle
+                ):
+                    try:
+                        b.set_clock_est(
+                            h, float(freq), float(offset), int(last_clock)
+                        )
+                    except Exception:
+                        logging.exception(
+                            "motion_bridge: set_clock_est failed"
+                        )
+
+                self._clocksync.set_clock_est_callback(
+                    _bridge_clock_est_cb
+                )
+        except Exception:
+            logging.exception(
+                "motion_bridge: failed to register MCU '%s'", self._name
+            )
         return True
 
     def _ready(self):
@@ -1861,7 +1695,7 @@ class MCU:
         # reactor reports `exited_gracefully()` when the drop lands. Best-
         # effort: if the bridge can't be reached (transport already gone),
         # fall through — we still try to send the reset command.
-        if self._motion_bridge is not None and self._bridge_handle is not None:
+        if self._bridge_handle is not None:
             try:
                 self._motion_bridge.bridge_mark_expected_disconnect(
                     self._bridge_handle
@@ -1930,33 +1764,13 @@ class MCU:
         self._flush_callbacks.append(callback)
 
     def flush_moves(self, print_time, clear_history_time):
-        if self._steppersync is None:
-            return
-        if self._motion_bridge is not None:
-            return  # Bridge mode: step generation handled in Rust
-        clock = self.print_time_to_clock(print_time)
-        if clock < 0:
-            return
-        for cb in self._flush_callbacks:
-            cb(print_time, clock)
-        clear_history_clock = max(
-            0, self.print_time_to_clock(clear_history_time)
-        )
-        ret = self._ffi_lib.steppersync_flush(
-            self._steppersync, clock, clear_history_clock
-        )
-        if ret:
-            raise error(
-                "Internal error in MCU '%s' stepcompress" % (self._name,)
-            )
+        # Bridge mode: step generation lives in the Rust runtime. Host-side
+        # steppersync flushing has nothing to do here.
+        return
 
     def check_active(self, print_time, eventtime):
-        if self._steppersync is None:
-            return
-        if self._motion_bridge is not None:
-            return  # Bridge mode: clock sync handled in Rust
-        offset, freq = self._clocksync.calibrate_clock(print_time, eventtime)
-        self._ffi_lib.steppersync_set_time(self._steppersync, offset, freq)
+        # Bridge mode: clock sync runs through motion_bridge; the legacy
+        # steppersync clock-calibration path no longer has work to do here.
         if (
             self._clocksync.is_active()
             or self.is_fileoutput()

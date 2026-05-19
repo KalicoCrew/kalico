@@ -194,13 +194,12 @@ class DualCarriages:
     cmd_SET_DUAL_CARRIAGE_help = "Configure the dual carriages mode"
 
     def cmd_SET_DUAL_CARRIAGE(self, gcmd):
-        # Motion bridge: runtime IDEX mode switches not yet supported
-        bridge = self.printer.lookup_object("motion_bridge", None)
-        if bridge is not None:
-            raise gcmd.error(
-                "SET_DUAL_CARRIAGE is not yet supported under the new "
-                "motion path. This will be available in a future phase."
-            )
+        # Motion bridge: runtime IDEX mode switches not yet supported.
+        # The bridge is unconditionally present, so this guard always fires.
+        raise gcmd.error(
+            "SET_DUAL_CARRIAGE is not yet supported under the new "
+            "motion path. This will be available in a future phase."
+        )
         index = gcmd.get_int("CARRIAGE", minval=0, maxval=1)
         mode = gcmd.get("MODE", PRIMARY).upper()
         if mode not in self.VALID_MODES:

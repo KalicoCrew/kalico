@@ -22,26 +22,15 @@ class SerialReader:
         self.reactor = reactor
         self.warn_prefix = warn_prefix
         self.mcu = mcu
-        # Detect motion bridge — if present, skip C serialqueue allocation
-        self._use_bridge = (
-            mcu is not None
-            and hasattr(mcu, "_motion_bridge")
-            and mcu._motion_bridge is not None
-        )
+        # The motion bridge owns wire I/O on every MCU on this fork, so
+        # the legacy C serialqueue is never allocated.
         # Serial port
         self.serial_dev = None
         self.msgparser = msgproto.MessageParser(warn_prefix=warn_prefix)
-        # C interface (skipped when bridge is active)
-        if self._use_bridge:
-            self.ffi_main = self.ffi_lib = None
-            self.serialqueue = None
-            self.default_cmd_queue = None
-            self.stats_buf = None
-        else:
-            self.ffi_main, self.ffi_lib = chelper.get_ffi()
-            self.serialqueue = None
-            self.default_cmd_queue = self.alloc_command_queue()
-            self.stats_buf = self.ffi_main.new("char[4096]")
+        self.ffi_main = self.ffi_lib = None
+        self.serialqueue = None
+        self.default_cmd_queue = None
+        self.stats_buf = None
         # Threading
         self.lock = threading.Lock()
         self.background_thread = None
@@ -83,7 +72,7 @@ class SerialReader:
 
     def _bridge_event_poller(self, eventtime):
         """Reactor timer: drain bridge runtime events and dispatch to handlers."""
-        if not self._use_bridge or self.mcu is None:
+        if self.mcu is None:
             return self.reactor.NEVER
         bridge = self.mcu._motion_bridge
         handle = self.mcu._bridge_handle
@@ -368,89 +357,43 @@ class SerialReader:
 
     def connect_pipe(self, filename):
         logging.info("%sStarting connect", self.warn_prefix)
-        if self._use_bridge:
-            # Bridge mode: Rust reactor owns the FD.  Ask the bridge to open
-            # the port, run the identify handshake, and return the raw dict
-            # blob so klippy's msgparser can be populated normally.
-            bridge = self.mcu._motion_bridge
-            # claim_mcu may not have been called yet (it normally happens in
-            # _mcu_identify after connect_pipe returns). Allocate the handle
-            # here so attach_serial has something to bind to; the later guard
-            # in _mcu_identify will skip the second claim_mcu call.
-            if self.mcu._bridge_handle is None:
-                self.mcu._bridge_handle = bridge.claim_mcu(
-                    self.mcu._name,
-                    filename,
-                    0,
-                )
-            handle = self.mcu._bridge_handle
-            logging.info("%sbridge attach_serial %s (handle=%s)",
-                         self.warn_prefix, filename, handle)
-            bridge.attach_serial(handle, filename, 0, timeout_s=30.0)
-            identify_data = bridge.get_identify_data(handle)
-            logging.info(
-                "%sbridge identify done (%d bytes)", self.warn_prefix, len(identify_data)
+        # Bridge mode: Rust reactor owns the FD.  Ask the bridge to open
+        # the port, run the identify handshake, and return the raw dict
+        # blob so klippy's msgparser can be populated normally.
+        bridge = self.mcu._motion_bridge
+        # claim_mcu may not have been called yet (it normally happens in
+        # _mcu_identify after connect_pipe returns). Allocate the handle
+        # here so attach_serial has something to bind to; the later guard
+        # in _mcu_identify will skip the second claim_mcu call.
+        if self.mcu._bridge_handle is None:
+            self.mcu._bridge_handle = bridge.claim_mcu(
+                self.mcu._name,
+                filename,
+                0,
             )
-            msgparser = msgproto.MessageParser(warn_prefix=self.warn_prefix)
-            msgparser.process_identify(identify_data)
-            self.msgparser = msgparser
-            self.register_response(self.handle_unknown, "#unknown")
-            # Register a reactor timer that polls runtime events from the
-            # bridge and dispatches them to klippy's registered handlers.
-            # This is the inbound async path for kalico_status_v6 etc.
-            self.reactor.register_timer(
-                self._bridge_event_poller, self.reactor.NOW
-            )
-            return
-        start_time = self.reactor.monotonic()
-        while True:
-            if self.reactor.monotonic() > start_time + 90.0:
-                self._error("Unable to connect")
-            try:
-                fd = os.open(filename, os.O_RDWR | os.O_NOCTTY)
-            except OSError as e:
-                logging.warning(
-                    "%sUnable to open port: %s", self.warn_prefix, e
-                )
-                self.reactor.pause(self.reactor.monotonic() + 5.0)
-                continue
-            serial_dev = os.fdopen(fd, "rb+", 0)
-            ret = self._start_session(serial_dev)
-            if ret:
-                break
+        handle = self.mcu._bridge_handle
+        logging.info("%sbridge attach_serial %s (handle=%s)",
+                     self.warn_prefix, filename, handle)
+        bridge.attach_serial(handle, filename, 0, timeout_s=30.0)
+        identify_data = bridge.get_identify_data(handle)
+        logging.info(
+            "%sbridge identify done (%d bytes)", self.warn_prefix, len(identify_data)
+        )
+        msgparser = msgproto.MessageParser(warn_prefix=self.warn_prefix)
+        msgparser.process_identify(identify_data)
+        self.msgparser = msgparser
+        self.register_response(self.handle_unknown, "#unknown")
+        # Register a reactor timer that polls runtime events from the
+        # bridge and dispatches them to klippy's registered handlers.
+        # This is the inbound async path for kalico_status_v6 etc.
+        self.reactor.register_timer(
+            self._bridge_event_poller, self.reactor.NOW
+        )
 
     def connect_uart(self, serialport, baud, rts=True):
-        # Bridge mode: redirect to bridge path regardless of baud setting.
-        if self._use_bridge:
-            self.connect_pipe(serialport)
-            return
-        # Initial connection
-        logging.info("%sStarting serial connect", self.warn_prefix)
-        start_time = self.reactor.monotonic()
-        while 1:
-            if (
-                self.serialqueue is not None
-            ):  # if we're already connected, don't recon
-                break
-            if self.reactor.monotonic() > start_time + 90.0:
-                self._error("Unable to connect")
-            try:
-                serial_dev = serial.Serial(
-                    baudrate=baud, timeout=0, exclusive=True
-                )
-                serial_dev.port = serialport
-                serial_dev.rts = rts
-                serial_dev.open()
-            except (OSError, IOError, serial.SerialException) as e:
-                logging.warning(
-                    "%sUnable to open serial port: %s", self.warn_prefix, e
-                )
-                self.reactor.pause(self.reactor.monotonic() + 5.0)
-                continue
-            stk500v2_leave(serial_dev, self.reactor)
-            ret = self._start_session(serial_dev)
-            if ret:
-                break
+        # Bridge mode owns the wire for UART transports too; route through
+        # the same path the pipe (USB-CDC) attaches use.
+        self.connect_pipe(serialport)
 
     def check_connect(self, serialport, baud, rts=True):
         serial_dev = serial.Serial(baudrate=baud, timeout=0, exclusive=False)
@@ -472,53 +415,29 @@ class SerialReader:
         )
 
     def set_clock_est(self, freq, conv_time, conv_clock, last_clock):
-        if self._use_bridge:
-            bridge = self.mcu._motion_bridge
-            handle = self.mcu._bridge_handle
-            if bridge is not None and handle is not None:
-                # Forward the (conv_time, conv_clock) anchor pair, NOT
-                # last_clock. Klippy's clocksync model is a regression
-                # line: at host time conv_time, the MCU was at conv_clock.
-                # last_clock is the most-recently-observed MCU clock,
-                # independent of conv_time, so pairing it with conv_time
-                # would mis-anchor the bridge's projection by the
-                # (conv_clock − last_clock) lag (typically several ms).
-                bridge.set_clock_est(
-                    handle, float(freq), float(conv_time), int(conv_clock)
-                )
-            return
-        self.ffi_lib.serialqueue_set_clock_est(
-            self.serialqueue, freq, conv_time, conv_clock, last_clock
-        )
+        bridge = self.mcu._motion_bridge
+        handle = self.mcu._bridge_handle
+        if bridge is not None and handle is not None:
+            # Forward the (conv_time, conv_clock) anchor pair, NOT
+            # last_clock. Klippy's clocksync model is a regression
+            # line: at host time conv_time, the MCU was at conv_clock.
+            # last_clock is the most-recently-observed MCU clock,
+            # independent of conv_time, so pairing it with conv_time
+            # would mis-anchor the bridge's projection by the
+            # (conv_clock − last_clock) lag (typically several ms).
+            bridge.set_clock_est(
+                handle, float(freq), float(conv_time), int(conv_clock)
+            )
 
     def disconnect(self):
-        if self._use_bridge:
-            # Bridge manages its own serial lifecycle
-            for pn in self.pending_notifications.values():
-                pn.complete(None)
-            self.pending_notifications.clear()
-            return
-        if self.serialqueue is not None:
-            self.ffi_lib.serialqueue_exit(self.serialqueue)
-            if self.background_thread is not None:
-                self.background_thread.join()
-            self.background_thread = self.serialqueue = None
-        if self.serial_dev is not None:
-            self.serial_dev.close()
-            self.serial_dev = None
+        # Bridge manages its own serial lifecycle; just settle pending
+        # response notifications.
         for pn in self.pending_notifications.values():
             pn.complete(None)
         self.pending_notifications.clear()
 
     def stats(self, eventtime):
-        if self._use_bridge:
-            return "bridge_mode=1"
-        if self.serialqueue is None:
-            return ""
-        self.ffi_lib.serialqueue_get_stats(
-            self.serialqueue, self.stats_buf, len(self.stats_buf)
-        )
-        return str(self.ffi_main.string(self.stats_buf).decode())
+        return "bridge_mode=1"
 
     def get_reactor(self):
         return self.reactor
@@ -527,9 +446,8 @@ class SerialReader:
         return self.msgparser
 
     def get_serialqueue(self):
-        if self._use_bridge:
-            return None  # Bridge manages the serial queue in Rust
-        return self.serialqueue
+        # Bridge manages the serial queue in Rust.
+        return None
 
     def get_default_command_queue(self):
         return self.default_cmd_queue
@@ -548,112 +466,48 @@ class SerialReader:
 
     # Command sending
     def raw_send(self, cmd, minclock, reqclock, cmd_queue):
+        # Bridge mode: Rust reactor owns the wire; periodic raw_send
+        # calls (e.g. get_clock from clocksync) are no-ops here.
+        # Clock sync is driven by the bridge via set_clock_est callbacks.
         self._check_noncritical_disconnected()
-        if self._use_bridge:
-            # Bridge mode: Rust reactor owns the wire; periodic raw_send
-            # calls (e.g. get_clock from clocksync) are no-ops here.
-            # Clock sync is driven by the bridge via set_clock_est callbacks.
-            return
-        if self.serialqueue is None:
-            return
-        self.ffi_lib.serialqueue_send(
-            self.serialqueue, cmd_queue, cmd, len(cmd), minclock, reqclock, 0
-        )
 
     def raw_send_wait_ack(self, cmd, minclock, reqclock, cmd_queue):
+        # Bridge mode: no-op; bridge owns the wire.
         self._check_noncritical_disconnected()
-        if self._use_bridge:
-            # Bridge mode: no-op; bridge owns the wire.
-            return {}
-        if self.serialqueue is None:
-            return
-        self.last_notify_id += 1
-        nid = self.last_notify_id
-        completion = self.reactor.completion()
-        self.pending_notifications[nid] = completion
-        self.ffi_lib.serialqueue_send(
-            self.serialqueue, cmd_queue, cmd, len(cmd), minclock, reqclock, nid
-        )
-        params = completion.wait()
-        if params is None:
-            self._error("Serial connection closed")
-        return params
+        return {}
 
     def send(self, msg, minclock=0, reqclock=0):
-        if self._use_bridge:
-            # Bridge mode: send fire-and-forget via the Rust reactor.
-            bridge = self.mcu._motion_bridge
-            handle = self.mcu._bridge_handle
-            if bridge is not None and handle is not None:
-                import logging as _l
-                _l.info("[serial-send] bridge_send mcu=%s handle=%s msg=%s",
-                        getattr(self.mcu, "_name", "?"), handle, msg[:200])
-                bridge.bridge_send(handle, msg)
-            else:
-                import logging as _l
-                _l.error(
-                    "[serial-send] DROPPED in bridge mode: bridge=%s handle=%s "
-                    "msg=%s", bridge, handle, msg[:200])
-            return
-        cmd = self.msgparser.create_command(msg)
-        self.raw_send(cmd, minclock, reqclock, self.default_cmd_queue)
+        # Bridge mode: send fire-and-forget via the Rust reactor.
+        bridge = self.mcu._motion_bridge
+        handle = self.mcu._bridge_handle
+        if bridge is not None and handle is not None:
+            logging.info(
+                "[serial-send] bridge_send mcu=%s handle=%s msg=%s",
+                getattr(self.mcu, "_name", "?"), handle, msg[:200])
+            bridge.bridge_send(handle, msg)
+        else:
+            logging.error(
+                "[serial-send] DROPPED in bridge mode: bridge=%s handle=%s "
+                "msg=%s", bridge, handle, msg[:200])
 
     def send_with_response(self, msg, response):
-        if self._use_bridge:
-            # Route through the Rust reactor which owns the FD.
-            bridge = self.mcu._motion_bridge
-            handle = self.mcu._bridge_handle
-            params = bridge.bridge_call(handle, msg, response)
-            # Inject timing fields klippy expects (reactor monotonic as approx).
-            now = self.reactor.monotonic()
-            params["#sent_time"] = now
-            params["#receive_time"] = now
-            return params
-        cmd = self.msgparser.create_command(msg)
-        src = SerialRetryCommand(self, response)
-        return src.get_response([cmd], self.default_cmd_queue)
+        # Route through the Rust reactor which owns the FD.
+        bridge = self.mcu._motion_bridge
+        handle = self.mcu._bridge_handle
+        params = bridge.bridge_call(handle, msg, response)
+        # Inject timing fields klippy expects (reactor monotonic as approx).
+        now = self.reactor.monotonic()
+        params["#sent_time"] = now
+        params["#receive_time"] = now
+        return params
 
     def alloc_command_queue(self):
-        if self._use_bridge:
-            return None  # Bridge manages its own command queues
-        return self.ffi_main.gc(
-            self.ffi_lib.serialqueue_alloc_commandqueue(),
-            self.ffi_lib.serialqueue_free_commandqueue,
-        )
+        # Bridge manages its own command queues in Rust.
+        return None
 
     # Dumping debug lists
     def dump_debug(self):
-        if self._use_bridge:
-            return "SerialReader: bridge mode (no C serialqueue)"
-        out = []
-        out.append(
-            "Dumping serial stats: %s" % (self.stats(self.reactor.monotonic()),)
-        )
-        sdata = self.ffi_main.new("struct pull_queue_message[1024]")
-        rdata = self.ffi_main.new("struct pull_queue_message[1024]")
-        scount = self.ffi_lib.serialqueue_extract_old(
-            self.serialqueue, 1, sdata, len(sdata)
-        )
-        rcount = self.ffi_lib.serialqueue_extract_old(
-            self.serialqueue, 0, rdata, len(rdata)
-        )
-        out.append("Dumping send queue %d messages" % (scount,))
-        for i in range(scount):
-            msg = sdata[i]
-            cmds = self.msgparser.dump(msg.msg[0 : msg.len])
-            out.append(
-                "Sent %d %f %f %d: %s"
-                % (i, msg.receive_time, msg.sent_time, msg.len, ", ".join(cmds))
-            )
-        out.append("Dumping receive queue %d messages" % (rcount,))
-        for i in range(rcount):
-            msg = rdata[i]
-            cmds = self.msgparser.dump(msg.msg[0 : msg.len])
-            out.append(
-                "Receive: %d %f %f %d: %s"
-                % (i, msg.receive_time, msg.sent_time, msg.len, ", ".join(cmds))
-            )
-        return "\n".join(out)
+        return "SerialReader: bridge mode (no C serialqueue)"
 
     # Default message handlers
     def _handle_unknown_init(self, params):

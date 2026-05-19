@@ -258,7 +258,10 @@ class PrinterMotionReport:
 
     # Shutdown handling
     def _dump_shutdown(self, eventtime):
-        # Log stepper queue_steps on mcu that started shutdown (if any)
+        # Stepper queue_step dump removed alongside the legacy stepcompress
+        # path — step pulses are emitted from the Rust runtime now and there
+        # is no host-side step queue to spill at shutdown. Trapq dump below
+        # is still useful for diagnosing planner-state at shutdown.
         shutdown_time = NEVER_TIME
         for dstepper in self.steppers.values():
             mcu = dstepper.mcu_stepper.get_mcu()
@@ -266,11 +269,6 @@ class PrinterMotionReport:
             if not sc:
                 continue
             shutdown_time = min(shutdown_time, mcu.clock_to_print_time(sc))
-            clock_100ms = mcu.seconds_to_clock(0.100)
-            start_clock = max(0, sc - clock_100ms)
-            end_clock = sc + clock_100ms
-            data, cdata = dstepper.get_step_queue(start_clock, end_clock)
-            dstepper.log_steps(data)
         if shutdown_time >= NEVER_TIME:
             return
         # Log trapqs around time of shutdown
