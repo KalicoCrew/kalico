@@ -106,6 +106,16 @@ pub const KALICO_ERR_HOST_DISCONNECT: i32 = -200;
 pub const KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED: i32 = -201;
 pub const KALICO_ERR_HOST_DISPATCHER_TIMEOUT: i32 = -202;
 
+// Step 8: stepping-redesign faults (per docs/superpowers/specs/2026-05-19-stepping-redesign-design.md §9.2).
+pub const KALICO_ERR_STEP_QUEUE_OVERFLOW: i32 = -300;
+pub const KALICO_ERR_SPI_QUEUE_OVERFLOW: i32 = -301;
+pub const KALICO_ERR_MATH_NON_FINITE: i32 = -302;
+pub const KALICO_ERR_PIECE_ADVANCE_UNDERFLOW: i32 = -303;
+pub const KALICO_ERR_SAMPLE_RATE_MISCONFIGURED: i32 = -304;
+pub const KALICO_ERR_POSITION_COUNT_OVERFLOW: i32 = -305;
+pub const KALICO_ERR_JOG_PARAMETERS_INVALID: i32 = -306;
+pub const KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING: i32 = -307;
+
 /// Fault taxonomy. Spec §9.1. Each code has a specific recovery semantic;
 /// collapsing to a catch-all loses diagnostic information.
 ///
@@ -181,6 +191,16 @@ pub enum FaultCode {
     HostDisconnect = -200,
     HostRetransmitExhausted = -201,
     HostDispatcherTimeout = -202,
+
+    // Step 8: stepping-redesign faults (per docs/superpowers/specs/2026-05-19-stepping-redesign-design.md §9.2).
+    StepQueueOverflow = -300,
+    SpiQueueOverflow = -301,
+    MathNonFinite = -302,
+    PieceAdvanceUnderflow = -303,
+    SampleRateMisconfigured = -304,
+    PositionCountOverflow = -305,
+    JogParametersInvalid = -306,
+    StepRateExceedsMcuCeiling = -307,
 }
 
 impl FaultCode {
@@ -344,6 +364,50 @@ mod tests {
         assert_ne!(KALICO_ERR_HOST_DISCONNECT, KALICO_ERR_HOST_DISPATCHER_TIMEOUT);
         assert_ne!(
             KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED,
+            KALICO_ERR_HOST_DISPATCHER_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn fault_code_stepping_redesign_numeric_values() {
+        // §9.2 — every Step-8 stepping-redesign FaultCode variant must
+        // numerically agree with its KALICO_ERR_* twin. Reuse-of-value
+        // would silently miscategorize faults to the host.
+        assert_eq!(
+            FaultCode::StepQueueOverflow.as_i32(),
+            KALICO_ERR_STEP_QUEUE_OVERFLOW
+        );
+        assert_eq!(
+            FaultCode::SpiQueueOverflow.as_i32(),
+            KALICO_ERR_SPI_QUEUE_OVERFLOW
+        );
+        assert_eq!(FaultCode::MathNonFinite.as_i32(), KALICO_ERR_MATH_NON_FINITE);
+        assert_eq!(
+            FaultCode::PieceAdvanceUnderflow.as_i32(),
+            KALICO_ERR_PIECE_ADVANCE_UNDERFLOW
+        );
+        assert_eq!(
+            FaultCode::SampleRateMisconfigured.as_i32(),
+            KALICO_ERR_SAMPLE_RATE_MISCONFIGURED
+        );
+        assert_eq!(
+            FaultCode::PositionCountOverflow.as_i32(),
+            KALICO_ERR_POSITION_COUNT_OVERFLOW
+        );
+        assert_eq!(
+            FaultCode::JogParametersInvalid.as_i32(),
+            KALICO_ERR_JOG_PARAMETERS_INVALID
+        );
+        assert_eq!(
+            FaultCode::StepRateExceedsMcuCeiling.as_i32(),
+            KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING
+        );
+        // Cross-check: distinct from each other and from the existing
+        // -7..-202 range.
+        assert_eq!(KALICO_ERR_STEP_QUEUE_OVERFLOW, -300);
+        assert_eq!(KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING, -307);
+        assert_ne!(
+            KALICO_ERR_STEP_QUEUE_OVERFLOW,
             KALICO_ERR_HOST_DISPATCHER_TIMEOUT
         );
     }

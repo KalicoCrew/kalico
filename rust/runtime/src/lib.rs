@@ -55,6 +55,7 @@ pub mod step_producer;
 pub mod step_queue;
 pub mod step_ring;
 pub mod step_time;
+pub mod stepping_state;
 pub mod stream;
 pub mod sub_sample_timing;
 pub mod test_xdirect_capture;

@@ -445,6 +445,24 @@ pub struct SharedState {
     pub last_combined_motor_a_cps_0: AtomicU32,
     /// CoreXY-combined cps[3] after `kine.combine` for motor A. f32 bits.
     pub last_combined_motor_a_cps_3: AtomicU32,
+
+    // Stepping-redesign telemetry (per 2026-05-19 design §10).
+    /// Per-axis high-water mark for the per-axis step-event queue depth.
+    /// ISR samples post-enqueue; foreground reads via the 10 Hz status frame.
+    pub queue_high_water: [AtomicU32; 4],
+    /// Per-axis count of `StepQueueOverflow` events. Bumps each time the
+    /// per-axis queue refuses an enqueue. Cumulative — never decremented.
+    pub queue_overflow_count: [AtomicU32; 4],
+    /// Count of sample ticks in which the phase-stepping SPI bus saturated
+    /// (a frame had to be dropped or coalesced because the DMA pipe was full).
+    pub spi_saturated_samples: AtomicU32,
+    /// Peak observed cycles spent inside the sample ISR, across all ticks
+    /// since boot. Use the rdcyc / DWT-CYCCNT counter; never decreases.
+    pub sample_isr_peak_cycles: AtomicU32,
+    /// Peak observed cycles spent inside the per-axis consumer hook, indexed
+    /// by axis. Used to spot a runaway axis-local hot path independently of
+    /// the global `sample_isr_peak_cycles`.
+    pub per_axis_consumer_peak_cycles: [AtomicU32; 4],
 }
 
 impl SharedState {
@@ -588,6 +606,16 @@ impl SharedState {
             last_resolved_primary_cps_3: AtomicU32::new(0),
             last_combined_motor_a_cps_0: AtomicU32::new(0),
             last_combined_motor_a_cps_3: AtomicU32::new(0),
+
+            // Stepping-redesign telemetry (per 2026-05-19 design §10).
+            // `AtomicU32` is not `Copy`, so `[AtomicU32::new(0); 4]` doesn't
+            // compile. Use `[const { ... }; N]` (Rust 1.79+) for clean,
+            // const-evaluable array initialization.
+            queue_high_water: [const { AtomicU32::new(0) }; 4],
+            queue_overflow_count: [const { AtomicU32::new(0) }; 4],
+            spi_saturated_samples: AtomicU32::new(0),
+            sample_isr_peak_cycles: AtomicU32::new(0),
+            per_axis_consumer_peak_cycles: [const { AtomicU32::new(0) }; 4],
         }
     }
 }
