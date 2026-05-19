@@ -133,33 +133,7 @@ class MCU_stepper:
             self._step_pulse_duration = 0.000002
         invert_step = self._invert_step
         if self._use_bridge:
-            # Bridge mode: register config commands but skip C FFI
-            step_pulse_ticks = self._mcu.seconds_to_clock(
-                self._step_pulse_duration
-            )
-            self._mcu.add_config_cmd(
-                "config_stepper oid=%d step_pin=%s dir_pin=%s invert_step=%d"
-                " step_pulse_ticks=%u"
-                % (
-                    self._oid,
-                    self._step_pin,
-                    self._dir_pin,
-                    invert_step,
-                    step_pulse_ticks,
-                )
-            )
-            self._mcu.add_config_cmd(
-                "reset_step_clock oid=%d clock=0" % (self._oid,),
-                on_restart=True,
-            )
-            self._reset_cmd_tag = self._mcu.lookup_command(
-                "reset_step_clock oid=%c clock=%u"
-            ).get_command_tag()
-            self._get_position_cmd = self._mcu.lookup_query_command(
-                "stepper_get_position oid=%c",
-                "stepper_position oid=%c pos=%i",
-                oid=self._oid,
-            )
+            self._build_config_bridge()
             return
         # Check if can enable "step on both edges"
         constants = self._mcu.get_constants()
@@ -217,6 +191,50 @@ class MCU_stepper:
         ffi_main, ffi_lib = chelper.get_ffi()
         ffi_lib.stepcompress_fill(
             self._stepqueue, max_error_ticks, step_cmd_tag, dir_cmd_tag
+        )
+
+    def _build_config_bridge(self):
+        # The kalico runtime emits step pulses by toggling step_pin
+        # exactly once per requested step (runtime_emit_step_pulses in
+        # src/stepper.c). Every edge — rising AND falling — counts as
+        # a step, so the TMC driver MUST be configured with DEDGE=1 or
+        # it counts only rising edges and the motor moves at half rate.
+        # tmc.py enables DEDGE based on `_step_both_edge`; we set it
+        # here and also send invert_step=-1 to record SF_SINGLE_SCHED
+        # on the firmware side (matches the legacy negotiated path).
+        constants = self._mcu.get_constants()
+        if not int(constants.get("STEPPER_STEP_BOTH_EDGE", "0")):
+            raise self._mcu.get_printer().config_error(
+                "Stepper %s: kalico motion bridge requires firmware "
+                "with STEPPER_STEP_BOTH_EDGE support (mcu=%s)"
+                % (self._name, self._mcu.get_name())
+            )
+        self._step_both_edge = True
+        self._step_pulse_duration = 0.0
+        invert_step = -1
+        step_pulse_ticks = 0
+        self._mcu.add_config_cmd(
+            "config_stepper oid=%d step_pin=%s dir_pin=%s invert_step=%d"
+            " step_pulse_ticks=%u"
+            % (
+                self._oid,
+                self._step_pin,
+                self._dir_pin,
+                invert_step,
+                step_pulse_ticks,
+            )
+        )
+        self._mcu.add_config_cmd(
+            "reset_step_clock oid=%d clock=0" % (self._oid,),
+            on_restart=True,
+        )
+        self._reset_cmd_tag = self._mcu.lookup_command(
+            "reset_step_clock oid=%c clock=%u"
+        ).get_command_tag()
+        self._get_position_cmd = self._mcu.lookup_query_command(
+            "stepper_get_position oid=%c",
+            "stepper_position oid=%c pos=%i",
+            oid=self._oid,
         )
 
     def get_oid(self):
