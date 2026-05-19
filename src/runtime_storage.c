@@ -51,7 +51,7 @@ _Static_assert(RT_STORAGE_SIZE >= 1024,
 #define AXI_BSS_KALICO_BUF_BYTES        14752 /* 4 * (1830 + 1850) + 32 */
 #define AXI_BSS_RUNTIME_BENCH_BYTES     1024  /* 256 * sizeof(uint32_t) */
 #define AXI_BSS_SERIAL_IRQ_RX_BYTES     2048  /* RX_BUFFER_SIZE in serial_irq.c */
-#define AXI_BSS_HEADROOM                16384 /* 16 KB margin */
+#define AXI_BSS_HEADROOM                2048  /* 2 KB margin — AXI is tight on H7 with the LARGE-profile RuntimeContext (~298 KB measured) */
 #define AXI_SRAM_SIZE                   (320 * 1024)
 
 _Static_assert(

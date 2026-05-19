@@ -452,17 +452,20 @@ config RUNTIME_CURVE_POOL_N
 
 config RUNTIME_STORAGE_SIZE_LARGE
     int "rt_storage byte ceiling (large profile, H7)"
-    default 290816
+    default 307200
     range 65536 524288
     depends on KALICO_RUNTIME
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
       replaces RT_CELL's Rust-side #[link_section] placement). Default
-      is 284 KB, sized to leave room for the other .axi_bss occupants
-      (kalico_buf ~14.4 KB, runtime_bench_samples_buf ~1 KB, receive_buf
-      2 KB) plus 16 KB headroom inside H7's 320 KB AXI SRAM region.
-      Const_assert on Rust + _Static_assert on C catch contract
-      violations at compile time.
+      is 300 KB. Measured size_of::<RuntimeContext>() on the LARGE
+      profile is 305896 bytes (298 KB); 300 KB gives ~1.3 KB of growth
+      room before the Rust const_assert fires. The AXI SRAM ceiling
+      (327680 bytes minus the other .axi_bss occupants — kalico_buf
+      14752, runtime_bench_samples_buf 1024, receive_buf 2048 — leaves
+      ~309 KB available) is tight; the C-side _Static_assert in
+      src/runtime_storage.c enforces 2 KB AXI headroom on top of that.
+      Both asserts catch contract violations at compile time.
 
 config RUNTIME_STORAGE_SIZE_SMALL
     int "rt_storage byte ceiling (small profile, F4)"
