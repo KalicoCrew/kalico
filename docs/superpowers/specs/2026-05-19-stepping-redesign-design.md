@@ -232,21 +232,40 @@ fn dispatch_axis(axis, P_end, v_end, P_sample_start, v_sample_start):
       axis.last_step_count = target_step_count
 
       if |n_steps| > 0:
-        v_avg = (v_sample_start + v_end) / 2
+        # Sub-sample step times via SECANT-SLOPE local-linear interpolation
+        # through (0, P_sample_start) and (sample_period, P_end). This is
+        # the canonical linear approximation of the cubic Bezier over this
+        # sample. By construction, t_local ∈ [0, sample_period] for every
+        # step_pos_k between P_sample_start and P_end — guaranteed in-sample.
+        #
+        # We do NOT use (v_sample_start + v_end) / 2 as the slope, even
+        # though it's an obvious-looking estimate. That trapezoidal average
+        # is only exact for linear v(t) (quadratic P); our cubic P has
+        # quadratic v, where trapezoidal disagrees with the true time-average
+        # by Simpson-rule curvature. The disagreement can push the formula's
+        # t_k outside [0, sample_period], scheduling steps into next sample's
+        # territory and double-counting at sample boundaries.
+        #
         # cycle_abs is u32 = lower 32 bits of cycle counter. Wraps every
         # ~8.3 s on H7, ~4 min on F446. Use wrapping_add for absolute time
         # computation. Consumer side uses timer_is_before (signed-delta).
-        if |v_avg| > V_EXTRAPOLATION_THRESHOLD:    # default 1 mm/s
-          # Velocity-extrapolated sub-sample times
+        displacement = P_end - P_sample_start
+        if |displacement| > DISPLACEMENT_THRESHOLD:   # default 1 microstep
           for k in 0..|n_steps|:
             step_pos_k = (prev_step_count + (k+1) · sign(n_steps))
                          · axis.microstep_distance
-            t_local_sec = (step_pos_k - P_sample_start) / v_avg
+            # Secant-slope linear interpolation:
+            t_local_sec = (step_pos_k - P_sample_start) · sample_period
+                          / displacement
+            # debug_assert: t_local_sec ∈ [0, sample_period] by construction
             dt_cycles = (t_local_sec · cycles_per_second) as u32
             cycle_abs = sample_start_cycles.wrapping_add(dt_cycles)
             push (cycle_abs, sign(n_steps)) to step_queues[axis]
         else:
-          # Near-zero velocity fallback: uniform within sample
+          # Sample produced n_steps but P barely changed (e.g., curve
+          # reversing direction at v=0 — n_steps integer counts of a back-
+          # and-forth that net to near zero). Fall back to uniform within
+          # sample; consumer fires them spread evenly.
           for k in 0..|n_steps|:
             dt_cycles = (sample_period_cycles · (k+1)) / (|n_steps|+1)
             cycle_abs = sample_start_cycles.wrapping_add(dt_cycles)
@@ -887,7 +906,8 @@ reactor → `kalico_runtime_shutdown_engine` → Klipper shutdown.
 - Bernstein→monomial conversion round-trip
 - Velocity-extrapolation formula against analytical step times for constant-v
   and constant-a curves (< 100 ns timing error)
-- `V_EXTRAPOLATION_THRESHOLD` fallback triggers near v=0
+- `DISPLACEMENT_THRESHOLD` fallback triggers when per-sample displacement
+  is below ~1 microstep (near-stationary samples, direction reversal at v=0)
 - Piece-boundary advancement (sample straddling pieces)
 
 **Property tests on SPSC step queue:**
@@ -1018,5 +1038,8 @@ These are recorded for future work; not blocking this redesign.
 - **Phase mode**: TMC DIRECT mode, coil currents driven via SPI.
 - **Step queue**: per-axis SPSC queue of `(cycle_abs, dir)` for Pulse mode.
 - **SPI write queue**: per-bus SPSC queue of TMC register writes for Phase mode.
-- **Velocity extrapolation**: `t_k = (step_pos_k - P_start) / v_avg` over each
-  sample interval.
+- **Velocity extrapolation**: secant-slope linear interpolation through
+  `(0, P_sample_start)` and `(sample_period, P_end)`, evaluated at each
+  integer step boundary `step_pos_k`. Yields `t_k ∈ [0, sample_period]`
+  by construction. Replaces trapezoidal-average estimate that could push
+  step times outside the sample window for cubic position curves.
