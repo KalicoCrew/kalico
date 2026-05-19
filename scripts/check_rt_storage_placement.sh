@@ -35,7 +35,13 @@ ADDR=$((16#${ADDR_HEX#0x}))
 
 # Detect MCU family from the ELF's symbol table.
 # Heuristic: H7 builds have an _axi_bss_start symbol; F4 builds don't.
-if "${OBJDUMP:-arm-none-eabi-objdump}" -t "$ELF" | grep -q '_axi_bss_start'; then
+#
+# Use awk instead of grep -q here: with `set -o pipefail`, grep -q exits
+# early when it matches, SIGPIPE-killing the upstream objdump, and the
+# pipe returns non-zero. awk reads stdin to EOF so the upstream finishes
+# normally regardless of match position.
+if "${OBJDUMP:-arm-none-eabi-objdump}" -t "$ELF" \
+   | awk '/_axi_bss_start/{found=1} END{exit !found}'; then
     MCU=H7
     EXPECTED_SECTION=".axi_bss"
     MIN_ADDR=$((0x24000000))
