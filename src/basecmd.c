@@ -197,6 +197,24 @@ oid_lookup(uint8_t oid, void *type)
     return oids[oid].data;
 }
 
+// Read-only peek for diagnostic probes investigating "Invalid oid type"
+// without crashing the MCU. Returns oids[oid].type if oid is in range,
+// otherwise (void *)1 as an out-of-range sentinel (0x1 is never a valid
+// function pointer on ARM).
+void *
+oid_type_peek(uint8_t oid)
+{
+    if (oid >= oid_count)
+        return (void *)1;
+    return oids[oid].type;
+}
+
+uint8_t
+oid_get_count(void)
+{
+    return oid_count;
+}
+
 void *
 oid_alloc(uint8_t oid, void *type, uint16_t size)
 {

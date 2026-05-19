@@ -522,6 +522,30 @@ command_config_runtime_stepper(uint32_t *args)
     // oid_lookup walks the same allocation table populated by
     // command_config_stepper, so this fails (shutdowns) cleanly if the
     // referenced stepper hasn't been configured yet.
+    {
+        // 2026-05-19 diag: pin down "Invalid oid type" shutdown that fires
+        // from this oid_lookup on both H7 and F4. Capture, just before the
+        // lookup that might shutdown:
+        //   tag   = 0xCE
+        //   stage = oid_get_count() — MCU's view of allocated oid range
+        //   value = (peek_lo << 8) | (motor_idx << 5) | stepper_oid
+        // peek_lo is the low byte of oids[stepper_oid].type. If peek_lo is 0
+        // then the oid was never allocated (oids[N].type == NULL); if it's
+        // 0x01 the oid was out of range (oid_type_peek sentinel); otherwise
+        // it's the low byte of whatever function pointer was stamped there.
+        // command_config_stepper's low byte is stable for a given build and
+        // can be cross-checked offline via `nm`.
+        extern void *oid_type_peek(uint8_t oid);
+        extern uint8_t oid_get_count(void);
+        extern void runtime_diag_progress(uint32_t tag, uint32_t stage,
+                                          uint32_t value);
+        void *peek = oid_type_peek(stepper_oid);
+        uint32_t peek_lo = (uint32_t)((uintptr_t)peek & 0xFFu);
+        uint32_t v = (peek_lo << 8)
+                   | (((uint32_t)motor_idx & 0x7u) << 5)
+                   | ((uint32_t)stepper_oid & 0x1Fu);
+        runtime_diag_progress(0xCE, (uint32_t)oid_get_count(), v);
+    }
     struct stepper *s = oid_lookup(stepper_oid, command_config_stepper);
     runtime_motor_steppers[motor_idx][cnt].stepper = s;
     runtime_motor_steppers[motor_idx][cnt].invert_dir = invert_dir ? 1 : 0;
