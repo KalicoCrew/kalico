@@ -207,12 +207,12 @@ class Printer:
         for printer_module in self.printer_modules.values():
             printer_module.register_components(self.components)
 
-    @staticmethod
-    def _allow_plugin_override(config) -> bool:
+    def _allow_plugin_override(self, config) -> bool:
         """Check config directly for allow_plugin_override before danger_options loads"""
         section = config.getsection("danger_options")
-        return section.getboolean(
-            "allow_plugin_override", False, note_valid=False
+        return (
+            section.getboolean("allow_plugin_override", False, note_valid=False)
+            or self.start_args["allow_plugin_override"]
         )
 
     def get_start_args(self):
@@ -612,6 +612,12 @@ def main():
         help="rotate the log file at every restart",
     )
     opts.add_option(
+        "--allow-plugin-override",
+        action="store_true",
+        dest="allow_plugin_override",
+        help="Allow kalico plugins to override builtin extras",
+    )
+    opts.add_option(
         "-v", action="store_true", dest="verbose", help="enable debug messages"
     )
     opts.add_option(
@@ -646,6 +652,7 @@ def main():
         "apiserver_group": options.apiserver_group,
         "apiserver_file_mode": options.apiserver_file_mode,
         "start_reason": "startup",
+        "allow_plugin_override": options.allow_plugin_override,
     }
 
     debuglevel = logging.INFO
