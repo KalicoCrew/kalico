@@ -220,6 +220,17 @@ stepper_event(struct timer *t)
 void
 command_config_stepper(uint32_t *args)
 {
+    // Diag: confirm command_config_stepper is being entered for each oid the
+    // host advertises in its "Dumping config commands" output. Tag 0xCD,
+    // stage = oid (args[0]), value low byte = low byte of command_config_stepper
+    // (so we can sanity-check that the type pointer we're about to stamp
+    // matches what command_config_runtime_stepper later expects).
+    {
+        extern void runtime_diag_progress(uint32_t tag, uint32_t stage,
+                                          uint32_t value);
+        uint32_t exp_lo = (uint32_t)((uintptr_t)command_config_stepper & 0xFFu);
+        runtime_diag_progress(0xCD, args[0] & 0xFFu, exp_lo);
+    }
     struct stepper *s = oid_alloc(args[0], command_config_stepper, sizeof(*s));
     int_fast8_t invert_step = args[3];
     if (invert_step > 0)
