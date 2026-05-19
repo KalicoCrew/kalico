@@ -247,6 +247,48 @@ fn commit_position_count(
     }
 }
 
+/// Phase-mode offset ramp: bring `phase_offset_microsteps` toward
+/// `phase_offset_target` by at most `max_per_sample` per call.
+///
+/// Spec: docs/superpowers/specs/2026-05-19-stepping-redesign-design.md
+/// "Set stepper offset" — host requests a delta via `set_stepper_offset`
+/// (Task 12), and the TIM5 ISR walks `phase_offset_microsteps` toward
+/// `phase_offset_target` over multiple samples to avoid step rate spikes.
+///
+/// Early-return semantics:
+/// - `max_per_sample == 0` is treated as "no ramp configured" (the boot
+///   default). In that mode the target update goes through directly via
+///   `set_stepper_offset` writing both fields, or via the next configure.
+/// - `current == target` means nothing to do.
+///
+/// `wrapping_sub` is used on the i32 delta computation: `current` and
+/// `target` are both i32 and either of them could be near i32::MIN /
+/// i32::MAX under a pathological host request; wrapping is the safe shape
+/// because we only inspect `delta.abs()` and `delta > 0` afterwards, and
+/// a wrapped delta still selects the correct ramp direction for any
+/// realistic step (max u16 == 65535 microsteps is many full revolutions).
+fn ramp_phase_offset(stepper: &crate::stepping_state::StepperRef, max_per_sample: i32) {
+    if max_per_sample == 0 {
+        return;
+    }
+    let current = stepper.phase_offset_microsteps.load(Ordering::Acquire);
+    let target = stepper.phase_offset_target.load(Ordering::Acquire);
+    if current == target {
+        return;
+    }
+    let delta = target.wrapping_sub(current);
+    let step = if delta.abs() <= max_per_sample {
+        delta
+    } else if delta > 0 {
+        max_per_sample
+    } else {
+        -max_per_sample
+    };
+    stepper
+        .phase_offset_microsteps
+        .store(current.wrapping_add(step), Ordering::Release);
+}
+
 /// Phase-mode dispatch: update per-stepper coil-current state without
 /// driving GPIO step pulses.
 ///
@@ -255,6 +297,10 @@ fn commit_position_count(
 /// SPI dispatcher will need to read on the next sample: the LUT lookup
 /// result and the per-stepper target so delta computation stays
 /// continuous across SPI cycles.
+///
+/// Task 13: before reading `phase_offset_microsteps`, each stepper's
+/// offset is ramped toward its `phase_offset_target` by at most
+/// `shared.max_phase_offset_ramp_per_sample` per sample.
 fn dispatch_phase(
     axis_idx: usize,
     axis: &mut AxisConfig,
@@ -272,7 +318,15 @@ fn dispatch_phase(
     let target_microsteps_axis = (p_end / microstep_distance).round() as i32;
     axis.last_step_count = target_microsteps_axis;
 
+    // u16 -> i32 widening; cannot truncate or lose sign.
+    let max_ramp = i32::from(
+        shared
+            .max_phase_offset_ramp_per_sample
+            .load(Ordering::Acquire),
+    );
+
     for stepper in &axis.steppers {
+        ramp_phase_offset(stepper, max_ramp);
         let phase_offset = stepper.phase_offset_microsteps.load(Ordering::Acquire);
         let target_stepper = target_microsteps_axis.wrapping_add(phase_offset);
         let prev_stepper = stepper.last_phase_target.load(Ordering::Acquire);
@@ -848,6 +902,79 @@ mod tests {
         assert_eq!(
             axis.steppers[0].position_count.load(Ordering::Acquire),
             256
+        );
+    }
+
+    /// Task 13: Phase mode ramps `phase_offset_microsteps` toward
+    /// `phase_offset_target` at `max_phase_offset_ramp_per_sample` per
+    /// call, clamping on the final step.
+    #[test]
+    fn phase_mode_ramps_offset_toward_target_at_max_per_sample() {
+        let shared = SharedState::new();
+        let mut q = StepQueue::new();
+        let mut axis = make_axis(StepMode::Phase, 0.0125);
+        // current = 0, target = 10, max = 4 → expect 4, 8, 10.
+        axis.steppers[0]
+            .phase_offset_target
+            .store(10, Ordering::Release);
+        shared
+            .max_phase_offset_ramp_per_sample
+            .store(4, Ordering::Release);
+
+        let q_ptr: *mut StepQueue = &mut q;
+        for expected in [4_i32, 8, 10] {
+            dispatch_axis(
+                0, &mut axis, q_ptr, &shared,
+                /* p_end */ 256.0 * 0.0125,
+                /* v_end */ 0.0,
+                /* p_sample_start */ 0.0,
+                /* sample_period_sec */ 25e-6,
+                /* sample_start_cycles */ 0,
+                /* cycles_per_second */ 520_000_000.0,
+            );
+            assert_eq!(
+                axis.steppers[0]
+                    .phase_offset_microsteps
+                    .load(Ordering::Acquire),
+                expected,
+                "ramp should advance to {expected}",
+            );
+        }
+    }
+
+    /// Task 13: `max_phase_offset_ramp_per_sample == 0` disables the
+    /// ramp — `phase_offset_microsteps` is left untouched even when
+    /// `phase_offset_target` differs.
+    #[test]
+    fn phase_mode_ramp_disabled_when_max_per_sample_is_zero() {
+        let shared = SharedState::new();
+        let mut q = StepQueue::new();
+        let mut axis = make_axis(StepMode::Phase, 0.0125);
+        axis.steppers[0]
+            .phase_offset_microsteps
+            .store(3, Ordering::Release);
+        axis.steppers[0]
+            .phase_offset_target
+            .store(99, Ordering::Release);
+        // max_phase_offset_ramp_per_sample defaults to 0 (no ramp).
+
+        let q_ptr: *mut StepQueue = &mut q;
+        dispatch_axis(
+            0, &mut axis, q_ptr, &shared,
+            /* p_end */ 256.0 * 0.0125,
+            /* v_end */ 0.0,
+            /* p_sample_start */ 0.0,
+            /* sample_period_sec */ 25e-6,
+            /* sample_start_cycles */ 0,
+            /* cycles_per_second */ 520_000_000.0,
+        );
+
+        assert_eq!(
+            axis.steppers[0]
+                .phase_offset_microsteps
+                .load(Ordering::Acquire),
+            3,
+            "ramp should be a no-op when max_per_sample == 0",
         );
     }
 
