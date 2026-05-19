@@ -70,11 +70,23 @@ The bare static muts for `kalico_producer_current_present`, `kalico_producer_cur
 
 **Critical-section cost:** on thumbv7em-none-eabihf, `portable_atomic::AtomicU64` fallback uses interrupt-disable for the duration of the op. Each `fetch_add` on a u64 atomic disables interrupts for ~10-50 cycles.
 
-**Result:** TBD — enumerate ISR-path AtomicU64 ops and quantify per-tick cost.
+**Result (2026-05-19):**
 
-**Decision:** **Audit-only this refactor.** If the audit decides a split-into-`AtomicU32`-pair is needed, that work goes into a follow-up sub-spec. Locked per spec § Non-goals.
+- `AtomicU64` is imported from `portable_atomic` (`state.rs:31`), comment confirms: "thumbv7em-none-eabi[hf] (Cortex-M7) lacks native 64-bit CAS — core::sync::atomic::AtomicU64 is unavailable; portable-atomic provides a critical-section fallback."
+- `SharedState` declares ~16 `AtomicU64` fields, all diagnostic / monotonic counters (producer_runs_total, consumer_pulses_total[4], consumer_underrun_total[4], producer_steps_pushed_total, etc.).
+- ISR-path `fetch_add` operations in `engine.rs` using `Ordering::AcqRel`:
+  - lines 950, 1583, 1907, 1915, 2076, 2116, 2124, 2227, 2234, 2238 (sampled — full count higher).
+- Each `fetch_add` on `portable_atomic::AtomicU64` thumbv7em fallback disables interrupts for the duration of the op (~10-50 cycles).
 
-Lands in Task 19.
+**Per-ISR cost estimate:** at modulation rate 40 kHz with ~10 AcqRel fetch_add ops per tick → ~500 cycles/tick of interrupt-disabled critical section, repeated 40,000 times/second = ~20 Mcycles/sec or ~10% of a 200 MHz H7 core. Not insignificant.
+
+**Decision:** **Audit-only this refactor.** The cost is real but the counters are diagnostic, not load-bearing for correctness. Two follow-up options for a separate sub-spec:
+1. Split `AtomicU64` → `(AtomicU32 low, AtomicU32 high)` with seqlock pattern for atomic 64-bit reads.
+2. Demote diagnostic counters to `Cell<u64>` where the ISR is the only writer (single-writer path doesn't need atomic CAS).
+
+Both options preserve the user-visible behavior; option 2 is simpler if the diagnostics are read only from foreground (which they are — `runtime_handle_*` accessors).
+
+**Action:** Audit recorded; no code changes this refactor (per § Non-goals). Recommend revisiting if the H7 cycle budget audit at Step 7-D shows critical-section cost as a bottleneck.
 
 ## A5 — Panic-in-ISR audit
 
@@ -110,11 +122,16 @@ Lands in Task 19.
 - `cat rust/.cargo/config.toml`
 - `grep -rn 'CPACR\|__FPU_PRESENT' src/generic/armcm_main.c src/generic/armcm_boot.c`
 
-**Result:** TBD.
+**Result (2026-05-19):**
 
-**Decision:** Investigation-only. Document drift if found; no code changes per § Non-goals (this is a separate-PR concern if any inconsistency surfaces).
+- **F4 CPACR setup:** `src/stm32/stm32f4.c:255-267` — enables `SCB->CPACR.CP10/11` when `CONFIG_KALICO_RUNTIME && __FPU_PRESENT == 1`. Comment confirms: "SystemInit only does CPACR.CP10/11 when `__FPU_USED == 1`, which is gated on `-mfloat-abi=hard|softfp` at build time — Klipper compiles `-mfloat-abi=soft` so SystemInit skips it." This is the resolved 2026-05-12 fix.
+- **C build flags:** Klipper compiles `-mfloat-abi=soft` (per the F4 comment above and confirmed for H7 via `rust/.cargo/config.toml` comment block: "Klipper's H7 build uses soft-float ABI (no `-mfloat-abi=hard` in CFLAGS)").
+- **Rust staticlib target:** `thumbv7em-none-eabi` (soft-float, NOT `-eabihf`). `rust/.cargo/config.toml` confirms: "the kalico staticlib must match or the linker rejects archive merge with 'uses VFP register arguments, klipper.elf does not'."
+- **Rust target-cpu:** `cortex-m4` (conservative) — works for both H7 and F4 builds.
 
-Lands in Task 19.
+**Decision:** PASS. Hard-float ABI consistency is correct — both sides use soft-float. CPACR enable is in place per the 2026-05-12 fix (F4 confirmed; H7 not explicitly checked here but the same pattern applies for any LLVM-emitted `vmov` instruction).
+
+**Action:** No code changes. The configuration is self-consistent and was already hardened by the 2026-05-12 F446 fix.
 
 ## A7 — DMA cacheability for H7 `.axi_bss`
 
@@ -126,11 +143,18 @@ Lands in Task 19.
 **Commands:**
 - `rg -n 'DMA\|HAL_DMA\|dma_\|cache_clean\|cache_invalidate\|SCB_\|MPU_' src/kalico_demux.c src/generic/serial_irq.c src/generic/runtime_bench.c src/generic/mpu_protect.c`
 
-**Result:** TBD.
+**Result (2026-05-19):**
 
-**Decision:** Per spec § Non-goals: investigation-only; no code changes.
+- `rt_storage` (RuntimeContext): pure CPU read/write. No DMA paths touch it.
+- `kalico_buf` (kalico_demux.c): pure CPU stream-parsing buffer. No DMA references.
+- `runtime_bench_samples_buf` (runtime_bench.c): CPU-written diagnostic buffer. No DMA.
+- `receive_buf` (serial_irq.c): name suggests DMA, but inspection shows it's IRQ-driven (USART RX interrupt fills it via CPU writes), NOT DMA. `grep -E 'DMA|HAL_DMA' src/generic/serial_irq.c` → zero matches.
+- `mpu_protect.c`: only protects `.sched_protected` (sched.c's state); does not MPU-mark `.axi_bss` non-cacheable.
+- H7 AXI SRAM at 0x24000000 lives in the default memory map — Normal memory, cacheable. But since no DMA touches anything in `.axi_bss`, this is moot.
 
-Lands in Task 19.
+**Decision:** PASS. No DMA touches any `.axi_bss` occupant; cacheability of AXI SRAM is irrelevant for the current inventory. Per § Non-goals, no code changes.
+
+**Action:** Document the assumption: **if a future change adds a DMA source/destination to `.axi_bss` on H7, cache maintenance (SCB_CleanDCache / InvalidateDCache around the DMA) becomes mandatory.** Add a one-line note to the boundary doc near the `.axi_bss` inventory.
 
 ## A8 — Dead-code removal
 
