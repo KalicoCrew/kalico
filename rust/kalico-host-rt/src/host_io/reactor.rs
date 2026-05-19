@@ -67,6 +67,11 @@ pub struct Reactor {
     /// See spec §6.0 in `2026-05-04-incremental-curve-upload-design.md`.
     pub(crate) pending_fire_and_forget: VecDeque<Vec<u8>>,
 
+    /// FIFO order for pending submissions and fire-and-forget frames. Klipper
+    /// config relies on strict wire order: a response-bearing barrier such as
+    /// `get_config` must not overtake earlier fire-and-forget config frames.
+    pub(crate) pending_outbound_order: VecDeque<PendingOutboundKind>,
+
     /// First-observed instant of a phantom `Ok(0)` from `port.read`.
     /// Per spec §3.11, treat as Closed only if it persists past
     /// `ZERO_BYTE_DEBOUNCE`. Cleared on any non-zero read.
@@ -115,6 +120,12 @@ pub(crate) struct PendingSubmission {
     pub expected_response_name: String,
     pub completion:             std::sync::mpsc::SyncSender<Result<crate::transport::MessageParams, TransportError>>,
     pub deadline:               Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PendingOutboundKind {
+    Submission,
+    FireAndForget,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -173,6 +184,7 @@ impl Reactor {
             pending_host_fault: None,
             pending_submissions: VecDeque::new(),
             pending_fire_and_forget: VecDeque::new(),
+            pending_outbound_order: VecDeque::new(),
             zero_byte_first_seen: None,
             last_recv_time: clock.now(),
             clock,
@@ -300,6 +312,7 @@ impl Reactor {
             self.pending_submissions.push_back(PendingSubmission {
                 call_id, payload, expected_response_name, completion, deadline,
             });
+            self.pending_outbound_order.push_back(PendingOutboundKind::Submission);
             return Ok(());
         }
 
@@ -355,6 +368,7 @@ impl Reactor {
                 return Err(TransportError::Backpressure);
             }
             self.pending_fire_and_forget.push_back(payload);
+            self.pending_outbound_order.push_back(PendingOutboundKind::FireAndForget);
             return Ok(());
         }
         let seq = self.send_seq;
@@ -371,63 +385,70 @@ impl Reactor {
 
     pub(crate) fn drain_pending_submissions(&mut self) {
         while !self.unacked_window.is_full() {
-            let Some(p) = self.pending_submissions.pop_front() else { break; };
-            let completion = p.completion.clone();
-            if let Err(e) = self.dispatch_submission(
-                p.call_id, p.payload, p.expected_response_name, completion, p.deadline,
-            ) {
-                // The queued submission is already popped — propagate
-                // the underlying transport error to the caller so it
-                // doesn't surface as a `DispatcherTimeout`. On I/O
-                // failure also stage a HostDisconnect fault and stop
-                // draining; the run loop will observe the Closed state
-                // on the next iteration.
-                let is_io = matches!(e, TransportError::Io(_));
-                let _ = p.completion.send(Err(e));
-                if is_io {
-                    eprintln!("[trace-close] drain_pending_submissions Io error kalico_pending={} await_n={} unacked_n={}",
-                        self.kalico_state.pending.len(),
-                        self.awaiting_response.len(),
-                        self.unacked_window.len(),
-                    );
-                    if self.pending_host_fault.is_none() {
-                        self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
-                            fault_code:   FaultCode::HostDisconnect.as_u16(),
-                            fault_detail: 0,
-                            segment_id:   0,
-                            synthesized:  false,
-                        });
+            let Some(kind) = self.pending_outbound_order.pop_front() else { break; };
+            match kind {
+                PendingOutboundKind::Submission => {
+                    let Some(p) = self.pending_submissions.pop_front() else {
+                        log::error!("pending outbound order referenced missing submission");
+                        continue;
+                    };
+                    let completion = p.completion.clone();
+                    if let Err(e) = self.dispatch_submission(
+                        p.call_id, p.payload, p.expected_response_name, completion, p.deadline,
+                    ) {
+                        // The queued submission is already popped — propagate
+                        // the underlying transport error to the caller so it
+                        // doesn't surface as a `DispatcherTimeout`. On I/O
+                        // failure also stage a HostDisconnect fault and stop
+                        // draining; the run loop will observe the Closed state
+                        // on the next iteration.
+                        let is_io = matches!(e, TransportError::Io(_));
+                        let _ = p.completion.send(Err(e));
+                        if is_io {
+                            eprintln!("[trace-close] drain_pending_submissions Io error kalico_pending={} await_n={} unacked_n={}",
+                                self.kalico_state.pending.len(),
+                                self.awaiting_response.len(),
+                                self.unacked_window.len(),
+                            );
+                            if self.pending_host_fault.is_none() {
+                                self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
+                                    fault_code:   FaultCode::HostDisconnect.as_u16(),
+                                    fault_detail: 0,
+                                    segment_id:   0,
+                                    synthesized:  false,
+                                });
+                            }
+                            self.state = ReactorState::Closed;
+                            return;
+                        }
                     }
-                    self.state = ReactorState::Closed;
-                    return;
                 }
-            }
-        }
-
-        // Spec §6.0: drain backpressured fire-and-forget payloads after
-        // submissions (which have callers blocked on results). On I/O failure,
-        // mirror the disconnect-latch behavior used for submissions.
-        while !self.unacked_window.is_full() {
-            let Some(payload) = self.pending_fire_and_forget.pop_front() else { break; };
-            if let Err(e) = self.dispatch_fire_and_forget(payload) {
-                if matches!(e, TransportError::Io(_)) {
-                    eprintln!("[trace-close] drain pending fire-and-forget Io error: {e:?}");
-                    if self.pending_host_fault.is_none() {
-                        self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
-                            fault_code:   FaultCode::HostDisconnect.as_u16(),
-                            fault_detail: 0,
-                            segment_id:   0,
-                            synthesized:  false,
-                        });
+                PendingOutboundKind::FireAndForget => {
+                    let Some(payload) = self.pending_fire_and_forget.pop_front() else {
+                        log::error!("pending outbound order referenced missing fire-and-forget");
+                        continue;
+                    };
+                    if let Err(e) = self.dispatch_fire_and_forget(payload) {
+                        if matches!(e, TransportError::Io(_)) {
+                            eprintln!("[trace-close] drain pending fire-and-forget Io error: {e:?}");
+                            if self.pending_host_fault.is_none() {
+                                self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
+                                    fault_code:   FaultCode::HostDisconnect.as_u16(),
+                                    fault_detail: 0,
+                                    segment_id:   0,
+                                    synthesized:  false,
+                                });
+                            }
+                            self.state = ReactorState::Closed;
+                            return;
+                        }
+                        // Non-I/O errors (e.g. window-full / Backpressure on re-enqueue):
+                        // drop the payload silently and continue. Backpressure here
+                        // means the queue is at the ceiling, which the dispatch path
+                        // already logged.
+                        log::warn!("drain_pending_submissions: fire-and-forget redispatch error: {e}");
                     }
-                    self.state = ReactorState::Closed;
-                    return;
                 }
-                // Non-I/O errors (e.g. window-full / Backpressure on re-enqueue):
-                // drop the payload silently and continue. Backpressure here
-                // means the queue is at the ceiling, which the dispatch path
-                // already logged.
-                log::warn!("drain_pending_submissions: fire-and-forget redispatch error: {e}");
             }
         }
     }
@@ -1084,6 +1105,7 @@ impl Reactor {
         // Spec §6.0: pending fire-and-forget payloads have no caller to
         // notify; drop them on disconnect.
         self.pending_fire_and_forget.clear();
+        self.pending_outbound_order.clear();
         self.passthrough_notify_map.clear();
 
         // Phase C-B: drop in-flight kalico calls + identify caller.
@@ -1622,6 +1644,7 @@ mod tests {
             completion: tx,
             deadline: Instant::now() + std::time::Duration::from_secs(1),
         });
+        reactor.pending_outbound_order.push_back(PendingOutboundKind::Submission);
 
         reactor.drain_pending_submissions();
 
@@ -2555,6 +2578,55 @@ mod a8_fire_and_forget_backpressure {
     }
 
     #[test]
+    fn a8_pending_fire_and_submission_drain_in_fifo_order() {
+        let mut h = ReactorHarness::new();
+        fill_window(&mut h);
+
+        h.reactor
+            .dispatch_fire_and_forget(vec![0xF1])
+            .expect("first fire-and-forget enqueues");
+        let (tx, _rx) = sync_channel(1);
+        h.reactor
+            .dispatch_submission(
+                99,
+                vec![0xA5],
+                "noop".into(),
+                tx,
+                h.clock.now() + Duration::from_secs(60),
+            )
+            .expect("submission enqueues");
+        h.reactor
+            .dispatch_fire_and_forget(vec![0xF2])
+            .expect("second fire-and-forget enqueues");
+
+        assert_eq!(
+            h.reactor.pending_outbound_order.iter().copied().collect::<Vec<_>>(),
+            vec![
+                PendingOutboundKind::FireAndForget,
+                PendingOutboundKind::Submission,
+                PendingOutboundKind::FireAndForget,
+            ],
+        );
+
+        h.feed_ack_all();
+        h.tick();
+
+        let payloads = h.reactor.unacked_window
+            .iter()
+            .map(|e| {
+                let crc_off = e.frame_bytes.len() - crate::host_io::wire::MESSAGE_TRAILER_SIZE;
+                e.frame_bytes[crate::host_io::wire::MESSAGE_HEADER_SIZE..crc_off].to_vec()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            payloads,
+            vec![vec![0xF1], vec![0xA5], vec![0xF2]],
+            "queued fire-and-forget and response-bearing submissions must preserve FIFO wire order",
+        );
+        assert!(h.reactor.pending_outbound_order.is_empty());
+    }
+
+    #[test]
     fn a8_overflow_returns_backpressure_error() {
         let mut h = ReactorHarness::new();
         fill_window(&mut h);
@@ -2870,6 +2942,7 @@ mod io_fault_propagation {
             completion: completion_tx,
             deadline: Instant::now() + Duration::from_secs(1),
         });
+        reactor.pending_outbound_order.push_back(PendingOutboundKind::Submission);
 
         reactor.unacked_window.pop_acked(1);
         reactor.drain_pending_submissions();
