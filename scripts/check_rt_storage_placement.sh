@@ -72,9 +72,12 @@ if [ "$ADDR" -lt "$MIN_ADDR" ] || [ "$ADDR" -ge "$MAX_ADDR" ]; then
 fi
 
 # F4-only: verify rt_storage is inside the boot-zeroed BSS span.
+# (awk without early `exit` to avoid the pipefail + SIGPIPE issue that bit
+# the MCU-detection heuristic above. The last match wins; there's only
+# one _bss_start / _bss_end symbol so it doesn't matter.)
 if [ "$MCU" = "F4" ]; then
-    BSS_START_HEX="$("${OBJDUMP:-arm-none-eabi-objdump}" -t "$ELF" | awk '/_bss_start$/{print $1; exit}')"
-    BSS_END_HEX="$("${OBJDUMP:-arm-none-eabi-objdump}" -t "$ELF" | awk '/_bss_end$/{print $1; exit}')"
+    BSS_START_HEX="$("${OBJDUMP:-arm-none-eabi-objdump}" -t "$ELF" | awk '/_bss_start$/{addr=$1} END{print addr}')"
+    BSS_END_HEX="$("${OBJDUMP:-arm-none-eabi-objdump}" -t "$ELF" | awk '/_bss_end$/{addr=$1} END{print addr}')"
     if [ -z "$BSS_START_HEX" ] || [ -z "$BSS_END_HEX" ]; then
         echo "WARNING: could not locate _bss_start/_bss_end symbols; skipping boot-zero coverage check" >&2
     else
