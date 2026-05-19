@@ -18,18 +18,27 @@ use heapless::spsc::Consumer;
 // The C global + volatile read/write pattern is the most ironclad way to
 // defeat any Rust / LTO compile-time optimization.
 //
-// Access path: Rust calls the C accessor functions
-// (kalico_producer_current_is_present / _set_present) ONLY. The bare
-// `static mut` imports were removed in the 2026-05-19 A3 boundary audit
-// because they carried the same LLVM-projection miscompilation risk the
-// accessor functions were introduced to avoid (the function-call boundary
-// is what makes the volatile semantics opaque to LLVM). The C side still
-// defines the volatile globals and the set/cleared counters; if those
-// counters need to be read from Rust later, add accessor functions for
-// them rather than reintroducing the bare static mut imports.
+// Access patterns (2026-05-19 A3 boundary audit clarifications):
+//
+//   - The `_present` flag (read+write from Rust) is accessed EXCLUSIVELY
+//     through the C accessor functions kalico_producer_current_is_present
+//     / _set_present. The function-call boundary makes the volatile
+//     semantics opaque to LLVM. The bare static mut import for `_present`
+//     was deleted in A3 because it carried the same borrow-projection
+//     miscompilation risk that motivated the queue migration.
+//
+//   - The `_set_count` / `_cleared_count` diagnostic counters are read-only
+//     from Rust via `core::ptr::read_volatile(addr_of!(...))` in
+//     kalico_runtime_producer_current_gate_counters_diag (see
+//     kalico-c-api/src/runtime_ffi.rs:2698). The read_volatile path
+//     emits a real LDR with no borrow projection, so the LLVM
+//     miscompilation that motivated A3 does NOT apply here. These bare
+//     static mut imports stay.
 #[cfg(target_os = "none")]
 #[allow(unsafe_code)]
 unsafe extern "C" {
+    pub static mut kalico_producer_current_set_count: u32;
+    pub static mut kalico_producer_current_cleared_count: u32;
     fn kalico_producer_current_is_present() -> i32;
     fn kalico_producer_current_set_present(present: i32);
 }
