@@ -729,6 +729,45 @@ pub mod exports {
         }
     }
 
+    /// Stepping-redesign Task 17 — new TIM5 ISR body.
+    ///
+    /// Drives the unified per-sample evaluator
+    /// [`runtime::tick::runtime_tick_sample`] over the engine's
+    /// `stepping_axes` / `tick_caches` and the runtime's shared state.
+    /// Mirrors the IsrState borrow discipline of
+    /// `kalico_runtime_modulated_tick`: project a `&mut IsrState`
+    /// (engine half) and a `&SharedState` (cross-half) out of
+    /// `RuntimeContext` exactly once per ISR fire.
+    ///
+    /// Called from `TIM5_IRQHandler` in `src/stm32/runtime_tick_{h7,f4}.c`
+    /// at the rate configured by `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ`.
+    /// During the T17 staging window the legacy
+    /// `kalico_runtime_modulated_tick` symbol is preserved for callers
+    /// not yet cut over.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_tick_sample(rt: *mut KalicoRuntime) {
+        if rt.is_null() {
+            return;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `rt` non-null and INIT_DONE=true. TIM5 is the SOLE
+        // writer of `IsrState`, so the disjoint half-split borrow
+        // (engine via IsrState; shared state via `&`) is sound — same
+        // discipline as `kalico_runtime_modulated_tick`.
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let shared_ptr: *const SharedState =
+                core::ptr::addr_of!((*ctx).shared);
+            let isr: &mut IsrState = &mut *isr_ptr;
+            let shared: &SharedState = &*shared_ptr;
+            isr.engine.tick_sample(shared);
+        }
+    }
+
     /// Foreground drain. Returns count of samples written.
     ///
     /// Phase 11 §10.4 expansion: alongside writing the sample to the wire

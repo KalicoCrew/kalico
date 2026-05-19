@@ -15,6 +15,12 @@ extern const uint32_t runtime_clock_freq;
 
 extern void* runtime_handle;   // exposed in src/runtime_tick.c
 
+// Stepping-redesign Task 17: new TIM5 ISR body. Replaces the legacy
+// `kalico_runtime_modulated_tick` call; the legacy symbol is kept
+// linkable so non-cutover callers still resolve until T18 finalizes
+// the activation logic.
+extern void kalico_runtime_tick_sample(void *rt);
+
 // These three are referenced ONLY from Rust (kalico-c-api's runtime_ffi.rs),
 // not from any C translation unit. Klipper builds with `-fwhole-program -flto`
 // which would otherwise treat them as internal and either inline them or
@@ -85,18 +91,16 @@ runtime_tick_enable(void)
         return;
     }
 
-    // 2026-05-19: lower modulation rate from 40 kHz → 10 kHz to leave
-    // CPU headroom for the USB CDC pump during motion. Per-tick ISR cost
-    // (one round-robin SPI write + 4 modulator computes) at 40 kHz left
-    // ~20% CPU for USB which was enough to drop the bulk-out endpoint
-    // under any sustained jog. At 10 kHz the same per-tick work yields
-    // ~80% CPU free for USB and other tasks. Per-motor write rate drops
-    // from 10 kHz → 2.5 kHz (round-robin across 4 motors), which is
-    // still above mass3d's "smooth" threshold for slow jogs but limits
-    // top speed — fine as a v1 mitigation; the long-term answer is
-    // either DMA SPI or per-tick write-coalescing.
+    // T17: TIM5 rate is set by `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ`
+    // (Task 1 Kconfig). Defaults to 40 kHz on H7 / 20 kHz on F4 /
+    // 10 kHz on the LINUX MCU. The historical 10 kHz hard-coded value
+    // was a band-aid against USB-CDC starvation under the legacy
+    // modulator's polled-tick SPI write cost; the redesigned unified
+    // tick (Tasks 7-9) does no SPI work in the ISR body so the rate
+    // can return to its design target. Per-MCU defaults are in
+    // src/Kconfig.
     TIM5->CR1 &= ~TIM_CR1_CEN;
-    TIM5->ARR  = (runtime_clock_freq / 10000U) - 1U;
+    TIM5->ARR  = (runtime_clock_freq / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
     TIM5->EGR  = TIM_EGR_UG;
     TIM5->SR   = 0;
     TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
@@ -124,10 +128,11 @@ runtime_tick_init(void)
     TIM5->CR1 &= ~TIM_CR1_CEN;
     TIM5->SR = 0;
 
-    // 10 kHz tick (see comment in runtime_tick_enable for rationale).
-    // PSC = 0, ARR = (clock_freq / 10000) - 1.
+    // T17: TIM5 rate from CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ (see
+    // comment in runtime_tick_enable for the rationale).
+    // PSC = 0, ARR = (clock_freq / SAMPLE_RATE_HZ) - 1.
     TIM5->PSC = 0;
-    TIM5->ARR = (runtime_clock_freq / 10000U) - 1U;
+    TIM5->ARR = (runtime_clock_freq / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
 
     // Auto-reload, update interrupt enable.
     TIM5->CR1 = TIM_CR1_ARPE;
@@ -189,17 +194,20 @@ TIM5_IRQHandler(void)
     runtime_endstop_sample_pins();
 #endif
 
-    // T10 (spec §3.2): TIM5 dispatches the Modulated polled-tick
-    // StepAccumulator path exclusively. The legacy engine state machine
-    // (`runtime_handle_tick` → `Engine::tick`) no longer runs from
-    // TIM5; segment dequeue + retirement are driven by the producer
-    // Klipper timer in `src/runtime_tick.c` (T8) and per-stepper step
-    // pulses fire from the consumer Klipper timers (T7). The Modulated
-    // entry computes its own widened clock from `timer_read_time` +
-    // `stats_send_time*`, so no CYCCNT widening seed is needed here.
+    // T17 (stepping-redesign): TIM5 dispatches the unified per-sample
+    // evaluator `kalico_runtime_tick_sample`, which evaluates the
+    // active per-axis Bezier piece(s), runs Newton iteration for step
+    // waketimes, and pushes step entries into the per-axis SPSC
+    // step_queues. Replaces the prior modulator-polled-tick path
+    // (`kalico_runtime_modulated_tick`); the legacy symbol stays
+    // linkable for parts not yet cut over but isn't called from here.
+    // The widened MCU clock is published by the producer Klipper timer
+    // (`runtime_widened_host_clock` in src/runtime_tick.c) into
+    // `SharedState::widened_now_lo`; the Rust ISR reads that value
+    // directly. No CYCCNT widening seed is needed here.
     uint32_t before = runtime_cyccnt_read();
     if (runtime_handle) {
-        kalico_runtime_modulated_tick(runtime_handle);
+        kalico_runtime_tick_sample(runtime_handle);
     }
     uint32_t after = runtime_cyccnt_read();
 

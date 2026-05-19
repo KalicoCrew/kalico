@@ -857,6 +857,90 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         crate::fault_helpers::raise_jog_parameters_invalid(shared);
         -1
     }
+
+    /// Stepping-redesign Task 17 — TIM5 ISR body wrapper.
+    ///
+    /// Constructs a [`crate::tick::TickContext`] from engine state +
+    /// `shared` and dispatches to [`crate::tick::runtime_tick_sample`],
+    /// which evaluates the active per-axis Bezier piece(s), runs Newton
+    /// iteration for step waketimes, and pushes step entries into the
+    /// per-axis SPSC `step_queues`.
+    ///
+    /// Caller contract (matches `runtime_modulated_tick`): the TIM5 ISR
+    /// is the sole writer of engine state under the §11 half-split
+    /// borrow discipline; the foreground only mutates `axis.mode`
+    /// atomically and pushes pieces via the producer's exclusive-access
+    /// configure path.
+    ///
+    /// Returns immediately if the engine isn't yet configured
+    /// (`cycles_per_second` / `sample_period_sec` not yet published by
+    /// `configure_kinematics`). Without the guard, NaN sample times
+    /// would propagate into the per-axis piece evaluator and latch a
+    /// `MathNonFinite` fault on boot before any host segment lands.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn tick_sample(&mut self, shared: &SharedState) {
+        if self.cycles_per_second <= 0.0 {
+            return;
+        }
+        if self.sample_period_sec <= 0.0 {
+            return;
+        }
+
+        // Resolve per-axis queue pointers. On MCU builds the storage is
+        // the C-declared `step_queues` symbol (one queue per axis); on
+        // host/test builds, null pointers — `dispatch_axis` short-
+        // circuits before any push.
+        #[cfg(not(any(test, feature = "host")))]
+        #[allow(unsafe_code)]
+        let queue_ptrs: [*mut crate::step_queue::StepQueue;
+            crate::stepping_state::N_AXES] = {
+            use crate::step_queue::{StepQueue, step_queues};
+            // SAFETY: `step_queues` is a C-owned static of size
+            // `N_AXIS_STEP_QUEUES` (compile-time asserted ≥ N_AXES);
+            // pointer arithmetic stays in-bounds for the four axis
+            // indices we form here. The pointers are handed to
+            // `runtime_tick_sample` which threads them through to the
+            // single-producer SPSC `step_queue_push` — the TIM5 ISR is
+            // the sole producer for every axis, satisfying the SPSC
+            // contract documented on `step_queue::push`.
+            unsafe {
+                let base = step_queues.get().cast::<StepQueue>();
+                [base, base.add(1), base.add(2), base.add(3)]
+            }
+        };
+        #[cfg(any(test, feature = "host"))]
+        let queue_ptrs: [*mut crate::step_queue::StepQueue;
+            crate::stepping_state::N_AXES] =
+            [core::ptr::null_mut(); crate::stepping_state::N_AXES];
+
+        // Read the widened-clock low half from `SharedState`. On MCU
+        // this seqlock cell is published by the producer Klipper timer
+        // (`runtime_widened_host_clock` in `src/runtime_tick.c`) every
+        // tick; on host/test the cell stays zero and the tick body's
+        // dispatchers absorb that gracefully (zero `t_sample_end_global`
+        // simply means no piece has advanced yet).
+        let now_cycles = shared
+            .widened_now_lo
+            .load(core::sync::atomic::Ordering::Acquire);
+        let cycles_per_second = self.cycles_per_second;
+        let t_sample_end_global = (now_cycles as f32) / cycles_per_second;
+
+        let mut ctx = crate::tick::TickContext {
+            axes: &mut self.stepping_axes,
+            queues: queue_ptrs,
+            shared,
+            caches: &mut self.tick_caches,
+            sample_period_sec: self.sample_period_sec,
+            sample_period_cycles: self.sample_period_cycles,
+            cycles_per_second,
+            k_xy: self.k_xy,
+            advance_accel: self.advance_accel,
+            advance_decel: self.advance_decel,
+            now_cycles,
+            t_sample_end_global,
+        };
+        crate::tick::runtime_tick_sample(&mut ctx);
+    }
 }
 
 // Engine::Default impl for tests where slot types implement Default.

@@ -17,6 +17,11 @@ extern const uint32_t runtime_clock_freq;
 
 extern void* runtime_handle;   // exposed in src/runtime_tick.c
 
+// Stepping-redesign Task 17: new TIM5 ISR body. Replaces the legacy
+// `kalico_runtime_modulated_tick` call; the legacy symbol stays
+// linkable for callers not yet cut over.
+extern void kalico_runtime_tick_sample(void *rt);
+
 // These three are referenced ONLY from Rust (kalico-c-api's runtime_ffi.rs),
 // not from any C translation unit. Klipper builds with `-fwhole-program -flto`
 // which would otherwise treat them as internal and either inline them or
@@ -75,11 +80,12 @@ runtime_tick_enable(void)
         return;
     }
 
-    // Modulated motors present — arm TIM5 at 10 kHz on F4 (per the historic
-    // F4 CPU budget for the polled-tick path; see runtime_tick_init for the
-    // peripheral-clock + DWT setup).
+    // T17: TIM5 rate is set by `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ`
+    // (Task 1 Kconfig; default 20 kHz on F4). See
+    // runtime_tick_init for the peripheral-clock + DWT setup and the
+    // F446 CPU-budget rationale that anchors the default.
     TIM5->CR1 &= ~TIM_CR1_CEN;
-    TIM5->ARR  = (runtime_clock_freq / 10000U) - 1U;
+    TIM5->ARR  = (runtime_clock_freq / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
     TIM5->EGR  = TIM_EGR_UG;
     TIM5->SR   = 0;
     TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
@@ -129,7 +135,7 @@ runtime_tick_init(void)
     // makes sense for any phase-stepped axes hosted on F4 in the future
     // (none today), or TIM5 can be disabled entirely.
     TIM5->PSC = 0;
-    TIM5->ARR = (runtime_clock_freq / 10000U) - 1U;
+    TIM5->ARR = (runtime_clock_freq / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
 
     // Auto-reload, update interrupt enable.
     TIM5->CR1 = TIM_CR1_ARPE;
@@ -186,13 +192,14 @@ TIM5_IRQHandler(void)
     runtime_endstop_sample_pins();
 #endif
 
-    // T10 (spec §3.2): TIM5 dispatches the Modulated polled-tick
-    // StepAccumulator path exclusively. F4 today never enables TIM5 (no
-    // phase-stepped axes), but if/when a future build flips a motor to
-    // Modulated, this handler runs the same path as H7.
+    // T17 (stepping-redesign): TIM5 dispatches the unified per-sample
+    // evaluator `kalico_runtime_tick_sample`, mirroring H7. F4 today
+    // never enables TIM5 (no phase-stepped axes), but the wiring stays
+    // symmetric with H7 so a future Modulated motor on F4 picks up the
+    // same path automatically.
     uint32_t before = runtime_cyccnt_read();
     if (runtime_handle) {
-        kalico_runtime_modulated_tick(runtime_handle);
+        kalico_runtime_tick_sample(runtime_handle);
     }
     uint32_t after = runtime_cyccnt_read();
 
