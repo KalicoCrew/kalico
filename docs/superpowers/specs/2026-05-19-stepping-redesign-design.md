@@ -598,8 +598,13 @@ applies even when both producer and consumer are Rust ISR contexts.
 
 **Storage:** 4 instances of `StepQueue`, declared in `src/step_queue.c`,
 placed in DTCM on H7 (non-cached, eliminates cache-coherency concerns) and
-default `.bss` on F4. Linker section name TBD against the existing H7 linker
-script — see open question Q-LINKER below.
+default `.bss` on F4. **Q-LINKER resolved (Task 18, 2026-05-19):** default
+`.bss` already lands in DTCM on H7 — `src/generic/armcm_link.lds.S` maps
+the `ram` region to `CONFIG_RAM_START`/`CONFIG_RAM_SIZE`, which on
+STM32H7 are `0x20000000` / `0x20000` (128 KB DTCM). No `__attribute__`
+needed. `.axi_bss` is the opt-in for the cached AXI SRAM region; using it
+for `step_queues` would *introduce* the cache coherency overhead this
+placement was designed to avoid.
 
 **C definitions (`src/step_queue.h`):**
 
@@ -1037,16 +1042,21 @@ These are recorded for future work; not blocking this redesign.
 - Step pulse width emitter for non-DEDGE drivers — out of scope; all target
   hardware (TMC2209/2240/5160) supports DEDGE.
 
-### Open questions to resolve before implementation
+### Open questions resolution log (Task 18, 2026-05-19)
 
-- **Q-LINKER:** The `StepQueue` storage section name. The boundary doc names
-  H7's `.axi_bss` section, but DTCM placement is preferred for the step
-  queues (non-cached, eliminates cache-coherency concerns between TIM5 ISR
-  and SysTick consumer). Confirm via inspection of the existing H7 linker
-  script whether there's a DTCM-mapped `.bss` region (matching the segment
-  queue's placement). If only `.axi_bss` is available, evaluate whether AXI
-  SRAM's cache behavior is acceptable for SPSC use. Resolve before writing
-  the implementation plan.
+- **Q-LINKER — RESOLVED.** Default `.bss` placement on H7 already lands in
+  DTCM. The shared linker `src/generic/armcm_link.lds.S` ties the `ram`
+  output region to `CONFIG_RAM_START` / `CONFIG_RAM_SIZE`; on STM32H7
+  those are `0x20000000` and `0x20000` (`src/stm32/Kconfig:251` and
+  `:273`), i.e. the 128 KB DTCM bank. No `__attribute__((section(...)))`
+  is required for `step_queues` — see `src/step_queue.c` (default-bss
+  rationale documented inline). `.axi_bss` is the explicit opt-in for the
+  cached AXI SRAM region (320 KB at `0x24000000`, used by the curve pool
+  and segment queue); routing `step_queues` there would have *added* the
+  cache-coherency overhead this placement was designed to avoid.
+
+No other questions remain open at Task 18 closure. All spec items not
+listed under "Deferred / future work" above are implemented in Tasks 1–17.
 
 ---
 

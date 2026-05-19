@@ -1,21 +1,21 @@
 // See step_queue.h for the design.
 //
 // Storage placement:
-//   H7: DTCM-mapped .bss (non-cached, eliminates cache coherency between
-//       TIM5 ISR producer and SysTick consumer). Q-LINKER open question:
-//       confirm the existing H7 linker script's DTCM region name; if no
-//       dedicated DTCM region exists, fall back to default .bss (which
-//       may live in cached AXI SRAM and require explicit cache maintenance).
-//   F4: default .bss (no DTCM/cache concern).
+//   H7: default `.bss` already lives in DTCM. The shared
+//       linker script `src/generic/armcm_link.lds.S` sets the `ram`
+//       region to `CONFIG_RAM_START`/`CONFIG_RAM_SIZE`, and on the
+//       H7 those are `0x20000000` / `0x20000` (128 KB) — i.e. DTCM,
+//       not the AXI SRAM region (which is opted into via the
+//       separate `.axi_bss` section). DTCM is non-cached and reached
+//       in a single CPU cycle, so no cache-maintenance / explicit
+//       attribute is required to give the TIM5-ISR producer and the
+//       SysTick consumer a coherent view of `step_queues`.
+//   F4: default `.bss` (single SRAM bank, no DTCM/cache split).
+//
+// Q-LINKER (resolved 2026-05-19, Task 18): default `.bss` is correct
+// on H7. Do NOT migrate to `.axi_bss` — that would *introduce* the
+// cache-coherency overhead this placement avoids.
 
-#include "autoconf.h"
 #include "step_queue.h"
 
-#if CONFIG_MACH_STM32H7
-// TODO Q-LINKER: confirm section name. Default placement uses .bss
-// in DTCM if the linker script maps it so. If a dedicated section is
-// needed, add it via __attribute__((section(".dtcm_bss"))).
 StepQueue step_queues[N_AXIS_STEP_QUEUES];
-#else
-StepQueue step_queues[N_AXIS_STEP_QUEUES];
-#endif
