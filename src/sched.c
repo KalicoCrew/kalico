@@ -154,23 +154,31 @@ sched_walk_chain(uint32_t addrs[SCHED_CHAIN_WALK_N],
     }
 }
 
-// Diagnostic: latch the first caller of sched_add_timer that passes a
-// pointer into the known scratch buffers (transmit_buf 0x20000088..,
-// batch_buf 0x20000be8..0x200015e8). Real timer structs never live
-// there. Captures the caller LR so addr2line can name the rogue caller.
+// Diagnostic: latch the first caller of sched_add_timer that ever
+// passed a pointer matching a heuristic "bogus" range. Kept around so
+// the fault_handler_report_task can still emit the latched fields if a
+// future regression surfaces; the actual block is OFF (`return 0;`).
+//
+// 2026-05-19: the heuristic ranges were `transmit_buf` (serial_irq.c)
+// and `batch_buf` (runtime_tick.c) — both scratch byte buffers no real
+// `struct timer` should occupy. The hardcoded addresses drifted with
+// the LTO layout: at this build `runtime_producer_timer` landed at
+// `0x200012ec`, inside the hardcoded `batch_buf` range `[0x20000be8,
+// 0x20001600)`. sched.c then blocked the producer timer's first
+// `sched_add_timer`, runtime_producer_event never fired, and the engine
+// wedged at Idle with segments queued but never consumed (test
+// `sim_motion_jogs::g1_x50_emits_step_pulses_on_sim`). Whatever
+// originally motivated this guard (commit df94e73b2) is long-since
+// fixed by the producer-timer atomicity work in commits 65d5295e6 and
+// a8e21cd41; the heuristic is now pure liability.
 volatile uint32_t sched_bad_add_caller __attribute__((used));
 volatile uint32_t sched_bad_add_value  __attribute__((used));
 
 static inline int
 addr_looks_bogus_for_timer(uint32_t p)
 {
-    // Both transmit_buf and batch_buf are static byte buffers that no
-    // real `struct timer` should ever live in. Their addresses shift
-    // between builds, so use generous ranges that cover plausible
-    // positions for current and near-future layouts (must be updated
-    // if the linker map changes drastically).
-    return (p >= 0x20000154u && p < 0x20000554u)   // transmit_buf
-        || (p >= 0x20000be8u && p < 0x20001600u);  // batch_buf
+    (void)p;
+    return 0;
 }
 
 // Capture additional context for the rogue sched_add_timer caller: the
