@@ -21,7 +21,6 @@
 #[cfg(feature = "header-runtime")]
 pub mod exports {
     use core::cell::UnsafeCell;
-    use core::mem::MaybeUninit;
     use core::sync::atomic::{AtomicBool, Ordering};
 
     use runtime::curve_pool::{CURVE_POOL_N, CurveHandle, CurvePool};
@@ -36,6 +35,7 @@ pub mod exports {
     use runtime::segment::{KinematicTag, Segment};
     use runtime::state::{FgState, IsrState, RuntimeContext, SharedState};
     use runtime::trace::TraceSample;
+    use runtime::RT_STORAGE_SIZE;
 
     /// The opaque type C sees — never dereferenced on the C side.
     /// Matches spec §3.2 / §5.6 handle discipline.
@@ -45,28 +45,74 @@ pub mod exports {
         _private: [u8; 0],
     }
 
-    /// Concrete singleton storage. Spec §3.2 init-once protocol.
-    ///
-    /// Wrapped in `MaybeUninit` because `RuntimeContext::init` writes
-    /// through raw-pointer projections (no constructor returns a
-    /// fully-formed `RuntimeContext`). Wrapped in `UnsafeCell` so we can
-    /// take a raw pointer to the storage from a shared `&` static without
-    /// undefined behaviour.
-    pub(super) struct RuntimeCell(UnsafeCell<MaybeUninit<RuntimeContext>>);
-    // SAFETY: synchronization is done externally via `INIT_DONE` (only one
-    // thread of control can take the `false → true` transition) and at
-    // runtime by the §11.1 foreground/ISR ownership discipline. The
-    // half-split (`FgState` / `IsrState`) projection through raw-pointer
-    // helpers in each FFI entry preserves strict aliasing.
-    unsafe impl Sync for RuntimeCell {}
+    // rt_storage — backing buffer for RuntimeContext, declared on the C
+    // side (src/runtime_storage.c) per docs/kalico-rewrite/mcu-c-rust-boundary.md
+    // rule B2 (C owns linker-section placement on the MCU).
+    //
+    // The UnsafeCell wrapper is layout-compatible with the C-side
+    // `uint8_t rt_storage[RT_STORAGE_SIZE]`; it exists purely to grant
+    // interior-mutability rights to pointers derived from it via .get().
+    // No shared `&` reference to rt_storage is ever formed by Rust —
+    // the only access path is rt_storage.get().cast::<RuntimeContext>()
+    // in runtime_handle_create, after which all writes flow through the
+    // existing half-split addr_of_mut! projection chain in
+    // RuntimeContext::init.
+    //
+    // Spec: docs/superpowers/specs/2026-05-19-mcu-c-rust-boundary-refactor-design.md.
+    //
+    // On the MCU (target_os = "none") rt_storage is C-declared in
+    // src/runtime_storage.c with a cfg-gated section attribute. On the host
+    // (cargo test, integration test harnesses), nothing links against that
+    // C file — so the same name is provided here as a Rust-side static.
+    // The host static doesn't need section placement; it just exists so
+    // tests and host-build paths find the symbol.
+    #[cfg(target_os = "none")]
+    unsafe extern "C" {
+        static rt_storage: UnsafeCell<[u8; RT_STORAGE_SIZE]>;
+    }
 
-    // Placed in AXI SRAM on H7 via the linker script (.axi_bss section).
-    // The 282 KB RuntimeContext doesn't fit in the H723's 128 KB DTCM
-    // region, but the H7 has 320 KB of AXI SRAM at 0x24000000 that is
-    // unused by the rest of Klipper. Other targets (host / linux / non-H7
-    // MCUs) ignore the section name and the static lands in regular .bss.
-    #[cfg_attr(feature = "axi-bss-placement", unsafe(link_section = ".axi_bss"))]
-    pub(super) static RT_CELL: RuntimeCell = RuntimeCell(UnsafeCell::new(MaybeUninit::uninit()));
+    // Host backing storage. UnsafeCell isn't Sync by default; wrap it in a
+    // transparent newtype with unsafe impl Sync. The cast site in
+    // runtime_handle_create reaches the *mut [u8; N] via `.0.get()` on host
+    // and `.get()` on MCU (UnsafeCell::get directly); a small cfg-split
+    // there keeps the wrapper minimal.
+    //
+    // Same discipline as the pre-refactor RuntimeCell — synchronization is
+    // the INIT_DONE guard + the half-split aliasing pattern, not
+    // type-system Sync.
+    #[cfg(not(target_os = "none"))]
+    #[repr(transparent)]
+    struct HostRtStorage(UnsafeCell<[u8; RT_STORAGE_SIZE]>);
+    // SAFETY: see runtime_handle_create's SAFETY comment.
+    #[cfg(not(target_os = "none"))]
+    unsafe impl Sync for HostRtStorage {}
+    // Lowercase to match the C-side `uint8_t rt_storage[N]` symbol that
+    // the MCU extern declaration above resolves to. The same identifier
+    // must work in both modes.
+    #[cfg(not(target_os = "none"))]
+    #[allow(non_upper_case_globals)]
+    static rt_storage: HostRtStorage =
+        HostRtStorage(UnsafeCell::new([0u8; RT_STORAGE_SIZE]));
+
+    // Compile-time size contract: RuntimeContext must fit in rt_storage.
+    // Bump CONFIG_RUNTIME_STORAGE_SIZE_LARGE/_SMALL in src/Kconfig if this
+    // fails after a RuntimeContext field addition.
+    const _: () = {
+        assert!(
+            core::mem::size_of::<RuntimeContext>() <= RT_STORAGE_SIZE,
+            "RuntimeContext outgrew RT_STORAGE_SIZE — bump Kconfig storage size"
+        );
+    };
+
+    // Compile-time alignment contract: rt_storage is _Alignas(16) on the
+    // C side; RuntimeContext's alignment must not exceed that. If this
+    // fails, bump the _Alignas value in src/runtime_storage.c.
+    const _: () = {
+        assert!(
+            core::mem::align_of::<RuntimeContext>() <= 16,
+            "RuntimeContext alignment > 16 — bump _Alignas in runtime_storage.c"
+        );
+    };
 
     /// Single-shot init guard. `compare_exchange(false → true)` succeeds
     /// exactly once; subsequent calls observe `Err(true)` and return null.
@@ -111,12 +157,28 @@ pub mod exports {
         if INIT_DONE.load(Ordering::Relaxed) {
             return core::ptr::null_mut();
         }
-        // SAFETY: single-threaded init; no other context can observe RT_CELL
-        // until INIT_DONE is published below. RuntimeContext::init writes
-        // through raw-pointer projections and never forms `&mut
+        // SAFETY: single-threaded init; no other context can observe
+        // rt_storage until INIT_DONE is published below. RuntimeContext::init
+        // writes through raw-pointer projections and never forms `&mut
         // RuntimeContext`, matching the §11.2 aliasing discipline.
+        //
+        // rt_storage.get() returns *mut [u8; N] with provenance over the
+        // full C-declared buffer; the cast to *mut RuntimeContext inherits
+        // that provenance (the const_assert above ensures RuntimeContext
+        // fits within the buffer).
         unsafe {
-            let rt_ptr: *mut RuntimeContext = (*RT_CELL.0.get()).as_mut_ptr();
+            // On MCU rt_storage is UnsafeCell<[u8; N]> (extern from C);
+            // on host it's HostRtStorage(UnsafeCell<[u8; N]>) (Rust-defined).
+            // .get() vs .0.get() — same underlying *mut [u8; N], same provenance.
+            #[cfg(target_os = "none")]
+            let rt_ptr: *mut RuntimeContext = rt_storage.get().cast::<RuntimeContext>();
+            #[cfg(not(target_os = "none"))]
+            let rt_ptr: *mut RuntimeContext = rt_storage.0.get().cast::<RuntimeContext>();
+            debug_assert_eq!(
+                (rt_ptr as usize) % core::mem::align_of::<RuntimeContext>(),
+                0,
+                "rt_storage alignment mismatch — linker placed it unaligned"
+            );
             RuntimeContext::init(rt_ptr);
             // Publish after full init — ISR sees either INIT_DONE=false
             // (before enable) or a fully-initialised context (after).
@@ -1428,6 +1490,52 @@ pub mod exports {
         // Modulated stepper was configured).
         unsafe { runtime_tick_enable() };
 
+        KALICO_OK
+    }
+
+    /// Seed the engine's `prev_x/y/z` position origin and `StepMotorState`
+    /// accumulators so the first segment after `SET_KINEMATIC_POSITION`
+    /// computes its delta against the correct origin rather than `(0, 0, 0)`.
+    ///
+    /// Called by the C `DECL_COMMAND` handler for `runtime_seed_position`
+    /// immediately before the host sends the first `PushSegment` of the
+    /// new stream. Fire-and-forget from the host side; no response is
+    /// required because the following `PushSegment` provides ordering.
+    ///
+    /// `x_q16`, `y_q16`, `z_q16` are Q16.16 fixed-point mm values
+    /// (`i32 = mm * 65536`). Decoded to `f32` here; the precision loss
+    /// (≈ 15 µm at 1 m) is negligible relative to the step-size floor.
+    ///
+    /// Foreground-only. Projects `&mut IsrState` under the same
+    /// single-threaded-foreground precondition as `configure_axes_blob`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_seed_position(
+        rt: *mut KalicoRuntime,
+        x_q16: i32,
+        y_q16: i32,
+        z_q16: i32,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let x = x_q16 as f32 / 65536.0;
+        let y = y_q16 as f32 / 65536.0;
+        let z = z_q16 as f32 / 65536.0;
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground-only projection. `engine` lives in `IsrState`;
+        // we project `&mut IsrState` under the same single-threaded-foreground
+        // precondition documented for `configure_axes_blob` — no ISR is running
+        // when the host sends this command (it arrives before the first
+        // PushSegment). No other `&mut IsrState` or `&mut FgState` may be live
+        // on this call path.
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.seed_position([x, y, z]);
+        }
         KALICO_OK
     }
 

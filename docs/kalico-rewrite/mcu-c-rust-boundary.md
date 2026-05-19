@@ -24,13 +24,14 @@ So: each language goes where it's better, and the engineering work is to make th
 
 These rules apply to every new piece of shared state added to the MCU. If you find yourself wanting to violate one, the answer is almost always "redefine the structure on the C side" or "narrow the surface to a single entry point."
 
-### B1. Entry points are explicit and small
+### B1. Entry points are explicit; logical entry-point count is small
 
-The C side calls Rust through a finite, named list of `extern "C"` functions. New entry points are an architectural change, not a casual addition — they're listed here, with their callers and purposes:
+The C side calls Rust through a small, named list of *logical* entry points. The count of *physical* `extern "C"` symbols is larger (~82 today) because of the opaque-handle API pattern: many functions sharing one handle constitute one cohesive seam. New seams require justification; new methods on an existing handle do not. Current inventory:
 
-- `runtime_tick` — scheduled by the C timer. The whole per-sample motion path hangs off this one call. Reentrant-safe by being non-reentrant (the C scheduler serializes calls).
-- `runtime_diag_progress` — read by the diagnostics dump path; reports motion engine state into `.persistent_diag`.
-- (Add new entries above this line, with a one-sentence justification.)
+- **`runtime_tick`** — scheduled by the C timer. The per-sample motion path hangs off this one call. Reentrant-safe by being non-reentrant (the C scheduler serializes calls).
+- **`runtime_handle_create` + the `KalicoRuntime` opaque-handle API.** One init-once function plus the family of accessor / operation functions taking `*mut KalicoRuntime` (see `rust/kalico-c-api/src/runtime_ffi.rs` for the full inventory — currently 82 entries). Counted as one logical seam for the discipline this rule is enforcing.
+- **`runtime_diag_progress`** — read by the diagnostics dump path; reports motion engine state into `.persistent_diag`.
+- (Add new entries above this line, with a one-sentence justification. A new accessor on the existing handle is not a new entry; a fundamentally new seam is.)
 
 Anything else — heater readback, pin events, USB byte arrival, command-table dispatch — stays inside C and is **not** routed through Rust. The motion engine is a tenant on the MCU, not the MCU's main loop.
 
@@ -52,7 +53,9 @@ This rule is uncomfortable because it costs duplication: a queue type is declare
 
 ### B4. `extern "C"` + `#[repr(C)]` everywhere across the boundary
 
-Any function visible across the boundary is `extern "C"` and listed in a header. Any struct visible across the boundary is `#[repr(C)]` on the Rust side and defined in a C header on the C side. No `#[repr(Rust)]` types, no `enum`-with-payloads, no `Option<&T>` in signatures, no zero-sized types, no `bool` (use `uint8_t`). Slices cross as pointer + length.
+Any function visible across the boundary is `extern "C"` and listed in a header. Any struct visible across the boundary is `#[repr(C)]` on the Rust side and defined in a C header on the C side. No `#[repr(Rust)]` types, no `enum`-with-payloads, no `Option<&T>` in signatures, no zero-sized types. Slices cross as pointer + length.
+
+`bool` is permitted. Rust's `bool` and C99 `_Bool` are layout-compatible (both 1 byte, both 0/1); the C side must `#include <stdbool.h>` to consume it. The audit pass on 2026-05-19 (A2 finding) ratified this against existing `runtime_handle_*` accessor sites that already return `bool` (`runtime_ffi.rs:2145, 2234, 2400, 2985`).
 
 ### B5. Atomicity and memory ordering follow the C model
 
@@ -69,9 +72,10 @@ The MCU side already has a memory model (ARMv7-M with explicit `__DMB` / `__DSB`
 | Scheduler timer | C | Calls `runtime_tick`. |
 | Watchdog (IWDG) | C | Petted from the scheduler; pacing actuals are Step 7-D scope. |
 | Motion engine — per-sample NURBS eval, kinematics, step output | Rust | The reason the boundary exists. |
-| Segment queue (host → MCU) | C struct (`.axi_bss`), Rust producer + Rust consumer | The 2026-05-18 SPSC fix. |
+| Segment queue (host → MCU) | C struct in regular `.bss` (DTCM on H7), Rust producer + Rust consumer | The 2026-05-18 SPSC fix. DTCM placement on H7 is deliberate: non-cached, eliminates cache-coherency concerns. NOT in `.axi_bss`. |
 | `.persistent_diag` region | C struct, C-allocated, both sides read/write | 2026-05-12 fix anchors the placement. |
-| `RT_CELL` (motion runtime state, per-MCU-target placement) | Rust today; *should migrate to C-owned section per B2.* | See "Open migrations." |
+| `.axi_bss` occupants (H7-only) | All C-declared today: `kalico_buf` (`src/kalico_demux.c`), `runtime_bench_samples_buf` (`src/generic/runtime_bench.c`), `receive_buf` (`src/generic/serial_irq.c`). Each tagged `__attribute__((section(".axi_bss")))` under `#if CONFIG_MACH_STM32H7`. | These rely on AXI SRAM at 0x24000000 because DTCM (128 KB) is saturated by the rest of Klipper. |
+| Runtime context backing (`rt_storage`) | C-declared `uint8_t` buffer in `src/runtime_storage.c`. H7: `.axi_bss` (AXI SRAM at 0x24000000) via cfg-gated section attribute. F4: regular `.bss` via default rule. Rust imports via `extern "C" { static rt_storage: UnsafeCell<[u8; RT_STORAGE_SIZE]>; }` and casts to `*mut RuntimeContext`. | Migrated 2026-05-19 from the `RT_CELL` Rust static with `#[link_section]`. `RT_STORAGE_SIZE` flows from Kconfig (`RUNTIME_STORAGE_SIZE_LARGE` = 284 KB on H7, `_SMALL` = 64 KB on F4) through both `src/runtime_storage.h` and `rust/runtime/build.rs`. The cargo-clean operational tripwire (`feedback_cargo_clean_between_mcus.md`) is now optional rather than safety-critical. |
 | Phase-stepping current synthesis (Step 10) | Rust | Algorithmic; lives on the Rust side of the line. |
 | Telemetry transport (Step 11) | C framing, Rust producers | The producers write into a C-owned ring; C ships it over the existing transport. |
 
@@ -79,16 +83,17 @@ The MCU side already has a memory model (ARMv7-M with explicit `__DMB` / `__DSB`
 
 These are the failures the boundary discipline is engineered against. They are *not* "Rust and C don't compose" failures — they are all about shared state and section ownership, which is hard between any two compilation units in any language. The rule treats the Rust ↔ C boundary the same as any C ↔ C boundary that crosses a section: with explicit ownership.
 
-- **2026-05-18 — SPSC `Consumer` miscompile.** A `heapless::spsc::Consumer` instance reported `qlen_sd=6` from one call site and `qlen_ps=1` from another in the same execution, with producer enqueues visible to one site but not the other. Pure Rust on both ends; the mix only exposed the issue because the bench setup required cross-module visibility. **Resolution:** segment queue is now a C struct in `.axi_bss` (B2 + B3). **Rule reinforced:** B3 — even Rust-only shared state should not cross indirection LLVM is allowed to optimize past.
+- **2026-05-18 — SPSC `Consumer` miscompile.** A `heapless::spsc::Consumer` instance reported `qlen_sd=6` from one call site and `qlen_ps=1` from another in the same execution, with producer enqueues visible to one site but not the other. Pure Rust on both ends; the mix only exposed the issue because the bench setup required cross-module visibility. **Resolution:** segment queue is now a C struct in regular `.bss` — DTCM on H7, normal SRAM on F4 — accessed by Rust via `extern "C"` (B2 + B3). DTCM was chosen over `.axi_bss` to eliminate any cache-coherency contribution; the relevant fix was avoiding the Rust borrow-projection, not memory placement. **Rule reinforced:** B3 — even Rust-only shared state should not cross indirection LLVM is allowed to optimize past.
 - **2026-05-12 — `dynmem` / `.persistent_diag` overlap.** `dynmem_start()` returned `&_bss_end`, but `.persistent_diag` started at `_bss_end` in the linker map, so `alloc_chunk` overwrote `runtime_diag_progress` writes. Result: corrupted `oids[N].type`, "Invalid oid type" shutdowns mid-session. **Resolution:** `dynmem_start()` returns `&_persistent_diag_end`. **Rule reinforced:** B2 — two allocators in two languages each thinking they own the same bytes is the class of bug; one-language ownership of section placement is the class of fix.
 - **2026-05-12 — F446 `configure_axes` crash.** F4 FPU disabled at boot (`SystemInit` skips CPACR when `__FPU_USED == 0`); Rust soft-float occasionally lowered reg-reg moves to `vmov`, which UNDEFINSTRs on M4F. **Resolution:** enable `CPACR.CP10/11` in `armcm_main` when `CONFIG_KALICO_RUNTIME=y && __FPU_PRESENT == 1`. **Rule reinforced:** B1 — boot / CPU-state setup is C's job; Rust assumes the CPU is configured before it runs.
-- **`RT_CELL` H7 vs F4 section confusion.** H7's `RT_CELL` belongs in `.axi_bss` (0x24000000); F4's must be in `.bss` (0x20000000). Cargo cache silently kept the wrong `.a` across `make clean`, leaking H7 placement into F4 builds and vice versa. **Resolution (today):** mandatory `cargo clean` between MCU targets; verify via `objdump -t out/klipper.elf | grep RT_CELL`. **Rule reinforced:** B2 — Rust deciding where a shared region lives is fragile across cross-targets; the long-run fix is C-side placement (see "Open migrations").
+- **`RT_CELL` H7 vs F4 section confusion (resolved 2026-05-19).** H7's `RT_CELL` belonged in `.axi_bss` (0x24000000); F4's in `.bss` (0x20000000). Cargo cache silently kept the wrong `.a` across `make clean`, leaking H7 placement into F4 builds and vice versa. **Initial resolution:** mandatory `cargo clean` between MCU targets; verify via `objdump`. **Structural resolution (2026-05-19, this refactor):** migrated to C-declared `rt_storage` in `src/runtime_storage.c` with cfg-gated `__attribute__((section(".axi_bss")))` (H7 only). Rust no longer makes placement decisions; cargo cache cannot leak across MCU targets. **Rule reinforced:** B2 — single-language ownership of section placement is the structural fix.
+- **2026-05-19 — `RT_CELL` → `rt_storage` migration.** The Rust static with `#[link_section = ".axi_bss"]` was replaced by a C-declared `uint8_t rt_storage[RT_STORAGE_SIZE]` buffer. Section placement now decided exclusively by the C linker script (cfg-gated attribute: `.axi_bss` on H7, default `.bss` on F4). Rust imports via `extern "C"` with an `UnsafeCell` wrapper for interior-mutability rights; soundness verified under stacked/tree borrows. Closes the cargo-clean operational tripwire (`feedback_cargo_clean_between_mcus.md`). Two adversarial reviewers (codex + opus kalico-plan-reviewer) had flagged the naïve `extern "C" { static rt_storage: [u8; N]; }` (no `UnsafeCell`) as unsound in spec v1 — the v2 `UnsafeCell<[u8; N]>` mechanism is what landed. **Rule reinforced:** B2 — single-language ownership of section placement is the structural fix.
 
 ## Open migrations
 
 State currently on the Rust side of the boundary that B2/B3 say should move to the C side:
 
-- **`RT_CELL`.** Today a Rust static with `#[link_section]`. Per B2, this should be a C struct in a C-owned section, with a `#[repr(C)]` Rust mirror. Migration is bounded and one-time. Not blocking Step 7; tracked as debt the boundary discipline wants to repay.
+- (none open as of 2026-05-19 — `RT_CELL` → `rt_storage` migration completed; see case study above.)
 
 ## Tradeoffs we accept
 

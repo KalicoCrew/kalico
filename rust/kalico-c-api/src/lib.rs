@@ -26,15 +26,29 @@ pub use runtime_ffi::exports::*;
 // Re-export error code constants used by integration tests.
 pub use runtime::error::*;
 
-/// Panic handler for MCU `no_std` staticlib builds. The Klipper C runtime
-/// provides no Rust panic infra; on panic we loop forever, leaving the
-/// machine in a deterministic locked state for the watchdog/host to detect.
+/// Panic handler for MCU `no_std` staticlib builds.
+///
+/// Routes into the C-side fault-latch (`rust_panic_latch` in
+/// `src/runtime_panic.c`), which calls Klipper's `shutdown("Rust panic")`.
+/// This emits a shutdown-report frame the host sees, services the IWDG one
+/// last time, and surfaces the failure in the klippy log — instead of
+/// silently locking the MCU inside whatever context the panic occurred
+/// (TIM5 ISR, stepper timer callback, etc.).
+///
+/// Pre-2026-05-19 (A5 boundary audit) this spun forever, which on the
+/// bench appeared as a frozen MCU with no diagnostics. The spin path
+/// also prevented IWDG service from inside an interrupt context.
 ///
 /// Host builds use the std panic machinery and skip this.
 #[cfg(not(feature = "host"))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {
-        core::hint::spin_loop();
+    unsafe extern "C" {
+        fn rust_panic_latch() -> !;
     }
+    // SAFETY: rust_panic_latch is __noreturn on the C side; it calls
+    // Klipper's shutdown() macro which never returns. The Rust panic
+    // handler's `-> !` return type is satisfied by the function's
+    // noreturn signature.
+    unsafe { rust_panic_latch() }
 }
