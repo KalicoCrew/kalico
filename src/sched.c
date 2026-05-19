@@ -14,7 +14,6 @@
 #include "board/pgm.h" // READP
 #include "command.h" // shutdown
 #include "sched.h" // sched_check_periodic
-#include "stepper.h" // stepper_event
 
 // Forward declarations of the timer-event handlers that own each foundation
 // timer in SchedState. Defined below.
@@ -307,15 +306,14 @@ sched_timer_dispatch(void)
     sched_dispatch_history_func[hidx % SCHED_DISPATCH_HISTORY_N] = (uint32_t)t->func;
     sched_dispatch_history_idx = hidx + 1;
 
-    uint_fast8_t res;
-    uint32_t updated_waketime;
-    if (CONFIG_INLINE_STEPPER_HACK && likely(!t->func)) {
-        res = stepper_event(t);
-        updated_waketime = t->waketime;
-    } else {
-        res = t->func(t);
-        updated_waketime = t->waketime;
-    }
+    // The legacy "inline stepper" optimization (CONFIG_INLINE_STEPPER_HACK
+    // + stepper_event when t->func is NULL) was removed alongside the
+    // queue_step / stepper_event_* scheduler — the Rust runtime emits
+    // step pulses from the TIM5 ISR via runtime_emit_step_pulses, not by
+    // queueing timer callbacks. All scheduled timers now go through
+    // t->func(t).
+    uint_fast8_t res = t->func(t);
+    uint32_t updated_waketime = t->waketime;
 
     // Update timer_list (rescheduling current timer if necessary)
     unsigned int next_waketime = updated_waketime;
