@@ -585,7 +585,15 @@ class SerialReader:
             bridge = self.mcu._motion_bridge
             handle = self.mcu._bridge_handle
             if bridge is not None and handle is not None:
+                import logging as _l
+                _l.info("[serial-send] bridge_send mcu=%s handle=%s msg=%s",
+                        getattr(self.mcu, "_name", "?"), handle, msg[:200])
                 bridge.bridge_send(handle, msg)
+            else:
+                import logging as _l
+                _l.error(
+                    "[serial-send] DROPPED in bridge mode: bridge=%s handle=%s "
+                    "msg=%s", bridge, handle, msg[:200])
             return
         cmd = self.msgparser.create_command(msg)
         self.raw_send(cmd, minclock, reqclock, self.default_cmd_queue)
