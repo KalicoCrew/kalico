@@ -1619,14 +1619,14 @@ pub mod exports {
         }
         // blob_len == 20 (legacy) doesn't touch phase config; left as-is.
 
-        // Spec §6.3: after all step_modes are written, atomically decide
-        // whether TIM5 should be armed. `runtime_tick_enable` will no-op on
-        // the C side when the Modulated count is zero (F4 with all-StepTime
-        // config never starts TIM5 here). This covers both the legacy
-        // 20-byte path (all-StepTime default, count == 0, no-op enable) and
-        // the extended 25-byte path (enables TIM5 only if at least one
-        // Modulated stepper was configured).
-        unsafe { runtime_tick_enable() };
+        // 2026-05-19: TIM5 is no longer armed here. configure_axes_blob now
+        // sets up state but leaves the phase-stepping ISR off; the first
+        // successful `push_segment_impl` arms TIM5 (it's idempotent on the
+        // C side after the 2026-05-19 guard). Pre-fix, arming at
+        // configure_axes meant the ISR fired at 40 kHz writing zero-delta
+        // XDIRECT for the entire idle period between config and first
+        // motion, starving USB CDC and causing "No such device"
+        // disconnects within ~1 s of any sustained load.
 
         KALICO_OK
     }

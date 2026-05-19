@@ -72,6 +72,19 @@ runtime_tick_enable(void)
         return;
     }
 
+    // 2026-05-19: idempotent re-arm guard. push_segment_impl calls this on
+    // every successful enqueue so the first segment lazily starts TIM5; if
+    // TIM5 is already counting (CR1.CEN==1), short-circuit to avoid the
+    // disable→reenable glitch and the dead-cycle USB-CDC bandwidth cost.
+    // The pre-2026-05-19 path was called from configure_axes_blob alone,
+    // which armed TIM5 immediately on connect — even before any segment
+    // existed — so the ISR fired at 40 kHz writing zero-delta XDIRECT to
+    // SPI3 for the entire idle period, starving the USB CDC pump and
+    // eventually causing "No such device" disconnects under sustained load.
+    if (TIM5->CR1 & TIM_CR1_CEN) {
+        return;
+    }
+
     // Modulated motors present — arm TIM5 at 40 kHz for current synthesis
     // (Step 10 future) and the polled-tick StepAccumulator path.
     TIM5->CR1 &= ~TIM_CR1_CEN;

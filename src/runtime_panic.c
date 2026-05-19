@@ -20,6 +20,7 @@
 
 #include "autoconf.h"
 #include "command.h"   // shutdown() macro → sched_shutdown(_DECL_STATIC_STR(...))
+#include "sched.h"     // sched_shutdown prototype (referenced by the macro)
 #include "compiler.h"  // __noreturn
 
 #if CONFIG_KALICO_RUNTIME
