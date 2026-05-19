@@ -115,13 +115,36 @@ motor positioning resolution.
 
 ### TIM5 ISR — the unified evaluator
 
+**Per-sample state caches** (held across ISR fires):
+
+```rust
+struct TickCaches {
+    // Per-axis: position/velocity sampled at the end of the PREVIOUS
+    // sample, which becomes "start" for THIS sample's velocity
+    // extrapolation. Read at sample entry, overwritten at sample exit.
+    P_prev: [f32; N_AXES],
+    v_prev: [f32; N_AXES],
+
+    // Cartesian XY arc-length velocity sampled at end of PREVIOUS sample.
+    // Used by E-follows-XY pressure-advance velocity-delta term. Scalar,
+    // because |v_xy| is a single derived quantity per sample (not per
+    // motor axis).
+    v_xy_prev: f32,
+
+    // Accumulated Cartesian XY arc length since segment start. Reset on
+    // segment retire; running sum across samples within a segment.
+    ds_xy_segment: f32,
+}
+```
+
 ```
 TIM5 ISR fires every (1 / sample_rate) µs:
 
-  P_sample_start_cache = P_sample_end_cache_from_last_fire
-  v_sample_start_cache = v_sample_end_cache_from_last_fire
+  v_A_sample_end = 0; v_B_sample_end = 0;   # captured per axis below
 
   for axis in [A, B, Z, E]:
+    P_sample_start = caches.P_prev[axis]
+    v_sample_start = caches.v_prev[axis]
     # (1) Advance piece if sample straddles boundary
     while t_local_for_axis(t_sample_end) > axis.piece.duration:
       advance to next piece (or break if segment retiring)
@@ -138,23 +161,32 @@ TIM5 ISR fires every (1 / sample_rate) µs:
     # (3) Endstop sample (existing hook, cheap when no arm)
     kalico_endstop_tick_step_time(handle, now)
 
+    # Capture per-axis velocity for the XY-arc-length step below.
+    if axis == A: v_A_sample_end = v_end
+    if axis == B: v_B_sample_end = v_end
+
     # (4) E-follows-XY arc-length integration (CLAUDE.md §extruder).
-    # IMPORTANT: arc length must be Cartesian XY, not motor-space A/B.
+    # Arc length is Cartesian XY, not motor-space A/B.
     # For CoreXY: |v_xy| = sqrt(vA² + vB²) / sqrt(2); for cartesian: = sqrt(vA² + vB²).
-    # Host pushes the kinematic factor K_xy at configure_axes time:
+    # Host sets K_xy at configure_kinematics time:
     #   K_xy = 1.0           for cartesian (A=X, B=Y trivially)
     #   K_xy = 1.0/sqrt(2)   for CoreXY
-    # (Delta and other non-orthogonal kinematics need K computed per pose, out
-    # of scope here; CoreXY + Cartesian cover the bench and all CLAUDE.md
-    # target machines.)
-    # Computed once per sample after A and B have both been evaluated.
-    if axis == B:    # last of the XY pair; A already evaluated this sample
-      v_motor_sq = v_A_cached² + v_B_cached²
-      v_xy = sqrt(v_motor_sq) · K_xy
-      ds_xy += v_xy · sample_period
-      v_xy_delta = v_xy - v_xy_prev_sample
+    # (Delta and other non-orthogonal kinematics need K computed per pose,
+    # out of scope here; CoreXY + Cartesian cover the bench and all
+    # CLAUDE.md target machines.)
+    # Run once after axis B (so both vA and vB are known this sample).
+    if axis == B:
+      v_motor_sq = v_A_sample_end² + v_B_sample_end²
+      v_xy = sqrt(v_motor_sq) · K_xy                       # scalar derived
+      caches.ds_xy_segment += v_xy · sample_period
+      v_xy_delta = v_xy - caches.v_xy_prev
+      caches.v_xy_prev = v_xy                              # for next sample
+
     if axis == E:
-      P_end += extrusion_per_xy_mm · ds_xy
+      # E_target uses the XY arc length accumulated this segment plus
+      # pressure-advance term keyed off the XY velocity DELTA between
+      # this sample and the previous sample.
+      P_end += extrusion_per_xy_mm · caches.ds_xy_segment
               + pressure_advance(sign(v_xy_delta)) · v_xy_delta
 
     # (5) Per-axis dispatch on stepping mode
@@ -167,19 +199,25 @@ TIM5 ISR fires every (1 / sample_rate) µs:
 
         if |n_steps| > 0:
           v_avg = (v_sample_start + v_end) / 2
+          # NOTE: cycle_abs is u32 = lower 32 bits of the cycle counter.
+          # Wraps every ~8.3 s on H7, ~4 min on F446. Always use wrapping_add
+          # when computing absolute cycle times. The consumer-side comparison
+          # uses Klipper's timer_is_before (signed-delta), wrap-safe.
           if |v_avg| > V_EXTRAPOLATION_THRESHOLD:    # default 1 mm/s
             # Velocity-extrapolated sub-sample times
             for k in 0..|n_steps|:
               step_pos_k = (prev_step_count + (k+1) · sign(n_steps))
                            · axis.microstep_distance
-              t_local = (step_pos_k - P_sample_start) / v_avg
-              cycle_abs = sample_start_cycles + t_local · cycles_per_second
-              push to axis.step_queue
+              t_local_sec = (step_pos_k - P_sample_start) / v_avg
+              dt_cycles = (t_local_sec · cycles_per_second) as u32
+              cycle_abs = sample_start_cycles.wrapping_add(dt_cycles)
+              push (cycle_abs, sign(n_steps)) to axis.step_queue
           else:
             # Near-zero velocity fallback: uniform within sample
             for k in 0..|n_steps|:
-              t_local = sample_period · (k+1) / (|n_steps|+1)
-              push to axis.step_queue
+              dt_cycles = (sample_period_cycles · (k+1)) / (|n_steps|+1)
+              cycle_abs = sample_start_cycles.wrapping_add(dt_cycles)
+              push (cycle_abs, sign(n_steps)) to axis.step_queue
 
           for stepper in axis.steppers:
             stepper.position_count.checked_add(n_steps)
@@ -213,25 +251,78 @@ TIM5 ISR fires every (1 / sample_rate) µs:
 ### Per-axis Klipper timer (consumer, Pulse mode)
 
 One permanent `struct timer` per motor axis (A, B, Z, E), riding on the
-existing Klipper SysTick scheduler. Body identical pattern to mainline's
-`stepper_event_edge`:
+existing Klipper SysTick scheduler. The `struct timer` itself is C-allocated
+(Klipper-owned), and its `func` pointer points to a **Rust `extern "C"`
+function** that performs the drain. This is the "Option A storage + Rust
+consumer logic" hybrid: queue storage stays C-owned per B2/B3, while the
+drain logic gets Rust type safety on `StepEntry` decode and direct access
+to the engine's atomic fault flags.
+
+Body **drains multiple due entries per fire** (mainline-pattern but batching
+when entries cluster):
 
 ```
 fn per_axis_step_event(t: &mut struct timer) -> u_fast8_t {
-  if entry = axis.step_queue.try_pop():
-    runtime_emit_step_pulses(axis_idx, sign=entry.dir)
-      # toggles all step pins of steppers bound to axis (existing fan-out)
-  if next = axis.step_queue.peek_head():
-    t.waketime = max(next.cycle_abs, now + SF_RESCHEDULE_FLOOR_NEW)
-  else:
-    t.waketime = now + sample_period_cycles  # re-check after next TIM5 fire
-  return SF_RESCHEDULE
+  let now = timer_read_time();
+  let drain_window = now.wrapping_add(DRAIN_WINDOW_CYCLES);
+  let floor_time   = now.wrapping_add(DISPATCHER_FLOOR_CYCLES);
+  let next_sample  = now.wrapping_add(sample_period_cycles);
+
+  // All u32 cycle-counter comparisons use Klipper's `timer_is_before(a, b)`,
+  // which evaluates `(int32_t)(a - b) < 0` — wrap-aware on the 32-bit cycle
+  // counter. NEVER compare cycle counters with plain `<`, `>`, or `max` —
+  // they wrap every ~8.3 seconds on H7 (520 MHz / 2³² cycles) and ~4 minutes
+  // on F446 (180 MHz / 2³² cycles), within a single print.
+  //
+  // Successive back-to-back step pulses are ~60-100 ns apart via the
+  // existing runtime_emit_step_pulses GPIO inner loop — sub-µs timing
+  // accuracy, well inside motor mechanical bandwidth.
+  while entry = axis.step_queue.peek_head() {
+    if timer_is_before(drain_window, entry.cycle_abs) break;  // entry too far future
+    axis.step_queue.pop();
+    runtime_emit_step_pulses(axis_idx, sign=entry.dir);
+  }
+
+  match axis.step_queue.peek_head() {
+    Some(next) => {
+      // Pick whichever is later (wrap-aware): the entry's scheduled time,
+      // or the dispatcher floor. timer_is_before(a, b) ⇒ a is earlier.
+      t.waketime = if timer_is_before(next.cycle_abs, floor_time) {
+        floor_time            // entry would race the dispatcher; clamp forward
+      } else {
+        next.cycle_abs
+      };
+    },
+    None => t.waketime = next_sample,                          // re-check next TIM5
+  }
+  return SF_RESCHEDULE;
 }
 ```
 
-`SF_RESCHEDULE_FLOOR_NEW`: ~5 µs (1500 cycles on H7, 900 cycles on F446) —
-matches Klipper scheduler dispatch overhead, not the previous arbitrary
-100 µs. No artificial step-rate ceiling.
+**Constants to measure, not pick:**
+
+- `DISPATCHER_FLOOR_CYCLES`: minimum reschedule gap, set to the *measured*
+  Klipper scheduler dispatch overhead on the target MCU. Profiled during
+  bring-up Stage 1. Expected ~1-2 µs on H7 (~700 cycles), ~3-4 µs on F446
+  (~600 cycles). Not the previous arbitrary 5 µs.
+- `DRAIN_WINDOW_CYCLES`: drain horizon, set to ~`DISPATCHER_FLOOR_CYCLES`
+  (entries clustered tighter than dispatcher can re-dispatch get batched
+  back-to-back). Same measurement campaign.
+
+**No artificial step-rate ceiling.** The consumer rate is bounded by
+dispatcher overhead + emission-body cost, not by a hand-picked floor. With
+batched drain, even step rates above the per-fire ceiling are sustained
+(consecutive due entries emit back-to-back within drain_window).
+
+**Per-MCU step-rate ceilings (measured during bring-up):**
+
+| MCU | Sample rate | Max sustained step rate per axis | Limit |
+|-----|-------------|----------------------------------|-------|
+| H7 @ 520 MHz | 40 kHz | ~500 kHz | per-step body cost |
+| F446 @ 180 MHz | 20 kHz | ~250 kHz | dispatcher floor |
+
+`configure_axis` rejects configurations exceeding the per-MCU ceiling with a
+`StepRateExceedsMcuCeiling` fault, computed from max-velocity × steps/mm.
 
 For Phase-mode axes the step queue is unused; the per-axis timer fires but
 its body sees an empty queue and reschedules. ~0.5% CPU per idle axis on H7.
@@ -284,7 +375,7 @@ i64 (lo/hi split with sequence counter) documented and ready if needed.
 support motors-sync-style alignment. For Pulse mode, the equivalent
 preservation happens automatically via TMC MSCNT — no firmware field needed.
 
-### Per-axis
+### Per-axis (Rust engine state)
 
 ```rust
 pub struct AxisConfig {
@@ -293,9 +384,10 @@ pub struct AxisConfig {
     pub piece: Option<BezierPieceMonomial>,
     pub piece_start_time: u64,            // cycles
     pub last_step_count: i32,             // axis-level, engine-private (not shared)
-    pub step_queue: SpscQueue<StepEntry, 16>,
     pub microstep_distance: f32,          // mm per microstep, uniform across axis
     pub spi_bus: Option<&SpiBusRef>,      // bound for Phase mode
+    // Step queue is NOT a field here — see "Per-axis step queue (C-owned shared state)"
+    // below. AxisConfig accesses it by axis index through the C-defined extern.
 }
 
 pub struct BezierPieceMonomial {
@@ -303,12 +395,106 @@ pub struct BezierPieceMonomial {
     pub vel_coeffs: [f32; 3],             // pre-baked derivative coefficients
     pub duration: f32,                    // seconds in this piece
 }
+```
 
+### Per-axis step queue (C-owned shared state)
+
+Per the architectural invariant in `docs/kalico-rewrite/mcu-c-rust-boundary.md`
+(rules **B2** and **B3**), shared state that crosses the C/Rust boundary — or
+even pure-Rust shared state that crosses indirection LLVM is allowed to
+optimize past — **must be defined in C, with a `#[repr(C)]` Rust mirror that
+does not own storage.** The 2026-05-18 case study (heapless::spsc::Consumer
+miscompile, pure Rust on both ends) is the load-bearing precedent: the rule
+applies even when both producer and consumer are Rust ISR contexts.
+
+**Storage:** 4 instances of `StepQueue`, declared in `src/step_queue.c`,
+placed in DTCM on H7 (non-cached, eliminates cache-coherency concerns) and
+default `.bss` on F4. Linker section name TBD against the existing H7 linker
+script — see open question Q-LINKER below.
+
+**C definitions (`src/step_queue.h`):**
+
+```c
+#define STEP_QUEUE_DEPTH 16
+
+typedef struct {
+    uint32_t cycle_abs;   // lower 32 bits of DWT CYCCNT; wrap-aware compare only
+    int8_t   dir;         // +1 / -1
+    uint8_t  _pad[3];     // explicit padding, matches Rust #[repr(C)] padding
+} StepEntry;              // sizeof == 8, 4-byte aligned
+
+typedef struct {
+    volatile uint16_t tail;   // producer-owned (TIM5 ISR writes)
+    volatile uint16_t head;   // consumer-owned (per-axis timer writes)
+    uint8_t _pad[4];          // align buf to 8 bytes
+    StepEntry buf[STEP_QUEUE_DEPTH];
+} StepQueue;                  // sizeof == 136, 8-byte aligned
+
+extern StepQueue step_queues[4];   // one per motor axis (A, B, Z, E)
+```
+
+```c
+// src/step_queue.c
+#if CONFIG_MACH_STM32H7
+__attribute__((section(".dtcm_bss")))    // exact section name pending Q-LINKER
+#endif
+StepQueue step_queues[4];
+
+_Static_assert(sizeof(StepEntry)  == 8,   "StepEntry layout drift");
+_Static_assert(sizeof(StepQueue)  == 136, "StepQueue layout drift");
+_Static_assert(offsetof(StepQueue, buf) == 8, "StepQueue.buf offset drift");
+```
+
+**Rust mirror (`rust/runtime/src/step_queue.rs`):**
+
+```rust
+use core::cell::UnsafeCell;
+
+#[repr(C)]
 pub struct StepEntry {
-    pub cycle_abs: u32,                   // lower 32 bits of cycle counter
-    pub dir: i8,                          // +1 / -1
+    pub cycle_abs: u32,
+    pub dir: i8,
+    _pad: [u8; 3],
+}
+
+#[repr(C)]
+pub struct StepQueue {
+    pub tail: u16,   // accessed via ptr::{read,write}_volatile from Rust
+    pub head: u16,
+    _pad: [u8; 4],
+    pub buf: [StepEntry; 16],
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<StepEntry>() == 8);
+    assert!(core::mem::size_of::<StepQueue>() == 136);
+    assert!(core::mem::offset_of!(StepQueue, buf) == 8);
+};
+
+extern "C" {
+    // C owns storage; UnsafeCell carries interior-mutability rights for ISR
+    // access from both producer (TIM5) and consumer (per-axis timer) sides.
+    pub static step_queues: UnsafeCell<[StepQueue; 4]>;
 }
 ```
+
+**SPSC access pattern (matches B5):**
+
+Producer (TIM5 ISR, Rust):
+1. Check `tail - head < STEP_QUEUE_DEPTH` (wrapping u16 subtract); overflow → fault.
+2. `ptr::write_volatile` the entry at `buf[tail % 16]`.
+3. `core::sync::atomic::fence(Ordering::Release)` — lowers to `DMB` on ARMv7-M.
+4. `ptr::write_volatile` to `tail = tail + 1`.
+
+Consumer (per-axis timer, Rust `extern "C"` function — see below):
+1. `ptr::read_volatile` `tail` and `head`.
+2. If `tail == head`: queue empty, return without popping.
+3. `core::sync::atomic::fence(Ordering::Acquire)` before reading entry data.
+4. Read entry at `buf[head % 16]` via `read_volatile`.
+5. `core::sync::atomic::fence(Ordering::Release)` before advancing head.
+6. `write_volatile` to `head = head + 1`.
+
+Memory cost: 4 queues × 136 B = 544 B. Trivial in DTCM (H7) or `.bss` (F4).
 
 `AxisConfig::mode` uniform across all steppers on the axis (Section 4
 constraint). Mixed-mode-per-axis is rejected at `configure_axes` time with a
@@ -344,24 +530,54 @@ stepper index.
 
 ### `kalico_set_axis_mode(axis_idx: u8, mode: StepMode) -> KalicoResult`
 
-Switch an axis between Pulse and Phase. Synchronous — waits for current
-segment to retire before applying. Returns `MotionInProgress` if a non-jog
-segment is mid-execution.
+Switch an axis between Pulse and Phase. **Idle-only**: the engine refuses
+the command if any motion segment is in flight on any axis. The host is
+responsible for quiescing motion before calling.
 
-Sequence:
-1. Engine accepts the request, blocks new push_segment until the switch completes
-2. Wait for current segment retire (typical: ms; bounded: segment.duration)
-3. Flush axis.step_queue and SPI writes for that axis's TMCs
-4. Host writes TMC config registers for the new mode (mode change of CHOPCONF,
-   stallguard enable/disable, etc.) — this is a separate Klippy step preceding
-   `kalico_set_axis_mode`
-5. Engine updates `axis.mode` (Release store, picked up by next TIM5 ISR)
-6. Engine unblocks push_segment
+Returns:
+- `Ok` — mode switch applied successfully.
+- `Err(MotionInProgress)` — at least one axis has an active segment; caller
+  must wait and retry. Not a fault: a recoverable busy signal.
+
+Engine sequence on accepting the command:
+1. Verify no segment is mid-execution on any axis (atomic check on
+   `producer_current`). If any active, return `Err(MotionInProgress)`.
+2. Flush `axis.step_queue` (drain any queued entries — there should be none
+   since motion is idle, but defensive).
+3. Flush SPI write queue entries targeting this axis's TMCs.
+4. Atomic store on `axis.mode` (Release ordering, picked up by next TIM5 ISR).
+5. Return `Ok`.
+
+The engine **does not** write TMC configuration registers. That's the host's
+responsibility, sequenced **after** `set_axis_mode` returns Ok:
+
+```
+# Host-side flow (in Klippy homing extra or equivalent):
+toolhead.wait_moves()                            # drain all in-flight motion
+result = mcu.send(kalico_set_axis_mode, axis=X, mode=Pulse)
+if result == MotionInProgress:
+    raise GcodeException("motion not idle, cannot switch axis mode")
+# Engine now in Pulse mode for X, no SPI XDIRECT writes happening.
+# Safe to reconfigure TMC chip:
+tmc_x.set_chopconf(mres=0, ...)                  # restore microstep table
+tmc_x.set_coolconf(sgt=2, ...)                   # enable stallguard
+tmc_x.set_tcoolthrs(...)
+# Now safe to queue motion in the new mode:
+toolhead.move(...)
+```
+
+This ordering avoids the race where the engine is still writing XDIRECT
+while the host reconfigures the TMC into normal microstep mode (or vice
+versa). Engine flushes first; host configures second; motion resumes third.
+
+The `ModeSwitchWhileMoving` fault is removed — the idle-only check returns
+a recoverable `Err`, not an unrecoverable fault.
 
 Use case: sensorless homing on a normally-phase-stepped axis. Klippy homing
 extra reads per-axis `primary_mode` and `homing_mode` from printer.cfg,
-issues `set_axis_mode(homing_mode)` before the homing maneuver and restores
-`set_axis_mode(primary_mode)` after.
+waits for motion idle, calls `set_axis_mode(homing_mode)`, then reconfigures
+TMC, then performs the homing maneuver. After homing, the symmetric sequence
+restores `primary_mode`.
 
 ### `kalico_set_stepper_offset(stepper_idx: u8, delta_microsteps: i32, max_microsteps_per_sample: u16) -> KalicoResult`
 
@@ -462,7 +678,10 @@ New fault codes added:
 - `SampleRateMisconfigured` — boot-time validation failure.
 - `PositionCountOverflow(stepper_idx)` — i32 `position_count` exceeded range.
 - `JogParametersInvalid` — `kalico_set_stepper_offset` parameters out of bounds.
-- `ModeSwitchWhileMoving(axis_idx)` — `kalico_set_axis_mode` called mid-segment.
+- `StepRateExceedsMcuCeiling(axis_idx)` — config-time rejection when an axis's
+  max sustained step rate (max_velocity · steps_per_mm) exceeds the per-MCU
+  ceiling stated in the consumer section. Not a fault during motion; raised
+  at `configure_axis` time so misconfigured machines refuse to start motion.
 
 All faults route through existing `shared.fault` mechanism → foreground
 reactor → `kalico_runtime_shutdown_engine` → Klipper shutdown.
@@ -582,6 +801,17 @@ These are recorded for future work; not blocking this redesign.
   if some axis demands different time resolution.
 - Step pulse width emitter for non-DEDGE drivers — out of scope; all target
   hardware (TMC2209/2240/5160) supports DEDGE.
+
+### Open questions to resolve before implementation
+
+- **Q-LINKER:** The `StepQueue` storage section name. The boundary doc names
+  H7's `.axi_bss` section, but DTCM placement is preferred for the step
+  queues (non-cached, eliminates cache-coherency concerns between TIM5 ISR
+  and SysTick consumer). Confirm via inspection of the existing H7 linker
+  script whether there's a DTCM-mapped `.bss` region (matching the segment
+  queue's placement). If only `.axi_bss` is available, evaluate whether AXI
+  SRAM's cache behavior is acceptable for SPSC use. Resolve before writing
+  the implementation plan.
 
 ---
 
