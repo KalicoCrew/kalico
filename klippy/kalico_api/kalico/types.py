@@ -4,9 +4,7 @@ import inspect
 import types
 import typing
 
-if typing.TYPE_CHECKING:
-    from .context import Kalico
-
+from .context import Kalico
 
 Function = typing.TypeVar("Handler", bound=typing.Callable)
 

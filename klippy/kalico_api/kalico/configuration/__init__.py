@@ -119,7 +119,7 @@ class ConfigurationSection:
 
     def gcode(self, option: str, function: GCodeFunction = None):
         def decorator(gcode_function: GCodeFunction) -> GCodeFunction:
-            if Configuration.__FINALIZE:
+            if self._configuration._finalized:
                 return gcode_function
 
             try:
