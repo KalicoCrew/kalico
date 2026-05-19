@@ -34,6 +34,7 @@ fn main() {
     let mkv = lookup("KALICO_RUNTIME_MAX_KNOT_VECTOR_LEN", "1850");
     let mdg = lookup("KALICO_RUNTIME_MAX_DEGREE", "10");
     let cpn = lookup("KALICO_RUNTIME_CURVE_POOL_N", "16");
+    let rss = lookup("KALICO_RUNTIME_STORAGE_SIZE", "327680");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
     let body = format!(
@@ -41,7 +42,8 @@ fn main() {
          pub const MAX_CONTROL_POINTS: usize = {mcp};\n\
          pub const MAX_KNOT_VECTOR_LEN: usize = {mkv};\n\
          pub const MAX_DEGREE: u8 = {mdg};\n\
-         pub const CURVE_POOL_N: usize = {cpn};\n"
+         pub const CURVE_POOL_N: usize = {cpn};\n\
+         pub const RT_STORAGE_SIZE: usize = {rss};\n"
     );
     fs::write(out_dir.join("sizing.rs"), body).expect("write sizing.rs");
 }
