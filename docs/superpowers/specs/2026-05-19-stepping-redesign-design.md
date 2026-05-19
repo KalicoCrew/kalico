@@ -348,22 +348,19 @@ distinct from the current value. Total per-stepper Phase-mode state:
 
 ### Mode-switch counter resync
 
-`kalico_set_axis_mode` sequence updated to include explicit counter
-resync after the engine flushes its queues:
+A mode switch can produce a one-shot burst on the first post-switch sample
+if the dispatch logic computes a delta against a stale counter. The
+`axis.last_step_count` field is updated in **both** Pulse and Phase samples
+(per the dispatch pseudocode), so a Phase→Pulse transition has no stale
+counter. The Pulse→Phase direction does: `stepper.last_phase_target` is
+only written in Phase samples, so on Pulse→Phase the first Phase sample
+would compute `delta_stepper = target − stale_last_phase_target` and burst.
 
-1. Verify idle (no segment in flight) → else `Err(MotionInProgress)`.
-2. Flush `step_queues[axis]` and SPI writes for this axis's TMCs.
-3. **Resync counters before unblocking:**
-   - When entering Phase mode: for each stepper, initialize
-     `last_phase_target = axis.last_step_count + phase_offset_microsteps`.
-     This makes the first Phase sample compute `delta_stepper = 0`
-     unless an offset is in flight, avoiding a one-shot burst.
-   - When entering Pulse mode: no resync needed.
-     `axis.last_step_count` was being updated during Phase mode too, so
-     the first Pulse sample's `n_steps = target - last_step_count`
-     reflects only motion since the last sample — no burst.
-4. Atomic store on `axis.mode` (Release).
-5. Return Ok.
+**Resolution:** the `kalico_set_axis_mode` engine sequence performs an
+explicit counter resync between flushing the queues and storing the new
+mode value. See the full sequence under
+[`kalico_set_axis_mode`](#kalico_set_axis_modeaxis_idx-u8-mode-stepmode---kalicoresult)
+in the commands section — that's the authoritative spec.
 
 ### Per-axis Klipper timer (consumer, Pulse mode)
 
@@ -713,14 +710,28 @@ Returns:
 - `Err(MotionInProgress)` — at least one axis has an active segment; caller
   must wait and retry. Not a fault: a recoverable busy signal.
 
-Engine sequence on accepting the command:
+Engine sequence on accepting the command (authoritative — the "Mode-switch
+counter resync" subsection above is supporting commentary; this sequence is
+what the implementation follows):
+
 1. Verify no segment is mid-execution on any axis (atomic check on
    `producer_current`). If any active, return `Err(MotionInProgress)`.
 2. Flush `axis.step_queue` (drain any queued entries — there should be none
    since motion is idle, but defensive).
 3. Flush SPI write queue entries targeting this axis's TMCs.
-4. Atomic store on `axis.mode` (Release ordering, picked up by next TIM5 ISR).
-5. Return `Ok`.
+4. **Counter resync** before the mode store, to avoid one-shot bursts on
+   the first sample after switch:
+   - Entering **Phase** mode (from Pulse): for each stepper on the axis,
+     `last_phase_target.store(axis.last_step_count + phase_offset_microsteps,
+     Release)`. The first Phase-mode sample then computes
+     `delta_stepper = 0` (modulo any in-flight offset ramp), no burst.
+   - Entering **Pulse** mode (from Phase): no resync needed.
+     `axis.last_step_count` was being updated during Phase samples (per the
+     dispatch pseudocode), so the first Pulse sample's
+     `n_steps = round(P_end / microstep_distance) - axis.last_step_count`
+     reflects only motion since the last sample — no burst.
+5. Atomic store on `axis.mode` (Release ordering, picked up by next TIM5 ISR).
+6. Return `Ok`.
 
 The engine **does not** write TMC configuration registers. That's the host's
 responsibility, sequenced **after** `set_axis_mode` returns Ok:
