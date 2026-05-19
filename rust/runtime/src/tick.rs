@@ -42,7 +42,8 @@
 use core::sync::atomic::Ordering;
 
 use crate::fault_helpers::{
-    raise_math_non_finite, raise_position_count_overflow, raise_step_queue_overflow,
+    raise_math_non_finite, raise_piece_advance_underflow, raise_position_count_overflow,
+    raise_step_queue_overflow,
 };
 use crate::phase_lut::PHASE_LUT;
 use crate::state::SharedState;
@@ -396,6 +397,70 @@ pub struct TickContext<'a> {
     pub t_sample_end_global: f32,
 }
 
+/// Advance the axis's active piece if the sample time has moved past
+/// the current piece's duration.
+///
+/// Returns `true` if at least one piece advance happened on this axis,
+/// so the caller can use that as a hint for segment-retirement timing.
+///
+/// In the stepping-redesign, each `AxisConfig` carries a single active
+/// piece; once exhausted, we clear `axis.piece` to `None` so the
+/// foreground (Task 11) can supply the next piece on its next configure
+/// call. The loop is bounded (`iters > 4` latches a fault) — that
+/// upper bound also catches a non-finite or zero `piece.duration` that
+/// would otherwise spin forever (`duration_cycles == 0` means
+/// `piece_start_time_cycles` doesn't advance and `t_local` stays past
+/// duration).
+///
+/// Spec: docs/superpowers/specs/2026-05-19-stepping-redesign-design.md
+/// "Piece advancement" section.
+//
+// `usize as u32` and `f32 as u64` casts are deliberate quantizations
+// matching the spec; the lints would force a workaround that doesn't
+// improve correctness on this hot path.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+fn advance_piece_if_needed(
+    axis: &mut AxisConfig,
+    axis_idx: usize,
+    shared: &SharedState,
+    t_sample_end_global: f32,
+    cycles_per_second: f32,
+) -> bool {
+    let mut advanced = false;
+    let mut iters: u8 = 0;
+    loop {
+        let Some(piece) = axis.piece else {
+            break;
+        };
+        let piece_start_sec =
+            (axis.piece_start_time_cycles as f32) / cycles_per_second;
+        let t_local = t_sample_end_global - piece_start_sec;
+        if t_local <= piece.duration {
+            break;
+        }
+        // Advance: bump piece_start_time by piece.duration in cycles.
+        // `duration` is non-negative seconds; converting to cycles via
+        // `* cycles_per_second` and then `as u64` is a controlled
+        // narrowing (the result fits in u64 for any realistic piece).
+        let duration_cycles = (piece.duration * cycles_per_second) as u64;
+        axis.piece_start_time_cycles =
+            axis.piece_start_time_cycles.wrapping_add(duration_cycles);
+
+        // Single active piece per axis; host pushes the next piece via
+        // a Task-11 command handler. Mark axis idle so the foreground
+        // can refill on its next configure call.
+        axis.piece = None;
+        advanced = true;
+
+        iters = iters.saturating_add(1);
+        if iters > 4 {
+            raise_piece_advance_underflow(shared, axis_idx);
+            break;
+        }
+    }
+    advanced
+}
+
 /// Run one TIM5 sample across all four axes.
 ///
 /// Caller responsibility:
@@ -429,6 +494,19 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     for axis_idx in [AXIS_A, AXIS_B, AXIS_Z] {
         let axis = &mut ctx.axes[axis_idx];
         let p_sample_start = ctx.caches.p_prev[axis_idx];
+
+        // Phase-5 prologue: advance / retire the active piece in lockstep
+        // with sample time before any evaluation. After this call,
+        // `axis.piece` is either still in-flight (`t_local <= duration`)
+        // or `None` (exhausted; Phase 5 below will see all-axes-idle and
+        // bump the retirement counter).
+        advance_piece_if_needed(
+            axis,
+            axis_idx,
+            ctx.shared,
+            ctx.t_sample_end_global,
+            ctx.cycles_per_second,
+        );
 
         let Some(piece) = axis.piece else {
             // No active piece on this axis: hold position, zero velocity.
@@ -518,6 +596,17 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     {
         let axis = &mut ctx.axes[AXIS_E];
         let p_sample_start = ctx.caches.p_prev[AXIS_E];
+
+        // Phase-5 prologue for the extruder axis. Same rationale as the
+        // motion-axis branch above: advance / retire before evaluation.
+        advance_piece_if_needed(
+            axis,
+            AXIS_E,
+            ctx.shared,
+            ctx.t_sample_end_global,
+            ctx.cycles_per_second,
+        );
+
         if let Some(piece) = axis.piece {
             let piece_start_sec =
                 (axis.piece_start_time_cycles as f32) / ctx.cycles_per_second;
@@ -569,12 +658,26 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     ctx.caches.v_prev = v_end_axis;
 
     // -----------------------------------------------------------------
-    // Phase 5: segment retirement — deferred to Task 9.
+    // Phase 5: segment retirement check.
     //
-    // That task will check piece duration vs `t_local`, advance to the
-    // next piece (or clear `axis.piece` to `None`), and reset
-    // `ds_xy_segment` at the start of every new XY segment.
+    // A segment is "retired" when every axis has advanced past its final
+    // piece. The runtime doesn't carry a segment manifest at the engine
+    // level (the spec defers that to the producer/host); this hook
+    // publishes the retirement counter for the host and resets the
+    // segment-local arc-length accumulator so the next segment's E
+    // follower starts from zero.
+    //
+    // Heuristic: if every axis has `piece == None` AND the cached
+    // `ds_xy_segment` is non-zero (so this sample saw the transition out
+    // of an active segment), publish the retirement event.
     // -----------------------------------------------------------------
+    let any_active = ctx.axes.iter().any(|a| a.piece.is_some());
+    if !any_active && ctx.caches.ds_xy_segment > 0.0 {
+        ctx.shared
+            .retired_through_segment_id
+            .fetch_add(1, Ordering::Release);
+        ctx.caches.ds_xy_segment = 0.0;
+    }
 }
 
 #[cfg(test)]

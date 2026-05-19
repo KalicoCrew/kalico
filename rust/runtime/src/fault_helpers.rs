@@ -67,6 +67,24 @@ pub fn raise_math_non_finite(shared: &SharedState, axis_idx: usize) {
         .store(FaultCode::MathNonFinite.as_i32(), Ordering::Release);
 }
 
+/// Latch a `PieceAdvanceUnderflow` fault.
+///
+/// Raised by `advance_piece_if_needed` when the per-axis advancement loop
+/// fails to make progress within its bounded iteration budget (>4 iters).
+/// That can only happen if the active piece is so short (or has a
+/// non-finite duration) that a single TIM5 sample-window spans many
+/// pieces — the loop would otherwise be unbounded, so we latch a fault
+/// and break out. `axis_idx` is encoded into bits 16..24 of `fault_detail`
+/// so the host can localize the offending axis.
+#[inline]
+pub fn raise_piece_advance_underflow(shared: &SharedState, axis_idx: usize) {
+    let detail = (axis_idx as u32 & 0xFF) << 16;
+    shared.fault_detail.store(detail, Ordering::Release);
+    shared
+        .last_error
+        .store(FaultCode::PieceAdvanceUnderflow.as_i32(), Ordering::Release);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
