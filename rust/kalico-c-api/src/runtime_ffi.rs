@@ -21,7 +21,6 @@
 #[cfg(feature = "header-runtime")]
 pub mod exports {
     use core::cell::UnsafeCell;
-    use core::mem::MaybeUninit;
     use core::sync::atomic::{AtomicBool, Ordering};
 
     use runtime::curve_pool::{CURVE_POOL_N, CurveHandle, CurvePool};
@@ -45,28 +44,45 @@ pub mod exports {
         _private: [u8; 0],
     }
 
-    /// Concrete singleton storage. Spec §3.2 init-once protocol.
-    ///
-    /// Wrapped in `MaybeUninit` because `RuntimeContext::init` writes
-    /// through raw-pointer projections (no constructor returns a
-    /// fully-formed `RuntimeContext`). Wrapped in `UnsafeCell` so we can
-    /// take a raw pointer to the storage from a shared `&` static without
-    /// undefined behaviour.
-    pub(super) struct RuntimeCell(UnsafeCell<MaybeUninit<RuntimeContext>>);
-    // SAFETY: synchronization is done externally via `INIT_DONE` (only one
-    // thread of control can take the `false → true` transition) and at
-    // runtime by the §11.1 foreground/ISR ownership discipline. The
-    // half-split (`FgState` / `IsrState`) projection through raw-pointer
-    // helpers in each FFI entry preserves strict aliasing.
-    unsafe impl Sync for RuntimeCell {}
+    // rt_storage — backing buffer for RuntimeContext, declared on the C
+    // side (src/runtime_storage.c) per docs/kalico-rewrite/mcu-c-rust-boundary.md
+    // rule B2 (C owns linker-section placement on the MCU).
+    //
+    // The UnsafeCell wrapper is layout-compatible with the C-side
+    // `uint8_t rt_storage[RT_STORAGE_SIZE]`; it exists purely to grant
+    // interior-mutability rights to pointers derived from it via .get().
+    // No shared `&` reference to rt_storage is ever formed by Rust —
+    // the only access path is rt_storage.get().cast::<RuntimeContext>()
+    // in runtime_handle_create, after which all writes flow through the
+    // existing half-split addr_of_mut! projection chain in
+    // RuntimeContext::init.
+    //
+    // Spec: docs/superpowers/specs/2026-05-19-mcu-c-rust-boundary-refactor-design.md.
+    use runtime::RT_STORAGE_SIZE;
 
-    // Placed in AXI SRAM on H7 via the linker script (.axi_bss section).
-    // The 282 KB RuntimeContext doesn't fit in the H723's 128 KB DTCM
-    // region, but the H7 has 320 KB of AXI SRAM at 0x24000000 that is
-    // unused by the rest of Klipper. Other targets (host / linux / non-H7
-    // MCUs) ignore the section name and the static lands in regular .bss.
-    #[cfg_attr(feature = "axi-bss-placement", unsafe(link_section = ".axi_bss"))]
-    pub(super) static RT_CELL: RuntimeCell = RuntimeCell(UnsafeCell::new(MaybeUninit::uninit()));
+    unsafe extern "C" {
+        static rt_storage: UnsafeCell<[u8; RT_STORAGE_SIZE]>;
+    }
+
+    // Compile-time size contract: RuntimeContext must fit in rt_storage.
+    // Bump CONFIG_RUNTIME_STORAGE_SIZE_LARGE/_SMALL in src/Kconfig if this
+    // fails after a RuntimeContext field addition.
+    const _: () = {
+        assert!(
+            core::mem::size_of::<RuntimeContext>() <= RT_STORAGE_SIZE,
+            "RuntimeContext outgrew RT_STORAGE_SIZE — bump Kconfig storage size"
+        );
+    };
+
+    // Compile-time alignment contract: rt_storage is _Alignas(16) on the
+    // C side; RuntimeContext's alignment must not exceed that. If this
+    // fails, bump the _Alignas value in src/runtime_storage.c.
+    const _: () = {
+        assert!(
+            core::mem::align_of::<RuntimeContext>() <= 16,
+            "RuntimeContext alignment > 16 — bump _Alignas in runtime_storage.c"
+        );
+    };
 
     /// Single-shot init guard. `compare_exchange(false → true)` succeeds
     /// exactly once; subsequent calls observe `Err(true)` and return null.
@@ -111,12 +127,22 @@ pub mod exports {
         if INIT_DONE.load(Ordering::Relaxed) {
             return core::ptr::null_mut();
         }
-        // SAFETY: single-threaded init; no other context can observe RT_CELL
-        // until INIT_DONE is published below. RuntimeContext::init writes
-        // through raw-pointer projections and never forms `&mut
+        // SAFETY: single-threaded init; no other context can observe
+        // rt_storage until INIT_DONE is published below. RuntimeContext::init
+        // writes through raw-pointer projections and never forms `&mut
         // RuntimeContext`, matching the §11.2 aliasing discipline.
+        //
+        // rt_storage.get() returns *mut [u8; N] with provenance over the
+        // full C-declared buffer; the cast to *mut RuntimeContext inherits
+        // that provenance (the const_assert above ensures RuntimeContext
+        // fits within the buffer).
         unsafe {
-            let rt_ptr: *mut RuntimeContext = (*RT_CELL.0.get()).as_mut_ptr();
+            let rt_ptr: *mut RuntimeContext = rt_storage.get().cast::<RuntimeContext>();
+            debug_assert_eq!(
+                (rt_ptr as usize) % core::mem::align_of::<RuntimeContext>(),
+                0,
+                "rt_storage alignment mismatch — linker placed it unaligned"
+            );
             RuntimeContext::init(rt_ptr);
             // Publish after full init — ISR sees either INIT_DONE=false
             // (before enable) or a fully-initialised context (after).
