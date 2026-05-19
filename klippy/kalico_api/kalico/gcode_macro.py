@@ -231,7 +231,17 @@ class Macro(typing.Generic[MacroParams, MacroReturn]):
         kwargs = {}
         params = context.get("params", {})
 
+        # Specially bind **kwargs
+        if any(
+            paramspec.kind == paramspec.VAR_KEYWORD
+            for paramspec in self._parameters
+        ):
+            kwargs.update(params)
+
         for paramspec in self._parameters:
+            if paramspec.kind == paramspec.VAR_KEYWORD:
+                continue
+
             param_name = paramspec.name.upper()
 
             if param_name not in params:

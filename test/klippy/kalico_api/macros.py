@@ -136,7 +136,30 @@ def do_the_thing(kalico: Kalico, validated: IntRange[0, 5] = -1):
     do_the_thing.vars["test"] = 1
     assert kalico.status["gcode_macro DO_THE_THING"].test == 1
 
+    # Check that overloaded "traditional" gcode work
+    kalico.gcode["M104.1"](t=200)
+    kalico.gcode["M104.1"]()
+
+    kalico.gcode.set_heater_temperature(heater="extruder", target=210)
+
 
 @gcode_macro(rename_existing="PAUSE_BASE")
 def pause(k: Kalico):
     k.gcode.pause_base()
+
+
+@gcode_macro(rename_existing="M104.1")
+def m104(k: Kalico, t: int = None):
+    if t:
+        k.gcode["M104.1"](T=t)
+    else:
+        k.gcode["M104.1"]()
+
+
+# Validate **params binds. Nicer than using some magic context?
+# actually, maybe this should be a magic, `_params: Params` or `_rawparams: RawParams`
+@gcode_macro(rename_existing="BASE_SET_HEATER_TEMPERATURE")
+def set_heater_temperature(k: Kalico, **params):
+    assert "HEATER" in params
+    assert "TARGET" in params
+    k.gcode.base_set_heater_temperature(**params)
