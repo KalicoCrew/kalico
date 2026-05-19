@@ -21,21 +21,21 @@ if [ ! -f "$ELF" ]; then
 fi
 
 # Find rt_storage symbol with section name and address.
-SYM_LINE="$(objdump -t "$ELF" | awk '/ rt_storage$/{print}')"
+SYM_LINE="$("${OBJDUMP:-arm-none-eabi-objdump}" -t "$ELF" | awk '/ rt_storage$/{print}')"
 if [ -z "$SYM_LINE" ]; then
     echo "ERROR: rt_storage symbol not found in $ELF" >&2
     echo "  (expected to be a C-declared uint8_t array in src/runtime_storage.c)" >&2
     exit 2
 fi
 
-# objdump -t format: <addr> <flags> <section> <size> <name>
+# "${OBJDUMP:-arm-none-eabi-objdump}" -t format: <addr> <flags> <section> <size> <name>
 ADDR_HEX="$(echo "$SYM_LINE" | awk '{print $1}')"
 SECTION="$(echo "$SYM_LINE" | awk '{print $(NF-2)}')"
 ADDR=$((16#${ADDR_HEX#0x}))
 
 # Detect MCU family from the ELF's symbol table.
 # Heuristic: H7 builds have an _axi_bss_start symbol; F4 builds don't.
-if objdump -t "$ELF" | grep -q '_axi_bss_start'; then
+if "${OBJDUMP:-arm-none-eabi-objdump}" -t "$ELF" | grep -q '_axi_bss_start'; then
     MCU=H7
     EXPECTED_SECTION=".axi_bss"
     MIN_ADDR=$((0x24000000))
@@ -67,8 +67,8 @@ fi
 
 # F4-only: verify rt_storage is inside the boot-zeroed BSS span.
 if [ "$MCU" = "F4" ]; then
-    BSS_START_HEX="$(objdump -t "$ELF" | awk '/_bss_start$/{print $1; exit}')"
-    BSS_END_HEX="$(objdump -t "$ELF" | awk '/_bss_end$/{print $1; exit}')"
+    BSS_START_HEX="$("${OBJDUMP:-arm-none-eabi-objdump}" -t "$ELF" | awk '/_bss_start$/{print $1; exit}')"
+    BSS_END_HEX="$("${OBJDUMP:-arm-none-eabi-objdump}" -t "$ELF" | awk '/_bss_end$/{print $1; exit}')"
     if [ -z "$BSS_START_HEX" ] || [ -z "$BSS_END_HEX" ]; then
         echo "WARNING: could not locate _bss_start/_bss_end symbols; skipping boot-zero coverage check" >&2
     else
