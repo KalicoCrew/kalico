@@ -11,7 +11,7 @@ use heapless::Vec;
 use runtime::error::FaultCode;
 use runtime::monomial::BezierPieceMonomial;
 use runtime::state::SharedState;
-use runtime::step_queue::StepQueue;
+use runtime::step_queue::{StepQueue, STEP_QUEUE_DEPTH};
 use runtime::stepping_state::{AxisConfig, StepMode, StepperRef, MAX_STEPPERS_PER_AXIS};
 use runtime::tick::dispatch_axis;
 
@@ -87,6 +87,59 @@ fn pulse_positive_motion_enqueues_n_steps() {
     assert_eq!(axis.last_step_count, 4);
     assert_eq!(axis.steppers[0].position_count.load(Ordering::Acquire), 4);
     assert_eq!(shared.last_error.load(Ordering::Acquire), 0);
+}
+
+/// Regression: when only some of the requested pushes fit in the queue
+/// (partial overflow), `position_count` and `last_step_count` MUST
+/// reflect the steps that landed in the queue — those WILL drive
+/// physical GPIO toggles regardless of fault state. Previously the bump
+/// happened only after the loop, so a partial-overflow desynced host
+/// position from physical reality.
+#[test]
+fn pulse_partial_push_commits_position_count_for_pushed_steps() {
+    let shared = SharedState::new();
+    let mut q = StepQueue::new();
+    // Leave exactly one slot free: depth 32, fill 31. The first push in
+    // dispatch_pulse succeeds, the second hits StepQueueFull.
+    q.tail = (STEP_QUEUE_DEPTH as u16) - 1;
+    q.head = 0;
+    let mut axis = make_axis(StepMode::Pulse, 0.0125);
+
+    let q_ptr: *mut StepQueue = &mut q;
+    dispatch_axis(
+        0, &mut axis, q_ptr, &shared,
+        /* p_end */ 0.05, // 4 microsteps requested
+        /* v_end */ 2000.0,
+        /* p_sample_start */ 0.0,
+        /* sample_period_sec */ 25e-6,
+        /* sample_start_cycles */ 1_000,
+        /* cycles_per_second */ 520_000_000.0,
+    );
+
+    // Exactly one push landed — the rest overflowed.
+    assert_eq!(
+        q.tail.wrapping_sub(q.head),
+        STEP_QUEUE_DEPTH as u16,
+        "queue should be exactly full (31 prefill + 1 push)"
+    );
+    // last_step_count must reflect the partial commit, not the full
+    // requested target (which would have been 4).
+    assert_eq!(
+        axis.last_step_count, 1,
+        "last_step_count must reflect pushes that landed, not requested target"
+    );
+    // position_count must bump by exactly the number of successful
+    // pushes — not 0 (the pre-fix bug) and not 4 (the requested count).
+    assert_eq!(
+        axis.steppers[0].position_count.load(Ordering::Acquire),
+        1,
+        "position_count must commit for pushed steps before fault"
+    );
+    // And the fault is latched.
+    assert_eq!(
+        shared.last_error.load(Ordering::Acquire),
+        FaultCode::StepQueueOverflow.as_i32()
+    );
 }
 
 #[test]

@@ -187,6 +187,11 @@ fn dispatch_pulse(
     };
 
     let dir: i8 = if signed_steps > 0 { 1 } else { -1 };
+    // Count successful pushes so a partial-overflow scenario commits
+    // `position_count` for steps that DID land in the queue (i.e., that
+    // the C-side per-axis timer will fire as physical motion). Otherwise
+    // the host's view of stepper position desyncs from physical reality.
+    let mut steps_committed: i32 = 0;
     for cycle_abs in times.iter().copied() {
         let entry = StepEntry { cycle_abs, dir, _pad: [0; 3] };
         // SAFETY: `queue_ptr` is supplied by the caller (TIM5 ISR), who
@@ -195,17 +200,45 @@ fn dispatch_pulse(
         // MCU, stack/heap test buffer on host).
         let push_res = unsafe { queue_push(queue_ptr, entry) };
         if push_res.is_err() {
+            // Commit the steps we already pushed before raising the
+            // fault — the queue's contents are about to drive real GPIO
+            // toggles regardless of fault state, so the position counter
+            // must reflect that. `dir` is ±1, so the signed delta is just
+            // ±steps_committed.
+            let committed_delta = steps_committed * (i32::from(dir));
+            commit_position_count(axis, axis_idx, shared, committed_delta);
             raise_step_queue_overflow(shared, axis_idx);
+            // Rewrite `last_step_count` to match the partial commit, so
+            // the next sample's `prev_step_count` matches the queue's
+            // actual contribution rather than the full requested target.
+            axis.last_step_count = prev_step_count + committed_delta;
             return;
         }
+        steps_committed += 1;
     }
 
-    // Per-stepper position bookkeeping. ISR is the sole writer, so
-    // load + checked_add + store (no CAS) is the right shape; we lose
-    // no concurrency vs. `fetch_add` but gain overflow detection.
+    // Full push success — commit the full requested delta.
+    commit_position_count(axis, axis_idx, shared, signed_steps);
+}
+
+/// Bump `position_count` on every yoked stepper of `axis` by `delta`.
+///
+/// ISR is the sole writer, so `load + checked_add + store` (no CAS) is
+/// the right shape; we lose no concurrency vs. `fetch_add` but gain
+/// overflow detection. On overflow a `PositionCountOverflow` fault is
+/// latched and the remaining steppers in the yoke are not updated.
+fn commit_position_count(
+    axis: &AxisConfig,
+    axis_idx: usize,
+    shared: &SharedState,
+    delta: i32,
+) {
+    if delta == 0 {
+        return;
+    }
     for stepper in &axis.steppers {
         let prev = stepper.position_count.load(Ordering::Acquire);
-        let Some(next) = prev.checked_add(signed_steps) else {
+        let Some(next) = prev.checked_add(delta) else {
             raise_position_count_overflow(shared, axis_idx);
             return;
         };
@@ -242,6 +275,10 @@ fn dispatch_phase(
         let phase_offset = stepper.phase_offset_microsteps.load(Ordering::Acquire);
         let target_stepper = target_microsteps_axis.wrapping_add(phase_offset);
         let prev_stepper = stepper.last_phase_target.load(Ordering::Acquire);
+        // Wrap on the subtraction implies a configuration discontinuity
+        // (a phase-offset jump or a re-arm): under normal motion
+        // `last_phase_target` advances at most a few microsteps per
+        // sample, so the wrapped difference equals the true difference.
         let delta_stepper = target_stepper.wrapping_sub(prev_stepper);
         stepper
             .last_phase_target
@@ -257,6 +294,7 @@ fn dispatch_phase(
         // `phase` is bounded `0..1024 == PHASE_LUT.len()` by the mask
         // above, so the lookup cannot panic; the `get` keeps us out of
         // `clippy::indexing_slicing` (which is denied at the crate root).
+        // safe: bounded by mask 0x3FF (= PHASE_LUT_SIZE - 1)
         let Some((coil_a, coil_b)) = PHASE_LUT.get(phase as usize).copied() else {
             continue;
         };
