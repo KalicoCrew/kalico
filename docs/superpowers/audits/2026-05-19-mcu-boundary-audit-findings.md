@@ -54,11 +54,13 @@ Targets: `rust/kalico-c-api/src/runtime_ffi.rs` (82 functions per `rg -c 'extern
 
 **Discovery command:** `rg -n 'kalico_producer_current_present' rust/`
 
-**Result:** TBD — fill in during audit run. Classify each match: (a) through C accessor function (safe), or (b) direct read of bare `static mut` (unsafe, must be routed through accessor).
+**Result (2026-05-19):** Only one Rust reference — the bare `static mut` import in `rust/runtime/src/engine.rs:23`. **No direct reads or writes** of the bare static. The volatile global is accessed exclusively through the C accessor functions `kalico_producer_current_is_present()` and `kalico_producer_current_set_present(int)` (defined at `src/kalico_segment_queue.c:155-172`), called from `read_producer_current_present` / `write_producer_current_present` in `engine.rs:39-50` / `:56-64`.
 
-**Decision:** TBD. If direct reads exist, route through C accessor. If none, delete the bare `static mut` Rust import in `rust/runtime/src/engine.rs:23` entirely.
+The bare static muts for `kalico_producer_current_present`, `kalico_producer_current_set_count`, and `kalico_producer_current_cleared_count` are dead — declared but never accessed from Rust.
 
-Lands in Task 16.
+**Decision:** **Delete the bare `static mut` imports** (engine.rs:23-25). Same class of fix as the 2026-05-18 SPSC queue migration: cross-language `static mut` imports carry the LLVM-projection miscompilation risk that the accessor functions were introduced to defeat. If the diag counters need to be read from Rust later, add C accessors rather than reintroducing the bare imports.
+
+**Action:** Deletion lands in this commit (Task 16).
 
 ## A4 — `portable_atomic::AtomicU64` ordering in ISR hot path
 

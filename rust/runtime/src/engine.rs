@@ -17,18 +17,19 @@ use heapless::spsc::Consumer;
 // producer_step's load = true while modulated_tick had written false).
 // The C global + volatile read/write pattern is the most ironclad way to
 // defeat any Rust / LTO compile-time optimization.
+//
+// Access path: Rust calls the C accessor functions
+// (kalico_producer_current_is_present / _set_present) ONLY. The bare
+// `static mut` imports were removed in the 2026-05-19 A3 boundary audit
+// because they carried the same LLVM-projection miscompilation risk the
+// accessor functions were introduced to avoid (the function-call boundary
+// is what makes the volatile semantics opaque to LLVM). The C side still
+// defines the volatile globals and the set/cleared counters; if those
+// counters need to be read from Rust later, add accessor functions for
+// them rather than reintroducing the bare static mut imports.
 #[cfg(target_os = "none")]
 #[allow(unsafe_code)]
 unsafe extern "C" {
-    pub static mut kalico_producer_current_present: u8;
-    pub static mut kalico_producer_current_set_count: u32;
-    pub static mut kalico_producer_current_cleared_count: u32;
-    // 2026-05-18 wedge fix: go through C FFI functions for the gate
-    // read/write instead of touching the volatile global directly from
-    // Rust. The function call is opaque to LLVM — it can't inline or
-    // reorder across it — so the volatile semantics live entirely
-    // inside the C translation unit and reach the Rust caller as
-    // "definitely-happened" memory ops.
     fn kalico_producer_current_is_present() -> i32;
     fn kalico_producer_current_set_present(present: i32);
 }
