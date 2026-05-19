@@ -3454,6 +3454,82 @@ pub mod exports {
         }
     }
 
+    // ─── Stepping-redesign Task 10 ──────────────────────────────────────
+    //
+    // Per-axis Klipper SysTick consumers (one timer per axis: X=0, Y=1,
+    // Z=2, E=3) read these two scheduler tunables every dispatch. They
+    // live on `SharedState` so the foreground config path (Task 11's
+    // `configure_kinematics`) publishes once and every per-axis timer
+    // observes a consistent pair on its next wake. Both accessors take no
+    // runtime handle — the per-axis timer is dispatched from Klipper's
+    // scheduler context where threading an `rt` arg through the `struct
+    // timer.func` typedef would force a parallel ABI. Internally they
+    // reach `rt_storage` (the published runtime context buffer) directly,
+    // gated by `INIT_DONE`, and return 0 if the runtime hasn't initialised
+    // yet — a safe default that makes the timer body fall back to "wake
+    // `now` with no floor" until configure_kinematics lands.
+
+    /// Project the `rt_storage` byte buffer to a `*const RuntimeContext`,
+    /// returning `None` if `INIT_DONE` hasn't been published yet. Used by
+    /// the handle-free FFI accessors (e.g. `kalico_runtime_get_*`) that
+    /// run in scheduler / ISR contexts where threading the opaque `*mut
+    /// KalicoRuntime` is impractical.
+    fn runtime_handle_or_null() -> Option<*const RuntimeContext> {
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return None;
+        }
+        // Same projection pattern as `runtime_handle_create`. `rt_storage`
+        // is `UnsafeCell<[u8; N]>` on the MCU and `HostRtStorage` on the
+        // host; in both cases `.get()` / `.0.get()` yields a `*mut [u8; N]`
+        // with provenance over the full buffer, which we cast to
+        // `*const RuntimeContext`. The const_assert above guarantees the
+        // struct fits.
+        #[cfg(target_os = "none")]
+        let rt_ptr: *const RuntimeContext = rt_storage.get().cast::<RuntimeContext>();
+        #[cfg(not(target_os = "none"))]
+        let rt_ptr: *const RuntimeContext = rt_storage.0.get().cast::<RuntimeContext>();
+        Some(rt_ptr)
+    }
+
+    /// Read the per-axis-timer dispatcher floor (cycles). The minimum
+    /// number of MCU clock cycles into the future the per-axis timer adds
+    /// to `now` when computing its next waketime; prevents runaway
+    /// re-entry. Published by Task 11's `configure_kinematics`. Returns 0
+    /// until the runtime is initialised.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn kalico_runtime_get_dispatcher_floor_cycles() -> u32 {
+        let Some(rt_ptr) = runtime_handle_or_null() else {
+            return 0;
+        };
+        // SAFETY: `rt_ptr` is the published rt_storage projection, valid
+        // for the lifetime of the program once INIT_DONE is set. Read-only
+        // access to `SharedState` atomics via a shared `&` projection — no
+        // `&mut` reaches this path.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*rt_ptr).shared);
+            (*shared_ptr).dispatcher_floor_cycles.load(Ordering::Acquire)
+        }
+    }
+
+    /// Read the per-axis-timer empty-queue poll cadence (cycles). Used by
+    /// the per-axis timer when its queue is empty: it reschedules at
+    /// `now + sample_period_cycles`. Typically set to the modulation-rate
+    /// period (25 µs at 40 kHz). Published by Task 11's
+    /// `configure_kinematics`. Returns 0 until the runtime is initialised
+    /// — `0` cycles means "wake `now`," which the next dispatch will
+    /// immediately reschedule.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn kalico_runtime_get_sample_period_cycles() -> u32 {
+        let Some(rt_ptr) = runtime_handle_or_null() else {
+            return 0;
+        };
+        // SAFETY: see `kalico_runtime_get_dispatcher_floor_cycles`.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*rt_ptr).shared);
+            (*shared_ptr).sample_period_cycles.load(Ordering::Acquire)
+        }
+    }
+
     /// Returns 1 if motor `stepper_idx` is configured (has step_distance > 0
     /// in its `ProducerState`), 0 otherwise. Used by C-side
     /// `init_step_time_timers` to avoid enabling consumer Klipper timers

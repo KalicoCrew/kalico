@@ -463,6 +463,22 @@ pub struct SharedState {
     /// by axis. Used to spot a runaway axis-local hot path independently of
     /// the global `sample_isr_peak_cycles`.
     pub per_axis_consumer_peak_cycles: [AtomicU32; 4],
+
+    // Stepping-redesign Task 10: scheduler tunables published by the
+    // foreground config path; consumed by the per-axis timer.
+    //
+    // `dispatcher_floor_cycles` is the minimum cycles-into-future the
+    // per-axis timer adds to `now` when computing its next waketime; it
+    // prevents runaway re-entry when entries' `cycle_abs` values land in
+    // the past.
+    //
+    // `sample_period_cycles` is the empty-queue poll cadence (typically the
+    // sample-rate period — 25 µs at 40 kHz).
+    //
+    // Foreground sets both via `configure_kinematics` in Task 11. Until
+    // then, 0 means "always reschedule for next sample without floor."
+    pub dispatcher_floor_cycles: AtomicU32,
+    pub sample_period_cycles: AtomicU32,
 }
 
 impl SharedState {
@@ -616,6 +632,12 @@ impl SharedState {
             spi_saturated_samples: AtomicU32::new(0),
             sample_isr_peak_cycles: AtomicU32::new(0),
             per_axis_consumer_peak_cycles: [const { AtomicU32::new(0) }; 4],
+
+            // Stepping-redesign Task 10. Both 0 until Task 11 publishes
+            // real values from configure_kinematics; 0 degrades safely
+            // (no floor, immediate-resample empty-queue wake).
+            dispatcher_floor_cycles: AtomicU32::new(0),
+            sample_period_cycles: AtomicU32::new(0),
         }
     }
 }

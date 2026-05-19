@@ -1953,3 +1953,72 @@ init_step_time_timers(void)
     }
 }
 
+// ===========================================================================
+// Stepping-redesign Task 10: per-axis step timer consumers
+// ===========================================================================
+//
+// New mainline-pattern Klipper timers (one per axis: X=0, Y=1, Z=2, E=3).
+// Each timer's `func` calls into the Rust body `kalico_per_axis_step_event`,
+// which pops one StepEntry from `step_queues[axis_idx]` if its `cycle_abs`
+// has arrived, emits the GPIO pulses via `runtime_emit_step_pulses` (already
+// defined in src/stepper.c), and returns the next waketime.
+//
+// Replaces the per-stepper `step_time_event` path. Task 16 of the stepping
+// redesign will delete the legacy code (`step_time_event`,
+// `runtime_producer_event`, `init_step_time_timers`); until then both code
+// paths coexist and only one is installed at boot. `init_per_axis_step_timers`
+// is the entry point for the new path; Task 11 wires it into
+// `command_kalico_configure_axis` once that lands.
+
+extern uint32_t kalico_per_axis_step_event(uint8_t axis_idx);
+
+// Per-axis timers (4 axes). The `func` slot is dispatched by Klipper's
+// SysTick scheduler; each trampoline below binds a literal axis_idx that
+// the Rust body uses to project to `step_queues[axis_idx]`.
+static struct timer per_axis_timers[4];
+
+static uint_fast8_t per_axis_timer_event_0(struct timer *t) {
+    t->waketime = kalico_per_axis_step_event(0);
+    return SF_RESCHEDULE;
+}
+static uint_fast8_t per_axis_timer_event_1(struct timer *t) {
+    t->waketime = kalico_per_axis_step_event(1);
+    return SF_RESCHEDULE;
+}
+static uint_fast8_t per_axis_timer_event_2(struct timer *t) {
+    t->waketime = kalico_per_axis_step_event(2);
+    return SF_RESCHEDULE;
+}
+static uint_fast8_t per_axis_timer_event_3(struct timer *t) {
+    t->waketime = kalico_per_axis_step_event(3);
+    return SF_RESCHEDULE;
+}
+
+static uint_fast8_t (*const per_axis_handlers[4])(struct timer *) = {
+    per_axis_timer_event_0,
+    per_axis_timer_event_1,
+    per_axis_timer_event_2,
+    per_axis_timer_event_3,
+};
+
+// Install the four per-axis timers. Called by Task 11's
+// `command_kalico_configure_axis` once that lands; for now this is a
+// public entry point with no caller in production paths.
+//
+// `runtime_emit_step_pulses` is defined in src/stepper.c — no stub needed
+// here. The Rust body resolves the C-declared `step_queues` array
+// internally; this file only owns the trampolines + scheduler wiring.
+void
+init_per_axis_step_timers(void)
+{
+    uint32_t now = timer_read_time();
+    for (int i = 0; i < 4; i++) {
+        per_axis_timers[i].func = per_axis_handlers[i];
+        // 1 ms boot delay so the first dispatch lands strictly in the
+        // future (sched_add_timer trips "Timer too close" on a past
+        // waketime). Subsequent waketimes come from
+        // kalico_per_axis_step_event's return value.
+        per_axis_timers[i].waketime = now + timer_from_us(1000);
+        sched_add_timer(&per_axis_timers[i]);
+    }
+}

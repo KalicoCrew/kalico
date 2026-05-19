@@ -41,6 +41,7 @@ pub mod fault_helpers;
 pub mod kinematics;
 pub mod modulator;
 pub mod monomial;
+pub mod per_axis_timer;
 pub mod phase_config;
 pub mod phase_lut;
 pub mod queue;
