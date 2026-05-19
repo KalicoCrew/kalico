@@ -653,7 +653,8 @@ extern "C" {
 
 Producer (TIM5 ISR, Rust):
 1. Check `tail - head < STEP_QUEUE_DEPTH` (wrapping u16 subtract); overflow → fault.
-2. `ptr::write_volatile` the entry at `buf[tail % 16]`.
+2. `ptr::write_volatile` the entry at `buf[(tail & STEP_QUEUE_DEPTH_MASK) as usize]`
+   (equivalent to `tail % STEP_QUEUE_DEPTH`; mask form is the hot-path version).
 3. `core::sync::atomic::fence(Ordering::Release)` — lowers to `DMB` on ARMv7-M.
 4. `ptr::write_volatile` to `tail = tail + 1`.
 
@@ -661,11 +662,12 @@ Consumer (per-axis timer, Rust `extern "C"` function — see below):
 1. `ptr::read_volatile` `tail` and `head`.
 2. If `tail == head`: queue empty, return without popping.
 3. `core::sync::atomic::fence(Ordering::Acquire)` before reading entry data.
-4. Read entry at `buf[head % 16]` via `read_volatile`.
+4. Read entry at `buf[(head & STEP_QUEUE_DEPTH_MASK) as usize]` via `read_volatile`.
 5. `core::sync::atomic::fence(Ordering::Release)` before advancing head.
 6. `write_volatile` to `head = head + 1`.
 
-Memory cost: 4 queues × 136 B = 544 B. Trivial in DTCM (H7) or `.bss` (F4).
+Memory cost: 4 queues × 264 B = 1056 B (matches the value stated above at
+`StepQueue` declaration). Trivial in DTCM (H7) or `.bss` (F4).
 
 `AxisConfig::mode` uniform across all steppers on the axis (Section 4
 constraint). Mixed-mode-per-axis is rejected at `configure_axes` time with a
