@@ -360,8 +360,21 @@ pub unsafe fn flush(rt: *mut RuntimeContext, out_credit_epoch: *mut u32) -> i32 
         let IsrState {
             engine,
             queue_consumer,
+            pending_segment,
             ..
         } = isr;
+        // Retire the deferred segment's handles too — Codex M1 fix
+        // (2026-05-20). `isr_sample_tick` may have dequeued a segment whose
+        // `t_start` lies in the future and parked it here; a flush tears
+        // the lookahead down, so the parked handles must surrender their
+        // pool ownership in lockstep with the queued segments
+        // `runtime_force_idle` retires.
+        if let Some(seg) = pending_segment.take() {
+            pool.confirm_retired(seg.x_handle);
+            pool.confirm_retired(seg.y_handle);
+            pool.confirm_retired(seg.z_handle);
+            pool.confirm_retired(seg.e_handle);
+        }
         engine.runtime_force_idle(pool, queue_consumer, shared);
     }
     unsafe { runtime_irq_restore(irq_flags) };

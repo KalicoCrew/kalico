@@ -926,6 +926,111 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     // -----------------------------------------------------------------
 }
 
+// ─── ISR sample entry — Codex M1 + M2 (2026-05-20) ───────────────────────
+//
+// Single sample-tick body invoked from `kalico_runtime_tick_sample`. Owns
+// three responsibilities the pre-redesign code distributed across the FFI
+// shim, `Engine::tick`, and the removed `producer_step`:
+//
+// 1. **Widen + publish the MCU clock (Codex M2).** Reads the raw 32-bit
+//    DWT/CYCCNT, extends it to u64 through the ISR-owned `WidenState`, and
+//    publishes the widened value through the §11.4 seqlock so
+//    `Engine::tick_sample`'s `widened_now_lo.load()` and any foreground
+//    reader see a coherent (lo, hi) pair. Without this step the
+//    `widened_now_*` cells stayed at zero on the H7 / F4 because nothing in
+//    the new stepping-redesign FFI surface ever called `WidenState::widen`
+//    or `publish_widened_now` — the engine's sample-time math read 0 every
+//    tick and the piece evaluator never advanced.
+//
+// 2. **Arm queued segments (Codex M1).** When `engine.current` is `None`,
+//    dequeue the next producer-side segment (or promote a previously
+//    deferred one) and hand it to `Engine::arm_segment`. The §6.3 host
+//    `arm()` predicate already verified `first_t_start >= now + arm_lead`
+//    against the foreground's view of the clock, so the ISR's job here is
+//    purely the mechanical "current slot empty → install the next segment"
+//    transition. If the segment's `t_start` is still in the future relative
+//    to the freshly widened now, we park it in `IsrState::pending_segment`
+//    until a later tick promotes it — the C-backed SPSC has no put-back
+//    primitive, so we must hold the dequeued segment in ISR-owned state to
+//    preserve order.
+//
+// 3. **Run the per-sample evaluator.** Same `Engine::tick_sample` call the
+//    FFI used pre-fix, just rehosted here so the cyccnt widen / clock
+//    publish / arm steps all sit on the same exclusive `&mut IsrState`
+//    borrow and there is no field-disjoint-borrow gymnastics in the FFI
+//    shim.
+//
+// All three steps must run under a single `&mut IsrState` borrow because
+// `Engine::arm_segment`, `WidenState::widen`, and the queue/pending-segment
+// mutation are mutually exclusive writers to ISR-owned state. The §11.1
+// ownership discipline says TIM5 is the sole writer; this function is the
+// ISR's entry point and therefore the natural home for those mutations.
+/// Single-call ISR body that widens the clock, arms a queued segment if
+/// the engine is idle, and evaluates the per-sample stepping math.
+/// `raw_cyccnt` is the freshly-sampled 32-bit DWT counter (zero on host).
+///
+/// # Caller contract
+///
+/// Must run under exclusive `&mut IsrState` access. The FFI shim's
+/// `kalico_runtime_tick_sample` is the production caller; host integration
+/// tests reach this through the published kalico-c-api FFI entry, which
+/// projects the rt_storage half-split and calls this function under the
+/// same single-writer discipline.
+pub fn isr_sample_tick(
+    isr: &mut crate::state::IsrState,
+    shared: &SharedState,
+    curve_pool: &crate::curve_pool::CurvePool,
+    raw_cyccnt: u32,
+) {
+    // 1. Widen the raw DWT sample and publish the §11.4 seqlock.
+    let now = isr.widen_state.widen(raw_cyccnt);
+    crate::clock::publish_widened_now(shared, now);
+
+    // 2. Promote-or-dequeue when the engine's current slot is empty.
+    //    Take `pending_segment` out by value so the subsequent
+    //    `arm_segment` / `dequeue` calls don't fight for the IsrState
+    //    field borrows.
+    if isr.engine.current.is_none() {
+        let candidate = match isr.pending_segment.take() {
+            Some(parked) => Some(parked),
+            None => {
+                let dequeued = isr.queue_consumer.dequeue();
+                if dequeued.is_some() {
+                    shared
+                        .producer_segment_dequeued_total
+                        .fetch_add(1, Ordering::AcqRel);
+                }
+                dequeued
+            }
+        };
+        if let Some(seg) = candidate {
+            if seg.t_start <= now {
+                // Publish before arming so any cross-half observer that
+                // sees the seg.id in `current_segment_id` will subsequently
+                // see the engine's mutated `current` (Release/Acquire pair
+                // upholds the ordering against tick_counter readers).
+                shared
+                    .current_segment_id
+                    .store(seg.id, Ordering::Release);
+                isr.engine.arm_segment(seg, curve_pool);
+            } else {
+                // Park until clock catches up. Re-checked next tick.
+                isr.pending_segment = Some(seg);
+            }
+        }
+    }
+
+    // 3. Hand the per-sample evaluator the trace producer it needs. The
+    //    field-disjoint borrow here is the same pattern the FFI used
+    //    before the M1/M2 fix landed.
+    let crate::state::IsrState {
+        engine,
+        trace_producer,
+        ..
+    } = isr;
+    engine.tick_sample(shared, curve_pool, trace_producer);
+}
+
 #[cfg(test)]
 mod tests {
     //! Smoke tests that hit only the host-build path (queue allocated

@@ -624,9 +624,16 @@ pub mod exports {
         }
         let ctx = rt.cast::<RuntimeContext>();
         // SAFETY: `rt` non-null and INIT_DONE=true. TIM5 is the SOLE
-        // writer of `IsrState`, so the disjoint half-split borrow
-        // (engine via IsrState; shared state via `&`) is sound.
+        // writer of `IsrState`, so the half-split borrow (engine + queue
+        // consumer + widen state via IsrState; shared state via `&`) is
+        // sound under §11.1. Codex M1+M2 (2026-05-20) moved the dequeue +
+        // arm + widen+publish steps INTO this ISR body — see
+        // `runtime::tick::isr_sample_tick` for the unified per-sample
+        // entry. Reading `runtime_cyccnt_read` here keeps the raw-DWT read
+        // adjacent to the widen-then-publish step the engine's
+        // `widened_now_lo.load()` depends on.
         unsafe {
+            let raw = runtime_cyccnt_read();
             let isr_ptr: *mut IsrState =
                 UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             let shared_ptr: *const SharedState =
@@ -636,17 +643,7 @@ pub mod exports {
             let isr: &mut IsrState = &mut *isr_ptr;
             let shared: &SharedState = &*shared_ptr;
             let curve_pool: &CurvePool = &*pool_ptr;
-            // Field-disjoint borrow: `engine` and `trace_producer` are
-            // separate fields on `IsrState`. The destructure lets us hand
-            // a `&mut Producer` to `tick_sample` so the Phase-5 retire path
-            // can emit `TRACE_FLAG_SEGMENT_END` samples without forming a
-            // second `&mut IsrState`.
-            let IsrState {
-                engine,
-                trace_producer,
-                ..
-            } = isr;
-            engine.tick_sample(shared, curve_pool, trace_producer);
+            runtime::tick::isr_sample_tick(isr, shared, curve_pool, raw);
         }
     }
 

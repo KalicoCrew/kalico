@@ -173,6 +173,18 @@ pub struct IsrState {
     /// engine. The ISR is the sole writer; foreground must not call
     /// `widen()` directly.
     pub widen_state: WidenState,
+    /// Segment dequeued from `queue_consumer` whose `t_start` is in the
+    /// future relative to the engine's widened clock. Held here until the
+    /// clock catches up, then promoted into `engine.current` via
+    /// `arm_segment` by `crate::tick::isr_sample_tick`. Spec §6.3 + Codex M1
+    /// (2026-05-20): the foreground `arm()` predicate verified
+    /// `first_t_start >= now + arm_lead_cycles` at stream-arm time, so the
+    /// ISR must tolerate `seg.t_start > now` for the lead-time window
+    /// without re-enqueuing — that would either need a put-back primitive
+    /// on the C-backed SPSC (it has none) or break the order invariant.
+    /// Stashing here is the §11.1 ISR-owned analogue of foreground's
+    /// `first_priming_segment_t_start` slot.
+    pub pending_segment: Option<Segment>,
 }
 
 impl IsrState {
@@ -771,6 +783,49 @@ impl RuntimeContext {
             let sample_rate_hz =
                 core::ptr::read_volatile(core::ptr::addr_of!(runtime_sample_rate_hz));
 
+            // Stepping-redesign Task 10 / Codex M4 (2026-05-20): publish the
+            // scheduler tunables to `SharedState` so the per-axis Klipper
+            // timer's empty-queue rescheduling math uses the real sample-period
+            // cadence (typically 25 µs at 40 kHz on H7) instead of the
+            // `0 → waketime = now` fallback that pegged the foreground
+            // scheduler.
+            //
+            // Both values mirror the same C-side constants that initialise
+            // `Engine::sample_period_cycles`, so the hot path (engine) and
+            // the foreground scheduler (per-axis timer) agree to the cycle.
+            //
+            // * `sample_period_cycles` — banker-rounded so it matches
+            //   `Engine::compute_sample_period` exactly. Both H7 (520 MHz /
+            //    40 kHz) and F4 (180 MHz / 20 kHz) divide cleanly; rounding
+            //    only matters for hypothetical odd ratios.
+            // * `dispatcher_floor_cycles` — 1 µs worth of cycles. The
+            //    documented minimum-safe headroom that prevents the per-axis
+            //    timer body from re-arming the Klipper scheduler at
+            //    `cycle_abs == now` on a late entry. `0` was the historical
+            //    "safe-but-spinning" default; publishing a real value here
+            //    keeps the foreground task off the deadline-missed path
+            //    without delaying step emission for any realistic queue
+            //    state. At 520 MHz that's 520 cycles; at 180 MHz, 180.
+            //
+            // Both values are atomic stores into `(*rt_ptr).shared`. We reach
+            // through `addr_of!` to avoid forming `&mut SharedState`; the
+            // atomic API itself supplies the synchronisation that lets the
+            // scheduler's `&SharedState` projection observe the published
+            // values once `INIT_DONE` is released.
+            let sample_period_cycles_init: u32 = if sample_rate_hz == 0 {
+                0
+            } else {
+                (freq + sample_rate_hz / 2) / sample_rate_hz
+            };
+            let dispatcher_floor_cycles_init: u32 = freq / 1_000_000;
+            let shared_ref: *const SharedState = core::ptr::addr_of!((*rt_ptr).shared);
+            (*shared_ref)
+                .sample_period_cycles
+                .store(sample_period_cycles_init, core::sync::atomic::Ordering::Release);
+            (*shared_ref)
+                .dispatcher_floor_cycles
+                .store(dispatcher_floor_cycles_init, core::sync::atomic::Ordering::Release);
+
             // Initialize FgState.
             let fg_ptr = core::ptr::addr_of_mut!((*rt_ptr).fg);
             fg_ptr.write(UnsafeCell::new(FgState {
@@ -816,6 +871,11 @@ impl RuntimeContext {
             );
             core::ptr::addr_of_mut!((*inner_ptr).widen_state)
                 .write(WidenState::default());
+            // No segment in the deferred slot at boot — Codex M1 fix
+            // (2026-05-20). `isr_sample_tick` populates this when a queued
+            // segment's `t_start` lies in the future relative to the freshly
+            // widened MCU clock.
+            core::ptr::addr_of_mut!((*inner_ptr).pending_segment).write(None);
         }
     }
 }

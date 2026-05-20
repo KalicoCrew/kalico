@@ -36,8 +36,6 @@
 
 use core::sync::atomic::Ordering;
 
-use heapless::spsc::Queue;
-
 use runtime::cubic_curve::WirePiece;
 use runtime::curve_pool::{CurveHandle, CurvePool};
 use runtime::engine::Engine;
@@ -125,31 +123,76 @@ fn engine_new_publishes_sample_period() {
 }
 
 #[test]
-fn tick_sample_pushes_step_entries_after_sample_period_set() {
-    // End-to-end: with sample_period_sec baked in via Engine::new (gap #2 fix)
-    // and observable host queues installed, tick_sample should emit step
-    // entries for a 10 mm X jog. This is the "make it green" target — the
-    // engine evaluates the Bezier piece per-sample, commits position to
-    // dispatch_pulse, and pushes entries into the per-axis StepQueue.
-    let mut engine = configured_engine();
-    // sample_period_sec is already set by Engine::new(H7_CLOCK_HZ, SAMPLE_RATE_HZ);
-    // test_set_sample_period is no longer needed here.
+fn isr_sample_tick_arms_queued_segment_and_pushes_steps() {
+    // Codex M1 + M2 regression test (2026-05-20). Drives the same scenario
+    // the bench failed on — a 10 mm X jog with a single segment + single
+    // cubic-Bezier piece — but exercises the **production ISR sample path**
+    // (`runtime::tick::isr_sample_tick`) instead of bypassing it via direct
+    // `Engine::arm_segment` calls. That bypass is what the pre-fix harness
+    // did, and it's the reason this test passed even while the real bench
+    // was stuck at "queue depth=0, no steps." With the new wiring the only
+    // segment-activation path is the dequeue-and-arm inside
+    // `isr_sample_tick`; if that path were removed, every assertion below
+    // would fall back to the pre-2026-05-20 silent-no-motion behaviour.
+    //
+    // Pre-fix expectation: `engine.current` stays `None`, `position_count`
+    // stays at 0, this `assert!(>= 700)` fails.
+    // Post-fix expectation: arm-from-queue + widen-then-publish drive the
+    // same ~800-step output that the unit-level evaluator produced
+    // historically.
 
-    // Install observable host-side queues so dispatch_axis can push.
-    let mut queues = [StepQueue::new(), StepQueue::new(), StepQueue::new(), StepQueue::new()];
+    use core::ptr::addr_of_mut;
+
+    use heapless::spsc::Queue;
+    use runtime::c_segment_queue;
+    use runtime::clock::WidenState;
+    use runtime::state::IsrState;
+
+    let mut engine = configured_engine();
+
+    // Install observable host-side step queues so `dispatch_axis` has
+    // somewhere to push entries.
+    let mut step_queues = [
+        StepQueue::new(),
+        StepQueue::new(),
+        StepQueue::new(),
+        StepQueue::new(),
+    ];
     let queue_ptrs = [
-        &mut queues[0] as *mut StepQueue,
-        &mut queues[1] as *mut StepQueue,
-        &mut queues[2] as *mut StepQueue,
-        &mut queues[3] as *mut StepQueue,
+        addr_of_mut!(step_queues[0]),
+        addr_of_mut!(step_queues[1]),
+        addr_of_mut!(step_queues[2]),
+        addr_of_mut!(step_queues[3]),
     ];
     engine.test_install_step_queues(queue_ptrs);
 
+    // Build the ISR-side envelope by hand. `c_segment_queue` is a singleton
+    // backed by a host `Mutex<VecDeque<Segment>>`; reset it so this test
+    // does not see leftovers from a sibling test in the same crate.
+    c_segment_queue::reset();
+    let queue_consumer = c_segment_queue::Consumer::<Segment>::new();
+    let mut queue_producer = c_segment_queue::Producer::<Segment>::new();
+    // `heapless::spsc::Queue::split` needs a `'static mut`. `Box::leak`
+    // gives us that without growing the test stack — the leaked queue
+    // outlives the test process, which is fine.
+    let trace_queue: &'static mut Queue<TraceSample, TRACE_RING_N> =
+        Box::leak(Box::new(Queue::new()));
+    let (trace_producer, _trace_consumer) = trace_queue.split();
+
+    let mut isr = IsrState {
+        queue_consumer,
+        trace_producer,
+        engine,
+        widen_state: WidenState::default(),
+        pending_segment: None,
+    };
+
+    // Load the cubic-Bezier curve into the pool + enqueue a segment via
+    // the **producer** side (the production foreground path) — never call
+    // `arm_segment` from the test.
     let pool = CurvePool::new();
     let piece = linear_jog_curve(10.0, 0.1);
-    let handle = pool
-        .try_alloc_and_load(0, &[piece])
-        .expect("slot 0 alloc");
+    let handle = pool.try_alloc_and_load(0, &[piece]).expect("slot 0 alloc");
     let mut seg = Segment {
         id: 1,
         x_handle: handle,
@@ -172,48 +215,64 @@ fn tick_sample_pushes_step_entries_after_sample_period_set() {
         seg.z_handle,
         seg.e_handle,
     );
-    engine.arm_segment(seg, &pool);
+    queue_producer.enqueue(seg).expect("queue producer enqueue");
 
     let shared = SharedState::new();
-    let mut trace_storage: Queue<TraceSample, TRACE_RING_N> = Queue::new();
-    let (mut trace_producer, _trace_consumer) = trace_storage.split();
-
-    // Drive the widened MCU clock manually. On the MCU,
-    // `runtime_widened_host_clock` (src/runtime_tick.c) republishes
-    // `timer_read_time()` widened into `SharedState::widened_now_lo` at the
-    // producer Klipper-timer cadence (~1 kHz); the ISR's
-    // `tick_sample` reads that value to derive `t_sample_end_global` for the
-    // piece evaluator. Host builds have no such producer, so without an
-    // explicit advance here the engine sees t=0 every iteration and the
-    // Bezier evaluator never advances past the piece start.
-    let cycles_per_sample = (H7_CLOCK_HZ / SAMPLE_RATE_HZ) as u32;
-    let mut now_cycles: u32 = 0;
-    // 100ms at 40 kHz = 4000 samples — exactly the curve's duration. Drain
-    // the per-axis StepQueue each iteration to simulate the per-axis timer
-    // ISR consumer; on the MCU `kalico_per_axis_step_event` pops + emits
-    // continuously, so the depth-32 queue never saturates. Without this drain
-    // the harness self-DoS's after ~32 steps (~4ms at this feedrate) — the
-    // producer keeps running but `dispatch_pulse` silently drops every step
-    // that hits a full queue (`raise_step_queue_overflow` latches a fault
-    // but doesn't halt the loop). That's a test-setup gap, not a production
-    // bug.
-    for _ in 0..4000 {
-        now_cycles = now_cycles.wrapping_add(cycles_per_sample);
-        shared.widened_now_lo.store(now_cycles, Ordering::Release);
-        engine.tick_sample(&shared, &pool, &mut trace_producer);
-        // Drain X queue (axis 0). Other axes are idle in this jog scenario.
+    // The new tick path widens the raw cyccnt INSIDE `isr_sample_tick` and
+    // publishes via the §11.4 seqlock; the test only needs to feed a
+    // monotonically advancing `raw` value. We advance one sample-period
+    // worth of cycles each iteration — exactly what the H7 TIM5 ISR
+    // observes between firings.
+    let cycles_per_sample = H7_CLOCK_HZ / SAMPLE_RATE_HZ;
+    let mut raw_cyccnt: u32 = 0;
+    // 100 ms at 40 kHz = 4 000 samples — the segment's full duration. We
+    // drain the per-axis X StepQueue each iteration to mimic the per-axis
+    // SysTick consumer (`kalico_per_axis_step_event`); without that drain
+    // the depth-32 ring saturates inside ~4 ms and the producer silently
+    // drops trailing entries, which is a test-setup artefact, not a
+    // production bug. Tail past 4 000 by ~5 ms so the curve's t_local
+    // crosses `piece.duration` (the `t_local <= duration` guard in
+    // `advance_piece_if_needed` requires strict `>`); the retire path
+    // fires on the next post-pass after exhaustion.
+    for _ in 0..4200 {
+        raw_cyccnt = raw_cyccnt.wrapping_add(cycles_per_sample);
+        runtime::tick::isr_sample_tick(&mut isr, &shared, &pool, raw_cyccnt);
         unsafe { while runtime::step_queue::pop(queue_ptrs[0]).is_some() {} }
     }
 
-    // 10 mm @ 0.0125 mm/microstep = 800 steps. The Newton-iterated step
-    // emission may differ by ±1 vs the closed-form count.
-    let stepper_count = engine.stepping_axes[0].steppers[0]
+    // Production observable: the X stepper's signed pulse counter.
+    // 10 mm at 0.0125 mm/microstep = 800 microsteps; Newton sub-sample
+    // emission may differ by a handful at the edges.
+    let stepper_count = isr.engine.stepping_axes[0].steppers[0]
         .position_count
         .load(Ordering::Acquire);
     assert!(
         stepper_count.abs() >= 700,
-        "after 100ms at 40 kHz over a 10mm move, the X stepper's \
-         position_count should be near 800 microsteps, got {stepper_count}"
+        "FFI-equivalent isr_sample_tick path: 10mm @ 0.0125 mm/microstep \
+         over 100ms should drive ~800 microsteps on axis X; got {stepper_count}. \
+         If this is 0, the ISR's arm-from-queue wiring (Codex M1) regressed: \
+         the segment sat in the queue forever, engine.current stayed None, \
+         and dispatch_axis never pushed step entries."
     );
 
+    // Cross-check: the widened-now seqlock must have been ticking — Codex
+    // M2 regression surface. If `widened_now_lo` is still zero after 4 000
+    // ticks the ISR's `publish_widened_now` call is gone.
+    let widened_now = runtime::clock::read_widened_now(&shared);
+    assert!(
+        widened_now > 0,
+        "Codex M2 regression: isr_sample_tick must call publish_widened_now \
+         every sample; widened-now is still 0 after 4 000 ticks."
+    );
+
+    // The segment should have retired by the end of the 100 ms loop.
+    let retired = shared
+        .retired_through_segment_id
+        .load(Ordering::Acquire);
+    assert_eq!(
+        retired, 1,
+        "segment 1 should have retired by sample 4000; \
+         retired_through_segment_id = {retired}. Likely cause: arm-from-queue \
+         never fired so retire bookkeeping had no current to clear."
+    );
 }

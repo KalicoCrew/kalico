@@ -204,6 +204,7 @@ pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
             trace_producer: t_producer,
             engine,
             widen_state: WidenState::default(),
+            pending_segment: None,
         }),
         shared: SharedState::new(),
         curve_pool: CurvePool::new(),
