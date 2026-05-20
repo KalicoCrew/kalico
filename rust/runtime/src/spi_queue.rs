@@ -34,21 +34,22 @@ pub const SPI_QUEUE_DEPTH_MASK: u16 = (SPI_QUEUE_DEPTH as u16) - 1;
 /// Number of independent SPI buses (SPI1 / SPI3 + headroom).
 pub const N_SPI_BUSES: usize = 3;
 
-/// One pending SPI write: chip-select GPIO handle, TMC register address,
-/// and a 32-bit payload (packed `(coil_A << 16) | (coil_B & 0xFFFF)` for
-/// the XDIRECT register).
+/// One pending SPI write: TMC chip-select OID (`command_config_spi`
+/// device OID), TMC register address, and a 32-bit payload (packed
+/// `(coil_A << 16) | (coil_B & 0xFFFF)` for the XDIRECT register).
 ///
 /// Layout must match the C struct exactly — `#[repr(C)]` + the same field
-/// order + the explicit 3-byte pad gives a 12-byte entry on every target
+/// order + the explicit 2-byte pad gives an 8-byte entry on every target
 /// we care about (ABI-stable across H7 / F4 / host).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SpiWrite {
-    pub cs_pin: u32,
+    pub tmc_cs_oid: u8,
     pub reg: u8,
-    pub _pad: [u8; 3],
+    pub _pad: [u8; 2],
     pub value: i32,
 }
+const _: () = assert!(core::mem::size_of::<SpiWrite>() == 8);
 
 /// SPSC ring of SPI writes. Storage is C-owned on the MCU; on host the
 /// `new()` constructor lets tests build instances directly.
@@ -72,9 +73,9 @@ impl SpiQueue {
             head: 0,
             _pad: [0; 4],
             buf: [SpiWrite {
-                cs_pin: 0,
+                tmc_cs_oid: 0xFF,
                 reg: 0,
-                _pad: [0; 3],
+                _pad: [0; 2],
                 value: 0,
             }; SPI_QUEUE_DEPTH],
         }
@@ -92,8 +93,8 @@ impl Default for SpiQueue {
 // future refactor changes field order or padding the build will fail here
 // rather than silently corrupting cross-language reads.
 const _: () = {
-    assert!(core::mem::size_of::<SpiWrite>() == 12);
-    assert!(core::mem::size_of::<SpiQueue>() == 200);
+    assert!(core::mem::size_of::<SpiWrite>() == 8);
+    assert!(core::mem::size_of::<SpiQueue>() == 136);
     assert!(SPI_QUEUE_DEPTH.is_power_of_two());
 };
 

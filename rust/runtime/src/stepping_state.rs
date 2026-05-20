@@ -24,38 +24,55 @@ pub enum StepMode {
     Phase = 1,
 }
 
-/// Per-physical-stepper static configuration + cross-half atomic state.
+/// Per-stepper Rust-side state. GPIO + direction-inversion live in C
+/// (`runtime_motor_steppers[][]`), so this struct only holds atomic state
+/// the ISR reads/writes.
 ///
-/// One instance per stepper that the unified engine drives. Fields split
-/// into:
-///
-/// - Static config (`step_pin`, `dir_pin`, `dir_invert`, `tmc_cs`): set at
-///   `configure_axes` time, never mutated by the ISR.
-/// - Cross-half atomics (`position_count`, the coil/phase fields): written
-///   by the ISR, read by the foreground / telemetry without taking a
-///   shared reference to `AxisConfig`. Atomics give us cross-half access
-///   without aliasing issues.
-///
-/// The `last_coil_A` / `last_coil_B` names use uppercase A/B to mirror the
-/// TMC5160 `XDIRECT` register's `COIL_A` / `COIL_B` field names verbatim —
-/// the mapping is load-bearing for debugging, so the snake_case lint is
-/// suppressed at the field level.
+/// Spec: `docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md` §4.2.
 #[derive(Debug)]
-#[allow(non_snake_case)]
 pub struct StepperRef {
-    pub step_pin: u32,
-    pub dir_pin: u32,
-    pub dir_invert: bool,
-
     pub position_count: AtomicI32,
-
-    pub tmc_cs: Option<u32>,
+    /// OID of `command_config_spi` for this stepper's TMC driver. `None`
+    /// means Pulse-only (no SPI traffic for this stepper).
+    pub tmc_cs_oid: Option<u8>,
+    #[allow(non_snake_case)]
     pub last_coil_A: AtomicI16,
+    #[allow(non_snake_case)]
     pub last_coil_B: AtomicI16,
     pub phase_offset_microsteps: AtomicI32,
     pub phase_offset_target: AtomicI32,
     pub last_phase_target: AtomicI32,
 }
+
+impl StepperRef {
+    pub fn new(tmc_cs_oid: Option<u8>) -> Self {
+        Self {
+            position_count: AtomicI32::new(0),
+            tmc_cs_oid,
+            last_coil_A: AtomicI16::new(0),
+            last_coil_B: AtomicI16::new(0),
+            phase_offset_microsteps: AtomicI32::new(0),
+            phase_offset_target: AtomicI32::new(0),
+            last_phase_target: AtomicI32::new(0),
+        }
+    }
+}
+
+/// FFI ABI: per-stepper binding payload, passed from C to Rust by
+/// `kalico_runtime_configure_axis`. Sentinel: `tmc_cs_oid == 0xFF` means
+/// "no TMC driver" (Pulse-only stepper). OID 0 is a legal SPI OID and
+/// must not be conflated with "absent."
+///
+/// Spec: `docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md` §5.2.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct StepperBindingRust {
+    pub tmc_cs_oid: u8,
+    pub _pad: [u8; 3],
+}
+const _: () = assert!(core::mem::size_of::<StepperBindingRust>() == 4);
+
+pub const TMC_CS_OID_NONE: u8 = 0xFF;
 
 /// Per-logical-axis configuration: the steppers physically yoked to this
 /// axis, the active Bezier piece being tracked, and the cached scalars

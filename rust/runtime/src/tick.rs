@@ -366,9 +366,9 @@ fn dispatch_phase(
         //
         // Bus index is hardcoded to 0 in the MVP. Production needs a
         // per-stepper `bus_idx` field on `StepperRef` (or the upper byte
-        // of `tmc_cs` reinterpreted as bus | gpio_handle); deferred until
+        // of `tmc_cs_oid` reinterpreted as bus | gpio_handle); deferred until
         // we have a multi-bus board to test against.
-        if let Some(cs) = stepper.tmc_cs {
+        if stepper.tmc_cs_oid.is_some() {
             #[allow(clippy::cast_sign_loss)] // sign-preserving u16->u32 then mask
             let packed = ((u32::from(coil_a as u16)) << 16) | (u32::from(coil_b as u16));
             let bus_idx: usize = 0;
@@ -387,9 +387,11 @@ fn dispatch_phase(
             let queue_ptr: *mut crate::spi_queue::SpiQueue = core::ptr::null_mut();
             if !queue_ptr.is_null() {
                 let entry = crate::spi_queue::SpiWrite {
-                    cs_pin: cs,
+                    tmc_cs_oid: stepper
+                        .tmc_cs_oid
+                        .unwrap_or(crate::stepping_state::TMC_CS_OID_NONE),
                     reg: 0x2D, // TMC5160 XDIRECT
-                    _pad: [0; 3],
+                    _pad: [0; 2],
                     #[allow(clippy::cast_possible_wrap)] // packed is the bit-pattern we want
                     value: packed as i32,
                 };
@@ -795,11 +797,8 @@ mod tests {
 
     fn make_stepper() -> StepperRef {
         StepperRef {
-            step_pin: 0,
-            dir_pin: 0,
-            dir_invert: false,
             position_count: AtomicI32::new(0),
-            tmc_cs: None,
+            tmc_cs_oid: None,
             last_coil_A: AtomicI16::new(0),
             last_coil_B: AtomicI16::new(0),
             phase_offset_microsteps: AtomicI32::new(0),

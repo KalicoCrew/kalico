@@ -88,6 +88,13 @@ typedef struct TraceSample {
   uint8_t _pad[7];
 } TraceSample;
 
+struct StepperBindingRust {
+    uint8_t tmc_cs_oid;     /* 0xFF = none (Pulse-only stepper) */
+    uint8_t _pad[3];
+};
+_Static_assert(sizeof(struct StepperBindingRust) == 4,
+               "StepperBindingRust ABI drift");
+
 
 
 

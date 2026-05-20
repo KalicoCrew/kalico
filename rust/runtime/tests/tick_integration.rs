@@ -48,11 +48,8 @@ const CYCLES_PER_SECOND: f32 = 520e6;
 
 fn make_stepper() -> StepperRef {
     StepperRef {
-        step_pin: 0,
-        dir_pin: 0,
-        dir_invert: false,
         position_count: AtomicI32::new(0),
-        tmc_cs: None,
+        tmc_cs_oid: None,
         last_coil_A: AtomicI16::new(0),
         last_coil_B: AtomicI16::new(0),
         phase_offset_microsteps: AtomicI32::new(0),
