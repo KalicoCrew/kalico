@@ -413,16 +413,23 @@ config RUNTIME_CURVE_POOL_N
 
 config RUNTIME_MAX_PIECES_PER_CURVE
     int "Maximum cubic Bézier pieces per curve slot"
-    default 16
-    range 1 64
+    default 64
+    range 1 256
     help
       Per-slot ceiling on cubic Bézier pieces. Both `RUNTIME_CURVE_POOL_N`
       and this value back the static cubic piece pool: total storage is
-      `CURVE_POOL_N * MAX_PIECES_PER_CURVE * sizeof(BezierPieceMonomial)`.
+      `CURVE_POOL_N * MAX_PIECES_PER_CURVE * sizeof(BezierPieceMonomial)`
+      (BezierPieceMonomial is 32 bytes in-memory; the wire encoding is
+      20 bytes — see rust/runtime/src/monomial.rs).
       Reported to the host via `RuntimeCapsResponse.max_pieces_per_curve`;
       the host's pre-upload validator rejects curves whose piece count
-      exceeds this value. Default 16 matches the Rust runtime's compile
-      time `MAX_PIECES_PER_CURVE`.
+      exceeds this value.
+      Default bumped from 16 to 64 on 2026-05-20: bench-observed
+      10mm@100mm/s jogs shape to 23 pieces after input-shaping
+      convolution; 16 rejects them with `CapsExceeded`. Logical-move
+      splitting (Task 13 follow-up) is the long-term answer for unbounded
+      move length; until then, raising the cap covers reasonable manual
+      jogs and most print-relevant segments.
 
 config KALICO_MOTION_SAMPLE_RATE_HZ
     int "Motion engine sample rate in Hz (TIM5 ISR fire rate)"
@@ -441,7 +448,7 @@ config KALICO_MOTION_SAMPLE_RATE_HZ
 
 config RUNTIME_STORAGE_SIZE_LARGE
     int "rt_storage byte ceiling (large profile, H7)"
-    default 63488
+    default 90112
     range 65536 524288
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
