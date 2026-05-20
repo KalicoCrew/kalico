@@ -327,7 +327,7 @@ runtime_init(void)
     // to short-circuit the entire init. If USB enumerates with this set
     // but not without, the crash is somewhere below. Currently DISABLED
     // (do the full init). Flip to 1 for bisect builds.
-#define RUNTIME_INIT_STUB 0
+#define RUNTIME_INIT_STUB 1  /* DIAG: stub runtime_init to confirm crash location */
 #if RUNTIME_INIT_STUB
     runtime_diag_progress(0xBF, 0, 0xCAFE);
     return;
