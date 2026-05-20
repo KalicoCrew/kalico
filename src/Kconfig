@@ -404,29 +404,6 @@ choice
         bool "Custom (override individual values)"
 endchoice
 
-config RUNTIME_MAX_CONTROL_POINTS
-    int "Max control points per curve slot"
-    default 1830 if RUNTIME_TARGET_LARGE
-    default 512 if RUNTIME_TARGET_SMALL
-    default 512
-    range 16 4096
-
-config RUNTIME_MAX_KNOT_VECTOR_LEN
-    int "Max knot-vector length per curve slot"
-    default 1850 if RUNTIME_TARGET_LARGE
-    default 524 if RUNTIME_TARGET_SMALL
-    default 524
-    range 27 4108
-    help
-      Must satisfy: RUNTIME_MAX_KNOT_VECTOR_LEN >= RUNTIME_MAX_CONTROL_POINTS
-      + RUNTIME_MAX_DEGREE + 1. The Rust runtime asserts this at compile
-      time; mismatched values fail the build.
-
-config RUNTIME_MAX_DEGREE
-    int "Max polynomial degree"
-    default 10
-    range 1 16
-
 config RUNTIME_CURVE_POOL_N
     int "Curve-pool slot count (planner look-ahead depth)"
     default 16 if RUNTIME_TARGET_LARGE
@@ -451,38 +428,35 @@ config KALICO_MOTION_SAMPLE_RATE_HZ
 
 config RUNTIME_STORAGE_SIZE_LARGE
     int "rt_storage byte ceiling (large profile, H7)"
-    default 307712
+    default 102400
     range 65536 524288
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
       replaces RT_CELL's Rust-side #[link_section] placement). Default
-      is 300 KB. Measured size_of::<RuntimeContext>() on the LARGE
-      profile is 305896 bytes (298 KB); 300 KB gives ~1.3 KB of growth
-      room before the Rust const_assert fires. The AXI SRAM ceiling
-      (327680 bytes minus the other .axi_bss occupants — kalico_buf
-      14752, runtime_bench_samples_buf 1024, receive_buf 2048 — leaves
-      ~309 KB available) is tight; the C-side _Static_assert in
-      src/runtime_storage.c enforces 2 KB AXI headroom on top of that.
-      Both asserts catch contract violations at compile time.
+      is 100 KB — provisional, set after the 2026-05-20 stepping
+      redesign that replaced the NURBS curve pool (~298 KB on LARGE)
+      with a uniform cubic Bézier piece pool (~8 KB on LARGE at
+      CURVE_POOL_N=16). Task 18 measures size_of::<RuntimeContext>()
+      and tunes this value. The AXI SRAM ceiling on H7 is 320 KB;
+      the C-side _Static_assert in src/runtime_storage.c enforces 2 KB
+      headroom. The Rust-side const_assert fires if RuntimeContext
+      exceeds this value at compile time.
 
 config RUNTIME_STORAGE_SIZE_SMALL
     int "rt_storage byte ceiling (small profile, F4)"
-    default 110592
+    default 65536
     range 32768 131072
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
       replaces RT_CELL's Rust-side #[link_section] placement). Default
-      is 104 KB. Bench-measured size_of::<RuntimeContext>() with the
-      user's actual F4 config (MAX_CONTROL_POINTS=512,
-      MAX_KNOT_VECTOR_LEN=524, CURVE_POOL_N=8 — overridden up from the
-      Kconfig SMALL default of 4) is 103432 bytes (101 KB); 104 KB
-      gives ~3 KB of growth room. F4's total SRAM is 128 KB so this
-      leaves ~24 KB for Klipper's own .bss + stack + heap.
+      is 64 KB — provisional, set after the 2026-05-20 stepping
+      redesign that replaced the NURBS curve pool (~103 KB on SMALL)
+      with a uniform cubic Bézier piece pool (~4 KB on SMALL at
+      CURVE_POOL_N=4). Task 18 measures size_of::<RuntimeContext>()
+      and tunes. F4's total SRAM is 128 KB; a 64 KB rt_storage leaves
+      ~64 KB for Klipper's .bss + stack + heap, which is ample.
       Const_assert on Rust catches RuntimeContext growth at compile
-      time. If a user bumps CURVE_POOL_N past ~8, they'll need to bump
-      this value too — at CURVE_POOL_N=10 RuntimeContext approaches
-      120 KB and starts crowding stack/heap; at CURVE_POOL_N=12+ it
-      no longer fits in F4 SRAM at all.
+      time.
 
 config KALICO_SIM
     bool "Build for simulator (disables IWDG, enables Linux sim shims)"
