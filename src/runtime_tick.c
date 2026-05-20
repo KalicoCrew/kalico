@@ -672,27 +672,6 @@ runtime_status_drain(void)
                 fault_detail = 0xB9000000u | (err << 16) | (crc << 8) | ok;
             }
             break;
-        case 12:
-            // 0xB8 — curve resolution outcomes per primary handle.
-            //   bits  0.. 7: producer_primary_resolved_total & 0xFF
-            //   bits  8..15: producer_primary_unused_total & 0xFF
-            //   bits 16..23: producer_primary_stale_total & 0xFF
-            // If resolved > 0 → real curves are being used; Cardano
-            //   exhaustion is a different root cause.
-            // If unused dominates and stale = 0 → host is sending UNUSED
-            //   handles for the moving axis (planner bug).
-            // If stale > 0 → host sent real handles but the pool retired
-            //   the slot generation prematurely (CurvePool gen mismatch).
-            {
-                uint32_t res = kalico_runtime_primary_resolved_lo(runtime_handle) & 0xFFu;
-                uint32_t un = kalico_runtime_primary_unused_lo(runtime_handle) & 0xFFu;
-                uint32_t st = kalico_runtime_primary_stale_lo(runtime_handle) & 0xFFu;
-                fault_detail = 0xB8000000u
-                             | (st << 16)
-                             | (un << 8)
-                             | res;
-            }
-            break;
         case 11:
             // 0xB7 — last r returned by runtime_handle_push_segment
             // (the C-side capture of the Rust FFI return). 0 = OK,
@@ -717,84 +696,6 @@ runtime_status_drain(void)
             {
                 int32_t r = kalico_runtime_last_push_segment_result(runtime_handle);
                 fault_detail = 0xB5000000u | ((uint32_t)r & 0x00FFFFFFu);
-            }
-            break;
-        case 8:
-            // 0xB4 — fetch + enqueue diagnostics. Distinguishes:
-            //   bits  0..15: producer_enqueue_success_total & 0xFFFF
-            //                — confirmed enqueues to fg.queue_producer.
-            //   bits 16..23: producer_fetch_attempts_total & 0xFF
-            //                — unconditional fetch_segment_for_motor entries.
-            // If enqueue>0 but dequeue (0xB3 bits 0..7) is 0, the queue
-            // ends aren't sharing the backing buffer (split is broken).
-            // If fetch_attempts=0 while producer_runs (0xB2 bits 16..23) > 0,
-            // the per-motor loop's gates are filtering every motor.
-            {
-                uint32_t enq = kalico_runtime_enqueue_success_lo(runtime_handle) & 0xFFFFu;
-                uint32_t fa = kalico_runtime_fetch_attempts_lo(runtime_handle) & 0xFFu;
-                fault_detail = 0xB4000000u
-                             | (fa << 16)
-                             | enq;
-            }
-            break;
-        case 7:
-            // 0xB3 — producer step accounting. 4 × 8-bit clamped counts:
-            //   bits  0.. 7: producer_segment_dequeued_total & 0xFF
-            //                — segments dequeued from queue. If 0 while host
-            //                  sent N PushSegments, segments are lost between
-            //                  the FFI and queue.
-            //   bits  8..15: producer_segment_retired_total & 0xFF
-            //                — segments fully retired (consumers_done).
-            //                  Should equal dequeued at steady state.
-            //   bits 16..23: producer_steps_pushed_total & 0xFF
-            //                — successful ring.push calls. If 0 while
-            //                  dequeued>0, every motor hit
-            //                  SegmentExhausted on first Cardano call OR
-            //                  fetch_segment returned None for handle.
-            // The motor_finished_curve count is implicit:
-            //   = retired × N_motors_with_active_handles in steady state.
-            //   Surfaced via tag 0xB4 below.
-            {
-                uint32_t deq = kalico_runtime_segments_dequeued_lo(runtime_handle) & 0xFFu;
-                uint32_t ret = kalico_runtime_segments_retired_lo(runtime_handle) & 0xFFu;
-                uint32_t pushed = kalico_runtime_steps_pushed_lo(runtime_handle) & 0xFFu;
-                fault_detail = 0xB3000000u
-                             | (pushed << 16)
-                             | (ret << 8)
-                             | deq;
-            }
-            break;
-        case 6:
-            // 0xB2 — producer-side fill diagnostic. Encodes:
-            //   bits  0..15: 4-bit-per-motor ring_high_water (clamped 0..15)
-            //                — > 0 means producer has pushed at least one
-            //                  entry into this motor's ring.
-            //   bits 16..23: producer_runs_total low 8 bits — heartbeat
-            //                for how many producer_step calls completed.
-            //
-            // If high_water[i] == 0 for every motor while producer_runs_lo
-            // is non-zero → producer is running but pushing nothing
-            // (fetch_segment_for_motor returns None, or Cardano returns
-            // SegmentExhausted immediately). If producer_runs_lo is 0,
-            // the step-event path is not reaching the producer.
-            {
-                uint32_t hw0 = kalico_runtime_ring_high_water(runtime_handle, 0);
-                uint32_t hw1 = kalico_runtime_ring_high_water(runtime_handle, 1);
-                uint32_t hw2 = kalico_runtime_ring_high_water(runtime_handle, 2);
-                uint32_t hw3 = kalico_runtime_ring_high_water(runtime_handle, 3);
-                if (hw0 > 15) hw0 = 15;
-                if (hw1 > 15) hw1 = 15;
-                if (hw2 > 15) hw2 = 15;
-                if (hw3 > 15) hw3 = 15;
-                uint32_t runs_lo =
-                    kalico_runtime_producer_runs_lo(runtime_handle) & 0xFFu;
-                uint16_t hws = (uint16_t)hw0
-                             | ((uint16_t)hw1 << 4)
-                             | ((uint16_t)hw2 << 8)
-                             | ((uint16_t)hw3 << 12);
-                fault_detail = 0xB2000000u
-                             | (runs_lo << 16)
-                             | (uint32_t)hws;
             }
             break;
         // 2026-05-17 H7 USB-OUT wedge investigation. The kalico_status_v6
@@ -990,58 +891,6 @@ runtime_status_drain(void)
             uint32_t ret =
                 runtime_handle_retired_through_segment_id(runtime_handle);
             fault_detail = 0xFF000000u | (ret & 0x00FFFFFFu);
-            break;
-        }
-        case 35: {
-            // 0xCC — 2026-05-18 wedge diag. producer_step entry-state vs
-            // status_drain view. Crucial: compares the value of
-            // `producer_current.is_some()` AS SEEN BY each call site.
-            //   bits 0..6   producer_segment_dequeued_total low 7 bits (0..127)
-            //   bits 7..13  producer_observed_none_total low 7 bits (0..127)
-            //   bits 14..16 queue_consumer.len() from status_drain (0..7)
-            //   bits 17..19 queue.len() from producer_step (0..7)
-            //   bit  20     status_drain's view of producer_current.is_some()
-            //   bit  21     producer_step's view of producer_current.is_some()
-            //   bits 22..23 reserved
-            // Diagnostic interpretation:
-            //   is_some bits AGREE: producer_current is consistently readable.
-            //     If qlen values agree too: queue is fine; look elsewhere.
-            //   is_some bits DISAGREE: producer_current is being cached by
-            //     the compiler across call sites — needs atomic semantics.
-            uint32_t deq = kalico_runtime_segments_dequeued_lo(runtime_handle);
-            uint32_t obs = kalico_runtime_observed_none_lo(runtime_handle);
-            uint8_t is_some_sd = kalico_runtime_producer_current_is_some_diag(
-                runtime_handle);
-            uint8_t is_some_ps = kalico_runtime_producer_current_is_some_from_producer_step_diag(
-                runtime_handle);
-            uint32_t qlen_sd = kalico_runtime_queue_len_diag(runtime_handle);
-            uint32_t qlen_ps = kalico_runtime_queue_len_from_producer_step_diag(
-                runtime_handle);
-            if (qlen_sd > 7) qlen_sd = 7;
-            if (qlen_ps > 7) qlen_ps = 7;
-            fault_detail = 0xCC000000u
-                         | ((uint32_t)(is_some_ps & 1u) << 21)
-                         | ((uint32_t)(is_some_sd & 1u) << 20)
-                         | ((qlen_ps & 7u) << 17)
-                         | ((qlen_sd & 7u) << 14)
-                         | ((obs & 0x7Fu) << 7)
-                         | (deq & 0x7Fu);
-            break;
-        }
-        case 36: {
-            // 0xCB — 2026-05-18 wedge diag: producer_current gate write
-            // counters. low 12 bits = set_count (Some writes), bits 12..23
-            // = cleared_count (None writes). If cleared_count stays at 0
-            // while modulated_tick claims to retire segments, the Rust
-            // write_producer_current_present helper isn't actually
-            // executing the write_volatile call.
-            uint32_t cnts = kalico_runtime_producer_current_gate_counters_diag(
-                runtime_handle);
-            uint32_t set_lo = cnts & 0xFFFu;
-            uint32_t cleared_lo = (cnts >> 16) & 0xFFFu;
-            fault_detail = 0xCB000000u
-                         | (cleared_lo << 12)
-                         | set_lo;
             break;
         }
         case 32: {
