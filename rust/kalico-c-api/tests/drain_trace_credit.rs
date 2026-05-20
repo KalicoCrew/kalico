@@ -24,6 +24,9 @@ use runtime::trace::{TRACE_FLAG_SEGMENT_END, TraceSample};
 pub static runtime_clock_freq: u32 = 520_000_000;
 
 #[unsafe(no_mangle)]
+pub static runtime_sample_rate_hz: u32 = 40_000;
+
+#[unsafe(no_mangle)]
 pub extern "C" fn runtime_tick_enable() {}
 
 #[unsafe(no_mangle)]

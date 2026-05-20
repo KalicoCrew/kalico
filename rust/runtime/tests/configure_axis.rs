@@ -33,7 +33,7 @@ fn new_engine() -> EngineImpl {
     // 520 MHz matches the H723 Kconfig default; any positive freq works
     // for the configure_* surface (it touches cycles_per_second only as
     // a cached scalar).
-    EngineImpl::new(520_000_000)
+    EngineImpl::new(520_000_000, 40_000)
 }
 
 fn pulse_binding() -> StepperBindingRust {

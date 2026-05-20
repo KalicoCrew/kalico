@@ -77,7 +77,11 @@ fn pulse_binding() -> StepperBindingRust {
 }
 
 fn configured_engine() -> EngineImpl {
-    let mut e = EngineImpl::new(H7_CLOCK_HZ);
+    // Engine::new now accepts (clock_hz, sample_rate_hz) and computes
+    // sample_period_sec at construction time — the Codex 2026-05-20 gap #2
+    // fix. Both values come from C-side constants in production
+    // (runtime_clock_freq / runtime_sample_rate_hz in src/runtime_tick.c).
+    let mut e = EngineImpl::new(H7_CLOCK_HZ, SAMPLE_RATE_HZ);
     // X axis (0): Pulse mode, 0.0125 mm/microstep — matches the bench TMC5160
     // setup at 256-microstep on a 1.8° motor + 20-tooth GT2 belt.
     let binding = pulse_binding();
@@ -89,76 +93,47 @@ fn configured_engine() -> EngineImpl {
 }
 
 #[test]
-fn tick_sample_no_op_proves_sample_period_gate() {
-    // Reproduces Codex point 2: with `Engine::new`'s default
-    // `sample_period_sec = 0.0`, `tick_sample` short-circuits before
-    // evaluating any loaded piece. Even with a fully-armed segment, the
-    // X axis's `last_step_count` stays at zero across N ticks.
-    let mut engine = configured_engine();
-    // Deliberately DO NOT call `test_set_sample_period` — that's the
-    // reproduction: production behaves the same way.
+fn engine_new_publishes_sample_period() {
+    // Verifies Codex gap #2 fix: `Engine::new(clock_hz, sample_rate_hz)` now
+    // derives and stores `sample_period_sec` + `sample_period_cycles` at
+    // construction time, so `tick_sample`'s `sample_period_sec <= 0.0` guard
+    // never fires in production.
+    //
+    // Before this fix both `Engine::new` and `init_in_place` wrote `0.0`,
+    // leaving `tick_sample` permanently stuck at the guard — motors never moved
+    // regardless of segment queue depth.
+    let engine = configured_engine();
 
-    let pool = CurvePool::new();
-    let piece = linear_jog_curve(10.0, 0.1);
-    let handle = pool
-        .try_alloc_and_load(0, &[piece])
-        .expect("slot 0 alloc");
-    let mut seg = Segment {
-        id: 1,
-        x_handle: handle,
-        y_handle: CurveHandle::UNUSED_SENTINEL,
-        z_handle: CurveHandle::UNUSED_SENTINEL,
-        e_handle: CurveHandle::UNUSED_SENTINEL,
-        t_start: 0,
-        t_end: ((0.1_f64) * f64::from(H7_CLOCK_HZ)) as u64,
-        kinematics: KinematicTag::CartesianXyzAndE,
-        e_mode: runtime::config::EMode::Travel,
-        flags: 0,
-        _pad: [0; 1],
-        extrusion_ratio: 0.0,
-        consumers_remaining: 0,
-    };
-    seg.consumers_remaining = Segment::compute_consumers_remaining(
-        seg.kinematics,
-        seg.x_handle,
-        seg.y_handle,
-        seg.z_handle,
-        seg.e_handle,
+    let expected_sec = 1.0_f32 / SAMPLE_RATE_HZ as f32;
+    let expected_cycles = H7_CLOCK_HZ / SAMPLE_RATE_HZ; // integer division matches impl
+
+    assert!(
+        engine.sample_period_sec > 0.0,
+        "sample_period_sec must be positive after Engine::new; got {}",
+        engine.sample_period_sec
     );
-    engine.arm_segment(seg, &pool);
-
-    let shared = SharedState::new();
-    let mut trace_storage: Queue<TraceSample, TRACE_RING_N> = Queue::new();
-    let (mut trace_producer, _trace_consumer) = trace_storage.split();
-
-    // Drive 100 samples — at 40 kHz that's 2.5 ms of simulated time, plenty
-    // for the linear curve to advance multiple microsteps if the evaluator
-    // were running.
-    for _ in 0..100 {
-        engine.tick_sample(&shared, &pool, &mut trace_producer);
-    }
-
-    let last_step_count = engine.stepping_axes[0].last_step_count;
+    assert!(
+        (engine.sample_period_sec - expected_sec).abs() < 1e-9,
+        "sample_period_sec expected {expected_sec} (1/{SAMPLE_RATE_HZ}), got {}",
+        engine.sample_period_sec
+    );
     assert_eq!(
-        last_step_count, 0,
-        "Codex point 2 reproduction: tick_sample IS supposed to no-op here. \
-         If this test fails with last_step_count > 0, sample_period_sec is \
-         being set somewhere — update this test to flip to a 'should fail \
-         pre-fix' marker."
+        engine.sample_period_cycles,
+        expected_cycles,
+        "sample_period_cycles expected {expected_cycles} ({H7_CLOCK_HZ}/{SAMPLE_RATE_HZ})"
     );
 }
 
 #[test]
 fn tick_sample_pushes_step_entries_after_sample_period_set() {
-    // Companion to the test above: once `sample_period_sec` is wired (via
-    // `test_set_sample_period` — production needs an equivalent path), the
-    // same setup should produce step entries on the X queue. This is the
-    // "make it green" target — currently fails because beyond Codex 2, the
-    // host-side queues aren't observable (Codex 5: stubbed-out path), and
-    // Engine::tick_sample's host branch uses [null; N_AXES]. We install real
-    // host queues via `test_install_step_queues` to close that gap.
+    // End-to-end: with sample_period_sec baked in via Engine::new (gap #2 fix)
+    // and observable host queues installed, tick_sample should emit step
+    // entries for a 10 mm X jog. This is the "make it green" target — the
+    // engine evaluates the Bezier piece per-sample, commits position to
+    // dispatch_pulse, and pushes entries into the per-axis StepQueue.
     let mut engine = configured_engine();
-    engine.test_set_sample_period(SAMPLE_RATE_HZ);
+    // sample_period_sec is already set by Engine::new(H7_CLOCK_HZ, SAMPLE_RATE_HZ);
+    // test_set_sample_period is no longer needed here.
 
     // Install observable host-side queues so dispatch_axis can push.
     let mut queues = [StepQueue::new(), StepQueue::new(), StepQueue::new(), StepQueue::new()];

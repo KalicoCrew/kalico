@@ -192,7 +192,15 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
 }
 
 impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
-    pub fn new(clock_freq: u32) -> Self {
+    /// Construct a new engine for the given MCU clock frequency and TIM5 sample
+    /// rate. Both values are read from C-side constants at production init time
+    /// (`runtime_clock_freq` / `runtime_sample_rate_hz` in `src/runtime_tick.c`);
+    /// tests supply them directly. `sample_period_sec` and `sample_period_cycles`
+    /// are derived here so `tick_sample`'s `sample_period_sec <= 0.0` guard
+    /// never fires in production (Codex 2026-05-20 gap #2 fix).
+    pub fn new(clock_freq: u32, sample_rate_hz: u32) -> Self {
+        let (sample_period_sec, sample_period_cycles) =
+            Self::compute_sample_period(clock_freq, sample_rate_hz);
         Self {
             current: None,
             last_motors: [0.0; 4],
@@ -236,8 +244,8 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             k_xy: 1.0,
             advance_accel: 0.0,
             advance_decel: 0.0,
-            sample_period_sec: 0.0,
-            sample_period_cycles: 0,
+            sample_period_sec,
+            sample_period_cycles,
             cycles_per_second: clock_freq as f32,
             tick_caches: crate::stepping_state::TickCaches::new(),
             #[cfg(any(test, feature = "host"))]
@@ -245,12 +253,28 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
         }
     }
 
-    /// Production-context constructor. Mirrors `::new(clock_freq)` but keeps
-    /// the call site noise low (Step-6 spec §14): the C-side
-    /// `runtime_clock_freq` static is read once at FFI init time and the value
-    /// is threaded through here.
-    pub fn new_production(clock_freq: u32) -> Self {
-        Self::new(clock_freq)
+    /// Compute `(sample_period_sec, sample_period_cycles)` from raw clock and
+    /// sample-rate values. Extracted so both `new` and `init_in_place` share
+    /// the same arithmetic without duplicating it.
+    ///
+    /// `sample_rate_hz == 0` is treated as "unconfigured" and returns `(0.0, 0)`,
+    /// preserving the `tick_sample` guard semantics for the zero-init edge case.
+    #[inline]
+    fn compute_sample_period(clock_freq: u32, sample_rate_hz: u32) -> (f32, u32) {
+        if sample_rate_hz == 0 {
+            return (0.0, 0);
+        }
+        let sec = 1.0_f32 / (sample_rate_hz as f32);
+        let cycles = (clock_freq as f32 / sample_rate_hz as f32).round() as u32;
+        (sec, cycles)
+    }
+
+    /// Production-context constructor. Mirrors `::new(clock_freq, sample_rate_hz)`
+    /// but keeps the call site noise low (Step-6 spec §14): both C-side statics
+    /// (`runtime_clock_freq`, `runtime_sample_rate_hz`) are read once at FFI init
+    /// time and threaded through here.
+    pub fn new_production(clock_freq: u32, sample_rate_hz: u32) -> Self {
+        Self::new(clock_freq, sample_rate_hz)
     }
 
     /// In-place initialization. Writes every field of `*ptr` via raw
@@ -263,14 +287,22 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
     /// build and the MCU started crashing during `runtime_handle_create`
     /// before USB enumeration.
     ///
+    /// `sample_rate_hz` is the TIM5 ISR fire rate; both it and `clock_freq`
+    /// come from C-side constants (`runtime_clock_freq` /
+    /// `runtime_sample_rate_hz`) at production init time. Passing them here
+    /// ensures `sample_period_sec` is non-zero from the first tick
+    /// (Codex 2026-05-20 gap #2 fix).
+    ///
     /// # Safety
     /// `ptr` must be valid for writes of `size_of::<Engine<P, I>>()` bytes
     /// and properly aligned. Caller must guarantee no concurrent reads.
     /// Used by [`crate::state::RuntimeContext::init`] to construct the
     /// engine field directly inside the C-owned `rt_storage` buffer.
     #[allow(unsafe_code)]
-    pub unsafe fn init_in_place(ptr: *mut Self, clock_freq: u32) {
+    pub unsafe fn init_in_place(ptr: *mut Self, clock_freq: u32, sample_rate_hz: u32) {
         use core::ptr::addr_of_mut;
+        let (sample_period_sec, sample_period_cycles) =
+            Self::compute_sample_period(clock_freq, sample_rate_hz);
         unsafe {
             addr_of_mut!((*ptr).current).write(None);
             addr_of_mut!((*ptr).last_motors).write([0.0; 4]);
@@ -313,8 +345,8 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             addr_of_mut!((*ptr).k_xy).write(1.0);
             addr_of_mut!((*ptr).advance_accel).write(0.0);
             addr_of_mut!((*ptr).advance_decel).write(0.0);
-            addr_of_mut!((*ptr).sample_period_sec).write(0.0);
-            addr_of_mut!((*ptr).sample_period_cycles).write(0);
+            addr_of_mut!((*ptr).sample_period_sec).write(sample_period_sec);
+            addr_of_mut!((*ptr).sample_period_cycles).write(sample_period_cycles);
             addr_of_mut!((*ptr).cycles_per_second).write(clock_freq as f32);
             #[cfg(any(test, feature = "host"))]
             addr_of_mut!((*ptr).test_queue_ptrs).write(
@@ -331,8 +363,8 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
     /// # Safety
     /// See [`init_in_place`].
     #[allow(unsafe_code)]
-    pub unsafe fn init_in_place_production(ptr: *mut Self, clock_freq: u32) {
-        unsafe { Self::init_in_place(ptr, clock_freq) }
+    pub unsafe fn init_in_place_production(ptr: *mut Self, clock_freq: u32, sample_rate_hz: u32) {
+        unsafe { Self::init_in_place(ptr, clock_freq, sample_rate_hz) }
     }
 }
 
@@ -1072,13 +1104,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 }
 
 // Engine::Default impl for tests where slot types implement Default.
-// Production callers must use ::new(clock_freq) — Default hardcodes 520 MHz.
+// Production callers must use ::new(clock_freq, sample_rate_hz) — Default
+// hardcodes H723 Kconfig defaults (520 MHz clock, 40 kHz sample rate).
 #[cfg(test)]
 impl<P: PaSlot + Default, I: IsSlot + Default> Default for Engine<P, I> {
     fn default() -> Self {
-        // H723 Klipper Kconfig default is 520 MHz (src/stm32/Kconfig). Tests using
-        // Default get this; tests requiring a specific value should call ::new() directly.
-        Self::new(520_000_000)
+        // H723 Klipper Kconfig defaults: 520 MHz clock, 40 kHz sample rate.
+        // Tests requiring specific values should call ::new() directly.
+        Self::new(520_000_000, crate::clock::TICK_RATE_HZ)
     }
 }
 

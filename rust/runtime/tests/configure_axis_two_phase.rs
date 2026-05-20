@@ -19,7 +19,7 @@ type EngineImpl = Engine<NoopPa, NoopIs>;
 fn build_engine() -> EngineImpl {
     // 520 MHz matches the H723 Kconfig default. Any positive freq is fine
     // for the configure_* surface (it only touches `cycles_per_second`).
-    EngineImpl::new(520_000_000)
+    EngineImpl::new(520_000_000, 40_000)
 }
 
 fn no_tmc_binding() -> StepperBindingRust {

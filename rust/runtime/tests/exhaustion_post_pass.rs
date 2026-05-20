@@ -28,7 +28,7 @@ type EngineImpl = Engine<NoopPa, NoopIs>;
 const CLOCK_FREQ: u32 = 520_000_000;
 
 fn new_engine() -> EngineImpl {
-    EngineImpl::new(CLOCK_FREQ)
+    EngineImpl::new(CLOCK_FREQ, 40_000)
 }
 
 fn make_linear_wire(delta_mm: f32, duration_s: f32) -> WirePiece {

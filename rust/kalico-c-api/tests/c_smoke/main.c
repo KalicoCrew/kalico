@@ -39,6 +39,7 @@ _Static_assert(sizeof(((TraceSample *)0)->_pad) == 7, "_pad length");
 
 /* Host-side stubs for symbols the staticlib leaves undefined. */
 const uint32_t runtime_clock_freq = 520000000u;
+const uint32_t runtime_sample_rate_hz = 40000u;
 
 void runtime_tick_enable(void) {}
 void runtime_tick_disable(void) {}

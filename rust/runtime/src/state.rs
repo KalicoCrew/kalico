@@ -715,6 +715,12 @@ unsafe impl Sync for RuntimeContext {}
 unsafe extern "C" {
     /// C-side static, set at `runtime_init` time in `src/runtime_tick.c`.
     static runtime_clock_freq: u32;
+    /// TIM5 ISR fire rate (Hz). Defined in `src/runtime_tick.c` as
+    /// `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ` (defaults: 40000 on H7,
+    /// 20000 on F4, 10000 on Linux sim). Consumed here to publish
+    /// `Engine::sample_period_sec` / `sample_period_cycles` at init time
+    /// so `tick_sample`'s guard never fires in production.
+    static runtime_sample_rate_hz: u32;
 }
 
 impl RuntimeContext {
@@ -757,10 +763,13 @@ impl RuntimeContext {
             let pool_ptr = core::ptr::addr_of_mut!((*rt_ptr).curve_pool);
             pool_ptr.write(CurvePool::new());
 
-            // Read C-side clock frequency once so the ISR's WidenState +
-            // Engine::new_production both see the same value. `runtime_clock_freq`
-            // is set at static-init time before the runtime ever runs.
+            // Read C-side clock frequency and sample rate once so the ISR's
+            // WidenState + Engine::init_in_place_production both see the same
+            // values. Both constants are set at static-init time in
+            // `src/runtime_tick.c` before the runtime ever runs.
             let freq = core::ptr::read_volatile(core::ptr::addr_of!(runtime_clock_freq));
+            let sample_rate_hz =
+                core::ptr::read_volatile(core::ptr::addr_of!(runtime_sample_rate_hz));
 
             // Initialize FgState.
             let fg_ptr = core::ptr::addr_of_mut!((*rt_ptr).fg);
@@ -803,6 +812,7 @@ impl RuntimeContext {
             EngineImpl::init_in_place_production(
                 core::ptr::addr_of_mut!((*inner_ptr).engine),
                 freq,
+                sample_rate_hz,
             );
             core::ptr::addr_of_mut!((*inner_ptr).widen_state)
                 .write(WidenState::default());

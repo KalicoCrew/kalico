@@ -172,7 +172,7 @@ pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
         Box::leak(Box::new(Queue::new()));
     let (t_producer, t_consumer) = trace_queue.split();
 
-    let mut engine = EngineImpl::new(TEST_CLOCK_FREQ);
+    let mut engine = EngineImpl::new(TEST_CLOCK_FREQ, 40_000);
     engine.configure(McuAxisConfig {
         motors: [
             Some(MotorConfig { steps_per_mm: 80.0, is_awd: false, invert_dir: false }),
