@@ -778,6 +778,105 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         0
     }
 
+    /// ISR-side segment arm. Called by `runtime_tick_sample` after dequeueing
+    /// a `Segment` from the SPSC queue. Populates per-axis state and the
+    /// engine-level retire-bookkeeping masks. NEVER called from foreground —
+    /// the §11.1 half-split discipline reserves `AxisConfig` mutation for the
+    /// ISR.
+    ///
+    /// Logic (spec §3.3 + §4.5):
+    /// 1. Per-axis: decode the segment's handle. If `UNUSED_SENTINEL`, leave
+    ///    axis idle. Else resolve via `curve_pool.lookup_active` and populate
+    ///    `curve_handle / piece_cursor / piece / piece_start_time_cycles`.
+    /// 2. `participating_mask`: bits A/B/Z (0..2) follow handle validity;
+    ///    bit E (3) ALSO requires `e_mode == EMode::Independent`
+    ///    (`CoupledToXy` E is non-participating; `Travel` E excluded).
+    /// 3. `pending_mask = participating_mask`.
+    /// 4. `segment_base_e = e_accumulator as f32`.
+    /// 5. `ds_xy_segment = 0.0`.
+    /// 6. `current = Some(seg)`.
+    ///
+    /// Spec: docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md §3.3 + §4.5.
+    #[allow(unsafe_code)]
+    pub fn arm_segment(
+        &mut self,
+        seg: crate::segment::Segment,
+        curve_pool: &crate::curve_pool::CurvePool,
+    ) {
+        let handles = [seg.x_handle, seg.y_handle, seg.z_handle, seg.e_handle];
+
+        // Per-axis arm.
+        for (axis_idx, handle) in handles.iter().enumerate() {
+            let axis = &mut self.stepping_axes[axis_idx];
+            if *handle == crate::curve_pool::CurveHandle::UNUSED_SENTINEL {
+                axis.curve_handle = None;
+                axis.piece = None;
+                axis.piece_cursor = 0;
+            } else if let Some(curve_ptr) = curve_pool.lookup_active(*handle) {
+                // SAFETY: curve_pool's generation guard published the slot;
+                // ISR is sole reader for the duration of the segment.
+                let curve = unsafe { &*curve_ptr };
+                if curve.piece_count == 0 {
+                    // Defensive: `populate_from_wire` rejects empty wire so
+                    // this should be unreachable, but treat as idle.
+                    axis.curve_handle = None;
+                    axis.piece = None;
+                    axis.piece_cursor = 0;
+                } else {
+                    axis.curve_handle = Some(*handle);
+                    axis.piece_cursor = 0;
+                    axis.piece = Some(curve.pieces[0]);
+                    axis.piece_start_time_cycles = seg.t_start;
+                }
+            } else {
+                // Slot generation mismatch (should be impossible — foreground
+                // validated at push). Treat as idle for this axis.
+                axis.curve_handle = None;
+                axis.piece = None;
+                axis.piece_cursor = 0;
+            }
+        }
+
+        // Compute participating_mask. Bits A/B/Z (0..2) follow handle
+        // validity; bit E (3) ALSO requires e_mode == Independent.
+        let mut participating: u8 = 0;
+        for axis_idx in 0..3 {
+            if self.stepping_axes[axis_idx].curve_handle.is_some() {
+                participating |= 1u8 << axis_idx;
+            }
+        }
+        if seg.e_mode == crate::config::EMode::Independent
+            && self.stepping_axes[3].curve_handle.is_some()
+        {
+            participating |= 1u8 << 3;
+        }
+        self.participating_mask = participating;
+        self.pending_mask = participating;
+
+        // E-accumulator base for absolute-position math (spec §4.6).
+        self.segment_base_e = self.e_accumulator as f32;
+        self.ds_xy_segment = 0.0;
+
+        self.current = Some(seg);
+    }
+
+    /// Test-only accessor to seed `e_accumulator` before invoking
+    /// `arm_segment`. The field stays private so production callers can't
+    /// race the f64 mutation; the test integration crate would otherwise
+    /// have no path to set up the snapshot-from-accumulator invariant.
+    #[cfg(any(test, feature = "host"))]
+    pub fn debug_set_e_accumulator(&mut self, value: f64) {
+        self.e_accumulator = value;
+    }
+
+    /// Test-only accessor to seed `ds_xy_segment` before invoking
+    /// `arm_segment`, so the reset-to-zero invariant is observable from a
+    /// non-zero starting value.
+    #[cfg(any(test, feature = "host"))]
+    pub fn debug_set_ds_xy_segment(&mut self, value: f32) {
+        self.ds_xy_segment = value;
+    }
+
     // ─── Stepping-redesign Task 12 — axis-mode + stepper-offset commands ─
     //
     // Spec: docs/superpowers/specs/2026-05-19-stepping-redesign-design.md
