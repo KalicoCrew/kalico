@@ -34,6 +34,31 @@ pub fn bernstein_to_monomial(bp: [f32; 4]) -> BezierPieceMonomial {
     }
 }
 
+/// Cubic Bezier Bernstein control points → seconds-domain monomial form.
+///
+/// Wraps [`bernstein_to_monomial`] (which produces unit-interval coefficients)
+/// with a duration rescale: `c_k' = c_k / d^k`. After rescale, evaluating
+/// the monomial at `t_sec ∈ [0, duration]` produces the same physical mm value
+/// the unit-interval evaluation would at `τ = t_sec / duration`.
+///
+/// Spec: `docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md` §3.2.
+#[inline]
+pub fn bernstein_to_monomial_with_duration(
+    bp: [f32; 4],
+    duration_sec: f32,
+) -> BezierPieceMonomial {
+    let m = bernstein_to_monomial(bp);
+    let c0 = m.coeffs[0];
+    let c1 = m.coeffs[1] / duration_sec;
+    let c2 = m.coeffs[2] / (duration_sec * duration_sec);
+    let c3 = m.coeffs[3] / (duration_sec * duration_sec * duration_sec);
+    BezierPieceMonomial {
+        coeffs: [c0, c1, c2, c3],
+        vel_coeffs: [c1, 2.0 * c2, 3.0 * c3],
+        duration: duration_sec,
+    }
+}
+
 /// Evaluate P(t) = c0 + c1·t + c2·t² + c3·t³ via Horner's method:
 /// P(t) = c0 + t·(c1 + t·(c2 + t·c3)).
 #[inline]
