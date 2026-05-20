@@ -49,12 +49,15 @@ fn configure_axis_publishes_mode_and_scalars() {
     let axis = &e.stepping_axes[0];
     assert_eq!(axis.mode.load(Ordering::Acquire), StepMode::Phase as u8);
     assert!((axis.microstep_distance - 0.0125).abs() < 1e-9);
-    assert_eq!(axis.extrusion_per_xy_mm, 0.0);
+    // `extrusion_per_xy_mm` is no longer a field on `AxisConfig` — per-
+    // segment `Segment::extrusion_ratio` is authoritative (Task 6).
     // After configure, no piece is active and counters are zeroed so the
     // next segment-arrival path can re-seed cleanly.
     assert!(axis.piece.is_none());
     assert_eq!(axis.piece_start_time_cycles, 0);
     assert_eq!(axis.last_step_count, 0);
+    assert!(axis.curve_handle.is_none());
+    assert_eq!(axis.piece_cursor, 0);
 }
 
 #[test]

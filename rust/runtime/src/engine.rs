@@ -664,11 +664,11 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// `axis_idx` is `0..N_AXES` (X=0, Y=1, Z=2, E=3). `mode` selects the
     /// per-stepper output path (Pulse or Phase). `microstep_distance` is
     /// the per-step distance in mm-equivalent units (must be finite,
-    /// positive). `extrusion_per_xy_mm` is the linear extruder ratio that
-    /// the E-follows-XY integrator multiplies arc-length-traveled by;
-    /// meaningful only on the E axis but accepted on every axis as a
-    /// pure scalar (validated finite, sign-agnostic — a slicer might pass
-    /// 0 for non-extruding moves).
+    /// positive). `extrusion_per_xy_mm` is accepted for ABI
+    /// compatibility but ignored — per-segment `Segment::extrusion_ratio`
+    /// is now authoritative (Task 6 + Task 11). Validated finite so a
+    /// NaN/inf slip-through from a slicer still surfaces here as an
+    /// error.
     ///
     /// `stepper_count` is accepted for ABI compatibility but currently
     /// unused — physical stepper bindings are still wired by
@@ -677,9 +677,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// On success the new configuration is published with `Release`
     /// ordering so the ISR's next `mode.load(Acquire)` observes the new
     /// mode together with the new scalar fields (the ISR re-reads
-    /// `microstep_distance` / `extrusion_per_xy_mm` whenever it samples
-    /// a fresh piece, so plain-store ordering relative to the atomic
-    /// mode-publish is sufficient).
+    /// `microstep_distance` whenever it samples a fresh piece, so
+    /// plain-store ordering relative to the atomic mode-publish is
+    /// sufficient).
     pub fn configure_axis(
         &mut self,
         axis_idx: u8,
@@ -697,12 +697,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         if !extrusion_per_xy_mm.is_finite() {
             return -1;
         }
-        // stepper_count is accepted but ignored — physical stepper bindings
-        // remain on `config_runtime_stepper` until Task 16.
+        // stepper_count and extrusion_per_xy_mm are accepted but ignored —
+        // physical stepper bindings remain on `config_runtime_stepper`
+        // until Task 16, and per-segment `Segment::extrusion_ratio` is
+        // the authoritative source for the E-follows-XY ratio (Task 11).
         let _ = stepper_count;
+        let _ = extrusion_per_xy_mm;
         let axis = &mut self.stepping_axes[axis_idx as usize];
         axis.microstep_distance = microstep_distance;
-        axis.extrusion_per_xy_mm = extrusion_per_xy_mm;
         // Clear any prior piece so the next segment-arrival path re-seeds
         // from scratch with the new microstep_distance / mode.
         axis.piece = None;

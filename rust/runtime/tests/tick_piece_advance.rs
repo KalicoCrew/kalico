@@ -39,11 +39,12 @@ fn idle_axis() -> AxisConfig {
     AxisConfig {
         mode: AtomicU8::new(StepMode::Pulse as u8),
         steppers: Vec::new(),
+        curve_handle: None,
+        piece_cursor: 0,
         piece: None,
         piece_start_time_cycles: 0,
         last_step_count: 0,
         microstep_distance: 0.25,
-        extrusion_per_xy_mm: 0.0,
     }
 }
 
@@ -65,11 +66,12 @@ fn piece_advances_when_sample_passes_duration() {
         AxisConfig {
             mode: AtomicU8::new(StepMode::Pulse as u8),
             steppers,
+            curve_handle: None,
+            piece_cursor: 0,
             piece: Some(piece),
             piece_start_time_cycles: 0,
             last_step_count: 0,
             microstep_distance: 0.25,
-            extrusion_per_xy_mm: 0.0,
         },
         idle_axis(),
         idle_axis(),
@@ -139,20 +141,22 @@ fn segment_retirement_increments_counter_and_resets_arc_length() {
         AxisConfig {
             mode: AtomicU8::new(StepMode::Pulse as u8),
             steppers: steppers_a,
+            curve_handle: None,
+            piece_cursor: 0,
             piece: Some(piece),
             piece_start_time_cycles: 0,
             last_step_count: 0,
             microstep_distance: 0.25,
-            extrusion_per_xy_mm: 0.0,
         },
         AxisConfig {
             mode: AtomicU8::new(StepMode::Pulse as u8),
             steppers: steppers_b,
+            curve_handle: None,
+            piece_cursor: 0,
             piece: Some(piece),
             piece_start_time_cycles: 0,
             last_step_count: 0,
             microstep_distance: 0.25,
-            extrusion_per_xy_mm: 0.0,
         },
         idle_axis(),
         idle_axis(),

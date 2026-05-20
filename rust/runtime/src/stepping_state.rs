@@ -85,11 +85,18 @@ pub const TMC_CS_OID_NONE: u8 = 0xFF;
 pub struct AxisConfig {
     pub mode: AtomicU8,
     pub steppers: Vec<StepperRef, MAX_STEPPERS_PER_AXIS>,
+    /// Active curve handle. `None` when no segment is armed or the curve
+    /// is exhausted.
+    pub curve_handle: Option<crate::curve_pool::CurveHandle>,
+    /// Index into the loaded curve's `pieces` array. Advanced by
+    /// `advance_piece_if_needed` (Task 9).
+    pub piece_cursor: u16,
+    /// Cached active piece (= curve.pieces[piece_cursor]). Refreshed
+    /// only on piece-boundary advancement.
     pub piece: Option<BezierPieceMonomial>,
     pub piece_start_time_cycles: u64,
     pub last_step_count: i32,
     pub microstep_distance: f32,
-    pub extrusion_per_xy_mm: f32,
 }
 
 impl AxisConfig {
@@ -105,11 +112,12 @@ impl AxisConfig {
         Self {
             mode: AtomicU8::new(StepMode::Pulse as u8),
             steppers: Vec::new(),
+            curve_handle: None,
+            piece_cursor: 0,
             piece: None,
             piece_start_time_cycles: 0,
             last_step_count: 0,
             microstep_distance: 0.0,
-            extrusion_per_xy_mm: 0.0,
         }
     }
 }

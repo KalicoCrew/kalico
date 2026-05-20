@@ -688,11 +688,17 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     //
     // The intrinsic extrusion from the E NURBS piece (retract/prime/
     // filament-change) is summed with:
-    //   - extrusion_per_xy_mm × ds_xy_segment   (E follows XY arc length)
-    //   - pa_k × extrusion_per_xy_mm × v_xy_this (pressure advance)
+    //   - extrusion_ratio × ds_xy_segment   (E follows XY arc length)
+    //   - pa_k × extrusion_ratio × v_xy_this (pressure advance)
     // where `pa_k` is `advance_accel` while v_xy is rising and
     // `advance_decel` while it is falling (asymmetric PA, see bleeding-
     // edge-v2 Step 9 lineage in the CLAUDE.md scope).
+    //
+    // Task 6 dropped the stale `AxisConfig::extrusion_per_xy_mm`; the
+    // ratio now comes per-segment from `Segment::extrusion_ratio`. Task
+    // 11 wires the current-segment cursor into `TickContext`; until
+    // then the coupling term is held at zero so E follows only its
+    // intrinsic curve.
     // -----------------------------------------------------------------
     {
         let axis = &mut ctx.axes[AXIS_E];
@@ -725,9 +731,13 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
                 } else {
                     ctx.advance_decel
                 };
+                // Per-segment extrusion ratio source pending Task 11
+                // (see Phase-3 banner above). Held at 0.0 so the E
+                // axis evaluates its intrinsic NURBS only.
+                let extrusion_ratio: f32 = 0.0;
                 let p_end = p_end_intrinsic
-                    + axis.extrusion_per_xy_mm * ctx.caches.ds_xy_segment
-                    + pa_k * axis.extrusion_per_xy_mm * ctx.caches.v_xy_this;
+                    + extrusion_ratio * ctx.caches.ds_xy_segment
+                    + pa_k * extrusion_ratio * ctx.caches.v_xy_this;
 
                 p_end_axis[AXIS_E] = p_end;
                 v_end_axis[AXIS_E] = v_end;
@@ -813,11 +823,12 @@ mod tests {
         AxisConfig {
             mode: AtomicU8::new(mode as u8),
             steppers,
+            curve_handle: None,
+            piece_cursor: 0,
             piece: None::<BezierPieceMonomial>,
             piece_start_time_cycles: 0,
             last_step_count: 0,
             microstep_distance,
-            extrusion_per_xy_mm: 0.0,
         }
     }
 

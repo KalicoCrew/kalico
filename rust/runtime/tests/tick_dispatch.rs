@@ -33,11 +33,12 @@ fn make_axis(mode: StepMode, microstep_distance: f32) -> AxisConfig {
     AxisConfig {
         mode: AtomicU8::new(mode as u8),
         steppers,
+        curve_handle: None,
+        piece_cursor: 0,
         piece: None::<BezierPieceMonomial>,
         piece_start_time_cycles: 0,
         last_step_count: 0,
         microstep_distance,
-        extrusion_per_xy_mm: 0.0,
     }
 }
 
