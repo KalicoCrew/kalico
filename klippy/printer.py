@@ -651,7 +651,7 @@ def main():
         "apiserver_user": options.apiserver_user,
         "apiserver_group": options.apiserver_group,
         "apiserver_file_mode": options.apiserver_file_mode,
-        "start_reason": "startup",
+        "start_reason": os.environ.get("_KLIPPY_START_REASON", "startup"),
         "allow_plugin_override": options.allow_plugin_override,
     }
 
@@ -732,9 +732,18 @@ def main():
         main_reactor.finalize()
         main_reactor = printer = None
         logging.info("Restarting printer")
-        start_args["start_reason"] = res
-        if options.rotate_log_at_restart and bglogger is not None:
-            bglogger.doRollover()
+        if options.debuginput:
+            continue
+        # Cleanup some open fds
+        if bglogger is not None:
+            bglogger.stop()
+        del start_args
+        # Re-exec klippy as a new process
+        os.execve(
+            sys.executable,
+            [sys.executable, *sys.argv],
+            {**os.environ, "_KLIPPY_START_REASON": res},
+        )
 
     if bglogger is not None:
         bglogger.stop()
