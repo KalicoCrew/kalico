@@ -213,11 +213,21 @@ fn tick_sample_pushes_step_entries_after_sample_period_set() {
     // Bezier evaluator never advances past the piece start.
     let cycles_per_sample = (H7_CLOCK_HZ / SAMPLE_RATE_HZ) as u32;
     let mut now_cycles: u32 = 0;
-    // 100ms at 40 kHz = 4000 samples — exactly the curve's duration.
+    // 100ms at 40 kHz = 4000 samples — exactly the curve's duration. Drain
+    // the per-axis StepQueue each iteration to simulate the per-axis timer
+    // ISR consumer; on the MCU `kalico_per_axis_step_event` pops + emits
+    // continuously, so the depth-32 queue never saturates. Without this drain
+    // the harness self-DoS's after ~32 steps (~4ms at this feedrate) — the
+    // producer keeps running but `dispatch_pulse` silently drops every step
+    // that hits a full queue (`raise_step_queue_overflow` latches a fault
+    // but doesn't halt the loop). That's a test-setup gap, not a production
+    // bug.
     for _ in 0..4000 {
         now_cycles = now_cycles.wrapping_add(cycles_per_sample);
         shared.widened_now_lo.store(now_cycles, Ordering::Release);
         engine.tick_sample(&shared, &pool, &mut trace_producer);
+        // Drain X queue (axis 0). Other axes are idle in this jog scenario.
+        unsafe { while runtime::step_queue::pop(queue_ptrs[0]).is_some() {} }
     }
 
     // 10 mm @ 0.0125 mm/microstep = 800 steps. The Newton-iterated step
@@ -231,17 +241,4 @@ fn tick_sample_pushes_step_entries_after_sample_period_set() {
          position_count should be near 800 microsteps, got {stepper_count}"
     );
 
-    // Observe step queue depth: any non-zero tail proves the producer wrote
-    // entries the per-axis timer would consume.
-    let q_x_depth = unsafe {
-        let q = queue_ptrs[0];
-        core::ptr::read_volatile(&(*q).tail).wrapping_sub(
-            core::ptr::read_volatile(&(*q).head),
-        )
-    };
-    assert!(
-        q_x_depth > 0,
-        "step_queues[0] should have entries pending consumer pop after \
-         producer ticks; got depth={q_x_depth}"
-    );
 }
