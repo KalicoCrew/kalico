@@ -1081,7 +1081,11 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// would propagate into the per-axis piece evaluator and latch a
     /// `MathNonFinite` fault on boot before any host segment lands.
     #[allow(clippy::cast_precision_loss)]
-    pub fn tick_sample(&mut self, shared: &SharedState) {
+    pub fn tick_sample(
+        &mut self,
+        shared: &SharedState,
+        curve_pool: &crate::curve_pool::CurvePool,
+    ) {
         if self.cycles_per_second <= 0.0 {
             return;
         }
@@ -1133,6 +1137,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             queues: queue_ptrs,
             shared,
             caches: &mut self.tick_caches,
+            curve_pool,
             ds_xy_segment: &mut self.ds_xy_segment,
             sample_period_sec: self.sample_period_sec,
             sample_period_cycles: self.sample_period_cycles,

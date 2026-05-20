@@ -482,12 +482,22 @@ pub const AXIS_E: usize = 3;
 ///   by Task 6); passed through to `dispatch_axis`.
 /// - `t_sample_end_global`: wall-clock time at the end of this sample,
 ///   in seconds, in the same epoch as `piece_start_time_cycles`.
-#[derive(Debug)]
+// `CurvePool` deliberately does not implement `Debug` (it carries large
+// per-slot arrays and `UnsafeCell`-protected payloads). Skip the derive
+// on `TickContext` — the ISR path doesn't format it, and tests can use
+// `{:?}` on the individual fields if needed.
+#[allow(missing_debug_implementations)]
 pub struct TickContext<'a> {
     pub axes: &'a mut [AxisConfig; N_AXES],
     pub queues: [*mut StepQueue; N_AXES],
     pub shared: &'a SharedState,
     pub caches: &'a mut TickCaches,
+    /// Curve pool reference for resolving `axis.curve_handle` →
+    /// `LoadedCubicCurve` during the per-axis piece-cursor walk in
+    /// `advance_piece_if_needed`. Borrowed `&` because the ISR is read-only
+    /// against the pool; foreground is the sole writer under the
+    /// `try_alloc_and_load` discipline.
+    pub curve_pool: &'a crate::curve_pool::CurvePool,
     /// Segment-scoped XY arc-length accumulator (mm). Owned by `Engine`
     /// since Task 7 of the stepping-redesign finish; reset at segment-arm
     /// and read by retire for the final E delta. Threaded into the tick
@@ -504,23 +514,26 @@ pub struct TickContext<'a> {
     pub t_sample_end_global: f32,
 }
 
-/// Advance the axis's active piece if the sample time has moved past
-/// the current piece's duration.
+/// Walk the per-axis cursor forward past any sample-straddled pieces.
 ///
 /// Returns `true` if at least one piece advance happened on this axis,
 /// so the caller can use that as a hint for segment-retirement timing.
 ///
-/// In the stepping-redesign, each `AxisConfig` carries a single active
-/// piece; once exhausted, we clear `axis.piece` to `None` so the
-/// foreground (Task 11) can supply the next piece on its next configure
-/// call. The loop is bounded (`iters > 4` latches a fault) — that
-/// upper bound also catches a non-finite or zero `piece.duration` that
-/// would otherwise spin forever (`duration_cycles == 0` means
-/// `piece_start_time_cycles` doesn't advance and `t_local` stays past
-/// duration).
+/// Spec §4.4. Per-axis loop only — does NOT make any retire/fault
+/// decisions about other axes. The per-sample post-pass in
+/// [`runtime_tick_sample`] owns `participating_mask` updates and the
+/// early-exhaustion fault check (Task 10).
 ///
-/// Spec: docs/superpowers/specs/2026-05-19-stepping-redesign-design.md
-/// "Piece advancement" section.
+/// On curve exhaustion (`piece_cursor >= curve.piece_count`) this clears
+/// both `axis.piece` and `axis.curve_handle` and breaks; the post-pass
+/// later decides retire vs. fault.
+///
+/// The iteration cap is `MAX_PIECES_PER_CURVE` (the loop is structurally
+/// bounded by curve length). Exceeding it implies internal corruption
+/// (zero/non-finite duration, or a curve-pool race) — that case still
+/// latches `PieceAdvanceUnderflow`.
+///
+/// Spec: `docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md` §4.4.
 //
 // `usize as u32` and `f32 as u64` casts are deliberate quantizations
 // matching the spec; the lints would force a workaround that doesn't
@@ -529,12 +542,13 @@ pub struct TickContext<'a> {
 fn advance_piece_if_needed(
     axis: &mut AxisConfig,
     axis_idx: usize,
+    curve_pool: &crate::curve_pool::CurvePool,
     shared: &SharedState,
     t_sample_end_global: f32,
     cycles_per_second: f32,
 ) -> bool {
     let mut advanced = false;
-    let mut iters: u8 = 0;
+    let mut iters: u16 = 0;
     loop {
         let Some(piece) = axis.piece else {
             break;
@@ -545,22 +559,65 @@ fn advance_piece_if_needed(
         if t_local <= piece.duration {
             break;
         }
-        // Advance: bump piece_start_time by piece.duration in cycles.
-        // `duration` is non-negative seconds; converting to cycles via
-        // `* cycles_per_second` and then `as u64` is a controlled
-        // narrowing (the result fits in u64 for any realistic piece).
+        // Walk cursor forward by one piece. `duration` is non-negative
+        // seconds; converting to cycles via `* cycles_per_second` and
+        // then `as u64` is a controlled narrowing (the result fits in
+        // u64 for any realistic piece). `saturating_add` on the cursor
+        // means a runaway loop hits the iter cap rather than walking
+        // past `piece_count` silently.
         let duration_cycles = (piece.duration * cycles_per_second) as u64;
-        axis.piece_start_time_cycles =
-            axis.piece_start_time_cycles.wrapping_add(duration_cycles);
-
-        // Single active piece per axis; host pushes the next piece via
-        // a Task-11 command handler. Mark axis idle so the foreground
-        // can refill on its next configure call.
-        axis.piece = None;
+        axis.piece_start_time_cycles = axis
+            .piece_start_time_cycles
+            .wrapping_add(duration_cycles);
+        axis.piece_cursor = axis.piece_cursor.saturating_add(1);
         advanced = true;
 
+        match axis.curve_handle {
+            Some(handle) => match curve_pool.lookup_active(handle) {
+                Some(curve_ptr) => {
+                    // SAFETY: `lookup_active` Acquire-loaded the slot's
+                    // `current_gen` and confirmed it matches `handle`,
+                    // synchronizing with the foreground's Release store
+                    // of the populated curve. The ISR is the sole reader,
+                    // and `curve_ptr` aliases the slot's UnsafeCell payload
+                    // for the duration of this borrow (no `&mut` to the
+                    // slot exists). Dereferencing is sound under §10.5.
+                    #[allow(unsafe_code)]
+                    let curve = unsafe { &*curve_ptr };
+                    if (axis.piece_cursor as usize) < curve.piece_count as usize {
+                        // SAFETY of index: piece_cursor < piece_count ≤
+                        // MAX_PIECES_PER_CURVE = pieces array length.
+                        #[allow(clippy::indexing_slicing)]
+                        let next = curve.pieces[axis.piece_cursor as usize];
+                        axis.piece = Some(next);
+                    } else {
+                        // Curve exhausted. Per-sample post-pass (Task 10)
+                        // owns the retire-vs-fault decision — clear local
+                        // state only and let the loop exit.
+                        axis.piece = None;
+                        axis.curve_handle = None;
+                        break;
+                    }
+                }
+                None => {
+                    // Slot generation drift (defensive; shouldn't happen
+                    // unless host retired the curve mid-segment).
+                    axis.piece = None;
+                    axis.curve_handle = None;
+                    break;
+                }
+            },
+            None => {
+                axis.piece = None;
+                break;
+            }
+        }
+
         iters = iters.saturating_add(1);
-        if iters > 4 {
+        if iters >= crate::curve_pool::MAX_PIECES_PER_CURVE as u16 {
+            // Runaway loop (corrupted duration or curve_pool race).
+            // Exceeding MAX_PIECES_PER_CURVE means something structural
+            // is wrong — fault regardless of participation.
             raise_piece_advance_underflow(shared, axis_idx);
             break;
         }
@@ -610,6 +667,7 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         advance_piece_if_needed(
             axis,
             axis_idx,
+            ctx.curve_pool,
             ctx.shared,
             ctx.t_sample_end_global,
             ctx.cycles_per_second,
@@ -715,6 +773,7 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         advance_piece_if_needed(
             axis,
             AXIS_E,
+            ctx.curve_pool,
             ctx.shared,
             ctx.t_sample_end_global,
             ctx.cycles_per_second,

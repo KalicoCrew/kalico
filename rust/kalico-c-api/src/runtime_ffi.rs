@@ -762,9 +762,12 @@ pub mod exports {
                 UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             let shared_ptr: *const SharedState =
                 core::ptr::addr_of!((*ctx).shared);
+            let pool_ptr: *const CurvePool =
+                core::ptr::addr_of!((*ctx).curve_pool);
             let isr: &mut IsrState = &mut *isr_ptr;
             let shared: &SharedState = &*shared_ptr;
-            isr.engine.tick_sample(shared);
+            let curve_pool: &CurvePool = &*pool_ptr;
+            isr.engine.tick_sample(shared, curve_pool);
         }
     }
 
