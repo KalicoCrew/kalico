@@ -315,6 +315,24 @@ runtime_drain_event(struct timer *t)
 void
 runtime_init(void)
 {
+    // 2026-05-20 bisect probe: write a progress marker BEFORE anything
+    // else, so a next-boot persistent-diag read shows whether we got into
+    // runtime_init at all. Tag 0xB0 = "runtime_init entered". Subsequent
+    // tags 0xB1..0xB5 mark each major step. If the H7 isn't enumerating
+    // on USB, the last tag seen on a successful boot tells us where it
+    // crashed.
+    runtime_diag_progress(0xB0, 0, 0);
+
+    // 2026-05-20 bisect: set RUNTIME_INIT_STUB=1 in environment / config
+    // to short-circuit the entire init. If USB enumerates with this set
+    // but not without, the crash is somewhere below. Currently DISABLED
+    // (do the full init). Flip to 1 for bisect builds.
+#define RUNTIME_INIT_STUB 0
+#if RUNTIME_INIT_STUB
+    runtime_diag_progress(0xBF, 0, 0xCAFE);
+    return;
+#endif
+
     // Capture prior-run cause-of-death from .persistent_diag BEFORE any
     // current-run runtime_diag_progress overwrites it. Status drain emits
     // this snapshot on every Nth status frame so klippy.log preserves it.
@@ -329,21 +347,27 @@ runtime_init(void)
         && rt_diag_persistent.last_packed != 0) {
         runtime_diag_prior_boot_snapshot = rt_diag_persistent.last_packed;
     }
+    runtime_diag_progress(0xB1, 0, 0);  // about to call runtime_handle_create
     runtime_handle = runtime_handle_create();
     if (!runtime_handle) {
         // Init failed — leave liveness flag at default (1 = OK) but handle unset;
         // calls into the runtime will short-circuit safely.
+        runtime_diag_progress(0xB1, 1, 0xFFFF);  // handle_create returned NULL
         return;
     }
+    runtime_diag_progress(0xB2, 0, 0);  // handle_create succeeded
     last_seen_tick_counter = runtime_handle_tick_counter(runtime_handle);
     last_progress_time = timer_read_time();
     last_seen_status = runtime_handle_status(runtime_handle);
+    runtime_diag_progress(0xB3, 0, 0);  // status reads done
 
     // Initialize the modulation tick driver. On STM32H7 this configures
     // TIM5 (DOES NOT enable; the first segment push triggers enable via
     // the producer protocol §4.4). On Linux it spawns the host pthread
     // that calls runtime_handle_tick at 40 kHz.
+    runtime_diag_progress(0xB4, 0, 0);  // about to call runtime_tick_init
     runtime_tick_init();
+    runtime_diag_progress(0xB5, 0, 0);  // tick_init done
 
     // Wire the periodic 1 kHz drain wake.
     runtime_drain_timer.func = runtime_drain_event;
