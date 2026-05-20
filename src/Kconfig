@@ -428,33 +428,35 @@ config KALICO_MOTION_SAMPLE_RATE_HZ
 
 config RUNTIME_STORAGE_SIZE_LARGE
     int "rt_storage byte ceiling (large profile, H7)"
-    default 102400
+    default 63488
     range 65536 524288
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
-      replaces RT_CELL's Rust-side #[link_section] placement). Default
-      is 100 KB — provisional, set after the 2026-05-20 stepping
-      redesign that replaced the NURBS curve pool (~298 KB on LARGE)
-      with a uniform cubic Bézier piece pool (~8 KB on LARGE at
-      CURVE_POOL_N=16). Task 18 measures size_of::<RuntimeContext>()
-      and tunes this value. The AXI SRAM ceiling on H7 is 320 KB;
+      replaces RT_CELL's Rust-side #[link_section] placement). Task 18
+      measured size_of::<RuntimeContext>() = 59048 bytes (57 KB) after
+      the 2026-05-20 stepping redesign replaced the NURBS curve pool
+      (~298 KB on LARGE) with a uniform cubic Bézier piece pool (~8 KB
+      at CURVE_POOL_N=16). Default is 63488 bytes (62 KB), providing
+      4440 bytes of headroom. The AXI SRAM ceiling on H7 is 320 KB;
       the C-side _Static_assert in src/runtime_storage.c enforces 2 KB
       headroom. The Rust-side const_assert fires if RuntimeContext
       exceeds this value at compile time.
 
 config RUNTIME_STORAGE_SIZE_SMALL
     int "rt_storage byte ceiling (small profile, F4)"
-    default 65536
+    default 63488
     range 32768 131072
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
-      replaces RT_CELL's Rust-side #[link_section] placement). Default
-      is 64 KB — provisional, set after the 2026-05-20 stepping
-      redesign that replaced the NURBS curve pool (~103 KB on SMALL)
-      with a uniform cubic Bézier piece pool (~4 KB on SMALL at
-      CURVE_POOL_N=4). Task 18 measures size_of::<RuntimeContext>()
-      and tunes. F4's total SRAM is 128 KB; a 64 KB rt_storage leaves
-      ~64 KB for Klipper's .bss + stack + heap, which is ample.
+      replaces RT_CELL's Rust-side #[link_section] placement). Task 18
+      measured size_of::<RuntimeContext>() = 59048 bytes (57 KB) after
+      the 2026-05-20 stepping redesign replaced the NURBS curve pool
+      (~103 KB on SMALL) with a uniform cubic Bézier piece pool (~4 KB
+      at CURVE_POOL_N=4). Default is 63488 bytes (62 KB) — the same as
+      LARGE because the measured size is identical and well below the F4
+      SRAM cap; no separate profile needed. Provides 4440 bytes of
+      headroom. F4's total SRAM is 128 KB; a 62 KB rt_storage leaves
+      ~66 KB for Klipper's .bss + stack + heap, which is ample.
       Const_assert on Rust catches RuntimeContext growth at compile
       time.
 

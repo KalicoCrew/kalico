@@ -842,6 +842,26 @@ pub fn set_step_mode(
 }
 
 #[cfg(test)]
+mod size_task18 {
+    use super::RuntimeContext;
+
+    /// Prints `size_of::<RuntimeContext>()` so tuning iterations have a
+    /// concrete number. Run with `cargo test -p runtime --lib size_task18 --
+    /// --nocapture` to see the output. The test is intentionally permanent —
+    /// it acts as a lightweight regression canary whenever fields are
+    /// added or removed from any of the state structs.
+    #[test]
+    fn print_runtime_context_size() {
+        let size = core::mem::size_of::<RuntimeContext>();
+        eprintln!(
+            "[Task 18] size_of::<RuntimeContext>() = {} bytes (={} KB)",
+            size,
+            size / 1024
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

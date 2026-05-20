@@ -45,7 +45,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     let cpn = lookup("KALICO_RUNTIME_CURVE_POOL_N", "16");
-    let rss = lookup("KALICO_RUNTIME_STORAGE_SIZE", "102400");
+    let rss = lookup("KALICO_RUNTIME_STORAGE_SIZE", "63488");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
 
