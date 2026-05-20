@@ -24,6 +24,11 @@ timer_from_us(uint32_t us)
 // Return true if time1 is before time2.  Always use this function to
 // compare times as regular C comparisons can fail if the counter
 // rolls over.
+// `used, externally_visible` keeps the out-of-line copy alive under
+// -ffunction-sections + --gc-sections so the Rust kalico runtime archive
+// can resolve it (the C-side callers all inline this short helper, which
+// would otherwise leave no live section for the linker to pick up).
+__attribute__((used, externally_visible))
 uint8_t
 timer_is_before(uint32_t time1, uint32_t time2)
 {
@@ -72,6 +77,11 @@ timer_set_diff(uint32_t value)
 // (CONFIG_KALICO_SIM=n) read the hardware register directly. NEVER flash
 // a CONFIG_KALICO_SIM=y image to silicon — IWDG-disable + software CYCCNT
 // is a debugging build only.
+// `used, externally_visible` keeps the out-of-line copy alive under
+// -ffunction-sections + --gc-sections so the Rust kalico runtime archive
+// can resolve it (most C-side callers inline a one-liner equivalent or
+// only reach this helper via the Rust archive).
+__attribute__((used, externally_visible))
 uint32_t
 timer_read_time(void)
 {
