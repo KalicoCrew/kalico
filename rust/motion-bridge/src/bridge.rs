@@ -1878,20 +1878,21 @@ impl PyMotionBridge {
             // curve exceeds its target's pool slot, fail-fast (Task 13 reduced
             // scope; full per-segment bisection is a follow-up).
             for plan in &mcu_plans {
-                let _caps = mcu_configs_for_cb
+                let caps = mcu_configs_for_cb
                     .iter()
                     .find(|c| c.mcu_id == plan.mcu_id)
                     .map(|c| c.caps)
                     .unwrap_or_default();
+                // Cap source: the MCU's own RuntimeCapsResponse (post-2026-05-20
+                // cubic-only schema), reported at attach via QueryRuntimeCaps.
+                // The earlier `kalico_host_rt::producer::MAX_PIECES_PER_CURVE`
+                // host constant was a placeholder pinned to the firmware
+                // default; with `RUNTIME_MAX_PIECES_PER_CURVE` now a Kconfig
+                // knob (and bumped from 16→64 for bench bring-up), the
+                // authoritative value lives on each MCU and varies per build.
+                let max_pieces = caps.max_pieces_per_curve as usize;
                 for (_axis, curve) in &plan.curves_to_load {
-                    // Post-stepping-redesign-finish: each loaded curve is a
-                    // cubic-Bezier piece array capped at MAX_PIECES_PER_CURVE
-                    // on the firmware side. The runtime-caps message no
-                    // longer carries per-curve sizing (NURBS knot / cp
-                    // budgets); the binding constraint is the host-mirrored
-                    // `MAX_PIECES_PER_CURVE` constant.
                     let pieces = curve.piece_count();
-                    let max_pieces = kalico_host_rt::producer::MAX_PIECES_PER_CURVE;
                     if pieces > max_pieces {
                         let err = DispatchError::CapsExceeded {
                             mcu_id: plan.mcu_id,

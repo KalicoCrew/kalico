@@ -14,10 +14,16 @@ use std::time::Duration;
 
 use kalico_protocol::{Encode, LoadCurveCubic, LoadCurveResponse, MessageKind, PushSegment, PushSegmentResponse, Decode};
 
-/// Cap defined by the firmware's `MAX_PIECES_PER_CURVE = 16` (spec
-/// `2026-05-20-stepping-redesign-finish-design.md` §2). Host-side enforcement
-/// short-circuits an over-cap upload before it hits the wire.
-pub const MAX_PIECES_PER_CURVE: usize = 16;
+/// Wire-format safety ceiling for `load_curve`'s piece_count argument.
+/// The authoritative per-MCU cap is `RuntimeCapsResponse.max_pieces_per_curve`
+/// (bumped from 16→64 default on 2026-05-20 — see src/Kconfig
+/// `RUNTIME_MAX_PIECES_PER_CURVE`). Callers should validate against
+/// `caps.max_pieces_per_curve` rather than this constant; this guard exists
+/// only to short-circuit obviously-malformed uploads (e.g. piece_count
+/// arriving as u8::MAX from a stale planner) before they hit the wire.
+/// Sized 1.5× the current firmware default so a future Kconfig bump to 96
+/// doesn't force a host-side rebuild.
+pub const MAX_PIECES_PER_CURVE: usize = 96;
 
 use crate::credit::CreditCounter;
 use crate::host_io::KalicoHostIo;
