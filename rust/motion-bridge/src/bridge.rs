@@ -1843,8 +1843,8 @@ impl PyMotionBridge {
                 + Send
                 + Sync,
         > = Arc::new(move |seg: &trajectory::ShapedSegment| -> Result<(), DispatchError> {
-            log::info!(
-                "[bridge-trace] dispatch closure entered: seg.t_start={} seg.t_end={}",
+            eprintln!(
+                "[move-diag] dispatch closure entered: seg.t_start={} seg.t_end={}",
                 seg.t_start, seg.t_end,
             );
             // ── Phase-4 per-axis-per-segment dispatch ─────────────────────
@@ -2261,9 +2261,9 @@ impl PyMotionBridge {
         de: f64,
         feedrate: f64,
     ) -> PyResult<()> {
-        log::debug!(
-            "[bridge-trace] submit_move enter dx={:.3} dy={:.3} dz={:.3} feed={:.1}",
-            dx, dy, dz, feedrate,
+        eprintln!(
+            "[move-diag] bridge.submit_move enter dx={:.3} dy={:.3} dz={:.3} de={:.3} feed={:.1}",
+            dx, dy, dz, de, feedrate,
         );
         py.allow_threads(|| -> PyResult<()> {
             let pos = *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());

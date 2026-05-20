@@ -266,6 +266,10 @@ impl PlannerHandle {
     }
 
     pub fn submit_move(&self, m: ClassifiedMove) -> Result<(), PlannerError> {
+        eprintln!(
+            "[move-diag] planner.submit_move enter nominal_s={:.6} distance_mm={:.3} feed={:.1}",
+            m.nominal_duration(), m.distance_mm, m.segment.feedrate_mm_s,
+        );
         self.check_error()?;
 
         // **Phase 6 Task 7.1 — caller-side `last_move_time_bits` advance.**
@@ -305,6 +309,7 @@ impl PlannerHandle {
     }
 
     pub fn flush(&self) -> Result<(), PlannerError> {
+        eprintln!("[move-diag] planner.flush enter (caller wait_moves)");
         self.check_error()?;
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.sender
@@ -570,15 +575,21 @@ fn run_commit_and_dispatch(
     let drained = match state.commit_decel_to_zero(&thread_state.emit_ctx()) {
         Ok(out) => out,
         Err(e) => {
+            eprintln!("[move-diag] run_commit_and_dispatch: commit_decel_to_zero ERR {e:?}");
             *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
             return false;
         }
     };
     let commit_us = commit_start.elapsed().as_micros();
     let batch_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
+    eprintln!(
+        "[move-diag] run_commit_and_dispatch: drained={} batch_dur_s={:.6} t_app_before={:.6} t_disp_before={:.6}",
+        drained.len(), batch_dur, t_app_before, t_disp_before,
+    );
     advance_last_move_time(last_move_time_bits, batch_dur);
     for s in &drained {
         if let Err(detail) = dispatch(s) {
+            eprintln!("[move-diag] run_commit_and_dispatch: dispatch ERR {detail:?}");
             *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Dispatch(detail));
             break;
         }
@@ -700,7 +711,7 @@ fn run_loop(
                     PlannerMsg::ClockSyncRearm { .. } => "ClockSyncRearm",
                     PlannerMsg::Shutdown => "Shutdown",
                 };
-                log::debug!("[planner-trace] recv {tag} gap_us={gap_us}");
+                eprintln!("[move-diag] planner recv {tag} gap_us={gap_us}");
                 m
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -719,7 +730,7 @@ fn run_loop(
                 let since_arm_ms = last_append_time
                     .map(|t| t.elapsed().as_micros() as i64)
                     .unwrap_or(-1);
-                log::debug!("[planner-trace] T_commit fire since_arm_us={since_arm_ms}");
+                eprintln!("[move-diag] planner T_commit fire since_arm_us={since_arm_ms}");
                 let _ok = run_commit_and_dispatch(
                     &mut state,
                     &thread_state,
@@ -758,6 +769,7 @@ fn run_loop(
 
                 let replan_start = Instant::now();
                 if let Err(e) = state.append_and_replan(m.segment, &thread_state.replan_ctx) {
+                    eprintln!("[move-diag] Move arm: append_and_replan ERR {e:?}");
                     *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
                     continue;
                 }
@@ -766,10 +778,18 @@ fn run_loop(
                 let drained = match state.emit_committed(&thread_state.emit_ctx()) {
                     Ok(out) => out,
                     Err(e) => {
+                        eprintln!("[move-diag] Move arm: emit_committed ERR {e:?}");
                         *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
                         continue;
                     }
                 };
+                eprintln!(
+                    "[move-diag] Move arm: drained={} t_app:{:.6}->{:.6} t_decel:{:.6}->{:.6} t_disp:{:.6}->{:.6}",
+                    drained.len(),
+                    prior_t_appended, state.t_appended,
+                    prior_t_decel, state.t_decel_start,
+                    prior_t_disp, state.t_dispatched,
+                );
                 let emit_us = emit_start.elapsed().as_micros();
                 let drained_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
                 log::debug!(
@@ -824,6 +844,10 @@ fn run_loop(
             }
 
             PlannerMsg::Flush { notify } => {
+                eprintln!(
+                    "[move-diag] Flush arm: last_append_time.is_some={} t_app={:.6} t_disp={:.6}",
+                    last_append_time.is_some(), state.t_appended, state.t_dispatched,
+                );
                 // Phase 4 Task 4.3 — `Flush` collapses `T_commit` → now
                 // (spec §3.4 lifecycle row). The streaming-native model
                 // holds the trailing decel-to-zero of the most recent
