@@ -982,6 +982,14 @@ pub fn isr_sample_tick(
     curve_pool: &crate::curve_pool::CurvePool,
     raw_cyccnt: u32,
 ) {
+    // 2026-05-21 bench diag — per-stage cycle counters.
+    // `cyccnt_read()` here is a private host-stub-able extern (declared
+    // below); on MCU it's the same DWT->CYCCNT read the C side uses,
+    // so deltas are in clock cycles (520 MHz on H7 / 180 MHz on F4).
+    // Skipped on host/test builds — the stub returns 0 so all four reads
+    // give zero deltas, max counters stay at 0.
+    let body_start = unsafe { cyccnt_read() };
+
     // Bench bring-up diagnostic (2026-05-21): `Engine::tick_counter`
     // existed but had no production increment site — the FFI accessor
     // returned 0 forever, so the bench diag tag "is TIM5 firing?" was
@@ -994,6 +1002,8 @@ pub fn isr_sample_tick(
     // 1. Widen the raw DWT sample and publish the §11.4 seqlock.
     let now = isr.widen_state.widen(raw_cyccnt);
     crate::clock::publish_widened_now(shared, now);
+    let after_widen = unsafe { cyccnt_read() };
+    update_max(&shared.isr_widen_cycles_max, after_widen.wrapping_sub(body_start));
 
     // 2. Promote-or-dequeue when the engine's current slot is empty.
     //    Take `pending_segment` out by value so the subsequent
@@ -1029,6 +1039,9 @@ pub fn isr_sample_tick(
         }
     }
 
+    let after_arm = unsafe { cyccnt_read() };
+    update_max(&shared.isr_arm_cycles_max, after_arm.wrapping_sub(after_widen));
+
     // 3. Hand the per-sample evaluator the trace producer it needs. The
     //    field-disjoint borrow here is the same pattern the FFI used
     //    before the M1/M2 fix landed.
@@ -1038,6 +1051,44 @@ pub fn isr_sample_tick(
         ..
     } = isr;
     engine.tick_sample(shared, curve_pool, trace_producer);
+    let body_end = unsafe { cyccnt_read() };
+    update_max(&shared.isr_eval_cycles_max, body_end.wrapping_sub(after_arm));
+
+    // Circuit-breaker: if the whole body exceeded ~58 µs on H7 (30000
+    // cycles at 520 MHz; ~167 µs on F4 at 180 MHz), bump the overrun
+    // counter so the host can see we're starving foreground.
+    let body_cycles = body_end.wrapping_sub(body_start);
+    if body_cycles > 30000 {
+        shared.isr_overrun_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+// CYCCNT extern. MCU = DWT->CYCCNT via the C helper; host = always 0
+// so test builds don't break (cyccnt deltas in tests are meaningless
+// anyway — sample times come from `runtime_tick_sample` inputs).
+#[cfg(not(any(test, feature = "host")))]
+unsafe extern "C" {
+    fn runtime_cyccnt_read() -> u32;
+}
+#[cfg(not(any(test, feature = "host")))]
+#[inline]
+unsafe fn cyccnt_read() -> u32 {
+    unsafe { runtime_cyccnt_read() }
+}
+#[cfg(any(test, feature = "host"))]
+#[inline]
+unsafe fn cyccnt_read() -> u32 { 0 }
+
+#[inline]
+fn update_max(slot: &core::sync::atomic::AtomicU32, val: u32) {
+    use core::sync::atomic::Ordering;
+    let prev = slot.load(Ordering::Relaxed);
+    if val > prev {
+        // Best-effort: a racy update from another writer can lose an
+        // intermediate max, but the ISR is the sole writer to these
+        // counters (TIM5 = single producer), so the race is theoretical.
+        slot.store(val, Ordering::Relaxed);
+    }
 }
 
 #[cfg(test)]

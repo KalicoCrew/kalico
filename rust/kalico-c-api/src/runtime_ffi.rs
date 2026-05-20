@@ -136,6 +136,10 @@ pub mod exports {
         fn runtime_tick_enable();
         fn runtime_tick_disable();
         fn runtime_cyccnt_read() -> u32;
+        // Boot-relative widened MCU clock from src/runtime_tick.c —
+        // timer_read_time() widened with stats_send_time_high. Same time
+        // domain the host uses for seg.t_start.
+        fn runtime_widened_host_clock() -> u64;
     }
 
     /// Init-once. Spec §3.2.
@@ -450,14 +454,21 @@ pub mod exports {
                 let raw = super::exports::runtime_cyccnt_read();
                 let isr_ptr_mut = isr_ptr_const.cast_mut();
                 let widen_state = &mut (*isr_ptr_mut).widen_state;
-                // Reconstruct last-widened high-water mark from the ISR's
-                // pre-disable state. `WidenState` exposes its fields
-                // crate-private but not pub, so we approximate by reading
-                // the seqlock-published widened-now from SharedState
-                // (§11.4) — that's the most recent widened sample the ISR
-                // produced before being disabled.
-                let last_widened = runtime::clock::read_widened_now(shared);
+                // Seed widening with the C-side boot-relative widened
+                // clock (timer_read_time widened with stats_send_time_high).
+                // Earlier seed from `read_widened_now(shared)` returned 0
+                // (the seqlock cell stays 0 until the first ISR publish),
+                // making widening start at zero while seg.t_start is
+                // billions — segments parked forever in pending_segment.
+                // Re-attempting after the 01f4090a5 revert; if this trips
+                // the previous 4-second-IRQ freeze, the per-stage cycle
+                // counters added in this commit (shared.isr_*_cycles_max +
+                // isr_overrun_count, emitted as fault_detail tags
+                // 0xE6-0xE9) will pinpoint which stage of isr_sample_tick
+                // is the spike.
+                let last_widened = super::exports::runtime_widened_host_clock();
                 widen_state.reinit(raw, last_widened);
+                runtime::clock::publish_widened_now(shared, last_widened);
                 super::exports::runtime_tick_enable();
             }
         }
@@ -880,6 +891,32 @@ pub mod exports {
         // shared-borrow contract.
         unsafe { runtime_handle_tick_counter(rt) }
     }
+
+    // 2026-05-21 bench diag — per-stage isr_sample_tick cycle counters.
+    // Each reads a SharedState atomic populated by `runtime::tick::isr_sample_tick`.
+    macro_rules! shared_u32_reader {
+        ($fn_name:ident, $field:ident) => {
+            #[unsafe(no_mangle)]
+            pub unsafe extern "C" fn $fn_name(rt: *mut KalicoRuntime) -> u32 {
+                if rt.is_null() {
+                    return 0;
+                }
+                if !INIT_DONE.load(Ordering::Acquire) {
+                    return 0;
+                }
+                let ctx = rt.cast::<RuntimeContext>();
+                unsafe {
+                    let shared_ptr: *const SharedState =
+                        core::ptr::addr_of!((*ctx).shared);
+                    (*shared_ptr).$field.load(Ordering::Relaxed)
+                }
+            }
+        };
+    }
+    shared_u32_reader!(kalico_runtime_get_isr_widen_cycles_max, isr_widen_cycles_max);
+    shared_u32_reader!(kalico_runtime_get_isr_arm_cycles_max, isr_arm_cycles_max);
+    shared_u32_reader!(kalico_runtime_get_isr_eval_cycles_max, isr_eval_cycles_max);
+    shared_u32_reader!(kalico_runtime_get_isr_overrun_count, isr_overrun_count);
 
     // ---- Phase 11 §5.3 status-frame accessors -----------------------------
     //

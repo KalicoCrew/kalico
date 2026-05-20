@@ -362,6 +362,19 @@ pub struct SharedState {
     /// host-side PushSegment count to detect dropped frames between
     /// `runtime_handle_push_segment` and `queue.enqueue`.
     pub producer_segment_dequeued_total: AtomicU64,
+    /// 2026-05-21 bench diag — per-stage isr_sample_tick cycle costs.
+    /// Each holds the running MAX cycle count for that stage of
+    /// `runtime::tick::isr_sample_tick`. Exposed via FFI accessors
+    /// `kalico_runtime_get_isr_{widen,arm,eval}_cycles_max` and read by
+    /// the runtime_status_drain rotation as tags 0xE6/0xE7/0xE8. If any
+    /// stage's max approaches the TIM5 period (~13000 cycles at 40 kHz
+    /// on H7), that's the section starving foreground.
+    /// `isr_overrun_count` increments per ISR that exceeds 30000 cycles
+    /// (~58 µs) of total body time — that's the circuit-breaker signal.
+    pub isr_widen_cycles_max: AtomicU32,
+    pub isr_arm_cycles_max: AtomicU32,
+    pub isr_eval_cycles_max: AtomicU32,
+    pub isr_overrun_count: AtomicU32,
     /// 2026-05-18 wedge diag: incremented in `producer_step` every time the
     /// `producer_current.is_none()` branch is entered, regardless of whether
     /// the subsequent `queue.dequeue()` returned Some or None. Cross-check
@@ -627,6 +640,10 @@ impl SharedState {
             producer_motor_finished_curve_total: AtomicU64::new(0),
             producer_segment_retired_total: AtomicU64::new(0),
             producer_segment_dequeued_total: AtomicU64::new(0),
+            isr_widen_cycles_max: AtomicU32::new(0),
+            isr_arm_cycles_max: AtomicU32::new(0),
+            isr_eval_cycles_max: AtomicU32::new(0),
+            isr_overrun_count: AtomicU32::new(0),
             producer_observed_none_total: AtomicU64::new(0),
             producer_step_last_len_snapshot: AtomicU32::new(0),
             producer_step_current_is_some_snapshot: AtomicU8::new(0),

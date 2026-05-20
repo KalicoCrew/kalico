@@ -903,6 +903,46 @@ runtime_status_drain(void)
             fault_detail = 0xFF000000u | (ret & 0x00FFFFFFu);
             break;
         }
+        case 4: {
+            // 0xE6 — isr_widen_cycles_max low 24 bits. Stage 1 of
+            // isr_sample_tick (raw DWT widen + seqlock publish). Expected
+            // to be tiny (hundreds of cycles).
+            extern uint32_t kalico_runtime_get_isr_widen_cycles_max(void* h);
+            uint32_t v = kalico_runtime_get_isr_widen_cycles_max(runtime_handle);
+            fault_detail = 0xE6000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 5: {
+            // 0xE7 — isr_arm_cycles_max low 24 bits. Stage 2 (dequeue +
+            // park-or-arm). Should be tiny except in the one tick that
+            // actually calls arm_segment (curve_pool lookup + axis state
+            // setup — bounded but f32-heavy).
+            extern uint32_t kalico_runtime_get_isr_arm_cycles_max(void* h);
+            uint32_t v = kalico_runtime_get_isr_arm_cycles_max(runtime_handle);
+            fault_detail = 0xE7000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 6: {
+            // 0xE8 — isr_eval_cycles_max low 24 bits. Stage 3
+            // (engine.tick_sample evaluator — Bezier eval + dispatch_pulse
+            // + step_queue pushes). The most expensive stage; spikes here
+            // are the prime suspect for the 2026-05-21 4-second-IRQ
+            // freeze symptom.
+            extern uint32_t kalico_runtime_get_isr_eval_cycles_max(void* h);
+            uint32_t v = kalico_runtime_get_isr_eval_cycles_max(runtime_handle);
+            fault_detail = 0xE8000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 7: {
+            // 0xE9 — isr_overrun_count low 24 bits. Bumped per
+            // isr_sample_tick whose total body cycles exceeded 30000
+            // (~58 µs on H7 / 167 µs on F4). Any non-zero reading
+            // = the ISR is starving foreground.
+            extern uint32_t kalico_runtime_get_isr_overrun_count(void* h);
+            uint32_t v = kalico_runtime_get_isr_overrun_count(runtime_handle);
+            fault_detail = 0xE9000000u | (v & 0x00FFFFFFu);
+            break;
+        }
         case 17: {
             // 0xE4 — diag.rt_tick_count low 24 bits. Bumped at the END of
             // every TIM5_IRQHandler execution, regardless of whether the
