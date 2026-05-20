@@ -364,43 +364,15 @@ send_push_segment_response(uint32_t correlation_id, int32_t result,
 static void
 handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
 {
-    // §7.3 body: slot u16 | degree u8 | n_cps u32 | n_knots u32 | cps×f32 | knots×f32
-    if (body_len < 11) {
-        send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
-        return;
-    }
-    uint16_t slot = (uint16_t)body[0] | ((uint16_t)body[1] << 8);
-    uint8_t degree = body[2];
-    uint32_t n_cps = (uint32_t)body[3] | ((uint32_t)body[4] << 8)
-                   | ((uint32_t)body[5] << 16) | ((uint32_t)body[6] << 24);
-    uint32_t n_knots = (uint32_t)body[7] | ((uint32_t)body[8] << 8)
-                     | ((uint32_t)body[9] << 16) | ((uint32_t)body[10] << 24);
-    uint32_t cps_bytes = n_cps * 4u;
-    uint32_t knots_bytes = n_knots * 4u;
-    uint32_t expected_len = 11u + cps_bytes + knots_bytes;
-    if (body_len != expected_len) {
-        send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
-        return;
-    }
-    if (cps_bytes > sizeof(runtime_aligned_cps)
-        || knots_bytes > sizeof(runtime_aligned_knots)) {
-        send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
-        return;
-    }
-    if (!runtime_handle) {
-        send_load_curve_response(correlation_id, KALICO_ERR_NOT_INIT, 0);
-        return;
-    }
-    // Copy into 4-byte-aligned scratch (frame body offset is arbitrary).
-    memcpy(runtime_aligned_cps, &body[11], cps_bytes);
-    memcpy(runtime_aligned_knots, &body[11 + cps_bytes], knots_bytes);
-    uint32_t handle_packed = 0;
-    int32_t r = runtime_handle_load_curve(
-        runtime_handle, slot,
-        runtime_aligned_cps, (uint16_t)n_cps,
-        runtime_aligned_knots, (uint16_t)n_knots,
-        degree, &handle_packed);
-    send_load_curve_response(correlation_id, r, handle_packed);
+    // NURBS load_curve handler deleted in stepping-redesign Task 13
+    // (2026-05-20). Task 15 adds handle_load_curve_cubic alongside this
+    // stub. Until that lands, any host that still emits the old NURBS
+    // LoadCurve frame gets a clean KALICO_ERR_NOT_INIT response rather
+    // than an undefined-symbol link failure against the deleted
+    // runtime_handle_load_curve FFI.
+    (void)body;
+    (void)body_len;
+    send_load_curve_response(correlation_id, KALICO_ERR_NOT_INIT, 0);
 }
 
 static void
