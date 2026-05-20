@@ -57,10 +57,30 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // Spec §3.2 (step-emission-architecture, T9): TIM5 is enabled iff at
-    // least one stepper on this MCU runs in Modulated mode (phase stepping
-    // / polled-tick StepAccumulator). For the all-StepTime MVP, TIM5 stays
-    // off entirely — the engine state machine is no longer TIM5-driven:
+    // Stepping-redesign 2026-05-20 (Codex gap #1 fix): TIM5 is enabled iff
+    // either a phase-stepping consumer exists OR there is at least one
+    // segment in flight on the producer queue. The two-clause gate
+    // replaces the earlier `count_modulated_steppers > 0` predicate,
+    // which silently disabled the entire StepTime/Pulse path on
+    // all-Pulse configs — `Engine::tick_sample` IS the producer for the
+    // per-axis step queues in BOTH Pulse and Phase modes, so TIM5 must
+    // fire whenever a segment is in flight regardless of step-mode
+    // selection.
+    //
+    // Why a conjunctive early-return (both clauses zero) rather than a
+    // disjunctive arm: at the producer call site (kalico-c-api/runtime_ffi.rs
+    // L461, push_segment) the segment has just been enqueued, so
+    // `queue_depth >= 1` is guaranteed when this function runs — no race
+    // between enqueue and depth observation. At the set_step_mode call
+    // site (runtime_ffi.rs L2193) `count_modulated_steppers` is the
+    // load-bearing clause and is also non-zero by construction.
+    //
+    // Disable symmetry: `runtime_drain` (src/runtime_tick.c:479) disables
+    // TIM5 on the Drained/Fault transition. By the time the engine reaches
+    // Drained, queue_depth has dropped to zero by definition, so the
+    // {enable predicate} and {disable predicate} stay in sync.
+    //
+    // The remaining ISR responsibilities are unchanged:
     //   - Segment dequeue + retirement run on the producer Klipper timer
     //     (`src/runtime_tick.c`, T8).
     //   - GPIO step pulses fire from per-stepper consumer Klipper timers
@@ -71,8 +91,11 @@ runtime_tick_enable(void)
         return;
     }
 
-    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
-        // No phase-stepping / polled-tick consumers — TIM5 stays disabled.
+    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0
+        && runtime_handle_queue_depth(runtime_handle) == 0) {
+        // No phase-stepping consumers AND no in-flight segments — TIM5
+        // stays disabled. This is the steady-state idle case; the next
+        // push_segment or set_step_mode call will re-enter and arm TIM5.
         return;
     }
 
