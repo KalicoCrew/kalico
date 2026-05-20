@@ -15,7 +15,6 @@ fn tick_caches_constructs() {
     assert_eq!(c.p_prev[0], 0.0);
     assert_eq!(c.v_prev[N_AXES - 1], 0.0);
     assert_eq!(c.v_xy_prev, 0.0);
-    assert_eq!(c.ds_xy_segment, 0.0);
     assert_eq!(c.v_xy_this, 0.0);
     assert!(!c.vdot_xy_accelerating);
 }

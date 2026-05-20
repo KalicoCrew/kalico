@@ -34,6 +34,7 @@ use core::sync::atomic::{AtomicI16, AtomicI32, AtomicU8, Ordering};
 
 use heapless::Vec;
 
+use runtime::curve_pool::CurvePool;
 use runtime::monomial::{bernstein_to_monomial, BezierPieceMonomial};
 use runtime::state::SharedState;
 use runtime::step_queue::StepQueue;
@@ -120,12 +121,18 @@ fn constant_velocity_produces_expected_step_count() {
 
     let shared = SharedState::new();
     let mut caches = TickCaches::new();
+    let pool = CurvePool::new();
+    let mut ds_xy_segment: f32 = 0.0;
 
     let mut ctx = TickContext {
         axes: &mut axes,
         queues: queue_ptrs,
         shared: &shared,
         caches: &mut caches,
+        curve_pool: &pool,
+        ds_xy_segment: &mut ds_xy_segment,
+        current_segment: None,
+        engine_segment_base_e: 0.0,
         sample_period_sec: SAMPLE_PERIOD_SEC,
         sample_period_cycles: SAMPLE_PERIOD_CYCLES,
         cycles_per_second: CYCLES_PER_SECOND,
@@ -202,12 +209,18 @@ fn xy_arc_length_accumulates_in_segment() {
     ];
     let shared = SharedState::new();
     let mut caches = TickCaches::new();
+    let pool = CurvePool::new();
+    let mut ds_xy_segment: f32 = 0.0;
 
     let mut ctx = TickContext {
         axes: &mut axes,
         queues: queue_ptrs,
         shared: &shared,
         caches: &mut caches,
+        curve_pool: &pool,
+        ds_xy_segment: &mut ds_xy_segment,
+        current_segment: None,
+        engine_segment_base_e: 0.0,
         sample_period_sec: SAMPLE_PERIOD_SEC,
         sample_period_cycles: SAMPLE_PERIOD_CYCLES,
         cycles_per_second: CYCLES_PER_SECOND,
@@ -221,9 +234,9 @@ fn xy_arc_length_accumulates_in_segment() {
     runtime_tick_sample(&mut ctx);
 
     assert!(
-        ctx.caches.ds_xy_segment > 0.0,
+        *ctx.ds_xy_segment > 0.0,
         "ds_xy_segment should accumulate over the sample (got {})",
-        ctx.caches.ds_xy_segment
+        *ctx.ds_xy_segment
     );
     assert!(
         ctx.caches.v_xy_this > 0.0,
@@ -311,11 +324,17 @@ fn extruder_follows_xy_arc_length() {
     ];
     let shared = SharedState::new();
     let mut caches = TickCaches::new();
+    let pool = CurvePool::new();
+    let mut ds_xy_segment: f32 = 0.0;
     let mut ctx = TickContext {
         axes: &mut axes,
         queues: queue_ptrs,
         shared: &shared,
         caches: &mut caches,
+        curve_pool: &pool,
+        ds_xy_segment: &mut ds_xy_segment,
+        current_segment: None,
+        engine_segment_base_e: 0.0,
         sample_period_sec: SAMPLE_PERIOD_SEC,
         sample_period_cycles: SAMPLE_PERIOD_CYCLES,
         cycles_per_second: CYCLES_PER_SECOND,

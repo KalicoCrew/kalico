@@ -15,6 +15,7 @@
 use core::sync::atomic::{AtomicI16, AtomicI32, AtomicU8, Ordering};
 use heapless::Vec;
 
+use runtime::curve_pool::CurvePool;
 use runtime::monomial::bernstein_to_monomial;
 use runtime::state::SharedState;
 use runtime::step_queue::StepQueue;
@@ -91,11 +92,17 @@ fn piece_advances_when_sample_passes_duration() {
     ];
     let shared = SharedState::new();
     let mut caches = TickCaches::new();
+    let pool = CurvePool::new();
+    let mut ds_xy_segment: f32 = 0.0;
     let mut ctx = TickContext {
         axes: &mut axes,
         queues: queue_ptrs,
         shared: &shared,
         caches: &mut caches,
+        curve_pool: &pool,
+        ds_xy_segment: &mut ds_xy_segment,
+        current_segment: None,
+        engine_segment_base_e: 0.0,
         sample_period_sec: 25e-6,
         sample_period_cycles: 13_000,
         cycles_per_second: 520e6,
@@ -113,6 +120,12 @@ fn piece_advances_when_sample_passes_duration() {
 }
 
 #[test]
+#[ignore = "retirement was moved out of runtime_tick_sample into \
+            Engine::retire_if_complete / post_pass_exhaustion (Task 10). \
+            Reconstructing the engine-level state machine in an integration \
+            test without the engine requires synthesizing the post_pass + \
+            retire calls; the engine-level test for that lives in \
+            exhaustion_post_pass.rs."]
 fn segment_retirement_increments_counter_and_resets_arc_length() {
     // Two-phase test:
     //
@@ -175,6 +188,8 @@ fn segment_retirement_increments_counter_and_resets_arc_length() {
     ];
     let shared = SharedState::new();
     let mut caches = TickCaches::new();
+    let pool = CurvePool::new();
+    let mut ds_xy_segment: f32 = 0.0;
 
     // First tick: at the end of the piece's duration → cubic evaluation
     // accumulates a positive `ds_xy_segment` (the cubic's terminal
@@ -184,6 +199,10 @@ fn segment_retirement_increments_counter_and_resets_arc_length() {
         queues: queue_ptrs,
         shared: &shared,
         caches: &mut caches,
+        curve_pool: &pool,
+        ds_xy_segment: &mut ds_xy_segment,
+        current_segment: None,
+        engine_segment_base_e: 0.0,
         sample_period_sec: 25e-6,
         sample_period_cycles: 13_000,
         cycles_per_second: 520e6,
@@ -195,9 +214,9 @@ fn segment_retirement_increments_counter_and_resets_arc_length() {
     };
     runtime_tick_sample(&mut ctx1);
     assert!(
-        caches.ds_xy_segment > 0.0,
+        ds_xy_segment > 0.0,
         "first tick should accumulate ds_xy_segment, got {}",
-        caches.ds_xy_segment
+        ds_xy_segment
     );
     let id_before = shared.retired_through_segment_id.load(Ordering::Acquire);
 
@@ -208,6 +227,10 @@ fn segment_retirement_increments_counter_and_resets_arc_length() {
         queues: queue_ptrs,
         shared: &shared,
         caches: &mut caches,
+        curve_pool: &pool,
+        ds_xy_segment: &mut ds_xy_segment,
+        current_segment: None,
+        engine_segment_base_e: 0.0,
         sample_period_sec: 25e-6,
         sample_period_cycles: 13_000,
         cycles_per_second: 520e6,
@@ -220,7 +243,7 @@ fn segment_retirement_increments_counter_and_resets_arc_length() {
     runtime_tick_sample(&mut ctx2);
 
     assert_eq!(
-        caches.ds_xy_segment, 0.0,
+        ds_xy_segment, 0.0,
         "Phase 5 should reset ds_xy_segment after retirement"
     );
     let id_after = shared.retired_through_segment_id.load(Ordering::Acquire);
