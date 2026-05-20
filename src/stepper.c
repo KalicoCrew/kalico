@@ -13,10 +13,11 @@
 #include "autoconf.h" // CONFIG_*
 #include "basecmd.h" // oid_alloc
 #include "board/gpio.h" // gpio_out_write
-#include "command.h" // DECL_COMMAND
+#include "command.h" // DECL_COMMAND, command_decode_ptr
 #include "sched.h" // DECL_SHUTDOWN
 #include "stepper.h"
 #include "trsync.h" // trsync_add_signal
+#include "kalico_runtime.h" // StepperBindingRust
 
 struct stepper {
     struct gpio_out step_pin, dir_pin;
@@ -137,16 +138,6 @@ static int8_t runtime_motor_last_dir[RUNTIME_MOTOR_COUNT] = { -1, -1, -1, -1 };
 volatile uint32_t runtime_emit_calls __attribute__((used, externally_visible));
 volatile uint32_t runtime_emit_pulses __attribute__((used, externally_visible));
 
-// Called from kalico_runtime_configure_axes_blob (Rust FFI) at the start
-// of every klippy session. Clears the runtime motor->stepper binding
-// table so the subsequent stream of config_runtime_stepper commands
-// populates a fresh slate. Without this, the table accumulates across
-// klippy restarts (MCU stays powered, klippy reconnects) and motor 0 /
-// motor 1 hit RUNTIME_MAX_STEPPERS_PER_MOTOR=4 after two reconnects —
-// the third reconnect shutdowns with "too many steppers per motor".
-// Bench-observed 2026-05-11 after F446 KALICO_RUNTIME enablement, when
-// klippy began re-running config_runtime_stepper for both H7 and F446
-// each session.
 // Foreground accessor — surfaces per-motor binding count for the
 // runtime_status_drain diag rotation (runtime_tick.c phase 5).
 __attribute__((used, externally_visible))
@@ -157,128 +148,6 @@ runtime_motor_binding_count(uint8_t motor_idx)
     return runtime_motor_stepper_count[motor_idx];
 }
 
-// 2026-05-14 binding-bug investigation diagnostic counters. Exposed via
-// fault_detail tags 0xB0..0xB3 so they survive the USB-CDC transmit_buf
-// overflow that ate the previous output()-based attempt log. Each counter
-// is incremented unconditionally at the very top of its callsite — so
-// `runtime_bind_calls_total` equals the number of `config_runtime_stepper`
-// commands that were dispatched by Klipper's command parser (it has
-// nothing to do with whether the binding got added afterwards), and
-// `runtime_bind_calls_for_motor[i]` is the per-motor-idx breakdown.
-// If `runtime_bind_calls_total` < 5 at steady state on the H7 the
-// command never even reached the dispatcher; if it's = 5 but
-// `runtime_bind_calls_for_motor[1] < 2` the command reached the
-// dispatcher but the parsed `motor_idx` doesn't match what Klipper
-// thought it sent.
-volatile uint32_t runtime_bind_calls_total __attribute__((used, externally_visible));
-volatile uint8_t runtime_bind_calls_for_motor[RUNTIME_MOTOR_COUNT]
-                __attribute__((used, externally_visible));
-volatile uint32_t runtime_bind_reset_calls __attribute__((used, externally_visible));
-// Incremented at the end of `command_config_runtime_stepper`, after the
-// `runtime_motor_stepper_count[motor_idx] = cnt + 1` write. If this lags
-// `runtime_bind_calls_total` at steady state, some path between the
-// dispatch entry (line ~494) and the count write (line ~512) is
-// short-circuiting — `oid_lookup` shutdown is the only known way, but a
-// shutdown would also stop the firmware, so divergence suggests something
-// stranger.
-volatile uint32_t runtime_bind_writes_committed
-                __attribute__((used, externally_visible));
-// 2-bit-per-motor snapshot of `runtime_motor_stepper_count[i]` captured
-// immediately after each successful write at line 512. Packed identically
-// to the 0xE2 tag's 4-bit-per-motor layout so the value can be compared
-// across snapshots — the LATEST per-motor `cnt + 1` is OR'd in (we don't
-// reset between binds, so the high-water mark per motor sticks).
-volatile uint32_t runtime_bind_count_snapshot_packed
-                __attribute__((used, externally_visible));
-
-__attribute__((used, externally_visible))
-void
-runtime_reset_stepper_bindings(void)
-{
-    runtime_bind_reset_calls++;
-    for (uint8_t m = 0; m < RUNTIME_MOTOR_COUNT; m++) {
-        runtime_motor_stepper_count[m] = 0;
-        runtime_motor_last_dir[m] = -1;
-        runtime_bind_calls_for_motor[m] = 0;
-    }
-}
-
-void
-command_config_runtime_stepper(uint32_t *args)
-{
-    runtime_bind_calls_total++;
-    uint8_t motor_idx = args[0];
-    uint8_t stepper_oid = args[1];
-    uint8_t invert_dir = args[2];
-    if (motor_idx < RUNTIME_MOTOR_COUNT) {
-        runtime_bind_calls_for_motor[motor_idx]++;
-    }
-    if (motor_idx >= RUNTIME_MOTOR_COUNT)
-        shutdown("config_runtime_stepper motor_idx out of range");
-    uint8_t cnt = runtime_motor_stepper_count[motor_idx];
-    if (cnt >= RUNTIME_MAX_STEPPERS_PER_MOTOR)
-        shutdown("config_runtime_stepper too many steppers per motor");
-    // oid_lookup walks the same allocation table populated by
-    // command_config_stepper, so this fails (shutdowns) cleanly if the
-    // referenced stepper hasn't been configured yet.
-    {
-        // 2026-05-19 diag: pin down "Invalid oid type" shutdown that fires
-        // from this oid_lookup on both H7 and F4. Capture, just before the
-        // lookup that might shutdown:
-        //   tag   = 0xCE
-        //   stage = oid_get_count() — MCU's view of allocated oid range
-        //   value = (peek_lo << 8) | (motor_idx << 5) | stepper_oid
-        // peek_lo is the low byte of oids[stepper_oid].type. If peek_lo is 0
-        // then the oid was never allocated (oids[N].type == NULL); if it's
-        // 0x01 the oid was out of range (oid_type_peek sentinel); otherwise
-        // it's the low byte of whatever function pointer was stamped there.
-        // command_config_stepper's low byte is stable for a given build and
-        // can be cross-checked offline via `nm`.
-        extern void *oid_type_peek(uint8_t oid);
-        extern uint8_t oid_get_count(void);
-        extern void runtime_diag_progress(uint32_t tag, uint32_t stage,
-                                          uint32_t value);
-        void *peek = oid_type_peek(stepper_oid);
-        uint32_t peek_lo = (uint32_t)((uintptr_t)peek & 0xFFu);
-        uint32_t v = (peek_lo << 8)
-                   | (((uint32_t)motor_idx & 0x7u) << 5)
-                   | ((uint32_t)stepper_oid & 0x1Fu);
-        runtime_diag_progress(0xCE, (uint32_t)oid_get_count(), v);
-    }
-    struct stepper *s = oid_lookup(stepper_oid, command_config_stepper);
-    runtime_motor_steppers[motor_idx][cnt].stepper = s;
-    runtime_motor_steppers[motor_idx][cnt].invert_dir = invert_dir ? 1 : 0;
-    runtime_motor_stepper_count[motor_idx] = cnt + 1;
-    runtime_motor_last_dir[motor_idx] = -1;
-    extern void init_step_time_timers(void);
-    init_step_time_timers();
-    // Snapshot every per-motor count immediately after the write completes,
-    // packed as 4-bits-per-motor (matches 0xE2 tag layout). Captures the
-    // table state visible from `command_config_runtime_stepper`'s vantage
-    // point — divergence between this and the 0xE2 read in
-    // `runtime_status_drain` indicates an outside writer touching the array
-    // after the dispatch returns. Each invocation overwrites with the live
-    // values; final value = state after the last successful bind.
-    {
-        uint8_t s0 = runtime_motor_stepper_count[0];
-        uint8_t s1 = runtime_motor_stepper_count[1];
-        uint8_t s2 = runtime_motor_stepper_count[2];
-        uint8_t s3 = runtime_motor_stepper_count[3];
-        if (s0 > 15) s0 = 15;
-        if (s1 > 15) s1 = 15;
-        if (s2 > 15) s2 = 15;
-        if (s3 > 15) s3 = 15;
-        uint32_t packed = (uint32_t)s0
-                        | ((uint32_t)s1 << 4)
-                        | ((uint32_t)s2 << 8)
-                        | ((uint32_t)s3 << 12);
-        runtime_bind_count_snapshot_packed = packed;
-    }
-    runtime_bind_writes_committed++;
-}
-DECL_COMMAND(command_config_runtime_stepper,
-             "config_runtime_stepper motor_idx=%c stepper_oid=%c invert_dir=%c");
-
 // ─── Stepping-redesign Task 11 — kalico_configure_* command handlers ─────
 //
 // Three foreground commands that publish per-axis configuration, the
@@ -288,50 +157,106 @@ DECL_COMMAND(command_config_runtime_stepper,
 // non-zero return so configuration errors are loud rather than silent.
 //
 // `runtime_handle` is the global published by `runtime_handle_create()`
-// in src/runtime_tick.c. The legacy `command_config_runtime_stepper`
-// above does NOT use it because it manipulates C-side stepper-binding
-// arrays directly; these new commands DO call into Rust and therefore
-// need the handle. Both code paths coexist until Task 16 deletes the
-// legacy command.
+// in src/runtime_tick.c. All commands here call into Rust and need the
+// handle. The legacy `command_config_runtime_stepper` was deleted in
+// Task 17 and replaced by the two-phase `command_kalico_configure_axis`.
 //
 // Wire-format note: Klipper carries f32 fields as `u32` containing
 // `f32::to_bits()` (the host packs, the MCU forwards the raw bits, and
 // `f32::from_bits` reconstructs on the Rust side). `%u` matches u32.
 
 extern void *runtime_handle; // defined in src/runtime_tick.c
-
-extern int32_t kalico_runtime_configure_axis(
-    void *handle, uint8_t axis_idx, uint8_t mode,
-    uint32_t microstep_distance_f32_bits,
-    uint32_t extrusion_per_xy_mm_f32_bits,
-    uint8_t stepper_count);
-
-extern int32_t kalico_runtime_configure_kinematics(
-    void *handle, uint32_t k_xy_f32_bits);
-
-extern int32_t kalico_runtime_configure_pressure_advance(
-    void *handle, uint32_t advance_accel_f32_bits,
-    uint32_t advance_decel_f32_bits);
+// kalico_runtime_configure_axis / _kinematics / _pressure_advance are
+// declared in kalico_runtime.h (included above).
 
 void
 command_kalico_configure_axis(uint32_t *args)
 {
-    uint8_t axis_idx = args[0];
-    uint8_t mode = args[1];
-    uint32_t mstep_bits = args[2];
-    uint32_t extrusion_bits = args[3];
-    uint8_t stepper_count = args[4];
+    uint8_t axis_idx        = args[0];
+    uint8_t mode            = args[1];
+    uint32_t mstep_bits     = args[2];
+    uint32_t extrusion_bits = args[3]; // reserved — not forwarded to current Rust FFI
+    uint8_t stepper_count   = args[4];
+    uint16_t blob_len       = (uint16_t)args[5];
+    const uint8_t *blob     = command_decode_ptr(args[6]);
+
+    // ── Phase 1: validate every input + every binding, no mutations.
+    if (axis_idx >= RUNTIME_MOTOR_COUNT)
+        shutdown("configure_axis axis_idx out of range");
+    if (mode > 1)
+        shutdown("configure_axis mode invalid");
+    if (stepper_count > RUNTIME_MAX_STEPPERS_PER_MOTOR)
+        shutdown("configure_axis too many steppers per axis");
+    if (blob_len != (uint16_t)stepper_count * 4)
+        shutdown("configure_axis blob length mismatch");
     if (!runtime_handle)
-        shutdown("kalico_configure_axis before runtime init");
-    int32_t rc = kalico_runtime_configure_axis(runtime_handle, axis_idx, mode,
-                                                mstep_bits, extrusion_bits,
-                                                stepper_count);
+        shutdown("configure_axis before runtime init");
+
+    struct {
+        struct stepper *stepper;
+        uint8_t invert_dir;
+        uint8_t tmc_cs_oid;
+    } staged[RUNTIME_MAX_STEPPERS_PER_MOTOR] = {{0}};
+
+    extern void *command_config_spi(uint32_t *);
+    for (uint8_t i = 0; i < stepper_count; i++) {
+        uint8_t stepper_oid = blob[i*4 + 0];
+        uint8_t dir_invert  = blob[i*4 + 1];
+        uint8_t tmc_cs_oid  = blob[i*4 + 2];
+        uint8_t flags       = blob[i*4 + 3];
+        if (flags != 0)
+            shutdown("configure_axis reserved stepper flags must be zero");
+        if (dir_invert > 1)
+            shutdown("configure_axis dir_invert must be 0 or 1");
+        struct stepper *s = oid_lookup(stepper_oid, command_config_stepper);
+        if (tmc_cs_oid != 0xFF) {
+            (void)oid_lookup(tmc_cs_oid, command_config_spi);
+        }
+        staged[i].stepper = s;
+        staged[i].invert_dir = dir_invert;
+        staged[i].tmc_cs_oid = tmc_cs_oid;
+    }
+
+    // ── Phase 2: Rust FFI.
+    struct StepperBindingRust bindings[RUNTIME_MAX_STEPPERS_PER_MOTOR];
+    for (uint8_t i = 0; i < stepper_count; i++) {
+        bindings[i].tmc_cs_oid = staged[i].tmc_cs_oid;
+        bindings[i]._pad[0] = 0;
+        bindings[i]._pad[1] = 0;
+        bindings[i]._pad[2] = 0;
+    }
+    int32_t rc = kalico_runtime_configure_axis(
+        runtime_handle, axis_idx, mode, mstep_bits,
+        stepper_count > 0 ? bindings : 0,
+        stepper_count);
     if (rc != 0)
-        shutdown("kalico_configure_axis rejected by runtime");
+        shutdown("configure_axis rejected by runtime");
+
+    // ── Phase 3: commit.
+    runtime_motor_stepper_count[axis_idx] = stepper_count;
+    for (uint8_t i = 0; i < stepper_count; i++) {
+        runtime_motor_steppers[axis_idx][i].stepper = staged[i].stepper;
+        runtime_motor_steppers[axis_idx][i].invert_dir = staged[i].invert_dir;
+    }
+    runtime_motor_last_dir[axis_idx] = -1;
+    (void)extrusion_bits; // parsed for wire compatibility; no Rust FFI param yet
+
+    // Register the per-axis Klipper timer consumers on the first successful
+    // configure_axis call per boot. Re-adding an already-queued timer would
+    // corrupt the scheduler's linked list, so we gate on a static flag.
+    // Timers are installed once and run for the lifetime of the boot; new
+    // configure_axis calls just update the engine's axis config while the
+    // existing timers keep polling.
+    extern void init_per_axis_step_timers(void);
+    static uint8_t per_axis_timers_installed;
+    if (!per_axis_timers_installed) {
+        per_axis_timers_installed = 1;
+        init_per_axis_step_timers();
+    }
 }
 DECL_COMMAND(command_kalico_configure_axis,
              "kalico_configure_axis axis_idx=%c mode=%c microstep_distance=%u"
-             " extrusion_per_xy_mm=%u stepper_count=%c");
+             " extrusion_per_xy_mm=%u stepper_count=%c steppers=%*s");
 
 void
 command_kalico_configure_kinematics(uint32_t *args)
@@ -382,11 +307,8 @@ DECL_COMMAND(command_kalico_configure_pressure_advance,
 // arguments is a hard misconfiguration rather than a recoverable runtime
 // condition.
 
-extern int32_t kalico_runtime_set_axis_mode(
-    void *handle, uint8_t axis_idx, uint8_t new_mode);
-extern int32_t kalico_runtime_set_stepper_offset(
-    void *handle, uint8_t stepper_idx, int32_t delta_microsteps,
-    uint16_t max_microsteps_per_sample);
+// kalico_runtime_set_axis_mode and kalico_runtime_set_stepper_offset
+// are declared in kalico_runtime.h (included above).
 
 void
 command_kalico_set_axis_mode(uint32_t *args)

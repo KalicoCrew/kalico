@@ -743,20 +743,33 @@ uint32_t kalico_runtime_get_dispatcher_floor_cycles(void);
 uint32_t kalico_runtime_get_sample_period_cycles(void);
 
 /**
- * Stepping-redesign Task 11. Publish per-axis configuration: stepping
- * mode (Pulse / Phase), microstep distance, extrusion ratio,
- * stepper-count slot reservation. `microstep_distance_f32_bits` and
- * `extrusion_per_xy_mm_f32_bits` are `f32::to_bits` of the underlying
- * scalars (Klipper carries f32 as u32 on the wire). `mode` is `0` for
- * Pulse, `1` for Phase; other values are rejected. Returns `0` on
- * success, negative on validation failure. The C handler treats any
- * non-zero return as a hard error and shuts the MCU down.
+ * Per-stepper binding descriptor passed from C to Rust via
+ * `kalico_runtime_configure_axis`. `tmc_cs_oid == 0xFF` means
+ * "no TMC driver" (Pulse-only stepper). OID 0 is a legal SPI
+ * OID and must not be conflated with absent.
+ * Size: 4 bytes (1 + 3 pad). `#[repr(C)]`.
+ */
+typedef struct StepperBindingRust {
+    uint8_t tmc_cs_oid;
+    uint8_t _pad[3];
+} StepperBindingRust;
+
+#define TMC_CS_OID_NONE ((uint8_t)0xFF)
+
+/**
+ * Stepping-redesign Task 14. Publish per-axis configuration: stepping
+ * mode (Pulse / Phase) and microstep distance. `microstep_distance_f32_bits`
+ * is `f32::to_bits` of the per-step distance. `mode` is `0` for Pulse,
+ * `1` for Phase (currently rejected with KALICO_ERR_PHASE_MODE_NOT_AVAILABLE);
+ * other values are rejected. `bindings_ptr` points to `stepper_count`
+ * `StepperBindingRust` entries; null is legal when `stepper_count == 0`.
+ * Returns `0` on success, negative on validation failure.
  */
 int32_t kalico_runtime_configure_axis(struct KalicoRuntime *rt,
                                       uint8_t axis_idx,
                                       uint8_t mode,
                                       uint32_t microstep_distance_f32_bits,
-                                      uint32_t extrusion_per_xy_mm_f32_bits,
+                                      const struct StepperBindingRust *bindings_ptr,
                                       uint8_t stepper_count);
 
 /**
