@@ -180,20 +180,68 @@ int32_t runtime_handle_push_segment(
 
 The 42-byte command body and the response back through the host pipeline are unchanged.
 
-**What does change is the engine's per-axis arm logic.** The existing `rust/runtime/src/segment.rs::Segment` struct already carries `id`, the 4 handles, `t_start`/`t_end`, `kinematics`, `e_mode`, and `extrusion_ratio` — every per-segment field the ISR needs. We preserve it as-is. The `Engine::current: Option<Segment>` field also stays (already present in engine.rs's `Engine` struct; that's what `engine.rs:2266` reads `current.id` from on retire).
+**Foreground push vs. ISR arm.** `runtime_handle_push_segment` runs in the foreground (host-command-dispatch context). It does NOT mutate `AxisConfig` or `Engine::current` — those are ISR-owned state per the §11.1 half-split discipline. Foreground responsibilities are:
 
-We add two small bitmasks on the Engine for retire bookkeeping, alongside `current`:
+1. Validate inputs (handle ranges, finite ratios, `t_end > t_start`, etc.).
+2. Validate slot allocations via `curve_pool::lookup(handle)` for each non-sentinel handle (slot exists and generation matches).
+3. Register the segment's 4 handles in the foreground `RetirementTable` indexed by segment id (per `reclaim.rs:60-67` — existing pattern).
+4. Enqueue the `Segment` struct into the foreground→ISR SPSC queue (`c_segment_queue`).
+5. Publish `accepted_segment_id` and `credit_epoch` in `SharedState` for host pacing.
+
+The ISR consumes the queue in `runtime_tick_sample` (one segment dequeued at most per ISR fire, per the existing `tick()` pattern at engine.rs:1446). On dequeue, the ISR performs **segment arm** — which is the per-axis mutation work this spec adds:
+
+```rust
+fn arm_segment(&mut self, seg: Segment) {
+    // For each axis, decode its handle into curve_handle + first piece + cursor.
+    // No curve_pool::lookup mutation here — the foreground validated the slot
+    // exists before enqueuing. The ISR only reads the slot.
+    for (axis_idx, handle) in [seg.x_handle, seg.y_handle, seg.z_handle, seg.e_handle].iter().enumerate() {
+        let axis = &mut self.axes[axis_idx];
+        if *handle == CurveHandle::UNUSED_SENTINEL {
+            axis.curve_handle = None;
+            axis.piece = None;
+            axis.piece_cursor = 0;
+        } else if let Some(curve) = curve_pool::lookup_active(*handle) {
+            axis.curve_handle = Some(*handle);
+            axis.piece_cursor = 0;
+            axis.piece = Some(curve.pieces[0]);
+            axis.piece_start_time_cycles = seg.t_start;
+        } else {
+            // Slot generation mismatch (should be impossible — foreground
+            // validated at push). Treat as idle for this axis.
+            axis.curve_handle = None;
+            axis.piece = None;
+            axis.piece_cursor = 0;
+        }
+    }
+    // Compute the 4-bit participation mask (see §4.5).
+    let participating = compute_participating_mask(&seg);
+    self.participating_mask = participating;
+    self.pending_mask = participating;
+    // E-accumulator base for absolute-position math (see §4.6).
+    self.segment_base_e = self.e_accumulator as f32;
+    self.ds_xy_segment = 0.0;
+    self.current = Some(seg);
+}
+```
+
+The push path queues the segment; the ISR arms it. No foreground mutation of `AxisConfig`/`Engine::current` is possible because foreground only touches the queue producer end.
+
+**Engine field set.** The existing `rust/runtime/src/segment.rs::Segment` struct carries `id`, the 4 handles, `t_start`/`t_end`, `kinematics`, `e_mode`, and `extrusion_ratio` — every per-segment field the ISR needs. We preserve it verbatim. The new retire-bookkeeping masks live on `Engine`, NOT on `Segment` (the `Segment` is just the queued-payload shape and stays exactly as wire-defined):
 
 ```rust
 pub struct Engine {
     // ... existing fields ...
-    pub current: Option<Segment>,         // EXISTING; the active segment for the ISR
-    pub participating_mask: u8,           // NEW: 4 bits, frozen at arm — which axes participate
-    pub pending_mask: u8,                 // NEW: 4 bits, mutated during evaluation — which still pending
+    pub current: Option<Segment>,         // EXISTING — set by arm_segment
+    pub participating_mask: u8,           // NEW — set by arm_segment
+    pub pending_mask: u8,                 // NEW — mutated by per-sample post-pass (§4.5)
+    pub segment_base_e: f32,              // NEW — captured at arm_segment from e_accumulator (§4.6)
+    pub e_accumulator: f64,               // EXISTING — long-haul absolute E; rolled forward at retire
+    pub ds_xy_segment: f32,               // moved from TickCaches to Engine for retire semantics (§4.6)
 }
 ```
 
-`participating_mask` is computed at arm-time from the segment's handles and `e_mode` (see §4.5). `pending_mask` starts equal to it and clears bits as each axis's curve exhausts. Retire fires when `pending_mask == 0`. The existing legacy `motor_curve_cursor` / `motor_current_segment_id` per-motor bitmasks are deleted along with the rest of the legacy path (§6.1).
+The existing legacy `motor_curve_cursor` / `motor_current_segment_id` per-motor bitmasks are deleted along with the rest of the legacy path (§6.1). The new `participating_mask` / `pending_mask` replace them, but they're scalar u8 fields on the Engine — not per-motor arrays.
 
 Per-axis arm:
 
@@ -249,7 +297,7 @@ pub struct AxisConfig {
 
 `piece` stays as a cached copy of `curve.pieces[piece_cursor]`. Refresh happens only on piece-boundary advancement, not every sample.
 
-**Note on the deleted `extrusion_per_xy_mm: f32` field.** Firmware Task 6 added this speculatively. The per-segment `extrusion_ratio_bits` field on `runtime_handle_push_segment` is the correct location for the E/XY ratio because the ratio varies per move (flow rate, extrusion width, retract semantics). The axis-level field is removed; the ISR reads `Engine::current_segment.extrusion_ratio_per_xy_mm` for the follower math (see §4.6).
+**Note on the deleted `extrusion_per_xy_mm: f32` field.** Firmware Task 6 added this speculatively. The per-segment `extrusion_ratio` field on `Segment` (set from `extrusion_ratio_bits` on the wire) is the correct location because the ratio varies per move (flow rate, extrusion width, retract semantics). The axis-level field is removed; the ISR reads `Engine::current.as_ref().extrusion_ratio` for the follower math (see §4.6).
 
 ### 4.2 `StepperRef` shrinks
 
@@ -308,7 +356,6 @@ In the engine's `push_segment` handler (already exists, just extended): decode t
 fn advance_piece_if_needed(
     axis: &mut AxisConfig,
     axis_idx: usize,
-    engine_current: Option<&ActiveSegment>,
     shared: &SharedState,
     t_sample_end_global: f32,
     cycles_per_second: f32,
@@ -363,20 +410,22 @@ fn advance_piece_if_needed(
 **The per-sample exhaustion pass.** `runtime_tick_sample` calls `advance_piece_if_needed` for each axis (A/B/Z in Phase 1, E in Phase 3). After all axes have advanced for this sample, the Engine runs a single post-pass to update `pending_mask` and decide whether early-exhaustion is a fault:
 
 ```rust
-// After all per-axis advance calls for this sample, in runtime_tick_sample:
-if let Some(seg) = self.current.as_ref() {
+// After all per-axis advance calls for this sample, in runtime_tick_sample.
+// Note: participating_mask and pending_mask live on Engine, NOT on Segment
+// (Segment is the wire-shape payload, preserved verbatim from rust/runtime/src/segment.rs).
+if self.current.is_some() {
     // Snapshot the post-advancement exhausted set: bits where the axis WAS
     // participating but its curve_handle is now None.
     let mut exhausted_now: u8 = 0;
     for axis_idx in 0..N_AXES {
-        if seg.participating_mask & (1u8 << axis_idx) != 0
+        if self.participating_mask & (1u8 << axis_idx) != 0
             && self.axes[axis_idx].curve_handle.is_none()
         {
             exhausted_now |= 1u8 << axis_idx;
         }
     }
     let prev_pending = self.pending_mask;
-    self.pending_mask = seg.participating_mask & !exhausted_now;
+    self.pending_mask = self.participating_mask & !exhausted_now;
 
     // Early-exhaustion fault: if any axis exhausted DURING THIS SAMPLE
     // (was pending, now exhausted) AND other participating axes are still
@@ -423,7 +472,7 @@ The E axis's participation gates on `e_mode` because:
 
 **`pending_mask` (also 4 bits):** initialized equal to `participating_mask` at segment-arm. Each bit clears when its axis's curve exhausts (advancement-loop sets `axis.curve_handle = None`). Retire fires when `pending_mask == 0`.
 
-Both masks live on `Engine::current_segment` (the `ActiveSegment` struct above) alongside `current_segment_id`. `engine_get_pending_mask(seg)` exposes the current value for the per-axis advancement loop's early-exhaustion check (§4.4).
+Both masks live directly on the `Engine` struct as `u8` fields (not on `Segment`, which is the unchanged wire-shape payload). `participating_mask` is frozen at `arm_segment` time and never re-derived; `pending_mask` is mutated by the per-sample post-pass in §4.4. The early-exhaustion check the advancement loop used to reference is now in the post-pass (§4.4), so no helper accessor is needed.
 
 **Early exhaustion → fault.** If any axis whose bit is in `participating_mask` exhausts while OTHER bits in `pending_mask` are still set, `raise_piece_advance_underflow(axis_idx)` fires from the advancement loop. The host shorted the curve relative to its siblings — a duration mismatch that must surface immediately, not silently hold-and-wait. Specifically because participating excludes CoupledToXy-mode E, the E intrinsic curve may legitimately exhaust early in that mode without faulting.
 
@@ -438,54 +487,65 @@ After publish, the Engine clears `current_segment_id`, `participating_mask`, `pe
 
 **Handle lifecycle.** Per-axis `axis.curve_handle` is set to `None` when the curve exhausts (during piece advancement). This is correct — those handles are no longer needed for ISR evaluation, and the foreground `RetirementTable` (a separate data structure indexed by segment id, not by axis) is the source of truth for which slots get reclaimed. The ISR does not need to remember handles past curve exhaustion; clearing them frees `AxisConfig` state for the next segment's arm.
 
-### 4.6 E-axis follower math — three e_mode cases
+### 4.6 E-axis follower math — three e_mode cases, absolute-position model
 
 The E axis is evaluated in Phase 3 of `runtime_tick_sample`. Its position output depends on the current segment's `e_mode`, NOT solely on whether `axis_e.piece` is `Some`. This is the crucial fix that lets normal extruding XY moves produce E motion even without an intrinsic E curve.
 
-Let `current = Engine::current_segment.as_ref()` (the `ActiveSegment` from §3.3). For each sample:
+**Critical: E position is absolute, not segment-relative.** The ISR's dispatch path (`dispatch_pulse`) computes step deltas from `p_end - p_prev`, where `p_prev` is the previous sample's absolute mm position. If Phase 3 returns segment-relative output (`intrinsic + ratio·ds_xy_segment + PA`), the value resets to 0 at every segment boundary — driving E backwards by the full previous E position on the first sample of the next segment.
+
+The existing engine handles this via `Engine::e_accumulator: f64` (engine.rs:354) — a high-precision absolute-E accumulator preserved across segments. The new evaluator preserves this pattern:
+
+- `e_accumulator: f64` on `Engine` carries the total absolute E position over the print. Updated each sample with the *delta* produced by the evaluator, not overwritten with the evaluator's segment-local output.
+- `segment_base_e: f32` on `Engine` captures the accumulator value at segment-arm time. Phase 3's segment-local computation starts from 0 *plus* this base.
+- Phase 3's returned `p_end` (absolute mm) = `segment_base_e + segment_local_e(...)`.
+- At segment retire: `e_accumulator` is bumped by the final segment-local delta to roll forward to the start of the next segment.
+
+The f64 width on `e_accumulator` exists to preserve sub-step accuracy over a multi-hour print (f32 loses ~one microstep per few hours of accumulated extrusion). The segment-local delta lives in f32 because per-sample float math is f32 throughout the ISR.
 
 ```rust
 fn evaluate_e_axis(
     axis_e: &mut AxisConfig,
-    current: Option<&ActiveSegment>,
-    ds_xy_this_sample: f32,        // computed from Phase 2 of runtime_tick_sample
-    pa_k: f32,                     // pressure-advance coefficient, sign-of-accel-aware
-    v_xy_this: f32,                // from Phase 2
+    current: Option<&Segment>,        // Engine::current
+    engine_segment_base_e: f32,       // Engine::segment_base_e
+    ds_xy_segment_accumulator: f32,   // total XY arc length accumulated since segment-arm
+    pa_k: f32,                        // pressure-advance coefficient
+    v_xy_this: f32,                   // from Phase 2 of runtime_tick_sample
     t_sample_end_global: f32,
     cycles_per_second: f32,
 ) -> f32 {
-    let Some(seg) = current else { return axis_e.last_p_e; };
+    let Some(seg) = current else { return engine_segment_base_e; };
 
-    // Intrinsic part: evaluated from axis_e.piece if any, else zero.
-    let intrinsic = if let Some(piece) = axis_e.piece {
+    // Segment-local intrinsic part: evaluated from axis_e.piece if any, else zero.
+    let intrinsic_local = if let Some(piece) = axis_e.piece {
         let t_local = t_sample_end_global - piece_start_seconds(axis_e, cycles_per_second);
         let (p, _v) = monomial_horner_eval(piece, t_local);
         p
     } else {
-        // No intrinsic E curve for this segment (or curve already exhausted).
-        // Total E motion comes from the follower term for CoupledToXy; zero for
-        // Independent (E truly idle) or Travel.
         0.0
     };
 
-    match seg.e_mode {
+    let segment_local = match seg.e_mode {
         EMode::CoupledToXy => {
-            // E = intrinsic + extrusion_ratio * ds_xy_segment + PA correction
-            let follower = seg.extrusion_ratio_per_xy_mm * ds_xy_segment_accumulator;
-            let pa_correction = pa_k * seg.extrusion_ratio_per_xy_mm * v_xy_this;
-            intrinsic + follower + pa_correction
+            let follower = seg.extrusion_ratio * ds_xy_segment_accumulator;
+            let pa_correction = pa_k * seg.extrusion_ratio * v_xy_this;
+            intrinsic_local + follower + pa_correction
         }
-        EMode::Independent => intrinsic,
+        EMode::Independent => intrinsic_local,
         EMode::Travel => 0.0,
-    }
+    };
+
+    // Return absolute E position by anchoring to the engine's segment-start base.
+    engine_segment_base_e + segment_local
 }
 ```
 
-**Implication for arm logic.** When `e_mode == CoupledToXy` and `e_handle == UNUSED_SENTINEL`, the segment-arm still leaves `axis_e.piece = None` (no intrinsic), but the Phase-3 evaluator runs the follower math anyway because of `seg.e_mode`. This is the case for a "normal extruding XY move" — host doesn't need to allocate a curve slot just to send a zero intrinsic E polynomial.
+**At segment-arm (ISR dequeue, §4.3-revised below):** `engine.segment_base_e = engine.e_accumulator as f32` (truncating the f64 → f32 for the per-sample math, the f64 is the long-haul accumulator). `ds_xy_segment_accumulator` resets to 0.
+
+**At segment-retire (§4.5):** the last per-sample E delta becomes the new permanent E position. Concretely, the Engine bumps `e_accumulator` by the (segment_local_e_at_retire as f64) using the per-segment final value, so the next segment's `segment_base_e` starts from the correct absolute mm.
 
 **Implication for participating_mask.** Per §4.5, the E bit goes into `participating_mask` only when `e_mode == Independent` (and handle non-sentinel). CoupledToXy follower segments retire on XY exhaustion regardless of when (or whether) the E intrinsic curve runs out. The early-exhaustion fault doesn't fire on E's intrinsic exhaustion in CoupledToXy mode.
 
-**Independent mode with no intrinsic.** If `e_mode == Independent` and `e_handle == UNUSED_SENTINEL`, E truly doesn't move — this is the "Z-only hop" or "purge before retract" pattern. The E bit is NOT in participating_mask (handle is sentinel), so E doesn't gate retire; XY/Z does.
+**Independent mode with no intrinsic.** If `e_mode == Independent` and `e_handle == UNUSED_SENTINEL`, E truly doesn't move — `segment_local == 0`, returned E equals `segment_base_e`, no step pulses. This is the "Z-only hop" or "purge before retract" pattern. The E bit is NOT in `participating_mask` (handle is sentinel), so E doesn't gate retire; XY/Z does.
 
 This preserves the existing per-segment `e_mode` + `extrusion_ratio` model — the firmware redesign doesn't break or replace it. The axis-level `extrusion_per_xy_mm` field that firmware Task 6 added is stale; the per-segment field on the existing `runtime_handle_push_segment` FFI is the authoritative source.
 
