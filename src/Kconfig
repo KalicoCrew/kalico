@@ -451,7 +451,7 @@ config KALICO_MOTION_SAMPLE_RATE_HZ
 
 config RUNTIME_STORAGE_SIZE_LARGE
     int "rt_storage byte ceiling (large profile, H7)"
-    default 315392
+    default 307712
     range 65536 524288
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
