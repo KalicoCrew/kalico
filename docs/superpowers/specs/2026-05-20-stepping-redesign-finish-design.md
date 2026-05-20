@@ -63,17 +63,20 @@ Match existing `CURVE_POOL_N` Kconfig values:
 | H7 (LARGE) | 16 | 16 | ~516 | ~8.2 KB |
 | F4 (SMALL) | 8 | 16 | ~516 | ~4.1 KB |
 
-Today's NURBS `kalico_buf = 14752` bytes. Net savings:
-- H7: ~6.5 KB freed from AXI SRAM (relieves the 99.35% pressure from the firmware build).
-- F4: ~10.6 KB freed.
+The curve pool lives inside `RuntimeContext` (the C-owned `rt_storage` buffer per the §11.2 storage-ownership invariant — NOT in `kalico_buf`, which is the unrelated native-transport demux receive buffer in `src/kalico_demux.c`). Today's NURBS curve-pool footprint inside `RuntimeContext` is sized by `MAX_CONTROL_POINTS` × `MAX_KNOT_VECTOR_LEN` × `CURVE_POOL_N` (LARGE: 1830 × 4 + 1850 × 4 = 14720 bytes per slot × 16 slots ≈ 235 KB of `RuntimeContext`). The cubic-piece replacement is ~516 bytes per slot. Net savings inside `RuntimeContext`:
 
-Plus the larger NURBS-only sizing constants (`MAX_CONTROL_POINTS = 1830`, `MAX_KNOT_VECTOR_LEN = 1850`, `MAX_DEGREE = 10`) go away from `runtime/build.rs` and `src/Makefile`'s envvar passthrough.
+- H7: NURBS curve-pool portion ~235 KB → cubic-piece portion ~8.2 KB. `RUNTIME_STORAGE_SIZE_LARGE` Kconfig can drop dramatically (current 307712 → expected ~80–100 KB after migration, exact number TBD from `size_of::<RuntimeContext>()` measurement). The `kalico_buf` and other `.axi_bss` occupants stay unchanged.
+- F4: NURBS curve-pool portion ~16 KB → cubic-piece portion ~4.1 KB. `RUNTIME_STORAGE_SIZE_SMALL` Kconfig drops accordingly.
+
+The larger NURBS-only sizing constants (`MAX_CONTROL_POINTS = 1830`, `MAX_KNOT_VECTOR_LEN = 1850`, `MAX_DEGREE = 10`) go away from `runtime/build.rs` and `src/Makefile`'s envvar passthrough. They're replaced by `MAX_PIECES_PER_CURVE = 16`.
 
 `MAX_PIECES_PER_CURVE = 16` accommodates G2/G3 quarter-arcs (~8 pieces typical) with headroom for spline fits. Worst-case G2 full-circle (~32 pieces) requires the host planner to split into two segments — defensible because the spec already says segments are arbitrary-size units composed by the host.
 
 ### 2.3 Storage location
 
-Same as today's `kalico_buf`: `.axi_bss` on H7, `.bss` on F4. The pool is large enough that DTCM placement would crowd stack+heap on F4. AXI access cost matters only on the foreground load path, not the TIM5 ISR — the ISR copies the active piece into a register-resident `BezierPieceMonomial` once per piece-boundary advancement and works from there.
+The curve pool is part of `RuntimeContext`, which itself lives in the C-owned `rt_storage` buffer per the storage-ownership invariant. `rt_storage` is placed in `.axi_bss` on H7 (cached AXI SRAM) and `.bss` on F4 (single-bank SRAM). This is unchanged by the redesign — the *size* of the curve-pool portion inside `RuntimeContext` shrinks dramatically (§2.2), but its placement does not move. AXI cache cost matters only on the foreground load path; the TIM5 ISR copies the active piece into a register-resident `BezierPieceMonomial` once per piece-boundary advancement and works from there.
+
+Other `.axi_bss` occupants (`kalico_buf`, `runtime_bench_samples_buf`, `receive_buf`) are unaffected by this spec.
 
 ---
 
@@ -280,7 +283,13 @@ pub struct SpiWrite {
 }
 ```
 
-Down from 12 to 8 bytes. The `SpiQueue` slot count stays the same (16 entries per axis); each entry is now smaller. The foreground SPI drain task in `runtime_tick.c::spi_drain_event` pops a `SpiWrite`, calls `oid_lookup(tmc_cs_oid, command_config_spi)`, and dispatches via `spidev_transfer`. The current stub implementation that "drops the entry without dispatching" becomes a real `spidev_transfer` call by this spec's completion (Stage 5 of the original bench-bringup spec, now scope-deferred).
+Down from 12 to 8 bytes. The `SpiQueue` slot count stays the same (16 entries per axis); each entry is now smaller.
+
+**Phase mode is rejected at `configure_axis` time in this cutover.** The SPI dispatch path (`runtime_tick.c::spi_drain_event` calling `oid_lookup` + `spidev_transfer`) is NOT implemented as part of this spec. The current stub that drops entries without dispatching stays as-is. Letting `configure_axis(mode=Phase)` succeed while SPI dispatch is a no-op would produce architecturally-green firmware that silently fails to move Phase-mode motors — exactly the kind of dishonest state this redesign rejects.
+
+Concretely: `kalico_runtime_configure_axis` returns `KALICO_ERR_PHASE_MODE_NOT_AVAILABLE` (new fault code, foreground-visible, no shutdown) when `mode == Phase`. Pulse mode works end-to-end through this spec; Phase mode lights up in the follow-up plan that implements real SPI dispatch + the TMC5160 register sequencing the bench needs (chopconf, stallguard pre-config, XDIRECT toggling — all out-of-scope here).
+
+This means Stage 5+ from the original bench-bringup spec are unreachable until the follow-up. The cutover doesn't gain Phase mode; it gains a correct cubic-Bezier Pulse path on all axes that today have no working motion at all.
 
 ### 4.3 Segment arm
 
@@ -323,19 +332,14 @@ fn advance_piece_if_needed(
                     axis.piece = Some(curve.pieces[axis.piece_cursor as usize]);
                 }
                 _ => {
-                    // Curve exhausted. Check whether any OTHER participating
-                    // axis still has work to do — if so, this is early exhaustion
-                    // (host duration-mismatch bug); fault.
+                    // Curve exhausted. Mark cleared in this axis's local state
+                    // but DON'T evaluate the early-exhaustion fault here — that
+                    // requires the full per-sample exhaustion-pass result (§4.5)
+                    // so we don't false-fault when multiple axes exhaust on the
+                    // same sample. Engine post-pass clears pending_mask and
+                    // checks the structural condition.
                     axis.piece = None;
                     axis.curve_handle = None;
-                    if let Some(seg) = engine_current {
-                        let other_pending = seg.participating_mask
-                            & !(1u8 << axis_idx)
-                            & engine_get_pending_mask(seg);
-                        if other_pending != 0 {
-                            raise_piece_advance_underflow(shared, axis_idx);
-                        }
-                    }
                     break;
                 }
             },
@@ -344,6 +348,10 @@ fn advance_piece_if_needed(
 
         iters = iters.saturating_add(1);
         if iters >= MAX_PIECES_PER_CURVE as u16 {
+            // Runaway loop (corrupted duration or curve_pool race). This IS a
+            // fault regardless of participation — the loop body is structurally
+            // bounded by curve length, so exceeding MAX_PIECES_PER_CURVE means
+            // something is wrong.
             raise_piece_advance_underflow(shared, axis_idx);
             break;
         }
@@ -352,7 +360,46 @@ fn advance_piece_if_needed(
 }
 ```
 
-`engine_get_pending_mask` is the Engine's view of which axes are still mid-segment (see §4.5). The fault fires only when X exhausts AND Y is still pending — symmetric and not biased by per-axis order.
+**The per-sample exhaustion pass.** `runtime_tick_sample` calls `advance_piece_if_needed` for each axis (A/B/Z in Phase 1, E in Phase 3). After all axes have advanced for this sample, the Engine runs a single post-pass to update `pending_mask` and decide whether early-exhaustion is a fault:
+
+```rust
+// After all per-axis advance calls for this sample, in runtime_tick_sample:
+if let Some(seg) = self.current.as_ref() {
+    // Snapshot the post-advancement exhausted set: bits where the axis WAS
+    // participating but its curve_handle is now None.
+    let mut exhausted_now: u8 = 0;
+    for axis_idx in 0..N_AXES {
+        if seg.participating_mask & (1u8 << axis_idx) != 0
+            && self.axes[axis_idx].curve_handle.is_none()
+        {
+            exhausted_now |= 1u8 << axis_idx;
+        }
+    }
+    let prev_pending = self.pending_mask;
+    self.pending_mask = seg.participating_mask & !exhausted_now;
+
+    // Early-exhaustion fault: if any axis exhausted DURING THIS SAMPLE
+    // (was pending, now exhausted) AND other participating axes are still
+    // pending after the full sample pass, the host shorted at least one
+    // axis. Process this AFTER the whole sample so we don't false-fault on
+    // multiple axes exhausting in the same sample.
+    let exhausted_this_sample = prev_pending & exhausted_now;
+    if exhausted_this_sample != 0 && self.pending_mask != 0 {
+        // Pick the lowest-numbered axis from the exhausted-this-sample set
+        // for the fault detail (axis_idx encoded in fault_detail upper bits).
+        let axis_idx = exhausted_this_sample.trailing_zeros() as usize;
+        raise_piece_advance_underflow(&self.shared, axis_idx);
+    }
+}
+```
+
+This pattern is correct for both single-axis early exhaustion AND simultaneous multi-axis exhaustion:
+
+- One axis exhausts, others still pending → `exhausted_this_sample != 0 && pending_mask != 0` → fault.
+- All participating axes exhaust together on the same sample → `exhausted_this_sample == participating_mask` and `pending_mask == 0` → no fault (segment retiring normally; the retire path in §4.5 fires next).
+- A non-participating axis (CoupledToXy E) exhausts → its bit is not in `participating_mask`, so it never enters `exhausted_now`, so it never enters `exhausted_this_sample`. No fault.
+
+The per-axis advancement loop no longer carries the early-exhaustion check — it's a single sample-level pass that's order-independent.
 
 ### 4.5 Segment retire — participating_mask + pending_mask
 
@@ -523,6 +570,8 @@ void command_kalico_configure_axis(uint32_t *args) {
 
     // ── Phase 2: Rust-side validation (microstep_distance finite/positive,
     // engine not mid-motion for mode change, etc.). Pass tmc_cs as the OID.
+    // StepperBindingRust is the FFI ABI struct, defined in C and mirrored
+    // in Rust with #[repr(C)] — see below.
     StepperBindingRust bindings[RUNTIME_MAX_STEPPERS_PER_MOTOR];
     for (uint8_t i = 0; i < stepper_count; i++) {
         bindings[i].tmc_cs_oid = staged[i].tmc_cs_oid;
@@ -547,11 +596,33 @@ DECL_COMMAND(command_kalico_configure_axis,
     " extrusion_per_xy_mm=%u stepper_count=%c steppers=%*s");
 ```
 
-`StepperBindingRust` is the FFI payload type (just `tmc_cs_handle: u32` for now, room for future flags via the reserved `flags` wire byte).
+**`StepperBindingRust` ABI** — defined in C (and mirrored to Rust with `#[repr(C)]` + `_Static_assert(sizeof) == sizeof()` cross-checks):
+
+```c
+// In rust/kalico-c-api/include/kalico_runtime.h
+struct StepperBindingRust {
+    uint8_t tmc_cs_oid;     // 0xFF = none (Pulse-only stepper)
+    uint8_t _pad[3];
+};
+_Static_assert(sizeof(struct StepperBindingRust) == 4,
+               "StepperBindingRust ABI drift");
+```
+
+```rust
+// In rust/runtime/src/stepping_state.rs (or wherever the ABI lives)
+#[repr(C)]
+pub struct StepperBindingRust {
+    pub tmc_cs_oid: u8,
+    pub _pad: [u8; 3],
+}
+const _: () = assert!(core::mem::size_of::<StepperBindingRust>() == 4);
+```
+
+`tmc_cs_oid == 0xFF` is the unambiguous "no TMC chip-select" sentinel for both Phase- and Pulse-only steppers. OID `0` is a legal `command_config_spi` allocation and must NOT be conflated with "absent."
 
 **Failure handling.** Any check failure between Phase 1 and Phase 3 leaves `runtime_motor_steppers[axis_idx]` and the Rust `AxisConfig` unchanged from their previous state. Klipper's `shutdown(...)` semantics will halt the firmware on a validation failure; on a Rust-side `rc != 0` rejection the same shutdown fires. Either way, no partial state.
 
-**Ordering of Rust-side mutations.** The Rust `configure_axis` engine method itself must also be two-phase internally: validate `microstep_distance > 0 && is_finite()`, `mode ∈ {Pulse, Phase}`, no segment in flight for this axis, and (for Phase mode) every binding has `tmc_cs_handle != 0`. Only after all validations clear, mutate `axis.steppers`, `axis.microstep_distance`, `axis.mode`, etc. — atomic at the engine level. If the host re-configures an axis mid-motion the request is rejected (`ERR_MOTION_IN_PROGRESS`); the C-side commit phase is skipped because Rust returned a non-zero rc.
+**Ordering of Rust-side mutations.** The Rust `configure_axis` engine method itself must also be two-phase internally: validate `microstep_distance > 0 && is_finite()`, `mode ∈ {Pulse, Phase}`, no segment in flight for this axis, and (for Phase mode) every binding has `tmc_cs_oid != 0xFF`. Only after all validations clear, mutate `axis.steppers`, `axis.microstep_distance`, `axis.mode`, etc. — atomic at the engine level. If the host re-configures an axis mid-motion the request is rejected (`ERR_MOTION_IN_PROGRESS`); the C-side commit phase is skipped because Rust returned a non-zero rc.
 
 ### 5.3 Direction-pin handling
 
@@ -632,11 +703,14 @@ All faults from firmware Task 6 carry over:
 - `JogParametersInvalid`
 - `StepRateExceedsMcuCeiling(axis_idx)`
 
-**New fault:** `CurveLoadInvalid` — fires from `runtime_handle_load_curve_cubic` on non-finite Bernstein, `piece_count` out of range, or `duration <= 0`. Foreground reject (returns `KALICO_ERR_INVALID_CURVE` to host), no shutdown.
+**New faults:**
+
+- `CurveLoadInvalid` — fires from `runtime_handle_load_curve_cubic` on non-finite Bernstein, `piece_count` out of range, or `duration <= 0`. Foreground reject (returns `KALICO_ERR_INVALID_CURVE` to host), no shutdown.
+- `PhaseModeNotAvailable` — fires from `kalico_runtime_configure_axis` when `mode == Phase`. Phase mode requires the SPI dispatch path which is deferred to a follow-up plan; rejecting at configure-time keeps the firmware honest about what it can drive. Foreground reject (returns `KALICO_ERR_PHASE_MODE_NOT_AVAILABLE` to host), no shutdown.
 
 **Piece-queue overflow.** The original brainstorming considered this. Verdict: not a runtime condition — pieces live in slots, slots are tracked via the credit-epoch protocol. A "queue full" condition would be a slot-allocation failure from `try_alloc_and_load`, returned to the host as an error from the `_load_curve_cubic` FFI. Host backs off via the credit-epoch mechanism that already exists. No new fault code needed.
 
-**`runtime_storage.c` static_assert update.** Drop the NURBS `kalico_buf` size term from the AXI budget computation. Add the new cubic-curve-pool size term. Both H7 and F4 ceilings stay within their existing AXI/total-SRAM budgets with net headroom freed.
+**`runtime_storage.c` static_assert update.** The C-side AXI-SRAM-budget assert sums `RT_STORAGE_SIZE` + the unrelated `.axi_bss` occupants (`kalico_buf`, `runtime_bench_samples_buf`, `receive_buf`) + a headroom term. As `RuntimeContext` shrinks (from the NURBS curve-pool size drop), `RT_STORAGE_SIZE` in Kconfig drops correspondingly; the `kalico_buf` term and other unrelated `.axi_bss` occupants stay. The Rust-side `const_assert!(size_of::<RuntimeContext>() <= RT_STORAGE_SIZE)` ensures the buffer fits. Both H7 and F4 ceilings stay within their existing AXI/total-SRAM budgets with significant net headroom freed.
 
 ---
 
@@ -649,8 +723,8 @@ Two tiers, neither bench-dependent:
 Each new module gets isolated coverage:
 
 - `curve_pool` retyped for cubic pieces — `try_alloc_and_load` with `LoadedCubicCurve`, `lookup` with generation match, `confirm_retired` slot reclamation.
-- `configure_axis` stepper-binding decoder — round-trip blob encoding/decoding, multiple stepper counts, edge cases (count=0, tmc_cs=0xFF, max stepper_count).
-- Piece-advancement cursor walking — single-piece curve, multi-piece curve advancing through all pieces, cursor past `piece_count` triggers `axis.piece = None`, the `iters > 4` guard.
+- `configure_axis` stepper-binding decoder — round-trip blob encoding/decoding, multiple stepper counts, edge cases (`count=0`, `tmc_cs_oid=0xFF` meaning none, `tmc_cs_oid=0` meaning valid SPI OID 0, max `stepper_count`), reserved-flag-byte rejection, validation-failure cases leave both C-side and Rust-side state untouched (the two-phase commit guarantee). Phase-mode reject test: `configure_axis(mode=Phase)` returns `KALICO_ERR_PHASE_MODE_NOT_AVAILABLE` and no state mutates.
+- Piece-advancement cursor walking — single-piece curve, multi-piece curve advancing through all pieces, cursor past `piece_count` triggers `axis.piece = None`, the `MAX_PIECES_PER_CURVE` runaway-loop cap, and the post-pass early-exhaustion fault (test simultaneous A+B exhaustion does NOT fault; test A-exhausts-while-B-pending DOES fault; test CoupledToXy E exhausting while XY pending does NOT fault).
 - End-to-end single-MCU ISR — feed a 1-piece linear curve through `dispatch_axis` (Pulse mode), confirm step_queue entries with expected `cycle_abs` + `dir`.
 
 ### 9.2 klipper-sim integration
@@ -683,9 +757,9 @@ Bench validation is a separate follow-up plan started only after step 7 passes.
 
 ## Out of scope
 
+- **Phase mode end-to-end.** Configure_axis rejects `mode=Phase` with `KALICO_ERR_PHASE_MODE_NOT_AVAILABLE`. Real SPI dispatch (`spidev_transfer` from `spi_drain_event`), TMC5160 register pre-config, XDIRECT toggle validation — all moved to a follow-up plan. The `SpiQueue` / `dispatch_phase` infrastructure stays in firmware (already built) so the follow-up has a smaller delta.
 - Bench bring-up Stages 1–7 from the original redesign spec.
-- TMC5160 register pre-config (chopconf, stallguard) — printer.cfg's existing TMC config handles it.
+- TMC5160 register pre-config (chopconf, stallguard) — printer.cfg's existing TMC config handles it for Pulse mode steppers; Phase-mode register pre-config is a follow-up topic.
 - klippy-side host planner changes beyond the bridge serialization layer. The planner's internal math already operates on cubics for most of the pipeline.
-- F4 firmware-side feature parity with H7 (Phase mode, multi-stepper-per-axis) — F4 in this redesign just runs Z in Pulse mode through the same code, no special-casing.
 - Performance characterization (per-MCU step-rate ceiling profiling) — telemetry surfaces it via `sample_isr_peak_cycles`; characterization is bench-side work.
 - Closed-loop encoder integration, hardware capture-compare GPIO toggling, DMA-driven GPIO — all explicitly deferred per the original spec's "Open items" section.
