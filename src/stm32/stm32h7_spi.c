@@ -5,12 +5,18 @@
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
 #include "board/io.h" // readb, writeb
-#include "command.h" // shutdown
+#include "command.h" // shutdown, output, DECL_CTR
 #include "gpio.h" // spi_setup
 #include "internal.h" // gpio_peripheral
 #include "sched.h" // sched_shutdown
 #include "board/misc.h" // timer_is_before
 #include "phase_stepping_spi.h" // phase_spi_try_acquire / phase_spi_release
+
+// Diagnostic frame emitted just before the spi rx / eot timeout shutdown so
+// the host log captures the failing peripheral's full register state.
+DECL_CTR("_DECL_OUTPUT "
+         "kalico_spi_hang reason=%c spi_addr=%u sr=%u cr1=%u cr2=%u "
+         "cfg1=%u cfg2=%u remaining=%c");
 
 struct spi_info {
     SPI_TypeDef *spi;
@@ -161,8 +167,14 @@ spi_transfer_locked(struct spi_config config, uint8_t receive_data,
         writeb((void *)&spi->TXDR, *data);
         uint32_t spi_deadline = timer_read_time() + timer_from_us(100);
         while ((spi->SR & (SPI_SR_RXWNE | SPI_SR_RXPLVL)) == 0) {
-            if (!timer_is_before(timer_read_time(), spi_deadline))
+            if (!timer_is_before(timer_read_time(), spi_deadline)) {
+                output("kalico_spi_hang reason=%c spi_addr=%u sr=%u cr1=%u "
+                       "cr2=%u cfg1=%u cfg2=%u remaining=%c",
+                       (uint8_t)'R', (uint32_t)(uintptr_t)spi,
+                       spi->SR, spi->CR1, spi->CR2,
+                       spi->CFG1, spi->CFG2, (uint8_t)len);
                 shutdown("spi rx timeout");
+            }
         }
         rdata = readb((void *)&spi->RXDR);
 
@@ -174,8 +186,14 @@ spi_transfer_locked(struct spi_config config, uint8_t receive_data,
 
     uint32_t eot_deadline = timer_read_time() + timer_from_us(100);
     while ((spi->SR & SPI_SR_EOT) == 0) {
-        if (!timer_is_before(timer_read_time(), eot_deadline))
+        if (!timer_is_before(timer_read_time(), eot_deadline)) {
+            output("kalico_spi_hang reason=%c spi_addr=%u sr=%u cr1=%u "
+                   "cr2=%u cfg1=%u cfg2=%u remaining=%c",
+                   (uint8_t)'E', (uint32_t)(uintptr_t)spi,
+                   spi->SR, spi->CR1, spi->CR2,
+                   spi->CFG1, spi->CFG2, (uint8_t)0);
             shutdown("spi eot timeout");
+        }
     }
 
     // Clear flags and disable SPI
