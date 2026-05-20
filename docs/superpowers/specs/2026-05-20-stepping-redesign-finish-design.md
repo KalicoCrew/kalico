@@ -147,21 +147,55 @@ pub unsafe extern "C" fn runtime_handle_load_curve_cubic(
 
 Returns `KALICO_OK` and writes `(generation << 16) | slot_idx` into `out_handle_packed` on success. Atomic: slot transitions to "valid" only after all pieces written and `current_gen += 1`.
 
-Validation:
+Validation (Phase 1, before any slot mutation):
+
 - `piece_count > 0 && piece_count <= MAX_PIECES_PER_CURVE`
 - All `duration > 0 && is_finite()`
 - All Bernstein bits decode to finite f32 values
 
+**No minimum-duration check at load.** Earlier drafts proposed a lower bound on `piece.duration` relative to the sample period to keep the piece-advancement loop bounded. That's not necessary: the loop's hard cap is `MAX_PIECES_PER_CURVE` (16) iterations, and a sample can structurally never advance past the curve's end. Validating `duration > 0 && is_finite()` is sufficient — a piece with `duration = 1 ns` is legal-but-pathological and the iter cap handles it.
+
 Failure → `KALICO_ERR_INVALID_CURVE` (or new `CurveLoadInvalid`), no slot mutation, no generation bump.
 
-### 3.3 `runtime_handle_push_segment` — semantics extended
+### 3.3 `runtime_handle_push_segment` — semantics extended, wire unchanged
 
-Wire signature unchanged (4 packed curve handles for X/Y/Z/E + `t_start_lo/hi` + segment id). What changes: the engine's segment-arm logic.
+The existing wire/FFI signature is preserved verbatim — all fields stay (see `rust/kalico-c-api/src/runtime_ffi.rs:206` for the live signature):
 
-On arm, for each axis:
+```c
+int32_t runtime_handle_push_segment(
+    KalicoRuntime *rt,
+    uint32_t id,
+    uint32_t x_handle_packed, uint32_t y_handle_packed,
+    uint32_t z_handle_packed, uint32_t e_handle_packed,
+    uint64_t t_start_cycles, uint64_t t_end_cycles,
+    uint8_t kinematics,            // 0=Cartesian, 1=CoreXY
+    uint8_t e_mode,                // EMode: 0=CoupledToXy, 1=Independent, 2=Travel
+    uint32_t extrusion_ratio_bits, // f32 E/XY ratio for CoupledToXy mode
+    uint32_t *out_accepted_segment_id,
+    uint32_t *out_credit_epoch);
+```
+
+The 42-byte command body and the response back through the host pipeline are unchanged.
+
+**What does change is the engine's per-axis arm logic.** The existing `rust/runtime/src/segment.rs::Segment` struct already carries `id`, the 4 handles, `t_start`/`t_end`, `kinematics`, `e_mode`, and `extrusion_ratio` — every per-segment field the ISR needs. We preserve it as-is. The `Engine::current: Option<Segment>` field also stays (already present in engine.rs's `Engine` struct; that's what `engine.rs:2266` reads `current.id` from on retire).
+
+We add two small bitmasks on the Engine for retire bookkeeping, alongside `current`:
 
 ```rust
-if handle == EMPTY_HANDLE_SENTINEL {
+pub struct Engine {
+    // ... existing fields ...
+    pub current: Option<Segment>,         // EXISTING; the active segment for the ISR
+    pub participating_mask: u8,           // NEW: 4 bits, frozen at arm — which axes participate
+    pub pending_mask: u8,                 // NEW: 4 bits, mutated during evaluation — which still pending
+}
+```
+
+`participating_mask` is computed at arm-time from the segment's handles and `e_mode` (see §4.5). `pending_mask` starts equal to it and clears bits as each axis's curve exhausts. Retire fires when `pending_mask == 0`. The existing legacy `motor_curve_cursor` / `motor_current_segment_id` per-motor bitmasks are deleted along with the rest of the legacy path (§6.1).
+
+Per-axis arm:
+
+```rust
+if handle == CurveHandle::UNUSED_SENTINEL {
     axis.curve_handle = None;
     axis.piece = None;
     axis.piece_cursor = 0;
@@ -173,6 +207,8 @@ if handle == EMPTY_HANDLE_SENTINEL {
     axis.piece_start_time_cycles = segment.t_start;
 }
 ```
+
+The `participating_mask` is built per-axis using both the handle and e_mode (see §4.5). The segment-level fields drive the E-follower math (§4.6).
 
 ### 3.4 Deleted FFI
 
@@ -205,18 +241,19 @@ pub struct AxisConfig {
     pub piece_start_time_cycles: u64,
     pub last_step_count: i32,
     pub microstep_distance: f32,
-    pub extrusion_per_xy_mm: f32,
 }
 ```
 
 `piece` stays as a cached copy of `curve.pieces[piece_cursor]`. Refresh happens only on piece-boundary advancement, not every sample.
+
+**Note on the deleted `extrusion_per_xy_mm: f32` field.** Firmware Task 6 added this speculatively. The per-segment `extrusion_ratio_bits` field on `runtime_handle_push_segment` is the correct location for the E/XY ratio because the ratio varies per move (flow rate, extrusion width, retract semantics). The axis-level field is removed; the ISR reads `Engine::current_segment.extrusion_ratio_per_xy_mm` for the follower math (see §4.6).
 
 ### 4.2 `StepperRef` shrinks
 
 ```rust
 pub struct StepperRef {
     pub position_count: AtomicI32,
-    pub tmc_cs: Option<u32>,
+    pub tmc_cs_oid: Option<u8>,         // OID of command_config_spi for this stepper's TMC; None = Pulse-only
     pub last_coil_A: AtomicI16,
     pub last_coil_B: AtomicI16,
     pub phase_offset_microsteps: AtomicI32,
@@ -225,7 +262,25 @@ pub struct StepperRef {
 }
 ```
 
-The fields `step_pin: u32`, `dir_pin: u32`, `dir_invert: bool` from firmware Task 6 are removed — vestigial, never read. The C-side `runtime_motor_steppers[][]` table holds the actual `struct stepper *` for GPIO emission; the Rust side only needs `tmc_cs` for Phase-mode SPI dispatch.
+The fields `step_pin: u32`, `dir_pin: u32`, `dir_invert: bool` from firmware Task 6 are removed — vestigial, never read by anything. The C-side `runtime_motor_steppers[][]` table holds the actual `struct stepper *` for GPIO emission; the Rust side only needs to know which TMC the SPI drain task should target.
+
+**Why `tmc_cs_oid: Option<u8>` and not a pointer.** Firmware Task 6's `tmc_cs: Option<u32>` was speculatively typed as a "raw handle" and never wired through. Casting a `struct spidev_s *` to `u32` truncates on the host build (64-bit pointers) and doesn't help the SPI driver anyway — `spidev_transfer` needs the full `struct spidev_s *`, not just its address. The OID is small (u8), portable across host and MCU, and the SPI drain task does `oid_lookup(tmc_cs_oid, command_config_spi)` exactly once per transfer to recover the device pointer.
+
+### 4.2a `SpiWrite` carries the OID
+
+`SpiWrite` (in `spi_queue.rs`, firmware Task 14) currently carries `cs_pin: u32`. Re-typed:
+
+```rust
+#[repr(C)]
+pub struct SpiWrite {
+    pub tmc_cs_oid: u8,
+    pub reg: u8,
+    pub _pad: [u8; 2],
+    pub value: i32,
+}
+```
+
+Down from 12 to 8 bytes. The `SpiQueue` slot count stays the same (16 entries per axis); each entry is now smaller. The foreground SPI drain task in `runtime_tick.c::spi_drain_event` pops a `SpiWrite`, calls `oid_lookup(tmc_cs_oid, command_config_spi)`, and dispatches via `spidev_transfer`. The current stub implementation that "drops the entry without dispatching" becomes a real `spidev_transfer` call by this spec's completion (Stage 5 of the original bench-bringup spec, now scope-deferred).
 
 ### 4.3 Segment arm
 
@@ -235,18 +290,22 @@ In the engine's `push_segment` handler (already exists, just extended): decode t
 
 ### 4.4 Piece advancement
 
-`advance_piece_if_needed` (firmware Task 9) gets the cursor-walking logic:
+`advance_piece_if_needed` (firmware Task 9) gets the cursor-walking logic. Two corrections from earlier drafts:
+
+1. **Iter cap = `MAX_PIECES_PER_CURVE`**, not 4. A sample can legitimately cross many short pieces (corner-rounding splines, host-side step-burst smoothing). The cap of 4 would false-fault on valid curves. The true upper bound on iterations per call is `MAX_PIECES_PER_CURVE` (16) — we can never advance more times than the curve has pieces. Combined with the load-time minimum-duration validation (see §3.2 — pieces with `duration <= 0` are rejected at load), runaway loops are structurally impossible.
+2. **Early exhaustion is a fault when another participating axis is still pending.** If X's curve runs out while Y still has pieces, that's a host duration-mismatch bug. Fault is raised here, before retirement bookkeeping runs.
 
 ```rust
 fn advance_piece_if_needed(
     axis: &mut AxisConfig,
     axis_idx: usize,
+    engine_current: Option<&ActiveSegment>,
     shared: &SharedState,
     t_sample_end_global: f32,
     cycles_per_second: f32,
 ) -> bool {
     let mut advanced = false;
-    let mut iters: u8 = 0;
+    let mut iters: u16 = 0;
     loop {
         let Some(piece) = axis.piece else { break };
         let t_local = t_sample_end_global - piece_start_seconds(axis, cycles_per_second);
@@ -264,17 +323,27 @@ fn advance_piece_if_needed(
                     axis.piece = Some(curve.pieces[axis.piece_cursor as usize]);
                 }
                 _ => {
-                    // Curve exhausted — segment is either retiring (next segment-arm
-                    // will refill) or the host shorted the curve (fault below).
+                    // Curve exhausted. Check whether any OTHER participating
+                    // axis still has work to do — if so, this is early exhaustion
+                    // (host duration-mismatch bug); fault.
                     axis.piece = None;
                     axis.curve_handle = None;
+                    if let Some(seg) = engine_current {
+                        let other_pending = seg.participating_mask
+                            & !(1u8 << axis_idx)
+                            & engine_get_pending_mask(seg);
+                        if other_pending != 0 {
+                            raise_piece_advance_underflow(shared, axis_idx);
+                        }
+                    }
+                    break;
                 }
             },
             None => { axis.piece = None; break; }
         }
 
         iters = iters.saturating_add(1);
-        if iters > 4 {
+        if iters >= MAX_PIECES_PER_CURVE as u16 {
             raise_piece_advance_underflow(shared, axis_idx);
             break;
         }
@@ -283,17 +352,33 @@ fn advance_piece_if_needed(
 }
 ```
 
-The `iters > 4` cap remains as defensive code (catches `duration == 0` foot-guns).
+`engine_get_pending_mask` is the Engine's view of which axes are still mid-segment (see §4.5). The fault fires only when X exhausts AND Y is still pending — symmetric and not biased by per-axis order.
 
-### 4.5 Segment retire
+### 4.5 Segment retire — participating_mask + pending_mask
 
 Phase 5 of `runtime_tick_sample` (firmware Task 9 stub) becomes:
 
-**Retire condition.** The current segment is retiring when every participating axis has exhausted its curve — i.e., every axis whose handle at segment-arm was non-sentinel now has `axis.curve_handle == None` (set by the piece-advancement loop above). Axes that were idle for the segment (sentinel handle at arm) are already in the "exhausted" state and don't gate retire. The check is purely structural: did all axes that had work to do finish that work?
+**Retire condition.** The current segment is retiring when every participating axis has exhausted its curve. The condition is purely structural — no dependence on `ds_xy_segment` (which is zero for pure-Z moves, retract/prime, intrinsic-E-only segments, etc., and would never gate retire on those).
 
-**Crucially, retire does NOT depend on `ds_xy_segment`.** Pure-Z moves, retract/prime, filament-change, intrinsic-E-only segments all have `ds_xy_segment == 0` throughout — gating retire on XY arc length would make those segments never retire. `ds_xy_segment` is purely an arc-length accumulator for the E-follows-XY PA math; it's reset on retire as a side effect, not used to detect retire.
+**Building `participating_mask` (4 bits, A/B/Z/E) at segment-arm:**
 
-To check "every participating axis exhausted," the Engine snapshots a 4-bit `participating_mask` at segment-arm (one bit per axis whose handle was non-sentinel). The retire test is: for each bit set in `participating_mask`, that axis's `curve_handle` is now `None`. Equivalent and cheaper than per-axis bookkeeping: track a 4-bit `pending_mask` that starts equal to `participating_mask` and clears the bit for an axis when that axis's curve exhausts. Retire when `pending_mask == 0`. Both masks live on the Engine alongside `current_segment_id`.
+| Axis | Bit included if … |
+|---|---|
+| A (X primary) | `x_handle != UNUSED_SENTINEL` |
+| B (Y primary, or CoreXY motor B) | `y_handle != UNUSED_SENTINEL` |
+| Z | `z_handle != UNUSED_SENTINEL` |
+| E | `e_handle != UNUSED_SENTINEL` **AND** `e_mode == Independent` |
+
+The E axis's participation gates on `e_mode` because:
+- **CoupledToXy:** E motion is derived from XY arc length (follower math, §4.6). The intrinsic E curve, if present, may legitimately have a shorter duration than XY — the follower keeps producing E motion past the intrinsic curve's exhaustion. E does NOT gate retire; XY does.
+- **Independent:** E has its own duration, independent of XY. E DOES gate retire alongside X/Y/Z.
+- **Travel:** No E motion at all. Host should send `e_handle = UNUSED_SENTINEL`. E doesn't participate.
+
+**`pending_mask` (also 4 bits):** initialized equal to `participating_mask` at segment-arm. Each bit clears when its axis's curve exhausts (advancement-loop sets `axis.curve_handle = None`). Retire fires when `pending_mask == 0`.
+
+Both masks live on `Engine::current_segment` (the `ActiveSegment` struct above) alongside `current_segment_id`. `engine_get_pending_mask(seg)` exposes the current value for the per-axis advancement loop's early-exhaustion check (§4.4).
+
+**Early exhaustion → fault.** If any axis whose bit is in `participating_mask` exhausts while OTHER bits in `pending_mask` are still set, `raise_piece_advance_underflow(axis_idx)` fires from the advancement loop. The host shorted the curve relative to its siblings — a duration mismatch that must surface immediately, not silently hold-and-wait. Specifically because participating excludes CoupledToXy-mode E, the E intrinsic curve may legitimately exhaust early in that mode without faulting.
 
 **What gets published on retire.**
 
@@ -305,6 +390,57 @@ To check "every participating axis exhausted," the Engine snapshots a 4-bit `par
 After publish, the Engine clears `current_segment_id`, `participating_mask`, `pending_mask` to await the next segment-arm.
 
 **Handle lifecycle.** Per-axis `axis.curve_handle` is set to `None` when the curve exhausts (during piece advancement). This is correct — those handles are no longer needed for ISR evaluation, and the foreground `RetirementTable` (a separate data structure indexed by segment id, not by axis) is the source of truth for which slots get reclaimed. The ISR does not need to remember handles past curve exhaustion; clearing them frees `AxisConfig` state for the next segment's arm.
+
+### 4.6 E-axis follower math — three e_mode cases
+
+The E axis is evaluated in Phase 3 of `runtime_tick_sample`. Its position output depends on the current segment's `e_mode`, NOT solely on whether `axis_e.piece` is `Some`. This is the crucial fix that lets normal extruding XY moves produce E motion even without an intrinsic E curve.
+
+Let `current = Engine::current_segment.as_ref()` (the `ActiveSegment` from §3.3). For each sample:
+
+```rust
+fn evaluate_e_axis(
+    axis_e: &mut AxisConfig,
+    current: Option<&ActiveSegment>,
+    ds_xy_this_sample: f32,        // computed from Phase 2 of runtime_tick_sample
+    pa_k: f32,                     // pressure-advance coefficient, sign-of-accel-aware
+    v_xy_this: f32,                // from Phase 2
+    t_sample_end_global: f32,
+    cycles_per_second: f32,
+) -> f32 {
+    let Some(seg) = current else { return axis_e.last_p_e; };
+
+    // Intrinsic part: evaluated from axis_e.piece if any, else zero.
+    let intrinsic = if let Some(piece) = axis_e.piece {
+        let t_local = t_sample_end_global - piece_start_seconds(axis_e, cycles_per_second);
+        let (p, _v) = monomial_horner_eval(piece, t_local);
+        p
+    } else {
+        // No intrinsic E curve for this segment (or curve already exhausted).
+        // Total E motion comes from the follower term for CoupledToXy; zero for
+        // Independent (E truly idle) or Travel.
+        0.0
+    };
+
+    match seg.e_mode {
+        EMode::CoupledToXy => {
+            // E = intrinsic + extrusion_ratio * ds_xy_segment + PA correction
+            let follower = seg.extrusion_ratio_per_xy_mm * ds_xy_segment_accumulator;
+            let pa_correction = pa_k * seg.extrusion_ratio_per_xy_mm * v_xy_this;
+            intrinsic + follower + pa_correction
+        }
+        EMode::Independent => intrinsic,
+        EMode::Travel => 0.0,
+    }
+}
+```
+
+**Implication for arm logic.** When `e_mode == CoupledToXy` and `e_handle == UNUSED_SENTINEL`, the segment-arm still leaves `axis_e.piece = None` (no intrinsic), but the Phase-3 evaluator runs the follower math anyway because of `seg.e_mode`. This is the case for a "normal extruding XY move" — host doesn't need to allocate a curve slot just to send a zero intrinsic E polynomial.
+
+**Implication for participating_mask.** Per §4.5, the E bit goes into `participating_mask` only when `e_mode == Independent` (and handle non-sentinel). CoupledToXy follower segments retire on XY exhaustion regardless of when (or whether) the E intrinsic curve runs out. The early-exhaustion fault doesn't fire on E's intrinsic exhaustion in CoupledToXy mode.
+
+**Independent mode with no intrinsic.** If `e_mode == Independent` and `e_handle == UNUSED_SENTINEL`, E truly doesn't move — this is the "Z-only hop" or "purge before retract" pattern. The E bit is NOT in participating_mask (handle is sentinel), so E doesn't gate retire; XY/Z does.
+
+This preserves the existing per-segment `e_mode` + `extrusion_ratio` model — the firmware redesign doesn't break or replace it. The axis-level `extrusion_per_xy_mm` field that firmware Task 6 added is stale; the per-segment field on the existing `runtime_handle_push_segment` FFI is the authoritative source.
 
 ---
 
@@ -329,8 +465,11 @@ void command_kalico_configure_axis(uint32_t *args) {
     uint32_t mstep_bits     = args[2];
     uint32_t extrusion_bits = args[3];
     uint8_t stepper_count   = args[4];
-    const uint8_t *blob     = (const uint8_t *)args[5];
-    uint16_t blob_len       = args[6];
+    // Klipper's %*s blob format consumes TWO args slots: length FIRST,
+    // then an encoded pointer that MUST go through command_decode_ptr.
+    // See src/i2ccmds.c (canonical pattern) and src/runtime_tick.c:1411.
+    uint16_t blob_len       = args[5];
+    const uint8_t *blob     = command_decode_ptr(args[6]);
 
     // ── Phase 1: validate everything; no mutations.
     if (axis_idx >= RUNTIME_MOTOR_COUNT)
@@ -343,10 +482,17 @@ void command_kalico_configure_axis(uint32_t *args) {
         shutdown("configure_axis blob length mismatch");
 
     // Resolve every OID, build a local staging array. Reject reserved flag bits.
+    // `tmc_cs_oid` is the OID of the existing command_config_spi allocation
+    // (i.e., a klipper-protocol OID, NOT a struct spidev_s * pointer). The
+    // foreground SPI drain task (`runtime_tick.c`'s spi_drain_event)
+    // dispatches through `oid_lookup(tmc_cs_oid, command_config_spi)` +
+    // `spidev_transfer(...)`. Storing the OID (a u8, padded into a u32 for
+    // ABI clarity) avoids the host/MCU pointer-size mismatch and the
+    // confusion of "is this a CS pin or a spidev_s *?".
     struct {
         struct stepper *stepper;
         uint8_t invert_dir;
-        uint32_t tmc_cs_handle;
+        uint8_t tmc_cs_oid;          // 0xFF = none
     } staged[RUNTIME_MAX_STEPPERS_PER_MOTOR] = {0};
 
     for (uint8_t i = 0; i < stepper_count; i++) {
@@ -361,24 +507,26 @@ void command_kalico_configure_axis(uint32_t *args) {
             shutdown("configure_axis dir_invert must be 0 or 1");
 
         struct stepper *s = oid_lookup(stepper_oid, command_config_stepper);
-        // oid_lookup shuts down on bad oid, so reaching here means s is valid.
+        // oid_lookup shuts down on bad oid; reaching here means s is valid.
 
-        uint32_t tmc_cs_handle = 0;
         if (tmc_cs_oid != 0xFF) {
-            tmc_cs_handle = (uint32_t)(uintptr_t)
-                oid_lookup(tmc_cs_oid, command_config_spi);
+            // Validate the spi OID is allocated — oid_lookup shuts down on
+            // bad oid. Return value not stored (the OID itself is what we
+            // carry forward; the lookup is purely a validation step).
+            (void)oid_lookup(tmc_cs_oid, command_config_spi);
         }
 
         staged[i].stepper = s;
         staged[i].invert_dir = dir_invert;
-        staged[i].tmc_cs_handle = tmc_cs_handle;
+        staged[i].tmc_cs_oid = tmc_cs_oid;
     }
 
     // ── Phase 2: Rust-side validation (microstep_distance finite/positive,
-    // engine not mid-motion for mode change, etc.). Pass staged tmc_cs handles.
+    // engine not mid-motion for mode change, etc.). Pass tmc_cs as the OID.
     StepperBindingRust bindings[RUNTIME_MAX_STEPPERS_PER_MOTOR];
-    for (uint8_t i = 0; i < stepper_count; i++)
-        bindings[i].tmc_cs_handle = staged[i].tmc_cs_handle;
+    for (uint8_t i = 0; i < stepper_count; i++) {
+        bindings[i].tmc_cs_oid = staged[i].tmc_cs_oid;
+    }
     int32_t rc = kalico_runtime_configure_axis(
         runtime_handle, axis_idx, mode, mstep_bits, extrusion_bits,
         stepper_count, bindings);
