@@ -31,6 +31,7 @@ pub mod bezier_root;
 pub mod c_segment_queue;
 pub mod clock;
 pub mod config;
+pub mod cubic_curve;
 pub mod curve_pool;
 pub use curve_pool::RT_STORAGE_SIZE;
 pub mod endstop;

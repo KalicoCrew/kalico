@@ -55,7 +55,8 @@ fn main() {
          pub const MAX_KNOT_VECTOR_LEN: usize = {mkv};\n\
          pub const MAX_DEGREE: u8 = {mdg};\n\
          pub const CURVE_POOL_N: usize = {cpn};\n\
-         pub const RT_STORAGE_SIZE: usize = {rss};\n"
+         pub const RT_STORAGE_SIZE: usize = {rss};\n\
+         pub const MAX_PIECES_PER_CURVE: usize = 16;\n"
     );
     fs::write(out_dir.join("sizing.rs"), sizing_body).expect("write sizing.rs");
 
