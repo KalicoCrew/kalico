@@ -27,6 +27,10 @@ def avg(data):
     return sum(data) / len(data)
 
 
+def has_flag(gcmd: GCodeCommand, name):
+    return gcmd.get(name, default="False").strip().lower() in {"1", "true"}
+
+
 class SampleStructure(Enum):
     # COLUMN = column index, colum header label
     TIME = 0, "time"
@@ -147,7 +151,46 @@ class LoadCellCommandHelper:
     cmd_CALIBRATE_LOAD_CELL_help = "Start interactive calibration tool"
 
     def cmd_LOAD_CELL_CALIBRATE(self, gcmd: GCodeCommand):
-        LoadCellGuidedCalibrationHelper(self.printer, self.load_cell)
+        # just tare or run the whole guided calibration experience?
+        if has_flag(gcmd, "TARE"):
+            self._calibration_tare(gcmd)
+        else:
+            LoadCellGuidedCalibrationHelper(self.printer, self.load_cell)
+
+    # set reference tare counts on a calibrated load cell
+    def _calibration_tare(self, gcmd: GCodeCommand):
+        # it is invalid to set the reference tare counts on an uncalibrated
+        # load cell. Prompt user to run full calibration
+        if not self.load_cell.is_calibrated():
+            raise gcmd.error(
+                "Load cell has not been calibrated. Run LOAD_CELL_CALIBRATE first."
+            )
+        reporter: ForceReporter = ForceReporter(gcmd, self.load_cell)
+        reporter.report(ZeroReference.ZERO, "New reference tare value: 0 = ")
+        self._report_calibration_change(gcmd, reporter)
+        LoadCellGuidedCalibrationHelper.calibration_warning(
+            gcmd, self.load_cell, reporter.counts
+        )
+        save = gcmd.get("SAVE", default="False").strip().lower() in {
+            "1",
+            "true",
+        }
+        self.load_cell.set_reference_tare_counts(
+            reporter.channel_counts, save=save
+        )
+
+    def _report_calibration_change(
+        self, gcmd: GCodeCommand, reporter: ForceReporter
+    ):
+        change = reporter.counts - self.load_cell.reference_tare_counts
+        formatter = ForceFormatter(
+            counts=change,
+            percent=self.load_cell.counts_to_percent(change),
+            force=self.load_cell.counts_to_grams(change, ZeroReference.ZERO),
+        )
+        gcmd.respond_info(
+            "Calibration changed by: " + formatter.format(show_counts=False)
+        )
 
     cmd_LOAD_CELL_READ_help = "Take a reading from the load cell"
 
