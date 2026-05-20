@@ -4,6 +4,8 @@
 # Move-issuing calls raise NotImplementedError; status/query methods work.
 import logging
 import os
+import struct
+from collections import defaultdict
 
 from . import chelper
 from . import motion_kinematics
@@ -891,32 +893,83 @@ class MotionToolhead(ToolHead):
                 phase_configs=phase_configs if any_phase_stepping else None,
             )
             # Step 7-D: bind every stepper attached to each runtime motor
-            # index to the C-side runtime_emit_step_pulses table. config_stepper
-            # was already issued during MCU config phase; the runtime binding
-            # is sent post-connect as a regular klipper-protocol command.
+            # index to the C-side runtime emit table. config_stepper was
+            # already issued during MCU config phase; the runtime binding is
+            # sent post-connect as a regular klipper-protocol command.
             # Each stepper's `invert_dir` (from `dir_pin: !PIN` in printer.cfg)
-            # is forwarded so runtime_emit_step_pulses can XOR it into the
-            # dir_pin level — without this, mainline-style step-count sign
-            # flipping (which lives in stepcompress and is bypassed in bridge
-            # mode) leaves polarity unhonored and motors run in reverse.
+            # is forwarded so the runtime can XOR it into the dir_pin level —
+            # without this, mainline-style step-count sign flipping (which
+            # lives in stepcompress and is bypassed in bridge mode) leaves
+            # polarity unhonored and motors run in reverse.
             #
-            # MCUs without CONFIG_KALICO_RUNTIME (no config_runtime_stepper in
+            # Replaces the legacy config_runtime_stepper per-stepper emit
+            # with the new per-axis kalico_configure_axis command
+            # (stepping-redesign-finish Task 20). One command per axis
+            # carries a %*s blob of per-stepper bindings, 4 bytes each:
+            #   { stepper_oid: u8, dir_invert: u8, tmc_cs_oid: u8, flags: u8 }
+            # tmc_cs_oid = 0xFF (TMC_CS_OID_NONE) for Pulse-only steppers;
+            # Phase mode is rejected at the FFI per spec §5.2, so all axes
+            # are Pulse mode in this cutover.
+            #
+            # MCUs without the new command (no stepping-redesign runtime in
             # their data dict) raise on the lookup; skip silently — those
             # steppers stay on legacy paths (and do nothing in bridge mode).
             try:
-                bind_cmd = mcu_obj.lookup_command(
-                    "config_runtime_stepper motor_idx=%c stepper_oid=%c"
-                    " invert_dir=%c"
+                configure_axis_cmd = mcu_obj.lookup_command(
+                    "kalico_configure_axis axis_idx=%c mode=%c"
+                    " microstep_distance=%u extrusion_per_xy_mm=%u"
+                    " stepper_count=%c steppers=%*s"
                 )
             except Exception:
                 logging.info(
-                    "MotionToolhead: mcu=%s lacks config_runtime_stepper "
-                    "(no CONFIG_KALICO_RUNTIME); skipping runtime binding",
+                    "MotionToolhead: mcu=%s lacks kalico_configure_axis "
+                    "(no new stepping redesign command); skipping runtime "
+                    "binding",
                     name,
                 )
                 continue
+
+            # Group bind_list by axis (motor_idx). bind_list entries are
+            # (motor_idx, stepper_name, stepper_oid, invert_dir) tuples.
+            axis_bindings = defaultdict(list)  # axis_idx -> [(oid, invert)]
             for (motor_idx, sname, oid, inv) in bind_list:
-                bind_cmd.send([motor_idx, oid, inv])
+                axis_bindings[motor_idx].append((oid, inv))
+
+            MODE_PULSE = 0
+            TMC_CS_OID_NONE = 0xFF
+            FLAGS_DEFAULT = 0
+
+            for axis_idx, bindings in axis_bindings.items():
+                # microstep_distance: mm per microstep, derived from
+                # steps_per_mm. Axis present in bindings with no/zero
+                # steps_per_mm is misconfigured; skip.
+                spm = (
+                    steps_per_mm[axis_idx]
+                    if axis_idx < len(steps_per_mm)
+                    else 0.0
+                )
+                if spm <= 0:
+                    continue
+                microstep_distance = 1.0 / spm
+                # Pack f32 as u32 bits for wire transport.
+                microstep_bits = struct.unpack(
+                    '<I', struct.pack('<f', microstep_distance)
+                )[0]
+                # extrusion_per_xy_mm is unused by the new firmware (the
+                # per-segment field on push_segment is authoritative); send
+                # 0.0 for ABI compatibility.
+                extrusion_bits = 0
+                # Build the bindings blob (4 bytes per stepper).
+                blob = bytearray()
+                for (oid, inv) in bindings:
+                    blob.append(oid)
+                    blob.append(inv & 0x01)
+                    blob.append(TMC_CS_OID_NONE)
+                    blob.append(FLAGS_DEFAULT)
+                configure_axis_cmd.send([
+                    axis_idx, MODE_PULSE, microstep_bits, extrusion_bits,
+                    len(bindings), bytes(blob),
+                ])
             logging.info(
                 "MotionToolhead: configure_axes mcu=%s kin=%d "
                 "present=0x%x awd=0x%x invert=0x%x steps_per_mm=%s "
