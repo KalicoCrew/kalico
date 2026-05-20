@@ -192,7 +192,11 @@ fn dispatch_pulse(
     // `position_count` for steps that DID land in the queue (i.e., that
     // the C-side per-axis timer will fire as physical motion). Otherwise
     // the host's view of stepper position desyncs from physical reality.
+    // Step index incremented per successful push; tracked explicitly so a
+    // partial overflow can commit `position_count` for steps that already
+    // landed in the queue.
     let mut steps_committed: i32 = 0;
+    #[allow(clippy::explicit_counter_loop)]
     for cycle_abs in times.iter().copied() {
         let entry = StepEntry { cycle_abs, dir, _pad: [0; 3] };
         // SAFETY: `queue_ptr` is supplied by the caller (TIM5 ISR), who
@@ -262,8 +266,8 @@ fn commit_position_count(
 /// - `current == target` means nothing to do.
 ///
 /// `wrapping_sub` is used on the i32 delta computation: `current` and
-/// `target` are both i32 and either of them could be near i32::MIN /
-/// i32::MAX under a pathological host request; wrapping is the safe shape
+/// `target` are both i32 and either of them could be near `i32::MIN` /
+/// `i32::MAX` under a pathological host request; wrapping is the safe shape
 /// because we only inspect `delta.abs()` and `delta > 0` afterwards, and
 /// a wrapped delta still selects the correct ramp direction for any
 /// realistic step (max u16 == 65535 microsteps is many full revolutions).
@@ -582,45 +586,41 @@ fn advance_piece_if_needed(
         axis.piece_cursor = axis.piece_cursor.saturating_add(1);
         advanced = true;
 
-        match axis.curve_handle {
-            Some(handle) => match curve_pool.lookup_active(handle) {
-                Some(curve_ptr) => {
-                    // SAFETY: `lookup_active` Acquire-loaded the slot's
-                    // `current_gen` and confirmed it matches `handle`,
-                    // synchronizing with the foreground's Release store
-                    // of the populated curve. The ISR is the sole reader,
-                    // and `curve_ptr` aliases the slot's UnsafeCell payload
-                    // for the duration of this borrow (no `&mut` to the
-                    // slot exists). Dereferencing is sound under §10.5.
-                    #[allow(unsafe_code)]
-                    let curve = unsafe { &*curve_ptr };
-                    if (axis.piece_cursor as usize) < curve.piece_count as usize {
-                        // SAFETY of index: piece_cursor < piece_count ≤
-                        // MAX_PIECES_PER_CURVE = pieces array length.
-                        #[allow(clippy::indexing_slicing)]
-                        let next = curve.pieces[axis.piece_cursor as usize];
-                        axis.piece = Some(next);
-                    } else {
-                        // Curve exhausted. Per-sample post-pass (Task 10)
-                        // owns the retire-vs-fault decision — clear local
-                        // state only and let the loop exit.
-                        axis.piece = None;
-                        axis.curve_handle = None;
-                        break;
-                    }
-                }
-                None => {
-                    // Slot generation drift (defensive; shouldn't happen
-                    // unless host retired the curve mid-segment).
+        if let Some(handle) = axis.curve_handle {
+            if let Some(curve_ptr) = curve_pool.lookup_active(handle) {
+                // SAFETY: `lookup_active` Acquire-loaded the slot's
+                // `current_gen` and confirmed it matches `handle`,
+                // synchronizing with the foreground's Release store
+                // of the populated curve. The ISR is the sole reader,
+                // and `curve_ptr` aliases the slot's UnsafeCell payload
+                // for the duration of this borrow (no `&mut` to the
+                // slot exists). Dereferencing is sound under §10.5.
+                #[allow(unsafe_code)]
+                let curve = unsafe { &*curve_ptr };
+                if (axis.piece_cursor as usize) < curve.piece_count as usize {
+                    // SAFETY of index: piece_cursor < piece_count ≤
+                    // MAX_PIECES_PER_CURVE = pieces array length.
+                    #[allow(clippy::indexing_slicing)]
+                    let next = curve.pieces[axis.piece_cursor as usize];
+                    axis.piece = Some(next);
+                } else {
+                    // Curve exhausted. Per-sample post-pass (Task 10)
+                    // owns the retire-vs-fault decision — clear local
+                    // state only and let the loop exit.
                     axis.piece = None;
                     axis.curve_handle = None;
                     break;
                 }
-            },
-            None => {
+            } else {
+                // Slot generation drift (defensive; shouldn't happen
+                // unless host retired the curve mid-segment).
                 axis.piece = None;
+                axis.curve_handle = None;
                 break;
             }
+        } else {
+            axis.piece = None;
+            break;
         }
 
         iters = iters.saturating_add(1);
@@ -663,8 +663,8 @@ fn advance_piece_if_needed(
 /// `engine_segment_base_e + segment_local`. The segment-local part
 /// dispatches on [`Segment::e_mode`](crate::segment::Segment::e_mode):
 ///
-/// - `CoupledToXy`: `intrinsic + extrusion_ratio * ds_xy_segment
-///   + pa_k * extrusion_ratio * v_xy_this`. The follower term integrates
+/// - `CoupledToXy`: `intrinsic + extrusion_ratio * ds_xy_segment + pa_k *
+///   extrusion_ratio * v_xy_this`. The follower term integrates
 ///   XY arc length since segment-arm; PA adds a velocity-proportional
 ///   correction whose sign (accelerating vs decelerating) the caller
 ///   has already baked into `pa_k`.
@@ -728,7 +728,11 @@ pub fn evaluate_e_axis(
     engine_segment_base_e + segment_local
 }
 
-#[allow(clippy::indexing_slicing)]
+// `runtime_tick_sample` is the per-sample ISR core. Spec §4 makes the
+// per-phase block structure load-bearing for review; splitting it into
+// helpers would obscure the ABXZ / A2 / E phase ordering documented in the
+// design. The 108-line body remains a deliberate single function.
+#[allow(clippy::indexing_slicing, clippy::too_many_lines)]
 pub fn runtime_tick_sample(ctx: &mut TickContext) {
     let mut p_end_axis = [0.0_f32; N_AXES];
     let mut v_end_axis = [0.0_f32; N_AXES];
@@ -877,11 +881,7 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
             ctx.cycles_per_second,
         );
 
-        if !p_end.is_finite() {
-            raise_math_non_finite(ctx.shared, AXIS_E);
-            p_end_axis[AXIS_E] = p_sample_start;
-            v_end_axis[AXIS_E] = 0.0;
-        } else {
+        if p_end.is_finite() {
             p_end_axis[AXIS_E] = p_end;
             // Phase-3 doesn't surface a separate E velocity (the secant-
             // slope sub-sample timing uses position differencing).
@@ -898,6 +898,10 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
                 ctx.now_cycles,
                 ctx.cycles_per_second,
             );
+        } else {
+            raise_math_non_finite(ctx.shared, AXIS_E);
+            p_end_axis[AXIS_E] = p_sample_start;
+            v_end_axis[AXIS_E] = 0.0;
         }
     }
 

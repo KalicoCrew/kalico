@@ -23,18 +23,18 @@
 
 #define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
 
+enum SourceKind {
+  Physical = 0,
+  TmcDiag = 1,
+};
+typedef uint8_t SourceKind;
+
 enum ArmPolicy {
   TripImmediately = 0,
   WaitForClear = 1,
   IgnoreUntilMoving = 2,
 };
 typedef uint8_t ArmPolicy;
-
-enum SourceKind {
-  Physical = 0,
-  TmcDiag = 1,
-};
-typedef uint8_t SourceKind;
 
 typedef struct SourceConfig SourceConfig;
 
@@ -87,6 +87,19 @@ typedef struct TraceSample {
   uint8_t flags;
   uint8_t _pad[7];
 } TraceSample;
+
+/**
+ * FFI ABI: per-stepper binding payload, passed from C to Rust by
+ * `kalico_runtime_configure_axis`. Sentinel: `tmc_cs_oid == 0xFF` means
+ * "no TMC driver" (Pulse-only stepper). OID 0 is a legal SPI OID and
+ * must not be conflated with "absent."
+ *
+ * Spec: `docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md` §5.2.
+ */
+typedef struct StepperBindingRust {
+  uint8_t tmc_cs_oid;
+  uint8_t _pad[3];
+} StepperBindingRust;
 
 
 
@@ -187,21 +200,18 @@ int32_t runtime_handle_query_pool_state(struct KalicoRuntime *rt,
                                         uint16_t *out_last_retired_gen);
 
 /**
- * Stepping-redesign Task 17 — new TIM5 ISR body.
+ * Stepping-redesign Task 17 — TIM5 ISR body.
  *
  * Drives the unified per-sample evaluator
  * [`runtime::tick::runtime_tick_sample`] over the engine's
  * `stepping_axes` / `tick_caches` and the runtime's shared state.
- * Mirrors the IsrState borrow discipline of
- * `kalico_runtime_modulated_tick`: project a `&mut IsrState`
- * (engine half) and a `&SharedState` (cross-half) out of
- * `RuntimeContext` exactly once per ISR fire.
+ * Projects a `&mut IsrState` (engine half) and a `&SharedState`
+ * (cross-half) out of `RuntimeContext` exactly once per ISR fire.
  *
  * Called from `TIM5_IRQHandler` in `src/stm32/runtime_tick_{h7,f4}.c`
  * at the rate configured by `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ`.
- * During the T17 staging window the legacy
- * `kalico_runtime_modulated_tick` symbol is preserved for callers
- * not yet cut over.
+ * Replaces the prior `kalico_runtime_modulated_tick` entry point
+ * removed in the 2026-05-20 stepping redesign.
  */
 void kalico_runtime_tick_sample(struct KalicoRuntime *rt);
 
@@ -607,8 +617,8 @@ int32_t kalico_runtime_set_step_mode(struct KalicoRuntime *rt,
 /**
  * Flip the `phase_trace_enabled` gate (2026-05-18 plan Task 5).
  *
- * When enabled, `Engine::producer_step` / `runtime_modulated_tick`
- * push one `TRACE_FLAG_PHASE_STEP`-flagged `TraceSample` per
+ * When enabled, `runtime_tick_sample` pushes one
+ * `TRACE_FLAG_PHASE_STEP`-flagged `TraceSample` per
  * phase-stepping tick per motor (Task 6 wiring). Default is `false`;
  * production builds leave it off so the trace ring isn't burned by
  * the 80 kHz per-motor PhaseStep stream when no diagnostic is active.
@@ -743,27 +753,18 @@ uint32_t kalico_runtime_get_dispatcher_floor_cycles(void);
 uint32_t kalico_runtime_get_sample_period_cycles(void);
 
 /**
- * Per-stepper binding descriptor passed from C to Rust via
- * `kalico_runtime_configure_axis`. `tmc_cs_oid == 0xFF` means
- * "no TMC driver" (Pulse-only stepper). OID 0 is a legal SPI
- * OID and must not be conflated with absent.
- * Size: 4 bytes (1 + 3 pad). `#[repr(C)]`.
- */
-typedef struct StepperBindingRust {
-    uint8_t tmc_cs_oid;
-    uint8_t _pad[3];
-} StepperBindingRust;
-
-#define TMC_CS_OID_NONE ((uint8_t)0xFF)
-
-/**
- * Stepping-redesign Task 14. Publish per-axis configuration: stepping
- * mode (Pulse / Phase) and microstep distance. `microstep_distance_f32_bits`
- * is `f32::to_bits` of the per-step distance. `mode` is `0` for Pulse,
- * `1` for Phase (currently rejected with KALICO_ERR_PHASE_MODE_NOT_AVAILABLE);
- * other values are rejected. `bindings_ptr` points to `stepper_count`
- * `StepperBindingRust` entries; null is legal when `stepper_count == 0`.
- * Returns `0` on success, negative on validation failure.
+ * Stepping-redesign Task 14. Publish per-axis configuration with
+ * explicit stepper bindings. `microstep_distance_f32_bits` is
+ * `f32::to_bits` of the per-step distance (Klipper carries f32 as u32
+ * on the wire). `mode` is `0` for Pulse; `1` for Phase — Phase is
+ * currently rejected with `KALICO_ERR_PHASE_MODE_NOT_AVAILABLE` (the
+ * SPI dispatch path is a follow-up task). Other mode values return
+ * `KALICO_ERR_INVALID_ARG`. `bindings_ptr` points to an array of
+ * `stepper_count` [`runtime::stepping_state::StepperBindingRust`]
+ * entries; a null pointer with `stepper_count == 0` is legal (axis
+ * with no steppers, e.g. virtual / logical-only). Returns `0` on
+ * success, negative on validation failure. The C handler treats any
+ * non-zero return as a hard error and shuts the MCU down.
  */
 int32_t kalico_runtime_configure_axis(struct KalicoRuntime *rt,
                                       uint8_t axis_idx,

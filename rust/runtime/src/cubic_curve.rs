@@ -19,18 +19,21 @@ use crate::monomial::{bernstein_to_monomial_with_duration, BezierPieceMonomial};
 include!(concat!(env!("OUT_DIR"), "/sizing.rs"));
 
 /// A loaded per-axis curve: the array of monomial-form pieces the ISR walks
-/// via a (curve_handle, piece_cursor) pair on `AxisConfig`.
+/// via a (`curve_handle`, `piece_cursor`) pair on `AxisConfig`.
 #[repr(C)]
 #[derive(Debug)]
 pub struct LoadedCubicCurve {
     pub piece_count: u16,
+    // Two-byte ABI padding so `pieces` lands on its natural alignment.
+    // Public for FFI layout but never read from Rust.
+    #[allow(clippy::pub_underscore_fields)]
     pub _pad: [u8; 2],
     pub pieces: [BezierPieceMonomial; MAX_PIECES_PER_CURVE],
 }
 
 impl LoadedCubicCurve {
     /// Construct an empty curve (all pieces zeroed, count=0).
-    /// Used by the curve_pool slot initializer.
+    /// Used by the `curve_pool` slot initializer.
     pub const fn empty() -> Self {
         const ZERO_PIECE: BezierPieceMonomial = BezierPieceMonomial {
             coeffs: [0.0; 4],
@@ -52,7 +55,7 @@ pub enum CubicLoadError {
     NonPositiveDuration,
 }
 
-/// Per-piece wire entry decoded from the load_curve_cubic blob:
+/// Per-piece wire entry decoded from the `load_curve_cubic` blob:
 /// 4 Bernstein bits + duration bits, each u32 (f32 bit pattern).
 #[derive(Clone, Copy, Debug)]
 #[repr(C)]
@@ -101,7 +104,13 @@ pub fn populate_from_wire(
             f32::from_bits(w.bp3_bits),
         ];
         let d = f32::from_bits(w.duration_bits);
-        out.pieces[i] = bernstein_to_monomial_with_duration(bp, d);
+        // SAFETY/CORRECTNESS: `i` is bounded by `wire.len()`, which the
+        // Phase-1 `wire.len() > MAX_PIECES_PER_CURVE` check above has
+        // already rejected; the slice index is therefore in-range for the
+        // fixed-size `pieces` array.
+        if let Some(slot) = out.pieces.get_mut(i) {
+            *slot = bernstein_to_monomial_with_duration(bp, d);
+        }
     }
     out.piece_count = wire.len() as u16;
     Ok(())

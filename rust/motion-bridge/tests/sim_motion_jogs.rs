@@ -833,9 +833,10 @@ fn build_dispatch(
             );
             for (i, (axis_idx, cp)) in plan.curves_to_load.iter().enumerate() {
                 eprintln!(
-                    "[planner-trace]   curve[{}]: axis={} n_cps={} n_knots={} body_estimate={}",
-                    i, axis_idx, cp.cps_f32.len(), cp.knots_f32.len(),
-                    11 + 4 * (cp.cps_f32.len() + cp.knots_f32.len()),
+                    "[planner-trace]   curve[{}]: axis={} n_pieces={} body_estimate={}",
+                    i, axis_idx, cp.bp_per_piece.len(),
+                    // LoadCurveCubic wire body: 4 (header) + 20 bytes per piece
+                    4 + 20 * cp.bp_per_piece.len(),
                 );
             }
 

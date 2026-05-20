@@ -78,7 +78,7 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     e_accumulator: f64,
     /// Bitmask: bits 0-3 are axes A/B/Z/E. Set at `arm_segment` (Task 8)
     /// for each axis whose curve handle is non-sentinel AND which
-    /// participates in retire (E in CoupledToXy mode is non-participating).
+    /// participates in retire (E in `CoupledToXy` mode is non-participating).
     /// Spec: docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md §4.5.
     pub participating_mask: u8,
 
@@ -139,21 +139,22 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
 
     /// Kinematic scale factor relating logical-XY velocity to physical
     /// motor-coordinate velocity magnitude. `1.0` for Cartesian (XY motor
-    /// positions equal logical XY); `1.0 / sqrt(2)` for CoreXY (each motor
-    /// moves at √2 times the per-axis logical speed at 45° diagonals).
+    /// positions equal logical XY); `1.0 / sqrt(2)` for `CoreXY` (each motor
+    /// moves at `√2` times the per-axis logical speed at 45° diagonals).
     /// Consumed by the XY-arc-length integrator that feeds the E-follows-XY
     /// and pressure-advance paths. Spec §3.4.
     pub k_xy: f32,
 
     /// Linear pressure-advance coefficient during the toolhead's accelerating
-    /// phase (s). The unified tick adds `+ advance_accel * ratio_per_xy_mm
-    /// * |v_xy|` to the integrated extrusion while `v̇_xy > 0`. `0.0`
-    /// disables PA on acceleration. Spec §3.5.
+    /// phase (s). The unified tick adds
+    /// `+ advance_accel * ratio_per_xy_mm * |v_xy|` to the integrated
+    /// extrusion while `v̇_xy > 0`. `0.0` disables PA on acceleration.
+    /// Spec §3.5.
     pub advance_accel: f32,
 
     /// Linear pressure-advance coefficient during the toolhead's decelerating
-    /// phase (s). Mirror of `advance_accel`; allows asymmetric K_accel /
-    /// K_decel (Kalico bleeding-edge Step 9). `0.0` disables PA on
+    /// phase (s). Mirror of `advance_accel`; allows asymmetric `K_accel` /
+    /// `K_decel` (Kalico bleeding-edge Step 9). `0.0` disables PA on
     /// deceleration. Spec §3.5.
     pub advance_decel: f32,
 
@@ -391,6 +392,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             return KALICO_ERR_MOTION_IN_PROGRESS;
         }
 
+        // `axis_idx as usize < N_AXES` was checked above; the indexing is
+        // in-range for `stepping_axes: [_; N_AXES]`.
+        #[allow(clippy::indexing_slicing)]
         let axis = &mut self.stepping_axes[axis_idx as usize];
         axis.microstep_distance = microstep_distance;
         // Clear any prior piece so the next segment-arrival path re-seeds
@@ -427,7 +431,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
     /// Publish kinematic scale factor relating logical-XY velocity to
     /// physical motor-coordinate velocity. `1.0` for Cartesian, `1/√2`
-    /// (≈0.7071) for CoreXY. Validated finite + strictly positive — a
+    /// (≈ 0.7071) for `CoreXY`. Validated finite + strictly positive — a
     /// zero / negative `k_xy` would silently zero out the XY arc-length
     /// integrator that feeds E-follows-XY and pressure-advance.
     pub fn configure_kinematics(&mut self, k_xy: f32) -> i32 {
@@ -488,6 +492,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
         // Per-axis arm.
         for (axis_idx, handle) in handles.iter().enumerate() {
+            // `handles` has 4 entries and `stepping_axes` is `[_; N_AXES]`
+            // (N_AXES == 4); the index range matches by construction.
+            #[allow(clippy::indexing_slicing)]
             let axis = &mut self.stepping_axes[axis_idx];
             if *handle == crate::curve_pool::CurveHandle::UNUSED_SENTINEL {
                 axis.curve_handle = None;
@@ -520,12 +527,17 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
         // Compute participating_mask. Bits A/B/Z (0..2) follow handle
         // validity; bit E (3) ALSO requires e_mode == Independent.
+        // `stepping_axes` is `[_; N_AXES]` with N_AXES == 4; the literal
+        // indices 0..3 and 3 are in-range by construction.
+        #[allow(clippy::indexing_slicing)]
         let mut participating: u8 = 0;
+        #[allow(clippy::indexing_slicing)]
         for axis_idx in 0..3 {
             if self.stepping_axes[axis_idx].curve_handle.is_some() {
                 participating |= 1u8 << axis_idx;
             }
         }
+        #[allow(clippy::indexing_slicing)]
         if seg.e_mode == crate::config::EMode::Independent
             && self.stepping_axes[3].curve_handle.is_some()
         {
@@ -566,8 +578,11 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         let mut exhausted_now: u8 = 0;
         for axis_idx in 0..crate::stepping_state::N_AXES {
             let bit = 1u8 << axis_idx;
-            if self.participating_mask & bit != 0
-                && self.stepping_axes[axis_idx].curve_handle.is_none()
+            // `axis_idx < N_AXES` by construction; `stepping_axes` has
+            // length `N_AXES`.
+            #[allow(clippy::indexing_slicing)]
+            let exhausted = self.stepping_axes[axis_idx].curve_handle.is_none();
+            if self.participating_mask & bit != 0 && exhausted
             {
                 exhausted_now |= bit;
             }
@@ -601,7 +616,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     ///    `drain_and_reclaim` (`rust/runtime/src/reclaim.rs`) reads this
     ///    and calls `pool.confirm_retired` for each handle in the
     ///    `RetirementTable` entry keyed by `seg_id`.
-    /// 5. Roll forward `e_accumulator` by the segment's CoupledToXy
+    /// 5. Roll forward `e_accumulator` by the segment's `CoupledToXy`
     ///    contribution (`extrusion_ratio * ds_xy_segment`). For
     ///    `Independent` / `Travel` the intrinsic E NURBS already drove
     ///    the accumulator forward via Phase 3; Task 11 refines this.
@@ -798,6 +813,10 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // Phase tick maintains `last_step_count` on the Pulse-bound
         // `axis.last_step_count` field as a side-effect, so going the
         // other direction is already in sync.
+        // `axis_idx as usize < N_AXES` was validated by the caller's
+        // dispatcher (and re-asserted by the per-axis bounds check in
+        // `configure_axis`'s sibling callers).
+        #[allow(clippy::indexing_slicing)]
         let axis = &mut self.stepping_axes[axis_idx as usize];
         match new_mode {
             crate::stepping_state::StepMode::Phase => {
@@ -860,6 +879,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         let mut remaining = stepper_idx as usize;
         for axis in &mut self.stepping_axes {
             if remaining < axis.steppers.len() {
+                // `remaining < axis.steppers.len()` was just checked.
+                #[allow(clippy::indexing_slicing)]
                 let stepper = &axis.steppers[remaining];
                 let new_target = stepper
                     .phase_offset_target

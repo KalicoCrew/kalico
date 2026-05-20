@@ -1,5 +1,5 @@
-//! Per-axis Klipper SysTick consumer. Mainline pattern: fire one entry
-//! per dispatch when its cycle_abs has arrived; never early.
+//! Per-axis Klipper `SysTick` consumer. Mainline pattern: fire one entry
+//! per dispatch when its `cycle_abs` has arrived; never early.
 //!
 //! Body called from C-side `struct timer.func` via `extern "C"`.
 //!
@@ -69,7 +69,7 @@ pub extern "C" fn kalico_per_axis_step_event(axis_idx: u8) -> u32 {
                 // SAFETY: `runtime_emit_step_pulses` is the C-side step
                 // emitter (`src/stepper.c`); a NOP-on-out-of-range guard
                 // covers `axis_idx >= RUNTIME_MOTOR_COUNT`.
-                unsafe { runtime_emit_step_pulses(axis_idx, entry.dir as i32) };
+                unsafe { runtime_emit_step_pulses(axis_idx, i32::from(entry.dir)) };
             }
         }
     }

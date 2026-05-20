@@ -225,15 +225,14 @@ impl CurvePool {
     /// Spec: docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md §4.4.
     pub fn lookup_active(&self, handle: CurveHandle) -> Option<*const LoadedCubicCurve> {
         let slot_idx = handle.slot_idx as usize;
-        if slot_idx >= CURVE_POOL_N {
-            return None;
-        }
-        let slot = &self.slots[slot_idx];
+        // `slots` is `[Slot; CURVE_POOL_N]`; `.get(slot_idx)` is the
+        // panic-free form of indexing past the array length.
+        let slot = self.slots.get(slot_idx)?;
         let cur = slot.current_gen.load(Ordering::Acquire);
         if cur != handle.generation {
             return None;
         }
-        Some(slot.curve.get() as *const LoadedCubicCurve)
+        Some(slot.curve.get().cast_const())
     }
 
     /// §8.5 flush helper. Resets every slot's `last_retired_gen` to its

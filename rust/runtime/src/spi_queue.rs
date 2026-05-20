@@ -46,6 +46,9 @@ pub const N_SPI_BUSES: usize = 3;
 pub struct SpiWrite {
     pub tmc_cs_oid: u8,
     pub reg: u8,
+    // ABI padding so `value` lands on its natural 4-byte alignment. Public
+    // for FFI layout; never read from Rust.
+    #[allow(clippy::pub_underscore_fields)]
     pub _pad: [u8; 2],
     pub value: i32,
 }

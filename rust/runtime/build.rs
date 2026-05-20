@@ -21,8 +21,8 @@
 //!    buffer (replaces the prior Rust-side `RT_CELL` with `#[link_section]`).
 //!    See `docs/superpowers/specs/2026-05-19-mcu-c-rust-boundary-refactor-design.md`.
 //!
-//!    NURBS sizing constants (MAX_CONTROL_POINTS, MAX_KNOT_VECTOR_LEN,
-//!    MAX_DEGREE) were removed in the 2026-05-20 stepping-redesign refactor;
+//!    NURBS sizing constants (`MAX_CONTROL_POINTS`, `MAX_KNOT_VECTOR_LEN`,
+//!    `MAX_DEGREE`) were removed in the 2026-05-20 stepping-redesign refactor;
 //!    the runtime now uses uniform cubic Bézier pieces exclusively.
 //!
 //! 3. Pre-compute an identity-sinusoid LUT for phase stepping (Step 10).

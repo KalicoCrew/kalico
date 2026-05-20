@@ -1,4 +1,4 @@
-//! Rust mirror of the C-side StepQueue (`src/step_queue.h`).
+//! Rust mirror of the C-side `StepQueue` (`src/step_queue.h`).
 //!
 //! Storage is owned by C — on the MCU, the C translation unit declares a
 //! `[StepQueue; N_AXIS_STEP_QUEUES]` placed in `.axi_bss` (or equivalent),
@@ -44,6 +44,9 @@ pub const N_AXIS_STEP_QUEUES: usize = 4;
 pub struct StepEntry {
     pub cycle_abs: u32,
     pub dir: i8,
+    // ABI tail padding so each entry is 8 bytes. Public for FFI layout;
+    // never read from Rust.
+    #[allow(clippy::pub_underscore_fields)]
     pub _pad: [u8; 3],
 }
 

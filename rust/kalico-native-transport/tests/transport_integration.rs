@@ -111,7 +111,7 @@ fn schema_hash_mismatch_faults() {
     assert!(matches!(transport.state(), ConnectionState::Faulted(_)));
 
     // Subsequent call refuses.
-    let err = transport.call(MessageKind::LoadCurve, &[], Duration::from_millis(50)).unwrap_err();
+    let err = transport.call(MessageKind::LoadCurveCubic, &[], Duration::from_millis(50)).unwrap_err();
     assert!(matches!(err, TransportError::NotIdentified(_)));
 }
 
@@ -161,7 +161,7 @@ fn reset_epoch_transition_invalidates_inflight() {
     }
 
     let err = transport
-        .call(MessageKind::LoadCurve, &[0u8; 4], Duration::from_secs(2))
+        .call(MessageKind::LoadCurveCubic, &[0u8; 4], Duration::from_secs(2))
         .unwrap_err();
     assert!(matches!(err, TransportError::Reset), "{err:?}");
 
@@ -170,7 +170,7 @@ fn reset_epoch_transition_invalidates_inflight() {
 
     // Transport is now Unidentified; further calls fail until re-identified.
     let err = transport
-        .call(MessageKind::LoadCurve, &[0u8; 4], Duration::from_millis(50))
+        .call(MessageKind::LoadCurveCubic, &[0u8; 4], Duration::from_millis(50))
         .unwrap_err();
     assert!(matches!(err, TransportError::NotIdentified(_)));
 }

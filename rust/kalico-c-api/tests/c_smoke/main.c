@@ -49,6 +49,18 @@ uint64_t runtime_host_now_us(void) { return 0ULL; }
 uint32_t runtime_irq_save(void) { return 0u; }
 void runtime_irq_restore(uint32_t flags) { (void)flags; }
 
+/* Klipper timer + stats interfaces used by the widened-now path and the
+ * per-axis step timer (runtime/src/per_axis_timer.rs, kalico-c-api widened
+ * clock). On MCU these come from src/sched.c and src/basecmd.c; here we
+ * stub them so the host link resolves. */
+uint32_t timer_read_time(void) { return 0u; }
+uint8_t timer_is_before(uint32_t a, uint32_t b) { (void)a; (void)b; return 0u; }
+void runtime_emit_step_pulses(uint8_t axis_idx, int32_t n_steps) {
+    (void)axis_idx; (void)n_steps;
+}
+uint32_t stats_send_time = 0u;
+uint32_t stats_send_time_high = 0u;
+
 int main(void) {
     /* Trivial smoke — link symbol resolution check. We don't assert on the
      * returned handle's value; init may legitimately succeed or (on a second

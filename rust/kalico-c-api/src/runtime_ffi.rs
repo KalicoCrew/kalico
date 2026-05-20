@@ -602,21 +602,18 @@ pub mod exports {
         KALICO_OK
     }
 
-    /// Stepping-redesign Task 17 — new TIM5 ISR body.
+    /// Stepping-redesign Task 17 — TIM5 ISR body.
     ///
     /// Drives the unified per-sample evaluator
     /// [`runtime::tick::runtime_tick_sample`] over the engine's
     /// `stepping_axes` / `tick_caches` and the runtime's shared state.
-    /// Mirrors the IsrState borrow discipline of
-    /// `kalico_runtime_modulated_tick`: project a `&mut IsrState`
-    /// (engine half) and a `&SharedState` (cross-half) out of
-    /// `RuntimeContext` exactly once per ISR fire.
+    /// Projects a `&mut IsrState` (engine half) and a `&SharedState`
+    /// (cross-half) out of `RuntimeContext` exactly once per ISR fire.
     ///
     /// Called from `TIM5_IRQHandler` in `src/stm32/runtime_tick_{h7,f4}.c`
     /// at the rate configured by `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ`.
-    /// During the T17 staging window the legacy
-    /// `kalico_runtime_modulated_tick` symbol is preserved for callers
-    /// not yet cut over.
+    /// Replaces the prior `kalico_runtime_modulated_tick` entry point
+    /// removed in the 2026-05-20 stepping redesign.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_tick_sample(rt: *mut KalicoRuntime) {
         if rt.is_null() {
@@ -628,8 +625,7 @@ pub mod exports {
         let ctx = rt.cast::<RuntimeContext>();
         // SAFETY: `rt` non-null and INIT_DONE=true. TIM5 is the SOLE
         // writer of `IsrState`, so the disjoint half-split borrow
-        // (engine via IsrState; shared state via `&`) is sound — same
-        // discipline as `kalico_runtime_modulated_tick`.
+        // (engine via IsrState; shared state via `&`) is sound.
         unsafe {
             let isr_ptr: *mut IsrState =
                 UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
@@ -1359,14 +1355,14 @@ pub mod exports {
         }
         // Same "fresh session" semantics: clear the C-side
         // motor→stepper binding table so the upcoming stream of
-        // config_runtime_stepper commands populates a fresh slate.
+        // `kalico_configure_axis` commands populates a fresh slate.
         // Without this, the table accumulates across klippy
         // reconnects (the MCU stays powered) and motor 0 / motor 1 hit
         // RUNTIME_MAX_STEPPERS_PER_MOTOR=4 after two reconnects —
         // the third shutdowns with "too many steppers per motor".
-        // Bench-observed 2026-05-11 after F446 KALICO_RUNTIME
-        // enablement, when klippy began re-running
-        // config_runtime_stepper for both H7 and F446 each session.
+        // Bench-observed 2026-05-11 (pre-redesign, where the same
+        // failure mode applied to the legacy `config_runtime_stepper`
+        // path that `kalico_configure_axis` replaced in Task 21).
         diag_progress(0xCA, 7, 0);
         #[cfg(target_os = "none")]
         {
@@ -2208,8 +2204,8 @@ pub mod exports {
 
     /// Flip the `phase_trace_enabled` gate (2026-05-18 plan Task 5).
     ///
-    /// When enabled, `Engine::producer_step` / `runtime_modulated_tick`
-    /// push one `TRACE_FLAG_PHASE_STEP`-flagged `TraceSample` per
+    /// When enabled, `runtime_tick_sample` pushes one
+    /// `TRACE_FLAG_PHASE_STEP`-flagged `TraceSample` per
     /// phase-stepping tick per motor (Task 6 wiring). Default is `false`;
     /// production builds leave it off so the trace ring isn't burned by
     /// the 80 kHz per-motor PhaseStep stream when no diagnostic is active.

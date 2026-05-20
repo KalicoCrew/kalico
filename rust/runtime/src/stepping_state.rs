@@ -29,15 +29,19 @@ pub enum StepMode {
 /// the ISR reads/writes.
 ///
 /// Spec: `docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md` §4.2.
+//
+// `last_coil_A` / `last_coil_B` retain capitalized A/B to match TMC coil
+// notation in the spec and datasheets — struct-level `#[allow(non_snake_case)]`
+// silences rustc field-level lints (field-level `#[allow]` did not suppress
+// per testing on rustc 1.79+).
+#[allow(non_snake_case)]
 #[derive(Debug)]
 pub struct StepperRef {
     pub position_count: AtomicI32,
     /// OID of `command_config_spi` for this stepper's TMC driver. `None`
     /// means Pulse-only (no SPI traffic for this stepper).
     pub tmc_cs_oid: Option<u8>,
-    #[allow(non_snake_case)]
     pub last_coil_A: AtomicI16,
-    #[allow(non_snake_case)]
     pub last_coil_B: AtomicI16,
     pub phase_offset_microsteps: AtomicI32,
     pub phase_offset_target: AtomicI32,
@@ -68,6 +72,10 @@ impl StepperRef {
 #[derive(Clone, Copy, Debug)]
 pub struct StepperBindingRust {
     pub tmc_cs_oid: u8,
+    // Three-byte ABI padding to round to the 4-byte slot. Public for FFI
+    // layout but never read from Rust; underscore prefix preserves "private
+    // by convention" signaling.
+    #[allow(clippy::pub_underscore_fields)]
     pub _pad: [u8; 3],
 }
 const _: () = assert!(core::mem::size_of::<StepperBindingRust>() == 4);
@@ -91,7 +99,7 @@ pub struct AxisConfig {
     /// Index into the loaded curve's `pieces` array. Advanced by
     /// `advance_piece_if_needed` (Task 9).
     pub piece_cursor: u16,
-    /// Cached active piece (= curve.pieces[piece_cursor]). Refreshed
+    /// Cached active piece (= `curve.pieces[piece_cursor]`). Refreshed
     /// only on piece-boundary advancement.
     pub piece: Option<BezierPieceMonomial>,
     pub piece_start_time_cycles: u64,
