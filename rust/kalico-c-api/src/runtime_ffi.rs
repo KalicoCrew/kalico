@@ -136,6 +136,17 @@ pub mod exports {
         fn runtime_tick_enable();
         fn runtime_tick_disable();
         fn runtime_cyccnt_read() -> u32;
+        // Boot-relative widened MCU clock — defined in src/runtime_tick.c
+        // via timer_read_time() widened with stats_send_time_high. This
+        // is the same time domain the host uses for segment t_start (the
+        // host's `kalico_clock_sync_response` returns this value, and the
+        // host's bridge computes seg.t_start = now_estimate + arm_lead in
+        // this domain). Seeding the ISR's `WidenState` with this value so
+        // the DWT-widened clock matches the host's time base — without it
+        // the widening starts at 0 while seg.t_start is billions of cycles,
+        // and `isr_sample_tick` parks every segment forever in
+        // `IsrState::pending_segment`. 2026-05-21 bench debug.
+        pub(super) fn runtime_widened_host_clock() -> u64;
     }
 
     /// Init-once. Spec §3.2.
@@ -450,14 +461,24 @@ pub mod exports {
                 let raw = super::exports::runtime_cyccnt_read();
                 let isr_ptr_mut = isr_ptr_const.cast_mut();
                 let widen_state = &mut (*isr_ptr_mut).widen_state;
-                // Reconstruct last-widened high-water mark from the ISR's
-                // pre-disable state. `WidenState` exposes its fields
-                // crate-private but not pub, so we approximate by reading
-                // the seqlock-published widened-now from SharedState
-                // (§11.4) — that's the most recent widened sample the ISR
-                // produced before being disabled.
-                let last_widened = runtime::clock::read_widened_now(shared);
+                // Seed widening with the C-side boot-relative widened clock
+                // (`runtime_widened_host_clock` — timer_read_time widened
+                // with stats_send_time_high). That's the same time base the
+                // host uses to compute `seg.t_start`, so the ISR's
+                // `widen()` returns values in the same domain. Reading the
+                // shared seqlock here was the previous behaviour, but the
+                // seqlock is 0 until the first ISR publish — meaning the
+                // very first segment lands with widened_now ~0 vs
+                // t_start = billions, and `isr_sample_tick` parks every
+                // segment in `pending_segment` forever. 2026-05-21 bench
+                // diagnostic (0xE3 tag pinned the parking, 0xE4/0xE5 pinned
+                // that the ISR was running but never converging).
+                let last_widened = super::exports::runtime_widened_host_clock();
                 widen_state.reinit(raw, last_widened);
+                // Also publish the seed to the shared seqlock so any
+                // foreground reader that races the first ISR tick sees the
+                // right baseline.
+                runtime::clock::publish_widened_now(shared, last_widened);
                 super::exports::runtime_tick_enable();
             }
         }
