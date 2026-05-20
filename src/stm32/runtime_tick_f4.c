@@ -17,10 +17,9 @@ extern const uint32_t runtime_clock_freq;
 
 extern void* runtime_handle;   // exposed in src/runtime_tick.c
 
-// Stepping-redesign Task 17: new TIM5 ISR body. Replaces the legacy
-// `kalico_runtime_modulated_tick` call; the legacy symbol stays
-// linkable for callers not yet cut over.
-extern void kalico_runtime_tick_sample(void *rt);
+// Stepping-redesign Task 17: TIM5 ISR body. The canonical prototype for
+// `kalico_runtime_tick_sample` is supplied by the included
+// `kalico_runtime.h`; no local extern needed.
 
 // These three are referenced ONLY from Rust (kalico-c-api's runtime_ffi.rs),
 // not from any C translation unit. Klipper builds with `-fwhole-program -flto`
