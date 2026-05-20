@@ -29,7 +29,7 @@ pub mod exports {
         KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_ARG,
         KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION, KALICO_ERR_INVALID_HANDLE,
         KALICO_ERR_INVALID_KINEMATICS,
-        KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
+        KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR, KALICO_ERR_PHASE_MODE_NOT_AVAILABLE,
         KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_ERR_QUEUE_FULL,
         KALICO_ERR_SEGMENT_ID_NON_MONOTONIC, KALICO_ERR_ZERO_DURATION_SEGMENT, KALICO_OK,
     };
@@ -2586,12 +2586,16 @@ pub mod exports {
     // `kalico_runtime_seed_position` and `kalico_runtime_configure_axes_blob`
     // rely on.
 
-    /// Stepping-redesign Task 11. Publish per-axis configuration: stepping
-    /// mode (Pulse / Phase), microstep distance, extrusion ratio,
-    /// stepper-count slot reservation. `microstep_distance_f32_bits` and
-    /// `extrusion_per_xy_mm_f32_bits` are `f32::to_bits` of the underlying
-    /// scalars (Klipper carries f32 as u32 on the wire). `mode` is `0` for
-    /// Pulse, `1` for Phase; other values are rejected. Returns `0` on
+    /// Stepping-redesign Task 14. Publish per-axis configuration with
+    /// explicit stepper bindings. `microstep_distance_f32_bits` is
+    /// `f32::to_bits` of the per-step distance (Klipper carries f32 as u32
+    /// on the wire). `mode` is `0` for Pulse; `1` for Phase — Phase is
+    /// currently rejected with `KALICO_ERR_PHASE_MODE_NOT_AVAILABLE` (the
+    /// SPI dispatch path is a follow-up task). Other mode values return
+    /// `KALICO_ERR_INVALID_ARG`. `bindings_ptr` points to an array of
+    /// `stepper_count` [`runtime::stepping_state::StepperBindingRust`]
+    /// entries; a null pointer with `stepper_count == 0` is legal (axis
+    /// with no steppers, e.g. virtual / logical-only). Returns `0` on
     /// success, negative on validation failure. The C handler treats any
     /// non-zero return as a hard error and shuts the MCU down.
     #[unsafe(no_mangle)]
@@ -2600,7 +2604,7 @@ pub mod exports {
         axis_idx: u8,
         mode: u8,
         microstep_distance_f32_bits: u32,
-        extrusion_per_xy_mm_f32_bits: u32,
+        bindings_ptr: *const runtime::stepping_state::StepperBindingRust,
         stepper_count: u8,
     ) -> i32 {
         if rt.is_null() {
@@ -2609,30 +2613,50 @@ pub mod exports {
         if !INIT_DONE.load(Ordering::Acquire) {
             return KALICO_ERR_NOT_INIT;
         }
+        // Phase mode is not yet available — reject at the FFI boundary so
+        // the C host sees KALICO_ERR_PHASE_MODE_NOT_AVAILABLE rather than
+        // a generic invalid-arg code. The engine method also guards this,
+        // but checking here avoids decoding the bindings slice for a mode
+        // the engine will reject regardless.
+        if mode == 1 {
+            return KALICO_ERR_PHASE_MODE_NOT_AVAILABLE;
+        }
         let mode_enum = match mode {
             0 => runtime::stepping_state::StepMode::Pulse,
-            1 => runtime::stepping_state::StepMode::Phase,
             _ => return KALICO_ERR_INVALID_ARG,
         };
         let mstep_dist = f32::from_bits(microstep_distance_f32_bits);
-        let extrusion = f32::from_bits(extrusion_per_xy_mm_f32_bits);
+        // Reconstruct the bindings slice. A null pointer with count 0 is
+        // valid (axis with no steppers); null + non-zero is rejected to
+        // avoid forming a slice over an invalid pointer.
+        let bindings: &[runtime::stepping_state::StepperBindingRust] = if stepper_count == 0 {
+            &[]
+        } else if bindings_ptr.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        } else {
+            // SAFETY: caller guarantees `bindings_ptr` is valid for
+            // `stepper_count` elements of `StepperBindingRust` (4-byte
+            // `#[repr(C)]` struct). The C command dispatcher passes the
+            // address of a stack-allocated array it owns for the duration
+            // of this call. The slice borrow does not outlive this
+            // function.
+            unsafe {
+                core::slice::from_raw_parts(bindings_ptr, stepper_count as usize)
+            }
+        };
         let ctx = rt.cast::<RuntimeContext>();
         // SAFETY: foreground-only entry; spec §11.2 raw-pointer projection.
         // Engine state is on `IsrState`; foreground may form `&mut
-        // IsrState` here under the precondition that TIM5 is not concurrently
-        // ticking the same per-axis state (Klipper command dispatch is
-        // single-threaded and serialised against the modulated tick by
-        // priority arbitration during configuration windows).
+        // IsrState` here under the precondition that TIM5 is not
+        // concurrently ticking the same per-axis state (Klipper command
+        // dispatch is single-threaded and serialised against the modulated
+        // tick by priority arbitration during configuration windows).
         unsafe {
             let isr_ptr: *mut IsrState =
                 UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
-            (*isr_ptr).engine.configure_axis(
-                axis_idx,
-                mode_enum,
-                mstep_dist,
-                extrusion,
-                stepper_count,
-            )
+            (*isr_ptr)
+                .engine
+                .configure_axis(axis_idx, mode_enum, mstep_dist, bindings)
         }
     }
 

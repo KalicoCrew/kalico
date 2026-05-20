@@ -4,6 +4,11 @@
 //! FFI-shim layer (`kalico_runtime_configure_axis` etc.) is covered at
 //! Task 18 integration time.
 //!
+//! Task 14 extends `configure_axis` to take a `&[StepperBindingRust]`
+//! slice instead of the old `extrusion_per_xy_mm + stepper_count` pair.
+//! Tests here cover the Pulse path; the Phase-rejection path and the
+//! stepper-binding population are covered in `configure_axis_two_phase.rs`.
+//!
 //! Why an integration test (`tests/`) instead of `#[cfg(test)] mod tests`
 //! inside `engine.rs`: the engine module is closed to in-file tests
 //! (4036+ lines, no existing `mod tests`), and the test-only `Default`
@@ -14,7 +19,7 @@ use core::sync::atomic::Ordering;
 
 use runtime::engine::Engine;
 use runtime::slot::{NoopIs, NoopPa};
-use runtime::stepping_state::{N_AXES, StepMode};
+use runtime::stepping_state::{N_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
 
 type EngineImpl = Engine<NoopPa, NoopIs>;
 
@@ -31,26 +36,29 @@ fn new_engine() -> EngineImpl {
     EngineImpl::new(520_000_000)
 }
 
+fn pulse_binding() -> StepperBindingRust {
+    StepperBindingRust { tmc_cs_oid: TMC_CS_OID_NONE, _pad: [0; 3] }
+}
+
 #[test]
 fn configure_axis_publishes_mode_and_scalars() {
     let mut e = new_engine();
 
-    // X axis (index 0): switch to Phase mode with a 0.0125 mm microstep
+    // X axis (index 0): Pulse mode with a 0.0125 mm microstep
     // (TMC5160 256-microstep, 1.8° motor on 20-tooth GT2 belt ≈ 0.0125 mm).
+    // Task 14: pass a single Pulse-only binding (TMC_CS_OID_NONE).
+    let binding = pulse_binding();
     let rc = e.configure_axis(
         0,
-        StepMode::Phase,
+        StepMode::Pulse,
         0.0125, // microstep_distance
-        0.0,    // extrusion_per_xy_mm — N/A on X
-        1,      // stepper_count
+        &[binding],
     );
     assert_eq!(rc, 0, "configure_axis returned non-zero");
 
     let axis = &e.stepping_axes[0];
-    assert_eq!(axis.mode.load(Ordering::Acquire), StepMode::Phase as u8);
+    assert_eq!(axis.mode.load(Ordering::Acquire), StepMode::Pulse as u8);
     assert!((axis.microstep_distance - 0.0125).abs() < 1e-9);
-    // `extrusion_per_xy_mm` is no longer a field on `AxisConfig` — per-
-    // segment `Segment::extrusion_ratio` is authoritative (Task 6).
     // After configure, no piece is active and counters are zeroed so the
     // next segment-arrival path can re-seed cleanly.
     assert!(axis.piece.is_none());
@@ -58,33 +66,31 @@ fn configure_axis_publishes_mode_and_scalars() {
     assert_eq!(axis.last_step_count, 0);
     assert!(axis.curve_handle.is_none());
     assert_eq!(axis.piece_cursor, 0);
+    // Stepper binding populated.
+    assert_eq!(axis.steppers.len(), 1);
+    assert!(axis.steppers[0].tmc_cs_oid.is_none());
 }
 
 #[test]
 fn configure_axis_rejects_invalid_inputs() {
     let mut e = new_engine();
+    let b = pulse_binding();
 
     // Out-of-range axis index.
-    assert_ne!(e.configure_axis(4, StepMode::Pulse, 0.01, 0.0, 1), 0);
-    assert_ne!(e.configure_axis(255, StepMode::Pulse, 0.01, 0.0, 1), 0);
+    assert_ne!(e.configure_axis(4, StepMode::Pulse, 0.01, &[b]), 0);
+    assert_ne!(e.configure_axis(255, StepMode::Pulse, 0.01, &[b]), 0);
 
     // Non-finite microstep_distance.
+    assert_ne!(e.configure_axis(0, StepMode::Pulse, f32::NAN, &[b]), 0);
     assert_ne!(
-        e.configure_axis(0, StepMode::Pulse, f32::NAN, 0.0, 1),
-        0,
-    );
-    assert_ne!(
-        e.configure_axis(0, StepMode::Pulse, f32::INFINITY, 0.0, 1),
+        e.configure_axis(0, StepMode::Pulse, f32::INFINITY, &[b]),
         0,
     );
     // Zero / negative microstep_distance.
-    assert_ne!(e.configure_axis(0, StepMode::Pulse, 0.0, 0.0, 1), 0);
-    assert_ne!(e.configure_axis(0, StepMode::Pulse, -0.01, 0.0, 1), 0);
-    // Non-finite extrusion.
-    assert_ne!(
-        e.configure_axis(3, StepMode::Pulse, 0.01, f32::NAN, 1),
-        0,
-    );
+    assert_ne!(e.configure_axis(0, StepMode::Pulse, 0.0, &[b]), 0);
+    assert_ne!(e.configure_axis(0, StepMode::Pulse, -0.01, &[b]), 0);
+    // Phase mode — rejected with KALICO_ERR_PHASE_MODE_NOT_AVAILABLE.
+    assert_ne!(e.configure_axis(0, StepMode::Phase, 0.01, &[b]), 0);
 }
 
 #[test]

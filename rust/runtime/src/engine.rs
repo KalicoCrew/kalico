@@ -340,17 +340,18 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// Publish new per-axis configuration for a single logical axis.
     ///
     /// `axis_idx` is `0..N_AXES` (X=0, Y=1, Z=2, E=3). `mode` selects the
-    /// per-stepper output path (Pulse or Phase). `microstep_distance` is
-    /// the per-step distance in mm-equivalent units (must be finite,
-    /// positive). `extrusion_per_xy_mm` is accepted for ABI
-    /// compatibility but ignored — per-segment `Segment::extrusion_ratio`
-    /// is now authoritative (Task 6 + Task 11). Validated finite so a
-    /// NaN/inf slip-through from a slicer still surfaces here as an
-    /// error.
+    /// per-stepper output path (`Pulse` only for now; `Phase` is rejected
+    /// with `KALICO_ERR_PHASE_MODE_NOT_AVAILABLE` — the SPI dispatch path
+    /// is a follow-up task). `microstep_distance` is the per-step distance
+    /// in mm-equivalent units (must be finite, positive). `bindings` maps
+    /// each physical stepper's TMC chip-select OID to its logical axis slot;
+    /// use `TMC_CS_OID_NONE` (0xFF) for Pulse-only steppers without a TMC
+    /// driver.
     ///
-    /// `stepper_count` is accepted for ABI compatibility but currently
-    /// unused — physical stepper bindings are still wired by
-    /// `config_runtime_stepper` until Task 16 unifies that path.
+    /// Rejected with `KALICO_ERR_MOTION_IN_PROGRESS` when a segment is
+    /// currently armed (i.e. `current.is_some()`). The configure path must
+    /// only be called between segments, from the single-threaded foreground
+    /// command dispatcher.
     ///
     /// On success the new configuration is published with `Release`
     /// ordering so the ISR's next `mode.load(Acquire)` observes the new
@@ -363,24 +364,33 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         axis_idx: u8,
         mode: crate::stepping_state::StepMode,
         microstep_distance: f32,
-        extrusion_per_xy_mm: f32,
-        stepper_count: u8,
+        bindings: &[crate::stepping_state::StepperBindingRust],
     ) -> i32 {
+        use crate::error::{
+            KALICO_ERR_INVALID_ARG, KALICO_ERR_MOTION_IN_PROGRESS,
+            KALICO_ERR_PHASE_MODE_NOT_AVAILABLE, KALICO_OK,
+        };
+
         if (axis_idx as usize) >= crate::stepping_state::N_AXES {
-            return -1;
+            return KALICO_ERR_INVALID_ARG;
+        }
+        // Phase mode is not yet available: the SPI dispatch path is a
+        // follow-up plan. Reject here so the host learns immediately
+        // rather than silently ignoring the binding.
+        if mode == crate::stepping_state::StepMode::Phase {
+            return KALICO_ERR_PHASE_MODE_NOT_AVAILABLE;
         }
         if !microstep_distance.is_finite() || microstep_distance <= 0.0 {
-            return -1;
+            return KALICO_ERR_INVALID_ARG;
         }
-        if !extrusion_per_xy_mm.is_finite() {
-            return -1;
+        // Configuration is only legal between segments — the ISR borrows
+        // `axis.steppers` and `axis.microstep_distance` for the lifetime
+        // of each armed piece; mutating them mid-flight would corrupt
+        // in-progress step generation.
+        if self.current.is_some() {
+            return KALICO_ERR_MOTION_IN_PROGRESS;
         }
-        // stepper_count and extrusion_per_xy_mm are accepted but ignored —
-        // physical stepper bindings remain on `config_runtime_stepper`
-        // until Task 16, and per-segment `Segment::extrusion_ratio` is
-        // the authoritative source for the E-follows-XY ratio (Task 11).
-        let _ = stepper_count;
-        let _ = extrusion_per_xy_mm;
+
         let axis = &mut self.stepping_axes[axis_idx as usize];
         axis.microstep_distance = microstep_distance;
         // Clear any prior piece so the next segment-arrival path re-seeds
@@ -388,11 +398,31 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         axis.piece = None;
         axis.piece_start_time_cycles = 0;
         axis.last_step_count = 0;
+        // Repopulate stepper bindings from the caller-supplied slice.
+        // `heapless::Vec::clear` drops all existing elements and resets
+        // len to 0; subsequent `push` calls fill in the new entries up
+        // to `MAX_STEPPERS_PER_AXIS`. Extra bindings beyond capacity are
+        // silently truncated (the hardware limit is 4 steppers per axis;
+        // the host should never exceed it).
+        axis.steppers.clear();
+        for b in bindings {
+            let tmc_cs_oid = if b.tmc_cs_oid == crate::stepping_state::TMC_CS_OID_NONE {
+                None
+            } else {
+                Some(b.tmc_cs_oid)
+            };
+            let stepper = crate::stepping_state::StepperRef::new(tmc_cs_oid);
+            // `push` returns `Err` only when the Vec is full (capacity ==
+            // MAX_STEPPERS_PER_AXIS); silently drop the excess rather than
+            // faulting — the C host is responsible for sending a
+            // well-bounded count.
+            let _ = axis.steppers.push(stepper);
+        }
         // Atomic publish of the mode last — ISR's Acquire load on `mode`
         // synchronizes against the plain stores above.
         axis.mode
             .store(mode as u8, core::sync::atomic::Ordering::Release);
-        0
+        KALICO_OK
     }
 
     /// Publish kinematic scale factor relating logical-XY velocity to

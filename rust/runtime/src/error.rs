@@ -106,6 +106,11 @@ pub const KALICO_ERR_HOST_DISCONNECT: i32 = -200;
 pub const KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED: i32 = -201;
 pub const KALICO_ERR_HOST_DISPATCHER_TIMEOUT: i32 = -202;
 
+// Task 14: two-phase configure_axis faults.
+pub const KALICO_ERR_PHASE_MODE_NOT_AVAILABLE: i32 = -29;
+pub const KALICO_ERR_CURVE_LOAD_INVALID: i32 = -30;
+pub const KALICO_ERR_MOTION_IN_PROGRESS: i32 = -31;
+
 // Step 8: stepping-redesign faults (per docs/superpowers/specs/2026-05-19-stepping-redesign-design.md §9.2).
 pub const KALICO_ERR_STEP_QUEUE_OVERFLOW: i32 = -300;
 pub const KALICO_ERR_SPI_QUEUE_OVERFLOW: i32 = -301;
@@ -186,6 +191,14 @@ pub enum FaultCode {
     CapabilityMissing = -24,
     NoStep = -25,
     InvalidArg = -26,
+
+    // Task 14: two-phase configure_axis faults.
+    /// Phase mode is not yet available (SPI dispatch path is a follow-up).
+    PhaseModeNotAvailable = -29,
+    /// A curve-load wire blob was structurally invalid.
+    CurveLoadInvalid = -30,
+    /// A configuration command arrived while a motion segment was in flight.
+    MotionInProgress = -31,
 
     // Step 7-C-io host-originated faults (§6.11).
     HostDisconnect = -200,

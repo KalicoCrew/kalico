@@ -107,6 +107,21 @@ pub fn raise_piece_advance_underflow(shared: &SharedState, axis_idx: usize) {
         .store(FaultCode::PieceAdvanceUnderflow.as_i32(), Ordering::Release);
 }
 
+/// Latch a `PhaseModeNotAvailable` fault.
+///
+/// Raised by the `configure_axis` foreground path when the requested step
+/// mode is `Phase` but the SPI dispatch path is not yet available. The
+/// `axis_idx` is encoded into bits 16..24 of `fault_detail` so the host
+/// can identify which axis configuration was rejected.
+#[inline]
+pub fn raise_phase_mode_not_available(shared: &SharedState, axis_idx: usize) {
+    let detail = (axis_idx as u32 & 0xFF) << 16;
+    shared.fault_detail.store(detail, Ordering::Release);
+    shared
+        .last_error
+        .store(FaultCode::PhaseModeNotAvailable.as_i32(), Ordering::Release);
+}
+
 /// Latch a `JogParametersInvalid` fault.
 ///
 /// Raised by the command-dispatcher entry points for jog-style mutations
