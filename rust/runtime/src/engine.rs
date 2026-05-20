@@ -336,6 +336,25 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// E accumulator for CoupledToXy mode — f64 for sub-step accuracy over
     /// millions of ticks (H723 has hardware double-precision FPU).
     e_accumulator: f64,
+    /// Bitmask: bits 0-3 are axes A/B/Z/E. Set at `arm_segment` (Task 8)
+    /// for each axis whose curve handle is non-sentinel AND which
+    /// participates in retire (E in CoupledToXy mode is non-participating).
+    /// Spec: docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md §4.5.
+    pub participating_mask: u8,
+
+    /// Bitmask: starts equal to `participating_mask` at arm; bits clear
+    /// as each axis's curve exhausts during evaluation. Retire fires
+    /// when `pending_mask == 0`.
+    pub pending_mask: u8,
+
+    /// Snapshot of `e_accumulator` (truncated to f32) at segment-arm.
+    /// Phase-3 evaluator returns `segment_base_e + segment_local_e` to
+    /// produce absolute E position (§4.6).
+    pub segment_base_e: f32,
+
+    /// XY arc-length accumulator, in mm, segment-scoped. Reset at arm,
+    /// updated each sample in Phase 2 of `runtime_tick_sample`.
+    pub ds_xy_segment: f32,
     /// Set to `true` on init and after flush/clear so the first segment seeds
     /// `prev_x`/`prev_y`/`prev_z` from X(0)/Y(0)/Z(0) rather than computing
     /// a spurious delta from (0,0,0).
@@ -494,6 +513,10 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             prev_y: 0.0,
             prev_z: 0.0,
             e_accumulator: 0.0,
+            participating_mask: 0,
+            pending_mask: 0,
+            segment_base_e: 0.0,
+            ds_xy_segment: 0.0,
             needs_xy_seed: true,
             debug_last_now: 0,
             debug_last_tstart: 0,
@@ -585,6 +608,10 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             addr_of_mut!((*ptr).prev_y).write(0.0);
             addr_of_mut!((*ptr).prev_z).write(0.0);
             addr_of_mut!((*ptr).e_accumulator).write(0.0);
+            addr_of_mut!((*ptr).participating_mask).write(0);
+            addr_of_mut!((*ptr).pending_mask).write(0);
+            addr_of_mut!((*ptr).segment_base_e).write(0.0);
+            addr_of_mut!((*ptr).ds_xy_segment).write(0.0);
             addr_of_mut!((*ptr).needs_xy_seed).write(true);
             addr_of_mut!((*ptr).debug_last_now).write(0);
             addr_of_mut!((*ptr).debug_last_tstart).write(0);
@@ -1007,6 +1034,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             queues: queue_ptrs,
             shared,
             caches: &mut self.tick_caches,
+            ds_xy_segment: &mut self.ds_xy_segment,
             sample_period_sec: self.sample_period_sec,
             sample_period_cycles: self.sample_period_cycles,
             cycles_per_second,

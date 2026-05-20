@@ -488,6 +488,12 @@ pub struct TickContext<'a> {
     pub queues: [*mut StepQueue; N_AXES],
     pub shared: &'a SharedState,
     pub caches: &'a mut TickCaches,
+    /// Segment-scoped XY arc-length accumulator (mm). Owned by `Engine`
+    /// since Task 7 of the stepping-redesign finish; reset at segment-arm
+    /// and read by retire for the final E delta. Threaded into the tick
+    /// context via mutable borrow so Phase 2 can integrate and Phase 5
+    /// can clear without reaching back through the engine.
+    pub ds_xy_segment: &'a mut f32,
     pub sample_period_sec: f32,
     pub sample_period_cycles: u32,
     pub cycles_per_second: f32,
@@ -670,7 +676,7 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         let v_motor_sq = va * va + vb * vb;
         let v_xy_this = libm::sqrtf(v_motor_sq) * ctx.k_xy;
         ctx.caches.vdot_xy_accelerating = v_xy_this >= ctx.caches.v_xy_prev;
-        ctx.caches.ds_xy_segment += v_xy_this * ctx.sample_period_sec;
+        *ctx.ds_xy_segment += v_xy_this * ctx.sample_period_sec;
         ctx.caches.v_xy_prev = v_xy_this;
         ctx.caches.v_xy_this = v_xy_this;
     } else {
@@ -736,7 +742,7 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
                 // axis evaluates its intrinsic NURBS only.
                 let extrusion_ratio: f32 = 0.0;
                 let p_end = p_end_intrinsic
-                    + extrusion_ratio * ctx.caches.ds_xy_segment
+                    + extrusion_ratio * *ctx.ds_xy_segment
                     + pa_k * extrusion_ratio * ctx.caches.v_xy_this;
 
                 p_end_axis[AXIS_E] = p_end;
@@ -783,11 +789,11 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     // of an active segment), publish the retirement event.
     // -----------------------------------------------------------------
     let any_active = ctx.axes.iter().any(|a| a.piece.is_some());
-    if !any_active && ctx.caches.ds_xy_segment > 0.0 {
+    if !any_active && *ctx.ds_xy_segment > 0.0 {
         ctx.shared
             .retired_through_segment_id
             .fetch_add(1, Ordering::Release);
-        ctx.caches.ds_xy_segment = 0.0;
+        *ctx.ds_xy_segment = 0.0;
     }
 }
 
