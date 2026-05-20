@@ -24,16 +24,36 @@
 
 use crate::step_queue::{peek as queue_peek, pop as queue_pop};
 
+// MCU build links these C symbols (defined in src/generic/armcm_timer.c and
+// src/stepper.c). Host builds (`feature = "host"`) and unit tests must not
+// pull undefined symbols into the cdylib — `cargo build -p motion-bridge`
+// produces `motion_bridge_native.so`, and `dlopen` would fail at klippy
+// import time if these extern "C" decls had no matching definition. Provide
+// inert host stubs under the same gate the rest of this module uses for
+// `resolve_queue_ptr`.
+#[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
     fn timer_read_time() -> u32;
     fn timer_is_before(a: u32, b: u32) -> u8;
     fn runtime_emit_step_pulses(axis_idx: u8, n_steps: i32);
 }
 
+#[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
     fn kalico_runtime_get_dispatcher_floor_cycles() -> u32;
     fn kalico_runtime_get_sample_period_cycles() -> u32;
 }
+
+#[cfg(any(test, feature = "host"))]
+unsafe fn timer_read_time() -> u32 { 0 }
+#[cfg(any(test, feature = "host"))]
+unsafe fn timer_is_before(_a: u32, _b: u32) -> u8 { 0 }
+#[cfg(any(test, feature = "host"))]
+unsafe fn runtime_emit_step_pulses(_axis_idx: u8, _n_steps: i32) {}
+#[cfg(any(test, feature = "host"))]
+unsafe fn kalico_runtime_get_dispatcher_floor_cycles() -> u32 { 0 }
+#[cfg(any(test, feature = "host"))]
+unsafe fn kalico_runtime_get_sample_period_cycles() -> u32 { 0 }
 
 /// Rust body for the per-axis `struct timer.func` callback. Called from C
 /// trampolines (one per axis 0..=3) in `src/runtime_tick.c`. Returns the
