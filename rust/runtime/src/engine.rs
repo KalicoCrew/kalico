@@ -860,6 +860,131 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.current = Some(seg);
     }
 
+    /// Per-sample post-pass: after every per-axis `advance_piece_if_needed`
+    /// has run for the current sample, update `pending_mask` and fault on
+    /// early exhaustion. Spec §4.4 + §4.5.
+    ///
+    /// Must be called exactly once per `runtime_tick_sample`, AFTER all
+    /// per-axis advances and BEFORE [`Engine::retire_if_complete`].
+    ///
+    /// Logic:
+    /// - `exhausted_now`: bits where the axis WAS participating but its
+    ///   `curve_handle` is now `None` (cleared by `advance_piece_if_needed`
+    ///   on curve exhaustion).
+    /// - `pending_mask = participating_mask & !exhausted_now`.
+    /// - `raise_piece_advance_underflow` fires ONLY when at least one axis
+    ///   exhausted THIS sample (was pending coming in, now cleared) AND
+    ///   the post-pass `pending_mask` is still non-zero (i.e., other
+    ///   participating axes still owe samples). Simultaneous exhaustion
+    ///   of every pending axis drops `pending_mask` to zero in the same
+    ///   sample → no fault, retire fires instead. Order-independent.
+    pub fn post_pass_exhaustion(&mut self, shared: &SharedState) {
+        if self.current.is_none() {
+            return;
+        }
+        let mut exhausted_now: u8 = 0;
+        for axis_idx in 0..crate::stepping_state::N_AXES {
+            let bit = 1u8 << axis_idx;
+            if self.participating_mask & bit != 0
+                && self.stepping_axes[axis_idx].curve_handle.is_none()
+            {
+                exhausted_now |= bit;
+            }
+        }
+        let prev_pending = self.pending_mask;
+        self.pending_mask = self.participating_mask & !exhausted_now;
+
+        // Early-exhaustion fault: bit cleared THIS sample (was pending,
+        // now exhausted) AND post-pass pending_mask still non-zero.
+        let exhausted_this_sample = prev_pending & exhausted_now;
+        if exhausted_this_sample != 0 && self.pending_mask != 0 {
+            let axis_idx = exhausted_this_sample.trailing_zeros() as usize;
+            crate::fault_helpers::raise_piece_advance_underflow(shared, axis_idx);
+        }
+    }
+
+    /// Phase-5 retire: when `pending_mask == 0` for the active segment,
+    /// publish retirement bookkeeping and clear segment state. Spec §4.5.
+    ///
+    /// Side effects (atomic-publishing in `Release` order):
+    /// 1. `shared.retired_through_segment_id ← current.id` — host slot
+    ///    pool's `release_through(retired_through)` watches this cursor.
+    ///    Matches the legacy contract (mirrored by `abort_for_homing_trip`
+    ///    at engine.rs:1683).
+    /// 2. `shared.producer_segment_retired_total += 1` — drained-segments
+    ///    counter consumed by `kalico_credit_freed` foreground emission.
+    /// 3. `stream::check_terminal_on_retire(shared, seg_id)` — terminal-
+    ///    segment + stream-machine bookkeeping (mirrors the legacy
+    ///    `abort_for_homing_trip` site).
+    /// 4. Enqueue `TRACE_FLAG_SEGMENT_END` sample — foreground
+    ///    `drain_and_reclaim` (`rust/runtime/src/reclaim.rs`) reads this
+    ///    and calls `pool.confirm_retired` for each handle in the
+    ///    `RetirementTable` entry keyed by `seg_id`.
+    /// 5. Roll forward `e_accumulator` by the segment's CoupledToXy
+    ///    contribution (`extrusion_ratio * ds_xy_segment`). For
+    ///    `Independent` / `Travel` the intrinsic E NURBS already drove
+    ///    the accumulator forward via Phase 3; Task 11 refines this.
+    /// 6. Clear `current`, `participating_mask`, `pending_mask`,
+    ///    `segment_base_e`, `ds_xy_segment`.
+    ///
+    /// Returns `true` iff retirement fired.
+    pub fn retire_if_complete(
+        &mut self,
+        shared: &SharedState,
+        trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
+    ) -> bool {
+        if self.current.is_none() || self.pending_mask != 0 {
+            return false;
+        }
+        // `current` is Some here.
+        #[allow(clippy::unwrap_used)] // checked immediately above
+        let seg = self.current.as_ref().unwrap();
+        let seg_id = seg.id;
+        let e_mode = seg.e_mode;
+        let extrusion_ratio = seg.extrusion_ratio;
+
+        // 1. Publish retirement cursor.
+        shared
+            .retired_through_segment_id
+            .store(seg_id, Ordering::Release);
+        // 2. Drained-segments counter.
+        shared
+            .producer_segment_retired_total
+            .fetch_add(1, Ordering::AcqRel);
+        // 3. Stream-state terminal hook.
+        crate::stream::check_terminal_on_retire(shared, seg_id);
+        // 4. SEGMENT_END trace marker. `tick`/`curve_handle` use the same
+        // sentinel pattern the existing `abort_for_homing_trip` emission
+        // uses for non-fault retire markers — reclaim only needs
+        // `segment_id` + the `TRACE_FLAG_SEGMENT_END` bit.
+        let _ = trace.enqueue(TraceSample {
+            tick: 0,
+            motor_a: self.last_motors[0],
+            motor_b: self.last_motors[1],
+            motor_z: self.last_motors[2],
+            motor_e: self.last_motors[3],
+            segment_id: seg_id,
+            curve_handle: CurveHandle::UNUSED_SENTINEL,
+            flags: TRACE_FLAG_SEGMENT_END,
+            _pad: [0; 7],
+        });
+        // 5. Roll forward e_accumulator (CoupledToXy follower portion).
+        // Task 11's absolute-E evaluator will refine; for Task 10 the
+        // segment's final XY-arc × extrusion_ratio captures the follower
+        // contribution. Independent / Travel modes have their E delta
+        // already integrated into the Phase-3 step accumulator.
+        if e_mode == crate::config::EMode::CoupledToXy {
+            self.e_accumulator += f64::from(extrusion_ratio * self.ds_xy_segment);
+        }
+        // 6. Clear segment-scoped state.
+        self.current = None;
+        self.participating_mask = 0;
+        self.pending_mask = 0;
+        self.segment_base_e = 0.0;
+        self.ds_xy_segment = 0.0;
+        true
+    }
+
     /// Test-only accessor to seed `e_accumulator` before invoking
     /// `arm_segment`. The field stays private so production callers can't
     /// race the f64 mutation; the test integration crate would otherwise
@@ -867,6 +992,23 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     #[cfg(any(test, feature = "host"))]
     pub fn debug_set_e_accumulator(&mut self, value: f64) {
         self.e_accumulator = value;
+    }
+
+    /// Test-only accessor: returns `true` iff the engine currently holds
+    /// an armed segment (i.e., `arm_segment` was called and no retire has
+    /// fired). The `current` field is `pub(crate)` to keep external
+    /// callers from peeking at the ISR-owned segment manifest; this
+    /// accessor lets the post-pass tests verify that retire cleared it.
+    #[cfg(any(test, feature = "host"))]
+    pub fn debug_current_is_some(&self) -> bool {
+        self.current.is_some()
+    }
+
+    /// Test-only accessor: returns the active segment's id, or `None` if
+    /// no segment is currently armed.
+    #[cfg(any(test, feature = "host"))]
+    pub fn debug_current_segment_id(&self) -> Option<u32> {
+        self.current.as_ref().map(|s| s.id)
     }
 
     /// Test-only accessor to seed `ds_xy_segment` before invoking
@@ -1085,6 +1227,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         &mut self,
         shared: &SharedState,
         curve_pool: &crate::curve_pool::CurvePool,
+        trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
     ) {
         if self.cycles_per_second <= 0.0 {
             return;
@@ -1149,6 +1292,18 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             t_sample_end_global,
         };
         crate::tick::runtime_tick_sample(&mut ctx);
+
+        // Per-sample post-pass exhaustion (§4.4 + §4.5): runs after every
+        // per-axis advance for this sample has happened inside
+        // `runtime_tick_sample`. Updates `pending_mask`, raises
+        // `PieceAdvanceUnderflow` on order-independent early exhaustion.
+        self.post_pass_exhaustion(shared);
+        // Phase-5 retire: fires when `pending_mask == 0` for the active
+        // segment. Publishes the retirement cursor, drained-segments
+        // counter, terminal-segment hook, and a `TRACE_FLAG_SEGMENT_END`
+        // sample that foreground `drain_and_reclaim` consumes to retire
+        // the curve-pool slots tracked in the `RetirementTable`.
+        self.retire_if_complete(shared, trace);
     }
 }
 

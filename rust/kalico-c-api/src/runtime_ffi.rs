@@ -767,7 +767,17 @@ pub mod exports {
             let isr: &mut IsrState = &mut *isr_ptr;
             let shared: &SharedState = &*shared_ptr;
             let curve_pool: &CurvePool = &*pool_ptr;
-            isr.engine.tick_sample(shared, curve_pool);
+            // Field-disjoint borrow: `engine` and `trace_producer` are
+            // separate fields on `IsrState`. The destructure lets us hand
+            // a `&mut Producer` to `tick_sample` so the Phase-5 retire path
+            // can emit `TRACE_FLAG_SEGMENT_END` samples without forming a
+            // second `&mut IsrState`.
+            let IsrState {
+                engine,
+                trace_producer,
+                ..
+            } = isr;
+            engine.tick_sample(shared, curve_pool, trace_producer);
         }
     }
 

@@ -834,26 +834,17 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     ctx.caches.v_prev = v_end_axis;
 
     // -----------------------------------------------------------------
-    // Phase 5: segment retirement check.
+    // Phase 5: segment retirement.
     //
-    // A segment is "retired" when every axis has advanced past its final
-    // piece. The runtime doesn't carry a segment manifest at the engine
-    // level (the spec defers that to the producer/host); this hook
-    // publishes the retirement counter for the host and resets the
-    // segment-local arc-length accumulator so the next segment's E
-    // follower starts from zero.
-    //
-    // Heuristic: if every axis has `piece == None` AND the cached
-    // `ds_xy_segment` is non-zero (so this sample saw the transition out
-    // of an active segment), publish the retirement event.
+    // Owned by `Engine::post_pass_exhaustion` + `Engine::retire_if_complete`
+    // (Task 10). The post-pass updates `pending_mask` from the per-axis
+    // exhaustion state set by `advance_piece_if_needed` above, and the
+    // retire publishes `retired_through_segment_id`, the `SEGMENT_END`
+    // trace marker, and rolls forward `e_accumulator` when
+    // `pending_mask == 0`. `Engine::tick_sample` invokes both immediately
+    // after this function returns — the call site needs the trace
+    // producer borrow, which is held outside `TickContext`.
     // -----------------------------------------------------------------
-    let any_active = ctx.axes.iter().any(|a| a.piece.is_some());
-    if !any_active && *ctx.ds_xy_segment > 0.0 {
-        ctx.shared
-            .retired_through_segment_id
-            .fetch_add(1, Ordering::Release);
-        *ctx.ds_xy_segment = 0.0;
-    }
 }
 
 #[cfg(test)]
