@@ -87,6 +87,7 @@ $(KALICO_LIB): FORCE
 			cargo clean -p nurbs 2>/dev/null || true; \
 		fi && \
 		KALICO_RUNTIME_CURVE_POOL_N=$(CONFIG_RUNTIME_CURVE_POOL_N) \
+		KALICO_RUNTIME_MAX_PIECES_PER_CURVE=$(CONFIG_RUNTIME_MAX_PIECES_PER_CURVE) \
 		KALICO_RUNTIME_STORAGE_SIZE=$(if $(filter y,$(CONFIG_RUNTIME_TARGET_LARGE)),$(CONFIG_RUNTIME_STORAGE_SIZE_LARGE),$(CONFIG_RUNTIME_STORAGE_SIZE_SMALL)) \
 		cargo build -p kalico-c-api \
 		--no-default-features \
@@ -103,6 +104,7 @@ KALICO_RUST_FEATURES := host,header-nurbs,header-runtime,kalico-sim
 rust/target/release/libkalico_c_api.a: FORCE
 	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" \
 		KALICO_RUNTIME_CURVE_POOL_N=$(CONFIG_RUNTIME_CURVE_POOL_N) \
+		KALICO_RUNTIME_MAX_PIECES_PER_CURVE=$(CONFIG_RUNTIME_MAX_PIECES_PER_CURVE) \
 		cargo build -p kalico-c-api \
 		--no-default-features \
 		--features $(KALICO_RUST_FEATURES) \

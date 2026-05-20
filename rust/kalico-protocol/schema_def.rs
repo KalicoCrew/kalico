@@ -115,10 +115,8 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         version: 1,
         channel: "control",
         fields: &[
-            SchemaField { name: "max_control_points", ty: "u32" },
-            SchemaField { name: "max_knot_vector_len", ty: "u32" },
-            SchemaField { name: "max_degree", ty: "u8" },
             SchemaField { name: "curve_pool_n", ty: "u16" },
+            SchemaField { name: "max_pieces_per_curve", ty: "u16" },
         ],
     },
     SchemaMessage {

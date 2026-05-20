@@ -28,14 +28,16 @@
 #include "command.h" // MESSAGE_MAX
 
 #define KALICO_DEMUX_KLIPPER_BUF_SIZE MESSAGE_MAX
-// Largest in-bound kalico frame is a LoadCurve carrying one slot's worth of
-// control points + knots, plus a small per-frame header. Sizing: 4 bytes per
-// f32 × (cps + knots) + 32 bytes for sync/len/channel/header/CRC and
-// per-message envelope. Stays in lockstep with the Rust runtime's pool
-// dimensions (CONFIG_RUNTIME_MAX_*) so the firmware never has to drop a
-// curve upload that the Rust side would still accept.
+// Largest in-bound kalico frame is a LoadCurveCubic carrying one slot's
+// worth of cubic Bézier pieces, plus the per-frame header. Sizing: each
+// piece is 5 × u32 LE = 20 bytes (monomial form for one axis); the
+// LoadCurveCubic body is `4 + piece_count * 20` bytes (slot_idx u16 +
+// axis_idx u8 + piece_count u8 + pieces[]); plus 32 bytes for the
+// sync/len/channel/header/CRC envelope. Stays in lockstep with the Rust
+// runtime's `MAX_PIECES_PER_CURVE` (mirrored from Kconfig) so the firmware
+// never has to drop a curve upload that the Rust side would still accept.
 #define KALICO_DEMUX_KALICO_BUF_SIZE \
-    (4u * (CONFIG_RUNTIME_MAX_CONTROL_POINTS + CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN) + 32u)
+    (4u + 20u * (CONFIG_RUNTIME_MAX_PIECES_PER_CURVE) + 32u)
 
 typedef enum {
     KALICO_DEMUX_OUT_NONE,    // need more bytes; no frame ready

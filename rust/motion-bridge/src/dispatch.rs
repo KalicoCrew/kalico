@@ -36,23 +36,23 @@ pub struct McuAxisConfig {
 
 /// Subset of `RuntimeCapsResponse` that the dispatcher needs to enforce
 /// per-MCU sizing limits when planning a curve.
+///
+/// Cubic-only revision (2026-05-20 stepping redesign): NURBS sizing fields
+/// (max_control_points / max_knot_vector_len / max_degree) were removed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct McuCaps {
-    pub max_control_points: u32,
-    pub max_knot_vector_len: u32,
-    pub max_degree: u8,
     pub curve_pool_n: u16,
+    pub max_pieces_per_curve: u16,
 }
 
 impl Default for McuCaps {
-    /// Large-profile defaults for backward compatibility with firmware
-    /// that doesn't yet implement QueryRuntimeCaps.
+    /// Large-profile defaults used when the per-MCU `QueryRuntimeCaps`
+    /// round-trip fails (e.g. transport timeout during attach). Mirrors
+    /// the H7 `RUNTIME_TARGET_LARGE` Kconfig defaults.
     fn default() -> Self {
         Self {
-            max_control_points: 1830,
-            max_knot_vector_len: 1850,
-            max_degree: 10,
             curve_pool_n: 16,
+            max_pieces_per_curve: 16,
         }
     }
 }
@@ -60,10 +60,8 @@ impl Default for McuCaps {
 impl From<kalico_protocol::messages::RuntimeCapsResponse> for McuCaps {
     fn from(r: kalico_protocol::messages::RuntimeCapsResponse) -> Self {
         Self {
-            max_control_points: r.max_control_points,
-            max_knot_vector_len: r.max_knot_vector_len,
-            max_degree: r.max_degree,
             curve_pool_n: r.curve_pool_n,
+            max_pieces_per_curve: r.max_pieces_per_curve,
         }
     }
 }

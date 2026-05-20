@@ -276,34 +276,27 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
 //
 // RuntimeCapsResponse body is pulled from Kconfig at compile time via
 // autoconf.h — same source of truth that sizes the Rust runtime's curve pool.
+// Cubic-only revision (2026-05-20 stepping redesign): NURBS sizing fields
+// (max_control_points / max_knot_vector_len / max_degree) were removed; the
+// response now carries only `curve_pool_n` and `max_pieces_per_curve`.
 static void
 handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
                           uint16_t body_len)
 {
     (void)body;
     (void)body_len; // request body is empty
-    uint8_t payload[PER_MESSAGE_HEADER_LEN + 11];
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 4];
     encode_message_header(payload, KALICO_MSG_RUNTIME_CAPS_RESPONSE,
                           MESSAGE_VERSION_DEFAULT, correlation_id);
     uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
-    uint32_t mcp = (uint32_t)CONFIG_RUNTIME_MAX_CONTROL_POINTS;
-    uint32_t mkv = (uint32_t)CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN;
     uint32_t pool = (uint32_t)CONFIG_RUNTIME_CURVE_POOL_N;
-    // u32 max_control_points
-    b[0] = (uint8_t)(mcp & 0xFF);
-    b[1] = (uint8_t)((mcp >> 8) & 0xFF);
-    b[2] = (uint8_t)((mcp >> 16) & 0xFF);
-    b[3] = (uint8_t)((mcp >> 24) & 0xFF);
-    // u32 max_knot_vector_len
-    b[4] = (uint8_t)(mkv & 0xFF);
-    b[5] = (uint8_t)((mkv >> 8) & 0xFF);
-    b[6] = (uint8_t)((mkv >> 16) & 0xFF);
-    b[7] = (uint8_t)((mkv >> 24) & 0xFF);
-    // u8 max_degree
-    b[8] = (uint8_t)CONFIG_RUNTIME_MAX_DEGREE;
+    uint32_t mpc = (uint32_t)CONFIG_RUNTIME_MAX_PIECES_PER_CURVE;
     // u16 curve_pool_n
-    b[9] = (uint8_t)(pool & 0xFF);
-    b[10] = (uint8_t)((pool >> 8) & 0xFF);
+    b[0] = (uint8_t)(pool & 0xFF);
+    b[1] = (uint8_t)((pool >> 8) & 0xFF);
+    // u16 max_pieces_per_curve
+    b[2] = (uint8_t)(mpc & 0xFF);
+    b[3] = (uint8_t)((mpc >> 8) & 0xFF);
     kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
                                 payload, sizeof(payload));
 }
@@ -313,14 +306,10 @@ handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
 // ---------------------------------------------------------------------------
 
 // FFI: Rust runtime — cubic curve loader.
-// Matches `runtime_handle_load_curve_cubic` in rust/kalico-c-api/src/runtime_ffi.rs.
-extern int32_t runtime_handle_load_curve_cubic(
-    void *handle,
-    uint16_t slot_idx,
-    uint8_t axis_idx,
-    uint8_t piece_count,
-    const uint8_t *pieces_blob,
-    uint32_t *out_handle_packed);
+// Declared in `rust/kalico-c-api/include/kalico_runtime.h` (already included
+// at the top of this file); the prototype is kept here as a one-line forward
+// declaration would shadow the canonical signature, so we let the include
+// supply it.
 
 static void
 send_load_curve_response(uint32_t correlation_id, int32_t result,

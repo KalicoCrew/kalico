@@ -291,39 +291,36 @@ impl Decode for ConfigureAxesResponse {
 // =============================================================================
 // QueryRuntimeCaps (0x0040) — request body: empty.
 // RuntimeCapsResponse (0x0041) — body layout:
-//   0..4   max_control_points  : u32_le
-//   4..8   max_knot_vector_len : u32_le
-//   8      max_degree          : u8
-//   9..11  curve_pool_n        : u16_le
-// Total: 11 bytes.
+//   0..2  curve_pool_n         : u16_le
+//   2..4  max_pieces_per_curve : u16_le
+// Total: 4 bytes.
+//
+// Cubic-only revision (2026-05-20 stepping redesign): the NURBS sizing fields
+// (max_control_points / max_knot_vector_len / max_degree) were removed. The
+// runtime now uses uniform cubic Bézier pieces; the only per-MCU sizing the
+// host needs is the pool slot count and the per-curve piece ceiling.
 // =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeCapsResponse {
-    pub max_control_points: u32,
-    pub max_knot_vector_len: u32,
-    pub max_degree: u8,
     pub curve_pool_n: u16,
+    pub max_pieces_per_curve: u16,
 }
 
-pub const RUNTIME_CAPS_RESPONSE_BODY_LEN: usize = 11;
+pub const RUNTIME_CAPS_RESPONSE_BODY_LEN: usize = 4;
 
 impl Encode for RuntimeCapsResponse {
     fn encode(&self, out: &mut Vec<u8>) {
-        put_u32(out, self.max_control_points);
-        put_u32(out, self.max_knot_vector_len);
-        put_u8(out, self.max_degree);
         put_u16(out, self.curve_pool_n);
+        put_u16(out, self.max_pieces_per_curve);
     }
 }
 
 impl Decode for RuntimeCapsResponse {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
-        let max_control_points = get_u32(c)?;
-        let max_knot_vector_len = get_u32(c)?;
-        let max_degree = get_u8(c)?;
         let curve_pool_n = get_u16(c)?;
-        Ok(Self { max_control_points, max_knot_vector_len, max_degree, curve_pool_n })
+        let max_pieces_per_curve = get_u16(c)?;
+        Ok(Self { curve_pool_n, max_pieces_per_curve })
     }
 }
 
@@ -582,10 +579,8 @@ mod tests {
     #[test]
     fn runtime_caps_roundtrip() {
         let original = RuntimeCapsResponse {
-            max_control_points: 512,
-            max_knot_vector_len: 524,
-            max_degree: 10,
             curve_pool_n: 4,
+            max_pieces_per_curve: 16,
         };
         let mut buf = Vec::new();
         original.encode(&mut buf);

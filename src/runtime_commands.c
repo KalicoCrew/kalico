@@ -442,64 +442,6 @@ command_runtime_configure_axes_blob(uint32_t *args)
 DECL_COMMAND(command_runtime_configure_axes_blob,
     "runtime_configure_axes_blob blob=%*s");
 
-// ---- 2026-05-18 sim test driver: load_curve via msgproto -------------------
-// Mirrors KALICO_MSG_LOAD_CURVE (kalico_dispatch.c::handle_load_curve) but
-// surfaces through Klipper msgproto so tools/test_sim_phase_stepping.py can
-// install a curve without the kalico-native binary frame transport (which
-// the standalone host-io helper does not demux).
-//
-// Wire body matches the binary-frame layout:
-//   slot u16 | degree u8 | n_cps u32 | cps×f32 | n_knots u32 | knots×f32
-#include <string.h>
-extern float runtime_aligned_cps[];
-extern float runtime_aligned_knots[];
-
-void
-command_runtime_load_curve_msgproto(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf(
-            "kalico_load_curve_msgproto_response result=%i curve_handle_packed=%u",
-            -7, 0);
-        return;
-    }
-    uint16_t slot = (uint16_t)args[0];
-    uint8_t degree = (uint8_t)args[1];
-    uint32_t n_cps = args[2];
-    uint32_t cps_len = args[3];
-    uint8_t *cps_ptr = command_decode_ptr(args[4]);
-    uint32_t n_knots = args[5];
-    uint32_t knots_len = args[6];
-    uint8_t *knots_ptr = command_decode_ptr(args[7]);
-    if (cps_len != n_cps * 4u || knots_len != n_knots * 4u) {
-        sendf(
-            "kalico_load_curve_msgproto_response result=%i curve_handle_packed=%u",
-            -1, 0);
-        return;
-    }
-    if (n_cps > (uint32_t)CONFIG_RUNTIME_MAX_CONTROL_POINTS
-        || n_knots > (uint32_t)CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN) {
-        sendf(
-            "kalico_load_curve_msgproto_response result=%i curve_handle_packed=%u",
-            -1, 0);
-        return;
-    }
-    memcpy(runtime_aligned_cps, cps_ptr, cps_len);
-    memcpy(runtime_aligned_knots, knots_ptr, knots_len);
-    uint32_t handle_packed = 0;
-    int32_t r = runtime_handle_load_curve(
-        runtime_handle, slot,
-        runtime_aligned_cps, (uint16_t)n_cps,
-        runtime_aligned_knots, (uint16_t)n_knots,
-        degree, &handle_packed);
-    sendf(
-        "kalico_load_curve_msgproto_response result=%i curve_handle_packed=%u",
-        r, handle_packed);
-}
-DECL_COMMAND(command_runtime_load_curve_msgproto,
-    "runtime_load_curve_msgproto slot=%hu degree=%c "
-    "n_cps=%u cps=%*s n_knots=%u knots=%*s");
-
 // ---- 2026-05-18 sim test driver: push_segment via msgproto -----------------
 // Mirrors KALICO_MSG_PUSH_SEGMENT through Klipper msgproto. The full 42-byte
 // segment body is encoded as a single %*s blob to keep the framed packet

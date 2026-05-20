@@ -411,6 +411,19 @@ config RUNTIME_CURVE_POOL_N
     default 4
     range 1 64
 
+config RUNTIME_MAX_PIECES_PER_CURVE
+    int "Maximum cubic Bézier pieces per curve slot"
+    default 16
+    range 1 64
+    help
+      Per-slot ceiling on cubic Bézier pieces. Both `RUNTIME_CURVE_POOL_N`
+      and this value back the static cubic piece pool: total storage is
+      `CURVE_POOL_N * MAX_PIECES_PER_CURVE * sizeof(BezierPieceMonomial)`.
+      Reported to the host via `RuntimeCapsResponse.max_pieces_per_curve`;
+      the host's pre-upload validator rejects curves whose piece count
+      exceeds this value. Default 16 matches the Rust runtime's compile
+      time `MAX_PIECES_PER_CURVE`.
+
 config KALICO_MOTION_SAMPLE_RATE_HZ
     int "Motion engine sample rate in Hz (TIM5 ISR fire rate)"
     depends on MACH_STM32H7 || MACH_STM32F4 || MACH_LINUX

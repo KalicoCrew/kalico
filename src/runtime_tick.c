@@ -1208,32 +1208,12 @@ DECL_TASK(runtime_status_drain);
 // 4 bytes; each knot is a single f32 (4 bytes). We derive `n_cp`,
 // `n_knots` from the blob byte-lengths and validate before calling
 // into Rust.
-// Aligned scratch buffers for the load_curve handler. Klipper's RX buffer
-// places the %*s payload at an arbitrary byte offset (typically not 4-byte
-// aligned), so passing those pointers directly to Rust yields an unaligned
-// `&[f32]` — UB on construction even though Cortex-M7 happens to allow
-// unaligned word reads at the CPU level. Empirically this hardfaults the
-// MCU and triggers a USB renumerate. Copy into 4-byte-aligned static
-// buffers first, then pass to Rust.
-//
-// Sizing matches CurvePool's compile-time bounds (MAX_CONTROL_POINTS = 1830,
-// MAX_KNOT_VECTOR_LEN = 1850). Bumped per Phase C of the kalico-native
-// transport spec
-// (docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md §10):
-// H723 X+Y heavy-shaping worst case is degree 9, ~200 pieces over 100 mm,
-// ~1810 cps and ~1820 knots. F446 will get a dedicated build with smaller
-// constants in Phase D — for now the unified Linux-sim / H723 build picks
-// the larger sizing.
-// Non-static so kalico_dispatch.c's LoadCurve handler can reuse the same
-// scratch (the legacy DECL_COMMAND begin/chunk/finalize path is retired).
-float runtime_aligned_cps[CONFIG_RUNTIME_MAX_CONTROL_POINTS];
-float runtime_aligned_knots[CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN];
-
-// Phase C of the kalico-native transport spec
-// (`docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md` §15)
-// retires the legacy begin/chunk/finalize command surface and the
-// kalico_push_segment command. Curve uploads and segment pushes now arrive
-// as native kalico frames; see src/kalico_dispatch.c handlers.
+// Cubic-only revision (2026-05-20 stepping redesign): the
+// `runtime_aligned_cps` / `runtime_aligned_knots` scratch buffers that backed
+// the legacy NURBS LoadCurve path were removed along with the NURBS upload
+// command. Cubic-piece uploads (LoadCurveCubic, kalico_dispatch.c) carry
+// fixed-stride 20-byte monomial pieces and do not need pre-aligned host-side
+// scratch.
 
 
 // Command surface (query_status, arm_endstop, disarm_endstop,

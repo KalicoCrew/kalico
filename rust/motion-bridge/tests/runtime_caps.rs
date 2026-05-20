@@ -21,10 +21,8 @@ use kalico_protocol::messages::{RuntimeCapsResponse, RUNTIME_CAPS_RESPONSE_BODY_
 #[test]
 fn query_runtime_caps_roundtrip_via_codec() {
     let original = RuntimeCapsResponse {
-        max_control_points: 512,
-        max_knot_vector_len: 524,
-        max_degree: 10,
         curve_pool_n: 4,
+        max_pieces_per_curve: 16,
     };
 
     let mut body = Vec::new();
@@ -32,7 +30,7 @@ fn query_runtime_caps_roundtrip_via_codec() {
     assert_eq!(
         body.len(),
         RUNTIME_CAPS_RESPONSE_BODY_LEN,
-        "encoded body must match the documented 11-byte layout",
+        "encoded body must match the documented 4-byte layout",
     );
 
     let mut c = Cursor::new(&body);
@@ -47,7 +45,7 @@ fn query_runtime_caps_roundtrip_via_codec() {
 /// becoming a hard panic.
 #[test]
 fn query_runtime_caps_short_body_errors() {
-    let body = [0u8; 3];
+    let body = [0u8; 2];
     let mut c = Cursor::new(&body);
     let r = RuntimeCapsResponse::decode_from(&mut c);
     assert!(r.is_err(), "short body must fail to decode, got {r:?}");

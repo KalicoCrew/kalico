@@ -93,10 +93,8 @@ struct McuConnection {
 /// the host previously assumed unconditionally.
 const FALLBACK_RUNTIME_CAPS: kalico_protocol::messages::RuntimeCapsResponse =
     kalico_protocol::messages::RuntimeCapsResponse {
-        max_control_points: 1830,
-        max_knot_vector_len: 1850,
-        max_degree: 10,
         curve_pool_n: 16,
+        max_pieces_per_curve: 16,
     };
 
 /// Sample interval for the periodic `kalico_clock_sync_request` driver.
@@ -934,11 +932,9 @@ impl PyMotionBridge {
             Ok(caps) => {
                 log::debug!(
                     "[caps-trace] attach_serial: runtime caps for {serial_path}: \
-                     max_cp={} max_kv={} max_deg={} pool_n={}",
-                    caps.max_control_points,
-                    caps.max_knot_vector_len,
-                    caps.max_degree,
+                     pool_n={} max_pieces_per_curve={}",
                     caps.curve_pool_n,
+                    caps.max_pieces_per_curve,
                 );
                 caps
             }
