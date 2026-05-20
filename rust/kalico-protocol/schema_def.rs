@@ -28,16 +28,14 @@ struct SchemaMessage {
 const SCHEMA_MESSAGES: &[SchemaMessage] = &[
     SchemaMessage {
         type_tag: 0x0010,
-        name: "LoadCurve",
-        version: 1,
+        name: "LoadCurveCubic",
+        version: 2,
         channel: "control",
         fields: &[
-            SchemaField { name: "slot", ty: "u16" },
-            SchemaField { name: "degree", ty: "u8" },
-            SchemaField { name: "n_cps", ty: "u32" },
-            SchemaField { name: "n_knots", ty: "u32" },
-            SchemaField { name: "cps", ty: "array<f32>" },
-            SchemaField { name: "knots", ty: "array<f32>" },
+            SchemaField { name: "slot_idx", ty: "u16" },
+            SchemaField { name: "axis_idx", ty: "u8" },
+            SchemaField { name: "piece_count", ty: "u8" },
+            SchemaField { name: "pieces_bytes", ty: "array<u8>" },
         ],
     },
     SchemaMessage {

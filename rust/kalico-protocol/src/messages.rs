@@ -5,8 +5,8 @@
 //! [`crate::bootstrap`] with a separate, fixed-forever byte layout.
 
 use crate::codec::{
-    Cursor, Decode, DecodeError, Encode, get_f32, get_f32_array, get_i32, get_u16, get_u32,
-    get_u64, get_u8, put_f32, put_f32_array, put_i32, put_u16, put_u32, put_u64, put_u8,
+    Cursor, Decode, DecodeError, Encode, get_f32, get_i32, get_u16, get_u32, get_u64, get_u8,
+    put_f32, put_i32, put_u16, put_u32, put_u64, put_u8,
 };
 
 /// Layer-4 message-type discriminants. Per spec §7.1.
@@ -18,7 +18,7 @@ use crate::codec::{
 pub enum MessageKind {
     Identify = 0x0001,
     IdentifyResponse = 0x0002,
-    LoadCurve = 0x0010,
+    LoadCurveCubic = 0x0010,
     LoadCurveResponse = 0x0011,
     PushSegment = 0x0020,
     PushSegmentResponse = 0x0021,
@@ -36,7 +36,7 @@ impl MessageKind {
         Some(match v {
             0x0001 => Self::Identify,
             0x0002 => Self::IdentifyResponse,
-            0x0010 => Self::LoadCurve,
+            0x0010 => Self::LoadCurveCubic,
             0x0011 => Self::LoadCurveResponse,
             0x0020 => Self::PushSegment,
             0x0021 => Self::PushSegmentResponse,
@@ -71,78 +71,61 @@ impl MessageKind {
 }
 
 // =============================================================================
-// LoadCurve (0x0010) — spec §7.3
+// LoadCurveCubic (0x0010) — spec §3.2 (cubic-piece wire format)
+//
+// Wire layout (little-endian):
+//   slot_idx:    u16  (offset 0)
+//   axis_idx:    u8   (offset 2)
+//   piece_count: u8   (offset 3)
+//   pieces:      piece_count × 20 bytes, each piece = 5 × u32 LE
+//                  (bp0_bits, bp1_bits, bp2_bits, bp3_bits, duration_bits)
+//
+// Total body = 4 + piece_count * 20 bytes.
+// The MCU dispatcher (`src/kalico_dispatch.c::handle_load_curve_cubic`)
+// decodes precisely this layout — keep encoder + decoder in lock-step.
 // =============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct LoadCurve {
-    pub slot: u16,
-    pub degree: u8,
-    pub cps: Vec<f32>,
-    pub knots: Vec<f32>,
+pub struct LoadCurveCubic {
+    pub slot_idx: u16,
+    pub axis_idx: u8,
+    pub piece_count: u8,
+    /// Raw piece bytes: `piece_count * 20` bytes, each piece = 5 × u32 LE
+    /// (bp0_bits, bp1_bits, bp2_bits, bp3_bits, duration_bits).
+    pub pieces_bytes: Vec<u8>,
 }
 
-impl Encode for LoadCurve {
+impl Encode for LoadCurveCubic {
     fn encode(&self, out: &mut Vec<u8>) {
-        // Spec §7.3 explicit byte layout:
-        //   slot u16 | degree u8 | n_cps u32 | n_knots u32 | cps[..] | knots[..]
-        // i.e. lengths up front, data after. The MCU dispatcher
-        // (`src/kalico_dispatch.c::handle_load_curve`) decodes precisely
-        // this layout — keep encoder + decoder in lock-step.
-        put_u16(out, self.slot);
-        put_u8(out, self.degree);
-        put_u32(out, u32::try_from(self.cps.len()).expect("cps len exceeds u32"));
-        put_u32(out, u32::try_from(self.knots.len()).expect("knots len exceeds u32"));
-        for v in &self.cps {
-            put_f32(out, *v);
-        }
-        for v in &self.knots {
-            put_f32(out, *v);
-        }
+        put_u16(out, self.slot_idx);
+        put_u8(out, self.axis_idx);
+        put_u8(out, self.piece_count);
+        out.extend_from_slice(&self.pieces_bytes);
     }
 }
 
-impl Decode for LoadCurve {
+impl Decode for LoadCurveCubic {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
-        let slot = get_u16(c)?;
-        let degree = get_u8(c)?;
-        let n_cps = get_u32(c)?;
-        let n_knots = get_u32(c)?;
-        // Validate both counts fit remaining bytes before allocating, so a
-        // hostile peer can't induce a multi-GB allocation.
-        let cps_bytes = (n_cps as usize).checked_mul(4).ok_or(
+        let slot_idx = get_u16(c)?;
+        let axis_idx = get_u8(c)?;
+        let piece_count = get_u8(c)?;
+        let pieces_len = (piece_count as usize).checked_mul(20).ok_or(
             DecodeError::ArrayLengthExceedsBuffer {
-                claimed: n_cps,
+                claimed: piece_count as u32,
                 available: c.remaining(),
             },
         )?;
-        let knots_bytes = (n_knots as usize).checked_mul(4).ok_or(
-            DecodeError::ArrayLengthExceedsBuffer {
-                claimed: n_knots,
-                available: c.remaining(),
-            },
-        )?;
-        let total = cps_bytes
-            .checked_add(knots_bytes)
-            .ok_or(DecodeError::ArrayLengthExceedsBuffer {
-                claimed: n_cps,
-                available: c.remaining(),
-            })?;
-        if total > c.remaining() {
+        if pieces_len > c.remaining() {
             return Err(DecodeError::ArrayLengthExceedsBuffer {
-                claimed: n_cps,
+                claimed: piece_count as u32,
                 available: c.remaining(),
             });
         }
-        let mut cps = Vec::with_capacity(n_cps as usize);
-        for _ in 0..n_cps {
-            cps.push(get_f32(c)?);
+        let mut pieces_bytes = vec![0u8; pieces_len];
+        for b in &mut pieces_bytes {
+            *b = get_u8(c)?;
         }
-        let mut knots = Vec::with_capacity(n_knots as usize);
-        for _ in 0..n_knots {
-            knots.push(get_f32(c)?);
-        }
-        Ok(Self { slot, degree, cps, knots })
+        Ok(Self { slot_idx, axis_idx, piece_count, pieces_bytes })
     }
 }
 
@@ -466,7 +449,7 @@ mod tests {
         for &k in &[
             MessageKind::Identify,
             MessageKind::IdentifyResponse,
-            MessageKind::LoadCurve,
+            MessageKind::LoadCurveCubic,
             MessageKind::LoadCurveResponse,
             MessageKind::PushSegment,
             MessageKind::PushSegmentResponse,
@@ -484,31 +467,32 @@ mod tests {
     }
 
     #[test]
-    fn load_curve_roundtrip_realistic() {
-        // Spec §7.3 worst case: degree 9, large arrays.
-        let degree = 9u8;
-        let n_cps = 200usize;
-        let n_knots = n_cps + degree as usize + 1; // = 210
-        // Deterministic pseudo-random fill via a simple LCG so the test is
-        // reproducible without pulling in `rand`.
+    fn load_curve_cubic_roundtrip_realistic() {
+        // 3 cubic pieces (each 5 × u32 = 20 bytes).
+        let piece_count = 3u8;
+        let pieces_len = piece_count as usize * 20;
+        // Deterministic pseudo-random fill via a simple LCG.
         let mut state: u32 = 0xC0FFEEEE;
-        let next = |s: &mut u32| -> f32 {
+        let next = |s: &mut u32| -> u8 {
             *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-            // Map to [-1000.0, 1000.0).
-            ((*s as f32) / (u32::MAX as f32)) * 2000.0 - 1000.0
+            (*s >> 24) as u8
         };
-        let cps: Vec<f32> = (0..n_cps).map(|_| next(&mut state)).collect();
-        let knots: Vec<f32> = (0..n_knots).map(|_| next(&mut state)).collect();
-        let msg = LoadCurve { slot: 7, degree, cps: cps.clone(), knots: knots.clone() };
+        let pieces_bytes: Vec<u8> = (0..pieces_len).map(|_| next(&mut state)).collect();
+        let msg = LoadCurveCubic {
+            slot_idx: 7,
+            axis_idx: 1,
+            piece_count,
+            pieces_bytes: pieces_bytes.clone(),
+        };
         let got = roundtrip(&msg);
-        assert_eq!(got.slot, 7);
-        assert_eq!(got.degree, 9);
-        assert_eq!(got.cps, cps);
-        assert_eq!(got.knots, knots);
+        assert_eq!(got.slot_idx, 7);
+        assert_eq!(got.axis_idx, 1);
+        assert_eq!(got.piece_count, piece_count);
+        assert_eq!(got.pieces_bytes, pieces_bytes);
 
-        // Encoded body size matches §7.3: 2 + 1 + 4 + 4 + 4*n_cps + 4*n_knots.
+        // Encoded body size: 2 (slot_idx) + 1 (axis_idx) + 1 (piece_count) + 3*20 = 64.
         let bytes = msg.encoded_to_vec();
-        assert_eq!(bytes.len(), 2 + 1 + 4 + 4 + 4 * n_cps + 4 * n_knots);
+        assert_eq!(bytes.len(), 4 + pieces_len);
     }
 
     #[test]
@@ -612,30 +596,23 @@ mod tests {
     }
 
     #[test]
-    fn decode_rejects_truncated_load_curve() {
-        // First 6 bytes of a valid encoding, then EOF.
-        let v = LoadCurve { slot: 1, degree: 3, cps: vec![1.0, 2.0], knots: vec![0.0] };
-        let bytes = v.encoded_to_vec();
-        let truncated = &bytes[..6];
+    fn decode_rejects_truncated_load_curve_cubic() {
+        // 3-byte truncation of the 4-byte header: triggers UnexpectedEof.
+        let bytes = &[0x01u8, 0x00, 0x00]; // slot_idx LE + axis_idx, no piece_count
         assert!(matches!(
-            LoadCurve::decode(truncated),
+            LoadCurveCubic::decode(bytes),
             Err(DecodeError::UnexpectedEof | DecodeError::ArrayLengthExceedsBuffer { .. })
         ));
     }
 
     #[test]
-    fn decode_rejects_oversized_array_claim() {
-        // slot u16 = 0, degree u8 = 0, n_cps u32 = 0xFFFF_FFFF,
-        // n_knots u32 = 0, no payload. Per spec §7.3 layout the host
-        // validates both counts before allocating.
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&0u16.to_le_bytes());
-        bytes.push(0);
-        bytes.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
-        bytes.extend_from_slice(&0u32.to_le_bytes());
-        match LoadCurve::decode(&bytes) {
+    fn decode_rejects_oversized_piece_count() {
+        // slot_idx u16 = 0, axis_idx u8 = 0, piece_count u8 = 0xFF (255 pieces = 5100
+        // bytes), but no piece data follows. The decoder must reject without allocating.
+        let bytes = &[0x00u8, 0x00, 0x00, 0xFF]; // header only, no pieces
+        match LoadCurveCubic::decode(bytes) {
             Err(DecodeError::ArrayLengthExceedsBuffer { claimed, .. }) => {
-                assert_eq!(claimed, 0xFFFF_FFFF);
+                assert_eq!(claimed, 0xFF);
             }
             other => panic!("expected ArrayLengthExceedsBuffer, got {other:?}"),
         }

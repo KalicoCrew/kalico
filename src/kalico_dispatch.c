@@ -19,11 +19,6 @@
 #include "kalico_runtime.h"
 extern void *runtime_handle;
 
-// Phase C: shared aligned scratch with command_kalico_load_curve_finalize
-// path retired in runtime_tick.c. Defined there.
-extern float runtime_aligned_cps[CONFIG_RUNTIME_MAX_CONTROL_POINTS];
-extern float runtime_aligned_knots[CONFIG_RUNTIME_MAX_KNOT_VECTOR_LEN];
-
 // Forward decl: platform-specific raw byte output. The Linux sim implements
 // this in linux/console.c; firmware builds will implement it on top of the
 // USB CDC TX path (Phase D).
@@ -66,7 +61,7 @@ volatile uint32_t handle_push_segment_no_handle_total
 volatile int32_t handle_push_segment_last_r
                 __attribute__((used, externally_visible));
 
-static void handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
+static void handle_load_curve_cubic(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
@@ -258,8 +253,8 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
     case KALICO_MSG_IDENTIFY:
         handle_identify(correlation_id, body, body_len);
         return;
-    case KALICO_MSG_LOAD_CURVE:
-        handle_load_curve(correlation_id, body, body_len);
+    case KALICO_MSG_LOAD_CURVE_CUBIC:
+        handle_load_curve_cubic(correlation_id, body, body_len);
         return;
     case KALICO_MSG_PUSH_SEGMENT:
         handle_push_segment(correlation_id, body, body_len);
@@ -314,8 +309,18 @@ handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
 }
 
 // ---------------------------------------------------------------------------
-// LoadCurve / PushSegment handlers (Phase C)
+// LoadCurveCubic / PushSegment handlers (Phase C)
 // ---------------------------------------------------------------------------
+
+// FFI: Rust runtime — cubic curve loader.
+// Matches `runtime_handle_load_curve_cubic` in rust/kalico-c-api/src/runtime_ffi.rs.
+extern int32_t runtime_handle_load_curve_cubic(
+    void *handle,
+    uint16_t slot_idx,
+    uint8_t axis_idx,
+    uint8_t piece_count,
+    const uint8_t *pieces_blob,
+    uint32_t *out_handle_packed);
 
 static void
 send_load_curve_response(uint32_t correlation_id, int32_t result,
@@ -362,17 +367,35 @@ send_push_segment_response(uint32_t correlation_id, int32_t result,
 }
 
 static void
-handle_load_curve(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
+handle_load_curve_cubic(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
 {
-    // NURBS load_curve handler deleted in stepping-redesign Task 13
-    // (2026-05-20). Task 15 adds handle_load_curve_cubic alongside this
-    // stub. Until that lands, any host that still emits the old NURBS
-    // LoadCurve frame gets a clean KALICO_ERR_NOT_INIT response rather
-    // than an undefined-symbol link failure against the deleted
-    // runtime_handle_load_curve FFI.
-    (void)body;
-    (void)body_len;
-    send_load_curve_response(correlation_id, KALICO_ERR_NOT_INIT, 0);
+    // Wire format (spec §3.2):
+    //   slot_idx: u16 LE (offset 0)
+    //   axis_idx: u8     (offset 2)
+    //   piece_count: u8  (offset 3)
+    //   pieces: piece_count * 20 bytes, each = 5 × u32 LE
+    //     bp0_bits, bp1_bits, bp2_bits, bp3_bits, duration_bits
+    if (body_len < 4) {
+        send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
+        return;
+    }
+    uint16_t slot_idx = (uint16_t)body[0] | ((uint16_t)body[1] << 8);
+    uint8_t axis_idx = body[2];
+    uint8_t piece_count = body[3];
+    uint32_t expected_len = 4u + (uint32_t)piece_count * 20u;
+    if ((uint32_t)body_len != expected_len) {
+        send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
+        return;
+    }
+    if (!runtime_handle) {
+        send_load_curve_response(correlation_id, KALICO_ERR_NOT_INIT, 0);
+        return;
+    }
+    uint32_t handle_packed = 0;
+    int32_t rc = runtime_handle_load_curve_cubic(
+        runtime_handle, slot_idx, axis_idx, piece_count,
+        &body[4], &handle_packed);
+    send_load_curve_response(correlation_id, rc, handle_packed);
 }
 
 static void
