@@ -776,14 +776,36 @@ impl RuntimeContext {
                 retirement_table: crate::reclaim::RetirementTable::new(),
             }));
 
-            // Initialize IsrState.
+            // Initialize IsrState — IN-PLACE, field-by-field, to avoid
+            // materializing the multi-KB `EngineImpl` (`step_rings` alone
+            // is ~20 KB) on the 8 KB MCU stack. Constructing
+            // `IsrState { engine: EngineImpl::new_production(freq), ... }`
+            // and writing it via `ptr::write` previously relied on RVO
+            // to elide the temporary; the stepping-redesign state growth
+            // (Tasks 6/8/11) tipped the compiler past whatever RVO
+            // threshold was load-bearing and the MCU boots into a stack
+            // overflow before USB enumeration.
+            //
+            // Write the inner `IsrState` via `UnsafeCell::raw_get` and
+            // initialize the engine via the dedicated `init_in_place`
+            // entry point so the giant struct lands directly in the
+            // C-owned `rt_storage` buffer without ever touching the stack.
             let isr_ptr = core::ptr::addr_of_mut!((*rt_ptr).isr);
-            isr_ptr.write(UnsafeCell::new(IsrState {
-                queue_consumer: q_consumer,
-                trace_producer: t_producer,
-                engine: EngineImpl::new_production(freq),
-                widen_state: WidenState::default(),
-            }));
+            // SAFETY: `isr_ptr` is valid for writes (caller contract).
+            // `UnsafeCell` is `#[repr(transparent)]` so its raw layout is
+            // identical to `IsrState`; writing through `raw_get` is
+            // equivalent to writing the inner field.
+            let inner_ptr: *mut IsrState = UnsafeCell::raw_get(isr_ptr);
+            core::ptr::addr_of_mut!((*inner_ptr).queue_consumer)
+                .write(q_consumer);
+            core::ptr::addr_of_mut!((*inner_ptr).trace_producer)
+                .write(t_producer);
+            EngineImpl::init_in_place_production(
+                core::ptr::addr_of_mut!((*inner_ptr).engine),
+                freq,
+            );
+            core::ptr::addr_of_mut!((*inner_ptr).widen_state)
+                .write(WidenState::default());
         }
     }
 }

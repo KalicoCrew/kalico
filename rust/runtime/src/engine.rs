@@ -566,6 +566,97 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
     pub fn new_production(clock_freq: u32) -> Self {
         Self::new(clock_freq)
     }
+
+    /// In-place initialization. Writes every field of `*ptr` via raw
+    /// pointer projections without ever materializing an `Engine` on the
+    /// stack — `step_rings` alone is ~20 KB and the H7 stack is only 8 KB,
+    /// so any path that returns `Engine` by value risks blowing the stack
+    /// during construction unless RVO succeeds. RVO is best-effort, not
+    /// guaranteed; the stepping-redesign growth (Tasks 6/8/11) tipped the
+    /// compiler past whatever heuristic was load-bearing in the prior
+    /// build and the MCU started crashing during `runtime_handle_create`
+    /// before USB enumeration.
+    ///
+    /// # Safety
+    /// `ptr` must be valid for writes of `size_of::<Engine<P, I>>()` bytes
+    /// and properly aligned. Caller must guarantee no concurrent reads.
+    /// Used by [`crate::state::RuntimeContext::init`] to construct the
+    /// engine field directly inside the C-owned `rt_storage` buffer.
+    #[allow(unsafe_code)]
+    pub unsafe fn init_in_place(ptr: *mut Self, clock_freq: u32) {
+        use core::ptr::addr_of_mut;
+        unsafe {
+            addr_of_mut!((*ptr).current).write(None);
+            addr_of_mut!((*ptr).last_motors).write([0.0; 4]);
+            addr_of_mut!((*ptr).pa_slot).write(P::default());
+            addr_of_mut!((*ptr).is_slot).write(I::default());
+            addr_of_mut!((*ptr).one_tick_cycles_value)
+                .write(u64::from(one_tick_cycles(clock_freq)));
+            addr_of_mut!((*ptr).status)
+                .write(AtomicU8::new(RuntimeStatus::Idle as u8));
+            addr_of_mut!((*ptr).last_error).write(AtomicI32::new(0));
+            addr_of_mut!((*ptr).tick_counter).write(TickCounter::new());
+            addr_of_mut!((*ptr).hold_sample_ticks).write(0);
+            addr_of_mut!((*ptr).prev_x).write(0.0);
+            addr_of_mut!((*ptr).prev_y).write(0.0);
+            addr_of_mut!((*ptr).prev_z).write(0.0);
+            addr_of_mut!((*ptr).e_accumulator).write(0.0);
+            addr_of_mut!((*ptr).needs_xy_seed).write(true);
+            addr_of_mut!((*ptr).debug_last_now).write(0);
+            addr_of_mut!((*ptr).debug_last_tstart).write(0);
+            addr_of_mut!((*ptr).debug_last_duration).write(0);
+            addr_of_mut!((*ptr).step_state)
+                .write([crate::step::StepMotorState::default(); 4]);
+            addr_of_mut!((*ptr).phase_modulators)
+                .write([const { None }; crate::state::MAX_STEPPER_OIDS]);
+            addr_of_mut!((*ptr).phase_tick_counter).write(0);
+            addr_of_mut!((*ptr).mcu_config).write(None);
+            // step_rings is the largest field (~20 KB); initialize each
+            // slot individually so even the array literal doesn't live on
+            // the stack as a temporary.
+            let rings_ptr = addr_of_mut!((*ptr).step_rings).cast::<StepRing>();
+            for i in 0..4 {
+                rings_ptr.add(i).write(StepRing::new());
+            }
+            let states_ptr = addr_of_mut!((*ptr).producer_states)
+                .cast::<ProducerState>();
+            for i in 0..4 {
+                states_ptr.add(i).write(ProducerState::new(0.0));
+            }
+            addr_of_mut!((*ptr).motor_curve_cursor).write([0; 4]);
+            addr_of_mut!((*ptr).motor_current_segment_id).write([None; 4]);
+            addr_of_mut!((*ptr).producer_current).write(None);
+            #[cfg(any(test, feature = "test-injection"))]
+            addr_of_mut!((*ptr).injected_iter_start).write(0);
+            // Task 11 unified per-axis state. Same in-place pattern —
+            // `AxisConfig` contains `heapless::Vec<StepperRef, 4>` which
+            // is itself non-trivially-sized.
+            let axes_ptr = addr_of_mut!((*ptr).stepping_axes)
+                .cast::<crate::stepping_state::AxisConfig>();
+            for i in 0..crate::stepping_state::N_AXES {
+                axes_ptr.add(i)
+                    .write(crate::stepping_state::AxisConfig::new_unconfigured());
+            }
+            addr_of_mut!((*ptr).k_xy).write(1.0);
+            addr_of_mut!((*ptr).advance_accel).write(0.0);
+            addr_of_mut!((*ptr).advance_decel).write(0.0);
+            addr_of_mut!((*ptr).sample_period_sec).write(0.0);
+            addr_of_mut!((*ptr).sample_period_cycles).write(0);
+            addr_of_mut!((*ptr).cycles_per_second).write(clock_freq as f32);
+            addr_of_mut!((*ptr).tick_caches)
+                .write(crate::stepping_state::TickCaches::new());
+        }
+    }
+
+    /// Production-context in-place init. Same contract as
+    /// [`init_in_place`] with the production allocator/slot types.
+    ///
+    /// # Safety
+    /// See [`init_in_place`].
+    #[allow(unsafe_code)]
+    pub unsafe fn init_in_place_production(ptr: *mut Self, clock_freq: u32) {
+        unsafe { Self::init_in_place(ptr, clock_freq) }
+    }
 }
 
 // ─── Stepping-redesign Task 11 — configuration entry points ───────────────
