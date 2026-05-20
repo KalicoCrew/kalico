@@ -119,7 +119,18 @@ Wire frame body:
 | 3 | 1 | `piece_count` (u8) |
 | 4 | `piece_count * 20` | array of `(bp0_bits, bp1_bits, bp2_bits, bp3_bits, duration_bits)` u32 quintuplets |
 
-So per-piece wire payload is 20 bytes (Bernstein control points + duration as f32-as-u32-bits). Firmware does the Bernstein → monomial conversion on the FFI side using `monomial::bernstein_to_monomial` (already in place from firmware Task 2). The slot stores the monomial form.
+So per-piece wire payload is 20 bytes (Bernstein control points + duration as f32-as-u32-bits). The Bernstein control points are in **standard unit-interval form** — i.e., they define P(t) for t ∈ [0, 1]. The firmware converts to seconds-domain monomial form on load so the ISR's `t_local_for_axis` (in seconds) can be evaluated directly by Horner without per-sample rescaling.
+
+**Load-time conversion** (per piece, in `runtime_handle_load_curve_cubic`):
+
+1. Algebraic Bernstein → unit-interval monomial via the existing `monomial::bernstein_to_monomial(bp)` (firmware Task 2): yields `(c0, c1, c2, c3)` such that `P(τ) = c0 + c1·τ + c2·τ² + c3·τ³` for τ ∈ [0, 1].
+2. Rescale to seconds domain by the piece's duration `d`: `(c0_s, c1_s, c2_s, c3_s) = (c0, c1/d, c2/d², c3/d³)`. After this, `P(t_sec) = c0_s + c1_s·t_sec + c2_s·t_sec² + c3_s·t_sec³` for `t_sec ∈ [0, d]` produces the same physical mm value.
+3. Pre-bake derivative coefficients: `vel_coeffs = (c1_s, 2·c2_s, 3·c3_s)`. The ISR reads these directly for velocity.
+4. Store the resulting `BezierPieceMonomial { coeffs: [c0_s, c1_s, c2_s, c3_s], vel_coeffs, duration: d }` into the slot.
+
+Because the rescale is purely algebraic and the existing `bernstein_to_monomial` doesn't take a duration, the cleanest realization is a thin wrapper `monomial::bernstein_to_monomial_with_duration(bp, duration_sec) -> BezierPieceMonomial` that does steps 1–3 and returns the final piece. Firmware Task 2's `bernstein_to_monomial` stays as-is for unit-interval math (used by host-side tests and the offline klipper-sim path).
+
+Firmware Task 8's integration test (`rust/runtime/tests/tick_integration.rs`) currently pre-scales CPs on the host side and relies on the unit-interval-becoming-seconds-domain accident; that test should be updated to use `bernstein_to_monomial_with_duration` and pass standard unit-interval CPs as part of this migration. The misleading scale-factor comment in the test header goes away.
 
 FFI:
 
@@ -218,7 +229,9 @@ The fields `step_pin: u32`, `dir_pin: u32`, `dir_invert: bool` from firmware Tas
 
 ### 4.3 Segment arm
 
-In the engine's `push_segment` handler (already exists, just extended): decode the 4 axis curve handles, validate each via `curve_pool.lookup`, populate the per-axis `(curve_handle, piece_cursor, piece, piece_start_time_cycles)` quadruple atomically. If any axis's handle is the empty sentinel (defined as `EMPTY_HANDLE_SENTINEL = 0`, which the existing slot allocator never produces because generations start at 1), that axis stays idle for this segment.
+In the engine's `push_segment` handler (already exists, just extended): decode the 4 axis curve handles, validate each via `curve_pool.lookup`, populate the per-axis `(curve_handle, piece_cursor, piece, piece_start_time_cycles)` quadruple atomically. If any axis's handle is `CurveHandle::UNUSED_SENTINEL` (the existing sentinel used by the legacy path, preserved as-is — the slot allocator never produces this value), that axis stays idle for this segment.
+
+**Engine-level current-segment tracking.** The Engine keeps a single `current_segment_id: u32` field — the id of the segment whose pieces the ISR is currently evaluating across all four axes. It's the same as the existing `Engine::current` mechanism today (which also retains a `Segment` struct with id + handles). On segment arm, the new segment's id replaces the previous one. This id is what gets published on retire — **not** a counter, **not** derived from per-axis state after curves have been cleared. Per-axis `curve_handle` is for evaluation; segment-level id is for retire bookkeeping. They serve different purposes and have different lifetimes.
 
 ### 4.4 Piece advancement
 
@@ -274,7 +287,24 @@ The `iters > 4` cap remains as defensive code (catches `duration == 0` foot-guns
 
 ### 4.5 Segment retire
 
-Phase 5 of `runtime_tick_sample` (firmware Task 9 stub) becomes: if every axis has `curve_handle == None` and the segment-local accumulator (`ds_xy_segment`) is non-zero, publish `retired_through_segment_id += 1`, reset the accumulator, signal `curve_pool::confirm_retired` for each retired slot from the foreground reactor.
+Phase 5 of `runtime_tick_sample` (firmware Task 9 stub) becomes:
+
+**Retire condition.** The current segment is retiring when every participating axis has exhausted its curve — i.e., every axis whose handle at segment-arm was non-sentinel now has `axis.curve_handle == None` (set by the piece-advancement loop above). Axes that were idle for the segment (sentinel handle at arm) are already in the "exhausted" state and don't gate retire. The check is purely structural: did all axes that had work to do finish that work?
+
+**Crucially, retire does NOT depend on `ds_xy_segment`.** Pure-Z moves, retract/prime, filament-change, intrinsic-E-only segments all have `ds_xy_segment == 0` throughout — gating retire on XY arc length would make those segments never retire. `ds_xy_segment` is purely an arc-length accumulator for the E-follows-XY PA math; it's reset on retire as a side effect, not used to detect retire.
+
+To check "every participating axis exhausted," the Engine snapshots a 4-bit `participating_mask` at segment-arm (one bit per axis whose handle was non-sentinel). The retire test is: for each bit set in `participating_mask`, that axis's `curve_handle` is now `None`. Equivalent and cheaper than per-axis bookkeeping: track a 4-bit `pending_mask` that starts equal to `participating_mask` and clears the bit for an axis when that axis's curve exhausts. Retire when `pending_mask == 0`. Both masks live on the Engine alongside `current_segment_id`.
+
+**What gets published on retire.**
+
+1. `shared.retired_through_segment_id.store(self.current_segment_id, Ordering::Release)` — the actual segment id, monotonic. Identical semantics to the existing legacy path at `engine.rs:2266` so the host's `slot_pool::release_through(retired_through)` logic continues to work unchanged.
+2. Emit a `SEGMENT_END` trace sample carrying `current_segment_id`. The foreground `reclaim::drain_and_reclaim` already consumes these traces and looks up the 4 handles in the `RetirementTable` (registered by the foreground at `push_segment` time, before the segment entered the SPSC queue — see `reclaim.rs:60-67`). The ISR does **not** carry handles for retire — the foreground table maps id → handles. This is the existing pattern; we preserve it.
+3. Reset segment-local accumulators: `ds_xy_segment = 0.0`, plus any future per-segment caches.
+4. Stream-state hook (existing): call `crate::stream::check_terminal_on_retire(shared, current_segment_id)`.
+
+After publish, the Engine clears `current_segment_id`, `participating_mask`, `pending_mask` to await the next segment-arm.
+
+**Handle lifecycle.** Per-axis `axis.curve_handle` is set to `None` when the curve exhausts (during piece advancement). This is correct — those handles are no longer needed for ISR evaluation, and the foreground `RetirementTable` (a separate data structure indexed by segment id, not by axis) is the source of truth for which slots get reclaimed. The ISR does not need to remember handles past curve exhaustion; clearing them frees `AxisConfig` state for the next segment's arm.
 
 ---
 
@@ -288,7 +318,9 @@ Phase 5 of `runtime_tick_sample` (firmware Task 9 stub) becomes: if every axis h
 
 ### 5.2 What changes
 
-`command_config_runtime_stepper` (the per-stepper-per-motor bind command) is deleted. `command_kalico_configure_axis` populates the same `runtime_motor_steppers[][]` table via its sub-message:
+`command_config_runtime_stepper` (the per-stepper-per-motor bind command) is deleted. `command_kalico_configure_axis` populates the same `runtime_motor_steppers[][]` table via its sub-message.
+
+**Two-phase commit.** All inputs must be validated and all OID lookups resolved into a fully-built stepper array before any byte of `runtime_motor_steppers[axis_idx]` or any Rust-side `AxisConfig` is mutated. This matches the legacy `command_config_runtime_stepper` pattern at `src/stepper.c:216-220` (range/count checks before write) and prevents the C-side bindings table or the Rust `AxisConfig` from being left in a partially-updated state on failure.
 
 ```c
 void command_kalico_configure_axis(uint32_t *args) {
@@ -300,32 +332,67 @@ void command_kalico_configure_axis(uint32_t *args) {
     const uint8_t *blob     = (const uint8_t *)args[5];
     uint16_t blob_len       = args[6];
 
+    // ── Phase 1: validate everything; no mutations.
+    if (axis_idx >= RUNTIME_MOTOR_COUNT)
+        shutdown("configure_axis axis_idx out of range");
+    if (mode > 1)
+        shutdown("configure_axis mode invalid");
+    if (stepper_count > RUNTIME_MAX_STEPPERS_PER_MOTOR)
+        shutdown("configure_axis too many steppers per axis");
     if (blob_len != (uint16_t)stepper_count * 4)
         shutdown("configure_axis blob length mismatch");
 
-    // Populate the C-side mapping table.
-    runtime_motor_stepper_count[axis_idx] = 0;
+    // Resolve every OID, build a local staging array. Reject reserved flag bits.
+    struct {
+        struct stepper *stepper;
+        uint8_t invert_dir;
+        uint32_t tmc_cs_handle;
+    } staged[RUNTIME_MAX_STEPPERS_PER_MOTOR] = {0};
+
     for (uint8_t i = 0; i < stepper_count; i++) {
         uint8_t stepper_oid = blob[i*4 + 0];
         uint8_t dir_invert  = blob[i*4 + 1];
+        uint8_t tmc_cs_oid  = blob[i*4 + 2];
+        uint8_t flags       = blob[i*4 + 3];
+
+        if (flags != 0)
+            shutdown("configure_axis reserved stepper flags must be zero");
+        if (dir_invert > 1)
+            shutdown("configure_axis dir_invert must be 0 or 1");
+
         struct stepper *s = oid_lookup(stepper_oid, command_config_stepper);
-        runtime_motor_steppers[axis_idx][i].stepper = s;
-        runtime_motor_steppers[axis_idx][i].invert_dir = dir_invert ? 1 : 0;
-        runtime_motor_stepper_count[axis_idx]++;
+        // oid_lookup shuts down on bad oid, so reaching here means s is valid.
+
+        uint32_t tmc_cs_handle = 0;
+        if (tmc_cs_oid != 0xFF) {
+            tmc_cs_handle = (uint32_t)(uintptr_t)
+                oid_lookup(tmc_cs_oid, command_config_spi);
+        }
+
+        staged[i].stepper = s;
+        staged[i].invert_dir = dir_invert;
+        staged[i].tmc_cs_handle = tmc_cs_handle;
     }
 
-    // Call into Rust to populate the per-stepper atomic state.
-    StepperBindingRust bindings[MAX_STEPPERS_PER_AXIS];
-    for (uint8_t i = 0; i < stepper_count; i++) {
-        uint8_t tmc_cs_oid = blob[i*4 + 2];
-        bindings[i].tmc_cs_handle = (tmc_cs_oid == 0xFF)
-            ? 0
-            : (uint32_t)(uintptr_t)oid_lookup(tmc_cs_oid, command_config_spi);
-    }
+    // ── Phase 2: Rust-side validation (microstep_distance finite/positive,
+    // engine not mid-motion for mode change, etc.). Pass staged tmc_cs handles.
+    StepperBindingRust bindings[RUNTIME_MAX_STEPPERS_PER_MOTOR];
+    for (uint8_t i = 0; i < stepper_count; i++)
+        bindings[i].tmc_cs_handle = staged[i].tmc_cs_handle;
     int32_t rc = kalico_runtime_configure_axis(
         runtime_handle, axis_idx, mode, mstep_bits, extrusion_bits,
         stepper_count, bindings);
     if (rc != 0) shutdown("configure_axis rejected by runtime");
+
+    // ── Phase 3: commit. Both sides validated; safe to mutate.
+    runtime_motor_stepper_count[axis_idx] = stepper_count;
+    for (uint8_t i = 0; i < stepper_count; i++) {
+        runtime_motor_steppers[axis_idx][i].stepper = staged[i].stepper;
+        runtime_motor_steppers[axis_idx][i].invert_dir = staged[i].invert_dir;
+    }
+    // Reset the per-axis direction-cache so the first emit forces a dir_pin
+    // write regardless of prior state.
+    runtime_motor_last_dir[axis_idx] = -1;
 }
 DECL_COMMAND(command_kalico_configure_axis,
     "kalico_configure_axis axis_idx=%c mode=%c microstep_distance=%u"
@@ -333,6 +400,10 @@ DECL_COMMAND(command_kalico_configure_axis,
 ```
 
 `StepperBindingRust` is the FFI payload type (just `tmc_cs_handle: u32` for now, room for future flags via the reserved `flags` wire byte).
+
+**Failure handling.** Any check failure between Phase 1 and Phase 3 leaves `runtime_motor_steppers[axis_idx]` and the Rust `AxisConfig` unchanged from their previous state. Klipper's `shutdown(...)` semantics will halt the firmware on a validation failure; on a Rust-side `rc != 0` rejection the same shutdown fires. Either way, no partial state.
+
+**Ordering of Rust-side mutations.** The Rust `configure_axis` engine method itself must also be two-phase internally: validate `microstep_distance > 0 && is_finite()`, `mode ∈ {Pulse, Phase}`, no segment in flight for this axis, and (for Phase mode) every binding has `tmc_cs_handle != 0`. Only after all validations clear, mutate `axis.steppers`, `axis.microstep_distance`, `axis.mode`, etc. — atomic at the engine level. If the host re-configures an axis mid-motion the request is rejected (`ERR_MOTION_IN_PROGRESS`); the C-side commit phase is skipped because Rust returned a non-zero rc.
 
 ### 5.3 Direction-pin handling
 
