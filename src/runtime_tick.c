@@ -51,6 +51,16 @@
 const uint32_t runtime_clock_freq __attribute__((used, externally_visible))
     = CONFIG_CLOCK_FREQ;
 
+// Motion-engine sample rate (TIM5 ISR fire rate on STM32; host-pthread tick
+// rate on Linux). Exposed to Rust via
+// `extern "C" { static runtime_sample_rate_hz: u32; }` so Engine::init can
+// publish `sample_period_sec = 1.0 / runtime_sample_rate_hz` without
+// embedding a magic constant. Source: CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ
+// (src/Kconfig); defaults: 40000 (H7), 20000 (F4), 10000 (Linux sim).
+// __attribute__((used, externally_visible)) survives -fwhole-program LTO + GC.
+const uint32_t runtime_sample_rate_hz __attribute__((used, externally_visible))
+    = CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ;
+
 
 extern volatile uint8_t runtime_liveness_ok;  // defined in src/stm32/watchdog.c
 
