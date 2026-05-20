@@ -47,6 +47,10 @@ def _is_param_converter(func):
     "Is this function callable with a single string argument"
     if typing.get_origin(func) == typing.Annotated:
         return _is_param_converter(typing.get_args(func)[0])
+    if typing.get_origin(func) == typing.Literal and all(
+        isinstance(arg, (str, int)) for arg in typing.get_args(func)
+    ):
+        return True
     if func in (inspect._empty, str, int, bool, float):
         return True
     if not callable(func):
@@ -119,12 +123,16 @@ def _document_parameters(parameters: list[inspect.Parameter]):
             doc["type"] = "enum"
             doc["choices"] = [e.value for e in param_type]
 
-            if parameter.default is not None:
+            if parameter.default not in (parameter.empty, None):
                 assert isinstance(parameter.default, param_type)
                 doc["default"] = parameter.default.value
             continue
 
-        if param_type in (str, float, int, bool):
+        if typing.get_origin(param_type) is typing.Literal:
+            doc["type"] = "enum"
+            doc["choices"] = list(typing.get_args(param_type))
+
+        elif param_type in (str, float, int, bool):
             doc["type"] = param_type.__name__
 
         elif callable(param_type):
@@ -265,6 +273,17 @@ class Macro(typing.Generic[MacroParams, MacroReturn]):
             # Special case for boolean values
             if type_ is bool:
                 value = bool(int(value))
+
+            elif typing.get_origin(type_) is typing.Literal:
+                for option in typing.get_args(type_):
+                    if (
+                        isinstance(option, str)
+                        and str(value).lower() == option.lower()
+                    ) or (
+                        isinstance(option, int)
+                        and (value.isdigit() and int(value) == option)
+                    ):
+                        value = option
 
             elif callable(type_):
                 value = paramspec.annotation(value)

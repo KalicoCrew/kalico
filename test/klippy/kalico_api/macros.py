@@ -1,5 +1,6 @@
 import enum
 import json
+import typing
 from typing import Annotated
 
 import pytest
@@ -142,6 +143,9 @@ def do_the_thing(kalico: Kalico, validated: IntRange[0, 5] = -1):
 
     kalico.gcode.set_heater_temperature(heater="extruder", target=210)
 
+    # Test typing.Literal for macro parameters being case insensitive
+    kalico.gcode.macro_literals(axis="x")
+
 
 @gcode_macro(rename_existing="PAUSE_BASE")
 def pause(k: Kalico):
@@ -163,3 +167,9 @@ def set_heater_temperature(k: Kalico, **params):
     assert "HEATER" in params
     assert "TARGET" in params
     k.gcode.base_set_heater_temperature(**params)
+
+
+# typing.Literal supprt
+@gcode_macro
+def macro_literals(k: Kalico, axis: typing.Literal["X", "Y", "Z"]):
+    k.respond_info(f"literal {axis=!r}")
