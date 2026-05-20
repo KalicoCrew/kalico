@@ -1275,6 +1275,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         let cycles_per_second = self.cycles_per_second;
         let t_sample_end_global = (now_cycles as f32) / cycles_per_second;
 
+        // Spec §4.6: Phase 3 needs the active segment (for `e_mode` /
+        // `extrusion_ratio`) and the f32 snapshot of `e_accumulator`
+        // taken at `arm_segment`. Snapshot them here — `tick_sample`
+        // holds the exclusive borrow on `self`, and `runtime_tick_sample`
+        // does not mutate `current` / `segment_base_e`, so threading the
+        // reference + scalar is sound.
+        let engine_segment_base_e = self.segment_base_e;
+        let current_segment = self.current.as_ref();
         let mut ctx = crate::tick::TickContext {
             axes: &mut self.stepping_axes,
             queues: queue_ptrs,
@@ -1282,6 +1290,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             caches: &mut self.tick_caches,
             curve_pool,
             ds_xy_segment: &mut self.ds_xy_segment,
+            current_segment,
+            engine_segment_base_e,
             sample_period_sec: self.sample_period_sec,
             sample_period_cycles: self.sample_period_cycles,
             cycles_per_second,

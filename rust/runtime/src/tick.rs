@@ -504,6 +504,16 @@ pub struct TickContext<'a> {
     /// context via mutable borrow so Phase 2 can integrate and Phase 5
     /// can clear without reaching back through the engine.
     pub ds_xy_segment: &'a mut f32,
+    /// Reference to `Engine::current` for the active segment. Phase 3's E-axis
+    /// evaluator dispatches on `Segment::e_mode` + `Segment::extrusion_ratio`.
+    /// `None` while no segment is armed (e.g. boot, between segments) — in
+    /// which case Phase 3 returns `engine_segment_base_e` unchanged (no E
+    /// motion).
+    pub current_segment: Option<&'a crate::segment::Segment>,
+    /// Snapshot of `Engine::e_accumulator` (truncated to f32) taken at
+    /// `arm_segment` time. Phase 3 returns absolute E as
+    /// `engine_segment_base_e + segment_local_e`. See spec §4.6.
+    pub engine_segment_base_e: f32,
     pub sample_period_sec: f32,
     pub sample_period_cycles: u32,
     pub cycles_per_second: f32,
@@ -647,6 +657,77 @@ fn advance_piece_if_needed(
 // is justified — every individual index would otherwise need its own
 // inline annotation, which would obscure the per-phase structure that
 // the spec calls out.
+/// Phase-3 E-axis evaluator (spec §4.6, absolute-position model).
+///
+/// Returns the absolute E position in mm:
+/// `engine_segment_base_e + segment_local`. The segment-local part
+/// dispatches on [`Segment::e_mode`](crate::segment::Segment::e_mode):
+///
+/// - `CoupledToXy`: `intrinsic + extrusion_ratio * ds_xy_segment
+///   + pa_k * extrusion_ratio * v_xy_this`. The follower term integrates
+///   XY arc length since segment-arm; PA adds a velocity-proportional
+///   correction whose sign (accelerating vs decelerating) the caller
+///   has already baked into `pa_k`.
+/// - `Independent`: `intrinsic` only — the E NURBS drives motion
+///   (retract / prime / filament change). No XY contribution.
+/// - `Travel`: `0`. E does not move.
+///
+/// `intrinsic` is the position from `axis_e.piece` (if any), evaluated at
+/// `t_sample_end_global - piece_start_seconds`. Without an active piece
+/// it is `0.0` — `Independent` mode then returns
+/// `engine_segment_base_e` (no E motion this sample), which is exactly
+/// the spec §4.6 "Independent with no intrinsic" behaviour.
+///
+/// `current == None` (no segment armed) likewise returns
+/// `engine_segment_base_e` — E holds its accumulated position.
+///
+/// `&mut AxisConfig` is taken for parity with the rest of Phase 3 (the
+/// caller already holds an exclusive borrow), but this evaluator does
+/// not mutate the axis — `advance_piece_if_needed` does that in the
+/// surrounding tick body.
+//
+// Permitted in this hot path: cast-precision-loss on `piece_start_time_cycles
+// as f32` matches the rest of `runtime_tick_sample`; we live with the f32
+// epoch's 24-bit mantissa for the same reasons documented on `TickContext`.
+#[allow(clippy::cast_precision_loss)]
+#[allow(clippy::too_many_arguments)] // Spec-pinned signature (§4.6 pseudocode).
+pub fn evaluate_e_axis(
+    axis_e: &mut AxisConfig,
+    current: Option<&crate::segment::Segment>,
+    engine_segment_base_e: f32,
+    ds_xy_segment_accumulator: f32,
+    pa_k: f32,
+    v_xy_this: f32,
+    t_sample_end_global: f32,
+    cycles_per_second: f32,
+) -> f32 {
+    let Some(seg) = current else {
+        return engine_segment_base_e;
+    };
+
+    let intrinsic_local = if let Some(piece) = axis_e.piece {
+        let piece_start_sec =
+            (axis_e.piece_start_time_cycles as f32) / cycles_per_second;
+        let t_local = t_sample_end_global - piece_start_sec;
+        let (p, _v) = crate::monomial::eval_position_velocity(&piece, t_local);
+        p
+    } else {
+        0.0
+    };
+
+    let segment_local = match seg.e_mode {
+        crate::config::EMode::CoupledToXy => {
+            let follower = seg.extrusion_ratio * ds_xy_segment_accumulator;
+            let pa_correction = pa_k * seg.extrusion_ratio * v_xy_this;
+            intrinsic_local + follower + pa_correction
+        }
+        crate::config::EMode::Independent => intrinsic_local,
+        crate::config::EMode::Travel => 0.0,
+    };
+
+    engine_segment_base_e + segment_local
+}
+
 #[allow(clippy::indexing_slicing)]
 pub fn runtime_tick_sample(ctx: &mut TickContext) {
     let mut p_end_axis = [0.0_f32; N_AXES];
@@ -750,19 +831,20 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     // -----------------------------------------------------------------
     // Phase 3: evaluate the extruder axis with E-follows-XY + PA.
     //
-    // The intrinsic extrusion from the E NURBS piece (retract/prime/
-    // filament-change) is summed with:
-    //   - extrusion_ratio × ds_xy_segment   (E follows XY arc length)
-    //   - pa_k × extrusion_ratio × v_xy_this (pressure advance)
-    // where `pa_k` is `advance_accel` while v_xy is rising and
-    // `advance_decel` while it is falling (asymmetric PA, see bleeding-
-    // edge-v2 Step 9 lineage in the CLAUDE.md scope).
+    // Absolute-position model (spec §4.6). `evaluate_e_axis` returns
+    // `engine_segment_base_e + segment_local`, dispatching on the
+    // current segment's `e_mode`:
+    //   - CoupledToXy: intrinsic + extrusion_ratio × ds_xy_segment
+    //                  + pa_k × extrusion_ratio × v_xy_this
+    //   - Independent: intrinsic (E NURBS only; no XY contribution)
+    //   - Travel:      0 (no E motion)
+    // `pa_k` is `advance_accel` while v_xy is rising and `advance_decel`
+    // while falling (asymmetric PA, bleeding-edge-v2 Step 9 lineage in
+    // the CLAUDE.md scope).
     //
-    // Task 6 dropped the stale `AxisConfig::extrusion_per_xy_mm`; the
-    // ratio now comes per-segment from `Segment::extrusion_ratio`. Task
-    // 11 wires the current-segment cursor into `TickContext`; until
-    // then the coupling term is held at zero so E follows only its
-    // intrinsic curve.
+    // `dispatch_axis` for E reuses `caches.p_prev[AXIS_E]` as the prior
+    // absolute position; the per-axis cache is updated below in Phase 4
+    // so subsequent samples see this sample's absolute E.
     // -----------------------------------------------------------------
     {
         let axis = &mut ctx.axes[AXIS_E];
@@ -779,50 +861,43 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
             ctx.cycles_per_second,
         );
 
-        if let Some(piece) = axis.piece {
-            let piece_start_sec =
-                (axis.piece_start_time_cycles as f32) / ctx.cycles_per_second;
-            let t_local = ctx.t_sample_end_global - piece_start_sec;
-            let (p_end_intrinsic, v_end) =
-                crate::monomial::eval_position_velocity(&piece, t_local);
-
-            if !p_end_intrinsic.is_finite() || !v_end.is_finite() {
-                raise_math_non_finite(ctx.shared, AXIS_E);
-                p_end_axis[AXIS_E] = p_sample_start;
-                v_end_axis[AXIS_E] = 0.0;
-            } else {
-                let pa_k = if ctx.caches.vdot_xy_accelerating {
-                    ctx.advance_accel
-                } else {
-                    ctx.advance_decel
-                };
-                // Per-segment extrusion ratio source pending Task 11
-                // (see Phase-3 banner above). Held at 0.0 so the E
-                // axis evaluates its intrinsic NURBS only.
-                let extrusion_ratio: f32 = 0.0;
-                let p_end = p_end_intrinsic
-                    + extrusion_ratio * *ctx.ds_xy_segment
-                    + pa_k * extrusion_ratio * ctx.caches.v_xy_this;
-
-                p_end_axis[AXIS_E] = p_end;
-                v_end_axis[AXIS_E] = v_end;
-
-                dispatch_axis(
-                    AXIS_E,
-                    axis,
-                    ctx.queues[AXIS_E],
-                    ctx.shared,
-                    p_end,
-                    v_end,
-                    p_sample_start,
-                    ctx.sample_period_sec,
-                    ctx.now_cycles,
-                    ctx.cycles_per_second,
-                );
-            }
+        let pa_k = if ctx.caches.vdot_xy_accelerating {
+            ctx.advance_accel
         } else {
+            ctx.advance_decel
+        };
+        let p_end = evaluate_e_axis(
+            axis,
+            ctx.current_segment,
+            ctx.engine_segment_base_e,
+            *ctx.ds_xy_segment,
+            pa_k,
+            ctx.caches.v_xy_this,
+            ctx.t_sample_end_global,
+            ctx.cycles_per_second,
+        );
+
+        if !p_end.is_finite() {
+            raise_math_non_finite(ctx.shared, AXIS_E);
             p_end_axis[AXIS_E] = p_sample_start;
             v_end_axis[AXIS_E] = 0.0;
+        } else {
+            p_end_axis[AXIS_E] = p_end;
+            // Phase-3 doesn't surface a separate E velocity (the secant-
+            // slope sub-sample timing uses position differencing).
+            v_end_axis[AXIS_E] = 0.0;
+            dispatch_axis(
+                AXIS_E,
+                axis,
+                ctx.queues[AXIS_E],
+                ctx.shared,
+                p_end,
+                /* v_end */ 0.0,
+                p_sample_start,
+                ctx.sample_period_sec,
+                ctx.now_cycles,
+                ctx.cycles_per_second,
+            );
         }
     }
 
