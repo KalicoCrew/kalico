@@ -936,6 +936,11 @@ runtime_status_drain(void)
         // 0xD0/0xD1/0xD2 — spi rx/eot timeout post-mortem (stm32h7_spi.c).
         // Volatiles populated just before the shutdown call; rotation cycles
         // through them so the host sees the full snapshot across 3 frames.
+        // H7-only: the externs are defined in src/stm32/stm32h7_spi.c, which
+        // F4 builds don't compile (F4 uses a different SPI driver). On F4
+        // slot numbers 14/15/16 become no-op rotation gaps, same as the
+        // other gaps already present in the switch.
+#if CONFIG_MACH_STM32H7
         case 14: {
             // 0xD0 — low 12 bits of SR (status — RXP, TXP, OVR, UDR, MODF,
             // EOT, TIFRE, SUSP), low 12 bits of SPI base address (enough to
@@ -969,6 +974,7 @@ runtime_status_drain(void)
                          | (kalico_spi_hang_cr2 & 0xFFFFu);
             break;
         }
+#endif
         }
     }
 
