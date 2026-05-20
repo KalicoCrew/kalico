@@ -124,6 +124,16 @@ uint32_t diag_get_peek_data(void);
 // cannot retire queued segments.
 uint32_t diag_get_tim5_count(void);
 
+// LIVE accessors for the runtime_tick subwindow inside TIM5_IRQHandler —
+// exposed for the 2026-05-21 "TIM5 fires but engine.tick_counter stays 0"
+// investigation (fault_detail tags 0xE4/0xE5). If rt_tick_count < tim5_count
+// the `if (runtime_handle)` early-skip in TIM5_IRQHandler is firing on every
+// fire (runtime_handle null inside the IRQ context). If rt_tick_count ==
+// tim5_count but rt_tick_cycles_max is tiny (~10 cycles), kalico_runtime_-
+// tick_sample is being called but early-returning before isr_sample_tick.
+uint32_t diag_get_rt_tick_count(void);
+uint32_t diag_get_rt_tick_cycles_max(void);
+
 // LIVE counter accessors for TX-side drops — exposed for the 2026-05-17
 // "credit_freed never reaches host" investigation (fault_detail tag 0xF9).
 // kalico_native_emit_credit_freed silently drops the frame when

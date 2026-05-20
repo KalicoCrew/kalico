@@ -903,6 +903,33 @@ runtime_status_drain(void)
             fault_detail = 0xFF000000u | (ret & 0x00FFFFFFu);
             break;
         }
+        case 17: {
+            // 0xE4 — diag.rt_tick_count low 24 bits. Bumped at the END of
+            // every TIM5_IRQHandler execution, regardless of whether the
+            // runtime_handle check inside the IRQ short-circuits the call
+            // to kalico_runtime_tick_sample. Compare with 0xF7 (tim5_irq_count):
+            //   E4 == F7 → if-block runs, kalico_runtime_tick_sample called
+            //   E4 <  F7 → impossible (E4 and F7 both bump at IRQ exit; F7
+            //              should == E4 always; if not, separate writer bug)
+            // The actual "is the Rust function being called" signal is 0xE5
+            // (rt_tick_cycles_max) — see below.
+            uint32_t cnt = diag_get_rt_tick_count();
+            fault_detail = 0xE4000000u | (cnt & 0x00FFFFFFu);
+            break;
+        }
+        case 18: {
+            // 0xE5 — diag.rt_tick_cycles_max low 24 bits. Captures the max
+            // duration of the `runtime_handle ? kalico_runtime_tick_sample :`
+            // bracket in TIM5_IRQHandler. If runtime_handle is null when
+            // TIM5 fires, the bracket reduces to two runtime_cyccnt_read()
+            // calls → cycles ~5-20. If kalico_runtime_tick_sample runs +
+            // calls isr_sample_tick + dispatches: ~thousands of cycles
+            // (engine evaluator). At 520 MHz, 25 µs = 13000 cycles is the
+            // expected "full work" magnitude.
+            uint32_t cyc = diag_get_rt_tick_cycles_max();
+            fault_detail = 0xE5000000u | (cyc & 0x00FFFFFFu);
+            break;
+        }
         case 35: {
             // 0xE3 — ISR liveness + pending-segment state (2026-05-21).
             // Disambiguates the bench symptom "queue_depth > 0 but engine

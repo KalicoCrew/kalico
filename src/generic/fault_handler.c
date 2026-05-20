@@ -397,6 +397,18 @@ diag_get_tim5_count(void)
 }
 
 uint32_t
+diag_get_rt_tick_count(void)
+{
+    return diag.rt_tick_count;
+}
+
+uint32_t
+diag_get_rt_tick_cycles_max(void)
+{
+    return diag.rt_tick_cycles_max;
+}
+
+uint32_t
 diag_get_tx_drops_kalico(void)
 {
     return diag.tx_drops_kalico;
