@@ -148,6 +148,27 @@ runtime_motor_binding_count(uint8_t motor_idx)
     return runtime_motor_stepper_count[motor_idx];
 }
 
+// Foreground reset — clears the motor→stepper binding table so the next
+// `kalico_configure_axes_blob` populates a fresh slate. Called from the Rust
+// FFI on a fresh klippy session (see `kalico_runtime_configure_axes_blob`
+// in `rust/kalico-c-api/src/runtime_ffi.rs`). Without this, the table
+// accumulates across klippy reconnects (the MCU stays powered) and a
+// reconnected klippy hits `RUNTIME_MAX_STEPPERS_PER_MOTOR` after two
+// reconnects.
+__attribute__((used, externally_visible))
+void
+runtime_reset_stepper_bindings(void)
+{
+    for (uint8_t m = 0; m < RUNTIME_MOTOR_COUNT; m++) {
+        runtime_motor_stepper_count[m] = 0;
+        runtime_motor_last_dir[m] = -1;
+        for (uint8_t i = 0; i < RUNTIME_MAX_STEPPERS_PER_MOTOR; i++) {
+            runtime_motor_steppers[m][i].stepper = NULL;
+            runtime_motor_steppers[m][i].invert_dir = 0;
+        }
+    }
+}
+
 // ─── Stepping-redesign Task 11 — kalico_configure_* command handlers ─────
 //
 // Three foreground commands that publish per-axis configuration, the
