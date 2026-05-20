@@ -434,8 +434,8 @@ command_runtime_configure_axes_blob(uint32_t *args)
                                                    blob_ptr,
                                                    blob_len);
     if (r == 0) {
-        extern void init_step_time_timers(void);
-        init_step_time_timers();
+        // New stepping path uses init_per_axis_step_timers; deleted in
+        // stepping-redesign-finish Task 17.
     }
     sendf("kalico_configure_axes_blob_response result=%i", r);
 }
@@ -554,8 +554,8 @@ command_runtime_push_segment_msgproto(uint32_t *args)
         t_start, t_end, kinematics, e_mode, extrusion_ratio_bits,
         &accepted_id, &credit_epoch);
     if (r == 0) {
-        extern void arm_producer_timer_if_kicked(void);
-        arm_producer_timer_if_kicked();
+        // New stepping path's TIM5 ISR dequeues segments directly; no
+        // producer timer to arm. Stepping-redesign-finish Task 17.
     }
     sendf(
         "kalico_push_segment_msgproto_response result=%i "

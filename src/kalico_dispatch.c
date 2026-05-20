@@ -459,14 +459,9 @@ handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_
         &accepted_id, &credit_epoch);
     handle_push_segment_last_r = r;
     if (r == 0 /* KALICO_OK */) {
-        // Wake the step-emission producer Klipper timer. The runtime's
-        // `push_segment` already CAS-set `producer_pending=true` inside
-        // `Engine::push_segment` (rust/runtime/src/engine.rs); we still
-        // need to make sure the producer timer is queued with the
-        // scheduler so the actual fill happens. `arm_producer_timer_if_kicked`
-        // is idempotent and coalesces concurrent kicks.
-        extern void arm_producer_timer_if_kicked(void);
-        arm_producer_timer_if_kicked();
+        // The new stepping path (TIM5 sample-driven cubic Bezier eval) has
+        // no producer timer to arm here — the ISR dequeues segments from
+        // the SPSC queue directly. Stepping-redesign-finish Task 17.
     }
     send_push_segment_response(correlation_id, r, accepted_id, credit_epoch);
 }
@@ -522,14 +517,9 @@ handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t bod
     int32_t r = kalico_runtime_configure_axes_blob(runtime_handle, body, body_len);
     runtime_diag_progress(0xCB, 4, (uint32_t)r);
     if (r == 0 /* KALICO_OK */) {
-        // Register each StepTime-mode motor's consumer Klipper timer with
-        // the scheduler now that the engine has a fresh axes config. The
-        // consumer timer fires once at a short-poll delay to bootstrap;
-        // its first run finds the ring empty, kicks the producer, and
-        // then switches to ring-driven scheduling once the producer
-        // fills the first batch.
-        extern void init_step_time_timers(void);
-        init_step_time_timers();
+        // The new stepping path uses init_per_axis_step_timers (installed
+        // once at boot via kalico_configure_axis). No per-config-axes
+        // timer registration needed here. Stepping-redesign-finish Task 17.
     }
     send_configure_axes_response(correlation_id, r);
     runtime_diag_progress(0xCB, 5, 0);
