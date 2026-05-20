@@ -315,30 +315,10 @@ runtime_drain_event(struct timer *t)
 void
 runtime_init(void)
 {
-    // 2026-05-20 bisect probe: write a progress marker BEFORE anything
-    // else, so a next-boot persistent-diag read shows whether we got into
-    // runtime_init at all. Tag 0xB0 = "runtime_init entered". Subsequent
-    // tags 0xB1..0xB5 mark each major step. If the H7 isn't enumerating
-    // on USB, the last tag seen on a successful boot tells us where it
-    // crashed.
-    runtime_diag_progress(0xB0, 0, 0);
-
-    // 2026-05-20 bisect: set RUNTIME_INIT_STUB=1 in environment / config
-    // to short-circuit the entire init. If USB enumerates with this set
-    // but not without, the crash is somewhere below. Currently DISABLED
-    // (do the full init). Flip to 1 for bisect builds.
-#define RUNTIME_INIT_STUB 1  /* DIAG: stub runtime_init to confirm crash location */
-#if RUNTIME_INIT_STUB
-    runtime_diag_progress(0xBF, 0, 0xCAFE);
-    return;
-#endif
-
-    // Capture prior-run cause-of-death from .persistent_diag BEFORE any
-    // current-run runtime_diag_progress overwrites it. Status drain emits
-    // this snapshot on every Nth status frame so klippy.log preserves it.
-    // Also stash the magic + raw packed values into a SEPARATE static so
-    // we can verify .persistent_diag actually survives (separately from
-    // status drain emit logic).
+    // 2026-05-20: capture prior-boot diag FIRST (before our markers
+    // overwrite it). Status drain emits this snapshot via klippy
+    // periodic-status, so once we enumerate we can read the prior
+    // boot's last marker over USB.
     extern volatile uint32_t runtime_diag_prior_magic_raw;
     extern volatile uint32_t runtime_diag_prior_packed_raw;
     runtime_diag_prior_magic_raw = rt_diag_persistent.magic;
@@ -347,6 +327,21 @@ runtime_init(void)
         && rt_diag_persistent.last_packed != 0) {
         runtime_diag_prior_boot_snapshot = rt_diag_persistent.last_packed;
     }
+
+    // 2026-05-20 bisect probe.
+    runtime_diag_progress(0xB0, 0, 0);
+
+    // 2026-05-20 bisect: STUB=1 short-circuits runtime_init's body.
+    // With STUB=1, USB enumeration tells us the crash is below this
+    // point. The prior-boot snapshot capture above survives so a klippy
+    // status frame can tell us the last marker the crashing firmware
+    // wrote.
+#define RUNTIME_INIT_STUB 1  /* DIAG: stub runtime_init to confirm crash location */
+#if RUNTIME_INIT_STUB
+    runtime_diag_progress(0xBF, 0, 0xCAFE);
+    return;
+#endif
+
     runtime_diag_progress(0xB1, 0, 0);  // about to call runtime_handle_create
     runtime_handle = runtime_handle_create();
     if (!runtime_handle) {
