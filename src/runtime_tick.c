@@ -336,7 +336,7 @@ runtime_init(void)
     // point. The prior-boot snapshot capture above survives so a klippy
     // status frame can tell us the last marker the crashing firmware
     // wrote.
-#define RUNTIME_INIT_STUB 1  /* DIAG: stub runtime_init to confirm crash location */
+#define RUNTIME_INIT_STUB 0  /* DIAG: 1 stubs runtime_init for bisect */
 #if RUNTIME_INIT_STUB
     runtime_diag_progress(0xBF, 0, 0xCAFE);
     return;
