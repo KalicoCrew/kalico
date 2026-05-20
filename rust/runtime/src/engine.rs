@@ -181,6 +181,14 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// atomics. Used by secant-slope sub-sample timing and the
     /// E-follows-XY arc-length accumulator.
     pub tick_caches: crate::stepping_state::TickCaches,
+
+    /// Host/test only: per-axis StepQueue pointers installed by
+    /// `Engine::test_install_step_queues` so `tick_sample`'s host branch
+    /// has somewhere to push step entries. Stays at `[null; N_AXES]` on
+    /// the MCU build (the field exists unconditionally to keep
+    /// `init_in_place` field-writes identical on host vs. MCU).
+    #[cfg(any(test, feature = "host"))]
+    test_queue_ptrs: [*mut crate::step_queue::StepQueue; crate::stepping_state::N_AXES],
 }
 
 impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
@@ -232,6 +240,8 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             sample_period_cycles: 0,
             cycles_per_second: clock_freq as f32,
             tick_caches: crate::stepping_state::TickCaches::new(),
+            #[cfg(any(test, feature = "host"))]
+            test_queue_ptrs: [core::ptr::null_mut(); crate::stepping_state::N_AXES],
         }
     }
 
@@ -306,6 +316,10 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             addr_of_mut!((*ptr).sample_period_sec).write(0.0);
             addr_of_mut!((*ptr).sample_period_cycles).write(0);
             addr_of_mut!((*ptr).cycles_per_second).write(clock_freq as f32);
+            #[cfg(any(test, feature = "host"))]
+            addr_of_mut!((*ptr).test_queue_ptrs).write(
+                [core::ptr::null_mut(); crate::stepping_state::N_AXES],
+            );
             addr_of_mut!((*ptr).tick_caches)
                 .write(crate::stepping_state::TickCaches::new());
         }
@@ -434,6 +448,45 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// (≈ 0.7071) for `CoreXY`. Validated finite + strictly positive — a
     /// zero / negative `k_xy` would silently zero out the XY arc-length
     /// integrator that feeds E-follows-XY and pressure-advance.
+    /// Test-only: set `sample_period_sec` + `sample_period_cycles` to mirror
+    /// what production would receive once Engine::init wires
+    /// `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ` through. Production currently
+    /// leaves both fields zero (Codex 2026-05-20 analysis: configure_kinematics
+    /// only sets k_xy; nothing publishes the sample period), so `tick_sample`
+    /// returns at the `sample_period_sec <= 0.0` guard before evaluating any
+    /// loaded piece. Tests must call this to exercise the producer-side step
+    /// pipeline on host without re-tripping that gate.
+    #[cfg(any(test, feature = "host"))]
+    pub fn test_set_sample_period(&mut self, sample_rate_hz: u32) {
+        let sec = 1.0_f32 / (sample_rate_hz as f32);
+        let cycles = (self.cycles_per_second / (sample_rate_hz as f32)).round() as u32;
+        self.sample_period_sec = sec;
+        self.sample_period_cycles = cycles;
+    }
+
+    /// Test-only host queue installer. Production `tick_sample` resolves
+    /// `step_queues` from the C-declared array on `target_os = "none"`; on
+    /// host the resolver returns `[null; N_AXES]`, which makes `dispatch_axis`
+    /// short-circuit before any step entry is pushed. Tests install owned
+    /// `StepQueue` instances so the producer-side pipeline becomes observable.
+    /// The companion `test_queue_ptr` getter exposes them to the per-axis
+    /// timer body (`kalico_per_axis_step_event`) for end-to-end drives.
+    #[cfg(any(test, feature = "host"))]
+    pub fn test_install_step_queues(
+        &mut self,
+        queues: [*mut crate::step_queue::StepQueue; crate::stepping_state::N_AXES],
+    ) {
+        self.test_queue_ptrs = queues;
+    }
+
+    #[cfg(any(test, feature = "host"))]
+    pub fn test_queue_ptr(&self, axis_idx: usize) -> *mut crate::step_queue::StepQueue {
+        self.test_queue_ptrs
+            .get(axis_idx)
+            .copied()
+            .unwrap_or(core::ptr::null_mut())
+    }
+
     pub fn configure_kinematics(&mut self, k_xy: f32) -> i32 {
         if !k_xy.is_finite() || k_xy <= 0.0 {
             return -1;
@@ -962,8 +1015,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         };
         #[cfg(any(test, feature = "host"))]
         let queue_ptrs: [*mut crate::step_queue::StepQueue;
-            crate::stepping_state::N_AXES] =
-            [core::ptr::null_mut(); crate::stepping_state::N_AXES];
+            crate::stepping_state::N_AXES] = self.test_queue_ptrs;
 
         // Read the widened-clock low half from `SharedState`. On MCU
         // this seqlock cell is published by the producer Klipper timer
