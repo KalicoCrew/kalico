@@ -15,6 +15,21 @@ extern const uint32_t runtime_clock_freq;
 
 extern void* runtime_handle;   // exposed in src/runtime_tick.c
 
+// 2026-05-20 (Codex gap M3): TIM5 gate now consults the live C-side
+// queue accessors directly, rather than runtime_handle_queue_depth()
+// (which is `accepted_segment_id - retired_through_segment_id` and
+// returns 0 for the first segment after boot because both atomics
+// initialise to 0 and id=0 - id=0 = 0 — silently skipping TIM5 enable
+// for the very first jog). The two accessors below are the literal
+// source of truth for "is there segment work outstanding for the ISR":
+//   - kalico_native_queue_len()           — pushed but not yet dequeued
+//   - kalico_producer_current_is_present() — ISR is mid-segment
+// Both live in src/kalico_segment_queue.c and are already
+// `used, externally_visible`'d, so the LTO+gc-sections concerns that
+// apply to runtime_clock_freq / runtime_handle do not apply here.
+extern unsigned kalico_native_queue_len(void);
+extern int kalico_producer_current_is_present(void);
+
 // Stepping-redesign Task 17: TIM5 ISR body. The canonical prototype for
 // `kalico_runtime_tick_sample` is supplied by the included
 // `kalico_runtime.h`; no local extern needed.
@@ -57,28 +72,32 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // Stepping-redesign 2026-05-20 (Codex gap #1 fix): TIM5 is enabled iff
-    // either a phase-stepping consumer exists OR there is at least one
-    // segment in flight on the producer queue. The two-clause gate
-    // replaces the earlier `count_modulated_steppers > 0` predicate,
-    // which silently disabled the entire StepTime/Pulse path on
-    // all-Pulse configs — `Engine::tick_sample` IS the producer for the
-    // per-axis step queues in BOTH Pulse and Phase modes, so TIM5 must
-    // fire whenever a segment is in flight regardless of step-mode
-    // selection.
+    // Stepping-redesign 2026-05-20 (Codex gap M3 follow-up): TIM5 is
+    // enabled iff at least one of three live conditions holds:
+    //   (1) a phase-stepping consumer needs sample writes
+    //       (count_modulated_steppers > 0), OR
+    //   (2) a segment is pending in the C-side bridge queue
+    //       (kalico_native_queue_len > 0), OR
+    //   (3) the ISR has dequeued and is mid-segment
+    //       (kalico_producer_current_is_present != 0).
     //
-    // Why a conjunctive early-return (both clauses zero) rather than a
-    // disjunctive arm: at the producer call site (kalico-c-api/runtime_ffi.rs
-    // L461, push_segment) the segment has just been enqueued, so
-    // `queue_depth >= 1` is guaranteed when this function runs — no race
-    // between enqueue and depth observation. At the set_step_mode call
-    // site (runtime_ffi.rs L2193) `count_modulated_steppers` is the
-    // load-bearing clause and is also non-zero by construction.
+    // The earlier two-clause gate (6cea9953d) had the right shape but
+    // used `runtime_handle_queue_depth()`, which is the host-side id
+    // cursor `accepted_segment_id - retired_through_segment_id`. Both
+    // atomics initialise to 0 and the first segment is pushed with
+    // id=0, so depth evaluates to 0 on the very first push — TIM5
+    // stayed disabled and the first jog after boot never moved motors.
+    // The three accessors above are the *live* truth, not a derived
+    // cursor: `kalico_native_queue_len()` is `(tail - head + N) % N`
+    // on the actual C ring (src/kalico_segment_queue.c) and
+    // `kalico_producer_current_is_present()` is the volatile C-side
+    // flag that the engine sets/clears across dequeue and retire.
     //
-    // Disable symmetry: `runtime_drain` (src/runtime_tick.c:479) disables
-    // TIM5 on the Drained/Fault transition. By the time the engine reaches
-    // Drained, queue_depth has dropped to zero by definition, so the
-    // {enable predicate} and {disable predicate} stay in sync.
+    // Disable symmetry: `runtime_drain` (src/runtime_tick.c) disables
+    // TIM5 only on the Drained/Fault transition. By the time the
+    // engine reaches Drained, the bridge queue is empty AND
+    // producer_current has been cleared, so the {enable predicate}
+    // and {disable predicate} stay in sync.
     //
     // The remaining ISR responsibilities are unchanged:
     //   - Segment dequeue + retirement run on the producer Klipper timer
@@ -92,9 +111,10 @@ runtime_tick_enable(void)
     }
 
     if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0
-        && runtime_handle_queue_depth(runtime_handle) == 0) {
-        // No phase-stepping consumers AND no in-flight segments — TIM5
-        // stays disabled. This is the steady-state idle case; the next
+        && kalico_native_queue_len() == 0
+        && !kalico_producer_current_is_present()) {
+        // No phase-stepping consumers AND no pending segments AND no
+        // in-execution segment — TIM5 stays disabled. The next
         // push_segment or set_step_mode call will re-enter and arm TIM5.
         return;
     }
