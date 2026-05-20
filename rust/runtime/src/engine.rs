@@ -265,7 +265,13 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             return (0.0, 0);
         }
         let sec = 1.0_f32 / (sample_rate_hz as f32);
-        let cycles = (clock_freq as f32 / sample_rate_hz as f32).round() as u32;
+        // Integer round-nearest: (a + b/2) / b avoids f32::round() which is
+        // not available on no_std MCU targets (thumbv7em-none-eabihf).
+        // f32::round() compiles to a `roundf` call that requires libm or a
+        // C runtime not present on bare-metal. Integer arithmetic is exact
+        // for u32 inputs and has no precision loss.
+        #[allow(clippy::integer_division)]
+        let cycles = (clock_freq + sample_rate_hz / 2) / sample_rate_hz;
         (sec, cycles)
     }
 
