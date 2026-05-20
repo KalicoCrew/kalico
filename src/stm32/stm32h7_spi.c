@@ -5,18 +5,24 @@
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
 #include "board/io.h" // readb, writeb
-#include "command.h" // shutdown, output, DECL_CTR
+#include "command.h" // shutdown
 #include "gpio.h" // spi_setup
 #include "internal.h" // gpio_peripheral
 #include "sched.h" // sched_shutdown
 #include "board/misc.h" // timer_is_before
 #include "phase_stepping_spi.h" // phase_spi_try_acquire / phase_spi_release
 
-// Diagnostic frame emitted just before the spi rx / eot timeout shutdown so
-// the host log captures the failing peripheral's full register state.
-DECL_CTR("_DECL_OUTPUT "
-         "kalico_spi_hang reason=%c spi_addr=%u sr=%u cr1=%u cr2=%u "
-         "cfg1=%u cfg2=%u remaining=%c");
+// Spi-hang last-seen state. Written by spi_transfer_locked just before
+// shutdown(); read by runtime_tick.c's diag rotation (tag 0xD0) so the
+// stuck peripheral's register snapshot survives the shutdown via the
+// next status frame, even when output() doesn't drain.
+volatile uint32_t kalico_spi_hang_addr __attribute__((used, externally_visible));
+volatile uint32_t kalico_spi_hang_sr   __attribute__((used, externally_visible));
+volatile uint32_t kalico_spi_hang_cr1  __attribute__((used, externally_visible));
+volatile uint32_t kalico_spi_hang_cr2  __attribute__((used, externally_visible));
+volatile uint32_t kalico_spi_hang_cfg2 __attribute__((used, externally_visible));
+// Low 4 bits = remaining-byte count at hang; bit 7 = R (rx) / E (eot)
+volatile uint8_t  kalico_spi_hang_reason __attribute__((used, externally_visible));
 
 struct spi_info {
     SPI_TypeDef *spi;
@@ -168,11 +174,12 @@ spi_transfer_locked(struct spi_config config, uint8_t receive_data,
         uint32_t spi_deadline = timer_read_time() + timer_from_us(100);
         while ((spi->SR & (SPI_SR_RXWNE | SPI_SR_RXPLVL)) == 0) {
             if (!timer_is_before(timer_read_time(), spi_deadline)) {
-                output("kalico_spi_hang reason=%c spi_addr=%u sr=%u cr1=%u "
-                       "cr2=%u cfg1=%u cfg2=%u remaining=%c",
-                       (uint8_t)'R', (uint32_t)(uintptr_t)spi,
-                       spi->SR, spi->CR1, spi->CR2,
-                       spi->CFG1, spi->CFG2, (uint8_t)len);
+                kalico_spi_hang_addr = (uint32_t)(uintptr_t)spi;
+                kalico_spi_hang_sr   = spi->SR;
+                kalico_spi_hang_cr1  = spi->CR1;
+                kalico_spi_hang_cr2  = spi->CR2;
+                kalico_spi_hang_cfg2 = spi->CFG2;
+                kalico_spi_hang_reason = (uint8_t)((len & 0x0F) | 0x00);
                 shutdown("spi rx timeout");
             }
         }
@@ -187,11 +194,12 @@ spi_transfer_locked(struct spi_config config, uint8_t receive_data,
     uint32_t eot_deadline = timer_read_time() + timer_from_us(100);
     while ((spi->SR & SPI_SR_EOT) == 0) {
         if (!timer_is_before(timer_read_time(), eot_deadline)) {
-            output("kalico_spi_hang reason=%c spi_addr=%u sr=%u cr1=%u "
-                   "cr2=%u cfg1=%u cfg2=%u remaining=%c",
-                   (uint8_t)'E', (uint32_t)(uintptr_t)spi,
-                   spi->SR, spi->CR1, spi->CR2,
-                   spi->CFG1, spi->CFG2, (uint8_t)0);
+            kalico_spi_hang_addr = (uint32_t)(uintptr_t)spi;
+            kalico_spi_hang_sr   = spi->SR;
+            kalico_spi_hang_cr1  = spi->CR1;
+            kalico_spi_hang_cr2  = spi->CR2;
+            kalico_spi_hang_cfg2 = spi->CFG2;
+            kalico_spi_hang_reason = (uint8_t)0x80; // bit 7 = EOT path
             shutdown("spi eot timeout");
         }
     }

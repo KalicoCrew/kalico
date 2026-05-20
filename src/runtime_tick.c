@@ -923,6 +923,42 @@ runtime_status_drain(void)
             fault_detail = 0x9D000000u | (seen & 0x00FFFFFFu);
             break;
         }
+        // 0xD0/0xD1/0xD2 — spi rx/eot timeout post-mortem (stm32h7_spi.c).
+        // Volatiles populated just before the shutdown call; rotation cycles
+        // through them so the host sees the full snapshot across 3 frames.
+        case 14: {
+            // 0xD0 — low 12 bits of SR (status — RXP, TXP, OVR, UDR, MODF,
+            // EOT, TIFRE, SUSP), low 12 bits of SPI base address (enough to
+            // disambiguate spi1=0x013xxx / spi3=0x003Cxx / spi4=0x013400 etc.)
+            extern volatile uint32_t kalico_spi_hang_addr;
+            extern volatile uint32_t kalico_spi_hang_sr;
+            fault_detail = 0xD0000000u
+                         | ((kalico_spi_hang_addr & 0xFFFu) << 12)
+                         | (kalico_spi_hang_sr & 0xFFFu);
+            break;
+        }
+        case 15: {
+            // 0xD1 — low 16 bits of CR1 (SPE, SSI, CSTART, MASRX, IOLOCK,
+            // CRC32, FTHLV, etc.) + reason byte in bits 16..23 (low nibble =
+            // remaining-byte count at hang; bit 7 = EOT path vs RX path).
+            extern volatile uint32_t kalico_spi_hang_cr1;
+            extern volatile uint8_t  kalico_spi_hang_reason;
+            fault_detail = 0xD1000000u
+                         | (((uint32_t)kalico_spi_hang_reason & 0xFFu) << 16)
+                         | (kalico_spi_hang_cr1 & 0xFFFFu);
+            break;
+        }
+        case 16: {
+            // 0xD2 — CR2 (TSIZE in bits 0..15) + low 8 bits of CFG2 (CPHA,
+            // CPOL, MASTER, SSM, AFCNTR, SSOE). Together they prove whether
+            // the peripheral was correctly configured for the txn at hang.
+            extern volatile uint32_t kalico_spi_hang_cr2;
+            extern volatile uint32_t kalico_spi_hang_cfg2;
+            fault_detail = 0xD2000000u
+                         | ((kalico_spi_hang_cfg2 & 0xFFu) << 16)
+                         | (kalico_spi_hang_cr2 & 0xFFFFu);
+            break;
+        }
         }
     }
 
