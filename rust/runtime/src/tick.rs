@@ -982,6 +982,15 @@ pub fn isr_sample_tick(
     curve_pool: &crate::curve_pool::CurvePool,
     raw_cyccnt: u32,
 ) {
+    // Bench bring-up diagnostic (2026-05-21): `Engine::tick_counter`
+    // existed but had no production increment site — the FFI accessor
+    // returned 0 forever, so the bench diag tag "is TIM5 firing?" was
+    // unreadable. Bump per-call here so the counter snapshots whether
+    // the ISR body executed at all, independent of the sample-period /
+    // arm-from-queue guards below. Wrapping is benign (u32 at 40 kHz
+    // wraps every ~30 hours).
+    isr.engine.tick_counter.increment();
+
     // 1. Widen the raw DWT sample and publish the §11.4 seqlock.
     let now = isr.widen_state.widen(raw_cyccnt);
     crate::clock::publish_widened_now(shared, now);

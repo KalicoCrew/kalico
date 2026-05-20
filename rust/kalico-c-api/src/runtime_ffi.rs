@@ -781,6 +781,106 @@ pub mod exports {
         }
     }
 
+    // ---- Bench bring-up diagnostic (2026-05-21) ---------------------------
+    //
+    // 2026-05-21 bench reported `queue_depth=2, engine_status=Idle,
+    // current_segment_id=0` after a jog — segments arrived on the MCU but
+    // the engine never armed. Diagnosis collapses to four hypotheses,
+    // distinguished by three independent observables exposed here:
+    //
+    //   * `kalico_runtime_get_tick_counter` — `Engine::tick_counter` snapshot.
+    //     Now actually increments per ISR call (see
+    //     `runtime::tick::isr_sample_tick`); zero means TIM5 is not firing
+    //     or `kalico_runtime_tick_sample` early-exits at the null/INIT_DONE
+    //     guards.
+    //   * `kalico_runtime_pending_segment_is_some` — whether the ISR
+    //     dequeued a segment but parked it because `seg.t_start > now`.
+    //     Non-zero with `current_segment_id == 0` means widened_now is
+    //     stale or the host's arm_lead is enormous.
+    //   * `kalico_runtime_queue_consumer_dequeues_lo` — low 32 bits of
+    //     `SharedState::producer_segment_dequeued_total`. Bumped in
+    //     `isr_sample_tick` after each successful `queue_consumer.dequeue()`.
+    //     Zero with tick_counter > 0 means the ISR fires but
+    //     `queue_consumer.dequeue()` returns None despite C-side
+    //     `kalico_native_queue_len() > 0` — the C/Rust queue sync bug
+    //     pattern.
+    //
+    // These three accessors compose into the C-side diag tag 0xE3 added to
+    // `src/runtime_tick.c`'s `runtime_status_drain` rotation.
+
+    /// Read whether the ISR has a parked-and-waiting segment in
+    /// `IsrState::pending_segment` (returns 1) or not (returns 0). Used by
+    /// the 0xE3 diag tag to disambiguate "queue stuck" vs "park stuck"
+    /// failure modes on the bench. Read-only access through the §11.1
+    /// shared-borrow discipline — `pending_segment` is mutated only by
+    /// `isr_sample_tick`, but the foreground status_drain reads the
+    /// `Option` discriminant byte directly under the same precondition
+    /// `runtime_handle_tick_counter` uses (no concurrent mutation while
+    /// status_drain executes from the host-task context).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_pending_segment_is_some(
+        rt: *mut KalicoRuntime,
+    ) -> u8 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: same shared-borrow contract as `runtime_handle_tick_counter`
+        // above — read-only access to ISR-owned state. The `is_some()` read
+        // is a single byte load of the `Option` discriminant; non-atomic
+        // but tolerable for a diagnostic that may race the ISR by one tick.
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            u8::from((*isr_ptr).pending_segment.is_some())
+        }
+    }
+
+    /// Low 32 bits of `SharedState::producer_segment_dequeued_total`. The
+    /// counter is bumped Acq/Rel in `isr_sample_tick` after every successful
+    /// `queue_consumer.dequeue()`. Pair with `kalico_runtime_get_tick_counter`
+    /// to distinguish "ISR not firing" from "ISR fires but never dequeues"
+    /// in the 0xE3 diag tag.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_queue_consumer_dequeues_lo(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: `SharedState` atomics — Acquire load synchronizes with
+        // the Release fetch_add in `isr_sample_tick`.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let full = (*shared_ptr)
+                .producer_segment_dequeued_total
+                .load(Ordering::Acquire);
+            #[allow(clippy::cast_possible_truncation)]
+            let lo = full as u32;
+            lo
+        }
+    }
+
+    /// Alias for `runtime_handle_tick_counter` with the
+    /// `kalico_runtime_get_*` naming the bench diag rotation uses. Same
+    /// underlying read — `Engine::tick_counter.snapshot()`. Returns 0 on a
+    /// null handle or before `INIT_DONE`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_get_tick_counter(
+        rt: *mut KalicoRuntime,
+    ) -> u32 {
+        // SAFETY: delegates to the existing tick-counter accessor; same
+        // shared-borrow contract.
+        unsafe { runtime_handle_tick_counter(rt) }
+    }
+
     // ---- Phase 11 §5.3 status-frame accessors -----------------------------
     //
     // Each helper projects to `&SharedState` (atomics-only) and reads one

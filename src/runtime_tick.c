@@ -903,6 +903,44 @@ runtime_status_drain(void)
             fault_detail = 0xFF000000u | (ret & 0x00FFFFFFu);
             break;
         }
+        case 35: {
+            // 0xE3 — ISR liveness + pending-segment state (2026-05-21).
+            // Disambiguates the bench symptom "queue_depth > 0 but engine
+            // never arms": three independent observables in 24 bits.
+            //
+            //   bits  0..15: tick_counter & 0xFFFF — bumped per
+            //                 isr_sample_tick call. 0 = TIM5 not firing
+            //                 (or kalico_runtime_tick_sample early-exits
+            //                 at null/INIT_DONE guards).
+            //   bit  16:     pending_segment_is_some — 1 if the ISR
+            //                 dequeued a segment but parked it because
+            //                 seg.t_start > widened_now.
+            //   bits 17..23: queue_consumer_dequeues_total & 0x7F —
+            //                 successful dequeues low 7 bits. 0 with
+            //                 tick_counter > 0 means
+            //                 queue_consumer.dequeue() returns None despite
+            //                 kalico_native_queue_len() > 0 (C/Rust queue
+            //                 sync bug — see 2026-05-18 SPSC miscompile).
+            //
+            // Reading guide for the host:
+            //   tc=0                      → TIM5 dead (check carl's gate)
+            //   tc>0, deq=0               → ISR fires, queue dequeue broken
+            //   tc>0, deq>0, pending=1    → arm-from-queue parks forever
+            //                                (widened_now stale / lead bug)
+            //   tc>0, deq>0, pending=0,
+            //   current_segment_id=0      → arm_segment ran but didn't
+            //                                land — investigate engine state
+            extern uint32_t kalico_runtime_get_tick_counter(void* handle);
+            extern uint8_t  kalico_runtime_pending_segment_is_some(void* handle);
+            extern uint32_t kalico_runtime_queue_consumer_dequeues_lo(void* handle);
+            uint32_t tc = kalico_runtime_get_tick_counter(runtime_handle) & 0xFFFFu;
+            uint32_t pending =
+                (uint32_t)kalico_runtime_pending_segment_is_some(runtime_handle) & 1u;
+            uint32_t deq =
+                kalico_runtime_queue_consumer_dequeues_lo(runtime_handle) & 0x7Fu;
+            fault_detail = 0xE3000000u | (deq << 17) | (pending << 16) | tc;
+            break;
+        }
         case 32: {
             // 0xFD — modulated retire attempts (low 12) / successes (low 12).
             // 2026-05-17 retire-branch instrumentation:
