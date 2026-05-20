@@ -18,4 +18,10 @@
 
 #include "step_queue.h"
 
+// `used, externally_visible` survives Klipper's -fwhole-program -flto
+// build, which would otherwise strip this symbol because it is only
+// referenced from the Rust staticlib (extern "C" { static step_queues; })
+// — the LTO pass sees no C reference and treats it as dead. Same pattern
+// as runtime_clock_freq / runtime_liveness_ok in src/stm32/runtime_tick_h7.c.
+__attribute__((used, externally_visible))
 StepQueue step_queues[N_AXIS_STEP_QUEUES];

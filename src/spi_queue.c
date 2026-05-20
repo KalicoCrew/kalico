@@ -4,4 +4,8 @@
 
 #include "spi_queue.h"
 
+// `used, externally_visible` survives Klipper's -fwhole-program -flto
+// build, which would otherwise strip this symbol — only the Rust
+// staticlib references it.
+__attribute__((used, externally_visible))
 SpiQueue spi_queues[N_SPI_BUSES];
