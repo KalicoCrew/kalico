@@ -146,49 +146,66 @@ spi_prepare(struct spi_config config)
 // calls below are __noreturn -- leaving phase_spi_busy=1 latched is
 // intentional. The ISR-side phase_stepping_write_xdirect skip path
 // remains safe during MCU halt.
+//
+// Pipelined TX-fill / RX-drain pattern uses SPI_SR_RXP (rx-packet, bit 0)
+// for per-byte rx detection in 8-bit data mode (CFG1.DSIZE=7). The earlier
+// fork variant polled SPI_SR_RXWNE | SPI_SR_RXPLVL — those only fire at
+// 32-bit word boundaries / packets, so any non-multiple-of-4 transfer
+// (e.g. MAX31865 3-byte RTD read) hung forever, surfacing as
+// "spi rx timeout" when the 100us deadline expired. Pattern matches
+// Klipper upstream src/stm32/stm32h7_spi.c.
+#define MAX_FIFO 8 // Limit tx fifo usage so rx fifo doesn't overrun
+
 void
 spi_transfer_locked(struct spi_config config, uint8_t receive_data,
                     uint8_t len, uint8_t *data)
 {
-    uint8_t rdata = 0;
+    uint8_t *wptr = data, *end = data + len;
     SPI_TypeDef *spi = config.spi;
 
-    spi->CR2 = len << SPI_CR2_TSIZE_Pos;
+    spi->CR2 = (uint32_t)len << SPI_CR2_TSIZE_Pos;
     // Enable SPI and start transfer, these MUST be set in this sequence
     spi->CR1 = SPI_CR1_SSI | SPI_CR1_SPE;
     spi->CR1 = SPI_CR1_SSI | SPI_CR1_CSTART | SPI_CR1_SPE;
 
     // Bridge-call stall investigation (2026-05-09): bound the busy-wait
-    // loops with a 100us-per-byte deadline. The original code had no
-    // timeout — a hardware-level SPI deadlock (CS glitch, FIFO state
-    // inconsistency, MISO transient) wedges the cooperative scheduler
-    // forever, ALL tasks block, IWDG fires after 30s, host sees
-    // "transport closed/timeout". This converts the silent wedge into a
-    // clean shutdown with a diagnosable reason.
+    // loops with a deadline. The original code had no timeout — a
+    // hardware-level SPI deadlock (CS glitch, FIFO state inconsistency,
+    // MISO transient) wedged the cooperative scheduler forever, ALL
+    // tasks blocked, IWDG fired after 30s, host saw "transport
+    // closed/timeout". This converts the silent wedge into a clean
+    // shutdown with a diagnosable reason. Deadline is reset on every
+    // observed byte of forward progress so a busy bus (multi-driver
+    // pipeline) doesn't trip a false positive.
     //
-    // Budget: 4MHz SPI = 2us per byte clocked. 100us is 50x headroom for
-    // FIFO drain. EOT also gets 100us — generous since EOT fires after
-    // the last bit clocks out.
-    while (len--) {
-        writeb((void *)&spi->TXDR, *data);
-        uint32_t spi_deadline = timer_read_time() + timer_from_us(100);
-        while ((spi->SR & (SPI_SR_RXWNE | SPI_SR_RXPLVL)) == 0) {
-            if (!timer_is_before(timer_read_time(), spi_deadline)) {
-                kalico_spi_hang_addr = (uint32_t)(uintptr_t)spi;
-                kalico_spi_hang_sr   = spi->SR;
-                kalico_spi_hang_cr1  = spi->CR1;
-                kalico_spi_hang_cr2  = spi->CR2;
-                kalico_spi_hang_cfg2 = spi->CFG2;
-                kalico_spi_hang_reason = (uint8_t)((len & 0x0F) | 0x00);
-                shutdown("spi rx timeout");
+    // Budget: 100us per pending byte. 4MHz SPI = 2us per byte clocked;
+    // 100us is 50x headroom for FIFO drain + cooperative scheduling.
+    uint32_t spi_deadline = timer_read_time() + timer_from_us(100 * len);
+    while (data < end) {
+        uint32_t sr = spi->SR & (SPI_SR_TXP | SPI_SR_RXP);
+        if ((sr & SPI_SR_TXP) && wptr < end && wptr < data + MAX_FIFO) {
+            writeb((void *)&spi->TXDR, *wptr++);
+            spi_deadline = timer_read_time() + timer_from_us(100 * (uint32_t)(end - data));
+            continue;
+        }
+        if (sr & SPI_SR_RXP) {
+            uint8_t rdata = readb((void *)&spi->RXDR);
+            if (receive_data) {
+                *data = rdata;
             }
+            data++;
+            spi_deadline = timer_read_time() + timer_from_us(100 * (uint32_t)(end - data));
+            continue;
         }
-        rdata = readb((void *)&spi->RXDR);
-
-        if (receive_data) {
-            *data = rdata;
+        if (!timer_is_before(timer_read_time(), spi_deadline)) {
+            kalico_spi_hang_addr = (uint32_t)(uintptr_t)spi;
+            kalico_spi_hang_sr   = spi->SR;
+            kalico_spi_hang_cr1  = spi->CR1;
+            kalico_spi_hang_cr2  = spi->CR2;
+            kalico_spi_hang_cfg2 = spi->CFG2;
+            kalico_spi_hang_reason = (uint8_t)((uint32_t)(end - data) & 0x0F);
+            shutdown("spi rx timeout");
         }
-        data++;
     }
 
     uint32_t eot_deadline = timer_read_time() + timer_from_us(100);
