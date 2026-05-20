@@ -16,10 +16,15 @@ pub fn fits(caps: &McuCaps, curve: &ScalarNurbs<f64>) -> bool {
 /// True if a `CurveLoadParams` payload fits the destination MCU's caps.
 /// Mirrors the dispatch-time check in `bridge.rs`; both must agree on what
 /// "fits" means.
-pub fn fits_curve_load(caps: &McuCaps, curve: &CurveLoadParams) -> bool {
-    curve.cps_f32.len() as u32 <= caps.max_control_points
-        && curve.knots_f32.len() as u32 <= caps.max_knot_vector_len
-        && curve.degree <= caps.max_degree
+///
+/// Cubic-piece curves carry a hard cap of `MAX_PIECES_PER_CURVE` (16) on
+/// the firmware side; the runtime-caps message no longer reports a
+/// per-curve sizing budget for NURBS knots / control points. We retain
+/// `max_degree` as a soft check (every piece is cubic = degree 3) and add
+/// a piece-count ceiling derived from `curve_pool_n`-adjacent reasoning:
+/// the firmware's `MAX_PIECES_PER_CURVE` is the binding constraint.
+pub fn fits_curve_load(_caps: &McuCaps, curve: &CurveLoadParams) -> bool {
+    curve.piece_count() <= kalico_host_rt::producer::MAX_PIECES_PER_CURVE
 }
 
 #[cfg(test)]
@@ -67,17 +72,17 @@ mod tests {
     #[test]
     fn curve_load_params_over_cap_does_not_fit() {
         let caps = small_caps();
+        // 17 pieces — exceeds firmware's MAX_PIECES_PER_CURVE = 16.
         let too_big = CurveLoadParams {
-            degree: 3,
-            knots_f32: vec![0.0_f32; 104], // > 76
-            cps_f32: vec![0.0_f32; 100],   // > 64
+            bp_per_piece: vec![[0.0_f32; 4]; 17],
+            duration_per_piece: vec![0.01_f32; 17],
         };
         assert!(!fits_curve_load(&caps, &too_big));
 
+        // 8 pieces — well within the cap.
         let just_right = CurveLoadParams {
-            degree: 3,
-            knots_f32: vec![0.0_f32; 29],
-            cps_f32: vec![0.0_f32; 25],
+            bp_per_piece: vec![[0.0_f32; 4]; 8],
+            duration_per_piece: vec![0.01_f32; 8],
         };
         assert!(fits_curve_load(&caps, &just_right));
     }

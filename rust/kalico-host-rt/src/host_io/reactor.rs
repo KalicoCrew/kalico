@@ -2874,7 +2874,7 @@ mod io_fault_propagation {
 
         let (completion_tx, completion_rx) = sync_channel(1);
         tx.send(ReactorCommand::KalicoCall {
-            kind: MessageKind::LoadCurve,
+            kind: MessageKind::LoadCurveCubic,
             body: vec![0; 16],
             completion: completion_tx,
             deadline: Instant::now() + Duration::from_secs(1),

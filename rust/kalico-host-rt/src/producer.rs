@@ -12,7 +12,12 @@
 
 use std::time::Duration;
 
-use kalico_protocol::{Encode, LoadCurve, LoadCurveResponse, MessageKind, PushSegment, PushSegmentResponse, Decode};
+use kalico_protocol::{Encode, LoadCurveCubic, LoadCurveResponse, MessageKind, PushSegment, PushSegmentResponse, Decode};
+
+/// Cap defined by the firmware's `MAX_PIECES_PER_CURVE = 16` (spec
+/// `2026-05-20-stepping-redesign-finish-design.md` §2). Host-side enforcement
+/// short-circuits an over-cap upload before it hits the wire.
+pub const MAX_PIECES_PER_CURVE: usize = 16;
 
 use crate::credit::CreditCounter;
 use crate::host_io::KalicoHostIo;
@@ -21,10 +26,10 @@ use crate::transport::TransportError;
 /// Default timeout for `LoadCurveResponse` (spec §7.4). The MCU should
 /// reply within microseconds; 100 ms is loose by ~3 orders of magnitude
 /// and only triggers on a host-side stall or a wire fault.
-/// LoadCurve is a bulk-data operation — the host ships a full cubic-Bézier
-/// piece (control points + knots, up to ~750 bytes payload) and the MCU has
-/// to deserialize, validate, and slot it into the curve pool before sending
-/// back the response.
+/// LoadCurveCubic is a small frame — the host ships at most 16 cubic-Bezier
+/// pieces (4 + 16*20 = 324 bytes payload) and the MCU deserializes,
+/// validates, and slots them into the curve pool before sending back the
+/// response.
 ///
 /// On silicon this completes in well under 50 ms. Under Renode's 1 µs
 /// quantum the same dispatch routinely takes 20+ s wall because the
@@ -187,118 +192,129 @@ pub fn push_segment_with_timeout(
     })
 }
 
-/// Parameters for loading a single scalar curve into an MCU's curve pool.
+/// Parameters for loading a single per-axis cubic-Bezier curve into an MCU's
+/// curve pool.
 ///
-/// Lays out the post-Phase-C kalico-native LoadCurve body (spec §7.3):
-/// `slot: u16, degree: u8, n_cps: u32, n_knots: u32, cps[..]: f32 LE,
-/// knots[..]: f32 LE`.
+/// Lays out the post-stepping-redesign-finish LoadCurveCubic body (spec
+/// §3.2): `slot_idx: u16, axis_idx: u8, piece_count: u8, pieces[..]: 20 bytes
+/// each` (4 Bernstein control points + duration, all f32 LE bit patterns).
+///
+/// Each piece carries its own `duration_s` in seconds; the firmware walks
+/// the piece array via (curve_handle, piece_cursor) and uses per-piece
+/// duration directly — no need to ship a knot vector or normalize-to-[0,1].
 #[derive(Debug, Clone)]
 pub struct CurveLoadParams {
-    pub degree: u8,
-    pub knots_f32: Vec<f32>,
-    pub cps_f32: Vec<f32>,
+    /// Per-piece Bernstein control points (length = `piece_count`, ≤ `MAX_PIECES_PER_CURVE`).
+    pub bp_per_piece: Vec<[f32; 4]>,
+    /// Per-piece duration in seconds (length matches `bp_per_piece`).
+    pub duration_per_piece: Vec<f32>,
 }
 
 impl CurveLoadParams {
-    /// Construct from a `nurbs::ScalarNurbs<f64>`, truncating to f32.
-    pub fn from_scalar_nurbs(curve: &nurbs::ScalarNurbs<f64>) -> Self {
-        Self {
-            degree: nurbs::NurbsView::degree(curve),
-            knots_f32: curve.knots().iter().map(|&k| k as f32).collect(),
-            cps_f32: curve.control_points().iter().map(|&v| v as f32).collect(),
-        }
-    }
-
-    /// Construct from a time-domain `ScalarNurbs<f64>` for the MCU evaluator.
+    /// Construct from a host-side cubic NURBS via `nurbs::bezier::extract_bezier_pieces`,
+    /// scaling each piece's knot domain `[u_start, u_end]` (in seconds, host
+    /// time) to a per-piece duration in seconds.
     ///
-    /// Firmware evaluates loaded curves at normalized segment progress
-    /// `u = elapsed / duration`, not at absolute host time. Keep the control
-    /// points as positions, but map the curve knot domain from
-    /// `[t_start_s, t_end_s]` onto `[0, 1]` before f32 truncation.
+    /// `t_start_s` / `t_end_s` are unused here — the input curve already
+    /// carries the absolute-time domain in its knot vector — but are
+    /// accepted for symmetry with the legacy `from_scalar_nurbs_normalized`
+    /// signature so dispatch-side callsites don't need to change shape.
     pub fn from_scalar_nurbs_normalized(
         curve: &nurbs::ScalarNurbs<f64>,
-        t_start_s: f64,
-        t_end_s: f64,
+        _t_start_s: f64,
+        _t_end_s: f64,
     ) -> Self {
-        let duration = t_end_s - t_start_s;
-        debug_assert!(duration > 0.0);
-        let knots_f32 = curve
-            .knots()
-            .iter()
-            .map(|&k| {
-                let u = if duration > 0.0 {
-                    (k - t_start_s) / duration
-                } else {
-                    k
-                };
-                u.clamp(0.0, 1.0) as f32
-            })
-            .collect();
-        Self {
-            degree: nurbs::NurbsView::degree(curve),
-            knots_f32,
-            cps_f32: curve.control_points().iter().map(|&v| v as f32).collect(),
+        let pieces = nurbs::bezier::extract_bezier_pieces(curve);
+        let mut bp_per_piece: Vec<[f32; 4]> = Vec::with_capacity(pieces.len());
+        let mut duration_per_piece: Vec<f32> = Vec::with_capacity(pieces.len());
+        for piece in &pieces {
+            // Cubic invariant — Bernstein basis with 4 control points.
+            // Higher-degree input would be a planner bug at this point in
+            // the pipeline (refit guarantees cubic). Pad / truncate
+            // defensively so an out-of-spec input still produces a
+            // well-formed wire frame rather than panicking inside the
+            // dispatch closure.
+            let bern = piece.to_bernstein();
+            let mut bp = [0.0_f32; 4];
+            for k in 0..4.min(bern.len()) {
+                bp[k] = bern[k] as f32;
+            }
+            // If degree < 3, hold the last CP (constant tail).
+            if bern.len() < 4 && !bern.is_empty() {
+                let last = bern[bern.len() - 1] as f32;
+                for k in bern.len()..4 {
+                    bp[k] = last;
+                }
+            }
+            bp_per_piece.push(bp);
+            let dur = (piece.u_end - piece.u_start) as f32;
+            duration_per_piece.push(dur);
         }
+        Self { bp_per_piece, duration_per_piece }
+    }
+
+    /// Number of cubic-Bezier pieces in this curve.
+    pub fn piece_count(&self) -> usize {
+        self.bp_per_piece.len()
     }
 }
 
-/// Load a scalar curve into the MCU's curve pool at the caller-specified slot.
+/// Lay out the per-piece body (`piece_count * 20` bytes, little-endian).
 ///
-/// Single kalico-native LoadCurve frame (spec §7.3) — the Phase-A through
-/// Phase-B `kalico-native-transport` plumbing replaces the legacy
-/// `begin/chunk/finalize` Klipper-msgproto sequence. On success returns the
-/// packed handle `(generation << 16) | slot_idx`. On `result != 0` returns
-/// [`ProducerError::McuRejected`].
+/// Per-piece layout: `bp0:u32 | bp1:u32 | bp2:u32 | bp3:u32 | duration:u32`,
+/// each u32 is an f32 bit pattern. Matches
+/// `kalico_protocol::messages::LoadCurveCubic` and the firmware-side
+/// `runtime::cubic_curve::populate_from_wire`.
+fn build_pieces_wire_bytes(bp: &[[f32; 4]], durs: &[f32]) -> Vec<u8> {
+    debug_assert_eq!(bp.len(), durs.len());
+    let mut out = Vec::with_capacity(bp.len() * 20);
+    for i in 0..bp.len() {
+        for &cp in &bp[i] {
+            out.extend_from_slice(&cp.to_bits().to_le_bytes());
+        }
+        out.extend_from_slice(&durs[i].to_bits().to_le_bytes());
+    }
+    out
+}
+
+/// Load a per-axis cubic-Bezier curve into the MCU's curve pool at the
+/// caller-specified slot. Single-frame, atomic — the entire piece array
+/// ships in one `LoadCurveCubic` (msg type 0x0010) and the MCU responds
+/// with `LoadCurveResponse` carrying the packed handle.
+///
+/// On success returns the packed handle `(generation << 16) | slot_idx`.
+/// On `result != 0` returns [`ProducerError::McuRejected`]. Host-side
+/// rejection (piece count out of range) surfaces as
+/// `ProducerError::Transport(TransportError::Parse(...))` to keep the
+/// error surface single-channel for dispatch.
+///
+/// Spec: `docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md` §3.2.
 pub fn load_curve(
     io: &KalicoHostIo,
     slot: u16,
+    axis_idx: u8,
     params: &CurveLoadParams,
     timeout: Duration,
 ) -> Result<u32, ProducerError> {
-    let body = LoadCurve {
-        slot,
-        degree: params.degree,
-        cps: params.cps_f32.clone(),
-        knots: params.knots_f32.clone(),
+    let piece_count = params.piece_count();
+    if piece_count == 0 || piece_count > MAX_PIECES_PER_CURVE {
+        return Err(ProducerError::Transport(TransportError::Parse(format!(
+            "load_curve: piece_count {piece_count} out of range [1, {MAX_PIECES_PER_CURVE}]"
+        ))));
+    }
+    let body = LoadCurveCubic {
+        slot_idx: slot,
+        axis_idx,
+        piece_count: piece_count as u8,
+        pieces_bytes: build_pieces_wire_bytes(&params.bp_per_piece, &params.duration_per_piece),
     }
     .encoded_to_vec();
 
-    eprintln!("[host] producer::load_curve calling kalico_call (slot={slot}, body_len={})", body.len());
-    // 2026-05-16 diag: dump first ~20 load_curve calls to a file so we can
-    // replay live curve geometry in the Rust integration tests. Set
-    // KALICO_CURVE_DUMP=/path/to/file to enable; first call truncates, then
-    // appends. Each line is JSON: {"slot": N, "degree": d, "cps": [...], "knots": [...]}.
-    if let Ok(path) = std::env::var("KALICO_CURVE_DUMP") {
-        use std::io::Write as _;
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static COUNT: AtomicU32 = AtomicU32::new(0);
-        let n = COUNT.fetch_add(1, Ordering::Relaxed);
-        if n < 40 {
-            let truncate = n == 0;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .append(!truncate)
-                .truncate(truncate)
-                .open(&path)
-            {
-                let cps_str: Vec<String> =
-                    params.cps_f32.iter().map(|v| format!("{:.6}", v)).collect();
-                let knots_str: Vec<String> =
-                    params.knots_f32.iter().map(|v| format!("{:.6}", v)).collect();
-                let _ = writeln!(
-                    f,
-                    "{{\"n\":{},\"slot\":{},\"degree\":{},\"cps\":[{}],\"knots\":[{}]}}",
-                    n,
-                    slot,
-                    params.degree,
-                    cps_str.join(","),
-                    knots_str.join(","),
-                );
-            }
-        }
-    }
-    let (kind, resp_body) = io.kalico_call(MessageKind::LoadCurve, body, timeout)?;
+    eprintln!(
+        "[host] producer::load_curve calling kalico_call (slot={slot}, axis={axis_idx}, pieces={piece_count}, body_len={})",
+        body.len()
+    );
+    let (kind, resp_body) = io.kalico_call(MessageKind::LoadCurveCubic, body, timeout)?;
     eprintln!("[host] producer::load_curve got response kind=0x{:04x}", kind.as_u16());
     if kind != MessageKind::LoadCurveResponse {
         return Err(ProducerError::Transport(TransportError::Parse(format!(
@@ -315,16 +331,14 @@ pub fn load_curve(
         // Diagnostic 2026-05-12: when the MCU rejects load_curve with
         // INVALID_HANDLE due to SlotAlreadyLoaded, the FFI side encodes the
         // slot's (current_gen, last_retired_gen) into `curve_handle_packed`
-        // as (kind << 30) | (cur << 16) | last. Decode and print it so the
-        // host log captures the MCU's slot-state view at the moment of
-        // rejection.
-        let kind = (resp.curve_handle_packed >> 30) & 0x3;
+        // as (kind << 30) | (cur << 16) | last.
+        let diag_kind = (resp.curve_handle_packed >> 30) & 0x3;
         let mcu_cur = ((resp.curve_handle_packed >> 16) & 0xFFFF) as u16;
         let mcu_last = (resp.curve_handle_packed & 0xFFFF) as u16;
         eprintln!(
-            "[host] producer::load_curve rejected slot={} result={} \
+            "[host] producer::load_curve rejected slot={} axis={} result={} \
              diag_kind={} mcu_cur_gen={} mcu_last_retired_gen={}",
-            slot, resp.result, kind, mcu_cur, mcu_last,
+            slot, axis_idx, resp.result, diag_kind, mcu_cur, mcu_last,
         );
         return Err(ProducerError::McuRejected(resp.result));
     }

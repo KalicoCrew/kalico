@@ -152,17 +152,13 @@ impl std::error::Error for PlannerError {}
 pub enum DispatchError {
     #[error(
         "motion-bridge: curve for mcu {mcu_id} exceeds caps \
-         (cps {cps} > {max_cps}, knots {knots} > {max_knots}, degree {degree} > {max_degree}); \
+         (pieces {pieces} > {max_pieces}); \
          logical-move splitting not yet implemented (Task 13 follow-up)."
     )]
     CapsExceeded {
         mcu_id: u32,
-        cps: u32,
-        max_cps: u32,
-        knots: u32,
-        max_knots: u32,
-        degree: u8,
-        max_degree: u8,
+        pieces: usize,
+        max_pieces: usize,
     },
     #[error("compute_ack_clock: {0}")]
     ComputeAckClock(String),

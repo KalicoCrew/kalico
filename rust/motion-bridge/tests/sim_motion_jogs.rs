@@ -873,6 +873,7 @@ fn build_dispatch(
                 match producer::load_curve(
                     host_io.as_ref(),
                     slot,
+                    axis_idx as u8,
                     &curve_params,
                     DEFAULT_LOAD_CURVE_TIMEOUT,
                 ) {
