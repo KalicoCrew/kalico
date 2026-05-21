@@ -505,6 +505,21 @@ class TMCCommandHelper:
 
     def _handle_stepper_enable(self, print_time, is_enable):
         if is_enable:
+            # In bridge mode, submit_move dispatches segments to the MCU
+            # immediately after _fire_active_callbacks returns. If we
+            # defer _do_enable to the reactor, the MCU steps into an
+            # uninitialised TMC driver and the first move is lost. Run
+            # the register init + phase calibration inline so the driver
+            # is ready before the segment is dispatched. The gcode mutex
+            # and wait_moves() are unnecessary here — the move hasn't
+            # been submitted yet, so there's nothing to flush or wait
+            # for. Mainline defers because the move sits in the
+            # lookahead and _do_enable's wait_moves() IS what flushes it
+            # to the MCU; bridge mode doesn't have that lookahead.
+            toolhead = self.printer.lookup_object("toolhead")
+            if getattr(toolhead, "bridge", None) is not None:
+                self._do_enable_bridge(print_time)
+                return
 
             def cb(ev):
                 return self._do_enable(print_time)
@@ -515,6 +530,27 @@ class TMCCommandHelper:
                 return self._do_disable(print_time)
 
         self.printer.get_reactor().register_callback(cb)
+
+    def _do_enable_bridge(self, print_time):
+        try:
+            if self.toff is not None:
+                self.fields.set_field("toff", self.toff)
+            self._init_registers()
+            did_reset = self.echeck_helper.start_checks()
+            if did_reset:
+                self.mcu_phase_offset = None
+            if self.mcu_phase_offset is not None:
+                return
+            logging.info(
+                "Calculating %s phase offset (bridge mode, inline)",
+                self.stepper_name,
+            )
+            self._handle_sync_mcu_pos(self.stepper)
+        except (self.printer.command_error, RuntimeError) as e:
+            self.printer.invoke_shutdown(
+                "TMC %s _do_enable_bridge failed: %s"
+                % (self.stepper_name, e)
+            )
 
     def _handle_connect(self):
         # Check if using step on both edges optimization

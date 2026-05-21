@@ -371,9 +371,6 @@ class MotionToolhead(ToolHead):
         )
         if self.bridge is not None:
             enable_print_time = self.get_last_move_time()
-            # Energize motors BEFORE dispatching segments so the
-            # queue_digital_out for the enable pin enters the reactor's
-            # submission queue ahead of the first load_curve/push_segment.
             self._fire_active_callbacks(dx, dy, dz, de, enable_print_time)
             bridge_lmt_before = self.bridge.get_last_move_time()
             self.bridge.submit_move(dx, dy, dz, de, feedrate)
@@ -383,22 +380,15 @@ class MotionToolhead(ToolHead):
         self.commanded_pos[:] = move.end_pos
 
     def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
-        # Energize the motors that will physically move for this segment.
-        # The decision is keyed off the same kinematic transform that
-        # drives stepping (motion_kinematics.motor_deltas mirrors
-        # rust/runtime/src/kinematics.rs): a motor's enable callback
-        # fires iff that motor's post-transform delta is non-zero. On
-        # CoreXY a pure-X cartesian command produces non-zero deltas on
-        # both A and B, so both energize — by construction, not by an
-        # axis-letter registry that can drift from the transform.
         if self.kin is None:
-            return
+            return False
         kin_name = (self.kinematics_name or "").lower()
         deltas = motion_kinematics.motor_deltas(kin_name, dx, dy, dz, de)
         if all(abs(d) <= 1e-9 for d in deltas):
-            return
+            return False
         if print_time is None:
             print_time = self.get_last_move_time()
+        fired = False
         for s in self.kin.get_steppers():
             if not s._active_callbacks:
                 continue
@@ -409,6 +399,8 @@ class MotionToolhead(ToolHead):
             s._active_callbacks = []
             for cb in cbs:
                 cb(print_time)
+            fired = True
+        return fired
 
     def drip_move(self, newpos, speed, drip_completion):
         # Step 7-D §6.2: bridge-aware single-segment homing.
