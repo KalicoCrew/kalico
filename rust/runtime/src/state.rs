@@ -402,6 +402,17 @@ pub struct SharedState {
     /// mapping between seg.t_start (cycles) and widened_now (cycles) is
     /// broken or the duration is wrongly tiny.
     pub isr_last_t_local_bits: AtomicU32,
+    /// Total step entries successfully pushed via queue_push across all
+    /// dispatch_pulse calls. If this stays 0 while EA/ED bump, then
+    /// `dispatch_pulse` is early-returning at `signed_steps == 0` —
+    /// the eval isn't producing enough p_end change to cross microstep
+    /// thresholds. If non-zero while motors stay silent, the per-axis
+    /// timer or runtime_emit_step_pulses GPIO toggle is broken.
+    pub isr_step_push_count: AtomicU32,
+    /// Last non-zero `signed_steps` value (i.e., last actual step demand)
+    /// in `dispatch_pulse`. Stays at 0 if no sample ever produced a
+    /// non-zero step demand.
+    pub isr_last_signed_steps: AtomicU32,
     /// 2026-05-18 wedge diag: incremented in `producer_step` every time the
     /// `producer_current.is_none()` branch is entered, regardless of whether
     /// the subsequent `queue.dequeue()` returned Some or None. Cross-check
@@ -681,6 +692,8 @@ impl SharedState {
             isr_last_microstep_bits: AtomicU32::new(0),
             isr_last_c0_bits: AtomicU32::new(0),
             isr_last_t_local_bits: AtomicU32::new(0),
+            isr_step_push_count: AtomicU32::new(0),
+            isr_last_signed_steps: AtomicU32::new(0),
             producer_observed_none_total: AtomicU64::new(0),
             producer_step_last_len_snapshot: AtomicU32::new(0),
             producer_step_current_is_some_snapshot: AtomicU8::new(0),

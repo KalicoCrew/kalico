@@ -629,7 +629,7 @@ runtime_status_drain(void)
         // tags (0xB6, 0xB7), curve-resolve tag (0xB8), demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 42) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 44) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 3:
             // 0xE6 — Live step_mode discriminants for motors 0..3, two
@@ -977,6 +977,26 @@ runtime_status_drain(void)
             extern uint32_t kalico_runtime_get_isr_last_t_local_bits(void* h);
             uint32_t v = kalico_runtime_get_isr_last_t_local_bits(runtime_handle);
             fault_detail = 0xCD000000u | ((v >> 8) & 0x00FFFFFFu);
+            break;
+        }
+        case 42: {
+            // 0xC8 — total successful queue_push count across all
+            // dispatch_pulse calls. If this stays 0 while EA/ED bump,
+            // signed_steps is always 0 (eval not producing enough p_end
+            // change). If non-zero, push works — per-axis timer or
+            // runtime_emit_step_pulses GPIO toggle is broken.
+            extern uint32_t kalico_runtime_get_isr_step_push_count(void* h);
+            uint32_t v = kalico_runtime_get_isr_step_push_count(runtime_handle);
+            fault_detail = 0xC8000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 43: {
+            // 0xC9 — last non-zero signed_steps seen by dispatch_pulse.
+            // ≈1 for typical jogs (1 step per few samples). 0 = no
+            // sample ever produced a non-zero step demand.
+            extern uint32_t kalico_runtime_get_isr_last_signed_steps(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_signed_steps(runtime_handle);
+            fault_detail = 0xC9000000u | (v & 0x00FFFFFFu);
             break;
         }
         case 36: {

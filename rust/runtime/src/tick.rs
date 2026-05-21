@@ -166,6 +166,14 @@ fn dispatch_pulse(
     if signed_steps == 0 {
         return;
     }
+    // 2026-05-21 diag: capture last non-zero signed_steps so the host
+    // can see what the eval is producing. If this stays 0 across an
+    // entire jog despite EA/ED bumping, the eval is never producing
+    // enough p_end change to cross a microstep threshold.
+    shared.isr_last_signed_steps.store(
+        signed_steps.unsigned_abs(),
+        core::sync::atomic::Ordering::Relaxed,
+    );
 
     // 2026-05-21 FIX: bound check that the comment in compute_step_times
     // PROMISED but nothing enforced. If signed_steps is huge (e.g.,
@@ -218,6 +226,9 @@ fn dispatch_pulse(
         // queue's storage outlives this call (C-owned `.axi_bss` on the
         // MCU, stack/heap test buffer on host).
         let push_res = unsafe { queue_push(queue_ptr, entry) };
+        if push_res.is_ok() {
+            bump_relaxed(&shared.isr_step_push_count);
+        }
         if push_res.is_err() {
             // Commit the steps we already pushed before raising the
             // fault — the queue's contents are about to drive real GPIO
