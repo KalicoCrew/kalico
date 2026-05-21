@@ -629,7 +629,7 @@ runtime_status_drain(void)
         // tags (0xB6, 0xB7), curve-resolve tag (0xB8), demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 48) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 52) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 3:
             // 0xE6 — Live step_mode discriminants for motors 0..3, two
@@ -1034,6 +1034,55 @@ runtime_status_drain(void)
             extern uint32_t kalico_runtime_get_isr_last_arm_participating(void* h);
             uint32_t v = kalico_runtime_get_isr_last_arm_participating(runtime_handle);
             fault_detail = 0xA3000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 48: {
+            // 0xA4 — HIGH 32 bits of seg.t_start at the most-recent park/arm
+            // decision. Hypothesis (b) predicts this = 0 when t_start was
+            // narrowed to u32 on the wire (MCU uptime ~32 s at 520 MHz needs
+            // ≥33 bits; low 32 = ~0 because the host computed t_start in
+            // MCU-clock cycles and its high half is non-zero). Hypothesis (a)
+            // epoch-mismatch predicts this non-zero but wildly different from
+            // 0xA5 (now_hi). A5 == A4 → same epoch; A5 >> A4 or A4 == 0 →
+            // t_start truncated or in wrong domain.
+            extern uint32_t kalico_runtime_get_isr_last_t_start_hi(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_t_start_hi(runtime_handle);
+            fault_detail = 0xA4000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 49: {
+            // 0xA5 — HIGH 32 bits of widened_now at the most-recent park/arm
+            // decision. At 520 MHz and 32 s uptime: now ≈ 32 × 520e6 =
+            // 16640000000 = 0x3E226200; high 32 bits = 0x3 (low 24 = 0xE2262X).
+            // Pair with 0xA4: if A5 >> 0 and A4 == 0 → t_start high half was
+            // lost (narrowed u32 or zero-epoch) → root cause confirmed as (b).
+            extern uint32_t kalico_runtime_get_isr_last_widened_hi(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_widened_hi(runtime_handle);
+            fault_detail = 0xA5000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 50: {
+            // 0xA6 — LOW 32 bits of `now.saturating_sub(seg.t_start)` at the
+            // most-recent park/arm decision. If t_start was 0 or much less
+            // than now, delta ≈ now ≈ uptime × clock_freq. At 32 s × 520 MHz
+            // = 16640000000 cycles; low 32 = 0x3E226200 (= ~1.04 G). If delta
+            // is small (≤ piece_duration_cycles), t_start is in the correct
+            // epoch and t_local in advance_piece_if_needed is reasonable.
+            extern uint32_t kalico_runtime_get_isr_arm_delta_lo(void* h);
+            uint32_t v = kalico_runtime_get_isr_arm_delta_lo(runtime_handle);
+            fault_detail = 0xA6000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 51: {
+            // 0xA7 — HIGH 32 bits of `now.saturating_sub(seg.t_start)`.
+            // Pair with 0xA6 for the full 64-bit delta. Non-zero high half
+            // means delta > 4294967295 cycles (~8.3 s at 520 MHz) — i.e.,
+            // t_start is more than 8 seconds in the past, confirming that
+            // advance_piece_if_needed sees t_local >> piece.duration and walks
+            // the cursor past piece_count on the very first sample.
+            extern uint32_t kalico_runtime_get_isr_arm_delta_hi(void* h);
+            uint32_t v = kalico_runtime_get_isr_arm_delta_hi(runtime_handle);
+            fault_detail = 0xA7000000u | (v & 0x00FFFFFFu);
             break;
         }
         case 36: {

@@ -923,6 +923,12 @@ pub mod exports {
     shared_u32_reader!(kalico_runtime_get_isr_armed_count, isr_armed_count);
     shared_u32_reader!(kalico_runtime_get_isr_last_t_start_lo, isr_last_t_start_lo);
     shared_u32_reader!(kalico_runtime_get_isr_last_widened_lo, isr_last_widened_lo);
+    // 2026-05-21 epoch-diagnosis: high halves + saturating delta for the
+    // park/arm decision. Expose via diag tags 0xA4..0xA7.
+    shared_u32_reader!(kalico_runtime_get_isr_last_t_start_hi, isr_last_t_start_hi);
+    shared_u32_reader!(kalico_runtime_get_isr_last_widened_hi, isr_last_widened_hi);
+    shared_u32_reader!(kalico_runtime_get_isr_arm_delta_lo, isr_arm_delta_lo);
+    shared_u32_reader!(kalico_runtime_get_isr_arm_delta_hi, isr_arm_delta_hi);
     shared_u32_reader!(kalico_runtime_get_isr_last_p_end_bits, isr_last_p_end_bits);
     shared_u32_reader!(kalico_runtime_get_isr_last_microstep_bits, isr_last_microstep_bits);
     shared_u32_reader!(kalico_runtime_get_isr_last_c0_bits, isr_last_c0_bits);

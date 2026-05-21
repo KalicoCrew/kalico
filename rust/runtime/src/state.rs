@@ -388,6 +388,23 @@ pub struct SharedState {
     /// (in their low-32 domain) is the actual park reason.
     pub isr_last_t_start_lo: AtomicU32,
     pub isr_last_widened_lo: AtomicU32,
+    /// 2026-05-21 epoch-diagnosis diag: HIGH 32 bits of seg.t_start and
+    /// widened_now at the most-recent park/arm decision, plus lo/hi of the
+    /// signed cycle-delta (now - t_start) as saturating_sub.
+    /// These four expose whether hypothesis (a) or (b) is the root cause:
+    ///   (a) t_start is in a wrong epoch (e.g., host sent seconds×freq rather
+    ///       than MCU-native DWT cycles): both _hi would be non-zero but wildly
+    ///       different magnitudes.
+    ///   (b) t_start was narrowed to u32 on the wire or in C-side decode:
+    ///       isr_last_t_start_hi would be 0 while isr_last_widened_hi would be
+    ///       non-zero (MCU has been up > 8.3 s → high bits accumulated).
+    pub isr_last_t_start_hi: AtomicU32,
+    pub isr_last_widened_hi: AtomicU32,
+    /// Low / high 32 bits of `now.saturating_sub(seg.t_start)` captured at the
+    /// same park/arm decision. If this is ≈ uptime×clock_freq (e.g., 32 s ×
+    /// 520 MHz = 16.6 G cycles), t_start was 0 or in the wrong epoch.
+    pub isr_arm_delta_lo: AtomicU32,
+    pub isr_arm_delta_hi: AtomicU32,
     /// Bit-pattern of the last `p_end` value passed to dispatch_pulse
     /// when the overflow guard tripped. f32::to_bits stored verbatim;
     /// host decodes via f32::from_bits(...) for the actual magnitude.
@@ -710,6 +727,10 @@ impl SharedState {
             isr_armed_count: AtomicU32::new(0),
             isr_last_t_start_lo: AtomicU32::new(0),
             isr_last_widened_lo: AtomicU32::new(0),
+            isr_last_t_start_hi: AtomicU32::new(0),
+            isr_last_widened_hi: AtomicU32::new(0),
+            isr_arm_delta_lo: AtomicU32::new(0),
+            isr_arm_delta_hi: AtomicU32::new(0),
             isr_last_p_end_bits: AtomicU32::new(0),
             isr_last_microstep_bits: AtomicU32::new(0),
             isr_last_c0_bits: AtomicU32::new(0),

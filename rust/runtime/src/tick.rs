@@ -1098,6 +1098,14 @@ pub fn isr_sample_tick(
         if let Some(seg) = candidate {
             shared.isr_last_t_start_lo.store(seg.t_start as u32, Ordering::Relaxed);
             shared.isr_last_widened_lo.store(now as u32, Ordering::Relaxed);
+            // 2026-05-21 epoch-diagnosis: also capture HIGH 32 bits and the
+            // saturating cycle-delta so we can distinguish hypothesis (a) wrong
+            // epoch from (b) u32-narrowed t_start on the wire.
+            shared.isr_last_t_start_hi.store((seg.t_start >> 32) as u32, Ordering::Relaxed);
+            shared.isr_last_widened_hi.store((now >> 32) as u32, Ordering::Relaxed);
+            let delta = now.saturating_sub(seg.t_start);
+            shared.isr_arm_delta_lo.store(delta as u32, Ordering::Relaxed);
+            shared.isr_arm_delta_hi.store((delta >> 32) as u32, Ordering::Relaxed);
             if seg.t_start <= now {
                 shared
                     .current_segment_id
