@@ -1,17 +1,19 @@
 //! Regression test: `isr_step_push_count` must be non-zero after a jog move.
 //!
-//! ### Bench symptom being reproduced
+//! ### Bench symptom (historical)
 //!
-//! On `sota-motion` HEAD, the H7's diagnostic telemetry shows:
+//! On `sota-motion` HEAD before the t_local f32-cancellation fix
+//! (`5be894004`) and the u32→u64 widening fix (`de160ee0c`), the H7's
+//! diagnostic telemetry showed:
 //!   - `isr_armed_count > 0`  (EA tag fires — segment IS dequeued + armed)
 //!   - `isr_deq_some_count > 0` (ED tag fires — dequeue path executed)
 //!   - `isr_step_push_count == 0` (no step entries ever pushed to the queue)
 //!   - `isr_last_signed_steps == 0` (every dispatch_pulse call sees signed_steps=0)
 //!
 //! Motors don't move. The engine is armed and evaluating, but position never
-//! advances. This test reproduces that failure locally, without firmware.
+//! advances.
 //!
-//! ### Root cause
+//! ### Root cause (frozen clock)
 //!
 //! `dispatch_pulse` computes:
 //!
@@ -38,13 +40,19 @@
 //! ### What this test asserts
 //!
 //! After 4 200 calls to `isr_sample_tick` with a 10 mm X-axis cubic Bézier
-//! segment in the queue **and `raw_cyccnt` held constant at 0**:
+//! segment in the queue **and `raw_cyccnt` advancing by `cycles_per_sample`
+//! each iteration** (exactly as the real H7 TIM5 ISR observes between
+//! firings):
 //!
-//!   - `shared.isr_step_push_count > 0`     — **FAILS on current HEAD**
-//!   - `shared.isr_last_signed_steps != 0`  — **FAILS on current HEAD**
+//!   - `shared.isr_step_push_count > 0`    — step entries were pushed
+//!   - `shared.isr_last_signed_steps != 0` — at least one sample had
+//!     non-zero step demand
 //!
-//! To fix: advance `raw_cyccnt` by `H7_CLOCK_HZ / SAMPLE_RATE_HZ` (13 000
-//! cycles) each iteration — exactly what `jog_repro.rs`'s passing test does.
+//! The clock advancement is the single structural difference between this
+//! test and the degenerate frozen-clock case. A frozen clock (constant
+//! `raw_cyccnt = 0`) produces `t_local = 0` every tick → no steps. An
+//! advancing clock drives `t_local` forward across the Bézier → ~800
+//! microsteps over 100 ms.
 
 #![allow(unsafe_code)]
 
@@ -94,14 +102,16 @@ fn configured_engine() -> EngineImpl {
     e
 }
 
-/// Reproduces the bench symptom: segment IS armed (EA/ED tags fire), but
-/// `isr_step_push_count` stays 0 because `raw_cyccnt` never advances past
-/// the segment's `t_start`, leaving `t_local = 0` on every tick.
+/// Verifies the engine emits step pulses for a 10 mm X-axis G5 jog when the
+/// mock cycle counter advances by `cycles_per_sample` each iteration —
+/// matching how the real H7 TIM5 ISR advances between firings.
 ///
-/// **This test FAILS on `sota-motion` HEAD.**
-///
-/// To make it pass: advance `raw_cyccnt` by `H7_CLOCK_HZ / SAMPLE_RATE_HZ`
-/// per iteration so `now_u64` grows and `t_local` increases over the curve.
+/// With an advancing clock `WidenState::widen` returns a monotonically
+/// increasing `now_cycles_u64`, `t_local` grows from 0 to 0.1 s across the
+/// segment's Bézier, and ~800 microsteps are produced (10 mm /
+/// 0.0125 mm·microstep⁻¹). The test asserts `isr_step_push_count > 0` and
+/// `isr_last_signed_steps != 0` — both of which would be 0 if the clock were
+/// frozen.
 #[test]
 fn step_push_emits_pieces_for_g5_move() {
     use core::ptr::addr_of_mut;
@@ -150,8 +160,8 @@ fn step_push_emits_pieces_for_g5_move() {
         y_handle: CurveHandle::UNUSED_SENTINEL,
         z_handle: CurveHandle::UNUSED_SENTINEL,
         e_handle: CurveHandle::UNUSED_SENTINEL,
-        // t_start = 0 so that the armed piece_start_time_cycles = 0 and
-        // widen(0) - 0 = 0 every tick when raw_cyccnt is held constant.
+        // t_start = 0 so the segment arms on the first tick (now = widen(0)
+        // satisfies seg.t_start <= now → 0 <= 0 on the very first call).
         t_start: 0,
         t_end: ((0.1_f64) * f64::from(H7_CLOCK_HZ)) as u64,
         kinematics: KinematicTag::CartesianXyzAndE,
@@ -173,47 +183,42 @@ fn step_push_emits_pieces_for_g5_move() {
     let shared = SharedState::new();
 
     // -----------------------------------------------------------------------
-    // KEY DIFFERENCE from jog_repro.rs's PASSING test: raw_cyccnt does NOT
-    // advance between iterations. It stays at 0 the entire loop.
+    // KEY FIX vs. the frozen-clock degenerate case:
     //
-    // Effect: WidenState::widen(0) returns 0 every call.
-    //         now_cycles_u64 = 0 every tick.
-    //         t_local_cycles = 0.wrapping_sub(0) = 0 every tick.
-    //         t_local        = 0.0 every tick.
-    //         p_end          = eval_bezier(0.0) = 0.0 every tick.
-    //         signed_steps   = 0 every tick.
-    //         dispatch_pulse returns early → isr_step_push_count never bumped.
+    // Advance `raw_cyccnt` by `cycles_per_sample` (H7_CLOCK_HZ /
+    // SAMPLE_RATE_HZ = 13 000 cycles) before each `isr_sample_tick` call —
+    // exactly what the H7 TIM5 ISR observes between firings. This makes
+    // `WidenState::widen` return a monotonically increasing `now_cycles_u64`
+    // so `t_local` grows from 0 to 0.1 s across the segment's Bézier.
     //
-    // The segment is armed (isr_armed_count > 0) — the ISR dequeues it,
-    // checks t_start (0) ≤ now (0), and calls arm_segment. EA/ED tags fire.
-    // But no steps are pushed. Exactly the bench symptom.
+    // Without this advancement: widen(0) = 0 every tick, t_local = 0,
+    // p_end = 0, signed_steps = 0 → no steps pushed (the frozen-clock bug).
     // -----------------------------------------------------------------------
-    let raw_cyccnt: u32 = 0; // constant — does NOT advance
+    let cycles_per_sample = H7_CLOCK_HZ / SAMPLE_RATE_HZ; // 13 000
 
+    // 100 ms at 40 kHz = 4 000 samples. Tail past 4 000 by ~5 ms so the
+    // curve's t_local crosses `piece.duration` (the `t_local <= duration`
+    // guard in `advance_piece_if_needed` requires strict `>`); the retire
+    // path fires on the next post-pass after exhaustion.
+    let mut raw_cyccnt: u32 = 0;
     for _ in 0..4_200 {
+        raw_cyccnt = raw_cyccnt.wrapping_add(cycles_per_sample);
         runtime::tick::isr_sample_tick(&mut isr, &shared, &pool, raw_cyccnt);
-        // Drain the step queue so it doesn't saturate (irrelevant here since
-        // nothing pushes, but mirrors the jog_repro harness for consistency).
+        // Drain the step queue so it doesn't saturate (the depth-32 ring
+        // would fill in ~4 ms at 800 steps / 100 ms = 8 steps/ms). Mirrors
+        // the jog_repro harness discipline.
         unsafe { while runtime::step_queue::pop(queue_ptrs[0]).is_some() {} }
     }
-
-    // -----------------------------------------------------------------------
-    // These two assertions FAIL on sota-motion HEAD.
-    //
-    // isr_armed_count > 0 would pass (segment was armed), confirming the
-    // EA/ED tags fire. But the step-push diagnostics never advance.
-    // -----------------------------------------------------------------------
 
     let push_count = shared.isr_step_push_count.load(Ordering::Acquire);
     assert!(
         push_count > 0,
         "isr_step_push_count must be > 0 after a 10 mm X jog segment is armed \
-         and the engine ticks for 100 ms worth of samples; got {push_count}. \
-         \n\nBench symptom reproduced: segment is armed (EA/ED tags fire) but \
-         dispatch_pulse sees signed_steps=0 every tick because now_cycles_u64 \
-         never advances past piece_start_time_cycles (both = 0), so t_local = 0 \
-         and p_end = 0 every sample. Fix: advance raw_cyccnt by \
-         cycles_per_sample (H7_CLOCK_HZ / SAMPLE_RATE_HZ = 13 000) each tick."
+         and the engine ticks for 100 ms worth of samples with an advancing \
+         clock; got {push_count}. \
+         \n\nIf this is 0, the engine path has regressed: either the segment \
+         was never armed, or dispatch_pulse sees signed_steps=0 every tick \
+         despite now_cycles_u64 advancing."
     );
 
     let last_signed = shared.isr_last_signed_steps.load(Ordering::Acquire);
@@ -221,9 +226,7 @@ fn step_push_emits_pieces_for_g5_move() {
         last_signed,
         0,
         "isr_last_signed_steps must be non-zero (some sample must have produced \
-         a non-zero step demand) during a 10 mm X jog; got {last_signed}. \
-         \n\nThis stays 0 because t_local is frozen at 0.0 every tick — \
-         the Bézier is evaluated at its starting point (p_end = 0 mm) on every \
-         sample, so the signed step delta is always 0."
+         a non-zero step demand) during a 10 mm X jog with an advancing clock; \
+         got {last_signed}."
     );
 }
