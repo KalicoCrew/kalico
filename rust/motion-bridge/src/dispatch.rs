@@ -156,21 +156,33 @@ pub fn build_push_params(
             {
                 let x = &shaped.axes[AXIS_X];
                 let y = &shaped.axes[AXIS_Y];
-                // Align knot vectors via exact Bézier-piece union (no fit
-                // error). After the union, add is guaranteed to succeed;
-                // the expect below is the unreachable sentinel.
-                let motor_a = nurbs::algebra::add_with_knot_union(x, y).unwrap_or_else(|e| {
-                    panic!(
-                        "post-union add failed — bridge invariant violated (motor-A): {e:?}"
-                    )
-                });
-                let motor_b_neg_y = nurbs::algebra::scalar_multiply(y, -1.0_f64);
-                let motor_b = nurbs::algebra::add_with_knot_union(x, &motor_b_neg_y)
-                    .unwrap_or_else(|e| {
+                let x_zero = x.control_points().iter().all(|c| *c == 0.0);
+                let y_zero = y.control_points().iter().all(|c| *c == 0.0);
+                let (motor_a, motor_b) = if y_zero {
+                    // Pure-X move: A = X, B = X (no knot union needed).
+                    (x.clone(), x.clone())
+                } else if x_zero {
+                    // Pure-Y move: A = Y, B = -Y.
+                    let neg_y = nurbs::algebra::scalar_multiply(y, -1.0_f64);
+                    (y.clone(), neg_y)
+                } else {
+                    // Diagonal: align knot vectors via exact Bézier-piece
+                    // union (no fit error). After the union, add is
+                    // guaranteed to succeed.
+                    let a = nurbs::algebra::add_with_knot_union(x, y).unwrap_or_else(|e| {
                         panic!(
-                            "post-union add failed — bridge invariant violated (motor-B): {e:?}"
+                            "post-union add failed — bridge invariant violated (motor-A): {e:?}"
                         )
                     });
+                    let neg_y = nurbs::algebra::scalar_multiply(y, -1.0_f64);
+                    let b = nurbs::algebra::add_with_knot_union(x, &neg_y)
+                        .unwrap_or_else(|e| {
+                            panic!(
+                                "post-union add failed — bridge invariant violated (motor-B): {e:?}"
+                            )
+                        });
+                    (a, b)
+                };
                 Some((motor_a, motor_b))
             } else {
                 None
