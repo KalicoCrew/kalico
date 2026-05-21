@@ -1300,20 +1300,21 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 }
             }
         }
+        let axis_positions = [xyz[0], xyz[1], xyz[2], 0.0];
         self.last_motors = motors;
-        self.tick_caches.p_prev = motors;
+        self.tick_caches.p_prev = axis_positions;
         self.tick_caches.v_prev = [0.0; 4];
         self.tick_caches.v_xy_prev = 0.0;
         self.tick_caches.v_xy_this = 0.0;
         self.tick_caches.vdot_xy_accelerating = false;
 
-        for (axis, &motor_pos_mm) in self.stepping_axes.iter_mut().zip(motors.iter()) {
+        for (axis, &axis_pos_mm) in self.stepping_axes.iter_mut().zip(axis_positions.iter()) {
             let microstep_distance = axis.microstep_distance;
             if !microstep_distance.is_finite() || microstep_distance <= 0.0 {
                 continue;
             }
             #[allow(clippy::cast_possible_truncation)]
-            let seed_steps = libm::roundf(motor_pos_mm / microstep_distance) as i32;
+            let seed_steps = libm::roundf(axis_pos_mm / microstep_distance) as i32;
             axis.last_step_count = seed_steps;
             for stepper in &axis.steppers {
                 stepper.position_count.store(seed_steps, Ordering::Release);
