@@ -4,6 +4,7 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
+import logging
 import math
 
 
@@ -196,6 +197,10 @@ class MCU_stepper:
         step_count = int(step_count)
         self._bridge_last_trip_step_count = step_count
         self._set_mcu_position(step_count)
+        logging.info(
+            "[bridge-trace] stepper trip snapshot: stepper=%s count=%d",
+            self.get_name(), step_count,
+        )
 
     def mcu_to_commanded_position(self, mcu_pos):
         return mcu_pos * self._step_dist - self._mcu_position_offset

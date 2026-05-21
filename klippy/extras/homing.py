@@ -41,6 +41,12 @@ class StepperPosition:
     def note_home_end(self, trigger_time):
         self.halt_pos = self.stepper.get_mcu_position()
         self.trig_pos = self.stepper.get_past_mcu_position(trigger_time)
+        logging.info(
+            "homing: stepper=%s endstop=%s start=%d halt=%d trig=%d "
+            "trigger_time=%.6f",
+            self.stepper_name, self.endstop_name, self.start_pos,
+            self.halt_pos, self.trig_pos, trigger_time,
+        )
 
     def verify_no_probe_skew(self, haltpos):
         new_start_pos = self.stepper.get_mcu_position(self.start_cmd_pos)
@@ -190,6 +196,10 @@ class HomingMove:
                 for sname in [s.get_name() for s in kin.get_steppers()]
             }
             self.distance_elapsed = kin.calc_position(filled_steps_moved)
+            logging.info(
+                "homing: steps_moved=%s distance_elapsed=%s",
+                steps_moved, self.distance_elapsed,
+            )
             if any(over_steps.values()):
                 self.toolhead.set_position(movepos)
                 halt_kin_spos = {
@@ -338,6 +348,18 @@ class Homing:
         if hmove.moved_less_than_dist(hi.min_home_dist, homing_axes):
             needs_rehome = True
             retract_dist = hi.min_home_dist
+        bridge_sensorless = (
+            hi.use_sensorless_homing
+            and getattr(self.toolhead, "bridge", None) is not None
+        )
+        if bridge_sensorless and needs_rehome:
+            logging.warning(
+                "homing: bridge sensorless first home moved less than "
+                "min_home_dist (distance_elapsed=%s min_home_dist=%.6f); "
+                "skipping second sensorless home",
+                hmove.distance_elapsed, hi.min_home_dist,
+            )
+            needs_rehome = False
 
         # Perform second home
         if retract_dist:
