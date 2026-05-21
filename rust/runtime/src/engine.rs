@@ -579,9 +579,40 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         seg: crate::segment::Segment,
         curve_pool: &crate::curve_pool::CurvePool,
     ) {
+        self.arm_segment_inner(seg, curve_pool, None)
+    }
+
+    /// 2026-05-21 production entry point that also publishes per-arm diag
+    /// atomics to `shared`. Tests use the 2-arg `arm_segment`.
+    pub fn arm_segment_with_diag(
+        &mut self,
+        seg: crate::segment::Segment,
+        curve_pool: &crate::curve_pool::CurvePool,
+        shared: &crate::state::SharedState,
+    ) {
+        self.arm_segment_inner(seg, curve_pool, Some(shared))
+    }
+
+    fn arm_segment_inner(
+        &mut self,
+        seg: crate::segment::Segment,
+        curve_pool: &crate::curve_pool::CurvePool,
+        shared: Option<&crate::state::SharedState>,
+    ) {
         let handles = [seg.x_handle, seg.y_handle, seg.z_handle, seg.e_handle];
 
-        // Per-axis arm.
+        // 2026-05-21 arm diag: snapshot the X-axis input handle so the host
+        // can see whether bridge sent UNUSED, a real handle, or something else.
+        if let Some(shared) = shared {
+            shared.isr_last_arm_x_handle.store(
+                seg.x_handle.pack(),
+                core::sync::atomic::Ordering::Relaxed,
+            );
+        }
+
+        // Per-axis arm. X-axis (idx 0) is also instrumented per branch.
+        let mut x_outcome: u32 = 0;
+        let mut x_piece_count: u32 = 0;
         for (axis_idx, handle) in handles.iter().enumerate() {
             // `handles` has 4 entries and `stepping_axes` is `[_; N_AXES]`
             // (N_AXES == 4); the index range matches by construction.
@@ -591,21 +622,33 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 axis.curve_handle = None;
                 axis.piece = None;
                 axis.piece_cursor = 0;
+                if axis_idx == 0 {
+                    x_outcome = 1; // UNUSED
+                }
             } else if let Some(curve_ptr) = curve_pool.lookup_active(*handle) {
                 // SAFETY: curve_pool's generation guard published the slot;
                 // ISR is sole reader for the duration of the segment.
                 let curve = unsafe { &*curve_ptr };
+                if axis_idx == 0 {
+                    x_piece_count = u32::from(curve.piece_count);
+                }
                 if curve.piece_count == 0 {
                     // Defensive: `populate_from_wire` rejects empty wire so
                     // this should be unreachable, but treat as idle.
                     axis.curve_handle = None;
                     axis.piece = None;
                     axis.piece_cursor = 0;
+                    if axis_idx == 0 {
+                        x_outcome = 3; // piece_count == 0
+                    }
                 } else {
                     axis.curve_handle = Some(*handle);
                     axis.piece_cursor = 0;
                     axis.piece = Some(curve.pieces[0]);
                     axis.piece_start_time_cycles = seg.t_start;
+                    if axis_idx == 0 {
+                        x_outcome = 4; // OK
+                    }
                 }
             } else {
                 // Slot generation mismatch (should be impossible — foreground
@@ -613,7 +656,20 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 axis.curve_handle = None;
                 axis.piece = None;
                 axis.piece_cursor = 0;
+                if axis_idx == 0 {
+                    x_outcome = 2; // lookup_active miss
+                }
             }
+        }
+        if let Some(shared) = shared {
+            shared.isr_last_arm_x_outcome.store(
+                x_outcome,
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            shared.isr_last_arm_x_piece_count.store(
+                x_piece_count,
+                core::sync::atomic::Ordering::Relaxed,
+            );
         }
 
         // Compute participating_mask. Bits A/B/Z (0..2) follow handle
@@ -636,6 +692,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         }
         self.participating_mask = participating;
         self.pending_mask = participating;
+
+        // 2026-05-21 arm diag: snapshot final participating mask.
+        if let Some(shared) = shared {
+            shared.isr_last_arm_participating.store(
+                u32::from(participating),
+                core::sync::atomic::Ordering::Relaxed,
+            );
+        }
 
         // E-accumulator base for absolute-position math (spec §4.6).
         self.segment_base_e = self.e_accumulator as f32;

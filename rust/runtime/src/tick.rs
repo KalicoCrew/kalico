@@ -1106,7 +1106,7 @@ pub fn isr_sample_tick(
                 // survives, freeze is in tick_sample evaluator. If crashes,
                 // freeze is in arm_segment (likely curve_pool lookup or
                 // axis piece initialization).
-                isr.engine.arm_segment(seg, curve_pool);
+                isr.engine.arm_segment_with_diag(seg, curve_pool, shared);
             } else {
                 bump_relaxed(&shared.isr_parked_count);
                 isr.pending_segment = Some(seg);

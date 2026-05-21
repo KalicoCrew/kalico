@@ -413,6 +413,28 @@ pub struct SharedState {
     /// in `dispatch_pulse`. Stays at 0 if no sample ever produced a
     /// non-zero step demand.
     pub isr_last_signed_steps: AtomicU32,
+    /// 2026-05-21 arm-time diagnostic: raw packed `seg.x_handle` of the
+    /// most recently armed segment. 0xFFFE_FFFE = UNUSED_SENTINEL (bridge
+    /// did not associate an X curve). Other values mean bridge sent a
+    /// real handle.
+    pub isr_last_arm_x_handle: AtomicU32,
+    /// 2026-05-21 arm-time diagnostic: outcome of arm for X axis.
+    /// 0 = never armed, 1 = UNUSED handle, 2 = lookup_active returned
+    /// None (slot/gen mismatch), 3 = curve loaded but piece_count==0,
+    /// 4 = OK (axis.piece set to Some). Tells us which of the three
+    /// "axis.piece becomes None" funnel paths actually fired.
+    pub isr_last_arm_x_outcome: AtomicU32,
+    /// 2026-05-21 arm-time diagnostic: piece_count of the X curve at arm
+    /// time (only meaningful when outcome >= 3). 0 confirms the
+    /// piece_count==0 branch fired; >0 + outcome=4 means arm succeeded
+    /// and the failure is downstream (advance_piece_if_needed walking
+    /// past exhaustion is the prime remaining suspect).
+    pub isr_last_arm_x_piece_count: AtomicU32,
+    /// 2026-05-21 arm-time diagnostic: `participating_mask` snapshot at
+    /// end of arm. Bit 0 = A/X, bit 1 = B/Y, bit 2 = Z, bit 3 = E. If 0,
+    /// no axes participated → instant retire (matches observed "ghost
+    /// retire" symptom).
+    pub isr_last_arm_participating: AtomicU32,
     /// 2026-05-18 wedge diag: incremented in `producer_step` every time the
     /// `producer_current.is_none()` branch is entered, regardless of whether
     /// the subsequent `queue.dequeue()` returned Some or None. Cross-check
@@ -694,6 +716,10 @@ impl SharedState {
             isr_last_t_local_bits: AtomicU32::new(0),
             isr_step_push_count: AtomicU32::new(0),
             isr_last_signed_steps: AtomicU32::new(0),
+            isr_last_arm_x_handle: AtomicU32::new(0),
+            isr_last_arm_x_outcome: AtomicU32::new(0),
+            isr_last_arm_x_piece_count: AtomicU32::new(0),
+            isr_last_arm_participating: AtomicU32::new(0),
             producer_observed_none_total: AtomicU64::new(0),
             producer_step_last_len_snapshot: AtomicU32::new(0),
             producer_step_current_is_some_snapshot: AtomicU8::new(0),

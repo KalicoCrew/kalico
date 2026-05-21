@@ -629,7 +629,7 @@ runtime_status_drain(void)
         // tags (0xB6, 0xB7), curve-resolve tag (0xB8), demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 44) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 48) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 3:
             // 0xE6 — Live step_mode discriminants for motors 0..3, two
@@ -997,6 +997,42 @@ runtime_status_drain(void)
             extern uint32_t kalico_runtime_get_isr_last_signed_steps(void* h);
             uint32_t v = kalico_runtime_get_isr_last_signed_steps(runtime_handle);
             fault_detail = 0xC9000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 44: {
+            // 0x9A — packed CurveHandle of last-armed seg.x_handle (low 24
+            // bits of generation:slot_idx). UNUSED_SENTINEL packs to
+            // 0xFFFE_FFFE; low 24 bits = 0xFEFFFE. Non-FEFFFE = bridge
+            // sent a real handle.
+            extern uint32_t kalico_runtime_get_isr_last_arm_x_handle(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_arm_x_handle(runtime_handle);
+            fault_detail = 0x9A000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 45: {
+            // 0x9B — last-arm X outcome. 0=never armed, 1=UNUSED handle,
+            // 2=lookup_active miss, 3=piece_count==0, 4=OK.
+            extern uint32_t kalico_runtime_get_isr_last_arm_x_outcome(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_arm_x_outcome(runtime_handle);
+            fault_detail = 0x9B000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 46: {
+            // 0x9C — last-arm X curve piece_count (only meaningful when
+            // outcome >= 3; 0 confirms empty-curve branch, >0 + outcome=4
+            // means arm succeeded and the failure is downstream).
+            extern uint32_t kalico_runtime_get_isr_last_arm_x_piece_count(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_arm_x_piece_count(runtime_handle);
+            fault_detail = 0x9C000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 47: {
+            // 0x9D — last-arm participating_mask. 0 = no axes participated
+            // (instant retire — matches ghost-segment symptom). bit 0=X,
+            // 1=Y, 2=Z, 3=E.
+            extern uint32_t kalico_runtime_get_isr_last_arm_participating(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_arm_participating(runtime_handle);
+            fault_detail = 0x9D000000u | (v & 0x00FFFFFFu);
             break;
         }
         case 36: {
