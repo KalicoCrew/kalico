@@ -1,0 +1,33 @@
+[package]
+name = "buzz-h7"
+version = "0.1.0"
+edition = "2021"
+description = "Bare-metal stepper buzz test for STM32H723 (Octopus Pro). No Klipper, no Kalico runtime. Directly configures TMC5160 via SPI, energizes the motor at ~0.7 A, generates step pulses, then triggers a system reset that lands back in Katapult ready for the next flash."
+
+[dependencies]
+cortex-m = { version = "0.7", features = ["critical-section-single-core"] }
+cortex-m-rt = "0.7"
+panic-halt = "0.2"
+stm32h7 = { version = "0.15", features = ["stm32h735", "rt"] }
+
+[profile.release]
+opt-level = "s"
+codegen-units = 1
+lto = true
+debug = true
+overflow-checks = false
+panic = "abort"
+
+[profile.dev]
+opt-level = "z"
+debug = true
+overflow-checks = false
+panic = "abort"
+
+[[bin]]
+name = "buzz-h7"
+test = false
+bench = false
+
+# This is a standalone firmware project. Don't pull workspace dependencies.
+[workspace]
