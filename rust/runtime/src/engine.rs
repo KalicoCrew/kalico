@@ -1110,6 +1110,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             advance_decel: self.advance_decel,
             now_cycles,
             t_sample_end_global,
+            now_cycles_u64,
         };
         crate::tick::runtime_tick_sample(&mut ctx);
 

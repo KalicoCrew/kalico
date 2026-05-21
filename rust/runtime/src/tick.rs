@@ -540,6 +540,16 @@ pub struct TickContext<'a> {
     pub advance_decel: f32,
     pub now_cycles: u32,
     pub t_sample_end_global: f32,
+    /// 2026-05-21: full u64 widened-now. Required because
+    /// `t_sample_end_global` (an f32) loses precision catastrophically
+    /// after ~8 s of uptime — at 5e9 cycles the f32 mantissa can't
+    /// distinguish a per-sample 13000-cycle increment, so `t_local`
+    /// (derived as f32 subtraction of two large nearly-equal values)
+    /// stays constant across samples → `p_end` constant → `signed_steps
+    /// == 0` every sample → no steps ever pushed → motors silent. Pass
+    /// the full u64 here so the consumer computes `t_local` from u64
+    /// subtraction *before* the f32 conversion.
+    pub now_cycles_u64: u64,
 }
 
 /// Walk the per-axis cursor forward past any sample-straddled pieces.
@@ -781,14 +791,16 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
             continue;
         };
 
-        // Local piece time = wall-clock now minus when this piece started.
-        // Both quantities are in seconds; subtraction in f32 is fine at
-        // sample granularity because Task 6 hands us already-aligned
-        // values (and the piece duration is in milliseconds for a
-        // typical 1mm-at-100mm/s move).
-        let piece_start_sec =
-            (axis.piece_start_time_cycles as f32) / ctx.cycles_per_second;
-        let t_local = ctx.t_sample_end_global - piece_start_sec;
+        // 2026-05-21: compute `t_local` from u64 cycle SUBTRACT first,
+        // then convert to f32 — otherwise f32 catastrophic cancellation
+        // (two large nearly-equal values subtracted) makes t_local
+        // constant across samples after ~8 s of uptime, freezing p_end
+        // and making signed_steps == 0 forever (motors silent despite
+        // engine running cleanly).
+        let t_local_cycles = ctx
+            .now_cycles_u64
+            .wrapping_sub(axis.piece_start_time_cycles);
+        let t_local = (t_local_cycles as f32) / ctx.cycles_per_second;
 
         // 2026-05-21 diag: capture c0 (start-of-piece position) and
         // t_local on every eval. Last value before the dispatch_pulse
