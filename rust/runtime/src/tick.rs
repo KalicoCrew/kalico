@@ -799,7 +799,11 @@ pub fn evaluate_e_axis(
 // per-phase block structure load-bearing for review; splitting it into
 // helpers would obscure the ABXZ / A2 / E phase ordering documented in the
 // design. The 108-line body remains a deliberate single function.
-#[allow(clippy::indexing_slicing, clippy::too_many_lines)]
+// Phase 2.5 uses `libm::fabsf(v) * 65536.0 as u32`. `fabsf` always
+// returns a non-negative f32, but clippy::cast_sign_loss fires on f32→u32
+// because f32 is technically signed. The invariant is structural (fabsf
+// postcondition), not just local, so silence the lint at function scope.
+#[allow(clippy::indexing_slicing, clippy::too_many_lines, clippy::cast_sign_loss)]
 pub fn runtime_tick_sample(ctx: &mut TickContext) {
     let mut p_end_axis = [0.0_f32; N_AXES];
     let mut v_end_axis = [0.0_f32; N_AXES];
@@ -912,6 +916,24 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     }
 
     // -----------------------------------------------------------------
+    // Phase 2.5: Compute per-axis motor-frame speed magnitudes for the
+    // endstop trip evaluator (Phase 5 below). Kept as a local so the
+    // TickContext struct stays identical to sota-motion — engine.rs does
+    // not need to know about this field.
+    //
+    // Q16.16 encoding: multiply the f32 speed (mm/s in motor-frame) by
+    // 65536.0 and cast to u32. `as u32` saturates on negative (sign is
+    // stripped by `libm::fabsf`) and on overflow (speeds above ~65535 mm/s
+    // are physically impossible). The endstop module uses unsigned Q16.16
+    // throughout (see `max_axis_velocity` in endstop.rs).
+    // -----------------------------------------------------------------
+    let v_motor_q16: [u32; 3] = [
+        (libm::fabsf(v_end_axis[AXIS_A]) * 65536.0) as u32,
+        (libm::fabsf(v_end_axis[AXIS_B]) * 65536.0) as u32,
+        (libm::fabsf(v_end_axis[AXIS_Z]) * 65536.0) as u32,
+    ];
+
+    // -----------------------------------------------------------------
     // Phase 3: evaluate the extruder axis with E-follows-XY + PA.
     //
     // Absolute-position model (spec §4.6). `evaluate_e_axis` returns
@@ -992,16 +1014,69 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     ctx.caches.v_prev = v_end_axis;
 
     // -----------------------------------------------------------------
-    // Phase 5: segment retirement.
+    // Phase 5: Endstop trip evaluation (sensorless homing).
+    //
+    // Called AFTER Phase 4 so the cache writeback is complete before we
+    // potentially abort the current segment.
+    //
+    // `endstop::tick` returns `AbortNow` when an armed endstop source
+    // has seen its assertion pattern. On trip we clear `axis.piece` for
+    // all axes so that `post_pass_exhaustion` (called immediately after
+    // `runtime_tick_sample` returns in `Engine::tick_sample`) sees all
+    // axes idle → clears `pending_mask` → `retire_if_complete` fires on
+    // the same call. That retirement publishes `retired_through_segment_id`
+    // and the `kalico_credit_freed` cursor through the normal drain path.
+    //
+    // The current sample's steps have already been enqueued (dispatch
+    // happened in Phase 1 / Phase 3 above) — those steps are in-flight
+    // and will let the motors coast to a stop naturally. Clearing `piece`
+    // here ensures NO further steps are dispatched for any subsequent
+    // sample: `advance_piece_if_needed` / Phase 1 will see `piece = None`
+    // and early-continue every axis.
+    //
+    // Stepper counts for the snapshot: we read `shared.stepper_counts`
+    // under Acquire ordering, matching the Release stores in
+    // `increment_position_count` (dispatch_pulse). `MAX_STEPPER_OIDS` is
+    // the full stepper table width; the endstop `publish_snapshot` call
+    // inside `endstop::tick` takes a `&[i32]` slice and bounds it by the
+    // arm's own `stepper_count`, so passing the full array is safe.
+    // -----------------------------------------------------------------
+    {
+        let mut stepper_counts = [0_i32; crate::state::MAX_STEPPER_OIDS];
+        for (dst, src) in stepper_counts
+            .iter_mut()
+            .zip(ctx.shared.stepper_counts.iter())
+        {
+            *dst = src.load(core::sync::atomic::Ordering::Acquire);
+        }
+        if crate::endstop::tick(ctx.now_cycles_u64, v_motor_q16, &stepper_counts)
+            == crate::endstop::TripAction::AbortNow
+        {
+            // Endstop tripped. Clear all active pieces so no further
+            // steps are dispatched from this sample onward. The segment
+            // stays in Engine::current — post_pass_exhaustion will see
+            // pending_mask → 0 and retire_if_complete will fire on the
+            // same tick_sample call, publishing the credit-freed cursor
+            // via the normal drain path.
+            for axis in ctx.axes.iter_mut() {
+                axis.piece = None;
+                axis.curve_handle = None;
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Phase 6: segment retirement.
     //
     // Owned by `Engine::post_pass_exhaustion` + `Engine::retire_if_complete`
     // (Task 10). The post-pass updates `pending_mask` from the per-axis
-    // exhaustion state set by `advance_piece_if_needed` above, and the
-    // retire publishes `retired_through_segment_id`, the `SEGMENT_END`
-    // trace marker, and rolls forward `e_accumulator` when
-    // `pending_mask == 0`. `Engine::tick_sample` invokes both immediately
-    // after this function returns — the call site needs the trace
-    // producer borrow, which is held outside `TickContext`.
+    // exhaustion state set by `advance_piece_if_needed` above (or the
+    // endstop trip clear above), and the retire publishes
+    // `retired_through_segment_id`, the `SEGMENT_END` trace marker, and
+    // rolls forward `e_accumulator` when `pending_mask == 0`.
+    // `Engine::tick_sample` invokes both immediately after this function
+    // returns — the call site needs the trace producer borrow, which is
+    // held outside `TickContext`.
     // -----------------------------------------------------------------
 }
 

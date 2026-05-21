@@ -223,7 +223,7 @@ fn segment_retirement_increments_counter_and_resets_arc_length() {
     let id_before = shared.retired_through_segment_id.load(Ordering::Acquire);
 
     // Second tick: t = 50 µs > 25 µs duration → both axes get cleared
-    // by `advance_piece_if_needed`. Phase 5 retires the segment.
+    // by `advance_piece_if_needed`. Phase 6 retires the segment.
     let mut ctx2 = TickContext {
         axes: &mut axes,
         queues: queue_ptrs,
