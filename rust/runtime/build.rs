@@ -37,7 +37,10 @@ use std::path::PathBuf;
 
 fn lookup(name: &str, default: &str) -> String {
     println!("cargo:rerun-if-env-changed={name}");
-    env::var(name).unwrap_or_else(|_| default.to_string())
+    match env::var(name) {
+        Ok(s) if !s.is_empty() => s,
+        _ => default.to_string(),
+    }
 }
 
 fn main() {
