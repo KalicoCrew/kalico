@@ -142,8 +142,19 @@ pub fn emit_shaped(
         let mut shaped_axes: [Option<ScalarNurbs<f64>>; 3] = [None, None, None];
 
         for axis in 0..3 {
-            let kernel_opt = kernels[axis].as_ref();
-            let mut axis_shaped = if let Some(kernel) = kernel_opt {
+            let cps = fitted.axes[axis].control_points();
+            let axis_is_constant = if let Some(&first) = cps.first() {
+                cps.iter().all(|c| (*c - first).abs() < 1e-12)
+            } else {
+                true
+            };
+
+            let mut axis_shaped = if axis_is_constant {
+                // Constant-position axis: shaping a constant is a no-op
+                // and refit would introduce µm-scale residuals that inflate
+                // the CoreXY knot-union piece count. Pass through as-is.
+                fitted.axes[axis].clone()
+            } else if let Some(kernel) = kernels[axis].as_ref() {
                 let padded = pad_segment_axis_with_history(
                     seg_idx,
                     axis,
@@ -166,16 +177,19 @@ pub fn emit_shaped(
                 fitted.axes[axis].clone()
             };
 
-            // Refit every axis (including passthrough) to cubic Bézier.
-            // Mirrors `beta::run_one_iteration`'s post-shape refit loop;
-            // dropping it here would diverge byte-for-byte from `shape_batch`
-            // and break the Phase-2 byte-identity contract.
-            axis_shaped = refit_to_cubic(&axis_shaped, REFIT_TOLERANCE_MM).map_err(|detail| {
-                ShapeError::FitFailure {
-                    index: seg_idx,
-                    detail,
-                }
-            })?;
+            if !axis_is_constant {
+                // Refit every non-constant axis to cubic Bézier.
+                // Mirrors `beta::run_one_iteration`'s post-shape refit loop;
+                // dropping it here would diverge byte-for-byte from
+                // `shape_batch` and break the Phase-2 byte-identity contract.
+                axis_shaped =
+                    refit_to_cubic(&axis_shaped, REFIT_TOLERANCE_MM).map_err(|detail| {
+                        ShapeError::FitFailure {
+                            index: seg_idx,
+                            detail,
+                        }
+                    })?;
+            }
 
             shaped_axes[axis] = Some(axis_shaped);
         }
