@@ -1012,17 +1012,17 @@ pub fn isr_sample_tick(
     let after_widen = unsafe { cyccnt_read() };
     update_max(&shared.isr_widen_cycles_max, after_widen.wrapping_sub(body_start));
 
-    // 2026-05-21 bisection: bail BEFORE dequeue/arm. The bench has been
-    // crashing within 1s of push_segment, even with downstream circuit
-    // breakers. If bench survives the jog with this early-return, the
-    // 4-second freeze is in the dequeue/arm/eval code path. If it
-    // still crashes, the freeze is in widen+publish (or further back
-    // in the C-side IRQ handler — endstop sample, etc.) which Rust
-    // can't catch from here.
-    bump_relaxed(&shared.isr_overrun_count);
-    return;
-    #[allow(unreachable_code)]
-    {
+    // 2026-05-21 bisection step 2: 948c6fdc6 (widen+publish only)
+    // survived the jog (state=ready post-jog, no crash, F7=589K IRQs,
+    // E5=314 cycles per ISR, E3=45K tick_counter, all atomics fine).
+    // That confirmed the 4-second freeze is in dequeue/arm/eval. Now
+    // re-enable dequeue + park-check but still skip arm_segment +
+    // tick_sample evaluator. If bench survives:
+    //   freeze is in arm_segment or evaluator (next bisection step).
+    // If bench crashes:
+    //   freeze is in queue_consumer.dequeue() itself — less likely
+    //   but possible if the SPSC interaction with the C ring is
+    //   doing something pathological under load.
 
     // 2. Promote-or-dequeue when the engine's current slot is empty.
     //    Take `pending_segment` out by value so the subsequent
@@ -1052,7 +1052,13 @@ pub fn isr_sample_tick(
                     .current_segment_id
                     .store(seg.id, Ordering::Release);
                 bump_relaxed(&shared.isr_armed_count);
-                isr.engine.arm_segment(seg, curve_pool);
+                // 2026-05-21 bisection step 3: SKIP arm_segment.
+                // We still bump isr_armed_count (so ED tag shows the
+                // would-be-arm count) but don't actually arm. Engine
+                // stays in current=None forever, so the dequeue path
+                // keeps running and we can see whether dequeue itself
+                // is the freeze source.
+                let _ = seg; // avoid unused-var warn
             } else {
                 bump_relaxed(&shared.isr_parked_count);
                 isr.pending_segment = Some(seg);
@@ -1062,6 +1068,12 @@ pub fn isr_sample_tick(
 
     let after_arm = unsafe { cyccnt_read() };
     update_max(&shared.isr_arm_cycles_max, after_arm.wrapping_sub(after_widen));
+
+    // 2026-05-21 bisection step 3: bail BEFORE tick_sample evaluator.
+    bump_relaxed(&shared.isr_overrun_count);
+    return;
+    #[allow(unreachable_code)]
+    let _post_arm_return: () = ();
 
     // 2026-05-21 circuit breaker. The previous bench attempts crashed
     // with a 4-second IRQ tying up the CPU (prior_diag tim5_max_cyc =
@@ -1102,7 +1114,6 @@ pub fn isr_sample_tick(
     if body_cycles > 30000 {
         shared.isr_overrun_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
-    } // close the #[allow(unreachable_code)] bisection block
 }
 
 // CYCCNT extern. MCU = DWT->CYCCNT via the C helper; host = always 0
