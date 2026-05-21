@@ -37,7 +37,11 @@ fn new_engine() -> EngineImpl {
 }
 
 fn pulse_binding() -> StepperBindingRust {
-    StepperBindingRust { tmc_cs_oid: TMC_CS_OID_NONE, _pad: [0; 3] }
+    StepperBindingRust {
+        stepper_oid: 0,
+        tmc_cs_oid: TMC_CS_OID_NONE,
+        _pad: [0; 2],
+    }
 }
 
 #[test]
@@ -68,6 +72,7 @@ fn configure_axis_publishes_mode_and_scalars() {
     assert_eq!(axis.piece_cursor, 0);
     // Stepper binding populated.
     assert_eq!(axis.steppers.len(), 1);
+    assert_eq!(axis.steppers[0].stepper_oid, 0);
     assert!(axis.steppers[0].tmc_cs_oid.is_none());
 }
 
@@ -82,10 +87,7 @@ fn configure_axis_rejects_invalid_inputs() {
 
     // Non-finite microstep_distance.
     assert_ne!(e.configure_axis(0, StepMode::Pulse, f32::NAN, &[b]), 0);
-    assert_ne!(
-        e.configure_axis(0, StepMode::Pulse, f32::INFINITY, &[b]),
-        0,
-    );
+    assert_ne!(e.configure_axis(0, StepMode::Pulse, f32::INFINITY, &[b]), 0,);
     // Zero / negative microstep_distance.
     assert_ne!(e.configure_axis(0, StepMode::Pulse, 0.0, &[b]), 0);
     assert_ne!(e.configure_axis(0, StepMode::Pulse, -0.01, &[b]), 0);

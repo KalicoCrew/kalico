@@ -76,10 +76,10 @@ use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::{IsrState, SharedState};
 use runtime::step_queue::StepQueue;
 use runtime::stepping_state::{StepMode, StepperBindingRust, TMC_CS_OID_NONE};
-use runtime::trace::{TraceSample, TRACE_RING_N};
+use runtime::trace::{TRACE_RING_N, TraceSample};
 
 use motion_bridge_native::classify::classify_and_build;
-use motion_bridge_native::dispatch::{build_push_params, McuAxisConfig, McuCaps, AXIS_X, AXIS_Y};
+use motion_bridge_native::dispatch::{AXIS_X, AXIS_Y, McuAxisConfig, McuCaps, build_push_params};
 
 type EngineImpl = Engine<NoopPa, NoopIs>;
 
@@ -139,8 +139,15 @@ fn curve_load_params_to_wire_pieces(
 
 fn configured_engine() -> EngineImpl {
     let mut e = EngineImpl::new(H7_CLOCK_HZ, SAMPLE_RATE_HZ);
-    let binding = StepperBindingRust { tmc_cs_oid: TMC_CS_OID_NONE, _pad: [0; 3] };
-    assert_eq!(e.configure_axis(0, StepMode::Pulse, MICROSTEP_DISTANCE_MM, &[binding]), 0);
+    let binding = StepperBindingRust {
+        stepper_oid: 0,
+        tmc_cs_oid: TMC_CS_OID_NONE,
+        _pad: [0; 2],
+    };
+    assert_eq!(
+        e.configure_axis(0, StepMode::Pulse, MICROSTEP_DISTANCE_MM, &[binding]),
+        0
+    );
     assert_eq!(e.configure_kinematics(1.0), 0);
     e
 }
@@ -167,11 +174,21 @@ fn make_shaped_segment_for_x_jog(
     let xyz = &m.segment.xyz;
     let degree: u8 = 3;
     let knots: Vec<f64> = vec![
-        0.0, 0.0, 0.0, 0.0,
-        t_duration_s, t_duration_s, t_duration_s, t_duration_s,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        t_duration_s,
+        t_duration_s,
+        t_duration_s,
+        t_duration_s,
     ];
     let cps_vec = xyz.control_points();
-    assert_eq!(cps_vec.len(), 4, "collinear cubic must have 4 control points");
+    assert_eq!(
+        cps_vec.len(),
+        4,
+        "collinear cubic must have 4 control points"
+    );
     let x_cps: Vec<f64> = cps_vec.iter().map(|cp| cp[0]).collect();
     let y_cps: Vec<f64> = cps_vec.iter().map(|cp| cp[1]).collect();
     let z_cps: Vec<f64> = cps_vec.iter().map(|cp| cp[2]).collect();
@@ -383,9 +400,7 @@ fn run_bridge_to_isr_chain(clock_base: u64, test_label: &str) {
     for _ in 0..total_samples {
         raw_cyccnt = raw_cyccnt.wrapping_add(cycles_per_sample);
         runtime::tick::isr_sample_tick(&mut isr, &shared, &pool, raw_cyccnt);
-        unsafe {
-            while runtime::step_queue::pop(queue_ptrs[0]).is_some() {}
-        }
+        unsafe { while runtime::step_queue::pop(queue_ptrs[0]).is_some() {} }
     }
 
     let isr_deq = shared.isr_deq_some_count.load(Ordering::Acquire);

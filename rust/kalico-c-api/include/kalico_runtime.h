@@ -97,8 +97,9 @@ typedef struct TraceSample {
  * Spec: `docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md` §5.2.
  */
 typedef struct StepperBindingRust {
+  uint8_t stepper_oid;
   uint8_t tmc_cs_oid;
-  uint8_t _pad[3];
+  uint8_t _pad[2];
 } StepperBindingRust;
 
 

@@ -70,7 +70,7 @@ use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::{IsrState, SharedState};
 use runtime::step_queue::StepQueue;
 use runtime::stepping_state::{StepMode, StepperBindingRust, TMC_CS_OID_NONE};
-use runtime::trace::{TraceSample, TRACE_RING_N};
+use runtime::trace::{TRACE_RING_N, TraceSample};
 
 type EngineImpl = Engine<NoopPa, NoopIs>;
 
@@ -91,7 +91,11 @@ fn linear_jog_curve(displacement_mm: f32, duration_sec: f32) -> WirePiece {
 }
 
 fn pulse_binding() -> StepperBindingRust {
-    StepperBindingRust { tmc_cs_oid: TMC_CS_OID_NONE, _pad: [0; 3] }
+    StepperBindingRust {
+        stepper_oid: 0,
+        tmc_cs_oid: TMC_CS_OID_NONE,
+        _pad: [0; 2],
+    }
 }
 
 fn configured_engine() -> EngineImpl {
@@ -223,8 +227,7 @@ fn step_push_emits_pieces_for_g5_move() {
 
     let last_signed = shared.isr_last_signed_steps.load(Ordering::Acquire);
     assert_ne!(
-        last_signed,
-        0,
+        last_signed, 0,
         "isr_last_signed_steps must be non-zero (some sample must have produced \
          a non-zero step demand) during a 10 mm X jog with an advancing clock; \
          got {last_signed}."

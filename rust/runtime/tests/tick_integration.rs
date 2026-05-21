@@ -35,13 +35,13 @@ use core::sync::atomic::{AtomicI16, AtomicI32, AtomicU8, Ordering};
 use heapless::Vec;
 
 use runtime::curve_pool::CurvePool;
-use runtime::monomial::{bernstein_to_monomial, BezierPieceMonomial};
+use runtime::monomial::{BezierPieceMonomial, bernstein_to_monomial};
 use runtime::state::SharedState;
 use runtime::step_queue::StepQueue;
 use runtime::stepping_state::{
-    AxisConfig, StepMode, StepperRef, TickCaches, MAX_STEPPERS_PER_AXIS,
+    AxisConfig, MAX_STEPPERS_PER_AXIS, StepMode, StepperRef, TickCaches,
 };
-use runtime::tick::{runtime_tick_sample, TickContext, N_AXES};
+use runtime::tick::{N_AXES, TickContext, runtime_tick_sample};
 
 const SAMPLE_PERIOD_SEC: f32 = 25e-6;
 const SAMPLE_PERIOD_CYCLES: u32 = 13_000;
@@ -49,6 +49,7 @@ const CYCLES_PER_SECOND: f32 = 520e6;
 
 fn make_stepper() -> StepperRef {
     StepperRef {
+        stepper_oid: 0,
         position_count: AtomicI32::new(0),
         tmc_cs_oid: None,
         last_coil_A: AtomicI16::new(0),
@@ -78,8 +79,7 @@ fn linear_piece(scale: f32, duration_sec: f32) -> BezierPieceMonomial {
     // Bernstein control points for a linear curve from 0 to `scale`:
     //   [0, scale/3, 2·scale/3, scale]
     // → c0 = 0, c1 = scale, c2 = 0, c3 = 0  (Horner evaluates as scale·t).
-    let mut piece =
-        bernstein_to_monomial([0.0, scale / 3.0, 2.0 * scale / 3.0, scale]);
+    let mut piece = bernstein_to_monomial([0.0, scale / 3.0, 2.0 * scale / 3.0, scale]);
     piece.duration = duration_sec;
     piece
 }
@@ -110,8 +110,12 @@ fn constant_velocity_produces_expected_step_count() {
         idle_axis(),
     ];
 
-    let mut queues =
-        [StepQueue::new(), StepQueue::new(), StepQueue::new(), StepQueue::new()];
+    let mut queues = [
+        StepQueue::new(),
+        StepQueue::new(),
+        StepQueue::new(),
+        StepQueue::new(),
+    ];
     let queue_ptrs = [
         &mut queues[0] as *mut StepQueue,
         &mut queues[1] as *mut StepQueue,
@@ -140,7 +144,7 @@ fn constant_velocity_produces_expected_step_count() {
         advance_accel: 0.0,
         advance_decel: 0.0,
         now_cycles: 0,
-            now_cycles_u64: 0,
+        now_cycles_u64: 0,
         t_sample_end_global: SAMPLE_PERIOD_SEC,
     };
 
@@ -200,8 +204,12 @@ fn xy_arc_length_accumulates_in_segment() {
         idle_axis(),
         idle_axis(),
     ];
-    let mut queues =
-        [StepQueue::new(), StepQueue::new(), StepQueue::new(), StepQueue::new()];
+    let mut queues = [
+        StepQueue::new(),
+        StepQueue::new(),
+        StepQueue::new(),
+        StepQueue::new(),
+    ];
     let queue_ptrs = [
         &mut queues[0] as *mut StepQueue,
         &mut queues[1] as *mut StepQueue,
@@ -229,7 +237,7 @@ fn xy_arc_length_accumulates_in_segment() {
         advance_accel: 0.0,
         advance_decel: 0.0,
         now_cycles: 0,
-            now_cycles_u64: 0,
+        now_cycles_u64: 0,
         t_sample_end_global: SAMPLE_PERIOD_SEC,
     };
 
@@ -316,8 +324,12 @@ fn extruder_follows_xy_arc_length() {
         },
     ];
 
-    let mut queues =
-        [StepQueue::new(), StepQueue::new(), StepQueue::new(), StepQueue::new()];
+    let mut queues = [
+        StepQueue::new(),
+        StepQueue::new(),
+        StepQueue::new(),
+        StepQueue::new(),
+    ];
     let queue_ptrs = [
         &mut queues[0] as *mut StepQueue,
         &mut queues[1] as *mut StepQueue,
@@ -344,7 +356,7 @@ fn extruder_follows_xy_arc_length() {
         advance_accel: 0.0,
         advance_decel: 0.0,
         now_cycles: 0,
-            now_cycles_u64: 0,
+        now_cycles_u64: 0,
         t_sample_end_global: SAMPLE_PERIOD_SEC,
     };
 

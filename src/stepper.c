@@ -287,10 +287,10 @@ command_kalico_configure_axis(uint32_t *args)
     // ── Phase 2: Rust FFI.
     struct StepperBindingRust bindings[RUNTIME_MAX_STEPPERS_PER_MOTOR];
     for (uint8_t i = 0; i < stepper_count; i++) {
+        bindings[i].stepper_oid = blob[i*4 + 0];
         bindings[i].tmc_cs_oid = staged[i].tmc_cs_oid;
         bindings[i]._pad[0] = 0;
         bindings[i]._pad[1] = 0;
-        bindings[i]._pad[2] = 0;
     }
     int32_t rc = kalico_runtime_configure_axis(
         runtime_handle, axis_idx, mode, mstep_bits,

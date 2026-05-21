@@ -8,8 +8,8 @@ use core::sync::atomic::Ordering;
 
 use runtime::engine::Engine;
 use runtime::error::{
-    KALICO_ERR_INVALID_ARG, KALICO_ERR_MOTION_IN_PROGRESS,
-    KALICO_ERR_PHASE_MODE_NOT_AVAILABLE, KALICO_OK,
+    KALICO_ERR_INVALID_ARG, KALICO_ERR_MOTION_IN_PROGRESS, KALICO_ERR_PHASE_MODE_NOT_AVAILABLE,
+    KALICO_OK,
 };
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::stepping_state::{StepMode, StepperBindingRust, TMC_CS_OID_NONE};
@@ -23,11 +23,19 @@ fn build_engine() -> EngineImpl {
 }
 
 fn no_tmc_binding() -> StepperBindingRust {
-    StepperBindingRust { tmc_cs_oid: TMC_CS_OID_NONE, _pad: [0; 3] }
+    StepperBindingRust {
+        stepper_oid: 0,
+        tmc_cs_oid: TMC_CS_OID_NONE,
+        _pad: [0; 2],
+    }
 }
 
 fn tmc_binding(oid: u8) -> StepperBindingRust {
-    StepperBindingRust { tmc_cs_oid: oid, _pad: [0; 3] }
+    StepperBindingRust {
+        stepper_oid: 0,
+        tmc_cs_oid: oid,
+        _pad: [0; 2],
+    }
 }
 
 // ─── Test 1: Phase mode is rejected ──────────────────────────────────────────
@@ -112,6 +120,7 @@ fn valid_pulse_succeeds() {
         "microstep_distance must be published"
     );
     assert_eq!(axis.steppers.len(), 1, "one stepper binding must be stored");
+    assert_eq!(axis.steppers[0].stepper_oid, 0);
     assert!(
         axis.steppers[0].tmc_cs_oid.is_none(),
         "TMC_CS_OID_NONE binding must decode to None"
@@ -245,7 +254,10 @@ fn motion_in_progress_rejected() {
     e.arm_segment(seg, &pool);
 
     // Engine is now mid-segment.
-    assert!(e.debug_current_is_some(), "engine must have an armed segment");
+    assert!(
+        e.debug_current_is_some(),
+        "engine must have an armed segment"
+    );
 
     let b = no_tmc_binding();
     let rc = e.configure_axis(0, StepMode::Pulse, 0.01, core::slice::from_ref(&b));

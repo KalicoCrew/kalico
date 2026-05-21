@@ -37,6 +37,7 @@ pub enum StepMode {
 #[allow(non_snake_case)]
 #[derive(Debug)]
 pub struct StepperRef {
+    pub stepper_oid: u8,
     pub position_count: AtomicI32,
     /// OID of `command_config_spi` for this stepper's TMC driver. `None`
     /// means Pulse-only (no SPI traffic for this stepper).
@@ -49,8 +50,9 @@ pub struct StepperRef {
 }
 
 impl StepperRef {
-    pub fn new(tmc_cs_oid: Option<u8>) -> Self {
+    pub fn new(stepper_oid: u8, tmc_cs_oid: Option<u8>) -> Self {
         Self {
+            stepper_oid,
             position_count: AtomicI32::new(0),
             tmc_cs_oid,
             last_coil_A: AtomicI16::new(0),
@@ -71,12 +73,13 @@ impl StepperRef {
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct StepperBindingRust {
+    pub stepper_oid: u8,
     pub tmc_cs_oid: u8,
-    // Three-byte ABI padding to round to the 4-byte slot. Public for FFI
+    // Two-byte ABI padding to round to the 4-byte slot. Public for FFI
     // layout but never read from Rust; underscore prefix preserves "private
     // by convention" signaling.
     #[allow(clippy::pub_underscore_fields)]
-    pub _pad: [u8; 3],
+    pub _pad: [u8; 2],
 }
 const _: () = assert!(core::mem::size_of::<StepperBindingRust>() == 4);
 

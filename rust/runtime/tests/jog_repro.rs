@@ -44,7 +44,7 @@ use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;
 use runtime::step_queue::StepQueue;
 use runtime::stepping_state::{StepMode, StepperBindingRust, TMC_CS_OID_NONE};
-use runtime::trace::{TraceSample, TRACE_RING_N};
+use runtime::trace::{TRACE_RING_N, TraceSample};
 
 type EngineImpl = Engine<NoopPa, NoopIs>;
 
@@ -82,7 +82,11 @@ fn absolute_linear_curve(start_mm: f32, end_mm: f32, duration_sec: f32) -> WireP
 }
 
 fn pulse_binding() -> StepperBindingRust {
-    StepperBindingRust { tmc_cs_oid: TMC_CS_OID_NONE, _pad: [0; 3] }
+    StepperBindingRust {
+        stepper_oid: 0,
+        tmc_cs_oid: TMC_CS_OID_NONE,
+        _pad: [0; 2],
+    }
 }
 
 fn configured_engine() -> EngineImpl {
@@ -127,8 +131,7 @@ fn engine_new_publishes_sample_period() {
         engine.sample_period_sec
     );
     assert_eq!(
-        engine.sample_period_cycles,
-        expected_cycles,
+        engine.sample_period_cycles, expected_cycles,
         "sample_period_cycles expected {expected_cycles} ({H7_CLOCK_HZ}/{SAMPLE_RATE_HZ})"
     );
 }
@@ -277,9 +280,7 @@ fn isr_sample_tick_arms_queued_segment_and_pushes_steps() {
     );
 
     // The segment should have retired by the end of the 100 ms loop.
-    let retired = shared
-        .retired_through_segment_id
-        .load(Ordering::Acquire);
+    let retired = shared.retired_through_segment_id.load(Ordering::Acquire);
     assert_eq!(
         retired, 1,
         "segment 1 should have retired by sample 4000; \

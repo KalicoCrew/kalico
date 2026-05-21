@@ -47,11 +47,9 @@ use crate::fault_helpers::{
 };
 use crate::phase_lut::PHASE_LUT;
 use crate::state::SharedState;
-use crate::step_queue::{push as queue_push, StepEntry, StepQueue};
+use crate::step_queue::{StepEntry, StepQueue, push as queue_push};
 use crate::stepping_state::{AxisConfig, StepMode};
-use crate::sub_sample_timing::{
-    compute_step_times, StepTimeInputs, StepTimingResult,
-};
+use crate::sub_sample_timing::{StepTimeInputs, StepTimingResult, compute_step_times};
 
 /// `|P_end - P_start|` below this triggers the uniform-spacing fallback
 /// in `dispatch_pulse`. Default ≈ one tenth of a micron, well below the
@@ -175,7 +173,9 @@ fn dispatch_pulse(
     let target_step_count = libm::roundf(p_end / microstep_distance) as i32;
     let signed_steps = target_step_count.wrapping_sub(prev_step_count);
     if axis_idx == AXIS_A {
-        shared.isr_last_p_end_bits.store(p_end.to_bits(), Ordering::Relaxed);
+        shared
+            .isr_last_p_end_bits
+            .store(p_end.to_bits(), Ordering::Relaxed);
         shared.isr_last_step_counts_packed.store(
             ((target_step_count as u32) << 16) | ((prev_step_count as u32) & 0xFFFF),
             Ordering::Relaxed,
@@ -212,10 +212,17 @@ fn dispatch_pulse(
         //   isr_last_p_end_bits = p_end.to_bits()
         //   isr_last_microstep_bits = microstep_distance.to_bits()
         // Host decodes via f32::from_bits().
-        shared.isr_last_t_start_lo.store(abs_steps, core::sync::atomic::Ordering::Relaxed);
+        shared
+            .isr_last_t_start_lo
+            .store(abs_steps, core::sync::atomic::Ordering::Relaxed);
         if axis_idx == AXIS_A {
-            shared.isr_last_p_end_bits.store(p_end.to_bits(), core::sync::atomic::Ordering::Relaxed);
-            shared.isr_last_microstep_bits.store(microstep_distance.to_bits(), core::sync::atomic::Ordering::Relaxed);
+            shared
+                .isr_last_p_end_bits
+                .store(p_end.to_bits(), core::sync::atomic::Ordering::Relaxed);
+            shared.isr_last_microstep_bits.store(
+                microstep_distance.to_bits(),
+                core::sync::atomic::Ordering::Relaxed,
+            );
         }
         bump_relaxed(&shared.isr_overrun_count);
         axis.last_step_count = prev_step_count;
@@ -246,7 +253,11 @@ fn dispatch_pulse(
     let mut steps_committed: i32 = 0;
     #[allow(clippy::explicit_counter_loop)]
     for cycle_abs in times.iter().copied() {
-        let entry = StepEntry { cycle_abs, dir, _pad: [0; 3] };
+        let entry = StepEntry {
+            cycle_abs,
+            dir,
+            _pad: [0; 3],
+        };
         // SAFETY: `queue_ptr` is supplied by the caller (TIM5 ISR), who
         // owns the sole-producer role for this axis's step queue. The
         // queue's storage outlives this call (C-owned `.axi_bss` on the
@@ -283,12 +294,7 @@ fn dispatch_pulse(
 /// the right shape; we lose no concurrency vs. `fetch_add` but gain
 /// overflow detection. On overflow a `PositionCountOverflow` fault is
 /// latched and the remaining steppers in the yoke are not updated.
-fn commit_position_count(
-    axis: &AxisConfig,
-    axis_idx: usize,
-    shared: &SharedState,
-    delta: i32,
-) {
+fn commit_position_count(axis: &AxisConfig, axis_idx: usize, shared: &SharedState, delta: i32) {
     if delta == 0 {
         return;
     }
@@ -356,12 +362,7 @@ fn ramp_phase_offset(stepper: &crate::stepping_state::StepperRef, max_per_sample
 /// Task 13: before reading `phase_offset_microsteps`, each stepper's
 /// offset is ramped toward its `phase_offset_target` by at most
 /// `shared.max_phase_offset_ramp_per_sample` per sample.
-fn dispatch_phase(
-    axis_idx: usize,
-    axis: &mut AxisConfig,
-    shared: &SharedState,
-    p_end: f32,
-) {
+fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, p_end: f32) {
     let microstep_distance = axis.microstep_distance;
     if !microstep_distance.is_finite() || microstep_distance == 0.0 {
         return;
@@ -613,7 +614,11 @@ pub struct TickContext<'a> {
 // `usize as u32` and `f32 as u64` casts are deliberate quantizations
 // matching the spec; the lints would force a workaround that doesn't
 // improve correctness on this hot path.
-#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss
+)]
 fn advance_piece_if_needed(
     axis: &mut AxisConfig,
     axis_idx: usize,
@@ -647,9 +652,7 @@ fn advance_piece_if_needed(
         // means a runaway loop hits the iter cap rather than walking
         // past `piece_count` silently.
         let duration_cycles = (piece.duration * cycles_per_second) as u64;
-        axis.piece_start_time_cycles = axis
-            .piece_start_time_cycles
-            .wrapping_add(duration_cycles);
+        axis.piece_start_time_cycles = axis.piece_start_time_cycles.wrapping_add(duration_cycles);
         axis.piece_cursor = axis.piece_cursor.saturating_add(1);
         advanced = true;
 
@@ -773,8 +776,7 @@ pub fn evaluate_e_axis(
     };
 
     let intrinsic_local = if let Some(piece) = axis_e.piece {
-        let piece_start_sec =
-            (axis_e.piece_start_time_cycles as f32) / cycles_per_second;
+        let piece_start_sec = (axis_e.piece_start_time_cycles as f32) / cycles_per_second;
         let t_local = t_sample_end_global - piece_start_sec;
         let (p, _v) = crate::monomial::eval_position_velocity(&piece, t_local);
         p
@@ -803,7 +805,11 @@ pub fn evaluate_e_axis(
 // returns a non-negative f32, but clippy::cast_sign_loss fires on f32→u32
 // because f32 is technically signed. The invariant is structural (fabsf
 // postcondition), not just local, so silence the lint at function scope.
-#[allow(clippy::indexing_slicing, clippy::too_many_lines, clippy::cast_sign_loss)]
+#[allow(
+    clippy::indexing_slicing,
+    clippy::too_many_lines,
+    clippy::cast_sign_loss
+)]
 pub fn runtime_tick_sample(ctx: &mut TickContext) {
     let mut p_end_axis = [0.0_f32; N_AXES];
     let mut v_end_axis = [0.0_f32; N_AXES];
@@ -853,12 +859,16 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         // t_local on every eval. Last value before the dispatch_pulse
         // bound check trips is what the host reads via diag tags.
         if axis_idx == AXIS_A {
-            ctx.shared.isr_last_c0_bits.store(piece.coeffs[0].to_bits(), core::sync::atomic::Ordering::Relaxed);
-            ctx.shared.isr_last_t_local_bits.store(t_local.to_bits(), core::sync::atomic::Ordering::Relaxed);
+            ctx.shared.isr_last_c0_bits.store(
+                piece.coeffs[0].to_bits(),
+                core::sync::atomic::Ordering::Relaxed,
+            );
+            ctx.shared
+                .isr_last_t_local_bits
+                .store(t_local.to_bits(), core::sync::atomic::Ordering::Relaxed);
         }
 
-        let (p_end, v_end) =
-            crate::monomial::eval_position_velocity(&piece, t_local);
+        let (p_end, v_end) = crate::monomial::eval_position_velocity(&piece, t_local);
         if !p_end.is_finite() || !v_end.is_finite() {
             raise_math_non_finite(ctx.shared, axis_idx);
             // Hold previous position to keep downstream caches sane.
@@ -894,8 +904,7 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     // integrate it directly; pressure-advance polarity is derived from
     // the sign of dv_xy/dt.
     // -----------------------------------------------------------------
-    let xy_active =
-        ctx.axes[AXIS_A].piece.is_some() || ctx.axes[AXIS_B].piece.is_some();
+    let xy_active = ctx.axes[AXIS_A].piece.is_some() || ctx.axes[AXIS_B].piece.is_some();
     if xy_active {
         let va = v_end_axis[AXIS_A];
         let vb = v_end_axis[AXIS_B];
@@ -1034,20 +1043,19 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     // sample: `advance_piece_if_needed` / Phase 1 will see `piece = None`
     // and early-continue every axis.
     //
-    // Stepper counts for the snapshot: we read `shared.stepper_counts`
-    // under Acquire ordering, matching the Release stores in
-    // `increment_position_count` (dispatch_pulse). `MAX_STEPPER_OIDS` is
-    // the full stepper table width; the endstop `publish_snapshot` call
-    // inside `endstop::tick` takes a `&[i32]` slice and bounds it by the
-    // arm's own `stepper_count`, so passing the full array is safe.
+    // Stepper counts for the snapshot: read the live per-stepper counters
+    // directly. `MAX_STEPPER_OIDS` is the full stepper table width; the
+    // endstop `publish_snapshot` call inside `endstop::tick` takes a
+    // `&[i32]` slice and bounds it by the arm's own `stepper_count`.
     // -----------------------------------------------------------------
     {
         let mut stepper_counts = [0_i32; crate::state::MAX_STEPPER_OIDS];
-        for (dst, src) in stepper_counts
-            .iter_mut()
-            .zip(ctx.shared.stepper_counts.iter())
-        {
-            *dst = src.load(core::sync::atomic::Ordering::Acquire);
+        for axis in ctx.axes.iter() {
+            for stepper in axis.steppers.iter() {
+                if let Some(dst) = stepper_counts.get_mut(usize::from(stepper.stepper_oid)) {
+                    *dst = stepper.position_count.load(Ordering::Acquire);
+                }
+            }
         }
         if crate::endstop::tick(ctx.now_cycles_u64, v_motor_q16, &stepper_counts)
             == crate::endstop::TripAction::AbortNow
@@ -1164,7 +1172,10 @@ pub fn isr_sample_tick(
     let now = isr.widen_state.widen(raw_cyccnt);
     crate::clock::publish_widened_now(shared, now);
     let after_widen = unsafe { cyccnt_read() };
-    update_max(&shared.isr_widen_cycles_max, after_widen.wrapping_sub(body_start));
+    update_max(
+        &shared.isr_widen_cycles_max,
+        after_widen.wrapping_sub(body_start),
+    );
 
     // 2026-05-21 bisection step 2: 948c6fdc6 (widen+publish only)
     // survived the jog (state=ready post-jog, no crash, F7=589K IRQs,
@@ -1199,20 +1210,30 @@ pub fn isr_sample_tick(
             }
         };
         if let Some(mut seg) = candidate {
-            shared.isr_last_t_start_lo.store(seg.t_start as u32, Ordering::Relaxed);
-            shared.isr_last_widened_lo.store(now as u32, Ordering::Relaxed);
+            shared
+                .isr_last_t_start_lo
+                .store(seg.t_start as u32, Ordering::Relaxed);
+            shared
+                .isr_last_widened_lo
+                .store(now as u32, Ordering::Relaxed);
             // 2026-05-21 epoch-diagnosis: also capture HIGH 32 bits and the
             // saturating cycle-delta so we can distinguish hypothesis (a) wrong
             // epoch from (b) u32-narrowed t_start on the wire.
-            shared.isr_last_t_start_hi.store((seg.t_start >> 32) as u32, Ordering::Relaxed);
-            shared.isr_last_widened_hi.store((now >> 32) as u32, Ordering::Relaxed);
+            shared
+                .isr_last_t_start_hi
+                .store((seg.t_start >> 32) as u32, Ordering::Relaxed);
+            shared
+                .isr_last_widened_hi
+                .store((now >> 32) as u32, Ordering::Relaxed);
             let delta = now.saturating_sub(seg.t_start);
-            shared.isr_arm_delta_lo.store(delta as u32, Ordering::Relaxed);
-            shared.isr_arm_delta_hi.store((delta >> 32) as u32, Ordering::Relaxed);
+            shared
+                .isr_arm_delta_lo
+                .store(delta as u32, Ordering::Relaxed);
+            shared
+                .isr_arm_delta_hi
+                .store((delta >> 32) as u32, Ordering::Relaxed);
             if seg.t_start <= now {
-                shared
-                    .current_segment_id
-                    .store(seg.id, Ordering::Release);
+                shared.current_segment_id.store(seg.id, Ordering::Release);
                 bump_relaxed(&shared.isr_armed_count);
                 // Host/USB command latency can make a freshly dequeued
                 // terminal segment start a few milliseconds in the past by
@@ -1244,7 +1265,10 @@ pub fn isr_sample_tick(
     }
 
     let after_arm = unsafe { cyccnt_read() };
-    update_max(&shared.isr_arm_cycles_max, after_arm.wrapping_sub(after_widen));
+    update_max(
+        &shared.isr_arm_cycles_max,
+        after_arm.wrapping_sub(after_widen),
+    );
 
     // 2026-05-21 bisection step 5: re-enable tick_sample call. Bisection
     // inside runtime_tick_sample (via _BISECT_RTS env at compile time) is
@@ -1283,14 +1307,19 @@ pub fn isr_sample_tick(
     } = isr;
     engine.tick_sample(shared, curve_pool, trace_producer);
     let body_end = unsafe { cyccnt_read() };
-    update_max(&shared.isr_eval_cycles_max, body_end.wrapping_sub(after_arm));
+    update_max(
+        &shared.isr_eval_cycles_max,
+        body_end.wrapping_sub(after_arm),
+    );
 
     // Circuit-breaker: if the whole body exceeded ~58 µs on H7 (30000
     // cycles at 520 MHz; ~167 µs on F4 at 180 MHz), bump the overrun
     // counter so the host can see we're starving foreground.
     let body_cycles = body_end.wrapping_sub(body_start);
     if body_cycles > 30000 {
-        shared.isr_overrun_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        shared
+            .isr_overrun_count
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -1308,7 +1337,9 @@ unsafe fn cyccnt_read() -> u32 {
 }
 #[cfg(any(test, feature = "host"))]
 #[inline]
-unsafe fn cyccnt_read() -> u32 { 0 }
+unsafe fn cyccnt_read() -> u32 {
+    0
+}
 
 #[inline]
 fn update_max(slot: &core::sync::atomic::AtomicU32, val: u32) {
@@ -1344,7 +1375,7 @@ mod tests {
     //! on the stack via `StepQueue::new()`). End-to-end ISR integration
     //! lives in Task 8's test suite.
 
-    use super::{dispatch_axis, DISPLACEMENT_THRESHOLD_MM};
+    use super::{DISPLACEMENT_THRESHOLD_MM, dispatch_axis};
     use crate::monomial::BezierPieceMonomial;
     use crate::state::SharedState;
     use crate::step_queue::StepQueue;
@@ -1354,6 +1385,7 @@ mod tests {
 
     fn make_stepper() -> StepperRef {
         StepperRef {
+            stepper_oid: 0,
             position_count: AtomicI32::new(0),
             tmc_cs_oid: None,
             last_coil_A: AtomicI16::new(0),
@@ -1389,7 +1421,10 @@ mod tests {
 
         let q_ptr: *mut StepQueue = &mut q;
         dispatch_axis(
-            0, &mut axis, q_ptr, &shared,
+            0,
+            &mut axis,
+            q_ptr,
+            &shared,
             /* p_end */ 0.0,
             /* v_end */ 0.0,
             /* p_sample_start */ 0.0,
@@ -1418,7 +1453,10 @@ mod tests {
         // Drive 4 microsteps forward = 4 × 0.0125 mm = 0.05 mm.
         let q_ptr: *mut StepQueue = &mut q;
         dispatch_axis(
-            0, &mut axis, q_ptr, &shared,
+            0,
+            &mut axis,
+            q_ptr,
+            &shared,
             /* p_end */ 0.05,
             /* v_end */ 2000.0,
             /* p_sample_start */ 0.0,
@@ -1430,10 +1468,7 @@ mod tests {
         let enq = q.tail.wrapping_sub(q.head);
         assert_eq!(enq, 4, "expected 4 step entries, got {enq}");
         assert_eq!(axis.last_step_count, 4);
-        assert_eq!(
-            axis.steppers[0].position_count.load(Ordering::Acquire),
-            4
-        );
+        assert_eq!(axis.steppers[0].position_count.load(Ordering::Acquire), 4);
         assert_eq!(shared.last_error.load(Ordering::Acquire), 0);
     }
 
@@ -1453,7 +1488,10 @@ mod tests {
 
         let q_ptr: *mut StepQueue = &mut q;
         dispatch_axis(
-            0, &mut axis, q_ptr, &shared,
+            0,
+            &mut axis,
+            q_ptr,
+            &shared,
             /* p_end */ tiny,
             /* v_end */ 0.0,
             /* p_sample_start */ -tiny,
@@ -1478,7 +1516,10 @@ mod tests {
         // p_end = 256 microsteps → phase = 256 → PHASE_LUT[256] = (0, 248).
         let q_ptr: *mut StepQueue = &mut q;
         dispatch_axis(
-            0, &mut axis, q_ptr, &shared,
+            0,
+            &mut axis,
+            q_ptr,
+            &shared,
             /* p_end */ 256.0 * 0.0125,
             /* v_end */ 0.0,
             /* p_sample_start */ 0.0,
@@ -1489,22 +1530,13 @@ mod tests {
 
         assert_eq!(q.tail, q.head, "phase mode must not enqueue step pulses");
         assert_eq!(axis.last_step_count, 256);
-        assert_eq!(
-            axis.steppers[0].last_coil_A.load(Ordering::Acquire),
-            0
-        );
-        assert_eq!(
-            axis.steppers[0].last_coil_B.load(Ordering::Acquire),
-            248
-        );
+        assert_eq!(axis.steppers[0].last_coil_A.load(Ordering::Acquire), 0);
+        assert_eq!(axis.steppers[0].last_coil_B.load(Ordering::Acquire), 248);
         assert_eq!(
             axis.steppers[0].last_phase_target.load(Ordering::Acquire),
             256
         );
-        assert_eq!(
-            axis.steppers[0].position_count.load(Ordering::Acquire),
-            256
-        );
+        assert_eq!(axis.steppers[0].position_count.load(Ordering::Acquire), 256);
     }
 
     /// Task 13: Phase mode ramps `phase_offset_microsteps` toward
@@ -1526,7 +1558,10 @@ mod tests {
         let q_ptr: *mut StepQueue = &mut q;
         for expected in [4_i32, 8, 10] {
             dispatch_axis(
-                0, &mut axis, q_ptr, &shared,
+                0,
+                &mut axis,
+                q_ptr,
+                &shared,
                 /* p_end */ 256.0 * 0.0125,
                 /* v_end */ 0.0,
                 /* p_sample_start */ 0.0,
@@ -1562,7 +1597,10 @@ mod tests {
 
         let q_ptr: *mut StepQueue = &mut q;
         dispatch_axis(
-            0, &mut axis, q_ptr, &shared,
+            0,
+            &mut axis,
+            q_ptr,
+            &shared,
             /* p_end */ 256.0 * 0.0125,
             /* v_end */ 0.0,
             /* p_sample_start */ 0.0,
@@ -1595,7 +1633,10 @@ mod tests {
         // axis target = 256, stepper target = 263, phase = 263.
         let q_ptr: *mut StepQueue = &mut q;
         dispatch_axis(
-            0, &mut axis, q_ptr, &shared,
+            0,
+            &mut axis,
+            q_ptr,
+            &shared,
             /* p_end */ 256.0 * 0.0125,
             /* v_end */ 0.0,
             /* p_sample_start */ 0.0,
@@ -1608,9 +1649,6 @@ mod tests {
             axis.steppers[0].last_phase_target.load(Ordering::Acquire),
             263
         );
-        assert_eq!(
-            axis.steppers[0].position_count.load(Ordering::Acquire),
-            263
-        );
+        assert_eq!(axis.steppers[0].position_count.load(Ordering::Acquire), 263);
     }
 }

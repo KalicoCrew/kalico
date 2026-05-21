@@ -180,16 +180,22 @@ class MCU_stepper:
         self._mcu_position_offset = mcu_pos_dist - self.get_commanded_position()
 
     def get_past_mcu_position(self, print_time):
-        # Bridge: position tracking lives in Rust.
-        return 0
+        # Bridge: homing snapshots come from the runtime's
+        # kalico_endstop_tripped event, not from legacy stepcompress
+        # history. Return the most recent snapshot applied by
+        # bridge_set_position_from_step_count(); fall back to the current
+        # position for non-homing callers.
+        return getattr(self, "_bridge_last_trip_step_count",
+                       self.get_mcu_position())
 
     def bridge_set_position_from_step_count(self, step_count):
         # Step 7-D §5.3: bridge-mode trip-position reconciliation. Apply an
         # authoritative MCU step counter snapshot (from a kalico_endstop
-        # trip event) directly via _set_mcu_position. Bypasses the legacy
-        # StepperPosition.note_home_end path which calls
-        # get_past_mcu_position (returns 0 in bridge mode).
-        self._set_mcu_position(int(step_count))
+        # trip event) directly via _set_mcu_position and retain it for
+        # get_past_mcu_position().
+        step_count = int(step_count)
+        self._bridge_last_trip_step_count = step_count
+        self._set_mcu_position(step_count)
 
     def mcu_to_commanded_position(self, mcu_pos):
         return mcu_pos * self._step_dist - self._mcu_position_offset

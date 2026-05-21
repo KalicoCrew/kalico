@@ -18,9 +18,7 @@ use crate::error::RuntimeError;
 use crate::segment::Segment;
 use crate::slot::{IsSlot, PaSlot};
 use crate::state::SharedState;
-use crate::trace::{
-    TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TRACE_RING_N, TraceSample,
-};
+use crate::trace::{TRACE_FLAG_FAULT_MARKER, TRACE_FLAG_SEGMENT_END, TRACE_RING_N, TraceSample};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -30,7 +28,6 @@ pub enum RuntimeStatus {
     Drained = 2,
     Fault = 3,
 }
-
 
 impl RuntimeStatus {
     #[inline]
@@ -126,13 +123,11 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     // Populated by `kalico_configure_axis` / `kalico_configure_kinematics` /
     // `kalico_configure_pressure_advance` (Task 11 FFI). Consumed by the
     // unified sample-ISR tick path (Task 8).
-
     /// Per-logical-axis configuration: active Bezier piece, cached scalars,
     /// stepper bindings. Indexed `[X=0, Y=1, Z=2, E=3]` in logical-axis
     /// space (the unified engine performs the kinematic transform at piece
     /// activation time, not per-sample).
-    pub stepping_axes:
-        [crate::stepping_state::AxisConfig; crate::stepping_state::N_AXES],
+    pub stepping_axes: [crate::stepping_state::AxisConfig; crate::stepping_state::N_AXES],
 
     /// Kinematic scale factor relating logical-XY velocity to physical
     /// motor-coordinate velocity magnitude. `1.0` for Cartesian (XY motor
@@ -313,8 +308,7 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             addr_of_mut!((*ptr).is_slot).write(I::default());
             addr_of_mut!((*ptr).one_tick_cycles_value)
                 .write(u64::from(one_tick_cycles(clock_freq)));
-            addr_of_mut!((*ptr).status)
-                .write(AtomicU8::new(RuntimeStatus::Idle as u8));
+            addr_of_mut!((*ptr).status).write(AtomicU8::new(RuntimeStatus::Idle as u8));
             addr_of_mut!((*ptr).last_error).write(AtomicI32::new(0));
             addr_of_mut!((*ptr).tick_counter).write(TickCounter::new());
             addr_of_mut!((*ptr).hold_sample_ticks).write(0);
@@ -330,8 +324,7 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             addr_of_mut!((*ptr).debug_last_now).write(0);
             addr_of_mut!((*ptr).debug_last_tstart).write(0);
             addr_of_mut!((*ptr).debug_last_duration).write(0);
-            addr_of_mut!((*ptr).step_state)
-                .write([crate::step::StepMotorState::default(); 4]);
+            addr_of_mut!((*ptr).step_state).write([crate::step::StepMotorState::default(); 4]);
             addr_of_mut!((*ptr).phase_modulators)
                 .write([const { None }; crate::state::MAX_STEPPER_OIDS]);
             addr_of_mut!((*ptr).phase_tick_counter).write(0);
@@ -339,10 +332,11 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             // Task 11 unified per-axis state. Same in-place pattern —
             // `AxisConfig` contains `heapless::Vec<StepperRef, 4>` which
             // is itself non-trivially-sized.
-            let axes_ptr = addr_of_mut!((*ptr).stepping_axes)
-                .cast::<crate::stepping_state::AxisConfig>();
+            let axes_ptr =
+                addr_of_mut!((*ptr).stepping_axes).cast::<crate::stepping_state::AxisConfig>();
             for i in 0..crate::stepping_state::N_AXES {
-                axes_ptr.add(i)
+                axes_ptr
+                    .add(i)
                     .write(crate::stepping_state::AxisConfig::new_unconfigured());
             }
             addr_of_mut!((*ptr).k_xy).write(1.0);
@@ -352,11 +346,9 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             addr_of_mut!((*ptr).sample_period_cycles).write(sample_period_cycles);
             addr_of_mut!((*ptr).cycles_per_second).write(clock_freq as f32);
             #[cfg(any(test, feature = "host"))]
-            addr_of_mut!((*ptr).test_queue_ptrs).write(
-                [core::ptr::null_mut(); crate::stepping_state::N_AXES],
-            );
-            addr_of_mut!((*ptr).tick_caches)
-                .write(crate::stepping_state::TickCaches::new());
+            addr_of_mut!((*ptr).test_queue_ptrs)
+                .write([core::ptr::null_mut(); crate::stepping_state::N_AXES]);
+            addr_of_mut!((*ptr).tick_caches).write(crate::stepping_state::TickCaches::new());
         }
     }
 
@@ -464,7 +456,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             } else {
                 Some(b.tmc_cs_oid)
             };
-            let stepper = crate::stepping_state::StepperRef::new(tmc_cs_oid);
+            let stepper = crate::stepping_state::StepperRef::new(b.stepper_oid, tmc_cs_oid);
             // `push` returns `Err` only when the Vec is full (capacity ==
             // MAX_STEPPERS_PER_AXIS); silently drop the excess rather than
             // faulting — the C host is responsible for sending a
@@ -535,11 +527,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// in seconds; `0.0` on either side disables PA in that phase. Reject
     /// non-finite or negative values — negative PA would invert the
     /// filament-pressure-correction sense, which is never physical.
-    pub fn configure_pressure_advance(
-        &mut self,
-        advance_accel: f32,
-        advance_decel: f32,
-    ) -> i32 {
+    pub fn configure_pressure_advance(&mut self, advance_accel: f32, advance_decel: f32) -> i32 {
         if !advance_accel.is_finite() || !advance_decel.is_finite() {
             return -1;
         }
@@ -602,10 +590,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // 2026-05-21 arm diag: snapshot the X-axis input handle so the host
         // can see whether bridge sent UNUSED, a real handle, or something else.
         if let Some(shared) = shared {
-            shared.isr_last_arm_x_handle.store(
-                seg.x_handle.pack(),
-                core::sync::atomic::Ordering::Relaxed,
-            );
+            shared
+                .isr_last_arm_x_handle
+                .store(seg.x_handle.pack(), core::sync::atomic::Ordering::Relaxed);
         }
 
         // Per-axis arm. X-axis (idx 0) is also instrumented per branch.
@@ -672,14 +659,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             }
         }
         if let Some(shared) = shared {
-            shared.isr_last_arm_x_outcome.store(
-                x_outcome,
-                core::sync::atomic::Ordering::Relaxed,
-            );
-            shared.isr_last_arm_x_piece_count.store(
-                x_piece_count,
-                core::sync::atomic::Ordering::Relaxed,
-            );
+            shared
+                .isr_last_arm_x_outcome
+                .store(x_outcome, core::sync::atomic::Ordering::Relaxed);
+            shared
+                .isr_last_arm_x_piece_count
+                .store(x_piece_count, core::sync::atomic::Ordering::Relaxed);
         }
 
         // Compute participating_mask. Bits A/B/Z (0..2) follow handle
@@ -747,8 +732,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             // length `N_AXES`.
             #[allow(clippy::indexing_slicing)]
             let exhausted = self.stepping_axes[axis_idx].curve_handle.is_none();
-            if self.participating_mask & bit != 0 && exhausted
-            {
+            if self.participating_mask & bit != 0 && exhausted {
                 exhausted_now |= bit;
             }
         }
@@ -952,7 +936,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         {
             #[allow(unsafe_code)]
             {
-                use crate::step_queue::{step_queues, StepQueue};
+                use crate::step_queue::{StepQueue, step_queues};
                 // SAFETY: `step_queues` is a C-owned static of size
                 // `N_AXIS_STEP_QUEUES` (asserted at compile time to be ≥
                 // `N_AXES`); `axis_idx < N_AXES` was verified above so the
@@ -960,10 +944,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 // race-safe against the ISR's volatile reads — both sides
                 // share the same ordering model that the ring uses normally.
                 unsafe {
-                    let q = step_queues
-                        .get()
-                        .cast::<StepQueue>()
-                        .add(axis_idx as usize);
+                    let q = step_queues.get().cast::<StepQueue>().add(axis_idx as usize);
                     core::ptr::write_volatile(&mut (*q).head, 0);
                     core::ptr::write_volatile(&mut (*q).tail, 0);
                 }
@@ -1109,8 +1090,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // circuits before any push.
         #[cfg(not(any(test, feature = "host")))]
         #[allow(unsafe_code)]
-        let queue_ptrs: [*mut crate::step_queue::StepQueue;
-            crate::stepping_state::N_AXES] = {
+        let queue_ptrs: [*mut crate::step_queue::StepQueue; crate::stepping_state::N_AXES] = {
             use crate::step_queue::{StepQueue, step_queues};
             // SAFETY: `step_queues` is a C-owned static of size
             // `N_AXIS_STEP_QUEUES` (compile-time asserted ≥ N_AXES);
@@ -1126,8 +1106,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             }
         };
         #[cfg(any(test, feature = "host"))]
-        let queue_ptrs: [*mut crate::step_queue::StepQueue;
-            crate::stepping_state::N_AXES] = self.test_queue_ptrs;
+        let queue_ptrs: [*mut crate::step_queue::StepQueue; crate::stepping_state::N_AXES] =
+            self.test_queue_ptrs;
 
         // Read the widened-clock low half from `SharedState`. On MCU
         // this seqlock cell is published by the producer Klipper timer
@@ -1233,11 +1213,17 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// in motor space (CoreXY: A=0, B=1, Z=2, E=3). Returns 0.0 for
     /// out-of-range or unconfigured axes.
     pub fn debug_steps_per_mm(&self, i: usize) -> f32 {
-        self.step_state.get(i).map(|s| s.debug_steps_per_mm()).unwrap_or(0.0)
+        self.step_state
+            .get(i)
+            .map(|s| s.debug_steps_per_mm())
+            .unwrap_or(0.0)
     }
 
     pub fn debug_accumulator(&self, i: usize) -> f64 {
-        self.step_state.get(i).map(|s| s.debug_accumulator()).unwrap_or(0.0)
+        self.step_state
+            .get(i)
+            .map(|s| s.debug_accumulator())
+            .unwrap_or(0.0)
     }
 
     /// Last observed motor position (post-PA/IS) for axis `i`.
@@ -1247,7 +1233,11 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
     /// Last (now, t_start, duration) tuple recorded by the most recent tick.
     pub fn debug_last_timing(&self) -> (u64, u64, u64) {
-        (self.debug_last_now, self.debug_last_tstart, self.debug_last_duration)
+        (
+            self.debug_last_now,
+            self.debug_last_tstart,
+            self.debug_last_duration,
+        )
     }
 
     pub fn configure(&mut self, config: crate::config::McuAxisConfig) {
@@ -1475,10 +1465,8 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             crate::stream::check_terminal_on_retire(shared, id);
         }
         self.clear_current();
-        self.last_error.store(
-            i32::from(RuntimeError::HomingTrip),
-            Ordering::Release,
-        );
+        self.last_error
+            .store(i32::from(RuntimeError::HomingTrip), Ordering::Release);
         self.status
             .store(RuntimeStatus::Drained as u8, Ordering::Release);
         shared.stream_open.store(false, Ordering::Release);
@@ -1560,5 +1548,4 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // tools/sim_klippy/tests/test_bridge_stall_repro.py::test_same_direction_jogs_reproduce_slot_pool_exhaustion.
         Ok(())
     }
-
 }

@@ -21,7 +21,7 @@ use heapless::Vec;
 
 use runtime::config::EMode;
 use runtime::curve_pool::CurveHandle;
-use runtime::monomial::{bernstein_to_monomial_with_duration, BezierPieceMonomial};
+use runtime::monomial::{BezierPieceMonomial, bernstein_to_monomial_with_duration};
 use runtime::segment::{KinematicTag, Segment};
 use runtime::stepping_state::{AxisConfig, StepMode, StepperRef};
 use runtime::tick::evaluate_e_axis;
@@ -32,6 +32,7 @@ use runtime::tick::evaluate_e_axis;
 
 fn make_stepper() -> StepperRef {
     StepperRef {
+        stepper_oid: 0,
         position_count: AtomicI32::new(0),
         tmc_cs_oid: None,
         last_coil_A: AtomicI16::new(0),
@@ -156,7 +157,7 @@ fn independent_mode_no_xy_contribution() {
     let seg = segment_with(EMode::Independent, /* ratio (ignored) */ 0.05);
     let engine_segment_base_e: f32 = 0.10; // carried forward
     let ds_xy_segment: f32 = 10.0; // 10 mm XY arc — would massively
-                                   // perturb output in CoupledToXy.
+    // perturb output in CoupledToXy.
     let t_sample_end_global: f32 = 25e-6; // exactly the piece end
 
     let p = evaluate_e_axis(

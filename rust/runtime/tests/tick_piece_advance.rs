@@ -20,12 +20,13 @@ use runtime::monomial::bernstein_to_monomial;
 use runtime::state::SharedState;
 use runtime::step_queue::StepQueue;
 use runtime::stepping_state::{
-    AxisConfig, StepMode, StepperRef, TickCaches, MAX_STEPPERS_PER_AXIS,
+    AxisConfig, MAX_STEPPERS_PER_AXIS, StepMode, StepperRef, TickCaches,
 };
-use runtime::tick::{runtime_tick_sample, TickContext};
+use runtime::tick::{TickContext, runtime_tick_sample};
 
 fn make_stepper() -> StepperRef {
     StepperRef {
+        stepper_oid: 0,
         position_count: AtomicI32::new(0),
         tmc_cs_oid: None,
         last_coil_A: AtomicI16::new(0),
@@ -56,8 +57,7 @@ fn piece_advances_when_sample_passes_duration() {
     // None on the first iteration of its inner loop.
     let scale = 1.0 / 10e-6;
     let piece = {
-        let mut p =
-            bernstein_to_monomial([0.0, scale / 3.0, 2.0 * scale / 3.0, scale]);
+        let mut p = bernstein_to_monomial([0.0, scale / 3.0, 2.0 * scale / 3.0, scale]);
         p.duration = 10e-6;
         p
     };
@@ -110,7 +110,7 @@ fn piece_advances_when_sample_passes_duration() {
         advance_accel: 0.0,
         advance_decel: 0.0,
         now_cycles: 0,
-            now_cycles_u64: 0,
+        now_cycles_u64: 0,
         t_sample_end_global: 20e-6, // past piece duration
     };
     runtime_tick_sample(&mut ctx);
@@ -142,8 +142,7 @@ fn segment_retirement_increments_counter_and_resets_arc_length() {
     //   `retired_through_segment_id` and zeroes the accumulator.
     let scale = 1.0 / 25e-6;
     let piece = {
-        let mut p =
-            bernstein_to_monomial([0.0, scale / 3.0, 2.0 * scale / 3.0, scale]);
+        let mut p = bernstein_to_monomial([0.0, scale / 3.0, 2.0 * scale / 3.0, scale]);
         p.duration = 25e-6;
         p
     };
@@ -211,7 +210,7 @@ fn segment_retirement_increments_counter_and_resets_arc_length() {
         advance_accel: 0.0,
         advance_decel: 0.0,
         now_cycles: 0,
-            now_cycles_u64: 0,
+        now_cycles_u64: 0,
         t_sample_end_global: 25e-6,
     };
     runtime_tick_sample(&mut ctx1);
@@ -240,7 +239,7 @@ fn segment_retirement_increments_counter_and_resets_arc_length() {
         advance_accel: 0.0,
         advance_decel: 0.0,
         now_cycles: 0,
-            now_cycles_u64: 0,
+        now_cycles_u64: 0,
         t_sample_end_global: 50e-6,
     };
     runtime_tick_sample(&mut ctx2);

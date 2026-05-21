@@ -11,12 +11,13 @@ use heapless::Vec;
 use runtime::error::FaultCode;
 use runtime::monomial::BezierPieceMonomial;
 use runtime::state::SharedState;
-use runtime::step_queue::{StepQueue, STEP_QUEUE_DEPTH};
-use runtime::stepping_state::{AxisConfig, StepMode, StepperRef, MAX_STEPPERS_PER_AXIS};
+use runtime::step_queue::{STEP_QUEUE_DEPTH, StepQueue};
+use runtime::stepping_state::{AxisConfig, MAX_STEPPERS_PER_AXIS, StepMode, StepperRef};
 use runtime::tick::dispatch_axis;
 
 fn make_stepper() -> StepperRef {
     StepperRef {
+        stepper_oid: 0,
         position_count: AtomicI32::new(0),
         tmc_cs_oid: None,
         last_coil_A: AtomicI16::new(0),
@@ -50,7 +51,10 @@ fn pulse_zero_motion_no_steps_scheduled() {
 
     let q_ptr: *mut StepQueue = &mut q;
     dispatch_axis(
-        0, &mut axis, q_ptr, &shared,
+        0,
+        &mut axis,
+        q_ptr,
+        &shared,
         /* p_end */ 0.0,
         /* v_end */ 0.0,
         /* p_sample_start */ 0.0,
@@ -72,7 +76,10 @@ fn pulse_positive_motion_enqueues_n_steps() {
 
     let q_ptr: *mut StepQueue = &mut q;
     dispatch_axis(
-        0, &mut axis, q_ptr, &shared,
+        0,
+        &mut axis,
+        q_ptr,
+        &shared,
         /* p_end */ 0.05,
         /* v_end */ 2000.0,
         /* p_sample_start */ 0.0,
@@ -105,7 +112,10 @@ fn pulse_partial_push_commits_position_count_for_pushed_steps() {
 
     let q_ptr: *mut StepQueue = &mut q;
     dispatch_axis(
-        0, &mut axis, q_ptr, &shared,
+        0,
+        &mut axis,
+        q_ptr,
+        &shared,
         /* p_end */ 0.05, // 4 microsteps requested
         /* v_end */ 2000.0,
         /* p_sample_start */ 0.0,
@@ -152,7 +162,10 @@ fn pulse_queue_overflow_latches_fault() {
 
     let q_ptr: *mut StepQueue = &mut q;
     dispatch_axis(
-        2, &mut axis, q_ptr, &shared,
+        2,
+        &mut axis,
+        q_ptr,
+        &shared,
         /* p_end */ 0.0125, // 1 step
         /* v_end */ 1000.0,
         /* p_sample_start */ 0.0,
@@ -177,7 +190,10 @@ fn phase_mode_updates_coil_state_no_queue_writes() {
     // 256 microsteps → PHASE_LUT[256] = (0, 248).
     let q_ptr: *mut StepQueue = &mut q;
     dispatch_axis(
-        0, &mut axis, q_ptr, &shared,
+        0,
+        &mut axis,
+        q_ptr,
+        &shared,
         /* p_end */ 256.0 * 0.0125,
         /* v_end */ 0.0,
         /* p_sample_start */ 0.0,
@@ -194,10 +210,7 @@ fn phase_mode_updates_coil_state_no_queue_writes() {
         axis.steppers[0].last_phase_target.load(Ordering::Acquire),
         256
     );
-    assert_eq!(
-        axis.steppers[0].position_count.load(Ordering::Acquire),
-        256
-    );
+    assert_eq!(axis.steppers[0].position_count.load(Ordering::Acquire), 256);
 }
 
 #[test]
@@ -211,7 +224,10 @@ fn phase_mode_honors_phase_offset() {
 
     let q_ptr: *mut StepQueue = &mut q;
     dispatch_axis(
-        0, &mut axis, q_ptr, &shared,
+        0,
+        &mut axis,
+        q_ptr,
+        &shared,
         /* p_end */ 256.0 * 0.0125,
         /* v_end */ 0.0,
         /* p_sample_start */ 0.0,
@@ -224,8 +240,5 @@ fn phase_mode_honors_phase_offset() {
         axis.steppers[0].last_phase_target.load(Ordering::Acquire),
         263
     );
-    assert_eq!(
-        axis.steppers[0].position_count.load(Ordering::Acquire),
-        263
-    );
+    assert_eq!(axis.steppers[0].position_count.load(Ordering::Acquire), 263);
 }
