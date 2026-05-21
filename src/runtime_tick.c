@@ -1006,7 +1006,7 @@ runtime_status_drain(void)
             // sent a real handle.
             extern uint32_t kalico_runtime_get_isr_last_arm_x_handle(void* h);
             uint32_t v = kalico_runtime_get_isr_last_arm_x_handle(runtime_handle);
-            fault_detail = 0x9A000000u | (v & 0x00FFFFFFu);
+            fault_detail = 0xA0000000u | (v & 0x00FFFFFFu);
             break;
         }
         case 45: {
@@ -1014,7 +1014,7 @@ runtime_status_drain(void)
             // 2=lookup_active miss, 3=piece_count==0, 4=OK.
             extern uint32_t kalico_runtime_get_isr_last_arm_x_outcome(void* h);
             uint32_t v = kalico_runtime_get_isr_last_arm_x_outcome(runtime_handle);
-            fault_detail = 0x9B000000u | (v & 0x00FFFFFFu);
+            fault_detail = 0xA1000000u | (v & 0x00FFFFFFu);
             break;
         }
         case 46: {
@@ -1023,16 +1023,17 @@ runtime_status_drain(void)
             // means arm succeeded and the failure is downstream).
             extern uint32_t kalico_runtime_get_isr_last_arm_x_piece_count(void* h);
             uint32_t v = kalico_runtime_get_isr_last_arm_x_piece_count(runtime_handle);
-            fault_detail = 0x9C000000u | (v & 0x00FFFFFFu);
+            fault_detail = 0xA2000000u | (v & 0x00FFFFFFu);
             break;
         }
         case 47: {
-            // 0x9D — last-arm participating_mask. 0 = no axes participated
+            // 0xA3 — last-arm participating_mask. 0 = no axes participated
             // (instant retire — matches ghost-segment symptom). bit 0=X,
-            // 1=Y, 2=Z, 3=E.
+            // 1=Y, 2=Z, 3=E. (Was 0x9D, collided with the pre-existing
+            // "durable monotonic seen-oid bitmap" at line 1170.)
             extern uint32_t kalico_runtime_get_isr_last_arm_participating(void* h);
             uint32_t v = kalico_runtime_get_isr_last_arm_participating(runtime_handle);
-            fault_detail = 0x9D000000u | (v & 0x00FFFFFFu);
+            fault_detail = 0xA3000000u | (v & 0x00FFFFFFu);
             break;
         }
         case 36: {
