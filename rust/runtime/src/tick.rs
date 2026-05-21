@@ -167,6 +167,25 @@ fn dispatch_pulse(
         return;
     }
 
+    // 2026-05-21 FIX: bound check that the comment in compute_step_times
+    // PROMISED but nothing enforced. If signed_steps is huge (e.g.,
+    // target_step_count saturated to i32::MAX because p_end was a giant
+    // finite f32), compute_step_times's `for k in 0..n_steps` would loop
+    // billions of times — ~4 seconds of CPU spin, IWDG fires, MCU resets.
+    // That's the entire crash chain we've been chasing for the last 7
+    // bisection steps. Bound here, raise a fault, and capture the
+    // out-of-range value via diag for further debugging.
+    let abs_steps = signed_steps.unsigned_abs();
+    if abs_steps > crate::sub_sample_timing::MAX_STEPS_PER_SAMPLE as u32 {
+        // Stash the offending value so we can see what went wrong.
+        // Reuse `isr_last_t_start_lo` (it's already a diag scratch field).
+        shared.isr_last_t_start_lo.store(abs_steps, core::sync::atomic::Ordering::Relaxed);
+        bump_relaxed(&shared.isr_overrun_count);
+        // Restore the cache so the engine doesn't drift wildly.
+        axis.last_step_count = prev_step_count;
+        return;
+    }
+
     let inputs = StepTimeInputs {
         p_start: p_sample_start,
         p_end,
@@ -188,17 +207,8 @@ fn dispatch_pulse(
     };
 
     let dir: i8 = if signed_steps > 0 { 1 } else { -1 };
-    // 2026-05-21 bisection step 7: SKIP queue_push loop. Keep
-    // compute_step_times above (it ran). If bench survives →
-    // queue_push is the freeze (likely heapless::spsc::Producer
-    // LDREX-style RMW, mirroring the 2026-05-18 Consumer
-    // miscompile we already had to work around with a C struct).
-    // If crashes → compute_step_times Newton iteration is the freeze.
-    let _ = (dir, times, queue_ptr);
-    return;
-    #[allow(unreachable_code)]
     let mut steps_committed: i32 = 0;
-    #[allow(unreachable_code, clippy::explicit_counter_loop)]
+    #[allow(clippy::explicit_counter_loop)]
     for cycle_abs in times.iter().copied() {
         let entry = StepEntry { cycle_abs, dir, _pad: [0; 3] };
         // SAFETY: `queue_ptr` is supplied by the caller (TIM5 ISR), who
@@ -806,11 +816,6 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
             ctx.cycles_per_second,
         );
     }
-
-    // 2026-05-21 bisection step 5: early-return after Phase 1.
-    // If bench survives jog with this: freeze is in Phase 2/3/4/5.
-    // If bench crashes: freeze is in Phase 1 (axis loop, eval, or dispatch).
-    return;
 
     // -----------------------------------------------------------------
     // Phase 2: XY-derived quantities.
