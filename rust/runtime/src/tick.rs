@@ -789,18 +789,23 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         p_end_axis[axis_idx] = p_end;
         v_end_axis[axis_idx] = v_end;
 
-        dispatch_axis(
-            axis_idx,
-            axis,
-            ctx.queues[axis_idx],
-            ctx.shared,
-            p_end,
-            v_end,
-            p_sample_start,
-            ctx.sample_period_sec,
-            ctx.now_cycles,
-            ctx.cycles_per_second,
-        );
+        // 2026-05-21 bisection step 6: SKIP dispatch_axis. Keep
+        // advance_piece_if_needed + eval_position_velocity to test
+        // if those alone cause the freeze.
+        let _ = p_sample_start;
+        let _ = axis;
+        // dispatch_axis(
+        //     axis_idx,
+        //     axis,
+        //     ctx.queues[axis_idx],
+        //     ctx.shared,
+        //     p_end,
+        //     v_end,
+        //     p_sample_start,
+        //     ctx.sample_period_sec,
+        //     ctx.now_cycles,
+        //     ctx.cycles_per_second,
+        // );
     }
 
     // 2026-05-21 bisection step 5: early-return after Phase 1.
