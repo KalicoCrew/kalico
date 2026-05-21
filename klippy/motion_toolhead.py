@@ -371,16 +371,15 @@ class MotionToolhead(ToolHead):
         )
         if self.bridge is not None:
             enable_print_time = self.get_last_move_time()
+            # Energize motors BEFORE dispatching segments so the
+            # queue_digital_out for the enable pin enters the reactor's
+            # submission queue ahead of the first load_curve/push_segment.
+            self._fire_active_callbacks(dx, dy, dz, de, enable_print_time)
             bridge_lmt_before = self.bridge.get_last_move_time()
             self.bridge.submit_move(dx, dy, dz, de, feedrate)
             self._bump_pending_end_time(
                 self.bridge.get_last_move_time() - bridge_lmt_before
             )
-            # Bridge synthesizes steps in the runtime; klippy's normal
-            # itersolve_check_active path doesn't fire. We trigger
-            # active-stepper callbacks ourselves so motors energize
-            # before the move starts.
-            self._fire_active_callbacks(dx, dy, dz, de, enable_print_time)
         self.commanded_pos[:] = move.end_pos
 
     def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
