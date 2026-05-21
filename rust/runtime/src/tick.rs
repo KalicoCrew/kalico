@@ -172,16 +172,18 @@ fn dispatch_pulse(
     // target_step_count saturated to i32::MAX because p_end was a giant
     // finite f32), compute_step_times's `for k in 0..n_steps` would loop
     // billions of times — ~4 seconds of CPU spin, IWDG fires, MCU resets.
-    // That's the entire crash chain we've been chasing for the last 7
-    // bisection steps. Bound here, raise a fault, and capture the
-    // out-of-range value via diag for further debugging.
+    // Bound here, capture the inputs via diag for further debugging.
     let abs_steps = signed_steps.unsigned_abs();
     if abs_steps > crate::sub_sample_timing::MAX_STEPS_PER_SAMPLE as u32 {
-        // Stash the offending value so we can see what went wrong.
-        // Reuse `isr_last_t_start_lo` (it's already a diag scratch field).
+        // Diag: stash the inputs that produced the oversized
+        // target_step_count. EE=abs_steps, then the f32 inputs:
+        //   isr_last_p_end_bits = p_end.to_bits()
+        //   isr_last_microstep_bits = microstep_distance.to_bits()
+        // Host decodes via f32::from_bits().
         shared.isr_last_t_start_lo.store(abs_steps, core::sync::atomic::Ordering::Relaxed);
+        shared.isr_last_p_end_bits.store(p_end.to_bits(), core::sync::atomic::Ordering::Relaxed);
+        shared.isr_last_microstep_bits.store(microstep_distance.to_bits(), core::sync::atomic::Ordering::Relaxed);
         bump_relaxed(&shared.isr_overrun_count);
-        // Restore the cache so the engine doesn't drift wildly.
         axis.last_step_count = prev_step_count;
         return;
     }

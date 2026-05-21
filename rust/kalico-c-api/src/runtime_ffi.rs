@@ -923,6 +923,8 @@ pub mod exports {
     shared_u32_reader!(kalico_runtime_get_isr_armed_count, isr_armed_count);
     shared_u32_reader!(kalico_runtime_get_isr_last_t_start_lo, isr_last_t_start_lo);
     shared_u32_reader!(kalico_runtime_get_isr_last_widened_lo, isr_last_widened_lo);
+    shared_u32_reader!(kalico_runtime_get_isr_last_p_end_bits, isr_last_p_end_bits);
+    shared_u32_reader!(kalico_runtime_get_isr_last_microstep_bits, isr_last_microstep_bits);
 
     // ---- Phase 11 §5.3 status-frame accessors -----------------------------
     //

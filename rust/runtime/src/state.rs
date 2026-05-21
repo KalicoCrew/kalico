@@ -388,6 +388,13 @@ pub struct SharedState {
     /// (in their low-32 domain) is the actual park reason.
     pub isr_last_t_start_lo: AtomicU32,
     pub isr_last_widened_lo: AtomicU32,
+    /// Bit-pattern of the last `p_end` value passed to dispatch_pulse
+    /// when the overflow guard tripped. f32::to_bits stored verbatim;
+    /// host decodes via f32::from_bits(...) for the actual magnitude.
+    pub isr_last_p_end_bits: AtomicU32,
+    /// Bit-pattern of `microstep_distance` from the same call. Same
+    /// encoding rationale.
+    pub isr_last_microstep_bits: AtomicU32,
     /// 2026-05-18 wedge diag: incremented in `producer_step` every time the
     /// `producer_current.is_none()` branch is entered, regardless of whether
     /// the subsequent `queue.dequeue()` returned Some or None. Cross-check
@@ -663,6 +670,8 @@ impl SharedState {
             isr_armed_count: AtomicU32::new(0),
             isr_last_t_start_lo: AtomicU32::new(0),
             isr_last_widened_lo: AtomicU32::new(0),
+            isr_last_p_end_bits: AtomicU32::new(0),
+            isr_last_microstep_bits: AtomicU32::new(0),
             producer_observed_none_total: AtomicU64::new(0),
             producer_step_last_len_snapshot: AtomicU32::new(0),
             producer_step_current_is_some_snapshot: AtomicU8::new(0),

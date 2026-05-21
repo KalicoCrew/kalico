@@ -629,7 +629,7 @@ runtime_status_drain(void)
         // tags (0xB6, 0xB7), curve-resolve tag (0xB8), demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 38) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 40) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 3:
             // 0xE6 — Live step_mode discriminants for motors 0..3, two
@@ -937,6 +937,27 @@ runtime_status_drain(void)
             extern uint32_t kalico_runtime_get_isr_last_t_start_lo(void* h);
             uint32_t v = kalico_runtime_get_isr_last_t_start_lo(runtime_handle);
             fault_detail = 0xEE000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 38: {
+            // 0xF6 (overloaded — reused free tag) — isr_last_p_end_bits.
+            // f32 to_bits() of p_end at the moment of the signed_steps
+            // overflow. Host decodes via f32::from_bits(value). Useful
+            // to see what the Bezier eval is producing when target_step_count
+            // saturates.
+            extern uint32_t kalico_runtime_get_isr_last_p_end_bits(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_p_end_bits(runtime_handle);
+            // Use 0xCA prefix (free) since 0xF6 already exists for DOEPTSIZ.
+            fault_detail = 0xCA000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 39: {
+            // 0xCB-overloaded — isr_last_microstep_bits. f32 to_bits()
+            // of microstep_distance. If this is ~0 (or very tiny), the
+            // p_end / microstep_distance divide explodes.
+            extern uint32_t kalico_runtime_get_isr_last_microstep_bits(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_microstep_bits(runtime_handle);
+            fault_detail = 0xCB000000u | (v & 0x00FFFFFFu);
             break;
         }
         case 36: {
