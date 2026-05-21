@@ -157,8 +157,17 @@ pub fn build_push_params(
                 let x = &shaped.axes[AXIS_X];
                 let y = &shaped.axes[AXIS_Y];
                 let eps = 1e-9;
-                let x_zero = x.control_points().iter().all(|c| c.abs() < eps);
-                let y_zero = y.control_points().iter().all(|c| c.abs() < eps);
+                let x_max = x.control_points().iter().map(|c| c.abs()).fold(0.0_f64, f64::max);
+                let y_max = y.control_points().iter().map(|c| c.abs()).fold(0.0_f64, f64::max);
+                let x_pieces = nurbs::bezier::extract_bezier_pieces(x).len();
+                let y_pieces = nurbs::bezier::extract_bezier_pieces(y).len();
+                log::info!(
+                    "[corexy-diag] x_max_cp={x_max:.6e} y_max_cp={y_max:.6e} \
+                     x_pieces={x_pieces} y_pieces={y_pieces} x_ncp={} y_ncp={}",
+                    x.control_points().len(), y.control_points().len(),
+                );
+                let x_zero = x_max < eps;
+                let y_zero = y_max < eps;
                 let (motor_a, motor_b) = if y_zero {
                     // Pure-X move: A = X, B = X (no knot union needed).
                     (x.clone(), x.clone())
