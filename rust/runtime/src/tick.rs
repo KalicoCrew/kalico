@@ -997,7 +997,14 @@ pub fn isr_sample_tick(
     // the ISR body executed at all, independent of the sample-period /
     // arm-from-queue guards below. Wrapping is benign (u32 at 40 kHz
     // wraps every ~30 hours).
-    isr.engine.tick_counter.increment();
+    //
+    // 2026-05-21 follow-up: rebound through `bump_relaxed` (load+store)
+    // because the original `increment()` (fetch_add(1, Relaxed)) was the
+    // first counter to show the "writes not visible to FFI reader"
+    // symptom — even ruby's documented "this fixes the latent gap"
+    // increment reads 0 from kalico_runtime_get_tick_counter despite
+    // isr_sample_tick demonstrably running (E6 widen_max non-zero).
+    bump_relaxed(isr.engine.tick_counter.inner_atomic());
 
     // 1. Widen the raw DWT sample and publish the §11.4 seqlock.
     let now = isr.widen_state.widen(raw_cyccnt);
@@ -1018,9 +1025,9 @@ pub fn isr_sample_tick(
                     shared
                         .producer_segment_dequeued_total
                         .fetch_add(1, Ordering::AcqRel);
-                    shared.isr_deq_some_count.fetch_add(1, Ordering::Relaxed);
+                    bump_relaxed(&shared.isr_deq_some_count);
                 } else {
-                    shared.isr_deq_none_count.fetch_add(1, Ordering::Relaxed);
+                    bump_relaxed(&shared.isr_deq_none_count);
                 }
                 dequeued
             }
@@ -1032,10 +1039,10 @@ pub fn isr_sample_tick(
                 shared
                     .current_segment_id
                     .store(seg.id, Ordering::Release);
-                shared.isr_armed_count.fetch_add(1, Ordering::Relaxed);
+                bump_relaxed(&shared.isr_armed_count);
                 isr.engine.arm_segment(seg, curve_pool);
             } else {
-                shared.isr_parked_count.fetch_add(1, Ordering::Relaxed);
+                bump_relaxed(&shared.isr_parked_count);
                 isr.pending_segment = Some(seg);
             }
         }
@@ -1091,6 +1098,22 @@ fn update_max(slot: &core::sync::atomic::AtomicU32, val: u32) {
         // counters (TIM5 = single producer), so the race is theoretical.
         slot.store(val, Ordering::Relaxed);
     }
+}
+
+// 2026-05-21: Workaround for the "fetch_add not visible to FFI reader"
+// codegen symptom seen in earlier bench. Tags 0xE3/0xEA/0xEB/0xEC/0xED
+// all read 0 despite E6 (update_max-driven) reading 2831 cycles in the
+// same ISR call — meaning fetch_add(1, Relaxed) writes weren't visible
+// while load+store WERE. Same fingerprint as the 2026-05-18 LLVM
+// miscompile of heapless::spsc::Consumer (qlen_sd=6 qlen_ps=1 from the
+// same instance). Mirror update_max's load+store pattern explicitly so
+// the same codegen path the working counter uses applies to all writers.
+// ISR is the single writer for these counters; race-free.
+#[inline]
+fn bump_relaxed(slot: &core::sync::atomic::AtomicU32) {
+    use core::sync::atomic::Ordering;
+    let prev = slot.load(Ordering::Relaxed);
+    slot.store(prev.wrapping_add(1), Ordering::Relaxed);
 }
 
 #[cfg(test)]
