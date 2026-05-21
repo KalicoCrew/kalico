@@ -940,24 +940,24 @@ runtime_status_drain(void)
             break;
         }
         case 38: {
-            // 0xF6 (overloaded — reused free tag) — isr_last_p_end_bits.
-            // f32 to_bits() of p_end at the moment of the signed_steps
-            // overflow. Host decodes via f32::from_bits(value). Useful
-            // to see what the Bezier eval is producing when target_step_count
-            // saturates.
+            // 0xCA — TOP 24 bits of isr_last_p_end_bits (= bits 31..8 of
+            // the f32). Includes sign + 8 exponent bits + top 15 mantissa
+            // bits. Reconstruct full f32 magnitude via:
+            //   v = (CA_payload << 8); f = f32::from_bits(v)
+            // (loses bottom 8 mantissa bits; precision ~5 decimal digits
+            // — plenty for "is this huge or normal" judgement).
             extern uint32_t kalico_runtime_get_isr_last_p_end_bits(void* h);
             uint32_t v = kalico_runtime_get_isr_last_p_end_bits(runtime_handle);
-            // Use 0xCA prefix (free) since 0xF6 already exists for DOEPTSIZ.
-            fault_detail = 0xCA000000u | (v & 0x00FFFFFFu);
+            fault_detail = 0xCA000000u | ((v >> 8) & 0x00FFFFFFu);
             break;
         }
         case 39: {
-            // 0xCB-overloaded — isr_last_microstep_bits. f32 to_bits()
-            // of microstep_distance. If this is ~0 (or very tiny), the
-            // p_end / microstep_distance divide explodes.
+            // 0xCB — TOP 24 bits of isr_last_microstep_bits. Same
+            // encoding as 0xCA. If this decodes to ~0 (denormal or
+            // genuine zero), p_end / microstep_distance overflows.
             extern uint32_t kalico_runtime_get_isr_last_microstep_bits(void* h);
             uint32_t v = kalico_runtime_get_isr_last_microstep_bits(runtime_handle);
-            fault_detail = 0xCB000000u | (v & 0x00FFFFFFu);
+            fault_detail = 0xCB000000u | ((v >> 8) & 0x00FFFFFFu);
             break;
         }
         case 36: {
