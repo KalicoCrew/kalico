@@ -1052,13 +1052,16 @@ pub fn isr_sample_tick(
                     .current_segment_id
                     .store(seg.id, Ordering::Release);
                 bump_relaxed(&shared.isr_armed_count);
-                // 2026-05-21 bisection step 3: SKIP arm_segment.
-                // We still bump isr_armed_count (so ED tag shows the
-                // would-be-arm count) but don't actually arm. Engine
-                // stays in current=None forever, so the dequeue path
-                // keeps running and we can see whether dequeue itself
-                // is the freeze source.
-                let _ = seg; // avoid unused-var warn
+                // 2026-05-21 bisection step 4: arm_segment ON, evaluator OFF.
+                // bd62f20bb (dequeue+park yes, arm+eval no) survived. EA=2
+                // dequeues, EC=0 parks (widening seed correct, seg.t_start
+                // <= now), ED=2 would-be-arms, EE=EF=0xBD47F5 (host time
+                // domain matches MCU's widened). Now actually call
+                // arm_segment but still bail before tick_sample. If bench
+                // survives, freeze is in tick_sample evaluator. If crashes,
+                // freeze is in arm_segment (likely curve_pool lookup or
+                // axis piece initialization).
+                isr.engine.arm_segment(seg, curve_pool);
             } else {
                 bump_relaxed(&shared.isr_parked_count);
                 isr.pending_segment = Some(seg);
