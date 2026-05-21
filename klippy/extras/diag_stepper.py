@@ -48,28 +48,30 @@ class DiagStepper:
         oid = mcu_stepper.get_oid()
         period_ticks = max(1, int(mcu.seconds_to_clock(period_us * 1e-6)))
 
-        cmd = mcu.lookup_command(
-            "diag_stepper_buzz oid=%c dir=%c step_count=%u period_ticks=%u"
+        # Plain formatted-string MCU command (clocksync.py pattern). The
+        # CommandWrapper.encode() path used by mainline Klipper doesn't
+        # exist on this fork's serial layer — send_with_response handles
+        # the formatted string directly through the bridge call.
+        msg_str = (
+            "diag_stepper_buzz oid=%d dir=%d step_count=%d period_ticks=%d"
+            % (oid, direction, steps, period_ticks)
         )
 
         logging.info(
             "DIAG_STEPPER_BUZZ stepper=%s oid=%d steps=%d period_us=%d"
-            " period_ticks=%d dir=%d",
+            " period_ticks=%d dir=%d cmd=%s",
             stepper_name,
             oid,
             steps,
             period_us,
             period_ticks,
             direction,
+            msg_str,
         )
 
-        # Send via send_with_response so the foreground blocks until the
-        # MCU finishes the busy-wait loop and replies — bench survives
-        # because the C-side bounds keep the loop under ~200 ms.
         try:
             response = mcu._serial.send_with_response(
-                cmd.encode([oid, direction, steps, period_ticks]),
-                "diag_stepper_buzz_response",
+                msg_str, "diag_stepper_buzz_response"
             )
             gcmd.respond_info(
                 "DIAG_STEPPER_BUZZ stepper=%s steps=%d period_us=%d dir=%d:"
