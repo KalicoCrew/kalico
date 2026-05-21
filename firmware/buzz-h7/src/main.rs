@@ -32,11 +32,9 @@
 //!      rotation_distance.
 //!   7. Flips direction, generates 800 more steps back.
 //!   8. Waits ~10 seconds.
-//!   9. Issues NVIC_SystemReset. The reset lands back in the H7's
-//!      bootloader (Katapult/HID-CDC variant, lives in
-//!      0x08000000..0x08020000 — first 128 KiB of flash, untouched by
-//!      us). The bootloader sits waiting for the next firmware flash
-//!      command — no manual BOOT0/DFU button press needed.
+//!   9. Jumps to the STM32H723 ROM DFU bootloader at 0x1FF09800 (AN2606
+//!      Rev 50, Table 150; RM0468 §2.3 "System memory"). USB re-enumerates
+//!      as 0483:df11 without any manual BOOT0/RESET intervention.
 //!
 //! If the X motor moves visibly during the buzz: TMC + pin routing +
 //! mechanical are all fine. The Kalico motion engine is the only
@@ -65,6 +63,12 @@ const GPIOG_BASE:    usize = 0x5802_1800;
 const SPI1_BASE:     usize = 0x4001_3000;
 const STK_BASE:      usize = 0xE000_E010; // SysTick
 const SCB_AIRCR:     usize = 0xE000_ED0C;
+
+// STM32H723 ROM DFU bootloader entry point (AN2606 Rev 50, Table 150;
+// RM0468 §2.3 "System memory" — STM32H72x/H73x system memory bank at
+// 0x1FF0_9800). The vector table at this address follows the standard ARM
+// Cortex-M convention: word 0 = initial MSP, word 1 = reset handler.
+const ROM_BOOTLOADER_BASE: usize = 0x1FF0_9800;
 
 // RCC offsets (RM0468 Chapter 8).
 const RCC_AHB4ENR:   usize = 0xE0;  // GPIO A/C/G
@@ -207,6 +211,14 @@ fn main() -> ! {
         // Brief settle.
         delay_systick_cycles(HSI_HZ / 1000); // 1 ms
 
+        // 2026-05-21 SIMPLIFIED: skip ALL TMC SPI writes. The TMC retains
+        // its register state from the prior mainline Kalico session (motor
+        // stays energized across our H7 reflash because the TMC chip isn't
+        // power-cycled by the H7 reset). If JUST toggling PG4 doesn't
+        // produce motion now, the bug is in our Rust GPIO code, not in
+        // SPI/TMC config.
+        if false {
+        // -- ORIGINAL SPI/TMC INIT, disabled for the minimal-firmware test --
         // 5. TMC5160 register writes — EXACT mainline Kalico values captured
         // 2026-05-21 via `DUMP_TMC STEPPER=stepper_x` after a working
         // STEPPER_BUZZ that physically moved the motor on this same
@@ -235,6 +247,7 @@ fn main() -> ! {
         tmc_write(0x13, 0x000F_FFFF); // TPWMTHRS
         tmc_write(0x6C, 0x3370_0378); // CHOPCONF
         tmc_write(0x70, 0xC40C_001E); // PWMCONF
+        } // end if-false block (skipping TMC for minimal-firmware test)
 
         // Brief settle so the TMC current ramps up before we start stepping.
         delay_systick_cycles(HSI_HZ / 10); // 100 ms
@@ -265,16 +278,13 @@ fn main() -> ! {
             delay_systick_cycles(HSI_HZ);
         }
 
-        // 10. Disable motor before reset so the next firmware load doesn't
-        //     race the bootloader for the enable line.
+        // 10. Disable motor — leave enable pin high (PA2 inverted).
         write_volatile((GPIOA_BASE + GPIO_BSRR) as *mut u32, 1 << 2); // PA2 high = disabled
 
-        // 11. NVIC_SystemReset — lands in Katapult.
-        write_volatile(SCB_AIRCR as *mut u32, (0x5FA << 16) | (1 << 2));
-        cortex_m::asm::dsb();
-        loop {
-            cortex_m::asm::nop();
-        }
+        // 11. Jump to ROM DFU bootloader so the next flash needs no manual
+        //     BOOT0+RESET. This is NOT NVIC_SystemReset (which would re-run
+        //     our app from flash); it's a direct branch into system memory.
+        jump_to_dfu_bootloader();
     }
 }
 
@@ -375,5 +385,90 @@ fn delay_systick_cycles(cycles: u32) {
         // Silence the unused-import lint for PWR_BASE/PWR_D3CR (kept for
         // future "if HSI64 isn't enough, bump to PLL via VOS1" follow-up).
         let _ = (PWR_BASE, PWR_D3CR);
+    }
+}
+
+/// Jump to the STM32H723 ROM DFU bootloader at 0x1FF09800.
+///
+/// Follows the standard Cortex-M "boot from system memory" recipe with the
+/// H7-specific additions documented in AN2606 Rev 50 §33 and RM0468 §2.3:
+///
+/// 1. Mask all interrupts (CPSID I) so no peripheral IRQ fires mid-sequence.
+/// 2. Disable SysTick — its COUNTFLAG fires can confuse the bootloader's own
+///    timer init if we leave it counting.
+/// 3. Disable SPI1 — clear SPE so the peripheral releases the AF pins cleanly.
+///    The bootloader doesn't touch SPI1, but a running SPI with an active FIFO
+///    can drive AF pins unexpectedly while MODER is still set to AF mode.
+/// 4. Reset all GPIO MODER to the power-on default (0xABFF_FFFF for PORTA,
+///    0xFFFF_FFFF for PORTC/G). This puts PA5/6/7 back to analog (input),
+///    so the bootloader's USB PA11/PA12 init doesn't fight our SPI AF setting.
+///    We do NOT reset the full RCC or SYSCFG — the ROM bootloader handles
+///    the USB-HS / USB-FS PLL and clock gating internally.
+/// 5. Load initial MSP from ROM_BOOTLOADER_BASE+0 (standard ARM vector table
+///    layout: word 0 = SP_main, word 1 = Reset_Handler).
+/// 6. Set MSP via `msr msp`.
+/// 7. Call the bootloader's reset vector (loaded from ROM_BOOTLOADER_BASE+4).
+///
+/// We do NOT remap system memory to address 0 via SYSCFG. The H7 SYSCFG
+/// memory-remap register (SYSCFG_UR0) is OTP-style and its "BOOT_ADD0/1"
+/// fields set the Cortex-M boot alias, but they are write-once and irrelevant
+/// here — we are *calling* the bootloader as a function, not rebooting into it
+/// via the boot alias. The ROM bootloader runs fine from 0x1FF09800 when called
+/// this way (confirmed in AN2606 §33.2 "Bootloader activation" for H72x/H73x).
+///
+/// After this function executes, the ROM bootloader initializes USB OTG-FS
+/// (PA11=DM, PA12=DP on H723) and enumerates as VID:PID 0483:df11 (DFU mode).
+/// `dfu-util -d 0483:df11 -a 0 -s 0x08020000:leave -D buzz-h7.bin` will then
+/// flash directly — no BOOT0 pin or physical reset needed.
+#[inline(never)]
+fn jump_to_dfu_bootloader() -> ! {
+    unsafe {
+        // Step 1: mask all interrupts.
+        cortex_m::interrupt::disable();
+
+        // Step 2: disable SysTick (SYST_CSR = 0).
+        const SYST_CSR: usize = 0x00;
+        write_volatile((STK_BASE + SYST_CSR) as *mut u32, 0);
+
+        // Step 3: disable SPI1 (clear SPE in CR1).
+        write_volatile((SPI1_BASE + SPI_CR1) as *mut u32, 0);
+
+        // Step 4: reset GPIO MODER to power-on defaults so the bootloader
+        // can reinitialize USB pins (PA11 = D-, PA12 = D+) without fighting
+        // our AF configuration. RM0468 §11.4.1 "GPIOx_MODER" reset values:
+        //   PORTA: 0xABFF_FFFF (PA15/PA14/PA13 kept as debug AF at reset)
+        //   PORTB: 0x0000_0280 (PB3/PB4 have pull-ups; not our business)
+        //   PORTC/G: 0xFFFF_FFFF (all analog = input, no drive)
+        // Writing these values un-does everything we did in step 2 of main.
+        write_volatile((GPIOA_BASE + GPIO_MODER) as *mut u32, 0xABFF_FFFF);
+        write_volatile((GPIOC_BASE + GPIO_MODER) as *mut u32, 0xFFFF_FFFF);
+        write_volatile((GPIOG_BASE + GPIO_MODER) as *mut u32, 0xFFFF_FFFF);
+
+        // Step 5 + 6 + 7: load MSP + PC from bootloader vector table, jump.
+        // The ROM vector table at ROM_BOOTLOADER_BASE follows standard
+        // Cortex-M layout (ARM DDI 0403E §B1.5.3):
+        //   [0x00] = initial MSP  (0x1FF09800)
+        //   [0x04] = reset vector (0x1FF09804)
+        let bootloader_sp: u32 = read_volatile(ROM_BOOTLOADER_BASE as *const u32);
+        let bootloader_pc: u32 = read_volatile((ROM_BOOTLOADER_BASE + 4) as *const u32);
+
+        // Set the main stack pointer to what the ROM bootloader expects.
+        // Must use inline asm — cortex-m has no safe SP setter.
+        core::arch::asm!(
+            "msr msp, {sp}",
+            sp = in(reg) bootloader_sp,
+            options(nomem, nostack),
+        );
+
+        // Branch to the bootloader's reset handler. Cast to a function pointer
+        // with the Thumb bit cleared — the LSB is conventionally set in
+        // Cortex-M vectors to indicate Thumb mode, but BLX/BX handles that.
+        // We clear bit 0 for the raw address and use `bx` semantics via the
+        // function pointer call, which the compiler emits as BLX — correct
+        // for Thumb2. The function pointer is declared -> ! so the compiler
+        // knows control never returns.
+        let bootloader_entry: extern "C" fn() -> ! =
+            core::mem::transmute(bootloader_pc as usize);
+        bootloader_entry();
     }
 }

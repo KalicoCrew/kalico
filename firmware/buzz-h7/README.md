@@ -12,16 +12,14 @@ step-pin routing, mechanical, current scale).
 2. Configures GPIO + SPI1 pins per the user's `printer.cfg`:
    - PG4 step, PC1 dir (inverted), PA2 enable (inverted)
    - PC7 CS, PA5/6/7 SPI1 SCK/MISO/MOSI
-3. Drives EN low → TMC powers the motor.
-4. Sends 6 TMC5160 register writes over SPI:
-   GCONF=0, GLOBAL_SCALER=128, IHOLD_IRUN (~0.7 A), TPOWERDOWN, CHOPCONF
-   (TOFF=3 — critical), PWMCONF.
-5. 800 step toggles at ~200 Hz forward (`~5 mm of motion`).
-6. Pause 1 sec.
-7. 800 step toggles back.
-8. Wait 10 sec (operator confirms motion stopped).
-9. `NVIC_SystemReset` → lands in Katapult. Ready for the next flash with
-   zero manual BOOT0/DFU intervention.
+3. Drives EN low so the TMC powers the motor (retains mainline register state).
+4. 800 step toggles at ~200 Hz forward (~5 mm of motion).
+5. Pause 1 sec.
+6. 800 step toggles back.
+7. Wait 10 sec (operator confirms motion stopped).
+8. Jumps to the STM32H723 ROM DFU bootloader at `0x1FF09800` (AN2606 Rev 50
+   §33, RM0468 §2.3). USB re-enumerates as `0483:df11` automatically — no
+   BOOT0 pin press or physical reset needed.
 
 ## Build (on the Pi)
 
@@ -33,28 +31,46 @@ arm-none-eabi-objcopy -O binary \
     buzz-h7.bin
 ```
 
-## Flash via H7 bootloader
+## First flash (one-time manual step)
 
-Same flow as Klipper itself — the H7 has a Katapult-variant bootloader in
-the first 128 KiB of flash (`CONFIG_FLASH_APPLICATION_ADDRESS=0x8020000` in
-`.config.h7.bak`). It stays untouched by us. After the bootloader signals
-ready, push the .bin to the 0x08020000 offset.
+The very first time you flash this build you need BOOT0+RESET to enter the
+STM32 ROM bootloader, because there is no prior firmware that auto-jumps.
+After that, every subsequent flash is fully automatic (see below).
 
-`scripts/flash_can.py` or `scripts/flash_usb.py` (whichever the Pi uses for
-the H7 normally) works the same way — point it at `buzz-h7.bin` instead of
-`klipper.bin`.
+```sh
+# Hold BOOT0, tap RESET, release BOOT0.
+dfu-util -d 0483:df11 -a 0 -s 0x08020000:leave -D buzz-h7.bin
+```
+
+## Subsequent flashes (auto-DFU)
+
+After the buzz sequence completes and ~10 seconds elapse, the firmware jumps
+to the ROM DFU bootloader on its own. USB re-enumerates as `0483:df11`.
+
+```sh
+# Wait for motor to stop + ~10 sec, then:
+dfu-util -d 0483:df11 -a 0 -s 0x08020000:leave -D buzz-h7.bin
+```
+
+No BOOT0 pin, no physical button press. `dfu-util -l` will show the device
+in DFU mode if you need to confirm before flashing.
 
 ## Reading the result
 
-- **X motor moves visibly forward then back** → TMC + pins + driver +
+- **X motor moves visibly forward then back** — TMC + pins + driver +
   mechanical are all fine. The Kalico motion engine is the only suspect for
   the "engine clean, motors silent" bug.
-- **Motor stays silent / energized-only** → bug is below the engine. Most
+- **Motor stays silent / energized-only** — bug is below the engine. Most
   likely TMC current too low for this specific motor, CHOPCONF wrong for
   this driver revision, or a pin-routing mismatch in printer.cfg vs the
   actual board wiring.
 
 ## Restoring Klipper after testing
 
-Flash `klipper.bin` (built by the normal Kalico build) via the same
-Katapult flow. Buzz firmware is gone, normal operation resumes.
+After the H7 is in DFU mode (auto, no button press needed):
+
+```sh
+dfu-util -d 0483:df11 -a 0 -s 0x08020000:leave -D klipper.bin
+```
+
+Buzz firmware is gone, normal operation resumes.
