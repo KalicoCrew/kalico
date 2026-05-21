@@ -156,8 +156,9 @@ pub fn build_push_params(
             {
                 let x = &shaped.axes[AXIS_X];
                 let y = &shaped.axes[AXIS_Y];
-                let x_zero = x.control_points().iter().all(|c| *c == 0.0);
-                let y_zero = y.control_points().iter().all(|c| *c == 0.0);
+                let eps = 1e-9;
+                let x_zero = x.control_points().iter().all(|c| c.abs() < eps);
+                let y_zero = y.control_points().iter().all(|c| c.abs() < eps);
                 let (motor_a, motor_b) = if y_zero {
                     // Pure-X move: A = X, B = X (no knot union needed).
                     (x.clone(), x.clone())
