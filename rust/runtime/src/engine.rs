@@ -632,6 +632,18 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 let curve = unsafe { &*curve_ptr };
                 if axis_idx == 0 {
                     x_piece_count = u32::from(curve.piece_count);
+                    // 2026-05-21 capture pieces[0].duration f32-bits for diag.
+                    // duration=0 → bernstein_to_monomial divides coeffs by
+                    // 0 → inf/NaN coeffs → all-zero signed_steps downstream.
+                    if curve.piece_count > 0 {
+                        if let Some(shared_ref) = shared {
+                            #[allow(clippy::indexing_slicing)]
+                            let dbits = curve.pieces[0].duration.to_bits();
+                            shared_ref
+                                .isr_last_arm_x_piece0_duration_bits
+                                .store(dbits, core::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
                 }
                 if curve.piece_count == 0 {
                     // Defensive: `populate_from_wire` rejects empty wire so

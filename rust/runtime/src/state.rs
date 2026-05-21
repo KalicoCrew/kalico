@@ -452,6 +452,12 @@ pub struct SharedState {
     /// no axes participated → instant retire (matches observed "ghost
     /// retire" symptom).
     pub isr_last_arm_participating: AtomicU32,
+    /// 2026-05-21 arm-time: f32-bits of `pieces[0].duration` for the X
+    /// curve at arm. If 0 (= 0.0 seconds), `bernstein_to_monomial_with_duration`
+    /// divides coeffs by 0 → inf/NaN → Bezier eval returns NaN → signed_steps=0.
+    /// Wire-side defect: load_curve sent duration_bits=0 or `populate_from_wire`
+    /// converted incorrectly.
+    pub isr_last_arm_x_piece0_duration_bits: AtomicU32,
     /// 2026-05-18 wedge diag: incremented in `producer_step` every time the
     /// `producer_current.is_none()` branch is entered, regardless of whether
     /// the subsequent `queue.dequeue()` returned Some or None. Cross-check
@@ -741,6 +747,7 @@ impl SharedState {
             isr_last_arm_x_outcome: AtomicU32::new(0),
             isr_last_arm_x_piece_count: AtomicU32::new(0),
             isr_last_arm_participating: AtomicU32::new(0),
+            isr_last_arm_x_piece0_duration_bits: AtomicU32::new(0),
             producer_observed_none_total: AtomicU64::new(0),
             producer_step_last_len_snapshot: AtomicU32::new(0),
             producer_step_current_is_some_snapshot: AtomicU8::new(0),

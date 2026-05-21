@@ -629,7 +629,7 @@ runtime_status_drain(void)
         // tags (0xB6, 0xB7), curve-resolve tag (0xB8), demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 52) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 53) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 3:
             // 0xE6 — Live step_mode discriminants for motors 0..3, two
@@ -1083,6 +1083,17 @@ runtime_status_drain(void)
             extern uint32_t kalico_runtime_get_isr_arm_delta_hi(void* h);
             uint32_t v = kalico_runtime_get_isr_arm_delta_hi(runtime_handle);
             fault_detail = 0xA7000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 52: {
+            // 0xA8 — f32-bits of pieces[0].duration of the X curve at arm.
+            // 0 means duration=0.0s → bernstein_to_monomial divides by 0 →
+            // inf/NaN coeffs → Bezier eval returns NaN → signed_steps=0 →
+            // step_push_count stays 0. Wire-encoding defect in load_curve
+            // or piece schema if confirmed.
+            extern uint32_t kalico_runtime_get_isr_last_arm_x_piece0_duration_bits(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_arm_x_piece0_duration_bits(runtime_handle);
+            fault_detail = 0xA8000000u | (v & 0x00FFFFFFu);
             break;
         }
         case 36: {
