@@ -593,6 +593,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.arm_segment_inner(seg, curve_pool, Some(shared))
     }
 
+    #[allow(unsafe_code)]
     fn arm_segment_inner(
         &mut self,
         seg: crate::segment::Segment,
