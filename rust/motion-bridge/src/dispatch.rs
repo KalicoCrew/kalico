@@ -156,18 +156,15 @@ pub fn build_push_params(
             {
                 let x = &shaped.axes[AXIS_X];
                 let y = &shaped.axes[AXIS_Y];
-                let eps = 1e-9;
+                // 10 µm threshold: shaper cross-talk can produce ~4 µm
+                // of Y displacement on a pure-X move. That's mechanically
+                // irrelevant but produces 16 extra Bézier pieces whose
+                // knot-union with X doubles the piece count past the MCU cap.
+                let negligible_mm = 0.01;
                 let x_max = x.control_points().iter().map(|c| c.abs()).fold(0.0_f64, f64::max);
                 let y_max = y.control_points().iter().map(|c| c.abs()).fold(0.0_f64, f64::max);
-                let x_pieces = nurbs::bezier::extract_bezier_pieces(x).len();
-                let y_pieces = nurbs::bezier::extract_bezier_pieces(y).len();
-                eprintln!(
-                    "[corexy-diag] x_max_cp={x_max:.6e} y_max_cp={y_max:.6e} \
-                     x_pieces={x_pieces} y_pieces={y_pieces} x_ncp={} y_ncp={}",
-                    x.control_points().len(), y.control_points().len(),
-                );
-                let x_zero = x_max < eps;
-                let y_zero = y_max < eps;
+                let x_zero = x_max < negligible_mm;
+                let y_zero = y_max < negligible_mm;
                 let (motor_a, motor_b) = if y_zero {
                     // Pure-X move: A = X, B = X (no knot union needed).
                     (x.clone(), x.clone())
