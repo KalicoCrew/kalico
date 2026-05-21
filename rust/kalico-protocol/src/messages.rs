@@ -26,6 +26,8 @@ pub enum MessageKind {
     ConfigureAxesResponse = 0x0031,
     QueryRuntimeCaps = 0x0040,
     RuntimeCapsResponse = 0x0041,
+    ResetCurvePool = 0x0050,
+    ResetCurvePoolResponse = 0x0051,
     StatusEvent = 0x0080,
     CreditFreed = 0x0081,
     FaultEvent = 0x0082,
@@ -44,6 +46,8 @@ impl MessageKind {
             0x0031 => Self::ConfigureAxesResponse,
             0x0040 => Self::QueryRuntimeCaps,
             0x0041 => Self::RuntimeCapsResponse,
+            0x0050 => Self::ResetCurvePool,
+            0x0051 => Self::ResetCurvePoolResponse,
             0x0080 => Self::StatusEvent,
             0x0081 => Self::CreditFreed,
             0x0082 => Self::FaultEvent,
@@ -325,6 +329,51 @@ impl Decode for RuntimeCapsResponse {
 }
 
 // =============================================================================
+// ResetCurvePool (0x0050) — request body: empty.
+// ResetCurvePoolResponse (0x0051) — body layout: result:i32_le (4 bytes).
+//
+// Sent by the host during `init_planner` to flush stale per-slot generation
+// counters left over from a previous klippy session when the MCU was not
+// power-cycled. The MCU calls `CurvePool::reset_all_retired_to_current` which
+// sets `last_retired_gen = current_gen` for every slot, making every slot
+// allocatable again. This fixes "slot busy" rejections (cur != last) that
+// occur when the host starts a fresh `SlotPool` (gens at 0) after reconnect
+// but the MCU's pool still carries session-old generations.
+// =============================================================================
+
+/// `ResetCurvePool` (0x0050) — zero-body request; no fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResetCurvePool;
+
+impl Encode for ResetCurvePool {
+    fn encode(&self, _out: &mut Vec<u8>) {}
+}
+
+impl Decode for ResetCurvePool {
+    fn decode_from(_c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self)
+    }
+}
+
+/// `ResetCurvePoolResponse` (0x0051).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResetCurvePoolResponse {
+    pub result: i32,
+}
+
+impl Encode for ResetCurvePoolResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+    }
+}
+
+impl Decode for ResetCurvePoolResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self { result: get_i32(c)? })
+    }
+}
+
+// =============================================================================
 // StatusEvent (0x0080) — spec §7.4
 //
 // v2 (2026-05-17): added `retired_through_segment_id` as the last field so the
@@ -454,6 +503,8 @@ mod tests {
             MessageKind::ConfigureAxesResponse,
             MessageKind::QueryRuntimeCaps,
             MessageKind::RuntimeCapsResponse,
+            MessageKind::ResetCurvePool,
+            MessageKind::ResetCurvePoolResponse,
             MessageKind::StatusEvent,
             MessageKind::CreditFreed,
             MessageKind::FaultEvent,
@@ -544,6 +595,20 @@ mod tests {
         let r = ConfigureAxesResponse { result: -7 };
         assert_eq!(roundtrip(&r), r);
         assert_eq!(r.encoded_to_vec().len(), 4);
+    }
+
+    #[test]
+    fn reset_curve_pool_roundtrip() {
+        let req = ResetCurvePool;
+        assert_eq!(roundtrip(&req), req);
+        assert_eq!(req.encoded_to_vec().len(), 0);
+
+        let resp = ResetCurvePoolResponse { result: 0 };
+        assert_eq!(roundtrip(&resp), resp);
+        assert_eq!(resp.encoded_to_vec().len(), 4);
+
+        let resp_err = ResetCurvePoolResponse { result: -7 };
+        assert_eq!(roundtrip(&resp_err), resp_err);
     }
 
     #[test]

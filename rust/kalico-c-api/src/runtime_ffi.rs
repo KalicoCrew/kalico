@@ -1927,6 +1927,40 @@ pub mod exports {
         }
     }
 
+    /// `kalico_runtime_reset_curve_pool` — set `last_retired_gen = current_gen`
+    /// for every curve pool slot.
+    ///
+    /// This is the MCU-side handler for the `ResetCurvePool` (0x0050) message.
+    /// It calls `CurvePool::reset_all_retired_to_current` which makes every
+    /// slot satisfy the alloc predicate (`current_gen == last_retired_gen`),
+    /// clearing "slot busy" rejections that persist after a klippy reconnect
+    /// without MCU power-cycle.
+    ///
+    /// Safe to call from foreground command-dispatch context only. The
+    /// operation is a sequence of acquire-load + release-store pairs on the
+    /// per-slot `AtomicU16`s; it never touches ISR state.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_reset_curve_pool(
+        rt: *mut KalicoRuntime,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        // SAFETY: `rt` is the published `RuntimeContext` pointer (non-null +
+        // INIT_DONE verified above). `CurvePool::reset_all_retired_to_current`
+        // is a foreground-only operation — it only does atomic stores to
+        // `last_retired_gen`, which the ISR reads but never writes.
+        // `project_fg` gives us the `FgState` half; we only need the
+        // `curve_pool` field which is in `RuntimeContext` (shared between
+        // fg and ISR sides). Cast to `RuntimeContext` directly.
+        let ctx = unsafe { &*(rt.cast::<RuntimeContext>()) };
+        ctx.curve_pool.reset_all_retired_to_current();
+        KALICO_OK
+    }
+
     /// `kalico_stream_flush` — `force_idle` handshake (§8.5).
     ///
     /// `flush()` projects to both halves under disabled-IRQ, so we hand it

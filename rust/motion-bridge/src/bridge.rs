@@ -1798,6 +1798,45 @@ impl PyMotionBridge {
                 .clone();
             let credit = Arc::new(CreditCounter::new(CREDIT_SEED_CAPACITY));
             io.attach_credit_counter(Arc::clone(&credit));
+
+            // On klippy reconnect without MCU power-cycle the MCU's
+            // `CurvePool` still carries generation counters from the prior
+            // session. Slots with `current_gen != last_retired_gen` (loaded
+            // but never retired because klippy died) will reject every
+            // `LoadCurveCubic` with "slot busy". Send `ResetCurvePool`
+            // (0x0050) to set `last_retired_gen = current_gen` for every
+            // slot before constructing the fresh `SlotPool`.
+            //
+            // Skip for non-kalico-native MCUs (stock Klipper firmware does
+            // not implement the kalico binary protocol).
+            if *kalico_native_for_plans.get(&cfg_mcu.mcu_id).unwrap_or(&false) {
+                match producer::reset_curve_pool(
+                    &io,
+                    producer::DEFAULT_RESET_CURVE_POOL_TIMEOUT,
+                ) {
+                    Ok(()) => log::debug!(
+                        "[init-planner] reset_curve_pool mcu={} ok",
+                        cfg_mcu.mcu_id
+                    ),
+                    Err(e) => {
+                        // Non-fatal: log and continue. If the MCU was just
+                        // power-cycled its pool is already clean (all gens
+                        // at 0). Failing here only hurts on a reconnect
+                        // where the MCU genuinely has stale state — in that
+                        // case the first `load_curve` will surface the
+                        // "slot busy" error at dispatch time, same as before
+                        // this fix, which is preferable to aborting planner
+                        // init entirely.
+                        log::warn!(
+                            "[init-planner] reset_curve_pool mcu={} failed: {e:?}; \
+                             continuing — first load_curve may fail with slot busy \
+                             if MCU was not power-cycled",
+                            cfg_mcu.mcu_id
+                        );
+                    }
+                }
+            }
+
             // Bench 2026-05-12: size the host slot pool to the MCU's
             // actual `caps.curve_pool_n` (queried at attach_serial). The
             // F446 reports `pool_n=4` under the small profile (per-slot

@@ -12,7 +12,10 @@
 
 use std::time::Duration;
 
-use kalico_protocol::{Encode, LoadCurveCubic, LoadCurveResponse, MessageKind, PushSegment, PushSegmentResponse, Decode};
+use kalico_protocol::{
+    Decode, Encode, LoadCurveCubic, LoadCurveResponse, MessageKind, PushSegment,
+    PushSegmentResponse, ResetCurvePool, ResetCurvePoolResponse,
+};
 
 /// Wire-format safety ceiling for `load_curve`'s piece_count argument.
 /// The authoritative per-MCU cap is `RuntimeCapsResponse.max_pieces_per_curve`
@@ -372,4 +375,50 @@ pub fn load_curve(
         ))));
     }
     Ok(resp.curve_handle_packed)
+}
+
+/// Default timeout for `ResetCurvePoolResponse`.
+///
+/// The MCU iterates over all pool slots (at most 64) with two atomic stores
+/// each — sub-microsecond on silicon. 500 ms is generous.
+pub const DEFAULT_RESET_CURVE_POOL_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Flush stale generation counters from the MCU's curve pool.
+///
+/// Must be called during `init_planner` (after attach but before any
+/// `load_curve`) whenever the MCU has not been power-cycled between klippy
+/// sessions. Without this, the MCU's `CurvePool` slots may have
+/// `current_gen != last_retired_gen` (curves loaded in the prior session
+/// that were never retired because klippy died), causing every subsequent
+/// `load_curve` to fail with "slot busy".
+///
+/// The MCU handler calls `CurvePool::reset_all_retired_to_current`, which
+/// sets `last_retired_gen = current_gen` for every slot. After that, every
+/// slot satisfies the alloc predicate (`cur == last`) and the next
+/// `try_alloc_and_load` succeeds. The MCU still uses its pre-existing
+/// `current_gen` values; the handle the MCU returns in the
+/// `LoadCurveResponse` is always authoritative — the host's own generation
+/// counter in `SlotPool` is advisory diagnostics only and is never sent to
+/// the MCU.
+pub fn reset_curve_pool(
+    io: &KalicoHostIo,
+    timeout: Duration,
+) -> Result<(), ProducerError> {
+    let body = ResetCurvePool.encoded_to_vec();
+    let (kind, resp_body) = io.kalico_call(MessageKind::ResetCurvePool, body, timeout)?;
+    if kind != MessageKind::ResetCurvePoolResponse {
+        return Err(ProducerError::Transport(TransportError::Parse(format!(
+            "reset_curve_pool: expected ResetCurvePoolResponse, got 0x{:04x}",
+            kind.as_u16()
+        ))));
+    }
+    let resp = ResetCurvePoolResponse::decode(&resp_body).map_err(|e| {
+        ProducerError::Transport(TransportError::Parse(format!(
+            "ResetCurvePoolResponse decode failed: {e:?}"
+        )))
+    })?;
+    if resp.result != 0 {
+        return Err(ProducerError::McuRejected(resp.result));
+    }
+    Ok(())
 }

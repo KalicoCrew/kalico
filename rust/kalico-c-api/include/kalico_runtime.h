@@ -505,6 +505,20 @@ int32_t kalico_runtime_stream_terminal(struct KalicoRuntime *rt, uint32_t segmen
 int32_t kalico_runtime_stream_flush(struct KalicoRuntime *rt, uint32_t *out_credit_epoch);
 
 /**
+ * `kalico_runtime_reset_curve_pool` — set `last_retired_gen = current_gen`
+ * for every curve pool slot.
+ *
+ * Called from the `ResetCurvePool` (0x0050) kalico-native message handler on
+ * every klippy reconnect where the MCU was not power-cycled. Makes all slots
+ * satisfy the alloc predicate (`current_gen == last_retired_gen`) so the new
+ * host session's first `LoadCurveCubic` does not fail with "slot busy".
+ *
+ * Safe to call from foreground command-dispatch context (same thread as all
+ * other kalico-native handlers). Does NOT touch the ISR half of the runtime.
+ */
+int32_t kalico_runtime_reset_curve_pool(struct KalicoRuntime *rt);
+
+/**
  * `kalico_clock_sync_request` — RTT-aware clock-sync ping (§12.1).
  *
  * Returns the on-demand widened MCU clock (timer_read_time +

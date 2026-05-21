@@ -65,6 +65,7 @@ static void handle_load_curve_cubic(uint32_t correlation_id, const uint8_t *body
 static void handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
+static void handle_reset_curve_pool(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 
 // ---------------------------------------------------------------------------
 // reset_epoch generation
@@ -264,6 +265,9 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
         return;
     case KALICO_MSG_QUERY_RUNTIME_CAPS:
         handle_query_runtime_caps(correlation_id, body, body_len);
+        return;
+    case KALICO_MSG_RESET_CURVE_POOL:
+        handle_reset_curve_pool(correlation_id, body, body_len);
         return;
     default:
         return;
@@ -512,6 +516,52 @@ handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t bod
     }
     send_configure_axes_response(correlation_id, r);
     runtime_diag_progress(0xCB, 5, 0);
+}
+
+// ---------------------------------------------------------------------------
+// ResetCurvePool handler (0x0050)
+// ---------------------------------------------------------------------------
+//
+// Called by the host during `init_planner` on every klippy reconnect where the
+// MCU was not power-cycled. Sets `last_retired_gen = current_gen` for every
+// curve pool slot so that all slots satisfy the alloc predicate
+// (`current_gen == last_retired_gen`) before the new session's first
+// `LoadCurveCubic` arrives. Without this, slots that held live curves in the
+// prior session keep `current_gen != last_retired_gen` forever (the retirement
+// trace events that would normally equalise them never fire after a host
+// restart), causing every subsequent `load_curve` to fail with "slot busy".
+//
+// The FFI calls `CurvePool::reset_all_retired_to_current` which is a pure
+// foreground operation (safe to call from the kalico message-dispatch task —
+// same execution context as all other command handlers).
+
+static void
+send_reset_curve_pool_response(uint32_t correlation_id, int32_t result)
+{
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 4];
+    encode_message_header(payload, KALICO_MSG_RESET_CURVE_POOL_RESPONSE,
+                          MESSAGE_VERSION_DEFAULT, correlation_id);
+    uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
+    b[0] = (uint8_t)(result & 0xFF);
+    b[1] = (uint8_t)((result >> 8) & 0xFF);
+    b[2] = (uint8_t)((result >> 16) & 0xFF);
+    b[3] = (uint8_t)((result >> 24) & 0xFF);
+    kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
+                                payload, sizeof(payload));
+}
+
+static void
+handle_reset_curve_pool(uint32_t correlation_id, const uint8_t *body,
+                        uint16_t body_len)
+{
+    (void)body;
+    (void)body_len; // request body is empty
+    if (!runtime_handle) {
+        send_reset_curve_pool_response(correlation_id, KALICO_ERR_NOT_INIT);
+        return;
+    }
+    int32_t r = kalico_runtime_reset_curve_pool(runtime_handle);
+    send_reset_curve_pool_response(correlation_id, r);
 }
 
 // ---------------------------------------------------------------------------
