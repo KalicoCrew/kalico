@@ -1018,22 +1018,24 @@ pub fn isr_sample_tick(
                     shared
                         .producer_segment_dequeued_total
                         .fetch_add(1, Ordering::AcqRel);
+                    shared.isr_deq_some_count.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    shared.isr_deq_none_count.fetch_add(1, Ordering::Relaxed);
                 }
                 dequeued
             }
         };
         if let Some(seg) = candidate {
+            shared.isr_last_t_start_lo.store(seg.t_start as u32, Ordering::Relaxed);
+            shared.isr_last_widened_lo.store(now as u32, Ordering::Relaxed);
             if seg.t_start <= now {
-                // Publish before arming so any cross-half observer that
-                // sees the seg.id in `current_segment_id` will subsequently
-                // see the engine's mutated `current` (Release/Acquire pair
-                // upholds the ordering against tick_counter readers).
                 shared
                     .current_segment_id
                     .store(seg.id, Ordering::Release);
+                shared.isr_armed_count.fetch_add(1, Ordering::Relaxed);
                 isr.engine.arm_segment(seg, curve_pool);
             } else {
-                // Park until clock catches up. Re-checked next tick.
+                shared.isr_parked_count.fetch_add(1, Ordering::Relaxed);
                 isr.pending_segment = Some(seg);
             }
         }

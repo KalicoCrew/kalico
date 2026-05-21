@@ -375,6 +375,17 @@ pub struct SharedState {
     pub isr_arm_cycles_max: AtomicU32,
     pub isr_eval_cycles_max: AtomicU32,
     pub isr_overrun_count: AtomicU32,
+    /// Decision-path counters in isr_sample_tick's dequeue/park/arm block.
+    /// Tell us exactly WHICH branch the ISR takes for every candidate.
+    pub isr_deq_some_count: AtomicU32,
+    pub isr_deq_none_count: AtomicU32,
+    pub isr_parked_count: AtomicU32,
+    pub isr_armed_count: AtomicU32,
+    /// Last observed comparands at the most-recent park/arm decision.
+    /// If isr_parked_count > 0, `isr_last_t_start_lo > isr_last_widened_lo`
+    /// (in their low-32 domain) is the actual park reason.
+    pub isr_last_t_start_lo: AtomicU32,
+    pub isr_last_widened_lo: AtomicU32,
     /// 2026-05-18 wedge diag: incremented in `producer_step` every time the
     /// `producer_current.is_none()` branch is entered, regardless of whether
     /// the subsequent `queue.dequeue()` returned Some or None. Cross-check
@@ -644,6 +655,12 @@ impl SharedState {
             isr_arm_cycles_max: AtomicU32::new(0),
             isr_eval_cycles_max: AtomicU32::new(0),
             isr_overrun_count: AtomicU32::new(0),
+            isr_deq_some_count: AtomicU32::new(0),
+            isr_deq_none_count: AtomicU32::new(0),
+            isr_parked_count: AtomicU32::new(0),
+            isr_armed_count: AtomicU32::new(0),
+            isr_last_t_start_lo: AtomicU32::new(0),
+            isr_last_widened_lo: AtomicU32::new(0),
             producer_observed_none_total: AtomicU64::new(0),
             producer_step_last_len_snapshot: AtomicU32::new(0),
             producer_step_current_is_some_snapshot: AtomicU8::new(0),

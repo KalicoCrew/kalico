@@ -903,6 +903,51 @@ runtime_status_drain(void)
             fault_detail = 0xFF000000u | (ret & 0x00FFFFFFu);
             break;
         }
+        case 0: {
+            // 0xEA — isr_deq_some_count low 24 bits. Bumped per ISR
+            // where queue_consumer.dequeue() returned Some(seg).
+            extern uint32_t kalico_runtime_get_isr_deq_some_count(void* h);
+            uint32_t v = kalico_runtime_get_isr_deq_some_count(runtime_handle);
+            fault_detail = 0xEA000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 1: {
+            // 0xEB — isr_deq_none_count low 24 bits.
+            extern uint32_t kalico_runtime_get_isr_deq_none_count(void* h);
+            uint32_t v = kalico_runtime_get_isr_deq_none_count(runtime_handle);
+            fault_detail = 0xEB000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 2: {
+            // 0xEC — isr_parked_count low 24 bits.
+            extern uint32_t kalico_runtime_get_isr_parked_count(void* h);
+            uint32_t v = kalico_runtime_get_isr_parked_count(runtime_handle);
+            fault_detail = 0xEC000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 8: {
+            // 0xED — isr_armed_count low 24 bits.
+            extern uint32_t kalico_runtime_get_isr_armed_count(void* h);
+            uint32_t v = kalico_runtime_get_isr_armed_count(runtime_handle);
+            fault_detail = 0xED000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 12: {
+            // 0xEE — isr_last_t_start_lo low 24 bits.
+            extern uint32_t kalico_runtime_get_isr_last_t_start_lo(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_t_start_lo(runtime_handle);
+            fault_detail = 0xEE000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 36: {
+            // 0xEF — isr_last_widened_lo low 24 bits. EF vs EE tells
+            // us whether seg.t_start is in past (EF >= EE, arm) or
+            // future (EF < EE, park).
+            extern uint32_t kalico_runtime_get_isr_last_widened_lo(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_widened_lo(runtime_handle);
+            fault_detail = 0xEF000000u | (v & 0x00FFFFFFu);
+            break;
+        }
         case 4: {
             // 0xE6 — isr_widen_cycles_max low 24 bits. Stage 1 of
             // isr_sample_tick (raw DWT widen + seqlock publish). Expected
