@@ -982,15 +982,6 @@ pub fn isr_sample_tick(
     curve_pool: &crate::curve_pool::CurvePool,
     raw_cyccnt: u32,
 ) {
-    // 2026-05-21 bench diag — unconditional marker write at ISR entry.
-    // If ED tag reads 0x0CAFEE, the writer→reader projection through
-    // SharedState works (and the "always-zero counter" symptom is a
-    // dead-conditional issue: `engine.current.is_none()` returns false).
-    // If ED stays 0, the layout/projection between writer and FFI reader
-    // is broken — likely because SharedState had no #[repr(C)] before
-    // this commit, allowing field-reorder drift across recompiles.
-    shared.isr_armed_count.store(0x0CAFEE, core::sync::atomic::Ordering::Relaxed);
-
     // 2026-05-21 bench diag — per-stage cycle counters.
     // `cyccnt_read()` here is a private host-stub-able extern (declared
     // below); on MCU it's the same DWT->CYCCNT read the C side uses,
@@ -1020,6 +1011,13 @@ pub fn isr_sample_tick(
     crate::clock::publish_widened_now(shared, now);
     let after_widen = unsafe { cyccnt_read() };
     update_max(&shared.isr_widen_cycles_max, after_widen.wrapping_sub(body_start));
+
+    // Circuit breaker checkpoint #1: if widen alone took too long,
+    // skip arm + eval. (Unlikely; widen is straight-line code.)
+    if after_widen.wrapping_sub(body_start) > 20000 {
+        bump_relaxed(&shared.isr_overrun_count);
+        return;
+    }
 
     // 2. Promote-or-dequeue when the engine's current slot is empty.
     //    Take `pending_segment` out by value so the subsequent
@@ -1059,6 +1057,26 @@ pub fn isr_sample_tick(
 
     let after_arm = unsafe { cyccnt_read() };
     update_max(&shared.isr_arm_cycles_max, after_arm.wrapping_sub(after_widen));
+
+    // 2026-05-21 circuit breaker. The previous bench attempts crashed
+    // with a 4-second IRQ tying up the CPU (prior_diag tim5_max_cyc =
+    // 2147491011 ≈ 4.1s, IWDG fires at 500ms → MCU reset → USB drop
+    // → klippy aborts). Bail out before tick_sample evaluator runs so
+    // the ISR returns within a sane budget regardless of what the
+    // evaluator does. If the bench survives the next jog with this in
+    // place, the 4-second freeze is in tick_sample (or arm_segment's
+    // far-end). Counter `isr_eval_skipped_count` (NEW field) tracks
+    // bails.
+    let elapsed = after_arm.wrapping_sub(body_start);
+    if elapsed > 20000 {
+        // ~38 µs at 520 MHz. Whatever happened above already burned
+        // the per-tick budget; skip the evaluator and return so IWDG
+        // doesn't fire. Subsequent ticks may still fault, but the
+        // bench should survive long enough for diag tags to capture
+        // the state.
+        bump_relaxed(&shared.isr_overrun_count);
+        return;
+    }
 
     // 3. Hand the per-sample evaluator the trace producer it needs. The
     //    field-disjoint borrow here is the same pattern the FFI used
