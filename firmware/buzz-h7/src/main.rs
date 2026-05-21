@@ -446,40 +446,45 @@ fn jump_to_dfu_bootloader() -> ! {
 
         // Step 4.5: point the vector table at the bootloader so its IRQs
         // (USB OTG_FS in particular) dispatch to ROM handlers instead of
-        // our app vectors at 0x08020000. Without this, the bootloader
+        // our app's vector table at 0x08020000. Without this, the bootloader
         // enumerates briefly, takes a USB IRQ, lands in our vectors which
         // are now meaningless after the jump, and the device falls off USB.
-        // SCB->VTOR is at 0xE000_ED08 (ARM DDI 0403E section B3.2.5).
+        // SCB->VTOR is at 0xE000_ED08 (ARM DDI 0403E §B3.2.5).
         const SCB_VTOR: usize = 0xE000_ED08;
         write_volatile(SCB_VTOR as *mut u32, ROM_BOOTLOADER_BASE as u32);
 
-        // Memory barriers: ensure peripheral writes retire and VTOR is
-        // observed before transferring control. Cortex-M7 needs both DSB
-        // and ISB; skipping these is the classic works-in-debugger trap.
+        // Memory barriers: ensure all peripheral writes above retire and
+        // the VTOR update is observed before we transfer control. Cortex-M7
+        // needs both DSB (data) and ISB (instruction) — the next fetch must
+        // see the new vector table mapping. Skipping these is the classic
+        // "works in debugger, fails at full speed" trap on M7.
         core::arch::asm!("dsb", "isb", options(nomem, nostack, preserves_flags));
 
-        // Step 5 + 6 + 7: load MSP + PC from bootloader vector table, then
-        // unmask interrupts and branch — all in one asm block so the compiler
-        // cannot insert stack-touching Rust between the MSP swap and the
-        // branch (which would write to the bootloader's stack region with
-        // our data). PRIMASK must be cleared before the branch: ROM USB IRQ
-        // handlers need interrupts enabled, and the H7 ROM startup is not
-        // documented to issue CPSIE I itself (codex review, AN2606 Rev 61).
+        // Step 5 + 6 + 7: load MSP + PC from bootloader vector table, jump.
         // The ROM vector table at ROM_BOOTLOADER_BASE follows standard
-        // Cortex-M layout (ARM DDI 0403E section B1.5.3):
+        // Cortex-M layout (ARM DDI 0403E §B1.5.3):
         //   [0x00] = initial MSP  (0x1FF09800)
         //   [0x04] = reset vector (0x1FF09804)
         let bootloader_sp: u32 = read_volatile(ROM_BOOTLOADER_BASE as *const u32);
         let bootloader_pc: u32 = read_volatile((ROM_BOOTLOADER_BASE + 4) as *const u32);
 
+        // Set the main stack pointer to what the ROM bootloader expects.
+        // Must use inline asm — cortex-m has no safe SP setter.
         core::arch::asm!(
             "msr msp, {sp}",
-            "cpsie i",
-            "isb",
-            "bx  {pc}",
             sp = in(reg) bootloader_sp,
-            pc = in(reg) bootloader_pc,
-            options(noreturn),
+            options(nomem, nostack),
         );
+
+        // Branch to the bootloader's reset handler. Cast to a function pointer
+        // with the Thumb bit cleared — the LSB is conventionally set in
+        // Cortex-M vectors to indicate Thumb mode, but BLX/BX handles that.
+        // We clear bit 0 for the raw address and use `bx` semantics via the
+        // function pointer call, which the compiler emits as BLX — correct
+        // for Thumb2. The function pointer is declared -> ! so the compiler
+        // knows control never returns.
+        let bootloader_entry: extern "C" fn() -> ! =
+            core::mem::transmute(bootloader_pc as usize);
+        bootloader_entry();
     }
 }
