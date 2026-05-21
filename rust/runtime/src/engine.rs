@@ -1061,11 +1061,29 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // tick; on host/test the cell stays zero and the tick body's
         // dispatchers absorb that gracefully (zero `t_sample_end_global`
         // simply means no piece has advanced yet).
-        let now_cycles = shared
-            .widened_now_lo
-            .load(core::sync::atomic::Ordering::Acquire);
+        // 2026-05-21 fix: read the FULL u64 widened-now via the §11.4
+        // seqlock, not just the low 32 bits. At 520 MHz on H7, u32 wraps
+        // every ~8.26 s of uptime — after which `now_cycles` (treated as
+        // u32) is `actual_widened_u64 % 2^32`, while `piece_start_time_cycles`
+        // is a true u64. The mismatched-domain subtraction sends `t_local`
+        // hugely negative, the Bezier eval extrapolates wildly, p_end
+        // saturates target_step_count to i32::MAX, signed_steps explodes,
+        // compute_step_times spins for ~4 seconds, IWDG fires. This single
+        // u32→u64 widening is the entire missing piece. Bench debug
+        // 2026-05-21: CD tag decoded t_local ≈ -92 to -130 sec (matches
+        // wrap arithmetic perfectly for an MCU that has been up ~9 s).
+        let now_cycles_u64 = crate::clock::read_widened_now(shared);
         let cycles_per_second = self.cycles_per_second;
-        let t_sample_end_global = (now_cycles as f32) / cycles_per_second;
+        // Keep the f32 conversion for downstream consumers that compare to
+        // piece_start_sec (also derived from a u64). Both are now in the
+        // full-precision wall-clock domain.
+        let t_sample_end_global = (now_cycles_u64 as f32) / cycles_per_second;
+        // Retain `now_cycles` as the u32 low half for downstream code that
+        // expects a u32 (`sample_start_cycles` in dispatch_pulse — used
+        // only as a relative reference for step times within one sample
+        // window, so low-32 truncation is fine there).
+        #[allow(clippy::cast_possible_truncation)]
+        let now_cycles = now_cycles_u64 as u32;
 
         // Spec §4.6: Phase 3 needs the active segment (for `e_mode` /
         // `extrusion_ratio`) and the f32 snapshot of `e_accumulator`
