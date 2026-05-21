@@ -593,7 +593,7 @@ fn advance_piece_if_needed(
     axis_idx: usize,
     curve_pool: &crate::curve_pool::CurvePool,
     shared: &SharedState,
-    t_sample_end_global: f32,
+    now_cycles_u64: u64,
     cycles_per_second: f32,
 ) -> bool {
     let mut advanced = false;
@@ -602,9 +602,15 @@ fn advance_piece_if_needed(
         let Some(piece) = axis.piece else {
             break;
         };
-        let piece_start_sec =
-            (axis.piece_start_time_cycles as f32) / cycles_per_second;
-        let t_local = t_sample_end_global - piece_start_sec;
+        // 2026-05-21 fix: subtract in u64 cycle domain BEFORE converting to
+        // f32 seconds. The prior `(now as f32) - (start as f32)` form lost
+        // precision after ~8 s of uptime (both operands rounded to the same
+        // f32 value), making t_local ≈ 0 and never crossing any piece
+        // duration → loop walks past every piece on first sample → axis.piece
+        // becomes None → per-axis eval skips silently. Same root cause as
+        // commit 5be894004 fixed for the eval path; this caller was missed.
+        let t_local_cycles = now_cycles_u64.wrapping_sub(axis.piece_start_time_cycles);
+        let t_local = (t_local_cycles as f32) / cycles_per_second;
         if t_local <= piece.duration {
             break;
         }
@@ -789,7 +795,7 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
             axis_idx,
             ctx.curve_pool,
             ctx.shared,
-            ctx.t_sample_end_global,
+            ctx.now_cycles_u64,
             ctx.cycles_per_second,
         );
 
@@ -906,7 +912,7 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
             AXIS_E,
             ctx.curve_pool,
             ctx.shared,
-            ctx.t_sample_end_global,
+            ctx.now_cycles_u64,
             ctx.cycles_per_second,
         );
 
