@@ -70,6 +70,17 @@ fn linear_jog_curve(displacement_mm: f32, duration_sec: f32) -> WirePiece {
     }
 }
 
+fn absolute_linear_curve(start_mm: f32, end_mm: f32, duration_sec: f32) -> WirePiece {
+    let delta = end_mm - start_mm;
+    WirePiece {
+        bp0_bits: start_mm.to_bits(),
+        bp1_bits: (start_mm + delta / 3.0).to_bits(),
+        bp2_bits: (start_mm + 2.0 * delta / 3.0).to_bits(),
+        bp3_bits: end_mm.to_bits(),
+        duration_bits: duration_sec.to_bits(),
+    }
+}
+
 fn pulse_binding() -> StepperBindingRust {
     StepperBindingRust { tmc_cs_oid: TMC_CS_OID_NONE, _pad: [0; 3] }
 }
@@ -274,5 +285,107 @@ fn isr_sample_tick_arms_queued_segment_and_pushes_steps() {
         "segment 1 should have retired by sample 4000; \
          retired_through_segment_id = {retired}. Likely cause: arm-from-queue \
          never fired so retire bookkeeping had no current to clear."
+    );
+}
+
+#[test]
+fn seeded_absolute_jog_after_set_kinematic_position_pushes_steps() {
+    use core::ptr::addr_of_mut;
+
+    use heapless::spsc::Queue;
+    use runtime::c_segment_queue;
+    use runtime::clock::WidenState;
+    use runtime::state::IsrState;
+
+    let mut engine = configured_engine();
+    engine.seed_position([100.0, 100.0, 10.0]);
+
+    let seed_count = engine.stepping_axes[0].last_step_count;
+    assert_eq!(
+        seed_count, 8000,
+        "X seed at 100mm with 0.0125mm/microstep must initialize last_step_count"
+    );
+    assert_eq!(
+        engine.tick_caches.p_prev[0], 100.0,
+        "SET_KINEMATIC_POSITION must seed the secant-slope position cache"
+    );
+
+    let mut step_queues = [
+        StepQueue::new(),
+        StepQueue::new(),
+        StepQueue::new(),
+        StepQueue::new(),
+    ];
+    let queue_ptrs = [
+        addr_of_mut!(step_queues[0]),
+        addr_of_mut!(step_queues[1]),
+        addr_of_mut!(step_queues[2]),
+        addr_of_mut!(step_queues[3]),
+    ];
+    engine.test_install_step_queues(queue_ptrs);
+
+    c_segment_queue::reset();
+    let queue_consumer = c_segment_queue::Consumer::<Segment>::new();
+    let mut queue_producer = c_segment_queue::Producer::<Segment>::new();
+    let trace_queue: &'static mut Queue<TraceSample, TRACE_RING_N> =
+        Box::leak(Box::new(Queue::new()));
+    let (trace_producer, _trace_consumer) = trace_queue.split();
+
+    let mut isr = IsrState {
+        queue_consumer,
+        trace_producer,
+        engine,
+        widen_state: WidenState::default(),
+        pending_segment: None,
+    };
+
+    let pool = CurvePool::new();
+    let piece = absolute_linear_curve(100.0, 110.0, 0.1);
+    let handle = pool.try_alloc_and_load(0, &[piece]).expect("slot 0 alloc");
+    let mut seg = Segment {
+        id: 1,
+        x_handle: handle,
+        y_handle: CurveHandle::UNUSED_SENTINEL,
+        z_handle: CurveHandle::UNUSED_SENTINEL,
+        e_handle: CurveHandle::UNUSED_SENTINEL,
+        t_start: 0,
+        t_end: ((0.1_f64) * f64::from(H7_CLOCK_HZ)) as u64,
+        kinematics: KinematicTag::CartesianXyzAndE,
+        e_mode: runtime::config::EMode::Travel,
+        flags: 0,
+        _pad: [0; 1],
+        extrusion_ratio: 0.0,
+        consumers_remaining: 0,
+    };
+    seg.consumers_remaining = Segment::compute_consumers_remaining(
+        seg.kinematics,
+        seg.x_handle,
+        seg.y_handle,
+        seg.z_handle,
+        seg.e_handle,
+    );
+    queue_producer.enqueue(seg).expect("queue producer enqueue");
+
+    let shared = SharedState::new();
+    let cycles_per_sample = H7_CLOCK_HZ / SAMPLE_RATE_HZ;
+    let mut raw_cyccnt: u32 = 0;
+    for _ in 0..4200 {
+        raw_cyccnt = raw_cyccnt.wrapping_add(cycles_per_sample);
+        runtime::tick::isr_sample_tick(&mut isr, &shared, &pool, raw_cyccnt);
+        unsafe { while runtime::step_queue::pop(queue_ptrs[0]).is_some() {} }
+    }
+
+    let final_count = isr.engine.stepping_axes[0].steppers[0]
+        .position_count
+        .load(Ordering::Acquire);
+    assert!(
+        (final_count - seed_count).abs() >= 700,
+        "absolute 100mm->110mm jog after SET_KINEMATIC_POSITION should emit \
+         about 800 new X microsteps; seed={seed_count}, final={final_count}"
+    );
+    assert!(
+        shared.isr_step_push_count.load(Ordering::Acquire) > 0,
+        "seeded absolute jog must push step entries instead of tripping the \
+         oversized catch-up guard every sample"
     );
 }

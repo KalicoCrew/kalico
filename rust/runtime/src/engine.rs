@@ -32,6 +32,7 @@ pub enum RuntimeStatus {
     Fault = 3,
 }
 
+
 impl RuntimeStatus {
     #[inline]
     fn from_u8(v: u8) -> Self {
@@ -1268,7 +1269,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// Seed the engine's logical toolhead position. Used by tests + by
     /// the bridge's `kalico_stream_open` / `SET_KINEMATIC_POSITION` paths
     /// to anchor `prev_x`/`prev_y`/`prev_z` and each motor's
-    /// `StepMotorState` accumulator before the first segment runs.
+    /// `StepMotorState` accumulator before the first segment runs. The
+    /// unified TIM5 step path also has per-axis integer step caches
+    /// (`stepping_axes[*].last_step_count`) and secant-slope position
+    /// caches (`tick_caches.p_prev`); those must be seeded to the same
+    /// motor-frame origin or the first absolute-position segment after
+    /// SET_KINEMATIC_POSITION is interpreted as a huge catch-up move.
     /// Without this, `runtime_modulated_tick` on a non-origin segment
     /// computes a spurious motor-delta = (segment_start - 0) on its first
     /// tick and emits thousands of catch-up step pulses.
@@ -1292,6 +1298,28 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 if let Some(&m) = motors.get(i) {
                     ss.seed(m);
                 }
+            }
+        }
+        self.last_motors = motors;
+        self.tick_caches.p_prev = motors;
+        self.tick_caches.v_prev = [0.0; 4];
+        self.tick_caches.v_xy_prev = 0.0;
+        self.tick_caches.v_xy_this = 0.0;
+        self.tick_caches.vdot_xy_accelerating = false;
+
+        for (axis, &motor_pos_mm) in self.stepping_axes.iter_mut().zip(motors.iter()) {
+            let microstep_distance = axis.microstep_distance;
+            if !microstep_distance.is_finite() || microstep_distance <= 0.0 {
+                continue;
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let seed_steps = libm::roundf(motor_pos_mm / microstep_distance) as i32;
+            axis.last_step_count = seed_steps;
+            for stepper in &axis.steppers {
+                stepper.position_count.store(seed_steps, Ordering::Release);
+                stepper
+                    .last_phase_target
+                    .store(seed_steps, Ordering::Release);
             }
         }
     }
@@ -1544,4 +1572,3 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     }
 
 }
-
