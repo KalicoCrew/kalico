@@ -369,7 +369,6 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
     let state = ARM.state.load(Ordering::Acquire);
     if matches_u8(state, ArmState::Armed)
         || matches_u8(state, ArmState::Tripping)
-        || matches_u8(state, ArmState::TrippedReady)
     {
         return Err(ArmError::Busy);
     }
