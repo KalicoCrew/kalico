@@ -1012,12 +1012,17 @@ pub fn isr_sample_tick(
     let after_widen = unsafe { cyccnt_read() };
     update_max(&shared.isr_widen_cycles_max, after_widen.wrapping_sub(body_start));
 
-    // Circuit breaker checkpoint #1: if widen alone took too long,
-    // skip arm + eval. (Unlikely; widen is straight-line code.)
-    if after_widen.wrapping_sub(body_start) > 20000 {
-        bump_relaxed(&shared.isr_overrun_count);
-        return;
-    }
+    // 2026-05-21 bisection: bail BEFORE dequeue/arm. The bench has been
+    // crashing within 1s of push_segment, even with downstream circuit
+    // breakers. If bench survives the jog with this early-return, the
+    // 4-second freeze is in the dequeue/arm/eval code path. If it
+    // still crashes, the freeze is in widen+publish (or further back
+    // in the C-side IRQ handler — endstop sample, etc.) which Rust
+    // can't catch from here.
+    bump_relaxed(&shared.isr_overrun_count);
+    return;
+    #[allow(unreachable_code)]
+    {
 
     // 2. Promote-or-dequeue when the engine's current slot is empty.
     //    Take `pending_segment` out by value so the subsequent
@@ -1097,6 +1102,7 @@ pub fn isr_sample_tick(
     if body_cycles > 30000 {
         shared.isr_overrun_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
+    } // close the #[allow(unreachable_code)] bisection block
 }
 
 // CYCCNT extern. MCU = DWT->CYCCNT via the C helper; host = always 0
