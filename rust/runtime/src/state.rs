@@ -161,6 +161,7 @@ pub struct FgState {
 /// pthread + the foreground producer task running on the same OS thread,
 /// so the invariant holds without hardware help.
 #[allow(missing_debug_implementations)] // Producer/Consumer don't implement Debug.
+#[repr(C)]
 pub struct IsrState {
     /// 2026-05-18: segment SPSC moved to C-backed queue. See
     /// `crate::c_segment_queue` for the rationale.
@@ -205,6 +206,7 @@ impl IsrState {
 
 /// Cross-half shared state. Atomics only; no `&mut` reaches this struct.
 #[derive(Debug)]
+#[repr(C)]
 pub struct SharedState {
     // Step-5 carryover.
     pub last_error: AtomicI32,

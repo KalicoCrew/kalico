@@ -982,6 +982,15 @@ pub fn isr_sample_tick(
     curve_pool: &crate::curve_pool::CurvePool,
     raw_cyccnt: u32,
 ) {
+    // 2026-05-21 bench diag — unconditional marker write at ISR entry.
+    // If ED tag reads 0x0CAFEE, the writer→reader projection through
+    // SharedState works (and the "always-zero counter" symptom is a
+    // dead-conditional issue: `engine.current.is_none()` returns false).
+    // If ED stays 0, the layout/projection between writer and FFI reader
+    // is broken — likely because SharedState had no #[repr(C)] before
+    // this commit, allowing field-reorder drift across recompiles.
+    shared.isr_armed_count.store(0x0CAFEE, core::sync::atomic::Ordering::Relaxed);
+
     // 2026-05-21 bench diag — per-stage cycle counters.
     // `cyccnt_read()` here is a private host-stub-able extern (declared
     // below); on MCU it's the same DWT->CYCCNT read the C side uses,
