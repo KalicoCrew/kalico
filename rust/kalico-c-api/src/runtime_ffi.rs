@@ -545,12 +545,15 @@ pub mod exports {
                     u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
             }
             let wire_slice = &wire[..piece_count as usize];
-            match pool.try_alloc_and_load(slot_idx as usize, wire_slice) {
-                Some(handle) => {
+            match pool.try_alloc_and_load_diagnostic(slot_idx as usize, wire_slice) {
+                Ok(handle) => {
                     *out_handle_packed = handle.pack();
                     KALICO_OK
                 }
-                None => KALICO_ERR_INVALID_CURVE,
+                Err(diag) => {
+                    *out_handle_packed = diag;
+                    KALICO_ERR_INVALID_CURVE
+                }
             }
         }
     }

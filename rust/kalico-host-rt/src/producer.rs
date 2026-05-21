@@ -341,12 +341,35 @@ pub fn load_curve(
         let diag_kind = (resp.curve_handle_packed >> 30) & 0x3;
         let mcu_cur = ((resp.curve_handle_packed >> 16) & 0xFFFF) as u16;
         let mcu_last = (resp.curve_handle_packed & 0xFFFF) as u16;
+        let diag_detail = match diag_kind {
+            1 => format!("slot busy: mcu_cur_gen={mcu_cur} mcu_last_retired_gen={mcu_last}"),
+            2 => {
+                let reason = resp.curve_handle_packed & 0x3FFF_FFFF;
+                let reason_name = match reason {
+                    1 => "piece_count out of range",
+                    2 => "non-finite Bernstein control point",
+                    3 => "non-positive duration",
+                    _ => "unknown validation reason",
+                };
+                format!("invalid payload: {reason_name} ({reason})")
+            }
+            3 => {
+                let requested = resp.curve_handle_packed & 0xFFFF;
+                format!("slot out of bounds: requested={requested}")
+            }
+            _ => format!(
+                "legacy/no diagnostic: packed=0x{:08x}",
+                resp.curve_handle_packed
+            ),
+        };
         eprintln!(
-            "[host] producer::load_curve rejected slot={} axis={} result={} \
-             diag_kind={} mcu_cur_gen={} mcu_last_retired_gen={}",
-            slot, axis_idx, resp.result, diag_kind, mcu_cur, mcu_last,
+            "[host] producer::load_curve rejected slot={} axis={} result={} diag_kind={} {}",
+            slot, axis_idx, resp.result, diag_kind, diag_detail,
         );
-        return Err(ProducerError::McuRejected(resp.result));
+        return Err(ProducerError::Transport(TransportError::Parse(format!(
+            "MCU rejected LoadCurveCubic result={} diag_kind={} {}",
+            resp.result, diag_kind, diag_detail
+        ))));
     }
     Ok(resp.curve_handle_packed)
 }

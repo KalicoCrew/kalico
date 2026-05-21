@@ -21,7 +21,7 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU16, Ordering};
 
-use crate::cubic_curve::{populate_from_wire, LoadedCubicCurve, WirePiece};
+use crate::cubic_curve::{populate_from_wire, CubicLoadError, LoadedCubicCurve, WirePiece};
 
 // Build-time-configurable sizing constants. The `pub const`s (see
 // `runtime/build.rs`) are emitted from Klipper's Kconfig values. Defaults
@@ -181,14 +181,33 @@ impl CurvePool {
         slot_idx: usize,
         wire: &[WirePiece],
     ) -> Option<CurveHandle> {
+        self.try_alloc_and_load_diagnostic(slot_idx, wire).ok()
+    }
+
+    /// Same as [`Self::try_alloc_and_load`], but returns a compact diagnostic
+    /// word on rejection for the `LoadCurveResponse.curve_handle_packed` error
+    /// path.
+    ///
+    /// Encoding:
+    /// - kind 1: slot busy, low bits are `(current_gen << 16) | last_retired_gen`
+    /// - kind 2: payload validation failed, low bits are a small reason code
+    /// - kind 3: slot index out of bounds, low bits are the requested slot
+    pub fn try_alloc_and_load_diagnostic(
+        &self,
+        slot_idx: usize,
+        wire: &[WirePiece],
+    ) -> Result<CurveHandle, u32> {
         if slot_idx >= CURVE_POOL_N {
-            return None;
+            return Err((3u32 << 30) | ((slot_idx as u32) & 0xFFFF));
         }
-        let slot = self.slots.get(slot_idx)?;
+        let slot = self
+            .slots
+            .get(slot_idx)
+            .ok_or((3u32 << 30) | ((slot_idx as u32) & 0xFFFF))?;
         let cur = slot.current_gen.load(Ordering::Acquire);
         let last = slot.last_retired_gen.load(Ordering::Acquire);
         if cur != last {
-            return None;
+            return Err((1u32 << 30) | (u32::from(cur) << 16) | u32::from(last));
         }
         // SAFETY: foreground is the sole writer of `slot.curve`; no `&mut
         // PoolSlot` ever forms, so the `UnsafeCell::get()` raw pointer is
@@ -199,17 +218,22 @@ impl CurvePool {
             let dst: *mut LoadedCubicCurve = slot.curve.get();
             populate_from_wire(&mut *dst, wire)
         };
-        if result.is_err() {
+        if let Err(err) = result {
             // Validation failed; slot still has its previous contents.
             // The generation is unchanged so existing readers see the prior curve.
-            return None;
+            let reason = match err {
+                CubicLoadError::PieceCountOutOfRange => 1u32,
+                CubicLoadError::NonFiniteBernstein => 2u32,
+                CubicLoadError::NonPositiveDuration => 3u32,
+            };
+            return Err((2u32 << 30) | reason);
         }
         // 2. Bump generation with Release. Wraps on u16 modulo. The ISR's
         //    Acquire-load synchronizes with this Release store, ensuring
         //    the curve write is visible iff the new gen is.
         let new_gen = cur.wrapping_add(1);
         slot.current_gen.store(new_gen, Ordering::Release);
-        Some(CurveHandle {
+        Ok(CurveHandle {
             slot_idx: slot_idx as u16,
             generation: new_gen,
         })
