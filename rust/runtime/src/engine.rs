@@ -15,8 +15,7 @@ use crate::clock::{TickCounter, one_tick_cycles};
 use crate::curve_pool::{CurveHandle, CurvePool};
 use crate::endstop::{self, TripAction};
 use crate::error::RuntimeError;
-use crate::kinematics::{cartesian_xyz_with_e, corexy_with_e};
-use crate::segment::{KinematicTag, Segment};
+use crate::segment::Segment;
 use crate::slot::{IsSlot, PaSlot};
 use crate::state::SharedState;
 use crate::trace::{
@@ -59,20 +58,17 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// Reset on segment activation; incremented per hold tick. At ~10 ms
     /// (`HOLD_SAMPLE_TICK_PERIOD = 400`) we drop one breadcrumb sample.
     hold_sample_ticks: u32,
-    /// Previous X position. Used for E-mode arc-length integration AND as
-    /// the "hold" value when the X handle of the current segment is
-    /// `UNUSED_SENTINEL` (the bridge omits constant axis curves; the
-    /// engine must hold the axis at its last known position rather than
-    /// drop it to zero — bench session 2026-05-11, STEP_BURST_EXCEEDED
-    /// fault on cross-segment Y handle transition).
+    /// Previous motor-A position (motor frame). For CoreXY MCUs this is
+    /// A = X+Y (host-combined); for Cartesian MCUs it is logical X. Used
+    /// for E-mode arc-length integration AND as the "hold" value when the
+    /// X handle of the current segment is `UNUSED_SENTINEL`.
     prev_x: f32,
-    /// Previous Y position. Same dual role as `prev_x`.
+    /// Previous motor-B position (motor frame). For CoreXY MCUs this is
+    /// B = X−Y (host-combined); for Cartesian MCUs it is logical Y. Same
+    /// dual role as `prev_x`.
     prev_y: f32,
-    /// Previous Z position. Same dual role as `prev_x` / `prev_y`. Before
-    /// 2026-05-11 the engine had no `prev_z` field because Z was never
-    /// E-arc-length-integrated and the bridge always sent a Z curve
-    /// (no `UNUSED` case). Added when `UNUSED → hold prev value` became
-    /// the engine's semantic for all kinematic axes.
+    /// Previous Z position (motor frame; identical to logical Z on all
+    /// current MCU configurations). Same dual role as `prev_x` / `prev_y`.
     prev_z: f32,
     /// E accumulator for CoupledToXy mode — f64 for sub-step accuracy over
     /// millions of ticks (H723 has hardware double-precision FPU).
@@ -1266,49 +1262,42 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.mcu_config = Some(config);
     }
 
-    /// Seed the engine's logical toolhead position. Used by tests + by
+    /// Seed the engine's motor-frame position. Used by tests + by
     /// the bridge's `kalico_stream_open` / `SET_KINEMATIC_POSITION` paths
-    /// to anchor `prev_x`/`prev_y`/`prev_z` and each motor's
-    /// `StepMotorState` accumulator before the first segment runs. The
-    /// unified TIM5 step path also has per-axis integer step caches
-    /// (`stepping_axes[*].last_step_count`) and secant-slope position
-    /// caches (`tick_caches.p_prev`); those must be seeded to the same
-    /// motor-frame origin or the first absolute-position segment after
+    /// to anchor each motor's `StepMotorState` accumulator before the first
+    /// segment runs. The unified TIM5 step path also has per-axis integer
+    /// step caches (`stepping_axes[*].last_step_count`) and secant-slope
+    /// position caches (`tick_caches.p_prev`); those must be seeded to the
+    /// same motor-frame origin or the first absolute-position segment after
     /// SET_KINEMATIC_POSITION is interpreted as a huge catch-up move.
     /// Without this, `runtime_modulated_tick` on a non-origin segment
     /// computes a spurious motor-delta = (segment_start - 0) on its first
     /// tick and emits thousands of catch-up step pulses.
     ///
-    /// `xyz` is in trajectory frame (mm), pre-kinematic-transform. The
-    /// per-motor accumulator is seeded from `xyz` through the configured
-    /// kinematic (CoreXY A=X+Y / B=X−Y, or Cartesian X/Y/Z).
+    /// **`xyz` is in motor frame** — the kinematic transform (CoreXY
+    /// A=X+Y / B=X−Y) is applied by the bridge before calling this
+    /// function. The MCU engine is motor-frame end-to-end; there is no
+    /// kinematic transform in the hot path or in this seed path.
     pub fn seed_position(&mut self, xyz: [f32; 3]) {
         self.prev_x = xyz[0];
         self.prev_y = xyz[1];
         self.prev_z = xyz[2];
         self.needs_xy_seed = false;
-        let motors = match self.mcu_config.as_ref().map(|c| c.kinematics) {
-            Some(KinematicTag::CoreXyAndE) => {
-                corexy_with_e([xyz[0], xyz[1], xyz[2], 0.0])
-            }
-            _ => cartesian_xyz_with_e([xyz[0], xyz[1], xyz[2], 0.0]),
-        };
+        // Motor-frame positions directly — no kinematic transform on the MCU.
+        let motor_positions = [xyz[0], xyz[1], xyz[2], 0.0_f32];
         for i in 0..4 {
             if let Some(ss) = self.step_state.get_mut(i) {
-                if let Some(&m) = motors.get(i) {
-                    ss.seed(m);
-                }
+                ss.seed(motor_positions[i]);
             }
         }
-        let axis_positions = [xyz[0], xyz[1], xyz[2], 0.0];
-        self.last_motors = motors;
-        self.tick_caches.p_prev = axis_positions;
+        self.last_motors = motor_positions;
+        self.tick_caches.p_prev = motor_positions;
         self.tick_caches.v_prev = [0.0; 4];
         self.tick_caches.v_xy_prev = 0.0;
         self.tick_caches.v_xy_this = 0.0;
         self.tick_caches.vdot_xy_accelerating = false;
 
-        for (axis, &axis_pos_mm) in self.stepping_axes.iter_mut().zip(axis_positions.iter()) {
+        for (axis, &axis_pos_mm) in self.stepping_axes.iter_mut().zip(motor_positions.iter()) {
             let microstep_distance = axis.microstep_distance;
             if !microstep_distance.is_finite() || microstep_distance <= 0.0 {
                 continue;

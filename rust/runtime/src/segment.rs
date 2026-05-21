@@ -105,38 +105,30 @@ impl Segment {
     /// Compute the initial `consumers_remaining` bitmask from the segment's
     /// four curve handles and kinematic transform.
     ///
-    /// Each UNUSED handle contributes no consumer bits. The kinematic
-    /// transform determines which motors consume which axis curves:
-    /// - `CartesianXyzAndE`: motor 0 ← x, 1 ← y, 2 ← z, 3 ← e.
-    /// - `CoreXyAndE`: motors 0 (A = X+Y) and 1 (B = X−Y) both consume the
-    ///   x AND y curves; motor 2 ← z; motor 3 ← e.
+    /// Each UNUSED handle contributes no consumer bits. By the time a
+    /// `Segment` exists, curves are already in motor frame (the CoreXY
+    /// transform A=X+Y / B=X−Y is applied by the bridge before the segment
+    /// is constructed). The mapping is therefore always Cartesian:
+    /// motor 0 ← x slot, motor 1 ← y slot, motor 2 ← z slot, motor 3 ← e slot,
+    /// regardless of `kinematics`.
     ///
     /// The producer or the bridge calls this at segment construction time so
     /// the engine never sees a `Segment` with a stale or zero mask while
     /// curve handles are present.
     pub fn compute_consumers_remaining(
-        kinematics: KinematicTag,
+        _kinematics: KinematicTag,
         x_handle: CurveHandle,
         y_handle: CurveHandle,
         z_handle: CurveHandle,
         e_handle: CurveHandle,
     ) -> u16 {
         let mut mask: u16 = 0;
-        // Per-motor consumer presence flags. `motor_idx_consumes_axis(i,
-        // axis)` returns true iff motor `i` reads `axis` under the
-        // selected kinematics.
-        let motor_consumes_x = |i: u8| -> bool {
-            match kinematics {
-                KinematicTag::CartesianXyzAndE => i == 0,
-                KinematicTag::CoreXyAndE => i == 0 || i == 1,
-            }
-        };
-        let motor_consumes_y = |i: u8| -> bool {
-            match kinematics {
-                KinematicTag::CartesianXyzAndE => i == 1,
-                KinematicTag::CoreXyAndE => i == 0 || i == 1,
-            }
-        };
+        // Motor-frame identity: each motor reads exactly its own slot.
+        // kinematics is accepted for API compatibility (used as a wire tag)
+        // but does not alter the consumer mapping — the CoreXY transform
+        // was applied by the bridge before this segment was built.
+        let motor_consumes_x = |i: u8| -> bool { i == 0 };
+        let motor_consumes_y = |i: u8| -> bool { i == 1 };
         let motor_consumes_z = |i: u8| -> bool { i == 2 };
         let motor_consumes_e = |i: u8| -> bool { i == 3 };
 
@@ -183,14 +175,11 @@ impl Segment {
     /// starving foreground tasks (including `watchdog_reset`) until IWDG fires.
     pub fn motor_has_remaining_work(&self, motor_idx: u8) -> bool {
         let motor_bit: u16 = 1 << motor_idx;
-        let consumes_x = match self.kinematics {
-            KinematicTag::CartesianXyzAndE => motor_idx == 0,
-            KinematicTag::CoreXyAndE => motor_idx == 0 || motor_idx == 1,
-        };
-        let consumes_y = match self.kinematics {
-            KinematicTag::CartesianXyzAndE => motor_idx == 1,
-            KinematicTag::CoreXyAndE => motor_idx == 0 || motor_idx == 1,
-        };
+        // Motor-frame identity: each motor reads exactly its own curve slot.
+        // The CoreXY transform (A=X+Y, B=X−Y) is applied by the bridge;
+        // by the time a Segment is constructed the curves are already motor-frame.
+        let consumes_x = motor_idx == 0;
+        let consumes_y = motor_idx == 1;
         let consumes_z = motor_idx == 2;
         let consumes_e = motor_idx == 3;
         let mut motor_mask: u16 = 0;
@@ -303,45 +292,72 @@ mod tests {
         assert!(seg.consumers_done());
     }
 
+    // motor_has_remaining_work_corexy was deleted (2026-05-21): the old test
+    // asserted the CoreXY cross-coupling semantics (motors 0 and 1 both
+    // consuming X AND Y). After the bridge-side transform fix, `Segment`
+    // curves are always motor-frame, so the consumer mapping is Cartesian
+    // (motor i reads slot i) regardless of kinematics tag. The
+    // motor_has_remaining_work_cartesian test above covers the same code path.
+
+    /// Lock the new "KinematicTag does not alter consumer mask" semantic.
+    ///
+    /// Before the round-2 bridge-side CoreXY transform fix, `compute_consumers_remaining`
+    /// branched on `kinematics` and produced different bitmasks for `CoreXyAndE`
+    /// vs `CartesianXyzAndE`. After the fix, both tags yield the same Cartesian-
+    /// identity mask for a given set of handles. This test pins that invariant
+    /// so a future refactor cannot silently reintroduce the old branchy code.
     #[test]
-    fn motor_has_remaining_work_corexy() {
-        let mut seg = Segment {
-            id: 1,
-            x_handle: CurveHandle::new(0, 1),
-            y_handle: CurveHandle::new(1, 1),
-            z_handle: CurveHandle::new(2, 1),
-            e_handle: CurveHandle::UNUSED_SENTINEL,
-            t_start: 0,
-            t_end: 1000,
-            kinematics: KinematicTag::CoreXyAndE,
-            e_mode: EMode::Travel,
-            extrusion_ratio: 0.0,
-            flags: 0,
-            _pad: [0; 1],
-            consumers_remaining: 0,
-        };
-        seg.consumers_remaining = Segment::compute_consumers_remaining(
-            seg.kinematics,
-            seg.x_handle,
-            seg.y_handle,
-            seg.z_handle,
-            seg.e_handle,
+    fn consumer_mask_is_identical_regardless_of_kinematic_tag() {
+        let x = CurveHandle::new(0, 1);
+        let y = CurveHandle::new(1, 1);
+        let z = CurveHandle::new(2, 1);
+        let e = CurveHandle::new(3, 1);
+
+        let mask_cartesian = Segment::compute_consumers_remaining(
+            KinematicTag::CartesianXyzAndE,
+            x, y, z, e,
+        );
+        let mask_corexy = Segment::compute_consumers_remaining(
+            KinematicTag::CoreXyAndE,
+            x, y, z, e,
         );
 
-        // CoreXY: motors 0 and 1 each consume BOTH X and Y. Motor 2 ← Z,
-        // motor 3 ← E (UNUSED here, so no work).
-        assert!(seg.motor_has_remaining_work(0));
-        assert!(seg.motor_has_remaining_work(1));
-        assert!(seg.motor_has_remaining_work(2));
-        assert!(!seg.motor_has_remaining_work(3));
+        assert_eq!(
+            mask_cartesian, mask_corexy,
+            "consumer mask must be identical for CartesianXyzAndE ({mask_cartesian:#06x}) \
+             and CoreXyAndE ({mask_corexy:#06x}) — the KinematicTag no longer alters the \
+             motor-frame consumer mapping (bridge applies transform before segment construction)",
+        );
 
-        // Clear motor 0 across BOTH X and Y nibbles — that's what
-        // clear_motor_bits_in_mask does for CoreXY motor 0 when it finishes.
-        seg.consumers_remaining &= !(1u16 << CONS_REMAINING_X_SHIFT);
-        seg.consumers_remaining &= !(1u16 << CONS_REMAINING_Y_SHIFT);
-        assert!(!seg.motor_has_remaining_work(0));
-        // Motor 1 still has its bit in the same nibbles.
-        assert!(seg.motor_has_remaining_work(1));
+        // Also verify motor_has_remaining_work agrees for each motor index.
+        for motor in 0_u8..4 {
+            let seg_cart = Segment {
+                id: 0,
+                x_handle: x,
+                y_handle: y,
+                z_handle: z,
+                e_handle: e,
+                t_start: 0,
+                t_end: 1000,
+                kinematics: KinematicTag::CartesianXyzAndE,
+                e_mode: EMode::Travel,
+                extrusion_ratio: 0.0,
+                flags: 0,
+                _pad: [0; 1],
+                consumers_remaining: mask_cartesian,
+            };
+            let seg_corexy = Segment {
+                kinematics: KinematicTag::CoreXyAndE,
+                consumers_remaining: mask_corexy,
+                ..seg_cart
+            };
+            assert_eq!(
+                seg_cart.motor_has_remaining_work(motor),
+                seg_corexy.motor_has_remaining_work(motor),
+                "motor_has_remaining_work({motor}) differs between kinematic tags — \
+                 CoreXy tag must produce the same result as Cartesian",
+            );
+        }
     }
 
     #[test]

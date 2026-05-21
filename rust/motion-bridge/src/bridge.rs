@@ -2508,18 +2508,19 @@ impl PyMotionBridge {
         let y_q16 = encode_q16(y);
         let z_q16 = encode_q16(z);
 
-        // Collect the set of MCU ids that have been configured for motion.
-        // mcu_axis_configs is the authoritative list of kalico-runtime MCUs.
-        let mcu_ids: Vec<u32> = {
+        // Collect the set of (mcu_id, kinematics) pairs for all configured
+        // motion MCUs. `kinematics` determines whether the MCU expects
+        // logical or motor-frame coordinates from `runtime_seed_position`.
+        let mcu_kin_pairs: Vec<(u32, u8)> = {
             self.mcu_axis_configs
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .iter()
-                .map(|c| c.mcu_id)
+                .map(|c| (c.mcu_id, c.kinematics))
                 .collect()
         };
 
-        for mcu_id in mcu_ids {
+        for (mcu_id, kin) in mcu_kin_pairs {
             let io = {
                 let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
                 let Some(conn) = mcus.get(&mcu_id) else { continue };
@@ -2529,6 +2530,19 @@ impl PyMotionBridge {
                 let Some(io) = conn.host_io.as_ref() else { continue };
                 io.clone()
             };
+
+            // The MCU engine is motor-frame end-to-end. For CoreXY MCUs, the
+            // seed values must be in motor frame: A = X+Y, B = X-Y, Z = Z.
+            // CartesianXyzAndE MCUs receive logical X/Y/Z directly (identity
+            // transform).
+            let (seed_x_q16, seed_y_q16) =
+                if kin == crate::dispatch::KINEMATICS_COREXY {
+                    // motor-A = X + Y, motor-B = X - Y
+                    (encode_q16(x + y), encode_q16(x - y))
+                } else {
+                    (x_q16, y_q16)
+                };
+
             use kalico_host_rt::host_io::parser::FieldValue;
             // Ignore send errors — if the channel is closed the next
             // PushSegment will surface the failure through the normal
@@ -2536,8 +2550,8 @@ impl PyMotionBridge {
             let _ = io.send_typed(
                 "runtime_seed_position",
                 &[
-                    ("x_q16", FieldValue::I32(x_q16)),
-                    ("y_q16", FieldValue::I32(y_q16)),
+                    ("x_q16", FieldValue::I32(seed_x_q16)),
+                    ("y_q16", FieldValue::I32(seed_y_q16)),
                     ("z_q16", FieldValue::I32(z_q16)),
                 ],
             );

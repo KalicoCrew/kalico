@@ -48,6 +48,145 @@ pub fn add<T: Float>(
         .map_err(|_| AlgebraError::KnotMismatch)
 }
 
+/// Add two scalar NURBS curves pointwise, first aligning their knot vectors
+/// via a Bézier-piece union.
+///
+/// Unlike [`add`], this function does not require `a` and `b` to share a knot
+/// vector — it extracts both as Bézier pieces, refines each to the union of
+/// breakpoints (exact knot insertion, no approximation), then adds the control
+/// points piece-by-piece and recomposites the result.
+///
+/// **Fast path:** when `a.knots() == b.knots()` the function delegates directly
+/// to [`add`] without going through extract → refine → recompose.
+///
+/// # Errors
+///
+/// - `AlgebraError::KnotMismatch` — degrees differ, or either curve has no pieces.
+/// - `AlgebraError::SupportMismatch` — the two curves span different parameter domains.
+/// - `AlgebraError::NotImplemented` — either operand carries non-unit weights (weighted
+///   addition requires a homogeneous lift and is deferred).
+///
+/// # Panics
+///
+/// After a successful knot-union pass the internal [`add`] call is guaranteed to
+/// succeed; if it returns `Err` despite the union (bridge invariant violation), this
+/// function panics with a diagnostic.
+///
+/// # Example
+///
+/// ```rust
+/// # use nurbs::algebra::add_with_knot_union;
+/// # use nurbs::ScalarNurbs;
+/// // X: two Bézier pieces. Y: one piece.
+/// let x = ScalarNurbs::try_new(
+///     1,
+///     vec![0.0_f64, 0.0, 0.5, 1.0, 1.0],
+///     vec![0.0, 5.0, 10.0],
+///     None,
+/// ).unwrap();
+/// let y = ScalarNurbs::try_new(
+///     1,
+///     vec![0.0_f64, 0.0, 1.0, 1.0],
+///     vec![20.0, 20.0],
+///     None,
+/// ).unwrap();
+/// let sum = add_with_knot_union(&x, &y).unwrap();
+/// // At u=0: 0+20=20; at u=1: 10+20=30.
+/// let v0 = nurbs::eval::eval(&sum.as_view(), 0.0_f64);
+/// let v1 = nurbs::eval::eval(&sum.as_view(), 1.0_f64);
+/// assert!((v0 - 20.0).abs() < 1e-12);
+/// assert!((v1 - 30.0).abs() < 1e-12);
+/// ```
+#[cfg(feature = "host")]
+pub fn add_with_knot_union<T: Float>(
+    a: &crate::ScalarNurbs<T>,
+    b: &crate::ScalarNurbs<T>,
+) -> Result<crate::ScalarNurbs<T>, AlgebraError> {
+    if a.degree() != b.degree() {
+        return Err(AlgebraError::KnotMismatch);
+    }
+    if a.weights().is_some() || b.weights().is_some() {
+        return Err(AlgebraError::NotImplemented(
+            "add_with_knot_union weighted — homogeneous lift required",
+        ));
+    }
+
+    // Fast path: already compatible — delegate directly.
+    if a.knots() == b.knots() {
+        return add(a, b);
+    }
+
+    let a_pieces = crate::bezier::extract_bezier_pieces(a);
+    let b_pieces = crate::bezier::extract_bezier_pieces(b);
+
+    if a_pieces.is_empty() || b_pieces.is_empty() {
+        return Err(AlgebraError::KnotMismatch);
+    }
+
+    // Verify both curves span the same parameter domain.
+    let a_start = a_pieces[0].u_start;
+    let a_end = a_pieces[a_pieces.len() - 1].u_end;
+    let b_start = b_pieces[0].u_start;
+    let b_end = b_pieces[b_pieces.len() - 1].u_end;
+    // Tolerance chosen to be robust against rounding in knot construction
+    // while still catching genuinely mismatched segments.
+    let domain_tol = T::from_f64(1e-12);
+    if (a_start - b_start).abs() > domain_tol || (a_end - b_end).abs() > domain_tol {
+        return Err(AlgebraError::SupportMismatch);
+    }
+
+    // Union of breakpoints: sorted, deduplicated by T::total_cmp (no float tolerance
+    // — exact representation is guaranteed by knot construction).
+    let breakpoints = union_breakpoints(&a_pieces, &b_pieces);
+    let a_refined = refine_pieces_to_breakpoints(&a_pieces, &breakpoints);
+    let b_refined = refine_pieces_to_breakpoints(&b_pieces, &breakpoints);
+
+    // These invariants hold by construction of union_breakpoints +
+    // refine_pieces_to_breakpoints: the union visit produces one output
+    // piece per input piece boundary, and both piece lists are refined
+    // against the same breakpoint set. Use release-active asserts so a
+    // future refine_pieces_to_breakpoints regression surfaces immediately
+    // rather than silently zip-truncating.
+    assert_eq!(
+        a_refined.len(),
+        b_refined.len(),
+        "add_with_knot_union: refine produced mismatched piece counts \
+         (a_refined={}, b_refined={}); this is an internal invariant violation",
+        a_refined.len(),
+        b_refined.len(),
+    );
+
+    // Add control points piece-by-piece. Piece count and CP count per piece
+    // match by the invariant above.
+    let sum_pieces: Vec<crate::bezier::BezierPiece<T>> = a_refined
+        .iter()
+        .zip(b_refined.iter())
+        .map(|(ap, bp)| {
+            assert_eq!(
+                ap.coeffs.len(),
+                bp.coeffs.len(),
+                "add_with_knot_union: CP count mismatch after union refine \
+                 (ap.coeffs={}, bp.coeffs={})",
+                ap.coeffs.len(),
+                bp.coeffs.len(),
+            );
+            let coeffs: Vec<T> = ap
+                .coeffs
+                .iter()
+                .zip(bp.coeffs.iter())
+                .map(|(ac, bc)| *ac + *bc)
+                .collect();
+            crate::bezier::BezierPiece {
+                u_start: ap.u_start,
+                u_end: ap.u_end,
+                coeffs,
+            }
+        })
+        .collect();
+
+    Ok(crate::bezier::bezier_pieces_to_nurbs(&sum_pieces))
+}
+
 /// Error from `fit_x_to_arc_length_piece`. Distinct from `AlgebraError` —
 /// fit failure is a recoverable signal to the caller (split + recurse), not
 /// a planner-level invariant violation.
@@ -1957,6 +2096,122 @@ mod tests {
             (got_05 - exp_05).abs() < 1e-10,
             "y(0.5): expected {exp_05}, got {got_05}, diff {}",
             (got_05 - exp_05).abs(),
+        );
+    }
+
+    // ── add_with_knot_union tests ────────────────────────────────────────────
+
+    /// Identical knot vectors → fast path: delegates to `add`, no refine.
+    #[test]
+    fn add_with_knot_union_identical_knots_fast_path() {
+        let a = crate::ScalarNurbs::try_new(
+            1,
+            vec![0.0_f64, 0.0, 1.0, 1.0],
+            vec![0.0, 1.0],
+            None,
+        )
+        .unwrap();
+        let b = crate::ScalarNurbs::try_new(
+            1,
+            vec![0.0_f64, 0.0, 1.0, 1.0],
+            vec![2.0, 3.0],
+            None,
+        )
+        .unwrap();
+        let sum = add_with_knot_union(&a, &b).unwrap();
+        // At u=0: 0+2=2. At u=1: 1+3=4. At u=0.5 (midpoint): 0.5+2.5=3.
+        assert!((eval(&sum.as_view(), 0.0_f64) - 2.0).abs() < 1e-12, "fast-path u=0");
+        assert!((eval(&sum.as_view(), 0.5_f64) - 3.0).abs() < 1e-12, "fast-path u=0.5");
+        assert!((eval(&sum.as_view(), 1.0_f64) - 4.0).abs() < 1e-12, "fast-path u=1");
+    }
+
+    /// Mismatched knot vectors → knot-union path: piece counts and eval values correct.
+    ///
+    /// `a` has two pieces (linear 0→5 on [0,0.5] then 5→10 on [0.5,1]).
+    /// `b` has one piece (constant 20). After union, both are 2 pieces, and
+    /// the sum evaluates to 20→25→30.
+    #[test]
+    fn add_with_knot_union_mismatched_knots_union_path() {
+        use crate::bezier::{BezierPiece, bezier_pieces_to_nurbs};
+
+        // Two-piece linear curve on [0,1]: 0→5 then 5→10.
+        // Pascal-shifted coefficients at u_start.
+        let a = bezier_pieces_to_nurbs(&[
+            BezierPiece::<f64> { u_start: 0.0, u_end: 0.5, coeffs: vec![0.0, 10.0] },
+            BezierPiece::<f64> { u_start: 0.5, u_end: 1.0, coeffs: vec![5.0, 10.0] },
+        ]);
+        // Single-piece constant 20.
+        let b = crate::ScalarNurbs::try_new(
+            1,
+            vec![0.0_f64, 0.0, 1.0, 1.0],
+            vec![20.0, 20.0],
+            None,
+        )
+        .unwrap();
+
+        let sum = add_with_knot_union(&a, &b).unwrap();
+        // Check at domain boundary and midpoint of each piece.
+        let cases = [(0.0_f64, 20.0), (0.25, 22.5), (0.5, 25.0), (0.75, 27.5), (1.0, 30.0)];
+        for (u, expected) in cases {
+            let got = eval(&sum.as_view(), u);
+            assert!(
+                (got - expected).abs() < 1e-10,
+                "union-path u={u}: expected {expected}, got {got}",
+            );
+        }
+    }
+
+    /// Degree mismatch → `KnotMismatch` error (same as `add`'s contract).
+    #[test]
+    fn add_with_knot_union_rejects_degree_mismatch() {
+        let a = crate::ScalarNurbs::try_new(
+            1,
+            vec![0.0_f64, 0.0, 1.0, 1.0],
+            vec![0.0, 1.0],
+            None,
+        )
+        .unwrap();
+        let b = crate::ScalarNurbs::try_new(
+            2,
+            vec![0.0_f64, 0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.5, 1.0],
+            None,
+        )
+        .unwrap();
+        let result = add_with_knot_union(&a, &b);
+        assert!(
+            matches!(result, Err(crate::AlgebraError::KnotMismatch)),
+            "expected KnotMismatch, got {result:?}",
+        );
+    }
+
+    /// Weighted curve → `NotImplemented` error (homogeneous lift deferred).
+    #[test]
+    fn add_with_knot_union_rejects_weighted_curves() {
+        let a = crate::ScalarNurbs::try_new(
+            1,
+            vec![0.0_f64, 0.0, 1.0, 1.0],
+            vec![0.0, 1.0],
+            Some(vec![1.0, 2.0]),
+        )
+        .unwrap();
+        let b = crate::ScalarNurbs::try_new(
+            1,
+            vec![0.0_f64, 0.0, 1.0, 1.0],
+            vec![0.0, 1.0],
+            None,
+        )
+        .unwrap();
+        let result = add_with_knot_union(&a, &b);
+        assert!(
+            matches!(result, Err(crate::AlgebraError::NotImplemented(_))),
+            "expected NotImplemented for weighted operand, got {result:?}",
+        );
+        // Also: b weighted, a not.
+        let result2 = add_with_knot_union(&b, &a);
+        assert!(
+            matches!(result2, Err(crate::AlgebraError::NotImplemented(_))),
+            "expected NotImplemented for weighted operand (swapped), got {result2:?}",
         );
     }
 }
