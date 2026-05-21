@@ -5,6 +5,7 @@ out
 __pycache__/
 .config
 .config.old
+.config.*.*
 klippy/.version
 .history/
 .DS_Store
@@ -34,6 +35,9 @@ scripts/fitter_prototype/corpus_results/
 # claude-code session-local runtime state (lock file holds session pid +
 # acquired-at; the rest of .claude/ — plugins, skills, settings — IS tracked)
 .claude/scheduled_tasks.lock
+
+# MCU firmware build outputs
+firmware/
 
 # Built artifacts (motion-bridge .so, chelper .so) — built per-platform,
 # never checked in. Keep klippy/ clean across macOS/Linux/Pi dev.
