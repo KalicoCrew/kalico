@@ -790,6 +790,12 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
             (axis.piece_start_time_cycles as f32) / ctx.cycles_per_second;
         let t_local = ctx.t_sample_end_global - piece_start_sec;
 
+        // 2026-05-21 diag: capture c0 (start-of-piece position) and
+        // t_local on every eval. Last value before the dispatch_pulse
+        // bound check trips is what the host reads via diag tags.
+        ctx.shared.isr_last_c0_bits.store(piece.coeffs[0].to_bits(), core::sync::atomic::Ordering::Relaxed);
+        ctx.shared.isr_last_t_local_bits.store(t_local.to_bits(), core::sync::atomic::Ordering::Relaxed);
+
         let (p_end, v_end) =
             crate::monomial::eval_position_velocity(&piece, t_local);
         if !p_end.is_finite() || !v_end.is_finite() {

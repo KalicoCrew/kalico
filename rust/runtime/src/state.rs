@@ -395,6 +395,13 @@ pub struct SharedState {
     /// Bit-pattern of `microstep_distance` from the same call. Same
     /// encoding rationale.
     pub isr_last_microstep_bits: AtomicU32,
+    /// `piece.coeffs[0]` (c0) bits from the active piece at the same
+    /// instant. ~90mm if the curve_pool slot is loaded correctly.
+    pub isr_last_c0_bits: AtomicU32,
+    /// `t_local` (sec since piece start) bits. If huge, the time-domain
+    /// mapping between seg.t_start (cycles) and widened_now (cycles) is
+    /// broken or the duration is wrongly tiny.
+    pub isr_last_t_local_bits: AtomicU32,
     /// 2026-05-18 wedge diag: incremented in `producer_step` every time the
     /// `producer_current.is_none()` branch is entered, regardless of whether
     /// the subsequent `queue.dequeue()` returned Some or None. Cross-check
@@ -672,6 +679,8 @@ impl SharedState {
             isr_last_widened_lo: AtomicU32::new(0),
             isr_last_p_end_bits: AtomicU32::new(0),
             isr_last_microstep_bits: AtomicU32::new(0),
+            isr_last_c0_bits: AtomicU32::new(0),
+            isr_last_t_local_bits: AtomicU32::new(0),
             producer_observed_none_total: AtomicU64::new(0),
             producer_step_last_len_snapshot: AtomicU32::new(0),
             producer_step_current_is_some_snapshot: AtomicU8::new(0),

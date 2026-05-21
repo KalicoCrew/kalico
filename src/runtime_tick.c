@@ -629,7 +629,7 @@ runtime_status_drain(void)
         // tags (0xB6, 0xB7), curve-resolve tag (0xB8), demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 40) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 42) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 3:
             // 0xE6 — Live step_mode discriminants for motors 0..3, two
@@ -958,6 +958,25 @@ runtime_status_drain(void)
             extern uint32_t kalico_runtime_get_isr_last_microstep_bits(void* h);
             uint32_t v = kalico_runtime_get_isr_last_microstep_bits(runtime_handle);
             fault_detail = 0xCB000000u | ((v >> 8) & 0x00FFFFFFu);
+            break;
+        }
+        case 40: {
+            // 0xCC — TOP 24 bits of isr_last_c0_bits (c0 monomial term
+            // of the active piece, ≈ start-of-piece position in mm).
+            // ~90mm expected for our jog; if huge, curve_pool slot
+            // loading is broken.
+            extern uint32_t kalico_runtime_get_isr_last_c0_bits(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_c0_bits(runtime_handle);
+            fault_detail = 0xCC000000u | ((v >> 8) & 0x00FFFFFFu);
+            break;
+        }
+        case 41: {
+            // 0xCD — TOP 24 bits of isr_last_t_local_bits (seconds since
+            // the active piece started). Should be a few milliseconds.
+            // If huge, seg.t_start vs widened_now time domain is broken.
+            extern uint32_t kalico_runtime_get_isr_last_t_local_bits(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_t_local_bits(runtime_handle);
+            fault_detail = 0xCD000000u | ((v >> 8) & 0x00FFFFFFu);
             break;
         }
         case 36: {
