@@ -296,6 +296,13 @@ class Homing:
 
         if dwell_time:
             self.toolhead.dwell(dwell_time)
+            # Bridge mode: toolhead.dwell() advances the planner's print
+            # time but doesn't produce a real-time wait — the TMC SPI
+            # writes above were immediate (bridge_call), so the motor
+            # needs an actual wall-clock pause for the new current to
+            # stabilize before stallGuard-based homing can detect a stall.
+            reactor = self.printer.get_reactor()
+            reactor.pause(reactor.monotonic() + dwell_time)
 
     def _reset_endstop_states(self, endstops):
         # re-querying a tmc endstop seems to reset the state
