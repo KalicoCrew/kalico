@@ -1123,7 +1123,7 @@ pub fn isr_sample_tick(
                 dequeued
             }
         };
-        if let Some(seg) = candidate {
+        if let Some(mut seg) = candidate {
             shared.isr_last_t_start_lo.store(seg.t_start as u32, Ordering::Relaxed);
             shared.isr_last_widened_lo.store(now as u32, Ordering::Relaxed);
             // 2026-05-21 epoch-diagnosis: also capture HIGH 32 bits and the
@@ -1139,6 +1139,18 @@ pub fn isr_sample_tick(
                     .current_segment_id
                     .store(seg.id, Ordering::Release);
                 bump_relaxed(&shared.isr_armed_count);
+                // Host/USB command latency can make a freshly dequeued
+                // terminal segment start a few milliseconds in the past by
+                // the time the TIM5 ISR arms it. If we keep that stale
+                // epoch, `advance_piece_if_needed` may walk every short
+                // piece to exhaustion before the first evaluation and the
+                // move retires without emitting steps. Rebase late arms to
+                // the current ISR clock while preserving segment duration.
+                let lateness = now.saturating_sub(seg.t_start);
+                if lateness > 0 {
+                    seg.t_start = now;
+                    seg.t_end = seg.t_end.saturating_add(lateness);
+                }
                 // 2026-05-21 bisection step 4: arm_segment ON, evaluator OFF.
                 // bd62f20bb (dequeue+park yes, arm+eval no) survived. EA=2
                 // dequeues, EC=0 parks (widening seed correct, seg.t_start
