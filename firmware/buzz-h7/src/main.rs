@@ -207,29 +207,34 @@ fn main() -> ! {
         // Brief settle.
         delay_systick_cycles(HSI_HZ / 1000); // 1 ms
 
-        // 5. TMC5160 register writes.
-        // GCONF = 0 (spreadcycle, no special flags)
-        tmc_write(0x00, 0x0000_0000);
-        // GLOBAL_SCALER = 128 (50% scaler — drops IRUN range to a safer span)
-        tmc_write(0x0B, 0x0000_0080);
-        // IHOLD_IRUN: ihold=8, irun=8 (≈0.7 A RMS at 50% scaler + 0.075 Ω
-        // sense), iholddelay=8
-        tmc_write(0x10, 0x0008_0808);
-        // TPOWERDOWN = 10 (standstill timeout)
-        tmc_write(0x11, 0x0000_000A);
-        // CHOPCONF: toff=3 (chopper on — CRITICAL; toff=0 silently disables
-        // the motor), hstrt=4, hend=1, tbl=2, mres=0 (256 microsteps)
-        // Bit layout: toff[3:0]=3, hstrt[6:4]=4 (010<<4), hend[10:7]=1
-        // (0001<<7=0x080), tbl[16:15]=2 (10<<15=0x10000), mres[27:24]=0
-        // intpol[28]=1 (interpolation on)
-        let chopconf: u32 = (3u32 << 0)    // toff = 3
-                          | (4u32 << 4)    // hstrt = 4
-                          | (1u32 << 7)    // hend = 1
-                          | (2u32 << 15)   // tbl = 2
-                          | (1u32 << 28);  // intpol = 1
-        tmc_write(0x6C, chopconf);
-        // PWMCONF: leave as default-ish (pwm_freq=1, pwm_grad=0x0D, pwm_ofs=0x24)
-        tmc_write(0x70, 0xC10D_0024);
+        // 5. TMC5160 register writes — EXACT mainline Kalico values captured
+        // 2026-05-21 via `DUMP_TMC STEPPER=stepper_x` after a working
+        // STEPPER_BUZZ that physically moved the motor on this same
+        // hardware. Don't second-guess — these are the ground-truth values.
+        //
+        //   GCONF       = 0x0000000C  en_pwm_mode=1, multistep_filt=1
+        //                             (stealthchop mode; NOT spreadcycle)
+        //   IHOLD_IRUN  = 0x00061A1A  ihold=26, irun=26, iholddelay=6
+        //                             (~2 A on user's 0.075 Ω sense)
+        //   CHOPCONF    = 0x33700378  toff=8, hstrt=7, hend=6, tpfd=7,
+        //                             mres=3 (32 microsteps), intpol=1,
+        //                             dedge=1  ← critical: makes each step
+        //                             pin EDGE a step, matching our toggle
+        //                             pattern. Without it, half our toggles
+        //                             would be ignored.
+        //   TPOWERDOWN  = 0x0000000A
+        //   TPWMTHRS    = 0x000FFFFF  (always-on stealthchop)
+        //   PWMCONF     = 0xC40C001E
+        //
+        // NO GLOBAL_SCALER write — mainline leaves it at reset default 0 (=
+        // 256 = full scale). My earlier 128 (50%) write was halving current
+        // unnecessarily.
+        tmc_write(0x00, 0x0000_000C); // GCONF
+        tmc_write(0x10, 0x0006_1A1A); // IHOLD_IRUN
+        tmc_write(0x11, 0x0000_000A); // TPOWERDOWN
+        tmc_write(0x13, 0x000F_FFFF); // TPWMTHRS
+        tmc_write(0x6C, 0x3370_0378); // CHOPCONF
+        tmc_write(0x70, 0xC40C_001E); // PWMCONF
 
         // Brief settle so the TMC current ramps up before we start stepping.
         delay_systick_cycles(HSI_HZ / 10); // 100 ms
