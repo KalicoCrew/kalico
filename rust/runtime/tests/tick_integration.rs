@@ -141,6 +141,7 @@ fn constant_velocity_produces_expected_step_count() {
         advance_decel: 0.0,
         now_cycles: 0,
             now_cycles_u64: 0,
+        v_motor_q16: [0u32; 3],
         t_sample_end_global: SAMPLE_PERIOD_SEC,
     };
 
@@ -230,6 +231,7 @@ fn xy_arc_length_accumulates_in_segment() {
         advance_decel: 0.0,
         now_cycles: 0,
             now_cycles_u64: 0,
+        v_motor_q16: [0u32; 3],
         t_sample_end_global: SAMPLE_PERIOD_SEC,
     };
 
@@ -345,6 +347,7 @@ fn extruder_follows_xy_arc_length() {
         advance_decel: 0.0,
         now_cycles: 0,
             now_cycles_u64: 0,
+        v_motor_q16: [0u32; 3],
         t_sample_end_global: SAMPLE_PERIOD_SEC,
     };
 

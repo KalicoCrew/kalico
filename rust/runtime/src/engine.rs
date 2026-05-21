@@ -1165,28 +1165,77 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // holds the exclusive borrow on `self`, and `runtime_tick_sample`
         // does not mutate `current` / `segment_base_e`, so threading the
         // reference + scalar is sound.
+        //
+        // `Segment: Copy` — copy the current segment out of `self` so
+        // that `ctx` (which borrows `self.stepping_axes` etc. mutably) and
+        // the subsequent `poll_endstop_trip` call (which takes `&mut self`)
+        // are not blocked by a lingering `&self.current` borrow. The copy
+        // is a memcopy of ~80 bytes and is pay-once per ISR sample.
         let engine_segment_base_e = self.segment_base_e;
-        let current_segment = self.current.as_ref();
-        let mut ctx = crate::tick::TickContext {
-            axes: &mut self.stepping_axes,
-            queues: queue_ptrs,
-            shared,
-            caches: &mut self.tick_caches,
-            curve_pool,
-            ds_xy_segment: &mut self.ds_xy_segment,
-            current_segment,
-            engine_segment_base_e,
-            sample_period_sec: self.sample_period_sec,
-            sample_period_cycles: self.sample_period_cycles,
-            cycles_per_second,
-            k_xy: self.k_xy,
-            advance_accel: self.advance_accel,
-            advance_decel: self.advance_decel,
-            now_cycles,
-            t_sample_end_global,
+        let current_segment_copy: Option<crate::segment::Segment> = self.current;
+        let current_segment = current_segment_copy.as_ref();
+        // `v_motor_q16` is extracted here so that `ctx` — which holds
+        // `&mut self.stepping_axes` and other field borrows — is fully
+        // dropped before the `poll_endstop_trip` call below takes `&mut
+        // self`. The inner block forces `ctx` out of scope; the Copy
+        // `[u32; 3]` value escapes cleanly.
+        let v_motor_q16: [u32; 3] = {
+            let mut ctx = crate::tick::TickContext {
+                axes: &mut self.stepping_axes,
+                queues: queue_ptrs,
+                shared,
+                caches: &mut self.tick_caches,
+                curve_pool,
+                ds_xy_segment: &mut self.ds_xy_segment,
+                current_segment,
+                engine_segment_base_e,
+                sample_period_sec: self.sample_period_sec,
+                sample_period_cycles: self.sample_period_cycles,
+                cycles_per_second,
+                k_xy: self.k_xy,
+                advance_accel: self.advance_accel,
+                advance_decel: self.advance_decel,
+                now_cycles,
+                t_sample_end_global,
+                now_cycles_u64,
+                // Written by runtime_tick_sample Phase 2.5; zero here so
+                // poll_endstop_trip sees a conservative (no-move) velocity
+                // if an early return inside runtime_tick_sample fires before
+                // Phase 2.5 runs.
+                v_motor_q16: [0u32; 3],
+            };
+            crate::tick::runtime_tick_sample(&mut ctx);
+            ctx.v_motor_q16
+        }; // `ctx` drops here; all &mut self.* borrows are released.
+
+        // -----------------------------------------------------------------
+        // Endstop trip evaluation (fix-sensorless-homing).
+        //
+        // `runtime_tick_sample` has now evaluated all motion axes and
+        // written the per-axis Q16.16 motor-frame speeds into
+        // `v_motor_q16`. Pass those to `poll_endstop_trip` so the
+        // `IgnoreUntilMoving` policy gate sees real velocities instead of
+        // the `[u32::MAX; 3]` placeholder from the pre-fix stub comment.
+        //
+        // On trip, `poll_endstop_trip` calls `abort_for_homing_trip` which
+        // retires the active segment, publishes the credit-freed cursor,
+        // sets status=Drained, and emits a FAULT trace marker — then returns
+        // `true`. We skip post_pass_exhaustion and retire_if_complete here
+        // because abort_for_homing_trip has already done the equivalent
+        // cleanup; running them on a cleared engine is benign (both guard on
+        // `self.current.is_none()`) but the early return makes the intent
+        // explicit.
+        // -----------------------------------------------------------------
+        if self.poll_endstop_trip(
             now_cycles_u64,
-        };
-        crate::tick::runtime_tick_sample(&mut ctx);
+            v_motor_q16,
+            curve_pool,
+            current_segment,
+            trace,
+            shared,
+        ) {
+            return;
+        }
 
         // Per-sample post-pass exhaustion (§4.4 + §4.5): runs after every
         // per-axis advance for this sample has happened inside
@@ -1497,8 +1546,6 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
     /// Endstop trip evaluator. Called per-sample from the unified tick
     /// path; on `AbortNow`, hands off to `abort_for_homing_trip`.
-    /// Velocity-gated policies receive `[u32::MAX; 3]` here: precise
-    /// per-axis velocity hooks at step resolution are a follow-up.
     pub fn poll_endstop_trip(
         &mut self,
         now: u64,

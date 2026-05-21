@@ -111,6 +111,7 @@ fn piece_advances_when_sample_passes_duration() {
         advance_decel: 0.0,
         now_cycles: 0,
             now_cycles_u64: 0,
+        v_motor_q16: [0u32; 3],
         t_sample_end_global: 20e-6, // past piece duration
     };
     runtime_tick_sample(&mut ctx);
@@ -212,6 +213,7 @@ fn segment_retirement_increments_counter_and_resets_arc_length() {
         advance_decel: 0.0,
         now_cycles: 0,
             now_cycles_u64: 0,
+        v_motor_q16: [0u32; 3],
         t_sample_end_global: 25e-6,
     };
     runtime_tick_sample(&mut ctx1);
@@ -241,6 +243,7 @@ fn segment_retirement_increments_counter_and_resets_arc_length() {
         advance_decel: 0.0,
         now_cycles: 0,
             now_cycles_u64: 0,
+        v_motor_q16: [0u32; 3],
         t_sample_end_global: 50e-6,
     };
     runtime_tick_sample(&mut ctx2);

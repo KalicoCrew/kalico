@@ -587,6 +587,18 @@ pub struct TickContext<'a> {
     /// the full u64 here so the consumer computes `t_local` from u64
     /// subtraction *before* the f32 conversion.
     pub now_cycles_u64: u64,
+    /// Per-axis motor-frame speed magnitudes in Q16.16 unsigned fixed-point
+    /// (counts/s), populated during Phase 2 (after motion axes are
+    /// evaluated). Indices follow [AXIS_A, AXIS_B, AXIS_Z]. Written by
+    /// `runtime_tick_sample` so the caller (`Engine::tick_sample`) can
+    /// pass real velocities to `poll_endstop_trip` instead of the
+    /// placeholder `[u32::MAX; 3]` from the pre-fix stub.
+    ///
+    /// Zero on every axis when no motion is active (Phase 1 idle path).
+    /// The endstop module's `IgnoreUntilMoving` policy gates on
+    /// `v_sel >= v_min_q16`; for sensorless homing the default `v_min_q16`
+    /// is 0, so any non-zero velocity here clears the ignore window.
+    pub v_motor_q16: [u32; 3],
 }
 
 /// Walk the per-axis cursor forward past any sample-straddled pieces.
@@ -799,7 +811,11 @@ pub fn evaluate_e_axis(
 // per-phase block structure load-bearing for review; splitting it into
 // helpers would obscure the ABXZ / A2 / E phase ordering documented in the
 // design. The 108-line body remains a deliberate single function.
-#[allow(clippy::indexing_slicing, clippy::too_many_lines)]
+// Phase 2.5 uses `libm::fabsf(v) * 65536.0 as u32`. `fabsf` always
+// returns a non-negative f32, but clippy::cast_sign_loss fires on f32→u32
+// because f32 is technically signed. The invariant is structural (fabsf
+// postcondition), not just local, so silence the lint at function scope.
+#[allow(clippy::indexing_slicing, clippy::too_many_lines, clippy::cast_sign_loss)]
 pub fn runtime_tick_sample(ctx: &mut TickContext) {
     let mut p_end_axis = [0.0_f32; N_AXES];
     let mut v_end_axis = [0.0_f32; N_AXES];
@@ -910,6 +926,24 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         // accumulated arc length that the next segment's E follower may
         // still consume.
     }
+
+    // -----------------------------------------------------------------
+    // Phase 2.5: Publish per-axis motor-frame speed magnitudes for the
+    // endstop trip evaluator. `Engine::tick_sample` reads these from
+    // `ctx.v_motor_q16` after `runtime_tick_sample` returns and passes
+    // them to `poll_endstop_trip`.
+    //
+    // Q16.16 encoding: multiply the f32 speed (mm/s in motor-frame) by
+    // 65536.0 and cast to u32. `as u32` saturates on negative (sign is
+    // stripped by `libm::fabsf`) and on overflow (speeds above ~65535 mm/s
+    // are physically impossible). The endstop module uses unsigned Q16.16
+    // throughout (see `max_axis_velocity` in endstop.rs).
+    // -----------------------------------------------------------------
+    ctx.v_motor_q16 = [
+        (libm::fabsf(v_end_axis[AXIS_A]) * 65536.0) as u32,
+        (libm::fabsf(v_end_axis[AXIS_B]) * 65536.0) as u32,
+        (libm::fabsf(v_end_axis[AXIS_Z]) * 65536.0) as u32,
+    ];
 
     // -----------------------------------------------------------------
     // Phase 3: evaluate the extruder axis with E-follows-XY + PA.
