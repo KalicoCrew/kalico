@@ -86,6 +86,52 @@ command_stepper_stop_on_trigger(uint32_t *args)
 DECL_COMMAND(command_stepper_stop_on_trigger,
              "stepper_stop_on_trigger oid=%c trsync_oid=%c");
 
+// 2026-05-21 minimal-firmware control test. Bypasses the entire Rust
+// motion engine: just toggles the step pin N times with a fixed period
+// to verify TMC + step pin + dir pin + motor wiring all work without
+// any Klipper/Rust scheduling. If this moves the motor but the engine
+// path doesn't, the engine is the only suspect. If THIS doesn't move
+// the motor either, the bug is below the engine (TMC config, current,
+// pin routing, mechanical).
+//
+// Bounded to step_count<=2000 + period_ticks>=timer_from_us(100) so
+// the busy-wait can't trip IWDG (worst-case ~200ms of foreground
+// blocking, well under the watchdog).
+void
+command_diag_stepper_buzz(uint32_t *args)
+{
+    uint8_t oid = args[0] & 0xFFu;
+    uint8_t dir = args[1] & 0x01u;
+    uint32_t step_count = args[2];
+    uint32_t period_ticks = args[3];
+    if (step_count > 2000) step_count = 2000;
+    uint32_t min_period = timer_from_us(100);
+    if (period_ticks < min_period) period_ticks = min_period;
+
+    struct stepper *s = stepper_oid_lookup(oid);
+    gpio_out_write(s->dir_pin, dir);
+
+    // Settle direction before first step edge (TMC datasheet typically
+    // requires >= 20 ns; 1 µs is generous).
+    uint32_t settle_deadline = timer_read_time() + timer_from_us(1);
+    while (timer_is_before(timer_read_time(), settle_deadline))
+        ;
+
+    uint32_t deadline = timer_read_time();
+    for (uint32_t i = 0; i < step_count; i++) {
+        gpio_out_toggle(s->step_pin);
+        deadline += period_ticks;
+        while (timer_is_before(timer_read_time(), deadline))
+            ;
+    }
+
+    sendf("diag_stepper_buzz_response oid=%c step_count=%u",
+          oid, step_count);
+}
+DECL_COMMAND(command_diag_stepper_buzz,
+             "diag_stepper_buzz oid=%c dir=%c step_count=%u"
+             " period_ticks=%u");
+
 void
 stepper_shutdown(void)
 {
