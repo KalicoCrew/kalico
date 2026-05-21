@@ -188,15 +188,17 @@ fn dispatch_pulse(
     };
 
     let dir: i8 = if signed_steps > 0 { 1 } else { -1 };
-    // Count successful pushes so a partial-overflow scenario commits
-    // `position_count` for steps that DID land in the queue (i.e., that
-    // the C-side per-axis timer will fire as physical motion). Otherwise
-    // the host's view of stepper position desyncs from physical reality.
-    // Step index incremented per successful push; tracked explicitly so a
-    // partial overflow can commit `position_count` for steps that already
-    // landed in the queue.
+    // 2026-05-21 bisection step 7: SKIP queue_push loop. Keep
+    // compute_step_times above (it ran). If bench survives →
+    // queue_push is the freeze (likely heapless::spsc::Producer
+    // LDREX-style RMW, mirroring the 2026-05-18 Consumer
+    // miscompile we already had to work around with a C struct).
+    // If crashes → compute_step_times Newton iteration is the freeze.
+    let _ = (dir, times, queue_ptr);
+    return;
+    #[allow(unreachable_code)]
     let mut steps_committed: i32 = 0;
-    #[allow(clippy::explicit_counter_loop)]
+    #[allow(unreachable_code, clippy::explicit_counter_loop)]
     for cycle_abs in times.iter().copied() {
         let entry = StepEntry { cycle_abs, dir, _pad: [0; 3] };
         // SAFETY: `queue_ptr` is supplied by the caller (TIM5 ISR), who
@@ -789,23 +791,20 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         p_end_axis[axis_idx] = p_end;
         v_end_axis[axis_idx] = v_end;
 
-        // 2026-05-21 bisection step 6: SKIP dispatch_axis. Keep
-        // advance_piece_if_needed + eval_position_velocity to test
-        // if those alone cause the freeze.
-        let _ = p_sample_start;
-        let _ = axis;
-        // dispatch_axis(
-        //     axis_idx,
-        //     axis,
-        //     ctx.queues[axis_idx],
-        //     ctx.shared,
-        //     p_end,
-        //     v_end,
-        //     p_sample_start,
-        //     ctx.sample_period_sec,
-        //     ctx.now_cycles,
-        //     ctx.cycles_per_second,
-        // );
+        // Step 7: dispatch_axis re-enabled. dispatch_pulse now bails
+        // before the queue_push loop (compute_step_times runs).
+        dispatch_axis(
+            axis_idx,
+            axis,
+            ctx.queues[axis_idx],
+            ctx.shared,
+            p_end,
+            v_end,
+            p_sample_start,
+            ctx.sample_period_sec,
+            ctx.now_cycles,
+            ctx.cycles_per_second,
+        );
     }
 
     // 2026-05-21 bisection step 5: early-return after Phase 1.
