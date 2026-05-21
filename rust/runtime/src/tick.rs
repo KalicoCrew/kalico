@@ -94,7 +94,12 @@ pub fn dispatch_axis(
     // unused-binding lint without changing the public signature.
     let _ = v_end;
 
-    match axis.mode.load(Ordering::Acquire) {
+    let mode = axis.mode.load(Ordering::Acquire);
+    shared.isr_last_axis_mode_packed.store(
+        ((axis_idx as u32) << 16) | u32::from(mode),
+        Ordering::Relaxed,
+    );
+    match mode {
         m if m == StepMode::Pulse as u8 => dispatch_pulse(
             axis_idx,
             axis,
@@ -106,7 +111,10 @@ pub fn dispatch_axis(
             sample_start_cycles,
             cycles_per_second,
         ),
-        m if m == StepMode::Phase as u8 => dispatch_phase(axis_idx, axis, shared, p_end),
+        m if m == StepMode::Phase as u8 => {
+            bump_relaxed(&shared.isr_phase_call_count);
+            dispatch_phase(axis_idx, axis, shared, p_end);
+        }
         // Invalid mode byte — the `mode` field is only ever written by the
         // foreground via `set_axis_mode` (Task 4), which enforces the enum
         // mapping. Treat as a no-op for this sample; if the byte is
@@ -142,12 +150,17 @@ fn dispatch_pulse(
     sample_start_cycles: u32,
     cycles_per_second: f32,
 ) {
+    bump_relaxed(&shared.isr_pulse_call_count);
     // Guard against a zero / non-finite microstep distance — that would
     // make the quantization step divide by zero and the engine should
     // never have been armed in that state. Bail silently for Task 7;
     // Task 4's configure_axes is the proper gatekeeper.
     let microstep_distance = axis.microstep_distance;
+    shared
+        .isr_last_microstep_bits
+        .store(microstep_distance.to_bits(), Ordering::Relaxed);
     if !microstep_distance.is_finite() || microstep_distance == 0.0 {
+        bump_relaxed(&shared.isr_pulse_bad_mstep_count);
         return;
     }
 
@@ -159,11 +172,17 @@ fn dispatch_pulse(
     #[allow(clippy::cast_possible_truncation)]
     let target_step_count = libm::roundf(p_end / microstep_distance) as i32;
     let signed_steps = target_step_count.wrapping_sub(prev_step_count);
+    shared.isr_last_p_end_bits.store(p_end.to_bits(), Ordering::Relaxed);
+    shared.isr_last_step_counts_packed.store(
+        ((target_step_count as u32) << 16) | ((prev_step_count as u32) & 0xFFFF),
+        Ordering::Relaxed,
+    );
     // Update the axis cache regardless of whether we found any steps to
     // schedule — Phase-mode keeps it in lockstep too.
     axis.last_step_count = target_step_count;
 
     if signed_steps == 0 {
+        bump_relaxed(&shared.isr_pulse_zero_step_count);
         return;
     }
     // 2026-05-21 diag: capture last non-zero signed_steps so the host
@@ -174,7 +193,6 @@ fn dispatch_pulse(
         signed_steps.unsigned_abs(),
         core::sync::atomic::Ordering::Relaxed,
     );
-
     // 2026-05-21 FIX: bound check that the comment in compute_step_times
     // PROMISED but nothing enforced. If signed_steps is huge (e.g.,
     // target_step_count saturated to i32::MAX because p_end was a giant

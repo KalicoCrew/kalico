@@ -938,6 +938,12 @@ pub mod exports {
     shared_u32_reader!(kalico_runtime_get_isr_last_t_local_bits, isr_last_t_local_bits);
     shared_u32_reader!(kalico_runtime_get_isr_step_push_count, isr_step_push_count);
     shared_u32_reader!(kalico_runtime_get_isr_last_signed_steps, isr_last_signed_steps);
+    shared_u32_reader!(kalico_runtime_get_isr_pulse_call_count, isr_pulse_call_count);
+    shared_u32_reader!(kalico_runtime_get_isr_pulse_zero_step_count, isr_pulse_zero_step_count);
+    shared_u32_reader!(kalico_runtime_get_isr_pulse_bad_mstep_count, isr_pulse_bad_mstep_count);
+    shared_u32_reader!(kalico_runtime_get_isr_phase_call_count, isr_phase_call_count);
+    shared_u32_reader!(kalico_runtime_get_isr_last_axis_mode_packed, isr_last_axis_mode_packed);
+    shared_u32_reader!(kalico_runtime_get_isr_last_step_counts_packed, isr_last_step_counts_packed);
     shared_u32_reader!(kalico_runtime_get_isr_last_arm_x_handle, isr_last_arm_x_handle);
     shared_u32_reader!(kalico_runtime_get_isr_last_arm_x_outcome, isr_last_arm_x_outcome);
     shared_u32_reader!(kalico_runtime_get_isr_last_arm_x_piece_count, isr_last_arm_x_piece_count);

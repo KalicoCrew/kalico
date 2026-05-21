@@ -629,7 +629,7 @@ runtime_status_drain(void)
         // tags (0xB6, 0xB7), curve-resolve tag (0xB8), demuxer tag (0xB9).
         static uint8_t st_emit_phase_ext;
         st_emit_phase_ext = (uint8_t)(st_emit_phase_ext + 1);
-        if (st_emit_phase_ext >= 53) st_emit_phase_ext = 0;
+        if (st_emit_phase_ext >= 59) st_emit_phase_ext = 0;
         switch (st_emit_phase_ext) {
         case 3:
             // 0xE6 — Live step_mode discriminants for motors 0..3, two
@@ -1094,6 +1094,48 @@ runtime_status_drain(void)
             extern uint32_t kalico_runtime_get_isr_last_arm_x_piece0_duration_bits(void* h);
             uint32_t v = kalico_runtime_get_isr_last_arm_x_piece0_duration_bits(runtime_handle);
             fault_detail = 0xA8000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 53: {
+            // 0xD3 — dispatch_pulse entry count.
+            extern uint32_t kalico_runtime_get_isr_pulse_call_count(void* h);
+            uint32_t v = kalico_runtime_get_isr_pulse_call_count(runtime_handle);
+            fault_detail = 0xD3000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 54: {
+            // 0xD4 — dispatch_pulse zero-step early returns.
+            extern uint32_t kalico_runtime_get_isr_pulse_zero_step_count(void* h);
+            uint32_t v = kalico_runtime_get_isr_pulse_zero_step_count(runtime_handle);
+            fault_detail = 0xD4000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 55: {
+            // 0xD5 — dispatch_pulse invalid/zero microstep_distance returns.
+            extern uint32_t kalico_runtime_get_isr_pulse_bad_mstep_count(void* h);
+            uint32_t v = kalico_runtime_get_isr_pulse_bad_mstep_count(runtime_handle);
+            fault_detail = 0xD5000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 56: {
+            // 0xD6 — dispatch_phase entry count.
+            extern uint32_t kalico_runtime_get_isr_phase_call_count(void* h);
+            uint32_t v = kalico_runtime_get_isr_phase_call_count(runtime_handle);
+            fault_detail = 0xD6000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 57: {
+            // 0xD7 — last dispatch_axis `(axis_idx << 16) | mode_byte`.
+            extern uint32_t kalico_runtime_get_isr_last_axis_mode_packed(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_axis_mode_packed(runtime_handle);
+            fault_detail = 0xD7000000u | (v & 0x00FFFFFFu);
+            break;
+        }
+        case 58: {
+            // 0xD8 — last Pulse `(target low16 << 16) | prev low16`.
+            extern uint32_t kalico_runtime_get_isr_last_step_counts_packed(void* h);
+            uint32_t v = kalico_runtime_get_isr_last_step_counts_packed(runtime_handle);
+            fault_detail = 0xD8000000u | (v & 0x00FFFFFFu);
             break;
         }
         case 36: {
