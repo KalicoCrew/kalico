@@ -1,11 +1,11 @@
 ---
 name: reading-klippy-log
-description: Use when investigating klippy.log on trident.local, asked about recent jog / print / fault / shutdown activity on the bench, when you need to know what the H7 or F4 MCUs have been doing, or whenever raw klippy log content would otherwise enter main-agent context. Dispatches an Opus subagent that fetches, filters, and analyzes the log; the raw log never enters main-agent context.
+description: Use when investigating klippy.log on trident.local, asked about recent jog / print / fault / shutdown activity on the bench, when you need to know what the H7 or F4 MCUs have been doing, or whenever raw klippy log content would otherwise enter main-agent context. Dispatches a Sonnet subagent that fetches, filters, and analyzes the log; the raw log never enters main-agent context.
 ---
 
 # Reading klippy.log on trident
 
-This skill answers questions about `~/printer_data/logs/klippy.log` on `trident.local` without flooding main-agent context with raw log content. An Opus subagent does the fetch + filter + analysis end-to-end and returns a structured, citation-backed answer.
+This skill answers questions about `~/printer_data/logs/klippy.log` on `trident.local` without flooding main-agent context with raw log content. A Sonnet subagent does the fetch + filter + analysis end-to-end and returns a structured, citation-backed answer.
 
 ## When to use
 
@@ -17,7 +17,7 @@ This skill answers questions about `~/printer_data/logs/klippy.log` on `trident.
 
 ## How to use
 
-Dispatch via the Agent tool with `subagent_type: general-purpose` and `model: "opus"`. The user-facing inputs (passed through to the prompt template below):
+Dispatch via the Agent tool with `subagent_type: general-purpose` and `model: "sonnet"`. The user-facing inputs (passed through to the prompt template below):
 
 - **question** (string, optional). Freeform query. Omit / leave empty → default-report mode.
 - **session_override** (one of `latest` | `previous` | `N`, default `latest`). Forces a specific session, bypassing the fresh-restart fallback heuristic.
@@ -40,12 +40,26 @@ Pipeline (run exactly, in order):
      bash {SKILL_DIR}/filter.sh [--session={session_override}] > "$SLICE"
    The slice is session-scoped, status-collapsed, line-numbered.
 
-2. Read the slice with the Read tool. Do NOT cat it via Bash — that re-injects
-   bytes you already have on disk and wastes your context.
+2. Read the ENTIRE slice with the Read tool, top to bottom, in a single pass.
+   The slice has already been de-noised by filter.sh — status-frame runs are
+   collapsed, only the current session is included. Reading it whole is the
+   point: you need the full picture, not a keyword match.
+
+   Do NOT grep, search, or otherwise sample the slice. No `grep`, no `rg`, no
+   Bash `awk`/`sed`/`tail`, no Read calls with a narrow offset/limit aimed at
+   pre-guessed line ranges. If the slice is large, Read it in sequential
+   chunks until you've seen every line — do not skip.
+
+   Do NOT cat the slice via Bash — that re-injects bytes you already have on
+   disk and wastes your context.
 
 3. {QUESTION_OR_DEFAULT_INSTRUCTION}
 
 Answering rules — non-negotiable:
+- Form your answer from the whole session, not from a keyword match. Even if
+  the user's question seems narrow ("did the jog fire?"), your answer should
+  reflect what else happened around that event — preceding setup, concurrent
+  MCU state, anything that recontextualizes the direct answer.
 - Every factual claim about the log MUST be backed by a quoted line with its
   L<n> citation. No claim without evidence.
 - If the slice does not contain the evidence needed, say so explicitly. Do not
