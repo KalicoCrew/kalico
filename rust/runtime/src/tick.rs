@@ -803,6 +803,11 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         );
     }
 
+    // 2026-05-21 bisection step 5: early-return after Phase 1.
+    // If bench survives jog with this: freeze is in Phase 2/3/4/5.
+    // If bench crashes: freeze is in Phase 1 (axis loop, eval, or dispatch).
+    return;
+
     // -----------------------------------------------------------------
     // Phase 2: XY-derived quantities.
     //
@@ -1072,11 +1077,12 @@ pub fn isr_sample_tick(
     let after_arm = unsafe { cyccnt_read() };
     update_max(&shared.isr_arm_cycles_max, after_arm.wrapping_sub(after_widen));
 
-    // 2026-05-21 bisection step 3: bail BEFORE tick_sample evaluator.
-    bump_relaxed(&shared.isr_overrun_count);
-    return;
-    #[allow(unreachable_code)]
-    let _post_arm_return: () = ();
+    // 2026-05-21 bisection step 5: re-enable tick_sample call. Bisection
+    // inside runtime_tick_sample (via _BISECT_RTS env at compile time) is
+    // controlled separately — see the early-return below `pub fn
+    // runtime_tick_sample`. Step 4 (4a15dcf78) with arm_segment ON + this
+    // call OFF survived (ED=1, E7=1154). Now adding back the engine.tick_sample
+    // call; if bench crashes, the freeze is in runtime_tick_sample's body.
 
     // 2026-05-21 circuit breaker. The previous bench attempts crashed
     // with a 4-second IRQ tying up the CPU (prior_diag tim5_max_cyc =
