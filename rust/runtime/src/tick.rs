@@ -156,9 +156,11 @@ fn dispatch_pulse(
     // never have been armed in that state. Bail silently for Task 7;
     // Task 4's configure_axes is the proper gatekeeper.
     let microstep_distance = axis.microstep_distance;
-    shared
-        .isr_last_microstep_bits
-        .store(microstep_distance.to_bits(), Ordering::Relaxed);
+    if axis_idx == AXIS_A {
+        shared
+            .isr_last_microstep_bits
+            .store(microstep_distance.to_bits(), Ordering::Relaxed);
+    }
     if !microstep_distance.is_finite() || microstep_distance == 0.0 {
         bump_relaxed(&shared.isr_pulse_bad_mstep_count);
         return;
@@ -172,11 +174,13 @@ fn dispatch_pulse(
     #[allow(clippy::cast_possible_truncation)]
     let target_step_count = libm::roundf(p_end / microstep_distance) as i32;
     let signed_steps = target_step_count.wrapping_sub(prev_step_count);
-    shared.isr_last_p_end_bits.store(p_end.to_bits(), Ordering::Relaxed);
-    shared.isr_last_step_counts_packed.store(
-        ((target_step_count as u32) << 16) | ((prev_step_count as u32) & 0xFFFF),
-        Ordering::Relaxed,
-    );
+    if axis_idx == AXIS_A {
+        shared.isr_last_p_end_bits.store(p_end.to_bits(), Ordering::Relaxed);
+        shared.isr_last_step_counts_packed.store(
+            ((target_step_count as u32) << 16) | ((prev_step_count as u32) & 0xFFFF),
+            Ordering::Relaxed,
+        );
+    }
     // Update the axis cache regardless of whether we found any steps to
     // schedule — Phase-mode keeps it in lockstep too.
     axis.last_step_count = target_step_count;
@@ -189,10 +193,12 @@ fn dispatch_pulse(
     // can see what the eval is producing. If this stays 0 across an
     // entire jog despite EA/ED bumping, the eval is never producing
     // enough p_end change to cross a microstep threshold.
-    shared.isr_last_signed_steps.store(
-        signed_steps.unsigned_abs(),
-        core::sync::atomic::Ordering::Relaxed,
-    );
+    if axis_idx == AXIS_A {
+        shared.isr_last_signed_steps.store(
+            signed_steps.unsigned_abs(),
+            core::sync::atomic::Ordering::Relaxed,
+        );
+    }
     // 2026-05-21 FIX: bound check that the comment in compute_step_times
     // PROMISED but nothing enforced. If signed_steps is huge (e.g.,
     // target_step_count saturated to i32::MAX because p_end was a giant
@@ -207,8 +213,10 @@ fn dispatch_pulse(
         //   isr_last_microstep_bits = microstep_distance.to_bits()
         // Host decodes via f32::from_bits().
         shared.isr_last_t_start_lo.store(abs_steps, core::sync::atomic::Ordering::Relaxed);
-        shared.isr_last_p_end_bits.store(p_end.to_bits(), core::sync::atomic::Ordering::Relaxed);
-        shared.isr_last_microstep_bits.store(microstep_distance.to_bits(), core::sync::atomic::Ordering::Relaxed);
+        if axis_idx == AXIS_A {
+            shared.isr_last_p_end_bits.store(p_end.to_bits(), core::sync::atomic::Ordering::Relaxed);
+            shared.isr_last_microstep_bits.store(microstep_distance.to_bits(), core::sync::atomic::Ordering::Relaxed);
+        }
         bump_relaxed(&shared.isr_overrun_count);
         axis.last_step_count = prev_step_count;
         return;
@@ -840,8 +848,10 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         // 2026-05-21 diag: capture c0 (start-of-piece position) and
         // t_local on every eval. Last value before the dispatch_pulse
         // bound check trips is what the host reads via diag tags.
-        ctx.shared.isr_last_c0_bits.store(piece.coeffs[0].to_bits(), core::sync::atomic::Ordering::Relaxed);
-        ctx.shared.isr_last_t_local_bits.store(t_local.to_bits(), core::sync::atomic::Ordering::Relaxed);
+        if axis_idx == AXIS_A {
+            ctx.shared.isr_last_c0_bits.store(piece.coeffs[0].to_bits(), core::sync::atomic::Ordering::Relaxed);
+            ctx.shared.isr_last_t_local_bits.store(t_local.to_bits(), core::sync::atomic::Ordering::Relaxed);
+        }
 
         let (p_end, v_end) =
             crate::monomial::eval_position_velocity(&piece, t_local);
