@@ -105,6 +105,13 @@ class BridgeKinematics:
             axes = "xyz"
         for axis in axes:
             self._register_axis(config, axis, trapq, extras=("1",))
+        if kin_name == "corexy" and len(self.rails) >= 2:
+            x_endstop = self.rails[0].get_endstops()[0][0]
+            y_endstop = self.rails[1].get_endstops()[0][0]
+            for s in self.rails[1].get_steppers():
+                x_endstop.add_stepper(s)
+            for s in self.rails[0].get_steppers():
+                y_endstop.add_stepper(s)
         # corexy bridge does not drive Z, but a stable Klipper printer.cfg may
         # still declare [stepper_z]/[stepper_z1..3]. Consume them as passthrough
         # rails so option validation passes; runtime ignores them.
@@ -158,7 +165,25 @@ class BridgeKinematics:
         return [s for rail in self.rails for s in rail.get_steppers()]
 
     def calc_position(self, stepper_positions):
-        return [0.0, 0.0, 0.0]
+        def rail_pos(rail):
+            vals = [
+                stepper_positions.get(s.get_name(), 0.0)
+                for s in rail.get_steppers()
+            ]
+            if not vals:
+                return 0.0
+            return sum(vals) / len(vals)
+
+        axis_rails = self._axis_rails()
+        if self.kinematics == "corexy":
+            a = rail_pos(axis_rails.get(0)) if 0 in axis_rails else 0.0
+            b = rail_pos(axis_rails.get(1)) if 1 in axis_rails else 0.0
+            z = rail_pos(axis_rails.get(2)) if 2 in axis_rails else 0.0
+            return [0.5 * (a + b), 0.5 * (a - b), z]
+        return [
+            rail_pos(axis_rails.get(i)) if i in axis_rails else 0.0
+            for i in (0, 1, 2)
+        ]
 
     def _check_endstops(self, move):
         end_pos = move.end_pos
