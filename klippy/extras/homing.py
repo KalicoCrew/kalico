@@ -373,12 +373,14 @@ class Homing:
             retractpos = [
                 hp - ad * retract_r for hp, ad in zip(homepos, axes_d)
             ]
+            pre_retract_pos = list(self.toolhead.get_position())
             self.toolhead.move(retractpos, hi.retract_speed)
+            post_retract_pos = list(self.toolhead.get_position())
             logging.info(
-                "homing: retract submitted retractpos=%s "
-                "commanded_pos=%s retract_dist=%.3f",
-                retractpos, list(self.toolhead.get_position()),
-                retract_dist,
+                "homing: retract pre_pos=%s retractpos=%s "
+                "post_pos=%s retract_dist=%.3f",
+                pre_retract_pos, retractpos,
+                post_retract_pos, retract_dist,
             )
             if not hi.use_sensorless_homing or needs_rehome:
                 try:
