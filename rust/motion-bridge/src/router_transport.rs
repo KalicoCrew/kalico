@@ -52,7 +52,12 @@ impl RouterTransport {
         queue: CommandQueueId,
         parser: Arc<Mutex<Option<Arc<MsgProtoParser>>>>,
     ) -> Self {
-        Self { router, mcu, queue, parser }
+        Self {
+            router,
+            mcu,
+            queue,
+            parser,
+        }
     }
 
     fn parser_snapshot(&self) -> Result<Arc<MsgProtoParser>, TransportError> {
@@ -104,10 +109,10 @@ impl RouterTransport {
         let body = match rx.recv_timeout(timeout) {
             Ok(b) => b,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                return Err(TransportError::Timeout)
+                return Err(TransportError::Timeout);
             }
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                return Err(TransportError::Closed)
+                return Err(TransportError::Closed);
             }
         };
 
@@ -166,9 +171,7 @@ impl Transport for RouterTransport {
         // a `NotifyId`; `NotifyId::default()` is the documented "no notify"
         // sentinel — see `kalico_host_rt::passthrough_queue::router`.
         let mut router = self.router.lock().unwrap();
-        let entry = PassthroughEntry::new(
-            wire_bytes, 0, 0, NotifyId::none(),
-        );
+        let entry = PassthroughEntry::new(wire_bytes, 0, 0, NotifyId::none());
         router
             .push(self.mcu, self.queue, entry)
             .map_err(|e| TransportError::Parse(format!("router push: {e}")))?;
@@ -198,7 +201,11 @@ mod tests {
         let parser_slot: Arc<Mutex<Option<Arc<MsgProtoParser>>>> = Arc::new(Mutex::new(None));
         let t = RouterTransport::new(router, mcu, queue, parser_slot);
 
-        match t.call("kalico_load_curve", "kalico_load_curve_response", Duration::from_millis(10)) {
+        match t.call(
+            "kalico_load_curve",
+            "kalico_load_curve_response",
+            Duration::from_millis(10),
+        ) {
             Err(TransportError::Parse(s)) => assert!(s.contains("not configured")),
             other => panic!("expected Parse error, got {other:?}"),
         }

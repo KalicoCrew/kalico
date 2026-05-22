@@ -59,7 +59,7 @@ pub fn parse_fault_event(params: &MessageParams) -> Option<FaultEvent> {
 ///   callers never miss an event that arrived before they attached.
 #[derive(Debug, Default)]
 pub struct FaultLatch {
-    pub cell:       Option<RuntimeFaultEvent>,
+    pub cell: Option<RuntimeFaultEvent>,
     pub subscriber: Option<SyncSender<RuntimeFaultEvent>>,
 }
 
@@ -83,10 +83,7 @@ impl FaultLatch {
     /// Attach a subscriber. Returns [`SubscribeError::AlreadySubscribed`] if
     /// one is already registered. Replays the currently-latched fault (if any)
     /// to the new subscriber before returning.
-    pub fn subscribe(
-        &mut self,
-        tx: SyncSender<RuntimeFaultEvent>,
-    ) -> Result<(), SubscribeError> {
+    pub fn subscribe(&mut self, tx: SyncSender<RuntimeFaultEvent>) -> Result<(), SubscribeError> {
         if self.subscriber.is_some() {
             return Err(SubscribeError::AlreadySubscribed { channel: "fault" });
         }
@@ -156,8 +153,12 @@ mod fault_latch_tests {
         let mut latch = FaultLatch::default();
         let (tx1, _rx1) = mpsc::sync_channel::<RuntimeFaultEvent>(1);
         let (tx2, _rx2) = mpsc::sync_channel::<RuntimeFaultEvent>(1);
-        latch.subscribe(tx1).expect("first subscribe should succeed");
-        let err = latch.subscribe(tx2).expect_err("second subscribe should fail");
+        latch
+            .subscribe(tx1)
+            .expect("first subscribe should succeed");
+        let err = latch
+            .subscribe(tx2)
+            .expect_err("second subscribe should fail");
         assert!(
             matches!(err, SubscribeError::AlreadySubscribed { channel: "fault" }),
             "expected AlreadySubscribed{{channel: \"fault\"}}, got {:?}",

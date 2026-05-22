@@ -122,7 +122,11 @@ fn two_mcu_cfgs() -> Vec<McuAxisConfig> {
 /// Expected: motor-A CPs [100, 103.33, 106.67, 110], motor-B CPs [-100, -96.67, -93.33, -90].
 #[test]
 fn corexy_pure_x_jog_combines_into_motor_frame_curves() {
-    let seg = shaped([linear_curve(0.0, 10.0), constant_curve(100.0), constant_curve(5.0)]);
+    let seg = shaped([
+        linear_curve(0.0, 10.0),
+        constant_curve(100.0),
+        constant_curve(5.0),
+    ]);
     let plans = build_push_params(&seg, &two_mcu_cfgs(), 0, 1_000);
 
     let octopus = plans.iter().find(|p| p.mcu_id == 0).expect("octopus plan");
@@ -138,14 +142,20 @@ fn corexy_pure_x_jog_combines_into_motor_frame_curves() {
     let a_cps = motor_a.bp_per_piece[0];
     let a_expected = [100.0_f32, 103.333_333, 106.666_666, 110.0];
     for (k, (&got, &exp)) in a_cps.iter().zip(a_expected.iter()).enumerate() {
-        assert!((got - exp).abs() < 1e-3, "motor-A CP[{k}]: got {got}, expected ~{exp}");
+        assert!(
+            (got - exp).abs() < 1e-3,
+            "motor-A CP[{k}]: got {got}, expected ~{exp}"
+        );
     }
 
     assert_eq!(motor_b.bp_per_piece.len(), 1);
     let b_cps = motor_b.bp_per_piece[0];
     let b_expected = [-100.0_f32, -96.666_666, -93.333_333, -90.0];
     for (k, (&got, &exp)) in b_cps.iter().zip(b_expected.iter()).enumerate() {
-        assert!((got - exp).abs() < 1e-3, "motor-B CP[{k}]: got {got}, expected ~{exp}");
+        assert!(
+            (got - exp).abs() < 1e-3,
+            "motor-B CP[{k}]: got {got}, expected ~{exp}"
+        );
     }
 
     // Z passes through unchanged on the Cartesian MCU.
@@ -196,20 +206,44 @@ fn corexy_multi_piece_x_knot_union_combines_correctly() {
     let (_, motor_b) = &plan.curves_to_load[1];
 
     // Both motor curves must be two pieces (X had 2 pieces, Y had 1; union → 2).
-    assert_eq!(motor_a.bp_per_piece.len(), 2, "motor-A must be 2 pieces after knot union");
-    assert_eq!(motor_b.bp_per_piece.len(), 2, "motor-B must be 2 pieces after knot union");
+    assert_eq!(
+        motor_a.bp_per_piece.len(),
+        2,
+        "motor-A must be 2 pieces after knot union"
+    );
+    assert_eq!(
+        motor_b.bp_per_piece.len(),
+        2,
+        "motor-B must be 2 pieces after knot union"
+    );
 
     // Motor-A = X+Y: at u=0 → 0+20=20; at u=1 → 10+20=30.
     let a0 = motor_a.bp_per_piece[0];
-    assert!((a0[0] as f64 - 20.0).abs() < 0.01, "motor-A piece0 CP0: got {}", a0[0]);
+    assert!(
+        (a0[0] as f64 - 20.0).abs() < 0.01,
+        "motor-A piece0 CP0: got {}",
+        a0[0]
+    );
     let a1 = motor_a.bp_per_piece[1];
-    assert!((a1[3] as f64 - 30.0).abs() < 0.01, "motor-A piece1 CP3: got {}", a1[3]);
+    assert!(
+        (a1[3] as f64 - 30.0).abs() < 0.01,
+        "motor-A piece1 CP3: got {}",
+        a1[3]
+    );
 
     // Motor-B = X-Y: at u=0 → 0-20=-20; at u=1 → 10-20=-10.
     let b0 = motor_b.bp_per_piece[0];
-    assert!((b0[0] as f64 - (-20.0)).abs() < 0.01, "motor-B piece0 CP0: got {}", b0[0]);
+    assert!(
+        (b0[0] as f64 - (-20.0)).abs() < 0.01,
+        "motor-B piece0 CP0: got {}",
+        b0[0]
+    );
     let b1 = motor_b.bp_per_piece[1];
-    assert!((b1[3] as f64 - (-10.0)).abs() < 0.01, "motor-B piece1 CP3: got {}", b1[3]);
+    assert!(
+        (b1[3] as f64 - (-10.0)).abs() < 0.01,
+        "motor-B piece1 CP3: got {}",
+        b1[3]
+    );
 
     // Interior-parameter evaluation via de Casteljau on the Bernstein CPs.
     //
@@ -248,7 +282,11 @@ fn corexy_multi_piece_x_knot_union_combines_correctly() {
 /// Motor-A = 50+Y: [50, 53.33, 56.67, 60]. Motor-B = 50-Y: [50, 46.67, 43.33, 40].
 #[test]
 fn corexy_pure_y_jog_motor_b_has_negative_y_contribution() {
-    let seg = shaped([constant_curve(50.0), linear_curve(0.0, 10.0), constant_curve(0.0)]);
+    let seg = shaped([
+        constant_curve(50.0),
+        linear_curve(0.0, 10.0),
+        constant_curve(0.0),
+    ]);
     let plans = build_push_params(&seg, &corexy_only_cfg(), 0, 1_000);
 
     let plan = plans.iter().find(|p| p.mcu_id == 0).expect("plan");
@@ -262,7 +300,10 @@ fn corexy_pure_y_jog_motor_b_has_negative_y_contribution() {
     let a_cps = motor_a.bp_per_piece[0];
     let a_expected = [50.0_f32, 53.333_333, 56.666_666, 60.0];
     for (k, (&got, &exp)) in a_cps.iter().zip(a_expected.iter()).enumerate() {
-        assert!((got - exp).abs() < 1e-3, "motor-A CP[{k}]: got {got}, expected ~{exp}");
+        assert!(
+            (got - exp).abs() < 1e-3,
+            "motor-A CP[{k}]: got {got}, expected ~{exp}"
+        );
     }
 
     assert_eq!(motor_b.bp_per_piece.len(), 1);
@@ -270,7 +311,10 @@ fn corexy_pure_y_jog_motor_b_has_negative_y_contribution() {
     // B = X - Y = 50 - [0, 3.33, 6.67, 10] = [50, 46.67, 43.33, 40].
     let b_expected = [50.0_f32, 46.666_666, 43.333_333, 40.0];
     for (k, (&got, &exp)) in b_cps.iter().zip(b_expected.iter()).enumerate() {
-        assert!((got - exp).abs() < 1e-3, "motor-B CP[{k}]: got {got}, expected ~{exp}");
+        assert!(
+            (got - exp).abs() < 1e-3,
+            "motor-B CP[{k}]: got {got}, expected ~{exp}"
+        );
     }
 }
 
@@ -279,7 +323,11 @@ fn corexy_pure_y_jog_motor_b_has_negative_y_contribution() {
 /// Both motors step at distinct rates — neither is zero.
 #[test]
 fn corexy_diagonal_jog_both_motors_step_at_distinct_rates() {
-    let seg = shaped([linear_curve(0.0, 6.0), linear_curve(0.0, 4.0), constant_curve(0.0)]);
+    let seg = shaped([
+        linear_curve(0.0, 6.0),
+        linear_curve(0.0, 4.0),
+        constant_curve(0.0),
+    ]);
     let plans = build_push_params(&seg, &corexy_only_cfg(), 0, 1_000);
 
     let plan = plans.iter().find(|p| p.mcu_id == 0).expect("plan");
@@ -296,13 +344,19 @@ fn corexy_diagonal_jog_both_motors_step_at_distinct_rates() {
     // Motor-A = X+Y: 0→10.
     let a_expected = [0.0_f32, 3.333_333, 6.666_666, 10.0];
     for (k, (&got, &exp)) in a_cps.iter().zip(a_expected.iter()).enumerate() {
-        assert!((got - exp).abs() < 1e-3, "motor-A CP[{k}]: got {got}, expected ~{exp}");
+        assert!(
+            (got - exp).abs() < 1e-3,
+            "motor-A CP[{k}]: got {got}, expected ~{exp}"
+        );
     }
 
     // Motor-B = X-Y: 0→2.
     let b_expected = [0.0_f32, 0.666_666, 1.333_333, 2.0];
     for (k, (&got, &exp)) in b_cps.iter().zip(b_expected.iter()).enumerate() {
-        assert!((got - exp).abs() < 1e-3, "motor-B CP[{k}]: got {got}, expected ~{exp}");
+        assert!(
+            (got - exp).abs() < 1e-3,
+            "motor-B CP[{k}]: got {got}, expected ~{exp}"
+        );
     }
 
     // Sanity: A and B differ.

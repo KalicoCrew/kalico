@@ -12,7 +12,7 @@
 //! test lives in a fresh test target.
 
 use kalico_protocol::codec::{Cursor, Decode, Encode};
-use kalico_protocol::messages::{RuntimeCapsResponse, RUNTIME_CAPS_RESPONSE_BODY_LEN};
+use kalico_protocol::messages::{RUNTIME_CAPS_RESPONSE_BODY_LEN, RuntimeCapsResponse};
 
 /// The bootstrap helper decodes a `RuntimeCapsResponse` body by calling
 /// `RuntimeCapsResponse::decode_from(&mut Cursor::new(body))`. Any change to

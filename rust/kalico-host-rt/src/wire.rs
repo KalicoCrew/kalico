@@ -186,14 +186,20 @@ mod tests {
         let err = encode_load_curve_v1(0, &cps, &knots, &weights).unwrap_err();
         assert!(matches!(
             err,
-            WireError::CountOverflow { field: "num_cps", len: 256 }
+            WireError::CountOverflow {
+                field: "num_cps",
+                len: 256
+            }
         ));
 
         let cps_scalar = vec![0.0_f32; 256];
         let err = encode_load_curve_scalar(0, &knots, &cps_scalar).unwrap_err();
         assert!(matches!(
             err,
-            WireError::CountOverflow { field: "num_cps", len: 256 }
+            WireError::CountOverflow {
+                field: "num_cps",
+                len: 256
+            }
         ));
     }
 }

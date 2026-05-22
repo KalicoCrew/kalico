@@ -26,7 +26,7 @@ fn harness_with_router() -> (
 ) {
     let mut h = ReactorHarness::new();
     let mut router = PassthroughRouter::with_clock(
-        Arc::clone(&h.clock) as Arc<dyn kalico_host_rt::clock::Clock + Send + Sync>,
+        Arc::clone(&h.clock) as Arc<dyn kalico_host_rt::clock::Clock + Send + Sync>
     );
     let mcu = router.claim_mcu("test_mcu");
     let qid = router.alloc_command_queue(mcu).unwrap();
@@ -68,9 +68,12 @@ fn task24_single_mcu_emission_ordering() {
     let (mut h, mcu, qid) = harness_with_router();
 
     // Push in descending req_clock order so the test validates sorting.
-    h.passthrough_push(mcu, qid, entry(&[0x03], 0, 300)).unwrap();
-    h.passthrough_push(mcu, qid, entry(&[0x01], 0, 100)).unwrap();
-    h.passthrough_push(mcu, qid, entry(&[0x02], 0, 200)).unwrap();
+    h.passthrough_push(mcu, qid, entry(&[0x03], 0, 300))
+        .unwrap();
+    h.passthrough_push(mcu, qid, entry(&[0x01], 0, 100))
+        .unwrap();
+    h.passthrough_push(mcu, qid, entry(&[0x02], 0, 200))
+        .unwrap();
 
     h.tick();
 
@@ -105,13 +108,25 @@ fn task25_multi_mcu_isolation() {
 
     // Push distinct payloads to each MCU.
     router
-        .push(mcu_a, qa, PassthroughEntry::new(vec![0xAA], 0, 1, NotifyId::none()))
+        .push(
+            mcu_a,
+            qa,
+            PassthroughEntry::new(vec![0xAA], 0, 1, NotifyId::none()),
+        )
         .unwrap();
     router
-        .push(mcu_a, qa, PassthroughEntry::new(vec![0xAB], 0, 2, NotifyId::none()))
+        .push(
+            mcu_a,
+            qa,
+            PassthroughEntry::new(vec![0xAB], 0, 2, NotifyId::none()),
+        )
         .unwrap();
     router
-        .push(mcu_b, qb, PassthroughEntry::new(vec![0xBB], 0, 1, NotifyId::none()))
+        .push(
+            mcu_b,
+            qb,
+            PassthroughEntry::new(vec![0xBB], 0, 1, NotifyId::none()),
+        )
         .unwrap();
 
     // Drain MCU-A.
@@ -188,7 +203,10 @@ fn task26_notify_round_trip() {
         .unwrap();
 
     // The callback should have fired.
-    let resp = captured.lock().unwrap().take()
+    let resp = captured
+        .lock()
+        .unwrap()
+        .take()
         .expect("callback must have fired");
 
     assert_eq!(resp.bytes, vec![0xBE, 0xEF], "response bytes must match");
@@ -220,7 +238,10 @@ fn task27_window_backpressure() {
     h.tick();
 
     let emitted_first_wave = extract_payloads(h.tx_log()).len();
-    assert!(emitted_first_wave > 0, "at least some entries should be emitted");
+    assert!(
+        emitted_first_wave > 0,
+        "at least some entries should be emitted"
+    );
     assert!(
         emitted_first_wave < 20,
         "window backpressure should block before all 20 entries emit; emitted={}",
@@ -287,11 +308,13 @@ fn task28_config_stage_ordering() {
 
     // Init commands follow.
     assert_eq!(
-        entries[2], vec![0xD1],
+        entries[2],
+        vec![0xD1],
         "first init cmd must follow config cmds"
     );
     assert_eq!(
-        entries[3], vec![0xD2],
+        entries[3],
+        vec![0xD2],
         "second init cmd must follow config cmds"
     );
 
@@ -333,6 +356,10 @@ fn task28b_runtime_traffic_after_config_completes() {
 
     // Runtime entry should appear on the wire.
     let payloads = extract_payloads(h.tx_log());
-    assert_eq!(payloads.len(), 1, "runtime entry should be on wire after config stage completes");
+    assert_eq!(
+        payloads.len(),
+        1,
+        "runtime entry should be on wire after config stage completes"
+    );
     assert_eq!(payloads[0], vec![0xEE]);
 }

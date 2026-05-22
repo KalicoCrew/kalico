@@ -110,7 +110,7 @@ mod tests {
     #[test]
     fn build_frame_roundtrips() {
         let frame = build_frame(&[0x01, 0x02], 0);
-        assert_eq!(frame[0], 5 + 2);    // len
+        assert_eq!(frame[0], 5 + 2); // len
         assert_eq!(frame[1] & MESSAGE_SEQ_MASK, 0);
         assert_eq!(frame[1] & !MESSAGE_SEQ_MASK, MESSAGE_DEST);
         assert_eq!(*frame.last().unwrap(), MESSAGE_SYNC);

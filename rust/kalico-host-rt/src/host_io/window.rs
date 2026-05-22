@@ -10,9 +10,9 @@ pub const MAX_PENDING_BLOCKS: usize = 12;
 
 #[derive(Debug)]
 pub struct UnackedEntry {
-    pub seq:         u64,
+    pub seq: u64,
     pub frame_bytes: Vec<u8>,
-    pub sent_at:     Instant,
+    pub sent_at: Instant,
     pub retry_count: u32,
 }
 
@@ -22,10 +22,18 @@ pub struct UnackedWindow {
 }
 
 impl UnackedWindow {
-    pub fn len(&self) -> usize { self.entries.len() }
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
-    pub fn is_full(&self) -> bool { self.entries.len() >= MAX_PENDING_BLOCKS }
-    pub fn front(&self) -> Option<&UnackedEntry> { self.entries.front() }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+    pub fn is_full(&self) -> bool {
+        self.entries.len() >= MAX_PENDING_BLOCKS
+    }
+    pub fn front(&self) -> Option<&UnackedEntry> {
+        self.entries.front()
+    }
 
     pub fn push(&mut self, entry: UnackedEntry) {
         debug_assert!(!self.is_full(), "UnackedWindow overflow");
@@ -61,13 +69,13 @@ impl UnackedWindow {
 
 #[derive(Debug)]
 pub struct AwaitEntry {
-    pub call_id:                u64,
-    pub seq:                    u64,
+    pub call_id: u64,
+    pub seq: u64,
     pub expected_response_name: String,
-    pub completion:             SyncSender<Result<MessageParams, TransportError>>,
-    pub submitted_at:           Instant,
-    pub deadline:               Instant,
-    pub abandoned:              bool,
+    pub completion: SyncSender<Result<MessageParams, TransportError>>,
+    pub submitted_at: Instant,
+    pub deadline: Instant,
+    pub abandoned: bool,
 }
 
 #[derive(Debug, Default)]
@@ -78,11 +86,15 @@ pub struct AwaitingResponse {
 const AWAITING_DEFENSIVE_CEILING: usize = 1024;
 
 impl AwaitingResponse {
-    pub fn len(&self) -> usize { self.entries.len() }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
 
     pub fn push(&mut self, entry: AwaitEntry) -> Result<(), TransportError> {
         if self.entries.len() >= AWAITING_DEFENSIVE_CEILING {
-            return Err(TransportError::Parse("AwaitingResponse defensive ceiling exceeded".into()));
+            return Err(TransportError::Parse(
+                "AwaitingResponse defensive ceiling exceeded".into(),
+            ));
         }
         self.entries.push_back(entry);
         Ok(())
@@ -90,7 +102,9 @@ impl AwaitingResponse {
 
     /// FIFO match against expected_response_name, skipping abandoned entries.
     pub fn find_match(&self, name: &str) -> Option<usize> {
-        self.entries.iter().position(|e| !e.abandoned && e.expected_response_name == name)
+        self.entries
+            .iter()
+            .position(|e| !e.abandoned && e.expected_response_name == name)
     }
 
     pub fn remove(&mut self, idx: usize) -> AwaitEntry {
@@ -122,7 +136,9 @@ impl AwaitingResponse {
         std::mem::take(&mut self.entries).into_iter().collect()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &AwaitEntry> { self.entries.iter() }
+    pub fn iter(&self) -> impl Iterator<Item = &AwaitEntry> {
+        self.entries.iter()
+    }
 }
 
 #[cfg(test)]
@@ -158,13 +174,20 @@ mod awaiting_tests {
     use super::*;
     use std::time::Duration;
 
-    fn make_entry(call_id: u64, name: &str, seq: u64, deadline: Instant)
-        -> (AwaitEntry, std::sync::mpsc::Receiver<Result<MessageParams, TransportError>>)
-    {
+    fn make_entry(
+        call_id: u64,
+        name: &str,
+        seq: u64,
+        deadline: Instant,
+    ) -> (
+        AwaitEntry,
+        std::sync::mpsc::Receiver<Result<MessageParams, TransportError>>,
+    ) {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         (
             AwaitEntry {
-                call_id, seq,
+                call_id,
+                seq,
                 expected_response_name: name.to_string(),
                 completion: tx,
                 submitted_at: Instant::now(),
@@ -182,7 +205,7 @@ mod awaiting_tests {
         let (e2, _r2) = make_entry(2, "rsp", 2, Instant::now() + Duration::from_secs(60));
         a.push(e1).unwrap();
         a.push(e2).unwrap();
-        assert_eq!(a.find_match("rsp"), Some(0));    // oldest first
+        assert_eq!(a.find_match("rsp"), Some(0)); // oldest first
     }
 
     #[test]
@@ -193,7 +216,7 @@ mod awaiting_tests {
         a.push(e1).unwrap();
         a.push(e2).unwrap();
         a.mark_abandoned(1);
-        assert_eq!(a.find_match("rsp"), Some(1));    // skips abandoned 0
+        assert_eq!(a.find_match("rsp"), Some(1)); // skips abandoned 0
     }
 
     #[test]

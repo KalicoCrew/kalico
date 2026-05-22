@@ -4,7 +4,7 @@
 use indexmap::IndexMap;
 
 use super::command_queue::CommandQueue;
-use super::entry::{PassthroughEntry, BACKGROUND_PRIORITY_CLOCK};
+use super::entry::{BACKGROUND_PRIORITY_CLOCK, PassthroughEntry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CommandQueueId(u32);
@@ -55,7 +55,11 @@ impl McuState {
         id
     }
 
-    pub fn push(&mut self, queue_id: CommandQueueId, entry: PassthroughEntry) -> Result<(), PushError> {
+    pub fn push(
+        &mut self,
+        queue_id: CommandQueueId,
+        entry: PassthroughEntry,
+    ) -> Result<(), PushError> {
         self.queues
             .get_mut(&queue_id)
             .ok_or(PushError::UnknownQueue(queue_id))?
@@ -76,7 +80,10 @@ impl McuState {
     /// are only popped when *no* non-background entries exist across any queue.
     pub fn pop_next(&mut self) -> Option<PassthroughEntry> {
         // Check whether any queue has a non-background ready entry.
-        let has_non_bg = self.queues.values().any(CommandQueue::has_non_background_ready);
+        let has_non_bg = self
+            .queues
+            .values()
+            .any(CommandQueue::has_non_background_ready);
 
         let best_key = self
             .queues
@@ -115,7 +122,10 @@ impl McuState {
     /// If non-background entries exist, background entries are excluded from
     /// the minimum. If only background entries remain, returns the sentinel.
     pub fn peek_next_req_clock(&self) -> Option<u64> {
-        let has_non_bg = self.queues.values().any(CommandQueue::has_non_background_ready);
+        let has_non_bg = self
+            .queues
+            .values()
+            .any(CommandQueue::has_non_background_ready);
         self.queues
             .values()
             .filter_map(CommandQueue::peek_ready_req_clock)
@@ -219,7 +229,10 @@ mod tests {
         // Non-background entries first, then background.
         assert_eq!(state.pop_next().unwrap().req_clock(), 100);
         assert_eq!(state.pop_next().unwrap().req_clock(), 300);
-        assert_eq!(state.pop_next().unwrap().req_clock(), BACKGROUND_PRIORITY_CLOCK);
+        assert_eq!(
+            state.pop_next().unwrap().req_clock(),
+            BACKGROUND_PRIORITY_CLOCK
+        );
     }
 
     #[test]

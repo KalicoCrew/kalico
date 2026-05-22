@@ -208,12 +208,8 @@ pub fn decode_trip_event(params: &MessageParams) -> Result<TripEventV1, EndstopE
     for i in 0..usize::from(stepper_count) {
         let off = i * 5;
         let oid = blob[off];
-        let step_count = i32::from_le_bytes([
-            blob[off + 1],
-            blob[off + 2],
-            blob[off + 3],
-            blob[off + 4],
-        ]);
+        let step_count =
+            i32::from_le_bytes([blob[off + 1], blob[off + 2], blob[off + 3], blob[off + 4]]);
         steppers.push(TripStepperRecord { oid, step_count });
     }
     Ok(TripEventV1 {

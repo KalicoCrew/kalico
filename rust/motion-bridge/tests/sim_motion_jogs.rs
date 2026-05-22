@@ -78,11 +78,9 @@ use std::time::{Duration, Instant};
 use kalico_host_rt::clock_sync::ClockSyncEstimator;
 use kalico_host_rt::credit::CreditCounter;
 use kalico_host_rt::endstop::{
-    arm_endstop_with_timeout, ArmPolicy, ArmStatus, SourceKind, SourceSpec,
+    ArmPolicy, ArmStatus, SourceKind, SourceSpec, arm_endstop_with_timeout,
 };
-use kalico_host_rt::host_io::runtime_events::{
-    EndstopTrippedEvent, RuntimeEvent, StatusEvent,
-};
+use kalico_host_rt::host_io::runtime_events::{EndstopTrippedEvent, RuntimeEvent, StatusEvent};
 use kalico_host_rt::host_io::{KalicoHostIo, KalicoHostIoConfig};
 use kalico_host_rt::producer::{self, DEFAULT_LOAD_CURVE_TIMEOUT};
 use kalico_host_rt::transport::Transport;
@@ -90,11 +88,9 @@ use trajectory::{AxisShaper, RequiredShaper, ShapedSegment, ShaperConfig};
 
 use motion_bridge_native::classify::classify_and_build;
 use motion_bridge_native::config::{PlannerConfig, PlannerLimits};
-use motion_bridge_native::dispatch::{
-    build_push_params, AXIS_X, AXIS_Y, McuAxisConfig, McuCaps,
-};
+use motion_bridge_native::dispatch::{AXIS_X, AXIS_Y, McuAxisConfig, McuCaps, build_push_params};
 use motion_bridge_native::planner::{DispatchError, PlannerHandle};
-use motion_bridge_native::slot_pool::{SlotPool, CURVE_POOL_N};
+use motion_bridge_native::slot_pool::{CURVE_POOL_N, SlotPool};
 
 // ---------------------------------------------------------------------------
 // Config constants — mirror the live Trident config (smaller subset; the sim
@@ -129,8 +125,12 @@ fn live_planner_config() -> PlannerConfig {
         square_corner_velocity: 5.0,
     };
     c.shaper = ShaperConfig {
-        x: RequiredShaper::SmoothMzv { frequency_hz: 186.0 },
-        y: RequiredShaper::SmoothMzv { frequency_hz: 122.0 },
+        x: RequiredShaper::SmoothMzv {
+            frequency_hz: 186.0,
+        },
+        y: RequiredShaper::SmoothMzv {
+            frequency_hz: 122.0,
+        },
         z: AxisShaper::Passthrough,
     };
     // Match the bench harness — looser than the production 5 µm because the
@@ -179,8 +179,8 @@ impl SimProcess {
                 .map(|d| d.as_secs())
                 .unwrap_or(0),
         ));
-        let log_file = std::fs::File::create(&log_path)
-            .map_err(|e| format!("create renode log: {e}"))?;
+        let log_file =
+            std::fs::File::create(&log_path).map_err(|e| format!("create renode log: {e}"))?;
         let log_file2 = log_file
             .try_clone()
             .map_err(|e| format!("clone renode log fd: {e}"))?;
@@ -203,7 +203,10 @@ impl SimProcess {
             log_path.display(),
         );
 
-        Ok(SimProcess { child: Some(child), log_path })
+        Ok(SimProcess {
+            child: Some(child),
+            log_path,
+        })
     }
 
     fn wait_for_tcp_ready(&self, timeout: Duration) -> Result<(), String> {
@@ -212,7 +215,9 @@ impl SimProcess {
             if std::net::TcpStream::connect_timeout(
                 &std::net::SocketAddr::new("127.0.0.1".parse().unwrap(), SIM_TCP_PORT),
                 Duration::from_millis(500),
-            ).is_ok() {
+            )
+            .is_ok()
+            {
                 return Ok(());
             }
             thread::sleep(Duration::from_millis(250));
@@ -220,7 +225,8 @@ impl SimProcess {
         Err(format!(
             "Renode TCP port {SIM_TCP_PORT} did not accept connections within {:?}; \
              see {}",
-            timeout, self.log_path.display(),
+            timeout,
+            self.log_path.display(),
         ))
     }
 }
@@ -445,8 +451,7 @@ impl SimHarness {
         let last_seg_id = Arc::new(AtomicU64::new(0));
         let fault_detail_by_tag: Arc<Mutex<HashMap<u8, u32>>> =
             Arc::new(Mutex::new(HashMap::new()));
-        let endstop_trips: Arc<Mutex<Vec<EndstopTrippedEvent>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let endstop_trips: Arc<Mutex<Vec<EndstopTrippedEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let slot_pool_for_release: Arc<Mutex<Option<Arc<Mutex<SlotPool>>>>> =
             Arc::new(Mutex::new(None));
         {
@@ -525,9 +530,9 @@ impl SimHarness {
 
         // Clock-sync thread — identical structure to bridge.rs's
         // `spawn_periodic_clock_sync`, just inlined.
-        let clock_sync = Arc::new(Mutex::new(
-            ClockSyncEstimator::new(f64::from(SIM_CLOCK_FREQ)),
-        ));
+        let clock_sync = Arc::new(Mutex::new(ClockSyncEstimator::new(f64::from(
+            SIM_CLOCK_FREQ,
+        ))));
         let clock_sync_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let clock_sync_samples = Arc::new(AtomicU64::new(0));
         let clock_sync_handle = {
@@ -651,11 +656,7 @@ impl SimHarness {
     ///   - `0xE2` bits 16..23 = `runtime_emit_pulses & 0xFF`.
     ///   - `0xB8` low 8 bits = `producer_primary_resolved_total & 0xFF`.
     fn fault_detail_max(&self, tag: u8) -> Option<u32> {
-        self.fault_detail_by_tag
-            .lock()
-            .unwrap()
-            .get(&tag)
-            .copied()
+        self.fault_detail_by_tag.lock().unwrap().get(&tag).copied()
     }
 
     /// Snapshot every observed tag/payload pair, sorted by tag for stable
@@ -812,10 +813,8 @@ fn build_dispatch(
             // clocks relative to mcu_base_clock. This is what
             // `host_time_to_mcu_clock` does on the router side, just without
             // routing through a `PassthroughRouter` mutex.
-            let rel_start_cycles =
-                (seg.t_start * f64::from(SIM_CLOCK_FREQ)).max(0.0) as u64;
-            let rel_end_cycles =
-                (seg.t_end * f64::from(SIM_CLOCK_FREQ)).max(0.0) as u64;
+            let rel_start_cycles = (seg.t_start * f64::from(SIM_CLOCK_FREQ)).max(0.0) as u64;
+            let rel_end_cycles = (seg.t_end * f64::from(SIM_CLOCK_FREQ)).max(0.0) as u64;
             plan.params.t_start = mcu_base_clock.saturating_add(rel_start_cycles);
             plan.params.t_end = mcu_base_clock.saturating_add(rel_end_cycles);
 
@@ -828,13 +827,20 @@ fn build_dispatch(
 
             eprintln!(
                 "[planner-trace] dispatching seg id={} mcu={} t_start={} t_end={} (rel {:.6}–{:.6} s) curves_to_load.len={}",
-                plan.params.id, plan.mcu_id, plan.params.t_start, plan.params.t_end,
-                seg.t_start, seg.t_end, plan.curves_to_load.len(),
+                plan.params.id,
+                plan.mcu_id,
+                plan.params.t_start,
+                plan.params.t_end,
+                seg.t_start,
+                seg.t_end,
+                plan.curves_to_load.len(),
             );
             for (i, (axis_idx, cp)) in plan.curves_to_load.iter().enumerate() {
                 eprintln!(
                     "[planner-trace]   curve[{}]: axis={} n_pieces={} body_estimate={}",
-                    i, axis_idx, cp.bp_per_piece.len(),
+                    i,
+                    axis_idx,
+                    cp.bp_per_piece.len(),
                     // LoadCurveCubic wire body: 4 (header) + 20 bytes per piece
                     4 + 20 * cp.bp_per_piece.len(),
                 );
@@ -844,32 +850,43 @@ fn build_dispatch(
             // partial-failure slot release.
             let mut allocated_slots: Vec<u16> = Vec::with_capacity(plan.curves_to_load.len());
             let mut load_err: Option<DispatchError> = None;
-            eprintln!("[planner-trace] seg={} entering load loop, n_curves={}",
-                plan.params.id, plan.curves_to_load.len());
+            eprintln!(
+                "[planner-trace] seg={} entering load loop, n_curves={}",
+                plan.params.id,
+                plan.curves_to_load.len()
+            );
             for i in 0..plan.curves_to_load.len() {
                 let axis_idx = plan.curves_to_load[i].0;
                 let curve_params = plan.curves_to_load[i].1.clone();
-                eprintln!("[planner-trace] seg={} curve_iter={} axis={} start", plan.params.id, i, axis_idx);
+                eprintln!(
+                    "[planner-trace] seg={} curve_iter={} axis={} start",
+                    plan.params.id, i, axis_idx
+                );
                 let alloc = {
                     let mut pool = slot_pool.lock().unwrap();
                     let cap = pool.capacity();
                     let in_flight = pool.in_flight_count();
-                    pool.try_alloc()
-                        .ok_or(DispatchError::SlotPoolExhausted {
-                            mcu_id: plan.mcu_id,
-                            capacity: cap,
-                            in_flight,
-                        })
+                    pool.try_alloc().ok_or(DispatchError::SlotPoolExhausted {
+                        mcu_id: plan.mcu_id,
+                        capacity: cap,
+                        in_flight,
+                    })
                 };
                 let (slot, slot_gen) = match alloc {
                     Ok(v) => v,
                     Err(e) => {
-                        eprintln!("[planner-trace] seg={} curve_iter={} alloc FAILED: {:?}", plan.params.id, i, e);
+                        eprintln!(
+                            "[planner-trace] seg={} curve_iter={} alloc FAILED: {:?}",
+                            plan.params.id, i, e
+                        );
                         load_err = Some(e);
                         break;
                     }
                 };
-                eprintln!("[planner-trace] seg={} curve_iter={} alloc OK slot={} gen={}", plan.params.id, i, slot, slot_gen);
+                eprintln!(
+                    "[planner-trace] seg={} curve_iter={} alloc OK slot={} gen={}",
+                    plan.params.id, i, slot, slot_gen
+                );
                 allocated_slots.push(slot);
                 match producer::load_curve(
                     host_io.as_ref(),
@@ -879,11 +896,17 @@ fn build_dispatch(
                     DEFAULT_LOAD_CURVE_TIMEOUT,
                 ) {
                     Ok(handle) => {
-                        eprintln!("[planner-trace] seg={} curve_iter={} load_curve OK handle=0x{:08x}", plan.params.id, i, handle);
+                        eprintln!(
+                            "[planner-trace] seg={} curve_iter={} load_curve OK handle=0x{:08x}",
+                            plan.params.id, i, handle
+                        );
                         plan.set_handle(axis_idx, handle);
                     }
                     Err(e) => {
-                        eprintln!("[planner-trace] seg={} curve_iter={} load_curve ERR: {:?}", plan.params.id, i, e);
+                        eprintln!(
+                            "[planner-trace] seg={} curve_iter={} load_curve ERR: {:?}",
+                            plan.params.id, i, e
+                        );
                         load_err = Some(DispatchError::LoadCurve {
                             mcu_id: plan.mcu_id,
                             slot,
@@ -896,7 +919,11 @@ fn build_dispatch(
                     }
                 }
             }
-            eprintln!("[planner-trace] seg={} exited load loop, load_err={:?}", plan.params.id, load_err.as_ref().map(|e| format!("{:?}", e)));
+            eprintln!(
+                "[planner-trace] seg={} exited load loop, load_err={:?}",
+                plan.params.id,
+                load_err.as_ref().map(|e| format!("{:?}", e))
+            );
 
             if let Some(err) = load_err {
                 let mut pool = slot_pool.lock().unwrap();
@@ -1056,7 +1083,11 @@ impl PlannerCtx {
             .kalico_stream_open([0.0; 4])
             .map_err(|e| format!("kalico_stream_open: {e}"))?;
 
-        Ok(PlannerCtx { harness, planner, stats })
+        Ok(PlannerCtx {
+            harness,
+            planner,
+            stats,
+        })
     }
 
     fn submit_jog(
@@ -1162,7 +1193,10 @@ fn configure_sim_axes_inner(
     }
     eprintln!(
         "[sim] ConfigureAxes ok (CoreXY, steps_per_mm = [{:.1}, {:.1}, {:.1}, {:.1}], phase_stepping={})",
-        steps_per_mm[0], steps_per_mm[1], steps_per_mm[2], steps_per_mm[3],
+        steps_per_mm[0],
+        steps_per_mm[1],
+        steps_per_mm[2],
+        steps_per_mm[3],
         extended.is_some(),
     );
     Ok(())
@@ -1224,9 +1258,7 @@ fn setup_klipper_stepper_bindings(host_io: &KalicoHostIo) -> Result<(), String> 
     //    `runtime_emit_step_pulses(0, n)` toggles PB5 (and writes PB6 on
     //    direction change) instead of early-returning on `cnt == 0`.
     host_io
-        .send_fire_and_forget(
-            "config_runtime_stepper motor_idx=0 stepper_oid=0 invert_dir=0",
-        )
+        .send_fire_and_forget("config_runtime_stepper motor_idx=0 stepper_oid=0 invert_dir=0")
         .map_err(|e| format!("config_runtime_stepper: {e:?}"))?;
 
     // 4. Barrier: send a request/response command so we know all three
@@ -1281,10 +1313,8 @@ fn setup_klipper_stepper_bindings(host_io: &KalicoHostIo) -> Result<(), String> 
 #[test]
 #[ignore = "spawns Renode subprocess; run with --ignored --test-threads=1"]
 fn g1_x50_emits_step_pulses_on_sim() {
-    let ctx = PlannerCtx::build_with_stepper_bindings(
-        [80.0_f32, 80.0_f32, 0.0_f32, 0.0_f32],
-    )
-    .expect("build sim harness with stepper bindings");
+    let ctx = PlannerCtx::build_with_stepper_bindings([80.0_f32, 80.0_f32, 0.0_f32, 0.0_f32])
+        .expect("build sim harness with stepper bindings");
 
     // Wait for the status-frame rotation to publish at least one of the
     // 0xB0/0xB1/0xE2/0xE6 binding-state tags so Stage 1's diag is visible
@@ -1294,10 +1324,9 @@ fn g1_x50_emits_step_pulses_on_sim() {
     {
         let deadline = Instant::now() + Duration::from_secs(8);
         while Instant::now() < deadline {
-            let has_binding_tag =
-                ctx.harness.fault_detail_max(0xE2).is_some()
-                    || ctx.harness.fault_detail_max(0xB1).is_some()
-                    || ctx.harness.fault_detail_max(0xE6).is_some();
+            let has_binding_tag = ctx.harness.fault_detail_max(0xE2).is_some()
+                || ctx.harness.fault_detail_max(0xB1).is_some()
+                || ctx.harness.fault_detail_max(0xE6).is_some();
             if has_binding_tag {
                 break;
             }
@@ -1324,7 +1353,8 @@ fn g1_x50_emits_step_pulses_on_sim() {
     let dispatched = ctx.dispatched_segments();
     eprintln!(
         "[test-G] dispatched_segments={} last_seg_id_observed={}",
-        dispatched, ctx.harness.last_segment_id(),
+        dispatched,
+        ctx.harness.last_segment_id(),
     );
 
     // Wait up to 180 s for the MCU to retire at least one segment. Renode
@@ -1340,8 +1370,7 @@ fn g1_x50_emits_step_pulses_on_sim() {
     eprintln!(
         "[test-G] final status: engine_status={} seg_id={} last_fault={} \
          fault_detail=0x{:08x}",
-        status.engine_status, status.current_segment_id,
-        status.last_fault, status.fault_detail,
+        status.engine_status, status.current_segment_id, status.last_fault, status.fault_detail,
     );
     for (tag, payload) in ctx.harness.fault_detail_summary() {
         eprintln!("[test-G]   fault_detail tag=0x{tag:02X} max_payload=0x{payload:06X}");
@@ -1396,7 +1425,10 @@ fn g1_x50_emits_step_pulses_on_sim() {
          This is the H7-wedge-after-motion symptom — the engine accepts \
          segments on the wire (push_segment OK) but never transitions out \
          of Idle. See recent runtime_tick.c producer-timer fixes.",
-        motor0_binding, status.engine_status, producer_kicks, empty_polls,
+        motor0_binding,
+        status.engine_status,
+        producer_kicks,
+        empty_polls,
     );
 
     assert!(
@@ -1444,7 +1476,8 @@ fn first_jog_after_stream_open_runs_on_sim() {
     let dispatched = ctx.dispatched_segments();
     eprintln!(
         "[test-A] dispatched_segments={} last_seg_id_observed={}",
-        dispatched, ctx.harness.last_segment_id(),
+        dispatched,
+        ctx.harness.last_segment_id(),
     );
 
     // Allow the firmware up to 90 s wall to process the dispatched curves.
@@ -1488,7 +1521,10 @@ fn first_jog_after_stream_open_runs_on_sim() {
                  Final status = {:?}. Last dispatch error = {:?}. \
                  This is the wire-format symptom — segments accepted on the \
                  wire (push_segment OK) but engine never executed them.",
-                dispatched, observed, status, ctx.last_dispatch_error(),
+                dispatched,
+                observed,
+                status,
+                ctx.last_dispatch_error(),
             );
         }
     }
@@ -1530,7 +1566,10 @@ fn ten_alternating_jogs_run_on_sim() {
 
     let dispatched = ctx.dispatched_segments();
     let target = dispatched.max(1) as u32;
-    eprintln!("[test-B] dispatched_segments={} target_seg_id={}", dispatched, target);
+    eprintln!(
+        "[test-B] dispatched_segments={} target_seg_id={}",
+        dispatched, target
+    );
 
     let wait_outcome = ctx
         .harness
@@ -1554,7 +1593,10 @@ fn ten_alternating_jogs_run_on_sim() {
             "BENCH BUG #4 (subsequent jogs slow / no motion): dispatched {} \
              segments but MCU `current_segment_id` only reached {} after 30s. \
              Status = {:?}. Last dispatch error = {:?}",
-            dispatched, observed, status, ctx.last_dispatch_error(),
+            dispatched,
+            observed,
+            status,
+            ctx.last_dispatch_error(),
         );
     }
 }
@@ -1592,7 +1634,10 @@ fn rapid_short_jogs_burst_no_fault() {
 
     let dispatched = ctx.dispatched_segments();
     let target = dispatched.max(1) as u32;
-    eprintln!("[test-C] dispatched={} target_seg_id={}", dispatched, target);
+    eprintln!(
+        "[test-C] dispatched={} target_seg_id={}",
+        dispatched, target
+    );
 
     let wait_outcome = ctx
         .harness
@@ -1604,11 +1649,15 @@ fn rapid_short_jogs_burst_no_fault() {
     }
 
     assert_eq!(
-        status.last_fault, 0,
+        status.last_fault,
+        0,
         "BENCH BUG #2 (step burst): MCU latched fault {} (detail=0x{:08x}, seg_id={}). \
          dispatched_segments={} last_dispatch_error={:?}",
-        status.last_fault, status.fault_detail, status.current_segment_id,
-        dispatched, ctx.last_dispatch_error(),
+        status.last_fault,
+        status.fault_detail,
+        status.current_segment_id,
+        dispatched,
+        ctx.last_dispatch_error(),
     );
 
     if let Err(observed) = wait_outcome {
@@ -1618,7 +1667,10 @@ fn rapid_short_jogs_burst_no_fault() {
             "BENCH BUG (rapid no-motion or stall): dispatched {} segments but \
              MCU `current_segment_id` only reached {} after 30s. last_fault=0, \
              status={:?}. dispatch error={:?}",
-            dispatched, observed, status, ctx.last_dispatch_error(),
+            dispatched,
+            observed,
+            status,
+            ctx.last_dispatch_error(),
         );
     }
 
@@ -1700,7 +1752,9 @@ fn phase_stepping_rapid_g1_x25_after_set_position_no_crash() {
         let r = ctx.submit_jog(pos, jog_mm, 0.0, 0.0, feedrate_mm_per_min);
         eprintln!(
             "[test-phase] jog#{i}: dx=+{jog_mm} pos_after=[{:.1},{:.1},{:.1}] submit={r:?}",
-            pos[0] + jog_mm, pos[1], pos[2],
+            pos[0] + jog_mm,
+            pos[1],
+            pos[2],
         );
         submit_results.push(r);
         pos[0] += jog_mm;
@@ -1731,8 +1785,7 @@ fn phase_stepping_rapid_g1_x25_after_set_position_no_crash() {
     eprintln!(
         "[test-phase] final status: engine_status={} seg_id={} \
          last_fault={} fault_detail=0x{:08x}",
-        status.engine_status, status.current_segment_id,
-        status.last_fault, status.fault_detail,
+        status.engine_status, status.current_segment_id, status.last_fault, status.fault_detail,
     );
     eprintln!("[test-phase] fault_detail tag summary (tag → max payload):");
     for (tag, payload) in &summary {
@@ -1779,7 +1832,8 @@ fn phase_stepping_rapid_g1_x25_after_set_position_no_crash() {
          last_fault={} fault_detail=0x{:08x}\n\
          seg_id_target={target} seg_id_observed={} dispatched={dispatched}\n\
          fault_detail summary: {summary:?}",
-        status.last_fault, status.fault_detail,
+        status.last_fault,
+        status.fault_detail,
         ctx.harness.last_segment_id(),
     );
 }
@@ -1855,8 +1909,7 @@ fn sim_harness_boots_and_emits_status() {
 #[test]
 #[ignore = "spawns Renode subprocess; run with --ignored --test-threads=1"]
 fn live_jog_mirror_corexy_160spm_xonly_pushes_steps_on_sim() {
-    let ctx = PlannerCtx::build_with_spm([160.0, 160.0, 0.0, 0.0])
-        .expect("build sim harness");
+    let ctx = PlannerCtx::build_with_spm([160.0, 160.0, 0.0, 0.0]).expect("build sim harness");
 
     // Mirror the live test exactly: start at [125, 100, 10], jog +0.5mm X
     // at F=600 (10 mm/s). bench_repro.rs's host runtime test with these
@@ -1869,7 +1922,8 @@ fn live_jog_mirror_corexy_160spm_xonly_pushes_steps_on_sim() {
     let dispatched = ctx.dispatched_segments();
     eprintln!(
         "[test-D] dispatched_segments={} last_seg_id_observed={}",
-        dispatched, ctx.harness.last_segment_id(),
+        dispatched,
+        ctx.harness.last_segment_id(),
     );
 
     assert!(
@@ -1918,7 +1972,11 @@ fn live_jog_mirror_corexy_160spm_xonly_pushes_steps_on_sim() {
              but MCU `current_segment_id` only reached {} after 25s. \
              Final status = {:?}. Tag summary = {:?}. Last dispatch \
              error = {:?}.",
-            dispatched, observed, status, summary, ctx.last_dispatch_error(),
+            dispatched,
+            observed,
+            status,
+            summary,
+            ctx.last_dispatch_error(),
         );
     }
 
@@ -1954,7 +2012,8 @@ fn live_jog_mirror_corexy_160spm_xonly_pushes_steps_on_sim() {
     );
 
     assert!(
-        pulses_lo > 0 || pushed > 0
+        pulses_lo > 0
+            || pushed > 0
             || ring_high_waters
                 .map(|hws| hws.iter().any(|h| *h > 0))
                 .unwrap_or(false),
@@ -1964,16 +2023,23 @@ fn live_jog_mirror_corexy_160spm_xonly_pushes_steps_on_sim() {
          = {}`, ring_high_water = {:?}. The producer exhausts every piece \
          without pushing a single step entry — same signature as the live \
          hardware bench. Tag summary: {:?}",
-        dispatched, ctx.harness.last_segment_id(),
-        pulses_lo, pushed, ring_high_waters, summary,
+        dispatched,
+        ctx.harness.last_segment_id(),
+        pulses_lo,
+        pushed,
+        ring_high_waters,
+        summary,
     );
 
     eprintln!(
         "[test-D] PASS: 0.5mm X jog dispatched {} segments, seg_id reached \
          {}, runtime_emit_pulses_lo = {}, producer_steps_pushed_lo = {}, \
          ring_high_water = {:?}.",
-        dispatched, ctx.harness.last_segment_id(),
-        pulses_lo, pushed, ring_high_waters,
+        dispatched,
+        ctx.harness.last_segment_id(),
+        pulses_lo,
+        pushed,
+        ring_high_waters,
     );
 }
 
@@ -2027,9 +2093,8 @@ fn homing_x_trips_when_pa0_raised_via_monitor() {
     // trip — no mid-motion GPIO-toggle race. Renode's STM32_GPIOPort
     // latches the input level until the next OnGPIO command, so PA0 stays
     // high once we set it.
-    let mut monitor =
-        RenodeMonitor::connect_with_timeout(Duration::from_secs(5))
-            .expect("connect Renode monitor on port 3335");
+    let mut monitor = RenodeMonitor::connect_with_timeout(Duration::from_secs(5))
+        .expect("connect Renode monitor on port 3335");
     monitor
         .set_gpio_input(PA0_PORT, PA0_PIN, true)
         .expect("pre-arm: raise PA0");
@@ -2090,8 +2155,7 @@ fn homing_x_trips_when_pa0_raised_via_monitor() {
     eprintln!(
         "[test-E] final status: engine_status={} seg_id={} last_fault={} \
          fault_detail=0x{:08x}",
-        status.engine_status, status.current_segment_id, status.last_fault,
-        status.fault_detail,
+        status.engine_status, status.current_segment_id, status.last_fault, status.fault_detail,
     );
     eprintln!("[test-E] fault_detail tag summary (tag → max payload):");
     for (tag, payload) in &summary {
@@ -2171,53 +2235,49 @@ fn g28_shaped_xy_two_pass_homing_via_renode_monitor() {
     const ARM_X_SLOW: u32 = 9002;
     const ARM_Y_FAST: u32 = 9003;
     const ARM_Y_SLOW: u32 = 9004;
-    const PA0: (char, u8, u16) = ('A', 0, 0);     // X endstop
-    const PA1: (char, u8, u16) = ('A', 1, 1);     // Y endstop
-    const STEPPER_OIDS: [u8; 2] = [0, 1];          // CoreXY A + B
-    const VELOCITY_AXIS_ALL: u8 = 0x07;            // X | Y | Z
+    const PA0: (char, u8, u16) = ('A', 0, 0); // X endstop
+    const PA1: (char, u8, u16) = ('A', 1, 1); // Y endstop
+    const STEPPER_OIDS: [u8; 2] = [0, 1]; // CoreXY A + B
+    const VELOCITY_AXIS_ALL: u8 = 0x07; // X | Y | Z
 
     let ctx = PlannerCtx::build().expect("build sim harness");
 
-    let mut monitor =
-        RenodeMonitor::connect_with_timeout(Duration::from_secs(5))
-            .expect("connect Renode monitor on port 3335");
+    let mut monitor = RenodeMonitor::connect_with_timeout(Duration::from_secs(5))
+        .expect("connect Renode monitor on port 3335");
 
     // Helper closure: arm an endstop on (port,pin,gpio_id) with TripImmediately
     // policy after pre-raising the pin. The first per-step sampler invocation
     // reads the pin high → trip fires on the first step.
-    let arm_after_raise = |mon: &mut RenodeMonitor,
-                           pin: (char, u8, u16),
-                           arm_id: u32|
-     -> ArmStatus {
-        mon.set_gpio_input(pin.0, pin.1, true)
-            .unwrap_or_else(|e| panic!("pre-raise P{}{}: {e}", pin.0, pin.1));
-        let sources = [SourceSpec {
-            kind: SourceKind::Physical,
-            gpio: pin.2,
-            active_high: true,
-            policy: ArmPolicy::TripImmediately,
-            sample_n: 1,
-            velocity_axis: VELOCITY_AXIS_ALL,
-            v_min_q16: 0,
-        }];
-        arm_endstop_with_timeout(
-            ctx.harness.host_io.as_ref(),
-            arm_id,
-            0,
-            &sources,
-            &STEPPER_OIDS,
-            Duration::from_secs(5),
-        )
-        .unwrap_or_else(|e| panic!("arm_endstop arm_id={arm_id}: {e:?}"))
-    };
+    let arm_after_raise =
+        |mon: &mut RenodeMonitor, pin: (char, u8, u16), arm_id: u32| -> ArmStatus {
+            mon.set_gpio_input(pin.0, pin.1, true)
+                .unwrap_or_else(|e| panic!("pre-raise P{}{}: {e}", pin.0, pin.1));
+            let sources = [SourceSpec {
+                kind: SourceKind::Physical,
+                gpio: pin.2,
+                active_high: true,
+                policy: ArmPolicy::TripImmediately,
+                sample_n: 1,
+                velocity_axis: VELOCITY_AXIS_ALL,
+                v_min_q16: 0,
+            }];
+            arm_endstop_with_timeout(
+                ctx.harness.host_io.as_ref(),
+                arm_id,
+                0,
+                &sources,
+                &STEPPER_OIDS,
+                Duration::from_secs(5),
+            )
+            .unwrap_or_else(|e| panic!("arm_endstop arm_id={arm_id}: {e:?}"))
+        };
 
     // Helper: lower a pin (used for back-off so the next pre-raise+arm
     // cycle observes a clean low → high transition).
-    let lower_pin =
-        |mon: &mut RenodeMonitor, pin: (char, u8, u16)| {
-            mon.set_gpio_input(pin.0, pin.1, false)
-                .unwrap_or_else(|e| panic!("lower P{}{}: {e}", pin.0, pin.1));
-        };
+    let lower_pin = |mon: &mut RenodeMonitor, pin: (char, u8, u16)| {
+        mon.set_gpio_input(pin.0, pin.1, false)
+            .unwrap_or_else(|e| panic!("lower P{}{}: {e}", pin.0, pin.1));
+    };
 
     // Per-phase telemetry: dispatched-from-host count + MCU-side retired
     // segment id. dispatched goes up the moment the bridge writes a frame;
@@ -2226,9 +2286,7 @@ fn g28_shaped_xy_two_pass_homing_via_renode_monitor() {
     let snapshot = |ctx: &PlannerCtx, label: &str| -> (u64, u32) {
         let d = ctx.dispatched_segments();
         let s = ctx.harness.last_segment_id();
-        eprintln!(
-            "[test-G] {label}: dispatched={d} mcu_seg_id={s}",
-        );
+        eprintln!("[test-G] {label}: dispatched={d} mcu_seg_id={s}",);
         (d, s)
     };
 
@@ -2281,8 +2339,9 @@ fn g28_shaped_xy_two_pass_homing_via_renode_monitor() {
     // last-known retired id. Renode runs ~5× slower than wall-clock; 60 s
     // is comfortable headroom for a 5 mm jog at 30 mm/min.
     let xback_target = after_xfast.1.saturating_add(1);
-    let xback_outcome =
-        ctx.harness.wait_for_segment_id(xback_target, Duration::from_secs(60));
+    let xback_outcome = ctx
+        .harness
+        .wait_for_segment_id(xback_target, Duration::from_secs(60));
     let after_xback = snapshot(&ctx, "after X back-off");
     if xback_outcome.is_err() {
         let status = ctx.harness.status();
@@ -2307,10 +2366,7 @@ fn g28_shaped_xy_two_pass_homing_via_renode_monitor() {
     // `wait_for_endstop_trip` blocks on. Treat `Rejected` (status=2) as
     // failure.
     let s = arm_after_raise(&mut monitor, PA0, ARM_X_SLOW);
-    assert_ne!(
-        s, ArmStatus::Rejected,
-        "X slow-home arm rejected: {s:?}",
-    );
+    assert_ne!(s, ArmStatus::Rejected, "X slow-home arm rejected: {s:?}",);
     ctx.submit_jog([-20.0, 0.0, 0.0], -25.0, 0.0, 0.0, 30.0)
         .expect("X slow-home jog submit");
     ctx.flush().expect("flush X slow-home");
@@ -2384,8 +2440,9 @@ fn g28_shaped_xy_two_pass_homing_via_renode_monitor() {
     ctx.flush().expect("flush Y back-off");
     thread::sleep(Duration::from_secs(2));
     let yback_target = after_yfast.1.saturating_add(1);
-    let yback_outcome =
-        ctx.harness.wait_for_segment_id(yback_target, Duration::from_secs(60));
+    let yback_outcome = ctx
+        .harness
+        .wait_for_segment_id(yback_target, Duration::from_secs(60));
     let after_yback = snapshot(&ctx, "after Y back-off");
     if yback_outcome.is_err() {
         let status = ctx.harness.status();
@@ -2404,10 +2461,7 @@ fn g28_shaped_xy_two_pass_homing_via_renode_monitor() {
     eprintln!("[test-G] === Y slow home (arm_id={ARM_Y_SLOW}) ===");
     // See X slow-home arm comment: AlreadyTripped is acceptable here too.
     let s = arm_after_raise(&mut monitor, PA1, ARM_Y_SLOW);
-    assert_ne!(
-        s, ArmStatus::Rejected,
-        "Y slow-home arm rejected: {s:?}",
-    );
+    assert_ne!(s, ArmStatus::Rejected, "Y slow-home arm rejected: {s:?}",);
     ctx.submit_jog([-45.0, -20.0, 0.0], 0.0, -25.0, 0.0, 30.0)
         .expect("Y slow-home jog submit");
     ctx.flush().expect("flush Y slow-home");
@@ -2443,10 +2497,6 @@ fn g28_shaped_xy_two_pass_homing_via_renode_monitor() {
     eprintln!(
         "[test-G] final status: engine_status={} seg_id={} \
          last_fault={} fault_detail=0x{:08x}",
-        status.engine_status,
-        status.current_segment_id,
-        status.last_fault,
-        status.fault_detail,
+        status.engine_status, status.current_segment_id, status.last_fault, status.fault_detail,
     );
 }
-

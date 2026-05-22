@@ -295,7 +295,8 @@ fn four_consecutive_jogs_chain_continuously() {
         let start = [(i as f64) * 1.0, 0.0, 0.0];
         let m = classify_and_build(start, 1.0, 0.0, 0.0, 0.0, 100.0)
             .unwrap_or_else(|e| panic!("classify move {i}: {e:?}"));
-        h.submit_move(m).unwrap_or_else(|e| panic!("submit move {i}: {e}"));
+        h.submit_move(m)
+            .unwrap_or_else(|e| panic!("submit move {i}: {e}"));
     }
     // Synchronization barrier — flush does not commit the trailing
     // decel under Phase 3 semantics, but it ensures the planner thread
@@ -1157,16 +1158,22 @@ fn kalico_stream_open_resets_planner_state() {
     // Reset to a new home position. This is the entry point the bridge
     // will call on `kalico_stream_open`.
     let new_home = [10.0, 20.0, 30.0, 0.0];
-    h.kalico_stream_open(new_home)
-        .expect("kalico_stream_open");
+    h.kalico_stream_open(new_home).expect("kalico_stream_open");
 
     // Follow-on move: 1 mm pure-X starting from the new home. The
     // bridge's caller is expected to express moves in the reset
     // position frame, so the `start` argument matches `new_home`. The
     // submitted move geometry covers `X ∈ [10, 11]` at 100 mm/s.
     h.submit_move(
-        classify_and_build([new_home[0], new_home[1], new_home[2]], 1.0, 0.0, 0.0, 0.0, 100.0)
-            .unwrap(),
+        classify_and_build(
+            [new_home[0], new_home[1], new_home[2]],
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            100.0,
+        )
+        .unwrap(),
     )
     .expect("submit move 2");
     h.flush().expect("flush move 2");
@@ -1239,8 +1246,15 @@ fn homing_resets_planner_state() {
     h.homing(new_home).expect("homing");
 
     h.submit_move(
-        classify_and_build([new_home[0], new_home[1], new_home[2]], 1.0, 0.0, 0.0, 0.0, 100.0)
-            .unwrap(),
+        classify_and_build(
+            [new_home[0], new_home[1], new_home[2]],
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            100.0,
+        )
+        .unwrap(),
     )
     .expect("submit move 2");
     h.flush().expect("flush move 2");
@@ -1318,7 +1332,11 @@ fn underrun_recovery_resets_to_recovered_position() {
     h.submit_move(
         classify_and_build(
             [recovered_pos[0], recovered_pos[1], recovered_pos[2]],
-            1.0, 0.0, 0.0, 0.0, 100.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            100.0,
         )
         .unwrap(),
     )
@@ -1381,7 +1399,11 @@ fn force_idle_recovery_resets_to_recovered_position() {
     h.submit_move(
         classify_and_build(
             [recovered_pos[0], recovered_pos[1], recovered_pos[2]],
-            1.0, 0.0, 0.0, 0.0, 100.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            100.0,
         )
         .unwrap(),
     )
@@ -1395,7 +1417,8 @@ fn force_idle_recovery_resets_to_recovered_position() {
     assert!(
         (x_start - recovered_pos[0]).abs() < SEAM_BUDGET_MM,
         "post-force-idle first dispatched X = {} mm; expected {} mm",
-        x_start, recovered_pos[0],
+        x_start,
+        recovered_pos[0],
     );
 
     h.shutdown();
@@ -1862,12 +1885,7 @@ fn wait_moves_blocks_until_dispatch_catches_up() {
     // means each `submit_move` returns with the atomic already bumped
     // by ~`nominal_duration`. The planner thread is free to rectify in
     // parallel; we don't synchronize with it between submits.
-    let starts = [
-        [0.0; 3],
-        [1.0, 0.0, 0.0],
-        [2.0, 0.0, 0.0],
-        [3.0, 0.0, 0.0],
-    ];
+    let starts = [[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]];
     let mut cumulative_nominal = 0.0;
     for start in starts.iter() {
         let m = classify_and_build(*start, 1.0, 0.0, 0.0, 0.0, 100.0).unwrap();
@@ -1989,4 +2007,3 @@ fn wait_moves_blocks_until_dispatch_catches_up() {
 
     h.shutdown();
 }
-

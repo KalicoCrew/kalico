@@ -11,7 +11,9 @@ pub trait Clock: Send + Sync {
 pub struct RealClock;
 
 impl Clock for RealClock {
-    fn now(&self) -> Instant { Instant::now() }
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
 }
 
 /// Hand-driven clock for deterministic tests. Interior-mutable so a single
@@ -24,7 +26,9 @@ pub struct MockClock {
 
 impl MockClock {
     pub fn new() -> Arc<Self> {
-        Arc::new(Self { inner: Mutex::new(Instant::now()) })
+        Arc::new(Self {
+            inner: Mutex::new(Instant::now()),
+        })
     }
 
     pub fn advance(&self, by: Duration) {
@@ -34,7 +38,9 @@ impl MockClock {
 }
 
 impl Clock for MockClock {
-    fn now(&self) -> Instant { *self.inner.lock().unwrap() }
+    fn now(&self) -> Instant {
+        *self.inner.lock().unwrap()
+    }
 }
 
 #[cfg(test)]

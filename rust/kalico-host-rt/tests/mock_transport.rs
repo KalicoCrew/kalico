@@ -15,9 +15,9 @@
 //! inside `call()` just before it blocks; static responses use it too.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use kalico_host_rt::host_io::parser::FieldValue;
@@ -27,9 +27,9 @@ type Responder = Box<dyn Fn(&str, Instant) -> MessageParams + Send + Sync>;
 
 struct MockPendingCall {
     expected_response_name: String,
-    cmd:                    String,
-    call_time:              Instant,
-    completion:             Option<SyncSender<Result<MessageParams, TransportError>>>,
+    cmd: String,
+    call_time: Instant,
+    completion: Option<SyncSender<Result<MessageParams, TransportError>>>,
 }
 
 /// One captured `send_typed` invocation.
@@ -59,10 +59,10 @@ impl OwnedFieldValue {
     fn from_borrowed(v: &FieldValue<'_>) -> Self {
         match v {
             FieldValue::Byte(b) => OwnedFieldValue::Byte(*b),
-            FieldValue::U16(v)  => OwnedFieldValue::U16(*v),
-            FieldValue::I16(v)  => OwnedFieldValue::I16(*v),
-            FieldValue::U32(v)  => OwnedFieldValue::U32(*v),
-            FieldValue::I32(v)  => OwnedFieldValue::I32(*v),
+            FieldValue::U16(v) => OwnedFieldValue::U16(*v),
+            FieldValue::I16(v) => OwnedFieldValue::I16(*v),
+            FieldValue::U32(v) => OwnedFieldValue::U32(*v),
+            FieldValue::I32(v) => OwnedFieldValue::I32(*v),
             FieldValue::Buffer(b) => OwnedFieldValue::Buffer(b.to_vec()),
             FieldValue::String(s) => OwnedFieldValue::String(s.to_string()),
             _ => OwnedFieldValue::Other,
@@ -72,17 +72,17 @@ impl OwnedFieldValue {
 
 struct MockState {
     pending_calls: HashMap<u64, MockPendingCall>,
-    next_call_id:  u64,
-    sent_cmds:     Vec<String>,
+    next_call_id: u64,
+    sent_cmds: Vec<String>,
     /// Captured fire-and-forget `send_typed` invocations, in order.
-    sent_typed:    Vec<SendTypedRecord>,
+    sent_typed: Vec<SendTypedRecord>,
     /// Per-response-name responder: called synchronously inside call() with
     /// the call_time Instant, returns the MessageParams to complete the call.
     static_responders: HashMap<String, Responder>,
 }
 
 pub struct MockTransport {
-    state:        Mutex<MockState>,
+    state: Mutex<MockState>,
     call_arrived: Condvar,
 }
 
@@ -109,7 +109,9 @@ impl MockTransport {
     where
         F: Fn(&str, Instant) -> MessageParams + Send + Sync + 'static,
     {
-        self.state.lock().unwrap()
+        self.state
+            .lock()
+            .unwrap()
             .static_responders
             .insert(expected_response_name.to_string(), Box::new(f));
     }
@@ -123,7 +125,12 @@ impl MockTransport {
     }
 
     pub fn any_sent_starting_with(&self, prefix: &str) -> bool {
-        self.state.lock().unwrap().sent_cmds.iter().any(|s| s.starts_with(prefix))
+        self.state
+            .lock()
+            .unwrap()
+            .sent_cmds
+            .iter()
+            .any(|s| s.starts_with(prefix))
     }
 
     pub fn last_sent(&self) -> Option<String> {
@@ -139,14 +146,22 @@ impl MockTransport {
     /// Filter `send_typed` invocations by command name.
     #[allow(dead_code)]
     pub fn sent_typed_named(&self, name: &str) -> Vec<SendTypedRecord> {
-        self.state.lock().unwrap().sent_typed.iter()
+        self.state
+            .lock()
+            .unwrap()
+            .sent_typed
+            .iter()
             .filter(|r| r.name == name)
             .cloned()
             .collect()
     }
 
     pub fn sent_starting_with(&self, prefix: &str) -> Vec<String> {
-        self.state.lock().unwrap().sent_cmds.iter()
+        self.state
+            .lock()
+            .unwrap()
+            .sent_cmds
+            .iter()
             .filter(|s| s.starts_with(prefix))
             .cloned()
             .collect()
@@ -157,7 +172,9 @@ impl MockTransport {
     pub fn wait_for_call(&self, expected_response_name: &str) -> (String, Instant) {
         let mut guard = self.state.lock().unwrap();
         loop {
-            let found = guard.pending_calls.iter()
+            let found = guard
+                .pending_calls
+                .iter()
                 .find(|(_, c)| c.expected_response_name == expected_response_name)
                 .map(|(_, c)| (c.cmd.clone(), c.call_time));
             if let Some(info) = found {
@@ -169,7 +186,9 @@ impl MockTransport {
 
     pub fn complete_call(&self, name: &str, params: MessageParams) {
         let mut state = self.state.lock().unwrap();
-        let id = state.pending_calls.iter()
+        let id = state
+            .pending_calls
+            .iter()
             .find(|(_, c)| c.expected_response_name == name)
             .map(|(id, _)| *id);
         if let Some(id) = id {
@@ -184,7 +203,9 @@ impl MockTransport {
 
     pub fn drop_pending(&self, name: &str) {
         let mut state = self.state.lock().unwrap();
-        let id = state.pending_calls.iter()
+        let id = state
+            .pending_calls
+            .iter()
             .find(|(_, c)| c.expected_response_name == name)
             .map(|(id, _)| *id);
         if let Some(id) = id {
@@ -214,12 +235,15 @@ impl Transport for MockTransport {
             let id = state.next_call_id;
             state.next_call_id += 1;
             let (tx, rx) = std::sync::mpsc::sync_channel(1);
-            state.pending_calls.insert(id, MockPendingCall {
-                expected_response_name: expected_response_name.to_string(),
-                cmd: cmd.to_string(),
-                call_time,
-                completion: Some(tx),
-            });
+            state.pending_calls.insert(
+                id,
+                MockPendingCall {
+                    expected_response_name: expected_response_name.to_string(),
+                    cmd: cmd.to_string(),
+                    call_time,
+                    completion: Some(tx),
+                },
+            );
             rx
         };
         self.call_arrived.notify_all();
@@ -247,7 +271,8 @@ impl Transport for MockTransport {
     ) -> Result<(), TransportError> {
         let record = SendTypedRecord {
             name: name.to_string(),
-            args: args.iter()
+            args: args
+                .iter()
                 .map(|(k, v)| ((*k).to_string(), OwnedFieldValue::from_borrowed(v)))
                 .collect(),
         };
@@ -269,7 +294,9 @@ impl SharedMock {
 
 impl std::ops::Deref for SharedMock {
     type Target = MockTransport;
-    fn deref(&self) -> &MockTransport { &self.0 }
+    fn deref(&self) -> &MockTransport {
+        &self.0
+    }
 }
 
 impl Transport for SharedMock {
@@ -289,7 +316,8 @@ impl Transport for SharedMock {
         expected_response_name: &str,
         timeout: Duration,
     ) -> Result<MessageParams, TransportError> {
-        self.0.call_typed(name, args, expected_response_name, timeout)
+        self.0
+            .call_typed(name, args, expected_response_name, timeout)
     }
 
     fn send_typed(
@@ -318,9 +346,7 @@ pub fn mp_with(values: &[(&str, MessageValue)]) -> MessageParams {
 fn complete_call_returns_to_caller() {
     let mock = Arc::new(MockTransport::new());
     let clone = mock.clone();
-    let t = std::thread::spawn(move || {
-        clone.call("ping", "pong", Duration::from_secs(1))
-    });
+    let t = std::thread::spawn(move || clone.call("ping", "pong", Duration::from_secs(1)));
     let mock_b = mock.clone();
     let _waiter = std::thread::spawn(move || {
         let _ = mock_b.wait_for_call("pong");

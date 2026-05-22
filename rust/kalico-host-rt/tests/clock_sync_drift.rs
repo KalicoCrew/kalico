@@ -76,8 +76,10 @@ fn request_id_is_strictly_monotonic() {
     for _ in 0..1000 {
         let next = est.next_clock_sync_request_id();
         // Allow wrap-around at u32::MAX.
-        assert!(next > prev || (prev == u32::MAX && next == 0),
-            "request_id non-monotonic: {prev} → {next}");
+        assert!(
+            next > prev || (prev == u32::MAX && next == 0),
+            "request_id non-monotonic: {prev} → {next}"
+        );
         prev = next;
     }
 }

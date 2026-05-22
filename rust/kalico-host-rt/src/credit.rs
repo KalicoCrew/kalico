@@ -240,9 +240,7 @@ mod tests {
         assert_eq!(c.available(), 0);
 
         let c2 = Arc::clone(&c);
-        let handle = thread::spawn(move || {
-            c2.acquire_blocking(Duration::from_secs(2))
-        });
+        let handle = thread::spawn(move || c2.acquire_blocking(Duration::from_secs(2)));
         // Give the waiter time to enter wait_timeout.
         thread::sleep(Duration::from_millis(50));
         c.release();
@@ -262,9 +260,7 @@ mod tests {
         assert_eq!(c.available(), 0);
 
         let c2 = Arc::clone(&c);
-        let handle = thread::spawn(move || {
-            c2.acquire_blocking(Duration::from_secs(2))
-        });
+        let handle = thread::spawn(move || c2.acquire_blocking(Duration::from_secs(2)));
         thread::sleep(Duration::from_millis(50));
         // MCU reports 3 slots free.
         c.on_credit_freed(3);
@@ -283,9 +279,7 @@ mod tests {
         assert_eq!(c.available(), 0);
 
         let c2 = Arc::clone(&c);
-        let handle = thread::spawn(move || {
-            c2.acquire_blocking(Duration::from_secs(2))
-        });
+        let handle = thread::spawn(move || c2.acquire_blocking(Duration::from_secs(2)));
         thread::sleep(Duration::from_millis(50));
         c.on_epoch_change(1);
         let result = handle.join().unwrap();

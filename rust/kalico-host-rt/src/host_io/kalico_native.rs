@@ -28,15 +28,15 @@ use std::sync::mpsc::SyncSender;
 use std::time::Instant;
 
 use kalico_native_transport::wire_helpers::{
-    decode_message_header, encode_message_header, MESSAGE_VERSION_DEFAULT,
+    MESSAGE_VERSION_DEFAULT, decode_message_header, encode_message_header,
 };
 use kalico_native_transport::{
-    decode_identify_response, encode_frame, encode_identify, BOOTSTRAP_IDENTIFY_RESPONSE_LEN,
-    CHANNEL_CONTROL,
+    BOOTSTRAP_IDENTIFY_RESPONSE_LEN, CHANNEL_CONTROL, decode_identify_response, encode_frame,
+    encode_identify,
 };
 use kalico_protocol::{
-    CreditFreed as KCreditFreed, Decode, FaultEvent as KFaultEvent, MessageKind,
-    StatusEvent as KStatusEvent, PROTO_VERSION, SCHEMA_HASH,
+    CreditFreed as KCreditFreed, Decode, FaultEvent as KFaultEvent, MessageKind, PROTO_VERSION,
+    SCHEMA_HASH, StatusEvent as KStatusEvent,
 };
 
 use crate::host_io::runtime_events::{CreditFreedEvent, FaultEvent, RuntimeEvent, StatusEvent};
@@ -231,8 +231,7 @@ fn handle_identify_response(state: &mut KalicoNativeState, payload: &[u8]) -> Ka
     if resp.schema_hash != SCHEMA_HASH {
         let host_hex = hex32(&SCHEMA_HASH);
         let mcu_hex = hex32(&resp.schema_hash);
-        let msg =
-            format!("kalico schema_hash mismatch — host {host_hex}, MCU {mcu_hex}");
+        let msg = format!("kalico schema_hash mismatch — host {host_hex}, MCU {mcu_hex}");
         log::error!("{msg}");
         if let Some(c) = state.identify_pending.take() {
             let _ = c.send(Err(TransportError::Parse(msg)));
@@ -254,7 +253,8 @@ fn handle_identify_response(state: &mut KalicoNativeState, payload: &[u8]) -> Ka
     );
     log::info!(
         "kalico identified: reset_epoch=0x{:08x}, caps=0x{:016x}, schema_hash matches",
-        resp.reset_epoch, resp.capabilities,
+        resp.reset_epoch,
+        resp.capabilities,
     );
     KalicoDispatchResult::Handled
 }
@@ -280,12 +280,15 @@ fn lift_event_to_runtime_event(
                     let old = state.reset_epoch.unwrap_or(0);
                     eprintln!(
                         "[kalico-id] reset_epoch MISMATCH state=0x{:08x} status=0x{:08x} — draining {} pending",
-                        old, s.reset_epoch, state.pending.len(),
+                        old,
+                        s.reset_epoch,
+                        state.pending.len(),
                     );
                     log::error!(
                         "kalico reset_epoch changed mid-session ({:#010x} -> {:#010x}); \
                          marking host as un-identified — motion dispatch will refuse new sends",
-                        old, s.reset_epoch
+                        old,
+                        s.reset_epoch
                     );
                     state.identified = false;
                     state.reset_epoch = Some(s.reset_epoch);

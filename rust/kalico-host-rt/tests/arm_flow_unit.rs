@@ -118,8 +118,7 @@ fn happy_path_single_mcu() {
 
 #[test]
 fn happy_path_two_mcus() {
-    let mut mcus: Vec<(SharedMock, ClockSyncEstimator)> =
-        vec![make_warm_mcu(0), make_warm_mcu(0)];
+    let mut mcus: Vec<(SharedMock, ClockSyncEstimator)> = vec![make_warm_mcu(0), make_warm_mcu(0)];
     let t_start_wall = Instant::now() + Duration::from_millis(500);
     arm_all_mcus(
         &mut mcus,
@@ -389,7 +388,11 @@ fn request_id_is_monotonic_across_arm_attempts() {
         })
         .collect();
 
-    assert_eq!(request_ids.len(), 2, "two arm attempts → two clock_sync_requests");
+    assert_eq!(
+        request_ids.len(),
+        2,
+        "two arm attempts → two clock_sync_requests"
+    );
     assert!(
         request_ids[1] > request_ids[0],
         "request_id must be monotonic across arm attempts; got {:?}",
@@ -410,7 +413,7 @@ fn arm_fails_on_request_id_mismatch() {
     mock.install_responder("kalico_clock_sync_response", |_cmd, _call_time| {
         let (lo, hi) = make_clock_sync_response(1.0, 0);
         mp_with(&[
-            ("request_id", MessageValue::U32(99)),   // wrong: sent 1, echo 99
+            ("request_id", MessageValue::U32(99)), // wrong: sent 1, echo 99
             ("mcu_clock_lo", MessageValue::U32(lo)),
             ("mcu_clock_hi", MessageValue::U32(hi)),
         ])
@@ -434,7 +437,10 @@ fn arm_fails_on_request_id_mismatch() {
                 msg
             );
         }
-        ref other => panic!("expected Transport(Parse(request_id mismatch)), got {:?}", other),
+        ref other => panic!(
+            "expected Transport(Parse(request_id mismatch)), got {:?}",
+            other
+        ),
     }
     assert!(
         failure.armed_indices.is_empty(),

@@ -1,8 +1,8 @@
 //! Single-thread poll-reactor. Spec §3.7.
 
 use std::collections::VecDeque;
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
@@ -12,37 +12,37 @@ use crate::host_io::ReactorCommand;
 use crate::host_io::events::EventDispatcher;
 use crate::host_io::identify::IdentifySeqState;
 use crate::host_io::kalico_native::{
-    build_kalico_control_frame, build_kalico_identify_frame, dispatch_kalico_frame,
-    KalicoDispatchResult, KalicoNativeState, PendingKalicoCall,
+    KalicoDispatchResult, KalicoNativeState, PendingKalicoCall, build_kalico_control_frame,
+    build_kalico_identify_frame, dispatch_kalico_frame,
 };
 use crate::host_io::parser::MsgProtoParser;
 use crate::host_io::rtt::RttEstimator;
 use crate::host_io::runtime_events::{FaultEvent, StatusEvent};
 use crate::host_io::serial_frame_io::SerialFrameIo;
-use crate::host_io::window::{UnackedWindow, AwaitingResponse};
-use kalico_native_transport::demux::{Frame, KlipperFrame, PollOutcome};
+use crate::host_io::window::{AwaitingResponse, UnackedWindow};
 use crate::passthrough_queue::{McuHandle, NotifyId, PassthroughRouter};
 use crate::transport::TransportError;
+use kalico_native_transport::demux::{Frame, KlipperFrame, PollOutcome};
 use runtime::error::FaultCode;
 
 pub struct Reactor {
-    pub(crate) io:                 SerialFrameIo,
-    pub(crate) parser:             Arc<MsgProtoParser>,
-    pub(crate) submission_rx:      Receiver<ReactorCommand>,
-    pub(crate) unacked_window:     UnackedWindow,
-    pub(crate) awaiting_response:  AwaitingResponse,
-    pub(crate) rtt:                RttEstimator,
-    pub(crate) status_snapshot:    Arc<ArcSwap<StatusEvent>>,
-    pub(crate) event_dispatcher:   EventDispatcher,
+    pub(crate) io: SerialFrameIo,
+    pub(crate) parser: Arc<MsgProtoParser>,
+    pub(crate) submission_rx: Receiver<ReactorCommand>,
+    pub(crate) unacked_window: UnackedWindow,
+    pub(crate) awaiting_response: AwaitingResponse,
+    pub(crate) rtt: RttEstimator,
+    pub(crate) status_snapshot: Arc<ArcSwap<StatusEvent>>,
+    pub(crate) event_dispatcher: EventDispatcher,
 
     // 64-bit absolute sequence counters. Per spec §3.1 / serialqueue.c:660-666.
-    pub(crate) send_seq:           u64,
-    pub(crate) receive_seq:        u64,
-    pub(crate) last_ack_seq:       u64,
-    pub(crate) ignore_nak_seq:     u64,
-    pub(crate) retransmit_seq:     u64,
-    pub(crate) rtt_sample_seq:     u64,
-    pub(crate) rtt_sample_armed:   bool,
+    pub(crate) send_seq: u64,
+    pub(crate) receive_seq: u64,
+    pub(crate) last_ack_seq: u64,
+    pub(crate) ignore_nak_seq: u64,
+    pub(crate) retransmit_seq: u64,
+    pub(crate) rtt_sample_seq: u64,
+    pub(crate) rtt_sample_armed: bool,
 
     pub(crate) state: ReactorState,
 
@@ -115,11 +115,12 @@ pub struct Reactor {
 }
 
 pub(crate) struct PendingSubmission {
-    pub call_id:                u64,
-    pub payload:                Vec<u8>,
+    pub call_id: u64,
+    pub payload: Vec<u8>,
     pub expected_response_name: String,
-    pub completion:             std::sync::mpsc::SyncSender<Result<crate::transport::MessageParams, TransportError>>,
-    pub deadline:               Instant,
+    pub completion:
+        std::sync::mpsc::SyncSender<Result<crate::transport::MessageParams, TransportError>>,
+    pub deadline: Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,8 +145,13 @@ impl Reactor {
         config: crate::host_io::KalicoHostIoConfig,
     ) -> Self {
         Self::new_with_clock(
-            io, parser, submission_rx, status_snapshot,
-            seq, config, Arc::new(RealClock),
+            io,
+            parser,
+            submission_rx,
+            status_snapshot,
+            seq,
+            config,
+            Arc::new(RealClock),
         )
     }
 
@@ -213,7 +219,10 @@ impl Reactor {
             parser,
             submission_rx,
             status_snapshot,
-            IdentifySeqState { next_send_seq_abs: 1, mcu_receive_seq_abs: 1 },
+            IdentifySeqState {
+                next_send_seq_abs: 1,
+                mcu_receive_seq_abs: 1,
+            },
             config,
             clock,
         )
@@ -230,7 +239,11 @@ impl Reactor {
         static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
         let seq = WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
         let t0 = std::time::Instant::now();
-        let proto = if !frame.is_empty() && frame[0] == 0x55 { "kalico" } else { "klipper" };
+        let proto = if !frame.is_empty() && frame[0] == 0x55 {
+            "kalico"
+        } else {
+            "klipper"
+        };
         let bytes = frame.len();
         let result: Result<(), TransportError> = (|| {
             self.io.write_all(frame)?;
@@ -301,7 +314,9 @@ impl Reactor {
         call_id: u64,
         payload: Vec<u8>,
         expected_response_name: String,
-        completion: std::sync::mpsc::SyncSender<Result<crate::transport::MessageParams, TransportError>>,
+        completion: std::sync::mpsc::SyncSender<
+            Result<crate::transport::MessageParams, TransportError>,
+        >,
         deadline: Instant,
     ) -> Result<(), TransportError> {
         if self.unacked_window.is_full() {
@@ -310,9 +325,14 @@ impl Reactor {
                 return Ok(());
             }
             self.pending_submissions.push_back(PendingSubmission {
-                call_id, payload, expected_response_name, completion, deadline,
+                call_id,
+                payload,
+                expected_response_name,
+                completion,
+                deadline,
             });
-            self.pending_outbound_order.push_back(PendingOutboundKind::Submission);
+            self.pending_outbound_order
+                .push_back(PendingOutboundKind::Submission);
             return Ok(());
         }
 
@@ -324,18 +344,24 @@ impl Reactor {
         self.write_frame(&frame)?;
 
         let now = self.clock.now();
-        self.unacked_window.push(crate::host_io::window::UnackedEntry {
-            seq, frame_bytes: frame, sent_at: now, retry_count: 0,
-        });
+        self.unacked_window
+            .push(crate::host_io::window::UnackedEntry {
+                seq,
+                frame_bytes: frame,
+                sent_at: now,
+                retry_count: 0,
+            });
         let _trace_name = expected_response_name.clone();
-        self.awaiting_response.push(crate::host_io::window::AwaitEntry {
-            call_id, seq,
-            expected_response_name,
-            completion,
-            submitted_at: now,
-            deadline,
-            abandoned: false,
-        })?;
+        self.awaiting_response
+            .push(crate::host_io::window::AwaitEntry {
+                call_id,
+                seq,
+                expected_response_name,
+                completion,
+                submitted_at: now,
+                deadline,
+                abandoned: false,
+            })?;
         eprintln!(
             "[trace-await] tid={:?} push call_id={call_id} seq={seq} name={_trace_name} await_len={}",
             std::thread::current().id(),
@@ -368,7 +394,8 @@ impl Reactor {
                 return Err(TransportError::Backpressure);
             }
             self.pending_fire_and_forget.push_back(payload);
-            self.pending_outbound_order.push_back(PendingOutboundKind::FireAndForget);
+            self.pending_outbound_order
+                .push_back(PendingOutboundKind::FireAndForget);
             return Ok(());
         }
         let seq = self.send_seq;
@@ -377,15 +404,21 @@ impl Reactor {
         let frame = crate::host_io::wire::build_frame(&payload, wire_seq);
         self.write_frame(&frame)?;
         let now = self.clock.now();
-        self.unacked_window.push(crate::host_io::window::UnackedEntry {
-            seq, frame_bytes: frame, sent_at: now, retry_count: 0,
-        });
+        self.unacked_window
+            .push(crate::host_io::window::UnackedEntry {
+                seq,
+                frame_bytes: frame,
+                sent_at: now,
+                retry_count: 0,
+            });
         Ok(())
     }
 
     pub(crate) fn drain_pending_submissions(&mut self) {
         while !self.unacked_window.is_full() {
-            let Some(kind) = self.pending_outbound_order.pop_front() else { break; };
+            let Some(kind) = self.pending_outbound_order.pop_front() else {
+                break;
+            };
             match kind {
                 PendingOutboundKind::Submission => {
                     let Some(p) = self.pending_submissions.pop_front() else {
@@ -394,7 +427,11 @@ impl Reactor {
                     };
                     let completion = p.completion.clone();
                     if let Err(e) = self.dispatch_submission(
-                        p.call_id, p.payload, p.expected_response_name, completion, p.deadline,
+                        p.call_id,
+                        p.payload,
+                        p.expected_response_name,
+                        completion,
+                        p.deadline,
                     ) {
                         // The queued submission is already popped — propagate
                         // the underlying transport error to the caller so it
@@ -405,18 +442,20 @@ impl Reactor {
                         let is_io = matches!(e, TransportError::Io(_));
                         let _ = p.completion.send(Err(e));
                         if is_io {
-                            eprintln!("[trace-close] drain_pending_submissions Io error kalico_pending={} await_n={} unacked_n={}",
+                            eprintln!(
+                                "[trace-close] drain_pending_submissions Io error kalico_pending={} await_n={} unacked_n={}",
                                 self.kalico_state.pending.len(),
                                 self.awaiting_response.len(),
                                 self.unacked_window.len(),
                             );
                             if self.pending_host_fault.is_none() {
-                                self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
-                                    fault_code:   FaultCode::HostDisconnect.as_u16(),
-                                    fault_detail: 0,
-                                    segment_id:   0,
-                                    synthesized:  false,
-                                });
+                                self.pending_host_fault =
+                                    Some(crate::host_io::runtime_events::FaultEvent {
+                                        fault_code: FaultCode::HostDisconnect.as_u16(),
+                                        fault_detail: 0,
+                                        segment_id: 0,
+                                        synthesized: false,
+                                    });
                             }
                             self.state = ReactorState::Closed;
                             return;
@@ -430,14 +469,17 @@ impl Reactor {
                     };
                     if let Err(e) = self.dispatch_fire_and_forget(payload) {
                         if matches!(e, TransportError::Io(_)) {
-                            eprintln!("[trace-close] drain pending fire-and-forget Io error: {e:?}");
+                            eprintln!(
+                                "[trace-close] drain pending fire-and-forget Io error: {e:?}"
+                            );
                             if self.pending_host_fault.is_none() {
-                                self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
-                                    fault_code:   FaultCode::HostDisconnect.as_u16(),
-                                    fault_detail: 0,
-                                    segment_id:   0,
-                                    synthesized:  false,
-                                });
+                                self.pending_host_fault =
+                                    Some(crate::host_io::runtime_events::FaultEvent {
+                                        fault_code: FaultCode::HostDisconnect.as_u16(),
+                                        fault_detail: 0,
+                                        segment_id: 0,
+                                        synthesized: false,
+                                    });
                             }
                             self.state = ReactorState::Closed;
                             return;
@@ -446,7 +488,9 @@ impl Reactor {
                         // drop the payload silently and continue. Backpressure here
                         // means the queue is at the ceiling, which the dispatch path
                         // already logged.
-                        log::warn!("drain_pending_submissions: fire-and-forget redispatch error: {e}");
+                        log::warn!(
+                            "drain_pending_submissions: fire-and-forget redispatch error: {e}"
+                        );
                     }
                 }
             }
@@ -492,10 +536,10 @@ impl Reactor {
                 eprintln!("[trace-close] drain_passthrough write_frame Io error: {_e:?}");
                 if self.pending_host_fault.is_none() {
                     self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
-                        fault_code:   FaultCode::HostDisconnect.as_u16(),
+                        fault_code: FaultCode::HostDisconnect.as_u16(),
                         fault_detail: 0,
-                        segment_id:   0,
-                        synthesized:  false,
+                        segment_id: 0,
+                        synthesized: false,
                     });
                 }
                 self.state = ReactorState::Closed;
@@ -504,17 +548,19 @@ impl Reactor {
             }
 
             let now = self.clock.now();
-            self.unacked_window.push(crate::host_io::window::UnackedEntry {
-                seq,
-                frame_bytes: frame,
-                sent_at: now,
-                retry_count: 0,
-            });
+            self.unacked_window
+                .push(crate::host_io::window::UnackedEntry {
+                    seq,
+                    frame_bytes: frame,
+                    sent_at: now,
+                    retry_count: 0,
+                });
 
             // Track notify association so inbound responses can be
             // routed back through the router's dispatch_response.
             if !entry.notify_id().is_none() {
-                self.passthrough_notify_map.insert(seq, (mcu, entry.notify_id()));
+                self.passthrough_notify_map
+                    .insert(seq, (mcu, entry.notify_id()));
             }
 
             if !self.rtt_sample_armed {
@@ -552,9 +598,12 @@ impl Reactor {
             }
         }
         // Inform the passthrough router's receive window about acked bytes.
-        if let (Some(router), Some(mcu)) = (self.passthrough_router.as_mut(), self.passthrough_mcu) {
+        if let (Some(router), Some(mcu)) = (self.passthrough_router.as_mut(), self.passthrough_mcu)
+        {
             for entry in &popped {
-                let payload_len = entry.frame_bytes.len()
+                let payload_len = entry
+                    .frame_bytes
+                    .len()
                     .saturating_sub(crate::host_io::wire::MESSAGE_MIN);
                 let _ = router.record_ack(mcu, payload_len as u64);
             }
@@ -593,10 +642,15 @@ impl Reactor {
         Ok(())
     }
 
-    pub(crate) fn write_retransmit(&mut self, trigger: RetransmitTrigger) -> Result<(), TransportError> {
+    pub(crate) fn write_retransmit(
+        &mut self,
+        trigger: RetransmitTrigger,
+    ) -> Result<(), TransportError> {
         // Build retransmit buffer: leading SYNC + all unacked frames.
         let buf = {
-            let frames: Vec<&[u8]> = self.unacked_window.iter()
+            let frames: Vec<&[u8]> = self
+                .unacked_window
+                .iter()
                 .map(|e| e.frame_bytes.as_slice())
                 .collect();
             crate::host_io::wire::build_retransmit_buffer(frames)
@@ -644,10 +698,10 @@ impl Reactor {
             if entry.retry_count >= MAX_RETRY_COUNT && silence >= MCU_SILENCE_FOR_CLOSE {
                 self.state = ReactorState::Closed;
                 self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
-                    fault_code:   FaultCode::HostRetransmitExhausted.as_u16(),
+                    fault_code: FaultCode::HostRetransmitExhausted.as_u16(),
                     fault_detail: entry.retry_count,
-                    segment_id:   0,
-                    synthesized:  false,
+                    segment_id: 0,
+                    synthesized: false,
                 });
                 return Err(TransportError::Closed);
             }
@@ -666,7 +720,10 @@ impl Reactor {
 // ---------------------------------------------------------------------------
 
 impl Reactor {
-    pub(crate) fn handle_inbound_frame(&mut self, frame: KlipperFrame) -> Result<(), TransportError> {
+    pub(crate) fn handle_inbound_frame(
+        &mut self,
+        frame: KlipperFrame,
+    ) -> Result<(), TransportError> {
         let bytes = frame.bytes();
         if bytes.len() < crate::host_io::wire::MESSAGE_MIN {
             return Ok(());
@@ -722,7 +779,9 @@ impl Reactor {
                     let entry = self.awaiting_response.remove(idx);
                     eprintln!(
                         "[trace-resp] tid={:?} match name={name} idx={idx} await_len={await_len_before} matched_call_id={} matched_seq={}",
-                        std::thread::current().id(), entry.call_id, entry.seq
+                        std::thread::current().id(),
+                        entry.call_id,
+                        entry.seq
                     );
                     let _ = entry.completion.send(Ok(params));
                 } else if !self.try_dispatch_passthrough_response(&raw_payload) {
@@ -852,33 +911,37 @@ impl Reactor {
                 let now = self.clock.now();
                 let first = *self.zero_byte_first_seen.get_or_insert(now);
                 if now.duration_since(first) >= ZERO_BYTE_DEBOUNCE {
-                    eprintln!("[trace-close] poll_serial PhantomZero exceeded debounce kalico_pending={} await_n={} unacked_n={}",
+                    eprintln!(
+                        "[trace-close] poll_serial PhantomZero exceeded debounce kalico_pending={} await_n={} unacked_n={}",
                         self.kalico_state.pending.len(),
                         self.awaiting_response.len(),
                         self.unacked_window.len(),
                     );
-                    log::warn!("port read returned Ok(0) for >= {ZERO_BYTE_DEBOUNCE:?}; transitioning to Closed");
+                    log::warn!(
+                        "port read returned Ok(0) for >= {ZERO_BYTE_DEBOUNCE:?}; transitioning to Closed"
+                    );
                     self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
-                        fault_code:   FaultCode::HostDisconnect.as_u16(),
+                        fault_code: FaultCode::HostDisconnect.as_u16(),
                         fault_detail: 0,
-                        segment_id:   0,
-                        synthesized:  false,
+                        segment_id: 0,
+                        synthesized: false,
                     });
                     self.state = ReactorState::Closed;
                 }
             }
             Err(e) => {
-                eprintln!("[trace-close] poll_serial Io error: {e:?} kalico_pending={} await_n={} unacked_n={}",
+                eprintln!(
+                    "[trace-close] poll_serial Io error: {e:?} kalico_pending={} await_n={} unacked_n={}",
                     self.kalico_state.pending.len(),
                     self.awaiting_response.len(),
                     self.unacked_window.len(),
                 );
                 log::warn!("port read error: {e:?}; transitioning to Closed");
                 self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
-                    fault_code:   FaultCode::HostDisconnect.as_u16(),
+                    fault_code: FaultCode::HostDisconnect.as_u16(),
                     fault_detail: 0,
-                    segment_id:   0,
-                    synthesized:  false,
+                    segment_id: 0,
+                    synthesized: false,
                 });
                 self.state = ReactorState::Closed;
             }
@@ -897,7 +960,8 @@ impl Reactor {
     /// KalicoCall) and the RTO retransmit path to mirror the established
     /// drain-path / poll_serial behavior.
     pub(crate) fn transition_closed_on_io_fault(&mut self) {
-        eprintln!("[trace-close] transition_closed_on_io_fault (write-path Io error) state_was={:?} kalico_pending={} await_n={} unacked_n={}",
+        eprintln!(
+            "[trace-close] transition_closed_on_io_fault (write-path Io error) state_was={:?} kalico_pending={} await_n={} unacked_n={}",
             self.state,
             self.kalico_state.pending.len(),
             self.awaiting_response.len(),
@@ -905,10 +969,10 @@ impl Reactor {
         );
         if self.pending_host_fault.is_none() {
             self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
-                fault_code:   FaultCode::HostDisconnect.as_u16(),
+                fault_code: FaultCode::HostDisconnect.as_u16(),
                 fault_detail: 0,
-                segment_id:   0,
-                synthesized:  false,
+                segment_id: 0,
+                synthesized: false,
             });
         }
         self.state = ReactorState::Closed;
@@ -917,36 +981,59 @@ impl Reactor {
     fn handle_command(&mut self, cmd: crate::host_io::ReactorCommand) {
         use crate::host_io::ReactorCommand;
         match cmd {
-            ReactorCommand::Submit { call_id, cmd, expected_response_name, completion, deadline } => {
-                match self.parser.encode(&cmd) {
-                    Ok(payload) => {
-                        if let Err(e) = self.dispatch_submission(
-                            call_id, payload, expected_response_name, completion.clone(), deadline,
-                        ) {
-                            let is_io = matches!(e, TransportError::Io(_));
-                            let _ = completion.send(Err(e));
-                            if is_io { self.transition_closed_on_io_fault(); }
+            ReactorCommand::Submit {
+                call_id,
+                cmd,
+                expected_response_name,
+                completion,
+                deadline,
+            } => match self.parser.encode(&cmd) {
+                Ok(payload) => {
+                    if let Err(e) = self.dispatch_submission(
+                        call_id,
+                        payload,
+                        expected_response_name,
+                        completion.clone(),
+                        deadline,
+                    ) {
+                        let is_io = matches!(e, TransportError::Io(_));
+                        let _ = completion.send(Err(e));
+                        if is_io {
+                            self.transition_closed_on_io_fault();
                         }
                     }
-                    Err(e) => {
-                        let _ = completion.send(Err(TransportError::Parse(format!("{e:?}"))));
-                    }
                 }
-            }
-            ReactorCommand::SubmitTyped { call_id, payload, expected_response_name, completion, deadline } => {
+                Err(e) => {
+                    let _ = completion.send(Err(TransportError::Parse(format!("{e:?}"))));
+                }
+            },
+            ReactorCommand::SubmitTyped {
+                call_id,
+                payload,
+                expected_response_name,
+                completion,
+                deadline,
+            } => {
                 if let Err(e) = self.dispatch_submission(
-                    call_id, payload, expected_response_name, completion.clone(), deadline,
+                    call_id,
+                    payload,
+                    expected_response_name,
+                    completion.clone(),
+                    deadline,
                 ) {
                     let is_io = matches!(e, TransportError::Io(_));
                     let _ = completion.send(Err(e));
-                    if is_io { self.transition_closed_on_io_fault(); }
+                    if is_io {
+                        self.transition_closed_on_io_fault();
+                    }
                 }
             }
             ReactorCommand::Abandon(call_id) => {
                 self.awaiting_response.mark_abandoned(call_id);
             }
             ReactorCommand::Shutdown => {
-                eprintln!("[trace-close] ReactorCommand::Shutdown received kalico_pending={} await_n={} unacked_n={}",
+                eprintln!(
+                    "[trace-close] ReactorCommand::Shutdown received kalico_pending={} await_n={} unacked_n={}",
                     self.kalico_state.pending.len(),
                     self.awaiting_response.len(),
                     self.unacked_window.len(),
@@ -982,11 +1069,17 @@ impl Reactor {
                 let _ = reply.send(result);
             }
             ReactorCommand::SubscribeRuntimeEvents { sender, reply } => {
-                let result = self.event_dispatcher.runtime_event_dispatcher.subscribe(sender);
+                let result = self
+                    .event_dispatcher
+                    .runtime_event_dispatcher
+                    .subscribe(sender);
                 let _ = reply.send(result);
             }
             ReactorCommand::SubscribeHostEvents { sender, reply } => {
-                let result = self.event_dispatcher.host_event_dispatcher.subscribe(sender);
+                let result = self
+                    .event_dispatcher
+                    .host_event_dispatcher
+                    .subscribe(sender);
                 let _ = reply.send(result);
             }
             ReactorCommand::InstallPassthroughRouter(router) => {
@@ -998,7 +1091,11 @@ impl Reactor {
                 self.passthrough_router = Some(router);
                 self.passthrough_mcu = mcu;
             }
-            ReactorCommand::PassthroughSend { mcu, queue_id, entry } => {
+            ReactorCommand::PassthroughSend {
+                mcu,
+                queue_id,
+                entry,
+            } => {
                 if let Some(ref mut router) = self.passthrough_router {
                     let _ = router.push(mcu, queue_id, entry);
                 }
@@ -1010,32 +1107,50 @@ impl Reactor {
                 // klippy's systemd wrapper. Append-only, line-per-event.
                 use std::io::Write as _;
                 let mut trace = std::fs::OpenOptions::new()
-                    .create(true).append(true)
+                    .create(true)
+                    .append(true)
                     .open("/tmp/kalico-firewire.log")
                     .ok();
                 match self.parser.encode(&cmd) {
                     Ok(payload) => {
-                        let cmd_disp = if cmd.len() > 120 { &cmd[..120] } else { cmd.as_str() };
-                        let head: Vec<String> = payload.iter().take(16)
-                            .map(|b| format!("{:02x}", b)).collect();
+                        let cmd_disp = if cmd.len() > 120 {
+                            &cmd[..120]
+                        } else {
+                            cmd.as_str()
+                        };
+                        let head: Vec<String> = payload
+                            .iter()
+                            .take(16)
+                            .map(|b| format!("{:02x}", b))
+                            .collect();
                         if let Some(ref mut f) = trace {
-                            let _ = writeln!(f, "[firewire] OK cmd=\"{}\" payload_len={} head=[{}]",
-                                cmd_disp, payload.len(), head.join(","));
+                            let _ = writeln!(
+                                f,
+                                "[firewire] OK cmd=\"{}\" payload_len={} head=[{}]",
+                                cmd_disp,
+                                payload.len(),
+                                head.join(",")
+                            );
                         }
                         if let Err(e) = self.dispatch_fire_and_forget(payload) {
                             let is_io = matches!(e, TransportError::Io(_));
                             if let Some(ref mut f) = trace {
-                                let _ = writeln!(f, "[firewire] dispatch_err cmd=\"{}\" err={}",
-                                    cmd_disp, e);
+                                let _ = writeln!(
+                                    f,
+                                    "[firewire] dispatch_err cmd=\"{}\" err={}",
+                                    cmd_disp, e
+                                );
                             }
                             eprintln!("[bridge-error] FireAndForget send: {e}");
-                            if is_io { self.transition_closed_on_io_fault(); }
+                            if is_io {
+                                self.transition_closed_on_io_fault();
+                            }
                         }
                     }
                     Err(e) => {
                         if let Some(ref mut f) = trace {
-                            let _ = writeln!(f, "[firewire] ENCODE_FAILED cmd=\"{}\" err={:?}",
-                                cmd, e);
+                            let _ =
+                                writeln!(f, "[firewire] ENCODE_FAILED cmd=\"{}\" err={:?}", cmd, e);
                         }
                         eprintln!(
                             "[bridge-error] FireAndForget encode failed for cmd={cmd:?}: {e:?}"
@@ -1047,10 +1162,15 @@ impl Reactor {
                 if let Err(e) = self.dispatch_fire_and_forget(payload) {
                     let is_io = matches!(e, TransportError::Io(_));
                     log::warn!("FireAndForgetTyped: send error: {e}");
-                    if is_io { self.transition_closed_on_io_fault(); }
+                    if is_io {
+                        self.transition_closed_on_io_fault();
+                    }
                 }
             }
-            ReactorCommand::KalicoIdentify { completion, deadline: _ } => {
+            ReactorCommand::KalicoIdentify {
+                completion,
+                deadline: _,
+            } => {
                 // Bootstrap-ABI Identify: hand-encoded frame, no schema.
                 let cid = self.kalico_state.allocate_correlation_id();
                 let frame = build_kalico_identify_frame(cid);
@@ -1066,18 +1186,28 @@ impl Reactor {
                     if let Some(c) = self.kalico_state.identify_pending.take() {
                         let _ = c.send(Err(e));
                     }
-                    if is_io { self.transition_closed_on_io_fault(); }
+                    if is_io {
+                        self.transition_closed_on_io_fault();
+                    }
                 }
             }
-            ReactorCommand::KalicoCall { kind, body, completion, deadline } => {
-                eprintln!("[trace-kcall] entry kind={kind:?} body_len={} state={:?} identified={} pending_n={}",
+            ReactorCommand::KalicoCall {
+                kind,
+                body,
+                completion,
+                deadline,
+            } => {
+                eprintln!(
+                    "[trace-kcall] entry kind={kind:?} body_len={} state={:?} identified={} pending_n={}",
                     body.len(),
                     self.state,
                     self.kalico_state.identified,
                     self.kalico_state.pending.len(),
                 );
                 if matches!(self.state, ReactorState::Closed) {
-                    eprintln!("[trace-kcall] FAIL: reactor already Closed before write — completing with TransportError::Closed");
+                    eprintln!(
+                        "[trace-kcall] FAIL: reactor already Closed before write — completing with TransportError::Closed"
+                    );
                     let _ = completion.send(Err(TransportError::Closed));
                     return;
                 }
@@ -1090,10 +1220,16 @@ impl Reactor {
                 }
                 let cid = self.kalico_state.allocate_correlation_id();
                 let frame = build_kalico_control_frame(kind, cid, &body);
-                eprintln!("[trace-kcall] write_frame kind={kind:?} cid={cid} frame_len={}", frame.len());
+                eprintln!(
+                    "[trace-kcall] write_frame kind={kind:?} cid={cid} frame_len={}",
+                    frame.len()
+                );
                 self.kalico_state.pending.insert(
                     cid,
-                    PendingKalicoCall { completion: completion.clone(), deadline },
+                    PendingKalicoCall {
+                        completion: completion.clone(),
+                        deadline,
+                    },
                 );
                 if let Err(e) = self.write_frame(&frame) {
                     eprintln!("[trace-kcall] write_frame ERROR cid={cid} kind={kind:?} err={e:?}");
@@ -1101,7 +1237,9 @@ impl Reactor {
                     if let Some(p) = self.kalico_state.pending.remove(&cid) {
                         let _ = p.completion.send(Err(e));
                     }
-                    if is_io { self.transition_closed_on_io_fault(); }
+                    if is_io {
+                        self.transition_closed_on_io_fault();
+                    }
                 } else {
                     eprintln!("[trace-kcall] write_frame OK cid={cid} kind={kind:?}");
                 }
@@ -1176,7 +1314,9 @@ pub enum TickOutcome {
 impl Reactor {
     pub fn run(&mut self) {
         loop {
-            if matches!(self.tick_once(), TickOutcome::Closed) { break; }
+            if matches!(self.tick_once(), TickOutcome::Closed) {
+                break;
+            }
         }
     }
 
@@ -1208,7 +1348,8 @@ impl Reactor {
                 Ok(cmd) => self.handle_command(cmd),
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    eprintln!("[trace-close] submission_rx Disconnected — all senders dropped kalico_pending={} await_n={} unacked_n={}",
+                    eprintln!(
+                        "[trace-close] submission_rx Disconnected — all senders dropped kalico_pending={} await_n={} unacked_n={}",
                         self.kalico_state.pending.len(),
                         self.awaiting_response.len(),
                         self.unacked_window.len(),
@@ -1272,7 +1413,9 @@ impl Reactor {
         let now = self.clock.now();
         let evicted = self.awaiting_response.evict_expired(now);
         for entry in evicted {
-            let _ = entry.completion.send(Err(TransportError::DispatcherTimeout));
+            let _ = entry
+                .completion
+                .send(Err(TransportError::DispatcherTimeout));
         }
 
         // 5b. Phase C-B: GC expired kalico calls.
@@ -1329,12 +1472,18 @@ mod tests {
             self.written.lock().unwrap().extend_from_slice(buf);
             Ok(buf.len())
         }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     impl serialport::SerialPort for MockPort {
-        fn name(&self) -> Option<String> { Some("mock".into()) }
-        fn baud_rate(&self) -> serialport::Result<u32> { Ok(115_200) }
+        fn name(&self) -> Option<String> {
+            Some("mock".into())
+        }
+        fn baud_rate(&self) -> serialport::Result<u32> {
+            Ok(115_200)
+        }
         fn data_bits(&self) -> serialport::Result<serialport::DataBits> {
             Ok(serialport::DataBits::Eight)
         }
@@ -1347,27 +1496,66 @@ mod tests {
         fn stop_bits(&self) -> serialport::Result<serialport::StopBits> {
             Ok(serialport::StopBits::One)
         }
-        fn timeout(&self) -> std::time::Duration { std::time::Duration::from_millis(1) }
-        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> { Ok(()) }
-        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> { Ok(()) }
-        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> { Ok(()) }
-        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> { Ok(()) }
-        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> { Ok(()) }
-        fn set_timeout(&mut self, _: std::time::Duration) -> serialport::Result<()> { Ok(()) }
-        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
-        fn read_data_set_ready(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn bytes_to_read(&self) -> serialport::Result<u32> { Ok(0) }
-        fn bytes_to_write(&self) -> serialport::Result<u32> { Ok(0) }
-        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> { Ok(()) }
-        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
-            Err(serialport::Error::new(serialport::ErrorKind::Unknown, "mock: try_clone unsupported"))
+        fn timeout(&self) -> std::time::Duration {
+            std::time::Duration::from_millis(1)
         }
-        fn set_break(&self) -> serialport::Result<()> { Ok(()) }
-        fn clear_break(&self) -> serialport::Result<()> { Ok(()) }
-        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
-        fn read_clear_to_send(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn read_ring_indicator(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn read_carrier_detect(&mut self) -> serialport::Result<bool> { Ok(false) }
+        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_timeout(&mut self, _: std::time::Duration) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn bytes_to_read(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn bytes_to_write(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
+            Err(serialport::Error::new(
+                serialport::ErrorKind::Unknown,
+                "mock: try_clone unsupported",
+            ))
+        }
+        fn set_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn clear_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1376,7 +1564,9 @@ mod tests {
 
     fn test_reactor_with_inflight(seqs: &[u64]) -> (Reactor, Arc<Mutex<Vec<u8>>>) {
         let written = Arc::new(Mutex::new(Vec::<u8>::new()));
-        let port = MockPort { written: Arc::clone(&written) };
+        let port = MockPort {
+            written: Arc::clone(&written),
+        };
 
         // Build a minimal MsgProtoParser (empty data dict is fine for these tests).
         let parser = Arc::new(crate::host_io::parser::MsgProtoParser::new_empty());
@@ -1387,7 +1577,10 @@ mod tests {
         ));
 
         let mut reactor = Reactor::new_for_tests(
-            Box::new(port), parser, rx, status_snapshot,
+            Box::new(port),
+            parser,
+            rx,
+            status_snapshot,
             crate::host_io::KalicoHostIoConfig::default(),
             Arc::new(crate::clock::RealClock),
         );
@@ -1395,12 +1588,14 @@ mod tests {
         // Pre-populate the unacked window.
         let max_seq = seqs.iter().copied().max().unwrap_or(0);
         for &seq in seqs {
-            reactor.unacked_window.push(crate::host_io::window::UnackedEntry {
-                seq,
-                frame_bytes: vec![],
-                sent_at: std::time::Instant::now(),
-                retry_count: 0,
-            });
+            reactor
+                .unacked_window
+                .push(crate::host_io::window::UnackedEntry {
+                    seq,
+                    frame_bytes: vec![],
+                    sent_at: std::time::Instant::now(),
+                    retry_count: 0,
+                });
         }
         if max_seq > 0 {
             reactor.send_seq = max_seq + 1;
@@ -1499,7 +1694,9 @@ mod tests {
         let (mut reactor, _port) = test_reactor_with_inflight(&[1, 2, 3]);
         reactor.receive_seq = 5;
         reactor.retransmit_seq = 0; // receive_seq >= retransmit_seq → arm 1
-        reactor.write_retransmit(RetransmitTrigger::NakDriven).unwrap();
+        reactor
+            .write_retransmit(RetransmitTrigger::NakDriven)
+            .unwrap();
         assert_eq!(reactor.ignore_nak_seq, 5); // = receive_seq
     }
 
@@ -1508,7 +1705,9 @@ mod tests {
         let (mut reactor, _port) = test_reactor_with_inflight(&[1, 2, 3]);
         reactor.receive_seq = 3;
         reactor.retransmit_seq = 7; // receive_seq < retransmit_seq → arm 2
-        reactor.write_retransmit(RetransmitTrigger::NakDriven).unwrap();
+        reactor
+            .write_retransmit(RetransmitTrigger::NakDriven)
+            .unwrap();
         assert_eq!(reactor.ignore_nak_seq, 7); // = retransmit_seq
     }
 
@@ -1516,7 +1715,9 @@ mod tests {
     fn timeout_driven_sets_ignore_nak_to_send_seq() {
         let (mut reactor, _port) = test_reactor_with_inflight(&[1, 2, 3]);
         reactor.send_seq = 10;
-        reactor.write_retransmit(RetransmitTrigger::TimeoutDriven).unwrap();
+        reactor
+            .write_retransmit(RetransmitTrigger::TimeoutDriven)
+            .unwrap();
         assert_eq!(reactor.ignore_nak_seq, 10); // = send_seq
     }
 
@@ -1524,7 +1725,9 @@ mod tests {
     fn nak_driven_does_not_back_off_rto() {
         let (mut reactor, _port) = test_reactor_with_inflight(&[1]);
         let rto_before = reactor.rtt.current_rto();
-        reactor.write_retransmit(RetransmitTrigger::NakDriven).unwrap();
+        reactor
+            .write_retransmit(RetransmitTrigger::NakDriven)
+            .unwrap();
         assert_eq!(reactor.rtt.current_rto(), rto_before);
     }
 
@@ -1532,7 +1735,9 @@ mod tests {
     fn timeout_driven_doubles_rto() {
         let (mut reactor, _port) = test_reactor_with_inflight(&[1]);
         let rto_before = reactor.rtt.current_rto();
-        reactor.write_retransmit(RetransmitTrigger::TimeoutDriven).unwrap();
+        reactor
+            .write_retransmit(RetransmitTrigger::TimeoutDriven)
+            .unwrap();
         assert!(reactor.rtt.current_rto() >= rto_before * 2);
     }
 
@@ -1544,18 +1749,29 @@ mod tests {
 
     impl std::io::Read for BrokenPipePort {
         fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "mock disconnect"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "mock disconnect",
+            ))
         }
     }
 
     impl std::io::Write for BrokenPipePort {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> { Ok(buf.len()) }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
 
     impl serialport::SerialPort for BrokenPipePort {
-        fn name(&self) -> Option<String> { Some("broken-pipe-mock".into()) }
-        fn baud_rate(&self) -> serialport::Result<u32> { Ok(115_200) }
+        fn name(&self) -> Option<String> {
+            Some("broken-pipe-mock".into())
+        }
+        fn baud_rate(&self) -> serialport::Result<u32> {
+            Ok(115_200)
+        }
         fn data_bits(&self) -> serialport::Result<serialport::DataBits> {
             Ok(serialport::DataBits::Eight)
         }
@@ -1568,27 +1784,66 @@ mod tests {
         fn stop_bits(&self) -> serialport::Result<serialport::StopBits> {
             Ok(serialport::StopBits::One)
         }
-        fn timeout(&self) -> std::time::Duration { std::time::Duration::from_millis(1) }
-        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> { Ok(()) }
-        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> { Ok(()) }
-        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> { Ok(()) }
-        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> { Ok(()) }
-        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> { Ok(()) }
-        fn set_timeout(&mut self, _: std::time::Duration) -> serialport::Result<()> { Ok(()) }
-        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
-        fn read_data_set_ready(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn bytes_to_read(&self) -> serialport::Result<u32> { Ok(0) }
-        fn bytes_to_write(&self) -> serialport::Result<u32> { Ok(0) }
-        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> { Ok(()) }
-        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
-            Err(serialport::Error::new(serialport::ErrorKind::Unknown, "mock: try_clone unsupported"))
+        fn timeout(&self) -> std::time::Duration {
+            std::time::Duration::from_millis(1)
         }
-        fn set_break(&self) -> serialport::Result<()> { Ok(()) }
-        fn clear_break(&self) -> serialport::Result<()> { Ok(()) }
-        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
-        fn read_clear_to_send(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn read_ring_indicator(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn read_carrier_detect(&mut self) -> serialport::Result<bool> { Ok(false) }
+        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_timeout(&mut self, _: std::time::Duration) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn bytes_to_read(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn bytes_to_write(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
+            Err(serialport::Error::new(
+                serialport::ErrorKind::Unknown,
+                "mock: try_clone unsupported",
+            ))
+        }
+        fn set_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn clear_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1604,38 +1859,94 @@ mod tests {
     }
     impl std::io::Write for BrokenWritePort {
         fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "mock write fail"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "mock write fail",
+            ))
         }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
     impl serialport::SerialPort for BrokenWritePort {
-        fn name(&self) -> Option<String> { Some("broken-write-mock".into()) }
-        fn baud_rate(&self) -> serialport::Result<u32> { Ok(115_200) }
-        fn data_bits(&self) -> serialport::Result<serialport::DataBits> { Ok(serialport::DataBits::Eight) }
-        fn flow_control(&self) -> serialport::Result<serialport::FlowControl> { Ok(serialport::FlowControl::None) }
-        fn parity(&self) -> serialport::Result<serialport::Parity> { Ok(serialport::Parity::None) }
-        fn stop_bits(&self) -> serialport::Result<serialport::StopBits> { Ok(serialport::StopBits::One) }
-        fn timeout(&self) -> std::time::Duration { std::time::Duration::from_millis(1) }
-        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> { Ok(()) }
-        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> { Ok(()) }
-        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> { Ok(()) }
-        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> { Ok(()) }
-        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> { Ok(()) }
-        fn set_timeout(&mut self, _: std::time::Duration) -> serialport::Result<()> { Ok(()) }
-        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
-        fn read_data_set_ready(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn bytes_to_read(&self) -> serialport::Result<u32> { Ok(0) }
-        fn bytes_to_write(&self) -> serialport::Result<u32> { Ok(0) }
-        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> { Ok(()) }
-        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
-            Err(serialport::Error::new(serialport::ErrorKind::Unknown, "mock: try_clone unsupported"))
+        fn name(&self) -> Option<String> {
+            Some("broken-write-mock".into())
         }
-        fn set_break(&self) -> serialport::Result<()> { Ok(()) }
-        fn clear_break(&self) -> serialport::Result<()> { Ok(()) }
-        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
-        fn read_clear_to_send(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn read_ring_indicator(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn read_carrier_detect(&mut self) -> serialport::Result<bool> { Ok(false) }
+        fn baud_rate(&self) -> serialport::Result<u32> {
+            Ok(115_200)
+        }
+        fn data_bits(&self) -> serialport::Result<serialport::DataBits> {
+            Ok(serialport::DataBits::Eight)
+        }
+        fn flow_control(&self) -> serialport::Result<serialport::FlowControl> {
+            Ok(serialport::FlowControl::None)
+        }
+        fn parity(&self) -> serialport::Result<serialport::Parity> {
+            Ok(serialport::Parity::None)
+        }
+        fn stop_bits(&self) -> serialport::Result<serialport::StopBits> {
+            Ok(serialport::StopBits::One)
+        }
+        fn timeout(&self) -> std::time::Duration {
+            std::time::Duration::from_millis(1)
+        }
+        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_timeout(&mut self, _: std::time::Duration) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn bytes_to_read(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn bytes_to_write(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
+            Err(serialport::Error::new(
+                serialport::ErrorKind::Unknown,
+                "mock: try_clone unsupported",
+            ))
+        }
+        fn set_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn clear_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1652,15 +1963,19 @@ mod tests {
         ));
         let parser = Arc::new(crate::host_io::parser::MsgProtoParser::new_empty());
         let mut reactor = Reactor::new_for_tests(
-            Box::new(BrokenWritePort), parser, rx, status_snapshot,
+            Box::new(BrokenWritePort),
+            parser,
+            rx,
+            status_snapshot,
             crate::host_io::KalicoHostIoConfig::default(),
             Arc::new(crate::clock::RealClock),
         );
 
         // Queue one pending submission. unacked_window is empty so the
         // drain loop will pop it and try to dispatch immediately.
-        let (tx, completion_rx) =
-            std::sync::mpsc::sync_channel::<Result<crate::transport::MessageParams, TransportError>>(1);
+        let (tx, completion_rx) = std::sync::mpsc::sync_channel::<
+            Result<crate::transport::MessageParams, TransportError>,
+        >(1);
         reactor.pending_submissions.push_back(PendingSubmission {
             call_id: 7,
             payload: vec![0xAA, 0xBB],
@@ -1668,19 +1983,33 @@ mod tests {
             completion: tx,
             deadline: Instant::now() + std::time::Duration::from_secs(1),
         });
-        reactor.pending_outbound_order.push_back(PendingOutboundKind::Submission);
+        reactor
+            .pending_outbound_order
+            .push_back(PendingOutboundKind::Submission);
 
         reactor.drain_pending_submissions();
 
-        let received = completion_rx.try_recv().expect("completion must be signaled");
+        let received = completion_rx
+            .try_recv()
+            .expect("completion must be signaled");
         match received {
             Err(TransportError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
             other => panic!("expected Io(BrokenPipe), got {other:?}"),
         }
-        assert_eq!(reactor.state, ReactorState::Closed, "state must transition to Closed");
-        let fault = reactor.pending_host_fault.as_ref().expect("host fault must be staged");
+        assert_eq!(
+            reactor.state,
+            ReactorState::Closed,
+            "state must transition to Closed"
+        );
+        let fault = reactor
+            .pending_host_fault
+            .as_ref()
+            .expect("host fault must be staged");
         assert_eq!(fault.fault_code, FaultCode::HostDisconnect.as_u16());
-        assert!(reactor.pending_submissions.is_empty(), "draining must stop after I/O failure");
+        assert!(
+            reactor.pending_submissions.is_empty(),
+            "draining must stop after I/O failure"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1696,7 +2025,10 @@ mod tests {
         ));
         let parser = Arc::new(crate::host_io::parser::MsgProtoParser::new_empty());
         let mut reactor = Reactor::new_for_tests(
-            Box::new(BrokenPipePort), parser, rx, status_snapshot,
+            Box::new(BrokenPipePort),
+            parser,
+            rx,
+            status_snapshot,
             crate::host_io::KalicoHostIoConfig::default(),
             Arc::new(crate::clock::RealClock),
         );
@@ -1714,7 +2046,10 @@ mod tests {
             FaultCode::HostDisconnect.as_u16(),
             "fault_code must be KALICO_ERR_HOST_DISCONNECT"
         );
-        assert!(!cell.synthesized, "host disconnect fault is not synthesized");
+        assert!(
+            !cell.synthesized,
+            "host disconnect fault is not synthesized"
+        );
     }
 }
 
@@ -1740,8 +2075,11 @@ mod a1_seq_wrap {
     fn submit_one(h: &mut ReactorHarness, payload: u8) {
         let (tx, _rx) = sync_channel(1);
         let _ = h.reactor.dispatch_submission(
-            payload as u64, vec![payload], "noop".into(),
-            tx, h.clock.now() + Duration::from_secs(60),
+            payload as u64,
+            vec![payload],
+            "noop".into(),
+            tx,
+            h.clock.now() + Duration::from_secs(60),
         );
     }
 
@@ -1824,7 +2162,7 @@ mod a1_seq_wrap {
         // hypothetical wrap; for now we simply verify the high-end works.
         let mut h = ReactorHarness::new();
         h.reactor.receive_seq = u64::MAX - 5;
-        h.reactor.send_seq    = u64::MAX - 5;
+        h.reactor.send_seq = u64::MAX - 5;
         h.reactor.last_ack_seq = u64::MAX - 6;
 
         submit_one(&mut h, 0);
@@ -1869,12 +2207,17 @@ mod a2_nak_rto {
     fn submit_one(h: &mut ReactorHarness, payload: u8) {
         let (tx, _rx) = sync_channel(1);
         let _ = h.reactor.dispatch_submission(
-            payload as u64, vec![payload], "noop".into(),
-            tx, h.clock.now() + Duration::from_secs(60),
+            payload as u64,
+            vec![payload],
+            "noop".into(),
+            tx,
+            h.clock.now() + Duration::from_secs(60),
         );
     }
 
-    fn ack(wire_seq: u8) -> Vec<u8> { build_frame(&[], wire_seq) }
+    fn ack(wire_seq: u8) -> Vec<u8> {
+        build_frame(&[], wire_seq)
+    }
 
     #[test]
     fn duplicate_ack_triggers_retransmit() {
@@ -1889,7 +2232,10 @@ mod a2_nak_rto {
         // Duplicate ack on rseq=2 → NAK retransmit (window non-empty).
         h.feed_rx(&ack(2));
         h.tick();
-        assert!(h.tx_log().len() > len_before, "duplicate ack should trigger retransmit");
+        assert!(
+            h.tx_log().len() > len_before,
+            "duplicate ack should trigger retransmit"
+        );
     }
 
     #[test]
@@ -1907,7 +2253,11 @@ mod a2_nak_rto {
         h.tick();
         let delta = h.tx_log().len() - len_before;
         // One retransmit = 1 SYNC + (frame_bytes for seq=2). Frame for [2] = 6 bytes.
-        assert_eq!(delta, 1 + 6, "second NAK must be suppressed by ignore_nak_seq");
+        assert_eq!(
+            delta,
+            1 + 6,
+            "second NAK must be suppressed by ignore_nak_seq"
+        );
     }
 
     #[test]
@@ -1975,8 +2325,11 @@ mod a2_nak_rto {
         let mut h = ReactorHarness::new();
         let (tx, rx) = sync_channel(1);
         let _ = h.reactor.dispatch_submission(
-            1, vec![0xAA], "noop".into(),
-            tx, h.clock.now() + Duration::from_secs(600),
+            1,
+            vec![0xAA],
+            "noop".into(),
+            tx,
+            h.clock.now() + Duration::from_secs(600),
         );
         h.tick();
         // Force 8 successive TimeoutDriven retransmits via clock advance.
@@ -1994,10 +2347,13 @@ mod a2_nak_rto {
         let outcome = h.tick();
         assert_eq!(outcome, TickOutcome::Closed);
         // Pending submission must have completed with TransportError::Closed.
-        let result = rx.recv_timeout(Duration::from_millis(100))
+        let result = rx
+            .recv_timeout(Duration::from_millis(100))
             .expect("completion delivered");
-        assert!(matches!(result, Err(TransportError::Closed)),
-            "expected Closed, got {result:?}");
+        assert!(
+            matches!(result, Err(TransportError::Closed)),
+            "expected Closed, got {result:?}"
+        );
         // Fault was staged with HostRetransmitExhausted code.
         let latched = h.reactor.event_dispatcher.fault_latch.cell.as_ref();
         let fc = latched.expect("fault latched").fault_code;
@@ -2020,8 +2376,11 @@ mod a4_nak_submit_race {
     fn submit_one(h: &mut ReactorHarness, payload: u8) {
         let (tx, _rx) = sync_channel(1);
         let _ = h.reactor.dispatch_submission(
-            payload as u64, vec![payload], "noop".into(),
-            tx, h.clock.now() + Duration::from_secs(60),
+            payload as u64,
+            vec![payload],
+            "noop".into(),
+            tx,
+            h.clock.now() + Duration::from_secs(60),
         );
     }
 
@@ -2046,13 +2405,15 @@ mod a4_nak_submit_race {
         // Use SubmitTyped to bypass parser.encode (the harness's empty parser
         // doesn't know any commands). The reactor command-drain path treats
         // SubmitTyped identically aside from encoding.
-        h.submission_tx.send(ReactorCommand::SubmitTyped {
-            call_id: 3,
-            payload: vec![3u8],
-            expected_response_name: "noop".into(),
-            completion: tx_new,
-            deadline: h.clock.now() + Duration::from_secs(60),
-        }).unwrap();
+        h.submission_tx
+            .send(ReactorCommand::SubmitTyped {
+                call_id: 3,
+                payload: vec![3u8],
+                expected_response_name: "noop".into(),
+                completion: tx_new,
+                deadline: h.clock.now() + Duration::from_secs(60),
+            })
+            .unwrap();
         h.feed_rx(&build_frame(&[], 2)); // duplicate ack on rseq=2 → NAK
 
         h.tick();
@@ -2076,10 +2437,13 @@ mod a4_nak_submit_race {
         let frame_size = 5 + 1; // empty MIN + 1-byte payload
         let expected_delta = frame_size + (1 + 2 * frame_size);
         let actual_delta = h.tx_log().len() - len_before_race;
-        assert_eq!(actual_delta, expected_delta,
+        assert_eq!(
+            actual_delta,
+            expected_delta,
             "expected new frame ({frame_size} B) + retransmit buffer (1 SYNC + 2 frames = {}) \
              = {expected_delta} B; got {actual_delta} B",
-            1 + 2 * frame_size);
+            1 + 2 * frame_size
+        );
     }
 }
 
@@ -2104,8 +2468,11 @@ mod a3_awaiting_response_gc {
     ) -> std::sync::mpsc::Receiver<Result<crate::transport::MessageParams, TransportError>> {
         let (tx, rx) = sync_channel(1);
         let _ = h.reactor.dispatch_submission(
-            call_id, vec![call_id as u8], "noop".into(),
-            tx, h.clock.now() + deadline_offset,
+            call_id,
+            vec![call_id as u8],
+            "noop".into(),
+            tx,
+            h.clock.now() + deadline_offset,
         );
         rx
     }
@@ -2123,9 +2490,16 @@ mod a3_awaiting_response_gc {
 
         // Entry remains in the deque but is marked abandoned.
         assert_eq!(h.awaiting_depth(), 1);
-        let entry = h.reactor.awaiting_response.iter().next()
+        let entry = h
+            .reactor
+            .awaiting_response
+            .iter()
+            .next()
             .expect("entry still present");
-        assert!(entry.abandoned, "abandon command should have flagged the entry");
+        assert!(
+            entry.abandoned,
+            "abandon command should have flagged the entry"
+        );
 
         // A late inbound response would skip abandoned entries via
         // `find_match` — we don't simulate the response here (the reactor's
@@ -2145,10 +2519,13 @@ mod a3_awaiting_response_gc {
         h.advance_clock(Duration::from_millis(50));
         h.tick(); // step 5: evict_expired → completion sender gets DispatcherTimeout
 
-        let result = rx.recv_timeout(Duration::from_millis(100))
+        let result = rx
+            .recv_timeout(Duration::from_millis(100))
             .expect("completion delivered");
-        assert!(matches!(result, Err(TransportError::DispatcherTimeout)),
-            "expected DispatcherTimeout, got {result:?}");
+        assert!(
+            matches!(result, Err(TransportError::DispatcherTimeout)),
+            "expected DispatcherTimeout, got {result:?}"
+        );
         assert_eq!(h.awaiting_depth(), 0);
     }
 
@@ -2167,10 +2544,13 @@ mod a3_awaiting_response_gc {
 
         // Both completions must have received TransportError::Closed.
         for rx in [rx1, rx2] {
-            let result = rx.recv_timeout(Duration::from_millis(100))
+            let result = rx
+                .recv_timeout(Duration::from_millis(100))
                 .expect("completion delivered");
-            assert!(matches!(result, Err(TransportError::Closed)),
-                "expected Closed, got {result:?}");
+            assert!(
+                matches!(result, Err(TransportError::Closed)),
+                "expected Closed, got {result:?}"
+            );
         }
         assert_eq!(h.awaiting_depth(), 0);
         assert_eq!(h.unacked_depth(), 0);
@@ -2187,16 +2567,20 @@ mod a5_passthrough_integration {
     use crate::host_io::test_harness::ReactorHarness;
     use crate::host_io::wire;
     use crate::passthrough_queue::{NotifyId, PassthroughEntry, PassthroughRouter};
-    use std::sync::mpsc::sync_channel;
     use std::sync::Arc;
+    use std::sync::mpsc::sync_channel;
     use std::time::Duration;
 
     /// Build a harness with a passthrough router pre-installed for one MCU.
     /// Returns the harness, the MCU handle, and a command queue ID.
-    fn harness_with_router() -> (ReactorHarness, crate::passthrough_queue::McuHandle, crate::passthrough_queue::CommandQueueId) {
+    fn harness_with_router() -> (
+        ReactorHarness,
+        crate::passthrough_queue::McuHandle,
+        crate::passthrough_queue::CommandQueueId,
+    ) {
         let mut h = ReactorHarness::new();
         let mut router = PassthroughRouter::with_clock(
-            Arc::clone(&h.clock) as Arc<dyn crate::clock::Clock + Send + Sync>,
+            Arc::clone(&h.clock) as Arc<dyn crate::clock::Clock + Send + Sync>
         );
         let mcu = router.claim_mcu("test_mcu");
         let qid = router.alloc_command_queue(mcu).unwrap();
@@ -2221,7 +2605,10 @@ mod a5_passthrough_integration {
         let (mut h, mcu, qid) = harness_with_router();
 
         // Push one entry directly into the router.
-        h.reactor.passthrough_router.as_mut().unwrap()
+        h.reactor
+            .passthrough_router
+            .as_mut()
+            .unwrap()
             .push(mcu, qid, entry(&[0xAA, 0xBB], 0, 0))
             .unwrap();
 
@@ -2231,7 +2618,8 @@ mod a5_passthrough_integration {
 
         // A frame was written: 5 (wire overhead) + 2 (payload) = 7 bytes.
         assert_eq!(
-            tx_after - tx_before, 7,
+            tx_after - tx_before,
+            7,
             "passthrough entry should produce a 7-byte wire frame"
         );
         assert_eq!(h.unacked_depth(), 1, "entry should be in unacked window");
@@ -2266,7 +2654,11 @@ mod a5_passthrough_integration {
         }
         assert_eq!(frames.len(), 3, "should have 3 frames");
         assert_eq!(frames[0], vec![0x01], "first frame should be req_clock=100");
-        assert_eq!(frames[1], vec![0x02], "second frame should be req_clock=200");
+        assert_eq!(
+            frames[1],
+            vec![0x02],
+            "second frame should be req_clock=200"
+        );
         assert_eq!(frames[2], vec![0x03], "third frame should be req_clock=300");
     }
 
@@ -2281,12 +2673,18 @@ mod a5_passthrough_integration {
         // Submit a typed command (goes through dispatch_submission → wire).
         let (tx, _rx) = sync_channel(1);
         let _ = h.reactor.dispatch_submission(
-            1, vec![0xCC], "noop".into(),
-            tx, h.clock.now() + Duration::from_secs(60),
+            1,
+            vec![0xCC],
+            "noop".into(),
+            tx,
+            h.clock.now() + Duration::from_secs(60),
         );
 
         // Push a passthrough entry.
-        h.reactor.passthrough_router.as_mut().unwrap()
+        h.reactor
+            .passthrough_router
+            .as_mut()
+            .unwrap()
             .push(mcu, qid, entry(&[0xDD], 0, 0))
             .unwrap();
 
@@ -2295,7 +2693,11 @@ mod a5_passthrough_integration {
         // Both should be in the unacked window. The typed command was
         // dispatched at submit time (before tick); the passthrough entry
         // is drained during tick's step 3b.
-        assert_eq!(h.unacked_depth(), 2, "both typed and passthrough should be in-flight");
+        assert_eq!(
+            h.unacked_depth(),
+            2,
+            "both typed and passthrough should be in-flight"
+        );
 
         // Verify both payloads are on the wire.
         let tx_log = h.tx_log();
@@ -2308,8 +2710,14 @@ mod a5_passthrough_integration {
             }
         }
         assert_eq!(payloads.len(), 2);
-        assert!(payloads.contains(&vec![0xCC]), "typed command payload on wire");
-        assert!(payloads.contains(&vec![0xDD]), "passthrough payload on wire");
+        assert!(
+            payloads.contains(&vec![0xCC]),
+            "typed command payload on wire"
+        );
+        assert!(
+            payloads.contains(&vec![0xDD]),
+            "passthrough payload on wire"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2354,16 +2762,25 @@ mod a5_passthrough_integration {
 
         // Create and send the router via the command channel.
         let mut router = PassthroughRouter::with_clock(
-            Arc::clone(&h.clock) as Arc<dyn crate::clock::Clock + Send + Sync>,
+            Arc::clone(&h.clock) as Arc<dyn crate::clock::Clock + Send + Sync>
         );
         let mcu = router.claim_mcu("test_mcu");
         let _qid = router.alloc_command_queue(mcu).unwrap();
 
-        h.submission_tx.send(ReactorCommand::InstallPassthroughRouter(router)).unwrap();
+        h.submission_tx
+            .send(ReactorCommand::InstallPassthroughRouter(router))
+            .unwrap();
         h.tick();
 
-        assert!(h.reactor.passthrough_router.is_some(), "router should be installed");
-        assert_eq!(h.reactor.passthrough_mcu, Some(mcu), "MCU handle should be set");
+        assert!(
+            h.reactor.passthrough_router.is_some(),
+            "router should be installed"
+        );
+        assert_eq!(
+            h.reactor.passthrough_mcu,
+            Some(mcu),
+            "MCU handle should be set"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2375,11 +2792,13 @@ mod a5_passthrough_integration {
         let (mut h, mcu, qid) = harness_with_router();
 
         // Send entry via the command channel.
-        h.submission_tx.send(ReactorCommand::PassthroughSend {
-            mcu,
-            queue_id: qid,
-            entry: entry(&[0xEE], 0, 0),
-        }).unwrap();
+        h.submission_tx
+            .send(ReactorCommand::PassthroughSend {
+                mcu,
+                queue_id: qid,
+                entry: entry(&[0xEE], 0, 0),
+            })
+            .unwrap();
 
         // First tick: drain command (pushes into router).
         // Same tick's step 3b: drain_passthrough emits it.
@@ -2405,12 +2824,18 @@ mod a5_passthrough_integration {
         // Submit a typed command first (gets seq=1).
         let (tx, _rx) = sync_channel(1);
         let _ = h.reactor.dispatch_submission(
-            1, vec![0xAA], "noop".into(),
-            tx, h.clock.now() + Duration::from_secs(60),
+            1,
+            vec![0xAA],
+            "noop".into(),
+            tx,
+            h.clock.now() + Duration::from_secs(60),
         );
 
         // Push a passthrough entry (should get seq=2).
-        h.reactor.passthrough_router.as_mut().unwrap()
+        h.reactor
+            .passthrough_router
+            .as_mut()
+            .unwrap()
             .push(mcu, qid, entry(&[0xBB], 0, 0))
             .unwrap();
 
@@ -2490,7 +2915,10 @@ mod a5_passthrough_integration {
         let (mut h, mcu, qid) = harness_with_router();
 
         let nid = NotifyId::new(42);
-        h.reactor.passthrough_router.as_mut().unwrap()
+        h.reactor
+            .passthrough_router
+            .as_mut()
+            .unwrap()
             .push(mcu, qid, entry_with_notify(&[0xFF], nid))
             .unwrap();
 
@@ -2498,7 +2926,8 @@ mod a5_passthrough_integration {
 
         // The notify map should have an entry keyed by the seq that was used.
         assert_eq!(h.reactor.passthrough_notify_map.len(), 1);
-        let (&seq, &(mapped_mcu, mapped_nid)) = h.reactor.passthrough_notify_map.iter().next().unwrap();
+        let (&seq, &(mapped_mcu, mapped_nid)) =
+            h.reactor.passthrough_notify_map.iter().next().unwrap();
         assert_eq!(seq, 1, "first emission gets seq=1");
         assert_eq!(mapped_mcu, mcu);
         assert_eq!(mapped_nid, nid);
@@ -2512,7 +2941,10 @@ mod a5_passthrough_integration {
     fn no_notify_entry_not_in_map() {
         let (mut h, mcu, qid) = harness_with_router();
 
-        h.reactor.passthrough_router.as_mut().unwrap()
+        h.reactor
+            .passthrough_router
+            .as_mut()
+            .unwrap()
             .push(mcu, qid, entry(&[0x01], 0, 0))
             .unwrap();
 
@@ -2534,8 +2966,8 @@ mod a5_passthrough_integration {
 mod a8_fire_and_forget_backpressure {
     use super::*;
     use crate::host_io::test_harness::ReactorHarness;
-    use crate::host_io::wire::build_frame;
     use crate::host_io::window::MAX_PENDING_BLOCKS;
+    use crate::host_io::wire::build_frame;
     use std::sync::mpsc::sync_channel;
     use std::time::Duration;
 
@@ -2624,7 +3056,11 @@ mod a8_fire_and_forget_backpressure {
             .expect("second fire-and-forget enqueues");
 
         assert_eq!(
-            h.reactor.pending_outbound_order.iter().copied().collect::<Vec<_>>(),
+            h.reactor
+                .pending_outbound_order
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
             vec![
                 PendingOutboundKind::FireAndForget,
                 PendingOutboundKind::Submission,
@@ -2635,7 +3071,9 @@ mod a8_fire_and_forget_backpressure {
         h.feed_ack_all();
         h.tick();
 
-        let payloads = h.reactor.unacked_window
+        let payloads = h
+            .reactor
+            .unacked_window
             .iter()
             .map(|e| {
                 let crc_off = e.frame_bytes.len() - crate::host_io::wire::MESSAGE_TRAILER_SIZE;
@@ -2697,7 +3135,9 @@ mod fire_and_forget_typed_routing {
         let payload = vec![0x2A, 0x07, 0x11];
 
         h.submission_tx
-            .send(ReactorCommand::FireAndForgetTyped { payload: payload.clone() })
+            .send(ReactorCommand::FireAndForgetTyped {
+                payload: payload.clone(),
+            })
             .expect("submission_tx open");
 
         h.tick();
@@ -2733,8 +3173,8 @@ mod fire_and_forget_typed_routing {
 #[cfg(test)]
 mod io_fault_propagation {
     use super::*;
-    use crate::host_io::test_harness::ReactorHarness;
     use crate::host_io::ReactorCommand;
+    use crate::host_io::test_harness::ReactorHarness;
     use std::sync::Arc;
     use std::sync::mpsc::sync_channel;
     use std::time::{Duration, Instant};
@@ -2750,38 +3190,94 @@ mod io_fault_propagation {
     }
     impl std::io::Write for BrokenWritePort {
         fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
-            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "mock fail"))
+            Err(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "mock fail",
+            ))
         }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
     impl serialport::SerialPort for BrokenWritePort {
-        fn name(&self) -> Option<String> { Some("broken".into()) }
-        fn baud_rate(&self) -> serialport::Result<u32> { Ok(0) }
-        fn data_bits(&self) -> serialport::Result<serialport::DataBits> { Ok(serialport::DataBits::Eight) }
-        fn flow_control(&self) -> serialport::Result<serialport::FlowControl> { Ok(serialport::FlowControl::None) }
-        fn parity(&self) -> serialport::Result<serialport::Parity> { Ok(serialport::Parity::None) }
-        fn stop_bits(&self) -> serialport::Result<serialport::StopBits> { Ok(serialport::StopBits::One) }
-        fn timeout(&self) -> Duration { Duration::from_millis(1) }
-        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> { Ok(()) }
-        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> { Ok(()) }
-        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> { Ok(()) }
-        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> { Ok(()) }
-        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> { Ok(()) }
-        fn set_timeout(&mut self, _: Duration) -> serialport::Result<()> { Ok(()) }
-        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
-        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
-        fn read_clear_to_send(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn read_data_set_ready(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn read_ring_indicator(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn read_carrier_detect(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn bytes_to_read(&self) -> serialport::Result<u32> { Ok(0) }
-        fn bytes_to_write(&self) -> serialport::Result<u32> { Ok(0) }
-        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> { Ok(()) }
-        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
-            Err(serialport::Error::new(serialport::ErrorKind::Unknown, "unsupported"))
+        fn name(&self) -> Option<String> {
+            Some("broken".into())
         }
-        fn set_break(&self) -> serialport::Result<()> { Ok(()) }
-        fn clear_break(&self) -> serialport::Result<()> { Ok(()) }
+        fn baud_rate(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn data_bits(&self) -> serialport::Result<serialport::DataBits> {
+            Ok(serialport::DataBits::Eight)
+        }
+        fn flow_control(&self) -> serialport::Result<serialport::FlowControl> {
+            Ok(serialport::FlowControl::None)
+        }
+        fn parity(&self) -> serialport::Result<serialport::Parity> {
+            Ok(serialport::Parity::None)
+        }
+        fn stop_bits(&self) -> serialport::Result<serialport::StopBits> {
+            Ok(serialport::StopBits::One)
+        }
+        fn timeout(&self) -> Duration {
+            Duration::from_millis(1)
+        }
+        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_timeout(&mut self, _: Duration) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn bytes_to_read(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn bytes_to_write(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
+            Err(serialport::Error::new(
+                serialport::ErrorKind::Unknown,
+                "unsupported",
+            ))
+        }
+        fn set_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn clear_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
     }
 
     fn fresh_reactor_with_broken_write() -> (Reactor, std::sync::mpsc::Sender<ReactorCommand>) {
@@ -2817,32 +3313,43 @@ mod io_fault_propagation {
             expected_response_name: "noop".into(),
             completion: completion_tx,
             deadline: Instant::now() + Duration::from_secs(1),
-        }).expect("submission_tx open");
+        })
+        .expect("submission_tx open");
 
         let outcome = reactor.tick_once();
 
-        let result = completion_rx.try_recv()
+        let result = completion_rx
+            .try_recv()
             .expect("completion delivered within one tick");
         match result {
-            Err(TransportError::Io(e)) =>
-                assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
+            Err(TransportError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
             other => panic!("expected Io(BrokenPipe), got {other:?}"),
         }
         // POST-FIX (2026-05-09 Fix 1): reactor MUST transition Closed +
         // stage HostDisconnect. Mirrors drain_pending_submissions behavior.
         // Note: pending_host_fault gets drained into fault_latch within the
         // same tick (step 4b), so we check the latch.
-        assert_eq!(reactor.state, ReactorState::Closed,
-            "Fix 1: SubmitTyped's Io error MUST transition Closed");
-        let cell = reactor.event_dispatcher.fault_latch.cell.as_ref()
+        assert_eq!(
+            reactor.state,
+            ReactorState::Closed,
+            "Fix 1: SubmitTyped's Io error MUST transition Closed"
+        );
+        let cell = reactor
+            .event_dispatcher
+            .fault_latch
+            .cell
+            .as_ref()
             .expect("Fix 1: HostDisconnect fault MUST be latched");
         assert_eq!(cell.fault_code, FaultCode::HostDisconnect.as_u16());
         // Submit doesn't reach awaiting_response.push since write failed.
         assert!(reactor.unacked_window.is_empty());
         // tick_once detects Closed in step 6 within the SAME tick that
         // staged the fault. Outcome is Closed (not Continue).
-        assert_eq!(outcome, TickOutcome::Closed,
-            "tick_once returns Closed when state transitioned this tick");
+        assert_eq!(
+            outcome,
+            TickOutcome::Closed,
+            "tick_once returns Closed when state transitioned this tick"
+        );
         // send_seq still advances (write attempted, just failed).
         assert_eq!(reactor.send_seq, 2);
     }
@@ -2853,14 +3360,20 @@ mod io_fault_propagation {
         let (mut reactor, tx) = fresh_reactor_with_broken_write();
         tx.send(ReactorCommand::FireAndForgetTyped {
             payload: vec![0x11, 0x22, 0x33],
-        }).expect("submission_tx open");
+        })
+        .expect("submission_tx open");
 
         let outcome = reactor.tick_once();
 
-        assert_eq!(reactor.state, ReactorState::Closed,
-            "Fix 1: FireAndForgetTyped's Io error MUST transition Closed");
-        assert!(reactor.event_dispatcher.fault_latch.cell.is_some(),
-            "Fix 1: HostDisconnect fault MUST be latched");
+        assert_eq!(
+            reactor.state,
+            ReactorState::Closed,
+            "Fix 1: FireAndForgetTyped's Io error MUST transition Closed"
+        );
+        assert!(
+            reactor.event_dispatcher.fault_latch.cell.is_some(),
+            "Fix 1: HostDisconnect fault MUST be latched"
+        );
         assert_eq!(outcome, TickOutcome::Closed);
     }
 
@@ -2878,23 +3391,30 @@ mod io_fault_propagation {
             body: vec![0; 16],
             completion: completion_tx,
             deadline: Instant::now() + Duration::from_secs(1),
-        }).expect("submission_tx open");
+        })
+        .expect("submission_tx open");
 
         let outcome = reactor.tick_once();
 
         let result = completion_rx.try_recv().expect("completion delivered");
         match result {
-            Err(TransportError::Io(e)) =>
-                assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
+            Err(TransportError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
             other => panic!("expected Io(BrokenPipe), got {other:?}"),
         }
-        assert_eq!(reactor.state, ReactorState::Closed,
-            "Fix 1: KalicoCall's Io error MUST transition Closed");
-        assert!(reactor.event_dispatcher.fault_latch.cell.is_some(),
-            "Fix 1: HostDisconnect fault MUST be latched");
+        assert_eq!(
+            reactor.state,
+            ReactorState::Closed,
+            "Fix 1: KalicoCall's Io error MUST transition Closed"
+        );
+        assert!(
+            reactor.event_dispatcher.fault_latch.cell.is_some(),
+            "Fix 1: HostDisconnect fault MUST be latched"
+        );
         assert_eq!(outcome, TickOutcome::Closed);
-        assert!(reactor.kalico_state.pending.is_empty(),
-            "pending entry cleaned up before Closed");
+        assert!(
+            reactor.kalico_state.pending.is_empty(),
+            "pending entry cleaned up before Closed"
+        );
     }
 
     /// Multi-Submit hammer: a single Io fault should immediately close the
@@ -2914,7 +3434,8 @@ mod io_fault_propagation {
                 expected_response_name: "noop".into(),
                 completion: ctx,
                 deadline: Instant::now() + Duration::from_secs(60),
-            }).expect("submission_tx open");
+            })
+            .expect("submission_tx open");
             completion_rxs.push(crx);
         }
 
@@ -2925,8 +3446,11 @@ mod io_fault_propagation {
         // state transitioned). Outcome is Closed (state went Closed in
         // this tick).
         let outcome1 = reactor.tick_once();
-        assert_eq!(outcome1, TickOutcome::Closed,
-            "first Io fault closes the transport");
+        assert_eq!(
+            outcome1,
+            TickOutcome::Closed,
+            "first Io fault closes the transport"
+        );
         assert_eq!(reactor.state, ReactorState::Closed);
 
         // At least the first 4 (one batch) got Io. The exact count depends
@@ -2938,8 +3462,10 @@ mod io_fault_propagation {
                 delivered_io += 1;
             }
         }
-        assert!(delivered_io >= 1,
-            "at least one Submit got an error response; got {delivered_io}");
+        assert!(
+            delivered_io >= 1,
+            "at least one Submit got an error response; got {delivered_io}"
+        );
     }
 
     /// Drain path — already correct pre-fix, regression-guard test.
@@ -2949,12 +3475,14 @@ mod io_fault_propagation {
         let (mut reactor, _tx) = fresh_reactor_with_broken_write();
 
         for seq in 0..crate::host_io::window::MAX_PENDING_BLOCKS as u64 {
-            reactor.unacked_window.push(crate::host_io::window::UnackedEntry {
-                seq,
-                frame_bytes: vec![],
-                sent_at: Instant::now(),
-                retry_count: 0,
-            });
+            reactor
+                .unacked_window
+                .push(crate::host_io::window::UnackedEntry {
+                    seq,
+                    frame_bytes: vec![],
+                    sent_at: Instant::now(),
+                    retry_count: 0,
+                });
         }
         reactor.send_seq = crate::host_io::window::MAX_PENDING_BLOCKS as u64;
 
@@ -2966,7 +3494,9 @@ mod io_fault_propagation {
             completion: completion_tx,
             deadline: Instant::now() + Duration::from_secs(1),
         });
-        reactor.pending_outbound_order.push_back(PendingOutboundKind::Submission);
+        reactor
+            .pending_outbound_order
+            .push_back(PendingOutboundKind::Submission);
 
         reactor.unacked_window.pop_acked(1);
         reactor.drain_pending_submissions();
@@ -2992,7 +3522,9 @@ mod io_fault_propagation {
     }
     impl FlakyWritePort {
         fn new(succeed_count: u32) -> Self {
-            Self { writes_until_fail: std::sync::atomic::AtomicU32::new(succeed_count) }
+            Self {
+                writes_until_fail: std::sync::atomic::AtomicU32::new(succeed_count),
+            }
         }
     }
     impl std::io::Read for FlakyWritePort {
@@ -3005,47 +3537,104 @@ mod io_fault_propagation {
             use std::sync::atomic::Ordering;
             let remaining = self.writes_until_fail.load(Ordering::Relaxed);
             if remaining > 0 {
-                self.writes_until_fail.store(remaining - 1, Ordering::Relaxed);
+                self.writes_until_fail
+                    .store(remaining - 1, Ordering::Relaxed);
                 Ok(buf.len())
             } else {
-                Err(std::io::Error::new(std::io::ErrorKind::Other, "mock retransmit fail"))
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "mock retransmit fail",
+                ))
             }
         }
-        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
     impl serialport::SerialPort for FlakyWritePort {
-        fn name(&self) -> Option<String> { Some("flaky".into()) }
-        fn baud_rate(&self) -> serialport::Result<u32> { Ok(0) }
-        fn data_bits(&self) -> serialport::Result<serialport::DataBits> { Ok(serialport::DataBits::Eight) }
-        fn flow_control(&self) -> serialport::Result<serialport::FlowControl> { Ok(serialport::FlowControl::None) }
-        fn parity(&self) -> serialport::Result<serialport::Parity> { Ok(serialport::Parity::None) }
-        fn stop_bits(&self) -> serialport::Result<serialport::StopBits> { Ok(serialport::StopBits::One) }
-        fn timeout(&self) -> Duration { Duration::from_millis(1) }
-        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> { Ok(()) }
-        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> { Ok(()) }
-        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> { Ok(()) }
-        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> { Ok(()) }
-        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> { Ok(()) }
-        fn set_timeout(&mut self, _: Duration) -> serialport::Result<()> { Ok(()) }
-        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
-        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
-        fn read_clear_to_send(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn read_data_set_ready(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn read_ring_indicator(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn read_carrier_detect(&mut self) -> serialport::Result<bool> { Ok(false) }
-        fn bytes_to_read(&self) -> serialport::Result<u32> { Ok(0) }
-        fn bytes_to_write(&self) -> serialport::Result<u32> { Ok(0) }
-        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> { Ok(()) }
-        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
-            Err(serialport::Error::new(serialport::ErrorKind::Unknown, "unsupported"))
+        fn name(&self) -> Option<String> {
+            Some("flaky".into())
         }
-        fn set_break(&self) -> serialport::Result<()> { Ok(()) }
-        fn clear_break(&self) -> serialport::Result<()> { Ok(()) }
+        fn baud_rate(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn data_bits(&self) -> serialport::Result<serialport::DataBits> {
+            Ok(serialport::DataBits::Eight)
+        }
+        fn flow_control(&self) -> serialport::Result<serialport::FlowControl> {
+            Ok(serialport::FlowControl::None)
+        }
+        fn parity(&self) -> serialport::Result<serialport::Parity> {
+            Ok(serialport::Parity::None)
+        }
+        fn stop_bits(&self) -> serialport::Result<serialport::StopBits> {
+            Ok(serialport::StopBits::One)
+        }
+        fn timeout(&self) -> Duration {
+            Duration::from_millis(1)
+        }
+        fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn set_timeout(&mut self, _: Duration) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+        fn bytes_to_read(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn bytes_to_write(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+        fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn try_clone(&self) -> serialport::Result<Box<dyn serialport::SerialPort>> {
+            Err(serialport::Error::new(
+                serialport::ErrorKind::Unknown,
+                "unsupported",
+            ))
+        }
+        fn set_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
+        fn clear_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
     }
 
-    fn fresh_reactor_with_flaky_port(succeed_count: u32)
-        -> (Reactor, std::sync::mpsc::Sender<ReactorCommand>)
-    {
+    fn fresh_reactor_with_flaky_port(
+        succeed_count: u32,
+    ) -> (Reactor, std::sync::mpsc::Sender<ReactorCommand>) {
         use crate::host_io::parser::MsgProtoParser;
         use crate::host_io::runtime_events::StatusEvent;
         use arc_swap::ArcSwap;
@@ -3055,7 +3644,9 @@ mod io_fault_propagation {
         let clock: Arc<dyn crate::clock::Clock> = Arc::new(crate::clock::RealClock);
         let reactor = Reactor::new_for_tests(
             Box::new(FlakyWritePort::new(succeed_count)),
-            parser, rx, status_snapshot,
+            parser,
+            rx,
+            status_snapshot,
             crate::host_io::KalicoHostIoConfig::default(),
             clock,
         );
@@ -3080,7 +3671,8 @@ mod io_fault_propagation {
             expected_response_name: "noop".into(),
             completion: completion_tx,
             deadline: Instant::now() + Duration::from_secs(60),
-        }).expect("submission_tx open");
+        })
+        .expect("submission_tx open");
 
         // Tick 1: process Submit, write succeeds. Awaiter is in
         // awaiting_response. Front of unacked_window is fresh.
@@ -3100,17 +3692,25 @@ mod io_fault_propagation {
         // transition_closed_on_io_fault MUST run. tick_once returns Closed
         // in the same tick.
         let outcome2 = reactor.tick_once();
-        assert_eq!(outcome2, TickOutcome::Closed,
-            "Fix 6: RTO retransmit Io error closes transport in same tick");
+        assert_eq!(
+            outcome2,
+            TickOutcome::Closed,
+            "Fix 6: RTO retransmit Io error closes transport in same tick"
+        );
         assert_eq!(reactor.state, ReactorState::Closed);
         // fault_latch holds the HostDisconnect after step 4b drains.
-        assert!(reactor.event_dispatcher.fault_latch.cell.is_some(),
-            "Fix 6: HostDisconnect fault MUST be latched");
+        assert!(
+            reactor.event_dispatcher.fault_latch.cell.is_some(),
+            "Fix 6: HostDisconnect fault MUST be latched"
+        );
 
         // The awaiter was flushed with Closed.
-        let result = completion_rx.try_recv().expect("flush_all_completions delivered");
-        assert!(matches!(result, Err(TransportError::Closed)),
-            "klippy gets Closed (not Io) via flush_all_completions; got {result:?}");
+        let result = completion_rx
+            .try_recv()
+            .expect("flush_all_completions delivered");
+        assert!(
+            matches!(result, Err(TransportError::Closed)),
+            "klippy gets Closed (not Io) via flush_all_completions; got {result:?}"
+        );
     }
-
 }

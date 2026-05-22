@@ -121,17 +121,19 @@ pub fn arm_all_mcus<T: Transport>(
             .map_err(|e| fail(ArmError::Transport(e), &armed_indices))?;
         let host_recv = Instant::now();
 
-        let echoed = resp.try_get_u32("request_id").ok_or_else(|| fail(
-            ArmError::Transport(TransportError::Parse(
-                "kalico_clock_sync_response missing request_id field".into(),
-            )),
-            &armed_indices,
-        ))?;
+        let echoed = resp.try_get_u32("request_id").ok_or_else(|| {
+            fail(
+                ArmError::Transport(TransportError::Parse(
+                    "kalico_clock_sync_response missing request_id field".into(),
+                )),
+                &armed_indices,
+            )
+        })?;
         if echoed != request_id {
             return Err(fail(
-                ArmError::Transport(TransportError::Parse(
-                    format!("clock_sync request_id mismatch: sent {request_id}, got {echoed}"),
-                )),
+                ArmError::Transport(TransportError::Parse(format!(
+                    "clock_sync request_id mismatch: sent {request_id}, got {echoed}"
+                ))),
                 &armed_indices,
             ));
         }
@@ -141,7 +143,15 @@ pub fn arm_all_mcus<T: Transport>(
         est.add_dedicated_sample(host_send, host_recv, mcu_clock);
 
         est.is_quality_gate_passed(baseline_freq)
-            .map_err(|subgate| fail(ArmError::QualityGate { mcu_index: idx, subgate }, &armed_indices))?;
+            .map_err(|subgate| {
+                fail(
+                    ArmError::QualityGate {
+                        mcu_index: idx,
+                        subgate,
+                    },
+                    &armed_indices,
+                )
+            })?;
     }
 
     // Spec §6.3 + §12.4 (GAP-1 fix): cross-MCU drift sanity check
@@ -222,7 +232,7 @@ pub enum ArmError {
     /// index of the failing MCU and the specific subgate that tripped.
     QualityGate {
         mcu_index: usize,
-        subgate:   crate::clock_sync::QualityGateFailure,
+        subgate: crate::clock_sync::QualityGateFailure,
     },
     /// Spec §6.3 + §12.4: cross-MCU clock-frequency drift exceeds
     /// `MAX_CROSS_MCU_FREQ_RATIO_OFFSET`. Carries the indices of the

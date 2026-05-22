@@ -72,8 +72,7 @@ fn arcswap_load_returns_complete_snapshot() {
     // Sanity: each load() returns a self-consistent snapshot — no torn read.
     // Snapshot is small (single u64) so Rust's Arc swap atomicity makes this
     // trivially true; we're sanity-checking the test infrastructure.
-    let snap: Arc<ArcSwap<Snapshot>> =
-        Arc::new(ArcSwap::from_pointee(Snapshot { generation: 42 }));
+    let snap: Arc<ArcSwap<Snapshot>> = Arc::new(ArcSwap::from_pointee(Snapshot { generation: 42 }));
     let g1 = snap.load();
     snap.store(Arc::new(Snapshot { generation: 43 }));
     let g2 = snap.load();

@@ -7,7 +7,7 @@ use crate::host_io::ReactorCommand;
 /// defuses on completion (Ok variant only) so timeout/disconnect paths still
 /// notify the reactor.
 pub(crate) struct CallHandle {
-    pub(crate) call_id:       u64,
+    pub(crate) call_id: u64,
     pub(crate) submission_tx: Sender<ReactorCommand>,
 }
 
@@ -19,7 +19,9 @@ impl CallHandle {
 
 impl Drop for CallHandle {
     fn drop(&mut self) {
-        let _ = self.submission_tx.send(ReactorCommand::Abandon(self.call_id));
+        let _ = self
+            .submission_tx
+            .send(ReactorCommand::Abandon(self.call_id));
     }
 }
 
@@ -30,7 +32,10 @@ mod tests {
     #[test]
     fn drop_without_defuse_sends_abandon() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let handle = CallHandle { call_id: 42, submission_tx: tx };
+        let handle = CallHandle {
+            call_id: 42,
+            submission_tx: tx,
+        };
         drop(handle);
         match rx.recv().expect("channel must have a message") {
             ReactorCommand::Abandon(id) => assert_eq!(id, 42),
@@ -42,8 +47,14 @@ mod tests {
     #[test]
     fn defuse_skips_abandon() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let handle = CallHandle { call_id: 99, submission_tx: tx };
+        let handle = CallHandle {
+            call_id: 99,
+            submission_tx: tx,
+        };
         handle.defuse();
-        assert!(rx.try_recv().is_err(), "defused handle must not send Abandon");
+        assert!(
+            rx.try_recv().is_err(),
+            "defused handle must not send Abandon"
+        );
     }
 }

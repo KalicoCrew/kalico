@@ -3,8 +3,8 @@
 use std::time::Duration;
 
 const ALPHA: f64 = 0.125;
-const BETA:  f64 = 0.25;
-const K:     f64 = 4.0;
+const BETA: f64 = 0.25;
+const K: f64 = 4.0;
 /// Floor on the RFC 6298 retransmission timeout.
 ///
 /// The original 25 ms was tuned for the Klipper C reference implementation
@@ -25,18 +25,22 @@ const K:     f64 = 4.0;
 /// retransmit-storm window we want to slow down.
 pub const MIN_RTO: Duration = Duration::from_millis(500);
 pub const MAX_RTO: Duration = Duration::from_secs(5);
-const G:     Duration = Duration::from_millis(1);
+const G: Duration = Duration::from_millis(1);
 
 #[derive(Debug)]
 pub struct RttEstimator {
-    srtt:   Option<Duration>,
+    srtt: Option<Duration>,
     rttvar: Option<Duration>,
-    rto:    Duration,
+    rto: Duration,
 }
 
 impl Default for RttEstimator {
     fn default() -> Self {
-        Self { srtt: None, rttvar: None, rto: MIN_RTO }
+        Self {
+            srtt: None,
+            rttvar: None,
+            rto: MIN_RTO,
+        }
     }
 }
 
@@ -51,7 +55,13 @@ fn secs_mul(d: Duration, f: f64) -> Duration {
 }
 
 fn clamp(d: Duration, min: Duration, max: Duration) -> Duration {
-    if d < min { min } else if d > max { max } else { d }
+    if d < min {
+        min
+    } else if d > max {
+        max
+    } else {
+        d
+    }
 }
 
 impl RttEstimator {
@@ -104,7 +114,9 @@ mod tests {
         let mut e = RttEstimator::default();
         e.backoff();
         assert!(e.current_rto() >= Duration::from_millis(50));
-        for _ in 0..20 { e.backoff(); }
+        for _ in 0..20 {
+            e.backoff();
+        }
         assert_eq!(e.current_rto(), MAX_RTO);
     }
 }

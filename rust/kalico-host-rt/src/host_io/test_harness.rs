@@ -72,50 +72,105 @@ impl Write for FakeSerialPort {
         self.handles.tx.lock().unwrap().extend_from_slice(buf);
         Ok(buf.len())
     }
-    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 // Stub the rest of the SerialPort trait. The reactor only calls write_all,
 // flush, set_timeout, and read; everything else returns sensible defaults
 // or Unsupported errors.
 impl SerialPort for FakeSerialPort {
-    fn name(&self) -> Option<String> { Some("fake".into()) }
-    fn baud_rate(&self) -> serialport::Result<u32> { Ok(0) }
+    fn name(&self) -> Option<String> {
+        Some("fake".into())
+    }
+    fn baud_rate(&self) -> serialport::Result<u32> {
+        Ok(0)
+    }
     fn data_bits(&self) -> serialport::Result<serialport::DataBits> {
-        Err(serialport::Error::new(serialport::ErrorKind::Unknown, "unsupported"))
+        Err(serialport::Error::new(
+            serialport::ErrorKind::Unknown,
+            "unsupported",
+        ))
     }
     fn flow_control(&self) -> serialport::Result<serialport::FlowControl> {
-        Err(serialport::Error::new(serialport::ErrorKind::Unknown, "unsupported"))
+        Err(serialport::Error::new(
+            serialport::ErrorKind::Unknown,
+            "unsupported",
+        ))
     }
     fn parity(&self) -> serialport::Result<serialport::Parity> {
-        Err(serialport::Error::new(serialport::ErrorKind::Unknown, "unsupported"))
+        Err(serialport::Error::new(
+            serialport::ErrorKind::Unknown,
+            "unsupported",
+        ))
     }
     fn stop_bits(&self) -> serialport::Result<serialport::StopBits> {
-        Err(serialport::Error::new(serialport::ErrorKind::Unknown, "unsupported"))
+        Err(serialport::Error::new(
+            serialport::ErrorKind::Unknown,
+            "unsupported",
+        ))
     }
-    fn timeout(&self) -> Duration { Duration::from_millis(0) }
-    fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> { Ok(()) }
-    fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> { Ok(()) }
-    fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> { Ok(()) }
-    fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> { Ok(()) }
-    fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> { Ok(()) }
-    fn set_timeout(&mut self, _: Duration) -> serialport::Result<()> { Ok(()) }
-    fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
-    fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> { Ok(()) }
-    fn read_clear_to_send(&mut self) -> serialport::Result<bool> { Ok(false) }
-    fn read_data_set_ready(&mut self) -> serialport::Result<bool> { Ok(false) }
-    fn read_ring_indicator(&mut self) -> serialport::Result<bool> { Ok(false) }
-    fn read_carrier_detect(&mut self) -> serialport::Result<bool> { Ok(false) }
+    fn timeout(&self) -> Duration {
+        Duration::from_millis(0)
+    }
+    fn set_baud_rate(&mut self, _: u32) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_flow_control(&mut self, _: serialport::FlowControl) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_parity(&mut self, _: serialport::Parity) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_data_bits(&mut self, _: serialport::DataBits) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_stop_bits(&mut self, _: serialport::StopBits) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_timeout(&mut self, _: Duration) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn write_request_to_send(&mut self, _: bool) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn write_data_terminal_ready(&mut self, _: bool) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
+        Ok(false)
+    }
+    fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
+        Ok(false)
+    }
+    fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
+        Ok(false)
+    }
+    fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
+        Ok(false)
+    }
     fn bytes_to_read(&self) -> serialport::Result<u32> {
         Ok(self.handles.rx.lock().unwrap().len() as u32)
     }
-    fn bytes_to_write(&self) -> serialport::Result<u32> { Ok(0) }
-    fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> { Ok(()) }
-    fn try_clone(&self) -> serialport::Result<Box<dyn SerialPort>> {
-        Err(serialport::Error::new(serialport::ErrorKind::Unknown, "unsupported"))
+    fn bytes_to_write(&self) -> serialport::Result<u32> {
+        Ok(0)
     }
-    fn set_break(&self) -> serialport::Result<()> { Ok(()) }
-    fn clear_break(&self) -> serialport::Result<()> { Ok(()) }
+    fn clear(&self, _: serialport::ClearBuffer) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn try_clone(&self) -> serialport::Result<Box<dyn SerialPort>> {
+        Err(serialport::Error::new(
+            serialport::ErrorKind::Unknown,
+            "unsupported",
+        ))
+    }
+    fn set_break(&self) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn clear_break(&self) -> serialport::Result<()> {
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -138,10 +193,19 @@ impl ReactorHarness {
         let status_snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
         let config = KalicoHostIoConfig::default();
         let reactor = Reactor::new_for_tests(
-            port, parser, submission_rx, status_snapshot,
-            config, clock.clone(),
+            port,
+            parser,
+            submission_rx,
+            status_snapshot,
+            config,
+            clock.clone(),
         );
-        Self { reactor, clock, port_handles, submission_tx }
+        Self {
+            reactor,
+            clock,
+            port_handles,
+            submission_tx,
+        }
     }
 
     /// Construct a harness with an explicit `IdentifySeqState`, simulating
@@ -164,7 +228,12 @@ impl ReactorHarness {
             config,
             clock_dyn,
         );
-        Self { reactor, clock, port_handles, submission_tx }
+        Self {
+            reactor,
+            clock,
+            port_handles,
+            submission_tx,
+        }
     }
 
     pub fn feed_rx(&self, bytes: &[u8]) {
@@ -183,9 +252,15 @@ impl ReactorHarness {
         self.port_handles.tx.lock().unwrap().clone()
     }
 
-    pub fn unacked_depth(&self) -> usize { self.reactor.unacked_window.len() }
-    pub fn awaiting_depth(&self) -> usize { self.reactor.awaiting_response.len() }
-    pub fn send_seq(&self) -> u64 { self.reactor.send_seq }
+    pub fn unacked_depth(&self) -> usize {
+        self.reactor.unacked_window.len()
+    }
+    pub fn awaiting_depth(&self) -> usize {
+        self.reactor.awaiting_response.len()
+    }
+    pub fn send_seq(&self) -> u64 {
+        self.reactor.send_seq
+    }
 
     /// Feed an ACK frame that acknowledges all frames up to (but not
     /// including) the current `send_seq`. This clears the reactor's unacked
@@ -207,7 +282,11 @@ impl ReactorHarness {
     ) -> std::sync::mpsc::Receiver<Result<MessageParams, TransportError>> {
         let (tx, rx) = sync_channel(1);
         let _ = self.reactor.dispatch_submission(
-            call_id, payload, expected_response_name.to_string(), tx, deadline,
+            call_id,
+            payload,
+            expected_response_name.to_string(),
+            tx,
+            deadline,
         );
         rx
     }
@@ -320,7 +399,8 @@ impl ReactorHarness {
         &mut self,
         mcu: crate::passthrough_queue::McuHandle,
     ) -> Result<Vec<Vec<u8>>, crate::passthrough_queue::RouterError> {
-        let router = self.reactor
+        let router = self
+            .reactor
             .passthrough_router
             .as_mut()
             .expect("no passthrough router installed");
@@ -335,7 +415,8 @@ impl ReactorHarness {
     pub fn passthrough_config_phase(
         &self,
         mcu: crate::passthrough_queue::McuHandle,
-    ) -> Result<crate::passthrough_queue::ConfigStagePhase, crate::passthrough_queue::RouterError> {
+    ) -> Result<crate::passthrough_queue::ConfigStagePhase, crate::passthrough_queue::RouterError>
+    {
         self.reactor
             .passthrough_router
             .as_ref()
@@ -381,12 +462,14 @@ mod smoke {
 
         // Sanity: the public send_seq accessor reflects the adopted state
         // *before* any frame goes out.
-        assert_eq!(h.send_seq(), 5, "reactor must adopt next_send_seq_abs from identify");
+        assert_eq!(
+            h.send_seq(),
+            5,
+            "reactor must adopt next_send_seq_abs from identify"
+        );
 
         let deadline = Instant::now() + Duration::from_secs(1);
-        let _completion = h.submit_via_dispatch(
-            42, vec![0x01], "noop", deadline,
-        );
+        let _completion = h.submit_via_dispatch(42, vec![0x01], "noop", deadline);
 
         let written = h.tx_log();
         assert!(!written.is_empty(), "reactor should have written a frame");

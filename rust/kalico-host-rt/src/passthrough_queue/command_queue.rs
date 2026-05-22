@@ -1,7 +1,7 @@
 //! Per-command-queue pair of sorted lists: upcoming (gated by `min_clock`)
 //! and ready (ordered by `req_clock`).
 
-use super::entry::{PassthroughEntry, BACKGROUND_PRIORITY_CLOCK};
+use super::entry::{BACKGROUND_PRIORITY_CLOCK, PassthroughEntry};
 
 #[derive(Debug, Default)]
 pub struct CommandQueue {
@@ -34,7 +34,9 @@ impl CommandQueue {
         self.ack_clock = ack_clock;
         // upcoming is sorted by min_clock ascending, so we can drain from
         // the front until we hit one that isn't eligible yet.
-        let split = self.upcoming.partition_point(|e| e.min_clock() <= ack_clock);
+        let split = self
+            .upcoming
+            .partition_point(|e| e.min_clock() <= ack_clock);
         let promoted: Vec<_> = self.upcoming.drain(..split).collect();
         for entry in promoted {
             sorted_insert_by_req_clock(&mut self.ready, entry);
@@ -184,7 +186,10 @@ mod tests {
         // Normal entries come out first, background last.
         assert_eq!(q.pop_ready().unwrap().req_clock(), 100);
         assert_eq!(q.pop_ready().unwrap().req_clock(), 200);
-        assert_eq!(q.pop_ready().unwrap().req_clock(), BACKGROUND_PRIORITY_CLOCK);
+        assert_eq!(
+            q.pop_ready().unwrap().req_clock(),
+            BACKGROUND_PRIORITY_CLOCK
+        );
     }
 
     #[test]

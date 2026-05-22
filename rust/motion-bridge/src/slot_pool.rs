@@ -203,11 +203,7 @@ mod tests {
                 break;
             }
         }
-        assert_eq!(
-            found,
-            Some(2),
-            "second alloc of same slot must be gen=2"
-        );
+        assert_eq!(found, Some(2), "second alloc of same slot must be gen=2");
     }
 
     #[test]
@@ -216,10 +212,7 @@ mod tests {
         for _ in 0..CURVE_POOL_N {
             assert!(p.try_alloc().is_some());
         }
-        assert!(
-            p.try_alloc().is_none(),
-            "exhausted pool must return None"
-        );
+        assert!(p.try_alloc().is_none(), "exhausted pool must return None");
         assert_eq!(p.in_flight_count(), CURVE_POOL_N);
     }
 
@@ -309,9 +302,9 @@ mod tests {
         // u16 rolling-counter bug (would have errored at slot 64).
         let mut p = SlotPool::new(CURVE_POOL_N);
         for i in 0..(CURVE_POOL_N * 5) {
-            let (s, _) = p.try_alloc().unwrap_or_else(|| {
-                panic!("alloc {i} failed — pool starved")
-            });
+            let (s, _) = p
+                .try_alloc()
+                .unwrap_or_else(|| panic!("alloc {i} failed — pool starved"));
             p.register_segment(s, i as u32);
             // Retire immediately (simulates a flushed pipeline).
             p.retire_through_segment(i as u32);

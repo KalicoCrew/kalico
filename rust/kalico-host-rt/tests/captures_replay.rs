@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use kalico_host_rt::host_io::parser::{DataDictionary, DecodedFrame, MsgProtoParser};
-use kalico_host_rt::host_io::wire::{extract_packet, MESSAGE_MIN};
+use kalico_host_rt::host_io::wire::{MESSAGE_MIN, extract_packet};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -215,10 +215,6 @@ fn corpus_covers_required_encode_surfaces() {
             result.err()
         );
         let bytes = result.unwrap();
-        assert!(
-            !bytes.is_empty(),
-            "encode({:?}) returned empty bytes",
-            cmd
-        );
+        assert!(!bytes.is_empty(), "encode({:?}) returned empty bytes", cmd);
     }
 }

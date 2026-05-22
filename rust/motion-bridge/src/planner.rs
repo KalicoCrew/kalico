@@ -38,7 +38,7 @@ use crate::classify::ClassifiedMove;
 use crate::config::{PlannerConfig, PlannerLimits};
 use trajectory::plan_velocity::{PlanShaper, SafetyMode};
 use trajectory::streaming::{EmitContext, ReplanContext, ShaperState};
-use trajectory::{AxisShaper, EHalo, RequiredShaper, ShaperConfig, ShapedSegment};
+use trajectory::{AxisShaper, EHalo, RequiredShaper, ShapedSegment, ShaperConfig};
 
 // ---------------------------------------------------------------------------
 // Quiescence-commit timer
@@ -99,24 +99,34 @@ pub enum PlannerMsg {
     /// Phase 5 Task 5.1 — `kalico_stream_open` arrived. Reset `ShaperState`
     /// to the supplied home position before processing any further moves.
     /// Wired now (see `run_loop`'s match arm).
-    KalicoStreamOpen { home_pos: [f64; 4] },
+    KalicoStreamOpen {
+        home_pos: [f64; 4],
+    },
     /// Phase 5 Task 5.1 — homing / `SET_KINEMATIC_POSITION` succeeded.
     /// Reset `ShaperState` to the supplied home position. Wired now.
-    Homing { home_pos: [f64; 4] },
+    Homing {
+        home_pos: [f64; 4],
+    },
     /// Phase 5 Task 5.1 — engine `Underrun` fault detected. Host-side
     /// detection lands in Task 5.2; for now this variant exists so callers
     /// can be wired against a stable enum, but the run-loop handler logs a
     /// warning and drops the message. Task 5.2 will replace the placeholder
     /// with the real reset-to-recovered-position path.
-    Underrun { recovered_pos: [f64; 4] },
+    Underrun {
+        recovered_pos: [f64; 4],
+    },
     /// Phase 5 Task 5.1 — engine `force_idle` detected. Same handling as
     /// `Underrun` (placeholder until Task 5.2 wires the recovery path).
-    ForceIdle { recovered_pos: [f64; 4] },
+    ForceIdle {
+        recovered_pos: [f64; 4],
+    },
     /// Phase 5 Task 5.1 — clock-sync re-arm event. Task 5.4 will wire the
     /// real handler (drain pending shaped output under the old bias, then
     /// update the bias for future dispatches per spec §3.7). For now the
     /// run-loop logs a warning and drops the message.
-    ClockSyncRearm { new_bias: ClockBias },
+    ClockSyncRearm {
+        new_bias: ClockBias,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -179,7 +189,9 @@ pub enum DispatchError {
         capacity: usize,
         in_flight: usize,
     },
-    #[error("load_curve mcu={mcu_id} slot={slot} seg_id={seg_id} axis={axis} host_gen={host_gen}: {detail}")]
+    #[error(
+        "load_curve mcu={mcu_id} slot={slot} seg_id={seg_id} axis={axis} host_gen={host_gen}: {detail}"
+    )]
     LoadCurve {
         mcu_id: u32,
         slot: u16,
@@ -268,7 +280,9 @@ impl PlannerHandle {
     pub fn submit_move(&self, m: ClassifiedMove) -> Result<(), PlannerError> {
         eprintln!(
             "[move-diag] planner.submit_move enter nominal_s={:.6} distance_mm={:.3} feed={:.1}",
-            m.nominal_duration(), m.distance_mm, m.segment.feedrate_mm_s,
+            m.nominal_duration(),
+            m.distance_mm,
+            m.segment.feedrate_mm_s,
         );
         self.check_error()?;
 
@@ -518,7 +532,8 @@ fn rectify_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) -> bool {
         "planner: rectification CAS contended for >{} attempts (delta {} s) — \
          giving up on this delta; the atomic will reflect the next \
          caller-side advance only",
-        RECTIFICATION_CAS_MAX_ATTEMPTS, delta,
+        RECTIFICATION_CAS_MAX_ATTEMPTS,
+        delta,
     );
     false
 }
@@ -584,7 +599,10 @@ fn run_commit_and_dispatch(
     let batch_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
     eprintln!(
         "[move-diag] run_commit_and_dispatch: drained={} batch_dur_s={:.6} t_app_before={:.6} t_disp_before={:.6}",
-        drained.len(), batch_dur, t_app_before, t_disp_before,
+        drained.len(),
+        batch_dur,
+        t_app_before,
+        t_disp_before,
     );
     advance_last_move_time(last_move_time_bits, batch_dur);
     for s in &drained {
@@ -663,7 +681,11 @@ fn run_loop(
         let tl = config.limits.to_temporal_limits();
         log::debug!(
             "[planner-trace] startup limits v_max={:?} a_max={:?} j_max={:?} a_centripetal_max={} shaper={:?}",
-            tl.v_max, tl.a_max, tl.j_max, tl.a_centripetal_max, config.shaper,
+            tl.v_max,
+            tl.a_max,
+            tl.j_max,
+            tl.a_centripetal_max,
+            config.shaper,
         );
     }
 
@@ -779,16 +801,20 @@ fn run_loop(
                     Ok(out) => out,
                     Err(e) => {
                         eprintln!("[move-diag] Move arm: emit_committed ERR {e:?}");
-                        *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
+                        *error.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some(PlannerError::Shape(e));
                         continue;
                     }
                 };
                 eprintln!(
                     "[move-diag] Move arm: drained={} t_app:{:.6}->{:.6} t_decel:{:.6}->{:.6} t_disp:{:.6}->{:.6}",
                     drained.len(),
-                    prior_t_appended, state.t_appended,
-                    prior_t_decel, state.t_decel_start,
-                    prior_t_disp, state.t_dispatched,
+                    prior_t_appended,
+                    state.t_appended,
+                    prior_t_decel,
+                    state.t_decel_start,
+                    prior_t_disp,
+                    state.t_dispatched,
                 );
                 let emit_us = emit_start.elapsed().as_micros();
                 let drained_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
@@ -812,7 +838,8 @@ fn run_loop(
 
                 for s in &drained {
                     if let Err(detail) = dispatch(s) {
-                        *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Dispatch(detail));
+                        *error.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some(PlannerError::Dispatch(detail));
                         break;
                     }
                 }
@@ -846,7 +873,9 @@ fn run_loop(
             PlannerMsg::Flush { notify } => {
                 eprintln!(
                     "[move-diag] Flush arm: last_append_time.is_some={} t_app={:.6} t_disp={:.6}",
-                    last_append_time.is_some(), state.t_appended, state.t_dispatched,
+                    last_append_time.is_some(),
+                    state.t_appended,
+                    state.t_dispatched,
                 );
                 // Phase 4 Task 4.3 — `Flush` collapses `T_commit` → now
                 // (spec §3.4 lifecycle row). The streaming-native model
@@ -950,8 +979,7 @@ fn run_loop(
                 thread_state.rebuild(&config);
             }
 
-            PlannerMsg::KalicoStreamOpen { home_pos }
-            | PlannerMsg::Homing { home_pos } => {
+            PlannerMsg::KalicoStreamOpen { home_pos } | PlannerMsg::Homing { home_pos } => {
                 // Phase 5 Task 5.1 — reset the streaming state to the new
                 // home position. `ShaperState::reset` preserves per-axis
                 // kernels (this is a position re-anchor, not a shaper
@@ -970,8 +998,7 @@ fn run_loop(
                 last_append_time = None;
             }
 
-            PlannerMsg::Underrun { recovered_pos }
-            | PlannerMsg::ForceIdle { recovered_pos } => {
+            PlannerMsg::Underrun { recovered_pos } | PlannerMsg::ForceIdle { recovered_pos } => {
                 // **Phase 5 Task 5.2 — planner-side reset to recovered
                 // position.** Engine `Underrun` / `force_idle` faults
                 // invalidate the in-flight planner timeline: the MCU

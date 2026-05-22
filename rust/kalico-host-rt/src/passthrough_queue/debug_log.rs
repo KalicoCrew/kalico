@@ -44,7 +44,11 @@ impl DebugLog {
         if self.sent.len() >= DEBUG_QUEUE_SENT {
             self.sent.pop_front();
         }
-        self.sent.push_back(DebugEntry { seq, bytes, timestamp });
+        self.sent.push_back(DebugEntry {
+            seq,
+            bytes,
+            timestamp,
+        });
     }
 
     /// Record a received message.
@@ -52,7 +56,11 @@ impl DebugLog {
         if self.received.len() >= DEBUG_QUEUE_RECEIVE {
             self.received.pop_front();
         }
-        self.received.push_back(DebugEntry { seq, bytes, timestamp });
+        self.received.push_back(DebugEntry {
+            seq,
+            bytes,
+            timestamp,
+        });
     }
 
     /// Drain the debug log, returning `(old_sent, old_received)`.

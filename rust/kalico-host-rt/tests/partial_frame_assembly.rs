@@ -6,7 +6,7 @@
 
 use proptest::prelude::*;
 
-use kalico_host_rt::host_io::wire::{build_frame, extract_packet, MESSAGE_SYNC};
+use kalico_host_rt::host_io::wire::{MESSAGE_SYNC, build_frame, extract_packet};
 
 /// Drain every parseable frame from `buf`. Returns the concatenated frames.
 fn drain_all(buf: &mut Vec<u8>) -> Vec<Vec<u8>> {

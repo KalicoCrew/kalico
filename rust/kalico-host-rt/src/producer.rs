@@ -259,7 +259,10 @@ impl CurveLoadParams {
             let dur = (piece.u_end - piece.u_start) as f32;
             duration_per_piece.push(dur);
         }
-        Self { bp_per_piece, duration_per_piece }
+        Self {
+            bp_per_piece,
+            duration_per_piece,
+        }
     }
 
     /// Number of cubic-Bezier pieces in this curve.
@@ -324,7 +327,10 @@ pub fn load_curve(
         body.len()
     );
     let (kind, resp_body) = io.kalico_call(MessageKind::LoadCurveCubic, body, timeout)?;
-    eprintln!("[host] producer::load_curve got response kind=0x{:04x}", kind.as_u16());
+    eprintln!(
+        "[host] producer::load_curve got response kind=0x{:04x}",
+        kind.as_u16()
+    );
     if kind != MessageKind::LoadCurveResponse {
         return Err(ProducerError::Transport(TransportError::Parse(format!(
             "expected LoadCurveResponse, got 0x{:04x}",
@@ -400,10 +406,7 @@ pub const DEFAULT_RESET_CURVE_POOL_TIMEOUT: Duration = Duration::from_millis(500
 /// `LoadCurveResponse` is always authoritative — the host's own generation
 /// counter in `SlotPool` is advisory diagnostics only and is never sent to
 /// the MCU.
-pub fn reset_curve_pool(
-    io: &KalicoHostIo,
-    timeout: Duration,
-) -> Result<(), ProducerError> {
+pub fn reset_curve_pool(io: &KalicoHostIo, timeout: Duration) -> Result<(), ProducerError> {
     let body = ResetCurvePool.encoded_to_vec();
     let (kind, resp_body) = io.kalico_call(MessageKind::ResetCurvePool, body, timeout)?;
     if kind != MessageKind::ResetCurvePoolResponse {

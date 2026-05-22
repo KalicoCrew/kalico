@@ -37,8 +37,12 @@ impl std::fmt::Display for TransportError {
             TransportError::Timeout => write!(f, "transport timed out"),
             TransportError::Closed => write!(f, "transport closed"),
             TransportError::Parse(s) => write!(f, "transport parse error: {s}"),
-            TransportError::DispatcherTimeout => write!(f, "dispatcher timeout (entry past deadline)"),
-            TransportError::Backpressure => write!(f, "transport backpressure (pending submission queue full)"),
+            TransportError::DispatcherTimeout => {
+                write!(f, "dispatcher timeout (entry past deadline)")
+            }
+            TransportError::Backpressure => {
+                write!(f, "transport backpressure (pending submission queue full)")
+            }
         }
     }
 }
@@ -67,8 +71,9 @@ pub enum SubscribeError {
 impl std::fmt::Display for SubscribeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SubscribeError::AlreadySubscribed { channel } =>
-                write!(f, "channel '{channel}' already has a subscriber"),
+            SubscribeError::AlreadySubscribed { channel } => {
+                write!(f, "channel '{channel}' already has a subscriber")
+            }
             SubscribeError::Closed => write!(f, "transport closed"),
         }
     }
@@ -206,7 +211,7 @@ impl MessageParams {
     pub fn try_get_str(&self, k: &str) -> Option<&str> {
         match self.fields.get(k)? {
             MessageValue::String(s) => Some(s.as_str()),
-            MessageValue::Bytes(b)  => std::str::from_utf8(b).ok(),
+            MessageValue::Bytes(b) => std::str::from_utf8(b).ok(),
             _ => None,
         }
     }

@@ -539,10 +539,13 @@ class BridgeTriggerDispatch:
         if self._reason is not None:
             # Already terminal (e.g., from arm-time AlreadyTripped).
             return
-        # Decode the payload. The msgproto layer hands this as raw fields;
-        # we delegate detailed decoding to the bridge-side via
-        # take_trip_event(), which pulls the runtime-Rust TripEvent.
-        self._trip_event = self._bridge.take_trip_event()
+        # Real hardware delivers the authoritative trip snapshot as the
+        # async kalico_endstop_tripped params. Simulation/native tests may
+        # still have it queued in the bridge's local runtime; use params
+        # first so stepper snapshots are not lost.
+        self._trip_event = dict(params)
+        if "steppers" not in self._trip_event:
+            self._trip_event = self._bridge.take_trip_event()
         self._reason = REASON_ENDSTOP_HIT
         self._completion.complete(self._reason)
 

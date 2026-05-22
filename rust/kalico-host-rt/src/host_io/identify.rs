@@ -127,12 +127,8 @@ pub fn identify_handshake(
             io.flush()?;
 
             let attempt_deadline = deadline.min(Instant::now() + chunk_deadline_per_attempt);
-            let outcome = wait_for_klipper_frame(
-                io,
-                attempt_deadline,
-                &mut mcu_recv_abs,
-                Some(wire_seq),
-            )?;
+            let outcome =
+                wait_for_klipper_frame(io, attempt_deadline, &mut mcu_recv_abs, Some(wire_seq))?;
 
             match outcome {
                 IdentifyOutcome::Response(params) => {
@@ -161,9 +157,7 @@ pub fn identify_handshake(
                     }
                     identify_data.extend_from_slice(&chunk);
                     if Instant::now() >= deadline {
-                        return Err(TransportError::Parse(
-                            "identify exceeded timeout".into(),
-                        ));
+                        return Err(TransportError::Parse("identify exceeded timeout".into()));
                     }
                     continue 'outer;
                 }
@@ -245,8 +239,7 @@ fn wait_for_klipper_frame(
                         // info that we want to absorb so the next host
                         // send matches firmware's expectation (spec §4.2).
                         let frame_seq_nibble = kf.seq_byte() & MESSAGE_SEQ_MASK;
-                        *mcu_recv_abs =
-                            wire::decode_absolute(*mcu_recv_abs, frame_seq_nibble);
+                        *mcu_recv_abs = wire::decode_absolute(*mcu_recv_abs, frame_seq_nibble);
                         if let Some(params) = decode_identify_response(kf.bytes()) {
                             return Ok(IdentifyOutcome::Response(params));
                         }
@@ -303,8 +296,9 @@ fn build_parser_from_identify(identify_data: &[u8]) -> Result<MsgProtoParser, Tr
     let json_bytes = if identify_data.first() == Some(&0x78) {
         let mut decoder = flate2::read::ZlibDecoder::new(identify_data);
         let mut out = Vec::new();
-        std::io::Read::read_to_end(&mut decoder, &mut out)
-            .map_err(|e| TransportError::Parse(format!("identify blob zlib inflate failed: {e}")))?;
+        std::io::Read::read_to_end(&mut decoder, &mut out).map_err(|e| {
+            TransportError::Parse(format!("identify blob zlib inflate failed: {e}"))
+        })?;
         out
     } else {
         identify_data.to_vec()
@@ -316,8 +310,9 @@ fn build_parser_from_identify(identify_data: &[u8]) -> Result<MsgProtoParser, Tr
     let dict: DataDictionary = serde_json::from_str(json_str)
         .map_err(|e| TransportError::Parse(format!("identify JSON parse failed: {e}")))?;
 
-    MsgProtoParser::from_dictionary(dict)
-        .map_err(|e| TransportError::Parse(format!("MsgProtoParser::from_dictionary failed: {e:?}")))
+    MsgProtoParser::from_dictionary(dict).map_err(|e| {
+        TransportError::Parse(format!("MsgProtoParser::from_dictionary failed: {e:?}"))
+    })
 }
 
 fn decode_identify_response(packet: &[u8]) -> Option<MessageParams> {

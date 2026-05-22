@@ -1,10 +1,10 @@
 mod bridge;
 #[doc(hidden)]
+pub mod cap_check;
+#[doc(hidden)]
 pub mod classify;
 #[doc(hidden)]
 pub mod config;
-#[doc(hidden)]
-pub mod cap_check;
 #[doc(hidden)]
 pub mod dispatch;
 #[doc(hidden)]

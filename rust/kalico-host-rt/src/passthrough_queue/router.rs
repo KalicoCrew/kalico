@@ -168,7 +168,10 @@ impl PassthroughRouter {
     }
 
     pub fn alloc_command_queue(&mut self, mcu: McuHandle) -> Result<CommandQueueId, RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         Ok(rec.state.alloc_command_queue())
     }
 
@@ -177,7 +180,10 @@ impl PassthroughRouter {
         mcu: McuHandle,
         cb: NotifyCallback,
     ) -> Result<NotifyId, RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         Ok(rec.notify_table.register(cb))
     }
 
@@ -187,12 +193,18 @@ impl PassthroughRouter {
         queue_id: CommandQueueId,
         entry: PassthroughEntry,
     ) -> Result<(), RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.state.push(queue_id, entry).map_err(RouterError::Push)
     }
 
     pub fn promote_all(&mut self, mcu: McuHandle, ack_clock: u64) -> Result<(), RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.state.promote_all(ack_clock);
         Ok(())
     }
@@ -205,7 +217,10 @@ impl PassthroughRouter {
         &mut self,
         mcu: McuHandle,
     ) -> Result<Option<PassthroughEntry>, RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         if !rec.window.can_emit() {
             return Ok(None);
         }
@@ -217,11 +232,8 @@ impl PassthroughRouter {
             rec.stats.bytes_write += bytes_len;
             rec.stats.send_seq += 1;
             let now = instant_to_f64(self.clock.now());
-            rec.debug_log.record_sent(
-                rec.stats.send_seq,
-                e.bytes().to_vec(),
-                now,
-            );
+            rec.debug_log
+                .record_sent(rec.stats.send_seq, e.bytes().to_vec(), now);
             if !e.notify_id().is_none() {
                 rec.sent_times.insert(e.notify_id(), now);
             }
@@ -246,16 +258,16 @@ impl PassthroughRouter {
         notify_id: NotifyId,
         response_bytes: Vec<u8>,
     ) -> Result<(), RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.stats.bytes_read += response_bytes.len() as u64;
         rec.stats.receive_seq += 1;
         let sent_time = rec.sent_times.remove(&notify_id).unwrap_or(0.0);
         let receive_time = instant_to_f64(self.clock.now());
-        rec.debug_log.record_received(
-            rec.stats.receive_seq,
-            response_bytes.clone(),
-            receive_time,
-        );
+        rec.debug_log
+            .record_received(rec.stats.receive_seq, response_bytes.clone(), receive_time);
         rec.notify_table.dispatch(
             notify_id,
             NotifyResponse {
@@ -267,12 +279,11 @@ impl PassthroughRouter {
         Ok(())
     }
 
-    pub fn record_ack(
-        &mut self,
-        mcu: McuHandle,
-        acked_bytes: u64,
-    ) -> Result<(), RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+    pub fn record_ack(&mut self, mcu: McuHandle, acked_bytes: u64) -> Result<(), RouterError> {
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.window.record_ack(acked_bytes);
         Ok(())
     }
@@ -280,30 +291,45 @@ impl PassthroughRouter {
     // ── Config-stage API ────────────────────────────────────────────────
 
     pub fn add_config_cmd(&mut self, mcu: McuHandle, bytes: Vec<u8>) -> Result<bool, RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         Ok(rec.config_stage.add_config_cmd(bytes))
     }
 
     pub fn add_init_cmd(&mut self, mcu: McuHandle, bytes: Vec<u8>) -> Result<bool, RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         Ok(rec.config_stage.add_init_cmd(bytes))
     }
 
     pub fn add_restart_cmd(&mut self, mcu: McuHandle, bytes: Vec<u8>) -> Result<bool, RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         Ok(rec.config_stage.add_restart_cmd(bytes))
     }
 
     /// Transition to `SendingConfig` — begin draining config commands.
     pub fn begin_config_phase(&mut self, mcu: McuHandle) -> Result<(), RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.config_stage.begin_config_send();
         Ok(())
     }
 
     /// Get the next config/init entry, or `None` when all have been sent.
     pub fn next_config_entry(&mut self, mcu: McuHandle) -> Result<Option<Vec<u8>>, RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         Ok(rec.config_stage.next_config_entry())
     }
 
@@ -324,7 +350,10 @@ impl PassthroughRouter {
         offset: f64,
         last_clock: u64,
     ) -> Result<(), RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.clock_freq = freq;
         // Keep the host timestamp paired with the MCU clock value supplied
         // by the clocksync estimate. Rebasing the timestamp to "now" while
@@ -348,7 +377,10 @@ impl PassthroughRouter {
         host_now_same_epoch: f64,
     ) -> Result<(), RouterError> {
         let bridge_now = instant_to_f64(self.clock.now());
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.clock_freq = freq;
         rec.clock_offset = bridge_now - (host_now_same_epoch - offset);
         rec.last_clock = last_clock;
@@ -371,7 +403,10 @@ impl PassthroughRouter {
         host_send: Instant,
         mcu_at_send: u64,
     ) -> Result<(), RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.clock_freq = freq;
         rec.clock_offset = instant_to_f64(host_send);
         rec.last_clock = mcu_at_send;
@@ -433,7 +468,10 @@ impl PassthroughRouter {
         &mut self,
         mcu: McuHandle,
     ) -> Result<(Vec<DebugEntry>, Vec<DebugEntry>), RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         Ok(rec.debug_log.extract_old())
     }
 
@@ -446,7 +484,10 @@ impl PassthroughRouter {
         mcu: McuHandle,
         cb: Box<dyn Fn() + Send>,
     ) -> Result<(), RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.flush_callbacks.push(cb);
         Ok(())
     }
@@ -456,7 +497,10 @@ impl PassthroughRouter {
     ///
     /// Call this after draining emissions for a tick.
     pub fn check_flush(&mut self, mcu: McuHandle) -> Result<(), RouterError> {
-        let rec = self.mcus.get_mut(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
+        let rec = self
+            .mcus
+            .get_mut(&mcu)
+            .ok_or(RouterError::UnknownMcu(mcu))?;
         if rec.was_non_empty && rec.state.is_all_ready_empty() {
             rec.was_non_empty = false;
             for cb in &rec.flush_callbacks {
@@ -681,9 +725,12 @@ mod tests {
         let count = Arc::new(Mutex::new(0u32));
         let count2 = Arc::clone(&count);
         router
-            .register_flush_callback(mcu, Box::new(move || {
-                *count2.lock().unwrap() += 1;
-            }))
+            .register_flush_callback(
+                mcu,
+                Box::new(move || {
+                    *count2.lock().unwrap() += 1;
+                }),
+            )
             .unwrap();
 
         // Enqueue and emit one entry.
@@ -704,9 +751,12 @@ mod tests {
         let count = Arc::new(Mutex::new(0u32));
         let count2 = Arc::clone(&count);
         router
-            .register_flush_callback(mcu, Box::new(move || {
-                *count2.lock().unwrap() += 1;
-            }))
+            .register_flush_callback(
+                mcu,
+                Box::new(move || {
+                    *count2.lock().unwrap() += 1;
+                }),
+            )
             .unwrap();
 
         // Never pushed anything — check_flush should NOT fire.
@@ -726,14 +776,20 @@ mod tests {
         let c2b = Arc::clone(&c2);
 
         router
-            .register_flush_callback(mcu, Box::new(move || {
-                *c1b.lock().unwrap() += 1;
-            }))
+            .register_flush_callback(
+                mcu,
+                Box::new(move || {
+                    *c1b.lock().unwrap() += 1;
+                }),
+            )
             .unwrap();
         router
-            .register_flush_callback(mcu, Box::new(move || {
-                *c2b.lock().unwrap() += 1;
-            }))
+            .register_flush_callback(
+                mcu,
+                Box::new(move || {
+                    *c2b.lock().unwrap() += 1;
+                }),
+            )
             .unwrap();
 
         router.push(mcu, q, entry(0, 10)).unwrap();
@@ -774,7 +830,9 @@ mod tests {
         router.push(mcu, q, entry_with_notify(0, 10, nid)).unwrap();
         let _ = router.pop_next_for_emission(mcu).unwrap();
 
-        router.dispatch_response(mcu, nid, vec![0xAA, 0xBB]).unwrap();
+        router
+            .dispatch_response(mcu, nid, vec![0xAA, 0xBB])
+            .unwrap();
 
         let s = router.get_stats(mcu).unwrap();
         assert_eq!(s.bytes_read, 2);
@@ -826,9 +884,7 @@ mod tests {
         let q = router.alloc_command_queue(mcu).unwrap();
 
         let nid = router.register_notify(mcu, Box::new(|_| {})).unwrap();
-        router
-            .push(mcu, q, entry_with_notify(0, 10, nid))
-            .unwrap();
+        router.push(mcu, q, entry_with_notify(0, 10, nid)).unwrap();
         let _ = router.pop_next_for_emission(mcu).unwrap();
         router
             .dispatch_response(mcu, nid, vec![0xDE, 0xAD])
@@ -872,9 +928,12 @@ mod tests {
         let count = Arc::new(Mutex::new(0u32));
         let count2 = Arc::clone(&count);
         router
-            .register_flush_callback(mcu, Box::new(move || {
-                *count2.lock().unwrap() += 1;
-            }))
+            .register_flush_callback(
+                mcu,
+                Box::new(move || {
+                    *count2.lock().unwrap() += 1;
+                }),
+            )
             .unwrap();
 
         router.push(mcu, q, entry(0, 10)).unwrap();

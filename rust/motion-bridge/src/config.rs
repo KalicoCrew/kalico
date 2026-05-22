@@ -91,10 +91,7 @@ impl Default for PlannerConfig {
 }
 
 /// Parse a shaper type string into a `RequiredShaper`.
-pub fn parse_required_shaper(
-    name: &str,
-    freq: f64,
-) -> Result<RequiredShaper, ShaperConfigError> {
+pub fn parse_required_shaper(name: &str, freq: f64) -> Result<RequiredShaper, ShaperConfigError> {
     if !freq.is_finite() || freq <= 0.0 {
         return Err(ShaperConfigError::InvalidFrequency { value: freq });
     }
@@ -142,8 +139,13 @@ mod tests {
         assert!(parse_required_shaper("ei", 50.0).is_err());
 
         // freq=0 must be rejected with an error mentioning the field name
-        let err = parse_required_shaper("smooth_zv", 0.0).unwrap_err().to_string();
-        assert!(err.contains("shaper_freq"), "error must name the field, got: {err}");
+        let err = parse_required_shaper("smooth_zv", 0.0)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("shaper_freq"),
+            "error must name the field, got: {err}"
+        );
 
         // negative freq rejected
         assert!(parse_required_shaper("smooth_mzv", -1.0).is_err());

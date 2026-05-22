@@ -44,7 +44,12 @@ pub struct PassthroughEntry {
 
 impl PassthroughEntry {
     pub fn new(bytes: Vec<u8>, min_clock: u64, req_clock: u64, notify_id: NotifyId) -> Self {
-        Self { bytes, min_clock, req_clock, notify_id }
+        Self {
+            bytes,
+            min_clock,
+            req_clock,
+            notify_id,
+        }
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -77,12 +82,7 @@ mod tests {
 
     #[test]
     fn entry_holds_bytes_and_clocks() {
-        let entry = PassthroughEntry::new(
-            vec![0xAA, 0xBB],
-            100,
-            200,
-            NotifyId::new(42),
-        );
+        let entry = PassthroughEntry::new(vec![0xAA, 0xBB], 100, 200, NotifyId::new(42));
         assert_eq!(entry.bytes(), &[0xAA, 0xBB]);
         assert_eq!(entry.min_clock(), 100);
         assert_eq!(entry.req_clock(), 200);

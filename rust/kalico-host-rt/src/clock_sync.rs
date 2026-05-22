@@ -312,7 +312,9 @@ impl ClockSyncEstimator {
     /// Age (since recording) of the most-recent sample of any kind.
     pub fn last_sample_age(&self) -> Option<Duration> {
         let now = self.clock.now();
-        self.samples.back().map(|s| now.saturating_duration_since(s.recorded_at))
+        self.samples
+            .back()
+            .map(|s| now.saturating_duration_since(s.recorded_at))
     }
 
     /// Age (since recording) of the most-recent dedicated (RTT-aware)
@@ -320,7 +322,8 @@ impl ClockSyncEstimator {
     /// fresh.
     pub fn last_dedicated_sample_age(&self) -> Option<Duration> {
         let now = self.clock.now();
-        self.last_dedicated_sample.map(|t| now.saturating_duration_since(t))
+        self.last_dedicated_sample
+            .map(|t| now.saturating_duration_since(t))
     }
 
     pub fn sample_count(&self) -> u32 {
@@ -352,25 +355,33 @@ impl ClockSyncEstimator {
         }
         match self.last_sample_age() {
             Some(age) if age.as_millis() <= u128::from(MAX_SAMPLE_AGE_MS_DEFAULT) => {}
-            Some(age) => return Err(QualityGateFailure::LastSampleStale {
-                age,
-                max_age: std::time::Duration::from_millis(u64::from(MAX_SAMPLE_AGE_MS_DEFAULT)),
-            }),
-            None => return Err(QualityGateFailure::LastSampleStale {
-                age: std::time::Duration::MAX,
-                max_age: std::time::Duration::from_millis(u64::from(MAX_SAMPLE_AGE_MS_DEFAULT)),
-            }),
+            Some(age) => {
+                return Err(QualityGateFailure::LastSampleStale {
+                    age,
+                    max_age: std::time::Duration::from_millis(u64::from(MAX_SAMPLE_AGE_MS_DEFAULT)),
+                });
+            }
+            None => {
+                return Err(QualityGateFailure::LastSampleStale {
+                    age: std::time::Duration::MAX,
+                    max_age: std::time::Duration::from_millis(u64::from(MAX_SAMPLE_AGE_MS_DEFAULT)),
+                });
+            }
         }
         match self.last_dedicated_sample_age() {
             Some(age) if age.as_millis() <= u128::from(MAX_RTT_AGE_MS_DEFAULT) => {}
-            Some(age) => return Err(QualityGateFailure::DedicatedSampleStale {
-                age,
-                max_age: std::time::Duration::from_millis(u64::from(MAX_RTT_AGE_MS_DEFAULT)),
-            }),
-            None => return Err(QualityGateFailure::DedicatedSampleStale {
-                age: std::time::Duration::MAX,
-                max_age: std::time::Duration::from_millis(u64::from(MAX_RTT_AGE_MS_DEFAULT)),
-            }),
+            Some(age) => {
+                return Err(QualityGateFailure::DedicatedSampleStale {
+                    age,
+                    max_age: std::time::Duration::from_millis(u64::from(MAX_RTT_AGE_MS_DEFAULT)),
+                });
+            }
+            None => {
+                return Err(QualityGateFailure::DedicatedSampleStale {
+                    age: std::time::Duration::MAX,
+                    max_age: std::time::Duration::from_millis(u64::from(MAX_RTT_AGE_MS_DEFAULT)),
+                });
+            }
         }
         Ok(())
     }
@@ -378,11 +389,26 @@ impl ClockSyncEstimator {
 
 #[derive(Debug)]
 pub enum QualityGateFailure {
-    InsufficientWarmup        { samples: usize, required: usize },
-    ResidualExceeded          { observed_us: f64, max_us: f64 },
-    DriftPpmExceeded          { observed_ppm: f64, max_ppm: f64 },
-    LastSampleStale           { age: std::time::Duration, max_age: std::time::Duration },
-    DedicatedSampleStale      { age: std::time::Duration, max_age: std::time::Duration },
+    InsufficientWarmup {
+        samples: usize,
+        required: usize,
+    },
+    ResidualExceeded {
+        observed_us: f64,
+        max_us: f64,
+    },
+    DriftPpmExceeded {
+        observed_ppm: f64,
+        max_ppm: f64,
+    },
+    LastSampleStale {
+        age: std::time::Duration,
+        max_age: std::time::Duration,
+    },
+    DedicatedSampleStale {
+        age: std::time::Duration,
+        max_age: std::time::Duration,
+    },
 }
 
 impl std::fmt::Display for QualityGateFailure {
@@ -415,7 +441,9 @@ mod clock_seam_tests {
         let t0 = clock.now();
         est.add_dedicated_sample(t0, t0 + Duration::from_millis(2), 1_000_000);
         clock.advance(Duration::from_secs(10));
-        let age = est.last_dedicated_sample_age().expect("dedicated sample present");
+        let age = est
+            .last_dedicated_sample_age()
+            .expect("dedicated sample present");
         // Sample recorded at clock.now() at end of add_dedicated_sample,
         // i.e. before our 10s advance. Age should be ~10s.
         assert_eq!(age, Duration::from_secs(10));

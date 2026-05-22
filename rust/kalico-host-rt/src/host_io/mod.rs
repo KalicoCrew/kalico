@@ -49,25 +49,25 @@ const DEFAULT_BAUD: u32 = 250_000;
 pub struct KalicoHostIoConfig {
     /// Capacity of the bounded ring delivering `TraceEvent` to the trace
     /// subscriber. Overruns set the sticky `OVERFLOW` flag on the next event.
-    pub trace_capacity:              usize,
+    pub trace_capacity: usize,
     /// Capacity of the bounded host-event inbox shared by the reactor (TraceRing
     /// overflow/disconnect/reattach diagnostics). Drained once per loop iter.
-    pub host_event_capacity:         usize,
+    pub host_event_capacity: usize,
     /// Capacity of the bounded `RuntimeEvent` catch-all subscriber channel.
-    pub runtime_event_capacity:      usize,
-    pub default_call_timeout:        Duration,
-    pub identify_timeout:            Duration,
-    pub default_dispatcher_timeout:  Duration,
+    pub runtime_event_capacity: usize,
+    pub default_call_timeout: Duration,
+    pub identify_timeout: Duration,
+    pub default_dispatcher_timeout: Duration,
 }
 
 impl Default for KalicoHostIoConfig {
     fn default() -> Self {
         Self {
-            trace_capacity:             256,
-            host_event_capacity:         64,
-            runtime_event_capacity:      64,
-            default_call_timeout:       Duration::from_millis(100),
-            identify_timeout:           Duration::from_millis(15_000),
+            trace_capacity: 256,
+            host_event_capacity: 64,
+            runtime_event_capacity: 64,
+            default_call_timeout: Duration::from_millis(100),
+            identify_timeout: Duration::from_millis(15_000),
             default_dispatcher_timeout: Duration::from_secs(30),
         }
     }
@@ -76,45 +76,45 @@ impl Default for KalicoHostIoConfig {
 #[derive(Debug)]
 pub enum ReactorCommand {
     Submit {
-        call_id:                u64,
-        cmd:                    String,
+        call_id: u64,
+        cmd: String,
         expected_response_name: String,
-        completion:             SyncSender<Result<MessageParams, TransportError>>,
-        deadline:               std::time::Instant,
+        completion: SyncSender<Result<MessageParams, TransportError>>,
+        deadline: std::time::Instant,
     },
     SubmitTyped {
-        call_id:                u64,
-        payload:                Vec<u8>,
+        call_id: u64,
+        payload: Vec<u8>,
         expected_response_name: String,
-        completion:             SyncSender<Result<MessageParams, TransportError>>,
-        deadline:               std::time::Instant,
+        completion: SyncSender<Result<MessageParams, TransportError>>,
+        deadline: std::time::Instant,
     },
     Abandon(u64),
     AttachCreditCounter(std::sync::Arc<CreditCounter>),
     SubscribeFault {
         sender: SyncSender<FaultEvent>,
-        reply:  SyncSender<Result<(), SubscribeError>>,
+        reply: SyncSender<Result<(), SubscribeError>>,
     },
     SubscribeTrace {
         sender: SyncSender<TraceEvent>,
-        reply:  SyncSender<Result<(), SubscribeError>>,
+        reply: SyncSender<Result<(), SubscribeError>>,
     },
     SubscribeRuntimeEvents {
         sender: SyncSender<RuntimeEvent>,
-        reply:  SyncSender<Result<(), SubscribeError>>,
+        reply: SyncSender<Result<(), SubscribeError>>,
     },
     SubscribeHostEvents {
         sender: SyncSender<HostEvent>,
-        reply:  SyncSender<Result<(), SubscribeError>>,
+        reply: SyncSender<Result<(), SubscribeError>>,
     },
     /// Install the passthrough router (bridge startup). Replaces any
     /// previously installed router.
     InstallPassthroughRouter(PassthroughRouter),
     /// Push a raw passthrough entry into the router for a specific MCU.
     PassthroughSend {
-        mcu:      McuHandle,
+        mcu: McuHandle,
         queue_id: CommandQueueId,
-        entry:    PassthroughEntry,
+        entry: PassthroughEntry,
     },
     /// Send a command with no expected response (fire-and-forget).
     /// The frame is still tracked in the unacked window for wire-level
@@ -135,7 +135,8 @@ pub enum ReactorCommand {
     /// writes it to the wire, and parks `completion` until the
     /// `IdentifyResponse` arrives (or the deadline fires).
     KalicoIdentify {
-        completion: SyncSender<Result<crate::host_io::kalico_native::IdentifyOutcome, TransportError>>,
+        completion:
+            SyncSender<Result<crate::host_io::kalico_native::IdentifyOutcome, TransportError>>,
         deadline: std::time::Instant,
     },
     /// Phase C-B: kalico-native control-channel call. The reactor allocates
@@ -144,7 +145,8 @@ pub enum ReactorCommand {
     KalicoCall {
         kind: kalico_protocol::MessageKind,
         body: Vec<u8>,
-        completion: SyncSender<Result<crate::host_io::kalico_native::KalicoCallOutcome, TransportError>>,
+        completion:
+            SyncSender<Result<crate::host_io::kalico_native::KalicoCallOutcome, TransportError>>,
         deadline: std::time::Instant,
     },
     Shutdown,
@@ -163,16 +165,16 @@ pub enum ReactorCommand {
 }
 
 pub struct KalicoHostIo {
-    submission_tx:       Sender<ReactorCommand>,
-    next_call_id:        AtomicU64,
-    reactor_handle:      Option<JoinHandle<()>>,
-    status_snapshot:     Arc<ArcSwap<StatusEvent>>,
-    parser:              Arc<MsgProtoParser>,
-    config:              KalicoHostIoConfig,
-    clock:               Arc<dyn crate::clock::Clock>,
+    submission_tx: Sender<ReactorCommand>,
+    next_call_id: AtomicU64,
+    reactor_handle: Option<JoinHandle<()>>,
+    status_snapshot: Arc<ArcSwap<StatusEvent>>,
+    parser: Arc<MsgProtoParser>,
+    config: KalicoHostIoConfig,
+    clock: Arc<dyn crate::clock::Clock>,
     /// Raw identify bytes (zlib-compressed blob as received from firmware).
     /// Suitable for passing directly to klippy's `process_identify`.
-    raw_identify_bytes:  Vec<u8>,
+    raw_identify_bytes: Vec<u8>,
 }
 
 impl std::fmt::Debug for KalicoHostIo {
@@ -251,17 +253,21 @@ impl KalicoHostIo {
                     if libc::tcsetattr(fd, libc::TCSANOW, &tio) != 0 {
                         let err = std::io::Error::last_os_error();
                         libc::close(fd);
-                        return Err(TransportError::Io(std::io::Error::other(
-                            format!("tcsetattr({path}): {err}"),
-                        )));
+                        return Err(TransportError::Io(std::io::Error::other(format!(
+                            "tcsetattr({path}): {err}"
+                        ))));
                     }
                     // Read back to verify cfmakeraw stuck.
                     let mut tio2: libc::termios = std::mem::zeroed();
                     if libc::tcgetattr(fd, &mut tio2) == 0 {
                         eprintln!(
                             "[tio-post-cfmakeraw] {path} iflag=0x{:x} oflag=0x{:x} cflag=0x{:x} lflag=0x{:x} vmin={} vtime={}",
-                            tio2.c_iflag, tio2.c_oflag, tio2.c_cflag, tio2.c_lflag,
-                            tio2.c_cc[libc::VMIN], tio2.c_cc[libc::VTIME],
+                            tio2.c_iflag,
+                            tio2.c_oflag,
+                            tio2.c_cflag,
+                            tio2.c_lflag,
+                            tio2.c_cc[libc::VMIN],
+                            tio2.c_cc[libc::VTIME],
                         );
                     }
                 }
@@ -274,8 +280,12 @@ impl KalicoHostIo {
                 if libc::tcgetattr(fd, &mut tio3) == 0 {
                     eprintln!(
                         "[tio-post-serialport] {path} iflag=0x{:x} oflag=0x{:x} cflag=0x{:x} lflag=0x{:x} vmin={} vtime={}",
-                        tio3.c_iflag, tio3.c_oflag, tio3.c_cflag, tio3.c_lflag,
-                        tio3.c_cc[libc::VMIN], tio3.c_cc[libc::VTIME],
+                        tio3.c_iflag,
+                        tio3.c_oflag,
+                        tio3.c_cflag,
+                        tio3.c_lflag,
+                        tio3.c_cc[libc::VMIN],
+                        tio3.c_cc[libc::VTIME],
                     );
                 }
             }
@@ -292,9 +302,11 @@ impl KalicoHostIo {
         let port_box: Box<dyn serialport::SerialPort> = serialport::new(path, baud)
             .timeout(Duration::from_millis(100))
             .open()
-            .map_err(|e| TransportError::Io(
-                std::io::Error::other(format!("serialport::open({path}@{baud}): {e}"))
-            ))?;
+            .map_err(|e| {
+                TransportError::Io(std::io::Error::other(format!(
+                    "serialport::open({path}@{baud}): {e}"
+                )))
+            })?;
         Self::open_with_port(port_box, config)
     }
 
@@ -321,10 +333,8 @@ impl KalicoHostIo {
         let _ = port_box.set_timeout(Duration::from_millis(100));
         let mut io = crate::host_io::serial_frame_io::SerialFrameIo::new(port_box);
 
-        let (parser_owned, raw_identify_bytes, identify_seq) = identify::identify_handshake(
-            &mut io,
-            config.identify_timeout,
-        )?;
+        let (parser_owned, raw_identify_bytes, identify_seq) =
+            identify::identify_handshake(&mut io, config.identify_timeout)?;
 
         let parser = Arc::new(parser_owned);
         let (submission_tx, submission_rx) = std::sync::mpsc::channel();
@@ -341,8 +351,13 @@ impl KalicoHostIo {
                 std::thread::current().id()
             );
             let mut reactor = crate::host_io::reactor::Reactor::new_with_clock(
-                io, reactor_parser, submission_rx, reactor_status, identify_seq,
-                reactor_config, reactor_clock,
+                io,
+                reactor_parser,
+                submission_rx,
+                reactor_status,
+                identify_seq,
+                reactor_config,
+                reactor_clock,
             );
             reactor.run();
             // 2026-05-17 wedge-detection: if the reactor exited because the
@@ -397,13 +412,15 @@ impl Transport for KalicoHostIo {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let deadline = self.clock.now() + timeout;
 
-        self.submission_tx.send(ReactorCommand::Submit {
-            call_id,
-            cmd: cmd.to_string(),
-            expected_response_name: expected_response_name.to_string(),
-            completion: tx,
-            deadline,
-        }).map_err(|_| TransportError::Closed)?;
+        self.submission_tx
+            .send(ReactorCommand::Submit {
+                call_id,
+                cmd: cmd.to_string(),
+                expected_response_name: expected_response_name.to_string(),
+                completion: tx,
+                deadline,
+            })
+            .map_err(|_| TransportError::Closed)?;
 
         let handle = crate::host_io::call_handle::CallHandle {
             call_id,
@@ -416,7 +433,10 @@ impl Transport for KalicoHostIo {
         // ReactorCommand::Abandon so Layer-1 GC removes it promptly instead of
         // waiting for the Layer-2 dispatcher deadline.
         match rx.recv_timeout(timeout) {
-            Ok(r) => { handle.defuse(); r }
+            Ok(r) => {
+                handle.defuse();
+                r
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Timeout),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
         }
@@ -429,20 +449,24 @@ impl Transport for KalicoHostIo {
         expected_response_name: &str,
         timeout: Duration,
     ) -> Result<MessageParams, TransportError> {
-        let payload = self.parser.encode_typed(name, args)
+        let payload = self
+            .parser
+            .encode_typed(name, args)
             .map_err(|e| TransportError::Parse(format!("{e:?}")))?;
 
         let call_id = self.next_call_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let deadline = self.clock.now() + timeout;
 
-        self.submission_tx.send(ReactorCommand::SubmitTyped {
-            call_id,
-            payload,
-            expected_response_name: expected_response_name.to_string(),
-            completion: tx,
-            deadline,
-        }).map_err(|_| TransportError::Closed)?;
+        self.submission_tx
+            .send(ReactorCommand::SubmitTyped {
+                call_id,
+                payload,
+                expected_response_name: expected_response_name.to_string(),
+                completion: tx,
+                deadline,
+            })
+            .map_err(|_| TransportError::Closed)?;
 
         let handle = crate::host_io::call_handle::CallHandle {
             call_id,
@@ -451,7 +475,10 @@ impl Transport for KalicoHostIo {
 
         // See `call` above for the defuse semantics rationale.
         match rx.recv_timeout(timeout) {
-            Ok(r) => { handle.defuse(); r }
+            Ok(r) => {
+                handle.defuse();
+                r
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Timeout),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
         }
@@ -469,40 +496,64 @@ impl Transport for KalicoHostIo {
 
 impl KalicoHostIo {
     pub fn attach_credit_counter(&self, counter: std::sync::Arc<crate::credit::CreditCounter>) {
-        let _ = self.submission_tx.send(ReactorCommand::AttachCreditCounter(counter));
+        let _ = self
+            .submission_tx
+            .send(ReactorCommand::AttachCreditCounter(counter));
     }
 
     pub fn subscribe_fault(&self) -> Result<std::sync::mpsc::Receiver<FaultEvent>, SubscribeError> {
         let (sender, receiver) = std::sync::mpsc::sync_channel(1);
         let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
-        self.submission_tx.send(ReactorCommand::SubscribeFault { sender, reply: reply_tx })
+        self.submission_tx
+            .send(ReactorCommand::SubscribeFault {
+                sender,
+                reply: reply_tx,
+            })
             .map_err(|_| SubscribeError::Closed)?;
         reply_rx.recv().map_err(|_| SubscribeError::Closed)??;
         Ok(receiver)
     }
 
-    pub fn take_trace_subscription(&self) -> Result<std::sync::mpsc::Receiver<TraceEvent>, SubscribeError> {
+    pub fn take_trace_subscription(
+        &self,
+    ) -> Result<std::sync::mpsc::Receiver<TraceEvent>, SubscribeError> {
         let (sender, receiver) = std::sync::mpsc::sync_channel(self.config.trace_capacity);
         let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
-        self.submission_tx.send(ReactorCommand::SubscribeTrace { sender, reply: reply_tx })
+        self.submission_tx
+            .send(ReactorCommand::SubscribeTrace {
+                sender,
+                reply: reply_tx,
+            })
             .map_err(|_| SubscribeError::Closed)?;
         reply_rx.recv().map_err(|_| SubscribeError::Closed)??;
         Ok(receiver)
     }
 
-    pub fn take_runtime_event_subscription(&self) -> Result<std::sync::mpsc::Receiver<RuntimeEvent>, SubscribeError> {
+    pub fn take_runtime_event_subscription(
+        &self,
+    ) -> Result<std::sync::mpsc::Receiver<RuntimeEvent>, SubscribeError> {
         let (sender, receiver) = std::sync::mpsc::sync_channel(self.config.runtime_event_capacity);
         let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
-        self.submission_tx.send(ReactorCommand::SubscribeRuntimeEvents { sender, reply: reply_tx })
+        self.submission_tx
+            .send(ReactorCommand::SubscribeRuntimeEvents {
+                sender,
+                reply: reply_tx,
+            })
             .map_err(|_| SubscribeError::Closed)?;
         reply_rx.recv().map_err(|_| SubscribeError::Closed)??;
         Ok(receiver)
     }
 
-    pub fn take_host_event_subscription(&self) -> Result<std::sync::mpsc::Receiver<HostEvent>, SubscribeError> {
+    pub fn take_host_event_subscription(
+        &self,
+    ) -> Result<std::sync::mpsc::Receiver<HostEvent>, SubscribeError> {
         let (sender, receiver) = std::sync::mpsc::sync_channel(self.config.host_event_capacity);
         let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
-        self.submission_tx.send(ReactorCommand::SubscribeHostEvents { sender, reply: reply_tx })
+        self.submission_tx
+            .send(ReactorCommand::SubscribeHostEvents {
+                sender,
+                reply: reply_tx,
+            })
             .map_err(|_| SubscribeError::Closed)?;
         reply_rx.recv().map_err(|_| SubscribeError::Closed)??;
         Ok(receiver)
@@ -537,7 +588,9 @@ impl KalicoHostIo {
     /// application-level reply is expected.
     pub fn send_fire_and_forget(&self, cmd: &str) -> Result<(), TransportError> {
         self.submission_tx
-            .send(ReactorCommand::FireAndForget { cmd: cmd.to_owned() })
+            .send(ReactorCommand::FireAndForget {
+                cmd: cmd.to_owned(),
+            })
             .map_err(|_| TransportError::Closed)
     }
 
@@ -566,7 +619,9 @@ impl KalicoHostIo {
         name: &str,
         args: &[(&str, crate::host_io::parser::FieldValue<'_>)],
     ) -> Result<(), TransportError> {
-        let payload = self.parser.encode_typed(name, args)
+        let payload = self
+            .parser
+            .encode_typed(name, args)
             .map_err(|e| TransportError::Parse(format!("{e:?}")))?;
         self.submission_tx
             .send(ReactorCommand::FireAndForgetTyped { payload })
@@ -592,7 +647,10 @@ impl KalicoHostIo {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let deadline = self.clock.now() + timeout;
         self.submission_tx
-            .send(ReactorCommand::KalicoIdentify { completion: tx, deadline })
+            .send(ReactorCommand::KalicoIdentify {
+                completion: tx,
+                deadline,
+            })
             .map_err(|_| TransportError::Closed)?;
         match rx.recv_timeout(timeout) {
             Ok(r) => r,
@@ -610,20 +668,30 @@ impl KalicoHostIo {
         body: Vec<u8>,
         timeout: Duration,
     ) -> Result<(kalico_protocol::MessageKind, Vec<u8>), TransportError> {
-        eprintln!("[trace-kcall-host] enter kind={kind:?} body_len={} timeout_ms={}",
-            body.len(), timeout.as_millis()
+        eprintln!(
+            "[trace-kcall-host] enter kind={kind:?} body_len={} timeout_ms={}",
+            body.len(),
+            timeout.as_millis()
         );
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let deadline = self.clock.now() + timeout;
-        if let Err(e) = self.submission_tx
-            .send(ReactorCommand::KalicoCall { kind, body, completion: tx, deadline })
-        {
-            eprintln!("[trace-kcall-host] FAIL submission_tx.send returned Err — reactor thread dead/dropped. e={e:?}");
+        if let Err(e) = self.submission_tx.send(ReactorCommand::KalicoCall {
+            kind,
+            body,
+            completion: tx,
+            deadline,
+        }) {
+            eprintln!(
+                "[trace-kcall-host] FAIL submission_tx.send returned Err — reactor thread dead/dropped. e={e:?}"
+            );
             return Err(TransportError::Closed);
         }
         eprintln!("[trace-kcall-host] submitted, awaiting response kind={kind:?}");
         let outcome = rx.recv_timeout(timeout);
-        eprintln!("[trace-kcall-host] response received kind={kind:?} outcome_is_ok={}", outcome.is_ok());
+        eprintln!(
+            "[trace-kcall-host] response received kind={kind:?} outcome_is_ok={}",
+            outcome.is_ok()
+        );
         match outcome {
             Ok(Ok(crate::host_io::kalico_native::KalicoCallOutcome::Response { kind, body })) => {
                 Ok((kind, body))
@@ -717,21 +785,22 @@ mod test_internals {
         use indexmap::IndexMap;
 
         let mut d = DataDictionary {
-            commands:       IndexMap::new(),
-            responses:      IndexMap::new(),
-            output:         IndexMap::new(),
-            enumerations:   IndexMap::new(),
-            config:         serde_json::json!({}),
-            version:        "v".into(),
-            app:            "kalico".into(),
+            commands: IndexMap::new(),
+            responses: IndexMap::new(),
+            output: IndexMap::new(),
+            enumerations: IndexMap::new(),
+            config: serde_json::json!({}),
+            version: "v".into(),
+            app: "kalico".into(),
             build_versions: None,
-            license:        None,
+            license: None,
         };
-        d.commands.insert("kalico_load_curve_begin slot=%hu degree=%c".into(), 99);
+        d.commands
+            .insert("kalico_load_curve_begin slot=%hu degree=%c".into(), 99);
         let parser = MsgProtoParser::from_dictionary(d).unwrap();
 
         let args = [
-            ("slot",   FieldValue::U16(7)),
+            ("slot", FieldValue::U16(7)),
             ("degree", FieldValue::Byte(3)),
         ];
         // What `send_typed` would put in the FireAndForgetTyped payload.

@@ -82,7 +82,11 @@ pub fn classify_and_build(
         return Err(ClassifyError::ZeroDisplacement);
     }
 
-    let class = if has_xy { MoveClass::XyTravel } else { MoveClass::ZOnly };
+    let class = if has_xy {
+        MoveClass::XyTravel
+    } else {
+        MoveClass::ZOnly
+    };
 
     let cps = to_collinear_bezier(start, end);
     let xyz = VectorNurbs::<f64, 3>::try_new(
@@ -99,14 +103,21 @@ pub fn classify_and_build(
         0.0,
         None,
         feedrate_mm_s,
-        SourceRange { start_line: 0, end_line: 0 },
+        SourceRange {
+            start_line: 0,
+            end_line: 0,
+        },
         None,
     )
     .map_err(|e| ClassifyError::SegmentConstruction(format!("{e:?}")))?;
 
     let distance_mm = (dx * dx + dy * dy + dz * dz).sqrt();
 
-    Ok(ClassifiedMove { segment, class, distance_mm })
+    Ok(ClassifiedMove {
+        segment,
+        class,
+        distance_mm,
+    })
 }
 
 #[derive(Debug)]

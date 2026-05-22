@@ -160,16 +160,12 @@ pub fn build_push_params(
                 // error). After the union, add is guaranteed to succeed;
                 // the expect below is the unreachable sentinel.
                 let motor_a = nurbs::algebra::add_with_knot_union(x, y).unwrap_or_else(|e| {
-                    panic!(
-                        "post-union add failed — bridge invariant violated (motor-A): {e:?}"
-                    )
+                    panic!("post-union add failed — bridge invariant violated (motor-A): {e:?}")
                 });
                 let motor_b_neg_y = nurbs::algebra::scalar_multiply(y, -1.0_f64);
                 let motor_b = nurbs::algebra::add_with_knot_union(x, &motor_b_neg_y)
                     .unwrap_or_else(|e| {
-                        panic!(
-                            "post-union add failed — bridge invariant violated (motor-B): {e:?}"
-                        )
+                        panic!("post-union add failed — bridge invariant violated (motor-B): {e:?}")
                     });
                 Some((motor_a, motor_b))
             } else {
@@ -254,8 +250,7 @@ pub fn build_push_params(
         // filling it with no-op segments blocks real motion later).
         {
             let all_constant = cfg.axes.iter().all(|&axis_idx| {
-                axis_idx < shaped.axes.len()
-                    && is_trivially_constant(&shaped.axes[axis_idx])
+                axis_idx < shaped.axes.len() && is_trivially_constant(&shaped.axes[axis_idx])
             });
             if all_constant {
                 continue;
@@ -285,7 +280,6 @@ pub fn build_push_params(
     plans
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,8 +289,7 @@ mod tests {
     fn linear_curve(a: f64, b: f64) -> ScalarNurbs<f64> {
         // degree-3 Bézier with collinear cps a, lerp(1/3), lerp(2/3), b
         let cps = vec![a, a + (b - a) / 3.0, a + 2.0 * (b - a) / 3.0, b];
-        ScalarNurbs::try_new(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], cps, None)
-            .unwrap()
+        ScalarNurbs::try_new(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], cps, None).unwrap()
     }
 
     fn constant_curve(v: f64) -> ScalarNurbs<f64> {
@@ -347,7 +340,11 @@ mod tests {
     fn x_move_sends_curves_for_every_kinematic_axis_on_each_mcu() {
         // X varies, Y and Z constant. cfgs[0] (Octopus) drives X+Y,
         // cfgs[1] (F446) drives Z. Both MCUs must receive curves.
-        let seg = shaped([linear_curve(0.0, 10.0), constant_curve(100.0), constant_curve(5.0)]);
+        let seg = shaped([
+            linear_curve(0.0, 10.0),
+            constant_curve(100.0),
+            constant_curve(5.0),
+        ]);
         let plans = build_push_params(&seg, &cfgs(), 1_000, 2_000);
 
         assert_eq!(plans.len(), 2, "both MCUs should get a plan");
@@ -378,7 +375,11 @@ mod tests {
     fn z_move_sends_curves_for_every_kinematic_axis_on_each_mcu() {
         // Same pattern: Z varies, X+Y constant. Both MCUs still get plans
         // because both have kinematic axes that need to be anchored.
-        let seg = shaped([constant_curve(50.0), constant_curve(100.0), linear_curve(0.0, 5.0)]);
+        let seg = shaped([
+            constant_curve(50.0),
+            constant_curve(100.0),
+            linear_curve(0.0, 5.0),
+        ]);
         let plans = build_push_params(&seg, &cfgs(), 1_000, 2_000);
 
         assert_eq!(plans.len(), 2);
@@ -391,7 +392,11 @@ mod tests {
 
     #[test]
     fn set_handle_fills_correct_field() {
-        let seg = shaped([linear_curve(0.0, 10.0), constant_curve(100.0), constant_curve(5.0)]);
+        let seg = shaped([
+            linear_curve(0.0, 10.0),
+            constant_curve(100.0),
+            constant_curve(5.0),
+        ]);
         let mut plans = build_push_params(&seg, &cfgs(), 0, 100);
         // Find the Octopus plan; it's no longer guaranteed to be plans[0]
         // since the iteration order over a Vec preserves cfg order, but
@@ -413,12 +418,22 @@ mod tests {
     /// STEP_BURST_EXCEEDED.
     #[test]
     fn constant_y_axis_for_pure_x_move_still_sends_a_curve() {
-        let seg = shaped([linear_curve(0.0, 25.0), constant_curve(100.0), constant_curve(10.0)]);
+        let seg = shaped([
+            linear_curve(0.0, 25.0),
+            constant_curve(100.0),
+            constant_curve(10.0),
+        ]);
         let plans = build_push_params(&seg, &cfgs(), 0, 1_000);
 
         let octopus = plans.iter().find(|p| p.mcu_id == 0).expect("octopus");
-        let has_x = octopus.curves_to_load.iter().any(|(axis, _)| *axis == AXIS_X);
-        let has_y = octopus.curves_to_load.iter().any(|(axis, _)| *axis == AXIS_Y);
+        let has_x = octopus
+            .curves_to_load
+            .iter()
+            .any(|(axis, _)| *axis == AXIS_X);
+        let has_y = octopus
+            .curves_to_load
+            .iter()
+            .any(|(axis, _)| *axis == AXIS_Y);
         assert!(has_x, "X curve must be sent on a pure-X move");
         assert!(
             has_y,
@@ -460,7 +475,11 @@ mod tests {
         // X: linear 0 → 10 (CPs: 0, 3.333, 6.667, 10)
         // Y: constant 100 (CPs: 100, 100, 100, 100)
         // Z: constant 5
-        let seg = shaped([linear_curve(0.0, 10.0), constant_curve(100.0), constant_curve(5.0)]);
+        let seg = shaped([
+            linear_curve(0.0, 10.0),
+            constant_curve(100.0),
+            constant_curve(5.0),
+        ]);
         let plans = build_push_params(&seg, &corexy_cfgs, 0, 1_000);
 
         let octopus = plans.iter().find(|p| p.mcu_id == 0).expect("octopus plan");
@@ -474,7 +493,8 @@ mod tests {
 
         // Motor-A = X + Y. Single-piece Bézier with CPs [0+100, 3.33+100, 6.67+100, 10+100].
         assert_eq!(
-            motor_a_params.bp_per_piece.len(), 1,
+            motor_a_params.bp_per_piece.len(),
+            1,
             "single-piece input → single-piece output"
         );
         let a_cps = motor_a_params.bp_per_piece[0];
@@ -488,7 +508,8 @@ mod tests {
 
         // Motor-B = X - Y. CPs [0-100, 3.33-100, 6.67-100, 10-100].
         assert_eq!(
-            motor_b_params.bp_per_piece.len(), 1,
+            motor_b_params.bp_per_piece.len(),
+            1,
             "single-piece input → single-piece output"
         );
         let b_cps = motor_b_params.bp_per_piece[0];
@@ -566,17 +587,33 @@ mod tests {
         assert_eq!(motor_a.bp_per_piece.len(), 2, "motor-A must be 2 pieces");
         // First CP of piece 0 ≈ X(0)+Y(0) = 0+20 = 20.
         let a0 = motor_a.bp_per_piece[0];
-        assert!((a0[0] as f64 - 20.0).abs() < 0.01, "motor-A piece0 CP0: got {}", a0[0]);
+        assert!(
+            (a0[0] as f64 - 20.0).abs() < 0.01,
+            "motor-A piece0 CP0: got {}",
+            a0[0]
+        );
         // Last CP of piece 1 ≈ X(1)+Y(1) = 10+20 = 30.
         let a1 = motor_a.bp_per_piece[1];
-        assert!((a1[3] as f64 - 30.0).abs() < 0.01, "motor-A piece1 CP3: got {}", a1[3]);
+        assert!(
+            (a1[3] as f64 - 30.0).abs() < 0.01,
+            "motor-A piece1 CP3: got {}",
+            a1[3]
+        );
 
         // Motor-B = X-Y: two pieces — values at u=0, 0.5, 1.0 should be -20, -15, -10.
         assert_eq!(motor_b.bp_per_piece.len(), 2, "motor-B must be 2 pieces");
         let b0 = motor_b.bp_per_piece[0];
-        assert!((b0[0] as f64 - (-20.0)).abs() < 0.01, "motor-B piece0 CP0: got {}", b0[0]);
+        assert!(
+            (b0[0] as f64 - (-20.0)).abs() < 0.01,
+            "motor-B piece0 CP0: got {}",
+            b0[0]
+        );
         let b1 = motor_b.bp_per_piece[1];
-        assert!((b1[3] as f64 - (-10.0)).abs() < 0.01, "motor-B piece1 CP3: got {}", b1[3]);
+        assert!(
+            (b1[3] as f64 - (-10.0)).abs() < 0.01,
+            "motor-B piece1 CP3: got {}",
+            b1[3]
+        );
     }
 
     /// **Pure-Y jog — sign of motor-B path.** X is constant, Y is linear.
@@ -594,7 +631,11 @@ mod tests {
             caps: McuCaps::default(),
         }];
         // X constant 50, Y linear 0→10.
-        let seg = shaped([constant_curve(50.0), linear_curve(0.0, 10.0), constant_curve(0.0)]);
+        let seg = shaped([
+            constant_curve(50.0),
+            linear_curve(0.0, 10.0),
+            constant_curve(0.0),
+        ]);
         let plans = build_push_params(&seg, &corexy_cfg, 0, 1_000);
 
         let plan = plans.iter().find(|p| p.mcu_id == 0).expect("plan");
@@ -642,7 +683,11 @@ mod tests {
             caps: McuCaps::default(),
         }];
         // X linear 0→6, Y linear 0→4.
-        let seg = shaped([linear_curve(0.0, 6.0), linear_curve(0.0, 4.0), constant_curve(0.0)]);
+        let seg = shaped([
+            linear_curve(0.0, 6.0),
+            linear_curve(0.0, 4.0),
+            constant_curve(0.0),
+        ]);
         let plans = build_push_params(&seg, &corexy_cfg, 0, 1_000);
 
         let plan = plans.iter().find(|p| p.mcu_id == 0).expect("plan");

@@ -1,7 +1,7 @@
 //! EventDispatcher subsystem. Spec §6. (Phase-C stub; Phase D adds the rest.)
 
-use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::time::Instant;
 
 use arc_swap::ArcSwap;
@@ -12,20 +12,28 @@ use crate::host_io::runtime_events::{CreditFreedEvent, RuntimeEvent, StatusEvent
 
 #[derive(Debug, Clone)]
 pub enum HostEvent {
-    TraceSubscriberOverflow { dropped_count: u64, at: Instant },
-    TraceSubscriberDisconnected { at: Instant },
-    TraceSubscriberReattached { events_lost_during_gap: u64, at: Instant },
+    TraceSubscriberOverflow {
+        dropped_count: u64,
+        at: Instant,
+    },
+    TraceSubscriberDisconnected {
+        at: Instant,
+    },
+    TraceSubscriberReattached {
+        events_lost_during_gap: u64,
+        at: Instant,
+    },
 }
 
 // ─── D6: TraceRing ───────────────────────────────────────────────────────────
 
 #[derive(Debug)]
 pub struct TraceRing {
-    capacity:               usize,
-    sticky_overflow:        bool,
-    subscriber:             Option<SyncSender<TraceEvent>>,
+    capacity: usize,
+    sticky_overflow: bool,
+    subscriber: Option<SyncSender<TraceEvent>>,
     drop_count_since_event: u64,
-    host_event_tx:          Option<SyncSender<HostEvent>>,
+    host_event_tx: Option<SyncSender<HostEvent>>,
 }
 
 impl TraceRing {
@@ -62,8 +70,8 @@ impl TraceRing {
                 }
                 Err(TrySendError::Disconnected(_)) => {
                     self.subscriber = None;
-                    self.sticky_overflow = false;     // Bug 2 fix: don't carry overflow to new subscriber
-                    self.drop_count_since_event = 1;  // Bug 1 fix: count the event that triggered disconnect
+                    self.sticky_overflow = false; // Bug 2 fix: don't carry overflow to new subscriber
+                    self.drop_count_since_event = 1; // Bug 1 fix: count the event that triggered disconnect
                     if let Some(host_tx) = &self.host_event_tx {
                         let _ = host_tx.try_send(HostEvent::TraceSubscriberDisconnected {
                             at: Instant::now(),
@@ -146,13 +154,16 @@ impl RuntimeEventDispatcher {
 
 #[derive(Debug)]
 pub struct HostEventDispatcher {
-    inbox_rx:   Receiver<HostEvent>,
+    inbox_rx: Receiver<HostEvent>,
     subscriber: Option<SyncSender<HostEvent>>,
 }
 
 impl HostEventDispatcher {
     pub fn new(inbox_rx: Receiver<HostEvent>) -> Self {
-        Self { inbox_rx, subscriber: None }
+        Self {
+            inbox_rx,
+            subscriber: None,
+        }
     }
 
     /// Forward any events queued in the inbox to the attached subscriber.
@@ -198,25 +209,25 @@ impl HostEventDispatcher {
 // ─── D9: EventDispatcher composition ─────────────────────────────────────────
 
 pub struct EventDispatcher {
-    pub credit_counter:           Option<Arc<CreditCounter>>,
-    pub fault_latch:              FaultLatch,
-    pub trace_ring:               TraceRing,
-    pub status_snapshot:          Arc<ArcSwap<StatusEvent>>,
+    pub credit_counter: Option<Arc<CreditCounter>>,
+    pub fault_latch: FaultLatch,
+    pub trace_ring: TraceRing,
+    pub status_snapshot: Arc<ArcSwap<StatusEvent>>,
     pub runtime_event_dispatcher: RuntimeEventDispatcher,
-    pub host_event_dispatcher:    HostEventDispatcher,
+    pub host_event_dispatcher: HostEventDispatcher,
     /// Last `retired_through_segment_id` observed on a `StatusEvent`. Drives
     /// the synthesis of `CreditFreed` from the 10 Hz periodic status frame —
     /// see [`Self::handle_status_frame`] for the motivation (USB-CDC TX
     /// congestion can drop fire-and-forget `CreditFreed` frames, but the
     /// periodic status frame is monotonic state so we can recover credit
     /// flow from it deterministically).
-    status_retired_watermark:     u32,
+    status_retired_watermark: u32,
 }
 
 impl EventDispatcher {
     pub fn new(
-        status_snapshot:     Arc<ArcSwap<StatusEvent>>,
-        trace_capacity:      usize,
+        status_snapshot: Arc<ArcSwap<StatusEvent>>,
+        trace_capacity: usize,
         host_event_capacity: usize,
     ) -> Self {
         // Spec §6.4 / §6.8: TraceRing emits HostEvents (overflow / disconnect /
@@ -299,7 +310,8 @@ impl EventDispatcher {
                 // `take_runtime_event_subscription` (e.g. the Python bridge poller)
                 // can observe status heartbeats.  The snapshot and fault-synthesis
                 // paths above are orthogonal and still fire first.
-                self.runtime_event_dispatcher.dispatch(RuntimeEvent::Status(e));
+                self.runtime_event_dispatcher
+                    .dispatch(RuntimeEvent::Status(e));
                 // v2 architectural credit-flow: status frames carry the retirement
                 // watermark. On advance, synthesize a CreditFreed and dispatch
                 // through the normal CreditFreed path. This keeps slot-pool
@@ -332,10 +344,10 @@ impl EventDispatcher {
         const ENGINE_STATUS_FAULT: u8 = 3;
         if frame.engine_status == ENGINE_STATUS_FAULT && self.fault_latch.cell.is_none() {
             let synthesized = crate::host_io::runtime_events::FaultEvent {
-                fault_code:   frame.last_fault,
+                fault_code: frame.last_fault,
                 fault_detail: frame.fault_detail,
-                segment_id:   frame.current_segment_id,
-                synthesized:  true,
+                segment_id: frame.current_segment_id,
+                synthesized: true,
             };
             self.fault_latch.dispatch(synthesized);
         }
@@ -365,9 +377,9 @@ impl EventDispatcher {
 #[cfg(test)]
 mod dispatch_tests {
     use super::*;
-    use std::sync::Arc;
-    use arc_swap::ArcSwap;
     use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent, StatusEvent};
+    use arc_swap::ArcSwap;
+    use std::sync::Arc;
 
     fn make_dispatcher() -> EventDispatcher {
         let snap = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
@@ -389,7 +401,11 @@ mod dispatch_tests {
     fn fault_status_synthesizes_when_no_edge_observed() {
         let mut d = make_dispatcher();
         d.dispatch(fault_status(3, 17, 42));
-        let cell = d.fault_latch.cell.as_ref().expect("fault should be synthesized");
+        let cell = d
+            .fault_latch
+            .cell
+            .as_ref()
+            .expect("fault should be synthesized");
         assert_eq!(cell.fault_code, 17);
         assert_eq!(cell.synthesized, true);
         assert_eq!(cell.segment_id, 42);

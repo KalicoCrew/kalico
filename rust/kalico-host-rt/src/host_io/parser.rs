@@ -10,27 +10,27 @@ use crate::transport::MessageValue;
 
 #[derive(Debug, Deserialize)]
 pub struct DataDictionary {
-    pub commands:     IndexMap<String, i32>,
-    pub responses:    IndexMap<String, i32>,
+    pub commands: IndexMap<String, i32>,
+    pub responses: IndexMap<String, i32>,
     // `output` is emitted by Kalico-runtime firmware and most modern Klipper
     // builds, but may be absent on older / minimal firmware. Default to empty.
     #[serde(default)]
-    pub output:       IndexMap<String, i32>,
+    pub output: IndexMap<String, i32>,
     #[serde(default)]
     pub enumerations: IndexMap<String, IndexMap<String, EnumValue>>,
-    pub config:       serde_json::Value,
+    pub config: serde_json::Value,
     // `version` and `app` are present on Klipper / Kalico firmware but absent
     // on third-party MCUs that ship a Klipper-compatible identify dict (e.g.
     // Beacon probe). They are stored for diagnostic logging only — nothing
     // downstream reads them — so default to empty strings.
     #[serde(default)]
-    pub version:      String,
+    pub version: String,
     #[serde(default)]
-    pub app:          String,
+    pub app: String,
     #[serde(default)]
     pub build_versions: Option<String>,
     #[serde(default)]
-    pub license:      Option<String>,
+    pub license: Option<String>,
 }
 
 #[derive(Debug)]
@@ -41,7 +41,8 @@ pub enum EnumValue {
 
 impl<'de> serde::Deserialize<'de> for EnumValue {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where D: serde::Deserializer<'de>,
+    where
+        D: serde::Deserializer<'de>,
     {
         use serde::de::Error;
         let value = serde_json::Value::deserialize(deserializer)?;
@@ -50,12 +51,20 @@ impl<'de> serde::Deserialize<'de> for EnumValue {
         }
         if let Some(arr) = value.as_array() {
             if arr.len() == 2 {
-                let start = arr[0].as_i64().ok_or_else(|| D::Error::custom("EnumValue range[0] not int"))? as i32;
-                let count = arr[1].as_i64().ok_or_else(|| D::Error::custom("EnumValue range[1] not int"))? as i32;
+                let start = arr[0]
+                    .as_i64()
+                    .ok_or_else(|| D::Error::custom("EnumValue range[0] not int"))?
+                    as i32;
+                let count = arr[1]
+                    .as_i64()
+                    .ok_or_else(|| D::Error::custom("EnumValue range[1] not int"))?
+                    as i32;
                 return Ok(EnumValue::Range { start, count });
             }
         }
-        Err(D::Error::custom("EnumValue: expected int or [start, count]"))
+        Err(D::Error::custom(
+            "EnumValue: expected int or [start, count]",
+        ))
     }
 }
 
@@ -114,15 +123,15 @@ impl From<ParseError> for crate::transport::TransportError {
 impl FieldType {
     pub fn from_format_code(code: &str) -> Result<Self, ParseError> {
         match code {
-            "%u"   => Ok(Self::U32),
-            "%i"   => Ok(Self::I32),
-            "%hu"  => Ok(Self::U16),
-            "%hi"  => Ok(Self::I16),
-            "%c"   => Ok(Self::Byte),
-            "%s"   => Ok(Self::String),
+            "%u" => Ok(Self::U32),
+            "%i" => Ok(Self::I32),
+            "%hu" => Ok(Self::U16),
+            "%hi" => Ok(Self::I16),
+            "%c" => Ok(Self::Byte),
+            "%s" => Ok(Self::String),
             "%.*s" => Ok(Self::ProgmemBuffer),
-            "%*s"  => Ok(Self::Buffer),
-            other  => Err(ParseError::UnknownFormatCode(other.to_string())),
+            "%*s" => Ok(Self::Buffer),
+            other => Err(ParseError::UnknownFormatCode(other.to_string())),
         }
     }
 }
@@ -186,7 +195,11 @@ pub fn extract_free_form_field_types(s: &str) -> Result<Vec<FieldType>, ParseErr
             }
             None => {
                 // Unknown `%X` — surface so we don't silently drop fields.
-                let next = rest.chars().nth(1).map(|c| format!("%{c}")).unwrap_or_else(|| "%".into());
+                let next = rest
+                    .chars()
+                    .nth(1)
+                    .map(|c| format!("%{c}"))
+                    .unwrap_or_else(|| "%".into());
                 return Err(ParseError::UnknownFormatCode(next));
             }
         }
@@ -197,13 +210,13 @@ pub fn extract_free_form_field_types(s: &str) -> Result<Vec<FieldType>, ParseErr
 #[derive(Debug, Clone)]
 pub struct EnumTable {
     pub by_name: HashMap<String, i32>,
-    pub by_int:  HashMap<i32, String>,
+    pub by_int: HashMap<i32, String>,
 }
 
 impl EnumTable {
     pub fn from_dict(d: &IndexMap<String, EnumValue>) -> Self {
         let mut by_name = HashMap::new();
-        let mut by_int  = HashMap::new();
+        let mut by_int = HashMap::new();
         for (name, value) in d {
             match value {
                 EnumValue::Single(i) => {
@@ -211,7 +224,9 @@ impl EnumTable {
                     by_int.insert(*i, name.clone());
                 }
                 EnumValue::Range { start, count } => {
-                    let root: String = name.trim_end_matches(|c: char| c.is_ascii_digit()).to_string();
+                    let root: String = name
+                        .trim_end_matches(|c: char| c.is_ascii_digit())
+                        .to_string();
                     let prefix_num: i32 = name[root.len()..].parse().unwrap_or(0);
                     for i in 0..*count {
                         let key = format!("{}{}", root, prefix_num + i);
@@ -234,9 +249,7 @@ pub fn apply_enumeration_wrapping(
         .into_iter()
         .map(|(field_name, ty)| {
             for enum_name in enums.keys() {
-                if field_name == *enum_name
-                    || field_name.ends_with(&format!("_{}", enum_name))
-                {
+                if field_name == *enum_name || field_name.ends_with(&format!("_{}", enum_name)) {
                     return (
                         field_name,
                         WrappedField::Enumerated {
@@ -253,12 +266,12 @@ pub fn apply_enumeration_wrapping(
 
 #[derive(Debug)]
 pub struct MsgProtoParser {
-    pub(crate) by_msgid:        HashMap<i32, DispatchSpec>,
+    pub(crate) by_msgid: HashMap<i32, DispatchSpec>,
     pub(crate) by_command_name: IndexMap<String, OutboundSpec>,
-    pub(crate) enumerations:    IndexMap<String, EnumTable>,
-    pub(crate) static_strings:  HashMap<i32, String>,
-    pub(crate) config:          serde_json::Value,
-    pub(crate) version:         String,
+    pub(crate) enumerations: IndexMap<String, EnumTable>,
+    pub(crate) static_strings: HashMap<i32, String>,
+    pub(crate) config: serde_json::Value,
+    pub(crate) version: String,
 }
 
 #[derive(Debug)]
@@ -269,14 +282,14 @@ pub enum DispatchSpec {
 
 #[derive(Debug)]
 pub struct ResponseSpec {
-    pub name:   String,
+    pub name: String,
     pub fields: Vec<(String, WrappedField)>,
 }
 
 #[derive(Debug)]
 pub struct OutputSpec {
-    pub format:      String,
-    pub fields:      Vec<WrappedField>,
+    pub format: String,
+    pub fields: Vec<WrappedField>,
     pub field_names: Vec<String>,
     /// True when the format string lacks `name=%type` recovery for at least
     /// one field (free-form `output(...)` per spec §4.7). Decode falls back to
@@ -286,7 +299,7 @@ pub struct OutputSpec {
 
 #[derive(Debug)]
 pub struct OutboundSpec {
-    pub msgid:  i32,
+    pub msgid: i32,
     pub fields: Vec<(String, WrappedField)>,
 }
 
@@ -297,24 +310,27 @@ impl MsgProtoParser {
     pub fn new_empty() -> Self {
         use indexmap::IndexMap;
         Self {
-            by_msgid:       std::collections::HashMap::new(),
+            by_msgid: std::collections::HashMap::new(),
             by_command_name: IndexMap::new(),
-            enumerations:   IndexMap::new(),
+            enumerations: IndexMap::new(),
             static_strings: std::collections::HashMap::new(),
-            config:         serde_json::json!({}),
-            version:        "empty".into(),
+            config: serde_json::json!({}),
+            version: "empty".into(),
         }
     }
 
     pub fn from_dictionary(dict: DataDictionary) -> Result<Self, ParseError> {
-        let mut seen_msgids:   HashSet<i32>    = HashSet::new();
-        let mut seen_formats:  HashSet<String> = HashSet::new();
+        let mut seen_msgids: HashSet<i32> = HashSet::new();
+        let mut seen_formats: HashSet<String> = HashSet::new();
         let mut seen_msgnames: HashSet<String> = HashSet::new();
 
         // Cross-section msgid + format-string collision check.
-        for (format, msgid) in dict.commands.iter()
-                                .chain(dict.responses.iter())
-                                .chain(dict.output.iter()) {
+        for (format, msgid) in dict
+            .commands
+            .iter()
+            .chain(dict.responses.iter())
+            .chain(dict.output.iter())
+        {
             if !seen_msgids.insert(*msgid) {
                 return Err(ParseError::DuplicateMsgid(*msgid));
             }
@@ -345,15 +361,30 @@ impl MsgProtoParser {
             let wrapped = apply_enumeration_wrapping(fields, &dict.enumerations);
             by_command_name.insert(
                 name.clone(),
-                OutboundSpec { msgid: *msgid, fields: wrapped.clone() },
+                OutboundSpec {
+                    msgid: *msgid,
+                    fields: wrapped.clone(),
+                },
             );
-            by_msgid.insert(*msgid, DispatchSpec::Response(ResponseSpec { name, fields: wrapped }));
+            by_msgid.insert(
+                *msgid,
+                DispatchSpec::Response(ResponseSpec {
+                    name,
+                    fields: wrapped,
+                }),
+            );
         }
 
         for (format, msgid) in &dict.responses {
             let (name, fields) = parse_format_string(format)?;
             let wrapped = apply_enumeration_wrapping(fields, &dict.enumerations);
-            by_msgid.insert(*msgid, DispatchSpec::Response(ResponseSpec { name, fields: wrapped }));
+            by_msgid.insert(
+                *msgid,
+                DispatchSpec::Response(ResponseSpec {
+                    name,
+                    fields: wrapped,
+                }),
+            );
         }
 
         for (format, msgid) in &dict.output {
@@ -462,33 +493,43 @@ pub fn encode_vlq(out: &mut Vec<u8>, value: i64) -> Result<(), ParseError> {
 
 pub fn encode_field_int(out: &mut Vec<u8>, ty: FieldType, value: i64) -> Result<(), ParseError> {
     match ty {
-        FieldType::U32 | FieldType::I32 |
-        FieldType::U16 | FieldType::I16 |
-        FieldType::Byte => encode_vlq(out, value),
+        FieldType::U32 | FieldType::I32 | FieldType::U16 | FieldType::I16 | FieldType::Byte => {
+            encode_vlq(out, value)
+        }
         _ => Err(ParseError::MalformedField),
     }
 }
 
-pub fn encode_field_value<'a>(out: &mut Vec<u8>, ty: FieldType, value: &FieldValue<'a>) -> Result<(), ParseError> {
+pub fn encode_field_value<'a>(
+    out: &mut Vec<u8>,
+    ty: FieldType,
+    value: &FieldValue<'a>,
+) -> Result<(), ParseError> {
     match (ty, value) {
-        (FieldType::U32,   FieldValue::U32(v))  => encode_vlq(out, i64::from(*v)),
-        (FieldType::I32,   FieldValue::I32(v))  => encode_vlq(out, i64::from(*v)),
-        (FieldType::U16,   FieldValue::U16(v))  => encode_vlq(out, i64::from(*v)),
-        (FieldType::I16,   FieldValue::I16(v))  => encode_vlq(out, i64::from(*v)),
-        (FieldType::Byte,  FieldValue::Byte(v)) => encode_vlq(out, i64::from(*v)),
+        (FieldType::U32, FieldValue::U32(v)) => encode_vlq(out, i64::from(*v)),
+        (FieldType::I32, FieldValue::I32(v)) => encode_vlq(out, i64::from(*v)),
+        (FieldType::U16, FieldValue::U16(v)) => encode_vlq(out, i64::from(*v)),
+        (FieldType::I16, FieldValue::I16(v)) => encode_vlq(out, i64::from(*v)),
+        (FieldType::Byte, FieldValue::Byte(v)) => encode_vlq(out, i64::from(*v)),
         (FieldType::String, FieldValue::String(s)) => {
             let bytes = s.as_bytes();
             if bytes.len() > u8::MAX as usize {
-                return Err(ParseError::OutOfRange { value: bytes.len() as i64, range: "string len 0..=255" });
+                return Err(ParseError::OutOfRange {
+                    value: bytes.len() as i64,
+                    range: "string len 0..=255",
+                });
             }
             out.push(bytes.len() as u8);
             out.extend_from_slice(bytes);
             Ok(())
         }
-        (FieldType::Buffer, FieldValue::Buffer(b)) |
-        (FieldType::ProgmemBuffer, FieldValue::Buffer(b)) => {
+        (FieldType::Buffer, FieldValue::Buffer(b))
+        | (FieldType::ProgmemBuffer, FieldValue::Buffer(b)) => {
             if b.len() > u8::MAX as usize {
-                return Err(ParseError::OutOfRange { value: b.len() as i64, range: "buffer len 0..=255" });
+                return Err(ParseError::OutOfRange {
+                    value: b.len() as i64,
+                    range: "buffer len 0..=255",
+                });
             }
             out.push(b.len() as u8);
             out.extend_from_slice(b);
@@ -505,7 +546,8 @@ pub fn parse_hex_buffer(s: &str) -> Result<Vec<u8>, ParseError> {
     let mut out = Vec::with_capacity(s.len() / 2);
     for pair in s.as_bytes().chunks(2) {
         let pair_str = std::str::from_utf8(pair).map_err(|_| ParseError::BadHex(s.to_string()))?;
-        let byte = u8::from_str_radix(pair_str, 16).map_err(|_| ParseError::BadHex(s.to_string()))?;
+        let byte =
+            u8::from_str_radix(pair_str, 16).map_err(|_| ParseError::BadHex(s.to_string()))?;
         out.push(byte);
     }
     Ok(out)
@@ -519,8 +561,7 @@ pub fn encode_field_str<'a>(
 ) -> Result<(), ParseError> {
     match wrapped {
         WrappedField::Plain(ty) => match ty {
-            FieldType::Byte | FieldType::U16 | FieldType::U32 |
-            FieldType::I16 | FieldType::I32 => {
+            FieldType::Byte | FieldType::U16 | FieldType::U32 | FieldType::I16 | FieldType::I32 => {
                 let v: i64 = value_str.parse().map_err(|_| ParseError::MalformedField)?;
                 range_check(*ty, v)?;
                 // Clipper-protocol clock fields (clock=%u) carry 64-bit
@@ -539,7 +580,10 @@ pub fn encode_field_str<'a>(
             FieldType::String => {
                 let bytes = value_str.as_bytes();
                 if bytes.len() > u8::MAX as usize {
-                    return Err(ParseError::OutOfRange { value: bytes.len() as i64, range: "string len 0..=255" });
+                    return Err(ParseError::OutOfRange {
+                        value: bytes.len() as i64,
+                        range: "string len 0..=255",
+                    });
                 }
                 out.push(bytes.len() as u8);
                 out.extend_from_slice(bytes);
@@ -548,7 +592,10 @@ pub fn encode_field_str<'a>(
             FieldType::Buffer | FieldType::ProgmemBuffer => {
                 let bytes = parse_hex_buffer(value_str)?;
                 if bytes.len() > u8::MAX as usize {
-                    return Err(ParseError::OutOfRange { value: bytes.len() as i64, range: "buffer len 0..=255" });
+                    return Err(ParseError::OutOfRange {
+                        value: bytes.len() as i64,
+                        range: "buffer len 0..=255",
+                    });
                 }
                 out.push(bytes.len() as u8);
                 out.extend_from_slice(&bytes);
@@ -556,12 +603,15 @@ pub fn encode_field_str<'a>(
             }
         },
         WrappedField::Enumerated { inner, enum_name } => {
-            let table = enums.get(enum_name)
+            let table = enums
+                .get(enum_name)
                 .ok_or_else(|| ParseError::UnknownEnumName(enum_name.clone()))?;
-            let int = table.by_name.get(value_str)
+            let int = table
+                .by_name
+                .get(value_str)
                 .ok_or_else(|| ParseError::UnknownEnumValue {
                     enum_name: enum_name.clone(),
-                    value:     value_str.to_string(),
+                    value: value_str.to_string(),
                 })?;
             encode_field_int(out, *inner, i64::from(*int))
         }
@@ -578,12 +628,16 @@ pub fn encode_wrapped_field_typed<'a>(
         WrappedField::Plain(ty) => encode_field_value(out, *ty, value),
         WrappedField::Enumerated { inner, enum_name } => match value {
             FieldValue::EnumName(name) => {
-                let table = enums.get(enum_name)
+                let table = enums
+                    .get(enum_name)
                     .ok_or_else(|| ParseError::UnknownEnumName(enum_name.clone()))?;
-                let int = table.by_name.get(*name).ok_or_else(|| ParseError::UnknownEnumValue {
-                    enum_name: enum_name.clone(),
-                    value: (*name).to_string(),
-                })?;
+                let int = table
+                    .by_name
+                    .get(*name)
+                    .ok_or_else(|| ParseError::UnknownEnumValue {
+                        enum_name: enum_name.clone(),
+                        value: (*name).to_string(),
+                    })?;
                 encode_field_int(out, *inner, i64::from(*int))
             }
             FieldValue::EnumIntOverride(i) => encode_field_int(out, *inner, i64::from(*i)),
@@ -611,16 +665,19 @@ fn range_check(ty: FieldType, v: i64) -> Result<(), ParseError> {
         // Accept the union of signed [-128..=127] and unsigned [0..=255]
         // byte ranges.
         FieldType::Byte => (-128..=255).contains(&v),
-        FieldType::U16  => (0..=65535).contains(&v),
+        FieldType::U16 => (0..=65535).contains(&v),
         // PT_int16 is also VLQ-extended in reference msgproto; the host can
         // legitimately send the full -0x8000..=0x7FFF range and the firmware
         // truncates to int16 on read.
-        FieldType::I16  => (-32768..=32767).contains(&v),
+        FieldType::I16 => (-32768..=32767).contains(&v),
         FieldType::U32 | FieldType::I32 => return Ok(()),
         _ => return Ok(()),
     };
     if !in_range {
-        return Err(ParseError::OutOfRange { value: v, range: "FieldType range" });
+        return Err(ParseError::OutOfRange {
+            value: v,
+            range: "FieldType range",
+        });
     }
     Ok(())
 }
@@ -642,7 +699,9 @@ impl MsgProtoParser {
     pub fn encode(&self, cmd: &str) -> Result<Vec<u8>, ParseError> {
         let mut tokens = cmd.split_whitespace();
         let name = tokens.next().ok_or(ParseError::EmptyCommand)?;
-        let spec = self.by_command_name.get(name)
+        let spec = self
+            .by_command_name
+            .get(name)
             .ok_or_else(|| ParseError::UnknownCommand(name.to_string()))?;
 
         let mut provided: HashMap<&str, &str> = HashMap::new();
@@ -654,32 +713,41 @@ impl MsgProtoParser {
         let mut payload = Vec::new();
         encode_vlq(&mut payload, i64::from(spec.msgid))?;
         for (field_name, wrapped) in &spec.fields {
-            let value_str = provided.get(field_name.as_str())
+            let value_str = provided
+                .get(field_name.as_str())
                 .ok_or_else(|| ParseError::MissingField(field_name.clone()))?;
             encode_field_str(&mut payload, wrapped, value_str, &self.enumerations)?;
         }
         Ok(payload)
     }
 
-    pub fn encode_typed<'a>(&self, name: &str, args: &[(&str, FieldValue<'a>)]) -> Result<Vec<u8>, ParseError> {
-        let spec = self.by_command_name.get(name)
+    pub fn encode_typed<'a>(
+        &self,
+        name: &str,
+        args: &[(&str, FieldValue<'a>)],
+    ) -> Result<Vec<u8>, ParseError> {
+        let spec = self
+            .by_command_name
+            .get(name)
             .ok_or_else(|| ParseError::UnknownCommand(name.to_string()))?;
-        let provided: HashMap<&str, &FieldValue> =
-            args.iter().map(|(k, v)| (*k, v)).collect();
+        let provided: HashMap<&str, &FieldValue> = args.iter().map(|(k, v)| (*k, v)).collect();
 
         let mut payload = Vec::new();
         encode_vlq(&mut payload, i64::from(spec.msgid))?;
         for (field_name, wrapped) in &spec.fields {
-            let value = provided.get(field_name.as_str())
+            let value = provided
+                .get(field_name.as_str())
                 .ok_or_else(|| ParseError::MissingField(field_name.clone()))?;
             encode_wrapped_field_typed(&mut payload, wrapped, value, &self.enumerations)?;
         }
         Ok(payload)
     }
 
-    pub fn decode_wrapped_field(&self, body: &[u8], wrapped: &WrappedField)
-        -> Result<(MessageValue, usize), ParseError>
-    {
+    pub fn decode_wrapped_field(
+        &self,
+        body: &[u8],
+        wrapped: &WrappedField,
+    ) -> Result<(MessageValue, usize), ParseError> {
         match wrapped {
             WrappedField::Plain(ty) => decode_field_plain(body, *ty),
             WrappedField::Enumerated { inner, enum_name } => {
@@ -689,9 +757,13 @@ impl MsgProtoParser {
                     MessageValue::I32(v) => v,
                     _ => return Err(ParseError::MalformedField),
                 };
-                let table = self.enumerations.get(enum_name)
+                let table = self
+                    .enumerations
+                    .get(enum_name)
                     .ok_or_else(|| ParseError::UnknownEnumName(enum_name.clone()))?;
-                let resolved = table.by_int.get(&int)
+                let resolved = table
+                    .by_int
+                    .get(&int)
                     .cloned()
                     .unwrap_or_else(|| format!("?{}", int));
                 Ok((MessageValue::String(resolved), consumed))
@@ -705,7 +777,9 @@ impl MsgProtoParser {
     pub fn decode_body(&self, body: &[u8]) -> Result<(String, MessageParams), ParseError> {
         let (msgid_signed, n) = decode_vlq(body)?;
         let msgid = msgid_signed as i32;
-        let dispatch = self.by_msgid.get(&msgid)
+        let dispatch = self
+            .by_msgid
+            .get(&msgid)
             .ok_or(ParseError::UnknownMsgid(msgid))?;
         match dispatch {
             DispatchSpec::Response(spec) => {
@@ -719,9 +793,11 @@ impl MsgProtoParser {
         }
     }
 
-    pub fn decode_response(&self, mut body: &[u8], fields: &[(String, WrappedField)])
-        -> Result<MessageParams, ParseError>
-    {
+    pub fn decode_response(
+        &self,
+        mut body: &[u8],
+        fields: &[(String, WrappedField)],
+    ) -> Result<MessageParams, ParseError> {
         let mut params = MessageParams::new();
         for (field_name, wrapped) in fields {
             let (value, consumed) = self.decode_wrapped_field(body, wrapped)?;
@@ -731,9 +807,11 @@ impl MsgProtoParser {
         Ok(params)
     }
 
-    pub fn decode_output(&self, body: &[u8], spec: &OutputSpec)
-        -> Result<(String, MessageParams), ParseError>
-    {
+    pub fn decode_output(
+        &self,
+        body: &[u8],
+        spec: &OutputSpec,
+    ) -> Result<(String, MessageParams), ParseError> {
         if spec.is_free_form {
             // Spec §4.7 fallback: positional decode + format-string interpolation,
             // surfaced as the canonical Python `("#output", {"#msg": formatted})`
@@ -762,24 +840,38 @@ impl MsgProtoParser {
             params.insert(field_name, value);
             cur = &cur[consumed..];
         }
-        let name = spec.format.split_whitespace().next().unwrap_or("#output").to_string();
+        let name = spec
+            .format
+            .split_whitespace()
+            .next()
+            .unwrap_or("#output")
+            .to_string();
         Ok((name, params))
     }
 
     pub fn decode(&self, packet: &[u8]) -> Result<DecodedFrame, ParseError> {
-        if packet.len() < MESSAGE_MIN { return Err(ParseError::ShortFrame); }
+        if packet.len() < MESSAGE_MIN {
+            return Err(ParseError::ShortFrame);
+        }
         let body = &packet[MESSAGE_HEADER_SIZE..packet.len() - MESSAGE_TRAILER_SIZE];
-        if body.is_empty() { return Err(ParseError::EmptyBody); }
+        if body.is_empty() {
+            return Err(ParseError::EmptyBody);
+        }
 
         let (msgid_signed, n) = decode_vlq(body)?;
         let msgid = msgid_signed as i32;
-        let dispatch = self.by_msgid.get(&msgid)
+        let dispatch = self
+            .by_msgid
+            .get(&msgid)
             .ok_or(ParseError::UnknownMsgid(msgid))?;
 
         match dispatch {
             DispatchSpec::Response(spec) => {
                 let params = self.decode_response(&body[n..], &spec.fields)?;
-                Ok(DecodedFrame::Response { name: spec.name.clone(), params })
+                Ok(DecodedFrame::Response {
+                    name: spec.name.clone(),
+                    params,
+                })
             }
             DispatchSpec::Output(spec) => {
                 let (name, params) = self.decode_output(&body[n..], spec)?;
@@ -789,12 +881,20 @@ impl MsgProtoParser {
     }
 
     /// Decodes a packet into the canonical `('#output', {'#msg': formatted})` form, for diagnostic use.
-    pub(crate) fn decode_output_canonical(&self, packet: &[u8]) -> Result<(String, MessageParams), ParseError> {
-        if packet.len() < MESSAGE_MIN { return Err(ParseError::ShortFrame); }
+    pub(crate) fn decode_output_canonical(
+        &self,
+        packet: &[u8],
+    ) -> Result<(String, MessageParams), ParseError> {
+        if packet.len() < MESSAGE_MIN {
+            return Err(ParseError::ShortFrame);
+        }
         let body = &packet[MESSAGE_HEADER_SIZE..packet.len() - MESSAGE_TRAILER_SIZE];
         let (msgid_signed, n) = decode_vlq(body)?;
         let msgid = msgid_signed as i32;
-        let dispatch = self.by_msgid.get(&msgid).ok_or(ParseError::UnknownMsgid(msgid))?;
+        let dispatch = self
+            .by_msgid
+            .get(&msgid)
+            .ok_or(ParseError::UnknownMsgid(msgid))?;
 
         let DispatchSpec::Output(spec) = dispatch else {
             return Err(ParseError::MalformedField);
@@ -823,7 +923,7 @@ const MESSAGE_TRAILER_SIZE: usize = 3;
 #[derive(Debug)]
 pub enum DecodedFrame {
     Response { name: String, params: MessageParams },
-    Output   { name: String, params: MessageParams },
+    Output { name: String, params: MessageParams },
 }
 
 /// Decode a single field from `body` according to `ty`.
@@ -844,9 +944,13 @@ pub fn decode_field_plain(body: &[u8], ty: FieldType) -> Result<(MessageValue, u
             Ok((MessageValue::I32(raw_i64 as i32), n))
         }
         FieldType::String | FieldType::Buffer | FieldType::ProgmemBuffer => {
-            if body.is_empty() { return Err(ParseError::Truncated); }
+            if body.is_empty() {
+                return Err(ParseError::Truncated);
+            }
             let len = body[0] as usize;
-            if body.len() < 1 + len { return Err(ParseError::Truncated); }
+            if body.len() < 1 + len {
+                return Err(ParseError::Truncated);
+            }
             Ok((MessageValue::Bytes(body[1..=len].to_vec()), 1 + len))
         }
     }
@@ -884,7 +988,9 @@ pub fn format_output_message(format: &str, values: &[MessageValue]) -> String {
         while let Some(&c) = iter.peek() {
             code.push(c);
             iter.next();
-            if matches!(c, 'u' | 'i' | 'c' | 's') { break; }
+            if matches!(c, 'u' | 'i' | 'c' | 's') {
+                break;
+            }
         }
         if value_idx >= values.len() {
             out.push_str(&code);
@@ -950,8 +1056,14 @@ mod from_dictionary_tests {
         d.responses.insert("rsp_a arg=%u".into(), 2);
         d.output.insert("evt_a arg=%u".into(), 3);
         let p = MsgProtoParser::from_dictionary(d).unwrap();
-        assert!(matches!(p.by_msgid.get(&1), Some(DispatchSpec::Response(_))));
-        assert!(matches!(p.by_msgid.get(&2), Some(DispatchSpec::Response(_))));
+        assert!(matches!(
+            p.by_msgid.get(&1),
+            Some(DispatchSpec::Response(_))
+        ));
+        assert!(matches!(
+            p.by_msgid.get(&2),
+            Some(DispatchSpec::Response(_))
+        ));
         assert!(matches!(p.by_msgid.get(&3), Some(DispatchSpec::Output(_))));
     }
 
@@ -979,22 +1091,28 @@ mod from_dictionary_tests {
         let parser = MsgProtoParser::from_dictionary(d).unwrap();
         // Body: msgid VLQ + u32 VLQ value 5 + length-prefixed string "hi"
         let mut body = Vec::new();
-        encode_vlq(&mut body, 8).unwrap();        // msgid
-        encode_vlq(&mut body, 5).unwrap();        // %u value
-        body.push(2);                              // %s length prefix
+        encode_vlq(&mut body, 8).unwrap(); // msgid
+        encode_vlq(&mut body, 5).unwrap(); // %u value
+        body.push(2); // %s length prefix
         body.extend_from_slice(b"hi");
 
-        let mut packet = vec![0u8, 0u8];           // 2-byte header (len + dest|seq)
+        let mut packet = vec![0u8, 0u8]; // 2-byte header (len + dest|seq)
         packet.extend_from_slice(&body);
-        packet.extend_from_slice(&[0, 0, 0]);      // 3-byte trailer (CRC + sync)
+        packet.extend_from_slice(&[0, 0, 0]); // 3-byte trailer (CRC + sync)
 
         let frame = parser.decode(&packet).expect("decode succeeds");
         match frame {
             DecodedFrame::Output { name, params } => {
                 assert_eq!(name, "#output", "free-form must surface as #output");
                 let msg = params.try_get_str("#msg").unwrap_or("");
-                assert!(msg.contains("5"),  "formatted message contains %u value: {msg:?}");
-                assert!(msg.contains("hi"), "formatted message contains %s value: {msg:?}");
+                assert!(
+                    msg.contains("5"),
+                    "formatted message contains %u value: {msg:?}"
+                );
+                assert!(
+                    msg.contains("hi"),
+                    "formatted message contains %s value: {msg:?}"
+                );
             }
             other => panic!("expected Output, got {other:?}"),
         }
@@ -1020,7 +1138,10 @@ mod data_dictionary_tests {
         let json = r#"{"PA0": [0, 16]}"#;
         let table: IndexMap<String, EnumValue> = serde_json::from_str(json).unwrap();
         match table.get("PA0") {
-            Some(EnumValue::Range { start: 0, count: 16 }) => {}
+            Some(EnumValue::Range {
+                start: 0,
+                count: 16,
+            }) => {}
             other => panic!("expected Range {{0, 16}}, got {:?}", other),
         }
     }
@@ -1052,8 +1173,11 @@ mod data_dictionary_tests {
         }"#;
         let dict: DataDictionary = serde_json::from_str(json).unwrap();
         let order: Vec<&String> = dict.enumerations.keys().collect();
-        assert_eq!(order, vec![&"pin".to_string(), &"step_pin".to_string()],
-                   "IndexMap must preserve JSON insertion order");
+        assert_eq!(
+            order,
+            vec![&"pin".to_string(), &"step_pin".to_string()],
+            "IndexMap must preserve JSON insertion order"
+        );
     }
 }
 
@@ -1096,7 +1220,13 @@ mod enum_table_tests {
     #[test]
     fn from_dict_expands_range() {
         let mut d = IndexMap::new();
-        d.insert("PA0".to_string(), EnumValue::Range { start: 0, count: 16 });
+        d.insert(
+            "PA0".to_string(),
+            EnumValue::Range {
+                start: 0,
+                count: 16,
+            },
+        );
         let table = EnumTable::from_dict(&d);
         assert_eq!(table.by_name.get("PA0"), Some(&0));
         assert_eq!(table.by_name.get("PA15"), Some(&15));
@@ -1135,7 +1265,10 @@ mod enum_matching_tests {
         let wrapped = apply_enumeration_wrapping(fields, &enums);
         match &wrapped[0].1 {
             WrappedField::Enumerated { enum_name, .. } => assert_eq!(enum_name, "pin"),
-            other => panic!("expected Enumerated (matched via _pin suffix), got {:?}", other),
+            other => panic!(
+                "expected Enumerated (matched via _pin suffix), got {:?}",
+                other
+            ),
         }
     }
 
@@ -1145,18 +1278,20 @@ mod enum_matching_tests {
 
         let mut pin_table = IndexMap::new();
         pin_table.insert("PA0".to_string(), EnumValue::Single(0));
-        enums.insert("pin".to_string(), pin_table);    // declared FIRST
+        enums.insert("pin".to_string(), pin_table); // declared FIRST
 
         let mut step_pin_table = IndexMap::new();
         step_pin_table.insert("X_step".to_string(), EnumValue::Single(99));
-        enums.insert("step_pin".to_string(), step_pin_table);    // declared SECOND
+        enums.insert("step_pin".to_string(), step_pin_table); // declared SECOND
 
         let fields = vec![("step_pin".to_string(), FieldType::U32)];
         let wrapped = apply_enumeration_wrapping(fields, &enums);
         match &wrapped[0].1 {
             WrappedField::Enumerated { enum_name, .. } => {
-                assert_eq!(enum_name, "pin",
-                    "first-match (pin via _pin suffix) wins, NOT longest-suffix (step_pin)");
+                assert_eq!(
+                    enum_name, "pin",
+                    "first-match (pin via _pin suffix) wins, NOT longest-suffix (step_pin)"
+                );
             }
             other => panic!("expected Enumerated, got {:?}", other),
         }
@@ -1173,7 +1308,15 @@ mod vlq_tests {
         // including u32::MAX (4294967295) which is distinct from -1 on the
         // wire (5 bytes vs 1 byte). The caller truncates to i32 via `as i32`
         // after decode when the field type requires it (see decode_response).
-        for v in [0i64, 1, -1, 100, 100_000, i64::from(i32::MIN), i64::from(u32::MAX)] {
+        for v in [
+            0i64,
+            1,
+            -1,
+            100,
+            100_000,
+            i64::from(i32::MIN),
+            i64::from(u32::MAX),
+        ] {
             let mut buf = Vec::new();
             encode_vlq(&mut buf, v).unwrap();
             let (decoded, consumed) = decode_vlq(&buf).unwrap();
@@ -1224,12 +1367,8 @@ mod encode_field_tests {
         let enums: IndexMap<String, EnumTable> = IndexMap::new();
         for v in &["-1", "-128", "0", "127", "255"] {
             let mut buf = Vec::new();
-            encode_field_str(
-                &mut buf,
-                &WrappedField::Plain(FieldType::Byte),
-                v,
-                &enums,
-            ).unwrap_or_else(|e| panic!("Byte should accept {v:?}: {e:?}"));
+            encode_field_str(&mut buf, &WrappedField::Plain(FieldType::Byte), v, &enums)
+                .unwrap_or_else(|e| panic!("Byte should accept {v:?}: {e:?}"));
             assert!(!buf.is_empty(), "encoded payload non-empty for {v:?}");
         }
     }
@@ -1241,14 +1380,11 @@ mod encode_field_tests {
         // -129 and 256 are outside the signed+unsigned byte envelope.
         for v in &["-129", "256", "1000", "-1000"] {
             let mut buf = Vec::new();
-            let r = encode_field_str(
-                &mut buf,
-                &WrappedField::Plain(FieldType::Byte),
-                v,
-                &enums,
+            let r = encode_field_str(&mut buf, &WrappedField::Plain(FieldType::Byte), v, &enums);
+            assert!(
+                matches!(r, Err(ParseError::OutOfRange { .. })),
+                "Byte should reject {v:?}, got {r:?}"
             );
-            assert!(matches!(r, Err(ParseError::OutOfRange { .. })),
-                "Byte should reject {v:?}, got {r:?}");
         }
     }
 
@@ -1264,7 +1400,10 @@ mod encode_field_tests {
 
     #[test]
     fn parse_hex_buffer_round_trips() {
-        assert_eq!(parse_hex_buffer("0123abcd").unwrap(), vec![0x01, 0x23, 0xAB, 0xCD]);
+        assert_eq!(
+            parse_hex_buffer("0123abcd").unwrap(),
+            vec![0x01, 0x23, 0xAB, 0xCD]
+        );
         assert_eq!(parse_hex_buffer("").unwrap(), Vec::<u8>::new());
         assert!(matches!(parse_hex_buffer("0z"), Err(ParseError::BadHex(_))));
         assert!(matches!(parse_hex_buffer("1"), Err(ParseError::BadHex(_))));
@@ -1277,10 +1416,15 @@ mod encode_method_tests {
 
     fn parser_with_one_command() -> MsgProtoParser {
         let mut d = DataDictionary {
-            commands: IndexMap::new(), responses: IndexMap::new(), output: IndexMap::new(),
-            enumerations: IndexMap::new(), config: serde_json::json!({}),
-            version: "v".into(), app: "kalico".into(),
-            build_versions: None, license: None,
+            commands: IndexMap::new(),
+            responses: IndexMap::new(),
+            output: IndexMap::new(),
+            enumerations: IndexMap::new(),
+            config: serde_json::json!({}),
+            version: "v".into(),
+            app: "kalico".into(),
+            build_versions: None,
+            license: None,
         };
         d.commands.insert("ping val=%u".into(), 42);
         MsgProtoParser::from_dictionary(d).unwrap()
@@ -1290,7 +1434,9 @@ mod encode_method_tests {
     fn string_and_typed_encode_to_same_bytes() {
         let p = parser_with_one_command();
         let bytes_str = p.encode("ping val=100").unwrap();
-        let bytes_typed = p.encode_typed("ping", &[("val", FieldValue::U32(100))]).unwrap();
+        let bytes_typed = p
+            .encode_typed("ping", &[("val", FieldValue::U32(100))])
+            .unwrap();
         assert_eq!(bytes_str, bytes_typed);
     }
 
@@ -1315,10 +1461,15 @@ mod encode_method_tests {
     #[test]
     fn enum_encode_rejects_unknown_name() {
         let mut d = DataDictionary {
-            commands: IndexMap::new(), responses: IndexMap::new(), output: IndexMap::new(),
-            enumerations: IndexMap::new(), config: serde_json::json!({}),
-            version: "v".into(), app: "kalico".into(),
-            build_versions: None, license: None,
+            commands: IndexMap::new(),
+            responses: IndexMap::new(),
+            output: IndexMap::new(),
+            enumerations: IndexMap::new(),
+            config: serde_json::json!({}),
+            version: "v".into(),
+            app: "kalico".into(),
+            build_versions: None,
+            license: None,
         };
         d.commands.insert("config_pin pin=%c".into(), 1);
         let mut pin_table = IndexMap::new();
@@ -1344,9 +1495,9 @@ mod decode_tests {
         body.extend_from_slice(payload);
         let msglen = MESSAGE_MIN + body.len();
         frame.push(msglen as u8);
-        frame.push(0x10);    // dest|seq=0
+        frame.push(0x10); // dest|seq=0
         frame.extend_from_slice(&body);
-        frame.extend_from_slice(&[0, 0]);    // dummy CRC
+        frame.extend_from_slice(&[0, 0]); // dummy CRC
         frame.push(0x7E);
         frame
     }
@@ -1354,10 +1505,15 @@ mod decode_tests {
     #[test]
     fn decode_response_round_trips() {
         let mut d = DataDictionary {
-            commands: IndexMap::new(), responses: IndexMap::new(), output: IndexMap::new(),
-            enumerations: IndexMap::new(), config: serde_json::json!({}),
-            version: "v".into(), app: "kalico".into(),
-            build_versions: None, license: None,
+            commands: IndexMap::new(),
+            responses: IndexMap::new(),
+            output: IndexMap::new(),
+            enumerations: IndexMap::new(),
+            config: serde_json::json!({}),
+            version: "v".into(),
+            app: "kalico".into(),
+            build_versions: None,
+            license: None,
         };
         d.responses.insert("rsp val=%u".into(), 7);
         let parser = MsgProtoParser::from_dictionary(d).unwrap();
@@ -1378,10 +1534,15 @@ mod decode_tests {
     #[test]
     fn decode_unknown_msgid_returns_error() {
         let d = DataDictionary {
-            commands: IndexMap::new(), responses: IndexMap::new(), output: IndexMap::new(),
-            enumerations: IndexMap::new(), config: serde_json::json!({}),
-            version: "v".into(), app: "kalico".into(),
-            build_versions: None, license: None,
+            commands: IndexMap::new(),
+            responses: IndexMap::new(),
+            output: IndexMap::new(),
+            enumerations: IndexMap::new(),
+            config: serde_json::json!({}),
+            version: "v".into(),
+            app: "kalico".into(),
+            build_versions: None,
+            license: None,
         };
         let parser = MsgProtoParser::from_dictionary(d).unwrap();
         let packet = build_packet(99, &[]);
@@ -1394,12 +1555,20 @@ mod decode_tests {
     #[test]
     fn decode_output_recovers_field_names() {
         let mut d = DataDictionary {
-            commands: IndexMap::new(), responses: IndexMap::new(), output: IndexMap::new(),
-            enumerations: IndexMap::new(), config: serde_json::json!({}),
-            version: "v".into(), app: "kalico".into(),
-            build_versions: None, license: None,
+            commands: IndexMap::new(),
+            responses: IndexMap::new(),
+            output: IndexMap::new(),
+            enumerations: IndexMap::new(),
+            config: serde_json::json!({}),
+            version: "v".into(),
+            app: "kalico".into(),
+            build_versions: None,
+            license: None,
         };
-        d.output.insert("kalico_credit_freed retired_through_segment_id=%u free_slots=%c".into(), 50);
+        d.output.insert(
+            "kalico_credit_freed retired_through_segment_id=%u free_slots=%c".into(),
+            50,
+        );
         let p = MsgProtoParser::from_dictionary(d).unwrap();
 
         let mut payload = Vec::new();
@@ -1420,12 +1589,20 @@ mod decode_tests {
     #[test]
     fn decode_output_canonical_produces_msg_form() {
         let mut d = DataDictionary {
-            commands: IndexMap::new(), responses: IndexMap::new(), output: IndexMap::new(),
-            enumerations: IndexMap::new(), config: serde_json::json!({}),
-            version: "v".into(), app: "kalico".into(),
-            build_versions: None, license: None,
+            commands: IndexMap::new(),
+            responses: IndexMap::new(),
+            output: IndexMap::new(),
+            enumerations: IndexMap::new(),
+            config: serde_json::json!({}),
+            version: "v".into(),
+            app: "kalico".into(),
+            build_versions: None,
+            license: None,
         };
-        d.output.insert("kalico_credit_freed retired_through_segment_id=%u free_slots=%c".into(), 50);
+        d.output.insert(
+            "kalico_credit_freed retired_through_segment_id=%u free_slots=%c".into(),
+            50,
+        );
         let p = MsgProtoParser::from_dictionary(d).unwrap();
 
         let mut payload = Vec::new();

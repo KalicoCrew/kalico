@@ -13,7 +13,7 @@ mod stats;
 pub use command_queue::CommandQueue;
 pub use config_stage::{ConfigStage, ConfigStagePhase};
 pub use debug_log::DebugEntry;
-pub use entry::{NotifyId, PassthroughEntry, BACKGROUND_PRIORITY_CLOCK};
+pub use entry::{BACKGROUND_PRIORITY_CLOCK, NotifyId, PassthroughEntry};
 pub use mcu_state::{CommandQueueId, McuState, PushError};
 pub use notify::{NotifyCallback, NotifyResponse, NotifyTable};
 pub use receive_window::ReceiveWindow;

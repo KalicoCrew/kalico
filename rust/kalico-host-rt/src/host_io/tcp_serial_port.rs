@@ -37,10 +37,11 @@ impl TcpSerialPort {
     /// wire protocol is latency-sensitive; coalescing small frames adds
     /// 40 ms+ on macOS).
     pub fn connect(addr: &str) -> Result<Self, TransportError> {
-        let stream = TcpStream::connect(addr)
-            .map_err(|e| TransportError::Io(io::Error::other(
-                format!("TcpSerialPort::connect({addr}): {e}"),
-            )))?;
+        let stream = TcpStream::connect(addr).map_err(|e| {
+            TransportError::Io(io::Error::other(format!(
+                "TcpSerialPort::connect({addr}): {e}"
+            )))
+        })?;
         // Note: NOT setting TCP_NODELAY. pyserial's `socket://` URL handler
         // doesn't either, and the Renode TCP bridge appears sensitive to
         // small-batch writes when Nagle is off — sub-millisecond identify-
@@ -51,9 +52,11 @@ impl TcpSerialPort {
         let default_timeout = Duration::from_millis(100);
         stream
             .set_read_timeout(Some(default_timeout))
-            .map_err(|e| TransportError::Io(io::Error::other(
-                format!("TcpSerialPort: set_read_timeout: {e}"),
-            )))?;
+            .map_err(|e| {
+                TransportError::Io(io::Error::other(format!(
+                    "TcpSerialPort: set_read_timeout: {e}"
+                )))
+            })?;
         // Long write timeout — Renode's TCP server can stall briefly under
         // heavy traffic but never refuses inbound. A 100 ms write timeout
         // (the read default) caused identify-NAK loops to abort mid-frame:
@@ -62,9 +65,11 @@ impl TcpSerialPort {
         // boundary.
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))
-            .map_err(|e| TransportError::Io(io::Error::other(
-                format!("TcpSerialPort: set_write_timeout: {e}"),
-            )))?;
+            .map_err(|e| {
+                TransportError::Io(io::Error::other(format!(
+                    "TcpSerialPort: set_write_timeout: {e}"
+                )))
+            })?;
         Ok(Self {
             stream,
             name: format!("tcp://{addr}"),
@@ -138,23 +143,47 @@ fn no_support(method: &'static str) -> serialport::Error {
 }
 
 impl SerialPort for TcpSerialPort {
-    fn name(&self) -> Option<String> { Some(self.name.clone()) }
+    fn name(&self) -> Option<String> {
+        Some(self.name.clone())
+    }
 
     // Renode UART ignores these — return plausible defaults so callers
     // logging the values get something sensible.
-    fn baud_rate(&self) -> serialport::Result<u32> { Ok(250_000) }
-    fn data_bits(&self) -> serialport::Result<DataBits> { Ok(DataBits::Eight) }
-    fn flow_control(&self) -> serialport::Result<FlowControl> { Ok(FlowControl::None) }
-    fn parity(&self) -> serialport::Result<Parity> { Ok(Parity::None) }
-    fn stop_bits(&self) -> serialport::Result<StopBits> { Ok(StopBits::One) }
+    fn baud_rate(&self) -> serialport::Result<u32> {
+        Ok(250_000)
+    }
+    fn data_bits(&self) -> serialport::Result<DataBits> {
+        Ok(DataBits::Eight)
+    }
+    fn flow_control(&self) -> serialport::Result<FlowControl> {
+        Ok(FlowControl::None)
+    }
+    fn parity(&self) -> serialport::Result<Parity> {
+        Ok(Parity::None)
+    }
+    fn stop_bits(&self) -> serialport::Result<StopBits> {
+        Ok(StopBits::One)
+    }
 
-    fn timeout(&self) -> Duration { self.timeout }
+    fn timeout(&self) -> Duration {
+        self.timeout
+    }
 
-    fn set_baud_rate(&mut self, _baud_rate: u32) -> serialport::Result<()> { Ok(()) }
-    fn set_data_bits(&mut self, _data_bits: DataBits) -> serialport::Result<()> { Ok(()) }
-    fn set_flow_control(&mut self, _flow_control: FlowControl) -> serialport::Result<()> { Ok(()) }
-    fn set_parity(&mut self, _parity: Parity) -> serialport::Result<()> { Ok(()) }
-    fn set_stop_bits(&mut self, _stop_bits: StopBits) -> serialport::Result<()> { Ok(()) }
+    fn set_baud_rate(&mut self, _baud_rate: u32) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_data_bits(&mut self, _data_bits: DataBits) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_flow_control(&mut self, _flow_control: FlowControl) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_parity(&mut self, _parity: Parity) -> serialport::Result<()> {
+        Ok(())
+    }
+    fn set_stop_bits(&mut self, _stop_bits: StopBits) -> serialport::Result<()> {
+        Ok(())
+    }
 
     fn set_timeout(&mut self, timeout: Duration) -> serialport::Result<()> {
         // TcpStream uses `None` to mean "block forever". 100 ms floor:
@@ -170,12 +199,12 @@ impl SerialPort for TcpSerialPort {
         if effective == self.timeout {
             return Ok(());
         }
-        self.stream
-            .set_read_timeout(Some(effective))
-            .map_err(|e| serialport::Error::new(
+        self.stream.set_read_timeout(Some(effective)).map_err(|e| {
+            serialport::Error::new(
                 serialport::ErrorKind::Io(e.kind()),
                 format!("TcpSerialPort: set_read_timeout: {e}"),
-            ))?;
+            )
+        })?;
         // Write timeout intentionally left at the construction default (100 ms).
         // The reactor's `SerialFrameIo::poll_frames_until` shrinks the read
         // timeout to whatever budget remains — sometimes a single millisecond
@@ -205,16 +234,24 @@ impl SerialPort for TcpSerialPort {
         Err(no_support("read_carrier_detect"))
     }
 
-    fn bytes_to_read(&self) -> serialport::Result<u32> { Ok(0) }
-    fn bytes_to_write(&self) -> serialport::Result<u32> { Ok(0) }
+    fn bytes_to_read(&self) -> serialport::Result<u32> {
+        Ok(0)
+    }
+    fn bytes_to_write(&self) -> serialport::Result<u32> {
+        Ok(0)
+    }
 
-    fn clear(&self, _buffer_to_clear: ClearBuffer) -> serialport::Result<()> { Ok(()) }
+    fn clear(&self, _buffer_to_clear: ClearBuffer) -> serialport::Result<()> {
+        Ok(())
+    }
 
     fn try_clone(&self) -> serialport::Result<Box<dyn SerialPort>> {
-        let cloned = self.stream.try_clone().map_err(|e| serialport::Error::new(
-            serialport::ErrorKind::Io(e.kind()),
-            format!("TcpSerialPort: try_clone: {e}"),
-        ))?;
+        let cloned = self.stream.try_clone().map_err(|e| {
+            serialport::Error::new(
+                serialport::ErrorKind::Io(e.kind()),
+                format!("TcpSerialPort: try_clone: {e}"),
+            )
+        })?;
         Ok(Box::new(TcpSerialPort {
             stream: cloned,
             name: self.name.clone(),
@@ -222,6 +259,10 @@ impl SerialPort for TcpSerialPort {
         }))
     }
 
-    fn set_break(&self) -> serialport::Result<()> { Err(no_support("set_break")) }
-    fn clear_break(&self) -> serialport::Result<()> { Err(no_support("clear_break")) }
+    fn set_break(&self) -> serialport::Result<()> {
+        Err(no_support("set_break"))
+    }
+    fn clear_break(&self) -> serialport::Result<()> {
+        Err(no_support("clear_break"))
+    }
 }
