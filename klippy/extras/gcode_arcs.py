@@ -200,11 +200,8 @@ class ArcSupport:
 
 
 def load_config(config):
-    bridge = config.get_printer().lookup_object("motion_bridge", None)
-    if bridge is not None:
-        raise config.error(
-            "Remove [gcode_arcs] from your config. Under the new motion "
-            "path, arc G-codes (G2/G3) are handled by the Step 13 "
-            "compatibility layer which converts them to G5 offline."
-        )
-    return ArcSupport(config)
+    raise config.error(
+        "Remove [gcode_arcs] from your config. Under the new motion "
+        "path, arc G-codes (G2/G3) are handled by the Step 13 "
+        "compatibility layer which converts them to G5 offline."
+    )

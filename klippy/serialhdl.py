@@ -76,7 +76,7 @@ class SerialReader:
             return self.reactor.NEVER
         bridge = self.mcu._motion_bridge
         handle = self.mcu._bridge_handle
-        if bridge is None or handle is None:
+        if handle is None:
             return self.reactor.NEVER
         now = eventtime
         # Drain up to 32 events per tick to avoid starving the reactor.
@@ -415,19 +415,10 @@ class SerialReader:
         )
 
     def set_clock_est(self, freq, conv_time, conv_clock, last_clock):
-        bridge = self.mcu._motion_bridge
-        handle = self.mcu._bridge_handle
-        if bridge is not None and handle is not None:
-            # Forward the (conv_time, conv_clock) anchor pair, NOT
-            # last_clock. Klippy's clocksync model is a regression
-            # line: at host time conv_time, the MCU was at conv_clock.
-            # last_clock is the most-recently-observed MCU clock,
-            # independent of conv_time, so pairing it with conv_time
-            # would mis-anchor the bridge's projection by the
-            # (conv_clock − last_clock) lag (typically several ms).
-            bridge.set_clock_est(
-                handle, float(freq), float(conv_time), int(conv_clock)
-            )
+        self.mcu._motion_bridge.set_clock_est(
+            self.mcu._bridge_handle,
+            float(freq), float(conv_time), int(conv_clock),
+        )
 
     def disconnect(self):
         # Bridge manages its own serial lifecycle; just settle pending
@@ -477,24 +468,17 @@ class SerialReader:
         return {}
 
     def send(self, msg, minclock=0, reqclock=0):
-        # Bridge mode: send fire-and-forget via the Rust reactor.
         bridge = self.mcu._motion_bridge
         handle = self.mcu._bridge_handle
-        if bridge is not None and handle is not None:
-            logging.info(
-                "[serial-send] bridge_send mcu=%s handle=%s msg=%s",
-                getattr(self.mcu, "_name", "?"), handle, msg[:200])
-            bridge.bridge_send(handle, msg)
-        else:
-            logging.error(
-                "[serial-send] DROPPED in bridge mode: bridge=%s handle=%s "
-                "msg=%s", bridge, handle, msg[:200])
+        logging.info(
+            "[serial-send] bridge_send mcu=%s handle=%s msg=%s",
+            getattr(self.mcu, "_name", "?"), handle, msg[:200])
+        bridge.bridge_send(handle, msg)
 
     def send_with_response(self, msg, response):
-        # Route through the Rust reactor which owns the FD.
-        bridge = self.mcu._motion_bridge
-        handle = self.mcu._bridge_handle
-        params = bridge.bridge_call(handle, msg, response)
+        params = self.mcu._motion_bridge.bridge_call(
+            self.mcu._bridge_handle, msg, response,
+        )
         # Inject timing fields klippy expects (reactor monotonic as approx).
         now = self.reactor.monotonic()
         params["#sent_time"] = now

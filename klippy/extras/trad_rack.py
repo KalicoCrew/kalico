@@ -2911,9 +2911,6 @@ class TradRackRunoutSensor:
 
 
 def load_config(config):
-    bridge = config.get_printer().lookup_object("motion_bridge", None)
-    if bridge is not None:
-        raise config.error(
-            "[trad_rack] is not supported under the new motion path"
-        )
-    return TradRack(config)
+    raise config.error(
+        "[trad_rack] is not supported under the new motion path"
+    )

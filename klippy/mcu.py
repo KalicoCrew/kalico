@@ -967,8 +967,7 @@ class MCU:
         self._name = config.get_name()
         if self._name.startswith("mcu "):
             self._name = self._name[4:]
-        # Motion bridge detection — stored for serialhdl and command routing
-        self._motion_bridge = printer.lookup_object("motion_bridge", None)
+        self._motion_bridge = printer.lookup_object("motion_bridge")
         self._bridge_handle = None
         # Serial port
         wp = "mcu '%s': " % (self._name)
@@ -1497,48 +1496,35 @@ class MCU:
         self.register_response(self._handle_shutdown, "shutdown")
         self.register_response(self._handle_shutdown, "is_shutdown")
         self.register_response(self._handle_mcu_stats, "stats")
-        # Phase 2: hand the msgproto data dictionary and serial path to the
-        # motion bridge so RouterTransport can encode/decode passthrough
-        # commands and own the wire.
-        try:
-            raw_dict = msgparser.get_raw_data_dictionary()
-            if raw_dict:
-                if isinstance(raw_dict, str):
-                    raw_dict = raw_dict.encode("utf-8")
-                self._motion_bridge.set_msgproto_dict(raw_dict)
-            if self._bridge_handle is None:
-                self._bridge_handle = self._motion_bridge.claim_mcu(
-                    self._name,
-                    self._serialport or "",
-                    int(self._baud or 0),
-                )
-            # Mirror clocksync regression updates into the bridge so
-            # its print-time-to-clock converter doesn't stay on the
-            # t*1e6 fallback.  Captured as a closure so the bridge
-            # wrapper and handle stay alive for the callback.
-            bridge = self._motion_bridge
-            handle = self._bridge_handle
-            if handle is not None:
-
-                def _bridge_clock_est_cb(
-                    freq, offset, last_clock, b=bridge, h=handle
-                ):
-                    try:
-                        b.set_clock_est(
-                            h, float(freq), float(offset), int(last_clock)
-                        )
-                    except Exception:
-                        logging.exception(
-                            "motion_bridge: set_clock_est failed"
-                        )
-
-                self._clocksync.set_clock_est_callback(
-                    _bridge_clock_est_cb
-                )
-        except Exception:
-            logging.exception(
-                "motion_bridge: failed to register MCU '%s'", self._name
+        raw_dict = msgparser.get_raw_data_dictionary()
+        if raw_dict:
+            if isinstance(raw_dict, str):
+                raw_dict = raw_dict.encode("utf-8")
+            self._motion_bridge.set_msgproto_dict(raw_dict)
+        if self._bridge_handle is None:
+            self._bridge_handle = self._motion_bridge.claim_mcu(
+                self._name,
+                self._serialport or "",
+                int(self._baud or 0),
             )
+        bridge = self._motion_bridge
+        handle = self._bridge_handle
+
+        def _bridge_clock_est_cb(
+            freq, offset, last_clock, b=bridge, h=handle
+        ):
+            try:
+                b.set_clock_est(
+                    h, float(freq), float(offset), int(last_clock)
+                )
+            except Exception:
+                logging.exception(
+                    "motion_bridge: set_clock_est failed"
+                )
+
+        self._clocksync.set_clock_est_callback(
+            _bridge_clock_est_cb
+        )
         return True
 
     def _ready(self):
@@ -1706,16 +1692,15 @@ class MCU:
         # reactor reports `exited_gracefully()` when the drop lands. Best-
         # effort: if the bridge can't be reached (transport already gone),
         # fall through — we still try to send the reset command.
-        if self._bridge_handle is not None:
-            try:
-                self._motion_bridge.bridge_mark_expected_disconnect(
-                    self._bridge_handle
-                )
-            except Exception:
-                logging.exception(
-                    "MCU '%s' bridge_mark_expected_disconnect failed"
-                    " (continuing with reset)", self._name,
-                )
+        try:
+            self._motion_bridge.bridge_mark_expected_disconnect(
+                self._bridge_handle
+            )
+        except Exception:
+            logging.exception(
+                "MCU '%s' bridge_mark_expected_disconnect failed"
+                " (continuing with reset)", self._name,
+            )
         if self._reset_cmd is None:
             # Attempt reset via config_reset command
             logging.info("Attempting MCU '%s' config_reset command", self._name)

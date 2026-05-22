@@ -171,10 +171,7 @@ class ManualStepper:
 
 
 def load_config_prefix(config):
-    bridge = config.get_printer().lookup_object("motion_bridge", None)
-    if bridge is not None:
-        raise config.error(
-            "[manual_stepper] is not yet supported under the new motion "
-            "path until Phase 5"
-        )
-    return ManualStepper(config)
+    raise config.error(
+        "[manual_stepper] is not yet supported under the new motion "
+        "path until Phase 5"
+    )

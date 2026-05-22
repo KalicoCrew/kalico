@@ -424,9 +424,6 @@ class GradientMixingExtruder(MixingExtruder):
 
 
 def load_config(config):
-    bridge = config.get_printer().lookup_object("motion_bridge", None)
-    if bridge is not None:
-        raise config.error(
-            "[mixing_extruder] is not supported under the new motion path"
-        )
-    return GradientMixingExtruder(config)
+    raise config.error(
+        "[mixing_extruder] is not supported under the new motion path"
+    )

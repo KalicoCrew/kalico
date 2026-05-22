@@ -516,18 +516,11 @@ class TMCCommandHelper:
             # for. Mainline defers because the move sits in the
             # lookahead and _do_enable's wait_moves() IS what flushes it
             # to the MCU; bridge mode doesn't have that lookahead.
-            toolhead = self.printer.lookup_object("toolhead")
-            if getattr(toolhead, "bridge", None) is not None:
-                self._do_enable_bridge(print_time)
-                return
+            self._do_enable_bridge(print_time)
+            return
 
-            def cb(ev):
-                return self._do_enable(print_time)
-
-        else:
-
-            def cb(ev):
-                return self._do_disable(print_time)
+        def cb(ev):
+            return self._do_disable(print_time)
 
         self.printer.get_reactor().register_callback(cb)
 

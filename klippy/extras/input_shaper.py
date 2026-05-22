@@ -154,12 +154,6 @@ class InputShaper:
 
     def connect(self):
         self.toolhead = self.printer.lookup_object("toolhead")
-        # If motion bridge is active, skip C-side IS setup entirely
-        bridge = self.printer.lookup_object("motion_bridge", None)
-        if bridge is not None:
-            return
-        # Configure initial values
-        self._update_input_shaping(error=self.printer.config_error)
 
     def _get_input_shaper_stepper_kinematics(self, stepper):
         # Lookup stepper kinematics
@@ -222,25 +216,14 @@ class InputShaper:
     cmd_SET_INPUT_SHAPER_help = "Set cartesian parameters for input shaper"
 
     def cmd_SET_INPUT_SHAPER(self, gcmd):
-        bridge = self.printer.lookup_object("motion_bridge", None)
-        if bridge is not None:
-            # Phase 2: route shaper updates to the Rust planner. Update
-            # local AxisInputShaper state so subsequent gets/reports stay
-            # consistent with what the planner is actually applying.
-            for shaper in self.shapers:
-                shaper.update(gcmd)
-            type_x = self.shapers[0].shaper_type
-            freq_x = self.shapers[0].shaper_freq
-            type_y = self.shapers[1].shaper_type
-            freq_y = self.shapers[1].shaper_freq
-            bridge.update_shaper(type_x, freq_x, type_y, freq_y)
-            for shaper in self.shapers:
-                shaper.report(gcmd)
-            return
-        if gcmd.get_command_parameters():
-            for shaper in self.shapers:
-                shaper.update(gcmd)
-            self._update_input_shaping()
+        bridge = self.printer.lookup_object("motion_bridge")
+        for shaper in self.shapers:
+            shaper.update(gcmd)
+        type_x = self.shapers[0].shaper_type
+        freq_x = self.shapers[0].shaper_freq
+        type_y = self.shapers[1].shaper_type
+        freq_y = self.shapers[1].shaper_freq
+        bridge.update_shaper(type_x, freq_x, type_y, freq_y)
         for shaper in self.shapers:
             shaper.report(gcmd)
 

@@ -196,11 +196,7 @@ class ForceMove:
             ",".join((axes[i] for i in clear_axes)),
         )
         toolhead.set_position([x, y, z, curpos[3]], homing_axes=(0, 1, 2))
-        # In bridge mode, BridgeKinematics doesn't have clear_homing_state;
-        # the position set above is sufficient to allow moves to proceed.
-        kin = toolhead.get_kinematics()
-        if hasattr(kin, "clear_homing_state"):
-            kin.clear_homing_state(clear_axes)
+        toolhead.get_kinematics().clear_homing_state(clear_axes)
 
 
 def load_config(config):

@@ -5,29 +5,13 @@
 # klippy code calls during startup and MCU communication.
 import logging
 
-try:
-    from . import motion_bridge_native as _native
-except ImportError:
-    _native = None
-    logging.warning(
-        "motion_bridge_native module not found; "
-        "build with 'make -f Makefile.kalico motion-bridge'"
-    )
+from . import motion_bridge_native as _native
 
 
 class MotionBridgeWrapper:
-    """Thin wrapper registered as printer object 'motion_bridge'.
-
-    All klippy code accesses the Rust bridge through this wrapper so
-    that import-time failures are caught once and reported clearly.
-    """
+    """Thin wrapper registered as printer object 'motion_bridge'."""
 
     def __init__(self, reactor):
-        if _native is None:
-            raise RuntimeError(
-                "motion_bridge native module (.so) is not available. "
-                "Run 'make -f Makefile.kalico motion-bridge' first."
-            )
         self._bridge = _native.MotionBridge()
         self._reactor = reactor
         # arm_id → BridgeTriggerDispatch registry. Populated by

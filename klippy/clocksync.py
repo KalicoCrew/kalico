@@ -178,10 +178,7 @@ class ClockSync:
             self.clock_avg,
             new_freq,
         )
-        # Mirror the regression update into the motion_bridge (if any).
-        # We pass the same (freq, offset, last_clock) triple that goes to
-        # the C serial layer so the bridge's print-time-to-clock matches
-        # the MCU's view.
+        # Mirror the regression update into the motion_bridge.
         cb = self._clock_est_callback
         if cb is not None:
             try:
@@ -218,18 +215,6 @@ class ClockSync:
         return last_clock + clock_diff
 
     def is_active(self):
-        # In bridge mode, the legacy get_clock_timer's raw_send call is a
-        # no-op (the bridge owns the wire and runs its own clock-sync
-        # thread), so queries_pending grows monotonically and never
-        # decrements. The counter is meaningless under bridge mode — fall
-        # through to "active" so callers like mcu._restart_via_command can
-        # still issue reset commands. Without this, FIRMWARE_RESTART logs
-        # "Unable to issue reset command on MCU '<name>'" for every bridge
-        # MCU after the first ~5 seconds, and the only recovery from a
-        # latched MCU shutdown is a power cycle.
-        # Bridge owns clocksync timing for every MCU on this fork; always
-        # report "active" so callers like mcu._restart_via_command can
-        # still issue reset commands.
         return True
 
     def dump_debug(self):
