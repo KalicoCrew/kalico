@@ -302,8 +302,38 @@ class MCU_trsync:
         self._stepper_stop_cmd = mcu.lookup_command(
             "stepper_stop_on_trigger oid=%c trsync_oid=%c", cq=self._cmd_queue
         )
-        # Motion bridge owns trigger dispatch; no C trdispatch_mcu needed.
-        self._trdispatch_mcu = None
+        if self._mcu._bridge_drives_steppers:
+            # Bridge owns step generation; no C-level trdispatch needed.
+            # The firmware trsync stays idle (config_trsync allocated but
+            # never started). See external-probe-homing.md Piece A.
+            self._trdispatch_mcu = None
+        else:
+            # Non-bridge MCU (Beacon, Eddy, load cell): restore mainline
+            # trdispatch_mcu for C-level serial interception.
+            set_timeout_tag = mcu.lookup_command(
+                "trsync_set_timeout oid=%c clock=%u"
+            ).get_command_tag()
+            trigger_cmd = mcu.lookup_command(
+                "trsync_trigger oid=%c reason=%c"
+            )
+            trigger_tag = trigger_cmd.get_command_tag()
+            state_cmd = mcu.lookup_command(
+                "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u"
+            )
+            state_tag = state_cmd.get_command_tag()
+            ffi_main, ffi_lib = chelper.get_ffi()
+            self._trdispatch_mcu = ffi_main.gc(
+                ffi_lib.trdispatch_mcu_alloc(
+                    self._trdispatch,
+                    mcu._serial.get_serialqueue(),
+                    self._cmd_queue,
+                    self._oid,
+                    set_timeout_tag,
+                    trigger_tag,
+                    state_tag,
+                ),
+                ffi_lib.free,
+            )
 
     def _shutdown(self):
         tc = self._trigger_completion
@@ -327,15 +357,14 @@ class MCU_trsync:
                     [self._oid, self.REASON_PAST_END_TIME]
                 )
 
-    def start(
-        self, print_time, report_offset, trigger_completion, expire_timeout
-    ):
-        if self._trdispatch_mcu is None:
-            raise error(
-                "MCU_trsync.start() not yet supported under the new "
-                "motion path (Phase 4)"
-            )
+    def start(self, print_time, report_offset, trigger_completion, expire_timeout):
         self._trigger_completion = trigger_completion
+        if self._mcu._bridge_drives_steppers:
+            # Bridge-driven MCU: no-op. Firmware trsync was never started,
+            # so no timeout can fire. The actual motion stop comes from
+            # bridge software_trip, not from trsync.
+            return
+        # Non-bridge MCU: full mainline path
         self._home_end_clock = None
         clock = self._mcu.print_time_to_clock(print_time)
         expire_ticks = self._mcu.seconds_to_clock(expire_timeout)
@@ -368,11 +397,14 @@ class MCU_trsync:
         self._home_end_clock = self._mcu.print_time_to_clock(home_end_time)
 
     def stop(self):
-        if self._trdispatch_mcu is None:
-            raise error(
-                "MCU_trsync.stop() not yet supported under the new "
-                "motion path (Phase 4)"
-            )
+        if self._mcu._bridge_drives_steppers:
+            # Bridge-driven MCU: no-op. Return REASON_ENDSTOP_HIT —
+            # safe under both Beacon's and TriggerDispatch's aggregation
+            # rules (primary trsync result dominates; secondary is only
+            # scanned for COMMS_TIMEOUT).
+            self._trigger_completion = None
+            return self.REASON_ENDSTOP_HIT
+        # Non-bridge MCU: full mainline path
         self._mcu.register_response(None, "trsync_state", self._oid)
         self._trigger_completion = None
         if self._mcu.is_fileoutput():
