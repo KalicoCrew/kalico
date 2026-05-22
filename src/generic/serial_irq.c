@@ -124,6 +124,21 @@ console_task(void)
 }
 DECL_TASK(console_task);
 
+// Reset receive_pos on shutdown so stale bytes that were in mid-dispatch
+// when the longjmp fired are not re-processed. Same rationale as the
+// usb_cdc.c usb_shutdown handler: without this, a shutdown-triggering
+// command (e.g. emergency_stop) in the stale buffer causes an infinite
+// longjmp cycle that wedges the firmware.
+//
+// Called with IRQs disabled (from ctr_run_shutdownfuncs inside
+// run_shutdown), so the serial RX IRQ cannot race.
+static void
+serial_shutdown(void)
+{
+    receive_pos = 0;
+}
+DECL_SHUTDOWN(serial_shutdown);
+
 // Encode and transmit a "response" message
 void
 console_sendf(const struct command_encoder *ce, va_list args)
