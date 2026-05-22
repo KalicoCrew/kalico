@@ -421,8 +421,8 @@ class TriggerDispatch:
     def __init__(self, mcu):
         self._mcu = mcu
         self._trigger_completion = None
-        # Motion bridge owns trigger dispatch; no C trdispatch allocation.
-        self._trdispatch = None
+        ffi_main, ffi_lib = chelper.get_ffi()
+        self._trdispatch = ffi_main.gc(ffi_lib.trdispatch_alloc(), ffi_lib.free)
         self._trsyncs = [MCU_trsync(mcu, self._trdispatch)]
 
     def get_oid(self):
@@ -454,13 +454,31 @@ class TriggerDispatch:
         return [s for trsync in self._trsyncs for s in trsync.get_steppers()]
 
     def start(self, print_time):
-        # Bridge owns trigger dispatch; the legacy entry point is unreachable
-        # via the live homing path (BridgeTriggerDispatch in motion_bridge.py
-        # replaces it). Raise loudly if anything in the tree still calls it.
-        raise error(
-            "TriggerDispatch.start() not yet supported under the new "
-            "motion path (Phase 4)"
+        if self._mcu._bridge_drives_steppers:
+            raise error(
+                "TriggerDispatch.start(): probe on bridge-driven MCU "
+                "'%s' is not supported — probe must be on a separate "
+                "board" % (self._mcu._name,)
+            )
+        reactor = self._mcu.get_printer().get_reactor()
+        self._trigger_completion = reactor.completion()
+        expire_timeout = get_danger_options().multi_mcu_trsync_timeout
+        if len(self._trsyncs) == 1:
+            expire_timeout = get_danger_options().single_mcu_trsync_timeout
+        for i, trsync in enumerate(self._trsyncs):
+            report_offset = float(i) / len(self._trsyncs)
+            trsync.start(
+                print_time,
+                report_offset,
+                self._trigger_completion,
+                expire_timeout,
+            )
+        etrsync = self._trsyncs[0]
+        ffi_main, ffi_lib = chelper.get_ffi()
+        ffi_lib.trdispatch_start(
+            self._trdispatch, etrsync.REASON_HOST_REQUEST
         )
+        return self._trigger_completion
 
     def wait_end(self, end_time):
         etrsync = self._trsyncs[0]
@@ -470,10 +488,18 @@ class TriggerDispatch:
         self._trigger_completion.wait()
 
     def stop(self):
-        raise error(
-            "TriggerDispatch.stop() not yet supported under the new "
-            "motion path (Phase 4)"
-        )
+        if self._mcu._bridge_drives_steppers:
+            raise error(
+                "TriggerDispatch.stop(): probe on bridge-driven MCU "
+                "'%s' is not supported" % (self._mcu._name,)
+            )
+        ffi_main, ffi_lib = chelper.get_ffi()
+        ffi_lib.trdispatch_stop(self._trdispatch)
+        res = [trsync.stop() for trsync in self._trsyncs]
+        err_res = [r for r in res if r >= MCU_trsync.REASON_COMMS_TIMEOUT]
+        if err_res:
+            return err_res[0]
+        return res[0]
 
 
 class MCU_endstop:
