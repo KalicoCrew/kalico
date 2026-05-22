@@ -491,9 +491,8 @@ class MotionToolhead(ToolHead):
             self.bridge.wait_moves()
 
     def flush_step_generation(self):
-        # Bridge owns flush; upstream's body operates on lookahead +
-        # trapq which we bypass.
-        pass
+        if self.bridge is not None:
+            self.bridge.wait_moves()
 
     def get_last_move_time(self):
         # Two clocks live here:
