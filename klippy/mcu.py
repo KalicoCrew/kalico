@@ -675,9 +675,9 @@ class MCU_endstop:
         return None
 
     def query_endstop(self, print_time):
-        # Bridge-mode: _query_cmd is None (no legacy endstop_query_state
-        # command). Return unpressed (0) as a safe stub — real query is
-        # Phase 5.
+        mcu_tmc = getattr(self, "_sensorless_mcu_tmc", None)
+        if mcu_tmc is not None:
+            mcu_tmc.get_register("DRV_STATUS")
         return 0
 
 

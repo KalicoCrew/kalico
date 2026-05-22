@@ -692,6 +692,7 @@ class TMCVirtualPinHelper:
         # for stress / debug profiles.
         if True:
             self.mcu_endstop._is_sensorless_diag = True
+            self.mcu_endstop._sensorless_mcu_tmc = self.mcu_tmc
             try:
                 self.mcu_endstop._sensorless_trip_immediately = (
                     self.config_section.getboolean(

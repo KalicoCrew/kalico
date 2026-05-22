@@ -202,6 +202,12 @@ pub enum DispatchError {
     },
     #[error("push_segment mcu={mcu_id}: {detail}")]
     PushSegment { mcu_id: u32, detail: String },
+    /// The `Arc<KalicoHostIo>` for the given MCU was dropped (e.g. by
+    /// `attach_serial` during a FIRMWARE_RESTART) before this dispatch
+    /// completed. The dispatch closure holds only a `Weak` reference and
+    /// `upgrade()` returned `None`. The segment was not sent.
+    #[error("MCU {0}: connection dropped during dispatch")]
+    ConnectionDropped(u32),
 }
 
 // ---------------------------------------------------------------------------

@@ -150,6 +150,11 @@ pub enum ReactorCommand {
         deadline: std::time::Instant,
     },
     Shutdown,
+    /// No-op sent by `KalicoHostIo::is_alive` to probe whether the reactor
+    /// thread is still running. The reactor discards it immediately. If
+    /// `send()` returns `Err`, the receiver (reactor) has dropped and the
+    /// connection is dead.
+    Noop,
     /// 2026-05-18: marks the reactor's pending close as graceful so a
     /// subsequent transport drop does NOT trigger the EXIT_ON_FAULT abort
     /// in the spawn-time guard. Used by klippy's bridge-MCU
@@ -495,6 +500,18 @@ impl Transport for KalicoHostIo {
 }
 
 impl KalicoHostIo {
+    /// Check whether the reactor thread is still running.
+    ///
+    /// Probes by sending a [`ReactorCommand::Noop`] on the submission channel.
+    /// Returns `true` if the send succeeds (receiver alive), `false` if the
+    /// reactor has exited and dropped its receiver end.
+    ///
+    /// Non-blocking: `std::sync::mpsc::Sender::send` returns `Err` immediately
+    /// when the receiver is disconnected.
+    pub fn is_alive(&self) -> bool {
+        self.submission_tx.send(ReactorCommand::Noop).is_ok()
+    }
+
     pub fn attach_credit_counter(&self, counter: std::sync::Arc<crate::credit::CreditCounter>) {
         let _ = self
             .submission_tx

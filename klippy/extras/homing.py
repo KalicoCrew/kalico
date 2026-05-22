@@ -348,14 +348,6 @@ class Homing:
         if hmove.moved_less_than_dist(hi.min_home_dist, homing_axes):
             needs_rehome = True
             retract_dist = hi.min_home_dist
-        if hi.use_sensorless_homing and needs_rehome:
-            logging.warning(
-                "homing: sensorless first home moved less than "
-                "min_home_dist (distance_elapsed=%s min_home_dist=%.6f); "
-                "skipping second sensorless home",
-                hmove.distance_elapsed, hi.min_home_dist,
-            )
-            needs_rehome = False
 
         # Perform second home
         if retract_dist:
@@ -371,6 +363,7 @@ class Homing:
             ]
             self.toolhead.move(retractpos, hi.retract_speed)
             if not hi.use_sensorless_homing or needs_rehome:
+                self.toolhead.wait_moves_and_mcu()
                 try:
                     # Home again
                     startpos = [

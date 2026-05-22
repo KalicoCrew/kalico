@@ -600,6 +600,13 @@ DECL_TASK(usb_ep0_task);
 void
 usb_shutdown(void)
 {
+    // Reset receive_pos so stale bytes in receive_buf are not re-processed
+    // after the longjmp that brought us here. Without this, a command in
+    // the stale buffer (e.g. emergency_stop) triggers sched_shutdown →
+    // longjmp on every task-loop iteration, wedging the firmware in an
+    // infinite longjmp cycle that prevents all new bulk-OUT processing
+    // (identify, get_config, etc.) — the MCU appears hung to the host.
+    receive_pos = 0;
     usb_notify_bulk_in();
     usb_notify_bulk_out();
     usb_notify_ep0();

@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -48,6 +48,22 @@ use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 const CREDIT_SEED_CAPACITY: i32 = 7;
 
 // ── Internal types ──────────────────────────────────────────────────────
+
+/// MCU seed position queued by `set_position` and drained by the dispatch
+/// closure before the next segment is sent.
+///
+/// Storing the seed here (rather than firing `runtime_seed_position`
+/// immediately in `set_position`) guarantees that the seed arrives at the
+/// MCU **after** all previously-dispatched segments (e.g. a retract during
+/// homing) have been placed on the wire.  The dispatch closure processes
+/// segments sequentially, so draining the pending seed at the head of each
+/// dispatch invocation provides the required ordering without any extra
+/// synchronisation.
+struct SeedPosition {
+    x: f64,
+    y: f64,
+    z: f64,
+}
 
 /// Metadata stored per claimed MCU.
 struct McuConnection {
@@ -398,6 +414,10 @@ pub struct PyMotionBridge {
     /// those relative times onto the MCU's live clock domain.
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
     homing: Arc<HomingState>,
+    /// Pending MCU seed position stored by `set_position` and drained by the
+    /// dispatch closure before each segment is sent.  `None` when no seed is
+    /// outstanding (normal steady-state path).
+    pending_seed: Arc<Mutex<Option<SeedPosition>>>,
 }
 
 /// Build the kalico-native `ConfigureAxes` wire body.
@@ -496,6 +516,7 @@ impl PyMotionBridge {
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             homing: Arc::new(HomingState::new()),
+            pending_seed: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -810,6 +831,103 @@ impl PyMotionBridge {
         let effective_baud = if baud == 0 { 250_000 } else { baud };
         let config = KalicoHostIoConfig::default();
 
+        // ── Reuse path ────────────────────────────────────────────────────────
+        // If an existing KalicoHostIo is alive (reactor thread still running),
+        // reuse it — skip the drop and reopen entirely. This matches mainline
+        // Klipper's behaviour: the serial port stays open through shutdown →
+        // FIRMWARE_RESTART cycles. Dropping an alive connection can wedge
+        // because the Drop's reactor-thread join blocks on a blocking serial
+        // read, and the subsequent reopen gets EBUSY from the kernel's
+        // cdc_acm single-open semantics.
+        //
+        // We do still re-subscribe runtime events (the old channel's buffer
+        // is stale after a firmware restart) and re-run the kalico-native
+        // identify + caps handshake so the host reflects the new firmware
+        // epoch. The clock-sync thread is left running — it holds only a
+        // Weak<KalicoHostIo> and will keep ticking without interruption.
+        {
+            let existing_io: Option<Arc<KalicoHostIo>> = {
+                let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+                mcus.get(&mcu_handle)
+                    .and_then(|conn| conn.host_io.as_ref().map(Arc::clone))
+            };
+            if let Some(io) = existing_io {
+                if io.is_alive() {
+                    log::info!(
+                        "attach_serial: reusing existing connection for {serial_path} \
+                         (reactor alive, skipping close/reopen)"
+                    );
+
+                    // Re-subscribe so the new runtime-event channel starts
+                    // fresh (the firmware restart will have pushed new events).
+                    let runtime_rx =
+                        io.take_runtime_event_subscription().map_err(|e| {
+                            PyRuntimeError::new_err(format!(
+                                "attach_serial: runtime_event re-subscribe: {e:?}"
+                            ))
+                        })?;
+
+                    let (kalico_native_supported, identify_caps) =
+                        match io.kalico_identify(std::time::Duration::from_secs(5)) {
+                            Ok(out) => {
+                                log::info!(
+                                    "attach_serial: kalico re-identified — \
+                                     reset_epoch=0x{:08x} caps=0x{:016x}",
+                                    out.reset_epoch,
+                                    out.capabilities,
+                                );
+                                (true, out.capabilities)
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "attach_serial: kalico_identify timed out on reuse \
+                                     for {serial_path} ({e}); treating as Klipper-protocol-only"
+                                );
+                                (false, 0u64)
+                            }
+                        };
+
+                    let runtime_caps =
+                        match query_runtime_caps(&io, std::time::Duration::from_secs(2)) {
+                            Ok(caps) => {
+                                log::debug!(
+                                    "[caps-trace] attach_serial reuse: runtime caps \
+                                     for {serial_path}: pool_n={} max_pieces_per_curve={}",
+                                    caps.curve_pool_n,
+                                    caps.max_pieces_per_curve,
+                                );
+                                caps
+                            }
+                            Err(e) => {
+                                log::debug!(
+                                    "[caps-trace] attach_serial reuse: QueryRuntimeCaps \
+                                     failed for {serial_path} ({e}); using large-profile defaults"
+                                );
+                                FALLBACK_RUNTIME_CAPS
+                            }
+                        };
+
+                    let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+                    let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
+                        PyRuntimeError::new_err(format!(
+                            "attach_serial: unknown mcu_handle {mcu_handle}"
+                        ))
+                    })?;
+                    conn.runtime_rx = Some(runtime_rx);
+                    conn.runtime_caps = Some(runtime_caps);
+                    conn.identify_caps = identify_caps;
+                    conn.kalico_native_supported = kalico_native_supported;
+                    // clock_sync_stop / clock_sync_thread left intact — the
+                    // thread is already running and does not need a restart.
+                    return Ok(());
+                }
+            }
+        }
+
+        // ── Fresh open path ───────────────────────────────────────────────────
+        // The existing connection is absent or dead. Drop it (if present) to
+        // release the kernel FD before reopening.
+        //
         // 2026-05-18: drop any existing KalicoHostIo for this mcu_handle
         // BEFORE trying to open the new serial. The Drop impl sends
         // `ReactorCommand::Shutdown` and joins the reactor thread, which
@@ -831,12 +949,13 @@ impl PyMotionBridge {
                     let _ = h.join();
                 }
                 conn.runtime_rx = None;
-                // Drop the Arc<KalicoHostIo>. If this was the last ref the
-                // Drop impl sends Shutdown to the reactor and joins it,
-                // releasing the FD. If a clone is held elsewhere (e.g. a
-                // dispatch closure captured a reference) the reactor stays
-                // alive — that path needs its own cleanup; for now the
-                // attach loop below tolerates a short delay.
+                // Drop the Arc<KalicoHostIo>. The dispatch closure in the
+                // planner thread holds only Weak<KalicoHostIo> references
+                // (downgraded at dispatch_ios insertion in init_planner), so
+                // dropping this Arc here drives the refcount to zero, causing
+                // the Drop impl to send Shutdown to the reactor and join it —
+                // which releases the kernel FD before the re-open loop below
+                // runs. No 30-second "Device or resource busy" spin.
                 conn.host_io = None;
             }
         }
@@ -1771,6 +1890,7 @@ impl PyMotionBridge {
         let homing = Arc::clone(&self.homing);
         let warned_mcus: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
         let router_arc = Arc::clone(&self.router);
+        let pending_seed_for_cb = Arc::clone(&self.pending_seed);
 
         let host_ios: HashMap<u32, Arc<KalicoHostIo>> = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
@@ -1816,9 +1936,18 @@ impl PyMotionBridge {
         // mcu_id. `dispatch_ios` is the closure-local lookup map; the credit
         // and slot-pool tables on `self` are the persistent ones the
         // event-routing API (`on_credit_freed`) drives.
+        //
+        // The KalicoHostIo entry is stored as Weak<KalicoHostIo> so that
+        // `attach_serial`'s `conn.host_io = None` (which drops the only
+        // strong Arc) immediately drives the refcount to zero — triggering
+        // the Drop impl that shuts down the reactor and releases the serial
+        // FD — without waiting for the planner thread to be torn down.
+        // The closure upgrades to Arc on each dispatch; if the upgrade
+        // returns None the connection has been dropped and the dispatch
+        // returns ConnectionDropped.
         let mut dispatch_ios: HashMap<
             u32,
-            (Arc<KalicoHostIo>, Arc<CreditCounter>, Arc<Mutex<SlotPool>>),
+            (Weak<KalicoHostIo>, Arc<CreditCounter>, Arc<Mutex<SlotPool>>),
         > = HashMap::new();
         let mut self_credits = self
             .credit_counters
@@ -1888,7 +2017,10 @@ impl PyMotionBridge {
             let slot_pool = Arc::new(Mutex::new(SlotPool::new(pool_capacity)));
             self_credits.insert(cfg_mcu.mcu_id, Arc::clone(&credit));
             self_pools.insert(cfg_mcu.mcu_id, Arc::clone(&slot_pool));
-            dispatch_ios.insert(cfg_mcu.mcu_id, (io, credit, slot_pool));
+            // Downgrade to Weak so the dispatch closure does not prevent
+            // KalicoHostIo::drop from running when attach_serial clears
+            // conn.host_io. The Arc is still live on `self.mcus` until then.
+            dispatch_ios.insert(cfg_mcu.mcu_id, (Arc::downgrade(&io), credit, slot_pool));
         }
         drop(self_credits);
         drop(self_pools);
@@ -1917,6 +2049,63 @@ impl PyMotionBridge {
                     "[move-diag] dispatch closure entered: seg.t_start={} seg.t_end={}",
                     seg.t_start, seg.t_end,
                 );
+
+                // ── Pending seed drain ─────────────────────────────────────────
+                //
+                // `set_position` stores its `runtime_seed_position` payload here
+                // rather than sending it immediately, because in-flight segments
+                // from a previous move (e.g. a retract during homing) may not
+                // have reached the MCU yet.  Sending the seed here — at the head
+                // of the next dispatch invocation — guarantees ordering: the seed
+                // arrives after all previous segments and before the segment we
+                // are about to dispatch.
+                if let Some(seed) = pending_seed_for_cb
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take()
+                {
+                    let encode_q16 = |mm: f64| -> i32 {
+                        let raw = mm * 65536.0;
+                        raw.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
+                    };
+                    let x_q16 = encode_q16(seed.x);
+                    let y_q16 = encode_q16(seed.y);
+                    let z_q16 = encode_q16(seed.z);
+
+                    for cfg in &mcu_configs_for_cb {
+                        let (io_weak, _credit, _pool) = match dispatch_ios.get(&cfg.mcu_id) {
+                            Some(v) => v,
+                            None => continue,
+                        };
+                        let io = match io_weak.upgrade() {
+                            Some(io) => io,
+                            None => continue, // connection dropped, skip this MCU
+                        };
+
+                        // Motor-frame transform: CoreXY MCUs expect A = X+Y,
+                        // B = X-Y; CartesianXyzAndE MCUs receive logical X/Y/Z.
+                        let (seed_x_q16, seed_y_q16) =
+                            if cfg.kinematics == crate::dispatch::KINEMATICS_COREXY {
+                                (encode_q16(seed.x + seed.y), encode_q16(seed.x - seed.y))
+                            } else {
+                                (x_q16, y_q16)
+                            };
+
+                        use kalico_host_rt::host_io::parser::FieldValue;
+                        // Ignore send errors — if the channel is closed the
+                        // imminent PushSegment will surface the failure through
+                        // the normal credit / fault path.
+                        let _ = io.send_typed(
+                            "runtime_seed_position",
+                            &[
+                                ("x_q16", FieldValue::I32(seed_x_q16)),
+                                ("y_q16", FieldValue::I32(seed_y_q16)),
+                                ("z_q16", FieldValue::I32(z_q16)),
+                            ],
+                        );
+                    }
+                }
+
                 // ── Phase-4 per-axis-per-segment dispatch ─────────────────────
                 //
                 // The B.1 multi-piece chunker has been retired (see spec
@@ -1993,9 +2182,15 @@ impl PyMotionBridge {
                         );
                         continue;
                     }
-                    let (io, credit, slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
+                    let (io_weak, credit, slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
                         Some(v) => v,
                         None => continue,
+                    };
+                    let io = match io_weak.upgrade() {
+                        Some(io) => io,
+                        None => {
+                            return Err(DispatchError::ConnectionDropped(plan.mcu_id));
+                        }
                     };
 
                     // Per-MCU clock conversion. Falls back to a microsecond
@@ -2575,69 +2770,19 @@ impl PyMotionBridge {
         // (Y_end - 0) instead of (Y_end - 100), which exceeds
         // MAX_STEPS_PER_TICK_DEFAULT and raises FaultCode::StepBurstExceeded.
         //
-        // Q16.16 fixed-point encoding: i32 = round(mm * 65536), clamped to
-        // i32 bounds. The Klipper command compiler treats %i as a signed int.
-        // send_typed is fire-and-forget — no response is awaited; ordering
-        // is guaranteed by the PushSegment that follows.
-        let encode_q16 = |mm: f64| -> i32 {
-            let raw = mm * 65536.0;
-            raw.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
-        };
-        let x_q16 = encode_q16(x);
-        let y_q16 = encode_q16(y);
-        let z_q16 = encode_q16(z);
-
-        // Collect the set of (mcu_id, kinematics) pairs for all configured
-        // motion MCUs. `kinematics` determines whether the MCU expects
-        // logical or motor-frame coordinates from `runtime_seed_position`.
-        let mcu_kin_pairs: Vec<(u32, u8)> = {
-            self.mcu_axis_configs
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .iter()
-                .map(|c| (c.mcu_id, c.kinematics))
-                .collect()
-        };
-
-        for (mcu_id, kin) in mcu_kin_pairs {
-            let io = {
-                let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-                let Some(conn) = mcus.get(&mcu_id) else {
-                    continue;
-                };
-                if !conn.kalico_native_supported {
-                    continue;
-                }
-                let Some(io) = conn.host_io.as_ref() else {
-                    continue;
-                };
-                io.clone()
-            };
-
-            // The MCU engine is motor-frame end-to-end. For CoreXY MCUs, the
-            // seed values must be in motor frame: A = X+Y, B = X-Y, Z = Z.
-            // CartesianXyzAndE MCUs receive logical X/Y/Z directly (identity
-            // transform).
-            let (seed_x_q16, seed_y_q16) = if kin == crate::dispatch::KINEMATICS_COREXY {
-                // motor-A = X + Y, motor-B = X - Y
-                (encode_q16(x + y), encode_q16(x - y))
-            } else {
-                (x_q16, y_q16)
-            };
-
-            use kalico_host_rt::host_io::parser::FieldValue;
-            // Ignore send errors — if the channel is closed the next
-            // PushSegment will surface the failure through the normal
-            // credit / fault path.
-            let _ = io.send_typed(
-                "runtime_seed_position",
-                &[
-                    ("x_q16", FieldValue::I32(seed_x_q16)),
-                    ("y_q16", FieldValue::I32(seed_y_q16)),
-                    ("z_q16", FieldValue::I32(z_q16)),
-                ],
-            );
-        }
+        // We do NOT send `runtime_seed_position` here directly.  In-flight
+        // segments from a previous move (e.g. a retract queued during homing)
+        // may not have reached the MCU yet.  Firing the seed immediately would
+        // overwrite the MCU's `prev_x/y/z` before the retract finishes,
+        // corrupting its step-delta computation.
+        //
+        // Instead, store the seed as `pending_seed`.  The dispatch closure
+        // (planner thread) drains it before sending the next segment, which
+        // guarantees the seed arrives AFTER all previously-dispatched segments.
+        *self
+            .pending_seed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(SeedPosition { x, y, z });
 
         Ok(())
     }
