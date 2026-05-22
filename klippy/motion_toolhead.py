@@ -364,15 +364,9 @@ class MotionToolhead(ToolHead):
         self.printer.register_event_handler(
             "klippy:disconnect", self._handle_disconnect
         )
-        import atexit, signal
-        atexit.register(self._handle_disconnect)
-        prev_sigterm = signal.getsignal(signal.SIGTERM)
+        import signal
         def _sigterm_handler(signum, frame):
-            self._handle_disconnect()
-            if callable(prev_sigterm):
-                prev_sigterm(signum, frame)
-            else:
-                raise SystemExit(0)
+            self.printer.request_exit("exit")
         signal.signal(signal.SIGTERM, _sigterm_handler)
 
         logging.info("MotionToolhead: Phase 1 skeleton initialized")
