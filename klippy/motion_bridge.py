@@ -32,6 +32,9 @@ class MotionBridgeWrapper:
     def release_mcu(self, handle):
         return self._bridge.release_mcu(handle)
 
+    def shutdown(self):
+        return self._bridge.shutdown()
+
     # ------------------------------------------------------------------
     # Command queues
     # ------------------------------------------------------------------
