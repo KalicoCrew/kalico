@@ -372,8 +372,11 @@ class MotionToolhead(ToolHead):
         logging.info("MotionToolhead: Phase 1 skeleton initialized")
 
     def _handle_disconnect(self):
+        logging.info("MotionToolhead: _handle_disconnect called")
         if self.bridge is not None:
+            logging.info("MotionToolhead: calling bridge.shutdown()")
             self.bridge.shutdown()
+            logging.info("MotionToolhead: bridge.shutdown() returned")
 
     # ------------------------------------------------------------------
     # Kinematics override
