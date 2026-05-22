@@ -374,6 +374,12 @@ class Homing:
                 hp - ad * retract_r for hp, ad in zip(homepos, axes_d)
             ]
             self.toolhead.move(retractpos, hi.retract_speed)
+            logging.info(
+                "homing: retract submitted retractpos=%s "
+                "commanded_pos=%s retract_dist=%.3f",
+                retractpos, list(self.toolhead.get_position()),
+                retract_dist,
+            )
             if not hi.use_sensorless_homing or needs_rehome:
                 try:
                     # Home again
@@ -381,10 +387,24 @@ class Homing:
                         rp - ad * retract_r
                         for rp, ad in zip(retractpos, axes_d)
                     ]
+                    logging.info(
+                        "homing: rehome set_position startpos=%s",
+                        startpos,
+                    )
                     self.toolhead.set_position(startpos)
+                    logging.info(
+                        "homing: rehome set_position done "
+                        "(flush_step_generation returned), "
+                        "resetting endstop states",
+                    )
                     self._reset_endstop_states(endstops)
 
                     hmove = HomingMove(self.printer, endstops)
+                    logging.info(
+                        "homing: rehome starting homing_move "
+                        "homepos=%s speed=%.1f",
+                        homepos, hi.second_homing_speed,
+                    )
                     hmove.homing_move(homepos, hi.second_homing_speed)
 
                     if hmove.check_no_movement() is not None:
