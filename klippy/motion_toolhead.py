@@ -238,14 +238,21 @@ class BridgeKinematics:
             homing_state.home_rails([rail], forcepos, homepos)
 
     def set_position(self, newpos, homing_axes=()):
-        # Upstream kinematics contract: this method owns runtime
-        # position-state sync. For cartesian, it drives itersolve. For
-        # the bridge, it pushes the new basis into the planner runtime.
         if self._toolhead.bridge is not None:
             self._toolhead.bridge.set_position(
                 newpos[0], newpos[1], newpos[2]
             )
         axis_rails = self._axis_rails()
+        for axis_idx, rail in axis_rails.items():
+            if self.kinematics == "corexy" and axis_idx < 2:
+                motor_pos = (newpos[0] + newpos[1]) if axis_idx == 0 \
+                    else (newpos[0] - newpos[1])
+            else:
+                motor_pos = newpos[axis_idx] if axis_idx < len(newpos) \
+                    else 0.0
+            for s in rail.get_steppers():
+                step_count = int(motor_pos / s.get_step_dist() + 0.5)
+                s._set_mcu_position(step_count)
         for axis in homing_axes:
             rail = axis_rails.get(axis)
             if rail is not None:

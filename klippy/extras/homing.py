@@ -364,9 +364,6 @@ class Homing:
             self.toolhead.move(retractpos, hi.retract_speed)
             if not hi.use_sensorless_homing or needs_rehome:
                 self.toolhead.wait_moves_and_mcu()
-                reactor = self.printer.get_reactor()
-                reactor.pause(reactor.monotonic() + 2.0)
-                logging.info("homing: 2s pause after retract complete")
                 try:
                     # Home again
                     startpos = [
