@@ -61,6 +61,19 @@ class EnableTracking:
 
     def motor_enable(self, print_time):
         if not self.is_enabled:
+            toolhead = self.stepper.get_mcu().get_printer().lookup_object(
+                "toolhead", None
+            )
+            bridge_mode = (
+                toolhead is not None
+                and getattr(toolhead, "bridge", None) is not None
+            )
+            if bridge_mode:
+                self.enable.set_enable(print_time)
+                self.is_enabled = True
+                for cb in self.callbacks:
+                    cb(print_time, True)
+                return
             for cb in self.callbacks:
                 cb(print_time, True)
             self.enable.set_enable(print_time)
