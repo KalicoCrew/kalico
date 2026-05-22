@@ -112,9 +112,9 @@ class BridgeKinematics:
                 x_endstop.add_stepper(s)
             for s in self.rails[0].get_steppers():
                 y_endstop.add_stepper(s)
-        # corexy bridge does not drive Z, but a stable Klipper printer.cfg may
-        # still declare [stepper_z]/[stepper_z1..3]. Consume them as passthrough
-        # rails so option validation passes; runtime ignores them.
+        # Z is kinematically independent in corexy (no A/B mixing), but the
+        # bridge dispatches Z curves to the Z MCU normally. Register Z rails
+        # so printer.cfg validation passes and homing/move-checking works.
         if kin_name == "corexy" and config.has_section("stepper_z"):
             self._register_axis(
                 config, "z", trapq, extras=("1", "2", "3")
@@ -147,6 +147,7 @@ class BridgeKinematics:
                 "cartesian_stepper_alloc", axis.encode()
             )
             mcu_stepper.set_trapq(trapq)
+            mcu_stepper.get_mcu()._bridge_drives_steppers = True
         self.rails.append(rail)
 
     def _axis_rails(self):

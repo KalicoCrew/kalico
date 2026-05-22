@@ -968,6 +968,7 @@ class MCU:
         if self._name.startswith("mcu "):
             self._name = self._name[4:]
         self._motion_bridge = printer.lookup_object("motion_bridge")
+        self._bridge_drives_steppers = False
         self._bridge_handle = None
         # Serial port
         wp = "mcu '%s': " % (self._name)
