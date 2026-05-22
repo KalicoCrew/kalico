@@ -7,7 +7,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -852,12 +852,13 @@ impl PyMotionBridge {
                     let _ = h.join();
                 }
                 conn.runtime_rx = None;
-                // Drop the Arc<KalicoHostIo>. If this was the last ref the
-                // Drop impl sends Shutdown to the reactor and joins it,
-                // releasing the FD. If a clone is held elsewhere (e.g. a
-                // dispatch closure captured a reference) the reactor stays
-                // alive — that path needs its own cleanup; for now the
-                // attach loop below tolerates a short delay.
+                // Drop the Arc<KalicoHostIo>. The dispatch closure in the
+                // planner thread holds only Weak<KalicoHostIo> references
+                // (downgraded at dispatch_ios insertion in init_planner), so
+                // dropping this Arc here drives the refcount to zero, causing
+                // the Drop impl to send Shutdown to the reactor and join it —
+                // which releases the kernel FD before the re-open loop below
+                // runs. No 30-second "Device or resource busy" spin.
                 conn.host_io = None;
             }
         }
@@ -1838,9 +1839,18 @@ impl PyMotionBridge {
         // mcu_id. `dispatch_ios` is the closure-local lookup map; the credit
         // and slot-pool tables on `self` are the persistent ones the
         // event-routing API (`on_credit_freed`) drives.
+        //
+        // The KalicoHostIo entry is stored as Weak<KalicoHostIo> so that
+        // `attach_serial`'s `conn.host_io = None` (which drops the only
+        // strong Arc) immediately drives the refcount to zero — triggering
+        // the Drop impl that shuts down the reactor and releases the serial
+        // FD — without waiting for the planner thread to be torn down.
+        // The closure upgrades to Arc on each dispatch; if the upgrade
+        // returns None the connection has been dropped and the dispatch
+        // returns ConnectionDropped.
         let mut dispatch_ios: HashMap<
             u32,
-            (Arc<KalicoHostIo>, Arc<CreditCounter>, Arc<Mutex<SlotPool>>),
+            (Weak<KalicoHostIo>, Arc<CreditCounter>, Arc<Mutex<SlotPool>>),
         > = HashMap::new();
         let mut self_credits = self
             .credit_counters
@@ -1910,7 +1920,10 @@ impl PyMotionBridge {
             let slot_pool = Arc::new(Mutex::new(SlotPool::new(pool_capacity)));
             self_credits.insert(cfg_mcu.mcu_id, Arc::clone(&credit));
             self_pools.insert(cfg_mcu.mcu_id, Arc::clone(&slot_pool));
-            dispatch_ios.insert(cfg_mcu.mcu_id, (io, credit, slot_pool));
+            // Downgrade to Weak so the dispatch closure does not prevent
+            // KalicoHostIo::drop from running when attach_serial clears
+            // conn.host_io. The Arc is still live on `self.mcus` until then.
+            dispatch_ios.insert(cfg_mcu.mcu_id, (Arc::downgrade(&io), credit, slot_pool));
         }
         drop(self_credits);
         drop(self_pools);
@@ -1963,9 +1976,13 @@ impl PyMotionBridge {
                     let z_q16 = encode_q16(seed.z);
 
                     for cfg in &mcu_configs_for_cb {
-                        let (io, _credit, _pool) = match dispatch_ios.get(&cfg.mcu_id) {
+                        let (io_weak, _credit, _pool) = match dispatch_ios.get(&cfg.mcu_id) {
                             Some(v) => v,
                             None => continue,
+                        };
+                        let io = match io_weak.upgrade() {
+                            Some(io) => io,
+                            None => continue, // connection dropped, skip this MCU
                         };
 
                         // Motor-frame transform: CoreXY MCUs expect A = X+Y,
@@ -2068,9 +2085,15 @@ impl PyMotionBridge {
                         );
                         continue;
                     }
-                    let (io, credit, slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
+                    let (io_weak, credit, slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
                         Some(v) => v,
                         None => continue,
+                    };
+                    let io = match io_weak.upgrade() {
+                        Some(io) => io,
+                        None => {
+                            return Err(DispatchError::ConnectionDropped(plan.mcu_id));
+                        }
                     };
 
                     // Per-MCU clock conversion. Falls back to a microsecond

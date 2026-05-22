@@ -348,18 +348,6 @@ class Homing:
         if hmove.moved_less_than_dist(hi.min_home_dist, homing_axes):
             needs_rehome = True
             retract_dist = hi.min_home_dist
-        bridge_sensorless = (
-            hi.use_sensorless_homing
-            and getattr(self.toolhead, "bridge", None) is not None
-        )
-        if bridge_sensorless and needs_rehome:
-            logging.warning(
-                "homing: bridge sensorless first home moved less than "
-                "min_home_dist (distance_elapsed=%s min_home_dist=%.6f); "
-                "skipping second sensorless home",
-                hmove.distance_elapsed, hi.min_home_dist,
-            )
-            needs_rehome = False
 
         # Perform second home
         if retract_dist:
@@ -373,40 +361,19 @@ class Homing:
             retractpos = [
                 hp - ad * retract_r for hp, ad in zip(homepos, axes_d)
             ]
-            pre_retract_pos = list(self.toolhead.get_position())
             self.toolhead.move(retractpos, hi.retract_speed)
-            post_retract_pos = list(self.toolhead.get_position())
-            logging.info(
-                "homing: retract pre_pos=%s retractpos=%s "
-                "post_pos=%s retract_dist=%.3f",
-                pre_retract_pos, retractpos,
-                post_retract_pos, retract_dist,
-            )
             if not hi.use_sensorless_homing or needs_rehome:
+                self.toolhead.wait_moves_and_mcu()
                 try:
                     # Home again
                     startpos = [
                         rp - ad * retract_r
                         for rp, ad in zip(retractpos, axes_d)
                     ]
-                    logging.info(
-                        "homing: rehome set_position startpos=%s",
-                        startpos,
-                    )
                     self.toolhead.set_position(startpos)
-                    logging.info(
-                        "homing: rehome set_position done "
-                        "(flush_step_generation returned), "
-                        "resetting endstop states",
-                    )
                     self._reset_endstop_states(endstops)
 
                     hmove = HomingMove(self.printer, endstops)
-                    logging.info(
-                        "homing: rehome starting homing_move "
-                        "homepos=%s speed=%.1f",
-                        homepos, hi.second_homing_speed,
-                    )
                     hmove.homing_move(homepos, hi.second_homing_speed)
 
                     if hmove.check_no_movement() is not None:
