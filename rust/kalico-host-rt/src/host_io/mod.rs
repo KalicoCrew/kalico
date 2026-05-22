@@ -194,21 +194,7 @@ impl Drop for KalicoHostIo {
     fn drop(&mut self) {
         let _ = self.submission_tx.send(ReactorCommand::Shutdown);
         if let Some(h) = self.reactor_handle.take() {
-            let start = std::time::Instant::now();
-            loop {
-                if h.is_finished() {
-                    let _ = h.join();
-                    break;
-                }
-                if start.elapsed() > std::time::Duration::from_millis(500) {
-                    eprintln!(
-                        "[host-io] KalicoHostIo::drop: reactor thread did not \
-                         exit within 500ms, abandoning join"
-                    );
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(10));
-            }
+            let _ = h.join();
         }
     }
 }
