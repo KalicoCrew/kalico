@@ -17,7 +17,21 @@ pub type PinId = u16;
 pub enum SourceKind {
     Physical = 0,
     TmcDiag = 1,
+    /// Software-triggered source: no GPIO pin is polled. The arm uses a
+    /// credit-windowed deadline mechanism instead — the host periodically
+    /// calls `extend_deadline` to push the window forward; if it stops
+    /// (because the probe triggered on the host side), the deadline expires
+    /// and the MCU freezes the segment autonomously.
+    Software = 2,
 }
+
+/// Sentinel written to `trip_source_idx` when the trip was caused by a
+/// deadline expiry rather than a GPIO assertion.
+pub const TRIP_SOURCE_DEADLINE_EXPIRED: u8 = 0xFF;
+
+/// Sentinel written to `trip_source_idx` when the trip was caused by an
+/// explicit `software_trip` call from the C command handler.
+pub const TRIP_SOURCE_SOFTWARE: u8 = 0xFE;
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -169,6 +183,19 @@ pub struct Arm {
     pub stepper_count: AtomicU8,
     pub stepper_oids: [AtomicU8; MAX_STEPPERS],
     pub snapshot: TripSnapshot,
+    // --- Software-source deadline state ---
+    /// `true` once the first `tick()` past `arm_clock` has set
+    /// `deadline_clock`. Cleared to `false` on each `arm()`.
+    pub deadline_active: AtomicBool,
+    /// Low 32 bits of `deadline_clock` (the MCU clock value at which the
+    /// deadline expires if no `extend_deadline` call has refreshed it).
+    pub deadline_clock_lo: AtomicU32,
+    /// High 32 bits of `deadline_clock`.
+    pub deadline_clock_hi: AtomicU32,
+    /// Low 32 bits of `grant_ticks` (window length in MCU clock ticks).
+    pub grant_ticks_lo: AtomicU32,
+    /// High 32 bits of `grant_ticks`.
+    pub grant_ticks_hi: AtomicU32,
 }
 
 impl Arm {
@@ -192,6 +219,11 @@ impl Arm {
                 AtomicU8::new(0),
             ],
             snapshot: TripSnapshot::new(),
+            deadline_active: AtomicBool::new(false),
+            deadline_clock_lo: AtomicU32::new(0),
+            deadline_clock_hi: AtomicU32::new(0),
+            grant_ticks_lo: AtomicU32::new(0),
+            grant_ticks_hi: AtomicU32::new(0),
         }
     }
 
@@ -199,6 +231,40 @@ impl Arm {
         let lo = u64::from(self.arm_clock_lo.load(Ordering::Acquire));
         let hi = u64::from(self.arm_clock_hi.load(Ordering::Acquire));
         (hi << 32) | lo
+    }
+
+    fn deadline_clock(&self) -> u64 {
+        let lo = u64::from(self.deadline_clock_lo.load(Ordering::Acquire));
+        let hi = u64::from(self.deadline_clock_hi.load(Ordering::Acquire));
+        (hi << 32) | lo
+    }
+
+    fn store_deadline_clock(&self, clock: u64) {
+        self.deadline_clock_lo
+            .store(clock as u32, Ordering::Release);
+        self.deadline_clock_hi
+            .store((clock >> 32) as u32, Ordering::Release);
+    }
+
+    fn grant_ticks(&self) -> u64 {
+        let lo = u64::from(self.grant_ticks_lo.load(Ordering::Acquire));
+        let hi = u64::from(self.grant_ticks_hi.load(Ordering::Acquire));
+        (hi << 32) | lo
+    }
+
+    fn store_grant_ticks(&self, ticks: u64) {
+        self.grant_ticks_lo
+            .store(ticks as u32, Ordering::Release);
+        self.grant_ticks_hi
+            .store((ticks >> 32) as u32, Ordering::Release);
+    }
+
+    /// Returns `true` if any active source has `SourceKind::Software`.
+    fn has_software_source(&self) -> bool {
+        let count = usize::from(self.source_count.load(Ordering::Acquire));
+        self.sources.iter().take(count).any(|src| {
+            src.kind.load(Ordering::Acquire) == SourceKind::Software as u8
+        })
     }
 }
 
@@ -265,6 +331,11 @@ pub struct ArmMsg {
     pub sources: [SourceConfig; MAX_SOURCES],
     pub stepper_count: u8,
     pub stepper_oids: [u8; MAX_STEPPERS],
+    /// Deadline window length in MCU clock ticks, used when at least one
+    /// source has `SourceKind::Software`. Computed by the C command handler
+    /// from the MCU's clock frequency (e.g. `freq / 20` for a 50 ms window).
+    /// Zero means no Software sources are present and the field is ignored.
+    pub grant_ticks: u64,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -354,6 +425,11 @@ fn reset_for_test() {
     ARM.stepper_count.store(0, Ordering::Release);
     ARM.snapshot.version.store(0, Ordering::Release);
     ARM.snapshot.step_count_count.store(0, Ordering::Release);
+    ARM.deadline_active.store(false, Ordering::Release);
+    ARM.deadline_clock_lo.store(0, Ordering::Release);
+    ARM.deadline_clock_hi.store(0, Ordering::Release);
+    ARM.grant_ticks_lo.store(0, Ordering::Release);
+    ARM.grant_ticks_hi.store(0, Ordering::Release);
     TRIP_EVENT_QUEUED.store(false, Ordering::Release);
     for src in &ARM.sources {
         src.reset_latches();
@@ -408,6 +484,12 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
         .store(msg.stepper_count, Ordering::Release);
     ARM.snapshot.version.store(0, Ordering::Release);
     ARM.snapshot.step_count_count.store(0, Ordering::Release);
+
+    // Initialise Software-source deadline state.
+    ARM.deadline_active.store(false, Ordering::Release);
+    ARM.store_deadline_clock(0);
+    ARM.store_grant_ticks(msg.grant_ticks);
+
     ARM.state.store(ArmState::Armed as u8, Ordering::Release);
 
     // Synchronous AlreadyTripped: if any TripImmediately source is
@@ -473,6 +555,12 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
 
     let source_count = usize::from(ARM.source_count.load(Ordering::Acquire));
     for (idx, src) in ARM.sources.iter().take(source_count).enumerate() {
+        // Software sources have no GPIO pin: skip the GPIO polling loop
+        // entirely and handle them via the deadline check below.
+        if src.kind.load(Ordering::Acquire) == SourceKind::Software as u8 {
+            continue;
+        }
+
         let gpio = src.gpio.load(Ordering::Acquire);
         let pin_high = read_pin(gpio);
         let active_high = src.active_high.load(Ordering::Acquire);
@@ -555,7 +643,117 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
         return TripAction::AbortNow;
     }
 
+    tick_software_deadline(clock, stepper_counts)
+}
+
+/// Check (or open) the Software-source deadline window.
+///
+/// Called at the end of every [`tick`] when the arm is in the `Armed` state
+/// and has passed `arm_clock`. Handles two sub-cases:
+///
+/// - `deadline_active == false`: first tick past `arm_clock`; opens the
+///   initial window by writing `deadline_clock = clock + grant_ticks`.
+/// - `deadline_active == true && clock >= deadline_clock`: window expired;
+///   transitions `Armed → Tripping → TrippedReady` and returns
+///   [`TripAction::AbortNow`].
+fn tick_software_deadline(clock: u64, stepper_counts: &[i32]) -> TripAction {
+    if !ARM.has_software_source() {
+        return TripAction::Continue;
+    }
+    if !ARM.deadline_active.load(Ordering::Acquire) {
+        // First tick past arm_clock: open the initial window.
+        let grant = ARM.grant_ticks();
+        ARM.store_deadline_clock(clock.saturating_add(grant));
+        ARM.deadline_active.store(true, Ordering::Release);
+        return TripAction::Continue;
+    }
+    if clock < ARM.deadline_clock() {
+        return TripAction::Continue;
+    }
+    // Deadline expired: attempt to freeze the segment.
+    if ARM
+        .state
+        .compare_exchange(
+            ArmState::Armed as u8,
+            ArmState::Tripping as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_ok()
+    {
+        publish_snapshot(clock, TRIP_SOURCE_DEADLINE_EXPIRED, stepper_counts);
+        ARM.state
+            .store(ArmState::TrippedReady as u8, Ordering::Release);
+        TRIP_EVENT_QUEUED.store(true, Ordering::Release);
+        return TripAction::AbortNow;
+    }
     TripAction::Continue
+}
+
+/// Result type returned by [`software_trip`].
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum TripResult {
+    /// The arm was in the `Armed` state and has been transitioned to
+    /// `TrippedReady`. A `TripEvent` is now available via [`poll_trip`].
+    Tripped,
+    /// The arm was not in the `Armed` state (already tripped, disarmed,
+    /// idle, …). The call is a no-op.
+    NotArmed,
+    /// The provided `arm_id` does not match the currently-armed slot.
+    WrongArmId,
+}
+
+/// Programmatically trip the currently-armed endstop from a C command
+/// handler (i.e. in response to the host sending a `runtime_software_trip`
+/// command).
+///
+/// `clock` is the current MCU clock value at call time (read via
+/// `timer_read_time()` in the C command handler).
+pub fn software_trip(arm_id: u32, clock: u64, stepper_counts: &[i32]) -> TripResult {
+    if ARM.arm_id.load(Ordering::Acquire) != arm_id {
+        return TripResult::WrongArmId;
+    }
+
+    match ARM.state.compare_exchange(
+        ArmState::Armed as u8,
+        ArmState::Tripping as u8,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => {}
+        Err(_) => return TripResult::NotArmed,
+    }
+
+    publish_snapshot(clock, TRIP_SOURCE_SOFTWARE, stepper_counts);
+    ARM.state
+        .store(ArmState::TrippedReady as u8, Ordering::Release);
+    TRIP_EVENT_QUEUED.store(true, Ordering::Release);
+    TripResult::Tripped
+}
+
+/// Extend the Software-source deadline by one grant window from `clock`.
+///
+/// Called from the C command handler for `runtime_extend_deadline` when the
+/// host confirms the probe has not yet triggered and wants to keep the MCU
+/// segment running. Silently ignores calls when:
+/// - `arm_id` does not match the active arm, or
+/// - the deadline is not currently active (arm was never ticked past
+///   `arm_clock`, or the arm is already tripped/disarmed).
+///
+/// `clock` is the current MCU clock value at call time.
+pub fn extend_deadline(arm_id: u32, clock: u64) {
+    // Reject stale or mismatched calls.
+    if ARM.arm_id.load(Ordering::Acquire) != arm_id {
+        return;
+    }
+    if !matches_u8(ARM.state.load(Ordering::Acquire), ArmState::Armed) {
+        return;
+    }
+    if !ARM.deadline_active.load(Ordering::Acquire) {
+        return;
+    }
+    let grant = ARM.grant_ticks();
+    ARM.store_deadline_clock(clock.saturating_add(grant));
 }
 
 pub fn poll_trip() -> Option<TripEvent> {
@@ -732,6 +930,30 @@ mod tests {
             sources,
             stepper_count: 2,
             stepper_oids: [0, 1, 0, 0, 0, 0, 0, 0],
+            grant_ticks: 0,
+        }
+    }
+
+    /// Build a Software-source arm message with the given `grant_ticks`.
+    fn sw_msg(grant_ticks: u64) -> ArmMsg {
+        let mut sources = [SourceConfig::EMPTY; MAX_SOURCES];
+        sources[0] = SourceConfig {
+            kind: SourceKind::Software,
+            gpio: 0,
+            active_high: true,
+            policy: ArmPolicy::TripImmediately,
+            sample_n: 1,
+            velocity_axis: VelocityAxis::XYZ,
+            v_min_q16: 0,
+        };
+        ArmMsg {
+            arm_id: 42,
+            arm_clock: 0,
+            source_count: 1,
+            sources,
+            stepper_count: 2,
+            stepper_oids: [0, 1, 0, 0, 0, 0, 0, 0],
+            grant_ticks,
         }
     }
 
@@ -891,6 +1113,7 @@ mod tests {
             sources,
             stepper_count: 2,
             stepper_oids: [0, 1, 0, 0, 0, 0, 0, 0],
+            grant_ticks: 0,
         })
         .expect("arm");
         set_pin_level(6, true);
@@ -1036,5 +1259,197 @@ mod tests {
             13,
         )));
         assert_eq!(result, Ok(ArmStatus::Armed));
+    }
+
+    // --- Software source tests ---
+
+    #[test]
+    fn software_source_does_not_trip_on_gpio() {
+        // A Software source must not read or respond to GPIO levels.
+        let _guard = reset();
+        arm(sw_msg(1000)).expect("arm");
+        // Set every pin high — a Physical source would trip immediately.
+        for i in 0..20_u16 {
+            set_pin_level(i, true);
+        }
+        // First tick opens the deadline window; must NOT trip on GPIO.
+        assert_eq!(tick(1, [0, 0, 0], &[1, 2]), TripAction::Continue);
+        // deadline_active should now be set.
+        assert!(ARM.deadline_active.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn software_source_deadline_expires_and_trips() {
+        // grant_ticks = 100; arm_clock = 0.
+        // tick(1)   → opens window: deadline = 1 + 100 = 101. Continue.
+        // tick(101) → clock == deadline → AbortNow with DEADLINE_EXPIRED idx.
+        let _guard = reset();
+        arm(sw_msg(100)).expect("arm");
+        assert_eq!(tick(1, [0, 0, 0], &[10, 20]), TripAction::Continue);
+        assert!(ARM.deadline_active.load(Ordering::Acquire));
+        // Clock 100 is still inside the window.
+        assert_eq!(tick(100, [0, 0, 0], &[10, 20]), TripAction::Continue);
+        // Clock 101 is at the deadline — should trip.
+        assert_eq!(tick(101, [0, 0, 0], &[10, 20]), TripAction::AbortNow);
+        let evt = drain_trip();
+        assert_eq!(evt.arm_id, 42);
+        assert_eq!(evt.trip_source_idx, TRIP_SOURCE_DEADLINE_EXPIRED);
+        assert_eq!(evt.trip_clock, 101);
+    }
+
+    #[test]
+    fn extend_deadline_pushes_window_forward() {
+        // grant_ticks = 100.
+        // tick(1)   → deadline = 101. Continue.
+        // extend_deadline at clock=50 → deadline = 50 + 100 = 150.
+        // tick(101) → inside new window. Continue.
+        // tick(150) → at new deadline. AbortNow.
+        let _guard = reset();
+        arm(sw_msg(100)).expect("arm");
+        assert_eq!(tick(1, [0, 0, 0], &[]), TripAction::Continue);
+        extend_deadline(42, 50);
+        assert_eq!(ARM.deadline_clock(), 150);
+        assert_eq!(tick(101, [0, 0, 0], &[]), TripAction::Continue);
+        assert_eq!(tick(150, [0, 0, 0], &[]), TripAction::AbortNow);
+        assert_eq!(drain_trip().trip_source_idx, TRIP_SOURCE_DEADLINE_EXPIRED);
+    }
+
+    #[test]
+    fn extend_deadline_ignored_for_wrong_arm_id() {
+        let _guard = reset();
+        arm(sw_msg(100)).expect("arm");
+        assert_eq!(tick(1, [0, 0, 0], &[]), TripAction::Continue);
+        let deadline_before = ARM.deadline_clock();
+        extend_deadline(99, 50); // wrong arm_id
+        assert_eq!(ARM.deadline_clock(), deadline_before);
+    }
+
+    #[test]
+    fn extend_deadline_ignored_before_first_tick() {
+        // Before the first tick, deadline_active = false.
+        // extend_deadline should silently ignore.
+        let _guard = reset();
+        arm(sw_msg(100)).expect("arm");
+        assert!(!ARM.deadline_active.load(Ordering::Acquire));
+        extend_deadline(42, 50); // deadline_active is false → no-op
+        assert!(!ARM.deadline_active.load(Ordering::Acquire));
+        assert_eq!(ARM.deadline_clock(), 0);
+    }
+
+    #[test]
+    fn software_trip_transitions_armed_to_tripped_ready() {
+        let _guard = reset();
+        arm(sw_msg(10_000)).expect("arm");
+        assert_eq!(
+            software_trip(42, 500, &[10, 20]),
+            TripResult::Tripped
+        );
+        let evt = drain_trip();
+        assert_eq!(evt.arm_id, 42);
+        assert_eq!(evt.trip_source_idx, TRIP_SOURCE_SOFTWARE);
+        assert_eq!(evt.trip_clock, 500);
+    }
+
+    #[test]
+    fn software_trip_wrong_arm_id_is_no_op() {
+        let _guard = reset();
+        arm(sw_msg(10_000)).expect("arm");
+        assert_eq!(
+            software_trip(99, 500, &[10, 20]),
+            TripResult::WrongArmId
+        );
+        // Still armed.
+        assert!(matches_u8(
+            ARM.state.load(Ordering::Acquire),
+            ArmState::Armed
+        ));
+    }
+
+    #[test]
+    fn software_trip_on_non_armed_state_is_not_armed() {
+        let _guard = reset();
+        // Set arm_id to 0 so it matches the reset state, then put the state
+        // into Disarmed. software_trip must return NotArmed (state check
+        // fails) rather than WrongArmId (arm_id check fails).
+        ARM.arm_id.store(0, Ordering::Release);
+        ARM.state.store(ArmState::Disarmed as u8, Ordering::Release);
+        assert_eq!(
+            software_trip(0, 500, &[]),
+            TripResult::NotArmed
+        );
+    }
+
+    #[test]
+    fn software_trip_idempotent_second_call_returns_not_armed() {
+        let _guard = reset();
+        arm(sw_msg(10_000)).expect("arm");
+        assert_eq!(software_trip(42, 1, &[]), TripResult::Tripped);
+        // State is now TrippedReady; a second call must return NotArmed.
+        assert_eq!(software_trip(42, 2, &[]), TripResult::NotArmed);
+    }
+
+    #[test]
+    fn deadline_active_false_resets_across_arm_calls() {
+        // Arm with Software source, open deadline, then re-arm.
+        // On the new arm, deadline_active must be false again.
+        let _guard = reset();
+        arm(sw_msg(100)).expect("arm");
+        tick(1, [0, 0, 0], &[]);
+        assert!(ARM.deadline_active.load(Ordering::Acquire));
+        // Disarm so we can re-arm.
+        disarm(42);
+        arm(sw_msg(100)).expect("arm");
+        assert!(
+            !ARM.deadline_active.load(Ordering::Acquire),
+            "deadline_active must be cleared on re-arm"
+        );
+    }
+
+    #[test]
+    fn software_source_deadline_uses_saturating_add() {
+        // grant_ticks = u64::MAX → deadline = clock.saturating_add(u64::MAX)
+        // = u64::MAX (saturates). That deadline will never be reached in
+        // practice, but the arithmetic must not overflow/panic.
+        let _guard = reset();
+        arm(sw_msg(u64::MAX)).expect("arm");
+        assert_eq!(tick(1, [0, 0, 0], &[]), TripAction::Continue);
+        assert_eq!(ARM.deadline_clock(), u64::MAX);
+    }
+
+    #[test]
+    fn software_source_skips_gpio_no_gpio_trip() {
+        // Mixed arm: Software source at index 0, Physical at index 1.
+        // Pin for Physical (gpio=15) is deasserted; no GPIO trip expected.
+        // Deadline with large grant: arm never expires. Should stay Continue.
+        let _guard = reset();
+        let mut sources = [SourceConfig::EMPTY; MAX_SOURCES];
+        sources[0] = SourceConfig {
+            kind: SourceKind::Software,
+            gpio: 0,
+            active_high: true,
+            policy: ArmPolicy::TripImmediately,
+            sample_n: 1,
+            velocity_axis: VelocityAxis::XYZ,
+            v_min_q16: 0,
+        };
+        sources[1] = cfg(SourceKind::Physical, ArmPolicy::TripImmediately, 1, 15);
+        arm(ArmMsg {
+            arm_id: 42,
+            arm_clock: 0,
+            source_count: 2,
+            sources,
+            stepper_count: 2,
+            stepper_oids: [0, 1, 0, 0, 0, 0, 0, 0],
+            grant_ticks: 10_000,
+        })
+        .expect("arm");
+        // Tick with Physical pin deasserted → Continue.
+        assert_eq!(tick(1, [0, 0, 0], &[]), TripAction::Continue);
+        // Assert the Physical pin → Physical source trips.
+        set_pin_level(15, true);
+        assert_eq!(tick(2, [0, 0, 0], &[]), TripAction::AbortNow);
+        let evt = drain_trip();
+        // Should be source index 1 (the Physical source), not the Software one.
+        assert_eq!(evt.trip_source_idx, 1);
     }
 }
