@@ -585,6 +585,16 @@ impl PyMotionBridge {
         Ok(())
     }
 
+    fn shutdown(&self) {
+        let handles: Vec<u32> = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            mcus.keys().copied().collect()
+        };
+        for h in handles {
+            let _ = self.release_mcu(h);
+        }
+    }
+
     // ── Task 34: alloc_command_queue ─────────────────────────────────────
 
     /// Allocate a command queue for the given MCU. Returns queue id as int.

@@ -361,8 +361,15 @@ class MotionToolhead(ToolHead):
         self.printer.register_event_handler(
             "klippy:connect", self._init_planner
         )
+        self.printer.register_event_handler(
+            "klippy:disconnect", self._handle_disconnect
+        )
 
         logging.info("MotionToolhead: Phase 1 skeleton initialized")
+
+    def _handle_disconnect(self):
+        if self.bridge is not None:
+            self.bridge.shutdown()
 
     # ------------------------------------------------------------------
     # Kinematics override
