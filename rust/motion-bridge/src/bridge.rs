@@ -831,6 +831,103 @@ impl PyMotionBridge {
         let effective_baud = if baud == 0 { 250_000 } else { baud };
         let config = KalicoHostIoConfig::default();
 
+        // ── Reuse path ────────────────────────────────────────────────────────
+        // If an existing KalicoHostIo is alive (reactor thread still running),
+        // reuse it — skip the drop and reopen entirely. This matches mainline
+        // Klipper's behaviour: the serial port stays open through shutdown →
+        // FIRMWARE_RESTART cycles. Dropping an alive connection can wedge
+        // because the Drop's reactor-thread join blocks on a blocking serial
+        // read, and the subsequent reopen gets EBUSY from the kernel's
+        // cdc_acm single-open semantics.
+        //
+        // We do still re-subscribe runtime events (the old channel's buffer
+        // is stale after a firmware restart) and re-run the kalico-native
+        // identify + caps handshake so the host reflects the new firmware
+        // epoch. The clock-sync thread is left running — it holds only a
+        // Weak<KalicoHostIo> and will keep ticking without interruption.
+        {
+            let existing_io: Option<Arc<KalicoHostIo>> = {
+                let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+                mcus.get(&mcu_handle)
+                    .and_then(|conn| conn.host_io.as_ref().map(Arc::clone))
+            };
+            if let Some(io) = existing_io {
+                if io.is_alive() {
+                    log::info!(
+                        "attach_serial: reusing existing connection for {serial_path} \
+                         (reactor alive, skipping close/reopen)"
+                    );
+
+                    // Re-subscribe so the new runtime-event channel starts
+                    // fresh (the firmware restart will have pushed new events).
+                    let runtime_rx =
+                        io.take_runtime_event_subscription().map_err(|e| {
+                            PyRuntimeError::new_err(format!(
+                                "attach_serial: runtime_event re-subscribe: {e:?}"
+                            ))
+                        })?;
+
+                    let (kalico_native_supported, identify_caps) =
+                        match io.kalico_identify(std::time::Duration::from_secs(5)) {
+                            Ok(out) => {
+                                log::info!(
+                                    "attach_serial: kalico re-identified — \
+                                     reset_epoch=0x{:08x} caps=0x{:016x}",
+                                    out.reset_epoch,
+                                    out.capabilities,
+                                );
+                                (true, out.capabilities)
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "attach_serial: kalico_identify timed out on reuse \
+                                     for {serial_path} ({e}); treating as Klipper-protocol-only"
+                                );
+                                (false, 0u64)
+                            }
+                        };
+
+                    let runtime_caps =
+                        match query_runtime_caps(&io, std::time::Duration::from_secs(2)) {
+                            Ok(caps) => {
+                                log::debug!(
+                                    "[caps-trace] attach_serial reuse: runtime caps \
+                                     for {serial_path}: pool_n={} max_pieces_per_curve={}",
+                                    caps.curve_pool_n,
+                                    caps.max_pieces_per_curve,
+                                );
+                                caps
+                            }
+                            Err(e) => {
+                                log::debug!(
+                                    "[caps-trace] attach_serial reuse: QueryRuntimeCaps \
+                                     failed for {serial_path} ({e}); using large-profile defaults"
+                                );
+                                FALLBACK_RUNTIME_CAPS
+                            }
+                        };
+
+                    let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+                    let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
+                        PyRuntimeError::new_err(format!(
+                            "attach_serial: unknown mcu_handle {mcu_handle}"
+                        ))
+                    })?;
+                    conn.runtime_rx = Some(runtime_rx);
+                    conn.runtime_caps = Some(runtime_caps);
+                    conn.identify_caps = identify_caps;
+                    conn.kalico_native_supported = kalico_native_supported;
+                    // clock_sync_stop / clock_sync_thread left intact — the
+                    // thread is already running and does not need a restart.
+                    return Ok(());
+                }
+            }
+        }
+
+        // ── Fresh open path ───────────────────────────────────────────────────
+        // The existing connection is absent or dead. Drop it (if present) to
+        // release the kernel FD before reopening.
+        //
         // 2026-05-18: drop any existing KalicoHostIo for this mcu_handle
         // BEFORE trying to open the new serial. The Drop impl sends
         // `ReactorCommand::Shutdown` and joins the reactor thread, which

@@ -1244,6 +1244,9 @@ impl Reactor {
                     eprintln!("[trace-kcall] write_frame OK cid={cid} kind={kind:?}");
                 }
             }
+            ReactorCommand::Noop => {
+                // Liveness probe from `KalicoHostIo::is_alive`. Nothing to do.
+            }
         }
     }
 }
