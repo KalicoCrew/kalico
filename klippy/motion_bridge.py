@@ -568,6 +568,7 @@ class BridgeTriggerDispatch:
             else:
                 # AlreadyTripped on race — wait briefly for the async
                 # event to land.
+                self._trip_event = self._bridge.take_trip_event()
                 self._reason = REASON_ENDSTOP_HIT
             if not self._completion.test():
                 self._completion.complete(self._reason)
@@ -581,6 +582,8 @@ class BridgeTriggerDispatch:
         return self._reason
 
     def get_trip_event(self):
+        if self._trip_event is None and self._reason == REASON_ENDSTOP_HIT:
+            self._trip_event = self._bridge.take_trip_event()
         return self._trip_event
 
     def get_arm_print_time(self):
