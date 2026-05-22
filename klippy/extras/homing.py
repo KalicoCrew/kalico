@@ -348,18 +348,6 @@ class Homing:
         if hmove.moved_less_than_dist(hi.min_home_dist, homing_axes):
             needs_rehome = True
             retract_dist = hi.min_home_dist
-        bridge_sensorless = (
-            hi.use_sensorless_homing
-            and getattr(self.toolhead, "bridge", None) is not None
-        )
-        if bridge_sensorless and needs_rehome:
-            logging.warning(
-                "homing: bridge sensorless first home moved less than "
-                "min_home_dist (distance_elapsed=%s min_home_dist=%.6f); "
-                "skipping second sensorless home",
-                hmove.distance_elapsed, hi.min_home_dist,
-            )
-            needs_rehome = False
 
         # Perform second home
         if retract_dist:

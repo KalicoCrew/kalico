@@ -49,6 +49,22 @@ const CREDIT_SEED_CAPACITY: i32 = 7;
 
 // ── Internal types ──────────────────────────────────────────────────────
 
+/// MCU seed position queued by `set_position` and drained by the dispatch
+/// closure before the next segment is sent.
+///
+/// Storing the seed here (rather than firing `runtime_seed_position`
+/// immediately in `set_position`) guarantees that the seed arrives at the
+/// MCU **after** all previously-dispatched segments (e.g. a retract during
+/// homing) have been placed on the wire.  The dispatch closure processes
+/// segments sequentially, so draining the pending seed at the head of each
+/// dispatch invocation provides the required ordering without any extra
+/// synchronisation.
+struct SeedPosition {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
 /// Metadata stored per claimed MCU.
 struct McuConnection {
     #[allow(dead_code)]
@@ -398,6 +414,10 @@ pub struct PyMotionBridge {
     /// those relative times onto the MCU's live clock domain.
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
     homing: Arc<HomingState>,
+    /// Pending MCU seed position stored by `set_position` and drained by the
+    /// dispatch closure before each segment is sent.  `None` when no seed is
+    /// outstanding (normal steady-state path).
+    pending_seed: Arc<Mutex<Option<SeedPosition>>>,
 }
 
 /// Build the kalico-native `ConfigureAxes` wire body.
@@ -496,6 +516,7 @@ impl PyMotionBridge {
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             homing: Arc::new(HomingState::new()),
+            pending_seed: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1771,6 +1792,7 @@ impl PyMotionBridge {
         let homing = Arc::clone(&self.homing);
         let warned_mcus: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
         let router_arc = Arc::clone(&self.router);
+        let pending_seed_for_cb = Arc::clone(&self.pending_seed);
 
         let host_ios: HashMap<u32, Arc<KalicoHostIo>> = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
@@ -1917,6 +1939,59 @@ impl PyMotionBridge {
                     "[move-diag] dispatch closure entered: seg.t_start={} seg.t_end={}",
                     seg.t_start, seg.t_end,
                 );
+
+                // ── Pending seed drain ─────────────────────────────────────────
+                //
+                // `set_position` stores its `runtime_seed_position` payload here
+                // rather than sending it immediately, because in-flight segments
+                // from a previous move (e.g. a retract during homing) may not
+                // have reached the MCU yet.  Sending the seed here — at the head
+                // of the next dispatch invocation — guarantees ordering: the seed
+                // arrives after all previous segments and before the segment we
+                // are about to dispatch.
+                if let Some(seed) = pending_seed_for_cb
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take()
+                {
+                    let encode_q16 = |mm: f64| -> i32 {
+                        let raw = mm * 65536.0;
+                        raw.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
+                    };
+                    let x_q16 = encode_q16(seed.x);
+                    let y_q16 = encode_q16(seed.y);
+                    let z_q16 = encode_q16(seed.z);
+
+                    for cfg in &mcu_configs_for_cb {
+                        let (io, _credit, _pool) = match dispatch_ios.get(&cfg.mcu_id) {
+                            Some(v) => v,
+                            None => continue,
+                        };
+
+                        // Motor-frame transform: CoreXY MCUs expect A = X+Y,
+                        // B = X-Y; CartesianXyzAndE MCUs receive logical X/Y/Z.
+                        let (seed_x_q16, seed_y_q16) =
+                            if cfg.kinematics == crate::dispatch::KINEMATICS_COREXY {
+                                (encode_q16(seed.x + seed.y), encode_q16(seed.x - seed.y))
+                            } else {
+                                (x_q16, y_q16)
+                            };
+
+                        use kalico_host_rt::host_io::parser::FieldValue;
+                        // Ignore send errors — if the channel is closed the
+                        // imminent PushSegment will surface the failure through
+                        // the normal credit / fault path.
+                        let _ = io.send_typed(
+                            "runtime_seed_position",
+                            &[
+                                ("x_q16", FieldValue::I32(seed_x_q16)),
+                                ("y_q16", FieldValue::I32(seed_y_q16)),
+                                ("z_q16", FieldValue::I32(z_q16)),
+                            ],
+                        );
+                    }
+                }
+
                 // ── Phase-4 per-axis-per-segment dispatch ─────────────────────
                 //
                 // The B.1 multi-piece chunker has been retired (see spec
@@ -2575,69 +2650,19 @@ impl PyMotionBridge {
         // (Y_end - 0) instead of (Y_end - 100), which exceeds
         // MAX_STEPS_PER_TICK_DEFAULT and raises FaultCode::StepBurstExceeded.
         //
-        // Q16.16 fixed-point encoding: i32 = round(mm * 65536), clamped to
-        // i32 bounds. The Klipper command compiler treats %i as a signed int.
-        // send_typed is fire-and-forget — no response is awaited; ordering
-        // is guaranteed by the PushSegment that follows.
-        let encode_q16 = |mm: f64| -> i32 {
-            let raw = mm * 65536.0;
-            raw.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
-        };
-        let x_q16 = encode_q16(x);
-        let y_q16 = encode_q16(y);
-        let z_q16 = encode_q16(z);
-
-        // Collect the set of (mcu_id, kinematics) pairs for all configured
-        // motion MCUs. `kinematics` determines whether the MCU expects
-        // logical or motor-frame coordinates from `runtime_seed_position`.
-        let mcu_kin_pairs: Vec<(u32, u8)> = {
-            self.mcu_axis_configs
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .iter()
-                .map(|c| (c.mcu_id, c.kinematics))
-                .collect()
-        };
-
-        for (mcu_id, kin) in mcu_kin_pairs {
-            let io = {
-                let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-                let Some(conn) = mcus.get(&mcu_id) else {
-                    continue;
-                };
-                if !conn.kalico_native_supported {
-                    continue;
-                }
-                let Some(io) = conn.host_io.as_ref() else {
-                    continue;
-                };
-                io.clone()
-            };
-
-            // The MCU engine is motor-frame end-to-end. For CoreXY MCUs, the
-            // seed values must be in motor frame: A = X+Y, B = X-Y, Z = Z.
-            // CartesianXyzAndE MCUs receive logical X/Y/Z directly (identity
-            // transform).
-            let (seed_x_q16, seed_y_q16) = if kin == crate::dispatch::KINEMATICS_COREXY {
-                // motor-A = X + Y, motor-B = X - Y
-                (encode_q16(x + y), encode_q16(x - y))
-            } else {
-                (x_q16, y_q16)
-            };
-
-            use kalico_host_rt::host_io::parser::FieldValue;
-            // Ignore send errors — if the channel is closed the next
-            // PushSegment will surface the failure through the normal
-            // credit / fault path.
-            let _ = io.send_typed(
-                "runtime_seed_position",
-                &[
-                    ("x_q16", FieldValue::I32(seed_x_q16)),
-                    ("y_q16", FieldValue::I32(seed_y_q16)),
-                    ("z_q16", FieldValue::I32(z_q16)),
-                ],
-            );
-        }
+        // We do NOT send `runtime_seed_position` here directly.  In-flight
+        // segments from a previous move (e.g. a retract queued during homing)
+        // may not have reached the MCU yet.  Firing the seed immediately would
+        // overwrite the MCU's `prev_x/y/z` before the retract finishes,
+        // corrupting its step-delta computation.
+        //
+        // Instead, store the seed as `pending_seed`.  The dispatch closure
+        // (planner thread) drains it before sending the next segment, which
+        // guarantees the seed arrives AFTER all previously-dispatched segments.
+        *self
+            .pending_seed
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(SeedPosition { x, y, z });
 
         Ok(())
     }
