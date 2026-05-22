@@ -364,6 +364,8 @@ class MotionToolhead(ToolHead):
         self.printer.register_event_handler(
             "klippy:disconnect", self._handle_disconnect
         )
+        import atexit
+        atexit.register(self._handle_disconnect)
 
         logging.info("MotionToolhead: Phase 1 skeleton initialized")
 
