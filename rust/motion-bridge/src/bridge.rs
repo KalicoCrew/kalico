@@ -2021,26 +2021,41 @@ impl PyMotionBridge {
                 .get(&cfg_mcu.mcu_id)
                 .unwrap_or(&false)
             {
-                match producer::reset_curve_pool(&io, producer::DEFAULT_RESET_CURVE_POOL_TIMEOUT) {
-                    Ok(()) => {
-                        log::debug!("[init-planner] reset_curve_pool mcu={} ok", cfg_mcu.mcu_id)
+                const MAX_RETRIES: usize = 3;
+                let mut last_err = None;
+                for attempt in 0..MAX_RETRIES {
+                    match producer::reset_curve_pool(
+                        &io,
+                        producer::DEFAULT_RESET_CURVE_POOL_TIMEOUT,
+                    ) {
+                        Ok(()) => {
+                            eprintln!(
+                                "[init-planner] reset_curve_pool mcu={} ok (attempt {})",
+                                cfg_mcu.mcu_id, attempt
+                            );
+                            last_err = None;
+                            break;
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[init-planner] reset_curve_pool mcu={} attempt {} \
+                                 failed: {e:?}; retrying",
+                                cfg_mcu.mcu_id, attempt
+                            );
+                            last_err = Some(e);
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                200 * (attempt as u64 + 1),
+                            ));
+                        }
                     }
-                    Err(e) => {
-                        // Non-fatal: log and continue. If the MCU was just
-                        // power-cycled its pool is already clean (all gens
-                        // at 0). Failing here only hurts on a reconnect
-                        // where the MCU genuinely has stale state — in that
-                        // case the first `load_curve` will surface the
-                        // "slot busy" error at dispatch time, same as before
-                        // this fix, which is preferable to aborting planner
-                        // init entirely.
-                        log::warn!(
-                            "[init-planner] reset_curve_pool mcu={} failed: {e:?}; \
-                             continuing — first load_curve may fail with slot busy \
-                             if MCU was not power-cycled",
-                            cfg_mcu.mcu_id
-                        );
-                    }
+                }
+                if let Some(e) = last_err {
+                    return Err(PyRuntimeError::new_err(format!(
+                        "reset_curve_pool mcu={} failed after {MAX_RETRIES} \
+                         attempts: {e:?}. The MCU has stale slot state from a \
+                         prior session — try FIRMWARE_RESTART.",
+                        cfg_mcu.mcu_id
+                    )));
                 }
             }
 

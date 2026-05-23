@@ -346,7 +346,7 @@ pub fn load_curve(
         // slot's (current_gen, last_retired_gen) into `curve_handle_packed`
         // as (kind << 30) | (cur << 16) | last.
         let diag_kind = (resp.curve_handle_packed >> 30) & 0x3;
-        let mcu_cur = ((resp.curve_handle_packed >> 16) & 0xFFFF) as u16;
+        let mcu_cur = ((resp.curve_handle_packed >> 16) & 0x3FFF) as u16;
         let mcu_last = (resp.curve_handle_packed & 0xFFFF) as u16;
         let diag_detail = match diag_kind {
             1 => format!("slot busy: mcu_cur_gen={mcu_cur} mcu_last_retired_gen={mcu_last}"),
