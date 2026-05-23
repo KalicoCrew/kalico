@@ -485,17 +485,8 @@ class MotionToolhead(ToolHead):
         from . import motion_bridge as _mb
         from . import motion_kinematics
 
-        # Snap _mcu_pending_end_time to the current MCU clock so
-        # get_last_move_time() returns a fresh print_time. Without this,
-        # the projection from _bump_pending_end_time can drift from
-        # reality after a long prior move (e.g. XY to safe_z_home),
-        # causing print_time_to_clock() to produce a stale reqclock on
-        # the target MCU (F446 Timer too close on stepper-enable).
         self.bridge.wait_moves()
-        if self.mcu is not None:
-            self._mcu_pending_end_time = self.mcu.estimated_print_time(
-                self.reactor.monotonic()
-            )
+        self._ground_pending_end_time_after_bridge_drain()
 
         pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
         dx = pos3[0] - self.commanded_pos[0]
@@ -609,6 +600,7 @@ class MotionToolhead(ToolHead):
 
     def flush_step_generation(self):
         self.bridge.wait_moves()
+        self._ground_pending_end_time_after_bridge_drain()
 
     def get_last_move_time(self):
         # Two clocks live here:
@@ -632,10 +624,23 @@ class MotionToolhead(ToolHead):
         return floor
 
     def note_homing_end(self):
-        if self.mcu is not None:
-            self._mcu_pending_end_time = self.mcu.estimated_print_time(
-                self.reactor.monotonic()
-            )
+        self._ground_pending_end_time_after_bridge_drain()
+
+    def _ground_pending_end_time_after_bridge_drain(self):
+        """Clamp stale bridge projections after a full dispatch drain.
+
+        `bridge.wait_moves()` means the host bridge has dispatched all queued
+        motion, not that every MCU has finished executing it. For subsequent
+        cross-MCU command scheduling, use a print-time grounded in the live
+        MCU clock plus the normal Klipper scheduling lookahead instead of a
+        stale projected motion end that may be seconds ahead.
+        """
+        if self.mcu is None:
+            return
+        est = self.mcu.estimated_print_time(self.reactor.monotonic())
+        command_time = est + BUFFER_TIME_START
+        if self._mcu_pending_end_time > command_time:
+            self._mcu_pending_end_time = command_time
 
     def _bump_pending_end_time(self, duration_added):
         """Extend the projected MCU end-time of the last queued move.
