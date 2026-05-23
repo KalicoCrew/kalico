@@ -446,28 +446,6 @@ class MotionToolhead(ToolHead):
             fired = True
         return fired
 
-    def prepare_drip_move(self, movepos):
-        curpos = self.commanded_pos
-        dx = movepos[0] - curpos[0]
-        dy = movepos[1] - curpos[1]
-        dz = movepos[2] - curpos[2]
-        if abs(dz) < 1e-9 or abs(dx) > 1e-9 or abs(dy) > 1e-9:
-            return
-        # Z-only move → software-trip path (external probe homing).
-        # Fire motor-enable callbacks here so the TMC UART traffic
-        # (~300ms) runs BEFORE homing_move arms the beacon trsync.
-        # X/Y sensorless homing is unaffected — it has dx/dy != 0.
-        if self.mcu is not None:
-            est_now = self.mcu.estimated_print_time(
-                self.reactor.monotonic())
-            lmt = self.get_last_move_time()
-            needed = est_now + 2.0
-            if lmt < needed:
-                self.dwell(needed - lmt)
-        self._fire_active_callbacks(
-            dx, dy, dz, 0.0, self.get_last_move_time()
-        )
-
     def drip_move(self, newpos, speed, drip_completion):
         logging.info(
             "[bridge-trace] drip_move entered: newpos=%s speed=%s "

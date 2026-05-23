@@ -342,6 +342,11 @@ class MCU_trsync:
         # but register the Python response handler for trsync_state.
         self._home_end_clock = None
         clock = self._mcu.print_time_to_clock(print_time)
+        if self._trdispatch_mcu is None:
+            # No C-level automatic timeout extension (bridge mode).
+            # Use a long initial timeout — the move will be terminated
+            # by endstop trigger or set_home_end_time, not by timeout.
+            expire_timeout = max(expire_timeout, 30.0)
         expire_ticks = self._mcu.seconds_to_clock(expire_timeout)
         expire_clock = clock + expire_ticks
         report_ticks = self._mcu.seconds_to_clock(expire_timeout * 0.3)
