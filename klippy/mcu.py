@@ -1506,6 +1506,16 @@ class MCU:
         self._reset_cmd = self.try_lookup_command("reset")
         self._config_reset_cmd = self.try_lookup_command("config_reset")
         ext_only = self._reset_cmd is None and self._config_reset_cmd is None
+        if ext_only:
+            msgparser = self._serial.get_msgparser()
+            all_cmds = sorted(msgparser.messages_by_name.keys())
+            logging.warning(
+                "MCU '%s' has no reset/config_reset command. "
+                "Available commands (%d): %s",
+                self._name, len(all_cmds),
+                ", ".join(c for c in all_cmds if "reset" in c.lower())
+                or "(none with 'reset')",
+            )
         msgparser = self._serial.get_msgparser()
         mbaud = msgparser.get_constant("SERIAL_BAUD", None)
         if self._restart_method is None and mbaud is None and not ext_only:
