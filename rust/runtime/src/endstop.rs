@@ -187,6 +187,13 @@ pub struct Arm {
     /// `true` once the first `tick()` past `arm_clock` has set
     /// `deadline_clock`. Cleared to `false` on each `arm()`.
     pub deadline_active: AtomicBool,
+    /// Seqlock version for `deadline_clock` lo/hi. Writers (ISR initial
+    /// activation AND command-handler `extend_deadline`) bump to odd
+    /// before writing, then to even after. The ISR reader skips the
+    /// expiry check when it catches a mid-write (returns `Continue`
+    /// instead of spinning — spinning would deadlock since the ISR
+    /// can't yield to the command handler it preempted).
+    pub deadline_version: AtomicU32,
     /// Low 32 bits of `deadline_clock` (the MCU clock value at which the
     /// deadline expires if no `extend_deadline` call has refreshed it).
     pub deadline_clock_lo: AtomicU32,
@@ -220,6 +227,7 @@ impl Arm {
             ],
             snapshot: TripSnapshot::new(),
             deadline_active: AtomicBool::new(false),
+            deadline_version: AtomicU32::new(0),
             deadline_clock_lo: AtomicU32::new(0),
             deadline_clock_hi: AtomicU32::new(0),
             grant_ticks_lo: AtomicU32::new(0),
@@ -233,17 +241,36 @@ impl Arm {
         (hi << 32) | lo
     }
 
-    fn deadline_clock(&self) -> u64 {
+    fn store_deadline_clock_seqlocked(&self, clock: u64) {
+        let v = self.deadline_version.load(Ordering::Acquire);
+        self.deadline_version.store(v | 1, Ordering::Release);
+        self.deadline_clock_lo
+            .store(clock as u32, Ordering::Release);
+        self.deadline_clock_hi
+            .store((clock >> 32) as u32, Ordering::Release);
+        self.deadline_version
+            .store(v.wrapping_add(2), Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn deadline_clock_unchecked(&self) -> u64 {
         let lo = u64::from(self.deadline_clock_lo.load(Ordering::Acquire));
         let hi = u64::from(self.deadline_clock_hi.load(Ordering::Acquire));
         (hi << 32) | lo
     }
 
-    fn store_deadline_clock(&self, clock: u64) {
-        self.deadline_clock_lo
-            .store(clock as u32, Ordering::Release);
-        self.deadline_clock_hi
-            .store((clock >> 32) as u32, Ordering::Release);
+    fn try_read_deadline_clock(&self) -> Option<u64> {
+        let v1 = self.deadline_version.load(Ordering::Acquire);
+        if v1 & 1 != 0 {
+            return None;
+        }
+        let lo = u64::from(self.deadline_clock_lo.load(Ordering::Acquire));
+        let hi = u64::from(self.deadline_clock_hi.load(Ordering::Acquire));
+        let v2 = self.deadline_version.load(Ordering::Acquire);
+        if v1 != v2 {
+            return None;
+        }
+        Some((hi << 32) | lo)
     }
 
     fn grant_ticks(&self) -> u64 {
@@ -426,6 +453,7 @@ fn reset_for_test() {
     ARM.snapshot.version.store(0, Ordering::Release);
     ARM.snapshot.step_count_count.store(0, Ordering::Release);
     ARM.deadline_active.store(false, Ordering::Release);
+    ARM.deadline_version.store(0, Ordering::Release);
     ARM.deadline_clock_lo.store(0, Ordering::Release);
     ARM.deadline_clock_hi.store(0, Ordering::Release);
     ARM.grant_ticks_lo.store(0, Ordering::Release);
@@ -487,7 +515,9 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
 
     // Initialise Software-source deadline state.
     ARM.deadline_active.store(false, Ordering::Release);
-    ARM.store_deadline_clock(0);
+    ARM.deadline_version.store(0, Ordering::Release);
+    ARM.deadline_clock_lo.store(0, Ordering::Release);
+    ARM.deadline_clock_hi.store(0, Ordering::Release);
     ARM.store_grant_ticks(msg.grant_ticks);
 
     ARM.state.store(ArmState::Armed as u8, Ordering::Release);
@@ -663,11 +693,15 @@ fn tick_software_deadline(clock: u64, stepper_counts: &[i32]) -> TripAction {
     if !ARM.deadline_active.load(Ordering::Acquire) {
         // First tick past arm_clock: open the initial window.
         let grant = ARM.grant_ticks();
-        ARM.store_deadline_clock(clock.saturating_add(grant));
+        ARM.store_deadline_clock_seqlocked(clock.saturating_add(grant));
         ARM.deadline_active.store(true, Ordering::Release);
         return TripAction::Continue;
     }
-    if clock < ARM.deadline_clock() {
+    let deadline = match ARM.try_read_deadline_clock() {
+        Some(d) => d,
+        None => return TripAction::Continue,
+    };
+    if clock < deadline {
         return TripAction::Continue;
     }
     // Deadline expired: attempt to freeze the segment.
@@ -753,7 +787,7 @@ pub fn extend_deadline(arm_id: u32, clock: u64) {
         return;
     }
     let grant = ARM.grant_ticks();
-    ARM.store_deadline_clock(clock.saturating_add(grant));
+    ARM.store_deadline_clock_seqlocked(clock.saturating_add(grant));
 }
 
 pub fn poll_trip() -> Option<TripEvent> {
@@ -1308,7 +1342,7 @@ mod tests {
         arm(sw_msg(100)).expect("arm");
         assert_eq!(tick(1, [0, 0, 0], &[]), TripAction::Continue);
         extend_deadline(42, 50);
-        assert_eq!(ARM.deadline_clock(), 150);
+        assert_eq!(ARM.deadline_clock_unchecked(), 150);
         assert_eq!(tick(101, [0, 0, 0], &[]), TripAction::Continue);
         assert_eq!(tick(150, [0, 0, 0], &[]), TripAction::AbortNow);
         assert_eq!(drain_trip().trip_source_idx, TRIP_SOURCE_DEADLINE_EXPIRED);
@@ -1319,9 +1353,9 @@ mod tests {
         let _guard = reset();
         arm(sw_msg(100)).expect("arm");
         assert_eq!(tick(1, [0, 0, 0], &[]), TripAction::Continue);
-        let deadline_before = ARM.deadline_clock();
+        let deadline_before = ARM.deadline_clock_unchecked();
         extend_deadline(99, 50); // wrong arm_id
-        assert_eq!(ARM.deadline_clock(), deadline_before);
+        assert_eq!(ARM.deadline_clock_unchecked(), deadline_before);
     }
 
     #[test]
@@ -1333,7 +1367,7 @@ mod tests {
         assert!(!ARM.deadline_active.load(Ordering::Acquire));
         extend_deadline(42, 50); // deadline_active is false → no-op
         assert!(!ARM.deadline_active.load(Ordering::Acquire));
-        assert_eq!(ARM.deadline_clock(), 0);
+        assert_eq!(ARM.deadline_clock_unchecked(), 0);
     }
 
     #[test]
@@ -1413,7 +1447,7 @@ mod tests {
         let _guard = reset();
         arm(sw_msg(u64::MAX)).expect("arm");
         assert_eq!(tick(1, [0, 0, 0], &[]), TripAction::Continue);
-        assert_eq!(ARM.deadline_clock(), u64::MAX);
+        assert_eq!(ARM.deadline_clock_unchecked(), u64::MAX);
     }
 
     #[test]

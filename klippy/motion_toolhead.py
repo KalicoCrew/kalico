@@ -551,7 +551,8 @@ class MotionToolhead(ToolHead):
                     waketime=self.reactor.monotonic() + 0.025
                 )
                 if drip_completion.test():
-                    self.bridge.software_trip(mcu_handle, arm_id)
+                    if not self.bridge.is_homing_segment_retired():
+                        self.bridge.software_trip(mcu_handle, arm_id)
                     break
                 if self.bridge.is_homing_segment_retired():
                     reason = self.bridge.get_homing_segment_reason()

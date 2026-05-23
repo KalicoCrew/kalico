@@ -186,7 +186,11 @@ class MCU_stepper:
             try:
                 base = getattr(bridge, '_homing_print_time_base', 0.0)
                 pos_xyz = bridge.get_homing_position_at_time(print_time - base)
-            except Exception:
+            except Exception as e:
+                logging.warning(
+                    "get_past_mcu_position: curve eval failed for %s: %s",
+                    self.get_name(), e,
+                )
                 return getattr(self, "_bridge_last_trip_step_count",
                                self.get_mcu_position())
             motor_pos = self._calc_motor_position_from_xyz(pos_xyz)
