@@ -1060,6 +1060,9 @@ impl Reactor {
             ReactorCommand::AttachCreditCounter(counter) => {
                 self.event_dispatcher.credit_counter = Some(counter);
             }
+            ReactorCommand::AttachRetirementCallback(wrapper) => {
+                self.event_dispatcher.retirement_callback = Some(wrapper.0);
+            }
             ReactorCommand::SubscribeFault { sender, reply } => {
                 let result = self.event_dispatcher.fault_latch.subscribe(sender);
                 let _ = reply.send(result);

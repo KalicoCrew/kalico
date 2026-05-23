@@ -73,6 +73,17 @@ impl Default for KalicoHostIoConfig {
     }
 }
 
+/// Newtype wrapper for a retirement callback so `ReactorCommand` can remain
+/// `#[derive(Debug)]`. The underlying `Arc<dyn Fn(u32) + Send + Sync>` does
+/// not implement `Debug`, so we provide a trivial opaque representation.
+pub struct RetirementCallback(pub Arc<dyn Fn(u32) + Send + Sync>);
+
+impl std::fmt::Debug for RetirementCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RetirementCallback(<fn>)")
+    }
+}
+
 #[derive(Debug)]
 pub enum ReactorCommand {
     Submit {
@@ -91,6 +102,7 @@ pub enum ReactorCommand {
     },
     Abandon(u64),
     AttachCreditCounter(std::sync::Arc<CreditCounter>),
+    AttachRetirementCallback(RetirementCallback),
     SubscribeFault {
         sender: SyncSender<FaultEvent>,
         reply: SyncSender<Result<(), SubscribeError>>,
@@ -536,6 +548,18 @@ impl KalicoHostIo {
         let _ = self
             .submission_tx
             .send(ReactorCommand::AttachCreditCounter(counter));
+    }
+
+    /// Install a callback that is invoked on the reactor thread with
+    /// `retired_through_segment_id` on every `CreditFreed` event — both
+    /// direct frames from the MCU and synthesized events from the 10 Hz
+    /// status watermark path. Avoids a circular crate dependency: since
+    /// `motion-bridge` depends on `kalico-host-rt`, the bridge installs its
+    /// slot-retirement logic here rather than importing a bridge type.
+    pub fn attach_retirement_callback(&self, cb: Arc<dyn Fn(u32) + Send + Sync>) {
+        let _ = self
+            .submission_tx
+            .send(ReactorCommand::AttachRetirementCallback(RetirementCallback(cb)));
     }
 
     pub fn subscribe_fault(&self) -> Result<std::sync::mpsc::Receiver<FaultEvent>, SubscribeError> {

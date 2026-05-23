@@ -222,6 +222,14 @@ pub struct EventDispatcher {
     /// periodic status frame is monotonic state so we can recover credit
     /// flow from it deterministically).
     status_retired_watermark: u32,
+    /// Optional callback installed by the bridge at init time. Called with
+    /// `retired_through_segment_id` on every `CreditFreed` event — both
+    /// direct frames from the MCU and synthesized events from the 10 Hz
+    /// status watermark path. Avoids a circular crate dependency: since
+    /// `motion-bridge` depends on `kalico-host-rt`, the callback direction
+    /// must go from `kalico-host-rt` out to `motion-bridge`, not via an
+    /// import. Set via [`ReactorCommand::AttachRetirementCallback`].
+    pub retirement_callback: Option<Arc<dyn Fn(u32) + Send + Sync>>,
 }
 
 impl EventDispatcher {
@@ -244,6 +252,7 @@ impl EventDispatcher {
             runtime_event_dispatcher: RuntimeEventDispatcher::default(),
             host_event_dispatcher: HostEventDispatcher::new(host_rx),
             status_retired_watermark: 0,
+            retirement_callback: None,
         }
     }
 
@@ -281,6 +290,9 @@ impl EventDispatcher {
                     available_after,
                     events,
                 );
+                if let Some(cb) = &self.retirement_callback {
+                    cb(e.retired_through_segment_id);
+                }
                 // Phase C-B (kalico-native transport): forward CreditFreed
                 // to the python bridge poller so motion-bridge.on_credit_freed
                 // releases curve-pool slots. Pre-Phase-C the legacy Klipper
@@ -541,5 +553,46 @@ mod dispatch_tests {
         // Regress to 8 (an out-of-order or stale frame).
         d.dispatch(status_with_watermark(0, 8));
         assert_eq!(counter.credit_freed_events(), 1, "regression ignored");
+    }
+
+    #[test]
+    fn credit_freed_calls_retirement_callback() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let status = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+        let mut d = EventDispatcher::new(status, 16, 8);
+
+        let retired_id = Arc::new(AtomicU32::new(0));
+        let retired_id2 = Arc::clone(&retired_id);
+        d.retirement_callback = Some(Arc::new(move |seg_id| {
+            retired_id2.store(seg_id, Ordering::Release);
+        }));
+
+        d.dispatch(RuntimeEvent::CreditFreed(CreditFreedEvent {
+            retired_through_segment_id: 42,
+            free_slots: 5,
+        }));
+        assert_eq!(retired_id.load(Ordering::Acquire), 42);
+    }
+
+    #[test]
+    fn status_synthesized_credit_freed_calls_retirement_callback() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let status = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+        let mut d = EventDispatcher::new(status, 16, 8);
+
+        let retired_id = Arc::new(AtomicU32::new(0));
+        let retired_id2 = Arc::clone(&retired_id);
+        d.retirement_callback = Some(Arc::new(move |seg_id| {
+            retired_id2.store(seg_id, Ordering::Release);
+        }));
+
+        d.dispatch(RuntimeEvent::Status(StatusEvent {
+            retired_through_segment_id: 10,
+            queue_depth: 3,
+            ..StatusEvent::default()
+        }));
+        assert_eq!(retired_id.load(Ordering::Acquire), 10);
     }
 }
