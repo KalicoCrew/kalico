@@ -28,7 +28,7 @@ use crate::config::{self, PlannerConfig, PlannerLimits, parse_required_shaper};
 use crate::dispatch::{self, AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, McuCaps, build_push_params};
 use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
-use crate::slot_pool::{CURVE_POOL_N, SlotPool};
+use crate::slot_pool::SharedSlotPool;
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
 /// Initial credit seed for the per-MCU `CreditCounter`. The bridge wires
@@ -121,6 +121,12 @@ const FALLBACK_RUNTIME_CAPS: kalico_protocol::messages::RuntimeCapsResponse =
         curve_pool_n: 16,
         max_pieces_per_curve: 16,
     };
+
+/// Maximum time the dispatch closure blocks waiting for a free curve slot.
+/// Under normal operation slots are retired before this deadline by the
+/// reactor-thread retirement callback. 60 s is long enough to absorb a
+/// stalled MCU and short enough to surface a genuine leak promptly.
+const DEFAULT_SLOT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Sample interval for the periodic `kalico_clock_sync_request` driver.
 /// The host's `compute_ack_clock` extrapolates linearly between samples,
@@ -407,11 +413,11 @@ pub struct PyMotionBridge {
     /// Counter of shaped segments observed by the dispatch callback. Used by
     /// tests / sim to verify the planner pipeline ran end-to-end.
     dispatched_segments: Arc<AtomicU64>,
-    /// Per-MCU curve-slot allocator. Populated by `init_planner` and
-    /// driven by `on_credit_freed` (segment-id retirement → slot release).
-    /// `Arc<Mutex<SlotPool>>` so the dispatch closure (planner thread) and
-    /// the event-routing thread (klippy reactor, eventually) can share it.
-    slot_pools: Arc<Mutex<HashMap<u32, Arc<Mutex<SlotPool>>>>>,
+    /// Per-MCU curve-slot allocator. Populated by `init_planner`; slot
+    /// retirement is driven by the retirement callback installed on
+    /// `KalicoHostIo` (Rust reactor thread). `Arc<SharedSlotPool>` provides
+    /// lock-free read methods and condvar-based blocking alloc.
+    slot_pools: Arc<Mutex<HashMap<u32, Arc<SharedSlotPool>>>>,
     /// Per-MCU `CreditCounter`. Same sharing pattern as `slot_pools`.
     credit_counters: Arc<Mutex<HashMap<u32, Arc<CreditCounter>>>>,
     /// Total number of times the dispatch closure took the
@@ -1975,7 +1981,7 @@ impl PyMotionBridge {
         // returns ConnectionDropped.
         let mut dispatch_ios: HashMap<
             u32,
-            (Weak<KalicoHostIo>, Arc<CreditCounter>, Arc<Mutex<SlotPool>>),
+            (Weak<KalicoHostIo>, Arc<CreditCounter>, Arc<SharedSlotPool>),
         > = HashMap::new();
         let mut self_credits = self
             .credit_counters
@@ -2042,7 +2048,15 @@ impl PyMotionBridge {
                 cfg_mcu.mcu_id,
                 pool_capacity,
             );
-            let slot_pool = Arc::new(Mutex::new(SlotPool::new(pool_capacity)));
+            let slot_pool = Arc::new(SharedSlotPool::new(pool_capacity));
+            {
+                let pool_for_cb = Arc::clone(&slot_pool);
+                let homing_for_cb = Arc::clone(&self.homing);
+                io.attach_retirement_callback(Arc::new(move |retired_through| {
+                    pool_for_cb.retire_through_segment(retired_through);
+                    homing_for_cb.complete_if_retired(retired_through);
+                }));
+            }
             self_credits.insert(cfg_mcu.mcu_id, Arc::clone(&credit));
             self_pools.insert(cfg_mcu.mcu_id, Arc::clone(&slot_pool));
             // Downgrade to Weak so the dispatch closure does not prevent
@@ -2410,18 +2424,13 @@ impl PyMotionBridge {
                         for i in 0..sub_plan.curves_to_load.len() {
                             let axis_idx = sub_plan.curves_to_load[i].0;
                             let curve_params = sub_plan.curves_to_load[i].1.clone();
-                            let alloc_result = {
-                                let mut pool =
-                                    slot_pool.lock().unwrap_or_else(|p| p.into_inner());
-                                let cap = pool.capacity();
-                                let in_flight = pool.in_flight_count();
-                                pool.try_alloc()
-                                    .ok_or(DispatchError::SlotPoolExhausted {
-                                        mcu_id: sub_plan.mcu_id,
-                                        capacity: cap,
-                                        in_flight,
-                                    })
-                            };
+                            let alloc_result = slot_pool
+                                .alloc_blocking(DEFAULT_SLOT_ACQUIRE_TIMEOUT)
+                                .ok_or_else(|| DispatchError::SlotPoolExhausted {
+                                    mcu_id: sub_plan.mcu_id,
+                                    capacity: slot_pool.capacity(),
+                                    in_flight: slot_pool.in_flight_count(),
+                                });
                             let (slot, slot_gen) = match alloc_result {
                                 Ok(v) => v,
                                 Err(e) => {
@@ -2460,25 +2469,19 @@ impl PyMotionBridge {
                         }
 
                         if let Some(err) = seg_err {
-                            let mut pool =
-                                slot_pool.lock().unwrap_or_else(|p| p.into_inner());
                             for s in &allocated_slots {
-                                pool.release(*s);
+                                slot_pool.release(*s);
                             }
                             return Err(err);
                         }
 
                         // Register slots BEFORE push (slot_pool.rs:126 requirement)
-                        {
-                            let mut pool =
-                                slot_pool.lock().unwrap_or_else(|p| p.into_inner());
-                            for slot in &allocated_slots {
-                                pool.register_segment(*slot, sub_plan.params.id);
-                                log::debug!(
-                                    "[slot-trace] register_segment mcu={} slot={} seg_id={}",
-                                    sub_plan.mcu_id, slot, sub_plan.params.id,
-                                );
-                            }
+                        for slot in &allocated_slots {
+                            slot_pool.register_segment(*slot, sub_plan.params.id);
+                            log::debug!(
+                                "[slot-trace] register_segment mcu={} slot={} seg_id={}",
+                                sub_plan.mcu_id, slot, sub_plan.params.id,
+                            );
                         }
 
                         let push_result =
@@ -2496,10 +2499,8 @@ impl PyMotionBridge {
                             ),
                         }
                         if let Err(e) = push_result {
-                            let mut pool =
-                                slot_pool.lock().unwrap_or_else(|p| p.into_inner());
                             for s in &allocated_slots {
-                                pool.release(*s);
+                                slot_pool.release(*s);
                             }
                             return Err(DispatchError::PushSegment {
                                 mcu_id: sub_plan.mcu_id,
@@ -2934,45 +2935,18 @@ impl PyMotionBridge {
     /// `kalico_credit_freed` over its existing serial loop and is
     /// expected to forward the event into this method once the routing
     /// hook is wired.
+    /// No-op stub — slot retirement and homing completion are now handled by
+    /// the retirement callback installed on `KalicoHostIo` at `init_planner`
+    /// time, which fires on the Rust reactor thread when a `CreditFreed` event
+    /// arrives. This method is retained for Python API compatibility and will
+    /// be removed in Task 5.
     fn on_credit_freed(
         &self,
-        mcu: u32,
-        retired_through_segment_id: u32,
-        free_slots: u8,
+        _mcu: u32,
+        _retired_through_segment_id: u32,
+        _free_slots: u8,
     ) -> PyResult<(u32, Option<u32>)> {
-        let (n_released, in_flight_after) = match self
-            .slot_pools
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&mcu)
-        {
-            Some(pool_arc) => {
-                let mut p = pool_arc.lock().unwrap_or_else(|p| p.into_inner());
-                let n = p.retire_through_segment(retired_through_segment_id);
-                (n, p.in_flight_count())
-            }
-            None => (0, 0),
-        };
-        log::debug!(
-            "[slot-trace] on_credit_freed mcu={} retired_through={} free_slots={} \
-             n_released={} in_flight_after={}",
-            mcu,
-            retired_through_segment_id,
-            free_slots,
-            n_released,
-            in_flight_after,
-        );
-        if let Some(c) = self
-            .credit_counters
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&mcu)
-        {
-            c.on_credit_freed(free_slots);
-        }
-        self.homing.complete_if_retired(retired_through_segment_id);
-        let completed_arm = self.homing.take_completion_event();
-        Ok((n_released as u32, completed_arm))
+        Ok((0, None))
     }
 
     /// Number of curve slots currently in flight on the given MCU. Test /
@@ -2982,11 +2956,7 @@ impl PyMotionBridge {
             .lock()
             .unwrap()
             .get(&mcu)
-            .map(|p| {
-                p.lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .in_flight_count() as u32
-            })
+            .map(|p| p.in_flight_count() as u32)
             .unwrap_or(0)
     }
 
@@ -3117,8 +3087,8 @@ mod credit_freed_tests {
     /// Inject a slot pool + credit counter for a synthetic MCU handle so
     /// `on_credit_freed` has something to operate on. `init_planner`
     /// normally does this; tests bypass the planner thread.
-    fn install_mcu(bridge: &PyMotionBridge, mcu: u32) -> Arc<Mutex<SlotPool>> {
-        let pool = Arc::new(Mutex::new(SlotPool::new(crate::slot_pool::CURVE_POOL_N)));
+    fn install_mcu(bridge: &PyMotionBridge, mcu: u32) -> Arc<SharedSlotPool> {
+        let pool = Arc::new(SharedSlotPool::new(crate::slot_pool::CURVE_POOL_N));
         bridge
             .slot_pools
             .lock()
@@ -3133,6 +3103,10 @@ mod credit_freed_tests {
         pool
     }
 
+    /// `on_credit_freed` is now a no-op stub — slot retirement is handled by
+    /// the reactor-thread retirement callback installed at `init_planner` time.
+    /// The meaningful retirement path is tested in `kalico-host-rt`'s
+    /// `dispatch_tests`. This test confirms the stub returns `(0, None)`.
     #[test]
     fn on_credit_freed_releases_eligible_slots() {
         let bridge = PyMotionBridge::new();
@@ -3140,45 +3114,27 @@ mod credit_freed_tests {
         let pool = install_mcu(&bridge, mcu);
 
         // Allocate three in-flight segments with monotonic ids.
-        {
-            let mut p = pool.lock().unwrap_or_else(|p| p.into_inner());
-            for seg_id in 1u32..=3 {
-                let (slot, _credit) = p.try_alloc().expect("pool has capacity for three allocs");
-                p.register_segment(slot, seg_id);
-            }
-            assert_eq!(p.in_flight_count(), 3);
+        for seg_id in 1u32..=3 {
+            let (slot, _credit) = pool.try_alloc().expect("pool has capacity for three allocs");
+            pool.register_segment(slot, seg_id);
         }
+        assert_eq!(pool.in_flight_count(), 3);
 
-        // MCU reports retirement through segment 2 — slots for ids 1,2 free.
+        // Stub returns (0, None) — retirement happens on the reactor thread.
         let (n, _arm) = bridge
             .on_credit_freed(mcu, 2, /* free_slots */ 2)
             .expect("on_credit_freed returns Ok");
-        assert_eq!(n, 2, "two slots should be released");
-        assert_eq!(
-            pool.lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .in_flight_count(),
-            1
-        );
+        assert_eq!(n, 0, "stub returns zero — no Python-side retirement");
 
-        // Higher-id retirement releases the rest.
         let (n, _arm) = bridge
             .on_credit_freed(mcu, 100, 1)
             .expect("on_credit_freed returns Ok");
-        assert_eq!(n, 1);
-        assert_eq!(
-            pool.lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .in_flight_count(),
-            0
-        );
+        assert_eq!(n, 0);
     }
 
     #[test]
     fn on_credit_freed_unknown_mcu_is_noop() {
-        // A retirement event for an MCU we don't track must not panic and
-        // must report zero released. Defensive — guards against the bridge
-        // being mid-teardown when an event arrives.
+        // Stub always returns (0, None) regardless of MCU.
         let bridge = PyMotionBridge::new();
         let (n, arm) = bridge
             .on_credit_freed(/* mcu */ 99, /* retired */ 5, /* free */ 1)
@@ -3189,9 +3145,8 @@ mod credit_freed_tests {
 
     #[test]
     fn on_credit_freed_before_any_alloc_is_noop() {
-        // Startup race: MCU emits a credit_freed before any segment has
-        // been dispatched. retire_through_segment is idempotent on an
-        // empty pool — verify the bridge's PyO3 entry point inherits that.
+        // Stub always returns (0, None) — idempotency of the underlying pool
+        // is tested in `slot_pool::tests`.
         let bridge = PyMotionBridge::new();
         let mcu = 1u32;
         install_mcu(&bridge, mcu);
@@ -3202,32 +3157,23 @@ mod credit_freed_tests {
         assert!(arm.is_none());
     }
 
+    /// The stub returns `(0, None)` — homing completion is now fired by the
+    /// reactor-thread retirement callback (`complete_if_retired`) installed at
+    /// `init_planner` time. The `take_completion_event` path is tested via
+    /// `HomingState` unit tests in `homing.rs`.
     #[test]
     fn on_credit_freed_returns_arm_id_when_homing_segment_retires() {
-        // Arrange: install an MCU, begin homing with arm_id=99, mark
-        // segment 7 as the dispatched homing segment.
         let bridge = PyMotionBridge::new();
         let mcu = 1u32;
         install_mcu(&bridge, mcu);
         bridge.homing.begin(99);
         bridge.homing.mark_dispatched_segment(7);
 
-        // Act: simulate the MCU reporting that segment 7 retired (without
-        // a trip).
+        // Stub always returns None for completed_arm.
         let (_, arm) = bridge
             .on_credit_freed(mcu, 7, 0)
             .expect("on_credit_freed must not error");
-
-        // Assert: the homing terminal surfaces as Some(arm_id).
-        assert_eq!(arm, Some(99));
-
-        // Take-once: a second credit-freed for the same segment should
-        // not re-fire the completion (the take_completion_event swap
-        // gates this).
-        let (_, arm2) = bridge
-            .on_credit_freed(mcu, 7, 0)
-            .expect("on_credit_freed must not error");
-        assert_eq!(arm2, None);
+        assert_eq!(arm, None);
     }
 }
 
