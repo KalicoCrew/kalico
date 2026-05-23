@@ -395,9 +395,13 @@ def run_simulation(
             beacon_pty = str(tmp / "klipper_sim_beacon")
             beacon_stub = _start_beacon(beacon_pty, log_dir, repo_root)
 
+            # Detect if this branch has the Kalico motion bridge
+            has_motion_bridge = (repo_root / "klippy" / "motion_bridge.py").exists()
+
             rendered_cfg = _prepare_config(
                 tmp, config_dir, repo_root,
                 h7_pty, f4_pty if dual_mcu else None, beacon_pty,
+                has_motion_bridge=has_motion_bridge,
             )
 
             # Copy G-code to virtual SD card location
@@ -485,46 +489,75 @@ def run_simulation(
                     api_socket, klippy_proc, klippy_log, timeout,
                 )
             else:
-                # No G-code — run homing + basic move test
-                log.info("No G-code file, running G28 + move test")
-
-                # Set all axes position and run test moves
-                # (Homing requires real-time scheduling; on Docker
-                # Desktop, SET_KINEMATIC_POSITION is used instead.
-                # On native Linux with SCHED_FIFO, G28 works.)
-                log.info("Setting position and running test moves")
-                send_gcode(api_socket,
-                           "SET_KINEMATIC_POSITION X=125 Y=125 Z=125",
-                           timeout=10)
+                # No G-code — generate and print a test pattern
+                log.info("No G-code file, generating test pattern")
+                test_gcode = gcode_dir / "sim_test.gcode"
+                test_gcode.write_text("""\
+; Kalico Sim self-test: square spiral with Z moves
+SET_KINEMATIC_POSITION X=125 Y=125 Z=125
+G1 Z120 F300
+G1 X10 Y10 F3000
+G1 X100 Y10 F3000
+G1 X100 Y100 F3000
+G1 X10 Y100 F3000
+G1 X10 Y10 F3000
+G1 X20 Y20 F3000
+G1 X90 Y20 F3000
+G1 X90 Y90 F3000
+G1 X20 Y90 F3000
+G1 X20 Y20 F3000
+G1 X30 Y30 F2000
+G1 X80 Y30 F2000
+G1 X80 Y80 F2000
+G1 X30 Y80 F2000
+G1 X30 Y30 F2000
+G1 X40 Y40 F1500
+G1 X70 Y40 F1500
+G1 X70 Y70 F1500
+G1 X40 Y70 F1500
+G1 X40 Y40 F1500
+G1 Z125 F300
+""")
                 resp = send_gcode(
                     api_socket,
-                    "G1 X100 Y100 Z120 F1000",
+                    "SDCARD_PRINT_FILE FILENAME=sim_test.gcode",
                     timeout=30,
                 )
-                success = True
-                error = None
-                if isinstance(resp, dict) and "error" in resp:
-                    success = False
-                    error = str(resp.get("error"))
-                else:
-                    # Second move
-                    resp = send_gcode(
-                        api_socket,
-                        "G1 X50 Y50 Z110 F1000",
-                        timeout=30,
-                    )
-                    if isinstance(resp, dict) and "error" in resp:
-                        success = False
-                        error = str(resp.get("error"))
-                    else:
-                        log.info("Test moves complete")
+                log.info("Print started: sim_test.gcode")
+                success, error = wait_for_print_done(
+                    api_socket, klippy_proc, klippy_log, timeout,
+                )
 
-            vtime_end = vtime_read_ns()
             wall_end = time.monotonic()
-
-            print_time_s = (vtime_end - vtime_start) / 1e9
             wall_time_s = wall_end - wall_start
-            speedup = print_time_s / wall_time_s if wall_time_s > 0 else 0
+
+            # Get actual print time from klippy's toolhead/print_stats
+            print_time_s = 0.0
+            try:
+                status = query_status(api_socket)
+                if status:
+                    r = status.get("result", {}).get("status", {})
+                    ps = r.get("print_stats", {})
+                    print_time_s = ps.get("total_duration", 0.0)
+                    if print_time_s == 0:
+                        print_time_s = ps.get("print_duration", 0.0)
+            except Exception:
+                pass
+
+            # Fallback: extract print time from klippy log stats
+            if print_time_s == 0:
+                try:
+                    klippy_content = klippy_log.read_text(errors="replace")
+                    import re
+                    for line in reversed(klippy_content.split("\n")):
+                        m = re.search(r"print_time=(\d+\.?\d*)", line)
+                        if m:
+                            print_time_s = float(m.group(1))
+                            break
+                except Exception:
+                    pass
+
+            speedup = print_time_s / wall_time_s if (wall_time_s > 0 and print_time_s > 0) else 0
 
             klippy_content = ""
             if klippy_log.exists():
@@ -641,12 +674,19 @@ def _prepare_config(
     h7_pty: str,
     f4_pty: Optional[str],
     beacon_pty: str,
+    has_motion_bridge: bool = False,
 ) -> pathlib.Path:
     """Render printer.cfg with sim serial paths."""
     # Try to find config from sim_klippy
     if config_dir is None:
-        # Generate a minimal config for basic testing
-        cfg = _generate_minimal_config(h7_pty, f4_pty)
+        cfg = _generate_minimal_config(h7_pty, f4_pty, gcode_dir=str(tmp_dir / "gcodes"))
+        if has_motion_bridge:
+            cfg += """
+[input_shaper]
+shaper_freq_x: 50
+shaper_freq_y: 50
+shaper_type: smooth_mzv
+"""
         cfg_path = tmp_dir / "printer.cfg"
         cfg_path.write_text(cfg)
         return cfg_path
@@ -781,7 +821,7 @@ class EndstopTrigger:
             )
 
 
-def _generate_minimal_config(h7_pty: str, f4_pty: str) -> str:
+def _generate_minimal_config(h7_pty: str, f4_pty: str, gcode_dir: str = "/tmp/kalico_sim_gcodes") -> str:
     """Generate a minimal single-MCU Cartesian config for testing.
 
     MACH_LINUX uses gpiochip0/gpioN pin naming (not STM32 PA3 style).
@@ -836,15 +876,10 @@ position_max: 250
 homing_speed: 5
 
 [virtual_sdcard]
-path: /tmp/kalico_sim_gcodes
+path: {gcode_dir}
 
 [force_move]
 enable_force_move: True
-
-[input_shaper]
-shaper_freq_x: 50
-shaper_freq_y: 50
-shaper_type: smooth_mzv
 """
 
 
