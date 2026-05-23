@@ -150,10 +150,20 @@ pub fn emit_shaped(
             };
 
             let mut axis_shaped = if axis_is_constant {
-                // Constant-position axis: shaping a constant is a no-op
-                // and refit would introduce µm-scale residuals that inflate
-                // the CoreXY knot-union piece count. Pass through as-is.
-                fitted.axes[axis].clone()
+                // Constant-position axis: collapse to a single-piece
+                // constant NURBS. Cloning the fitted axis would preserve
+                // all N grid pieces (e.g. 200 for a long move), which
+                // inflates the CoreXY knot-union piece count (200 X +
+                // 200 Y → 672 motor-frame pieces). A single piece keeps
+                // the knot union tight.
+                let val = cps.first().copied().unwrap_or(0.0);
+                ScalarNurbs::try_new(
+                    3,
+                    vec![t_start, t_start, t_start, t_start,
+                         t_end, t_end, t_end, t_end],
+                    vec![val; 4],
+                    None,
+                ).expect("constant NURBS construction")
             } else if let Some(kernel) = kernels[axis].as_ref() {
                 let padded = pad_segment_axis_with_history(
                     seg_idx,
