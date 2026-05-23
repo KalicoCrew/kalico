@@ -424,8 +424,16 @@ class SerialReader:
         )
 
     def disconnect(self):
-        # Bridge manages its own serial lifecycle; just settle pending
-        # response notifications.
+        # Release the serial port through the bridge so firmware_restart's
+        # arduino_reset() can open it for the DTR toggle.  Mirrors
+        # mainline's disconnect() which closes the FD before the reset.
+        bridge = getattr(self.mcu, "_motion_bridge", None)
+        handle = getattr(self.mcu, "_bridge_handle", None)
+        if bridge is not None and handle is not None:
+            try:
+                bridge.detach_serial(handle)
+            except Exception:
+                logging.exception("bridge detach_serial failed")
         for pn in self.pending_notifications.values():
             pn.complete(None)
         self.pending_notifications.clear()

@@ -852,6 +852,29 @@ impl PyMotionBridge {
     /// Open the serial port for `mcu_handle`, run the identify handshake,
     /// and spawn the host-rt reactor thread that owns the FD.
     ///
+    /// Release the serial port for an MCU without removing the MCU
+    /// entry.  Stops clock-sync, drops the `KalicoHostIo` (which
+    /// shuts down the reactor thread and closes the kernel FD), and
+    /// clears the runtime event receiver.  The MCU handle stays valid
+    /// so a later `attach_serial` can reconnect.
+    ///
+    /// Called from `serialhdl.disconnect()` in bridge mode so that
+    /// `arduino_reset()` can open the port for the DTR-toggle reset.
+    fn detach_serial(&self, mcu_handle: u32) -> PyResult<()> {
+        let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(conn) = mcus.get_mut(&mcu_handle) {
+            if let Some(stop) = conn.clock_sync_stop.take() {
+                stop.store(true, std::sync::atomic::Ordering::Release);
+            }
+            if let Some(h) = conn.clock_sync_thread.take() {
+                let _ = h.join();
+            }
+            conn.runtime_rx = None;
+            conn.host_io = None;
+        }
+        Ok(())
+    }
+
     /// Blocks until the port is open and identify completes (or the
     /// 30-second retry window expires). The raw identify bytes (zlib
     /// blob from firmware) are stored and can be retrieved via
