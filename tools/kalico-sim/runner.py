@@ -846,11 +846,215 @@ enable_force_move: True
 """
 
 
+def run_batch_simulation(
+    repo_root: pathlib.Path,
+    gcode_path: pathlib.Path,
+    config_path: Optional[pathlib.Path] = None,
+    timeout: float = 300.0,
+    verbose: bool = False,
+) -> SimResult:
+    """Run Klipper in batch mode (--debuginput/--debugoutput) for
+    faster-than-real-time print time prediction.
+
+    This mode runs the full motion planner WITHOUT any MCU firmware.
+    It processes G-code at CPU speed (~100x real-time for typical prints)
+    and produces exact timing data. No Docker privileges needed.
+
+    Requires a dictionary file (klipper.dict) built from the firmware.
+    """
+    wall_start = time.monotonic()
+
+    with tempfile.TemporaryDirectory(prefix="kalico_batch_") as tmpdir:
+        tmp = pathlib.Path(tmpdir)
+
+        # Find or build dictionary file
+        dict_path = repo_root / "out" / "klipper.dict"
+        if not dict_path.exists():
+            return SimResult(
+                success=False, print_time_s=0,
+                wall_time_s=time.monotonic() - wall_start,
+                speedup=0,
+                error="Missing klipper.dict. Build firmware first.",
+            )
+
+        # Prepare config
+        if config_path is None:
+            # Generate a batch-mode config (no serial needed)
+            cfg_text = _generate_batch_config()
+            cfg_file = tmp / "printer.cfg"
+            cfg_file.write_text(cfg_text)
+            config_path = cfg_file
+
+        # Prepare output files
+        debug_output = str(tmp / "debug_output")
+        klippy_log = str(tmp / "klippy.log")
+
+        # Run klippy in batch mode
+        cmd = [
+            "python3",
+            str(repo_root / "klippy" / "klippy.py"),
+            str(config_path),
+            "-i", str(gcode_path),
+            "-o", debug_output,
+            "-d", str(dict_path),
+            "-l", klippy_log,
+        ]
+        if verbose:
+            cmd.append("-v")
+
+        log.info("Running batch simulation: %s", gcode_path.name)
+        log.info("Command: %s", " ".join(cmd))
+
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=str(repo_root),
+            )
+        except subprocess.TimeoutExpired:
+            return SimResult(
+                success=False, print_time_s=0,
+                wall_time_s=time.monotonic() - wall_start,
+                speedup=0,
+                error=f"Batch simulation timed out after {timeout}s",
+            )
+
+        wall_end = time.monotonic()
+        wall_time = wall_end - wall_start
+
+        # Parse klippy log for print time
+        print_time = 0.0
+        error = None
+        klippy_content = ""
+        try:
+            klippy_content = pathlib.Path(klippy_log).read_text(errors="replace")
+        except FileNotFoundError:
+            pass
+
+        if result.returncode != 0:
+            # Check for known errors
+            if "error" in klippy_content.lower() or "shutdown" in klippy_content.lower():
+                for line in klippy_content.split("\n"):
+                    if "error" in line.lower() or "shutdown" in line.lower():
+                        error = line.strip()
+                        break
+            if not error:
+                error = f"klippy exited with code {result.returncode}"
+                if result.stderr:
+                    error += f"\n{result.stderr[-500:]}"
+
+        # Extract print time from log
+        import re
+        # Look for "Exiting (print time X.XXXs)" — the definitive line
+        for line in reversed(klippy_content.split("\n")):
+            m = re.search(r"print time (\d+\.?\d*)s", line)
+            if m:
+                print_time = float(m.group(1))
+                break
+        # Fallback: look for "print_time=X.XXX" in stats
+        if print_time == 0:
+            for line in reversed(klippy_content.split("\n")):
+                m = re.search(r"print_time=(\d+\.?\d*)", line)
+                if m:
+                    print_time = float(m.group(1))
+                    break
+
+        speedup = print_time / wall_time if wall_time > 0 else 0
+
+        return SimResult(
+            success=(result.returncode == 0 and error is None),
+            print_time_s=print_time,
+            wall_time_s=wall_time,
+            speedup=speedup,
+            error=error,
+            klippy_log=klippy_content,
+        )
+
+
+def _generate_batch_config() -> str:
+    """Generate a config for batch mode (MACH_LINUX pin format)."""
+    return """\
+[mcu]
+serial: /dev/null
+
+[printer]
+kinematics: cartesian
+max_velocity: 300
+max_accel: 5000
+max_z_velocity: 15
+max_z_accel: 45
+
+[stepper_x]
+step_pin: gpiochip0/gpio0
+dir_pin: gpiochip0/gpio1
+enable_pin: !gpiochip0/gpio2
+microsteps: 16
+rotation_distance: 40
+endstop_pin: ^gpiochip0/gpio10
+position_endstop: 0
+position_max: 250
+
+[stepper_y]
+step_pin: gpiochip0/gpio3
+dir_pin: gpiochip0/gpio4
+enable_pin: !gpiochip0/gpio5
+microsteps: 16
+rotation_distance: 40
+endstop_pin: ^gpiochip0/gpio11
+position_endstop: 0
+position_max: 250
+
+[stepper_z]
+step_pin: gpiochip0/gpio6
+dir_pin: gpiochip0/gpio7
+enable_pin: !gpiochip0/gpio8
+microsteps: 16
+rotation_distance: 4
+endstop_pin: ^gpiochip0/gpio12
+position_endstop: 0
+position_max: 250
+
+[extruder]
+step_pin: gpiochip0/gpio13
+dir_pin: gpiochip0/gpio14
+enable_pin: !gpiochip0/gpio15
+microsteps: 16
+rotation_distance: 22.6789511
+nozzle_diameter: 0.4
+filament_diameter: 1.75
+heater_pin: gpiochip0/gpio20
+sensor_pin: analog0
+sensor_type: EPCOS 100K B57560G104F
+min_temp: -10
+max_temp: 300
+control: pid
+pid_kp: 30
+pid_ki: 2
+pid_kd: 100
+
+[heater_bed]
+heater_pin: gpiochip0/gpio21
+sensor_pin: analog1
+sensor_type: EPCOS 100K B57560G104F
+min_temp: -10
+max_temp: 120
+control: pid
+pid_kp: 60
+pid_ki: 1
+pid_kd: 600
+"""
+
+
 def main():
     parser = argparse.ArgumentParser(description="Kalico Simulator")
     parser.add_argument("--gcode", type=str, help="G-code file to print")
     parser.add_argument("--config", type=str,
-                        help="Config directory (default: sim_klippy/printer_real/config)")
+                        help="Config directory or file")
+    parser.add_argument("--mode", choices=["full", "batch"], default="full",
+                        help="Simulation mode: 'full' (MCU firmware) or "
+                             "'batch' (timing prediction, faster)")
     parser.add_argument("--timeout", type=float, default=600,
                         help="Max wall-clock seconds (default: 600)")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -865,23 +1069,36 @@ def main():
     gcode = pathlib.Path(args.gcode) if args.gcode else None
     config = pathlib.Path(args.config) if args.config else None
 
-    result = run_simulation(
-        repo_root=repo,
-        gcode_path=gcode,
-        config_dir=config,
-        timeout=args.timeout,
-        verbose=args.verbose,
-    )
+    if args.mode == "batch":
+        if not gcode:
+            print("ERROR: --gcode is required for batch mode")
+            sys.exit(1)
+        result = run_batch_simulation(
+            repo_root=repo,
+            gcode_path=gcode,
+            config_path=config,
+            timeout=args.timeout,
+            verbose=args.verbose,
+        )
+    else:
+        result = run_simulation(
+            repo_root=repo,
+            gcode_path=gcode,
+            config_dir=config,
+            timeout=args.timeout,
+            verbose=args.verbose,
+        )
 
     print("\n" + "=" * 60)
-    print("SIMULATION RESULT")
+    print(f"SIMULATION RESULT ({args.mode} mode)")
     print("=" * 60)
     print(f"  Status:     {'PASS' if result.success else 'FAIL'}")
     print(f"  Print time: {result.print_time_s:.1f}s "
           f"({result.print_time_s/60:.1f} min)")
     print(f"  Wall time:  {result.wall_time_s:.1f}s "
           f"({result.wall_time_s/60:.1f} min)")
-    print(f"  Speedup:    {result.speedup:.1f}x")
+    if result.speedup > 0:
+        print(f"  Speedup:    {result.speedup:.1f}x")
     if result.error:
         print(f"  Error:      {result.error}")
     print("=" * 60)

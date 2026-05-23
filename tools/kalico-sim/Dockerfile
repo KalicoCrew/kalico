@@ -35,6 +35,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-jinja2 \
     python3-markupsafe \
     libffi-dev \
+    libudev-dev \
     pkg-config \
     git \
     curl \
@@ -57,6 +58,15 @@ COPY . /kalico/
 
 # Build shims (libvtime.so + libsim_intercept.so)
 RUN make -C tools/kalico-sim/libvtime
+
+# Patch the source tree for MACH_LINUX builds.
+# Fixes two issues that exist on the sota-motion branch:
+#   1. Linux stubs for Cortex-M-only symbols: sched_writable_begin/end/reset
+#      (generic/mpu_protect.c) and timer_wrap_event (generic/armcm_timer.c).
+#      Both files are STM32-only and are never compiled for MACH_LINUX.
+#   2. Call-site rename: kalico_runtime_modulated_tick ->
+#      kalico_runtime_tick_sample (Rust API renamed in 2026-05-20 redesign).
+RUN bash tools/kalico-sim/patches/fix_linux_build.sh /kalico
 
 # Build MACH_LINUX H7 firmware
 # Use branch-specific config if available, else generic
@@ -93,6 +103,17 @@ RUN mkdir -p out && cp /sim_elfs/*.elf out/
 
 # Build klippy C helpers
 RUN cd klippy && python3 chelper/__init__.py
+
+# Build motion-bridge PyO3 module if the Rust crate exists.
+# Must happen AFTER the firmware builds (which do make clean and
+# destroy the Rust target directory).
+RUN if [ -d rust/motion-bridge ]; then \
+        echo "=== Building motion-bridge ==="; \
+        cd rust && cargo build -p motion-bridge --release 2>&1 | tail -5 && \
+        cp target/release/libmotion_bridge_native.so \
+           /kalico/klippy/motion_bridge_native.so && \
+        echo "=== motion_bridge_native.so installed ==="; \
+    fi
 
 # Fetch third-party plugins if the script exists
 RUN if [ -f tools/sim_klippy/fetch_plugins.sh ]; then \
