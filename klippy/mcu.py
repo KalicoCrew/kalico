@@ -364,15 +364,36 @@ class MCU_trsync:
         self._mcu.register_response(
             self._handle_trsync_state, "trsync_state", self._oid
         )
-        self._trsync_start_cmd.send(
-            [self._oid, report_clock, report_ticks, self.REASON_COMMS_TIMEOUT],
-            reqclock=clock,
-        )
-        for s in self._steppers:
-            self._stepper_stop_cmd.send([s.get_oid(), self._oid])
-        self._trsync_set_timeout_cmd.send(
-            [self._oid, expire_clock], reqclock=clock
-        )
+        if self._trdispatch_mcu is not None:
+            self._trsync_start_cmd.send(
+                [self._oid, report_clock, report_ticks,
+                 self.REASON_COMMS_TIMEOUT],
+                reqclock=clock,
+            )
+            for s in self._steppers:
+                self._stepper_stop_cmd.send([s.get_oid(), self._oid])
+            self._trsync_set_timeout_cmd.send(
+                [self._oid, expire_clock], reqclock=clock
+            )
+        else:
+            # Bridge mode: raw_send is a no-op for CommandWrapper,
+            # so send text-format commands directly through the bridge.
+            serial = self._mcu._serial
+            serial.send(
+                "trsync_start oid=%d report_clock=%d report_ticks=%d"
+                " expire_reason=%d"
+                % (self._oid, report_clock, report_ticks,
+                   self.REASON_COMMS_TIMEOUT)
+            )
+            for s in self._steppers:
+                serial.send(
+                    "stepper_stop_on_trigger oid=%d trsync_oid=%d"
+                    % (s.get_oid(), self._oid)
+                )
+            serial.send(
+                "trsync_set_timeout oid=%d clock=%d"
+                % (self._oid, expire_clock)
+            )
 
     def set_home_end_time(self, home_end_time):
         self._home_end_clock = self._mcu.print_time_to_clock(home_end_time)
