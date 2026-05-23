@@ -2717,6 +2717,83 @@ impl PyMotionBridge {
         Ok(status as u8)
     }
 
+    // ── Step 7-E: async homing submission + software trip + deadline ──────────
+    //
+    // `submit_homing_move_async` submits a homing move without blocking; the
+    // Python caller polls `is_homing_segment_retired` in its credit loop.
+    // `software_trip` and `extend_homing_deadline` are wire commands that map
+    // directly onto the corresponding firmware runtime commands.
+
+    /// Submit one homing-tagged absolute move and return immediately.
+    /// Unlike `submit_homing_move`, this does **not** call `wait_moves` —
+    /// the caller is expected to poll `is_homing_segment_retired` to detect
+    /// completion.
+    #[pyo3(signature = (newpos, speed, arm_ids))]
+    fn submit_homing_move_async(
+        &self,
+        newpos: Vec<f64>,
+        speed: f64,
+        arm_ids: Vec<u32>,
+    ) -> PyResult<()> {
+        self.submit_homing_move_inner(&newpos, speed, &arm_ids)
+        // No wait_moves — returns immediately.
+    }
+
+    /// Returns `true` once the homing segment has reached a terminal state:
+    /// `Completed`, `Tripped`, or `DeadlineExpired`.
+    fn is_homing_segment_retired(&self) -> bool {
+        matches!(
+            self.homing.state(),
+            crate::homing::HomingSegmentState::Completed
+                | crate::homing::HomingSegmentState::Tripped
+                | crate::homing::HomingSegmentState::DeadlineExpired
+        )
+    }
+
+    /// Returns a reason code after `is_homing_segment_retired` is `true`.
+    ///
+    /// | Code | Meaning |
+    /// |------|---------|
+    /// | 0    | Still active or idle (not yet retired) |
+    /// | 1    | Completed — move ran to end time with no trigger |
+    /// | 2    | Tripped — software_trip or GPIO trigger fired |
+    /// | 3    | DeadlineExpired — deadline elapsed before completion |
+    fn get_homing_segment_reason(&self) -> u8 {
+        match self.homing.state() {
+            crate::homing::HomingSegmentState::Completed => 1,
+            crate::homing::HomingSegmentState::Tripped => 2,
+            crate::homing::HomingSegmentState::DeadlineExpired => 3,
+            _ => 0,
+        }
+    }
+
+    /// Send `runtime_software_trip arm_id=%u` to the MCU and wait for the
+    /// `kalico_software_trip_response`. Returns the status byte from the MCU.
+    #[pyo3(signature = (mcu, arm_id, timeout_s=0.1))]
+    fn software_trip(&self, mcu: u32, arm_id: u32, timeout_s: f64) -> PyResult<u8> {
+        let io = self.host_io_for_mcu("software_trip", mcu)?;
+        let timeout = std::time::Duration::from_secs_f64(timeout_s);
+        let msg = format!("runtime_software_trip arm_id={arm_id}");
+        let params = {
+            use kalico_host_rt::transport::Transport;
+            io.call(&msg, "kalico_software_trip_response", timeout)
+                .map_err(|e| PyRuntimeError::new_err(format!("software_trip: {e}")))?
+        };
+        let status = params.try_get_u32("status").unwrap_or(1) as u8;
+        Ok(status)
+    }
+
+    /// Send `runtime_extend_homing_deadline arm_id=%u` to the MCU.
+    /// Fire-and-forget — no response is expected.
+    #[pyo3(signature = (mcu, arm_id))]
+    fn extend_homing_deadline(&self, mcu: u32, arm_id: u32) -> PyResult<()> {
+        let io = self.host_io_for_mcu("extend_homing_deadline", mcu)?;
+        let msg = format!("runtime_extend_homing_deadline arm_id={arm_id}");
+        io.send_fire_and_forget(&msg)
+            .map_err(|e| PyRuntimeError::new_err(format!("extend_homing_deadline: {e}")))?;
+        Ok(())
+    }
+
     /// Submit a dwell: flush + advance print time.
     fn submit_dwell(&self, duration_s: f64) -> PyResult<()> {
         let planner = self.planner.get().ok_or_else(|| {
