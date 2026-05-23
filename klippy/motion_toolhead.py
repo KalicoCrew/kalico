@@ -584,29 +584,57 @@ class MotionToolhead(ToolHead):
             self.bridge.submit_homing_move_async(pos3, speed, [arm_id])
 
             # Credit-extension loop
+            loop_iter = 0
+            exit_reason = "unknown"
             while True:
                 drip_completion.wait(
                     waketime=self.reactor.monotonic() + 0.025
                 )
+                loop_iter += 1
                 if drip_completion.test():
-                    if not self.bridge.is_homing_segment_retired():
+                    retired = self.bridge.is_homing_segment_retired()
+                    logging.info(
+                        "[homing-loop] beacon triggered iter=%d "
+                        "segment_retired=%s", loop_iter, retired,
+                    )
+                    if not retired:
                         self.bridge.software_trip(mcu_handle, arm_id)
+                    exit_reason = "beacon_trigger"
                     break
                 if self.bridge.is_homing_segment_retired():
                     reason = self.bridge.get_homing_segment_reason()
+                    logging.info(
+                        "[homing-loop] segment retired iter=%d reason=%d",
+                        loop_iter, reason,
+                    )
                     if reason == _mb.BRIDGE_REASON_DEADLINE_EXPIRED:
+                        exit_reason = "deadline_expired"
                         raise self.printer.command_error(
                             "Homing deadline expired: host failed to "
                             "extend credit within 50ms"
                         )
+                    exit_reason = "segment_complete"
                     break  # natural no-trigger
                 self.bridge.extend_homing_deadline(mcu_handle, arm_id)
+            logging.info(
+                "[homing-loop] exited: reason=%s iter=%d", exit_reason,
+                loop_iter,
+            )
 
             self.bridge.wait_moves()
             bridge_lmt_after = self.bridge.get_last_move_time()
             duration = bridge_lmt_after - bridge_lmt_before
             self._bump_pending_end_time(duration)
         finally:
+            # SAFETY: unconditionally stop the F446 engine. If the
+            # loop exited for ANY reason — beacon trigger, segment
+            # retirement, exception, deadline — Z must not keep moving.
+            try:
+                self.bridge.software_trip(mcu_handle, arm_id)
+            except Exception:
+                logging.exception(
+                    "[safety] software_trip failed in finally block"
+                )
             self.bridge._software_trip_active = False
             self.active_homing_arms.discard(arm_id)
             self.bridge.unregister_homing_dispatch(arm_id)
