@@ -521,7 +521,7 @@ class MotionToolhead(ToolHead):
         # Create virtual arm
         arm_id = _mb._alloc_arm_id()
         stepper_oids = [s.get_oid() for s in moving_steppers]
-        source = (_mb.SOURCE_KIND_SOFTWARE, 0, 0, 0, 1, 0, 0)
+        source = (_mb.SOURCE_KIND_SOFTWARE, 0, False, 0, 1, 0, 0)
         arm_clock = int(stepper_mcu.print_time_to_clock(
             self.get_last_move_time()
         ))
