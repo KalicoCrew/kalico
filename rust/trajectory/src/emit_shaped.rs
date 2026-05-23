@@ -150,6 +150,10 @@ pub fn emit_shaped(
             };
 
             let mut axis_shaped = if axis_is_constant {
+                eprintln!(
+                    "[emit-diag] seg {} axis {} CONSTANT: {} cps, val={:.6}, collapsing to 1-piece",
+                    seg_idx, axis, cps.len(), cps.first().copied().unwrap_or(0.0),
+                );
                 // Constant-position axis: collapse to a single-piece
                 // constant NURBS. Cloning the fitted axis would preserve
                 // all N grid pieces (e.g. 200 for a long move), which
