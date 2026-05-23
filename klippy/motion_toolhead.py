@@ -468,16 +468,26 @@ class MotionToolhead(ToolHead):
                 dx, dy, dz, 0.0, self.get_last_move_time()
             )
             self.bridge._software_trip_active = False
+            bridge_lmt_before = self.bridge.get_last_move_time()
             self.bridge.submit_homing_move(pos3, speed, arm_ids)
             self.bridge.wait_moves()
-            # After a homing trip, the segment retired early but
-            # bridge.get_last_move_time() may still reflect the planned
-            # (full-travel) end time. Reset the MCU time projection to
-            # the actual MCU clock so wait_moves_and_mcu() and
-            # get_last_move_time() don't stall on phantom travel.
+            bridge_lmt_after = self.bridge.get_last_move_time()
+            planned_duration = bridge_lmt_after - bridge_lmt_before
+            # After a homing trip the segment retired early, but
+            # bridge.get_last_move_time() still reflects the planned
+            # (full-travel) end. Cap the projection to avoid stalling
+            # in wait_moves_and_mcu() on phantom travel time, while
+            # keeping enough slack for the home_wait backstop.
             if self.mcu is not None:
-                self._mcu_pending_end_time = (
-                    self.mcu.estimated_print_time(self.reactor.monotonic())
+                est = self.mcu.estimated_print_time(
+                    self.reactor.monotonic()
+                )
+                # The move already physically completed (wait_moves
+                # returned). Project at most 0.5s past current MCU
+                # time — enough for the home_wait backstop (1.0s
+                # slack) but not the full planned duration.
+                self._mcu_pending_end_time = est + min(
+                    planned_duration, 0.5
                 )
         elif drip_completion is not None and not drip_completion.test():
             # External probe software-trip path
@@ -570,10 +580,15 @@ class MotionToolhead(ToolHead):
                 self.bridge.extend_homing_deadline(mcu_handle, arm_id)
 
             self.bridge.wait_moves()
-            # Reset MCU time projection — see GPIO path comment above.
+            # Cap MCU time projection — see GPIO path comment above.
+            bridge_lmt_after = self.bridge.get_last_move_time()
+            planned_duration = bridge_lmt_after - bridge_lmt_before
             if self.mcu is not None:
-                self._mcu_pending_end_time = (
-                    self.mcu.estimated_print_time(self.reactor.monotonic())
+                est = self.mcu.estimated_print_time(
+                    self.reactor.monotonic()
+                )
+                self._mcu_pending_end_time = est + min(
+                    planned_duration, 0.5
                 )
         finally:
             self.bridge._software_trip_active = False
