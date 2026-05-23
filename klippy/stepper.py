@@ -181,13 +181,39 @@ class MCU_stepper:
         self._mcu_position_offset = mcu_pos_dist - self.get_commanded_position()
 
     def get_past_mcu_position(self, print_time):
-        # Bridge: homing snapshots come from the runtime's
-        # kalico_endstop_tripped event, not from legacy stepcompress
-        # history. Return the most recent snapshot applied by
-        # bridge_set_position_from_step_count(); fall back to the current
-        # position for non-homing callers.
+        bridge = getattr(self._mcu, '_motion_bridge', None)
+        if bridge is not None and getattr(bridge, '_software_trip_active', False):
+            try:
+                pos_xyz = bridge.get_homing_position_at_time(print_time)
+            except Exception:
+                return getattr(self, "_bridge_last_trip_step_count",
+                               self.get_mcu_position())
+            motor_pos = self._calc_motor_position_from_xyz(pos_xyz)
+            mcu_pos_dist = motor_pos + self._mcu_position_offset
+            mcu_pos = mcu_pos_dist / self._step_dist
+            if mcu_pos >= 0.0:
+                return int(mcu_pos + 0.5)
+            return int(mcu_pos - 0.5)
         return getattr(self, "_bridge_last_trip_step_count",
                        self.get_mcu_position())
+
+    def _calc_motor_position_from_xyz(self, pos_xyz):
+        bridge = getattr(self._mcu, '_motion_bridge', None)
+        kin = getattr(bridge, '_kinematics_name', 'cartesian') \
+            if bridge else 'cartesian'
+        axis = self._bridge_active_axes
+        if kin == 'corexy':
+            if axis in (b'x', b'+x'):
+                return pos_xyz[0] + pos_xyz[1]
+            elif axis in (b'y', b'-y'):
+                return pos_xyz[0] - pos_xyz[1]
+            else:
+                idx = {b'z': 2}.get(axis, 2)
+                return pos_xyz[idx]
+        else:
+            idx = {b'x': 0, b'+x': 0, b'y': 1, b'+y': 1,
+                   b'z': 2}.get(axis, 0)
+            return pos_xyz[idx]
 
     def bridge_set_position_from_step_count(self, step_count):
         # Step 7-D §5.3: bridge-mode trip-position reconciliation. Apply an

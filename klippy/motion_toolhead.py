@@ -239,6 +239,7 @@ class BridgeKinematics:
             homing_state.home_rails([rail], forcepos, homepos)
 
     def set_position(self, newpos, homing_axes=()):
+        self._toolhead.bridge._software_trip_active = False
         self._toolhead.bridge.set_position(
             newpos[0], newpos[1], newpos[2]
         )
