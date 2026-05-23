@@ -1675,6 +1675,17 @@ class MCU:
         try:
             return self.lookup_command(msgformat)
         except self._serial.get_msgparser().error as e:
+            logging.info(
+                "MCU '%s' try_lookup_command('%s') failed: %s "
+                "(available: %s)",
+                self._name, msgformat, e,
+                ", ".join(
+                    sorted(self._serial.get_msgparser()
+                           .messages_by_name.keys())[:20]
+                ) + ("..." if len(
+                    self._serial.get_msgparser()
+                    .messages_by_name) > 20 else ""),
+            )
             return None
 
     def get_enumerations(self):
