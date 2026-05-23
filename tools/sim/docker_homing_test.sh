@@ -37,9 +37,9 @@ dir_pin: PB6
 enable_pin: !PB7
 microsteps: 16
 rotation_distance: 40
-endstop_pin: ^PB8
-position_endstop: 20
-position_max: 20
+endstop_pin: ^PC6
+position_endstop: 50
+position_max: 50
 homing_speed: 50
 homing_retract_dist: 5
 min_home_dist: 15
@@ -76,6 +76,9 @@ shaper_type_y: smooth_zv
 enable_force_move: True
 CFGEOF
 
+# Remove stale chelper from host volume mount (wrong arch)
+rm -f klippy/chelper/c_helper.so klippy/chelper/*.o
+
 echo "=== Starting klippy ==="
 mkdir -p /tmp/logs
 python3 klippy/klippy.py /tmp/homing_test.cfg \
@@ -111,9 +114,11 @@ fi
 
 echo "=== Running homing test ==="
 python3 tools/sim/test_homing_lag.py --api /tmp/klippy_api --renode-monitor localhost:3335
+TEST_RC=$?
 
-echo "=== Done ==="
-# Copy logs out
-cp /tmp/logs/klippy.log /work/tools/sim/.homing-test-logs/ 2>/dev/null || true
+echo ""
+echo "=== klippy.log (homing-relevant lines) ==="
+grep -i 'homing\|endstop\|arm\|trigger\|trip\|bridge-trace\|needs rehome\|No trigger\|steps_moved\|note_homing\|_mcu_pending' /tmp/logs/klippy.log 2>/dev/null | tail -30
 
 kill $KLIPPY_PID $SOCAT_PID $RENODE_PID 2>/dev/null
+exit $TEST_RC

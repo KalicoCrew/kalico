@@ -35,7 +35,7 @@ sysbus Tag <0x58024400 4> "RCC_CR" 0x02000003
 emulation CreateServerSocketTerminal 3334 "uart_term" false
 connector Connect sysbus.usart2 uart_term
 
-emulation SetGlobalQuantum "0.000001"
+emulation SetGlobalQuantum "0.000100"
 
 machine StartGdbServer 3333 true
 

@@ -18,17 +18,20 @@ RUN curl -sL https://github.com/renode/renode/releases/download/v1.16.1/renode-1
     rm /tmp/renode.tar.gz && \
     ln -s /opt/renode/renode /usr/local/bin/renode
 
-# Rust (for motion-bridge + kalico-c-api)
+# Rust
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     sh -s -- -y --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
 RUN rustup target add thumbv7em-none-eabi
 
+# Python deps
+RUN pip3 install --break-system-packages cffi pyserial greenlet jinja2 numpy
+
+# Source — one big COPY, but the heavy layers above are cached.
 WORKDIR /work
 COPY . /work/
 
 # Build sim firmware (ARM, for Renode)
-# Reproduce the stack-size override from build_sim_firmware.sh
 RUN cp tools/sim/sim.config .config && \
     make olddefconfig && \
     if grep -q '^CONFIG_STACK_SIZE=' tools/sim/sim.config; then \
@@ -39,18 +42,11 @@ RUN cp tools/sim/sim.config .config && \
     make clean && \
     make -j$(nproc)
 
-# Build motion-bridge for host (Linux x86_64)
+# Build motion-bridge for host (Linux)
 RUN cd rust && cargo build -p motion-bridge --release && \
     cp target/release/libmotion_bridge_native.so ../klippy/motion_bridge_native.so
 
-# Build chelper for host
+# Remove stale chelper (will be auto-built on first klippy start)
 RUN rm -f klippy/chelper/c_helper.so
 
-# Python deps klippy needs
-RUN pip3 install --break-system-packages cffi pyserial greenlet jinja2 numpy
-
-# Entrypoint: launch Renode, socat PTY bridge, klippy, then run the test
-COPY tools/sim/docker_homing_test.sh /run_test.sh
-RUN chmod +x /run_test.sh
-
-CMD ["/run_test.sh"]
+CMD ["/work/tools/sim/docker_homing_test.sh"]

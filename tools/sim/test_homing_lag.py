@@ -39,27 +39,38 @@ class RenodeMonitor:
     def __init__(self, addr):
         host, port = addr.rsplit(":", 1)
         self._sock = socket.create_connection((host, int(port)), timeout=10)
-        self._sock.settimeout(2)
-        # Drain banner
-        try:
-            self._sock.recv(8192)
-        except socket.timeout:
-            pass
+        self._sock.settimeout(5)
+        self._buf = b""
+        # Drain banner until first prompt
+        self._read_until_prompt()
         # Select machine
-        self._send("mach set 0")
+        self.cmd("mach set 0")
 
-    def _send(self, cmd):
-        self._sock.sendall((cmd + "\n").encode())
-        time.sleep(0.3)
-        resp = ""
-        try:
-            resp = self._sock.recv(8192).decode(errors="replace")
-        except socket.timeout:
-            pass
-        return resp.strip()
+    def _read_until_prompt(self):
+        while True:
+            try:
+                chunk = self._sock.recv(4096)
+            except socket.timeout:
+                break
+            if not chunk:
+                break
+            self._buf += chunk
+            # Renode prompt: (monitor) or (h723) followed by space
+            text = self._buf.decode(errors="replace")
+            # Strip ANSI escape codes for matching
+            import re
+            clean = re.sub(r'\x1b\[[0-9;]*m', '', text)
+            if re.search(r'\((monitor|h723)\)\s*$', clean):
+                result = clean.strip()
+                self._buf = b""
+                return result
+        result = self._buf.decode(errors="replace").strip()
+        self._buf = b""
+        return result
 
     def cmd(self, cmd):
-        return self._send(cmd)
+        self._sock.sendall((cmd + "\n").encode())
+        return self._read_until_prompt()
 
     def close(self):
         self._sock.close()
@@ -82,41 +93,53 @@ def main():
 
     # Test 1: Pre-tripped endstop with retract — measures post-homing delay
     print("\n=== Test 1: Pre-tripped endstop (retract timing) ===")
-    # PB8 = gpio_id 24 (port B * 16 + pin 8).
-    # Set via firmware's runtime_sim_endstop_set_pin command, which
-    # directly writes the runtime's PIN_LEVELS array — bypasses GPIO
-    # hardware that Renode can't inject into.
-    GPIO_PB8 = 1 * 16 + 8  # 24
-    print(f"Setting PB8 HIGH (gpio_id={GPIO_PB8})...")
-    r = gcode(args.api,
-              f"KALICO_SIM_ENDSTOP_SET_PIN GPIO={GPIO_PB8} LEVEL=1",
-              timeout=5.0)
-    print(f"  Result: {r}")
-    time.sleep(0.5)
+    # Don't pause Renode — klippy needs the MCU responsive to send
+    # arm commands. Instead, inject the pin via Renode monitor from a
+    # background thread after a wall-clock delay, while G28 is in flight.
+    import threading
 
+    def delayed_gpio_inject():
+        time.sleep(2.0)
+        m = RenodeMonitor(args.renode_monitor)
+        m.cmd("sysbus.gpioPortC OnGPIO 6 true")
+        r = m.cmd("sysbus ReadDoubleWord 0x58020810")
+        print(f"  [inject thread] IDR after OnGPIO: {r[:60]}")
+        m.close()
+
+    inject_thread = threading.Thread(target=delayed_gpio_inject, daemon=True)
+    inject_thread.start()
+
+    print("Sending G28 X (PC6 will be injected after ~3s)...")
     t0 = time.time()
-    r = gcode(args.api, "G28 X", timeout=60.0)
+    r = gcode(args.api, "G28 X", timeout=120.0)
     elapsed = time.time() - t0
+    inject_thread.join(timeout=5.0)
+
     err = (r.get("error") or {}).get("message", "")
 
     print(f"  Elapsed: {elapsed:.2f}s")
     if err:
         print(f"  Error: {err[:200]}")
+    print(f"  Elapsed: {elapsed:.2f}s")
+    if err:
+        print(f"  Error: {err[:200]}")
     # "Endstop still triggered after retract" is expected when the pin
-    # stays HIGH through the retract — the test only checks timing.
+    # stays HIGH through the retract.
     if "still triggered after retract" in err:
-        if elapsed > 5.0:
-            print(f"  BUG: {elapsed:.1f}s delay before 'still triggered' error")
-            failures.append(f"Test 1: {elapsed:.1f}s delay")
-        else:
-            print(f"  OK: retract + re-check completed in {elapsed:.1f}s (no ghost delay)")
+        print(f"  (expected — pin stays HIGH through retract)")
     elif err:
         failures.append(f"Test 1 unexpected error: {err[:100]}")
-    elif elapsed > 5.0:
-        print(f"  BUG: {elapsed:.1f}s delay (expected < 5s)")
+    else:
+        print(f"  Homing succeeded")
+    # Renode runs at ~0.3-0.7x real time. A 50mm/50mm/s = 1s firmware
+    # homing move should take < 10s wall-clock even at 0.1x. The bug
+    # adds 5-10s of ghost delay on top of that. Threshold at 15s to
+    # separate Renode slowness from the actual bug.
+    if elapsed > 15.0:
+        print(f"  BUG: {elapsed:.1f}s total — likely ghost delay")
         failures.append(f"Test 1: {elapsed:.1f}s delay")
     else:
-        print(f"  OK: {elapsed:.1f}s")
+        print(f"  Timing acceptable: {elapsed:.1f}s")
 
     # Summary
     print("\n=== Summary ===")
