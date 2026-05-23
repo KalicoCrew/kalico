@@ -236,27 +236,6 @@ class BridgeKinematics:
                 forcepos[axis] += 1.5 * (
                     position_max - hi.position_endstop
                 )
-            # Fire motor-enable callbacks (TMC UART phase-offset reads,
-            # current set, enable pin) BEFORE home_rails enters the
-            # homing state machine.  home_rails → homing_move arms the
-            # beacon trsync with a short timeout; if motor-enable UART
-            # traffic runs after that (inside _drip_move_software_trip),
-            # the trsync expires before Z motion begins.  Firing here
-            # moves the ~300ms UART overhead before the trsync window.
-            dx = (homepos[0] or 0.0) - (forcepos[0] or 0.0)
-            dy = (homepos[1] or 0.0) - (forcepos[1] or 0.0)
-            dz = (homepos[2] or 0.0) - (forcepos[2] or 0.0)
-            th = self._toolhead
-            if th.mcu is not None:
-                est_now = th.mcu.estimated_print_time(
-                    th.reactor.monotonic())
-                lmt = th.get_last_move_time()
-                needed = est_now + 2.0
-                if lmt < needed:
-                    th.dwell(needed - lmt)
-            th._fire_active_callbacks(
-                dx, dy, dz, 0.0, th.get_last_move_time()
-            )
             homing_state.home_rails([rail], forcepos, homepos)
 
     def set_position(self, newpos, homing_axes=()):
@@ -466,6 +445,33 @@ class MotionToolhead(ToolHead):
                 cb(print_time)
             fired = True
         return fired
+
+    def prepare_drip_move(self, movepos):
+        # Only matters for the software-trip path (external probe Z
+        # homing).  Bridge-native sensorless homing (X/Y) fires its
+        # own enable callbacks inside drip_move after the endstop is
+        # armed, with the correct stallGuard settle timing.
+        #
+        # For software-trip: fire motor-enable callbacks here so the
+        # TMC UART traffic (~300ms) runs BEFORE homing_move arms the
+        # beacon trsync.  The callbacks are consumed (one-shot), so
+        # _drip_move_software_trip's later _fire_active_callbacks is
+        # a harmless no-op.
+        if not self.active_homing_arms:
+            curpos = self.commanded_pos
+            dx = movepos[0] - curpos[0]
+            dy = movepos[1] - curpos[1]
+            dz = movepos[2] - curpos[2]
+            if self.mcu is not None:
+                est_now = self.mcu.estimated_print_time(
+                    self.reactor.monotonic())
+                lmt = self.get_last_move_time()
+                needed = est_now + 2.0
+                if lmt < needed:
+                    self.dwell(needed - lmt)
+            self._fire_active_callbacks(
+                dx, dy, dz, 0.0, self.get_last_move_time()
+            )
 
     def drip_move(self, newpos, speed, drip_completion):
         logging.info(

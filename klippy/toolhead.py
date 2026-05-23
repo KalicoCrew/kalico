@@ -678,6 +678,8 @@ class ToolHead:
             )
             self._advance_move_time(npt)
 
+    def prepare_drip_move(self, movepos):
+        pass
     def drip_move(self, newpos, speed, drip_completion):
         self.dwell(self.kin_flush_delay)
         # Transition from "NeedPrime"/"Priming"/main state to "Drip" state

@@ -124,6 +124,12 @@ class HomingMove:
             for es, name in self.endstops
             for s in es.get_steppers()
         ]
+        # Hook: let the toolhead fire motor-enable callbacks (TMC UART
+        # phase-offset, current set, enable pin) BEFORE the endstop
+        # trsync is armed.  On the motion toolhead's software-trip path
+        # this UART traffic takes ~300ms; if it runs after trsync setup,
+        # the beacon's ~25ms timeout expires before Z motion begins.
+        self.toolhead.prepare_drip_move(movepos)
         # Start endstop checking
         print_time = self.toolhead.get_last_move_time()
         endstop_triggers = []
