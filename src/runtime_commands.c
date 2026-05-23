@@ -151,9 +151,10 @@ endstop_pin_table_populate(uint8_t source_count, const uint8_t *sources_ptr)
         n = KALICO_ENDSTOP_MAX_SOURCES;
     for (uint8_t i = 0; i < n; i++) {
         const uint8_t *r = sources_ptr + (uint32_t)i * KALICO_ENDSTOP_SOURCE_RECORD_LEN;
-        // r[0] = kind (0 = Physical, 1 = TmcDiag — must match the
-        // SourceKind enum in rust/runtime/src/endstop.rs).
+        // r[0] = kind (0 = Physical, 1 = TmcDiag, 2 = Software).
         uint8_t kind = r[0];
+        if (kind == 2)
+            continue;   // Software sources have no GPIO to sample
         uint16_t gpio_id = (uint16_t)r[1] | ((uint16_t)r[2] << 8);
         int32_t pull_up = (kind == 1) ? 1 : 0;
         endstop_pin_table[i].gpio_id = gpio_id;

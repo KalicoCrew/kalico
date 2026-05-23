@@ -2188,6 +2188,7 @@ pub mod exports {
             let kind = match r[0] {
                 0 => SourceKind::Physical,
                 1 => SourceKind::TmcDiag,
+                2 => SourceKind::Software,
                 _ => return KALICO_ERR_NULL_PTR,
             };
             let gpio = u16::from_le_bytes([r[1], r[2]]);
