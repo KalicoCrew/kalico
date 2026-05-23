@@ -1465,6 +1465,15 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             crate::stream::check_terminal_on_retire(shared, id);
         }
         self.clear_current();
+        // Mark ALL pool slots free. The engine is about to go Drained;
+        // queued segments are dead and their curve data will never be
+        // evaluated. The host releases slots via credit_freed (keyed
+        // on retired_through above); without this reset, slots whose
+        // retirement was still pending in the trace ring appear "busy"
+        // when the host re-allocates them for the next move.
+        // confirm_retired's CAS guard prevents later stale trace-drain
+        // events from rolling last_retired_gen backwards.
+        pool.reset_all_retired_to_current();
         self.last_error
             .store(i32::from(RuntimeError::HomingTrip), Ordering::Release);
         self.status
