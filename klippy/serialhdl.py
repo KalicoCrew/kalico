@@ -429,9 +429,18 @@ class SerialReader:
         # mainline's disconnect() which closes the FD before the reset.
         bridge = getattr(self.mcu, "_motion_bridge", None)
         handle = getattr(self.mcu, "_bridge_handle", None)
+        logging.info(
+            "%sdisconnect: bridge=%s handle=%s",
+            self.warn_prefix,
+            bridge is not None, handle,
+        )
         if bridge is not None and handle is not None:
             try:
                 bridge.detach_serial(handle)
+                logging.info(
+                    "%sdisconnect: detach_serial(%s) ok",
+                    self.warn_prefix, handle,
+                )
             except Exception:
                 logging.exception("bridge detach_serial failed")
         for pn in self.pending_notifications.values():
