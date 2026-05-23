@@ -38,8 +38,8 @@ enable_pin: !PB7
 microsteps: 16
 rotation_distance: 40
 endstop_pin: ^PC6
-position_endstop: 50
-position_max: 50
+position_endstop: 300
+position_max: 300
 homing_speed: 50
 homing_retract_dist: 5
 min_home_dist: 15
