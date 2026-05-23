@@ -939,6 +939,21 @@ def run_batch_simulation(
         if verbose:
             cmd.append("-v")
 
+        # Preprocess G-code: strip custom macros, replace PRINT_START
+        preprocessor = repo_root / "tools" / "kalico-sim" / "preprocess_gcode.py"
+        if preprocessor.exists():
+            processed = tmp / "processed.gcode"
+            try:
+                subprocess.run(
+                    ["python3", str(preprocessor),
+                     str(gcode_path), str(processed)],
+                    check=True, capture_output=True, text=True,
+                )
+                log.info("Preprocessed: %s", processed.name)
+                cmd[cmd.index(str(gcode_path))] = str(processed)
+            except subprocess.CalledProcessError as e:
+                log.warning("Preprocessor failed: %s", e.stderr[:200])
+
         log.info("Running batch simulation: %s", gcode_path.name)
         log.info("Command: %s", " ".join(cmd))
 
@@ -1011,47 +1026,55 @@ def run_batch_simulation(
 
 
 def _generate_batch_config() -> str:
-    """Generate a config for batch mode (MACH_LINUX pin format)."""
+    """Generate a config for batch mode (MACH_LINUX pin format).
+
+    Matches a typical Voron Trident 250/300 config: CoreXY kinematics,
+    high accel/velocity limits, 0.4mm nozzle, large build volume.
+    """
     return """\
 [mcu]
 serial: /dev/null
 
 [printer]
-kinematics: cartesian
-max_velocity: 300
-max_accel: 5000
-max_z_velocity: 15
-max_z_accel: 45
+kinematics: corexy
+max_velocity: 500
+max_accel: 25000
+max_z_velocity: 30
+max_z_accel: 100
+square_corner_velocity: 5
 
 [stepper_x]
 step_pin: gpiochip0/gpio0
 dir_pin: gpiochip0/gpio1
 enable_pin: !gpiochip0/gpio2
-microsteps: 16
+microsteps: 32
 rotation_distance: 40
 endstop_pin: ^gpiochip0/gpio10
 position_endstop: 0
-position_max: 250
+position_max: 300
+homing_speed: 50
 
 [stepper_y]
 step_pin: gpiochip0/gpio3
 dir_pin: gpiochip0/gpio4
 enable_pin: !gpiochip0/gpio5
-microsteps: 16
+microsteps: 32
 rotation_distance: 40
 endstop_pin: ^gpiochip0/gpio11
 position_endstop: 0
-position_max: 250
+position_max: 300
+homing_speed: 50
 
 [stepper_z]
 step_pin: gpiochip0/gpio6
 dir_pin: gpiochip0/gpio7
 enable_pin: !gpiochip0/gpio8
-microsteps: 16
+microsteps: 32
 rotation_distance: 4
 endstop_pin: ^gpiochip0/gpio12
 position_endstop: 0
-position_max: 250
+position_max: 300
+homing_speed: 8
 
 [extruder]
 step_pin: gpiochip0/gpio13
@@ -1064,23 +1087,29 @@ filament_diameter: 1.75
 heater_pin: gpiochip0/gpio20
 sensor_pin: analog0
 sensor_type: EPCOS 100K B57560G104F
-min_temp: -10
+min_temp: -273
 max_temp: 300
 control: pid
 pid_kp: 30
 pid_ki: 2
 pid_kd: 100
+max_extrude_cross_section: 100
+max_extrude_only_distance: 500
+pressure_advance: 0.04
 
 [heater_bed]
 heater_pin: gpiochip0/gpio21
 sensor_pin: analog1
 sensor_type: EPCOS 100K B57560G104F
-min_temp: -10
+min_temp: -273
 max_temp: 120
 control: pid
 pid_kp: 60
 pid_ki: 1
 pid_kd: 600
+
+[force_move]
+enable_force_move: True
 """
 
 
