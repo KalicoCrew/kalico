@@ -525,13 +525,23 @@ class MotionToolhead(ToolHead):
         arm_id = _mb._alloc_arm_id()
         stepper_oids = [s.get_oid() for s in moving_steppers]
         source = (_mb.SOURCE_KIND_SOFTWARE, 0, False, 0, 1, 0, 0)
-        arm_clock = int(stepper_mcu.print_time_to_clock(
-            self.get_last_move_time()
-        ))
+        lmt = self.get_last_move_time()
+        arm_clock = int(stepper_mcu.print_time_to_clock(lmt))
+        est_now = 0.0
+        if self.mcu is not None:
+            est_now = self.mcu.estimated_print_time(self.reactor.monotonic())
+        logging.info(
+            "[diag] _drip_move_software_trip: lmt=%.6f est_now=%.6f "
+            "pending=%.6f arm_clock=%d stepper_mcu=%s "
+            "stepper_mcu_clock=%d",
+            lmt, est_now, self._mcu_pending_end_time, arm_clock,
+            stepper_mcu.get_name(),
+            int(stepper_mcu.print_time_to_clock(est_now)),
+        )
 
         # Energize motors
         self._fire_active_callbacks(
-            dx, dy, dz, 0.0, self.get_last_move_time()
+            dx, dy, dz, 0.0, lmt
         )
 
         # Arm + submit
