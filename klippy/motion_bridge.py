@@ -34,6 +34,9 @@ class MotionBridgeWrapper:
     def release_mcu(self, handle):
         return self._bridge.release_mcu(handle)
 
+    def detach_serial(self, handle):
+        return self._bridge.detach_serial(handle)
+
     def shutdown(self):
         return self._bridge.shutdown()
 
