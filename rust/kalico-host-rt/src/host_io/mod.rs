@@ -223,6 +223,9 @@ impl KalicoHostIo {
         path: &str,
         config: KalicoHostIoConfig,
     ) -> Result<Self, TransportError> {
+        if let Some(addr) = path.strip_prefix("socket://") {
+            return Self::open_tcp_with_config(addr, config);
+        }
         use std::os::unix::io::FromRawFd;
 
         // SAFETY: `libc::open` and `TTYPort::from_raw_fd` are both unsafe FFI
@@ -296,6 +299,23 @@ impl KalicoHostIo {
             }
             port
         };
+        Self::open_with_port(port_box, config)
+    }
+
+    #[cfg(target_family = "unix")]
+    fn open_tcp_with_config(
+        addr: &str,
+        config: KalicoHostIoConfig,
+    ) -> Result<Self, TransportError> {
+        use std::net::TcpStream;
+        use std::os::unix::io::{FromRawFd, IntoRawFd};
+
+        let stream = TcpStream::connect(addr).map_err(TransportError::Io)?;
+        stream.set_nodelay(true).ok();
+        let fd = stream.into_raw_fd();
+        #[allow(unsafe_code)]
+        let port_box: Box<dyn serialport::SerialPort> =
+            unsafe { Box::new(serialport::TTYPort::from_raw_fd(fd)) };
         Self::open_with_port(port_box, config)
     }
 

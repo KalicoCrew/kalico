@@ -993,6 +993,7 @@ impl PyMotionBridge {
         let is_pipe = baud == 0
             || serial_path.starts_with("/tmp/")
             || serial_path.starts_with("/dev/pts/")
+            || serial_path.starts_with("socket://")
             || serial_path.contains("klipper_host")
             || serial_path.contains("klipper_sim");
 

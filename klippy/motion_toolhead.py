@@ -1238,27 +1238,42 @@ class MotionToolhead(ToolHead):
     def cmd_KALICO_SIM_ENDSTOP_SET_PIN(self, gcmd):
         gpio = gcmd.get_int("GPIO", minval=0, maxval=0xFFFF)
         level = gcmd.get_int("LEVEL", minval=0, maxval=1)
-        # GPIO pin index is chip_id * MAX_GPIO_LINES + offset, matching
-        # the firmware's GPIO() macro. MAX_GPIO_LINES=288 per
-        # src/linux/internal.h.
-        MAX_GPIO_LINES = 288
-        chip_id = gpio // MAX_GPIO_LINES
-        line = gpio % MAX_GPIO_LINES
         client = _open_sim_control()
-        if client is None:
-            raise gcmd.error(
-                "KALICO_SIM_ENDSTOP_SET_PIN requires the shim "
-                "(KALICO_SIM_SOCK_DIR not set or sim_control missing)"
-            )
+        if client is not None:
+            MAX_GPIO_LINES = 288
+            chip_id = gpio // MAX_GPIO_LINES
+            line = gpio % MAX_GPIO_LINES
+            try:
+                with client:
+                    client.set_gpio_input(
+                        chip=chip_id, line=line, value=level,
+                    )
+                gcmd.respond_info(
+                    "KALICO_SIM_ENDSTOP_SET_PIN gpio=%d level=%d -> ok (shim)"
+                    % (gpio, level)
+                )
+                return
+            except Exception as e:
+                raise gcmd.error("set_gpio_input failed: %s" % e)
+        # Fallback: send runtime_sim_endstop_set_pin directly to the
+        # firmware (Renode sim path — CONFIG_KALICO_SIM only).
+        if self.mcu is None:
+            raise gcmd.error("no MCU available for sim endstop set_pin")
+        handle = self.mcu._bridge_handle
         try:
-            with client:
-                client.set_gpio_input(chip=chip_id, line=line, value=level)
+            self.bridge.bridge_send(
+                handle,
+                "runtime_sim_endstop_set_pin gpio=%d level=%d"
+                % (gpio, level),
+            )
             gcmd.respond_info(
-                "KALICO_SIM_ENDSTOP_SET_PIN gpio=%d level=%d -> ok"
+                "KALICO_SIM_ENDSTOP_SET_PIN gpio=%d level=%d -> ok (fw)"
                 % (gpio, level)
             )
         except Exception as e:
-            raise gcmd.error("set_gpio_input failed: %s" % e)
+            raise gcmd.error(
+                "runtime_sim_endstop_set_pin failed: %s" % e
+            )
 
 
 def add_printer_objects(config):

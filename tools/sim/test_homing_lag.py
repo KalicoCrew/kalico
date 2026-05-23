@@ -1,103 +1,27 @@
 #!/usr/bin/env python3
-"""Reproduce the homing-lag timing bug against Renode.
+"""Reproduce the homing-lag timing bug.
 
-Launches Renode + klippy, sends G28 X, injects GPIO endstop triggers
-via Renode's telnet monitor, and measures wall-clock timing.
+Usage inside Docker:
+    python3 tools/sim/test_homing_lag.py --api /tmp/klippy_api --renode-monitor localhost:3335
 
-Usage:
-    bash tools/sim/build_sim_firmware.sh
-    python3 tools/sim/test_homing_lag.py
+Usage standalone (if klippy + Renode already running):
+    python3 tools/sim/test_homing_lag.py --api /tmp/klippy_api --renode-monitor localhost:3335
 """
+import argparse
 import json
-import os
-import pathlib
-import signal
 import socket
-import subprocess
-import sys
-import threading
 import time
-
-REPO = pathlib.Path(__file__).resolve().parents[2]
-LOGDIR = REPO / "tools" / "sim" / ".homing-test-logs"
-PRINTER_CFG = REPO / "tools" / "sim" / "homing_test.cfg"
-KLIPPY_LOG = LOGDIR / "klippy.log"
-KLIPPY_API = "/tmp/klippy_homing_test_api"
-
-RENODE_UART_PORT = 3334
-RENODE_MONITOR_PORT = 3335
-ENDSTOP_PIN = "PA4"  # stepper_x endstop
-ENDSTOP_PORT = "gpioPortA"
-ENDSTOP_LINE = 4
+import sys
 
 
-def cleanup():
-    subprocess.run(["pkill", "-f", "renode.*h723_sim"], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(0.5)
-    try:
-        os.unlink(KLIPPY_API)
-    except FileNotFoundError:
-        pass
-
-
-def spawn_renode():
-    """Launch Renode in background, wait for UART port."""
-    proc = subprocess.Popen(
-        ["renode", "--port", str(RENODE_MONITOR_PORT), "--disable-gui",
-         "-e", f"include @{REPO}/tools/sim/h723_sim.resc",
-         "-e", "logLevel 3 sysbus",
-         "-e", "logLevel 3 rcc",
-         "-e", "logLevel 3 nvic",
-         "-e", "logLevel 0 usart2",
-         "-e", "start"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    for _ in range(100):
-        try:
-            s = socket.create_connection(("localhost", RENODE_UART_PORT), timeout=1)
-            s.close()
-            return proc
-        except (ConnectionRefusedError, OSError):
-            time.sleep(0.2)
-    proc.terminate()
-    raise RuntimeError("Renode UART port never opened")
-
-
-def spawn_klippy():
-    """Launch klippy connected to Renode's UART."""
-    LOGDIR.mkdir(parents=True, exist_ok=True)
-    stderr_log = open(LOGDIR / "klippy_stderr.log", "wb")
-    proc = subprocess.Popen(
-        ["python3", str(REPO / "klippy" / "klippy.py"),
-         str(PRINTER_CFG),
-         "-l", str(KLIPPY_LOG),
-         "-a", KLIPPY_API],
-        cwd=str(REPO),
-        stdout=stderr_log, stderr=subprocess.STDOUT,
-    )
-    # Wait for API socket
-    for _ in range(300):
-        if os.path.exists(KLIPPY_API):
-            time.sleep(3.0)
-            return proc
-        if proc.poll() is not None:
-            raise RuntimeError(f"klippy exited early: {proc.returncode}")
-        time.sleep(0.2)
-    proc.terminate()
-    raise RuntimeError("klippy API socket never appeared")
-
-
-def send_gcode(script, timeout=30.0):
+def gcode(api_socket, script, timeout=60.0):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
-    s.connect(KLIPPY_API)
-    msg = json.dumps({
+    s.connect(api_socket)
+    s.sendall(json.dumps({
         "id": 1, "method": "gcode/script",
         "params": {"script": script},
-    }).encode() + b"\x03"
-    s.sendall(msg)
+    }).encode() + b"\x03")
     buf = b""
     while True:
         c = s.recv(4096)
@@ -111,73 +35,98 @@ def send_gcode(script, timeout=30.0):
     return json.loads(out.decode()) if out else {}
 
 
-def renode_set_gpio(port, line, value):
-    """Set a GPIO input level via Renode's telnet monitor."""
-    s = socket.create_connection(("localhost", RENODE_MONITOR_PORT), timeout=5)
-    s.settimeout(2)
-    try:
-        s.recv(4096)
-    except socket.timeout:
-        pass
-    cmd = f"sysbus.{port} Set {line} {'true' if value else 'false'}\n"
-    s.sendall(cmd.encode())
-    time.sleep(0.2)
-    try:
-        s.recv(4096)
-    except socket.timeout:
-        pass
-    s.close()
+class RenodeMonitor:
+    def __init__(self, addr):
+        host, port = addr.rsplit(":", 1)
+        self._sock = socket.create_connection((host, int(port)), timeout=10)
+        self._sock.settimeout(2)
+        # Drain banner
+        try:
+            self._sock.recv(8192)
+        except socket.timeout:
+            pass
+        # Select machine
+        self._send("mach set 0")
+
+    def _send(self, cmd):
+        self._sock.sendall((cmd + "\n").encode())
+        time.sleep(0.3)
+        resp = ""
+        try:
+            resp = self._sock.recv(8192).decode(errors="replace")
+        except socket.timeout:
+            pass
+        return resp.strip()
+
+    def cmd(self, cmd):
+        return self._send(cmd)
+
+    def close(self):
+        self._sock.close()
+
+
+def renode_cmd(monitor_addr, cmd):
+    mon = RenodeMonitor(monitor_addr)
+    r = mon.cmd(cmd)
+    mon.close()
+    return r
 
 
 def main():
-    cleanup()
-    print("Spawning Renode...")
-    renode = spawn_renode()
-    print("Renode started. Spawning klippy...")
-    klippy = None
-    try:
-        klippy = spawn_klippy()
-        print("Klippy started. Running homing test...")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--api", required=True, help="klippy API socket path")
+    parser.add_argument("--renode-monitor", required=True, help="host:port for Renode monitor")
+    args = parser.parse_args()
 
-        # Pre-trip: set endstop HIGH before G28
-        renode_set_gpio(ENDSTOP_PORT, ENDSTOP_LINE, 1)
-        time.sleep(0.5)
+    failures = []
 
-        t0 = time.time()
-        r = send_gcode("G28 X", timeout=30.0)
-        elapsed = time.time() - t0
+    # Test 1: Pre-tripped endstop with retract — measures post-homing delay
+    print("\n=== Test 1: Pre-tripped endstop (retract timing) ===")
+    # PB8 = gpio_id 24 (port B * 16 + pin 8).
+    # Set via firmware's runtime_sim_endstop_set_pin command, which
+    # directly writes the runtime's PIN_LEVELS array — bypasses GPIO
+    # hardware that Renode can't inject into.
+    GPIO_PB8 = 1 * 16 + 8  # 24
+    print(f"Setting PB8 HIGH (gpio_id={GPIO_PB8})...")
+    r = gcode(args.api,
+              f"KALICO_SIM_ENDSTOP_SET_PIN GPIO={GPIO_PB8} LEVEL=1",
+              timeout=5.0)
+    print(f"  Result: {r}")
+    time.sleep(0.5)
 
-        print(f"\nG28 X result: {r}")
-        print(f"Elapsed: {elapsed:.2f}s")
+    t0 = time.time()
+    r = gcode(args.api, "G28 X", timeout=60.0)
+    elapsed = time.time() - t0
+    err = (r.get("error") or {}).get("message", "")
 
+    print(f"  Elapsed: {elapsed:.2f}s")
+    if err:
+        print(f"  Error: {err[:200]}")
+    # "Endstop still triggered after retract" is expected when the pin
+    # stays HIGH through the retract — the test only checks timing.
+    if "still triggered after retract" in err:
         if elapsed > 5.0:
-            print(f"\nBUG CONFIRMED: G28 X took {elapsed:.1f}s "
-                  f"(expected < 5s with pre-tripped endstop)")
+            print(f"  BUG: {elapsed:.1f}s delay before 'still triggered' error")
+            failures.append(f"Test 1: {elapsed:.1f}s delay")
         else:
-            print(f"\nOK: G28 X completed in {elapsed:.1f}s")
+            print(f"  OK: retract + re-check completed in {elapsed:.1f}s (no ghost delay)")
+    elif err:
+        failures.append(f"Test 1 unexpected error: {err[:100]}")
+    elif elapsed > 5.0:
+        print(f"  BUG: {elapsed:.1f}s delay (expected < 5s)")
+        failures.append(f"Test 1: {elapsed:.1f}s delay")
+    else:
+        print(f"  OK: {elapsed:.1f}s")
 
-        # Check klippy.log for details
-        if KLIPPY_LOG.exists():
-            log = KLIPPY_LOG.read_text()
-            if "needs rehome" in log:
-                print("Log contains 'needs rehome'")
-            if "No trigger" in log:
-                print("Log contains 'No trigger' — second home failed!")
-            # Print homing-related lines
-            for line in log.splitlines():
-                if any(k in line for k in [
-                    "homing:", "needs rehome", "bridge-trace",
-                    "No trigger", "steps_moved",
-                ]):
-                    print(f"  {line.strip()}")
-
-    finally:
-        if klippy is not None:
-            klippy.terminate()
-            klippy.wait(timeout=3)
-        renode.terminate()
-        renode.wait(timeout=3)
+    # Summary
+    print("\n=== Summary ===")
+    if failures:
+        for f in failures:
+            print(f"  FAIL: {f}")
+        return 1
+    print("  All tests passed")
+    return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main() or 0)
+    sys.exit(main())

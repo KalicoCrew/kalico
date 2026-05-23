@@ -1,0 +1,44 @@
+:name: kalico-h723-sim
+:description: Renode simulator for Docker (portable Renode install path).
+
+using sysbus
+mach create "h723"
+
+machine LoadPlatformDescription @/opt/renode/platforms/cpus/stm32h743.repl
+
+machine LoadPlatformDescriptionFromString """
+spi3: SPI.STM32H7_SPI @ sysbus 0x40003C00
+    IRQ -> nvic@51
+"""
+
+include @tools/sim/renode_peripherals/Tmc5160.cs
+machine LoadPlatformDescriptionFromString """
+spi_mux: SPI.SPIMultiplexer @ spi3 { init: { SetActiveLow 5; SetActiveLow 6 } }
+"""
+machine LoadPlatformDescriptionFromString """
+tmc_x: Sensors.TMC5160 @ spi_mux 5
+"""
+machine LoadPlatformDescriptionFromString """
+tmc_y: Sensors.TMC5160 @ spi_mux 6
+"""
+machine LoadPlatformDescriptionFromString """
+gpioPortA: { 5 -> spi_mux@5; 6 -> spi_mux@6 }
+"""
+
+cpu FpuEnabled true
+
+sysbus Tag <0x58024800 4> "PWR_CR1"  0x100
+sysbus Tag <0x58024804 4> "PWR_CSR1" 0x2000
+sysbus Tag <0x58024808 4> "PWR_CR2"  0x1
+sysbus Tag <0x58024400 4> "RCC_CR" 0x02000003
+
+emulation CreateServerSocketTerminal 3334 "uart_term" false
+connector Connect sysbus.usart2 uart_term
+
+emulation SetGlobalQuantum "0.000001"
+
+machine StartGdbServer 3333 true
+
+sysbus LoadELF @out/klipper.elf
+
+echo "Renode kalico-h723-sim (Docker) ready."
