@@ -18,15 +18,13 @@ use kalico_protocol::{
 };
 
 /// Wire-format safety ceiling for `load_curve`'s piece_count argument.
-/// The authoritative per-MCU cap is `RuntimeCapsResponse.max_pieces_per_curve`
-/// (bumped from 16→64 default on 2026-05-20 — see src/Kconfig
-/// `RUNTIME_MAX_PIECES_PER_CURVE`). Callers should validate against
-/// `caps.max_pieces_per_curve` rather than this constant; this guard exists
-/// only to short-circuit obviously-malformed uploads (e.g. piece_count
-/// arriving as u8::MAX from a stale planner) before they hit the wire.
-/// Sized 1.5× the current firmware default so a future Kconfig bump to 96
-/// doesn't force a host-side rebuild.
-pub const MAX_PIECES_PER_CURVE: usize = 96;
+/// The authoritative per-MCU cap is `RuntimeCapsResponse.max_pieces_per_curve`.
+/// This guard short-circuits obviously-malformed uploads before they hit the
+/// wire. Set to 255 (max u8) because `LoadCurveCubic.piece_count` is encoded
+/// as `u8` on the wire — a value of 256 would overflow to 0.
+/// Callers should validate against `caps.max_pieces_per_curve` (clamped to
+/// 255 by the dispatch layer) rather than this constant.
+pub const MAX_PIECES_PER_CURVE: usize = 255;
 
 use crate::credit::CreditCounter;
 use crate::host_io::KalicoHostIo;
