@@ -88,17 +88,16 @@ class SerialReader:
             # Map event type to a msgproto-style name so existing handlers work.
             if ev_type == "status":
                 name = "kalico_status_v6"
-                # Count and log first few frames so Phase-3 verification can
-                # grep the log without enabling DEBUG-level logging globally.
-                if not hasattr(self, "_status_frame_count"):
-                    self._status_frame_count = 0
-                self._status_frame_count += 1
-                if self._status_frame_count <= 5 or self._status_frame_count % 50 == 0:
+                # Log only on state change (engine_status, last_fault).
+                prev = getattr(self, "_last_status_state", None)
+                cur = (ev.get("engine_status"), ev.get("last_fault"))
+                if prev != cur:
+                    self._last_status_state = cur
                     logging.info(
-                        "%s[bridge-async] kalico_status_v6 frame #%d engine_status=%s",
+                        "%s[bridge-async] kalico_status_v6 "
+                        "engine_status=%s last_fault=%s",
                         self.warn_prefix,
-                        self._status_frame_count,
-                        ev.get("engine_status", "?"),
+                        cur[0], cur[1],
                     )
             elif ev_type == "credit_freed":
                 name = "kalico_credit_freed"
@@ -383,6 +382,9 @@ class SerialReader:
         msgparser.process_identify(identify_data)
         self.msgparser = msgparser
         self.register_response(self.handle_unknown, "#unknown")
+        # Suppress handle_default logging for status events — state
+        # changes are already logged inline in _bridge_event_poller.
+        self.register_response(lambda params: None, "kalico_status_v6")
         # Register a reactor timer that polls runtime events from the
         # bridge and dispatches them to klippy's registered handlers.
         # This is the inbound async path for kalico_status_v6 etc.
