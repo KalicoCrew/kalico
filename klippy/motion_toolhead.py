@@ -527,10 +527,11 @@ class MotionToolhead(ToolHead):
         source = (_mb.SOURCE_KIND_SOFTWARE, 0, False, 0, 1, 0, 0)
 
         # The motor-enable callbacks do inline TMC phase-offset reads
-        # over UART (~100ms per stepper).  Pad the print_time used for
-        # queue_digital_out so later steppers' enable commands don't
-        # arrive after their scheduled MCU clock ("Timer too close").
-        ENABLE_HEADROOM = 0.500
+        # over UART (~100ms per stepper).  With 3 Z steppers each
+        # doing ~20 UART transactions at ~5ms, total wall-clock cost
+        # is ~300ms.  Pad generously so the last stepper's
+        # queue_digital_out clock is still in the MCU's future.
+        ENABLE_HEADROOM = 2.000
         lmt = self.get_last_move_time()
         est_now = 0.0
         if self.mcu is not None:
