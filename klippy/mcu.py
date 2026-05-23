@@ -302,38 +302,11 @@ class MCU_trsync:
         self._stepper_stop_cmd = mcu.lookup_command(
             "stepper_stop_on_trigger oid=%c trsync_oid=%c", cq=self._cmd_queue
         )
-        if self._mcu._bridge_drives_steppers:
-            # Bridge owns step generation; no C-level trdispatch needed.
-            # The firmware trsync stays idle (config_trsync allocated but
-            # never started). See external-probe-homing.md Piece A.
-            self._trdispatch_mcu = None
-        else:
-            # Non-bridge MCU (Beacon, Eddy, load cell): restore mainline
-            # trdispatch_mcu for C-level serial interception.
-            set_timeout_tag = mcu.lookup_command(
-                "trsync_set_timeout oid=%c clock=%u"
-            ).get_command_tag()
-            trigger_cmd = mcu.lookup_command(
-                "trsync_trigger oid=%c reason=%c"
-            )
-            trigger_tag = trigger_cmd.get_command_tag()
-            state_cmd = mcu.lookup_command(
-                "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u"
-            )
-            state_tag = state_cmd.get_command_tag()
-            ffi_main, ffi_lib = chelper.get_ffi()
-            self._trdispatch_mcu = ffi_main.gc(
-                ffi_lib.trdispatch_mcu_alloc(
-                    self._trdispatch,
-                    mcu._serial.get_serialqueue(),
-                    self._cmd_queue,
-                    self._oid,
-                    set_timeout_tag,
-                    trigger_tag,
-                    state_tag,
-                ),
-                ffi_lib.free,
-            )
+        # Bridge mode: the bridge owns the serial wire for ALL MCUs, so
+        # no C serialqueue exists and trdispatch_mcu cannot be allocated.
+        # Non-bridge MCUs (Beacon, Eddy) still send firmware trsync
+        # commands in start()/stop() — just without C-level interception.
+        self._trdispatch_mcu = None
 
     def _shutdown(self):
         tc = self._trigger_completion
@@ -364,7 +337,9 @@ class MCU_trsync:
             # so no timeout can fire. The actual motion stop comes from
             # bridge software_trip, not from trsync.
             return
-        # Non-bridge MCU: full mainline path
+        # Non-bridge MCU (Beacon, Eddy): send firmware commands.
+        # Skip trdispatch_mcu_setup (no C serialqueue in bridge mode)
+        # but register the Python response handler for trsync_state.
         self._home_end_clock = None
         clock = self._mcu.print_time_to_clock(print_time)
         expire_ticks = self._mcu.seconds_to_clock(expire_timeout)
@@ -372,14 +347,15 @@ class MCU_trsync:
         report_ticks = self._mcu.seconds_to_clock(expire_timeout * 0.3)
         report_clock = clock + int(report_ticks * report_offset + 0.5)
         min_extend_ticks = int(report_ticks * 0.8 + 0.5)
-        ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.trdispatch_mcu_setup(
-            self._trdispatch_mcu,
-            clock,
-            expire_clock,
-            expire_ticks,
-            min_extend_ticks,
-        )
+        if self._trdispatch_mcu is not None:
+            ffi_main, ffi_lib = chelper.get_ffi()
+            ffi_lib.trdispatch_mcu_setup(
+                self._trdispatch_mcu,
+                clock,
+                expire_clock,
+                expire_ticks,
+                min_extend_ticks,
+            )
         self._mcu.register_response(
             self._handle_trsync_state, "trsync_state", self._oid
         )
