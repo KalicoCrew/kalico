@@ -619,12 +619,8 @@ class MotionToolhead(ToolHead):
             return max(self._mcu_pending_end_time, floor)
         return floor
 
-    def note_homing_end(self, trigger_print_time):
-        if self.mcu is None:
-            return
-        if trigger_print_time is not None and trigger_print_time > 0.0:
-            self._mcu_pending_end_time = trigger_print_time
-        else:
+    def note_homing_end(self):
+        if self.mcu is not None:
             self._mcu_pending_end_time = self.mcu.estimated_print_time(
                 self.reactor.monotonic()
             )
