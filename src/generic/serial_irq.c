@@ -132,7 +132,7 @@ DECL_TASK(console_task);
 //
 // Called with IRQs disabled (from ctr_run_shutdownfuncs inside
 // run_shutdown), so the serial RX IRQ cannot race.
-static void
+void
 serial_shutdown(void)
 {
     receive_pos = 0;

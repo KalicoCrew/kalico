@@ -2057,60 +2057,15 @@ pub mod exports {
     #[cfg(feature = "kalico-sim")]
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_load_fixture(
-        rt: *mut KalicoRuntime,
-        slot_idx: u16,
-        fixture_id: u16,
-        out_handle_packed: *mut u32,
+        _rt: *mut KalicoRuntime,
+        _slot_idx: u16,
+        _fixture_id: u16,
+        _out_handle_packed: *mut u32,
     ) -> i32 {
-        use runtime::sim_fixtures::{FIXTURE_CPS_MAX, FIXTURE_KNOTS_MAX, FIXTURE_WEIGHTS_MAX};
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: project to the top-level CurvePool only — no `&mut
-        // RuntimeContext` forms on this path. The fixture path uses the
-        // FPU-free `load_unchecked` to avoid Renode's CPACR-disabled
-        // UsageFault on the regular load() path.
-        unsafe {
-            let pool: &CurvePool = &*core::ptr::addr_of!((*ctx).curve_pool);
-            let mut cps = [0.0_f32; FIXTURE_CPS_MAX];
-            let mut knots = [0.0_f32; FIXTURE_KNOTS_MAX];
-            let mut weights = [0.0_f32; FIXTURE_WEIGHTS_MAX];
-            let Some((degree, n_cp, n_knots, _n_weights)) =
-                runtime::sim_fixtures::lookup(fixture_id, &mut cps, &mut knots, &mut weights)
-            else {
-                return KALICO_ERR_INVALID_CURVE;
-            };
-            // Step 7-B: load_unchecked uses scalar API. Fixtures still
-            // emit 3D data (3 floats per CP); extract first component (X).
-            // Task 8 will update fixtures to native scalar.
-            const FIXTURE_DIM: usize = 3; // sim_fixtures' per-CP dimension
-            let mut cps_scalar = [0.0_f32; runtime::curve_pool::MAX_CONTROL_POINTS];
-            for i in 0..n_cp {
-                cps_scalar[i] = cps[i * FIXTURE_DIM];
-            }
-            match pool.load_unchecked(
-                slot_idx,
-                degree,
-                &knots[..n_knots],
-                &cps_scalar[..n_cp],
-            ) {
-                Ok(handle) => {
-                    if !out_handle_packed.is_null() {
-                        *out_handle_packed = handle.pack();
-                    }
-                    KALICO_OK
-                }
-                Err(
-                    runtime::curve_pool::CurvePoolError::OutOfBounds
-                    | runtime::curve_pool::CurvePoolError::SlotAlreadyLoaded,
-                ) => KALICO_ERR_INVALID_HANDLE,
-                Err(_) => KALICO_ERR_INVALID_CURVE,
-            }
-        }
+        // Fixture loading used the old NURBS CurvePool API. The pool now
+        // uses WirePiece-based cubic loading. This escape hatch is unused
+        // by homing / motion tests — stub it to unblock the sim build.
+        KALICO_ERR_INVALID_CURVE
     }
 
     // ---- Step 7-D: endstop arm/disarm/poll_trip ----------------------------

@@ -13,6 +13,8 @@
 #include "autoconf.h" // CONFIG_*
 #include "basecmd.h" // oid_alloc
 #include "board/gpio.h" // gpio_out_write
+#include "board/irq.h" // irq_disable / irq_enable
+#include "board/misc.h" // timer_from_us, timer_read_time, timer_is_before
 #include "command.h" // DECL_COMMAND, command_decode_ptr
 #include "sched.h" // DECL_SHUTDOWN
 #include "stepper.h"

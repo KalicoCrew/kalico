@@ -163,10 +163,10 @@ pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
     use crate::stream::FgStreamState;
     use crate::trace::{TRACE_RING_N, TraceSample};
 
-    // Box::leak the queues so Producer/Consumer halves are 'static.
-    let seg_queue: &'static mut Queue<Segment, Q_N> =
-        Box::leak(Box::new(Queue::new()));
-    let (q_producer, q_consumer) = seg_queue.split();
+    // Segment queue uses c_segment_queue (static C-backed singleton on MCU,
+    // Mutex<VecDeque> on host). Producer/Consumer are zero-sized markers.
+    let q_producer = crate::c_segment_queue::Producer::new();
+    let q_consumer = crate::c_segment_queue::Consumer::new();
 
     let trace_queue: &'static mut Queue<TraceSample, TRACE_RING_N> =
         Box::leak(Box::new(Queue::new()));
@@ -250,20 +250,18 @@ pub fn push_test_segment_linear_z_at(
     // Total Z displacement: velocity × duration.
     let z_end_mm = velocity_mm_s * duration_s;
 
-    // Degree-3 Bézier with collinear CPs at 0, L/3, 2L/3, L.
-    // This gives exactly position(u) = L * u (linear in u).
-    let cp0 = 0.0_f32;
-    let cp1 = z_end_mm / 3.0;
-    let cp2 = z_end_mm * 2.0 / 3.0;
-    let cp3 = z_end_mm;
-    let cps = [cp0, cp1, cp2, cp3];
-    // Clamped degree-3 knot vector: [0, 0, 0, 0, 1, 1, 1, 1].
-    let knots = [0.0_f32, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
+    // Single cubic Bernstein piece: collinear CPs give linear position(u).
+    let wire = [crate::cubic_curve::WirePiece {
+        bp0_bits: 0.0_f32.to_bits(),
+        bp1_bits: (z_end_mm / 3.0).to_bits(),
+        bp2_bits: (z_end_mm * 2.0 / 3.0).to_bits(),
+        bp3_bits: z_end_mm.to_bits(),
+        duration_bits: duration_s.to_bits(),
+    }];
 
-    // Load into curve pool at slot 0 (test assumes a freshly-init pool).
     let z_handle = ctx
         .curve_pool
-        .validate_and_load(0, 3, &knots, &cps)
+        .try_alloc_and_load(0, &wire)
         .expect("Z curve must load into fresh pool");
 
     // Place the segment directly into engine.current so arm_step_timer sees
