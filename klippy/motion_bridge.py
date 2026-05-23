@@ -18,6 +18,7 @@ class MotionBridgeWrapper:
         # BridgeTriggerDispatch.start so the credit-freed handler can
         # fire _completion on past-end-time.
         self._homing_dispatches = {}
+        self._software_trip_active = False
 
     def get_bridge(self):
         return self._bridge
@@ -342,6 +343,24 @@ class MotionBridgeWrapper:
     def take_trip_event(self):
         return self._bridge.take_trip_event()
 
+    def submit_homing_move_async(self, newpos, speed, arm_ids):
+        return self._bridge.submit_homing_move_async(newpos, speed, arm_ids)
+
+    def is_homing_segment_retired(self):
+        return self._bridge.is_homing_segment_retired()
+
+    def get_homing_segment_reason(self):
+        return self._bridge.get_homing_segment_reason()
+
+    def software_trip(self, mcu, arm_id, timeout_s=2.0):
+        return self._bridge.software_trip(mcu, arm_id, timeout_s)
+
+    def extend_homing_deadline(self, mcu, arm_id):
+        return self._bridge.extend_homing_deadline(mcu, arm_id)
+
+    def get_homing_position_at_time(self, print_time):
+        return self._bridge.get_homing_position_at_time(print_time)
+
 
 # ----------------------------------------------------------------------
 # Step 7-D: BridgeTriggerDispatch
@@ -367,6 +386,15 @@ ARM_STATUS_REJECTED = 2
 DISARM_STATUS_DISARMED = 0
 DISARM_STATUS_ALREADY_TRIPPED = 1
 DISARM_STATUS_UNKNOWN = 2
+
+# Bridge-private homing segment reasons (from Rust bridge's
+# get_homing_segment_reason). Separate namespace from MCU_trsync
+# reasons above.
+BRIDGE_REASON_PAST_END_TIME = 1
+BRIDGE_REASON_TRIPPED = 2
+BRIDGE_REASON_DEADLINE_EXPIRED = 3
+
+SOURCE_KIND_SOFTWARE = 2
 
 
 _ARM_ID_COUNTER = [1]
