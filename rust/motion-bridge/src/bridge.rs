@@ -25,7 +25,7 @@ use trajectory::{AxisShaper, ShaperConfig};
 
 use crate::classify;
 use crate::config::{self, PlannerConfig, PlannerLimits, parse_required_shaper};
-use crate::dispatch::{AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, McuCaps, build_push_params};
+use crate::dispatch::{self, AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, McuCaps, build_push_params};
 use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::slot_pool::{CURVE_POOL_N, SlotPool};
@@ -2177,38 +2177,6 @@ impl PyMotionBridge {
                         .join(","),
                 );
 
-                // Cap-check each curve against the destination MCU's caps before
-                // dispatch. `build_push_params` does not enforce caps; if a planned
-                // curve exceeds its target's pool slot, fail-fast (Task 13 reduced
-                // scope; full per-segment bisection is a follow-up).
-                for plan in &mcu_plans {
-                    let caps = mcu_configs_for_cb
-                        .iter()
-                        .find(|c| c.mcu_id == plan.mcu_id)
-                        .map(|c| c.caps)
-                        .unwrap_or_default();
-                    // Cap source: the MCU's own RuntimeCapsResponse (post-2026-05-20
-                    // cubic-only schema), reported at attach via QueryRuntimeCaps.
-                    // The earlier `kalico_host_rt::producer::MAX_PIECES_PER_CURVE`
-                    // host constant was a placeholder pinned to the firmware
-                    // default; with `RUNTIME_MAX_PIECES_PER_CURVE` now a Kconfig
-                    // knob (and bumped from 16→64 for bench bring-up), the
-                    // authoritative value lives on each MCU and varies per build.
-                    let max_pieces = caps.max_pieces_per_curve as usize;
-                    for (_axis, curve) in &plan.curves_to_load {
-                        let pieces = curve.piece_count();
-                        if pieces > max_pieces {
-                            let err = DispatchError::CapsExceeded {
-                                mcu_id: plan.mcu_id,
-                                pieces,
-                                max_pieces,
-                            };
-                            log::error!("{err}");
-                            return Err(err);
-                        }
-                    }
-                }
-
                 for mut plan in mcu_plans {
                     // Skip plans targeting MCUs without kalico-runtime — stock
                     // Klipper firmware can't decode load_curve / push_segment.
@@ -2391,176 +2359,153 @@ impl PyMotionBridge {
                     plan.params.t_start = t_start_clock;
                     plan.params.t_end = t_end_clock;
 
-                    // Allocate a fresh segment id for this logical move (one per
-                    // MCU per ShapedSegment, restoring pre-B.1 semantics).
-                    {
-                        let mut ids = next_seg_id.lock().unwrap_or_else(|p| p.into_inner());
-                        let entry = ids.entry(plan.mcu_id).or_insert(1);
-                        plan.params.id = *entry;
-                        *entry = entry.wrapping_add(1);
-                    }
-                    homing.mark_dispatched_segment(plan.params.id);
-
-                    // Allocate slots, load curves. On any error, release every
-                    // slot allocated so far for this segment so the pool doesn't
-                    // leak. Each `producer::load_curve` call expands internally
-                    // to begin + N×chunk + finalize over the wire.
-                    let mut allocated_slots: Vec<u16> =
-                        Vec::with_capacity(plan.curves_to_load.len());
-                    let mut seg_err: Option<DispatchError> = None;
-                    for i in 0..plan.curves_to_load.len() {
-                        let axis_idx = plan.curves_to_load[i].0;
-                        let curve_params = plan.curves_to_load[i].1.clone();
-                        let alloc_result = {
-                            let mut pool = slot_pool.lock().unwrap_or_else(|p| p.into_inner());
-                            let cap = pool.capacity();
-                            let in_flight = pool.in_flight_count();
-                            pool.try_alloc().ok_or(DispatchError::SlotPoolExhausted {
-                                mcu_id: plan.mcu_id,
-                                capacity: cap,
-                                in_flight,
-                            })
-                        };
-                        let (slot, slot_gen) = match alloc_result {
-                            Ok(v) => v,
-                            Err(e) => {
-                                seg_err = Some(e);
-                                break;
-                            }
-                        };
-                        let pool_in_flight_after_alloc = {
-                            let p = slot_pool.lock().unwrap_or_else(|p| p.into_inner());
-                            p.in_flight_count()
-                        };
-                        log::debug!(
-                            "[slot-trace] try_alloc mcu={} seg_id={} axis={} slot={} gen={} in_flight={}",
-                            plan.mcu_id,
-                            plan.params.id,
-                            axis_idx,
-                            slot,
-                            slot_gen,
-                            pool_in_flight_after_alloc,
+                    // --- Move splitting (dispatch-level curve chunking) ---
+                    let caps = mcu_configs_for_cb
+                        .iter()
+                        .find(|c| c.mcu_id == plan.mcu_id)
+                        .map(|c| c.caps)
+                        .unwrap_or_default();
+                    let effective_max_pieces =
+                        (caps.max_pieces_per_curve as usize).min(255);
+                    if caps.max_pieces_per_curve > 255 {
+                        log::warn!(
+                            "MCU {} reports max_pieces_per_curve={}, clamping to 255 (u8 wire ceiling)",
+                            plan.mcu_id, caps.max_pieces_per_curve,
                         );
-                        allocated_slots.push(slot);
-                        match producer::load_curve(
-                            io.as_ref(),
-                            slot,
-                            axis_idx as u8,
-                            &curve_params,
-                            producer::DEFAULT_LOAD_CURVE_TIMEOUT,
-                        ) {
-                            Ok(handle) => {
-                                plan.set_handle(axis_idx, handle);
-                            }
-                            Err(e) => {
-                                seg_err = Some(DispatchError::LoadCurve {
-                                    mcu_id: plan.mcu_id,
-                                    slot,
-                                    seg_id: plan.params.id,
-                                    axis: axis_idx,
-                                    host_gen: slot_gen,
-                                    detail: e.to_string(),
-                                });
-                                break;
-                            }
-                        }
                     }
 
-                    if let Some(err) = seg_err {
-                        // Partial failure: release every slot allocated for this
-                        // segment before propagating.
-                        let mut pool = slot_pool.lock().unwrap_or_else(|p| p.into_inner());
-                        for s in &allocated_slots {
-                            log::debug!(
-                                "[slot-trace] release(on-err) mcu={} seg_id={} slot={}",
-                                plan.mcu_id,
-                                plan.params.id,
-                                s,
-                            );
-                            pool.release(*s);
-                        }
-                        return Err(err);
+                    let sub_plans = dispatch::split_plan_if_needed(
+                        plan, effective_max_pieces, freq,
+                    )?;
+
+                    let n_sub = sub_plans.len();
+                    if n_sub > 1 {
+                        log::info!(
+                            "[bridge-trace] split mcu={}: {} sub-segments (max_pieces={})",
+                            sub_plans[0].mcu_id, n_sub, effective_max_pieces,
+                        );
                     }
 
-                    // Bind every freshly-allocated slot to this segment id so
-                    // `kalico_credit_freed`-driven retirement can release them.
-                    {
-                        let mut pool = slot_pool.lock().unwrap_or_else(|p| p.into_inner());
-                        for slot in &allocated_slots {
-                            pool.register_segment(*slot, plan.params.id);
-                            log::debug!(
-                                "[slot-trace] register_segment mcu={} slot={} seg_id={}",
-                                plan.mcu_id,
-                                slot,
-                                plan.params.id,
-                            );
-                        }
-                    }
-
-                    // Diagnostic 2026-05-11: dump per-segment dispatch info to
-                    // distinguish bridge-side curve discontinuity from
-                    // late-activation (u_entry > 0) as the cause of
-                    // STEP_BURST_EXCEEDED on segment 3 of the second jog.
-                    // Evaluate the shaped curves at their `seg.t_start` and
-                    // `seg.t_end` so cross-segment continuity can be verified
-                    // from the log alone: if seg N's pos_end matches seg N+1's
-                    // pos_start, the planner emits continuous geometry and any
-                    // burst must be late-activation; if they differ by the
-                    // observed delta (e.g. ~15 mm), the discontinuity is real.
-                    let pos_at = |axis: usize, u: f64| -> f64 {
-                        let curve = &seg.axes[axis];
-                        nurbs::eval::eval(curve, u)
+                    // Pre-allocate segment IDs for homing correctness:
+                    // mark_dispatched_segment overwrites on each call (homing.rs:70),
+                    // so we register only the LAST sub-segment's ID to prevent
+                    // premature completion if earlier sub-segments retire while
+                    // dispatch is still in progress.
+                    let pre_alloc_ids: Vec<u32> = {
+                        let mut ids = next_seg_id.lock().unwrap_or_else(|p| p.into_inner());
+                        let entry = ids.entry(sub_plans[0].mcu_id).or_insert(1);
+                        let first = *entry;
+                        *entry = entry.wrapping_add(n_sub as u32);
+                        (0..n_sub as u32).map(|i| first.wrapping_add(i)).collect()
                     };
-                    log::debug!(
-                        "[bridge-trace] seg-dispatch mcu={} seg_id={} branch={} \
-                     now_clock={} mcu_base={} t_start_clock={} t_end_clock={} \
-                     t_start_s={:.6} t_end_s={:.6} \
-                     pos_start=[{:.4},{:.4},{:.4}] pos_end=[{:.4},{:.4},{:.4}]",
-                        plan.mcu_id,
-                        plan.params.id,
-                        _diag_branch_outer,
-                        _diag_now_clock,
-                        mcu_base_clock,
-                        t_start_clock,
-                        t_end_clock,
-                        seg.t_start,
-                        seg.t_end,
-                        pos_at(0, seg.t_start),
-                        pos_at(1, seg.t_start),
-                        pos_at(2, seg.t_start),
-                        pos_at(0, seg.t_end),
-                        pos_at(1, seg.t_end),
-                        pos_at(2, seg.t_end),
-                    );
+                    homing.mark_dispatched_segment(*pre_alloc_ids.last().unwrap());
 
-                    let push_result = dispatch_push_segment(io.as_ref(), credit, &plan.params);
-                    match &push_result {
-                        Ok(info) => log::info!(
-                            "[bridge-trace] push_segment ok: mcu={} sent_id={} accepted_id={} credit_epoch={}",
-                            plan.mcu_id,
-                            plan.params.id,
-                            info.accepted_segment_id,
-                            info.credit_epoch,
-                        ),
-                        Err(e) => log::info!(
-                            "[bridge-trace] push_segment err: mcu={} sent_id={} err={:?}",
-                            plan.mcu_id,
-                            plan.params.id,
-                            e,
-                        ),
-                    }
-                    if let Err(e) = push_result {
-                        // Defensive cleanup — release this segment's slots so
-                        // the pool doesn't leak (the MCU never accepted them).
-                        let mut pool = slot_pool.lock().unwrap_or_else(|p| p.into_inner());
-                        for s in &allocated_slots {
-                            pool.release(*s);
+                    for (sub_idx, mut sub_plan) in sub_plans.into_iter().enumerate() {
+                        sub_plan.params.id = pre_alloc_ids[sub_idx];
+
+                        let mut allocated_slots: Vec<u16> =
+                            Vec::with_capacity(sub_plan.curves_to_load.len());
+                        let mut seg_err: Option<DispatchError> = None;
+                        for i in 0..sub_plan.curves_to_load.len() {
+                            let axis_idx = sub_plan.curves_to_load[i].0;
+                            let curve_params = sub_plan.curves_to_load[i].1.clone();
+                            let alloc_result = {
+                                let mut pool =
+                                    slot_pool.lock().unwrap_or_else(|p| p.into_inner());
+                                let cap = pool.capacity();
+                                let in_flight = pool.in_flight_count();
+                                pool.try_alloc()
+                                    .ok_or(DispatchError::SlotPoolExhausted {
+                                        mcu_id: sub_plan.mcu_id,
+                                        capacity: cap,
+                                        in_flight,
+                                    })
+                            };
+                            let (slot, slot_gen) = match alloc_result {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    seg_err = Some(e);
+                                    break;
+                                }
+                            };
+                            log::debug!(
+                                "[slot-trace] try_alloc mcu={} seg_id={} sub={}/{} axis={} slot={} gen={}",
+                                sub_plan.mcu_id, sub_plan.params.id,
+                                sub_idx + 1, n_sub, axis_idx, slot, slot_gen,
+                            );
+                            allocated_slots.push(slot);
+                            match producer::load_curve(
+                                io.as_ref(),
+                                slot,
+                                axis_idx as u8,
+                                &curve_params,
+                                producer::DEFAULT_LOAD_CURVE_TIMEOUT,
+                            ) {
+                                Ok(handle) => {
+                                    sub_plan.set_handle(axis_idx, handle);
+                                }
+                                Err(e) => {
+                                    seg_err = Some(DispatchError::LoadCurve {
+                                        mcu_id: sub_plan.mcu_id,
+                                        slot,
+                                        seg_id: sub_plan.params.id,
+                                        axis: axis_idx,
+                                        host_gen: slot_gen,
+                                        detail: e.to_string(),
+                                    });
+                                    break;
+                                }
+                            }
                         }
-                        return Err(DispatchError::PushSegment {
-                            mcu_id: plan.mcu_id,
-                            detail: e.to_string(),
-                        });
-                    }
+
+                        if let Some(err) = seg_err {
+                            let mut pool =
+                                slot_pool.lock().unwrap_or_else(|p| p.into_inner());
+                            for s in &allocated_slots {
+                                pool.release(*s);
+                            }
+                            return Err(err);
+                        }
+
+                        // Register slots BEFORE push (slot_pool.rs:126 requirement)
+                        {
+                            let mut pool =
+                                slot_pool.lock().unwrap_or_else(|p| p.into_inner());
+                            for slot in &allocated_slots {
+                                pool.register_segment(*slot, sub_plan.params.id);
+                                log::debug!(
+                                    "[slot-trace] register_segment mcu={} slot={} seg_id={}",
+                                    sub_plan.mcu_id, slot, sub_plan.params.id,
+                                );
+                            }
+                        }
+
+                        let push_result =
+                            dispatch_push_segment(io.as_ref(), credit, &sub_plan.params);
+                        match &push_result {
+                            Ok(info) => log::info!(
+                                "[bridge-trace] push_segment ok: mcu={} seg_id={} sub={}/{} accepted_id={}",
+                                sub_plan.mcu_id, sub_plan.params.id,
+                                sub_idx + 1, n_sub, info.accepted_segment_id,
+                            ),
+                            Err(e) => log::info!(
+                                "[bridge-trace] push_segment err: mcu={} seg_id={} sub={}/{} err={:?}",
+                                sub_plan.mcu_id, sub_plan.params.id,
+                                sub_idx + 1, n_sub, e,
+                            ),
+                        }
+                        if let Err(e) = push_result {
+                            let mut pool =
+                                slot_pool.lock().unwrap_or_else(|p| p.into_inner());
+                            for s in &allocated_slots {
+                                pool.release(*s);
+                            }
+                            return Err(DispatchError::PushSegment {
+                                mcu_id: sub_plan.mcu_id,
+                                detail: e.to_string(),
+                            });
+                        }
+                    } // end sub_plan loop
                 }
 
                 counter.fetch_add(1, Ordering::Relaxed);
