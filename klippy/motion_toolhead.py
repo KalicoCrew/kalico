@@ -761,7 +761,7 @@ class MotionToolhead(ToolHead):
                 f446,
             )
             self._configure_axes_per_mcu(bridge_mcus)
-            self._register_credit_freed_handlers(bridge_mcus)
+
         except Exception:
             logging.exception("MotionToolhead: init_planner failed")
             raise
@@ -1117,52 +1117,6 @@ class MotionToolhead(ToolHead):
                 [(m, n, o, i) for (m, n, o, i) in bind_list],
                 phase_configs, any_phase_stepping,
                 len(phase_configs),
-            )
-
-    def _register_credit_freed_handlers(self, bridge_mcus):
-        """Register a kalico_credit_freed handler on each bridge MCU.
-
-        Dispatch path: MCU emits kalico_credit_freed
-        -> Rust host_io lifts to RuntimeEvent::CreditFreed
-        -> bridge.try_recv_event surfaces dict
-        -> serialhdl._bridge_event_poller renames to "kalico_credit_freed"
-        -> THIS handler -> bridge.on_credit_freed
-        -> Rust SlotPool.retire_through_segment + CreditCounter sync.
-        """
-        bridge = self.bridge
-        for name, mcu_obj, mcu_handle in bridge_mcus:
-            serial = getattr(mcu_obj, "_serial", None)
-            if serial is None or not hasattr(serial, "register_response"):
-                logging.warning(
-                    "MotionToolhead: bridge MCU '%s' has no SerialReader; "
-                    "kalico_credit_freed handler not registered", name,
-                )
-                continue
-            handle = mcu_handle
-            mcu_label = name
-
-            def _on_credit_freed(params, _bridge=bridge, _handle=handle,
-                                 _label=mcu_label):
-                try:
-                    retired = int(params.get("retired_through_segment_id", 0))
-                    free_slots = int(params.get("free_slots", 0))
-                    result = _bridge.on_credit_freed(
-                        _handle, retired, free_slots,
-                    )
-                    if isinstance(result, tuple) and len(result) >= 2:
-                        completed_arm = result[1]
-                        if completed_arm is not None:
-                            _bridge.fire_homing_completion(completed_arm)
-                except Exception:
-                    logging.exception(
-                        "MotionToolhead: bridge.on_credit_freed failed for "
-                        "MCU '%s' (handle=%s)", _label, _handle,
-                    )
-
-            serial.register_response(_on_credit_freed, "kalico_credit_freed")
-            logging.info(
-                "MotionToolhead: registered kalico_credit_freed handler for "
-                "MCU '%s' (handle=%s)", name, mcu_handle,
             )
 
     # ------------------------------------------------------------------
