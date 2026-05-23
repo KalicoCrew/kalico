@@ -2,23 +2,27 @@
 # Kalico Simulator — build and run in Docker.
 #
 # Usage:
-#   ./run.sh                          # Homing test on current branch
-#   ./run.sh --branch main            # Test specific branch
+#   ./run.sh                          # Test current branch (main)
+#   ./run.sh --branch sota-motion     # Test a specific branch
 #   ./run.sh --gcode benchy.gcode     # Print a G-code file
-#   ./run.sh --branch sota-motion     # Test sota-motion (should catch bugs)
+#   ./run.sh --privileged             # Enable SCHED_FIFO for homing
 #
-# Multiple instances run in parallel safely (each container has its
-# own /dev/shm for the virtual clock).
+# The script creates a clean build context from the target branch,
+# overlays the simulator tools, builds the Docker image, and runs it.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-BRANCH="HEAD"
+# Find the actual git directory (handle worktrees)
+GIT_DIR="$(cd "$REPO_ROOT" && git rev-parse --git-common-dir 2>/dev/null || echo "$REPO_ROOT/.git")"
+MAIN_REPO="$(cd "$GIT_DIR/.." 2>/dev/null && pwd || echo "$REPO_ROOT")"
+
+BRANCH=""
 GCODE=""
 EXTRA_ARGS=""
-VERBOSE=""
+DOCKER_ARGS="--rm"
 TAG_SUFFIX=""
 
 while [[ $# -gt 0 ]]; do
@@ -32,8 +36,12 @@ while [[ $# -gt 0 ]]; do
             GCODE="$2"
             shift 2
             ;;
+        --privileged)
+            DOCKER_ARGS="$DOCKER_ARGS --privileged"
+            shift
+            ;;
         --verbose|-v)
-            VERBOSE="--verbose"
+            EXTRA_ARGS="$EXTRA_ARGS --verbose"
             shift
             ;;
         *)
@@ -46,23 +54,37 @@ done
 IMAGE_TAG="kalico-sim${TAG_SUFFIX}"
 
 echo "=== Kalico Simulator ==="
-echo "  Branch: $BRANCH"
-echo "  Image:  $IMAGE_TAG"
-echo "  G-code: ${GCODE:-none (homing test)}"
+echo "  Branch:    ${BRANCH:-HEAD}"
+echo "  Image:     $IMAGE_TAG"
+echo "  Main repo: $MAIN_REPO"
+echo "  G-code:    ${GCODE:-none (basic test)}"
 echo ""
 
-# Build the Docker image
-echo "Building Docker image..."
+# Create build context: archive target branch + overlay simulator tools
+BUILD_CTX=$(mktemp -d)
+trap "rm -rf $BUILD_CTX" EXIT
+
+if [[ -n "$BRANCH" ]]; then
+    echo "Extracting branch '$BRANCH'..."
+    (cd "$MAIN_REPO" && git archive "$BRANCH") | tar -x -C "$BUILD_CTX"
+else
+    echo "Extracting HEAD..."
+    (cd "$REPO_ROOT" && git archive HEAD) | tar -x -C "$BUILD_CTX"
+fi
+
+# Overlay simulator tools (from the worktree/current checkout)
+echo "Adding simulator tools..."
+mkdir -p "$BUILD_CTX/tools/kalico-sim"
+cp -a "$SCRIPT_DIR"/* "$BUILD_CTX/tools/kalico-sim/"
+
+# Build
+echo "Building Docker image '$IMAGE_TAG'..."
 docker build \
-    --build-arg "BRANCH=$BRANCH" \
     -t "$IMAGE_TAG" \
-    -f "$SCRIPT_DIR/Dockerfile" \
-    "$REPO_ROOT"
+    -f "$BUILD_CTX/tools/kalico-sim/Dockerfile" \
+    "$BUILD_CTX"
 
-# Run the simulation
-DOCKER_ARGS="--rm"
-
-# Mount G-code file if specified
+# Run
 if [[ -n "$GCODE" ]]; then
     GCODE_ABS="$(cd "$(dirname "$GCODE")" && pwd)/$(basename "$GCODE")"
     DOCKER_ARGS="$DOCKER_ARGS -v $GCODE_ABS:/gcode/$(basename "$GCODE"):ro"
@@ -70,4 +92,4 @@ if [[ -n "$GCODE" ]]; then
 fi
 
 echo "Running simulation..."
-docker run $DOCKER_ARGS "$IMAGE_TAG" $VERBOSE $EXTRA_ARGS
+docker run $DOCKER_ARGS "$IMAGE_TAG" $EXTRA_ARGS

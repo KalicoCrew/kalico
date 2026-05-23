@@ -44,26 +44,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN pip3 install --break-system-packages \
     greenlet cffi pyserial jinja2 markupsafe numpy 2>/dev/null || true
 
+# Install Rust toolchain (needed for branches with KALICO_RUNTIME)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain stable --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
+
 WORKDIR /kalico
 
-ARG BRANCH=HEAD
-
-# Copy the entire repository (from the simulator branch / build context)
+# The build context should already contain the target branch's code
+# with tools/kalico-sim overlaid. Use run.sh to prepare the context.
 COPY . /kalico/
-
-# Save simulator tools before potential branch switch — they may not
-# exist on the target branch. We stash the whole tools/kalico-sim
-# directory and restore it after checkout.
-RUN cp -a tools/kalico-sim /tmp/_kalico_sim_tools
-
-# Checkout target branch if specified. Use --force to discard any
-# working tree changes that conflict with the target branch.
-RUN if [ "$BRANCH" != "HEAD" ]; then \
-        git checkout --force "$BRANCH" 2>/dev/null || echo "WARN: branch $BRANCH not found, using HEAD"; \
-    fi
-
-# Restore simulator tools on top of the target branch
-RUN cp -a /tmp/_kalico_sim_tools tools/kalico-sim && rm -rf /tmp/_kalico_sim_tools
 
 # Build shims (libvtime.so + libsim_intercept.so)
 RUN make -C tools/kalico-sim/libvtime
