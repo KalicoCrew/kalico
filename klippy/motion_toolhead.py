@@ -479,6 +479,99 @@ class MotionToolhead(ToolHead):
             # No endstop armed — regular move fallback
             self.move(newpos, speed)
 
+    def _drip_move_software_trip(self, newpos, speed, drip_completion):
+        from . import motion_bridge as _mb
+        from . import motion_kinematics
+
+        pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
+        dx = pos3[0] - self.commanded_pos[0]
+        dy = pos3[1] - self.commanded_pos[1]
+        dz = pos3[2] - self.commanded_pos[2]
+
+        # Select moving steppers via kinematic motor-delta mapping
+        kin_name = self.kinematics_name or ""
+        motor_d = motion_kinematics.motor_deltas(kin_name, dx, dy, dz, 0.0)
+        slot_prefixes = ["stepper_x", "stepper_y", "stepper_z", "extruder"]
+        moving_steppers = []
+        for slot_idx, delta in enumerate(motor_d):
+            if abs(delta) < 1e-9:
+                continue
+            prefix = slot_prefixes[slot_idx]
+            for s in self.kin.get_steppers():
+                if s.get_name().startswith(prefix):
+                    moving_steppers.append(s)
+
+        if not moving_steppers:
+            self.move(newpos, speed)
+            return
+
+        # Resolve MCU handle from first stepper's MCU
+        stepper_mcus = set(s.get_mcu() for s in moving_steppers)
+        if len(stepper_mcus) > 1:
+            raise self.printer.command_error(
+                "External probe homing across multiple bridge MCUs "
+                "is not supported"
+            )
+        stepper_mcu = next(iter(stepper_mcus))
+        mcu_handle = stepper_mcu._bridge_handle
+        queue = self.bridge.alloc_command_queue(mcu_handle)
+
+        # Create virtual arm
+        arm_id = _mb._alloc_arm_id()
+        stepper_oids = [s.get_oid() for s in moving_steppers]
+        source = (_mb.SOURCE_KIND_SOFTWARE, 0, 0, 0, 1, 0, 0)
+        arm_clock = int(stepper_mcu.print_time_to_clock(
+            self.get_last_move_time()
+        ))
+
+        # Energize motors
+        self._fire_active_callbacks(
+            dx, dy, dz, 0.0, self.get_last_move_time()
+        )
+
+        # Arm + submit
+        self.active_homing_arms.add(arm_id)
+        self.bridge.register_homing_dispatch(arm_id, None)
+        self.bridge._software_trip_active = True
+
+        bridge_lmt_before = self.bridge.get_last_move_time()
+        try:
+            self.bridge.endstop_arm(
+                mcu_handle, queue, arm_id, arm_clock,
+                [source], stepper_oids,
+            )
+            self.bridge.submit_homing_move_async(pos3, speed, [arm_id])
+
+            # Credit-extension loop
+            while True:
+                drip_completion.wait(
+                    waketime=self.reactor.monotonic() + 0.025
+                )
+                if drip_completion.test():
+                    self.bridge.software_trip(mcu_handle, arm_id)
+                    break
+                if self.bridge.is_homing_segment_retired():
+                    reason = self.bridge.get_homing_segment_reason()
+                    if reason == _mb.BRIDGE_REASON_DEADLINE_EXPIRED:
+                        raise self.printer.command_error(
+                            "Homing deadline expired: host failed to "
+                            "extend credit within 50ms"
+                        )
+                    break  # natural no-trigger
+                self.bridge.extend_homing_deadline(mcu_handle, arm_id)
+
+            self.bridge.wait_moves()
+            bridge_lmt_after = self.bridge.get_last_move_time()
+            duration = bridge_lmt_after - bridge_lmt_before
+            self._bump_pending_end_time(duration)
+        finally:
+            self.active_homing_arms.discard(arm_id)
+            self.bridge.unregister_homing_dispatch(arm_id)
+            try:
+                self.bridge.endstop_disarm(mcu_handle, queue, arm_id)
+            except Exception:
+                pass  # best-effort cleanup
+
     def dwell(self, delay):
         self.bridge.submit_dwell(delay)
         if delay > 0.0:
