@@ -583,12 +583,16 @@ class MotionToolhead(ToolHead):
             self.bridge._homing_print_time_base = bridge_lmt_before
             self.bridge.submit_homing_move_async(pos3, speed, [arm_id])
 
-            # Credit-extension loop with hard safety timeout.
-            # The loop MUST exit within HOMING_TIMEOUT — if it doesn't,
-            # software_trip is called and an error is raised. This
-            # prevents Z from running indefinitely if the beacon trsync
-            # completion doesn't propagate to drip_completion.
-            HOMING_TIMEOUT = 10.0
+            # Credit-extension loop with capped lifetime.
+            #
+            # The F446's software endstop has a ~50ms grant window.
+            # Each extend_homing_deadline pushes it by another ~50ms.
+            # We cap extensions at the expected move duration so the
+            # firmware's deadline fires if the host relay is broken.
+            # After the cap, the loop exits and the finally block
+            # calls software_trip unconditionally.
+            move_dist = abs(pos3[2] - self.commanded_pos[2])
+            move_time = move_dist / max(speed, 0.1) + 5.0
             loop_start = self.reactor.monotonic()
             loop_iter = 0
             exit_reason = "unknown"
@@ -599,14 +603,10 @@ class MotionToolhead(ToolHead):
                 loop_iter += 1
                 elapsed = self.reactor.monotonic() - loop_start
                 if drip_completion.test():
-                    retired = self.bridge.is_homing_segment_retired()
                     logging.info(
                         "[homing-loop] beacon triggered iter=%d "
-                        "elapsed=%.3f segment_retired=%s",
-                        loop_iter, elapsed, retired,
+                        "elapsed=%.3f", loop_iter, elapsed,
                     )
-                    if not retired:
-                        self.bridge.software_trip(mcu_handle, arm_id)
                     exit_reason = "beacon_trigger"
                     break
                 if self.bridge.is_homing_segment_retired():
@@ -616,30 +616,23 @@ class MotionToolhead(ToolHead):
                         "elapsed=%.3f reason=%d",
                         loop_iter, elapsed, reason,
                     )
-                    if reason == _mb.BRIDGE_REASON_DEADLINE_EXPIRED:
-                        exit_reason = "deadline_expired"
-                        raise self.printer.command_error(
-                            "Homing deadline expired: host failed to "
-                            "extend credit within 50ms"
-                        )
                     exit_reason = "segment_complete"
                     break
-                if elapsed > HOMING_TIMEOUT:
+                if elapsed > move_time:
                     logging.error(
                         "[homing-loop] SAFETY TIMEOUT iter=%d "
-                        "elapsed=%.3f — forcing stop",
+                        "elapsed=%.3f — stopping extensions",
                         loop_iter, elapsed,
                     )
                     exit_reason = "safety_timeout"
                     raise self.printer.command_error(
                         "Homing safety timeout: Z moved for %.1fs "
-                        "without beacon trigger or segment completion"
-                        % (elapsed,)
+                        "without trigger" % (elapsed,)
                     )
                 self.bridge.extend_homing_deadline(mcu_handle, arm_id)
             logging.info(
-                "[homing-loop] exited: reason=%s iter=%d", exit_reason,
-                loop_iter,
+                "[homing-loop] exited: reason=%s iter=%d",
+                exit_reason, loop_iter,
             )
 
             self.bridge.wait_moves()
