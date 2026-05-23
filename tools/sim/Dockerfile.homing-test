@@ -31,7 +31,7 @@ RUN pip3 install --break-system-packages cffi pyserial greenlet jinja2 numpy
 WORKDIR /work
 COPY . /work/
 
-# Build sim firmware (ARM, for Renode)
+# Build H7 sim firmware
 RUN cp tools/sim/sim.config .config && \
     make olddefconfig && \
     if grep -q '^CONFIG_STACK_SIZE=' tools/sim/sim.config; then \
@@ -40,7 +40,16 @@ RUN cp tools/sim/sim.config .config && \
       touch .config && rm -f out/autoconf.h; \
     fi && \
     make clean && \
-    make -j$(nproc)
+    make -j$(nproc) && \
+    cp out/klipper.elf /tmp/klipper-h7-sim.elf
+
+# Build F446 sim firmware
+RUN cp tools/sim/sim_f446.config .config && \
+    make olddefconfig && \
+    make clean && \
+    make -j$(nproc) && \
+    cp out/klipper.elf out/klipper-f4-sim.elf && \
+    cp /tmp/klipper-h7-sim.elf out/klipper-h7-sim.elf
 
 # Build motion-bridge for host (Linux)
 RUN cd rust && cargo build -p motion-bridge --release && \

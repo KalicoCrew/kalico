@@ -1,0 +1,55 @@
+:name: kalico-dual-mcu-sim
+:description: Dual-MCU Renode sim — H723 (main) + F446 (bottom) for multi-MCU homing tests.
+
+using sysbus
+
+# ── H723 (main MCU) ──────────────────────────────────────────────────
+mach create "h723"
+machine LoadPlatformDescription @/opt/renode/platforms/cpus/stm32h743.repl
+
+machine LoadPlatformDescriptionFromString """
+spi3: SPI.STM32H7_SPI @ sysbus 0x40003C00
+    IRQ -> nvic@51
+"""
+
+include @tools/sim/renode_peripherals/Tmc5160.cs
+machine LoadPlatformDescriptionFromString """
+spi_mux: SPI.SPIMultiplexer @ spi3 { init: { SetActiveLow 5; SetActiveLow 6 } }
+"""
+machine LoadPlatformDescriptionFromString """
+tmc_x: Sensors.TMC5160 @ spi_mux 5
+"""
+machine LoadPlatformDescriptionFromString """
+tmc_y: Sensors.TMC5160 @ spi_mux 6
+"""
+machine LoadPlatformDescriptionFromString """
+gpioPortA: { 5 -> spi_mux@5; 6 -> spi_mux@6 }
+"""
+
+cpu FpuEnabled true
+
+sysbus Tag <0x58024800 4> "PWR_CR1"  0x100
+sysbus Tag <0x58024804 4> "PWR_CSR1" 0x2000
+sysbus Tag <0x58024808 4> "PWR_CR2"  0x1
+sysbus Tag <0x58024400 4> "RCC_CR" 0x02000003
+
+emulation CreateServerSocketTerminal 3334 "h723_uart" false
+connector Connect sysbus.usart2 h723_uart
+
+sysbus LoadELF @out/klipper-h7-sim.elf
+
+# ── F446 (bottom MCU) ────────────────────────────────────────────────
+mach create "f446"
+machine LoadPlatformDescription @/opt/renode/platforms/cpus/stm32f429.repl
+
+cpu FpuEnabled true
+
+emulation CreateServerSocketTerminal 3336 "f446_uart" false
+connector Connect sysbus.usart2 f446_uart
+
+sysbus LoadELF @out/klipper-f4-sim.elf
+
+# ── Global settings ──────────────────────────────────────────────────
+emulation SetGlobalQuantum "0.000100"
+
+echo "Dual-MCU sim ready. H723 UART -> tcp:3334, F446 UART -> tcp:3336"

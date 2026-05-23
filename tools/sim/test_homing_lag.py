@@ -120,9 +120,6 @@ def main():
     print(f"  Elapsed: {elapsed:.2f}s")
     if err:
         print(f"  Error: {err[:200]}")
-    print(f"  Elapsed: {elapsed:.2f}s")
-    if err:
-        print(f"  Error: {err[:200]}")
     # "Endstop still triggered after retract" is expected when the pin
     # stays HIGH through the retract.
     if "still triggered after retract" in err:
@@ -131,15 +128,38 @@ def main():
         failures.append(f"Test 1 unexpected error: {err[:100]}")
     else:
         print(f"  Homing succeeded")
-    # Renode runs at ~0.3-0.7x real time. A 50mm/50mm/s = 1s firmware
-    # homing move should take < 10s wall-clock even at 0.1x. The bug
-    # adds 5-10s of ghost delay on top of that. Threshold at 15s to
-    # separate Renode slowness from the actual bug.
     if elapsed > 15.0:
         print(f"  BUG: {elapsed:.1f}s total — likely ghost delay")
         failures.append(f"Test 1: {elapsed:.1f}s delay")
     else:
         print(f"  Timing acceptable: {elapsed:.1f}s")
+
+    # Test 2: Post-homing responsiveness
+    # After G28 completes, measure how long the next command takes.
+    # On the real Trident, there's a multi-second delay after homing
+    # before the toolhead responds to SET_KINEMATIC_POSITION or G1.
+    print("\n=== Test 2: Post-homing response time ===")
+    t1 = time.time()
+    r2 = gcode(args.api, "SET_KINEMATIC_POSITION X=0 Y=0 Z=0", timeout=30.0)
+    post_homing_elapsed = time.time() - t1
+    err2 = (r2.get("error") or {}).get("message", "")
+    print(f"  SET_KINEMATIC_POSITION elapsed: {post_homing_elapsed:.3f}s")
+    if err2:
+        print(f"  Error: {err2[:200]}")
+
+    t2 = time.time()
+    r3 = gcode(args.api, "G1 X10 F3000", timeout=30.0)
+    move_elapsed = time.time() - t2
+    err3 = (r3.get("error") or {}).get("message", "")
+    print(f"  G1 X10 elapsed: {move_elapsed:.3f}s")
+    if err3:
+        print(f"  Error: {err3[:200]}")
+
+    if post_homing_elapsed > 3.0:
+        print(f"  BUG: {post_homing_elapsed:.1f}s post-homing delay on SET_KINEMATIC_POSITION")
+        failures.append(f"Test 2: {post_homing_elapsed:.1f}s post-homing delay")
+    else:
+        print(f"  Post-homing response OK: {post_homing_elapsed:.3f}s")
 
     # Summary
     print("\n=== Summary ===")

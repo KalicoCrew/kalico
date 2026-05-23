@@ -3,28 +3,32 @@ set -euo pipefail
 
 cd /work
 
-echo "=== Starting Renode ==="
+echo "=== Starting Renode (dual MCU) ==="
 renode --port 3335 --disable-gui \
-  -e "include @tools/sim/h723_sim_docker.resc" \
+  -e "include @tools/sim/dual_mcu_docker.resc" \
   -e 'logLevel 3 sysbus' -e 'logLevel 3 rcc' -e 'logLevel 3 nvic' \
   -e 'logLevel 0 usart2' -e 'start' &
 RENODE_PID=$!
 
-# Wait for UART port
-echo "Waiting for Renode UART..."
+# Wait for both UART ports
+echo "Waiting for Renode UARTs..."
 until nc -z localhost 3334 2>/dev/null; do sleep 0.5; done
-echo "Renode UART ready"
+until nc -z localhost 3336 2>/dev/null; do sleep 0.5; done
+echo "Renode UARTs ready (H723:3334, F446:3336)"
 
-echo "=== Starting socat PTY bridge ==="
-socat PTY,link=/tmp/renode_pty,raw,echo=0 TCP:localhost:3334 &
-SOCAT_PID=$!
-until [ -e /tmp/renode_pty ]; do sleep 0.2; done
-echo "PTY bridge ready: $(readlink /tmp/renode_pty)"
+echo "=== Starting socat PTY bridges ==="
+socat PTY,link=/tmp/renode_h7_pty,raw,echo=0 TCP:localhost:3334 &
+socat PTY,link=/tmp/renode_f4_pty,raw,echo=0 TCP:localhost:3336 &
+until [ -e /tmp/renode_h7_pty ] && [ -e /tmp/renode_f4_pty ]; do sleep 0.2; done
+echo "PTY bridges ready: H7=$(readlink /tmp/renode_h7_pty) F4=$(readlink /tmp/renode_f4_pty)"
 
 echo "=== Printer config ==="
 cat > /tmp/homing_test.cfg << 'CFGEOF'
 [mcu]
-serial: /tmp/renode_pty
+serial: /tmp/renode_h7_pty
+
+[mcu bottom]
+serial: /tmp/renode_f4_pty
 
 [printer]
 kinematics: cartesian
@@ -56,12 +60,12 @@ position_max: 200
 homing_speed: 50
 
 [stepper_z]
-step_pin: PB13
-dir_pin: PB14
-enable_pin: !PB15
+step_pin: bottom:PB5
+dir_pin: bottom:PB6
+enable_pin: !bottom:PB7
 microsteps: 16
 rotation_distance: 8
-endstop_pin: ^PC0
+endstop_pin: ^bottom:PC6
 position_endstop: 0
 position_max: 200
 homing_speed: 5

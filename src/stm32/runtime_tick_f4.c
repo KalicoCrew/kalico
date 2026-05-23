@@ -198,14 +198,9 @@ TIM5_IRQHandler(void)
 
     // Step 7.5 — sample any armed endstop GPIOs before the engine tick so
     // `endstop::tick` observes fresh pin levels in the same modulation
-    // period. No-op when no arm is active (table empty). Skipped under
-    // CONFIG_KALICO_SIM: the Renode e2e test drives pin levels directly
-    // via `command_runtime_sim_endstop_set_pin`, and a real-GPIO sample
-    // here would clobber the test's override every tick.
-#if !CONFIG_KALICO_SIM
+    // period. No-op when no arm is active (table empty).
     extern void runtime_endstop_sample_pins(void);
     runtime_endstop_sample_pins();
-#endif
 
     // T17 (stepping-redesign): TIM5 dispatches the unified per-sample
     // evaluator `kalico_runtime_tick_sample`, mirroring H7. F4 today

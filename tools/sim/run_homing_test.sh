@@ -33,4 +33,5 @@ exec docker run --rm \
     -v "$REPO_ROOT/tools/sim/test_homing_lag.py:/work/tools/sim/test_homing_lag.py" \
     -v "$REPO_ROOT/tools/sim/docker_homing_test.sh:/work/tools/sim/docker_homing_test.sh" \
     -v "$REPO_ROOT/tools/sim/h723_sim_docker.resc:/work/tools/sim/h723_sim_docker.resc" \
+    -v "$REPO_ROOT/tools/sim/dual_mcu_docker.resc:/work/tools/sim/dual_mcu_docker.resc" \
     "$IMAGE"
