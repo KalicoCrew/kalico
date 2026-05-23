@@ -143,37 +143,17 @@ pub fn emit_shaped(
 
         for axis in 0..3 {
             let cps = fitted.axes[axis].control_points();
-            let (axis_is_constant, max_dev) = if let Some(&first) = cps.first() {
-                let dev = cps.iter().map(|c| (*c - first).abs()).fold(0.0_f64, f64::max);
-                (dev < 1e-12, dev)
+            let axis_is_constant = if let Some(&first) = cps.first() {
+                cps.iter().all(|c| (*c - first).abs() < 1e-12)
             } else {
-                (true, 0.0)
+                true
             };
-            eprintln!(
-                "[emit-diag] seg {} axis {} cps={} is_constant={} max_dev={:.2e} first={:.6}",
-                seg_idx, axis, cps.len(), axis_is_constant, max_dev,
-                cps.first().copied().unwrap_or(0.0),
-            );
 
             let mut axis_shaped = if axis_is_constant {
-                eprintln!(
-                    "[emit-diag] seg {} axis {} CONSTANT: {} cps, val={:.6}, collapsing to 1-piece",
-                    seg_idx, axis, cps.len(), cps.first().copied().unwrap_or(0.0),
-                );
-                // Constant-position axis: collapse to a single-piece
-                // constant NURBS. Cloning the fitted axis would preserve
-                // all N grid pieces (e.g. 200 for a long move), which
-                // inflates the CoreXY knot-union piece count (200 X +
-                // 200 Y → 672 motor-frame pieces). A single piece keeps
-                // the knot union tight.
-                let val = cps.first().copied().unwrap_or(0.0);
-                ScalarNurbs::try_new(
-                    3,
-                    vec![t_start, t_start, t_start, t_start,
-                         t_end, t_end, t_end, t_end],
-                    vec![val; 4],
-                    None,
-                ).expect("constant NURBS construction")
+                // Constant-position axis: shaping a constant is a no-op
+                // and refit would introduce µm-scale residuals that inflate
+                // the CoreXY knot-union piece count. Pass through as-is.
+                fitted.axes[axis].clone()
             } else if let Some(kernel) = kernels[axis].as_ref() {
                 let padded = pad_segment_axis_with_history(
                     seg_idx,

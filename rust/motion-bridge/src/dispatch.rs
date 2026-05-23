@@ -156,11 +156,9 @@ pub fn build_push_params(
             {
                 let x = &shaped.axes[AXIS_X];
                 let y = &shaped.axes[AXIS_Y];
-                log::info!(
-                    "[dispatch-diag] corexy knot union: x_knots={} y_knots={} x_cps={} y_cps={}",
-                    x.knots().len(), y.knots().len(),
-                    x.control_points().len(), y.control_points().len(),
-                );
+                // Align knot vectors via exact Bézier-piece union (no fit
+                // error). After the union, add is guaranteed to succeed;
+                // the expect below is the unreachable sentinel.
                 let motor_a = nurbs::algebra::add_with_knot_union(x, y).unwrap_or_else(|e| {
                     panic!("post-union add failed — bridge invariant violated (motor-A): {e:?}")
                 });
