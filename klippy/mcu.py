@@ -1690,7 +1690,13 @@ class MCU:
 
     # Restarts
     def _disconnect(self):
+        logging.info(
+            "MCU '%s' _disconnect: serial=%s type=%s",
+            self._name, self._serial, type(self._serial).__name__,
+        )
         self._serial.disconnect()
+        logging.info("MCU '%s' _disconnect: serial.disconnect() returned",
+                     self._name)
         self._steppersync = None
 
     def _shutdown(self, force=False):
