@@ -148,7 +148,13 @@ class HomingMove:
             error = "Error during homing move: %s" % (str(e),)
         # Wait for endstops to trigger
         trigger_times = {}
-        move_end_print_time = self.toolhead.get_last_move_time()
+        # Use the dedicated homing end time if available — it reflects
+        # the full planned travel for the backstop calculation, decoupled
+        # from _mcu_pending_end_time which is reset after trips.
+        if hasattr(self.toolhead, 'get_last_homing_move_end_time'):
+            move_end_print_time = self.toolhead.get_last_homing_move_end_time()
+        else:
+            move_end_print_time = self.toolhead.get_last_move_time()
         for mcu_endstop, name in self.endstops:
             try:
                 trigger_time = mcu_endstop.home_wait(move_end_print_time)
