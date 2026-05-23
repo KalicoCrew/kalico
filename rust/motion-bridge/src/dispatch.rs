@@ -8,6 +8,7 @@
 //! motor-frame curves in its X/Y handle slots and has no CoreXY transform in
 //! its hot path.
 
+use crate::planner::DispatchError;
 use kalico_host_rt::producer::{CurveLoadParams, SegmentPushParams};
 use runtime::segment::KinematicTag;
 use trajectory::ShapedSegment;
@@ -186,6 +187,129 @@ pub fn extract_time_window(
         bp_per_piece: result_bp,
         duration_per_piece: result_dur,
     }
+}
+
+/// Split an `McuPushPlan` into sub-plans where every axis has
+/// `≤ max_pieces` pieces. Returns the plan unchanged if no axis exceeds
+/// the limit. Uses time-domain splitting with de Casteljau subdivision
+/// for pieces straddling chunk boundaries.
+///
+/// `freq` is the MCU clock frequency in Hz, used to convert piece durations
+/// (seconds) to clock ticks for sub-plan timing.
+pub fn split_plan_if_needed(
+    plan: McuPushPlan,
+    max_pieces: usize,
+    freq: f64,
+) -> Result<Vec<McuPushPlan>, DispatchError> {
+    split_recursive(plan, max_pieces, freq, 0)
+}
+
+fn split_recursive(
+    plan: McuPushPlan,
+    max_pieces: usize,
+    freq: f64,
+    depth: usize,
+) -> Result<Vec<McuPushPlan>, DispatchError> {
+    let max_pc = plan
+        .curves_to_load
+        .iter()
+        .map(|(_, c)| c.piece_count())
+        .max()
+        .unwrap_or(0);
+
+    if max_pc <= max_pieces {
+        return Ok(vec![plan]);
+    }
+
+    if max_pieces < 3 {
+        return Err(DispatchError::CapsExceeded {
+            mcu_id: plan.mcu_id,
+            pieces: max_pc,
+            max_pieces,
+        });
+    }
+
+    if depth > 8 {
+        return Err(DispatchError::CapsExceeded {
+            mcu_id: plan.mcu_id,
+            pieces: max_pc,
+            max_pieces,
+        });
+    }
+
+    let stride = max_pieces - 2;
+
+    // Find bottleneck axis (most pieces)
+    let bottleneck_idx = plan
+        .curves_to_load
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, (_, c))| c.piece_count())
+        .map(|(i, _)| i)
+        .unwrap();
+    let bottleneck = &plan.curves_to_load[bottleneck_idx].1;
+
+    // Compute split times from bottleneck's piece boundaries
+    let mut split_times = vec![0.0_f64];
+    let mut elapsed = 0.0_f64;
+    for (i, d) in bottleneck.duration_per_piece.iter().enumerate() {
+        elapsed += *d as f64;
+        if (i + 1) % stride == 0 && i + 1 < bottleneck.piece_count() {
+            split_times.push(elapsed);
+        }
+    }
+    split_times.push(elapsed);
+
+    let t_start_clock = plan.params.t_start;
+    let t_end_clock = plan.params.t_end;
+    let n_chunks = split_times.len() - 1;
+    let mut chunks = Vec::with_capacity(n_chunks);
+    let mut chunk_start_clock = t_start_clock;
+
+    for w in 0..n_chunks {
+        let win_start = split_times[w];
+        let win_end = split_times[w + 1];
+
+        let chunk_end_clock = if w == n_chunks - 1 {
+            t_end_clock
+        } else {
+            let dur_clocks = (win_end - win_start) * freq;
+            chunk_start_clock + dur_clocks.round() as u64
+        };
+
+        let sub_curves: Vec<(usize, CurveLoadParams)> = plan
+            .curves_to_load
+            .iter()
+            .map(|(axis_idx, curve)| (*axis_idx, extract_time_window(curve, win_start, win_end)))
+            .collect();
+
+        let mut sub_params = plan.params;
+        sub_params.t_start = chunk_start_clock;
+        sub_params.t_end = chunk_end_clock;
+        sub_params.id = 0;
+        sub_params.x_handle_packed = UNUSED_HANDLE;
+        sub_params.y_handle_packed = UNUSED_HANDLE;
+        sub_params.z_handle_packed = UNUSED_HANDLE;
+        sub_params.e_handle_packed = UNUSED_HANDLE;
+
+        chunks.push(McuPushPlan {
+            mcu_id: plan.mcu_id,
+            curves_to_load: sub_curves,
+            params: sub_params,
+        });
+
+        chunk_start_clock = chunk_end_clock;
+    }
+
+    // Recursive validation: if any chunk still exceeds max_pieces
+    // (e.g. non-bottleneck axis had high local density), re-split it.
+    let mut result = Vec::new();
+    for chunk in chunks {
+        let sub = split_recursive(chunk, max_pieces, freq, depth + 1)?;
+        result.extend(sub);
+    }
+
+    Ok(result)
 }
 
 /// Build per-MCU push plans for a single shaped segment.
@@ -431,6 +555,188 @@ mod tests {
         assert_eq!(result.piece_count(), 2, "1 subdivided + 1 whole");
         assert!((result.duration_per_piece[0] - 0.5).abs() < 1e-5);
         assert_eq!(result.bp_per_piece[1], curve.bp_per_piece[3]);
+    }
+
+    #[test]
+    fn split_plan_no_split_needed() {
+        let curve = make_curve(5, 0.1, 1.0);
+        let plan = McuPushPlan {
+            mcu_id: 0,
+            curves_to_load: vec![(AXIS_X, curve)],
+            params: SegmentPushParams {
+                id: 0,
+                x_handle_packed: UNUSED_HANDLE,
+                y_handle_packed: UNUSED_HANDLE,
+                z_handle_packed: UNUSED_HANDLE,
+                e_handle_packed: UNUSED_HANDLE,
+                t_start: 1000,
+                t_end: 2000,
+                kinematics: 0,
+                e_mode: 2,
+                extrusion_ratio: 0.0,
+            },
+        };
+        let result = super::split_plan_if_needed(plan, 10, 1_000_000.0).unwrap();
+        assert_eq!(result.len(), 1, "no split needed");
+        assert_eq!(result[0].curves_to_load[0].1.piece_count(), 5);
+    }
+
+    #[test]
+    fn split_plan_equal_axes_splits_correctly() {
+        // 10 pieces per axis, max_pieces=4 → stride=2
+        let curve_x = make_curve(10, 0.1, 1.0);
+        let curve_y = make_curve(10, 0.1, 2.0);
+        let plan = McuPushPlan {
+            mcu_id: 0,
+            curves_to_load: vec![(AXIS_X, curve_x), (AXIS_Y, curve_y)],
+            params: SegmentPushParams {
+                id: 0,
+                x_handle_packed: UNUSED_HANDLE,
+                y_handle_packed: UNUSED_HANDLE,
+                z_handle_packed: UNUSED_HANDLE,
+                e_handle_packed: UNUSED_HANDLE,
+                t_start: 0,
+                t_end: 1_000_000,
+                kinematics: 0,
+                e_mode: 2,
+                extrusion_ratio: 0.0,
+            },
+        };
+        let result = super::split_plan_if_needed(plan, 4, 1_000_000.0).unwrap();
+        assert!(
+            result.len() >= 2,
+            "should produce multiple chunks, got {}",
+            result.len()
+        );
+        for chunk in &result {
+            for (_, curve) in &chunk.curves_to_load {
+                assert!(
+                    curve.piece_count() <= 4,
+                    "chunk has {} pieces",
+                    curve.piece_count()
+                );
+            }
+        }
+        // Timing continuity
+        assert_eq!(result[0].params.t_start, 0);
+        assert_eq!(result.last().unwrap().params.t_end, 1_000_000);
+        for i in 1..result.len() {
+            assert_eq!(
+                result[i].params.t_start,
+                result[i - 1].params.t_end,
+                "timing gap between chunks {} and {}",
+                i - 1,
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn split_plan_unequal_axes_uses_de_casteljau() {
+        // X has 10 pieces (each 0.1s), Z has 3 pieces (each ~0.333s).
+        // max_pieces=4 → stride=2. Z pieces straddle X boundaries → de Casteljau.
+        let curve_x = make_curve(10, 0.1, 1.0);
+        let dur_z = 1.0_f32 / 3.0;
+        let curve_z = make_curve(3, dur_z, 5.0);
+        let plan = McuPushPlan {
+            mcu_id: 0,
+            curves_to_load: vec![(AXIS_X, curve_x), (AXIS_Z, curve_z)],
+            params: SegmentPushParams {
+                id: 0,
+                x_handle_packed: UNUSED_HANDLE,
+                y_handle_packed: UNUSED_HANDLE,
+                z_handle_packed: UNUSED_HANDLE,
+                e_handle_packed: UNUSED_HANDLE,
+                t_start: 0,
+                t_end: 1_000_000,
+                kinematics: 2,
+                e_mode: 2,
+                extrusion_ratio: 0.0,
+            },
+        };
+        let result = super::split_plan_if_needed(plan, 4, 1_000_000.0).unwrap();
+        assert!(result.len() >= 3, "should produce multiple chunks");
+        for chunk in &result {
+            for (_, curve) in &chunk.curves_to_load {
+                assert!(
+                    curve.piece_count() <= 4,
+                    "axis piece count {} exceeds max 4",
+                    curve.piece_count()
+                );
+            }
+            assert_eq!(chunk.curves_to_load.len(), 2, "both axes in every chunk");
+        }
+    }
+
+    #[test]
+    fn split_plan_preserves_e_mode_and_extrusion_ratio() {
+        let curve = make_curve(10, 0.1, 1.0);
+        let plan = McuPushPlan {
+            mcu_id: 7,
+            curves_to_load: vec![(AXIS_X, curve)],
+            params: SegmentPushParams {
+                id: 0,
+                x_handle_packed: UNUSED_HANDLE,
+                y_handle_packed: UNUSED_HANDLE,
+                z_handle_packed: UNUSED_HANDLE,
+                e_handle_packed: UNUSED_HANDLE,
+                t_start: 0,
+                t_end: 1_000_000,
+                kinematics: 0,
+                e_mode: 1,
+                extrusion_ratio: 0.042,
+            },
+        };
+        let result = super::split_plan_if_needed(plan, 4, 1_000_000.0).unwrap();
+        for chunk in &result {
+            assert_eq!(chunk.params.e_mode, 1);
+            assert!((chunk.params.extrusion_ratio - 0.042).abs() < 1e-6);
+            assert_eq!(chunk.params.kinematics, 0);
+            assert_eq!(chunk.mcu_id, 7);
+        }
+    }
+
+    #[test]
+    fn split_plan_cap_below_3_errors_only_when_splitting_needed() {
+        // 2 pieces, cap=2 → no split → ok
+        let small = make_curve(2, 0.1, 1.0);
+        let plan_ok = McuPushPlan {
+            mcu_id: 0,
+            curves_to_load: vec![(AXIS_X, small)],
+            params: SegmentPushParams {
+                id: 0,
+                x_handle_packed: UNUSED_HANDLE,
+                y_handle_packed: UNUSED_HANDLE,
+                z_handle_packed: UNUSED_HANDLE,
+                e_handle_packed: UNUSED_HANDLE,
+                t_start: 0,
+                t_end: 1000,
+                kinematics: 0,
+                e_mode: 2,
+                extrusion_ratio: 0.0,
+            },
+        };
+        assert!(super::split_plan_if_needed(plan_ok, 2, 1e6).is_ok());
+
+        // 5 pieces, cap=2 → split needed, cap too low → error
+        let big = make_curve(5, 0.1, 1.0);
+        let plan_err = McuPushPlan {
+            mcu_id: 0,
+            curves_to_load: vec![(AXIS_X, big)],
+            params: SegmentPushParams {
+                id: 0,
+                x_handle_packed: UNUSED_HANDLE,
+                y_handle_packed: UNUSED_HANDLE,
+                z_handle_packed: UNUSED_HANDLE,
+                e_handle_packed: UNUSED_HANDLE,
+                t_start: 0,
+                t_end: 1000,
+                kinematics: 0,
+                e_mode: 2,
+                extrusion_ratio: 0.0,
+            },
+        };
+        assert!(super::split_plan_if_needed(plan_err, 2, 1e6).is_err());
     }
 
     fn linear_curve(a: f64, b: f64) -> ScalarNurbs<f64> {
