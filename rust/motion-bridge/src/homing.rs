@@ -8,6 +8,12 @@ pub enum HomingSegmentState {
     Active = 1,
     Completed = 2,
     Tripped = 3,
+    /// Terminal state reached when the software deadline expired without the
+    /// host extending it.  This means the probe triggered on the host side and
+    /// the host stopped sending `extend_deadline` commands.  The MCU froze the
+    /// segment autonomously; the `TripEvent` carries
+    /// `trip_source_idx == TRIP_SOURCE_DEADLINE_EXPIRED (0xFF)`.
+    DeadlineExpired = 4,
 }
 
 impl HomingSegmentState {
@@ -16,6 +22,7 @@ impl HomingSegmentState {
             1 => Self::Active,
             2 => Self::Completed,
             3 => Self::Tripped,
+            4 => Self::DeadlineExpired,
             _ => Self::Idle,
         }
     }
@@ -84,8 +91,13 @@ impl HomingState {
         }
         if let Some(evt) = runtime::endstop::poll_trip() {
             *self.pending_trip.lock().unwrap() = Some(evt);
-            self.state
-                .store(HomingSegmentState::Tripped as u8, Ordering::Release);
+            if evt.trip_source_idx == runtime::endstop::TRIP_SOURCE_DEADLINE_EXPIRED {
+                self.state
+                    .store(HomingSegmentState::DeadlineExpired as u8, Ordering::Release);
+            } else {
+                self.state
+                    .store(HomingSegmentState::Tripped as u8, Ordering::Release);
+            }
         } else {
             self.state
                 .store(HomingSegmentState::Completed as u8, Ordering::Release);
@@ -95,8 +107,13 @@ impl HomingState {
     pub fn take_trip_event(&self) -> Option<runtime::endstop::TripEvent> {
         if let Some(evt) = runtime::endstop::poll_trip() {
             *self.pending_trip.lock().unwrap() = Some(evt);
-            self.state
-                .store(HomingSegmentState::Tripped as u8, Ordering::Release);
+            if evt.trip_source_idx == runtime::endstop::TRIP_SOURCE_DEADLINE_EXPIRED {
+                self.state
+                    .store(HomingSegmentState::DeadlineExpired as u8, Ordering::Release);
+            } else {
+                self.state
+                    .store(HomingSegmentState::Tripped as u8, Ordering::Release);
+            }
         }
         self.pending_trip.lock().unwrap().take()
     }
@@ -166,6 +183,51 @@ mod tests {
         // Even if credit-freed retires the segment afterwards, no completion event.
         h.complete_if_retired(2);
         assert_eq!(h.state(), HomingSegmentState::Tripped);
+        assert_eq!(h.take_completion_event(), None);
+    }
+
+    #[test]
+    fn from_u8_round_trips_all_variants() {
+        let pairs: &[(u8, HomingSegmentState)] = &[
+            (0, HomingSegmentState::Idle),
+            (1, HomingSegmentState::Active),
+            (2, HomingSegmentState::Completed),
+            (3, HomingSegmentState::Tripped),
+            (4, HomingSegmentState::DeadlineExpired),
+        ];
+        for &(raw, expected) in pairs {
+            assert_eq!(HomingSegmentState::from_u8(raw), expected, "raw={raw}");
+        }
+        // Unknown values fall back to Idle.
+        assert_eq!(HomingSegmentState::from_u8(5), HomingSegmentState::Idle);
+        assert_eq!(HomingSegmentState::from_u8(255), HomingSegmentState::Idle);
+    }
+
+    #[test]
+    fn complete_if_retired_does_not_overwrite_deadline_expired() {
+        // DeadlineExpired is a terminal state; complete_if_retired must
+        // leave it alone (same as Tripped).
+        let h = HomingState::new();
+        h.begin(9);
+        h.mark_dispatched_segment(5);
+        h.state.store(
+            HomingSegmentState::DeadlineExpired as u8,
+            std::sync::atomic::Ordering::Release,
+        );
+        h.complete_if_retired(5);
+        assert_eq!(h.state(), HomingSegmentState::DeadlineExpired);
+        assert_eq!(h.take_completion_event(), None);
+    }
+
+    #[test]
+    fn take_completion_event_does_not_fire_after_deadline_expired() {
+        let h = HomingState::new();
+        h.begin(10);
+        h.mark_dispatched_segment(6);
+        h.state.store(
+            HomingSegmentState::DeadlineExpired as u8,
+            std::sync::atomic::Ordering::Release,
+        );
         assert_eq!(h.take_completion_event(), None);
     }
 }
