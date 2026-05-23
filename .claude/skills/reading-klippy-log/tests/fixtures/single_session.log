@@ -1,7 +1,0 @@
-junk line before any banner
-=======================
-Start printer at Wed May 13 00:09:04 2026 (1778623744.8 15059.2)
-Loaded MCU 'mcu' 175 commands
-G1 X10 F3000
-mcu 'mcu':  got {'type': 'status', 'engine_status': 0, 'current_segment_id': 0, 'last_fault': 0, 'fault_detail': 100, '#name': 'kalico_status_v6', '#sent_time': 100.0, '#receive_time': 100.0}
-Shutdown: oh no

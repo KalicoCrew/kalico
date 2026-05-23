@@ -1,3 +1,0 @@
-Start printer at Wed May 13 00:00:00 2026 (1778600000.0 0.0)
-mcu 'mcu':  got {'type': 'status', 'engine_status': 2, 'current_segment_id': 26, 'last_fault': 0, 'fault_detail': 100, '#name': 'kalico_status_v6', '#sent_time': 9.9, '#receive_time': 9.9}
-mcu 'mcu':  got {'type': 'status', 'engine_status': 2, 'current_segment_id': 26, 'last_fault': 0, 'fault_detail': 100, '#name': 'kalico_status_v6', '#sent_time': 10.1, '#receive_time': 10.1}
