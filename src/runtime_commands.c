@@ -208,6 +208,12 @@ command_runtime_disarm_endstop(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_disarm_endstop, "runtime_disarm_endstop arm_id=%u");
 
+// ---- Software trip + deadline extension for external probe homing --------
+// These use the basecmd.c clock-widening variables declared below the
+// clock-sync handler — forward-declare here so the handlers compile.
+extern uint32_t stats_send_time;        // basecmd.c
+extern uint32_t stats_send_time_high;   // basecmd.c
+
 void
 command_runtime_software_trip(uint32_t *args)
 {
