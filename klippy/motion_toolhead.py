@@ -246,15 +246,16 @@ class BridgeKinematics:
             dx = (homepos[0] or 0.0) - (forcepos[0] or 0.0)
             dy = (homepos[1] or 0.0) - (forcepos[1] or 0.0)
             dz = (homepos[2] or 0.0) - (forcepos[2] or 0.0)
-            if self.mcu is not None:
-                est_now = self.mcu.estimated_print_time(
-                    self.reactor.monotonic())
-                lmt = self.get_last_move_time()
+            th = self._toolhead
+            if th.mcu is not None:
+                est_now = th.mcu.estimated_print_time(
+                    th.reactor.monotonic())
+                lmt = th.get_last_move_time()
                 needed = est_now + 2.0
                 if lmt < needed:
-                    self.dwell(needed - lmt)
-            self._fire_active_callbacks(
-                dx, dy, dz, 0.0, self.get_last_move_time()
+                    th.dwell(needed - lmt)
+            th._fire_active_callbacks(
+                dx, dy, dz, 0.0, th.get_last_move_time()
             )
             homing_state.home_rails([rail], forcepos, homepos)
 
