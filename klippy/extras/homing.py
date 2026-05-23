@@ -160,6 +160,9 @@ class HomingMove:
                 trigger_times[name] = trigger_time
             elif check_triggered and error is None:
                 error = "No trigger on %s after full movement" % (name,)
+        # Correct MCU time projection if the move was cut short by a trigger
+        if trigger_times:
+            self.toolhead.note_homing_end(max(trigger_times.values()))
         # Determine stepper halt positions
         self.toolhead.flush_step_generation()
         for sp in self.stepper_positions:

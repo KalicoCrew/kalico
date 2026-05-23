@@ -468,13 +468,12 @@ class MotionToolhead(ToolHead):
                 dx, dy, dz, 0.0, self.get_last_move_time()
             )
             self.bridge._software_trip_active = False
+            bridge_lmt_before = self.bridge.get_last_move_time()
             self.bridge.submit_homing_move(pos3, speed, arm_ids)
             self.bridge.wait_moves()
-            # Homing moves are truncated by endstop triggers, so the
-            # bridge-reported duration overshoots actual MCU execution.
-            # After wait_moves the MCU is idle — snap the projection to
-            # the current MCU clock instead of accumulating ghost time.
-            self._snap_pending_to_now()
+            bridge_lmt_after = self.bridge.get_last_move_time()
+            duration = bridge_lmt_after - bridge_lmt_before
+            self._bump_pending_end_time(duration)
         elif drip_completion is not None and not drip_completion.test():
             # External probe software-trip path
             self._drip_move_software_trip(newpos, speed, drip_completion)
@@ -566,7 +565,9 @@ class MotionToolhead(ToolHead):
                 self.bridge.extend_homing_deadline(mcu_handle, arm_id)
 
             self.bridge.wait_moves()
-            self._snap_pending_to_now()
+            bridge_lmt_after = self.bridge.get_last_move_time()
+            duration = bridge_lmt_after - bridge_lmt_before
+            self._bump_pending_end_time(duration)
         finally:
             self.bridge._software_trip_active = False
             self.active_homing_arms.discard(arm_id)
@@ -618,8 +619,12 @@ class MotionToolhead(ToolHead):
             return max(self._mcu_pending_end_time, floor)
         return floor
 
-    def _snap_pending_to_now(self):
-        if self.mcu is not None:
+    def note_homing_end(self, trigger_print_time):
+        if self.mcu is None:
+            return
+        if trigger_print_time is not None and trigger_print_time > 0.0:
+            self._mcu_pending_end_time = trigger_print_time
+        else:
             self._mcu_pending_end_time = self.mcu.estimated_print_time(
                 self.reactor.monotonic()
             )
