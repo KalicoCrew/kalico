@@ -513,7 +513,6 @@ static int gpio_handle_get_linehandle(int chip_fd, struct gpiohandle_request *re
         return -1;
     }
     if (req->lines != 1) {
-        // Klipper always requests exactly one line; reject otherwise.
         errno = EINVAL;
         return -1;
     }
@@ -523,6 +522,18 @@ static int gpio_handle_get_linehandle(int chip_fd, struct gpiohandle_request *re
         errno = EINVAL;
         return -1;
     }
+    // If this line is already allocated, free the old slot first.
+    // This handles gpio_out_reset which closes and re-opens lines.
+    pthread_mutex_lock(&fake_slots_mtx);
+    for (int i = 1; i < MAX_FAKE_FDS; i++) {
+        if (fake_slots[i].kind == SIM_GPIOLINE
+            && fake_slots[i].u.gpioline.chip_id == chip_id
+            && fake_slots[i].u.gpioline.line_offset == offset) {
+            fake_slots[i].kind = SIM_NONE;
+            LOG("gpio re-request chip=%d offset=%d, freed old slot %d", chip_id, offset, i);
+        }
+    }
+    pthread_mutex_unlock(&fake_slots_mtx);
     int line_fd = alloc_fake_fd(SIM_GPIOLINE);
     if (line_fd < 0) return -1;
     struct sim_fd_slot *line_slot = slot_for_fd(line_fd);

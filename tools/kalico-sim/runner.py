@@ -645,9 +645,6 @@ def _prepare_config(
     """Render printer.cfg with sim serial paths."""
     # Try to find config from sim_klippy
     if config_dir is None:
-        config_dir = repo_root / "tools" / "sim_klippy" / "printer_real" / "config"
-
-    if not config_dir.exists():
         # Generate a minimal config for basic testing
         cfg = _generate_minimal_config(h7_pty, f4_pty)
         cfg_path = tmp_dir / "printer.cfg"
@@ -843,6 +840,11 @@ path: /tmp/kalico_sim_gcodes
 
 [force_move]
 enable_force_move: True
+
+[input_shaper]
+shaper_freq_x: 50
+shaper_freq_y: 50
+shaper_type: smooth_mzv
 """
 
 
