@@ -174,6 +174,248 @@ impl Default for SlotPool {
     }
 }
 
+// ---------------------------------------------------------------------------
+// SharedSlotPool — thread-safe wrapper with condvar-based blocking acquire
+// ---------------------------------------------------------------------------
+
+use std::sync::{Condvar, Mutex as StdMutex};
+use std::time::{Duration, Instant};
+
+/// Thread-safe wrapper around [`SlotPool`] that adds a condvar-based
+/// [`Self::alloc_blocking`] method.
+///
+/// Callers that previously wrapped `SlotPool` in `Arc<Mutex<SlotPool>>`
+/// should migrate to `Arc<SharedSlotPool>`. Every mutation path that could
+/// return a slot to the free list (`release`, `retire_through_segment`)
+/// signals the condvar so any parked `alloc_blocking` call wakes promptly.
+///
+/// ## Condvar pairing
+///
+/// `cv` is paired with `inner` — both `alloc_blocking` (waiter) and the
+/// mutation methods (notifiers) lock `inner` before touching `cv`. The
+/// `Condvar::notify_all` call in the notifier paths is issued while the
+/// lock is still held, matching the std `Condvar` contract.
+///
+/// ## Poison recovery
+///
+/// All `Mutex::lock` calls use `.unwrap_or_else(|p| p.into_inner())` so a
+/// panic in a background thread does not permanently poison the pool.
+#[derive(Debug)]
+pub struct SharedSlotPool {
+    inner: StdMutex<SlotPool>,
+    cv: Condvar,
+}
+
+impl SharedSlotPool {
+    /// Construct a new shared pool with `capacity` slots.
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            inner: StdMutex::new(SlotPool::new(capacity)),
+            cv: Condvar::new(),
+        }
+    }
+
+    /// Non-blocking alloc. Returns `Some((slot_idx, generation))` when a
+    /// free slot is available, `None` when the pool is exhausted.
+    pub fn try_alloc(&self) -> Option<(u16, u16)> {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .try_alloc()
+    }
+
+    /// Blocking alloc — waits up to `timeout` for a slot to become free.
+    ///
+    /// Returns `Some((slot_idx, generation))` when a slot was acquired,
+    /// `None` when `timeout` elapsed without any slot becoming available.
+    ///
+    /// ## Pattern
+    ///
+    /// 1. Lock `inner`.
+    /// 2. Try `guard.try_alloc()` — return immediately on success.
+    /// 3. Check deadline; if past, return `None`.
+    /// 4. `cv.wait_timeout(guard, remaining)` — releases the lock, parks
+    ///    the thread until notified or the deadline arrives.
+    /// 5. Re-acquire `guard`, loop back to step 2.
+    /// 6. On condvar timeout: one final `try_alloc`, then `None`.
+    pub fn alloc_blocking(&self, timeout: Duration) -> Option<(u16, u16)> {
+        let deadline = Instant::now() + timeout;
+        let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        loop {
+            if let Some(pair) = guard.try_alloc() {
+                return Some(pair);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return None;
+            }
+            let remaining = deadline - now;
+            let (g, wait_res) = self
+                .cv
+                .wait_timeout(guard, remaining)
+                .unwrap_or_else(|p| p.into_inner());
+            guard = g;
+            if wait_res.timed_out() {
+                // One final attempt — a slot may have been returned between
+                // the timeout being set and the notifier path seeing us.
+                return guard.try_alloc();
+            }
+        }
+    }
+
+    /// Record that `slot` belongs to `segment_id`. Delegates to
+    /// [`SlotPool::register_segment`].
+    pub fn register_segment(&self, slot: u16, segment_id: u32) {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .register_segment(slot, segment_id);
+    }
+
+    /// Release `slot` back to the free pool. Signals the condvar if the
+    /// slot was actually freed (i.e. it was in-flight before the call).
+    pub fn release(&self, slot: u16) {
+        let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let before = guard.free_count();
+        guard.release(slot);
+        let freed = guard.free_count() > before;
+        if freed {
+            self.cv.notify_all();
+        }
+    }
+
+    /// Release every in-flight slot whose registered `segment_id` is
+    /// `<= retired_through`. Signals the condvar when one or more slots
+    /// were actually freed. Returns the count released.
+    pub fn retire_through_segment(&self, retired_through: u32) -> usize {
+        let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        let n = guard.retire_through_segment(retired_through);
+        if n > 0 {
+            self.cv.notify_all();
+        }
+        n
+    }
+
+    /// Capacity this pool was constructed with.
+    pub fn capacity(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .capacity()
+    }
+
+    /// Number of slots currently in-flight.
+    pub fn in_flight_count(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .in_flight_count()
+    }
+
+    /// Number of slots currently free.
+    pub fn free_count(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .free_count()
+    }
+}
+
+#[cfg(test)]
+mod shared_tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+
+    /// Pool has free slots — `alloc_blocking` must return without waiting.
+    #[test]
+    fn alloc_blocking_immediate_when_free() {
+        let pool = SharedSlotPool::new(4);
+        let result = pool.alloc_blocking(Duration::from_millis(100));
+        assert!(result.is_some(), "expected Some, got None");
+        assert_eq!(pool.in_flight_count(), 1);
+        assert_eq!(pool.free_count(), 3);
+    }
+
+    /// Exhaust pool, then retire a segment from another thread — the blocked
+    /// `alloc_blocking` call must wake and succeed.
+    #[test]
+    fn alloc_blocking_wakes_on_retire() {
+        let pool = Arc::new(SharedSlotPool::new(4));
+
+        // Exhaust all slots and register them under segment ids.
+        let mut slots = Vec::new();
+        for i in 0..4u32 {
+            let (s, _) = pool.try_alloc().expect("alloc");
+            pool.register_segment(s, i);
+            slots.push(s);
+        }
+        assert_eq!(pool.free_count(), 0);
+
+        // Spawn a thread that blocks waiting for a slot.
+        let pool2 = Arc::clone(&pool);
+        let handle = thread::spawn(move || pool2.alloc_blocking(Duration::from_secs(5)));
+
+        // Give the waiter time to park in wait_timeout.
+        thread::sleep(Duration::from_millis(50));
+
+        // Retire segment 0, freeing its slot.
+        pool.retire_through_segment(0);
+
+        let result = handle.join().expect("thread panicked");
+        assert!(result.is_some(), "alloc_blocking must succeed after retire");
+    }
+
+    /// Exhaust pool and call `alloc_blocking` with a short timeout — must
+    /// return `None` and the elapsed time must be at least 40 ms.
+    #[test]
+    fn alloc_blocking_times_out() {
+        let pool = SharedSlotPool::new(4);
+        for _ in 0..4 {
+            pool.try_alloc().expect("alloc");
+        }
+        assert_eq!(pool.free_count(), 0);
+
+        let start = Instant::now();
+        let result = pool.alloc_blocking(Duration::from_millis(50));
+        let elapsed = start.elapsed();
+
+        assert!(result.is_none(), "expected timeout, got {:?}", result);
+        assert!(
+            elapsed >= Duration::from_millis(40),
+            "should have waited close to the full timeout, elapsed={elapsed:?}"
+        );
+    }
+
+    /// Exhaust pool, spawn a blocking-alloc thread, then call `release` from
+    /// the main thread — the waiter must wake and succeed.
+    #[test]
+    fn release_wakes_alloc_blocking() {
+        let pool = Arc::new(SharedSlotPool::new(4));
+
+        // Exhaust all slots.
+        let mut slots = Vec::new();
+        for _ in 0..4 {
+            let (s, _) = pool.try_alloc().expect("alloc");
+            slots.push(s);
+        }
+        assert_eq!(pool.free_count(), 0);
+
+        // Spawn a thread that blocks waiting for a slot.
+        let pool2 = Arc::clone(&pool);
+        let handle = thread::spawn(move || pool2.alloc_blocking(Duration::from_secs(5)));
+
+        // Give the waiter time to park.
+        thread::sleep(Duration::from_millis(50));
+
+        // Release one slot.
+        pool.release(slots[0]);
+
+        let result = handle.join().expect("thread panicked");
+        assert!(result.is_some(), "alloc_blocking must succeed after release");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
