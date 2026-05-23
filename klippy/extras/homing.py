@@ -111,6 +111,11 @@ class HomingMove:
         triggered=True,
         check_triggered=True,
     ):
+        import time as _time
+        _hm_t0 = _time.monotonic()
+        def _hm_elapsed(label):
+            logging.info("homing_move: [%.3fs] %s",
+                         _time.monotonic() - _hm_t0, label)
         # Notify start of homing/probing move
         self.printer.send_event("homing:homing_move_begin", self)
         # Note start location
@@ -140,12 +145,14 @@ class HomingMove:
         all_endstop_trigger = multi_complete(self.printer, endstop_triggers)
 
         self.toolhead.dwell(HOMING_START_DELAY)
+        _hm_elapsed("endstops armed, dwell done")
         # Issue move
         error = None
         try:
             self.toolhead.drip_move(movepos, speed, all_endstop_trigger)
         except self.printer.command_error as e:
             error = "Error during homing move: %s" % (str(e),)
+        _hm_elapsed("drip_move returned")
         # Wait for endstops to trigger
         trigger_times = {}
         # Use the dedicated homing end time if available — it reflects
@@ -166,8 +173,10 @@ class HomingMove:
                 trigger_times[name] = trigger_time
             elif check_triggered and error is None:
                 error = "No trigger on %s after full movement" % (name,)
+        _hm_elapsed("home_wait done")
         # Determine stepper halt positions
         self.toolhead.flush_step_generation()
+        _hm_elapsed("flush_step_generation done")
         for sp in self.stepper_positions:
             tt = trigger_times.get(sp.endstop_name, move_end_print_time)
             sp.note_home_end(tt)
@@ -329,6 +338,12 @@ class Homing:
             endstop[0].query_endstop(print_time)
 
     def home_rails(self, rails, forcepos, movepos):
+        import time as _time
+        _t0 = _time.monotonic()
+        def _elapsed(label):
+            nonlocal _t0
+            now = _time.monotonic()
+            logging.info("homing: [%.3fs] %s", now - _t0, label)
         # Notify of upcoming homing operation
         self.printer.send_event("homing:home_rails_begin", self, rails)
         # Alter kinematics class to think printer is at forcepo
@@ -340,12 +355,17 @@ class Homing:
         endstops = [es for rail in rails for es in rail.get_endstops()]
         hi = rails[0].get_homing_info()
         hmove = HomingMove(self.printer, endstops)
+        _elapsed("pre-homing setup done, axes=%s" % homing_axes)
 
         try:
             self._set_homing_accel(hi.accel, pre_homing=True)
+            _elapsed("set_homing_accel(pre=True)")
             self._set_homing_current(homing_axes, pre_homing=True)
+            _elapsed("set_homing_current(pre=True)")
             self._reset_endstop_states(endstops)
+            _elapsed("reset_endstop_states")
             hmove.homing_move(homepos, hi.speed)
+            _elapsed("homing_move done")
         finally:
             self._set_homing_accel(hi.accel, pre_homing=False)
 
@@ -357,7 +377,7 @@ class Homing:
 
         # Perform second home
         if retract_dist:
-            logging.info("homing: needs rehome: %s", needs_rehome)
+            _elapsed("retract_dist=%s needs_rehome=%s" % (retract_dist, needs_rehome))
             # Retract
             startpos = self._fill_coord(forcepos)
             homepos = self._fill_coord(movepos)
@@ -368,8 +388,10 @@ class Homing:
                 hp - ad * retract_r for hp, ad in zip(homepos, axes_d)
             ]
             self.toolhead.move(retractpos, hi.retract_speed)
+            _elapsed("retract move submitted")
             if not hi.use_sensorless_homing or needs_rehome:
                 self.toolhead.wait_moves_and_mcu()
+                _elapsed("wait_moves_and_mcu done")
                 try:
                     # Home again
                     startpos = [
@@ -397,9 +419,11 @@ class Homing:
                         raise self.printer.command_error(
                             "Early homing trigger on second home!"
                         )
+                    _elapsed("second homing_move done")
                 finally:
                     self._set_homing_accel(hi.accel, pre_homing=False)
                     self._set_homing_current(homing_axes, pre_homing=False)
+                    _elapsed("set_homing_current(pre=False)")
 
                 if hi.retract_dist:
                     # Retract (again)
@@ -415,8 +439,10 @@ class Homing:
 
         self._set_homing_accel(hi.accel, pre_homing=False)
         self._set_homing_current(homing_axes, pre_homing=False)
+        _elapsed("final set_homing_current(pre=False)")
         # Signal home operation complete
         self.toolhead.flush_step_generation()
+        _elapsed("flush_step_generation done")
         self.trigger_mcu_pos = {
             sp.stepper_name: sp.trig_pos for sp in hmove.stepper_positions
         }
