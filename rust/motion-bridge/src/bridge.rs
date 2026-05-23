@@ -65,6 +65,17 @@ struct SeedPosition {
     z: f64,
 }
 
+/// Retained copy of the last homing segment's per-axis NURBS curves.
+/// Used by the host to evaluate toolhead position at the trigger instant.
+struct RetainedHomingCurve {
+    /// Per-axis NURBS curves [X, Y, Z] — cloned from ShapedSegment.axes.
+    axes: [nurbs::ScalarNurbs<f64>; 3],
+    /// Batch-timeline start time (seconds).
+    t_start: f64,
+    /// Batch-timeline end time (seconds).
+    t_end: f64,
+}
+
 /// Metadata stored per claimed MCU.
 struct McuConnection {
     #[allow(dead_code)]
@@ -418,6 +429,10 @@ pub struct PyMotionBridge {
     /// dispatch closure before each segment is sent.  `None` when no seed is
     /// outstanding (normal steady-state path).
     pending_seed: Arc<Mutex<Option<SeedPosition>>>,
+    /// Retained homing segment curves.  Populated by the dispatch closure when
+    /// a homing-active segment is dispatched; cleared by `set_position` (stream
+    /// open / planner reset).  `None` outside of an active homing sequence.
+    retained_homing_curve: Arc<Mutex<Option<RetainedHomingCurve>>>,
 }
 
 /// Build the kalico-native `ConfigureAxes` wire body.
@@ -517,6 +532,7 @@ impl PyMotionBridge {
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             homing: Arc::new(HomingState::new()),
             pending_seed: Arc::new(Mutex::new(None)),
+            retained_homing_curve: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -1901,6 +1917,7 @@ impl PyMotionBridge {
         let warned_mcus: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
         let router_arc = Arc::clone(&self.router);
         let pending_seed_for_cb = Arc::clone(&self.pending_seed);
+        let retained_curve_for_cb = Arc::clone(&self.retained_homing_curve);
 
         let host_ios: HashMap<u32, Arc<KalicoHostIo>> = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
@@ -2134,6 +2151,22 @@ impl PyMotionBridge {
                 // Build per-axis-per-segment plans first; we still need clocks
                 // before we can fill in the timing fields.
                 let mcu_plans = build_push_params(seg, &mcu_configs_for_cb, 0, 0);
+
+                // Retain homing segment curves once per logical segment (not per
+                // MCU plan) so the Python side can evaluate position at the trigger
+                // instant.  Only retained while homing is Active; cleared by
+                // `set_position`.
+                if homing.state() == crate::homing::HomingSegmentState::Active {
+                    let retained = RetainedHomingCurve {
+                        axes: seg.axes.clone(),
+                        t_start: seg.t_start,
+                        t_end: seg.t_end,
+                    };
+                    *retained_curve_for_cb
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner()) = Some(retained);
+                }
+
                 log::info!(
                     "[bridge-trace] mcu_plans built: count={} mcu_ids=[{}]",
                     mcu_plans.len(),
@@ -2871,6 +2904,13 @@ impl PyMotionBridge {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = Some(SeedPosition { x, y, z });
 
+        // Clear any retained homing curve — the stream is being re-opened
+        // and the previous homing segment is no longer valid.
+        *self
+            .retained_homing_curve
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
+
         Ok(())
     }
 
@@ -3019,6 +3059,35 @@ impl PyMotionBridge {
     /// indicates SET_CLOCK_EST was not called before motion submission.
     fn fallback_clock_conversions(&self) -> u64 {
         self.fallback_clock_conversions.load(Ordering::Relaxed)
+    }
+
+    /// Evaluate the retained homing curve at the given parameter `t`
+    /// (batch-local seconds).
+    ///
+    /// Returns `[x, y, z]` position in millimetres, or raises `RuntimeError`
+    /// if no homing curve has been retained yet.  `t` is clamped to
+    /// `[t_start, t_end]` of the segment so callers can pass the raw trigger
+    /// clock value without needing to guard the edges themselves.
+    ///
+    /// The retained curve is populated by the dispatch closure the first time
+    /// a homing-active segment is dispatched, and is cleared by `set_position`
+    /// (stream open / planner reset).
+    #[pyo3(signature = (t,))]
+    fn get_homing_position_at_time(&self, t: f64) -> PyResult<Vec<f64>> {
+        let guard = self
+            .retained_homing_curve
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let curve = guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("get_homing_position_at_time: no homing curve retained")
+        })?;
+        let t_clamped = t.clamp(curve.t_start, curve.t_end);
+        let pos: Vec<f64> = curve
+            .axes
+            .iter()
+            .map(|axis| nurbs::eval::eval(axis, t_clamped))
+            .collect();
+        Ok(pos)
     }
 }
 
