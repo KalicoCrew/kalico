@@ -236,6 +236,26 @@ class BridgeKinematics:
                 forcepos[axis] += 1.5 * (
                     position_max - hi.position_endstop
                 )
+            # Fire motor-enable callbacks (TMC UART phase-offset reads,
+            # current set, enable pin) BEFORE home_rails enters the
+            # homing state machine.  home_rails → homing_move arms the
+            # beacon trsync with a short timeout; if motor-enable UART
+            # traffic runs after that (inside _drip_move_software_trip),
+            # the trsync expires before Z motion begins.  Firing here
+            # moves the ~300ms UART overhead before the trsync window.
+            dx = (homepos[0] or 0.0) - (forcepos[0] or 0.0)
+            dy = (homepos[1] or 0.0) - (forcepos[1] or 0.0)
+            dz = (homepos[2] or 0.0) - (forcepos[2] or 0.0)
+            if self.mcu is not None:
+                est_now = self.mcu.estimated_print_time(
+                    self.reactor.monotonic())
+                lmt = self.get_last_move_time()
+                needed = est_now + 2.0
+                if lmt < needed:
+                    self.dwell(needed - lmt)
+            self._fire_active_callbacks(
+                dx, dy, dz, 0.0, self.get_last_move_time()
+            )
             homing_state.home_rails([rail], forcepos, homepos)
 
     def set_position(self, newpos, homing_axes=()):
