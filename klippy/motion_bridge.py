@@ -19,6 +19,7 @@ class MotionBridgeWrapper:
         # fire _completion on past-end-time.
         self._homing_dispatches = {}
         self._software_trip_active = False
+        self._homing_print_time_base = 0.0
 
     def get_bridge(self):
         return self._bridge

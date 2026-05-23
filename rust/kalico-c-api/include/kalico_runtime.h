@@ -566,6 +566,8 @@ int32_t kalico_endstop_arm(uint32_t arm_id,
                            uint8_t stepper_count,
                            const uint8_t *steppers_ptr,
                            uintptr_t steppers_len,
+                           uint32_t grant_ticks_lo,
+                           uint32_t grant_ticks_hi,
                            uint8_t *out_status);
 
 /**

@@ -313,6 +313,7 @@ class MotionToolhead(ToolHead):
         self.bridge = printer.lookup_object("motion_bridge")
         self.active_homing_arms = set()
         self.kinematics_name = config.get("kinematics", "")
+        self.bridge._kinematics_name = self.kinematics_name
         # Projected MCU print-time of the END of the last queued bridge
         # move. See get_last_move_time / _bump_pending_end_time.
         self._mcu_pending_end_time = 0.0
@@ -541,6 +542,7 @@ class MotionToolhead(ToolHead):
                 mcu_handle, queue, arm_id, arm_clock,
                 [source], stepper_oids,
             )
+            self.bridge._homing_print_time_base = bridge_lmt_before
             self.bridge.submit_homing_move_async(pos3, speed, [arm_id])
 
             # Credit-extension loop
@@ -566,6 +568,7 @@ class MotionToolhead(ToolHead):
             duration = bridge_lmt_after - bridge_lmt_before
             self._bump_pending_end_time(duration)
         finally:
+            self.bridge._software_trip_active = False
             self.active_homing_arms.discard(arm_id)
             self.bridge.unregister_homing_dispatch(arm_id)
             try:

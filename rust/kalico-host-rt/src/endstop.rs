@@ -27,6 +27,7 @@ pub const DEFAULT_DISARM_TIMEOUT: Duration = Duration::from_millis(100);
 pub enum SourceKind {
     Physical = 0,
     TmcDiag = 1,
+    Software = 2,
 }
 
 #[repr(u8)]

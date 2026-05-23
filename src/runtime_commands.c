@@ -178,9 +178,21 @@ command_runtime_arm_endstop(uint32_t *args)
     uint32_t steppers_len = args[7];
     uint8_t *steppers_ptr = command_decode_ptr(args[8]);
     uint8_t status = 2; // Rejected
+    // Compute grant_ticks: 50ms at MCU clock freq for Software sources
+    uint64_t grant_ticks = 0;
+    if (sources_ptr && source_count > 0) {
+        for (uint8_t i = 0; i < source_count; i++) {
+            if (sources_ptr[(uint32_t)i * KALICO_ENDSTOP_SOURCE_RECORD_LEN] == 2) {
+                grant_ticks = (uint64_t)CONFIG_CLOCK_FREQ / 20;
+                break;
+            }
+        }
+    }
     (void)kalico_endstop_arm(arm_id, arm_clock_lo, arm_clock_hi,
                              source_count, sources_ptr, sources_len,
                              stepper_count, steppers_ptr, steppers_len,
+                             (uint32_t)grant_ticks,
+                             (uint32_t)(grant_ticks >> 32),
                              &status);
     // Only wire up GPIO sampling when the runtime accepted the arm.
     // status: 0 = Armed, 1 = AlreadyTripped, 2 = Rejected. AlreadyTripped

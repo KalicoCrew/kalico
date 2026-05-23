@@ -2151,6 +2151,8 @@ pub mod exports {
         stepper_count: u8,
         steppers_ptr: *const u8,
         steppers_len: usize,
+        grant_ticks_lo: u32,
+        grant_ticks_hi: u32,
         out_status: *mut u8,
     ) -> i32 {
         if out_status.is_null() {
@@ -2216,6 +2218,7 @@ pub mod exports {
         }
 
         let arm_clock = (u64::from(arm_clock_hi) << 32) | u64::from(arm_clock_lo);
+        let grant_ticks = (u64::from(grant_ticks_hi) << 32) | u64::from(grant_ticks_lo);
         let msg = ArmMsg {
             arm_id,
             arm_clock,
@@ -2223,10 +2226,7 @@ pub mod exports {
             sources,
             stepper_count,
             stepper_oids,
-            // This command path carries Physical / TmcDiag sources only;
-            // Software sources and the deadline window are not present on
-            // this wire format. Zero means "no Software sources; field ignored."
-            grant_ticks: 0,
+            grant_ticks,
         };
 
         match runtime::endstop::arm(msg) {

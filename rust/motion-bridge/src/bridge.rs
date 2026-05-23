@@ -2704,6 +2704,7 @@ impl PyMotionBridge {
             let kind = match kind_byte {
                 0 => endstop::SourceKind::Physical,
                 1 => endstop::SourceKind::TmcDiag,
+                2 => endstop::SourceKind::Software,
                 _ => return Err(PyRuntimeError::new_err("invalid source kind")),
             };
             let policy = match policy_byte {

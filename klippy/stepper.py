@@ -184,7 +184,8 @@ class MCU_stepper:
         bridge = getattr(self._mcu, '_motion_bridge', None)
         if bridge is not None and getattr(bridge, '_software_trip_active', False):
             try:
-                pos_xyz = bridge.get_homing_position_at_time(print_time)
+                base = getattr(bridge, '_homing_print_time_base', 0.0)
+                pos_xyz = bridge.get_homing_position_at_time(print_time - base)
             except Exception:
                 return getattr(self, "_bridge_last_trip_step_count",
                                self.get_mcu_position())
