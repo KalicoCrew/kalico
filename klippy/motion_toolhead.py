@@ -485,6 +485,15 @@ class MotionToolhead(ToolHead):
         from . import motion_bridge as _mb
         from . import motion_kinematics
 
+        # Wait for both bridge dispatch AND MCU execution to complete
+        # before computing clocks for the homing move's stepper-enable
+        # and endstop-arm commands. Without this, the print_time from
+        # get_last_move_time() can convert to a stale reqclock on the
+        # target MCU — especially after a long prior move (e.g. XY to
+        # safe_z_home) whose dispatch and execution consumed seconds of
+        # wall time while _mcu_pending_end_time drifted from reality.
+        self.wait_moves_and_mcu()
+
         pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
         dx = pos3[0] - self.commanded_pos[0]
         dy = pos3[1] - self.commanded_pos[1]
