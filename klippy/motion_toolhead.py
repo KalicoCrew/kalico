@@ -468,12 +468,13 @@ class MotionToolhead(ToolHead):
                 dx, dy, dz, 0.0, self.get_last_move_time()
             )
             self.bridge._software_trip_active = False
-            bridge_lmt_before = self.bridge.get_last_move_time()
             self.bridge.submit_homing_move(pos3, speed, arm_ids)
             self.bridge.wait_moves()
-            bridge_lmt_after = self.bridge.get_last_move_time()
-            duration = bridge_lmt_after - bridge_lmt_before
-            self._bump_pending_end_time(duration)
+            # Homing moves are truncated by endstop triggers, so the
+            # bridge-reported duration overshoots actual MCU execution.
+            # After wait_moves the MCU is idle — snap the projection to
+            # the current MCU clock instead of accumulating ghost time.
+            self._snap_pending_to_now()
         elif drip_completion is not None and not drip_completion.test():
             # External probe software-trip path
             self._drip_move_software_trip(newpos, speed, drip_completion)
@@ -565,9 +566,7 @@ class MotionToolhead(ToolHead):
                 self.bridge.extend_homing_deadline(mcu_handle, arm_id)
 
             self.bridge.wait_moves()
-            bridge_lmt_after = self.bridge.get_last_move_time()
-            duration = bridge_lmt_after - bridge_lmt_before
-            self._bump_pending_end_time(duration)
+            self._snap_pending_to_now()
         finally:
             self.bridge._software_trip_active = False
             self.active_homing_arms.discard(arm_id)
@@ -618,6 +617,12 @@ class MotionToolhead(ToolHead):
         if self._mcu_pending_end_time > est:
             return max(self._mcu_pending_end_time, floor)
         return floor
+
+    def _snap_pending_to_now(self):
+        if self.mcu is not None:
+            self._mcu_pending_end_time = self.mcu.estimated_print_time(
+                self.reactor.monotonic()
+            )
 
     def _bump_pending_end_time(self, duration_added):
         """Extend the projected MCU end-time of the last queued move.
