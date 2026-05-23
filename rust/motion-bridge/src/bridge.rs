@@ -598,6 +598,15 @@ impl PyMotionBridge {
             let _ = join.join();
         }
 
+        if let Some(pool) = self
+            .slot_pools
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&handle)
+        {
+            pool.close();
+        }
+
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router.release_mcu(mcu_handle_from_raw(handle));
         self.handlers

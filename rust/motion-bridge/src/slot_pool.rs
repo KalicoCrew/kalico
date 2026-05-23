@@ -178,6 +178,7 @@ impl Default for SlotPool {
 // SharedSlotPool — thread-safe wrapper with condvar-based blocking acquire
 // ---------------------------------------------------------------------------
 
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::sync::{Condvar, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -188,6 +189,14 @@ use std::time::{Duration, Instant};
 /// should migrate to `Arc<SharedSlotPool>`. Every mutation path that could
 /// return a slot to the free list (`release`, `retire_through_segment`)
 /// signals the condvar so any parked `alloc_blocking` call wakes promptly.
+///
+/// ## Shutdown
+///
+/// [`Self::close`] sets a sticky closed flag and wakes all waiters. Once
+/// closed, [`Self::alloc_blocking`] returns `None` immediately and
+/// [`Self::try_alloc`] returns `None` regardless of free-slot count.
+/// This prevents a 60-second stall when the MCU is released while the
+/// dispatch closure is blocked waiting for slots.
 ///
 /// ## Condvar pairing
 ///
@@ -204,6 +213,7 @@ use std::time::{Duration, Instant};
 pub struct SharedSlotPool {
     inner: StdMutex<SlotPool>,
     cv: Condvar,
+    closed: AtomicBool,
 }
 
 impl SharedSlotPool {
@@ -212,12 +222,28 @@ impl SharedSlotPool {
         Self {
             inner: StdMutex::new(SlotPool::new(capacity)),
             cv: Condvar::new(),
+            closed: AtomicBool::new(false),
         }
     }
 
+    /// Mark the pool as closed. All current and future `alloc_blocking` /
+    /// `try_alloc` calls return `None` immediately. Wakes all parked
+    /// waiters so they can observe the closed state.
+    pub fn close(&self) {
+        self.closed.store(true, AtomicOrdering::Release);
+        self.cv.notify_all();
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(AtomicOrdering::Acquire)
+    }
+
     /// Non-blocking alloc. Returns `Some((slot_idx, generation))` when a
-    /// free slot is available, `None` when the pool is exhausted.
+    /// free slot is available, `None` when the pool is exhausted or closed.
     pub fn try_alloc(&self) -> Option<(u16, u16)> {
+        if self.is_closed() {
+            return None;
+        }
         self.inner
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -239,9 +265,15 @@ impl SharedSlotPool {
     /// 5. Re-acquire `guard`, loop back to step 2.
     /// 6. On condvar timeout: one final `try_alloc`, then `None`.
     pub fn alloc_blocking(&self, timeout: Duration) -> Option<(u16, u16)> {
+        if self.is_closed() {
+            return None;
+        }
         let deadline = Instant::now() + timeout;
         let mut guard = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         loop {
+            if self.is_closed() {
+                return None;
+            }
             if let Some(pair) = guard.try_alloc() {
                 return Some(pair);
             }
@@ -256,8 +288,6 @@ impl SharedSlotPool {
                 .unwrap_or_else(|p| p.into_inner());
             guard = g;
             if wait_res.timed_out() {
-                // One final attempt — a slot may have been returned between
-                // the timeout being set and the notifier path seeing us.
                 return guard.try_alloc();
             }
         }
@@ -413,6 +443,35 @@ mod shared_tests {
 
         let result = handle.join().expect("thread panicked");
         assert!(result.is_some(), "alloc_blocking must succeed after release");
+    }
+
+    #[test]
+    fn close_wakes_blocked_alloc() {
+        let pool = Arc::new(SharedSlotPool::new(1));
+        pool.try_alloc().unwrap();
+        assert_eq!(pool.free_count(), 0);
+
+        let pool2 = Arc::clone(&pool);
+        let handle = thread::spawn(move || pool2.alloc_blocking(Duration::from_secs(10)));
+        thread::sleep(Duration::from_millis(50));
+
+        let start = Instant::now();
+        pool.close();
+        let result = handle.join().expect("thread panicked");
+        assert!(result.is_none(), "closed pool must return None");
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "close must wake waiter promptly, not wait for timeout"
+        );
+    }
+
+    #[test]
+    fn try_alloc_returns_none_when_closed() {
+        let pool = SharedSlotPool::new(4);
+        assert!(pool.try_alloc().is_some());
+        pool.close();
+        assert!(pool.try_alloc().is_none());
+        assert!(pool.is_closed());
     }
 }
 
