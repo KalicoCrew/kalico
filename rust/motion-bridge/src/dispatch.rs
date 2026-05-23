@@ -117,6 +117,77 @@ pub fn is_trivially_constant(curve: &nurbs::ScalarNurbs<f64>) -> bool {
     cps.iter().all(|&v| (v - first).abs() <= EPS_CONST)
 }
 
+/// De Casteljau subdivision of a cubic Bernstein polynomial at parameter `t`.
+/// Returns `(left_half, right_half)` — two sets of cubic Bernstein control
+/// points covering `[0, t]` and `[t, 1]` respectively.
+pub fn de_casteljau_split(bp: [f32; 4], t: f32) -> ([f32; 4], [f32; 4]) {
+    let [b0, b1, b2, b3] = bp;
+    let p01 = b0 + t * (b1 - b0);
+    let p12 = b1 + t * (b2 - b1);
+    let p23 = b2 + t * (b3 - b2);
+    let p012 = p01 + t * (p12 - p01);
+    let p123 = p12 + t * (p23 - p12);
+    let p0123 = p012 + t * (p123 - p012);
+    ([b0, p01, p012, p0123], [p0123, p123, p23, b3])
+}
+
+/// Extract the sub-curve covering time window `[win_start, win_end]` (seconds
+/// relative to curve start). Pieces entirely within the window are included
+/// as-is. Pieces straddling a boundary are subdivided via de Casteljau.
+pub fn extract_time_window(
+    curve: &CurveLoadParams,
+    win_start: f64,
+    win_end: f64,
+) -> CurveLoadParams {
+    let mut result_bp = Vec::new();
+    let mut result_dur = Vec::new();
+    let mut elapsed = 0.0_f64;
+
+    for i in 0..curve.bp_per_piece.len() {
+        let d = curve.duration_per_piece[i] as f64;
+        let piece_start = elapsed;
+        let piece_end = elapsed + d;
+        elapsed = piece_end;
+
+        if piece_end <= win_start + 1e-12 || piece_start >= win_end - 1e-12 {
+            continue;
+        }
+
+        if piece_start >= win_start - 1e-12 && piece_end <= win_end + 1e-12 {
+            result_bp.push(curve.bp_per_piece[i]);
+            result_dur.push(curve.duration_per_piece[i]);
+            continue;
+        }
+
+        let mut cur_bp = curve.bp_per_piece[i];
+        let mut cur_dur = d;
+        let mut cur_start = piece_start;
+
+        if cur_start < win_start - 1e-12 {
+            let t = ((win_start - cur_start) / cur_dur) as f32;
+            let (_, right) = de_casteljau_split(cur_bp, t);
+            cur_bp = right;
+            cur_dur *= 1.0 - t as f64;
+            cur_start = win_start;
+        }
+
+        if cur_start + cur_dur > win_end + 1e-12 {
+            let t = ((win_end - cur_start) / cur_dur) as f32;
+            let (left, _) = de_casteljau_split(cur_bp, t);
+            cur_bp = left;
+            cur_dur *= t as f64;
+        }
+
+        result_bp.push(cur_bp);
+        result_dur.push(cur_dur as f32);
+    }
+
+    CurveLoadParams {
+        bp_per_piece: result_bp,
+        duration_per_piece: result_dur,
+    }
+}
+
 /// Build per-MCU push plans for a single shaped segment.
 ///
 /// `t_start_clock` / `t_end_clock` are 64-bit MCU-clock values produced by
@@ -285,6 +356,82 @@ mod tests {
     use super::*;
     use geometry::segment::EMode;
     use nurbs::ScalarNurbs;
+
+    fn make_curve(n_pieces: usize, piece_dur: f32, slope: f32) -> CurveLoadParams {
+        let mut bp = Vec::with_capacity(n_pieces);
+        let mut dur = Vec::with_capacity(n_pieces);
+        for i in 0..n_pieces {
+            let v0 = slope * i as f32;
+            let v1 = slope * (i as f32 + 1.0 / 3.0);
+            let v2 = slope * (i as f32 + 2.0 / 3.0);
+            let v3 = slope * (i as f32 + 1.0);
+            bp.push([v0, v1, v2, v3]);
+            dur.push(piece_dur);
+        }
+        CurveLoadParams {
+            bp_per_piece: bp,
+            duration_per_piece: dur,
+        }
+    }
+
+    #[test]
+    fn de_casteljau_split_at_midpoint() {
+        let bp: [f32; 4] = [0.0, 1.0, 2.0, 3.0];
+        let (left, right) = super::de_casteljau_split(bp, 0.5);
+        assert!((left[0] - 0.0).abs() < 1e-6);
+        assert!((left[3] - 1.5).abs() < 1e-6);
+        assert!((right[0] - 1.5).abs() < 1e-6);
+        assert!((right[3] - 3.0).abs() < 1e-6);
+        assert!((left[3] - right[0]).abs() < 1e-6);
+    }
+
+    #[test]
+    fn de_casteljau_split_at_quarter() {
+        let bp: [f32; 4] = [0.0, 0.0, 0.0, 12.0];
+        let (left, right) = super::de_casteljau_split(bp, 0.25);
+        assert!((left[0] - 0.0).abs() < 1e-5, "left start");
+        assert!((left[3] - 0.1875).abs() < 1e-4, "left end = eval(0.25) got {}", left[3]);
+        assert!((right[0] - 0.1875).abs() < 1e-4, "right start");
+        assert!((right[3] - 12.0).abs() < 1e-5, "right end");
+    }
+
+    #[test]
+    fn extract_time_window_full_range_is_identity() {
+        let curve = make_curve(5, 0.1, 1.0);
+        let result = super::extract_time_window(&curve, 0.0, 0.5);
+        assert_eq!(result.piece_count(), 5);
+        assert_eq!(result.bp_per_piece, curve.bp_per_piece);
+    }
+
+    #[test]
+    fn extract_time_window_first_half() {
+        let curve = make_curve(10, 0.1, 1.0);
+        let result = super::extract_time_window(&curve, 0.0, 0.5);
+        assert_eq!(result.piece_count(), 5);
+        for i in 0..5 {
+            assert_eq!(result.bp_per_piece[i], curve.bp_per_piece[i]);
+        }
+    }
+
+    #[test]
+    fn extract_time_window_mid_piece_boundary_uses_de_casteljau() {
+        let curve = make_curve(4, 1.0, 1.0);
+        let result = super::extract_time_window(&curve, 0.0, 2.5);
+        assert_eq!(result.piece_count(), 3, "2 whole + 1 subdivided");
+        assert_eq!(result.bp_per_piece[0], curve.bp_per_piece[0]);
+        assert_eq!(result.bp_per_piece[1], curve.bp_per_piece[1]);
+        assert!((result.duration_per_piece[2] - 0.5).abs() < 1e-5);
+        assert!((result.bp_per_piece[2][0] - curve.bp_per_piece[2][0]).abs() < 1e-5);
+    }
+
+    #[test]
+    fn extract_time_window_second_half_starts_mid_piece() {
+        let curve = make_curve(4, 1.0, 1.0);
+        let result = super::extract_time_window(&curve, 2.5, 4.0);
+        assert_eq!(result.piece_count(), 2, "1 subdivided + 1 whole");
+        assert!((result.duration_per_piece[0] - 0.5).abs() < 1e-5);
+        assert_eq!(result.bp_per_piece[1], curve.bp_per_piece[3]);
+    }
 
     fn linear_curve(a: f64, b: f64) -> ScalarNurbs<f64> {
         // degree-3 Bézier with collinear cps a, lerp(1/3), lerp(2/3), b
