@@ -317,12 +317,6 @@ class MotionToolhead(ToolHead):
         # Projected MCU print-time of the END of the last queued bridge
         # move. See get_last_move_time / _bump_pending_end_time.
         self._mcu_pending_end_time = 0.0
-        # Planned MCU end time of the last homing move. Used by
-        # homing.py for the home_wait backstop calculation. Decoupled
-        # from _mcu_pending_end_time because wait_moves_and_mcu needs
-        # the latter reset after a trip, while the backstop needs the
-        # full planned duration for the no-trip case.
-        self._last_homing_move_end_time = 0.0
 
         # Run upstream init: trapq alloc, gcode commands (G4/M400/
         # SET_VELOCITY_LIMIT/RESET_VELOCITY_LIMIT/M204), helper modules
@@ -478,20 +472,8 @@ class MotionToolhead(ToolHead):
             self.bridge.submit_homing_move(pos3, speed, arm_ids)
             self.bridge.wait_moves()
             bridge_lmt_after = self.bridge.get_last_move_time()
-            planned_duration = bridge_lmt_after - bridge_lmt_before
-            # Two readers need different values after homing:
-            # - home_wait backstop (homing.py:151) needs the full
-            #   planned duration so it doesn't fire prematurely on
-            #   no-trip full-travel moves.
-            # - wait_moves_and_mcu (homing.py:366) needs est_now so
-            #   it doesn't sleep for phantom travel after a trip.
-            # Store planned end separately; reset _mcu_pending_end_time.
-            if self.mcu is not None:
-                est = self.mcu.estimated_print_time(
-                    self.reactor.monotonic()
-                )
-                self._last_homing_move_end_time = est + planned_duration
-                self._mcu_pending_end_time = est
+            duration = bridge_lmt_after - bridge_lmt_before
+            self._bump_pending_end_time(duration)
         elif drip_completion is not None and not drip_completion.test():
             # External probe software-trip path
             self._drip_move_software_trip(newpos, speed, drip_completion)
@@ -583,15 +565,9 @@ class MotionToolhead(ToolHead):
                 self.bridge.extend_homing_deadline(mcu_handle, arm_id)
 
             self.bridge.wait_moves()
-            # Decouple readers — see GPIO path comment above.
             bridge_lmt_after = self.bridge.get_last_move_time()
-            planned_duration = bridge_lmt_after - bridge_lmt_before
-            if self.mcu is not None:
-                est = self.mcu.estimated_print_time(
-                    self.reactor.monotonic()
-                )
-                self._last_homing_move_end_time = est + planned_duration
-                self._mcu_pending_end_time = est
+            duration = bridge_lmt_after - bridge_lmt_before
+            self._bump_pending_end_time(duration)
         finally:
             self.bridge._software_trip_active = False
             self.active_homing_arms.discard(arm_id)
@@ -621,9 +597,6 @@ class MotionToolhead(ToolHead):
 
     def flush_step_generation(self):
         self.bridge.wait_moves()
-
-    def get_last_homing_move_end_time(self):
-        return self._last_homing_move_end_time
 
     def get_last_move_time(self):
         # Two clocks live here:
