@@ -531,6 +531,9 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
         if cfg.policy != ArmPolicy::TripImmediately {
             continue;
         }
+        if cfg.kind == SourceKind::Software {
+            continue;
+        }
         let pin_high = read_pin(cfg.gpio);
         let asserted = if cfg.active_high { pin_high } else { !pin_high };
         if asserted {
