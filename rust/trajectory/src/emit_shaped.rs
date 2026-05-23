@@ -143,11 +143,17 @@ pub fn emit_shaped(
 
         for axis in 0..3 {
             let cps = fitted.axes[axis].control_points();
-            let axis_is_constant = if let Some(&first) = cps.first() {
-                cps.iter().all(|c| (*c - first).abs() < 1e-12)
+            let (axis_is_constant, max_dev) = if let Some(&first) = cps.first() {
+                let dev = cps.iter().map(|c| (*c - first).abs()).fold(0.0_f64, f64::max);
+                (dev < 1e-12, dev)
             } else {
-                true
+                (true, 0.0)
             };
+            eprintln!(
+                "[emit-diag] seg {} axis {} cps={} is_constant={} max_dev={:.2e} first={:.6}",
+                seg_idx, axis, cps.len(), axis_is_constant, max_dev,
+                cps.first().copied().unwrap_or(0.0),
+            );
 
             let mut axis_shaped = if axis_is_constant {
                 eprintln!(
