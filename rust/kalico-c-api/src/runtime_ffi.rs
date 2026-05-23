@@ -2223,6 +2223,10 @@ pub mod exports {
             sources,
             stepper_count,
             stepper_oids,
+            // This command path carries Physical / TmcDiag sources only;
+            // Software sources and the deadline window are not present on
+            // this wire format. Zero means "no Software sources; field ignored."
+            grant_ticks: 0,
         };
 
         match runtime::endstop::arm(msg) {
@@ -2254,6 +2258,46 @@ pub mod exports {
             DisarmStatus::Unknown => 2u8,
         };
         unsafe { *out_status = s };
+        KALICO_OK
+    }
+
+    /// Software-trip an armed endstop. Called from the C command handler
+    /// `command_runtime_software_trip`. Writes a status byte into `*out_status`:
+    /// 0 = Tripped, 1 = NotArmed, 2 = WrongArmId.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_software_trip(
+        arm_id: u32,
+        clock_lo: u32,
+        clock_hi: u32,
+        out_status: *mut u8,
+    ) -> i32 {
+        if out_status.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        let clock = (u64::from(clock_hi) << 32) | u64::from(clock_lo);
+        // Pass empty stepper_counts — the MCU's step counters are not available
+        // from the command handler context. The snapshot will have zero counts;
+        // the host uses the retained curve for position reconstruction instead.
+        let result = runtime::endstop::software_trip(arm_id, clock, &[]);
+        let status = match result {
+            runtime::endstop::TripResult::Tripped => 0u8,
+            runtime::endstop::TripResult::NotArmed => 1u8,
+            runtime::endstop::TripResult::WrongArmId => 2u8,
+        };
+        unsafe { *out_status = status };
+        KALICO_OK
+    }
+
+    /// Extend the homing deadline by one grant window. Called from the C
+    /// command handler `command_runtime_extend_homing_deadline`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_extend_deadline(
+        arm_id: u32,
+        clock_lo: u32,
+        clock_hi: u32,
+    ) -> i32 {
+        let clock = (u64::from(clock_hi) << 32) | u64::from(clock_lo);
+        runtime::endstop::extend_deadline(arm_id, clock);
         KALICO_OK
     }
 

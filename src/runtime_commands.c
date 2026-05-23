@@ -209,6 +209,32 @@ command_runtime_disarm_endstop(uint32_t *args)
 DECL_COMMAND(command_runtime_disarm_endstop, "runtime_disarm_endstop arm_id=%u");
 
 void
+command_runtime_software_trip(uint32_t *args)
+{
+    uint32_t arm_id = args[0];
+    uint32_t clock_lo = timer_read_time();
+    // Widen using the same pattern as command_runtime_clock_sync_request
+    uint32_t clock_hi = stats_send_time_high + (clock_lo < stats_send_time);
+    uint8_t status = 1; // NotArmed default
+    (void)kalico_software_trip(arm_id, clock_lo, clock_hi, &status);
+    sendf("kalico_software_trip_response arm_id=%u status=%c",
+          arm_id, status);
+}
+DECL_COMMAND(command_runtime_software_trip,
+    "runtime_software_trip arm_id=%u");
+
+void
+command_runtime_extend_homing_deadline(uint32_t *args)
+{
+    uint32_t arm_id = args[0];
+    uint32_t clock_lo = timer_read_time();
+    uint32_t clock_hi = stats_send_time_high + (clock_lo < stats_send_time);
+    (void)kalico_extend_deadline(arm_id, clock_lo, clock_hi);
+}
+DECL_COMMAND(command_runtime_extend_homing_deadline,
+    "runtime_extend_homing_deadline arm_id=%u");
+
+void
 command_runtime_configure_axes(uint32_t *args)
 {
     if (!runtime_handle) {

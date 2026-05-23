@@ -575,6 +575,19 @@ int32_t kalico_endstop_arm(uint32_t arm_id,
 int32_t kalico_endstop_disarm(uint32_t arm_id, uint8_t *out_status);
 
 /**
+ * Software-trip an armed endstop. Called from the C command handler
+ * `command_runtime_software_trip`. Writes a status byte into `*out_status`:
+ * 0 = Tripped, 1 = NotArmed, 2 = WrongArmId.
+ */
+int32_t kalico_software_trip(uint32_t arm_id, uint32_t clock_lo, uint32_t clock_hi, uint8_t *status);
+
+/**
+ * Extend the homing deadline by one grant window. Called from the C
+ * command handler `command_runtime_extend_homing_deadline`.
+ */
+int32_t kalico_extend_deadline(uint32_t arm_id, uint32_t clock_lo, uint32_t clock_hi);
+
+/**
  * Drain the next pending trip event into a host-side buffer.
  *
  * Wire format v1, little-endian, total length =
