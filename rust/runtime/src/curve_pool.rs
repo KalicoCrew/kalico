@@ -275,16 +275,35 @@ impl CurvePool {
     }
 
     /// Foreground reclaim. Called from the trace-drain pipeline on observing
-    /// `SEGMENT_END(handle)`. FIFO ordering of trace events guarantees all
-    /// prior generations for this slot have already retired.
+    /// `SEGMENT_END(handle)` AND from `abort_for_homing_trip` (ISR context).
+    ///
+    /// Monotonic: only advances `last_retired_gen`, never rolls it back.
+    /// `abort_for_homing_trip` may retire a LATER generation before the
+    /// foreground drains the trace ring's EARLIER `SEGMENT_END` events.
+    /// Without the CAS guard, the stale foreground drain would overwrite
+    /// `last_retired_gen` backwards, leaving the slot permanently "busy."
     pub fn confirm_retired(&self, handle: CurveHandle) {
         let slot_idx = handle.slot_idx as usize;
         if slot_idx >= CURVE_POOL_N {
             return;
         }
         if let Some(slot) = self.slots.get(slot_idx) {
-            slot.last_retired_gen
-                .store(handle.generation, Ordering::Release);
+            loop {
+                let current_last = slot.last_retired_gen.load(Ordering::Acquire);
+                let delta = handle.generation.wrapping_sub(current_last);
+                if delta == 0 || delta >= 32768 {
+                    break;
+                }
+                match slot.last_retired_gen.compare_exchange_weak(
+                    current_last,
+                    handle.generation,
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => break,
+                    Err(_) => continue,
+                }
+            }
         }
     }
 
