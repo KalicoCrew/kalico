@@ -445,13 +445,6 @@ class MotionToolhead(ToolHead):
         return fired
 
     def drip_move(self, newpos, speed, drip_completion):
-        # Step 7-D §6.2: bridge-aware single-segment homing.
-        # Endstops were armed upstream by homing.py via
-        # mcu_endstop.home_start; each BridgeTriggerDispatch.start
-        # registered its arm_id with self.active_homing_arms. Submit one
-        # homing-tagged segment; on trip the runtime ISR aborts and
-        # freezes the curve evaluator. wait_moves() returns when the
-        # segment retires (Completed or Tripped).
         logging.info(
             "[bridge-trace] drip_move entered: newpos=%s speed=%s "
             "drip_test=%s active_homing_arms=%s",
@@ -463,37 +456,28 @@ class MotionToolhead(ToolHead):
         if drip_completion is not None and drip_completion.test():
             return
         arm_ids = list(self.active_homing_arms)
-        if not arm_ids:
-            # No bridge endstops armed — fall back to a regular move so
-            # bring-up doesn't crash on file-output / legacy paths.
+        if arm_ids:
+            # Bridge-native GPIO/sensorless path (existing)
+            pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
+            dx = pos3[0] - self.commanded_pos[0]
+            dy = pos3[1] - self.commanded_pos[1]
+            dz = pos3[2] - self.commanded_pos[2]
+            self._fire_active_callbacks(
+                dx, dy, dz, 0.0, self.get_last_move_time()
+            )
+            self.bridge._software_trip_active = False
+            bridge_lmt_before = self.bridge.get_last_move_time()
+            self.bridge.submit_homing_move(pos3, speed, arm_ids)
+            self.bridge.wait_moves()
+            bridge_lmt_after = self.bridge.get_last_move_time()
+            duration = bridge_lmt_after - bridge_lmt_before
+            self._bump_pending_end_time(duration)
+        elif drip_completion is not None and not drip_completion.test():
+            # External probe software-trip path
+            self._drip_move_software_trip(newpos, speed, drip_completion)
+        else:
+            # No endstop armed — regular move fallback
             self.move(newpos, speed)
-            return
-        pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
-        # Energize motors before the homing move. Same reasoning as in
-        # move(): the bridge runtime synthesizes steps directly, so
-        # klippy's itersolve_check_active path that normally fires
-        # StepperEnablePin.set_enable() never runs. Fire the active
-        # callbacks here too, with deltas computed from the toolhead's
-        # current commanded_pos to the homing target — that's what
-        # is_active_axis(...) needs to filter the right rails.
-        dx = pos3[0] - self.commanded_pos[0]
-        dy = pos3[1] - self.commanded_pos[1]
-        dz = pos3[2] - self.commanded_pos[2]
-        self._fire_active_callbacks(dx, dy, dz, 0.0, self.get_last_move_time())
-        bridge_lmt_before = self.bridge.get_last_move_time()
-        self.bridge.submit_homing_move(pos3, speed, arm_ids)
-        self.bridge.wait_moves()
-        bridge_lmt_after = self.bridge.get_last_move_time()
-        duration = bridge_lmt_after - bridge_lmt_before
-        self._bump_pending_end_time(duration)
-        logging.info(
-            "[bridge-trace] drip_move dispatched: dx=%.4f dy=%.4f dz=%.4f "
-            "speed=%.4f arms=%s bridge_last_move_time=%.6f -> %.6f "
-            "delta=%.6f mcu_pending_end=%.6f",
-            dx, dy, dz, speed, arm_ids,
-            bridge_lmt_before, bridge_lmt_after, duration,
-            self._mcu_pending_end_time,
-        )
 
     def dwell(self, delay):
         self.bridge.submit_dwell(delay)
