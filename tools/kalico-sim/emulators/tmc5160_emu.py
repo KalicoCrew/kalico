@@ -48,12 +48,25 @@ TMC5160_DEFAULTS = {
 }
 
 
-def handle_client(conn, regs, last_read):
+XDIRECT_REG = 0x2D
+GCONF_REG = 0x00
+
+
+def _sign9(val):
+    val &= 0x1FF
+    return val - 0x200 if val & 0x100 else val
+
+
+def handle_client(conn, regs, last_read, xdirect_log):
     """Serve one SPI connection (one CS assertion).
 
     TMC5160 SPI protocol: the response datagram always returns the value
     of the register addressed by the PREVIOUS datagram (not the current
     one). `last_read[0]` tracks this across connections.
+
+    `xdirect_log` is a list of (timestamp, coil_a, coil_b) tuples
+    appended on each XDIRECT write. The test reads this via a sidecar
+    JSON file written by the emulator main loop.
     """
     conn.settimeout(0.5)
     try:
@@ -76,6 +89,20 @@ def handle_client(conn, regs, last_read):
                 reply_val = regs.get(last_read[0], 0)
                 if is_write:
                     regs[reg_addr] = value
+                    if reg_addr == XDIRECT_REG:
+                        coil_a = _sign9(value)
+                        coil_b = _sign9(value >> 16)
+                        xdirect_log.append((time.monotonic(), coil_a, coil_b))
+                        sys.stdout.write(
+                            f"XDIRECT coil_a={coil_a} coil_b={coil_b} "
+                            f"raw=0x{value:08x}\n")
+                        sys.stdout.flush()
+                    elif reg_addr == GCONF_REG:
+                        direct_mode = bool(value & (1 << 16))
+                        sys.stdout.write(
+                            f"GCONF raw=0x{value:08x} "
+                            f"direct_mode={direct_mode}\n")
+                        sys.stdout.flush()
                 last_read[0] = reg_addr
                 resp = struct.pack(">BI", 0x00, reply_val)
                 time.sleep(0.1)  # exaggerated SPI latency to trigger drain overflow
@@ -92,19 +119,29 @@ def handle_client(conn, regs, last_read):
 def run_emulator(sock_path):
     regs = dict(TMC5160_DEFAULTS)
     last_read = [0x00]
+    xdirect_log = []
+    json_path = str(sock_path) + ".xdirect.json"
     if os.path.exists(sock_path):
         os.unlink(sock_path)
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(sock_path)
     srv.listen(8)
     srv.settimeout(0.5)
+    flush_counter = 0
     while True:
         try:
             conn, _ = srv.accept()
             t = threading.Thread(target=handle_client,
-                                 args=(conn, regs, last_read), daemon=True)
+                                 args=(conn, regs, last_read, xdirect_log),
+                                 daemon=True)
             t.start()
         except socket.timeout:
+            flush_counter += 1
+            if flush_counter % 4 == 0 and xdirect_log:
+                import json
+                with open(json_path, "w") as f:
+                    json.dump([{"t": e[0], "a": e[1], "b": e[2]}
+                               for e in xdirect_log], f)
             continue
         except Exception:
             break
