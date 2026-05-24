@@ -388,7 +388,9 @@ def _enable_direct_mode(config, stepper_section, fields):
     convention. ``microsteps`` is read from the ``[stepper_*]`` section
     (``stepper_section``) per TMCMicrostepHelper convention.
     """
-    fields.set_field("direct_mode", 1)
+    # direct_mode is NOT set in the field cache here — it must be
+    # written AFTER CHOPCONF (toff>0) is on the chip, or the bootstrap
+    # charge pump starves. _xdirect_preload handles the sequencing.
     sct = config.getfloat("stealthchop_threshold", 0.0, minval=0.0)
     if sct > 0.0:
         raise config.error(
@@ -547,19 +549,22 @@ class TMC5160:
                 dis_cmd.send([])
             except Exception:
                 pass
-        # Ensure CHOPCONF (toff>0) is on the chip BEFORE GCONF
-        # (direct_mode=1). In direct_mode the TMC5160's bootstrap
-        # charge pump depends on the chopper switching — if toff=0
-        # when direct_mode is set, the bridges stop switching, bootstrap
-        # caps drain, and uv_cp trips after a few moves. _init_registers
-        # writes GCONF before CHOPCONF (dict insertion order), so we
-        # re-write both in the correct order here.
+        # Write CHOPCONF (toff>0) first, then set GCONF.direct_mode=1.
+        # direct_mode is deliberately NOT in the field cache (removed from
+        # _enable_direct_mode) so _init_registers doesn't write it while
+        # the chip still has toff=0 from the virtual-enable disable phase.
+        # The bootstrap charge pump depends on the chopper switching —
+        # direct_mode with toff=0 drains the bootstrap caps and triggers
+        # uv_cp after a few moves.
         chopconf_val = self.fields.registers.get("CHOPCONF")
         if chopconf_val is not None:
             self.mcu_tmc.set_register("CHOPCONF", chopconf_val)
-        gconf_val = self.fields.registers.get("GCONF")
-        if gconf_val is not None:
-            self.mcu_tmc.set_register("GCONF", gconf_val)
+        # Now safe to enable direct_mode — chopper is running.
+        gconf_val = self.fields.registers.get("GCONF", 0)
+        gconf_val |= (1 << 16)   # direct_mode
+        gconf_val &= ~(1 << 2)   # SpreadCycle (clear en_pwm_mode)
+        self.mcu_tmc.set_register("GCONF", gconf_val)
+        self.fields.registers["GCONF"] = gconf_val
         # Read the live electrical phase from the microstep counter
         mscnt = self.mcu_tmc.get_register("MSCNT") & 0x3FF
         angle = mscnt * 2.0 * math.pi / 1024.0
