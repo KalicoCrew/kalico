@@ -651,19 +651,29 @@ def _start_chip_emulators(h7_sock_dir, f4_sock_dir, repo_root):
 
 
 def _start_beacon(beacon_pty, log_dir, repo_root):
-    """Start Beacon serial stub if available."""
+    """Start Beacon MCU emulator."""
     try:
         sys.path.insert(0, str(repo_root))
-        from tools.sim_klippy.orchestrator.beacon_serial_stub import BeaconSerialStub
-        beacon = BeaconSerialStub(
+        # Local emulator (kalico-sim/emulators/) — add to path directly
+        # since the hyphen in kalico-sim makes it non-importable as a module
+        emulators_dir = repo_root / "tools" / "kalico-sim" / "emulators"
+        if emulators_dir.exists():
+            sys.path.insert(0, str(emulators_dir))
+        try:
+            from beacon_mcu import BeaconMcuStub
+        except ImportError:
+            from tools.sim_klippy.orchestrator.beacon_serial_stub import (
+                BeaconMcuStub,
+            )
+        beacon = BeaconMcuStub(
             beacon_pty,
             log_path=str(log_dir / "beacon_traffic.log"),
         )
         beacon.start_sample_stream(z_target_mm=10.0, rate_hz=200)
-        log.info("Beacon stub started")
+        log.info("Beacon MCU emulator started")
         return beacon
     except ImportError as e:
-        log.warning("Could not import BeaconSerialStub: %s", e)
+        log.warning("Could not import Beacon emulator: %s", e)
         return None
 
 
