@@ -117,4 +117,29 @@ else
     echo "fix_linux_build: timer threshold already patched, skipping."
 fi
 
+# ---------------------------------------------------------------------------
+# Fix 4 — phase stepping SPI support on MACH_LINUX
+# ---------------------------------------------------------------------------
+PHASE_SRC="$REPO_ROOT/src/linux/phase_stepping_spi.c"
+PHASE_HDR="$REPO_ROOT/src/linux/phase_stepping_spi.h"
+
+if [ ! -f "$PHASE_SRC" ]; then
+    echo "fix_linux_build: copying phase_stepping_spi to src/linux/"
+    cp "$REPO_ROOT/src/stm32/phase_stepping_spi.c" "$PHASE_SRC"
+    cp "$REPO_ROOT/src/stm32/phase_stepping_spi.h" "$PHASE_HDR"
+fi
+
+LINUX_MK="$REPO_ROOT/src/linux/Makefile"
+if ! grep -q "phase_stepping_spi" "$LINUX_MK" 2>/dev/null; then
+    echo "fix_linux_build: adding phase_stepping_spi.c to Linux Makefile"
+    sed -i '/src-y += runtime_commands.c/a src-y += linux/phase_stepping_spi.c' "$LINUX_MK"
+fi
+
+RT_CMD="$REPO_ROOT/src/runtime_commands.c"
+if ! grep -q 'CONFIG_MACH_LINUX' "$RT_CMD" 2>/dev/null; then
+    echo "fix_linux_build: enabling phase stepping for MACH_LINUX in runtime_commands.c"
+    sed -i 's/#if CONFIG_MACH_STM32$/#if CONFIG_MACH_STM32 || CONFIG_MACH_LINUX/' "$RT_CMD"
+    sed -i '/#if CONFIG_MACH_STM32 || CONFIG_MACH_LINUX/{n;s|#include "stm32/phase_stepping_spi.h"|#include "stm32/phase_stepping_spi.h"\n#elif CONFIG_MACH_LINUX\n#include "linux/phase_stepping_spi.h"|;}' "$RT_CMD"
+fi
+
 echo "fix_linux_build: done."
