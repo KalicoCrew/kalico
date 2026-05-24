@@ -244,6 +244,7 @@ COPY --from=firmware /kalico/klippy/chelper/ /kalico/klippy/chelper/
 # Copy libvtime shims
 COPY --from=firmware \
     /kalico/tools/kalico-sim/libvtime/libvtime.so \
+    /kalico/tools/kalico-sim/libvtime/libvtime_clock_only.so \
     /kalico/tools/kalico-sim/libvtime/libsim_intercept.so \
     /kalico/tools/kalico-sim/libvtime/
 

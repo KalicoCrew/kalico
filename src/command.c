@@ -7,6 +7,7 @@
 #include <stdarg.h> // va_start
 #include <stdio.h>  // fprintf (MACH_LINUX diag)
 #include <string.h> // memcpy
+#include "autoconf.h" // CONFIG_MACH_LINUX
 #include "board/io.h" // readb
 #include "board/irq.h" // irq_poll
 #include "board/misc.h" // crc16_ccitt
@@ -360,9 +361,22 @@ command_dispatch(uint8_t *buf, uint_fast8_t msglen)
         uint32_t args[READP(cp->num_args)];
         p = command_parsef(p, msgend, cp, args);
         if (sched_is_shutdown() && !(READP(cp->flags) & HF_IN_SHUTDOWN)) {
+#if CONFIG_MACH_LINUX
+            fprintf(stderr, "[mcu-dispatch] SKIP cmdid=%u (shutdown, no HF_IN_SHUTDOWN)\n",
+                    (unsigned)cmdid);
+            fflush(stderr);
+#endif
             sched_report_shutdown();
             continue;
         }
+#if CONFIG_MACH_LINUX
+        {
+            void (*fn)(uint32_t*) = READP(cp->func);
+            fprintf(stderr, "[mcu-dispatch] CALL cmdid=%u func=%p\n",
+                    (unsigned)cmdid, (void*)fn);
+            fflush(stderr);
+        }
+#endif
         irq_poll();
         void (*func)(uint32_t*) = READP(cp->func);
         func(args);

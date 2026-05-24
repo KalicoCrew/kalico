@@ -165,8 +165,9 @@ def spawn_mcu(
     # interposition; vtime must see the raw libc symbols.
     env["LD_PRELOAD"] = f"{vtime_so}:{shim_so}"
     env["KALICO_SIM_SOCK_DIR"] = sock_dir
-    # Default vtime speed (100x) — fast enough for init convergence,
-    # controlled by KALICO_VTIME_SPEED env if needed.
+    # Speed cap keeps MCU clock advancement within timeout budgets.
+    # At 3x, a 30-second timeout survives 10 real seconds of I/O.
+    env.setdefault("KALICO_VTIME_SPEED", "1")
     # env["KALICO_VTIME_SPEED"] = "100"  # libvtime default
     if verbose:
         env["KALICO_SIM_SHIM_VERBOSE"] = "1"
@@ -429,17 +430,13 @@ def run_simulation(
             api_socket = str(tmp / "klippy.sock")
 
             env = os.environ.copy()
-            # Klippy does NOT use virtual time — it runs at real CPU
-            # speed. The MCU processes use virtual time (via LD_PRELOAD
-            # in spawn_mcu) so they process commands instantly. Klippy's
-            # motion planner generates moves at CPU speed; the MCU is
-            # "infinitely fast." This avoids the virtual-time deadlock
-            # where both sides wait for I/O and neither advances time.
+            # Klippy runs on real wall time — no LD_PRELOAD. The MCU
+            # processes run on virtual time (via libvtime.so). The
+            # bridge's clock sync maps between the two time bases.
             if verbose:
                 env["KALICO_VTIME_DEBUG"] = "1"
             env["KALICO_SIM_SOCK_DIR"] = str(h7_sock_dir)
             env.setdefault("RUST_LOG", "info")
-            env.setdefault("KALICO_VTIME_SPEED", "10")
 
             # Install third-party plugins as symlinks in klippy/extras/
             # so klippy discovers them (same as sim_klippy conftest.py).
@@ -513,13 +510,24 @@ def run_simulation(
                 gcode_text = gcode_path.read_text().strip()
                 log.info("Sending G-code directly: %s",
                          gcode_text[:80] + ("..." if len(gcode_text) > 80 else ""))
-                resp = send_gcode(api_socket, gcode_text, timeout=timeout)
+                try:
+                    resp = send_gcode(api_socket, gcode_text, timeout=timeout)
+                except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                    resp = {}
+                    log.error("G-code send failed (klippy died?): %s", e)
                 log.info("G-code result: %s",
                          str(resp)[:200] if resp else "empty")
 
                 error_msg = (resp.get("error") or {}).get("message", "")
-                success = "result" in resp and not error_msg
-                error = error_msg if error_msg else None
+                if not resp:
+                    success = False
+                    error = "klippy connection lost during G-code execution"
+                elif error_msg:
+                    success = False
+                    error = error_msg
+                else:
+                    success = "result" in resp
+                    error = None
             else:
                 # No G-code — generate and print a test pattern
                 log.info("No G-code file, generating test pattern")
