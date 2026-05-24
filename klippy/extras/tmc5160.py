@@ -3,6 +3,7 @@
 # Copyright (C) 2018-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import logging
 import math
 
 from . import tmc, tmc2130
@@ -441,6 +442,8 @@ class TMC5160:
             config, self.mcu_tmc, direct_mode=self._phase_stepping,
         )
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)
+        if self._phase_stepping:
+            cmdhelper.set_post_enable_callback(self._xdirect_preload)
         cmdhelper.setup_register_dump(ReadRegisters)
         self.get_phase_offset = cmdhelper.get_phase_offset
         self.get_status = cmdhelper.get_status
@@ -508,6 +511,40 @@ class TMC5160:
         set_config_field(config, "pwm_lim", 12)
         #   TPOWERDOWN
         set_config_field(config, "tpowerdown", 10)
+        if self._phase_stepping:
+            # In direct_mode the TMC5160 uses IHOLD for current scaling
+            # (no step pulses to trigger IRUN). Extend the standstill
+            # timeout to maximum so the driver doesn't power-down the
+            # coils while phase stepping is active.
+            self.fields.set_field("tpowerdown", 255)
+
+    def _xdirect_preload(self):
+        """Write XDIRECT with coil currents matching the current MSCNT phase.
+
+        Called after _init_registers() when a phase-stepping-enabled
+        TMC5160 is enabled. In direct_mode, register 0x2D is XDIRECT
+        (mapped as "XTARGET" in our register dict). Without this
+        preload, XDIRECT stays at its reset value 0x00000000 — zero
+        current in both coils — until the first ISR write.
+        """
+        # Read the live electrical phase from the microstep counter
+        mscnt = self.mcu_tmc.get_register("MSCNT") & 0x3FF
+        # Compute coil currents from phase angle (amplitude 248, matching
+        # the TMC5160 sine table peak). MSCNT indexes phase B on sine,
+        # phase A on cosine per the TMC5160 datasheet.
+        angle = mscnt * 2.0 * math.pi / 1024.0
+        coil_a = int(round(248.0 * math.cos(angle)))
+        coil_b = int(round(248.0 * math.sin(angle)))
+        # Pack as TMC5160 XDIRECT: coil_B[31:16] | coil_A[15:0]
+        # Both are signed 9-bit values, mask to 16-bit for packing.
+        cur_a_u16 = coil_a & 0xFFFF
+        cur_b_u16 = coil_b & 0xFFFF
+        xdirect_val = (cur_b_u16 << 16) | cur_a_u16
+        self.mcu_tmc.set_register("XTARGET", xdirect_val)
+        logging.info(
+            "TMC5160 XDIRECT preload: mscnt=%d coil_a=%d coil_b=%d "
+            "raw=0x%08x", mscnt, coil_a, coil_b, xdirect_val
+        )
 
     def get_phase_config(self):
         """Return (bus_id, cs_pin_id) for phase-stepping integration.
