@@ -478,38 +478,31 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
 
             let motor_idx = found_motor_idx.unwrap_or(0xFF);
 
-            // On host/test builds, record into the test capture sink
-            // instead of pushing to the null queue.
             #[cfg(any(test, feature = "host"))]
             crate::test_xdirect_capture::record(motor_idx, coil_a, coil_b);
 
-            #[cfg(not(any(test, feature = "host")))]
+            // Push to the C-owned SPI queue for the foreground drain timer.
+            // On MCU builds this is always active. On MACH_LINUX sim builds
+            // (kalico-sim feature), it's also active so the drain timer
+            // exercises the real SPI path through the shim → emulator.
+            #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
             {
                 let bus_idx: usize = 0;
-                // SAFETY: `spi_queues` is a C-owned static of fixed length
-                // `N_SPI_BUSES`; `bus_idx < N_SPI_BUSES` is enforced by the
-                // hardcoded `0`. The cast yields a pointer to the `bus_idx`-th
-                // element of the array — same provenance as the array base.
                 let queue_ptr = unsafe {
                     crate::spi_queue::spi_queues
                         .get()
                         .cast::<crate::spi_queue::SpiQueue>()
                         .add(bus_idx)
                 };
-                if !queue_ptr.is_null() {
-                    let entry = crate::spi_queue::SpiWrite {
-                        motor_idx,
-                        _pad: 0,
-                        coil_a,
-                        coil_b,
-                        _pad2: [0; 2],
-                    };
-                    // SAFETY: `queue_ptr` points to a live `SpiQueue` (C-owned
-                    // static); the TIM5 ISR is the sole producer for every
-                    // bus, satisfying the SPSC contract documented on `push`.
-                    if unsafe { crate::spi_queue::push(queue_ptr, entry) }.is_err() {
-                        crate::fault_helpers::raise_spi_queue_overflow(shared, bus_idx);
-                    }
+                let entry = crate::spi_queue::SpiWrite {
+                    motor_idx,
+                    _pad: 0,
+                    coil_a,
+                    coil_b,
+                    _pad2: [0; 2],
+                };
+                if unsafe { crate::spi_queue::push(queue_ptr, entry) }.is_err() {
+                    crate::fault_helpers::raise_spi_queue_overflow(shared, bus_idx);
                 }
             }
         }

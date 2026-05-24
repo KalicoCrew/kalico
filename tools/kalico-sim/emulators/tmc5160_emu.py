@@ -17,6 +17,7 @@ For writes (bit 7 = 1): stores the value in the shadow register.
 
 import os
 import socket
+import time
 import struct
 import sys
 import threading
@@ -77,6 +78,7 @@ def handle_client(conn, regs, last_read):
                     regs[reg_addr] = value
                 last_read[0] = reg_addr
                 resp = struct.pack(">BI", 0x00, reply_val)
+                time.sleep(0.001)  # model SPI bus latency
                 try:
                     conn.sendall(resp)
                 except (BrokenPipeError, ConnectionResetError):

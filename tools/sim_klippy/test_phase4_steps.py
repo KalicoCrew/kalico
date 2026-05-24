@@ -173,7 +173,7 @@ def main():
         seen_nonzero = False
         seen_spi_writes = 0
         while time.time() < deadline:
-            time.sleep(2.0)
+            time.sleep(0.5)
             if not elf_log.exists():
                 continue
             text = elf_log.read_text(errors="replace")
