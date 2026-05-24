@@ -159,6 +159,12 @@ def main():
         print("[phase4] sending G1 X50 F6000 then M400 (flush)")
         resp = send_gcode("G1 X50 F6000\nM400")
         print(f"  response: {resp}")
+        if "error" in resp:
+            err_msg = resp.get("error", {}).get("message", "")
+            if "shutdown" in err_msg.lower() or "timed out" in err_msg.lower() \
+                    or "timeout" in err_msg.lower():
+                print(f"\n[phase4] FAIL: MCU shutdown during move: {err_msg[:120]}")
+                return 1
 
         # The bridge schedules segments at MCU_clock_now + 100ms_lead +
         # seg.t_start; if klippy startup pushed the MCU clock far ahead of

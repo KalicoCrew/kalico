@@ -78,7 +78,7 @@ def handle_client(conn, regs, last_read):
                     regs[reg_addr] = value
                 last_read[0] = reg_addr
                 resp = struct.pack(">BI", 0x00, reply_val)
-                time.sleep(0.001)  # model SPI bus latency
+                time.sleep(0.1)  # exaggerated SPI latency to trigger drain overflow
                 try:
                     conn.sendall(resp)
                 except (BrokenPipeError, ConnectionResetError):
