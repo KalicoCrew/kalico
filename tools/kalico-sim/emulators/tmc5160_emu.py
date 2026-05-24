@@ -77,6 +77,10 @@ def handle_client(conn, regs):
                 if is_write:
                     regs[reg_addr] = value
                 resp = struct.pack(">BI", 0x00, regs.get(reg_addr, 0))
+                sys.stderr.write(
+                    f"[tmc-emu] {'W' if is_write else 'R'} reg=0x{reg_addr:02x}"
+                    f" val=0x{value:08x} -> 0x{regs.get(reg_addr, 0):08x}\n"
+                )
                 try:
                     conn.sendall(resp)
                 except (BrokenPipeError, ConnectionResetError):

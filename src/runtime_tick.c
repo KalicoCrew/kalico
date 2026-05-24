@@ -1600,7 +1600,7 @@ init_per_axis_step_timers(void)
         // future (sched_add_timer trips "Timer too close" on a past
         // waketime). Subsequent waketimes come from
         // kalico_per_axis_step_event's return value.
-        per_axis_timers[i].waketime = now + timer_from_us(1000);
+        per_axis_timers[i].waketime = now + (uint32_t)0x3FFFFFFF;
         sched_add_timer(&per_axis_timers[i]);
     }
 }
