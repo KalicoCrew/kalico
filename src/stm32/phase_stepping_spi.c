@@ -12,7 +12,8 @@
 #include "gpio.h"   // struct spi_config, spi_prepare, spi_transfer,
                     // struct gpio_out, gpio_out_setup, gpio_out_write
 #include "board/irq.h" // irq_save, irq_restore, irqstatus_t
-#include "internal.h" // get_pclock_frequency
+#include "board/misc.h" // timer_read_time, timer_from_us, timer_is_before
+#include "internal.h" // get_pclock_frequency, SPI_TypeDef
 
 #define MAX_PHASE_BUSES  4
 #define MAX_PHASE_MOTORS 16   // matches Rust state::MAX_STEPPER_OIDS
@@ -169,11 +170,54 @@ phase_stepping_write_xdirect(uint8_t motor_idx,
         (uint8_t)(ua & 0xFF),                // coil_A low 8 bits
     };
 
-    spi_prepare(phase_buses[bus_id].fast_cfg);
-    gpio_out_write(phase_motors[motor_idx].cs, 0); // CS low (assert)
-    spi_transfer_locked(phase_buses[bus_id].fast_cfg, 0,
-                        sizeof(datagram), datagram);
-    gpio_out_write(phase_motors[motor_idx].cs, 1); // CS high (deassert)
+    struct spi_config fast = phase_buses[bus_id].fast_cfg;
+    SPI_TypeDef *spi = fast.spi;
+
+    // Inline SPI prepare + transfer — avoids spi_transfer_locked which
+    // calls shutdown("spi rx timeout") on failure. From ISR context,
+    // shutdown kills the MCU. We skip-on-error instead.
+    spi->CFG1 = ((uint32_t)fast.div << SPI_CFG1_MBR_Pos)
+              | (7 << SPI_CFG1_DSIZE_Pos);
+    spi->CFG2 = ((uint32_t)fast.mode << SPI_CFG2_CPHA_Pos)
+              | SPI_CFG2_MASTER | SPI_CFG2_SSM | SPI_CFG2_AFCNTR
+              | SPI_CFG2_SSOE;
+
+    gpio_out_write(phase_motors[motor_idx].cs, 0);
+
+    spi->CR2 = 5u << SPI_CR2_TSIZE_Pos;
+    spi->CR1 = SPI_CR1_SSI | SPI_CR1_SPE;
+    spi->CR1 = SPI_CR1_SSI | SPI_CR1_CSTART | SPI_CR1_SPE;
+
+    for (int i = 0; i < 5; i++) {
+        uint32_t deadline = timer_read_time() + timer_from_us(50);
+        while (!(spi->SR & SPI_SR_TXP)) {
+            if (!timer_is_before(timer_read_time(), deadline))
+                goto bail;
+        }
+        *(volatile uint8_t *)&spi->TXDR = datagram[i];
+    }
+    // Drain RX FIFO
+    for (int i = 0; i < 5; i++) {
+        uint32_t deadline = timer_read_time() + timer_from_us(50);
+        while (!(spi->SR & SPI_SR_RXP)) {
+            if (!timer_is_before(timer_read_time(), deadline))
+                goto bail;
+        }
+        (void)*(volatile uint8_t *)&spi->RXDR;
+    }
+    // Wait for EOT
+    {
+        uint32_t deadline = timer_read_time() + timer_from_us(100);
+        while (!(spi->SR & SPI_SR_EOT)) {
+            if (!timer_is_before(timer_read_time(), deadline))
+                goto bail;
+        }
+    }
+
+bail:
+    spi->IFCR = 0xFFFFFFFF;
+    spi->CR1 = SPI_CR1_SSI;
+    gpio_out_write(phase_motors[motor_idx].cs, 1);
 
     phase_spi_write_count++;
     phase_spi_release();
