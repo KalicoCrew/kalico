@@ -98,23 +98,49 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Fix 3 — increase "timer in the past" threshold for MACH_LINUX
+# Fix 3 — disable "timer in the past" shutdown for MACH_LINUX
 # ---------------------------------------------------------------------------
-# On real MCU hardware, timer ISR fires in hardware regardless of what
-# the main loop does — the 100ms threshold is generous. On MACH_LINUX,
-# timer dispatch runs in the main thread via SIGALRM, so any main-loop
-# delay (command processing, Rust runtime init, Python GC on the host)
-# can push timers past 100ms. We increase to 2 seconds — enough to
-# tolerate Docker VM jitter and heavy init without false positives.
+# On real MCU hardware this check catches runaway timers — the hardware
+# timer ISR fires reliably so a timer >100ms late is genuinely broken.
+# On MACH_LINUX with virtual time, the MCU's virtual clock advances at
+# CPU speed and can race arbitrarily far ahead of klippy's clock
+# estimate. No fixed threshold is large enough. The check is not useful
+# in the sim — disable it entirely.
 TIMER_FILE="$REPO_ROOT/src/linux/timer.c"
 
-if grep -q "timer_from_us(100000)" "$TIMER_FILE" 2>/dev/null; then
-    echo "fix_linux_build: increasing timer-in-past threshold in $TIMER_FILE"
-    sed -i \
-        's/timer_from_us(100000)/timer_from_us(2000000)/' \
-        "$TIMER_FILE"
+if grep -q 'try_shutdown("Rescheduled timer in the past")' "$TIMER_FILE" 2>/dev/null; then
+    echo "fix_linux_build: disabling timer-in-past shutdown check"
+    sed -i 's/try_shutdown("Rescheduled timer in the past")/((void)0) \/\* sim: disabled \*\//' "$TIMER_FILE"
 else
-    echo "fix_linux_build: timer threshold already patched, skipping."
+    echo "fix_linux_build: timer-in-past check already disabled, skipping."
+fi
+
+# Also disable "Timer too close" in sched.c — same root cause: vtime
+# clock jumps can make newly-scheduled timers appear to be in the past.
+SCHED_FILE="$REPO_ROOT/src/sched.c"
+
+if grep -q 'try_shutdown("Timer too close")' "$SCHED_FILE" 2>/dev/null; then
+    echo "fix_linux_build: disabling timer-too-close shutdown check"
+    sed -i 's/try_shutdown("Timer too close")/((void)0) \/\* sim: disabled \*\//' "$SCHED_FILE"
+else
+    echo "fix_linux_build: timer-too-close check already disabled, skipping."
+fi
+
+# ---------------------------------------------------------------------------
+# Fix 4 — bypass console_wake gate so serial reads survive runtime tick
+# ---------------------------------------------------------------------------
+# Belt-and-suspenders alongside virtual time. On MACH_LINUX without vtime,
+# the runtime tick monopolizes the cooperative scheduler and irq_wait()
+# never reaches ppoll, so console_wake is never set. With vtime this is
+# less critical (ppoll gets I/O priority), but removing the gate is cheap
+# insurance — one extra EWOULDBLOCK read() per task round.
+CONSOLE_FILE="$REPO_ROOT/src/linux/console.c"
+
+if grep -q 'sched_check_wake(&console_wake)' "$CONSOLE_FILE" 2>/dev/null; then
+    echo "fix_linux_build: removing console_wake gate from console_task"
+    sed -i '/sched_check_wake(&console_wake)/{N;d;}' "$CONSOLE_FILE"
+else
+    echo "fix_linux_build: console_wake gate already removed, skipping."
 fi
 
 echo "fix_linux_build: done."

@@ -116,11 +116,13 @@ __attribute__((constructor(101)))
 static void iio_init(void) {
     for (int i = 0; i < MAX_IIO_CHANNELS; i++) iio_values[i] = DEFAULT_ADC_VALUE;
     // Default auto-endstop mappings for the minimal sim config:
-    // step gpio0 → endstop gpio10 (X), step gpio3 → endstop gpio11 (Y),
-    // step gpio6 → endstop gpio12 (Z). Trigger after 100 steps.
-    auto_endstops[0] = (struct auto_endstop){1, 0,0, 0,10, 50, 0, 0, 0};
-    auto_endstops[1] = (struct auto_endstop){1, 0,3, 0,11, 50, 0, 0, 0};
-    auto_endstops[2] = (struct auto_endstop){1, 0,6, 0,12, 50, 0, 0, 0};
+    // step gpio0 → endstop gpio200 (X), step gpio3 → endstop gpio201 (Y),
+    // step gpio6 → endstop gpio202 (Z). Trigger after 50 steps.
+    // Line numbers 200-202 match runner.py's X/Y/Z_ENDSTOP_LINE constants
+    // and are well clear of the step/dir/enable pins (0-8).
+    auto_endstops[0] = (struct auto_endstop){1, 0,0, 0,200, 50, 0, 0, 0};
+    auto_endstops[1] = (struct auto_endstop){1, 0,3, 0,201, 50, 0, 0, 0};
+    auto_endstops[2] = (struct auto_endstop){1, 0,6, 0,202, 50, 0, 0, 0};
 }
 
 static int alloc_fake_fd(enum sim_slot_kind kind) {
