@@ -467,35 +467,17 @@ class SerialReader:
             self._error("non-critical MCU is disconnected")
 
     # Command sending
-    def _decode_cmd_to_text(self, cmd):
-        """Decode a binary Klipper command body to text format."""
-        mp = self.msgparser
-        msgid, _ = mp.msgid_parser.parse(cmd, 0)
-        mid = mp.messages_by_id.get(msgid)
-        if mid is None:
-            return None
-        params, _ = mid.parse(cmd, 0)
-        return mid.format_params(params)
-
     def raw_send(self, cmd, minclock, reqclock, cmd_queue):
+        # Bridge mode: no-op for all MCUs. Bridge-driven MCUs (H7,
+        # F446) use the kalico binary protocol. Non-bridge MCUs
+        # (beacon) get trsync commands via direct serial.send() in
+        # MCU_trsync.start(). Clock sync is handled by the bridge
+        # internally — forwarding get_clock here caused contention
+        # that broke X homing trip event delivery.
         self._check_noncritical_disconnected()
-        if self.mcu is not None and not getattr(
-            self.mcu, "_bridge_drives_steppers", True
-        ):
-            text = self._decode_cmd_to_text(cmd)
-            if text:
-                self.send(text)
-            return
-        # Bridge-driven MCU (H7, F446): no-op.
 
     def raw_send_wait_ack(self, cmd, minclock, reqclock, cmd_queue):
         self._check_noncritical_disconnected()
-        if self.mcu is not None and not getattr(
-            self.mcu, "_bridge_drives_steppers", True
-        ):
-            text = self._decode_cmd_to_text(cmd)
-            if text:
-                self.send(text)
         return {}
 
     def send(self, msg, minclock=0, reqclock=0):
