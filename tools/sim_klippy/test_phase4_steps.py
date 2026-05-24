@@ -45,12 +45,45 @@ def cleanup_prior():
             pass
 
 
+SIM_SOCK_DIR = pathlib.Path("/tmp/kalico_sim_socks")
+
+
+def spawn_tmc_emulators():
+    """Spawn TMC5160 SPI register emulators for phase-stepping CS pins."""
+    SIM_SOCK_DIR.mkdir(exist_ok=True)
+    emu_script = REPO / "tools" / "kalico-sim" / "emulators" / "tmc5160_emu.py"
+    procs = []
+    # CS pins from printer.cfg: stepper_x=gpio27 (chip0, line27),
+    # stepper_y=gpio26 (chip0, line26).
+    for line in (27, 26):
+        sock_path = SIM_SOCK_DIR / f"spi_cs_0_{line}"
+        p = subprocess.Popen(
+            [sys.executable, str(emu_script), str(sock_path)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        # Wait for socket to appear
+        for _ in range(20):
+            if sock_path.exists():
+                break
+            time.sleep(0.05)
+        procs.append(p)
+    return procs
+
+
 def spawn_elf():
     LOGDIR.mkdir(parents=True, exist_ok=True)
     elf_log = open(ELF_LOG, "wb")
+    shim_so = REPO / "tools" / "kalico-sim" / "libvtime" / "libsim_intercept.so"
+    if not shim_so.exists():
+        subprocess.check_call(["make", "-C", str(shim_so.parent)],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    env = os.environ.copy()
+    env["LD_PRELOAD"] = str(shim_so)
+    env["KALICO_SIM_SOCK_DIR"] = str(SIM_SOCK_DIR)
     proc = subprocess.Popen(
         [str(KLIPPER_ELF), "-I", SIM_SOCKET],
         stdout=elf_log, stderr=subprocess.STDOUT,
+        env=env,
     )
     for _ in range(50):
         if os.path.exists(SIM_SOCKET):
@@ -107,6 +140,9 @@ def send_gcode(script, timeout=30.0):
 def main():
     print("[phase4] cleaning up prior processes")
     cleanup_prior()
+
+    print("[phase4] spawning TMC5160 emulators")
+    tmc_procs = spawn_tmc_emulators()
 
     print("[phase4] spawning klipper.elf")
     elf = spawn_elf()
@@ -225,6 +261,12 @@ def main():
             try:
                 p.terminate()
                 p.wait(timeout=3)
+            except Exception:
+                p.kill()
+        for p in tmc_procs:
+            try:
+                p.terminate()
+                p.wait(timeout=1)
             except Exception:
                 p.kill()
 

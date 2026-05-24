@@ -82,7 +82,7 @@ pub mod exports {
     // the INIT_DONE guard + the half-split aliasing pattern, not
     // type-system Sync.
     #[cfg(not(target_os = "none"))]
-    #[repr(transparent)]
+    #[repr(C, align(16))]
     struct HostRtStorage(UnsafeCell<[u8; RT_STORAGE_SIZE]>);
     // SAFETY: see runtime_handle_create's SAFETY comment.
     #[cfg(not(target_os = "none"))]
@@ -2738,16 +2738,17 @@ pub mod exports {
     #[unsafe(no_mangle)]
     pub extern "C" fn kalico_runtime_get_dispatcher_floor_cycles() -> u32 {
         let Some(rt_ptr) = runtime_handle_or_null() else {
-            return 0;
+            return 50_000;
         };
         // SAFETY: `rt_ptr` is the published rt_storage projection, valid
         // for the lifetime of the program once INIT_DONE is set. Read-only
         // access to `SharedState` atomics via a shared `&` projection — no
         // `&mut` reaches this path.
-        unsafe {
+        let v = unsafe {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*rt_ptr).shared);
             (*shared_ptr).dispatcher_floor_cycles.load(Ordering::Acquire)
-        }
+        };
+        if v == 0 { 50_000 } else { v }
     }
 
     /// Read the per-axis-timer empty-queue poll cadence (cycles). Used by
@@ -2760,13 +2761,14 @@ pub mod exports {
     #[unsafe(no_mangle)]
     pub extern "C" fn kalico_runtime_get_sample_period_cycles() -> u32 {
         let Some(rt_ptr) = runtime_handle_or_null() else {
-            return 0;
+            return 50_000;
         };
         // SAFETY: see `kalico_runtime_get_dispatcher_floor_cycles`.
-        unsafe {
+        let v = unsafe {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*rt_ptr).shared);
             (*shared_ptr).sample_period_cycles.load(Ordering::Acquire)
-        }
+        };
+        if v == 0 { 50_000 } else { v }
     }
 
     // ─── Stepping-redesign Task 11 ──────────────────────────────────────
