@@ -97,4 +97,24 @@ else
     echo "fix_linux_build: runtime_tick_host.c already uses kalico_runtime_tick_sample, skipping."
 fi
 
+# ---------------------------------------------------------------------------
+# Fix 3 — increase "timer in the past" threshold for MACH_LINUX
+# ---------------------------------------------------------------------------
+# On real MCU hardware, timer ISR fires in hardware regardless of what
+# the main loop does — the 100ms threshold is generous. On MACH_LINUX,
+# timer dispatch runs in the main thread via SIGALRM, so any main-loop
+# delay (command processing, Rust runtime init, Python GC on the host)
+# can push timers past 100ms. We increase to 2 seconds — enough to
+# tolerate Docker VM jitter and heavy init without false positives.
+TIMER_FILE="$REPO_ROOT/src/linux/timer.c"
+
+if grep -q "timer_from_us(100000)" "$TIMER_FILE" 2>/dev/null; then
+    echo "fix_linux_build: increasing timer-in-past threshold in $TIMER_FILE"
+    sed -i \
+        's/timer_from_us(100000)/timer_from_us(2000000)/' \
+        "$TIMER_FILE"
+else
+    echo "fix_linux_build: timer threshold already patched, skipping."
+fi
+
 echo "fix_linux_build: done."
