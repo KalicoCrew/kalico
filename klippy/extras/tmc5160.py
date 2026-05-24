@@ -547,6 +547,19 @@ class TMC5160:
                 dis_cmd.send([])
             except Exception:
                 pass
+        # Ensure CHOPCONF (toff>0) is on the chip BEFORE GCONF
+        # (direct_mode=1). In direct_mode the TMC5160's bootstrap
+        # charge pump depends on the chopper switching — if toff=0
+        # when direct_mode is set, the bridges stop switching, bootstrap
+        # caps drain, and uv_cp trips after a few moves. _init_registers
+        # writes GCONF before CHOPCONF (dict insertion order), so we
+        # re-write both in the correct order here.
+        chopconf_val = self.fields.registers.get("CHOPCONF")
+        if chopconf_val is not None:
+            self.mcu_tmc.set_register("CHOPCONF", chopconf_val)
+        gconf_val = self.fields.registers.get("GCONF")
+        if gconf_val is not None:
+            self.mcu_tmc.set_register("GCONF", gconf_val)
         # Read the live electrical phase from the microstep counter
         mscnt = self.mcu_tmc.get_register("MSCNT") & 0x3FF
         angle = mscnt * 2.0 * math.pi / 1024.0
