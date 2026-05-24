@@ -89,6 +89,13 @@ void    phase_spi_release(void);
 uint32_t phase_spi_get_skip_count(void);
 uint32_t phase_spi_get_write_count(void);
 
+// ISR XDIRECT write gate. The ISR fires for timekeeping but skips
+// phase_stepping_write_xdirect until enable_writes is called. This
+// prevents SPI bus contention between the ISR's XDIRECT writes and
+// the foreground TMC register init sequence (_do_enable_bridge).
+void phase_stepping_enable_writes(void);
+void phase_stepping_disable_writes(void);
+
 // Bare SPI3 transfer for ISR callers that already hold phase_spi_busy.
 // External callers MUST NOT use this — use spi_transfer instead.
 // Calling this without holding phase_spi_busy races against any

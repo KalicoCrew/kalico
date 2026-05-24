@@ -21,6 +21,7 @@
 static volatile uint8_t  phase_spi_busy = 0;
 static volatile uint32_t phase_spi_skip_count = 0;
 static volatile uint32_t phase_spi_write_count = 0;
+static volatile uint8_t phase_spi_writes_enabled = 0;
 
 __attribute__((used, externally_visible))
 uint8_t
@@ -102,9 +103,25 @@ phase_stepping_register_motor(uint8_t motor_idx, uint8_t bus_id,
 
 __attribute__((used, externally_visible))
 void
+phase_stepping_enable_writes(void)
+{
+    phase_spi_writes_enabled = 1;
+}
+
+__attribute__((used, externally_visible))
+void
+phase_stepping_disable_writes(void)
+{
+    phase_spi_writes_enabled = 0;
+}
+
+__attribute__((used, externally_visible))
+void
 phase_stepping_write_xdirect(uint8_t motor_idx,
                              int16_t coil_a, int16_t coil_b)
 {
+    if (!phase_spi_writes_enabled)
+        return;
     if (motor_idx >= MAX_PHASE_MOTORS || !phase_motors[motor_idx].configured)
         return;
     uint8_t bus_id = phase_motors[motor_idx].bus_id;

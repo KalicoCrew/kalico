@@ -89,6 +89,9 @@ void    phase_spi_release(void);
 uint32_t phase_spi_get_skip_count(void);
 uint32_t phase_spi_get_write_count(void);
 
+void phase_stepping_enable_writes(void);
+void phase_stepping_disable_writes(void);
+
 // Bare SPI3 transfer for ISR callers that already hold phase_spi_busy.
 // External callers MUST NOT use this — use spi_transfer instead.
 // Calling this without holding phase_spi_busy races against any
