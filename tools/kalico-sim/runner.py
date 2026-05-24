@@ -167,8 +167,13 @@ def spawn_mcu(
     env["KALICO_SIM_SOCK_DIR"] = sock_dir
     # Speed cap keeps MCU clock advancement within timeout budgets.
     # At 3x, a 30-second timeout survives 10 real seconds of I/O.
-    # Default 100x — the MCU runs ~100x faster than wall clock.
-    # Lower values reduce simulation speed but improve I/O reliability.
+    # Speed cap shared by all processes. Three processes at Nx each can
+    # advance the shared clock at up to 3Nx. Klippy's reactor must
+    # keep up with timer processing at this effective rate.
+    # 5x per process → 15x effective → manageable timer load.
+    # Low speed cap keeps the virtual/real time drift bounded so
+    # the mixed-time-base clock sync produces usable estimates.
+    env.setdefault("KALICO_VTIME_SPEED", "2")
     # env["KALICO_VTIME_SPEED"] = "100"  # libvtime default
     if verbose:
         env["KALICO_SIM_SHIM_VERBOSE"] = "1"
@@ -431,9 +436,11 @@ def run_simulation(
             api_socket = str(tmp / "klippy.sock")
 
             env = os.environ.copy()
-            # Klippy runs on real wall time — no LD_PRELOAD. The MCU
-            # processes run on virtual time (via libvtime.so). The
-            # bridge's clock sync maps between the two time bases.
+            # Klippy uses the clock-only shim: overrides CLOCK_MONOTONIC_RAW
+            # (chelper get_monotonic) to read virtual time, leaves
+            # CLOCK_MONOTONIC real (Rust Instant::now for bridge timeouts).
+            vtime_clock_only = vtime_so.parent / "libvtime_clock_only.so"
+            env["LD_PRELOAD"] = str(vtime_clock_only)
             if verbose:
                 env["KALICO_VTIME_DEBUG"] = "1"
             env["KALICO_SIM_SOCK_DIR"] = str(h7_sock_dir)

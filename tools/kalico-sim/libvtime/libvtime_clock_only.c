@@ -50,8 +50,10 @@ int clock_gettime(clockid_t clk_id, struct timespec *tp)
     if (!vshm || !real_clock_gettime)
         return real_clock_gettime ? real_clock_gettime(clk_id, tp) : -1;
 
-    if (clk_id == CLOCK_MONOTONIC || clk_id == CLOCK_MONOTONIC_RAW
-        || clk_id == CLOCK_MONOTONIC_COARSE) {
+    // Only CLOCK_MONOTONIC_RAW — used by klippy's chelper get_monotonic().
+    // CLOCK_MONOTONIC is left real so Rust Instant::now() (used for bridge
+    // timeouts) doesn't expire in virtual time.
+    if (clk_id == CLOCK_MONOTONIC_RAW) {
         uint64_t ns = atomic_load_explicit(&vshm->nanos, memory_order_acquire);
         tp->tv_sec = (time_t)(ns / 1000000000ULL);
         tp->tv_nsec = (long)(ns % 1000000000ULL);
