@@ -1441,9 +1441,12 @@ runtime_status_drain(void)
     int32_t c0 = kalico_runtime_get_stepper_count(runtime_handle, 0);
     int32_t c1 = kalico_runtime_get_stepper_count(runtime_handle, 1);
     int32_t c2 = kalico_runtime_get_stepper_count(runtime_handle, 2);
+    extern uint32_t phase_spi_get_write_count(void);
+    uint32_t spi_writes = phase_spi_get_write_count();
     fprintf(stderr,
-        "[sim-progress] status=%u seg=%u counts=[%d,%d,%d]\n",
-        status, cur_seg, c0, c1, c2);
+        "[sim-progress] status=%u seg=%u counts=[%d,%d,%d]"
+        " spi_writes=%u\n",
+        status, cur_seg, c0, c1, c2, spi_writes);
     fflush(stderr);
 #endif
 }
@@ -1602,21 +1605,21 @@ init_per_axis_step_timers(void)
     }
 }
 
-// === Task 14: SPI queue foreground drain (stub) ===
+// === Task 14: SPI queue foreground drain ===
 //
 // The TIM5 ISR pushes SpiWrite entries into spi_queues[bus_idx] from
-// dispatch_phase. A foreground struct timer firing at ~10 kHz should
-// pop from each bus's queue and dispatch through Klipper's spidev /
-// bus.c. For now: stub timer that clears the queue without writing to
-// hardware — keeps the SPSC contract live without committing to a
-// specific bus driver. Bench bring-up (Stage 5) wires real SPI.
+// dispatch_phase. This foreground Klipper timer fires at ~10 kHz, pops
+// entries, and dispatches each one through phase_stepping_write_xdirect
+// (src/{stm32,linux}/phase_stepping_spi.c) which handles bus lookup,
+// chip-select, and the 5-byte XDIRECT SPI transfer.
 //
-// `init_spi_drain_timer` is publicly exposed but has no production
-// caller yet; Task 14's scope is the queue + ISR push only. Once the
-// real SPI bring-up lands, this hook will be invoked alongside
-// `init_per_axis_step_timers` from `command_kalico_configure_axis`.
+// At 40 kHz ISR × N motors, the 10 kHz drain pops ~4·N entries per wake.
+// SPI_QUEUE_DEPTH=16 provides headroom for transient jitter.
 
 #include "spi_queue.h"
+
+extern void phase_stepping_write_xdirect(uint8_t motor_idx,
+                                         int16_t coil_a, int16_t coil_b);
 
 static struct timer spi_drain_timer;
 
@@ -1626,9 +1629,11 @@ spi_drain_event(struct timer *t)
     for (int bus = 0; bus < N_SPI_BUSES; bus++) {
         SpiQueue *q = &spi_queues[bus];
         while (q->head != q->tail) {
-            // Stub: drop the entry without dispatching to hardware.
-            // Bench Stage 5 replaces this with: spidev_write(...).
+            uint16_t slot = q->head & SPI_QUEUE_DEPTH_MASK;
+            SpiWrite entry = q->buf[slot];
             q->head = (uint16_t)(q->head + 1);
+            phase_stepping_write_xdirect(entry.motor_idx,
+                                         entry.coil_a, entry.coil_b);
         }
     }
     t->waketime = timer_read_time() + timer_from_us(100);  // 10 kHz

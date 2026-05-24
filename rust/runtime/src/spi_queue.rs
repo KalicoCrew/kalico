@@ -34,23 +34,21 @@ pub const SPI_QUEUE_DEPTH_MASK: u16 = (SPI_QUEUE_DEPTH as u16) - 1;
 /// Number of independent SPI buses (SPI1 / SPI3 + headroom).
 pub const N_SPI_BUSES: usize = 3;
 
-/// One pending SPI write: TMC chip-select OID (`command_config_spi`
-/// device OID), TMC register address, and a 32-bit payload (packed
-/// `(coil_A << 16) | (coil_B & 0xFFFF)` for the XDIRECT register).
+/// One pending XDIRECT coil write for a single phase-stepping motor.
 ///
-/// Layout must match the C struct exactly — `#[repr(C)]` + the same field
-/// order + the explicit 2-byte pad gives an 8-byte entry on every target
-/// we care about (ABI-stable across H7 / F4 / host).
+/// Layout must match the C struct in `src/spi_queue.h` exactly —
+/// `#[repr(C)]` + identical field order + explicit padding gives an
+/// 8-byte entry on every target (ABI-stable across H7 / F4 / host).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SpiWrite {
-    pub tmc_cs_oid: u8,
-    pub reg: u8,
-    // ABI padding so `value` lands on its natural 4-byte alignment. Public
-    // for FFI layout; never read from Rust.
+    pub motor_idx: u8,
     #[allow(clippy::pub_underscore_fields)]
-    pub _pad: [u8; 2],
-    pub value: i32,
+    pub _pad: u8,
+    pub coil_a: i16,
+    pub coil_b: i16,
+    #[allow(clippy::pub_underscore_fields)]
+    pub _pad2: [u8; 2],
 }
 const _: () = assert!(core::mem::size_of::<SpiWrite>() == 8);
 
@@ -76,10 +74,11 @@ impl SpiQueue {
             head: 0,
             _pad: [0; 4],
             buf: [SpiWrite {
-                tmc_cs_oid: 0xFF,
-                reg: 0,
-                _pad: [0; 2],
-                value: 0,
+                motor_idx: 0xFF,
+                _pad: 0,
+                coil_a: 0,
+                coil_b: 0,
+                _pad2: [0; 2],
             }; SPI_QUEUE_DEPTH],
         }
     }

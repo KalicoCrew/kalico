@@ -87,6 +87,7 @@ void phase_stepping_write_xdirect(uint8_t motor_idx,
 uint8_t phase_spi_try_acquire(void);
 void    phase_spi_release(void);
 uint32_t phase_spi_get_skip_count(void);
+uint32_t phase_spi_get_write_count(void);
 
 // Bare SPI3 transfer for ISR callers that already hold phase_spi_busy.
 // External callers MUST NOT use this — use spi_transfer instead.

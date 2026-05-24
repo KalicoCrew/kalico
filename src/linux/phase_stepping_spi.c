@@ -20,6 +20,7 @@
 // See phase_stepping_spi.h for the rationale and contract.
 static volatile uint8_t  phase_spi_busy = 0;
 static volatile uint32_t phase_spi_skip_count = 0;
+static volatile uint32_t phase_spi_write_count = 0;
 
 __attribute__((used, externally_visible))
 uint8_t
@@ -37,10 +38,6 @@ __attribute__((used, externally_visible))
 void
 phase_spi_release(void)
 {
-    // Single-byte volatile write is atomic on M4/M7. No critical
-    // section needed because we are the sole writer of the cleared
-    // state; preemption between read and write of the held state
-    // cannot violate invariants.
     phase_spi_busy = 0;
 }
 
@@ -49,6 +46,13 @@ uint32_t
 phase_spi_get_skip_count(void)
 {
     return phase_spi_skip_count;
+}
+
+__attribute__((used, externally_visible))
+uint32_t
+phase_spi_get_write_count(void)
+{
+    return phase_spi_write_count;
 }
 
 struct phase_bus_state {
@@ -138,5 +142,6 @@ phase_stepping_write_xdirect(uint8_t motor_idx,
                         sizeof(datagram), datagram);
     gpio_out_write(phase_motors[motor_idx].cs, 1); // CS high (deassert)
 
+    phase_spi_write_count++;
     phase_spi_release();
 }

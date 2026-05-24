@@ -111,12 +111,8 @@ host_tick_main(void *arg)
         runtime_endstop_sample_pins();
 #endif
 
-        // T10: TIM5 dispatches the Modulated polled-tick StepAccumulator
-        // path exclusively. CYCCNT widening for the engine has moved
-        // inside `kalico_runtime_modulated_tick`'s C-side helper, so we
-        // no longer thread `raw_cyccnt` through the call.
         (void)runtime_cyccnt_read();
-        kalico_runtime_modulated_tick(runtime_handle);
+        kalico_runtime_tick_sample(runtime_handle);
     }
     return NULL;
 }

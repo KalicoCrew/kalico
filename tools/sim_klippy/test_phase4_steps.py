@@ -136,10 +136,11 @@ def main():
         # the schedule lead has had time to drain.
         # Poll elf log for non-zero stepper counts. Bypasses bridge_call so
         # we get the answer even if klippy shut down on the M400 timeout.
-        print("[phase4] polling elf log for non-zero step counts")
+        print("[phase4] polling elf log for non-zero step counts + XDIRECT writes")
         elf_log = REPO / "tools" / "sim_klippy" / ".local-logs" / "klipper_elf.log"
         deadline = time.time() + 60.0
         seen_nonzero = False
+        seen_spi_writes = 0
         while time.time() < deadline:
             time.sleep(2.0)
             if not elf_log.exists():
@@ -152,6 +153,13 @@ def main():
                     if any(abs(p) > 0 for p in parts):
                         print("  step pulses observed: %s" % parts)
                         seen_nonzero = True
+                    if "spi_writes=" in line:
+                        try:
+                            seen_spi_writes = int(
+                                line.split("spi_writes=")[1].split()[0])
+                        except (IndexError, ValueError):
+                            pass
+                    if seen_nonzero:
                         break
             if seen_nonzero:
                 break
@@ -190,28 +198,35 @@ def main():
         print(f"\n[phase4] RESULT: X step count (oid=0): {x_count}")
         print(f"[phase4] RESULT: Y step count (oid=1): {y_count}")
 
-        # If we already saw non-zero counts in the elf log poll above,
-        # treat the gate as green even if bridge_call died on M400.
-        if seen_nonzero:
-            print("\n[phase4] GATE GREEN: step pulses observed via elf log")
-            print("[phase4] Phase 4 PASS")
-            return 0
+        print(f"[phase4] XDIRECT SPI write count: {seen_spi_writes}")
 
-        # Phase 4 gate (klippy-side query path)
-        if x_count > 0 or y_count > 0:
+        # Gate 1: step pulses (elf log path)
+        if seen_nonzero:
+            print("\n[phase4] GATE 1 GREEN: step pulses observed via elf log")
+        # Gate 1 fallback: klippy-side query
+        elif x_count > 0 or y_count > 0:
             total = abs(x_count) + abs(y_count)
-            print(f"\n[phase4] GATE GREEN: {total} total step pulses emitted")
-            print("[phase4] Phase 4 PASS")
-            return 0
+            print(f"\n[phase4] GATE 1 GREEN: {total} total step pulses (bridge query)")
+            seen_nonzero = True
         else:
-            print("\n[phase4] GATE RED: 0 step pulses — move did not produce steps")
-            # Dump relevant log lines for diagnosis
+            print("\n[phase4] GATE 1 RED: 0 step pulses — move did not produce steps")
             for line in log.splitlines():
                 if any(k in line for k in ("Error", "Traceback", "step", "submit_move",
                                            "bridge-trace", "planner", "bridge-async",
                                            "KALICO_SIM", "homed")):
                     print("  LOG:", line[-200:])
             return 1
+
+        # Gate 2: XDIRECT SPI writes must be non-zero for phase-stepping axes.
+        if seen_spi_writes > 0:
+            print(f"[phase4] GATE 2 GREEN: {seen_spi_writes} XDIRECT SPI writes")
+        else:
+            print("[phase4] GATE 2 RED: 0 XDIRECT SPI writes — "
+                  "phase stepping drain is not delivering coil modulation")
+            return 1
+
+        print("[phase4] Phase 4 PASS")
+        return 0
 
     finally:
         print("\n[phase4] tearing down")
