@@ -1014,6 +1014,22 @@ impl Reactor {
                 completion,
                 deadline,
             } => {
+                {
+                    use std::io::Write as _;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true).append(true)
+                        .open("/tmp/kalico-firewire.log")
+                    {
+                        let _ = writeln!(f,
+                            "[diag-submit] SubmitTyped call_id={call_id} resp={expected_response_name} \
+                             payload_len={} unacked={} pending_sub={} state={:?}",
+                            payload.len(),
+                            self.unacked_window.len(),
+                            self.pending_submissions.len(),
+                            self.state,
+                        );
+                    }
+                }
                 if let Err(e) = self.dispatch_submission(
                     call_id,
                     payload,

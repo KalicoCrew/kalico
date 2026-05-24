@@ -1,0 +1,106 @@
+=======================
+Starting Klippy...
+Args: ['klippy/klippy.py', '/tmp/homing_test_pty.cfg', '-l', 'tools/sim/.homing-test-logs/klippy.log', '-a', '/tmp/klippy_homing_test_api']
+App Name: Kalico
+Git version: 'v2026.04.00-1702-gbe7aaaf16-dirty'
+Branch: sota-motion
+Remote: origin
+Tracked URL: git@github.com:dderg/kalico.git
+CPU: ?
+Python: '3.14.4 (main, Apr  7 2026, 13:13:20) [Clang 21.0.0 (clang-2100.0.123.102)]'
+Start printer at Sat May 23 15:04:05 2026 (1779541445.5 3551979.2)
+Failed to load module 'autotune_tmc'.
+Traceback (most recent call last):
+  File "/Users/daniladergachev/Developer/kalico/klippy/printer.py", line 127, in load
+    self.module = importlib.import_module(self.module_info.name)
+                  ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/importlib/__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1406, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1371, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1335, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'klippy.extras.autotune_tmc'
+Failed to load module 'beacon'.
+Traceback (most recent call last):
+  File "/Users/daniladergachev/Developer/kalico/klippy/printer.py", line 127, in load
+    self.module = importlib.import_module(self.module_info.name)
+                  ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/importlib/__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1406, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1371, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1335, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'klippy.extras.beacon'
+Failed to load module 'motor_constants'.
+Traceback (most recent call last):
+  File "/Users/daniladergachev/Developer/kalico/klippy/printer.py", line 127, in load
+    self.module = importlib.import_module(self.module_info.name)
+                  ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/importlib/__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1406, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1371, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1335, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'klippy.extras.motor_constants'
+Failed to load module 'motors_sync'.
+Traceback (most recent call last):
+  File "/Users/daniladergachev/Developer/kalico/klippy/printer.py", line 127, in load
+    self.module = importlib.import_module(self.module_info.name)
+                  ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/opt/homebrew/Cellar/python@3.14/3.14.4/Frameworks/Python.framework/Versions/3.14/lib/python3.14/importlib/__init__.py", line 88, in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap>", line 1406, in _gcd_import
+  File "<frozen importlib._bootstrap>", line 1371, in _find_and_load
+  File "<frozen importlib._bootstrap>", line 1335, in _find_and_load_unlocked
+ModuleNotFoundError: No module named 'klippy.extras.motors_sync'
+===== Config file =====
+[mcu]
+serial = /tmp/renode_pty
+
+[printer]
+kinematics = cartesian
+max_velocity = 300
+max_accel = 3000
+
+[stepper_x]
+step_pin = PA0
+dir_pin = PA1
+enable_pin = !PA3
+microsteps = 16
+rotation_distance = 40
+endstop_pin = ^PA4
+position_endstop = 20
+position_max = 20
+homing_speed = 50
+homing_retract_dist = 5
+min_home_dist = 15
+
+[stepper_y]
+step_pin = PA5
+dir_pin = PA6
+enable_pin = !PA7
+microsteps = 16
+rotation_distance = 40
+endstop_pin = ^PB0
+position_endstop = 0
+position_max = 200
+homing_speed = 50
+
+[stepper_z]
+step_pin = PB1
+dir_pin = PB2
+enable_pin = !PB3
+microsteps = 16
+rotation_distance = 8
+endstop_pin = ^PB4
+position_endstop = 0
+position_max = 200
+homing_speed = 5
+
+[force_move]
+enable_force_move = True
+=======================
