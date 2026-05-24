@@ -537,9 +537,10 @@ class TMCCommandHelper:
             self._init_registers()
             if self._post_enable_cb is not None:
                 self._post_enable_cb()
-            did_reset = self.echeck_helper.start_checks()
             if self._post_enable_cb is not None:
-                self.echeck_helper.stop_checks()
+                did_reset = False
+            else:
+                did_reset = self.echeck_helper.start_checks()
             if did_reset:
                 self.mcu_phase_offset = None
             if self.mcu_phase_offset is not None:
