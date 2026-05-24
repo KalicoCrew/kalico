@@ -47,14 +47,12 @@ TMC5160_DEFAULTS = {
 }
 
 
-def handle_client(conn, regs):
+def handle_client(conn, regs, last_read):
     """Serve one SPI connection (one CS assertion).
 
-    The shim opens a new connection per SPI operation. For ioctl-based
-    transfers it writes N bytes then reads N bytes; for write()-based
-    sends it writes N bytes then drops the connection. We respond
-    immediately per 5-byte datagram so the ioctl path gets its data
-    without waiting for EOF.
+    TMC5160 SPI protocol: the response datagram always returns the value
+    of the register addressed by the PREVIOUS datagram (not the current
+    one). `last_read[0]` tracks this across connections.
     """
     conn.settimeout(0.5)
     try:
@@ -74,13 +72,11 @@ def handle_client(conn, regs):
                 is_write = bool(addr_byte & 0x80)
                 reg_addr = addr_byte & 0x7F
                 value = struct.unpack(">I", frame[1:5])[0]
+                reply_val = regs.get(last_read[0], 0)
                 if is_write:
                     regs[reg_addr] = value
-                resp = struct.pack(">BI", 0x00, regs.get(reg_addr, 0))
-                sys.stderr.write(
-                    f"[tmc-emu] {'W' if is_write else 'R'} reg=0x{reg_addr:02x}"
-                    f" val=0x{value:08x} -> 0x{regs.get(reg_addr, 0):08x}\n"
-                )
+                last_read[0] = reg_addr
+                resp = struct.pack(">BI", 0x00, reply_val)
                 try:
                     conn.sendall(resp)
                 except (BrokenPipeError, ConnectionResetError):
@@ -93,6 +89,7 @@ def handle_client(conn, regs):
 
 def run_emulator(sock_path):
     regs = dict(TMC5160_DEFAULTS)
+    last_read = [0x00]
     if os.path.exists(sock_path):
         os.unlink(sock_path)
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -102,8 +99,8 @@ def run_emulator(sock_path):
     while True:
         try:
             conn, _ = srv.accept()
-            t = threading.Thread(target=handle_client, args=(conn, regs),
-                                 daemon=True)
+            t = threading.Thread(target=handle_client,
+                                 args=(conn, regs, last_read), daemon=True)
             t.start()
         except socket.timeout:
             continue

@@ -1114,15 +1114,14 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         if crate::endstop::tick(ctx.now_cycles_u64, v_motor_q16, &stepper_counts)
             == crate::endstop::TripAction::AbortNow
         {
-            // Endstop tripped. Clear all active pieces so no further
-            // steps are dispatched from this sample onward. The segment
-            // stays in Engine::current — post_pass_exhaustion will see
-            // pending_mask → 0 and retire_if_complete will fire on the
-            // same tick_sample call, publishing the credit-freed cursor
-            // via the normal drain path.
             for axis in ctx.axes.iter_mut() {
                 axis.piece = None;
                 axis.curve_handle = None;
+            }
+        }
+        for (i, &val) in stepper_counts.iter().enumerate() {
+            if let Some(dst) = ctx.shared.stepper_counts.get(i) {
+                dst.store(val, Ordering::Release);
             }
         }
     }

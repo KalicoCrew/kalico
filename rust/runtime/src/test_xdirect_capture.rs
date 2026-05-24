@@ -61,10 +61,15 @@ mod host {
         let mut g = sink().lock().unwrap_or_else(|p| p.into_inner());
         g.clear();
     }
+
+    pub fn count() -> usize {
+        let g = sink().lock().unwrap_or_else(|p| p.into_inner());
+        g.len()
+    }
 }
 
 #[cfg(not(target_os = "none"))]
-pub use host::{clear, drain, record};
+pub use host::{clear, count, drain, record};
 
 // On target, the helpers compile to no-ops so the production write_xdirect
 // path still type-checks if it ever reaches this module (it shouldn't —

@@ -57,9 +57,10 @@ def spawn_tmc_emulators():
     # stepper_y=gpio26 (chip0, line26).
     for line in (27, 26):
         sock_path = SIM_SOCK_DIR / f"spi_cs_0_{line}"
+        emu_log = open(LOGDIR / f"tmc_emu_{line}.log", "w")
         p = subprocess.Popen(
             [sys.executable, str(emu_script), str(sock_path)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=emu_log, stderr=emu_log,
         )
         # Wait for socket to appear
         for _ in range(20):
@@ -80,6 +81,7 @@ def spawn_elf():
     env = os.environ.copy()
     env["LD_PRELOAD"] = str(shim_so)
     env["KALICO_SIM_SOCK_DIR"] = str(SIM_SOCK_DIR)
+    env["KALICO_SIM_SHIM_VERBOSE"] = "1"
     proc = subprocess.Popen(
         [str(KLIPPER_ELF), "-I", SIM_SOCKET],
         stdout=elf_log, stderr=subprocess.STDOUT,
@@ -203,17 +205,18 @@ def main():
         # Query step counts via the KALICO_SIM_STEP_COUNT G-code command,
         # which routes through klippy → bridge → MCU wire command.
         print("[phase4] querying axis accumulators (post-move)")
-        for axis in (0, 1, 2):
-            r = send_gcode("KALICO_SIM_AXIS_ACCUM OID=%d" % axis)
-            print(f"  AXIS_ACCUM={axis}: {r}")
-
-        print("[phase4] querying step count for OID 0 (X stepper)")
-        x_resp = send_gcode("KALICO_SIM_STEP_COUNT OID=0")
-        print(f"  OID=0 response: {x_resp}")
-
-        print("[phase4] querying step count for OID 1 (Y stepper)")
-        y_resp = send_gcode("KALICO_SIM_STEP_COUNT OID=1")
-        print(f"  OID=1 response: {y_resp}")
+        try:
+            for axis in (0, 1, 2):
+                r = send_gcode("KALICO_SIM_AXIS_ACCUM OID=%d" % axis)
+                print(f"  AXIS_ACCUM={axis}: {r}")
+            print("[phase4] querying step count for OID 0 (X stepper)")
+            x_resp = send_gcode("KALICO_SIM_STEP_COUNT OID=0")
+            print(f"  OID=0 response: {x_resp}")
+            print("[phase4] querying step count for OID 1 (Y stepper)")
+            y_resp = send_gcode("KALICO_SIM_STEP_COUNT OID=1")
+            print(f"  OID=1 response: {y_resp}")
+        except (ConnectionRefusedError, ConnectionResetError, OSError) as e:
+            print(f"  query failed (klippy disconnected): {e}")
 
         # Extract counts from klippy log (respond_info writes there)
         log = KLIPPY_LOG.read_text() if KLIPPY_LOG.exists() else ""

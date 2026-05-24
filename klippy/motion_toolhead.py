@@ -1089,6 +1089,8 @@ class MotionToolhead(ToolHead):
                     if bus_id in seen_buses:
                         continue
                     seen_buses.add(bus_id)
+                    logging.info("register_phase_bus mcu=%s bus_id=%d",
+                                 name, bus_id)
                     self.bridge.register_phase_bus(
                         mcu_handle, bus_id, rate=2_000_000,
                     )
@@ -1097,6 +1099,9 @@ class MotionToolhead(ToolHead):
                 ):
                     if bus_id == 0xFF:
                         continue
+                    logging.info(
+                        "register_phase_motor mcu=%s motor=%d bus=%d cs=%d",
+                        name, motor_idx, bus_id, cs_pin_id)
                     self.bridge.register_phase_motor(
                         mcu_handle, motor_idx, bus_id, cs_pin_id,
                     )
@@ -1177,7 +1182,18 @@ class MotionToolhead(ToolHead):
                 for (oid, inv) in bindings:
                     blob.append(oid)
                     blob.append(inv & 0x01)
-                    blob.append(TMC_CS_OID_NONE)
+                    tmc_oid = TMC_CS_OID_NONE
+                    if step_modes[axis_idx] == 0:
+                        for (sname, s) in slot_steppers[axis_idx]:
+                            if s.get_oid() == oid:
+                                tmc_name = "tmc5160 " + sname
+                                try:
+                                    tmc = self.printer.lookup_object(tmc_name)
+                                    tmc_oid = tmc.get_spi_oid()
+                                except Exception:
+                                    pass
+                                break
+                    blob.append(tmc_oid)
                     blob.append(FLAGS_DEFAULT)
                 configure_axis_cmd.send([
                     axis_idx, MODE_PULSE, microstep_bits, extrusion_bits,

@@ -530,6 +530,9 @@ class TMC5160:
             )
         return (self._phase_bus_id, self._phase_cs_pin_id)
 
+    def get_spi_oid(self):
+        return self.mcu_tmc.tmc_spi.spi.oid
+
 
 def load_config_prefix(config):
     return TMC5160(config)

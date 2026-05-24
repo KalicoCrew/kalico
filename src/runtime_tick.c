@@ -1441,8 +1441,8 @@ runtime_status_drain(void)
     int32_t c0 = kalico_runtime_get_stepper_count(runtime_handle, 0);
     int32_t c1 = kalico_runtime_get_stepper_count(runtime_handle, 1);
     int32_t c2 = kalico_runtime_get_stepper_count(runtime_handle, 2);
-    extern uint32_t phase_spi_get_write_count(void);
-    uint32_t spi_writes = phase_spi_get_write_count();
+    extern uint32_t kalico_runtime_get_xdirect_write_count(void);
+    uint32_t spi_writes = kalico_runtime_get_xdirect_write_count();
     fprintf(stderr,
         "[sim-progress] status=%u seg=%u counts=[%d,%d,%d]"
         " spi_writes=%u\n",

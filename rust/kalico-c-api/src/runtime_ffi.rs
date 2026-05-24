@@ -1339,6 +1339,18 @@ pub mod exports {
         }
     }
 
+    #[unsafe(no_mangle)]
+    pub extern "C" fn kalico_runtime_get_xdirect_write_count() -> u32 {
+        #[cfg(not(target_os = "none"))]
+        {
+            runtime::test_xdirect_capture::count() as u32
+        }
+        #[cfg(target_os = "none")]
+        {
+            0
+        }
+    }
+
     /// Configure axis mapping and kinematics for this MCU. Minimal stub for
     /// Step 7-B MVP — accepts `kinematics_tag` (0 = CoreXyAndE, 1 =
     /// CartesianXyzAndE) and validates. Full motor-config blob
