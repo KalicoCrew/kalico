@@ -5,6 +5,7 @@
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
 #include <stdarg.h> // va_start
+#include <stdio.h>  // fprintf (MACH_LINUX diag)
 #include <string.h> // memcpy
 #include "board/io.h" // readb
 #include "board/irq.h" // irq_poll
@@ -296,10 +297,28 @@ command_find_block(uint8_t *buf, uint_fast8_t buf_len, uint_fast8_t *pop_count)
     *pop_count = msglen;
     // Check sequence number
     if (msgseq != next_sequence) {
+#if CONFIG_MACH_LINUX
+        fprintf(stderr, "[mcu-seq] MISMATCH msgseq=0x%02x next_sequence=0x%02x msglen=%u\n",
+                msgseq, next_sequence, msglen);
+        fflush(stderr);
+#endif
         // Lost message - discard messages until it is retransmitted
         goto nak;
     }
     next_sequence = ((msgseq + 1) & MESSAGE_SEQ_MASK) | MESSAGE_DEST;
+#if CONFIG_MACH_LINUX
+    {
+        uint8_t *p = &buf[MESSAGE_HEADER_SIZE];
+        uint_fast16_t cmdid = 0;
+        if (msglen > MESSAGE_MIN) {
+            cmdid = *p;
+            if (cmdid >= 0x80) cmdid = (cmdid & 0x7f) | (*++p << 7);
+        }
+        fprintf(stderr, "[mcu-seq] OK msgseq=0x%02x cmdid=%u msglen=%u\n",
+                msgseq, (unsigned)cmdid, msglen);
+        fflush(stderr);
+    }
+#endif
     return 1;
 
 need_more_data:

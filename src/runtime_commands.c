@@ -7,6 +7,7 @@
 // each backend's ISR.
 
 #include <stdint.h>
+#include <stdio.h>
 #include "autoconf.h"
 #include "board/gpio.h"           // gpio_in_setup / gpio_in_read / spi_setup
 #include "command.h"              // DECL_COMMAND, sendf, command_decode_ptr
@@ -166,6 +167,10 @@ endstop_pin_table_populate(uint8_t source_count, const uint8_t *sources_ptr)
 void
 command_runtime_arm_endstop(uint32_t *args)
 {
+#if CONFIG_MACH_LINUX
+    fprintf(stderr, "[mcu-arm] command_runtime_arm_endstop entered arm_id=%u\n", args[0]);
+    fflush(stderr);
+#endif
     uint32_t arm_id = args[0];
     uint32_t arm_clock_lo = args[1];
     uint32_t arm_clock_hi = args[2];

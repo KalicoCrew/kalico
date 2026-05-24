@@ -57,6 +57,7 @@ class SimResult:
     speedup: float
     error: Optional[str] = None
     klippy_log: Optional[str] = None
+    mcu_logs: Optional[dict] = None
 
 
 def vtime_create(start_ns: int = 1_000_000_000) -> None:
@@ -563,6 +564,13 @@ G1 Z125 F300
             if klippy_log.exists():
                 klippy_content = klippy_log.read_text(errors="replace")
 
+            mcu_log_contents = {}
+            for mcu in mcus:
+                try:
+                    mcu_log_contents[mcu.name] = open(mcu.log_path).read()
+                except Exception:
+                    pass
+
             return SimResult(
                 success=success,
                 print_time_s=print_time_s,
@@ -570,6 +578,7 @@ G1 Z125 F300
                 speedup=speedup,
                 error=error,
                 klippy_log=klippy_content,
+                mcu_logs=mcu_log_contents,
             )
 
         finally:

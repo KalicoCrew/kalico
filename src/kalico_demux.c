@@ -227,6 +227,15 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
             break;
         case KALICO_DEMUX_OUT_KLIPPER: {
             kalico_demux_out_klipper_total++;
+#if CONFIG_MACH_LINUX
+            {
+                const uint8_t *kb = kalico_demux_klipper_buf();
+                uint8_t kl = kalico_demux_klipper_len();
+                fprintf(stderr, "[mcu-demux] KLIPPER len=%u seq=0x%02x total=%u\n",
+                        kl, kl >= 2 ? kb[1] : 0, kalico_demux_out_klipper_total);
+                fflush(stderr);
+            }
+#endif
             // Bootloader-request sentinel detection. The 32-byte sentinel
             // begins with 0x20 (= 32 decimal), which falls inside the
             // demuxer's [KLIPPER_LEN_MIN=5, KLIPPER_LEN_MAX=64] range, so
