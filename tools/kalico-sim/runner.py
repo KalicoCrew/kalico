@@ -167,7 +167,8 @@ def spawn_mcu(
     env["KALICO_SIM_SOCK_DIR"] = sock_dir
     # Speed cap keeps MCU clock advancement within timeout budgets.
     # At 3x, a 30-second timeout survives 10 real seconds of I/O.
-    env.setdefault("KALICO_VTIME_SPEED", "1")
+    # Default 100x — the MCU runs ~100x faster than wall clock.
+    # Lower values reduce simulation speed but improve I/O reliability.
     # env["KALICO_VTIME_SPEED"] = "100"  # libvtime default
     if verbose:
         env["KALICO_SIM_SHIM_VERBOSE"] = "1"
