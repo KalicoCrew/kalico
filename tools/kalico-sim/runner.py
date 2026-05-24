@@ -1276,6 +1276,45 @@ def main():
         print(f"  Error:      {result.error}")
     print("=" * 60)
 
+    if not result.success and result.klippy_log:
+        print("
+--- klippy.log (homing-relevant, all lines) ---")
+        for line in result.klippy_log.strip().split("
+"):
+            lo = line.lower()
+            if any(k in lo for k in (
+                "bridge-trace", "endstop_arm", "arm_id", "arm status",
+                "trip", "drip", "credit", "homing", "home_start",
+                "home_wait", "no trigger", "segment_id",
+                "submit_homing", "homing_move", "error during",
+                "internal error", "mcu silent", "move-diag",
+                "sim-trace", "dispatch closure", "load_curve",
+                "classify", "submit_move",
+            )):
+                print(line)
+        print("--- end klippy.log ---")
+
+    if not result.success and result.mcu_logs:
+        for name, content in result.mcu_logs.items():
+            print(f"
+--- {name} MCU log (last 30 lines) ---")
+            for line in content.strip().split("
+")[-30:]:
+                print(line)
+            print(f"--- end {name} ---")
+
+    if not result.success and result.klippy_log:
+        trace_lines = [l for l in result.klippy_log.split("
+")
+                       if "trace-write" in l or "trace-close" in l or
+                          "trace-kcall" in l or "endstop_arm" in l.lower()]
+        if trace_lines:
+            print("
+--- bridge trace lines ---")
+            for line in trace_lines[-30:]:
+                print(line)
+            print("--- end bridge trace ---")
+
     if args.phase_test and result.klippy_log:
         print("\n--- Phase stepping log excerpts ---")
         for line in result.klippy_log.split("\n"):
