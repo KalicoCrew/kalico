@@ -444,6 +444,7 @@ class TMC5160:
             config, self.mcu_tmc, direct_mode=self._phase_stepping,
         )
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)
+        self._echeck_helper = cmdhelper.echeck_helper
         if self._phase_stepping:
             cmdhelper.set_post_enable_callback(self._xdirect_preload)
         cmdhelper.setup_register_dump(ReadRegisters)
@@ -582,6 +583,16 @@ class TMC5160:
         if disable_cmd is not None:
             disable_cmd.send([])
             logging.info("TMC5160 phase_stepping_enable_spi sent")
+        # Stop the periodic DRV_STATUS/GSTAT checks while the ISR is
+        # writing XDIRECT. The ISR's inline SPI manipulates the SPI
+        # peripheral registers directly — foreground register reads
+        # during ISR activity return corrupted data (e.g., GSTAT reads
+        # as 0x010a0023 instead of a valid 3-bit value), triggering
+        # false drv_err/uv_cp shutdowns. DMA-based SPI (Phase 2) will
+        # fix the arbitration; until then, suppress the checks.
+        self._echeck_helper.stop_checks()
+        logging.info("TMC5160 XDIRECT: stopped periodic checks "
+                     "(phase stepping active)")
 
     def get_phase_config(self):
         """Return (bus_id, cs_pin_id) for phase-stepping integration.
