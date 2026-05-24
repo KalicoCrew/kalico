@@ -12,6 +12,7 @@
 #include "gpio.h"   // struct spi_config, spi_prepare, spi_transfer,
                     // struct gpio_out, gpio_out_setup, gpio_out_write
 #include "board/irq.h" // irq_save, irq_restore, irqstatus_t
+#include "internal.h" // get_pclock_frequency
 
 #define MAX_PHASE_BUSES  4
 #define MAX_PHASE_MOTORS 16   // matches Rust state::MAX_STEPPER_OIDS
@@ -57,6 +58,7 @@ phase_spi_get_write_count(void)
 
 struct phase_bus_state {
     struct spi_config cfg;
+    struct spi_config fast_cfg;
     uint8_t configured;
 };
 
@@ -85,6 +87,19 @@ phase_stepping_register_bus(uint8_t bus_id, struct spi_config cfg)
     if (bus_id >= MAX_PHASE_BUSES)
         return;
     phase_buses[bus_id].cfg = cfg;
+    // XDIRECT writes run from the TIM5 ISR at 40 kHz. At the default
+    // TMC SPI rate (~1 MHz) a 5-byte transfer takes ~40 µs — well over
+    // the 25 µs tick budget for even a single motor. Override the MBR
+    // divisor so the XDIRECT path runs at ~4 MHz (5 µs per motor).
+    // TMC5160 datasheet maximum is 8 MHz; 4 MHz is conservative.
+    struct spi_config fast = cfg;
+    uint32_t pclk = get_pclock_frequency((uint32_t)(uintptr_t)cfg.spi);
+    uint32_t target_rate = 4000000;
+    uint32_t div = 0;
+    while ((pclk >> (div + 1)) > target_rate && div < 7)
+        div++;
+    fast.div = div;
+    phase_buses[bus_id].fast_cfg = fast;
     phase_buses[bus_id].configured = 1;
 }
 
@@ -133,12 +148,9 @@ phase_stepping_write_xdirect(uint8_t motor_idx,
         (uint8_t)(ua & 0xFF),                // coil_A low 8 bits
     };
 
-    spi_prepare(phase_buses[bus_id].cfg);
+    spi_prepare(phase_buses[bus_id].fast_cfg);
     gpio_out_write(phase_motors[motor_idx].cs, 0); // CS low (assert)
-    // 2026-05-19: call the unlocked variant — we already own
-    // phase_spi_busy via phase_spi_try_acquire() above. Calling the
-    // public spi_transfer here would deadlock the ISR on its own lock.
-    spi_transfer_locked(phase_buses[bus_id].cfg, 0,
+    spi_transfer_locked(phase_buses[bus_id].fast_cfg, 0,
                         sizeof(datagram), datagram);
     gpio_out_write(phase_motors[motor_idx].cs, 1); // CS high (deassert)
 
