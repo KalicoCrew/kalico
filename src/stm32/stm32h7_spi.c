@@ -245,11 +245,14 @@ spi_transfer(struct spi_config config, uint8_t receive_data,
     // the lock the ISR itself owns, USB CDC pump starves, the H7
     // re-enumerates, and klippy aborts via EXIT_ON_FAULT.
     while (!phase_spi_try_acquire()) {
-        // Spin; the ISR-side write completes within one TIM5 period
-        // (25 us at 40 kHz). On real hardware the CPU is not idle here
-        // -- the next TIM5 ISR fire will release. In Renode sim, the
-        // virtual time advances under the spin loop.
+        // Spin; the ISR-side write completes within one TIM5 period.
     }
+    // spi_prepare MUST be inside the lock. The ISR's
+    // phase_stepping_write_xdirect calls spi_prepare(fast_cfg) which
+    // overwrites SPI3->CFG1 with a different MBR divisor. If the ISR
+    // fires between a caller's spi_prepare and spi_transfer, the
+    // foreground transfer runs at the wrong clock rate.
+    spi_prepare(config);
     spi_transfer_locked(config, receive_data, len, data);
     phase_spi_release();
 }

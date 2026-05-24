@@ -15,6 +15,7 @@ src-y += linux/runtime_tick_host.c
 src-y += linux/fault_handler_stub.c
 src-y += runtime_tick.c
 src-y += runtime_commands.c
+src-y += linux/phase_stepping_spi.c
 
 # Generated FFI header (cbindgen) shared with the H7 build.
 CFLAGS += -Irust/kalico-c-api/include

@@ -1441,9 +1441,12 @@ runtime_status_drain(void)
     int32_t c0 = kalico_runtime_get_stepper_count(runtime_handle, 0);
     int32_t c1 = kalico_runtime_get_stepper_count(runtime_handle, 1);
     int32_t c2 = kalico_runtime_get_stepper_count(runtime_handle, 2);
+    extern uint32_t kalico_runtime_get_xdirect_write_count(void);
+    uint32_t spi_writes = kalico_runtime_get_xdirect_write_count();
     fprintf(stderr,
-        "[sim-progress] status=%u seg=%u counts=[%d,%d,%d]\n",
-        status, cur_seg, c0, c1, c2);
+        "[sim-progress] status=%u seg=%u counts=[%d,%d,%d]"
+        " spi_writes=%u\n",
+        status, cur_seg, c0, c1, c2, spi_writes);
     fflush(stderr);
 #endif
 }
@@ -1597,48 +1600,14 @@ init_per_axis_step_timers(void)
         // future (sched_add_timer trips "Timer too close" on a past
         // waketime). Subsequent waketimes come from
         // kalico_per_axis_step_event's return value.
-        per_axis_timers[i].waketime = now + timer_from_us(1000);
+        per_axis_timers[i].waketime = now + (uint32_t)0x3FFFFFFF;
         sched_add_timer(&per_axis_timers[i]);
     }
 }
 
-// === Task 14: SPI queue foreground drain (stub) ===
-//
-// The TIM5 ISR pushes SpiWrite entries into spi_queues[bus_idx] from
-// dispatch_phase. A foreground struct timer firing at ~10 kHz should
-// pop from each bus's queue and dispatch through Klipper's spidev /
-// bus.c. For now: stub timer that clears the queue without writing to
-// hardware — keeps the SPSC contract live without committing to a
-// specific bus driver. Bench bring-up (Stage 5) wires real SPI.
-//
-// `init_spi_drain_timer` is publicly exposed but has no production
-// caller yet; Task 14's scope is the queue + ISR push only. Once the
-// real SPI bring-up lands, this hook will be invoked alongside
-// `init_per_axis_step_timers` from `command_kalico_configure_axis`.
-
-#include "spi_queue.h"
-
-static struct timer spi_drain_timer;
-
-static uint_fast8_t
-spi_drain_event(struct timer *t)
-{
-    for (int bus = 0; bus < N_SPI_BUSES; bus++) {
-        SpiQueue *q = &spi_queues[bus];
-        while (q->head != q->tail) {
-            // Stub: drop the entry without dispatching to hardware.
-            // Bench Stage 5 replaces this with: spidev_write(...).
-            q->head = (uint16_t)(q->head + 1);
-        }
-    }
-    t->waketime = timer_read_time() + timer_from_us(100);  // 10 kHz
-    return SF_RESCHEDULE;
-}
-
-void
-init_spi_drain_timer(void)
-{
-    spi_drain_timer.func = spi_drain_event;
-    spi_drain_timer.waketime = timer_read_time() + timer_from_us(1000);
-    sched_add_timer(&spi_drain_timer);
-}
+// Task 14 SPI queue drain removed — dispatch_phase now calls
+// phase_stepping_write_xdirect directly from the ISR. The SPSC queue
+// could never keep up (160K entries/sec from 40 kHz ISR × 4 motors,
+// drain processed ~10K/sec with blocking SPI). Direct ISR write with
+// skip-not-block (phase_spi_try_acquire) matches mass3d/kalico's
+// working architecture.

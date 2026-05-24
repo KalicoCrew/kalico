@@ -41,27 +41,6 @@ pub fn raise_step_queue_overflow(shared: &SharedState, axis_idx: usize) {
     }
 }
 
-/// Latch a `SpiQueueOverflow` fault and bump the SPI-saturation counter.
-///
-/// Raised by `dispatch_phase` when the per-bus SPI write queue (see
-/// `crate::spi_queue`) refuses an enqueue — i.e. the foreground SPI
-/// drain timer fell behind the ISR. `bus_idx` identifies which SPI bus
-/// (0..`N_SPI_BUSES`) overflowed and is encoded into bits 16..24 of
-/// `fault_detail`. There is no dedicated per-bus counter yet; the
-/// existing `spi_saturated_samples` aggregate is reused for visibility
-/// in the 10 Hz status frame.
-#[inline]
-pub fn raise_spi_queue_overflow(shared: &SharedState, bus_idx: usize) {
-    let detail = (bus_idx as u32 & 0xFF) << 16;
-    shared.fault_detail.store(detail, Ordering::Release);
-    shared
-        .last_error
-        .store(FaultCode::SpiQueueOverflow.as_i32(), Ordering::Release);
-    // No dedicated per-bus overflow counter yet (spec §9.2 reserves space
-    // but the SharedState array hasn't landed); the aggregate
-    // `spi_saturated_samples` is the closest existing counter.
-    shared.spi_saturated_samples.fetch_add(1, Ordering::Release);
-}
 
 /// Latch a `PositionCountOverflow` fault.
 ///

@@ -45,12 +45,47 @@ def cleanup_prior():
             pass
 
 
+SIM_SOCK_DIR = pathlib.Path("/tmp/kalico_sim_socks")
+
+
+def spawn_tmc_emulators():
+    """Spawn TMC5160 SPI register emulators for phase-stepping CS pins."""
+    SIM_SOCK_DIR.mkdir(exist_ok=True)
+    emu_script = REPO / "tools" / "kalico-sim" / "emulators" / "tmc5160_emu.py"
+    procs = []
+    # CS pins from printer.cfg: stepper_x=gpio27 (chip0, line27),
+    # stepper_y=gpio26 (chip0, line26).
+    for line in (27, 26):
+        sock_path = SIM_SOCK_DIR / f"spi_cs_0_{line}"
+        emu_log = open(LOGDIR / f"tmc_emu_{line}.log", "w")
+        p = subprocess.Popen(
+            [sys.executable, str(emu_script), str(sock_path)],
+            stdout=emu_log, stderr=emu_log,
+        )
+        # Wait for socket to appear
+        for _ in range(20):
+            if sock_path.exists():
+                break
+            time.sleep(0.05)
+        procs.append(p)
+    return procs
+
+
 def spawn_elf():
     LOGDIR.mkdir(parents=True, exist_ok=True)
     elf_log = open(ELF_LOG, "wb")
+    shim_so = REPO / "tools" / "kalico-sim" / "libvtime" / "libsim_intercept.so"
+    if not shim_so.exists():
+        subprocess.check_call(["make", "-C", str(shim_so.parent)],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    env = os.environ.copy()
+    env["LD_PRELOAD"] = str(shim_so)
+    env["KALICO_SIM_SOCK_DIR"] = str(SIM_SOCK_DIR)
+    env["KALICO_SIM_SHIM_VERBOSE"] = "1"
     proc = subprocess.Popen(
         [str(KLIPPER_ELF), "-I", SIM_SOCKET],
         stdout=elf_log, stderr=subprocess.STDOUT,
+        env=env,
     )
     for _ in range(50):
         if os.path.exists(SIM_SOCKET):
@@ -108,26 +143,28 @@ def main():
     print("[phase4] cleaning up prior processes")
     cleanup_prior()
 
+    print("[phase4] spawning TMC5160 emulators")
+    tmc_procs = spawn_tmc_emulators()
+
     print("[phase4] spawning klipper.elf")
     elf = spawn_elf()
     print("[phase4] spawning klippy")
     klippy = spawn_klippy()
 
     try:
-        # Fake-home by setting kinematic position
-        print("[phase4] fake-homing: SET_KINEMATIC_POSITION X=0 Y=0 Z=0")
-        resp = send_gcode("SET_KINEMATIC_POSITION X=0 Y=0 Z=0")
+        print("[phase4] fake-homing: SET_KINEMATIC_POSITION X=100 Y=100 Z=10")
+        resp = send_gcode("SET_KINEMATIC_POSITION X=100 Y=100 Z=10")
         print(f"  response: {resp}")
 
-        # Diagnostic: confirm configure_axes actually wrote steps_per_mm.
-        print("[phase4] reading axis steps_per_mm")
-        for axis in (0, 1, 2):
-            resp = send_gcode("KALICO_SIM_AXIS_STEPS OID=%d" % axis)
-            print(f"  AXIS={axis} response: {resp}")
-
-        print("[phase4] sending G1 X10 F1000 then M400 (flush)")
-        resp = send_gcode("G1 X10 F1000\nM400")
+        print("[phase4] sending G1 X50 F6000 then M400 (flush)")
+        resp = send_gcode("G1 X50 F6000\nM400")
         print(f"  response: {resp}")
+        if "error" in resp:
+            err_msg = resp.get("error", {}).get("message", "")
+            if "shutdown" in err_msg.lower() or "timed out" in err_msg.lower() \
+                    or "timeout" in err_msg.lower():
+                print(f"\n[phase4] FAIL: MCU shutdown during move: {err_msg[:120]}")
+                return 1
 
         # The bridge schedules segments at MCU_clock_now + 100ms_lead +
         # seg.t_start; if klippy startup pushed the MCU clock far ahead of
@@ -136,12 +173,13 @@ def main():
         # the schedule lead has had time to drain.
         # Poll elf log for non-zero stepper counts. Bypasses bridge_call so
         # we get the answer even if klippy shut down on the M400 timeout.
-        print("[phase4] polling elf log for non-zero step counts")
+        print("[phase4] polling elf log for motion + SPI output")
         elf_log = REPO / "tools" / "sim_klippy" / ".local-logs" / "klipper_elf.log"
         deadline = time.time() + 60.0
         seen_nonzero = False
+        seen_spi_writes = 0
         while time.time() < deadline:
-            time.sleep(2.0)
+            time.sleep(0.5)
             if not elf_log.exists():
                 continue
             text = elf_log.read_text(errors="replace")
@@ -150,26 +188,33 @@ def main():
                     inner = line.split("counts=[", 1)[1].split("]", 1)[0]
                     parts = [int(x) for x in inner.split(",")]
                     if any(abs(p) > 0 for p in parts):
-                        print("  step pulses observed: %s" % parts)
                         seen_nonzero = True
-                        break
-            if seen_nonzero:
+                    if "spi_writes=" in line:
+                        try:
+                            w = int(line.split("spi_writes=")[1].split()[0])
+                            if w > seen_spi_writes:
+                                seen_spi_writes = w
+                        except (IndexError, ValueError):
+                            pass
+            if seen_nonzero and seen_spi_writes > 0:
+                print(f"  motion + SPI observed: spi_writes={seen_spi_writes}")
                 break
 
         # Query step counts via the KALICO_SIM_STEP_COUNT G-code command,
         # which routes through klippy → bridge → MCU wire command.
         print("[phase4] querying axis accumulators (post-move)")
-        for axis in (0, 1, 2):
-            r = send_gcode("KALICO_SIM_AXIS_ACCUM OID=%d" % axis)
-            print(f"  AXIS_ACCUM={axis}: {r}")
-
-        print("[phase4] querying step count for OID 0 (X stepper)")
-        x_resp = send_gcode("KALICO_SIM_STEP_COUNT OID=0")
-        print(f"  OID=0 response: {x_resp}")
-
-        print("[phase4] querying step count for OID 1 (Y stepper)")
-        y_resp = send_gcode("KALICO_SIM_STEP_COUNT OID=1")
-        print(f"  OID=1 response: {y_resp}")
+        try:
+            for axis in (0, 1, 2):
+                r = send_gcode("KALICO_SIM_AXIS_ACCUM OID=%d" % axis)
+                print(f"  AXIS_ACCUM={axis}: {r}")
+            print("[phase4] querying step count for OID 0 (X stepper)")
+            x_resp = send_gcode("KALICO_SIM_STEP_COUNT OID=0")
+            print(f"  OID=0 response: {x_resp}")
+            print("[phase4] querying step count for OID 1 (Y stepper)")
+            y_resp = send_gcode("KALICO_SIM_STEP_COUNT OID=1")
+            print(f"  OID=1 response: {y_resp}")
+        except (ConnectionRefusedError, ConnectionResetError, OSError) as e:
+            print(f"  query failed (klippy disconnected): {e}")
 
         # Extract counts from klippy log (respond_info writes there)
         log = KLIPPY_LOG.read_text() if KLIPPY_LOG.exists() else ""
@@ -189,23 +234,13 @@ def main():
 
         print(f"\n[phase4] RESULT: X step count (oid=0): {x_count}")
         print(f"[phase4] RESULT: Y step count (oid=1): {y_count}")
+        print(f"[phase4] SPI XDIRECT writes: {seen_spi_writes}")
 
-        # If we already saw non-zero counts in the elf log poll above,
-        # treat the gate as green even if bridge_call died on M400.
-        if seen_nonzero:
-            print("\n[phase4] GATE GREEN: step pulses observed via elf log")
-            print("[phase4] Phase 4 PASS")
-            return 0
+        if not seen_nonzero and (x_count > 0 or y_count > 0):
+            seen_nonzero = True
 
-        # Phase 4 gate (klippy-side query path)
-        if x_count > 0 or y_count > 0:
-            total = abs(x_count) + abs(y_count)
-            print(f"\n[phase4] GATE GREEN: {total} total step pulses emitted")
-            print("[phase4] Phase 4 PASS")
-            return 0
-        else:
-            print("\n[phase4] GATE RED: 0 step pulses — move did not produce steps")
-            # Dump relevant log lines for diagnosis
+        if not seen_nonzero:
+            print("\n[phase4] FAIL: 0 position counts — move produced no motion")
             for line in log.splitlines():
                 if any(k in line for k in ("Error", "Traceback", "step", "submit_move",
                                            "bridge-trace", "planner", "bridge-async",
@@ -213,12 +248,26 @@ def main():
                     print("  LOG:", line[-200:])
             return 1
 
+        if seen_spi_writes == 0:
+            print("\n[phase4] FAIL: 0 SPI XDIRECT writes — "
+                  "phase stepping is not driving coil modulation")
+            return 1
+
+        print(f"\n[phase4] Phase 4 PASS: motion + {seen_spi_writes} SPI writes")
+        return 0
+
     finally:
         print("\n[phase4] tearing down")
         for p in (klippy, elf):
             try:
                 p.terminate()
                 p.wait(timeout=3)
+            except Exception:
+                p.kill()
+        for p in tmc_procs:
+            try:
+                p.terminate()
+                p.wait(timeout=1)
             except Exception:
                 p.kill()
 

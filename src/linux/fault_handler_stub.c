@@ -128,3 +128,27 @@ DIAG_GET_STUB(peek_data)
 DIAG_GET_STUB(tim5_count)
 DIAG_GET_STUB(tx_drops_kalico)
 DIAG_GET_STUB(tx_drops_klipper)
+DIAG_GET_STUB(rt_tick_count)
+DIAG_GET_STUB(rt_tick_cycles_max)
+
+// Linux build doesn't have armcm_timer.c or mpu_protect.c — provide
+// stubs for symbols referenced by sched.c.
+#include "sched.h"
+
+uint_fast8_t timer_wrap_event(struct timer *t)
+{
+    t->waketime += 0xffffff;
+    return SF_RESCHEDULE;
+}
+
+void sched_writable_reset(void)
+{
+}
+
+void sched_writable_begin(void)
+{
+}
+
+void sched_writable_end(void)
+{
+}

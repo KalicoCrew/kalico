@@ -3,6 +3,7 @@
 # Copyright (C) 2018-2019  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+import logging
 import math
 
 from . import tmc, tmc2130
@@ -387,7 +388,9 @@ def _enable_direct_mode(config, stepper_section, fields):
     convention. ``microsteps`` is read from the ``[stepper_*]`` section
     (``stepper_section``) per TMCMicrostepHelper convention.
     """
-    fields.set_field("direct_mode", 1)
+    # direct_mode is NOT set in the field cache here — it must be
+    # written AFTER CHOPCONF (toff>0) is on the chip, or the bootstrap
+    # charge pump starves. _xdirect_preload handles the sequencing.
     sct = config.getfloat("stealthchop_threshold", 0.0, minval=0.0)
     if sct > 0.0:
         raise config.error(
@@ -441,6 +444,9 @@ class TMC5160:
             config, self.mcu_tmc, direct_mode=self._phase_stepping,
         )
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)
+        self._echeck_helper = cmdhelper.echeck_helper
+        if self._phase_stepping:
+            cmdhelper.set_post_enable_callback(self._xdirect_preload)
         cmdhelper.setup_register_dump(ReadRegisters)
         self.get_phase_offset = cmdhelper.get_phase_offset
         self.get_status = cmdhelper.get_status
@@ -508,6 +514,85 @@ class TMC5160:
         set_config_field(config, "pwm_lim", 12)
         #   TPOWERDOWN
         set_config_field(config, "tpowerdown", 10)
+        if self._phase_stepping:
+            # In direct_mode the TMC5160 uses IHOLD for current scaling
+            # (no step pulses to trigger IRUN). Extend the standstill
+            # timeout to maximum so the driver doesn't power-down the
+            # coils while phase stepping is active.
+            self.fields.set_field("tpowerdown", 255)
+
+    def _xdirect_preload(self):
+        """Write XDIRECT with coil currents matching the current MSCNT phase.
+
+        Called after _init_registers() when a phase-stepping-enabled
+        TMC5160 is enabled. In direct_mode, register 0x2D is XDIRECT
+        (mapped as "XTARGET" in our register dict). Without this
+        preload, XDIRECT stays at its reset value 0x00000000 — zero
+        current in both coils — until the first ISR write.
+
+        Also gates ISR XDIRECT writes: disables them before the SPI
+        traffic (so the ISR doesn't compete with this foreground
+        register access) and re-enables after the XDIRECT write is
+        done.
+        """
+        mcu_obj = self.mcu_tmc.tmc_spi.spi.get_mcu()
+        try:
+            disable_cmd = mcu_obj.lookup_command(
+                "kalico_phase_stepping_enable_spi")
+        except Exception:
+            disable_cmd = None
+        # Suppress ISR XDIRECT writes during our foreground SPI traffic
+        # (the disable command is idempotent; harmless if already disabled).
+        if disable_cmd is not None:
+            try:
+                dis_cmd = mcu_obj.lookup_command(
+                    "kalico_phase_stepping_disable_spi")
+                dis_cmd.send([])
+            except Exception:
+                pass
+        # Write CHOPCONF (toff>0) first, then set GCONF.direct_mode=1.
+        # direct_mode is deliberately NOT in the field cache (removed from
+        # _enable_direct_mode) so _init_registers doesn't write it while
+        # the chip still has toff=0 from the virtual-enable disable phase.
+        # The bootstrap charge pump depends on the chopper switching —
+        # direct_mode with toff=0 drains the bootstrap caps and triggers
+        # uv_cp after a few moves.
+        chopconf_val = self.fields.registers.get("CHOPCONF")
+        if chopconf_val is not None:
+            self.mcu_tmc.set_register("CHOPCONF", chopconf_val)
+        # Now safe to enable direct_mode — chopper is running.
+        gconf_val = self.fields.registers.get("GCONF", 0)
+        gconf_val |= (1 << 16)   # direct_mode
+        gconf_val &= ~(1 << 2)   # SpreadCycle (clear en_pwm_mode)
+        self.mcu_tmc.set_register("GCONF", gconf_val)
+        self.fields.registers["GCONF"] = gconf_val
+        # Read the live electrical phase from the microstep counter
+        mscnt = self.mcu_tmc.get_register("MSCNT") & 0x3FF
+        angle = mscnt * 2.0 * math.pi / 1024.0
+        coil_a = int(round(248.0 * math.cos(angle)))
+        coil_b = int(round(248.0 * math.sin(angle)))
+        cur_a_u16 = coil_a & 0xFFFF
+        cur_b_u16 = coil_b & 0xFFFF
+        xdirect_val = (cur_b_u16 << 16) | cur_a_u16
+        self.mcu_tmc.set_register("XTARGET", xdirect_val)
+        logging.info(
+            "TMC5160 XDIRECT preload: mscnt=%d coil_a=%d coil_b=%d "
+            "raw=0x%08x", mscnt, coil_a, coil_b, xdirect_val
+        )
+        # Re-enable ISR XDIRECT writes now that foreground SPI is done
+        if disable_cmd is not None:
+            disable_cmd.send([])
+            logging.info("TMC5160 phase_stepping_enable_spi sent")
+        # Stop the periodic DRV_STATUS/GSTAT checks while the ISR is
+        # writing XDIRECT. The ISR's inline SPI manipulates the SPI
+        # peripheral registers directly — foreground register reads
+        # during ISR activity return corrupted data (e.g., GSTAT reads
+        # as 0x010a0023 instead of a valid 3-bit value), triggering
+        # false drv_err/uv_cp shutdowns. DMA-based SPI (Phase 2) will
+        # fix the arbitration; until then, suppress the checks.
+        self._echeck_helper.stop_checks()
+        logging.info("TMC5160 XDIRECT: stopped periodic checks "
+                     "(phase stepping active)")
 
     def get_phase_config(self):
         """Return (bus_id, cs_pin_id) for phase-stepping integration.
@@ -529,6 +614,9 @@ class TMC5160:
                 self.mcu_tmc.tmc_spi.get_bus_and_cs_ids()
             )
         return (self._phase_bus_id, self._phase_cs_pin_id)
+
+    def get_spi_oid(self):
+        return self.mcu_tmc.tmc_spi.spi.oid
 
 
 def load_config_prefix(config):

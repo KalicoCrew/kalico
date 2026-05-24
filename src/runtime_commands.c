@@ -16,7 +16,9 @@
 #include "kalico_runtime.h"       // FFI export prototypes
 #include "kalico_dispatch.h"      // kalico_native_emit_*
 #if CONFIG_MACH_STM32
-#include "stm32/phase_stepping_spi.h"  // phase_stepping_register_bus
+#include "stm32/phase_stepping_spi.h"
+#elif CONFIG_MACH_LINUX
+#include "linux/phase_stepping_spi.h"
 #endif
 
 
@@ -37,13 +39,7 @@ command_runtime_query_status(uint32_t *args)
     uint8_t status = runtime_handle_status(runtime_handle);
     int32_t last_err = runtime_handle_last_error(runtime_handle);
     uint32_t phase_skip = 0;
-#if CONFIG_MACH_STM32
-    // Cooperative SPI3 contention counter, incremented from the TIM5 ISR
-    // when the phase-stepping write loses the busy-flag race vs Klipper's
-    // low-priority TMC SPI register access. Surface on the periodic
-    // status frame so the host (and the bench acceptance gate) can
-    // monitor that contention stays inside the expected envelope
-    // (<100/s sustained per spec §8.4 / Task 13).
+#if CONFIG_MACH_STM32 || CONFIG_MACH_LINUX
     phase_skip = phase_spi_get_skip_count();
 #endif
     sendf("kalico_status status=%c last_err=%i phase_spi_skip_count=%u",
@@ -579,7 +575,7 @@ DECL_COMMAND(command_runtime_push_segment_msgproto,
 void
 command_runtime_register_phase_bus(uint32_t *args)
 {
-#if CONFIG_MACH_STM32
+#if CONFIG_MACH_STM32 || CONFIG_MACH_LINUX
     uint8_t bus_id = (uint8_t)args[0];
     uint32_t rate = args[1];
     struct spi_config cfg = spi_setup(bus_id, 3 /* mode 3, TMC SPI */, rate);
@@ -603,7 +599,7 @@ DECL_COMMAND(command_runtime_register_phase_bus,
 void
 command_runtime_register_phase_motor(uint32_t *args)
 {
-#if CONFIG_MACH_STM32
+#if CONFIG_MACH_STM32 || CONFIG_MACH_LINUX
     uint8_t motor_idx = (uint8_t)args[0];
     uint8_t bus_id    = (uint8_t)args[1];
     uint8_t cs_pin_id = (uint8_t)args[2];

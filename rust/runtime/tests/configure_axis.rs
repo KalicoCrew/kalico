@@ -91,8 +91,8 @@ fn configure_axis_rejects_invalid_inputs() {
     // Zero / negative microstep_distance.
     assert_ne!(e.configure_axis(0, StepMode::Pulse, 0.0, &[b]), 0);
     assert_ne!(e.configure_axis(0, StepMode::Pulse, -0.01, &[b]), 0);
-    // Phase mode — rejected with KALICO_ERR_PHASE_MODE_NOT_AVAILABLE.
-    assert_ne!(e.configure_axis(0, StepMode::Phase, 0.01, &[b]), 0);
+    // Phase mode with a valid microstep_distance is now accepted.
+    assert_eq!(e.configure_axis(0, StepMode::Phase, 0.01, &[b]), 0);
 }
 
 #[test]

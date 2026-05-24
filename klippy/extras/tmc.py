@@ -280,6 +280,7 @@ class TMCCommandHelper:
         self.toff = None
         self.mcu_phase_offset = None
         self.stepper = None
+        self._post_enable_cb = None
         self.stepper_enable = self.printer.load_object(config, "stepper_enable")
         self.printer.register_event_handler(
             "stepper:sync_mcu_position", self._handle_sync_mcu_pos
@@ -324,6 +325,9 @@ class TMCCommandHelper:
         for reg_name in list(self.fields.registers.keys()):
             val = self.fields.registers[reg_name]  # Val may change during loop
             self.mcu_tmc.set_register(reg_name, val, print_time)
+
+    def set_post_enable_callback(self, cb):
+        self._post_enable_cb = cb
 
     cmd_INIT_TMC_help = "Initialize TMC stepper driver registers"
 
@@ -461,7 +465,12 @@ class TMCCommandHelper:
                 # Shared enable via comms handling
                 self.fields.set_field("toff", self.toff)
             self._init_registers()
-            did_reset = self.echeck_helper.start_checks()
+            if self._post_enable_cb is not None:
+                self._post_enable_cb()
+            if self._post_enable_cb is not None:
+                did_reset = False
+            else:
+                did_reset = self.echeck_helper.start_checks()
             if did_reset:
                 self.mcu_phase_offset = None
             # Calculate phase offset
@@ -529,7 +538,12 @@ class TMCCommandHelper:
             if self.toff is not None:
                 self.fields.set_field("toff", self.toff)
             self._init_registers()
-            did_reset = self.echeck_helper.start_checks()
+            if self._post_enable_cb is not None:
+                self._post_enable_cb()
+            if self._post_enable_cb is not None:
+                did_reset = False
+            else:
+                did_reset = self.echeck_helper.start_checks()
             if did_reset:
                 self.mcu_phase_offset = None
             if self.mcu_phase_offset is not None:
@@ -569,6 +583,8 @@ class TMCCommandHelper:
                 )
             else:
                 self._init_registers()
+                if self._post_enable_cb is not None:
+                    self._post_enable_cb()
         except self.printer.command_error as e:
             logging.info("TMC %s failed to init: %s", self.name, str(e))
 

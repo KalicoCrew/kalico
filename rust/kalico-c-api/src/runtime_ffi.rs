@@ -29,7 +29,7 @@ pub mod exports {
         KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_ARG,
         KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION, KALICO_ERR_INVALID_HANDLE,
         KALICO_ERR_INVALID_KINEMATICS,
-        KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR, KALICO_ERR_PHASE_MODE_NOT_AVAILABLE,
+        KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
         KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_ERR_QUEUE_FULL,
         KALICO_ERR_SEGMENT_ID_NON_MONOTONIC, KALICO_ERR_ZERO_DURATION_SEGMENT, KALICO_OK,
     };
@@ -82,7 +82,7 @@ pub mod exports {
     // the INIT_DONE guard + the half-split aliasing pattern, not
     // type-system Sync.
     #[cfg(not(target_os = "none"))]
-    #[repr(transparent)]
+    #[repr(C, align(16))]
     struct HostRtStorage(UnsafeCell<[u8; RT_STORAGE_SIZE]>);
     // SAFETY: see runtime_handle_create's SAFETY comment.
     #[cfg(not(target_os = "none"))]
@@ -1336,6 +1336,18 @@ pub mod exports {
         unsafe {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
             (*shared_ptr).stepper_counts[oid as usize].load(Ordering::Acquire)
+        }
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn kalico_runtime_get_xdirect_write_count() -> u32 {
+        #[cfg(not(target_os = "none"))]
+        {
+            runtime::test_xdirect_capture::count() as u32
+        }
+        #[cfg(target_os = "none")]
+        {
+            0
         }
     }
 
@@ -2738,16 +2750,17 @@ pub mod exports {
     #[unsafe(no_mangle)]
     pub extern "C" fn kalico_runtime_get_dispatcher_floor_cycles() -> u32 {
         let Some(rt_ptr) = runtime_handle_or_null() else {
-            return 0;
+            return 5_000_000;
         };
         // SAFETY: `rt_ptr` is the published rt_storage projection, valid
         // for the lifetime of the program once INIT_DONE is set. Read-only
         // access to `SharedState` atomics via a shared `&` projection — no
         // `&mut` reaches this path.
-        unsafe {
+        let v = unsafe {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*rt_ptr).shared);
             (*shared_ptr).dispatcher_floor_cycles.load(Ordering::Acquire)
-        }
+        };
+        if v == 0 { 5_000_000 } else { v }
     }
 
     /// Read the per-axis-timer empty-queue poll cadence (cycles). Used by
@@ -2760,13 +2773,14 @@ pub mod exports {
     #[unsafe(no_mangle)]
     pub extern "C" fn kalico_runtime_get_sample_period_cycles() -> u32 {
         let Some(rt_ptr) = runtime_handle_or_null() else {
-            return 0;
+            return 5_000_000;
         };
         // SAFETY: see `kalico_runtime_get_dispatcher_floor_cycles`.
-        unsafe {
+        let v = unsafe {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*rt_ptr).shared);
             (*shared_ptr).sample_period_cycles.load(Ordering::Acquire)
-        }
+        };
+        if v == 0 { 5_000_000 } else { v }
     }
 
     // ─── Stepping-redesign Task 11 ──────────────────────────────────────
@@ -2785,9 +2799,8 @@ pub mod exports {
     /// Stepping-redesign Task 14. Publish per-axis configuration with
     /// explicit stepper bindings. `microstep_distance_f32_bits` is
     /// `f32::to_bits` of the per-step distance (Klipper carries f32 as u32
-    /// on the wire). `mode` is `0` for Pulse; `1` for Phase — Phase is
-    /// currently rejected with `KALICO_ERR_PHASE_MODE_NOT_AVAILABLE` (the
-    /// SPI dispatch path is a follow-up task). Other mode values return
+    /// on the wire). `mode` is `0` for Pulse; `1` for Phase (TMC5160
+    /// XDIRECT coil-current modulation). Other mode values return
     /// `KALICO_ERR_INVALID_ARG`. `bindings_ptr` points to an array of
     /// `stepper_count` [`runtime::stepping_state::StepperBindingRust`]
     /// entries; a null pointer with `stepper_count == 0` is legal (axis
@@ -2809,16 +2822,9 @@ pub mod exports {
         if !INIT_DONE.load(Ordering::Acquire) {
             return KALICO_ERR_NOT_INIT;
         }
-        // Phase mode is not yet available — reject at the FFI boundary so
-        // the C host sees KALICO_ERR_PHASE_MODE_NOT_AVAILABLE rather than
-        // a generic invalid-arg code. The engine method also guards this,
-        // but checking here avoids decoding the bindings slice for a mode
-        // the engine will reject regardless.
-        if mode == 1 {
-            return KALICO_ERR_PHASE_MODE_NOT_AVAILABLE;
-        }
         let mode_enum = match mode {
             0 => runtime::stepping_state::StepMode::Pulse,
+            1 => runtime::stepping_state::StepMode::Phase,
             _ => return KALICO_ERR_INVALID_ARG,
         };
         let mstep_dist = f32::from_bits(microstep_distance_f32_bits);
@@ -2850,9 +2856,30 @@ pub mod exports {
         unsafe {
             let isr_ptr: *mut IsrState =
                 UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
-            (*isr_ptr)
+            let rc = (*isr_ptr)
                 .engine
-                .configure_axis(axis_idx, mode_enum, mstep_dist, bindings)
+                .configure_axis(axis_idx, mode_enum, mstep_dist, bindings);
+            if rc != KALICO_OK {
+                return rc;
+            }
+            // If configure_axes_blob marked this axis as Modulated, upgrade
+            // axis.mode from Pulse to Phase so the ISR routes through
+            // dispatch_phase for XDIRECT coil modulation.
+            let shared_ptr: *const runtime::state::SharedState =
+                core::ptr::addr_of!((*ctx).shared);
+            if (axis_idx as usize) < runtime::state::MAX_STEPPER_OIDS {
+                let step_mode = (*shared_ptr).step_modes[axis_idx as usize]
+                    .load(core::sync::atomic::Ordering::Acquire);
+                if step_mode == runtime::state::StepMode::Modulated as u8 {
+                    (*isr_ptr).engine.stepping_axes[axis_idx as usize]
+                        .mode
+                        .store(
+                            runtime::stepping_state::StepMode::Phase as u8,
+                            core::sync::atomic::Ordering::Release,
+                        );
+                }
+            }
+            KALICO_OK
         }
     }
 

@@ -1019,57 +1019,9 @@ class MotionToolhead(ToolHead):
                         "reflash." % (slot_name, name, mcu_caps)
                     )
             if any_phase_stepping:
-                # GCONF synchronization barrier: TMC5160's direct_mode bit
-                # was queued by tmc5160.py::_enable_direct_mode during the
-                # connect-time SPI burst. Reading GCONF back via the
-                # canonical synchronous accessor (mcu_tmc.get_register, which
-                # serializes on the SPI mutex and performs a reg_read
-                # round-trip) flushes the MCU's command queue, guaranteeing
-                # the burst's writes have committed before configure_axes_blob
-                # arms the TIM5 XDIRECT ISR. Without this barrier,
-                # printer.cfg section ordering ([motion_toolhead] before
-                # [tmc5160 stepper_*]) can race the burst, and TMC5160
-                # silently discards XDIRECT writes when direct_mode=0,
-                # producing no torque and no error.
-                #
-                # One TMC chip per stepper_name; iterate over the flat
-                # per-motor list. (The same physical chip cannot appear
-                # twice — distinct stepper sections each own their own
-                # TMC5160 SPI chip on a distinct CS pin.)
-                gconf_checked = set()
-                for i, slot in enumerate(slot_steppers):
-                    if step_modes[i] != 0 or not slot:
-                        continue
-                    for (stepper_name, _stepper) in slot:
-                        if stepper_name in gconf_checked:
-                            continue
-                        gconf_checked.add(stepper_name)
-                        try:
-                            tmc = self.printer.lookup_object(
-                                "tmc5160 " + stepper_name
-                            )
-                        except Exception:
-                            # Already validated above; treat as best-effort.
-                            continue
-                        mcu_tmc = getattr(tmc, "mcu_tmc", None)
-                        if (mcu_tmc is None
-                                or not hasattr(mcu_tmc, "get_register")):
-                            # Different driver type (e.g. UART instead of
-                            # SPI) lacks the synchronous accessor; the
-                            # barrier is best-effort hardening for TMC5160
-                            # SPI and must not break other paths.
-                            continue
-                        gconf_val = mcu_tmc.get_register("GCONF")
-                        if not (gconf_val & (1 << 16)):
-                            raise self.printer.config_error(
-                                "phase_stepping=True on stepper '%s' but "
-                                "GCONF.direct_mode is 0 after connect "
-                                "(GCONF=0x%x); TMC5160 connect-time burst "
-                                "did not commit. This usually indicates a "
-                                "[motion_toolhead] vs [tmc5160 %s] section "
-                                "ordering race or an SPI failure."
-                                % (stepper_name, gconf_val, stepper_name)
-                            )
+                # GCONF.direct_mode is set by _xdirect_preload at stepper
+                # enable time (not at connect time) to ensure CHOPCONF
+                # toff>0 is on the chip first. No barrier needed here.
                 # 2026-05-19 phase-stepping two-stage registration. SPI bus
                 # cfg is shared across all TMC5160s on a bus and registered
                 # once per unique bus_id. Per-motor CS GPIOs are registered
@@ -1089,6 +1041,8 @@ class MotionToolhead(ToolHead):
                     if bus_id in seen_buses:
                         continue
                     seen_buses.add(bus_id)
+                    logging.info("register_phase_bus mcu=%s bus_id=%d",
+                                 name, bus_id)
                     self.bridge.register_phase_bus(
                         mcu_handle, bus_id, rate=2_000_000,
                     )
@@ -1097,6 +1051,9 @@ class MotionToolhead(ToolHead):
                 ):
                     if bus_id == 0xFF:
                         continue
+                    logging.info(
+                        "register_phase_motor mcu=%s motor=%d bus=%d cs=%d",
+                        name, motor_idx, bus_id, cs_pin_id)
                     self.bridge.register_phase_motor(
                         mcu_handle, motor_idx, bus_id, cs_pin_id,
                     )
@@ -1177,7 +1134,18 @@ class MotionToolhead(ToolHead):
                 for (oid, inv) in bindings:
                     blob.append(oid)
                     blob.append(inv & 0x01)
-                    blob.append(TMC_CS_OID_NONE)
+                    tmc_oid = TMC_CS_OID_NONE
+                    if step_modes[axis_idx] == 0:
+                        for (sname, s) in slot_steppers[axis_idx]:
+                            if s.get_oid() == oid:
+                                tmc_name = "tmc5160 " + sname
+                                try:
+                                    tmc = self.printer.lookup_object(tmc_name)
+                                    tmc_oid = tmc.get_spi_oid()
+                                except Exception:
+                                    pass
+                                break
+                    blob.append(tmc_oid)
                     blob.append(FLAGS_DEFAULT)
                 configure_axis_cmd.send([
                     axis_idx, MODE_PULSE, microstep_bits, extrusion_bits,
@@ -1195,6 +1163,8 @@ class MotionToolhead(ToolHead):
                 phase_configs, any_phase_stepping,
                 len(phase_configs),
             )
+            # phase_stepping_enable_spi is sent from TMC5160._xdirect_preload
+            # after all TMC register init is complete, not here.
 
     # ------------------------------------------------------------------
     # Sim-only diagnostic gcode commands

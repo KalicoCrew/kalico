@@ -51,6 +51,17 @@ use crate::step_queue::{StepEntry, StepQueue, push as queue_push};
 use crate::stepping_state::{AxisConfig, StepMode};
 use crate::sub_sample_timing::{StepTimeInputs, StepTimingResult, compute_step_times};
 
+// FFI declaration for the C-side SPI write function. Enabled on MCU builds
+// and MACH_LINUX sim builds (kalico-sim feature). The C implementation in
+// `src/stm32/phase_stepping_spi.c` (MCU) and `src/linux/phase_stepping_spi.c`
+// (sim) performs a skip-not-block transfer: if `phase_spi_try_acquire()`
+// fails (bus held by foreground TMC register access), the write is skipped
+// and a skip counter is incremented — no blocking, no queue needed.
+#[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+unsafe extern "C" {
+    fn phase_stepping_write_xdirect(motor_idx: u8, coil_a: i16, coil_b: i16);
+}
+
 /// `|P_end - P_start|` below this triggers the uniform-spacing fallback
 /// in `dispatch_pulse`. Default ≈ one tenth of a micron, well below the
 /// physical microstep on every kinematic we ship.
@@ -298,6 +309,19 @@ fn commit_position_count(axis: &AxisConfig, axis_idx: usize, shared: &SharedStat
     if delta == 0 {
         return;
     }
+    // When step_modes[axis] == Modulated, the TMC5160 is in XDIRECT mode
+    // and ignores GPIO step pulses — they produce no physical motion. Only
+    // dispatch_phase (via direct position_count updates) should advance the
+    // counter. Suppressing here makes the sim faithful to hardware.
+    if shared
+        .step_modes
+        .get(axis_idx)
+        .map_or(false, |m| {
+            m.load(Ordering::Acquire) == crate::state::StepMode::Modulated as u8
+        })
+    {
+        return;
+    }
     for stepper in &axis.steppers {
         let prev = stepper.position_count.load(Ordering::Acquire);
         let Some(next) = prev.checked_add(delta) else {
@@ -416,47 +440,72 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
         // Task 14: push the new coil pair into the per-bus SPI write
         // queue. The foreground struct-timer in `src/runtime_tick.c`
         // pops these and dispatches the actual SPI transfer through
-        // Klipper's bus driver (currently a stub; Stage-5 bench bring-up
-        // wires real SPI). Stepper without a TMC chip-select (e.g. a
-        // phase-stepped Z stepper without TMC5160) skips the push.
+        // Klipper's bus driver. Steppers without a TMC chip-select (e.g.
+        // a phase-stepped Z stepper without TMC5160) skip the push.
         //
-        // Bus index is hardcoded to 0 in the MVP. Production needs a
-        // per-stepper `bus_idx` field on `StepperRef` (or the upper byte
-        // of `tmc_cs_oid` reinterpreted as bus | gpio_handle); deferred until
-        // we have a multi-bus board to test against.
+        // `motor_idx` is resolved from `shared.phase_slot_idx`: scan
+        // entries 0..phase_motor_count for ones whose slot matches
+        // `axis_idx`, collecting them into a local cursor so the j-th
+        // stepper in this axis maps to the j-th matching motor entry.
         if stepper.tmc_cs_oid.is_some() {
-            #[allow(clippy::cast_sign_loss)] // sign-preserving u16->u32 then mask
-            let packed = ((u32::from(coil_a as u16)) << 16) | (u32::from(coil_b as u16));
-            let bus_idx: usize = 0;
-            #[cfg(not(any(test, feature = "host")))]
-            // SAFETY: `spi_queues` is a C-owned static of fixed length
-            // `N_SPI_BUSES`; `bus_idx < N_SPI_BUSES` is enforced by the
-            // hardcoded `0`. The cast yields a pointer to the `bus_idx`-th
-            // element of the array — same provenance as the array base.
-            let queue_ptr = unsafe {
-                crate::spi_queue::spi_queues
-                    .get()
-                    .cast::<crate::spi_queue::SpiQueue>()
-                    .add(bus_idx)
-            };
-            #[cfg(any(test, feature = "host"))]
-            let queue_ptr: *mut crate::spi_queue::SpiQueue = core::ptr::null_mut();
-            if !queue_ptr.is_null() {
-                let entry = crate::spi_queue::SpiWrite {
-                    tmc_cs_oid: stepper
-                        .tmc_cs_oid
-                        .unwrap_or(crate::stepping_state::TMC_CS_OID_NONE),
-                    reg: 0x2D, // TMC5160 XDIRECT
-                    _pad: [0; 2],
-                    #[allow(clippy::cast_possible_wrap)] // packed is the bit-pattern we want
-                    value: packed as i32,
-                };
-                // SAFETY: `queue_ptr` points to a live `SpiQueue` (C-owned
-                // static); the TIM5 ISR is the sole producer for every
-                // bus, satisfying the SPSC contract documented on `push`.
-                if unsafe { crate::spi_queue::push(queue_ptr, entry) }.is_err() {
-                    crate::fault_helpers::raise_spi_queue_overflow(shared, bus_idx);
+            // Resolve motor_idx by scanning phase_slot_idx for this axis.
+            // We track `stepper_cursor` (count of steppers with tmc_cs_oid
+            // seen so far) to match the j-th stepper to the j-th motor.
+            // This variable is incremented below after each tmc_cs_oid stepper.
+            // Inline scan: find the motor_cursor-th entry in phase_slot_idx
+            // that maps to axis_idx.
+            let phase_motor_count =
+                shared.phase_motor_count.load(Ordering::Acquire) as usize;
+            let mut found_motor_idx: Option<u8> = None;
+            {
+                // Count how many tmc_cs_oid-bearing steppers in this axis
+                // come before `stepper` in `axis.steppers` to derive the
+                // j-th slot we need to look up.
+                let mut j: usize = 0;
+                for earlier in &axis.steppers {
+                    if core::ptr::eq(earlier as *const _, stepper as *const _) {
+                        break;
+                    }
+                    if earlier.tmc_cs_oid.is_some() {
+                        j += 1;
+                    }
                 }
+                // Walk phase_slot_idx to find the j-th entry matching axis_idx.
+                let mut match_count: usize = 0;
+                for m in 0..phase_motor_count.min(crate::state::MAX_STEPPER_OIDS) {
+                    let slot = shared.phase_slot_idx[m].load(Ordering::Acquire);
+                    if slot as usize == axis_idx {
+                        if match_count == j {
+                            #[allow(clippy::cast_possible_truncation)]
+                            {
+                                found_motor_idx = Some(m as u8);
+                            }
+                            break;
+                        }
+                        match_count += 1;
+                    }
+                }
+            }
+
+            let motor_idx = found_motor_idx.unwrap_or(0xFF);
+
+            #[cfg(any(test, feature = "host"))]
+            crate::test_xdirect_capture::record(motor_idx, coil_a, coil_b);
+
+            // Call phase_stepping_write_xdirect directly from the ISR.
+            // On MCU builds this is always active. On MACH_LINUX sim builds
+            // (kalico-sim feature), it's also active so the call exercises
+            // the real SPI path through the shim → emulator.
+            // The C function implements skip-not-block semantics: it calls
+            // phase_spi_try_acquire() and skips the transfer (incrementing a
+            // skip counter) if the SPI bus is held by a foreground TMC
+            // register access — no fault, no queue needed.
+            #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+            // SAFETY: motor_idx, coil_a, coil_b are computed from validated
+            // LUT/config state above. The C function is reentrant-safe for
+            // concurrent foreground access via its internal try-acquire guard.
+            unsafe {
+                phase_stepping_write_xdirect(motor_idx, coil_a, coil_b);
             }
         }
 
@@ -1060,15 +1109,14 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         if crate::endstop::tick(ctx.now_cycles_u64, v_motor_q16, &stepper_counts)
             == crate::endstop::TripAction::AbortNow
         {
-            // Endstop tripped. Clear all active pieces so no further
-            // steps are dispatched from this sample onward. The segment
-            // stays in Engine::current — post_pass_exhaustion will see
-            // pending_mask → 0 and retire_if_complete will fire on the
-            // same tick_sample call, publishing the credit-freed cursor
-            // via the normal drain path.
             for axis in ctx.axes.iter_mut() {
                 axis.piece = None;
                 axis.curve_handle = None;
+            }
+        }
+        for (i, &val) in stepper_counts.iter().enumerate() {
+            if let Some(dst) = ctx.shared.stepper_counts.get(i) {
+                dst.store(val, Ordering::Release);
             }
         }
     }

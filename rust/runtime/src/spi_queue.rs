@@ -34,23 +34,27 @@ pub const SPI_QUEUE_DEPTH_MASK: u16 = (SPI_QUEUE_DEPTH as u16) - 1;
 /// Number of independent SPI buses (SPI1 / SPI3 + headroom).
 pub const N_SPI_BUSES: usize = 3;
 
-/// One pending SPI write: TMC chip-select OID (`command_config_spi`
-/// device OID), TMC register address, and a 32-bit payload (packed
-/// `(coil_A << 16) | (coil_B & 0xFFFF)` for the XDIRECT register).
+/// One pending SPI write: motor slot index, signed coil-A and coil-B
+/// currents for the TMC5160 XDIRECT register.
 ///
 /// Layout must match the C struct exactly — `#[repr(C)]` + the same field
-/// order + the explicit 2-byte pad gives an 8-byte entry on every target
+/// order + the explicit pad fields give an 8-byte entry on every target
 /// we care about (ABI-stable across H7 / F4 / host).
+///
+/// `motor_idx` is the index into the C-side `phase_motors[]` table; the C
+/// consumer resolves the SPI bus and chip-select from that table.
+/// `_pad` rounds `motor_idx` to 2 bytes so `coil_a` lands on a 2-byte
+/// alignment boundary. `_pad2` rounds the struct to 8 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SpiWrite {
-    pub tmc_cs_oid: u8,
-    pub reg: u8,
-    // ABI padding so `value` lands on its natural 4-byte alignment. Public
-    // for FFI layout; never read from Rust.
+    pub motor_idx: u8,
     #[allow(clippy::pub_underscore_fields)]
-    pub _pad: [u8; 2],
-    pub value: i32,
+    pub _pad: u8,
+    pub coil_a: i16,
+    pub coil_b: i16,
+    #[allow(clippy::pub_underscore_fields)]
+    pub _pad2: [u8; 2],
 }
 const _: () = assert!(core::mem::size_of::<SpiWrite>() == 8);
 
@@ -76,10 +80,11 @@ impl SpiQueue {
             head: 0,
             _pad: [0; 4],
             buf: [SpiWrite {
-                tmc_cs_oid: 0xFF,
-                reg: 0,
-                _pad: [0; 2],
-                value: 0,
+                motor_idx: 0xFF,
+                _pad: 0,
+                coil_a: 0,
+                coil_b: 0,
+                _pad2: [0; 2],
             }; SPI_QUEUE_DEPTH],
         }
     }
@@ -101,13 +106,6 @@ const _: () = {
     assert!(SPI_QUEUE_DEPTH.is_power_of_two());
 };
 
-// On MCU builds, storage is the C-declared `spi_queues` symbol; the
-// `UnsafeCell` wrapper is purely a marker that interior mutation is
-// expected. Host / test builds construct queues directly via `new()`.
-#[cfg(not(any(test, feature = "host")))]
-unsafe extern "C" {
-    pub static spi_queues: core::cell::UnsafeCell<[SpiQueue; N_SPI_BUSES]>;
-}
 
 /// Returned by `push` when the ring is full.
 #[derive(Debug, PartialEq, Eq)]

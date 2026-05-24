@@ -19,10 +19,11 @@
 #define N_SPI_BUSES           3   // headroom for SPI1/SPI3 + future expansion
 
 typedef struct {
-    uint32_t cs_pin;       // GPIO handle for chip-select
-    uint8_t  reg;          // TMC register address (XDIRECT = 0x2D)
-    uint8_t  _pad[3];
-    int32_t  value;        // packed (coil_A << 16) | (coil_B & 0xFFFF)
+    uint8_t  motor_idx;    // index into phase_motors[] for write_xdirect dispatch
+    uint8_t  _pad;
+    int16_t  coil_a;
+    int16_t  coil_b;
+    uint8_t  _pad2[2];
 } SpiWrite;
 
 typedef struct {
@@ -34,8 +35,8 @@ typedef struct {
 
 extern SpiQueue spi_queues[N_SPI_BUSES];
 
-_Static_assert(sizeof(SpiWrite) == 12, "SpiWrite layout drift");
-_Static_assert(sizeof(SpiQueue) == 200, "SpiQueue layout drift");
+_Static_assert(sizeof(SpiWrite) == 8, "SpiWrite layout drift");
+_Static_assert(sizeof(SpiQueue) == 136, "SpiQueue layout drift");
 _Static_assert(offsetof(SpiQueue, buf) == 8, "SpiQueue.buf offset drift");
 _Static_assert((SPI_QUEUE_DEPTH & SPI_QUEUE_DEPTH_MASK) == 0,
                "SPI_QUEUE_DEPTH must be power of 2");
