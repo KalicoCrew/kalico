@@ -216,11 +216,11 @@ bail:
     spi->IFCR = 0xFFFFFFFF;
     spi->CR1 = SPI_CR1_SSI;
 #else
-    // Non-H7: use standard spi_transfer_locked (SPI v1).
+    // Non-H7: use standard spi_transfer (SPI v1).
     spi_prepare(phase_buses[bus_id].fast_cfg);
     gpio_out_write(phase_motors[motor_idx].cs, 0);
-    spi_transfer_locked(phase_buses[bus_id].fast_cfg, 0,
-                        sizeof(datagram), datagram);
+    spi_transfer(phase_buses[bus_id].fast_cfg, 0,
+                 sizeof(datagram), datagram);
 #endif
     gpio_out_write(phase_motors[motor_idx].cs, 1);
 
