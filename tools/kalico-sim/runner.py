@@ -165,6 +165,9 @@ def spawn_mcu(
     # interposition; vtime must see the raw libc symbols.
     env["LD_PRELOAD"] = f"{vtime_so}:{shim_so}"
     env["KALICO_SIM_SOCK_DIR"] = sock_dir
+    # Default vtime speed (100x) — fast enough for init convergence,
+    # controlled by KALICO_VTIME_SPEED env if needed.
+    # env["KALICO_VTIME_SPEED"] = "100"  # libvtime default
     if verbose:
         env["KALICO_SIM_SHIM_VERBOSE"] = "1"
         env["KALICO_VTIME_DEBUG"] = "1"
