@@ -94,7 +94,7 @@ phase_stepping_register_bus(uint8_t bus_id, struct spi_config cfg)
     // TMC5160 datasheet maximum is 8 MHz; 4 MHz is conservative.
     struct spi_config fast = cfg;
     uint32_t pclk = get_pclock_frequency((uint32_t)(uintptr_t)cfg.spi);
-    uint32_t target_rate = 4000000;
+    uint32_t target_rate = 8000000;
     uint32_t div = 0;
     while ((pclk >> (div + 1)) > target_rate && div < 7)
         div++;
