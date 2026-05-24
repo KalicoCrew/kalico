@@ -2675,7 +2675,7 @@ impl PyMotionBridge {
     /// Send `runtime_arm_endstop` and wait for the synchronous response.
     /// Returns the status byte (0=Armed, 1=AlreadyTripped, 2=Rejected) per
     /// spec §3.2.
-    #[pyo3(signature = (mcu, queue, arm_id, arm_clock, sources, stepper_oids, timeout_s=0.1))]
+    #[pyo3(signature = (mcu, queue, arm_id, arm_clock, sources, stepper_oids, timeout_s=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn endstop_arm(
         &self,
@@ -2733,7 +2733,7 @@ impl PyMotionBridge {
 
     /// Send `runtime_disarm_endstop` and wait for the response. Returns the
     /// status byte (0=Disarmed, 1=AlreadyTripped, 2=Unknown) per spec §3.5.
-    #[pyo3(signature = (mcu, queue, arm_id, timeout_s=0.1))]
+    #[pyo3(signature = (mcu, queue, arm_id, timeout_s=2.0))]
     fn endstop_disarm(&self, mcu: u32, queue: u32, arm_id: u32, timeout_s: f64) -> PyResult<u8> {
         use kalico_host_rt::endstop;
         let _ = queue;
@@ -2796,7 +2796,7 @@ impl PyMotionBridge {
 
     /// Send `runtime_software_trip arm_id=%u` to the MCU and wait for the
     /// `kalico_software_trip_response`. Returns the status byte from the MCU.
-    #[pyo3(signature = (mcu, arm_id, timeout_s=0.1))]
+    #[pyo3(signature = (mcu, arm_id, timeout_s=2.0))]
     fn software_trip(&self, mcu: u32, arm_id: u32, timeout_s: f64) -> PyResult<u8> {
         let io = self.host_io_for_mcu("software_trip", mcu)?;
         let timeout = std::time::Duration::from_secs_f64(timeout_s);
