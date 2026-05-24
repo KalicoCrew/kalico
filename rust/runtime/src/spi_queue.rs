@@ -34,11 +34,17 @@ pub const SPI_QUEUE_DEPTH_MASK: u16 = (SPI_QUEUE_DEPTH as u16) - 1;
 /// Number of independent SPI buses (SPI1 / SPI3 + headroom).
 pub const N_SPI_BUSES: usize = 3;
 
-/// One pending XDIRECT coil write for a single phase-stepping motor.
+/// One pending SPI write: motor slot index, signed coil-A and coil-B
+/// currents for the TMC5160 XDIRECT register.
 ///
-/// Layout must match the C struct in `src/spi_queue.h` exactly —
-/// `#[repr(C)]` + identical field order + explicit padding gives an
-/// 8-byte entry on every target (ABI-stable across H7 / F4 / host).
+/// Layout must match the C struct exactly — `#[repr(C)]` + the same field
+/// order + the explicit pad fields give an 8-byte entry on every target
+/// we care about (ABI-stable across H7 / F4 / host).
+///
+/// `motor_idx` is the index into the C-side `phase_motors[]` table; the C
+/// consumer resolves the SPI bus and chip-select from that table.
+/// `_pad` rounds `motor_idx` to 2 bytes so `coil_a` lands on a 2-byte
+/// alignment boundary. `_pad2` rounds the struct to 8 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SpiWrite {

@@ -38,10 +38,6 @@ __attribute__((used, externally_visible))
 void
 phase_spi_release(void)
 {
-    // Single-byte volatile write is atomic on M4/M7. No critical
-    // section needed because we are the sole writer of the cleared
-    // state; preemption between read and write of the held state
-    // cannot violate invariants.
     phase_spi_busy = 0;
 }
 

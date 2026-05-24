@@ -1606,15 +1606,6 @@ init_per_axis_step_timers(void)
 }
 
 // === Task 14: SPI queue foreground drain ===
-//
-// The TIM5 ISR pushes SpiWrite entries into spi_queues[bus_idx] from
-// dispatch_phase. This foreground Klipper timer fires at ~10 kHz, pops
-// entries, and dispatches each one through phase_stepping_write_xdirect
-// (src/{stm32,linux}/phase_stepping_spi.c) which handles bus lookup,
-// chip-select, and the 5-byte XDIRECT SPI transfer.
-//
-// At 40 kHz ISR × N motors, the 10 kHz drain pops ~4·N entries per wake.
-// SPI_QUEUE_DEPTH=16 provides headroom for transient jitter.
 
 #include "spi_queue.h"
 

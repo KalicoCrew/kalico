@@ -1,16 +1,13 @@
 //! Task 14 — `configure_axis` two-phase validation tests.
 //!
-//! Covers: Phase mode rejection, out-of-range axis index, valid Pulse
+//! Covers: Phase mode acceptance, out-of-range axis index, valid Pulse
 //! success with stepper bindings, OID 0 as a legal SPI binding, and
 //! state-preservation on validation failure.
 
 use core::sync::atomic::Ordering;
 
 use runtime::engine::Engine;
-use runtime::error::{
-    KALICO_ERR_INVALID_ARG, KALICO_ERR_MOTION_IN_PROGRESS, KALICO_ERR_PHASE_MODE_NOT_AVAILABLE,
-    KALICO_OK,
-};
+use runtime::error::{KALICO_ERR_INVALID_ARG, KALICO_ERR_MOTION_IN_PROGRESS, KALICO_OK};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::stepping_state::{StepMode, StepperBindingRust, TMC_CS_OID_NONE};
 
@@ -38,33 +35,27 @@ fn tmc_binding(oid: u8) -> StepperBindingRust {
     }
 }
 
-// ─── Test 1: Phase mode is rejected ──────────────────────────────────────────
+// ─── Test 1: Phase mode is accepted ──────────────────────────────────────────
 
-/// `configure_axis(mode=Phase)` must return `KALICO_ERR_PHASE_MODE_NOT_AVAILABLE`
-/// and must NOT arm the axis (stepper list stays empty, mode stays Pulse).
+/// `configure_axis(mode=Phase)` must succeed (`KALICO_OK`) and publish
+/// the axis mode as `Phase`, with the stepper binding stored.
 #[test]
-fn phase_mode_rejected() {
+fn phase_mode_accepted() {
     let mut e = build_engine();
     let b = no_tmc_binding();
 
     let rc = e.configure_axis(0, StepMode::Phase, 0.0125, &[b]);
-    assert_eq!(
-        rc, KALICO_ERR_PHASE_MODE_NOT_AVAILABLE,
-        "expected PHASE_MODE_NOT_AVAILABLE, got {rc}"
-    );
+    assert_eq!(rc, KALICO_OK, "Phase configure_axis must succeed, got {rc}");
 
-    // Axis state must be untouched — mode stays Pulse (the default), and
-    // no stepper binding should have been written.
+    // Axis mode must be Phase and the stepper binding written.
     let axis = &e.stepping_axes[0];
     assert_eq!(
         axis.mode.load(Ordering::Acquire),
-        StepMode::Pulse as u8,
-        "mode must not have been written on Phase rejection"
+        StepMode::Phase as u8,
+        "mode must be Phase after Phase configure_axis"
     );
-    assert!(
-        axis.steppers.is_empty(),
-        "stepper bindings must not be populated on rejection"
-    );
+    assert_eq!(axis.steppers.len(), 1, "stepper binding must be stored");
+    assert!((axis.microstep_distance - 0.0125).abs() < 1e-9);
 }
 
 // ─── Test 2: Out-of-range axis index ─────────────────────────────────────────
@@ -154,45 +145,41 @@ fn binding_tmc_cs_oid_zero_is_legal() {
     );
 }
 
-// ─── Test 5: Validation failure leaves pre-existing state untouched ───────────
+// ─── Test 5: Switching from Pulse to Phase mode succeeds ─────────────────────
 
-/// When `configure_axis` fails validation, the axis state that was
-/// already configured (from a prior successful call) must remain
-/// unmodified. Guards against partial-write bugs where the engine updates
-/// some fields before hitting a later validation check.
+/// A valid `configure_axis(mode=Phase)` call on an axis that was previously
+/// configured as `Pulse` must succeed and overwrite the axis state.
 #[test]
-fn validation_failure_leaves_state_untouched() {
+fn switch_pulse_to_phase_succeeds() {
     let mut e = build_engine();
     let good_binding = no_tmc_binding();
 
-    // Seed a valid configuration on axis 3.
+    // Seed a valid Pulse configuration on axis 3.
     let rc_ok = e.configure_axis(3, StepMode::Pulse, 0.05, &[good_binding]);
     assert_eq!(rc_ok, KALICO_OK, "first configure must succeed");
 
-    // Snapshot what was written.
-    let microstep_before = e.stepping_axes[3].microstep_distance;
-    let steppers_len_before = e.stepping_axes[3].steppers.len();
+    // Now configure as Phase with a different microstep_distance.
+    let phase_binding = no_tmc_binding();
+    let rc_phase = e.configure_axis(3, StepMode::Phase, 0.01, &[phase_binding]);
+    assert_eq!(rc_phase, KALICO_OK, "Phase configure must succeed");
 
-    // Attempt Phase mode — must fail.
-    let bad_binding = no_tmc_binding();
-    let rc_bad = e.configure_axis(3, StepMode::Phase, 0.01, &[bad_binding]);
-    assert_ne!(rc_bad, KALICO_OK, "Phase configure must fail");
-
-    // State unchanged.
+    // Axis state updated to Phase.
     let axis = &e.stepping_axes[3];
     assert_eq!(
         axis.mode.load(Ordering::Acquire),
-        StepMode::Pulse as u8,
-        "mode must still be Pulse after failed Phase attempt"
+        StepMode::Phase as u8,
+        "mode must be Phase after Phase configure_axis"
     );
-    assert!(
-        (axis.microstep_distance - microstep_before).abs() < 1e-9,
-        "microstep_distance must not change after rejection"
-    );
+    assert!((axis.microstep_distance - 0.01).abs() < 1e-9, "microstep_distance updated");
+
+    // Validation failures on a subsequent call still leave state untouched.
+    let rc_bad = e.configure_axis(3, StepMode::Pulse, 0.0, &[no_tmc_binding()]);
+    assert_ne!(rc_bad, KALICO_OK, "zero microstep_distance must still be rejected");
+    // Mode stays Phase (the bad call touched nothing).
     assert_eq!(
-        axis.steppers.len(),
-        steppers_len_before,
-        "stepper count must not change after rejection"
+        e.stepping_axes[3].mode.load(Ordering::Acquire),
+        StepMode::Phase as u8,
+        "mode must remain Phase after rejected call"
     );
 }
 

@@ -298,6 +298,19 @@ fn commit_position_count(axis: &AxisConfig, axis_idx: usize, shared: &SharedStat
     if delta == 0 {
         return;
     }
+    // When step_modes[axis] == Modulated, the TMC5160 is in XDIRECT mode
+    // and ignores GPIO step pulses — they produce no physical motion. Only
+    // dispatch_phase (via direct position_count updates) should advance the
+    // counter. Suppressing here makes the sim faithful to hardware.
+    if shared
+        .step_modes
+        .get(axis_idx)
+        .map_or(false, |m| {
+            m.load(Ordering::Acquire) == crate::state::StepMode::Modulated as u8
+        })
+    {
+        return;
+    }
     for stepper in &axis.steppers {
         let prev = stepper.position_count.load(Ordering::Acquire);
         let Some(next) = prev.checked_add(delta) else {
@@ -368,48 +381,44 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
         return;
     }
 
+    // Quantize the axis position to integer microsteps. This is the base
+    // against which per-stepper phase offsets are added.
     #[allow(clippy::cast_possible_truncation)]
     let target_microsteps_axis = libm::roundf(p_end / microstep_distance) as i32;
     axis.last_step_count = target_microsteps_axis;
 
+    // u16 -> i32 widening; cannot truncate or lose sign.
     let max_ramp = i32::from(
         shared
             .max_phase_offset_ramp_per_sample
             .load(Ordering::Acquire),
     );
 
-    // Resolve motor_idx for each phase-capable stepper on this axis.
-    // Motors are registered by configure_axes_blob in motor_idx order;
-    // phase_slot_idx[motor_idx] == axis_idx identifies motors on this axis.
-    // The j-th such motor corresponds to the j-th stepper with tmc_cs_oid.
-    let motor_count = shared.phase_motor_count.load(Ordering::Acquire) as usize;
-    let mut axis_motor_ids: [u8; 4] = [0xFF; 4];
-    let mut n_axis_motors: usize = 0;
-    for i in 0..motor_count {
-        if i < crate::state::MAX_STEPPER_OIDS
-            && shared.phase_slot_idx.get(i).map_or(false, |s| {
-                s.load(Ordering::Acquire) == axis_idx as u8
-            })
-            && n_axis_motors < 4
-        {
-            axis_motor_ids[n_axis_motors] = i as u8;
-            n_axis_motors += 1;
-        }
-    }
-    let mut motor_cursor: usize = 0;
-
     for stepper in &axis.steppers {
         ramp_phase_offset(stepper, max_ramp);
         let phase_offset = stepper.phase_offset_microsteps.load(Ordering::Acquire);
         let target_stepper = target_microsteps_axis.wrapping_add(phase_offset);
         let prev_stepper = stepper.last_phase_target.load(Ordering::Acquire);
+        // Wrap on the subtraction implies a configuration discontinuity
+        // (a phase-offset jump or a re-arm): under normal motion
+        // `last_phase_target` advances at most a few microsteps per
+        // sample, so the wrapped difference equals the true difference.
         let delta_stepper = target_stepper.wrapping_sub(prev_stepper);
         stepper
             .last_phase_target
             .store(target_stepper, Ordering::Release);
 
+        // Mask to the 10-bit electrical-cycle width. The signed→unsigned
+        // bitcast wraps negative values modulo 2^32; `& 0x3FF` then
+        // selects the low 10 bits, which equals the mathematical
+        // remainder mod 1024 because 2^32 mod 1024 == 0. This is the
+        // same identity the spec relies on.
         #[allow(clippy::cast_sign_loss)]
         let phase = (target_stepper as u32) & 0x3FF;
+        // `phase` is bounded `0..1024 == PHASE_LUT.len()` by the mask
+        // above, so the lookup cannot panic; the `get` keeps us out of
+        // `clippy::indexing_slicing` (which is denied at the crate root).
+        // safe: bounded by mask 0x3FF (= PHASE_LUT_SIZE - 1)
         let Some((coil_a, coil_b)) = PHASE_LUT.get(phase as usize).copied() else {
             continue;
         };
@@ -417,41 +426,97 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
         stepper.last_coil_A.store(coil_a, Ordering::Release);
         stepper.last_coil_B.store(coil_b, Ordering::Release);
 
-        if stepper.tmc_cs_oid.is_some() && motor_cursor < n_axis_motors {
-            let motor_idx = axis_motor_ids[motor_cursor];
-            motor_cursor += 1;
+        // Task 14: push the new coil pair into the per-bus SPI write
+        // queue. The foreground struct-timer in `src/runtime_tick.c`
+        // pops these and dispatches the actual SPI transfer through
+        // Klipper's bus driver. Steppers without a TMC chip-select (e.g.
+        // a phase-stepped Z stepper without TMC5160) skip the push.
+        //
+        // `motor_idx` is resolved from `shared.phase_slot_idx`: scan
+        // entries 0..phase_motor_count for ones whose slot matches
+        // `axis_idx`, collecting them into a local cursor so the j-th
+        // stepper in this axis maps to the j-th matching motor entry.
+        if stepper.tmc_cs_oid.is_some() {
+            // Resolve motor_idx by scanning phase_slot_idx for this axis.
+            // We track `stepper_cursor` (count of steppers with tmc_cs_oid
+            // seen so far) to match the j-th stepper to the j-th motor.
+            // This variable is incremented below after each tmc_cs_oid stepper.
+            // Inline scan: find the motor_cursor-th entry in phase_slot_idx
+            // that maps to axis_idx.
+            let phase_motor_count =
+                shared.phase_motor_count.load(Ordering::Acquire) as usize;
+            let mut found_motor_idx: Option<u8> = None;
+            {
+                // Count how many tmc_cs_oid-bearing steppers in this axis
+                // come before `stepper` in `axis.steppers` to derive the
+                // j-th slot we need to look up.
+                let mut j: usize = 0;
+                for earlier in &axis.steppers {
+                    if core::ptr::eq(earlier as *const _, stepper as *const _) {
+                        break;
+                    }
+                    if earlier.tmc_cs_oid.is_some() {
+                        j += 1;
+                    }
+                }
+                // Walk phase_slot_idx to find the j-th entry matching axis_idx.
+                let mut match_count: usize = 0;
+                for m in 0..phase_motor_count.min(crate::state::MAX_STEPPER_OIDS) {
+                    let slot = shared.phase_slot_idx[m].load(Ordering::Acquire);
+                    if slot as usize == axis_idx {
+                        if match_count == j {
+                            #[allow(clippy::cast_possible_truncation)]
+                            {
+                                found_motor_idx = Some(m as u8);
+                            }
+                            break;
+                        }
+                        match_count += 1;
+                    }
+                }
+            }
 
-            // MCU: push into the per-bus SPSC queue for foreground drain.
+            let motor_idx = found_motor_idx.unwrap_or(0xFF);
+
+            // On host/test builds, record into the test capture sink
+            // instead of pushing to the null queue.
+            #[cfg(any(test, feature = "host"))]
+            crate::test_xdirect_capture::record(motor_idx, coil_a, coil_b);
+
             #[cfg(not(any(test, feature = "host")))]
             {
                 let bus_idx: usize = 0;
-                // SAFETY: `spi_queues` is a C-owned static of length
-                // `N_SPI_BUSES`; `bus_idx == 0 < N_SPI_BUSES`.
+                // SAFETY: `spi_queues` is a C-owned static of fixed length
+                // `N_SPI_BUSES`; `bus_idx < N_SPI_BUSES` is enforced by the
+                // hardcoded `0`. The cast yields a pointer to the `bus_idx`-th
+                // element of the array — same provenance as the array base.
                 let queue_ptr = unsafe {
                     crate::spi_queue::spi_queues
                         .get()
                         .cast::<crate::spi_queue::SpiQueue>()
                         .add(bus_idx)
                 };
-                let entry = crate::spi_queue::SpiWrite {
-                    motor_idx,
-                    _pad: 0,
-                    coil_a,
-                    coil_b,
-                    _pad2: [0; 2],
-                };
-                if unsafe { crate::spi_queue::push(queue_ptr, entry) }.is_err() {
-                    crate::fault_helpers::raise_spi_queue_overflow(shared, bus_idx);
+                if !queue_ptr.is_null() {
+                    let entry = crate::spi_queue::SpiWrite {
+                        motor_idx,
+                        _pad: 0,
+                        coil_a,
+                        coil_b,
+                        _pad2: [0; 2],
+                    };
+                    // SAFETY: `queue_ptr` points to a live `SpiQueue` (C-owned
+                    // static); the TIM5 ISR is the sole producer for every
+                    // bus, satisfying the SPSC contract documented on `push`.
+                    if unsafe { crate::spi_queue::push(queue_ptr, entry) }.is_err() {
+                        crate::fault_helpers::raise_spi_queue_overflow(shared, bus_idx);
+                    }
                 }
-            }
-
-            // Host / test: record directly into the capture sink.
-            #[cfg(any(test, feature = "host"))]
-            {
-                crate::test_xdirect_capture::record(motor_idx, coil_a, coil_b);
             }
         }
 
+        // Bump `position_count` by the per-stepper delta (includes any
+        // mid-sample offset change). Use a checked add so a runaway
+        // offset latches a fault rather than silently wrapping.
         let prev = stepper.position_count.load(Ordering::Acquire);
         let Some(next) = prev.checked_add(delta_stepper) else {
             raise_position_count_overflow(shared, axis_idx);

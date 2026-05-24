@@ -136,7 +136,7 @@ def main():
         # the schedule lead has had time to drain.
         # Poll elf log for non-zero stepper counts. Bypasses bridge_call so
         # we get the answer even if klippy shut down on the M400 timeout.
-        print("[phase4] polling elf log for non-zero step counts + XDIRECT writes")
+        print("[phase4] polling elf log for motion + SPI output")
         elf_log = REPO / "tools" / "sim_klippy" / ".local-logs" / "klipper_elf.log"
         deadline = time.time() + 60.0
         seen_nonzero = False
@@ -197,19 +197,13 @@ def main():
 
         print(f"\n[phase4] RESULT: X step count (oid=0): {x_count}")
         print(f"[phase4] RESULT: Y step count (oid=1): {y_count}")
+        print(f"[phase4] SPI XDIRECT writes: {seen_spi_writes}")
 
-        print(f"[phase4] XDIRECT SPI write count: {seen_spi_writes}")
-
-        # Gate 1: step pulses (elf log path)
-        if seen_nonzero:
-            print("\n[phase4] GATE 1 GREEN: step pulses observed via elf log")
-        # Gate 1 fallback: klippy-side query
-        elif x_count > 0 or y_count > 0:
-            total = abs(x_count) + abs(y_count)
-            print(f"\n[phase4] GATE 1 GREEN: {total} total step pulses (bridge query)")
+        if not seen_nonzero and (x_count > 0 or y_count > 0):
             seen_nonzero = True
-        else:
-            print("\n[phase4] GATE 1 RED: 0 step pulses — move did not produce steps")
+
+        if not seen_nonzero:
+            print("\n[phase4] FAIL: 0 position counts — move produced no motion")
             for line in log.splitlines():
                 if any(k in line for k in ("Error", "Traceback", "step", "submit_move",
                                            "bridge-trace", "planner", "bridge-async",
@@ -217,15 +211,12 @@ def main():
                     print("  LOG:", line[-200:])
             return 1
 
-        # Gate 2: XDIRECT SPI writes must be non-zero for phase-stepping axes.
-        if seen_spi_writes > 0:
-            print(f"[phase4] GATE 2 GREEN: {seen_spi_writes} XDIRECT SPI writes")
-        else:
-            print("[phase4] GATE 2 RED: 0 XDIRECT SPI writes — "
-                  "phase stepping drain is not delivering coil modulation")
+        if seen_spi_writes == 0:
+            print("\n[phase4] FAIL: 0 SPI XDIRECT writes — "
+                  "phase stepping is not driving coil modulation")
             return 1
 
-        print("[phase4] Phase 4 PASS")
+        print(f"\n[phase4] Phase 4 PASS: motion + {seen_spi_writes} SPI writes")
         return 0
 
     finally:

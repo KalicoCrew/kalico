@@ -382,13 +382,12 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// Publish new per-axis configuration for a single logical axis.
     ///
     /// `axis_idx` is `0..N_AXES` (X=0, Y=1, Z=2, E=3). `mode` selects the
-    /// per-stepper output path (`Pulse` only for now; `Phase` is rejected
-    /// with `KALICO_ERR_PHASE_MODE_NOT_AVAILABLE` — the SPI dispatch path
-    /// is a follow-up task). `microstep_distance` is the per-step distance
-    /// in mm-equivalent units (must be finite, positive). `bindings` maps
-    /// each physical stepper's TMC chip-select OID to its logical axis slot;
-    /// use `TMC_CS_OID_NONE` (0xFF) for Pulse-only steppers without a TMC
-    /// driver.
+    /// per-stepper output path (`Pulse` for GPIO STEP/DIR; `Phase` for
+    /// TMC5160 XDIRECT SPI coil-current modulation). `microstep_distance`
+    /// is the per-step distance in mm-equivalent units (must be finite,
+    /// positive). `bindings` maps each physical stepper's TMC chip-select
+    /// OID to its logical axis slot; use `TMC_CS_OID_NONE` (0xFF) for
+    /// Pulse-only steppers without a TMC driver.
     ///
     /// Rejected with `KALICO_ERR_MOTION_IN_PROGRESS` when a segment is
     /// currently armed (i.e. `current.is_some()`). The configure path must
@@ -408,19 +407,10 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         microstep_distance: f32,
         bindings: &[crate::stepping_state::StepperBindingRust],
     ) -> i32 {
-        use crate::error::{
-            KALICO_ERR_INVALID_ARG, KALICO_ERR_MOTION_IN_PROGRESS,
-            KALICO_ERR_PHASE_MODE_NOT_AVAILABLE, KALICO_OK,
-        };
+        use crate::error::{KALICO_ERR_INVALID_ARG, KALICO_ERR_MOTION_IN_PROGRESS, KALICO_OK};
 
         if (axis_idx as usize) >= crate::stepping_state::N_AXES {
             return KALICO_ERR_INVALID_ARG;
-        }
-        // Phase mode is not yet available: the SPI dispatch path is a
-        // follow-up plan. Reject here so the host learns immediately
-        // rather than silently ignoring the binding.
-        if mode == crate::stepping_state::StepMode::Phase {
-            return KALICO_ERR_PHASE_MODE_NOT_AVAILABLE;
         }
         if !microstep_distance.is_finite() || microstep_distance <= 0.0 {
             return KALICO_ERR_INVALID_ARG;
