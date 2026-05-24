@@ -532,7 +532,7 @@ class TMC5160:
         register access) and re-enables after the XDIRECT write is
         done.
         """
-        mcu_obj = self.mcu_tmc.get_mcu()
+        mcu_obj = self.mcu_tmc.tmc_spi.spi.get_mcu()
         try:
             disable_cmd = mcu_obj.lookup_command(
                 "kalico_phase_stepping_enable_spi")
