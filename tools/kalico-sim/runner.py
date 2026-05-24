@@ -438,6 +438,8 @@ def run_simulation(
             if verbose:
                 env["KALICO_VTIME_DEBUG"] = "1"
             env["KALICO_SIM_SOCK_DIR"] = str(h7_sock_dir)
+            env.setdefault("RUST_LOG", "info")
+            env.setdefault("KALICO_VTIME_SPEED", "10")
 
             # Install third-party plugins as symlinks in klippy/extras/
             # so klippy discovers them (same as sim_klippy conftest.py).
@@ -494,35 +496,30 @@ def run_simulation(
                 )
             log.info("Klippy ready")
 
-            # Pre-trigger endstop pins so G28 hits the AlreadyTripped
-            # path in the bridge. On MACH_LINUX the runtime tick starves
-            # the serial reader, so step-counting auto-endstop can't
-            # work — the homing move command never reaches the MCU.
-            # Setting the pin HIGH before G28 makes the arm return
-            # AlreadyTripped synchronously in a single command round-trip.
-            sim_control = str(h7_sock_dir / "sim_control")
-            for line in (X_ENDSTOP_LINE, Y_ENDSTOP_LINE, Z_ENDSTOP_LINE):
-                _sim_control_cmd(sim_control,
-                                 f"set_gpio_input chip=0 line={line} value=1")
-            log.info("Endstop pins pre-triggered (AlreadyTripped path)")
+            # Endstop pins start LOW. During homing the MCU generates
+            # step pulses; the auto-endstop in libsim_intercept.so
+            # counts rising edges and triggers the linked endstop GPIO
+            # after 50 steps. With virtual time enabled, serial I/O
+            # works normally so the full homing trajectory executes.
 
             # Record virtual time at start
             vtime_start = vtime_read_ns()
 
             if gcode_path:
-                # Start the print via virtual SD card
-                gcode_name = gcode_path.name
-                resp = send_gcode(
-                    api_socket,
-                    f"SDCARD_PRINT_FILE FILENAME={gcode_name}",
-                    timeout=30,
-                )
-                log.info("Print started: %s", gcode_name)
+                # Read the G-code and send it directly via the API.
+                # The virtual SD card path can stall on macros or
+                # pre-conditions; direct API dispatch is more reliable
+                # for sim testing.
+                gcode_text = gcode_path.read_text().strip()
+                log.info("Sending G-code directly: %s",
+                         gcode_text[:80] + ("..." if len(gcode_text) > 80 else ""))
+                resp = send_gcode(api_socket, gcode_text, timeout=timeout)
+                log.info("G-code result: %s",
+                         str(resp)[:200] if resp else "empty")
 
-                # Wait for completion
-                success, error = wait_for_print_done(
-                    api_socket, klippy_proc, klippy_log, timeout,
-                )
+                error_msg = (resp.get("error") or {}).get("message", "")
+                success = "result" in resp and not error_msg
+                error = error_msg if error_msg else None
             else:
                 # No G-code — generate and print a test pattern
                 log.info("No G-code file, generating test pattern")
@@ -1257,10 +1254,16 @@ def main():
     print("=" * 60)
 
     if not result.success and result.klippy_log:
-        print("\n--- klippy.log (last 60 lines) ---")
-        lines = result.klippy_log.strip().split("\n")
-        for line in lines[-60:]:
-            if "kalico_status_v6" not in line:
+        print("\n--- klippy.log (homing-relevant, all lines) ---")
+        for line in result.klippy_log.strip().split("\n"):
+            lo = line.lower()
+            if any(k in lo for k in (
+                "bridge-trace", "endstop_arm", "arm_id", "arm status",
+                "trip", "drip", "credit", "homing", "home_start",
+                "home_wait", "no trigger", "segment_id",
+                "submit_homing", "homing_move", "error during",
+                "internal error", "mcu silent",
+            )):
                 print(line)
         print("--- end klippy.log ---")
 

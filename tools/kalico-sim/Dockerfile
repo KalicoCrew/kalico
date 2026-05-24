@@ -256,6 +256,11 @@ COPY --from=rust-build \
 COPY --from=firmware /kalico/tools/sim_klippy/printer_real/third_party_repos/ \
     /kalico/tools/sim_klippy/printer_real/third_party_repos/
 
+# Apply sim-only Python traces. Can't go in fix_linux_build.sh because
+# the runtime stage re-copies klippy/ fresh from the build context.
+COPY tools/kalico-sim/patches/patch_klippy_traces.py /tmp/patch_klippy_traces.py
+RUN python3 /tmp/patch_klippy_traces.py klippy/motion_toolhead.py
+
 RUN mkdir -p /gcode /tmp/kalico_sim_gcodes
 
 ENTRYPOINT ["python3", "tools/kalico-sim/runner.py"]
