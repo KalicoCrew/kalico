@@ -526,17 +526,32 @@ class TMC5160:
         (mapped as "XTARGET" in our register dict). Without this
         preload, XDIRECT stays at its reset value 0x00000000 — zero
         current in both coils — until the first ISR write.
+
+        Also gates ISR XDIRECT writes: disables them before the SPI
+        traffic (so the ISR doesn't compete with this foreground
+        register access) and re-enables after the XDIRECT write is
+        done.
         """
+        mcu_obj = self.mcu_tmc.get_mcu()
+        try:
+            disable_cmd = mcu_obj.lookup_command(
+                "kalico_phase_stepping_enable_spi")
+        except Exception:
+            disable_cmd = None
+        # Suppress ISR XDIRECT writes during our foreground SPI traffic
+        # (the disable command is idempotent; harmless if already disabled).
+        if disable_cmd is not None:
+            try:
+                dis_cmd = mcu_obj.lookup_command(
+                    "kalico_phase_stepping_disable_spi")
+                dis_cmd.send([])
+            except Exception:
+                pass
         # Read the live electrical phase from the microstep counter
         mscnt = self.mcu_tmc.get_register("MSCNT") & 0x3FF
-        # Compute coil currents from phase angle (amplitude 248, matching
-        # the TMC5160 sine table peak). MSCNT indexes phase B on sine,
-        # phase A on cosine per the TMC5160 datasheet.
         angle = mscnt * 2.0 * math.pi / 1024.0
         coil_a = int(round(248.0 * math.cos(angle)))
         coil_b = int(round(248.0 * math.sin(angle)))
-        # Pack as TMC5160 XDIRECT: coil_B[31:16] | coil_A[15:0]
-        # Both are signed 9-bit values, mask to 16-bit for packing.
         cur_a_u16 = coil_a & 0xFFFF
         cur_b_u16 = coil_b & 0xFFFF
         xdirect_val = (cur_b_u16 << 16) | cur_a_u16
@@ -545,6 +560,10 @@ class TMC5160:
             "TMC5160 XDIRECT preload: mscnt=%d coil_a=%d coil_b=%d "
             "raw=0x%08x", mscnt, coil_a, coil_b, xdirect_val
         )
+        # Re-enable ISR XDIRECT writes now that foreground SPI is done
+        if disable_cmd is not None:
+            disable_cmd.send([])
+            logging.info("TMC5160 phase_stepping_enable_spi sent")
 
     def get_phase_config(self):
         """Return (bus_id, cs_pin_id) for phase-stepping integration.

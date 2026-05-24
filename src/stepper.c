@@ -338,6 +338,16 @@ DECL_COMMAND(command_kalico_phase_stepping_enable_spi,
              "kalico_phase_stepping_enable_spi");
 
 void
+command_kalico_phase_stepping_disable_spi(uint32_t *args)
+{
+    (void)args;
+    extern void phase_stepping_disable_writes(void);
+    phase_stepping_disable_writes();
+}
+DECL_COMMAND(command_kalico_phase_stepping_disable_spi,
+             "kalico_phase_stepping_disable_spi");
+
+void
 command_kalico_configure_kinematics(uint32_t *args)
 {
     uint32_t k_xy_bits = args[0];

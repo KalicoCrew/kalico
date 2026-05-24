@@ -1211,17 +1211,8 @@ class MotionToolhead(ToolHead):
                 phase_configs, any_phase_stepping,
                 len(phase_configs),
             )
-            if any_phase_stepping:
-                try:
-                    enable_spi_cmd = mcu_obj.lookup_command(
-                        "kalico_phase_stepping_enable_spi"
-                    )
-                    enable_spi_cmd.send([])
-                    logging.info(
-                        "MotionToolhead: phase_stepping_enable_spi "
-                        "sent to mcu=%s", name)
-                except Exception:
-                    pass
+            # phase_stepping_enable_spi is sent from TMC5160._xdirect_preload
+            # after all TMC register init is complete, not here.
 
     # ------------------------------------------------------------------
     # Sim-only diagnostic gcode commands
