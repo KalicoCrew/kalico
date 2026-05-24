@@ -451,7 +451,7 @@ def run_simulation(
             if verbose:
                 env["KALICO_VTIME_DEBUG"] = "1"
             env["KALICO_SIM_SOCK_DIR"] = str(h7_sock_dir)
-            env.setdefault("RUST_LOG", "info")
+            env.setdefault("RUST_LOG", "debug")
 
             # Install third-party plugins as symlinks in klippy/extras/
             # so klippy discovers them (same as sim_klippy conftest.py).
