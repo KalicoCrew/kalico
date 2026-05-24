@@ -8,6 +8,7 @@
 // caller's clock divider / mode. In Renode this is benign, but we follow
 // the canonical pattern so the same .c is correct on real silicon.
 
+#include "autoconf.h" // CONFIG_MACH_STM32H7
 #include "phase_stepping_spi.h"
 #include "gpio.h"   // struct spi_config, spi_prepare, spi_transfer,
                     // struct gpio_out, gpio_out_setup, gpio_out_write
@@ -170,12 +171,11 @@ phase_stepping_write_xdirect(uint8_t motor_idx,
         (uint8_t)(ua & 0xFF),                // coil_A low 8 bits
     };
 
+#if CONFIG_MACH_STM32H7
+    // H7 SPI v2: inline transfer with skip-on-error (no shutdown from ISR).
     struct spi_config fast = phase_buses[bus_id].fast_cfg;
     SPI_TypeDef *spi = fast.spi;
 
-    // Inline SPI prepare + transfer — avoids spi_transfer_locked which
-    // calls shutdown("spi rx timeout") on failure. From ISR context,
-    // shutdown kills the MCU. We skip-on-error instead.
     spi->CFG1 = ((uint32_t)fast.div << SPI_CFG1_MBR_Pos)
               | (7 << SPI_CFG1_DSIZE_Pos);
     spi->CFG2 = ((uint32_t)fast.mode << SPI_CFG2_CPHA_Pos)
@@ -196,7 +196,6 @@ phase_stepping_write_xdirect(uint8_t motor_idx,
         }
         *(volatile uint8_t *)&spi->TXDR = datagram[i];
     }
-    // Drain RX FIFO
     for (int i = 0; i < 5; i++) {
         uint32_t deadline = timer_read_time() + timer_from_us(50);
         while (!(spi->SR & SPI_SR_RXP)) {
@@ -205,7 +204,6 @@ phase_stepping_write_xdirect(uint8_t motor_idx,
         }
         (void)*(volatile uint8_t *)&spi->RXDR;
     }
-    // Wait for EOT
     {
         uint32_t deadline = timer_read_time() + timer_from_us(100);
         while (!(spi->SR & SPI_SR_EOT)) {
@@ -217,6 +215,13 @@ phase_stepping_write_xdirect(uint8_t motor_idx,
 bail:
     spi->IFCR = 0xFFFFFFFF;
     spi->CR1 = SPI_CR1_SSI;
+#else
+    // Non-H7: use standard spi_transfer_locked (SPI v1).
+    spi_prepare(phase_buses[bus_id].fast_cfg);
+    gpio_out_write(phase_motors[motor_idx].cs, 0);
+    spi_transfer_locked(phase_buses[bus_id].fast_cfg, 0,
+                        sizeof(datagram), datagram);
+#endif
     gpio_out_write(phase_motors[motor_idx].cs, 1);
 
     phase_spi_write_count++;
