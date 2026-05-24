@@ -34,6 +34,21 @@ def patch_motion_bridge(path):
         path.write_text(text)
         print(f"patch_klippy_traces: patched attach_serial timeout in {path}")
 
+def patch_mcu_homing(path):
+    """Increase homing backstop timeout for sim.
+
+    The planner's dispatch closure can block for ~5s on compute_ack_clock
+    when the MCU runs on vtime (clock sync takes time to converge).
+    The default 1.0s slack isn't enough. Add 15s for the sim.
+    """
+    text = path.read_text()
+    old = "slack = max(0.0, home_end_time - est_now) + 1.0"
+    if old in text and "# sim-patched" not in text:
+        new = "slack = max(0.0, home_end_time - est_now) + 16.0  # sim-patched: +15s for vtime dispatch latency"
+        text = text.replace(old, new, 1)
+        path.write_text(text)
+        print(f"patch_klippy_traces: patched homing backstop slack in {path}")
+
 if __name__ == "__main__":
     for arg in sys.argv[1:]:
         p = pathlib.Path(arg)
@@ -41,3 +56,5 @@ if __name__ == "__main__":
             patch_motion_toolhead(p)
         elif p.name == "motion_bridge.py":
             patch_motion_bridge(p)
+        elif p.name == "mcu.py":
+            patch_mcu_homing(p)

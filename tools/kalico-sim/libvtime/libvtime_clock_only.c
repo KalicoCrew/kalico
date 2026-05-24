@@ -50,10 +50,15 @@ int clock_gettime(clockid_t clk_id, struct timespec *tp)
     if (!vshm || !real_clock_gettime)
         return real_clock_gettime ? real_clock_gettime(clk_id, tp) : -1;
 
-    // Only CLOCK_MONOTONIC_RAW — used by klippy's chelper get_monotonic().
-    // CLOCK_MONOTONIC is left real so Rust Instant::now() (used for bridge
-    // timeouts) doesn't expire in virtual time.
-    if (clk_id == CLOCK_MONOTONIC_RAW) {
+    // Override both CLOCK_MONOTONIC and CLOCK_MONOTONIC_RAW so klippy's
+    // chelper (MONOTONIC_RAW) and the Rust bridge (MONOTONIC via
+    // Instant::now) both see virtual time. This keeps the bridge's
+    // clock sync estimate consistent — no mixed real/virtual time base.
+    // Timeouts in virtual time expire faster (proportional to combined
+    // vtime speed of all processes), so attach_serial timeout is patched
+    // to 120s in the Dockerfile.
+    if (clk_id == CLOCK_MONOTONIC || clk_id == CLOCK_MONOTONIC_RAW
+        || clk_id == CLOCK_MONOTONIC_COARSE) {
         uint64_t ns = atomic_load_explicit(&vshm->nanos, memory_order_acquire);
         tp->tv_sec = (time_t)(ns / 1000000000ULL);
         tp->tv_nsec = (long)(ns % 1000000000ULL);

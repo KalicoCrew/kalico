@@ -367,24 +367,15 @@ ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout,
         deadline_ns = vtime_now() + ts_to_ns(timeout);
     }
 
-    // Unified poll loop: check I/O first, then fire timer if due.
-    // Uses a 1ms real poll to yield CPU between iterations. This is
-    // the core sim scheduling loop — all three processes (klippy, H7,
-    // F4) spend most of their time here, cooperatively advancing the
-    // shared virtual clock and exchanging serial data.
-    for (int i = 0; i < 30000; i++) {
-        // 1) Check for I/O (1ms real timeout — yields CPU to other
-        //    processes while waiting for serial data)
-        struct timespec one_ms = { .tv_sec = 0, .tv_nsec = 1000000 };
-        ret = real_ppoll(fds, nfds, &one_ms, sigmask);
-        if (ret != 0)
-            return ret;
-
-        // 2) Check deadline
+    // Core sim scheduling loop. Timer fires are instant (no blocking);
+    // I/O waits use 1ms real poll to yield CPU. This ensures timers
+    // advance at full CPU speed while still detecting serial data.
+    for (int i = 0; i < 100000; i++) {
+        // 1) Check deadline
         if (vtime_now() >= deadline_ns)
             return 0;
 
-        // 3) Fire virtual timer if due
+        // 2) Fire virtual timer if due — NO blocking, instant
         pthread_mutex_lock(&vtimer.lock);
         if (vtimer.armed) {
             uint64_t target = vtimer.target_ns;
@@ -398,6 +389,13 @@ ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout,
             }
         }
         pthread_mutex_unlock(&vtimer.lock);
+
+        // 3) No timer due — check for I/O with 1ms real timeout
+        //    (yields CPU to other processes)
+        struct timespec one_ms = { .tv_sec = 0, .tv_nsec = 1000000 };
+        ret = real_ppoll(fds, nfds, &one_ms, sigmask);
+        if (ret != 0)
+            return ret;
     }
     if (deadline_ns < UINT64_MAX)
         vtime_advance_to(deadline_ns);
@@ -435,15 +433,15 @@ select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
             + (uint64_t)timeout->tv_usec * 1000ULL;
     }
 
-    struct timespec spin = { .tv_sec = 0, .tv_nsec = 50000 };
-    int spins = 0;
-    while (1) {
+    for (int i = 0; i < 30000; i++) {
         // Restore fd_sets
         if (readfds) *readfds = r_copy;
         if (writefds) *writefds = w_copy;
         if (exceptfds) *exceptfds = e_copy;
 
-        ret = real_select(nfds, readfds, writefds, exceptfds, &zero);
+        // 1ms real timeout — yields CPU while checking for I/O
+        struct timeval one_ms = { .tv_sec = 0, .tv_usec = 1000 };
+        ret = real_select(nfds, readfds, writefds, exceptfds, &one_ms);
         if (ret != 0)
             return ret;
 
@@ -456,13 +454,6 @@ select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
         }
 
         vtimer_check_and_fire();
-
-        spins++;
-        if (spins > 1000)
-            spin.tv_nsec = 500000;
-        if (spins > 10000)
-            spin.tv_nsec = 2000000;
-        real_nanosleep(&spin, NULL);
     }
 }
 

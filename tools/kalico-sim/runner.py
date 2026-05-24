@@ -180,7 +180,7 @@ def spawn_mcu(
     # Keep at 1 (real-time) so timeouts work naturally. The sim still
     # runs faster than real time because ppoll skips sleep when timers
     # are due — only I/O waits take real time.
-    env.setdefault("KALICO_VTIME_SPEED", "1")
+    env.setdefault("KALICO_VTIME_SPEED", "100")
     # env["KALICO_VTIME_SPEED"] = "100"  # libvtime default
     if verbose:
         env["KALICO_SIM_SHIM_VERBOSE"] = "1"
@@ -443,10 +443,11 @@ def run_simulation(
             api_socket = str(tmp / "klippy.sock")
 
             env = os.environ.copy()
-            # Full vtime shim: klippy shares the same virtual clock AND
-            # ppoll behavior as the MCU. Both sides advance cooperatively.
-            # The identify timeout is patched to 120s in the Dockerfile.
-            env["LD_PRELOAD"] = str(vtime_so)
+            # No LD_PRELOAD on klippy. Overriding clock_gettime breaks
+            # either the reactor (CLOCK_MONOTONIC → GIL starvation) or
+            # the bridge (CLOCK_MONOTONIC_RAW only → mixed time base).
+            # Klippy runs on real wall time. The MCU runs on virtual time.
+            # The bridge's clock sync handles the mapping.
             if verbose:
                 env["KALICO_VTIME_DEBUG"] = "1"
             env["KALICO_SIM_SOCK_DIR"] = str(h7_sock_dir)
