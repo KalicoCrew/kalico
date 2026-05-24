@@ -106,13 +106,6 @@ const _: () = {
     assert!(SPI_QUEUE_DEPTH.is_power_of_two());
 };
 
-// On MCU builds (and MACH_LINUX sim), storage is the C-declared
-// `spi_queues` symbol. The kalico-sim feature enables it on host builds
-// so the drain timer processes real SPI entries through the shim.
-#[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
-unsafe extern "C" {
-    pub static spi_queues: core::cell::UnsafeCell<[SpiQueue; N_SPI_BUSES]>;
-}
 
 /// Returned by `push` when the ring is full.
 #[derive(Debug, PartialEq, Eq)]

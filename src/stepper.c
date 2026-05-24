@@ -317,12 +317,10 @@ command_kalico_configure_axis(uint32_t *args)
     // configure_axis calls just update the engine's axis config while the
     // existing timers keep polling.
     extern void init_per_axis_step_timers(void);
-    extern void init_spi_drain_timer(void);
     static uint8_t per_axis_timers_installed;
     if (!per_axis_timers_installed) {
         per_axis_timers_installed = 1;
         init_per_axis_step_timers();
-        init_spi_drain_timer();
     }
 }
 DECL_COMMAND(command_kalico_configure_axis,

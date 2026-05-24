@@ -51,6 +51,17 @@ use crate::step_queue::{StepEntry, StepQueue, push as queue_push};
 use crate::stepping_state::{AxisConfig, StepMode};
 use crate::sub_sample_timing::{StepTimeInputs, StepTimingResult, compute_step_times};
 
+// FFI declaration for the C-side SPI write function. Enabled on MCU builds
+// and MACH_LINUX sim builds (kalico-sim feature). The C implementation in
+// `src/stm32/phase_stepping_spi.c` (MCU) and `src/linux/phase_stepping_spi.c`
+// (sim) performs a skip-not-block transfer: if `phase_spi_try_acquire()`
+// fails (bus held by foreground TMC register access), the write is skipped
+// and a skip counter is incremented — no blocking, no queue needed.
+#[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+unsafe extern "C" {
+    fn phase_stepping_write_xdirect(motor_idx: u8, coil_a: i16, coil_b: i16);
+}
+
 /// `|P_end - P_start|` below this triggers the uniform-spacing fallback
 /// in `dispatch_pulse`. Default ≈ one tenth of a micron, well below the
 /// physical microstep on every kinematic we ship.
@@ -481,29 +492,20 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
             #[cfg(any(test, feature = "host"))]
             crate::test_xdirect_capture::record(motor_idx, coil_a, coil_b);
 
-            // Push to the C-owned SPI queue for the foreground drain timer.
+            // Call phase_stepping_write_xdirect directly from the ISR.
             // On MCU builds this is always active. On MACH_LINUX sim builds
-            // (kalico-sim feature), it's also active so the drain timer
-            // exercises the real SPI path through the shim → emulator.
+            // (kalico-sim feature), it's also active so the call exercises
+            // the real SPI path through the shim → emulator.
+            // The C function implements skip-not-block semantics: it calls
+            // phase_spi_try_acquire() and skips the transfer (incrementing a
+            // skip counter) if the SPI bus is held by a foreground TMC
+            // register access — no fault, no queue needed.
             #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
-            {
-                let bus_idx: usize = 0;
-                let queue_ptr = unsafe {
-                    crate::spi_queue::spi_queues
-                        .get()
-                        .cast::<crate::spi_queue::SpiQueue>()
-                        .add(bus_idx)
-                };
-                let entry = crate::spi_queue::SpiWrite {
-                    motor_idx,
-                    _pad: 0,
-                    coil_a,
-                    coil_b,
-                    _pad2: [0; 2],
-                };
-                if unsafe { crate::spi_queue::push(queue_ptr, entry) }.is_err() {
-                    crate::fault_helpers::raise_spi_queue_overflow(shared, bus_idx);
-                }
+            // SAFETY: motor_idx, coil_a, coil_b are computed from validated
+            // LUT/config state above. The C function is reentrant-safe for
+            // concurrent foreground access via its internal try-acquire guard.
+            unsafe {
+                phase_stepping_write_xdirect(motor_idx, coil_a, coil_b);
             }
         }
 

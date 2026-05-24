@@ -1605,36 +1605,9 @@ init_per_axis_step_timers(void)
     }
 }
 
-// === Task 14: SPI queue foreground drain ===
-
-#include "spi_queue.h"
-
-extern void phase_stepping_write_xdirect(uint8_t motor_idx,
-                                         int16_t coil_a, int16_t coil_b);
-
-static struct timer spi_drain_timer;
-
-static uint_fast8_t
-spi_drain_event(struct timer *t)
-{
-    for (int bus = 0; bus < N_SPI_BUSES; bus++) {
-        SpiQueue *q = &spi_queues[bus];
-        while (q->head != q->tail) {
-            uint16_t slot = q->head & SPI_QUEUE_DEPTH_MASK;
-            SpiWrite entry = q->buf[slot];
-            q->head = (uint16_t)(q->head + 1);
-            phase_stepping_write_xdirect(entry.motor_idx,
-                                         entry.coil_a, entry.coil_b);
-        }
-    }
-    t->waketime = timer_read_time() + timer_from_us(100);  // 10 kHz
-    return SF_RESCHEDULE;
-}
-
-void
-init_spi_drain_timer(void)
-{
-    spi_drain_timer.func = spi_drain_event;
-    spi_drain_timer.waketime = timer_read_time() + timer_from_us(1000);
-    sched_add_timer(&spi_drain_timer);
-}
+// Task 14 SPI queue drain removed — dispatch_phase now calls
+// phase_stepping_write_xdirect directly from the ISR. The SPSC queue
+// could never keep up (160K entries/sec from 40 kHz ISR × 4 motors,
+// drain processed ~10K/sec with blocking SPI). Direct ISR write with
+// skip-not-block (phase_spi_try_acquire) matches mass3d/kalico's
+// working architecture.

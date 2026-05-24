@@ -179,12 +179,6 @@ runtime_tick_enable(void)
         // F4 (and H7) firmware behavior.
         return;
     }
-    extern void init_spi_drain_timer(void);
-    static uint8_t spi_drain_installed;
-    if (!spi_drain_installed) {
-        spi_drain_installed = 1;
-        init_spi_drain_timer();
-    }
     atomic_store_explicit(&host_tick_enabled, 1, memory_order_release);
 }
 
