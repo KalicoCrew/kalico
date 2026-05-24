@@ -21,8 +21,23 @@ def patch_motion_toolhead(path):
     path.write_text(text)
     print(f"patch_klippy_traces: patched {path}")
 
+def patch_motion_bridge(path):
+    """Increase attach_serial timeout for sim (vtime makes clock advance faster)."""
+    text = path.read_text()
+    old = "return self._bridge.attach_serial(mcu_handle, serial_path, baud, timeout_s)"
+    if old in text and "# sim-patched" not in text:
+        new = (
+            "# sim-patched: increase timeout for vtime\n"
+            "        return self._bridge.attach_serial(mcu_handle, serial_path, baud, max(timeout_s, 120.0))"
+        )
+        text = text.replace(old, new, 1)
+        path.write_text(text)
+        print(f"patch_klippy_traces: patched attach_serial timeout in {path}")
+
 if __name__ == "__main__":
     for arg in sys.argv[1:]:
         p = pathlib.Path(arg)
         if p.name == "motion_toolhead.py":
             patch_motion_toolhead(p)
+        elif p.name == "motion_bridge.py":
+            patch_motion_bridge(p)

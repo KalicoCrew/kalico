@@ -173,7 +173,14 @@ def spawn_mcu(
     # 5x per process → 15x effective → manageable timer load.
     # Low speed cap keeps the virtual/real time drift bounded so
     # the mixed-time-base clock sync produces usable estimates.
-    env.setdefault("KALICO_VTIME_SPEED", "2")
+    # Speed cap: 1 = real-time (virtual = wall). Higher = faster sim.
+    # With full vtime on klippy, ALL processes share the clock.
+    # N processes at Sx each → Nx effective rate. Timeouts in virtual
+    # time (Instant::now → clock_gettime → vtime) expire Nx faster.
+    # Keep at 1 (real-time) so timeouts work naturally. The sim still
+    # runs faster than real time because ppoll skips sleep when timers
+    # are due — only I/O waits take real time.
+    env.setdefault("KALICO_VTIME_SPEED", "1")
     # env["KALICO_VTIME_SPEED"] = "100"  # libvtime default
     if verbose:
         env["KALICO_SIM_SHIM_VERBOSE"] = "1"
@@ -436,11 +443,10 @@ def run_simulation(
             api_socket = str(tmp / "klippy.sock")
 
             env = os.environ.copy()
-            # Klippy uses the clock-only shim: overrides CLOCK_MONOTONIC_RAW
-            # (chelper get_monotonic) to read virtual time, leaves
-            # CLOCK_MONOTONIC real (Rust Instant::now for bridge timeouts).
-            vtime_clock_only = vtime_so.parent / "libvtime_clock_only.so"
-            env["LD_PRELOAD"] = str(vtime_clock_only)
+            # Full vtime shim: klippy shares the same virtual clock AND
+            # ppoll behavior as the MCU. Both sides advance cooperatively.
+            # The identify timeout is patched to 120s in the Dockerfile.
+            env["LD_PRELOAD"] = str(vtime_so)
             if verbose:
                 env["KALICO_VTIME_DEBUG"] = "1"
             env["KALICO_SIM_SOCK_DIR"] = str(h7_sock_dir)
@@ -602,8 +608,11 @@ G1 Z10 F300
                 klippy_content = klippy_log.read_text(errors="replace")
             klippy_stdout = log_dir / "klippy.stdout"
             if klippy_stdout.exists():
+                stdout_text = klippy_stdout.read_text(errors="replace")
+                log.info("klippy.stdout: %d bytes, %d lines",
+                         len(stdout_text), stdout_text.count("\n"))
                 klippy_content += "\n--- klippy.stdout ---\n"
-                klippy_content += klippy_stdout.read_text(errors="replace")
+                klippy_content += stdout_text
 
             mcu_log_contents = {}
             for mcu in mcus:
@@ -1278,7 +1287,9 @@ def main():
                 "trip", "drip", "credit", "homing", "home_start",
                 "home_wait", "no trigger", "segment_id",
                 "submit_homing", "homing_move", "error during",
-                "internal error", "mcu silent",
+                "internal error", "mcu silent", "move-diag",
+                "sim-trace", "dispatch closure", "load_curve",
+                "classify", "submit_move",
             )):
                 print(line)
         print("--- end klippy.log ---")

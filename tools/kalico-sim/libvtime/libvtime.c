@@ -362,36 +362,29 @@ ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout,
 
     uint64_t deadline_ns;
     if (!timeout) {
-        // Infinite wait — but if a virtual timer is armed, we advance
-        // to it and fire immediately. This is the key to making the
-        // MCU's timer dispatch work in virtual time.
-        pthread_mutex_lock(&vtimer.lock);
-        if (vtimer.armed) {
-            uint64_t target = vtimer.target_ns;
-            vtimer.armed = 0;
-            pthread_mutex_unlock(&vtimer.lock);
-            vtime_advance_to(target);
-            raise(SIGALRM);
-            errno = EINTR;
-            return -1;
-        }
-        pthread_mutex_unlock(&vtimer.lock);
         deadline_ns = UINT64_MAX;
     } else {
         deadline_ns = vtime_now() + ts_to_ns(timeout);
     }
 
-    // Busy-poll with timer advancement
-    struct timespec spin = { .tv_sec = 0, .tv_nsec = 100000 };
-    for (int i = 0; i < 10000; i++) {
-        ret = real_ppoll(fds, nfds, &zero, sigmask);
+    // Unified poll loop: check I/O first, then fire timer if due.
+    // Uses a 1ms real poll to yield CPU between iterations. This is
+    // the core sim scheduling loop — all three processes (klippy, H7,
+    // F4) spend most of their time here, cooperatively advancing the
+    // shared virtual clock and exchanging serial data.
+    for (int i = 0; i < 30000; i++) {
+        // 1) Check for I/O (1ms real timeout — yields CPU to other
+        //    processes while waiting for serial data)
+        struct timespec one_ms = { .tv_sec = 0, .tv_nsec = 1000000 };
+        ret = real_ppoll(fds, nfds, &one_ms, sigmask);
         if (ret != 0)
             return ret;
 
+        // 2) Check deadline
         if (vtime_now() >= deadline_ns)
             return 0;
 
-        // Check for newly armed timer
+        // 3) Fire virtual timer if due
         pthread_mutex_lock(&vtimer.lock);
         if (vtimer.armed) {
             uint64_t target = vtimer.target_ns;
@@ -405,8 +398,6 @@ ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout,
             }
         }
         pthread_mutex_unlock(&vtimer.lock);
-
-        real_nanosleep(&spin, NULL);
     }
     if (deadline_ns < UINT64_MAX)
         vtime_advance_to(deadline_ns);
