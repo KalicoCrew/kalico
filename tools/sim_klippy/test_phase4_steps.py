@@ -152,19 +152,12 @@ def main():
     klippy = spawn_klippy()
 
     try:
-        # Fake-home by setting kinematic position
-        print("[phase4] fake-homing: SET_KINEMATIC_POSITION X=0 Y=0 Z=0")
-        resp = send_gcode("SET_KINEMATIC_POSITION X=0 Y=0 Z=0")
+        print("[phase4] fake-homing: SET_KINEMATIC_POSITION X=100 Y=100 Z=10")
+        resp = send_gcode("SET_KINEMATIC_POSITION X=100 Y=100 Z=10")
         print(f"  response: {resp}")
 
-        # Diagnostic: confirm configure_axes actually wrote steps_per_mm.
-        print("[phase4] reading axis steps_per_mm")
-        for axis in (0, 1, 2):
-            resp = send_gcode("KALICO_SIM_AXIS_STEPS OID=%d" % axis)
-            print(f"  AXIS={axis} response: {resp}")
-
-        print("[phase4] sending G1 X10 F1000 then M400 (flush)")
-        resp = send_gcode("G1 X10 F1000\nM400")
+        print("[phase4] sending G1 X50 F6000 then M400 (flush)")
+        resp = send_gcode("G1 X50 F6000\nM400")
         print(f"  response: {resp}")
 
         # The bridge schedules segments at MCU_clock_now + 100ms_lead +
@@ -189,17 +182,16 @@ def main():
                     inner = line.split("counts=[", 1)[1].split("]", 1)[0]
                     parts = [int(x) for x in inner.split(",")]
                     if any(abs(p) > 0 for p in parts):
-                        print("  step pulses observed: %s" % parts)
                         seen_nonzero = True
                     if "spi_writes=" in line:
                         try:
-                            seen_spi_writes = int(
-                                line.split("spi_writes=")[1].split()[0])
+                            w = int(line.split("spi_writes=")[1].split()[0])
+                            if w > seen_spi_writes:
+                                seen_spi_writes = w
                         except (IndexError, ValueError):
                             pass
-                    if seen_nonzero:
-                        break
-            if seen_nonzero:
+            if seen_nonzero and seen_spi_writes > 0:
+                print(f"  motion + SPI observed: spi_writes={seen_spi_writes}")
                 break
 
         # Query step counts via the KALICO_SIM_STEP_COUNT G-code command,
