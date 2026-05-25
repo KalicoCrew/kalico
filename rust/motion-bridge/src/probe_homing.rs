@@ -53,11 +53,19 @@ pub fn prepare_probe_homing(
             Some(u32::from(beacon_trsync_oid)),
             Box::new(move |msg_params| {
                 let can_trigger = msg_params.get_u32("can_trigger");
-                if can_trigger == 0 {
-                    let cmd = format!("runtime_software_trip arm_id={arm_id}");
-                    let _ = stepper_io_clone.send_fire_and_forget(&cmd);
-                    triggered_clone.store(true, Ordering::Release);
+                if can_trigger != 0 {
+                    return;
                 }
+                // Only fire on ENDSTOP_HIT (reason 1). Ignore HOST_REQUEST
+                // (reason 2) which is the stale trsync_trigger cleanup from
+                // a previous homing pass.
+                let reason = msg_params.get_u32("trigger_reason");
+                if reason != 1 {
+                    return;
+                }
+                let cmd = format!("runtime_software_trip arm_id={arm_id}");
+                let _ = stepper_io_clone.send_fire_and_forget(&cmd);
+                triggered_clone.store(true, Ordering::Release);
             }),
         )?
     };
