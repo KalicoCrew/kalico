@@ -579,7 +579,11 @@ pub fn disarm(arm_id: u32) -> DisarmStatus {
 }
 
 pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> TripAction {
-    if !matches_u8(ARM.state.load(Ordering::Acquire), ArmState::Armed) {
+    let state = ARM.state.load(Ordering::Acquire);
+    if matches_u8(state, ArmState::TrippedReady) || matches_u8(state, ArmState::Tripping) {
+        return TripAction::AbortNow;
+    }
+    if !matches_u8(state, ArmState::Armed) {
         return TripAction::Continue;
     }
     if clock < ARM.arm_clock() {
@@ -1179,18 +1183,29 @@ mod tests {
     }
 
     #[test]
-    fn trip_never_fires_while_state_is_not_armed() {
+    fn tick_returns_continue_for_non_armed_non_tripped_states() {
         let _guard = reset();
         set_pin_level(8, true);
         for state in [
             ArmState::Idle,
-            ArmState::Tripping,
-            ArmState::TrippedReady,
             ArmState::TrippedSent,
             ArmState::Disarmed,
         ] {
             ARM.state.store(state as u8, Ordering::Release);
             assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::Continue);
+        }
+    }
+
+    #[test]
+    fn tick_returns_abort_for_tripped_states() {
+        let _guard = reset();
+        for state in [ArmState::Tripping, ArmState::TrippedReady] {
+            ARM.state.store(state as u8, Ordering::Release);
+            assert_eq!(
+                tick(1, [0, 0, 0], &[1]),
+                TripAction::AbortNow,
+                "tick() must return AbortNow when state={state:?}"
+            );
         }
     }
 
@@ -1488,5 +1503,59 @@ mod tests {
         let evt = drain_trip();
         // Should be source index 1 (the Physical source), not the Software one.
         assert_eq!(evt.trip_source_idx, 1);
+    }
+
+    /// Regression test for the Z homing crash (2026-05-25):
+    /// `software_trip` must cause the next `tick()` call to return
+    /// `AbortNow`. The segment engine calls `tick()` at modulation rate;
+    /// if it returns `Continue` after a software trip, the MCU keeps
+    /// generating steps and the toolhead doesn't stop.
+    ///
+    /// Root cause: `tick()` early-returns `Continue` when
+    /// `ARM.state != Armed`. After `software_trip` sets state to
+    /// `TrippedReady`, tick() saw "not Armed" and returned Continue
+    /// instead of AbortNow.
+    #[test]
+    fn software_trip_causes_tick_to_abort() {
+        let _guard = reset();
+        arm(sw_msg(100_000)).expect("arm");
+
+        // First tick past arm_clock: activates the deadline window.
+        assert_eq!(tick(1, [0, 0, 0], &[0, 0]), TripAction::Continue);
+
+        // Host sends software_trip (probe triggered).
+        assert_eq!(software_trip(42, 50, &[10, 20]), TripResult::Tripped);
+
+        // The NEXT tick() must return AbortNow so the segment engine
+        // stops generating steps. This is the critical safety invariant.
+        assert_eq!(
+            tick(51, [0, 0, 0], &[10, 20]),
+            TripAction::AbortNow,
+            "tick() must return AbortNow after software_trip — \
+             otherwise the MCU keeps moving and crashes into the bed"
+        );
+    }
+
+    /// Same as above but for the case where software_trip arrives BEFORE
+    /// the first tick past arm_clock (the deadline isn't active yet).
+    /// tick() must still return AbortNow.
+    #[test]
+    fn software_trip_before_arm_clock_causes_tick_to_abort() {
+        let _guard = reset();
+        let mut msg = sw_msg(100_000);
+        msg.arm_clock = 1000; // arm_clock is in the future
+        arm(msg).expect("arm");
+
+        // Host sends software_trip before arm_clock (probe triggered
+        // very early due to being close to bed).
+        assert_eq!(software_trip(42, 500, &[10, 20]), TripResult::Tripped);
+
+        // tick at clock=1001 (past arm_clock): must abort even though
+        // deadline wasn't active.
+        assert_eq!(
+            tick(1001, [0, 0, 0], &[10, 20]),
+            TripAction::AbortNow,
+            "tick() must abort after software_trip even if deadline wasn't active"
+        );
     }
 }
