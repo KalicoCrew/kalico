@@ -1143,16 +1143,27 @@ impl Reactor {
                 }
             }
             ReactorCommand::FireAndForget { cmd } => {
-                // Diag 2026-05-19: write every FireAndForget event to a
-                // dedicated trace file at /tmp/kalico-firewire.log because
-                // log::info/eprintln stderr output is getting swallowed by
-                // klippy's systemd wrapper. Append-only, line-per-event.
                 use std::io::Write as _;
                 let mut trace = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open("/tmp/kalico-firewire.log")
                     .ok();
+                // DIAG: for software_trip, log queue state
+                if cmd.contains("software_trip") || cmd.contains("extend_homing") {
+                    if let Some(ref mut f) = trace {
+                        let _ = writeln!(
+                            f,
+                            "[{:?}] HOMING_CMD=\"{}\" window_full={} unacked={} pending_faf={} pending_sub={}",
+                            std::time::SystemTime::now(),
+                            cmd,
+                            self.unacked_window.is_full(),
+                            self.unacked_window.len(),
+                            self.pending_fire_and_forget.len(),
+                            self.pending_submissions.len(),
+                        );
+                    }
+                }
                 match self.parser.encode(&cmd) {
                     Ok(payload) => {
                         let cmd_disp = if cmd.len() > 120 {

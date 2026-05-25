@@ -240,6 +240,10 @@ class BridgeKinematics:
 
     def set_position(self, newpos, homing_axes=()):
         self._toolhead.bridge._software_trip_active = False
+        try:
+            self._toolhead.bridge.wait_moves()
+        except Exception:
+            pass
         self._toolhead.bridge.set_position(
             newpos[0], newpos[1], newpos[2]
         )
