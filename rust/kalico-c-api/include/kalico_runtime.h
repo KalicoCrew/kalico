@@ -583,11 +583,6 @@ int32_t kalico_endstop_disarm(uint32_t arm_id, uint8_t *out_status);
  */
 int32_t kalico_software_trip(uint32_t arm_id, uint32_t clock_lo, uint32_t clock_hi, uint8_t *status);
 
-/* DIAG: endstop tick/trip counters for debugging homing on MCU. */
-uint32_t kalico_endstop_diag_tick_calls(void);
-uint32_t kalico_endstop_diag_abort_returns(void);
-uint32_t kalico_endstop_diag_trip_calls(void);
-uint32_t kalico_endstop_diag_trip_armed(void);
 
 /**
  * Extend the homing deadline by one grant window. Called from the C
