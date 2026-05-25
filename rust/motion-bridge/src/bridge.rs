@@ -2821,6 +2821,66 @@ impl PyMotionBridge {
         Ok(())
     }
 
+    /// Arm the beacon trsync interceptor, submit the homing move, and block
+    /// (GIL released) until the MCU trips or the sensor-fault timeout expires.
+    ///
+    /// Returns the raw status byte from the MCU `kalico_software_trip_response`
+    /// message (0 = not tripped, 1 = homing complete, 2 = software trip, …).
+    ///
+    /// `stepper_oids` is accepted for forward-compatibility (caller may later
+    /// drive per-stepper enable/disable from here) but is currently unused.
+    #[pyo3(signature = (
+        beacon_handle,
+        beacon_trsync_oid,
+        stepper_mcu_handle,
+        arm_id,
+        move_pos,
+        speed,
+        sensor_fault_timeout_s,
+        stepper_oids,
+    ))]
+    fn run_probe_homing(
+        &self,
+        py: Python<'_>,
+        beacon_handle: u32,
+        beacon_trsync_oid: u8,
+        stepper_mcu_handle: u32,
+        arm_id: u32,
+        move_pos: Vec<f64>,
+        speed: f64,
+        sensor_fault_timeout_s: f64,
+        stepper_oids: Vec<u8>,
+    ) -> PyResult<u8> {
+        let _ = stepper_oids;
+
+        let beacon_io = self.host_io_for_mcu("run_probe_homing(beacon)", beacon_handle)?;
+        let stepper_io =
+            self.host_io_for_mcu("run_probe_homing(stepper)", stepper_mcu_handle)?;
+
+        self.submit_homing_move_inner(&move_pos, speed, &[arm_id])?;
+
+        let params = crate::probe_homing::ProbeHomingParams {
+            beacon_io,
+            stepper_io,
+            beacon_trsync_oid,
+            arm_id,
+            sensor_fault_timeout: std::time::Duration::from_secs_f64(sensor_fault_timeout_s),
+        };
+
+        // Release the GIL so Python's reactor thread is not blocked for the
+        // full homing move duration (potentially hundreds of milliseconds).
+        let result = py.allow_threads(|| {
+            crate::probe_homing::run_probe_homing(&params, &self.homing)
+        });
+
+        match result {
+            Ok(r) => Ok(r as u8),
+            Err(e) => Err(PyRuntimeError::new_err(format!(
+                "run_probe_homing transport error: {e}"
+            ))),
+        }
+    }
+
     /// Submit a dwell: flush + advance print time.
     fn submit_dwell(&self, duration_s: f64) -> PyResult<()> {
         let planner = self.planner.get().ok_or_else(|| {
