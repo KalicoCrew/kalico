@@ -583,14 +583,19 @@ class MotionToolhead(ToolHead):
             self.bridge._homing_print_time_base = bridge_lmt_before
             self.bridge.submit_homing_move_async(pos3, speed, [arm_id])
 
-            # Credit-extension loop with capped lifetime.
+            # Credit-extension loop with sensor-fault cap.
             #
-            # The F446's software endstop has a ~50ms grant window.
-            # Each extend_homing_deadline pushes it by another ~50ms.
-            # We cap extensions at the expected move duration so the
-            # firmware's deadline fires if the host relay is broken.
-            # After the cap, the loop exits and the finally block
-            # calls software_trip unconditionally.
+            # Collision protection is the MCU-side dead-man switch:
+            # the bottom MCU's software endstop has a ~50ms grant
+            # window; each extend_homing_deadline pushes it by ~50ms.
+            # If the host stops extending (crash, reactor stall),
+            # the MCU halts Z autonomously within one grant window.
+            #
+            # This loop's timeout is a SEPARATE concern: sensor-fault
+            # detection.  If the probe never triggers across the full
+            # travel distance, the sensor is broken or misconfigured.
+            # The timeout fires AFTER the bed would have already
+            # crashed — it is NOT collision protection.
             #
             # move_dist uses the ACTUAL axis range (position_max -
             # position_min), not the inflated forcepos distance which
@@ -606,11 +611,11 @@ class MotionToolhead(ToolHead):
                 move_dist = min(nominal_dist, actual_range)
             else:
                 move_dist = nominal_dist
-            move_time = move_dist / max(speed, 0.1) + 5.0
+            sensor_fault_timeout = move_dist / max(speed, 0.1) + 5.0
             logging.info(
                 "[homing-loop] enter: nominal_dist=%.1f move_dist=%.1f "
-                "speed=%.1f move_time=%.1f arm_id=%d mcu=%s",
-                nominal_dist, move_dist, speed, move_time,
+                "speed=%.1f sensor_fault_timeout=%.1f arm_id=%d mcu=%s",
+                nominal_dist, move_dist, speed, sensor_fault_timeout,
                 arm_id, stepper_mcu.get_name(),
             )
             loop_start = self.reactor.monotonic()
@@ -624,10 +629,10 @@ class MotionToolhead(ToolHead):
                 elapsed = self.reactor.monotonic() - loop_start
                 if drip_completion.test():
                     logging.info(
-                        "[homing-loop] beacon triggered iter=%d "
+                        "[homing-loop] probe triggered iter=%d "
                         "elapsed=%.3f", loop_iter, elapsed,
                     )
-                    exit_reason = "beacon_trigger"
+                    exit_reason = "probe_trigger"
                     break
                 if self.bridge.is_homing_segment_retired():
                     reason = self.bridge.get_homing_segment_reason()
@@ -638,16 +643,17 @@ class MotionToolhead(ToolHead):
                     )
                     exit_reason = "segment_complete"
                     break
-                if elapsed > move_time:
+                if elapsed > sensor_fault_timeout:
                     logging.error(
-                        "[homing-loop] SAFETY TIMEOUT iter=%d "
-                        "elapsed=%.3f — stopping extensions",
-                        loop_iter, elapsed,
+                        "[homing-loop] SENSOR FAULT: probe did not "
+                        "trigger across full travel (%.1fmm in %.1fs)"
+                        " — stopping", move_dist, elapsed,
                     )
-                    exit_reason = "safety_timeout"
+                    exit_reason = "sensor_fault"
                     raise self.printer.command_error(
-                        "Homing safety timeout: Z moved for %.1fs "
-                        "without trigger" % (elapsed,)
+                        "Probe sensor fault: no trigger after %.1fmm "
+                        "of Z travel (%.1fs). Check probe wiring and "
+                        "threshold." % (move_dist, elapsed,)
                     )
                 self.bridge.extend_homing_deadline(mcu_handle, arm_id)
             logging.info(
