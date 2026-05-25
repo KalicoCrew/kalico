@@ -6,7 +6,7 @@ use crate::transport::MessageParams;
 /// Newtype wrapper so `ReactorCommand` can remain `#[derive(Debug)]`. The
 /// inner `Box<dyn Fn(&MessageParams) + Send + Sync>` does not implement
 /// `Debug`, so we provide a trivial opaque representation.
-pub(crate) struct InterceptorCallback(pub Box<dyn Fn(&MessageParams) + Send + Sync>);
+pub struct InterceptorCallback(pub Box<dyn Fn(&MessageParams) + Send + Sync>);
 
 impl std::fmt::Debug for InterceptorCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
