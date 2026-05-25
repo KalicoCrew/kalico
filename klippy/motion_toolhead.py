@@ -146,7 +146,10 @@ class BridgeKinematics:
             mcu_stepper.setup_itersolve(
                 "cartesian_stepper_alloc", axis.encode()
             )
-            mcu_stepper.set_trapq(trapq)
+            # DIAG: do NOT connect steppers to trapq — bridge mode
+            # generates steps via the Rust runtime, not the C trapq.
+            # If Z still moves after this, the motion source is NOT trapq.
+            # mcu_stepper.set_trapq(trapq)
             mcu_stepper.get_mcu()._bridge_drives_steppers = True
         self.rails.append(rail)
 
