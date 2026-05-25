@@ -362,12 +362,17 @@ class MotionBridgeWrapper:
     def extend_homing_deadline(self, mcu, arm_id):
         return self._bridge.extend_homing_deadline(mcu, arm_id)
 
-    def run_probe_homing(self, beacon_handle, beacon_trsync_oid,
-                         stepper_mcu_handle, arm_id, move_pos, speed,
-                         sensor_fault_timeout, stepper_oids):
-        return self._bridge.run_probe_homing(
+    def prepare_probe_homing(self, beacon_handle, beacon_trsync_oid,
+                             stepper_mcu_handle, arm_id,
+                             sensor_fault_timeout):
+        return self._bridge.prepare_probe_homing(
             beacon_handle, beacon_trsync_oid, stepper_mcu_handle,
-            arm_id, move_pos, speed, sensor_fault_timeout, stepper_oids,
+            arm_id, sensor_fault_timeout,
+        )
+
+    def run_probe_homing(self, handle_id, move_pos, speed, stepper_oids):
+        return self._bridge.run_probe_homing(
+            handle_id, move_pos, speed, stepper_oids,
         )
 
     def get_homing_position_at_time(self, print_time):

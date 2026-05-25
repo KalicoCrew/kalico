@@ -439,6 +439,9 @@ pub struct PyMotionBridge {
     /// a homing-active segment is dispatched; cleared by `set_position` (stream
     /// open / planner reset).  `None` outside of an active homing sequence.
     retained_homing_curve: Arc<Mutex<Option<RetainedHomingCurve>>>,
+    /// Active probe-homing handles keyed by an incrementing ID.
+    probe_handles: Mutex<HashMap<u64, crate::probe_homing::ProbeHomingHandle>>,
+    probe_handle_counter: AtomicU64,
 }
 
 /// Build the kalico-native `ConfigureAxes` wire body.
@@ -539,6 +542,8 @@ impl PyMotionBridge {
             homing: Arc::new(HomingState::new()),
             pending_seed: Arc::new(Mutex::new(None)),
             retained_homing_curve: Arc::new(Mutex::new(None)),
+            probe_handles: Mutex::new(HashMap::new()),
+            probe_handle_counter: AtomicU64::new(1),
         }
     }
 
@@ -2821,57 +2826,75 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    /// Arm the beacon trsync interceptor, submit the homing move, and block
-    /// (GIL released) until the MCU trips or the sensor-fault timeout expires.
-    ///
-    /// Returns the raw status byte from the MCU `kalico_software_trip_response`
-    /// message (0 = not tripped, 1 = homing complete, 2 = software trip, …).
-    ///
-    /// `stepper_oids` is accepted for forward-compatibility (caller may later
-    /// drive per-stepper enable/disable from here) but is currently unused.
+    /// Phase 1: register the Beacon trsync interceptor.  Call BEFORE
+    /// `home_start()` sends `beacon_home`, so the interceptor is in
+    /// place when the probe triggers.  Returns an opaque handle ID.
+    fn prepare_probe_homing(
+        &self,
+        beacon_handle: u32,
+        beacon_trsync_oid: u8,
+        stepper_mcu_handle: u32,
+        arm_id: u32,
+        sensor_fault_timeout_s: f64,
+    ) -> PyResult<u64> {
+        let beacon_io = self.host_io_for_mcu("prepare_probe_homing(beacon)", beacon_handle)?;
+        let stepper_io =
+            self.host_io_for_mcu("prepare_probe_homing(stepper)", stepper_mcu_handle)?;
+
+        let handle = crate::probe_homing::prepare_probe_homing(
+            beacon_io,
+            stepper_io,
+            beacon_trsync_oid,
+            arm_id,
+            std::time::Duration::from_secs_f64(sensor_fault_timeout_s),
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("prepare_probe_homing: {e}")))?;
+
+        let id = self.next_probe_handle_id();
+        self.probe_handles
+            .lock()
+            .unwrap()
+            .insert(id, handle);
+        Ok(id)
+    }
+
+    /// Phase 2: submit the homing move and block (GIL released) until
+    /// the probe triggers, the segment retires, or the sensor-fault
+    /// timeout fires.  Cleans up the interceptor before returning.
     #[pyo3(signature = (
-        beacon_handle,
-        beacon_trsync_oid,
-        stepper_mcu_handle,
-        arm_id,
+        handle_id,
         move_pos,
         speed,
-        sensor_fault_timeout_s,
         stepper_oids,
     ))]
     fn run_probe_homing(
         &self,
         py: Python<'_>,
-        beacon_handle: u32,
-        beacon_trsync_oid: u8,
-        stepper_mcu_handle: u32,
-        arm_id: u32,
+        handle_id: u64,
         move_pos: Vec<f64>,
         speed: f64,
-        sensor_fault_timeout_s: f64,
         stepper_oids: Vec<u8>,
     ) -> PyResult<u8> {
         let _ = stepper_oids;
 
-        let beacon_io = self.host_io_for_mcu("run_probe_homing(beacon)", beacon_handle)?;
-        let stepper_io =
-            self.host_io_for_mcu("run_probe_homing(stepper)", stepper_mcu_handle)?;
+        let handle = self
+            .probe_handles
+            .lock()
+            .unwrap()
+            .remove(&handle_id)
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "run_probe_homing: unknown handle_id {handle_id}"
+                ))
+            })?;
 
-        self.submit_homing_move_inner(&move_pos, speed, &[arm_id])?;
+        self.submit_homing_move_inner(&move_pos, speed, &[handle.arm_id])?;
 
-        let params = crate::probe_homing::ProbeHomingParams {
-            beacon_io,
-            stepper_io,
-            beacon_trsync_oid,
-            arm_id,
-            sensor_fault_timeout: std::time::Duration::from_secs_f64(sensor_fault_timeout_s),
-        };
-
-        // Release the GIL so Python's reactor thread is not blocked for the
-        // full homing move duration (potentially hundreds of milliseconds).
         let result = py.allow_threads(|| {
-            crate::probe_homing::run_probe_homing(&params, &self.homing)
+            crate::probe_homing::run_probe_homing(&handle, &self.homing)
         });
+
+        crate::probe_homing::cleanup_probe_homing(handle);
 
         match result {
             Ok(r) => Ok(r as u8),
@@ -3082,6 +3105,10 @@ impl PyMotionBridge {
 }
 
 impl PyMotionBridge {
+    fn next_probe_handle_id(&self) -> u64 {
+        self.probe_handle_counter.fetch_add(1, Ordering::Relaxed)
+    }
+
     fn host_io_for_mcu(&self, caller: &str, mcu: u32) -> PyResult<Arc<KalicoHostIo>> {
         let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
         let conn = mcus.get(&mcu).ok_or_else(|| {

@@ -481,6 +481,57 @@ class MotionToolhead(ToolHead):
             # No endstop armed — regular move fallback
             self.move(newpos, speed)
 
+    def _prepare_probe_interceptor(self, endstops):
+        """Pre-register the Rust frame interceptor for the external
+        probe's trsync.  Called from homing.py BEFORE home_start() so
+        the interceptor is in place when the probe triggers.  Stores
+        the handle ID on self for _drip_move_software_trip to consume.
+        """
+        self._probe_homing_handle_id = None
+        stepper_mcus = set()
+        for s in self.kin.get_steppers():
+            if s.get_name().startswith("stepper_z"):
+                stepper_mcus.add(s.get_mcu())
+        if len(stepper_mcus) != 1:
+            return
+        stepper_mcu = next(iter(stepper_mcus))
+        for mcu_endstop, name in endstops:
+            es_mcu = mcu_endstop.get_mcu()
+            if es_mcu == stepper_mcu:
+                continue
+            if es_mcu._bridge_handle is None:
+                continue
+            trsync = getattr(
+                getattr(mcu_endstop, '_shared', None), '_trsync', None
+            )
+            if trsync is None:
+                continue
+            from . import motion_bridge as _mb
+            arm_id = _mb._alloc_arm_id()
+            nominal_dist = 250.0
+            axis_rails = self.kin._axis_rails()
+            z_rail = axis_rails.get(2)
+            if z_rail is not None:
+                z_min, z_max = z_rail.get_range()
+                nominal_dist = abs(z_max - z_min)
+            sensor_fault_timeout = nominal_dist / 5.0 + 5.0
+            handle_id = self.bridge.prepare_probe_homing(
+                es_mcu._bridge_handle,
+                trsync.get_oid(),
+                stepper_mcu._bridge_handle,
+                arm_id,
+                sensor_fault_timeout,
+            )
+            self._probe_homing_handle_id = handle_id
+            self._probe_homing_arm_id = arm_id
+            logging.info(
+                "[probe-homing] interceptor registered: handle_id=%d "
+                "beacon_handle=%s trsync_oid=%d arm_id=%d",
+                handle_id, es_mcu._bridge_handle, trsync.get_oid(),
+                arm_id,
+            )
+            return
+
     def _drip_move_software_trip(self, newpos, speed, drip_completion):
         from . import motion_bridge as _mb
         from . import motion_kinematics
@@ -522,7 +573,9 @@ class MotionToolhead(ToolHead):
         queue = self.bridge.alloc_command_queue(mcu_handle)
 
         # Create virtual arm
-        arm_id = _mb._alloc_arm_id()
+        arm_id = getattr(self, '_probe_homing_arm_id', None)
+        if arm_id is None:
+            arm_id = _mb._alloc_arm_id()
         stepper_oids = [s.get_oid() for s in moving_steppers]
         source = (_mb.SOURCE_KIND_SOFTWARE, 0, False, 0, 1, 0, 0)
 
@@ -582,52 +635,26 @@ class MotionToolhead(ToolHead):
             )
             self.bridge._homing_print_time_base = bridge_lmt_before
 
-            # Resolve Beacon MCU handle and trsync OID from the
-            # endstop list stashed by homing.py before drip_move.
-            beacon_mcu = None
-            beacon_trsync_oid = 0
-            for mcu_endstop, name in getattr(self, '_homing_endstops', []):
-                es_mcu = mcu_endstop.get_mcu()
-                if es_mcu != stepper_mcu:
-                    beacon_mcu = es_mcu
-                    beacon_trsync_oid = (
-                        mcu_endstop._shared._trsync.get_oid()
-                    )
-                    break
-            if beacon_mcu is None or beacon_mcu._bridge_handle is None:
+            # Use the pre-registered interceptor handle from
+            # _prepare_probe_interceptor (called before home_start).
+            handle_id = getattr(self, '_probe_homing_handle_id', None)
+            if handle_id is None:
                 raise self.printer.command_error(
-                    "Cannot resolve Beacon MCU for probe homing"
+                    "No probe homing interceptor registered "
+                    "(call _prepare_probe_interceptor first)"
                 )
-
-            # Sensor-fault timeout: detects broken probe, not collision.
-            nominal_dist = abs(pos3[2] - self.commanded_pos[2])
-            axis_rails = self.kin._axis_rails()
-            z_rail = axis_rails.get(2)
-            if z_rail is not None:
-                z_min, z_max = z_rail.get_range()
-                actual_range = abs(z_max - z_min)
-                move_dist = min(nominal_dist, actual_range)
-            else:
-                move_dist = nominal_dist
-            sensor_fault_timeout = move_dist / max(speed, 0.1) + 5.0
+            # Use the arm_id from prepare (matches what the
+            # interceptor will send in software_trip).
+            arm_id = self._probe_homing_arm_id
 
             logging.info(
                 "[probe-homing] calling run_probe_homing: "
-                "beacon_handle=%s trsync_oid=%d stepper_handle=%s "
-                "arm_id=%d speed=%.1f sensor_fault_timeout=%.1f",
-                beacon_mcu._bridge_handle, beacon_trsync_oid,
-                mcu_handle, arm_id, speed, sensor_fault_timeout,
+                "handle_id=%d arm_id=%d speed=%.1f",
+                handle_id, arm_id, speed,
             )
 
             result = self.bridge.run_probe_homing(
-                beacon_mcu._bridge_handle,
-                beacon_trsync_oid,
-                mcu_handle,
-                arm_id,
-                pos3,
-                speed,
-                sensor_fault_timeout,
-                stepper_oids,
+                handle_id, pos3, speed, stepper_oids,
             )
 
             PROBE_TRIGGERED = 0
@@ -637,9 +664,8 @@ class MotionToolhead(ToolHead):
 
             if result == SENSOR_FAULT:
                 raise self.printer.command_error(
-                    "Probe sensor fault: no trigger after %.1fmm "
-                    "of Z travel (%.1fs). Check probe wiring and "
-                    "threshold." % (move_dist, sensor_fault_timeout)
+                    "Probe sensor fault: no trigger during full Z "
+                    "travel. Check probe wiring and threshold."
                 )
             if result == DEADLINE_EXPIRED:
                 raise self.printer.command_error(

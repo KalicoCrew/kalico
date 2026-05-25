@@ -126,6 +126,10 @@ class HomingMove:
         ]
         # Start endstop checking
         print_time = self.toolhead.get_last_move_time()
+        # Pre-register the Rust interceptor before home_start sends
+        # beacon_home — ensures the interceptor is in place before the
+        # probe can trigger.
+        self.toolhead._prepare_probe_interceptor(self.endstops)
         endstop_triggers = []
         for mcu_endstop, name in self.endstops:
             rest_time = self._calc_endstop_rate(mcu_endstop, movepos, speed)
