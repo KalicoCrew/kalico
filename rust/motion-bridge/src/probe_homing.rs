@@ -53,10 +53,18 @@ pub fn prepare_probe_homing(
             Some(u32::from(beacon_trsync_oid)),
             Box::new(move |msg_params| {
                 let can_trigger = msg_params.get_u32("can_trigger");
+                eprintln!(
+                    "[probe-homing-interceptor] trsync_state received: \
+                     can_trigger={can_trigger} arm_id={arm_id}"
+                );
                 if can_trigger == 0 {
                     let cmd = format!("runtime_software_trip arm_id={arm_id}");
                     let _ = stepper_io_clone.send_fire_and_forget(&cmd);
                     triggered_clone.store(true, Ordering::Release);
+                    eprintln!(
+                        "[probe-homing-interceptor] TRIGGERED — \
+                         software_trip sent, flag set"
+                    );
                 }
             }),
         )?
@@ -104,14 +112,18 @@ fn run_loop(
     extend_cmd: &str,
 ) -> Result<ProbeHomingResult, TransportError> {
     let start = Instant::now();
+    eprintln!(
+        "[probe-homing-loop] entering loop arm_id={} timeout={:.1}s",
+        handle.arm_id, handle.sensor_fault_timeout.as_secs_f64(),
+    );
 
     loop {
         std::thread::sleep(TICK_INTERVAL);
         let elapsed = start.elapsed();
 
         if handle.triggered.load(Ordering::Acquire) {
-            log::info!(
-                "[probe-homing] probe triggered elapsed={:.3}s",
+            eprintln!(
+                "[probe-homing-loop] TRIGGERED elapsed={:.3}s",
                 elapsed.as_secs_f64(),
             );
             return Ok(ProbeHomingResult::ProbeTriggered);
