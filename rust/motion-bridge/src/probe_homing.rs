@@ -46,6 +46,7 @@ pub fn prepare_probe_homing(
 
     let interceptor_id = {
         let triggered_clone = Arc::clone(&triggered);
+        let stepper_io_clone = Arc::clone(&stepper_io);
 
         beacon_io.register_frame_interceptor(
             "trsync_state",
@@ -55,13 +56,11 @@ pub fn prepare_probe_homing(
                 if can_trigger != 0 {
                     return;
                 }
-                // Detection only — do NOT send software_trip here.
-                // The interceptor fires at wire speed, often before the
-                // MCU has started executing the homing segment. If we
-                // send software_trip now, the MCU reports 0 steps and
-                // the position is wrong. Instead, just set the flag;
-                // the loop thread sends software_trip on the next tick
-                // after the MCU has had time to generate steps.
+                // Fire software_trip immediately — this runs in the
+                // Beacon reactor thread, sub-millisecond from the
+                // trigger frame arriving on the wire.
+                let cmd = format!("runtime_software_trip arm_id={arm_id}");
+                let _ = stepper_io_clone.send_fire_and_forget(&cmd);
                 triggered_clone.store(true, Ordering::Release);
             }),
         )?
@@ -115,11 +114,6 @@ fn run_loop(
         let elapsed = start.elapsed();
 
         if handle.triggered.load(Ordering::Acquire) {
-            // Send software_trip NOW — the MCU has been executing the
-            // homing segment for at least one tick (25ms) worth of
-            // steps, so it will report a meaningful step count.
-            let trip_cmd = format!("runtime_software_trip arm_id={}", handle.arm_id);
-            let _ = handle.stepper_io.send_fire_and_forget(&trip_cmd);
             log::info!(
                 "[probe-homing] probe triggered elapsed={:.3}s",
                 elapsed.as_secs_f64(),

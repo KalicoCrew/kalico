@@ -790,30 +790,31 @@ impl Reactor {
                         entry.seq
                     );
                     let _ = entry.completion.send(Ok(params));
-                } else if !self.try_dispatch_passthrough_response(&raw_payload) {
-                    eprintln!(
-                        "[trace-resp] tid={:?} unsolicited name={name} await_len={await_len_before}",
-                        std::thread::current().id()
-                    );
-                    // Fire registered interceptors before dispatching to channel.
+                } else {
+                    // Fire registered interceptors BEFORE passthrough
+                    // routing. The passthrough router greedily consumes
+                    // frames for pending notify callbacks; if we checked
+                    // passthrough first, an unsolicited trsync_state
+                    // trigger could be eaten by a pending send_with_response
+                    // and the homing interceptor would never see it.
                     let oid = params.fields.get("oid").and_then(|v| match v {
                         crate::transport::MessageValue::U32(n) => Some(*n),
                         crate::transport::MessageValue::I32(n) => Some(*n as u32),
                         _ => None,
                     });
                     self.interceptors.dispatch(&name, oid, &params);
-                    // Unsolicited Klipper-protocol Response frames
-                    // (analog_in_state, trsync_state, stats, homing_state, …)
-                    // need to reach klippy's per-(name, oid) handlers. The
-                    // bridge owns the wire so klippy's serialqueue never
-                    // sees them; forward as PassthroughResponse with the full
-                    // params dict so `serialhdl._bridge_event_poller` can
-                    // dispatch by name+oid.
-                    let event = crate::host_io::runtime_events::RuntimeEvent::PassthroughResponse {
-                        name,
-                        params,
-                    };
-                    self.dispatch_runtime_event(event);
+
+                    if !self.try_dispatch_passthrough_response(&raw_payload) {
+                        eprintln!(
+                            "[trace-resp] tid={:?} unsolicited name={name} await_len={await_len_before}",
+                            std::thread::current().id()
+                        );
+                        let event = crate::host_io::runtime_events::RuntimeEvent::PassthroughResponse {
+                            name,
+                            params,
+                        };
+                        self.dispatch_runtime_event(event);
+                    }
                 }
             }
             crate::host_io::parser::DecodedFrame::Output { name, params } => {
