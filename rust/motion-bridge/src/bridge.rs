@@ -2901,7 +2901,24 @@ impl PyMotionBridge {
                 ))
             })?;
 
+        let seg_count_before = self.dispatched_segments.load(Ordering::Relaxed);
         self.submit_homing_move_inner(&move_pos, speed, &[handle.arm_id])?;
+        let seg_count_after = self.dispatched_segments.load(Ordering::Relaxed);
+        // DIAG: log how many segments were dispatched for this homing move
+        {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true).append(true)
+                .open("/tmp/interceptor_trace.log")
+            {
+                let _ = writeln!(f,
+                    "[{:?}] HOMING_MOVE_DISPATCH seg_before={} seg_after={} dispatched={}",
+                    std::time::SystemTime::now(),
+                    seg_count_before, seg_count_after,
+                    seg_count_after - seg_count_before,
+                );
+            }
+        }
 
         let result = py.allow_threads(|| {
             crate::probe_homing::run_probe_homing(&handle)
