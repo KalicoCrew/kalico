@@ -315,12 +315,25 @@ class MCU_trsync:
             tc.complete(False)
 
     def _handle_trsync_state(self, params):
+        logging.info(
+            "[trsync-diag] _handle_trsync_state mcu=%s oid=%d "
+            "can_trigger=%s trigger_reason=%s clock=%s "
+            "has_completion=%s",
+            self._mcu._name, self._oid,
+            params.get("can_trigger"), params.get("trigger_reason"),
+            params.get("clock"),
+            self._trigger_completion is not None,
+        )
         if not params["can_trigger"]:
             tc = self._trigger_completion
             if tc is not None:
                 self._trigger_completion = None
                 reason = params["trigger_reason"]
                 is_failure = reason >= self.REASON_COMMS_TIMEOUT
+                logging.info(
+                    "[trsync-diag] completing trigger: reason=%d "
+                    "is_failure=%s", reason, is_failure,
+                )
                 self._reactor.async_complete(tc, is_failure)
         elif self._home_end_clock is not None:
             clock = self._mcu.clock32_to_clock64(params["clock"])
@@ -333,9 +346,10 @@ class MCU_trsync:
     def start(self, print_time, report_offset, trigger_completion, expire_timeout):
         self._trigger_completion = trigger_completion
         if self._mcu._bridge_drives_steppers:
-            # Bridge-driven MCU: no-op. Firmware trsync was never started,
-            # so no timeout can fire. The actual motion stop comes from
-            # bridge software_trip, not from trsync.
+            logging.info(
+                "[trsync-diag] start no-op (bridge-driven) mcu=%s oid=%d",
+                self._mcu._name, self._oid,
+            )
             return
         # Non-bridge MCU (Beacon, Eddy): send firmware commands.
         # Skip trdispatch_mcu_setup (no C serialqueue in bridge mode)
@@ -363,6 +377,15 @@ class MCU_trsync:
             )
         self._mcu.register_response(
             self._handle_trsync_state, "trsync_state", self._oid
+        )
+        logging.info(
+            "[trsync-diag] start mcu=%s oid=%d bridge_drives=%s "
+            "print_time=%.6f clock=%d expire_clock=%d "
+            "expire_timeout=%.1f steppers=%s",
+            self._mcu._name, self._oid,
+            self._mcu._bridge_drives_steppers,
+            print_time, clock, expire_clock, expire_timeout,
+            [s.get_name() for s in self._steppers],
         )
         if self._trdispatch_mcu is not None:
             self._trsync_start_cmd.send(

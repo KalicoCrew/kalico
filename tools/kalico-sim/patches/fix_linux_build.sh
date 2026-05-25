@@ -152,12 +152,11 @@ if grep -q 'handle_push_segment_calls_total' "$DISPATCH_FILE" 2>/dev/null && \
     echo "fix_linux_build: adding push_segment + kalico_dispatch traces"
     # Add push trace right after the counter increment
     sed -i 's/handle_push_segment_calls_total++;/handle_push_segment_calls_total++; fprintf(stderr, "[mcu-push-diag] push total=%u body_len=%u\\n", handle_push_segment_calls_total, body_len); fflush(stderr);/' "$DISPATCH_FILE"
-    # Add kalico_dispatch_frame trace
+    # Add kalico_dispatch_frame trace — insert after body_len is defined
+    # so both 'kind' and 'body_len' are in scope for the fprintf.
     if grep -q 'kalico_dispatch_frame' "$DISPATCH_FILE" && ! grep -q 'mcu-kalico-diag' "$DISPATCH_FILE"; then
-        sed -i '/^kalico_dispatch_frame/{
-a\
-    fprintf(stderr, "[mcu-kalico-diag] dispatch kind=0x%04x body_len=%u\\n", kind, body_len); fflush(stderr);
-}' "$DISPATCH_FILE"
+        sed -i '/uint16_t body_len = payload_len - PER_MESSAGE_HEADER_LEN;/a\
+    fprintf(stderr, "[mcu-kalico-diag] dispatch kind=0x%04x body_len=%u\\n", kind, body_len); fflush(stderr);' "$DISPATCH_FILE"
     fi
 fi
 

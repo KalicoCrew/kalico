@@ -110,17 +110,19 @@ CORE_RESPONSES = [
 ]
 
 BEACON_RESPONSES = [
-    "beacon_data bytes=%*s",
-    "beacon_status clock=%u sample=%i frequency=%u temp=%hi",
+    # beacon_data — streaming frequency samples. beacon.py reads:
+    #   params["data"], params["samples"], params["start_clock"], params["delta_clock"]
+    # The data buffer contains delta-compressed frequency counts.
+    "beacon_data data=%*s samples=%c start_clock=%u delta_clock=%u",
+    # beacon_status — thermal telemetry. beacon.py reads:
+    #   params["mcu_temp"], params["supply_voltage"], params["coil_temp"], params["status"]
+    "beacon_status mcu_temp=%u supply_voltage=%u coil_temp=%u status=%u",
+    # beacon_contact — contact detection event. Sent unsolicited on
+    # nozzle contact. beacon.py stores as last_contact_msg.
     "beacon_contact triggered=%c clock=%u sample=%i frequency=%u",
     "beacon_nvm_data bytes=%*s offset=%hu",
     "beacon_contact_state triggered=%c detect_clock=%u",
-    # Accelerometer responses. `_handle_accel_data` reads start_clock /
-    # delta_clock / data; the data buffer carries 6-byte samples
-    # (xl, xh, yl, yh, zl, zh) per beacon.py ACCEL_BYTES_PER_SAMPLE=6.
-    # `_handle_accel_state` is `pass` — no field accesses — so the
-    # state response shape need only round-trip through msgproto. We
-    # report a single-uint32 error counter.
+    # Accelerometer responses.
     "beacon_accel_data start_clock=%u delta_clock=%u data=%*s",
     "beacon_accel_state errors=%u",
 ]

@@ -185,6 +185,8 @@ class BeaconMcuStub:
         # Boot only requires the dictionary surface + acks; the
         # proximity-trip path lights up in a follow-up commit.
         self._trsync_oids: set = set()
+        self._trsync_can_trigger: dict = {}
+        self._trsync_trigger_reason: dict = {}
         # Accelerometer streaming — driven on by motors_sync (via
         # APIDumpHelper batch_bulk) and off by `BeaconAccelHelper.reinit`
         # at boot (beacon.py:3466). Independent thread; the data path
@@ -215,14 +217,21 @@ class BeaconMcuStub:
 
         # --- Z-aware frequency model ---
         # Beacon's eddy-current frequency varies with distance to bed.
-        # Model: freq = base_freq + coeff / (z_mm + offset)
-        # At z=0 (contact): freq ≈ 2_000_000 Hz
-        # At z=5mm: freq ≈ 500_000 Hz
-        # At z=10mm+: freq ≈ 350_000 Hz (far field, nearly constant)
+        # Model: freq = base + coeff / (z_mm + offset)
+        # The saved SAVE_CONFIG model uses domain [1.8359e-7, 1.8936e-7]
+        # (inverse-Hz), meaning frequencies ~5.28–5.45 MHz.
+        # At z=0:  freq = 5,450,000 Hz → count = 73,153,076
+        # At z=2:  freq = 5,316,667 Hz → count = 71,361,745
+        # At z=5:  freq = 5,283,333 Hz → count = 70,914,218
+        # At z=10: freq = 5,268,182 Hz → count = 70,710,853
         self._z_current: float = 10.0  # current simulated Z height in mm
-        self._freq_base: int = 300_000
-        self._freq_coeff: float = 1_700_000.0
-        self._freq_offset: float = 1.0  # prevents div-by-zero at z=0
+        self._freq_base: int = 5_183_000     # ~5.18 MHz base
+        self._freq_coeff: float = 763_000.0  # tuned to match model polynomial
+        self._freq_offset: float = 2.857     # wider spread across 0-5mm range
+        # Z tracking during proximity homing
+        self._homing_approach_speed: float = 5.0  # mm/s (matches homing_speed)
+        self._homing_start_z: float = 10.0
+        self._homing_start_time: float = 0.0
 
     # ------------------------------------------------------------------
     # Public lifecycle / orchestrator API
@@ -526,6 +535,7 @@ class BeaconMcuStub:
     def _handle_beacon_stream(self, params: dict) -> None:
         en = params["en"]
         self._stream_en = bool(en)
+        logging.info("beacon-stub: stream en=%d", en)
         if self._stream_en:
             self._start_sample_thread()
         else:
@@ -536,13 +546,72 @@ class BeaconMcuStub:
         self._threshold_untrigger = params["untrigger"]
 
     def _handle_beacon_home(self, params: dict) -> None:
-        self._home_active = True
         self._home_trsync_oid = params["trsync_oid"]
         self._home_trigger_reason = params["trigger_reason"]
         self._home_trigger_invert = params["trigger_invert"]
+        if not self._home_active:
+            self._homing_start_z = self._z_current
+            self._homing_start_time = time.monotonic()
+            self._home_active = True
+            self._start_homing_monitor()
+        logging.info(
+            "beacon-stub: beacon_home trsync_oid=%d "
+            "z=%.2f threshold=%d",
+            self._home_trsync_oid, self._z_current,
+            self._threshold_trigger,
+        )
 
     def _handle_beacon_stop_home(self, params: dict) -> None:
         self._home_active = False
+
+    def _start_homing_monitor(self) -> None:
+        """Start a background thread that monitors Z and fires the trigger.
+
+        On real beacon hardware, the firmware monitors the coil frequency
+        independently of whether beacon_data streaming is on. The sample
+        loop only runs when streaming is enabled, so this separate monitor
+        handles the trigger check during homing when streaming is off.
+        """
+        t = threading.Thread(
+            target=self._homing_monitor_loop,
+            name="beacon-stub-homing",
+            daemon=True,
+        )
+        t.start()
+
+    def _homing_monitor_loop(self) -> None:
+        CHECK_HZ = 200.0
+        period = 1.0 / CHECK_HZ
+        iter_count = 0
+        while not self._stop.is_set() and self._home_active:
+            time.sleep(period)
+            elapsed = time.monotonic() - self._homing_start_time
+            self._z_current = max(
+                0.0,
+                self._homing_start_z - elapsed * self._homing_approach_speed,
+            )
+            freq = self._z_to_frequency(self._z_current)
+            count = self._freq_to_count(freq)
+            iter_count += 1
+            if iter_count % 40 == 0:
+                logging.info(
+                    "beacon-stub: homing monitor z=%.2f freq=%d "
+                    "count=%d threshold=%d",
+                    self._z_current, freq, count,
+                    self._threshold_trigger,
+                )
+            if self._threshold_trigger > 0:
+                if self._home_trigger_invert:
+                    triggered = count <= self._threshold_untrigger
+                else:
+                    triggered = count >= self._threshold_trigger
+                if triggered:
+                    logging.info(
+                        "beacon-stub: TRIGGER z=%.2f count=%d threshold=%d",
+                        self._z_current, count, self._threshold_trigger,
+                    )
+                    self._fire_homing_trigger()
+                    return
 
     def _handle_beacon_nvm_read(self, params: dict) -> None:
         length = params["len"]
@@ -604,27 +673,21 @@ class BeaconMcuStub:
     # -- trsync -------------------------------------------------------
 
     def _handle_config_trsync(self, params: dict) -> None:
-        # Track the OID so we can validate inbound trsync_* commands
-        # later. The firmware-side equivalent (src/trsync.c) allocates
-        # the per-OID state struct here.
         self._trsync_oids.add(params["oid"])
+        self._trsync_can_trigger = {}
 
     def _handle_trsync_start(self, params: dict) -> None:
-        # The real firmware would store report_clock / report_ticks /
-        # expire_reason and emit periodic `trsync_state` reports plus
-        # one final report on expire. For boot we don't need those —
-        # klippy only consumes trsync_state in `MCU_trsync.start()`,
-        # which isn't reached during config. Track the OID so a
-        # subsequent `trsync_trigger` can reply with a coherent state.
         self._trsync_oids.add(params["oid"])
+        self._trsync_can_trigger[params["oid"]] = True
 
     def _handle_trsync_trigger(self, params: dict) -> None:
-        # Mirror src/trsync.c command_trsync_trigger: send a final
-        # `trsync_state` with can_trigger=0 and the requested reason.
-        # klippy's MCU_trsync._handle_trsync_state releases the
-        # completion on can_trigger=0.
         oid = params["oid"]
         reason = params["reason"]
+        if self._trsync_can_trigger.get(oid, False):
+            self._trsync_can_trigger[oid] = False
+            self._trsync_trigger_reason[oid] = reason
+        else:
+            reason = self._trsync_trigger_reason.get(oid, reason)
         self._send_msg(
             "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u",
             oid=oid, can_trigger=0, trigger_reason=reason,
@@ -734,6 +797,7 @@ class BeaconMcuStub:
         next_batch = time.monotonic()
         next_status = time.monotonic()
         last_data_value = 0
+        loop_iter_count = 0
 
         while not self._stop.is_set() and self._stream_en:
             now = time.monotonic()
@@ -747,8 +811,20 @@ class BeaconMcuStub:
             if now >= next_batch:
                 next_batch += batch_period
                 start_clock = self._now_clock()
+
+                # During proximity homing, linearly decrease Z to simulate
+                # the nozzle descending toward the bed at homing_speed.
+                if self._home_active:
+                    elapsed = now - self._homing_start_time
+                    self._z_current = max(
+                        0.0,
+                        self._homing_start_z - elapsed * self._homing_approach_speed,
+                    )
+
                 freq = self._z_to_frequency(self._z_current)
-                data_value = freq
+                # Protocol uses COUNT values, not raw Hz.
+                # count = freq * 2^28 / CLOCK_FREQ
+                data_value = self._freq_to_count(freq)
 
                 # Delta-compress samples
                 buf = bytearray()
@@ -777,15 +853,31 @@ class BeaconMcuStub:
                     delta_clock=delta_clock,
                 )
                 self.tx_sample_count += SAMPLES_PER_BATCH
+                loop_iter_count += 1
 
-                # Check proximity homing trigger
-                if self._home_active:
-                    triggered = False
+                # Check proximity homing trigger using COUNT values.
+                # _threshold_trigger / _threshold_untrigger are already in
+                # counts (set by beacon_set_threshold from klippy).
+                if self._home_active and self._threshold_trigger > 0:
+                    count = data_value
                     if self._home_trigger_invert:
-                        triggered = freq <= self._threshold_untrigger
+                        triggered = count <= self._threshold_untrigger
                     else:
-                        triggered = freq >= self._threshold_trigger
-                    if triggered and self._threshold_trigger > 0:
+                        triggered = count >= self._threshold_trigger
+                    if loop_iter_count % 40 == 0:
+                        logging.info(
+                            "beacon-stub: trigger check z=%.2f "
+                            "count=%d threshold=%d triggered=%s",
+                            self._z_current, count,
+                            self._threshold_trigger, triggered,
+                        )
+                    if triggered:
+                        logging.info(
+                            "beacon-stub: TRIGGER FIRED z=%.2f "
+                            "count=%d threshold=%d",
+                            self._z_current, count,
+                            self._threshold_trigger,
+                        )
                         self._fire_homing_trigger()
 
             # Emit thermal status
@@ -803,19 +895,35 @@ class BeaconMcuStub:
         """Convert Z height (mm) to eddy-current frequency (Hz).
 
         Model: freq = base + coeff / (z + offset)
-        At z=0 (contact): ~2,000,000 Hz
-        At z=5mm: ~640,000 Hz
-        At z=10mm: ~470,000 Hz
+        Tuned to match the saved beacon model polynomial at z=0,2,5mm.
+        At z=0:   ~5,450,000 Hz (count ≈ 73,153,076)
+        At z=2:   ~5,340,000 Hz (count ≈ 71,675,060)  — crosses trigger threshold
+        At z=5:   ~5,280,000 Hz (count ≈ 70,869,319)
+        At z=10:  ~5,242,000 Hz
         """
         if z_mm < 0:
             z_mm = 0
         return int(self._freq_base + self._freq_coeff / (z_mm + self._freq_offset))
+
+    def _freq_to_count(self, freq_hz: int) -> int:
+        """Convert frequency (Hz) to beacon COUNT value.
+
+        count = freq * 2^28 / CLOCK_FREQ  (CLOCK_FREQ = 20_000_000)
+
+        This is the inverse of beacon firmware's count→freq mapping:
+        freq = count * CLOCK_FREQ / 2^28
+        """
+        return int(freq_hz * (2 ** 28) / CLOCK_FREQ)
 
     def _fire_homing_trigger(self) -> None:
         """Fire the trsync trigger to signal homing completion."""
         if not self._home_active:
             return
         self._home_active = False
+        oid = self._home_trsync_oid
+        reason = self._home_trigger_reason
+        self._trsync_can_trigger[oid] = False
+        self._trsync_trigger_reason[oid] = reason
         oid = self._home_trsync_oid
         reason = self._home_trigger_reason
         self._send_msg(

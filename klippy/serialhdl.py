@@ -130,6 +130,14 @@ class SerialReader:
                 # via register_response. Fields from the firmware are spread
                 # into ev by the bridge; preserve them for the callback.
                 name = ev.get("name", "")
+                if name == "trsync_state":
+                    logging.info(
+                        "%s[bridge-poller] trsync_state response: "
+                        "oid=%s can_trigger=%s trigger_reason=%s",
+                        self.warn_prefix,
+                        ev.get("oid"), ev.get("can_trigger"),
+                        ev.get("trigger_reason"),
+                    )
                 ev["#name"] = name
                 ev["#sent_time"] = now
                 ev["#receive_time"] = now
@@ -140,6 +148,13 @@ class SerialReader:
                         or self.handlers.get((name, None))
                         or self.handle_default
                     )
+                    if name == "trsync_state":
+                        logging.info(
+                            "%s[bridge-poller] trsync_state handler "
+                            "lookup: key=(%s,%s) found=%s",
+                            self.warn_prefix, name, oid,
+                            hdl is not self.handle_default,
+                        )
                 try:
                     hdl(ev)
                 except Exception:

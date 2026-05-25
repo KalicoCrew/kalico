@@ -329,6 +329,7 @@ def run_simulation(
     timeout: float = 600.0,
     verbose: bool = False,
     phase_stepping: bool = False,
+    homing_test: bool = False,
 ) -> SimResult:
     """Run a complete simulation. Returns SimResult."""
     wall_start = time.monotonic()
@@ -405,6 +406,7 @@ def run_simulation(
                 h7_pty, f4_pty if dual_mcu else None, beacon_pty,
                 has_motion_bridge=has_motion_bridge,
                 phase_stepping=phase_stepping,
+                homing_test=homing_test,
             )
 
             # Copy G-code to virtual SD card location
@@ -430,7 +432,9 @@ def run_simulation(
                 env["KALICO_VTIME_DEBUG"] = "1"
             env["KALICO_SIM_SOCK_DIR"] = str(h7_sock_dir)
 
-            # Add sim_klippy's third-party plugin paths if available
+            # Add sim_klippy's third-party plugin paths if available.
+            # Klipper's module loader scans klippy/extras/ — third-party
+            # modules need symlinks there to be discoverable.
             third_party = repo_root / "tools" / "sim_klippy" / "printer_real" / "third_party_repos"
             if third_party.exists():
                 pp = env.get("PYTHONPATH", "")
@@ -441,6 +445,15 @@ def run_simulation(
                     str(motors_path) if motors_path.exists() else "",
                     pp,
                 ]))
+                extras_dir = repo_root / "klippy" / "extras"
+                beacon_py = beacon_path / "beacon.py"
+                extras_beacon = extras_dir / "beacon.py"
+                if beacon_py.exists() and not extras_beacon.exists():
+                    try:
+                        os.symlink(str(beacon_py.resolve()), str(extras_beacon))
+                        log.info("Symlinked beacon.py into klippy/extras/")
+                    except OSError:
+                        pass
 
             klippy_proc = subprocess.Popen(
                 [
@@ -476,6 +489,67 @@ def run_simulation(
 
             # Record virtual time at start
             vtime_start = vtime_read_ns()
+
+            if homing_test:
+                # -- Beacon Z homing test ----------------------------------
+                # Sequence:
+                #   1. SET_KINEMATIC_POSITION marks all axes as homed and
+                #      places XY at the beacon home position. This avoids
+                #      GPIO-based XY homing which requires the MACH_LINUX
+                #      MCU firmware to execute steps in real time (fragile
+                #      under Docker VM timing).
+                #   2. G28 Z exercises the full beacon proximity homing path:
+                #      BeaconHomingHelper → trsync → drip_move_software_trip.
+                log.info("Homing test: faking position, then G28 Z via beacon")
+
+                resp = send_gcode(
+                    api_socket,
+                    "SET_KINEMATIC_POSITION X=150 Y=150 Z=100",
+                    timeout=10,
+                )
+                log.info("SET_KINEMATIC_POSITION: %s", resp)
+
+                resp = send_gcode(api_socket, "G4 P1000", timeout=15)
+
+                resp = send_gcode(api_socket, "G28 Z", timeout=60)
+                log.info("G28 Z: %s", resp)
+
+                # Determine success: no error key in response and klippy
+                # log contains no shutdown after the homing command.
+                klippy_content = (
+                    klippy_log.read_text(errors="replace")
+                    if klippy_log.exists()
+                    else ""
+                )
+                homing_error = None
+                if isinstance(resp, dict) and resp.get("error"):
+                    homing_error = f"G28 Z failed: {resp['error']}"
+                elif "shutdown:" in klippy_content.lower():
+                    for line in klippy_content.split("\n"):
+                        if "shutdown:" in line.lower():
+                            homing_error = f"Printer shutdown during homing: {line.strip()}"
+                            break
+                elif not resp:
+                    homing_error = "G28 Z timed out or returned no response"
+
+                success = homing_error is None
+                error = homing_error
+                wall_end = time.monotonic()
+                wall_time_s = wall_end - wall_start
+
+                return SimResult(
+                    success=success,
+                    print_time_s=0,
+                    wall_time_s=wall_time_s,
+                    speedup=0,
+                    error=error,
+                    klippy_log=klippy_content,
+                    mcu_logs={
+                        mcu.name: open(mcu.log_path).read()
+                        for mcu in mcus
+                        if pathlib.Path(mcu.log_path).exists()
+                    },
+                )
 
             if gcode_path:
                 # Start the print via virtual SD card
@@ -707,15 +781,21 @@ def _prepare_config(
     beacon_pty: str,
     has_motion_bridge: bool = False,
     phase_stepping: bool = False,
+    homing_test: bool = False,
 ) -> pathlib.Path:
     """Render printer.cfg with sim serial paths."""
     # Try to find config from sim_klippy
     if config_dir is None:
-        if phase_stepping:
+        if homing_test:
+            cfg = _generate_beacon_homing_config(
+                h7_pty, f4_pty, beacon_pty,
+                gcode_dir=str(tmp_dir / "gcodes"),
+            )
+        elif phase_stepping:
             cfg = _generate_phase_stepping_config(h7_pty, f4_pty, gcode_dir=str(tmp_dir / "gcodes"))
         else:
             cfg = _generate_minimal_config(h7_pty, f4_pty, gcode_dir=str(tmp_dir / "gcodes"))
-        if has_motion_bridge and not phase_stepping:
+        if has_motion_bridge and not phase_stepping and not homing_test:
             cfg += """
 [input_shaper]
 shaper_freq_x: 50
@@ -854,6 +934,119 @@ class EndstopTrigger:
             self._send_cmd(
                 f"set_gpio_input chip={chip} line={line} value=0"
             )
+
+
+def _generate_beacon_homing_config(
+    h7_pty: str,
+    f4_pty: str,
+    beacon_pty: str,
+    gcode_dir: str = "/tmp/kalico_sim_gcodes",
+) -> str:
+    """Generate a dual-MCU CoreXY config with beacon probe for Z homing tests.
+
+    Uses H7 for X/Y/E and F4 (bottom) for Z steppers. Beacon is the
+    virtual endstop for the Z axis. The SAVE_CONFIG block contains a
+    calibrated beacon model so klippy boots without requiring NVM calibration
+    from the stub's NVM image.
+
+    model_domain [1.8359e-7, 1.8936e-7] corresponds to frequencies
+    ~5.28–5.45 MHz, which matches the stub's updated frequency model:
+      z=10mm → count ≈ 70,710,853 (freq ≈ 5,268,182 Hz)
+      z=0    → count ≈ 73,153,076 (freq ≈ 5,450,000 Hz)
+    """
+    f4_section = ""
+    if f4_pty:
+        f4_section = f"""
+[mcu bottom]
+serial: {f4_pty}
+"""
+    z_step_mcu = "bottom:" if f4_pty else ""
+    return f"""\
+[mcu]
+serial: {h7_pty}
+{f4_section}
+[printer]
+kinematics: corexy
+max_velocity: 300
+max_accel: 3000
+max_z_velocity: 10
+max_z_accel: 100
+
+[stepper_x]
+step_pin: gpiochip0/gpio0
+dir_pin: gpiochip0/gpio1
+enable_pin: !gpiochip0/gpio2
+microsteps: 16
+rotation_distance: 40
+endstop_pin: ^gpiochip0/gpio10
+position_endstop: 0
+position_max: 300
+homing_speed: 10
+
+[stepper_y]
+step_pin: gpiochip0/gpio3
+dir_pin: gpiochip0/gpio4
+enable_pin: !gpiochip0/gpio5
+microsteps: 16
+rotation_distance: 40
+endstop_pin: ^gpiochip0/gpio11
+position_endstop: 0
+position_max: 300
+homing_speed: 10
+
+[stepper_z]
+step_pin: {z_step_mcu}gpiochip0/gpio0
+dir_pin: {z_step_mcu}gpiochip0/gpio1
+enable_pin: !{z_step_mcu}gpiochip0/gpio2
+microsteps: 16
+rotation_distance: 4
+endstop_pin: probe:z_virtual_endstop
+position_min: -5
+position_max: 250
+homing_speed: 5
+
+[beacon]
+serial: {beacon_pty}
+x_offset: 0
+y_offset: 0
+home_xy_position: 150, 150
+home_z_hop: 5
+home_z_hop_speed: 10
+home_xy_move_speed: 50
+home_method: proximity
+home_method_when_homed: proximity
+home_autocalibrate: never
+
+[input_shaper]
+shaper_freq_x: 50
+shaper_freq_y: 50
+shaper_type: smooth_mzv
+
+[virtual_sdcard]
+path: {gcode_dir}
+
+[force_move]
+enable_force_move: True
+
+#*# <---------------------- SAVE_CONFIG ---------------------->
+#*# DO NOT EDIT THIS BLOCK OR BELOW. The contents are auto-generated.
+#*#
+#*# [beacon model default]
+#*# model_coef = 1.4366832587589902,
+#*#   1.7791425946955506,
+#*#   0.8114676630327906,
+#*#   0.4077638527717382,
+#*#   0.2629778891883896,
+#*#   0.21087515838926726,
+#*#   -0.15390965626840192,
+#*#   -0.21990798533166914,
+#*#   0.24377872047881705,
+#*#   0.22573604715705745
+#*# model_domain = 1.8359521074610915e-07,1.893648763276026e-07
+#*# model_range = 0.200000,5.000000
+#*# model_temp = 30.886664
+#*# model_offset = 0.00000
+"""
 
 
 def _generate_minimal_config(h7_pty: str, f4_pty: str, gcode_dir: str = "/tmp/kalico_sim_gcodes") -> str:
@@ -1230,6 +1423,8 @@ def main():
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--phase-test", action="store_true",
                         help="Enable phase stepping config (TMC5160 on X)")
+    parser.add_argument("--homing-test", action="store_true",
+                        help="Run beacon Z homing test (dual-MCU CoreXY + beacon proximity)")
     parser.add_argument("--repo", type=str, default=str(REPO_ROOT),
                         help="Repository root (default: auto-detect)")
     args = parser.parse_args()
@@ -1260,6 +1455,7 @@ def main():
             timeout=args.timeout,
             verbose=args.verbose,
             phase_stepping=args.phase_test,
+            homing_test=args.homing_test,
         )
 
     print("\n" + "=" * 60)
@@ -1277,10 +1473,8 @@ def main():
     print("=" * 60)
 
     if not result.success and result.klippy_log:
-        print("
---- klippy.log (homing-relevant, all lines) ---")
-        for line in result.klippy_log.strip().split("
-"):
+        print("\n--- klippy.log (homing-relevant, all lines) ---")
+        for line in result.klippy_log.strip().split("\n"):
             lo = line.lower()
             if any(k in lo for k in (
                 "bridge-trace", "endstop_arm", "arm_id", "arm status",
@@ -1296,24 +1490,32 @@ def main():
 
     if not result.success and result.mcu_logs:
         for name, content in result.mcu_logs.items():
-            print(f"
---- {name} MCU log (last 30 lines) ---")
-            for line in content.strip().split("
-")[-30:]:
+            print(f"\n--- {name} MCU log (last 30 lines) ---")
+            for line in content.strip().split("\n")[-30:]:
                 print(line)
             print(f"--- end {name} ---")
 
     if not result.success and result.klippy_log:
-        trace_lines = [l for l in result.klippy_log.split("
-")
+        trace_lines = [l for l in result.klippy_log.split("\n")
                        if "trace-write" in l or "trace-close" in l or
                           "trace-kcall" in l or "endstop_arm" in l.lower()]
         if trace_lines:
-            print("
---- bridge trace lines ---")
+            print("\n--- bridge trace lines ---")
             for line in trace_lines[-30:]:
                 print(line)
             print("--- end bridge trace ---")
+
+    if args.homing_test and result.klippy_log:
+        print("\n--- Beacon homing log excerpts ---")
+        for line in result.klippy_log.split("\n"):
+            llow = line.lower()
+            if any(k in llow for k in [
+                "beacon", "homing", "home", "trsync", "trigger",
+                "z_virtual_endstop", "proximity", "endstop",
+                "can_trigger", "threshold", "z_hop",
+            ]):
+                print(f"  {line.strip()}")
+        print("---")
 
     if args.phase_test and result.klippy_log:
         print("\n--- Phase stepping log excerpts ---")

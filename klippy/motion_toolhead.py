@@ -591,8 +591,28 @@ class MotionToolhead(ToolHead):
             # firmware's deadline fires if the host relay is broken.
             # After the cap, the loop exits and the finally block
             # calls software_trip unconditionally.
-            move_dist = abs(pos3[2] - self.commanded_pos[2])
+            #
+            # move_dist uses the ACTUAL axis range (position_max -
+            # position_min), not the inflated forcepos distance which
+            # is 1.5x larger. The forcepos trick sets a fictitious
+            # start position far from the endstop — the real travel
+            # can't exceed the physical axis range.
+            nominal_dist = abs(pos3[2] - self.commanded_pos[2])
+            axis_rails = self.kin._axis_rails()
+            z_rail = axis_rails.get(2)
+            if z_rail is not None:
+                z_min, z_max = z_rail.get_range()
+                actual_range = abs(z_max - z_min)
+                move_dist = min(nominal_dist, actual_range)
+            else:
+                move_dist = nominal_dist
             move_time = move_dist / max(speed, 0.1) + 5.0
+            logging.info(
+                "[homing-loop] enter: nominal_dist=%.1f move_dist=%.1f "
+                "speed=%.1f move_time=%.1f arm_id=%d mcu=%s",
+                nominal_dist, move_dist, speed, move_time,
+                arm_id, stepper_mcu.get_name(),
+            )
             loop_start = self.reactor.monotonic()
             loop_iter = 0
             exit_reason = "unknown"
