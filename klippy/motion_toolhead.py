@@ -705,17 +705,20 @@ class MotionToolhead(ToolHead):
         self.bridge.wait_moves()
 
     def wait_moves_and_mcu(self):
-        self.wait_moves()
-        if self._mcu_pending_end_time > 0.0 and self.mcu is not None:
-            est = self.mcu.estimated_print_time(self.reactor.monotonic())
-            remaining = self._mcu_pending_end_time - est
-            if remaining > 0.0:
-                self.reactor.pause(
-                    self.reactor.monotonic() + remaining + 0.010
-                )
+        self.flush_step_generation()
 
     def flush_step_generation(self):
         self.bridge.wait_moves()
+        if self._mcu_pending_end_time > 0.0 and self.mcu is not None:
+            while True:
+                est = self.mcu.estimated_print_time(
+                    self.reactor.monotonic())
+                remaining = self._mcu_pending_end_time - est
+                if remaining <= 0.0:
+                    break
+                self.reactor.pause(
+                    self.reactor.monotonic() + remaining + 0.010
+                )
         self._ground_pending_end_time_after_bridge_drain()
 
     def get_last_move_time(self):

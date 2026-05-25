@@ -33,6 +33,13 @@ pub const TRIP_SOURCE_DEADLINE_EXPIRED: u8 = 0xFF;
 /// explicit `software_trip` call from the C command handler.
 pub const TRIP_SOURCE_SOFTWARE: u8 = 0xFE;
 
+// DIAG: counters for debugging tick/software_trip interaction on MCU.
+// Read from C via kalico_endstop_diag_counters().
+pub static DIAG_TICK_CALLS: AtomicU32 = AtomicU32::new(0);
+pub static DIAG_ABORT_NOW_RETURNS: AtomicU32 = AtomicU32::new(0);
+pub static DIAG_SOFTWARE_TRIP_CALLS: AtomicU32 = AtomicU32::new(0);
+pub static DIAG_SOFTWARE_TRIP_ARMED: AtomicU32 = AtomicU32::new(0);
+
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ArmPolicy {
@@ -579,8 +586,10 @@ pub fn disarm(arm_id: u32) -> DisarmStatus {
 }
 
 pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> TripAction {
+    DIAG_TICK_CALLS.fetch_add(1, Ordering::Relaxed);
     let state = ARM.state.load(Ordering::Acquire);
     if matches_u8(state, ArmState::TrippedReady) || matches_u8(state, ArmState::Tripping) {
+        DIAG_ABORT_NOW_RETURNS.fetch_add(1, Ordering::Relaxed);
         return TripAction::AbortNow;
     }
     if !matches_u8(state, ArmState::Armed) {
@@ -751,6 +760,7 @@ pub enum TripResult {
 /// `clock` is the current MCU clock value at call time (read via
 /// `timer_read_time()` in the C command handler).
 pub fn software_trip(arm_id: u32, clock: u64, stepper_counts: &[i32]) -> TripResult {
+    DIAG_SOFTWARE_TRIP_CALLS.fetch_add(1, Ordering::Relaxed);
     if ARM.arm_id.load(Ordering::Acquire) != arm_id {
         return TripResult::WrongArmId;
     }
@@ -761,7 +771,9 @@ pub fn software_trip(arm_id: u32, clock: u64, stepper_counts: &[i32]) -> TripRes
         Ordering::AcqRel,
         Ordering::Acquire,
     ) {
-        Ok(_) => {}
+        Ok(_) => {
+            DIAG_SOFTWARE_TRIP_ARMED.fetch_add(1, Ordering::Relaxed);
+        }
         Err(_) => return TripResult::NotArmed,
     }
 

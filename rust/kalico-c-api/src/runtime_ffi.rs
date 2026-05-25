@@ -2256,6 +2256,24 @@ pub mod exports {
         KALICO_OK
     }
 
+    // DIAG: expose endstop tick/trip counters to C command handlers.
+    #[unsafe(no_mangle)]
+    pub extern "C" fn kalico_endstop_diag_tick_calls() -> u32 {
+        runtime::endstop::DIAG_TICK_CALLS.load(core::sync::atomic::Ordering::Relaxed)
+    }
+    #[unsafe(no_mangle)]
+    pub extern "C" fn kalico_endstop_diag_abort_returns() -> u32 {
+        runtime::endstop::DIAG_ABORT_NOW_RETURNS.load(core::sync::atomic::Ordering::Relaxed)
+    }
+    #[unsafe(no_mangle)]
+    pub extern "C" fn kalico_endstop_diag_trip_calls() -> u32 {
+        runtime::endstop::DIAG_SOFTWARE_TRIP_CALLS.load(core::sync::atomic::Ordering::Relaxed)
+    }
+    #[unsafe(no_mangle)]
+    pub extern "C" fn kalico_endstop_diag_trip_armed() -> u32 {
+        runtime::endstop::DIAG_SOFTWARE_TRIP_ARMED.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Extend the homing deadline by one grant window. Called from the C
     /// command handler `command_runtime_extend_homing_deadline`.
     #[unsafe(no_mangle)]

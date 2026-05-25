@@ -237,8 +237,15 @@ command_runtime_software_trip(uint32_t *args)
     uint32_t clock_hi = stats_send_time_high + (clock_lo < stats_send_time);
     uint8_t status = 1; // NotArmed default
     (void)kalico_software_trip(arm_id, clock_lo, clock_hi, &status);
-    sendf("kalico_software_trip_response arm_id=%u status=%c",
-          arm_id, status);
+    // DIAG: report counters alongside status so host can verify
+    // tick() is actually being called and returning AbortNow.
+    uint32_t tick_calls = kalico_endstop_diag_tick_calls();
+    uint32_t abort_returns = kalico_endstop_diag_abort_returns();
+    uint32_t trip_calls = kalico_endstop_diag_trip_calls();
+    uint32_t trip_armed = kalico_endstop_diag_trip_armed();
+    sendf("kalico_software_trip_response arm_id=%u status=%c"
+          " tick_calls=%u abort_returns=%u trip_calls=%u trip_armed=%u",
+          arm_id, status, tick_calls, abort_returns, trip_calls, trip_armed);
 }
 DECL_COMMAND(command_runtime_software_trip,
     "runtime_software_trip arm_id=%u");
