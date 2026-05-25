@@ -69,6 +69,10 @@ impl InterceptorTable {
         });
     }
 
+    pub fn entry_count(&self) -> usize {
+        self.entries.values().map(|v| v.len()).sum()
+    }
+
     pub fn dispatch(&self, msg_name: &str, oid: Option<u32>, params: &MessageParams) {
         let key = InterceptorKey {
             msg_name: msg_name.to_owned(),

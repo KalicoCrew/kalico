@@ -791,17 +791,26 @@ impl Reactor {
                     );
                     let _ = entry.completion.send(Ok(params));
                 } else {
-                    // Fire registered interceptors BEFORE passthrough
-                    // routing. The passthrough router greedily consumes
-                    // frames for pending notify callbacks; if we checked
-                    // passthrough first, an unsolicited trsync_state
-                    // trigger could be eaten by a pending send_with_response
-                    // and the homing interceptor would never see it.
                     let oid = params.fields.get("oid").and_then(|v| match v {
                         crate::transport::MessageValue::U32(n) => Some(*n),
                         crate::transport::MessageValue::I32(n) => Some(*n as u32),
                         _ => None,
                     });
+                    // DIAG: trace every unsolicited frame + interceptor state
+                    {
+                        use std::io::Write;
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true).append(true)
+                            .open("/tmp/interceptor_trace.log")
+                        {
+                            let _ = writeln!(f,
+                                "[{:?}] unsolicited name={} oid={:?} interceptor_count={}",
+                                std::time::SystemTime::now(),
+                                name, oid,
+                                self.interceptors.entry_count(),
+                            );
+                        }
+                    }
                     self.interceptors.dispatch(&name, oid, &params);
 
                     if !self.try_dispatch_passthrough_response(&raw_payload) {
