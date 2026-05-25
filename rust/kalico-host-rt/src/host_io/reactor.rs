@@ -796,6 +796,21 @@ impl Reactor {
                         crate::transport::MessageValue::I32(n) => Some(*n as u32),
                         _ => None,
                     });
+                    // DIAG: trace every unsolicited frame + interceptor state
+                    {
+                        use std::io::Write;
+                        if let Ok(mut f) = std::fs::OpenOptions::new()
+                            .create(true).append(true)
+                            .open("/tmp/interceptor_trace.log")
+                        {
+                            let _ = writeln!(f,
+                                "[{:?}] unsolicited name={} oid={:?} interceptor_count={}",
+                                std::time::SystemTime::now(),
+                                name, oid,
+                                self.interceptors.entry_count(),
+                            );
+                        }
+                    }
                     self.interceptors.dispatch(&name, oid, &params);
 
                     if !self.try_dispatch_passthrough_response(&raw_payload) {

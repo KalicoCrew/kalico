@@ -2891,7 +2891,7 @@ impl PyMotionBridge {
         self.submit_homing_move_inner(&move_pos, speed, &[handle.arm_id])?;
 
         let result = py.allow_threads(|| {
-            crate::probe_homing::run_probe_homing(&handle, &self.homing)
+            crate::probe_homing::run_probe_homing(&handle)
         });
 
         crate::probe_homing::cleanup_probe_homing(handle);

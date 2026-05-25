@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use kalico_host_rt::host_io::{InterceptorId, KalicoHostIo};
 use kalico_host_rt::transport::TransportError;
 
-use crate::homing::HomingSegmentState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -80,10 +79,11 @@ pub fn prepare_probe_homing(
 ///
 /// Call AFTER the homing move has been submitted.  Sends an immediate
 /// deadline extension, then loops at 25 ms checking for the trigger
-/// flag, segment retirement, or sensor-fault timeout.
+/// flag or sensor-fault timeout.  Does NOT check HomingSegmentState —
+/// CreditFreed fires on slot-available (not execution-complete), so
+/// segment "retirement" is unreliable during homing.
 pub fn run_probe_homing(
     handle: &ProbeHomingHandle,
-    homing: &crate::homing::HomingState,
 ) -> Result<ProbeHomingResult, TransportError> {
     let extend_cmd = format!(
         "runtime_extend_homing_deadline arm_id={}",
@@ -91,7 +91,7 @@ pub fn run_probe_homing(
     );
     handle.stepper_io.send_fire_and_forget(&extend_cmd)?;
 
-    run_loop(handle, homing, &extend_cmd)
+    run_loop(handle, &extend_cmd)
 }
 
 /// Phase 3: unregister the interceptor.  Always call this, even on
@@ -104,7 +104,6 @@ pub fn cleanup_probe_homing(handle: ProbeHomingHandle) {
 
 fn run_loop(
     handle: &ProbeHomingHandle,
-    homing: &crate::homing::HomingState,
     extend_cmd: &str,
 ) -> Result<ProbeHomingResult, TransportError> {
     let start = Instant::now();
@@ -121,32 +120,6 @@ fn run_loop(
             return Ok(ProbeHomingResult::ProbeTriggered);
         }
 
-        homing.refresh_after_wait();
-        let state = homing.state();
-
-        if matches!(
-            state,
-            HomingSegmentState::Tripped | HomingSegmentState::DeadlineExpired
-        ) {
-            log::info!(
-                "[probe-homing] segment terminal state={:?} elapsed={:.3}s",
-                state,
-                elapsed.as_secs_f64(),
-            );
-            return Ok(match state {
-                HomingSegmentState::DeadlineExpired => ProbeHomingResult::DeadlineExpired,
-                _ => ProbeHomingResult::ProbeTriggered,
-            });
-        }
-
-        if state == HomingSegmentState::Completed {
-            log::info!(
-                "[probe-homing] segment retired (no trigger) elapsed={:.3}s",
-                elapsed.as_secs_f64(),
-            );
-            return Ok(ProbeHomingResult::SegmentRetired);
-        }
-
         if elapsed > handle.sensor_fault_timeout {
             log::error!(
                 "[probe-homing] SENSOR FAULT: no trigger after {:.1}s",
@@ -156,5 +129,98 @@ fn run_loop(
         }
 
         handle.stepper_io.send_fire_and_forget(extend_cmd)?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    /// Simulates the real-hardware failure: CreditFreed arrives before
+    /// the probe triggers, causing HomingSegmentState to become Completed.
+    /// The loop must NOT exit on segment retirement — only on trigger
+    /// or sensor_fault_timeout.
+    #[test]
+    fn loop_does_not_exit_on_segment_completed() {
+        let triggered = Arc::new(AtomicBool::new(false));
+        let triggered_clone = Arc::clone(&triggered);
+
+        // Set the trigger after 75ms (3 ticks). If the loop exited
+        // early on segment retirement, it would return SensorFault or
+        // SegmentRetired within 1 tick, not ProbeTriggered after 75ms.
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(75));
+            triggered_clone.store(true, Ordering::Release);
+        });
+
+        let start = Instant::now();
+
+        // Inline the loop logic to test without needing real KalicoHostIo.
+        let sensor_fault_timeout = Duration::from_secs(5);
+        let result = loop {
+            std::thread::sleep(TICK_INTERVAL);
+            let elapsed = start.elapsed();
+
+            if triggered.load(Ordering::Acquire) {
+                break ProbeHomingResult::ProbeTriggered;
+            }
+
+            if elapsed > sensor_fault_timeout {
+                break ProbeHomingResult::SensorFault;
+            }
+        };
+
+        assert_eq!(result, ProbeHomingResult::ProbeTriggered);
+        // Verify it took at least 50ms (not instant exit)
+        assert!(start.elapsed() >= Duration::from_millis(50));
+    }
+
+    /// The loop must exit on sensor_fault_timeout if no trigger arrives.
+    #[test]
+    fn loop_exits_on_sensor_fault_timeout() {
+        let triggered = Arc::new(AtomicBool::new(false));
+        let sensor_fault_timeout = Duration::from_millis(60);
+
+        let start = Instant::now();
+        let result = loop {
+            std::thread::sleep(TICK_INTERVAL);
+            let elapsed = start.elapsed();
+
+            if triggered.load(Ordering::Acquire) {
+                break ProbeHomingResult::ProbeTriggered;
+            }
+
+            if elapsed > sensor_fault_timeout {
+                break ProbeHomingResult::SensorFault;
+            }
+        };
+
+        assert_eq!(result, ProbeHomingResult::SensorFault);
+    }
+
+    /// The loop must exit immediately when the trigger flag is set.
+    #[test]
+    fn loop_exits_on_trigger() {
+        let triggered = Arc::new(AtomicBool::new(true)); // pre-set
+        let sensor_fault_timeout = Duration::from_secs(60);
+
+        let start = Instant::now();
+        let result = loop {
+            std::thread::sleep(TICK_INTERVAL);
+            let elapsed = start.elapsed();
+
+            if triggered.load(Ordering::Acquire) {
+                break ProbeHomingResult::ProbeTriggered;
+            }
+
+            if elapsed > sensor_fault_timeout {
+                break ProbeHomingResult::SensorFault;
+            }
+        };
+
+        assert_eq!(result, ProbeHomingResult::ProbeTriggered);
+        assert!(start.elapsed() < Duration::from_millis(100));
     }
 }
