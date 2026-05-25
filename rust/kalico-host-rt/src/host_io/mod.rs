@@ -8,6 +8,7 @@
 pub mod call_handle;
 pub mod events;
 pub mod identify;
+pub(crate) mod interceptor;
 pub mod kalico_native;
 pub mod parser;
 pub mod reactor;
@@ -16,6 +17,7 @@ pub mod runtime_events;
 pub mod serial_frame_io;
 pub mod tcp_serial_port;
 pub use identify::IdentifySeqState;
+pub use interceptor::InterceptorId;
 pub use serial_frame_io::SerialFrameIo;
 pub use tcp_serial_port::TcpSerialPort;
 #[cfg(any(test, feature = "test-harness"))]
