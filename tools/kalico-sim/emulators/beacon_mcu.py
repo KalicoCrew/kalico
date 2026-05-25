@@ -679,6 +679,10 @@ class BeaconMcuStub:
     def _handle_trsync_start(self, params: dict) -> None:
         self._trsync_oids.add(params["oid"])
         self._trsync_can_trigger[params["oid"]] = True
+        # Reset Z to initial height so the homing monitor can simulate
+        # approach from above for the next pass (fixes rehome case where
+        # a previous pass left _z_current at 0).
+        self._z_current = self._homing_start_z = 10.0
 
     def _handle_trsync_trigger(self, params: dict) -> None:
         oid = params["oid"]
