@@ -2733,6 +2733,19 @@ impl PyMotionBridge {
             timeout,
         )
         .map_err(|e| PyRuntimeError::new_err(format!("endstop_arm: {e}")))?;
+        // DIAG: log arm result to trace file
+        {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true).append(true)
+                .open("/tmp/interceptor_trace.log")
+            {
+                let _ = writeln!(f,
+                    "[{:?}] ENDSTOP_ARM mcu={} arm_id={} arm_clock={} status={} (0=Armed 1=AlreadyTripped 2=Rejected)",
+                    std::time::SystemTime::now(), mcu, arm_id, arm_clock, status as u8,
+                );
+            }
+        }
         Ok(status as u8)
     }
 
