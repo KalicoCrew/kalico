@@ -544,6 +544,16 @@ class MotionToolhead(ToolHead):
         dy = pos3[1] - self.commanded_pos[1]
         dz = pos3[2] - self.commanded_pos[2]
 
+        logging.info(
+            "[diag] _drip_move_software_trip: "
+            "commanded_pos=[%.3f,%.3f,%.3f] pos3=[%.3f,%.3f,%.3f] "
+            "dx=%.6f dy=%.6f dz=%.6f",
+            self.commanded_pos[0], self.commanded_pos[1],
+            self.commanded_pos[2],
+            pos3[0], pos3[1], pos3[2],
+            dx, dy, dz,
+        )
+
         # Select moving steppers via kinematic motor-delta mapping
         kin_name = self.kinematics_name or ""
         motor_d = motion_kinematics.motor_deltas(kin_name, dx, dy, dz, 0.0)

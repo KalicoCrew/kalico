@@ -52,15 +52,38 @@ pub fn prepare_probe_homing(
             Some(u32::from(beacon_trsync_oid)),
             Box::new(move |msg_params| {
                 let can_trigger = msg_params.get_u32("can_trigger");
+                // DIAG: trace every callback invocation
+                {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true).append(true)
+                        .open("/tmp/interceptor_trace.log")
+                    {
+                        let _ = writeln!(f,
+                            "[{:?}] CALLBACK can_trigger={} arm_id={}",
+                            std::time::SystemTime::now(), can_trigger, arm_id,
+                        );
+                    }
+                }
                 if can_trigger != 0 {
                     return;
                 }
-                // Fire software_trip immediately — this runs in the
-                // Beacon reactor thread, sub-millisecond from the
-                // trigger frame arriving on the wire.
                 let cmd = format!("runtime_software_trip arm_id={arm_id}");
-                let _ = stepper_io_clone.send_fire_and_forget(&cmd);
+                let send_result = stepper_io_clone.send_fire_and_forget(&cmd);
                 triggered_clone.store(true, Ordering::Release);
+                // DIAG: trace the trip send result
+                {
+                    use std::io::Write;
+                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                        .create(true).append(true)
+                        .open("/tmp/interceptor_trace.log")
+                    {
+                        let _ = writeln!(f,
+                            "[{:?}] SOFTWARE_TRIP sent arm_id={} result={:?} flag_set=true",
+                            std::time::SystemTime::now(), arm_id, send_result,
+                        );
+                    }
+                }
             }),
         )?
     };
