@@ -543,7 +543,7 @@ class MotionToolhead(ToolHead):
                 lmt = self.get_last_move_time()
 
         logging.info(
-            "[diag] _drip_move_software_trip pre-enable: "
+            "[probe-homing] pre-enable: "
             "lmt=%.6f est_now=%.6f pending=%.6f stepper_mcu=%s",
             lmt, est_now, self._mcu_pending_end_time,
             stepper_mcu.get_name(),
@@ -564,7 +564,7 @@ class MotionToolhead(ToolHead):
             max(lmt, est_now + BUFFER_TIME_START)
         ))
         logging.info(
-            "[diag] _drip_move_software_trip post-enable: "
+            "[probe-homing] post-enable: "
             "est_now=%.6f arm_clock=%d",
             est_now, arm_clock,
         )
@@ -581,27 +581,25 @@ class MotionToolhead(ToolHead):
                 [source], stepper_oids,
             )
             self.bridge._homing_print_time_base = bridge_lmt_before
-            self.bridge.submit_homing_move_async(pos3, speed, [arm_id])
 
-            # Credit-extension loop with sensor-fault cap.
-            #
-            # Collision protection is the MCU-side dead-man switch:
-            # the bottom MCU's software endstop has a ~50ms grant
-            # window; each extend_homing_deadline pushes it by ~50ms.
-            # If the host stops extending (crash, reactor stall),
-            # the MCU halts Z autonomously within one grant window.
-            #
-            # This loop's timeout is a SEPARATE concern: sensor-fault
-            # detection.  If the probe never triggers across the full
-            # travel distance, the sensor is broken or misconfigured.
-            # The timeout fires AFTER the bed would have already
-            # crashed — it is NOT collision protection.
-            #
-            # move_dist uses the ACTUAL axis range (position_max -
-            # position_min), not the inflated forcepos distance which
-            # is 1.5x larger. The forcepos trick sets a fictitious
-            # start position far from the endstop — the real travel
-            # can't exceed the physical axis range.
+            # Resolve Beacon MCU handle and trsync OID from the
+            # endstop list stashed by homing.py before drip_move.
+            beacon_mcu = None
+            beacon_trsync_oid = 0
+            for mcu_endstop, name in getattr(self, '_homing_endstops', []):
+                es_mcu = mcu_endstop.get_mcu()
+                if es_mcu != stepper_mcu:
+                    beacon_mcu = es_mcu
+                    beacon_trsync_oid = (
+                        mcu_endstop._shared._trsync.get_oid()
+                    )
+                    break
+            if beacon_mcu is None or beacon_mcu._bridge_handle is None:
+                raise self.printer.command_error(
+                    "Cannot resolve Beacon MCU for probe homing"
+                )
+
+            # Sensor-fault timeout: detects broken probe, not collision.
             nominal_dist = abs(pos3[2] - self.commanded_pos[2])
             axis_rails = self.kin._axis_rails()
             z_rail = axis_rails.get(2)
@@ -612,69 +610,48 @@ class MotionToolhead(ToolHead):
             else:
                 move_dist = nominal_dist
             sensor_fault_timeout = move_dist / max(speed, 0.1) + 5.0
+
             logging.info(
-                "[homing-loop] enter: nominal_dist=%.1f move_dist=%.1f "
-                "speed=%.1f sensor_fault_timeout=%.1f arm_id=%d mcu=%s",
-                nominal_dist, move_dist, speed, sensor_fault_timeout,
-                arm_id, stepper_mcu.get_name(),
+                "[probe-homing] calling run_probe_homing: "
+                "beacon_handle=%s trsync_oid=%d stepper_handle=%s "
+                "arm_id=%d speed=%.1f sensor_fault_timeout=%.1f",
+                beacon_mcu._bridge_handle, beacon_trsync_oid,
+                mcu_handle, arm_id, speed, sensor_fault_timeout,
             )
-            loop_start = self.reactor.monotonic()
-            loop_iter = 0
-            exit_reason = "unknown"
-            while True:
-                drip_completion.wait(
-                    waketime=self.reactor.monotonic() + 0.025
+
+            result = self.bridge.run_probe_homing(
+                beacon_mcu._bridge_handle,
+                beacon_trsync_oid,
+                mcu_handle,
+                arm_id,
+                pos3,
+                speed,
+                sensor_fault_timeout,
+                stepper_oids,
+            )
+
+            PROBE_TRIGGERED = 0
+            SEGMENT_RETIRED = 1
+            SENSOR_FAULT = 2
+            DEADLINE_EXPIRED = 3
+
+            if result == SENSOR_FAULT:
+                raise self.printer.command_error(
+                    "Probe sensor fault: no trigger after %.1fmm "
+                    "of Z travel (%.1fs). Check probe wiring and "
+                    "threshold." % (move_dist, sensor_fault_timeout)
                 )
-                loop_iter += 1
-                elapsed = self.reactor.monotonic() - loop_start
-                if drip_completion.test():
-                    logging.info(
-                        "[homing-loop] probe triggered iter=%d "
-                        "elapsed=%.3f", loop_iter, elapsed,
-                    )
-                    exit_reason = "probe_trigger"
-                    break
-                if self.bridge.is_homing_segment_retired():
-                    reason = self.bridge.get_homing_segment_reason()
-                    logging.info(
-                        "[homing-loop] segment retired iter=%d "
-                        "elapsed=%.3f reason=%d",
-                        loop_iter, elapsed, reason,
-                    )
-                    exit_reason = "segment_complete"
-                    break
-                if elapsed > sensor_fault_timeout:
-                    logging.error(
-                        "[homing-loop] SENSOR FAULT: probe did not "
-                        "trigger across full travel (%.1fmm in %.1fs)"
-                        " — stopping", move_dist, elapsed,
-                    )
-                    exit_reason = "sensor_fault"
-                    raise self.printer.command_error(
-                        "Probe sensor fault: no trigger after %.1fmm "
-                        "of Z travel (%.1fs). Check probe wiring and "
-                        "threshold." % (move_dist, elapsed,)
-                    )
-                self.bridge.extend_homing_deadline(mcu_handle, arm_id)
-            logging.info(
-                "[homing-loop] exited: reason=%s iter=%d",
-                exit_reason, loop_iter,
-            )
+            if result == DEADLINE_EXPIRED:
+                raise self.printer.command_error(
+                    "Homing deadline expired: MCU dead-man switch "
+                    "fired (host extension loop may have stalled)"
+                )
 
             self.bridge.wait_moves()
             bridge_lmt_after = self.bridge.get_last_move_time()
             duration = bridge_lmt_after - bridge_lmt_before
             self._bump_pending_end_time(duration)
         finally:
-            # SAFETY: unconditionally stop the F446 engine. If the
-            # loop exited for ANY reason — beacon trigger, segment
-            # retirement, exception, deadline — Z must not keep moving.
-            try:
-                self.bridge.software_trip(mcu_handle, arm_id)
-            except Exception:
-                logging.exception(
-                    "[safety] software_trip failed in finally block"
-                )
             self.bridge._software_trip_active = False
             self.active_homing_arms.discard(arm_id)
             self.bridge.unregister_homing_dispatch(arm_id)

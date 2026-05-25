@@ -141,11 +141,14 @@ class HomingMove:
 
         self.toolhead.dwell(HOMING_START_DELAY)
         # Issue move
+        self.toolhead._homing_endstops = self.endstops
         error = None
         try:
             self.toolhead.drip_move(movepos, speed, all_endstop_trigger)
         except self.printer.command_error as e:
             error = "Error during homing move: %s" % (str(e),)
+        finally:
+            self.toolhead._homing_endstops = []
         # Wait for endstops to trigger
         trigger_times = {}
         move_end_print_time = self.toolhead.get_last_move_time()
