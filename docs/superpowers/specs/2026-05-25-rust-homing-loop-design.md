@@ -53,6 +53,11 @@ A scoped thread spawned by `run_probe_homing`. Owns:
 - Shared `AtomicBool` (set by interceptor on trigger)
 - Move parameters and sensor-fault timeout
 
+After submitting the homing move, sends one immediate `extend_homing_deadline`
+before entering the loop. This provides margin against the MCU's initial 50ms
+grant window (which the MCU opens itself on the first tick past `arm_clock` —
+the host doesn't open it, just needs to extend before it expires).
+
 Loop body (25ms tick):
 - Check `AtomicBool` → ProbeTriggered
 - Check `is_homing_segment_retired` → SegmentRetired
@@ -113,7 +118,9 @@ Result is an enum (exposed as u8 to Python):
 5. Registers frame interceptor: `(beacon_handle, "trsync_state", oid)` →
    callback fires `software_trip` to bottom MCU + sets `AtomicBool`
 6. Submits homing move via `submit_homing_move_async`
-7. Homing loop thread runs (25ms tick, extends deadline)
+7. Sends an immediate `extend_homing_deadline` (margin against the MCU's
+   initial 50ms grant window, which opens on the first tick past arm_clock)
+8. Homing loop thread runs (25ms tick, extends deadline)
 8. On trigger: reactor reads `trsync_state(can_trigger=0)` → interceptor fires
    `software_trip` (sub-ms) → sets `AtomicBool`
 9. Loop sees flag, exits
