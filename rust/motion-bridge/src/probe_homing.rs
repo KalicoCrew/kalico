@@ -56,16 +56,19 @@ pub fn prepare_probe_homing(
                 if can_trigger != 0 {
                     return;
                 }
-                // Only fire on ENDSTOP_HIT (reason 1). Ignore HOST_REQUEST
-                // (reason 2) which is the stale trsync_trigger cleanup from
-                // a previous homing pass.
-                let reason = msg_params.get_u32("trigger_reason");
-                if reason != 1 {
+                // One-shot: only fire once per registration. The stale
+                // trsync_trigger cleanup from a prior pass echoes the
+                // previous trigger_reason (indistinguishable from a
+                // real trigger), so we guard with compare_exchange
+                // instead of filtering by reason.
+                if triggered_clone
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+                {
                     return;
                 }
                 let cmd = format!("runtime_software_trip arm_id={arm_id}");
                 let _ = stepper_io_clone.send_fire_and_forget(&cmd);
-                triggered_clone.store(true, Ordering::Release);
             }),
         )?
     };
