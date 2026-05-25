@@ -3012,4 +3012,46 @@ pub mod exports {
         }
     }
 
+    /// Install C-owned `step_queues` into the Rust engine on host/MACH_LINUX
+    /// builds so `tick_sample`'s `dispatch_axis` can push step entries.
+    ///
+    /// On the MCU the engine resolves the C `step_queues` extern directly
+    /// via `#[cfg(not(target_os = "none"))]`; on host builds
+    /// `test_queue_ptrs` stays null unless explicitly installed here.
+    ///
+    /// Called once from `runtime_tick_enable` in `src/linux/runtime_tick_host.c`
+    /// before the tick thread is armed, so there is no concurrent ISR writer.
+    ///
+    /// Returns `KALICO_OK` (0) on success, or a negative error code:
+    /// - `KALICO_ERR_NULL_PTR`  — `rt` or `queues` is null.
+    /// - `KALICO_ERR_NOT_INIT`  — runtime has not been initialised yet.
+    #[cfg(feature = "host")]
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_install_step_queues(
+        rt: *mut KalicoRuntime,
+        queues: *mut u8,
+    ) -> i32 {
+        if rt.is_null() || queues.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let isr_ptr: *mut IsrState =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let q0 = queues.cast::<runtime::step_queue::StepQueue>();
+            let ptrs: [*mut runtime::step_queue::StepQueue;
+                runtime::stepping_state::N_AXES] = [
+                q0,
+                q0.add(1),
+                q0.add(2),
+                q0.add(3),
+            ];
+            (*isr_ptr).engine.test_install_step_queues(ptrs);
+        }
+        KALICO_OK
+    }
+
 }

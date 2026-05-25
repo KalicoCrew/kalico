@@ -115,14 +115,12 @@ static pthread_mutex_t auto_endstop_mtx = PTHREAD_MUTEX_INITIALIZER;
 __attribute__((constructor(101)))
 static void iio_init(void) {
     for (int i = 0; i < MAX_IIO_CHANNELS; i++) iio_values[i] = DEFAULT_ADC_VALUE;
-    // Default auto-endstop mappings for the minimal sim config:
-    // step gpio0 → endstop gpio200 (X), step gpio3 → endstop gpio201 (Y),
-    // step gpio6 → endstop gpio202 (Z). Trigger after 50 steps.
-    // Line numbers 200-202 match runner.py's X/Y/Z_ENDSTOP_LINE constants
-    // and are well clear of the step/dir/enable pins (0-8).
-    auto_endstops[0] = (struct auto_endstop){1, 0,0, 0,200, 50, 0, 0, 0};
-    auto_endstops[1] = (struct auto_endstop){1, 0,3, 0,201, 50, 0, 0, 0};
-    auto_endstops[2] = (struct auto_endstop){1, 0,6, 0,202, 50, 0, 0, 0};
+    // Auto-endstop mappings matching printer_real/config after pin-overrides:
+    // X: step PG4→gpio18, endstop→gpio200; Y: step PF11→gpio7, endstop→gpio201;
+    // Z: step PG0→gpio15, endstop→gpio202. Trigger after 50 steps.
+    auto_endstops[0] = (struct auto_endstop){1, 0,18, 0,200, 50, 0, 0, 0};
+    auto_endstops[1] = (struct auto_endstop){1, 0,7,  0,201, 50, 0, 0, 0};
+    auto_endstops[2] = (struct auto_endstop){1, 0,15, 0,202, 50, 0, 0, 0};
 }
 
 static int alloc_fake_fd(enum sim_slot_kind kind) {
@@ -593,6 +591,19 @@ static void check_auto_endstops(int chip_id, int offset, int new_value) {
         ae->last_step_value = new_value;
     }
     pthread_mutex_unlock(&auto_endstop_mtx);
+}
+
+// Exported entry point for the MCU tick thread to notify the auto-endstop
+// of step pulses without going through the GPIO ioctl path. The tick
+// thread populates the Rust step queues and calls this for each step
+// via dlsym(RTLD_DEFAULT, "sim_intercept_notify_step").
+__attribute__((visibility("default")))
+void sim_intercept_notify_step(int chip, int line, int32_t n_steps) {
+    int count = (n_steps < 0) ? -n_steps : n_steps;
+    for (int i = 0; i < count; i++) {
+        check_auto_endstops(chip, line, 1); // rising edge
+        check_auto_endstops(chip, line, 0); // falling edge (reset for next)
+    }
 }
 
 static int gpio_handle_set_values(int line_fd, struct gpiohandle_data *data) {

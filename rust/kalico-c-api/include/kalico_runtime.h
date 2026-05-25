@@ -849,4 +849,22 @@ int32_t kalico_runtime_set_stepper_offset(struct KalicoRuntime *rt,
                                           int32_t delta_microsteps,
                                           uint16_t max_microsteps_per_sample);
 
+/**
+ * Host-only (MACH_LINUX / feature="host"). Wire the C-owned
+ * `step_queues[N_AXIS_STEP_QUEUES]` array into the Rust engine so that
+ * `kalico_runtime_tick_sample` can push step entries. Must be called
+ * after `runtime_handle_create` and before enabling the tick thread.
+ *
+ * `queues` must be `(uint8_t *)step_queues` — a pointer to the first
+ * element of the static `StepQueue[N_AXIS_STEP_QUEUES]` array declared
+ * in step_queue.h.
+ *
+ * Returns `KALICO_OK` (0) on success, or a negative error code if `rt`
+ * or `queues` is null, or the runtime has not yet been initialised.
+ *
+ * No-op on MCU builds (the symbol is not exported).
+ */
+int32_t kalico_runtime_install_step_queues(struct KalicoRuntime *rt,
+                                           uint8_t *queues);
+
 #endif  /* KALICO_RUNTIME_H */

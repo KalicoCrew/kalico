@@ -13,17 +13,22 @@
 
 #include "generic/runtime_tick.h"
 
+#include <dlfcn.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "autoconf.h" // CONFIG_CLOCK_FREQ
 #include "kalico_runtime.h"
 #include "sched.h" // shutdown handling — currently unused but matches H7
+#include "step_queue.h" // StepQueue, step_queues[], N_AXIS_STEP_QUEUES
 
 extern void *runtime_handle;
 extern void runtime_endstop_sample_pins(void); // src/runtime_tick.c
@@ -78,17 +83,31 @@ runtime_host_widened_clock_now(void)
     return timer_read_time_u64();
 }
 
+// Step pin → GPIO line mapping for the sim step queue consumer.
+// Matches printer_real/config after pin-overrides.toml:
+// X(motor0)=PG4→gpio18, Y(motor1)=PF11→gpio7, Z(motor2)=PG0→gpio15.
+static const int step_gpio_lines[N_AXIS_STEP_QUEUES] = { 18, 7, 15, -1 };
+
+// dlsym-resolved shim function for notifying auto-endstop of steps.
+static void (*sim_notify_step)(int chip, int line, int32_t n_steps);
+
 static void *
 host_tick_main(void *arg)
 {
     (void)arg;
+
+    // Lower priority so the main thread's ppoll (which advances vtime)
+    // preempts us when both are runnable.
+    pid_t tid = (pid_t)syscall(SYS_gettid);
+    setpriority(PRIO_PROCESS, tid, 19);
+
+    // Resolve the shim's step-notification function.
+    sim_notify_step = dlsym(RTLD_DEFAULT, "sim_intercept_notify_step");
+
     struct timespec next;
     clock_gettime(CLOCK_MONOTONIC, &next);
 
     while (1) {
-        // Sleep until the next 40 kHz boundary regardless of run/pause —
-        // disabling TIM5 on the H7 just gates the ISR; here we keep the
-        // loop alive and skip the runtime call when paused.
         next.tv_nsec += HOST_TICK_NS;
         while (next.tv_nsec >= 1000000000L) {
             next.tv_nsec -= 1000000000L;
@@ -101,18 +120,26 @@ host_tick_main(void *arg)
         if (!runtime_handle)
             continue;
 
-        // Sample any armed endstop GPIOs before the engine tick — same
-        // ordering as TIM5_IRQHandler so endstop::tick observes fresh
-        // levels in the same modulation period. Skipped under
-        // CONFIG_KALICO_SIM (the Linux build is itself a sim) so the
-        // FFI-driven kalico_sim_endstop_set_pin path isn't clobbered
-        // every tick by an unhelpful gpio_in_read of an unconnected pin.
 #if !CONFIG_KALICO_SIM
         runtime_endstop_sample_pins();
 #endif
 
         (void)runtime_cyccnt_read();
         kalico_runtime_tick_sample(runtime_handle);
+
+        // Drain step queues: pop entries pushed by tick_sample and
+        // notify the auto-endstop shim so it can count step pulses.
+        for (int axis = 0; axis < N_AXIS_STEP_QUEUES; axis++) {
+            StepQueue *q = &step_queues[axis];
+            while (q->head != q->tail) {
+                uint16_t idx = q->head & (STEP_QUEUE_DEPTH - 1);
+                int8_t dir = q->buf[idx].dir;
+                q->head++;
+                if (sim_notify_step && step_gpio_lines[axis] >= 0)
+                    sim_notify_step(0, step_gpio_lines[axis],
+                                    dir ? -1 : 1);
+            }
+        }
     }
     return NULL;
 }
@@ -164,21 +191,18 @@ runtime_tick_enable(void)
         uint32_t high = stats_send_time_high + (low < stats_send_time);
         uint64_t baseline = ((uint64_t)high) << 32 | (uint64_t)low;
         runtime_handle_seed_widen(runtime_handle, baseline);
+        // Wire the C-owned step_queues array into the Rust engine so that
+        // tick_sample's dispatch_axis can push step entries on this host
+        // build. On the MCU the engine resolves the C extern directly; here
+        // test_queue_ptrs stays null unless we install them explicitly.
+        kalico_runtime_install_step_queues(runtime_handle,
+                                           (uint8_t *)step_queues);
     }
-    // 2026-05-17: mirror the F4/H7 firmware's gating on
-    // count_modulated_steppers > 0. Previously the Linux sim always armed
-    // the 40 kHz host tick regardless of whether any motor was configured
-    // Modulated, which masked F4-specific bugs where TIM5 stays disabled
-    // because the count is observed as 0 at the time of enable. The
-    // sim-vs-hardware divergence let test_bridge_stall_repro pass under
-    // the architectural fix while the real F4 still failed to retire
-    // segments; mirroring the gate here surfaces the same fault path.
-    if (runtime_handle
-        && kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
-        // No phase-stepped motors — host tick stays disabled, matching the
-        // F4 (and H7) firmware behavior.
-        return;
-    }
+    // MACH_LINUX always enables the tick so the runtime evaluates
+    // segments and pushes to the step queues installed above. On real
+    // MCU hardware the tick is gated on count_modulated_steppers > 0,
+    // but the Linux sim needs it unconditionally because there is no
+    // separate step-event path for regular-stepping motors.
     atomic_store_explicit(&host_tick_enabled, 1, memory_order_release);
 }
 
