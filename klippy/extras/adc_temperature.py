@@ -180,10 +180,8 @@ class LinearResistance:
 
     def calc_adc(self, temp):
         # Calculate adc reading from a temperature
-        r = self.li.reverse_interpolate(temp)
-        return (r + self.inline_resistor) / (
-            self.pullup + r + self.inline_resistor
-        )
+        r = self.li.reverse_interpolate(temp) + self.inline_resistor
+        return r / (self.pullup + r)
 
 
 # Custom defined sensors from the config file
