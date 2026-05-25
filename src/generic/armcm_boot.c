@@ -51,6 +51,39 @@ reset_handler_stage_two(void)
 {
     int i;
 
+#if __CORTEX_M >= 7
+    // A bootloader (e.g. Katapult) may leave D-cache and I-cache enabled.
+    // CMSIS SCB_EnableDCache/ICache skip invalidation when already on,
+    // so stale cache lines survive into the application.  Disable and
+    // invalidate both caches before touching RAM.
+    if (SCB->CCR & SCB_CCR_DC_Msk) {
+        SCB->CCR &= ~SCB_CCR_DC_Msk;
+        __DSB(); __ISB();
+    }
+    SCB->CSSELR = 0U;
+    __DSB();
+    {
+        uint32_t ccsidr = SCB->CCSIDR;
+        uint32_t sets = (ccsidr >> 13) & 0x7FFF;
+        uint32_t ways = (ccsidr >> 3) & 0x3FF;
+        uint32_t wshift = __CLZ(ways) & 0x1FU;
+        do {
+            uint32_t w = ways;
+            do {
+                SCB->DCISW = (sets << SCB_DCISW_SET_Pos)
+                           | (w << wshift);
+            } while (w--);
+        } while (sets--);
+    }
+    __DSB(); __ISB();
+    if (SCB->CCR & SCB_CCR_IC_Msk) {
+        SCB->CCR &= ~SCB_CCR_IC_Msk;
+        __DSB(); __ISB();
+    }
+    SCB->ICIALLU = 0U;
+    __DSB(); __ISB();
+#endif
+
     // Clear all enabled user interrupts and user pending interrupts
     for (i = 0; i < ARRAY_SIZE(NVIC->ICER); i++) {
         NVIC->ICER[i] = 0xFFFFFFFF;
