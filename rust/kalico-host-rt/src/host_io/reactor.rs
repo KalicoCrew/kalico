@@ -803,12 +803,22 @@ impl Reactor {
                             .create(true).append(true)
                             .open("/tmp/interceptor_trace.log")
                         {
-                            let _ = writeln!(f,
-                                "[{:?}] unsolicited name={} oid={:?} interceptor_count={}",
-                                std::time::SystemTime::now(),
-                                name, oid,
-                                self.interceptors.entry_count(),
-                            );
+                            if name.contains("software_trip") || name.contains("trsync_state") {
+                                let _ = writeln!(f,
+                                    "[{:?}] unsolicited name={} oid={:?} interceptor_count={} params={:?}",
+                                    std::time::SystemTime::now(),
+                                    name, oid,
+                                    self.interceptors.entry_count(),
+                                    params,
+                                );
+                            } else {
+                                let _ = writeln!(f,
+                                    "[{:?}] unsolicited name={} oid={:?} interceptor_count={}",
+                                    std::time::SystemTime::now(),
+                                    name, oid,
+                                    self.interceptors.entry_count(),
+                                );
+                            }
                         }
                     }
                     self.interceptors.dispatch(&name, oid, &params);
