@@ -169,6 +169,20 @@ pub enum ReactorCommand {
     /// `send()` returns `Err`, the receiver (reactor) has dropped and the
     /// connection is dead.
     Noop,
+    /// Register a frame interceptor. The reactor calls `callback` on the
+    /// reactor thread for every unsolicited frame matching `(msg_name, oid)`
+    /// before forwarding to the `RuntimeEvent` dispatcher. Replies with the
+    /// allocated `InterceptorId` so the caller can later unregister.
+    RegisterInterceptor {
+        msg_name: String,
+        oid: Option<u32>,
+        callback: crate::host_io::interceptor::InterceptorCallback,
+        reply: SyncSender<crate::host_io::InterceptorId>,
+    },
+    /// Unregister a previously registered frame interceptor.
+    UnregisterInterceptor {
+        id: crate::host_io::InterceptorId,
+    },
     /// 2026-05-18: marks the reactor's pending close as graceful so a
     /// subsequent transport drop does NOT trigger the EXIT_ON_FAULT abort
     /// in the spawn-time guard. Used by klippy's bridge-MCU
@@ -624,6 +638,37 @@ impl KalicoHostIo {
         timeout: Duration,
     ) -> Result<MessageParams, TransportError> {
         self.call(cmd, response, timeout)
+    }
+
+    /// Register a callback that fires on the reactor thread for every
+    /// unsolicited frame whose `msg_name` (and optional `oid`) matches,
+    /// before the frame is forwarded to the `RuntimeEvent` dispatcher.
+    /// Returns an [`InterceptorId`] that can be passed to
+    /// [`unregister_frame_interceptor`] to remove the callback.
+    pub fn register_frame_interceptor(
+        &self,
+        msg_name: &str,
+        oid: Option<u32>,
+        callback: Box<dyn Fn(&crate::transport::MessageParams) + Send + Sync>,
+    ) -> Result<InterceptorId, TransportError> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        self.submission_tx
+            .send(ReactorCommand::RegisterInterceptor {
+                msg_name: msg_name.to_owned(),
+                oid,
+                callback: crate::host_io::interceptor::InterceptorCallback(callback),
+                reply: reply_tx,
+            })
+            .map_err(|_| TransportError::Closed)?;
+        reply_rx.recv().map_err(|_| TransportError::Closed)
+    }
+
+    /// Remove a previously registered frame interceptor. The callback will
+    /// not fire for any frames processed after this call returns.
+    pub fn unregister_frame_interceptor(&self, id: InterceptorId) -> Result<(), TransportError> {
+        self.submission_tx
+            .send(ReactorCommand::UnregisterInterceptor { id })
+            .map_err(|_| TransportError::Closed)
     }
 
     /// Send a command to the MCU without waiting for any response.

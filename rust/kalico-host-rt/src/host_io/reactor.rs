@@ -112,6 +112,11 @@ pub struct Reactor {
     /// Pending kalico calls / identify state. Stream demuxing now lives
     /// inside `io: SerialFrameIo`.
     pub(crate) kalico_state: KalicoNativeState,
+
+    /// Frame interceptor table. Callbacks registered here fire on the
+    /// reactor thread before an unsolicited frame is forwarded to the
+    /// `RuntimeEvent` dispatcher. Keyed by `(msg_name, oid)`.
+    pub(crate) interceptors: crate::host_io::interceptor::InterceptorTable,
 }
 
 pub(crate) struct PendingSubmission {
@@ -198,6 +203,7 @@ impl Reactor {
             passthrough_notify_map: std::collections::HashMap::new(),
             passthrough_mcu: None,
             kalico_state: KalicoNativeState::default(),
+            interceptors: crate::host_io::interceptor::InterceptorTable::new(),
         }
     }
 
@@ -789,6 +795,13 @@ impl Reactor {
                         "[trace-resp] tid={:?} unsolicited name={name} await_len={await_len_before}",
                         std::thread::current().id()
                     );
+                    // Fire registered interceptors before dispatching to channel.
+                    let oid = params.fields.get("oid").and_then(|v| match v {
+                        crate::transport::MessageValue::U32(n) => Some(*n),
+                        crate::transport::MessageValue::I32(n) => Some(*n as u32),
+                        _ => None,
+                    });
+                    self.interceptors.dispatch(&name, oid, &params);
                     // Unsolicited Klipper-protocol Response frames
                     // (analog_in_state, trsync_state, stats, homing_state, …)
                     // need to reach klippy's per-(name, oid) handlers. The
@@ -1265,6 +1278,18 @@ impl Reactor {
             }
             ReactorCommand::Noop => {
                 // Liveness probe from `KalicoHostIo::is_alive`. Nothing to do.
+            }
+            ReactorCommand::RegisterInterceptor {
+                msg_name,
+                oid,
+                callback,
+                reply,
+            } => {
+                let id = self.interceptors.register(msg_name, oid, callback);
+                let _ = reply.send(id);
+            }
+            ReactorCommand::UnregisterInterceptor { id } => {
+                self.interceptors.unregister(id);
             }
         }
     }

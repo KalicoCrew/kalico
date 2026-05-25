@@ -3,6 +3,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::transport::MessageParams;
 
+/// Newtype wrapper so `ReactorCommand` can remain `#[derive(Debug)]`. The
+/// inner `Box<dyn Fn(&MessageParams) + Send + Sync>` does not implement
+/// `Debug`, so we provide a trivial opaque representation.
+pub(crate) struct InterceptorCallback(pub Box<dyn Fn(&MessageParams) + Send + Sync>);
+
+impl std::fmt::Debug for InterceptorCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("InterceptorCallback(<fn>)")
+    }
+}
+
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -40,14 +51,14 @@ impl InterceptorTable {
         &mut self,
         msg_name: String,
         oid: Option<u32>,
-        callback: Box<dyn Fn(&MessageParams) + Send + Sync>,
+        callback: InterceptorCallback,
     ) -> InterceptorId {
         let id = InterceptorId::next();
         let key = InterceptorKey { msg_name, oid };
         self.entries
             .entry(key)
             .or_default()
-            .push(InterceptorEntry { id, callback });
+            .push(InterceptorEntry { id, callback: callback.0 });
         id
     }
 
