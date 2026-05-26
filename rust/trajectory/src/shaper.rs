@@ -14,7 +14,8 @@ use nurbs::ScalarNurbs;
 ///
 /// For passthrough axes (Z by default), skip this function and return the
 /// fitted axis NURBS directly.
-const SAMPLES_PER_KERNEL_WIDTH: usize = 40;
+const INPUT_SAMPLES_PER_KERNEL_WIDTH: usize = 40;
+const OUTPUT_SAMPLES_PER_KERNEL_WIDTH: usize = 12;
 
 pub fn shape_axis(
     padded: &ScalarNurbs<f64>,
@@ -22,7 +23,14 @@ pub fn shape_axis(
     t_start: f64,
     t_end: f64,
 ) -> Result<ScalarNurbs<f64>, nurbs::AlgebraError> {
-    Ok(convolve_discrete(padded, kernel, t_start, t_end, SAMPLES_PER_KERNEL_WIDTH))
+    Ok(convolve_discrete(
+        padded,
+        kernel,
+        t_start,
+        t_end,
+        INPUT_SAMPLES_PER_KERNEL_WIDTH,
+        OUTPUT_SAMPLES_PER_KERNEL_WIDTH,
+    ))
 }
 
 fn eval_clamped(curve: &ScalarNurbs<f64>, t: f64) -> f64 {
@@ -50,19 +58,15 @@ fn convolve_discrete(
     kernel: &PiecewisePolynomialKernel<f64>,
     t_start: f64,
     t_end: f64,
-    samples_per_kernel_width: usize,
+    input_samples_per_kw: usize,
+    output_samples_per_kw: usize,
 ) -> ScalarNurbs<f64> {
     use nurbs::bezier::{bezier_pieces_to_nurbs, BezierPiece};
 
     let (k_lo, k_hi) = kernel.support();
     let kernel_width = k_hi - k_lo;
-    // Input sampling: dense, for FIR accuracy (trapezoidal error O(dt_in²))
-    let dt_in = kernel_width / (samples_per_kernel_width as f64);
-    // Output sampling: sparse, just needs to capture the smooth convolution.
-    // The convolution output bandwidth ≤ input bandwidth. 1 sample per
-    // kernel width (~5ms at 186Hz) is Nyquist-safe and produces ~14k
-    // output points for a 69s segment instead of 537k.
-    let dt_out = kernel_width;
+    let dt_in = kernel_width / (input_samples_per_kw as f64);
+    let dt_out = kernel_width / (output_samples_per_kw as f64);
 
     let input_lo = t_start + k_lo;
     let input_hi = t_end + k_hi;
