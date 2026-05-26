@@ -2149,13 +2149,8 @@ impl PyMotionBridge {
                 // rather than sending it immediately, because in-flight segments
                 // from a previous move (e.g. a retract during homing) may not
                 // have reached the MCU yet.  We take the seed here and send it
-                // only to MCUs that receive a real segment in this dispatch
-                // invocation.  MCUs skipped by the all-constant guard (e.g. the
-                // CoreXY Octopus during a Z-only homing move) must NOT receive
-                // the seed — doing so would overwrite prev_x/y on a potentially
-                // still-executing prior segment.  If any MCU was skipped, the
-                // seed is put back so the next dispatch that targets that MCU
-                // can deliver it.
+                // to each MCU that receives a real segment in this dispatch
+                // invocation.
                 let taken_seed = pending_seed_for_cb
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
@@ -2388,10 +2383,6 @@ impl PyMotionBridge {
                     plan.params.t_end = t_end_clock;
 
                     // ── Per-MCU seed delivery ─────────────────────────────────
-                    // Send runtime_seed_position ONLY to MCUs that receive a
-                    // real segment.  MCUs skipped by the all-constant guard
-                    // never reach this point, so they don't get a stale seed
-                    // that would corrupt prev_x/y mid-execution.
                     if let Some(ref seed) = taken_seed {
                         let encode_q16 = |mm: f64| -> i32 {
                             let raw = mm * 65536.0;
@@ -2408,7 +2399,7 @@ impl PyMotionBridge {
                             (encode_q16(seed.x), encode_q16(seed.y))
                         };
                         let z_q16 = encode_q16(seed.z);
-                        log::info!(
+                        log::debug!(
                             "[bridge-trace] per-MCU seed: mcu={} x_q16={} y_q16={} z_q16={} logical=[{:.3},{:.3},{:.3}]",
                             plan.mcu_id, seed_x_q16, seed_y_q16, z_q16,
                             seed.x, seed.y, seed.z,
@@ -2565,12 +2556,6 @@ impl PyMotionBridge {
                         }
                     } // end sub_plan loop
                 }
-
-                // No put-back: MCUs that were skipped (all-constant) don't
-                // need the seed — their `needs_xy_seed` flag will self-seed
-                // from the curve start on their first real segment.  Putting
-                // the seed back would cause it to be re-sent to already-seeded
-                // MCUs on the next dispatch, resetting prev_x/y mid-motion.
 
                 counter.fetch_add(1, Ordering::Relaxed);
                 Ok(())

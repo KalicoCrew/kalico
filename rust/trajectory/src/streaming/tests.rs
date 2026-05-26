@@ -397,8 +397,6 @@ fn two_move_replan_chains_smoothly() {
 
     let m1 = linear_x_segment(0.0, 1.0, 100.0);
     state.append_and_replan(m1, &ctx).expect("move 1");
-    let t_decel_after_move_1 = state.t_decel_start;
-    let t_appended_after_move_1 = state.t_appended;
 
     let m2 = linear_x_segment(1.0, 2.0, 100.0);
     state.append_and_replan(m2, &ctx).expect("move 2");
@@ -433,8 +431,6 @@ fn two_move_replan_chains_smoothly() {
         state.t_decel_start < state.t_appended,
         "decel ramp must occupy a non-empty tail of the plan",
     );
-    let _ = t_appended_after_move_1;
-    let _ = t_decel_after_move_1;
 }
 
 /// Spec §3.4 history-preservation acceptance: when the dispatch cursor
