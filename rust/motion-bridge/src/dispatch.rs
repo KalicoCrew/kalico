@@ -444,11 +444,28 @@ pub fn build_push_params(
         // only has `curve_pool_n` capacity, which is 4 on the F446;
         // filling it with no-op segments blocks real motion later).
         {
-            let all_constant = cfg.axes.iter().all(|&axis_idx| {
-                axis_idx < shaped.axes.len() && is_trivially_constant(&shaped.axes[axis_idx])
-            });
+            let per_axis_const: Vec<(usize, bool)> = cfg.axes.iter().map(|&axis_idx| {
+                let c = axis_idx < shaped.axes.len() && is_trivially_constant(&shaped.axes[axis_idx]);
+                (axis_idx, c)
+            }).collect();
+            let all_constant = per_axis_const.iter().all(|(_, c)| *c);
             if all_constant {
+                log::info!(
+                    "[dispatch-diag] mcu={} ALL-CONSTANT skip axes={:?}",
+                    cfg.mcu_id, per_axis_const,
+                );
                 continue;
+            }
+            for &(axis_idx, is_const) in &per_axis_const {
+                if !is_const && axis_idx < shaped.axes.len() {
+                    let cps = shaped.axes[axis_idx].control_points();
+                    let first = cps.first().copied().unwrap_or(0.0);
+                    let max_dev = cps.iter().map(|c| (c - first).abs()).fold(0.0_f64, f64::max);
+                    log::info!(
+                        "[dispatch-diag] mcu={} axis={} NOT constant: n_cps={} first={:.6} max_dev={:.2e}",
+                        cfg.mcu_id, axis_idx, cps.len(), first, max_dev,
+                    );
+                }
             }
         }
 
