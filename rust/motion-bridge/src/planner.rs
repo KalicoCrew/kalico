@@ -1718,4 +1718,74 @@ mod tests {
             );
         }
     }
+
+    /// No homing — just reset to a position and do a Z-only move.
+    /// If the bug requires prior XY motion through the shaper,
+    /// this should pass cleanly.
+    #[test]
+    fn z_only_move_no_prior_xy_motion() {
+        use crate::classify::classify_and_build;
+        use crate::dispatch::is_trivially_constant;
+
+        let shaper_cfg = ShaperConfig {
+            x: RequiredShaper::SmoothMzv { frequency_hz: 186.0 },
+            y: RequiredShaper::SmoothMzv { frequency_hz: 122.0 },
+            z: AxisShaper::Passthrough,
+        };
+
+        let mut cfg = PlannerConfig::default();
+        cfg.limits.max_velocity = 1000.0;
+        cfg.limits.max_accel = 70000.0;
+        cfg.limits.max_z_velocity = 5.0;
+        cfg.limits.max_z_accel = 100.0;
+        cfg.shaper = shaper_cfg;
+
+        let shapers = shaper_config_to_axis_shapers(&cfg.shaper);
+        let mut state = ShaperState::new([0.0; 4], &shapers);
+        let replan_ctx = build_replan_context(&cfg);
+        let emit_kernels = shaper_config_to_emit_kernels(&cfg.shaper);
+        let e_halos: Vec<trajectory::EHalo> = Vec::new();
+        let emit_ctx = EmitContext {
+            kernels: &emit_kernels,
+            e_halos: &e_halos,
+        };
+
+        // No prior moves — just reset and go
+        state.reset([150.0, 132.0, 344.0, 0.0]);
+
+        let z_move = classify_and_build(
+            [150.0, 132.0, 344.0], 0.0, 0.0, -342.0, 0.0, 8.0,
+        ).expect("classify Z move");
+        state.append_and_replan(z_move.segment, &replan_ctx).expect("replan");
+
+        let mut segs: Vec<trajectory::ShapedSegment> = Vec::new();
+        segs.extend(state.emit_committed(&emit_ctx).expect("emit"));
+        segs.extend(state.commit_decel_to_zero(&emit_ctx).expect("flush"));
+
+        assert!(!segs.is_empty());
+
+        let mut max_dev_x: f64 = 0.0;
+        let mut max_dev_y: f64 = 0.0;
+        for (i, seg) in segs.iter().enumerate() {
+            let cps_x = seg.axes[0].control_points();
+            let cps_y = seg.axes[1].control_points();
+            let dev_x = cps_x.iter().map(|c| (c - 150.0).abs()).fold(0.0_f64, f64::max);
+            let dev_y = cps_y.iter().map(|c| (c - 132.0).abs()).fold(0.0_f64, f64::max);
+            max_dev_x = max_dev_x.max(dev_x);
+            max_dev_y = max_dev_y.max(dev_y);
+            eprintln!(
+                "[no_prior] seg[{i}]: t=[{:.3},{:.3}] X dev={:.6}mm Y dev={:.6}mm",
+                seg.t_start, seg.t_end, dev_x, dev_y,
+            );
+        }
+
+        assert!(
+            max_dev_x < 0.001,
+            "Z-only move without prior XY motion: X deviated by {max_dev_x:.3}mm (expected < 1µm)",
+        );
+        assert!(
+            max_dev_y < 0.001,
+            "Z-only move without prior XY motion: Y deviated by {max_dev_y:.3}mm (expected < 1µm)",
+        );
+    }
 }
