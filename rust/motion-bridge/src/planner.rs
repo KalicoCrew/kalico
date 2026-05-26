@@ -1632,4 +1632,90 @@ mod tests {
              moves bleeds into the Z-only move's shaped Y axis.",
         );
     }
+
+    /// Same as the Z-only test but with a tiny X displacement (0.1mm)
+    /// alongside the 342mm Z descent. If the 750mm amplification is
+    /// specific to the near-constant case, this should show a much
+    /// smaller (proportionate) deviation. If it's a general history
+    /// contamination, it will show a similar magnitude.
+    #[test]
+    fn z_move_with_tiny_x_after_homing_xy_deviation_proportional() {
+        use crate::classify::classify_and_build;
+
+        let shaper_cfg = ShaperConfig {
+            x: RequiredShaper::SmoothMzv { frequency_hz: 186.0 },
+            y: RequiredShaper::SmoothMzv { frequency_hz: 122.0 },
+            z: AxisShaper::Passthrough,
+        };
+
+        let mut cfg = PlannerConfig::default();
+        cfg.limits.max_velocity = 1000.0;
+        cfg.limits.max_accel = 70000.0;
+        cfg.limits.max_z_velocity = 5.0;
+        cfg.limits.max_z_accel = 100.0;
+        cfg.shaper = shaper_cfg;
+
+        let shapers = shaper_config_to_axis_shapers(&cfg.shaper);
+        let mut state = ShaperState::new([0.0; 4], &shapers);
+        let replan_ctx = build_replan_context(&cfg);
+        let emit_kernels = shaper_config_to_emit_kernels(&cfg.shaper);
+        let e_halos: Vec<trajectory::EHalo> = Vec::new();
+        let emit_ctx = EmitContext {
+            kernels: &emit_kernels,
+            e_halos: &e_halos,
+        };
+
+        let do_move =
+            |state: &mut ShaperState,
+             start: [f64; 3],
+             dx: f64, dy: f64, dz: f64, feed: f64| {
+                let m = classify_and_build(start, dx, dy, dz, 0.0, feed)
+                    .expect("classify");
+                state.append_and_replan(m.segment, &replan_ctx).expect("replan");
+                state.emit_committed(&emit_ctx).expect("emit")
+            };
+        let do_flush = |state: &mut ShaperState| -> Vec<trajectory::ShapedSegment> {
+            state.commit_decel_to_zero(&emit_ctx).expect("flush")
+        };
+
+        // Same XY homing sequence as the Z-only test
+        state.reset([-154.5, 0.0, 0.0, 0.0]);
+        let _ = do_move(&mut state, [-154.5, 0.0, 0.0], 454.5, 0.0, 0.0, 100.0);
+        let _ = do_flush(&mut state);
+        state.reset([300.0, 0.0, 0.0, 0.0]);
+        let _ = do_move(&mut state, [300.0, 0.0, 0.0], -5.0, 0.0, 0.0, 100.0);
+        let _ = do_move(&mut state, [295.0, 0.0, 0.0], -100.0, 0.0, 0.0, 100.0);
+        let _ = do_move(&mut state, [195.0, 0.0, 0.0], -100.0, 0.0, 0.0, 100.0);
+        let _ = do_flush(&mut state);
+        state.reset([95.0, -151.5, 0.0, 0.0]);
+        let _ = do_move(&mut state, [95.0, -151.5, 0.0], 0.0, 453.5, 0.0, 100.0);
+        let _ = do_flush(&mut state);
+        state.reset([95.0, 302.0, 0.0, 0.0]);
+        let _ = do_move(&mut state, [95.0, 302.0, 0.0], 0.0, -5.0, 0.0, 100.0);
+        let _ = do_move(&mut state, [95.0, 297.0, 0.0], 55.0, -165.0, 0.0, 300.0);
+        let _ = do_flush(&mut state);
+
+        // Z move with tiny X: dx=0.1mm instead of 0
+        state.reset([150.0, 132.0, 344.0, 0.0]);
+        let z_move = classify_and_build(
+            [150.0, 132.0, 344.0], 0.1, 0.0, -342.0, 0.0, 8.0,
+        ).expect("classify Z+tiny-X move");
+        state.append_and_replan(z_move.segment, &replan_ctx).expect("replan");
+
+        let mut segs: Vec<trajectory::ShapedSegment> = Vec::new();
+        segs.extend(state.emit_committed(&emit_ctx).expect("emit"));
+        segs.extend(state.commit_decel_to_zero(&emit_ctx).expect("flush"));
+
+        assert!(!segs.is_empty());
+
+        for (i, seg) in segs.iter().enumerate() {
+            let cps_x = seg.axes[0].control_points();
+            let min_x = cps_x.iter().copied().fold(f64::INFINITY, f64::min);
+            let max_x = cps_x.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            eprintln!(
+                "[tiny_x] seg[{i}]: t=[{:.3},{:.3}] X n_cps={} range=[{:.3},{:.3}]",
+                seg.t_start, seg.t_end, cps_x.len(), min_x, max_x,
+            );
+        }
+    }
 }
