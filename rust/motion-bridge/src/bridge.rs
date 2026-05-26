@@ -2205,9 +2205,6 @@ impl PyMotionBridge {
                         .join(","),
                 );
 
-                let seeded_mcu_ids: std::collections::HashSet<u32> =
-                    mcu_plans.iter().map(|p| p.mcu_id).collect();
-
                 for mut plan in mcu_plans {
                     // Skip plans targeting MCUs without kalico-runtime — stock
                     // Klipper firmware can't decode load_curve / push_segment.
@@ -2569,24 +2566,11 @@ impl PyMotionBridge {
                     } // end sub_plan loop
                 }
 
-                // If we took a seed but some MCUs were skipped (all-constant),
-                // put the seed back so the next dispatch that targets those
-                // MCUs can deliver it.
-                if let Some(seed) = taken_seed {
-                    let all_covered = mcu_configs_for_cb
-                        .iter()
-                        .all(|c| seeded_mcu_ids.contains(&c.mcu_id));
-                    if !all_covered {
-                        log::info!(
-                            "[bridge-trace] seed put-back: not all MCUs covered (seeded={:?} configured={:?})",
-                            seeded_mcu_ids,
-                            mcu_configs_for_cb.iter().map(|c| c.mcu_id).collect::<Vec<_>>(),
-                        );
-                        *pending_seed_for_cb
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner()) = Some(seed);
-                    }
-                }
+                // No put-back: MCUs that were skipped (all-constant) don't
+                // need the seed — their `needs_xy_seed` flag will self-seed
+                // from the curve start on their first real segment.  Putting
+                // the seed back would cause it to be re-sent to already-seeded
+                // MCUs on the next dispatch, resetting prev_x/y mid-motion.
 
                 counter.fetch_add(1, Ordering::Relaxed);
                 Ok(())
