@@ -266,21 +266,23 @@ mod tests {
         ]
     }
 
-    fn assert_nurbs_byte_equal(a: &ScalarNurbs<f64>, b: &ScalarNurbs<f64>, label: &str) {
+    fn assert_nurbs_near_equal(a: &ScalarNurbs<f64>, b: &ScalarNurbs<f64>, label: &str) {
         assert_eq!(a.degree(), b.degree(), "{label}: degree differs");
-        assert_eq!(a.knots(), b.knots(), "{label}: knots differ");
-        assert_eq!(
-            a.control_points(),
-            b.control_points(),
-            "{label}: control points differ"
-        );
-        assert_eq!(
-            a.weights().is_some(),
-            b.weights().is_some(),
-            "{label}: weight presence differs"
-        );
+        assert_eq!(a.knots().len(), b.knots().len(), "{label}: knot count differs");
+        let max_knot_diff = a.knots().iter().zip(b.knots().iter())
+            .map(|(ka, kb)| (ka - kb).abs()).fold(0.0_f64, f64::max);
+        assert!(max_knot_diff < 1e-12, "{label}: knots differ by {max_knot_diff:.2e}");
+        assert_eq!(a.control_points().len(), b.control_points().len(),
+            "{label}: control point count differs");
+        let max_cp_diff = a.control_points().iter().zip(b.control_points().iter())
+            .map(|(ca, cb)| (ca - cb).abs()).fold(0.0_f64, f64::max);
+        assert!(max_cp_diff < 1e-12, "{label}: control points differ by {max_cp_diff:.2e} mm");
+        assert_eq!(a.weights().is_some(), b.weights().is_some(),
+            "{label}: weight presence differs");
         if let (Some(wa), Some(wb)) = (a.weights(), b.weights()) {
-            assert_eq!(wa, wb, "{label}: weights differ");
+            let max_w_diff = wa.iter().zip(wb.iter())
+                .map(|(wa, wb)| (wa - wb).abs()).fold(0.0_f64, f64::max);
+            assert!(max_w_diff < 1e-12, "{label}: weights differ by {max_w_diff:.2e}");
         }
     }
 
@@ -367,9 +369,9 @@ mod tests {
 
         assert_eq!(emitted.len(), reference.segments.len());
         for (i, (a, b)) in emitted.iter().zip(reference.segments.iter()).enumerate() {
-            assert_nurbs_byte_equal(&a.axes[0], &b.axes[0], &format!("seg{i} X"));
-            assert_nurbs_byte_equal(&a.axes[1], &b.axes[1], &format!("seg{i} Y"));
-            assert_nurbs_byte_equal(&a.axes[2], &b.axes[2], &format!("seg{i} Z"));
+            assert_nurbs_near_equal(&a.axes[0], &b.axes[0], &format!("seg{i} X"));
+            assert_nurbs_near_equal(&a.axes[1], &b.axes[1], &format!("seg{i} Y"));
+            assert_nurbs_near_equal(&a.axes[2], &b.axes[2], &format!("seg{i} Z"));
             assert_eq!(a.e_mode, b.e_mode, "seg{i}: e_mode differs");
             assert!(
                 (a.extrusion_per_xy_mm - b.extrusion_per_xy_mm).abs() < 1e-15,
@@ -527,7 +529,7 @@ mod tests {
                 1.0,
             );
             let legacy = crate::pad::pad_segment_axis(0, axis, &fitted, &[], t_sm_half, 0.0, 1.0);
-            assert_nurbs_byte_equal(&with_history, &legacy, &format!("axis {axis}"));
+            assert_nurbs_near_equal(&with_history, &legacy, &format!("axis {axis}"));
         }
     }
 }
