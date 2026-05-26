@@ -56,55 +56,54 @@ fn convolve_discrete(
 
     let (k_lo, k_hi) = kernel.support();
     let kernel_width = k_hi - k_lo;
-    let dt = kernel_width / (samples_per_kernel_width as f64);
+    // Input sampling: dense, for FIR accuracy (trapezoidal error O(dt_in²))
+    let dt_in = kernel_width / (samples_per_kernel_width as f64);
+    // Output sampling: sparse, just needs to capture the smooth convolution.
+    // The convolution output bandwidth ≤ input bandwidth. 1 sample per
+    // kernel width (~5ms at 186Hz) is Nyquist-safe and produces ~14k
+    // output points for a 69s segment instead of 537k.
+    let dt_out = kernel_width;
 
     let input_lo = t_start + k_lo;
     let input_hi = t_end + k_hi;
-    let n_input = ((input_hi - input_lo) / dt).ceil() as usize + 1;
+    let n_input = ((input_hi - input_lo) / dt_in).ceil() as usize + 1;
 
     let input_samples: Vec<f64> = (0..n_input)
         .map(|i| {
-            let t = input_lo + (i as f64) * dt;
+            let t = input_lo + (i as f64) * dt_in;
             eval_clamped(padded, t)
         })
         .collect();
 
-    let n_output = (((t_end - t_start) / dt).ceil() as usize) + 1;
+    let n_output = (((t_end - t_start) / dt_out).ceil() as usize) + 1;
     let mut output_times: Vec<f64> = Vec::with_capacity(n_output + 1);
     let mut output_values: Vec<f64> = Vec::with_capacity(n_output + 1);
 
-    for i in 0..n_output {
-        let t_out = (t_start + (i as f64) * dt).min(t_end);
-        let j_lo_f = (t_out - k_hi - input_lo) / dt;
-        let j_hi_f = (t_out - k_lo - input_lo) / dt;
+    let fir_at = |t_out: f64| -> f64 {
+        let j_lo_f = (t_out - k_hi - input_lo) / dt_in;
+        let j_hi_f = (t_out - k_lo - input_lo) / dt_in;
         let j_lo = (j_lo_f.floor() as isize).max(0) as usize;
         let j_hi = ((j_hi_f.ceil() as isize) + 1).min(n_input as isize) as usize;
-
         let mut acc = 0.0_f64;
         for j in j_lo..j_hi {
-            let t_j = input_lo + (j as f64) * dt;
+            let t_j = input_lo + (j as f64) * dt_in;
             let w = eval_kernel(kernel, t_out - t_j);
-            acc += input_samples[j] * w * dt;
+            acc += input_samples[j] * w * dt_in;
         }
+        acc
+    };
+
+    for i in 0..n_output {
+        let t_out = (t_start + (i as f64) * dt_out).min(t_end);
         output_times.push(t_out);
-        output_values.push(acc);
+        output_values.push(fir_at(t_out));
     }
 
+    // Ensure the last sample is exactly at t_end
     if let Some(last_t) = output_times.last() {
-        if (*last_t - t_end).abs() > 1e-15 {
-            let t_out = t_end;
-            let j_lo_f = (t_out - k_hi - input_lo) / dt;
-            let j_hi_f = (t_out - k_lo - input_lo) / dt;
-            let j_lo = (j_lo_f.floor() as isize).max(0) as usize;
-            let j_hi = ((j_hi_f.ceil() as isize) + 1).min(n_input as isize) as usize;
-            let mut acc = 0.0_f64;
-            for j in j_lo..j_hi {
-                let t_j = input_lo + (j as f64) * dt;
-                let w = eval_kernel(kernel, t_out - t_j);
-                acc += input_samples[j] * w * dt;
-            }
+        if (*last_t - t_end).abs() > dt_out * 0.01 {
             output_times.push(t_end);
-            output_values.push(acc);
+            output_values.push(fir_at(t_end));
         }
     }
 
