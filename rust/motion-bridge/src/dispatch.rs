@@ -432,50 +432,6 @@ pub fn build_push_params(
             continue;
         }
 
-        // Skip MCUs where every configured axis is trivially constant
-        // (all control points equal). The "don't skip constants" policy
-        // (line 213) applies when an MCU has a MIX of moving and constant
-        // axes — sending the constant alongside the moving one anchors the
-        // engine's absolute-position model. When ALL axes are constant,
-        // the MCU has zero work: no steps to emit, no position to track
-        // relative to a moving partner. Dispatching would occupy a curve-
-        // pool slot that never retires (the engine arms the segment,
-        // ticks through pieces, and retires — but the host slot pool
-        // only has `curve_pool_n` capacity, which is 4 on the F446;
-        // filling it with no-op segments blocks real motion later).
-        {
-            let per_axis_const: Vec<(usize, bool)> = cfg.axes.iter().map(|&axis_idx| {
-                let c = axis_idx < shaped.axes.len() && is_trivially_constant(&shaped.axes[axis_idx]);
-                (axis_idx, c)
-            }).collect();
-            let all_constant = per_axis_const.iter().all(|(_, c)| *c);
-            {
-                use std::io::Write;
-                if let Ok(mut f) = std::fs::OpenOptions::new()
-                    .create(true).append(true)
-                    .open("/home/dderg/printer_data/logs/dispatch_diag.log")
-                {
-                    let _ = writeln!(f, "mcu={} all_constant={} axes={:?} t=[{:.6},{:.6}]",
-                        cfg.mcu_id, all_constant, per_axis_const,
-                        shaped.t_start, shaped.t_end);
-                    if !all_constant {
-                        for &(axis_idx, is_const) in &per_axis_const {
-                            if !is_const && axis_idx < shaped.axes.len() {
-                                let cps = shaped.axes[axis_idx].control_points();
-                                let first = cps.first().copied().unwrap_or(0.0);
-                                let max_dev = cps.iter().map(|c| (c - first).abs()).fold(0.0_f64, f64::max);
-                                let _ = writeln!(f, "  axis={} n_cps={} first={:.6} max_dev={:.2e}",
-                                    axis_idx, cps.len(), first, max_dev);
-                            }
-                        }
-                    }
-                }
-            }
-            if all_constant {
-                continue;
-            }
-        }
-
         let params = SegmentPushParams {
             id: 0,
             x_handle_packed: UNUSED_HANDLE,
@@ -850,8 +806,8 @@ mod tests {
 
     #[test]
     fn z_move_sends_curves_for_every_kinematic_axis_on_each_mcu() {
-        // Same pattern: Z varies, X+Y constant. Both MCUs still get plans
-        // because both have kinematic axes that need to be anchored.
+        // Z varies, X+Y constant. Both MCUs still get plans because
+        // both have kinematic axes that need to be anchored.
         let seg = shaped([
             constant_curve(50.0),
             constant_curve(100.0),

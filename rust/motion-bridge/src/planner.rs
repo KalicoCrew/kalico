@@ -1525,7 +1525,7 @@ mod tests {
         // emit_committed in a loop (advancing t_decel_start each time
         // to simulate the commit timer opening the dispatch window).
         let z_move = classify_and_build(
-            [150.0, 150.0, 344.0], 0.0, 0.0, -342.0, 0.0, 8.0,
+            [150.0, 132.0, 344.0], 0.0, 0.0, -342.0, 0.0, 8.0,
         ).expect("classify Z move");
         state
             .append_and_replan(z_move.segment, &replan_ctx)
