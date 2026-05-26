@@ -1410,7 +1410,7 @@ mod tests {
     #[test]
     fn z_only_move_after_homing_xy_shaped_axes_are_constant() {
         use crate::classify::classify_and_build;
-        use crate::dispatch::is_trivially_constant;
+
 
         // ---- Shaper config matching real Trident: smooth_mzv @ 186 Hz on X,
         //      smooth_mzv @ 122 Hz on Y, passthrough on Z. ----
@@ -1562,56 +1562,18 @@ mod tests {
         // control-point deviation from constant — a visible sign that the
         // shaper was operating on wrong history state left over from the
         // prior XY moves.
-        let mut any_non_constant_x = false;
-        let mut any_non_constant_y = false;
         let mut max_dev_x: f64 = 0.0;
         let mut max_dev_y: f64 = 0.0;
 
-        for (i, seg) in z_segments.iter().enumerate() {
-            let x_const = is_trivially_constant(&seg.axes[0]);
-            let y_const = is_trivially_constant(&seg.axes[1]);
-            let cps_x = seg.axes[0].control_points();
-            let cps_y = seg.axes[1].control_points();
-
-            // Measure deviation from the expected constant.
-            // X should be at 150.0, Y at 132.0 (beacon home position).
-            let dev_from_expected_x = cps_x.iter()
+        for seg in &z_segments {
+            let dev_x = seg.axes[0].control_points().iter()
                 .map(|c| (c - 150.0).abs())
                 .fold(0.0_f64, f64::max);
-            let dev_from_expected_y = cps_y.iter()
+            let dev_y = seg.axes[1].control_points().iter()
                 .map(|c| (c - 132.0).abs())
                 .fold(0.0_f64, f64::max);
-            let min_x = cps_x.iter().copied().fold(f64::INFINITY, f64::min);
-            let max_x = cps_x.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            let min_y = cps_y.iter().copied().fold(f64::INFINITY, f64::min);
-            let max_y = cps_y.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-
-            eprintln!(
-                "[z_only_constant] seg[{i}]: t=[{:.3},{:.3}] duration={:.3}s",
-                seg.t_start, seg.t_end, seg.t_end - seg.t_start,
-            );
-            eprintln!(
-                "  X: n_cps={} const={} range=[{:.3},{:.3}] dev_from_150={:.3}mm",
-                cps_x.len(), x_const, min_x, max_x, dev_from_expected_x,
-            );
-            eprintln!(
-                "  Y: n_cps={} const={} range=[{:.3},{:.3}] dev_from_150={:.3}mm",
-                cps_y.len(), y_const, min_y, max_y, dev_from_expected_y,
-            );
-
-            if !x_const {
-                any_non_constant_x = true;
-                let first_x = cps_x[0];
-                let dev_x = cps_x.iter()
-                    .map(|c| (c - first_x).abs())
-                    .fold(0.0_f64, f64::max);
-                max_dev_x = max_dev_x.max(dev_from_expected_x);
-            }
-
-            if !y_const {
-                any_non_constant_y = true;
-                max_dev_y = max_dev_y.max(dev_from_expected_y);
-            }
+            max_dev_x = max_dev_x.max(dev_x);
+            max_dev_y = max_dev_y.max(dev_y);
         }
 
         assert!(
@@ -1702,15 +1664,29 @@ mod tests {
 
         assert!(!segs.is_empty());
 
-        for (i, seg) in segs.iter().enumerate() {
-            let cps_x = seg.axes[0].control_points();
-            let min_x = cps_x.iter().copied().fold(f64::INFINITY, f64::min);
-            let max_x = cps_x.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-            eprintln!(
-                "[tiny_x] seg[{i}]: t=[{:.3},{:.3}] X n_cps={} range=[{:.3},{:.3}]",
-                seg.t_start, seg.t_end, cps_x.len(), min_x, max_x,
-            );
+        let mut max_dev_x: f64 = 0.0;
+        let mut max_dev_y: f64 = 0.0;
+        for seg in &segs {
+            let dev_x = seg.axes[0].control_points().iter()
+                .map(|c| (c - 150.0).abs())
+                .fold(0.0_f64, f64::max);
+            let dev_y = seg.axes[1].control_points().iter()
+                .map(|c| (c - 132.0).abs())
+                .fold(0.0_f64, f64::max);
+            max_dev_x = max_dev_x.max(dev_x);
+            max_dev_y = max_dev_y.max(dev_y);
         }
+
+        // X has 0.1mm real displacement — shaped output should stay near
+        // 150.0, not blow up to hundreds of mm.
+        assert!(
+            max_dev_x < 1.0,
+            "tiny-X move: X deviated {max_dev_x:.3}mm from 150.0 (expected < 1mm for 0.1mm input)",
+        );
+        assert!(
+            max_dev_y < 0.01,
+            "tiny-X move: Y deviated {max_dev_y:.6}mm from 132.0 (expected < 10µm)",
+        );
     }
 
     /// No homing — just reset to a position and do a Z-only move.
@@ -1719,7 +1695,7 @@ mod tests {
     #[test]
     fn z_only_move_no_prior_xy_motion() {
         use crate::classify::classify_and_build;
-        use crate::dispatch::is_trivially_constant;
+
 
         let shaper_cfg = ShaperConfig {
             x: RequiredShaper::SmoothMzv { frequency_hz: 186.0 },
