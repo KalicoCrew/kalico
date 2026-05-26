@@ -723,8 +723,6 @@ class MotionToolhead(ToolHead):
         self.bridge.wait_moves()
         if self._mcu_pending_end_time > 0.0:
             for mcu in self._bridge_mcus():
-                if mcu is None:
-                    continue
                 while True:
                     est = mcu.estimated_print_time(
                         self.reactor.monotonic())
