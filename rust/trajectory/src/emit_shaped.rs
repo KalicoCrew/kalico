@@ -135,6 +135,42 @@ pub fn emit_shaped(
 
     let mut output: Vec<ShapedSegment> = Vec::with_capacity(planned.len());
 
+    // DIAG: dump what emit_shaped receives
+    if planned.len() == 1 && planned[0].t_end - planned[0].t_start > 60.0 {
+        eprintln!(
+            "[emit_shaped DIAG] LONG SEGMENT BATCH: n_planned={} batch_t=[{:.3},{:.3}]",
+            planned.len(), batch_t_start, batch_t_end,
+        );
+        for (i, f) in planned.iter().enumerate() {
+            for ax in 0..3 {
+                let cps = f.axes[ax].control_points();
+                let first = cps.first().copied().unwrap_or(0.0);
+                let last = cps.last().copied().unwrap_or(0.0);
+                let max_dev = cps.iter().map(|c| (c - first).abs()).fold(0.0_f64, f64::max);
+                eprintln!(
+                    "  planned[{}] axis={} t=[{:.3},{:.3}] n_cps={} first={:.6} last={:.6} max_dev={:.2e}",
+                    i, ax, f.t_start, f.t_end, cps.len(), first, last, max_dev,
+                );
+            }
+        }
+        for (i, h) in history.axes.iter().enumerate() {
+            if !h.is_empty() {
+                eprintln!(
+                    "  history axis={}: {} pieces, t=[{:.3},{:.3}]",
+                    i, h.len(),
+                    h.first().map(|p| p.u_start).unwrap_or(0.0),
+                    h.last().map(|p| p.u_end).unwrap_or(0.0),
+                );
+                for (j, p) in h.iter().enumerate() {
+                    eprintln!(
+                        "    piece[{}]: t=[{:.6},{:.6}] coeffs={:?}",
+                        j, p.u_start, p.u_end, p.coeffs,
+                    );
+                }
+            }
+        }
+    }
+
     for (seg_idx, fitted) in planned.iter().enumerate() {
         let t_start = fitted.t_start;
         let t_end = fitted.t_end;
@@ -148,6 +184,15 @@ pub fn emit_shaped(
             } else {
                 true
             };
+            // DIAG: detect non-constant fitted CPs on "should be constant" axes
+            if !axis_is_constant && axis < 2 {
+                let first = cps[0];
+                let max_dev = cps.iter().map(|c| (c - first).abs()).fold(0.0_f64, f64::max);
+                eprintln!(
+                    "[emit_shaped DIAG] seg_idx={} axis={} FITTED NOT CONSTANT: n_cps={} first={:.6} max_dev={:.2e} t=[{:.3},{:.3}]",
+                    seg_idx, axis, cps.len(), first, max_dev, t_start, t_end,
+                );
+            }
 
             let mut axis_shaped = if axis_is_constant {
                 // Constant-position axis: shaping a constant is a no-op
@@ -165,12 +210,33 @@ pub fn emit_shaped(
                     batch_t_start,
                     batch_t_end,
                 );
-                shape_axis(&padded, kernel, t_start, t_end).map_err(|detail| {
+                // DIAG: log padded curve stats for X/Y on long segments
+                let is_long = t_end - t_start > 10.0;
+                if is_long && axis < 2 {
+                    let pcps = padded.control_points();
+                    let pmin = pcps.iter().copied().fold(f64::INFINITY, f64::min);
+                    let pmax = pcps.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    eprintln!(
+                        "[STAGE padded] seg={} axis={} n_cps={} range=[{:.3},{:.3}]",
+                        seg_idx, axis, pcps.len(), pmin, pmax,
+                    );
+                }
+                let shaped_result = shape_axis(&padded, kernel, t_start, t_end).map_err(|detail| {
                     ShapeError::Algebra {
                         index: seg_idx,
                         detail,
                     }
-                })?
+                })?;
+                if is_long && axis < 2 {
+                    let scps = shaped_result.control_points();
+                    let smin = scps.iter().copied().fold(f64::INFINITY, f64::min);
+                    let smax = scps.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    eprintln!(
+                        "[STAGE shaped] seg={} axis={} n_cps={} range=[{:.3},{:.3}]",
+                        seg_idx, axis, scps.len(), smin, smax,
+                    );
+                }
+                shaped_result
             } else {
                 // Passthrough: forward the fitted axis (matches
                 // `beta::run_one_iteration`'s `kernels.z = None` branch).
@@ -178,10 +244,7 @@ pub fn emit_shaped(
             };
 
             if !axis_is_constant {
-                // Refit every non-constant axis to cubic Bézier.
-                // Mirrors `beta::run_one_iteration`'s post-shape refit loop;
-                // dropping it here would diverge byte-for-byte from
-                // `shape_batch` and break the Phase-2 byte-identity contract.
+                let is_long = t_end - t_start > 10.0;
                 axis_shaped =
                     refit_to_cubic(&axis_shaped, REFIT_TOLERANCE_MM).map_err(|detail| {
                         ShapeError::FitFailure {
@@ -189,6 +252,15 @@ pub fn emit_shaped(
                             detail,
                         }
                     })?;
+                if is_long && axis < 2 {
+                    let rcps = axis_shaped.control_points();
+                    let rmin = rcps.iter().copied().fold(f64::INFINITY, f64::min);
+                    let rmax = rcps.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+                    eprintln!(
+                        "[STAGE refit ] seg={} axis={} n_cps={} range=[{:.3},{:.3}]",
+                        seg_idx, axis, rcps.len(), rmin, rmax,
+                    );
+                }
             }
 
             shaped_axes[axis] = Some(axis_shaped);
