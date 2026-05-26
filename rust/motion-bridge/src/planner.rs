@@ -1427,8 +1427,11 @@ mod tests {
         // Build a PlannerConfig that uses the Trident shapers but relaxed
         // fit tolerance so the test converges reliably on short homing moves.
         let mut cfg = PlannerConfig::default();
+        cfg.limits.max_velocity = 300.0;
+        cfg.limits.max_accel = 10000.0;
+        cfg.limits.max_z_velocity = 10.0;
+        cfg.limits.max_z_accel = 100.0;
         cfg.shaper = shaper_cfg;
-        cfg.fit_tolerance_mm = 0.05; // relaxed from 5 µm; homing moves are not precision prints
 
         // Construct ShaperState + contexts exactly as the run-loop does.
         let shapers = shaper_config_to_axis_shapers(&cfg.shaper);
@@ -1468,21 +1471,19 @@ mod tests {
                 .expect("commit_decel_to_zero should succeed")
         };
 
-        // ---- Step 1: reset to X homing force-position ----
+        // Sequence from actual klippy log during G28 on the Trident:
+        //
+        // X homing (sensorless, positive_dir, endstop at 300):
+        //   forcepos X = -154.5, homepos X = 300
         state.reset([-154.5, 0.0, 0.0, 0.0]);
-
-        // ---- Step 2: X homing move (fast approach) ----
         let _ = do_move(&mut state, [-154.5, 0.0, 0.0], 454.5, 0.0, 0.0, 100.0);
         let _ = do_flush(&mut state);
-
-        // ---- Step 3: reset to X endstop position ----
+        // Endstop triggered → set_position(haltpos ≈ 300)
         state.reset([300.0, 0.0, 0.0, 0.0]);
-
-        // ---- Step 4: X retract ----
+        // Retract 5mm
         let _ = do_move(&mut state, [300.0, 0.0, 0.0], -5.0, 0.0, 0.0, 100.0);
         let _ = do_flush(&mut state);
-
-        // ---- Step 5: X slow approach (two moves) ----
+        // Move to safe X for Y homing (two moves at 100mm/s)
         state.reset([295.0, 0.0, 0.0, 0.0]);
         let _ = do_move(&mut state, [295.0, 0.0, 0.0], -100.0, 0.0, 0.0, 100.0);
         let _ = do_flush(&mut state);
@@ -1490,23 +1491,31 @@ mod tests {
         let _ = do_move(&mut state, [195.0, 0.0, 0.0], -100.0, 0.0, 0.0, 100.0);
         let _ = do_flush(&mut state);
 
-        // ---- Step 6: reset to Y homing force-position (X stays at ~95) ----
-        state.reset([95.0, -154.5, 0.0, 0.0]);
+        // Y homing (sensorless, positive_dir, endstop at 302):
+        //   forcepos Y = -151.5, homepos Y = 302, X stays at 95
+        state.reset([95.0, -151.5, 0.0, 0.0]);
+        let _ = do_move(&mut state, [95.0, -151.5, 0.0], 0.0, 453.5, 0.0, 100.0);
+        let _ = do_flush(&mut state);
+        // Endstop triggered → set_position(haltpos ≈ [95, 302])
+        state.reset([95.0, 302.0, 0.0, 0.0]);
+        // Retract 5mm in Y
+        let _ = do_move(&mut state, [95.0, 302.0, 0.0], 0.0, -5.0, 0.0, 100.0);
+        let _ = do_flush(&mut state);
 
-        // ---- Step 7: XY diagonal move to home_xy ----
+        // Move to beacon home position (150, 132) at 300mm/s — large diagonal
+        state.reset([95.0, 297.0, 0.0, 0.0]);
         let _ = do_move(
             &mut state,
-            [95.0, -154.5, 0.0],
-            55.0,  // dx: to X=150
-            304.5, // dy: to Y=150
+            [95.0, 297.0, 0.0],
+            55.0,   // dx: to X=150
+            -165.0, // dy: to Y=132
             0.0,
             300.0,
         );
         let _ = do_flush(&mut state);
 
-        // ---- Step 8: reset to Z homing start position ----
-        // Toolhead is now at (150, 150). Z starts near top of travel (344 mm).
-        state.reset([150.0, 150.0, 344.0, 0.0]);
+        // Z homing setup: set_position with Z at top of travel
+        state.reset([150.0, 132.0, 344.0, 0.0]);
 
         // ---- Step 9: Z-only homing move (slow descent) ----
         // This is the move that triggers the bug: dx=0, dy=0, dz=-342.
@@ -1568,35 +1577,47 @@ mod tests {
         for (i, seg) in z_segments.iter().enumerate() {
             let x_const = is_trivially_constant(&seg.axes[0]);
             let y_const = is_trivially_constant(&seg.axes[1]);
+            let cps_x = seg.axes[0].control_points();
+            let cps_y = seg.axes[1].control_points();
+
+            // Measure deviation from the expected constant (150.0),
+            // not from first CP (which itself may be wrong).
+            let dev_from_expected_x = cps_x.iter()
+                .map(|c| (c - 150.0).abs())
+                .fold(0.0_f64, f64::max);
+            let dev_from_expected_y = cps_y.iter()
+                .map(|c| (c - 150.0).abs())
+                .fold(0.0_f64, f64::max);
+            let min_x = cps_x.iter().copied().fold(f64::INFINITY, f64::min);
+            let max_x = cps_x.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let min_y = cps_y.iter().copied().fold(f64::INFINITY, f64::min);
+            let max_y = cps_y.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+
+            eprintln!(
+                "[z_only_constant] seg[{i}]: t=[{:.3},{:.3}] duration={:.3}s",
+                seg.t_start, seg.t_end, seg.t_end - seg.t_start,
+            );
+            eprintln!(
+                "  X: n_cps={} const={} range=[{:.3},{:.3}] dev_from_150={:.3}mm",
+                cps_x.len(), x_const, min_x, max_x, dev_from_expected_x,
+            );
+            eprintln!(
+                "  Y: n_cps={} const={} range=[{:.3},{:.3}] dev_from_150={:.3}mm",
+                cps_y.len(), y_const, min_y, max_y, dev_from_expected_y,
+            );
 
             if !x_const {
                 any_non_constant_x = true;
-                let cps_x = seg.axes[0].control_points();
                 let first_x = cps_x[0];
-                let dev_x = cps_x
-                    .iter()
+                let dev_x = cps_x.iter()
                     .map(|c| (c - first_x).abs())
                     .fold(0.0_f64, f64::max);
-                max_dev_x = max_dev_x.max(dev_x);
-                eprintln!(
-                    "[z_only_constant] seg[{i}]: X is NOT constant — \
-                     max_dev={dev_x:.3} mm (first_cp={first_x:.3})",
-                );
+                max_dev_x = max_dev_x.max(dev_from_expected_x);
             }
 
             if !y_const {
                 any_non_constant_y = true;
-                let cps_y = seg.axes[1].control_points();
-                let first_y = cps_y[0];
-                let dev_y = cps_y
-                    .iter()
-                    .map(|c| (c - first_y).abs())
-                    .fold(0.0_f64, f64::max);
-                max_dev_y = max_dev_y.max(dev_y);
-                eprintln!(
-                    "[z_only_constant] seg[{i}]: Y is NOT constant — \
-                     max_dev={dev_y:.3} mm (first_cp={first_y:.3})",
-                );
+                max_dev_y = max_dev_y.max(dev_from_expected_y);
             }
         }
 
