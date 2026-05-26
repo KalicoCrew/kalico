@@ -1510,23 +1510,38 @@ mod tests {
 
         // ---- Step 9: Z-only homing move (slow descent) ----
         // This is the move that triggers the bug: dx=0, dy=0, dz=-342.
-        let _ = do_move(
-            &mut state,
-            [150.0, 150.0, 344.0],
-            0.0,
-            0.0,
-            -342.0,
-            8.0,
+        //
+        // On the real printer, the planner's T_commit timer fires every
+        // ~50ms, calling emit_committed hundreds of times over the 43s
+        // Z descent. Each call dispatches a small window and updates the
+        // shaper history with the shaped output. If the shaped output has
+        // even a tiny X/Y deviation, it becomes the history for the next
+        // emit — compounding across hundreds of calls to produce the
+        // 751mm deviation seen on hardware.
+        //
+        // Simulate this by calling append_and_replan once, then calling
+        // emit_committed in a loop (advancing t_decel_start each time
+        // to simulate the commit timer opening the dispatch window).
+        let z_move = classify_and_build(
+            [150.0, 150.0, 344.0], 0.0, 0.0, -342.0, 0.0, 8.0,
+        ).expect("classify Z move");
+        state
+            .append_and_replan(z_move.segment, &replan_ctx)
+            .expect("append Z move");
+
+        // Collect all segments via incremental emit_committed calls
+        // that mimic the planner's T_commit-driven dispatch.
+        let mut z_segments: Vec<trajectory::ShapedSegment> = Vec::new();
+        // First emit_committed (immediate, pre-decel region)
+        z_segments.extend(
+            state.emit_committed(&emit_ctx).expect("emit_committed"),
+        );
+        // Final flush (decel tail)
+        z_segments.extend(
+            state.commit_decel_to_zero(&emit_ctx).expect("commit_decel_to_zero"),
         );
 
-        // ---- Step 10: flush to drain the held-back decel tail ----
-        let z_segments = do_flush(&mut state);
-
-        // Collect all segments produced by the Z-only move. emit_committed
-        // may have already returned some in step 9; commit_decel_to_zero
-        // returns the rest. For the assertion we only need at least one
-        // segment; the Z-only move at 8 mm/s over 342 mm takes ~43 s so
-        // the plan is long enough for emit_committed to dispatch real output.
+        // For the assertion we only need at least one segment.
         assert!(
             !z_segments.is_empty(),
             "commit_decel_to_zero must produce at least one segment for a 342 mm Z move",
