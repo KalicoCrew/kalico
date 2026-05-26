@@ -2411,8 +2411,13 @@ impl PyMotionBridge {
                             (encode_q16(seed.x), encode_q16(seed.y))
                         };
                         let z_q16 = encode_q16(seed.z);
+                        log::info!(
+                            "[bridge-trace] per-MCU seed: mcu={} x_q16={} y_q16={} z_q16={} logical=[{:.3},{:.3},{:.3}]",
+                            plan.mcu_id, seed_x_q16, seed_y_q16, z_q16,
+                            seed.x, seed.y, seed.z,
+                        );
                         use kalico_host_rt::host_io::parser::FieldValue;
-                        let _ = io.send_typed(
+                        let result = io.send_typed(
                             "runtime_seed_position",
                             &[
                                 ("x_q16", FieldValue::I32(seed_x_q16)),
@@ -2420,6 +2425,12 @@ impl PyMotionBridge {
                                 ("z_q16", FieldValue::I32(z_q16)),
                             ],
                         );
+                        if let Err(ref e) = result {
+                            log::error!(
+                                "[bridge-trace] seed send FAILED mcu={}: {:?}",
+                                plan.mcu_id, e,
+                            );
+                        }
                     }
 
                     // --- Move splitting (dispatch-level curve chunking) ---
@@ -2566,6 +2577,11 @@ impl PyMotionBridge {
                         .iter()
                         .all(|c| seeded_mcu_ids.contains(&c.mcu_id));
                     if !all_covered {
+                        log::info!(
+                            "[bridge-trace] seed put-back: not all MCUs covered (seeded={:?} configured={:?})",
+                            seeded_mcu_ids,
+                            mcu_configs_for_cb.iter().map(|c| c.mcu_id).collect::<Vec<_>>(),
+                        );
                         *pending_seed_for_cb
                             .lock()
                             .unwrap_or_else(|p| p.into_inner()) = Some(seed);
