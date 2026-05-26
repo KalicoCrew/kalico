@@ -1471,39 +1471,31 @@ mod tests {
                 .expect("commit_decel_to_zero should succeed")
         };
 
-        // Sequence from actual klippy log during G28 on the Trident:
+        // Sequence from actual klippy log during G28 on the Trident.
+        // reset() = klippy's set_position (homing boundaries only).
+        // Regular moves chain through append_and_replan without reset.
         //
         // X homing (sensorless, positive_dir, endstop at 300):
-        //   forcepos X = -154.5, homepos X = 300
         state.reset([-154.5, 0.0, 0.0, 0.0]);
         let _ = do_move(&mut state, [-154.5, 0.0, 0.0], 454.5, 0.0, 0.0, 100.0);
         let _ = do_flush(&mut state);
         // Endstop triggered → set_position(haltpos ≈ 300)
         state.reset([300.0, 0.0, 0.0, 0.0]);
-        // Retract 5mm
+        // Retract + safe-X moves: regular moves, no reset between them.
         let _ = do_move(&mut state, [300.0, 0.0, 0.0], -5.0, 0.0, 0.0, 100.0);
-        let _ = do_flush(&mut state);
-        // Move to safe X for Y homing (two moves at 100mm/s)
-        state.reset([295.0, 0.0, 0.0, 0.0]);
         let _ = do_move(&mut state, [295.0, 0.0, 0.0], -100.0, 0.0, 0.0, 100.0);
-        let _ = do_flush(&mut state);
-        state.reset([195.0, 0.0, 0.0, 0.0]);
         let _ = do_move(&mut state, [195.0, 0.0, 0.0], -100.0, 0.0, 0.0, 100.0);
+        // home_rails flush_step_generation at end of X homing
         let _ = do_flush(&mut state);
 
         // Y homing (sensorless, positive_dir, endstop at 302):
-        //   forcepos Y = -151.5, homepos Y = 302, X stays at 95
         state.reset([95.0, -151.5, 0.0, 0.0]);
         let _ = do_move(&mut state, [95.0, -151.5, 0.0], 0.0, 453.5, 0.0, 100.0);
         let _ = do_flush(&mut state);
         // Endstop triggered → set_position(haltpos ≈ [95, 302])
         state.reset([95.0, 302.0, 0.0, 0.0]);
-        // Retract 5mm in Y
+        // Retract + move to beacon home: regular moves, no reset between them.
         let _ = do_move(&mut state, [95.0, 302.0, 0.0], 0.0, -5.0, 0.0, 100.0);
-        let _ = do_flush(&mut state);
-
-        // Move to beacon home position (150, 132) at 300mm/s — large diagonal
-        state.reset([95.0, 297.0, 0.0, 0.0]);
         let _ = do_move(
             &mut state,
             [95.0, 297.0, 0.0],
@@ -1512,6 +1504,7 @@ mod tests {
             0.0,
             300.0,
         );
+        // home_rails flush_step_generation at end of Y homing
         let _ = do_flush(&mut state);
 
         // Z homing setup: set_position with Z at top of travel
