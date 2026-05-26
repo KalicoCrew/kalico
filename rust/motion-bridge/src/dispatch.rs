@@ -453,7 +453,7 @@ pub fn build_push_params(
                 use std::io::Write;
                 if let Ok(mut f) = std::fs::OpenOptions::new()
                     .create(true).append(true)
-                    .open("/tmp/dispatch_diag.log")
+                    .open("/home/dderg/printer_data/logs/dispatch_diag.log")
                 {
                     let _ = writeln!(f, "mcu={} all_constant={} axes={:?} t=[{:.6},{:.6}]",
                         cfg.mcu_id, all_constant, per_axis_const,
