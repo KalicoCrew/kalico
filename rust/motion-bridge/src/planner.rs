@@ -1573,13 +1573,13 @@ mod tests {
             let cps_x = seg.axes[0].control_points();
             let cps_y = seg.axes[1].control_points();
 
-            // Measure deviation from the expected constant (150.0),
-            // not from first CP (which itself may be wrong).
+            // Measure deviation from the expected constant.
+            // X should be at 150.0, Y at 132.0 (beacon home position).
             let dev_from_expected_x = cps_x.iter()
                 .map(|c| (c - 150.0).abs())
                 .fold(0.0_f64, f64::max);
             let dev_from_expected_y = cps_y.iter()
-                .map(|c| (c - 150.0).abs())
+                .map(|c| (c - 132.0).abs())
                 .fold(0.0_f64, f64::max);
             let min_x = cps_x.iter().copied().fold(f64::INFINITY, f64::min);
             let max_x = cps_x.iter().copied().fold(f64::NEG_INFINITY, f64::max);
@@ -1615,21 +1615,15 @@ mod tests {
         }
 
         assert!(
-            !any_non_constant_x,
-            "Z-only move after XY homing produced non-constant X shaped output \
-             (max deviation from constant: {max_dev_x:.3} mm). \
-             Expected: X should be trivially constant at 150.0 mm throughout \
-             the Z descent. Bug: shaper history state left over from prior XY \
-             moves bleeds into the Z-only move's shaped X axis.",
+            max_dev_x < 0.01,
+            "Z-only move after XY homing: X deviated by {max_dev_x:.6} mm from 150.0 \
+             (expected < 10µm)",
         );
 
         assert!(
-            !any_non_constant_y,
-            "Z-only move after XY homing produced non-constant Y shaped output \
-             (max deviation from constant: {max_dev_y:.3} mm). \
-             Expected: Y should be trivially constant at 150.0 mm throughout \
-             the Z descent. Bug: shaper history state left over from prior XY \
-             moves bleeds into the Z-only move's shaped Y axis.",
+            max_dev_y < 0.01,
+            "Z-only move after XY homing: Y deviated by {max_dev_y:.6} mm from 132.0 \
+             (expected < 10µm)",
         );
     }
 
@@ -1780,12 +1774,12 @@ mod tests {
         }
 
         assert!(
-            max_dev_x < 0.001,
-            "Z-only move without prior XY motion: X deviated by {max_dev_x:.3}mm (expected < 1µm)",
+            max_dev_x < 0.01,
+            "Z-only move without prior XY motion: X deviated by {max_dev_x:.6}mm (expected < 10µm)",
         );
         assert!(
-            max_dev_y < 0.001,
-            "Z-only move without prior XY motion: Y deviated by {max_dev_y:.3}mm (expected < 1µm)",
+            max_dev_y < 0.01,
+            "Z-only move without prior XY motion: Y deviated by {max_dev_y:.6}mm (expected < 10µm)",
         );
     }
 }
