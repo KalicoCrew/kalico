@@ -2143,61 +2143,23 @@ impl PyMotionBridge {
                     seg.t_start, seg.t_end,
                 );
 
-                // ── Pending seed drain ─────────────────────────────────────────
+                // ── Pending seed — take for per-MCU delivery below ───────────
                 //
                 // `set_position` stores its `runtime_seed_position` payload here
                 // rather than sending it immediately, because in-flight segments
                 // from a previous move (e.g. a retract during homing) may not
-                // have reached the MCU yet.  Sending the seed here — at the head
-                // of the next dispatch invocation — guarantees ordering: the seed
-                // arrives after all previous segments and before the segment we
-                // are about to dispatch.
-                if let Some(seed) = pending_seed_for_cb
+                // have reached the MCU yet.  We take the seed here and send it
+                // only to MCUs that receive a real segment in this dispatch
+                // invocation.  MCUs skipped by the all-constant guard (e.g. the
+                // CoreXY Octopus during a Z-only homing move) must NOT receive
+                // the seed — doing so would overwrite prev_x/y on a potentially
+                // still-executing prior segment.  If any MCU was skipped, the
+                // seed is put back so the next dispatch that targets that MCU
+                // can deliver it.
+                let taken_seed = pending_seed_for_cb
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .take()
-                {
-                    let encode_q16 = |mm: f64| -> i32 {
-                        let raw = mm * 65536.0;
-                        raw.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
-                    };
-                    let x_q16 = encode_q16(seed.x);
-                    let y_q16 = encode_q16(seed.y);
-                    let z_q16 = encode_q16(seed.z);
-
-                    for cfg in &mcu_configs_for_cb {
-                        let (io_weak, _credit, _pool) = match dispatch_ios.get(&cfg.mcu_id) {
-                            Some(v) => v,
-                            None => continue,
-                        };
-                        let io = match io_weak.upgrade() {
-                            Some(io) => io,
-                            None => continue, // connection dropped, skip this MCU
-                        };
-
-                        // Motor-frame transform: CoreXY MCUs expect A = X+Y,
-                        // B = X-Y; CartesianXyzAndE MCUs receive logical X/Y/Z.
-                        let (seed_x_q16, seed_y_q16) =
-                            if cfg.kinematics == crate::dispatch::KINEMATICS_COREXY {
-                                (encode_q16(seed.x + seed.y), encode_q16(seed.x - seed.y))
-                            } else {
-                                (x_q16, y_q16)
-                            };
-
-                        use kalico_host_rt::host_io::parser::FieldValue;
-                        // Ignore send errors — if the channel is closed the
-                        // imminent PushSegment will surface the failure through
-                        // the normal credit / fault path.
-                        let _ = io.send_typed(
-                            "runtime_seed_position",
-                            &[
-                                ("x_q16", FieldValue::I32(seed_x_q16)),
-                                ("y_q16", FieldValue::I32(seed_y_q16)),
-                                ("z_q16", FieldValue::I32(z_q16)),
-                            ],
-                        );
-                    }
-                }
+                    .take();
 
                 // ── Phase-4 per-axis-per-segment dispatch ─────────────────────
                 //
@@ -2242,6 +2204,9 @@ impl PyMotionBridge {
                         .collect::<Vec<_>>()
                         .join(","),
                 );
+
+                let seeded_mcu_ids: std::collections::HashSet<u32> =
+                    mcu_plans.iter().map(|p| p.mcu_id).collect();
 
                 for mut plan in mcu_plans {
                     // Skip plans targeting MCUs without kalico-runtime — stock
@@ -2425,6 +2390,38 @@ impl PyMotionBridge {
                     plan.params.t_start = t_start_clock;
                     plan.params.t_end = t_end_clock;
 
+                    // ── Per-MCU seed delivery ─────────────────────────────────
+                    // Send runtime_seed_position ONLY to MCUs that receive a
+                    // real segment.  MCUs skipped by the all-constant guard
+                    // never reach this point, so they don't get a stale seed
+                    // that would corrupt prev_x/y mid-execution.
+                    if let Some(ref seed) = taken_seed {
+                        let encode_q16 = |mm: f64| -> i32 {
+                            let raw = mm * 65536.0;
+                            raw.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
+                        };
+                        let cfg = mcu_configs_for_cb
+                            .iter()
+                            .find(|c| c.mcu_id == plan.mcu_id);
+                        let (seed_x_q16, seed_y_q16) = if cfg
+                            .map_or(false, |c| c.kinematics == crate::dispatch::KINEMATICS_COREXY)
+                        {
+                            (encode_q16(seed.x + seed.y), encode_q16(seed.x - seed.y))
+                        } else {
+                            (encode_q16(seed.x), encode_q16(seed.y))
+                        };
+                        let z_q16 = encode_q16(seed.z);
+                        use kalico_host_rt::host_io::parser::FieldValue;
+                        let _ = io.send_typed(
+                            "runtime_seed_position",
+                            &[
+                                ("x_q16", FieldValue::I32(seed_x_q16)),
+                                ("y_q16", FieldValue::I32(seed_y_q16)),
+                                ("z_q16", FieldValue::I32(z_q16)),
+                            ],
+                        );
+                    }
+
                     // --- Move splitting (dispatch-level curve chunking) ---
                     let caps = mcu_configs_for_cb
                         .iter()
@@ -2559,6 +2556,20 @@ impl PyMotionBridge {
                             });
                         }
                     } // end sub_plan loop
+                }
+
+                // If we took a seed but some MCUs were skipped (all-constant),
+                // put the seed back so the next dispatch that targets those
+                // MCUs can deliver it.
+                if let Some(seed) = taken_seed {
+                    let all_covered = mcu_configs_for_cb
+                        .iter()
+                        .all(|c| seeded_mcu_ids.contains(&c.mcu_id));
+                    if !all_covered {
+                        *pending_seed_for_cb
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner()) = Some(seed);
+                    }
                 }
 
                 counter.fetch_add(1, Ordering::Relaxed);
