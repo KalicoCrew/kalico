@@ -710,18 +710,28 @@ class MotionToolhead(ToolHead):
     def wait_moves_and_mcu(self):
         self.flush_step_generation()
 
+    def _bridge_mcus(self):
+        if not hasattr(self, '_cached_bridge_mcus'):
+            mcus = set()
+            if self.kin is not None:
+                for s in self.kin.get_steppers():
+                    mcus.add(s.get_mcu())
+            self._cached_bridge_mcus = list(mcus) if mcus else [self.mcu]
+        return self._cached_bridge_mcus
+
     def flush_step_generation(self):
         self.bridge.wait_moves()
-        if self._mcu_pending_end_time > 0.0 and self.mcu is not None:
-            while True:
-                est = self.mcu.estimated_print_time(
-                    self.reactor.monotonic())
-                remaining = self._mcu_pending_end_time - est
-                if remaining <= 0.0:
-                    break
-                self.reactor.pause(
-                    self.reactor.monotonic() + remaining + 0.010
-                )
+        if self._mcu_pending_end_time > 0.0:
+            for mcu in self._bridge_mcus():
+                while True:
+                    est = mcu.estimated_print_time(
+                        self.reactor.monotonic())
+                    remaining = self._mcu_pending_end_time - est
+                    if remaining <= 0.0:
+                        break
+                    self.reactor.pause(
+                        self.reactor.monotonic() + remaining + 0.010
+                    )
         self._ground_pending_end_time_after_bridge_drain()
 
     def get_last_move_time(self):
