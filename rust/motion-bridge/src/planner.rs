@@ -1427,9 +1427,9 @@ mod tests {
         // Build a PlannerConfig that uses the Trident shapers but relaxed
         // fit tolerance so the test converges reliably on short homing moves.
         let mut cfg = PlannerConfig::default();
-        cfg.limits.max_velocity = 300.0;
-        cfg.limits.max_accel = 10000.0;
-        cfg.limits.max_z_velocity = 10.0;
+        cfg.limits.max_velocity = 1000.0;
+        cfg.limits.max_accel = 70000.0;
+        cfg.limits.max_z_velocity = 5.0;
         cfg.limits.max_z_accel = 100.0;
         cfg.shaper = shaper_cfg;
 
