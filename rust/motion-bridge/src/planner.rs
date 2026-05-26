@@ -1372,4 +1372,235 @@ mod tests {
         let h = PlannerHandle::spawn(PlannerConfig::default(), dispatch);
         drop(h); // Drop impl should send Shutdown + join.
     }
+
+    // ---------------------------------------------------------------------------
+    // Bug regression: Z-only move after XY homing produces non-constant X/Y
+    // shaped output (axes[0] and axes[1] deviate from constant by 751 mm and
+    // 73 mm — massive, not numerical noise).
+    //
+    // Root: after `state.reset(home_pos)` the per-axis queues are re-seeded at
+    // the new home position but `planned_fitted` / `planned_meta` are cleared.
+    // `emit_committed` (and `commit_decel_to_zero`) rebuilds per-axis history
+    // from `axes[i].pieces` — which are correct — but the shaping kernel for X
+    // and Y is applied to the Z-only move's unshaped plan. For a Z-only segment
+    // the X and Y components of `planned_fitted[*].axes[{0,1}]` are constant at
+    // the reset's home X/Y. After a flush/commit the shaped X and Y curves must
+    // therefore be constant (the convolution of a constant with any kernel is the
+    // same constant).
+    //
+    // This test FAILS on the current code (demonstrating the bug) and should
+    // pass after the fix is applied.
+    //
+    // Sequence mirrors a CoreXY G28 homing cycle:
+    //   1. Reset to X homing force-position.
+    //   2. X homing move (fast, large dx).
+    //   3. Reset to X endstop position.
+    //   4. X retract.
+    //   5. X slow approach moves.
+    //   6. Reset to XY homing force-position.
+    //   7. XY diagonal move (to home_xy position).
+    //   8. Reset to Z homing start (toolhead at home_xy, Z near top).
+    //   9. Z-only homing move (slow descent).
+    //  10. Flush: commit_decel_to_zero drains the held-back tail.
+    //  11. Assert: every shaped segment from step 9 has constant X and Y.
+    //
+    // The test drives `ShaperState` inline (no `PlannerHandle` thread) using
+    // the same internal helpers the planner run-loop uses, so the shaped output
+    // is fully deterministic and directly inspectable.
+    #[test]
+    fn z_only_move_after_homing_xy_shaped_axes_are_constant() {
+        use crate::classify::classify_and_build;
+        use crate::dispatch::is_trivially_constant;
+
+        // ---- Shaper config matching real Trident: smooth_mzv @ 186 Hz on X,
+        //      smooth_mzv @ 122 Hz on Y, passthrough on Z. ----
+        let shaper_cfg = ShaperConfig {
+            x: trajectory::RequiredShaper::SmoothMzv {
+                frequency_hz: 186.0,
+            },
+            y: trajectory::RequiredShaper::SmoothMzv {
+                frequency_hz: 122.0,
+            },
+            z: trajectory::AxisShaper::Passthrough,
+        };
+
+        // Build a PlannerConfig that uses the Trident shapers but relaxed
+        // fit tolerance so the test converges reliably on short homing moves.
+        let mut cfg = PlannerConfig::default();
+        cfg.shaper = shaper_cfg;
+        cfg.fit_tolerance_mm = 0.05; // relaxed from 5 µm; homing moves are not precision prints
+
+        // Construct ShaperState + contexts exactly as the run-loop does.
+        let shapers = shaper_config_to_axis_shapers(&cfg.shaper);
+        let mut state = ShaperState::new([0.0; 4], &shapers);
+
+        let replan_ctx = build_replan_context(&cfg);
+        let emit_kernels = shaper_config_to_emit_kernels(&cfg.shaper);
+        let e_halos: Vec<trajectory::EHalo> = Vec::new();
+        let emit_ctx = EmitContext {
+            kernels: &emit_kernels,
+            e_halos: &e_halos,
+        };
+
+        // Helper: append one move, immediately emit committed, discard output.
+        // Mirrors the run-loop's per-Move arm (append_and_replan + emit_committed).
+        let do_move =
+            |state: &mut ShaperState,
+             start: [f64; 3],
+             dx: f64,
+             dy: f64,
+             dz: f64,
+             feed: f64| {
+                let m = classify_and_build(start, dx, dy, dz, 0.0, feed)
+                    .expect("classify_and_build should succeed for valid moves");
+                state
+                    .append_and_replan(m.segment, &replan_ctx)
+                    .expect("append_and_replan should succeed");
+                state
+                    .emit_committed(&emit_ctx)
+                    .expect("emit_committed should succeed")
+            };
+
+        // Helper: flush (commit decel tail) and collect all emitted segments.
+        let do_flush = |state: &mut ShaperState| -> Vec<ShapedSegment> {
+            state
+                .commit_decel_to_zero(&emit_ctx)
+                .expect("commit_decel_to_zero should succeed")
+        };
+
+        // ---- Step 1: reset to X homing force-position ----
+        state.reset([-154.5, 0.0, 0.0, 0.0]);
+
+        // ---- Step 2: X homing move (fast approach) ----
+        let _ = do_move(&mut state, [-154.5, 0.0, 0.0], 454.5, 0.0, 0.0, 100.0);
+        let _ = do_flush(&mut state);
+
+        // ---- Step 3: reset to X endstop position ----
+        state.reset([300.0, 0.0, 0.0, 0.0]);
+
+        // ---- Step 4: X retract ----
+        let _ = do_move(&mut state, [300.0, 0.0, 0.0], -5.0, 0.0, 0.0, 100.0);
+        let _ = do_flush(&mut state);
+
+        // ---- Step 5: X slow approach (two moves) ----
+        state.reset([295.0, 0.0, 0.0, 0.0]);
+        let _ = do_move(&mut state, [295.0, 0.0, 0.0], -100.0, 0.0, 0.0, 100.0);
+        let _ = do_flush(&mut state);
+        state.reset([195.0, 0.0, 0.0, 0.0]);
+        let _ = do_move(&mut state, [195.0, 0.0, 0.0], -100.0, 0.0, 0.0, 100.0);
+        let _ = do_flush(&mut state);
+
+        // ---- Step 6: reset to Y homing force-position (X stays at ~95) ----
+        state.reset([95.0, -154.5, 0.0, 0.0]);
+
+        // ---- Step 7: XY diagonal move to home_xy ----
+        let _ = do_move(
+            &mut state,
+            [95.0, -154.5, 0.0],
+            55.0,  // dx: to X=150
+            304.5, // dy: to Y=150
+            0.0,
+            300.0,
+        );
+        let _ = do_flush(&mut state);
+
+        // ---- Step 8: reset to Z homing start position ----
+        // Toolhead is now at (150, 150). Z starts near top of travel (344 mm).
+        state.reset([150.0, 150.0, 344.0, 0.0]);
+
+        // ---- Step 9: Z-only homing move (slow descent) ----
+        // This is the move that triggers the bug: dx=0, dy=0, dz=-342.
+        let _ = do_move(
+            &mut state,
+            [150.0, 150.0, 344.0],
+            0.0,
+            0.0,
+            -342.0,
+            8.0,
+        );
+
+        // ---- Step 10: flush to drain the held-back decel tail ----
+        let z_segments = do_flush(&mut state);
+
+        // Collect all segments produced by the Z-only move. emit_committed
+        // may have already returned some in step 9; commit_decel_to_zero
+        // returns the rest. For the assertion we only need at least one
+        // segment; the Z-only move at 8 mm/s over 342 mm takes ~43 s so
+        // the plan is long enough for emit_committed to dispatch real output.
+        assert!(
+            !z_segments.is_empty(),
+            "commit_decel_to_zero must produce at least one segment for a 342 mm Z move",
+        );
+
+        // ---- Step 11: assert X and Y shaped axes are constant ----
+        //
+        // For a Z-only move the toolhead does not move in X or Y. The
+        // unshaped X and Y trajectories in `planned_fitted` are constant
+        // (all control points equal the reset home position: X=150, Y=150).
+        // The shaper convolution of a constant function is the same constant.
+        // Therefore every `ShapedSegment` produced by this move must have
+        // axes[0] (X) and axes[1] (Y) trivially constant.
+        //
+        // On buggy code the X and Y axes have 751 mm and 73 mm maximum
+        // control-point deviation from constant — a visible sign that the
+        // shaper was operating on wrong history state left over from the
+        // prior XY moves.
+        let mut any_non_constant_x = false;
+        let mut any_non_constant_y = false;
+        let mut max_dev_x: f64 = 0.0;
+        let mut max_dev_y: f64 = 0.0;
+
+        for (i, seg) in z_segments.iter().enumerate() {
+            let x_const = is_trivially_constant(&seg.axes[0]);
+            let y_const = is_trivially_constant(&seg.axes[1]);
+
+            if !x_const {
+                any_non_constant_x = true;
+                let cps_x = seg.axes[0].control_points();
+                let first_x = cps_x[0];
+                let dev_x = cps_x
+                    .iter()
+                    .map(|c| (c - first_x).abs())
+                    .fold(0.0_f64, f64::max);
+                max_dev_x = max_dev_x.max(dev_x);
+                eprintln!(
+                    "[z_only_constant] seg[{i}]: X is NOT constant — \
+                     max_dev={dev_x:.3} mm (first_cp={first_x:.3})",
+                );
+            }
+
+            if !y_const {
+                any_non_constant_y = true;
+                let cps_y = seg.axes[1].control_points();
+                let first_y = cps_y[0];
+                let dev_y = cps_y
+                    .iter()
+                    .map(|c| (c - first_y).abs())
+                    .fold(0.0_f64, f64::max);
+                max_dev_y = max_dev_y.max(dev_y);
+                eprintln!(
+                    "[z_only_constant] seg[{i}]: Y is NOT constant — \
+                     max_dev={dev_y:.3} mm (first_cp={first_y:.3})",
+                );
+            }
+        }
+
+        assert!(
+            !any_non_constant_x,
+            "Z-only move after XY homing produced non-constant X shaped output \
+             (max deviation from constant: {max_dev_x:.3} mm). \
+             Expected: X should be trivially constant at 150.0 mm throughout \
+             the Z descent. Bug: shaper history state left over from prior XY \
+             moves bleeds into the Z-only move's shaped X axis.",
+        );
+
+        assert!(
+            !any_non_constant_y,
+            "Z-only move after XY homing produced non-constant Y shaped output \
+             (max deviation from constant: {max_dev_y:.3} mm). \
+             Expected: Y should be trivially constant at 150.0 mm throughout \
+             the Z descent. Bug: shaper history state left over from prior XY \
+             moves bleeds into the Z-only move's shaped Y axis.",
+        );
+    }
 }
