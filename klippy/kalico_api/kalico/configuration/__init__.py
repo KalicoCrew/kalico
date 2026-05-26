@@ -42,8 +42,13 @@ class Configuration:
         return ConfigurationSection(self, self._config.getsection(section))
 
     def define(
-        self, section: str, name: str = None, /, **options: dict[str, Value]
+        self,
+        section: str,
+        name: str = None,
+        /,
+        **options: dict[str, Value],
     ) -> ConfigurationSection:
+        "Define a configuration section"
         config = self.get(section, name)
         config.update(options)
         return config
@@ -70,17 +75,20 @@ class ConfigurationSection:
     def __init__(self, configuration: Configuration, config: ConfigWrapper):
         self._configuration = configuration
         self._printer: Printer = config.get_printer()
-        self._config = config.getsection("printer")
+        self._pconfig: PrinterConfig = self._printer.lookup_object("configfile")
+        self._config: ConfigWrapper = config.getsection("printer")
         self._fileconfig: RawConfigParser = config.fileconfig
-        self._section = config.get_name()
+
+        self.section = config.get_name()
+        self.name = self.section.split()[-1]
 
     def _is_used(self, option: str):
-        tracking_id = (self._section.lower(), option.lower())
+        tracking_id = (self.section.lower(), option.lower())
         return tracking_id in self._config.access_tracking
 
     def _create_section(self):
-        if not self._fileconfig.has_section(self._section):
-            self._fileconfig.add_section(self._section)
+        if not self._fileconfig.has_section(self.section):
+            self._fileconfig.add_section(self.section)
 
     def has(self, option: str):
         return self._config.has(option)
@@ -95,13 +103,16 @@ class ConfigurationSection:
         self._create_section()
 
         if self._is_used(option):
-            raise ConfigError(f"[{self._section}] {option!r} is already in use")
+            raise ConfigError(f"[{self.section}] {option!r} is already in use")
 
         if callable(value):
             self.gcode(option, value)
 
         else:
-            self._fileconfig.set(self._section, option, str(value))
+            self._fileconfig.set(self.section, option, str(value))
+            if isinstance(value, (list, tuple)):
+                acc_id = (self.section.lower(), option.lower())
+                self._config.raw_values[acc_id] = value
 
     def update(self, options: dict[str, Scalar]):
         if self._configuration._finalized:
@@ -126,17 +137,28 @@ class ConfigurationSection:
                 validate_gcode_function(gcode_function)
             except ConfigError as e:
                 raise ConfigError(
-                    f"{self._section} {option} is not a valid gcode function, {e}"
+                    f"{self.section} {option} is not a valid gcode function, {e}"
                 )
 
-            function_key = f"{self._section.lower()}.{option}"
+            gcode = self._printer.lookup_object("gcode")
             gcode_macro = self._printer.load_object(self._config, "gcode_macro")
 
-            gcode_macro._gcode_functions[function_key] = GCodeFunctionTemplate(
-                self._config, gcode_function
+            function_key = f"{self.section.lower()}.{option}"
+            template = GCodeFunctionTemplate(
+                self._config,
+                function_key,
+                gcode_function,
+            )
+
+            gcode_macro._gcode_functions[function_key] = template
+            gcode.register_mux_command(
+                "CALL_GCODE_FUNCTION",
+                "KEY",
+                function_key,
+                template,
             )
             self._fileconfig.set(
-                self._section, option, f"!!gcode_function:{function_key}"
+                self.section, option, f"!!gcode_function:{function_key}"
             )
             return gcode_function
 
@@ -147,9 +169,10 @@ class ConfigurationSection:
 
 
 class GCodeFunctionTemplate:
-    def __init__(self, config, function: GCodeFunction):
+    def __init__(self, config, key: str, function: GCodeFunction):
         self.printer = config.get_printer()
 
+        self.key = key
         self.function = function
         self.name = self.function.__name__
         self.params = None
@@ -162,3 +185,6 @@ class GCodeFunctionTemplate:
 
     def __call__(self, context=None):
         return self.run_gcode_from_command(context)
+
+    def render(self, context=None):
+        return f"CALL_GCODE_FUNCTION KEY='{self.key}'"

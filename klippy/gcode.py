@@ -25,7 +25,11 @@ class CommandError(Exception):
         self._log = log
 
 
-Coord = collections.namedtuple("Coord", ("x", "y", "z", "e"))
+class Coord(typing.NamedTuple):
+    x: float
+    y: float
+    z: float
+    e: float
 
 
 class GCodeCommand:
@@ -668,6 +672,9 @@ class GCodeAPI:
 
     def display(self, msg: str):
         self._gcode.run_script_from_command(f"M117 {msg}")
+
+    def clear_display(self):
+        self._gcode.run_script_from_command("M117")
 
 
 class GCodeCommandAPI:

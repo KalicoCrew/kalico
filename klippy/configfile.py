@@ -71,16 +71,24 @@ class SectionInterpolation(configparser.Interpolation):
 class ConfigWrapper:
     error = configparser.Error
 
-    def __init__(self, printer, fileconfig, access_tracking, section):
+    def __init__(
+        self,
+        printer,
+        fileconfig,
+        access_tracking,
+        raw_values,
+        section,
+    ):
         self.printer = printer
         self.fileconfig = fileconfig
         self.access_tracking = access_tracking
+        self.raw_values = raw_values
         self.section = section
 
     def get_printer(self):
         return self.printer
 
-    def get_name(self):
+    def get_name(self) -> str:
         return self.section
 
     def _get_wrapper(
@@ -94,16 +102,21 @@ class ConfigWrapper:
         below=None,
         note_valid=True,
     ):
+        acc_id = (self.section.lower(), option.lower())
         if not self.fileconfig.has_option(self.section, option):
             if default is not sentinel:
                 if note_valid and default is not None:
-                    acc_id = (self.section.lower(), option.lower())
                     self.access_tracking[acc_id] = default
                 return default
             raise error(
                 "Option '%s' in section '%s' must be specified"
                 % (option, self.section)
             )
+        if acc_id in self.raw_values:
+            raw_value = self.raw_values[acc_id]
+            if note_valid:
+                self.access_tracking[acc_id] = raw_value
+            return raw_value
         if parser is float:
             parser = mathutil.safe_float
         try:
@@ -116,7 +129,7 @@ class ConfigWrapper:
                 % (option, self.section)
             )
         if note_valid:
-            self.access_tracking[(self.section.lower(), option.lower())] = v
+            self.access_tracking[acc_id] = v
         if minval is not None and v < minval:
             raise error(
                 "Option '%s' in section '%s' must have minimum of %s"
@@ -299,7 +312,11 @@ class ConfigWrapper:
 
     def getsection(self, section):
         return ConfigWrapper(
-            self.printer, self.fileconfig, self.access_tracking, section
+            self.printer,
+            self.fileconfig,
+            self.access_tracking,
+            self.raw_values,
+            section,
         )
 
     def has_section(self, section):
@@ -514,6 +531,7 @@ class PrinterConfig:
 
     def _build_config_wrapper(self, data, filename):
         access_tracking = {}
+        raw_values = {}
         fileconfig = configparser.RawConfigParser(
             strict=False,
             inline_comment_prefixes=(";", "#"),
@@ -522,7 +540,7 @@ class PrinterConfig:
 
         self._parse_config(data, filename, fileconfig, set())
         return ConfigWrapper(
-            self.printer, fileconfig, access_tracking, "printer"
+            self.printer, fileconfig, access_tracking, raw_values, "printer"
         )
 
     def _build_config_string(self, config):

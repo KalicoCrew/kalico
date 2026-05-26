@@ -22,6 +22,12 @@ config: Configuration
 
 BlockingResult = typing.TypeVar("BlockingResult")
 
+class Coord(typing.NamedTuple):
+    x: float
+    y: float
+    z: float
+    e: float
+
 class GCodeAPI:
     def __getattr__(self, command: str) -> GCodeCommandAPI: ...
     def __call__(self, command: str): ...
@@ -52,7 +58,7 @@ class HeatersAPI:
         """
 
 class FanAPI:
-    def set_speed(self, fan_name: str, speed: float):
+    def set_speed(self, fan_name: str = "fan", speed: float = 0.0):
         """Set the speed of a fan"""
 
 class MoveAPI:
@@ -101,6 +107,8 @@ class MoveAPI:
         """
         Save the current gcode state
         """
+    @property
+    def gcode_offset(self) -> Coord: ...
 
 class TimerCallback(typing.Protocol):
     def __call__(self, kalico: Kalico, eventtime: float):

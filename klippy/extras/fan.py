@@ -8,9 +8,8 @@ from __future__ import annotations
 
 import typing
 
-from . import output_pin, pulse_counter
 from ..gcode import CommandError
-from . import pulse_counter
+from . import output_pin, pulse_counter
 
 if typing.TYPE_CHECKING:
     from ..configfile import ConfigWrapper
@@ -221,7 +220,7 @@ class FanAPI:
     def __init__(self, printer: Printer):
         self._printer = printer
 
-    def set_speed(self, fan_name: str, speed: float):
+    def set_speed(self, fan_name: str = "fan", speed: float = 0.0):
         "Set the speed of a fan"
         if fan_name == "fan":
             fan: PrinterFan = self._printer.lookup_object("fan", None)

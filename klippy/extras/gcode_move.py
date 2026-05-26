@@ -9,6 +9,8 @@ import contextlib
 import logging
 import typing
 
+from klippy.gcode import Coord
+
 if typing.TYPE_CHECKING:
     from klippy.printer import Printer, SubsystemComponentCollection
 
@@ -519,6 +521,10 @@ class MoveAPI:
                 restore_position=restore_position,
                 speed=speed,
             )
+
+    @property
+    def gcode_offset(self) -> Coord:
+        return Coord(*self._gcode_move.homing_position)
 
 
 def register_components(subsystem: SubsystemComponentCollection):

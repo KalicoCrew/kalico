@@ -9,6 +9,7 @@ import grp
 import json
 import logging
 import os
+import pathlib
 import pwd
 import socket
 import sys
@@ -329,11 +330,13 @@ class ClientConnection:
             return bool(obj)
         elif isinstance(obj, numpy.ndarray):
             return obj.tolist()
+        elif isinstance(obj, pathlib.Path):
+            return str(obj)
         # anything else will fail
         logging.warning(
             f"_json_convert: can't serialize object of type {type(obj)}: '{str(obj)}'"
         )
-        return obj
+        return repr(obj)
 
     def send(self, data):
         try:

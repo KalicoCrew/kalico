@@ -89,10 +89,9 @@ config(
     drop_first_result="true",
 )
 
-config(
-    "bed_mesh",
-    mesh_min="10, 10",
-    mesh_max="180, 180",
+config.bed_mesh(
+    mesh_min=(10, 10),
+    mesh_max=(180, 180),
 )
 
 config("pause_resume")
