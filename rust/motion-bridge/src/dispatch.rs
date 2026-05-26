@@ -449,23 +449,30 @@ pub fn build_push_params(
                 (axis_idx, c)
             }).collect();
             let all_constant = per_axis_const.iter().all(|(_, c)| *c);
-            if all_constant {
-                log::info!(
-                    "[dispatch-diag] mcu={} ALL-CONSTANT skip axes={:?}",
-                    cfg.mcu_id, per_axis_const,
-                );
-                continue;
-            }
-            for &(axis_idx, is_const) in &per_axis_const {
-                if !is_const && axis_idx < shaped.axes.len() {
-                    let cps = shaped.axes[axis_idx].control_points();
-                    let first = cps.first().copied().unwrap_or(0.0);
-                    let max_dev = cps.iter().map(|c| (c - first).abs()).fold(0.0_f64, f64::max);
-                    log::info!(
-                        "[dispatch-diag] mcu={} axis={} NOT constant: n_cps={} first={:.6} max_dev={:.2e}",
-                        cfg.mcu_id, axis_idx, cps.len(), first, max_dev,
-                    );
+            {
+                use std::io::Write;
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true).append(true)
+                    .open("/tmp/dispatch_diag.log")
+                {
+                    let _ = writeln!(f, "mcu={} all_constant={} axes={:?} t=[{:.6},{:.6}]",
+                        cfg.mcu_id, all_constant, per_axis_const,
+                        shaped.t_start, shaped.t_end);
+                    if !all_constant {
+                        for &(axis_idx, is_const) in &per_axis_const {
+                            if !is_const && axis_idx < shaped.axes.len() {
+                                let cps = shaped.axes[axis_idx].control_points();
+                                let first = cps.first().copied().unwrap_or(0.0);
+                                let max_dev = cps.iter().map(|c| (c - first).abs()).fold(0.0_f64, f64::max);
+                                let _ = writeln!(f, "  axis={} n_cps={} first={:.6} max_dev={:.2e}",
+                                    axis_idx, cps.len(), first, max_dev);
+                            }
+                        }
+                    }
                 }
+            }
+            if all_constant {
+                continue;
             }
         }
 
