@@ -153,11 +153,18 @@ get_piece_for_time(axis, now):
   if now - next.start_time > FAULT_TOLERANCE:
     trigger_fault(PIECE_START_IN_PAST)
   
+  // Free the PREVIOUS piece's slot (not the one we're loading).
+  // The current piece's slot stays occupied until the ISR transitions
+  // away from it. This means the ring always holds at least 1 occupied
+  // slot while an axis is active.
+  free_previous_slot(axis)
+  
   cache_velocity_coeffs(next)
   axis.current_piece = next
-  advance_read_cursor(axis)
   return next
 ```
+
+Slot freeing happens at lower priority than the motion calculation (deferred to foreground) — it is not urgent to do it in the same tick as the piece transition.
 
 ### 4.3 Piece Start Time
 
