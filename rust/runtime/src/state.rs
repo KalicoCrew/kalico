@@ -1052,55 +1052,7 @@ pub fn set_step_mode(
 }
 
 #[cfg(test)]
-mod size_task18 {
-    use super::RuntimeContext;
-
-    /// Prints `size_of::<RuntimeContext>()` so tuning iterations have a
-    /// concrete number. Run with `cargo test -p runtime --lib size_task18 --
-    /// --nocapture` to see the output. The test is intentionally permanent —
-    /// it acts as a lightweight regression canary whenever fields are
-    /// added or removed from any of the state structs.
-    #[test]
-    fn print_runtime_context_size() {
-        let size = core::mem::size_of::<RuntimeContext>();
-        eprintln!(
-            "[Task 18] size_of::<RuntimeContext>() = {} bytes (={} KB)",
-            size,
-            size / 1024
-        );
-    }
-}
+mod size_task18;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shared_state_default_is_idle() {
-        let s = SharedState::new();
-        assert_eq!(
-            s.runtime_status.load(core::sync::atomic::Ordering::Relaxed),
-            crate::engine::RuntimeStatus::Idle as u8
-        );
-        assert!(!s.stream_open.load(core::sync::atomic::Ordering::Relaxed));
-        assert!(!s.force_idle.load(core::sync::atomic::Ordering::Relaxed));
-    }
-
-    #[test]
-    fn shared_state_default_widened_now_zero() {
-        let s = SharedState::new();
-        assert_eq!(
-            s.widened_now_lo.load(core::sync::atomic::Ordering::Relaxed),
-            0
-        );
-        assert_eq!(
-            s.widened_now_hi.load(core::sync::atomic::Ordering::Relaxed),
-            0
-        );
-        assert_eq!(
-            s.widened_now_seq
-                .load(core::sync::atomic::Ordering::Relaxed),
-            0
-        );
-    }
-}
+mod tests;
