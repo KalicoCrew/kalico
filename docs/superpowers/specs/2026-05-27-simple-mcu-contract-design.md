@@ -8,7 +8,7 @@
 
 ## 1. Core Concept
 
-The MCU receives **pieces** — 28-byte cubic polynomial fragments — and plays them back sequentially per axis at the ISR rate (40 kHz on H7, 20 kHz on F4). That is the entire MCU contract.
+The MCU receives **pieces** — 32-byte cubic polynomial fragments — and plays them back sequentially per axis at the ISR rate (40 kHz on H7, 20 kHz on F4). That is the entire MCU contract.
 
 There are no segments, no curve pool, no handles, no generation tracking, no kinematic transforms, no E-follower arithmetic on the MCU. The MCU does not know what axes exist in the machine, what kinematics are in use, or how many MCUs are in the system. It receives pieces, evaluates polynomials, and drives steppers.
 
@@ -16,17 +16,18 @@ There are no segments, no curve pool, no handles, no generation tracking, no kin
 
 ### 2.1 Piece Ring
 
-Total piece ring memory is fixed per MCU (determined by chip target at build time). Each axis gets its own contiguous circular buffer carved from this memory during `ConfigureAxis`. The host specifies the ring depth (number of pieces) per axis — the MCU subtracts from remaining memory and errors if the request would exceed it. No equal-division assumption; the host owns the sizing policy. The MCU reports its total available piece memory via `RuntimeCapsResponse`.
+Total piece ring memory is **static, configured at compile time** via Kconfig (`CONFIG_RUNTIME_PIECE_RING_SIZE`). Each axis gets its own contiguous circular buffer carved from this memory during `ConfigureAxis`. The host specifies the ring depth (number of pieces) per axis — the MCU subtracts from remaining memory and errors if the request would exceed it. No equal-division assumption; the host owns the sizing policy.
 
-Each entry is 28 bytes:
+Each entry is 32 bytes (power-of-2 for bit-shift ring indexing):
 
 | Field | Type | Bytes | Description |
 |-------|------|-------|-------------|
 | `start_time` | `u64` | 8 | Piece start time in MCU clock cycles |
 | `coeffs` | `[f32; 4]` | 16 | Bernstein control points (b0, b1, b2, b3) |
 | `duration` | `f32` | 4 | Piece duration in seconds |
+| `_reserved` | `u32` | 4 | Padding (available for future use, e.g., piece_id) |
 
-Total: **28 bytes per piece** on wire and in storage.
+Total: **32 bytes per piece**. The u64 `start_time` forces 8-byte struct alignment; 32 bytes avoids implicit padding and gives power-of-2 indexing.
 
 At load time the MCU converts Bernstein → monomial (Horner-friendly) coefficients in place. Velocity coefficients (`vc0 = c1`, `vc1 = 2·c2`, `vc2 = 3·c3`) are **not stored** in the ring — they are computed once per piece transition and cached in per-axis ISR working state (3 × f32 = 12 bytes fixed cost).
 
@@ -38,7 +39,10 @@ Start time is in u64 MCU clock cycles (host converts from absolute time using pe
 - `CONFIG_RUNTIME_CURVE_POOL_N` — no curve pool
 - `CONFIG_RUNTIME_MAX_PIECES_PER_CURVE` — no per-slot piece ceiling
 
-How the MCU determines its total available piece memory (Kconfig, linker section, or hardcoded per-target constant) is an implementation detail. The contract-facing surface is `RuntimeCapsResponse` reporting the total.
+**Added:**
+- `CONFIG_RUNTIME_PIECE_RING_SIZE` — total bytes for piece ring storage (default: 63488 on H7, 16384 on F4)
+
+The host queries this value via `RuntimeCapsResponse` and uses it to plan per-axis ring depth requests.
 
 ### 2.2 Per-Axis ISR Working State (fixed, not in ring)
 
@@ -67,7 +71,7 @@ Multiple steppers can share the same axis (e.g., 3 Z motors on a Trident all bou
 |---------|---------|---------|
 | `ConfigureAxis` | 0x0030 | Register an axis: ring_depth, stepping mode, microstep_distance, stepper bindings. MCU allocates ring from remaining memory; errors if insufficient. |
 | `ConfigureAxisResponse` | 0x0031 | Result code |
-| `PushPieces` | 0x0020 | Append N pieces to an axis's ring. Payload: `axis_idx:u8, piece_count:u8, pieces[count × 28 bytes]` |
+| `PushPieces` | 0x0020 | Append N pieces to an axis's ring. Payload: `axis_idx:u8, piece_count:u8, pieces[count × 32 bytes]` |
 | `PushPiecesResponse` | 0x0021 | Result: OK or RING_FULL or INVALID_AXIS |
 | `QueryRuntimeCaps` | 0x0040 | Request MCU capabilities |
 | `RuntimeCapsResponse` | 0x0041 | Reports total piece memory (bytes) |
@@ -232,7 +236,7 @@ On hard fault:
 
 ### 7.2 Added to MCU
 
-- Per-axis piece ring: flat circular buffer (28 bytes/entry), static total size from `CONFIG_RUNTIME_PIECE_RING_SIZE`
+- Per-axis piece ring: flat circular buffer (32 bytes/entry), static total size from `CONFIG_RUNTIME_PIECE_RING_SIZE`
 - `PushPieces` message type
 - Piece-start-in-past fault check in ISR
 - Total-piece-memory reporting in `RuntimeCapsResponse`
