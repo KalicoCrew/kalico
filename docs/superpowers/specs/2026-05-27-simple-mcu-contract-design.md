@@ -16,7 +16,7 @@ There are no segments, no curve pool, no handles, no generation tracking, no kin
 
 ### 2.1 Piece Ring
 
-A single flat circular buffer shared across all axes. Total ring memory is **static, configured at compile time** via Kconfig (`CONFIG_RUNTIME_PIECE_RING_SIZE`). Per-axis ring depth is dynamic: `ring_depth_per_axis = total_ring_memory / (28 × num_axes)`, determined at runtime when the host registers axes.
+Total piece ring memory is **static, configured at compile time** via Kconfig (`CONFIG_RUNTIME_PIECE_RING_SIZE`). Each axis gets its own contiguous circular buffer carved from this memory during `ConfigureAxis`. The host specifies the ring depth (number of pieces) per axis — the MCU subtracts from remaining memory and errors if the request would exceed it. No equal-division assumption; the host owns the sizing policy.
 
 Each entry is 28 bytes:
 
@@ -41,7 +41,7 @@ Start time is in u64 MCU clock cycles (host converts from absolute time using pe
 **Added:**
 - `CONFIG_RUNTIME_PIECE_RING_SIZE` — total bytes for piece ring storage (default: 63488 on H7, 16384 on F4)
 
-The host queries this value via `RuntimeCapsResponse` and divides by `28 × num_axes` to compute uniform ring depth per axis.
+The host queries this value via `RuntimeCapsResponse` and uses it to plan per-axis ring depth requests.
 
 ### 2.2 Per-Axis ISR Working State (fixed, not in ring)
 
@@ -53,6 +53,7 @@ The host queries this value via `RuntimeCapsResponse` and divides by `28 × num_
 
 ### 2.3 Per-Axis Configuration (set once at startup)
 
+- Ring depth: number of pieces to allocate for this axis
 - Stepping mode: pulse or phase
 - Microstep distance (1 / steps_per_mm)
 - Stepper bindings: which physical steppers are driven from this axis
@@ -67,7 +68,7 @@ Multiple steppers can share the same axis (e.g., 3 Z motors on a Trident all bou
 
 | Message | Wire ID | Purpose |
 |---------|---------|---------|
-| `ConfigureAxis` | 0x0030 | Register an axis: stepping mode, microstep_distance, stepper bindings |
+| `ConfigureAxis` | 0x0030 | Register an axis: ring_depth, stepping mode, microstep_distance, stepper bindings. MCU allocates ring from remaining memory; errors if insufficient. |
 | `ConfigureAxisResponse` | 0x0031 | Result code |
 | `PushPieces` | 0x0020 | Append N pieces to an axis's ring. Payload: `axis_idx:u8, piece_count:u8, pieces[count × 28 bytes]` |
 | `PushPiecesResponse` | 0x0021 | Result: OK or RING_FULL or INVALID_AXIS |
@@ -113,7 +114,7 @@ Currently reports `curve_pool_n` and `max_pieces_per_curve`. New response report
 
 - `total_piece_memory: u32` — total bytes for piece ring storage (compile-time constant from `CONFIG_RUNTIME_PIECE_RING_SIZE`)
 
-The host divides by `28 × num_axes` to compute uniform ring depth per axis.
+The host uses this to plan per-axis ring depth requests in subsequent `ConfigureAxis` calls.
 
 ## 4. ISR Logic
 
@@ -153,18 +154,14 @@ get_piece_for_time(axis, now):
   if now - next.start_time > FAULT_TOLERANCE:
     trigger_fault(PIECE_START_IN_PAST)
   
-  // Free the PREVIOUS piece's slot (not the one we're loading).
-  // The current piece's slot stays occupied until the ISR transitions
-  // away from it. This means the ring always holds at least 1 occupied
-  // slot while an axis is active.
-  free_previous_slot(axis)
-  
   cache_velocity_coeffs(next)
-  axis.current_piece = next
+  prev = axis.current_piece
+  axis.current_piece = next   // arm new piece first
+  free_slot(prev)             // then release previous (deferred to foreground)
   return next
 ```
 
-Slot freeing happens at lower priority than the motion calculation (deferred to foreground) — it is not urgent to do it in the same tick as the piece transition.
+**Slot freeing invariant:** The current piece's slot is never freed. Only after the ISR assigns a new current piece is the previous slot released. Freeing is deferred to lower priority (foreground task) — not urgent in the same tick as the piece transition.
 
 ### 4.3 Piece Start Time
 
