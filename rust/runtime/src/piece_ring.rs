@@ -36,6 +36,135 @@
 
 use crate::monomial::bernstein_to_monomial_with_duration;
 
+/// A fixed-capacity SPSC ring buffer for [`PieceEntry`] values.
+///
+/// Ownership convention:
+/// - The **producer** (foreground code) calls [`push`][PieceRing::push].
+/// - The **consumer** (40 kHz ISR) calls [`peek`][PieceRing::peek] and
+///   [`pop`][PieceRing::pop].
+///
+/// No lock-free synchronisation is performed — the caller is responsible for
+/// ensuring that the producer and consumer do not run concurrently (single
+/// core MCU with preemption disabled around push, or ISR-only consumer that
+/// only reads after a fence).
+///
+/// Storage is provided by the caller so the struct is suitable for `no_std`
+/// environments with no heap allocator.
+///
+/// # Example
+///
+/// ```rust
+/// use runtime::piece_ring::{PieceEntry, PieceRing};
+///
+/// let mut storage = [PieceEntry { start_time: 0, coeffs: [0.0; 4], duration: 0.0, _reserved: 0 }; 4];
+/// let mut ring = PieceRing::new(&mut storage);
+///
+/// let entry = PieceEntry { start_time: 1000, coeffs: [0.0; 4], duration: 0.001, _reserved: 0 };
+/// assert!(ring.push(entry).is_ok());
+/// assert_eq!(ring.peek().unwrap().start_time, 1000);
+/// ring.pop();
+/// assert_eq!(ring.consumed_count(), 1);
+/// ```
+#[derive(Debug)]
+pub struct PieceRing<'a> {
+    buf: &'a mut [PieceEntry],
+    /// Next write position (producer index).
+    head: usize,
+    /// Next read position (consumer index).
+    tail: usize,
+    /// Current number of entries in the ring.
+    count: usize,
+    /// Monotonic counter of consumed (popped) pieces, for heartbeat reporting.
+    consumed: u32,
+}
+
+impl<'a> PieceRing<'a> {
+    /// Construct a new, empty ring backed by `storage`.
+    ///
+    /// The capacity of the ring equals `storage.len()`.
+    #[inline]
+    pub fn new(storage: &'a mut [PieceEntry]) -> Self {
+        Self {
+            buf: storage,
+            head: 0,
+            tail: 0,
+            count: 0,
+            consumed: 0,
+        }
+    }
+
+    /// Returns the maximum number of entries the ring can hold.
+    #[inline]
+    pub fn capacity(&self) -> usize {
+        self.buf.len()
+    }
+
+    /// Returns the number of entries currently in the ring.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Returns `true` if the ring contains no entries.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Returns `true` if the ring is at capacity.
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.count == self.buf.len()
+    }
+
+    /// Append `entry` to the back of the ring.
+    ///
+    /// Returns `Err(())` if the ring is full; the entry is not stored.
+    #[inline]
+    pub fn push(&mut self, entry: PieceEntry) -> Result<(), ()> {
+        if self.is_full() {
+            return Err(());
+        }
+        self.buf[self.head] = entry;
+        self.head = (self.head + 1) % self.buf.len();
+        self.count += 1;
+        Ok(())
+    }
+
+    /// Borrow the front entry without removing it.
+    ///
+    /// Returns `None` if the ring is empty.
+    #[inline]
+    pub fn peek(&self) -> Option<&PieceEntry> {
+        if self.is_empty() {
+            return None;
+        }
+        Some(&self.buf[self.tail])
+    }
+
+    /// Remove the front entry and increment the monotonic [`consumed_count`][Self::consumed_count].
+    ///
+    /// If the ring is empty this is a no-op.
+    #[inline]
+    pub fn pop(&mut self) {
+        if self.is_empty() {
+            return;
+        }
+        self.tail = (self.tail + 1) % self.buf.len();
+        self.count -= 1;
+        self.consumed = self.consumed.wrapping_add(1);
+    }
+
+    /// Monotonically increasing count of entries consumed via [`pop`][Self::pop].
+    ///
+    /// Wraps on overflow (u32). Used by the heartbeat subsystem to confirm the
+    /// ISR is making forward progress.
+    #[inline]
+    pub fn consumed_count(&self) -> u32 {
+        self.consumed
+    }
+}
+
 /// A single cubic Bézier piece in Bernstein form, ready to be loaded into the
 /// MCU ISR ring buffer.
 ///
