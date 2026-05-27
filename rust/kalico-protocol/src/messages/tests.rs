@@ -5,8 +5,7 @@ where
     T: Encode + Decode + PartialEq + std::fmt::Debug,
 {
     let bytes = v.encoded_to_vec();
-    let decoded = T::decode(&bytes).expect("decode ok");
-    decoded
+    T::decode(&bytes).expect("decode ok")
 }
 
 #[test]
@@ -24,6 +23,8 @@ fn message_kind_round_trips_via_u16() {
         MessageKind::RuntimeCapsResponse,
         MessageKind::ResetCurvePool,
         MessageKind::ResetCurvePoolResponse,
+        MessageKind::PushPieces,
+        MessageKind::PushPiecesResponse,
         MessageKind::StatusEvent,
         MessageKind::CreditFreed,
         MessageKind::FaultEvent,
@@ -39,7 +40,7 @@ fn load_curve_cubic_roundtrip_realistic() {
     let piece_count = 3u8;
     let pieces_len = piece_count as usize * 20;
     // Deterministic pseudo-random fill via a simple LCG.
-    let mut state: u32 = 0xC0FFEEEE;
+    let mut state: u32 = 0xC0FF_EEEE;
     let next = |s: &mut u32| -> u8 {
         *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         (*s >> 24) as u8
@@ -64,7 +65,10 @@ fn load_curve_cubic_roundtrip_realistic() {
 
 #[test]
 fn load_curve_response_roundtrip() {
-    let v = LoadCurveResponse { result: -3, curve_handle_packed: 0xDEAD_BEEF };
+    let v = LoadCurveResponse {
+        result: -3,
+        curve_handle_packed: 0xDEAD_BEEF,
+    };
     assert_eq!(roundtrip(&v), v);
     assert_eq!(v.encoded_to_vec().len(), 8);
 }
@@ -81,7 +85,7 @@ fn push_segment_roundtrip() {
         t_end: 0x8899_AABB_CCDD_EEFF,
         kinematics: 0x05,
         e_mode: 0x01,
-        extrusion_ratio: 0.0234567,
+        extrusion_ratio: 0.023_456_7,
     };
     assert_eq!(roundtrip(&v), v);
     // 4*5 (ids+handles) + 8*2 (timestamps) + 1 + 1 + 4 = 42.
@@ -148,14 +152,21 @@ fn status_event_roundtrip() {
 
 #[test]
 fn credit_freed_roundtrip() {
-    let v = CreditFreed { retired_through_segment_id: 4242, free_slots: 14 };
+    let v = CreditFreed {
+        retired_through_segment_id: 4242,
+        free_slots: 14,
+    };
     assert_eq!(roundtrip(&v), v);
     assert_eq!(v.encoded_to_vec().len(), 5);
 }
 
 #[test]
 fn fault_event_roundtrip() {
-    let v = FaultEvent { fault_code: 0x0007, fault_detail: 0xBAAD_F00D, segment_id: 11 };
+    let v = FaultEvent {
+        fault_code: 0x0007,
+        fault_detail: 0xBAAD_F00D,
+        segment_id: 11,
+    };
     assert_eq!(roundtrip(&v), v);
     assert_eq!(v.encoded_to_vec().len(), 10);
 }
@@ -198,8 +209,67 @@ fn decode_rejects_oversized_piece_count() {
 }
 
 #[test]
+fn push_pieces_roundtrip_single() {
+    let msg = PushPieces {
+        axis_idx: 2,
+        piece_count: 1,
+        pieces_bytes: vec![0xAB; 32],
+    };
+    let mut buf = Vec::new();
+    msg.encode(&mut buf);
+    // Expected: 1 byte axis_idx + 1 byte piece_count + 32 bytes pieces = 34 bytes.
+    assert_eq!(buf.len(), 34);
+    let mut cursor = Cursor::new(&buf);
+    let decoded = PushPieces::decode_from(&mut cursor).unwrap();
+    assert_eq!(decoded.axis_idx, 2);
+    assert_eq!(decoded.piece_count, 1);
+    assert_eq!(decoded.pieces_bytes.len(), 32);
+    assert_eq!(decoded.pieces_bytes[0], 0xAB);
+}
+
+#[test]
+fn push_pieces_roundtrip_multiple() {
+    let msg = PushPieces {
+        axis_idx: 0,
+        piece_count: 3,
+        pieces_bytes: vec![0x42; 96], // 3 * 32 = 96
+    };
+    let mut buf = Vec::new();
+    msg.encode(&mut buf);
+    let mut cursor = Cursor::new(&buf);
+    let decoded = PushPieces::decode_from(&mut cursor).unwrap();
+    assert_eq!(decoded.piece_count, 3);
+    assert_eq!(decoded.pieces_bytes.len(), 96);
+}
+
+#[test]
+fn push_pieces_response_roundtrip() {
+    let msg = PushPiecesResponse { result: -2 };
+    let mut buf = Vec::new();
+    msg.encode(&mut buf);
+    let mut cursor = Cursor::new(&buf);
+    let decoded = PushPiecesResponse::decode_from(&mut cursor).unwrap();
+    assert_eq!(decoded.result, -2);
+}
+
+#[test]
+fn push_pieces_kind_in_message_kind_table() {
+    assert_eq!(MessageKind::from_u16(0x0060), Some(MessageKind::PushPieces));
+    assert_eq!(
+        MessageKind::from_u16(0x0061),
+        Some(MessageKind::PushPiecesResponse)
+    );
+    assert_eq!(MessageKind::PushPieces.as_u16(), 0x0060);
+    assert_eq!(MessageKind::PushPiecesResponse.as_u16(), 0x0061);
+}
+
+#[test]
 fn decode_rejects_trailing_bytes() {
-    let v = FaultEvent { fault_code: 1, fault_detail: 2, segment_id: 3 };
+    let v = FaultEvent {
+        fault_code: 1,
+        fault_detail: 2,
+        segment_id: 3,
+    };
     let mut bytes = v.encoded_to_vec();
     bytes.push(0xAA);
     match FaultEvent::decode(&bytes) {

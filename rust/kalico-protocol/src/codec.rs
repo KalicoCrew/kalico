@@ -69,7 +69,9 @@ pub trait Decode: Sized {
         let mut cur = Cursor::new(buf);
         let v = Self::decode_from(&mut cur)?;
         if !cur.is_empty() {
-            return Err(DecodeError::TrailingBytes { remaining: cur.remaining() });
+            return Err(DecodeError::TrailingBytes {
+                remaining: cur.remaining(),
+            });
         }
         Ok(v)
     }
@@ -122,7 +124,10 @@ pub fn put_f32(out: &mut Vec<u8>, v: f32) {
     out.extend_from_slice(&v.to_le_bytes());
 }
 pub fn put_f32_array(out: &mut Vec<u8>, vs: &[f32]) {
-    put_u32(out, u32::try_from(vs.len()).expect("array length exceeds u32"));
+    put_u32(
+        out,
+        u32::try_from(vs.len()).expect("array length exceeds u32"),
+    );
     for v in vs {
         put_f32(out, *v);
     }
@@ -141,7 +146,9 @@ pub fn get_u32(c: &mut Cursor<'_>) -> Result<u32, DecodeError> {
 }
 pub fn get_u64(c: &mut Cursor<'_>) -> Result<u64, DecodeError> {
     let s = c.take(8)?;
-    Ok(u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]))
+    Ok(u64::from_le_bytes([
+        s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7],
+    ]))
 }
 pub fn get_i32(c: &mut Cursor<'_>) -> Result<i32, DecodeError> {
     let s = c.take(4)?;
@@ -158,10 +165,12 @@ pub fn get_f32(c: &mut Cursor<'_>) -> Result<f32, DecodeError> {
 pub fn get_f32_array(c: &mut Cursor<'_>) -> Result<Vec<f32>, DecodeError> {
     let n = get_u32(c)?;
     let n_usize = n as usize;
-    let needed = n_usize.checked_mul(4).ok_or(DecodeError::ArrayLengthExceedsBuffer {
-        claimed: n,
-        available: c.remaining(),
-    })?;
+    let needed = n_usize
+        .checked_mul(4)
+        .ok_or(DecodeError::ArrayLengthExceedsBuffer {
+            claimed: n,
+            available: c.remaining(),
+        })?;
     if needed > c.remaining() {
         return Err(DecodeError::ArrayLengthExceedsBuffer {
             claimed: n,

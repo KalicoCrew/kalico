@@ -2,7 +2,9 @@ use super::*;
 
 #[test]
 fn identify_byte_layout() {
-    let m = Identify { proto_version: 0x01 };
+    let m = Identify {
+        proto_version: 0x01,
+    };
     let bytes = m.encode_body_to_array();
     assert_eq!(bytes.len(), 1);
     assert_eq!(bytes, [0x01]);
@@ -13,11 +15,17 @@ fn identify_byte_layout() {
 fn identify_decode_rejects_wrong_length() {
     assert!(matches!(
         Identify::decode_body(&[]),
-        Err(BootstrapDecodeError::WrongLength { expected: 1, got: 0 })
+        Err(BootstrapDecodeError::WrongLength {
+            expected: 1,
+            got: 0
+        })
     ));
     assert!(matches!(
         Identify::decode_body(&[1, 2]),
-        Err(BootstrapDecodeError::WrongLength { expected: 1, got: 2 })
+        Err(BootstrapDecodeError::WrongLength {
+            expected: 1,
+            got: 2
+        })
     ));
 }
 
@@ -64,7 +72,10 @@ fn identify_response_byte_layout() {
     // reset_epoch little-endian.
     assert_eq!(&bytes[57..61], &[0xEF, 0xBE, 0xAD, 0xDE]);
     // capabilities little-endian.
-    assert_eq!(&bytes[61..69], &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
+    assert_eq!(
+        &bytes[61..69],
+        &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]
+    );
     // mcu_serial verbatim.
     assert_eq!(&bytes[69..81], &mcu_serial);
 
@@ -76,6 +87,9 @@ fn identify_response_byte_layout() {
 fn identify_response_decode_rejects_wrong_length() {
     assert!(matches!(
         IdentifyResponse::decode_body(&[0u8; 80]),
-        Err(BootstrapDecodeError::WrongLength { expected: 81, got: 80 })
+        Err(BootstrapDecodeError::WrongLength {
+            expected: 81,
+            got: 80
+        })
     ));
 }
