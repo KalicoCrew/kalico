@@ -1,0 +1,207 @@
+use super::*;
+use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent, StatusEvent};
+use arc_swap::ArcSwap;
+use std::sync::Arc;
+
+fn make_dispatcher() -> EventDispatcher {
+    let snap = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+    EventDispatcher::new(snap, 256, 64)
+}
+
+fn fault_status(engine_status: u8, last_fault: u16, segment_id: u32) -> RuntimeEvent {
+    RuntimeEvent::Status(StatusEvent {
+        engine_status,
+        queue_depth: 0,
+        current_segment_id: segment_id,
+        last_fault,
+        fault_detail: 0,
+        retired_through_segment_id: 0,
+    })
+}
+
+#[test]
+fn fault_status_synthesizes_when_no_edge_observed() {
+    let mut d = make_dispatcher();
+    d.dispatch(fault_status(3, 17, 42));
+    let cell = d
+        .fault_latch
+        .cell
+        .as_ref()
+        .expect("fault should be synthesized");
+    assert_eq!(cell.fault_code, 17);
+    assert_eq!(cell.synthesized, true);
+    assert_eq!(cell.segment_id, 42);
+}
+
+#[test]
+fn synthesis_idempotent_across_repeated_status_frames() {
+    let mut d = make_dispatcher();
+    d.dispatch(fault_status(3, 17, 42));
+    d.dispatch(fault_status(3, 17, 42));
+    // Still latched once (cell still present, still synthesized).
+    let cell = d.fault_latch.cell.as_ref().unwrap();
+    assert_eq!(cell.synthesized, true);
+}
+
+#[test]
+fn edge_event_upgrades_synthesized_in_place() {
+    let mut d = make_dispatcher();
+    d.dispatch(fault_status(3, 17, 42));
+    // Edge event with exact segment_id preferred.
+    d.dispatch(RuntimeEvent::Fault(FaultEvent {
+        fault_code: 17,
+        fault_detail: 0,
+        segment_id: 39,
+        synthesized: false,
+    }));
+    let cell = d.fault_latch.cell.as_ref().unwrap();
+    assert!(!cell.synthesized, "edge upgrade clears synthesized");
+    assert_eq!(cell.segment_id, 39, "edge segment_id preferred");
+}
+
+#[test]
+fn status_without_fault_does_not_synthesize() {
+    let mut d = make_dispatcher();
+    d.dispatch(fault_status(1, 0, 0)); // engine_status != 3
+    assert!(d.fault_latch.cell.is_none());
+}
+
+// Helper for the v2 credit-flow synthesis tests. queue_depth and the
+// retirement watermark are the only fields that matter for the
+// synthesized CreditFreed; engine_status is RUNNING and no fault.
+fn status_with_watermark(queue_depth: u8, retired_through: u32) -> RuntimeEvent {
+    RuntimeEvent::Status(StatusEvent {
+        engine_status: 1,
+        queue_depth,
+        current_segment_id: 0,
+        last_fault: 0,
+        fault_detail: 0,
+        retired_through_segment_id: retired_through,
+    })
+}
+
+/// v2: a Status frame whose watermark advances past the previous
+/// observation must synthesize a CreditFreed dispatched through the
+/// normal CreditFreed path — that's what releases slot-pool slots when
+/// the firmware's fire-and-forget CreditFreed frame got dropped.
+#[test]
+fn status_watermark_advance_synthesizes_credit_freed() {
+    use std::sync::mpsc::sync_channel;
+    let mut d = make_dispatcher();
+    let counter = Arc::new(CreditCounter::new(7));
+    d.credit_counter = Some(Arc::clone(&counter));
+    // Drain to zero so we can observe on_credit_freed snapping.
+    for _ in 0..7 {
+        counter.try_acquire().unwrap();
+    }
+    assert_eq!(counter.available(), 0);
+
+    // Subscribe to the runtime-event channel so we can observe the
+    // synthesized CreditFreed forwarded to the bridge poller.
+    let (tx, rx) = sync_channel::<RuntimeEvent>(8);
+    d.runtime_event_dispatcher.subscribe(tx).unwrap();
+
+    // First Status with watermark=5 and queue_depth=2 → free_slots=5.
+    d.dispatch(status_with_watermark(2, 5));
+
+    // Counter snapped to 5 (= Q_N-1 - queue_depth = 7 - 2).
+    assert_eq!(counter.available(), 5, "watermark advance must snap credit");
+    assert_eq!(counter.credit_freed_events(), 1);
+
+    // Drain channel — exactly 1 Status and 1 CreditFreed must have
+    // been dispatched, in that order.
+    let evt1 = rx.recv().unwrap();
+    let evt2 = rx.recv().unwrap();
+    assert!(matches!(evt1, RuntimeEvent::Status(_)));
+    match evt2 {
+        RuntimeEvent::CreditFreed(c) => {
+            assert_eq!(c.retired_through_segment_id, 5);
+            assert_eq!(c.free_slots, 5);
+        }
+        other => panic!("expected synthesized CreditFreed, got {:?}", other),
+    }
+    assert!(rx.try_recv().is_err(), "no further events");
+}
+
+/// Repeated Status frames with the same watermark must NOT re-synthesize
+/// CreditFreed — otherwise on_credit_freed would clobber try_acquire's
+/// decrement on every 100 ms status tick.
+#[test]
+fn status_watermark_unchanged_does_not_synthesize() {
+    let mut d = make_dispatcher();
+    let counter = Arc::new(CreditCounter::new(7));
+    d.credit_counter = Some(Arc::clone(&counter));
+
+    // Prime: watermark=5 advances from 0 → 1 synth.
+    d.dispatch(status_with_watermark(0, 5));
+    assert_eq!(counter.credit_freed_events(), 1);
+
+    // Same watermark, decremented available via try_acquire — the
+    // second Status must NOT re-snap available back up.
+    counter.try_acquire().unwrap();
+    let available_before = counter.available();
+    d.dispatch(status_with_watermark(0, 5));
+    assert_eq!(counter.credit_freed_events(), 1, "no new credit event");
+    assert_eq!(
+        counter.available(),
+        available_before,
+        "no resnap when watermark unchanged"
+    );
+}
+
+/// Stale Status frames (watermark < last seen, e.g. after reordering on
+/// the wire) must not synthesize. Wraparound is intentionally allowed —
+/// signed-difference comparison handles a u32 overflow correctly.
+#[test]
+fn status_watermark_regression_does_not_synthesize() {
+    let mut d = make_dispatcher();
+    let counter = Arc::new(CreditCounter::new(7));
+    d.credit_counter = Some(Arc::clone(&counter));
+    d.dispatch(status_with_watermark(0, 10));
+    assert_eq!(counter.credit_freed_events(), 1);
+
+    // Regress to 8 (an out-of-order or stale frame).
+    d.dispatch(status_with_watermark(0, 8));
+    assert_eq!(counter.credit_freed_events(), 1, "regression ignored");
+}
+
+#[test]
+fn credit_freed_calls_retirement_callback() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let status = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+    let mut d = EventDispatcher::new(status, 16, 8);
+
+    let retired_id = Arc::new(AtomicU32::new(0));
+    let retired_id2 = Arc::clone(&retired_id);
+    d.retirement_callback = Some(Arc::new(move |seg_id| {
+        retired_id2.store(seg_id, Ordering::Release);
+    }));
+
+    d.dispatch(RuntimeEvent::CreditFreed(CreditFreedEvent {
+        retired_through_segment_id: 42,
+        free_slots: 5,
+    }));
+    assert_eq!(retired_id.load(Ordering::Acquire), 42);
+}
+
+#[test]
+fn status_synthesized_credit_freed_calls_retirement_callback() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    let status = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+    let mut d = EventDispatcher::new(status, 16, 8);
+
+    let retired_id = Arc::new(AtomicU32::new(0));
+    let retired_id2 = Arc::clone(&retired_id);
+    d.retirement_callback = Some(Arc::new(move |seg_id| {
+        retired_id2.store(seg_id, Ordering::Release);
+    }));
+
+    d.dispatch(RuntimeEvent::Status(StatusEvent {
+        retired_through_segment_id: 10,
+        queue_depth: 3,
+        ..StatusEvent::default()
+    }));
+    assert_eq!(retired_id.load(Ordering::Acquire), 10);
+}
