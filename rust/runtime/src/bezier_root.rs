@@ -160,7 +160,11 @@ pub fn solve_monotone_cubic_root(
         // either endpoint. t_low is exclusive ⇒ None; t_high is
         // inclusive ⇒ Some(t_high).
         if mid <= t_low || mid >= t_high {
-            return if mid > t_low { Some(mid.min(t_high)) } else { None };
+            return if mid > t_low {
+                Some(mid.min(t_high))
+            } else {
+                None
+            };
         }
         let v_mid = eval_cubic_bernstein(p0, p1, p2, p3, mid);
         let f_mid = v_mid - target;
@@ -210,13 +214,7 @@ pub(crate) fn eval_cubic_bernstein(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -
 /// control points `d_i = 3·(P_{i+1} - P_i)`; evaluate by de Casteljau
 /// on those.
 #[inline]
-pub(crate) fn eval_cubic_derivative_bernstein(
-    p0: f32,
-    p1: f32,
-    p2: f32,
-    p3: f32,
-    t: f32,
-) -> f32 {
+pub(crate) fn eval_cubic_derivative_bernstein(p0: f32, p1: f32, p2: f32, p3: f32, t: f32) -> f32 {
     let one_minus_t = 1.0 - t;
     // Difference control points of the degree-2 derivative curve.
     let d0 = 3.0 * (p1 - p0);

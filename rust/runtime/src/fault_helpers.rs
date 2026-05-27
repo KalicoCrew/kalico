@@ -41,7 +41,6 @@ pub fn raise_step_queue_overflow(shared: &SharedState, axis_idx: usize) {
     }
 }
 
-
 /// Latch a `PositionCountOverflow` fault.
 ///
 /// `axis_idx` is the per-axis index in `0..4`; for steppers paired to an

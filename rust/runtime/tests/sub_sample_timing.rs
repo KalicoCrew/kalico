@@ -5,7 +5,7 @@
 //! and the small-displacement uniform-spacing fallback.
 
 use runtime::sub_sample_timing::{
-    compute_step_times, StepTimeInputs, StepTimingResult, MAX_STEPS_PER_SAMPLE,
+    MAX_STEPS_PER_SAMPLE, StepTimeInputs, StepTimingResult, compute_step_times,
 };
 
 // H7 nominal clock — 520 MHz.
@@ -42,8 +42,7 @@ fn step_times_in_sample_for_constant_velocity() {
     assert_eq!(times.len(), 4, "expected exactly 4 step times");
 
     for k in 0..4u32 {
-        let expected =
-            ((k + 1) as u64 * SAMPLE_PERIOD_CYCLES as u64 / 4u64) as u32;
+        let expected = ((k + 1) as u64 * SAMPLE_PERIOD_CYCLES as u64 / 4u64) as u32;
         let got = times[k as usize];
         let drift = if got > expected {
             got - expected
@@ -112,8 +111,7 @@ fn falls_back_to_uniform_when_displacement_too_small() {
     assert_eq!(times.len(), 3);
     let n = 3u64;
     for k in 0..n {
-        let expected =
-            (SAMPLE_PERIOD_CYCLES as u64 * (k + 1) / (n + 1)) as u32;
+        let expected = (SAMPLE_PERIOD_CYCLES as u64 * (k + 1) / (n + 1)) as u32;
         assert_eq!(
             times[k as usize], expected,
             "uniform step {k}: expected {expected}, got {}",

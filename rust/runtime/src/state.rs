@@ -40,6 +40,15 @@ use crate::segment::Segment;
 use crate::slot::{NoopIs, NoopPa};
 use crate::trace::{TRACE_RING_N, TraceSample};
 
+/// Runtime storage size — the byte count the C side must reserve for
+/// `RuntimeContext`. Defined here so `curve_pool` (and `lib.rs`) can
+/// re-export it without a circular dependency.
+///
+/// This is the build-script-generated constant (`$OUT_DIR/sizing.rs`
+/// `RT_STORAGE_SIZE`) re-exported at the crate level; use
+/// `runtime::RT_STORAGE_SIZE` in external crates.
+pub use crate::curve_pool::RT_STORAGE_SIZE;
+
 /// Per-stepper stepping-output strategy. Stored as `AtomicU8` in
 /// `SharedState::step_modes`; runtime-mutable via `runtime_set_step_mode`.
 ///
@@ -959,12 +968,14 @@ impl RuntimeContext {
             };
             let dispatcher_floor_cycles_init: u32 = freq / 1_000_000;
             let shared_ref: *const SharedState = core::ptr::addr_of!((*rt_ptr).shared);
-            (*shared_ref)
-                .sample_period_cycles
-                .store(sample_period_cycles_init, core::sync::atomic::Ordering::Release);
-            (*shared_ref)
-                .dispatcher_floor_cycles
-                .store(dispatcher_floor_cycles_init, core::sync::atomic::Ordering::Release);
+            (*shared_ref).sample_period_cycles.store(
+                sample_period_cycles_init,
+                core::sync::atomic::Ordering::Release,
+            );
+            (*shared_ref).dispatcher_floor_cycles.store(
+                dispatcher_floor_cycles_init,
+                core::sync::atomic::Ordering::Release,
+            );
 
             // Initialize FgState.
             let fg_ptr = core::ptr::addr_of_mut!((*rt_ptr).fg);
@@ -1000,17 +1011,14 @@ impl RuntimeContext {
             // identical to `IsrState`; writing through `raw_get` is
             // equivalent to writing the inner field.
             let inner_ptr: *mut IsrState = UnsafeCell::raw_get(isr_ptr);
-            core::ptr::addr_of_mut!((*inner_ptr).queue_consumer)
-                .write(q_consumer);
-            core::ptr::addr_of_mut!((*inner_ptr).trace_producer)
-                .write(t_producer);
+            core::ptr::addr_of_mut!((*inner_ptr).queue_consumer).write(q_consumer);
+            core::ptr::addr_of_mut!((*inner_ptr).trace_producer).write(t_producer);
             EngineImpl::init_in_place_production(
                 core::ptr::addr_of_mut!((*inner_ptr).engine),
                 freq,
                 sample_rate_hz,
             );
-            core::ptr::addr_of_mut!((*inner_ptr).widen_state)
-                .write(WidenState::default());
+            core::ptr::addr_of_mut!((*inner_ptr).widen_state).write(WidenState::default());
             // No segment in the deferred slot at boot — Codex M1 fix
             // (2026-05-20). `isr_sample_tick` populates this when a queued
             // segment's `t_start` lies in the future relative to the freshly
@@ -1047,7 +1055,8 @@ pub fn set_step_mode(
     if mode == StepMode::Modulated && !mcu_supports_phase {
         return Err(SetStepModeError::CapabilityMissing);
     }
-    shared.step_modes[stepper_idx as usize].store(mode as u8, core::sync::atomic::Ordering::Release);
+    shared.step_modes[stepper_idx as usize]
+        .store(mode as u8, core::sync::atomic::Ordering::Release);
     Ok(())
 }
 

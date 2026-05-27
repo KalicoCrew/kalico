@@ -25,7 +25,7 @@
 #![allow(unsafe_code)]
 
 use core::ptr;
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{Ordering, fence};
 
 /// Power-of-two ring depth shared with the C side; see `src/spi_queue.h`.
 pub const SPI_QUEUE_DEPTH: usize = 16;
@@ -105,7 +105,6 @@ const _: () = {
     assert!(core::mem::size_of::<SpiQueue>() == 136);
     assert!(SPI_QUEUE_DEPTH.is_power_of_two());
 };
-
 
 /// Returned by `push` when the ring is full.
 #[derive(Debug, PartialEq, Eq)]

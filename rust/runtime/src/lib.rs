@@ -28,12 +28,16 @@
 extern crate alloc;
 
 pub mod bezier_root;
+/// Task-5 stub: retains `CurveHandle` + `CurvePool` for ABI compatibility.
+/// Task-6 will replace with PieceRing architecture.
+pub mod curve_pool;
+/// Task-5 stub: retains `WirePiece` wire-format struct for `kalico-c-api` compatibility.
+/// Task-6 replaces with PieceRing-based loading path.
+pub mod cubic_curve;
+pub use curve_pool::RT_STORAGE_SIZE;
 pub mod c_segment_queue;
 pub mod clock;
 pub mod config;
-pub mod cubic_curve;
-pub mod curve_pool;
-pub use curve_pool::RT_STORAGE_SIZE;
 pub mod endstop;
 pub mod engine;
 pub mod error;
@@ -53,7 +57,7 @@ pub mod sim_fixtures;
 pub mod slot;
 pub mod spi_queue;
 pub mod state;
-pub use state::{set_step_mode, SetStepModeError, StepMode};
+pub use state::{SetStepModeError, StepMode, set_step_mode};
 pub mod step;
 pub mod step_queue;
 pub mod stepping_state;

@@ -83,8 +83,7 @@ pub fn compute_step_times(inp: &StepTimeInputs) -> StepTimingResult {
     // far below u32::MAX in any sane configuration. Sign-loss / truncation
     // are safe here.
     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let sample_period_cycles =
-        (inp.sample_period_sec * inp.cycles_per_second) as u32;
+    let sample_period_cycles = (inp.sample_period_sec * inp.cycles_per_second) as u32;
 
     let mut times: Vec<u32, MAX_STEPS_PER_SAMPLE> = Vec::new();
 
@@ -104,14 +103,11 @@ pub fn compute_step_times(inp: &StepTimeInputs) -> StepTimingResult {
             // (< 1 cycle of jitter), well below the timing precision we
             // care about.
             #[allow(clippy::integer_division)]
-            let dt_cycles =
-                u64::from(sample_period_cycles) * ((k as u64) + 1) / n_plus_1;
+            let dt_cycles = u64::from(sample_period_cycles) * ((k as u64) + 1) / n_plus_1;
             // dt_cycles ≤ sample_period_cycles by construction, so the
             // u64 → u32 truncation is lossless.
             #[allow(clippy::cast_possible_truncation)]
-            let _ = times.push(
-                inp.sample_start_cycles.wrapping_add(dt_cycles as u32),
-            );
+            let _ = times.push(inp.sample_start_cycles.wrapping_add(dt_cycles as u32));
         }
         return StepTimingResult::Uniform(times);
     }
@@ -121,15 +117,13 @@ pub fn compute_step_times(inp: &StepTimeInputs) -> StepTimingResult {
         // `n_steps` is bounded by `MAX_STEPS_PER_SAMPLE = 16`, so the
         // `k as i32` cast cannot wrap on any supported target.
         #[allow(clippy::cast_possible_wrap)]
-        let step_idx =
-            inp.prev_step_count + ((k as i32) + 1) * sign;
+        let step_idx = inp.prev_step_count + ((k as i32) + 1) * sign;
         // i32 → f32: step_idx ranges over at most ±MAX_STEPS_PER_SAMPLE
         // around `prev_step_count`; precision loss for the f32 multiply is
         // far below the microstep grid.
         #[allow(clippy::cast_precision_loss)]
         let step_pos_k = (step_idx as f32) * inp.microstep_distance;
-        let t_local_sec =
-            (step_pos_k - inp.p_start) * inp.sample_period_sec / displacement;
+        let t_local_sec = (step_pos_k - inp.p_start) * inp.sample_period_sec / displacement;
         // f32 → u32: t_local_sec is in [0, sample_period_sec], so the
         // product with cycles_per_second is in [0, sample_period_cycles],
         // bounded well below u32::MAX.

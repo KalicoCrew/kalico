@@ -170,11 +170,17 @@ fn switch_pulse_to_phase_succeeds() {
         StepMode::Phase as u8,
         "mode must be Phase after Phase configure_axis"
     );
-    assert!((axis.microstep_distance - 0.01).abs() < 1e-9, "microstep_distance updated");
+    assert!(
+        (axis.microstep_distance - 0.01).abs() < 1e-9,
+        "microstep_distance updated"
+    );
 
     // Validation failures on a subsequent call still leave state untouched.
     let rc_bad = e.configure_axis(3, StepMode::Pulse, 0.0, &[no_tmc_binding()]);
-    assert_ne!(rc_bad, KALICO_OK, "zero microstep_distance must still be rejected");
+    assert_ne!(
+        rc_bad, KALICO_OK,
+        "zero microstep_distance must still be rejected"
+    );
     // Mode stays Phase (the bad call touched nothing).
     assert_eq!(
         e.stepping_axes[3].mode.load(Ordering::Acquire),

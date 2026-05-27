@@ -1,4 +1,4 @@
-use runtime::step::{StepMotorState, StepResult, MAX_STEPS_PER_TICK_DEFAULT};
+use runtime::step::{MAX_STEPS_PER_TICK_DEFAULT, StepMotorState, StepResult};
 
 #[test]
 fn zero_delta_produces_no_steps() {

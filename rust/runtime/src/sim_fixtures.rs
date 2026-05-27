@@ -175,14 +175,26 @@ pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
     let mut engine = EngineImpl::new(TEST_CLOCK_FREQ, 40_000);
     engine.configure(McuAxisConfig {
         motors: [
-            Some(MotorConfig { steps_per_mm: 80.0, is_awd: false, invert_dir: false }),
-            Some(MotorConfig { steps_per_mm: 80.0, is_awd: false, invert_dir: false }),
+            Some(MotorConfig {
+                steps_per_mm: 80.0,
+                is_awd: false,
+                invert_dir: false,
+            }),
+            Some(MotorConfig {
+                steps_per_mm: 80.0,
+                is_awd: false,
+                invert_dir: false,
+            }),
             Some(MotorConfig {
                 steps_per_mm: TEST_Z_STEPS_PER_MM,
                 is_awd: false,
                 invert_dir: false,
             }),
-            Some(MotorConfig { steps_per_mm: 80.0, is_awd: false, invert_dir: false }),
+            Some(MotorConfig {
+                steps_per_mm: 80.0,
+                is_awd: false,
+                invert_dir: false,
+            }),
         ],
         kinematics: KinematicTag::CartesianXyzAndE,
     });

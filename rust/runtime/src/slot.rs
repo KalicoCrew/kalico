@@ -1,33 +1,20 @@
-//! `PaSlot` / `IsSlot` traits — runtime-evaluation slots. Spec §3.1.
+//! PA/IS slot trait stubs — Task 5 placeholder.
 //!
-//! Step 5 ships only `Noop` impls (ZST + `#[inline(always)]` → optimizer
-//! removes the call). Step 9 adds `TanhPa`; Step 8 adds `SmoothShaper`.
-//!
-//! Slot signature is intentionally `apply(&mut self, &mut TickState)` — `&mut self`
-//! lets future impls maintain per-slot state (e.g., `TanhPa`'s previous-tick history)
-//! without widening `TickState`. Spec §3.1 forward note.
+//! The full slot trait hierarchy has been removed. These stubs retain the
+//! minimum needed for `Engine<P, I>` to compile until Task 6 rewrites it.
 
-use crate::state::TickState;
+/// Pressure-advance slot trait (stub).
+pub trait PaSlot {}
 
-pub trait PaSlot {
-    #[inline(always)]
-    fn apply(&mut self, _state: &mut TickState) {}
-}
+/// Input-shaping slot trait (stub).
+pub trait IsSlot {}
 
-pub trait IsSlot {
-    #[inline(always)]
-    fn apply(&mut self, _state: &mut TickState) {}
-}
-
+/// Zero-cost no-op implementations for the production `EngineImpl` typedef.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopPa;
-
-impl PaSlot for NoopPa {}
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopIs;
 
+impl PaSlot for NoopPa {}
 impl IsSlot for NoopIs {}
-
-#[cfg(test)]
-mod tests;

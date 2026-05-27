@@ -6,7 +6,7 @@
 //! depends on.
 
 use runtime::stepping_state::{
-    AxisConfig, StepMode, StepperRef, TickCaches, MAX_STEPPERS_PER_AXIS, N_AXES,
+    AxisConfig, MAX_STEPPERS_PER_AXIS, N_AXES, StepMode, StepperRef, TickCaches,
 };
 
 #[test]

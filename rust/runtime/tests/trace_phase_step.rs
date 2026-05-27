@@ -36,14 +36,10 @@ fn phase_step_sample_round_trip() {
     // "Serialize" via the existing wire format: TraceSample is
     // `#[repr(C)]` + `Copy`, mirrored bit-for-bit on the C side. The
     // 40-byte representation is the trace-ring wire format.
-    let bytes: [u8; 40] = unsafe {
-        core::mem::transmute::<TraceSample, [u8; 40]>(sample)
-    };
+    let bytes: [u8; 40] = unsafe { core::mem::transmute::<TraceSample, [u8; 40]>(sample) };
 
     // "Deserialize" — bytewise reconstruct the struct.
-    let restored: TraceSample = unsafe {
-        core::mem::transmute::<[u8; 40], TraceSample>(bytes)
-    };
+    let restored: TraceSample = unsafe { core::mem::transmute::<[u8; 40], TraceSample>(bytes) };
 
     // Round-trip equivalence: every field, including the flag bits and the
     // packed phase-step payload, survives unchanged.
@@ -51,7 +47,9 @@ fn phase_step_sample_round_trip() {
 
     // Tag recognition: the restored sample must still decode back to the
     // same logical (motor, mscount, i_a, i_b, wrote_spi) tuple.
-    let decoded = restored.as_phase_step().expect("flag set → decode succeeds");
+    let decoded = restored
+        .as_phase_step()
+        .expect("flag set → decode succeeds");
     assert_eq!(decoded.tick, 12_345);
     assert_eq!(decoded.motor, 0);
     assert_eq!(decoded.mscount, 512);
@@ -61,10 +59,8 @@ fn phase_step_sample_round_trip() {
 
     // Negative-i16 and wrote_spi=false also round-trip.
     let neg = TraceSample::phase_step(0xFFFF_FFFF, 3, 0xFFFF, -1, -32_768, false);
-    let neg_bytes: [u8; 40] =
-        unsafe { core::mem::transmute::<TraceSample, [u8; 40]>(neg) };
-    let neg_back: TraceSample =
-        unsafe { core::mem::transmute::<[u8; 40], TraceSample>(neg_bytes) };
+    let neg_bytes: [u8; 40] = unsafe { core::mem::transmute::<TraceSample, [u8; 40]>(neg) };
+    let neg_back: TraceSample = unsafe { core::mem::transmute::<[u8; 40], TraceSample>(neg_bytes) };
     let neg_decoded = neg_back.as_phase_step().unwrap();
     assert_eq!(neg_decoded.tick, 0xFFFF_FFFF);
     assert_eq!(neg_decoded.motor, 3);

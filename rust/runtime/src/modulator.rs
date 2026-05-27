@@ -74,8 +74,7 @@ impl PhaseDirectModulator {
     /// First-tick seed without reporting a step delta. Matches
     /// `StepMotorState::seed` — called once after configure / homing-snap.
     pub fn seed(&mut self, motor_position_mm: f32) {
-        self.step_accumulator =
-            f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
+        self.step_accumulator = f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
         self.seeded = true;
         self.last_direction = 0;
     }
@@ -89,12 +88,8 @@ impl PhaseDirectModulator {
     /// Matches `StepMotorState::update` semantics: on `Err`, the
     /// accumulator is NOT advanced, so retrying after the caller resets
     /// the cap is safe.
-    pub fn compute(
-        &mut self,
-        motor_position_mm: f32,
-    ) -> Result<PhaseTickResult, ()> {
-        let new_pos_steps =
-            f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
+    pub fn compute(&mut self, motor_position_mm: f32) -> Result<PhaseTickResult, ()> {
+        let new_pos_steps = f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
 
         if !self.seeded {
             self.step_accumulator = new_pos_steps;

@@ -33,7 +33,6 @@ pub const TRIP_SOURCE_DEADLINE_EXPIRED: u8 = 0xFF;
 /// explicit `software_trip` call from the C command handler.
 pub const TRIP_SOURCE_SOFTWARE: u8 = 0xFE;
 
-
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ArmPolicy {
@@ -281,8 +280,7 @@ impl Arm {
     }
 
     fn store_grant_ticks(&self, ticks: u64) {
-        self.grant_ticks_lo
-            .store(ticks as u32, Ordering::Release);
+        self.grant_ticks_lo.store(ticks as u32, Ordering::Release);
         self.grant_ticks_hi
             .store((ticks >> 32) as u32, Ordering::Release);
     }
@@ -290,9 +288,10 @@ impl Arm {
     /// Returns `true` if any active source has `SourceKind::Software`.
     fn has_software_source(&self) -> bool {
         let count = usize::from(self.source_count.load(Ordering::Acquire));
-        self.sources.iter().take(count).any(|src| {
-            src.kind.load(Ordering::Acquire) == SourceKind::Software as u8
-        })
+        self.sources
+            .iter()
+            .take(count)
+            .any(|src| src.kind.load(Ordering::Acquire) == SourceKind::Software as u8)
     }
 }
 
@@ -472,9 +471,7 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
     validate_arm_msg(&msg)?;
 
     let state = ARM.state.load(Ordering::Acquire);
-    if matches_u8(state, ArmState::Armed)
-        || matches_u8(state, ArmState::Tripping)
-    {
+    if matches_u8(state, ArmState::Armed) || matches_u8(state, ArmState::Tripping) {
         return Err(ArmError::Busy);
     }
 
@@ -539,8 +536,7 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
         let asserted = if cfg.active_high { pin_high } else { !pin_high };
         if asserted {
             // Transition to Tripping → TrippedReady.
-            ARM.state
-                .store(ArmState::Tripping as u8, Ordering::Release);
+            ARM.state.store(ArmState::Tripping as u8, Ordering::Release);
             // Publish snapshot with arm_clock as the trip clock (no
             // actual MCU tick yet; best-effort timestamp).
             let empty_counts: &[i32] = &[];
@@ -613,9 +609,8 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
 
         match policy {
             ArmPolicy::IgnoreUntilMoving => {
-                let axis = VelocityAxis::from_bits_truncate(
-                    src.velocity_axis.load(Ordering::Acquire),
-                );
+                let axis =
+                    VelocityAxis::from_bits_truncate(src.velocity_axis.load(Ordering::Acquire));
                 let v_sel = max_axis_velocity(v_per_axis_q16, axis);
                 if !src.moved_above_v.load(Ordering::Acquire)
                     && v_sel >= src.v_min_q16.load(Ordering::Acquire)

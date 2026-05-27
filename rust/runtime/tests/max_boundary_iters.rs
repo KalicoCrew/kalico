@@ -29,11 +29,11 @@
 use heapless::spsc::Queue;
 
 use runtime::clock::{WidenState, one_tick_cycles};
+use runtime::config::EMode;
 use runtime::curve_pool::{CurveHandle, CurvePool};
 use runtime::engine::{Engine, RuntimeStatus};
 use runtime::error::RuntimeError;
 use runtime::queue::Q_N;
-use runtime::config::EMode;
 use runtime::segment::{KinematicTag, Segment};
 use runtime::slot::{NoopIs, NoopPa};
 use runtime::state::SharedState;

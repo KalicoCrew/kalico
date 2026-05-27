@@ -49,10 +49,7 @@ fn cubic_bezier_shape() {
 }
 
 /// Extract scalar (first component) from 3D fixture CPs.
-fn extract_scalar_cps(
-    cps_3d: &[f32],
-    n_cp: usize,
-) -> [f32; crate::curve_pool::MAX_CONTROL_POINTS] {
+fn extract_scalar_cps(cps_3d: &[f32], n_cp: usize) -> [f32; crate::curve_pool::MAX_CONTROL_POINTS] {
     let mut scalar = [0.0f32; crate::curve_pool::MAX_CONTROL_POINTS];
     for i in 0..n_cp {
         scalar[i] = cps_3d[i * 3];

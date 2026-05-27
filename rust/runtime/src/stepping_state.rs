@@ -92,18 +92,15 @@ pub const TMC_CS_OID_NONE: u8 = 0xFF;
 /// `mode` is atomic so the host can flip an axis between `Pulse` and
 /// `Phase` without a stop-the-world handshake (e.g. sensorless homing on
 /// a normally-phase-stepped axis temporarily reverts to `Pulse`).
+///
+/// Task-5: `curve_handle` and `piece_cursor` removed. Piece tracking now
+/// lives solely in `piece` + `piece_start_time_cycles`. Task-6 will wire
+/// the `PieceRing` consumer into this struct.
 #[derive(Debug)]
 pub struct AxisConfig {
     pub mode: AtomicU8,
     pub steppers: Vec<StepperRef, MAX_STEPPERS_PER_AXIS>,
-    /// Active curve handle. `None` when no segment is armed or the curve
-    /// is exhausted.
-    pub curve_handle: Option<crate::curve_pool::CurveHandle>,
-    /// Index into the loaded curve's `pieces` array. Advanced by
-    /// `advance_piece_if_needed` (Task 9).
-    pub piece_cursor: u16,
-    /// Cached active piece (= `curve.pieces[piece_cursor]`). Refreshed
-    /// only on piece-boundary advancement.
+    /// Cached active piece. Refreshed on piece-boundary advancement.
     pub piece: Option<BezierPieceMonomial>,
     pub piece_start_time_cycles: u64,
     pub last_step_count: i32,
@@ -123,8 +120,6 @@ impl AxisConfig {
         Self {
             mode: AtomicU8::new(StepMode::Pulse as u8),
             steppers: Vec::new(),
-            curve_handle: None,
-            piece_cursor: 0,
             piece: None,
             piece_start_time_cycles: 0,
             last_step_count: 0,
