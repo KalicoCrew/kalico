@@ -107,7 +107,7 @@ Current `ConfigureAxes` sends kinematics tag, present_mask, awd_mask, invert_mas
 - `present_mask` / `awd_mask` — no fixed 4-axis assumption; axes registered individually
 - Fixed-4 `steps_per_mm` array — moves into per-axis microstep_distance
 
-The stepper binding payload (`StepperBindingRust`: stepper_oid + tmc_cs_oid) is unchanged.
+The stepper binding mechanism is unchanged.
 
 ### 3.4 RuntimeCapsResponse Changes
 
