@@ -114,12 +114,11 @@ struct McuConnection {
 }
 
 /// Default fallback caps used when the MCU doesn't respond to
-/// `QueryRuntimeCaps` (older firmware). Matches the large-profile pool sizing
-/// the host previously assumed unconditionally.
+/// `QueryRuntimeCaps` (older firmware). `total_piece_memory` of 62 KB matches
+/// the H7 `RUNTIME_TARGET_LARGE` total piece buffer (large-profile defaults).
 const FALLBACK_RUNTIME_CAPS: kalico_protocol::messages::RuntimeCapsResponse =
     kalico_protocol::messages::RuntimeCapsResponse {
-        curve_pool_n: 16,
-        max_pieces_per_curve: 16,
+        total_piece_memory: 62 * 1024,
     };
 
 /// Maximum time the dispatch closure blocks waiting for a free curve slot.
@@ -961,9 +960,8 @@ impl PyMotionBridge {
                             Ok(caps) => {
                                 log::debug!(
                                     "[caps-trace] attach_serial reuse: runtime caps \
-                                     for {serial_path}: pool_n={} max_pieces_per_curve={}",
-                                    caps.curve_pool_n,
-                                    caps.max_pieces_per_curve,
+                                     for {serial_path}: total_piece_memory={}",
+                                    caps.total_piece_memory,
                                 );
                                 caps
                             }
@@ -1107,9 +1105,8 @@ impl PyMotionBridge {
             Ok(caps) => {
                 log::debug!(
                     "[caps-trace] attach_serial: runtime caps for {serial_path}: \
-                     pool_n={} max_pieces_per_curve={}",
-                    caps.curve_pool_n,
-                    caps.max_pieces_per_curve,
+                     total_piece_memory={}",
+                    caps.total_piece_memory,
                 );
                 caps
             }
@@ -2086,14 +2083,15 @@ impl PyMotionBridge {
                 }
             }
 
-            // Bench 2026-05-12: size the host slot pool to the MCU's
-            // actual `caps.curve_pool_n` (queried at attach_serial). The
-            // F446 reports `pool_n=4` under the small profile (per-slot
-            // scratch + 128 KB total RAM forces this); the H7 reports 16.
-            // Hardcoding 16 here previously caused the 5th sequential jog
-            // to allocate slot=4 → F446 rejects with
-            // `KALICO_ERR_INVALID_HANDLE`/OutOfBounds.
-            let pool_capacity = cfg_mcu.caps.curve_pool_n as usize;
+            // Bench 2026-05-12: size the host slot pool to the MCU's actual
+            // piece-pool capacity (queried at attach_serial via QueryRuntimeCaps).
+            // With the simple-MCU-contract revision the MCU reports total_piece_memory
+            // rather than a slot count; derive a slot count as total_pieces / 4 so
+            // the host aligns with the MCU's per-axis ring sizing. Cap at 64 (the
+            // firmware's hard CURVE_POOL_N upper bound) to avoid over-allocating.
+            // Previously `curve_pool_n` was reported directly; this derivation keeps
+            // the existing slot-pool-exhaustion guard correct.
+            let pool_capacity = (cfg_mcu.caps.total_pieces() / 4).max(1).min(64);
             log::debug!(
                 "[slot-trace] init_pool mcu={} capacity={}",
                 cfg_mcu.mcu_id,
@@ -2427,14 +2425,14 @@ impl PyMotionBridge {
                         .find(|c| c.mcu_id == plan.mcu_id)
                         .map(|c| c.caps)
                         .unwrap_or_default();
-                    let effective_max_pieces =
-                        (caps.max_pieces_per_curve as usize).min(255);
-                    if caps.max_pieces_per_curve > 255 {
-                        log::warn!(
-                            "MCU {} reports max_pieces_per_curve={}, clamping to 255 (u8 wire ceiling)",
-                            plan.mcu_id, caps.max_pieces_per_curve,
-                        );
-                    }
+                    // Derive a per-curve piece ceiling from total_piece_memory.
+                    // With the simple-MCU-contract revision the MCU reports total
+                    // piece memory rather than a per-curve cap; use total_pieces / 4
+                    // as a reasonable per-curve budget (mirrors the pool_capacity
+                    // derivation above). Clamp to 255 — the u8 wire ceiling for
+                    // LoadCurveCubic.piece_count.
+                    let raw_max_pieces = caps.total_pieces() / 4;
+                    let effective_max_pieces = raw_max_pieces.max(1).min(255);
 
                     let sub_plans = dispatch::split_plan_if_needed(
                         plan, effective_max_pieces, freq,

@@ -112,11 +112,10 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
     SchemaMessage {
         type_tag: 0x0041,
         name: "RuntimeCapsResponse",
-        version: 1,
+        version: 2,
         channel: "control",
         fields: &[
-            SchemaField { name: "curve_pool_n", ty: "u16" },
-            SchemaField { name: "max_pieces_per_curve", ty: "u16" },
+            SchemaField { name: "total_piece_memory", ty: "u32" },
         ],
     },
     SchemaMessage {
@@ -172,6 +171,20 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
             SchemaField { name: "fault_code", ty: "u16" },
             SchemaField { name: "fault_detail", ty: "u32" },
             SchemaField { name: "segment_id", ty: "u32" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0083,
+        name: "StatusHeartbeat",
+        version: 1,
+        channel: "events",
+        fields: &[
+            SchemaField { name: "engine_state", ty: "u8" },
+            SchemaField { name: "fault_code", ty: "u8" },
+            SchemaField { name: "num_axes", ty: "u8" },
+            // consumed_counts: num_axes × u32 — variable-length, length-prefixed
+            // by num_axes on the wire.
+            SchemaField { name: "consumed_counts", ty: "array<u32>" },
         ],
     },
 ];

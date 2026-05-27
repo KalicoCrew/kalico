@@ -55,22 +55,23 @@ pub struct McuAxisConfig {
 /// Subset of `RuntimeCapsResponse` that the dispatcher needs to enforce
 /// per-MCU sizing limits when planning a curve.
 ///
-/// Cubic-only revision (2026-05-20 stepping redesign): NURBS sizing fields
-/// (max_control_points / max_knot_vector_len / max_degree) were removed.
+/// Simple-MCU-contract revision (2026-05-28): the MCU now reports a single
+/// `total_piece_memory` (bytes). The host derives per-axis budgets from this
+/// at `init_planner` time. Each piece is 32 bytes on the wire (`PushPieces`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct McuCaps {
-    pub curve_pool_n: u16,
-    pub max_pieces_per_curve: u16,
+    /// Total bytes available for piece storage across all per-axis rings,
+    /// as reported by `RuntimeCapsResponse.total_piece_memory`.
+    pub total_piece_memory: u32,
 }
 
 impl Default for McuCaps {
     /// Large-profile defaults used when the per-MCU `QueryRuntimeCaps`
-    /// round-trip fails (e.g. transport timeout during attach). Mirrors
-    /// the H7 `RUNTIME_TARGET_LARGE` Kconfig defaults.
+    /// round-trip fails (e.g. transport timeout during attach). 62 KB
+    /// matches the H7 `RUNTIME_TARGET_LARGE` total piece buffer.
     fn default() -> Self {
         Self {
-            curve_pool_n: 16,
-            max_pieces_per_curve: 16,
+            total_piece_memory: 62 * 1024,
         }
     }
 }
@@ -78,9 +79,15 @@ impl Default for McuCaps {
 impl From<kalico_protocol::messages::RuntimeCapsResponse> for McuCaps {
     fn from(r: kalico_protocol::messages::RuntimeCapsResponse) -> Self {
         Self {
-            curve_pool_n: r.curve_pool_n,
-            max_pieces_per_curve: r.max_pieces_per_curve,
+            total_piece_memory: r.total_piece_memory,
         }
+    }
+}
+
+impl McuCaps {
+    /// Maximum number of 32-byte pieces the MCU can hold in total.
+    pub fn total_pieces(&self) -> usize {
+        self.total_piece_memory as usize / 32
     }
 }
 

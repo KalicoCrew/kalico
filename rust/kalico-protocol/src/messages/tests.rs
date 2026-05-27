@@ -28,6 +28,7 @@ fn message_kind_round_trips_via_u16() {
         MessageKind::StatusEvent,
         MessageKind::CreditFreed,
         MessageKind::FaultEvent,
+        MessageKind::StatusHeartbeat,
     ] {
         assert_eq!(MessageKind::from_u16(k.as_u16()), Some(k));
     }
@@ -172,17 +173,49 @@ fn fault_event_roundtrip() {
 }
 
 #[test]
-fn runtime_caps_roundtrip() {
-    let original = RuntimeCapsResponse {
-        curve_pool_n: 4,
-        max_pieces_per_curve: 16,
+fn runtime_caps_response_new_format() {
+    let msg = RuntimeCapsResponse {
+        total_piece_memory: 63488,
     };
     let mut buf = Vec::new();
-    original.encode(&mut buf);
-    assert_eq!(buf.len(), RUNTIME_CAPS_RESPONSE_BODY_LEN);
-    let mut c = Cursor::new(&buf);
-    let decoded = RuntimeCapsResponse::decode_from(&mut c).unwrap();
-    assert_eq!(decoded, original);
+    msg.encode(&mut buf);
+    assert_eq!(buf.len(), 4);
+    let mut cursor = Cursor::new(&buf);
+    let decoded = RuntimeCapsResponse::decode_from(&mut cursor).unwrap();
+    assert_eq!(decoded.total_piece_memory, 63488);
+}
+
+#[test]
+fn status_heartbeat_roundtrip_empty() {
+    let msg = StatusHeartbeat {
+        engine_state: 0,
+        fault_code: 0,
+        consumed_counts: vec![],
+    };
+    let mut buf = Vec::new();
+    msg.encode(&mut buf);
+    assert_eq!(buf.len(), 3); // 1+1+1 (num_axes=0)
+    let mut cursor = Cursor::new(&buf);
+    let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
+    assert_eq!(decoded.consumed_counts.len(), 0);
+}
+
+#[test]
+fn status_heartbeat_roundtrip_with_axes() {
+    let msg = StatusHeartbeat {
+        engine_state: 1,
+        fault_code: 0,
+        consumed_counts: vec![42, 42, 10, 5],
+    };
+    let mut buf = Vec::new();
+    msg.encode(&mut buf);
+    // 1 + 1 + 1 + 4*4 = 19 bytes
+    assert_eq!(buf.len(), 19);
+    let mut cursor = Cursor::new(&buf);
+    let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
+    assert_eq!(decoded.engine_state, 1);
+    assert_eq!(decoded.fault_code, 0);
+    assert_eq!(decoded.consumed_counts, vec![42, 42, 10, 5]);
 }
 
 #[test]

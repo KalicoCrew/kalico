@@ -33,6 +33,7 @@ pub enum MessageKind {
     StatusEvent = 0x0080,
     CreditFreed = 0x0081,
     FaultEvent = 0x0082,
+    StatusHeartbeat = 0x0083,
 }
 
 impl MessageKind {
@@ -55,6 +56,7 @@ impl MessageKind {
             0x0080 => Self::StatusEvent,
             0x0081 => Self::CreditFreed,
             0x0082 => Self::FaultEvent,
+            0x0083 => Self::StatusHeartbeat,
             _ => return None,
         })
     }
@@ -315,38 +317,33 @@ impl Decode for ConfigureAxesResponse {
 // =============================================================================
 // QueryRuntimeCaps (0x0040) — request body: empty.
 // RuntimeCapsResponse (0x0041) — body layout:
-//   0..2  curve_pool_n         : u16_le
-//   2..4  max_pieces_per_curve : u16_le
+//   0..4  total_piece_memory : u32_le
 // Total: 4 bytes.
 //
-// Cubic-only revision (2026-05-20 stepping redesign): the NURBS sizing fields
-// (max_control_points / max_knot_vector_len / max_degree) were removed. The
-// runtime now uses uniform cubic Bézier pieces; the only per-MCU sizing the
-// host needs is the pool slot count and the per-curve piece ceiling.
+// Simple-MCU-contract revision (2026-05-28): replaced the two-field layout
+// (curve_pool_n: u16, max_pieces_per_curve: u16) with a single
+// total_piece_memory: u32 representing the total bytes available for piece
+// storage across all per-axis rings on the MCU. The host derives per-axis
+// budgets from this figure at init_planner time.
 // =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeCapsResponse {
-    pub curve_pool_n: u16,
-    pub max_pieces_per_curve: u16,
+    pub total_piece_memory: u32,
 }
 
 pub const RUNTIME_CAPS_RESPONSE_BODY_LEN: usize = 4;
 
 impl Encode for RuntimeCapsResponse {
     fn encode(&self, out: &mut Vec<u8>) {
-        put_u16(out, self.curve_pool_n);
-        put_u16(out, self.max_pieces_per_curve);
+        put_u32(out, self.total_piece_memory);
     }
 }
 
 impl Decode for RuntimeCapsResponse {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
-        let curve_pool_n = get_u16(c)?;
-        let max_pieces_per_curve = get_u16(c)?;
         Ok(Self {
-            curve_pool_n,
-            max_pieces_per_curve,
+            total_piece_memory: get_u32(c)?,
         })
     }
 }
@@ -575,6 +572,70 @@ impl Decode for FaultEvent {
             fault_code: get_u16(c)?,
             fault_detail: get_u32(c)?,
             segment_id: get_u32(c)?,
+        })
+    }
+}
+
+// =============================================================================
+// StatusHeartbeat (0x0083) — MCU → Host periodic status event.
+//
+// Wire layout (little-endian):
+//   engine_state:    u8
+//   fault_code:      u8
+//   num_axes:        u8  — length of the consumed_counts array that follows
+//   consumed_counts: num_axes × u32_le
+//
+// Total body = 3 + num_axes * 4 bytes.
+//
+// Sent by the MCU at the heartbeat rate (typically 10 Hz) so the host can
+// track per-axis piece consumption without a separate query round-trip.
+// =============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusHeartbeat {
+    pub engine_state: u8,
+    pub fault_code: u8,
+    /// Per-axis consumed piece counts, one entry per configured axis.
+    pub consumed_counts: Vec<u32>,
+}
+
+impl Encode for StatusHeartbeat {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_u8(out, self.engine_state);
+        put_u8(out, self.fault_code);
+        let num_axes = self.consumed_counts.len() as u8;
+        put_u8(out, num_axes);
+        for &count in &self.consumed_counts {
+            put_u32(out, count);
+        }
+    }
+}
+
+impl Decode for StatusHeartbeat {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        let engine_state = get_u8(c)?;
+        let fault_code = get_u8(c)?;
+        let num_axes = get_u8(c)?;
+        let counts_len = (num_axes as usize).checked_mul(4).ok_or(
+            DecodeError::ArrayLengthExceedsBuffer {
+                claimed: u32::from(num_axes),
+                available: c.remaining(),
+            },
+        )?;
+        if counts_len > c.remaining() {
+            return Err(DecodeError::ArrayLengthExceedsBuffer {
+                claimed: u32::from(num_axes),
+                available: c.remaining(),
+            });
+        }
+        let mut consumed_counts = Vec::with_capacity(num_axes as usize);
+        for _ in 0..num_axes {
+            consumed_counts.push(get_u32(c)?);
+        }
+        Ok(Self {
+            engine_state,
+            fault_code,
+            consumed_counts,
         })
     }
 }
