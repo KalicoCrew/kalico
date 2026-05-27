@@ -80,7 +80,7 @@ Multiple steppers can share the same axis (e.g., 3 Z motors on a Trident all bou
 
 | Message | Wire ID | Purpose |
 |---------|---------|---------|
-| `StatusHeartbeat` | 0x0080 | Periodic (10 Hz): per-axis consumed piece count (monotonic), engine state, fault info |
+| `StatusHeartbeat` | 0x0080 | Periodic (10 Hz): engine_state:u8, fault_code:u8, num_axes:u8, consumed_counts[num_axes]:u32[] — per-axis monotonic consumed piece count |
 | `FaultEvent` | 0x0082 | Immediate: fault code + detail |
 
 **Bootstrap (unchanged, frozen forever):**
@@ -141,7 +141,9 @@ tick(now):
 get_piece_for_time(axis, now):
   piece = axis.current_piece
 
-  if piece exists and now < piece_end(piece):
+  // piece_end = piece.start_time + (u64)(piece.duration * clock_freq)
+  // computed once per piece transition, cached in ISR state
+  if piece exists and now < axis.piece_end:
     return piece          // still in current piece
 
   next = next_in_ring(axis)
@@ -260,7 +262,7 @@ On hard fault:
 - Kinematic transforms (CoreXY → motor space)
 - E-follower integration (already removed from ISR in `daf8a1aa`, host-side implementation is separate work)
 - All multi-MCU synchronization logic
-- Ring depth calculation (total_memory / 28 / num_axes)
+- Ring depth calculation (total_memory / 32 / num_axes)
 
 ## 8. Implementation Prerequisites
 
