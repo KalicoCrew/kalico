@@ -5,8 +5,9 @@
 //! - Simultaneous A+B exhaustion does NOT fault — `pending_mask` drops to 0
 //!   in the same sample and `retire_if_complete` fires.
 //! - A-exhausts-while-B-pending DOES fault with `PieceAdvanceUnderflow`.
-//! - `CoupledToXy` E exhausting while XY pending does NOT fault — E is not
-//!   in `participating_mask` under `CoupledToXy`.
+//! - E is now a regular Bezier axis. If E has a curve handle, it participates
+//!   in `participating_mask`. Early E exhaustion while X+Y are pending is a
+//!   host programming error (mismatched curve durations) and faults.
 //!
 //! Spec: `docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md`.
 
@@ -189,10 +190,11 @@ fn early_exhaustion_x_while_y_pending_faults() {
 }
 
 #[test]
-fn coupled_e_exhausting_early_does_not_fault() {
-    // CoupledToXy: only X+Y are participating; E is a follower (not in
-    // `participating_mask`). Even if E's curve "exhausts" first, the
-    // post-pass should not fault — E isn't tracked in `pending_mask`.
+fn e_axis_participates_and_early_exhaustion_faults() {
+    // After E-unification: E is a regular Bezier axis pre-computed by the
+    // host. When E has a curve handle it participates in `participating_mask`
+    // regardless of `e_mode`. If E exhausts before X+Y, that is a mismatch
+    // in curve durations — a host programming error — and should fault.
     let mut engine = new_engine();
     let pool = CurvePool::new();
     let shared = SharedState::new();
@@ -210,26 +212,27 @@ fn coupled_e_exhausting_early_does_not_fault() {
     seg.x_handle = hx;
     seg.y_handle = hy;
     seg.e_handle = he;
-    seg.e_mode = EMode::CoupledToXy;
+    seg.e_mode = EMode::CoupledToXy; // e_mode field is still in Segment but no longer governs participation
     seg.extrusion_ratio = 0.05;
 
     engine.arm_segment(seg, &pool);
-    // Only X+Y, not E.
-    assert_eq!(engine.participating_mask, 0b0011, "CoupledToXy: X+Y only");
+    // X + Y + E all have handles → all three participate.
+    assert_eq!(engine.participating_mask, 0b1011, "X+Y+E participating");
 
-    // E exhausts early.
+    // E exhausts early (its 25 µs curve ended while X+Y 250 µs curves remain).
     mark_axis_exhausted(&mut engine, 3);
 
     engine.post_pass_exhaustion(&shared);
 
-    // pending_mask unchanged: E isn't in participating_mask.
+    // E bit cleared, X+Y still pending.
     assert_eq!(
         engine.pending_mask, 0b0011,
-        "E exhaustion under CoupledToXy must NOT clear participating bits",
+        "pending_mask clears E bit on exhaustion",
     );
+    // Early exhaustion of E while X+Y still pending → PieceAdvanceUnderflow.
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
-        0,
-        "CoupledToXy E exhaustion must NOT raise PieceAdvanceUnderflow",
+        FaultCode::PieceAdvanceUnderflow.as_i32(),
+        "early E exhaustion while X+Y pending must latch PieceAdvanceUnderflow",
     );
 }

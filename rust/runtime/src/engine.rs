@@ -55,25 +55,9 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// Reset on segment activation; incremented per hold tick. At ~10 ms
     /// (`HOLD_SAMPLE_TICK_PERIOD = 400`) we drop one breadcrumb sample.
     hold_sample_ticks: u32,
-    /// Previous motor-A position (motor frame). For CoreXY MCUs this is
-    /// A = X+Y (host-combined); for Cartesian MCUs it is logical X. Used
-    /// for E-mode arc-length integration AND as the "hold" value when the
-    /// X handle of the current segment is `UNUSED_SENTINEL`.
-    prev_x: f32,
-    /// Previous motor-B position (motor frame). For CoreXY MCUs this is
-    /// B = X−Y (host-combined); for Cartesian MCUs it is logical Y. Same
-    /// dual role as `prev_x`.
-    prev_y: f32,
-    /// Previous Z position (motor frame; identical to logical Z on all
-    /// current MCU configurations). Same dual role as `prev_x` / `prev_y`.
-    prev_z: f32,
-    /// E accumulator for CoupledToXy mode — f64 for sub-step accuracy over
-    /// millions of ticks (H723 has hardware double-precision FPU).
-    e_accumulator: f64,
-    /// Bitmask: bits 0-3 are axes A/B/Z/E. Set at `arm_segment` (Task 8)
-    /// for each axis whose curve handle is non-sentinel AND which
-    /// participates in retire (E in `CoupledToXy` mode is non-participating).
-    /// Spec: docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md §4.5.
+    /// Bitmask: bits 0-3 are axes A/B/Z/E. Set at `arm_segment` for each
+    /// axis whose curve handle is non-sentinel. All four axes participate
+    /// equally in retire bookkeeping.
     pub participating_mask: u8,
 
     /// Bitmask: starts equal to `participating_mask` at arm; bits clear
@@ -81,18 +65,6 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// when `pending_mask == 0`.
     pub pending_mask: u8,
 
-    /// Snapshot of `e_accumulator` (truncated to f32) at segment-arm.
-    /// Phase-3 evaluator returns `segment_base_e + segment_local_e` to
-    /// produce absolute E position (§4.6).
-    pub segment_base_e: f32,
-
-    /// XY arc-length accumulator, in mm, segment-scoped. Reset at arm,
-    /// updated each sample in Phase 2 of `runtime_tick_sample`.
-    pub ds_xy_segment: f32,
-    /// Set to `true` on init and after flush/clear so the first segment seeds
-    /// `prev_x`/`prev_y`/`prev_z` from X(0)/Y(0)/Z(0) rather than computing
-    /// a spurious delta from (0,0,0).
-    needs_xy_seed: bool,
     /// Diagnostic — last (now, t_start, duration) observed in tick_with_current.
     debug_last_now: u64,
     debug_last_tstart: u64,
@@ -120,40 +92,18 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     //
     // Spec: docs/superpowers/specs/2026-05-19-stepping-redesign-design.md
     //
-    // Populated by `kalico_configure_axis` / `kalico_configure_kinematics` /
-    // `kalico_configure_pressure_advance` (Task 11 FFI). Consumed by the
-    // unified sample-ISR tick path (Task 8).
+    // Populated by `kalico_configure_axis` (Task 11 FFI). Consumed by the
+    // unified sample-ISR tick path (Task 8). All four axes (A/B/Z/E) are
+    // evaluated identically — no per-axis special-case logic.
     /// Per-logical-axis configuration: active Bezier piece, cached scalars,
     /// stepper bindings. Indexed `[X=0, Y=1, Z=2, E=3]` in logical-axis
     /// space (the unified engine performs the kinematic transform at piece
     /// activation time, not per-sample).
     pub stepping_axes: [crate::stepping_state::AxisConfig; crate::stepping_state::N_AXES],
 
-    /// Kinematic scale factor relating logical-XY velocity to physical
-    /// motor-coordinate velocity magnitude. `1.0` for Cartesian (XY motor
-    /// positions equal logical XY); `1.0 / sqrt(2)` for `CoreXY` (each motor
-    /// moves at `√2` times the per-axis logical speed at 45° diagonals).
-    /// Consumed by the XY-arc-length integrator that feeds the E-follows-XY
-    /// and pressure-advance paths. Spec §3.4.
-    pub k_xy: f32,
-
-    /// Linear pressure-advance coefficient during the toolhead's accelerating
-    /// phase (s). The unified tick adds
-    /// `+ advance_accel * ratio_per_xy_mm * |v_xy|` to the integrated
-    /// extrusion while `v̇_xy > 0`. `0.0` disables PA on acceleration.
-    /// Spec §3.5.
-    pub advance_accel: f32,
-
-    /// Linear pressure-advance coefficient during the toolhead's decelerating
-    /// phase (s). Mirror of `advance_accel`; allows asymmetric `K_accel` /
-    /// `K_decel` (Kalico bleeding-edge Step 9). `0.0` disables PA on
-    /// deceleration. Spec §3.5.
-    pub advance_decel: f32,
-
     /// Sample-rate period in seconds. Equal to `1.0 / sample_rate_hz`
     /// (typically 25 µs at 40 kHz). Consumed by sub-sample timing for
-    /// secant-slope velocity recovery. Published once at
-    /// `configure_kinematics` time; recomputed if the timer cadence changes.
+    /// secant-slope velocity recovery.
     pub sample_period_sec: f32,
 
     /// Sample-rate period in MCU clock cycles. Equal to
@@ -203,15 +153,8 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             last_error: AtomicI32::new(0),
             tick_counter: TickCounter::new(),
             hold_sample_ticks: 0,
-            prev_x: 0.0,
-            prev_y: 0.0,
-            prev_z: 0.0,
-            e_accumulator: 0.0,
             participating_mask: 0,
             pending_mask: 0,
-            segment_base_e: 0.0,
-            ds_xy_segment: 0.0,
-            needs_xy_seed: true,
             debug_last_now: 0,
             debug_last_tstart: 0,
             debug_last_duration: 0,
@@ -220,22 +163,13 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             phase_tick_counter: 0,
             mcu_config: None,
             // Task 11 unified per-axis configuration. All fields default
-            // to "unconfigured" until configure_axis / configure_kinematics
-            // / configure_pressure_advance publish real values.
+            // to "unconfigured" until configure_axis publishes real values.
             stepping_axes: [
                 crate::stepping_state::AxisConfig::new_unconfigured(),
                 crate::stepping_state::AxisConfig::new_unconfigured(),
                 crate::stepping_state::AxisConfig::new_unconfigured(),
                 crate::stepping_state::AxisConfig::new_unconfigured(),
             ],
-            // Default to Cartesian k_xy=1.0 so the unified-tick XY
-            // arc-length integration produces sane numbers even if the
-            // host never sends configure_kinematics (a misconfiguration,
-            // but better than NaN propagation). CoreXY hosts overwrite
-            // this with 1.0/sqrt(2).
-            k_xy: 1.0,
-            advance_accel: 0.0,
-            advance_decel: 0.0,
             sample_period_sec,
             sample_period_cycles,
             cycles_per_second: clock_freq as f32,
@@ -312,15 +246,8 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
             addr_of_mut!((*ptr).last_error).write(AtomicI32::new(0));
             addr_of_mut!((*ptr).tick_counter).write(TickCounter::new());
             addr_of_mut!((*ptr).hold_sample_ticks).write(0);
-            addr_of_mut!((*ptr).prev_x).write(0.0);
-            addr_of_mut!((*ptr).prev_y).write(0.0);
-            addr_of_mut!((*ptr).prev_z).write(0.0);
-            addr_of_mut!((*ptr).e_accumulator).write(0.0);
             addr_of_mut!((*ptr).participating_mask).write(0);
             addr_of_mut!((*ptr).pending_mask).write(0);
-            addr_of_mut!((*ptr).segment_base_e).write(0.0);
-            addr_of_mut!((*ptr).ds_xy_segment).write(0.0);
-            addr_of_mut!((*ptr).needs_xy_seed).write(true);
             addr_of_mut!((*ptr).debug_last_now).write(0);
             addr_of_mut!((*ptr).debug_last_tstart).write(0);
             addr_of_mut!((*ptr).debug_last_duration).write(0);
@@ -339,9 +266,6 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
                     .add(i)
                     .write(crate::stepping_state::AxisConfig::new_unconfigured());
             }
-            addr_of_mut!((*ptr).k_xy).write(1.0);
-            addr_of_mut!((*ptr).advance_accel).write(0.0);
-            addr_of_mut!((*ptr).advance_decel).write(0.0);
             addr_of_mut!((*ptr).sample_period_sec).write(sample_period_sec);
             addr_of_mut!((*ptr).sample_period_cycles).write(sample_period_cycles);
             addr_of_mut!((*ptr).cycles_per_second).write(clock_freq as f32);
@@ -368,16 +292,11 @@ impl<P: PaSlot + Default, I: IsSlot + Default> Engine<P, I> {
 // Foreground command handlers reach these through the FFI shims in
 // `kalico-c-api::runtime_ffi` (`kalico_runtime_configure_axis`,
 // `kalico_runtime_configure_kinematics`,
-// `kalico_runtime_configure_pressure_advance`). All three are
-// foreground-only and never racing with the ISR — Klipper sends these
-// commands from the single-threaded command dispatcher before / between
-// segments, not while the TIM5 ISR is mid-tick on the same axis state.
+// `kalico_runtime_configure_pressure_advance`). The latter two are no-op
+// stubs retained for ABI compatibility — their E-follows-XY logic has been
+// removed. All are foreground-only and never racing with the ISR.
 //
-// Return convention: `0` = success, negative = host-visible error. The
-// negative values are kept abstract here (`-1`) rather than reaching for
-// the KALICO_ERR_* constants in `runtime::error` because the C handlers
-// merely log "rejected" — host-side surfacing of the precise error code
-// is not part of Task 11's surface area.
+// Return convention: `0` = success, negative = host-visible error.
 impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// Publish new per-axis configuration for a single logical axis.
     ///
@@ -460,19 +379,11 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         KALICO_OK
     }
 
-    /// Publish kinematic scale factor relating logical-XY velocity to
-    /// physical motor-coordinate velocity. `1.0` for Cartesian, `1/√2`
-    /// (≈ 0.7071) for `CoreXY`. Validated finite + strictly positive — a
-    /// zero / negative `k_xy` would silently zero out the XY arc-length
-    /// integrator that feeds E-follows-XY and pressure-advance.
-    /// Test-only: set `sample_period_sec` + `sample_period_cycles` to mirror
-    /// what production would receive once Engine::init wires
-    /// `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ` through. Production currently
-    /// leaves both fields zero (Codex 2026-05-20 analysis: configure_kinematics
-    /// only sets k_xy; nothing publishes the sample period), so `tick_sample`
-    /// returns at the `sample_period_sec <= 0.0` guard before evaluating any
-    /// loaded piece. Tests must call this to exercise the producer-side step
-    /// pipeline on host without re-tripping that gate.
+    /// Test-only: set `sample_period_sec` + `sample_period_cycles` so
+    /// `tick_sample` doesn't early-return at the `sample_period_sec <= 0.0`
+    /// guard. Production receives these at `Engine::new` time via
+    /// `clock_freq` / `sample_rate_hz`; tests that construct without a
+    /// sample-rate call this to exercise the evaluator pipeline.
     #[cfg(any(test, feature = "host"))]
     pub fn test_set_sample_period(&mut self, sample_rate_hz: u32) {
         let sec = 1.0_f32 / (sample_rate_hz as f32);
@@ -504,19 +415,24 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             .unwrap_or(core::ptr::null_mut())
     }
 
+    /// No-op stub retained for FFI ABI compatibility
+    /// (`kalico_runtime_configure_kinematics`). The kinematic scale factor
+    /// `k_xy` was only used by the removed E-follows-XY arc-length integrator;
+    /// the MCU now treats all four axes uniformly with no XY-derived quantities.
+    /// Always returns 0 (success) for valid inputs; -1 for invalid.
     pub fn configure_kinematics(&mut self, k_xy: f32) -> i32 {
         if !k_xy.is_finite() || k_xy <= 0.0 {
             return -1;
         }
-        self.k_xy = k_xy;
         0
     }
 
-    /// Publish asymmetric pressure-advance coefficients. `advance_accel`
-    /// applies while `v̇_xy > 0`, `advance_decel` while `v̇_xy < 0`. Both
-    /// in seconds; `0.0` on either side disables PA in that phase. Reject
-    /// non-finite or negative values — negative PA would invert the
-    /// filament-pressure-correction sense, which is never physical.
+    /// No-op stub retained for FFI ABI compatibility
+    /// (`kalico_runtime_configure_pressure_advance`). Pressure-advance was
+    /// computed from XY-derived quantities removed in the E-unification
+    /// refactor. The host pre-bakes PA into the E Bezier curve; the MCU
+    /// evaluates E uniformly with no PA correction. Always returns 0
+    /// (success) for valid inputs; -1 for invalid.
     pub fn configure_pressure_advance(&mut self, advance_accel: f32, advance_decel: f32) -> i32 {
         if !advance_accel.is_finite() || !advance_decel.is_finite() {
             return -1;
@@ -524,12 +440,10 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         if advance_accel < 0.0 || advance_decel < 0.0 {
             return -1;
         }
-        self.advance_accel = advance_accel;
-        self.advance_decel = advance_decel;
         0
     }
 
-    /// ISR-side segment arm. Called by `runtime_tick_sample` after dequeueing
+    /// ISR-side segment arm. Called by `isr_sample_tick` after dequeueing
     /// a `Segment` from the SPSC queue. Populates per-axis state and the
     /// engine-level retire-bookkeeping masks. NEVER called from foreground —
     /// the §11.1 half-split discipline reserves `AxisConfig` mutation for the
@@ -539,13 +453,10 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// 1. Per-axis: decode the segment's handle. If `UNUSED_SENTINEL`, leave
     ///    axis idle. Else resolve via `curve_pool.lookup_active` and populate
     ///    `curve_handle / piece_cursor / piece / piece_start_time_cycles`.
-    /// 2. `participating_mask`: bits A/B/Z (0..2) follow handle validity;
-    ///    bit E (3) ALSO requires `e_mode == EMode::Independent`
-    ///    (`CoupledToXy` E is non-participating; `Travel` E excluded).
+    /// 2. `participating_mask`: set for every axis (A/B/Z/E) whose curve
+    ///    handle is non-sentinel. All four axes are treated uniformly.
     /// 3. `pending_mask = participating_mask`.
-    /// 4. `segment_base_e = e_accumulator as f32`.
-    /// 5. `ds_xy_segment = 0.0`.
-    /// 6. `current = Some(seg)`.
+    /// 4. `current = Some(seg)`.
     ///
     /// Spec: docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md §3.3 + §4.5.
     #[allow(unsafe_code)]
@@ -657,23 +568,18 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 .store(x_piece_count, core::sync::atomic::Ordering::Relaxed);
         }
 
-        // Compute participating_mask. Bits A/B/Z (0..2) follow handle
-        // validity; bit E (3) ALSO requires e_mode == Independent.
-        // `stepping_axes` is `[_; N_AXES]` with N_AXES == 4; the literal
-        // indices 0..3 and 3 are in-range by construction.
+        // Compute participating_mask. All four axes (A/B/Z/E) are treated
+        // identically — a bit is set iff the axis has a valid curve handle.
+        // E is now a regular Bezier axis pre-computed by the host; the
+        // old EMode::Independent / EMode::CoupledToXy distinction no longer
+        // governs participation.
         #[allow(clippy::indexing_slicing)]
         let mut participating: u8 = 0;
         #[allow(clippy::indexing_slicing)]
-        for axis_idx in 0..3 {
+        for axis_idx in 0..crate::stepping_state::N_AXES {
             if self.stepping_axes[axis_idx].curve_handle.is_some() {
                 participating |= 1u8 << axis_idx;
             }
-        }
-        #[allow(clippy::indexing_slicing)]
-        if seg.e_mode == crate::config::EMode::Independent
-            && self.stepping_axes[3].curve_handle.is_some()
-        {
-            participating |= 1u8 << 3;
         }
         self.participating_mask = participating;
         self.pending_mask = participating;
@@ -685,10 +591,6 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
                 core::sync::atomic::Ordering::Relaxed,
             );
         }
-
-        // E-accumulator base for absolute-position math (spec §4.6).
-        self.segment_base_e = self.e_accumulator as f32;
-        self.ds_xy_segment = 0.0;
 
         self.current = Some(seg);
     }
@@ -775,8 +677,6 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         #[allow(clippy::unwrap_used)] // checked immediately above
         let seg = self.current.as_ref().unwrap();
         let seg_id = seg.id;
-        let e_mode = seg.e_mode;
-        let extrusion_ratio = seg.extrusion_ratio;
 
         // 1. Publish retirement cursor.
         shared
@@ -803,30 +703,14 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
             flags: TRACE_FLAG_SEGMENT_END,
             _pad: [0; 7],
         });
-        // 5. Roll forward e_accumulator (CoupledToXy follower portion).
-        // Task 11's absolute-E evaluator will refine; for Task 10 the
-        // segment's final XY-arc × extrusion_ratio captures the follower
-        // contribution. Independent / Travel modes have their E delta
-        // already integrated into the Phase-3 step accumulator.
-        if e_mode == crate::config::EMode::CoupledToXy {
-            self.e_accumulator += f64::from(extrusion_ratio * self.ds_xy_segment);
-        }
-        // 6. Clear segment-scoped state.
+        // 5. Clear segment-scoped state. All four axes (A/B/Z/E) are
+        // evaluated uniformly; no per-segment XY arc-length or E-accumulator
+        // rollforward is needed — E position is fully captured by the Bezier
+        // evaluation in Phase 1.
         self.current = None;
         self.participating_mask = 0;
         self.pending_mask = 0;
-        self.segment_base_e = 0.0;
-        self.ds_xy_segment = 0.0;
         true
-    }
-
-    /// Test-only accessor to seed `e_accumulator` before invoking
-    /// `arm_segment`. The field stays private so production callers can't
-    /// race the f64 mutation; the test integration crate would otherwise
-    /// have no path to set up the snapshot-from-accumulator invariant.
-    #[cfg(any(test, feature = "host"))]
-    pub fn debug_set_e_accumulator(&mut self, value: f64) {
-        self.e_accumulator = value;
     }
 
     /// Test-only accessor: returns `true` iff the engine currently holds
@@ -844,14 +728,6 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     #[cfg(any(test, feature = "host"))]
     pub fn debug_current_segment_id(&self) -> Option<u32> {
         self.current.as_ref().map(|s| s.id)
-    }
-
-    /// Test-only accessor to seed `ds_xy_segment` before invoking
-    /// `arm_segment`, so the reset-to-zero invariant is observable from a
-    /// non-zero starting value.
-    #[cfg(any(test, feature = "host"))]
-    pub fn debug_set_ds_xy_segment(&mut self, value: f32) {
-        self.ds_xy_segment = value;
     }
 
     // ─── Stepping-redesign Task 12 — axis-mode + stepper-offset commands ─
@@ -1129,29 +1005,15 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         #[allow(clippy::cast_possible_truncation)]
         let now_cycles = now_cycles_u64 as u32;
 
-        // Spec §4.6: Phase 3 needs the active segment (for `e_mode` /
-        // `extrusion_ratio`) and the f32 snapshot of `e_accumulator`
-        // taken at `arm_segment`. Snapshot them here — `tick_sample`
-        // holds the exclusive borrow on `self`, and `runtime_tick_sample`
-        // does not mutate `current` / `segment_base_e`, so threading the
-        // reference + scalar is sound.
-        let engine_segment_base_e = self.segment_base_e;
-        let current_segment = self.current.as_ref();
         let mut ctx = crate::tick::TickContext {
             axes: &mut self.stepping_axes,
             queues: queue_ptrs,
             shared,
             caches: &mut self.tick_caches,
             curve_pool,
-            ds_xy_segment: &mut self.ds_xy_segment,
-            current_segment,
-            engine_segment_base_e,
             sample_period_sec: self.sample_period_sec,
             sample_period_cycles: self.sample_period_cycles,
             cycles_per_second,
-            k_xy: self.k_xy,
-            advance_accel: self.advance_accel,
-            advance_decel: self.advance_decel,
             now_cycles,
             t_sample_end_global,
             now_cycles_u64,
@@ -1259,10 +1121,6 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// function. The MCU engine is motor-frame end-to-end; there is no
     /// kinematic transform in the hot path or in this seed path.
     pub fn seed_position(&mut self, xyz: [f32; 3]) {
-        self.prev_x = xyz[0];
-        self.prev_y = xyz[1];
-        self.prev_z = xyz[2];
-        self.needs_xy_seed = false;
         // Motor-frame positions directly — no kinematic transform on the MCU.
         let motor_positions = [xyz[0], xyz[1], xyz[2], 0.0_f32];
         for i in 0..4 {
@@ -1273,9 +1131,6 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.last_motors = motor_positions;
         self.tick_caches.p_prev = motor_positions;
         self.tick_caches.v_prev = [0.0; 4];
-        self.tick_caches.v_xy_prev = 0.0;
-        self.tick_caches.v_xy_this = 0.0;
-        self.tick_caches.vdot_xy_accelerating = false;
 
         for (axis, &axis_pos_mm) in self.stepping_axes.iter_mut().zip(motor_positions.iter()) {
             let microstep_distance = axis.microstep_distance;
@@ -1299,13 +1154,9 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// can drop the in-flight segment under disabled-IRQ before clearing
     /// `stream_open`. Phase 1 lands the accessor; the call site arrives in
     /// Phase 7.
-    ///
-    /// Also resets E-mode and XY-seed state so the next stream starts clean.
     #[allow(dead_code)] // Wired in Phase 7.
     pub(crate) fn clear_current(&mut self) {
         self.current = None;
-        self.needs_xy_seed = true;
-        self.e_accumulator = 0.0;
     }
 
     /// Synchronous foreground flush. Spec §3.10.
@@ -1368,9 +1219,6 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         // 5. Clear current-segment / position-seed state.
         self.clear_current();
         self.last_motors = [0.0; 4];
-        self.prev_x = 0.0;
-        self.prev_y = 0.0;
-        self.prev_z = 0.0;
 
         // 6. Re-publish settled engine status. After force_idle the
         //    host either re-streams (transitions Idle → Running on

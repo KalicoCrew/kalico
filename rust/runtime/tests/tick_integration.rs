@@ -1,17 +1,16 @@
 //! Integration test for the full per-sample evaluator (Task 8).
 //!
-//! Validates the three observable behaviours of [`runtime_tick_sample`]
+//! Validates the observable behaviours of [`runtime_tick_sample`]
 //! independently of the lower-level dispatch / monomial / fault helpers:
 //!
 //! 1. A constant-velocity pulse-mode axis enqueues the expected number
 //!    of steps and bumps each yoked stepper's `position_count` by the
 //!    same amount.
-//! 2. Two active XY axes drive the cartesian arc-length accumulator
-//!    (`caches.ds_xy_segment`) and the cached `v_xy_this` to non-zero
-//!    values.
-//! 3. The extruder follower, given `extrusion_per_xy_mm > 0`, advances
-//!    its `last_step_count` purely from the XY arc length even with an
-//!    intrinsically-flat E NURBS piece.
+//! 2. All four axes (A, B, Z, E) are evaluated identically — no
+//!    E-follows-XY arc-length integration, no PA, no XY-derived quantities.
+//!    The `xy_arc_length_accumulates_in_segment` and
+//!    `extruder_follows_xy_arc_length` tests were removed when those fields
+//!    were deleted from `TickContext` and `TickCaches`.
 //!
 //! ### Plan deviation — polynomial coefficient scaling
 //!
@@ -24,11 +23,7 @@
 //! Consequence: a 1 mm move over a 25 µs sample with linear velocity
 //! ~40 m/s (40000 mm/s) needs Bernstein control points
 //! `[0, 1/3, 2/3, 1] · 40000`, not the unit-interval `[0, 1/3, 2/3, 1]`
-//! that the plan's verbatim test fixture used. The plan's fixture would
-//! have evaluated to ~25 µm of position over the sample, far below one
-//! microstep, and the `last_step_count == 4` assertion would be unmet.
-//! The scaling below matches the spec's eval semantics so the test
-//! exercises the dispatch path with the assertion intact.
+//! that the plan's verbatim test fixture used.
 
 use core::sync::atomic::{AtomicI16, AtomicI32, AtomicU8, Ordering};
 
@@ -74,11 +69,7 @@ fn idle_axis() -> AxisConfig {
 }
 
 /// Linear motion piece: `P(t) = scale · t` (so velocity is `scale`).
-/// Use this to set up a known constant-velocity move.
 fn linear_piece(scale: f32, duration_sec: f32) -> BezierPieceMonomial {
-    // Bernstein control points for a linear curve from 0 to `scale`:
-    //   [0, scale/3, 2·scale/3, scale]
-    // → c0 = 0, c1 = scale, c2 = 0, c3 = 0  (Horner evaluates as scale·t).
     let mut piece = bernstein_to_monomial([0.0, scale / 3.0, 2.0 * scale / 3.0, scale]);
     piece.duration = duration_sec;
     piece
@@ -126,7 +117,6 @@ fn constant_velocity_produces_expected_step_count() {
     let shared = SharedState::new();
     let mut caches = TickCaches::new();
     let pool = CurvePool::new();
-    let mut ds_xy_segment: f32 = 0.0;
 
     let mut ctx = TickContext {
         axes: &mut axes,
@@ -134,17 +124,11 @@ fn constant_velocity_produces_expected_step_count() {
         shared: &shared,
         caches: &mut caches,
         curve_pool: &pool,
-        ds_xy_segment: &mut ds_xy_segment,
-        current_segment: None,
-        engine_segment_base_e: 0.0,
         sample_period_sec: SAMPLE_PERIOD_SEC,
         sample_period_cycles: SAMPLE_PERIOD_CYCLES,
         cycles_per_second: CYCLES_PER_SECOND,
-        k_xy: 1.0,
-        advance_accel: 0.0,
-        advance_decel: 0.0,
-        now_cycles: 0,
-        now_cycles_u64: 0,
+        now_cycles: SAMPLE_PERIOD_CYCLES,
+        now_cycles_u64: SAMPLE_PERIOD_CYCLES as u64,
         t_sample_end_global: SAMPLE_PERIOD_SEC,
     };
 
@@ -166,151 +150,19 @@ fn constant_velocity_produces_expected_step_count() {
     );
 }
 
+/// All four axes are evaluated uniformly. Verify that an E-axis Bezier piece
+/// is dispatched exactly like any other axis — no XY-coupling, no PA.
 #[test]
-fn xy_arc_length_accumulates_in_segment() {
-    // Both A and B advancing at the same linear velocity: the cartesian
-    // arc length should be positive and `v_xy_this` should equal the
-    // motor-frame magnitude (k_xy = 1.0 in the cartesian fixture).
+fn e_axis_evaluated_uniformly_like_other_axes() {
     let velocity = 1.0 / SAMPLE_PERIOD_SEC;
-    let piece_a = linear_piece(velocity, SAMPLE_PERIOD_SEC);
-    let piece_b = piece_a;
-
-    let mut steppers_a: Vec<StepperRef, MAX_STEPPERS_PER_AXIS> = Vec::new();
-    let _ = steppers_a.push(make_stepper());
-    let mut steppers_b: Vec<StepperRef, MAX_STEPPERS_PER_AXIS> = Vec::new();
-    let _ = steppers_b.push(make_stepper());
-
-    let mut axes = [
-        AxisConfig {
-            mode: AtomicU8::new(StepMode::Pulse as u8),
-            steppers: steppers_a,
-            curve_handle: None,
-            piece_cursor: 0,
-            piece: Some(piece_a),
-            piece_start_time_cycles: 0,
-            last_step_count: 0,
-            microstep_distance: 0.25,
-        },
-        AxisConfig {
-            mode: AtomicU8::new(StepMode::Pulse as u8),
-            steppers: steppers_b,
-            curve_handle: None,
-            piece_cursor: 0,
-            piece: Some(piece_b),
-            piece_start_time_cycles: 0,
-            last_step_count: 0,
-            microstep_distance: 0.25,
-        },
-        idle_axis(),
-        idle_axis(),
-    ];
-    let mut queues = [
-        StepQueue::new(),
-        StepQueue::new(),
-        StepQueue::new(),
-        StepQueue::new(),
-    ];
-    let queue_ptrs = [
-        &mut queues[0] as *mut StepQueue,
-        &mut queues[1] as *mut StepQueue,
-        &mut queues[2] as *mut StepQueue,
-        &mut queues[3] as *mut StepQueue,
-    ];
-    let shared = SharedState::new();
-    let mut caches = TickCaches::new();
-    let pool = CurvePool::new();
-    let mut ds_xy_segment: f32 = 0.0;
-
-    let mut ctx = TickContext {
-        axes: &mut axes,
-        queues: queue_ptrs,
-        shared: &shared,
-        caches: &mut caches,
-        curve_pool: &pool,
-        ds_xy_segment: &mut ds_xy_segment,
-        current_segment: None,
-        engine_segment_base_e: 0.0,
-        sample_period_sec: SAMPLE_PERIOD_SEC,
-        sample_period_cycles: SAMPLE_PERIOD_CYCLES,
-        cycles_per_second: CYCLES_PER_SECOND,
-        k_xy: 1.0,
-        advance_accel: 0.0,
-        advance_decel: 0.0,
-        now_cycles: 0,
-        now_cycles_u64: 0,
-        t_sample_end_global: SAMPLE_PERIOD_SEC,
-    };
-
-    runtime_tick_sample(&mut ctx);
-
-    assert!(
-        *ctx.ds_xy_segment > 0.0,
-        "ds_xy_segment should accumulate over the sample (got {})",
-        *ctx.ds_xy_segment
-    );
-    assert!(
-        ctx.caches.v_xy_this > 0.0,
-        "v_xy_this should be positive while both A and B advance (got {})",
-        ctx.caches.v_xy_this
-    );
-    // Both axes started from rest in TickCaches, so v_xy_this >= v_xy_prev
-    // → the accelerating flag should be true on this first sample.
-    assert!(
-        ctx.caches.vdot_xy_accelerating,
-        "vdot_xy_accelerating should be true on the first sample of a move"
-    );
-    // p_prev should reflect the just-evaluated positions, not the stale
-    // zeros from TickCaches::new().
-    assert!(
-        ctx.caches.p_prev[0] > 0.0,
-        "p_prev[A] should be advanced by the dispatched motion"
-    );
-    assert!(ctx.caches.p_prev[1] > 0.0, "p_prev[B] should be advanced");
-    assert_eq!(N_AXES, 4, "spec invariant: four axes");
-}
-
-#[test]
-#[ignore = "Task 6 dropped AxisConfig::extrusion_per_xy_mm; Task 11 will \
-            wire per-segment Segment::extrusion_ratio into the Phase-3 \
-            evaluator. Until then the E-follows-XY coupling term is held \
-            at 0.0 and this assertion cannot pass."]
-fn extruder_follows_xy_arc_length() {
-    // E intrinsically-zero piece + per-segment extrusion_ratio = 0.05
-    // means E should advance purely from XY arc length. With v_xy ≈ √2
-    // mm / 25 µs over the sample, ds_xy ≈ √2 mm and E ≈ 0.0707 mm;
-    // microstep 0.01 → ≈7 microsteps.
-    let velocity = 1.0 / SAMPLE_PERIOD_SEC;
-    let piece_a = linear_piece(velocity, SAMPLE_PERIOD_SEC);
-    let piece_b = piece_a;
-    // E piece is intrinsically zero (no retraction motion); the entire E
-    // advance must come from the per-segment extrusion ratio scaled by
-    // `ds_xy_segment`.
-    let piece_e = bernstein_to_monomial([0.0, 0.0, 0.0, 0.0]);
+    let piece_e = linear_piece(velocity, SAMPLE_PERIOD_SEC);
 
     let mut steppers_e: Vec<StepperRef, MAX_STEPPERS_PER_AXIS> = Vec::new();
     let _ = steppers_e.push(make_stepper());
 
     let mut axes = [
-        AxisConfig {
-            mode: AtomicU8::new(StepMode::Pulse as u8),
-            steppers: Vec::new(),
-            curve_handle: None,
-            piece_cursor: 0,
-            piece: Some(piece_a),
-            piece_start_time_cycles: 0,
-            last_step_count: 0,
-            microstep_distance: 0.25,
-        },
-        AxisConfig {
-            mode: AtomicU8::new(StepMode::Pulse as u8),
-            steppers: Vec::new(),
-            curve_handle: None,
-            piece_cursor: 0,
-            piece: Some(piece_b),
-            piece_start_time_cycles: 0,
-            last_step_count: 0,
-            microstep_distance: 0.25,
-        },
+        idle_axis(),
+        idle_axis(),
         idle_axis(),
         AxisConfig {
             mode: AtomicU8::new(StepMode::Pulse as u8),
@@ -320,7 +172,7 @@ fn extruder_follows_xy_arc_length() {
             piece: Some(piece_e),
             piece_start_time_cycles: 0,
             last_step_count: 0,
-            microstep_distance: 0.01,
+            microstep_distance: 0.25,
         },
     ];
 
@@ -336,40 +188,50 @@ fn extruder_follows_xy_arc_length() {
         &mut queues[2] as *mut StepQueue,
         &mut queues[3] as *mut StepQueue,
     ];
+
     let shared = SharedState::new();
     let mut caches = TickCaches::new();
     let pool = CurvePool::new();
-    let mut ds_xy_segment: f32 = 0.0;
+
     let mut ctx = TickContext {
         axes: &mut axes,
         queues: queue_ptrs,
         shared: &shared,
         caches: &mut caches,
         curve_pool: &pool,
-        ds_xy_segment: &mut ds_xy_segment,
-        current_segment: None,
-        engine_segment_base_e: 0.0,
         sample_period_sec: SAMPLE_PERIOD_SEC,
         sample_period_cycles: SAMPLE_PERIOD_CYCLES,
         cycles_per_second: CYCLES_PER_SECOND,
-        k_xy: 1.0,
-        advance_accel: 0.0,
-        advance_decel: 0.0,
-        now_cycles: 0,
-        now_cycles_u64: 0,
+        now_cycles: SAMPLE_PERIOD_CYCLES,
+        now_cycles_u64: SAMPLE_PERIOD_CYCLES as u64,
         t_sample_end_global: SAMPLE_PERIOD_SEC,
     };
 
     runtime_tick_sample(&mut ctx);
 
-    assert!(
-        axes[3].last_step_count > 0,
-        "extruder should have advanced positions from XY arc length (got {})",
-        axes[3].last_step_count
+    // Check p_prev[E] before dropping ctx (it holds the mutable borrow on axes).
+    let p_prev_e = ctx.caches.p_prev[3];
+    // Drop ctx to release the mutable borrow on axes before reading axes[3].
+    drop(ctx);
+
+    assert_eq!(
+        axes[3].last_step_count, 4,
+        "E axis (idx 3) should produce 4 microsteps like any other axis"
+    );
+    assert_eq!(
+        axes[3].steppers[0].position_count.load(Ordering::Acquire),
+        4,
+        "E stepper position_count should reflect dispatched steps"
     );
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
         0,
-        "no fault should latch on the follower path"
+        "no fault should latch on uniform E evaluation"
     );
+    // p_prev for E should be updated after the tick.
+    assert!(
+        p_prev_e > 0.0,
+        "p_prev[E] should be advanced by the dispatched motion"
+    );
+    assert_eq!(N_AXES, 4, "spec invariant: four axes");
 }

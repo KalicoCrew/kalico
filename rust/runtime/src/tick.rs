@@ -578,11 +578,7 @@ pub const AXIS_E: usize = 3;
 /// - `shared`: cross-half fault publication + telemetry counters.
 /// - `caches`: tick-private scratch (Task 5's [`TickCaches`]).
 /// - `sample_period_sec` / `sample_period_cycles` / `cycles_per_second`:
-///   sample-window scalars used by dispatch + XY arc-length.
-/// - `k_xy`: motor→cartesian XY speed scale. 1.0 for cartesian; 1/√2
-///   for `CoreXY`.
-/// - `advance_accel` / `advance_decel`: PA coefficients (s); the active
-///   one is selected per-tick from `vdot_xy_accelerating`.
+///   sample-window scalars used by dispatch.
 /// - `now_cycles`: sample-start absolute cycle counter (already widened
 ///   by Task 6); passed through to `dispatch_axis`.
 /// - `t_sample_end_global`: wall-clock time at the end of this sample,
@@ -603,28 +599,9 @@ pub struct TickContext<'a> {
     /// against the pool; foreground is the sole writer under the
     /// `try_alloc_and_load` discipline.
     pub curve_pool: &'a crate::curve_pool::CurvePool,
-    /// Segment-scoped XY arc-length accumulator (mm). Owned by `Engine`
-    /// since Task 7 of the stepping-redesign finish; reset at segment-arm
-    /// and read by retire for the final E delta. Threaded into the tick
-    /// context via mutable borrow so Phase 2 can integrate and Phase 5
-    /// can clear without reaching back through the engine.
-    pub ds_xy_segment: &'a mut f32,
-    /// Reference to `Engine::current` for the active segment. Phase 3's E-axis
-    /// evaluator dispatches on `Segment::e_mode` + `Segment::extrusion_ratio`.
-    /// `None` while no segment is armed (e.g. boot, between segments) — in
-    /// which case Phase 3 returns `engine_segment_base_e` unchanged (no E
-    /// motion).
-    pub current_segment: Option<&'a crate::segment::Segment>,
-    /// Snapshot of `Engine::e_accumulator` (truncated to f32) taken at
-    /// `arm_segment` time. Phase 3 returns absolute E as
-    /// `engine_segment_base_e + segment_local_e`. See spec §4.6.
-    pub engine_segment_base_e: f32,
     pub sample_period_sec: f32,
     pub sample_period_cycles: u32,
     pub cycles_per_second: f32,
-    pub k_xy: f32,
-    pub advance_accel: f32,
-    pub advance_decel: f32,
     pub now_cycles: u32,
     pub t_sample_end_global: f32,
     /// 2026-05-21: full u64 widened-now. Required because
@@ -767,93 +744,16 @@ fn advance_piece_if_needed(
 /// dispatch is skipped and a [`MathNonFinite`](crate::error::FaultCode::MathNonFinite)
 /// fault is latched via [`raise_math_non_finite`]. Other axes proceed.
 ///
-/// Phase 5 (segment retirement) is deferred to Task 9.
+/// All four axes (A, B, Z, E) are evaluated identically. The host
+/// pre-computes E as a regular Bezier curve; the MCU treats E the same
+/// as any other axis with no PA, no arc-length integration, no XY-derived
+/// quantities.
 //
-// Every `[...]` index in this body is statically bounded by `N_AXES`:
-// the iteration set `[AXIS_A, AXIS_B, AXIS_Z]` and the constant `AXIS_E`
-// are all `< N_AXES`, and the bookkeeping loop's `0..N_AXES` bound is
-// exactly the array length. The blanket `allow(clippy::indexing_slicing)`
-// is justified — every individual index would otherwise need its own
-// inline annotation, which would obscure the per-phase structure that
-// the spec calls out.
-/// Phase-3 E-axis evaluator (spec §4.6, absolute-position model).
-///
-/// Returns the absolute E position in mm:
-/// `engine_segment_base_e + segment_local`. The segment-local part
-/// dispatches on [`Segment::e_mode`](crate::segment::Segment::e_mode):
-///
-/// - `CoupledToXy`: `intrinsic + extrusion_ratio * ds_xy_segment + pa_k *
-///   extrusion_ratio * v_xy_this`. The follower term integrates
-///   XY arc length since segment-arm; PA adds a velocity-proportional
-///   correction whose sign (accelerating vs decelerating) the caller
-///   has already baked into `pa_k`.
-/// - `Independent`: `intrinsic` only — the E NURBS drives motion
-///   (retract / prime / filament change). No XY contribution.
-/// - `Travel`: `0`. E does not move.
-///
-/// `intrinsic` is the position from `axis_e.piece` (if any), evaluated at
-/// `t_sample_end_global - piece_start_seconds`. Without an active piece
-/// it is `0.0` — `Independent` mode then returns
-/// `engine_segment_base_e` (no E motion this sample), which is exactly
-/// the spec §4.6 "Independent with no intrinsic" behaviour.
-///
-/// `current == None` (no segment armed) likewise returns
-/// `engine_segment_base_e` — E holds its accumulated position.
-///
-/// `&mut AxisConfig` is taken for parity with the rest of Phase 3 (the
-/// caller already holds an exclusive borrow), but this evaluator does
-/// not mutate the axis — `advance_piece_if_needed` does that in the
-/// surrounding tick body.
-//
-// Permitted in this hot path: cast-precision-loss on `piece_start_time_cycles
-// as f32` matches the rest of `runtime_tick_sample`; we live with the f32
-// epoch's 24-bit mantissa for the same reasons documented on `TickContext`.
-#[allow(clippy::cast_precision_loss)]
-#[allow(clippy::too_many_arguments)] // Spec-pinned signature (§4.6 pseudocode).
-pub fn evaluate_e_axis(
-    axis_e: &mut AxisConfig,
-    current: Option<&crate::segment::Segment>,
-    engine_segment_base_e: f32,
-    ds_xy_segment_accumulator: f32,
-    pa_k: f32,
-    v_xy_this: f32,
-    t_sample_end_global: f32,
-    cycles_per_second: f32,
-) -> f32 {
-    let Some(seg) = current else {
-        return engine_segment_base_e;
-    };
-
-    let intrinsic_local = if let Some(piece) = axis_e.piece {
-        let piece_start_sec = (axis_e.piece_start_time_cycles as f32) / cycles_per_second;
-        let t_local = t_sample_end_global - piece_start_sec;
-        let (p, _v) = crate::monomial::eval_position_velocity(&piece, t_local);
-        p
-    } else {
-        0.0
-    };
-
-    let segment_local = match seg.e_mode {
-        crate::config::EMode::CoupledToXy => {
-            let follower = seg.extrusion_ratio * ds_xy_segment_accumulator;
-            let pa_correction = pa_k * seg.extrusion_ratio * v_xy_this;
-            intrinsic_local + follower + pa_correction
-        }
-        crate::config::EMode::Independent => intrinsic_local,
-        crate::config::EMode::Travel => 0.0,
-    };
-
-    engine_segment_base_e + segment_local
-}
-
-// `runtime_tick_sample` is the per-sample ISR core. Spec §4 makes the
-// per-phase block structure load-bearing for review; splitting it into
-// helpers would obscure the ABXZ / A2 / E phase ordering documented in the
-// design. The 108-line body remains a deliberate single function.
-// Phase 2.5 uses `libm::fabsf(v) * 65536.0 as u32`. `fabsf` always
-// returns a non-negative f32, but clippy::cast_sign_loss fires on f32→u32
-// because f32 is technically signed. The invariant is structural (fabsf
-// postcondition), not just local, so silence the lint at function scope.
+// Every `[...]` index in this body is statically bounded by `N_AXES`.
+// The blanket `allow(clippy::indexing_slicing)` is justified — each
+// index is within [0, N_AXES) by construction.
+// `libm::fabsf(v) * 65536.0 as u32` for endstop Q16.16 encoding:
+// `fabsf` always returns non-negative; `as u32` saturates on overflow.
 #[allow(
     clippy::indexing_slicing,
     clippy::too_many_lines,
@@ -864,17 +764,15 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     let mut v_end_axis = [0.0_f32; N_AXES];
 
     // -----------------------------------------------------------------
-    // Phase 1: evaluate motion axes A, B, Z and dispatch each.
+    // Phase 1: evaluate ALL axes (A, B, Z, E) uniformly.
+    //
+    // All four axes share identical evaluation logic: advance piece cursor,
+    // evaluate Bezier polynomial, dispatch steps. E is no longer special.
     // -----------------------------------------------------------------
-    for axis_idx in [AXIS_A, AXIS_B, AXIS_Z] {
+    for axis_idx in [AXIS_A, AXIS_B, AXIS_Z, AXIS_E] {
         let axis = &mut ctx.axes[axis_idx];
         let p_sample_start = ctx.caches.p_prev[axis_idx];
 
-        // Phase-5 prologue: advance / retire the active piece in lockstep
-        // with sample time before any evaluation. After this call,
-        // `axis.piece` is either still in-flight (`t_local <= duration`)
-        // or `None` (exhausted; Phase 5 below will see all-axes-idle and
-        // bump the retirement counter).
         advance_piece_if_needed(
             axis,
             axis_idx,
@@ -886,27 +784,18 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
 
         let Some(piece) = axis.piece else {
             // No active piece on this axis: hold position, zero velocity.
-            // p_prev stays as last published (kept implicit by writing
-            // p_sample_start back into p_end_axis below).
             p_end_axis[axis_idx] = p_sample_start;
             v_end_axis[axis_idx] = 0.0;
             continue;
         };
 
-        // 2026-05-21: compute `t_local` from u64 cycle SUBTRACT first,
-        // then convert to f32 — otherwise f32 catastrophic cancellation
-        // (two large nearly-equal values subtracted) makes t_local
-        // constant across samples after ~8 s of uptime, freezing p_end
-        // and making signed_steps == 0 forever (motors silent despite
-        // engine running cleanly).
+        // Compute t_local from u64 cycle subtraction BEFORE converting to f32
+        // to avoid catastrophic cancellation after ~8 s uptime.
         let t_local_cycles = ctx
             .now_cycles_u64
             .wrapping_sub(axis.piece_start_time_cycles);
         let t_local = (t_local_cycles as f32) / ctx.cycles_per_second;
 
-        // 2026-05-21 diag: capture c0 (start-of-piece position) and
-        // t_local on every eval. Last value before the dispatch_pulse
-        // bound check trips is what the host reads via diag tags.
         if axis_idx == AXIS_A {
             ctx.shared.isr_last_c0_bits.store(
                 piece.coeffs[0].to_bits(),
@@ -920,7 +809,6 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         let (p_end, v_end) = crate::monomial::eval_position_velocity(&piece, t_local);
         if !p_end.is_finite() || !v_end.is_finite() {
             raise_math_non_finite(ctx.shared, axis_idx);
-            // Hold previous position to keep downstream caches sane.
             p_end_axis[axis_idx] = p_sample_start;
             v_end_axis[axis_idx] = 0.0;
             continue;
@@ -929,8 +817,6 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
         p_end_axis[axis_idx] = p_end;
         v_end_axis[axis_idx] = v_end;
 
-        // Step 7: dispatch_axis re-enabled. dispatch_pulse now bails
-        // before the queue_push loop (compute_step_times runs).
         dispatch_axis(
             axis_idx,
             axis,
@@ -946,158 +832,27 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     }
 
     // -----------------------------------------------------------------
-    // Phase 2: XY-derived quantities.
-    //
-    // Motor-frame speed → cartesian XY speed via `k_xy`. Arc length
-    // accumulates per segment so the extruder follower (Phase 3) can
-    // integrate it directly; pressure-advance polarity is derived from
-    // the sign of dv_xy/dt.
-    // -----------------------------------------------------------------
-    let xy_active = ctx.axes[AXIS_A].piece.is_some() || ctx.axes[AXIS_B].piece.is_some();
-    if xy_active {
-        let va = v_end_axis[AXIS_A];
-        let vb = v_end_axis[AXIS_B];
-        let v_motor_sq = va * va + vb * vb;
-        let v_xy_this = libm::sqrtf(v_motor_sq) * ctx.k_xy;
-        ctx.caches.vdot_xy_accelerating = v_xy_this >= ctx.caches.v_xy_prev;
-        *ctx.ds_xy_segment += v_xy_this * ctx.sample_period_sec;
-        ctx.caches.v_xy_prev = v_xy_this;
-        ctx.caches.v_xy_this = v_xy_this;
-    } else {
-        ctx.caches.v_xy_this = 0.0;
-        ctx.caches.vdot_xy_accelerating = false;
-        // Note: ds_xy_segment is *not* reset here. The segment-retirement
-        // phase (Task 9) is what zeroes it; an XY-idle tick mid-segment
-        // (e.g., a Z-only hop between extrusions) must not clobber the
-        // accumulated arc length that the next segment's E follower may
-        // still consume.
-    }
-
-    // -----------------------------------------------------------------
-    // Phase 2.5: Compute per-axis motor-frame speed magnitudes for the
-    // endstop trip evaluator (Phase 5 below). Kept as a local so the
-    // TickContext struct stays identical to sota-motion — engine.rs does
-    // not need to know about this field.
-    //
-    // Q16.16 encoding: multiply the f32 speed (mm/s in motor-frame) by
-    // 65536.0 and cast to u32. `as u32` saturates on negative (sign is
-    // stripped by `libm::fabsf`) and on overflow (speeds above ~65535 mm/s
-    // are physically impossible). The endstop module uses unsigned Q16.16
-    // throughout (see `max_axis_velocity` in endstop.rs).
-    // -----------------------------------------------------------------
-    let v_motor_q16: [u32; 3] = [
-        (libm::fabsf(v_end_axis[AXIS_A]) * 65536.0) as u32,
-        (libm::fabsf(v_end_axis[AXIS_B]) * 65536.0) as u32,
-        (libm::fabsf(v_end_axis[AXIS_Z]) * 65536.0) as u32,
-    ];
-
-    // -----------------------------------------------------------------
-    // Phase 3: evaluate the extruder axis with E-follows-XY + PA.
-    //
-    // Absolute-position model (spec §4.6). `evaluate_e_axis` returns
-    // `engine_segment_base_e + segment_local`, dispatching on the
-    // current segment's `e_mode`:
-    //   - CoupledToXy: intrinsic + extrusion_ratio × ds_xy_segment
-    //                  + pa_k × extrusion_ratio × v_xy_this
-    //   - Independent: intrinsic (E NURBS only; no XY contribution)
-    //   - Travel:      0 (no E motion)
-    // `pa_k` is `advance_accel` while v_xy is rising and `advance_decel`
-    // while falling (asymmetric PA, bleeding-edge-v2 Step 9 lineage in
-    // the CLAUDE.md scope).
-    //
-    // `dispatch_axis` for E reuses `caches.p_prev[AXIS_E]` as the prior
-    // absolute position; the per-axis cache is updated below in Phase 4
-    // so subsequent samples see this sample's absolute E.
-    // -----------------------------------------------------------------
-    {
-        let axis = &mut ctx.axes[AXIS_E];
-        let p_sample_start = ctx.caches.p_prev[AXIS_E];
-
-        // Phase-5 prologue for the extruder axis. Same rationale as the
-        // motion-axis branch above: advance / retire before evaluation.
-        advance_piece_if_needed(
-            axis,
-            AXIS_E,
-            ctx.curve_pool,
-            ctx.shared,
-            ctx.now_cycles_u64,
-            ctx.cycles_per_second,
-        );
-
-        let pa_k = if ctx.caches.vdot_xy_accelerating {
-            ctx.advance_accel
-        } else {
-            ctx.advance_decel
-        };
-        let p_end = evaluate_e_axis(
-            axis,
-            ctx.current_segment,
-            ctx.engine_segment_base_e,
-            *ctx.ds_xy_segment,
-            pa_k,
-            ctx.caches.v_xy_this,
-            ctx.t_sample_end_global,
-            ctx.cycles_per_second,
-        );
-
-        if p_end.is_finite() {
-            p_end_axis[AXIS_E] = p_end;
-            // Phase-3 doesn't surface a separate E velocity (the secant-
-            // slope sub-sample timing uses position differencing).
-            v_end_axis[AXIS_E] = 0.0;
-            dispatch_axis(
-                AXIS_E,
-                axis,
-                ctx.queues[AXIS_E],
-                ctx.shared,
-                p_end,
-                /* v_end */ 0.0,
-                p_sample_start,
-                ctx.sample_period_sec,
-                ctx.now_cycles,
-                ctx.cycles_per_second,
-            );
-        } else {
-            raise_math_non_finite(ctx.shared, AXIS_E);
-            p_end_axis[AXIS_E] = p_sample_start;
-            v_end_axis[AXIS_E] = 0.0;
-        }
-    }
-
-    // -----------------------------------------------------------------
-    // Phase 4: publish (p_end, v_end) into per-axis caches for the next
+    // Phase 2: publish (p_end, v_end) into per-axis caches for the next
     // tick's secant-slope sub-sample timing.
     // -----------------------------------------------------------------
     ctx.caches.p_prev = p_end_axis;
     ctx.caches.v_prev = v_end_axis;
 
     // -----------------------------------------------------------------
-    // Phase 5: Endstop trip evaluation (sensorless homing).
+    // Phase 3: Endstop trip evaluation (sensorless homing).
     //
-    // Called AFTER Phase 4 so the cache writeback is complete before we
-    // potentially abort the current segment.
-    //
-    // `endstop::tick` returns `AbortNow` when an armed endstop source
-    // has seen its assertion pattern. On trip we clear `axis.piece` for
-    // all axes so that `post_pass_exhaustion` (called immediately after
-    // `runtime_tick_sample` returns in `Engine::tick_sample`) sees all
-    // axes idle → clears `pending_mask` → `retire_if_complete` fires on
-    // the same call. That retirement publishes `retired_through_segment_id`
-    // and the `kalico_credit_freed` cursor through the normal drain path.
-    //
-    // The current sample's steps have already been enqueued (dispatch
-    // happened in Phase 1 / Phase 3 above) — those steps are in-flight
-    // and will let the motors coast to a stop naturally. Clearing `piece`
-    // here ensures NO further steps are dispatched for any subsequent
-    // sample: `advance_piece_if_needed` / Phase 1 will see `piece = None`
-    // and early-continue every axis.
-    //
-    // Stepper counts for the snapshot: read the live per-stepper counters
-    // directly. `MAX_STEPPER_OIDS` is the full stepper table width; the
-    // endstop `publish_snapshot` call inside `endstop::tick` takes a
-    // `&[i32]` slice and bounds it by the arm's own `stepper_count`.
+    // Q16.16 per-axis motor-frame speed magnitudes for the velocity-gated
+    // endstop policy (`IgnoreUntilMoving`). Derived from the just-evaluated
+    // v_end_axis values for A, B, Z.
     // -----------------------------------------------------------------
     {
+        // Compute Q16.16 speeds for axes A, B, Z (endstop uses motor-frame).
+        let v_motor_q16: [u32; 3] = [
+            (libm::fabsf(v_end_axis[AXIS_A]) * 65536.0) as u32,
+            (libm::fabsf(v_end_axis[AXIS_B]) * 65536.0) as u32,
+            (libm::fabsf(v_end_axis[AXIS_Z]) * 65536.0) as u32,
+        ];
+
         let mut stepper_counts = [0_i32; crate::state::MAX_STEPPER_OIDS];
         for axis in ctx.axes.iter() {
             for stepper in axis.steppers.iter() {
@@ -1122,17 +877,11 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     }
 
     // -----------------------------------------------------------------
-    // Phase 6: segment retirement.
+    // Phase 4: segment retirement.
     //
     // Owned by `Engine::post_pass_exhaustion` + `Engine::retire_if_complete`
-    // (Task 10). The post-pass updates `pending_mask` from the per-axis
-    // exhaustion state set by `advance_piece_if_needed` above (or the
-    // endstop trip clear above), and the retire publishes
-    // `retired_through_segment_id`, the `SEGMENT_END` trace marker, and
-    // rolls forward `e_accumulator` when `pending_mask == 0`.
-    // `Engine::tick_sample` invokes both immediately after this function
-    // returns — the call site needs the trace producer borrow, which is
-    // held outside `TickContext`.
+    // (Task 10). Invoked immediately after this function returns in
+    // `Engine::tick_sample`.
     // -----------------------------------------------------------------
 }
 
