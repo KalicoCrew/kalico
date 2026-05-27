@@ -44,6 +44,7 @@ pub mod monomial;
 pub mod per_axis_timer;
 pub mod phase_config;
 pub mod phase_lut;
+pub mod piece_ring;
 pub mod queue;
 pub mod reclaim;
 pub mod segment;
