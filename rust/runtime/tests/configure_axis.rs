@@ -68,8 +68,6 @@ fn configure_axis_publishes_mode_and_scalars() {
     assert!(axis.piece.is_none());
     assert_eq!(axis.piece_start_time_cycles, 0);
     assert_eq!(axis.last_step_count, 0);
-    assert!(axis.curve_handle.is_none());
-    assert_eq!(axis.piece_cursor, 0);
     // Stepper binding populated.
     assert_eq!(axis.steppers.len(), 1);
     assert_eq!(axis.steppers[0].stepper_oid, 0);

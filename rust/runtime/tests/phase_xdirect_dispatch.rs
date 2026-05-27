@@ -49,8 +49,6 @@ fn make_phase_axis(microstep_distance: f32, stepper: StepperRef) -> AxisConfig {
     AxisConfig {
         mode: AtomicU8::new(StepMode::Phase as u8),
         steppers,
-        curve_handle: None,
-        piece_cursor: 0,
         piece: None,
         piece_start_time_cycles: 0,
         last_step_count: 0,
@@ -260,8 +258,6 @@ fn phase_dispatch_two_steppers_two_captures() {
     let mut axis = AxisConfig {
         mode: AtomicU8::new(StepMode::Phase as u8),
         steppers,
-        curve_handle: None,
-        piece_cursor: 0,
         piece: None,
         piece_start_time_cycles: 0,
         last_step_count: 0,
