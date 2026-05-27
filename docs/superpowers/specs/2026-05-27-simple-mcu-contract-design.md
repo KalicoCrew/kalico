@@ -16,7 +16,7 @@ There are no segments, no curve pool, no handles, no generation tracking, no kin
 
 ### 2.1 Piece Ring
 
-Total piece ring memory is **static, configured at compile time** via Kconfig (`CONFIG_RUNTIME_PIECE_RING_SIZE`). Each axis gets its own contiguous circular buffer carved from this memory during `ConfigureAxis`. The host specifies the ring depth (number of pieces) per axis — the MCU subtracts from remaining memory and errors if the request would exceed it. No equal-division assumption; the host owns the sizing policy.
+Total piece ring memory is fixed per MCU (determined by chip target at build time). Each axis gets its own contiguous circular buffer carved from this memory during `ConfigureAxis`. The host specifies the ring depth (number of pieces) per axis — the MCU subtracts from remaining memory and errors if the request would exceed it. No equal-division assumption; the host owns the sizing policy. The MCU reports its total available piece memory via `RuntimeCapsResponse`.
 
 Each entry is 28 bytes:
 
@@ -38,10 +38,7 @@ Start time is in u64 MCU clock cycles (host converts from absolute time using pe
 - `CONFIG_RUNTIME_CURVE_POOL_N` — no curve pool
 - `CONFIG_RUNTIME_MAX_PIECES_PER_CURVE` — no per-slot piece ceiling
 
-**Added:**
-- `CONFIG_RUNTIME_PIECE_RING_SIZE` — total bytes for piece ring storage (default: 63488 on H7, 16384 on F4)
-
-The host queries this value via `RuntimeCapsResponse` and uses it to plan per-axis ring depth requests.
+How the MCU determines its total available piece memory (Kconfig, linker section, or hardcoded per-target constant) is an implementation detail. The contract-facing surface is `RuntimeCapsResponse` reporting the total.
 
 ### 2.2 Per-Axis ISR Working State (fixed, not in ring)
 
