@@ -48,9 +48,6 @@ _Static_assert(RT_STORAGE_SIZE >= 1024,
 //   - runtime_bench_samples_buf (src/generic/runtime_bench.c)
 //   - receive_buf (src/generic/serial_irq.c, RX_BUFFER_SIZE = 2 KB)
 //
-// (Segment SPSC queue is NOT in .axi_bss — lives in DTCM/regular .bss
-// deliberately, per kalico_segment_queue.c:31-40.)
-//
 // RT_STORAGE_SIZE (formerly ~298 KB for the NURBS LARGE profile) is now
 // provisionally 100 KB following the 2026-05-20 stepping redesign that
 // replaced the NURBS curve pool with a uniform cubic Bézier piece pool.

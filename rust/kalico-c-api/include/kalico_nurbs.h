@@ -70,16 +70,6 @@ float kalico_nurbs_param_from_arc_length_f32(const struct kalico_nurbs_ArcLength
 int32_t runtime_handle_check_blob_version(const uint8_t *payload_ptr, uint32_t payload_len);
 
 /**
- * Diagnostic: per-slot generation snapshot (spec §10.4 + Round-1 B9).
- * Used after a fault for host-side recovery decisions. Writes the
- * per-slot `current_gen` and `last_retired_gen` into the out-params.
- */
-int32_t runtime_handle_query_pool_state(kalico_nurbs_KalicoRuntime *rt,
-                                        uint16_t slot_idx,
-                                        uint16_t *out_current_gen,
-                                        uint16_t *out_last_retired_gen);
-
-/**
  * Stepping-redesign Task 17 — TIM5 ISR body.
  *
  * Drives the unified per-sample evaluator
@@ -237,14 +227,6 @@ double kalico_runtime_get_axis_accumulator(kalico_nurbs_KalicoRuntime *rt, uint8
  * Used by the sim diagnostic command `runtime_sim_stepper_count_query`.
  */
 int32_t kalico_runtime_get_stepper_count(kalico_nurbs_KalicoRuntime *rt, uint8_t oid);
-
-/**
- * Configure axis mapping and kinematics for this MCU. Minimal stub for
- * Step 7-B MVP — accepts `kinematics_tag` (0 = CoreXyAndE, 1 =
- * CartesianXyzAndE) and validates. Full motor-config blob
- * deserialization is deferred to Step 7-C.
- */
-int32_t kalico_configure_axes(kalico_nurbs_KalicoRuntime *rt, uint8_t kinematics_tag);
 
 /**
  * Extended blob layout (25 bytes) and phase-stepping blob layout
@@ -507,13 +489,6 @@ uint32_t kalico_runtime_queue_len_diag(kalico_nurbs_KalicoRuntime *rt);
  * (producer and consumer ends not sharing the backing buffer).
  */
 uint32_t kalico_runtime_enqueue_success_lo(kalico_nurbs_KalicoRuntime *rt);
-
-/**
- * Diagnostic: read the last result code from `push_segment_impl`.
- * 0 = KALICO_OK, negative = an error code (see error.rs). Updated on
- * every call regardless of outcome.
- */
-int32_t kalico_runtime_last_push_segment_result(kalico_nurbs_KalicoRuntime *rt);
 
 /**
  * 2026-05-15 live diagnosis: read the low 32 bits of

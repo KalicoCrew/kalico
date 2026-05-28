@@ -15,18 +15,6 @@ extern const uint32_t runtime_clock_freq;
 
 extern void* runtime_handle;   // exposed in src/runtime_tick.c
 
-// 2026-05-20 (Codex gap M3): TIM5 gate consults the live C-side queue
-// length directly, rather than runtime_handle_queue_depth() (which is
-// `accepted_segment_id - retired_through_segment_id` and returns 0 for
-// the first segment after boot because both atomics initialise to 0
-// and id=0 - id=0 = 0 — silently skipping TIM5 enable for the very
-// first jog). `kalico_native_queue_len()` is the literal `(tail - head
-// + N) % N` on the actual C ring (src/kalico_segment_queue.c) and is
-// already `used, externally_visible`'d, so the LTO+gc-sections
-// concerns that apply to runtime_clock_freq / runtime_handle do not
-// apply here.
-extern unsigned kalico_native_queue_len(void);
-
 // Stepping-redesign Task 17: TIM5 ISR body. The canonical prototype for
 // `kalico_runtime_tick_sample` is supplied by the included
 // `kalico_runtime.h`; no local extern needed.
@@ -69,50 +57,27 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // Stepping-redesign 2026-05-20 (Codex gap M3 follow-up): TIM5 is
-    // enabled iff at least one of two live conditions holds:
-    //   (1) a phase-stepping consumer needs sample writes
-    //       (count_modulated_steppers > 0), OR
-    //   (2) a segment is pending in the C-side bridge queue
-    //       (kalico_native_queue_len > 0).
-    //
-    // The earlier gate (6cea9953d) used `runtime_handle_queue_depth()`,
-    // the host-side id cursor `accepted_segment_id -
-    // retired_through_segment_id`. Both atomics initialise to 0 and
-    // the first segment is pushed with id=0, so depth evaluated to 0
-    // on the very first push — TIM5 stayed disabled and the first jog
-    // after boot never moved motors. `kalico_native_queue_len()` is
-    // the *live* truth: `(tail - head + N) % N` on the actual C ring
-    // (src/kalico_segment_queue.c).
-    //
-    // Why no "ISR mid-segment" clause: a mid-segment re-enable can
-    // only reach this function through one of the two real call sites
-    // — push_segment (clause 2 is non-zero, just enqueued) or
-    // set_step_mode (clause 1 is non-zero by construction). There is
-    // no other path. The CR1.CEN idempotent guard below also short-
-    // circuits any redundant call while TIM5 is already running.
+    // TIM5 is enabled iff at least one phase-stepping consumer needs
+    // sample writes (count_modulated_steppers > 0). The CR1.CEN
+    // idempotent guard below short-circuits any redundant call while
+    // TIM5 is already running.
     //
     // Disable symmetry: `runtime_drain` (src/runtime_tick.c) disables
-    // TIM5 only on the Drained/Fault transition. By the time the
-    // engine reaches Drained the bridge queue is empty by definition,
-    // so the {enable predicate} and {disable predicate} stay in sync.
+    // TIM5 only on the Drained/Fault transition.
     //
     // The remaining ISR responsibilities are unchanged:
-    //   - Segment dequeue + retirement run on the producer Klipper timer
-    //     (`src/runtime_tick.c`, T8).
-    //   - GPIO step pulses fire from per-stepper consumer Klipper timers
-    //     (`step_time_event`, T7) keyed off Newton-iterated waketimes.
+    //   - GPIO step pulses fire from per-axis consumer Klipper timers
+    //     (`per_axis_timer_event_*`, src/runtime_tick.c) keyed off the
+    //     per-axis step queues.
     //   - Widened MCU clock for `clock_sync_respond` is computed on-demand
-    //     via `runtime_handle_widened_now` (T6), no seqlock seeding needed.
+    //     via `runtime_handle_widened_now`, no seqlock seeding needed.
     if (!runtime_handle) {
         return;
     }
 
-    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0
-        && kalico_native_queue_len() == 0) {
-        // No phase-stepping consumers AND no pending segments —
-        // TIM5 stays disabled. The next push_segment or set_step_mode
-        // call will re-enter and arm TIM5.
+    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
+        // No phase-stepping consumers — TIM5 stays disabled. The next
+        // set_step_mode call will re-enter and arm TIM5.
         return;
     }
 

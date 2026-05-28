@@ -48,24 +48,8 @@ static uint8_t tx_buf[KALICO_TX_BUF_SIZE];
 // Reset epoch, generated once at boot. Nonzero by construction.
 static uint32_t reset_epoch;
 
-// 2026-05-14 push_segment investigation counters. Surfaced via
-// fault_detail tags 0xB6/0xB7 so we can localise whether
-// PushSegment frames reach handle_push_segment and what runtime_handle_push_segment
-// actually returns. All in .bss; cleared on MCU reset.
-volatile uint32_t handle_push_segment_calls_total
-                __attribute__((used, externally_visible));
-volatile uint32_t handle_push_segment_invalid_body_total
-                __attribute__((used, externally_visible));
-volatile uint32_t handle_push_segment_no_handle_total
-                __attribute__((used, externally_visible));
-volatile int32_t handle_push_segment_last_r
-                __attribute__((used, externally_visible));
-
-static void handle_load_curve_cubic(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
-static void handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
-static void handle_reset_curve_pool(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_push_pieces(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 
 // ---------------------------------------------------------------------------
@@ -143,11 +127,10 @@ kalico_transport_send_frame(uint8_t channel, const uint8_t *payload,
     uint16_t crc = crc16_ccitt(&tx_buf[1], (uint32_t)(2 + 1 + payload_len));
     tx_buf[total - 2] = (uint8_t)(crc & 0xFF);
     tx_buf[total - 1] = (uint8_t)((crc >> 8) & 0xFF);
-    // 2026-05-17: return the underlying write_raw result so callers that
-    // care about delivery (kalico_native_emit_credit_freed → host slot
-    // pool retirement) can detect transmit_buf overflow drops and retry
-    // on the next drain cycle. transmit_buf overflow returns -1; success
-    // returns the frame length.
+    // Return the underlying write_raw result so callers that care about
+    // delivery can detect transmit_buf overflow drops and retry on the
+    // next drain cycle. transmit_buf overflow returns -1; success returns
+    // the frame length.
     return kalico_console_write_raw(tx_buf, (uint16_t)total);
 }
 
@@ -255,20 +238,11 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
     case KALICO_MSG_IDENTIFY:
         handle_identify(correlation_id, body, body_len);
         return;
-    case KALICO_MSG_LOAD_CURVE_CUBIC:
-        handle_load_curve_cubic(correlation_id, body, body_len);
-        return;
-    case KALICO_MSG_PUSH_SEGMENT:
-        handle_push_segment(correlation_id, body, body_len);
-        return;
     case KALICO_MSG_CONFIGURE_AXES:
         handle_configure_axes(correlation_id, body, body_len);
         return;
     case KALICO_MSG_QUERY_RUNTIME_CAPS:
         handle_query_runtime_caps(correlation_id, body, body_len);
-        return;
-    case KALICO_MSG_RESET_CURVE_POOL:
-        handle_reset_curve_pool(correlation_id, body, body_len);
         return;
     case KALICO_MSG_PUSH_PIECES:
         handle_push_pieces(correlation_id, body, body_len);
@@ -307,160 +281,6 @@ handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
     b[3] = (uint8_t)((mpc >> 8) & 0xFF);
     kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
                                 payload, sizeof(payload));
-}
-
-// ---------------------------------------------------------------------------
-// LoadCurveCubic / PushSegment handlers (Phase C)
-// ---------------------------------------------------------------------------
-
-// FFI: Rust runtime — cubic curve loader.
-// Declared in `rust/kalico-c-api/include/kalico_runtime.h` (already included
-// at the top of this file); the prototype is kept here as a one-line forward
-// declaration would shadow the canonical signature, so we let the include
-// supply it.
-
-static void
-send_load_curve_response(uint32_t correlation_id, int32_t result,
-                         uint32_t curve_handle_packed)
-{
-    uint8_t payload[PER_MESSAGE_HEADER_LEN + 8];
-    encode_message_header(payload, KALICO_MSG_LOAD_CURVE_RESPONSE,
-                          MESSAGE_VERSION_DEFAULT, correlation_id);
-    uint8_t *body = &payload[PER_MESSAGE_HEADER_LEN];
-    body[0] = (uint8_t)(result & 0xFF);
-    body[1] = (uint8_t)((result >> 8) & 0xFF);
-    body[2] = (uint8_t)((result >> 16) & 0xFF);
-    body[3] = (uint8_t)((result >> 24) & 0xFF);
-    body[4] = (uint8_t)(curve_handle_packed & 0xFF);
-    body[5] = (uint8_t)((curve_handle_packed >> 8) & 0xFF);
-    body[6] = (uint8_t)((curve_handle_packed >> 16) & 0xFF);
-    body[7] = (uint8_t)((curve_handle_packed >> 24) & 0xFF);
-    kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
-                                payload, sizeof(payload));
-}
-
-static void
-send_push_segment_response(uint32_t correlation_id, int32_t result,
-                           uint32_t accepted_segment_id, uint32_t credit_epoch)
-{
-    uint8_t payload[PER_MESSAGE_HEADER_LEN + 12];
-    encode_message_header(payload, KALICO_MSG_PUSH_SEGMENT_RESPONSE,
-                          MESSAGE_VERSION_DEFAULT, correlation_id);
-    uint8_t *body = &payload[PER_MESSAGE_HEADER_LEN];
-    body[0] = (uint8_t)(result & 0xFF);
-    body[1] = (uint8_t)((result >> 8) & 0xFF);
-    body[2] = (uint8_t)((result >> 16) & 0xFF);
-    body[3] = (uint8_t)((result >> 24) & 0xFF);
-    body[4] = (uint8_t)(accepted_segment_id & 0xFF);
-    body[5] = (uint8_t)((accepted_segment_id >> 8) & 0xFF);
-    body[6] = (uint8_t)((accepted_segment_id >> 16) & 0xFF);
-    body[7] = (uint8_t)((accepted_segment_id >> 24) & 0xFF);
-    body[8] = (uint8_t)(credit_epoch & 0xFF);
-    body[9] = (uint8_t)((credit_epoch >> 8) & 0xFF);
-    body[10] = (uint8_t)((credit_epoch >> 16) & 0xFF);
-    body[11] = (uint8_t)((credit_epoch >> 24) & 0xFF);
-    kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
-                                payload, sizeof(payload));
-}
-
-static void
-handle_load_curve_cubic(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
-{
-    // Wire format (spec §3.2):
-    //   slot_idx: u16 LE (offset 0)
-    //   axis_idx: u8     (offset 2)
-    //   piece_count: u8  (offset 3)
-    //   pieces: piece_count * 20 bytes, each = 5 × u32 LE
-    //     bp0_bits, bp1_bits, bp2_bits, bp3_bits, duration_bits
-    if (body_len < 4) {
-        send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
-        return;
-    }
-    uint16_t slot_idx = (uint16_t)body[0] | ((uint16_t)body[1] << 8);
-    uint8_t axis_idx = body[2];
-    uint8_t piece_count = body[3];
-    uint32_t expected_len = 4u + (uint32_t)piece_count * 20u;
-    if ((uint32_t)body_len != expected_len) {
-        send_load_curve_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0);
-        return;
-    }
-    if (!runtime_handle) {
-        send_load_curve_response(correlation_id, KALICO_ERR_NOT_INIT, 0);
-        return;
-    }
-    uint32_t handle_packed = 0;
-    int32_t rc = runtime_handle_load_curve_cubic(
-        runtime_handle, slot_idx, axis_idx, piece_count,
-        &body[4], &handle_packed);
-    send_load_curve_response(correlation_id, rc, handle_packed);
-}
-
-static void
-handle_push_segment(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
-{
-    extern volatile uint32_t handle_push_segment_calls_total;
-    extern volatile uint32_t handle_push_segment_invalid_body_total;
-    extern volatile uint32_t handle_push_segment_no_handle_total;
-    extern volatile int32_t handle_push_segment_last_r;
-    extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
-    handle_push_segment_calls_total++;
-    // Independent diag signal — if the counter remains at 0 across many
-    // host PushSegment writes, this confirms it via the 0xCC stage-1 tag
-    // (visible as a value 0xCC01...XX in fault_detail). The counter is
-    // .bss; the diag is foreground-overwriteable, so they cross-check.
-    runtime_diag_progress(0xCC, 1, body_len);
-    // §7.4 body: id u32, 4×handle u32, t_start u64, t_end u64, kin u8, e_mode u8, extrusion_ratio f32 — 42 bytes.
-    if (body_len != 42) {
-        handle_push_segment_invalid_body_total++;
-        send_push_segment_response(correlation_id, KALICO_ERR_INVALID_CURVE, 0, 0);
-        return;
-    }
-    if (!runtime_handle) {
-        handle_push_segment_no_handle_total++;
-        send_push_segment_response(correlation_id, KALICO_ERR_NOT_INIT, 0, 0);
-        return;
-    }
-    uint32_t id = (uint32_t)body[0] | ((uint32_t)body[1] << 8)
-                | ((uint32_t)body[2] << 16) | ((uint32_t)body[3] << 24);
-    uint32_t x_handle = (uint32_t)body[4] | ((uint32_t)body[5] << 8)
-                      | ((uint32_t)body[6] << 16) | ((uint32_t)body[7] << 24);
-    uint32_t y_handle = (uint32_t)body[8] | ((uint32_t)body[9] << 8)
-                      | ((uint32_t)body[10] << 16) | ((uint32_t)body[11] << 24);
-    uint32_t z_handle = (uint32_t)body[12] | ((uint32_t)body[13] << 8)
-                      | ((uint32_t)body[14] << 16) | ((uint32_t)body[15] << 24);
-    uint32_t e_handle = (uint32_t)body[16] | ((uint32_t)body[17] << 8)
-                      | ((uint32_t)body[18] << 16) | ((uint32_t)body[19] << 24);
-    uint64_t t_start = 0;
-    for (int i = 0; i < 8; i++)
-        t_start |= ((uint64_t)body[20 + i]) << (8 * i);
-    uint64_t t_end = 0;
-    for (int i = 0; i < 8; i++)
-        t_end |= ((uint64_t)body[28 + i]) << (8 * i);
-    uint8_t kinematics = body[36];
-    uint8_t e_mode = body[37];
-    uint32_t extrusion_ratio_bits = (uint32_t)body[38] | ((uint32_t)body[39] << 8)
-                                  | ((uint32_t)body[40] << 16) | ((uint32_t)body[41] << 24);
-    uint32_t accepted_id = 0, credit_epoch = 0;
-    // Diag: surface the parsed handle values so we can tell whether the
-    // host is sending UNUSED sentinels (0xFFFFFFFF) or real handles.
-    // 0xCD20 already covers per-frame dispatch; reuse with stage 0xD0..0xD3
-    // for the 4 handles, but pack only the low 16 bits (slot_idx + low gen
-    // bits) to fit in the value field.
-    runtime_diag_progress(0xCE, 0xD0, x_handle & 0xFFFFu);
-    runtime_diag_progress(0xCE, 0xD1, y_handle & 0xFFFFu);
-    runtime_diag_progress(0xCE, 0xD2, z_handle & 0xFFFFu);
-    runtime_diag_progress(0xCE, 0xD3, e_handle & 0xFFFFu);
-    int32_t r = runtime_handle_push_segment(
-        runtime_handle, id, x_handle, y_handle, z_handle, e_handle,
-        t_start, t_end, kinematics, e_mode, extrusion_ratio_bits,
-        &accepted_id, &credit_epoch);
-    handle_push_segment_last_r = r;
-    if (r == 0 /* KALICO_OK */) {
-        // The new stepping path (TIM5 sample-driven cubic Bezier eval) has
-        // no producer timer to arm here — the ISR dequeues segments from
-        // the SPSC queue directly. Stepping-redesign-finish Task 17.
-    }
-    send_push_segment_response(correlation_id, r, accepted_id, credit_epoch);
 }
 
 // ---------------------------------------------------------------------------
@@ -520,52 +340,6 @@ handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t bod
     }
     send_configure_axes_response(correlation_id, r);
     runtime_diag_progress(0xCB, 5, 0);
-}
-
-// ---------------------------------------------------------------------------
-// ResetCurvePool handler (0x0050)
-// ---------------------------------------------------------------------------
-//
-// Called by the host during `init_planner` on every klippy reconnect where the
-// MCU was not power-cycled. Sets `last_retired_gen = current_gen` for every
-// curve pool slot so that all slots satisfy the alloc predicate
-// (`current_gen == last_retired_gen`) before the new session's first
-// `LoadCurveCubic` arrives. Without this, slots that held live curves in the
-// prior session keep `current_gen != last_retired_gen` forever (the retirement
-// trace events that would normally equalise them never fire after a host
-// restart), causing every subsequent `load_curve` to fail with "slot busy".
-//
-// The FFI calls `CurvePool::reset_all_retired_to_current` which is a pure
-// foreground operation (safe to call from the kalico message-dispatch task —
-// same execution context as all other command handlers).
-
-static void
-send_reset_curve_pool_response(uint32_t correlation_id, int32_t result)
-{
-    uint8_t payload[PER_MESSAGE_HEADER_LEN + 4];
-    encode_message_header(payload, KALICO_MSG_RESET_CURVE_POOL_RESPONSE,
-                          MESSAGE_VERSION_DEFAULT, correlation_id);
-    uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
-    b[0] = (uint8_t)(result & 0xFF);
-    b[1] = (uint8_t)((result >> 8) & 0xFF);
-    b[2] = (uint8_t)((result >> 16) & 0xFF);
-    b[3] = (uint8_t)((result >> 24) & 0xFF);
-    kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
-                                payload, sizeof(payload));
-}
-
-static void
-handle_reset_curve_pool(uint32_t correlation_id, const uint8_t *body,
-                        uint16_t body_len)
-{
-    (void)body;
-    (void)body_len; // request body is empty
-    if (!runtime_handle) {
-        send_reset_curve_pool_response(correlation_id, KALICO_ERR_NOT_INIT);
-        return;
-    }
-    int32_t r = kalico_runtime_reset_curve_pool(runtime_handle);
-    send_reset_curve_pool_response(correlation_id, r);
 }
 
 // ---------------------------------------------------------------------------
@@ -673,65 +447,6 @@ send_status_heartbeat(void)
 // ---------------------------------------------------------------------------
 // Event emitters (Phase C — events channel, fire-and-forget, correlation_id=0)
 // ---------------------------------------------------------------------------
-
-void
-kalico_native_emit_status_event(uint8_t engine_status, uint8_t queue_depth,
-                                uint32_t current_segment_id,
-                                int32_t last_fault, uint32_t fault_detail,
-                                uint32_t retired_through_segment_id)
-{
-    // v2 (2026-05-17): body is 22 bytes — added `retired_through_segment_id`
-    // u32 tail field. The 10 Hz periodic status frame is now the load-bearing
-    // credit-flow signal; the host advances its slot-pool watermark from this
-    // field on every status frame so the lossy fire-and-forget
-    // `kalico_native_emit_credit_freed` path is no longer required for
-    // correctness.
-    uint8_t payload[PER_MESSAGE_HEADER_LEN + 22];
-    encode_message_header(payload, KALICO_MSG_STATUS_EVENT,
-                          MESSAGE_VERSION_DEFAULT, 0);
-    uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
-    b[0] = engine_status;
-    b[1] = queue_depth;
-    b[2] = (uint8_t)(current_segment_id & 0xFF);
-    b[3] = (uint8_t)((current_segment_id >> 8) & 0xFF);
-    b[4] = (uint8_t)((current_segment_id >> 16) & 0xFF);
-    b[5] = (uint8_t)((current_segment_id >> 24) & 0xFF);
-    b[6] = (uint8_t)(last_fault & 0xFF);
-    b[7] = (uint8_t)((last_fault >> 8) & 0xFF);
-    b[8] = (uint8_t)((last_fault >> 16) & 0xFF);
-    b[9] = (uint8_t)((last_fault >> 24) & 0xFF);
-    b[10] = (uint8_t)(fault_detail & 0xFF);
-    b[11] = (uint8_t)((fault_detail >> 8) & 0xFF);
-    b[12] = (uint8_t)((fault_detail >> 16) & 0xFF);
-    b[13] = (uint8_t)((fault_detail >> 24) & 0xFF);
-    uint32_t epoch = reset_epoch;
-    b[14] = (uint8_t)(epoch & 0xFF);
-    b[15] = (uint8_t)((epoch >> 8) & 0xFF);
-    b[16] = (uint8_t)((epoch >> 16) & 0xFF);
-    b[17] = (uint8_t)((epoch >> 24) & 0xFF);
-    b[18] = (uint8_t)(retired_through_segment_id & 0xFF);
-    b[19] = (uint8_t)((retired_through_segment_id >> 8) & 0xFF);
-    b[20] = (uint8_t)((retired_through_segment_id >> 16) & 0xFF);
-    b[21] = (uint8_t)((retired_through_segment_id >> 24) & 0xFF);
-    kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
-}
-
-int
-kalico_native_emit_credit_freed(uint32_t retired_through_segment_id,
-                                uint8_t free_slots)
-{
-    uint8_t payload[PER_MESSAGE_HEADER_LEN + 5];
-    encode_message_header(payload, KALICO_MSG_CREDIT_FREED,
-                          MESSAGE_VERSION_DEFAULT, 0);
-    uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
-    b[0] = (uint8_t)(retired_through_segment_id & 0xFF);
-    b[1] = (uint8_t)((retired_through_segment_id >> 8) & 0xFF);
-    b[2] = (uint8_t)((retired_through_segment_id >> 16) & 0xFF);
-    b[3] = (uint8_t)((retired_through_segment_id >> 24) & 0xFF);
-    b[4] = free_slots;
-    return kalico_transport_send_frame(
-        KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
-}
 
 void
 kalico_native_emit_fault_event(uint16_t fault_code, uint32_t fault_detail,

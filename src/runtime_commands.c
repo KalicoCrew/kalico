@@ -255,19 +255,6 @@ command_runtime_extend_homing_deadline(uint32_t *args)
 DECL_COMMAND(command_runtime_extend_homing_deadline,
     "runtime_extend_homing_deadline arm_id=%u");
 
-void
-command_runtime_configure_axes(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf("kalico_configure_axes_response result=%i", -7);
-        return;
-    }
-    uint8_t kinematics = args[0];
-    int32_t r = kalico_configure_axes(runtime_handle, kinematics);
-    sendf("kalico_configure_axes_response result=%i", r);
-}
-DECL_COMMAND(command_runtime_configure_axes, "runtime_configure_axes kinematics=%c");
-
 // ---- Seed position: SET_KINEMATIC_POSITION → MCU engine origin fix --------
 //
 // When klippy issues SET_KINEMATIC_POSITION the host-side ShaperState is
@@ -399,30 +386,6 @@ DECL_COMMAND(command_runtime_clock_sync_request,
     "runtime_clock_sync_request request_id=%u "
     "host_send_time_lo=%u host_send_time_hi=%u");
 
-// ---- Step-6 §10.4 / Round-1 B9 diagnostic --------------------------------
-// Per-slot curve-pool generation snapshot. Used by the host after a fault to
-// decide whether the pool can be reused or a power-cycle is required.
-void
-command_runtime_query_pool_state(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf(
-            "kalico_pool_state_response result=%i slot_idx=%hu current_gen=%hu last_retired_gen=%hu",
-            -7, (uint16_t)0, (uint16_t)0, (uint16_t)0);
-        return;
-    }
-    uint16_t slot = args[0];
-    uint16_t current_gen = 0;
-    uint16_t last_retired_gen = 0;
-    int32_t r = runtime_handle_query_pool_state(
-        runtime_handle, slot, &current_gen, &last_retired_gen);
-    sendf(
-        "kalico_pool_state_response result=%i slot_idx=%hu current_gen=%hu last_retired_gen=%hu",
-        r, slot, current_gen, last_retired_gen);
-}
-DECL_COMMAND(command_runtime_query_pool_state,
-    "runtime_query_pool_state slot=%hu");
-
 // ---- 2026-05-18 phase-stepping diagnostic gate -----------------------------
 // Exposes `kalico_runtime_set_phase_trace_enabled` on the wire so host-side
 // sim tests (tools/test_sim_phase_stepping.py) can flip the per-print
@@ -488,71 +451,6 @@ command_runtime_configure_axes_blob(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_configure_axes_blob,
     "runtime_configure_axes_blob blob=%*s");
-
-// ---- 2026-05-18 sim test driver: push_segment via msgproto -----------------
-// Mirrors KALICO_MSG_PUSH_SEGMENT through Klipper msgproto. The full 42-byte
-// segment body is encoded as a single %*s blob to keep the framed packet
-// under MESSAGE_MAX = 64 bytes (12 separate PT_uint32 args at max-varint
-// width would exceed the cap).
-//
-// Wire body layout matches kalico_dispatch.c::handle_push_segment §7.4:
-//   id u32 | x/y/z/e u32 each | t_start u64 | t_end u64 |
-//   kinematics u8 | e_mode u8 | extrusion_ratio_bits u32  (42 bytes total)
-void
-command_runtime_push_segment_msgproto(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf(
-            "kalico_push_segment_msgproto_response result=%i "
-            "accepted_segment_id=%u credit_epoch=%u",
-            -7, 0, 0);
-        return;
-    }
-    uint32_t body_len = args[0];
-    uint8_t *body = command_decode_ptr(args[1]);
-    if (body_len != 42) {
-        sendf(
-            "kalico_push_segment_msgproto_response result=%i "
-            "accepted_segment_id=%u credit_epoch=%u",
-            -1, 0, 0);
-        return;
-    }
-    uint32_t id = (uint32_t)body[0] | ((uint32_t)body[1] << 8)
-                | ((uint32_t)body[2] << 16) | ((uint32_t)body[3] << 24);
-    uint32_t x_handle = (uint32_t)body[4] | ((uint32_t)body[5] << 8)
-                      | ((uint32_t)body[6] << 16) | ((uint32_t)body[7] << 24);
-    uint32_t y_handle = (uint32_t)body[8] | ((uint32_t)body[9] << 8)
-                      | ((uint32_t)body[10] << 16) | ((uint32_t)body[11] << 24);
-    uint32_t z_handle = (uint32_t)body[12] | ((uint32_t)body[13] << 8)
-                      | ((uint32_t)body[14] << 16) | ((uint32_t)body[15] << 24);
-    uint32_t e_handle = (uint32_t)body[16] | ((uint32_t)body[17] << 8)
-                      | ((uint32_t)body[18] << 16) | ((uint32_t)body[19] << 24);
-    uint64_t t_start = 0;
-    for (int i = 0; i < 8; i++)
-        t_start |= ((uint64_t)body[20 + i]) << (8 * i);
-    uint64_t t_end = 0;
-    for (int i = 0; i < 8; i++)
-        t_end |= ((uint64_t)body[28 + i]) << (8 * i);
-    uint8_t kinematics = body[36];
-    uint8_t e_mode = body[37];
-    uint32_t extrusion_ratio_bits = (uint32_t)body[38] | ((uint32_t)body[39] << 8)
-                                  | ((uint32_t)body[40] << 16) | ((uint32_t)body[41] << 24);
-    uint32_t accepted_id = 0, credit_epoch = 0;
-    int32_t r = runtime_handle_push_segment(
-        runtime_handle, id, x_handle, y_handle, z_handle, e_handle,
-        t_start, t_end, kinematics, e_mode, extrusion_ratio_bits,
-        &accepted_id, &credit_epoch);
-    if (r == 0) {
-        // New stepping path's TIM5 ISR dequeues segments directly; no
-        // producer timer to arm. Stepping-redesign-finish Task 17.
-    }
-    sendf(
-        "kalico_push_segment_msgproto_response result=%i "
-        "accepted_segment_id=%u credit_epoch=%u",
-        r, accepted_id, credit_epoch);
-}
-DECL_COMMAND(command_runtime_push_segment_msgproto,
-    "runtime_push_segment_msgproto body=%*s");
 
 // ---- 2026-05-18 phase-stepping SPI bus registration ----------------------
 // Closes the gap between the Rust runtime's per-motor phase_config storage

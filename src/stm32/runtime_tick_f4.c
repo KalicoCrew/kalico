@@ -17,13 +17,6 @@ extern const uint32_t runtime_clock_freq;
 
 extern void* runtime_handle;   // exposed in src/runtime_tick.c
 
-// 2026-05-20 (Codex gap M3): TIM5 gate consults the live C-side queue
-// length directly. See runtime_tick_h7.c for the full rationale — the
-// previous `runtime_handle_queue_depth()` clause returned 0 for the
-// first push after boot (id=0 minus id=0) and silently skipped TIM5
-// enable. The accessor lives in src/kalico_segment_queue.c.
-extern unsigned kalico_native_queue_len(void);
-
 // Stepping-redesign Task 17: TIM5 ISR body. The canonical prototype for
 // `kalico_runtime_tick_sample` is supplied by the included
 // `kalico_runtime.h`; no local extern needed.
@@ -66,20 +59,12 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // Stepping-redesign 2026-05-20 (Codex gap M3 follow-up): TIM5 is
-    // enabled iff at least one of two live conditions holds:
-    //   (1) count_modulated_steppers > 0 — phase-stepping idle tick,
-    //   (2) kalico_native_queue_len > 0 — segment pending in bridge.
-    // Mirrors runtime_tick_h7.c; see that file for the full rationale.
+    // TIM5 is enabled iff count_modulated_steppers > 0 (phase-stepping
+    // consumer present). Mirrors runtime_tick_h7.c; see that file for
+    // the full rationale.
     //
-    // F4 today has no phase-stepped axis, so historically clause (1)
-    // alone kept TIM5 off entirely. Under the new redesign
-    // `Engine::tick_sample` is also the producer for per-axis step
-    // queues, so the F4 backend needs to arm TIM5 whenever a segment
-    // is in flight — same as H7. The drain task disables TIM5 on
-    // Drained transition, so no idle-time ticking when the queue is
-    // empty (preserves the 2026-05-19 commit's SPI3-starvation guard
-    // even though F4 doesn't share SPI3's specific bottleneck).
+    // F4 today has no phase-stepped axis, so this gate keeps TIM5 off
+    // entirely. The drain task disables TIM5 on the Drained transition.
     //
     // Remaining ISR responsibilities are unchanged from before — see the
     // bullet list in runtime_tick_h7.c::runtime_tick_enable.
@@ -87,11 +72,9 @@ runtime_tick_enable(void)
         return;
     }
 
-    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0
-        && kalico_native_queue_len() == 0) {
-        // No phase-stepping consumers AND no pending segments —
-        // TIM5 stays disabled. The next push_segment or set_step_mode
-        // call will re-enter and arm TIM5.
+    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
+        // No phase-stepping consumers — TIM5 stays disabled. The next
+        // set_step_mode call will re-enter and arm TIM5.
         return;
     }
 
