@@ -104,6 +104,25 @@ unsafe extern "C" {
     pub static step_queues: core::cell::UnsafeCell<[StepQueue; N_AXIS_STEP_QUEUES]>;
 }
 
+/// Raw pointer to the C-owned step queue for axis `i`, or null if `i` is out
+/// of range. MCU-only — host/test builds keep their queues in
+/// `Engine::test_queue_ptrs` instead.
+///
+/// This concentrates the one piece of pointer arithmetic over the C-declared
+/// `step_queues` static in the boundary module that owns it (and already opts
+/// into `unsafe_code`), so the engine hot path stays free of `unsafe`.
+#[cfg(not(any(test, feature = "host")))]
+#[must_use]
+pub fn queue_for_axis(i: usize) -> *mut StepQueue {
+    if i >= N_AXIS_STEP_QUEUES {
+        return ptr::null_mut();
+    }
+    // SAFETY: `i < N_AXIS_STEP_QUEUES` is checked above, and `step_queues` is
+    // the C-declared array of exactly `N_AXIS_STEP_QUEUES` queues, so `add(i)`
+    // stays in-bounds and yields a pointer to a live, aligned `StepQueue`.
+    unsafe { step_queues.get().cast::<StepQueue>().add(i) }
+}
+
 /// Returned by `push` when the ring is full.
 #[derive(Debug, PartialEq, Eq)]
 pub struct StepQueueFull;
