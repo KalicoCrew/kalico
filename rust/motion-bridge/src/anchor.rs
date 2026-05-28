@@ -3,7 +3,12 @@
 //! (a reset). See spec §3.2.1.
 
 const CONTIGUITY_EPS: f64 = 1e-6; // seconds; planner timestamps compare to each other
-const DEFAULT_LEAD_SECS: f64 = 0.25;
+// EXPERIMENT (2026-05-29): bumped 0.25 -> 2.0 to discriminate whether the
+// stream lead actually reaches the piece start_time. If PieceStartInPast
+// disappears, the lead is applied (0.25 s was just too small for a ~250 ms
+// deficit); if it persists at ~hundreds of us late, the lead term is being
+// dropped in the projection/clock-frame path. Revert after the bench read.
+const DEFAULT_LEAD_SECS: f64 = 2.0;
 
 pub struct Anchor {
     /// Host-time instant (seconds) that planner t = 0 maps to. `None` until
@@ -48,7 +53,7 @@ mod tests {
         let (t0, fresh) = a.anchor_segment(0.0, 1.0, 100.0);
         assert!(fresh);
         // piece at u_start=0 → host time t0 + 0 = now + lead
-        assert!((t0 + 0.0 - (100.0 + 0.25)).abs() < 1e-9);
+        assert!((t0 + 0.0 - (100.0 + DEFAULT_LEAD_SECS)).abs() < 1e-9);
     }
 
     #[test]
@@ -69,6 +74,6 @@ mod tests {
         let (t0_b, fresh) = a.anchor_segment(0.0, 1.0, 130.0);
         assert!(fresh);
         assert_ne!(t0_a, t0_b);
-        assert!((t0_b - (130.0 + 0.25)).abs() < 1e-9);
+        assert!((t0_b - (130.0 + DEFAULT_LEAD_SECS)).abs() < 1e-9);
     }
 }
