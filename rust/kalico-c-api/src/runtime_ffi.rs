@@ -26,10 +26,9 @@ pub mod exports {
     use runtime::RT_STORAGE_SIZE;
     use runtime::engine::RuntimeStatus;
     use runtime::error::{
-        KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_INVALID_ARG,
-        KALICO_ERR_INVALID_HANDLE, KALICO_ERR_INVALID_KINEMATICS,
-        KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR, KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED,
-        KALICO_OK,
+        KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_INVALID_ARG, KALICO_ERR_INVALID_HANDLE,
+        KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
+        KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_OK,
     };
     use runtime::segment::KinematicTag;
     use runtime::state::{FgState, IsrState, RuntimeContext, SharedState};

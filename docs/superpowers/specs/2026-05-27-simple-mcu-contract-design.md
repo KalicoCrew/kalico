@@ -264,9 +264,22 @@ On hard fault:
 - All multi-MCU synchronization logic
 - Ring depth calculation (total_memory / 32 / num_axes)
 
-## 8. Implementation Prerequisites
+## 8. Ring Sizing Defaults
 
-Before physical testing, calculate sane defaults for piece ring buffer sizing on F4 and H7 boards based on available SRAM budgets.
+`CONFIG_RUNTIME_PIECE_RING_SIZE` is the total byte budget for all per-axis piece rings combined; the runtime divides it equally among the configured axes. Each `PieceEntry` is 32 bytes. Defaults are chosen against each board's SRAM budget, leaving ample headroom for Klipper's `.bss` + stack + heap.
+
+**H7 (BTT Octopus Pro, 520 MHz, ~1 MB SRAM) — default 63488 bytes (62 KB):**
+- `63488 / 32 = 1984` total piece entries.
+- 4 axes (e.g. A, B, Z, E on a CoreXY): `1984 / 4 = 496` pieces/axis.
+- At ~1 ms/piece that is ~496 ms of look-ahead per axis — comfortably more than the ~5 heartbeat intervals (at 10 Hz) the host needs to react to consumption.
+
+**F4 (e.g. 180 MHz class, 128 KB SRAM) — default 16384 bytes (16 KB):**
+- `16384 / 32 = 512` total piece entries.
+- 1 axis (Z-only follower MCU): `512` pieces/axis ≈ 512 ms look-ahead.
+- 2 axes: `512 / 2 = 256` pieces/axis ≈ 256 ms look-ahead.
+- 16 KB of ring leaves the bulk of the 128 KB SRAM for the rest of the firmware.
+
+The host queries the configured value via `RuntimeCapsResponse.total_piece_memory` and computes per-axis depth itself (total / 32 / num_axes); the MCU never allocates per-axis depth — it stays a flat shared buffer. Because pieces are time-synchronized across axes, per-axis depth is uniform by construction.
 
 ## 9. Open Questions
 
