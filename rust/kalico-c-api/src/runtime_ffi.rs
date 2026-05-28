@@ -117,8 +117,6 @@ pub mod exports {
     // C-side timer-control helpers — defined in src/stm32/runtime_tick_h7.c
     // on the MCU and stubbed by the integration-test harness on host.
     unsafe extern "C" {
-        fn runtime_tick_enable();
-        fn runtime_tick_disable();
         fn runtime_cyccnt_read() -> u32;
     }
 
@@ -1430,18 +1428,9 @@ pub mod exports {
     /// `kalico_clock_sync_request` — RTT-aware clock-sync ping (§12.1).
     ///
     /// Returns the on-demand widened MCU clock (timer_read_time +
-    /// stats_send_time_high), NOT the engine seqlock value. Rationale: the
-    /// seqlock published by `Engine::tick` is only updated from the TIM5 ISR,
-    /// and TIM5 stays disabled in the all-StepTime MVP (see
-    /// `runtime_tick_enable` in `src/stm32/runtime_tick_h7.c` — early-return
-    /// when `count_modulated_steppers == 0`). Reading the seqlock in that
-    /// configuration returns its default 0, which the bridge's clock-sync
-    /// driver filters out as "MCU clock looks uninitialised" — the host's
-    /// router clock estimate then never refreshes from its connect-time
-    /// anchor, `compute_ack_clock` extrapolates linearly into the future,
-    /// segment `t_start` lands tens of seconds ahead of the MCU's actual
-    /// clock, and the in-flight credit window deadlocks waiting for
-    /// retirements that can't happen.
+    /// stats_send_time_high), NOT the engine seqlock value. The seqlock is
+    /// updated only from the TIM5 ISR, so this path computes the widened clock
+    /// on-demand and is correct regardless of whether TIM5 is running.
     ///
     /// The on-demand widening uses Klipper's `stats_send_time_high` (updated
     /// by the stats DECL_TASK at ~0.2 Hz). Its ~5 s lag in the high half is
