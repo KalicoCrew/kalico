@@ -21,6 +21,7 @@ This spec replaces that whole layer with: flatten each shaped segment into per-a
 - **`PieceEntry` layout** (`rust/runtime/src/piece_ring.rs`): `start_time: u64` (MCU clock cycles), `coeffs: [f32; 4]` (Bernstein control points), `duration: f32` (seconds), `_reserved: u32`. 32 bytes total.
 - **Idle = hold.** `engine.rs::get_position_and_velocity` returns `None` when an axis has no current piece or the next piece has not started; the tick loop `continue`s, leaving `p_prev` untouched and emitting no steps. An axis with no piece freezes at its last position — it does **not** snap to zero. This covers genuinely pieceless cases (an axis the segment has no curve for, e.g. E on a pure-travel move; or end-of-stream gaps). It is **not** relied on as an optimization for non-moving axes — see §3.2.
 - **Every segment carries all three kinematic axes.** `emit_shaped` always builds `ShapedSegment.axes[0..2]` (X/Y/Z); a non-moving axis gets a *constant* curve, which `extract_bezier_pieces` yields as one constant piece. So a standing-still axis produces one cheap piece per segment, not zero. E is separate and may be absent on travel moves.
+- **A late piece is a hard fault, not a soft pickup.** `engine.rs:654-659`: once `now − start_time > FAULT_TOLERANCE` (2 ISR ticks, ≈ tens of µs), the engine raises `PIECE_START_IN_PAST` — per contract §6 it stops all steppers, emits `FaultEvent`, and refuses further `PushPieces` until reset/reconfigure. There is no stutter-and-recover; a piece that arrives after its `start_time` halts the machine.
 - **Wire send exists.** `KalicoHostIo::kalico_call(MessageKind::PushPieces, body, timeout)` sends one control-channel frame and awaits the matching `PushPiecesResponse`. `kalico_protocol::messages::PushPieces` already has an `Encode` impl. No new transport code is required.
 - **Clock conversion exists.** The bridge already maps planner-local time to per-MCU clock via the clock-sync + planner-epoch machinery it used for segment `t_start`/`t_end` (`PassthroughRouter::host_time_to_mcu_clock`). We apply the same mapping per piece instead of per segment.
 
@@ -37,6 +38,18 @@ So pieces stay in their natural per-axis form. The only cross-axis discipline is
 
 A cubic Bézier piece represents a degree-3 polynomial exactly on its interval. You can always *split* a piece (de Casteljau, exact) but never *merge* two across a boundary (would exceed degree 3). This design never needs to do either — it ships the pieces the refit produced, unmodified.
 
+### 2.1 Source: the committed dispatch stream — append-only by construction
+
+The host does **not** receive finished moves. The streaming shaper only dispatches shaped output up to a moving commit boundary `target = t_decel_start − max_h` (`streaming/emit.rs:82`). Everything past that boundary — the trailing decel ramp — is **speculative**: a later replan may rewrite it (`replace_uncommitted_axis_pieces`), or the quiescence timer fires and `commit_decel_to_zero` (`streaming/emit.rs:241`) adopts it as the real stop. Both paths emit their now-committed segments through the **same dispatch closure** this spec consumes.
+
+This is the architectural firewall that makes append-only push correct, and it is structural, not a discipline:
+
+> **The pump's sole input is the committed dispatch stream — the drained output of `emit_committed` / `commit_decel_to_zero`, delivered via the dispatch closure. The pump holds no handle to `ShaperState` internals (`axes[i].pieces` past `t_dispatched`, `planned_fitted`). The speculative tail is not reachable from the pump.**
+
+Append-only correctness then follows automatically: the only pieces that *exist* to push are already committed, hence immutable. The wire protocol has no "replace piece N" operation and needs none — there is no code path by which the pump could push a piece a later replan might change. Framed this way, the failure mode (reaching forward into the planner buffer to deepen lookahead) is **impossible by construction**, not merely forbidden — and it pre-empts a future "optimization" that would hand the pump a peek at the speculative plan to fill rings deeper. Any such change would be reintroducing the retraction problem, and the boundary is where that must be refused.
+
+A direct consequence for the pump's lifecycle: "all queues drained up to the boundary" is **not** end-of-motion. The actual zero-velocity stop ramp is held back until quiescence commits it, arriving later as its own segments (latest in time — the earliest-first scheduler emits them last). The pump stays alive across a drained-to-boundary state; it does not tear down. This is exactly the host-side "pause = bring the axis to zero velocity at the end of the move" behavior — it *is* the quiescence commit, already wired through the dispatch closure.
+
 ## 3. Components
 
 Three pieces, in the order data flows.
@@ -51,6 +64,8 @@ Pure config-time bookkeeping, independent of everything else in this spec. Per M
 - Send one `ConfigureAxis` per axis carrying that `ring_depth` (plus the existing stepping-mode / microstep / stepper-binding fields, unchanged).
 
 This logic knows nothing about motion, static axes, or piece content. It allocates a ring for **every** axis the MCU drives — whether an axis actually moves during a given print is a runtime send-time decision (§3.2, §4) and has no bearing on allocation.
+
+**Sizing sanity check (budget 1 of §5.1).** Memory is the allocation driver, but the resulting depth must be validated against the steady-stream refill budget: `ring_depth × typical_piece_duration` (ring-depth-in-time) must comfortably exceed the heartbeat RTT, so the ring does not drain between refills. The defaults in the contract spec (≈496 pieces/axis on H7, ≈0.5 s at ~1 ms/piece, vs a 10 Hz / 100 ms heartbeat) clear this by ~5×. If a board's memory budget ever yields a ring too shallow to cover `max_h` + heartbeat RTT, that is a configuration error to surface at startup, not a runtime degradation to absorb silently. Ring depth does **not** address budget 2 (the stop case) — see §5.1.
 
 ### 3.2 Enqueue adapter (per `ShapedSegment`, planner thread)
 
@@ -118,9 +133,19 @@ Per `PushPieces` frame: `kalico_call(MessageKind::PushPieces, body, timeout)`, w
 
 ## 5. Scheduling / timing notes
 
-- **Initial start-time lead.** The first piece of a fresh stream must have a `start_time` far enough in the future that it is loaded before the ISR reaches it. This is covered by the planner running ahead of realtime (its existing look-ahead) mapped through `host_time_to_mcu_clock`, combined with the pump pushing earliest-first so near-future pieces always go out first. `PIECE_START_IN_PAST` (a hard fault, §4.2 of the contract spec) is the backstop if the host ever falls behind.
-- **No underrun in normal operation.** Strict time-order pushing keeps every axis buffered to ≈ the same wall-clock frontier (bounded by the tightest ring). Underrun only occurs if an MCU stops consuming — which is the hung-MCU case the stall rule deliberately turns into a system halt.
+- **Initial start-time lead.** The first piece of a fresh stream must have a `start_time` far enough in the future that it is loaded before the ISR reaches it. This is covered by the planner running ahead of realtime (its existing look-ahead) mapped through `host_time_to_mcu_clock`, combined with the pump pushing earliest-first so near-future pieces always go out first.
 - **All axes of a segment arrive together.** The planner emits each `ShapedSegment` covering all axes over one `[t_start, t_end]` window, so the enqueue adapter never presents the pump with a partial timeline; the global merge always has a complete picture up to the latest enqueued segment.
+
+### 5.1 Underrun is a halt — two independent budgets
+
+If the MCU drains its ring to the committed frontier, the axis idle-holds (§1.1). But the frontier sits at `t_decel_start − max_h` — **mid-cruise, nonzero velocity** — so the freeze is already an infinite-jerk stop. Worse, when the held-back ramp finally arrives its `start_time` is now in the MCU's past, which is a **hard fault** (`PIECE_START_IN_PAST`, §1.1), not a soft pickup: the machine halts and needs a reconfigure. This is a halt-class invariant the design depends on, inherited from the streaming shaper (the old segment dispatch had it too). We do **not** fix it here — but the design relies on two separate budgets staying satisfied, and ring depth only covers one:
+
+1. **Steady-stream refill (mid-print, moves keep coming).** Each new move's replan advances `t_decel_start`, so the committed frontier keeps moving forward; the only risk is heartbeat-latency refill lag. **Binding check: ring-depth-in-time > heartbeat RTT.** This is the §3.1 sizing sanity check, and it is the *only* underrun ring depth defends against.
+2. **Boundary / stop underrun (genuine stop, dwell, end-of-print, or input starvation).** The frontier stalls at the last move's `t_decel_start − max_h` and advances only when quiescence fires `commit_decel_to_zero`. **Ring depth does nothing here** — there is no piece past the frontier to push, no matter how deep the ring. The binding budget is planner-side: `T_commit + emit + push + RTT` must be less than the buffered time remaining at the boundary, with `FAULT_TOLERANCE` (2 ISR ticks ≈ tens of µs) as the absolute floor.
+
+Plain version: deep rings are a bigger water tank — they ride out a slow refill. But at a stop the tap itself is closed until the planner decides the print is done; a bigger tank just delays the moment you notice no water is coming. What saves the stop case is the planner reopening the tap (committing the decel) before the tank runs dry — a timer budget, not a tank-size budget.
+
+§3.1 sizing must therefore sanity-check ring-depth-in-time against `max_h` + heartbeat RTT (budget 1); budget 2 is a planner concern (`T_commit` vs buffered-time-at-boundary) and is named here only so the dependency is explicit, not silently assumed.
 
 ## 6. Removal (folded into this work)
 
