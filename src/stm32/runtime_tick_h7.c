@@ -57,56 +57,19 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // TIM5 is enabled iff at least one phase-stepping consumer needs
-    // sample writes (count_modulated_steppers > 0). The CR1.CEN
-    // idempotent guard below short-circuits any redundant call while
-    // TIM5 is already running.
-    //
-    // Disable symmetry: `runtime_drain` (src/runtime_tick.c) disables
-    // TIM5 only on the Drained/Fault transition.
-    //
-    // The remaining ISR responsibilities are unchanged:
-    //   - GPIO step pulses fire from per-axis consumer Klipper timers
-    //     (`per_axis_timer_event_*`, src/runtime_tick.c) keyed off the
-    //     per-axis step queues.
-    //   - Widened MCU clock for `clock_sync_respond` is computed on-demand
-    //     via `runtime_handle_widened_now`, no seqlock seeding needed.
-    if (!runtime_handle) {
-        return;
-    }
-
-    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
-        // No phase-stepping consumers — TIM5 stays disabled. The next
-        // set_step_mode call will re-enter and arm TIM5.
-        return;
-    }
-
-    // 2026-05-19: idempotent re-arm guard. push_segment_impl calls this on
-    // every successful enqueue so the first segment lazily starts TIM5; if
-    // TIM5 is already counting (CR1.CEN==1), short-circuit to avoid the
-    // disable→reenable glitch and the dead-cycle USB-CDC bandwidth cost.
-    // The pre-2026-05-19 path was called from configure_axes_blob alone,
-    // which armed TIM5 immediately on connect — even before any segment
-    // existed — so the ISR fired at 40 kHz writing zero-delta XDIRECT to
-    // SPI3 for the entire idle period, starving the USB CDC pump and
-    // eventually causing "No such device" disconnects under sustained load.
+    // Idempotent re-arm. TIM5 is armed at init and disabled only on Klipper
+    // shutdown, so on STM32 this is normally a no-op (CR1.CEN already set).
+    // The entry point is retained because the Linux build's runtime_tick_enable
+    // performs the post-connect widen-seed + step-queue install
+    // (src/linux/runtime_tick_host.c); configure_axis calls it on every build.
     if (TIM5->CR1 & TIM_CR1_CEN) {
         return;
     }
-
-    // T17: TIM5 rate is set by `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ`
-    // (Task 1 Kconfig). Defaults to 40 kHz on H7 / 20 kHz on F4 /
-    // 10 kHz on the LINUX MCU. The historical 10 kHz hard-coded value
-    // was a band-aid against USB-CDC starvation under the legacy
-    // modulator's polled-tick SPI write cost; the redesigned unified
-    // tick (Tasks 7-9) does no SPI work in the ISR body so the rate
-    // can return to its design target. Per-MCU defaults are in
-    // src/Kconfig.
     TIM5->CR1 &= ~TIM_CR1_CEN;
     TIM5->ARR  = (runtime_clock_freq / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
     TIM5->EGR  = TIM_EGR_UG;
     TIM5->SR   = 0;
-    TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
+    TIM5->SR   = ~TIM_SR_UIF;
     TIM5->CR1 |= TIM_CR1_CEN;
     NVIC_EnableIRQ(TIM5_IRQn);
 }
@@ -158,8 +121,15 @@ runtime_tick_init(void)
     // heater deadline / 500 ms IWDG window.
     NVIC_SetPriority(TIM5_IRQn, 2);
 
-    // Don't enable yet — runtime_init pushes segments first; first push triggers
-    // runtime_tick_enable() via the producer protocol.
+    // Always-on (spec 2026-05-28): the piece-ring engine has no per-push event
+    // to lazily start TIM5 (segments are gone), so the ISR free-runs from boot.
+    // It idles cheaply when no axis has an active piece. TIM5 is disabled only
+    // on Klipper shutdown (DECL_SHUTDOWN in runtime_tick.c) and re-armed here on
+    // FIRMWARE_RESTART.
+    TIM5->EGR  = TIM_EGR_UG;
+    TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
+    TIM5->CR1 |= TIM_CR1_CEN;
+    NVIC_EnableIRQ(TIM5_IRQn);
 }
 
 void
