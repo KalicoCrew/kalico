@@ -393,7 +393,7 @@ would compute `delta_stepper = target − stale_last_phase_target` and burst.
 **Resolution:** the `kalico_set_axis_mode` engine sequence performs an
 explicit counter resync between flushing the queues and storing the new
 mode value. See the full sequence under
-[`kalico_set_axis_mode`](#kalico_set_axis_modeaxis_idx-u8-mode-stepmode---kalicoresult)
+[`kalico_set_axis_mode`](#kalico_set_axis_modeaxis_idx-u8-mode-stepmode-kalicoresult)
 in the commands section — that's the authoritative spec.
 
 ### Per-axis Klipper timer (consumer, Pulse mode)
