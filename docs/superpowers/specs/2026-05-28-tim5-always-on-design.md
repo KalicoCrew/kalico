@@ -87,7 +87,7 @@ The original lazy-arm scheme was a compute / USB-CDC-starvation mitigation (the 
 
 ## 5. Test / verification notes
 
-- **Pulse-only motion regression (the core bug):** with phase stepping disabled, a configured axis must produce steps. This is the path that broke when segments were removed; it is the primary thing to confirm.
+- **Pulse-only motion (the core unfinished path):** with phase stepping disabled, a configured axis must produce steps. The piece-ring rewrite hasn't yet wired an arm path for this case — segments used to provide it, and that part of the work isn't finished in this branch. This change completes it, and it is the primary thing to confirm.
 - **Phase-stepping motion** still works (TIM5 was already on in that case via the Modulated gate).
 - **Shutdown disables TIM5:** trigger M112 / a host shutdown and confirm `runtime_tick_disable` runs (TIM5 `CR1.CEN` clear) and motion halts.
 - **FIRMWARE_RESTART re-arms TIM5** via `runtime_tick_init`.
