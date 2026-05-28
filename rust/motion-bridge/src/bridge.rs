@@ -1621,6 +1621,11 @@ impl PyMotionBridge {
                 // Trace events are not klippy-visible; skip silently.
                 return Ok(None);
             }
+            RuntimeEvent::Heartbeat { .. } => {
+                // Heartbeat events feed the pump's flow-control accounting and
+                // are not klippy-visible; skip silently.
+                return Ok(None);
+            }
             RuntimeEvent::EndstopTripped(e) => {
                 d.set_item("type", "endstop_tripped")?;
                 d.set_item("arm_id", e.arm_id)?;

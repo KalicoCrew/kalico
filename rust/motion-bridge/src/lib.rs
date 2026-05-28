@@ -13,6 +13,8 @@ pub mod dispatch;
 pub mod homing;
 #[doc(hidden)]
 pub mod planner;
+#[doc(hidden)]
+pub mod pump;
 mod router_transport;
 #[doc(hidden)]
 pub mod slot_pool;
