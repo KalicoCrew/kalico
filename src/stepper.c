@@ -329,6 +329,14 @@ command_kalico_configure_axis(uint32_t *args)
         per_axis_timers_installed = 1;
         init_per_axis_step_timers();
     }
+
+    // Drive the platform tick-enable now that an axis is configured. On STM32
+    // TIM5 is already armed at init, so the idempotent CR1.CEN guard makes this
+    // a no-op; on the Linux MCU build this performs the post-connect widen-seed
+    // + step-queue install (src/linux/runtime_tick_host.c). Replaces the old
+    // set_step_mode-driven enable (removed 2026-05-28).
+    extern void runtime_tick_enable(void);
+    runtime_tick_enable();
 }
 DECL_COMMAND(command_kalico_configure_axis,
              "kalico_configure_axis axis_idx=%c mode=%c microstep_distance=%u"
