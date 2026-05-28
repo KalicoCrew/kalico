@@ -1812,28 +1812,10 @@ pub mod exports {
             match runtime::state::set_step_mode(shared, stepper_idx, mode, mcu_supports_phase != 0)
             {
                 Ok(()) => {
-                    // Spec §6.3: re-evaluate TIM5 arm state after every
-                    // successful step-mode flip. Count Modulated steppers via
-                    // the same loop used by `kalico_runtime_count_modulated_steppers`.
-                    // `runtime_tick_enable` is a no-op when count == 0 (C-side
-                    // guard added in the same commit), so calling it here is
-                    // always safe. `runtime_tick_disable` is called only when
-                    // the count reaches zero — idempotent if TIM5 was never
-                    // started.
-                    use runtime::state::MAX_STEPPER_OIDS;
-                    let mut modulated_count = 0u8;
-                    for i in 0..MAX_STEPPER_OIDS {
-                        if shared.step_modes[i].load(Ordering::Acquire)
-                            == runtime::state::StepMode::Modulated as u8
-                        {
-                            modulated_count = modulated_count.saturating_add(1);
-                        }
-                    }
-                    if modulated_count == 0 {
-                        runtime_tick_disable();
-                    } else {
-                        runtime_tick_enable();
-                    }
+                    // TIM5 lifecycle is decoupled from step mode (spec
+                    // 2026-05-28): the timer is armed at runtime_tick_init and
+                    // disabled only on Klipper shutdown. Setting a step mode no
+                    // longer arms/disarms the tick.
                     KALICO_OK
                 }
                 Err(runtime::state::SetStepModeError::CapabilityMissing) => {
