@@ -431,6 +431,11 @@ impl PassthroughRouter {
         Ok(projected)
     }
 
+    /// Shared host clock "now" in seconds — the time base the dispatch anchor uses. Reads the same clock source as the ack-clock projections (via a different formula).
+    pub fn host_now_secs(&self) -> f64 {
+        instant_to_f64(self.clock.now())
+    }
+
     /// Convert a host-time-seconds value to the projected MCU clock for
     /// the given MCU, using the linear estimate set by `set_clock_est`.
     /// Returns 0 if the estimate has not been initialised (`freq == 0`).

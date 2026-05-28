@@ -186,6 +186,9 @@ pub enum DispatchError {
     /// `upgrade()` returned `None`. The segment was not sent.
     #[error("MCU {0}: connection dropped during dispatch")]
     ConnectionDropped(u32),
+    /// The piece pump's receiver was dropped (pump thread exited/panicked) — a dispatch send had nowhere to go.
+    #[error("piece pump thread is gone; cannot dispatch")]
+    PumpGone,
 }
 
 // ---------------------------------------------------------------------------

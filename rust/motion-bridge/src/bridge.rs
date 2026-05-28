@@ -24,7 +24,7 @@ use trajectory::{AxisShaper, ShaperConfig};
 
 use crate::classify;
 use crate::config::{self, PlannerConfig, PlannerLimits, parse_required_shaper};
-use crate::dispatch::{self, AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, McuCaps, build_push_params};
+use crate::dispatch::{AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, McuCaps};
 use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::slot_pool::SharedSlotPool;
@@ -421,6 +421,16 @@ pub struct PyMotionBridge {
     /// Active probe-homing handles keyed by an incrementing ID.
     probe_handles: Mutex<HashMap<u64, crate::probe_homing::ProbeHomingHandle>>,
     probe_handle_counter: AtomicU64,
+
+    // ── Push-pieces pump (Task 8) ────────────────────────────────────────
+    /// Sender side of the pump channel. `None` until `init_planner` runs.
+    /// Cloned into the dispatch closure and into the heartbeat callbacks.
+    /// `detach_serial` / teardown sends `PumpMsg::Shutdown` and joins the
+    /// thread via `pump_thread`.
+    pump_tx: Mutex<Option<std::sync::mpsc::Sender<crate::pump::PumpMsg>>>,
+    /// Join handle for the `"push-pieces-pump"` thread. `None` until
+    /// `init_planner` runs.
+    pump_thread: Mutex<Option<JoinHandle<()>>>,
 }
 
 /// Build the kalico-native `ConfigureAxes` wire body.
@@ -523,6 +533,8 @@ impl PyMotionBridge {
             retained_homing_curve: Arc::new(Mutex::new(None)),
             probe_handles: Mutex::new(HashMap::new()),
             probe_handle_counter: AtomicU64::new(1),
+            pump_tx: Mutex::new(None),
+            pump_thread: Mutex::new(None),
         }
     }
 
@@ -607,6 +619,20 @@ impl PyMotionBridge {
         };
         for h in handles {
             let _ = self.release_mcu(h);
+        }
+
+        // Stop the push-pieces pump thread (spawned by init_planner).
+        // Signal Shutdown first (non-blocking), then join so the thread
+        // drains before the process exits — mirrors clock-sync teardown.
+        let pump_join = {
+            let tx = self.pump_tx.lock().unwrap_or_else(|p| p.into_inner()).take();
+            if let Some(tx) = tx {
+                let _ = tx.send(crate::pump::PumpMsg::Shutdown);
+            }
+            self.pump_thread.lock().unwrap_or_else(|p| p.into_inner()).take()
+        };
+        if let Some(h) = pump_join {
+            let _ = h.join();
         }
     }
 
@@ -1964,6 +1990,75 @@ impl PyMotionBridge {
             out
         };
 
+        // ── Push-pieces pump (Task 8) ─────────────────────────────────────
+        //
+        // One pump thread per planner session. Receives `EnqueueMsg`s from
+        // the dispatch closure and `HeartbeatMsg`s from the per-MCU
+        // heartbeat callback, and sends `PushPieces` frames in strict
+        // time order with per-ring flow control.
+        //
+        // The pump holds `Weak<KalicoHostIo>` — NOT `Arc` — mirroring
+        // `dispatch_ios` below: `detach_serial` drops the strong Arc to
+        // tear down the reactor; the pump must not pin the IO alive.
+        //
+        // Ring depth per (mcu,axis): total_piece_memory / 32 / num_axes.
+        // Clamped to .min(64) because the MCU C side still hardcodes
+        // ring_depth=64 in stepper.c (task 9 wires the real depth and
+        // drops this clamp).
+        let ring_depth_table: HashMap<crate::pump::AxisKey, u32> = {
+            let mut t = HashMap::new();
+            for cfg_mcu in &mcu_configs {
+                let total = cfg_mcu.caps.total_pieces() as u32;
+                let n = cfg_mcu.axes.len().max(1) as u32;
+                // NB: ring depth divides total_pieces by this MCU's axis count (per-axis rings), unlike the legacy slot pool's fixed /4. Task 9 finalizes per-axis sizing.
+                // .min(64): MCU C side still hardcodes ring_depth=64 (stepper.c);
+                // Task 9 wires the real depth and drops this clamp.
+                let depth = (total / n).min(64).max(1);
+                for &axis in &cfg_mcu.axes {
+                    t.insert(
+                        crate::pump::AxisKey {
+                            mcu_id: cfg_mcu.mcu_id,
+                            axis: axis as u8,
+                        },
+                        depth,
+                    );
+                }
+            }
+            t
+        };
+
+        let (pump_tx_init, pump_rx) = std::sync::mpsc::channel::<crate::pump::PumpMsg>();
+
+        // Downgrade to Weak so the pump never pins an IO alive across
+        // detach_serial. Built BEFORE the dispatch_ios loop which also
+        // calls Arc::downgrade on the same map.
+        let wire_ios: HashMap<u32, Weak<KalicoHostIo>> = host_ios
+            .iter()
+            .map(|(&id, io)| (id, Arc::downgrade(io)))
+            .collect();
+        let pump_timeout = Duration::from_secs(5);
+        let ring_depth_table_for_pump = ring_depth_table.clone();
+        let pump_thread_handle = std::thread::Builder::new()
+            .name("push-pieces-pump".into())
+            .spawn(move || {
+                let sink = crate::pump::WireSink {
+                    ios: wire_ios,
+                    timeout: pump_timeout,
+                };
+                crate::pump::run_pump(pump_rx, sink, move |k| {
+                    ring_depth_table_for_pump.get(&k).copied().unwrap_or(64)
+                });
+            })
+            .expect("spawn push-pieces-pump thread");
+
+        // Stored for teardown via shutdown() (sends Shutdown, joins the thread). NOTE: not torn down on Drop or detach_serial — acceptable for the current single-session lifecycle (init_planner runs once under OnceLock; klippy always calls shutdown()). Revisit when restart/re-init is wired.
+        *self.pump_tx.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(pump_tx_init.clone());
+        *self.pump_thread.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(pump_thread_handle);
+
+        // ── End pump setup ────────────────────────────────────────────────
+
         // Snapshot of which MCUs accept kalico-native producer messages
         // (load_curve / push_segment). MCUs whose firmware is stock Klipper
         // (no kalico runtime) attach for Klipper-protocol traffic but the
@@ -2044,376 +2139,104 @@ impl PyMotionBridge {
             // KalicoHostIo::drop from running when attach_serial clears
             // conn.host_io. The Arc is still live on `self.mcus` until then.
             dispatch_ios.insert(cfg_mcu.mcu_id, (Arc::downgrade(&io), credit, slot_pool));
+
+            // ── Task 8: heartbeat callback → pump ─────────────────────────
+            // Route StatusHeartbeat consumed_counts to the pump so it can
+            // update per-ring flow-control accounting.
+            {
+                let pump_tx_hb = pump_tx_init.clone();
+                let mcu_id = cfg_mcu.mcu_id;
+                io.attach_heartbeat_callback(Arc::new(move |consumed: &[u32]| {
+                    let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
+                        crate::pump::HeartbeatMsg {
+                            mcu_id,
+                            consumed_counts: consumed.to_vec(),
+                        },
+                    ));
+                }));
+            }
         }
         drop(self_credits);
         drop(self_pools);
+        // dispatch_ios is consumed only by the credit/slot build loop above; after it, this map is inert (drop-only) — Task 10 removes it with the rest of the segment-era path.
 
         let mcu_configs_for_cb = mcu_configs;
         let router_for_cb = Arc::clone(&router_arc);
 
-        // Per-MCU rolling segment id. Allocated alongside the slot to
-        // bind the `kalico_credit_freed.retired_through_segment_id`
-        // retirement signal to the segment's curve slots.
-        let next_seg_id: Arc<Mutex<HashMap<u32, u32>>> = Arc::new(Mutex::new(HashMap::new()));
-        // Per-MCU schedule state:
-        //   (current batch base clock, next available absolute clock).
-        // `trajectory::shape_batch` emits batch-local times, with each new
-        // batch starting at t=0. Dispatch places those relative seconds onto
-        // the MCU's live clock with a small lead so the firmware does not see
-        // zero-duration or already-expired segments.
-        let schedule_state: Arc<Mutex<HashMap<u32, (u64, u64)>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        // Suppress unused-variable warnings for old segment-era state that
+        // remains declared above (inert until Task 10 removes it).
+        // The `dispatch_ios` map is still referenced by other live code
+        // (credit / slot setup); only close-only items are suppressed here.
+        // `counter` is intentionally NOT suppressed — it is captured by the
+        // new closure to maintain the `dispatched_segments` invariant used
+        // by `run_probe_homing` and `get_dispatched_segment_count`.
+        let _ = &fallback_counter;
+        let _ = &clock_freqs;
+        let _ = &homing;
+        let _ = &pending_seed_for_cb;
+        let _ = &retained_curve_for_cb;
+        let _ = &warned_mcus;
+        let _ = &kalico_native_for_plans;
+
+        // ── Task 8: new dispatch wiring ───────────────────────────────────
+        //
+        // `Anchor` tracks the shared host-time T0 for the current stream.
+        // The dispatch type is `Fn` (not `FnMut`) + `Send + Sync`, so we
+        // need interior mutability.  `Mutex<Anchor>` satisfies both `Send`
+        // and `Sync`; the planner calls dispatch serially (one segment at a
+        // time from its run-loop), so the mutex is always uncontended.
+        let anchor_mutex = std::sync::Mutex::new(crate::anchor::Anchor::new());
+        let pump_tx_for_cb = pump_tx_init.clone();
+        // `counter` is Arc<AtomicU64>; captured into the closure to keep
+        // `dispatched_segments` accurate for `run_probe_homing` diagnostics.
+        let counter_for_cb = Arc::clone(&counter);
 
         let dispatch: Arc<
             dyn Fn(&trajectory::ShapedSegment) -> Result<(), DispatchError> + Send + Sync,
         > = Arc::new(
             move |seg: &trajectory::ShapedSegment| -> Result<(), DispatchError> {
-                eprintln!(
-                    "[move-diag] dispatch closure entered: seg.t_start={} seg.t_end={}",
+                log::debug!(
+                    "[bridge-trace] dispatch entered: seg.t_start={:.6} seg.t_end={:.6}",
                     seg.t_start, seg.t_end,
                 );
 
-                // ── Pending seed — take for per-MCU delivery below ───────────
-                //
-                // `set_position` stores its `runtime_seed_position` payload here
-                // rather than sending it immediately, because in-flight segments
-                // from a previous move (e.g. a retract during homing) may not
-                // have reached the MCU yet.  We take the seed here and send it
-                // to each MCU that receives a real segment in this dispatch
-                // invocation.
-                let taken_seed = pending_seed_for_cb
+                // Shared host "now" (seconds) from the router's single clock.
+                let host_now = {
+                    let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
+                    r.host_now_secs()
+                };
+
+                let (t0, fresh) = anchor_mutex
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .take();
+                    .anchor_segment(seg.t_start, seg.t_end, host_now);
 
-                // ── Phase-4 per-axis-per-segment dispatch ─────────────────────
-                //
-                // The B.1 multi-piece chunker has been retired (see spec
-                // `docs/superpowers/specs/2026-05-04-incremental-curve-upload-design.md`
-                // §6.3): the wire-fit reason for chunking is gone now that
-                // `producer::load_curve` uses the begin/N×chunk/finalize
-                // incremental upload protocol, and the §5.0 pool bump
-                // accommodates the trajectory layer's worst-case post-shape
-                // piece count in a single logical-move dispatch. So K=1
-                // load_curve + 1 push_segment per axis per logical move per MCU.
-                //
-                // Per-MCU clock derivation runs ONCE per logical segment, not
-                // once per chunk. `homing.mark_dispatched_segment` and
-                // `next_seg_id` allocation also happen once per logical move.
+                // `project`: host-time seconds → MCU absolute clock ticks.
+                // Locks the router once per (mcu_id, piece); router is held
+                // only for the arithmetic, not for any I/O.
+                let project = |mcu_id: u32, host_secs: f64| -> u64 {
+                    let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
+                    r.host_time_to_mcu_clock(
+                        crate::types::mcu_handle_from_raw(mcu_id),
+                        host_secs,
+                    )
+                    .unwrap_or(0)
+                };
 
-                // Build per-axis-per-segment plans first; we still need clocks
-                // before we can fill in the timing fields.
-                let mcu_plans = build_push_params(seg, &mcu_configs_for_cb, 0, 0);
-
-                // Retain homing segment curves once per logical segment (not per
-                // MCU plan) so the Python side can evaluate position at the trigger
-                // instant.  Only retained while homing is Active; cleared by
-                // `set_position`.
-                if homing.state() == crate::homing::HomingSegmentState::Active {
-                    let retained = RetainedHomingCurve {
-                        axes: seg.axes.clone(),
-                        t_start: seg.t_start,
-                        t_end: seg.t_end,
-                    };
-                    *retained_curve_for_cb
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner()) = Some(retained);
-                }
-
-                log::info!(
-                    "[bridge-trace] mcu_plans built: count={} mcu_ids=[{}]",
-                    mcu_plans.len(),
-                    mcu_plans
-                        .iter()
-                        .map(|p| format!("{}({}c)", p.mcu_id, p.curves_to_load.len()))
-                        .collect::<Vec<_>>()
-                        .join(","),
+                let msgs = crate::enqueue::enqueue_segment(
+                    seg,
+                    &mcu_configs_for_cb,
+                    t0,
+                    fresh,
+                    project,
                 );
-
-                for mut plan in mcu_plans {
-                    // Skip plans targeting MCUs without kalico-runtime — stock
-                    // Klipper firmware can't decode load_curve / push_segment.
-                    // Their motion has to be driven via the legacy Klipper-
-                    // protocol path (out of scope for the kalico planner).
-                    if !kalico_native_for_plans
-                        .get(&plan.mcu_id)
-                        .copied()
-                        .unwrap_or(false)
-                    {
-                        log::info!(
-                            "[bridge-trace] skipping plan mcu={} (not kalico-native)",
-                            plan.mcu_id,
-                        );
-                        continue;
-                    }
-                    let (io_weak, _credit, _slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
-                        Some(v) => v,
-                        None => continue,
-                    };
-                    let io = match io_weak.upgrade() {
-                        Some(io) => io,
-                        None => {
-                            return Err(DispatchError::ConnectionDropped(plan.mcu_id));
-                        }
-                    };
-
-                    // Per-MCU clock conversion. Falls back to a microsecond
-                    // approximation if `set_clock_est` has not been called yet.
-                    let mcu_h = mcu_handle_from_raw(plan.mcu_id);
-                    let freq = clock_freqs
-                    .lock()
-                    .unwrap()
-                    .get(&plan.mcu_id)
-                    .copied()
-                    .filter(|f| *f > 0.0)
-                    .unwrap_or_else(|| {
-                        fallback_counter.fetch_add(1, Ordering::Relaxed);
-                        let first_for_mcu = {
-                            let mut warned = warned_mcus.lock().unwrap_or_else(|p| p.into_inner());
-                            warned.insert(plan.mcu_id)
-                        };
-                        if first_for_mcu {
-                            log::warn!(
-                                "motion-bridge: MCU {} clock frequency not installed; using 1 MHz fallback for relative segment timing. SET_CLOCK_EST not yet wired by klippy?",
-                                plan.mcu_id
-                            );
-                        }
-                        1_000_000.0
-                    });
-
-                    // Captured outside the base-clock block for the
-                    // post-dispatch diagnostic log (2026-05-11): they tell us
-                    // whether the segment activates on-time or late.
-                    let _diag_now_clock: u64;
-                    let _diag_branch_outer: &'static str;
-                    // Compute schedule base ONCE per (mcu, logical-segment).
-                    let mcu_base_clock: u64 = {
-                        // Block-wait for clock-sync to publish a non-zero
-                        // widened MCU clock. If we dispatched against
-                        // `now_clock=0` (clock-sync hasn't establish a real
-                        // `last_clock` yet — happens on the first dispatch
-                        // immediately after klippy restart while the 8-
-                        // iteration clocksync calibration is still in
-                        // flight), `t_start_clock = 0 + lead_cycles` lands
-                        // far below the firmware's widened `now`. The engine
-                        // sees the segment as already-in-the-past and the
-                        // boundary loop retires it in one tick without
-                        // evaluating any intermediate u-values — segment_id
-                        // advances, status goes Drained, but zero step
-                        // pulses fire ('first jog after restart doesn't
-                        // move' bench symptom 2026-05-11).
-                        let lead_cycles_init = (freq * 0.250).round().max(1.0) as u64;
-                        let wait_start = Instant::now();
-                        let mut wait_iter: u32 = 0;
-                        let now_clock = loop {
-                            let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
-                            let n = r
-                                .compute_ack_clock(mcu_h)
-                                .map_err(|e| DispatchError::ComputeAckClock(e.to_string()))?;
-                            drop(r);
-                            if n > 0 {
-                                break n;
-                            }
-                            if wait_iter == 0
-                                || wait_iter == 50
-                                || wait_iter == 250
-                                || wait_iter == 499
-                            {
-                                log::debug!(
-                                    "[bridge-trace] dispatch-wait iter={} mcu_id={} mcu_h={:?} now_clock=0 freq_from_map={}",
-                                    wait_iter,
-                                    plan.mcu_id,
-                                    mcu_h,
-                                    freq as u64,
-                                );
-                            }
-                            wait_iter += 1;
-                            if wait_start.elapsed() > Duration::from_secs(5) {
-                                return Err(DispatchError::ClockSyncTimeout {
-                                    mcu_id: plan.mcu_id,
-                                    mcu_handle: mcu_h,
-                                });
-                            }
-                            std::thread::sleep(Duration::from_millis(10));
-                        };
-                        let lead_cycles = lead_cycles_init;
-
-                        // One-shot diag (per-session): on the very first
-                        // dispatched segment, dump now_clock + freq + lead.
-                        use std::sync::atomic::{AtomicBool, Ordering as AOrd};
-                        static FIRST_DISPATCH_LOGGED: AtomicBool = AtomicBool::new(false);
-                        if !FIRST_DISPATCH_LOGGED.swap(true, AOrd::AcqRel) {
-                            log::debug!(
-                                "[bridge-trace] first-dispatch mcu={} freq={} now_clock={} lead_cycles={} seg.t_start={:.6} clock_sync_wait_ms={}",
-                                plan.mcu_id,
-                                freq as u64,
-                                now_clock,
-                                lead_cycles,
-                                seg.t_start,
-                                wait_start.elapsed().as_millis(),
-                            );
-                        }
-
-                        let mut schedule = schedule_state.lock().unwrap_or_else(|p| p.into_inner());
-                        let entry = schedule.entry(plan.mcu_id).or_insert((0, 0));
-                        let now_plus_lead = now_clock.saturating_add(lead_cycles);
-                        let planner_offset_cycles = (seg.t_start * freq).round().max(0.0) as u64;
-                        let _diag_prev_entry1 = entry.1;
-                        _diag_now_clock = now_clock;
-                        if entry.1 == 0 || seg.t_start <= 1.0e-12 {
-                            // Fresh trajectory: first ever dispatch on this MCU,
-                            // or planner-time-zero (post-stream-open reset).
-                            // Anchor base so the first segment lands at now+lead.
-                            entry.0 = entry.1.max(now_plus_lead);
-                            _diag_branch_outer = "fresh";
-                        } else if entry.1 < now_clock {
-                            // Continuity break: the previous dispatched segment's
-                            // t_end_clock is already in the past, so the MCU
-                            // engine has drained and is sitting idle. Rebase so
-                            // *this* segment lands at now+lead — that is, choose
-                            // a base such that `base + planner_t_start*freq ==
-                            // now+lead`. The planner emits cumulative
-                            // `seg.t_start` values that grow across moves
-                            // (continuous streaming model); without this
-                            // subtraction, the dispatch would add the cumulative
-                            // planner time on top of wall-clock now, producing
-                            // a perceived ~planner_t_start-second delay before
-                            // motion starts (bench-observed 2026-05-11: "second
-                            // jog is slower" when clicks bracket a drained gap).
-                            entry.0 = now_plus_lead.saturating_sub(planner_offset_cycles);
-                            _diag_branch_outer = "rebase-drained";
-                        } else {
-                            // Previous dispatched segment is still in flight
-                            // on the MCU (entry.1 >= now_clock). Continuous streaming
-                            // — keep the existing base so the new segment threads
-                            // onto the end of the previous trajectory at the
-                            // planner's intended t_start.
-                            _diag_branch_outer = "continuous";
-                        }
-                        entry.0
-                    };
-
-                    // Segment time window in MCU clocks. `seg.t_start` /
-                    // `seg.t_end` are absolute seconds in the trajectory batch
-                    // timeline; convert to MCU-clock relative to mcu_base_clock.
-                    let rel_start = (seg.t_start * freq).round().max(0.0) as u64;
-                    let rel_end = (seg.t_end * freq).round().max(0.0) as u64;
-                    let t_start_clock = mcu_base_clock.saturating_add(rel_start);
-                    let t_end_clock = mcu_base_clock.saturating_add(rel_end);
-
-                    // Update tail of schedule so the next logical segment sees
-                    // the correct end-of-batch.
-                    {
-                        let mut schedule = schedule_state.lock().unwrap_or_else(|p| p.into_inner());
-                        let entry = schedule.entry(plan.mcu_id).or_insert((0, 0));
-                        entry.1 = entry.1.max(t_end_clock);
-                    }
-
-                    plan.params.t_start = t_start_clock;
-                    plan.params.t_end = t_end_clock;
-
-                    // ── Per-MCU seed delivery ─────────────────────────────────
-                    if let Some(ref seed) = taken_seed {
-                        let encode_q16 = |mm: f64| -> i32 {
-                            let raw = mm * 65536.0;
-                            raw.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
-                        };
-                        let cfg = mcu_configs_for_cb.iter().find(|c| c.mcu_id == plan.mcu_id);
-                        let (seed_x_q16, seed_y_q16) = if cfg.map_or(false, |c| {
-                            c.kinematics == crate::dispatch::KINEMATICS_COREXY
-                        }) {
-                            (encode_q16(seed.x + seed.y), encode_q16(seed.x - seed.y))
-                        } else {
-                            (encode_q16(seed.x), encode_q16(seed.y))
-                        };
-                        let z_q16 = encode_q16(seed.z);
-                        log::debug!(
-                            "[bridge-trace] per-MCU seed: mcu={} x_q16={} y_q16={} z_q16={} logical=[{:.3},{:.3},{:.3}]",
-                            plan.mcu_id,
-                            seed_x_q16,
-                            seed_y_q16,
-                            z_q16,
-                            seed.x,
-                            seed.y,
-                            seed.z,
-                        );
-                        use kalico_host_rt::host_io::parser::FieldValue;
-                        let result = io.send_typed(
-                            "runtime_seed_position",
-                            &[
-                                ("x_q16", FieldValue::I32(seed_x_q16)),
-                                ("y_q16", FieldValue::I32(seed_y_q16)),
-                                ("z_q16", FieldValue::I32(z_q16)),
-                            ],
-                        );
-                        if let Err(ref e) = result {
-                            log::error!(
-                                "[bridge-trace] seed send FAILED mcu={}: {:?}",
-                                plan.mcu_id,
-                                e,
-                            );
-                        }
-                    }
-
-                    // --- Move splitting (dispatch-level curve chunking) ---
-                    let caps = mcu_configs_for_cb
-                        .iter()
-                        .find(|c| c.mcu_id == plan.mcu_id)
-                        .map(|c| c.caps)
-                        .unwrap_or_default();
-                    // Derive a per-curve piece ceiling from total_piece_memory.
-                    // With the simple-MCU-contract revision the MCU reports total
-                    // piece memory rather than a per-curve cap; use total_pieces / 4
-                    // as a reasonable per-curve budget (mirrors the pool_capacity
-                    // derivation above). Clamp to 255 — the u8 wire ceiling for
-                    // LoadCurveCubic.piece_count.
-                    let raw_max_pieces = caps.total_pieces() / 4;
-                    let effective_max_pieces = raw_max_pieces.max(1).min(255);
-
-                    let sub_plans =
-                        dispatch::split_plan_if_needed(plan, effective_max_pieces, freq)?;
-
-                    let n_sub = sub_plans.len();
-                    if n_sub > 1 {
-                        log::info!(
-                            "[bridge-trace] split mcu={}: {} sub-segments (max_pieces={})",
-                            sub_plans[0].mcu_id,
-                            n_sub,
-                            effective_max_pieces,
-                        );
-                    }
-
-                    // Pre-allocate segment IDs for homing correctness:
-                    // mark_dispatched_segment overwrites on each call (homing.rs:70),
-                    // so we register only the LAST sub-segment's ID to prevent
-                    // premature completion if earlier sub-segments retire while
-                    // dispatch is still in progress.
-                    let pre_alloc_ids: Vec<u32> = {
-                        let mut ids = next_seg_id.lock().unwrap_or_else(|p| p.into_inner());
-                        let entry = ids.entry(sub_plans[0].mcu_id).or_insert(1);
-                        let first = *entry;
-                        *entry = entry.wrapping_add(n_sub as u32);
-                        (0..n_sub as u32).map(|i| first.wrapping_add(i)).collect()
-                    };
-                    homing.mark_dispatched_segment(*pre_alloc_ids.last().unwrap());
-
-                    for (sub_idx, mut sub_plan) in sub_plans.into_iter().enumerate() {
-                        sub_plan.params.id = pre_alloc_ids[sub_idx];
-                        // TODO(simple-mcu-contract): replace with PushPieces dispatch.
-                        // The old LoadCurveCubic + PushSegment wire path has been
-                        // removed. This loop now builds sub-plans but does not send
-                        // them — wire dispatch is pending the PushPieces integration.
-                        log::debug!(
-                            "[slot-trace] sub_plan mcu={} seg_id={} sub={}/{}",
-                            sub_plan.mcu_id,
-                            sub_plan.params.id,
-                            sub_idx + 1,
-                            n_sub,
-                        );
-                    } // end sub_plan loop
+                for m in msgs {
+                    pump_tx_for_cb
+                        .send(crate::pump::PumpMsg::Enqueue(m))
+                        .map_err(|_| DispatchError::PumpGone)?;
                 }
 
-                counter.fetch_add(1, Ordering::Relaxed);
+                counter_for_cb.fetch_add(1, Ordering::Relaxed);
                 Ok(())
             },
         );
