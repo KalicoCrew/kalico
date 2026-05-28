@@ -14,14 +14,11 @@
 //!  2. A `ShapedSegment` is synthesised from the bridge's collinear-cubic
 //!     NURBS (matching what `build_push_params` expects as input).
 //!  3. `build_push_params` → `McuPushPlan` with `CurveLoadParams`.
-//!  4. `CurveLoadParams` → `WirePiece` array (the bit-pattern the bridge
-//!     encodes onto the wire and the MCU decodes via `populate_from_wire`).
-//!  5. `CurvePool::try_alloc_and_load` with those wire pieces.
-//!  6. `Segment` constructed from pool handles + t_start/t_end at a
-//!     **realistic MCU clock base** (~9 s of uptime = 4.68×10⁹ cycles).
-//!  7. `c_segment_queue::Producer::enqueue`.
-//!  8. `isr_sample_tick` loop (advancing mock clock from the same base).
-//!  9. Assert `position_count > 0` on the X-axis stepper.
+//!  4. `CurveLoadParams` (Bernstein control points) → `PieceEntry` array with
+//!     absolute MCU start times derived from `t_start_clock`.
+//!  5. `Engine::push_pieces` loads the entries into the per-axis ring.
+//!  6. `isr_sample_tick` loop (advancing mock clock from `clock_base`).
+//!  7. Assert `position_count > 0` on the X-axis stepper.
 //!
 //! ## The bench bug (now fixed in 5be894004)
 //!
@@ -33,20 +30,19 @@
 //! 24 bits (~7 decimal digits); a 13 000-cycle per-sample increment has a
 //! relative ratio of 2.6×10⁻⁶ < f32 epsilon at this magnitude. Both
 //! operands round to the same f32 value; their difference is always 0.
-//! Bezier eval at frozen `t_local` produces constant `p_end`; `signed_steps`
-//! stays 0 every sample; no steps ever fire; motors are silent.
 //!
-//! Fix (`5be894004`): compute `t_local_cycles = now_u64 - piece_start_u64`
-//! (exact u64 subtract, no precision loss), THEN convert the small result
-//! to f32.
+//! The piece-ring architecture fixes this by computing:
+//!   `elapsed_cycles = now_u64 - piece_start_u64`  (exact u64 subtract)
+//! and only then converting the small result to f32. This test verifies the
+//! fix survives by setting `PieceEntry::start_time = CLOCK_BASE_CYCLES` and
+//! driving ticks from that base.
 //!
 //! ## Regression test purpose
 //!
 //! `bridge_encoded_x_jog_at_realistic_mcu_uptime_drives_steps` sets the
 //! initial clock base to 9 s of H7 cycles (4.68×10⁹) to ensure the fix
 //! is tested under conditions that would have triggered the cancellation
-//! bug before `5be894004`. If the fix ever regresses, this test fails at
-//! the `position_count >= 700` assertion.
+//! bug before the piece-ring architecture.
 //!
 //! ## Stepper parameters
 //!
@@ -65,23 +61,16 @@ use core::sync::atomic::Ordering;
 use std::sync::Mutex;
 
 use heapless::spsc::Queue;
-use runtime::c_segment_queue;
 use runtime::clock::WidenState;
-use runtime::config::EMode;
-use runtime::cubic_curve::WirePiece;
-use runtime::curve_pool::{CurveHandle, CurvePool};
 use runtime::engine::Engine;
-use runtime::segment::{KinematicTag, Segment};
-use runtime::slot::{NoopIs, NoopPa};
-use runtime::state::{IsrState, SharedState};
+use runtime::piece_ring::PieceEntry;
+use runtime::state::{IsrState, SharedState, TOTAL_RING_PIECES};
 use runtime::step_queue::StepQueue;
-use runtime::stepping_state::{StepMode, StepperBindingRust, TMC_CS_OID_NONE};
+use runtime::stepping_state::{MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
 use runtime::trace::{TRACE_RING_N, TraceSample};
 
 use motion_bridge_native::classify::classify_and_build;
 use motion_bridge_native::dispatch::{AXIS_X, AXIS_Y, McuAxisConfig, McuCaps, build_push_params};
-
-type EngineImpl = Engine<NoopPa, NoopIs>;
 
 // Match the H7 bench: 520 MHz clock, 40 kHz modulation rate.
 const H7_CLOCK_HZ: u32 = 520_000_000;
@@ -99,56 +88,73 @@ const JOG_FEEDRATE_MM_S: f64 = 10.0;
 // At 520 MHz that's 4.68×10⁹ cycles — well past f32's ability to represent
 // a 13 000-cycle per-sample increment (f32 epsilon is ~6×10⁻⁸ at 5×10⁹
 // → relative resolution 300 cycles; 13 000 cycles needs <1 ULP at 5e9 or
-// absolute error ≤ 13000, which requires f64 or the u64-subtract trick).
+// absolute error ≤ 13000, which requires the u64-subtract trick).
 //
 // Setting CLOCK_BASE_CYCLES to this value puts the test in the regime that
-// triggered the f32-cancellation bench bug pre-5be894004.
+// triggered the f32-cancellation bench bug in the old Bezier-eval path.
+// The piece-ring architecture avoids the cancellation by computing
+// `elapsed_cycles = now_u64 - piece_start_u64` before converting to f32.
 const MCU_UPTIME_S: u64 = 9;
 const CLOCK_BASE_CYCLES: u64 = MCU_UPTIME_S * H7_CLOCK_HZ as u64;
 
-// ── Helper: convert CurveLoadParams → WirePiece slice ──────────────────────
-//
-// Replicates the encoding that `kalico_host_rt::producer::load_curve` sends
-// over the wire, which the MCU's `runtime_handle_load_curve_cubic` decodes
-// via `populate_from_wire`. Using this here lets us inject the bridge-produced
-// curve into a host-side `CurvePool` without a live serial connection.
+// Ring depth per axis — large enough for all pieces of a 1 s jog.
+const RING_DEPTH: usize = 64;
 
-fn curve_load_params_to_wire_pieces(
+// ── Helper: convert CurveLoadParams → PieceEntry slice ──────────────────────
+//
+// `CurveLoadParams::bp_per_piece` holds Bernstein control points; these map
+// directly to `PieceEntry::coeffs`.  `start_time` for piece `i` is
+// `t_start_clock + sum(duration[0..i] * clock_hz)`.
+
+fn curve_load_params_to_piece_entries(
     params: &kalico_host_rt::producer::CurveLoadParams,
-) -> Vec<WirePiece> {
+    t_start_clock: u64,
+    clock_hz: u32,
+) -> Vec<PieceEntry> {
     assert_eq!(
         params.bp_per_piece.len(),
         params.duration_per_piece.len(),
         "bp_per_piece and duration_per_piece must have the same length"
     );
-    params
+    let mut entries = Vec::with_capacity(params.bp_per_piece.len());
+    let mut start = t_start_clock;
+    for (bp, &dur) in params
         .bp_per_piece
         .iter()
         .zip(params.duration_per_piece.iter())
-        .map(|(bp, &dur)| WirePiece {
-            bp0_bits: bp[0].to_bits(),
-            bp1_bits: bp[1].to_bits(),
-            bp2_bits: bp[2].to_bits(),
-            bp3_bits: bp[3].to_bits(),
-            duration_bits: dur.to_bits(),
-        })
-        .collect()
+    {
+        entries.push(PieceEntry {
+            start_time: start,
+            coeffs: *bp,
+            duration: dur,
+            _reserved: 0,
+        });
+        let dur_cycles = (dur * clock_hz as f32) as u64;
+        start += dur_cycles;
+    }
+    entries
 }
 
 // ── Helper: build a configured engine ─────────────────────────────────────
 
-fn configured_engine() -> EngineImpl {
-    let mut e = EngineImpl::new(H7_CLOCK_HZ, SAMPLE_RATE_HZ);
+fn configured_engine() -> Engine {
+    let mut e = Engine::new(H7_CLOCK_HZ, SAMPLE_RATE_HZ);
     let binding = StepperBindingRust {
         stepper_oid: 0,
         tmc_cs_oid: TMC_CS_OID_NONE,
         _pad: [0; 2],
     };
     assert_eq!(
-        e.configure_axis(0, StepMode::Pulse, MICROSTEP_DISTANCE_MM, &[binding]),
+        e.configure_axis(
+            0,
+            StepMode::Pulse,
+            MICROSTEP_DISTANCE_MM,
+            RING_DEPTH,
+            &[binding],
+            TOTAL_RING_PIECES,
+        ),
         0
     );
-    assert_eq!(e.configure_kinematics(1.0), 0);
     e
 }
 
@@ -212,8 +218,7 @@ fn make_shaped_segment_for_x_jog(
 
 // ── Global test mutex ─────────────────────────────────────────────────────
 //
-// `c_segment_queue` is a process-global singleton (OnceLock<Mutex<VecDeque>>).
-// Two tests that both call reset() + enqueue() + isr_loop will race if they
+// Two tests that both call push_pieces + isr_loop will race if they
 // run concurrently. Serialize them via this mutex.
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
@@ -221,7 +226,7 @@ static TEST_MUTEX: Mutex<()> = Mutex::new(());
 //
 // Both tests call this with different `clock_base` values:
 //   - 0 (trivial case, passes even with f32 cancellation)
-//   - CLOCK_BASE_CYCLES (realistic MCU uptime, fails pre-5be894004)
+//   - CLOCK_BASE_CYCLES (realistic MCU uptime, fails pre-piece-ring fix)
 
 fn run_bridge_to_isr_chain(clock_base: u64, test_label: &str) {
     let _guard = TEST_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
@@ -233,7 +238,7 @@ fn run_bridge_to_isr_chain(clock_base: u64, test_label: &str) {
     let mcu_configs = vec![McuAxisConfig {
         mcu_id: 0,
         axes: vec![AXIS_X, AXIS_Y],
-        kinematics: KinematicTag::CartesianXyzAndE as u8,
+        kinematics: runtime::segment::KinematicTag::CartesianXyzAndE as u8,
         caps: McuCaps::default(),
     }];
     let t_start_clock: u64 = clock_base;
@@ -251,30 +256,39 @@ fn run_bridge_to_isr_chain(clock_base: u64, test_label: &str) {
         "[{test_label}] McuPushPlan has no curves — X axis NURBS skipped"
     );
 
-    // Step 3: CurveLoadParams → WirePiece → CurvePool.
-    let pool = CurvePool::new();
-    let mut x_handle = CurveHandle::UNUSED_SENTINEL;
-    let mut y_handle = CurveHandle::UNUSED_SENTINEL;
+    // Step 3: CurveLoadParams → PieceEntry → Engine::push_pieces.
+    let mut engine = configured_engine();
+    let mut storage = vec![
+        PieceEntry {
+            start_time: 0,
+            coeffs: [0.0; 4],
+            duration: 0.0,
+            _reserved: 0,
+        };
+        TOTAL_RING_PIECES
+    ];
+
+    let mut x_loaded = false;
 
     for (axis_idx, curve_params) in &plan.curves_to_load {
-        let wire_pieces = curve_load_params_to_wire_pieces(curve_params);
+        let entries = curve_load_params_to_piece_entries(curve_params, t_start_clock, H7_CLOCK_HZ);
 
-        // Piece duration must be positive — zero here means t_local never
+        // Piece duration must be positive — zero means t_local never
         // advances, p_end stays constant, signed_steps stays 0.
-        for (k, wp) in wire_pieces.iter().enumerate() {
-            let dur = f32::from_bits(wp.duration_bits);
+        for (k, entry) in entries.iter().enumerate() {
             assert!(
-                dur > 0.0,
-                "[{test_label}] WirePiece[{k}] for axis {axis_idx}: duration={dur} ≤ 0. \
-                 CurveLoadParams::from_scalar_nurbs_normalized produced a zero-duration piece. \
-                 t_local will never advance past 0 → no steps."
+                entry.duration > 0.0,
+                "[{test_label}] PieceEntry[{k}] for axis {axis_idx}: duration={} ≤ 0. \
+                 CurveLoadParams produced a zero-duration piece. \
+                 t_local will never advance past 0 → no steps.",
+                entry.duration
             );
         }
 
         // X span must be meaningful.
         if *axis_idx == AXIS_X {
-            let bp0 = f32::from_bits(wire_pieces[0].bp0_bits);
-            let bp3_last = f32::from_bits(wire_pieces.last().unwrap().bp3_bits);
+            let bp0 = entries[0].coeffs[0];
+            let bp3_last = entries.last().unwrap().coeffs[3];
             let span = (bp3_last - bp0).abs();
             assert!(
                 span > 0.1,
@@ -283,84 +297,32 @@ fn run_bridge_to_isr_chain(clock_base: u64, test_label: &str) {
             );
             eprintln!(
                 "[{test_label}] X curve: span={span:.6} mm, n_pieces={}, dur={:?}",
-                wire_pieces.len(),
+                entries.len(),
                 &curve_params.duration_per_piece,
             );
         }
 
-        let slot_idx = if *axis_idx == AXIS_X { 0 } else { 1 };
-        let handle = pool
-            .try_alloc_and_load(slot_idx, &wire_pieces)
-            .unwrap_or_else(|| {
-                panic!(
-                    "[{test_label}] CurvePool::try_alloc_and_load failed for slot {slot_idx} \
-                     (axis {axis_idx}) — populate_from_wire rejected the WirePiece."
-                )
-            });
+        let axis_u8 = *axis_idx as u8;
+        let rc = engine.push_pieces(axis_u8, &entries, &mut storage);
+        assert_eq!(
+            rc, 0,
+            "[{test_label}] engine.push_pieces failed for axis {axis_idx} (rc={rc})"
+        );
 
         if *axis_idx == AXIS_X {
-            x_handle = handle;
-        } else if *axis_idx == AXIS_Y {
-            y_handle = handle;
+            x_loaded = true;
         }
     }
 
     assert!(
-        !x_handle.is_unused_sentinel(),
-        "[{test_label}] X handle is UNUSED_SENTINEL — X curve was not loaded into pool."
+        x_loaded,
+        "[{test_label}] X axis pieces were not loaded — curve missing from plan."
     );
 
-    // Step 4: build Segment + enqueue.
-    let mut seg = Segment {
-        id: 1,
-        x_handle,
-        y_handle,
-        z_handle: CurveHandle::UNUSED_SENTINEL,
-        e_handle: CurveHandle::UNUSED_SENTINEL,
-        t_start: t_start_clock,
-        t_end: t_end_clock,
-        kinematics: KinematicTag::CartesianXyzAndE,
-        e_mode: EMode::Travel,
-        flags: 0,
-        _pad: [0; 1],
-        extrusion_ratio: 0.0,
-        consumers_remaining: 0,
-    };
-    seg.consumers_remaining = Segment::compute_consumers_remaining(
-        seg.kinematics,
-        seg.x_handle,
-        seg.y_handle,
-        seg.z_handle,
-        seg.e_handle,
-    );
-    assert_ne!(
-        seg.consumers_remaining, 0,
-        "[{test_label}] consumers_remaining=0 — ISR would retire segment immediately with 0 steps."
-    );
-
-    c_segment_queue::reset();
-    let mut queue_producer = c_segment_queue::Producer::<Segment>::new();
-    let queue_consumer = c_segment_queue::Consumer::<Segment>::new();
-    queue_producer.enqueue(seg).expect("segment enqueue");
-    assert!(
-        !queue_consumer.is_empty(),
-        "[{test_label}] queue is empty immediately after enqueue."
-    );
-
-    // Step 5: ISR setup + tick loop.
-    let mut engine = configured_engine();
-    let mut step_queues = [
-        StepQueue::new(),
-        StepQueue::new(),
-        StepQueue::new(),
-        StepQueue::new(),
-    ];
-    let queue_ptrs = [
-        addr_of_mut!(step_queues[0]),
-        addr_of_mut!(step_queues[1]),
-        addr_of_mut!(step_queues[2]),
-        addr_of_mut!(step_queues[3]),
-    ];
+    // Step 4: ISR setup + tick loop.
+    let mut step_queues: [StepQueue; MAX_AXES] = std::array::from_fn(|_| StepQueue::new());
+    let queue_ptrs: [*mut StepQueue; MAX_AXES] =
+        std::array::from_fn(|i| addr_of_mut!(step_queues[i]));
     engine.test_install_step_queues(queue_ptrs);
 
     let trace_queue: &'static mut Queue<TraceSample, TRACE_RING_N> =
@@ -371,15 +333,15 @@ fn run_bridge_to_isr_chain(clock_base: u64, test_label: &str) {
     // Seed the WidenState with the clock_base so the first `widen()` inside
     // `isr_sample_tick` correctly extends the u32 CYCCNT into the u64 domain
     // starting at `clock_base`. Without seeding, WidenState would start at 0
-    // and would need to roll over `clock_base / 2^32` times to reach the
-    // segment's t_start — far more samples than the test budget.
-    //
-    // `WidenState::seed(baseline)` sets:
-    //   self.high = baseline & !0xFFFF_FFFFu64  (upper bits)
-    //   self.last_low = baseline as u32          (lower 32 bits)
-    // The next `widen(raw)` then measures advance from this reference point.
+    // and would need to roll over `clock_base / 2^32` times before the
+    // piece's start_time became reachable — far more samples than the budget.
     widen_state.seed(clock_base);
 
+    // `IsrState` still carries `queue_consumer` and `pending_segment` for
+    // the C-segment-queue path (used by the MCU-side legacy bridge), but
+    // `isr_sample_tick` no longer reads from them in the piece-ring model —
+    // the engine drives itself from its per-axis rings.
+    let queue_consumer = runtime::c_segment_queue::Consumer::<runtime::segment::Segment>::new();
     let mut isr = IsrState {
         queue_consumer,
         trace_producer,
@@ -390,87 +352,48 @@ fn run_bridge_to_isr_chain(clock_base: u64, test_label: &str) {
     let shared = SharedState::new();
 
     // Drive samples. Each tick advances raw_cyccnt by cycles_per_sample.
-    // Starting from (clock_base as u32) + cycles_per_sample, the widened
-    // result is clock_base + cycles_per_sample (no rollover on the first tick
-    // because seed set last_low = clock_base as u32 and raw is higher).
     let cycles_per_sample = H7_CLOCK_HZ / SAMPLE_RATE_HZ;
     let total_samples = SAMPLE_RATE_HZ as u64 + 200; // 1 s + 5 ms at 40 kHz
     let mut raw_cyccnt: u32 = clock_base as u32;
 
     for _ in 0..total_samples {
         raw_cyccnt = raw_cyccnt.wrapping_add(cycles_per_sample);
-        runtime::tick::isr_sample_tick(&mut isr, &shared, &pool, raw_cyccnt);
+        runtime::tick::isr_sample_tick(&mut isr, &shared, &mut storage, raw_cyccnt);
         unsafe { while runtime::step_queue::pop(queue_ptrs[0]).is_some() {} }
     }
 
-    let isr_deq = shared.isr_deq_some_count.load(Ordering::Acquire);
-    let isr_armed = shared.isr_armed_count.load(Ordering::Acquire);
     let isr_step_pushes = shared.isr_step_push_count.load(Ordering::Acquire);
-    let position_count = isr.engine.stepping_axes[0].steppers[0]
+    let position_count = isr.engine.stepping_axes[0].as_ref().unwrap().steppers[0]
         .position_count
         .load(Ordering::Acquire);
-    let t_local_bits = shared.isr_last_t_local_bits.load(Ordering::Relaxed);
-    let t_local_last = f32::from_bits(t_local_bits);
 
     eprintln!(
-        "[{test_label}] clock_base={clock_base} isr_deq={isr_deq} isr_armed={isr_armed} \
-         step_pushes={isr_step_pushes} position_count={position_count} \
-         t_local_last={t_local_last:.6}s",
+        "[{test_label}] clock_base={clock_base} \
+         step_pushes={isr_step_pushes} position_count={position_count}",
     );
 
-    // ASSERTION A: ISR must dequeue the segment.
-    assert!(
-        isr_deq >= 1,
-        "[{test_label}] isr_sample_tick never dequeued the segment \
-         ({total_samples} ticks, isr_deq_some=0). Segment stuck in queue."
-    );
-
-    // ASSERTION B: ISR must arm the segment (t_start must be <= widened_now).
+    // ASSERTION A: ISR must have pushed some step entries.
     //
-    // On the MCU the clock starts somewhere in the u32 wrap range and the
-    // WidenState extends it. The test's initial raw_cyccnt is `clock_base as
-    // u32`. The segment's t_start is also `clock_base`. On the first tick
-    // after the base, raw_cyccnt > t_start (in u64 space) so t_start <= now
-    // and the arm fires.
-    //
-    // If this assertion fails, the segment is perpetually parked — t_start is
-    // in the future relative to the widened clock — which would mean the
-    // WidenState epoch seeding is wrong.
-    assert!(
-        isr_armed >= 1,
-        "[{test_label}] ISR dequeued (isr_deq={isr_deq}) but never armed \
-         (isr_armed=0). seg.t_start={t_start_clock} not <= widened_now. \
-         WidenState not seeded correctly from clock_base={clock_base}."
-    );
-
-    // ASSERTION C: ISR must have pushed some step entries.
-    //
-    // Pre-5be894004: at large clock_base (9 s uptime) the f32 cancellation
-    // made t_local always 0 → p_end always 0 → signed_steps always 0 →
-    // this assertion fails with isr_step_pushes=0.
-    // Post-5be894004: u64 subtract keeps t_local accurate → p_end advances
-    // correctly → steps fire.
+    // If clock_base is large (9 s uptime) and the engine incorrectly computes
+    // t_local as  f32(now)/Hz - f32(piece_start)/Hz  (the old cancellation
+    // bug), t_local stays 0 every sample → p_end constant → no steps.
+    // The piece-ring engine uses  elapsed = now_u64 - piece_start_u64
+    // (exact u64 subtract), so this assertion must pass at all clock bases.
     assert!(
         isr_step_pushes > 0,
-        "[{test_label}] ISR armed segment (isr_armed={isr_armed}) but pushed 0 steps. \
-         dispatch_pulse early-returned at signed_steps==0 every sample.\n\
+        "[{test_label}] ISR pushed 0 steps after {total_samples} ticks. \
          Likely cause: t_local frozen at 0 due to f32 catastrophic cancellation \
          (clock_base={clock_base} ≈ {:.1} s of uptime). \
-         Last t_local sampled: {t_local_last:.9} s — if this is 0.0 or repeating, \
-         the u64-subtract fix in 5be894004 has regressed.\n\
          This is the bench bug: steppers energized but no motion.",
         clock_base as f64 / f64::from(H7_CLOCK_HZ)
     );
 
-    // ASSERTION D (primary): stepper must reflect ~800 microsteps.
+    // ASSERTION B (primary): stepper must reflect ~800 microsteps.
     assert!(
         position_count.abs() >= 700,
         "[{test_label}] position_count={position_count} after 10 mm jog \
          (expected |count| >= 700). \
-         isr_step_pushes={isr_step_pushes}, clock_base={clock_base}.\n\
-         If isr_step_pushes>0 but position_count~0, the step-queue consumer \
-         is not calling commit_position_count, or the wrong stepper index \
-         is being read."
+         isr_step_pushes={isr_step_pushes}, clock_base={clock_base}.",
     );
 }
 
@@ -479,9 +402,9 @@ fn run_bridge_to_isr_chain(clock_base: u64, test_label: &str) {
 // ──────────────────────────────────────────────────────────────────────────
 //
 // Baseline: passes even with the f32-cancellation bug because clock_base=0
-// makes t_local = now_cycles/Hz - 0 = small positive number with no
-// cancellation. If this test fails, the bug is in the bridge encoding or
-// runtime ISR plumbing, NOT in the t_local precision fix.
+// makes elapsed = now_cycles - 0 = small positive number with no cancellation.
+// If this test fails, the bug is in the bridge encoding or runtime ISR
+// plumbing, NOT in the cancellation fix.
 
 #[test]
 fn bridge_encoded_x_jog_clock_base_zero_drives_steps() {
@@ -492,14 +415,15 @@ fn bridge_encoded_x_jog_clock_base_zero_drives_steps() {
 // Test B: realistic MCU uptime base (~9 s)
 // ──────────────────────────────────────────────────────────────────────────
 //
-// Regression test for the f32-cancellation bench bug (commit 5be894004).
+// Regression test for the f32-cancellation bench bug.
 //
-// Before 5be894004: t_local computed as f32(now)/Hz - f32(piece_start)/Hz.
+// Before the piece-ring fix: t_local computed as
+//   f32(now)/Hz - f32(piece_start)/Hz.
 //   At clock_base = 4.68×10⁹ cycles, both operands round to the same f32
 //   value; their difference is always 0; p_end never changes; signed_steps
-//   is always 0; isr_step_push_count stays 0; ASSERTION C fails.
+//   is always 0; ASSERTION A fails.
 //
-// After 5be894004: t_local_cycles = now_u64 - piece_start_u64 (exact u64
+// After the fix: elapsed_cycles = now_u64 - piece_start_u64 (exact u64
 //   subtract); the small result converts to f32 accurately; p_end advances
 //   per sample; steps fire; test passes.
 

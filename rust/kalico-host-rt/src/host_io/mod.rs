@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 
@@ -555,7 +555,9 @@ impl KalicoHostIo {
     pub fn attach_retirement_callback(&self, cb: Arc<dyn Fn(u32) + Send + Sync>) {
         let _ = self
             .submission_tx
-            .send(ReactorCommand::AttachRetirementCallback(RetirementCallback(cb)));
+            .send(ReactorCommand::AttachRetirementCallback(
+                RetirementCallback(cb),
+            ));
     }
 
     pub fn subscribe_fault(&self) -> Result<std::sync::mpsc::Receiver<FaultEvent>, SubscribeError> {
