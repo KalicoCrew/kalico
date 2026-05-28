@@ -48,4 +48,9 @@ void kalico_native_emit_fault_event(uint16_t fault_code,
                                     uint32_t fault_detail,
                                     uint32_t segment_id);
 
+// 10 Hz per-axis consumed-count heartbeat (StatusHeartbeat 0x0083).
+// Called from runtime_status_drain in src/runtime_tick.c at the same 10 Hz
+// cadence as kalico_native_emit_status_event.
+void send_status_heartbeat(void);
+
 #endif // kalico_dispatch.h

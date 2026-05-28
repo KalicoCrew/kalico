@@ -3131,6 +3131,76 @@ pub mod exports {
         }
     }
 
+    /// Fill caller buffers with the current heartbeat snapshot.
+    ///
+    /// Writes `engine_state`, `fault_code`, and up to `max_axes`
+    /// per-axis consumed piece counts into the caller-provided buffers.
+    ///
+    /// Returns the number of axes actually written (>= 0) on success, or a
+    /// negative error code:
+    /// - `-1` (`KALICO_ERR_NULL_PTR`)  — `rt` or any out-pointer is null.
+    /// - `-2` (`KALICO_ERR_NOT_INIT`)  — runtime not yet initialised.
+    ///
+    /// Only `[..min(num_axes, max_axes)]` entries are written to
+    /// `out_consumed`; the caller must allocate at least `max_axes` u32s.
+    ///
+    /// # Safety
+    /// - `rt` must be the handle returned by `runtime_handle_create`.
+    /// - `out_engine_state`, `out_fault_code` must be valid for a single-byte
+    ///   write.
+    /// - `out_consumed` must be valid for `max_axes` u32 writes (≥ 4-byte
+    ///   aligned, as a C `uint32_t[8]` is).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_get_heartbeat(
+        rt: *mut KalicoRuntime,
+        out_engine_state: *mut u8,
+        out_fault_code: *mut u8,
+        out_consumed: *mut u32,
+        max_axes: usize,
+    ) -> i32 {
+        if rt.is_null()
+            || out_engine_state.is_null()
+            || out_fault_code.is_null()
+            || out_consumed.is_null()
+        {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: read-only access to IsrState atomics via the §11.2
+        // shared-borrow discipline — same pattern as
+        // `runtime_handle_tick_counter`. `Engine::status()` and
+        // `Engine::last_error()` both load through atomics; `num_axes` is
+        // a plain u8 written only during foreground configure_axis calls
+        // (not during ISR ticks); `consumed_counts()` reads per-axis
+        // ring descriptors through plain u32 loads that are written
+        // exclusively by the ISR pop path. A transient torn read of one
+        // count (non-atomic u32 on 32-bit Cortex-M is single-instruction
+        // aligned, so effectively atomic in practice) is tolerable for a
+        // 10 Hz diagnostic heartbeat.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let engine = &(*isr_ptr).engine;
+
+            let engine_state = engine.status() as u8;
+            let fault_code = (engine.last_error() as u32 & 0xFF) as u8;
+            let num_axes = engine.num_axes as usize;
+            let counts = engine.consumed_counts();
+            let n_write = num_axes.min(max_axes);
+
+            core::ptr::write(out_engine_state, engine_state);
+            core::ptr::write(out_fault_code, fault_code);
+            for i in 0..n_write {
+                out_consumed.add(i).write(counts[i]);
+            }
+            #[allow(clippy::cast_possible_truncation)]
+            let result = n_write as i32;
+            result
+        }
+    }
+
     /// Install C-owned `step_queues` into the Rust engine on host/MACH_LINUX
     /// builds so `tick_sample`'s `dispatch_axis` can push step entries.
     ///

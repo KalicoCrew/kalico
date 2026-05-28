@@ -866,6 +866,25 @@ int32_t kalico_runtime_set_stepper_offset(struct KalicoRuntime *rt,
                                           uint16_t max_microsteps_per_sample);
 
 /**
+ * Fill caller buffers with the current heartbeat snapshot.
+ *
+ * Writes `engine_state`, `fault_code`, and up to `max_axes` per-axis
+ * consumed piece counts into the caller-provided buffers.
+ *
+ * Returns the number of axes actually written (>= 0) on success, or a
+ * negative error code:
+ *   -1 (KALICO_ERR_NULL_PTR) — rt or any out-pointer is null.
+ *   -2 (KALICO_ERR_NOT_INIT) — runtime not yet initialised.
+ *
+ * `out_consumed` must point to an array of at least `max_axes` uint32_t.
+ */
+int32_t kalico_runtime_get_heartbeat(struct KalicoRuntime *rt,
+                                     uint8_t *out_engine_state,
+                                     uint8_t *out_fault_code,
+                                     uint32_t *out_consumed,
+                                     uintptr_t max_axes);
+
+/**
  * Host-only (MACH_LINUX / feature="host"). Wire the C-owned
  * `step_queues[N_AXIS_STEP_QUEUES]` array into the Rust engine so that
  * `kalico_runtime_tick_sample` can push step entries. Must be called

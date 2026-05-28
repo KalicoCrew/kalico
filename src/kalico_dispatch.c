@@ -627,6 +627,50 @@ handle_push_pieces(uint32_t correlation_id, const uint8_t *body, uint16_t body_l
 }
 
 // ---------------------------------------------------------------------------
+// StatusHeartbeat (0x0083) — 10 Hz MCU→Host per-axis consumed-count frame.
+// ---------------------------------------------------------------------------
+
+void
+send_status_heartbeat(void)
+{
+    if (!runtime_handle)
+        return;
+
+    uint8_t st = 0;
+    uint8_t fc = 0;
+    uint32_t counts[8];
+    int32_t n = kalico_runtime_get_heartbeat(runtime_handle,
+                                             &st, &fc, counts, 8);
+    if (n < 0)
+        return;
+
+    // Body = engine_state(1) + fault_code(1) + num_axes(1) + n * u32(4 each).
+    // Max body = 3 + 8*4 = 35 bytes. Full frame well within KALICO_TX_BUF_SIZE.
+    uint8_t payload[KALICO_TX_BUF_SIZE];
+    int off = 0;
+    payload[off++] = (uint8_t)(KALICO_MSG_STATUS_HEARTBEAT & 0xFF);
+    payload[off++] = (uint8_t)((KALICO_MSG_STATUS_HEARTBEAT >> 8) & 0xFF);
+    payload[off++] = MESSAGE_VERSION_DEFAULT;
+    // correlation_id = 0 (async event, not a reply).
+    payload[off++] = 0;
+    payload[off++] = 0;
+    payload[off++] = 0;
+    payload[off++] = 0;
+    // Body.
+    payload[off++] = st;
+    payload[off++] = fc;
+    payload[off++] = (uint8_t)n;
+    for (int i = 0; i < n; i++) {
+        uint32_t v = counts[i];
+        payload[off++] = (uint8_t)(v & 0xFF);
+        payload[off++] = (uint8_t)((v >> 8) & 0xFF);
+        payload[off++] = (uint8_t)((v >> 16) & 0xFF);
+        payload[off++] = (uint8_t)((v >> 24) & 0xFF);
+    }
+    kalico_transport_send_frame(KALICO_CHANNEL_CONTROL, payload, (uint16_t)off);
+}
+
+// ---------------------------------------------------------------------------
 // Event emitters (Phase C — events channel, fire-and-forget, correlation_id=0)
 // ---------------------------------------------------------------------------
 

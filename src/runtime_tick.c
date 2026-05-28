@@ -524,6 +524,7 @@ runtime_status_drain(void)
     if ((int32_t)(now - last_status_emit_time) < (int32_t)status_period_ticks)
         return;
     last_status_emit_time = now;
+    send_status_heartbeat();
 
     // Diag heartbeat for the status emit task. Threshold: 200 ms (we run
     // at 10 Hz so a 200 ms gap means we missed two cycles, which is what
