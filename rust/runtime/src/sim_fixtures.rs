@@ -127,8 +127,8 @@ pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
     })
 }
 
-/// Push a Z-only linear segment into the engine's piece ring.
-/// starting at `t_start`.
+/// Push a Z-only linear segment into the engine's piece ring, starting at
+/// `t_start`.
 ///
 /// Pushes a single cubic Bézier Z piece (collinear control points → linear
 /// position) via `engine.push_pieces`.
