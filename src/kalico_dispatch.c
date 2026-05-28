@@ -48,7 +48,6 @@ static uint8_t tx_buf[KALICO_TX_BUF_SIZE];
 // Reset epoch, generated once at boot. Nonzero by construction.
 static uint32_t reset_epoch;
 
-static void handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_push_pieces(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 
@@ -238,9 +237,6 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
     case KALICO_MSG_IDENTIFY:
         handle_identify(correlation_id, body, body_len);
         return;
-    case KALICO_MSG_CONFIGURE_AXES:
-        handle_configure_axes(correlation_id, body, body_len);
-        return;
     case KALICO_MSG_QUERY_RUNTIME_CAPS:
         handle_query_runtime_caps(correlation_id, body, body_len);
         return;
@@ -280,65 +276,6 @@ handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
     b[3] = (uint8_t)((total_piece_memory >> 24) & 0xFF);
     kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
                                 payload, sizeof(payload));
-}
-
-// ---------------------------------------------------------------------------
-// ConfigureAxes handler
-// ---------------------------------------------------------------------------
-
-static void
-send_configure_axes_response(uint32_t correlation_id, int32_t result)
-{
-    uint8_t payload[PER_MESSAGE_HEADER_LEN + 4];
-    encode_message_header(payload, KALICO_MSG_CONFIGURE_AXES_RESPONSE,
-                          MESSAGE_VERSION_DEFAULT, correlation_id);
-    uint8_t *body = &payload[PER_MESSAGE_HEADER_LEN];
-    body[0] = (uint8_t)(result & 0xFF);
-    body[1] = (uint8_t)((result >> 8) & 0xFF);
-    body[2] = (uint8_t)((result >> 16) & 0xFF);
-    body[3] = (uint8_t)((result >> 24) & 0xFF);
-    kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
-                                payload, sizeof(payload));
-}
-
-static void
-handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
-{
-    // C-side diag breadcrumbs. tag=0xCB = "C-side dispatch". The Rust FFI
-    // uses tag=0xCA. Both update runtime_diag_last_packed which the 10 Hz
-    // status drain surfaces in fault_detail.
-    extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
-    runtime_diag_progress(0xCB, 1, body_len);
-    // Accept 20-byte (legacy), 25-byte (extended StepMode array), or
-    // 26+3N-byte (variable-length per-motor phase config; N in 0..=16
-    // motors). The Rust parser validates the per-motor entries; this
-    // wrapper only gates the length to a recognized shape.
-    int accept = (body_len == 20) || (body_len == 25);
-    if (!accept && body_len >= 26) {
-        uint16_t tail = body_len - 26;
-        if (tail % 3 == 0 && (tail / 3) <= 16) {
-            accept = 1;
-        }
-    }
-    if (!accept) {
-        send_configure_axes_response(correlation_id, KALICO_ERR_INVALID_CURVE);
-        return;
-    }
-    runtime_diag_progress(0xCB, 2, 0);
-    if (!runtime_handle) {
-        send_configure_axes_response(correlation_id, KALICO_ERR_NOT_INIT);
-        return;
-    }
-    runtime_diag_progress(0xCB, 3, 0);
-    int32_t r = kalico_runtime_configure_axes_blob(runtime_handle, body, body_len);
-    runtime_diag_progress(0xCB, 4, (uint32_t)r);
-    if (r == 0 /* KALICO_OK */) {
-        // The new stepping path uses init_per_axis_step_timers (installed
-        // once at boot via kalico_configure_axis). No per-config-axes
-        // timer registration needed here. Stepping-redesign-finish Task 17.
-    }
-    send_configure_axes_response(correlation_id, r);
-    runtime_diag_progress(0xCB, 5, 0);
 }
 
 // ---------------------------------------------------------------------------

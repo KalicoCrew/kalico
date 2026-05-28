@@ -5,7 +5,14 @@
 //! because it is purely a segment-wire type; the curve-pool module has been
 //! removed (2026-05-28).
 
-use crate::config::EMode;
+/// Extruder evaluation mode.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EMode {
+    CoupledToXy = 0,
+    Independent = 1,
+    Travel = 2,
+}
 
 /// Wire-encoded `(generation << 16) | slot_idx` handle to a piece-ring axis
 /// slot. `#[repr(C)]` so `TraceSample` and `Segment` stay ABI-compatible

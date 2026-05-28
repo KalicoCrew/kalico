@@ -27,10 +27,9 @@ pub mod exports {
     use runtime::engine::RuntimeStatus;
     use runtime::error::{
         KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_INVALID_ARG, KALICO_ERR_INVALID_HANDLE,
-        KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
+        KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
         KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_OK,
     };
-    use runtime::segment::KinematicTag;
     use runtime::state::{FgState, IsrState, RuntimeContext, SharedState};
     use runtime::trace::TraceSample;
 
@@ -721,8 +720,8 @@ pub mod exports {
 
     /// Diagnostic: read the configured `steps_per_mm` for axis `oid` (0..=3
     /// in motor space). Returns 0.0 if `oid` is out of range or runtime
-    /// uninitialised. Used by Phase 4 sim test to verify that
-    /// `configure_axes_blob` reached the engine.
+    /// uninitialised. Used by Phase 4 sim test to verify axis configuration
+    /// reached the engine.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn runtime_handle_get_axis_steps_per_mm(
         rt: *mut KalicoRuntime,
@@ -852,353 +851,6 @@ pub mod exports {
         }
     }
 
-    /// Configure axes from a packed motor blob delivered via the kalico-native
-    /// transport. Layout (matches `kalico-protocol` `ConfigureAxes` body):
-    ///   kinematics u8 | present_mask u8 | awd_mask u8 | invert_mask u8 |
-    ///   steps_per_mm[4] f32 little-endian
-    ///
-    /// Total: 20 bytes. `kinematics`: 0 = CoreXyAndE, 1 = CartesianXyzAndE.
-    /// Bits in masks index motors `[A/X, B/Y, Z, E]`.
-    ///
-    /// Caller invariant: this is one-shot, called from foreground before
-    /// TIM5 is armed (i.e. before any tick can fire). The FFI projects
-    /// `&mut IsrState` outside the ISR lock, which is sound only under
-    /// that single-threaded precondition.
-    /// Emit a tagged `#output` line to the host for live-step diagnostics.
-    /// On the MCU this calls into `runtime_diag_progress` (defined in
-    /// `src/runtime_tick.c`), which queues an `output(...)` line to the
-    /// USB-CDC TX buffer. The host sees `rt_diag tag=<T> stage=<S> value=<V>`
-    /// even if the chip resets shortly after — buffered bytes flush before
-    /// the disconnect. No-op on host-test builds.
-    #[inline]
-    #[allow(unused_variables)]
-    fn diag_progress(tag: u32, stage: u32, value: u32) {
-        #[cfg(target_os = "none")]
-        {
-            unsafe extern "C" {
-                fn runtime_diag_progress(tag: u32, stage: u32, value: u32);
-            }
-            // SAFETY: stable C ABI; foreground-only.
-            unsafe {
-                runtime_diag_progress(tag, stage, value);
-            }
-        }
-    }
-
-    /// Extended blob layout (25 bytes) and phase-stepping blob layout
-    /// (33 bytes — Task 4 / spec §4.1):
-    ///
-    /// ```text
-    /// byte  0     kinematics_tag  (0 = CoreXY+E, 1 = Cartesian+E)
-    /// byte  1     present_mask    (bit i set → motor i is present)
-    /// byte  2     awd_mask        (bit i set → motor i is AWD)
-    /// byte  3     invert_mask     (bit i set → motor i direction inverted)
-    /// bytes 4-7   steps_per_mm[0] (f32 LE)
-    /// bytes 8-11  steps_per_mm[1] (f32 LE)
-    /// bytes 12-15 steps_per_mm[2] (f32 LE)
-    /// bytes 16-19 steps_per_mm[3] (f32 LE)
-    ///             -- present only in extended (25-byte) format --
-    /// byte 20     mcu_caps        (bit 0 = mcu_supports_phase_stepping)
-    /// byte 21     step_mode[0]    (0 = Modulated, 1 = StepTime)
-    /// byte 22     step_mode[1]
-    /// byte 23     step_mode[2]
-    /// byte 24     step_mode[3]
-    ///             -- present only in phase-stepping (26+3N-byte) format --
-    /// byte 25                 phase_motor_count = N (1..=MAX_STEPPER_OIDS)
-    /// bytes 26+3i..26+3i+2    motor i: (bus_id, cs_pin_id, slot_idx)
-    /// ```
-    ///
-    /// Legacy hosts emit the 20-byte format; the MCU defaults all steppers to
-    /// `StepTime` in that case. Any `blob_len` not in
-    /// `{20, 25, 26 + 3·N for 0 <= N <= MAX_STEPPER_OIDS}` is rejected. The
-    /// variable-length format requires `step_mode[slot_idx] == Modulated`
-    /// for every motor entry (spec §4.1). N is bounded by MAX_STEPPER_OIDS
-    /// (16); the earlier audible-band ≤2 cap is no longer enforced here —
-    /// per-shared-SPI-bus bandwidth derating is a separate future change.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_configure_axes_blob(
-        rt: *mut KalicoRuntime,
-        blob_ptr: *const u8,
-        blob_len: u32,
-    ) -> i32 {
-        use runtime::config::{EMode as _Unused, McuAxisConfig, MotorConfig};
-        let _ = _Unused::CoupledToXy;
-        diag_progress(0xCA, 1, 0); // ENTER
-        if rt.is_null() || blob_ptr.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        // Accept 20-byte (legacy), 25-byte (extended with StepMode array),
-        // or 26+3·N-byte (variable-length per-motor phase-stepping SPI
-        // config; 0 <= N <= MAX_STEPPER_OIDS). Any other length is
-        // rejected. The N=0 case (blob_len == 26) is accepted as a
-        // "clear all phase config" signal, but practically the host emits
-        // a 25-byte body in that case — see motion_toolhead.py.
-        let blob_len_usize = blob_len as usize;
-        let phase_len_ok = blob_len_usize >= 26
-            && (blob_len_usize - 26) % 3 == 0
-            && ((blob_len_usize - 26) / 3) <= runtime::state::MAX_STEPPER_OIDS;
-        if blob_len != 20 && blob_len != 25 && !phase_len_ok {
-            diag_progress(0xCA, 10, blob_len);
-            return KALICO_ERR_INVALID_KINEMATICS;
-        }
-        let blob = unsafe { core::slice::from_raw_parts(blob_ptr, blob_len as usize) };
-        diag_progress(0xCA, 2, u32::from(blob[0]));
-        let kinematics_tag = blob[0];
-        let present_mask = blob[1];
-        let awd_mask = blob[2];
-        let invert_mask = blob[3];
-        let mut steps = [0f32; 4];
-        for i in 0..4 {
-            let off = 4 + i * 4;
-            steps[i] = f32::from_le_bytes([blob[off], blob[off + 1], blob[off + 2], blob[off + 3]]);
-        }
-        diag_progress(0xCA, 3, u32::from(present_mask));
-        let kinematics = match kinematics_tag {
-            0 => KinematicTag::CoreXyAndE,
-            1 => KinematicTag::CartesianXyzAndE,
-            _ => return KALICO_ERR_INVALID_KINEMATICS,
-        };
-        let mut motors: [Option<MotorConfig>; 4] = [None, None, None, None];
-        for i in 0..4 {
-            if present_mask & (1 << i) != 0 {
-                motors[i] = Some(MotorConfig {
-                    steps_per_mm: steps[i],
-                    is_awd: awd_mask & (1 << i) != 0,
-                    invert_dir: invert_mask & (1 << i) != 0,
-                });
-            }
-        }
-        diag_progress(0xCA, 4, 0);
-        let cfg = McuAxisConfig { motors, kinematics };
-        if cfg.validate().is_err() {
-            return KALICO_ERR_INVALID_KINEMATICS;
-        }
-        diag_progress(0xCA, 5, 0);
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: per the doc-comment precondition, no ISR is running yet.
-        // Foreground is the sole writer; we project &mut IsrState to call
-        // engine.configure(). No other &IsrState may be live at this point.
-        unsafe {
-            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
-            (*isr_ptr).engine.configure(cfg);
-        }
-        diag_progress(0xCA, 6, 0);
-        // Step 7-D: configure_axes is the bridge's "I'm starting a fresh
-        // session" signal. Reset segment-id monotonicity tracking so the
-        // new klippy session's segment_id sequence (which restarts from 1)
-        // doesn't collide with any accepted_segment_id state preserved on
-        // the MCU across the klippy reconnect (-141
-        // SEGMENT_ID_NON_MONOTONIC). NOT calling full `stream::flush()` —
-        // that path does an ISR force_idle handshake which times out into
-        // LIVENESS_STALLED when TIM5 isn't yet running (configure_axes is
-        // called before the first segment push, before ISR enable). Only
-        // these two atomics gate the monotonic check (runtime_ffi.rs:265
-        // and engine.rs / segment::activate paths); resetting them is
-        // safe with no ISR running.
-        unsafe {
-            let shared_ptr: *const runtime::state::SharedState = core::ptr::addr_of!((*ctx).shared);
-            (*shared_ptr)
-                .accepted_segment_id_seen
-                .store(false, Ordering::Release);
-            (*shared_ptr)
-                .accepted_segment_id
-                .store(0, Ordering::Release);
-        }
-        // Same "fresh session" semantics: clear the C-side
-        // motor→stepper binding table so the upcoming stream of
-        // `kalico_configure_axis` commands populates a fresh slate.
-        // Without this, the table accumulates across klippy
-        // reconnects (the MCU stays powered) and motor 0 / motor 1 hit
-        // RUNTIME_MAX_STEPPERS_PER_MOTOR=4 after two reconnects —
-        // the third shutdowns with "too many steppers per motor".
-        // Bench-observed 2026-05-11 (pre-redesign, where the same
-        // failure mode applied to the legacy `config_runtime_stepper`
-        // path that `kalico_configure_axis` replaced in Task 21).
-        diag_progress(0xCA, 7, 0);
-        #[cfg(target_os = "none")]
-        {
-            unsafe extern "C" {
-                fn runtime_reset_stepper_bindings();
-            }
-            // SAFETY: foreground-only, no preconditions; simply zeros
-            // small static arrays in src/stepper.c.
-            unsafe {
-                runtime_reset_stepper_bindings();
-            }
-        }
-        diag_progress(0xCA, 8, 0);
-
-        // --- Extended format: parse per-stepper StepMode array (spec §4 C1) ---
-        //
-        // byte 20: mcu_caps (bit 0 = mcu_supports_phase_stepping)
-        // bytes 21-24: step_mode[0..4] (0 = Modulated, 1 = StepTime)
-        //
-        // Legacy 20-byte blobs land here with no step_mode bytes; SharedState
-        // already initialises every step_modes[i] to StepTime (default), so no
-        // further action is needed for the legacy path. Both the 25-byte
-        // extended and 33-byte phase-config blobs carry the StepMode array.
-        if blob_len >= 25 {
-            let mcu_caps = blob[20];
-            let mcu_supports_phase = (mcu_caps & 0x01) != 0;
-            unsafe {
-                let shared_ptr: *const runtime::state::SharedState =
-                    core::ptr::addr_of!((*ctx).shared);
-                let shared: &runtime::state::SharedState = &*shared_ptr;
-                for i in 0..4usize {
-                    let raw_mode = blob[21 + i];
-                    let mode = match runtime::state::StepMode::from_u8(raw_mode) {
-                        Some(m) => m,
-                        // Unknown discriminant → treat as StepTime (safe default).
-                        None => runtime::state::StepMode::StepTime,
-                    };
-                    match runtime::state::set_step_mode(shared, i as u8, mode, mcu_supports_phase) {
-                        Ok(()) => {}
-                        Err(runtime::state::SetStepModeError::CapabilityMissing) => {
-                            // Host requested Modulated on an MCU that doesn't
-                            // advertise phase-stepping. Defense-in-depth check —
-                            // the host (Task E1) is supposed to prevent this.
-                            diag_progress(0xCA, 9, i as u32);
-                            return KALICO_ERR_CAPABILITY_MISSING;
-                        }
-                        Err(runtime::state::SetStepModeError::OutOfRange) => {
-                            // i is bounded to 0..4 above; unreachable in practice.
-                            diag_progress(0xCA, 9, 0xFF);
-                            return KALICO_ERR_INVALID_KINEMATICS;
-                        }
-                    }
-                }
-            }
-            diag_progress(0xCA, 10, u32::from(mcu_caps));
-        }
-
-        // --- Variable-length format: parse per-motor phase-stepping SPI
-        // config (one entry per phase-stepped motor; topology-agnostic).
-        //
-        // Layout (3 bytes per motor starting at offset 26):
-        //   byte 25                 phase_motor_count = N (0..=MAX_STEPPER_OIDS=16)
-        //   bytes 26+3i..26+3i+2    motor i: (bus_id, cs_pin_id, slot_idx)
-        //
-        // `bus_id == 0xFF` is a sentinel marking "motor entry intentionally
-        // empty" (rare — the host emits dense entries). Each non-sentinel
-        // entry's slot_idx must be < 4 (kinematic-slot count) and
-        // `step_mode[slot_idx]` must be `Modulated` (validated against the
-        // step_modes already-installed above).
-        //
-        // Errors do NOT clear previously-stored slots — the runtime is
-        // single-shot configured before TIM5 runs, so a rejected blob
-        // leaves the runtime in its pre-call state for the host to inspect
-        // and retry with a corrected blob.
-        if blob_len_usize >= 26 {
-            let count = blob[25] as usize;
-            let expected_len = 26 + 3 * count;
-            if blob_len_usize != expected_len || count > runtime::state::MAX_STEPPER_OIDS {
-                diag_progress(0xCA, 10, blob_len);
-                return KALICO_ERR_INVALID_KINEMATICS;
-            }
-            // Pre-validate per-entry before mutating SharedState.
-            let mut parsed: [Option<(runtime::phase_config::PhaseConfig, u8)>;
-                runtime::state::MAX_STEPPER_OIDS] = [None; runtime::state::MAX_STEPPER_OIDS];
-            for i in 0..count {
-                let off = 26 + i * 3;
-                let bus = blob[off];
-                let cs = blob[off + 1];
-                let slot_idx = blob[off + 2];
-                if bus == 0xFF {
-                    // Sentinel entries inside count are allowed but skipped.
-                    parsed[i] = None;
-                    continue;
-                }
-                if slot_idx >= 4 {
-                    diag_progress(0xCA, 11, slot_idx as u32);
-                    return KALICO_ERR_INVALID_KINEMATICS;
-                }
-                // step_mode[slot_idx] must be Modulated. The step_modes
-                // bytes from the same blob were just installed above;
-                // check the source byte directly so the rejection is
-                // independent of SharedState mutation order.
-                let mode_byte = blob[21 + slot_idx as usize];
-                if mode_byte != (runtime::state::StepMode::Modulated as u8) {
-                    diag_progress(0xCA, 11, slot_idx as u32);
-                    return KALICO_ERR_INVALID_KINEMATICS;
-                }
-                parsed[i] = Some((
-                    runtime::phase_config::PhaseConfig {
-                        spi_bus_id: bus,
-                        cs_pin_id: cs,
-                    },
-                    slot_idx,
-                ));
-            }
-            // Commit. The per-motor count is also stored so the ISR can
-            // loop 0..count rather than scanning all MAX_STEPPER_OIDS
-            // entries.
-            unsafe {
-                let shared_ptr: *const runtime::state::SharedState =
-                    core::ptr::addr_of!((*ctx).shared);
-                let shared: &runtime::state::SharedState = &*shared_ptr;
-                for i in 0..runtime::state::MAX_STEPPER_OIDS {
-                    if i < count {
-                        if let Some(slot) = shared.phase_config.get(i) {
-                            runtime::phase_config::store(slot, parsed[i].map(|(c, _)| c));
-                        }
-                        if let Some(s) = shared.phase_slot_idx.get(i) {
-                            s.store(
-                                parsed[i].map(|(_, idx)| idx).unwrap_or(0xFF),
-                                Ordering::Release,
-                            );
-                        }
-                    } else {
-                        // Clear unused motor entries past `count` so a
-                        // shrinking re-configure can't leave stale slots.
-                        if let Some(slot) = shared.phase_config.get(i) {
-                            runtime::phase_config::store(slot, None);
-                        }
-                        if let Some(s) = shared.phase_slot_idx.get(i) {
-                            s.store(0xFF, Ordering::Release);
-                        }
-                    }
-                }
-                shared
-                    .phase_motor_count
-                    .store(count as u8, Ordering::Release);
-            }
-            diag_progress(0xCA, 13, count as u32);
-        } else if blob_len == 25 {
-            // step_modes only, no phase config — clear any prior phase
-            // state so a "configure axes without phase stepping" call
-            // doesn't leave stale phase config behind.
-            unsafe {
-                let shared_ptr: *const runtime::state::SharedState =
-                    core::ptr::addr_of!((*ctx).shared);
-                let shared: &runtime::state::SharedState = &*shared_ptr;
-                for i in 0..runtime::state::MAX_STEPPER_OIDS {
-                    if let Some(slot) = shared.phase_config.get(i) {
-                        runtime::phase_config::store(slot, None);
-                    }
-                    if let Some(s) = shared.phase_slot_idx.get(i) {
-                        s.store(0xFF, Ordering::Release);
-                    }
-                }
-                shared.phase_motor_count.store(0, Ordering::Release);
-            }
-        }
-        // blob_len == 20 (legacy) doesn't touch phase config; left as-is.
-
-        // 2026-05-19: TIM5 is no longer armed here. configure_axes_blob now
-        // sets up state but leaves the phase-stepping ISR off; the first
-        // successful `push_segment_impl` arms TIM5 (it's idempotent on the
-        // C side after the 2026-05-19 guard). Pre-fix, arming at
-        // configure_axes meant the ISR fired at 40 kHz writing zero-delta
-        // XDIRECT for the entire idle period between config and first
-        // motion, starving USB CDC and causing "No such device"
-        // disconnects within ~1 s of any sustained load.
-
-        KALICO_OK
-    }
-
     /// Seed the engine's `prev_x/y/z` position origin and `StepMotorState`
     /// accumulators so the first segment after `SET_KINEMATIC_POSITION`
     /// computes its delta against the correct origin rather than `(0, 0, 0)`.
@@ -1213,7 +865,7 @@ pub mod exports {
     /// (≈ 15 µm at 1 m) is negligible relative to the step-size floor.
     ///
     /// Foreground-only. Projects `&mut IsrState` under the same
-    /// single-threaded-foreground precondition as `configure_axes_blob`.
+    /// single-threaded-foreground precondition as `kalico_runtime_configure_axis`.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_seed_position(
         rt: *mut KalicoRuntime,
@@ -1232,10 +884,9 @@ pub mod exports {
         let z = z_q16 as f32 / 65536.0;
         let ctx = rt.cast::<RuntimeContext>();
         // SAFETY: foreground-only projection. `engine` lives in `IsrState`;
-        // we project `&mut IsrState` under the same single-threaded-foreground
-        // precondition documented for `configure_axes_blob` — no ISR is running
-        // when the host sends this command (it arrives before the first
-        // PushSegment). No other `&mut IsrState` or `&mut FgState` may be live
+        // we project `&mut IsrState` under the single-threaded-foreground
+        // precondition (no ISR running) — this command arrives before the first
+        // PushSegment. No other `&mut IsrState` or `&mut FgState` may be live
         // on this call path.
         unsafe {
             let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
@@ -2223,7 +1874,7 @@ pub mod exports {
     // single-threaded command dispatcher between segments, never during
     // a TIM5 ISR tick on the same axis state, so projecting `&mut
     // IsrState` here is sound under the same precondition that
-    // `kalico_runtime_seed_position` and `kalico_runtime_configure_axes_blob`
+    // `kalico_runtime_seed_position` and `kalico_runtime_configure_axis`
     // rely on.
 
     /// Stepping-redesign Task 14. Publish per-axis configuration with
@@ -2302,8 +1953,8 @@ pub mod exports {
             if rc != KALICO_OK {
                 return rc;
             }
-            // If configure_axes_blob marked this axis as Modulated, upgrade
-            // axis.mode from Pulse to Phase so the ISR routes through
+            // If this axis was configured as Modulated (via SharedState step_modes),
+            // upgrade axis.mode from Pulse to Phase so the ISR routes through
             // dispatch_phase for XDIRECT coil modulation.
             let shared_ptr: *const runtime::state::SharedState = core::ptr::addr_of!((*ctx).shared);
             if (axis_idx as usize) < runtime::state::MAX_STEPPER_OIDS {

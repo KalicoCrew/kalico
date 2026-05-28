@@ -93,8 +93,7 @@ pub const KALICO_ERR_INVALID_ARG: i32 = -26;
 
 // Phase-stepping configure_axes (Task 4 / spec §3.2, §4.1).
 /// Spec §3.2 audible-band protection: at most 2 motors may be configured for
-/// phase stepping. Hard parse-time reject when the 33-byte
-/// `configure_axes_blob` requests more.
+/// phase stepping. Hard parse-time reject on excess motor count.
 pub const KALICO_ERR_INVALID_PHASE_AXIS_COUNT: i32 = -27;
 /// Two phase-stepped motors attempted to share a single SPI bus. Reserved
 /// for Task 6 (`runtime_modulated_tick`); declared here so the configure

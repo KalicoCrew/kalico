@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use super::*;
-use crate::config::EMode;
+use crate::segment::EMode;
 use crate::segment::CurveHandle;
 use crate::segment::*;
 

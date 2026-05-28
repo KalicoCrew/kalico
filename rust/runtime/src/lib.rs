@@ -32,7 +32,6 @@ pub mod sizing;
 pub use sizing::RT_STORAGE_SIZE;
 pub mod c_segment_queue;
 pub mod clock;
-pub mod config;
 pub mod endstop;
 pub mod engine;
 pub mod error;

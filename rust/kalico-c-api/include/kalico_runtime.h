@@ -281,8 +281,8 @@ uint32_t runtime_handle_fault_detail(struct KalicoRuntime *rt);
 /**
  * Diagnostic: read the configured `steps_per_mm` for axis `oid` (0..=3
  * in motor space). Returns 0.0 if `oid` is out of range or runtime
- * uninitialised. Used by Phase 4 sim test to verify that
- * `configure_axes_blob` reached the engine.
+ * uninitialised. Used by sim tests to verify axis configuration
+ * reached the engine.
  */
 float runtime_handle_get_axis_steps_per_mm(struct KalicoRuntime *rt, uint8_t oid);
 
@@ -325,42 +325,6 @@ double kalico_runtime_get_axis_accumulator(struct KalicoRuntime *rt, uint8_t oid
 int32_t kalico_runtime_get_stepper_count(struct KalicoRuntime *rt, uint8_t oid);
 
 /**
- * Extended blob layout (25 bytes) and phase-stepping blob layout
- * (33 bytes — Task 4 / spec §4.1):
- *
- * ```text
- * byte  0     kinematics_tag  (0 = CoreXY+E, 1 = Cartesian+E)
- * byte  1     present_mask    (bit i set → motor i is present)
- * byte  2     awd_mask        (bit i set → motor i is AWD)
- * byte  3     invert_mask     (bit i set → motor i direction inverted)
- * bytes 4-7   steps_per_mm[0] (f32 LE)
- * bytes 8-11  steps_per_mm[1] (f32 LE)
- * bytes 12-15 steps_per_mm[2] (f32 LE)
- * bytes 16-19 steps_per_mm[3] (f32 LE)
- *             -- present only in extended (25-byte) format --
- * byte 20     mcu_caps        (bit 0 = mcu_supports_phase_stepping)
- * byte 21     step_mode[0]    (0 = Modulated, 1 = StepTime)
- * byte 22     step_mode[1]
- * byte 23     step_mode[2]
- * byte 24     step_mode[3]
- *             -- present only in phase-stepping (26+3N-byte) format --
- * byte 25                 phase_motor_count = N (1..=MAX_STEPPER_OIDS)
- * bytes 26+3i..26+3i+2    motor i: (bus_id, cs_pin_id, slot_idx)
- * ```
- *
- * Legacy hosts emit the 20-byte format; the MCU defaults all steppers to
- * `StepTime` in that case. Any `blob_len` not in
- * `{20, 25, 26 + 3·N for 0 <= N <= MAX_STEPPER_OIDS}` is rejected. The
- * variable-length format requires `step_mode[slot_idx] == Modulated`
- * for every motor entry (spec §4.1). N is bounded by MAX_STEPPER_OIDS
- * (16); the earlier audible-band ≤2 cap is no longer enforced here —
- * per-shared-SPI-bus bandwidth derating is a separate future change.
- */
-int32_t kalico_runtime_configure_axes_blob(struct KalicoRuntime *rt,
-                                           const uint8_t *blob_ptr,
-                                           uint32_t blob_len);
-
-/**
  * Seed the engine's `prev_x/y/z` position origin and `StepMotorState`
  * accumulators so the first segment after `SET_KINEMATIC_POSITION`
  * computes its delta against the correct origin rather than `(0, 0, 0)`.
@@ -375,7 +339,7 @@ int32_t kalico_runtime_configure_axes_blob(struct KalicoRuntime *rt,
  * (≈ 15 µm at 1 m) is negligible relative to the step-size floor.
  *
  * Foreground-only. Projects `&mut IsrState` under the same
- * single-threaded-foreground precondition as `configure_axes_blob`.
+ * single-threaded-foreground precondition as `kalico_runtime_configure_axis`.
  */
 int32_t kalico_runtime_seed_position(struct KalicoRuntime *rt,
                                      int32_t x_q16,

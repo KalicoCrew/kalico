@@ -101,10 +101,9 @@ pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
     use heapless::spsc::Queue;
 
     use crate::clock::WidenState;
-    use crate::config::{McuAxisConfig, MotorConfig};
     use crate::queue::Q_N;
     use crate::reclaim::RetirementTable;
-    use crate::segment::{KinematicTag, Segment};
+    use crate::segment::Segment;
     use crate::state::{EngineImpl, FgState, IsrState, RuntimeContext, SharedState};
     use crate::stream::FgStreamState;
     use crate::trace::{TRACE_RING_N, TraceSample};
@@ -116,32 +115,7 @@ pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
         Box::leak(Box::new(Queue::new()));
     let (t_producer, t_consumer) = trace_queue.split();
 
-    let mut engine = EngineImpl::new(TEST_CLOCK_FREQ, 40_000);
-    engine.configure(McuAxisConfig {
-        motors: [
-            Some(MotorConfig {
-                steps_per_mm: 80.0,
-                is_awd: false,
-                invert_dir: false,
-            }),
-            Some(MotorConfig {
-                steps_per_mm: 80.0,
-                is_awd: false,
-                invert_dir: false,
-            }),
-            Some(MotorConfig {
-                steps_per_mm: TEST_Z_STEPS_PER_MM,
-                is_awd: false,
-                invert_dir: false,
-            }),
-            Some(MotorConfig {
-                steps_per_mm: 80.0,
-                is_awd: false,
-                invert_dir: false,
-            }),
-        ],
-        kinematics: KinematicTag::CartesianXyzAndE,
-    });
+    let engine = EngineImpl::new(TEST_CLOCK_FREQ, 40_000);
 
     use crate::sizing::TOTAL_RING_PIECES;
     Box::new(RuntimeContext {
@@ -196,9 +170,8 @@ pub fn push_test_segment_linear_z_at(
     velocity_mm_s: f32,
     duration_s: f32,
 ) {
-    use crate::config::EMode;
     use crate::piece_ring::PieceEntry;
-    use crate::segment::{CurveHandle, KinematicTag, Segment};
+    use crate::segment::{CurveHandle, EMode, KinematicTag, Segment};
     use crate::sizing::TOTAL_RING_PIECES;
 
     let z_end_mm = velocity_mm_s * duration_s;

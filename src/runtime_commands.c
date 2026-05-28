@@ -407,57 +407,11 @@ command_runtime_set_phase_trace(uint32_t *args)
 DECL_COMMAND(command_runtime_set_phase_trace,
     "runtime_set_phase_trace enabled=%c");
 
-// ---- 2026-05-18 configure_axes binary blob via msgproto --------------------
-// Production routes configure_axes through the kalico-native binary frame
-// transport (KALICO_MSG_CONFIGURE_AXES, see src/kalico_dispatch.c). That
-// path requires a separate sync byte (0x55) and CRC scheme that the
-// standalone host-io helper (tools/kalico_host_io.py) does not demux —
-// responses never reach Python callers driving the sim from a plain
-// pyserial socket. This DECL_COMMAND surfaces the same Rust FFI through
-// the standard Klipper msgproto path so sim tests can install per-motor
-// phase config (33-byte blob) without standing up the full bridge crate.
-// Accepts 20-byte (legacy), 25-byte (extended StepMode), or 33-byte
-// (phase-stepping per-motor SPI config) blobs.
-void
-command_runtime_configure_axes_blob(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf("kalico_configure_axes_blob_response result=%i", -7);
-        return;
-    }
-    uint32_t blob_len = args[0];
-    uint8_t *blob_ptr = command_decode_ptr(args[1]);
-    // Accept 20 / 25 / 26+3N (N in 0..=16). Rust parser validates the
-    // per-motor entries; wrapper only gates length to a recognized shape.
-    int accept = (blob_len == 20) || (blob_len == 25);
-    if (!accept && blob_len >= 26) {
-        uint32_t tail = blob_len - 26;
-        if (tail % 3 == 0 && (tail / 3) <= 16) {
-            accept = 1;
-        }
-    }
-    if (!accept) {
-        sendf("kalico_configure_axes_blob_response result=%i", -1);
-        return;
-    }
-    int32_t r = kalico_runtime_configure_axes_blob(runtime_handle,
-                                                   blob_ptr,
-                                                   blob_len);
-    if (r == 0) {
-        // New stepping path uses init_per_axis_step_timers; deleted in
-        // stepping-redesign-finish Task 17.
-    }
-    sendf("kalico_configure_axes_blob_response result=%i", r);
-}
-DECL_COMMAND(command_runtime_configure_axes_blob,
-    "runtime_configure_axes_blob blob=%*s");
-
 // ---- 2026-05-18 phase-stepping SPI bus registration ----------------------
 // Closes the gap between the Rust runtime's per-motor phase_config storage
-// (installed via runtime_configure_axes_blob) and the C-side
-// `phase_stepping_write_xdirect` path. Without this command, every XDIRECT
-// write from the modulator hits the `if (!configured) return;` early-exit
-// in src/stm32/phase_stepping_spi.c and silently drops.
+// and the C-side `phase_stepping_write_xdirect` path. Without this command,
+// every XDIRECT write from the modulator hits the `if (!configured) return;`
+// early-exit in src/stm32/phase_stepping_spi.c and silently drops.
 //
 // Two-stage registration (2026-05-19 — fixes the multi-TMC5160-on-one-bus
 // CS-aliasing bug, see docs/superpowers/specs/2026-05-19-phase-stepping-
@@ -466,7 +420,7 @@ DECL_COMMAND(command_runtime_configure_axes_blob,
 //      bus_id, installs the shared SPI cfg (rate, mode 3).
 //   2. `runtime_register_phase_motor motor_idx=%c bus_id=%c cs_pin_id=%c`
 //      — once per phase-stepped motor, installs that motor's CS GPIO.
-// Both must precede `runtime_configure_axes_blob`.
+// Both must precede the first `kalico_configure_axis` command.
 //
 // STM32-only because the underlying phase_stepping_spi.c is STM32-only.
 // On linux/sim hosts (non-STM32 mach) both return -88 ("not supported on

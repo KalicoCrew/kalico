@@ -295,9 +295,8 @@ pub struct SharedState {
     pub step_modes: [AtomicU8; MAX_STEPPER_OIDS],
     /// Per-motor phase-stepping SPI config. Packed (`spi_bus_id << 8 |
     /// cs_pin_id`). `0xFFFF` means "no phase config — use the StepPulse
-    /// output path." Populated by `kalico_runtime_configure_axes_blob`'s
-    /// variable-length parse branch; read by `runtime_modulated_tick`.
-    /// See `crate::phase_config` for the helpers.
+    /// output path." Populated during axis configuration; read by
+    /// `runtime_modulated_tick`. See `crate::phase_config` for the helpers.
     ///
     /// In the variable-length layout (≥26-byte body), entry `motor_idx`
     /// describes the SPI bus / CS pin for the physical motor at
@@ -310,13 +309,13 @@ pub struct SharedState {
     /// the slot whose commanded `motors[slot_idx]` position drives motor
     /// `motor_idx`'s XDIRECT output. Multiple motors can share a slot
     /// (AWD pairs, or industrial multi-motor-per-axis configs).
-    /// Populated by `configure_axes_blob` alongside `phase_config`.
+    /// Populated during axis configuration alongside `phase_config`.
     /// Unused entries hold `0xFF`.
     pub phase_slot_idx: [AtomicU8; MAX_STEPPER_OIDS],
     /// Number of valid entries in `phase_config` / `phase_slot_idx`. The
     /// ISR loops `0..phase_motor_count` rather than scanning the full
     /// `MAX_STEPPER_OIDS` array. Stored as `AtomicU8` so the foreground
-    /// can re-publish a fresh count from `configure_axes_blob`. `0`
+    /// can re-publish a fresh count from the configure path. `0`
     /// disables phase stepping entirely on this MCU.
     pub phase_motor_count: AtomicU8,
 

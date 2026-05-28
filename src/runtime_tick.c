@@ -96,7 +96,7 @@ runtime_host_now_us(void)
 // Why not `output(...)` directly: kalico-native dispatch context (FFI
 // handlers reached via the kalico-native demux) blocks the foreground
 // task that drains the USB-CDC TX buffer until the handler returns.
-// On F446, configure_axes_blob crashes BEFORE that return, so any
+// On F446, the kalico-native FFI handler crashes BEFORE that return, so any
 // `output()` line queued during the FFI never flushes — klippy sees
 // nothing. The status-frame piggyback uses an already-running drain
 // task (10 Hz cadence) that emits even while the foreground is busy.

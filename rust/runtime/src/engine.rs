@@ -84,10 +84,7 @@ pub struct Engine {
     // Per-axis `StepMotorState` for the accumulator-based step path.
     // Indexed 0..MAX_AXES; entries beyond num_axes are unused.
     pub(crate) step_state: [StepMotorState; MAX_AXES],
-    // Legacy fields retained for FFI call sites that still reference them.
-    // These will be cleaned up in subsequent tasks.
     pub(crate) last_motors: [f32; MAX_AXES],
-    pub(crate) mcu_config: Option<crate::config::McuAxisConfig>,
     // Tick caches kept for `seed_position` compatibility.
     pub tick_caches: crate::stepping_state::TickCaches,
     #[cfg(any(test, feature = "host"))]
@@ -108,7 +105,6 @@ impl Engine {
             ring_alloc_cursor: 0,
             step_state: [StepMotorState::default(); MAX_AXES],
             last_motors: [0.0; MAX_AXES],
-            mcu_config: None,
             tick_caches: crate::stepping_state::TickCaches::new(),
             #[cfg(any(test, feature = "host"))]
             test_queue_ptrs: [core::ptr::null_mut(); MAX_AXES],
@@ -150,7 +146,6 @@ impl Engine {
             addr_of_mut!((*ptr).ring_alloc_cursor).write(0);
             addr_of_mut!((*ptr).step_state).write([StepMotorState::default(); MAX_AXES]);
             addr_of_mut!((*ptr).last_motors).write([0.0; MAX_AXES]);
-            addr_of_mut!((*ptr).mcu_config).write(None);
             addr_of_mut!((*ptr).tick_caches).write(crate::stepping_state::TickCaches::new());
             #[cfg(any(test, feature = "host"))]
             addr_of_mut!((*ptr).test_queue_ptrs).write([core::ptr::null_mut(); MAX_AXES]);
@@ -529,17 +524,6 @@ impl Engine {
                     .store(seed_steps, Ordering::Release);
             }
         }
-    }
-
-    pub fn configure(&mut self, config: crate::config::McuAxisConfig) {
-        for (i, motor_opt) in config.motors.iter().enumerate() {
-            if let Some(motor) = motor_opt {
-                if let Some(ss) = self.step_state.get_mut(i) {
-                    *ss = StepMotorState::new(motor.steps_per_mm);
-                }
-            }
-        }
-        self.mcu_config = Some(config);
     }
 
     pub fn debug_steps_per_mm(&self, i: usize) -> f32 {
