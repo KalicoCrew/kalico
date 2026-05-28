@@ -30,8 +30,7 @@ pub mod exports {
         KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
         KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_OK,
     };
-    use runtime::state::{FgState, IsrState, RuntimeContext, SharedState};
-    use runtime::trace::TraceSample;
+    use runtime::state::{IsrState, RuntimeContext, SharedState};
 
     /// The opaque type C sees — never dereferenced on the C side.
     /// Matches spec §3.2 / §5.6 handle discipline.
@@ -235,73 +234,6 @@ pub mod exports {
         }
     }
 
-    /// Foreground drain. Returns count of samples written.
-    ///
-    /// Phase 11 §10.4 expansion: alongside writing the sample to the wire
-    /// buffer, this also calls `pool.confirm_retired` for any sample
-    /// carrying `TRACE_FLAG_SEGMENT_END`, so curve-pool slots get reclaimed
-    /// in lockstep with the trace ship-out (one drain pass = one
-    /// foreground-side wire emit + one reclaim cursor advance).
-    ///
-    /// `out_saw_segment_end` (optional, may be NULL): set to `1` on return
-    /// when the drain consumed at least one `TRACE_FLAG_SEGMENT_END`
-    /// sample, else `0`. Closure-review fix: `kalico_credit_freed` emission
-    /// in `runtime_drain` previously gated only on the second
-    /// (drain-and-reclaim) leg's bit, but the first leg routinely consumes
-    /// every `SEGMENT_END` under steady-state push, suppressing the credit
-    /// event and deadlocking host flow control. The C handler now ORs this
-    /// bit with the reclaim leg's bit.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn runtime_handle_drain_trace(
-        rt: *mut KalicoRuntime,
-        out_buf: *mut TraceSample,
-        out_cap: u32,
-        out_saw_segment_end: *mut u8,
-    ) -> u32 {
-        if !out_saw_segment_end.is_null() {
-            // SAFETY: caller-provided pointer; documented to be a valid
-            // u8 location for writes when non-null.
-            unsafe {
-                *out_saw_segment_end = 0;
-            }
-        }
-        if rt.is_null() || out_buf.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: project to the foreground trace consumer — no `&mut` on
-        // IsrState forms here. Caller-provided out_buf must be valid for
-        // out_cap writes of TraceSample.
-        unsafe {
-            let fg_ptr: *mut FgState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).fg));
-            let fg: &mut FgState = &mut *fg_ptr;
-            let out_slice = core::slice::from_raw_parts_mut(out_buf, out_cap as usize);
-            let mut count = 0usize;
-            let mut saw_segment_end = false;
-            while count < out_slice.len() {
-                let Some(sample) = fg.trace_consumer.dequeue() else {
-                    break;
-                };
-                if (sample.flags & runtime::trace::TRACE_FLAG_SEGMENT_END) != 0 {
-                    saw_segment_end = true;
-                }
-                if let Some(slot) = out_slice.get_mut(count) {
-                    *slot = sample;
-                }
-                count += 1;
-            }
-            if !out_saw_segment_end.is_null() && saw_segment_end {
-                *out_saw_segment_end = 1;
-            }
-            #[allow(clippy::cast_possible_truncation)]
-            let result = count as u32;
-            result
-        }
-    }
-
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn runtime_handle_status(rt: *mut KalicoRuntime) -> u8 {
         if rt.is_null() {
@@ -354,90 +286,6 @@ pub mod exports {
         unsafe {
             let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).engine.tick_counter()
-        }
-    }
-
-    // ---- Bench bring-up diagnostic (2026-05-21) ---------------------------
-    //
-    // 2026-05-21 bench reported `queue_depth=2, engine_status=Idle,
-    // current_segment_id=0` after a jog — segments arrived on the MCU but
-    // the engine never armed. Diagnosis collapses to four hypotheses,
-    // distinguished by three independent observables exposed here:
-    //
-    //   * `kalico_runtime_get_tick_counter` — `Engine::tick_counter` snapshot.
-    //     Now actually increments per ISR call (see
-    //     `runtime::tick::isr_sample_tick`); zero means TIM5 is not firing
-    //     or `kalico_runtime_tick_sample` early-exits at the null/INIT_DONE
-    //     guards.
-    //   * `kalico_runtime_pending_segment_is_some` — whether the ISR
-    //     dequeued a segment but parked it because `seg.t_start > now`.
-    //     Non-zero with `current_segment_id == 0` means widened_now is
-    //     stale or the host's arm_lead is enormous.
-    //   * `kalico_runtime_queue_consumer_dequeues_lo` — low 32 bits of
-    //     `SharedState::producer_segment_dequeued_total`. Bumped in
-    //     `isr_sample_tick` after each successful `queue_consumer.dequeue()`.
-    //     Zero with tick_counter > 0 means the ISR fires but
-    //     `queue_consumer.dequeue()` returns None despite C-side
-    //     `kalico_native_queue_len() > 0` — the C/Rust queue sync bug
-    //     pattern.
-    //
-    // These three accessors compose into the C-side diag tag 0xE3 added to
-    // `src/runtime_tick.c`'s `runtime_status_drain` rotation.
-
-    /// Read whether the ISR has a parked-and-waiting segment in
-    /// `IsrState::pending_segment` (returns 1) or not (returns 0). Used by
-    /// the 0xE3 diag tag to disambiguate "queue stuck" vs "park stuck"
-    /// failure modes on the bench. Read-only access through the §11.1
-    /// shared-borrow discipline — `pending_segment` is mutated only by
-    /// `isr_sample_tick`, but the foreground status_drain reads the
-    /// `Option` discriminant byte directly under the same precondition
-    /// `runtime_handle_tick_counter` uses (no concurrent mutation while
-    /// status_drain executes from the host-task context).
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_pending_segment_is_some(rt: *mut KalicoRuntime) -> u8 {
-        if rt.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: same shared-borrow contract as `runtime_handle_tick_counter`
-        // above — read-only access to ISR-owned state. The `is_some()` read
-        // is a single byte load of the `Option` discriminant; non-atomic
-        // but tolerable for a diagnostic that may race the ISR by one tick.
-        unsafe {
-            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
-            u8::from((*isr_ptr).pending_segment.is_some())
-        }
-    }
-
-    /// Low 32 bits of `SharedState::producer_segment_dequeued_total`. The
-    /// counter is bumped Acq/Rel in `isr_sample_tick` after every successful
-    /// `queue_consumer.dequeue()`. Pair with `kalico_runtime_get_tick_counter`
-    /// to distinguish "ISR not firing" from "ISR fires but never dequeues"
-    /// in the 0xE3 diag tag.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_queue_consumer_dequeues_lo(
-        rt: *mut KalicoRuntime,
-    ) -> u32 {
-        if rt.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: `SharedState` atomics — Acquire load synchronizes with
-        // the Release fetch_add in `isr_sample_tick`.
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            let full = (*shared_ptr)
-                .producer_segment_dequeued_total
-                .load(Ordering::Acquire);
-            #[allow(clippy::cast_possible_truncation)]
-            let lo = full as u32;
-            lo
         }
     }
 
@@ -495,66 +343,6 @@ pub mod exports {
             let low = timer_read_time();
             let high = stats_send_time_high + ((low < stats_send_time) as u32);
             ((high as u64) << 32) | (low as u64)
-        }
-    }
-
-    /// Read the credit-flow epoch counter (§5.3 + §10.4). Bumped on each
-    /// `kalico_stream_flush` so the host can detect mid-stream resets.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn runtime_handle_credit_epoch(rt: *mut KalicoRuntime) -> u32 {
-        if rt.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: SharedState atomics-only access.
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            (*shared_ptr).credit_epoch.load(Ordering::Acquire)
-        }
-    }
-
-    /// Read the cumulative-accepted segment id cursor (§5.3 + §4.1.5).
-    /// Mirrors the value placed into the `kalico_push_response` schema.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn runtime_handle_accepted_segment_id(rt: *mut KalicoRuntime) -> u32 {
-        if rt.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: SharedState atomics-only access.
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            (*shared_ptr).accepted_segment_id.load(Ordering::Acquire)
-        }
-    }
-
-    /// Read the retired-through segment id cursor (§5.3 + §4.1.5). Advances
-    /// monotonically as the engine retires segments — host uses this to
-    /// gate flow control and to know when a stream-terminal hand-off is
-    /// safe to call.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn runtime_handle_retired_through_segment_id(
-        rt: *mut KalicoRuntime,
-    ) -> u32 {
-        if rt.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: SharedState atomics-only access.
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            (*shared_ptr)
-                .retired_through_segment_id
-                .load(Ordering::Acquire)
         }
     }
 
@@ -649,53 +437,6 @@ pub mod exports {
             (*core::ptr::addr_of!((*ctx).shared))
                 .last_retire_consumers_after_clear
                 .load(Ordering::Acquire)
-        }
-    }
-
-    /// Read the currently-active segment id (`0` if engine is Idle/Drained
-    /// or pre-stream).
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn runtime_handle_current_segment_id(rt: *mut KalicoRuntime) -> u32 {
-        if rt.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: SharedState atomics-only access.
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            (*shared_ptr).current_segment_id.load(Ordering::Acquire)
-        }
-    }
-
-    /// Approximate queue depth — number of segments the foreground has
-    /// pushed minus the number the ISR has retired through. Useful as a
-    /// status-frame breadcrumb but NOT a synchronization primitive (both
-    /// cursors lag the actual SPSC state by an unbounded number of ticks
-    /// in the worst case). Returns saturating-subtraction in u8 range
-    /// (`Q_N - 1` is the structural cap; saturate at 255 just in case).
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn runtime_handle_queue_depth(rt: *mut KalicoRuntime) -> u8 {
-        if rt.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: SharedState atomics-only access.
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            let accepted = (*shared_ptr).accepted_segment_id.load(Ordering::Acquire);
-            let retired = (*shared_ptr)
-                .retired_through_segment_id
-                .load(Ordering::Acquire);
-            let depth = accepted.saturating_sub(retired);
-            #[allow(clippy::cast_possible_truncation)]
-            let r = depth.min(u32::from(u8::MAX)) as u8;
-            r
         }
     }
 
@@ -895,165 +636,11 @@ pub mod exports {
         KALICO_OK
     }
 
-    /// Phase 11 Task 11.2 foreground reclaim drain pipeline. Drains up to
-    /// `limit` trace samples from the ring, calls `pool.confirm_retired`
-    /// for each `SEGMENT_END` observed, and returns a 32-bit packed
-    /// status:
-    ///
-    /// - Bits 0..=15 — count of samples drained this call.
-    /// - Bit 16     — set if a fresh trace-overflow fault latched (§13.1).
-    /// - Bit 17     — set if at least one `SEGMENT_END` was observed
-    ///   (caller emits one or more `kalico_credit_freed`
-    ///   events keyed off the updated cursors).
-    ///
-    /// The C handler (`runtime_drain` `DECL_TASK` in `src/runtime_tick.c`)
-    /// uses this single-call form so the trace-drain + reclaim + fault-
-    /// latch pipeline is one round-trip per drain wake-up.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_drain_and_reclaim(
-        rt: *mut KalicoRuntime,
-        limit: u32,
-    ) -> u32 {
-        if rt.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: foreground-only projection — touches FgState (sole writer)
-        // for the trace consumer and &SharedState for the trace-overflow latch.
-        unsafe {
-            let fg_ptr: *mut FgState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).fg));
-            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
-            let fg: &mut FgState = &mut *fg_ptr;
-            let mut saw_segment_end = false;
-            let drained = runtime::reclaim::drain_and_reclaim(
-                &fg.retirement_table,
-                || {
-                    let s = fg.trace_consumer.dequeue();
-                    if let Some(sample) = s {
-                        if (sample.flags & runtime::trace::TRACE_FLAG_SEGMENT_END) != 0 {
-                            saw_segment_end = true;
-                        }
-                    }
-                    s
-                },
-                limit as usize,
-            );
-            let overflow_latched = runtime::reclaim::check_trace_overflow_and_fault(shared);
-            let mut packed: u32 = (drained as u32) & 0xFFFF;
-            if overflow_latched {
-                packed |= 1 << 16;
-            }
-            if saw_segment_end {
-                packed |= 1 << 17;
-            }
-            packed
-        }
-    }
-
-    // ---- Stream lifecycle + clock-sync FFI (spec §8.3 / §12.1) ------------
+    // ---- Stream lifecycle + clock-sync FFI ------------
     //
-    // Phase 3.2 declares the FFI shape; Phase 6 wires the actual state-
-    // machine bodies (`runtime::stream::open` / `arm` / `terminal` / `flush`
-    // / `clock_sync_respond`). Until Phase 6 lands, the shims return
-    // `KALICO_ERR_STREAM_STATE_VIOLATION` (-140) so the host sees a
-    // recognisable "not-yet-implemented" code rather than silently passing.
-
-    /// Project to `&mut FgState` + `&SharedState`. Used by the stream-
-    /// lifecycle FFI shims below. Caller must guarantee `rt` non-null and
-    /// `INIT_DONE=true`.
-    ///
-    /// SAFETY: caller must ensure `rt` is non-null and `INIT_DONE=true`.
-    /// Only one `&mut FgState` may be live at a time across the FFI surface;
-    /// the foreground task is single-threaded so this is enforced by call-
-    /// site discipline, not the type system.
-    unsafe fn project_fg<R, F>(rt: *mut KalicoRuntime, f: F) -> R
-    where
-        F: FnOnce(&mut FgState, &SharedState) -> R,
-    {
-        let ctx = rt.cast::<RuntimeContext>();
-        unsafe {
-            let fg_ptr: *mut FgState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).fg));
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            f(&mut *fg_ptr, &*shared_ptr)
-        }
-    }
-
-    /// `kalico_stream_open` — assert host-MCU stream identity (§8.3).
-    /// Phase-6 stub.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_stream_open(
-        rt: *mut KalicoRuntime,
-        stream_id: u32,
-        out_credit_epoch: *mut u32,
-    ) -> i32 {
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        // SAFETY: half-split projection per the discipline contract.
-        unsafe {
-            project_fg(rt, |fg, shared| {
-                let r = runtime::stream::open(fg, shared, stream_id);
-                if r == KALICO_OK && !out_credit_epoch.is_null() {
-                    *out_credit_epoch = shared.credit_epoch.load(Ordering::Acquire);
-                }
-                r
-            })
-        }
-    }
-
-    /// `kalico_stream_arm` — commit the priming buffer (§6.4 / §8.3).
-    /// Phase-6 stub.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_stream_arm(
-        rt: *mut KalicoRuntime,
-        t_start_t0: u64,
-        arm_lead_cycles: u32,
-        out_armed_t_start: *mut u64,
-    ) -> i32 {
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        // SAFETY: half-split projection per the discipline contract.
-        unsafe {
-            project_fg(rt, |fg, shared| {
-                let (r, armed_t) = runtime::stream::arm(fg, shared, t_start_t0, arm_lead_cycles);
-                if !out_armed_t_start.is_null() {
-                    *out_armed_t_start = armed_t;
-                }
-                r
-            })
-        }
-    }
-
-    /// `kalico_stream_terminal` — mark the last segment id of the stream
-    /// (§8.3). Phase-6 stub.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_stream_terminal(
-        rt: *mut KalicoRuntime,
-        segment_id: u32,
-    ) -> i32 {
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        // SAFETY: half-split projection per the discipline contract.
-        unsafe {
-            project_fg(rt, |fg, shared| {
-                runtime::stream::terminal(fg, shared, segment_id)
-            })
-        }
-    }
+    // `open` / `arm` / `terminal` (segment-era stubs) have been removed.
+    // `flush` is retained as a no-op shell; the host rewrite (same branch)
+    // replaces it with the real force-idle / cancel mechanism.
 
     /// `kalico_stream_flush` — `force_idle` handshake (§8.5).
     ///
@@ -1495,46 +1082,6 @@ pub mod exports {
         }
     }
 
-    /// Flip the `phase_trace_enabled` gate (2026-05-18 plan Task 5).
-    ///
-    /// When enabled, `runtime_tick_sample` pushes one
-    /// `TRACE_FLAG_PHASE_STEP`-flagged `TraceSample` per
-    /// phase-stepping tick per motor (Task 6 wiring). Default is `false`;
-    /// production builds leave it off so the trace ring isn't burned by
-    /// the 80 kHz per-motor PhaseStep stream when no diagnostic is active.
-    ///
-    /// `enabled`: non-zero → true, zero → false. The store uses `Release`
-    /// ordering; the ISR-side load pairs with `Acquire`.
-    ///
-    /// Returns:
-    /// - `KALICO_OK` on success.
-    /// - `KALICO_ERR_NULL_PTR` if `rt` is null.
-    /// - `KALICO_ERR_NOT_INIT` if the runtime has not been initialised.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_set_phase_trace_enabled(
-        rt: *mut KalicoRuntime,
-        enabled: u8,
-    ) -> i32 {
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: SharedState is atomics-only; no `&mut` is formed. The
-        // `phase_trace_enabled` atomic is designed for foreground writes
-        // and ISR reads, same discipline as `step_modes` / `phase_config`.
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            let shared: &SharedState = &*shared_ptr;
-            shared
-                .phase_trace_enabled
-                .store(enabled != 0, Ordering::Release);
-        }
-        KALICO_OK
-    }
-
     // ---- Legacy Newton / step-ring producer surface (DELETED) ------------
     //
     // The `kalico_runtime_producer_step`, `kalico_runtime_step_ring_*`,
@@ -1545,33 +1092,6 @@ pub mod exports {
     // per-sample `kalico_runtime_tick_sample` ISR driving the cubic
     // evaluator over the curve pool — no producer timer, no per-motor
     // step rings, no Newton fill.
-
-    /// 2026-05-18 wedge diag: live snapshot of `queue_consumer.len()` —
-    /// the SPSC's view of how many segments are queued and visible to the
-    /// Consumer. Cross-check against `accepted_segment_id -
-    /// retired_through_segment_id` (host's view of queue depth):
-    ///   - queue.len() == queue_depth → SPSC is consistent; bug elsewhere.
-    ///   - queue.len() < queue_depth  → SPSC's Consumer can't see all the
-    ///                                   Producer's enqueued segments
-    ///                                   (memory visibility / write-buffer
-    ///                                   / cache issue, or queue corrupted).
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_queue_len_diag(rt: *mut KalicoRuntime) -> u32 {
-        if rt.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: §11.1 — foreground sole access to IsrState here.
-        // `Consumer::len()` reads atomics via &self, no mutation.
-        unsafe {
-            let isr_ptr: *const IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
-            let isr: &IsrState = &*isr_ptr;
-            isr.queue_consumer.len() as u32
-        }
-    }
 
     /// Diagnostic: read the low 32 bits of `producer_enqueue_success_total`.
     /// Bumps AFTER `fg.queue_producer.enqueue(seg)` returns Ok in

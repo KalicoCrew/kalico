@@ -21,8 +21,6 @@
 
 use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
-use heapless::spsc::Producer;
-
 use crate::clock::TickCounter;
 use crate::error::{KALICO_ERR_INVALID_ARG, KALICO_ERR_RING_FULL, KALICO_OK};
 use crate::fault_helpers::raise_piece_start_in_past;
@@ -30,7 +28,6 @@ use crate::piece_ring::PieceEntry;
 use crate::state::SharedState;
 use crate::step::StepMotorState;
 use crate::stepping_state::{AxisState, MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
-use crate::trace::{TRACE_RING_N, TraceSample};
 
 pub use crate::stepping_state::N_AXES;
 
@@ -265,13 +262,11 @@ impl Engine {
     ///
     /// `storage` is projected from `RuntimeContext::piece_storage` by the
     /// caller.
-    #[allow(clippy::too_many_arguments)]
     pub fn tick(
         &mut self,
         now: u64,
         shared: &SharedState,
         storage: &mut [PieceEntry],
-        _trace: &mut Producer<'_, TraceSample, TRACE_RING_N>,
     ) {
         use crate::tick::dispatch_axis;
         #[cfg(any(test, feature = "host"))]
@@ -599,11 +594,6 @@ impl Engine {
         self.stepping_axes
             .iter()
             .any(|a| a.as_ref().map_or(false, |ax| ax.has_piece))
-    }
-
-    #[cfg(any(test, feature = "host"))]
-    pub fn debug_current_segment_id(&self) -> Option<u32> {
-        None
     }
 }
 

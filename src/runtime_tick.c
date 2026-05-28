@@ -338,7 +338,6 @@ runtime_init(void)
 }
 DECL_INIT(runtime_init);
 
-#define KALICO_TRACE_BATCH 64
 #define KALICO_LIVENESS_THRESHOLD_MS 25
 #define KALICO_LIVENESS_THRESHOLD_TICKS  \
     ((KALICO_LIVENESS_THRESHOLD_MS) * (CONFIG_CLOCK_FREQ / 1000))
@@ -360,63 +359,6 @@ runtime_drain(void)
                         diag_slot_rt_drain_max_gap(),
                         timer_from_us(50000),
                         0); // no event tag — runtime_drain idle gaps are normal
-
-    // Phase 11 Task 11.2 §10.4 reclaim drain pipeline. Drains a batch of
-    // trace samples for transport to the host, then asks the Rust side to
-    // also drain-and-reclaim its own internal cursor for SEGMENT_END events
-    // (so curve-pool slots get returned promptly) and check the §13.1
-    // trace-overflow latch. The two drain paths share the same SPSC ring
-    // (same FgState consumer); the order matters — `runtime_handle_drain_trace`
-    // moves samples to the wire FIRST so the host sees the trace data, THEN
-    // `kalico_runtime_drain_and_reclaim` consumes any remaining samples for
-    // bookkeeping. Both are safe back-to-back because each stops on the
-    // first dequeue == None.
-    static uint8_t batch_buf[KALICO_TRACE_BATCH * 40];  // 40 bytes per sample
-    uint8_t trace_saw_segment_end = 0;
-    uint32_t n = runtime_handle_drain_trace(
-        runtime_handle, (struct TraceSample*)batch_buf, KALICO_TRACE_BATCH,
-        &trace_saw_segment_end);
-    (void)trace_saw_segment_end;  // credit-flow now rides the StatusHeartbeat
-    if (n > 0) {
-        // FORMAT-VERSION EXEMPTION (Phase 3.1 / closure-review):
-        // Phase 3.1 added a 1-byte FORMAT_VERSION_V1 = 0x01 prefix on
-        // host→MCU blob payloads (load_curve cps/knots/weights). The
-        // MCU→host trace blob is intentionally NOT versioned: it is a
-        // one-shot variable-length stream of `TraceSample` records whose
-        // schema is sanity-checked at compile time via the static_assert
-        // on `sizeof(TraceSample) == 40` plus the cbindgen-no-drift CI
-        // check. Adding a per-batch version byte would burn 1.5% of every
-        // 64-sample drain (32 vs 33-byte alignment loss) for no decoder
-        // benefit — the host knows the schema from the data dictionary,
-        // and a wire-protocol version bump would change the data dict
-        // (different msgid for `kalico_trace`) anyway.
-        // See plan-changes-log.md "Step-6 closure-review follow-up fixes"
-        // entry for the full reasoning.
-        output("kalico_trace count=%u data=%*s", n, n * 40, batch_buf);
-    }
-
-    // Reclaim leg: drain whatever the wire-batch left behind and observe
-    // SEGMENT_END events for curve-pool reclaim + trace-overflow check.
-    // Returns a packed status word — see kalico_runtime_drain_and_reclaim
-    // doc-comment for the bit layout. Credit flow now rides the periodic
-    // StatusHeartbeat's per-axis consumed counts, so this leg is kept only
-    // for the trace-overflow fault latch.
-    uint32_t reclaim_status = kalico_runtime_drain_and_reclaim(
-        runtime_handle, KALICO_TRACE_BATCH);
-    uint8_t fresh_overflow_fault = (reclaim_status >> 16) & 1;
-
-    // §13.1: a fresh trace-overflow latch is reported via the `kalico_fault`
-    // async event. The fault state itself is now in shared.last_error +
-    // shared.runtime_status (latched by check_trace_overflow_and_fault on
-    // the Rust side); the periodic StatusHeartbeat echoes it on the next
-    // 10 Hz tick. We send the async event here so the host gets the fault
-    // notification immediately, not up to ~100 ms later.
-    if (fresh_overflow_fault) {
-        int32_t fault_code = runtime_handle_last_error(runtime_handle);
-        uint32_t fault_detail = runtime_handle_fault_detail(runtime_handle);
-        uint32_t cur_seg = runtime_handle_current_segment_id(runtime_handle);
-        kalico_native_emit_fault_event((uint16_t)fault_code, fault_detail, cur_seg);
-    }
 
     // Liveness check. Only meaningful when the runtime is RUNNING — the ISR
     // is deliberately disabled in IDLE/DRAINED (no segment pushed yet) and
@@ -448,8 +390,7 @@ runtime_drain(void)
         if (prev_engine_status != 3 /* FAULT */) {
             int32_t fault_code = runtime_handle_last_error(runtime_handle);
             uint32_t fault_detail = runtime_handle_fault_detail(runtime_handle);
-            uint32_t cur_seg = runtime_handle_current_segment_id(runtime_handle);
-            kalico_native_emit_fault_event((uint16_t)fault_code, fault_detail, cur_seg);
+            kalico_native_emit_fault_event((uint16_t)fault_code, fault_detail, 0);
         }
     }
 
@@ -515,16 +456,15 @@ runtime_status_drain(void)
     // bridge_call link can still observe motion progress via the elf log.
     // Phase 4 test polls this to confirm GATE GREEN.
     uint8_t status = runtime_handle_status(runtime_handle);
-    uint32_t cur_seg = runtime_handle_current_segment_id(runtime_handle);
     int32_t c0 = kalico_runtime_get_stepper_count(runtime_handle, 0);
     int32_t c1 = kalico_runtime_get_stepper_count(runtime_handle, 1);
     int32_t c2 = kalico_runtime_get_stepper_count(runtime_handle, 2);
     extern uint32_t kalico_runtime_get_xdirect_write_count(void);
     uint32_t spi_writes = kalico_runtime_get_xdirect_write_count();
     fprintf(stderr,
-        "[sim-progress] status=%u seg=%u counts=[%d,%d,%d]"
+        "[sim-progress] status=%u counts=[%d,%d,%d]"
         " spi_writes=%u\n",
-        status, cur_seg, c0, c1, c2, spi_writes);
+        status, c0, c1, c2, spi_writes);
     fflush(stderr);
 #endif
 }
@@ -548,11 +488,11 @@ DECL_TASK(runtime_status_drain);
 
 
 // Command surface (query_status, arm_endstop, disarm_endstop,
-// stream_*, clock_sync_request, query_pool_state)
-// plus the endstop GPIO sampler hot-path
-// (`runtime_endstop_sample_pins` + `endstop_pin_table`) live in
-// src/runtime_commands.c. This file keeps only lifecycle (init/drain),
-// sibling drains (status_drain, endstop_drain), and shared globals.
+// stream_flush, clock_sync_request) and the endstop GPIO sampler
+// hot-path (`runtime_endstop_sample_pins` + `endstop_pin_table`) live
+// in src/runtime_commands.c. This file keeps only lifecycle
+// (init/drain), sibling drains (status_drain, endstop_drain), and
+// shared globals.
 
 DECL_CTR("_DECL_OUTPUT "
          "kalico_endstop_tripped arm_id=%u "
@@ -594,18 +534,8 @@ runtime_endstop_drain(void)
 }
 DECL_TASK(runtime_endstop_drain);
 
-// ---- Step-6 §5/§9 async event channel declarations ---------------------
-// `kalico_credit_freed` and `kalico_fault` are MCU-emitted async events
-// (no DECL_COMMAND on the host-to-MCU side). The Klipper `output(FMT, ...)`
-// macro at call sites already registers each format string into the data
-// dictionary via `_DECL_OUTPUT` / `DECL_CTR`, so a static `DECL_CTR` here
-// is the equivalent of pre-registering the schema before the first emit.
-// The actual emits live in the foreground drain pipeline (Phase 11) and the
-// fault-publish path (Phase 4 / Phase 11).
-DECL_CTR("_DECL_OUTPUT "
-         "kalico_trace count=%u data=%*s");
-// kalico_fault retired Phase C — it now rides the kalico-native events
-// channel via kalico_native_emit_fault_event in src/kalico_dispatch.c.
+// kalico_fault is an MCU-emitted async event. It rides the kalico-native
+// events channel via kalico_native_emit_fault_event in src/kalico_dispatch.c.
 // The periodic StatusHeartbeat (send_status_heartbeat) carries per-axis
 // consumed-count credit flow and engine state.
 // Sim-only commands and the sim drain-wake hook live in

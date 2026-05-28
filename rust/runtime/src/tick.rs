@@ -356,12 +356,8 @@ pub fn isr_sample_tick(
         return;
     }
 
-    let crate::state::IsrState {
-        engine,
-        trace_producer,
-        ..
-    } = isr;
-    engine.tick(now, shared, storage, trace_producer);
+    let crate::state::IsrState { engine, .. } = isr;
+    engine.tick(now, shared, storage);
 
     let body_end = unsafe { cyccnt_read() };
     update_max(

@@ -15,22 +15,16 @@
     unsafe_op_in_unsafe_fn
 )]
 
-// `alloc` is needed by the `sim_fixtures::init_test_runtime` helper, which
-// `Box::leak`s static queues so the split `Producer`/`Consumer` halves carry
-// `'static` lifetimes. The helper itself is gated `#[cfg(not(target_os =
-// "none"))]` in `sim_fixtures.rs`, so the MCU sim firmware build (target
-// `thumbv7em-none-eabi`, `target_os = "none"`) doesn't compile it — and
-// pulling in `alloc` on that target without supplying a `#[global_allocator]`
-// fails the link with "no global memory allocator found." Gate this `extern
-// crate alloc;` to match the helper's gate so the embedded sim build is
-// allocator-free.
+// `alloc` is needed by the `sim_fixtures::init_test_runtime` helper on hosted
+// environments. Gate to match the helper's `#[cfg(not(target_os = "none"))]`
+// so the embedded sim build stays allocator-free.
 #[cfg(all(feature = "kalico-sim", not(target_os = "none")))]
 extern crate alloc;
 
 pub mod bezier_root;
+pub mod segment;
 pub mod sizing;
 pub use sizing::RT_STORAGE_SIZE;
-pub mod c_segment_queue;
 pub mod clock;
 pub mod endstop;
 pub mod engine;
@@ -41,9 +35,6 @@ pub mod per_axis_timer;
 pub mod phase_config;
 pub mod phase_lut;
 pub mod piece_ring;
-pub mod queue;
-pub mod reclaim;
-pub mod segment;
 #[cfg(feature = "kalico-sim")]
 pub mod sim_fixtures;
 pub mod spi_queue;
@@ -56,7 +47,6 @@ pub mod stream;
 pub mod sub_sample_timing;
 pub mod test_xdirect_capture;
 pub mod tick;
-pub mod trace;
 pub mod wire;
 
 #[cfg(test)]

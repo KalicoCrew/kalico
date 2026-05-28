@@ -24,9 +24,8 @@
 
 extern void *runtime_handle;      // defined in src/runtime_tick.c
 
-// Aligned scratch buffers for curve-load are also declared here for
-// continuity with the legacy file layout — definitions live in
-// src/runtime_tick.c.
+// Scratch buffer declarations for the curve-load path are kept in
+// src/runtime_tick.c for historical layout continuity.
 
 void
 command_runtime_query_status(uint32_t *args)
@@ -286,62 +285,6 @@ command_runtime_seed_position(uint32_t *args)
 DECL_COMMAND(command_runtime_seed_position,
     "runtime_seed_position x_q16=%i y_q16=%i z_q16=%i");
 
-// ---- Step-6 §8.3 stream lifecycle commands ----------------------------
-// Phase 3.2 declares the wire surface; Phase 6 wires the actual state-
-// machine transitions in `runtime::stream`. The FFIs return -140
-// (KALICO_ERR_STREAM_STATE_VIOLATION) until Phase 6 lands.
-
-void
-command_runtime_stream_open(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf("kalico_stream_open_response result=%i credit_epoch=%u", -7, 0);
-        return;
-    }
-    uint32_t stream_id = args[0];
-    uint32_t credit_epoch = 0;
-    int32_t r = kalico_runtime_stream_open(
-        runtime_handle, stream_id, &credit_epoch);
-    sendf("kalico_stream_open_response result=%i credit_epoch=%u",
-          r, credit_epoch);
-}
-DECL_COMMAND(command_runtime_stream_open, "runtime_stream_open stream_id=%u");
-
-void
-command_runtime_stream_arm(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf(
-            "kalico_stream_arm_response result=%i armed_t_start_lo=%u armed_t_start_hi=%u",
-            -7, 0, 0);
-        return;
-    }
-    uint64_t t_start_t0 = ((uint64_t)args[1] << 32) | args[0];
-    uint32_t arm_lead_cycles = args[2];
-    uint64_t armed_t_start = 0;
-    int32_t r = kalico_runtime_stream_arm(
-        runtime_handle, t_start_t0, arm_lead_cycles, &armed_t_start);
-    sendf(
-        "kalico_stream_arm_response result=%i armed_t_start_lo=%u armed_t_start_hi=%u",
-        r, (uint32_t)armed_t_start, (uint32_t)(armed_t_start >> 32));
-}
-DECL_COMMAND(command_runtime_stream_arm,
-    "runtime_stream_arm t_start_t0_lo=%u t_start_t0_hi=%u arm_lead_cycles=%u");
-
-void
-command_runtime_stream_terminal(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf("kalico_stream_terminal_response result=%i", -7);
-        return;
-    }
-    uint32_t segment_id = args[0];
-    int32_t r = kalico_runtime_stream_terminal(runtime_handle, segment_id);
-    sendf("kalico_stream_terminal_response result=%i", r);
-}
-DECL_COMMAND(command_runtime_stream_terminal,
-    "runtime_stream_terminal segment_id=%u");
-
 void
 command_runtime_stream_flush(uint32_t *args)
 {
@@ -385,27 +328,6 @@ command_runtime_clock_sync_request(uint32_t *args)
 DECL_COMMAND(command_runtime_clock_sync_request,
     "runtime_clock_sync_request request_id=%u "
     "host_send_time_lo=%u host_send_time_hi=%u");
-
-// ---- 2026-05-18 phase-stepping diagnostic gate -----------------------------
-// Exposes `kalico_runtime_set_phase_trace_enabled` on the wire so host-side
-// sim tests (tools/test_sim_phase_stepping.py) can flip the per-print
-// PhaseStep trace push without going through the Klippy bridge crate.
-// Production builds default to off; tests turn it on for the duration of a
-// jog, drain the trace ring via the existing `kalico_trace` output frame,
-// and turn it off again.
-void
-command_runtime_set_phase_trace(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf("kalico_set_phase_trace_response result=%i", -7);
-        return;
-    }
-    uint8_t enabled = (uint8_t)args[0];
-    int32_t r = kalico_runtime_set_phase_trace_enabled(runtime_handle, enabled);
-    sendf("kalico_set_phase_trace_response result=%i", r);
-}
-DECL_COMMAND(command_runtime_set_phase_trace,
-    "runtime_set_phase_trace enabled=%c");
 
 // ---- 2026-05-18 phase-stepping SPI bus registration ----------------------
 // Closes the gap between the Rust runtime's per-motor phase_config storage

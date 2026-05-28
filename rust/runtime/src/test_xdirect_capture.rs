@@ -25,18 +25,37 @@ pub struct XDirectRecord {
 #[cfg(not(target_os = "none"))]
 mod host {
     use super::XDirectRecord;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     fn sink() -> &'static Mutex<Vec<XDirectRecord>> {
         static SINK: OnceLock<Mutex<Vec<XDirectRecord>>> = OnceLock::new();
         SINK.get_or_init(|| Mutex::new(Vec::new()))
     }
 
+    /// Serialization lock for integration tests that own the sink for the
+    /// duration of a single test case. Acquire with `lock_for_test()` and
+    /// hold the returned guard until the test assertion completes so that
+    /// concurrent tests do not interleave `record()` calls into the window
+    /// between a test's `clear()` and `drain()`.
+    fn test_serial() -> &'static Mutex<()> {
+        static SERIAL: OnceLock<Mutex<()>> = OnceLock::new();
+        SERIAL.get_or_init(|| Mutex::new(()))
+    }
+
+    /// Acquire exclusive ownership of the capture sink for one test.
+    ///
+    /// The caller **must** hold the returned guard until its own `drain()`
+    /// or `clear()` call completes.  Dropping the guard returns the lock to
+    /// the next waiting test.
+    pub fn lock_for_test() -> MutexGuard<'static, ()> {
+        test_serial().lock().unwrap_or_else(|p| p.into_inner())
+    }
+
     /// Append a record. Called by `engine::write_xdirect` in host builds.
     pub fn record(motor_idx: u8, coil_a: i16, coil_b: i16) {
         // Lock poisoning means a prior test panicked while holding the
         // mutex — recover the inner Vec anyway so subsequent tests are
-        // not collateral damage. Mirrors `c_segment_queue`'s host-backend.
+        // not collateral damage.
         let mut g = sink().lock().unwrap_or_else(|p| p.into_inner());
         g.push(XDirectRecord {
             motor_idx,
@@ -69,7 +88,7 @@ mod host {
 }
 
 #[cfg(not(target_os = "none"))]
-pub use host::{clear, count, drain, record};
+pub use host::{clear, count, drain, lock_for_test, record};
 
 // On target, the helpers compile to no-ops so the production write_xdirect
 // path still type-checks if it ever reaches this module (it shouldn't —
@@ -85,3 +104,7 @@ pub fn drain() -> &'static [XDirectRecord] {
 
 #[cfg(target_os = "none")]
 pub fn clear() {}
+
+/// No-op on target — there is no parallelism in a bare-metal ISR context.
+#[cfg(target_os = "none")]
+pub fn lock_for_test() {}

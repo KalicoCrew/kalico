@@ -98,49 +98,24 @@ pub const TEST_Z_STEPS_PER_MM: f32 = 400.0;
 #[allow(unsafe_code)]
 pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
     use core::cell::UnsafeCell;
-    use heapless::spsc::Queue;
 
     use crate::clock::WidenState;
-    use crate::queue::Q_N;
-    use crate::reclaim::RetirementTable;
-    use crate::segment::Segment;
     use crate::state::{EngineImpl, FgState, IsrState, RuntimeContext, SharedState};
-    use crate::stream::FgStreamState;
-    use crate::trace::{TRACE_RING_N, TraceSample};
-
-    let q_producer = crate::c_segment_queue::Producer::new();
-    let q_consumer = crate::c_segment_queue::Consumer::new();
-
-    let trace_queue: &'static mut Queue<TraceSample, TRACE_RING_N> =
-        Box::leak(Box::new(Queue::new()));
-    let (t_producer, t_consumer) = trace_queue.split();
 
     let engine = EngineImpl::new(TEST_CLOCK_FREQ, 40_000);
 
     use crate::sizing::TOTAL_RING_PIECES;
     Box::new(RuntimeContext {
         fg: UnsafeCell::new(FgState {
-            queue_producer: q_producer,
-            trace_consumer: t_consumer,
-            stream_state_machine: FgStreamState::Idle,
             current_stream_id: None,
             armed_t_start_t0: None,
-            first_priming_segment_t_start: None,
-            terminal_segment_id: None,
             flush_start_tick: None,
-            retirement_table: RetirementTable::new(),
         }),
         isr: UnsafeCell::new(IsrState {
-            queue_consumer: q_consumer,
-            trace_producer: t_producer,
             engine,
             widen_state: WidenState::default(),
-            pending_segment: None,
         }),
         shared: SharedState::new(),
-        // Backing storage not used — we split from the leaked queues above.
-        queue_storage: UnsafeCell::new(Queue::new()),
-        trace_storage: UnsafeCell::new(Queue::new()),
         piece_storage: UnsafeCell::new(
             [crate::piece_ring::PieceEntry {
                 start_time: 0,
@@ -152,13 +127,11 @@ pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
     })
 }
 
-/// Push a Z-only linear segment into the engine's piece ring and active-segment
-/// slot, starting at `t_start`.
+/// Push a Z-only linear segment into the engine's piece ring.
+/// starting at `t_start`.
 ///
 /// Pushes a single cubic Bézier Z piece (collinear control points → linear
-/// position) via `engine.push_pieces`, then places the `Segment` directly
-/// into `engine.current` with all axis handles set to `UNUSED_SENTINEL`
-/// (the piece ring carries the curve data; handles are now decorative).
+/// position) via `engine.push_pieces`.
 ///
 /// - `t_start`: absolute MCU cycle at which the segment begins
 /// - `velocity_mm_s`: Z velocity in mm/s (must be > 0)
@@ -171,7 +144,6 @@ pub fn push_test_segment_linear_z_at(
     duration_s: f32,
 ) {
     use crate::piece_ring::PieceEntry;
-    use crate::segment::{CurveHandle, EMode, KinematicTag, Segment};
     use crate::sizing::TOTAL_RING_PIECES;
 
     let z_end_mm = velocity_mm_s * duration_s;
@@ -192,26 +164,6 @@ pub fn push_test_segment_linear_z_at(
     // axis_idx=2 is Z. push_pieces allocates from the Z ring descriptor.
     let rc = isr.engine.push_pieces(2, &[piece], storage_slice);
     assert_eq!(rc, 0, "push_pieces for Z failed (ring not configured?)");
-
-    // Duration in cycles.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let duration_cycles: u64 = (duration_s * TEST_CLOCK_FREQ as f32) as u64;
-
-    isr.engine.current = Some(Segment {
-        id: 1,
-        x_handle: CurveHandle::UNUSED_SENTINEL,
-        y_handle: CurveHandle::UNUSED_SENTINEL,
-        z_handle: CurveHandle::UNUSED_SENTINEL,
-        e_handle: CurveHandle::UNUSED_SENTINEL,
-        t_start,
-        t_end: t_start + duration_cycles,
-        kinematics: KinematicTag::CartesianXyzAndE,
-        e_mode: EMode::Travel,
-        extrusion_ratio: 0.0,
-        flags: 0,
-        _pad: [0; 1],
-        consumers_remaining: 0,
-    });
     let _ = TOTAL_RING_PIECES; // suppress unused import warning
 }
 

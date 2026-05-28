@@ -49,46 +49,6 @@ typedef struct KalicoRuntime {
 } KalicoRuntime;
 
 /**
- * Handle to a loaded curve. 32-bit packed `(slot_idx, generation)` per
- * spec §10.1. ABA-defeating: at `Q_N_MAX = 256` the u16 gen wraps over
- * `65536 - 256 = 65280` allocations, which exceeds any realistic in-flight
- * stale-handle window.
- */
-typedef struct CurveHandle {
-  uint16_t slot_idx;
-  uint16_t generation;
-} CurveHandle;
-/**
- * Sentinel for hold segments (§6.5). The ISR short-circuits on the
- * `SEGMENT_FLAG_HOLD_SEGMENT` flag bit BEFORE looking up this handle, so
- * the sentinel is never resolved through `CurvePool::lookup_active`.
- */
-#define CurveHandle_HOLD_SEGMENT_SENTINEL (CurveHandle){ .slot_idx = UINT16_MAX, .generation = UINT16_MAX }
-/**
- * Sentinel for unused curve handle slots in multi-handle segment structs.
- * Distinct from `HOLD_SEGMENT_SENTINEL` to avoid confusion.
- */
-#define CurveHandle_UNUSED_SENTINEL (CurveHandle){ .slot_idx = (UINT16_MAX - 1), .generation = (UINT16_MAX - 1) }
-
-/**
- * Trace sample (§13.2). `repr(C)` aligned (NOT packed) to avoid unaligned
- * `u64` access on Cortex-M7. Carries `curve_handle` so foreground reclaim
- * (`drain_and_reclaim` → `pool.confirm_retired(handle)`) can route
- * `SEGMENT_END` events back to the right pool slot per §10.4.
- */
-typedef struct TraceSample {
-  uint64_t tick;
-  float motor_a;
-  float motor_b;
-  float motor_z;
-  float motor_e;
-  uint32_t segment_id;
-  struct CurveHandle curve_handle;
-  uint8_t flags;
-  uint8_t _pad[7];
-} TraceSample;
-
-/**
  * FFI ABI: per-stepper binding payload, passed from C to Rust by
  * `kalico_runtime_configure_axis`. Sentinel: `tmc_cs_oid == 0xFF` means
  * "no TMC driver" (Pulse-only stepper). OID 0 is a legal SPI OID and
@@ -154,27 +114,6 @@ int32_t runtime_handle_check_blob_version(const uint8_t *payload_ptr, uint32_t p
  */
 void kalico_runtime_tick_sample(struct KalicoRuntime *rt);
 
-/**
- * Foreground drain. Returns count of samples written.
- *
- * Phase 11 §10.4 expansion: drains trace samples from the ISR ring
- * into the caller-supplied buffer. Detects `TRACE_FLAG_SEGMENT_END`
- * samples for the caller's credit-emit bookkeeping.
- *
- * `out_saw_segment_end` (optional, may be NULL): set to `1` on return
- * when the drain consumed at least one `TRACE_FLAG_SEGMENT_END`
- * sample, else `0`. Closure-review fix: `kalico_credit_freed` emission
- * in `runtime_drain` previously gated only on the second
- * (drain-and-reclaim) leg's bit, but the first leg routinely consumes
- * every `SEGMENT_END` under steady-state push, suppressing the credit
- * event and deadlocking host flow control. The C handler now ORs this
- * bit with the reclaim leg's bit.
- */
-uint32_t runtime_handle_drain_trace(struct KalicoRuntime *rt,
-                                    struct TraceSample *out_buf,
-                                    uint32_t out_cap,
-                                    uint8_t *out_saw_segment_end);
-
 uint8_t runtime_handle_status(struct KalicoRuntime *rt);
 
 int32_t runtime_handle_last_error(struct KalicoRuntime *rt);
@@ -195,26 +134,6 @@ uint32_t runtime_handle_tick_counter(struct KalicoRuntime *rt);
  * stats-task wrap update; do not call from ISR context.
  */
 uint64_t runtime_handle_widened_now(struct KalicoRuntime *rt);
-
-/**
- * Read the credit-flow epoch counter (§5.3 + §10.4). Bumped on each
- * `kalico_stream_flush` so the host can detect mid-stream resets.
- */
-uint32_t runtime_handle_credit_epoch(struct KalicoRuntime *rt);
-
-/**
- * Read the cumulative-accepted segment id cursor (§5.3 + §4.1.5).
- * Mirrors the value placed into the `kalico_push_response` schema.
- */
-uint32_t runtime_handle_accepted_segment_id(struct KalicoRuntime *rt);
-
-/**
- * Read the retired-through segment id cursor (§5.3 + §4.1.5). Advances
- * monotonically as the engine retires segments — host uses this to
- * gate flow control and to know when a stream-terminal hand-off is
- * safe to call.
- */
-uint32_t runtime_handle_retired_through_segment_id(struct KalicoRuntime *rt);
 
 /**
  * 2026-05-17 F4-retire-stall diagnostic: read low 32 bits of the most
@@ -254,22 +173,6 @@ uint32_t runtime_handle_modulated_retire_successes(struct KalicoRuntime *rt);
  * what the per-motor clear didn't reach.
  */
 uint32_t runtime_handle_last_retire_consumers_after_clear(struct KalicoRuntime *rt);
-
-/**
- * Read the currently-active segment id (`0` if engine is Idle/Drained
- * or pre-stream).
- */
-uint32_t runtime_handle_current_segment_id(struct KalicoRuntime *rt);
-
-/**
- * Approximate queue depth — number of segments the foreground has
- * pushed minus the number the ISR has retired through. Useful as a
- * status-frame breadcrumb but NOT a synchronization primitive (both
- * cursors lag the actual SPSC state by an unbounded number of ticks
- * in the worst case). Returns saturating-subtraction in u8 range
- * (`Q_N - 1` is the structural cap; saturate at 255 just in case).
- */
-uint8_t runtime_handle_queue_depth(struct KalicoRuntime *rt);
 
 /**
  * Read the latched `fault_detail` payload (§9.2). Mirrors the value
@@ -345,47 +248,6 @@ int32_t kalico_runtime_seed_position(struct KalicoRuntime *rt,
                                      int32_t x_q16,
                                      int32_t y_q16,
                                      int32_t z_q16);
-
-/**
- * Phase 11 Task 11.2 foreground reclaim drain pipeline. Drains up to
- * `limit` trace samples from the ring, calls `pool.confirm_retired`
- * for each `SEGMENT_END` observed, and returns a 32-bit packed
- * status:
- *
- * - Bits 0..=15 — count of samples drained this call.
- * - Bit 16     — set if a fresh trace-overflow fault latched (§13.1).
- * - Bit 17     — set if at least one `SEGMENT_END` was observed
- *   (caller emits one or more `kalico_credit_freed`
- *   events keyed off the updated cursors).
- *
- * The C handler (`runtime_drain` `DECL_TASK` in `src/runtime_tick.c`)
- * uses this single-call form so the trace-drain + reclaim + fault-
- * latch pipeline is one round-trip per drain wake-up.
- */
-uint32_t kalico_runtime_drain_and_reclaim(struct KalicoRuntime *rt, uint32_t limit);
-
-/**
- * `kalico_stream_open` — assert host-MCU stream identity (§8.3).
- * Phase-6 stub.
- */
-int32_t kalico_runtime_stream_open(struct KalicoRuntime *rt,
-                                   uint32_t stream_id,
-                                   uint32_t *out_credit_epoch);
-
-/**
- * `kalico_stream_arm` — commit the priming buffer (§6.4 / §8.3).
- * Phase-6 stub.
- */
-int32_t kalico_runtime_stream_arm(struct KalicoRuntime *rt,
-                                  uint64_t t_start_t0,
-                                  uint32_t arm_lead_cycles,
-                                  uint64_t *out_armed_t_start);
-
-/**
- * `kalico_stream_terminal` — mark the last segment id of the stream
- * (§8.3). Phase-6 stub.
- */
-int32_t kalico_runtime_stream_terminal(struct KalicoRuntime *rt, uint32_t segment_id);
 
 /**
  * `kalico_stream_flush` — `force_idle` handshake (§8.5).
@@ -522,38 +384,6 @@ int32_t kalico_runtime_set_step_mode(struct KalicoRuntime *rt,
                                      uint8_t stepper_idx,
                                      uint8_t mode,
                                      uint8_t mcu_supports_phase);
-
-/**
- * Flip the `phase_trace_enabled` gate (2026-05-18 plan Task 5).
- *
- * When enabled, `runtime_tick_sample` pushes one
- * `TRACE_FLAG_PHASE_STEP`-flagged `TraceSample` per
- * phase-stepping tick per motor (Task 6 wiring). Default is `false`;
- * production builds leave it off so the trace ring isn't burned by
- * the 80 kHz per-motor PhaseStep stream when no diagnostic is active.
- *
- * `enabled`: non-zero → true, zero → false. The store uses `Release`
- * ordering; the ISR-side load pairs with `Acquire`.
- *
- * Returns:
- * - `KALICO_OK` on success.
- * - `KALICO_ERR_NULL_PTR` if `rt` is null.
- * - `KALICO_ERR_NOT_INIT` if the runtime has not been initialised.
- */
-int32_t kalico_runtime_set_phase_trace_enabled(struct KalicoRuntime *rt, uint8_t enabled);
-
-/**
- * 2026-05-18 wedge diag: live snapshot of `queue_consumer.len()` —
- * the SPSC's view of how many segments are queued and visible to the
- * Consumer. Cross-check against `accepted_segment_id -
- * retired_through_segment_id` (host's view of queue depth):
- *   - queue.len() == queue_depth → SPSC is consistent; bug elsewhere.
- *   - queue.len() < queue_depth  → SPSC's Consumer can't see all the
- *                                   Producer's enqueued segments
- *                                   (memory visibility / write-buffer
- *                                   / cache issue, or queue corrupted).
- */
-uint32_t kalico_runtime_queue_len_diag(struct KalicoRuntime *rt);
 
 /**
  * Diagnostic: read the low 32 bits of `producer_enqueue_success_total`.

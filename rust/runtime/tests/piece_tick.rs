@@ -12,15 +12,12 @@
 
 use core::sync::atomic::Ordering;
 
-use heapless::spsc::Queue;
-
 use runtime::engine::Engine;
 use runtime::error::FaultCode;
 use runtime::piece_ring::PieceEntry;
 use runtime::state::{SharedState, TOTAL_RING_PIECES};
 use runtime::step_queue::StepQueue;
 use runtime::stepping_state::{MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
-use runtime::trace::{TRACE_RING_N, TraceSample};
 
 // 520 MHz clock, 40 kHz ISR → 13_000 cycles per tick.
 const CLOCK_FREQ: u32 = 520_000_000;
@@ -84,8 +81,6 @@ fn tick_arms_piece_when_start_time_reached() {
         };
         TOTAL_RING_PIECES
     ];
-    let mut trace_q: Queue<TraceSample, TRACE_RING_N> = Queue::new();
-    let (mut trace_prod, _trace_cons) = trace_q.split();
 
     let piece = const_piece(TICK_CYCLES, 0.001);
     let rc = engine.push_pieces(0, &[piece], &mut storage);
@@ -98,7 +93,7 @@ fn tick_arms_piece_when_start_time_reached() {
     engine.test_install_step_queues(qs);
 
     let shared = SharedState::new();
-    engine.tick(TICK_CYCLES, &shared, &mut storage, &mut trace_prod);
+    engine.tick(TICK_CYCLES, &shared, &mut storage);
 
     // Piece armed → popped → consumed count becomes 1.
     assert_eq!(
@@ -136,8 +131,6 @@ fn tick_idle_before_start_time() {
         };
         TOTAL_RING_PIECES
     ];
-    let mut trace_q: Queue<TraceSample, TRACE_RING_N> = Queue::new();
-    let (mut trace_prod, _trace_cons) = trace_q.split();
 
     // Piece starts far in the future.
     let piece = const_piece(100_000, 0.001);
@@ -151,7 +144,7 @@ fn tick_idle_before_start_time() {
 
     let shared = SharedState::new();
     // Tick at a time well before the piece starts.
-    engine.tick(TICK_CYCLES, &shared, &mut storage, &mut trace_prod);
+    engine.tick(TICK_CYCLES, &shared, &mut storage);
 
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
@@ -183,8 +176,6 @@ fn tick_idle_when_ring_empty() {
         };
         TOTAL_RING_PIECES
     ];
-    let mut trace_q: Queue<TraceSample, TRACE_RING_N> = Queue::new();
-    let (mut trace_prod, _trace_cons) = trace_q.split();
 
     let mut q0 = StepQueue::new();
     let mut qs: [*mut StepQueue; MAX_AXES] = [core::ptr::null_mut(); MAX_AXES];
@@ -192,7 +183,7 @@ fn tick_idle_when_ring_empty() {
     engine.test_install_step_queues(qs);
 
     let shared = SharedState::new();
-    engine.tick(TICK_CYCLES, &shared, &mut storage, &mut trace_prod);
+    engine.tick(TICK_CYCLES, &shared, &mut storage);
 
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
@@ -221,8 +212,6 @@ fn tick_faults_on_piece_start_in_past() {
         };
         TOTAL_RING_PIECES
     ];
-    let mut trace_q: Queue<TraceSample, TRACE_RING_N> = Queue::new();
-    let (mut trace_prod, _trace_cons) = trace_q.split();
 
     let start = 1_000_u64;
     let piece = const_piece(start, 0.001);
@@ -237,7 +226,7 @@ fn tick_faults_on_piece_start_in_past() {
     let shared = SharedState::new();
     // 3 ticks past start — exceeds 2-tick tolerance.
     let now = start + TICK_CYCLES * 3;
-    engine.tick(now, &shared, &mut storage, &mut trace_prod);
+    engine.tick(now, &shared, &mut storage);
 
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
@@ -265,8 +254,6 @@ fn tick_within_fault_tolerance_arms_ok() {
         };
         TOTAL_RING_PIECES
     ];
-    let mut trace_q: Queue<TraceSample, TRACE_RING_N> = Queue::new();
-    let (mut trace_prod, _trace_cons) = trace_q.split();
 
     let start = 1_000_u64;
     let piece = const_piece(start, 0.001);
@@ -281,7 +268,7 @@ fn tick_within_fault_tolerance_arms_ok() {
     let shared = SharedState::new();
     // Exactly 1 tick late — within tolerance.
     let now = start + TICK_CYCLES;
-    engine.tick(now, &shared, &mut storage, &mut trace_prod);
+    engine.tick(now, &shared, &mut storage);
 
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
@@ -314,8 +301,6 @@ fn tick_advances_through_consecutive_pieces() {
         };
         TOTAL_RING_PIECES
     ];
-    let mut trace_q: Queue<TraceSample, TRACE_RING_N> = Queue::new();
-    let (mut trace_prod, _trace_cons) = trace_q.split();
 
     // Piece A: starts at TICK_CYCLES, 1 ms duration.
     let a_start = TICK_CYCLES;
@@ -342,7 +327,7 @@ fn tick_advances_through_consecutive_pieces() {
     let shared = SharedState::new();
 
     // First tick: arms piece A.
-    engine.tick(a_start, &shared, &mut storage, &mut trace_prod);
+    engine.tick(a_start, &shared, &mut storage);
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
         0,
@@ -355,7 +340,7 @@ fn tick_advances_through_consecutive_pieces() {
     );
 
     // Second tick: A has expired (now == a_end == b_start), arms piece B.
-    engine.tick(a_end, &shared, &mut storage, &mut trace_prod);
+    engine.tick(a_end, &shared, &mut storage);
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
         0,
