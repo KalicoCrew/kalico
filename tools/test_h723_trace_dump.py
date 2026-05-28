@@ -20,8 +20,15 @@ import struct
 import sys
 import time
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
+
+# Hardware-deferred __main__ trace-dump test against a flashed H723 bench;
+# no pytest test functions. Tagged needs_hardware so it is honestly excluded
+# from CI. Run directly: `python3 <this file> ...`.
+pytestmark = pytest.mark.needs_hardware
 
 TOLERANCE_MM = 0.05
 TRACE_SAMPLE_FMT = (
@@ -288,7 +295,11 @@ def main():
             t_start = t_cursor + int(0.005 * args.clock_freq)  # +5 ms head-room
             t_end = t_start + duration_ticks
             push_segment(
-                io, seg_id=idx + 1, handles=handles, t_start=t_start, t_end=t_end
+                io,
+                seg_id=idx + 1,
+                handles=handles,
+                t_start=t_start,
+                t_end=t_end,
             )
             samples = drain_traces(io, duration_s=duration_us * 1e-6 + 0.050)
             max_err, n_compared = compare(samples, fx, t_start, t_end)

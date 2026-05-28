@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import math
 
-from scripts.g1_to_g5_postprocess import postprocess
 from scripts.fitter_prototype.params import FitterParams
+from scripts.g1_to_g5_postprocess import postprocess
 
 
 def test_smooth_extruding_run_emits_g5_and_preserves_final_e():

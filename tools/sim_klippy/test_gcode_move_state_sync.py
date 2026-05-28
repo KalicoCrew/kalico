@@ -20,6 +20,7 @@ Out of scope (deferred until Step 7-D Phase 4 dispatch stabilizes):
     manual_move event-firing fix can't be verified end-to-end until
     bridge dispatch lands.
 """
+
 import json
 import os
 import pathlib
@@ -29,6 +30,14 @@ import socket
 import subprocess
 import sys
 import time
+
+import pytest
+
+# This is a standalone __main__ script that spawns out/klipper.elf; it has
+# no pytest test functions. Tagged needs_elf so it is honestly classified
+# (and excluded from the CI sim_unit selection) rather than silently
+# collected as zero items. Run directly: `python3 <this file>`.
+pytestmark = pytest.mark.needs_elf
 
 REPO = pathlib.Path(os.environ.get("KALICO_REPO", "/work"))
 LOGDIR = REPO / "tools" / "sim_klippy" / ".local-logs"
@@ -41,10 +50,18 @@ KLIPPY_LOG = LOGDIR / "klippy.log"
 
 
 def cleanup_prior():
-    subprocess.run(["pkill", "-f", str(KLIPPER_ELF)], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["pkill", "-f", "klippy_sim"], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        ["pkill", "-f", str(KLIPPER_ELF)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["pkill", "-f", "klippy_sim"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     time.sleep(0.5)
     for path in (SIM_SOCKET, KLIPPY_INPUT_TTY, KLIPPY_API):
         try:
@@ -58,7 +75,8 @@ def spawn_elf():
     elf_log = open(LOGDIR / "klipper_elf.log", "wb")
     proc = subprocess.Popen(
         [str(KLIPPER_ELF), "-I", SIM_SOCKET],
-        stdout=elf_log, stderr=subprocess.STDOUT,
+        stdout=elf_log,
+        stderr=subprocess.STDOUT,
     )
     for _ in range(50):
         if os.path.exists(SIM_SOCKET):
@@ -71,9 +89,17 @@ def spawn_elf():
 def spawn_klippy():
     klippy_python = pathlib.Path(shutil.which("python3") or "python3")
     proc = subprocess.Popen(
-        [str(klippy_python), str(REPO / "klippy" / "klippy.py"),
-         str(PRINTER_CFG), "-l", str(KLIPPY_LOG),
-         "-I", KLIPPY_INPUT_TTY, "-a", KLIPPY_API],
+        [
+            str(klippy_python),
+            str(REPO / "klippy" / "klippy.py"),
+            str(PRINTER_CFG),
+            "-l",
+            str(KLIPPY_LOG),
+            "-I",
+            KLIPPY_INPUT_TTY,
+            "-a",
+            KLIPPY_API,
+        ],
         cwd=str(REPO),
     )
     for _ in range(150):
@@ -91,7 +117,10 @@ def api_request(msg_id, method, params, timeout=30.0):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect(KLIPPY_API)
-    msg = json.dumps({"id": msg_id, "method": method, "params": params}).encode() + b"\x03"
+    msg = (
+        json.dumps({"id": msg_id, "method": method, "params": params}).encode()
+        + b"\x03"
+    )
     s.sendall(msg)
     buf = b""
     while True:
@@ -111,10 +140,16 @@ def send_gcode(script):
 
 
 def query_positions():
-    r = api_request(2, "objects/query", {"objects": {
-        "toolhead": ["position"],
-        "gcode_move": ["gcode_position"],
-    }})
+    r = api_request(
+        2,
+        "objects/query",
+        {
+            "objects": {
+                "toolhead": ["position"],
+                "gcode_move": ["gcode_position"],
+            }
+        },
+    )
     return r["result"]["status"]
 
 
@@ -159,7 +194,9 @@ def main():
         assert abs(th_pos[0] - 50.0) < 1e-6, th_pos
         assert abs(th_pos[1] - 60.0) < 1e-6, th_pos
 
-        print("OK: gcode_move stays synced through set_position event + G92 frame reset")
+        print(
+            "OK: gcode_move stays synced through set_position event + G92 frame reset"
+        )
 
     except AssertionError as e:
         print(f"[gms] FAIL: {e}")
@@ -170,10 +207,14 @@ def main():
     finally:
         klippy.send_signal(signal.SIGTERM)
         elf.send_signal(signal.SIGTERM)
-        try: klippy.wait(timeout=5)
-        except subprocess.TimeoutExpired: klippy.kill()
-        try: elf.wait(timeout=5)
-        except subprocess.TimeoutExpired: elf.kill()
+        try:
+            klippy.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            klippy.kill()
+        try:
+            elf.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            elf.kill()
 
     sys.exit(1 if failed else 0)
 

@@ -1,21 +1,35 @@
 #!/usr/bin/env python3
 """Test: SET_KINEMATIC_POSITION, 1mm jog, then G28 X."""
+
 import argparse
 import json
 import socket
-import time
 import sys
 import threading
+import time
+
+import pytest
+
+# Renode-driven __main__ script (drives a Renode monitor); no pytest test
+# functions. Tagged needs_renode so it is honestly excluded from CI. Run
+# directly: `python3 <this file> --api ... --renode-monitor ...`.
+pytestmark = pytest.mark.needs_renode
 
 
 def gcode(api_socket, script, timeout=60.0):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect(api_socket)
-    s.sendall(json.dumps({
-        "id": 1, "method": "gcode/script",
-        "params": {"script": script},
-    }).encode() + b"\x03")
+    s.sendall(
+        json.dumps(
+            {
+                "id": 1,
+                "method": "gcode/script",
+                "params": {"script": script},
+            }
+        ).encode()
+        + b"\x03"
+    )
     buf = b""
     while True:
         c = s.recv(4096)
@@ -50,13 +64,13 @@ class RenodeMonitor:
             return ""
 
     def inject_gpio(self, machine, port_addr, bit):
-        self.cmd(f"mach set \"{machine}\"")
+        self.cmd(f'mach set "{machine}"')
         cur = self.cmd(f"sysbus ReadDoubleWord {port_addr}")
         try:
             val = int(cur.strip().split("\n")[-1].strip(), 0)
         except (ValueError, IndexError):
             val = 0
-        val |= (1 << bit)
+        val |= 1 << bit
         self.cmd(f"sysbus WriteDoubleWord {port_addr} {val}")
         check = self.cmd(f"sysbus ReadDoubleWord {hex(port_addr + 0x10)}")
         print(f"  [inject] IDR after write: {check.strip()}")
@@ -80,13 +94,13 @@ def main():
     t0 = time.time()
     r = gcode(args.api, "SET_KINEMATIC_POSITION X=150 Y=150 Z=0")
     err = r.get("error", {}).get("message", "")
-    print(f"   elapsed={time.time()-t0:.3f}s error={err or 'none'}")
+    print(f"   elapsed={time.time() - t0:.3f}s error={err or 'none'}")
 
     print("\n2. G1 X151 F3000 (1mm jog)")
     t0 = time.time()
     r = gcode(args.api, "G1 X151 F3000")
     err = r.get("error", {}).get("message", "")
-    print(f"   elapsed={time.time()-t0:.3f}s error={err or 'none'}")
+    print(f"   elapsed={time.time() - t0:.3f}s error={err or 'none'}")
 
     print("\n3. G28 X (with GPIO injection after 2s)")
 

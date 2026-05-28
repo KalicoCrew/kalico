@@ -63,8 +63,15 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
+
+# Renode Gate-B acceptance test; its test_item_* functions require an `io`
+# fixture wired to a freshly-launched Renode sim. Tagged needs_renode so it
+# is honestly excluded from CI (no Renode emulation there).
+pytestmark = pytest.mark.needs_renode
 
 # Match tools/test_sim_gate_a.py + tools/test_sim_stream_lifecycle.py.
 CLOCK_FREQ = 520_000_000

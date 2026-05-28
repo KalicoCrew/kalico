@@ -52,18 +52,23 @@ Usage (manages sim lifecycle externally — see `scripts/renode_phase2_gate.sh`)
 """
 
 import argparse
-import math
-import os
 import pathlib
 import struct
 import sys
 import time
+
+import pytest
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 sys.path.insert(0, str(REPO_ROOT / "klippy"))
 
 from kalico_host_io import KalicoHostIO  # noqa: E402
+
+# Renode Phase-2 wire-level gate; boots the H723 Renode sim. No pytest test
+# functions (a __main__ driver). Tagged needs_renode so it is honestly
+# excluded from CI. Run directly via scripts/renode_phase2_gate.sh.
+pytestmark = pytest.mark.needs_renode
 
 # Match tools/test_sim_gate_a.py timing constants.
 CLOCK_FREQ = 520_000_000
@@ -77,8 +82,8 @@ FORMAT_VERSION_V1 = 1
 UNUSED_HANDLE = 0xFFFEFFFE
 # EMode values (runtime/src/config.rs).
 E_MODE_COUPLED_TO_XY = 0
-E_MODE_INDEPENDENT   = 1
-E_MODE_TRAVEL        = 2
+E_MODE_INDEPENDENT = 1
+E_MODE_TRAVEL = 2
 
 
 def floats_to_blob(values):
@@ -99,24 +104,32 @@ FIXTURE_SCALAR_CUBIC = {
 
 def load_curve(io, slot, fixture, timeout=3.0):
     """Send kalico_load_curve (scalar V1 format) and return (result, handle)."""
-    cmd = (
-        "kalico_load_curve version=%d slot=%d degree=%d cps=%s knots=%s"
-        % (
-            FORMAT_VERSION_V1,
-            slot,
-            int(fixture["degree"]),
-            floats_to_blob(fixture["cps"]),
-            floats_to_blob(fixture["knots"]),
-        )
+    cmd = "kalico_load_curve version=%d slot=%d degree=%d cps=%s knots=%s" % (
+        FORMAT_VERSION_V1,
+        slot,
+        int(fixture["degree"]),
+        floats_to_blob(fixture["cps"]),
+        floats_to_blob(fixture["knots"]),
     )
     io.send(cmd)
     resp = io.wait_for_response("kalico_load_curve_response", timeout)
     return int(resp["result"]), int(resp.get("curve_handle_packed", 0))
 
 
-def push_segment(io, seg_id, x_handle, y_handle, z_handle, e_handle,
-                 t_start, t_end, kin=0, e_mode=E_MODE_TRAVEL,
-                 extrusion_ratio=0, timeout=3.0):
+def push_segment(
+    io,
+    seg_id,
+    x_handle,
+    y_handle,
+    z_handle,
+    e_handle,
+    t_start,
+    t_end,
+    kin=0,
+    e_mode=E_MODE_TRAVEL,
+    extrusion_ratio=0,
+    timeout=3.0,
+):
     """Send kalico_push_segment (Step 7-B per-axis-handle format)."""
     cmd = (
         "kalico_push_segment id=%d x_handle=%d y_handle=%d "
@@ -125,12 +138,17 @@ def push_segment(io, seg_id, x_handle, y_handle, z_handle, e_handle,
         "kinematics=%d e_mode=%d extrusion_ratio=%d"
         % (
             seg_id,
-            x_handle, y_handle, z_handle, e_handle,
+            x_handle,
+            y_handle,
+            z_handle,
+            e_handle,
             (t_start >> 32) & 0xFFFFFFFF,
             t_start & 0xFFFFFFFF,
             (t_end >> 32) & 0xFFFFFFFF,
             t_end & 0xFFFFFFFF,
-            kin, e_mode, extrusion_ratio,
+            kin,
+            e_mode,
+            extrusion_ratio,
         )
     )
     io.send(cmd)
@@ -142,6 +160,7 @@ def import_motion_bridge():
     """Import the PyO3 cdylib via klippy/motion_bridge.so."""
     try:
         import motion_bridge as native  # noqa: F401
+
         return native
     except ImportError as exc:
         raise SystemExit(
@@ -192,18 +211,22 @@ def main():
         # make `init_planner` happy.
         octopus = bridge.claim_mcu("octopus", args.port, 0)
         f446 = bridge.claim_mcu("f446", args.port, 0)
-        print("[gate] bridge.claim_mcu ok (octopus=%d, f446=%d)"
-              % (octopus, f446))
+        print(
+            "[gate] bridge.claim_mcu ok (octopus=%d, f446=%d)" % (octopus, f446)
+        )
 
         bridge.init_planner(
-            300.0,   # max_velocity (mm/s)
+            300.0,  # max_velocity (mm/s)
             5000.0,  # max_accel
-            10.0,    # max_z_velocity
-            100.0,   # max_z_accel
-            5.0,     # square_corner_velocity
-            "smooth_zv", 40.0,  # X shaper
-            "smooth_zv", 40.0,  # Y shaper
-            octopus, f446,
+            10.0,  # max_z_velocity
+            100.0,  # max_z_accel
+            5.0,  # square_corner_velocity
+            "smooth_zv",
+            40.0,  # X shaper
+            "smooth_zv",
+            40.0,  # Y shaper
+            octopus,
+            f446,
         )
         print("[gate] bridge.init_planner ok")
 
@@ -233,12 +256,18 @@ def main():
         rc_x, x_handle = load_curve(io, slot=0, fixture=FIXTURE_SCALAR_CUBIC)
         if rc_x != 0:
             raise SystemExit("FAIL: kalico_load_curve (X) result=%d" % (rc_x,))
-        print("[gate] kalico_load_curve ok (slot=0, x_handle=0x%08x)" % (x_handle,))
+        print(
+            "[gate] kalico_load_curve ok (slot=0, x_handle=0x%08x)"
+            % (x_handle,)
+        )
 
         rc_y, y_handle = load_curve(io, slot=1, fixture=FIXTURE_SCALAR_CUBIC)
         if rc_y != 0:
             raise SystemExit("FAIL: kalico_load_curve (Y) result=%d" % (rc_y,))
-        print("[gate] kalico_load_curve ok (slot=1, y_handle=0x%08x)" % (y_handle,))
+        print(
+            "[gate] kalico_load_curve ok (slot=1, y_handle=0x%08x)"
+            % (y_handle,)
+        )
 
         # 100-tick segment, well ahead of widened_now to avoid underrun.
         seg_cycles = 100 * ONE_TICK_CYCLES
@@ -251,7 +280,7 @@ def main():
             e_handle=UNUSED_HANDLE,
             t_start=LARGE_T_START_BASE,
             t_end=LARGE_T_START_BASE + seg_cycles,
-            kin=0,           # CoreXyAndE
+            kin=0,  # CoreXyAndE
             e_mode=E_MODE_TRAVEL,
             extrusion_ratio=0,
         )

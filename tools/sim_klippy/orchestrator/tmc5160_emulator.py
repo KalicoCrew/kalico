@@ -9,40 +9,43 @@ PyTrinamic note: the library names the register GLOBAL_SCALER (with
 underscore), not GLOBALSCALER. The local constant here is named
 GLOBALSCALER for readability, mapping to address 0x0B.
 """
+
+from __future__ import annotations
+
 from typing import Callable, Optional
 
 # Register addresses — TMC5160 datasheet §5
-GCONF        = 0x00
-GSTAT        = 0x01
-IFCNT        = 0x02
-SLAVECONF    = 0x03
-IOIN         = 0x04
+GCONF = 0x00
+GSTAT = 0x01
+IFCNT = 0x02
+SLAVECONF = 0x03
+IOIN = 0x04
 GLOBALSCALER = 0x0B
-IHOLD_IRUN   = 0x10
-TPOWERDOWN   = 0x11
-TSTEP        = 0x12
-TPWMTHRS     = 0x13
-TCOOLTHRS    = 0x14
-THIGH        = 0x15
-CHOPCONF     = 0x6C
-COOLCONF     = 0x6D
-DCCTRL       = 0x6E
-DRV_STATUS   = 0x6F
-PWMCONF      = 0x70
+IHOLD_IRUN = 0x10
+TPOWERDOWN = 0x11
+TSTEP = 0x12
+TPWMTHRS = 0x13
+TCOOLTHRS = 0x14
+THIGH = 0x15
+CHOPCONF = 0x6C
+COOLCONF = 0x6D
+DCCTRL = 0x6E
+DRV_STATUS = 0x6F
+PWMCONF = 0x70
 
 # Power-on-reset defaults (datasheet Table 6)
 POR_DEFAULTS = {
-    GCONF:        0x00000000,
-    GSTAT:        0x00000007,  # reset bit set on POR
-    IFCNT:        0x00000000,
-    SLAVECONF:    0x00000000,
-    IOIN:         0x30000000,
-    GLOBALSCALER: 256,         # datasheet POR = 0 (full-scale); treated as 256 internally
-    IHOLD_IRUN:   0x00000000,
-    TPOWERDOWN:   0x0000000A,
-    TSTEP:        0x000FFFFF,
-    CHOPCONF:     0x00410150,
-    DRV_STATUS:   0x00000000,
+    GCONF: 0x00000000,
+    GSTAT: 0x00000007,  # reset bit set on POR
+    IFCNT: 0x00000000,
+    SLAVECONF: 0x00000000,
+    IOIN: 0x30000000,
+    GLOBALSCALER: 256,  # datasheet POR = 0 (full-scale); treated as 256 internally
+    IHOLD_IRUN: 0x00000000,
+    TPOWERDOWN: 0x0000000A,
+    TSTEP: 0x000FFFFF,
+    CHOPCONF: 0x00410150,
+    DRV_STATUS: 0x00000000,
 }
 
 # Registers that are cleared to zero after a read
@@ -134,13 +137,15 @@ class TMC5160Emulator:
         # Read path: return previously latched data, then capture current value
         latched = self._last_read_data
         self._last_read_data = self._do_read(addr)
-        return bytes([
-            0x00,                     # status byte (simplified: always 0)
-            (latched >> 24) & 0xFF,
-            (latched >> 16) & 0xFF,
-            (latched >> 8) & 0xFF,
-            latched & 0xFF,
-        ])
+        return bytes(
+            [
+                0x00,  # status byte (simplified: always 0)
+                (latched >> 24) & 0xFF,
+                (latched >> 16) & 0xFF,
+                (latched >> 8) & 0xFF,
+                latched & 0xFF,
+            ]
+        )
 
     # ------------------------------------------------------------------
     # Internal register access with side-effects
@@ -158,12 +163,12 @@ class TMC5160Emulator:
             # 5 bits) and irun (bits 12-8 field, 5 bits).  Using a wider mask
             # before the clamp ensures that e.g. 0x40 (= 64) clamps to 31
             # rather than being silently zeroed by a 5-bit mask first.
-            ihold = min(31, value & 0xFF)            # bits 7-0 raw, clamp
-            irun = min(31, (value >> 8) & 0xFF)      # bits 15-8 raw, clamp
-            iholddelay = (value >> 16) & 0x0F        # bits 19-16
+            ihold = min(31, value & 0xFF)  # bits 7-0 raw, clamp
+            irun = min(31, (value >> 8) & 0xFF)  # bits 15-8 raw, clamp
+            iholddelay = (value >> 16) & 0x0F  # bits 19-16
             value = ihold | (irun << 8) | (iholddelay << 16)
         elif addr == CHOPCONF:
-            value &= ~(0x7 << 17)   # bits 17-19 are reserved; force to 0
+            value &= ~(0x7 << 17)  # bits 17-19 are reserved; force to 0
         self._registers[addr] = value
 
     def _do_read(self, addr: int) -> int:

@@ -5,10 +5,14 @@ import sys
 import threading
 import zlib
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import kalico_host_io  # noqa: E402
 import msgproto  # noqa: E402
+
+pytestmark = pytest.mark.sim_unit
 
 
 def _frame(seq, payload=b""):
@@ -213,7 +217,9 @@ def test_identify_terminates_on_partial_final_chunk(monkeypatch):
     try:
         assert io.get_msgparser().get_app_info() == "fake"
         assert fake_serial.last_serial.requests[-1][0] == 200
-        assert 213 not in [offset for offset, _count in fake_serial.last_serial.requests]
+        assert 213 not in [
+            offset for offset, _count in fake_serial.last_serial.requests
+        ]
     finally:
         io.disconnect()
 
@@ -243,7 +249,9 @@ def test_identify_uses_zlib_eof_before_silent_past_end(monkeypatch):
     try:
         assert io.get_msgparser().get_app_info() == "fake"
         assert fake_serial.last_serial.requests[-1][0] == 120
-        assert 160 not in [offset for offset, _count in fake_serial.last_serial.requests]
+        assert 160 not in [
+            offset for offset, _count in fake_serial.last_serial.requests
+        ]
     finally:
         io.disconnect()
 

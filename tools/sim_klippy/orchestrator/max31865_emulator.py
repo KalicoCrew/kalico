@@ -25,8 +25,8 @@ config). Klippy's ``calc_temp`` will turn this into a believable ambient
 reading; we're not modeling thermal dynamics here, just keeping the
 heater_check happy enough for boot.
 """
-from typing import Dict
 
+from typing import Dict
 
 # Register addresses
 CONFIG_REG = 0x00

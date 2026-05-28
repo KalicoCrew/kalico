@@ -20,6 +20,7 @@ Sensorless-specific stuff (SG_RESULT thresholds, DIAG callback timing
 in the TMC5160 emulator) is exercised by test_sensorless_trigger.py
 and works on real hardware. This test is about the homing pipeline.
 """
+
 import json
 import socket
 import time
@@ -28,6 +29,7 @@ import pytest
 
 from tools.sim_klippy.orchestrator.sim_control_client import SimControlClient
 
+pytestmark = pytest.mark.needs_elf
 
 # Must match pin-overrides.toml [stepper_*.config_set] endstop_pin lines.
 X_ENDSTOP_LINE = 200

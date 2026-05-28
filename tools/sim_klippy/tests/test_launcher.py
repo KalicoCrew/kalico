@@ -1,10 +1,14 @@
 """launcher.spawn_mcus brings up two klipper.elf processes, returns
 handles that include the PTY socket paths, and tears them down cleanly
 on .shutdown(). After spawn returns, both PTYs must exist."""
+
 import os
-import pathlib
+
 import pytest
-from tools.sim_klippy.orchestrator.launcher import spawn_mcus, McuHandle
+
+from tools.sim_klippy.orchestrator.launcher import McuHandle, spawn_mcus
+
+pytestmark = pytest.mark.needs_elf
 
 
 def test_spawn_brings_up_both_mcus(tmp_path):

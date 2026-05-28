@@ -20,7 +20,6 @@ from scripts.fitter_prototype.fit import (
 )
 from scripts.fitter_prototype.params import FitterParams
 
-
 _PARAM_RE = re.compile(r"([A-Za-z])([-+]?(?:\d+(?:\.\d*)?|\.\d+))")
 
 
@@ -78,7 +77,9 @@ def _head_and_params(line: str) -> tuple[str, dict[str, float]]:
         return "", {}
     head = parts[0].upper()
     rest = parts[1] if len(parts) > 1 else ""
-    return head, {m.group(1).upper(): float(m.group(2)) for m in _PARAM_RE.finditer(rest)}
+    return head, {
+        m.group(1).upper(): float(m.group(2)) for m in _PARAM_RE.finditer(rest)
+    }
 
 
 def _fmt(value: float) -> str:
@@ -134,8 +135,10 @@ def _is_convertible_g1(
     y = params.get("Y", modal.y)
     z = params.get("Z", modal.z)
     e_param = params.get("E")
-    e = modal.e if e_param is None else (
-        e_param if modal.absolute_e else modal.e + e_param
+    e = (
+        modal.e
+        if e_param is None
+        else (e_param if modal.absolute_e else modal.e + e_param)
     )
     f = params.get("F", modal.f)
     if not include_travel and e <= modal.e + 1e-9:
@@ -207,9 +210,7 @@ def _emit_fit(run: Run, params: FitterParams) -> list[str] | None:
         extrapolate=False,
     )
     derivative = spline.derivative()
-    breakpoints = np.unique(
-        fitted.knots[fitted.degree : -(fitted.degree)]
-    )
+    breakpoints = np.unique(fitted.knots[fitted.degree : -(fitted.degree)])
     breakpoints = breakpoints[
         (breakpoints >= fitted.knots[fitted.degree] - 1e-12)
         & (breakpoints <= fitted.knots[-fitted.degree - 1] + 1e-12)

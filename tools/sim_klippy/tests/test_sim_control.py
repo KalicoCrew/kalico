@@ -1,4 +1,5 @@
 """Pytest for sim_control_client.py against a running shim."""
+
 import os
 import subprocess
 import time
@@ -10,6 +11,7 @@ from tools.sim_klippy.orchestrator.sim_control_client import (
     SimControlError,
 )
 
+pytestmark = pytest.mark.sim_unit
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 
@@ -19,8 +21,12 @@ def shim_under_sleep(tmp_path):
     """Spawn /bin/sleep with the shim loaded; yield the control-socket path."""
     sock_dir = tmp_path / "sim"
     sock_dir.mkdir()
-    shim = os.path.join(REPO_ROOT, "tools/sim_klippy/preload/libsim_intercept.so")
-    assert os.path.exists(shim), "build shim first: make -C tools/sim_klippy/preload"
+    shim = os.path.join(
+        REPO_ROOT, "tools/sim_klippy/preload/libsim_intercept.so"
+    )
+    assert os.path.exists(shim), (
+        "build shim first: make -C tools/sim_klippy/preload"
+    )
     env = os.environ.copy()
     env["LD_PRELOAD"] = shim
     env["KALICO_SIM_SOCK_DIR"] = str(sock_dir)

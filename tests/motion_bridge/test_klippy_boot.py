@@ -168,7 +168,6 @@ class TestBridgeModule:
     def test_claim_stub_mcus(self):
         """All stub (non-motion) MCUs can be claimed without error."""
         import motion_bridge
-
         from stub_mcus import claim_stub_mcus
 
         bridge = motion_bridge.MotionBridge()
@@ -181,7 +180,6 @@ class TestBridgeModule:
     def test_alloc_queues_for_all_mcus(self):
         """Command queues can be allocated for both primary and stub MCUs."""
         import motion_bridge
-
         from stub_mcus import claim_stub_mcus
 
         bridge = motion_bridge.MotionBridge()

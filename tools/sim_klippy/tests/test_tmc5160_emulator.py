@@ -4,7 +4,12 @@ Datasheet §5.1: each transfer is 5 bytes. byte0 = R/W bit (MSB) | reg
 addr (low 7 bits). Bytes 1-4 = data (big-endian). Read returns:
 status byte | previous-read data — i.e., the data from the PREVIOUS
 read, not the current one. So a single read needs two transfers."""
+
+import pytest
+
 from tools.sim_klippy.orchestrator.tmc5160_emulator import TMC5160Emulator
+
+pytestmark = pytest.mark.sim_unit
 
 
 def test_write_then_double_read_returns_value():
@@ -55,7 +60,9 @@ def test_drv_status_sg_result_from_load_hook():
     chip.set_load(120)
     chip.transfer(bytes([0x6F, 0, 0, 0, 0]))
     reply = chip.transfer(bytes([0x6F, 0, 0, 0, 0]))
-    sg = (reply[3] << 8 | reply[4]) & 0x3FF  # 10-bit SG_RESULT lives in low bits
+    sg = (
+        reply[3] << 8 | reply[4]
+    ) & 0x3FF  # 10-bit SG_RESULT lives in low bits
     assert sg == 120
 
 

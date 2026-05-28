@@ -13,14 +13,21 @@ triggers stepper enable) but BEFORE any G1 move.
 
 Expected: FAIL until the XDIRECT preload is implemented.
 """
+
 import json
 import os
 import pathlib
-import signal
 import socket
 import subprocess
 import sys
 import time
+
+import pytest
+
+# Standalone __main__ script that spawns out/klipper.elf; no pytest test
+# functions. Tagged needs_elf so it is honestly classified (and excluded
+# from the CI sim_unit selection). Run directly: `python3 <this file>`.
+pytestmark = pytest.mark.needs_elf
 
 REPO = pathlib.Path(os.environ.get("KALICO_REPO", "/work"))
 LOGDIR = REPO / "tools" / "sim_klippy" / ".local-logs"
@@ -35,10 +42,18 @@ SIM_SOCK_DIR = pathlib.Path("/tmp/kalico_sim_socks")
 
 
 def cleanup_prior():
-    subprocess.run(["pkill", "-f", str(KLIPPER_ELF)], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["pkill", "-f", "klippy_sim"], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        ["pkill", "-f", str(KLIPPER_ELF)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["pkill", "-f", "klippy_sim"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     time.sleep(0.5)
     for path in (SIM_SOCKET, KLIPPY_INPUT_TTY, KLIPPY_API):
         try:
@@ -56,7 +71,8 @@ def spawn_tmc_emulators():
         emu_log = open(LOGDIR / f"tmc_emu_{line}.log", "w")
         p = subprocess.Popen(
             [sys.executable, str(emu_script), str(sock_path)],
-            stdout=emu_log, stderr=emu_log,
+            stdout=emu_log,
+            stderr=emu_log,
         )
         for _ in range(20):
             if sock_path.exists():
@@ -71,15 +87,19 @@ def spawn_elf():
     elf_log = open(ELF_LOG, "wb")
     shim_so = REPO / "tools" / "kalico-sim" / "libvtime" / "libsim_intercept.so"
     if not shim_so.exists():
-        subprocess.check_call(["make", "-C", str(shim_so.parent)],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.check_call(
+            ["make", "-C", str(shim_so.parent)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     env = os.environ.copy()
     env["LD_PRELOAD"] = str(shim_so)
     env["KALICO_SIM_SOCK_DIR"] = str(SIM_SOCK_DIR)
     env["KALICO_SIM_SHIM_VERBOSE"] = "1"
     proc = subprocess.Popen(
         [str(KLIPPER_ELF), "-I", SIM_SOCKET],
-        stdout=elf_log, stderr=subprocess.STDOUT,
+        stdout=elf_log,
+        stderr=subprocess.STDOUT,
         env=env,
     )
     for _ in range(50):
@@ -92,11 +112,20 @@ def spawn_elf():
 
 def spawn_klippy():
     import shutil
+
     klippy_python = pathlib.Path(shutil.which("python3") or "python3")
     proc = subprocess.Popen(
-        [str(klippy_python), str(REPO / "klippy" / "klippy.py"),
-         str(PRINTER_CFG), "-l", str(KLIPPY_LOG),
-         "-I", KLIPPY_INPUT_TTY, "-a", KLIPPY_API],
+        [
+            str(klippy_python),
+            str(REPO / "klippy" / "klippy.py"),
+            str(PRINTER_CFG),
+            "-l",
+            str(KLIPPY_LOG),
+            "-I",
+            KLIPPY_INPUT_TTY,
+            "-a",
+            KLIPPY_API,
+        ],
         cwd=str(REPO),
     )
     for _ in range(150):
@@ -114,9 +143,12 @@ def send_gcode(script, timeout=30.0):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect(KLIPPY_API)
-    msg = json.dumps(
-        {"id": 1, "method": "gcode/script", "params": {"script": script}}
-    ).encode() + b"\x03"
+    msg = (
+        json.dumps(
+            {"id": 1, "method": "gcode/script", "params": {"script": script}}
+        ).encode()
+        + b"\x03"
+    )
     s.sendall(msg)
     buf = b""
     while True:
@@ -145,11 +177,13 @@ def read_emulator_xdirect_log(line_id):
                     k, v = token.split("=", 1)
                     parts[k] = v
             try:
-                entries.append({
-                    "coil_a": int(parts.get("coil_a", "0")),
-                    "coil_b": int(parts.get("coil_b", "0")),
-                    "raw": parts.get("raw", "0x0"),
-                })
+                entries.append(
+                    {
+                        "coil_a": int(parts.get("coil_a", "0")),
+                        "coil_b": int(parts.get("coil_b", "0")),
+                        "raw": parts.get("raw", "0x0"),
+                    }
+                )
             except (ValueError, KeyError):
                 pass
     return entries
@@ -168,10 +202,12 @@ def read_emulator_gconf_log(line_id):
                 if "=" in token:
                     k, v = token.split("=", 1)
                     parts[k] = v
-            entries.append({
-                "raw": parts.get("raw", "0x0"),
-                "direct_mode": parts.get("direct_mode", "False") == "True",
-            })
+            entries.append(
+                {
+                    "raw": parts.get("raw", "0x0"),
+                    "direct_mode": parts.get("direct_mode", "False") == "True",
+                }
+            )
     return entries
 
 
@@ -194,10 +230,16 @@ def main():
         gconf_26 = read_emulator_gconf_log(26)
         dm_27 = any(e["direct_mode"] for e in gconf_27)
         dm_26 = any(e["direct_mode"] for e in gconf_26)
-        print(f"  CS27 GCONF writes: {len(gconf_27)}, direct_mode seen: {dm_27}")
-        print(f"  CS26 GCONF writes: {len(gconf_26)}, direct_mode seen: {dm_26}")
+        print(
+            f"  CS27 GCONF writes: {len(gconf_27)}, direct_mode seen: {dm_27}"
+        )
+        print(
+            f"  CS26 GCONF writes: {len(gconf_26)}, direct_mode seen: {dm_26}"
+        )
         if not dm_27 and not dm_26:
-            print("\n[preload] FAIL: GCONF.direct_mode never set on any TMC5160")
+            print(
+                "\n[preload] FAIL: GCONF.direct_mode never set on any TMC5160"
+            )
             return 1
 
         # ── Gate 2: fake-home triggers stepper enable ──
@@ -217,26 +259,36 @@ def main():
         xd_26 = read_emulator_xdirect_log(26)
         print(f"  CS27 (stepper_x) XDIRECT writes: {len(xd_27)}")
         for e in xd_27[:5]:
-            print(f"    coil_a={e['coil_a']} coil_b={e['coil_b']} raw={e['raw']}")
+            print(
+                f"    coil_a={e['coil_a']} coil_b={e['coil_b']} raw={e['raw']}"
+            )
         print(f"  CS26 (stepper_y) XDIRECT writes: {len(xd_26)}")
         for e in xd_26[:5]:
-            print(f"    coil_a={e['coil_a']} coil_b={e['coil_b']} raw={e['raw']}")
+            print(
+                f"    coil_a={e['coil_a']} coil_b={e['coil_b']} raw={e['raw']}"
+            )
 
         nonzero_27 = any(e["coil_a"] != 0 or e["coil_b"] != 0 for e in xd_27)
         nonzero_26 = any(e["coil_a"] != 0 or e["coil_b"] != 0 for e in xd_26)
 
         if not nonzero_27 and not nonzero_26:
             if not xd_27 and not xd_26:
-                print("\n[preload] FAIL: no XDIRECT writes at all — "
-                      "phase stepping never wrote coil currents")
+                print(
+                    "\n[preload] FAIL: no XDIRECT writes at all — "
+                    "phase stepping never wrote coil currents"
+                )
             else:
-                print("\n[preload] FAIL: XDIRECT written but all values are zero — "
-                      "motor would not energize (no holding current)")
+                print(
+                    "\n[preload] FAIL: XDIRECT written but all values are zero — "
+                    "motor would not energize (no holding current)"
+                )
             return 1
 
-        print(f"\n[preload] PASS: XDIRECT preloaded with non-zero current "
-              f"(CS27={'yes' if nonzero_27 else 'no'} "
-              f"CS26={'yes' if nonzero_26 else 'no'})")
+        print(
+            f"\n[preload] PASS: XDIRECT preloaded with non-zero current "
+            f"(CS27={'yes' if nonzero_27 else 'no'} "
+            f"CS26={'yes' if nonzero_26 else 'no'})"
+        )
         return 0
 
     finally:

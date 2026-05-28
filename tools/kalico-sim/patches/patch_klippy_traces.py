@@ -3,8 +3,10 @@
 
 Called from the Dockerfile runtime stage after klippy/ is copied fresh.
 """
-import sys
+
 import pathlib
+import sys
+
 
 def patch_motion_toolhead(path):
     text = path.read_text()
@@ -14,12 +16,12 @@ def patch_motion_toolhead(path):
         return
     new = (
         '            logging.info("[sim-trace] submit_homing pos3=%s speed=%s arms=%s cmd=%s",'
-        " pos3, speed, arm_ids, self.commanded_pos[:3])\n"
-        + old
+        " pos3, speed, arm_ids, self.commanded_pos[:3])\n" + old
     )
     text = text.replace(old, new, 1)
     path.write_text(text)
     print(f"patch_klippy_traces: patched {path}")
+
 
 def patch_motion_bridge(path):
     """Increase attach_serial timeout for sim (vtime makes clock advance faster)."""
@@ -33,6 +35,7 @@ def patch_motion_bridge(path):
         text = text.replace(old, new, 1)
         path.write_text(text)
         print(f"patch_klippy_traces: patched attach_serial timeout in {path}")
+
 
 def patch_mcu_homing(path):
     """Increase homing backstop timeout for sim.
@@ -48,6 +51,7 @@ def patch_mcu_homing(path):
         text = text.replace(old, new, 1)
         path.write_text(text)
         print(f"patch_klippy_traces: patched homing backstop slack in {path}")
+
 
 if __name__ == "__main__":
     for arg in sys.argv[1:]:

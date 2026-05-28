@@ -156,7 +156,7 @@ CONFIG = {
     # `float()` (beacon.py:3484). LIS2DW12 supports ±2/4/8/16 g; we
     # expose the standard four scales plus values matching the LSB
     # convention the firmware uses.
-    "BEACON_ACCEL_SCALE_2G": "0.000061",   # g/LSB at ±2g  (≈ 1/2^14)
+    "BEACON_ACCEL_SCALE_2G": "0.000061",  # g/LSB at ±2g  (≈ 1/2^14)
     "BEACON_ACCEL_SCALE_4G": "0.000122",
     "BEACON_ACCEL_SCALE_8G": "0.000244",
     "BEACON_ACCEL_SCALE_16G": "0.000488",

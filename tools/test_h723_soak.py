@@ -14,8 +14,15 @@ import pathlib
 import sys
 import time
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
+
+# Hardware-deferred __main__ soak test against a flashed H723 bench; no
+# pytest test functions. Tagged needs_hardware so it is honestly excluded
+# from CI. Run directly: `python3 <this file> ...`.
+pytestmark = pytest.mark.needs_hardware
 
 STATUS_NAMES = {0: "IDLE", 1: "LOADED", 2: "RUNNING", 3: "FAULT"}
 

@@ -9,6 +9,27 @@ import tempfile
 import pytest
 
 
+def _native_bridge_available() -> bool:
+    """True when the PyO3 ``motion_bridge_native`` cdylib is importable.
+
+    The new motion engine routes all toolhead motion through this bridge.
+    When it is not built (e.g. CI today, where the cdylib is not compiled),
+    klippy boots on a stub that fails loud on any motion call — so the
+    integration ``.test`` cases that drive a printer cannot run. They are
+    skipped with an explicit reason (never silently passed) and light up
+    automatically once the cdylib is built. ``SHOULD_FAIL`` config-error
+    cases never reach motion, so they still run.
+    """
+    try:
+        from klippy import motion_bridge
+    except Exception:
+        return False
+    return motion_bridge._native is not None
+
+
+_BRIDGE_AVAILABLE = _native_bridge_available()
+
+
 def pytest_collect_file(parent, file_path):
     if file_path.suffix == ".test":
         return KlippyTest.from_parent(parent, path=file_path)
@@ -108,15 +129,31 @@ class KlippyTestItem(pytest.Item):
         self.config_file = config_file
         self.dictionaries = dictionaries
         self.gcode = gcode
+        self.should_fail = should_fail
 
         if should_fail:
             self.add_marker(pytest.mark.xfail)
 
     def setup(self):
+        # Integration cases boot a printer and drive it; that needs the real
+        # native motion bridge. Without it, skip honestly (not silent-pass)
+        # rather than hang on the stub. Config-error (SHOULD_FAIL) cases never
+        # reach motion, so they still run.
+        if not _BRIDGE_AVAILABLE and not self.should_fail:
+            pytest.skip(
+                "requires native motion_bridge_native (PyO3 cdylib not built); "
+                "build it to exercise the motion engine — see "
+                "docs/kalico-rewrite/ci.md (make -f Makefile.kalico motion-bridge)"
+            )
         self.tmp_dir = pathlib.Path(tempfile.mkdtemp())
 
     def teardown(self):
-        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+        # setup() may have bailed via pytest.skip() before assigning tmp_dir
+        # (bridge-absent skip-gate); guard so skipped items don't raise an
+        # AttributeError at teardown and turn a clean skip into an ERROR.
+        tmp_dir = getattr(self, "tmp_dir", None)
+        if tmp_dir is not None:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
     def runtest(self):
         gcode_file = self.tmp_dir.joinpath("_test_.gcode")
@@ -132,7 +169,12 @@ class KlippyTestItem(pytest.Item):
         for df in self.dictionaries:
             args.extend(["-d", df])
 
-        subprocess.run(args, check=True, text=True, stderr=subprocess.STDOUT)
+        # Bounded so a wedged klippy subprocess fails the case instead of
+        # hanging the whole suite (the old unbounded run could stall CI for
+        # the full job timeout).
+        subprocess.run(
+            args, check=True, text=True, stderr=subprocess.STDOUT, timeout=120
+        )
 
     def repr_failure(self, excinfo, style=None):
         if isinstance(excinfo.value, subprocess.CalledProcessError):

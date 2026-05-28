@@ -7,8 +7,8 @@ chip's CS pin); transfers arriving on an unmapped CS raise ``KeyError``
 so a misconfigured wiring blows up loudly rather than silently
 mis-dispatching.
 """
-from typing import Callable, Dict
 
+from typing import Callable, Dict
 
 ChipHandler = Callable[[bytes], bytes]
 

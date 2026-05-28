@@ -4,6 +4,7 @@ Wire format: line-oriented text. See
 docs/superpowers/specs/2026-05-08-syscall-shim-design.md §"Control socket
 protocol" for the grammar.
 """
+
 import socket
 import threading
 
@@ -62,7 +63,9 @@ class SimControlClient:
             raise SimControlError(f"unexpected ping reply: {r}")
 
     def set_gpio_input(self, chip: int, line: int, value: int) -> None:
-        r = self._send_recv(f"set_gpio_input chip={chip} line={line} value={value}")
+        r = self._send_recv(
+            f"set_gpio_input chip={chip} line={line} value={value}"
+        )
         if r != "ok":
             raise SimControlError(f"unexpected reply: {r}")
 
@@ -75,10 +78,10 @@ class SimControlClient:
         r = self._send_recv(f"get_gpio_output chip={chip} line={line}")
         if not r.startswith("value="):
             raise SimControlError(f"unexpected reply: {r}")
-        return int(r[len("value="):])
+        return int(r[len("value=") :])
 
     def get_pwm(self, chip: int, pwm: int, file: str = "duty_cycle") -> int:
         r = self._send_recv(f"get_pwm chip={chip} pwm={pwm} file={file}")
         if not r.startswith("value="):
             raise SimControlError(f"unexpected reply: {r}")
-        return int(r[len("value="):])
+        return int(r[len("value=") :])

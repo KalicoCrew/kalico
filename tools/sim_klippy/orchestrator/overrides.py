@@ -5,8 +5,8 @@ text in-memory so the vendored printer.cfg can stay verbatim. We
 operate at the printer.cfg-text level (not at klippy's section/option
 parser) because klippy's resolver dispatches to chelper before we get
 a hook in — easier to substitute the strings up front."""
+
 import re
-from pathlib import Path
 
 try:
     import tomllib  # py 3.11+
@@ -24,7 +24,9 @@ def _flatten(d: dict, prefix: str = "") -> dict:
     out = {}
     for k, v in d.items():
         full_key = f"{prefix}.{k}" if prefix else k
-        if isinstance(v, dict) and not any(isinstance(vv, dict) for vv in v.values()):
+        if isinstance(v, dict) and not any(
+            isinstance(vv, dict) for vv in v.values()
+        ):
             # leaf table — store under the dotted key
             out[full_key] = v
         elif isinstance(v, dict):

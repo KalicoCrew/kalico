@@ -62,4 +62,14 @@ ignore = [
 
 [tool.pytest.ini_options]
 pythonpath = [".", "klippy"]
+# NOTE: tools/ is deliberately NOT in testpaths. The CI-able kalico-sim
+# unit subset is run via an explicit path + marker selection (see
+# `scripts/ci.sh sim`), so widening testpaths here would sweep in the
+# ELF/Renode/hardware tests that must not run in CI.
 testpaths = ["test", "tests"]
+markers = [
+  "sim_unit: in-process kalico-sim unit/contract test (CI-able, no ELF/hardware)",
+  "needs_elf: requires a built klipper sim ELF",
+  "needs_renode: requires Renode emulation",
+  "needs_hardware: requires real H723/F446/Trident bench hardware",
+]

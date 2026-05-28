@@ -18,48 +18,67 @@ Three checks, all pure-Python (no klippy boot required):
 3. legacy_toolhead_importable: prove `klippy.toolhead` is a
    self-contained module that imports without the bridge present.
 """
+
 from __future__ import annotations
 
 import importlib
 
-from klippy.toolhead import ToolHead
-from klippy.motion_toolhead import MotionToolhead
+import pytest
 
+from klippy.motion_toolhead import MotionToolhead
+from klippy.toolhead import ToolHead
+
+pytestmark = pytest.mark.sim_unit
 
 # --- Test 1: override-surface baseline -------------------------------------
 
 # Methods MotionToolhead defines locally (overrides). Update this baseline
 # when intentionally changing the override surface. Any divergence triggers
 # CI failure with a diff message.
-EXPECTED_LOCAL_METHODS = frozenset({
-    "__init__",
-    "_load_kinematics",
-    "move",
-    "_fire_active_callbacks",
-    "drip_move",
-    "dwell",
-    "wait_moves",
-    "flush_step_generation",
-    "get_last_move_time",
-    "note_mcu_movequeue_activity",
-    "set_accel",
-    "reset_accel",
-    "cmd_SET_VELOCITY_LIMIT",
-    "cmd_RESET_VELOCITY_LIMIT",
-    "stats",
-    "_init_planner",
-    "_configure_axes_per_mcu",
-    "_register_credit_freed_handlers",
-    "cmd_KALICO_SIM_STEP_COUNT",
-    "cmd_KALICO_SIM_AXIS_STEPS",
-    "cmd_KALICO_SIM_AXIS_ACCUM",
-    "cmd_KALICO_SIM_ENDSTOP_SET_PIN",
-})
+EXPECTED_LOCAL_METHODS = frozenset(
+    {
+        "__init__",
+        "_load_kinematics",
+        "move",
+        "_fire_active_callbacks",
+        "drip_move",
+        "dwell",
+        "wait_moves",
+        "flush_step_generation",
+        "get_last_move_time",
+        "note_mcu_movequeue_activity",
+        "set_accel",
+        "reset_accel",
+        "cmd_SET_VELOCITY_LIMIT",
+        "cmd_RESET_VELOCITY_LIMIT",
+        "stats",
+        "_init_planner",
+        "_configure_axes_per_mcu",
+        "cmd_KALICO_SIM_STEP_COUNT",
+        "cmd_KALICO_SIM_AXIS_STEPS",
+        "cmd_KALICO_SIM_AXIS_ACCUM",
+        "cmd_KALICO_SIM_ENDSTOP_SET_PIN",
+        # Bridge-mode overrides of the upstream lifecycle / motion surface.
+        # MotionToolhead drives motion through the native bridge instead of
+        # the legacy trapq/stepcompress path, so it overrides connection
+        # teardown, homing/probe interception, drip software-endstop trips,
+        # and the bridge-drain end-time bookkeeping.
+        "_handle_disconnect",
+        "_prepare_probe_interceptor",
+        "_drip_move_software_trip",
+        "wait_moves_and_mcu",
+        "_bridge_mcus",
+        "note_homing_end",
+        "_ground_pending_end_time_after_bridge_drain",
+        "_bump_pending_end_time",
+    }
+)
 
 
 def test_motion_toolhead_override_surface_matches_baseline():
     actual = {
-        name for name, value in MotionToolhead.__dict__.items()
+        name
+        for name, value in MotionToolhead.__dict__.items()
         if callable(value) and not name.startswith("__")
     }
     actual.add("__init__")  # always part of the baseline
@@ -77,56 +96,59 @@ def test_motion_toolhead_override_surface_matches_baseline():
 # Methods upstream ToolHead exposes today. If upstream gains a new
 # public-ish method, this test fails so a human reviews whether
 # MotionToolhead should override it.
-EXPECTED_TOOLHEAD_METHODS = frozenset({
-    "__init__",
-    "_advance_flush_time",
-    "_advance_move_time",
-    "_calc_junction_deviation",
-    "_calc_print_time",
-    "_check_pause",
-    "_flush_handler",
-    "_flush_lookahead",
-    "_handle_shutdown",
-    "_load_kinematics",
-    "_priming_handler",
-    "_process_moves",
-    "_update_drip_move_time",
-    "check_busy",
-    "cmd_G4",
-    "cmd_M204",
-    "cmd_M400",
-    "cmd_RESET_VELOCITY_LIMIT",
-    "cmd_SET_VELOCITY_LIMIT",
-    "drip_move",
-    "dwell",
-    "flush_step_generation",
-    "get_active_rails_for_axis",
-    "get_extruder",
-    "get_kinematics",
-    "get_last_move_time",
-    "get_max_velocity",
-    "get_position",
-    "get_status",
-    "get_trapq",
-    "limit_next_junction_speed",
-    "manual_move",
-    "move",
-    "note_mcu_movequeue_activity",
-    "note_step_generation_scan_time",
-    "register_lookahead_callback",
-    "register_step_generator",
-    "reset_accel",
-    "set_accel",
-    "set_extruder",
-    "set_position",
-    "stats",
-    "wait_moves",
-})
+EXPECTED_TOOLHEAD_METHODS = frozenset(
+    {
+        "__init__",
+        "_advance_flush_time",
+        "_advance_move_time",
+        "_calc_junction_deviation",
+        "_calc_print_time",
+        "_check_pause",
+        "_flush_handler",
+        "_flush_lookahead",
+        "_handle_shutdown",
+        "_load_kinematics",
+        "_priming_handler",
+        "_process_moves",
+        "_update_drip_move_time",
+        "check_busy",
+        "cmd_G4",
+        "cmd_M204",
+        "cmd_M400",
+        "cmd_RESET_VELOCITY_LIMIT",
+        "cmd_SET_VELOCITY_LIMIT",
+        "drip_move",
+        "dwell",
+        "flush_step_generation",
+        "get_active_rails_for_axis",
+        "get_extruder",
+        "get_kinematics",
+        "get_last_move_time",
+        "get_max_velocity",
+        "get_position",
+        "get_status",
+        "get_trapq",
+        "limit_next_junction_speed",
+        "manual_move",
+        "move",
+        "note_mcu_movequeue_activity",
+        "note_step_generation_scan_time",
+        "register_lookahead_callback",
+        "register_step_generator",
+        "reset_accel",
+        "set_accel",
+        "set_extruder",
+        "set_position",
+        "stats",
+        "wait_moves",
+    }
+)
 
 
 def test_upstream_toolhead_method_baseline():
     actual = {
-        name for name, value in ToolHead.__dict__.items()
+        name
+        for name, value in ToolHead.__dict__.items()
         if callable(value) and not name.startswith("__")
     }
     actual.add("__init__")
@@ -145,6 +167,7 @@ def test_upstream_toolhead_method_baseline():
 
 # --- Test 2: flush-timer silencing invariant -------------------------------
 
+
 def test_no_motion_toolhead_path_calls_note_mcu_movequeue_activity():
     """Static check: no MotionToolhead method body invokes the upstream
     flush-timer rearm method along a bridge code path.
@@ -159,6 +182,7 @@ def test_no_motion_toolhead_path_calls_note_mcu_movequeue_activity():
     all overridden to no-op or replaced).
     """
     import inspect
+
     forbidden = "note_mcu_movequeue_activity"
     overrides = {}
     for name in EXPECTED_LOCAL_METHODS:
@@ -178,12 +202,12 @@ def test_no_motion_toolhead_path_calls_note_mcu_movequeue_activity():
     assert not offenders, (
         "Flush-timer silencing invariant violated!\n"
         "These MotionToolhead methods invoke %s, which rearms the "
-        "silenced flush_timer:\n  %s"
-        % (forbidden, offenders)
+        "silenced flush_timer:\n  %s" % (forbidden, offenders)
     )
 
 
 # --- Test 3: legacy ToolHead module imports cleanly ------------------------
+
 
 def test_legacy_toolhead_module_imports_without_bridge():
     """Restored upstream toolhead.py is self-contained: it imports without

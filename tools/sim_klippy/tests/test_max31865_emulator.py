@@ -1,10 +1,15 @@
 """Contract tests for the MAX31865Emulator."""
+
+import pytest
+
 from tools.sim_klippy.orchestrator.max31865_emulator import (
-    MAX31865Emulator,
     CONFIG_REG,
-    RTD_MSB_REG,
     DEFAULT_RTD_REGISTER,
+    RTD_MSB_REG,
+    MAX31865Emulator,
 )
+
+pytestmark = pytest.mark.sim_unit
 
 
 def test_config_register_default():

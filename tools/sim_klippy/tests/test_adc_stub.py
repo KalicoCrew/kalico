@@ -1,7 +1,11 @@
 """HeaterModel + thermistor curve. Used by the orchestrator to feed
 realistic thermistor readings back into the firmware."""
+
 import pytest
+
 from tools.sim_klippy.orchestrator.adc_stub import HeaterModel, temp_to_adc
+
+pytestmark = pytest.mark.sim_unit
 
 
 def test_bed_ramps_toward_target():
