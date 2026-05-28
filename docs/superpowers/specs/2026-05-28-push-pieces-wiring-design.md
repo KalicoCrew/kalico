@@ -19,7 +19,7 @@ The host never caught up: the dispatch closure still builds the old `McuPushPlan
 - **`PieceEntry`** (`piece_ring.rs:305`): `start_time: u64` (clock cycles), `coeffs: [f32; 4]` (Bernstein), `duration: f32` (seconds), `_reserved: u32`. 32 bytes.
 - **Idle = hold.** `engine.rs::get_position_and_velocity` returns `None` when an axis has no current piece (or the next hasn't started); the tick loop `continue`s, `p_prev` untouched, no steps. An axis with no piece freezes — it does **not** snap to zero. (Covers genuinely pieceless axes, e.g. E on a travel move.)
 - **Every segment carries X/Y/Z.** `emit_shaped` always builds `ShapedSegment.axes[0..2]`; a non-moving axis gets a *constant* curve → one constant piece. E is separate and may be absent.
-- **A late piece aborts the print.** When `now − start_time > FAULT_TOLERANCE` (2 ticks; `engine.rs:654`), the MCU faults and the print stops (via foreground Klipper `shutdown()` — not a clean instantaneous engine stop, and uncoordinated across MCUs, but the end state is "stopped, aborted"). The mechanism is not this spec's concern; the obligation is to never let underrun happen (§5.1).
+- **A late piece aborts the print.** `now − start_time > FAULT_TOLERANCE` (`engine.rs:654`) faults the MCU and stops the print (via Klipper `shutdown()` — not a clean engine stop, but it stops). The mechanism isn't this spec's concern; the obligation is to never underrun (§5).
 - **Wire send exists, but blocks.** `KalicoHostIo::kalico_call(MessageKind::PushPieces, body, timeout)` sends one frame and awaits `PushPiecesResponse`; `PushPieces` already has an `Encode` impl. It is a blocking round-trip (`host_io/mod.rs:780`) — see §3.5.
 - **Heartbeat is currently DROPPED.** `StatusHeartbeat` decodes as a struct but `lift_event_to_runtime_event` (`kalico_native.rs`) routes it to the `_ =>` discard arm; there is no `RuntimeEvent::Heartbeat`. Routing it is new work (§3.4), and skipping it is a guaranteed halt: with `consumed` frozen, `room` hits 0 after the first `ring_depth` pieces and the pump stalls forever while heartbeats are thrown away.
 - **Host→MCU clock conversion already exists.** The clock-sync subsystem maintains a per-MCU estimate off one shared host clock; converting a host time to a given MCU's clock is an existing operation (`host_time_to_mcu_clock`). This spec consumes it and adds no clock machinery — see §3.2.1.
@@ -37,9 +37,9 @@ The host does not receive finished moves. The streaming shaper dispatches only u
 
 > **The pump's only input is the committed dispatch stream (the drained output of `emit_committed` / `commit_decel_to_zero`). It holds no handle to `ShaperState` internals; the speculative tail is unreachable from it.**
 
-So append-only correctness is structural, not a discipline: the only pieces that exist to push are already committed, hence immutable. The wire has no "replace piece N" and needs none. This pre-empts any future "let the pump peek at the planner buffer to deepen lookahead" optimization — that would reintroduce retraction and must be refused at this boundary.
+So append-only correctness is structural: the only pieces that exist to push are already committed, hence immutable — the wire needs no "replace piece N". A future "let the pump peek at the planner buffer to deepen lookahead" would reintroduce retraction and must be refused here.
 
-Lifecycle consequence: "all queues drained to the boundary" is **not** end-of-motion. The zero-velocity stop ramp arrives later (as the quiescence commit's segments, latest in time → pushed last). The pump stays alive across a drained-to-boundary state.
+Lifecycle consequence: "all queues drained to the boundary" is **not** end-of-motion. The stop ramp arrives later (the quiescence commit's segments, latest in time → pushed last), so the pump stays alive across a drained-to-boundary state.
 
 ## 3. Components
 
@@ -51,7 +51,7 @@ Config-time bookkeeping, independent of everything else. Per MCU:
 - `ring_depth = total_pieces / num_axes_on_mcu` (equal division across the axes that MCU drives).
 - Send one `ConfigureAxis` per axis with that `ring_depth` (stepping-mode / microstep / stepper-binding fields unchanged).
 
-It allocates a ring for **every** axis the MCU drives, regardless of whether that axis moves in any given print. The resulting depth must clear the steady-stream refill budget (§5.1 budget 1): `ring_depth × typical_piece_duration` must comfortably exceed the heartbeat RTT. Defaults (≈496 pieces/axis on H7 ≈ 0.5 s, vs 100 ms heartbeat) clear it ~5×; a board too shallow to cover `max_h` + heartbeat RTT is a startup config error, not a runtime degradation.
+It allocates a ring for **every** axis the MCU drives, regardless of whether that axis moves in any given print. The resulting depth must clear the steady-stream refill budget (§5 budget 1): `ring_depth × typical_piece_duration` must comfortably exceed the heartbeat RTT. Defaults (≈496 pieces/axis on H7 ≈ 0.5 s, vs 100 ms heartbeat) clear it ~5×; a board too shallow to cover `max_h` + heartbeat RTT is a startup config error, not a runtime degradation.
 
 ### 3.2 Enqueue adapter (per `ShapedSegment`, planner thread)
 
@@ -132,21 +132,16 @@ Per frame: `kalico_call(MessageKind::PushPieces, body, timeout)`; `body` is `axi
 
 **Result codes** must be shared named constants (host ↔ MCU), defined once in `kalico_protocol` and referenced from both sides so a renumber can't desync: `OK` / `RING_FULL` / `INVALID_AXIS` (MCU returns these from `handle_push_pieces`, cf. `KALICO_ERR_*` in `kalico_dispatch.c`). Normal operation is always `OK`; `RING_FULL` is the safety net.
 
-**Throughput (CLAUDE.md constraint #1).** A serial blocking pump caps at `1/RTT` *frames*/s per MCU. With batching the rate is frames, not pieces: ~0.5–1 ms USB RTT → ~1000–2000 frames/s, vs shaped XY emitting hundreds–low-thousands of pieces/s aggregate — coalesced frames keep a serial pump comfortably ahead for bring-up. Validate this number on the bench before declaring the path adequate. If a future workload approaches the ceiling, pipelining (fire-and-forget + response reconciliation) is the lever — a throughput tweak, not a design change.
+**Throughput (CLAUDE.md constraint #1).** A serial blocking pump caps at ~`1/RTT` *frames*/s per MCU; batching makes the unit frames not pieces, so coalesced frames stay well ahead of the shaped piece rate for bring-up. Validate on the bench; if a workload later nears the ceiling, pipelining is the lever (a tweak, not a redesign).
 
-## 5. Timing
+## 5. Underrun is a halt — two budgets, ring depth covers only one
 
-- **Initial lead.** A fresh stream's first piece must be far enough ahead to load before the ISR reaches it — covered by the anchor's `lead ≈ 0.25 s` (§3.2.1) plus earliest-first pushing.
-- **All axes arrive together.** Each `ShapedSegment` covers all axes over one `[t_start, t_end]`, so the pump always has a complete timeline up to the latest enqueued segment.
+Each `ShapedSegment` covers all axes over one `[t_start, t_end]`, so the pump always has a complete timeline up to the latest enqueued segment. If a ring instead drains to the committed frontier, the axis idle-holds — but the frontier is mid-cruise at nonzero velocity (an infinite-jerk freeze), and when the held-back ramp arrives it's now in the past → `PIECE_START_IN_PAST` (§1.1). Inherited from the streaming shaper; not fixed here, but two budgets must hold:
 
-### 5.1 Underrun is a halt — two budgets, ring depth covers only one
+1. **Steady-stream refill** (moves keep coming): the frontier advances each replan, so the only risk is heartbeat-latency refill lag. **Binding: ring-depth-in-time > heartbeat RTT** (§3.1). The *only* underrun ring depth defends.
+2. **Stop / dwell / starvation:** the frontier stalls until quiescence fires `commit_decel_to_zero`. **Ring depth does nothing** — nothing past the frontier to push. Binding budget is planner-side: `T_commit + pipeline < buffered time at the boundary`, floored by `FAULT_TOLERANCE`.
 
-If the ring drains to the committed frontier, the axis idle-holds — but the frontier sits at `t_decel_start − max_h`, mid-cruise at nonzero velocity, so the freeze is an infinite-jerk stop; and when the held-back ramp finally arrives it's now in the past → `PIECE_START_IN_PAST` (§1.1). This is a halt-class invariant inherited from the streaming shaper; we don't fix it here, but two budgets must hold:
-
-1. **Steady-stream refill** (moves keep coming): each replan advances `t_decel_start`, so the frontier moves; the only risk is heartbeat-latency refill lag. **Binding: ring-depth-in-time > heartbeat RTT** (the §3.1 check). The *only* underrun ring depth defends.
-2. **Stop / dwell / starvation:** the frontier stalls at the last move's boundary until quiescence fires `commit_decel_to_zero`. **Ring depth does nothing** — there's no piece past the frontier to push. Binding budget is planner-side: `T_commit + emit + push + RTT` < buffered time at the boundary, floored by `FAULT_TOLERANCE`.
-
-Plain version: deep rings are a bigger tank that rides out a slow refill, but at a stop the tap is closed until the planner commits the decel — a bigger tank just delays noticing. Budget 2 is a planner concern, named here only so the dependency is explicit.
+Plain version: deep rings are a bigger tank that rides out a slow refill, but at a stop the tap is closed until the planner commits the decel — a bigger tank just delays noticing. Budget 2 is a planner concern, named so the dependency is explicit.
 
 ## 6. Removal (folded in) — unwiring a live path
 
