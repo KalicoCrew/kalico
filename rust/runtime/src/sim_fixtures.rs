@@ -102,9 +102,8 @@ pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
 
     use crate::clock::WidenState;
     use crate::config::{McuAxisConfig, MotorConfig};
-    use crate::queue::Q_N;
     use crate::reclaim::RetirementTable;
-    use crate::segment::{KinematicTag, Segment};
+    use crate::segment::KinematicTag;
     use crate::state::{EngineImpl, FgState, IsrState, RuntimeContext, SharedState};
     use crate::stream::FgStreamState;
     use crate::trace::{TRACE_RING_N, TraceSample};
@@ -178,13 +177,11 @@ pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
     })
 }
 
-/// Push a Z-only linear segment into the engine's piece ring and active-segment
-/// slot, starting at `t_start`.
+/// Push a Z-only linear segment into the engine's piece ring, starting at
+/// `t_start`.
 ///
-/// Pushes a single cubic Bézier Z piece (collinear control points → linear
-/// position) via `engine.push_pieces`, then places the `Segment` directly
-/// into `engine.current` with all axis handles set to `UNUSED_SENTINEL`
-/// (the piece ring carries the curve data; handles are now decorative).
+/// Constructs a single cubic Bézier Z piece (collinear control points →
+/// linear position) and loads it into the Z ring via `engine.push_pieces`.
 ///
 /// - `t_start`: absolute MCU cycle at which the segment begins
 /// - `velocity_mm_s`: Z velocity in mm/s (must be > 0)
@@ -196,10 +193,7 @@ pub fn push_test_segment_linear_z_at(
     velocity_mm_s: f32,
     duration_s: f32,
 ) {
-    use crate::config::EMode;
     use crate::piece_ring::PieceEntry;
-    use crate::segment::{CurveHandle, KinematicTag, Segment};
-    use crate::sizing::TOTAL_RING_PIECES;
 
     let z_end_mm = velocity_mm_s * duration_s;
 
@@ -219,31 +213,10 @@ pub fn push_test_segment_linear_z_at(
     // axis_idx=2 is Z. push_pieces allocates from the Z ring descriptor.
     let rc = isr.engine.push_pieces(2, &[piece], storage_slice);
     assert_eq!(rc, 0, "push_pieces for Z failed (ring not configured?)");
-
-    // Duration in cycles.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let duration_cycles: u64 = (duration_s * TEST_CLOCK_FREQ as f32) as u64;
-
-    isr.engine.current = Some(Segment {
-        id: 1,
-        x_handle: CurveHandle::UNUSED_SENTINEL,
-        y_handle: CurveHandle::UNUSED_SENTINEL,
-        z_handle: CurveHandle::UNUSED_SENTINEL,
-        e_handle: CurveHandle::UNUSED_SENTINEL,
-        t_start,
-        t_end: t_start + duration_cycles,
-        kinematics: KinematicTag::CartesianXyzAndE,
-        e_mode: EMode::Travel,
-        extrusion_ratio: 0.0,
-        flags: 0,
-        _pad: [0; 1],
-        consumers_remaining: 0,
-    });
-    let _ = TOTAL_RING_PIECES; // suppress unused import warning
 }
 
-/// Push a Z-only linear segment into the engine's active-segment slot,
-/// starting at cycle 0.
+/// Push a Z-only linear segment into the engine's piece ring, starting at
+/// cycle 0.
 pub fn push_test_segment_linear_z(
     ctx: &mut crate::state::RuntimeContext,
     velocity_mm_s: f32,
