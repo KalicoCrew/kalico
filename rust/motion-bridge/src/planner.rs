@@ -1411,7 +1411,6 @@ mod tests {
     fn z_only_move_after_homing_xy_shaped_axes_are_constant() {
         use crate::classify::classify_and_build;
 
-
         // ---- Shaper config matching real Trident: smooth_mzv @ 186 Hz on X,
         //      smooth_mzv @ 122 Hz on Y, passthrough on Z. ----
         let shaper_cfg = ShaperConfig {
@@ -1448,12 +1447,7 @@ mod tests {
         // Helper: append one move, immediately emit committed, discard output.
         // Mirrors the run-loop's per-Move arm (append_and_replan + emit_committed).
         let do_move =
-            |state: &mut ShaperState,
-             start: [f64; 3],
-             dx: f64,
-             dy: f64,
-             dz: f64,
-             feed: f64| {
+            |state: &mut ShaperState, start: [f64; 3], dx: f64, dy: f64, dz: f64, feed: f64| {
                 let m = classify_and_build(start, dx, dy, dz, 0.0, feed)
                     .expect("classify_and_build should succeed for valid moves");
                 state
@@ -1524,9 +1518,8 @@ mod tests {
         // Simulate this by calling append_and_replan once, then calling
         // emit_committed in a loop (advancing t_decel_start each time
         // to simulate the commit timer opening the dispatch window).
-        let z_move = classify_and_build(
-            [150.0, 132.0, 344.0], 0.0, 0.0, -342.0, 0.0, 8.0,
-        ).expect("classify Z move");
+        let z_move = classify_and_build([150.0, 132.0, 344.0], 0.0, 0.0, -342.0, 0.0, 8.0)
+            .expect("classify Z move");
         state
             .append_and_replan(z_move.segment, &replan_ctx)
             .expect("append Z move");
@@ -1535,12 +1528,12 @@ mod tests {
         // that mimic the planner's T_commit-driven dispatch.
         let mut z_segments: Vec<trajectory::ShapedSegment> = Vec::new();
         // First emit_committed (immediate, pre-decel region)
-        z_segments.extend(
-            state.emit_committed(&emit_ctx).expect("emit_committed"),
-        );
+        z_segments.extend(state.emit_committed(&emit_ctx).expect("emit_committed"));
         // Final flush (decel tail)
         z_segments.extend(
-            state.commit_decel_to_zero(&emit_ctx).expect("commit_decel_to_zero"),
+            state
+                .commit_decel_to_zero(&emit_ctx)
+                .expect("commit_decel_to_zero"),
         );
 
         // For the assertion we only need at least one segment.
@@ -1566,10 +1559,14 @@ mod tests {
         let mut max_dev_y: f64 = 0.0;
 
         for seg in &z_segments {
-            let dev_x = seg.axes[0].control_points().iter()
+            let dev_x = seg.axes[0]
+                .control_points()
+                .iter()
                 .map(|c| (c - 150.0).abs())
                 .fold(0.0_f64, f64::max);
-            let dev_y = seg.axes[1].control_points().iter()
+            let dev_y = seg.axes[1]
+                .control_points()
+                .iter()
                 .map(|c| (c - 132.0).abs())
                 .fold(0.0_f64, f64::max);
             max_dev_x = max_dev_x.max(dev_x);
@@ -1599,8 +1596,12 @@ mod tests {
         use crate::classify::classify_and_build;
 
         let shaper_cfg = ShaperConfig {
-            x: RequiredShaper::SmoothMzv { frequency_hz: 186.0 },
-            y: RequiredShaper::SmoothMzv { frequency_hz: 122.0 },
+            x: RequiredShaper::SmoothMzv {
+                frequency_hz: 186.0,
+            },
+            y: RequiredShaper::SmoothMzv {
+                frequency_hz: 122.0,
+            },
             z: AxisShaper::Passthrough,
         };
 
@@ -1622,12 +1623,11 @@ mod tests {
         };
 
         let do_move =
-            |state: &mut ShaperState,
-             start: [f64; 3],
-             dx: f64, dy: f64, dz: f64, feed: f64| {
-                let m = classify_and_build(start, dx, dy, dz, 0.0, feed)
-                    .expect("classify");
-                state.append_and_replan(m.segment, &replan_ctx).expect("replan");
+            |state: &mut ShaperState, start: [f64; 3], dx: f64, dy: f64, dz: f64, feed: f64| {
+                let m = classify_and_build(start, dx, dy, dz, 0.0, feed).expect("classify");
+                state
+                    .append_and_replan(m.segment, &replan_ctx)
+                    .expect("replan");
                 state.emit_committed(&emit_ctx).expect("emit")
             };
         let do_flush = |state: &mut ShaperState| -> Vec<trajectory::ShapedSegment> {
@@ -1653,10 +1653,11 @@ mod tests {
 
         // Z move with tiny X: dx=0.1mm instead of 0
         state.reset([150.0, 132.0, 344.0, 0.0]);
-        let z_move = classify_and_build(
-            [150.0, 132.0, 344.0], 0.1, 0.0, -342.0, 0.0, 8.0,
-        ).expect("classify Z+tiny-X move");
-        state.append_and_replan(z_move.segment, &replan_ctx).expect("replan");
+        let z_move = classify_and_build([150.0, 132.0, 344.0], 0.1, 0.0, -342.0, 0.0, 8.0)
+            .expect("classify Z+tiny-X move");
+        state
+            .append_and_replan(z_move.segment, &replan_ctx)
+            .expect("replan");
 
         let mut segs: Vec<trajectory::ShapedSegment> = Vec::new();
         segs.extend(state.emit_committed(&emit_ctx).expect("emit"));
@@ -1667,10 +1668,14 @@ mod tests {
         let mut max_dev_x: f64 = 0.0;
         let mut max_dev_y: f64 = 0.0;
         for seg in &segs {
-            let dev_x = seg.axes[0].control_points().iter()
+            let dev_x = seg.axes[0]
+                .control_points()
+                .iter()
                 .map(|c| (c - 150.0).abs())
                 .fold(0.0_f64, f64::max);
-            let dev_y = seg.axes[1].control_points().iter()
+            let dev_y = seg.axes[1]
+                .control_points()
+                .iter()
                 .map(|c| (c - 132.0).abs())
                 .fold(0.0_f64, f64::max);
             max_dev_x = max_dev_x.max(dev_x);
@@ -1696,10 +1701,13 @@ mod tests {
     fn z_only_move_no_prior_xy_motion() {
         use crate::classify::classify_and_build;
 
-
         let shaper_cfg = ShaperConfig {
-            x: RequiredShaper::SmoothMzv { frequency_hz: 186.0 },
-            y: RequiredShaper::SmoothMzv { frequency_hz: 122.0 },
+            x: RequiredShaper::SmoothMzv {
+                frequency_hz: 186.0,
+            },
+            y: RequiredShaper::SmoothMzv {
+                frequency_hz: 122.0,
+            },
             z: AxisShaper::Passthrough,
         };
 
@@ -1723,10 +1731,11 @@ mod tests {
         // No prior moves — just reset and go
         state.reset([150.0, 132.0, 344.0, 0.0]);
 
-        let z_move = classify_and_build(
-            [150.0, 132.0, 344.0], 0.0, 0.0, -342.0, 0.0, 8.0,
-        ).expect("classify Z move");
-        state.append_and_replan(z_move.segment, &replan_ctx).expect("replan");
+        let z_move = classify_and_build([150.0, 132.0, 344.0], 0.0, 0.0, -342.0, 0.0, 8.0)
+            .expect("classify Z move");
+        state
+            .append_and_replan(z_move.segment, &replan_ctx)
+            .expect("replan");
 
         let mut segs: Vec<trajectory::ShapedSegment> = Vec::new();
         segs.extend(state.emit_committed(&emit_ctx).expect("emit"));
@@ -1739,8 +1748,14 @@ mod tests {
         for (i, seg) in segs.iter().enumerate() {
             let cps_x = seg.axes[0].control_points();
             let cps_y = seg.axes[1].control_points();
-            let dev_x = cps_x.iter().map(|c| (c - 150.0).abs()).fold(0.0_f64, f64::max);
-            let dev_y = cps_y.iter().map(|c| (c - 132.0).abs()).fold(0.0_f64, f64::max);
+            let dev_x = cps_x
+                .iter()
+                .map(|c| (c - 150.0).abs())
+                .fold(0.0_f64, f64::max);
+            let dev_y = cps_y
+                .iter()
+                .map(|c| (c - 132.0).abs())
+                .fold(0.0_f64, f64::max);
             max_dev_x = max_dev_x.max(dev_x);
             max_dev_y = max_dev_y.max(dev_y);
             eprintln!(

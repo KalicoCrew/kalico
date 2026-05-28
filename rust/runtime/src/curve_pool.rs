@@ -21,7 +21,7 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU16, Ordering};
 
-use crate::cubic_curve::{populate_from_wire, CubicLoadError, LoadedCubicCurve, WirePiece};
+use crate::cubic_curve::{CubicLoadError, LoadedCubicCurve, WirePiece, populate_from_wire};
 
 // Build-time-configurable sizing constants. The `pub const`s (see
 // `runtime/build.rs`) are emitted from Klipper's Kconfig values. Defaults
@@ -158,6 +158,7 @@ impl Default for CurvePool {
 }
 
 impl CurvePool {
+    #[allow(clippy::large_stack_arrays)]
     pub const fn new() -> Self {
         Self {
             slots: [const { PoolSlot::new() }; CURVE_POOL_N],
@@ -176,11 +177,7 @@ impl CurvePool {
     ///   gen, ensuring the curve write is visible iff the new gen is.
     ///
     /// Spec: `docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md` §3.2.
-    pub fn try_alloc_and_load(
-        &self,
-        slot_idx: usize,
-        wire: &[WirePiece],
-    ) -> Option<CurveHandle> {
+    pub fn try_alloc_and_load(&self, slot_idx: usize, wire: &[WirePiece]) -> Option<CurveHandle> {
         self.try_alloc_and_load_diagnostic(slot_idx, wire).ok()
     }
 
@@ -375,9 +372,7 @@ mod tests {
     fn alloc_and_load_then_lookup_returns_ptr() {
         let pool = CurvePool::new();
         let wire = wire_pieces(4);
-        let handle = pool
-            .try_alloc_and_load(0, &wire)
-            .expect("alloc+load");
+        let handle = pool.try_alloc_and_load(0, &wire).expect("alloc+load");
         assert_eq!(handle.slot_idx, 0);
         assert_eq!(handle.generation, 1);
         let ptr = pool.lookup_active(handle).expect("lookup_active");
@@ -391,15 +386,11 @@ mod tests {
     fn alloc_twice_into_same_slot_blocks_until_retired() {
         let pool = CurvePool::new();
         let wire = wire_pieces(4);
-        let h1 = pool
-            .try_alloc_and_load(0, &wire)
-            .expect("first");
+        let h1 = pool.try_alloc_and_load(0, &wire).expect("first");
         // Second alloc into the same slot must fail (slot busy).
         assert!(pool.try_alloc_and_load(0, &wire).is_none());
         pool.confirm_retired(h1);
-        let h2 = pool
-            .try_alloc_and_load(0, &wire)
-            .expect("second");
+        let h2 = pool.try_alloc_and_load(0, &wire).expect("second");
         assert_eq!(h2.generation, 2);
     }
 

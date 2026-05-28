@@ -327,7 +327,10 @@ mod tests {
         let mut input = default_input(&segments, SafetyMode::TerminalKnown);
         input.initial_v = -1.0;
         let result = plan_velocity(&input);
-        assert!(matches!(result, Err(ShapeError::UnsupportedBoundaryVelocity)));
+        assert!(matches!(
+            result,
+            Err(ShapeError::UnsupportedBoundaryVelocity)
+        ));
     }
 
     #[test]
@@ -347,7 +350,10 @@ mod tests {
         let mut input = default_input(&segments, SafetyMode::TerminalKnown);
         input.terminal_v = f64::NAN;
         let result = plan_velocity(&input);
-        assert!(matches!(result, Err(ShapeError::UnsupportedBoundaryVelocity)));
+        assert!(matches!(
+            result,
+            Err(ShapeError::UnsupportedBoundaryVelocity)
+        ));
     }
 
     /// Step-0 lift contract: a non-zero `initial_v` is accepted (no error)
@@ -483,8 +489,8 @@ mod tests {
     /// velocity, which propagates back and slows segment 0's tail too —
     /// that's TOPP-RA doing its job, not a β-derate regression. The
     /// invariant we _can_ assert end-to-end is monotonicity per-segment
-    /// (both segments must take ≥ their TerminalKnown durations under
-    /// WorstCaseFuture, with strict inequality on the last segment because
+    /// (both segments must take ≥ their `TerminalKnown` durations under
+    /// `WorstCaseFuture`, with strict inequality on the last segment because
     /// its limit is genuinely halved).
     ///
     /// The "only last segment's _effective machine limit_ is changed"

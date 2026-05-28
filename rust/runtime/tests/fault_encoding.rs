@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! `fault_detail` encoder tests. Spec §9.2.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]

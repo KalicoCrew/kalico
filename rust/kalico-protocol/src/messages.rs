@@ -1,12 +1,12 @@
-//! MessageKind discriminants + per-message structs (spec §7).
+//! `MessageKind` discriminants + per-message structs (spec §7).
 //!
 //! Each non-bootstrap message has a hand-written `Encode` and `Decode` impl.
 //! Bootstrap messages (`Identify`, `IdentifyResponse`) live in
 //! [`crate::bootstrap`] with a separate, fixed-forever byte layout.
 
 use crate::codec::{
-    Cursor, Decode, DecodeError, Encode, get_f32, get_i32, get_u16, get_u32, get_u64, get_u8,
-    put_f32, put_i32, put_u16, put_u32, put_u64, put_u8,
+    Cursor, Decode, DecodeError, Encode, get_f32, get_i32, get_u8, get_u16, get_u32, get_u64,
+    put_f32, put_i32, put_u8, put_u16, put_u32, put_u64,
 };
 
 /// Layer-4 message-type discriminants. Per spec §7.1.
@@ -60,7 +60,7 @@ impl MessageKind {
     }
 
     /// True if this message is decoded via the schema. False for bootstrap
-    /// (Identify / IdentifyResponse), which use [`crate::bootstrap`].
+    /// (Identify / `IdentifyResponse`), which use [`crate::bootstrap`].
     pub fn is_schema_validated(self) -> bool {
         !matches!(self, Self::Identify | Self::IdentifyResponse)
     }
@@ -95,7 +95,7 @@ pub struct LoadCurveCubic {
     pub axis_idx: u8,
     pub piece_count: u8,
     /// Raw piece bytes: `piece_count * 20` bytes, each piece = 5 × u32 LE
-    /// (bp0_bits, bp1_bits, bp2_bits, bp3_bits, duration_bits).
+    /// (`bp0_bits`, `bp1_bits`, `bp2_bits`, `bp3_bits`, `duration_bits`).
     pub pieces_bytes: Vec<u8>,
 }
 
@@ -115,13 +115,13 @@ impl Decode for LoadCurveCubic {
         let piece_count = get_u8(c)?;
         let pieces_len = (piece_count as usize).checked_mul(20).ok_or(
             DecodeError::ArrayLengthExceedsBuffer {
-                claimed: piece_count as u32,
+                claimed: u32::from(piece_count),
                 available: c.remaining(),
             },
         )?;
         if pieces_len > c.remaining() {
             return Err(DecodeError::ArrayLengthExceedsBuffer {
-                claimed: piece_count as u32,
+                claimed: u32::from(piece_count),
                 available: c.remaining(),
             });
         }
@@ -129,7 +129,12 @@ impl Decode for LoadCurveCubic {
         for b in &mut pieces_bytes {
             *b = get_u8(c)?;
         }
-        Ok(Self { slot_idx, axis_idx, piece_count, pieces_bytes })
+        Ok(Self {
+            slot_idx,
+            axis_idx,
+            piece_count,
+            pieces_bytes,
+        })
     }
 }
 
@@ -152,7 +157,10 @@ impl Encode for LoadCurveResponse {
 
 impl Decode for LoadCurveResponse {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { result: get_i32(c)?, curve_handle_packed: get_u32(c)? })
+        Ok(Self {
+            result: get_i32(c)?,
+            curve_handle_packed: get_u32(c)?,
+        })
     }
 }
 
@@ -267,7 +275,13 @@ impl Decode for ConfigureAxes {
         let awd_mask = get_u8(c)?;
         let invert_mask = get_u8(c)?;
         let steps_per_mm = [get_f32(c)?, get_f32(c)?, get_f32(c)?, get_f32(c)?];
-        Ok(Self { kinematics, present_mask, awd_mask, invert_mask, steps_per_mm })
+        Ok(Self {
+            kinematics,
+            present_mask,
+            awd_mask,
+            invert_mask,
+            steps_per_mm,
+        })
     }
 }
 
@@ -288,7 +302,9 @@ impl Encode for ConfigureAxesResponse {
 
 impl Decode for ConfigureAxesResponse {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { result: get_i32(c)? })
+        Ok(Self {
+            result: get_i32(c)?,
+        })
     }
 }
 
@@ -324,7 +340,10 @@ impl Decode for RuntimeCapsResponse {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
         let curve_pool_n = get_u16(c)?;
         let max_pieces_per_curve = get_u16(c)?;
-        Ok(Self { curve_pool_n, max_pieces_per_curve })
+        Ok(Self {
+            curve_pool_n,
+            max_pieces_per_curve,
+        })
     }
 }
 
@@ -369,7 +388,9 @@ impl Encode for ResetCurvePoolResponse {
 
 impl Decode for ResetCurvePoolResponse {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
-        Ok(Self { result: get_i32(c)? })
+        Ok(Self {
+            result: get_i32(c)?,
+        })
     }
 }
 
@@ -486,8 +507,7 @@ mod tests {
         T: Encode + Decode + PartialEq + std::fmt::Debug,
     {
         let bytes = v.encoded_to_vec();
-        let decoded = T::decode(&bytes).expect("decode ok");
-        decoded
+        T::decode(&bytes).expect("decode ok")
     }
 
     #[test]
@@ -520,7 +540,7 @@ mod tests {
         let piece_count = 3u8;
         let pieces_len = piece_count as usize * 20;
         // Deterministic pseudo-random fill via a simple LCG.
-        let mut state: u32 = 0xC0FFEEEE;
+        let mut state: u32 = 0xC0FF_EEEE;
         let next = |s: &mut u32| -> u8 {
             *s = s.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             (*s >> 24) as u8
@@ -545,7 +565,10 @@ mod tests {
 
     #[test]
     fn load_curve_response_roundtrip() {
-        let v = LoadCurveResponse { result: -3, curve_handle_packed: 0xDEAD_BEEF };
+        let v = LoadCurveResponse {
+            result: -3,
+            curve_handle_packed: 0xDEAD_BEEF,
+        };
         assert_eq!(roundtrip(&v), v);
         assert_eq!(v.encoded_to_vec().len(), 8);
     }
@@ -562,7 +585,7 @@ mod tests {
             t_end: 0x8899_AABB_CCDD_EEFF,
             kinematics: 0x05,
             e_mode: 0x01,
-            extrusion_ratio: 0.0234567,
+            extrusion_ratio: 0.023_456_7,
         };
         assert_eq!(roundtrip(&v), v);
         // 4*5 (ids+handles) + 8*2 (timestamps) + 1 + 1 + 4 = 42.
@@ -629,14 +652,21 @@ mod tests {
 
     #[test]
     fn credit_freed_roundtrip() {
-        let v = CreditFreed { retired_through_segment_id: 4242, free_slots: 14 };
+        let v = CreditFreed {
+            retired_through_segment_id: 4242,
+            free_slots: 14,
+        };
         assert_eq!(roundtrip(&v), v);
         assert_eq!(v.encoded_to_vec().len(), 5);
     }
 
     #[test]
     fn fault_event_roundtrip() {
-        let v = FaultEvent { fault_code: 0x0007, fault_detail: 0xBAAD_F00D, segment_id: 11 };
+        let v = FaultEvent {
+            fault_code: 0x0007,
+            fault_detail: 0xBAAD_F00D,
+            segment_id: 11,
+        };
         assert_eq!(roundtrip(&v), v);
         assert_eq!(v.encoded_to_vec().len(), 10);
     }
@@ -680,7 +710,11 @@ mod tests {
 
     #[test]
     fn decode_rejects_trailing_bytes() {
-        let v = FaultEvent { fault_code: 1, fault_detail: 2, segment_id: 3 };
+        let v = FaultEvent {
+            fault_code: 1,
+            fault_detail: 2,
+            segment_id: 3,
+        };
         let mut bytes = v.encoded_to_vec();
         bytes.push(0xAA);
         match FaultEvent::decode(&bytes) {

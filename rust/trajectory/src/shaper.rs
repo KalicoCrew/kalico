@@ -22,15 +22,15 @@ pub fn shape_axis(
     kernel: &PiecewisePolynomialKernel<f64>,
     t_start: f64,
     t_end: f64,
-) -> Result<ScalarNurbs<f64>, nurbs::AlgebraError> {
-    Ok(convolve_discrete(
+) -> ScalarNurbs<f64> {
+    convolve_discrete(
         padded,
         kernel,
         t_start,
         t_end,
         INPUT_SAMPLES_PER_KERNEL_WIDTH,
         OUTPUT_SAMPLES_PER_KERNEL_WIDTH,
-    ))
+    )
 }
 
 fn eval_clamped(curve: &ScalarNurbs<f64>, t: f64) -> f64 {
@@ -53,6 +53,11 @@ fn eval_kernel(kernel: &PiecewisePolynomialKernel<f64>, z: f64) -> f64 {
     0.0
 }
 
+// The FIR index arithmetic converts f64 floor/ceil results to isize for
+// arithmetic and then to usize after clamping. The .max(0) / .min(n) guards
+// guarantee the values are non-negative before the usize cast, and n_input
+// stays well below isize::MAX for any realistic segment length.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_wrap)]
 fn convolve_discrete(
     padded: &ScalarNurbs<f64>,
     kernel: &PiecewisePolynomialKernel<f64>,
@@ -121,7 +126,11 @@ fn convolve_discrete(
             let v0 = output_values[i];
             let v1 = output_values[i + 1];
             let dt_piece = t1 - t0;
-            let slope = if dt_piece > 0.0 { (v1 - v0) / dt_piece } else { 0.0 };
+            let slope = if dt_piece > 0.0 {
+                (v1 - v0) / dt_piece
+            } else {
+                0.0
+            };
             BezierPiece {
                 u_start: t0,
                 u_end: t1,
@@ -134,6 +143,7 @@ fn convolve_discrete(
 }
 
 #[cfg(test)]
+#[allow(clippy::cast_lossless)]
 mod tests {
     use super::*;
     use crate::fit::FittedSegment;
@@ -201,7 +211,7 @@ mod tests {
         let fitted = vec![constant_segment(x_val, 0.0, 0.0, 0.0, 1.0)];
 
         let padded = pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 0.0, 1.0);
-        let shaped = shape_axis(&padded, &kernel, 0.0, 1.0).unwrap();
+        let shaped = shape_axis(&padded, &kernel, 0.0, 1.0);
 
         // Sample at multiple points — all should be close to x_val.
         // Tolerance 1e-4 mm (100 nm): the discrete FIR's kernel normalization
@@ -257,8 +267,7 @@ mod tests {
                 &kernel,
                 fitted[seg_idx].t_start,
                 fitted[seg_idx].t_end,
-            )
-            .unwrap();
+            );
             shaped_per_seg.push(shaped);
         }
 
@@ -341,7 +350,7 @@ mod tests {
         );
 
         // The shaped result should be valid on [0, 1].
-        let shaped = shape_axis(&padded, &kernel, 0.0, 1.0).unwrap();
+        let shaped = shape_axis(&padded, &kernel, 0.0, 1.0);
         let shaped_pieces = extract_bezier_pieces(&shaped);
 
         // At t=0, the shaped value should be close to x_start (constant extension
@@ -440,7 +449,7 @@ mod long_segment_stability {
         let fitted = vec![constant_segment_69s(x_val)];
         let padded = pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 0.0, 69.0);
 
-        let shaped = shape_axis(&padded, &kernel, 0.0, 69.0).unwrap();
+        let shaped = shape_axis(&padded, &kernel, 0.0, 69.0);
         let pieces = extract_bezier_pieces(&shaped);
 
         let mut max_dev = 0.0_f64;
@@ -467,7 +476,7 @@ mod long_segment_stability {
         let fitted = vec![constant_segment_69s(x_val)];
         let padded = pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 0.0, 69.0);
 
-        let shaped = shape_axis(&padded, &kernel, 0.0, 69.0).unwrap();
+        let shaped = shape_axis(&padded, &kernel, 0.0, 69.0);
         let pieces = extract_bezier_pieces(&shaped);
 
         let mut max_dev = 0.0_f64;

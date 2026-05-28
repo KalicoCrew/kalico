@@ -25,7 +25,7 @@ use crate::state::SharedState;
 use crate::trace::{TRACE_FLAG_SEGMENT_END, TraceSample};
 
 /// Number of concurrent in-flight segments the retirement table can track.
-/// 16 covers the Q_N maximum of 256 segments with comfortable headroom for
+/// 16 covers the `Q_N` maximum of 256 segments with comfortable headroom for
 /// realistic burst depths.
 pub const RETIREMENT_TABLE_N: usize = 16;
 
@@ -35,7 +35,7 @@ pub const RETIREMENT_TABLE_N: usize = 16;
 ///
 /// The table is a fixed-size circular ring of `(segment_id, handles)` pairs.
 /// `register` writes in FIFO order; `lookup` scans linearly. At steady-state
-/// queue depths (≤ Q_N = 256, realistic burst ≤ 16) a linear scan is O(1)
+/// queue depths (≤ `Q_N` = 256, realistic burst ≤ 16) a linear scan is O(1)
 /// amortized. Overwrite of the oldest entry is silent — a mis-hit means the
 /// slot stays un-retired until the pool's generation counter catches up on
 /// the next flush (acceptable fault-recovery path, not a correctness hazard
@@ -61,6 +61,7 @@ impl RetirementTable {
     /// Record the 4 per-axis handles issued for `segment_id`. Must be called
     /// from the foreground at push time, before the segment enters the SPSC
     /// queue. Overwrites the oldest entry when the ring is full.
+    #[allow(clippy::indexing_slicing)] // self.head is always kept in 0..RETIREMENT_TABLE_N by the modulo below
     pub fn register(&mut self, segment_id: u32, handles: [CurveHandle; 4]) {
         self.entries[self.head] = (segment_id, handles);
         self.head = (self.head + 1) % RETIREMENT_TABLE_N;

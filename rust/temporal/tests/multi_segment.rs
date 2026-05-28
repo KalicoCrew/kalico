@@ -428,6 +428,7 @@ mod fixture_6_long_realistic_chain {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn fixture_6() {
         // 10 segments: 6 G1 straights + 2 G5 cubics + 2 G2 quarter-arcs.
         // All segments are geometrically connected end-to-end.
@@ -569,11 +570,13 @@ mod fixture_6_long_realistic_chain {
         let joining_ok = matches!(output.joining_status, JoiningStatus::Converged)
             || (matches!(
                 output.joining_status,
-                JoiningStatus::StalledOnInfeasibleSegment { last_dirty_count: 1 }
+                JoiningStatus::StalledOnInfeasibleSegment {
+                    last_dirty_count: 1
+                }
             ) && output.profiles.iter().enumerate().all(|(i, p)| {
                 // Profile 7 is the curved-arc segment that hits the SLP
-            // linearization-gap symptom from spec §10.
-            let is_curved_arc = i == 7;
+                // linearization-gap symptom from spec §10.
+                let is_curved_arc = i == 7;
                 matches!(
                     p.status,
                     temporal::SolveStatus::Solved

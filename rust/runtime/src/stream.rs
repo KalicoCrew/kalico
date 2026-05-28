@@ -234,31 +234,31 @@ pub fn check_terminal_on_retire(shared: &SharedState, retired_seg_id: u32) {
 /// the math.
 ///
 /// **2026-05-13 re-fix.** Returns to `read_widened_now(shared)` — the
-/// seqlock published by Engine::tick — now that the "always-on TIM5"
-/// fix (commit 0512e962d, 2026-05-12) guarantees Engine::tick runs
-/// continuously regardless of count_modulated. The 2026-05-11
+/// seqlock published by `Engine::tick` — now that the "always-on TIM5"
+/// fix (commit 0512e962d, 2026-05-12) guarantees `Engine::tick` runs
+/// continuously regardless of `count_modulated`. The 2026-05-11
 /// stats-based workaround was correct ONLY while TIM5 could go silent
 /// on Drained / Fault; with TIM5 always armed, the engine-side seqlock
 /// is fresh every 25 µs (H7) / 100 µs (F4).
 ///
-/// The stats-based widening (Klipper's stats_send_time_high, 5 s cadence)
-/// caused a new failure mode after the always-on-TIM5 fix: WidenState
+/// The stats-based widening (Klipper's `stats_send_time_high`, 5 s cadence)
+/// caused a new failure mode after the always-on-TIM5 fix: `WidenState`
 /// observes 2^32 wraps via TIM5 ISR (40 kHz / 10 kHz) MUCH faster than
-/// stats_send_time_high which only updates on the stats_update task at
-/// ~0.2 Hz. When a wrap occurred, the engine's WidenState bumped `.high`
-/// immediately, but stats_send_time_high lagged up to 5 seconds. During
+/// `stats_send_time_high` which only updates on the `stats_update` task at
+/// ~0.2 Hz. When a wrap occurred, the engine's `WidenState` bumped `.high`
+/// immediately, but `stats_send_time_high` lagged up to 5 seconds. During
 /// that window, the host's `t_start_clock` was stamped using stale
 /// stats-based clock → engine's `now` >> `t_start` → segment retired
 /// instantly → no step pulses fired. Bench symptom 2026-05-13: jog
-/// retires 6 segments to Drained in milliseconds, emit_calls=0,
-/// step_time_event fires at 1 kHz poll cadence but always hits NO_STEP
+/// retires 6 segments to Drained in milliseconds, `emit_calls=0`,
+/// `step_time_event` fires at 1 kHz poll cadence but always hits `NO_STEP`
 /// because by the time it polls, engine.current is already None.
 ///
 /// Engine-side and host-side now share a SINGLE widening source (the
-/// engine's WidenState, seeded at runtime_tick_enable from
-/// stats_send_time_high but evolved independently via TIM5 ISR
+/// engine's `WidenState`, seeded at `runtime_tick_enable` from
+/// `stats_send_time_high` but evolved independently via TIM5 ISR
 /// observations) — eliminating the divergence between the frame the
-/// host stamps t_start in and the frame the engine evaluates `now` in.
+/// host stamps `t_start` in and the frame the engine evaluates `now` in.
 pub fn clock_sync_respond(
     _fg: &mut FgState,
     shared: &SharedState,

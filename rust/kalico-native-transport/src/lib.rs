@@ -17,23 +17,25 @@
 //! Wire-level helpers (per-message header encode/decode, `StatusEvent`
 //! field accessors used during demux) live in [`wire_helpers`].
 
-pub mod frame;
-pub mod demux;
-pub mod frame_source;
-pub mod wire_helpers;
 pub mod bootstrap;
-pub mod transport;
 pub mod connection;
+pub mod demux;
+pub mod frame;
+pub mod frame_source;
+pub mod transport;
+pub mod wire_helpers;
 
-pub use frame::{decode_frame, encode_frame, FrameError, CHANNEL_CONTROL, CHANNEL_EVENTS, FRAME_SYNC};
-pub use demux::{Demuxer, Frame, KlipperFrame, StreamError, PollOutcome};
-pub use frame_source::{FrameSource, FrameSourceError};
-pub use kalico_protocol::{MessageKind, PROTO_VERSION, SCHEMA_HASH};
 pub use bootstrap::{
-    decode_identify_response, encode_identify, IdentifyResponse, BOOTSTRAP_IDENTIFY_LEN,
-    BOOTSTRAP_IDENTIFY_RESPONSE_LEN,
+    BOOTSTRAP_IDENTIFY_LEN, BOOTSTRAP_IDENTIFY_RESPONSE_LEN, IdentifyResponse,
+    decode_identify_response, encode_identify,
 };
 pub use connection::{Connection, MockConnection};
+pub use demux::{Demuxer, Frame, KlipperFrame, PollOutcome, StreamError};
+pub use frame::{
+    CHANNEL_CONTROL, CHANNEL_EVENTS, FRAME_SYNC, FrameError, decode_frame, encode_frame,
+};
+pub use frame_source::{FrameSource, FrameSourceError};
+pub use kalico_protocol::{MessageKind, PROTO_VERSION, SCHEMA_HASH};
 pub use transport::{
     ConnectionState, EpochChange, EventMessage, KalicoNativeTransport, Transport, TransportError,
 };

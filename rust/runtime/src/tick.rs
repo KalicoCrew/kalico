@@ -187,6 +187,7 @@ fn dispatch_pulse(
         shared
             .isr_last_p_end_bits
             .store(p_end.to_bits(), Ordering::Relaxed);
+        #[allow(clippy::cast_sign_loss)] // diagnostic bit-pack: sign loss is intentional
         shared.isr_last_step_counts_packed.store(
             ((target_step_count as u32) << 16) | ((prev_step_count as u32) & 0xFFFF),
             Ordering::Relaxed,
@@ -316,9 +317,7 @@ fn commit_position_count(axis: &AxisConfig, axis_idx: usize, shared: &SharedStat
     if shared
         .step_modes
         .get(axis_idx)
-        .map_or(false, |m| {
-            m.load(Ordering::Acquire) == crate::state::StepMode::Modulated as u8
-        })
+        .is_some_and(|m| m.load(Ordering::Acquire) == crate::state::StepMode::Modulated as u8)
     {
         return;
     }
@@ -386,6 +385,7 @@ fn ramp_phase_offset(stepper: &crate::stepping_state::StepperRef, max_per_sample
 /// Task 13: before reading `phase_offset_microsteps`, each stepper's
 /// offset is ramped toward its `phase_offset_target` by at most
 /// `shared.max_phase_offset_ramp_per_sample` per sample.
+#[allow(clippy::indexing_slicing)] // m < MAX_STEPPER_OIDS by loop bound
 fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, p_end: f32) {
     let microstep_distance = axis.microstep_distance;
     if !microstep_distance.is_finite() || microstep_distance == 0.0 {
@@ -454,8 +454,7 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
             // This variable is incremented below after each tmc_cs_oid stepper.
             // Inline scan: find the motor_cursor-th entry in phase_slot_idx
             // that maps to axis_idx.
-            let phase_motor_count =
-                shared.phase_motor_count.load(Ordering::Acquire) as usize;
+            let phase_motor_count = shared.phase_motor_count.load(Ordering::Acquire) as usize;
             let mut found_motor_idx: Option<u8> = None;
             {
                 // Count how many tmc_cs_oid-bearing steppers in this axis
@@ -463,7 +462,7 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
                 // j-th slot we need to look up.
                 let mut j: usize = 0;
                 for earlier in &axis.steppers {
-                    if core::ptr::eq(earlier as *const _, stepper as *const _) {
+                    if core::ptr::eq(core::ptr::from_ref(earlier), core::ptr::from_ref(stepper)) {
                         break;
                     }
                     if earlier.tmc_cs_oid.is_some() {
@@ -1100,7 +1099,7 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
     {
         let mut stepper_counts = [0_i32; crate::state::MAX_STEPPER_OIDS];
         for axis in ctx.axes.iter() {
-            for stepper in axis.steppers.iter() {
+            for stepper in &axis.steppers {
                 if let Some(dst) = stepper_counts.get_mut(usize::from(stepper.stepper_oid)) {
                     *dst = stepper.position_count.load(Ordering::Acquire);
                 }
@@ -1184,7 +1183,7 @@ pub fn runtime_tick_sample(ctx: &mut TickContext) {
 /// Must run under exclusive `&mut IsrState` access. The FFI shim's
 /// `kalico_runtime_tick_sample` is the production caller; host integration
 /// tests reach this through the published kalico-c-api FFI entry, which
-/// projects the rt_storage half-split and calls this function under the
+/// projects the `rt_storage` half-split and calls this function under the
 /// same single-writer discipline.
 pub fn isr_sample_tick(
     isr: &mut crate::state::IsrState,
@@ -1242,20 +1241,19 @@ pub fn isr_sample_tick(
     //    `arm_segment` / `dequeue` calls don't fight for the IsrState
     //    field borrows.
     if isr.engine.current.is_none() {
-        let candidate = match isr.pending_segment.take() {
-            Some(parked) => Some(parked),
-            None => {
-                let dequeued = isr.queue_consumer.dequeue();
-                if dequeued.is_some() {
-                    shared
-                        .producer_segment_dequeued_total
-                        .fetch_add(1, Ordering::AcqRel);
-                    bump_relaxed(&shared.isr_deq_some_count);
-                } else {
-                    bump_relaxed(&shared.isr_deq_none_count);
-                }
-                dequeued
+        let candidate = if let Some(parked) = isr.pending_segment.take() {
+            Some(parked)
+        } else {
+            let dequeued = isr.queue_consumer.dequeue();
+            if dequeued.is_some() {
+                shared
+                    .producer_segment_dequeued_total
+                    .fetch_add(1, Ordering::AcqRel);
+                bump_relaxed(&shared.isr_deq_some_count);
+            } else {
+                bump_relaxed(&shared.isr_deq_none_count);
             }
+            dequeued
         };
         if let Some(mut seg) = candidate {
             shared
@@ -1418,6 +1416,7 @@ fn bump_relaxed(slot: &core::sync::atomic::AtomicU32) {
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing)] // test-only: indexing known-length steppers[0] in assertions
 mod tests {
     //! Smoke tests that hit only the host-build path (queue allocated
     //! on the stack via `StepQueue::new()`). End-to-end ISR integration

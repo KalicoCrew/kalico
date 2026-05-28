@@ -494,7 +494,11 @@ mod tests {
         let bp: [f32; 4] = [0.0, 0.0, 0.0, 12.0];
         let (left, right) = super::de_casteljau_split(bp, 0.25);
         assert!((left[0] - 0.0).abs() < 1e-5, "left start");
-        assert!((left[3] - 0.1875).abs() < 1e-4, "left end = eval(0.25) got {}", left[3]);
+        assert!(
+            (left[3] - 0.1875).abs() < 1e-4,
+            "left end = eval(0.25) got {}",
+            left[3]
+        );
         assert!((right[0] - 0.1875).abs() < 1e-4, "right start");
         assert!((right[3] - 12.0).abs() < 1e-5, "right end");
     }

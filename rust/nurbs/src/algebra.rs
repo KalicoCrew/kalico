@@ -1597,7 +1597,7 @@ mod tests {
 
     #[test]
     fn breakpoint_sort_handles_nan_without_panicking() {
-        let mut out_breaks = vec![0.0_f64, f64::NAN, 1.0];
+        let mut out_breaks = [0.0_f64, f64::NAN, 1.0];
         out_breaks.sort_by(|a, b| <f64 as crate::Float>::total_cmp(*a, *b));
         assert_eq!(out_breaks.len(), 3);
     }
@@ -2104,25 +2104,24 @@ mod tests {
     /// Identical knot vectors → fast path: delegates to `add`, no refine.
     #[test]
     fn add_with_knot_union_identical_knots_fast_path() {
-        let a = crate::ScalarNurbs::try_new(
-            1,
-            vec![0.0_f64, 0.0, 1.0, 1.0],
-            vec![0.0, 1.0],
-            None,
-        )
-        .unwrap();
-        let b = crate::ScalarNurbs::try_new(
-            1,
-            vec![0.0_f64, 0.0, 1.0, 1.0],
-            vec![2.0, 3.0],
-            None,
-        )
-        .unwrap();
+        let a = crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![0.0, 1.0], None)
+            .unwrap();
+        let b = crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![2.0, 3.0], None)
+            .unwrap();
         let sum = add_with_knot_union(&a, &b).unwrap();
         // At u=0: 0+2=2. At u=1: 1+3=4. At u=0.5 (midpoint): 0.5+2.5=3.
-        assert!((eval(&sum.as_view(), 0.0_f64) - 2.0).abs() < 1e-12, "fast-path u=0");
-        assert!((eval(&sum.as_view(), 0.5_f64) - 3.0).abs() < 1e-12, "fast-path u=0.5");
-        assert!((eval(&sum.as_view(), 1.0_f64) - 4.0).abs() < 1e-12, "fast-path u=1");
+        assert!(
+            (eval(&sum.as_view(), 0.0_f64) - 2.0).abs() < 1e-12,
+            "fast-path u=0"
+        );
+        assert!(
+            (eval(&sum.as_view(), 0.5_f64) - 3.0).abs() < 1e-12,
+            "fast-path u=0.5"
+        );
+        assert!(
+            (eval(&sum.as_view(), 1.0_f64) - 4.0).abs() < 1e-12,
+            "fast-path u=1"
+        );
     }
 
     /// Mismatched knot vectors → knot-union path: piece counts and eval values correct.
@@ -2137,21 +2136,31 @@ mod tests {
         // Two-piece linear curve on [0,1]: 0→5 then 5→10.
         // Pascal-shifted coefficients at u_start.
         let a = bezier_pieces_to_nurbs(&[
-            BezierPiece::<f64> { u_start: 0.0, u_end: 0.5, coeffs: vec![0.0, 10.0] },
-            BezierPiece::<f64> { u_start: 0.5, u_end: 1.0, coeffs: vec![5.0, 10.0] },
+            BezierPiece::<f64> {
+                u_start: 0.0,
+                u_end: 0.5,
+                coeffs: vec![0.0, 10.0],
+            },
+            BezierPiece::<f64> {
+                u_start: 0.5,
+                u_end: 1.0,
+                coeffs: vec![5.0, 10.0],
+            },
         ]);
         // Single-piece constant 20.
-        let b = crate::ScalarNurbs::try_new(
-            1,
-            vec![0.0_f64, 0.0, 1.0, 1.0],
-            vec![20.0, 20.0],
-            None,
-        )
-        .unwrap();
+        let b =
+            crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![20.0, 20.0], None)
+                .unwrap();
 
         let sum = add_with_knot_union(&a, &b).unwrap();
         // Check at domain boundary and midpoint of each piece.
-        let cases = [(0.0_f64, 20.0), (0.25, 22.5), (0.5, 25.0), (0.75, 27.5), (1.0, 30.0)];
+        let cases = [
+            (0.0_f64, 20.0),
+            (0.25, 22.5),
+            (0.5, 25.0),
+            (0.75, 27.5),
+            (1.0, 30.0),
+        ];
         for (u, expected) in cases {
             let got = eval(&sum.as_view(), u);
             assert!(
@@ -2164,13 +2173,8 @@ mod tests {
     /// Degree mismatch → `KnotMismatch` error (same as `add`'s contract).
     #[test]
     fn add_with_knot_union_rejects_degree_mismatch() {
-        let a = crate::ScalarNurbs::try_new(
-            1,
-            vec![0.0_f64, 0.0, 1.0, 1.0],
-            vec![0.0, 1.0],
-            None,
-        )
-        .unwrap();
+        let a = crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![0.0, 1.0], None)
+            .unwrap();
         let b = crate::ScalarNurbs::try_new(
             2,
             vec![0.0_f64, 0.0, 0.0, 1.0, 1.0, 1.0],
@@ -2195,13 +2199,8 @@ mod tests {
             Some(vec![1.0, 2.0]),
         )
         .unwrap();
-        let b = crate::ScalarNurbs::try_new(
-            1,
-            vec![0.0_f64, 0.0, 1.0, 1.0],
-            vec![0.0, 1.0],
-            None,
-        )
-        .unwrap();
+        let b = crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![0.0, 1.0], None)
+            .unwrap();
         let result = add_with_knot_union(&a, &b);
         assert!(
             matches!(result, Err(crate::AlgebraError::NotImplemented(_))),

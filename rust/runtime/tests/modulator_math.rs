@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! `PhaseDirectModulator` math: mscount from position, phase-advance
 //! accumulator for direction sense, stepper-counts delta.
 
@@ -20,8 +30,11 @@ fn mscount_wraps_modulo_electrical_cycle() {
     // steps_per_mm = 80, that's 1024 / 80 = 12.8 mm. Position 12.8 mm
     // should land at mscount = 0 again.
     let r = m.compute(MOTOR_PERIOD as f32 / STEPS_PER_MM).unwrap();
-    assert!(r.mscount == 0 || r.mscount == 1 || r.mscount == (MOTOR_PERIOD as u16 - 1),
-            "expected wrap to ~0, got {}", r.mscount);
+    assert!(
+        r.mscount == 0 || r.mscount == 1 || r.mscount == (MOTOR_PERIOD as u16 - 1),
+        "expected wrap to ~0, got {}",
+        r.mscount
+    );
 }
 
 #[test]
@@ -30,8 +43,11 @@ fn mscount_quarter_cycle() {
     // Quarter electrical cycle = MOTOR_PERIOD/4 = 256 microsteps
     // = 256 / 80 = 3.2 mm.
     let r = m.compute(3.2).unwrap();
-    assert!((r.mscount as i32 - 256).abs() <= 1,
-            "expected ~256, got {}", r.mscount);
+    assert!(
+        (r.mscount as i32 - 256).abs() <= 1,
+        "expected ~256, got {}",
+        r.mscount
+    );
 }
 
 #[test]
@@ -57,7 +73,10 @@ fn direction_sticks_through_sub_microstep_ticks() {
     // Now creep forward by 0.005 mm (0.4 microsteps) per tick
     let r2 = m.compute(0.025).unwrap();
     let r3 = m.compute(0.030).unwrap();
-    assert_eq!(r2.direction, 1, "direction must stick through sub-microstep tick");
+    assert_eq!(
+        r2.direction, 1,
+        "direction must stick through sub-microstep tick"
+    );
     assert_eq!(r3.direction, 1);
 }
 
@@ -114,8 +133,11 @@ fn mscount_wraps_correctly_on_reverse_jog_through_origin() {
     // Move backward from 0 to a negative position. 0.0125 mm = 1 microstep.
     // -0.0125 mm should give accumulator = -1, mscount = MOTOR_PERIOD - 1.
     let r = m.compute(-0.0125).unwrap();
-    assert_eq!(r.mscount, (MOTOR_PERIOD as u16) - 1,
-               "negative accumulator must wrap to MOTOR_PERIOD-1");
+    assert_eq!(
+        r.mscount,
+        (MOTOR_PERIOD as u16) - 1,
+        "negative accumulator must wrap to MOTOR_PERIOD-1"
+    );
     // Move further back. Accumulator = -2, mscount = MOTOR_PERIOD - 2.
     let r = m.compute(-0.025).unwrap();
     assert_eq!(r.mscount, (MOTOR_PERIOD as u16) - 2);
@@ -134,8 +156,10 @@ fn reset_accumulator_re_seeds_on_next_compute() {
     // reporting a multi-thousand-microstep burst.
     m.reset_accumulator();
     let r = m.compute(10.0).unwrap();
-    assert_eq!(r.steps_delta, 0,
-               "after reset_accumulator, first compute() must re-seed not burst");
+    assert_eq!(
+        r.steps_delta, 0,
+        "after reset_accumulator, first compute() must re-seed not burst"
+    );
     // Now subsequent ticks compute deltas from 10.0 as the new baseline.
     // Use a +0.1 mm increment (8 microsteps at 80 steps/mm); +1 microstep
     // would land just under 1.0 in f64 after the f32→f64 round-trip

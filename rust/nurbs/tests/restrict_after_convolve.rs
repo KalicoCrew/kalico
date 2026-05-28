@@ -25,8 +25,8 @@
 //! lands directly in Pascal-shifted-at-α basis, eliminating the lossy
 //! re-shift entirely.
 
-use nurbs::algebra::{convolve, restrict_to_domain, PiecewisePolynomialKernel};
-use nurbs::bezier::{bezier_pieces_to_nurbs, BezierPiece};
+use nurbs::algebra::{PiecewisePolynomialKernel, convolve, restrict_to_domain};
+use nurbs::bezier::{BezierPiece, bezier_pieces_to_nurbs};
 use nurbs::eval::eval;
 
 /// Smooth-MZV-shaped two-segment ramp where the second segment lives at large
@@ -41,14 +41,13 @@ fn convolve_then_restrict_preserves_endpoint_on_offset_second_segment() {
     let h = t_sm / 2.0;
     let c = 15.0 / (16.0 * h.powi(5));
     let abs_coeffs = vec![c * h.powi(4), 0.0, -2.0 * c * h * h, 0.0, c];
-    let kernel =
-        PiecewisePolynomialKernel::single_poly_from_absolute(abs_coeffs, (-h, h));
+    let kernel = PiecewisePolynomialKernel::single_poly_from_absolute(abs_coeffs, (-h, h));
 
     // Input: left-extension constant 50 (starting before t=0.728), linear ramp
     // 50 → 100 over [0.728, 2.069], right-extension constant 100. Mirrors how
     // the trajectory pad path lays out a batched second segment.
-    let t_start = 0.7283517369016971_f64;
-    let t_end = 2.0692055134039826_f64;
+    let t_start = 0.728_351_736_901_697_1_f64;
+    let t_end = 2.069_205_513_403_982_6_f64;
     // Degree-4 pieces match the post-`fit_hermite_c1` shape that
     // `trajectory::shaper::shape_axis` actually feeds into `convolve` in the
     // live planner. The bug manifests at degree-9 output, which requires
@@ -79,8 +78,8 @@ fn convolve_then_restrict_preserves_endpoint_on_offset_second_segment() {
     let modulation_amp = 1.0e-3;
     let modulation_freq = 30.0;
     for i in 0..n_ramp_pieces {
-        let u0 = t_start + total * (i as f64) / (n_ramp_pieces as f64);
-        let u1 = t_start + total * ((i + 1) as f64) / (n_ramp_pieces as f64);
+        let u0 = t_start + total * f64::from(i) / f64::from(n_ramp_pieces);
+        let u1 = t_start + total * f64::from(i + 1) / f64::from(n_ramp_pieces);
         // Approximate position(u) ≈ 50 + slope*(u - t_start) + amp*sin(2π·f·u)
         // by its 4th-order Taylor expansion around u0, expressed in shifted
         // basis (u − u0). Coefficients:

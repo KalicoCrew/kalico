@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! End-to-end test for the Phase-mode dispatch path.
 //!
 //! Verifies that, given:
@@ -169,8 +179,7 @@ fn phase_dispatch_resolves_motor_idx_from_slot_table() {
     let records = test_xdirect_capture::drain();
     assert_eq!(records.len(), 1, "expected exactly one SPI capture");
     assert_eq!(
-        records[0].motor_idx,
-        motor_idx as u8,
+        records[0].motor_idx, motor_idx as u8,
         "motor_idx must resolve to 2, not 0 or 1"
     );
 
@@ -284,7 +293,11 @@ fn phase_dispatch_two_steppers_two_captures() {
     );
 
     let records = test_xdirect_capture::drain();
-    assert_eq!(records.len(), 2, "expected two SPI captures for two steppers");
+    assert_eq!(
+        records.len(),
+        2,
+        "expected two SPI captures for two steppers"
+    );
     assert_eq!(records[0].motor_idx, 0, "first stepper → motor_idx 0");
     assert_eq!(records[1].motor_idx, 1, "second stepper → motor_idx 1");
 

@@ -8,6 +8,15 @@
 // - Phase 3 Task 3.1 `append_and_replan` semantics.
 // - Phase 3 Task 3.2 `emit_committed` semantics.
 
+#![allow(
+    clippy::doc_markdown,
+    clippy::uninlined_format_args,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::float_cmp,
+    clippy::unreadable_literal
+)]
+
 use geometry::segment::CubicSegment;
 use nurbs::algebra::PiecewisePolynomialKernel;
 use nurbs::bezier::{bezier_pieces_to_nurbs, BezierPiece};
@@ -53,7 +62,11 @@ fn linear_segment() -> FittedSegment {
 
 fn assert_nurbs_near_equal(a: &ScalarNurbs<f64>, b: &ScalarNurbs<f64>, label: &str) {
     assert_eq!(a.degree(), b.degree(), "{label}: degree differs");
-    assert_eq!(a.knots().len(), b.knots().len(), "{label}: knot count differs");
+    assert_eq!(
+        a.knots().len(),
+        b.knots().len(),
+        "{label}: knot count differs"
+    );
     let max_knot_diff = a
         .knots()
         .iter()
@@ -132,12 +145,12 @@ fn shim_matches_direct_pipeline_for_single_linear_move() {
 
     // X: shaped + refit.
     let x_padded = pad_segment_axis(0, 0, fitted_slice, &[], h, 0.0, 1.0);
-    let x_shaped = shape_axis(&x_padded, &kernel, 0.0, 1.0).unwrap();
+    let x_shaped = shape_axis(&x_padded, &kernel, 0.0, 1.0);
     let x_refit = refit_to_cubic(&x_shaped, REFIT_TOLERANCE_MM).unwrap();
 
     // Y: shaped + refit (Y also SmoothZv at the same freq → same kernel).
     let y_padded = pad_segment_axis(0, 1, fitted_slice, &[], h, 0.0, 1.0);
-    let y_shaped = shape_axis(&y_padded, &kernel, 0.0, 1.0).unwrap();
+    let y_shaped = shape_axis(&y_padded, &kernel, 0.0, 1.0);
     let y_refit = refit_to_cubic(&y_shaped, REFIT_TOLERANCE_MM).unwrap();
 
     // Z: passthrough → still refit.
@@ -161,9 +174,7 @@ fn new_seeds_axis_queues_with_rest_extension() {
         Some(AxisShaper::SmoothZv {
             frequency_hz: 100.0,
         }),
-        Some(AxisShaper::SmoothMzv {
-            frequency_hz: 80.0,
-        }),
+        Some(AxisShaper::SmoothMzv { frequency_hz: 80.0 }),
         Some(AxisShaper::Passthrough),
         None,
     ];
@@ -270,18 +281,8 @@ fn replan_kernels_planshaper() -> [Option<PlanShaper>; 4] {
 /// Build them from the same shaper config as `replan_shapers`.
 fn replan_kernels_piecewise() -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
     [
-        Some(
-            RequiredShaper::SmoothMzv {
-                frequency_hz: 60.0,
-            }
-            .to_kernel(),
-        ),
-        Some(
-            RequiredShaper::SmoothMzv {
-                frequency_hz: 60.0,
-            }
-            .to_kernel(),
-        ),
+        Some(RequiredShaper::SmoothMzv { frequency_hz: 60.0 }.to_kernel()),
+        Some(RequiredShaper::SmoothMzv { frequency_hz: 60.0 }.to_kernel()),
         None,
         None,
     ]
@@ -336,13 +337,9 @@ fn linear_x_segment(start_x: f64, end_x: f64, feedrate: f64) -> CubicSegment {
         ]
     };
     let cps = vec![p0, lerp(1.0 / 3.0), lerp(2.0 / 3.0), p3];
-    let xyz = VectorNurbs::<f64, 3>::try_new(
-        3,
-        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        cps,
-        None,
-    )
-    .unwrap();
+    let xyz =
+        VectorNurbs::<f64, 3>::try_new(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], cps, None)
+            .unwrap();
     CubicSegment::try_new(
         xyz,
         EMode::Travel,
@@ -945,8 +942,8 @@ fn t_dispatched_interior_to_move_replan_preserves_position() {
     // Read X(t_dispatched) off the prior (unshaped) plan's per-axis
     // queue. By the queue's invariant this is the same value the
     // post-shape kernel was about to convolve through at the seam.
-    let x_pre_replan = read_axis_value_at(&state, 0, t_d)
-        .expect("axes[0] must cover t_dispatched after emit");
+    let x_pre_replan =
+        read_axis_value_at(&state, 0, t_d).expect("axes[0] must cover t_dispatched after emit");
     // For a 200 mm move with `feedrate = 200 mm/s`, the unshaped profile
     // cruises near 200 mm/s for most of the move; t_dispatched (at
     // `t_decel_start − max_h`) lands somewhere in or past the cruise
@@ -1330,4 +1327,3 @@ fn live_limits_50mm_pure_x_completes_quickly() {
         state.t_appended,
     );
 }
-

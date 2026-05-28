@@ -84,20 +84,17 @@ fn rational_quadratic_arc_n200_solves_with_centripetal_cruise() {
     // grid-refinement / numerical drift but rejects genuinely-broken
     // iterates.
     match profile.status {
-        SolveStatus::Solved
-        | SolveStatus::SolvedInexact { .. }
-        | SolveStatus::SolvedSlp { .. } => {}
+        SolveStatus::Solved | SolveStatus::SolvedInexact { .. } | SolveStatus::SolvedSlp { .. } => {
+        }
         SolveStatus::DivergedSlp { last_max_ratio, .. } => {
             assert!(
                 last_max_ratio < 1.02,
-                "DivergedSlp accepted only with last_max_ratio < 1.02, got {}",
-                last_max_ratio,
+                "DivergedSlp accepted only with last_max_ratio < 1.02, got {last_max_ratio}",
             );
         }
-        ref other => panic!(
-            "expected Solved/SolvedInexact/SolvedSlp or DivergedSlp(<1.02), got {:?}",
-            other,
-        ),
+        ref other => {
+            panic!("expected Solved/SolvedInexact/SolvedSlp or DivergedSlp(<1.02), got {other:?}",)
+        }
     }
 
     // (b) Midpoint speed: within 5 % of v_cruise = √(a_centripetal / κ).

@@ -15,7 +15,7 @@
 //!
 //! When `target_os != "none"` (host tests + sim), the queue is backed by a
 //! `Mutex<VecDeque<Segment>>` so unit tests don't need the C linker
-//! symbols. The semantics match (FIFO, capacity Q_N - 1 = 7).
+//! symbols. The semantics match (FIFO, capacity `Q_N` - 1 = 7).
 
 use crate::queue::Q_N;
 use crate::segment::Segment;
@@ -63,7 +63,9 @@ impl<T> Producer<T> {
     /// static singleton — calling this multiple times will mint markers
     /// that all route through the same backing storage.
     pub const fn new() -> Self {
-        Self { _phantom: PhantomData }
+        Self {
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -75,7 +77,9 @@ impl<T> Default for Producer<T> {
 
 impl<T> Consumer<T> {
     pub const fn new() -> Self {
-        Self { _phantom: PhantomData }
+        Self {
+            _phantom: PhantomData,
+        }
     }
 }
 
@@ -101,11 +105,8 @@ impl Producer<Segment> {
             // KALICO_SEGMENT_SIZE constant). The C function performs a memcpy
             // from this pointer, no aliasing, no further use of the pointer
             // after the call returns.
-            let r = unsafe {
-                ffi::kalico_native_queue_enqueue(
-                    core::ptr::from_ref(&seg).cast::<u8>(),
-                )
-            };
+            let r =
+                unsafe { ffi::kalico_native_queue_enqueue(core::ptr::from_ref(&seg).cast::<u8>()) };
             if r == 0 { Ok(()) } else { Err(seg) }
         }
         #[cfg(not(target_os = "none"))]
@@ -128,11 +129,7 @@ impl Consumer<Segment> {
             // C function memcpy'd a valid Segment into the slot, so
             // `assume_init` is sound. On `r != 0` we discard the
             // uninitialised slot.
-            let r = unsafe {
-                ffi::kalico_native_queue_dequeue(
-                    slot.as_mut_ptr().cast::<u8>(),
-                )
-            };
+            let r = unsafe { ffi::kalico_native_queue_dequeue(slot.as_mut_ptr().cast::<u8>()) };
             if r == 0 {
                 #[allow(unsafe_code)]
                 Some(unsafe { slot.assume_init() })
@@ -152,7 +149,9 @@ impl Consumer<Segment> {
         {
             #[allow(unsafe_code)]
             // SAFETY: no preconditions; reads atomic counters.
-            unsafe { ffi::kalico_native_queue_len() as usize }
+            unsafe {
+                ffi::kalico_native_queue_len() as usize
+            }
         }
         #[cfg(not(target_os = "none"))]
         {
@@ -174,7 +173,9 @@ pub fn reset() {
         #[allow(unsafe_code)]
         // SAFETY: no preconditions on the C side; foreground caller's
         // §11 contract serialises access.
-        unsafe { ffi::kalico_native_queue_reset() }
+        unsafe {
+            ffi::kalico_native_queue_reset()
+        }
     }
     #[cfg(not(target_os = "none"))]
     {
@@ -197,7 +198,9 @@ mod host_backend {
     }
 
     pub(super) fn enqueue(seg: Segment) -> Result<(), Segment> {
-        let mut q = queue().lock().unwrap_or_else(|p| p.into_inner());
+        let mut q = queue()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if q.len() >= super::CAPACITY {
             return Err(seg);
         }
@@ -206,17 +209,23 @@ mod host_backend {
     }
 
     pub(super) fn dequeue() -> Option<Segment> {
-        let mut q = queue().lock().unwrap_or_else(|p| p.into_inner());
+        let mut q = queue()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         q.pop_front()
     }
 
     pub(super) fn len() -> usize {
-        let q = queue().lock().unwrap_or_else(|p| p.into_inner());
+        let q = queue()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         q.len()
     }
 
     pub(super) fn reset() {
-        let mut q = queue().lock().unwrap_or_else(|p| p.into_inner());
+        let mut q = queue()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         q.clear();
     }
 }

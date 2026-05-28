@@ -335,12 +335,7 @@ fn beta_iterate_inner(
     let mut converged = false;
 
     for iteration in 0..input.beta_max_iters {
-        let result = match run_one_iteration(
-            input,
-            partition,
-            &planning_a_max,
-            &kernels,
-        ) {
+        let result = match run_one_iteration(input, partition, &planning_a_max, &kernels) {
             Ok(result) => result,
             Err(_) if last_result.is_some() => {
                 beta_warning = Some(beta_warning_from_last(
@@ -393,19 +388,11 @@ fn beta_iterate_inner(
         // If this is the last iteration, save the result and set warning.
         if iteration == input.beta_max_iters - 1 {
             // Exhausted iterations. Run one final solve with derated limits.
-            let final_result = match run_one_iteration(
-                input,
-                partition,
-                &planning_a_max,
-                &kernels,
-            ) {
-                Ok(result) => result,
-                Err(_) => {
-                    beta_warning =
-                        Some(beta_warning_from_last(&result, &derate_machine_a_max));
-                    last_result = Some(result);
-                    break;
-                }
+            let Ok(final_result) = run_one_iteration(input, partition, &planning_a_max, &kernels)
+            else {
+                beta_warning = Some(beta_warning_from_last(&result, &derate_machine_a_max));
+                last_result = Some(result);
+                break;
             };
             let final_derate = compute_derate(
                 &final_result.peaks,
@@ -428,12 +415,7 @@ fn beta_iterate_inner(
         Some(r) => r,
         None => {
             // beta_max_iters == 0: run one iteration with original limits.
-            run_one_iteration(
-                input,
-                partition,
-                &planning_a_max,
-                &kernels,
-            )?
+            run_one_iteration(input, partition, &planning_a_max, &kernels)?
         }
     };
 
@@ -456,10 +438,7 @@ fn beta_iterate_inner(
 /// to the entire last segment rather than only its trailing-`h` slice. This
 /// over-conservatism affects only the last segment's tail, which is the
 /// portion that gets replanned away the moment a follow-on move arrives.
-fn effective_machine_a_max(
-    machine_a_max: &[[f64; 3]],
-    safety_mode: SafetyMode,
-) -> Vec<[f64; 3]> {
+fn effective_machine_a_max(machine_a_max: &[[f64; 3]], safety_mode: SafetyMode) -> Vec<[f64; 3]> {
     let mut effective = machine_a_max.to_vec();
     if matches!(safety_mode, SafetyMode::WorstCaseFuture) {
         if let Some(last) = effective.last_mut() {
@@ -590,16 +569,25 @@ fn run_one_iteration(
                     let degree = seg.curve.degree();
                     let total_time = profile.total_time;
                     let n_samples = profile.samples.len();
-                    let v_start = profile.samples.first().map(|s| s.v).unwrap_or(f64::NAN);
-                    let v_end = profile.samples.last().map(|s| s.v).unwrap_or(f64::NAN);
+                    let v_start = profile.samples.first().map_or(f64::NAN, |s| s.v);
+                    let v_end = profile.samples.last().map_or(f64::NAN, |s| s.v);
                     let _ = write!(
                         &mut detail,
                         " | seg{}: status={:?} v_start={:.4} v_end={:.4} \
                          n_samples={} total_time={:.4}s degree={} n_cps={} \
                          limits[v={:?} a={:?} j={:?} a_centripetal={:?}]",
-                        global_idx, profile.status, v_start, v_end,
-                        n_samples, total_time, degree, n_cps,
-                        limits.v_max, limits.a_max, limits.j_max, limits.a_centripetal_max,
+                        global_idx,
+                        profile.status,
+                        v_start,
+                        v_end,
+                        n_samples,
+                        total_time,
+                        degree,
+                        n_cps,
+                        limits.v_max,
+                        limits.a_max,
+                        limits.j_max,
+                        limits.a_centripetal_max,
                     );
                 }
                 return Err(ShapeError::TemporalJoining(status, detail));
@@ -1107,6 +1095,7 @@ fn constant_nurbs(value: f64, t_start: f64, t_end: f64) -> ScalarNurbs<f64> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use crate::{ELimits, ShapeBatchInput, ShapeSegmentInput, ShaperConfig};

@@ -74,8 +74,7 @@ impl PhaseDirectModulator {
     /// First-tick seed without reporting a step delta. Matches
     /// `StepMotorState::seed` — called once after configure / homing-snap.
     pub fn seed(&mut self, motor_position_mm: f32) {
-        self.step_accumulator =
-            f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
+        self.step_accumulator = f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
         self.seeded = true;
         self.last_direction = 0;
     }
@@ -89,12 +88,9 @@ impl PhaseDirectModulator {
     /// Matches `StepMotorState::update` semantics: on `Err`, the
     /// accumulator is NOT advanced, so retrying after the caller resets
     /// the cap is safe.
-    pub fn compute(
-        &mut self,
-        motor_position_mm: f32,
-    ) -> Result<PhaseTickResult, ()> {
-        let new_pos_steps =
-            f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
+    #[allow(clippy::result_unit_err)] // () matches StepMotorState::update's error shape; callers only check is_err()
+    pub fn compute(&mut self, motor_position_mm: f32) -> Result<PhaseTickResult, ()> {
+        let new_pos_steps = f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
 
         if !self.seeded {
             self.step_accumulator = new_pos_steps;
@@ -164,7 +160,10 @@ impl PhaseDirectModulator {
 #[inline]
 fn wrap_mscount(accumulator_steps: f64) -> u16 {
     let rounded = libm::round(accumulator_steps) as i64;
+    #[allow(clippy::cast_possible_wrap)] // MOTOR_PERIOD=1024 fits in i64 on all targets
     let modulus = MOTOR_PERIOD as i64;
     let wrapped = ((rounded % modulus) + modulus) % modulus;
-    wrapped as u16
+    #[allow(clippy::cast_sign_loss)] // wrapped is in 0..MOTOR_PERIOD by construction
+    let result = wrapped as u16;
+    result
 }

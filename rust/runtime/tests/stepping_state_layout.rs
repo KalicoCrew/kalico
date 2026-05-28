@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! Smoke test for `stepping_state` — verifies the module compiles in
 //! isolation. The broader `runtime` lib-test build is currently blocked
 //! by pre-existing `Consumer<Segment>` mismatches in `engine.rs` (see
@@ -6,10 +16,11 @@
 //! depends on.
 
 use runtime::stepping_state::{
-    AxisConfig, StepMode, StepperRef, TickCaches, MAX_STEPPERS_PER_AXIS, N_AXES,
+    AxisConfig, MAX_STEPPERS_PER_AXIS, N_AXES, StepMode, StepperRef, TickCaches,
 };
 
 #[test]
+#[allow(clippy::float_cmp)] // testing zero initialization; exact equality is the contract here
 fn tick_caches_constructs() {
     let c = TickCaches::new();
     assert_eq!(c.p_prev[0], 0.0);

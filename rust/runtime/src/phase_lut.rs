@@ -60,6 +60,8 @@ pub fn lookup(mscount: u16, _direction: i8) -> (i16, i16) {
 }
 
 #[cfg(test)]
+#[allow(clippy::integer_division)] // LUT sizes are powers of 2; integer division for quarter/half indices is exact
+#[allow(clippy::indexing_slicing)] // LUT index expressions guaranteed in-bounds by construction
 mod tests {
     use super::{COIL_AMPLITUDE, PHASE_LUT, PHASE_LUT_SIZE};
 

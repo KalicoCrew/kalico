@@ -66,8 +66,7 @@ pub fn refit_to_cubic(
     }
 
     // Wrap each piece as a 1-axis array for fit_hermite_c1::<1>.
-    let mut wrapped: Vec<[BezierPiece<f64>; 1]> =
-        pieces_in.into_iter().map(|p| [p]).collect();
+    let mut wrapped: Vec<[BezierPiece<f64>; 1]> = pieces_in.into_iter().map(|p| [p]).collect();
 
     for depth in 0..=MAX_SUBDIVISIONS {
         match fit_hermite_c1::<1>(&wrapped, tolerance_mm, 3) {
@@ -121,6 +120,7 @@ fn split_at_midpoints(
 }
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown, clippy::cast_lossless)]
 mod tests {
     use super::*;
     use nurbs::eval::eval;

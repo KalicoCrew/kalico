@@ -2,8 +2,6 @@ mod bridge;
 #[doc(hidden)]
 pub mod cap_check;
 #[doc(hidden)]
-pub mod probe_homing;
-#[doc(hidden)]
 pub mod classify;
 #[doc(hidden)]
 pub mod config;
@@ -13,6 +11,8 @@ pub mod dispatch;
 pub mod homing;
 #[doc(hidden)]
 pub mod planner;
+#[doc(hidden)]
+pub mod probe_homing;
 mod router_transport;
 #[doc(hidden)]
 pub mod slot_pool;

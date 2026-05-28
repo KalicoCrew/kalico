@@ -219,6 +219,7 @@ impl ShaperState {
     /// Forwards any [`ShapeError`] from `plan_velocity`. On error the
     /// `ShaperState` is left unchanged (atomic — the new move is *not*
     /// pushed onto `uncommitted_moves` and no `pieces` content is touched).
+    #[allow(clippy::too_many_lines)]
     pub fn append_and_replan(
         &mut self,
         new_segment: CubicSegment,
@@ -293,7 +294,7 @@ impl ShaperState {
                 // against `uncommitted_moves` in the resolver), so we
                 // wouldn't reach this branch.
                 if let Some(front) = self.uncommitted_moves.front_mut() {
-                    front.segment = new_segment;
+                    front.segment = *new_segment;
                     // `t_start` will be refreshed from the new plan; for
                     // now record that the un-committed portion starts at
                     // the dispatch boundary so ordering stays consistent.
@@ -350,11 +351,7 @@ impl ShaperState {
             .map(|m| PlanSegment {
                 temporal: temporal::multi::SegmentInput {
                     curve: &m.segment.xyz,
-                    limits: per_segment_limits(
-                        &m.segment.xyz,
-                        ctx.limits,
-                        m.segment.feedrate_mm_s,
-                    ),
+                    limits: per_segment_limits(&m.segment.xyz, ctx.limits, m.segment.feedrate_mm_s),
                     trailing_junction_chord_tolerance_mm: ctx.junction_chord_tolerance_mm,
                 },
                 e_mode: m.segment.e_mode,
@@ -685,7 +682,9 @@ impl ShaperState {
         )
         .expect("split_cubic_bezier output is a valid single-piece cubic Bézier");
 
-        Some(PartialCommitSplit::Replace { new_segment })
+        Some(PartialCommitSplit::Replace {
+            new_segment: Box::new(new_segment),
+        })
     }
 
     /// Replace the `axes[axis_idx].pieces` entries whose `u_start ≥
@@ -721,13 +720,11 @@ impl ShaperState {
         // absolute time line.
         for f in fitted {
             let axis_nurbs = &f.axes[axis_idx];
-            let shifted = extract_bezier_pieces(axis_nurbs)
-                .into_iter()
-                .map(|mut p| {
-                    p.u_start += time_offset;
-                    p.u_end += time_offset;
-                    p
-                });
+            let shifted = extract_bezier_pieces(axis_nurbs).into_iter().map(|mut p| {
+                p.u_start += time_offset;
+                p.u_end += time_offset;
+                p
+            });
             pieces.extend(shifted);
         }
     }
@@ -743,7 +740,7 @@ enum PartialCommitSplit {
     /// (re-parameterized to `[0, 1]`). All non-geometric metadata
     /// (`e_mode`, `extrusion_per_xy_mm`, `feedrate_mm_s`, etc.) is
     /// inherited from the original move.
-    Replace { new_segment: CubicSegment },
+    Replace { new_segment: Box<CubicSegment> },
     /// `s_dispatched ≥ 1 − SPLIT_BOUNDARY_TOLERANCE`: the partially-
     /// committed move is essentially fully committed. The caller must
     /// ensure the move is dropped from `uncommitted_moves` rather than
@@ -777,6 +774,7 @@ enum PartialCommitSplit {
 ///
 /// Returns `Some(s)` (clamped to `[0, 1]`) on a residual-checked convergence;
 /// `None` on wrong-root detection.
+#[allow(clippy::too_many_lines)]
 fn invert_cubic_bezier_xyz_to_param(
     curve: &nurbs::VectorNurbs<f64, 3>,
     p_target: [f64; 3],
@@ -873,9 +871,9 @@ fn invert_cubic_bezier_xyz_to_param(
     // noise on the *control polygon* is dominated by the refit's
     // sample-grid resolution, not by f64 round-off, and `1e-9` admits
     // every collinear-cubic the planner produces.
-    let pure_x = cps.iter().all(|p| {
-        p[1].abs() < PURE_AXIS_TOLERANCE && p[2].abs() < PURE_AXIS_TOLERANCE
-    });
+    let pure_x = cps
+        .iter()
+        .all(|p| p[1].abs() < PURE_AXIS_TOLERANCE && p[2].abs() < PURE_AXIS_TOLERANCE);
     if pure_x {
         let x0 = cps[0][0];
         let x3 = cps[3][0];
@@ -925,9 +923,12 @@ fn invert_cubic_bezier_xyz_to_param(
         // f(s)   = (xyz − p_target) · xyz'
         // f'(s)  = xyz' · xyz' + (xyz − p_target) · xyz''
         let f = dx[0] * d1[0] + dx[1] * d1[1] + dx[2] * d1[2];
-        let f_prime =
-            d1[0] * d1[0] + d1[1] * d1[1] + d1[2] * d1[2] + dx[0] * d2[0] + dx[1] * d2[1]
-                + dx[2] * d2[2];
+        let f_prime = d1[0] * d1[0]
+            + d1[1] * d1[1]
+            + d1[2] * d1[2]
+            + dx[0] * d2[0]
+            + dx[1] * d2[1]
+            + dx[2] * d2[2];
         if !f.is_finite() || !f_prime.is_finite() || f_prime.abs() < NEWTON_DENOMINATOR_FLOOR {
             break;
         }
@@ -982,7 +983,7 @@ fn invert_cubic_bezier_xyz_to_param(
 /// The SOCP relaxation in `temporal::topp::constraints` uses
 /// `j_path = min(j_max[X], j_max[Y], j_max[Z])` as a single scalar bound on
 /// `d³s/dt³`. For a curve where some axes have no displacement (e.g. pure-X
-/// G1 → collinear cubic Bezier), the inactive axes' j_max would otherwise
+/// G1 → collinear cubic Bezier), the inactive axes' `j_max` would otherwise
 /// pull this min down to nonsense values (a Voron with `max_z_accel=100`
 /// has `j_max[Z]=200` vs `j_max[X]=140000` — pure-X jogs end up running at
 /// effective ~700× slower than the X-axis is actually capable of).
@@ -1160,7 +1161,7 @@ fn shape_single_segment(
         let q = &axes[axis];
         let axis_shaped = if let Some(kernel) = q.kernel.as_ref() {
             let padded = pad_segment_axis(0, axis, fitted_slice, &[], q.h, t_start, t_end);
-            shape_axis(&padded, kernel, t_start, t_end)?
+            shape_axis(&padded, kernel, t_start, t_end)
         } else {
             // Passthrough — use the fitted axis directly. Mirrors the
             // `kernels.z = None` branch in `beta::run_one_iteration`.

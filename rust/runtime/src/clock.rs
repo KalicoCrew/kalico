@@ -152,7 +152,7 @@ impl TickCounter {
 
     /// 2026-05-21 — expose the inner atomic for the `bump_relaxed`
     /// workaround in `tick::isr_sample_tick` (see that function's comment
-    /// on the fetch_add codegen symptom for full rationale).
+    /// on the `fetch_add` codegen symptom for full rationale).
     #[inline]
     pub fn inner_atomic(&self) -> &AtomicU32 {
         &self.inner
@@ -211,6 +211,7 @@ pub fn read_widened_now(shared: &SharedState) -> u64 {
 }
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 mod tests {
     use super::*;
 

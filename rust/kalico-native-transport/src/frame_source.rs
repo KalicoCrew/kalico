@@ -27,16 +27,18 @@ impl<R: Read + std::fmt::Debug> std::fmt::Debug for FrameSource<R> {
             .field("reader", &self.reader)
             .field("set_timeout", &"<fn>")
             .field("demuxer", &self.demuxer)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
 impl<R: Read> FrameSource<R> {
-    pub fn new(
-        reader: R,
-        set_timeout: Box<dyn FnMut(&mut R, Duration) -> io::Result<()>>,
-    ) -> Self {
-        Self { reader, set_timeout, demuxer: Demuxer::new(), scratch: [0u8; 1024] }
+    pub fn new(reader: R, set_timeout: Box<dyn FnMut(&mut R, Duration) -> io::Result<()>>) -> Self {
+        Self {
+            reader,
+            set_timeout,
+            demuxer: Demuxer::new(),
+            scratch: [0u8; 1024],
+        }
     }
 
     pub fn from_read_no_timeout(reader: R) -> Self {
@@ -53,8 +55,7 @@ impl<R: Read> FrameSource<R> {
     ) -> Result<PollOutcome, FrameSourceError> {
         let now = Instant::now();
         let remaining = deadline.saturating_duration_since(now);
-        (self.set_timeout)(&mut self.reader, remaining)
-            .map_err(FrameSourceError::SetTimeout)?;
+        (self.set_timeout)(&mut self.reader, remaining).map_err(FrameSourceError::SetTimeout)?;
         match self.reader.read(&mut self.scratch) {
             Ok(0) => Ok(PollOutcome::PhantomZero),
             Ok(n) => {
@@ -79,9 +80,9 @@ impl<R: Read> FrameSource<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
     use crate::demux::Frame;
-    use crate::frame::{encode_frame, CHANNEL_CONTROL};
+    use crate::frame::{CHANNEL_CONTROL, encode_frame};
+    use std::io::Cursor;
 
     #[test]
     fn poll_frames_until_returns_phantom_zero_on_eof() {
@@ -111,7 +112,7 @@ mod tests {
                     .iter()
                     .map(|f| match f {
                         Frame::Kalico { payload, .. } => payload.clone(),
-                        _ => panic!("expected kalico"),
+                        Frame::Klipper(_) => panic!("expected kalico"),
                     })
                     .collect();
                 assert_eq!(payloads[0], b"first");
@@ -128,8 +129,7 @@ mod tests {
             cursor,
             Box::new(|_, _| Err(io::Error::new(io::ErrorKind::Other, "broken"))),
         );
-        let result =
-            fs.poll_frames_until(Instant::now() + Duration::from_millis(100));
+        let result = fs.poll_frames_until(Instant::now() + Duration::from_millis(100));
         assert!(matches!(result, Err(FrameSourceError::SetTimeout(_))));
     }
 }

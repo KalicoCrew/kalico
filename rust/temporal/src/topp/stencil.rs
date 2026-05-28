@@ -177,19 +177,22 @@ mod tests {
         }
     }
 
-    /// b[i] = 0 should produce s_dddot = 0 (the .max(0.0).sqrt() guard
-    /// makes s_dot = 0). No NaN/Inf even with non-zero b-FD numerator.
+    /// `b[i]` = 0 should produce `s_dddot` = 0 (the `.max(0.0).sqrt()` guard
+    /// makes `s_dot` = 0). No NaN/Inf even with non-zero b-FD numerator.
     #[test]
     fn s_dddot_at_handles_zero_b_without_nan() {
         let h = 1.0;
         let mut b = vec![10.0; 5];
         b[1] = 0.0;
         let got = s_dddot_at(&b, 1, h);
-        assert_eq!(got, 0.0, "expected exactly 0.0, got {got}");
+        // Exact zero: sqrt(0.0) == 0.0 by IEEE 754; the product is identically 0.
+        #[allow(clippy::float_cmp)]
+        let eq = got == 0.0;
+        assert!(eq, "expected exactly 0.0, got {got}");
         assert!(got.is_finite());
     }
 
-    /// b[i] slightly negative (Clarabel residual rounding) should also
+    /// `b[i]` slightly negative (Clarabel residual rounding) should also
     /// produce 0, not NaN.
     #[test]
     fn s_dddot_at_handles_slightly_negative_b_without_nan() {
@@ -197,7 +200,10 @@ mod tests {
         let mut b = vec![10.0; 5];
         b[1] = -1e-15;
         let got = s_dddot_at(&b, 1, h);
-        assert_eq!(got, 0.0);
+        // Exact zero: .max(0.0) clamps to 0.0; sqrt(0.0) == 0.0 by IEEE 754.
+        #[allow(clippy::float_cmp)]
+        let eq = got == 0.0;
+        assert!(eq, "expected exactly 0.0, got {got}");
         assert!(got.is_finite());
     }
 

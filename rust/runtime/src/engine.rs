@@ -41,6 +41,7 @@ impl RuntimeStatus {
     }
 }
 
+/// cbindgen:ignore
 #[allow(missing_debug_implementations)] // P, I are open trait bounds; ISR-internal struct.
 pub struct Engine<P: PaSlot, I: IsSlot> {
     pub(crate) current: Option<Segment>,
@@ -55,19 +56,19 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// Reset on segment activation; incremented per hold tick. At ~10 ms
     /// (`HOLD_SAMPLE_TICK_PERIOD = 400`) we drop one breadcrumb sample.
     hold_sample_ticks: u32,
-    /// Previous motor-A position (motor frame). For CoreXY MCUs this is
+    /// Previous motor-A position (motor frame). For `CoreXY` MCUs this is
     /// A = X+Y (host-combined); for Cartesian MCUs it is logical X. Used
     /// for E-mode arc-length integration AND as the "hold" value when the
     /// X handle of the current segment is `UNUSED_SENTINEL`.
     prev_x: f32,
-    /// Previous motor-B position (motor frame). For CoreXY MCUs this is
+    /// Previous motor-B position (motor frame). For `CoreXY` MCUs this is
     /// B = X−Y (host-combined); for Cartesian MCUs it is logical Y. Same
     /// dual role as `prev_x`.
     prev_y: f32,
     /// Previous Z position (motor frame; identical to logical Z on all
     /// current MCU configurations). Same dual role as `prev_x` / `prev_y`.
     prev_z: f32,
-    /// E accumulator for CoupledToXy mode — f64 for sub-step accuracy over
+    /// E accumulator for `CoupledToXy` mode — f64 for sub-step accuracy over
     /// millions of ticks (H723 has hardware double-precision FPU).
     e_accumulator: f64,
     /// Bitmask: bits 0-3 are axes A/B/Z/E. Set at `arm_segment` (Task 8)
@@ -93,13 +94,13 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// `prev_x`/`prev_y`/`prev_z` from X(0)/Y(0)/Z(0) rather than computing
     /// a spurious delta from (0,0,0).
     needs_xy_seed: bool,
-    /// Diagnostic — last (now, t_start, duration) observed in tick_with_current.
+    /// Diagnostic — last (now, `t_start`, duration) observed in `tick_with_current`.
     debug_last_now: u64,
     debug_last_tstart: u64,
     debug_last_duration: u64,
     /// Per-axis step accumulators. Indexed in motor space post-kinematics:
-    /// CoreXY: [A=0, B=1, Z=2, E=3]. Step pulse emission deferred to 7-D;
-    /// update() is called but results are logged/ignored for now.
+    /// `CoreXY`: [A=0, B=1, Z=2, E=3]. Step pulse emission deferred to 7-D;
+    /// `update()` is called but results are logged/ignored for now.
     step_state: [crate::step::StepMotorState; 4],
     /// Per-motor phase-stepping state. Populated lazily on the first phase
     /// tick when `shared.phase_config[motor_idx]` reports a phase config;
@@ -174,7 +175,7 @@ pub struct Engine<P: PaSlot, I: IsSlot> {
     /// E-follows-XY arc-length accumulator.
     pub tick_caches: crate::stepping_state::TickCaches,
 
-    /// Host/test only: per-axis StepQueue pointers installed by
+    /// Host/test only: per-axis `StepQueue` pointers installed by
     /// `Engine::test_install_step_queues` so `tick_sample`'s host branch
     /// has somewhere to push step entries. Stays at `[null; N_AXES]` on
     /// the MCU build (the field exists unconditionally to keep
@@ -466,16 +467,18 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// zero / negative `k_xy` would silently zero out the XY arc-length
     /// integrator that feeds E-follows-XY and pressure-advance.
     /// Test-only: set `sample_period_sec` + `sample_period_cycles` to mirror
-    /// what production would receive once Engine::init wires
+    /// what production would receive once `Engine::init` wires
     /// `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ` through. Production currently
-    /// leaves both fields zero (Codex 2026-05-20 analysis: configure_kinematics
-    /// only sets k_xy; nothing publishes the sample period), so `tick_sample`
+    /// leaves both fields zero (Codex 2026-05-20 analysis: `configure_kinematics`
+    /// only sets `k_xy`; nothing publishes the sample period), so `tick_sample`
     /// returns at the `sample_period_sec <= 0.0` guard before evaluating any
     /// loaded piece. Tests must call this to exercise the producer-side step
     /// pipeline on host without re-tripping that gate.
     #[cfg(any(test, feature = "host"))]
     pub fn test_set_sample_period(&mut self, sample_rate_hz: u32) {
         let sec = 1.0_f32 / (sample_rate_hz as f32);
+        #[allow(clippy::cast_sign_loss)]
+        // result of .round() on a positive value is always non-negative
         let cycles = (self.cycles_per_second / (sample_rate_hz as f32)).round() as u32;
         self.sample_period_sec = sec;
         self.sample_period_cycles = cycles;
@@ -554,7 +557,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         seg: crate::segment::Segment,
         curve_pool: &crate::curve_pool::CurvePool,
     ) {
-        self.arm_segment_inner(seg, curve_pool, None)
+        self.arm_segment_inner(seg, curve_pool, None);
     }
 
     /// 2026-05-21 production entry point that also publishes per-arm diag
@@ -565,7 +568,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         curve_pool: &crate::curve_pool::CurvePool,
         shared: &crate::state::SharedState,
     ) {
-        self.arm_segment_inner(seg, curve_pool, Some(shared))
+        self.arm_segment_inner(seg, curve_pool, Some(shared));
     }
 
     #[allow(unsafe_code)]
@@ -1199,21 +1202,19 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
 
     /// Set the per-MCU axis configuration. Must be called before motion
     /// segments are pushed so step generation has valid steps-per-mm ratios.
-    /// Diagnostic accessor: returns the configured steps_per_mm for axis `i`
-    /// in motor space (CoreXY: A=0, B=1, Z=2, E=3). Returns 0.0 for
+    /// Diagnostic accessor: returns the configured `steps_per_mm` for axis `i`
+    /// in motor space (`CoreXY`: A=0, B=1, Z=2, E=3). Returns 0.0 for
     /// out-of-range or unconfigured axes.
     pub fn debug_steps_per_mm(&self, i: usize) -> f32 {
         self.step_state
             .get(i)
-            .map(|s| s.debug_steps_per_mm())
-            .unwrap_or(0.0)
+            .map_or(0.0, super::step::StepMotorState::debug_steps_per_mm)
     }
 
     pub fn debug_accumulator(&self, i: usize) -> f64 {
         self.step_state
             .get(i)
-            .map(|s| s.debug_accumulator())
-            .unwrap_or(0.0)
+            .map_or(0.0, super::step::StepMotorState::debug_accumulator)
     }
 
     /// Last observed motor position (post-PA/IS) for axis `i`.
@@ -1221,7 +1222,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
         self.last_motors.get(i).copied().unwrap_or(0.0)
     }
 
-    /// Last (now, t_start, duration) tuple recorded by the most recent tick.
+    /// Last (now, `t_start`, duration) tuple recorded by the most recent tick.
     pub fn debug_last_timing(&self) -> (u64, u64, u64) {
         (
             self.debug_last_now,
@@ -1249,15 +1250,16 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// step caches (`stepping_axes[*].last_step_count`) and secant-slope
     /// position caches (`tick_caches.p_prev`); those must be seeded to the
     /// same motor-frame origin or the first absolute-position segment after
-    /// SET_KINEMATIC_POSITION is interpreted as a huge catch-up move.
+    /// `SET_KINEMATIC_POSITION` is interpreted as a huge catch-up move.
     /// Without this, `runtime_modulated_tick` on a non-origin segment
-    /// computes a spurious motor-delta = (segment_start - 0) on its first
+    /// computes a spurious motor-delta = (`segment_start` - 0) on its first
     /// tick and emits thousands of catch-up step pulses.
     ///
-    /// **`xyz` is in motor frame** — the kinematic transform (CoreXY
+    /// **`xyz` is in motor frame** — the kinematic transform (`CoreXY`
     /// A=X+Y / B=X−Y) is applied by the bridge before calling this
     /// function. The MCU engine is motor-frame end-to-end; there is no
     /// kinematic transform in the hot path or in this seed path.
+    #[allow(clippy::indexing_slicing)] // indexing over fixed-size [f32; 4] with literal indices 0..4
     pub fn seed_position(&mut self, xyz: [f32; 3]) {
         self.prev_x = xyz[0];
         self.prev_y = xyz[1];
@@ -1507,7 +1509,7 @@ impl<P: PaSlot, I: IsSlot> Engine<P, I> {
     /// Returns `Err(seg)` if the queue is full (mirrors `heapless::spsc::Producer::enqueue`).
     ///
     /// Spec §3.4 wake source #1.
-    pub fn push_segment<'q>(
+    pub fn push_segment(
         &mut self,
         mut seg: Segment,
         queue_producer: &mut SegProducer<Segment>,

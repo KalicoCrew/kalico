@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! Stepping-redesign Task 11 — unit-level coverage of the three
 //! `configure_*` methods on `Engine`. These exercise the validation +
 //! state-publish behaviour directly through the engine surface; the
@@ -124,6 +134,7 @@ fn configure_kinematics_rejects_invalid_inputs() {
 }
 
 #[test]
+#[allow(clippy::float_cmp)] // exact equality tests for stored configuration values
 fn configure_pressure_advance_accepts_symmetric_and_asymmetric() {
     let mut e = new_engine();
 

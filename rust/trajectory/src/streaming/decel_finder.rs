@@ -76,7 +76,7 @@ pub(super) fn find_decel_start_time(fitted: &[FittedSegment]) -> f64 {
             // left endpoint. We still emit the very-first piece's left
             // endpoint by initializing the loop from `s = 0` on the first
             // piece only.
-            let start_s = if samples.is_empty() { 0 } else { 1 };
+            let start_s = usize::from(!samples.is_empty());
             for s in start_s..=SAMPLES_PER_PIECE {
                 let t = u0 + (u1 - u0) * (s as f64) / (SAMPLES_PER_PIECE as f64);
                 let vx = dx.evaluate(t);

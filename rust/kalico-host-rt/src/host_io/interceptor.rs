@@ -55,10 +55,10 @@ impl InterceptorTable {
     ) -> InterceptorId {
         let id = InterceptorId::next();
         let key = InterceptorKey { msg_name, oid };
-        self.entries
-            .entry(key)
-            .or_default()
-            .push(InterceptorEntry { id, callback: callback.0 });
+        self.entries.entry(key).or_default().push(InterceptorEntry {
+            id,
+            callback: callback.0,
+        });
         id
     }
 
@@ -97,8 +97,8 @@ impl std::fmt::Debug for InterceptorEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
     fn dispatch_fires_matching_callback() {
@@ -180,7 +180,11 @@ mod tests {
 
         table.unregister(id);
         table.dispatch("trsync_state", Some(0), &params);
-        assert_eq!(count.load(Ordering::Relaxed), 1, "should not fire after unregister");
+        assert_eq!(
+            count.load(Ordering::Relaxed),
+            1,
+            "should not fire after unregister"
+        );
     }
 
     #[test]

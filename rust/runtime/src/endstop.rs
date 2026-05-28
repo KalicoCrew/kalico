@@ -14,6 +14,14 @@ pub type PinId = u16;
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ArmPolicy {
+    TripImmediately = 0,
+    WaitForClear = 1,
+    IgnoreUntilMoving = 2,
+}
+
+#[repr(u8)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum SourceKind {
     Physical = 0,
     TmcDiag = 1,
@@ -32,15 +40,6 @@ pub const TRIP_SOURCE_DEADLINE_EXPIRED: u8 = 0xFF;
 /// Sentinel written to `trip_source_idx` when the trip was caused by an
 /// explicit `software_trip` call from the C command handler.
 pub const TRIP_SOURCE_SOFTWARE: u8 = 0xFE;
-
-
-#[repr(u8)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum ArmPolicy {
-    TripImmediately = 0,
-    WaitForClear = 1,
-    IgnoreUntilMoving = 2,
-}
 
 impl TryFrom<u8> for ArmPolicy {
     type Error = u8;
@@ -254,6 +253,7 @@ impl Arm {
     }
 
     #[cfg(test)]
+    #[allow(clippy::doc_markdown)]
     fn deadline_clock_unchecked(&self) -> u64 {
         let lo = u64::from(self.deadline_clock_lo.load(Ordering::Acquire));
         let hi = u64::from(self.deadline_clock_hi.load(Ordering::Acquire));
@@ -281,8 +281,7 @@ impl Arm {
     }
 
     fn store_grant_ticks(&self, ticks: u64) {
-        self.grant_ticks_lo
-            .store(ticks as u32, Ordering::Release);
+        self.grant_ticks_lo.store(ticks as u32, Ordering::Release);
         self.grant_ticks_hi
             .store((ticks >> 32) as u32, Ordering::Release);
     }
@@ -290,9 +289,10 @@ impl Arm {
     /// Returns `true` if any active source has `SourceKind::Software`.
     fn has_software_source(&self) -> bool {
         let count = usize::from(self.source_count.load(Ordering::Acquire));
-        self.sources.iter().take(count).any(|src| {
-            src.kind.load(Ordering::Acquire) == SourceKind::Software as u8
-        })
+        self.sources
+            .iter()
+            .take(count)
+            .any(|src| src.kind.load(Ordering::Acquire) == SourceKind::Software as u8)
     }
 }
 
@@ -423,6 +423,7 @@ static TRIP_EVENT_QUEUED: AtomicBool = AtomicBool::new(false);
 static PIN_LEVELS: [AtomicBool; MAX_GPIO_PINS] = [const { AtomicBool::new(false) }; MAX_GPIO_PINS];
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn set_pin_level(gpio: PinId, pin_high: bool) -> bool {
@@ -436,6 +437,7 @@ pub fn set_pin_level(gpio: PinId, pin_high: bool) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     let guard = match TEST_MUTEX.lock() {
         Ok(guard) => guard,
@@ -446,6 +448,7 @@ pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 fn reset_for_test() {
     ARM.state.store(ArmState::Idle as u8, Ordering::Release);
     ARM.arm_id.store(0, Ordering::Release);
@@ -472,9 +475,7 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
     validate_arm_msg(&msg)?;
 
     let state = ARM.state.load(Ordering::Acquire);
-    if matches_u8(state, ArmState::Armed)
-        || matches_u8(state, ArmState::Tripping)
-    {
+    if matches_u8(state, ArmState::Armed) || matches_u8(state, ArmState::Tripping) {
         return Err(ArmError::Busy);
     }
 
@@ -539,8 +540,7 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
         let asserted = if cfg.active_high { pin_high } else { !pin_high };
         if asserted {
             // Transition to Tripping → TrippedReady.
-            ARM.state
-                .store(ArmState::Tripping as u8, Ordering::Release);
+            ARM.state.store(ArmState::Tripping as u8, Ordering::Release);
             // Publish snapshot with arm_clock as the trip clock (no
             // actual MCU tick yet; best-effort timestamp).
             let empty_counts: &[i32] = &[];
@@ -613,9 +613,8 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
 
         match policy {
             ArmPolicy::IgnoreUntilMoving => {
-                let axis = VelocityAxis::from_bits_truncate(
-                    src.velocity_axis.load(Ordering::Acquire),
-                );
+                let axis =
+                    VelocityAxis::from_bits_truncate(src.velocity_axis.load(Ordering::Acquire));
                 let v_sel = max_axis_velocity(v_per_axis_q16, axis);
                 if !src.moved_above_v.load(Ordering::Acquire)
                     && v_sel >= src.v_min_q16.load(Ordering::Acquire)
@@ -705,9 +704,8 @@ fn tick_software_deadline(clock: u64, stepper_counts: &[i32]) -> TripAction {
         ARM.deadline_active.store(true, Ordering::Release);
         return TripAction::Continue;
     }
-    let deadline = match ARM.try_read_deadline_clock() {
-        Some(d) => d,
-        None => return TripAction::Continue,
+    let Some(deadline) = ARM.try_read_deadline_clock() else {
+        return TripAction::Continue;
     };
     if clock < deadline {
         return TripAction::Continue;
@@ -944,6 +942,7 @@ const fn matches_u8(value: u8, state: ArmState) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
@@ -1008,6 +1007,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::if_same_then_else)]
     fn source_policy_sample_matrix() {
         for kind in [SourceKind::Physical, SourceKind::TmcDiag] {
             for policy in [
@@ -1117,7 +1117,10 @@ mod tests {
     fn arm_policy_try_from_decodes_known_variants_and_rejects_others() {
         assert_eq!(ArmPolicy::try_from(0).unwrap(), ArmPolicy::TripImmediately);
         assert_eq!(ArmPolicy::try_from(1).unwrap(), ArmPolicy::WaitForClear);
-        assert_eq!(ArmPolicy::try_from(2).unwrap(), ArmPolicy::IgnoreUntilMoving);
+        assert_eq!(
+            ArmPolicy::try_from(2).unwrap(),
+            ArmPolicy::IgnoreUntilMoving
+        );
         assert_eq!(ArmPolicy::try_from(3).unwrap_err(), 3);
         assert_eq!(ArmPolicy::try_from(255).unwrap_err(), 255);
     }
@@ -1187,11 +1190,7 @@ mod tests {
     fn tick_returns_continue_for_non_armed_non_tripped_states() {
         let _guard = reset();
         set_pin_level(8, true);
-        for state in [
-            ArmState::Idle,
-            ArmState::TrippedSent,
-            ArmState::Disarmed,
-        ] {
+        for state in [ArmState::Idle, ArmState::TrippedSent, ArmState::Disarmed] {
             ARM.state.store(state as u8, Ordering::Release);
             assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::Continue);
         }
@@ -1393,10 +1392,7 @@ mod tests {
     fn software_trip_transitions_armed_to_tripped_ready() {
         let _guard = reset();
         arm(sw_msg(10_000)).expect("arm");
-        assert_eq!(
-            software_trip(42, 500, &[10, 20]),
-            TripResult::Tripped
-        );
+        assert_eq!(software_trip(42, 500, &[10, 20]), TripResult::Tripped);
         let evt = drain_trip();
         assert_eq!(evt.arm_id, 42);
         assert_eq!(evt.trip_source_idx, TRIP_SOURCE_SOFTWARE);
@@ -1407,10 +1403,7 @@ mod tests {
     fn software_trip_wrong_arm_id_is_no_op() {
         let _guard = reset();
         arm(sw_msg(10_000)).expect("arm");
-        assert_eq!(
-            software_trip(99, 500, &[10, 20]),
-            TripResult::WrongArmId
-        );
+        assert_eq!(software_trip(99, 500, &[10, 20]), TripResult::WrongArmId);
         // Still armed.
         assert!(matches_u8(
             ARM.state.load(Ordering::Acquire),
@@ -1426,10 +1419,7 @@ mod tests {
         // fails) rather than WrongArmId (arm_id check fails).
         ARM.arm_id.store(0, Ordering::Release);
         ARM.state.store(ArmState::Disarmed as u8, Ordering::Release);
-        assert_eq!(
-            software_trip(0, 500, &[]),
-            TripResult::NotArmed
-        );
+        assert_eq!(software_trip(0, 500, &[]), TripResult::NotArmed);
     }
 
     #[test]

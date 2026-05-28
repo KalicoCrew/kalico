@@ -162,12 +162,7 @@ pub fn emit_shaped(
                     batch_t_start,
                     batch_t_end,
                 );
-                shape_axis(&padded, kernel, t_start, t_end).map_err(|detail| {
-                    ShapeError::Algebra {
-                        index: seg_idx,
-                        detail,
-                    }
-                })?
+                shape_axis(&padded, kernel, t_start, t_end)
             } else {
                 fitted.axes[axis].clone()
             };
@@ -268,21 +263,51 @@ mod tests {
 
     fn assert_nurbs_near_equal(a: &ScalarNurbs<f64>, b: &ScalarNurbs<f64>, label: &str) {
         assert_eq!(a.degree(), b.degree(), "{label}: degree differs");
-        assert_eq!(a.knots().len(), b.knots().len(), "{label}: knot count differs");
-        let max_knot_diff = a.knots().iter().zip(b.knots().iter())
-            .map(|(ka, kb)| (ka - kb).abs()).fold(0.0_f64, f64::max);
-        assert!(max_knot_diff < 1e-12, "{label}: knots differ by {max_knot_diff:.2e}");
-        assert_eq!(a.control_points().len(), b.control_points().len(),
-            "{label}: control point count differs");
-        let max_cp_diff = a.control_points().iter().zip(b.control_points().iter())
-            .map(|(ca, cb)| (ca - cb).abs()).fold(0.0_f64, f64::max);
-        assert!(max_cp_diff < 1e-12, "{label}: control points differ by {max_cp_diff:.2e} mm");
-        assert_eq!(a.weights().is_some(), b.weights().is_some(),
-            "{label}: weight presence differs");
+        assert_eq!(
+            a.knots().len(),
+            b.knots().len(),
+            "{label}: knot count differs"
+        );
+        let max_knot_diff = a
+            .knots()
+            .iter()
+            .zip(b.knots().iter())
+            .map(|(ka, kb)| (ka - kb).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_knot_diff < 1e-12,
+            "{label}: knots differ by {max_knot_diff:.2e}"
+        );
+        assert_eq!(
+            a.control_points().len(),
+            b.control_points().len(),
+            "{label}: control point count differs"
+        );
+        let max_cp_diff = a
+            .control_points()
+            .iter()
+            .zip(b.control_points().iter())
+            .map(|(ca, cb)| (ca - cb).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_cp_diff < 1e-12,
+            "{label}: control points differ by {max_cp_diff:.2e} mm"
+        );
+        assert_eq!(
+            a.weights().is_some(),
+            b.weights().is_some(),
+            "{label}: weight presence differs"
+        );
         if let (Some(wa), Some(wb)) = (a.weights(), b.weights()) {
-            let max_w_diff = wa.iter().zip(wb.iter())
-                .map(|(wa, wb)| (wa - wb).abs()).fold(0.0_f64, f64::max);
-            assert!(max_w_diff < 1e-12, "{label}: weights differ by {max_w_diff:.2e}");
+            let max_w_diff = wa
+                .iter()
+                .zip(wb.iter())
+                .map(|(wa, wb)| (wa - wb).abs())
+                .fold(0.0_f64, f64::max);
+            assert!(
+                max_w_diff < 1e-12,
+                "{label}: weights differ by {max_w_diff:.2e}"
+            );
         }
     }
 
@@ -321,8 +346,18 @@ mod tests {
         assert_eq!(planned.len(), 1);
 
         let kernels: [Option<PiecewisePolynomialKernel<f64>>; 4] = [
-            Some(RequiredShaper::SmoothZv { frequency_hz: 180.0 }.to_kernel()),
-            Some(RequiredShaper::SmoothZv { frequency_hz: 120.0 }.to_kernel()),
+            Some(
+                RequiredShaper::SmoothZv {
+                    frequency_hz: 180.0,
+                }
+                .to_kernel(),
+            ),
+            Some(
+                RequiredShaper::SmoothZv {
+                    frequency_hz: 120.0,
+                }
+                .to_kernel(),
+            ),
             None,
             None,
         ];
@@ -426,16 +461,8 @@ mod tests {
         }];
 
         let t_sm_half = 0.3; // pad target: t = 0.7
-        let padded = pad_segment_axis_with_history(
-            0,
-            0,
-            &fitted,
-            &[],
-            &history_x,
-            t_sm_half,
-            1.0,
-            2.0,
-        );
+        let padded =
+            pad_segment_axis_with_history(0, 0, &fitted, &[], &history_x, t_sm_half, 1.0, 2.0);
 
         let pieces = extract_bezier_pieces(&padded);
         // Padded must extend back to at least t = 0.7.
@@ -518,16 +545,8 @@ mod tests {
 
         let t_sm_half = 0.1;
         for axis in 0..3 {
-            let with_history = pad_segment_axis_with_history(
-                0,
-                axis,
-                &fitted,
-                &[],
-                &[],
-                t_sm_half,
-                0.0,
-                1.0,
-            );
+            let with_history =
+                pad_segment_axis_with_history(0, axis, &fitted, &[], &[], t_sm_half, 0.0, 1.0);
             let legacy = crate::pad::pad_segment_axis(0, axis, &fitted, &[], t_sm_half, 0.0, 1.0);
             assert_nurbs_near_equal(&with_history, &legacy, &format!("axis {axis}"));
         }

@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! Tests for the per-sample post-pass exhaustion check (§4.4 + §4.5) and the
 //! Phase-5 retire (Task 10 of stepping-redesign-finish).
 //!
@@ -75,8 +85,7 @@ fn make_trace_pair() -> (
     heapless::spsc::Producer<'static, TraceSample, TRACE_RING_N>,
     heapless::spsc::Consumer<'static, TraceSample, TRACE_RING_N>,
 ) {
-    let queue: &'static mut Queue<TraceSample, TRACE_RING_N> =
-        Box::leak(Box::new(Queue::new()));
+    let queue: &'static mut Queue<TraceSample, TRACE_RING_N> = Box::leak(Box::new(Queue::new()));
     queue.split()
 }
 

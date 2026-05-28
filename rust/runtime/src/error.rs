@@ -298,8 +298,14 @@ mod tests {
             ),
             (RuntimeError::FaultLatched, KALICO_ERR_FAULT_LATCHED),
             (RuntimeError::Underrun, KALICO_ERR_UNDERRUN),
-            (RuntimeError::StepBurstExceeded, KALICO_ERR_STEP_BURST_EXCEEDED),
-            (RuntimeError::ZeroDurationSegment, KALICO_ERR_ZERO_DURATION_SEGMENT),
+            (
+                RuntimeError::StepBurstExceeded,
+                KALICO_ERR_STEP_BURST_EXCEEDED,
+            ),
+            (
+                RuntimeError::ZeroDurationSegment,
+                KALICO_ERR_ZERO_DURATION_SEGMENT,
+            ),
             (RuntimeError::HomingTrip, KALICO_ERR_HOMING_TRIP),
             (RuntimeError::BoundaryLoopExhausted, KALICO_ERR_INTERNAL),
             (RuntimeError::NaNOrInfFromEval, KALICO_ERR_INTERNAL),
@@ -346,7 +352,10 @@ mod tests {
 
     #[test]
     fn host_disconnect_round_trips() {
-        assert_eq!(FaultCode::HostDisconnect.as_i32(), KALICO_ERR_HOST_DISCONNECT);
+        assert_eq!(
+            FaultCode::HostDisconnect.as_i32(),
+            KALICO_ERR_HOST_DISCONNECT
+        );
         assert_eq!(KALICO_ERR_HOST_DISCONNECT, -200);
     }
 
@@ -371,10 +380,22 @@ mod tests {
     #[test]
     fn host_codes_distinct_from_mcu() {
         assert_ne!(KALICO_ERR_HOST_DISCONNECT, KALICO_ERR_TRACE_OVERFLOW);
-        assert_ne!(KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED, KALICO_ERR_TRACE_OVERFLOW);
-        assert_ne!(KALICO_ERR_HOST_DISPATCHER_TIMEOUT, KALICO_ERR_TRACE_OVERFLOW);
-        assert_ne!(KALICO_ERR_HOST_DISCONNECT, KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED);
-        assert_ne!(KALICO_ERR_HOST_DISCONNECT, KALICO_ERR_HOST_DISPATCHER_TIMEOUT);
+        assert_ne!(
+            KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED,
+            KALICO_ERR_TRACE_OVERFLOW
+        );
+        assert_ne!(
+            KALICO_ERR_HOST_DISPATCHER_TIMEOUT,
+            KALICO_ERR_TRACE_OVERFLOW
+        );
+        assert_ne!(
+            KALICO_ERR_HOST_DISCONNECT,
+            KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED
+        );
+        assert_ne!(
+            KALICO_ERR_HOST_DISCONNECT,
+            KALICO_ERR_HOST_DISPATCHER_TIMEOUT
+        );
         assert_ne!(
             KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED,
             KALICO_ERR_HOST_DISPATCHER_TIMEOUT
@@ -394,7 +415,10 @@ mod tests {
             FaultCode::SpiQueueOverflow.as_i32(),
             KALICO_ERR_SPI_QUEUE_OVERFLOW
         );
-        assert_eq!(FaultCode::MathNonFinite.as_i32(), KALICO_ERR_MATH_NON_FINITE);
+        assert_eq!(
+            FaultCode::MathNonFinite.as_i32(),
+            KALICO_ERR_MATH_NON_FINITE
+        );
         assert_eq!(
             FaultCode::PieceAdvanceUnderflow.as_i32(),
             KALICO_ERR_PIECE_ADVANCE_UNDERFLOW

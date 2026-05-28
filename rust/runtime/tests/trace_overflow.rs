@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! Step-6 §13.1 trace-overflow → `KALICO_FAULT_TRACE_OVERFLOW` latch tests.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 

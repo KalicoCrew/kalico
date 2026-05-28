@@ -25,7 +25,7 @@
 #![allow(unsafe_code)]
 
 use core::ptr;
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{Ordering, fence};
 
 /// Power-of-two ring depth shared with the C side; see `src/step_queue.h`.
 pub const STEP_QUEUE_DEPTH: usize = 32;

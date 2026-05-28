@@ -32,10 +32,7 @@ impl MockConnection {
                 tx: h2p.clone(),
                 rx: p2h.clone(),
             },
-            PeerHalf {
-                tx: p2h,
-                rx: h2p,
-            },
+            PeerHalf { tx: p2h, rx: h2p },
         )
     }
 }

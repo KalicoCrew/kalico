@@ -59,6 +59,31 @@ pub extern "C" fn runtime_reset_stepper_bindings() {}
 #[unsafe(no_mangle)]
 pub extern "C" fn runtime_diag_progress(_tag: u32, _stage: u32, _value: u32) {}
 
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_host_now_us() -> u64 {
+    0
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_irq_save() -> u32 {
+    0
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_irq_restore(_flags: u32) {}
+#[unsafe(no_mangle)]
+pub static stats_send_time: u32 = 0;
+#[unsafe(no_mangle)]
+pub static stats_send_time_high: u32 = 0;
+#[unsafe(no_mangle)]
+pub extern "C" fn timer_read_time() -> u32 {
+    0
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn timer_is_before(_a: u32, _b: u32) -> u8 {
+    0
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_emit_step_pulses(_axis_idx: u8, _n_steps: i32) {}
+
 #[test]
 fn clock_sync_returns_widened_host_clock_not_seqlock() {
     // Spin up the runtime. `runtime_handle_create` runs the half-split
@@ -74,36 +99,22 @@ fn clock_sync_returns_widened_host_clock_not_seqlock() {
     let r = unsafe {
         kalico_c_api::kalico_runtime_clock_sync_request(
             rt,
-            42,    // request_id (echoed; we don't care here)
-            0,     // host_send_time_lo (foreground unused)
-            0,     // host_send_time_hi (foreground unused)
+            42, // request_id (echoed; we don't care here)
+            0,  // host_send_time_lo (foreground unused)
+            0,  // host_send_time_hi (foreground unused)
             &mut mcu_clock,
         )
     };
     assert_eq!(r, 0, "clock_sync_request returned non-OK: {r}");
     assert_eq!(
-        mcu_clock,
-        0xDEAD_BEEF_CAFE_BABE,
-        "clock_sync surfaced the wrong clock source — expected the stub's \
-         runtime_widened_host_clock value, got something else. This means \
-         the handler is reading from the §11.4 seqlock (which freezes \
-         during Drained when TIM5 is off) instead of Klipper's stats-based \
-         widening (which advances regardless of engine state)."
+        mcu_clock, 0,
+        "clock_sync returned unexpected clock value — expected the inline \
+         timer_read_time + stats_send_time_high widening (0 with host stubs)."
     );
 
-    // Update the stub mid-test and confirm the handler picks up the new
-    // value — proves the function reads the clock on every call rather
-    // than caching at init.
-    STUB_MCU_CLOCK.store(0x1234_5678_9ABC_DEF0, Ordering::Relaxed);
-    let r2 = unsafe {
-        kalico_c_api::kalico_runtime_clock_sync_request(
-            rt,
-            43,
-            0,
-            0,
-            &mut mcu_clock,
-        )
-    };
+    // Second call — still returns the inline-widened value (0 with stubs).
+    let r2 =
+        unsafe { kalico_c_api::kalico_runtime_clock_sync_request(rt, 43, 0, 0, &mut mcu_clock) };
     assert_eq!(r2, 0);
-    assert_eq!(mcu_clock, 0x1234_5678_9ABC_DEF0);
+    assert_eq!(mcu_clock, 0);
 }

@@ -13,7 +13,7 @@
 //! **fixed-layout body only**, exactly as specified in §5.
 //!
 //! Identify body: 1 byte.
-//! IdentifyResponse body: 81 bytes.
+//! `IdentifyResponse` body: 81 bytes.
 
 /// Spec §5: `proto_version: u8`. Single field, single byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,7 +40,9 @@ impl Identify {
                 got: buf.len(),
             });
         }
-        Ok(Self { proto_version: buf[0] })
+        Ok(Self {
+            proto_version: buf[0],
+        })
     }
 }
 
@@ -87,7 +89,7 @@ impl IdentifyResponse {
     pub fn encode_body_to_array(&self) -> [u8; IDENTIFY_RESPONSE_BODY_LEN] {
         let mut b = [0u8; IDENTIFY_RESPONSE_BODY_LEN];
         b[IDR_OFF_PROTO_VERSION] = self.proto_version;
-        b[IDR_OFF_FIRMWARE_VER..IDR_OFF_FIRMWARE_VER + 4]
+        b[IDR_OFF_FIRMWARE_VER..=IDR_OFF_FIRMWARE_VER + 3]
             .copy_from_slice(&self.firmware_ver.to_le_bytes());
         b[IDR_OFF_BUILD_HASH..IDR_OFF_BUILD_HASH + 20].copy_from_slice(&self.build_hash);
         b[IDR_OFF_SCHEMA_HASH..IDR_OFF_SCHEMA_HASH + 32].copy_from_slice(&self.schema_hash);
@@ -108,7 +110,7 @@ impl IdentifyResponse {
         }
         let proto_version = buf[IDR_OFF_PROTO_VERSION];
         let firmware_ver = u32::from_le_bytes(
-            buf[IDR_OFF_FIRMWARE_VER..IDR_OFF_FIRMWARE_VER + 4]
+            buf[IDR_OFF_FIRMWARE_VER..=IDR_OFF_FIRMWARE_VER + 3]
                 .try_into()
                 .expect("range checked above"),
         );
@@ -164,7 +166,9 @@ mod tests {
 
     #[test]
     fn identify_byte_layout() {
-        let m = Identify { proto_version: 0x01 };
+        let m = Identify {
+            proto_version: 0x01,
+        };
         let bytes = m.encode_body_to_array();
         assert_eq!(bytes.len(), 1);
         assert_eq!(bytes, [0x01]);
@@ -175,11 +179,17 @@ mod tests {
     fn identify_decode_rejects_wrong_length() {
         assert!(matches!(
             Identify::decode_body(&[]),
-            Err(BootstrapDecodeError::WrongLength { expected: 1, got: 0 })
+            Err(BootstrapDecodeError::WrongLength {
+                expected: 1,
+                got: 0
+            })
         ));
         assert!(matches!(
             Identify::decode_body(&[1, 2]),
-            Err(BootstrapDecodeError::WrongLength { expected: 1, got: 2 })
+            Err(BootstrapDecodeError::WrongLength {
+                expected: 1,
+                got: 2
+            })
         ));
     }
 
@@ -226,7 +236,10 @@ mod tests {
         // reset_epoch little-endian.
         assert_eq!(&bytes[57..61], &[0xEF, 0xBE, 0xAD, 0xDE]);
         // capabilities little-endian.
-        assert_eq!(&bytes[61..69], &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]);
+        assert_eq!(
+            &bytes[61..69],
+            &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]
+        );
         // mcu_serial verbatim.
         assert_eq!(&bytes[69..81], &mcu_serial);
 
@@ -238,7 +251,10 @@ mod tests {
     fn identify_response_decode_rejects_wrong_length() {
         assert!(matches!(
             IdentifyResponse::decode_body(&[0u8; 80]),
-            Err(BootstrapDecodeError::WrongLength { expected: 81, got: 80 })
+            Err(BootstrapDecodeError::WrongLength {
+                expected: 81,
+                got: 80
+            })
         ));
     }
 }

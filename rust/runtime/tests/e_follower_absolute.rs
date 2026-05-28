@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! Tests for Phase-3 E follower math — absolute-E position model.
 //!
 //! Spec: docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md §4.6.

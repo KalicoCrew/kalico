@@ -40,10 +40,12 @@ fn schema_hash_changes_when_a_field_type_changes() {
     // hash differently. This is the "what if I quietly changed a field"
     // canary: if this test ever passes when the field type is the same,
     // the canonicalization is broken.
-    let mut mutated_fields: Vec<SchemaField> =
-        SCHEMA_MESSAGES[0].fields.iter().copied().collect();
+    let mut mutated_fields: Vec<SchemaField> = SCHEMA_MESSAGES[0].fields.to_vec();
     // Change `slot:u16` to `slot:u32` on LoadCurve — wire-incompatible.
-    mutated_fields[0] = SchemaField { name: "slot", ty: "u32" };
+    mutated_fields[0] = SchemaField {
+        name: "slot",
+        ty: "u32",
+    };
     let mutated_msg = SchemaMessage {
         type_tag: SCHEMA_MESSAGES[0].type_tag,
         name: SCHEMA_MESSAGES[0].name,
@@ -64,9 +66,11 @@ fn schema_hash_changes_when_a_field_type_changes() {
 
 #[test]
 fn schema_hash_changes_when_a_field_is_added() {
-    let mut extra_fields: Vec<SchemaField> =
-        SCHEMA_MESSAGES[0].fields.iter().copied().collect();
-    extra_fields.push(SchemaField { name: "new_field", ty: "u32" });
+    let mut extra_fields: Vec<SchemaField> = SCHEMA_MESSAGES[0].fields.to_vec();
+    extra_fields.push(SchemaField {
+        name: "new_field",
+        ty: "u32",
+    });
     let mutated_msg = SchemaMessage {
         type_tag: SCHEMA_MESSAGES[0].type_tag,
         name: SCHEMA_MESSAGES[0].name,

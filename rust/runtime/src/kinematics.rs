@@ -1,11 +1,11 @@
 //! Kinematic transforms. Spec §3.1 / §4.2 step 6.
 //!
-//! **Architecture note (2026-05-21):** The CoreXY transform is now applied by
+//! **Architecture note (2026-05-21):** The `CoreXY` transform is now applied by
 //! the host bridge (`motion-bridge/src/dispatch.rs::build_push_params`) before
 //! curves are serialised to the MCU. The MCU engine is motor-frame end-to-end
 //! and no longer calls these functions in its hot path. They are retained here
 //! for unit-test coverage of the transform math and as reference documentation
-//! of the CoreXY geometry invariant.
+//! of the `CoreXY` geometry invariant.
 
 /// `CoreXY`: (x, y, z, e) → (a=x+y, b=x−y, z, e).
 /// Z and E are passed through unchanged.

@@ -205,7 +205,11 @@ pub fn split_cubic_bezier(
 ) -> (VectorNurbs<f64, 3>, VectorNurbs<f64, 3>) {
     assert_eq!(xyz.degree(), 3, "split_cubic_bezier: degree must be 3");
     let cps = xyz.control_points();
-    assert_eq!(cps.len(), 4, "split_cubic_bezier: must have 4 control points");
+    assert_eq!(
+        cps.len(),
+        4,
+        "split_cubic_bezier: must have 4 control points"
+    );
     assert!(
         xyz.weights().is_none(),
         "split_cubic_bezier: weights must be absent (polynomial Bézier)",
@@ -405,7 +409,7 @@ mod tests {
             // Left covers original [0, s], right covers [s, 1]. Sample 21 u
             // values in [0, 1] for each half and remap to the original s-domain.
             for k in 0..=20 {
-                let u_local = (k as f64) / 20.0;
+                let u_local = f64::from(k) / 20.0;
                 let u_left = u_local * s;
                 let u_right = s + u_local * (1.0 - s);
                 let lhs_left = vector_eval(&left, u_local);

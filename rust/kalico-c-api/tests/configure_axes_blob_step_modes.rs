@@ -46,6 +46,43 @@ pub extern "C" fn runtime_reset_stepper_bindings() {}
 #[unsafe(no_mangle)]
 pub extern "C" fn runtime_diag_progress(_tag: u32, _stage: u32, _value: u32) {}
 
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_widened_host_clock() -> u64 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_host_now_us() -> u64 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_irq_save() -> u32 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_irq_restore(_flags: u32) {}
+
+#[unsafe(no_mangle)]
+pub static stats_send_time: u32 = 0;
+
+#[unsafe(no_mangle)]
+pub static stats_send_time_high: u32 = 0;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn timer_read_time() -> u32 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn timer_is_before(_a: u32, _b: u32) -> u8 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_emit_step_pulses(_axis_idx: u8, _n_steps: i32) {}
+
 // ---- Helpers ----------------------------------------------------------------
 
 /// Build a minimal valid 20-byte blob (legacy format).
@@ -96,6 +133,23 @@ unsafe fn write_step_mode(ctx: *mut RuntimeContext, i: usize, mode: StepMode) {
     shared.step_modes[i].store(mode as u8, Ordering::Release);
 }
 
+fn reset_shared_state(shared: &SharedState) {
+    for slot in shared.step_modes.iter() {
+        slot.store(StepMode::StepTime as u8, Ordering::Release);
+    }
+    for slot in shared.phase_config.iter() {
+        slot.store(0xFFFF, Ordering::Release);
+    }
+    for slot in shared.phase_slot_idx.iter() {
+        slot.store(0xFF, Ordering::Release);
+    }
+    shared.phase_motor_count.store(0, Ordering::Release);
+}
+
+fn shared_of(ctx: *mut RuntimeContext) -> &'static SharedState {
+    unsafe { &*core::ptr::addr_of!((*ctx).shared) }
+}
+
 // ---- Singleton runtime init -------------------------------------------------
 
 /// Thin wrapper that makes `*mut KalicoRuntime` shareable across test threads.
@@ -116,7 +170,8 @@ fn get_runtime() -> *mut kalico_c_api::KalicoRuntime {
         let rt = kalico_c_api::runtime_handle_create();
         assert!(!rt.is_null(), "runtime_handle_create failed");
         RuntimePtr(rt)
-    }).0
+    })
+    .0
 }
 
 // ---- Tests ------------------------------------------------------------------
@@ -126,6 +181,7 @@ fn get_runtime() -> *mut kalico_c_api::KalicoRuntime {
 fn legacy_blob_preserves_existing_step_modes() {
     let rt = get_runtime();
     let ctx = rt.cast::<RuntimeContext>();
+    reset_shared_state(shared_of(ctx));
 
     // Set a known state: flip motor 0 to Modulated via direct atomic write.
     unsafe { write_step_mode(ctx, 0, StepMode::Modulated) };
@@ -136,12 +192,17 @@ fn legacy_blob_preserves_existing_step_modes() {
     let rc = unsafe {
         kalico_c_api::kalico_runtime_configure_axes_blob(rt, blob.as_ptr(), blob.len() as u32)
     };
-    assert_eq!(rc, kalico_c_api::KALICO_OK, "legacy blob should be accepted");
+    assert_eq!(
+        rc,
+        kalico_c_api::KALICO_OK,
+        "legacy blob should be accepted"
+    );
 
     // Motor 0 must still be Modulated (legacy path doesn't touch step_modes).
     let m0 = unsafe { read_step_mode(ctx, 0) };
     assert_eq!(
-        m0, StepMode::Modulated,
+        m0,
+        StepMode::Modulated,
         "legacy blob must preserve pre-existing Modulated on motor 0",
     );
     let m1 = unsafe { read_step_mode(ctx, 1) };
@@ -153,6 +214,7 @@ fn legacy_blob_preserves_existing_step_modes() {
 fn extended_blob_populates_step_modes() {
     let rt = get_runtime();
     let ctx = rt.cast::<RuntimeContext>();
+    reset_shared_state(shared_of(ctx));
 
     // Phase-capable MCU (bit 0 set). Request: motor 0 = Modulated, rest = StepTime.
     let blob = extended_blob(
@@ -167,9 +229,18 @@ fn extended_blob_populates_step_modes() {
     let rc = unsafe {
         kalico_c_api::kalico_runtime_configure_axes_blob(rt, blob.as_ptr(), blob.len() as u32)
     };
-    assert_eq!(rc, kalico_c_api::KALICO_OK, "extended blob (phase-capable) should be accepted");
+    assert_eq!(
+        rc,
+        kalico_c_api::KALICO_OK,
+        "extended blob (phase-capable) should be accepted"
+    );
 
-    let expected = [StepMode::Modulated, StepMode::StepTime, StepMode::StepTime, StepMode::StepTime];
+    let expected = [
+        StepMode::Modulated,
+        StepMode::StepTime,
+        StepMode::StepTime,
+        StepMode::StepTime,
+    ];
     for (i, &want) in expected.iter().enumerate() {
         let got = unsafe { read_step_mode(ctx, i) };
         assert_eq!(got, want, "motor {i}: expected {want:?}, got {got:?}");
@@ -206,6 +277,7 @@ fn extended_blob_all_step_time_non_phase_mcu_accepted() {
         "all-StepTime extended blob on non-phase MCU must be accepted",
     );
     let ctx = rt.cast::<RuntimeContext>();
+    reset_shared_state(shared_of(ctx));
     for i in 0..4 {
         let mode = unsafe { read_step_mode(ctx, i) };
         assert_eq!(mode, StepMode::StepTime, "motor {i} should be StepTime");
@@ -244,9 +316,8 @@ fn invalid_blob_lengths_rejected() {
     let rt = get_runtime();
     for bad_len in [0u32, 1, 19, 21, 24, 27, 28, 100] {
         let buf = vec![0u8; bad_len as usize];
-        let rc = unsafe {
-            kalico_c_api::kalico_runtime_configure_axes_blob(rt, buf.as_ptr(), bad_len)
-        };
+        let rc =
+            unsafe { kalico_c_api::kalico_runtime_configure_axes_blob(rt, buf.as_ptr(), bad_len) };
         assert_eq!(
             rc,
             kalico_c_api::KALICO_ERR_INVALID_KINEMATICS,

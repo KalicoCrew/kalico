@@ -201,6 +201,7 @@ pub fn split_without_refit(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
     use nurbs::bezier::BezierPiece;

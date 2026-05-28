@@ -1,5 +1,16 @@
 //! NURBS evaluation: de Boor, vector eval, derivative, curvature.
 //! See spec §eval module.
+//!
+//! # Safety note
+//!
+//! This module uses `unsafe { get_unchecked }` for the de Boor index accesses.
+//! All such accesses are proved in-bounds by the `find_knot_span` invariant
+//! (k ∈ [p, n-1] per Piegl & Tiller Algorithm A4.1); each site is accompanied
+//! by a `SAFETY:` comment and a `debug_assert!` of the precondition.
+// `unsafe_code` is workspace-denied by default; this module is the sole
+// exception because the hot-path MCU de Boor evaluators require provably-safe
+// index elimination to avoid panic-symbol contamination in the release firmware.
+#![allow(unsafe_code)]
 
 use crate::{Float, MAX_DEGREE, MIN_PARAMETRIC_SPEED, NurbsView, VectorNurbsView, WORKSPACE_SIZE};
 
@@ -12,18 +23,35 @@ pub(crate) use crate::knot::find_knot_span;
 #[cfg(not(feature = "host"))]
 #[inline]
 pub(crate) fn find_knot_span<T: Float>(knots: &[T], p: usize, n: usize, u: T) -> usize {
+    // Pre-conditions: knots.len() == n + p + 1; n >= 1; p >= 0.
+    // All index accesses below are in-bounds:
+    //   knots[n]     : n < n+p+1 (since p >= 0)
+    //   knots[p]     : p < n+p+1 (since n >= 1)
+    //   knots[mid]   : mid ∈ [low,high] ⊆ [p,n] ⊂ [0, n+p+1)
+    //   knots[mid+1] : mid+1 ≤ n+1 ≤ n+p+1 (since high ≤ n)
     debug_assert!(knots.len() == n + p + 1);
-    if u >= knots[n] {
+    debug_assert!(n >= 1);
+    // SAFETY: n < n+p+1 = knots.len() (p is usize so >= 0, n >= 1)
+    if u >= unsafe { *knots.get_unchecked(n) } {
         return n - 1;
     }
-    if u <= knots[p] {
+    // SAFETY: p < n+p+1 = knots.len() (n >= 1)
+    if u <= unsafe { *knots.get_unchecked(p) } {
         return p;
     }
     let mut low = p;
     let mut high = n;
     let mut mid = (low + high) / 2;
-    while u < knots[mid] || u >= knots[mid + 1] {
-        if u < knots[mid] {
+    while {
+        // SAFETY: mid ∈ [low,high] ⊆ [p,n] < n+p+1 = knots.len();
+        //         mid+1 ≤ high+1 ≤ n+1 ≤ n+p+1 = knots.len() (p >= 0).
+        let km = unsafe { *knots.get_unchecked(mid) };
+        let km1 = unsafe { *knots.get_unchecked(mid + 1) };
+        u < km || u >= km1
+    } {
+        // SAFETY: same bounds — recompute on next iteration.
+        let km = unsafe { *knots.get_unchecked(mid) };
+        if u < km {
             high = mid;
         } else {
             low = mid;
@@ -38,6 +66,19 @@ pub(crate) fn find_knot_span<T: Float>(knots: &[T], p: usize, n: usize, u: T) ->
 /// `p as usize <= MAX_DEGREE`.
 ///
 /// Reference: Piegl & Tiller "The NURBS Book" Algorithm A4.1 (de Boor).
+///
+/// # Index-safety invariant
+///
+/// `find_knot_span` returns `k ∈ [p, n-1]` (algorithm A2.1 postcondition).
+///
+/// For `j ∈ 0..=p`: `k - p + j ∈ [0, k] ⊆ [0, n-1]` — valid index into
+/// `cps` (len `n`) and into `knots` (len `n + p + 1`).
+///
+/// For the recurrence with `r ∈ 1..=p`, `j ∈ r..=p`:
+/// `k + 1 + j - r ≤ k + p ≤ (n-1) + p = n + p - 1 < n + p + 1` — valid.
+///
+/// All accesses below are proved in-bounds by this invariant; `get_unchecked`
+/// eliminates the panic paths that LLVM cannot otherwise remove on the MCU.
 #[inline]
 pub(crate) fn de_boor_inner<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T {
     debug_assert!((degree as usize) <= MAX_DEGREE);
@@ -45,26 +86,40 @@ pub(crate) fn de_boor_inner<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) 
     let n = cps.len();
     let k = find_knot_span(knots, p, n, u);
 
+    // SAFETY: k ∈ [p, n-1] from find_knot_span, so k-p+j ∈ [0, n-1] for j ∈ 0..=p.
+    debug_assert!(k >= p && k < n, "find_knot_span invariant: k ∈ [p, n-1]");
+    debug_assert!(knots.len() == n + p + 1, "knots len == n + p + 1");
+
     let mut d = [T::ZERO; WORKSPACE_SIZE];
     for j in 0..=p {
-        d[j] = cps[k - p + j];
+        // SAFETY: k - p + j ∈ [0, k] ⊆ [0, n-1] < cps.len()
+        // SAFETY: j ≤ p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
+        unsafe { *d.get_unchecked_mut(j) = *cps.get_unchecked(k - p + j) };
     }
 
     for r in 1..=p {
         for j in (r..=p).rev() {
-            let denom = knots[k + 1 + j - r] - knots[k - p + j];
+            // SAFETY: k - p + j ∈ [0, n-1] < knots.len();
+            //         k + 1 + j - r ≤ k + p ≤ n + p - 1 < knots.len() = n + p + 1.
+            // SAFETY: j ≤ p ≤ MAX_DEGREE < WORKSPACE_SIZE; j-1 ≥ r-1 ≥ 0.
+            let knot_lo = unsafe { *knots.get_unchecked(k - p + j) };
+            let knot_hi = unsafe { *knots.get_unchecked(k + 1 + j - r) };
+            let denom = knot_hi - knot_lo;
             let alpha = if denom > T::ZERO {
-                (u - knots[k - p + j]) / denom
+                (u - knot_lo) / denom
             } else {
                 T::ZERO
             };
             // d[j] = (1 - alpha) * d[j-1] + alpha * d[j]
             //      = (d[j] - d[j-1]).mul_add(alpha, d[j-1])
-            d[j] = (d[j] - d[j - 1]).mul_add(alpha, d[j - 1]);
+            let dj = unsafe { *d.get_unchecked(j) };
+            let djm1 = unsafe { *d.get_unchecked(j - 1) };
+            unsafe { *d.get_unchecked_mut(j) = (dj - djm1).mul_add(alpha, djm1) };
         }
     }
 
-    d[p]
+    // SAFETY: p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
+    unsafe { *d.get_unchecked(p) }
 }
 
 /// Evaluate a scalar NURBS at parameter `u`.
@@ -94,6 +149,13 @@ pub fn eval<T: Float, V: NurbsView<T>>(curve: &V, u: T) -> T {
 /// Reference: Piegl & Tiller "The NURBS Book" §4.4 (rational evaluation via
 /// homogeneous coordinates). The weighting is applied at the de Boor
 /// initialization step; the recurrence is identical to `de_boor_inner`.
+///
+/// # Index-safety invariant
+///
+/// Same as `de_boor_inner`: `find_knot_span` returns `k ∈ [p, n-1]`, so
+/// `k - p + j ∈ [0, n-1]` for `j ∈ 0..=p`, and `k + 1 + j - r ≤ k + p ≤ n + p - 1`.
+/// All `cps`, `weights`, and `knots` accesses below are in-bounds by this
+/// invariant; `get_unchecked` eliminates MCU-build panic paths.
 #[inline]
 pub(crate) fn de_boor_homogeneous<T: Float>(
     cps: &[T],
@@ -108,24 +170,40 @@ pub(crate) fn de_boor_homogeneous<T: Float>(
     let n = cps.len();
     let k = find_knot_span(knots, p, n, u);
 
+    // SAFETY: k ∈ [p, n-1] from find_knot_span, so k-p+j ∈ [0, n-1] for j ∈ 0..=p.
+    debug_assert!(k >= p && k < n, "find_knot_span invariant: k ∈ [p, n-1]");
+    debug_assert!(knots.len() == n + p + 1, "knots len == n + p + 1");
+
     let mut d = [T::ZERO; WORKSPACE_SIZE];
     for j in 0..=p {
-        d[j] = cps[k - p + j] * weights[k - p + j];
+        // SAFETY: k - p + j ∈ [0, n-1] < cps.len() == weights.len()
+        // SAFETY: j ≤ p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
+        unsafe {
+            *d.get_unchecked_mut(j) =
+                *cps.get_unchecked(k - p + j) * *weights.get_unchecked(k - p + j);
+        }
     }
 
     for r in 1..=p {
         for j in (r..=p).rev() {
-            let denom = knots[k + 1 + j - r] - knots[k - p + j];
+            // SAFETY: same knots-index invariant as de_boor_inner.
+            // SAFETY: j ≤ p ≤ MAX_DEGREE < WORKSPACE_SIZE; j-1 ≥ r-1 ≥ 0.
+            let knot_lo = unsafe { *knots.get_unchecked(k - p + j) };
+            let knot_hi = unsafe { *knots.get_unchecked(k + 1 + j - r) };
+            let denom = knot_hi - knot_lo;
             let alpha = if denom > T::ZERO {
-                (u - knots[k - p + j]) / denom
+                (u - knot_lo) / denom
             } else {
                 T::ZERO
             };
-            d[j] = (d[j] - d[j - 1]).mul_add(alpha, d[j - 1]);
+            let dj = unsafe { *d.get_unchecked(j) };
+            let djm1 = unsafe { *d.get_unchecked(j - 1) };
+            unsafe { *d.get_unchecked_mut(j) = (dj - djm1).mul_add(alpha, djm1) };
         }
     }
 
-    d[p]
+    // SAFETY: p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
+    unsafe { *d.get_unchecked(p) }
 }
 
 /// Evaluate a vector NURBS at parameter `u`. Shares knot-span lookup and alpha
@@ -145,17 +223,25 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V
     let mut d_axes: [[T; WORKSPACE_SIZE]; N] = [[T::ZERO; WORKSPACE_SIZE]; N];
     let mut d_w = [T::ZERO; WORKSPACE_SIZE];
 
+    // SAFETY: k ∈ [p, n-1] from find_knot_span (same invariant as de_boor_inner).
+    debug_assert!(k >= p && k < n, "find_knot_span invariant: k ∈ [p, n-1]");
+    debug_assert!(knots.len() == n + p + 1, "knots len == n + p + 1");
+
     // Initialize active CPs for this span.
     for j in 0..=p {
-        let cp = cps[k - p + j];
+        // SAFETY: k - p + j ∈ [0, n-1] < cps.len()
+        // SAFETY: j ≤ p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
+        let cp = unsafe { cps.get_unchecked(k - p + j) };
         if let Some(w) = curve.weights() {
+            // SAFETY: same index, w.len() == cps.len()
+            let wj = unsafe { *w.get_unchecked(k - p + j) };
             for axis in 0..N {
-                d_axes[axis][j] = cp[axis] * w[k - p + j];
+                unsafe { *d_axes[axis].get_unchecked_mut(j) = cp[axis] * wj };
             }
-            d_w[j] = w[k - p + j];
+            unsafe { *d_w.get_unchecked_mut(j) = wj };
         } else {
             for axis in 0..N {
-                d_axes[axis][j] = cp[axis];
+                unsafe { *d_axes[axis].get_unchecked_mut(j) = cp[axis] };
             }
         }
     }
@@ -163,34 +249,44 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V
     // de Boor recurrence — shared alphas across axes.
     for r in 1..=p {
         for j in (r..=p).rev() {
-            let denom = knots[k + 1 + j - r] - knots[k - p + j];
+            // SAFETY: same knots-index invariant as de_boor_inner.
+            // SAFETY: j ≤ p ≤ MAX_DEGREE < WORKSPACE_SIZE; j-1 ≥ r-1 ≥ 0.
+            let knot_lo = unsafe { *knots.get_unchecked(k - p + j) };
+            let knot_hi = unsafe { *knots.get_unchecked(k + 1 + j - r) };
+            let denom = knot_hi - knot_lo;
             let alpha = if denom > T::ZERO {
-                (u - knots[k - p + j]) / denom
+                (u - knot_lo) / denom
             } else {
                 T::ZERO
             };
             for axis in 0..N {
-                d_axes[axis][j] =
-                    (d_axes[axis][j] - d_axes[axis][j - 1]).mul_add(alpha, d_axes[axis][j - 1]);
+                let dj = unsafe { *d_axes[axis].get_unchecked(j) };
+                let djm1 = unsafe { *d_axes[axis].get_unchecked(j - 1) };
+                unsafe { *d_axes[axis].get_unchecked_mut(j) = (dj - djm1).mul_add(alpha, djm1) };
             }
             if has_weights {
-                d_w[j] = (d_w[j] - d_w[j - 1]).mul_add(alpha, d_w[j - 1]);
+                let dj = unsafe { *d_w.get_unchecked(j) };
+                let djm1 = unsafe { *d_w.get_unchecked(j - 1) };
+                unsafe { *d_w.get_unchecked_mut(j) = (dj - djm1).mul_add(alpha, djm1) };
             }
         }
     }
 
     let mut result = [T::ZERO; N];
     if has_weights {
-        let denom = d_w[p];
+        // SAFETY: p ≤ MAX_DEGREE < WORKSPACE_SIZE
+        let denom = unsafe { *d_w.get_unchecked(p) };
         let floor = T::from_f64(MIN_PARAMETRIC_SPEED);
         debug_assert!(denom.abs() > floor);
         let denom_clamp = denom.max(floor);
         for axis in 0..N {
-            result[axis] = d_axes[axis][p] / denom_clamp;
+            // SAFETY: p ≤ MAX_DEGREE < WORKSPACE_SIZE
+            result[axis] = unsafe { *d_axes[axis].get_unchecked(p) } / denom_clamp;
         }
     } else {
         for axis in 0..N {
-            result[axis] = d_axes[axis][p];
+            // SAFETY: p ≤ MAX_DEGREE < WORKSPACE_SIZE
+            result[axis] = unsafe { *d_axes[axis].get_unchecked(p) };
         }
     }
     result
@@ -204,12 +300,12 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V
 /// Per-pass cost is `O(p^2)` arithmetic ops; this function does `~2x` the
 /// work of `eval_polynomial` alone, vs `~3x` if you call eval and derivative
 /// separately (eval pays for the lowered curve's de Boor, plus its own
-/// init / find_knot_span). On the H7 at degree 9 / 82 cps / 92 knots, the
+/// init / `find_knot_span`). On the H7 at degree 9 / 82 cps / 92 knots, the
 /// combined form is materially cheaper than the sum of the separate calls.
 ///
 /// MCU hot path: callers are responsible for ensuring slice shapes satisfy
 /// `knots.len() == cps.len() + degree + 1` and that the curve was validated
-/// upstream (e.g. CurvePool on segment load).
+/// upstream (e.g. `CurvePool` on segment load).
 ///
 /// Polynomial (non-rational) only — for weighted curves go via separate
 /// `eval` + appropriate quotient-rule construction.
@@ -235,72 +331,102 @@ pub fn eval_polynomial_with_derivative<T: Float>(
         let p = 0;
         let n = cps.len();
         let k = find_knot_span(knots, p, n, u);
-        return (cps[k], T::ZERO);
+        // SAFETY: find_knot_span returns k ∈ [0, n-1] for p=0.
+        debug_assert!(k < n);
+        return (unsafe { *cps.get_unchecked(k) }, T::ZERO);
     }
 
     let p = degree as usize;
     let n = cps.len();
     let k = find_knot_span(knots, p, n, u);
 
+    // SAFETY: k ∈ [p, n-1] from find_knot_span; k-p+j ∈ [0,n-1] for j ∈ 0..=p;
+    //         k+1+j-r ≤ k+p ≤ n+p-1 < knots.len() = n+p+1.
+    debug_assert!(k >= p && k < n, "find_knot_span invariant: k ∈ [p, n-1]");
+    debug_assert!(knots.len() == n + p + 1, "knots len == n + p + 1");
+
     let mut d = [T::ZERO; WORKSPACE_SIZE];
     let mut dd = [T::ZERO; WORKSPACE_SIZE];
     for j in 0..=p {
-        d[j] = cps[k - p + j];
+        // SAFETY: k - p + j ∈ [0, n-1] < cps.len()
+        // SAFETY: j ≤ p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
+        unsafe { *d.get_unchecked_mut(j) = *cps.get_unchecked(k - p + j) };
         // dd[j] = 0 — original cps don't depend on u, already in default.
     }
 
     for r in 1..=p {
         for j in (r..=p).rev() {
-            let lo = knots[k - p + j];
-            let hi = knots[k + 1 + j - r];
+            // SAFETY: same knots-index invariant as de_boor_inner.
+            // SAFETY: j ≤ p ≤ MAX_DEGREE < WORKSPACE_SIZE; j-1 ≥ r-1 ≥ 0.
+            let lo = unsafe { *knots.get_unchecked(k - p + j) };
+            let hi = unsafe { *knots.get_unchecked(k + 1 + j - r) };
             let denom = hi - lo;
             // Save old d[j-1] / d[j] / dd[j-1] / dd[j] before any writes.
             // (Reverse-j iteration means d[j-1] hasn't been touched at this r.)
-            let old_d_jm1 = d[j - 1];
-            let old_d_j = d[j];
-            let old_dd_jm1 = dd[j - 1];
-            let old_dd_j = dd[j];
+            let old_d_jm1 = unsafe { *d.get_unchecked(j - 1) };
+            let old_d_j = unsafe { *d.get_unchecked(j) };
+            let old_dd_jm1 = unsafe { *dd.get_unchecked(j - 1) };
+            let old_dd_j = unsafe { *dd.get_unchecked(j) };
             if denom > T::ZERO {
                 let inv_denom = T::ONE / denom;
                 let alpha = (u - lo) * inv_denom;
                 let one_minus_alpha = T::ONE - alpha;
                 // dd[j] = (1-α) * dd[j-1] + α * dd[j]
                 //       + (d[j] - d[j-1]) / denom
-                dd[j] = one_minus_alpha * old_dd_jm1
-                    + alpha * old_dd_j
-                    + (old_d_j - old_d_jm1) * inv_denom;
-                d[j] = (old_d_j - old_d_jm1).mul_add(alpha, old_d_jm1);
+                unsafe {
+                    *dd.get_unchecked_mut(j) = one_minus_alpha * old_dd_jm1
+                        + alpha * old_dd_j
+                        + (old_d_j - old_d_jm1) * inv_denom;
+                    *d.get_unchecked_mut(j) = (old_d_j - old_d_jm1).mul_add(alpha, old_d_jm1);
+                }
             } else {
                 // Degenerate knot interval: alpha undefined, freeze d[j] to
                 // d[j-1] and dd[j] to dd[j-1] (consistent with the
                 // alpha=0 fallback in `de_boor_inner`).
-                d[j] = old_d_jm1;
-                dd[j] = old_dd_jm1;
+                unsafe {
+                    *d.get_unchecked_mut(j) = old_d_jm1;
+                    *dd.get_unchecked_mut(j) = old_dd_jm1;
+                }
             }
         }
     }
 
-    (d[p], dd[p])
+    // SAFETY: p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
+    unsafe { (*d.get_unchecked(p), *dd.get_unchecked(p)) }
 }
 
 /// Knot-span lookup variant that takes f32 knots but an f64 query parameter.
 /// Used by `eval_polynomial_f32_with_pos_vel_accel_f64` to drive the de Boor
 /// recurrence in f64 over f32-storage cps/knots without an intermediate
 /// per-knot widening pass.
+// Same index-safety proof as the MCU `find_knot_span` copy:
+//   knots[n]     : n < n+p+1 (p is usize, n >= 1)
+//   knots[p]     : p < n+p+1 (n >= 1)
+//   knots[mid]   : mid ∈ [low,high] ⊆ [p,n] < n+p+1
+//   knots[mid+1] : mid+1 ≤ n+1 ≤ n+p+1 (p >= 0)
 #[inline]
 fn find_knot_span_f32_with_f64_u(knots: &[f32], p: usize, n: usize, u: f64) -> usize {
     debug_assert!(knots.len() == n + p + 1);
-    if u >= knots[n] as f64 {
+    debug_assert!(n >= 1);
+    // SAFETY: n < n+p+1 = knots.len()
+    if u >= f64::from(unsafe { *knots.get_unchecked(n) }) {
         return n - 1;
     }
-    if u <= knots[p] as f64 {
+    // SAFETY: p < n+p+1 = knots.len()
+    if u <= f64::from(unsafe { *knots.get_unchecked(p) }) {
         return p;
     }
     let mut low = p;
     let mut high = n;
     let mut mid = (low + high) / 2;
-    while u < knots[mid] as f64 || u >= knots[mid + 1] as f64 {
-        if u < knots[mid] as f64 {
+    while {
+        // SAFETY: mid ∈ [low,high] ⊆ [p,n] < n+p+1; mid+1 ≤ n+1 ≤ n+p+1.
+        let km = f64::from(unsafe { *knots.get_unchecked(mid) });
+        let km1 = f64::from(unsafe { *knots.get_unchecked(mid + 1) });
+        u < km || u >= km1
+    } {
+        let km = f64::from(unsafe { *knots.get_unchecked(mid) });
+        if u < km {
             high = mid;
         } else {
             low = mid;
@@ -335,23 +461,27 @@ pub fn eval_polynomial_f32_with_pos_vel_accel_f64(
     debug_assert!((degree as usize) <= MAX_DEGREE);
     debug_assert!(knots.len() == cps.len() + (degree as usize) + 1);
 
-    let u_f64 = u as f64;
+    let u_f64 = f64::from(u);
     let p = usize::from(degree);
     let n = cps.len();
 
     if degree == 0 {
         // Step function: position is the active cp, derivatives are zero.
         let k = find_knot_span_f32_with_f64_u(knots, p, n, u_f64);
-        return (cps[k] as f64, 0.0, 0.0);
+        // SAFETY: find_knot_span returns k ∈ [0, n-1] for p=0.
+        debug_assert!(k < n);
+        return (f64::from(unsafe { *cps.get_unchecked(k) }), 0.0, 0.0);
     }
     if degree == 1 {
         // Linear: analytic evaluator. Second derivative is identically zero
         // on each span (the curve is piecewise-linear in u).
         let k = find_knot_span_f32_with_f64_u(knots, p, n, u_f64);
-        let a = cps[k - 1] as f64;
-        let b = cps[k] as f64;
-        let knot_lo = knots[k] as f64;
-        let knot_hi = knots[k + 1] as f64;
+        // SAFETY: k ∈ [1, n-1] for p=1; k-1 ∈ [0, n-2]; k+1 ≤ n < knots.len().
+        debug_assert!(k >= 1 && k < n);
+        let a = f64::from(unsafe { *cps.get_unchecked(k - 1) });
+        let b = f64::from(unsafe { *cps.get_unchecked(k) });
+        let knot_lo = f64::from(unsafe { *knots.get_unchecked(k) });
+        let knot_hi = f64::from(unsafe { *knots.get_unchecked(k + 1) });
         let denom = knot_hi - knot_lo;
         if denom <= 0.0 {
             return (a, 0.0, 0.0);
@@ -364,53 +494,73 @@ pub fn eval_polynomial_f32_with_pos_vel_accel_f64(
 
     let k = find_knot_span_f32_with_f64_u(knots, p, n, u_f64);
 
+    // SAFETY: k ∈ [p, n-1] from find_knot_span; k-p+j ∈ [0,n-1] for j ∈ 0..=p;
+    //         k+1+j-r ≤ k+p ≤ n+p-1 < knots.len() = n+p+1.
+    debug_assert!(k >= p && k < n, "find_knot_span invariant");
+    debug_assert!(knots.len() == n + p + 1, "knots len == n + p + 1");
+
     let mut d = [0.0_f64; WORKSPACE_SIZE];
     let mut dd = [0.0_f64; WORKSPACE_SIZE];
     let mut ddd = [0.0_f64; WORKSPACE_SIZE];
     for j in 0..=p {
-        d[j] = cps[k - p + j] as f64;
+        // SAFETY: k - p + j ∈ [0, n-1] < cps.len()
+        // SAFETY: j ≤ p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
+        unsafe { *d.get_unchecked_mut(j) = f64::from(*cps.get_unchecked(k - p + j)) };
         // dd[j] = 0, ddd[j] = 0 — initial cps don't depend on u.
     }
 
     for r in 1..=p {
         for j in (r..=p).rev() {
-            let lo = knots[k - p + j] as f64;
-            let hi = knots[k + 1 + j - r] as f64;
+            // SAFETY: same knots-index invariant as de_boor_inner.
+            // SAFETY: j ≤ p ≤ MAX_DEGREE < WORKSPACE_SIZE; j-1 ≥ r-1 ≥ 0.
+            let lo = f64::from(unsafe { *knots.get_unchecked(k - p + j) });
+            let hi = f64::from(unsafe { *knots.get_unchecked(k + 1 + j - r) });
             let denom = hi - lo;
-            let old_d_jm1 = d[j - 1];
-            let old_d_j = d[j];
-            let old_dd_jm1 = dd[j - 1];
-            let old_dd_j = dd[j];
-            let old_ddd_jm1 = ddd[j - 1];
-            let old_ddd_j = ddd[j];
+            let old_d_jm1 = unsafe { *d.get_unchecked(j - 1) };
+            let old_d_j = unsafe { *d.get_unchecked(j) };
+            let old_dd_jm1 = unsafe { *dd.get_unchecked(j - 1) };
+            let old_dd_j = unsafe { *dd.get_unchecked(j) };
+            let old_ddd_jm1 = unsafe { *ddd.get_unchecked(j - 1) };
+            let old_ddd_j = unsafe { *ddd.get_unchecked(j) };
             if denom > 0.0_f64 {
                 let inv_denom = 1.0_f64 / denom;
                 let alpha = (u_f64 - lo) * inv_denom;
                 let one_minus_alpha = 1.0_f64 - alpha;
-                ddd[j] = one_minus_alpha * old_ddd_jm1
-                    + alpha * old_ddd_j
-                    + 2.0 * (old_dd_j - old_dd_jm1) * inv_denom;
-                dd[j] = one_minus_alpha * old_dd_jm1
-                    + alpha * old_dd_j
-                    + (old_d_j - old_d_jm1) * inv_denom;
-                d[j] = (old_d_j - old_d_jm1) * alpha + old_d_jm1;
+                unsafe {
+                    *ddd.get_unchecked_mut(j) = one_minus_alpha * old_ddd_jm1
+                        + alpha * old_ddd_j
+                        + 2.0 * (old_dd_j - old_dd_jm1) * inv_denom;
+                    *dd.get_unchecked_mut(j) = one_minus_alpha * old_dd_jm1
+                        + alpha * old_dd_j
+                        + (old_d_j - old_d_jm1) * inv_denom;
+                    *d.get_unchecked_mut(j) = (old_d_j - old_d_jm1) * alpha + old_d_jm1;
+                }
             } else {
-                d[j] = old_d_jm1;
-                dd[j] = old_dd_jm1;
-                ddd[j] = old_ddd_jm1;
+                unsafe {
+                    *d.get_unchecked_mut(j) = old_d_jm1;
+                    *dd.get_unchecked_mut(j) = old_dd_jm1;
+                    *ddd.get_unchecked_mut(j) = old_ddd_jm1;
+                }
             }
         }
     }
 
-    (d[p], dd[p], ddd[p])
+    // SAFETY: p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
+    unsafe {
+        (
+            *d.get_unchecked(p),
+            *dd.get_unchecked(p),
+            *ddd.get_unchecked(p),
+        )
+    }
 }
 
 /// Evaluate a scalar B-spline NURBS at `u` directly from raw cps + knots
 /// slices, without going through `ScalarNurbsRef::try_new` (which re-runs the
 /// full O(n) NURBS-invariant validation on every call). MCU hot path: callers
-/// are responsible for ensuring slice shapes satisfy `knots.len() == cps.len()
-/// + degree + 1` and that the curve was validated upstream (e.g. CurvePool
-/// on segment load).
+/// are responsible for ensuring slice shapes satisfy
+/// `knots.len() == cps.len() + degree + 1` and that the curve was validated
+/// upstream (e.g. `CurvePool` on segment load).
 ///
 /// Polynomial (non-rational) only — for weighted curves go through `eval`.
 #[inline]
@@ -458,6 +608,16 @@ pub fn eval_derivative<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T 
 
     let k = find_knot_span(lowered_knots, new_p, new_n, u);
 
+    // SAFETY: k ∈ [new_p, new_n-1] from find_knot_span;
+    //         i = k - new_p + j ∈ [0, k] ⊆ [0, new_n-1] = [0, n-2].
+    //         cps[i+1] has i+1 ≤ new_n-1+1 = n-1 < cps.len().
+    //         knots[i+p+1] has i+p+1 ≤ (n-2)+p+1 = n+p-1 < knots.len() = n+p+1.
+    //         lowered_knots has length n+p-1; k+1+j-r ≤ k+new_p ≤ n-2+p-1 = n+p-3 < n+p-1.
+    debug_assert!(
+        k >= new_p && k < new_n,
+        "find_knot_span invariant on lowered knots"
+    );
+
     // Initialize de Boor scratch from the Q-window only. d[j] (j ∈ 0..=new_p)
     // corresponds to derivative cp index i = k - new_p + j in the lowered
     // curve, which maps to original cp index i = k - new_p + j (same offset
@@ -466,28 +626,40 @@ pub fn eval_derivative<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T 
     let p_t = T::from_f64(f64::from(degree));
     for j in 0..=new_p {
         let i = k - new_p + j;
-        let denom = knots[i + p + 1] - knots[i + 1];
-        d[j] = if denom > T::ZERO {
-            p_t * (cps[i + 1] - cps[i]) / denom
-        } else {
-            T::ZERO
-        };
+        // SAFETY: i ∈ [0, n-2]; i+1 ∈ [1, n-1] < cps.len(); i+p+1 ≤ n+p-1 < knots.len().
+        // SAFETY: j ≤ new_p ≤ p-1 ≤ MAX_DEGREE-1 < WORKSPACE_SIZE
+        let denom = unsafe { *knots.get_unchecked(i + p + 1) - *knots.get_unchecked(i + 1) };
+        unsafe {
+            *d.get_unchecked_mut(j) = if denom > T::ZERO {
+                // SAFETY: i ∈ [0, n-2]; i+1 ∈ [1, n-1] < cps.len()
+                p_t * (*cps.get_unchecked(i + 1) - *cps.get_unchecked(i)) / denom
+            } else {
+                T::ZERO
+            };
+        }
     }
 
     // de Boor recurrence on lowered_knots, identical shape to de_boor_inner.
     for r in 1..=new_p {
         for j in (r..=new_p).rev() {
-            let denom = lowered_knots[k + 1 + j - r] - lowered_knots[k - new_p + j];
+            // SAFETY: lowered_knots indices are in-bounds by the invariant above.
+            // SAFETY: j ≤ new_p < WORKSPACE_SIZE; j-1 ≥ r-1 ≥ 0.
+            let knot_lo = unsafe { *lowered_knots.get_unchecked(k - new_p + j) };
+            let knot_hi = unsafe { *lowered_knots.get_unchecked(k + 1 + j - r) };
+            let denom = knot_hi - knot_lo;
             let alpha = if denom > T::ZERO {
-                (u - lowered_knots[k - new_p + j]) / denom
+                (u - knot_lo) / denom
             } else {
                 T::ZERO
             };
-            d[j] = (d[j] - d[j - 1]).mul_add(alpha, d[j - 1]);
+            let dj = unsafe { *d.get_unchecked(j) };
+            let djm1 = unsafe { *d.get_unchecked(j - 1) };
+            unsafe { *d.get_unchecked_mut(j) = (dj - djm1).mul_add(alpha, djm1) };
         }
     }
 
-    d[new_p]
+    // SAFETY: new_p = p - 1 ≤ MAX_DEGREE - 1 < WORKSPACE_SIZE
+    unsafe { *d.get_unchecked(new_p) }
 }
 
 /// Compute the parametric derivative `dP/du` as a new owned NURBS via degree
@@ -785,25 +957,15 @@ mod tests {
     fn eval_polynomial_with_derivative_matches_separate_calls_quadratic() {
         let curve = quadratic_curve_f64();
         for u_pct in 0..=100 {
-            let u = u_pct as f64 / 100.0;
+            let u = f64::from(u_pct) / 100.0;
             let (v_combined, d_combined) = eval_polynomial_with_derivative(
                 curve.control_points(),
                 curve.knots(),
                 curve.degree(),
                 u,
             );
-            let v_sep = eval_polynomial(
-                curve.control_points(),
-                curve.knots(),
-                curve.degree(),
-                u,
-            );
-            let d_sep = eval_derivative(
-                curve.control_points(),
-                curve.knots(),
-                curve.degree(),
-                u,
-            );
+            let v_sep = eval_polynomial(curve.control_points(), curve.knots(), curve.degree(), u);
+            let d_sep = eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
             assert!(
                 (v_combined - v_sep).abs() < 1e-12,
                 "u={u}: combined value {v_combined} vs separate {v_sep}"
@@ -826,25 +988,15 @@ mod tests {
         )
         .unwrap();
         for u_pct in 0..=100 {
-            let u = u_pct as f64 / 100.0;
+            let u = f64::from(u_pct) / 100.0;
             let (v_combined, d_combined) = eval_polynomial_with_derivative(
                 curve.control_points(),
                 curve.knots(),
                 curve.degree(),
                 u,
             );
-            let v_sep = eval_polynomial(
-                curve.control_points(),
-                curve.knots(),
-                curve.degree(),
-                u,
-            );
-            let d_sep = eval_derivative(
-                curve.control_points(),
-                curve.knots(),
-                curve.degree(),
-                u,
-            );
+            let v_sep = eval_polynomial(curve.control_points(), curve.knots(), curve.degree(), u);
+            let d_sep = eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
             assert!(
                 (v_combined - v_sep).abs() < 1e-12,
                 "u={u}: combined value {v_combined} vs separate {v_sep}"
@@ -864,7 +1016,7 @@ mod tests {
         let curve = quadratic_curve_f64();
         let lowered = derivative(&curve);
         for u_pct in 0..=100 {
-            let u = u_pct as f64 / 100.0;
+            let u = f64::from(u_pct) / 100.0;
             let materialized = eval(&lowered.as_view(), u);
             let windowed =
                 eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
@@ -889,7 +1041,7 @@ mod tests {
         .unwrap();
         let lowered = derivative(&curve);
         for u_pct in 0..=100 {
-            let u = u_pct as f64 / 100.0;
+            let u = f64::from(u_pct) / 100.0;
             let materialized = eval(&lowered.as_view(), u);
             let windowed =
                 eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
@@ -948,9 +1100,9 @@ mod tests {
         let cps = vec![0.0_f32, 0.0, 1.0];
         let knots = vec![0.0_f32, 0.0, 0.0, 1.0, 1.0, 1.0];
         let (p, v, a) = eval_polynomial_f32_with_pos_vel_accel_f64(&cps, &knots, 2, 0.5);
-        assert!((p - 0.25).abs() < 1e-9, "pos={}", p);
-        assert!((v - 1.0_f64).abs() < 1e-9, "vel={}", v);
-        assert!((a - 2.0_f64).abs() < 1e-9, "accel={}", a);
+        assert!((p - 0.25).abs() < 1e-9, "pos={p}");
+        assert!((v - 1.0_f64).abs() < 1e-9, "vel={v}");
+        assert!((a - 2.0_f64).abs() < 1e-9, "accel={a}");
     }
 
     #[test]
@@ -961,9 +1113,9 @@ mod tests {
         let cps = vec![0.0_f32, 0.0, 0.0, 1.0];
         let knots = vec![0.0_f32, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
         let (p, v, a) = eval_polynomial_f32_with_pos_vel_accel_f64(&cps, &knots, 3, 0.5);
-        assert!((p - 0.125).abs() < 1e-9, "pos={}", p);
-        assert!((v - 0.75_f64).abs() < 1e-9, "vel={}", v);
-        assert!((a - 3.0_f64).abs() < 1e-9, "accel={}", a);
+        assert!((p - 0.125).abs() < 1e-9, "pos={p}");
+        assert!((v - 0.75_f64).abs() < 1e-9, "vel={v}");
+        assert!((a - 3.0_f64).abs() < 1e-9, "accel={a}");
     }
 
     #[test]
@@ -975,12 +1127,11 @@ mod tests {
         let cps = vec![0.0_f32, 1.0];
         let knots = vec![0.0_f32, 0.0, 1.0, 1.0];
         let (p, v, a) = eval_polynomial_f32_with_pos_vel_accel_f64(&cps, &knots, 1, 0.3);
-        assert!((p - 0.3).abs() < 1e-6, "pos={}", p);
-        assert!((v - 1.0_f64).abs() < 1e-9, "vel={}", v);
+        assert!((p - 0.3).abs() < 1e-6, "pos={p}");
+        assert!((v - 1.0_f64).abs() < 1e-9, "vel={v}");
         assert!(
             a.abs() < 1e-9,
-            "linear curve must have zero second derivative; got {}",
-            a
+            "linear curve must have zero second derivative; got {a}"
         );
     }
 

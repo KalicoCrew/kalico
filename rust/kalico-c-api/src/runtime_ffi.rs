@@ -23,20 +23,19 @@ pub mod exports {
     use core::cell::UnsafeCell;
     use core::sync::atomic::{AtomicBool, Ordering};
 
+    use runtime::RT_STORAGE_SIZE;
     use runtime::curve_pool::{CURVE_POOL_N, CurveHandle, CurvePool};
     use runtime::engine::RuntimeStatus;
     use runtime::error::{
         KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_ARG,
         KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION, KALICO_ERR_INVALID_HANDLE,
-        KALICO_ERR_INVALID_KINEMATICS,
-        KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
+        KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
         KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_ERR_QUEUE_FULL,
         KALICO_ERR_SEGMENT_ID_NON_MONOTONIC, KALICO_ERR_ZERO_DURATION_SEGMENT, KALICO_OK,
     };
     use runtime::segment::{KinematicTag, Segment};
     use runtime::state::{FgState, IsrState, RuntimeContext, SharedState};
     use runtime::trace::TraceSample;
-    use runtime::RT_STORAGE_SIZE;
 
     /// The opaque type C sees — never dereferenced on the C side.
     /// Matches spec §3.2 / §5.6 handle discipline.
@@ -92,8 +91,7 @@ pub mod exports {
     // must work in both modes.
     #[cfg(not(target_os = "none"))]
     #[allow(non_upper_case_globals)]
-    static rt_storage: HostRtStorage =
-        HostRtStorage(UnsafeCell::new([0u8; RT_STORAGE_SIZE]));
+    static rt_storage: HostRtStorage = HostRtStorage(UnsafeCell::new([0u8; RT_STORAGE_SIZE]));
 
     // Compile-time size contract: RuntimeContext must fit in rt_storage.
     // Bump CONFIG_RUNTIME_STORAGE_SIZE_LARGE/_SMALL in src/Kconfig if this
@@ -349,20 +347,25 @@ pub mod exports {
         // "audible clicks but no toolhead motion" / "G1 X1 emits 32 of 80
         // expected pulses" on the bench. Pin the mask now so retirement
         // gates on per-motor `SegmentExhausted` reports.
-        let consumers_remaining = Segment::compute_consumers_remaining(
-            kin, x_handle, y_handle, z_handle, e_handle,
-        );
+        let consumers_remaining =
+            Segment::compute_consumers_remaining(kin, x_handle, y_handle, z_handle, e_handle);
         // 2026-05-15 live diagnosis: capture handle packings and the
         // computed consumers_remaining so the host can read them back via
         // FFI/diag tags. If `consumers_remaining == 0`, every handle was
         // UNUSED — the bridge sent a no-op segment to the MCU.
-        shared.last_push_x_handle_packed.store(x_handle.pack(), Ordering::Release);
-        shared.last_push_y_handle_packed.store(y_handle.pack(), Ordering::Release);
+        shared
+            .last_push_x_handle_packed
+            .store(x_handle.pack(), Ordering::Release);
+        shared
+            .last_push_y_handle_packed
+            .store(y_handle.pack(), Ordering::Release);
         shared
             .last_push_consumers_remaining
             .store(consumers_remaining as u32, Ordering::Release);
         if consumers_remaining == 0 {
-            shared.push_segment_all_unused_total.fetch_add(1, Ordering::AcqRel);
+            shared
+                .push_segment_all_unused_total
+                .fetch_add(1, Ordering::AcqRel);
         }
         let seg = Segment {
             id,
@@ -387,7 +390,8 @@ pub mod exports {
             .fetch_add(1, Ordering::AcqRel);
         // Register all 4 per-axis handles in the retirement table so the
         // trace-drain pipeline can retire them on SEGMENT_END.
-        fg.retirement_table.register(id, [x_handle, y_handle, z_handle, e_handle]);
+        fg.retirement_table
+            .register(id, [x_handle, y_handle, z_handle, e_handle]);
         // Round-2 B6: on the FIRST push of a fresh stream (Opening or
         // StreamOpenPriming with no recorded first segment yet), capture
         // the priming segment's t_start in FgState so the §6.3 arm()
@@ -539,10 +543,8 @@ pub mod exports {
                 wire[i].bp0_bits = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
                 wire[i].bp1_bits = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
                 wire[i].bp2_bits = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
-                wire[i].bp3_bits =
-                    u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
-                wire[i].duration_bits =
-                    u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
+                wire[i].bp3_bits = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
+                wire[i].duration_bits = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
             }
             let wire_slice = &wire[..piece_count as usize];
             match pool.try_alloc_and_load_diagnostic(slot_idx as usize, wire_slice) {
@@ -648,12 +650,9 @@ pub mod exports {
         // `widened_now_lo.load()` depends on.
         unsafe {
             let raw = runtime_cyccnt_read();
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
-            let shared_ptr: *const SharedState =
-                core::ptr::addr_of!((*ctx).shared);
-            let pool_ptr: *const CurvePool =
-                core::ptr::addr_of!((*ctx).curve_pool);
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            let pool_ptr: *const CurvePool = core::ptr::addr_of!((*ctx).curve_pool);
             let isr: &mut IsrState = &mut *isr_ptr;
             let shared: &SharedState = &*shared_ptr;
             let curve_pool: &CurvePool = &*pool_ptr;
@@ -717,8 +716,7 @@ pub mod exports {
                     if let Some(handles) = fg.retirement_table.lookup(sample.segment_id) {
                         for h in &handles {
                             if !h.is_unused_sentinel()
-                                && *h
-                                    != runtime::curve_pool::CurveHandle::HOLD_SEGMENT_SENTINEL
+                                && *h != runtime::curve_pool::CurveHandle::HOLD_SEGMENT_SENTINEL
                             {
                                 pool.confirm_retired(*h);
                             }
@@ -832,9 +830,7 @@ pub mod exports {
     /// `runtime_handle_tick_counter` uses (no concurrent mutation while
     /// status_drain executes from the host-task context).
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_pending_segment_is_some(
-        rt: *mut KalicoRuntime,
-    ) -> u8 {
+    pub unsafe extern "C" fn kalico_runtime_pending_segment_is_some(rt: *mut KalicoRuntime) -> u8 {
         if rt.is_null() {
             return 0;
         }
@@ -847,8 +843,7 @@ pub mod exports {
         // is a single byte load of the `Option` discriminant; non-atomic
         // but tolerable for a diagnostic that may race the ISR by one tick.
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             u8::from((*isr_ptr).pending_segment.is_some())
         }
     }
@@ -887,9 +882,7 @@ pub mod exports {
     /// underlying read — `Engine::tick_counter.snapshot()`. Returns 0 on a
     /// null handle or before `INIT_DONE`.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_get_tick_counter(
-        rt: *mut KalicoRuntime,
-    ) -> u32 {
+    pub unsafe extern "C" fn kalico_runtime_get_tick_counter(rt: *mut KalicoRuntime) -> u32 {
         // SAFETY: delegates to the existing tick-counter accessor; same
         // shared-borrow contract.
         unsafe { runtime_handle_tick_counter(rt) }
@@ -909,14 +902,16 @@ pub mod exports {
                 }
                 let ctx = rt.cast::<RuntimeContext>();
                 unsafe {
-                    let shared_ptr: *const SharedState =
-                        core::ptr::addr_of!((*ctx).shared);
+                    let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
                     (*shared_ptr).$field.load(Ordering::Relaxed)
                 }
             }
         };
     }
-    shared_u32_reader!(kalico_runtime_get_isr_widen_cycles_max, isr_widen_cycles_max);
+    shared_u32_reader!(
+        kalico_runtime_get_isr_widen_cycles_max,
+        isr_widen_cycles_max
+    );
     shared_u32_reader!(kalico_runtime_get_isr_arm_cycles_max, isr_arm_cycles_max);
     shared_u32_reader!(kalico_runtime_get_isr_eval_cycles_max, isr_eval_cycles_max);
     shared_u32_reader!(kalico_runtime_get_isr_overrun_count, isr_overrun_count);
@@ -933,22 +928,64 @@ pub mod exports {
     shared_u32_reader!(kalico_runtime_get_isr_arm_delta_lo, isr_arm_delta_lo);
     shared_u32_reader!(kalico_runtime_get_isr_arm_delta_hi, isr_arm_delta_hi);
     shared_u32_reader!(kalico_runtime_get_isr_last_p_end_bits, isr_last_p_end_bits);
-    shared_u32_reader!(kalico_runtime_get_isr_last_microstep_bits, isr_last_microstep_bits);
+    shared_u32_reader!(
+        kalico_runtime_get_isr_last_microstep_bits,
+        isr_last_microstep_bits
+    );
     shared_u32_reader!(kalico_runtime_get_isr_last_c0_bits, isr_last_c0_bits);
-    shared_u32_reader!(kalico_runtime_get_isr_last_t_local_bits, isr_last_t_local_bits);
+    shared_u32_reader!(
+        kalico_runtime_get_isr_last_t_local_bits,
+        isr_last_t_local_bits
+    );
     shared_u32_reader!(kalico_runtime_get_isr_step_push_count, isr_step_push_count);
-    shared_u32_reader!(kalico_runtime_get_isr_last_signed_steps, isr_last_signed_steps);
-    shared_u32_reader!(kalico_runtime_get_isr_pulse_call_count, isr_pulse_call_count);
-    shared_u32_reader!(kalico_runtime_get_isr_pulse_zero_step_count, isr_pulse_zero_step_count);
-    shared_u32_reader!(kalico_runtime_get_isr_pulse_bad_mstep_count, isr_pulse_bad_mstep_count);
-    shared_u32_reader!(kalico_runtime_get_isr_phase_call_count, isr_phase_call_count);
-    shared_u32_reader!(kalico_runtime_get_isr_last_axis_mode_packed, isr_last_axis_mode_packed);
-    shared_u32_reader!(kalico_runtime_get_isr_last_step_counts_packed, isr_last_step_counts_packed);
-    shared_u32_reader!(kalico_runtime_get_isr_last_arm_x_handle, isr_last_arm_x_handle);
-    shared_u32_reader!(kalico_runtime_get_isr_last_arm_x_outcome, isr_last_arm_x_outcome);
-    shared_u32_reader!(kalico_runtime_get_isr_last_arm_x_piece_count, isr_last_arm_x_piece_count);
-    shared_u32_reader!(kalico_runtime_get_isr_last_arm_participating, isr_last_arm_participating);
-    shared_u32_reader!(kalico_runtime_get_isr_last_arm_x_piece0_duration_bits, isr_last_arm_x_piece0_duration_bits);
+    shared_u32_reader!(
+        kalico_runtime_get_isr_last_signed_steps,
+        isr_last_signed_steps
+    );
+    shared_u32_reader!(
+        kalico_runtime_get_isr_pulse_call_count,
+        isr_pulse_call_count
+    );
+    shared_u32_reader!(
+        kalico_runtime_get_isr_pulse_zero_step_count,
+        isr_pulse_zero_step_count
+    );
+    shared_u32_reader!(
+        kalico_runtime_get_isr_pulse_bad_mstep_count,
+        isr_pulse_bad_mstep_count
+    );
+    shared_u32_reader!(
+        kalico_runtime_get_isr_phase_call_count,
+        isr_phase_call_count
+    );
+    shared_u32_reader!(
+        kalico_runtime_get_isr_last_axis_mode_packed,
+        isr_last_axis_mode_packed
+    );
+    shared_u32_reader!(
+        kalico_runtime_get_isr_last_step_counts_packed,
+        isr_last_step_counts_packed
+    );
+    shared_u32_reader!(
+        kalico_runtime_get_isr_last_arm_x_handle,
+        isr_last_arm_x_handle
+    );
+    shared_u32_reader!(
+        kalico_runtime_get_isr_last_arm_x_outcome,
+        isr_last_arm_x_outcome
+    );
+    shared_u32_reader!(
+        kalico_runtime_get_isr_last_arm_x_piece_count,
+        isr_last_arm_x_piece_count
+    );
+    shared_u32_reader!(
+        kalico_runtime_get_isr_last_arm_participating,
+        isr_last_arm_participating
+    );
+    shared_u32_reader!(
+        kalico_runtime_get_isr_last_arm_x_piece0_duration_bits,
+        isr_last_arm_x_piece0_duration_bits
+    );
 
     // ---- Phase 11 §5.3 status-frame accessors -----------------------------
     //
@@ -1230,8 +1267,7 @@ pub mod exports {
         }
         let ctx = rt.cast::<RuntimeContext>();
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).engine.debug_steps_per_mm(oid as usize)
         }
     }
@@ -1253,25 +1289,20 @@ pub mod exports {
         }
         let ctx = rt.cast::<RuntimeContext>();
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).widen_state.seed_high(baseline_widened_clock);
         }
     }
 
     /// Diagnostic: read most recent post-PA/IS motor position for axis `oid`.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_get_axis_motor(
-        rt: *mut KalicoRuntime,
-        oid: u8,
-    ) -> f32 {
+    pub unsafe extern "C" fn kalico_runtime_get_axis_motor(rt: *mut KalicoRuntime, oid: u8) -> f32 {
         if rt.is_null() || !INIT_DONE.load(Ordering::Acquire) || oid >= 4 {
             return 0.0;
         }
         let ctx = rt.cast::<RuntimeContext>();
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).engine.debug_last_motor(oid as usize)
         }
     }
@@ -1290,12 +1321,17 @@ pub mod exports {
         }
         let ctx = rt.cast::<RuntimeContext>();
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             let (n, ts, dur) = (*isr_ptr).engine.debug_last_timing();
-            if !now_out.is_null() { *now_out = n; }
-            if !t_start_out.is_null() { *t_start_out = ts; }
-            if !duration_out.is_null() { *duration_out = dur; }
+            if !now_out.is_null() {
+                *now_out = n;
+            }
+            if !t_start_out.is_null() {
+                *t_start_out = ts;
+            }
+            if !duration_out.is_null() {
+                *duration_out = dur;
+            }
         }
     }
 
@@ -1311,8 +1347,7 @@ pub mod exports {
         }
         let ctx = rt.cast::<RuntimeContext>();
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).engine.debug_accumulator(oid as usize)
         }
     }
@@ -1403,7 +1438,9 @@ pub mod exports {
                 fn runtime_diag_progress(tag: u32, stage: u32, value: u32);
             }
             // SAFETY: stable C ABI; foreground-only.
-            unsafe { runtime_diag_progress(tag, stage, value); }
+            unsafe {
+                runtime_diag_progress(tag, stage, value);
+            }
         }
     }
 
@@ -1475,9 +1512,7 @@ pub mod exports {
         let mut steps = [0f32; 4];
         for i in 0..4 {
             let off = 4 + i * 4;
-            steps[i] = f32::from_le_bytes([
-                blob[off], blob[off + 1], blob[off + 2], blob[off + 3],
-            ]);
+            steps[i] = f32::from_le_bytes([blob[off], blob[off + 1], blob[off + 2], blob[off + 3]]);
         }
         diag_progress(0xCA, 3, u32::from(present_mask));
         let kinematics = match kinematics_tag {
@@ -1506,8 +1541,7 @@ pub mod exports {
         // Foreground is the sole writer; we project &mut IsrState to call
         // engine.configure(). No other &IsrState may be live at this point.
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).engine.configure(cfg);
         }
         diag_progress(0xCA, 6, 0);
@@ -1524,11 +1558,12 @@ pub mod exports {
         // and engine.rs / segment::activate paths); resetting them is
         // safe with no ISR running.
         unsafe {
-            let shared_ptr: *const runtime::state::SharedState =
-                core::ptr::addr_of!((*ctx).shared);
-            (*shared_ptr).accepted_segment_id_seen
+            let shared_ptr: *const runtime::state::SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr)
+                .accepted_segment_id_seen
                 .store(false, Ordering::Release);
-            (*shared_ptr).accepted_segment_id
+            (*shared_ptr)
+                .accepted_segment_id
                 .store(0, Ordering::Release);
         }
         // Same "fresh session" semantics: clear the C-side
@@ -1549,7 +1584,9 @@ pub mod exports {
             }
             // SAFETY: foreground-only, no preconditions; simply zeros
             // small static arrays in src/stepper.c.
-            unsafe { runtime_reset_stepper_bindings(); }
+            unsafe {
+                runtime_reset_stepper_bindings();
+            }
         }
         diag_progress(0xCA, 8, 0);
 
@@ -1576,12 +1613,7 @@ pub mod exports {
                         // Unknown discriminant → treat as StepTime (safe default).
                         None => runtime::state::StepMode::StepTime,
                     };
-                    match runtime::state::set_step_mode(
-                        shared,
-                        i as u8,
-                        mode,
-                        mcu_supports_phase,
-                    ) {
+                    match runtime::state::set_step_mode(shared, i as u8, mode, mcu_supports_phase) {
                         Ok(()) => {}
                         Err(runtime::state::SetStepModeError::CapabilityMissing) => {
                             // Host requested Modulated on an MCU that doesn't
@@ -1621,16 +1653,13 @@ pub mod exports {
         if blob_len_usize >= 26 {
             let count = blob[25] as usize;
             let expected_len = 26 + 3 * count;
-            if blob_len_usize != expected_len
-                || count > runtime::state::MAX_STEPPER_OIDS
-            {
+            if blob_len_usize != expected_len || count > runtime::state::MAX_STEPPER_OIDS {
                 diag_progress(0xCA, 10, blob_len);
                 return KALICO_ERR_INVALID_KINEMATICS;
             }
             // Pre-validate per-entry before mutating SharedState.
             let mut parsed: [Option<(runtime::phase_config::PhaseConfig, u8)>;
-                runtime::state::MAX_STEPPER_OIDS] =
-                [None; runtime::state::MAX_STEPPER_OIDS];
+                runtime::state::MAX_STEPPER_OIDS] = [None; runtime::state::MAX_STEPPER_OIDS];
             for i in 0..count {
                 let off = 26 + i * 3;
                 let bus = blob[off];
@@ -1672,10 +1701,7 @@ pub mod exports {
                 for i in 0..runtime::state::MAX_STEPPER_OIDS {
                     if i < count {
                         if let Some(slot) = shared.phase_config.get(i) {
-                            runtime::phase_config::store(
-                                slot,
-                                parsed[i].map(|(c, _)| c),
-                            );
+                            runtime::phase_config::store(slot, parsed[i].map(|(c, _)| c));
                         }
                         if let Some(s) = shared.phase_slot_idx.get(i) {
                             s.store(
@@ -1694,7 +1720,9 @@ pub mod exports {
                         }
                     }
                 }
-                shared.phase_motor_count.store(count as u8, Ordering::Release);
+                shared
+                    .phase_motor_count
+                    .store(count as u8, Ordering::Release);
             }
             diag_progress(0xCA, 13, count as u32);
         } else if blob_len == 25 {
@@ -1769,8 +1797,7 @@ pub mod exports {
         // PushSegment). No other `&mut IsrState` or `&mut FgState` may be live
         // on this call path.
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).engine.seed_position([x, y, z]);
         }
         KALICO_OK
@@ -1952,9 +1979,7 @@ pub mod exports {
     /// operation is a sequence of acquire-load + release-store pairs on the
     /// per-slot `AtomicU16`s; it never touches ISR state.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_reset_curve_pool(
-        rt: *mut KalicoRuntime,
-    ) -> i32 {
+    pub unsafe extern "C" fn kalico_runtime_reset_curve_pool(rt: *mut KalicoRuntime) -> i32 {
         if rt.is_null() {
             return KALICO_ERR_NULL_PTR;
         }
@@ -2142,12 +2167,9 @@ pub mod exports {
             return KALICO_ERR_NULL_PTR;
         }
 
-        let sources_blob: &[u8] = unsafe {
-            core::slice::from_raw_parts(sources_ptr, sources_len)
-        };
-        let steppers_blob: &[u8] = unsafe {
-            core::slice::from_raw_parts(steppers_ptr, steppers_len)
-        };
+        let sources_blob: &[u8] = unsafe { core::slice::from_raw_parts(sources_ptr, sources_len) };
+        let steppers_blob: &[u8] =
+            unsafe { core::slice::from_raw_parts(steppers_ptr, steppers_len) };
 
         let mut sources = [SourceConfig::EMPTY; MAX_SOURCES];
         for i in 0..source_count as usize {
@@ -2380,7 +2402,8 @@ pub mod exports {
         unsafe {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
             let shared: &SharedState = &*shared_ptr;
-            match runtime::state::set_step_mode(shared, stepper_idx, mode, mcu_supports_phase != 0) {
+            match runtime::state::set_step_mode(shared, stepper_idx, mode, mcu_supports_phase != 0)
+            {
                 Ok(()) => {
                     // Spec §6.3: re-evaluate TIM5 arm state after every
                     // successful step-mode flip. Count Modulated steppers via
@@ -2465,7 +2488,6 @@ pub mod exports {
     // evaluator over the curve pool — no producer timer, no per-motor
     // step rings, no Newton fill.
 
-
     /// 2026-05-18 wedge diag: live snapshot of `queue_consumer.len()` —
     /// the SPSC's view of how many segments are queued and visible to the
     /// Consumer. Cross-check against `accepted_segment_id -
@@ -2476,17 +2498,18 @@ pub mod exports {
     ///                                   (memory visibility / write-buffer
     ///                                   / cache issue, or queue corrupted).
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_queue_len_diag(
-        rt: *mut KalicoRuntime,
-    ) -> u32 {
-        if rt.is_null() { return 0; }
-        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+    pub unsafe extern "C" fn kalico_runtime_queue_len_diag(rt: *mut KalicoRuntime) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
         let ctx = rt.cast::<RuntimeContext>();
         // SAFETY: §11.1 — foreground sole access to IsrState here.
         // `Consumer::len()` reads atomics via &self, no mutation.
         unsafe {
-            let isr_ptr: *const IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *const IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             let isr: &IsrState = &*isr_ptr;
             isr.queue_consumer.len() as u32
         }
@@ -2498,15 +2521,19 @@ pub mod exports {
     /// `producer_segment_dequeued_total` is 0, the queue split is broken
     /// (producer and consumer ends not sharing the backing buffer).
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_enqueue_success_lo(
-        rt: *mut KalicoRuntime,
-    ) -> u32 {
-        if rt.is_null() { return 0; }
-        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+    pub unsafe extern "C" fn kalico_runtime_enqueue_success_lo(rt: *mut KalicoRuntime) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
         let ctx = rt.cast::<RuntimeContext>();
         unsafe {
             let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
-            shared.producer_enqueue_success_total.load(Ordering::Acquire) as u32
+            shared
+                .producer_enqueue_success_total
+                .load(Ordering::Acquire) as u32
         }
     }
 
@@ -2517,8 +2544,12 @@ pub mod exports {
     pub unsafe extern "C" fn kalico_runtime_last_push_segment_result(
         rt: *mut KalicoRuntime,
     ) -> i32 {
-        if rt.is_null() { return 0; }
-        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
         let ctx = rt.cast::<RuntimeContext>();
         unsafe {
             let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
@@ -2533,11 +2564,13 @@ pub mod exports {
     /// without ever invoking motor processing, which matches the
     /// "energized but no motion" symptom.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_push_seg_all_unused_lo(
-        rt: *mut KalicoRuntime,
-    ) -> u32 {
-        if rt.is_null() { return 0; }
-        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+    pub unsafe extern "C" fn kalico_runtime_push_seg_all_unused_lo(rt: *mut KalicoRuntime) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
         let ctx = rt.cast::<RuntimeContext>();
         unsafe {
             let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
@@ -2549,11 +2582,13 @@ pub mod exports {
     /// `push_segment_impl`. Layout: `(gen << 16) | slot_idx`. UNUSED
     /// sentinel = 0xFFFE_FFFE.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_last_push_x_handle(
-        rt: *mut KalicoRuntime,
-    ) -> u32 {
-        if rt.is_null() { return 0; }
-        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+    pub unsafe extern "C" fn kalico_runtime_last_push_x_handle(rt: *mut KalicoRuntime) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
         let ctx = rt.cast::<RuntimeContext>();
         unsafe {
             let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
@@ -2564,11 +2599,13 @@ pub mod exports {
     /// 2026-05-15 live diagnosis: read the packed last `y_handle` from
     /// `push_segment_impl`.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_last_push_y_handle(
-        rt: *mut KalicoRuntime,
-    ) -> u32 {
-        if rt.is_null() { return 0; }
-        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+    pub unsafe extern "C" fn kalico_runtime_last_push_y_handle(rt: *mut KalicoRuntime) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
         let ctx = rt.cast::<RuntimeContext>();
         unsafe {
             let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
@@ -2583,8 +2620,12 @@ pub mod exports {
     pub unsafe extern "C" fn kalico_runtime_last_push_consumers_remaining(
         rt: *mut KalicoRuntime,
     ) -> u32 {
-        if rt.is_null() { return 0; }
-        if !INIT_DONE.load(Ordering::Acquire) { return 0; }
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
         let ctx = rt.cast::<RuntimeContext>();
         unsafe {
             let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
@@ -2669,9 +2710,7 @@ pub mod exports {
     ///
     /// Returns `0` for a null `rt` or uninitialised runtime.
     #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_count_modulated_steppers(
-        rt: *mut KalicoRuntime,
-    ) -> u8 {
+    pub unsafe extern "C" fn kalico_runtime_count_modulated_steppers(rt: *mut KalicoRuntime) -> u8 {
         use runtime::state::MAX_STEPPER_OIDS;
         if rt.is_null() {
             return 0;
@@ -2735,7 +2774,9 @@ pub mod exports {
             // its address (`.get()`) does not form an aliasing reference.
             // The actual access is gated by `INIT_DONE` above.
             #[allow(unsafe_code)]
-            unsafe { rt_storage.get().cast::<RuntimeContext>() }
+            unsafe {
+                rt_storage.get().cast::<RuntimeContext>()
+            }
         };
         #[cfg(not(target_os = "none"))]
         let rt_ptr: *const RuntimeContext = rt_storage.0.get().cast::<RuntimeContext>();
@@ -2758,7 +2799,9 @@ pub mod exports {
         // `&mut` reaches this path.
         let v = unsafe {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*rt_ptr).shared);
-            (*shared_ptr).dispatcher_floor_cycles.load(Ordering::Acquire)
+            (*shared_ptr)
+                .dispatcher_floor_cycles
+                .load(Ordering::Acquire)
         };
         if v == 0 { 5_000_000 } else { v }
     }
@@ -2842,9 +2885,7 @@ pub mod exports {
             // address of a stack-allocated array it owns for the duration
             // of this call. The slice borrow does not outlive this
             // function.
-            unsafe {
-                core::slice::from_raw_parts(bindings_ptr, stepper_count as usize)
-            }
+            unsafe { core::slice::from_raw_parts(bindings_ptr, stepper_count as usize) }
         };
         let ctx = rt.cast::<RuntimeContext>();
         // SAFETY: foreground-only entry; spec §11.2 raw-pointer projection.
@@ -2854,8 +2895,7 @@ pub mod exports {
         // dispatch is single-threaded and serialised against the modulated
         // tick by priority arbitration during configuration windows).
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             let rc = (*isr_ptr)
                 .engine
                 .configure_axis(axis_idx, mode_enum, mstep_dist, bindings);
@@ -2865,8 +2905,7 @@ pub mod exports {
             // If configure_axes_blob marked this axis as Modulated, upgrade
             // axis.mode from Pulse to Phase so the ISR routes through
             // dispatch_phase for XDIRECT coil modulation.
-            let shared_ptr: *const runtime::state::SharedState =
-                core::ptr::addr_of!((*ctx).shared);
+            let shared_ptr: *const runtime::state::SharedState = core::ptr::addr_of!((*ctx).shared);
             if (axis_idx as usize) < runtime::state::MAX_STEPPER_OIDS {
                 let step_mode = (*shared_ptr).step_modes[axis_idx as usize]
                     .load(core::sync::atomic::Ordering::Acquire);
@@ -2902,8 +2941,7 @@ pub mod exports {
         let ctx = rt.cast::<RuntimeContext>();
         // SAFETY: see `kalico_runtime_configure_axis` SAFETY note.
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).engine.configure_kinematics(k_xy)
         }
     }
@@ -2929,8 +2967,7 @@ pub mod exports {
         let ctx = rt.cast::<RuntimeContext>();
         // SAFETY: see `kalico_runtime_configure_axis` SAFETY note.
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr)
                 .engine
                 .configure_pressure_advance(advance_accel, advance_decel)
@@ -2965,8 +3002,7 @@ pub mod exports {
         // under that precondition (foreground-only entry point, never
         // re-entered from the TIM5 ISR).
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             (*isr_ptr).engine.set_axis_mode(axis_idx, new_mode)
         }
     }
@@ -2998,10 +3034,8 @@ pub mod exports {
         // SharedState is atomics-only) and is independent of the
         // `&mut IsrState` projection.
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
-            let shared_ptr: *const SharedState =
-                core::ptr::addr_of!((*ctx).shared);
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
             let shared: &SharedState = &*shared_ptr;
             (*isr_ptr).engine.set_stepper_offset(
                 shared,
@@ -3039,19 +3073,12 @@ pub mod exports {
         }
         let ctx = rt.cast::<RuntimeContext>();
         unsafe {
-            let isr_ptr: *mut IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             let q0 = queues.cast::<runtime::step_queue::StepQueue>();
-            let ptrs: [*mut runtime::step_queue::StepQueue;
-                runtime::stepping_state::N_AXES] = [
-                q0,
-                q0.add(1),
-                q0.add(2),
-                q0.add(3),
-            ];
+            let ptrs: [*mut runtime::step_queue::StepQueue; runtime::stepping_state::N_AXES] =
+                [q0, q0.add(1), q0.add(2), q0.add(3)];
             (*isr_ptr).engine.test_install_step_queues(ptrs);
         }
         KALICO_OK
     }
-
 }

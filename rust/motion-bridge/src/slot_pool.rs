@@ -442,7 +442,10 @@ mod shared_tests {
         pool.release(slots[0]);
 
         let result = handle.join().expect("thread panicked");
-        assert!(result.is_some(), "alloc_blocking must succeed after release");
+        assert!(
+            result.is_some(),
+            "alloc_blocking must succeed after release"
+        );
     }
 
     #[test]

@@ -107,12 +107,12 @@ fn happy_path_single_mcu() {
 
     let io = &mcus[0].0;
     assert!(
-        io.any_sent_starting_with("kalico_clock_sync_request"),
-        "must have sent kalico_clock_sync_request"
+        io.any_sent_starting_with("runtime_clock_sync_request"),
+        "must have sent runtime_clock_sync_request"
     );
     assert!(
-        io.any_sent_starting_with("kalico_stream_arm"),
-        "must have sent kalico_stream_arm"
+        io.any_sent_starting_with("runtime_stream_arm"),
+        "must have sent runtime_stream_arm"
     );
 }
 
@@ -165,7 +165,7 @@ fn quality_gate_failure_aborts() {
         "no MCU should be armed when quality gate fails"
     );
     assert!(
-        !mock.any_sent_starting_with("kalico_stream_arm "),
+        !mock.any_sent_starting_with("runtime_stream_arm "),
         "must NOT issue stream_arm if quality gate fails"
     );
 }
@@ -377,7 +377,7 @@ fn request_id_is_monotonic_across_arm_attempts() {
     .expect("second arm should succeed");
 
     let request_ids: Vec<u32> = mock
-        .sent_starting_with("kalico_clock_sync_request")
+        .sent_starting_with("runtime_clock_sync_request")
         .iter()
         .map(|cmd| {
             cmd.split_whitespace()
@@ -447,7 +447,7 @@ fn arm_fails_on_request_id_mismatch() {
         "no MCU should be armed on request_id mismatch"
     );
     assert!(
-        !mock.any_sent_starting_with("kalico_stream_arm "),
-        "kalico_stream_arm must not be sent on request_id mismatch"
+        !mock.any_sent_starting_with("runtime_stream_arm "),
+        "runtime_stream_arm must not be sent on request_id mismatch"
     );
 }

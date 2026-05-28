@@ -800,22 +800,27 @@ impl Reactor {
                     {
                         use std::io::Write;
                         if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true).append(true)
+                            .create(true)
+                            .append(true)
                             .open("/tmp/interceptor_trace.log")
                         {
                             if name.contains("software_trip") || name.contains("trsync_state") {
-                                let _ = writeln!(f,
+                                let _ = writeln!(
+                                    f,
                                     "[{:?}] unsolicited name={} oid={:?} interceptor_count={} params={:?}",
                                     std::time::SystemTime::now(),
-                                    name, oid,
+                                    name,
+                                    oid,
                                     self.interceptors.entry_count(),
                                     params,
                                 );
                             } else {
-                                let _ = writeln!(f,
+                                let _ = writeln!(
+                                    f,
                                     "[{:?}] unsolicited name={} oid={:?} interceptor_count={}",
                                     std::time::SystemTime::now(),
-                                    name, oid,
+                                    name,
+                                    oid,
                                     self.interceptors.entry_count(),
                                 );
                             }
@@ -828,10 +833,11 @@ impl Reactor {
                             "[trace-resp] tid={:?} unsolicited name={name} await_len={await_len_before}",
                             std::thread::current().id()
                         );
-                        let event = crate::host_io::runtime_events::RuntimeEvent::PassthroughResponse {
-                            name,
-                            params,
-                        };
+                        let event =
+                            crate::host_io::runtime_events::RuntimeEvent::PassthroughResponse {
+                                name,
+                                params,
+                            };
                         self.dispatch_runtime_event(event);
                     }
                 }
@@ -1050,10 +1056,12 @@ impl Reactor {
                 {
                     use std::io::Write as _;
                     if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .create(true).append(true)
+                        .create(true)
+                        .append(true)
                         .open("/tmp/kalico-firewire.log")
                     {
-                        let _ = writeln!(f,
+                        let _ = writeln!(
+                            f,
                             "[diag-submit] SubmitTyped call_id={call_id} resp={expected_response_name} \
                              payload_len={} unacked={} pending_sub={} state={:?}",
                             payload.len(),
@@ -2401,11 +2409,17 @@ mod a2_nak_rto {
         h.tick();
         // Force 8 successive TimeoutDriven retransmits via clock advance.
         // Each tick advances clock past current RTO; write_retransmit increments
-        // retry_count for every unacked entry (reactor.rs:293-305). On the 8th
-        // call, retry_count >= MAX_RETRY_COUNT → state→Closed, Err returned.
+        // retry_count for every unacked entry. On the 8th call,
+        // retry_count >= MAX_RETRY_COUNT AND silence >= MCU_SILENCE_FOR_CLOSE
+        // (currently 120 s) → state→Closed, Err returned.
+        // We advance 20s per iteration (8 × 20s = 160s > MCU_SILENCE_FOR_CLOSE),
+        // which is well past the MAX_RTO ceiling (5s) so the RTO guard fires
+        // on every tick, and well past MCU_SILENCE_FOR_CLOSE so the silence
+        // gate is satisfied before retry_count reaches MAX_RETRY_COUNT.
         for _ in 0..8 {
-            // Advance well past any RTO ceiling (5s).
-            h.advance_clock(Duration::from_secs(10));
+            // 20s >> MAX_RTO (5s) ensures RTO fires; 8 × 20s = 160s >
+            // MCU_SILENCE_FOR_CLOSE (120s) satisfies the silence gate.
+            h.advance_clock(Duration::from_secs(20));
             h.tick();
         }
         // Reactor should now be Closed.

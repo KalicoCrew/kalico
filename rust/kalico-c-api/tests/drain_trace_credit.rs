@@ -37,6 +37,49 @@ pub extern "C" fn runtime_cyccnt_read() -> u32 {
     0
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_reset_stepper_bindings() {}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_diag_progress(_tag: u32, _stage: u32, _value: u32) {}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_widened_host_clock() -> u64 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_host_now_us() -> u64 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_irq_save() -> u32 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_irq_restore(_flags: u32) {}
+
+#[unsafe(no_mangle)]
+pub static stats_send_time: u32 = 0;
+
+#[unsafe(no_mangle)]
+pub static stats_send_time_high: u32 = 0;
+
+#[unsafe(no_mangle)]
+pub extern "C" fn timer_read_time() -> u32 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn timer_is_before(_a: u32, _b: u32) -> u8 {
+    0
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn runtime_emit_step_pulses(_axis_idx: u8, _n_steps: i32) {}
+
 /// End-to-end smoke: init the runtime, push a `SEGMENT_END` trace sample
 /// into the ISR-side trace producer (via the published `RT_CELL` pointer),
 /// drain through `runtime_handle_drain_trace` with a non-null

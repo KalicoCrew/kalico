@@ -13,8 +13,8 @@ use crate::curve_pool::CurveHandle;
 /// host drain latency without dropping samples.
 ///
 /// Reduced from 1201 to 1199 to give the `RuntimeContext` BSS cell 80 bytes
-/// of slack after the `Engine` CoupledToXy fields (prev_x/prev_y/e_accumulator/
-/// needs_xy_seed, ~20 bytes) were added and brought it flush against `INIT_DONE`.
+/// of slack after the `Engine` `CoupledToXy` fields (`prev_x/prev_y/e_accumulator`/
+/// `needs_xy_seed`, ~20 bytes) were added and brought it flush against `INIT_DONE`.
 pub const TRACE_RING_N: usize = 1199;
 
 // Step-5 carryover bit (retired in Step-6 — replaced by §13.1
@@ -83,7 +83,7 @@ impl Default for TraceSample {
 ///
 /// `tick` is the low 32 bits of the host-widened tick (the upper bits of
 /// `TraceSample::tick` are zero-padded on encode and ignored on decode for
-/// PhaseStep samples — phase-stepping diagnostics don't need 64-bit ticks
+/// `PhaseStep` samples — phase-stepping diagnostics don't need 64-bit ticks
 /// in a single sample stream).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhaseStepPayload {
@@ -108,9 +108,9 @@ impl TraceSample {
     /// - `motor_z` / `motor_e` / `segment_id` / `curve_handle` are zeroed.
     /// - `flags` is `TRACE_FLAG_PHASE_STEP`.
     ///
-    /// Total payload size: 1 (motor) + 2 (mscount) + 2 (i_a) + 2 (i_b)
-    /// + 1 (wrote_spi) = 8 bytes, comfortably inside the 16 bytes available
-    /// in `motor_a` + `motor_b` — no ring-size changes needed.
+    /// Total payload size: 1 (motor) + 2 (mscount) + 2 (`i_a`) + 2 (`i_b`)
+    ///   + 1 (`wrote_spi`) = 8 bytes, comfortably inside the 16 bytes available
+    ///     in `motor_a` + `motor_b` — no ring-size changes needed.
     #[must_use]
     pub fn phase_step(
         tick: u32,

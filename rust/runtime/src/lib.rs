@@ -52,7 +52,7 @@ pub mod sim_fixtures;
 pub mod slot;
 pub mod spi_queue;
 pub mod state;
-pub use state::{set_step_mode, SetStepModeError, StepMode};
+pub use state::{SetStepModeError, StepMode, set_step_mode};
 pub mod step;
 pub mod step_queue;
 pub mod stepping_state;

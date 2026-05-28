@@ -16,7 +16,7 @@ use crate::curve_pool::CurveHandle;
 /// a segment's curves before any of them advances to the next segment.
 /// Under that invariant the nibble structure is over-specified — the engine
 /// retires the whole segment once any motor reports "done" because the
-/// others have already reported "done" within the same producer_step call.
+/// others have already reported "done" within the same `producer_step` call.
 /// The full per-motor bookkeeping arrives when truly-independent per-motor
 /// cursors land (post-MVP, see spec §7.2).
 ///
@@ -80,7 +80,7 @@ pub struct Segment {
     pub flags: u8,
     #[allow(clippy::pub_underscore_fields)]
     pub _pad: [u8; 1],
-    /// Extrusion ratio (extrusion_per_xy_mm) for `CoupledToXy` mode.
+    /// Extrusion ratio (`extrusion_per_xy_mm`) for `CoupledToXy` mode.
     /// Ignored when `e_mode != CoupledToXy`.
     pub extrusion_ratio: f32,
     /// Per-axis-curve consumer bitmask (spec §3.8 retirement decoupling).
@@ -106,7 +106,7 @@ impl Segment {
     /// four curve handles and kinematic transform.
     ///
     /// Each UNUSED handle contributes no consumer bits. By the time a
-    /// `Segment` exists, curves are already in motor frame (the CoreXY
+    /// `Segment` exists, curves are already in motor frame (the `CoreXY`
     /// transform A=X+Y / B=X−Y is applied by the bridge before the segment
     /// is constructed). The mapping is therefore always Cartesian:
     /// motor 0 ← x slot, motor 1 ← y slot, motor 2 ← z slot, motor 3 ← e slot,
@@ -134,22 +134,43 @@ impl Segment {
 
         // For each axis: if its handle is non-UNUSED, set the bit for every
         // motor that consumes that axis.
-        let set_for = |mask: &mut u16, handle: CurveHandle, shift: u32, consumes: &dyn Fn(u8) -> bool| {
-            if handle.is_unused_sentinel() {
-                return;
-            }
-            let mut nibble: u16 = 0;
-            for motor in 0_u8..4 {
-                if consumes(motor) {
-                    nibble |= 1_u16 << motor;
+        let set_for =
+            |mask: &mut u16, handle: CurveHandle, shift: u32, consumes: &dyn Fn(u8) -> bool| {
+                if handle.is_unused_sentinel() {
+                    return;
                 }
-            }
-            *mask |= (nibble & 0x0F) << shift;
-        };
-        set_for(&mut mask, x_handle, CONS_REMAINING_X_SHIFT, &motor_consumes_x);
-        set_for(&mut mask, y_handle, CONS_REMAINING_Y_SHIFT, &motor_consumes_y);
-        set_for(&mut mask, z_handle, CONS_REMAINING_Z_SHIFT, &motor_consumes_z);
-        set_for(&mut mask, e_handle, CONS_REMAINING_E_SHIFT, &motor_consumes_e);
+                let mut nibble: u16 = 0;
+                for motor in 0_u8..4 {
+                    if consumes(motor) {
+                        nibble |= 1_u16 << motor;
+                    }
+                }
+                *mask |= (nibble & 0x0F) << shift;
+            };
+        set_for(
+            &mut mask,
+            x_handle,
+            CONS_REMAINING_X_SHIFT,
+            &motor_consumes_x,
+        );
+        set_for(
+            &mut mask,
+            y_handle,
+            CONS_REMAINING_Y_SHIFT,
+            &motor_consumes_y,
+        );
+        set_for(
+            &mut mask,
+            z_handle,
+            CONS_REMAINING_Z_SHIFT,
+            &motor_consumes_z,
+        );
+        set_for(
+            &mut mask,
+            e_handle,
+            CONS_REMAINING_E_SHIFT,
+            &motor_consumes_e,
+        );
         mask
     }
 
@@ -167,11 +188,11 @@ impl Segment {
     /// Used by the producer to skip motors that have already finished this
     /// segment's work — without this check, a finished motor whose
     /// `ProducerState` was cleared at `SegmentExhausted` would, on the next
-    /// `producer_step` call, re-enter the "is_idle, fetch segment, start
-    /// curve, find SegmentExhausted again, mark finished again" path and
+    /// `producer_step` call, re-enter the "`is_idle`, fetch segment, start
+    /// curve, find `SegmentExhausted` again, mark finished again" path and
     /// spuriously report `made_progress=true` every fire. That produces an
     /// infinite `WorkPending` self-reschedule at `SF_RESCHEDULE_FLOOR=100 µs`
-    /// on the C side, pegging the SysTick dispatch loop at 10 kHz and
+    /// on the C side, pegging the `SysTick` dispatch loop at 10 kHz and
     /// starving foreground tasks (including `watchdog_reset`) until IWDG fires.
     pub fn motor_has_remaining_work(&self, motor_idx: u8) -> bool {
         let motor_bit: u16 = 1 << motor_idx;
@@ -200,6 +221,7 @@ impl Segment {
 }
 
 #[cfg(test)]
+#[allow(clippy::doc_markdown)]
 mod tests {
     use super::*;
 
@@ -313,14 +335,10 @@ mod tests {
         let z = CurveHandle::new(2, 1);
         let e = CurveHandle::new(3, 1);
 
-        let mask_cartesian = Segment::compute_consumers_remaining(
-            KinematicTag::CartesianXyzAndE,
-            x, y, z, e,
-        );
-        let mask_corexy = Segment::compute_consumers_remaining(
-            KinematicTag::CoreXyAndE,
-            x, y, z, e,
-        );
+        let mask_cartesian =
+            Segment::compute_consumers_remaining(KinematicTag::CartesianXyzAndE, x, y, z, e);
+        let mask_corexy =
+            Segment::compute_consumers_remaining(KinematicTag::CoreXyAndE, x, y, z, e);
 
         assert_eq!(
             mask_cartesian, mask_corexy,

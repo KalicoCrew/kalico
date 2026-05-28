@@ -34,6 +34,9 @@ exclude = [
     "runtime_clock_freq",
 ]
 
+[fn]
+sort_by = "Name"
+
 [parse]
 parse_deps = true
 include = ["nurbs"]

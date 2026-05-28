@@ -5,12 +5,12 @@
 
 use std::time::Duration;
 
-use kalico_native_transport::{
-    bootstrap::encode_identify_response, ConnectionState, EpochChange, IdentifyResponse,
-    KalicoNativeTransport, MessageKind, MockConnection, Transport, TransportError,
-};
-use kalico_native_transport::frame::{encode_frame, CHANNEL_CONTROL, CHANNEL_EVENTS};
+use kalico_native_transport::frame::{CHANNEL_CONTROL, CHANNEL_EVENTS, encode_frame};
 use kalico_native_transport::wire_helpers::encode_message_header;
+use kalico_native_transport::{
+    ConnectionState, EpochChange, IdentifyResponse, KalicoNativeTransport, MessageKind,
+    MockConnection, Transport, TransportError, bootstrap::encode_identify_response,
+};
 
 fn host_schema_hash() -> [u8; 32] {
     let mut h = [0u8; 32];
@@ -20,7 +20,11 @@ fn host_schema_hash() -> [u8; 32] {
     h
 }
 
-fn make_identify_response_frame(correlation_id: u32, schema_hash: [u8; 32], reset_epoch: u32) -> Vec<u8> {
+fn make_identify_response_frame(
+    correlation_id: u32,
+    schema_hash: [u8; 32],
+    reset_epoch: u32,
+) -> Vec<u8> {
     let resp = IdentifyResponse {
         proto_version: 0x01,
         firmware_ver: 0x0000_0001,
@@ -66,7 +70,10 @@ fn bootstrap_handshake_success() {
             // Spin briefly until host emits Identify bytes.
             let deadline = std::time::Instant::now() + Duration::from_secs(1);
             while peer.read_all_pending().is_empty() {
-                assert!(std::time::Instant::now() < deadline, "peer never saw Identify");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "peer never saw Identify"
+                );
                 std::thread::sleep(Duration::from_millis(1));
             }
             // Use any plausible correlation_id; transport just stashes the epoch.
@@ -77,7 +84,9 @@ fn bootstrap_handshake_success() {
 
     let epoch = transport.identify(Duration::from_secs(2)).unwrap();
     assert_eq!(epoch, 0xCAFE_BABE);
-    assert!(matches!(transport.state(), ConnectionState::Identified { reset_epoch } if reset_epoch == 0xCAFE_BABE));
+    assert!(
+        matches!(transport.state(), ConnectionState::Identified { reset_epoch } if reset_epoch == 0xCAFE_BABE)
+    );
 
     // Epoch subscriber sees Established.
     let evt = epoch_rx.recv_timeout(Duration::from_millis(50)).unwrap();
@@ -111,7 +120,9 @@ fn schema_hash_mismatch_faults() {
     assert!(matches!(transport.state(), ConnectionState::Faulted(_)));
 
     // Subsequent call refuses.
-    let err = transport.call(MessageKind::LoadCurveCubic, &[], Duration::from_millis(50)).unwrap_err();
+    let err = transport
+        .call(MessageKind::LoadCurveCubic, &[], Duration::from_millis(50))
+        .unwrap_err();
     assert!(matches!(err, TransportError::NotIdentified(_)));
 }
 
@@ -161,7 +172,11 @@ fn reset_epoch_transition_invalidates_inflight() {
     }
 
     let err = transport
-        .call(MessageKind::LoadCurveCubic, &[0u8; 4], Duration::from_secs(2))
+        .call(
+            MessageKind::LoadCurveCubic,
+            &[0u8; 4],
+            Duration::from_secs(2),
+        )
         .unwrap_err();
     assert!(matches!(err, TransportError::Reset), "{err:?}");
 
@@ -170,7 +185,11 @@ fn reset_epoch_transition_invalidates_inflight() {
 
     // Transport is now Unidentified; further calls fail until re-identified.
     let err = transport
-        .call(MessageKind::LoadCurveCubic, &[0u8; 4], Duration::from_millis(50))
+        .call(
+            MessageKind::LoadCurveCubic,
+            &[0u8; 4],
+            Duration::from_millis(50),
+        )
         .unwrap_err();
     assert!(matches!(err, TransportError::NotIdentified(_)));
 }

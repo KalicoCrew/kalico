@@ -440,6 +440,7 @@ fn append_path_jerk_cut_to_clarabel(
 ///
 /// Identity check (numerical pin): `rust/temporal/tests/step9_cut_identity.rs`.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 fn append_axis_jerk_cut_to_clarabel(
     cut: &AxisJerkCut,
     h: f64,
@@ -461,8 +462,7 @@ fn append_axis_jerk_cut_to_clarabel(
 
     // Compute (α at anchor b-var, three other (var_idx, α) entries, K) per stencil.
     // The `b_anchor` is floored at SLP_B_FLOOR to keep 1/√b̄ bounded.
-    let (alpha_b_anchor, entries_extra, k_const): (f64, [(usize, f64); 3], f64) = match cut
-        .stencil
+    let (alpha_b_anchor, entries_extra, k_const): (f64, [(usize, f64); 3], f64) = match cut.stencil
     {
         AxisJerkStencil::Interior => {
             debug_assert!(i >= 1 && i + 1 < n_grid, "interior index out of range");
@@ -476,13 +476,9 @@ fn append_axis_jerk_cut_to_clarabel(
             let alpha_b_im1 = cp * s / (2.0 * h * h);
             let alpha_b_ip1 = cp * s / (2.0 * h * h);
             let alpha_a_i = 3.0 * cpp * s;
-            let alpha_b_i = 1.5 * cppp * s
-                + 3.0 * cpp * a_i / (2.0 * s)
-                - cp * s / (h * h)
+            let alpha_b_i = 1.5 * cppp * s + 3.0 * cpp * a_i / (2.0 * s) - cp * s / (h * h)
                 + cp * d2 / (4.0 * h * h * s);
-            let k = -0.5 * cppp * s3
-                - 1.5 * cpp * a_i * s
-                - cp * d2 * s / (4.0 * h * h);
+            let k = -0.5 * cppp * s3 - 1.5 * cpp * a_i * s - cp * d2 * s / (4.0 * h * h);
             (
                 alpha_b_i,
                 [
@@ -510,9 +506,7 @@ fn append_axis_jerk_cut_to_clarabel(
             let alpha_b_1 = -cp * s / (h * h);
             let alpha_b_2 = cp * s / (2.0 * h * h);
             let alpha_a_0 = 3.0 * cpp * s;
-            let k = -0.5 * cppp * s3
-                - 1.5 * cpp * a_0 * s
-                - cp * d2 * s / (4.0 * h * h);
+            let k = -0.5 * cppp * s3 - 1.5 * cpp * a_0 * s - cp * d2 * s / (4.0 * h * h);
             (
                 alpha_b_0,
                 [
@@ -540,9 +534,7 @@ fn append_axis_jerk_cut_to_clarabel(
                 + cp * s / (2.0 * h * h)
                 + cp * d2 / (4.0 * h * h * s);
             let alpha_a_nm1 = 3.0 * cpp * s;
-            let k = -0.5 * cppp * s3
-                - 1.5 * cpp * a_nm1 * s
-                - cp * d2 * s / (4.0 * h * h);
+            let k = -0.5 * cppp * s3 - 1.5 * cpp * a_nm1 * s - cp * d2 * s / (4.0 * h * h);
             (
                 alpha_b_nm1,
                 [
@@ -1560,9 +1552,7 @@ fn build_axis_jerk_cuts(
             let b_bars: [f64; 3] = match stencil {
                 AxisJerkStencil::Interior => [result.b[i - 1], result.b[i], result.b[i + 1]],
                 AxisJerkStencil::StartBoundary => [result.b[0], result.b[1], result.b[2]],
-                AxisJerkStencil::EndBoundary => {
-                    [result.b[n - 3], result.b[n - 2], result.b[n - 1]]
-                }
+                AxisJerkStencil::EndBoundary => [result.b[n - 3], result.b[n - 2], result.b[n - 1]],
             };
             cuts.push(SlpCut::AxisJerk(AxisJerkCut {
                 i,

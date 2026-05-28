@@ -9,7 +9,7 @@
 //! On `target_os = "none"` the host helpers compile to no-op stubs so the
 //! module can stay `pub` without leaking host-only state into firmware.
 //!
-//! 2026-05-19 — record now carries `motor_idx` (and only motor_idx) for the
+//! 2026-05-19 — record now carries `motor_idx` (and only `motor_idx`) for the
 //! per-motor-CS dispatch refactor. Bus / CS resolution is the C side's job
 //! via the `phase_motors[]` table; host tests assert on motor identity.
 
@@ -25,46 +25,47 @@ pub struct XDirectRecord {
 #[cfg(not(target_os = "none"))]
 mod host {
     use super::XDirectRecord;
-    use std::sync::{Mutex, OnceLock};
+    use std::cell::RefCell;
 
-    fn sink() -> &'static Mutex<Vec<XDirectRecord>> {
-        static SINK: OnceLock<Mutex<Vec<XDirectRecord>>> = OnceLock::new();
-        SINK.get_or_init(|| Mutex::new(Vec::new()))
+    // Thread-local storage so each test thread has its own independent
+    // capture buffer. This eliminates the process-global race where test
+    // B's `clear()` would race test A's `drain()` when both run on
+    // separate OS threads under `cargo test` or `cargo nextest`.
+    thread_local! {
+        static SINK: RefCell<Vec<XDirectRecord>> = const { RefCell::new(Vec::new()) };
     }
 
     /// Append a record. Called by `engine::write_xdirect` in host builds.
     pub fn record(motor_idx: u8, coil_a: i16, coil_b: i16) {
-        // Lock poisoning means a prior test panicked while holding the
-        // mutex — recover the inner Vec anyway so subsequent tests are
-        // not collateral damage. Mirrors `c_segment_queue`'s host-backend.
-        let mut g = sink().lock().unwrap_or_else(|p| p.into_inner());
-        g.push(XDirectRecord {
-            motor_idx,
-            coil_a,
-            coil_b,
+        SINK.with(|s| {
+            s.borrow_mut().push(XDirectRecord {
+                motor_idx,
+                coil_a,
+                coil_b,
+            });
         });
     }
 
     /// Drain and return all records captured since the last drain. Each
     /// test should drain at the start so prior tests' captures don't leak.
     pub fn drain() -> Vec<XDirectRecord> {
-        let mut g = sink().lock().unwrap_or_else(|p| p.into_inner());
-        let out = g.clone();
-        g.clear();
-        out
+        SINK.with(|s| {
+            let mut buf = s.borrow_mut();
+            let out = buf.clone();
+            buf.clear();
+            out
+        })
     }
 
     /// Drop any pending captures without returning them. Useful when a
     /// test wants a clean slate before exercising the path under
     /// assertion, regardless of what earlier setup may have recorded.
     pub fn clear() {
-        let mut g = sink().lock().unwrap_or_else(|p| p.into_inner());
-        g.clear();
+        SINK.with(|s| s.borrow_mut().clear());
     }
 
     pub fn count() -> usize {
-        let g = sink().lock().unwrap_or_else(|p| p.into_inner());
-        g.len()
+        SINK.with(|s| s.borrow().len())
     }
 }
 

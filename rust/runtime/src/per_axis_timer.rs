@@ -45,15 +45,23 @@ unsafe extern "C" {
 }
 
 #[cfg(any(test, feature = "host"))]
-unsafe fn timer_read_time() -> u32 { 0 }
+unsafe fn timer_read_time() -> u32 {
+    0
+}
 #[cfg(any(test, feature = "host"))]
-unsafe fn timer_is_before(_a: u32, _b: u32) -> u8 { 0 }
+unsafe fn timer_is_before(_a: u32, _b: u32) -> u8 {
+    0
+}
 #[cfg(any(test, feature = "host"))]
 unsafe fn runtime_emit_step_pulses(_axis_idx: u8, _n_steps: i32) {}
 #[cfg(any(test, feature = "host"))]
-unsafe fn kalico_runtime_get_dispatcher_floor_cycles() -> u32 { 0 }
+unsafe fn kalico_runtime_get_dispatcher_floor_cycles() -> u32 {
+    0
+}
 #[cfg(any(test, feature = "host"))]
-unsafe fn kalico_runtime_get_sample_period_cycles() -> u32 { 0 }
+unsafe fn kalico_runtime_get_sample_period_cycles() -> u32 {
+    0
+}
 
 /// Rust body for the per-axis `struct timer.func` callback. Called from C
 /// trampolines (one per axis 0..=3) in `src/runtime_tick.c`. Returns the
@@ -134,7 +142,7 @@ pub extern "C" fn kalico_per_axis_step_event(axis_idx: u8) -> u32 {
 /// (axis_idx ∈ 0..=3 is implicit from the four C trampolines).
 #[cfg(not(any(test, feature = "host")))]
 fn resolve_queue_ptr(axis_idx: usize) -> *mut crate::step_queue::StepQueue {
-    use crate::step_queue::{step_queues, StepQueue};
+    use crate::step_queue::{StepQueue, step_queues};
     // SAFETY: `step_queues` is the C-declared array, `.add(axis_idx)` is
     // in-bounds for axis_idx ∈ 0..N_AXIS_STEP_QUEUES (caller invariant).
     unsafe { step_queues.get().cast::<StepQueue>().add(axis_idx) }

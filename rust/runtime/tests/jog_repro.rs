@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! Host-side reproduction of the bench's "jog doesn't move motors" failure.
 //!
 //! Built 2026-05-20 in response to the live-bench symptom: after the

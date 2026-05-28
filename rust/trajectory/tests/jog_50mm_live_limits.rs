@@ -70,8 +70,12 @@ fn jog_50mm_at_100mms_with_live_limits() {
         },
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothMzv { frequency_hz: 186.0 },
-            y: RequiredShaper::SmoothMzv { frequency_hz: 122.0 },
+            x: RequiredShaper::SmoothMzv {
+                frequency_hz: 186.0,
+            },
+            y: RequiredShaper::SmoothMzv {
+                frequency_hz: 122.0,
+            },
             z: AxisShaper::Passthrough,
         },
         fit_tolerance_mm: 0.005,
@@ -138,8 +142,12 @@ fn jog_50mm_with_higher_scv() {
         },
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothMzv { frequency_hz: 186.0 },
-            y: RequiredShaper::SmoothMzv { frequency_hz: 122.0 },
+            x: RequiredShaper::SmoothMzv {
+                frequency_hz: 186.0,
+            },
+            y: RequiredShaper::SmoothMzv {
+                frequency_hz: 122.0,
+            },
             z: AxisShaper::Passthrough,
         },
         fit_tolerance_mm: 0.005,
@@ -197,8 +205,12 @@ fn probe_with_feedrate(feedrate: f64, dist_mm: f64) -> f64 {
         },
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothMzv { frequency_hz: 186.0 },
-            y: RequiredShaper::SmoothMzv { frequency_hz: 122.0 },
+            x: RequiredShaper::SmoothMzv {
+                frequency_hz: 186.0,
+            },
+            y: RequiredShaper::SmoothMzv {
+                frequency_hz: 122.0,
+            },
             z: AxisShaper::Passthrough,
         },
         fit_tolerance_mm: 0.005,
@@ -239,8 +251,8 @@ fn jog_50mm_with_z_jmax_uncapped() {
     let curve = x_50mm_collinear_cubic();
     let limits = temporal::Limits::new(
         [1000.0, 1000.0, 5.0],
-        [70000.0, 70000.0, 1000.0],          // a_max[Z]=1000
-        [140000.0, 140000.0, 2000.0],        // j_max[Z]=2000 (10x current)
+        [70000.0, 70000.0, 1000.0],   // a_max[Z]=1000
+        [140000.0, 140000.0, 2000.0], // j_max[Z]=2000 (10x current)
         5.0_f64.powi(2) / (70000.0 * 0.5),
     );
 
@@ -265,8 +277,12 @@ fn jog_50mm_with_z_jmax_uncapped() {
         },
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothMzv { frequency_hz: 186.0 },
-            y: RequiredShaper::SmoothMzv { frequency_hz: 122.0 },
+            x: RequiredShaper::SmoothMzv {
+                frequency_hz: 186.0,
+            },
+            y: RequiredShaper::SmoothMzv {
+                frequency_hz: 122.0,
+            },
             z: AxisShaper::Passthrough,
         },
         fit_tolerance_mm: 0.005,

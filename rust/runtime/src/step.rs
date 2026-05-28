@@ -11,7 +11,7 @@
 ///
 /// Original conservative value (16) commented out; restore once the
 /// planner-continuity invariant is enforced end-to-end.
-///   // pub const MAX_STEPS_PER_TICK_DEFAULT: i32 = 16;
+///   // pub const `MAX_STEPS_PER_TICK_DEFAULT`: i32 = 16;
 pub const MAX_STEPS_PER_TICK_DEFAULT: i32 = 65536;
 
 /// Output of a single [`StepMotorState::update`] call.
@@ -68,8 +68,7 @@ impl StepMotorState {
     /// Call this after homing or on the first trajectory segment so that the
     /// first `update` does not see a spurious burst relative to physical zero.
     pub fn seed(&mut self, motor_position_mm: f32) {
-        self.step_accumulator =
-            f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
+        self.step_accumulator = f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
     }
 
     /// Drop the sub-step residual without losing the configured
@@ -91,9 +90,9 @@ impl StepMotorState {
     ///
     /// Returns `Err(())` if the burst cap (`max_steps_per_tick`) would be
     /// exceeded — the caller should raise a fault and halt the axis.
+    #[allow(clippy::result_unit_err)] // () matches Modulator::compute's error shape; callers only check is_err()
     pub fn update(&mut self, motor_position_mm: f32) -> Result<StepResult, ()> {
-        let new_pos_steps =
-            f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
+        let new_pos_steps = f64::from(motor_position_mm) * f64::from(self.steps_per_mm);
         let delta = new_pos_steps - self.step_accumulator;
         // Truncate toward zero — fractional residual stays in the accumulator.
         #[allow(clippy::integer_division)]

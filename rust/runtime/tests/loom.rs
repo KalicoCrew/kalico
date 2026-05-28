@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! Loom feature gate scaffold. Spec §6.2 / §6.8.
 //!
 //! Loom can't model cortex-m IRQs, but it exhaustively explores Acquire/

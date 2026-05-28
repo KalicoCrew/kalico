@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! Loom model of the curve-pool alloc / confirm-retired race (Phase 12).
 //!
 //! Spec §10.2 + Round-1 Codex #4 ordering invariant: the foreground

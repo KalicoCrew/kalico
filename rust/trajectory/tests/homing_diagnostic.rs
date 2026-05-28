@@ -181,22 +181,46 @@ fn regression_pure_x_homing_matrix_all_variants_converge() {
 
     // V5: full shape_batch at 300 mm with smooth-MZV@50Hz, β=10. The failing case
     // from Task 1.
-    results.push(run_shape_variant("V5 full 300mm MZV β=10", 300.0, smooth_mzv_50(), 10));
+    results.push(run_shape_variant(
+        "V5 full 300mm MZV β=10",
+        300.0,
+        smooth_mzv_50(),
+        10,
+    ));
 
     // V6: same but β=30. Pins whether more β iters helps.
-    results.push(run_shape_variant("V6 full 300mm MZV β=30", 300.0, smooth_mzv_50(), 30));
+    results.push(run_shape_variant(
+        "V6 full 300mm MZV β=30",
+        300.0,
+        smooth_mzv_50(),
+        30,
+    ));
 
     // V7: full shape_batch with smooth-MZV at very high frequency (narrow kernel,
     // approximates "no shaping"). Pins whether IS shaping is implicated.
     let narrow_mzv = ShaperConfig {
-        x: RequiredShaper::SmoothMzv { frequency_hz: 500.0 },
-        y: RequiredShaper::SmoothMzv { frequency_hz: 500.0 },
+        x: RequiredShaper::SmoothMzv {
+            frequency_hz: 500.0,
+        },
+        y: RequiredShaper::SmoothMzv {
+            frequency_hz: 500.0,
+        },
         z: AxisShaper::Passthrough,
     };
-    results.push(run_shape_variant("V7 full 300mm MZV@500Hz β=10", 300.0, narrow_mzv, 10));
+    results.push(run_shape_variant(
+        "V7 full 300mm MZV@500Hz β=10",
+        300.0,
+        narrow_mzv,
+        10,
+    ));
 
     // V8: full pipeline at 30 mm with smooth-MZV@50Hz, β=10. Control.
-    results.push(run_shape_variant("V8 full 30mm MZV β=10", 30.0, smooth_mzv_50(), 10));
+    results.push(run_shape_variant(
+        "V8 full 30mm MZV β=10",
+        30.0,
+        smooth_mzv_50(),
+        10,
+    ));
 
     // V9: 300 mm topp-only with max_n=1000 (h ≈ 0.5mm, matching V2's grid spacing).
     // If discretization slack scales h², ratio should drop from 1.012 to ~1.002.
@@ -216,7 +240,10 @@ fn regression_pure_x_homing_matrix_all_variants_converge() {
     // Print the matrix.
     eprintln!("\n=== HOMING-FIXTURE DIAGNOSTIC MATRIX ===");
     for r in &results {
-        eprintln!("[{:>5.1}s] {:<35} -> {}", r.wallclock_secs, r.label, r.outcome);
+        eprintln!(
+            "[{:>5.1}s] {:<35} -> {}",
+            r.wallclock_secs, r.label, r.outcome
+        );
     }
     eprintln!("=== END MATRIX ===\n");
 
@@ -254,8 +281,8 @@ fn regression_pure_x_homing_matrix_all_variants_converge() {
     ];
     let mut failures: Vec<String> = Vec::new();
     for r in &results {
-        let converged = r.outcome.contains("joining=Converged")
-            || r.outcome.contains("temporal=Converged");
+        let converged =
+            r.outcome.contains("joining=Converged") || r.outcome.contains("temporal=Converged");
         if converged {
             continue;
         }
