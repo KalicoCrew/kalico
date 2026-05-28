@@ -4,7 +4,7 @@
 //! no real serial I/O. The API surface matches what klippy will need so
 //! that the Python-side code can be developed in parallel.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
@@ -16,7 +16,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use kalico_host_rt::clock::RealClock;
-use kalico_host_rt::credit::CreditCounter;
 use kalico_host_rt::host_io::parser::{DataDictionary, MsgProtoParser};
 use kalico_host_rt::host_io::{KalicoHostIo, KalicoHostIoConfig};
 use kalico_host_rt::passthrough_queue::{NotifyId, PassthroughEntry, PassthroughRouter};
@@ -27,24 +26,7 @@ use crate::config::{self, PlannerConfig, PlannerLimits, parse_required_shaper};
 use crate::dispatch::{AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, McuCaps};
 use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
-use crate::slot_pool::SharedSlotPool;
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
-
-/// Initial credit seed for the per-MCU `CreditCounter`. The bridge wires
-/// `kalico_credit_freed` events into [`CreditCounter::on_credit_freed`] via
-/// [`PyMotionBridge::on_credit_freed`] — but the upstream event-routing
-/// path (an inbound serial reactor) is not yet hooked up to the bridge,
-/// so in practice this seed bounds the in-flight credit budget for the
-/// whole print. Sized generously so motion doesn't stall on credit before
-/// the routing lands.
-// MCU segment queue is `Q_N - 1 = 7` deep (see `rust/runtime/src/queue.rs::Q_N`).
-// Seeding the host's local credit counter higher than that lets the host fire
-// more segments than the MCU can buffer before the first `kalico_credit_freed`
-// event arrives — overshoot rejects with `KALICO_ERR_QUEUE_FULL = -1` from
-// `push_segment`. Seeding at the same value as the MCU's effective capacity
-// keeps the first burst within budget; the very first `credit_freed` then
-// reconciles to MCU-authoritative free_slots.
-const CREDIT_SEED_CAPACITY: i32 = 7;
 
 // ── Internal types ──────────────────────────────────────────────────────
 
@@ -392,13 +374,6 @@ pub struct PyMotionBridge {
     /// Counter of shaped segments observed by the dispatch callback. Used by
     /// tests / sim to verify the planner pipeline ran end-to-end.
     dispatched_segments: Arc<AtomicU64>,
-    /// Per-MCU curve-slot allocator. Populated by `init_planner`; slot
-    /// retirement is driven by the retirement callback installed on
-    /// `KalicoHostIo` (Rust reactor thread). `Arc<SharedSlotPool>` provides
-    /// lock-free read methods and condvar-based blocking alloc.
-    slot_pools: Arc<Mutex<HashMap<u32, Arc<SharedSlotPool>>>>,
-    /// Per-MCU `CreditCounter`. Same sharing pattern as `slot_pools`.
-    credit_counters: Arc<Mutex<HashMap<u32, Arc<CreditCounter>>>>,
     /// Total number of times the dispatch closure took the
     /// `host_time_to_mcu_clock` fallback path (because the per-MCU clock
     /// estimate had not yet been installed by `set_clock_est`). Production
@@ -524,8 +499,6 @@ impl PyMotionBridge {
             commanded_pos: Mutex::new([0.0; 3]),
             mcu_axis_configs: Mutex::new(Vec::new()),
             dispatched_segments: Arc::new(AtomicU64::new(0)),
-            slot_pools: Arc::new(Mutex::new(HashMap::new())),
-            credit_counters: Arc::new(Mutex::new(HashMap::new())),
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             homing: Arc::new(HomingState::new()),
@@ -592,15 +565,6 @@ impl PyMotionBridge {
         }
         if let Some(join) = join {
             let _ = join.join();
-        }
-
-        if let Some(pool) = self
-            .slot_pools
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&handle)
-        {
-            pool.close();
         }
 
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
@@ -1944,30 +1908,8 @@ impl PyMotionBridge {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = mcu_configs.clone();
 
-        // ── Task 8b: wire the dispatch closure to producer::load_curve /
-        // producer::push_segment via KalicoHostIo ─────────────────────────
-        //
-        // Per-MCU state captured into the closure:
-        //   * a CreditCounter pre-seeded to CREDIT_SEED_CAPACITY (option A:
-        //     no real `kalico_credit_freed` accounting yet),
-        //   * the KalicoHostIo reactor handle that owns this MCU's wire.
-        //
-        // The closure then, per ShapedSegment:
-        //   1. converts `t_start` / `t_end` (print-time seconds) to MCU
-        //      clock via `PassthroughRouter::host_time_to_mcu_clock`;
-        //   2. builds per-MCU push plans (`build_push_params`);
-        //   3. for each plan: `load_curve` per axis, then `push_segment`.
-        //
-        // Errors are propagated as `Err(String)` so the planner thread
-        // surfaces them as `PlannerError::Dispatch`.
         let counter = Arc::clone(&self.dispatched_segments);
-        let fallback_counter = Arc::clone(&self.fallback_clock_conversions);
-        let clock_freqs = Arc::clone(&self.clock_freqs);
-        let homing = Arc::clone(&self.homing);
-        let warned_mcus: Arc<Mutex<HashSet<u32>>> = Arc::new(Mutex::new(HashSet::new()));
         let router_arc = Arc::clone(&self.router);
-        let pending_seed_for_cb = Arc::clone(&self.pending_seed);
-        let retained_curve_for_cb = Arc::clone(&self.retained_homing_curve);
 
         let host_ios: HashMap<u32, Arc<KalicoHostIo>> = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
@@ -2059,124 +2001,27 @@ impl PyMotionBridge {
 
         // ── End pump setup ────────────────────────────────────────────────
 
-        // Snapshot of which MCUs accept kalico-native producer messages
-        // (load_curve / push_segment). MCUs whose firmware is stock Klipper
-        // (no kalico runtime) attach for Klipper-protocol traffic but the
-        // bridge can't send them planner curves. The dispatch closure below
-        // skips plans targeting such MCUs.
-        let kalico_native_for_plans: HashMap<u32, bool> = {
-            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            mcu_configs
-                .iter()
-                .map(|cfg| {
-                    let supported = mcus
-                        .get(&cfg.mcu_id)
-                        .map(|c| c.kalico_native_supported)
-                        .unwrap_or(false);
-                    (cfg.mcu_id, supported)
-                })
-                .collect()
-        };
-
-        // Per-MCU dispatch context (host I/O + credit + slot pool) keyed by
-        // mcu_id. `dispatch_ios` is the closure-local lookup map; the credit
-        // and slot-pool tables on `self` are the persistent ones the
-        // event-routing API (`on_credit_freed`) drives.
-        //
-        // The KalicoHostIo entry is stored as Weak<KalicoHostIo> so that
-        // `attach_serial`'s `conn.host_io = None` (which drops the only
-        // strong Arc) immediately drives the refcount to zero — triggering
-        // the Drop impl that shuts down the reactor and releases the serial
-        // FD — without waiting for the planner thread to be torn down.
-        // The closure upgrades to Arc on each dispatch; if the upgrade
-        // returns None the connection has been dropped and the dispatch
-        // returns ConnectionDropped.
-        let mut dispatch_ios: HashMap<
-            u32,
-            (Weak<KalicoHostIo>, Arc<CreditCounter>, Arc<SharedSlotPool>),
-        > = HashMap::new();
-        let mut self_credits = self
-            .credit_counters
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let mut self_pools = self.slot_pools.lock().unwrap_or_else(|p| p.into_inner());
-        self_credits.clear();
-        self_pools.clear();
+        // Attach heartbeat callbacks — route StatusHeartbeat consumed_counts
+        // to the pump so it can update per-ring flow-control accounting.
         for cfg_mcu in &mcu_configs {
             let io = host_ios
                 .get(&cfg_mcu.mcu_id)
                 .expect("host_io map built from mcu_configs")
                 .clone();
-            let credit = Arc::new(CreditCounter::new(CREDIT_SEED_CAPACITY));
-            io.attach_credit_counter(Arc::clone(&credit));
-
-            // Bench 2026-05-12: size the host slot pool to the MCU's actual
-            // piece-pool capacity (queried at attach_serial via QueryRuntimeCaps).
-            // With the simple-MCU-contract revision the MCU reports total_piece_memory
-            // rather than a slot count; derive a slot count as total_pieces / 4 so
-            // the host aligns with the MCU's per-axis ring sizing. Cap at 64 (the
-            // firmware's hard CURVE_POOL_N upper bound) to avoid over-allocating.
-            // Previously `curve_pool_n` was reported directly; this derivation keeps
-            // the existing slot-pool-exhaustion guard correct.
-            let pool_capacity = (cfg_mcu.caps.total_pieces() / 4).max(1).min(64);
-            log::debug!(
-                "[slot-trace] init_pool mcu={} capacity={}",
-                cfg_mcu.mcu_id,
-                pool_capacity,
-            );
-            let slot_pool = Arc::new(SharedSlotPool::new(pool_capacity));
-            {
-                let pool_for_cb = Arc::clone(&slot_pool);
-                let homing_for_cb = Arc::clone(&self.homing);
-                io.attach_retirement_callback(Arc::new(move |retired_through| {
-                    pool_for_cb.retire_through_segment(retired_through);
-                    homing_for_cb.complete_if_retired(retired_through);
-                }));
-            }
-            self_credits.insert(cfg_mcu.mcu_id, Arc::clone(&credit));
-            self_pools.insert(cfg_mcu.mcu_id, Arc::clone(&slot_pool));
-            // Downgrade to Weak so the dispatch closure does not prevent
-            // KalicoHostIo::drop from running when attach_serial clears
-            // conn.host_io. The Arc is still live on `self.mcus` until then.
-            dispatch_ios.insert(cfg_mcu.mcu_id, (Arc::downgrade(&io), credit, slot_pool));
-
-            // ── Task 8: heartbeat callback → pump ─────────────────────────
-            // Route StatusHeartbeat consumed_counts to the pump so it can
-            // update per-ring flow-control accounting.
-            {
-                let pump_tx_hb = pump_tx_init.clone();
-                let mcu_id = cfg_mcu.mcu_id;
-                io.attach_heartbeat_callback(Arc::new(move |consumed: &[u32]| {
-                    let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
-                        crate::pump::HeartbeatMsg {
-                            mcu_id,
-                            consumed_counts: consumed.to_vec(),
-                        },
-                    ));
-                }));
-            }
+            let pump_tx_hb = pump_tx_init.clone();
+            let mcu_id = cfg_mcu.mcu_id;
+            io.attach_heartbeat_callback(Arc::new(move |consumed: &[u32]| {
+                let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
+                    crate::pump::HeartbeatMsg {
+                        mcu_id,
+                        consumed_counts: consumed.to_vec(),
+                    },
+                ));
+            }));
         }
-        drop(self_credits);
-        drop(self_pools);
-        // dispatch_ios is consumed only by the credit/slot build loop above; after it, this map is inert (drop-only) — Task 10 removes it with the rest of the segment-era path.
 
         let mcu_configs_for_cb = mcu_configs;
         let router_for_cb = Arc::clone(&router_arc);
-
-        // Suppress unused-variable warnings for old segment-era state that
-        // remains declared above (inert until Task 10 removes it).
-        // The `dispatch_ios` map is still referenced by other live code
-        // (credit / slot setup); only close-only items are suppressed here.
-        // `counter` is intentionally NOT suppressed — it is captured by the
-        // new closure to maintain the `dispatched_segments` invariant used
-        // by `run_probe_homing` and `get_dispatched_segment_count`.
-        let _ = &fallback_counter;
-        let _ = &clock_freqs;
-        let _ = &homing;
-        let _ = &pending_seed_for_cb;
-        let _ = &retained_curve_for_cb;
-        let _ = &warned_mcus;
-        let _ = &kalico_native_for_plans;
 
         // ── Task 8: new dispatch wiring ───────────────────────────────────
         //
@@ -2748,27 +2593,6 @@ impl PyMotionBridge {
     /// sim hook — not part of the klippy-facing API.
     fn dispatched_segment_count(&self) -> u64 {
         self.dispatched_segments.load(Ordering::Relaxed)
-    }
-
-    /// Number of curve slots currently in flight on the given MCU. Test /
-    /// diagnostic hook.
-    fn slot_pool_in_flight(&self, mcu: u32) -> u32 {
-        self.slot_pools
-            .lock()
-            .unwrap()
-            .get(&mcu)
-            .map(|p| p.in_flight_count() as u32)
-            .unwrap_or(0)
-    }
-
-    /// Available credit for the given MCU. Test / diagnostic hook.
-    fn credit_available(&self, mcu: u32) -> i32 {
-        self.credit_counters
-            .lock()
-            .unwrap()
-            .get(&mcu)
-            .map(|c| c.available())
-            .unwrap_or(0)
     }
 
     /// Number of times the dispatch closure took the `t * 1e6` fallback

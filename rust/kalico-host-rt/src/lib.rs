@@ -28,7 +28,6 @@
 
 pub mod clock;
 pub mod clock_sync;
-pub mod credit;
 pub mod endstop;
 pub mod fault;
 pub mod host_io;

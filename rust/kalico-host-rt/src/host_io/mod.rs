@@ -33,7 +33,6 @@ use std::time::Duration;
 
 use arc_swap::ArcSwap;
 
-use crate::credit::CreditCounter;
 use crate::host_io::events::HostEvent;
 use crate::host_io::parser::MsgProtoParser;
 use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent, StatusEvent, TraceEvent};
@@ -75,17 +74,6 @@ impl Default for KalicoHostIoConfig {
     }
 }
 
-/// Newtype wrapper for a retirement callback so `ReactorCommand` can remain
-/// `#[derive(Debug)]`. The underlying `Arc<dyn Fn(u32) + Send + Sync>` does
-/// not implement `Debug`, so we provide a trivial opaque representation.
-pub struct RetirementCallback(pub Arc<dyn Fn(u32) + Send + Sync>);
-
-impl std::fmt::Debug for RetirementCallback {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RetirementCallback(<fn>)")
-    }
-}
-
 /// Newtype wrapper for a heartbeat callback so `ReactorCommand` can remain
 /// `#[derive(Debug)]`. Fired on every `StatusHeartbeat` with the per-axis
 /// consumed-piece counts.
@@ -114,8 +102,6 @@ pub enum ReactorCommand {
         deadline: std::time::Instant,
     },
     Abandon(u64),
-    AttachCreditCounter(std::sync::Arc<CreditCounter>),
-    AttachRetirementCallback(RetirementCallback),
     AttachHeartbeatCallback(HeartbeatCallback),
     SubscribeFault {
         sender: SyncSender<FaultEvent>,
@@ -550,26 +536,6 @@ impl KalicoHostIo {
     /// when the receiver is disconnected.
     pub fn is_alive(&self) -> bool {
         self.submission_tx.send(ReactorCommand::Noop).is_ok()
-    }
-
-    pub fn attach_credit_counter(&self, counter: std::sync::Arc<crate::credit::CreditCounter>) {
-        let _ = self
-            .submission_tx
-            .send(ReactorCommand::AttachCreditCounter(counter));
-    }
-
-    /// Install a callback that is invoked on the reactor thread with
-    /// `retired_through_segment_id` on every `CreditFreed` event — both
-    /// direct frames from the MCU and synthesized events from the 10 Hz
-    /// status watermark path. Avoids a circular crate dependency: since
-    /// `motion-bridge` depends on `kalico-host-rt`, the bridge installs its
-    /// slot-retirement logic here rather than importing a bridge type.
-    pub fn attach_retirement_callback(&self, cb: Arc<dyn Fn(u32) + Send + Sync>) {
-        let _ = self
-            .submission_tx
-            .send(ReactorCommand::AttachRetirementCallback(
-                RetirementCallback(cb),
-            ));
     }
 
     /// Register a callback fired on every `StatusHeartbeat` with the per-axis

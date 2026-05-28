@@ -82,19 +82,12 @@ fn status_with_watermark(queue_depth: u8, retired_through: u32) -> RuntimeEvent 
 
 /// v2: a Status frame whose watermark advances past the previous
 /// observation must synthesize a CreditFreed dispatched through the
-/// normal CreditFreed path — that's what releases slot-pool slots when
-/// the firmware's fire-and-forget CreditFreed frame got dropped.
+/// normal CreditFreed path — forwarded to the bridge poller via
+/// take_runtime_event.
 #[test]
 fn status_watermark_advance_synthesizes_credit_freed() {
     use std::sync::mpsc::sync_channel;
     let mut d = make_dispatcher();
-    let counter = Arc::new(CreditCounter::new(7));
-    d.credit_counter = Some(Arc::clone(&counter));
-    // Drain to zero so we can observe on_credit_freed snapping.
-    for _ in 0..7 {
-        counter.try_acquire().unwrap();
-    }
-    assert_eq!(counter.available(), 0);
 
     // Subscribe to the runtime-event channel so we can observe the
     // synthesized CreditFreed forwarded to the bridge poller.
@@ -103,10 +96,6 @@ fn status_watermark_advance_synthesizes_credit_freed() {
 
     // First Status with watermark=5 and queue_depth=2 → free_slots=5.
     d.dispatch(status_with_watermark(2, 5));
-
-    // Counter snapped to 5 (= Q_N-1 - queue_depth = 7 - 2).
-    assert_eq!(counter.available(), 5, "watermark advance must snap credit");
-    assert_eq!(counter.credit_freed_events(), 1);
 
     // Drain channel — exactly 1 Status and 1 CreditFreed must have
     // been dispatched, in that order.
@@ -124,86 +113,47 @@ fn status_watermark_advance_synthesizes_credit_freed() {
 }
 
 /// Repeated Status frames with the same watermark must NOT re-synthesize
-/// CreditFreed — otherwise on_credit_freed would clobber try_acquire's
-/// decrement on every 100 ms status tick.
+/// CreditFreed.
 #[test]
 fn status_watermark_unchanged_does_not_synthesize() {
+    use std::sync::mpsc::sync_channel;
     let mut d = make_dispatcher();
-    let counter = Arc::new(CreditCounter::new(7));
-    d.credit_counter = Some(Arc::clone(&counter));
 
-    // Prime: watermark=5 advances from 0 → 1 synth.
-    d.dispatch(status_with_watermark(0, 5));
-    assert_eq!(counter.credit_freed_events(), 1);
+    let (tx, rx) = sync_channel::<RuntimeEvent>(8);
+    d.runtime_event_dispatcher.subscribe(tx).unwrap();
 
-    // Same watermark, decremented available via try_acquire — the
-    // second Status must NOT re-snap available back up.
-    counter.try_acquire().unwrap();
-    let available_before = counter.available();
+    // Prime: watermark=5 advances from 0 → 1 CreditFreed.
     d.dispatch(status_with_watermark(0, 5));
-    assert_eq!(counter.credit_freed_events(), 1, "no new credit event");
-    assert_eq!(
-        counter.available(),
-        available_before,
-        "no resnap when watermark unchanged"
-    );
+    // Drain: 1 Status + 1 CreditFreed.
+    let _ = rx.recv().unwrap();
+    let _ = rx.recv().unwrap();
+
+    // Same watermark again — no new CreditFreed.
+    d.dispatch(status_with_watermark(0, 5));
+    // Only 1 Status arrives.
+    let _ = rx.recv().unwrap();
+    assert!(rx.try_recv().is_err(), "no CreditFreed on unchanged watermark");
 }
 
-/// Stale Status frames (watermark < last seen, e.g. after reordering on
-/// the wire) must not synthesize. Wraparound is intentionally allowed —
-/// signed-difference comparison handles a u32 overflow correctly.
+/// Stale Status frames (watermark < last seen) must not synthesize.
 #[test]
 fn status_watermark_regression_does_not_synthesize() {
+    use std::sync::mpsc::sync_channel;
     let mut d = make_dispatcher();
-    let counter = Arc::new(CreditCounter::new(7));
-    d.credit_counter = Some(Arc::clone(&counter));
+
+    let (tx, rx) = sync_channel::<RuntimeEvent>(8);
+    d.runtime_event_dispatcher.subscribe(tx).unwrap();
+
     d.dispatch(status_with_watermark(0, 10));
-    assert_eq!(counter.credit_freed_events(), 1);
+    // Drain 1 Status + 1 CreditFreed.
+    let _ = rx.recv().unwrap();
+    let _ = rx.recv().unwrap();
 
     // Regress to 8 (an out-of-order or stale frame).
     d.dispatch(status_with_watermark(0, 8));
-    assert_eq!(counter.credit_freed_events(), 1, "regression ignored");
-}
-
-#[test]
-fn credit_freed_calls_retirement_callback() {
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    let status = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
-    let mut d = EventDispatcher::new(status, 16, 8);
-
-    let retired_id = Arc::new(AtomicU32::new(0));
-    let retired_id2 = Arc::clone(&retired_id);
-    d.retirement_callback = Some(Arc::new(move |seg_id| {
-        retired_id2.store(seg_id, Ordering::Release);
-    }));
-
-    d.dispatch(RuntimeEvent::CreditFreed(CreditFreedEvent {
-        retired_through_segment_id: 42,
-        free_slots: 5,
-    }));
-    assert_eq!(retired_id.load(Ordering::Acquire), 42);
-}
-
-#[test]
-fn status_synthesized_credit_freed_calls_retirement_callback() {
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    let status = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
-    let mut d = EventDispatcher::new(status, 16, 8);
-
-    let retired_id = Arc::new(AtomicU32::new(0));
-    let retired_id2 = Arc::clone(&retired_id);
-    d.retirement_callback = Some(Arc::new(move |seg_id| {
-        retired_id2.store(seg_id, Ordering::Release);
-    }));
-
-    d.dispatch(RuntimeEvent::Status(StatusEvent {
-        retired_through_segment_id: 10,
-        queue_depth: 3,
-        ..StatusEvent::default()
-    }));
-    assert_eq!(retired_id.load(Ordering::Acquire), 10);
+    // Only 1 Status arrives.
+    let _ = rx.recv().unwrap();
+    assert!(rx.try_recv().is_err(), "regression ignored — no CreditFreed");
 }
 
 #[test]

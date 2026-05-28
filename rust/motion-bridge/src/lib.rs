@@ -2,8 +2,6 @@
 pub mod anchor;
 mod bridge;
 #[doc(hidden)]
-pub mod cap_check;
-#[doc(hidden)]
 pub mod probe_homing;
 #[doc(hidden)]
 pub mod classify;
@@ -20,8 +18,6 @@ pub mod planner;
 #[doc(hidden)]
 pub mod pump;
 mod router_transport;
-#[doc(hidden)]
-pub mod slot_pool;
 mod types;
 
 use pyo3::prelude::*;

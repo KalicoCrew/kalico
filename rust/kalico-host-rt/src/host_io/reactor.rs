@@ -1106,12 +1106,6 @@ impl Reactor {
                 );
                 self.closed_via_shutdown = true;
             }
-            ReactorCommand::AttachCreditCounter(counter) => {
-                self.event_dispatcher.credit_counter = Some(counter);
-            }
-            ReactorCommand::AttachRetirementCallback(wrapper) => {
-                self.event_dispatcher.retirement_callback = Some(wrapper.0);
-            }
             ReactorCommand::AttachHeartbeatCallback(wrapper) => {
                 self.event_dispatcher.heartbeat_callback = Some(wrapper.0);
             }
