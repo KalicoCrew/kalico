@@ -66,6 +66,7 @@ static void handle_push_segment(uint32_t correlation_id, const uint8_t *body, ui
 static void handle_configure_axes(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 static void handle_reset_curve_pool(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
+static void handle_push_pieces(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 
 // ---------------------------------------------------------------------------
 // reset_epoch generation
@@ -268,6 +269,9 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
         return;
     case KALICO_MSG_RESET_CURVE_POOL:
         handle_reset_curve_pool(correlation_id, body, body_len);
+        return;
+    case KALICO_MSG_PUSH_PIECES:
+        handle_push_pieces(correlation_id, body, body_len);
         return;
     default:
         return;
@@ -562,6 +566,64 @@ handle_reset_curve_pool(uint32_t correlation_id, const uint8_t *body,
     }
     int32_t r = kalico_runtime_reset_curve_pool(runtime_handle);
     send_reset_curve_pool_response(correlation_id, r);
+}
+
+// ---------------------------------------------------------------------------
+// PushPieces handler (0x0060) — Task 7
+// ---------------------------------------------------------------------------
+//
+// Delivers a batch of pre-baked polynomial `PieceEntry` records for a single
+// axis's ring buffer.
+//
+// Body wire format (§ PushPieces):
+//   axis_idx    u8       (body[0])
+//   piece_count u8       (body[1])
+//   pieces      piece_count * 32 bytes  (body + 2)
+//
+// Total body length must equal 2 + piece_count * 32.
+//
+// The Rust FFI `kalico_runtime_push_pieces` validates alignment internally
+// via `read_unaligned`; the C side only gates the overall body length.
+
+static void
+send_push_pieces_response(uint32_t correlation_id, int32_t result)
+{
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 4];
+    encode_message_header(payload, KALICO_MSG_PUSH_PIECES_RESPONSE,
+                          MESSAGE_VERSION_DEFAULT, correlation_id);
+    uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
+    b[0] = (uint8_t)(result & 0xFF);
+    b[1] = (uint8_t)((result >> 8) & 0xFF);
+    b[2] = (uint8_t)((result >> 16) & 0xFF);
+    b[3] = (uint8_t)((result >> 24) & 0xFF);
+    kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
+                                payload, sizeof(payload));
+}
+
+static void
+handle_push_pieces(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
+{
+    // Minimum body: axis_idx(1) + piece_count(1) = 2 bytes (0 pieces is legal).
+    if (body_len < 2) {
+        send_push_pieces_response(correlation_id, KALICO_ERR_INVALID_CURVE);
+        return;
+    }
+    uint8_t axis_idx = body[0];
+    uint8_t piece_count = body[1];
+    uint32_t expected_len = 2u + (uint32_t)piece_count * 32u;
+    if ((uint32_t)body_len != expected_len) {
+        send_push_pieces_response(correlation_id, KALICO_ERR_INVALID_CURVE);
+        return;
+    }
+    if (!runtime_handle) {
+        send_push_pieces_response(correlation_id, KALICO_ERR_NOT_INIT);
+        return;
+    }
+    // pieces_len is body_len - 2; the Rust FFI re-validates piece_count * 32.
+    uint16_t pieces_len = (uint16_t)(body_len - 2u);
+    int32_t r = kalico_runtime_push_pieces(
+        runtime_handle, axis_idx, piece_count, body + 2, pieces_len);
+    send_push_pieces_response(correlation_id, r);
 }
 
 // ---------------------------------------------------------------------------

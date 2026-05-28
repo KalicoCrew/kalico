@@ -784,25 +784,40 @@ uint32_t kalico_runtime_get_dispatcher_floor_cycles(void);
 uint32_t kalico_runtime_get_sample_period_cycles(void);
 
 /**
- * Stepping-redesign Task 14. Publish per-axis configuration with
- * explicit stepper bindings. `microstep_distance_f32_bits` is
- * `f32::to_bits` of the per-step distance (Klipper carries f32 as u32
- * on the wire). `mode` is `0` for Pulse; `1` for Phase — Phase is
- * currently rejected with `KALICO_ERR_PHASE_MODE_NOT_AVAILABLE` (the
- * SPI dispatch path is a follow-up task). Other mode values return
- * `KALICO_ERR_INVALID_ARG`. `bindings_ptr` points to an array of
- * `stepper_count` [`runtime::stepping_state::StepperBindingRust`]
- * entries; a null pointer with `stepper_count == 0` is legal (axis
- * with no steppers, e.g. virtual / logical-only). Returns `0` on
- * success, negative on validation failure. The C handler treats any
- * non-zero return as a hard error and shuts the MCU down.
+ * Stepping-redesign Task 14 / Task 7 (ring_depth wiring). Publish per-axis
+ * configuration with explicit stepper bindings. `microstep_distance_f32_bits`
+ * is `f32::to_bits` of the per-step distance (Klipper carries f32 as u32 on
+ * the wire). `mode` is `0` for Pulse; `1` for Phase (TMC5160 XDIRECT
+ * coil-current modulation). Other mode values return `KALICO_ERR_INVALID_ARG`.
+ * `ring_depth` is the number of `PieceEntry` slots to allocate for this axis
+ * from the shared `piece_storage`; C callers pass a compile-time default of 64
+ * until the host drives this via the wire protocol. `bindings_ptr` points to an
+ * array of `stepper_count` `StepperBindingRust` entries; a null pointer with
+ * `stepper_count == 0` is legal (axis with no steppers, e.g. virtual /
+ * logical-only). Returns `0` on success, negative on validation failure. The C
+ * handler treats any non-zero return as a hard error and shuts the MCU down.
  */
 int32_t kalico_runtime_configure_axis(struct KalicoRuntime *rt,
                                       uint8_t axis_idx,
                                       uint8_t mode,
                                       uint32_t microstep_distance_f32_bits,
+                                      uint16_t ring_depth,
                                       const struct StepperBindingRust *bindings_ptr,
                                       uint8_t stepper_count);
+
+/**
+ * Task 7a. Push a batch of pre-baked polynomial pieces into an axis's ring buffer.
+ *
+ * `pieces_ptr` points to `piece_count * 32` raw bytes in `PieceEntry` wire
+ * format. `pieces_len` must equal `piece_count * 32`. The pointer may be
+ * unaligned; the Rust FFI uses `read_unaligned` internally.
+ * Returns `0` on success, negative on error.
+ */
+int32_t kalico_runtime_push_pieces(struct KalicoRuntime *rt,
+                                   uint8_t axis_idx,
+                                   uint8_t piece_count,
+                                   const uint8_t *pieces_ptr,
+                                   uint16_t pieces_len);
 
 /**
  * Stepping-redesign Task 11. Publish the kinematic scale factor

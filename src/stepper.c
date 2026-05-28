@@ -294,8 +294,15 @@ command_kalico_configure_axis(uint32_t *args)
         bindings[i]._pad[0] = 0;
         bindings[i]._pad[1] = 0;
     }
+    // ring_depth: number of PieceEntry slots to allocate for this axis.
+    // The host will eventually drive this via the wire protocol; for now
+    // pass a fixed default of 64 (matches configure_axis_legacy's previous
+    // behaviour and is sufficient for the current single-segment lookahead).
+    // TODO: wire from host via kalico_configure_axis protocol field.
+    uint16_t ring_depth = 64;
     int32_t rc = kalico_runtime_configure_axis(
         runtime_handle, axis_idx, mode, mstep_bits,
+        ring_depth,
         stepper_count > 0 ? bindings : 0,
         stepper_count);
     if (rc != 0)

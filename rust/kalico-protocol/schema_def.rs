@@ -135,6 +135,26 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         ],
     },
     SchemaMessage {
+        type_tag: 0x0060,
+        name: "PushPieces",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "axis_idx", ty: "u8" },
+            SchemaField { name: "piece_count", ty: "u8" },
+            SchemaField { name: "pieces_bytes", ty: "array<u8>" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0061,
+        name: "PushPiecesResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+        ],
+    },
+    SchemaMessage {
         type_tag: 0x0080,
         name: "StatusEvent",
         version: 2,

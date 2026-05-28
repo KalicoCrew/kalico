@@ -2843,18 +2843,25 @@ pub mod exports {
     /// `f32::to_bits` of the per-step distance (Klipper carries f32 as u32
     /// on the wire). `mode` is `0` for Pulse; `1` for Phase (TMC5160
     /// XDIRECT coil-current modulation). Other mode values return
-    /// `KALICO_ERR_INVALID_ARG`. `bindings_ptr` points to an array of
-    /// `stepper_count` [`runtime::stepping_state::StepperBindingRust`]
-    /// entries; a null pointer with `stepper_count == 0` is legal (axis
-    /// with no steppers, e.g. virtual / logical-only). Returns `0` on
-    /// success, negative on validation failure. The C handler treats any
-    /// non-zero return as a hard error and shuts the MCU down.
+    /// `KALICO_ERR_INVALID_ARG`. `ring_depth` is the number of
+    /// [`PieceEntry`] slots to allocate for this axis's ring region
+    /// from the shared `piece_storage`; the engine bump-allocates
+    /// contiguously. The C caller currently passes a compile-time
+    /// default (see `command_kalico_configure_axis` in `src/stepper.c`);
+    /// a future protocol revision will let the host drive this via
+    /// the wire. `bindings_ptr` points to an array of `stepper_count`
+    /// [`runtime::stepping_state::StepperBindingRust`] entries; a null
+    /// pointer with `stepper_count == 0` is legal (axis with no steppers,
+    /// e.g. virtual / logical-only). Returns `0` on success, negative on
+    /// validation failure. The C handler treats any non-zero return as a
+    /// hard error and shuts the MCU down.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_configure_axis(
         rt: *mut KalicoRuntime,
         axis_idx: u8,
         mode: u8,
         microstep_distance_f32_bits: u32,
+        ring_depth: u16,
         bindings_ptr: *const runtime::stepping_state::StepperBindingRust,
         stepper_count: u8,
     ) -> i32 {
@@ -2893,15 +2900,14 @@ pub mod exports {
         // concurrently ticking the same per-axis state (Klipper command
         // dispatch is single-threaded and serialised against the modulated
         // tick by priority arbitration during configuration windows).
-        // TODO(task7): wire ring_depth from the wire protocol.
-        // For now use the legacy helper that allocates a default per-axis depth.
         let total_ring_pieces = runtime::state::TOTAL_RING_PIECES;
         unsafe {
             let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
-            let rc = (*isr_ptr).engine.configure_axis_legacy(
+            let rc = (*isr_ptr).engine.configure_axis(
                 axis_idx,
                 mode_enum,
                 mstep_dist,
+                ring_depth as usize,
                 bindings,
                 total_ring_pieces,
             );
@@ -2930,6 +2936,75 @@ pub mod exports {
             }
             KALICO_OK
         }
+    }
+
+    /// Task 7a. Push a batch of pre-baked polynomial pieces into an axis's
+    /// ring buffer.
+    ///
+    /// `pieces_ptr` points to `piece_count * 32` raw bytes in
+    /// `PieceEntry` wire format (little-endian, 8-byte-aligned field layout;
+    /// the pointer itself may be unaligned relative to 8-byte boundaries
+    /// because it arrives as a byte offset into a protocol frame buffer).
+    /// `pieces_len` must equal `piece_count * 32`; a mismatch returns
+    /// `KALICO_ERR_INVALID_ARG` without touching the ring.
+    ///
+    /// Called from `handle_push_pieces` in `src/kalico_dispatch.c`.
+    /// This is a foreground-only entry point — the ISR concurrently reads the
+    /// ring tail; the foreground only writes the ring head. That discipline
+    /// matches `kalico_runtime_configure_axis` (same §11.2 split).
+    #[unsafe(no_mangle)]
+    #[allow(clippy::cast_possible_truncation)]
+    pub unsafe extern "C" fn kalico_runtime_push_pieces(
+        rt: *mut KalicoRuntime,
+        axis_idx: u8,
+        piece_count: u8,
+        pieces_ptr: *const u8,
+        pieces_len: u16,
+    ) -> i32 {
+        if rt.is_null() || pieces_ptr.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        // Validate that the byte buffer exactly covers piece_count entries.
+        if pieces_len as usize != (piece_count as usize) * 32 {
+            return KALICO_ERR_INVALID_ARG;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground-only entry. The §11.2 split guarantees:
+        //   - The ISR (TIM5) exclusively pops from each axis ring's tail cursor;
+        //     the foreground exclusively pushes to the head cursor. The two
+        //     sides never write the same slot simultaneously.
+        //   - `UnsafeCell::raw_get` on `piece_storage` yields a `*mut [..]`
+        //     with provenance over the full array without forming a shared
+        //     reference to the `UnsafeCell`.
+        //   - `read_unaligned` is used for each `PieceEntry` because
+        //     `pieces_ptr` is a byte offset into a protocol frame buffer and
+        //     is not guaranteed to satisfy the 8-byte alignment required by
+        //     `PieceEntry`. `read_unaligned` is sound for any `Copy` type as
+        //     long as the source address is valid for reads of `size_of::<T>()`
+        //     bytes and all bit patterns are valid — both hold here
+        //     (`PieceEntry` has no invalid-bit-pattern invariants).
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let ps_ptr: *mut [runtime::piece_ring::PieceEntry; runtime::state::TOTAL_RING_PIECES] =
+                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).piece_storage));
+            let storage: &mut [runtime::piece_ring::PieceEntry] = &mut *ps_ptr;
+            for k in 0..piece_count as usize {
+                // read_unaligned: pieces_ptr may not be 8-byte aligned; each
+                // `PieceEntry` is 32 bytes, so consecutive entries start at
+                // 32-byte multiples of the (potentially unaligned) base.
+                let p = core::ptr::read_unaligned(
+                    pieces_ptr.add(k * 32) as *const runtime::piece_ring::PieceEntry
+                );
+                let rc = (*isr_ptr).engine.push_pieces(axis_idx, &[p], storage);
+                if rc != KALICO_OK {
+                    return rc;
+                }
+            }
+        }
+        KALICO_OK
     }
 
     /// Stepping-redesign Task 11. Publish the kinematic scale factor
