@@ -1,3 +1,5 @@
+#[doc(hidden)]
+pub mod anchor;
 mod bridge;
 #[doc(hidden)]
 pub mod cap_check;
