@@ -60,6 +60,7 @@ The original lazy-arm scheme was a compute / USB-CDC-starvation mitigation (the 
 - **Why foreground, not the fault site:** `shutdown()` does `irq_disable()` + `longjmp` to `sched_main`'s `setjmp`. Calling it from the fault site would (a) unwind through Rust ISR frames — the C/Rust boundary hazard called out in `docs/kalico-rewrite/mcu-c-rust-boundary.md` — and (b) on Linux the fault fires in the `host_tick` pthread, where a `longjmp` to `sched_main`'s `setjmp` in a different thread is undefined behavior. `runtime_drain` runs in `sched_main`'s task loop on every platform, so `shutdown()` there is the established, safe Klipper pattern (mirrors `try_shutdown("Timer too close")`).
 - **Latency:** `runtime_drain` runs at 1 kHz, so ≤1 ms from fault to shutdown. The faulted axis already idles immediately (the fault-raising path returns `None` for that axis every tick); other axes only play valid, already-queued pieces in that window — bounded and non-garbage motion, which is acceptable.
 - **Edge detection:** the drain must track the last error code it acted on so it does not re-emit / re-`shutdown` every tick once `last_error` is latched. (The first call to `shutdown` longjmps away regardless, but the edge guard keeps the pre-shutdown logic correct and avoids duplicate fault events.)
+- **Relationship to the existing dormant `cur_status` readers:** the new `last_error` path is *additive and independent* of `runtime_status`. The dormant `cur_status`-based blocks in `runtime_drain` — the RUNNING liveness gate (`:430`), the `cur_status == FAULT` fault-event emit (`:446`), the diag transition recording (`:474`), and the LED-hook tracking (`:479`) — are **left untouched**, consistent with leaving the status machine dormant. Only the `:464` disable block is removed. The `:446` emit never fires today (status never reaches FAULT), so there is no double-emit; if the status machine is wired up later, that reconciliation (collapsing the two fault-emit sites) happens then, as part of that work.
 
 ### 3.5 Shutdown reason string
 
@@ -71,7 +72,7 @@ The original lazy-arm scheme was a compute / USB-CDC-starvation mitigation (the 
 
 - `src/stm32/runtime_tick_h7.c`: enable TIM5 in `runtime_tick_init`; strip the `count_modulated_steppers` gate from `runtime_tick_enable` (keep `CR1.CEN` guard).
 - `src/stm32/runtime_tick_f4.c`: same two edits.
-- `src/runtime_tick.c`: delete the `DRAINED || FAULT` TIM5-disable block in `runtime_drain`; add the `last_error`-driven fault-event-then-`shutdown` path with edge detection; add `DECL_SHUTDOWN(runtime_tick_shutdown)` → `runtime_tick_disable()`.
+- `src/runtime_tick.c`: delete **only** the `:464` `DRAINED || FAULT` TIM5-disable block in `runtime_drain` (leave the other dormant `cur_status` readers at `:430`/`:446`/`:474`/`:479` untouched — see §3.4); add the `last_error`-driven fault-event-then-`shutdown` path with edge detection; add `DECL_SHUTDOWN(runtime_tick_shutdown)` → `runtime_tick_disable()`.
 - `src/stepper.c`: call `runtime_tick_enable()` once from `command_kalico_configure_axis` (alongside `init_per_axis_step_timers`).
 
 ### 4.2 Rust (`rust/`)
