@@ -4,7 +4,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use heapless::spsc::Queue;
 
-use crate::curve_pool::CurveHandle;
+use crate::segment::CurveHandle;
 
 /// `TraceRing` capacity used by the `Engine` ISR. Spec §13.1.
 ///

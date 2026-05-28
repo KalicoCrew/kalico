@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::config::EMode;
-use crate::curve_pool::CurveHandle;
+use crate::segment::CurveHandle;
 use crate::segment::*;
 
 fn seg(id: u32, t_start: u64, t_end: u64) -> Segment {

@@ -24,15 +24,15 @@ pub mod exports {
     use core::sync::atomic::{AtomicBool, Ordering};
 
     use runtime::RT_STORAGE_SIZE;
-    use runtime::curve_pool::{CURVE_POOL_N, CurveHandle, CurvePool};
     use runtime::engine::RuntimeStatus;
     use runtime::error::{
         KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_ARG,
-        KALICO_ERR_INVALID_CURVE, KALICO_ERR_INVALID_DURATION, KALICO_ERR_INVALID_HANDLE,
-        KALICO_ERR_INVALID_KINEMATICS, KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
-        KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_ERR_QUEUE_FULL,
-        KALICO_ERR_SEGMENT_ID_NON_MONOTONIC, KALICO_ERR_ZERO_DURATION_SEGMENT, KALICO_OK,
+        KALICO_ERR_INVALID_DURATION, KALICO_ERR_INVALID_HANDLE, KALICO_ERR_INVALID_KINEMATICS,
+        KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR, KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED,
+        KALICO_ERR_QUEUE_FULL, KALICO_ERR_SEGMENT_ID_NON_MONOTONIC,
+        KALICO_ERR_ZERO_DURATION_SEGMENT, KALICO_OK,
     };
+    use runtime::segment::CurveHandle;
     use runtime::segment::{KinematicTag, Segment};
     use runtime::state::{FgState, IsrState, RuntimeContext, SharedState};
     use runtime::trace::TraceSample;
@@ -479,87 +479,6 @@ pub mod exports {
         KALICO_OK
     }
 
-    /// Atomic one-shot load of a cubic-piece curve. Spec §3.2 (2026-05-20
-    /// stepping-redesign).
-    ///
-    /// Wire frame body:
-    ///   slot_idx u16 (LE), axis_idx u8, piece_count u8,
-    ///   pieces: piece_count * 20 bytes, each = 5 × u32 (LE):
-    ///     bp0_bits, bp1_bits, bp2_bits, bp3_bits, duration_bits
-    ///
-    /// Returns `KALICO_OK` on success and writes `(gen << 16) | slot_idx`
-    /// into `out_handle_packed`. Validation rejections (zero / oversized
-    /// `piece_count`, non-finite control points, slot already in flight)
-    /// return `KALICO_ERR_INVALID_CURVE` without mutating the slot.
-    ///
-    /// `axis_idx` is reserved for future per-axis validation; ignored for
-    /// now (the curve pool is a flat slot pool).
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn runtime_handle_load_curve_cubic(
-        rt: *mut KalicoRuntime,
-        slot_idx: u16,
-        axis_idx: u8,
-        piece_count: u8,
-        pieces_blob: *const u8,
-        out_handle_packed: *mut u32,
-    ) -> i32 {
-        if rt.is_null() || pieces_blob.is_null() || out_handle_packed.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        use runtime::cubic_curve::WirePiece;
-        use runtime::curve_pool::MAX_PIECES_PER_CURVE;
-        if piece_count == 0 || piece_count as usize > MAX_PIECES_PER_CURVE {
-            return KALICO_ERR_INVALID_CURVE;
-        }
-        let _ = axis_idx; // reserved for future per-axis validation
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: `rt` non-null and INIT_DONE=true above. The CurvePool lives
-        // at the top of RuntimeContext; foreground writes the slot via
-        // `try_alloc_and_load`'s atomic gen-bump under the existing
-        // foreground-sole-writer discipline (§10.2 / curve_pool.rs).
-        // `pieces_blob` must be valid for `piece_count * 20` bytes per the
-        // caller's contract (the C dispatch handler reads the same bounds
-        // from the wire frame).
-        unsafe {
-            let pool_ptr: *const CurvePool = core::ptr::addr_of!((*ctx).curve_pool);
-            let pool: &CurvePool = &*pool_ptr;
-
-            // Decode the wire blob into a stack-local WirePiece array. Each
-            // piece is 5 little-endian u32 words.
-            let mut wire: [WirePiece; MAX_PIECES_PER_CURVE] = [WirePiece {
-                bp0_bits: 0,
-                bp1_bits: 0,
-                bp2_bits: 0,
-                bp3_bits: 0,
-                duration_bits: 0,
-            }; MAX_PIECES_PER_CURVE];
-            for i in 0..piece_count as usize {
-                let base = pieces_blob.add(i * 20);
-                let mut buf = [0u8; 20];
-                core::ptr::copy_nonoverlapping(base, buf.as_mut_ptr(), 20);
-                wire[i].bp0_bits = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]);
-                wire[i].bp1_bits = u32::from_le_bytes([buf[4], buf[5], buf[6], buf[7]]);
-                wire[i].bp2_bits = u32::from_le_bytes([buf[8], buf[9], buf[10], buf[11]]);
-                wire[i].bp3_bits = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]);
-                wire[i].duration_bits = u32::from_le_bytes([buf[16], buf[17], buf[18], buf[19]]);
-            }
-            let wire_slice = &wire[..piece_count as usize];
-            match pool.try_alloc_and_load_diagnostic(slot_idx as usize, wire_slice) {
-                Ok(handle) => {
-                    *out_handle_packed = handle.pack();
-                    KALICO_OK
-                }
-                Err(diag) => {
-                    *out_handle_packed = diag;
-                    KALICO_ERR_INVALID_CURVE
-                }
-            }
-        }
-    }
-
     /// Validate a versioned blob payload's leading version byte (§4.2).
     /// Foreground entrypoint for the C handler that reads payload bytes off
     /// the wire and routes the post-version-byte slice into the Step-5
@@ -580,42 +499,6 @@ pub mod exports {
             Ok(()) => KALICO_OK,
             Err(_) => KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED,
         }
-    }
-
-    /// Diagnostic: per-slot generation snapshot (spec §10.4 + Round-1 B9).
-    /// Used after a fault for host-side recovery decisions. Writes the
-    /// per-slot `current_gen` and `last_retired_gen` into the out-params.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn runtime_handle_query_pool_state(
-        rt: *mut KalicoRuntime,
-        slot_idx: u16,
-        out_current_gen: *mut u16,
-        out_last_retired_gen: *mut u16,
-    ) -> i32 {
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        if (slot_idx as usize) >= CURVE_POOL_N {
-            return KALICO_ERR_INVALID_HANDLE;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: read-only access through atomics; no `&mut` forms.
-        unsafe {
-            let pool: &CurvePool = &*core::ptr::addr_of!((*ctx).curve_pool);
-            let Some(slot) = pool.slots.get(slot_idx as usize) else {
-                return KALICO_ERR_INVALID_HANDLE;
-            };
-            if !out_current_gen.is_null() {
-                *out_current_gen = slot.current_gen.load(Ordering::Acquire);
-            }
-            if !out_last_retired_gen.is_null() {
-                *out_last_retired_gen = slot.last_retired_gen.load(Ordering::Acquire);
-            }
-        }
-        KALICO_OK
     }
 
     /// Task 6 TIM5 ISR body — piece-ring walker.
@@ -696,12 +579,11 @@ pub mod exports {
             return 0;
         }
         let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: project to the foreground trace consumer + curve pool —
-        // no `&mut` on IsrState forms here. Caller-provided out_buf must be
-        // valid for out_cap writes of TraceSample.
+        // SAFETY: project to the foreground trace consumer — no `&mut` on
+        // IsrState forms here. Caller-provided out_buf must be valid for
+        // out_cap writes of TraceSample.
         unsafe {
             let fg_ptr: *mut FgState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).fg));
-            let pool: &CurvePool = &*core::ptr::addr_of!((*ctx).curve_pool);
             let fg: &mut FgState = &mut *fg_ptr;
             let out_slice = core::slice::from_raw_parts_mut(out_buf, out_cap as usize);
             let mut count = 0usize;
@@ -711,16 +593,6 @@ pub mod exports {
                     break;
                 };
                 if (sample.flags & runtime::trace::TRACE_FLAG_SEGMENT_END) != 0 {
-                    // Retire all 4 per-axis handles via the retirement table.
-                    if let Some(handles) = fg.retirement_table.lookup(sample.segment_id) {
-                        for h in &handles {
-                            if !h.is_unused_sentinel()
-                                && *h != runtime::curve_pool::CurveHandle::HOLD_SEGMENT_SENTINEL
-                            {
-                                pool.confirm_retired(*h);
-                            }
-                        }
-                    }
                     saw_segment_end = true;
                 }
                 if let Some(slot) = out_slice.get_mut(count) {
@@ -1829,16 +1701,13 @@ pub mod exports {
         }
         let ctx = rt.cast::<RuntimeContext>();
         // SAFETY: foreground-only projection — touches FgState (sole writer)
-        // for the trace consumer, &CurvePool for confirm_retired, and
-        // &SharedState for the trace-overflow latch.
+        // for the trace consumer and &SharedState for the trace-overflow latch.
         unsafe {
             let fg_ptr: *mut FgState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).fg));
-            let pool: &CurvePool = &*core::ptr::addr_of!((*ctx).curve_pool);
             let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
             let fg: &mut FgState = &mut *fg_ptr;
             let mut saw_segment_end = false;
             let drained = runtime::reclaim::drain_and_reclaim(
-                pool,
                 &fg.retirement_table,
                 || {
                     let s = fg.trace_consumer.dequeue();
@@ -1965,38 +1834,6 @@ pub mod exports {
         }
     }
 
-    /// `kalico_runtime_reset_curve_pool` — set `last_retired_gen = current_gen`
-    /// for every curve pool slot.
-    ///
-    /// This is the MCU-side handler for the `ResetCurvePool` (0x0050) message.
-    /// It calls `CurvePool::reset_all_retired_to_current` which makes every
-    /// slot satisfy the alloc predicate (`current_gen == last_retired_gen`),
-    /// clearing "slot busy" rejections that persist after a klippy reconnect
-    /// without MCU power-cycle.
-    ///
-    /// Safe to call from foreground command-dispatch context only. The
-    /// operation is a sequence of acquire-load + release-store pairs on the
-    /// per-slot `AtomicU16`s; it never touches ISR state.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_reset_curve_pool(rt: *mut KalicoRuntime) -> i32 {
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        // SAFETY: `rt` is the published `RuntimeContext` pointer (non-null +
-        // INIT_DONE verified above). `CurvePool::reset_all_retired_to_current`
-        // is a foreground-only operation — it only does atomic stores to
-        // `last_retired_gen`, which the ISR reads but never writes.
-        // `project_fg` gives us the `FgState` half; we only need the
-        // `curve_pool` field which is in `RuntimeContext` (shared between
-        // fg and ISR sides). Cast to `RuntimeContext` directly.
-        let ctx = unsafe { &*(rt.cast::<RuntimeContext>()) };
-        ctx.curve_pool.reset_all_retired_to_current();
-        KALICO_OK
-    }
-
     /// `kalico_stream_flush` — `force_idle` handshake (§8.5).
     ///
     /// `flush()` projects to both halves under disabled-IRQ, so we hand it
@@ -2101,6 +1938,7 @@ pub mod exports {
         // Fixture loading used the old NURBS CurvePool API. The pool now
         // uses WirePiece-based cubic loading. This escape hatch is unused
         // by homing / motion tests — stub it to unblock the sim build.
+        use runtime::error::KALICO_ERR_INVALID_CURVE;
         KALICO_ERR_INVALID_CURVE
     }
 

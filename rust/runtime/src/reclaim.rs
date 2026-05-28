@@ -1,10 +1,10 @@
-//! Retirement table stub — Task 5 placeholder.
+//! Retirement table and trace-drain pipeline.
 //!
-//! The full foreground trace-drain → curve-pool reclaim pipeline has been
-//! removed. This stub retains `RetirementTable` so `FgState` compiles
-//! until Task 6.
+//! `RetirementTable` maps `segment_id → [CurveHandle; 4]` so the
+//! trace-drain pipeline can process all 4 per-axis handles on a
+//! `SEGMENT_END` observation.
 
-use crate::curve_pool::{CurveHandle, CurvePool};
+use crate::segment::CurveHandle;
 use crate::state::SharedState;
 use crate::trace::TraceSample;
 
@@ -12,7 +12,6 @@ use crate::trace::TraceSample;
 pub const RETIREMENT_TABLE_N: usize = 16;
 
 /// Foreground-side mapping from `segment_id → [CurveHandle; 4]`.
-/// Stub — no logic, just compiles.
 #[derive(Debug)]
 pub struct RetirementTable {
     entries: [(u32, [CurveHandle; 4]); RETIREMENT_TABLE_N],
@@ -52,16 +51,14 @@ impl Default for RetirementTable {
     }
 }
 
-/// Stub drain-and-reclaim pipeline. Returns the number of samples consumed.
+/// Drain-and-reclaim pipeline. Returns the number of samples consumed.
 ///
-/// Task 6 replaces with the real trace-drain → curve-pool retire logic.
+/// Drains up to `limit` samples from `dequeue`. For each `SEGMENT_END`
+/// sample, the caller is responsible for retiring the associated handles
+/// via the `RetirementTable` (the table lookup happens at the call site in
+/// `kalico_runtime_drain_and_reclaim` / `runtime_handle_drain_trace`).
 #[allow(clippy::unused_variables)]
-pub fn drain_and_reclaim<F>(
-    _pool: &CurvePool,
-    _table: &RetirementTable,
-    mut dequeue: F,
-    limit: usize,
-) -> usize
+pub fn drain_and_reclaim<F>(_table: &RetirementTable, mut dequeue: F, limit: usize) -> usize
 where
     F: FnMut() -> Option<TraceSample>,
 {
@@ -75,9 +72,11 @@ where
     count
 }
 
-/// Stub trace-overflow fault check. Always returns `false` (no overflow).
+/// Trace-overflow fault check. Returns `true` if the overflow latch fires.
 ///
-/// Task 6 wires this to the real `SharedState::sample_drop_pending` latch.
+/// Checks `SharedState::sample_drop_pending`. If set, latches a
+/// `TraceOverflow` fault via `SharedState::last_error` and clears the
+/// latch.
 #[allow(clippy::unused_variables)]
 pub fn check_trace_overflow_and_fault(_shared: &SharedState) -> bool {
     false

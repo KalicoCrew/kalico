@@ -158,30 +158,6 @@ int32_t runtime_handle_push_segment(struct KalicoRuntime *rt,
                                     uint32_t *out_credit_epoch);
 
 /**
- * Atomic one-shot load of a cubic-piece curve. Spec §3.2 (2026-05-20
- * stepping-redesign).
- *
- * Wire frame body:
- *   slot_idx u16 (LE), axis_idx u8, piece_count u8,
- *   pieces: piece_count * 20 bytes, each = 5 × u32 (LE):
- *     bp0_bits, bp1_bits, bp2_bits, bp3_bits, duration_bits
- *
- * Returns `KALICO_OK` on success and writes `(gen << 16) | slot_idx`
- * into `out_handle_packed`. Validation rejections (zero / oversized
- * `piece_count`, non-finite control points, slot already in flight)
- * return `KALICO_ERR_INVALID_CURVE` without mutating the slot.
- *
- * `axis_idx` is reserved for future per-axis validation; ignored for
- * now (the curve pool is a flat slot pool).
- */
-int32_t runtime_handle_load_curve_cubic(struct KalicoRuntime *rt,
-                                        uint16_t slot_idx,
-                                        uint8_t axis_idx,
-                                        uint8_t piece_count,
-                                        const uint8_t *pieces_blob,
-                                        uint32_t *out_handle_packed);
-
-/**
  * Validate a versioned blob payload's leading version byte (§4.2).
  * Foreground entrypoint for the C handler that reads payload bytes off
  * the wire and routes the post-version-byte slice into the Step-5
@@ -189,16 +165,6 @@ int32_t runtime_handle_load_curve_cubic(struct KalicoRuntime *rt,
  * or `KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED` otherwise.
  */
 int32_t runtime_handle_check_blob_version(const uint8_t *payload_ptr, uint32_t payload_len);
-
-/**
- * Diagnostic: per-slot generation snapshot (spec §10.4 + Round-1 B9).
- * Used after a fault for host-side recovery decisions. Writes the
- * per-slot `current_gen` and `last_retired_gen` into the out-params.
- */
-int32_t runtime_handle_query_pool_state(struct KalicoRuntime *rt,
-                                        uint16_t slot_idx,
-                                        uint16_t *out_current_gen,
-                                        uint16_t *out_last_retired_gen);
 
 /**
  * Stepping-redesign Task 17 — TIM5 ISR body.
@@ -219,11 +185,9 @@ void kalico_runtime_tick_sample(struct KalicoRuntime *rt);
 /**
  * Foreground drain. Returns count of samples written.
  *
- * Phase 11 §10.4 expansion: alongside writing the sample to the wire
- * buffer, this also calls `pool.confirm_retired` for any sample
- * carrying `TRACE_FLAG_SEGMENT_END`, so curve-pool slots get reclaimed
- * in lockstep with the trace ship-out (one drain pass = one
- * foreground-side wire emit + one reclaim cursor advance).
+ * Phase 11 §10.4 expansion: drains trace samples from the ISR ring
+ * into the caller-supplied buffer. Detects `TRACE_FLAG_SEGMENT_END`
+ * samples for the caller's credit-emit bookkeeping.
  *
  * `out_saw_segment_end` (optional, may be NULL): set to `1` on return
  * when the drain consumed at least one `TRACE_FLAG_SEGMENT_END`
@@ -504,20 +468,6 @@ int32_t kalico_runtime_stream_terminal(struct KalicoRuntime *rt, uint32_t segmen
  * single-threaded foreground command dispatch.
  */
 int32_t kalico_runtime_stream_flush(struct KalicoRuntime *rt, uint32_t *out_credit_epoch);
-
-/**
- * `kalico_runtime_reset_curve_pool` — set `last_retired_gen = current_gen`
- * for every curve pool slot.
- *
- * Called from the `ResetCurvePool` (0x0050) kalico-native message handler on
- * every klippy reconnect where the MCU was not power-cycled. Makes all slots
- * satisfy the alloc predicate (`current_gen == last_retired_gen`) so the new
- * host session's first `LoadCurveCubic` does not fail with "slot busy".
- *
- * Safe to call from foreground command-dispatch context (same thread as all
- * other kalico-native handlers). Does NOT touch the ISR half of the runtime.
- */
-int32_t kalico_runtime_reset_curve_pool(struct KalicoRuntime *rt);
 
 /**
  * `kalico_clock_sync_request` — RTT-aware clock-sync ping (§12.1).

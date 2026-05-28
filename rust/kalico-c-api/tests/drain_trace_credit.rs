@@ -49,7 +49,7 @@ pub extern "C" fn runtime_cyccnt_read() -> u32 {
 #[test]
 fn drain_trace_reports_segment_end_to_caller() {
     use core::cell::UnsafeCell;
-    use runtime::curve_pool::CurveHandle;
+    use runtime::segment::CurveHandle;
     use runtime::state::{IsrState, RuntimeContext};
 
     let rt = kalico_c_api::runtime_handle_create();
