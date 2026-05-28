@@ -24,7 +24,6 @@ exclude = [
     "runtime_handle_push_segment",
     "runtime_handle_load_curve_cubic",
     "kalico_runtime_load_fixture",
-    "runtime_handle_drain_trace",
     "runtime_handle_status",
     "runtime_handle_last_error",
     "runtime_handle_tick_counter",

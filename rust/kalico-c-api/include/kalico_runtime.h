@@ -26,6 +26,14 @@
 enum SourceKind {
   Physical = 0,
   TmcDiag = 1,
+  /**
+   * Software-triggered source: no GPIO pin is polled. The arm uses a
+   * credit-windowed deadline mechanism instead — the host periodically
+   * calls `extend_deadline` to push the window forward; if it stops
+   * (because the probe triggered on the host side), the deadline expires
+   * and the MCU freezes the segment autonomously.
+   */
+  Software = 2,
 };
 typedef uint8_t SourceKind;
 
@@ -49,12 +57,8 @@ typedef struct KalicoRuntime {
 } KalicoRuntime;
 
 /**
- * FFI ABI: per-stepper binding payload, passed from C to Rust by
- * `kalico_runtime_configure_axis`. Sentinel: `tmc_cs_oid == 0xFF` means
- * "no TMC driver" (Pulse-only stepper). OID 0 is a legal SPI OID and
- * must not be conflated with "absent."
- *
- * Spec: `docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md` §5.2.
+ * FFI ABI: per-stepper binding payload passed from C to Rust.
+ * Sentinel: `tmc_cs_oid == 0xFF` means "no TMC driver" (Pulse-only stepper).
  */
 typedef struct StepperBindingRust {
   uint8_t stepper_oid;
@@ -99,18 +103,13 @@ struct KalicoRuntime *runtime_handle_create(void);
 int32_t runtime_handle_check_blob_version(const uint8_t *payload_ptr, uint32_t payload_len);
 
 /**
- * Stepping-redesign Task 17 — TIM5 ISR body.
+ * Task 6 TIM5 ISR body — piece-ring walker.
  *
- * Drives the unified per-sample evaluator
- * [`runtime::tick::runtime_tick_sample`] over the engine's
- * `stepping_axes` / `tick_caches` and the runtime's shared state.
- * Projects a `&mut IsrState` (engine half) and a `&SharedState`
- * (cross-half) out of `RuntimeContext` exactly once per ISR fire.
+ * Projects `&mut IsrState`, `&SharedState`, and a `&mut [PieceEntry]`
+ * slice over `piece_storage` from `RuntimeContext` and delegates to
+ * `runtime::tick::isr_sample_tick`.
  *
- * Called from `TIM5_IRQHandler` in `src/stm32/runtime_tick_{h7,f4}.c`
- * at the rate configured by `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ`.
- * Replaces the prior `kalico_runtime_modulated_tick` entry point
- * removed in the 2026-05-20 stepping redesign.
+ * Called from `TIM5_IRQHandler` in `src/stm32/runtime_tick_{h7,f4}.c`.
  */
 void kalico_runtime_tick_sample(struct KalicoRuntime *rt);
 
@@ -119,6 +118,14 @@ uint8_t runtime_handle_status(struct KalicoRuntime *rt);
 int32_t runtime_handle_last_error(struct KalicoRuntime *rt);
 
 uint32_t runtime_handle_tick_counter(struct KalicoRuntime *rt);
+
+/**
+ * Alias for `runtime_handle_tick_counter` with the
+ * `kalico_runtime_get_*` naming the bench diag rotation uses. Same
+ * underlying read — `Engine::tick_counter.snapshot()`. Returns 0 on a
+ * null handle or before `INIT_DONE`.
+ */
+uint32_t kalico_runtime_get_tick_counter(struct KalicoRuntime *rt);
 
 /**
  * Read the widened MCU clock. Spec §3.9 — on-demand widening from
@@ -184,7 +191,7 @@ uint32_t runtime_handle_fault_detail(struct KalicoRuntime *rt);
 /**
  * Diagnostic: read the configured `steps_per_mm` for axis `oid` (0..=3
  * in motor space). Returns 0.0 if `oid` is out of range or runtime
- * uninitialised. Used by sim tests to verify axis configuration
+ * uninitialised. Used by Phase 4 sim test to verify axis configuration
  * reached the engine.
  */
 float runtime_handle_get_axis_steps_per_mm(struct KalicoRuntime *rt, uint8_t oid);
@@ -226,6 +233,8 @@ double kalico_runtime_get_axis_accumulator(struct KalicoRuntime *rt, uint8_t oid
  * Used by the sim diagnostic command `runtime_sim_stepper_count_query`.
  */
 int32_t kalico_runtime_get_stepper_count(struct KalicoRuntime *rt, uint8_t oid);
+
+uint32_t kalico_runtime_get_xdirect_write_count(void);
 
 /**
  * Seed the engine's `prev_x/y/z` position origin and `StepMotorState`
@@ -321,8 +330,10 @@ int32_t kalico_endstop_disarm(uint32_t arm_id, uint8_t *out_status);
  * `command_runtime_software_trip`. Writes a status byte into `*out_status`:
  * 0 = Tripped, 1 = NotArmed, 2 = WrongArmId.
  */
-int32_t kalico_software_trip(uint32_t arm_id, uint32_t clock_lo, uint32_t clock_hi, uint8_t *status);
-
+int32_t kalico_software_trip(uint32_t arm_id,
+                             uint32_t clock_lo,
+                             uint32_t clock_hi,
+                             uint8_t *out_status);
 
 /**
  * Extend the homing deadline by one grant window. Called from the C
@@ -485,18 +496,23 @@ uint32_t kalico_runtime_get_dispatcher_floor_cycles(void);
 uint32_t kalico_runtime_get_sample_period_cycles(void);
 
 /**
- * Stepping-redesign Task 14 / Task 7 (ring_depth wiring). Publish per-axis
- * configuration with explicit stepper bindings. `microstep_distance_f32_bits`
- * is `f32::to_bits` of the per-step distance (Klipper carries f32 as u32 on
- * the wire). `mode` is `0` for Pulse; `1` for Phase (TMC5160 XDIRECT
- * coil-current modulation). Other mode values return `KALICO_ERR_INVALID_ARG`.
- * `ring_depth` is the number of `PieceEntry` slots to allocate for this axis
- * from the shared `piece_storage`; C callers pass a compile-time default of 64
- * until the host drives this via the wire protocol. `bindings_ptr` points to an
- * array of `stepper_count` `StepperBindingRust` entries; a null pointer with
- * `stepper_count == 0` is legal (axis with no steppers, e.g. virtual /
- * logical-only). Returns `0` on success, negative on validation failure. The C
- * handler treats any non-zero return as a hard error and shuts the MCU down.
+ * Stepping-redesign Task 14. Publish per-axis configuration with
+ * explicit stepper bindings. `microstep_distance_f32_bits` is
+ * `f32::to_bits` of the per-step distance (Klipper carries f32 as u32
+ * on the wire). `mode` is `0` for Pulse; `1` for Phase (TMC5160
+ * XDIRECT coil-current modulation). Other mode values return
+ * `KALICO_ERR_INVALID_ARG`. `ring_depth` is the number of
+ * [`PieceEntry`] slots to allocate for this axis's ring region
+ * from the shared `piece_storage`; the engine bump-allocates
+ * contiguously. The C caller currently passes a compile-time
+ * default (see `command_kalico_configure_axis` in `src/stepper.c`);
+ * a future protocol revision will let the host drive this via
+ * the wire. `bindings_ptr` points to an array of `stepper_count`
+ * [`runtime::stepping_state::StepperBindingRust`] entries; a null
+ * pointer with `stepper_count == 0` is legal (axis with no steppers,
+ * e.g. virtual / logical-only). Returns `0` on success, negative on
+ * validation failure. The C handler treats any non-zero return as a
+ * hard error and shuts the MCU down.
  */
 int32_t kalico_runtime_configure_axis(struct KalicoRuntime *rt,
                                       uint8_t axis_idx,
@@ -507,12 +523,20 @@ int32_t kalico_runtime_configure_axis(struct KalicoRuntime *rt,
                                       uint8_t stepper_count);
 
 /**
- * Task 7a. Push a batch of pre-baked polynomial pieces into an axis's ring buffer.
+ * Task 7a. Push a batch of pre-baked polynomial pieces into an axis's
+ * ring buffer.
  *
- * `pieces_ptr` points to `piece_count * 32` raw bytes in `PieceEntry` wire
- * format. `pieces_len` must equal `piece_count * 32`. The pointer may be
- * unaligned; the Rust FFI uses `read_unaligned` internally.
- * Returns `0` on success, negative on error.
+ * `pieces_ptr` points to `piece_count * 32` raw bytes in
+ * `PieceEntry` wire format (little-endian, 8-byte-aligned field layout;
+ * the pointer itself may be unaligned relative to 8-byte boundaries
+ * because it arrives as a byte offset into a protocol frame buffer).
+ * `pieces_len` must equal `piece_count * 32`; a mismatch returns
+ * `KALICO_ERR_INVALID_ARG` without touching the ring.
+ *
+ * Called from `handle_push_pieces` in `src/kalico_dispatch.c`.
+ * This is a foreground-only entry point — the ISR concurrently reads the
+ * ring tail; the foreground only writes the ring head. That discipline
+ * matches `kalico_runtime_configure_axis` (same §11.2 split).
  */
 int32_t kalico_runtime_push_pieces(struct KalicoRuntime *rt,
                                    uint8_t axis_idx,
@@ -569,15 +593,23 @@ int32_t kalico_runtime_set_stepper_offset(struct KalicoRuntime *rt,
 /**
  * Fill caller buffers with the current heartbeat snapshot.
  *
- * Writes `engine_state`, `fault_code`, and up to `max_axes` per-axis
- * consumed piece counts into the caller-provided buffers.
+ * Writes `engine_state`, `fault_code`, and up to `max_axes`
+ * per-axis consumed piece counts into the caller-provided buffers.
  *
  * Returns the number of axes actually written (>= 0) on success, or a
  * negative error code:
- *   -1 (KALICO_ERR_NULL_PTR) — rt or any out-pointer is null.
- *   -2 (KALICO_ERR_NOT_INIT) — runtime not yet initialised.
+ * - `-1` (`KALICO_ERR_NULL_PTR`)  — `rt` or any out-pointer is null.
+ * - `-2` (`KALICO_ERR_NOT_INIT`)  — runtime not yet initialised.
  *
- * `out_consumed` must point to an array of at least `max_axes` uint32_t.
+ * Only `[..min(num_axes, max_axes)]` entries are written to
+ * `out_consumed`; the caller must allocate at least `max_axes` u32s.
+ *
+ * # Safety
+ * - `rt` must be the handle returned by `runtime_handle_create`.
+ * - `out_engine_state`, `out_fault_code` must be valid for a single-byte
+ *   write.
+ * - `out_consumed` must be valid for `max_axes` u32 writes (≥ 4-byte
+ *   aligned, as a C `uint32_t[8]` is).
  */
 int32_t kalico_runtime_get_heartbeat(struct KalicoRuntime *rt,
                                      uint8_t *out_engine_state,
@@ -586,21 +618,20 @@ int32_t kalico_runtime_get_heartbeat(struct KalicoRuntime *rt,
                                      uintptr_t max_axes);
 
 /**
- * Host-only (MACH_LINUX / feature="host"). Wire the C-owned
- * `step_queues[N_AXIS_STEP_QUEUES]` array into the Rust engine so that
- * `kalico_runtime_tick_sample` can push step entries. Must be called
- * after `runtime_handle_create` and before enabling the tick thread.
+ * Install C-owned `step_queues` into the Rust engine on host/MACH_LINUX
+ * builds so `tick_sample`'s `dispatch_axis` can push step entries.
  *
- * `queues` must be `(uint8_t *)step_queues` — a pointer to the first
- * element of the static `StepQueue[N_AXIS_STEP_QUEUES]` array declared
- * in step_queue.h.
+ * On the MCU the engine resolves the C `step_queues` extern directly
+ * via `#[cfg(not(target_os = "none"))]`; on host builds
+ * `test_queue_ptrs` stays null unless explicitly installed here.
  *
- * Returns `KALICO_OK` (0) on success, or a negative error code if `rt`
- * or `queues` is null, or the runtime has not yet been initialised.
+ * Called once from `runtime_tick_enable` in `src/linux/runtime_tick_host.c`
+ * before the tick thread is armed, so there is no concurrent ISR writer.
  *
- * No-op on MCU builds (the symbol is not exported).
+ * Returns `KALICO_OK` (0) on success, or a negative error code:
+ * - `KALICO_ERR_NULL_PTR`  — `rt` or `queues` is null.
+ * - `KALICO_ERR_NOT_INIT`  — runtime has not been initialised yet.
  */
-int32_t kalico_runtime_install_step_queues(struct KalicoRuntime *rt,
-                                           uint8_t *queues);
+int32_t kalico_runtime_install_step_queues(struct KalicoRuntime *rt, uint8_t *queues);
 
 #endif  /* KALICO_RUNTIME_H */

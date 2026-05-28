@@ -15,7 +15,7 @@
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KinematicTag {
-    /// CoreXY: host pre-applies A = X+Y / B = X−Y; MCU receives motor-frame
+    /// `CoreXY`: host pre-applies A = X+Y / B = X−Y; MCU receives motor-frame
     /// curves in its X/Y slots and drives two motors per logical axis.
     CoreXyAndE = 0,
     /// Cartesian: X, Y, Z, E map 1-to-1 to MCU axis slots.
