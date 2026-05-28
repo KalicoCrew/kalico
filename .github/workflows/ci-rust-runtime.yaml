@@ -3,10 +3,18 @@ name: Rust runtime (Step 5 + Step 6)
 on:
   workflow_dispatch:
   pull_request:
+  # Run on the de-facto main branch too, so its tip's status is always current
+  # (PR-only runs left sota-motion's true state unknown between merges).
+  push:
+    branches: [sota-motion]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
   cancel-in-progress: true
+
+# Every gate below runs `./scripts/ci.sh <job>` — the SAME command developers
+# run locally (`./scripts/ci.sh` / `./scripts/ci.sh quick`). CI and local
+# cannot drift because they execute one shared script.
 
 jobs:
   changes:
@@ -24,13 +32,16 @@ jobs:
             rust:
               - 'rust/**'
               - 'Cargo.lock'
+              - 'scripts/ci.sh'
               - '.github/workflows/ci-rust-runtime.yaml'
             headers:
               - 'rust/**'
               - 'tools/regen_headers.sh'
+              - 'scripts/ci.sh'
               - '.github/workflows/ci-rust-runtime.yaml'
             klipper-c:
               - 'src/**'
+              - 'scripts/ci.sh'
               - '.github/workflows/ci-rust-runtime.yaml'
 
   rust-host:
@@ -38,9 +49,6 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - uses: actions/checkout@v4
       - name: Install system dependencies
@@ -48,22 +56,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      - name: cargo build (workspace; covers kalico-host-rt + runtime + temporal)
-        run: cargo build --workspace
-      - name: cargo test (workspace; covers kalico-host-rt + runtime + temporal)
-        # `--features test-injection` activates the runtime crate's
-        # `Engine::inject_iter_count` predicate path that gates
-        # `tests/max_boundary_iters.rs` (Phase 12.2). Without it the
-        # integration test compiles to an empty binary via `#![cfg(...)]`
-        # and the §6.6 ABI-cap regression would silently never run in CI.
-        run: cargo test --workspace --features runtime/test-injection
-      - name: cargo clippy (-D warnings)
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: cargo fmt (check)
-        run: cargo fmt --all -- --check
+      - name: build + test (nextest) + clippy + fmt
+        run: ./scripts/ci.sh rust-host
 
   # Step-6 §11.4 / §11.3 loom tests for half-split SPSC, widened-clock
   # seqlock, force_idle handshake, and curve-pool alloc race. Loom
@@ -74,11 +74,6 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: rust
-    env:
-      RUSTFLAGS: "--cfg loom"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -87,21 +82,13 @@ jobs:
           workspaces: rust
           key: loom
       - name: cargo test (loom — runtime, --release)
-        run: >
-          cargo test -p runtime --release
-          --test loom_seqlock
-          --test loom_spsc_split
-          --test loom_force_idle
-          --test loom_curve_pool_alloc
+        run: ./scripts/ci.sh rust-loom
 
   rust-mcu-h7:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -112,19 +99,13 @@ jobs:
           workspaces: rust
           key: mcu-h7
       - name: cargo build (mcu-h7)
-        run: >
-          cargo build -p kalico-c-api --no-default-features
-          --features mcu-h7,header-nurbs,header-runtime
-          --target thumbv7em-none-eabi
+        run: ./scripts/ci.sh rust-mcu-h7
 
   rust-mcu-f4:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -135,10 +116,7 @@ jobs:
           workspaces: rust
           key: mcu-f4
       - name: cargo build (mcu-f4)
-        run: >
-          cargo build -p kalico-c-api --no-default-features
-          --features mcu-f4,header-nurbs,header-runtime
-          --target thumbv7em-none-eabi
+        run: ./scripts/ci.sh rust-mcu-f4
 
   rust-cbindgen-drift:
     needs: changes
@@ -152,19 +130,14 @@ jobs:
         with:
           workspaces: rust
           key: cbindgen-drift
-      - name: Regenerate headers
-        run: ./tools/regen_headers.sh
-      - name: Verify headers committed in tree match generated
-        run: git diff --exit-code rust/kalico-c-api/include/
+      - name: Regenerate headers and verify committed copies match
+        run: ./scripts/ci.sh cbindgen-drift
 
   rust-c-smoke:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -172,15 +145,8 @@ jobs:
         with:
           workspaces: rust
           key: c-smoke
-      - name: Build release staticlib
-        run: >
-          cargo build -p kalico-c-api --no-default-features
-          --features host,header-nurbs,header-runtime --release
-      - name: Run c_smoke_build test
-        run: >
-          cargo test -p kalico-c-api --no-default-features
-          --features host,header-nurbs,header-runtime
-          --test c_smoke_build
+      - name: Build release staticlib + run c_smoke_build test
+        run: ./scripts/ci.sh c-smoke
 
   rust-deny:
     needs: changes
@@ -198,9 +164,6 @@ jobs:
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@nightly
@@ -211,35 +174,13 @@ jobs:
           workspaces: rust
           key: miri
       - name: cargo +nightly miri test (runtime, host)
-        env:
-          MIRIFLAGS: "-Zmiri-ignore-leaks"
-        run: >
-          cargo +nightly miri test -p runtime --features host
-          --test curve_pool_alloc
-          --test engine_underrun
-          --test fault_encoding
-          --test force_idle_short_circuit
-          --test hold_segment
-          --test max_boundary_iters
-          --test reclaim_pipeline
-          --test segment_id_atomics
-          --test seqlock_unit
-          --test trace_overflow
+        run: ./scripts/ci.sh miri
 
   rust-panic-symbol-grep:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    # Informational until the nurbs Layer 0 panic-elimination pass lands.
-    # The de Boor evaluator currently relies on mathematically-proved loop
-    # invariants for knot/cp indexing, which LLVM cannot see — bounds checks
-    # survive the release build. Tracked as a Layer 0 follow-up; the gate
-    # still reports diffs to the job log so regressions stay visible.
-    continue-on-error: true
-    defaults:
-      run:
-        working-directory: rust
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -249,27 +190,11 @@ jobs:
         with:
           workspaces: rust
           key: panic-grep
-      - name: Emit LLVM-IR for release MCU build
-        run: >
-          cargo rustc -p kalico-c-api --release
-          --no-default-features --features mcu-h7,header-nurbs,header-runtime
-          --target thumbv7em-none-eabi -- --emit=llvm-ir
-      - name: Grep for panic symbols
-        shell: bash
-        run: |
-          set -eo pipefail
-          shopt -s nullglob
-          ll_files=(target/thumbv7em-none-eabi/release/deps/*.ll)
-          if [ ${#ll_files[@]} -eq 0 ]; then
-            echo "No LLVM-IR files emitted; build step likely failed silently"
-            exit 1
-          fi
-          if grep -E 'core::panicking|panic_bounds_check' "${ll_files[@]}"; then
-            echo "Panic symbols found in MCU build — review src/runtime/src/*.rs for bounds-check or division-by-zero paths"
-            exit 1
-          fi
-          echo "No panic symbols detected in release MCU build."
+      - name: Assert release MCU build is panic-free
+        run: ./scripts/ci.sh panic-grep
 
+  # Safety gate: the MCU watchdog must keep reading the runtime liveness flag
+  # (renamed runtime_liveness_ok). Cheap grep; guards against accidental removal.
   watchdog-canary:
     needs: changes
     if: needs.changes.outputs.klipper-c == 'true'
@@ -277,7 +202,5 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-      - name: Assert kalico_liveness_ok gate present
-        run: grep -F 'kalico_liveness_ok' src/stm32/watchdog.c
-      - name: Assert CONFIG_KALICO_RUNTIME gate present
-        run: grep -F 'CONFIG_KALICO_RUNTIME' src/stm32/watchdog.c
+      - name: Assert runtime_liveness_ok gate present in watchdog
+        run: ./scripts/ci.sh watchdog-canary
