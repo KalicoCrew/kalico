@@ -241,14 +241,6 @@ pub struct SharedState {
     /// disables phase stepping entirely on this MCU.
     pub phase_motor_count: AtomicU8,
 
-    /// Per-print enable for `TRACE_FLAG_PHASE_STEP` trace pushes. Default
-    /// `false`. Production builds default to off so they don't burn the
-    /// 80 kHz of trace bandwidth that per-tick PhaseStep samples would
-    /// generate; the foreground flips this on through
-    /// `kalico_runtime_set_phase_trace_enabled` when a phase-stepping
-    /// diagnostic trace is requested. Read in `runtime_modulated_tick` /
-    /// `Engine::producer_step` (Task 6).
-    pub phase_trace_enabled: AtomicBool,
 
     // ─── Step 7-emission (Task 5) diagnostics ─────────────────────────────
     // Spec: docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md §6.
@@ -628,7 +620,6 @@ impl SharedState {
                 AtomicU8::new(0xFF),
             ],
             phase_motor_count: AtomicU8::new(0),
-            phase_trace_enabled: AtomicBool::new(false),
             producer_pending: AtomicBool::new(false),
             producer_runs_total: AtomicU64::new(0),
             consumer_pulses_total: [
@@ -883,7 +874,7 @@ pub enum SetStepModeError {
 /// phase-stepping bit. Spec §10.
 ///
 /// `Release` ordering on the store pairs with `Acquire` loads in the
-/// engine ISR and `count_modulated_steppers` foreground reads.
+/// engine ISR and any foreground reader of `step_modes`.
 pub fn set_step_mode(
     shared: &SharedState,
     stepper_idx: u8,

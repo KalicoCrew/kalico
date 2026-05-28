@@ -32,9 +32,10 @@
 #include "generic/runtime_tick.h"   // backend interface (consumer view)
 #include "generic/fault_handler.h"  // diag_record_engine_xition, diag_take_snapshot
 #if CONFIG_MACH_LINUX
-// Host build: pthread-driven tick replaces the TIM5 ISR. The Rust runtime
-// still calls runtime_tick_enable/disable/runtime_cyccnt_read across the
-// producer-protocol boundary; we provide host-side stubs in
+// Host build: pthread-driven tick replaces the TIM5 ISR. The only Rust→C
+// call across this boundary now is runtime_cyccnt_read; runtime_tick_enable
+// and runtime_tick_disable are called from C (configure_axis / the
+// DECL_SHUTDOWN handler), not from Rust. Host-side implementations live in
 // src/linux/runtime_tick_host.c.
 #endif
 
@@ -315,10 +316,11 @@ runtime_init(void)
     last_seen_status = runtime_handle_status(runtime_handle);
     runtime_diag_progress(0xB3, 0, 0);  // status reads done
 
-    // Initialize the modulation tick driver. On STM32H7 this configures
-    // TIM5 (DOES NOT enable; the first segment push triggers enable via
-    // the producer protocol §4.4). On Linux it spawns the host pthread
-    // that calls runtime_handle_tick at 40 kHz.
+    // Initialize the modulation tick driver. On STM32H7 this configures AND
+    // arms TIM5 — it free-runs from boot now, with no arm gate (the old
+    // "first segment push enables via the producer protocol" path is gone).
+    // On Linux it spawns the host pthread that calls runtime_handle_tick at
+    // the configured sample rate.
     runtime_diag_progress(0xB4, 0, 0);  // about to call runtime_tick_init
     runtime_tick_init();
     runtime_diag_progress(0xB5, 0, 0);  // tick_init done
@@ -360,12 +362,12 @@ runtime_drain(void)
                         timer_from_us(50000),
                         0); // no event tag — runtime_drain idle gaps are normal
 
-    // Liveness check. Only meaningful when the runtime is RUNNING — the ISR
-    // is deliberately disabled in IDLE/DRAINED (no segment pushed yet) and
-    // tick_counter cannot advance, so we'd trip a false positive within
-    // KALICO_LIVENESS_THRESHOLD_MS of boot otherwise. We refresh the
-    // last_progress_time anchor in non-RUNNING states so a state transition
-    // INTO RUNNING doesn't immediately trip on a stale anchor.
+    // Liveness check. Only meaningful when the runtime is RUNNING — the gate
+    // is keyed on RUNNING status, not on the ISR being off. (TIM5 free-runs
+    // from boot, so the ISR and tick_counter advance even in IDLE/DRAINED;
+    // the liveness logic just doesn't act unless status == RUNNING.) We
+    // refresh the last_progress_time anchor in non-RUNNING states so a state
+    // transition INTO RUNNING doesn't immediately trip on a stale anchor.
     uint32_t cur_counter = runtime_handle_tick_counter(runtime_handle);
     uint32_t cur_time = timer_read_time();
     uint8_t cur_status = runtime_handle_status(runtime_handle);
@@ -394,17 +396,29 @@ runtime_drain(void)
         }
     }
 
-    // DRAINED or FAULT → disable TIM5 on the first transition into that
-    // state. The engine has nothing left to evaluate; leaving TIM5 running at
-    // 40 kHz needlessly burns CPU cycles. Under Renode the ISR load also
-    // starves USART2 command dispatch, preventing host tools from talking to
-    // the firmware after a print completes. runtime_tick_enable re-arms TIM5
-    // whenever a Modulated stepper is configured, so this is safe. Under IDLE
-    // the ISR was never enabled (no-op to call disable), but we gate on the
-    // transition anyway to avoid redundant disable calls.
-    if ((cur_status == 2 /* DRAINED */ || cur_status == 3 /* FAULT */)
-        && prev_engine_status != cur_status) {
-        runtime_tick_disable();
+    // Hard-fault escalation (spec 2026-05-28 §3.4). The runtime status machine
+    // is dormant, so we key off last_error directly: on a fresh nonzero fault
+    // code, notify the host with the specifics, then enter Klipper's global
+    // shutdown — the single stop state. shutdown() does irq_disable()+longjmp
+    // back to sched_main; that is safe HERE in foreground (DECL_TASK context)
+    // but NOT from the ISR/Rust tick path, which is why escalation lives in this
+    // drain rather than at the fault site. The edge guard matters because after
+    // shutdown() longjmps, sched_main resumes run_tasks() and this drain can run
+    // once more with last_error still latched; last_acted_error is stored before
+    // shutdown() (and survives the longjmp as a static), so the trailing pass is
+    // suppressed instead of re-emitting + re-shutting-down.
+    // (The cur_status == 3 block above is dormant — runtime_status is never set
+    // away from Idle today — so this last_error path is the live escalation.)
+    static int32_t last_acted_error;
+    int32_t cur_error = runtime_handle_last_error(runtime_handle);
+    if (cur_error != 0 && cur_error != last_acted_error) {
+        last_acted_error = cur_error;
+        uint32_t fdetail = runtime_handle_fault_detail(runtime_handle);
+        // Segment ids are gone (piece-ring model); pass 0 for the legacy
+        // segment-id slot, matching the dormant cur_status fault emit above.
+        kalico_native_emit_fault_event((uint16_t)cur_error, fdetail, 0);
+        runtime_liveness_ok = 0;
+        shutdown("kalico runtime fault");
     }
 
     if (cur_status != prev_engine_status) {
@@ -422,6 +436,18 @@ runtime_drain(void)
     }
 }
 DECL_TASK(runtime_drain);
+
+// Single stop state (spec 2026-05-28): TIM5 goes off when Klipper shuts down.
+// The per-axis step-consumer timers are already wiped by sched_timer_reset
+// during shutdown, so motion has stopped; this just halts the now-pointless ISR
+// compute (and avoids Renode USART2 starvation). Re-armed on FIRMWARE_RESTART
+// via runtime_tick_init.
+void
+runtime_tick_shutdown(void)
+{
+    runtime_tick_disable();
+}
+DECL_SHUTDOWN(runtime_tick_shutdown);
 
 // Phase 11 Task 11.1 §5.3 periodic 10 Hz `kalico_status_v6` frame.
 // Background task that polls the wake flag and emits a status frame at the

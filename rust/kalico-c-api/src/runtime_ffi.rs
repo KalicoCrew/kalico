@@ -112,11 +112,9 @@ pub mod exports {
     /// exactly once; subsequent calls observe `Err(true)` and return null.
     pub(super) static INIT_DONE: AtomicBool = AtomicBool::new(false);
 
-    // C-side timer-control helpers — defined in src/stm32/runtime_tick_h7.c
+    // C-side cycle-counter helper — defined in src/stm32/runtime_tick_h7.c
     // on the MCU and stubbed by the integration-test harness on host.
     unsafe extern "C" {
-        fn runtime_tick_enable();
-        fn runtime_tick_disable();
         fn runtime_cyccnt_read() -> u32;
     }
 
@@ -311,10 +309,11 @@ pub mod exports {
 
     /// Read the widened MCU clock. Spec §3.9 — on-demand widening from
     /// Klipper's `timer_read_time` + the `stats_send_time` / `stats_send_time_high`
-    /// counters that Klipper's stats task maintains (basecmd.c). Replaces the
-    /// pre-emission-rewrite SharedState seqlock dependency: TIM5 is off when
-    /// `count_modulated_steppers == 0`, so the seqlock would not be re-published
-    /// in StepTime-only configurations. The stats task runs unconditionally,
+    /// counters that Klipper's stats task maintains (basecmd.c). TIM5 now
+    /// free-runs from boot, so the engine seqlock is continuously republished
+    /// while the firmware is alive; the stats-task path remains the correct
+    /// choice here because it avoids ISR-context re-entrancy with the
+    /// `timer_read_time` wrap update. The stats task runs unconditionally,
     /// so this widening advances regardless of engine activity.
     ///
     /// Mirrors the C-side `runtime_widened_host_clock` in `src/runtime_tick.c`.
@@ -668,18 +667,9 @@ pub mod exports {
     /// `kalico_clock_sync_request` — RTT-aware clock-sync ping (§12.1).
     ///
     /// Returns the on-demand widened MCU clock (timer_read_time +
-    /// stats_send_time_high), NOT the engine seqlock value. Rationale: the
-    /// seqlock published by `Engine::tick` is only updated from the TIM5 ISR,
-    /// and TIM5 stays disabled in the all-StepTime MVP (see
-    /// `runtime_tick_enable` in `src/stm32/runtime_tick_h7.c` — early-return
-    /// when `count_modulated_steppers == 0`). Reading the seqlock in that
-    /// configuration returns its default 0, which the bridge's clock-sync
-    /// driver filters out as "MCU clock looks uninitialised" — the host's
-    /// router clock estimate then never refreshes from its connect-time
-    /// anchor, `compute_ack_clock` extrapolates linearly into the future,
-    /// segment `t_start` lands tens of seconds ahead of the MCU's actual
-    /// clock, and the in-flight credit window deadlocks waiting for
-    /// retirements that can't happen.
+    /// stats_send_time_high), NOT the engine seqlock value. The seqlock is
+    /// updated only from the TIM5 ISR, so this path computes the widened clock
+    /// on-demand and is correct regardless of whether TIM5 is running.
     ///
     /// The on-demand widening uses Klipper's `stats_send_time_high` (updated
     /// by the stats DECL_TASK at ~0.2 Hz). Its ~5 s lag in the high half is
@@ -1050,28 +1040,10 @@ pub mod exports {
             match runtime::state::set_step_mode(shared, stepper_idx, mode, mcu_supports_phase != 0)
             {
                 Ok(()) => {
-                    // Spec §6.3: re-evaluate TIM5 arm state after every
-                    // successful step-mode flip. Count Modulated steppers via
-                    // the same loop used by `kalico_runtime_count_modulated_steppers`.
-                    // `runtime_tick_enable` is a no-op when count == 0 (C-side
-                    // guard added in the same commit), so calling it here is
-                    // always safe. `runtime_tick_disable` is called only when
-                    // the count reaches zero — idempotent if TIM5 was never
-                    // started.
-                    use runtime::state::MAX_STEPPER_OIDS;
-                    let mut modulated_count = 0u8;
-                    for i in 0..MAX_STEPPER_OIDS {
-                        if shared.step_modes[i].load(Ordering::Acquire)
-                            == runtime::state::StepMode::Modulated as u8
-                        {
-                            modulated_count = modulated_count.saturating_add(1);
-                        }
-                    }
-                    if modulated_count == 0 {
-                        runtime_tick_disable();
-                    } else {
-                        runtime_tick_enable();
-                    }
+                    // TIM5 lifecycle is decoupled from step mode (spec
+                    // 2026-05-28): the timer is armed at runtime_tick_init and
+                    // disabled only on Klipper shutdown. Setting a step mode no
+                    // longer arms/disarms the tick.
                     KALICO_OK
                 }
                 Err(runtime::state::SetStepModeError::CapabilityMissing) => {
@@ -1256,43 +1228,6 @@ pub mod exports {
                 Some(slot) => slot.load(Ordering::Acquire),
                 None => 0xFFFF,
             }
-        }
-    }
-
-    /// Count how many steppers are currently in `StepMode::Modulated`.
-    ///
-    /// Used by `runtime_tick_enable` (C-side, spec §6.3) to decide whether
-    /// TIM5 is needed: if the count is zero, TIM5 has no work and is left
-    /// disabled. F4 (no `PHASE_STEPPING` capability) always hits this path;
-    /// H7 in an all-StepTime config also leaves TIM5 idle.
-    ///
-    /// Returns `0` for a null `rt` or uninitialised runtime.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_count_modulated_steppers(rt: *mut KalicoRuntime) -> u8 {
-        use runtime::state::MAX_STEPPER_OIDS;
-        if rt.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: `rt` is the published RT_CELL pointer (non-null, INIT_DONE=true).
-        // `step_modes` are `AtomicU8` fields; we read via a shared `&SharedState`
-        // reference — no `&mut` is formed. Acquire ordering ensures we see the
-        // latest `set_step_mode` write from any foreground caller.
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            let shared: &SharedState = &*shared_ptr;
-            let mut count = 0u8;
-            for i in 0..MAX_STEPPER_OIDS {
-                if shared.step_modes[i].load(Ordering::Acquire)
-                    == runtime::state::StepMode::Modulated as u8
-                {
-                    count = count.saturating_add(1);
-                }
-            }
-            count
         }
     }
 

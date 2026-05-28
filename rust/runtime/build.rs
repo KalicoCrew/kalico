@@ -14,7 +14,13 @@
 //!    vars exported by Klipper's Makefile (which sources them from the
 //!    matching `CONFIG_RUNTIME_*` Kconfig values). Defaults match the H7
 //!    `large` profile so host-only / sim builds (which don't go through the
-//!    Klipper Makefile) still compile.
+//!    Klipper Makefile) still compile. **For bare-metal MCU builds
+//!    (`CARGO_CFG_TARGET_OS == "none"`) a missing or empty env var is a
+//!    hard build error** — a silent default would desync Rust's
+//!    `RT_STORAGE_SIZE` / `PIECE_RING_SIZE` from the C-declared
+//!    `rt_storage[]` / piece-ring buffers and cause memory corruption at
+//!    runtime (the exact failure mode observed with stale `.config` on F4:
+//!    C buffer = 73728, Rust constant silently fell back to 122880).
 //!
 //!    Spec: docs/superpowers/specs/2026-05-06-runtime-sizing-per-mcu-design.md §4.3.
 //!    `RT_STORAGE_SIZE` is the byte ceiling for the C-declared `rt_storage`
@@ -35,11 +41,40 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-fn lookup(name: &str, default: &str) -> String {
+/// Resolve a build-env var.
+///
+/// - When the env var is set and non-empty, its value is returned regardless
+///   of target.
+/// - When the env var is missing or empty **and `is_mcu` is `false`** (host /
+///   sim build), the supplied `default` is returned — these callers do not go
+///   through Klipper's Makefile and the default is intentional.
+/// - When the env var is missing or empty **and `is_mcu` is `true`** (bare-
+///   metal `thumbv*-none-*` target), the build panics with an actionable
+///   message.  A silent default would desync this Rust constant from the
+///   C-declared buffer size and cause runtime memory corruption (stale
+///   `.config` F4 incident: C buffer = 73728, Rust silently used 122880).
+fn lookup(name: &str, default: &str, is_mcu: bool) -> String {
     println!("cargo:rerun-if-env-changed={name}");
     match env::var(name) {
         Ok(s) if !s.is_empty() => s,
-        _ => default.to_string(),
+        _ => {
+            if is_mcu {
+                panic!(
+                    "\n\
+                     build.rs: `{name}` is missing or empty for a bare-metal MCU build.\n\
+                     This variable must be exported by Klipper's Makefile from the\n\
+                     `CONFIG_RUNTIME_*` Kconfig value matching the active `.config`.\n\
+                     A missing value silently desyncs Rust's compile-time constant from\n\
+                     the C-declared `rt_storage[]` / piece-ring buffer size, causing\n\
+                     memory corruption at runtime (observed on F4 with stale `.config`:\n\
+                     C buffer = 73728 bytes, Rust constant fell back to 122880 bytes).\n\
+                     Fix: ensure `make` is run from the Klipper tree with a current\n\
+                     `.config` so the KALICO_RUNTIME_* vars are in the environment\n\
+                     when Cargo is invoked.\n"
+                );
+            }
+            default.to_string()
+        }
     }
 }
 
@@ -47,10 +82,17 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(loom)");
     println!("cargo:rerun-if-changed=build.rs");
 
-    let rss = lookup("KALICO_RUNTIME_STORAGE_SIZE", "122880");
+    // Cargo sets CARGO_CFG_TARGET_OS to "none" for bare-metal thumbv*-none-*
+    // targets.  For host and MACH_LINUX sim builds it is "linux", "macos",
+    // etc.  Missing means the toolchain is very old; treat it as host-like.
+    let is_mcu = env::var("CARGO_CFG_TARGET_OS")
+        .map(|v| v == "none")
+        .unwrap_or(false);
+
+    let rss = lookup("KALICO_RUNTIME_STORAGE_SIZE", "122880", is_mcu);
     // PIECE_RING_SIZE: total bytes for piece ring storage.
     // Default 63488 on H7; override via KALICO_RUNTIME_PIECE_RING_SIZE.
-    let prs = lookup("KALICO_RUNTIME_PIECE_RING_SIZE", "63488");
+    let prs = lookup("KALICO_RUNTIME_PIECE_RING_SIZE", "63488", is_mcu);
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
 

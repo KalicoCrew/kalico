@@ -91,10 +91,11 @@ uint32_t kalico_runtime_get_tick_counter(kalico_nurbs_KalicoRuntime *rt);
 /**
  * Read the widened MCU clock. Spec §3.9 — on-demand widening from
  * Klipper's `timer_read_time` + the `stats_send_time` / `stats_send_time_high`
- * counters that Klipper's stats task maintains (basecmd.c). Replaces the
- * pre-emission-rewrite SharedState seqlock dependency: TIM5 is off when
- * `count_modulated_steppers == 0`, so the seqlock would not be re-published
- * in StepTime-only configurations. The stats task runs unconditionally,
+ * counters that Klipper's stats task maintains (basecmd.c). TIM5 now
+ * free-runs from boot, so the engine seqlock is continuously republished
+ * while the firmware is alive; the stats-task path remains the correct
+ * choice here because it avoids ISR-context re-entrancy with the
+ * `timer_read_time` wrap update. The stats task runs unconditionally,
  * so this widening advances regardless of engine activity.
  *
  * Mirrors the C-side `runtime_widened_host_clock` in `src/runtime_tick.c`.
@@ -233,18 +234,9 @@ int32_t kalico_runtime_stream_flush(kalico_nurbs_KalicoRuntime *rt, uint32_t *ou
  * `kalico_clock_sync_request` — RTT-aware clock-sync ping (§12.1).
  *
  * Returns the on-demand widened MCU clock (timer_read_time +
- * stats_send_time_high), NOT the engine seqlock value. Rationale: the
- * seqlock published by `Engine::tick` is only updated from the TIM5 ISR,
- * and TIM5 stays disabled in the all-StepTime MVP (see
- * `runtime_tick_enable` in `src/stm32/runtime_tick_h7.c` — early-return
- * when `count_modulated_steppers == 0`). Reading the seqlock in that
- * configuration returns its default 0, which the bridge's clock-sync
- * driver filters out as "MCU clock looks uninitialised" — the host's
- * router clock estimate then never refreshes from its connect-time
- * anchor, `compute_ack_clock` extrapolates linearly into the future,
- * segment `t_start` lands tens of seconds ahead of the MCU's actual
- * clock, and the in-flight credit window deadlocks waiting for
- * retirements that can't happen.
+ * stats_send_time_high), NOT the engine seqlock value. The seqlock is
+ * updated only from the TIM5 ISR, so this path computes the widened clock
+ * on-demand and is correct regardless of whether TIM5 is running.
  *
  * The on-demand widening uses Klipper's `stats_send_time_high` (updated
  * by the stats DECL_TASK at ~0.2 Hz). Its ~5 s lag in the high half is
@@ -423,18 +415,6 @@ uint8_t kalico_runtime_get_step_mode(kalico_nurbs_KalicoRuntime *rt, uint8_t ste
  * decode.
  */
 uint16_t kalico_runtime_query_phase_config(kalico_nurbs_KalicoRuntime *rt, uint8_t motor_idx);
-
-/**
- * Count how many steppers are currently in `StepMode::Modulated`.
- *
- * Used by `runtime_tick_enable` (C-side, spec §6.3) to decide whether
- * TIM5 is needed: if the count is zero, TIM5 has no work and is left
- * disabled. F4 (no `PHASE_STEPPING` capability) always hits this path;
- * H7 in an all-StepTime config also leaves TIM5 idle.
- *
- * Returns `0` for a null `rt` or uninitialised runtime.
- */
-uint8_t kalico_runtime_count_modulated_steppers(kalico_nurbs_KalicoRuntime *rt);
 
 /**
  * Read the per-axis-timer dispatcher floor (cycles). The minimum

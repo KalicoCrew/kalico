@@ -144,7 +144,6 @@ pub fn push_test_segment_linear_z_at(
     duration_s: f32,
 ) {
     use crate::piece_ring::PieceEntry;
-    use crate::sizing::TOTAL_RING_PIECES;
 
     let z_end_mm = velocity_mm_s * duration_s;
 
@@ -164,11 +163,10 @@ pub fn push_test_segment_linear_z_at(
     // axis_idx=2 is Z. push_pieces allocates from the Z ring descriptor.
     let rc = isr.engine.push_pieces(2, &[piece], storage_slice);
     assert_eq!(rc, 0, "push_pieces for Z failed (ring not configured?)");
-    let _ = TOTAL_RING_PIECES; // suppress unused import warning
 }
 
-/// Push a Z-only linear segment into the engine's active-segment slot,
-/// starting at cycle 0.
+/// Push a Z-only linear segment into the engine's piece ring, starting at
+/// cycle 0.
 pub fn push_test_segment_linear_z(
     ctx: &mut crate::state::RuntimeContext,
     velocity_mm_s: f32,
