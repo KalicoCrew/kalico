@@ -4,11 +4,6 @@ on:
     paths:
       - docs/**
       - .github/workflows/ci-docs_test.yaml
-  push:
-    branches: [sota-motion]
-    paths:
-      - docs/**
-      - .github/workflows/ci-docs_test.yaml
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}

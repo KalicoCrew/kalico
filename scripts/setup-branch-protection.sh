@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # scripts/setup-branch-protection.sh — OPTIONAL: require these checks on PRs.
 #
-# Not needed for a solo direct-commit workflow (sota-motion is committed to
-# directly; CI-on-push + the pre-push hook keep it honest — see
-# docs/kalico-rewrite/ci.md). This only adds value once OTHER contributors open
-# PRs: it gates their merges on the checks. It sets `enforce_admins: false`, so
-# it never blocks direct maintainer pushes to sota-motion.
+# Not needed for a solo direct-commit workflow: sota-motion is committed to
+# directly, CI runs on PRs (the gate you rely on when merging), and local
+# `./scripts/ci.sh` covers pre-merge checks — see docs/kalico-rewrite/ci.md.
+# This only adds value once OTHER contributors open PRs: it gates their merges
+# on the checks. It sets `enforce_admins: false`, so it never blocks direct
+# maintainer pushes to sota-motion.
 #
 # Requires admin on the repo and `gh auth login`. Run once (re-running is safe;
 # it overwrites the protection config). Review the REQUIRED_CHECKS list below

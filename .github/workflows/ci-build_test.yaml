@@ -3,8 +3,6 @@ name: Build test
 on:
   workflow_dispatch:
   pull_request:
-  push:
-    branches: [sota-motion]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}

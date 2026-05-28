@@ -3,10 +3,6 @@ name: Rust runtime (Step 5 + Step 6)
 on:
   workflow_dispatch:
   pull_request:
-  # Run on the de-facto main branch too, so its tip's status is always current
-  # (PR-only runs left sota-motion's true state unknown between merges).
-  push:
-    branches: [sota-motion]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}

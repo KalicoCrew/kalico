@@ -33,18 +33,30 @@ cargo install cargo-nextest --locked   # process-per-test isolation
 cargo install cargo-deny               # optional
 ```
 
-## Pre-push hook
+## Checking locally before a PR
 
-Catch failures before they reach CI. The hook runs `ci.sh quick` (ruff + rust
-build/test/clippy/fmt) before every push and aborts the push if a gate fails:
+The single source of truth runs the same gates CI does. Before opening a PR to
+merge a chunk of work, run the fast subset (or the full suite):
+
+```sh
+./scripts/ci.sh quick      # ruff + rust build/test/clippy/fmt
+./scripts/ci.sh            # everything
+```
+
+### Optional pre-push hook
+
+If you want that gate to run automatically on every `git push`, enable the
+tracked hook:
 
 ```sh
 ./scripts/ci.sh install-hooks    # one-time; sets core.hooksPath = .githooks
 ```
 
-It is branch-agnostic, so it also guards **direct pushes to `sota-motion`** — the
-common case here. Bypass a single push with `git push --no-verify`; disable with
-`git config --unset core.hooksPath`.
+It is **opt-in and off by default**, because it runs on *every* push and so adds
+latency to tight loops — notably the trident deploy loop (commit → push → pull on
+the Pi → compile → flash), where the host-side `quick` gate is irrelevant to the
+firmware build. With it enabled, bypass a single push with `git push
+--no-verify`; disable entirely with `git config --unset core.hooksPath`.
 
 ## Policy: no fake-green
 
@@ -63,15 +75,14 @@ Tests are not silenced to make CI pass. In particular:
   CI runs `sim_unit` and excludes hardware/Renode *by marker on the command
   line*, so the exclusion is visible, not hidden in `testpaths`.
 
-## Keeping `sota-motion` green
+## Where CI runs
 
-`sota-motion` is the de-facto main and is committed to **directly** — there is no
-required pull-request workflow. It is kept honest by two mechanisms:
-
-- **CI on every push.** The workflows run on `push` to `sota-motion` (not only on
-  PRs), so its tip's true status is always current — no more "stale green".
-- **The pre-push hook** (`./scripts/ci.sh install-hooks`) runs the fast gate
-  locally *before* a commit lands, so red rarely reaches the branch at all.
+CI runs on **pull requests** — that is the gate you rely on when merging a chunk
+of work. `sota-motion` (the de-facto main) is committed to **directly** during
+development and bench iteration; those direct pushes are intentionally *not*
+CI-gated, so they stay fast. The contract is: **red on a PR means a real
+problem.** When you want assurance before a direct commit, run `./scripts/ci.sh`
+locally (above).
 
 Branch protection is **not** used and not needed for a solo direct-commit
 workflow. If collaborators are ever added, the optional
