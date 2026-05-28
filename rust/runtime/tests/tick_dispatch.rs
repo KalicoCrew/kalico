@@ -9,7 +9,6 @@ use core::sync::atomic::{AtomicI16, AtomicI32, AtomicU8, Ordering};
 use heapless::Vec;
 
 use runtime::error::FaultCode;
-use runtime::monomial::BezierPieceMonomial;
 use runtime::state::SharedState;
 use runtime::step_queue::{STEP_QUEUE_DEPTH, StepQueue};
 use runtime::stepping_state::{AxisConfig, MAX_STEPPERS_PER_AXIS, StepMode, StepperRef};
@@ -34,10 +33,8 @@ fn make_axis(mode: StepMode, microstep_distance: f32) -> AxisConfig {
     AxisConfig {
         mode: AtomicU8::new(mode as u8),
         steppers,
-        piece: None::<BezierPieceMonomial>,
-        piece_start_time_cycles: 0,
-        last_step_count: 0,
         microstep_distance,
+        ..AxisConfig::new_unconfigured()
     }
 }
 
