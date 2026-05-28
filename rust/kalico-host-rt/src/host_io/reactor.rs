@@ -1112,6 +1112,9 @@ impl Reactor {
             ReactorCommand::AttachRetirementCallback(wrapper) => {
                 self.event_dispatcher.retirement_callback = Some(wrapper.0);
             }
+            ReactorCommand::AttachHeartbeatCallback(wrapper) => {
+                self.event_dispatcher.heartbeat_callback = Some(wrapper.0);
+            }
             ReactorCommand::SubscribeFault { sender, reply } => {
                 let result = self.event_dispatcher.fault_latch.subscribe(sender);
                 let _ = reply.send(result);

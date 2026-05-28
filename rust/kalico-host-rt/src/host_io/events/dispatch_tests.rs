@@ -1,7 +1,7 @@
 use super::*;
 use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent, StatusEvent};
 use arc_swap::ArcSwap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 fn make_dispatcher() -> EventDispatcher {
     let snap = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
@@ -204,4 +204,44 @@ fn status_synthesized_credit_freed_calls_retirement_callback() {
         ..StatusEvent::default()
     }));
     assert_eq!(retired_id.load(Ordering::Acquire), 10);
+}
+
+#[test]
+fn heartbeat_callback_fires_with_consumed_counts() {
+    let status = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+    let mut d = EventDispatcher::new(status, 16, 8);
+
+    let recorder: Arc<Mutex<Vec<Vec<u32>>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorder2 = Arc::clone(&recorder);
+    d.heartbeat_callback = Some(Arc::new(move |counts: &[u32]| {
+        recorder2.lock().unwrap().push(counts.to_vec());
+    }));
+
+    d.dispatch(RuntimeEvent::Heartbeat {
+        consumed_counts: vec![5, 1],
+    });
+
+    let got = recorder.lock().unwrap();
+    assert_eq!(got.len(), 1, "callback must fire exactly once");
+    assert_eq!(got[0], vec![5, 1]);
+}
+
+#[test]
+fn heartbeat_is_not_forwarded_to_runtime_rx() {
+    use std::sync::mpsc::sync_channel;
+
+    let status = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+    let mut d = EventDispatcher::new(status, 16, 8);
+
+    let (tx, rx) = sync_channel::<RuntimeEvent>(8);
+    d.runtime_event_dispatcher.subscribe(tx).unwrap();
+
+    d.dispatch(RuntimeEvent::Heartbeat {
+        consumed_counts: vec![3, 7],
+    });
+
+    assert!(
+        rx.try_recv().is_err(),
+        "Heartbeat must NOT reach the runtime_rx channel"
+    );
 }

@@ -55,6 +55,11 @@ pub enum RuntimeEvent {
     Status(StatusEvent),
     Trace(TraceEvent),
     EndstopTripped(EndstopTrippedEvent),
+    /// Per-axis consumed-piece counts from `StatusHeartbeat` (0x0083),
+    /// used by the host pump for flow control.
+    Heartbeat {
+        consumed_counts: Vec<u32>,
+    },
     /// Free-form `output("...")` from firmware that the host parser decodes
     /// into the canonical `('#output', {'#msg': formatted})` form. Routed to
     /// klippy's `#output` handler.

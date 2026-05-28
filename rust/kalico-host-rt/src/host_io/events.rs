@@ -230,6 +230,11 @@ pub struct EventDispatcher {
     /// must go from `kalico-host-rt` out to `motion-bridge`, not via an
     /// import. Set via [`ReactorCommand::AttachRetirementCallback`].
     pub retirement_callback: Option<Arc<dyn Fn(u32) + Send + Sync>>,
+    /// Optional callback fired on every `StatusHeartbeat` (0x0083) with the
+    /// per-axis consumed-piece counts. Pump-private: the event is consumed
+    /// here and NOT forwarded to the general `runtime_rx` channel.
+    /// Set via [`ReactorCommand::AttachHeartbeatCallback`].
+    pub heartbeat_callback: Option<Arc<dyn Fn(&[u32]) + Send + Sync>>,
 }
 
 impl EventDispatcher {
@@ -253,6 +258,7 @@ impl EventDispatcher {
             host_event_dispatcher: HostEventDispatcher::new(host_rx),
             status_retired_watermark: 0,
             retirement_callback: None,
+            heartbeat_callback: None,
         }
     }
 
@@ -332,6 +338,14 @@ impl EventDispatcher {
                 // is the floor — slot pool catches up within 100 ms regardless).
                 if let Some(c) = synth_credit {
                     self.dispatch(RuntimeEvent::CreditFreed(c));
+                }
+            }
+            RuntimeEvent::Heartbeat { consumed_counts } => {
+                // Pump-private: consumed here, NOT forwarded to the general
+                // runtime_rx channel. The heartbeat callback feeds the host
+                // pump's flow-control logic directly over a channel.
+                if let Some(cb) = &self.heartbeat_callback {
+                    cb(&consumed_counts);
                 }
             }
             RuntimeEvent::EndstopTripped(_)

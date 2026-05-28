@@ -86,6 +86,17 @@ impl std::fmt::Debug for RetirementCallback {
     }
 }
 
+/// Newtype wrapper for a heartbeat callback so `ReactorCommand` can remain
+/// `#[derive(Debug)]`. Fired on every `StatusHeartbeat` with the per-axis
+/// consumed-piece counts.
+pub struct HeartbeatCallback(pub Arc<dyn Fn(&[u32]) + Send + Sync>);
+
+impl std::fmt::Debug for HeartbeatCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HeartbeatCallback(<fn>)")
+    }
+}
+
 #[derive(Debug)]
 pub enum ReactorCommand {
     Submit {
@@ -105,6 +116,7 @@ pub enum ReactorCommand {
     Abandon(u64),
     AttachCreditCounter(std::sync::Arc<CreditCounter>),
     AttachRetirementCallback(RetirementCallback),
+    AttachHeartbeatCallback(HeartbeatCallback),
     SubscribeFault {
         sender: SyncSender<FaultEvent>,
         reply: SyncSender<Result<(), SubscribeError>>,
@@ -558,6 +570,17 @@ impl KalicoHostIo {
             .send(ReactorCommand::AttachRetirementCallback(
                 RetirementCallback(cb),
             ));
+    }
+
+    /// Register a callback fired on every `StatusHeartbeat` with the per-axis
+    /// consumed-piece counts. Runs on the reactor/event thread — must be
+    /// non-blocking (it only sends on a channel; see motion-bridge pump).
+    pub fn attach_heartbeat_callback(&self, cb: Arc<dyn Fn(&[u32]) + Send + Sync>) {
+        let _ = self
+            .submission_tx
+            .send(ReactorCommand::AttachHeartbeatCallback(HeartbeatCallback(
+                cb,
+            )));
     }
 
     pub fn subscribe_fault(&self) -> Result<std::sync::mpsc::Receiver<FaultEvent>, SubscribeError> {

@@ -29,7 +29,10 @@ use kalico_native_transport::{
     BOOTSTRAP_IDENTIFY_RESPONSE_LEN, CHANNEL_CONTROL, decode_identify_response, encode_frame,
     encode_identify,
 };
-use kalico_protocol::{Decode, FaultEvent as KFaultEvent, MessageKind, PROTO_VERSION, SCHEMA_HASH};
+use kalico_protocol::{
+    Decode, FaultEvent as KFaultEvent, MessageKind, PROTO_VERSION, SCHEMA_HASH,
+    StatusHeartbeat as KStatusHeartbeat,
+};
 
 use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent};
 use crate::transport::TransportError;
@@ -119,6 +122,7 @@ pub fn build_kalico_identify_frame(correlation_id: u32) -> Vec<u8> {
 
 /// Result of dispatching a single complete kalico frame at the reactor's
 /// byte-stream level.
+#[derive(Debug)]
 pub enum KalicoDispatchResult {
     /// The frame was routed to a pending call, an identify, or as an event
     /// already lifted by the dispatcher.
@@ -270,6 +274,18 @@ fn lift_event_to_runtime_event(
                 KalicoDispatchResult::Ignored
             }
         },
+        MessageKind::StatusHeartbeat => match KStatusHeartbeat::decode(body) {
+            Ok(hb) => {
+                // engine_state / fault_code intentionally dropped — the pump needs only consumed_counts.
+                KalicoDispatchResult::Event(RuntimeEvent::Heartbeat {
+                    consumed_counts: hb.consumed_counts,
+                })
+            }
+            Err(e) => {
+                log::warn!("kalico StatusHeartbeat decode failed: {e:?}");
+                KalicoDispatchResult::Ignored
+            }
+        },
         _ => {
             log::warn!("unexpected event kind on events channel: {kind:?}");
             KalicoDispatchResult::Ignored
@@ -283,4 +299,32 @@ fn hex32(bytes: &[u8; 32]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kalico_protocol::{Encode, StatusHeartbeat};
+
+    fn make_state() -> KalicoNativeState {
+        KalicoNativeState::default()
+    }
+
+    #[test]
+    fn status_heartbeat_lifts_to_runtime_event() {
+        let hb = StatusHeartbeat {
+            engine_state: 1,
+            fault_code: 0,
+            consumed_counts: vec![7, 0, 3],
+        };
+        let mut body = Vec::new();
+        hb.encode(&mut body);
+        let mut st = make_state();
+        match lift_event_to_runtime_event(&mut st, MessageKind::StatusHeartbeat, &body) {
+            KalicoDispatchResult::Event(RuntimeEvent::Heartbeat { consumed_counts }) => {
+                assert_eq!(consumed_counts, vec![7, 0, 3]);
+            }
+            other => panic!("expected Heartbeat event, got {:?}", other),
+        }
+    }
 }
