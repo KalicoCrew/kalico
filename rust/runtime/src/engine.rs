@@ -26,9 +26,8 @@ use heapless::spsc::Producer;
 use crate::clock::TickCounter;
 use crate::error::{KALICO_ERR_INVALID_ARG, KALICO_ERR_RING_FULL, KALICO_OK};
 use crate::fault_helpers::raise_piece_start_in_past;
-use crate::modulator::PhaseDirectModulator;
 use crate::piece_ring::PieceEntry;
-use crate::state::{MAX_STEPPER_OIDS, SharedState};
+use crate::state::SharedState;
 use crate::step::StepMotorState;
 use crate::stepping_state::{AxisState, MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
 use crate::trace::{TRACE_RING_N, TraceSample};
@@ -82,8 +81,6 @@ pub struct Engine {
     pub num_axes: u8,
     /// Bump-allocate cursor: next unused index in piece_storage.
     ring_alloc_cursor: usize,
-    /// Phase modulator state (per stepper OID slot).
-    phase_modulators: [Option<PhaseDirectModulator>; MAX_STEPPER_OIDS],
     // Per-axis `StepMotorState` for the accumulator-based step path.
     // Indexed 0..MAX_AXES; entries beyond num_axes are unused.
     pub(crate) step_state: [StepMotorState; MAX_AXES],
@@ -109,7 +106,6 @@ impl Engine {
             stepping_axes: [const { None }; MAX_AXES],
             num_axes: 0,
             ring_alloc_cursor: 0,
-            phase_modulators: [const { None }; MAX_STEPPER_OIDS],
             step_state: [StepMotorState::default(); MAX_AXES],
             last_motors: [0.0; MAX_AXES],
             mcu_config: None,
@@ -152,7 +148,6 @@ impl Engine {
             addr_of_mut!((*ptr).stepping_axes).write([const { None }; MAX_AXES]);
             addr_of_mut!((*ptr).num_axes).write(0);
             addr_of_mut!((*ptr).ring_alloc_cursor).write(0);
-            addr_of_mut!((*ptr).phase_modulators).write([const { None }; MAX_STEPPER_OIDS]);
             addr_of_mut!((*ptr).step_state).write([StepMotorState::default(); MAX_AXES]);
             addr_of_mut!((*ptr).last_motors).write([0.0; MAX_AXES]);
             addr_of_mut!((*ptr).mcu_config).write(None);
@@ -573,9 +568,6 @@ impl Engine {
     pub fn runtime_force_idle(&mut self, shared: &SharedState) {
         for ss in &mut self.step_state {
             ss.reset_accumulator();
-        }
-        for slot in &mut self.phase_modulators {
-            *slot = None;
         }
         for axis_opt in &mut self.stepping_axes {
             if let Some(axis) = axis_opt.as_mut() {
