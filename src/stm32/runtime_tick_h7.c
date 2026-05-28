@@ -124,7 +124,7 @@ runtime_tick_init(void)
     // Always-on (spec 2026-05-28): the piece-ring engine has no per-push event
     // to lazily start TIM5 (segments are gone), so the ISR free-runs from boot.
     // It idles cheaply when no axis has an active piece. TIM5 is disabled only
-    // on Klipper shutdown (DECL_SHUTDOWN in runtime_tick.c) and re-armed here on
+    // when the firmware stops motion (Klipper shutdown) and re-armed here on
     // FIRMWARE_RESTART.
     TIM5->EGR  = TIM_EGR_UG;
     TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
