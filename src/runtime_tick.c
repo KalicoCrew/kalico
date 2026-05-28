@@ -88,7 +88,7 @@ runtime_host_now_us(void)
     return ((uint64_t)cycles) / (CONFIG_CLOCK_FREQ / 1000000U);
 }
 
-// F446 configure_axes crash diagnostic (2026-05-11). Packs the latest
+// Boot/dispatch progress diagnostic (2026-05-11). Packs the latest
 // (tag, stage, value) triple into a single u32 word that
 // `runtime_status_drain` piggybacks onto the periodic `kalico_status_v6`
 // frame's `fault_detail` field when no real fault is latched.
@@ -548,7 +548,7 @@ DECL_TASK(runtime_status_drain);
 
 
 // Command surface (query_status, arm_endstop, disarm_endstop,
-// configure_axes, stream_*, clock_sync_request, query_pool_state)
+// stream_*, clock_sync_request, query_pool_state)
 // plus the endstop GPIO sampler hot-path
 // (`runtime_endstop_sample_pins` + `endstop_pin_table`) live in
 // src/runtime_commands.c. This file keeps only lifecycle (init/drain),

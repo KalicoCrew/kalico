@@ -34,9 +34,6 @@ pub extern "C" fn runtime_cyccnt_read() -> u32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn runtime_reset_stepper_bindings() {}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn runtime_diag_progress(_tag: u32, _stage: u32, _value: u32) {}
 
 #[test]

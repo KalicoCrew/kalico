@@ -448,7 +448,7 @@ DECL_COMMAND(command_runtime_register_phase_bus,
 // would force the host to send symbolic pin names ("PA5") instead of the
 // raw stm32 GPIO encoding (port*16+pin = 5) used by the rest of the
 // phase_config wire surface. The `_id` suffix sidesteps the enum lookup
-// and keeps the encoding consistent with the 33-byte configure_axes blob.
+// and keeps the encoding consistent with the `kalico_configure_axis` path.
 void
 command_runtime_register_phase_motor(uint32_t *args)
 {
