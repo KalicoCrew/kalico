@@ -64,9 +64,4 @@ pub mod trace;
 pub mod wire;
 
 #[cfg(test)]
-mod tests {
-    #[test]
-    fn smoke() {
-        // Crate compiles; module tree intact.
-    }
-}
+mod tests;

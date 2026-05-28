@@ -109,7 +109,10 @@ fn idle_axis_stays_none_for_unused_sentinel() {
 }
 
 #[test]
-fn participating_mask_for_coupled_e_excludes_e_bit() {
+fn participating_mask_for_coupled_e_includes_e_bit() {
+    // After E-unification: EMode::CoupledToXy no longer excludes E from
+    // participating_mask. All axes with a valid curve handle participate,
+    // regardless of e_mode. The host pre-computes E as a regular Bezier.
     let mut engine = new_engine();
     let pool = CurvePool::new();
     let x = pool
@@ -126,12 +129,9 @@ fn participating_mask_for_coupled_e_excludes_e_bit() {
 
     engine.arm_segment(seg, &pool);
 
-    // Even though E has a curve, in CoupledToXy mode E doesn't participate.
-    assert_eq!(engine.participating_mask, 0b0001); // only X
-    assert_eq!(engine.pending_mask, 0b0001);
-    // The per-axis state for E is still armed (the evaluator reads the
-    // CoupledToXy curve as the integrated source), but it does not count
-    // toward retire bookkeeping.
+    // Both X and E have handles → both participate in retire bookkeeping.
+    assert_eq!(engine.participating_mask, 0b1001); // X + E
+    assert_eq!(engine.pending_mask, 0b1001);
     assert!(engine.stepping_axes[3].curve_handle.is_some());
 }
 
@@ -174,30 +174,7 @@ fn participating_mask_for_travel_excludes_e_bit() {
     assert_eq!(engine.pending_mask, 0b0001);
 }
 
-#[test]
-fn segment_base_e_snapshotted_from_accumulator() {
-    let mut engine = new_engine();
-    engine.debug_set_e_accumulator(12.345);
-    let pool = CurvePool::new();
-    let seg = idle_segment();
-
-    engine.arm_segment(seg, &pool);
-
-    assert!(
-        (engine.segment_base_e - 12.345).abs() < 1e-3,
-        "segment_base_e={} (expected ~12.345)",
-        engine.segment_base_e
-    );
-}
-
-#[test]
-fn ds_xy_segment_resets_to_zero() {
-    let mut engine = new_engine();
-    engine.debug_set_ds_xy_segment(999.0);
-    let pool = CurvePool::new();
-    let seg = idle_segment();
-
-    engine.arm_segment(seg, &pool);
-
-    assert_eq!(engine.ds_xy_segment, 0.0);
-}
+// segment_base_e_snapshotted_from_accumulator and ds_xy_segment_resets_to_zero
+// were removed: the E-accumulator and ds_xy_segment fields no longer exist.
+// E is now a regular Bezier axis pre-computed by the host; the MCU evaluates
+// all four axes (A/B/Z/E) uniformly with no per-segment arc-length integration.

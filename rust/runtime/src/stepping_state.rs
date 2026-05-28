@@ -143,9 +143,6 @@ impl AxisConfig {
 pub struct TickCaches {
     pub p_prev: [f32; N_AXES],
     pub v_prev: [f32; N_AXES],
-    pub v_xy_prev: f32,
-    pub v_xy_this: f32,
-    pub vdot_xy_accelerating: bool,
 }
 
 impl TickCaches {
@@ -153,9 +150,6 @@ impl TickCaches {
         Self {
             p_prev: [0.0; N_AXES],
             v_prev: [0.0; N_AXES],
-            v_xy_prev: 0.0,
-            v_xy_this: 0.0,
-            vdot_xy_accelerating: false,
         }
     }
 }

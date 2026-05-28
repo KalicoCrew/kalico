@@ -105,65 +105,41 @@ fn configure_axis_rejects_invalid_inputs() {
     assert_eq!(e.configure_axis(0, StepMode::Phase, 0.01, &[b]), 0);
 }
 
+// configure_kinematics and configure_pressure_advance are now no-op stubs —
+// k_xy and advance_accel/advance_decel fields were removed when the
+// E-follows-XY arc-length integrator was removed. The stubs still validate
+// their inputs and return 0 on success / -1 on invalid, preserving the FFI ABI.
+
 #[test]
-fn configure_kinematics_accepts_cartesian_and_corexy() {
+fn configure_kinematics_returns_ok_for_valid_inputs() {
     let mut e = new_engine();
-
-    // Cartesian.
     assert_eq!(e.configure_kinematics(1.0), 0);
-    assert!((e.k_xy - 1.0).abs() < 1e-9);
-
-    // CoreXY: 1 / sqrt(2) ≈ 0.7071067811865476.
     let inv_sqrt2 = 1.0_f32 / 2.0_f32.sqrt();
     assert_eq!(e.configure_kinematics(inv_sqrt2), 0);
-    assert!((e.k_xy - inv_sqrt2).abs() < 1e-7);
 }
 
 #[test]
 fn configure_kinematics_rejects_invalid_inputs() {
     let mut e = new_engine();
-    let baseline = e.k_xy;
-
     assert_ne!(e.configure_kinematics(0.0), 0);
     assert_ne!(e.configure_kinematics(-1.0), 0);
     assert_ne!(e.configure_kinematics(f32::NAN), 0);
     assert_ne!(e.configure_kinematics(f32::INFINITY), 0);
-
-    // State unchanged after each rejection.
-    assert!((e.k_xy - baseline).abs() < 1e-9);
 }
 
 #[test]
-#[allow(clippy::float_cmp)] // exact equality tests for stored configuration values
-fn configure_pressure_advance_accepts_symmetric_and_asymmetric() {
+fn configure_pressure_advance_returns_ok_for_valid_inputs() {
     let mut e = new_engine();
-
-    // Symmetric Klipper-style PA: same K on accel and decel.
     assert_eq!(e.configure_pressure_advance(0.05, 0.05), 0);
-    assert_eq!(e.advance_accel, 0.05);
-    assert_eq!(e.advance_decel, 0.05);
-
-    // Asymmetric (Kalico bleeding-edge Step 9).
     assert_eq!(e.configure_pressure_advance(0.08, 0.04), 0);
-    assert_eq!(e.advance_accel, 0.08);
-    assert_eq!(e.advance_decel, 0.04);
-
-    // PA off.
     assert_eq!(e.configure_pressure_advance(0.0, 0.0), 0);
-    assert_eq!(e.advance_accel, 0.0);
-    assert_eq!(e.advance_decel, 0.0);
 }
 
 #[test]
 fn configure_pressure_advance_rejects_invalid_inputs() {
     let mut e = new_engine();
-    let _ = e.configure_pressure_advance(0.05, 0.05); // seed baseline
-
-    // Non-finite either side.
     assert_ne!(e.configure_pressure_advance(f32::NAN, 0.0), 0);
     assert_ne!(e.configure_pressure_advance(0.0, f32::INFINITY), 0);
-
-    // Negative — PA is never physically negative.
     assert_ne!(e.configure_pressure_advance(-0.01, 0.0), 0);
     assert_ne!(e.configure_pressure_advance(0.0, -0.01), 0);
 }

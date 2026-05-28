@@ -23,6 +23,13 @@
 
 #define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
 
+enum ArmPolicy {
+  TripImmediately = 0,
+  WaitForClear = 1,
+  IgnoreUntilMoving = 2,
+};
+typedef uint8_t ArmPolicy;
+
 enum SourceKind {
   Physical = 0,
   TmcDiag = 1,
@@ -36,13 +43,6 @@ enum SourceKind {
   Software = 2,
 };
 typedef uint8_t SourceKind;
-
-enum ArmPolicy {
-  TripImmediately = 0,
-  WaitForClear = 1,
-  IgnoreUntilMoving = 2,
-};
-typedef uint8_t ArmPolicy;
 
 typedef struct SourceConfig SourceConfig;
 

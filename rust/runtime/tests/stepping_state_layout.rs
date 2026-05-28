@@ -25,9 +25,9 @@ fn tick_caches_constructs() {
     let c = TickCaches::new();
     assert_eq!(c.p_prev[0], 0.0);
     assert_eq!(c.v_prev[N_AXES - 1], 0.0);
-    assert_eq!(c.v_xy_prev, 0.0);
-    assert_eq!(c.v_xy_this, 0.0);
-    assert!(!c.vdot_xy_accelerating);
+    // TickCaches holds only p_prev and v_prev since the E-follows-XY
+    // arc-length fields (v_xy_prev, v_xy_this, vdot_xy_accelerating)
+    // were removed — all four axes are now evaluated uniformly.
 }
 
 #[test]
