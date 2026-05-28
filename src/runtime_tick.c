@@ -459,8 +459,13 @@ runtime_drain(void)
     // shutdown — the single stop state. shutdown() does irq_disable()+longjmp
     // back to sched_main; that is safe HERE in foreground (DECL_TASK context)
     // but NOT from the ISR/Rust tick path, which is why escalation lives in this
-    // drain rather than at the fault site. The edge guard prevents re-emitting
-    // every 1 kHz tick before the longjmp takes effect.
+    // drain rather than at the fault site. The edge guard matters because after
+    // shutdown() longjmps, sched_main resumes run_tasks() and this drain can run
+    // once more with last_error still latched; last_acted_error is stored before
+    // shutdown() (and survives the longjmp as a static), so the trailing pass is
+    // suppressed instead of re-emitting + re-shutting-down.
+    // (The cur_status == 3 block above is dormant — runtime_status is never set
+    // away from Idle today — so this last_error path is the live escalation.)
     static int32_t last_acted_error;
     int32_t cur_error = runtime_handle_last_error(runtime_handle);
     if (cur_error != 0 && cur_error != last_acted_error) {
