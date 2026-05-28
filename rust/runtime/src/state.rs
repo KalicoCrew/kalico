@@ -370,14 +370,12 @@ pub struct SharedState {
     pub producer_segment_retired_total: AtomicU64,
     /// Total times `Engine::producer_step`'s queue.dequeue returned Some
     /// (a segment was pulled into `producer_current`). Cross-check against
-    /// host-side PushSegment count to detect dropped frames between
-    /// `runtime_handle_push_segment` and `queue.enqueue`.
+    /// host-side PushPieces count to detect dropped frames.
     pub producer_segment_dequeued_total: AtomicU64,
     /// 2026-05-21 bench diag — per-stage isr_sample_tick cycle costs.
     /// Each holds the running MAX cycle count for that stage of
-    /// `runtime::tick::isr_sample_tick`. Exposed via FFI accessors
-    /// `kalico_runtime_get_isr_{widen,arm,eval}_cycles_max` and read by
-    /// the runtime_status_drain rotation as tags 0xE6/0xE7/0xE8. If any
+    /// `runtime::tick::isr_sample_tick`. Read by the
+    /// runtime_status_drain rotation as tags 0xE6/0xE7/0xE8. If any
     /// stage's max approaches the TIM5 period (~13000 cycles at 40 kHz
     /// on H7), that's the section starving foreground.
     /// `isr_overrun_count` increments per ISR that exceeds 30000 cycles

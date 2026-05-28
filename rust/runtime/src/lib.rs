@@ -28,7 +28,6 @@
 extern crate alloc;
 
 pub mod bezier_root;
-pub mod cubic_curve;
 pub mod sizing;
 pub use sizing::RT_STORAGE_SIZE;
 pub mod c_segment_queue;
@@ -38,7 +37,6 @@ pub mod endstop;
 pub mod engine;
 pub mod error;
 pub mod fault_helpers;
-pub mod kinematics;
 pub mod modulator;
 pub mod monomial;
 pub mod per_axis_timer;
@@ -50,7 +48,6 @@ pub mod reclaim;
 pub mod segment;
 #[cfg(feature = "kalico-sim")]
 pub mod sim_fixtures;
-pub mod slot;
 pub mod spi_queue;
 pub mod state;
 pub use state::{SetStepModeError, StepMode, set_step_mode};

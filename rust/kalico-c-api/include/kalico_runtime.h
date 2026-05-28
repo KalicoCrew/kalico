@@ -130,34 +130,6 @@ extern uint32_t runtime_cyccnt_read(void);
 struct KalicoRuntime *runtime_handle_create(void);
 
 /**
- * Push a segment. Producer protocol per spec §4.4 + §10.1.
- *
- * Step 7-B: four per-axis curve handles (x, y, z, e) replace the single
- * `curve_handle_packed`. Each is a wire-encoded `(generation << 16) |
- * slot_idx`. `e_mode` selects the extruder evaluation strategy (0 =
- * CoupledToXy, 1 = Independent, 2 = Travel). `extrusion_ratio_bits` is
- * `f32::to_bits()` of the extrusion_per_xy_mm scalar for CoupledToXy mode.
- *
- * `out_accepted_segment_id` and `out_credit_epoch` may be NULL (host
- * callers that don't need them); when present they receive the values
- * published into `SharedState` on success — host caller sees the same
- * values via the `kalico_push_response` schema (§5.3).
- */
-int32_t runtime_handle_push_segment(struct KalicoRuntime *rt,
-                                    uint32_t id,
-                                    uint32_t x_handle_packed,
-                                    uint32_t y_handle_packed,
-                                    uint32_t z_handle_packed,
-                                    uint32_t e_handle_packed,
-                                    uint64_t t_start,
-                                    uint64_t t_end,
-                                    uint8_t kinematics,
-                                    uint8_t e_mode,
-                                    uint32_t extrusion_ratio_bits,
-                                    uint32_t *out_accepted_segment_id,
-                                    uint32_t *out_credit_epoch);
-
-/**
  * Validate a versioned blob payload's leading version byte (§4.2).
  * Foreground entrypoint for the C handler that reads payload bytes off
  * the wire and routes the post-version-byte slice into the Step-5
@@ -351,14 +323,6 @@ double kalico_runtime_get_axis_accumulator(struct KalicoRuntime *rt, uint8_t oid
  * Used by the sim diagnostic command `runtime_sim_stepper_count_query`.
  */
 int32_t kalico_runtime_get_stepper_count(struct KalicoRuntime *rt, uint8_t oid);
-
-/**
- * Configure axis mapping and kinematics for this MCU. Minimal stub for
- * Step 7-B MVP — accepts `kinematics_tag` (0 = CoreXyAndE, 1 =
- * CartesianXyzAndE) and validates. Full motor-config blob
- * deserialization is deferred to Step 7-C.
- */
-int32_t kalico_configure_axes(struct KalicoRuntime *rt, uint8_t kinematics_tag);
 
 /**
  * Extended blob layout (25 bytes) and phase-stepping blob layout
@@ -635,13 +599,6 @@ uint32_t kalico_runtime_queue_len_diag(struct KalicoRuntime *rt);
  * (producer and consumer ends not sharing the backing buffer).
  */
 uint32_t kalico_runtime_enqueue_success_lo(struct KalicoRuntime *rt);
-
-/**
- * Diagnostic: read the last result code from `push_segment_impl`.
- * 0 = KALICO_OK, negative = an error code (see error.rs). Updated on
- * every call regardless of outcome.
- */
-int32_t kalico_runtime_last_push_segment_result(struct KalicoRuntime *rt);
 
 /**
  * 2026-05-15 live diagnosis: read the low 32 bits of

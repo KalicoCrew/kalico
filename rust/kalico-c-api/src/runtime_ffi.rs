@@ -26,14 +26,12 @@ pub mod exports {
     use runtime::RT_STORAGE_SIZE;
     use runtime::engine::RuntimeStatus;
     use runtime::error::{
-        KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_FAULT_LATCHED, KALICO_ERR_INVALID_ARG,
-        KALICO_ERR_INVALID_DURATION, KALICO_ERR_INVALID_HANDLE, KALICO_ERR_INVALID_KINEMATICS,
+        KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_INVALID_ARG,
+        KALICO_ERR_INVALID_HANDLE, KALICO_ERR_INVALID_KINEMATICS,
         KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR, KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED,
-        KALICO_ERR_QUEUE_FULL, KALICO_ERR_SEGMENT_ID_NON_MONOTONIC,
-        KALICO_ERR_ZERO_DURATION_SEGMENT, KALICO_OK,
+        KALICO_OK,
     };
-    use runtime::segment::CurveHandle;
-    use runtime::segment::{KinematicTag, Segment};
+    use runtime::segment::KinematicTag;
     use runtime::state::{FgState, IsrState, RuntimeContext, SharedState};
     use runtime::trace::TraceSample;
 
@@ -117,27 +115,12 @@ pub mod exports {
     /// exactly once; subsequent calls observe `Err(true)` and return null.
     pub(super) static INIT_DONE: AtomicBool = AtomicBool::new(false);
 
-    // C-side `runtime_clock_freq` constant — defined in src/runtime_tick.c
-    // (or, on host builds, by the integration-test harness).
-    //
-    // NOTE: `RuntimeContext::init` re-imports this same symbol on the
-    // runtime-crate side; the import here is kept so the existing
-    // producer-protocol re-enable path can read the freq for
-    // `min_segment_cycles` arithmetic.
-    unsafe extern "C" {
-        pub(super) static runtime_clock_freq: u32;
-    }
-
     // C-side timer-control helpers — defined in src/stm32/runtime_tick_h7.c
     // on the MCU and stubbed by the integration-test harness on host.
     unsafe extern "C" {
         fn runtime_tick_enable();
         fn runtime_tick_disable();
         fn runtime_cyccnt_read() -> u32;
-        // Boot-relative widened MCU clock from src/runtime_tick.c —
-        // timer_read_time() widened with stats_send_time_high. Same time
-        // domain the host uses for seg.t_start.
-        fn runtime_widened_host_clock() -> u64;
     }
 
     /// Init-once. Spec §3.2.
@@ -189,294 +172,6 @@ pub mod exports {
             INIT_DONE.store(true, Ordering::Release);
             rt_ptr.cast::<KalicoRuntime>()
         }
-    }
-
-    /// Push a segment. Producer protocol per spec §4.4 + §10.1.
-    ///
-    /// Step 7-B: four per-axis curve handles (x, y, z, e) replace the single
-    /// `curve_handle_packed`. Each is a wire-encoded `(generation << 16) |
-    /// slot_idx`. `e_mode` selects the extruder evaluation strategy (0 =
-    /// CoupledToXy, 1 = Independent, 2 = Travel). `extrusion_ratio_bits` is
-    /// `f32::to_bits()` of the extrusion_per_xy_mm scalar for CoupledToXy mode.
-    ///
-    /// `out_accepted_segment_id` and `out_credit_epoch` may be NULL (host
-    /// callers that don't need them); when present they receive the values
-    /// published into `SharedState` on success — host caller sees the same
-    /// values via the `kalico_push_response` schema (§5.3).
-    #[unsafe(no_mangle)]
-    #[allow(clippy::too_many_arguments)]
-    pub unsafe extern "C" fn runtime_handle_push_segment(
-        rt: *mut KalicoRuntime,
-        id: u32,
-        x_handle_packed: u32,
-        y_handle_packed: u32,
-        z_handle_packed: u32,
-        e_handle_packed: u32,
-        t_start: u64,
-        t_end: u64,
-        kinematics: u8,
-        e_mode: u8,
-        extrusion_ratio_bits: u32,
-        out_accepted_segment_id: *mut u32,
-        out_credit_epoch: *mut u32,
-    ) -> i32 {
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: `rt` is the published RT_CELL pointer (verified non-null
-        // and INIT_DONE==true above). We project to the foreground half-state
-        // and the SharedState atomics via raw pointers; no `&mut
-        // RuntimeContext` ever exists on this path. The §11.1 ownership
-        // discipline (foreground sole writer of FgState) is enforced by
-        // code review — no other FFI entry forms `&mut FgState`.
-        unsafe {
-            let fg_ptr: *mut FgState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).fg));
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            let isr_ptr_const: *const IsrState =
-                UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr)).cast_const();
-            let fg: &mut FgState = &mut *fg_ptr;
-            let shared: &SharedState = &*shared_ptr;
-            let result = push_segment_impl(
-                fg,
-                shared,
-                isr_ptr_const,
-                id,
-                CurveHandle::unpack(x_handle_packed),
-                CurveHandle::unpack(y_handle_packed),
-                CurveHandle::unpack(z_handle_packed),
-                CurveHandle::unpack(e_handle_packed),
-                t_start,
-                t_end,
-                kinematics,
-                e_mode,
-                extrusion_ratio_bits,
-                out_accepted_segment_id,
-                out_credit_epoch,
-            );
-            shared
-                .last_push_segment_result
-                .store(result, Ordering::Release);
-            result
-        }
-    }
-
-    /// Foreground push body. Operates on the half-split borrows projected by
-    /// the FFI shim above. The Step-5 producer protocol at re-enable still
-    /// reads back from the ISR half (`widen_state`); per spec §4.7 the ISR
-    /// is paused at this point so the foreground can mutate `widen_state`
-    /// without contention.
-    ///
-    /// Step 7-B: accepts 4 per-axis curve handles + e_mode + extrusion_ratio.
-    /// Registers all 4 handles in the retirement table at push time so the
-    /// trace-drain pipeline can retire them on `SEGMENT_END`.
-    ///
-    /// SAFETY (caller): `isr_ptr_const` must point at the same `RuntimeContext`'s
-    /// `IsrState`, and the ISR must be disabled while the producer-protocol
-    /// re-enable branch runs (Klipper's `runtime_tick_disable()` does
-    /// this; callers via the C shim hold to that contract).
-    #[allow(clippy::too_many_arguments)]
-    unsafe fn push_segment_impl(
-        fg: &mut FgState,
-        shared: &SharedState,
-        isr_ptr_const: *const IsrState,
-        id: u32,
-        x_handle: CurveHandle,
-        y_handle: CurveHandle,
-        z_handle: CurveHandle,
-        e_handle: CurveHandle,
-        t_start: u64,
-        t_end: u64,
-        kinematics: u8,
-        e_mode_raw: u8,
-        extrusion_ratio_bits: u32,
-        out_accepted_segment_id: *mut u32,
-        out_credit_epoch: *mut u32,
-    ) -> i32 {
-        use runtime::config::EMode;
-        // Fault-latched short-circuit (preserves Step-5 behaviour).
-        if shared.last_error.load(Ordering::Acquire) != 0
-            && shared.runtime_status.load(Ordering::Acquire) == RuntimeStatus::Fault as u8
-        {
-            return KALICO_ERR_FAULT_LATCHED;
-        }
-        if t_end == t_start {
-            return KALICO_ERR_ZERO_DURATION_SEGMENT;
-        }
-        if t_end < t_start {
-            return KALICO_ERR_INVALID_DURATION;
-        }
-        // SAFETY: C-side immutable constant set at static-init time.
-        let min_seg_cycles = u64::from(runtime::clock::min_segment_cycles(unsafe {
-            super::exports::runtime_clock_freq
-        }));
-        if t_end - t_start < min_seg_cycles {
-            return KALICO_ERR_INVALID_DURATION;
-        }
-        let kin = match kinematics {
-            0 => KinematicTag::CoreXyAndE,
-            1 => KinematicTag::CartesianXyzAndE,
-            _ => return KALICO_ERR_INVALID_KINEMATICS,
-        };
-        let e_mode = match e_mode_raw {
-            0 => EMode::CoupledToXy,
-            1 => EMode::Independent,
-            2 => EMode::Travel,
-            _ => return KALICO_ERR_INVALID_KINEMATICS,
-        };
-        // Round-2 B11-real / Round-3 B-R3-8 — strict monotonicity gated by
-        // the `accepted_segment_id_seen` flag so the initial-state-no-prior-
-        // push case does not collide with id=0. The flag is reset on flush /
-        // new stream_open (Phase 7 will wire those resets).
-        let prev_seen = shared.accepted_segment_id_seen.load(Ordering::Acquire);
-        let prev_accepted = shared.accepted_segment_id.load(Ordering::Acquire);
-        if prev_seen && id <= prev_accepted {
-            return KALICO_ERR_SEGMENT_ID_NON_MONOTONIC;
-        }
-        // §3.8 consumer mask. Computed here at construction because the
-        // host-side `Engine::push_segment` Rust API that also computes this
-        // mask has no callers in the production path — the FFI bypasses it
-        // and enqueues directly. Leaving the mask at 0 makes
-        // `seg.consumers_done()` return true on the first `producer_step`
-        // call AFTER motor 0 fills its first batch, retiring the segment
-        // before motor 0 has finished its real work and silently losing
-        // every step past PRODUCER_BATCH_CAP. Reproduces as
-        // "audible clicks but no toolhead motion" / "G1 X1 emits 32 of 80
-        // expected pulses" on the bench. Pin the mask now so retirement
-        // gates on per-motor `SegmentExhausted` reports.
-        let consumers_remaining =
-            Segment::compute_consumers_remaining(kin, x_handle, y_handle, z_handle, e_handle);
-        // 2026-05-15 live diagnosis: capture handle packings and the
-        // computed consumers_remaining so the host can read them back via
-        // FFI/diag tags. If `consumers_remaining == 0`, every handle was
-        // UNUSED — the bridge sent a no-op segment to the MCU.
-        shared
-            .last_push_x_handle_packed
-            .store(x_handle.pack(), Ordering::Release);
-        shared
-            .last_push_y_handle_packed
-            .store(y_handle.pack(), Ordering::Release);
-        shared
-            .last_push_consumers_remaining
-            .store(consumers_remaining as u32, Ordering::Release);
-        if consumers_remaining == 0 {
-            shared
-                .push_segment_all_unused_total
-                .fetch_add(1, Ordering::AcqRel);
-        }
-        let seg = Segment {
-            id,
-            x_handle,
-            y_handle,
-            z_handle,
-            e_handle,
-            t_start,
-            t_end,
-            kinematics: kin,
-            e_mode,
-            extrusion_ratio: f32::from_bits(extrusion_ratio_bits),
-            flags: 0,
-            _pad: [0; 1],
-            consumers_remaining,
-        };
-        if fg.queue_producer.enqueue(seg).is_err() {
-            return KALICO_ERR_QUEUE_FULL;
-        }
-        shared
-            .producer_enqueue_success_total
-            .fetch_add(1, Ordering::AcqRel);
-        // Register all 4 per-axis handles in the retirement table so the
-        // trace-drain pipeline can retire them on SEGMENT_END.
-        fg.retirement_table
-            .register(id, [x_handle, y_handle, z_handle, e_handle]);
-        // Round-2 B6: on the FIRST push of a fresh stream (Opening or
-        // StreamOpenPriming with no recorded first segment yet), capture
-        // the priming segment's t_start in FgState so the §6.3 arm()
-        // predicate can validate it without peeking the ISR-owned queue.
-        // Also auto-transition StreamOpening → StreamOpenPriming on first
-        // push so the state machine reflects priming-buffer accumulation.
-        match fg.stream_state_machine {
-            runtime::stream::FgStreamState::StreamOpening => {
-                fg.stream_state_machine = runtime::stream::FgStreamState::StreamOpenPriming;
-                if fg.first_priming_segment_t_start.is_none() {
-                    fg.first_priming_segment_t_start = Some(t_start);
-                }
-            }
-            runtime::stream::FgStreamState::StreamOpenPriming => {
-                if fg.first_priming_segment_t_start.is_none() {
-                    fg.first_priming_segment_t_start = Some(t_start);
-                }
-            }
-            runtime::stream::FgStreamState::Armed => {
-                // Round-3 B-R3-9 implicit transition: once a push lands
-                // after arm(), the stream is in steady-state motion.
-                // Foreground state machine reflects that.
-                fg.stream_state_machine = runtime::stream::FgStreamState::Running;
-            }
-            _ => {}
-        }
-        // Round-2 B14: foreground publishes the cumulative-accepted cursor
-        // for both the periodic kalico_status frame and Gate-B observers.
-        // Release pairs with foreground/host readers' Acquire on the same
-        // atomics.
-        shared.accepted_segment_id.store(id, Ordering::Release);
-        shared
-            .accepted_segment_id_seen
-            .store(true, Ordering::Release);
-        // Optional out-params for the host-side response schema (Phase 3.3).
-        if !out_accepted_segment_id.is_null() {
-            // SAFETY: caller-provided pointer is documented to be a valid
-            // u32 location for writes when non-null.
-            unsafe {
-                *out_accepted_segment_id = id;
-            }
-        }
-        if !out_credit_epoch.is_null() {
-            let credit_epoch = shared.credit_epoch.load(Ordering::Acquire);
-            // SAFETY: caller-provided pointer is documented to be a valid
-            // u32 location for writes when non-null.
-            unsafe {
-                *out_credit_epoch = credit_epoch;
-            }
-        }
-        // §4.4 producer-protocol: re-enable TIM5 if observed status was IDLE/DRAINED.
-        let cur_status = shared.runtime_status.load(Ordering::Acquire);
-        if cur_status == RuntimeStatus::Idle as u8 || cur_status == RuntimeStatus::Drained as u8 {
-            // SAFETY: foreground-context access; spec §4.7 invariant — TIM5
-            // was disabled by C-side caller before push, so `widen_state`
-            // has no concurrent ISR writer. We materialize a `&mut
-            // WidenState` here under that contract.
-            //
-            // Per Round-3 fix B-R3-4, `widen_state` lives on `IsrState`,
-            // not Engine. The shim borrows it by projecting through the
-            // ISR-state UnsafeCell *only* under the ISR-disabled
-            // discipline.
-            unsafe {
-                let raw = super::exports::runtime_cyccnt_read();
-                let isr_ptr_mut = isr_ptr_const.cast_mut();
-                let widen_state = &mut (*isr_ptr_mut).widen_state;
-                // Seed widening with the C-side boot-relative widened
-                // clock (timer_read_time widened with stats_send_time_high).
-                // Earlier seed from `read_widened_now(shared)` returned 0
-                // (the seqlock cell stays 0 until the first ISR publish),
-                // making widening start at zero while seg.t_start is
-                // billions — segments parked forever in pending_segment.
-                // Re-attempting after the 01f4090a5 revert; if this trips
-                // the previous 4-second-IRQ freeze, the per-stage cycle
-                // counters added in this commit (shared.isr_*_cycles_max +
-                // isr_overrun_count, emitted as fault_detail tags
-                // 0xE6-0xE9) will pinpoint which stage of isr_sample_tick
-                // is the spike.
-                let last_widened = super::exports::runtime_widened_host_clock();
-                widen_state.reinit(raw, last_widened);
-                runtime::clock::publish_widened_now(shared, last_widened);
-                super::exports::runtime_tick_enable();
-            }
-        }
-        KALICO_OK
     }
 
     /// Validate a versioned blob payload's leading version byte (§4.2).
@@ -758,105 +453,6 @@ pub mod exports {
         // shared-borrow contract.
         unsafe { runtime_handle_tick_counter(rt) }
     }
-
-    // 2026-05-21 bench diag — per-stage isr_sample_tick cycle counters.
-    // Each reads a SharedState atomic populated by `runtime::tick::isr_sample_tick`.
-    macro_rules! shared_u32_reader {
-        ($fn_name:ident, $field:ident) => {
-            #[unsafe(no_mangle)]
-            pub unsafe extern "C" fn $fn_name(rt: *mut KalicoRuntime) -> u32 {
-                if rt.is_null() {
-                    return 0;
-                }
-                if !INIT_DONE.load(Ordering::Acquire) {
-                    return 0;
-                }
-                let ctx = rt.cast::<RuntimeContext>();
-                unsafe {
-                    let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-                    (*shared_ptr).$field.load(Ordering::Relaxed)
-                }
-            }
-        };
-    }
-    shared_u32_reader!(
-        kalico_runtime_get_isr_widen_cycles_max,
-        isr_widen_cycles_max
-    );
-    shared_u32_reader!(kalico_runtime_get_isr_arm_cycles_max, isr_arm_cycles_max);
-    shared_u32_reader!(kalico_runtime_get_isr_eval_cycles_max, isr_eval_cycles_max);
-    shared_u32_reader!(kalico_runtime_get_isr_overrun_count, isr_overrun_count);
-    shared_u32_reader!(kalico_runtime_get_isr_deq_some_count, isr_deq_some_count);
-    shared_u32_reader!(kalico_runtime_get_isr_deq_none_count, isr_deq_none_count);
-    shared_u32_reader!(kalico_runtime_get_isr_parked_count, isr_parked_count);
-    shared_u32_reader!(kalico_runtime_get_isr_armed_count, isr_armed_count);
-    shared_u32_reader!(kalico_runtime_get_isr_last_t_start_lo, isr_last_t_start_lo);
-    shared_u32_reader!(kalico_runtime_get_isr_last_widened_lo, isr_last_widened_lo);
-    // 2026-05-21 epoch-diagnosis: high halves + saturating delta for the
-    // park/arm decision. Expose via diag tags 0xA4..0xA7.
-    shared_u32_reader!(kalico_runtime_get_isr_last_t_start_hi, isr_last_t_start_hi);
-    shared_u32_reader!(kalico_runtime_get_isr_last_widened_hi, isr_last_widened_hi);
-    shared_u32_reader!(kalico_runtime_get_isr_arm_delta_lo, isr_arm_delta_lo);
-    shared_u32_reader!(kalico_runtime_get_isr_arm_delta_hi, isr_arm_delta_hi);
-    shared_u32_reader!(kalico_runtime_get_isr_last_p_end_bits, isr_last_p_end_bits);
-    shared_u32_reader!(
-        kalico_runtime_get_isr_last_microstep_bits,
-        isr_last_microstep_bits
-    );
-    shared_u32_reader!(kalico_runtime_get_isr_last_c0_bits, isr_last_c0_bits);
-    shared_u32_reader!(
-        kalico_runtime_get_isr_last_t_local_bits,
-        isr_last_t_local_bits
-    );
-    shared_u32_reader!(kalico_runtime_get_isr_step_push_count, isr_step_push_count);
-    shared_u32_reader!(
-        kalico_runtime_get_isr_last_signed_steps,
-        isr_last_signed_steps
-    );
-    shared_u32_reader!(
-        kalico_runtime_get_isr_pulse_call_count,
-        isr_pulse_call_count
-    );
-    shared_u32_reader!(
-        kalico_runtime_get_isr_pulse_zero_step_count,
-        isr_pulse_zero_step_count
-    );
-    shared_u32_reader!(
-        kalico_runtime_get_isr_pulse_bad_mstep_count,
-        isr_pulse_bad_mstep_count
-    );
-    shared_u32_reader!(
-        kalico_runtime_get_isr_phase_call_count,
-        isr_phase_call_count
-    );
-    shared_u32_reader!(
-        kalico_runtime_get_isr_last_axis_mode_packed,
-        isr_last_axis_mode_packed
-    );
-    shared_u32_reader!(
-        kalico_runtime_get_isr_last_step_counts_packed,
-        isr_last_step_counts_packed
-    );
-    shared_u32_reader!(
-        kalico_runtime_get_isr_last_arm_x_handle,
-        isr_last_arm_x_handle
-    );
-    shared_u32_reader!(
-        kalico_runtime_get_isr_last_arm_x_outcome,
-        isr_last_arm_x_outcome
-    );
-    shared_u32_reader!(
-        kalico_runtime_get_isr_last_arm_x_piece_count,
-        isr_last_arm_x_piece_count
-    );
-    shared_u32_reader!(
-        kalico_runtime_get_isr_last_arm_participating,
-        isr_last_arm_participating
-    );
-    shared_u32_reader!(
-        kalico_runtime_get_isr_last_arm_x_piece0_duration_bits,
-        isr_last_arm_x_piece0_duration_bits
-    );
 
     // ---- Phase 11 §5.3 status-frame accessors -----------------------------
     //
@@ -1255,31 +851,6 @@ pub mod exports {
         {
             0
         }
-    }
-
-    /// Configure axis mapping and kinematics for this MCU. Minimal stub for
-    /// Step 7-B MVP — accepts `kinematics_tag` (0 = CoreXyAndE, 1 =
-    /// CartesianXyzAndE) and validates. Full motor-config blob
-    /// deserialization is deferred to Step 7-C.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_configure_axes(
-        rt: *mut KalicoRuntime,
-        kinematics_tag: u8,
-    ) -> i32 {
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        // Validate the kinematics tag.
-        match kinematics_tag {
-            0 | 1 => {}
-            _ => return KALICO_ERR_INVALID_KINEMATICS,
-        }
-        // Stub: full motor-config blob deserialization deferred to Step 7-C.
-        let _ = rt;
-        KALICO_OK
     }
 
     /// Configure axes from a packed motor blob delivered via the kalico-native
@@ -1744,7 +1315,7 @@ pub mod exports {
     /// lifecycle FFI shims below. Caller must guarantee `rt` non-null and
     /// `INIT_DONE=true`.
     ///
-    /// SAFETY: same contract as `runtime_handle_push_segment`'s projection.
+    /// SAFETY: caller must ensure `rt` is non-null and `INIT_DONE=true`.
     /// Only one `&mut FgState` may be live at a time across the FFI surface;
     /// the foreground task is single-threaded so this is enforced by call-
     /// site discipline, not the type system.
@@ -2371,26 +1942,6 @@ pub mod exports {
             shared
                 .producer_enqueue_success_total
                 .load(Ordering::Acquire) as u32
-        }
-    }
-
-    /// Diagnostic: read the last result code from `push_segment_impl`.
-    /// 0 = KALICO_OK, negative = an error code (see error.rs). Updated on
-    /// every call regardless of outcome.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_last_push_segment_result(
-        rt: *mut KalicoRuntime,
-    ) -> i32 {
-        if rt.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        unsafe {
-            let shared: &SharedState = &*core::ptr::addr_of!((*ctx).shared);
-            shared.last_push_segment_result.load(Ordering::Acquire)
         }
     }
 
