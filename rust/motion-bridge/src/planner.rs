@@ -180,28 +180,6 @@ pub enum DispatchError {
         mcu_id: u32,
         mcu_handle: kalico_host_rt::passthrough_queue::McuHandle,
     },
-    #[error(
-        "slot pool exhausted for mcu={mcu_id} (capacity={capacity}, in_flight={in_flight}); \
-         awaiting kalico_credit_freed retirement events"
-    )]
-    SlotPoolExhausted {
-        mcu_id: u32,
-        capacity: usize,
-        in_flight: usize,
-    },
-    #[error(
-        "load_curve mcu={mcu_id} slot={slot} seg_id={seg_id} axis={axis} host_gen={host_gen}: {detail}"
-    )]
-    LoadCurve {
-        mcu_id: u32,
-        slot: u16,
-        seg_id: u32,
-        axis: usize,
-        host_gen: u16,
-        detail: String,
-    },
-    #[error("push_segment mcu={mcu_id}: {detail}")]
-    PushSegment { mcu_id: u32, detail: String },
     /// The `Arc<KalicoHostIo>` for the given MCU was dropped (e.g. by
     /// `attach_serial` during a FIRMWARE_RESTART) before this dispatch
     /// completed. The dispatch closure holds only a `Weak` reference and
@@ -1233,4 +1211,3 @@ fn required_to_axis(req: RequiredShaper) -> AxisShaper {
 
 #[cfg(test)]
 mod tests;
-

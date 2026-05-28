@@ -16,9 +16,7 @@ pub mod messages;
 pub use bootstrap::{Identify, IdentifyResponse};
 pub use codec::{Decode, DecodeError, Encode};
 pub use messages::{
-    CreditFreed, FaultEvent, LoadCurveCubic, LoadCurveResponse, MessageKind, PushPieces,
-    PushPiecesResponse, PushSegment, PushSegmentResponse, ResetCurvePool, ResetCurvePoolResponse,
-    RuntimeCapsResponse, StatusEvent, StatusHeartbeat,
+    FaultEvent, MessageKind, PushPieces, PushPiecesResponse, RuntimeCapsResponse, StatusHeartbeat,
 };
 
 // Generated at build time. Provides:

@@ -41,9 +41,9 @@ fn schema_hash_changes_when_a_field_type_changes() {
     // canary: if this test ever passes when the field type is the same,
     // the canonicalization is broken.
     let mut mutated_fields: Vec<SchemaField> = SCHEMA_MESSAGES[0].fields.to_vec();
-    // Change `slot:u16` to `slot:u32` on LoadCurve — wire-incompatible.
+    // Change `kinematics:u8` to `kinematics:u32` on ConfigureAxes — wire-incompatible.
     mutated_fields[0] = SchemaField {
-        name: "slot",
+        name: "kinematics",
         ty: "u32",
     };
     let mutated_msg = SchemaMessage {

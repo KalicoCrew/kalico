@@ -27,57 +27,6 @@ struct SchemaMessage {
 // Message order: ascending type-tag.
 const SCHEMA_MESSAGES: &[SchemaMessage] = &[
     SchemaMessage {
-        type_tag: 0x0010,
-        name: "LoadCurveCubic",
-        version: 2,
-        channel: "control",
-        fields: &[
-            SchemaField { name: "slot_idx", ty: "u16" },
-            SchemaField { name: "axis_idx", ty: "u8" },
-            SchemaField { name: "piece_count", ty: "u8" },
-            SchemaField { name: "pieces_bytes", ty: "array<u8>" },
-        ],
-    },
-    SchemaMessage {
-        type_tag: 0x0011,
-        name: "LoadCurveResponse",
-        version: 1,
-        channel: "control",
-        fields: &[
-            SchemaField { name: "result", ty: "i32" },
-            SchemaField { name: "curve_handle_packed", ty: "u32" },
-        ],
-    },
-    SchemaMessage {
-        type_tag: 0x0020,
-        name: "PushSegment",
-        version: 1,
-        channel: "control",
-        fields: &[
-            SchemaField { name: "id", ty: "u32" },
-            SchemaField { name: "handle_x", ty: "u32" },
-            SchemaField { name: "handle_y", ty: "u32" },
-            SchemaField { name: "handle_z", ty: "u32" },
-            SchemaField { name: "handle_e", ty: "u32" },
-            SchemaField { name: "t_start", ty: "u64" },
-            SchemaField { name: "t_end", ty: "u64" },
-            SchemaField { name: "kinematics", ty: "u8" },
-            SchemaField { name: "e_mode", ty: "u8" },
-            SchemaField { name: "extrusion_ratio", ty: "f32" },
-        ],
-    },
-    SchemaMessage {
-        type_tag: 0x0021,
-        name: "PushSegmentResponse",
-        version: 1,
-        channel: "control",
-        fields: &[
-            SchemaField { name: "result", ty: "i32" },
-            SchemaField { name: "accepted_segment_id", ty: "u32" },
-            SchemaField { name: "credit_epoch", ty: "u32" },
-        ],
-    },
-    SchemaMessage {
         type_tag: 0x0030,
         name: "ConfigureAxes",
         version: 1,
@@ -119,22 +68,6 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         ],
     },
     SchemaMessage {
-        type_tag: 0x0050,
-        name: "ResetCurvePool",
-        version: 1,
-        channel: "control",
-        fields: &[],
-    },
-    SchemaMessage {
-        type_tag: 0x0051,
-        name: "ResetCurvePoolResponse",
-        version: 1,
-        channel: "control",
-        fields: &[
-            SchemaField { name: "result", ty: "i32" },
-        ],
-    },
-    SchemaMessage {
         type_tag: 0x0060,
         name: "PushPieces",
         version: 1,
@@ -152,34 +85,6 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         channel: "control",
         fields: &[
             SchemaField { name: "result", ty: "i32" },
-        ],
-    },
-    SchemaMessage {
-        type_tag: 0x0080,
-        name: "StatusEvent",
-        version: 2,
-        channel: "events",
-        fields: &[
-            SchemaField { name: "engine_status", ty: "u8" },
-            SchemaField { name: "queue_depth", ty: "u8" },
-            SchemaField { name: "current_segment_id", ty: "u32" },
-            SchemaField { name: "last_fault", ty: "i32" },
-            SchemaField { name: "fault_detail", ty: "u32" },
-            SchemaField { name: "reset_epoch", ty: "u32" },
-            // v2: piggyback retirement watermark on the 10 Hz periodic frame.
-            // Replaces fire-and-forget CreditFreed as the load-bearing credit
-            // signal — CreditFreed becomes a redundant fast-path.
-            SchemaField { name: "retired_through_segment_id", ty: "u32" },
-        ],
-    },
-    SchemaMessage {
-        type_tag: 0x0081,
-        name: "CreditFreed",
-        version: 1,
-        channel: "events",
-        fields: &[
-            SchemaField { name: "retired_through_segment_id", ty: "u32" },
-            SchemaField { name: "free_slots", ty: "u8" },
         ],
     },
     SchemaMessage {

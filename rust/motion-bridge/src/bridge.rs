@@ -20,7 +20,6 @@ use kalico_host_rt::credit::CreditCounter;
 use kalico_host_rt::host_io::parser::{DataDictionary, MsgProtoParser};
 use kalico_host_rt::host_io::{KalicoHostIo, KalicoHostIoConfig};
 use kalico_host_rt::passthrough_queue::{NotifyId, PassthroughEntry, PassthroughRouter};
-use kalico_host_rt::producer;
 use trajectory::{AxisShaper, ShaperConfig};
 
 use crate::classify;
@@ -120,12 +119,6 @@ const FALLBACK_RUNTIME_CAPS: kalico_protocol::messages::RuntimeCapsResponse =
     kalico_protocol::messages::RuntimeCapsResponse {
         total_piece_memory: 62 * 1024,
     };
-
-/// Maximum time the dispatch closure blocks waiting for a free curve slot.
-/// Under normal operation slots are retired before this deadline by the
-/// reactor-thread retirement callback. 60 s is long enough to absorb a
-/// stalled MCU and short enough to surface a genuine leak promptly.
-const DEFAULT_SLOT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Sample interval for the periodic `kalico_clock_sync_request` driver.
 /// The host's `compute_ack_clock` extrapolates linearly between samples,
@@ -361,19 +354,6 @@ fn build_shaper_config(
         y: parse_required_shaper(type_y, freq_y)?,
         z: AxisShaper::Passthrough,
     })
-}
-
-/// Push a segment via the kalico-native transport (spec §7.4 / Phase C-B).
-/// This was a fire-and-forget Klipper-protocol command pre-Phase-C; the new
-/// transport delivers a synchronous `PushSegmentResponse` so the dispatch
-/// loop confirms acceptance before moving on. Per-segment latency is one
-/// kalico round-trip — measured in microseconds on USB-CDC.
-fn dispatch_push_segment(
-    io: &KalicoHostIo,
-    credit: &CreditCounter,
-    params: &producer::SegmentPushParams,
-) -> Result<producer::PushedSegmentInfo, producer::ProducerError> {
-    producer::push_segment_with_timeout(io, credit, params, producer::DEFAULT_PUSH_RESPONSE_TIMEOUT)
 }
 
 // ── PyMotionBridge ──────────────────────────────────────────────────────
@@ -928,12 +908,11 @@ impl PyMotionBridge {
 
                     // Re-subscribe so the new runtime-event channel starts
                     // fresh (the firmware restart will have pushed new events).
-                    let runtime_rx =
-                        io.take_runtime_event_subscription().map_err(|e| {
-                            PyRuntimeError::new_err(format!(
-                                "attach_serial: runtime_event re-subscribe: {e:?}"
-                            ))
-                        })?;
+                    let runtime_rx = io.take_runtime_event_subscription().map_err(|e| {
+                        PyRuntimeError::new_err(format!(
+                            "attach_serial: runtime_event re-subscribe: {e:?}"
+                        ))
+                    })?;
 
                     let (kalico_native_supported, identify_caps) =
                         match io.kalico_identify(std::time::Duration::from_secs(5)) {
@@ -2031,58 +2010,6 @@ impl PyMotionBridge {
             let credit = Arc::new(CreditCounter::new(CREDIT_SEED_CAPACITY));
             io.attach_credit_counter(Arc::clone(&credit));
 
-            // On klippy reconnect without MCU power-cycle the MCU's
-            // `CurvePool` still carries generation counters from the prior
-            // session. Slots with `current_gen != last_retired_gen` (loaded
-            // but never retired because klippy died) will reject every
-            // `LoadCurveCubic` with "slot busy". Send `ResetCurvePool`
-            // (0x0050) to set `last_retired_gen = current_gen` for every
-            // slot before constructing the fresh `SlotPool`.
-            //
-            // Skip for non-kalico-native MCUs (stock Klipper firmware does
-            // not implement the kalico binary protocol).
-            if *kalico_native_for_plans
-                .get(&cfg_mcu.mcu_id)
-                .unwrap_or(&false)
-            {
-                const MAX_RETRIES: usize = 3;
-                let mut last_err = None;
-                for attempt in 0..MAX_RETRIES {
-                    match producer::reset_curve_pool(
-                        &io,
-                        producer::DEFAULT_RESET_CURVE_POOL_TIMEOUT,
-                    ) {
-                        Ok(()) => {
-                            eprintln!(
-                                "[init-planner] reset_curve_pool mcu={} ok (attempt {})",
-                                cfg_mcu.mcu_id, attempt
-                            );
-                            last_err = None;
-                            break;
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "[init-planner] reset_curve_pool mcu={} attempt {} \
-                                 failed: {e:?}; retrying",
-                                cfg_mcu.mcu_id, attempt
-                            );
-                            last_err = Some(e);
-                            std::thread::sleep(std::time::Duration::from_millis(
-                                200 * (attempt as u64 + 1),
-                            ));
-                        }
-                    }
-                }
-                if let Some(e) = last_err {
-                    return Err(PyRuntimeError::new_err(format!(
-                        "reset_curve_pool mcu={} failed after {MAX_RETRIES} \
-                         attempts: {e:?}. The MCU has stale slot state from a \
-                         prior session — try FIRMWARE_RESTART.",
-                        cfg_mcu.mcu_id
-                    )));
-                }
-            }
-
             // Bench 2026-05-12: size the host slot pool to the MCU's actual
             // piece-pool capacity (queried at attach_serial via QueryRuntimeCaps).
             // With the simple-MCU-contract revision the MCU reports total_piece_memory
@@ -2214,7 +2141,7 @@ impl PyMotionBridge {
                         );
                         continue;
                     }
-                    let (io_weak, credit, slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
+                    let (io_weak, _credit, _slot_pool) = match dispatch_ios.get(&plan.mcu_id) {
                         Some(v) => v,
                         None => continue,
                     };
@@ -2386,12 +2313,10 @@ impl PyMotionBridge {
                             let raw = mm * 65536.0;
                             raw.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
                         };
-                        let cfg = mcu_configs_for_cb
-                            .iter()
-                            .find(|c| c.mcu_id == plan.mcu_id);
-                        let (seed_x_q16, seed_y_q16) = if cfg
-                            .map_or(false, |c| c.kinematics == crate::dispatch::KINEMATICS_COREXY)
-                        {
+                        let cfg = mcu_configs_for_cb.iter().find(|c| c.mcu_id == plan.mcu_id);
+                        let (seed_x_q16, seed_y_q16) = if cfg.map_or(false, |c| {
+                            c.kinematics == crate::dispatch::KINEMATICS_COREXY
+                        }) {
                             (encode_q16(seed.x + seed.y), encode_q16(seed.x - seed.y))
                         } else {
                             (encode_q16(seed.x), encode_q16(seed.y))
@@ -2399,8 +2324,13 @@ impl PyMotionBridge {
                         let z_q16 = encode_q16(seed.z);
                         log::debug!(
                             "[bridge-trace] per-MCU seed: mcu={} x_q16={} y_q16={} z_q16={} logical=[{:.3},{:.3},{:.3}]",
-                            plan.mcu_id, seed_x_q16, seed_y_q16, z_q16,
-                            seed.x, seed.y, seed.z,
+                            plan.mcu_id,
+                            seed_x_q16,
+                            seed_y_q16,
+                            z_q16,
+                            seed.x,
+                            seed.y,
+                            seed.z,
                         );
                         use kalico_host_rt::host_io::parser::FieldValue;
                         let result = io.send_typed(
@@ -2414,7 +2344,8 @@ impl PyMotionBridge {
                         if let Err(ref e) = result {
                             log::error!(
                                 "[bridge-trace] seed send FAILED mcu={}: {:?}",
-                                plan.mcu_id, e,
+                                plan.mcu_id,
+                                e,
                             );
                         }
                     }
@@ -2434,15 +2365,16 @@ impl PyMotionBridge {
                     let raw_max_pieces = caps.total_pieces() / 4;
                     let effective_max_pieces = raw_max_pieces.max(1).min(255);
 
-                    let sub_plans = dispatch::split_plan_if_needed(
-                        plan, effective_max_pieces, freq,
-                    )?;
+                    let sub_plans =
+                        dispatch::split_plan_if_needed(plan, effective_max_pieces, freq)?;
 
                     let n_sub = sub_plans.len();
                     if n_sub > 1 {
                         log::info!(
                             "[bridge-trace] split mcu={}: {} sub-segments (max_pieces={})",
-                            sub_plans[0].mcu_id, n_sub, effective_max_pieces,
+                            sub_plans[0].mcu_id,
+                            n_sub,
+                            effective_max_pieces,
                         );
                     }
 
@@ -2462,96 +2394,17 @@ impl PyMotionBridge {
 
                     for (sub_idx, mut sub_plan) in sub_plans.into_iter().enumerate() {
                         sub_plan.params.id = pre_alloc_ids[sub_idx];
-
-                        let mut allocated_slots: Vec<u16> =
-                            Vec::with_capacity(sub_plan.curves_to_load.len());
-                        let mut seg_err: Option<DispatchError> = None;
-                        for i in 0..sub_plan.curves_to_load.len() {
-                            let axis_idx = sub_plan.curves_to_load[i].0;
-                            let curve_params = sub_plan.curves_to_load[i].1.clone();
-                            let alloc_result = slot_pool
-                                .alloc_blocking(DEFAULT_SLOT_ACQUIRE_TIMEOUT)
-                                .ok_or_else(|| DispatchError::SlotPoolExhausted {
-                                    mcu_id: sub_plan.mcu_id,
-                                    capacity: slot_pool.capacity(),
-                                    in_flight: slot_pool.in_flight_count(),
-                                });
-                            let (slot, slot_gen) = match alloc_result {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    seg_err = Some(e);
-                                    break;
-                                }
-                            };
-                            log::debug!(
-                                "[slot-trace] try_alloc mcu={} seg_id={} sub={}/{} axis={} slot={} gen={}",
-                                sub_plan.mcu_id, sub_plan.params.id,
-                                sub_idx + 1, n_sub, axis_idx, slot, slot_gen,
-                            );
-                            allocated_slots.push(slot);
-                            match producer::load_curve(
-                                io.as_ref(),
-                                slot,
-                                axis_idx as u8,
-                                &curve_params,
-                                producer::DEFAULT_LOAD_CURVE_TIMEOUT,
-                            ) {
-                                Ok(handle) => {
-                                    sub_plan.set_handle(axis_idx, handle);
-                                }
-                                Err(e) => {
-                                    seg_err = Some(DispatchError::LoadCurve {
-                                        mcu_id: sub_plan.mcu_id,
-                                        slot,
-                                        seg_id: sub_plan.params.id,
-                                        axis: axis_idx,
-                                        host_gen: slot_gen,
-                                        detail: e.to_string(),
-                                    });
-                                    break;
-                                }
-                            }
-                        }
-
-                        if let Some(err) = seg_err {
-                            for s in &allocated_slots {
-                                slot_pool.release(*s);
-                            }
-                            return Err(err);
-                        }
-
-                        // Register slots BEFORE push (slot_pool.rs:126 requirement)
-                        for slot in &allocated_slots {
-                            slot_pool.register_segment(*slot, sub_plan.params.id);
-                            log::debug!(
-                                "[slot-trace] register_segment mcu={} slot={} seg_id={}",
-                                sub_plan.mcu_id, slot, sub_plan.params.id,
-                            );
-                        }
-
-                        let push_result =
-                            dispatch_push_segment(io.as_ref(), credit, &sub_plan.params);
-                        match &push_result {
-                            Ok(info) => log::info!(
-                                "[bridge-trace] push_segment ok: mcu={} seg_id={} sub={}/{} accepted_id={}",
-                                sub_plan.mcu_id, sub_plan.params.id,
-                                sub_idx + 1, n_sub, info.accepted_segment_id,
-                            ),
-                            Err(e) => log::info!(
-                                "[bridge-trace] push_segment err: mcu={} seg_id={} sub={}/{} err={:?}",
-                                sub_plan.mcu_id, sub_plan.params.id,
-                                sub_idx + 1, n_sub, e,
-                            ),
-                        }
-                        if let Err(e) = push_result {
-                            for s in &allocated_slots {
-                                slot_pool.release(*s);
-                            }
-                            return Err(DispatchError::PushSegment {
-                                mcu_id: sub_plan.mcu_id,
-                                detail: e.to_string(),
-                            });
-                        }
+                        // TODO(simple-mcu-contract): replace with PushPieces dispatch.
+                        // The old LoadCurveCubic + PushSegment wire path has been
+                        // removed. This loop now builds sub-plans but does not send
+                        // them — wire dispatch is pending the PushPieces integration.
+                        log::debug!(
+                            "[slot-trace] sub_plan mcu={} seg_id={} sub={}/{}",
+                            sub_plan.mcu_id,
+                            sub_plan.params.id,
+                            sub_idx + 1,
+                            n_sub,
+                        );
                     } // end sub_plan loop
                 }
 
@@ -2731,12 +2584,18 @@ impl PyMotionBridge {
         {
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true).append(true)
+                .create(true)
+                .append(true)
                 .open("/tmp/interceptor_trace.log")
             {
-                let _ = writeln!(f,
+                let _ = writeln!(
+                    f,
                     "[{:?}] ENDSTOP_ARM mcu={} arm_id={} arm_clock={} status={} (0=Armed 1=AlreadyTripped 2=Rejected)",
-                    std::time::SystemTime::now(), mcu, arm_id, arm_clock, status as u8,
+                    std::time::SystemTime::now(),
+                    mcu,
+                    arm_id,
+                    arm_clock,
+                    status as u8,
                 );
             }
         }
@@ -2858,10 +2717,7 @@ impl PyMotionBridge {
         .map_err(|e| PyRuntimeError::new_err(format!("prepare_probe_homing: {e}")))?;
 
         let id = self.next_probe_handle_id();
-        self.probe_handles
-            .lock()
-            .unwrap()
-            .insert(id, handle);
+        self.probe_handles.lock().unwrap().insert(id, handle);
         Ok(id)
     }
 
@@ -2890,9 +2746,7 @@ impl PyMotionBridge {
             .unwrap()
             .remove(&handle_id)
             .ok_or_else(|| {
-                PyRuntimeError::new_err(format!(
-                    "run_probe_homing: unknown handle_id {handle_id}"
-                ))
+                PyRuntimeError::new_err(format!("run_probe_homing: unknown handle_id {handle_id}"))
             })?;
 
         let seg_count_before = self.dispatched_segments.load(Ordering::Relaxed);
@@ -2902,21 +2756,22 @@ impl PyMotionBridge {
         {
             use std::io::Write;
             if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true).append(true)
+                .create(true)
+                .append(true)
                 .open("/tmp/interceptor_trace.log")
             {
-                let _ = writeln!(f,
+                let _ = writeln!(
+                    f,
                     "[{:?}] HOMING_MOVE_DISPATCH seg_before={} seg_after={} dispatched={}",
                     std::time::SystemTime::now(),
-                    seg_count_before, seg_count_after,
+                    seg_count_before,
+                    seg_count_after,
                     seg_count_after - seg_count_before,
                 );
             }
         }
 
-        let result = py.allow_threads(|| {
-            crate::probe_homing::run_probe_homing(&handle)
-        });
+        let result = py.allow_threads(|| crate::probe_homing::run_probe_homing(&handle));
 
         crate::probe_homing::cleanup_probe_homing(handle);
 
@@ -3000,10 +2855,8 @@ impl PyMotionBridge {
         // Instead, store the seed as `pending_seed`.  The dispatch closure
         // (planner thread) drains it before sending the next segment, which
         // guarantees the seed arrives AFTER all previously-dispatched segments.
-        *self
-            .pending_seed
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = Some(SeedPosition { x, y, z });
+        *self.pending_seed.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(SeedPosition { x, y, z });
 
         // Clear any retained homing curve — the stream is being re-opened
         // and the previous homing segment is no longer valid.
