@@ -292,11 +292,7 @@ impl Engine {
                 .unwrap_or(core::ptr::null_mut())
         };
         #[cfg(not(any(test, feature = "host")))]
-        let get_queue = |i: usize| {
-            use crate::step_queue::{StepQueue, step_queues};
-            // SAFETY: step_queues is a static C-side array; i < MAX_AXES.
-            unsafe { step_queues.get().cast::<StepQueue>().add(i) }
-        };
+        let get_queue = |i: usize| crate::step_queue::queue_for_axis(i);
 
         let sample_period_sec = if self.sample_period_cycles == 0 || self.cycles_per_second == 0.0 {
             0.0_f32

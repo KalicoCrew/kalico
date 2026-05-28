@@ -260,7 +260,7 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
 // autoconf.h — same source of truth that sizes the Rust runtime's curve pool.
 // Cubic-only revision (2026-05-20 stepping redesign): NURBS sizing fields
 // (max_control_points / max_knot_vector_len / max_degree) were removed; the
-// response now carries only `curve_pool_n` and `max_pieces_per_curve`.
+// response now carries a single u32 `total_piece_memory` (bytes).
 static void
 handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
                           uint16_t body_len)
@@ -271,14 +271,13 @@ handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
     encode_message_header(payload, KALICO_MSG_RUNTIME_CAPS_RESPONSE,
                           MESSAGE_VERSION_DEFAULT, correlation_id);
     uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
-    uint32_t pool = (uint32_t)CONFIG_RUNTIME_CURVE_POOL_N;
-    uint32_t mpc = (uint32_t)CONFIG_RUNTIME_MAX_PIECES_PER_CURVE;
-    // u16 curve_pool_n
-    b[0] = (uint8_t)(pool & 0xFF);
-    b[1] = (uint8_t)((pool >> 8) & 0xFF);
-    // u16 max_pieces_per_curve
-    b[2] = (uint8_t)(mpc & 0xFF);
-    b[3] = (uint8_t)((mpc >> 8) & 0xFF);
+    // u32 total_piece_memory (bytes). Host divides by 32 (PieceEntry size)
+    // and by the configured axis count to derive per-axis ring depth.
+    uint32_t total_piece_memory = (uint32_t)CONFIG_RUNTIME_PIECE_RING_SIZE;
+    b[0] = (uint8_t)(total_piece_memory & 0xFF);
+    b[1] = (uint8_t)((total_piece_memory >> 8) & 0xFF);
+    b[2] = (uint8_t)((total_piece_memory >> 16) & 0xFF);
+    b[3] = (uint8_t)((total_piece_memory >> 24) & 0xFF);
     kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
                                 payload, sizeof(payload));
 }
