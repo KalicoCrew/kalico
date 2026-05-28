@@ -22,8 +22,10 @@ This spec replaces that whole layer with: flatten each shaped segment into per-a
 - **Idle = hold.** `engine.rs::get_position_and_velocity` returns `None` when an axis has no current piece or the next piece has not started; the tick loop `continue`s, leaving `p_prev` untouched and emitting no steps. An axis with no piece freezes at its last position — it does **not** snap to zero. This covers genuinely pieceless cases (an axis the segment has no curve for, e.g. E on a pure-travel move; or end-of-stream gaps). It is **not** relied on as an optimization for non-moving axes — see §3.2.
 - **Every segment carries all three kinematic axes.** `emit_shaped` always builds `ShapedSegment.axes[0..2]` (X/Y/Z); a non-moving axis gets a *constant* curve, which `extract_bezier_pieces` yields as one constant piece. So a standing-still axis produces one cheap piece per segment, not zero. E is separate and may be absent on travel moves.
 - **A late piece is a hard fault, not a soft pickup.** `engine.rs:654-659`: once `now − start_time > FAULT_TOLERANCE` (2 ISR ticks, ≈ tens of µs), the engine raises `PIECE_START_IN_PAST` — per contract §6 it stops all steppers, emits `FaultEvent`, and refuses further `PushPieces` until reset/reconfigure. There is no stutter-and-recover; a piece that arrives after its `start_time` halts the machine.
-- **Wire send exists.** `KalicoHostIo::kalico_call(MessageKind::PushPieces, body, timeout)` sends one control-channel frame and awaits the matching `PushPiecesResponse`. `kalico_protocol::messages::PushPieces` already has an `Encode` impl. No new transport code is required.
-- **Clock conversion exists.** The bridge already maps planner-local time to per-MCU clock via the clock-sync + planner-epoch machinery it used for segment `t_start`/`t_end` (`PassthroughRouter::host_time_to_mcu_clock`). We apply the same mapping per piece instead of per segment.
+- **Wire send exists.** `KalicoHostIo::kalico_call(MessageKind::PushPieces, body, timeout)` sends one control-channel frame and awaits the matching `PushPiecesResponse`. `kalico_protocol::messages::PushPieces` already has an `Encode` impl. No new transport code is required. **But this is a blocking round-trip** (`host_io/mod.rs:755`, blocks at `:780`) — see §3.5.
+- **Heartbeat is currently DROPPED, not consumed — this is new routing, and skipping it is a guaranteed early halt.** The `StatusHeartbeat` *struct* decodes, but `lift_event_to_runtime_event` (`kalico_native.rs`) routes it into the `_ =>` "unexpected event kind" arm and discards it; there is no `RuntimeEvent::Heartbeat` variant (`runtime_events.rs:52` has only `Fault`). The doc comment at `kalico_native.rs:14` claims it lifts `StatusHeartbeat` — it does not. Consequence: with `consumed` never updating, after the host pushes `ring_depth` pieces `room = ring_depth − (ring_depth − 0) = 0`, the pump stalls "waiting for a heartbeat" — while heartbeats physically arrive and are shredded at the door. Motion halts the instant the initial ring plays out. So this is real work (add a dispatch arm + a route to the pump), not "wire a value in" — see §3.4.
+- **Clock conversion — the live anchor is NOT `host_time_to_mcu_clock`.** That function is test-only (`router_transport/tests.rs:45,57`; live code only mentions it in comments). The live dispatch path anchors via `PassthroughRouter::compute_ack_clock(mcu)` for the per-MCU "now" (`bridge.rs:2206`), then places segment times as `mcu_base_clock + (t · freq)` (`bridge.rs:2293-2297`). Per-piece conversion must use the *same* anchor: `start_time = mcu_base_clock + round(u_start · freq)`. This anchor is also what must re-establish on every planner `reset()` (set_position / stream open) — fix the citation and the re-anchor together; they are one anchor.
+- **`consumed` is a wrapping `u32`.** `piece_ring.rs:64` (`consumed: u32`), `:160` (`wrapping_add`). The host's `room = ring_depth − (pushed − consumed)` must be computed in **wrapping `u32`**, and host-side `pushed` must be the same width (or be reset per epoch). Harmless on a short bench run (2³² pieces is enormous) but a silent landmine on a long-lived host process — free to get right now.
 
 ## 2. Core model
 
@@ -74,7 +76,7 @@ Replaces `build_push_params` + `split_plan_if_needed` + `McuPushPlan` entirely. 
 1. **CoreXY transform** (preserved, relocated from `dispatch.rs`): for a CoreXY MCU driving both X and Y, combine into motor-frame A = X + Y (slot 0) and B = X − Y (slot 1) via the existing `nurbs::algebra::add_with_knot_union`. All other axes pass through.
 2. For each axis the segment provides a curve for:
    - `extract_bezier_pieces` → per piece:
-     - `start_time = host_time_to_mcu_clock(u_start)` (per-MCU; absolute clock cycles).
+     - `start_time = mcu_base_clock + round(u_start · freq)` — the **live anchor** (`compute_ack_clock` + `mcu_base_clock + t·freq`, §1.1), per-MCU, in absolute clock cycles. **Not** `host_time_to_mcu_clock` (test-only). Re-anchored on planner `reset()`.
      - `duration = (u_end − u_start)` as f32 seconds.
      - `coeffs = ` the four Bernstein control points as f32.
      - `_reserved = 0`.
@@ -90,11 +92,11 @@ A single global pusher, woken by **both** "new pieces enqueued" and "heartbeat u
 
 It maintains, per `(mcu, axis)`:
 - the queue of not-yet-pushed `PieceEntry`s (from §3.2),
-- `pushed` — count the host has sent,
-- `consumed` — latest value from the heartbeat,
+- `pushed: u32` — count the host has committed to the wire,
+- `consumed: u32` — latest value from the heartbeat,
 - `ring_depth` — from §3.1.
 
-`room = ring_depth − (pushed − consumed)`.
+`room = ring_depth − (pushed −_wrapping consumed)`, computed in **wrapping `u32`** to match the MCU's `consumed` (§1.1). `pushed` increments when a frame's pieces are **committed to the wire** (the room is reserved at that point), not when the `PushPiecesResponse` returns — the response only confirms; host-side accounting is authoritative (the host never sends a doomed push). On planner `reset()`/epoch change, `pushed` and `consumed` reset together with the clock re-anchor (§3.2).
 
 **Scheduling — strict global start-time order with stall-on-full-head:**
 
@@ -119,21 +121,39 @@ The stall is the entire safety property: a hung (non-consuming) MCU fills its ri
 
 **Batching** is the one efficiency carve-out and cannot break ordering: the batch is always a contiguous prefix of the global time order that happens to be on one MCU, split into one `PushPieces` frame per axis (the wire format carries `axis_idx, piece_count, pieces[]`). It ends the instant the next piece in global order is on a different MCU, or a ring in the run hits `room == 0`.
 
+**Tie-break.** When two heads share the same `start_time` (common: CoreXY A and B are the X±Y combination over identical windows, so their pieces are co-timed), break ties deterministically by `(mcu_id, axis_idx)`. Determinism matters only for reproducibility — co-timed pieces on different rings are independent, so any fixed order is correct.
+
 A consequence, stated for clarity: the system's effective buffer depth is governed by whichever ring fills first **in time** — the axis emitting the most pieces per second (X/Y under shaping), not the stationary ones. This is automatic and intended.
 
-### 3.4 Heartbeat handling
+### 3.4 Heartbeat handling — new routing, not a value-wire
 
-On each `StatusHeartbeat`: read per-axis `consumed_counts`, update each `(mcu, axis)` `consumed`, wake the pump. (`StatusHeartbeat` decoding already exists; this wires its `consumed_counts` into the pump's accounting.)
+Today `StatusHeartbeat` is decoded as a struct but **discarded** (§1.1): `lift_event_to_runtime_event` drops it into the `_ =>` arm. This work must:
+
+1. Add a `MessageKind::StatusHeartbeat` arm to `lift_event_to_runtime_event` (`kalico_native.rs`) that decodes the body and produces a routed result instead of `Ignored`.
+2. Carry it to the pump. Given the concurrency model (§3.5), the cleanest route is a dedicated heartbeat channel/callback into the pump (a `RuntimeEvent::Heartbeat` variant is the alternative, but heartbeats are pump-private and need not surface to the general runtime-event consumers).
+
+On each heartbeat the pump updates per-`(mcu, axis)` `consumed` and re-evaluates the stall (a freed ring may unblock the global head). Skipping this is the guaranteed early halt of §1.1, not an edge case.
+
+### 3.5 Pump concurrency
+
+Three actors touch the per-`(mcu, axis)` state: the **planner thread** (enqueue, §3.2), the **pump**, and the **heartbeat handler** (§3.4, runs on the reactor/event path). Two non-negotiables:
+
+1. **The pump must never hold a lock across the blocking `kalico_call`.** `kalico_call` blocks on the wire round-trip (`host_io/mod.rs:780`). Holding any shared lock across it serializes the planner thread and the heartbeat handler behind wire latency — under sustained motion that throttles the planner to the wire RTT and starves the heartbeat updates the pump itself depends on (deadlock-adjacent).
+2. **The dual wakeup must be lost-wakeup-safe.** The pump wakes on *both* "new pieces enqueued" and "heartbeat freed room". A naive condvar can miss a wake that fires between the stall check and the wait.
+
+**Recommended model: the pump owns the queues and all ring accounting; it is fed by channels.** The planner sends flattened pieces over a channel; the heartbeat handler sends `(mcu, axis, consumed)` updates over a channel. The pump's run loop selects over both, mutating its own state with no shared lock — so neither the planner nor the heartbeat handler ever blocks on the pump, and the lost-wakeup problem dissolves into channel readiness. The only blocking call (`kalico_call`) happens while the pump holds nothing the other two actors need.
 
 ## 4. Wire send detail
 
-Per `PushPieces` frame: `kalico_call(MessageKind::PushPieces, body, timeout)`, where `body` encodes `axis_idx: u8, piece_count: u8, pieces[count × 32 bytes]` via the existing `PushPieces` `Encode`. The response is `PushPiecesResponse` (`OK` / `RING_FULL` / `INVALID_AXIS`); in normal operation it is always `OK` (host-side room accounting).
+Per `PushPieces` frame: `kalico_call(MessageKind::PushPieces, body, timeout)`, where `body` encodes `axis_idx: u8, piece_count: u8, pieces[count × 32 bytes]` via the existing `PushPieces` `Encode`. The response is `PushPiecesResponse`.
 
-`kalico_call` is a blocking round-trip. For the MVP the pump issues them serially. Pipelining (fire-and-forget plus response reconciliation) is a throughput tuning lever, not a design change, and is left for later if the round-trip latency proves to bound piece throughput.
+**Result codes must be shared, named constants** (host ↔ MCU), not magic numbers: `OK` / `RING_FULL` / `INVALID_AXIS` (the MCU side returns these from `handle_push_pieces`; see `KALICO_ERR_*` usage in `kalico_dispatch.c`). Define them once in `kalico_protocol` and reference from both sides so a renumber can't desync. In normal operation the result is always `OK` (host-side room accounting); `RING_FULL` is the safety net.
+
+**Throughput sanity (CLAUDE.md constraint #1).** `kalico_call` is a blocking round-trip, so a serial pump caps piece throughput at `1 / RTT` frames/s per MCU. With batching (§3.3) a frame can carry many pieces of one axis, so the relevant rate is *frames*, not pieces: a USB RTT of ~0.5–1 ms gives ~1000–2000 frames/s, and shaped XY emits on the order of hundreds–low-thousands of pieces/s aggregate — so coalesced frames keep the serial pump comfortably ahead for the bench bring-up. If a future high-piece-rate workload approaches the ceiling, pipelining (fire-and-forget plus response reconciliation against the heartbeat) is the lever — a throughput optimization, not a design change. This is the one number to validate on the bench before declaring the path adequate, not an assumption to carry silently.
 
 ## 5. Scheduling / timing notes
 
-- **Initial start-time lead.** The first piece of a fresh stream must have a `start_time` far enough in the future that it is loaded before the ISR reaches it. This is covered by the planner running ahead of realtime (its existing look-ahead) mapped through `host_time_to_mcu_clock`, combined with the pump pushing earliest-first so near-future pieces always go out first.
+- **Initial start-time lead.** The first piece of a fresh stream must have a `start_time` far enough in the future that it is loaded before the ISR reaches it. This is covered by the planner running ahead of realtime (its existing look-ahead) mapped through the live anchor (§3.2; note the existing `lead_cycles_init ≈ freq · 0.25` lead at `bridge.rs:2200`), combined with the pump pushing earliest-first so near-future pieces always go out first.
 - **All axes of a segment arrive together.** The planner emits each `ShapedSegment` covering all axes over one `[t_start, t_end]` window, so the enqueue adapter never presents the pump with a partial timeline; the global merge always has a complete picture up to the latest enqueued segment.
 
 ### 5.1 Underrun is a halt — two independent budgets
@@ -147,15 +167,39 @@ Plain version: deep rings are a bigger water tank — they ride out a slow refil
 
 §3.1 sizing must therefore sanity-check ring-depth-in-time against `max_h` + heartbeat RTT (budget 1); budget 2 is a planner concern (`T_commit` vs buffered-time-at-boundary) and is named here only so the dependency is explicit, not silently assumed.
 
-## 6. Removal (folded into this work)
+## 6. Removal (folded into this work) — unwiring a LIVE path, not deleting orphans
 
-The new pump cannot coexist cleanly with the credit / slot machinery, and the segment-era host types are dead under the piece-ring contract. Remove:
+Important correction to an earlier framing: the credit / slot machinery is **not dead code**. It is **live-wired and only inert** — the MCU simply stopped emitting `CreditFreed`, so the path never fires, but every link is present and compiled in:
+
+- `attach_credit_counter` (`host_io/mod.rs:543`, called from `bridge.rs:2011`),
+- the reactor route `ReactorCommand::AttachCreditCounter` (`reactor.rs:1113`),
+- `EventDispatcher::on_credit_freed` (`events.rs:268`),
+- plus the `credit/tests.rs` and `events/dispatch_tests.rs` suites.
+
+So removal means **carefully unwiring a live path**, and the order matters — pull the wiring before (or together with) the types, or the build breaks mid-removal. The §6 "leave the build green" requirement is doing real work here, not a platitude.
+
+Remove (host side):
 
 - `dispatch.rs`: `build_push_params`, `split_plan_if_needed` / `split_recursive`, `McuPushPlan`, `SegmentPushParams` references, packed-handle constants (`UNUSED_HANDLE`) and `set_handle`, and `is_trivially_constant`. Keep the CoreXY transform logic (relocated into the enqueue adapter); `de_casteljau_split` / `extract_time_window` are unused once sub-splitting is gone — remove them too.
 - `producer.rs`: `CurveLoadParams`, `SegmentPushParams`, and the now-unused conversion helpers.
-- `credit.rs` and the `CreditCounter` wiring in `bridge.rs` (`attach_credit_counter`, `CREDIT_SEED_CAPACITY`).
-- The slot pool (`SharedSlotPool`) and retirement-callback wiring (`attach_retirement_callback`, `on_credit_freed`, `retire_through_segment`).
-- The `e_mode` / `extrusion_ratio` fields on the dispatch path. **E becomes an ordinary axis**: the planner emits E pieces like any other axis, and the MCU has no follower math (E-follows-XY was removed from the MCU precisely because it belongs in the planner). Whether the planner's E-follower *curve generation* is complete is downstream of this spec; the push path treats E uniformly.
+- **`cap_check.rs`: `fits_curve_load`** (`cap_check.rs:19`) — an additional `CurveLoadParams` consumer the earlier list missed. Removing `CurveLoadParams` without this leaves a dangling reference.
+- `credit.rs` and the `CreditCounter` wiring above (`attach_credit_counter`, the reactor command, `CREDIT_SEED_CAPACITY`).
+- The slot pool (`SharedSlotPool`) and retirement-callback wiring (`attach_retirement_callback`, `EventDispatcher::on_credit_freed`, `retire_through_segment`).
+- The `e_mode` / `extrusion_ratio` fields on the dispatch path (see §6.1 on E).
+- **Replace the hardcoded `total_pieces() / 4`** (`bridge.rs:2021` and `:2365`) with the per-MCU `num_axes` division of §3.1. The `/4` was a stand-in for "assume 4 axes"; ring sizing must use the actual axis count for that MCU.
+
+### 6.1 E is a follower ratio today, not a curve — do not overclaim "printable"
+
+`emit_shaped` carries E as a follower *ratio* (`extrusion_per_xy_mm`), **not** as a Bézier curve on an E axis. So "the planner emits E pieces like any other axis" is the *target*, not the current reality. Under this spec:
+
+- **Travel moves work** (X/Y/Z have curves; E has none → nothing enqueued).
+- **Extruding moves produce no E motion** — there is no E curve to extract pieces from.
+
+Closing that is a new pipeline stage: arc-length integration of the shaped XY into an E position curve (the host-side half of "E follows XY", which was correctly removed from the MCU because it belongs in the planner). That stage is **out of scope here** and is its own spec. §9's success criteria are therefore **travel/motion only** — this spec does not claim a printable extruding path.
+
+### 6.2 Cross-spec sequencing
+
+The credit subsystem spans both this spec (host side) and the companion segment-era MCU-side removal spec. Sequence them so neither lands a dangling reference: the host unwiring here must not assume MCU-side `CreditFreed` removal has happened, and vice versa. Coordinate the merge order or gate one on the other.
 
 Removal should leave the build green with the new path in place — not a separate "delete then rebuild" step.
 
@@ -173,15 +217,22 @@ Removal should leave the build green with the new path in place — not a separa
 
 ## 9. Testing
 
+**Scope of "works": travel/motion only.** This spec does not deliver an extruding path (§6.1) — E has no curve yet. Success criteria are about getting time-synchronized *motion* onto the wire, not printing.
+
 End-to-end, on the bench (the user can verify motion directly):
 
 - A single travel move on CoreXY produces motion on the X/Y MCU; Z gets one constant piece per segment (held), E is silent (no curve on a travel move).
 - A move involving Z produces Z motion pieces on the F4 while X/Y stream to the H7.
-- Sustained streaming (many moves) keeps both MCUs fed without one racing ahead of the other — the original bug.
+- **Sustained streaming past the initial ring fill** keeps both MCUs fed without one racing ahead or halting — this exercises the heartbeat-routing fix (§3.4); without it, motion stops the instant the first ring drains. This is the original bug *and* the new first-light risk in one test.
 - Heartbeat `consumed_counts` advance and the pump refills as rings drain.
+- A clean stop (end of a move sequence) decelerates to zero — the quiescence ramp (§2.1) arrives and is pushed; no `PIECE_START_IN_PAST` fault, no abrupt halt.
 
 Unit / integration (host crates):
 
-- Enqueue adapter: a moving axis yields time-ordered `PieceEntry`s with correct absolute `start_time` and `duration`; a non-moving axis yields one constant piece per segment; CoreXY A/B are the X±Y combination.
-- Pump scheduler: strict global start-time order; stall when the head's ring is full (no skip-ahead to a ring with room); same-MCU runs coalesce; no frame is sent when `room == 0`.
-- Ring allocation: `total_piece_memory` divides equally across a MCU's driven axes.
+- Enqueue adapter: a moving axis yields time-ordered `PieceEntry`s with correct absolute `start_time` (live anchor, §3.2) and `duration`; a non-moving axis yields one constant piece per segment; CoreXY A/B are the X±Y combination (transform applied *before* piece extraction).
+- Pump scheduler: strict global start-time order; stall when the head's ring is full (no skip-ahead to a ring with room); same-MCU runs coalesce; no frame is sent when `room == 0`; deterministic `(mcu_id, axis_idx)` tie-break on equal `start_time`.
+- Room accounting: wrapping-`u32` arithmetic stays correct across a `consumed`/`pushed` wrap (don't require 2³² real pieces — unit-test the wrap directly).
+- Heartbeat routing: a `StatusHeartbeat` frame reaches the pump and advances `consumed` (regression guard against the `_ =>` discard).
+- Result codes: host and MCU agree on the named `OK`/`RING_FULL`/`INVALID_AXIS` constants (shared source, §4).
+- Ring allocation: `total_piece_memory` divides by the actual per-MCU `num_axes` (not the old `/4`).
+- Concurrency: the pump never holds a shared lock across `kalico_call` (§3.5) — assert via the channel-fed ownership model rather than a runtime check where possible.
