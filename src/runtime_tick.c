@@ -453,17 +453,23 @@ runtime_drain(void)
         }
     }
 
-    // DRAINED or FAULT → disable TIM5 on the first transition into that
-    // state. The engine has nothing left to evaluate; leaving TIM5 running at
-    // 40 kHz needlessly burns CPU cycles. Under Renode the ISR load also
-    // starves USART2 command dispatch, preventing host tools from talking to
-    // the firmware after a print completes. runtime_tick_enable re-arms TIM5
-    // whenever a Modulated stepper is configured, so this is safe. Under IDLE
-    // the ISR was never enabled (no-op to call disable), but we gate on the
-    // transition anyway to avoid redundant disable calls.
-    if ((cur_status == 2 /* DRAINED */ || cur_status == 3 /* FAULT */)
-        && prev_engine_status != cur_status) {
-        runtime_tick_disable();
+    // Hard-fault escalation (spec 2026-05-28 §3.4). The runtime status machine
+    // is dormant, so we key off last_error directly: on a fresh nonzero fault
+    // code, notify the host with the specifics, then enter Klipper's global
+    // shutdown — the single stop state. shutdown() does irq_disable()+longjmp
+    // back to sched_main; that is safe HERE in foreground (DECL_TASK context)
+    // but NOT from the ISR/Rust tick path, which is why escalation lives in this
+    // drain rather than at the fault site. The edge guard prevents re-emitting
+    // every 1 kHz tick before the longjmp takes effect.
+    static int32_t last_acted_error;
+    int32_t cur_error = runtime_handle_last_error(runtime_handle);
+    if (cur_error != 0 && cur_error != last_acted_error) {
+        last_acted_error = cur_error;
+        uint32_t fdetail = runtime_handle_fault_detail(runtime_handle);
+        uint32_t cseg = runtime_handle_current_segment_id(runtime_handle);
+        kalico_native_emit_fault_event((uint16_t)cur_error, fdetail, cseg);
+        runtime_liveness_ok = 0;
+        shutdown("kalico runtime fault");
     }
 
     if (cur_status != prev_engine_status) {
@@ -481,6 +487,18 @@ runtime_drain(void)
     }
 }
 DECL_TASK(runtime_drain);
+
+// Single stop state (spec 2026-05-28): TIM5 goes off when Klipper shuts down.
+// The per-axis step-consumer timers are already wiped by sched_timer_reset
+// during shutdown, so motion has stopped; this just halts the now-pointless ISR
+// compute (and avoids Renode USART2 starvation). Re-armed on FIRMWARE_RESTART
+// via runtime_tick_init.
+void
+runtime_tick_shutdown(void)
+{
+    runtime_tick_disable();
+}
+DECL_SHUTDOWN(runtime_tick_shutdown);
 
 // Phase 11 Task 11.1 §5.3 periodic 10 Hz `kalico_status_v6` frame.
 // Background task that polls the wake flag and emits a status frame at the
