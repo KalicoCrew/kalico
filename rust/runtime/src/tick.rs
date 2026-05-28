@@ -317,13 +317,18 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
 
 // ─── ISR sample entry ─────────────────────────────────────────────────────
 
-/// Single-call ISR body that widens the clock, arms a queued segment if
-/// the engine is idle, and evaluates the per-sample stepping math.
-/// `raw_cyccnt` is the freshly-sampled 32-bit DWT counter (zero on host).
+/// Single-call ISR body for the piece-ring walker engine (Task 6).
+///
+/// Widens the 32-bit DWT clock, publishes `widened_now`, then delegates to
+/// `Engine::tick` which walks each configured axis's ring, evaluates the
+/// Horner polynomial, and calls `dispatch_axis`.
+///
+/// `storage` is projected from `RuntimeContext::piece_storage` by the FFI
+/// caller (`kalico_runtime_tick_sample`).
 pub fn isr_sample_tick(
     isr: &mut crate::state::IsrState,
     shared: &SharedState,
-    curve_pool: &crate::curve_pool::CurvePool,
+    storage: &mut [crate::piece_ring::PieceEntry],
     raw_cyccnt: u32,
 ) {
     let body_start = unsafe { cyccnt_read() };
@@ -338,59 +343,8 @@ pub fn isr_sample_tick(
         after_widen.wrapping_sub(body_start),
     );
 
-    if isr.engine.current.is_none() {
-        let candidate = match isr.pending_segment.take() {
-            Some(parked) => Some(parked),
-            None => {
-                let dequeued = isr.queue_consumer.dequeue();
-                if dequeued.is_some() {
-                    shared
-                        .producer_segment_dequeued_total
-                        .fetch_add(1, Ordering::AcqRel);
-                    bump_relaxed(&shared.isr_deq_some_count);
-                } else {
-                    bump_relaxed(&shared.isr_deq_none_count);
-                }
-                dequeued
-            }
-        };
-        if let Some(mut seg) = candidate {
-            shared
-                .isr_last_t_start_lo
-                .store(seg.t_start as u32, Ordering::Relaxed);
-            shared
-                .isr_last_widened_lo
-                .store(now as u32, Ordering::Relaxed);
-            shared
-                .isr_last_t_start_hi
-                .store((seg.t_start >> 32) as u32, Ordering::Relaxed);
-            shared
-                .isr_last_widened_hi
-                .store((now >> 32) as u32, Ordering::Relaxed);
-            let delta = now.saturating_sub(seg.t_start);
-            shared
-                .isr_arm_delta_lo
-                .store(delta as u32, Ordering::Relaxed);
-            shared
-                .isr_arm_delta_hi
-                .store((delta >> 32) as u32, Ordering::Relaxed);
-            if seg.t_start <= now {
-                shared.current_segment_id.store(seg.id, Ordering::Release);
-                bump_relaxed(&shared.isr_armed_count);
-                let lateness = now.saturating_sub(seg.t_start);
-                if lateness > 0 {
-                    seg.t_start = now;
-                    seg.t_end = seg.t_end.saturating_add(lateness);
-                }
-                isr.engine.arm_segment_with_diag(seg, curve_pool, shared);
-            } else {
-                bump_relaxed(&shared.isr_parked_count);
-                isr.pending_segment = Some(seg);
-            }
-        }
-    }
-
-    let after_arm = unsafe { cyccnt_read() };
+    // No segment-arm stage — the new engine manages its own piece advancement.
+    let after_arm = after_widen;
     update_max(
         &shared.isr_arm_cycles_max,
         after_arm.wrapping_sub(after_widen),
@@ -407,7 +361,8 @@ pub fn isr_sample_tick(
         trace_producer,
         ..
     } = isr;
-    engine.tick_sample(shared, curve_pool, trace_producer);
+    engine.tick(now, shared, storage, trace_producer);
+
     let body_end = unsafe { cyccnt_read() };
     update_max(
         &shared.isr_eval_cycles_max,
@@ -421,7 +376,6 @@ pub fn isr_sample_tick(
             .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
-
 
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {

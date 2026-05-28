@@ -35,9 +35,9 @@ use heapless::spsc::{Consumer, Producer, Queue};
 use crate::clock::WidenState;
 use crate::curve_pool::CurvePool;
 use crate::engine::Engine;
+use crate::piece_ring::PieceEntry;
 use crate::queue::Q_N;
 use crate::segment::Segment;
-use crate::slot::{NoopIs, NoopPa};
 use crate::trace::{TRACE_RING_N, TraceSample};
 
 /// Runtime storage size — the byte count the C side must reserve for
@@ -48,6 +48,13 @@ use crate::trace::{TRACE_RING_N, TraceSample};
 /// `RT_STORAGE_SIZE`) re-exported at the crate level; use
 /// `runtime::RT_STORAGE_SIZE` in external crates.
 pub use crate::curve_pool::RT_STORAGE_SIZE;
+
+/// Total number of piece entries in the shared ring storage.
+/// Derived from `PIECE_RING_SIZE / 32` (each entry is 32 bytes).
+pub use crate::curve_pool::TOTAL_RING_PIECES;
+
+/// Byte size of the piece ring storage (compile-time constant from build.rs).
+pub use crate::curve_pool::PIECE_RING_SIZE;
 
 /// Per-stepper stepping-output strategy. Stored as `AtomicU8` in
 /// `SharedState::step_modes`; runtime-mutable via `runtime_set_step_mode`.
@@ -96,12 +103,11 @@ pub struct TickState {
     pub motors: [f32; 4],    // [a, b, z, e] or [x, y, z, e] post-kinematic
 }
 
-/// Production `Engine` instantiation: ZST PA/IS slots per Step-5 spec §3.1.
-///
-/// Step 8 (smooth shapers) and Step 9 (tanh PA) replace these with real impls.
-/// Round-2 fix B1: Engine is generic, so the FFI shim refers to this typedef
-/// rather than spelling out the slot types at every call site.
-pub type EngineImpl = Engine<NoopPa, NoopIs>;
+/// Production `Engine` type alias — the PA/IS generic params have been removed
+/// in the Task 6 rewrite (host pre-bakes them).  The alias is kept so all
+/// existing call sites (`IsrState::engine`, `init`, FFI) compile without
+/// changes to their type annotations.
+pub type EngineImpl = Engine;
 
 // Phase 7 §8.5 force_idle handshake calls Klipper's `irq_save`/`irq_restore`
 // to gate the queue-drain step. We import via thin C wrappers
@@ -834,10 +840,15 @@ impl Default for SharedState {
 ///   latent UB by ensuring at most ONE `&mut FgState` OR `&mut IsrState`
 ///   (disjoint memory) exists at a time.
 /// - `shared` is plain (no `UnsafeCell`); all writes go through atomics.
-/// - `curve_pool` is at the top level: foreground writes via
-///   `try_alloc_and_load`; the ISR reads via `lookup`. Per-slot atomics
-///   guard concurrent access (Phase 2 §10.2 + Round-1 Codex #4 — see
-///   `curve_pool::PoolSlot`). Spec §10.5.
+/// - `piece_storage` is the flat `[PieceEntry; TOTAL_RING_PIECES]` array that
+///   all per-axis ring regions carve into. It is `UnsafeCell` so the ISR can
+///   project a `&mut [PieceEntry]` slice through the `RuntimeContext` shared
+///   reference while the foreground simultaneously holds `&mut FgState` — the
+///   two borrows are to disjoint memory. The foreground writes via
+///   `Engine::push_pieces`; the ISR reads/pops via `Engine::tick`. Mutual
+///   exclusion is the same as the existing ISR/foreground discipline.
+/// - `curve_pool` is retained as a stub for diagnostic FFI compatibility.
+///   Task 7 removes it once the host-side `PushPieces` wire protocol is wired.
 /// - `queue_storage` / `trace_storage` are wrapped in `UnsafeCell` so that
 ///   `init` can split them into `Producer`/`Consumer` halves and store the
 ///   halves into `FgState`/`IsrState` while keeping the backing storage
@@ -852,8 +863,19 @@ pub struct RuntimeContext {
     /// Cross-half atomics. Read/written through `&SharedState` (atomics
     /// supply the synchronization). Spec §11.3.
     pub shared: SharedState,
-    /// Top-level curve slab. Foreground writer / ISR reader; per-slot
-    /// generation atomics arrive in Phase 2. Spec §10.5.
+    /// Flat piece ring backing store.  Each axis gets a contiguous sub-region
+    /// described by `AxisState::ring` (a `RingDescriptor` — offset + depth).
+    /// `UnsafeCell` so the ISR can mutate (pop) while the foreground pushes
+    /// into distinct ring regions without forming overlapping `&mut` borrows.
+    ///
+    /// C/Rust boundary: `piece_storage` lives inside the C-declared
+    /// `rt_storage` buffer, so C owns linker-section placement on the MCU
+    /// (docs/kalico-rewrite/mcu-c-rust-boundary.md rule B2). No additional
+    /// `#[link_section]` is needed here.
+    pub piece_storage: UnsafeCell<[PieceEntry; TOTAL_RING_PIECES]>,
+    /// Stub curve pool — retained for `runtime_handle_query_pool_state` and
+    /// `runtime_handle_load_curve_cubic` diagnostic FFI compatibility until
+    /// Task 7 removes it.
     pub curve_pool: CurvePool,
     /// Backing storage for the segment SPSC. Split into `Producer` /
     /// `Consumer` halves at `init` time and stored on `FgState` /
@@ -920,9 +942,24 @@ impl RuntimeContext {
             let shared_ptr = core::ptr::addr_of_mut!((*rt_ptr).shared);
             shared_ptr.write(SharedState::new());
 
-            // Initialize CurvePool at top level.
+            // Initialize CurvePool at top level (stub for diagnostic FFI).
             let pool_ptr = core::ptr::addr_of_mut!((*rt_ptr).curve_pool);
             pool_ptr.write(CurvePool::new());
+
+            // Zero-initialize piece_storage (all entries start zeroed).
+            // `UnsafeCell<[PieceEntry; N]>` is layout-compatible with `[PieceEntry; N]`
+            // (`UnsafeCell` is `#[repr(transparent)]`).  Writing zeroes is safe
+            // because `PieceEntry` is `#[repr(C)]` with no padding and all-zero is a
+            // valid bit pattern (start_time=0, coeffs=0.0, duration=0.0).
+            let ps_ptr = core::ptr::addr_of_mut!((*rt_ptr).piece_storage);
+            // write_bytes sets every byte to 0 — equivalent to initializing each
+            // PieceEntry field to 0 (zeroed f32 = 0.0, zeroed u64 = 0).
+            core::ptr::write_bytes(
+                ps_ptr.cast::<u8>(),
+                0u8,
+                core::mem::size_of::<UnsafeCell<[crate::piece_ring::PieceEntry; TOTAL_RING_PIECES]>>(
+                ),
+            );
 
             // Read C-side clock frequency and sample rate once so the ISR's
             // WidenState + Engine::init_in_place_production both see the same

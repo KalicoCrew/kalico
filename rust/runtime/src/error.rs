@@ -120,6 +120,11 @@ pub const KALICO_ERR_SAMPLE_RATE_MISCONFIGURED: i32 = -304;
 pub const KALICO_ERR_POSITION_COUNT_OVERFLOW: i32 = -305;
 pub const KALICO_ERR_JOG_PARAMETERS_INVALID: i32 = -306;
 pub const KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING: i32 = -307;
+/// Spec §6 safety invariant: ISR reached a piece whose start_time is more than
+/// 2 ISR ticks in the past — MCU was not fed in time.  Hard fault.
+pub const KALICO_ERR_PIECE_START_IN_PAST: i32 = -308;
+/// Ring is full — `PushPieces` rejected because the axis ring has no space.
+pub const KALICO_ERR_RING_FULL: i32 = -309;
 
 /// Fault taxonomy. Spec §9.1. Each code has a specific recovery semantic;
 /// collapsing to a catch-all loses diagnostic information.
@@ -214,6 +219,10 @@ pub enum FaultCode {
     PositionCountOverflow = -305,
     JogParametersInvalid = -306,
     StepRateExceedsMcuCeiling = -307,
+    /// ISR reached a piece whose start_time is more than 2 ISR ticks in the past.
+    PieceStartInPast = -308,
+    /// `PushPieces` rejected: axis ring is full.
+    RingFull = -309,
 }
 
 impl FaultCode {

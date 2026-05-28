@@ -36,6 +36,137 @@
 
 use crate::monomial::bernstein_to_monomial_with_duration;
 
+/// Borrow-free logical descriptor for a ring region within a shared
+/// `[PieceEntry]` backing store.
+///
+/// This is the engine-side counterpart to [`PieceRing`]: it holds only
+/// integer bookkeeping fields (offset, depth, head, tail, count, consumed)
+/// and every operation takes the backing store by explicit `&mut [PieceEntry]`
+/// parameter.  That design avoids splitting a single `UnsafeCell<[PieceEntry; N]>`
+/// array into N disjoint `&mut` borrows — an operation the borrow checker
+/// cannot verify is disjoint without unsafe code.
+///
+/// `PieceRing<'a>` is preserved for host unit tests (it holds a borrow for
+/// ergonomics in test code).  The engine uses `RingDescriptor` exclusively.
+#[derive(Debug, Clone, Copy)]
+pub struct RingDescriptor {
+    /// Start index into the shared storage array for this axis's region.
+    pub ring_offset: usize,
+    /// Capacity of this axis's ring region (number of entries).
+    pub ring_depth: usize,
+    /// Write cursor (relative to ring_offset), in `0..ring_depth`.
+    pub head: usize,
+    /// Read cursor (relative to ring_offset), in `0..ring_depth`.
+    pub tail: usize,
+    /// Current number of entries in the ring.
+    pub count: usize,
+    /// Monotonic consumed count (wrapping u32).
+    pub consumed: u32,
+}
+
+impl RingDescriptor {
+    /// Construct an empty, unconfigured descriptor (ring_depth 0 = no ring
+    /// allocated yet).
+    #[inline]
+    pub const fn new_unconfigured() -> Self {
+        Self {
+            ring_offset: 0,
+            ring_depth: 0,
+            head: 0,
+            tail: 0,
+            count: 0,
+            consumed: 0,
+        }
+    }
+
+    /// Construct a descriptor for a ring region starting at `offset` with
+    /// capacity `depth`.
+    #[inline]
+    pub const fn new(offset: usize, depth: usize) -> Self {
+        Self {
+            ring_offset: offset,
+            ring_depth: depth,
+            head: 0,
+            tail: 0,
+            count: 0,
+            consumed: 0,
+        }
+    }
+
+    /// Returns `true` if `configure_axis` has been called for this slot.
+    #[inline]
+    pub fn is_configured(&self) -> bool {
+        self.ring_depth > 0
+    }
+
+    /// Returns the number of entries currently in the ring.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Returns `true` if the ring contains no entries.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// Returns `true` if the ring is at capacity.
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.count == self.ring_depth
+    }
+
+    /// Append `entry` to the back of the ring.
+    ///
+    /// Returns `Err(())` if the ring is full.
+    #[inline]
+    pub fn push(&mut self, storage: &mut [PieceEntry], entry: PieceEntry) -> Result<(), ()> {
+        if self.is_full() || self.ring_depth == 0 {
+            return Err(());
+        }
+        let abs = self.ring_offset + self.head;
+        if let Some(slot) = storage.get_mut(abs) {
+            *slot = entry;
+        } else {
+            return Err(());
+        }
+        self.head = (self.head + 1) % self.ring_depth;
+        self.count += 1;
+        Ok(())
+    }
+
+    /// Peek the front entry without removing it.
+    ///
+    /// Returns `None` if the ring is empty.
+    #[inline]
+    pub fn peek<'s>(&self, storage: &'s [PieceEntry]) -> Option<&'s PieceEntry> {
+        if self.is_empty() {
+            return None;
+        }
+        storage.get(self.ring_offset + self.tail)
+    }
+
+    /// Remove the front entry, incrementing the monotonic consumed counter.
+    ///
+    /// No-op if the ring is empty.
+    #[inline]
+    pub fn pop(&mut self) {
+        if self.is_empty() || self.ring_depth == 0 {
+            return;
+        }
+        self.tail = (self.tail + 1) % self.ring_depth;
+        self.count -= 1;
+        self.consumed = self.consumed.wrapping_add(1);
+    }
+
+    /// Monotonically increasing count of consumed entries.
+    #[inline]
+    pub fn consumed_count(&self) -> u32 {
+        self.consumed
+    }
+}
+
 /// A fixed-capacity SPSC ring buffer for [`PieceEntry`] values.
 ///
 /// Ownership convention:

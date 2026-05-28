@@ -116,7 +116,8 @@ fn get_runtime() -> *mut kalico_c_api::KalicoRuntime {
         let rt = kalico_c_api::runtime_handle_create();
         assert!(!rt.is_null(), "runtime_handle_create failed");
         RuntimePtr(rt)
-    }).0
+    })
+    .0
 }
 
 // ---- Tests ------------------------------------------------------------------
@@ -136,12 +137,17 @@ fn legacy_blob_preserves_existing_step_modes() {
     let rc = unsafe {
         kalico_c_api::kalico_runtime_configure_axes_blob(rt, blob.as_ptr(), blob.len() as u32)
     };
-    assert_eq!(rc, kalico_c_api::KALICO_OK, "legacy blob should be accepted");
+    assert_eq!(
+        rc,
+        kalico_c_api::KALICO_OK,
+        "legacy blob should be accepted"
+    );
 
     // Motor 0 must still be Modulated (legacy path doesn't touch step_modes).
     let m0 = unsafe { read_step_mode(ctx, 0) };
     assert_eq!(
-        m0, StepMode::Modulated,
+        m0,
+        StepMode::Modulated,
         "legacy blob must preserve pre-existing Modulated on motor 0",
     );
     let m1 = unsafe { read_step_mode(ctx, 1) };
@@ -167,9 +173,18 @@ fn extended_blob_populates_step_modes() {
     let rc = unsafe {
         kalico_c_api::kalico_runtime_configure_axes_blob(rt, blob.as_ptr(), blob.len() as u32)
     };
-    assert_eq!(rc, kalico_c_api::KALICO_OK, "extended blob (phase-capable) should be accepted");
+    assert_eq!(
+        rc,
+        kalico_c_api::KALICO_OK,
+        "extended blob (phase-capable) should be accepted"
+    );
 
-    let expected = [StepMode::Modulated, StepMode::StepTime, StepMode::StepTime, StepMode::StepTime];
+    let expected = [
+        StepMode::Modulated,
+        StepMode::StepTime,
+        StepMode::StepTime,
+        StepMode::StepTime,
+    ];
     for (i, &want) in expected.iter().enumerate() {
         let got = unsafe { read_step_mode(ctx, i) };
         assert_eq!(got, want, "motor {i}: expected {want:?}, got {got:?}");
@@ -244,9 +259,8 @@ fn invalid_blob_lengths_rejected() {
     let rt = get_runtime();
     for bad_len in [0u32, 1, 19, 21, 24, 27, 28, 100] {
         let buf = vec![0u8; bad_len as usize];
-        let rc = unsafe {
-            kalico_c_api::kalico_runtime_configure_axes_blob(rt, buf.as_ptr(), bad_len)
-        };
+        let rc =
+            unsafe { kalico_c_api::kalico_runtime_configure_axes_blob(rt, buf.as_ptr(), bad_len) };
         assert_eq!(
             rc,
             kalico_c_api::KALICO_ERR_INVALID_KINEMATICS,

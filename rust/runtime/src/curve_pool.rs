@@ -20,11 +20,15 @@ pub struct CurveHandle {
 
 impl CurveHandle {
     /// Sentinel value meaning "this axis has no curve" (all-ones pattern).
-    pub const UNUSED_SENTINEL: Self = Self { packed: 0xFFFE_FFFE };
+    pub const UNUSED_SENTINEL: Self = Self {
+        packed: 0xFFFE_FFFE,
+    };
 
     /// Sentinel for hold segments (differs from UNUSED so the ISR can
     /// distinguish "no work" from "hold position").
-    pub const HOLD_SEGMENT_SENTINEL: Self = Self { packed: 0xFFFF_FFFF };
+    pub const HOLD_SEGMENT_SENTINEL: Self = Self {
+        packed: 0xFFFF_FFFF,
+    };
 
     /// Construct from `slot_idx` and `generation`.
     #[inline]
@@ -150,4 +154,3 @@ impl Default for CurvePool {
         Self::new()
     }
 }
-

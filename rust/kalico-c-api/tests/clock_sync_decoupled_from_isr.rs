@@ -74,16 +74,15 @@ fn clock_sync_returns_widened_host_clock_not_seqlock() {
     let r = unsafe {
         kalico_c_api::kalico_runtime_clock_sync_request(
             rt,
-            42,    // request_id (echoed; we don't care here)
-            0,     // host_send_time_lo (foreground unused)
-            0,     // host_send_time_hi (foreground unused)
+            42, // request_id (echoed; we don't care here)
+            0,  // host_send_time_lo (foreground unused)
+            0,  // host_send_time_hi (foreground unused)
             &mut mcu_clock,
         )
     };
     assert_eq!(r, 0, "clock_sync_request returned non-OK: {r}");
     assert_eq!(
-        mcu_clock,
-        0xDEAD_BEEF_CAFE_BABE,
+        mcu_clock, 0xDEAD_BEEF_CAFE_BABE,
         "clock_sync surfaced the wrong clock source — expected the stub's \
          runtime_widened_host_clock value, got something else. This means \
          the handler is reading from the §11.4 seqlock (which freezes \
@@ -95,15 +94,8 @@ fn clock_sync_returns_widened_host_clock_not_seqlock() {
     // value — proves the function reads the clock on every call rather
     // than caching at init.
     STUB_MCU_CLOCK.store(0x1234_5678_9ABC_DEF0, Ordering::Relaxed);
-    let r2 = unsafe {
-        kalico_c_api::kalico_runtime_clock_sync_request(
-            rt,
-            43,
-            0,
-            0,
-            &mut mcu_clock,
-        )
-    };
+    let r2 =
+        unsafe { kalico_c_api::kalico_runtime_clock_sync_request(rt, 43, 0, 0, &mut mcu_clock) };
     assert_eq!(r2, 0);
     assert_eq!(mcu_clock, 0x1234_5678_9ABC_DEF0);
 }

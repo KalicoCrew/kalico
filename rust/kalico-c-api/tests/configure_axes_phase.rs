@@ -25,7 +25,7 @@
 
 use core::sync::atomic::Ordering;
 use runtime::phase_config::PhaseConfig;
-use runtime::state::{RuntimeContext, SharedState, StepMode, MAX_STEPPER_OIDS};
+use runtime::state::{MAX_STEPPER_OIDS, RuntimeContext, SharedState, StepMode};
 
 // ---- Host-side stubs required by runtime_ffi's extern "C" declarations ------
 
@@ -166,7 +166,11 @@ fn accepts_two_phase_motors_on_distinct_slots() {
     let rc = unsafe {
         kalico_c_api::kalico_runtime_configure_axes_blob(rt, blob.as_ptr(), blob.len() as u32)
     };
-    assert_eq!(rc, kalico_c_api::KALICO_OK, "two-motor blob must accept, got {rc}");
+    assert_eq!(
+        rc,
+        kalico_c_api::KALICO_OK,
+        "two-motor blob must accept, got {rc}"
+    );
 
     let shared = shared_of(ctx);
     assert_eq!(shared.phase_motor_count.load(Ordering::Acquire), 2);
@@ -220,15 +224,43 @@ fn accepts_corexy_awd_four_motors_two_slots() {
     let rc = unsafe {
         kalico_c_api::kalico_runtime_configure_axes_blob(rt, blob.as_ptr(), blob.len() as u32)
     };
-    assert_eq!(rc, kalico_c_api::KALICO_OK, "CoreXY+AWD must accept, got {rc}");
+    assert_eq!(
+        rc,
+        kalico_c_api::KALICO_OK,
+        "CoreXY+AWD must accept, got {rc}"
+    );
 
     let shared = shared_of(ctx);
     assert_eq!(shared.phase_motor_count.load(Ordering::Acquire), 4);
     let expected = [
-        (PhaseConfig { spi_bus_id: 3, cs_pin_id: 5 }, 0u8),
-        (PhaseConfig { spi_bus_id: 3, cs_pin_id: 6 }, 0u8),
-        (PhaseConfig { spi_bus_id: 3, cs_pin_id: 7 }, 1u8),
-        (PhaseConfig { spi_bus_id: 3, cs_pin_id: 8 }, 1u8),
+        (
+            PhaseConfig {
+                spi_bus_id: 3,
+                cs_pin_id: 5,
+            },
+            0u8,
+        ),
+        (
+            PhaseConfig {
+                spi_bus_id: 3,
+                cs_pin_id: 6,
+            },
+            0u8,
+        ),
+        (
+            PhaseConfig {
+                spi_bus_id: 3,
+                cs_pin_id: 7,
+            },
+            1u8,
+        ),
+        (
+            PhaseConfig {
+                spi_bus_id: 3,
+                cs_pin_id: 8,
+            },
+            1u8,
+        ),
     ];
     for (i, (cfg, slot)) in expected.iter().enumerate() {
         assert_eq!(
@@ -338,9 +370,7 @@ fn rejects_count_above_max_stepper_oids() {
 
     // Build a blob with count = MAX_STEPPER_OIDS + 1 = 17. The byte count
     // is consistent (26 + 3*17 = 77) so only the count-cap check trips.
-    let mut entries: Vec<(u8, u8, u8)> = (0..17u8)
-        .map(|i| (3, 0x10 + i, i % 4))
-        .collect();
+    let mut entries: Vec<(u8, u8, u8)> = (0..17u8).map(|i| (3, 0x10 + i, i % 4)).collect();
     let blob = build_phase_blob(
         1,
         0b0000_1111,
@@ -405,7 +435,11 @@ fn legacy_25_byte_blob_clears_prior_phase_config() {
     let rc = unsafe {
         kalico_c_api::kalico_runtime_configure_axes_blob(rt, blob.as_ptr(), blob.len() as u32)
     };
-    assert_eq!(rc, kalico_c_api::KALICO_OK, "25-byte blob must accept, got {rc}");
+    assert_eq!(
+        rc,
+        kalico_c_api::KALICO_OK,
+        "25-byte blob must accept, got {rc}"
+    );
 
     let shared = shared_of(ctx);
     assert_eq!(shared.phase_motor_count.load(Ordering::Acquire), 0);

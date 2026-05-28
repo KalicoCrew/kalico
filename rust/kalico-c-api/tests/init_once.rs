@@ -58,16 +58,16 @@ fn null_handle_returns_null_ptr_error() {
     let r = unsafe {
         kalico_c_api::runtime_handle_push_segment(
             std::ptr::null_mut(),
-            0,    // id
-            0,    // x_handle_packed
-            0,    // y_handle_packed
-            0,    // z_handle_packed
-            0,    // e_handle_packed
-            0,    // t_start
-            100,  // t_end
-            0,    // kinematics
-            0,    // e_mode
-            0,    // extrusion_ratio_bits
+            0,   // id
+            0,   // x_handle_packed
+            0,   // y_handle_packed
+            0,   // z_handle_packed
+            0,   // e_handle_packed
+            0,   // t_start
+            100, // t_end
+            0,   // kinematics
+            0,   // e_mode
+            0,   // extrusion_ratio_bits
             std::ptr::null_mut(),
             std::ptr::null_mut(),
         )
