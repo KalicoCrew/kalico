@@ -3,7 +3,10 @@
 //! per-ring flow control. See
 //! `docs/superpowers/specs/2026-05-28-push-pieces-wiring-design.md`.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::mpsc::{Receiver, RecvError};
+use std::sync::Weak;
+use std::time::Duration;
 use runtime::piece_ring::PieceEntry;
 
 /// Destination ring identity.
@@ -237,11 +240,6 @@ mod sched_tests {
 mod tests {
     use super::*;
 
-    #[allow(dead_code)]
-    fn piece(start: u64) -> PieceEntry {
-        PieceEntry { start_time: start, coeffs: [0.0; 4], duration: 0.001, _reserved: 0 }
-    }
-
     #[test]
     fn room_full_then_drains() {
         let mut q = AxisQueue::new(4);
@@ -259,5 +257,186 @@ mod tests {
         q.consumed = u32::MAX;             // consumed is "behind" pushed by 3
         // in_flight = 2 - (u32::MAX) wrapping = 3
         assert_eq!(q.room(), 5);
+    }
+}
+
+// ── Inbound message types ────────────────────────────────────────────────────
+
+/// Pieces handed to the pump for one (mcu, axis), in time order.
+pub struct EnqueueMsg {
+    pub key: AxisKey,
+    pub pieces: Vec<PieceEntry>,
+    /// Set when this batch begins a fresh stream (timeline re-anchor): the
+    /// pump leaves flow-control counters alone (spec §3.3) — this flag exists
+    /// only so future logic can react; for now it is informational.
+    pub fresh_stream: bool,
+}
+
+/// Per-MCU heartbeat: consumed counts indexed by axis.
+pub struct HeartbeatMsg {
+    pub mcu_id: u32,
+    pub consumed_counts: Vec<u32>,
+}
+
+/// Inbound to the pump loop.
+pub enum PumpMsg {
+    Enqueue(EnqueueMsg),
+    Heartbeat(HeartbeatMsg),
+    Shutdown,
+}
+
+// ── PieceSink trait ──────────────────────────────────────────────────────────
+
+/// Sends one axis's frame to the wire. Returns the MCU's result code
+/// (`result_codes::OK` on success).
+pub trait PieceSink: Send {
+    fn send_frame(&self, key: AxisKey, pieces: &[PieceEntry]) -> Result<i32, String>;
+}
+
+// ── run_pump ─────────────────────────────────────────────────────────────────
+
+/// Run the pump until `Shutdown`. `ring_depth_of` supplies each ring's depth
+/// the first time its key is seen. `sink` performs the actual wire send.
+pub fn run_pump<S, F>(rx: Receiver<PumpMsg>, sink: S, ring_depth_of: F)
+where
+    S: PieceSink,
+    F: Fn(AxisKey) -> u32,
+{
+    let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
+    const MAX_PER_FRAME: usize = 255; // u8 wire piece_count
+
+    let apply = |msg: PumpMsg, queues: &mut BTreeMap<AxisKey, AxisQueue>| -> bool {
+        match msg {
+            PumpMsg::Shutdown => return false,
+            PumpMsg::Enqueue(EnqueueMsg { key, pieces, fresh_stream: _ }) => {
+                let q = queues
+                    .entry(key)
+                    .or_insert_with(|| AxisQueue::new(ring_depth_of(key)));
+                q.pieces.extend(pieces);
+            }
+            PumpMsg::Heartbeat(HeartbeatMsg { mcu_id, consumed_counts }) => {
+                for (axis, &c) in consumed_counts.iter().enumerate() {
+                    let key = AxisKey { mcu_id, axis: axis as u8 };
+                    if let Some(q) = queues.get_mut(&key) {
+                        q.consumed = c;
+                    }
+                }
+            }
+        }
+        true
+    };
+
+    // Block for the first message, then process bursts.
+    loop {
+        let first = match rx.recv() {
+            Ok(m) => m,
+            Err(RecvError) => return,
+        };
+        if !apply(first, &mut queues) {
+            return;
+        }
+        // Drain anything else already queued (coalesce bursts before sending).
+        while let Ok(m) = rx.try_recv() {
+            if !apply(m, &mut queues) {
+                return;
+            }
+        }
+        // Send as far as the schedule allows. A send failure breaks all the
+        // way back to `recv()` (labeled break) instead of re-running schedule
+        // on the still-queued pieces — otherwise a persistent failure spins a
+        // tight busy-loop. The next inbound message (heartbeat/enqueue) retries.
+        'send: loop {
+            match schedule(&queues, MAX_PER_FRAME) {
+                Schedule::Idle | Schedule::StallFull(_) => break 'send,
+                Schedule::Send(frames) => {
+                    if frames.is_empty() {
+                        break 'send;
+                    }
+                    for f in frames {
+                        match sink.send_frame(f.key, &f.pieces) {
+                            Ok(_) => {
+                                let q =
+                                    queues.get_mut(&f.key).expect("planned key exists");
+                                for _ in 0..f.pieces.len() {
+                                    q.pieces.pop_front();
+                                }
+                                q.pushed =
+                                    q.pushed.wrapping_add(f.pieces.len() as u32);
+                            }
+                            Err(e) => {
+                                log::error!(
+                                    "pump send_frame failed for {:?}: {e}",
+                                    f.key
+                                );
+                                // Leave the pieces queued; retry on next message.
+                                break 'send;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── WireSink ─────────────────────────────────────────────────────────────────
+
+/// Production sink: one `kalico_call(PushPieces)` per frame.
+///
+/// Holds `Weak<KalicoHostIo>` — NOT `Arc` — mirroring the dispatch_ios design
+/// in bridge.rs: `detach_serial` drops the strong `Arc` to tear down the
+/// reactor, so the pump must not pin the IO alive. An upgrade failure means
+/// the MCU was detached; the frame is dropped with an error (the pump logs
+/// and leaves the pieces queued — a detached MCU is a stream teardown).
+pub struct WireSink {
+    pub ios: HashMap<u32, Weak<kalico_host_rt::host_io::KalicoHostIo>>,
+    pub timeout: Duration,
+}
+
+impl PieceSink for WireSink {
+    fn send_frame(&self, key: AxisKey, pieces: &[PieceEntry]) -> Result<i32, String> {
+        // schedule() caps frames at MAX_PER_FRAME = 255, so this is unreachable
+        // in the production path; the assert guards against callers bypassing
+        // schedule() and hitting a silent truncation.
+        debug_assert!(
+            pieces.len() <= 255,
+            "PushPieces frame exceeds u8 piece_count; schedule() must cap at 255"
+        );
+        let io = self
+            .ios
+            .get(&key.mcu_id)
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| format!("KalicoHostIo for mcu {} detached", key.mcu_id))?;
+        let mut pieces_bytes =
+            Vec::with_capacity(pieces.len() * std::mem::size_of::<PieceEntry>());
+        for p in pieces {
+            pieces_bytes.extend_from_slice(&p.to_le_bytes());
+        }
+        let msg = kalico_protocol::messages::PushPieces {
+            axis_idx: key.axis,
+            piece_count: pieces.len() as u8,
+            pieces_bytes,
+        };
+        // 2 header bytes (axis_idx + piece_count) + serialised piece data.
+        let mut body =
+            Vec::with_capacity(2 + pieces.len() * std::mem::size_of::<PieceEntry>());
+        kalico_protocol::codec::Encode::encode(&msg, &mut body);
+        let (_kind, resp) = io
+            .kalico_call(
+                kalico_protocol::MessageKind::PushPieces,
+                body,
+                self.timeout,
+            )
+            .map_err(|e| format!("kalico_call PushPieces: {e:?}"))?;
+        use kalico_protocol::codec::Decode as _;
+        let r = kalico_protocol::messages::PushPiecesResponse::decode(&resp)
+            .map_err(|e| format!("decode PushPiecesResponse: {e:?}"))?;
+        if r.result != kalico_protocol::result_codes::OK {
+            return Err(format!(
+                "MCU rejected PushPieces (mcu {} axis {}): {}",
+                key.mcu_id, key.axis, r.result
+            ));
+        }
+        Ok(r.result)
     }
 }
