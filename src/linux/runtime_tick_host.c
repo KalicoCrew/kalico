@@ -198,11 +198,11 @@ runtime_tick_enable(void)
         kalico_runtime_install_step_queues(runtime_handle,
                                            (uint8_t *)step_queues);
     }
-    // MACH_LINUX always enables the tick so the runtime evaluates
-    // segments and pushes to the step queues installed above. On real
-    // MCU hardware the tick is gated on count_modulated_steppers > 0,
-    // but the Linux sim needs it unconditionally because there is no
-    // separate step-event path for regular-stepping motors.
+    // Enable the tick unconditionally so the runtime evaluates segments and
+    // pushes to the step queues installed above. This matches the MCU, which
+    // now arms TIM5 unconditionally at init (free-running from boot, no arm
+    // gate); the Linux sim likewise has no separate step-event path for
+    // regular-stepping motors, so the tick must always be on.
     atomic_store_explicit(&host_tick_enabled, 1, memory_order_release);
 }
 

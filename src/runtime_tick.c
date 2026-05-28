@@ -32,9 +32,10 @@
 #include "generic/runtime_tick.h"   // backend interface (consumer view)
 #include "generic/fault_handler.h"  // diag_record_engine_xition, diag_take_snapshot
 #if CONFIG_MACH_LINUX
-// Host build: pthread-driven tick replaces the TIM5 ISR. The Rust runtime
-// still calls runtime_tick_enable/disable/runtime_cyccnt_read across the
-// producer-protocol boundary; we provide host-side stubs in
+// Host build: pthread-driven tick replaces the TIM5 ISR. The only Rust→C
+// call across this boundary now is runtime_cyccnt_read; runtime_tick_enable
+// and runtime_tick_disable are called from C (configure_axis / the
+// DECL_SHUTDOWN handler), not from Rust. Host-side implementations live in
 // src/linux/runtime_tick_host.c.
 #endif
 
@@ -315,10 +316,11 @@ runtime_init(void)
     last_seen_status = runtime_handle_status(runtime_handle);
     runtime_diag_progress(0xB3, 0, 0);  // status reads done
 
-    // Initialize the modulation tick driver. On STM32H7 this configures
-    // TIM5 (DOES NOT enable; the first segment push triggers enable via
-    // the producer protocol §4.4). On Linux it spawns the host pthread
-    // that calls runtime_handle_tick at 40 kHz.
+    // Initialize the modulation tick driver. On STM32H7 this configures AND
+    // arms TIM5 — it free-runs from boot now, with no arm gate (the old
+    // "first segment push enables via the producer protocol" path is gone).
+    // On Linux it spawns the host pthread that calls runtime_handle_tick at
+    // the configured sample rate.
     runtime_diag_progress(0xB4, 0, 0);  // about to call runtime_tick_init
     runtime_tick_init();
     runtime_diag_progress(0xB5, 0, 0);  // tick_init done
@@ -418,12 +420,12 @@ runtime_drain(void)
         kalico_native_emit_fault_event((uint16_t)fault_code, fault_detail, cur_seg);
     }
 
-    // Liveness check. Only meaningful when the runtime is RUNNING — the ISR
-    // is deliberately disabled in IDLE/DRAINED (no segment pushed yet) and
-    // tick_counter cannot advance, so we'd trip a false positive within
-    // KALICO_LIVENESS_THRESHOLD_MS of boot otherwise. We refresh the
-    // last_progress_time anchor in non-RUNNING states so a state transition
-    // INTO RUNNING doesn't immediately trip on a stale anchor.
+    // Liveness check. Only meaningful when the runtime is RUNNING — the gate
+    // is keyed on RUNNING status, not on the ISR being off. (TIM5 free-runs
+    // from boot, so the ISR and tick_counter advance even in IDLE/DRAINED;
+    // the liveness logic just doesn't act unless status == RUNNING.) We
+    // refresh the last_progress_time anchor in non-RUNNING states so a state
+    // transition INTO RUNNING doesn't immediately trip on a stale anchor.
     uint32_t cur_counter = runtime_handle_tick_counter(runtime_handle);
     uint32_t cur_time = timer_read_time();
     uint8_t cur_status = runtime_handle_status(runtime_handle);
