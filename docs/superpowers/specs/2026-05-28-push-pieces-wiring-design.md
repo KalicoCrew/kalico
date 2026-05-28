@@ -22,7 +22,7 @@ The host never caught up: the dispatch closure still builds the old `McuPushPlan
 - **A late piece aborts the print.** When `now − start_time > FAULT_TOLERANCE` (2 ticks; `engine.rs:654`), the MCU faults and the print stops (via foreground Klipper `shutdown()` — not a clean instantaneous engine stop, and uncoordinated across MCUs, but the end state is "stopped, aborted"). The mechanism is not this spec's concern; the obligation is to never let underrun happen (§5.1).
 - **Wire send exists, but blocks.** `KalicoHostIo::kalico_call(MessageKind::PushPieces, body, timeout)` sends one frame and awaits `PushPiecesResponse`; `PushPieces` already has an `Encode` impl. It is a blocking round-trip (`host_io/mod.rs:780`) — see §3.5.
 - **Heartbeat is currently DROPPED.** `StatusHeartbeat` decodes as a struct but `lift_event_to_runtime_event` (`kalico_native.rs`) routes it to the `_ =>` discard arm; there is no `RuntimeEvent::Heartbeat`. Routing it is new work (§3.4), and skipping it is a guaranteed halt: with `consumed` frozen, `room` hits 0 after the first `ring_depth` pieces and the pump stalls forever while heartbeats are thrown away.
-- **Clock anchor.** The live dispatch anchors via `PassthroughRouter::compute_ack_clock(mcu)` for "now", then `mcu_base_clock + round(t·freq)` (`bridge.rs:2206,2293-2297`). `host_time_to_mcu_clock` is **test-only** — do not use it. See §3.2.1.
+- **Clock projection (one shared host clock, per-MCU projection).** The router holds a single host clock (`router.clock.now()`); each MCU has its own `(clock_offset, clock_freq, last_clock)`. Projecting a host time `t_host` to an MCU's clock is `last_clock + (t_host − offset)·freq`. `compute_ack_clock(mcu)` (`router.rs:422`) does this for `t_host = now`; the (currently test-only) `host_time_to_mcu_clock(mcu, t_host)` (`router.rs:437`) does it for arbitrary `t_host`. The single shared host clock is what lets one anchor land synchronously on every MCU (§3.2.1). The live dispatch today instead uses `compute_ack_clock` + `mcu_base_clock + round(t·freq)` (`bridge.rs:2206,2293-2297`); §3.2.1 replaces that with the shared-anchor projection.
 - **`consumed` is a wrapping `u32`** (`piece_ring.rs:64,160`). Host `room` and `pushed` must use matching wrapping `u32` (§3.3).
 
 ## 2. Core model
@@ -59,7 +59,7 @@ Replaces `build_push_params` + `split_plan_if_needed` + `McuPushPlan`. For each 
 
 1. **CoreXY transform** (relocated from `dispatch.rs`): for a CoreXY MCU driving X and Y, combine into motor-frame A = X + Y (slot 0), B = X − Y (slot 1) via `nurbs::algebra::add_with_knot_union`. Other axes pass through.
 2. For each axis the segment provides a curve for, `extract_bezier_pieces` → per piece:
-   - `start_time = mcu_clock_for(mcu, T0 + u_start)` — absolute clock cycles via the shared anchor (§3.2.1).
+   - `start_time = project(mcu, T0 + u_start)` — the piece's host time projected into this MCU's clock (§3.2.1).
    - `duration = u_end − u_start` (f32 seconds), `coeffs =` the four Bernstein points (f32), `_reserved = 0`.
    - Append in time order to that `(mcu, axis)` queue.
 
@@ -69,13 +69,13 @@ No segment IDs, handles, slots, or sub-splitting. **No static/skip judgment**: a
 
 The MCU compares `start_time` only against absolute `now` (earlier → idle, too-late → fault, §1.1). There is no relative / ASAP / "0 = now" encoding; `0` is just a past clock value → instant fault. The host always stamps a real future absolute clock, and pieces are self-contained (contract §4.3).
 
-The host holds **one shared anchor `T0`** — the host/print-time instant mapping planner `t = 0`. Every piece is `mcu_clock_for(mcu, T0 + t_start)`: one host-time instant, converted into each MCU's own clock domain, so all MCUs begin a given segment at the **same real moment** (cross-MCU sync). This shared anchor is load-bearing — the old per-MCU `schedule_state` did not guarantee it.
+The host holds **one shared anchor `T0`** — a single **host-time** instant (host seconds) mapping planner `t = 0`. Every piece's `start_time = project(mcu, T0 + u_start)` (the projection of §1.1). Because `T0` lives in the shared host domain and only the projection is per-MCU, all MCUs begin a given segment at the **same real moment** (cross-MCU sync). This shared anchor is load-bearing — the old per-MCU `schedule_state` did not guarantee it.
 
 **Anchoring rule** (compares planner timestamps to each other, never to wall-clock — the host does no real-time checks):
 
 - The adapter remembers the previous segment's planner `t_end`.
 - **Contiguous** (`t_start ≈ last_t_end`): keep `T0`. `N+1.start = N.start + N.duration` falls out.
-- **Reset** (`t_start` jumps backward to ~0): establish a fresh `T0 = (now + lead) − t_start`, landing the new stream's first segment at `now + lead` (`lead ≈ freq · 0.25`, existing). `now` comes from `compute_ack_clock`.
+- **Reset** (`t_start` jumps backward to ~0): capture the shared host clock once as `host_now = router.clock.now()` and set `T0 = host_now + lead − t_start` (host seconds; `lead ≈ 0.25 s`, the existing value). The new stream's first segment then lands `lead` ahead, synchronously on every MCU via the per-MCU projection.
 
 A backward jump in planner time is the unambiguous "fresh stream" signal, and it covers every reset uniformly: explicit `reset()` (stream-open, set_position, homing, underrun, force_idle, reconnect) and the quiescence reset all return the timeline toward 0.
 
@@ -85,7 +85,9 @@ A backward jump in planner time is the unambiguous "fresh stream" signal, and it
 
 A single global pusher, woken by new-pieces and by heartbeat. It can't live in the per-segment closure because it must react to heartbeats arriving between segments.
 
-Per `(mcu, axis)` it tracks: the queue of unpushed pieces, `pushed: u32`, `consumed: u32` (from heartbeat), and `ring_depth`. `room = ring_depth − (pushed −_wrap consumed)`, **wrapping `u32`** (§1.1). `pushed` increments when pieces are committed to the wire (room reserved then), not on response — host accounting is authoritative. On reset/epoch change, `pushed` and `consumed` reset with the re-anchor.
+Per `(mcu, axis)` it tracks: the queue of unpushed pieces, `pushed: u32`, `consumed: u32` (from heartbeat), and `ring_depth`. `room = ring_depth − (pushed −_wrap consumed)`, **wrapping `u32`** (§1.1). `pushed` increments when pieces are committed to the wire (room reserved then), not on response — host accounting is authoritative.
+
+These counters track the MCU's **monotonic** ring counter and are **independent of the time re-anchor** (§3.2.1): a planner timeline reset does not reset them. At an idle→motion re-anchor the ring has drained, so `consumed ≈ pushed` already and `room` is full — no reset needed, and zeroing `pushed` against the still-climbing MCU counter would corrupt `room`. They reset only on an actual MCU ring reset (epoch change from MCU restart/reconfigure, where `consumed` genuinely returns to 0).
 
 **Scheduling — strict global start-time order, stall on a full head:**
 
@@ -134,7 +136,7 @@ Per frame: `kalico_call(MessageKind::PushPieces, body, timeout)`; `body` is `axi
 
 ## 5. Timing
 
-- **Initial lead.** A fresh stream's first piece must be far enough ahead to load before the ISR reaches it — covered by the planner's look-ahead through the anchor (`lead ≈ freq · 0.25`) plus earliest-first pushing.
+- **Initial lead.** A fresh stream's first piece must be far enough ahead to load before the ISR reaches it — covered by the anchor's `lead ≈ 0.25 s` (§3.2.1) plus earliest-first pushing.
 - **All axes arrive together.** Each `ShapedSegment` covers all axes over one `[t_start, t_end]`, so the pump always has a complete timeline up to the latest enqueued segment.
 
 ### 5.1 Underrun is a halt — two budgets, ring depth covers only one
