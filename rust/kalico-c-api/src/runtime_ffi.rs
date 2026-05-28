@@ -114,7 +114,7 @@ pub mod exports {
     /// exactly once; subsequent calls observe `Err(true)` and return null.
     pub(super) static INIT_DONE: AtomicBool = AtomicBool::new(false);
 
-    // C-side timer-control helpers — defined in src/stm32/runtime_tick_h7.c
+    // C-side cycle-counter helper — defined in src/stm32/runtime_tick_h7.c
     // on the MCU and stubbed by the integration-test harness on host.
     unsafe extern "C" {
         fn runtime_cyccnt_read() -> u32;
