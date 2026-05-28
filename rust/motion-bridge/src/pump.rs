@@ -315,6 +315,12 @@ where
                 q.pieces.extend(pieces);
             }
             PumpMsg::Heartbeat(HeartbeatMsg { mcu_id, consumed_counts }) => {
+                // INVARIANT: consumed_counts[i] is axis index i, the SAME axis
+                // numbering used by PushPieces.axis_idx and the enqueue adapter's
+                // AxisKey.axis. Verified end-to-end on the MCU: the heartbeat FFI
+                // writes consumed_counts()[i] = stepping_axes[i].ring.consumed_count()
+                // in index order (runtime_ffi.rs), and push_pieces(axis_idx) targets
+                // that same stepping_axes[axis_idx]. Do not reorder either side.
                 for (axis, &c) in consumed_counts.iter().enumerate() {
                     let key = AxisKey { mcu_id, axis: axis as u8 };
                     if let Some(q) = queues.get_mut(&key) {
