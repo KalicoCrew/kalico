@@ -12,6 +12,8 @@ pub mod config;
 #[doc(hidden)]
 pub mod dispatch;
 #[doc(hidden)]
+pub mod enqueue;
+#[doc(hidden)]
 pub mod homing;
 #[doc(hidden)]
 pub mod planner;
