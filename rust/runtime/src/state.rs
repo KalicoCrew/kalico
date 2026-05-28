@@ -1058,7 +1058,7 @@ pub enum SetStepModeError {
 /// phase-stepping bit. Spec §10.
 ///
 /// `Release` ordering on the store pairs with `Acquire` loads in the
-/// engine ISR and `count_modulated_steppers` foreground reads.
+/// engine ISR and any foreground reader of `step_modes`.
 pub fn set_step_mode(
     shared: &SharedState,
     stepper_idx: u8,

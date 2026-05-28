@@ -462,10 +462,11 @@ pub mod exports {
 
     /// Read the widened MCU clock. Spec §3.9 — on-demand widening from
     /// Klipper's `timer_read_time` + the `stats_send_time` / `stats_send_time_high`
-    /// counters that Klipper's stats task maintains (basecmd.c). Replaces the
-    /// pre-emission-rewrite SharedState seqlock dependency: TIM5 is off when
-    /// `count_modulated_steppers == 0`, so the seqlock would not be re-published
-    /// in StepTime-only configurations. The stats task runs unconditionally,
+    /// counters that Klipper's stats task maintains (basecmd.c). TIM5 now
+    /// free-runs from boot, so the engine seqlock is continuously republished
+    /// while the firmware is alive; the stats-task path remains the correct
+    /// choice here because it avoids ISR-context re-entrancy with the
+    /// `timer_read_time` wrap update. The stats task runs unconditionally,
     /// so this widening advances regardless of engine activity.
     ///
     /// Mirrors the C-side `runtime_widened_host_clock` in `src/runtime_tick.c`.
@@ -2056,43 +2057,6 @@ pub mod exports {
                 Some(slot) => slot.load(Ordering::Acquire),
                 None => 0xFFFF,
             }
-        }
-    }
-
-    /// Count how many steppers are currently in `StepMode::Modulated`.
-    ///
-    /// Used by `runtime_tick_enable` (C-side, spec §6.3) to decide whether
-    /// TIM5 is needed: if the count is zero, TIM5 has no work and is left
-    /// disabled. F4 (no `PHASE_STEPPING` capability) always hits this path;
-    /// H7 in an all-StepTime config also leaves TIM5 idle.
-    ///
-    /// Returns `0` for a null `rt` or uninitialised runtime.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_count_modulated_steppers(rt: *mut KalicoRuntime) -> u8 {
-        use runtime::state::MAX_STEPPER_OIDS;
-        if rt.is_null() {
-            return 0;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return 0;
-        }
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: `rt` is the published RT_CELL pointer (non-null, INIT_DONE=true).
-        // `step_modes` are `AtomicU8` fields; we read via a shared `&SharedState`
-        // reference — no `&mut` is formed. Acquire ordering ensures we see the
-        // latest `set_step_mode` write from any foreground caller.
-        unsafe {
-            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
-            let shared: &SharedState = &*shared_ptr;
-            let mut count = 0u8;
-            for i in 0..MAX_STEPPER_OIDS {
-                if shared.step_modes[i].load(Ordering::Acquire)
-                    == runtime::state::StepMode::Modulated as u8
-                {
-                    count = count.saturating_add(1);
-                }
-            }
-            count
         }
     }
 
