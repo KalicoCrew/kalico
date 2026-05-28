@@ -19,7 +19,8 @@ This spec replaces that whole layer with: flatten each shaped segment into per-a
 ### 1.1 Verified facts this design rests on
 
 - **`PieceEntry` layout** (`rust/runtime/src/piece_ring.rs`): `start_time: u64` (MCU clock cycles), `coeffs: [f32; 4]` (Bernstein control points), `duration: f32` (seconds), `_reserved: u32`. 32 bytes total.
-- **Idle = hold.** `engine.rs::get_position_and_velocity` returns `None` when an axis has no current piece or the next piece has not started; the tick loop `continue`s, leaving `p_prev` untouched and emitting no steps. An axis with no piece freezes at its last position — it does **not** snap to zero. (This is what makes static-axis skipping safe; it was unsafe under the old UNUSED-handle model that evaluated to absolute zero — the `dispatch.rs:411` phantom-jump bug.)
+- **Idle = hold.** `engine.rs::get_position_and_velocity` returns `None` when an axis has no current piece or the next piece has not started; the tick loop `continue`s, leaving `p_prev` untouched and emitting no steps. An axis with no piece freezes at its last position — it does **not** snap to zero. This covers genuinely pieceless cases (an axis the segment has no curve for, e.g. E on a pure-travel move; or end-of-stream gaps). It is **not** relied on as an optimization for non-moving axes — see §3.2.
+- **Every segment carries all three kinematic axes.** `emit_shaped` always builds `ShapedSegment.axes[0..2]` (X/Y/Z); a non-moving axis gets a *constant* curve, which `extract_bezier_pieces` yields as one constant piece. So a standing-still axis produces one cheap piece per segment, not zero. E is separate and may be absent on travel moves.
 - **Wire send exists.** `KalicoHostIo::kalico_call(MessageKind::PushPieces, body, timeout)` sends one control-channel frame and awaits the matching `PushPiecesResponse`. `kalico_protocol::messages::PushPieces` already has an `Encode` impl. No new transport code is required.
 - **Clock conversion exists.** The bridge already maps planner-local time to per-MCU clock via the clock-sync + planner-epoch machinery it used for segment `t_start`/`t_end` (`PassthroughRouter::host_time_to_mcu_clock`). We apply the same mapping per piece instead of per segment.
 
@@ -56,22 +57,17 @@ This logic knows nothing about motion, static axes, or piece content. It allocat
 Replaces `build_push_params` + `split_plan_if_needed` + `McuPushPlan` entirely. For each `ShapedSegment` the planner emits:
 
 1. **CoreXY transform** (preserved, relocated from `dispatch.rs`): for a CoreXY MCU driving both X and Y, combine into motor-frame A = X + Y (slot 0) and B = X − Y (slot 1) via the existing `nurbs::algebra::add_with_knot_union`. All other axes pass through.
-2. For each axis that **moves** in this segment:
+2. For each axis the segment provides a curve for:
    - `extract_bezier_pieces` → per piece:
      - `start_time = host_time_to_mcu_clock(u_start)` (per-MCU; absolute clock cycles).
      - `duration = (u_end − u_start)` as f32 seconds.
      - `coeffs = ` the four Bernstein control points as f32.
      - `_reserved = 0`.
    - Append the resulting `PieceEntry`s, in time order, to that `(mcu, axis)` queue.
-3. **Static axes enqueue nothing.** An axis whose curve is constant over the segment (no motion) is skipped; the engine holds its last position. "Static" is decided here at send time — see §3.2.1.
 
 No segment IDs, no packed handles, no slot allocation, no sub-splitting.
 
-#### 3.2.1 Static-axis test
-
-An axis is static over the segment when all its Bézier control points equal the held position within `EPS_CONST` (the existing `is_trivially_constant` test, `dispatch.rs:119`). Skipping is safe because of the idle-holds-position guarantee (§1.1).
-
-**Continuity invariant:** when a skipped axis next moves, its first emitted piece's `b0` must equal the position the engine is holding, or a step jump results. The planner plans absolute, continuous positions, and `seed_position` anchors the engine at startup / `set_position`, so this holds by construction. This is an invariant to preserve, not new logic to add.
+**No static/skip judgment anywhere.** The adapter extracts and enqueues whatever pieces the segment's curves yield. A non-moving axis carries a constant curve → one constant piece, which is sent like any other; an axis with no curve (e.g. E on a travel move) yields nothing, naturally. Sending the explicit constant piece is simpler *and* safer than skipping: position continuity is carried in the piece itself rather than depending on the engine's hold behavior. The pump (§3.3) likewise never inspects piece content — it only sees queued `PieceEntry`s and their `start_time`s.
 
 ### 3.3 Pump (async; the real new logic)
 
@@ -130,7 +126,7 @@ Per `PushPieces` frame: `kalico_call(MessageKind::PushPieces, body, timeout)`, w
 
 The new pump cannot coexist cleanly with the credit / slot machinery, and the segment-era host types are dead under the piece-ring contract. Remove:
 
-- `dispatch.rs`: `build_push_params`, `split_plan_if_needed` / `split_recursive`, `McuPushPlan`, `SegmentPushParams` references, packed-handle constants (`UNUSED_HANDLE`) and `set_handle`. Keep the CoreXY transform logic (relocated into the enqueue adapter) and `de_casteljau_split`/`extract_time_window` only if still used (they are not, once sub-splitting is gone — remove them too).
+- `dispatch.rs`: `build_push_params`, `split_plan_if_needed` / `split_recursive`, `McuPushPlan`, `SegmentPushParams` references, packed-handle constants (`UNUSED_HANDLE`) and `set_handle`, and `is_trivially_constant`. Keep the CoreXY transform logic (relocated into the enqueue adapter); `de_casteljau_split` / `extract_time_window` are unused once sub-splitting is gone — remove them too.
 - `producer.rs`: `CurveLoadParams`, `SegmentPushParams`, and the now-unused conversion helpers.
 - `credit.rs` and the `CreditCounter` wiring in `bridge.rs` (`attach_credit_counter`, `CREDIT_SEED_CAPACITY`).
 - The slot pool (`SharedSlotPool`) and retirement-callback wiring (`attach_retirement_callback`, `on_credit_freed`, `retire_through_segment`).
@@ -154,13 +150,13 @@ Removal should leave the build green with the new path in place — not a separa
 
 End-to-end, on the bench (the user can verify motion directly):
 
-- A single travel move on CoreXY produces motion on X and Y MCU with Z/E silent (no pieces).
-- A move involving Z produces Z pieces on the F4 while X/Y stream to the H7.
+- A single travel move on CoreXY produces motion on the X/Y MCU; Z gets one constant piece per segment (held), E is silent (no curve on a travel move).
+- A move involving Z produces Z motion pieces on the F4 while X/Y stream to the H7.
 - Sustained streaming (many moves) keeps both MCUs fed without one racing ahead of the other — the original bug.
 - Heartbeat `consumed_counts` advance and the pump refills as rings drain.
 
 Unit / integration (host crates):
 
-- Enqueue adapter: a moving axis yields time-ordered `PieceEntry`s with correct absolute `start_time` and `duration`; a static axis yields none; CoreXY A/B are the X±Y combination.
+- Enqueue adapter: a moving axis yields time-ordered `PieceEntry`s with correct absolute `start_time` and `duration`; a non-moving axis yields one constant piece per segment; CoreXY A/B are the X±Y combination.
 - Pump scheduler: strict global start-time order; stall when the head's ring is full (no skip-ahead to a ring with room); same-MCU runs coalesce; no frame is sent when `room == 0`.
 - Ring allocation: `total_piece_memory` divides equally across a MCU's driven axes.
