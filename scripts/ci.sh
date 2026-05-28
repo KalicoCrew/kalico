@@ -11,6 +11,7 @@
 # Usage:
 #   ./scripts/ci.sh                 # run all gates with a summary (local)
 #   ./scripts/ci.sh quick           # fast subset: ruff + rust build/test/clippy/fmt
+#   ./scripts/ci.sh install-hooks   # enable the pre-push hook (runs `quick` per push)
 #   ./scripts/ci.sh <job>           # run one gate, exit with its status (CI)
 #
 # Jobs: ruff rust-host rust-build rust-test rust-clippy rust-fmt rust-loom
@@ -253,6 +254,21 @@ usage() {
     sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
 }
 
+# Enable the tracked pre-push hook (.githooks/pre-push runs `ci.sh quick`).
+# Branch-agnostic, so it also guards direct pushes to sota-motion.
+job_install_hooks() {
+    cd "$ROOT"
+    [ -x .githooks/pre-push ] || {
+        echo "error: .githooks/pre-push missing or not executable" >&2
+        return 1
+    }
+    git config core.hooksPath .githooks
+    echo "pre-push hook enabled (core.hooksPath = .githooks)."
+    echo "  runs './scripts/ci.sh quick' before every push — incl. direct pushes to sota-motion"
+    echo "  bypass once:  git push --no-verify"
+    echo "  disable:      git config --unset core.hooksPath"
+}
+
 # ─── dispatch ──────────────────────────────────────────────────────────────
 case "${1:-all}" in
     rust-host)        job_rust_host ;;
@@ -275,6 +291,7 @@ case "${1:-all}" in
     sim)              job_sim ;;
     all)              run_all false ;;
     quick|--quick)    run_all true ;;
+    install-hooks|hooks) job_install_hooks ;;
     -h|--help|help)   usage ;;
     *) echo "unknown job: ${1:-}" >&2; usage >&2; exit 2 ;;
 esac
