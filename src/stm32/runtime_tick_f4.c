@@ -59,34 +59,19 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // TIM5 is enabled iff count_modulated_steppers > 0 (phase-stepping
-    // consumer present). Mirrors runtime_tick_h7.c; see that file for
-    // the full rationale.
-    //
-    // F4 today has no phase-stepped axis, so this gate keeps TIM5 off
-    // entirely. The drain task disables TIM5 on the Drained transition.
-    //
-    // Remaining ISR responsibilities are unchanged from before — see the
-    // bullet list in runtime_tick_h7.c::runtime_tick_enable.
-    if (!runtime_handle) {
+    // Idempotent re-arm. TIM5 is armed at init and disabled only on Klipper
+    // shutdown, so on STM32 this is normally a no-op (CR1.CEN already set).
+    // The entry point is retained because the Linux build's runtime_tick_enable
+    // performs the post-connect widen-seed + step-queue install
+    // (src/linux/runtime_tick_host.c); configure_axis calls it on every build.
+    if (TIM5->CR1 & TIM_CR1_CEN) {
         return;
     }
-
-    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0) {
-        // No phase-stepping consumers — TIM5 stays disabled. The next
-        // set_step_mode call will re-enter and arm TIM5.
-        return;
-    }
-
-    // T17: TIM5 rate is set by `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ`
-    // (Task 1 Kconfig; default 20 kHz on F4). See
-    // runtime_tick_init for the peripheral-clock + DWT setup and the
-    // F446 CPU-budget rationale that anchors the default.
     TIM5->CR1 &= ~TIM_CR1_CEN;
     TIM5->ARR  = (runtime_clock_freq / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
     TIM5->EGR  = TIM_EGR_UG;
     TIM5->SR   = 0;
-    TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
+    TIM5->SR   = ~TIM_SR_UIF;
     TIM5->CR1 |= TIM_CR1_CEN;
     NVIC_EnableIRQ(TIM5_IRQn);
 }
@@ -153,8 +138,15 @@ runtime_tick_init(void)
     // runtime_tick_h7.c for the full rationale.
     NVIC_SetPriority(TIM5_IRQn, 2);
 
-    // Don't enable yet — runtime_init pushes segments first; first push triggers
-    // runtime_tick_enable() via the producer protocol.
+    // Always-on (spec 2026-05-28): the piece-ring engine has no per-push event
+    // to lazily start TIM5 (segments are gone), so the ISR free-runs from boot.
+    // It idles cheaply when no axis has an active piece. TIM5 is disabled only
+    // when the firmware stops motion (Klipper shutdown) and re-armed here on
+    // FIRMWARE_RESTART.
+    TIM5->EGR  = TIM_EGR_UG;
+    TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
+    TIM5->CR1 |= TIM_CR1_CEN;
+    NVIC_EnableIRQ(TIM5_IRQn);
 }
 
 void
