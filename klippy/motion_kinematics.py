@@ -50,9 +50,7 @@ def parse_kinematics(config):
     axes_config = {}
 
     if kin_name in ("cartesian", "corexy"):
-        axes_config["max_velocity"] = config.getfloat(
-            "max_velocity", above=0.0
-        )
+        axes_config["max_velocity"] = config.getfloat("max_velocity", above=0.0)
         axes_config["max_accel"] = config.getfloat("max_accel", above=0.0)
         axes_config["max_z_velocity"] = config.getfloat(
             "max_z_velocity", None, above=0.0

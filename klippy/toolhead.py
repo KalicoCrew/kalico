@@ -333,7 +333,7 @@ class ToolHead:
         ):
             raise config.error(
                 "dual_carriage not compatible with '%s' kinematics system"
-                % (kin_name,)
+                % (config.get("kinematics"),)
             )
         if hasattr(self.kin, "max_x_velocity"):
             self.orig_cfg["max_x_velocity"] = self.kin.max_x_velocity

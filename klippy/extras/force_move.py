@@ -6,8 +6,6 @@
 import logging
 import math
 
-from klippy import chelper
-
 BUZZ_DISTANCE = 1.0
 BUZZ_VELOCITY = BUZZ_DISTANCE / 0.250
 BUZZ_RADIANS_DISTANCE = math.radians(1.0)

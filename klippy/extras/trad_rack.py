@@ -2911,6 +2911,4 @@ class TradRackRunoutSensor:
 
 
 def load_config(config):
-    raise config.error(
-        "[trad_rack] is not supported under the new motion path"
-    )
+    raise config.error("[trad_rack] is not supported under the new motion path")

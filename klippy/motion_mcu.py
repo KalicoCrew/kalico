@@ -51,11 +51,21 @@ class MotionQueryCommandWrapper:
             data,
         )
         # Phase 1: return a synthetic response dict
-        return {"#name": self._respformat.split()[0], "#sent_time": 0.0,
-                "#receive_time": 0.0}
+        return {
+            "#name": self._respformat.split()[0],
+            "#sent_time": 0.0,
+            "#receive_time": 0.0,
+        }
 
-    def send_with_preface(self, preface_cmd, preface_data=(), data=(),
-                          minclock=0, reqclock=0, retry=True):
+    def send_with_preface(
+        self,
+        preface_cmd,
+        preface_data=(),
+        data=(),
+        minclock=0,
+        reqclock=0,
+        retry=True,
+    ):
         return self.send(data, minclock, reqclock, retry)
 
 
@@ -92,13 +102,11 @@ class MotionMcuProxy:
         self.is_non_critical = False
 
     def setup(self, serial_path, baud):
-        self._mcu_handle = self._bridge.claim_mcu(
-            self._name, serial_path, baud
-        )
-        self._bridge_handle = self._mcu_handle  # alias for motion_toolhead._init_planner
-        self._command_queue = self._bridge.alloc_command_queue(
+        self._mcu_handle = self._bridge.claim_mcu(self._name, serial_path, baud)
+        self._bridge_handle = (
             self._mcu_handle
-        )
+        )  # alias for motion_toolhead._init_planner
+        self._command_queue = self._bridge.alloc_command_queue(self._mcu_handle)
 
     # ------------------------------------------------------------------
     # MCU API — identity / lifecycle
@@ -143,8 +151,9 @@ class MotionMcuProxy:
     def lookup_command(self, msgformat, cq=None):
         return MotionCommandWrapper(self, msgformat, cq)
 
-    def lookup_query_command(self, msgformat, respformat, oid=None,
-                             cq=None, is_async=False):
+    def lookup_query_command(
+        self, msgformat, respformat, oid=None, cq=None, is_async=False
+    ):
         return MotionQueryCommandWrapper(self, msgformat, respformat, oid, cq)
 
     def try_lookup_command(self, msgformat):
@@ -266,9 +275,8 @@ class MotionMcuProxy:
         }
         if pin_type not in pcs:
             from . import pins
-            raise pins.error(
-                "pin type %s not supported on mcu" % (pin_type,)
-            )
+
+            raise pins.error("pin type %s not supported on mcu" % (pin_type,))
         return pcs[pin_type](self, pin_params)
 
     # ------------------------------------------------------------------

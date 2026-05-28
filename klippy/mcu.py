@@ -26,6 +26,7 @@ MAX_SCHEDULE_TICKS = (1 << 31) - 1
 # Directly caused by the limitation of MAX_SCHEDULE_TICKS.
 MAX_NOMINAL_DURATION = 3.0
 
+
 def _format_bridge_msg(cmd, data):
     """Format a Klipper command as a string for the bridge's text-protocol
     parser. Used by both query (CommandQueryWrapper) and fire-and-forget
@@ -42,8 +43,10 @@ def _format_bridge_msg(cmd, data):
         val = data[i]
         if isinstance(val, (bytes, bytearray)):
             val = val.hex()
-        elif isinstance(val, (list, tuple)) and val and all(
-            isinstance(x, int) for x in val
+        elif (
+            isinstance(val, (list, tuple))
+            and val
+            and all(isinstance(x, int) for x in val)
         ):
             val = bytes(val).hex()
         parts.append("%s=%s" % (name, val))
@@ -181,7 +184,12 @@ class CommandQueryWrapper:
             raise
 
     def send(self, data=(), minclock=0, reqclock=0, retry=True):
-        return self._bridge_send(data)
+        if getattr(self._serial, "mcu", None) and getattr(
+            self._serial.mcu, "_motion_bridge", None
+        ):
+            return self._bridge_send(data)
+        cmds = self._cmd.encode(data)
+        return self._do_send(cmds, minclock, reqclock, retry)
 
     def send_with_preface(
         self,
@@ -212,16 +220,24 @@ class CommandWrapper:
         self._msgtag = msgparser.lookup_msgid(msgformat) & 0xFFFFFFFF
 
     def send(self, data=(), minclock=0, reqclock=0):
-        # Bridge mode has no serialqueue — raw_send is a no-op. Format
-        # the command as a string and route through bridge_send so
-        # fire-and-forget commands (e.g. spi_send used as a SPI bus-
-        # selection preface) actually reach the firmware.
-        self._serial.send(_format_bridge_msg(self._cmd, data), minclock)
+        if getattr(self._serial, "mcu", None) and getattr(
+            self._serial.mcu, "_motion_bridge", None
+        ):
+            self._serial.send(_format_bridge_msg(self._cmd, data), minclock)
+        else:
+            self._serial.raw_send(
+                self._cmd.encode(data), minclock, reqclock, self._cmd_queue
+            )
 
     def send_wait_ack(self, data=(), minclock=0, reqclock=0):
-        # Bridge has no per-frame ack semantics — bridge_send is already
-        # wire-level ACKed. Treat send_wait_ack as a plain send.
-        self._serial.send(_format_bridge_msg(self._cmd, data), minclock)
+        if getattr(self._serial, "mcu", None) and getattr(
+            self._serial.mcu, "_motion_bridge", None
+        ):
+            self._serial.send(_format_bridge_msg(self._cmd, data), minclock)
+        else:
+            self._serial.raw_send_wait_ack(
+                self._cmd.encode(data), minclock, reqclock, self._cmd_queue
+            )
 
     def get_command_tag(self):
         return self._msgtag
@@ -319,8 +335,10 @@ class MCU_trsync:
             "[trsync-diag] _handle_trsync_state mcu=%s oid=%d "
             "can_trigger=%s trigger_reason=%s clock=%s "
             "has_completion=%s",
-            self._mcu._name, self._oid,
-            params.get("can_trigger"), params.get("trigger_reason"),
+            self._mcu._name,
+            self._oid,
+            params.get("can_trigger"),
+            params.get("trigger_reason"),
             params.get("clock"),
             self._trigger_completion is not None,
         )
@@ -331,8 +349,9 @@ class MCU_trsync:
                 reason = params["trigger_reason"]
                 is_failure = reason >= self.REASON_COMMS_TIMEOUT
                 logging.info(
-                    "[trsync-diag] completing trigger: reason=%d "
-                    "is_failure=%s", reason, is_failure,
+                    "[trsync-diag] completing trigger: reason=%d is_failure=%s",
+                    reason,
+                    is_failure,
                 )
                 self._reactor.async_complete(tc, is_failure)
         elif self._home_end_clock is not None:
@@ -343,12 +362,15 @@ class MCU_trsync:
                     [self._oid, self.REASON_PAST_END_TIME]
                 )
 
-    def start(self, print_time, report_offset, trigger_completion, expire_timeout):
+    def start(
+        self, print_time, report_offset, trigger_completion, expire_timeout
+    ):
         self._trigger_completion = trigger_completion
         if self._mcu._bridge_drives_steppers:
             logging.info(
                 "[trsync-diag] start no-op (bridge-driven) mcu=%s oid=%d",
-                self._mcu._name, self._oid,
+                self._mcu._name,
+                self._oid,
             )
             return
         # Non-bridge MCU (Beacon, Eddy): send firmware commands.
@@ -382,15 +404,23 @@ class MCU_trsync:
             "[trsync-diag] start mcu=%s oid=%d bridge_drives=%s "
             "print_time=%.6f clock=%d expire_clock=%d "
             "expire_timeout=%.1f steppers=%s",
-            self._mcu._name, self._oid,
+            self._mcu._name,
+            self._oid,
             self._mcu._bridge_drives_steppers,
-            print_time, clock, expire_clock, expire_timeout,
+            print_time,
+            clock,
+            expire_clock,
+            expire_timeout,
             [s.get_name() for s in self._steppers],
         )
         if self._trdispatch_mcu is not None:
             self._trsync_start_cmd.send(
-                [self._oid, report_clock, report_ticks,
-                 self.REASON_COMMS_TIMEOUT],
+                [
+                    self._oid,
+                    report_clock,
+                    report_ticks,
+                    self.REASON_COMMS_TIMEOUT,
+                ],
                 reqclock=clock,
             )
             for s in self._steppers:
@@ -405,8 +435,12 @@ class MCU_trsync:
             serial.send(
                 "trsync_start oid=%d report_clock=%d report_ticks=%d"
                 " expire_reason=%d"
-                % (self._oid, report_clock, report_ticks,
-                   self.REASON_COMMS_TIMEOUT)
+                % (
+                    self._oid,
+                    report_clock,
+                    report_ticks,
+                    self.REASON_COMMS_TIMEOUT,
+                )
             )
             for s in self._steppers:
                 serial.send(
@@ -414,8 +448,7 @@ class MCU_trsync:
                     % (s.get_oid(), self._oid)
                 )
             serial.send(
-                "trsync_set_timeout oid=%d clock=%d"
-                % (self._oid, expire_clock)
+                "trsync_set_timeout oid=%d clock=%d" % (self._oid, expire_clock)
             )
 
     def set_home_end_time(self, home_end_time):
@@ -500,9 +533,7 @@ class TriggerDispatch:
             )
         etrsync = self._trsyncs[0]
         ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.trdispatch_start(
-            self._trdispatch, etrsync.REASON_HOST_REQUEST
-        )
+        ffi_lib.trdispatch_start(self._trdispatch, etrsync.REASON_HOST_REQUEST)
         return self._trigger_completion
 
     def wait_end(self, end_time):
@@ -549,16 +580,19 @@ class MCU_endstop:
         # (e.g. Z stepper) override before home_start.
         self._sensorless_velocity_axis = 0x03  # X | Y
         self._sensorless_v_min_q16 = 0  # 0 = no lower-bound gate
-        from . import motion_bridge as _mb
-
         # NB: at MCU_endstop construction time the bridge has not yet
         # identified the MCU, so `_bridge_handle` is None and we
         # cannot allocate a bridge command queue here. Defer both
         # the handle and the queue to BridgeTriggerDispatch.start().
         bridge_wrapper = mcu._motion_bridge
-        self._dispatch = _mb.BridgeTriggerDispatch(
-            bridge_wrapper, None, None, mcu.get_printer().get_reactor()
-        )
+        if bridge_wrapper is not None:
+            from . import motion_bridge as _mb
+
+            self._dispatch = _mb.BridgeTriggerDispatch(
+                bridge_wrapper, None, None, mcu.get_printer().get_reactor()
+            )
+        else:
+            self._dispatch = None
         # Resolve the numeric GPIO index the firmware-side endstop
         # sampler will read. The Linux MCU uses GPIO(port,num) =
         # port*288+num (src/linux/internal.h::GPIO); on STM32 the
@@ -585,6 +619,7 @@ class MCU_endstop:
         #     `gpio_in_setup`.
         # Returns 0 for unparseable strings (matches prior behavior).
         import re
+
         pin = pin_str.strip()
         m = re.match(r"^gpiochip(\d+)/gpio(\d+)$", pin)
         if m:
@@ -595,14 +630,17 @@ class MCU_endstop:
         if m:
             num = int(m.group(2))
             if num <= 15:
-                return (ord(m.group(1)) - ord('A')) * 16 + num
+                return (ord(m.group(1)) - ord("A")) * 16 + num
         return 0
 
     def add_stepper(self, stepper):
-        self._dispatch.add_stepper(stepper)
+        if self._dispatch is not None:
+            self._dispatch.add_stepper(stepper)
 
     def get_steppers(self):
-        return self._dispatch.get_steppers()
+        if self._dispatch is not None:
+            return self._dispatch.get_steppers()
+        return []
 
     def home_start(
         self, print_time, sample_time, sample_count, rest_time, triggered=True
@@ -619,7 +657,6 @@ class MCU_endstop:
         # bridge samples at modulation rate; sample_count → sample_n;
         # triggered=True → TripImmediately for physical, IgnoreUntilMoving
         # for TmcDiag unless self._sensorless_trip_immediately).
-        from . import motion_bridge as _mb
 
         # Resolve pin: extract a numeric GPIO index plus polarity. The
         # bridge MCU's pin namespace numbers are firmware-side; for now
@@ -654,7 +691,11 @@ class MCU_endstop:
         gpio = int(getattr(self, "_bridge_gpio_index", 0))
         sample_n = max(1, int(sample_count))
         self._dispatch.add_source(
-            kind, gpio, active_high, policy, sample_n,
+            kind,
+            gpio,
+            active_high,
+            policy,
+            sample_n,
             int(self._sensorless_velocity_axis),
             int(self._sensorless_v_min_q16),
         )
@@ -680,7 +721,11 @@ class MCU_endstop:
         logging.info(
             "[bridge-trace] _home_wait_bridge: home_end_time=%.6f "
             "est_now=%.6f delta=%.6f slack=%.6f eventtime=%.6f",
-            home_end_time, est_now, home_end_time - est_now, slack, eventtime,
+            home_end_time,
+            est_now,
+            home_end_time - est_now,
+            slack,
+            eventtime,
         )
         completion = self._dispatch._completion
         result = completion.wait(waketime=backstop)
@@ -695,16 +740,16 @@ class MCU_endstop:
             # ArmStatus::Rejected (Busy).
             self._dispatch.stop()
             cmderr = self._mcu.get_printer().command_error
-            wake_eventtime = (
-                self._mcu.get_printer().get_reactor().monotonic()
-            )
+            wake_eventtime = self._mcu.get_printer().get_reactor().monotonic()
             wake_est = self._mcu.estimated_print_time(wake_eventtime)
             logging.info(
                 "[bridge-trace] _home_wait_bridge backstop fired: "
                 "wake_eventtime=%.6f wake_est_pt=%.6f "
                 "elapsed_wall=%.6f elapsed_mcu=%.6f",
-                wake_eventtime, wake_est,
-                wake_eventtime - eventtime, wake_est - est_now,
+                wake_eventtime,
+                wake_est,
+                wake_eventtime - eventtime,
+                wake_est - est_now,
             )
             raise cmderr(
                 "Homing wait: MCU silent past expected end-time + 1.0s "
@@ -729,14 +774,17 @@ class MCU_endstop:
                 logging.info(
                     "[bridge-trace] _home_wait_bridge trip stepper "
                     "oid=%s count=%s has no host stepper",
-                    step.get("oid"), step.get("step_count"),
+                    step.get("oid"),
+                    step.get("step_count"),
                 )
                 continue
             cnt = int(step["step_count"])
             logging.info(
                 "[bridge-trace] _home_wait_bridge apply trip count "
                 "stepper=%s oid=%s count=%d",
-                stepper_for.get_name(), step.get("oid"), cnt,
+                stepper_for.get_name(),
+                step.get("oid"),
+                cnt,
             )
             if hasattr(stepper_for, "bridge_set_position_from_step_count"):
                 stepper_for.bridge_set_position_from_step_count(cnt)
@@ -1050,7 +1098,7 @@ class MCU:
         self._name = config.get_name()
         if self._name.startswith("mcu "):
             self._name = self._name[4:]
-        self._motion_bridge = printer.lookup_object("motion_bridge")
+        self._motion_bridge = printer.lookup_object("motion_bridge", None)
         self._bridge_drives_steppers = False
         self._bridge_handle = None
         # Serial port
@@ -1205,8 +1253,7 @@ class MCU:
             # and we fall through to the normal `invoke_async_shutdown`
             # below so the operator sees the actual failure.
             self._check_restart(
-                "MCU '%s' latched in shutdown state at connect"
-                % (self._name,)
+                "MCU '%s' latched in shutdown state at connect" % (self._name,)
             )
 
         append_msgs = []
@@ -1353,13 +1400,13 @@ class MCU:
                     "Sending MCU '%s' printer configuration...", self._name
                 )
                 for c in local_config_cmds:
-                    logging.info("[config-send] mcu=%s cmd=%s",
-                                 self._name, c)
+                    logging.info("[config-send] mcu=%s cmd=%s", self._name, c)
                     self._serial.send(c)
             else:
                 for c in self._restart_cmds:
-                    logging.info("[config-send-restart] mcu=%s cmd=%s",
-                                 self._name, c)
+                    logging.info(
+                        "[config-send-restart] mcu=%s cmd=%s", self._name, c
+                    )
                     self._serial.send(c)
             # Transmit init messages
             for c in self._init_cmds:
@@ -1561,7 +1608,8 @@ class MCU:
             logging.warning(
                 "MCU '%s' has no reset/config_reset command. "
                 "Available commands (%d): %s",
-                self._name, len(all_cmds),
+                self._name,
+                len(all_cmds),
                 ", ".join(c for c in all_cmds if "reset" in c.lower())
                 or "(none with 'reset')",
             )
@@ -1591,34 +1639,31 @@ class MCU:
         self.register_response(self._handle_shutdown, "is_shutdown")
         self.register_response(self._handle_mcu_stats, "stats")
         raw_dict = msgparser.get_raw_data_dictionary()
-        if raw_dict:
-            if isinstance(raw_dict, str):
-                raw_dict = raw_dict.encode("utf-8")
-            self._motion_bridge.set_msgproto_dict(raw_dict)
-        if self._bridge_handle is None:
-            self._bridge_handle = self._motion_bridge.claim_mcu(
-                self._name,
-                self._serialport or "",
-                int(self._baud or 0),
-            )
-        bridge = self._motion_bridge
-        handle = self._bridge_handle
-
-        def _bridge_clock_est_cb(
-            freq, offset, last_clock, b=bridge, h=handle
-        ):
-            try:
-                b.set_clock_est(
-                    h, float(freq), float(offset), int(last_clock)
+        if self._motion_bridge is not None:
+            if raw_dict:
+                if isinstance(raw_dict, str):
+                    raw_dict = raw_dict.encode("utf-8")
+                self._motion_bridge.set_msgproto_dict(raw_dict)
+            if self._bridge_handle is None:
+                self._bridge_handle = self._motion_bridge.claim_mcu(
+                    self._name,
+                    self._serialport or "",
+                    int(self._baud or 0),
                 )
-            except Exception:
-                logging.exception(
-                    "motion_bridge: set_clock_est failed"
-                )
+            bridge = self._motion_bridge
+            handle = self._bridge_handle
 
-        self._clocksync.set_clock_est_callback(
-            _bridge_clock_est_cb
-        )
+            def _bridge_clock_est_cb(
+                freq, offset, last_clock, b=bridge, h=handle
+            ):
+                try:
+                    b.set_clock_est(
+                        h, float(freq), float(offset), int(last_clock)
+                    )
+                except Exception:
+                    logging.exception("motion_bridge: set_clock_est failed")
+
+            self._clocksync.set_clock_est_callback(_bridge_clock_est_cb)
         return True
 
     def _ready(self):
@@ -1725,15 +1770,20 @@ class MCU:
             return self.lookup_command(msgformat)
         except self._serial.get_msgparser().error as e:
             logging.info(
-                "MCU '%s' try_lookup_command('%s') failed: %s "
-                "(available: %s)",
-                self._name, msgformat, e,
+                "MCU '%s' try_lookup_command('%s') failed: %s (available: %s)",
+                self._name,
+                msgformat,
+                e,
                 ", ".join(
-                    sorted(self._serial.get_msgparser()
-                           .messages_by_name.keys())[:20]
-                ) + ("..." if len(
-                    self._serial.get_msgparser()
-                    .messages_by_name) > 20 else ""),
+                    sorted(
+                        self._serial.get_msgparser().messages_by_name.keys()
+                    )[:20]
+                )
+                + (
+                    "..."
+                    if len(self._serial.get_msgparser().messages_by_name) > 20
+                    else ""
+                ),
             )
             return None
 
@@ -1798,13 +1848,15 @@ class MCU:
         # effort: if the bridge can't be reached (transport already gone),
         # fall through — we still try to send the reset command.
         try:
-            self._motion_bridge.bridge_mark_expected_disconnect(
-                self._bridge_handle
-            )
+            if self._motion_bridge is not None:
+                self._motion_bridge.bridge_mark_expected_disconnect(
+                    self._bridge_handle
+                )
         except Exception:
             logging.exception(
                 "MCU '%s' bridge_mark_expected_disconnect failed"
-                " (continuing with reset)", self._name,
+                " (continuing with reset)",
+                self._name,
             )
         if self._reset_cmd is None:
             # Attempt reset via config_reset command
@@ -1832,10 +1884,14 @@ class MCU:
             "[firmware-restart-trace] mcu=%s force=%s _is_mcu_bridge=%s "
             "non_critical_disconnected=%s _restart_method=%s "
             "_reset_cmd_present=%s clocksync_active=%s",
-            self._name, force, self._is_mcu_bridge,
-            self.non_critical_disconnected, self._restart_method,
+            self._name,
+            force,
+            self._is_mcu_bridge,
+            self.non_critical_disconnected,
+            self._restart_method,
             self._reset_cmd is not None,
-            self._clocksync.is_active() if self._clocksync is not None
+            self._clocksync.is_active()
+            if self._clocksync is not None
             else "no-clocksync",
         )
         if (

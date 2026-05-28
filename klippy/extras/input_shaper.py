@@ -33,8 +33,10 @@ class InputShaperParams:
             smoother_freq = config.getfloat(
                 "smoother_freq_" + axis, None, minval=0.0
             )
-            self.shaper_freq = smoother_freq if smoother_freq is not None else (
-                config.getfloat("shaper_freq_" + axis, 0.0, minval=0.0)
+            self.shaper_freq = (
+                smoother_freq
+                if smoother_freq is not None
+                else (config.getfloat("shaper_freq_" + axis, 0.0, minval=0.0))
             )
         else:
             self.shaper_freq = config.getfloat(

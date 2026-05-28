@@ -33,7 +33,11 @@ class DiagStepper:
         if force_move is not None:
             stepper = force_move.lookup_stepper(stepper_name)
         if stepper is None:
-            for s in self.printer.lookup_object("toolhead").get_kinematics().get_steppers():
+            for s in (
+                self.printer.lookup_object("toolhead")
+                .get_kinematics()
+                .get_steppers()
+            ):
                 if s.get_name() == stepper_name:
                     stepper = s
                     break
@@ -43,7 +47,11 @@ class DiagStepper:
                 " stepper_z stepper_z1 ..." % (stepper_name,)
             )
 
-        mcu_stepper = stepper if hasattr(stepper, "get_oid") else stepper.get_mcu_stepper()
+        mcu_stepper = (
+            stepper
+            if hasattr(stepper, "get_oid")
+            else stepper.get_mcu_stepper()
+        )
         mcu = mcu_stepper.get_mcu()
         oid = mcu_stepper.get_oid()
         period_ticks = max(1, int(mcu.seconds_to_clock(period_us * 1e-6)))

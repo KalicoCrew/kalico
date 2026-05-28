@@ -7,12 +7,9 @@ import os
 import struct
 from collections import defaultdict
 
-from . import chelper
-from . import motion_kinematics
-from . import stepper
+from . import motion_kinematics, stepper
 from .kinematics import extruder
-from .toolhead import Move, ToolHead, BUFFER_TIME_START
-
+from .toolhead import BUFFER_TIME_START, Move, ToolHead
 
 # Per-motor-slot prefix table. Slot order matches
 # `motion_kinematics.motor_deltas` and `_configure_axes_per_mcu`'s
@@ -39,7 +36,7 @@ def _name_motor_slot(name):
     for slot_idx, prefix in _MOTOR_SLOT_PREFIXES:
         if not name.startswith(prefix):
             continue
-        suffix = name[len(prefix):]
+        suffix = name[len(prefix) :]
         if suffix == "":
             return (slot_idx, True)
         if suffix.isdigit():
@@ -91,11 +88,15 @@ class BridgeKinematics:
     in its unhomed sentinel form.
     """
 
+    supports_dual_carriage = False
+
     def __init__(self, toolhead, config, trapq):
         self._toolhead = toolhead
         kin_name = config.get("kinematics")
         if kin_name not in ("cartesian", "corexy", "hybrid_corexy"):
-            raise config.error("Unsupported bridge kinematics '%s'" % (kin_name,))
+            raise config.error(
+                "Unsupported bridge kinematics '%s'" % (kin_name,)
+            )
         self.kinematics = kin_name
         self.rails = []
         self._printer = config.get_printer()
@@ -116,9 +117,7 @@ class BridgeKinematics:
         # bridge dispatches Z curves to the Z MCU normally. Register Z rails
         # so printer.cfg validation passes and homing/move-checking works.
         if kin_name == "corexy" and config.has_section("stepper_z"):
-            self._register_axis(
-                config, "z", trapq, extras=("1", "2", "3")
-            )
+            self._register_axis(config, "z", trapq, extras=("1", "2", "3"))
 
         # Per-axis (low, high) bounds. `low > high` means "unhomed" and is
         # what triggers the "Must home axis first" path in `_check_endstops`.
@@ -193,8 +192,7 @@ class BridgeKinematics:
         end_pos = move.end_pos
         for i in (0, 1, 2):
             if move.axes_d[i] and (
-                end_pos[i] < self.limits[i][0]
-                or end_pos[i] > self.limits[i][1]
+                end_pos[i] < self.limits[i][0] or end_pos[i] > self.limits[i][1]
             ):
                 if self.limits[i][0] > self.limits[i][1]:
                     raise move.move_error("Must home axis first")
@@ -232,28 +230,24 @@ class BridgeKinematics:
             homepos[axis] = hi.position_endstop
             forcepos = list(homepos)
             if hi.positive_dir:
-                forcepos[axis] -= 1.5 * (
-                    hi.position_endstop - position_min
-                )
+                forcepos[axis] -= 1.5 * (hi.position_endstop - position_min)
             else:
-                forcepos[axis] += 1.5 * (
-                    position_max - hi.position_endstop
-                )
+                forcepos[axis] += 1.5 * (position_max - hi.position_endstop)
             homing_state.home_rails([rail], forcepos, homepos)
 
     def set_position(self, newpos, homing_axes=()):
         self._toolhead.bridge._software_trip_active = False
-        self._toolhead.bridge.set_position(
-            newpos[0], newpos[1], newpos[2]
-        )
+        self._toolhead.bridge.set_position(newpos[0], newpos[1], newpos[2])
         axis_rails = self._axis_rails()
         for axis_idx, rail in axis_rails.items():
             if self.kinematics == "corexy" and axis_idx < 2:
-                motor_pos = (newpos[0] + newpos[1]) if axis_idx == 0 \
+                motor_pos = (
+                    (newpos[0] + newpos[1])
+                    if axis_idx == 0
                     else (newpos[0] - newpos[1])
+                )
             else:
-                motor_pos = newpos[axis_idx] if axis_idx < len(newpos) \
-                    else 0.0
+                motor_pos = newpos[axis_idx] if axis_idx < len(newpos) else 0.0
             for s in rail.get_steppers():
                 step_count = int(motor_pos / s.get_step_dist() + 0.5)
                 s._set_mcu_position(step_count)
@@ -290,7 +284,9 @@ class BridgeKinematics:
         y_min, y_max = ranges.get("y", (0.0, 0.0))
         z_min, z_max = ranges.get("z", (0.0, 0.0))
         homed = "".join(
-            a for i, a in enumerate("xyz") if self.limits[i][0] <= self.limits[i][1]
+            a
+            for i, a in enumerate("xyz")
+            if self.limits[i][0] <= self.limits[i][1]
         )
         return {
             "homed_axes": homed,
@@ -313,7 +309,11 @@ class MotionToolhead(ToolHead):
         # Pre-super: attributes that BridgeKinematics or registered handlers
         # may reference during super().__init__.
         printer = config.get_printer()
-        self.bridge = printer.lookup_object("motion_bridge")
+        self.bridge = printer.lookup_object("motion_bridge", None)
+        if self.bridge is None:
+            from . import motion_bridge
+
+            self.bridge = motion_bridge._StubBridge()
         self.active_homing_arms = set()
         self.kinematics_name = config.get("kinematics", "")
         self.bridge._kinematics_name = self.kinematics_name
@@ -371,8 +371,10 @@ class MotionToolhead(ToolHead):
             "klippy:disconnect", self._handle_disconnect
         )
         import signal
+
         def _sigterm_handler(signum, frame):
             self.printer.request_exit("exit")
+
         signal.signal(signal.SIGTERM, _sigterm_handler)
 
         logging.info("MotionToolhead: Phase 1 skeleton initialized")
@@ -415,7 +417,13 @@ class MotionToolhead(ToolHead):
         logging.info(
             "[bridge-trace] move: newpos=%s speed=%s dx=%.4f dy=%.4f "
             "dz=%.4f de=%.4f feedrate=%.4f",
-            list(newpos), speed, dx, dy, dz, de, feedrate,
+            list(newpos),
+            speed,
+            dx,
+            dy,
+            dz,
+            de,
+            feedrate,
         )
         enable_print_time = self.get_last_move_time()
         self._fire_active_callbacks(dx, dy, dz, de, enable_print_time)
@@ -453,9 +461,9 @@ class MotionToolhead(ToolHead):
         logging.info(
             "[bridge-trace] drip_move entered: newpos=%s speed=%s "
             "drip_test=%s active_homing_arms=%s",
-            list(newpos), speed,
-            (drip_completion.test()
-             if drip_completion is not None else None),
+            list(newpos),
+            speed,
+            (drip_completion.test() if drip_completion is not None else None),
             sorted(self.active_homing_arms),
         )
         if drip_completion is not None and drip_completion.test():
@@ -505,11 +513,12 @@ class MotionToolhead(ToolHead):
             if es_mcu._bridge_handle is None:
                 continue
             trsync = getattr(
-                getattr(mcu_endstop, '_shared', None), '_trsync', None
+                getattr(mcu_endstop, "_shared", None), "_trsync", None
             )
             if trsync is None:
                 continue
             from . import motion_bridge as _mb
+
             arm_id = _mb._alloc_arm_id()
             nominal_dist = 250.0
             axis_rails = self.kin._axis_rails()
@@ -530,7 +539,9 @@ class MotionToolhead(ToolHead):
             logging.info(
                 "[probe-homing] interceptor registered: handle_id=%d "
                 "beacon_handle=%s trsync_oid=%d arm_id=%d",
-                handle_id, es_mcu._bridge_handle, trsync.get_oid(),
+                handle_id,
+                es_mcu._bridge_handle,
+                trsync.get_oid(),
                 arm_id,
             )
             return
@@ -551,10 +562,15 @@ class MotionToolhead(ToolHead):
             "[diag] _drip_move_software_trip: "
             "commanded_pos=[%.3f,%.3f,%.3f] pos3=[%.3f,%.3f,%.3f] "
             "dx=%.6f dy=%.6f dz=%.6f",
-            self.commanded_pos[0], self.commanded_pos[1],
+            self.commanded_pos[0],
+            self.commanded_pos[1],
             self.commanded_pos[2],
-            pos3[0], pos3[1], pos3[2],
-            dx, dy, dz,
+            pos3[0],
+            pos3[1],
+            pos3[2],
+            dx,
+            dy,
+            dz,
         )
 
         # Select moving steppers via kinematic motor-delta mapping
@@ -586,7 +602,7 @@ class MotionToolhead(ToolHead):
         queue = self.bridge.alloc_command_queue(mcu_handle)
 
         # Create virtual arm
-        arm_id = getattr(self, '_probe_homing_arm_id', None)
+        arm_id = getattr(self, "_probe_homing_arm_id", None)
         if arm_id is None:
             arm_id = _mb._alloc_arm_id()
         stepper_oids = [s.get_oid() for s in moving_steppers]
@@ -601,8 +617,7 @@ class MotionToolhead(ToolHead):
         lmt = self.get_last_move_time()
         est_now = 0.0
         if self.mcu is not None:
-            est_now = self.mcu.estimated_print_time(
-                self.reactor.monotonic())
+            est_now = self.mcu.estimated_print_time(self.reactor.monotonic())
             needed = est_now + ENABLE_HEADROOM
             if lmt < needed:
                 self.dwell(needed - lmt)
@@ -611,28 +626,29 @@ class MotionToolhead(ToolHead):
         logging.info(
             "[probe-homing] pre-enable: "
             "lmt=%.6f est_now=%.6f pending=%.6f stepper_mcu=%s",
-            lmt, est_now, self._mcu_pending_end_time,
+            lmt,
+            est_now,
+            self._mcu_pending_end_time,
             stepper_mcu.get_name(),
         )
 
         # Energize motors (TMC UART traffic runs here)
-        self._fire_active_callbacks(
-            dx, dy, dz, 0.0, lmt
-        )
+        self._fire_active_callbacks(dx, dy, dz, 0.0, lmt)
 
         # Recompute arm_clock AFTER callbacks — the UART traffic
         # consumed wall-clock time, so the pre-callback lmt may now
         # be in the MCU's past.
         if self.mcu is not None:
-            est_now = self.mcu.estimated_print_time(
-                self.reactor.monotonic())
-        arm_clock = int(stepper_mcu.print_time_to_clock(
-            max(lmt, est_now + BUFFER_TIME_START)
-        ))
+            est_now = self.mcu.estimated_print_time(self.reactor.monotonic())
+        arm_clock = int(
+            stepper_mcu.print_time_to_clock(
+                max(lmt, est_now + BUFFER_TIME_START)
+            )
+        )
         logging.info(
-            "[probe-homing] post-enable: "
-            "est_now=%.6f arm_clock=%d",
-            est_now, arm_clock,
+            "[probe-homing] post-enable: est_now=%.6f arm_clock=%d",
+            est_now,
+            arm_clock,
         )
 
         # Arm + submit
@@ -643,14 +659,18 @@ class MotionToolhead(ToolHead):
         bridge_lmt_before = self.bridge.get_last_move_time()
         try:
             self.bridge.endstop_arm(
-                mcu_handle, queue, arm_id, arm_clock,
-                [source], stepper_oids,
+                mcu_handle,
+                queue,
+                arm_id,
+                arm_clock,
+                [source],
+                stepper_oids,
             )
             self.bridge._homing_print_time_base = bridge_lmt_before
 
             # Use the pre-registered interceptor handle from
             # _prepare_probe_interceptor (called before home_start).
-            handle_id = getattr(self, '_probe_homing_handle_id', None)
+            handle_id = getattr(self, "_probe_homing_handle_id", None)
             if handle_id is None:
                 raise self.printer.command_error(
                     "No probe homing interceptor registered "
@@ -663,11 +683,16 @@ class MotionToolhead(ToolHead):
             logging.info(
                 "[probe-homing] calling run_probe_homing: "
                 "handle_id=%d arm_id=%d speed=%.1f",
-                handle_id, arm_id, speed,
+                handle_id,
+                arm_id,
+                speed,
             )
 
             result = self.bridge.run_probe_homing(
-                handle_id, pos3, speed, stepper_oids,
+                handle_id,
+                pos3,
+                speed,
+                stepper_oids,
             )
 
             PROBE_TRIGGERED = 0
@@ -711,7 +736,7 @@ class MotionToolhead(ToolHead):
         self.flush_step_generation()
 
     def _bridge_mcus(self):
-        if not hasattr(self, '_cached_bridge_mcus'):
+        if not hasattr(self, "_cached_bridge_mcus"):
             mcus = set()
             if self.kin is not None:
                 for s in self.kin.get_steppers():
@@ -724,8 +749,7 @@ class MotionToolhead(ToolHead):
         if self._mcu_pending_end_time > 0.0:
             for mcu in self._bridge_mcus():
                 while True:
-                    est = mcu.estimated_print_time(
-                        self.reactor.monotonic())
+                    est = mcu.estimated_print_time(self.reactor.monotonic())
                     remaining = self._mcu_pending_end_time - est
                     if remaining <= 0.0:
                         break
@@ -821,7 +845,8 @@ class MotionToolhead(ToolHead):
 
     def stats(self, eventtime):
         return False, "print_time=%.3f buffer_time=0.000 print_stall=%d" % (
-            self.print_time, self.print_stall,
+            self.print_time,
+            self.print_stall,
         )
 
     # ------------------------------------------------------------------
@@ -961,7 +986,7 @@ class MotionToolhead(ToolHead):
             for i in range(4):
                 # Filter slot steppers to those that live on this MCU.
                 on_this_mcu = []
-                for (sname, s) in slot_steppers[i]:
+                for sname, s in slot_steppers[i]:
                     if len(bridge_mcus) > 1:
                         try:
                             s_mcu = s.get_mcu()
@@ -984,7 +1009,7 @@ class MotionToolhead(ToolHead):
                 # stepper's phase_stepping flag.
                 if getattr(primary, "phase_stepping", False):
                     step_modes[i] = 0  # Modulated
-                for (sname, s) in on_this_mcu:
+                for sname, s in on_this_mcu:
                     inv = 1 if getattr(s, "_invert_dir", False) else 0
                     bind_list.append((i, sname, s.get_oid(), inv))
             # 2026-05-19 phase-stepping bridge integration (variable-length
@@ -1003,7 +1028,7 @@ class MotionToolhead(ToolHead):
                 # is defensive belt-and-suspenders.
                 if step_modes[i] != 0 or not slot:
                     continue
-                for (stepper_name, stepper) in slot:
+                for stepper_name, stepper_obj in slot:
                     tmc_name = "tmc5160 " + stepper_name
                     try:
                         tmc = self.printer.lookup_object(tmc_name)
@@ -1044,7 +1069,8 @@ class MotionToolhead(ToolHead):
             if present_mask == 0:
                 logging.info(
                     "MotionToolhead: no steppers matched MCU %s; "
-                    "skipping configure_axes", name,
+                    "skipping configure_axes",
+                    name,
                 )
                 continue
             # Capability check: any stepper requesting phase_stepping=True on
@@ -1090,16 +1116,19 @@ class MotionToolhead(ToolHead):
                 # order and assigns the same motor_idx to each entry
                 # (rust/kalico-c-api/src/runtime_ffi.rs:1535).
                 seen_buses = set()
-                for (bus_id, _cs_pin_id, _slot_idx) in phase_configs:
+                for bus_id, _cs_pin_id, _slot_idx in phase_configs:
                     if bus_id == 0xFF:
                         continue
                     if bus_id in seen_buses:
                         continue
                     seen_buses.add(bus_id)
-                    logging.info("register_phase_bus mcu=%s bus_id=%d",
-                                 name, bus_id)
+                    logging.info(
+                        "register_phase_bus mcu=%s bus_id=%d", name, bus_id
+                    )
                     self.bridge.register_phase_bus(
-                        mcu_handle, bus_id, rate=2_000_000,
+                        mcu_handle,
+                        bus_id,
+                        rate=2_000_000,
                     )
                 for motor_idx, (bus_id, cs_pin_id, _slot_idx) in enumerate(
                     phase_configs,
@@ -1108,13 +1137,25 @@ class MotionToolhead(ToolHead):
                         continue
                     logging.info(
                         "register_phase_motor mcu=%s motor=%d bus=%d cs=%d",
-                        name, motor_idx, bus_id, cs_pin_id)
+                        name,
+                        motor_idx,
+                        bus_id,
+                        cs_pin_id,
+                    )
                     self.bridge.register_phase_motor(
-                        mcu_handle, motor_idx, bus_id, cs_pin_id,
+                        mcu_handle,
+                        motor_idx,
+                        bus_id,
+                        cs_pin_id,
                     )
             self.bridge.configure_axes(
-                mcu_handle, kin_tag, present_mask, awd_mask,
-                invert_mask, steps_per_mm, step_modes,
+                mcu_handle,
+                kin_tag,
+                present_mask,
+                awd_mask,
+                invert_mask,
+                steps_per_mm,
+                step_modes,
                 phase_configs=phase_configs if any_phase_stepping else None,
             )
             # Step 7-D: bind every stepper attached to each runtime motor
@@ -1157,7 +1198,7 @@ class MotionToolhead(ToolHead):
             # Group bind_list by axis (motor_idx). bind_list entries are
             # (motor_idx, stepper_name, stepper_oid, invert_dir) tuples.
             axis_bindings = defaultdict(list)  # axis_idx -> [(oid, invert)]
-            for (motor_idx, sname, oid, inv) in bind_list:
+            for motor_idx, sname, oid, inv in bind_list:
                 axis_bindings[motor_idx].append((oid, inv))
 
             MODE_PULSE = 0
@@ -1178,7 +1219,7 @@ class MotionToolhead(ToolHead):
                 microstep_distance = 1.0 / spm
                 # Pack f32 as u32 bits for wire transport.
                 microstep_bits = struct.unpack(
-                    '<I', struct.pack('<f', microstep_distance)
+                    "<I", struct.pack("<f", microstep_distance)
                 )[0]
                 # extrusion_per_xy_mm is unused by the new firmware (the
                 # per-segment field on push_segment is authoritative); send
@@ -1186,12 +1227,12 @@ class MotionToolhead(ToolHead):
                 extrusion_bits = 0
                 # Build the bindings blob (4 bytes per stepper).
                 blob = bytearray()
-                for (oid, inv) in bindings:
+                for oid, inv in bindings:
                     blob.append(oid)
                     blob.append(inv & 0x01)
                     tmc_oid = TMC_CS_OID_NONE
                     if step_modes[axis_idx] == 0:
-                        for (sname, s) in slot_steppers[axis_idx]:
+                        for sname, s in slot_steppers[axis_idx]:
                             if s.get_oid() == oid:
                                 tmc_name = "tmc5160 " + sname
                                 try:
@@ -1202,20 +1243,33 @@ class MotionToolhead(ToolHead):
                                 break
                     blob.append(tmc_oid)
                     blob.append(FLAGS_DEFAULT)
-                configure_axis_cmd.send([
-                    axis_idx, MODE_PULSE, microstep_bits, extrusion_bits,
-                    len(bindings), bytes(blob),
-                ])
+                configure_axis_cmd.send(
+                    [
+                        axis_idx,
+                        MODE_PULSE,
+                        microstep_bits,
+                        extrusion_bits,
+                        len(bindings),
+                        bytes(blob),
+                    ]
+                )
             logging.info(
                 "MotionToolhead: configure_axes mcu=%s kin=%d "
                 "present=0x%x awd=0x%x invert=0x%x steps_per_mm=%s "
                 "step_modes=%s mcu_caps=0x%x runtime_bindings=%s "
                 "phase_configs=%s any_phase_stepping=%s "
                 "phase_motor_count=%d",
-                name, kin_tag, present_mask, awd_mask, invert_mask,
-                steps_per_mm, step_modes, mcu_caps,
+                name,
+                kin_tag,
+                present_mask,
+                awd_mask,
+                invert_mask,
+                steps_per_mm,
+                step_modes,
+                mcu_caps,
                 [(m, n, o, i) for (m, n, o, i) in bind_list],
-                phase_configs, any_phase_stepping,
+                phase_configs,
+                any_phase_stepping,
                 len(phase_configs),
             )
             # phase_stepping_enable_spi is sent from TMC5160._xdirect_preload
@@ -1302,7 +1356,9 @@ class MotionToolhead(ToolHead):
             try:
                 with client:
                     client.set_gpio_input(
-                        chip=chip_id, line=line, value=level,
+                        chip=chip_id,
+                        line=line,
+                        value=level,
                     )
                 gcmd.respond_info(
                     "KALICO_SIM_ENDSTOP_SET_PIN gpio=%d level=%d -> ok (shim)"
@@ -1319,17 +1375,14 @@ class MotionToolhead(ToolHead):
         try:
             self.bridge.bridge_send(
                 handle,
-                "runtime_sim_endstop_set_pin gpio=%d level=%d"
-                % (gpio, level),
+                "runtime_sim_endstop_set_pin gpio=%d level=%d" % (gpio, level),
             )
             gcmd.respond_info(
                 "KALICO_SIM_ENDSTOP_SET_PIN gpio=%d level=%d -> ok (fw)"
                 % (gpio, level)
             )
         except Exception as e:
-            raise gcmd.error(
-                "runtime_sim_endstop_set_pin failed: %s" % e
-            )
+            raise gcmd.error("runtime_sim_endstop_set_pin failed: %s" % e)
 
 
 def add_printer_objects(config):
