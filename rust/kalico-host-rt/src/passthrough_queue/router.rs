@@ -384,6 +384,33 @@ impl PassthroughRouter {
         rec.clock_freq = freq;
         rec.clock_offset = bridge_now - (host_now_same_epoch - offset);
         rec.last_clock = last_clock;
+
+        // Diagnostic file log — throttled to the first 12 calls then every
+        // 200th, so the file stays bounded. No wall-clock timestamps; the
+        // call-counter `n` provides ordering.
+        {
+            use std::io::Write as _;
+            use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
+            static N: AtomicUsize = AtomicUsize::new(0);
+            let n = N.fetch_add(1, AOrd::Relaxed);
+            if n < 12 || n % 200 == 0 {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("/tmp/clock-est-diag.log")
+                {
+                    let _ = writeln!(
+                        f,
+                        "[clock-est] n={n} mcu={mcu:?} in_freq={freq} \
+                         in_offset={offset:.9} in_last_clock={last_clock} \
+                         host_now_same_epoch={host_now_same_epoch:.9} \
+                         bridge_now={bridge_now:.9} -> clock_offset={:.9}",
+                        rec.clock_offset
+                    );
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -452,6 +479,15 @@ impl PassthroughRouter {
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let projected = rec.last_clock.wrapping_add(delta.max(0.0) as u64);
         Ok(projected)
+    }
+
+    /// Diagnostic snapshot of the per-MCU clock estimate:
+    /// `(clock_freq, clock_offset, last_clock)`.
+    ///
+    /// Returns `None` if the MCU handle is unknown.
+    pub fn clock_est_snapshot(&self, mcu: McuHandle) -> Option<(f64, f64, u64)> {
+        let rec = self.mcus.get(&mcu)?;
+        Some((rec.clock_freq, rec.clock_offset, rec.last_clock))
     }
 
     // ── Stats ────────────────────────────────────────────────────────────
