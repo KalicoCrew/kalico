@@ -78,6 +78,16 @@ impl StepQueue {
             }; STEP_QUEUE_DEPTH],
         }
     }
+
+    /// Empty the queue by resetting both SPSC counters to 0.
+    ///
+    /// The caller must hold exclusive access (an IRQ guard): both the producer
+    /// (writes `tail`) and the consumer (writes `head`) must be quiescent.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.tail = 0;
+        self.head = 0;
+    }
 }
 
 #[cfg(any(test, feature = "host"))]
@@ -121,6 +131,21 @@ pub fn queue_for_axis(i: usize) -> *mut StepQueue {
     // the C-declared array of exactly `N_AXIS_STEP_QUEUES` queues, so `add(i)`
     // stays in-bounds and yields a pointer to a live, aligned `StepQueue`.
     unsafe { step_queues.get().cast::<StepQueue>().add(i) }
+}
+
+/// Clear all per-axis step queues. MCU-only — host/test builds keep their
+/// queues in `Engine::test_queue_ptrs` and have no `step_queues` global.
+///
+/// The caller (`kalico_runtime_reset`) holds the IRQ guard, so no producer
+/// ISR or consumer timer runs concurrently with these writes.
+#[cfg(not(any(test, feature = "host")))]
+pub fn reset_all_queues() {
+    for i in 0..N_AXIS_STEP_QUEUES {
+        let q = queue_for_axis(i);
+        // SAFETY: `i < N_AXIS_STEP_QUEUES` so `q` is non-null and points at a
+        // live `StepQueue`; the IRQ guard guarantees exclusive access.
+        unsafe { (*q).clear(); }
+    }
 }
 
 /// Returned by `push` when the ring is full.
@@ -216,4 +241,21 @@ pub unsafe fn len(q: *mut StepQueue) -> u16 {
     let tail = unsafe { ptr::read_volatile(&(*q).tail) };
     let head = unsafe { ptr::read_volatile(&(*q).head) };
     tail.wrapping_sub(head)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_empties_queue() {
+        let mut q = StepQueue::new();
+        // 3 entries outstanding (tail ahead of head).
+        q.tail = 5;
+        q.head = 2;
+        assert_ne!(q.tail, q.head);
+        q.clear();
+        assert_eq!(q.tail, 0);
+        assert_eq!(q.head, 0);
+    }
 }
