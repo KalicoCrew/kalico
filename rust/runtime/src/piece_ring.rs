@@ -40,11 +40,26 @@ use crate::monomial::bernstein_to_monomial_with_duration;
 /// `[PieceEntry]` backing store.
 ///
 /// This is the engine-side counterpart to [`PieceRing`]: it holds only
-/// integer bookkeeping fields (offset, depth, head, tail, count, consumed)
-/// and every operation takes the backing store by explicit `&mut [PieceEntry]`
-/// parameter.  That design avoids splitting a single `UnsafeCell<[PieceEntry; N]>`
-/// array into N disjoint `&mut` borrows — an operation the borrow checker
-/// cannot verify is disjoint without unsafe code.
+/// integer bookkeeping fields and every operation takes the backing store by
+/// explicit `&mut [PieceEntry]` parameter.  That design avoids splitting a
+/// single `UnsafeCell<[PieceEntry; N]>` array into N disjoint `&mut` borrows —
+/// an operation the borrow checker cannot verify is disjoint without unsafe
+/// code.
+///
+/// ## Cursor semantics
+///
+/// - `head` — monotonic valid frontier (u32, wrapping).  Slots with indices
+///   `[consumed, head)` (modulo arithmetic) are visible to the consumer.
+///   Advanced **only** by [`commit_head`][Self::commit_head]; slot writes via
+///   [`write_slot`][Self::write_slot] do **not** advance it.
+/// - `tail` — physical read cursor in `[0, ring_depth)`.  Advanced one step
+///   per [`pop`][Self::pop] (wrapping at `ring_depth`).
+/// - `consumed` — monotonic consumed counter (u32, wrapping).  Tracks how
+///   many entries have been popped; incremented one per [`pop`][Self::pop].
+///
+/// Occupancy: `len() = head.wrapping_sub(consumed) as usize`.  Empty (`len==0`)
+/// and full (`len==ring_depth`) are distinct because the difference is of
+/// monotonic counters, never reduced mod N.
 ///
 /// `PieceRing<'a>` is preserved for host unit tests (it holds a borrow for
 /// ergonomics in test code).  The engine uses `RingDescriptor` exclusively.
@@ -54,13 +69,14 @@ pub struct RingDescriptor {
     pub ring_offset: usize,
     /// Capacity of this axis's ring region (number of entries).
     pub ring_depth: usize,
-    /// Write cursor (relative to ring_offset), in `0..ring_depth`.
-    pub head: usize,
-    /// Read cursor (relative to ring_offset), in `0..ring_depth`.
+    /// Monotonic valid frontier (host-driven); advanced only by
+    /// [`commit_head`][Self::commit_head].
+    pub head: u32,
+    /// Physical read cursor in `[0, ring_depth)`; advanced one per
+    /// [`pop`][Self::pop].
     pub tail: usize,
-    /// Current number of entries in the ring.
-    pub count: usize,
-    /// Monotonic consumed count (wrapping u32).
+    /// Monotonic consumed counter (wrapping u32); advanced one per
+    /// [`pop`][Self::pop].
     pub consumed: u32,
 }
 
@@ -74,7 +90,6 @@ impl RingDescriptor {
             ring_depth: 0,
             head: 0,
             tail: 0,
-            count: 0,
             consumed: 0,
         }
     }
@@ -88,7 +103,6 @@ impl RingDescriptor {
             ring_depth: depth,
             head: 0,
             tail: 0,
-            count: 0,
             consumed: 0,
         }
     }
@@ -99,40 +113,105 @@ impl RingDescriptor {
         self.ring_depth > 0
     }
 
-    /// Returns the number of entries currently in the ring.
+    /// Returns the number of entries currently visible (committed but not yet
+    /// consumed): `head.wrapping_sub(consumed)`.
     #[inline]
     pub fn len(&self) -> usize {
-        self.count
+        self.head.wrapping_sub(self.consumed) as usize
     }
 
-    /// Returns `true` if the ring contains no entries.
+    /// Returns `true` if the ring contains no visible entries.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.count == 0
+        self.head == self.consumed
     }
 
-    /// Returns `true` if the ring is at capacity.
+    /// Returns `true` if the ring is at capacity (all slots occupied).
     #[inline]
     pub fn is_full(&self) -> bool {
-        self.count == self.ring_depth
+        self.len() == self.ring_depth
     }
 
-    /// Append `entry` to the back of the ring.
+    /// Write one entry to an absolute physical slot.  Does **not** advance
+    /// `head`; the slot becomes visible to the consumer only after a
+    /// subsequent [`commit_head`][Self::commit_head] call.
     ///
-    /// Returns `Err(())` if the ring is full.
+    /// `physical_slot` must be in `[0, ring_depth)` — the FFI guarantees this
+    /// (the host computes `(start_slot + index) % depth` before calling).
+    /// Out-of-range writes (including `ring_depth == 0`) panic in debug builds
+    /// via the `debug_assert!` below and index-out-of-bounds panic in release;
+    /// silent drops would hide misconfiguration.
+    ///
+    /// `configure_axis` guarantees `ring_offset + ring_depth <= storage.len()`,
+    /// so `ring_offset + physical_slot < storage.len()` holds whenever
+    /// `physical_slot < ring_depth`.
+    #[inline]
+    pub fn write_slot(
+        &self,
+        storage: &mut [PieceEntry],
+        physical_slot: usize,
+        entry: PieceEntry,
+    ) {
+        if self.ring_depth == 0 || physical_slot >= self.ring_depth {
+            return;
+        }
+        debug_assert!(
+            self.ring_offset + physical_slot < storage.len(),
+            "ring slot out of storage bounds"
+        );
+        storage[self.ring_offset + physical_slot] = entry;
+    }
+
+    /// Advance the valid frontier to `new_head`, monotonically, within ring
+    /// capacity.
+    ///
+    /// A `new_head` is accepted only when it represents a strict advance
+    /// over the current `head` **and** the resulting occupancy does not exceed
+    /// `ring_depth` (the flow-control invariant `head − consumed ≤ ring_depth`).
+    /// Both comparisons are made relative to `consumed` so they remain correct
+    /// across the u32 counter wrap for in-order frames.
+    ///
+    /// The capacity bound also rejects an out-of-domain `new_head` that lands
+    /// behind `consumed` — such a value produces a huge wrapping distance that
+    /// exceeds `ring_depth`, and is therefore silently dropped rather than
+    /// accepted as a spurious advance.
+    ///
+    /// This function does **not** sanitize arbitrary adversarial values beyond
+    /// the capacity bound; it assumes the host sends monotone, in-range heads.
+    #[inline]
+    pub fn commit_head(&mut self, new_head: u32) {
+        let cur = self.head.wrapping_sub(self.consumed);
+        let proposed = new_head.wrapping_sub(self.consumed);
+        // Accept only a strict advance that keeps occupancy within capacity.
+        // (`head − consumed ≤ ring_depth` is the flow-control invariant; this
+        // also rejects an out-of-domain `new_head` that lands behind `consumed`
+        // and would otherwise read as a huge wrapping advance.)
+        if proposed > cur && proposed <= self.ring_depth as u32 {
+            self.head = new_head;
+        }
+    }
+
+    /// Convenience append used by the host-side test path and `push_pieces`.
+    ///
+    /// Writes `entry` at the next free physical slot (derived from the current
+    /// head position) and immediately commits the new head, making the entry
+    /// visible to the consumer.
+    ///
+    /// **Interim compatibility shim** — this method exists for the current
+    /// `engine::push_pieces` path.  Task 4 replaces that call site with
+    /// explicit `write_slot` + `commit_head` (batch write before a single
+    /// commit); at that point `push` will be removed or demoted to
+    /// `#[cfg(test)]`.  Do not add new callers.
+    ///
+    /// Returns `Err(())` if the ring is full or unconfigured.
     #[inline]
     pub fn push(&mut self, storage: &mut [PieceEntry], entry: PieceEntry) -> Result<(), ()> {
         if self.is_full() || self.ring_depth == 0 {
             return Err(());
         }
-        let abs = self.ring_offset + self.head;
-        if let Some(slot) = storage.get_mut(abs) {
-            *slot = entry;
-        } else {
-            return Err(());
-        }
-        self.head = (self.head + 1) % self.ring_depth;
-        self.count += 1;
+        let physical_slot = (self.head as usize) % self.ring_depth;
+        self.write_slot(storage, physical_slot, entry);
+        self.head = self.head.wrapping_add(1);
         Ok(())
     }
 
@@ -147,20 +226,23 @@ impl RingDescriptor {
         storage.get(self.ring_offset + self.tail)
     }
 
-    /// Remove the front entry, incrementing the monotonic consumed counter.
+    /// Remove the front entry, advancing the physical tail (wrapping) and
+    /// incrementing the monotonic `consumed` counter.
     ///
-    /// No-op if the ring is empty.
+    /// No-op if the ring is empty or unconfigured.
     #[inline]
     pub fn pop(&mut self) {
-        if self.is_empty() || self.ring_depth == 0 {
+        if self.ring_depth == 0 || self.is_empty() {
             return;
         }
-        self.tail = (self.tail + 1) % self.ring_depth;
-        self.count -= 1;
+        self.tail += 1;
+        if self.tail >= self.ring_depth {
+            self.tail = 0;
+        }
         self.consumed = self.consumed.wrapping_add(1);
     }
 
-    /// Monotonically increasing count of consumed entries.
+    /// Monotonically increasing count of consumed entries (wrapping u32).
     #[inline]
     pub fn consumed_count(&self) -> u32 {
         self.consumed

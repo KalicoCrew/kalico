@@ -235,3 +235,151 @@ fn ring_pop_empty_is_noop() {
     ring.pop(); // should not panic
     assert_eq!(ring.consumed_count(), 0);
 }
+
+// ── RingDescriptor — monotonic head/consumed + write_slot/commit_head ─────────
+
+use runtime::piece_ring::RingDescriptor;
+
+fn make_rd_storage<const N: usize>() -> [PieceEntry; N] {
+    [PieceEntry {
+        start_time: 0,
+        coeffs: [0.0; 4],
+        duration: 0.0,
+        _reserved: 0,
+    }; N]
+}
+
+fn pe(start: u64) -> PieceEntry {
+    PieceEntry {
+        start_time: start,
+        coeffs: [0.0; 4],
+        duration: 0.0,
+        _reserved: 0,
+    }
+}
+
+#[test]
+fn write_slot_lands_at_absolute_index_without_advancing_head() {
+    let mut storage = make_rd_storage::<8>();
+    let ring = RingDescriptor::new(0, 8);
+    ring.write_slot(&mut storage, 5, pe(1234));
+    assert_eq!(storage[5].start_time, 1234);
+    assert_eq!(ring.len(), 0);
+    assert!(ring.is_empty());
+}
+
+#[test]
+fn commit_head_makes_slots_visible_and_is_monotone() {
+    let mut storage = make_rd_storage::<8>();
+    let mut ring = RingDescriptor::new(0, 8);
+    ring.write_slot(&mut storage, 0, pe(10));
+    ring.write_slot(&mut storage, 1, pe(20));
+    ring.commit_head(2);
+    assert_eq!(ring.len(), 2);
+    assert_eq!(ring.peek(&storage).unwrap().start_time, 10);
+    ring.commit_head(1); // stale re-send ignored
+    assert_eq!(ring.len(), 2);
+}
+
+#[test]
+fn pop_advances_physical_tail_and_monotonic_consumed() {
+    let mut storage = make_rd_storage::<4>();
+    let mut ring = RingDescriptor::new(0, 4);
+    ring.write_slot(&mut storage, 0, pe(10));
+    ring.write_slot(&mut storage, 1, pe(20));
+    ring.commit_head(2);
+    ring.pop();
+    assert_eq!(ring.consumed_count(), 1);
+    assert_eq!(ring.peek(&storage).unwrap().start_time, 20);
+    assert_eq!(ring.len(), 1);
+}
+
+#[test]
+fn empty_full_distinct_via_monotonic_difference() {
+    let mut storage = make_rd_storage::<2>();
+    let mut ring = RingDescriptor::new(0, 2);
+    assert!(ring.is_empty());
+    ring.write_slot(&mut storage, 0, pe(1));
+    ring.write_slot(&mut storage, 1, pe(2));
+    ring.commit_head(2);
+    assert!(ring.is_full());
+    assert!(!ring.is_empty());
+}
+
+// ── RingDescriptor — physical tail wrap ──────────────────────────────────────
+
+/// Fill a depth-2 ring, pop both entries (verifying tail wraps 1→0 on the
+/// second pop), then write and commit two more entries and confirm peek returns
+/// the first new one.  This directly exercises the `tail += 1; if tail >=
+/// ring_depth { tail = 0 }` branch inside `pop`.
+#[test]
+fn rd_physical_tail_wraps_after_depth_pops() {
+    let mut storage = make_rd_storage::<2>();
+    let mut ring = RingDescriptor::new(0, 2);
+
+    // Fill the ring via write_slot + commit_head.
+    ring.write_slot(&mut storage, 0, pe(10));
+    ring.write_slot(&mut storage, 1, pe(20));
+    ring.commit_head(2);
+    assert_eq!(ring.len(), 2);
+
+    // First pop: tail 0→1, consumed 0→1.
+    ring.pop();
+    assert_eq!(ring.consumed_count(), 1);
+    assert_eq!(ring.peek(&storage).unwrap().start_time, 20);
+
+    // Second pop: tail 1→0 (wraps), consumed 1→2.
+    ring.pop();
+    assert_eq!(ring.consumed_count(), 2);
+    assert!(ring.is_empty());
+    // tail must have wrapped back to 0 — verify by writing fresh entries and
+    // confirming peek sees the first one (slot 0 in the backing store).
+    ring.write_slot(&mut storage, 0, pe(30));
+    ring.write_slot(&mut storage, 1, pe(40));
+    ring.commit_head(4);
+    assert_eq!(ring.len(), 2);
+    assert_eq!(ring.peek(&storage).unwrap().start_time, 30);
+}
+
+// ── RingDescriptor — commit_head capacity-bound enforcement ──────────────────
+
+/// Verify that commit_head rejects a new_head whose implied occupancy would
+/// exceed ring_depth, and that an out-of-domain value behind consumed (which
+/// wraps to a huge distance) is also rejected.
+#[test]
+fn rd_commit_head_rejects_over_capacity_and_stale_behind_consumed() {
+    let mut storage = make_rd_storage::<4>();
+    // depth=4; write all four slots up-front so storage is populated.
+    let mut ring = RingDescriptor::new(0, 4);
+    ring.write_slot(&mut storage, 0, pe(1));
+    ring.write_slot(&mut storage, 1, pe(2));
+    ring.write_slot(&mut storage, 2, pe(3));
+    ring.write_slot(&mut storage, 3, pe(4));
+
+    // Commit 3 entries: occupancy 3, consumed=0, head=3.
+    ring.commit_head(3);
+    assert_eq!(ring.len(), 3);
+
+    // Pop one: consumed=1, head=3, occupancy=2.
+    ring.pop();
+    assert_eq!(ring.consumed_count(), 1);
+    assert_eq!(ring.len(), 2);
+
+    // Attempt to commit a head that would bring occupancy to 5 (>ring_depth=4).
+    // proposed = 6.wrapping_sub(1) = 5 > ring_depth=4 → REJECTED.
+    let head_before = ring.head;
+    ring.commit_head(6);
+    assert_eq!(ring.head, head_before, "over-capacity commit_head must be rejected");
+
+    // Attempt to commit an out-of-domain value behind consumed (consumed=1,
+    // new_head=0: proposed = 0u32.wrapping_sub(1) = u32::MAX → REJECTED).
+    ring.commit_head(0);
+    assert_eq!(ring.head, head_before, "behind-consumed commit_head must be rejected");
+
+    // A legitimate advance to exactly consumed+ring_depth (occupancy=4) IS accepted.
+    // consumed=1, ring_depth=4 → new_head=5, proposed=4 == ring_depth → OK.
+    ring.write_slot(&mut storage, ring.head as usize % 4, pe(50));
+    ring.write_slot(&mut storage, (ring.head as usize + 1) % 4, pe(60));
+    ring.commit_head(5);
+    assert_eq!(ring.len(), 4, "commit to exactly ring_depth occupancy must be accepted");
+}

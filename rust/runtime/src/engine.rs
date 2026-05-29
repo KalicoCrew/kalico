@@ -61,8 +61,8 @@ impl RuntimeStatus {
 /// Storage model:
 /// - `RuntimeContext::piece_storage` holds a flat `[PieceEntry; TOTAL_RING_PIECES]`.
 /// - Each configured axis owns a contiguous sub-slice described by
-///   `AxisState::ring` (`RingDescriptor` — offset + depth + head + tail + count +
-///   consumed).
+///   `AxisState::ring` (`RingDescriptor` — offset + depth + monotonic head +
+///   tail + monotonic consumed).
 /// - The engine bump-allocates axis regions from a running `ring_alloc_cursor`
 ///   during `configure_axis`.
 #[allow(missing_debug_implementations)]
