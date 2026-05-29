@@ -486,7 +486,13 @@ where
                 let q = queues
                     .entry(key)
                     .or_insert_with(|| AxisQueue::new(ring_depth_of(key)));
+                let count_added = pieces.len();
                 q.pieces.extend(pieces);
+                // PIECEDIAG (revert)
+                log::info!(
+                    "PIECEDIAG enqueue axis={} n={} qlen={}",
+                    key.axis, count_added, q.pieces.len()
+                );
             }
             PumpMsg::Heartbeat(HeartbeatMsg { mcu_id, consumed_counts }) => {
                 // INVARIANT: consumed_counts[i] is axis index i, the SAME axis
@@ -495,6 +501,11 @@ where
                 // writes consumed_counts()[i] = stepping_axes[i].ring.consumed_count()
                 // in index order (runtime_ffi.rs), and push_pieces(axis_idx) targets
                 // that same stepping_axes[axis_idx]. Do not reorder either side.
+                // PIECEDIAG (revert)
+                log::info!(
+                    "PIECEDIAG HB mcu={} consumed={:?}",
+                    mcu_id, consumed_counts
+                );
                 for (axis, &c) in consumed_counts.iter().enumerate() {
                     let key = AxisKey { mcu_id, axis: axis as u8 };
                     if let Some(q) = queues.get_mut(&key) {
@@ -527,7 +538,20 @@ where
         // tight busy-loop. The next inbound message (heartbeat/enqueue) retries.
         'send: loop {
             match schedule(&queues, MAX_PER_FRAME) {
-                Schedule::Idle | Schedule::StallFull(_) => break 'send,
+                Schedule::Idle => break 'send,
+                Schedule::StallFull(stall_key) => {
+                    // PIECEDIAG (revert)
+                    let q = queues.get(&stall_key);
+                    log::info!(
+                        "PIECEDIAG STALL axis={} pushed={} consumed={} ring_depth={} room={}",
+                        stall_key.axis,
+                        q.map_or(0, |q| q.pushed),
+                        q.map_or(0, |q| q.consumed),
+                        q.map_or(0, |q| q.ring_depth),
+                        q.map_or(0, |q| q.room()),
+                    );
+                    break 'send;
+                }
                 Schedule::Send(frames) => {
                     if frames.is_empty() {
                         break 'send;
@@ -548,7 +572,12 @@ where
                             q.pushed.wrapping_add(n)
                         };
                         match sink.send_frame(f.key, &f.pieces, f.start_slot, new_head) {
-                            Ok(_) => {
+                            Ok(code) => {
+                                // PIECEDIAG (revert)
+                                log::info!(
+                                    "PIECEDIAG SEND axis={} count={} start_slot={} new_head={} -> OK rc={}",
+                                    f.key.axis, n, f.start_slot, new_head, code
+                                );
                                 let q =
                                     queues.get_mut(&f.key).expect("planned key exists");
                                 for _ in 0..f.pieces.len() {
@@ -557,7 +586,12 @@ where
                                 q.pushed = q.pushed.wrapping_add(n);
                                 q.advance_write_cursor(n);
                             }
-                            Err(e) => {
+                            Err(ref e) => {
+                                // PIECEDIAG (revert)
+                                log::info!(
+                                    "PIECEDIAG SEND axis={} count={} start_slot={} new_head={} -> ERR {}",
+                                    f.key.axis, n, f.start_slot, new_head, e
+                                );
                                 log::error!(
                                     "pump send_frame failed for {:?}: {e}",
                                     f.key
