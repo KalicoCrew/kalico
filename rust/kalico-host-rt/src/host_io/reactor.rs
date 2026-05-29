@@ -12,7 +12,7 @@ use crate::host_io::ReactorCommand;
 use crate::host_io::events::EventDispatcher;
 use crate::host_io::identify::IdentifySeqState;
 use crate::host_io::kalico_native::{
-    KalicoDispatchResult, KalicoNativeState, PendingKalicoCall, build_kalico_control_frame,
+    KalicoDispatchResult, KalicoNativeState, PendingKalicoCall, build_kalico_frame,
     build_kalico_identify_frame, dispatch_kalico_frame,
 };
 use crate::host_io::parser::MsgProtoParser;
@@ -1241,13 +1241,14 @@ impl Reactor {
                 }
             }
             ReactorCommand::KalicoCall {
+                channel,
                 kind,
                 body,
                 completion,
                 deadline,
             } => {
                 eprintln!(
-                    "[trace-kcall] entry kind={kind:?} body_len={} state={:?} identified={} pending_n={}",
+                    "[trace-kcall] entry channel={channel} kind={kind:?} body_len={} state={:?} identified={} pending_n={}",
                     body.len(),
                     self.state,
                     self.kalico_state.identified,
@@ -1268,9 +1269,9 @@ impl Reactor {
                     return;
                 }
                 let cid = self.kalico_state.allocate_correlation_id();
-                let frame = build_kalico_control_frame(kind, cid, &body);
+                let frame = build_kalico_frame(channel, kind, cid, &body);
                 eprintln!(
-                    "[trace-kcall] write_frame kind={kind:?} cid={cid} frame_len={}",
+                    "[trace-kcall] write_frame channel={channel} kind={kind:?} cid={cid} frame_len={}",
                     frame.len()
                 );
                 self.kalico_state.pending.insert(

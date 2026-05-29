@@ -19,17 +19,33 @@ pub struct AxisKey {
 /// One axis's outbound queue plus flow-control accounting. `pushed` and
 /// `consumed` are wrapping u32 mirrors of the MCU's monotonic ring counter
 /// (spec §3.3) — never reset on a time re-anchor, only on an MCU ring reset.
+///
+/// `physical_write_cursor` tracks the MCU ring slot that will receive the
+/// next piece. It is advanced incrementally modulo `ring_depth` on each
+/// successful send — it is NEVER derived as `pushed % ring_depth`, which
+/// would produce wrong results across u32 wrap of `pushed`.
 #[derive(Debug)]
 pub struct AxisQueue {
     pub pieces: VecDeque<PieceEntry>,
     pub pushed: u32,
     pub consumed: u32,
     pub ring_depth: u32,
+    /// Physical ring write cursor: the slot index in `[0, ring_depth)` where
+    /// the next batch of pieces will be written on the MCU side. Advanced
+    /// incrementally (mod ring_depth) on each ACKed send — never reset on
+    /// time re-anchor, only on an MCU ring reset.
+    pub physical_write_cursor: u32,
 }
 
 impl AxisQueue {
     pub fn new(ring_depth: u32) -> Self {
-        Self { pieces: VecDeque::new(), pushed: 0, consumed: 0, ring_depth }
+        Self {
+            pieces: VecDeque::new(),
+            pushed: 0,
+            consumed: 0,
+            ring_depth,
+            physical_write_cursor: 0,
+        }
     }
     /// Free ring slots = depth − in-flight, where in-flight = pushed − consumed
     /// (wrapping). Saturates at 0.
@@ -37,13 +53,31 @@ impl AxisQueue {
         let in_flight = self.pushed.wrapping_sub(self.consumed);
         self.ring_depth.saturating_sub(in_flight)
     }
+    /// Advance the physical write cursor by `n` slots, wrapping at `ring_depth`.
+    /// No-op when `ring_depth == 0` (degenerate / uninitialised ring).
+    pub fn advance_write_cursor(&mut self, n: u32) {
+        if self.ring_depth == 0 {
+            return;
+        }
+        // cursor < ring_depth ≤ 65535, n ≤ 255 → sum ≤ 65789 < u32::MAX; no overflow.
+        self.physical_write_cursor = (self.physical_write_cursor + n) % self.ring_depth;
+    }
 }
 
 /// A planned outbound frame: one axis's contiguous run of pieces.
+///
+/// `start_slot` is filled in by the send loop (just before sending) from
+/// `AxisQueue::physical_write_cursor` — the scheduler does not have mutable
+/// queue access at plan time, so this field is set to 0 at construction and
+/// overwritten at send time.
 #[derive(Debug)]
 pub struct FramePlan {
     pub key: AxisKey,
     pub pieces: Vec<PieceEntry>,
+    /// Physical ring slot where this frame's first piece will land on the MCU.
+    /// Set to 0 at schedule time; overwritten with `q.physical_write_cursor`
+    /// just before the send call in `run_pump`.
+    pub start_slot: u16,
 }
 
 /// Outcome of one scheduling decision.
@@ -128,6 +162,9 @@ pub fn schedule(queues: &BTreeMap<AxisKey, AxisQueue>, max_per_frame: usize) -> 
         .map(|(k, n)| FramePlan {
             key: k,
             pieces: queues[&k].pieces.iter().take(n).copied().collect(),
+            // start_slot is filled in by run_pump just before sending, once
+            // it looks up the queue's physical_write_cursor. Set 0 here.
+            start_slot: 0,
         })
         .collect();
     // The head-room > 0 check above guarantees at least one piece is planned.
@@ -239,6 +276,8 @@ mod sched_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use std::sync::mpsc;
 
     #[test]
     fn room_full_then_drains() {
@@ -257,6 +296,132 @@ mod tests {
         q.consumed = u32::MAX;             // consumed is "behind" pushed by 3
         // in_flight = 2 - (u32::MAX) wrapping = 3
         assert_eq!(q.room(), 5);
+    }
+
+    #[test]
+    fn physical_write_cursor_advances_and_wraps_at_n() {
+        let mut q = AxisQueue::new(4); // ring_depth 4
+        assert_eq!(q.physical_write_cursor, 0);
+        q.advance_write_cursor(3);
+        assert_eq!(q.physical_write_cursor, 3);
+        // 3 + 3 = 6 → 6 % 4 = 2
+        q.advance_write_cursor(3);
+        assert_eq!(q.physical_write_cursor, 2);
+    }
+
+    // ── Mock sink for run_pump tests ──────────────────────────────────────────
+
+    /// Records every send_frame call's (start_slot, new_head) for assertions.
+    #[derive(Clone)]
+    struct RecordingSink {
+        calls: Arc<Mutex<Vec<(u16, u32)>>>,
+    }
+
+    impl RecordingSink {
+        fn new() -> Self {
+            Self { calls: Arc::new(Mutex::new(Vec::new())) }
+        }
+        fn recorded(&self) -> Vec<(u16, u32)> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl PieceSink for RecordingSink {
+        fn send_frame(
+            &self,
+            _key: AxisKey,
+            _pieces: &[PieceEntry],
+            start_slot: u16,
+            new_head: u32,
+        ) -> Result<i32, String> {
+            self.calls.lock().unwrap().push((start_slot, new_head));
+            Ok(kalico_protocol::result_codes::OK)
+        }
+    }
+
+    fn make_piece(t: u64) -> PieceEntry {
+        PieceEntry { start_time: t, coeffs: [0.0; 4], duration: 0.001, _reserved: 0 }
+    }
+
+    #[test]
+    fn run_pump_sets_start_slot_from_cursor_and_advances_it() {
+        // ring_depth = 8 (> 2*N), so there is always room for both batches
+        // without needing a heartbeat to free slots. N=3 pieces per batch:
+        //
+        //   First send:  start_slot = 0,        new_head = N=3.
+        //                cursor advances to N % 8 = 3.
+        //   Second send: start_slot = 3,        new_head = 2*N=6.
+        //                cursor advances to (3+3) % 8 = 6.
+        //
+        // The pump runs in a separate thread (matching pump_loop.rs style)
+        // because the burst-drain logic would otherwise see the Shutdown
+        // message and exit before sending if everything is pre-queued.
+        const RING_DEPTH: u32 = 8; // > 2*N, guarantees room for both batches
+        const N: u32 = 3;
+
+        let sink = RecordingSink::new();
+        let (tx, rx) = mpsc::channel::<PumpMsg>();
+        let sink_clone = sink.clone();
+        let handle = std::thread::spawn(move || {
+            run_pump(rx, sink_clone, |_key| RING_DEPTH);
+        });
+
+        // Enqueue first batch of N pieces and spin-wait until the pump drains it.
+        tx.send(PumpMsg::Enqueue(EnqueueMsg {
+            key: AxisKey { mcu_id: 1, axis: 0 },
+            pieces: (0..N).map(|i| make_piece(i as u64)).collect(),
+            fresh_stream: false,
+        }))
+        .unwrap();
+        {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while sink.recorded().len() < 1 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "pump did not drain first batch within deadline"
+                );
+                std::thread::yield_now();
+            }
+        }
+
+        // Enqueue second batch of N pieces and spin-wait until the pump drains it.
+        tx.send(PumpMsg::Enqueue(EnqueueMsg {
+            key: AxisKey { mcu_id: 1, axis: 0 },
+            pieces: (N..N * 2).map(|i| make_piece(i as u64)).collect(),
+            fresh_stream: false,
+        }))
+        .unwrap();
+        {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while sink.recorded().len() < 2 {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "pump did not drain second batch within deadline"
+                );
+                std::thread::yield_now();
+            }
+        }
+
+        tx.send(PumpMsg::Shutdown).unwrap();
+        handle.join().unwrap();
+
+        let recorded = sink.recorded();
+        assert_eq!(recorded.len(), 2, "expected exactly 2 sends, got {}", recorded.len());
+
+        let (s0, h0) = recorded[0];
+        let (s1, h1) = recorded[1];
+
+        // First send: cursor was 0, new_head = N.
+        assert_eq!(s0, 0, "first start_slot should be 0");
+        assert_eq!(h0, N, "first new_head should be N={N}");
+
+        // Second send: cursor advanced to (0 + N) % RING_DEPTH after first send.
+        let expected_s1 = (N % RING_DEPTH) as u16;
+        assert_eq!(s1, expected_s1, "second start_slot should be {expected_s1}");
+        assert_eq!(h1, N * 2, "second new_head should be {}", N * 2);
+        // Sanity: cursor after second send would be (N + N) % RING_DEPTH.
+        // We don't assert it here (no access to the queue after run_pump exits),
+        // but the new_head values prove both batches were fully sent.
     }
 }
 
@@ -290,7 +455,16 @@ pub enum PumpMsg {
 /// Sends one axis's frame to the wire. Returns the MCU's result code
 /// (`result_codes::OK` on success).
 pub trait PieceSink: Send {
-    fn send_frame(&self, key: AxisKey, pieces: &[PieceEntry]) -> Result<i32, String>;
+    /// Send `pieces` for `key`, starting at physical ring slot `start_slot`.
+    /// `new_head` is `pushed.wrapping_add(pieces.len())` — the post-send
+    /// monotonic counter the MCU will see as the new head.
+    fn send_frame(
+        &self,
+        key: AxisKey,
+        pieces: &[PieceEntry],
+        start_slot: u16,
+        new_head: u32,
+    ) -> Result<i32, String>;
 }
 
 // ── run_pump ─────────────────────────────────────────────────────────────────
@@ -383,20 +557,34 @@ where
                     if frames.is_empty() {
                         break 'send;
                     }
-                    for f in frames {
-                        match sink.send_frame(f.key, &f.pieces) {
+                    for mut f in frames {
+                        let n = f.pieces.len() as u32;
+                        // Look up cursor + compute new_head BEFORE borrowing the
+                        // queue mutably after the send. Borrow ends at end of
+                        // this block so the mut borrow below doesn't conflict.
+                        let new_head = {
+                            let q = queues.get(&f.key).expect("planned key exists");
+                            debug_assert!(
+                                q.ring_depth <= u32::from(u16::MAX),
+                                "ring_depth {} exceeds u16::MAX; start_slot cast is lossy",
+                                q.ring_depth
+                            );
+                            f.start_slot = q.physical_write_cursor as u16;
+                            q.pushed.wrapping_add(n)
+                        };
+                        match sink.send_frame(f.key, &f.pieces, f.start_slot, new_head) {
                             Ok(_) => {
                                 let q =
                                     queues.get_mut(&f.key).expect("planned key exists");
                                 for _ in 0..f.pieces.len() {
                                     q.pieces.pop_front();
                                 }
-                                q.pushed =
-                                    q.pushed.wrapping_add(f.pieces.len() as u32);
+                                q.pushed = q.pushed.wrapping_add(n);
+                                q.advance_write_cursor(n);
                                 pump_diag(&format!(
-                                    "SEND {:?} n={} pushed={} consumed={} room={} queued_left={}",
-                                    f.key, f.pieces.len(), q.pushed, q.consumed,
-                                    q.room(), q.pieces.len()
+                                    "SEND {:?} n={} pushed={} consumed={} room={} queued_left={} cursor={}",
+                                    f.key, n, q.pushed, q.consumed,
+                                    q.room(), q.pieces.len(), q.physical_write_cursor
                                 ));
                             }
                             Err(e) => {
@@ -430,7 +618,13 @@ pub struct WireSink {
 }
 
 impl PieceSink for WireSink {
-    fn send_frame(&self, key: AxisKey, pieces: &[PieceEntry]) -> Result<i32, String> {
+    fn send_frame(
+        &self,
+        key: AxisKey,
+        pieces: &[PieceEntry],
+        start_slot: u16,
+        new_head: u32,
+    ) -> Result<i32, String> {
         // schedule() caps frames at MAX_PER_FRAME = 255, so this is unreachable
         // in the production path; the assert guards against callers bypassing
         // schedule() and hitting a silent truncation.
@@ -451,18 +645,20 @@ impl PieceSink for WireSink {
         let msg = kalico_protocol::messages::PushPieces {
             axis_idx: key.axis,
             piece_count: pieces.len() as u8,
-            // TODO(Task 6): set from physical_write_cursor / pushed+n once
-            // AxisQueue gains those fields.
-            start_slot: 0,
-            new_head: 0,
+            start_slot,
+            new_head,
             pieces_bytes,
         };
         // 2 header bytes (axis_idx + piece_count) + serialised piece data.
         let mut body =
             Vec::with_capacity(2 + pieces.len() * std::mem::size_of::<PieceEntry>());
         kalico_protocol::codec::Encode::encode(&msg, &mut body);
+        // PushPieces is sent on KALICO_CHANNEL_PIECES (0x02). The response
+        // (PushPiecesResponse) arrives on the control channel matched by
+        // correlation_id — no change to the response handling path.
         let (_kind, resp) = io
-            .kalico_call(
+            .kalico_call_on_channel(
+                kalico_protocol::KALICO_CHANNEL_PIECES,
                 kalico_protocol::MessageKind::PushPieces,
                 body,
                 self.timeout,

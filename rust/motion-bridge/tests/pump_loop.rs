@@ -8,7 +8,13 @@ use runtime::piece_ring::PieceEntry;
 
 struct RecordingSink(Arc<Mutex<Vec<(AxisKey, usize)>>>);
 impl PieceSink for RecordingSink {
-    fn send_frame(&self, key: AxisKey, pieces: &[PieceEntry]) -> Result<i32, String> {
+    fn send_frame(
+        &self,
+        key: AxisKey,
+        pieces: &[PieceEntry],
+        _start_slot: u16,
+        _new_head: u32,
+    ) -> Result<i32, String> {
         self.0.lock().unwrap().push((key, pieces.len()));
         Ok(0)
     }

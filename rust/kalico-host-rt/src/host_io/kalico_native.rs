@@ -101,9 +101,17 @@ impl KalicoNativeState {
     }
 }
 
-/// Build a control-channel frame: per-message header + body, wrapped in
-/// the Layer-1 frame envelope.
-pub fn build_kalico_control_frame(kind: MessageKind, correlation_id: u32, body: &[u8]) -> Vec<u8> {
+/// Build a kalico frame on an explicit channel: per-message header + body,
+/// wrapped in the Layer-1 frame envelope. For control-channel calls use
+/// `CHANNEL_CONTROL` (0x00); for pieces use
+/// [`kalico_protocol::KALICO_CHANNEL_PIECES`] (0x02).
+/// Responses always arrive on the control channel keyed by correlation_id.
+pub fn build_kalico_frame(
+    channel: u8,
+    kind: MessageKind,
+    correlation_id: u32,
+    body: &[u8],
+) -> Vec<u8> {
     let mut payload = Vec::with_capacity(7 + body.len());
     payload.extend_from_slice(&encode_message_header(
         kind,
@@ -111,7 +119,13 @@ pub fn build_kalico_control_frame(kind: MessageKind, correlation_id: u32, body: 
         correlation_id,
     ));
     payload.extend_from_slice(body);
-    encode_frame(CHANNEL_CONTROL, &payload)
+    encode_frame(channel, &payload)
+}
+
+/// Build a control-channel frame: per-message header + body, wrapped in
+/// the Layer-1 frame envelope.
+pub fn build_kalico_control_frame(kind: MessageKind, correlation_id: u32, body: &[u8]) -> Vec<u8> {
+    build_kalico_frame(CHANNEL_CONTROL, kind, correlation_id, body)
 }
 
 /// Build an Identify (bootstrap-ABI) frame.

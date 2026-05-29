@@ -151,10 +151,16 @@ pub enum ReactorCommand {
             SyncSender<Result<crate::host_io::kalico_native::IdentifyOutcome, TransportError>>,
         deadline: std::time::Instant,
     },
-    /// Phase C-B: kalico-native control-channel call. The reactor allocates
-    /// a correlation_id, builds the frame from `kind` + `body`, writes it,
-    /// and parks `completion` keyed by correlation_id. Spec §7.2.
+    /// Phase C-B: kalico-native call on `channel`. The reactor allocates a
+    /// correlation_id, builds the frame from `kind` + `body` on the specified
+    /// channel, writes it, and parks `completion` keyed by correlation_id.
+    /// Spec §7.2. Outbound channel is explicit; the response always arrives on
+    /// the control channel matched by correlation_id.
     KalicoCall {
+        /// Layer-1 channel byte for the outbound frame. Control-channel calls
+        /// use `CHANNEL_CONTROL` (0x00); PushPieces uses
+        /// [`kalico_protocol::KALICO_CHANNEL_PIECES`] (0x02).
+        channel: u8,
         kind: kalico_protocol::MessageKind,
         body: Vec<u8>,
         completion:
@@ -739,22 +745,44 @@ impl KalicoHostIo {
     }
 
     /// Issue a kalico-native control-channel call (spec §7.2): one frame
-    /// out (kind + body), one frame in (matching correlation_id). Used by
-    /// `producer::load_curve` / `producer::push_segment` and similar.
+    /// out on `CHANNEL_CONTROL` (kind + body), one frame in (matching
+    /// correlation_id). Used by `producer::load_curve` / `push_segment` etc.
+    /// See also [`kalico_call_on_channel`] for the pieces channel.
     pub fn kalico_call(
         &self,
         kind: kalico_protocol::MessageKind,
         body: Vec<u8>,
         timeout: Duration,
     ) -> Result<(kalico_protocol::MessageKind, Vec<u8>), TransportError> {
+        self.kalico_call_on_channel(
+            kalico_native_transport::CHANNEL_CONTROL,
+            kind,
+            body,
+            timeout,
+        )
+    }
+
+    /// Issue a kalico-native call on an explicit outbound `channel`. The
+    /// response always arrives on the control channel matched by
+    /// correlation_id. Used by the pump to send `PushPieces` on
+    /// `CHANNEL_PIECES` (0x02) while receiving `PushPiecesResponse` on the
+    /// control channel.
+    pub fn kalico_call_on_channel(
+        &self,
+        channel: u8,
+        kind: kalico_protocol::MessageKind,
+        body: Vec<u8>,
+        timeout: Duration,
+    ) -> Result<(kalico_protocol::MessageKind, Vec<u8>), TransportError> {
         eprintln!(
-            "[trace-kcall-host] enter kind={kind:?} body_len={} timeout_ms={}",
+            "[trace-kcall-host] enter channel={channel} kind={kind:?} body_len={} timeout_ms={}",
             body.len(),
             timeout.as_millis()
         );
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let deadline = self.clock.now() + timeout;
         if let Err(e) = self.submission_tx.send(ReactorCommand::KalicoCall {
+            channel,
             kind,
             body,
             completion: tx,
@@ -765,7 +793,7 @@ impl KalicoHostIo {
             );
             return Err(TransportError::Closed);
         }
-        eprintln!("[trace-kcall-host] submitted, awaiting response kind={kind:?}");
+        eprintln!("[trace-kcall-host] submitted, awaiting response channel={channel} kind={kind:?}");
         let outcome = rx.recv_timeout(timeout);
         eprintln!(
             "[trace-kcall-host] response received kind={kind:?} outcome_is_ok={}",
