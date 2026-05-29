@@ -323,6 +323,28 @@ DECL_COMMAND(command_kalico_configure_axis,
              " extrusion_per_xy_mm=%u stepper_count=%c ring_depth=%hu"
              " steppers=%*s");
 
+// Host-issued clean-state reset. Sent once per MCU on every klippy:connect,
+// before the per-axis configure_axis calls, so the Rust engine's ring bump
+// allocator (and all per-axis state) starts fresh whether or not the MCU was
+// rebooted. Idempotent: a no-op on a freshly-booted MCU.
+//
+// IRQ guard: the reset clears engine state + the per-axis step queues, both of
+// which are concurrently touched by the always-armed TIM5 sample ISR and the
+// per-axis step-event timers. irq_save() blocks both for the bounded reset.
+void
+command_kalico_runtime_reset(uint32_t *args)
+{
+    (void)args;
+    if (!runtime_handle)
+        shutdown("runtime reset before runtime init");
+    irqstatus_t flag = irq_save();
+    int32_t rc = kalico_runtime_reset(runtime_handle);
+    irq_restore(flag);
+    if (rc != 0)
+        shutdown("runtime reset rejected");
+}
+DECL_COMMAND(command_kalico_runtime_reset, "kalico_runtime_reset");
+
 void
 command_kalico_phase_stepping_enable_spi(uint32_t *args)
 {
