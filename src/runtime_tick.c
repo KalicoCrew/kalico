@@ -414,20 +414,9 @@ runtime_drain(void)
     if (cur_error != 0 && cur_error != last_acted_error) {
         last_acted_error = cur_error;
         uint32_t fdetail = runtime_handle_fault_detail(runtime_handle);
-        // THROWAWAY bench diag (2026-05-29 first-jog starvation probe).
-        // Segment ids are gone (piece-ring model), so reuse the legacy
-        // segment-id slot to ship the worst TIM5 inter-fire gap (us, hi16)
-        // and the USB(OTG) cycles that coincided with it (us, lo16). This
-        // arrives in the live kalico_fault event without needing a reboot:
-        //   gap_us ≈ otg_us  => USB-OTG preemption starved the engine ISR;
-        //   gap_us >> otg_us  => non-USB blocker (critical section / compute).
-        extern uint32_t diag_get_tim5_max_gap_cyc(void);
-        extern uint32_t diag_get_tim5_max_gap_otg_cyc(void);
-        uint32_t cyc_per_us = CONFIG_CLOCK_FREQ / 1000000u;
-        uint32_t gap_us = diag_get_tim5_max_gap_cyc() / cyc_per_us;
-        uint32_t otg_us = diag_get_tim5_max_gap_otg_cyc() / cyc_per_us;
-        uint32_t diag_sid = ((gap_us & 0xFFFFu) << 16) | (otg_us & 0xFFFFu);
-        kalico_native_emit_fault_event((uint16_t)cur_error, fdetail, diag_sid);
+        // Segment ids are gone (piece-ring model); pass 0 for the legacy
+        // segment-id slot, matching the dormant cur_status fault emit above.
+        kalico_native_emit_fault_event((uint16_t)cur_error, fdetail, 0);
         runtime_liveness_ok = 0;
         shutdown("kalico runtime fault");
     }

@@ -130,9 +130,6 @@ DIAG_GET_STUB(tx_drops_kalico)
 DIAG_GET_STUB(tx_drops_klipper)
 DIAG_GET_STUB(rt_tick_count)
 DIAG_GET_STUB(rt_tick_cycles_max)
-// THROWAWAY bench diag (2026-05-29 first-jog starvation probe) — revert later.
-DIAG_GET_STUB(tim5_max_gap_cyc)
-DIAG_GET_STUB(tim5_max_gap_otg_cyc)
 
 // Linux build doesn't have armcm_timer.c or mpu_protect.c — provide
 // stubs for symbols referenced by sched.c.
