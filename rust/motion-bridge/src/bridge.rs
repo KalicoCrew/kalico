@@ -2298,50 +2298,48 @@ impl PyMotionBridge {
                 // MCU clock); lead≈0 → the 0.25s lead is lost. REVERT after.
                 {
                     use std::io::Write as _;
-                    let (proj_now, proj_host_now) = {
-                        let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
-                        let c0 = mcu_configs_for_cb.first();
-                        let pn = c0
-                            .map(|c| {
-                                r.compute_ack_clock(crate::types::mcu_handle_from_raw(c.mcu_id))
-                                    .unwrap_or(0)
-                            })
-                            .unwrap_or(0);
-                        let phn = c0
-                            .map(|c| {
-                                r.host_time_to_mcu_clock(
-                                    crate::types::mcu_handle_from_raw(c.mcu_id),
-                                    host_now,
-                                )
-                                .unwrap_or(0)
-                            })
-                            .unwrap_or(0);
-                        (pn, phn)
-                    };
-                    let first_start = msgs
-                        .iter()
-                        .filter_map(|m| m.pieces.first().map(|p| p.start_time))
-                        .min()
-                        .unwrap_or(0);
                     if let Ok(mut fh) = std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
                         .open("/home/dderg/printer_data/logs/sip-diag.log")
                     {
+                        let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
                         let _ = writeln!(
                             fh,
-                            "[sip-diag] host_now={:.6} seg.t_start={:.6} seg.t_end={:.6} t0={:.6} fresh={} proj_now_clk={} proj_host_now_clk={} first_start_clk={} lead_clk={} delta_vs_now_clk={}",
-                            host_now,
-                            seg.t_start,
-                            seg.t_end,
-                            t0,
-                            fresh,
-                            proj_now,
-                            proj_host_now,
-                            first_start,
-                            first_start as i64 - proj_host_now as i64,
-                            first_start as i64 - proj_now as i64,
+                            "[sip-seg] host_now={:.6} t0={:.6} fresh={} seg.t_start={:.6} seg.t_end={:.6}",
+                            host_now, t0, fresh, seg.t_start, seg.t_end,
                         );
+                        // Per-(mcu,axis): the ACTUAL first piece start_time vs the
+                        // per-MCU projection of now / t0 / now+1s, plus the raw
+                        // (freq, clock_offset, last_clock). proj_t0 - proj_now is the
+                        // lead in that MCU's cycles (should be ~0.25*freq). If
+                        // proj_now == proj_now_plus1s the projection is CLAMPED.
+                        for m in &msgs {
+                            let mh = crate::types::mcu_handle_from_raw(m.key.mcu_id);
+                            let first = m.pieces.first().map(|p| p.start_time).unwrap_or(0);
+                            let p_now = r.host_time_to_mcu_clock(mh, host_now).unwrap_or(0);
+                            let p_t0 =
+                                r.host_time_to_mcu_clock(mh, t0 + seg.t_start).unwrap_or(0);
+                            let p_now1 =
+                                r.host_time_to_mcu_clock(mh, host_now + 1.0).unwrap_or(0);
+                            let (freq, coff, lclk) =
+                                r.clock_debug(mh).unwrap_or((0.0, 0.0, 0));
+                            let _ = writeln!(
+                                fh,
+                                "[sip-msg]   mcu={} axis={} first_start={} proj_now={} proj_t0={} proj_now+1s={} lead={} clamped={} | freq={} clk_off={:.6} last_clk={}",
+                                m.key.mcu_id,
+                                m.key.axis,
+                                first,
+                                p_now,
+                                p_t0,
+                                p_now1,
+                                p_t0 as i64 - p_now as i64,
+                                p_now1 == p_now,
+                                freq as u64,
+                                coff,
+                                lclk,
+                            );
+                        }
                     }
                 }
 

@@ -455,6 +455,15 @@ impl PassthroughRouter {
         Ok(projected)
     }
 
+    /// DIAG(sip): expose the raw clock-estimate triple `(freq, clock_offset,
+    /// last_clock)` for the given MCU so host-side diagnostics can see whether
+    /// the projection is clamped / which epoch `clock_offset` lives in. REVERT.
+    pub fn clock_debug(&self, mcu: McuHandle) -> Option<(f64, f64, u64)> {
+        self.mcus
+            .get(&mcu)
+            .map(|r| (r.clock_freq, r.clock_offset, r.last_clock))
+    }
+
     // ── Stats ────────────────────────────────────────────────────────────
 
     /// Snapshot current statistics for the given MCU.
