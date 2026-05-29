@@ -573,12 +573,11 @@ pub(crate) fn ring_depth_for_axis_inner(
     }
     let depth = axis_ring_depth(cfg.caps.total_pieces() as u32, cfg.axes.len() as u32);
     if depth > u32::from(u16::MAX) {
-        log::warn!(
-            "ring_depth_for_axis: mcu_handle={mcu_handle} axis={axis} \
-             computed depth={depth} exceeds u16::MAX — clamping to 65535; \
+        return Err(format!(
+            "ring depth {depth} exceeds u16::MAX (65535) for mcu {mcu_handle} axis {axis}; \
+             a >65535-piece ring would need >2 MB of SRAM and is impossible here — \
              check total_piece_memory configuration"
-        );
-        return Ok(u16::MAX);
+        ));
     }
     #[allow(clippy::cast_possible_truncation)]
     Ok(depth as u16)
@@ -630,6 +629,25 @@ mod ring_depth_for_axis_tests {
         // Z is not configured on mcu 1 (X/Y only).
         let e = ring_depth_for_axis_inner(&configs(), 1, AXIS_Z as u8).unwrap_err();
         assert!(e.contains("not configured"), "got: {e}");
+    }
+
+    #[test]
+    fn ring_depth_over_u16_is_hard_error_not_clamp() {
+        // total_piece_memory = 70_000 * 32 bytes → total_pieces = 70_000.
+        // axis_ring_depth(70_000, 1) = 70_000 > 65535 (u16::MAX).
+        let configs = vec![McuAxisConfig {
+            mcu_id: 0,
+            axes: vec![AXIS_X],
+            kinematics: 0,
+            caps: McuCaps { total_piece_memory: 70_000 * 32 },
+        }];
+        let res = ring_depth_for_axis_inner(&configs, 0, AXIS_X as u8);
+        assert!(res.is_err(), "depth > u16::MAX must be a hard error, not a clamp");
+        let e = res.unwrap_err();
+        assert!(
+            e.contains("exceeds u16::MAX"),
+            "error message should mention u16::MAX, got: {e}"
+        );
     }
 }
 
@@ -1322,9 +1340,9 @@ impl PyMotionBridge {
     /// configured axis list; an unknown axis returns an error.
     ///
     /// The return type is `u16`: the value fits comfortably for any realistic
-    /// `total_piece_memory` (e.g. 992 for a 2-axis MCU with 62 KB).  Values
-    /// exceeding 65535 are clamped with a warning — treat that as a
-    /// misconfiguration.
+    /// `total_piece_memory` (e.g. 992 for a 2-axis MCU with 62 KB).  A
+    /// computed depth exceeding `u16::MAX` (65535) is a hard error: this
+    /// method raises `RuntimeError` and no clamping occurs.
     fn ring_depth_for_axis(&self, mcu_handle: u32, axis: u8) -> PyResult<u16> {
         let configs = self
             .mcu_axis_configs

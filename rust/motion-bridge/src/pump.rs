@@ -451,6 +451,10 @@ impl PieceSink for WireSink {
         let msg = kalico_protocol::messages::PushPieces {
             axis_idx: key.axis,
             piece_count: pieces.len() as u8,
+            // TODO(Task 6): set from physical_write_cursor / pushed+n once
+            // AxisQueue gains those fields.
+            start_slot: 0,
+            new_head: 0,
             pieces_bytes,
         };
         // 2 header bytes (axis_idx + piece_count) + serialised piece data.
