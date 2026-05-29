@@ -3,12 +3,7 @@
 //! (a reset). See spec §3.2.1.
 
 const CONTIGUITY_EPS: f64 = 1e-6; // seconds; planner timestamps compare to each other
-// EXPERIMENT (2026-05-29): bumped 0.25 -> 2.0 to discriminate whether the
-// stream lead actually reaches the piece start_time. If PieceStartInPast
-// disappears, the lead is applied (0.25 s was just too small for a ~250 ms
-// deficit); if it persists at ~hundreds of us late, the lead term is being
-// dropped in the projection/clock-frame path. Revert after the bench read.
-const DEFAULT_LEAD_SECS: f64 = 2.0;
+const DEFAULT_LEAD_SECS: f64 = 0.25;
 
 pub struct Anchor {
     /// Host-time instant (seconds) that planner t = 0 maps to. `None` until
