@@ -2287,38 +2287,62 @@ impl PyMotionBridge {
                 );
 
                 // DIAG(sip): scheduling decision for PieceStartInPast (-308)
-                // root-cause investigation. Captures, per dispatched segment:
-                // the planner timeline (seg.t_start/t_end), the host-time anchor
-                // (t0) and whether it re-anchored (fresh), the *current* projected
-                // MCU clock (proj_now_clk) vs the first piece's scheduled start
-                // clock (first_start_clk). A large negative delta = piece
-                // scheduled in the MCU's past → the -308 trigger. REVERT after.
+                // root-cause investigation. Rust stderr/log are discarded by
+                // klippy, so write to a persistent file. Captures, per dispatched
+                // segment: planner timeline (seg.t_start/t_end), host-time anchor
+                // (t0) + re-anchor flag (fresh), the projected MCU clock for the
+                // current host_now (proj_host_now_clk), the first piece's actual
+                // scheduled start clock (first_start_clk), and the LEAD in clock
+                // cycles (first_start - proj_host_now). lead≈+0.25s*freq → lead
+                // applied (so a -308 means the host clock estimate lags the real
+                // MCU clock); lead≈0 → the 0.25s lead is lost. REVERT after.
                 {
-                    let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
-                    let proj_now = mcu_configs_for_cb
-                        .first()
-                        .map(|c| {
-                            r.compute_ack_clock(crate::types::mcu_handle_from_raw(c.mcu_id))
+                    use std::io::Write as _;
+                    let (proj_now, proj_host_now) = {
+                        let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
+                        let c0 = mcu_configs_for_cb.first();
+                        let pn = c0
+                            .map(|c| {
+                                r.compute_ack_clock(crate::types::mcu_handle_from_raw(c.mcu_id))
+                                    .unwrap_or(0)
+                            })
+                            .unwrap_or(0);
+                        let phn = c0
+                            .map(|c| {
+                                r.host_time_to_mcu_clock(
+                                    crate::types::mcu_handle_from_raw(c.mcu_id),
+                                    host_now,
+                                )
                                 .unwrap_or(0)
-                        })
-                        .unwrap_or(0);
-                    drop(r);
+                            })
+                            .unwrap_or(0);
+                        (pn, phn)
+                    };
                     let first_start = msgs
                         .iter()
                         .filter_map(|m| m.pieces.first().map(|p| p.start_time))
                         .min()
                         .unwrap_or(0);
-                    eprintln!(
-                        "[sip-diag] host_now={:.6} seg.t_start={:.6} seg.t_end={:.6} t0={:.6} fresh={} proj_now_clk={} first_start_clk={} delta_clk={}",
-                        host_now,
-                        seg.t_start,
-                        seg.t_end,
-                        t0,
-                        fresh,
-                        proj_now,
-                        first_start,
-                        first_start as i64 - proj_now as i64,
-                    );
+                    if let Ok(mut fh) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/home/dderg/printer_data/logs/sip-diag.log")
+                    {
+                        let _ = writeln!(
+                            fh,
+                            "[sip-diag] host_now={:.6} seg.t_start={:.6} seg.t_end={:.6} t0={:.6} fresh={} proj_now_clk={} proj_host_now_clk={} first_start_clk={} lead_clk={} delta_vs_now_clk={}",
+                            host_now,
+                            seg.t_start,
+                            seg.t_end,
+                            t0,
+                            fresh,
+                            proj_now,
+                            proj_host_now,
+                            first_start,
+                            first_start as i64 - proj_host_now as i64,
+                            first_start as i64 - proj_now as i64,
+                        );
+                    }
                 }
 
                 for m in msgs {
