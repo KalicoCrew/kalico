@@ -481,6 +481,54 @@ pub(crate) fn build_configure_axes_body(
     body
 }
 
+/// Per-axis ring depth: split this MCU's piece memory evenly across its axes.
+///
+/// Floor division guarantees the sum of per-axis depths never exceeds
+/// `total_pieces`, so the MCU's bump-allocator over `piece_storage` always
+/// fits.  A lower clamp of 1 prevents a zero-depth ring on pathological
+/// inputs; `num_axes.max(1)` prevents division by zero.
+///
+/// This is the **single source of truth** for the formula.  It is used both
+/// when building the `ring_depth_table` for the pump (in `init_planner`) and
+/// when answering `ring_depth_for_axis` queries from the Python configure path.
+pub(crate) fn axis_ring_depth(total_pieces: u32, num_axes: u32) -> u32 {
+    (total_pieces / num_axes.max(1)).max(1)
+}
+
+#[cfg(test)]
+mod axis_ring_depth_tests {
+    use super::axis_ring_depth;
+
+    #[test]
+    fn typical_two_axis_mcu() {
+        // 62 KB / 32 bytes = 1984 pieces; two axes → 992 each.
+        assert_eq!(axis_ring_depth(1984, 2), 992);
+    }
+
+    #[test]
+    fn single_axis_mcu() {
+        assert_eq!(axis_ring_depth(1984, 1), 1984);
+    }
+
+    #[test]
+    fn floor_division() {
+        // 5 / 2 = 2 (floor).
+        assert_eq!(axis_ring_depth(5, 2), 2);
+    }
+
+    #[test]
+    fn lower_clamp_on_zero_total() {
+        // 0 / 2 = 0 → clamped to 1.
+        assert_eq!(axis_ring_depth(0, 2), 1);
+    }
+
+    #[test]
+    fn zero_num_axes_treated_as_one() {
+        // num_axes.max(1) = 1 → 1000 / 1 = 1000.
+        assert_eq!(axis_ring_depth(1000, 0), 1000);
+    }
+}
+
 #[pymethods]
 impl PyMotionBridge {
     // ── Task 31: constructor ────────────────────────────────────────────
@@ -1143,6 +1191,58 @@ impl PyMotionBridge {
             ))
         })?;
         Ok(conn.identify_caps)
+    }
+
+    /// Return the per-axis ring depth for `mcu_handle` / `axis`.
+    ///
+    /// This is the **single source of truth** for the value that is written
+    /// into both the `kalico_configure_axis` wire command (consumed by the MCU
+    /// allocator) and the pump's per-ring flow-control accounting.  The Python
+    /// configure-axis path calls this and forwards the result to the MCU; the
+    /// pump reads the same value from `ring_depth_table` which was built with
+    /// `axis_ring_depth` directly.
+    ///
+    /// `init_planner` MUST have been called before this method (it populates
+    /// `mcu_axis_configs`).  `axis` is validated as a member of the MCU's
+    /// configured axis list; an unknown axis returns an error.
+    ///
+    /// The return type is `u16`: the value fits comfortably for any realistic
+    /// `total_piece_memory` (e.g. 992 for a 2-axis MCU with 62 KB).  Values
+    /// exceeding 65535 are clamped with a warning — treat that as a
+    /// misconfiguration.
+    fn ring_depth_for_axis(&self, mcu_handle: u32, axis: u8) -> PyResult<u16> {
+        let configs = self
+            .mcu_axis_configs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let cfg = configs
+            .iter()
+            .find(|c| c.mcu_id == mcu_handle)
+            .ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "ring_depth_for_axis: unknown mcu_handle {mcu_handle} \
+                     (init_planner not yet called?)"
+                ))
+            })?;
+        let axis_usize = usize::from(axis);
+        if !cfg.axes.contains(&axis_usize) {
+            return Err(PyRuntimeError::new_err(format!(
+                "ring_depth_for_axis: axis {axis} is not configured on mcu_handle \
+                 {mcu_handle} (configured axes: {:?})",
+                cfg.axes
+            )));
+        }
+        let depth = axis_ring_depth(cfg.caps.total_pieces() as u32, cfg.axes.len() as u32);
+        if depth > u32::from(u16::MAX) {
+            log::warn!(
+                "ring_depth_for_axis: mcu_handle={mcu_handle} axis={axis} \
+                 computed depth={depth} exceeds u16::MAX — clamping to 65535; \
+                 check total_piece_memory configuration"
+            );
+            return Ok(u16::MAX);
+        }
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(depth as u16)
     }
 
     /// Send the kalico-native `ConfigureAxes` message for an attached MCU.
@@ -1944,18 +2044,15 @@ impl PyMotionBridge {
         // tear down the reactor; the pump must not pin the IO alive.
         //
         // Ring depth per (mcu,axis): total_piece_memory / 32 / num_axes.
-        // Clamped to .min(64) because the MCU C side still hardcodes
-        // ring_depth=64 in stepper.c (task 9 wires the real depth and
-        // drops this clamp).
+        // Computed by `axis_ring_depth` — the single source of truth shared
+        // with the `ring_depth_for_axis` Python-facing getter so the pump and
+        // the MCU allocator always agree on the ring size.
         let ring_depth_table: HashMap<crate::pump::AxisKey, u32> = {
             let mut t = HashMap::new();
             for cfg_mcu in &mcu_configs {
                 let total = cfg_mcu.caps.total_pieces() as u32;
-                let n = cfg_mcu.axes.len().max(1) as u32;
-                // NB: ring depth divides total_pieces by this MCU's axis count (per-axis rings), unlike the legacy slot pool's fixed /4. Task 9 finalizes per-axis sizing.
-                // .min(64): MCU C side still hardcodes ring_depth=64 (stepper.c);
-                // Task 9 wires the real depth and drops this clamp.
-                let depth = (total / n).min(64).max(1);
+                let n = cfg_mcu.axes.len() as u32;
+                let depth = axis_ring_depth(total, n);
                 for &axis in &cfg_mcu.axes {
                     t.insert(
                         crate::pump::AxisKey {
@@ -1988,7 +2085,7 @@ impl PyMotionBridge {
                     timeout: pump_timeout,
                 };
                 crate::pump::run_pump(pump_rx, sink, move |k| {
-                    ring_depth_table_for_pump.get(&k).copied().unwrap_or(64)
+                    ring_depth_table_for_pump.get(&k).copied().unwrap_or(1)
                 });
             })
             .expect("spawn push-pieces-pump thread");

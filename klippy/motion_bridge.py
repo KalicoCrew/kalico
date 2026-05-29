@@ -122,6 +122,15 @@ class MotionBridgeWrapper:
         """
         return self._bridge.get_mcu_capabilities(mcu_handle)
 
+    def ring_depth_for_axis(self, mcu_handle, axis_idx):
+        """Return the per-axis ring depth (u16) for the given MCU and axis.
+
+        This is the single source of truth shared between the pump's flow-
+        control accounting and the kalico_configure_axis wire command.
+        init_planner must have been called before this method.
+        """
+        return self._bridge.ring_depth_for_axis(mcu_handle, axis_idx)
+
     def configure_axes(
         self,
         mcu_handle,

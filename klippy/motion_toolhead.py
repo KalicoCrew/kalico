@@ -1154,7 +1154,7 @@ class MotionToolhead(ToolHead):
                 configure_axis_cmd = mcu_obj.lookup_command(
                     "kalico_configure_axis axis_idx=%c mode=%c"
                     " microstep_distance=%u extrusion_per_xy_mm=%u"
-                    " stepper_count=%c steppers=%*s"
+                    " stepper_count=%c ring_depth=%hu steppers=%*s"
                 )
             except Exception:
                 logging.info(
@@ -1213,9 +1213,12 @@ class MotionToolhead(ToolHead):
                                 break
                     blob.append(tmc_oid)
                     blob.append(FLAGS_DEFAULT)
+                ring_depth = self.bridge.ring_depth_for_axis(
+                    mcu_handle, axis_idx
+                )
                 configure_axis_cmd.send([
                     axis_idx, MODE_PULSE, microstep_bits, extrusion_bits,
-                    len(bindings), bytes(blob),
+                    len(bindings), ring_depth, bytes(blob),
                 ])
             logging.info(
                 "MotionToolhead: configure_axes mcu=%s kin=%d "

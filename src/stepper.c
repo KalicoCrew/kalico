@@ -226,8 +226,9 @@ command_kalico_configure_axis(uint32_t *args)
     uint32_t mstep_bits     = args[2];
     uint32_t extrusion_bits = args[3]; // reserved — not forwarded to current Rust FFI
     uint8_t stepper_count   = args[4];
-    uint16_t blob_len       = (uint16_t)args[5];
-    const uint8_t *blob     = command_decode_ptr(args[6]);
+    uint16_t ring_depth     = (uint16_t)args[5];
+    uint16_t blob_len       = (uint16_t)args[6];
+    const uint8_t *blob     = command_decode_ptr(args[7]);
 
     // ── Phase 1: validate every input + every binding, no mutations.
     if (axis_idx >= RUNTIME_MOTOR_COUNT)
@@ -238,6 +239,8 @@ command_kalico_configure_axis(uint32_t *args)
         shutdown("configure_axis too many steppers per axis");
     if (blob_len != (uint16_t)stepper_count * 4)
         shutdown("configure_axis blob length mismatch");
+    if (ring_depth == 0)
+        shutdown("configure_axis ring_depth must be nonzero");
     if (!runtime_handle)
         shutdown("configure_axis before runtime init");
 
@@ -274,12 +277,8 @@ command_kalico_configure_axis(uint32_t *args)
         bindings[i]._pad[0] = 0;
         bindings[i]._pad[1] = 0;
     }
-    // ring_depth: number of PieceEntry slots to allocate for this axis.
-    // The host will eventually drive this via the wire protocol; for now
-    // pass a fixed default of 64 (matches configure_axis_legacy's previous
-    // behaviour and is sufficient for the current single-segment lookahead).
-    // TODO: wire from host via kalico_configure_axis protocol field.
-    uint16_t ring_depth = 64;
+    // ring_depth: host-supplied number of PieceEntry slots for this axis,
+    // derived from total_piece_memory / num_axes in the Rust bridge.
     int32_t rc = kalico_runtime_configure_axis(
         runtime_handle, axis_idx, mode, mstep_bits,
         ring_depth,
@@ -320,7 +319,8 @@ command_kalico_configure_axis(uint32_t *args)
 }
 DECL_COMMAND(command_kalico_configure_axis,
              "kalico_configure_axis axis_idx=%c mode=%c microstep_distance=%u"
-             " extrusion_per_xy_mm=%u stepper_count=%c steppers=%*s");
+             " extrusion_per_xy_mm=%u stepper_count=%c ring_depth=%hu"
+             " steppers=%*s");
 
 void
 command_kalico_phase_stepping_enable_spi(uint32_t *args)
