@@ -653,7 +653,22 @@ fn get_position_and_velocity(
     // Fault check: piece start_time is too far in the past.
     let fault_tolerance = u64::from(sample_period_cycles) * 2;
     if now.saturating_sub(next_entry.start_time) > fault_tolerance {
-        raise_piece_start_in_past(shared, axis_idx);
+        // DIAG(sip): encode how many sample-periods late the piece was into
+        // the low 16 bits of fault_detail (axis stays in bits 16..24) so the
+        // emitted -308 carries the actual MCU-side now-vs-start_time delta.
+        // REVERT to the bare `raise_piece_start_in_past` call after concluding.
+        let late_cycles = now.saturating_sub(next_entry.start_time);
+        let periods_late = if sample_period_cycles > 0 {
+            (late_cycles / u64::from(sample_period_cycles)).min(0xFFFF)
+        } else {
+            0xFFFF
+        };
+        let detail = ((axis_idx as u32 & 0xFF) << 16) | (periods_late as u32 & 0xFFFF);
+        shared.fault_detail.store(detail, Ordering::Release);
+        shared
+            .last_error
+            .store(crate::error::FaultCode::PieceStartInPast.as_i32(), Ordering::Release);
+        let _ = raise_piece_start_in_past; // keep import live while diag is in place
         axis.has_piece = false;
         return None;
     }

@@ -2286,6 +2286,41 @@ impl PyMotionBridge {
                     project,
                 );
 
+                // DIAG(sip): scheduling decision for PieceStartInPast (-308)
+                // root-cause investigation. Captures, per dispatched segment:
+                // the planner timeline (seg.t_start/t_end), the host-time anchor
+                // (t0) and whether it re-anchored (fresh), the *current* projected
+                // MCU clock (proj_now_clk) vs the first piece's scheduled start
+                // clock (first_start_clk). A large negative delta = piece
+                // scheduled in the MCU's past → the -308 trigger. REVERT after.
+                {
+                    let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
+                    let proj_now = mcu_configs_for_cb
+                        .first()
+                        .map(|c| {
+                            r.compute_ack_clock(crate::types::mcu_handle_from_raw(c.mcu_id))
+                                .unwrap_or(0)
+                        })
+                        .unwrap_or(0);
+                    drop(r);
+                    let first_start = msgs
+                        .iter()
+                        .filter_map(|m| m.pieces.first().map(|p| p.start_time))
+                        .min()
+                        .unwrap_or(0);
+                    eprintln!(
+                        "[sip-diag] host_now={:.6} seg.t_start={:.6} seg.t_end={:.6} t0={:.6} fresh={} proj_now_clk={} first_start_clk={} delta_clk={}",
+                        host_now,
+                        seg.t_start,
+                        seg.t_end,
+                        t0,
+                        fresh,
+                        proj_now,
+                        first_start,
+                        first_start as i64 - proj_now as i64,
+                    );
+                }
+
                 for m in msgs {
                     pump_tx_for_cb
                         .send(crate::pump::PumpMsg::Enqueue(m))
