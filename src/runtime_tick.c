@@ -240,6 +240,15 @@ static uint8_t prev_engine_status = 0;
 static uint32_t last_seen_tick_counter = 0;
 static uint32_t last_progress_time = 0;
 
+// DIAG (revert 2026-05-29): inter-fire gap (CYCCNT cycles) of the TIM5 ISR
+// fire in which a runtime fault first latched. Set by TIM5_IRQHandler
+// (runtime_tick_h7.c) the first time last_error goes nonzero; read at the
+// fault-emit site below and shipped as the kalico_fault `segment_id` slot so
+// it lands in klippy.log. Distinguishes a PieceStartInPast caused by ISR
+// starvation (gap >> 25 us) from one caused by a per-piece timestamp error
+// (gap ~ 25 us). REMOVE after the bench read.
+volatile uint32_t runtime_isr_gap_at_fault_cyc = 0;
+
 // First-light status LED removed for Surface C bring-up.
 //
 // The plan-literal placeholder pin was PA13, which is SWDIO on the H7 —
@@ -414,9 +423,12 @@ runtime_drain(void)
     if (cur_error != 0 && cur_error != last_acted_error) {
         last_acted_error = cur_error;
         uint32_t fdetail = runtime_handle_fault_detail(runtime_handle);
-        // Segment ids are gone (piece-ring model); pass 0 for the legacy
-        // segment-id slot, matching the dormant cur_status fault emit above.
-        kalico_native_emit_fault_event((uint16_t)cur_error, fdetail, 0);
+        // DIAG (revert 2026-05-29): ship the faulting ISR fire's inter-fire
+        // gap (microseconds) in the legacy segment-id slot so klippy.log shows
+        // whether the engine ISR stalled (gap >> 25 us) right before the fault.
+        uint32_t isr_gap_us =
+            runtime_isr_gap_at_fault_cyc / (CONFIG_CLOCK_FREQ / 1000000U);
+        kalico_native_emit_fault_event((uint16_t)cur_error, fdetail, isr_gap_us);
         runtime_liveness_ok = 0;
         shutdown("kalico runtime fault");
     }

@@ -140,6 +140,15 @@ TIM5_IRQHandler(void)
     extern void diag_tim5_account(uint32_t enter, uint32_t exit);
     uint32_t diag_enter = DWT->CYCCNT;
 
+    // DIAG (revert 2026-05-29): inter-fire gap of this TIM5 ISR fire. Normal
+    // is ~one tick period (25 us at 40 kHz); a large value means the ISR was
+    // starved. Latched at the first fault below and reported via klippy.log.
+    static uint32_t diag_prev_isr_enter = 0;
+    static uint8_t diag_gap_latched = 0;
+    uint32_t diag_isr_gap =
+        diag_prev_isr_enter ? (diag_enter - diag_prev_isr_enter) : 0;
+    diag_prev_isr_enter = diag_enter;
+
     TIM5->SR = ~TIM_SR_UIF;            // entry-time ack (spec §2.4)
 
 #if CONFIG_KALICO_SIM
@@ -178,6 +187,16 @@ TIM5_IRQHandler(void)
         kalico_runtime_tick_sample(runtime_handle);
     }
     uint32_t after = runtime_cyccnt_read();
+
+    // DIAG (revert 2026-05-29): on the first fire that latches a fault, record
+    // this fire's inter-fire gap so the drain's kalico_fault emit ships it.
+    // runtime_handle_last_error is declared by kalico_runtime.h (included above).
+    extern volatile uint32_t runtime_isr_gap_at_fault_cyc;
+    if (!diag_gap_latched && runtime_handle
+        && runtime_handle_last_error(runtime_handle) != 0) {
+        runtime_isr_gap_at_fault_cyc = diag_isr_gap;
+        diag_gap_latched = 1;
+    }
 
     // Bench capture: weak no-op unless CONFIG_RUNTIME_BENCH=y.
     runtime_bench_capture(after - before);
