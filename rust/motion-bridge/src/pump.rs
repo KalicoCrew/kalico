@@ -295,6 +295,25 @@ pub trait PieceSink: Send {
 
 // ── run_pump ─────────────────────────────────────────────────────────────────
 
+/// DIAGNOSTIC (2026-05-29): append a timestamped line to /tmp/pump-diag.log so
+/// we can see the pump's send/heartbeat cadence relative to wall time and
+/// localize the first-light PieceStartInPast fault (heartbeat-paced delivery
+/// vs. ISR stall). REVERT after the bench read.
+fn pump_diag(msg: &str) {
+    use std::io::Write as _;
+    use std::sync::OnceLock;
+    static START: OnceLock<std::time::Instant> = OnceLock::new();
+    let t0 = START.get_or_init(std::time::Instant::now);
+    let ms = t0.elapsed().as_secs_f64() * 1000.0;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/pump-diag.log")
+    {
+        let _ = writeln!(f, "[pump +{ms:.1}ms] {msg}");
+    }
+}
+
 /// Run the pump until `Shutdown`. `ring_depth_of` supplies each ring's depth
 /// the first time its key is seen. `sink` performs the actual wire send.
 pub fn run_pump<S, F>(rx: Receiver<PumpMsg>, sink: S, ring_depth_of: F)
@@ -308,13 +327,19 @@ where
     let apply = |msg: PumpMsg, queues: &mut BTreeMap<AxisKey, AxisQueue>| -> bool {
         match msg {
             PumpMsg::Shutdown => return false,
-            PumpMsg::Enqueue(EnqueueMsg { key, pieces, fresh_stream: _ }) => {
+            PumpMsg::Enqueue(EnqueueMsg { key, pieces, fresh_stream }) => {
+                let n = pieces.len();
                 let q = queues
                     .entry(key)
                     .or_insert_with(|| AxisQueue::new(ring_depth_of(key)));
                 q.pieces.extend(pieces);
+                pump_diag(&format!(
+                    "ENQ {key:?} +{n} fresh={fresh_stream} queued={} pushed={} consumed={} room={} depth={}",
+                    q.pieces.len(), q.pushed, q.consumed, q.room(), q.ring_depth
+                ));
             }
             PumpMsg::Heartbeat(HeartbeatMsg { mcu_id, consumed_counts }) => {
+                pump_diag(&format!("HB mcu={mcu_id} consumed={consumed_counts:?}"));
                 // INVARIANT: consumed_counts[i] is axis index i, the SAME axis
                 // numbering used by PushPieces.axis_idx and the enqueue adapter's
                 // AxisKey.axis. Verified end-to-end on the MCU: the heartbeat FFI
@@ -368,6 +393,11 @@ where
                                 }
                                 q.pushed =
                                     q.pushed.wrapping_add(f.pieces.len() as u32);
+                                pump_diag(&format!(
+                                    "SEND {:?} n={} pushed={} consumed={} room={} queued_left={}",
+                                    f.key, f.pieces.len(), q.pushed, q.consumed,
+                                    q.room(), q.pieces.len()
+                                ));
                             }
                             Err(e) => {
                                 log::error!(
