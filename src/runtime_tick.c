@@ -240,21 +240,6 @@ static uint8_t prev_engine_status = 0;
 static uint32_t last_seen_tick_counter = 0;
 static uint32_t last_progress_time = 0;
 
-// DIAG (revert 2026-05-29): inter-fire gap (CYCCNT cycles) of the TIM5 ISR
-// fire in which a runtime fault first latched. Set by TIM5_IRQHandler
-// (runtime_tick_h7.c) the first time last_error goes nonzero; read at the
-// fault-emit site below and shipped as the kalico_fault `segment_id` slot so
-// it lands in klippy.log. Distinguishes a PieceStartInPast caused by ISR
-// starvation (gap >> 25 us) from one caused by a per-piece timestamp error
-// (gap ~ 25 us). REMOVE after the bench read.
-volatile uint32_t runtime_isr_gap_at_fault_cyc = 0;
-// DIAG (revert 2026-05-29): full duration (CYCCNT cycles) of the ISR fire
-// PRECEDING the faulting one. If this ~= the gap above, the engine tick ran
-// long (compute overrun); if it is small (~few us) while the gap is large,
-// the ISR was blocked from firing (preemption / IRQ-disabled critical
-// section). Packed alongside the gap in segment_id. REMOVE after bench read.
-volatile uint32_t runtime_isr_prevfull_at_fault_cyc = 0;
-
 // First-light status LED removed for Surface C bring-up.
 //
 // The plan-literal placeholder pin was PA13, which is SWDIO on the H7 —
@@ -429,18 +414,9 @@ runtime_drain(void)
     if (cur_error != 0 && cur_error != last_acted_error) {
         last_acted_error = cur_error;
         uint32_t fdetail = runtime_handle_fault_detail(runtime_handle);
-        // DIAG (revert 2026-05-29): pack two values into the segment_id slot so
-        // klippy.log shows the stall shape:
-        //   bits 16..31 = faulting ISR fire's inter-fire gap (us)
-        //   bits  0..15 = preceding ISR fire's full duration   (us)
-        // gap >> 25us with small prev-duration => ISR blocked (preemption);
-        // gap ~= prev-duration                  => engine tick ran long.
-        uint32_t cyc_per_us = CONFIG_CLOCK_FREQ / 1000000U;
-        uint32_t isr_gap_us = runtime_isr_gap_at_fault_cyc / cyc_per_us;
-        uint32_t isr_prevfull_us = runtime_isr_prevfull_at_fault_cyc / cyc_per_us;
-        uint32_t diag_sid =
-            ((isr_gap_us & 0xFFFFU) << 16) | (isr_prevfull_us & 0xFFFFU);
-        kalico_native_emit_fault_event((uint16_t)cur_error, fdetail, diag_sid);
+        // Segment ids are gone (piece-ring model); pass 0 for the legacy
+        // segment-id slot, matching the dormant cur_status fault emit above.
+        kalico_native_emit_fault_event((uint16_t)cur_error, fdetail, 0);
         runtime_liveness_ok = 0;
         shutdown("kalico runtime fault");
     }
