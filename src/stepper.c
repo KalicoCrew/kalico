@@ -277,8 +277,9 @@ command_kalico_configure_axis(uint32_t *args)
         bindings[i]._pad[0] = 0;
         bindings[i]._pad[1] = 0;
     }
-    // ring_depth: host-supplied number of PieceEntry slots for this axis,
-    // derived from total_piece_memory / num_axes in the Rust bridge.
+    // ring_depth: host-supplied number of 32-byte PieceEntry slots for this
+    // axis, derived as total_piece_memory / 32 / num_axes in the Rust bridge
+    // (axis_ring_depth in rust/motion-bridge/src/bridge.rs).
     int32_t rc = kalico_runtime_configure_axis(
         runtime_handle, axis_idx, mode, mstep_bits,
         ring_depth,

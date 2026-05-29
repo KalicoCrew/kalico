@@ -529,6 +529,95 @@ mod axis_ring_depth_tests {
     }
 }
 
+/// Pure core of [`MotionBridge::ring_depth_for_axis`], split out so the
+/// lookup/validation/clamp logic is unit-testable without a PyO3 harness.
+/// Returns the per-axis ring depth saturated to `u16`, or an error string
+/// describing the lookup/validation failure (the PyO3 wrapper maps it to a
+/// `PyRuntimeError`).
+pub(crate) fn ring_depth_for_axis_inner(
+    configs: &[crate::dispatch::McuAxisConfig],
+    mcu_handle: u32,
+    axis: u8,
+) -> Result<u16, String> {
+    let cfg = configs
+        .iter()
+        .find(|c| c.mcu_id == mcu_handle)
+        .ok_or_else(|| {
+            format!(
+                "ring_depth_for_axis: unknown mcu_handle {mcu_handle} \
+                 (init_planner not yet called?)"
+            )
+        })?;
+    let axis_usize = usize::from(axis);
+    if !cfg.axes.contains(&axis_usize) {
+        return Err(format!(
+            "ring_depth_for_axis: axis {axis} is not configured on mcu_handle \
+             {mcu_handle} (configured axes: {:?})",
+            cfg.axes
+        ));
+    }
+    let depth = axis_ring_depth(cfg.caps.total_pieces() as u32, cfg.axes.len() as u32);
+    if depth > u32::from(u16::MAX) {
+        log::warn!(
+            "ring_depth_for_axis: mcu_handle={mcu_handle} axis={axis} \
+             computed depth={depth} exceeds u16::MAX — clamping to 65535; \
+             check total_piece_memory configuration"
+        );
+        return Ok(u16::MAX);
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    Ok(depth as u16)
+}
+
+#[cfg(test)]
+mod ring_depth_for_axis_tests {
+    use super::ring_depth_for_axis_inner;
+    use crate::dispatch::{McuAxisConfig, McuCaps, AXIS_X, AXIS_Y, AXIS_Z};
+
+    fn configs() -> Vec<McuAxisConfig> {
+        vec![
+            McuAxisConfig {
+                mcu_id: 1,
+                axes: vec![AXIS_X, AXIS_Y],
+                kinematics: 0,
+                caps: McuCaps { total_piece_memory: 62 * 1024 },
+            },
+            McuAxisConfig {
+                mcu_id: 2,
+                axes: vec![AXIS_Z],
+                kinematics: 1,
+                caps: McuCaps { total_piece_memory: 62 * 1024 },
+            },
+        ]
+    }
+
+    #[test]
+    fn success_two_axis_mcu() {
+        // 62 KB / 32 = 1984 pieces; 2 axes → 992 each.
+        assert_eq!(ring_depth_for_axis_inner(&configs(), 1, AXIS_X as u8).unwrap(), 992);
+        assert_eq!(ring_depth_for_axis_inner(&configs(), 1, AXIS_Y as u8).unwrap(), 992);
+    }
+
+    #[test]
+    fn success_single_axis_mcu() {
+        // 1984 pieces / 1 axis → 1984.
+        assert_eq!(ring_depth_for_axis_inner(&configs(), 2, AXIS_Z as u8).unwrap(), 1984);
+    }
+
+    #[test]
+    fn unknown_mcu_handle_errors() {
+        let e = ring_depth_for_axis_inner(&configs(), 99, AXIS_X as u8).unwrap_err();
+        assert!(e.contains("unknown mcu_handle 99"), "got: {e}");
+    }
+
+    #[test]
+    fn axis_not_on_mcu_errors() {
+        // Z is not configured on mcu 1 (X/Y only).
+        let e = ring_depth_for_axis_inner(&configs(), 1, AXIS_Z as u8).unwrap_err();
+        assert!(e.contains("not configured"), "got: {e}");
+    }
+}
+
 #[pymethods]
 impl PyMotionBridge {
     // ── Task 31: constructor ────────────────────────────────────────────
@@ -1215,34 +1304,7 @@ impl PyMotionBridge {
             .mcu_axis_configs
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        let cfg = configs
-            .iter()
-            .find(|c| c.mcu_id == mcu_handle)
-            .ok_or_else(|| {
-                PyRuntimeError::new_err(format!(
-                    "ring_depth_for_axis: unknown mcu_handle {mcu_handle} \
-                     (init_planner not yet called?)"
-                ))
-            })?;
-        let axis_usize = usize::from(axis);
-        if !cfg.axes.contains(&axis_usize) {
-            return Err(PyRuntimeError::new_err(format!(
-                "ring_depth_for_axis: axis {axis} is not configured on mcu_handle \
-                 {mcu_handle} (configured axes: {:?})",
-                cfg.axes
-            )));
-        }
-        let depth = axis_ring_depth(cfg.caps.total_pieces() as u32, cfg.axes.len() as u32);
-        if depth > u32::from(u16::MAX) {
-            log::warn!(
-                "ring_depth_for_axis: mcu_handle={mcu_handle} axis={axis} \
-                 computed depth={depth} exceeds u16::MAX — clamping to 65535; \
-                 check total_piece_memory configuration"
-            );
-            return Ok(u16::MAX);
-        }
-        #[allow(clippy::cast_possible_truncation)]
-        Ok(depth as u16)
+        ring_depth_for_axis_inner(&configs, mcu_handle, axis).map_err(PyRuntimeError::new_err)
     }
 
     /// Send the kalico-native `ConfigureAxes` message for an attached MCU.
@@ -2085,7 +2147,14 @@ impl PyMotionBridge {
                     timeout: pump_timeout,
                 };
                 crate::pump::run_pump(pump_rx, sink, move |k| {
-                    ring_depth_table_for_pump.get(&k).copied().unwrap_or(1)
+                    ring_depth_table_for_pump.get(&k).copied().unwrap_or_else(|| {
+                        log::error!(
+                            "pump: no ring_depth for {k:?} — axis absent from \
+                             init_planner config; using sentinel depth 1 \
+                             (expect PieceStartInPast fault)"
+                        );
+                        1
+                    })
                 });
             })
             .expect("spawn push-pieces-pump thread");
