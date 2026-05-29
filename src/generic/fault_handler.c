@@ -157,6 +157,12 @@ enum {
     DIAG_EV_TX_DROP_KAL   = 5,   // a=len, b=transmit_pos_at_drop
     DIAG_EV_TX_DROP_KLP   = 6,   // a=max_size, b=transmit_pos_at_drop
     DIAG_EV_ENGINE_XITION = 7,   // a=(prev<<8)|new, b=samples_taken
+    // THROWAWAY bench diag (2026-05-29 first-jog starvation probe). Pushed
+    // from diag_tim5_account when the TIM5 inter-fire gap exceeds threshold.
+    // a = inter-fire gap (DWT cycles); b = OTG (USB) cycles that elapsed
+    // during that same gap window. b≈a => USB preemption; b≈0 => non-USB
+    // blocker (critical section / same-prio ISR / compute). Revert after read.
+    DIAG_EV_TIM5_GAP      = 8,
 };
 
 struct diag_event {
@@ -205,6 +211,18 @@ struct diag_counters {
     uint32_t rt_tick_cycles_max;
     uint64_t rt_tick_cycles_total;
     uint32_t rt_tick_buckets[DIAG_HIST_NBUCKETS];
+
+    // THROWAWAY bench diag (2026-05-29 first-jog starvation probe).
+    // The histograms above measure how long each TIM5 fire RUNS (duration);
+    // they cannot see how long BETWEEN fires the ISR was starved. These track
+    // the inter-fire gap (entry-to-entry, DWT cycles) and, for the single
+    // worst gap, how much USB(OTG) activity coincided with it — the decisive
+    // "was it USB preemption?" attribution. Revert after the bench read.
+    uint32_t tim5_max_gap_cyc;        // largest inter-fire gap (DWT cycles)
+    uint32_t tim5_max_gap_otg_cyc;    // OTG cycles elapsed during that gap
+    uint32_t tim5_max_gap_otg_count;  // OTG IRQs that fired during that gap
+    uint32_t tim5_max_gap_at_count;   // tim5_irq_count when the max gap hit
+    uint32_t tim5_gap_events;         // # gaps over the ring-push threshold
 
     // Per-stage cumulative timing inside runtime_handle_tick. `eval_*` covers
     // every scalar_eval call (≈3–4 per tick: X, Y, Z, optionally E). `dvel_*`
@@ -420,6 +438,13 @@ diag_get_tx_drops_klipper(void)
     return diag.tx_drops_klipper;
 }
 
+// THROWAWAY bench diag (2026-05-29). Read at the foreground fault-emit site
+// (runtime_drain) to pack the worst inter-fire gap + concurrent USB activity
+// into the live kalico_fault segment_id slot, so the answer arrives without
+// waiting for a reboot-time prior_diag dump. Revert after the bench read.
+uint32_t diag_get_tim5_max_gap_cyc(void)     { return diag.tim5_max_gap_cyc; }
+uint32_t diag_get_tim5_max_gap_otg_cyc(void) { return diag.tim5_max_gap_otg_cyc; }
+
 void
 diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
 {
@@ -436,6 +461,44 @@ diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
     // cycles. 50us ≈ 8x normal — a real outlier worth recording.
     if (dur > 26000u)
         diag_ring_push(DIAG_EV_TIM5_LONG, dur, enter_cycles);
+
+    // THROWAWAY bench diag (2026-05-29 first-jog starvation probe).
+    // Inter-fire GAP = this fire's entry minus the previous fire's entry.
+    // Steady-state is ~13000 cyc (25us @ 40kHz). A large gap means the ISR
+    // was STARVED (blocked from firing) — invisible to the duration histogram
+    // above. For the same window we also snapshot OTG (USB) cycle/count deltas:
+    // otg-in-gap ≈ gap  => USB preemption is the blocker;
+    // otg-in-gap ≈ 0     => a non-USB blocker (critical section / same-prio
+    //                       ISR running long / compute backlog). DWT wrap is
+    // handled by unsigned subtraction; otg_total low word read is a single
+    // aligned word (a rare torn read is acceptable for a diagnostic).
+    static uint32_t gap_last_enter;
+    static uint32_t gap_last_otg_cyc;
+    static uint32_t gap_last_otg_count;
+    static uint8_t  gap_seeded;
+    uint32_t otg_cyc_now   = (uint32_t)diag.otg_irq_cycles_total;
+    uint32_t otg_count_now = diag.otg_irq_count;
+    if (gap_seeded) {
+        uint32_t gap         = enter_cycles - gap_last_enter;
+        uint32_t otg_in_gap  = otg_cyc_now - gap_last_otg_cyc;
+        uint32_t otg_n_gap   = otg_count_now - gap_last_otg_count;
+        // 3 ticks @ 40kHz/520MHz ≈ 39000 cyc (~75us): only true starvation,
+        // not the ordinary 25us cadence, lands a timestamped ring entry.
+        if (gap > 39000u) {
+            diag.tim5_gap_events++;
+            diag_ring_push(DIAG_EV_TIM5_GAP, gap, otg_in_gap);
+        }
+        if (gap > diag.tim5_max_gap_cyc) {
+            diag.tim5_max_gap_cyc       = gap;
+            diag.tim5_max_gap_otg_cyc   = otg_in_gap;
+            diag.tim5_max_gap_otg_count = otg_n_gap;
+            diag.tim5_max_gap_at_count  = diag.tim5_irq_count;
+        }
+    }
+    gap_last_enter     = enter_cycles;
+    gap_last_otg_cyc   = otg_cyc_now;
+    gap_last_otg_count = otg_count_now;
+    gap_seeded = 1;
 }
 
 // Per-stage timing inside runtime_handle_tick. Called from Rust at each
@@ -868,6 +931,12 @@ fault_handler_report_task(void)
                 prior_diag.tim5_irq_buckets[i] = diag.tim5_irq_buckets[i];
                 prior_diag.rt_tick_buckets[i]  = diag.rt_tick_buckets[i];
             }
+            // THROWAWAY bench diag (2026-05-29 first-jog starvation probe).
+            prior_diag.tim5_max_gap_cyc       = diag.tim5_max_gap_cyc;
+            prior_diag.tim5_max_gap_otg_cyc   = diag.tim5_max_gap_otg_cyc;
+            prior_diag.tim5_max_gap_otg_count = diag.tim5_max_gap_otg_count;
+            prior_diag.tim5_max_gap_at_count  = diag.tim5_max_gap_at_count;
+            prior_diag.tim5_gap_events        = diag.tim5_gap_events;
             prior_diag.usb_out_calls        = diag.usb_out_calls;
             prior_diag.usb_out_max_gap_ticks = diag.usb_out_max_gap_ticks;
             prior_diag.usb_in_calls         = diag.usb_in_calls;
@@ -1054,6 +1123,18 @@ fault_handler_report_task(void)
                prior_diag.rt_tick_cycles_max,
                (uint32_t)(prior_diag.rt_tick_cycles_total & 0xFFFFFFFFu),
                (uint32_t)(prior_diag.rt_tick_cycles_total >> 32));
+        // THROWAWAY bench diag (2026-05-29 first-jog starvation probe). The
+        // worst TIM5 inter-fire gap (DWT cycles) + USB activity coincident
+        // with it + the tick index where it hit. at_tick vs prior tim5_n =
+        // how many ticks ran before the starving gap; gap_events = how many
+        // gaps over threshold across the whole run.
+        output("prior_diag_gap max_gap_cyc %u otg_in_gap_cyc %u otg_in_gap_n %u"
+               " at_tick %u gap_events %u",
+               prior_diag.tim5_max_gap_cyc,
+               prior_diag.tim5_max_gap_otg_cyc,
+               prior_diag.tim5_max_gap_otg_count,
+               prior_diag.tim5_max_gap_at_count,
+               prior_diag.tim5_gap_events);
         output("prior_diag_summary_eval n %u max %u total_lo %u total_hi %u",
                prior_diag.rt_eval_n, prior_diag.rt_eval_cycles_max,
                (uint32_t)(prior_diag.rt_eval_cycles_total & 0xFFFFFFFFu),
