@@ -36,6 +36,18 @@
 _Static_assert(KALICO_DEMUX_KALICO_BUF_SIZE >= 64u,
                "kalico_buf too small for control frames");
 
+/* Largest legal kalico frame of ANY channel is a full pieces frame:
+ *   envelope(sync+len2+channel = 4) + per-msg header(7) + piece header(8)
+ *   + 255 pieces * 32 B + crc(2) = 8181 bytes.
+ * Pieces stream straight into the ring and never accumulate in kalico_buf,
+ * so a pieces frame's declared length is bounded by THIS, not by the (much
+ * smaller) staging buffer. The channel byte is not known until pos==4, so the
+ * header-length sanity check applies this global bound; the staging-buffer
+ * bound is then applied only to non-pieces channels once the channel decodes. */
+#define KALICO_FRAME_MAX_LEN (4u + 7u + 8u + 255u * 32u + 2u) /* = 8181 */
+_Static_assert(KALICO_FRAME_MAX_LEN >= KALICO_DEMUX_KALICO_BUF_SIZE,
+               "global frame bound must cover the staging buffer");
+
 typedef enum {
     KALICO_DEMUX_OUT_NONE,    // need more bytes; no frame ready
     KALICO_DEMUX_OUT_KLIPPER, // complete Klipper frame in klipper buffer

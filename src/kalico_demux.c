@@ -161,7 +161,12 @@ kalico_demux_feed_byte(uint8_t b)
                 return KALICO_DEMUX_OUT_ERROR;
             }
             uint32_t total = 1u + (uint32_t)len_field;
-            if (total > KALICO_DEMUX_KALICO_BUF_SIZE) {
+            // Channel is not known yet (it lands at pos==4), so bound by the
+            // largest legal frame of ANY channel — a full pieces frame. The
+            // smaller staging-buffer bound is applied per-channel at pos==4
+            // below, because pieces stream straight to the ring and never
+            // accumulate in kalico_buf.
+            if (total > KALICO_FRAME_MAX_LEN) {
                 state = DEMUX_S_WAITING;
                 return KALICO_DEMUX_OUT_ERROR;
             }
@@ -189,6 +194,15 @@ kalico_demux_feed_byte(uint8_t b)
             piece_sink_begin();
             state = DEMUX_S_PIECES;
             return KALICO_DEMUX_OUT_NONE;
+        }
+        // Non-pieces frames (control/events) accumulate in kalico_buf and must
+        // fit it. The channel is known at pos==4, so enforce the staging-buffer
+        // bound here — an oversized control frame is rejected before it can
+        // overflow the buffer (the per-byte guard above is the backstop).
+        if (kalico_pos == 4 && kalico_buf[3] != KALICO_CHANNEL_PIECES
+            && kalico_total_len > KALICO_DEMUX_KALICO_BUF_SIZE) {
+            state = DEMUX_S_WAITING;
+            return KALICO_DEMUX_OUT_ERROR;
         }
         if (kalico_total_len > 0 && kalico_pos == kalico_total_len) {
             kalico_demux_output_t out = finalize_kalico_frame();
