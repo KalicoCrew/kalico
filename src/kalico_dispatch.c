@@ -306,8 +306,17 @@ handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
 // `index` counts 0,1,2,... so the FFI lands it at (start_slot + index) %
 // ring_depth. The frontier is advanced only post-CRC, in piece_sink_commit.
 
-#define PIECE_SINK_HEADER_LEN 15u
+// Combined header = per-message header (7) + piece header (8) = 15 bytes.
+#define PIECE_SINK_HEADER_LEN (PER_MESSAGE_HEADER_LEN + 8u)
 #define PIECE_ENTRY_LEN       32u
+// piece_count is a u8 (header[8]), so a valid frame carries at most 255 pieces
+// at indices 0..254. PIECE_SINK_MAX_PIECES guards the write `index` argument
+// (passed as a u8 to kalico_runtime_write_piece) against a malformed over-long
+// frame: once this many pieces have been written we stop writing but keep
+// draining bytes. Such a frame is rejected anyway by the piece_count ==
+// pieces_seen self-check in piece_sink_commit, so this is purely a
+// belt-and-suspenders bound on the write index.
+#define PIECE_SINK_MAX_PIECES 0xFFu
 
 static void
 send_push_pieces_response(uint32_t correlation_id, int32_t result)
@@ -388,7 +397,7 @@ piece_sink_feed(uint8_t b)
     if (piece_off == PIECE_ENTRY_LEN - 1) {
         // A full 32-byte piece just completed. Write it pre-CRC; the slot is
         // not visible to the ISR until commit advances the frontier.
-        if (runtime_handle && piece_sink.pieces_seen < 0xFFu) {
+        if (runtime_handle && piece_sink.pieces_seen < PIECE_SINK_MAX_PIECES) {
             int32_t r = kalico_runtime_write_piece(
                 runtime_handle, piece_sink.axis_idx, piece_sink.start_slot,
                 (uint8_t)piece_sink.pieces_seen, piece_sink.scratch);
@@ -413,6 +422,17 @@ piece_sink_commit(void)
     // error rather than advancing the frontier.
     if (!piece_sink.header_parsed) {
         send_push_pieces_response(0, KALICO_ERR_INVALID_CURVE);
+        return;
+    }
+    // Self-check the framing: the number of 32-byte pieces actually streamed
+    // must equal the piece_count the host declared in the piece header. CRC
+    // catches bit-corruption, not a count/length logic mismatch (e.g. a host
+    // that miscomputed the frame length or piece_count). If they disagree,
+    // refuse to advance the frontier — the partially-written slots stay below
+    // the un-advanced head and are invisible to the ISR.
+    if (piece_sink.pieces_seen != (uint32_t)piece_sink.piece_count) {
+        send_push_pieces_response(piece_sink.correlation_id,
+                                  KALICO_ERR_INVALID_CURVE);
         return;
     }
     int32_t rc = piece_sink.write_rc;

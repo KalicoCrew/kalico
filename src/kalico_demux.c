@@ -18,6 +18,10 @@
 // Minimum value of the on-wire kalico `len` field: u16 len(2) + channel(1) +
 // crc(2). Smaller values are malformed.
 #define KALICO_FRAME_MIN_LEN_FIELD  5
+// Non-payload bytes in a kalico frame: envelope sync(1) + len(2) + channel(1)
+// = 4, plus trailing crc(2). Subtract from the total frame length to get the
+// CRC-covered payload length.
+#define KALICO_FRAME_OVERHEAD       6u  /* envelope(sync+len2+channel=4) + crc(2) */
 
 typedef enum {
     DEMUX_S_WAITING,
@@ -173,7 +177,8 @@ kalico_demux_feed_byte(uint8_t b)
         if (kalico_pos == 4 && kalico_buf[3] == KALICO_CHANNEL_PIECES
             && kalico_total_len > 0) {
             // payload = total frame - envelope(4: sync+len+channel) - crc(2).
-            pieces_payload_remaining = (uint16_t)(kalico_total_len - 6);
+            pieces_payload_remaining =
+                (uint16_t)(kalico_total_len - KALICO_FRAME_OVERHEAD);
             // Seed CRC over [len_lo, len_hi, channel]; payload bytes folded
             // as they stream in (DEMUX_S_PIECES case below).
             pieces_crc = 0xffff;
@@ -208,9 +213,14 @@ kalico_demux_feed_byte(uint8_t b)
         {
             uint16_t crc_expected = (uint16_t)pieces_crc_lo
                                   | ((uint16_t)b << 8);
-            // Frame complete either way; reset for the next frame. kalico_pos
-            // is left as-is (the next sync byte in DEMUX_S_WAITING resets it),
-            // but clear it for cleanliness so no stale length lingers.
+            // Frame complete either way; reset for the next frame. This reset
+            // is load-bearing, not cosmetic: the pieces path returns OUT_NONE
+            // (commit happens inline here, no pump-visible output), so it
+            // BYPASSES kalico_demux_consume() — the function that resets
+            // kalico_pos/kalico_total_len on the KLIPPER/KALICO/ERROR paths.
+            // This is therefore the only reset that runs for a committed
+            // pieces frame; without it a stale kalico_total_len would linger
+            // into the next frame's header parse.
             state = DEMUX_S_WAITING;
             kalico_pos = 0;
             kalico_total_len = 0;
@@ -266,7 +276,7 @@ kalico_demux_kalico_payload_len(void)
     if (kalico_pos < 1 + KALICO_FRAME_MIN_LEN_FIELD)
         return 0;
     // total frame = sync + len_field; payload = total - 4 (header) - 2 (crc).
-    return (uint16_t)(kalico_pos - 6);
+    return (uint16_t)(kalico_pos - KALICO_FRAME_OVERHEAD);
 }
 
 uint8_t
