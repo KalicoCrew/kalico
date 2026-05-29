@@ -462,7 +462,11 @@ runtime_status_drain(void)
     // Spec §5.3: 10 Hz cadence. The cast through int32_t handles u32 wrap
     // (~8.3 s at 520 MHz, ~83 s in sim) — at 100 ms cadence the difference
     // fits well inside a signed window.
-    const uint32_t status_period_ticks = CONFIG_CLOCK_FREQ / 10;
+    // VERIFICATION EXPERIMENT (2026-05-29): 10 Hz -> 200 Hz so the pump's
+    // credit (consumed-count) feedback returns fast enough to refill the
+    // depth-64 ring before the engine drains it. Tests whether the first-light
+    // PieceStartInPast is heartbeat-paced delivery starvation. REVERT.
+    const uint32_t status_period_ticks = CONFIG_CLOCK_FREQ / 200;
     if ((int32_t)(now - last_status_emit_time) < (int32_t)status_period_ticks)
         return;
     last_status_emit_time = now;
