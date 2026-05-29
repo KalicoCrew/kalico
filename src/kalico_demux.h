@@ -16,9 +16,9 @@
 // After consuming the frame, the caller calls kalico_demux_consume() to
 // reset the accumulator.
 //
-// Buffers are static; sized to fit the largest expected frame. The kalico
-// buffer is sized for an 8 KB upper bound on the LoadCurve frame for now;
-// bump KALICO_DEMUX_KALICO_BUF_SIZE when the per-MCU pool sizing changes.
+// Buffers are static; sized to fit the largest expected frame. Pieces stream
+// directly into the ring on KALICO_CHANNEL_PIECES (Task 7) and never touch the
+// kalico buffer, so it is now sized only for the largest inbound CONTROL frame.
 
 #ifndef __KALICO_DEMUX_H
 #define __KALICO_DEMUX_H
@@ -28,16 +28,13 @@
 #include "command.h" // MESSAGE_MAX
 
 #define KALICO_DEMUX_KLIPPER_BUF_SIZE MESSAGE_MAX
-// Largest in-bound kalico frame is a PushPieces batch: a 2-byte body header
-// (axis_idx u8 + piece_count u8) + piece_count × 32-byte PieceEntry, plus the
-// ~32-byte sync/len/channel/header/CRC envelope. The wire `piece_count` field
-// is a u8, so 255 is the hard protocol ceiling; KALICO_MAX_PIECES_PER_FRAME is
-// the batch size the host agrees not to exceed. TODO(host-sync): finalize this
-// against the host-side piece batcher — too small drops valid frames, too
-// large wastes SRAM (on F4 the whole ring is only ~16 KB).
-#define KALICO_MAX_PIECES_PER_FRAME 128u
-#define KALICO_DEMUX_KALICO_BUF_SIZE \
-    (4u + 32u * (KALICO_MAX_PIECES_PER_FRAME) + 32u)
+/* Pieces stream straight into the ring on KALICO_CHANNEL_PIECES (Task 7) and
+ * never touch kalico_buf. This buffer now only stages the largest inbound
+ * CONTROL frame: [sync(1)][len(2)][channel(1)][per-msg hdr(7)][body][crc(2)].
+ * ConfigureAxis is the largest control body; 512 B leaves generous margin. */
+#define KALICO_DEMUX_KALICO_BUF_SIZE 512u
+_Static_assert(KALICO_DEMUX_KALICO_BUF_SIZE >= 64u,
+               "kalico_buf too small for control frames");
 
 typedef enum {
     KALICO_DEMUX_OUT_NONE,    // need more bytes; no frame ready

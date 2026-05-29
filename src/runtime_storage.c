@@ -41,10 +41,11 @@ _Static_assert(RT_STORAGE_SIZE >= 1024,
 // region. Update this list when adding new .axi_bss statics.
 //
 // Other .axi_bss occupants on H7 today:
-//   - kalico_buf (src/kalico_demux.c) — will shrink once kalico_demux.h is
-//     updated in Task 15/17 to reflect the cubic LoadCurveCubic frame
-//     (~8 KB max vs the NURBS-era 14752 bytes); 14752 is kept here until
-//     that coordinated change lands.
+//   - kalico_buf (src/kalico_demux.c) — shrunk to 512 B: pieces now stream
+//     straight into the ring on KALICO_CHANNEL_PIECES and never touch
+//     kalico_buf, so it stages only the largest inbound CONTROL frame
+//     (was the NURBS-era 14752 bytes). The reclaimed SRAM is left
+//     unallocated (spec §4.5).
 //   - runtime_bench_samples_buf (src/generic/runtime_bench.c)
 //   - receive_buf (src/generic/serial_irq.c, RX_BUFFER_SIZE = 2 KB)
 //
@@ -53,7 +54,7 @@ _Static_assert(RT_STORAGE_SIZE >= 1024,
 // replaced the NURBS curve pool with a uniform cubic Bézier piece pool.
 // Task 18 measures size_of::<RuntimeContext>() and tunes.
 #if CONFIG_MACH_STM32H7
-#define AXI_BSS_KALICO_BUF_BYTES        14752 /* 4 * (1830 + 1850) + 32 — NURBS-era value; update when kalico_demux.h is updated in Task 15/17 */
+#define AXI_BSS_KALICO_BUF_BYTES        512   /* matches KALICO_DEMUX_KALICO_BUF_SIZE (was 14752, NURBS-era) */
 #define AXI_BSS_RUNTIME_BENCH_BYTES     1024  /* 256 * sizeof(uint32_t) */
 #define AXI_BSS_SERIAL_IRQ_RX_BYTES     2048  /* RX_BUFFER_SIZE in serial_irq.c */
 #define AXI_BSS_HEADROOM                2048  /* 2 KB margin */
