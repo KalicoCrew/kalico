@@ -43,17 +43,18 @@ fn second_init_returns_null() {
 
 #[test]
 fn null_handle_returns_null_ptr_error() {
-    // Verify that the piece-ring push path rejects a null runtime handle.
-    // `kalico_runtime_push_pieces` is the current data path (piece ring
-    // replaced the old segment queue); it must return KALICO_ERR_NULL_PTR
-    // before dereferencing the handle.
+    // Verify that the piece-ring write path rejects a null runtime handle.
+    // `kalico_runtime_write_piece` replaced `kalico_runtime_push_pieces`
+    // (Task 4); it must return KALICO_ERR_NULL_PTR before dereferencing
+    // the handle.
+    let piece = [0u8; 32];
     let r = unsafe {
-        kalico_c_api::kalico_runtime_push_pieces(
+        kalico_c_api::kalico_runtime_write_piece(
             std::ptr::null_mut(),
-            0,                    // axis_idx
-            0,                    // piece_count
-            std::ptr::null(),     // pieces_ptr
-            0,                    // pieces_len
+            0,                  // axis_idx
+            0,                  // start_slot
+            0,                  // index
+            piece.as_ptr(),
         )
     };
     assert_eq!(r, kalico_c_api::KALICO_ERR_NULL_PTR);

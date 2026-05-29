@@ -499,26 +499,45 @@ int32_t kalico_runtime_configure_axis(struct KalicoRuntime *rt,
                                       uint8_t stepper_count);
 
 /**
- * Task 7a. Push a batch of pre-baked polynomial pieces into an axis's
- * ring buffer.
+ * Write one 32-byte [`PieceEntry`] to absolute physical slot
+ * `(start_slot + index) mod ring_depth` for `axis_idx`. Does **not**
+ * advance the frontier — the slot becomes visible to the ISR consumer
+ * only after a subsequent [`kalico_runtime_commit_head`] call.
+ * Streamed pre-CRC by the transport (Task 7); the CRC verification step
+ * calls `commit_head` to expose the batch atomically.
  *
- * `pieces_ptr` points to `piece_count * 32` raw bytes in
- * `PieceEntry` wire format (little-endian, 8-byte-aligned field layout;
- * the pointer itself may be unaligned relative to 8-byte boundaries
- * because it arrives as a byte offset into a protocol frame buffer).
- * `pieces_len` must equal `piece_count * 32`; a mismatch returns
- * `KALICO_ERR_INVALID_ARG` without touching the ring.
+ * `piece_ptr` points to exactly 32 raw bytes in `PieceEntry` wire format
+ * (little-endian, 8-byte-aligned field layout). The pointer may be
+ * unaligned relative to 8-byte boundaries — `read_unaligned` is used
+ * internally, matching the same `read_unaligned` discipline used throughout this FFI.
  *
- * Called from `handle_push_pieces` in `src/kalico_dispatch.c`.
- * This is a foreground-only entry point — the ISR concurrently reads the
- * ring tail; the foreground only writes the ring head. That discipline
- * matches `kalico_runtime_configure_axis` (same §11.2 split).
+ * Returns `KALICO_OK` on success; `KALICO_ERR_NULL_PTR` if `rt` or
+ * `piece_ptr` is null; `KALICO_ERR_NOT_INIT` if the runtime has not been
+ * initialised; `KALICO_ERR_INVALID_ARG` if `axis_idx` is out of range or
+ * the axis has not been configured.
  */
-int32_t kalico_runtime_push_pieces(struct KalicoRuntime *rt,
+int32_t kalico_runtime_write_piece(struct KalicoRuntime *rt,
                                    uint8_t axis_idx,
-                                   uint8_t piece_count,
-                                   const uint8_t *pieces_ptr,
-                                   uint16_t pieces_len);
+                                   uint16_t start_slot,
+                                   uint8_t index,
+                                   const uint8_t *piece_ptr);
+
+/**
+ * Advance the axis ring's monotonic valid frontier to `new_head`.
+ *
+ * The advance is accepted only when `new_head` represents a strict
+ * increase over the current frontier and keeps occupancy within
+ * `ring_depth` (flow-control invariant). A stale re-send with a lower
+ * `new_head` is silently ignored. Called post-CRC by the transport
+ * (Task 7) after a batch of slots has been written via
+ * [`kalico_runtime_write_piece`].
+ *
+ * Returns `KALICO_OK` on success (including the monotone no-op case);
+ * `KALICO_ERR_NULL_PTR` if `rt` is null; `KALICO_ERR_NOT_INIT` if the
+ * runtime has not been initialised; `KALICO_ERR_INVALID_ARG` if
+ * `axis_idx` is out of range or the axis has not been configured.
+ */
+int32_t kalico_runtime_commit_head(struct KalicoRuntime *rt, uint8_t axis_idx, uint32_t new_head);
 
 /**
  * Stepping-redesign Task 11. Publish the kinematic scale factor

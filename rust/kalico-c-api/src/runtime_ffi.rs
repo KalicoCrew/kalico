@@ -1432,50 +1432,49 @@ pub mod exports {
         }
     }
 
-    /// Task 7a. Push a batch of pre-baked polynomial pieces into an axis's
-    /// ring buffer.
+    /// Write one 32-byte [`PieceEntry`] to absolute physical slot
+    /// `(start_slot + index) mod ring_depth` for `axis_idx`. Does **not**
+    /// advance the frontier — the slot becomes visible to the ISR consumer
+    /// only after a subsequent [`kalico_runtime_commit_head`] call.
+    /// Streamed pre-CRC by the transport (Task 7); the CRC verification step
+    /// calls `commit_head` to expose the batch atomically.
     ///
-    /// `pieces_ptr` points to `piece_count * 32` raw bytes in
-    /// `PieceEntry` wire format (little-endian, 8-byte-aligned field layout;
-    /// the pointer itself may be unaligned relative to 8-byte boundaries
-    /// because it arrives as a byte offset into a protocol frame buffer).
-    /// `pieces_len` must equal `piece_count * 32`; a mismatch returns
-    /// `KALICO_ERR_INVALID_ARG` without touching the ring.
+    /// `piece_ptr` points to exactly 32 raw bytes in `PieceEntry` wire format
+    /// (little-endian, 8-byte-aligned field layout). The pointer may be
+    /// unaligned relative to 8-byte boundaries — `read_unaligned` is used
+    /// internally, matching the same `read_unaligned` discipline used throughout this FFI.
     ///
-    /// Called from `handle_push_pieces` in `src/kalico_dispatch.c`.
-    /// This is a foreground-only entry point — the ISR concurrently reads the
-    /// ring tail; the foreground only writes the ring head. That discipline
-    /// matches `kalico_runtime_configure_axis` (same §11.2 split).
+    /// Returns `KALICO_OK` on success; `KALICO_ERR_NULL_PTR` if `rt` or
+    /// `piece_ptr` is null; `KALICO_ERR_NOT_INIT` if the runtime has not been
+    /// initialised; `KALICO_ERR_INVALID_ARG` if `axis_idx` is out of range or
+    /// the axis has not been configured.
     #[unsafe(no_mangle)]
-    #[allow(clippy::cast_possible_truncation)]
-    pub unsafe extern "C" fn kalico_runtime_push_pieces(
+    pub unsafe extern "C" fn kalico_runtime_write_piece(
         rt: *mut KalicoRuntime,
         axis_idx: u8,
-        piece_count: u8,
-        pieces_ptr: *const u8,
-        pieces_len: u16,
+        start_slot: u16,
+        index: u8,
+        piece_ptr: *const u8,
     ) -> i32 {
-        if rt.is_null() || pieces_ptr.is_null() {
+        if rt.is_null() || piece_ptr.is_null() {
             return KALICO_ERR_NULL_PTR;
         }
         if !INIT_DONE.load(Ordering::Acquire) {
             return KALICO_ERR_NOT_INIT;
         }
-        // Validate that the byte buffer exactly covers piece_count entries.
-        if pieces_len as usize != (piece_count as usize) * 32 {
-            return KALICO_ERR_INVALID_ARG;
-        }
         let ctx = rt.cast::<RuntimeContext>();
         // SAFETY: foreground-only entry. The §11.2 split guarantees:
         //   - The ISR (TIM5) exclusively pops from each axis ring's tail cursor;
-        //     the foreground exclusively pushes to the head cursor. The two
-        //     sides never write the same slot simultaneously.
+        //     the foreground exclusively writes to ring slots. Head is NOT
+        //     advanced here — that is deferred to a subsequent
+        //     `kalico_runtime_commit_head` call. The two sides never touch the
+        //     same slot simultaneously.
         //   - `UnsafeCell::raw_get` on `piece_storage` yields a `*mut [..]`
         //     with provenance over the full array without forming a shared
         //     reference to the `UnsafeCell`.
-        //   - `read_unaligned` is used for each `PieceEntry` because
-        //     `pieces_ptr` is a byte offset into a protocol frame buffer and
-        //     is not guaranteed to satisfy the 8-byte alignment required by
+        //   - `read_unaligned` is used for the incoming `PieceEntry` because
+        //     `piece_ptr` is a byte offset into a protocol frame buffer and is
+        //     not guaranteed to satisfy the 8-byte alignment required by
         //     `PieceEntry`. `read_unaligned` is sound for any `Copy` type as
         //     long as the source address is valid for reads of `size_of::<T>()`
         //     bytes and all bit patterns are valid — both hold here
@@ -1485,18 +1484,73 @@ pub mod exports {
             let ps_ptr: *mut [runtime::piece_ring::PieceEntry; runtime::state::TOTAL_RING_PIECES] =
                 UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).piece_storage));
             let storage: &mut [runtime::piece_ring::PieceEntry] = &mut *ps_ptr;
-            for k in 0..piece_count as usize {
-                // read_unaligned: pieces_ptr may not be 8-byte aligned; each
-                // `PieceEntry` is 32 bytes, so consecutive entries start at
-                // 32-byte multiples of the (potentially unaligned) base.
-                let p = core::ptr::read_unaligned(
-                    pieces_ptr.add(k * 32) as *const runtime::piece_ring::PieceEntry
-                );
-                let rc = (*isr_ptr).engine.push_pieces(axis_idx, &[p], storage);
-                if rc != KALICO_OK {
-                    return rc;
-                }
+            let Some(axis) = (*isr_ptr)
+                .engine
+                .stepping_axes
+                .get_mut(axis_idx as usize)
+                .and_then(|s| s.as_mut())
+            else {
+                return KALICO_ERR_INVALID_ARG;
+            };
+            if !axis.ring.is_configured() {
+                return KALICO_ERR_INVALID_ARG;
             }
+            let depth = axis.ring.ring_depth;
+            let slot = (start_slot as usize + index as usize) % depth;
+            let entry = core::ptr::read_unaligned(
+                piece_ptr as *const runtime::piece_ring::PieceEntry
+            );
+            axis.ring.write_slot(storage, slot, entry);
+        }
+        KALICO_OK
+    }
+
+    /// Advance the axis ring's monotonic valid frontier to `new_head`.
+    ///
+    /// The advance is accepted only when `new_head` represents a strict
+    /// increase over the current frontier and keeps occupancy within
+    /// `ring_depth` (flow-control invariant). A stale re-send with a lower
+    /// `new_head` is silently ignored. Called post-CRC by the transport
+    /// (Task 7) after a batch of slots has been written via
+    /// [`kalico_runtime_write_piece`].
+    ///
+    /// Returns `KALICO_OK` on success (including the monotone no-op case);
+    /// `KALICO_ERR_NULL_PTR` if `rt` is null; `KALICO_ERR_NOT_INIT` if the
+    /// runtime has not been initialised; `KALICO_ERR_INVALID_ARG` if
+    /// `axis_idx` is out of range or the axis has not been configured.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_commit_head(
+        rt: *mut KalicoRuntime,
+        axis_idx: u8,
+        new_head: u32,
+    ) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: same §11.2 foreground-only precondition as write_piece.
+        // `ring.head` is a plain u32: the foreground is the sole writer and
+        // the ISR reads it via peek()/is_empty(). On single-core ARMv7E-M,
+        // exception entry/return act as memory barriers (boundary rule B5),
+        // so the ISR's read is sequenced after the foreground's store with no
+        // explicit fence required. No overlapping mutable projections.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            let Some(axis) = (*isr_ptr)
+                .engine
+                .stepping_axes
+                .get_mut(axis_idx as usize)
+                .and_then(|s| s.as_mut())
+            else {
+                return KALICO_ERR_INVALID_ARG;
+            };
+            if !axis.ring.is_configured() {
+                return KALICO_ERR_INVALID_ARG;
+            }
+            axis.ring.commit_head(new_head);
         }
         KALICO_OK
     }
