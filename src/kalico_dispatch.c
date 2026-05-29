@@ -27,6 +27,7 @@ extern int kalico_console_write_raw(const uint8_t *buf, uint16_t len);
 #define KALICO_FRAME_SYNC 0x55
 #define KALICO_CHANNEL_CONTROL 0x00
 #define KALICO_CHANNEL_EVENTS  0x01
+#define KALICO_CHANNEL_PIECES  0x02
 #define MESSAGE_VERSION_DEFAULT 0x01
 
 // Phase C error codes (mirror runtime FFI conventions).

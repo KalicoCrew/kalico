@@ -29,6 +29,15 @@ include!(concat!(env!("OUT_DIR"), "/schema_hash.rs"));
 /// bootstrap layer; cross-version migration would be a new spec.
 pub const PROTO_VERSION: u8 = 0x01;
 
+/// Channel discriminators (frame header byte 3), per spec §6.
+///
+/// Mirrors the `KALICO_CHANNEL_*` #defines in `src/kalico_dispatch.c`.
+/// Keep the two in sync — a renumber on one side without the other silently
+/// desyncs the wire contract.
+pub const KALICO_CHANNEL_CONTROL: u8 = 0x00;
+pub const KALICO_CHANNEL_EVENTS: u8 = 0x01;
+pub const KALICO_CHANNEL_PIECES: u8 = 0x02;
+
 /// `PushPiecesResponse.result` codes, shared host <-> MCU. These mirror the
 /// `KALICO_ERR_*` values the C side returns from `handle_push_pieces`
 /// (`src/kalico_dispatch.c`). Keep the two in sync — a renumber on one side
