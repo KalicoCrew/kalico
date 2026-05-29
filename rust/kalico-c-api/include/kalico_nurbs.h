@@ -464,6 +464,21 @@ int32_t kalico_runtime_configure_axis(kalico_nurbs_KalicoRuntime *rt,
                                       uint8_t stepper_count);
 
 /**
+ * Reset the motion engine to a clean state — issued by the host on every
+ * (re)connect before reconfiguring axes. Rewinds the ring bump allocator
+ * and clears all per-axis state so re-sent `configure_axis` commands never
+ * overflow `piece_storage` on a reconnect-without-reboot.
+ *
+ * Must be called from foreground inside an IRQ-disabled window (the C
+ * command handler holds `irq_save`/`irq_restore`): the engine state and the
+ * per-axis step queues this clears are concurrently touched by the TIM5
+ * sample ISR and the per-axis step-event timers.
+ *
+ * Returns `KALICO_OK` (0), `KALICO_ERR_NULL_PTR`, or `KALICO_ERR_NOT_INIT`.
+ */
+int32_t kalico_runtime_reset(kalico_nurbs_KalicoRuntime *rt);
+
+/**
  * Write one 32-byte [`PieceEntry`] to absolute physical slot
  * `(start_slot + index) mod ring_depth` for `axis_idx`. Does **not**
  * advance the frontier — the slot becomes visible to the ISR consumer

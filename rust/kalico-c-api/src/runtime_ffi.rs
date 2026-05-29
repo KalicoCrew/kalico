@@ -1432,6 +1432,39 @@ pub mod exports {
         }
     }
 
+    /// Reset the motion engine to a clean state — issued by the host on every
+    /// (re)connect before reconfiguring axes. Rewinds the ring bump allocator
+    /// and clears all per-axis state so re-sent `configure_axis` commands never
+    /// overflow `piece_storage` on a reconnect-without-reboot.
+    ///
+    /// Must be called from foreground inside an IRQ-disabled window (the C
+    /// command handler holds `irq_save`/`irq_restore`): the engine state and the
+    /// per-axis step queues this clears are concurrently touched by the TIM5
+    /// sample ISR and the per-axis step-event timers.
+    ///
+    /// Returns `KALICO_OK` (0), `KALICO_ERR_NULL_PTR`, or `KALICO_ERR_NOT_INIT`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_reset(rt: *mut KalicoRuntime) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground-only entry under the C-side IRQ guard; spec §11.2
+        // raw-pointer projection. No other `&mut IsrState` may be live.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.reset();
+        }
+        // Clear the C-owned per-axis step queues (MCU build only); host/test
+        // builds have no `step_queues` global.
+        #[cfg(not(any(test, feature = "host")))]
+        runtime::step_queue::reset_all_queues();
+        KALICO_OK
+    }
+
     /// Write one 32-byte [`PieceEntry`] to absolute physical slot
     /// `(start_slot + index) mod ring_depth` for `axis_idx`. Does **not**
     /// advance the frontier — the slot becomes visible to the ISR consumer
