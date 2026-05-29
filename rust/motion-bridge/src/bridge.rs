@@ -94,14 +94,6 @@ struct McuConnection {
     clock_sync_thread: Option<JoinHandle<()>>,
 }
 
-/// Default fallback caps used when the MCU doesn't respond to
-/// `QueryRuntimeCaps` (older firmware). `total_piece_memory` of 62 KB matches
-/// the H7 `RUNTIME_TARGET_LARGE` total piece buffer (large-profile defaults).
-const FALLBACK_RUNTIME_CAPS: kalico_protocol::messages::RuntimeCapsResponse =
-    kalico_protocol::messages::RuntimeCapsResponse {
-        total_piece_memory: 62 * 1024,
-    };
-
 /// Sample interval for the periodic `kalico_clock_sync_request` driver.
 /// The host's `compute_ack_clock` extrapolates linearly between samples,
 /// so 500 ms is comfortably below the threshold at which clock-drift
@@ -274,9 +266,11 @@ fn decode_runtime_caps_body(
 }
 
 /// Issue a `QueryRuntimeCaps` control-channel call and decode the response
-/// body. On any transport / decode error returns `Err` — the bootstrap path
-/// logs a warning and falls back to [`FALLBACK_RUNTIME_CAPS`] so older
-/// firmware (predating QueryRuntimeCaps) still attaches.
+/// body. On any transport / decode error returns `Err`.
+///
+/// For kalico-native MCUs a caps-query failure is fatal — the host cannot
+/// size piece rings without `total_piece_memory`. Callers must propagate the
+/// error rather than falling back to a guessed default.
 fn query_runtime_caps(
     io: &KalicoHostIo,
     timeout: std::time::Duration,
@@ -335,6 +329,27 @@ fn build_shaper_config(
         x: parse_required_shaper(type_x, freq_x)?,
         y: parse_required_shaper(type_y, freq_y)?,
         z: AxisShaper::Passthrough,
+    })
+}
+
+/// Resolve runtime capabilities for a motion MCU.
+///
+/// Returns `Ok(McuCaps)` when `caps` is `Some`, and `Err(String)` when
+/// `caps` is `None` — meaning the MCU attached without reporting caps (old,
+/// unflashed, or mismatched firmware). Callers map the `Err(String)` to a
+/// `PyRuntimeError`.
+///
+/// Unit tests are in [`resolve_motion_caps_tests`].
+fn resolve_motion_caps(
+    caps: Option<kalico_protocol::messages::RuntimeCapsResponse>,
+    label: &str,
+    handle: u32,
+) -> Result<McuCaps, String> {
+    caps.map(McuCaps::from).ok_or_else(|| {
+        format!(
+            "no runtime caps for {label} MCU (handle={handle}) — cannot size piece rings; \
+             firmware not flashed or QueryRuntimeCaps failed at attach"
+        )
     })
 }
 
@@ -1061,7 +1076,7 @@ impl PyMotionBridge {
                             }
                         };
 
-                    let runtime_caps =
+                    let runtime_caps = if kalico_native_supported {
                         match query_runtime_caps(&io, std::time::Duration::from_secs(2)) {
                             Ok(caps) => {
                                 log::debug!(
@@ -1069,16 +1084,20 @@ impl PyMotionBridge {
                                      for {serial_path}: total_piece_memory={}",
                                     caps.total_piece_memory,
                                 );
-                                caps
+                                Some(caps)
                             }
                             Err(e) => {
-                                log::debug!(
-                                    "[caps-trace] attach_serial reuse: QueryRuntimeCaps \
-                                     failed for {serial_path} ({e}); using large-profile defaults"
-                                );
-                                FALLBACK_RUNTIME_CAPS
+                                return Err(PyRuntimeError::new_err(format!(
+                                    "attach_serial: QueryRuntimeCaps failed for {serial_path} \
+                                     ({e}) — a kalico-native MCU must report runtime caps; \
+                                     firmware is too old, mismatched, or not flashed. \
+                                     Refusing to attach with guessed caps."
+                                )));
                             }
-                        };
+                        }
+                    } else {
+                        None
+                    };
 
                     let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
                     let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
@@ -1087,7 +1106,7 @@ impl PyMotionBridge {
                         ))
                     })?;
                     conn.runtime_rx = Some(runtime_rx);
-                    conn.runtime_caps = Some(runtime_caps);
+                    conn.runtime_caps = runtime_caps;
                     conn.identify_caps = identify_caps;
                     conn.kalico_native_supported = kalico_native_supported;
                     // clock_sync_stop / clock_sync_thread left intact — the
@@ -1202,27 +1221,34 @@ impl PyMotionBridge {
                 }
             };
 
-        // Task 10: query per-MCU runtime caps. Older firmware predates this
-        // message — on any error fall back to the large-profile defaults so
-        // attach still succeeds. Task 11 will route this onto
-        // `McuAxisConfig::caps` for sizing decisions; for now we just stash
-        // it on the per-MCU connection.
-        let runtime_caps = match query_runtime_caps(&host_io, std::time::Duration::from_secs(2)) {
-            Ok(caps) => {
-                log::debug!(
-                    "[caps-trace] attach_serial: runtime caps for {serial_path}: \
-                     total_piece_memory={}",
-                    caps.total_piece_memory,
-                );
-                caps
+        // Query per-MCU runtime caps for kalico-native MCUs. The host derives
+        // per-axis ring depths from `total_piece_memory`; guessing the value
+        // would desync host flow-control from the real MCU ring and produce
+        // confusing downstream shutdowns. A failure here means old/unflashed/
+        // mismatched firmware — crash early rather than silently misbehave.
+        // Non-native MCUs (stock-Klipper firmware) don't have a motion runtime
+        // at all, so caps don't apply.
+        let runtime_caps = if kalico_native_supported {
+            match query_runtime_caps(&host_io, std::time::Duration::from_secs(2)) {
+                Ok(caps) => {
+                    log::debug!(
+                        "[caps-trace] attach_serial: runtime caps for {serial_path}: \
+                         total_piece_memory={}",
+                        caps.total_piece_memory,
+                    );
+                    Some(caps)
+                }
+                Err(e) => {
+                    return Err(PyRuntimeError::new_err(format!(
+                        "attach_serial: QueryRuntimeCaps failed for {serial_path} \
+                         ({e}) — a kalico-native MCU must report runtime caps; \
+                         firmware is too old, mismatched, or not flashed. \
+                         Refusing to attach with guessed caps."
+                    )));
+                }
             }
-            Err(e) => {
-                log::debug!(
-                    "[caps-trace] attach_serial: QueryRuntimeCaps failed for {serial_path} ({e}); \
-                     falling back to large-profile defaults",
-                );
-                FALLBACK_RUNTIME_CAPS
-            }
+        } else {
+            None
         };
 
         let host_io_arc = Arc::new(host_io);
@@ -1258,7 +1284,7 @@ impl PyMotionBridge {
         })?;
         conn.host_io = Some(host_io_arc);
         conn.runtime_rx = Some(runtime_rx);
-        conn.runtime_caps = Some(runtime_caps);
+        conn.runtime_caps = runtime_caps;
         conn.identify_caps = identify_caps;
         conn.kalico_native_supported = kalico_native_supported;
         conn.clock_sync_stop = clock_sync_stop;
@@ -2034,21 +2060,24 @@ impl PyMotionBridge {
             .unwrap_or_else(|p| p.into_inner()) = cfg.clone();
 
         // Two-MCU first-print MVP topology. Pull `runtime_caps` from each
-        // `McuConnection` (set during bootstrap by `query_runtime_caps`); fall
-        // back to large-profile defaults if the firmware predates
-        // `QueryRuntimeCaps`.
+        // `McuConnection` (set during attach by `query_runtime_caps`). Missing
+        // caps for a motion MCU is a hard failure — the host cannot size piece
+        // rings without `total_piece_memory`, and guessing risks desyncing
+        // host flow-control from the real MCU ring.
         let (octopus_caps, f446_caps) = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            let oc = mcus
-                .get(&octopus_handle)
-                .and_then(|c| c.runtime_caps)
-                .map(McuCaps::from)
-                .unwrap_or_default();
-            let fc = mcus
-                .get(&f446_handle)
-                .and_then(|c| c.runtime_caps)
-                .map(McuCaps::from)
-                .unwrap_or_default();
+            let oc = resolve_motion_caps(
+                mcus.get(&octopus_handle).and_then(|c| c.runtime_caps),
+                "octopus",
+                octopus_handle,
+            )
+            .map_err(PyRuntimeError::new_err)?;
+            let fc = resolve_motion_caps(
+                mcus.get(&f446_handle).and_then(|c| c.runtime_caps),
+                "f446",
+                f446_handle,
+            )
+            .map_err(PyRuntimeError::new_err)?;
             (oc, fc)
         };
         let mcu_configs = vec![
@@ -2934,4 +2963,40 @@ fn trip_event_to_pydict(py: Python<'_>, evt: runtime::endstop::TripEvent) -> PyR
         .collect();
     d.set_item("steppers", steppers)?;
     Ok(d.unbind())
+}
+
+#[cfg(test)]
+mod resolve_motion_caps_tests {
+    use super::resolve_motion_caps;
+    use crate::dispatch::McuCaps;
+    use kalico_protocol::messages::RuntimeCapsResponse;
+
+    #[test]
+    fn some_caps_returns_ok_with_correct_value() {
+        let caps = Some(RuntimeCapsResponse {
+            total_piece_memory: 62 * 1024,
+        });
+        let result = resolve_motion_caps(caps, "octopus", 1);
+        assert_eq!(
+            result,
+            Ok(McuCaps {
+                total_piece_memory: 62 * 1024
+            })
+        );
+    }
+
+    #[test]
+    fn none_caps_returns_err_containing_label_and_handle() {
+        let result = resolve_motion_caps(None, "f446", 7);
+        assert!(result.is_err(), "expected Err for None caps");
+        let msg = result.unwrap_err();
+        assert!(
+            msg.contains("f446"),
+            "error message should contain the MCU label; got: {msg}"
+        );
+        assert!(
+            msg.contains('7'),
+            "error message should contain the handle; got: {msg}"
+        );
+    }
 }

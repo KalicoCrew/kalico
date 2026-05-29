@@ -36,8 +36,9 @@ pub struct McuAxisConfig {
     pub axes: Vec<usize>,
     /// Kinematics tag forwarded to the MCU via the configure-axes command.
     pub kinematics: u8,
-    /// Per-MCU runtime sizing limits as reported by `QueryRuntimeCaps`
-    /// (or `McuCaps::default()` for firmware that predates the message).
+    /// Per-MCU runtime sizing limits as reported by `QueryRuntimeCaps`.
+    /// Caps are mandatory for motion MCUs — a missing response is a hard
+    /// failure at attach time (old/unflashed/mismatched firmware).
     pub caps: McuCaps,
 }
 
@@ -52,17 +53,6 @@ pub struct McuCaps {
     /// Total bytes available for piece storage across all per-axis rings,
     /// as reported by `RuntimeCapsResponse.total_piece_memory`.
     pub total_piece_memory: u32,
-}
-
-impl Default for McuCaps {
-    /// Large-profile defaults used when the per-MCU `QueryRuntimeCaps`
-    /// round-trip fails (e.g. transport timeout during attach). 62 KB
-    /// matches the H7 `RUNTIME_TARGET_LARGE` total piece buffer.
-    fn default() -> Self {
-        Self {
-            total_piece_memory: 62 * 1024,
-        }
-    }
 }
 
 impl From<kalico_protocol::messages::RuntimeCapsResponse> for McuCaps {
