@@ -70,11 +70,12 @@ struct McuConnection {
     /// Runtime event receiver — populated by `attach_serial`. Drained by
     /// `take_runtime_event` for klippy-side dispatch.
     runtime_rx: Option<Receiver<kalico_host_rt::host_io::runtime_events::RuntimeEvent>>,
-    /// Per-MCU runtime capabilities, queried via `QueryRuntimeCaps` after
-    /// the kalico-native Identify handshake completes (Task 10). Falls back
-    /// to the large-profile defaults if the firmware doesn't reply (older
-    /// firmware predates the QueryRuntimeCaps message). Task 11 will move
-    /// this onto `McuAxisConfig::caps`; for now the bootstrap stores it here.
+    /// Per-MCU runtime capabilities from `QueryRuntimeCaps`, populated by
+    /// `attach_serial`. `Some` for kalico-native MCUs; `None` for stock-Klipper
+    /// MCUs that have no motion runtime (caps don't apply). A `None` for an MCU
+    /// that `init_planner` treats as a motion MCU is a hard error — see
+    /// `resolve_motion_caps`, which refuses with a `PyRuntimeError` rather than
+    /// guessing a default.
     runtime_caps: Option<kalico_protocol::messages::RuntimeCapsResponse>,
     /// Raw `capabilities` bitmap from the `IdentifyResponse` (spec §5 bytes
     /// 61..69). Bit 0 = `PHASE_STEPPING_CAPABLE`. Set during `attach_serial`;
@@ -238,10 +239,9 @@ fn spawn_periodic_clock_sync(
 }
 
 /// Errors returned by `query_runtime_caps` / `decode_runtime_caps_body`.
-/// The bootstrap path discriminates only via Display today (logged + falls
-/// back), but the typed variants make future routing (e.g. distinguishing
-/// "old firmware lacks the message" from "transport hiccup") possible
-/// without restructuring callers.
+/// The caller now treats any error as a fatal attach failure for kalico-native
+/// MCUs (no fallback); the typed variants remain so future routing can
+/// distinguish, e.g., a transport hiccup from an unknown-message reply.
 #[derive(Debug, thiserror::Error)]
 enum RuntimeCapsError {
     #[error("kalico_call QueryRuntimeCaps: {0}")]
@@ -2065,6 +2065,9 @@ impl PyMotionBridge {
         // rings without `total_piece_memory`, and guessing risks desyncing
         // host flow-control from the real MCU ring.
         let (octopus_caps, f446_caps) = {
+            // `mcus` guard drops at this block's closing brace — including when
+            // `resolve_motion_caps(...)?` below propagates an Err — so the lock
+            // is never held across the error return.
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let oc = resolve_motion_caps(
                 mcus.get(&octopus_handle).and_then(|c| c.runtime_caps),
