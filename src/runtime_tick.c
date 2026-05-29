@@ -248,6 +248,12 @@ static uint32_t last_progress_time = 0;
 // starvation (gap >> 25 us) from one caused by a per-piece timestamp error
 // (gap ~ 25 us). REMOVE after the bench read.
 volatile uint32_t runtime_isr_gap_at_fault_cyc = 0;
+// DIAG (revert 2026-05-29): full duration (CYCCNT cycles) of the ISR fire
+// PRECEDING the faulting one. If this ~= the gap above, the engine tick ran
+// long (compute overrun); if it is small (~few us) while the gap is large,
+// the ISR was blocked from firing (preemption / IRQ-disabled critical
+// section). Packed alongside the gap in segment_id. REMOVE after bench read.
+volatile uint32_t runtime_isr_prevfull_at_fault_cyc = 0;
 
 // First-light status LED removed for Surface C bring-up.
 //
@@ -423,12 +429,18 @@ runtime_drain(void)
     if (cur_error != 0 && cur_error != last_acted_error) {
         last_acted_error = cur_error;
         uint32_t fdetail = runtime_handle_fault_detail(runtime_handle);
-        // DIAG (revert 2026-05-29): ship the faulting ISR fire's inter-fire
-        // gap (microseconds) in the legacy segment-id slot so klippy.log shows
-        // whether the engine ISR stalled (gap >> 25 us) right before the fault.
-        uint32_t isr_gap_us =
-            runtime_isr_gap_at_fault_cyc / (CONFIG_CLOCK_FREQ / 1000000U);
-        kalico_native_emit_fault_event((uint16_t)cur_error, fdetail, isr_gap_us);
+        // DIAG (revert 2026-05-29): pack two values into the segment_id slot so
+        // klippy.log shows the stall shape:
+        //   bits 16..31 = faulting ISR fire's inter-fire gap (us)
+        //   bits  0..15 = preceding ISR fire's full duration   (us)
+        // gap >> 25us with small prev-duration => ISR blocked (preemption);
+        // gap ~= prev-duration                  => engine tick ran long.
+        uint32_t cyc_per_us = CONFIG_CLOCK_FREQ / 1000000U;
+        uint32_t isr_gap_us = runtime_isr_gap_at_fault_cyc / cyc_per_us;
+        uint32_t isr_prevfull_us = runtime_isr_prevfull_at_fault_cyc / cyc_per_us;
+        uint32_t diag_sid =
+            ((isr_gap_us & 0xFFFFU) << 16) | (isr_prevfull_us & 0xFFFFU);
+        kalico_native_emit_fault_event((uint16_t)cur_error, fdetail, diag_sid);
         runtime_liveness_ok = 0;
         shutdown("kalico runtime fault");
     }
