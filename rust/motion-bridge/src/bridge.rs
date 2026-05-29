@@ -23,7 +23,7 @@ use trajectory::{AxisShaper, ShaperConfig};
 
 use crate::classify;
 use crate::config::{self, PlannerConfig, PlannerLimits, parse_required_shaper};
-use crate::dispatch::{AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, McuCaps};
+use crate::dispatch::{AXIS_E, AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, McuCaps};
 use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
@@ -2086,7 +2086,10 @@ impl PyMotionBridge {
         let mcu_configs = vec![
             McuAxisConfig {
                 mcu_id: octopus_handle,
-                axes: vec![AXIS_X, AXIS_Y],
+                // X, Y, and E (follower) — 3 motor rings on this MCU;
+                // ring depth divides total_pieces by 3. The enqueue adapter
+                // skips E (index ≥ segment arity) so no E pieces are emitted.
+                axes: vec![AXIS_X, AXIS_Y, AXIS_E],
                 kinematics: 0, // CoreXyAndE
                 caps: octopus_caps,
             },

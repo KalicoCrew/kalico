@@ -26,13 +26,22 @@ const _: () = assert!(
 pub const AXIS_X: usize = 0;
 pub const AXIS_Y: usize = 1;
 pub const AXIS_Z: usize = 2;
+/// Extruder motor slot. A follower of shaped XY motion: it has a piece ring
+/// on the MCU (so it must be counted for ring sizing) but no `ShapedSegment`
+/// curve — the enqueue adapter skips it (index ≥ segment arity) and the MCU
+/// derives E from the shaped XY trajectory.
+pub const AXIS_E: usize = 3;
 
 /// Per-MCU configuration: which `ShapedSegment` axes this MCU is responsible
 /// for, plus the firmware kinematics tag.
 #[derive(Debug, Clone)]
 pub struct McuAxisConfig {
     pub mcu_id: u32,
-    /// Indices into `ShapedSegment::axes` (0=X, 1=Y, 2=Z) that this MCU drives.
+    /// Motor slots this MCU drives. Indices 0=X, 1=Y, 2=Z map into
+    /// `ShapedSegment::axes`; follower slots like `AXIS_E` (3) have a ring on the
+    /// MCU (counted for ring sizing) but no segment curve — the enqueue adapter
+    /// skips any index ≥ the segment's axis count. Used for ring-depth division
+    /// and per-axis flow-control keys.
     pub axes: Vec<usize>,
     /// Kinematics tag forwarded to the MCU via the configure-axes command.
     pub kinematics: u8,
