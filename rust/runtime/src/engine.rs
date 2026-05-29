@@ -651,7 +651,12 @@ fn get_position_and_velocity(
     }
 
     // Fault check: piece start_time is too far in the past.
-    let fault_tolerance = u64::from(sample_period_cycles) * 2;
+    // VERIFICATION EXPERIMENT (2026-05-29): widen the 2-tick tolerance to
+    // 1000 ticks (~100 ms @ H7 10 kHz, ~50 ms @ F446 20 kHz) to test whether
+    // the first-piece PieceStartInPast fault is a bounded motion-onset ISR
+    // gap. If the toolhead then moves, the trajectory pieces are correct and
+    // the only gate was the tight 2-tick tolerance vs. onset jitter. REVERT.
+    let fault_tolerance = u64::from(sample_period_cycles) * 1000;
     let late_cycles = now.saturating_sub(next_entry.start_time);
     if late_cycles > fault_tolerance {
         // Convert lateness to microseconds for the fault detail payload.
