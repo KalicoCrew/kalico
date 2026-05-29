@@ -25,9 +25,7 @@ extern void *runtime_handle;
 extern int kalico_console_write_raw(const uint8_t *buf, uint16_t len);
 
 #define KALICO_FRAME_SYNC 0x55
-#define KALICO_CHANNEL_CONTROL 0x00
-#define KALICO_CHANNEL_EVENTS  0x01
-#define KALICO_CHANNEL_PIECES  0x02
+// KALICO_CHANNEL_* live in kalico_dispatch.h (shared with the demuxer).
 #define MESSAGE_VERSION_DEFAULT 0x01
 
 // Phase C error codes (mirror runtime FFI conventions).
@@ -50,7 +48,6 @@ static uint8_t tx_buf[KALICO_TX_BUF_SIZE];
 static uint32_t reset_epoch;
 
 static void handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
-static void handle_push_pieces(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
 
 // ---------------------------------------------------------------------------
 // reset_epoch generation
@@ -241,9 +238,10 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
     case KALICO_MSG_QUERY_RUNTIME_CAPS:
         handle_query_runtime_caps(correlation_id, body, body_len);
         return;
-    case KALICO_MSG_PUSH_PIECES:
-        handle_push_pieces(correlation_id, body, body_len);
-        return;
+    // KALICO_MSG_PUSH_PIECES no longer reaches the frame dispatcher: pieces
+    // arrive on KALICO_CHANNEL_PIECES and are streamed into the ring by the
+    // demuxer's piece-sink path (piece_sink_begin/feed/commit), never
+    // accumulated into a staging buffer and dispatched here.
     default:
         return;
     }
@@ -280,21 +278,36 @@ handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
 }
 
 // ---------------------------------------------------------------------------
-// PushPieces handler (0x0060) — Task 7
+// PushPieces v2 — streaming piece sink (Task 7)
 // ---------------------------------------------------------------------------
 //
-// Delivers a batch of pre-baked polynomial `PieceEntry` records for a single
-// axis's ring buffer.
+// Pieces arrive on KALICO_CHANNEL_PIECES and are streamed byte-by-byte from
+// the demuxer straight into the axis ring — they are never accumulated into
+// the demuxer's staging buffer (that staging buffer is what silently dropped
+// oversized frames; removing it is the whole point of this change).
 //
-// Body wire format (§ PushPieces):
-//   axis_idx    u8       (body[0])
-//   piece_count u8       (body[1])
-//   pieces      piece_count * 32 bytes  (body + 2)
+// Payload wire layout streamed through piece_sink_feed (envelope + CRC are
+// handled by the demuxer; the sink sees only the CRC-covered payload bytes):
 //
-// Total body length must equal 2 + piece_count * 32.
+//   per-message header (7):  type u16_le | version u8 | corr_id u32_le
+//   piece header       (8):  axis_idx u8 | piece_count u8 | start_slot u16_le
+//                            | new_head u32_le
+//   piece 0 (32) | piece 1 (32) | ...   (piece_count entries)
 //
-// The Rust FFI `kalico_runtime_push_pieces` validates alignment internally
-// via `read_unaligned`; the C side only gates the overall body length.
+// So the leading 15 bytes are the combined header. Field offsets:
+//   corr_id     = header[3..7)  LE
+//   axis_idx    = header[7]
+//   piece_count = header[8]
+//   start_slot  = header[9..11) LE
+//   new_head    = header[11..15) LE
+//
+// Each completed 32-byte piece is written with
+// kalico_runtime_write_piece(rt, axis_idx, start_slot, index, scratch) where
+// `index` counts 0,1,2,... so the FFI lands it at (start_slot + index) %
+// ring_depth. The frontier is advanced only post-CRC, in piece_sink_commit.
+
+#define PIECE_SINK_HEADER_LEN 15u
+#define PIECE_ENTRY_LEN       32u
 
 static void
 send_push_pieces_response(uint32_t correlation_id, int32_t result)
@@ -311,30 +324,103 @@ send_push_pieces_response(uint32_t correlation_id, int32_t result)
                                 payload, sizeof(payload));
 }
 
-static void
-handle_push_pieces(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
+// Streaming state for the in-flight pieces frame. Single-threaded foreground
+// (same context as kalico_demux_pump), so no locking is required.
+static struct {
+    uint8_t  header[PIECE_SINK_HEADER_LEN];
+    uint8_t  scratch[PIECE_ENTRY_LEN]; // current piece being assembled
+    uint32_t bytes_seen;               // total payload bytes fed this frame
+    uint32_t pieces_seen;              // completed pieces written so far
+    // Parsed header fields (valid once bytes_seen >= PIECE_SINK_HEADER_LEN).
+    uint32_t correlation_id;
+    uint32_t new_head;
+    uint16_t start_slot;
+    uint8_t  axis_idx;
+    uint8_t  piece_count;
+    uint8_t  header_parsed;
+    int32_t  write_rc;                 // first non-OK write_piece rc, or OK
+} piece_sink;
+
+void
+piece_sink_begin(void)
 {
-    // Minimum body: axis_idx(1) + piece_count(1) = 2 bytes (0 pieces is legal).
-    if (body_len < 2) {
-        send_push_pieces_response(correlation_id, KALICO_ERR_INVALID_CURVE);
+    piece_sink.bytes_seen = 0;
+    piece_sink.pieces_seen = 0;
+    piece_sink.header_parsed = 0;
+    piece_sink.write_rc = 0; // KALICO_OK
+    piece_sink.correlation_id = 0;
+    piece_sink.new_head = 0;
+    piece_sink.start_slot = 0;
+    piece_sink.axis_idx = 0;
+    piece_sink.piece_count = 0;
+}
+
+void
+piece_sink_feed(uint8_t b)
+{
+    uint32_t i = piece_sink.bytes_seen;
+    if (i < PIECE_SINK_HEADER_LEN) {
+        piece_sink.header[i] = b;
+        piece_sink.bytes_seen = i + 1;
+        if (piece_sink.bytes_seen == PIECE_SINK_HEADER_LEN) {
+            const uint8_t *h = piece_sink.header;
+            piece_sink.correlation_id = (uint32_t)h[3]
+                                      | ((uint32_t)h[4] << 8)
+                                      | ((uint32_t)h[5] << 16)
+                                      | ((uint32_t)h[6] << 24);
+            piece_sink.axis_idx    = h[7];
+            piece_sink.piece_count = h[8];
+            piece_sink.start_slot  = (uint16_t)h[9]
+                                   | ((uint16_t)h[10] << 8);
+            piece_sink.new_head    = (uint32_t)h[11]
+                                   | ((uint32_t)h[12] << 8)
+                                   | ((uint32_t)h[13] << 16)
+                                   | ((uint32_t)h[14] << 24);
+            piece_sink.header_parsed = 1;
+        }
         return;
     }
-    uint8_t axis_idx = body[0];
-    uint8_t piece_count = body[1];
-    uint32_t expected_len = 2u + (uint32_t)piece_count * 32u;
-    if ((uint32_t)body_len != expected_len) {
-        send_push_pieces_response(correlation_id, KALICO_ERR_INVALID_CURVE);
-        return;
+    // Payload byte belongs to a 32-byte piece. Offset within the current
+    // piece, and which piece this is.
+    uint32_t piece_off = (i - PIECE_SINK_HEADER_LEN) % PIECE_ENTRY_LEN;
+    piece_sink.scratch[piece_off] = b;
+    piece_sink.bytes_seen = i + 1;
+    if (piece_off == PIECE_ENTRY_LEN - 1) {
+        // A full 32-byte piece just completed. Write it pre-CRC; the slot is
+        // not visible to the ISR until commit advances the frontier.
+        if (runtime_handle && piece_sink.pieces_seen < 0xFFu) {
+            int32_t r = kalico_runtime_write_piece(
+                runtime_handle, piece_sink.axis_idx, piece_sink.start_slot,
+                (uint8_t)piece_sink.pieces_seen, piece_sink.scratch);
+            if (r != 0 && piece_sink.write_rc == 0)
+                piece_sink.write_rc = r; // latch first failure
+        }
+        piece_sink.pieces_seen++;
     }
+}
+
+void
+piece_sink_commit(void)
+{
+    // Called only after the demuxer verified the frame CRC. If runtime_handle
+    // was null, no slots were written; report NOT_INIT and skip commit_head.
     if (!runtime_handle) {
-        send_push_pieces_response(correlation_id, KALICO_ERR_NOT_INIT);
+        send_push_pieces_response(piece_sink.correlation_id, KALICO_ERR_NOT_INIT);
         return;
     }
-    // pieces_len is body_len - 2; the Rust FFI re-validates piece_count * 32.
-    uint16_t pieces_len = (uint16_t)(body_len - 2u);
-    int32_t r = kalico_runtime_push_pieces(
-        runtime_handle, axis_idx, piece_count, body + 2, pieces_len);
-    send_push_pieces_response(correlation_id, r);
+    // If a header never completed (truncated/malformed frame that still
+    // matched a CRC over too-few bytes), correlation_id is 0; respond with an
+    // error rather than advancing the frontier.
+    if (!piece_sink.header_parsed) {
+        send_push_pieces_response(0, KALICO_ERR_INVALID_CURVE);
+        return;
+    }
+    int32_t rc = piece_sink.write_rc;
+    if (rc == 0) {
+        rc = kalico_runtime_commit_head(
+            runtime_handle, piece_sink.axis_idx, piece_sink.new_head);
+    }
+    send_push_pieces_response(piece_sink.correlation_id, rc);
 }
 
 // ---------------------------------------------------------------------------

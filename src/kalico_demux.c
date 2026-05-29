@@ -23,9 +23,32 @@ typedef enum {
     DEMUX_S_WAITING,
     DEMUX_S_KLIPPER,
     DEMUX_S_KALICO,
+    DEMUX_S_PIECES,   // streaming PushPieces payload straight into the ring
 } demux_state_t;
 
 static demux_state_t state;
+
+// Incremental crc16-ccitt fold — one byte at a time. Matches the one-shot
+// crc16_ccitt() in src/generic/crc16_ccitt.c exactly (seed 0xffff). Used by
+// the streaming pieces path, which never materialises the whole frame in a
+// contiguous buffer, so the one-shot crc16_ccitt(buf,len) cannot be applied.
+static inline uint16_t
+crc16_ccitt_update(uint16_t crc, uint8_t b)
+{
+    uint8_t data = b ^ (crc & 0xff);
+    data ^= data << 4;
+    return ((((uint16_t)data << 8) | (crc >> 8))
+            ^ (uint8_t)(data >> 4) ^ ((uint16_t)data << 3));
+}
+
+// Streaming state for a KALICO_CHANNEL_PIECES frame. The payload is fed
+// byte-by-byte into piece_sink_feed and never lands in kalico_buf; the CRC is
+// folded incrementally over [len_lo, len_hi, channel, payload...] to match the
+// host's one-shot crc16_ccitt over the same span.
+static uint16_t pieces_payload_remaining; // payload bytes still to stream
+static uint16_t pieces_crc;               // running fold
+static uint8_t  pieces_crc_byte;          // count of trailing crc bytes seen
+static uint8_t  pieces_crc_lo;            // first (low) crc byte
 
 // 2026-05-14 PushSegment dispatch investigation. handle_push_segment is
 // never entered despite host write_frame of kalico-native PushSegment.
@@ -140,12 +163,69 @@ kalico_demux_feed_byte(uint8_t b)
             }
             kalico_total_len = (uint16_t)total;
         }
+        // Once the channel byte has been stored (kalico_pos == 4) and the
+        // total length is known, a pieces-channel frame switches to the
+        // streaming sink: its payload bytes are fed straight into the ring
+        // and never accumulated in kalico_buf. kalico_total_len is computed
+        // at pos>=3 above, so it is always known by pos==4. Any other channel
+        // stays in DEMUX_S_KALICO and accumulates + finalizes exactly as
+        // before (control/events path unchanged).
+        if (kalico_pos == 4 && kalico_buf[3] == KALICO_CHANNEL_PIECES
+            && kalico_total_len > 0) {
+            // payload = total frame - envelope(4: sync+len+channel) - crc(2).
+            pieces_payload_remaining = (uint16_t)(kalico_total_len - 6);
+            // Seed CRC over [len_lo, len_hi, channel]; payload bytes folded
+            // as they stream in (DEMUX_S_PIECES case below).
+            pieces_crc = 0xffff;
+            pieces_crc = crc16_ccitt_update(pieces_crc, kalico_buf[1]);
+            pieces_crc = crc16_ccitt_update(pieces_crc, kalico_buf[2]);
+            pieces_crc = crc16_ccitt_update(pieces_crc, kalico_buf[3]);
+            pieces_crc_byte = 0;
+            piece_sink_begin();
+            state = DEMUX_S_PIECES;
+            return KALICO_DEMUX_OUT_NONE;
+        }
         if (kalico_total_len > 0 && kalico_pos == kalico_total_len) {
             kalico_demux_output_t out = finalize_kalico_frame();
             state = DEMUX_S_WAITING;
             return out;
         }
         return KALICO_DEMUX_OUT_NONE;
+
+    case DEMUX_S_PIECES:
+        if (pieces_payload_remaining > 0) {
+            pieces_crc = crc16_ccitt_update(pieces_crc, b);
+            piece_sink_feed(b);
+            pieces_payload_remaining--;
+            return KALICO_DEMUX_OUT_NONE;
+        }
+        // Trailing CRC bytes, little-endian: low byte first, then high.
+        if (pieces_crc_byte == 0) {
+            pieces_crc_lo = b;
+            pieces_crc_byte = 1;
+            return KALICO_DEMUX_OUT_NONE;
+        }
+        {
+            uint16_t crc_expected = (uint16_t)pieces_crc_lo
+                                  | ((uint16_t)b << 8);
+            // Frame complete either way; reset for the next frame. kalico_pos
+            // is left as-is (the next sync byte in DEMUX_S_WAITING resets it),
+            // but clear it for cleanliness so no stale length lingers.
+            state = DEMUX_S_WAITING;
+            kalico_pos = 0;
+            kalico_total_len = 0;
+            if (crc_expected == pieces_crc) {
+                // CRC verified: commit advances the ring frontier and sends
+                // the PushPiecesResponse itself, so the pump does nothing.
+                piece_sink_commit();
+                return KALICO_DEMUX_OUT_NONE;
+            }
+            // CRC mismatch: no commit, no response. The pieces written
+            // pre-CRC stay below the un-advanced frontier and are invisible
+            // to the ISR.
+            kalico_demux_crc_mismatch_total++;
+            return KALICO_DEMUX_OUT_ERROR;
+        }
     }
     // Unreachable.
     state = DEMUX_S_WAITING;

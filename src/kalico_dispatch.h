@@ -6,6 +6,27 @@
 
 #include <stdint.h>
 
+// Layer 1 channel ids (§4). Shared between the dispatcher and the demuxer
+// (the demuxer routes KALICO_CHANNEL_PIECES directly into the streaming
+// piece sink, bypassing the staging buffer).
+#define KALICO_CHANNEL_CONTROL 0x00
+#define KALICO_CHANNEL_EVENTS  0x01
+#define KALICO_CHANNEL_PIECES  0x02
+
+// Streaming piece sink (Task 7). Pieces arriving on KALICO_CHANNEL_PIECES are
+// streamed byte-by-byte from the demuxer directly into the axis ring, never
+// buffered in the demuxer's staging buffer. The demuxer folds the CRC
+// incrementally and calls these in order:
+//   piece_sink_begin()  once, when the pieces channel byte completes.
+//   piece_sink_feed(b)  for every payload byte (pre-CRC-verify).
+//   piece_sink_commit() once, only after the trailing CRC matches; advances
+//                       the ring frontier and sends the PushPiecesResponse.
+// A truncated/CRC-failed frame never calls commit, so partially-written ring
+// slots stay below the (un-advanced) frontier and are invisible to the ISR.
+void piece_sink_begin(void);
+void piece_sink_feed(uint8_t b);
+void piece_sink_commit(void);
+
 // Dispatch a kalico frame received from the demuxer.
 // `channel` is the Layer 1 channel; `payload` is the post-frame Layer 4
 // payload (per-message header + body). The dispatcher is a foreground call
