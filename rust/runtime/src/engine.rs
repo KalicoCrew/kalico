@@ -229,6 +229,30 @@ impl Engine {
         KALICO_OK
     }
 
+    /// Reset the engine to a clean, just-initialized motion state.
+    ///
+    /// Issued by the host on every (re)connect before reconfiguring axes, so
+    /// the bump allocator (`ring_alloc_cursor`) and all per-axis state start
+    /// fresh regardless of whether the MCU was rebooted. Idempotent: on a
+    /// freshly-constructed engine this is a no-op.
+    ///
+    /// Preserves the immutable hardware config (`sample_period_cycles`,
+    /// `cycles_per_second`) and the running `tick_counter` clock — resetting
+    /// those would desync the ISR time base.
+    ///
+    /// The per-axis C step queues live outside the engine and are cleared
+    /// separately by the FFI caller (`kalico_runtime_reset`).
+    pub fn reset(&mut self) {
+        self.ring_alloc_cursor = 0;
+        self.stepping_axes = [const { None }; MAX_AXES];
+        self.num_axes = 0;
+        self.step_state = [StepMotorState::default(); MAX_AXES];
+        self.last_motors = [0.0; MAX_AXES];
+        self.tick_caches = crate::stepping_state::TickCaches::new();
+        self.status.store(RuntimeStatus::Idle as u8, Ordering::Release);
+        self.last_error.store(0, Ordering::Release);
+    }
+
     /// Append pieces into an axis's ring region.
     ///
     /// `storage` is the shared piece_storage array.
