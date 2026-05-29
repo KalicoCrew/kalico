@@ -652,14 +652,8 @@ fn get_position_and_velocity(
 
     // Fault check: piece start_time is too far in the past.
     let fault_tolerance = u64::from(sample_period_cycles) * 2;
-    let late_cycles = now.saturating_sub(next_entry.start_time);
-    if late_cycles > fault_tolerance {
-        // Convert lateness to microseconds for the fault detail payload.
-        // f64 used here to avoid f32 precision loss on large cycle counts;
-        // this is the cold fault path so the extra precision cost is free.
-        let lateness_us =
-            ((late_cycles as f64) * 1.0e6 / (f64::from(cycles_per_second))) as u32;
-        raise_piece_start_in_past(shared, axis_idx, lateness_us);
+    if now.saturating_sub(next_entry.start_time) > fault_tolerance {
+        raise_piece_start_in_past(shared, axis_idx);
         axis.has_piece = false;
         return None;
     }

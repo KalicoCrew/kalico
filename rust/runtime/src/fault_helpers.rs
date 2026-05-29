@@ -122,13 +122,10 @@ pub fn raise_jog_parameters_invalid(shared: &SharedState) {
 /// Raised by the ISR `get_piece_for_time` logic when the candidate next piece's
 /// `start_time` is more than `2 * sample_period_cycles` in the past — the MCU
 /// was not fed in time.  All motion stops; the host must reset before resuming.
-///
-/// `fault_detail` encoding:
-/// - bits 24..31: `axis_idx` (0..=3 for X/Y/Z/E)
-/// - bits 0..23:  lateness in microseconds, saturating at `0x00FF_FFFF` (~16.7 s)
+/// `axis_idx` is encoded into bits 16..24 of `fault_detail`.
 #[inline]
-pub fn raise_piece_start_in_past(shared: &SharedState, axis_idx: usize, lateness_us: u32) {
-    let detail = ((axis_idx as u32 & 0xFF) << 24) | (lateness_us.min(0x00FF_FFFF));
+pub fn raise_piece_start_in_past(shared: &SharedState, axis_idx: usize) {
+    let detail = (axis_idx as u32 & 0xFF) << 16;
     shared.fault_detail.store(detail, Ordering::Release);
     shared
         .last_error

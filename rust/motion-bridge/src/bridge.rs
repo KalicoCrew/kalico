@@ -1431,27 +1431,16 @@ impl PyMotionBridge {
                 }
             }
         }
-        log::debug!(
-            "[trace-bridge-cax] enter mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x} step_modes={step_modes:?}"
-        );
-        // belt-and-suspenders: also force stderr flush
-        let _ = std::io::stderr().flush();
         let (io, identify_caps) = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let conn = mcus.get(&mcu_handle).ok_or_else(|| {
                 PyRuntimeError::new_err(format!("configure_axes: unknown mcu_handle {mcu_handle}"))
             })?;
-            log::debug!(
-                "[trace-bridge-cax] conn found mcu_handle={mcu_handle} kalico_supported={} host_io_some={}",
-                conn.kalico_native_supported,
-                conn.host_io.is_some()
-            );
             // Stock-Klipper firmware (no kalico runtime) cannot accept this
             // bootstrap message. Silently no-op so multi-MCU setups where one
             // board runs stock Klipper still complete _configure_axes_per_mcu
             // for the kalico-runtime board(s).
             if !conn.kalico_native_supported {
-                log::debug!("[trace-bridge-cax] kalico_native_supported=false -> early Ok(())");
                 return Ok(());
             }
             let io = conn
@@ -2294,51 +2283,6 @@ impl PyMotionBridge {
                     fresh,
                     project,
                 );
-
-                // Diagnostic: on a fresh stream, log one line per EnqueueMsg
-                // that has at least one piece. Capped at 200 total lines so
-                // the file stays bounded across the entire process lifetime.
-                if fresh {
-                    use std::io::Write as _;
-                    use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
-                    static ANCHOR_N: AtomicUsize = AtomicUsize::new(0);
-                    for m in &msgs {
-                        if m.pieces.is_empty() {
-                            continue;
-                        }
-                        let n = ANCHOR_N.fetch_add(1, AOrd::Relaxed);
-                        if n >= 200 {
-                            break;
-                        }
-                        let est = {
-                            let r = router_for_cb
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner());
-                            r.clock_est_snapshot(
-                                crate::types::mcu_handle_from_raw(m.key.mcu_id),
-                            )
-                        };
-                        if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open("/tmp/anchor-diag.log")
-                        {
-                            let _ = writeln!(
-                                f,
-                                "[anchor] n={n} mcu={} axis={} host_now={:.9} \
-                                 t0={:.9} seg_t_start={:.9} start_time={} \
-                                 est={:?}",
-                                m.key.mcu_id,
-                                m.key.axis,
-                                host_now,
-                                t0,
-                                seg.t_start,
-                                m.pieces[0].start_time,
-                                est,
-                            );
-                        }
-                    }
-                }
 
                 for m in msgs {
                     pump_tx_for_cb

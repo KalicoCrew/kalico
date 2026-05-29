@@ -774,32 +774,18 @@ impl KalicoHostIo {
         body: Vec<u8>,
         timeout: Duration,
     ) -> Result<(kalico_protocol::MessageKind, Vec<u8>), TransportError> {
-        eprintln!(
-            "[trace-kcall-host] enter channel={channel} kind={kind:?} body_len={} timeout_ms={}",
-            body.len(),
-            timeout.as_millis()
-        );
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let deadline = self.clock.now() + timeout;
-        if let Err(e) = self.submission_tx.send(ReactorCommand::KalicoCall {
-            channel,
-            kind,
-            body,
-            completion: tx,
-            deadline,
-        }) {
-            eprintln!(
-                "[trace-kcall-host] FAIL submission_tx.send returned Err — reactor thread dead/dropped. e={e:?}"
-            );
-            return Err(TransportError::Closed);
-        }
-        eprintln!("[trace-kcall-host] submitted, awaiting response channel={channel} kind={kind:?}");
-        let outcome = rx.recv_timeout(timeout);
-        eprintln!(
-            "[trace-kcall-host] response received kind={kind:?} outcome_is_ok={}",
-            outcome.is_ok()
-        );
-        match outcome {
+        self.submission_tx
+            .send(ReactorCommand::KalicoCall {
+                channel,
+                kind,
+                body,
+                completion: tx,
+                deadline,
+            })
+            .map_err(|_| TransportError::Closed)?;
+        match rx.recv_timeout(timeout) {
             Ok(Ok(crate::host_io::kalico_native::KalicoCallOutcome::Response { kind, body })) => {
                 Ok((kind, body))
             }
@@ -808,10 +794,7 @@ impl KalicoHostIo {
             }
             Ok(Err(e)) => Err(e),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Timeout),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                eprintln!("[trace-kcall-host] FAIL recv Disconnected — completion sender dropped");
-                Err(TransportError::Closed)
-            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
         }
     }
 }
