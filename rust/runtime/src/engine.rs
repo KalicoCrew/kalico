@@ -653,17 +653,27 @@ fn get_position_and_velocity(
     // Fault check: piece start_time is too far in the past.
     let fault_tolerance = u64::from(sample_period_cycles) * 2;
     if now.saturating_sub(next_entry.start_time) > fault_tolerance {
-        // DIAG(sip): encode how many sample-periods late the piece was into
-        // the low 16 bits of fault_detail (axis stays in bits 16..24) so the
-        // emitted -308 carries the actual MCU-side now-vs-start_time delta.
-        // REVERT to the bare `raise_piece_start_in_past` call after concluding.
+        // DIAG(sip): encode TWO quantities into fault_detail so the emitted
+        // -308 is self-explanatory:
+        //   low  16 bits = periods_late  = (now - start_time) / sample_period
+        //   high 16 bits = clk_off_periods = (rust_now - c_clock) / sample_period
+        //                  i.e. how far the engine's Rust widened clock leads the
+        //                  C/Klipper clock the host schedules against (the bug).
+        // axis is dropped here (the fault event already names the MCU). REVERT
+        // to the bare `raise_piece_start_in_past` call after concluding.
         let late_cycles = now.saturating_sub(next_entry.start_time);
         let periods_late = if sample_period_cycles > 0 {
             (late_cycles / u64::from(sample_period_cycles)).min(0xFFFF)
         } else {
             0xFFFF
         };
-        let detail = ((axis_idx as u32 & 0xFF) << 16) | (periods_late as u32 & 0xFFFF);
+        let clk_off_cyc = crate::tick::CLK_DOMAIN_OFFSET_CYC.load(Ordering::Relaxed);
+        let clk_off_periods = if sample_period_cycles > 0 {
+            (clk_off_cyc / sample_period_cycles).min(0xFFFF)
+        } else {
+            0xFFFF
+        };
+        let detail = (clk_off_periods << 16) | (periods_late as u32 & 0xFFFF);
         shared.fault_detail.store(detail, Ordering::Release);
         shared
             .last_error

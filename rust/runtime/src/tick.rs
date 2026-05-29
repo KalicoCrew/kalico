@@ -317,6 +317,14 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
 
 // ─── ISR sample entry ─────────────────────────────────────────────────────
 
+/// DIAG(sip): low 32 bits of `(rust_now - c_clock)` captured each ISR tick,
+/// where `c_clock` is the C/Klipper widened clock (`timer_read_time()` +
+/// `stats_send_time_high`) that the clock-sync response returns to the host.
+/// This measures the divergence between the engine's evaluation clock and the
+/// host's scheduling clock. Read by the -308 fault site. REVERT after.
+pub(crate) static CLK_DOMAIN_OFFSET_CYC: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
+
 /// Single-call ISR body for the piece-ring walker engine (Task 6).
 ///
 /// Widens the 32-bit DWT clock, publishes `widened_now`, then delegates to
@@ -337,6 +345,28 @@ pub fn isr_sample_tick(
 
     let now = isr.widen_state.widen(raw_cyccnt);
     crate::clock::publish_widened_now(shared, now);
+    // DIAG(sip): measure divergence between the engine's Rust widened clock
+    // (`now`) and the C/Klipper clock that the clock-sync response feeds the
+    // host scheduler. Same DWT low bits, independently-widened high bits.
+    #[cfg(not(any(test, feature = "host")))]
+    {
+        unsafe extern "C" {
+            fn timer_read_time() -> u32;
+            static stats_send_time: u32;
+            static stats_send_time_high: u32;
+        }
+        // SAFETY: single u32 reads of Klipper-owned globals (same access the
+        // clock-sync FFI `kalico_runtime_clock_sync_request` already performs).
+        let c_clock = unsafe {
+            let low = timer_read_time();
+            let high = stats_send_time_high + ((low < stats_send_time) as u32);
+            (u64::from(high) << 32) | u64::from(low)
+        };
+        CLK_DOMAIN_OFFSET_CYC.store(
+            now.wrapping_sub(c_clock) as u32,
+            core::sync::atomic::Ordering::Relaxed,
+        );
+    }
     let after_widen = unsafe { cyccnt_read() };
     update_max(
         &shared.isr_widen_cycles_max,
