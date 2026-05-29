@@ -166,12 +166,14 @@ impl Decode for RuntimeCapsResponse {
 // =============================================================================
 // PushPieces (0x0060) — Host → MCU
 //
-// Wire layout (little-endian):
-//   axis_idx:    u8  (offset 0)  — which axis ring to push to
-//   piece_count: u8  (offset 1)  — number of 32-byte pieces in this message
-//   pieces_bytes: piece_count × 32 bytes — raw piece data
+// Wire layout v2 (little-endian):
+//   axis_idx:    u8   (offset 0) — which axis ring to push to
+//   piece_count: u8   (offset 1) — number of 32-byte pieces in this message
+//   start_slot:  u16  (offset 2) — physical ring slot index for the first piece
+//   new_head:    u32  (offset 4) — monotonic valid-frontier the MCU advances to
+//   pieces_bytes: piece_count × 32 bytes (offset 8) — raw piece data
 //
-// Total body = 2 + piece_count * 32 bytes.
+// Total body = 8 + piece_count * 32 bytes.
 //
 // PushPiecesResponse (0x0061) — MCU → Host
 //   result: i32  — 0 = OK, negative = error code
@@ -181,6 +183,10 @@ impl Decode for RuntimeCapsResponse {
 pub struct PushPieces {
     pub axis_idx: u8,
     pub piece_count: u8,
+    /// Physical ring slot index where the host wants the first piece placed.
+    pub start_slot: u16,
+    /// Monotonic valid-frontier the MCU should advance to after CRC.
+    pub new_head: u32,
     /// Raw piece bytes: `piece_count * 32` bytes.
     pub pieces_bytes: Vec<u8>,
 }
@@ -189,6 +195,8 @@ impl Encode for PushPieces {
     fn encode(&self, out: &mut Vec<u8>) {
         put_u8(out, self.axis_idx);
         put_u8(out, self.piece_count);
+        put_u16(out, self.start_slot);
+        put_u32(out, self.new_head);
         out.extend_from_slice(&self.pieces_bytes);
     }
 }
@@ -197,6 +205,8 @@ impl Decode for PushPieces {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
         let axis_idx = get_u8(c)?;
         let piece_count = get_u8(c)?;
+        let start_slot = get_u16(c)?;
+        let new_head = get_u32(c)?;
         let pieces_len = (piece_count as usize).checked_mul(32).ok_or(
             DecodeError::ArrayLengthExceedsBuffer {
                 claimed: u32::from(piece_count),
@@ -216,6 +226,8 @@ impl Decode for PushPieces {
         Ok(Self {
             axis_idx,
             piece_count,
+            start_slot,
+            new_head,
             pieces_bytes,
         })
     }

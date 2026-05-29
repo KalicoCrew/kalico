@@ -14,7 +14,7 @@ struct SchemaMessage {
     type_tag: u16,
     name: &'static str,
     version: u8,
-    channel: &'static str, // "control" | "events"
+    channel: &'static str, // "control" | "events" | "pieces"
     fields: &'static [SchemaField],
 }
 
@@ -70,11 +70,13 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
     SchemaMessage {
         type_tag: 0x0060,
         name: "PushPieces",
-        version: 1,
-        channel: "control",
+        version: 2,
+        channel: "pieces",
         fields: &[
             SchemaField { name: "axis_idx", ty: "u8" },
             SchemaField { name: "piece_count", ty: "u8" },
+            SchemaField { name: "start_slot", ty: "u16" },
+            SchemaField { name: "new_head", ty: "u32" },
             SchemaField { name: "pieces_bytes", ty: "array<u8>" },
         ],
     },

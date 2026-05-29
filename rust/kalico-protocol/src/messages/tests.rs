@@ -115,18 +115,44 @@ fn push_pieces_roundtrip_single() {
     let msg = PushPieces {
         axis_idx: 2,
         piece_count: 1,
+        start_slot: 0,
+        new_head: 0,
         pieces_bytes: vec![0xAB; 32],
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    // Expected: 1 byte axis_idx + 1 byte piece_count + 32 bytes pieces = 34 bytes.
-    assert_eq!(buf.len(), 34);
+    // axis_idx(1) + piece_count(1) + start_slot(2) + new_head(4) + 32 bytes pieces = 40 bytes.
+    assert_eq!(buf.len(), 40);
     let mut cursor = Cursor::new(&buf);
     let decoded = PushPieces::decode_from(&mut cursor).unwrap();
     assert_eq!(decoded.axis_idx, 2);
     assert_eq!(decoded.piece_count, 1);
+    assert_eq!(decoded.start_slot, 0);
+    assert_eq!(decoded.new_head, 0);
     assert_eq!(decoded.pieces_bytes.len(), 32);
     assert_eq!(decoded.pieces_bytes[0], 0xAB);
+}
+
+#[test]
+fn push_pieces_v2_roundtrip_carries_slot_and_head() {
+    let msg = PushPieces {
+        axis_idx: 2,
+        piece_count: 1,
+        start_slot: 41,
+        new_head: 5000,
+        pieces_bytes: vec![0xAB; 32],
+    };
+    let mut buf = Vec::new();
+    msg.encode(&mut buf);
+    // axis_idx(1) + piece_count(1) + start_slot(2) + new_head(4) + 32 = 40 bytes.
+    assert_eq!(buf.len(), 40);
+    let mut cursor = Cursor::new(&buf);
+    let decoded = PushPieces::decode_from(&mut cursor).unwrap();
+    assert_eq!(decoded.axis_idx, 2);
+    assert_eq!(decoded.piece_count, 1);
+    assert_eq!(decoded.start_slot, 41);
+    assert_eq!(decoded.new_head, 5000);
+    assert_eq!(decoded.pieces_bytes, vec![0xAB; 32]);
 }
 
 #[test]
@@ -134,13 +160,19 @@ fn push_pieces_roundtrip_multiple() {
     let msg = PushPieces {
         axis_idx: 0,
         piece_count: 3,
+        start_slot: 0,
+        new_head: 0,
         pieces_bytes: vec![0x42; 96], // 3 * 32 = 96
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
+    // axis_idx(1) + piece_count(1) + start_slot(2) + new_head(4) + 3*32 = 104 bytes.
+    assert_eq!(buf.len(), 8 + 3 * 32);
     let mut cursor = Cursor::new(&buf);
     let decoded = PushPieces::decode_from(&mut cursor).unwrap();
     assert_eq!(decoded.piece_count, 3);
+    assert_eq!(decoded.start_slot, 0);
+    assert_eq!(decoded.new_head, 0);
     assert_eq!(decoded.pieces_bytes.len(), 96);
 }
 
