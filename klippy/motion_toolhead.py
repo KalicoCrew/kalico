@@ -1165,6 +1165,24 @@ class MotionToolhead(ToolHead):
                 )
                 continue
 
+            # Clean-state reset before (re)configuring this MCU's axes. The
+            # engine's ring bump allocator never frees, and configure_axis is
+            # re-sent on every klippy:connect; without this reset a plain
+            # RESTART / systemctl restart / crash-reconnect (which does NOT
+            # reboot bridge MCUs) overflows the pool -> KALICO_ERR_RING_FULL.
+            # Idempotent: a no-op on a freshly-booted MCU. Same command queue,
+            # so it is processed before the configure_axis commands below.
+            try:
+                reset_cmd = mcu_obj.lookup_command("kalico_runtime_reset")
+            except Exception:
+                reset_cmd = None
+            if reset_cmd is not None:
+                reset_cmd.send([])
+                logging.info(
+                    "MotionToolhead: sent kalico_runtime_reset to mcu=%s",
+                    name,
+                )
+
             # Group bind_list by axis (motor_idx). bind_list entries are
             # (motor_idx, stepper_name, stepper_oid, invert_dir) tuples.
             axis_bindings = defaultdict(list)  # axis_idx -> [(oid, invert)]
