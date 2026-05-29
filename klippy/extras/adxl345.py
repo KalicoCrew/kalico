@@ -8,6 +8,7 @@ import logging
 import math
 import multiprocessing
 import os
+import tempfile
 import time
 
 from . import bulk_sensor, bus
@@ -189,10 +190,15 @@ class AccelCommandHelper:
         self.bg_client = None
         bg_client.finish_measurements()
         # Write data to file
+        tmpdir = tempfile.gettempdir()
         if self.base_name == self.name:
-            filename = "/tmp/%s-%s.csv" % (self.base_name, name)
+            filename = os.path.join(
+                tmpdir, "%s-%s.csv" % (self.base_name, name)
+            )
         else:
-            filename = "/tmp/%s-%s-%s.csv" % (self.base_name, self.name, name)
+            filename = os.path.join(
+                tmpdir, "%s-%s-%s.csv" % (self.base_name, self.name, name)
+            )
         bg_client.write_to_file(filename)
         gcmd.respond_info(
             "Writing raw accelerometer data to %s file" % (filename,)

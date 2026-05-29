@@ -5,6 +5,8 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 import math
+import os
+import tempfile
 
 from . import heaters
 
@@ -81,9 +83,10 @@ class PIDCalibrate:
         heater.set_control(old_control, False)
 
         if write_file:
-            fname = "/tmp/heattest.csv"
+            tmpdir = tempfile.gettempdir()
+            fname = os.path.join(tmpdir, "heattest.csv")
             if calibrate_secondary:
-                fname = "/tmp/heattest_secondary.csv"
+                fname = os.path.join(tmpdir, "heattest_secondary.csv")
             calibrate.write_file(fname)
 
         if calibrate.check_busy(0.0, 0.0, 0.0):
