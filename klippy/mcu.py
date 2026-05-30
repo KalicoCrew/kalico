@@ -346,9 +346,33 @@ class MCU_trsync:
     def start(self, print_time, report_offset, trigger_completion, expire_timeout):
         self._trigger_completion = trigger_completion
         if self._mcu._bridge_drives_steppers:
+            # Bridge-driven MCU: the firmware trsync is a real SINK. Arm it and
+            # register the runtime_stop_on_trigger freeze signal so a relayed
+            # trsync_trigger freezes the curve evaluator. No periodic report and
+            # no expire here — TripDispatch owns trip distribution; the metered
+            # drip drain owns host-death safety.
+            self._home_end_clock = None
+            clock = self._mcu.print_time_to_clock(print_time)
+            serial = self._mcu._serial
+            serial.send(
+                "trsync_start oid=%d report_clock=%d report_ticks=0"
+                " expire_reason=%d"
+                % (self._oid, clock, self.REASON_COMMS_TIMEOUT)
+            )
+            arm_id = getattr(self, "_bridge_arm_id", None)
+            if arm_id is None:
+                raise self._mcu.error(
+                    "bridge MCU_trsync.start: _bridge_arm_id not set "
+                    "(homing glue must assign it before start)"
+                )
+            if self._steppers:
+                serial.send(
+                    "runtime_stop_on_trigger arm_id=%d trsync_oid=%d"
+                    % (arm_id, self._oid)
+                )
             logging.info(
-                "[trsync-diag] start no-op (bridge-driven) mcu=%s oid=%d",
-                self._mcu._name, self._oid,
+                "[trsync-diag] bridge sink armed mcu=%s oid=%d arm_id=%d",
+                self._mcu._name, self._oid, arm_id,
             )
             return
         # Non-bridge MCU (Beacon, Eddy): send firmware commands.
