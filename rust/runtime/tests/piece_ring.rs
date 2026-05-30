@@ -306,13 +306,13 @@ fn empty_full_distinct_via_monotonic_difference() {
     assert!(!ring.is_empty());
 }
 
-// ── RingDescriptor — retired cursor wraps modulo ring_depth ──────────────────
+// ── RingDescriptor — tail read cursor wraps after ring_depth advances ─────────
 
-/// Fill a depth-2 ring, advance_counter both entries (verifying that
-/// `retired % ring_depth` wraps 0→1→0), then write and commit two more entries
-/// and confirm peek returns the first new one.  `peek` reads at
-/// `retired % ring_depth`, so after two retires (retired==2) the read cursor
-/// wraps back to slot 0 in the backing store.
+/// Fill a depth-2 ring, advance_counter both entries (verifying that the
+/// `tail` physical cursor wraps 0→1→0), then write and commit two more entries
+/// and confirm peek returns the first new one.  `peek` reads at `tail` (no
+/// division), so after two retires `tail` wraps back to 0 and reads slot 0
+/// in the backing store.
 #[test]
 fn rd_retired_cursor_wraps_after_depth_advances() {
     let mut storage = make_rd_storage::<2>();
@@ -324,17 +324,20 @@ fn rd_retired_cursor_wraps_after_depth_advances() {
     ring.commit_head(2);
     assert_eq!(ring.len(), 2);
 
-    // First advance: retired 0→1; peek reads slot 1 % 2 = 1 → pe(20).
+    // First advance: retired 0→1, tail 0→1; peek reads slot tail=1 → pe(20).
     ring.advance_counter();
     assert_eq!(ring.retired_count(), 1);
+    assert_eq!(ring.tail, 1, "tail must be 1 after first advance");
     assert_eq!(ring.peek(&storage).unwrap().start_time, 20);
 
-    // Second advance: retired 1→2 (ring now empty: head==retired==2).
+    // Second advance: retired 1→2, tail 1→0 (wraps at ring_depth=2).
+    // Ring now empty: head==retired==2.
     ring.advance_counter();
     assert_eq!(ring.retired_count(), 2);
+    assert_eq!(ring.tail, 0, "tail must wrap to 0 after ring_depth advances");
     assert!(ring.is_empty());
-    // Retired cursor has wrapped back to slot 0 mod 2 — verify by writing
-    // fresh entries and confirming peek sees the first one (slot 0).
+    // tail is back at slot 0 — verify by writing fresh entries and confirming
+    // peek sees the first one (slot 0).
     ring.write_slot(&mut storage, 0, pe(30));
     ring.write_slot(&mut storage, 1, pe(40));
     ring.commit_head(4);

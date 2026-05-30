@@ -54,8 +54,13 @@ use crate::monomial::bernstein_to_monomial_with_duration;
 ///   [`write_slot`][Self::write_slot] do **not** advance it.
 /// - `retired` — monotonic retire counter (u32, wrapping).  Tracks how many
 ///   entries have fully elapsed their time window; incremented one per
-///   [`advance_counter`][Self::advance_counter].  Also serves as the read
-///   cursor: `peek` reads slot `retired % ring_depth`.
+///   [`advance_counter`][Self::advance_counter].  Purely a flow-control
+///   frontier; **not** used to derive the read slot.
+/// - `tail` — physical read cursor in `[0, ring_depth)`.  The front slot is
+///   always `ring_offset + tail`; advanced together with `retired` inside
+///   [`advance_counter`][Self::advance_counter] (wraps at `ring_depth`).
+///   The invariant `tail == retired % ring_depth` holds because both cursors
+///   advance only in `advance_counter`, starting from 0.
 ///
 /// Occupancy: `len() = head.wrapping_sub(retired) as usize`.  Empty (`len==0`)
 /// and full (`len==ring_depth`) are distinct because the difference is of
@@ -73,9 +78,13 @@ pub struct RingDescriptor {
     /// [`commit_head`][Self::commit_head].
     pub head: u32,
     /// Monotonic retire counter (wrapping u32); advanced one per
-    /// [`advance_counter`][Self::advance_counter]. Also the read cursor:
-    /// `peek` reads at `retired % ring_depth`.
+    /// [`advance_counter`][Self::advance_counter].  Purely a flow-control
+    /// frontier; the read slot is tracked separately by `tail`.
     pub retired: u32,
+    /// Physical read cursor in `[0, ring_depth)`.  Advanced one step per
+    /// [`advance_counter`][Self::advance_counter], wrapping at `ring_depth`.
+    /// `peek` reads from `ring_offset + tail` — no division required.
+    pub tail: usize,
 }
 
 impl RingDescriptor {
@@ -88,6 +97,7 @@ impl RingDescriptor {
             ring_depth: 0,
             head: 0,
             retired: 0,
+            tail: 0,
         }
     }
 
@@ -100,6 +110,7 @@ impl RingDescriptor {
             ring_depth: depth,
             head: 0,
             retired: 0,
+            tail: 0,
         }
     }
 
@@ -213,27 +224,34 @@ impl RingDescriptor {
 
     /// Peek the front entry without removing it.
     ///
-    /// Returns `None` if the ring is empty. Reads from slot
-    /// `retired % ring_depth` — the currently-armed-or-next piece.
+    /// Returns `None` if the ring is empty.  Reads from the physical cursor
+    /// `tail` — no division required on the hot path.
     #[inline]
     pub fn peek<'s>(&self, storage: &'s [PieceEntry]) -> Option<&'s PieceEntry> {
         if self.is_empty() {
             return None;
         }
-        let slot = (self.retired as usize) % self.ring_depth;
-        storage.get(self.ring_offset + slot)
+        storage.get(self.ring_offset + self.tail)
     }
 
     /// Advance the retire cursor by one (the front piece's window has fully
     /// elapsed). No-op when empty or unconfigured. The engine copies the
     /// piece's coefficients via `peek` before playing it, so nothing here
     /// needs to return the entry.
+    ///
+    /// Both cursors advance together so the invariant `tail == retired %
+    /// ring_depth` is preserved without a division: `tail` wraps explicitly at
+    /// `ring_depth`, and `retired` is incremented as a pure monotonic counter.
     #[inline]
     pub fn advance_counter(&mut self) {
         if self.ring_depth == 0 || self.is_empty() {
             return;
         }
         self.retired = self.retired.wrapping_add(1);
+        self.tail += 1;
+        if self.tail >= self.ring_depth {
+            self.tail = 0;
+        }
     }
 
     /// Monotonic count of pieces whose window has fully elapsed (wrapping u32).
