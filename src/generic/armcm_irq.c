@@ -84,11 +84,17 @@ irq_restore(irqstatus_t flag)
 void
 irq_wait(void)
 {
+    // SIPDIAG10: irq_wait re-enables interrupts (raw cpsie) each idle-loop
+    // iteration, so TIM5 fires normally during idle. Bracket the raw window
+    // with close/reopen so the idle-sleep loop in run_tasks is NOT mis-measured
+    // as one multi-ms irq-off window (which masked the real blocker).
+    irqoff_close();
     if (__CORTEX_M == 7)
         // Cortex-m7 may disable cpu counter on wfi, so use nop
         asm volatile("cpsie i\n    nop\n    cpsid i\n" ::: "memory");
     else
         asm volatile("cpsie i\n    wfi\n    cpsid i\n" ::: "memory");
+    irqoff_open((uint32_t)__builtin_return_address(0));
 }
 
 void
