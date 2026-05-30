@@ -708,7 +708,14 @@ class MotionToolhead(ToolHead):
         self.bridge.wait_moves()
 
     def wait_moves_and_mcu(self):
-        self.flush_step_generation()
+        self.bridge.drain_motion()
+        self._ground_pending_end_time_after_bridge_drain()
+
+    def cmd_M400(self, gcmd):
+        # Upstream ToolHead.__init__ registers M400 -> self.cmd_M400; via
+        # Python MRO that binds to this override in bridge mode, so M400
+        # routes through the full motion drain instead of wait_moves().
+        self.wait_moves_and_mcu()
 
     def _bridge_mcus(self):
         if not hasattr(self, '_cached_bridge_mcus'):
