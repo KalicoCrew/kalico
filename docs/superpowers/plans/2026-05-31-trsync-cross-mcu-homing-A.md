@@ -707,7 +707,26 @@ distribution, drip drain owns host-death."
 
 ---
 
-## Task 6: Host — wire `TripDispatch` into the GPIO `drip_move` branch
+## Task 6: Host — create + arm sink trsyncs and the `TripDispatch` relay in `BridgeTriggerDispatch`
+
+> **CORRECTION (2026-05-31, during execution).** The original Task 6 below assumed
+> `drip_move` could enumerate per-MCU sink `MCU_trsync` objects. It cannot: the
+> bridge GPIO endstop uses `BridgeTriggerDispatch` (`motion_bridge.py`), which owns
+> **no** `MCU_trsync` objects (it arms stepper OIDs directly via `endstop_arm`), and
+> the legacy `TriggerDispatch` that *does* create them hard-rejects bridge MCUs
+> (`mcu.py:506`). Firmware trsync OIDs are **config-time** allocations
+> (`MCU_trsync.__init__` → `mcu.create_oid()` + `register_config_callback`), so the
+> sink trsyncs must be **created in `BridgeTriggerDispatch.add_stepper`** (config
+> phase, one per distinct stepper MCU, mirroring legacy `TriggerDispatch.add_stepper`)
+> and **armed + relayed in `BridgeTriggerDispatch.start`**, cleaned up in `stop`.
+> This matches spec A4/A5 ("`MCU_endstop.home_start` arms the per-MCU trsyncs + the
+> `TripDispatch`"). `drip_move` is left **unchanged**. The `motion_bridge.py`
+> `trip_dispatch_prepare`/`_cleanup` wrappers are still added as written.
+>
+> The corrected scope is implemented per the re-dispatch instructions; the original
+> drip_move-centric steps below are retained for context but superseded.
+
+### (superseded) Original Task 6 — wire `TripDispatch` into the GPIO `drip_move` branch
 
 **Files:**
 - Modify: `klippy/motion_bridge.py` (add `trip_dispatch_prepare`/`_cleanup` wrappers)
