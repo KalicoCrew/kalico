@@ -653,27 +653,20 @@ fn get_position_and_velocity(
     // Fault check: piece start_time is too far in the past.
     let fault_tolerance = u64::from(sample_period_cycles) * 2;
     if now.saturating_sub(next_entry.start_time) > fault_tolerance {
-        // DIAG(sip): encode TWO quantities into fault_detail so the emitted
-        // -308 is self-explanatory:
-        //   low  16 bits = periods_late  = (now - start_time) / sample_period
-        //   high 16 bits = clk_off_periods = (rust_now - c_clock) / sample_period
-        //                  i.e. how far the engine's Rust widened clock leads the
-        //                  C/Klipper clock the host schedules against (the bug).
-        // axis is dropped here (the fault event already names the MCU). REVERT
-        // to the bare `raise_piece_start_in_past` call after concluding.
+        // DIAG(sip): emit the EXACT how-far-in-the-past magnitude, SATURATING
+        // (not wrapping/capping) so it is unambiguous on the host:
+        //   late_cycles = now - start_time, clamped to u32::MAX.
+        //   <  ~1e6   (<~2 ms)  → sub-wrap lateness: clocks aligned, the piece
+        //                         is only marginally late → host-scheduling /
+        //                         enqueue-timing / fault-tolerance issue (H2).
+        //   == 0xFFFFFFFF (≥8.26 s) → wrap-scale: the engine's WidenState clock
+        //                         is ≥1 DWT wrap ahead of the stats clock the
+        //                         host schedules against → WidenState never
+        //                         seeded to the stats clock on the H7 (H1).
+        // REVERT to the bare `raise_piece_start_in_past` call after concluding.
         let late_cycles = now.saturating_sub(next_entry.start_time);
-        let periods_late = if sample_period_cycles > 0 {
-            (late_cycles / u64::from(sample_period_cycles)).min(0xFFFF)
-        } else {
-            0xFFFF
-        };
-        let clk_off_cyc = crate::tick::CLK_DOMAIN_OFFSET_CYC.load(Ordering::Relaxed);
-        let clk_off_periods = if sample_period_cycles > 0 {
-            (clk_off_cyc / sample_period_cycles).min(0xFFFF)
-        } else {
-            0xFFFF
-        };
-        let detail = (clk_off_periods << 16) | (periods_late as u32 & 0xFFFF);
+        let _ = axis_idx; // axis no longer encoded; fault event names the MCU
+        let detail = late_cycles.min(u64::from(u32::MAX)) as u32;
         shared.fault_detail.store(detail, Ordering::Release);
         shared
             .last_error
