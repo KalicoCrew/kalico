@@ -865,6 +865,13 @@ fn run_loop(
                     }
                 }
 
+                // Capture the stream's sync origin at its first dispatch, in
+                // the same sub-ms window the Anchor establishes `t0`. Residual
+                // skew is absorbed by LEAD.
+                if sync_instant.is_none() && !drained.is_empty() {
+                    sync_instant = Some(Instant::now());
+                }
+
                 // Compute `actual = t_appended_after − t_appended_before`.
                 // For the **streaming** path this is the right measure of
                 // "what duration did this move add to the queue?" — not
@@ -1015,6 +1022,7 @@ fn run_loop(
                 // across resets so the test/diagnostic counters reflect
                 // cumulative timer-fire history (resetting it would
                 // confuse downstream consumers reading the AtomicU32).
+                sync_instant = None; // re-captured at next first dispatch
                 state.reset(home_pos);
                 last_append_time = None;
             }
@@ -1061,6 +1069,7 @@ fn run_loop(
                 // fault as a connection break, drops the planner,
                 // re-`init_planner`s, and re-homes — which
                 // constructs a fresh `ShaperState`.
+                sync_instant = None; // re-captured at next first dispatch
                 state.reset(recovered_pos);
                 last_append_time = None;
             }
