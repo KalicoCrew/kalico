@@ -3,7 +3,14 @@
 //! (a reset). See spec §3.2.1.
 
 const CONTIGUITY_EPS: f64 = 1e-6; // seconds; planner timestamps compare to each other
-const DEFAULT_LEAD_SECS: f64 = 0.25;
+// SIPDIAG17 (revert): falsification test for the BORN-LATE root cause. The
+// fresh-stream first piece is stamped start_time = proj_now + lead, but the
+// host clock projection under-projects the true MCU clock by ~230ms and the
+// PushPieces batch eats ~23ms, fully consuming the old 0.25s lead → piece lands
+// ~0.6-1.1ms in the MCU's past (-308). Bumped 0.25 → 0.75 (still well inside the
+// ~1.31s ring capacity of 661 slots @ ~500 pieces/s). If -308 disappears, the
+// budget-vs-lead mechanism is confirmed. REVERT to 0.25 after the test.
+const DEFAULT_LEAD_SECS: f64 = 0.75;
 
 pub struct Anchor {
     /// Host-time instant (seconds) that planner t = 0 maps to. `None` until
