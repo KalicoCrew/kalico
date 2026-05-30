@@ -653,20 +653,23 @@ fn get_position_and_velocity(
     // Fault check: piece start_time is too far in the past.
     let fault_tolerance = u64::from(sample_period_cycles) * 2;
     if now.saturating_sub(next_entry.start_time) > fault_tolerance {
-        // DIAG(sip): emit the EXACT how-far-in-the-past magnitude, SATURATING
-        // (not wrapping/capping) so it is unambiguous on the host:
-        //   late_cycles = now - start_time, clamped to u32::MAX.
-        //   <  ~1e6   (<~2 ms)  → sub-wrap lateness: clocks aligned, the piece
-        //                         is only marginally late → host-scheduling /
-        //                         enqueue-timing / fault-tolerance issue (H2).
-        //   == 0xFFFFFFFF (≥8.26 s) → wrap-scale: the engine's WidenState clock
-        //                         is ≥1 DWT wrap ahead of the stats clock the
-        //                         host schedules against → WidenState never
-        //                         seeded to the stats clock on the H7 (H1).
+        // DIAG(sip): late_cycles (now - start_time) is already known sub-wrap
+        // (~246µs-1ms). Emit instead the INTER-TICK GAP at the faulting tick
+        // (now - prev_tick_now) so we can tell WHY the engine missed the
+        // [start_time, start_time+50µs] arming window:
+        //   gap ≈ 13000 cyc  (25µs, one period) → ticks were smooth; the engine
+        //         peeked the piece every tick but still faulted (logic issue:
+        //         piece not the head, stale has_piece, or a non-tick mechanism).
+        //   gap ≫ 13000 cyc (e.g. ~200000 = ~400µs) → the TIM5 ISR was starved
+        //         / skipped ticks at arm-time, so `now` jumped past the window.
+        // The TICK_GAP_MAX is the largest gap seen all run (not just this tick).
         // REVERT to the bare `raise_piece_start_in_past` call after concluding.
-        let late_cycles = now.saturating_sub(next_entry.start_time);
-        let _ = axis_idx; // axis no longer encoded; fault event names the MCU
-        let detail = late_cycles.min(u64::from(u32::MAX)) as u32;
+        let _ = axis_idx;
+        let gap = crate::tick::TICK_GAP_CYC.load(Ordering::Relaxed);
+        let gap_max = crate::tick::TICK_GAP_MAX_CYC.load(Ordering::Relaxed);
+        // Pack: high 16 = min(gap_max/16, 0xFFFF), low 16 = min(gap/16, 0xFFFF)
+        // (units of 16 cycles ≈ 30ns; resolves up to ~2ms per field).
+        let detail = ((gap_max / 16).min(0xFFFF) << 16) | (gap / 16).min(0xFFFF);
         shared.fault_detail.store(detail, Ordering::Release);
         shared
             .last_error
