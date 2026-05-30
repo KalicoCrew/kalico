@@ -261,37 +261,6 @@ impl EventDispatcher {
                     .dispatch(RuntimeEvent::CreditFreed(e));
             }
             RuntimeEvent::Fault(e) => {
-                // SIPDIAG18 (revert): persist the -308 fault_detail on the RECEIVE
-                // thread (before any Python drain or shutdown teardown). Decode:
-                //   bit 31      front_seen_idle (1=visible-early, 0=born-late)
-                //   bits 30..21 consumed_count (0=FIRST piece, >0=SUBSEQUENT)
-                //   bits 20..10 lateness us
-                //   bits  9..0  faulting piece duration us (short => pile-up)
-                {
-                    use std::io::Write as _;
-                    let fd = e.fault_detail;
-                    let seen_idle = (fd >> 31) & 0x1;
-                    let consumed = (fd >> 21) & 0x3FF;
-                    let lateness_us = (fd >> 10) & 0x7FF;
-                    let dur_us = fd & 0x3FF;
-                    if let Ok(mut fh) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/home/dderg/printer_data/logs/sip-diag.log")
-                    {
-                        let _ = writeln!(
-                            fh,
-                            "[sip-fault] code={} detail=0x{:08x} synthesized={} | front_seen_idle={} consumed={} lateness_us={} piece_dur_us={}  (consumed=0=>FIRST, seen_idle=0=>BORN-LATE)",
-                            e.fault_code,
-                            fd,
-                            e.synthesized,
-                            seen_idle,
-                            consumed,
-                            lateness_us,
-                            dur_us,
-                        );
-                    }
-                }
                 self.fault_latch.dispatch(e.clone());
                 // Forward to the python bridge poller too — fault visibility
                 // matters end-to-end. Pre-Phase-C this rode the legacy

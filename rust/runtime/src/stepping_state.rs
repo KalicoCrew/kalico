@@ -100,12 +100,6 @@ pub struct AxisState {
     // ── ISR working cache for the current piece ──
     /// `true` when a piece has been armed and `piece_end_cycles` is valid.
     pub has_piece: bool,
-    /// SIPDIAG16 (revert): set true whenever the current FRONT piece is peeked
-    /// with `now < start_time` (visible BEFORE its start). Cleared on every
-    /// `pop` (i.e. when the front piece advances). At a -308 fault this tells us
-    /// DIRECTLY whether the faulting piece was ever visible-early (flicker/gap)
-    /// or was born already-late (host delivered/committed it past start_time).
-    pub front_seen_idle: bool,
     /// Position monomial coefficients (c0, c1, c2, c3) for the current piece.
     pub mono_coeffs: [f32; 4],
     /// Velocity coefficients (vc0, vc1, vc2) for the current piece.
@@ -130,7 +124,6 @@ impl AxisState {
             microstep_distance: 0.0,
             ring: RingDescriptor::new_unconfigured(),
             has_piece: false,
-            front_seen_idle: false,
             mono_coeffs: [0.0; 4],
             vel_coeffs: [0.0; 3],
             piece_start_cycles: 0,
@@ -144,7 +137,6 @@ impl AxisState {
     /// Reset ISR working state (called by `configure_axis`).
     pub fn reset_isr_cache(&mut self) {
         self.has_piece = false;
-        self.front_seen_idle = false;
         self.mono_coeffs = [0.0; 4];
         self.vel_coeffs = [0.0; 3];
         self.piece_start_cycles = 0;

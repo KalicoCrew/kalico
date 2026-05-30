@@ -317,27 +317,6 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
 
 // ─── ISR sample entry ─────────────────────────────────────────────────────
 
-/// DIAG(sip): low 32 bits of `now` at the previous ISR tick, and the gap
-/// `now - prev` for the CURRENT tick. The -308 fault site reads `TICK_GAP_CYC`
-/// to decide: gap ≈ one sample period (13000 cyc / 25µs) → ticks were smooth,
-/// so the engine should have armed the piece at start_time (logic issue); gap
-/// ≫ period → the TIM5 ISR was starved (skipped ticks), so `now` jumped past
-/// the piece's [start_time, start_time+tolerance] arming window. REVERT after.
-pub(crate) static PREV_TICK_NOW_LO: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
-pub(crate) static TICK_GAP_CYC: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
-pub(crate) static TICK_GAP_MAX_CYC: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
-/// SIPDIAG14: count of ticks where the engine peeked a VISIBLE piece but
-/// `now < start_time` (the idle-with-visible-piece branch). At the -308 fault:
-/// large (~10k+/axis over a 0.25s early-visible window) → the piece was visible
-/// well before start_time and the late arm is genuine starvation; ~0 → the
-/// piece only became peekable AFTER start_time (a commit/visibility issue, not
-/// starvation). REVERT after concluding.
-pub(crate) static IDLE_VISIBLE_COUNT: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(0);
-
 /// Single-call ISR body for the piece-ring walker engine (Task 6).
 ///
 /// Widens the 32-bit DWT clock, publishes `widened_now`, then delegates to
@@ -358,18 +337,6 @@ pub fn isr_sample_tick(
 
     let now = isr.widen_state.widen(raw_cyccnt);
     crate::clock::publish_widened_now(shared, now);
-    // DIAG(sip): inter-tick gap (this tick's `now` minus the previous tick's).
-    {
-        use core::sync::atomic::Ordering::Relaxed;
-        let now_lo = now as u32;
-        let prev = PREV_TICK_NOW_LO.swap(now_lo, Relaxed);
-        let gap = now_lo.wrapping_sub(prev);
-        TICK_GAP_CYC.store(gap, Relaxed);
-        // Ignore the first tick (prev==0 → huge bogus gap).
-        if prev != 0 && gap > TICK_GAP_MAX_CYC.load(Relaxed) {
-            TICK_GAP_MAX_CYC.store(gap, Relaxed);
-        }
-    }
     let after_widen = unsafe { cyccnt_read() };
     update_max(
         &shared.isr_widen_cycles_max,

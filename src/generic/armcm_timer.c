@@ -270,20 +270,10 @@ timer_dispatch_many(void)
     }
 }
 
-// SIPDIAG12: total SysTick_Handler entry->exit duration. SysTick is priority 2
-// (same as the TIM5 evaluator); equal-priority exceptions cannot preempt one
-// another, so TIM5 is blocked for the WHOLE handler — including the up-to-
-// TIMER_REPEAT_TICKS (timer_from_us(100)) busy-waits inside timer_dispatch_many,
-// even across its irq_enable (PRIMASK enable admits only HIGHER-priority IRQs,
-// not equal-priority TIM5). This max is the true TIM5-starvation source. Read
-// from the Rust -308 path. REVERT after concluding.
-volatile uint32_t kalico_systick_max_cyc __attribute__((used));
-
 // IRQ handler
 void __visible __aligned(16) // aligning helps stabilize perf benchmarks
 SysTick_Handler(void)
 {
-    uint32_t st_entry = timer_read_time();
     irq_disable();
 #if CONFIG_KALICO_SIM
     // CONFIG_KALICO_SIM uses a software CYCCNT (runtime_sim_cyccnt) because
@@ -311,9 +301,6 @@ SysTick_Handler(void)
     uint32_t diff = timer_dispatch_many();
     timer_set_diff(diff);
     irq_enable();
-    uint32_t st_dur = timer_read_time() - st_entry;
-    if (st_dur > kalico_systick_max_cyc)
-        kalico_systick_max_cyc = st_dur;
 }
 DECL_ARMCM_IRQ(SysTick_Handler, SysTick_IRQn);
 

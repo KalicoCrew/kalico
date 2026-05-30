@@ -3,9 +3,6 @@
 //! (a reset). See spec §3.2.1.
 
 const CONTIGUITY_EPS: f64 = 1e-6; // seconds; planner timestamps compare to each other
-// Reverted to 0.25 after SIPDIAG17: the lead is NOT the lever — bumping it to
-// 0.75 left lateness unchanged (~1ms), proving the born-late is a consumption-
-// rate effect (engine drains <=1 piece/tick), not a lead/anchor shortfall.
 const DEFAULT_LEAD_SECS: f64 = 0.25;
 
 pub struct Anchor {

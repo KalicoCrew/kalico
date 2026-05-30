@@ -167,32 +167,6 @@ where
         });
     }
 
-    // SIPDIAG18 (revert): the -308 born-late is tick-rate-coupled (lateness
-    // 1054µs@10kHz → 137µs@40kHz), i.e. a piece-drain backlog: the engine
-    // advances <=1 piece/tick, so a burst of pieces shorter than the tick period
-    // piles their start_times into the past. Log the per-call duration profile
-    // for the H7 (mcu_id 0) so we can SEE the sub-tick pieces. REVERT after.
-    if mcu_id == 0 && !out.is_empty() {
-        use std::io::Write as _;
-        if let Ok(mut fh) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open("/home/dderg/printer_data/logs/piece-dur.log")
-        {
-            let durs_us: Vec<u32> = out.iter().map(|p| (p.duration * 1.0e6) as u32).collect();
-            let min = durs_us.iter().copied().min().unwrap_or(0);
-            let max = durs_us.iter().copied().max().unwrap_or(0);
-            let lt25 = durs_us.iter().filter(|&&d| d < 25).count();
-            let lt100 = durs_us.iter().filter(|&&d| d < 100).count();
-            let head: Vec<u32> = durs_us.iter().take(30).copied().collect();
-            let _ = writeln!(
-                fh,
-                "[piece-dur] n={} min_us={} max_us={} n_lt25us={} n_lt100us={} | first30_us={:?}",
-                durs_us.len(), min, max, lt25, lt100, head,
-            );
-        }
-    }
-
     out
 }
 

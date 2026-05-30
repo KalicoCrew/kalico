@@ -213,30 +213,6 @@ fn spawn_periodic_clock_sync(
                                     / 2.0) as u64;
                                 let mcu_at_send =
                                     mcu_at_response.saturating_sub(one_way_cycles);
-                                // DIAG(sip): the host's clock model lags the true
-                                // MCU clock if the clock-sync RTT is large + the
-                                // round-trip is asymmetric (RTT/2 over-corrects
-                                // mcu_at_send low). Log rtt + the correction so we
-                                // can see the lag magnitude directly. REVERT after.
-                                {
-                                    use std::io::Write as _;
-                                    if let Ok(mut fh) = std::fs::OpenOptions::new()
-                                        .create(true)
-                                        .append(true)
-                                        .open("/home/dderg/printer_data/logs/clksync-diag.log")
-                                    {
-                                        let _ = writeln!(
-                                            fh,
-                                            "[clksync] mcu={} rtt_us={} one_way_cyc={} mcu_at_response={} mcu_at_send={} freq={}",
-                                            mcu_handle_raw,
-                                            rtt.as_micros(),
-                                            one_way_cycles,
-                                            mcu_at_response,
-                                            mcu_at_send,
-                                            estimator.clock_freq_estimate as u64,
-                                        );
-                                    }
-                                }
                                 let mut r = router.lock().unwrap_or_else(|p| p.into_inner());
                                 let _ = r.set_clock_est_from_sample(
                                     mcu_h,
@@ -1966,24 +1942,6 @@ impl PyMotionBridge {
                 last_clock,
             );
         }
-        // DIAG(sip): klippy's clocksync may overwrite the accurate periodic
-        // RTT-corrected sample with a stale/lagging estimate. Log every arrival
-        // so we can see whether this path races the periodic sync and biases
-        // the model low. REVERT after.
-        {
-            use std::io::Write as _;
-            if let Ok(mut fh) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/home/dderg/printer_data/logs/clksync-diag.log")
-            {
-                let _ = writeln!(
-                    fh,
-                    "[clk-rebased] mcu={} freq={} klippy_offset={:.6} last_clock={} host_now_same_epoch={:.6}",
-                    mcu, freq as u64, offset, last_clock, host_now_same_epoch,
-                );
-            }
-        }
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
             .set_clock_est_rebased(
@@ -2327,85 +2285,6 @@ impl PyMotionBridge {
                     fresh,
                     project,
                 );
-
-                // DIAG(sip): scheduling decision for PieceStartInPast (-308)
-                // root-cause investigation. Rust stderr/log are discarded by
-                // klippy, so write to a persistent file. Captures, per dispatched
-                // segment: planner timeline (seg.t_start/t_end), host-time anchor
-                // (t0) + re-anchor flag (fresh), the projected MCU clock for the
-                // current host_now (proj_host_now_clk), the first piece's actual
-                // scheduled start clock (first_start_clk), and the LEAD in clock
-                // cycles (first_start - proj_host_now). lead≈+0.25s*freq → lead
-                // applied (so a -308 means the host clock estimate lags the real
-                // MCU clock); lead≈0 → the 0.25s lead is lost. REVERT after.
-                {
-                    use std::io::Write as _;
-                    if let Ok(mut fh) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/home/dderg/printer_data/logs/sip-diag.log")
-                    {
-                        let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
-                        let _ = writeln!(
-                            fh,
-                            "[sip-seg] host_now={:.6} t0={:.6} fresh={} seg.t_start={:.6} seg.t_end={:.6}",
-                            host_now, t0, fresh, seg.t_start, seg.t_end,
-                        );
-                        // Per-(mcu,axis): the ACTUAL first piece start_time vs the
-                        // per-MCU projection of now / t0 / now+1s, plus the raw
-                        // (freq, clock_offset, last_clock). proj_t0 - proj_now is the
-                        // lead in that MCU's cycles (should be ~0.25*freq). If
-                        // proj_now == proj_now_plus1s the projection is CLAMPED.
-                        for m in &msgs {
-                            let mh = crate::types::mcu_handle_from_raw(m.key.mcu_id);
-                            let first = m.pieces.first().map(|p| p.start_time).unwrap_or(0);
-                            let p_now = r.host_time_to_mcu_clock(mh, host_now).unwrap_or(0);
-                            let p_t0 =
-                                r.host_time_to_mcu_clock(mh, t0 + seg.t_start).unwrap_or(0);
-                            let p_now1 =
-                                r.host_time_to_mcu_clock(mh, host_now + 1.0).unwrap_or(0);
-                            let (freq, coff, lclk) =
-                                r.clock_debug(mh).unwrap_or((0.0, 0.0, 0));
-                            let _ = writeln!(
-                                fh,
-                                "[sip-msg]   mcu={} axis={} first_start={} proj_now={} proj_t0={} proj_now+1s={} lead={} clamped={} | freq={} clk_off={:.6} last_clk={}",
-                                m.key.mcu_id,
-                                m.key.axis,
-                                first,
-                                p_now,
-                                p_t0,
-                                p_now1,
-                                p_t0 as i64 - p_now as i64,
-                                p_now1 == p_now,
-                                freq as u64,
-                                coff,
-                                lclk,
-                            );
-                        }
-                    }
-                }
-
-                // DIAG(sip): wall-clock at dispatch of the FIRST (fresh) segment
-                // so we can measure dispatch -> wire-send latency vs the
-                // PushPieces round-trip ([ptx-send]). REVERT after.
-                if fresh {
-                    use std::io::Write as _;
-                    if let Ok(mut fh) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/home/dderg/printer_data/logs/piece-tx.log")
-                    {
-                        let wall = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_micros())
-                            .unwrap_or(0);
-                        let _ = writeln!(
-                            fh,
-                            "[ptx-disp] wall_us={} fresh seg.t_start={:.6} n_msgs={}",
-                            wall, seg.t_start, msgs.len(),
-                        );
-                    }
-                }
 
                 for m in msgs {
                     pump_tx_for_cb

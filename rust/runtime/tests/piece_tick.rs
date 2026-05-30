@@ -3,7 +3,7 @@
 //! Exercises the full pipeline: configure_axis → push_pieces → tick → verify
 //! observable state.  Tests cover:
 //!   - Arming a piece when start_time is reached
-//!   - Idle behaviour before start_time
+//!   - Holding at t=0 before start_time (future piece adopted into cache)
 //!   - Idle behaviour with an empty ring
 //!   - Hard fault when a piece's start_time is more than 2 ticks in the past
 //!   - Within-tolerance arming (1 tick late — must NOT fault)
@@ -113,12 +113,21 @@ fn tick_arms_piece_when_start_time_reached() {
     assert_eq!(rc2, 0, "should be able to push after consumption");
 }
 
-// ── Test 2: idle before start_time ───────────────────────────────────────────
+// ── Test 2: hold at t=0 before start_time ────────────────────────────────────
 
-/// Push a piece that hasn't started yet.  The ISR must idle (no fault, no
-/// consumption) and leave the ring untouched.
+/// Push a piece that hasn't started yet.  With the gap branch removed (spec
+/// §4.4 cursor walk), the ISR adopts the future piece into its cache and holds
+/// it at `t = 0` via `eval_horner`'s saturating elapsed — it does NOT idle in
+/// the ring.  Observable contract before `start_time`:
+///   - no fault is latched (a future piece passes the 2-tick check trivially);
+///   - the piece is adopted exactly once (`consumed == 1`) and the cursor does
+///     not advance past it on subsequent pre-start ticks (it stays held);
+///   - no motion is produced (the constant piece dispatches no steps).
+/// This is physically equivalent to the old "idle in the ring" behaviour — the
+/// toolhead holds the start position — but the future piece now lives in the
+/// cache rather than the ring slot.
 #[test]
-fn tick_idle_before_start_time() {
+fn tick_holds_at_t0_before_start_time() {
     let mut engine = make_engine();
     configure_axis0(&mut engine, 64);
 
@@ -143,18 +152,32 @@ fn tick_idle_before_start_time() {
     engine.test_install_step_queues(qs);
 
     let shared = SharedState::new();
-    // Tick at a time well before the piece starts.
+    // Tick well before the piece starts → adopt into cache, hold at t=0.
     engine.tick(TICK_CYCLES, &shared, &mut storage);
 
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
         0,
-        "no fault for idle before start_time"
+        "no fault for a future piece held at t=0"
     );
     assert_eq!(
         engine.consumed_counts()[0],
+        1,
+        "future piece is adopted into the cache exactly once"
+    );
+
+    // A second pre-start tick must keep holding the SAME piece — the cursor
+    // does not advance past a piece whose end is still in the future.
+    engine.tick(TICK_CYCLES * 2, &shared, &mut storage);
+    assert_eq!(
+        shared.last_error.load(Ordering::Acquire),
         0,
-        "piece must not be consumed before its start_time"
+        "still no fault on a later pre-start tick"
+    );
+    assert_eq!(
+        engine.consumed_counts()[0],
+        1,
+        "piece stays held at t=0; cursor must not advance before start_time"
     );
 }
 

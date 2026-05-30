@@ -611,13 +611,31 @@ impl Default for Engine {
 /// Advance the axis to the correct piece for `now`, returning
 /// `(position, velocity)` if an active piece exists.
 ///
-/// Implements the spec §4.2 slot-freeing invariant:
-/// 1. Cache velocity coefficients and assign the new current piece FIRST.
-/// 2. THEN free (pop) the previous slot.
+/// This is the cursor-walking loop from the stepping-redesign spec §4.4
+/// (`advance_piece_if_needed`), rendered in the ring's peek/pop vocabulary.
+/// A single sample can legitimately cross many sub-tick pieces (corner-
+/// rounding splines, host-side step-burst smoothing), so we loop until the
+/// front piece contains `now` rather than advancing at most one piece per
+/// tick. Four branches:
 ///
-/// Returns `None` if the axis should idle this tick (ring empty or gap
-/// between pieces).  Raises a hard fault if the next piece's start_time is
-/// more than `2 * sample_period_cycles` in the past.
+/// 1. **Current piece still relevant** (`now < piece_end`) — evaluate and
+///    return. This also covers "next piece hasn't started yet": a future
+///    piece returns here and [`eval_horner`]'s saturating elapsed clamps it
+///    to `t = 0`, holding the start position until `now` crosses `start_time`.
+///    No separate gap branch is needed.
+/// 2. **Ring empty** — nothing to advance to → idle / underrun, return `None`.
+/// 3. **Adopted piece starts > 2 ticks in the past** — the MCU was not fed in
+///    time (genuine late delivery, or a multi-tick ISR stall). Hard fault.
+///    Walking a contiguous sub-tick burst never trips this: lateness strictly
+///    shrinks as we advance (each step subtracts a positive `duration` from
+///    `now − start`), and branch 1 keeps us on the current piece until `now`
+///    barely passes its end, so a successor is at most ~1 tick behind `now`.
+/// 4. **Arm the piece** (cache coeffs before freeing the slot, §4.2 slot-free
+///    order), then loop to re-test branch 1 against the just-armed piece.
+///
+/// The loop is bounded by ring occupancy — each iteration `pop()`s one entry,
+/// so it terminates at branch 2 once the ring drains; no separate runaway cap
+/// is required.
 fn get_position_and_velocity(
     axis: &mut AxisState,
     now: u64,
@@ -627,112 +645,46 @@ fn get_position_and_velocity(
     storage: &mut [PieceEntry],
     axis_idx: usize,
 ) -> Option<(f32, f32)> {
-    // Fast path: still within the current piece.
-    if axis.has_piece && now < axis.piece_end_cycles {
-        return Some(eval_horner(
-            &axis.mono_coeffs,
-            &axis.vel_coeffs,
-            axis.piece_start_cycles,
-            now,
-            cycles_per_second,
-        ));
+    loop {
+        // Branch 1: current piece still relevant (or a future piece, held at
+        // t=0 by eval_horner's saturating elapsed).
+        if axis.has_piece && now < axis.piece_end_cycles {
+            return Some(eval_horner(
+                &axis.mono_coeffs,
+                &axis.vel_coeffs,
+                axis.piece_start_cycles,
+                now,
+                cycles_per_second,
+            ));
+        }
+
+        // Advance to the next piece. Copy by value so we don't hold a live
+        // borrow of `storage` while mutating `axis`.
+        // Branch 2: nothing there → idle / underrun.
+        let Some(next_entry) = axis.ring.peek(storage).copied() else {
+            axis.has_piece = false;
+            return None;
+        };
+
+        // Branch 3: the piece we're adopting must not start more than two
+        // ticks in the past. Future pieces pass trivially (saturating sub → 0).
+        let fault_tolerance = u64::from(sample_period_cycles) * 2;
+        if now.saturating_sub(next_entry.start_time) > fault_tolerance {
+            raise_piece_start_in_past(shared, axis_idx);
+            axis.has_piece = false;
+            return None;
+        }
+
+        // Branch 4: arm the piece (cache coefficients BEFORE freeing the slot,
+        // §4.2), then loop to re-test branch 1 against the just-armed piece.
+        let (mono, vel) = next_entry.to_monomial();
+        axis.mono_coeffs = mono;
+        axis.vel_coeffs = vel;
+        axis.piece_start_cycles = next_entry.start_time;
+        axis.piece_end_cycles = next_entry.end_time(cycles_per_second);
+        axis.has_piece = true;
+        axis.ring.pop();
     }
-
-    // Current piece expired (or no piece yet). Peek the next one.
-    // We need to do this without holding a live reference to storage while
-    // also mutating axis, so copy the candidate entry by value.
-    let next_entry: PieceEntry = *axis.ring.peek(storage)?;
-
-    // Gap: next piece hasn't started yet.
-    if now < next_entry.start_time {
-        // SIPDIAG14: piece is VISIBLE (peek returned Some) but not yet started.
-        // Counting these tells us whether the first piece was visible before its
-        // start_time (genuine starvation) or only became visible after it
-        // (commit/visibility bug).
-        crate::tick::IDLE_VISIBLE_COUNT.fetch_add(1, Ordering::Relaxed);
-        // SIPDIAG16: mark that THIS front piece was seen before its start_time.
-        axis.front_seen_idle = true;
-        // Axis idles — not a fault.
-        axis.has_piece = false;
-        return None;
-    }
-
-    // Fault check: piece start_time is too far in the past.
-    let fault_tolerance = u64::from(sample_period_cycles) * 2;
-    if now.saturating_sub(next_entry.start_time) > fault_tolerance {
-        // DIAG(sip) SIPDIAG13: the existing diag_tim5_account proves the TIM5
-        // handler entry->exit max is 605 cyc (~1.16µs) over 8.8M ticks (hist all
-        // in bucket 0, no DIAG_EV_TIM5_LONG) — so the body is ALWAYS short, the
-        // 200µs gap is a GENUINE entry-to-entry no-fire (ffi-gap and true-entry
-        // gap can differ by at most the <=605cyc handler width), and both the
-        // "long body" and "sampling point" hypotheses are dead. The remaining
-        // open question (panel red-team): lateness (now - start_time) and the
-        // gap are DIFFERENT quantities never latched together. Latch BOTH now:
-        //   high 16 = lateness µs = (now - start_time) (cap 0xFFFF = 65ms).
-        //   low  16 = TIM5 inter-tick gap µs (cap 0xFFFF).
-        // SIPDIAG15: SIPDIAG14 showed idle_visible=2282 (~28ms) — piece 0 IS
-        // peek-visible ~28ms before start_time — and lateness=607µs. With
-        // lateness (1074µs in SIPDIAG13) > gap (199µs), the faulting tick does
-        // NOT immediately follow an idle-visible tick. Discriminate flicker vs
-        // one-big-gap by latching lateness against the run-MAX gap:
-        //   high 16 = lateness µs (cap 0xFFFF).
-        //   low  16 = run-max TIM5 inter-tick gap µs (cap 0xFFFF).
-        // gap_max < lateness  -> engine ticked through [start_time, fault] with
-        //   no single gap that long, yet didn't fault until the end => piece 0
-        //   was NOT peek-visible for most of that window => VISIBILITY FLICKER.
-        // gap_max ≈ lateness -> one big starvation gap straddled start_time.
-        // REVERT to the bare `raise_piece_start_in_past` call after concluding.
-        // SIPDIAG18: born-late is confirmed (front_seen_idle=0) and lead-invariant
-        // → consumption-rate hypothesis: the engine drains <=1 piece per tick, so a
-        // burst of pieces shorter than the tick period (100µs @ 10kHz) cannot be
-        // drained fast enough and piles up into the past. Pack the two tests:
-        //   bit  31    : front_seen_idle (1 = visible-early, 0 = born-late)
-        //   bits 30..21: consumed_count (10-bit, cap 1023) — #pieces popped before
-        //                the fault. 0 = FIRST piece faulted; >0 = a SUBSEQUENT
-        //                piece (answers "first vs subsequent").
-        //   bits 20..10: lateness µs (11-bit, cap 2047)
-        //   bits  9..0 : faulting piece duration µs (10-bit, cap 1023) — if short
-        //                (< tick period) it supports the pile-up mechanism.
-        // REVERT to the bare `raise_piece_start_in_past` call after concluding.
-        let _ = axis_idx;
-        let lateness_cyc = now.saturating_sub(next_entry.start_time); // u64
-        let cyc_per_us = (cycles_per_second / 1.0e6) as u64; // ≈520 on H7
-        let to_us = |c: u64, cap: u64| if cyc_per_us > 0 { (c / cyc_per_us).min(cap) } else { cap };
-        let seen_idle_bit: u32 = if axis.front_seen_idle { 1 } else { 0 };
-        let consumed = (axis.ring.consumed_count() & 0x3FF) as u32; // cap 1023
-        let lateness_us = to_us(lateness_cyc, 0x7FF) as u32; // cap 2047
-        let dur_us = ((next_entry.duration * 1.0e6) as u32).min(0x3FF); // cap 1023µs
-        let detail = (seen_idle_bit << 31) | (consumed << 21) | (lateness_us << 10) | dur_us;
-        shared.fault_detail.store(detail, Ordering::Release);
-        shared
-            .last_error
-            .store(crate::error::FaultCode::PieceStartInPast.as_i32(), Ordering::Release);
-        let _ = raise_piece_start_in_past; // keep import live while diag is in place
-        axis.has_piece = false;
-        return None;
-    }
-
-    // Arm the new piece: cache coefficients BEFORE popping the slot.
-    // Spec §4.2: arm new piece first, then free the slot it occupied.
-    let (mono, vel) = next_entry.to_monomial();
-    axis.mono_coeffs = mono;
-    axis.vel_coeffs = vel;
-    axis.piece_start_cycles = next_entry.start_time;
-    axis.piece_end_cycles = next_entry.end_time(cycles_per_second);
-    axis.has_piece = true;
-    // Now free the ring slot (the entry is fully cached above).
-    axis.ring.pop();
-    // SIPDIAG16: front piece advanced — reset the "seen-before-start" flag so
-    // it reflects only the NEXT front piece's pre-start visibility.
-    axis.front_seen_idle = false;
-
-    Some(eval_horner(
-        &axis.mono_coeffs,
-        &axis.vel_coeffs,
-        axis.piece_start_cycles,
-        now,
-        cycles_per_second,
-    ))
 }
 
 /// Evaluate position and velocity via Horner using the axis's cached
