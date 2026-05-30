@@ -202,9 +202,14 @@ on Flush (M400 / wait_moves):
   never-implemented "Flush / M400 handled separately" gap (`planner.rs:753-759`)
   and kills the M400-then-move `-308` with the same mechanism as the idle case.
 
-`DrainSync` (the `retired == sent` Flush barrier, `drain.rs`) is replaced by the
-clock wait. The pump's independent `pushed`/`retired` flow-control accounting is
-untouched.
+`DrainSync` is **not removed.** Its `add_sent` / `set_retired` accounting is the
+pump's flow-control mechanism (untouched), and `set_position` (`bridge.rs:2737`)
+still uses `wait_drained` for a real retirement barrier before re-seeding motor
+state. What changes is only the **M400 completion semantics**: the clock wait
+(`t_appended + LEAD`) is the authoritative "motion done" signal; the post-flush
+`wait_drained` in `drain_motion` becomes redundant (it returns immediately once
+the clock wait has passed) and may be kept as a belt-and-suspenders check or
+dropped.
 
 ### F. Sync-origin pinning
 
@@ -250,10 +255,13 @@ keep them separate:
   `max(t_appended, elapsed_since_sync)` placement + rest-hold advance (§ A);
   capture/re-capture `sync_instant` (§ F); rewrite the `Flush` arm as the
   time-based wait (§ E); remove the idle reset.
-- `rust/trajectory/src/streaming/state.rs` — rest-hold advance primitive (§ A);
-  remove `current_position()` (added by the superseded spec, now unused).
-- `rust/motion-bridge/src/drain.rs` — retire `DrainSync` from the Flush path
-  (pump flow-control accounting stays where it is).
+- `rust/trajectory/src/streaming/state.rs` — add the rest-hold advance primitive
+  (`advance_idle`, § A), reusing the existing `axis_position_at` settled-position
+  read. `current_position()` is **retained** (public API with tests; its
+  underlying read is what the rest-hold reuses).
+- `rust/motion-bridge/src/drain.rs` — **unchanged.** `DrainSync` stays (pump
+  flow-control accounting + `set_position`'s barrier). Only M400's completion
+  semantics move to the clock (§ E).
 - `rust/motion-bridge/src/bridge.rs` — `wait_moves` / `drain_motion` re-pointed
   at the time-based Flush; heartbeat callback wiring for flow control unchanged.
 - `rust/motion-bridge/src/anchor.rs` — **unchanged** (backward-jump branch now
