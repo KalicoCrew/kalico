@@ -91,6 +91,10 @@ const CLOCK_SYNC_INTERVAL: Duration = Duration::from_millis(500);
 /// stall without cascading into the wedge guard.
 const CLOCK_SYNC_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// Upper bound on a single motion drain. A real print's longest queued motion
+/// plus buffer is well under this; exceeding it means a wedged MCU -> loud fail.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// Spawn the bridge's per-MCU periodic clock-sync driver.
 ///
 /// Why this exists: in bridge mode klippy's `clocksync._get_clock_event`
@@ -2380,6 +2384,25 @@ impl PyMotionBridge {
         Ok(())
     }
 
+    /// Block the calling (G-code) thread until every axis the bridge has sent
+    /// to has `retired == sent` — i.e. the MCU has physically finished all
+    /// queued motion. Flushes the planner first (which shapes + dispatches the
+    /// decel-to-zero tail). The reactor/heartbeat threads keep running while we
+    /// wait (GIL released). Loud timeout error on a wedged MCU.
+    fn drain_motion(&self, py: Python<'_>) -> PyResult<()> {
+        let planner = self.planner.get().ok_or_else(|| {
+            PyRuntimeError::new_err("planner not initialized — call init_planner first")
+        })?;
+        // 1) Flush: dispatch the held-back decel-to-zero tail to the pump.
+        py.allow_threads(|| planner.flush()).map_err(planner_err)?;
+        // 2) Wait for the MCU to retire everything we sent.
+        let drain = self.drain.clone();
+        py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT))
+            .map_err(PyRuntimeError::new_err)?;
+        self.homing.refresh_after_wait();
+        Ok(())
+    }
+
     fn take_trip_event(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
         let Some(evt) = self.homing.take_trip_event() else {
             return Ok(None);
@@ -2709,6 +2732,10 @@ impl PyMotionBridge {
             planner
                 .kalico_stream_open([x, y, z, 0.0])
                 .map_err(planner_err)?;
+
+            // Reset host drain counters to align with the MCU's freshly-zeroed
+            // retired cursor after stream re-open.
+            self.drain.reset();
 
             // Re-establish each MCU's motor-frame `last_step_count` baseline so
             // the first move after homing / G92 / SET_KINEMATIC_POSITION computes
