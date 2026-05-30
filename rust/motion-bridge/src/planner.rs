@@ -783,6 +783,38 @@ fn run_loop(
                 let move_dist = m.distance_mm;
                 let move_feed = m.segment.feedrate_mm_s;
 
+                // Placement rule (spec §A): if the clock has run past the plan
+                // tail, the toolhead is genuinely idle. Commit any held-back
+                // tail first (so the MCU gets the prior decel-to-zero), then
+                // insert a rest-hold advancing t_appended to "now" so the new
+                // move starts at elapsed_since_sync (== host_now + LEAD via the
+                // Anchor) instead of overlapping the prior committed tail.
+                let esc = sync_instant.map_or(0.0, |t| t.elapsed().as_secs_f64());
+                if esc > state.t_appended + 1e-6 {
+                    // Commit any held-back decel-to-zero first; only insert the
+                    // rest-hold if that succeeded. On a commit/dispatch failure
+                    // `run_commit_and_dispatch` leaves t_dispatched < t_appended
+                    // and latches the error — advancing the timeline then would
+                    // trip advance_idle's fully-committed precondition (debug) or
+                    // silently drop the uncommitted tail (release). Skip it; the
+                    // latched error surfaces on the caller's next check_error.
+                    let committed_ok = if state.t_dispatched < state.t_appended - 1e-12 {
+                        run_commit_and_dispatch(
+                            &mut state,
+                            &thread_state,
+                            &dispatch,
+                            &error,
+                            &last_move_time_bits,
+                            &commit_fire_count,
+                        )
+                    } else {
+                        true
+                    };
+                    if committed_ok {
+                        state.advance_idle(esc);
+                    }
+                }
+
                 let replan_start = Instant::now();
                 if let Err(e) = state.append_and_replan(m.segment, &thread_state.replan_ctx) {
                     eprintln!("[move-diag] Move arm: append_and_replan ERR {e:?}");

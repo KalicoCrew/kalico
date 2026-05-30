@@ -1494,6 +1494,35 @@ fn commit_decel_to_zero_advances_t_dispatched_to_t_appended_and_is_idempotent() 
     assert!((state.t_dispatched - state.t_appended).abs() < 1e-12);
 }
 
+/// Monotonicity guard across an idle gap: after a fully-committed move,
+/// advancing the idle hold and then appending a second move must produce
+/// strictly non-decreasing `u_start` stamps across all per-axis pieces.
+/// This locks the property the Move-arm placement rule (spec §A) relies on.
+#[test]
+fn piece_stamps_monotone_across_idle_gap() {
+    let mut state = ShaperState::new([0.0; 4], &replan_shapers());
+    let ctx = replan_context();
+    let kernels = replan_kernels_piecewise();
+    let halos: Vec<EHalo> = Vec::new();
+    let ctx_emit = emit_context_default(&kernels, &halos);
+
+    // Move 1, fully committed.
+    state.append_and_replan(linear_x_segment(0.0, 200.0, 200.0), &ctx).expect("m1");
+    let _ = state.emit_committed(&ctx_emit).expect("emit1");
+    let _ = state.commit_decel_to_zero(&ctx_emit).expect("commit1");
+    let t_after_m1 = state.t_appended;
+
+    // Idle gap of 0.5 s, then move 2.
+    state.advance_idle(t_after_m1 + 0.5);
+    state.append_and_replan(linear_x_segment(200.0, 400.0, 200.0), &ctx).expect("m2");
+    let _ = state.emit_committed(&ctx_emit).expect("emit2");
+
+    let stamps: Vec<f64> = state.axes[0].pieces.iter().map(|p| p.u_start).collect();
+    for w in stamps.windows(2) {
+        assert!(w[1] >= w[0] - 1e-12, "u_start went backward: {} -> {}", w[0], w[1]);
+    }
+}
+
 /// Regression guard for the `t_dispatched`-unchanged bug: after `advance_idle`,
 /// `append_and_replan` must plan the new move from `target_t` (now), not from
 /// the old `t_appended`. With the old code `t_dispatched` was left behind, so
