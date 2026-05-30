@@ -1,7 +1,9 @@
 # Idle re-anchor: rewind the planner clock on quiescence
 
 **Date:** 2026-05-30
-**Status:** Design — pending implementation
+**Status:** SUPERSEDED by `2026-05-30-monotonic-planner-clock-design.md` — the
+reset-and-re-anchor approach (Choice B) did not work on hardware; the fault and
+the corrected architecture are analyzed in the successor spec.
 **Branch:** `simple-mcu-contract`
 
 ## Problem
