@@ -139,11 +139,11 @@ MCU clock for pieces; `last_move_time` is klippy's own frame for scheduling inli
 (M106, SET_PIN AT_TIME), mapped to the wire by klippy's separate `est_print_time`
 machinery. B follows this precedent and introduces no new desync.
 
-### Revert the exploratory Choice-A edit
+### `anchor.rs` is unchanged
 
-`rust/motion-bridge/src/anchor.rs` currently carries an uncommitted Choice-A change (an
-extra `t0 + seg_t_start < host_now` condition plus an `idle_gap_reanchors_forward` test).
-B does not use it. Revert the file to `HEAD` (`git checkout rust/motion-bridge/src/anchor.rs`).
+B requires no change to `rust/motion-bridge/src/anchor.rs` — the existing backward-jump
+branch does the re-anchoring once the planner clock is rewound. (An exploratory Choice-A
+edit was made and then reverted; the file matches `HEAD`.)
 
 ## Out of scope
 
@@ -180,4 +180,5 @@ B does not use it. Revert the file to `HEAD` (`git checkout rust/motion-bridge/s
 - `rust/trajectory/src/streaming/state.rs` — add `current_position()`.
 - `rust/motion-bridge/src/planner.rs` — call `state.reset(state.current_position())` in the
   `T_COMMIT` (`RecvTimeoutError::Timeout`) arm, after `run_commit_and_dispatch`.
-- `rust/motion-bridge/src/anchor.rs` — revert the uncommitted Choice-A edit.
+
+`rust/motion-bridge/src/anchor.rs` is intentionally **not** touched.
