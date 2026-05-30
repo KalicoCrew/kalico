@@ -687,8 +687,7 @@ fn get_position_and_velocity(
     axis_idx: usize,
 ) -> Option<(f32, f32)> {
     loop {
-        // Branch 1: current piece still relevant (or a future piece, held at
-        // t=0 by eval_horner's saturating elapsed).
+        // Branch 1: current armed piece still inside its window.
         if axis.has_piece && now < axis.piece_end_cycles {
             return Some(eval_horner(
                 &axis.mono_coeffs,
@@ -699,32 +698,36 @@ fn get_position_and_velocity(
             ));
         }
 
-        // Advance to the next piece. Copy by value so we don't hold a live
-        // borrow of `storage` while mutating `axis`.
-        // Branch 2: nothing there → idle / underrun.
-        let Some(next_entry) = axis.ring.peek(storage).copied() else {
+        // The armed piece (if any) has now finished its window. Retire it:
+        // advance the cursor (which also advances the read position to the
+        // next slot) and mark no piece armed. This is the ONLY bump site, so
+        // `retired` counts pieces whose window has fully elapsed.
+        if axis.has_piece {
+            axis.ring.advance_counter();
             axis.has_piece = false;
+        }
+
+        // Branch 2: nothing more to play -> idle / underrun. `retired` now
+        // equals `head` (== host's `sent`), the host's "motion done" signal.
+        let Some(next_entry) = axis.ring.peek(storage).copied() else {
             return None;
         };
 
-        // Branch 3: the piece we're adopting must not start more than two
-        // ticks in the past. Future pieces pass trivially (saturating sub → 0).
+        // Branch 3: start-in-past fault.
         let fault_tolerance = u64::from(sample_period_cycles) * 2;
         if now.saturating_sub(next_entry.start_time) > fault_tolerance {
             raise_piece_start_in_past(shared, axis_idx);
-            axis.has_piece = false;
             return None;
         }
 
-        // Branch 4: arm the piece (cache coefficients BEFORE freeing the slot,
-        // §4.2), then loop to re-test branch 1 against the just-armed piece.
+        // Branch 4: arm the next piece (cache coeffs). Do NOT advance the
+        // cursor here — the slot stays occupied until this piece retires.
         let (mono, vel) = next_entry.to_monomial();
         axis.mono_coeffs = mono;
         axis.vel_coeffs = vel;
         axis.piece_start_cycles = next_entry.start_time;
         axis.piece_end_cycles = next_entry.end_time(cycles_per_second);
         axis.has_piece = true;
-        axis.ring.advance_counter();
     }
 }
 
