@@ -288,12 +288,12 @@ impl EventDispatcher {
                     self.dispatch(RuntimeEvent::CreditFreed(c));
                 }
             }
-            RuntimeEvent::Heartbeat { consumed_counts } => {
+            RuntimeEvent::Heartbeat { retired_counts } => {
                 // Pump-private: consumed here, NOT forwarded to the general
                 // runtime_rx channel. The heartbeat callback feeds the host
                 // pump's flow-control logic directly over a channel.
                 if let Some(cb) = &self.heartbeat_callback {
-                    cb(&consumed_counts);
+                    cb(&retired_counts);
                 }
             }
             RuntimeEvent::EndstopTripped(_)

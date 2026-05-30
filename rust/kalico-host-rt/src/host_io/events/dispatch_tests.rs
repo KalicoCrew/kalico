@@ -157,7 +157,7 @@ fn status_watermark_regression_does_not_synthesize() {
 }
 
 #[test]
-fn heartbeat_callback_fires_with_consumed_counts() {
+fn heartbeat_callback_fires_with_retired_counts() {
     let status = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
     let mut d = EventDispatcher::new(status, 16, 8);
 
@@ -168,7 +168,7 @@ fn heartbeat_callback_fires_with_consumed_counts() {
     }));
 
     d.dispatch(RuntimeEvent::Heartbeat {
-        consumed_counts: vec![5, 1],
+        retired_counts: vec![5, 1],
     });
 
     let got = recorder.lock().unwrap();
@@ -187,7 +187,7 @@ fn heartbeat_is_not_forwarded_to_runtime_rx() {
     d.runtime_event_dispatcher.subscribe(tx).unwrap();
 
     d.dispatch(RuntimeEvent::Heartbeat {
-        consumed_counts: vec![3, 7],
+        retired_counts: vec![3, 7],
     });
 
     assert!(

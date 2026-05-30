@@ -2188,7 +2188,7 @@ impl PyMotionBridge {
 
         // ── End pump setup ────────────────────────────────────────────────
 
-        // Attach heartbeat callbacks — route StatusHeartbeat consumed_counts
+        // Attach heartbeat callbacks — route StatusHeartbeat retired_counts
         // to the pump so it can update per-ring flow-control accounting.
         for cfg_mcu in &mcu_configs {
             let io = host_ios
@@ -2197,13 +2197,13 @@ impl PyMotionBridge {
                 .clone();
             let pump_tx_hb = pump_tx_init.clone();
             let mcu_id = cfg_mcu.mcu_id;
-            io.attach_heartbeat_callback(Arc::new(move |consumed: &[u32]| {
+            io.attach_heartbeat_callback(Arc::new(move |retired: &[u32]| {
                 // PIECEDIAG (revert)
-                log::info!("PIECEDIAG HB mcu={} consumed={:?}", mcu_id, consumed);
+                log::info!("PIECEDIAG HB mcu={} retired={:?}", mcu_id, retired);
                 let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
                     crate::pump::HeartbeatMsg {
                         mcu_id,
-                        consumed_counts: consumed.to_vec(),
+                        retired_counts: retired.to_vec(),
                     },
                 ));
             }));

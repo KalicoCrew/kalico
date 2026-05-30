@@ -17,7 +17,7 @@ pub struct AxisKey {
 }
 
 /// One axis's outbound queue plus flow-control accounting. `pushed` and
-/// `consumed` are wrapping u32 mirrors of the MCU's monotonic ring counter
+/// `retired` are wrapping u32 mirrors of the MCU's monotonic ring counter
 /// (spec §3.3) — never reset on a time re-anchor, only on an MCU ring reset.
 ///
 /// `physical_write_cursor` tracks the MCU ring slot that will receive the
@@ -28,7 +28,7 @@ pub struct AxisKey {
 pub struct AxisQueue {
     pub pieces: VecDeque<PieceEntry>,
     pub pushed: u32,
-    pub consumed: u32,
+    pub retired: u32,
     pub ring_depth: u32,
     /// Physical ring write cursor: the slot index in `[0, ring_depth)` where
     /// the next batch of pieces will be written on the MCU side. Advanced
@@ -42,15 +42,15 @@ impl AxisQueue {
         Self {
             pieces: VecDeque::new(),
             pushed: 0,
-            consumed: 0,
+            retired: 0,
             ring_depth,
             physical_write_cursor: 0,
         }
     }
-    /// Free ring slots = depth − in-flight, where in-flight = pushed − consumed
+    /// Free ring slots = depth − in-flight, where in-flight = pushed − retired
     /// (wrapping). Saturates at 0.
     pub fn room(&self) -> u32 {
-        let in_flight = self.pushed.wrapping_sub(self.consumed);
+        let in_flight = self.pushed.wrapping_sub(self.retired);
         self.ring_depth.saturating_sub(in_flight)
     }
     /// Advance the physical write cursor by `n` slots, wrapping at `ring_depth`.
@@ -285,7 +285,7 @@ mod tests {
         assert_eq!(q.room(), 4);
         q.pushed = 4;
         assert_eq!(q.room(), 0);          // full
-        q.consumed = 1;
+        q.retired = 1;
         assert_eq!(q.room(), 1);          // one freed
     }
 
@@ -293,7 +293,7 @@ mod tests {
     fn room_correct_across_u32_wrap() {
         let mut q = AxisQueue::new(8);
         q.pushed = 2;                      // wrapped past u32::MAX
-        q.consumed = u32::MAX;             // consumed is "behind" pushed by 3
+        q.retired = u32::MAX;             // retired is "behind" pushed by 3
         // in_flight = 2 - (u32::MAX) wrapping = 3
         assert_eq!(q.room(), 5);
     }
@@ -437,10 +437,10 @@ pub struct EnqueueMsg {
     pub fresh_stream: bool,
 }
 
-/// Per-MCU heartbeat: consumed counts indexed by axis.
+/// Per-MCU heartbeat: retired counts indexed by axis.
 pub struct HeartbeatMsg {
     pub mcu_id: u32,
-    pub consumed_counts: Vec<u32>,
+    pub retired_counts: Vec<u32>,
 }
 
 /// Inbound to the pump loop.
@@ -494,22 +494,22 @@ where
                     key.axis, count_added, q.pieces.len()
                 );
             }
-            PumpMsg::Heartbeat(HeartbeatMsg { mcu_id, consumed_counts }) => {
-                // INVARIANT: consumed_counts[i] is axis index i, the SAME axis
+            PumpMsg::Heartbeat(HeartbeatMsg { mcu_id, retired_counts }) => {
+                // INVARIANT: retired_counts[i] is axis index i, the SAME axis
                 // numbering used by PushPieces.axis_idx and the enqueue adapter's
                 // AxisKey.axis. Verified end-to-end on the MCU: the heartbeat FFI
-                // writes consumed_counts()[i] = stepping_axes[i].ring.consumed_count()
+                // writes retired_counts()[i] = stepping_axes[i].ring.retired_count()
                 // in index order (runtime_ffi.rs), and push_pieces(axis_idx) targets
                 // that same stepping_axes[axis_idx]. Do not reorder either side.
                 // PIECEDIAG (revert)
                 log::info!(
-                    "PIECEDIAG HB mcu={} consumed={:?}",
-                    mcu_id, consumed_counts
+                    "PIECEDIAG HB mcu={} retired={:?}",
+                    mcu_id, retired_counts
                 );
-                for (axis, &c) in consumed_counts.iter().enumerate() {
+                for (axis, &c) in retired_counts.iter().enumerate() {
                     let key = AxisKey { mcu_id, axis: axis as u8 };
                     if let Some(q) = queues.get_mut(&key) {
-                        q.consumed = c;
+                        q.retired = c;
                     }
                 }
             }
@@ -543,10 +543,10 @@ where
                     // PIECEDIAG (revert)
                     let q = queues.get(&stall_key);
                     log::info!(
-                        "PIECEDIAG STALL axis={} pushed={} consumed={} ring_depth={} room={}",
+                        "PIECEDIAG STALL axis={} pushed={} retired={} ring_depth={} room={}",
                         stall_key.axis,
                         q.map_or(0, |q| q.pushed),
-                        q.map_or(0, |q| q.consumed),
+                        q.map_or(0, |q| q.retired),
                         q.map_or(0, |q| q.ring_depth),
                         q.map_or(0, |q| q.room()),
                     );

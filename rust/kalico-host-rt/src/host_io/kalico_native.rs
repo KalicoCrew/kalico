@@ -290,9 +290,9 @@ fn lift_event_to_runtime_event(
         },
         MessageKind::StatusHeartbeat => match KStatusHeartbeat::decode(body) {
             Ok(hb) => {
-                // engine_state / fault_code intentionally dropped — the pump needs only consumed_counts.
+                // engine_state / fault_code intentionally dropped — the pump needs only retired_counts.
                 KalicoDispatchResult::Event(RuntimeEvent::Heartbeat {
-                    consumed_counts: hb.consumed_counts,
+                    retired_counts: hb.retired_counts,
                 })
             }
             Err(e) => {
@@ -329,14 +329,14 @@ mod tests {
         let hb = StatusHeartbeat {
             engine_state: 1,
             fault_code: 0,
-            consumed_counts: vec![7, 0, 3],
+            retired_counts: vec![7, 0, 3],
         };
         let mut body = Vec::new();
         hb.encode(&mut body);
         let mut st = make_state();
         match lift_event_to_runtime_event(&mut st, MessageKind::StatusHeartbeat, &body) {
-            KalicoDispatchResult::Event(RuntimeEvent::Heartbeat { consumed_counts }) => {
-                assert_eq!(consumed_counts, vec![7, 0, 3]);
+            KalicoDispatchResult::Event(RuntimeEvent::Heartbeat { retired_counts }) => {
+                assert_eq!(retired_counts, vec![7, 0, 3]);
             }
             other => panic!("expected Heartbeat event, got {:?}", other),
         }
