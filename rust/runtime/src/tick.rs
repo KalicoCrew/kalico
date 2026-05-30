@@ -329,6 +329,14 @@ pub(crate) static TICK_GAP_CYC: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
 pub(crate) static TICK_GAP_MAX_CYC: core::sync::atomic::AtomicU32 =
     core::sync::atomic::AtomicU32::new(0);
+/// SIPDIAG14: count of ticks where the engine peeked a VISIBLE piece but
+/// `now < start_time` (the idle-with-visible-piece branch). At the -308 fault:
+/// large (~10k+/axis over a 0.25s early-visible window) → the piece was visible
+/// well before start_time and the late arm is genuine starvation; ~0 → the
+/// piece only became peekable AFTER start_time (a commit/visibility issue, not
+/// starvation). REVERT after concluding.
+pub(crate) static IDLE_VISIBLE_COUNT: core::sync::atomic::AtomicU32 =
+    core::sync::atomic::AtomicU32::new(0);
 
 /// Single-call ISR body for the piece-ring walker engine (Task 6).
 ///

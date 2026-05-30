@@ -645,6 +645,11 @@ fn get_position_and_velocity(
 
     // Gap: next piece hasn't started yet.
     if now < next_entry.start_time {
+        // SIPDIAG14: piece is VISIBLE (peek returned Some) but not yet started.
+        // Counting these tells us whether the first piece was visible before its
+        // start_time (genuine starvation) or only became visible after it
+        // (commit/visibility bug).
+        crate::tick::IDLE_VISIBLE_COUNT.fetch_add(1, Ordering::Relaxed);
         // Axis idles — not a fault.
         axis.has_piece = false;
         return None;
@@ -663,20 +668,28 @@ fn get_position_and_velocity(
         // gap are DIFFERENT quantities never latched together. Latch BOTH now:
         //   high 16 = lateness µs = (now - start_time) (cap 0xFFFF = 65ms).
         //   low  16 = TIM5 inter-tick gap µs (cap 0xFFFF).
-        // Decode:
-        //   lateness ≈ gap ≈ 200  -> genuine arm-coincident 200µs starvation.
-        //   lateness ≈ 20000-30000, gap ≈ 25 -> CLOCK-DOMAIN skew (gap is a red
-        //                                        herring; engine-now runs ahead
-        //                                        of the host-stats start_time).
-        //   lateness ≈ 55, gap ≈ 200 -> tolerance/boundary miss decoupled from
-        //                               a separate 200µs gap event.
+        // SIPDIAG14: SIPDIAG13 measured lateness=1074µs vs gap=199µs — decoupled,
+        // and (sub-wrap) refutes clock-domain skew, so `now` is genuinely 1074µs
+        // past start_time IN-DOMAIN. A single 199µs gap can't make the arm 1074µs
+        // late, so the question is whether the first piece was VISIBLE before
+        // start_time (starvation) or only after it (commit/visibility). Latch the
+        // idle-with-visible-piece count vs the lateness:
+        //   high 16 = idle-visible tick count (cap 0xFFFF).
+        //   low  16 = lateness µs (cap 0xFFFF).
+        // idle_visible ~10k+ -> visible early, late arm is genuine starvation.
+        // idle_visible ~0    -> piece became peekable only AFTER start_time
+        //                       (commit/visibility bug — NOT starvation).
         // REVERT to the bare `raise_piece_start_in_past` call after concluding.
         let _ = axis_idx;
         let lateness_cyc = now.saturating_sub(next_entry.start_time); // u64
-        let gap_cyc = u64::from(crate::tick::TICK_GAP_CYC.load(Ordering::Relaxed));
         let cyc_per_us = (cycles_per_second / 1.0e6) as u64; // ≈520 on H7
-        let to_us = |c: u64| if cyc_per_us > 0 { (c / cyc_per_us).min(0xFFFF) } else { 0xFFFF };
-        let detail = ((to_us(lateness_cyc) << 16) | to_us(gap_cyc)) as u32;
+        let lateness_us = if cyc_per_us > 0 {
+            (lateness_cyc / cyc_per_us).min(0xFFFF)
+        } else {
+            0xFFFF
+        } as u32;
+        let idle_visible = crate::tick::IDLE_VISIBLE_COUNT.load(Ordering::Relaxed).min(0xFFFF);
+        let detail = (idle_visible << 16) | lateness_us;
         shared.fault_detail.store(detail, Ordering::Release);
         shared
             .last_error
