@@ -176,6 +176,48 @@ fn pulse_queue_overflow_latches_fault() {
     assert_eq!(shared.queue_overflow_count[2].load(Ordering::Acquire), 1);
 }
 
+/// A single-sample step delta beyond MAX_STEPS_PER_SAMPLE (16) is an
+/// unrecoverable baseline discontinuity (e.g. a missing position seed). It
+/// must hard-fault with `StepsPerSampleExceeded` — like `PieceStartInPast` —
+/// not silently revert and freeze the axis. `fault_detail` carries the axis
+/// index in bits 16..24 and the saturated step count in the low 16 bits.
+#[test]
+fn pulse_steps_per_sample_exceeded_hard_faults() {
+    let shared = SharedState::new();
+    let mut q = StepQueue::new();
+    let mut axis = make_axis(StepMode::Pulse, 0.0125);
+
+    // p_end = 0.5 mm / 0.0125 = 40 microsteps from baseline 0 → 40 > 16.
+    let q_ptr: *mut StepQueue = &mut q;
+    dispatch_axis(
+        1,
+        &mut axis,
+        q_ptr,
+        &shared,
+        /* p_end */ 0.5,
+        /* v_end */ 0.0,
+        /* p_sample_start */ 0.0,
+        /* sample_period_sec */ 25e-6,
+        /* sample_start_cycles */ 0,
+        /* cycles_per_second */ 520_000_000.0,
+    );
+
+    assert_eq!(
+        shared.last_error.load(Ordering::Acquire),
+        FaultCode::StepsPerSampleExceeded.as_i32(),
+        "over-threshold delta must latch StepsPerSampleExceeded"
+    );
+    // No steps emitted, baseline left unchanged (reverted before the fault).
+    assert_eq!(q.tail, q.head, "no steps may be enqueued on overrun");
+    assert_eq!(axis.last_step_count, 0, "baseline must not advance on fault");
+    // detail = (axis 1 << 16) | abs_steps(40).
+    assert_eq!(
+        shared.fault_detail.load(Ordering::Acquire),
+        (1u32 << 16) | 40,
+        "fault_detail encodes axis index and saturated step count"
+    );
+}
+
 #[test]
 fn phase_mode_updates_coil_state_no_queue_writes() {
     let shared = SharedState::new();

@@ -26,11 +26,15 @@ const TICK_CYCLES: u64 = (CLOCK_FREQ / SAMPLE_RATE) as u64; // 13_000
 
 // A trivial constant piece: all Bernstein control points equal → position
 // does not change over the piece duration (useful to avoid driving any steps
-// and keep the queue from interfering with assertions).
+// and keep the queue from interfering with assertions). The constant value is
+// 0 so it matches the engine's unseeded baseline (last_step_count == 0): the
+// first sample computes signed_steps == 0 and drives no steps. A non-zero
+// constant here would arm with an instantaneous |Δsteps| far above
+// MAX_STEPS_PER_SAMPLE and (correctly) trip the StepsPerSampleExceeded fault.
 fn const_piece(start_time: u64, duration: f32) -> PieceEntry {
     PieceEntry {
         start_time,
-        coeffs: [10.0; 4],
+        coeffs: [0.0; 4],
         duration,
         _reserved: 0,
     }

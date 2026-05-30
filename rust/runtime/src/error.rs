@@ -222,6 +222,13 @@ pub enum FaultCode {
     PieceStartInPast = -308,
     /// `PushPieces` rejected: axis ring is full.
     RingFull = -309,
+    /// ISR pulse dispatch computed a single-sample step delta larger than
+    /// `MAX_STEPS_PER_SAMPLE`. This is an unrecoverable position-baseline
+    /// discontinuity — most commonly a missing/incorrect position seed, so the
+    /// motor-frame `last_step_count` baseline disagrees with the piece stream.
+    /// All motion stops; the host must reset before resuming (mirrors
+    /// `PieceStartInPast`).
+    StepsPerSampleExceeded = -310,
 }
 
 impl FaultCode {

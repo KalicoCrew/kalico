@@ -11,7 +11,9 @@
 
 use core::sync::atomic::Ordering;
 
-use crate::fault_helpers::{raise_position_count_overflow, raise_step_queue_overflow};
+use crate::fault_helpers::{
+    raise_position_count_overflow, raise_step_queue_overflow, raise_steps_per_sample_exceeded,
+};
 use crate::phase_lut::PHASE_LUT;
 use crate::state::SharedState;
 use crate::step_queue::{StepEntry, StepQueue, push as queue_push};
@@ -140,7 +142,14 @@ fn dispatch_pulse(
             );
         }
         bump_relaxed(&shared.isr_overrun_count);
+        // A per-sample delta beyond MAX_STEPS_PER_SAMPLE is not a transient to
+        // silently ride out — it is an unrecoverable baseline discontinuity
+        // (e.g. a missing position seed leaving last_step_count disagreeing with
+        // the motor-frame piece stream). Hard-fault like PieceStartInPast so the
+        // host shuts down and must reset, rather than freezing one motor and
+        // limping through a corrupted move.
         axis.last_step_count = prev_step_count;
+        raise_steps_per_sample_exceeded(shared, axis_idx, abs_steps);
         return;
     }
 

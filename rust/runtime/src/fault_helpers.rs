@@ -132,5 +132,23 @@ pub fn raise_piece_start_in_past(shared: &SharedState, axis_idx: usize) {
         .store(FaultCode::PieceStartInPast.as_i32(), Ordering::Release);
 }
 
+/// Latch a `StepsPerSampleExceeded` fault.
+///
+/// Raised by the ISR pulse-dispatch path when a single TIM5 sample window
+/// would require more than `MAX_STEPS_PER_SAMPLE` microsteps. This is an
+/// unrecoverable discontinuity — most commonly a missing/incorrect position
+/// seed, so the motor-frame baseline disagrees with the piece stream. Mirrors
+/// `raise_piece_start_in_past`: all motion stops, the host must reset.
+/// `axis_idx` is encoded into bits 16..24 of `fault_detail`; the saturated
+/// per-sample step count is carried in the low 16 bits for host diagnosis.
+#[inline]
+pub fn raise_steps_per_sample_exceeded(shared: &SharedState, axis_idx: usize, abs_steps: u32) {
+    let detail = ((axis_idx as u32 & 0xFF) << 16) | abs_steps.min(0xFFFF);
+    shared.fault_detail.store(detail, Ordering::Release);
+    shared
+        .last_error
+        .store(FaultCode::StepsPerSampleExceeded.as_i32(), Ordering::Release);
+}
+
 #[cfg(test)]
 mod tests;
