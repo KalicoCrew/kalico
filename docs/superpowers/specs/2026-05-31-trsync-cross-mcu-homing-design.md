@@ -115,6 +115,13 @@ New command, the bridge twin of `stepper_stop_on_trigger`:
 runtime_stop_on_trigger arm_id=%u trsync_oid=%c
 ```
 
+Lives in `src/runtime_commands.c`, directly beside `command_runtime_software_trip`
+(which its callback calls) — not in `src/stepper.c`. Rationale: `stepper.c`'s
+`stepper_stop` is about the *old C step queue* the bridge doesn't use; placing a
+curve-evaluator-freeze signal there invites the misread that this is a step-queue
+stop. The `trsync_add_signal` call is MCU-generic, so the file choice is purely
+about keeping the "relay → freeze" surface legible and in one place.
+
 Registers a `trsync_signal` (via `trsync_add_signal`) whose callback calls
 `kalico_software_trip(arm_id, clock_lo, clock_hi, &status)` — i.e. it freezes the
 curve evaluator for that arm. The signal struct stores `arm_id`.
@@ -291,8 +298,7 @@ Per the no-live-test-until-analysis-exhausted rule, verification ladder:
 | File | Change |
 |------|--------|
 | `src/trsync.c` / `.h` | (reuse) no change to core; relied on for arm/trigger/signal. |
-| `src/stepper.c` or new `src/runtime_*` | `runtime_stop_on_trigger arm_id trsync_oid` command + signal → `kalico_software_trip`. |
-| `src/runtime_commands.c` | delete `command_runtime_extend_homing_deadline`; keep `command_runtime_software_trip`. |
+| `src/runtime_commands.c` | add `runtime_stop_on_trigger arm_id trsync_oid` command + `trsync_signal` callback → `kalico_software_trip` (beside `command_runtime_software_trip`); delete `command_runtime_extend_homing_deadline`; keep `command_runtime_software_trip`. |
 | `src/runtime_tick.c` | delete curve-evaluator `deadline_clock` checks; keep `kalico_endstop_tripped` drain. |
 | `rust/runtime/src/endstop.rs` | disable local `AbortNow` siren (marker comment); delete software-deadline source + `extend_deadline`. |
 | `rust/motion-bridge/src/probe_homing.rs` → `trip_dispatch.rs` | generalize interceptor into `TripDispatch` (sources: `kalico_endstop_tripped` + `trsync_state`; sink: `trsync_trigger`); delete extend loop; add sliced dispatch loop. |
