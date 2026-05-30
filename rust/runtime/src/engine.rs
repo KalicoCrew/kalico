@@ -687,11 +687,8 @@ fn get_position_and_velocity(
     axis_idx: usize,
 ) -> Option<(f32, f32)> {
     loop {
-        // Branch 1: current armed piece still inside its window. This also
-        // covers a not-yet-started piece (now < piece_start_cycles): it returns
-        // here too, and eval_horner's saturating elapsed clamps t to 0, holding
-        // the start position until `now` crosses the start. No separate gap
-        // branch is needed.
+        // Branch 1: current armed piece still inside its window (or a future
+        // piece held at t=0 by eval_horner's saturating elapsed).
         if let Some(p) = &axis.armed {
             if now < p.piece_end_cycles {
                 return Some(eval_horner(
@@ -704,38 +701,39 @@ fn get_position_and_velocity(
             }
         }
 
-        // The armed piece (if any) has now finished its window. Retire it:
-        // advance the cursor (which also advances the read position to the
-        // next slot) and clear the cache. This is the ONLY bump site, so
-        // `retired` counts pieces whose window has fully elapsed.
-        if axis.armed.is_some() {
+        if axis.armed.take().is_some() {
             axis.ring.advance_counter();
-            axis.armed = None;
         }
 
-        // Branch 2: nothing more to play -> idle / underrun. `retired` now
-        // equals `head` (== host's `sent`), the host's "motion done" signal.
-        let Some(next_entry) = axis.ring.peek(storage).copied() else {
+        let Some(p) = arm_next(axis, storage, cycles_per_second) else {
             return None;
         };
 
-        // Branch 3: start-in-past fault.
         let fault_tolerance = u64::from(sample_period_cycles) * 2;
-        if now.saturating_sub(next_entry.start_time) > fault_tolerance {
+        if now.saturating_sub(p.piece_start_cycles) > fault_tolerance {
             raise_piece_start_in_past(shared, axis_idx);
             return None;
         }
-
-        // Branch 4: arm the next piece (cache coeffs). Do NOT advance the
-        // cursor here — the slot stays occupied until this piece retires.
-        let (mono, vel) = next_entry.to_monomial();
-        axis.armed = Some(ArmedPiece {
-            mono_coeffs: mono,
-            vel_coeffs: vel,
-            piece_start_cycles: next_entry.start_time,
-            piece_end_cycles: next_entry.end_time(cycles_per_second),
-        });
     }
+}
+
+/// Peek the next ring entry, convert to monomial, and arm it.  Returns
+/// the armed piece, or `None` (clearing the cache) when the ring is empty.
+fn arm_next<'a>(
+    axis: &'a mut AxisState,
+    storage: &[PieceEntry],
+    cycles_per_second: f32,
+) -> Option<&'a ArmedPiece> {
+    let Some(entry) = axis.ring.peek(storage).copied() else {
+        return None;
+    };
+    let (mono, vel) = entry.to_monomial();
+    Some(axis.armed.insert(ArmedPiece {
+        mono_coeffs: mono,
+        vel_coeffs: vel,
+        piece_start_cycles: entry.start_time,
+        piece_end_cycles: entry.end_time(cycles_per_second),
+    }))
 }
 
 /// Evaluate position and velocity via Horner using the axis's cached

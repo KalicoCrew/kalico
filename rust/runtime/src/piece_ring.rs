@@ -235,9 +235,7 @@ impl RingDescriptor {
     }
 
     /// Advance the retire cursor by one (the front piece's window has fully
-    /// elapsed). No-op when empty or unconfigured. The engine copies the
-    /// piece's coefficients via `peek` before playing it, so nothing here
-    /// needs to return the entry.
+    /// elapsed). No-op when empty or unconfigured.
     ///
     /// Both cursors advance together so the invariant `tail == retired %
     /// ring_depth` is preserved without a division: `tail` wraps explicitly at
