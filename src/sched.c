@@ -282,8 +282,8 @@ static volatile uint32_t sched_dispatch_history_idx;
 // callback, so one long callback blocks the 40 kHz evaluator ISR for its full
 // duration. Capturing the max + offender lets the host addr2line the callback
 // that starves the evaluator at piece arm-time. Read from the Rust -308 path.
-volatile uint32_t kalico_dispatch_max_cyc;
-volatile uint32_t kalico_dispatch_max_func;
+volatile uint32_t kalico_dispatch_max_cyc __attribute__((used));
+volatile uint32_t kalico_dispatch_max_func __attribute__((used));
 
 void
 sched_get_dispatch_history(uint32_t *idx,
