@@ -453,8 +453,8 @@ impl DrainSync {
     /// Record `n` pieces handed to the wire for `(mcu, axis)`.
     pub fn add_sent(&self, mcu: u32, axis: u8, n: u32) {
         let mut c = self.counts.lock().unwrap_or_else(|p| p.into_inner());
-        *c.sent.entry((mcu, axis)).or_insert(0) =
-            c.sent.get(&(mcu, axis)).copied().unwrap_or(0).wrapping_add(n);
+        let e = c.sent.entry((mcu, axis)).or_insert(0);
+        *e = e.wrapping_add(n);
         // No notify: more `sent` can only delay the predicate.
     }
 
