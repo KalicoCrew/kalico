@@ -109,9 +109,9 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
             SchemaField { name: "engine_state", ty: "u8" },
             SchemaField { name: "fault_code", ty: "u8" },
             SchemaField { name: "num_axes", ty: "u8" },
-            // consumed_counts: num_axes × u32 — variable-length, length-prefixed
+            // retired_counts: num_axes × u32 — variable-length, length-prefixed
             // by num_axes on the wire.
-            SchemaField { name: "consumed_counts", ty: "array<u32>" },
+            SchemaField { name: "retired_counts", ty: "array<u32>" },
         ],
     },
 ];

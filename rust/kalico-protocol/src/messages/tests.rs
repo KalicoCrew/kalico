@@ -82,14 +82,14 @@ fn status_heartbeat_roundtrip_empty() {
     let msg = StatusHeartbeat {
         engine_state: 0,
         fault_code: 0,
-        consumed_counts: vec![],
+        retired_counts: vec![],
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
     assert_eq!(buf.len(), 3); // 1+1+1 (num_axes=0)
     let mut cursor = Cursor::new(&buf);
     let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
-    assert_eq!(decoded.consumed_counts.len(), 0);
+    assert_eq!(decoded.retired_counts.len(), 0);
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn status_heartbeat_roundtrip_with_axes() {
     let msg = StatusHeartbeat {
         engine_state: 1,
         fault_code: 0,
-        consumed_counts: vec![42, 42, 10, 5],
+        retired_counts: vec![42, 42, 10, 5],
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
@@ -107,7 +107,7 @@ fn status_heartbeat_roundtrip_with_axes() {
     let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
     assert_eq!(decoded.engine_state, 1);
     assert_eq!(decoded.fault_code, 0);
-    assert_eq!(decoded.consumed_counts, vec![42, 42, 10, 5]);
+    assert_eq!(decoded.retired_counts, vec![42, 42, 10, 5]);
 }
 
 #[test]

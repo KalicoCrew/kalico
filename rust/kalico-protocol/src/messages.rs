@@ -285,32 +285,34 @@ impl Decode for FaultEvent {
 // StatusHeartbeat (0x0083) — MCU → Host periodic status event.
 //
 // Wire layout (little-endian):
-//   engine_state:    u8
-//   fault_code:      u8
-//   num_axes:        u8  — length of the consumed_counts array that follows
-//   consumed_counts: num_axes × u32_le
+//   engine_state:   u8
+//   fault_code:     u8
+//   num_axes:       u8  — length of the retired_counts array that follows
+//   retired_counts: num_axes × u32_le
 //
 // Total body = 3 + num_axes * 4 bytes.
 //
 // Sent by the MCU at the heartbeat rate (typically 10 Hz) so the host can
-// track per-axis piece consumption without a separate query round-trip.
+// track per-axis piece retirement without a separate query round-trip.
+// The host uses `retired_counts` to implement the "motion drain" barrier:
+// `retired == sent` per axis ⟺ that axis has physically finished all motion.
 // =============================================================================
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusHeartbeat {
     pub engine_state: u8,
     pub fault_code: u8,
-    /// Per-axis consumed piece counts, one entry per configured axis.
-    pub consumed_counts: Vec<u32>,
+    /// Per-axis retired piece counts, one entry per configured axis.
+    pub retired_counts: Vec<u32>,
 }
 
 impl Encode for StatusHeartbeat {
     fn encode(&self, out: &mut Vec<u8>) {
         put_u8(out, self.engine_state);
         put_u8(out, self.fault_code);
-        let num_axes = self.consumed_counts.len() as u8;
+        let num_axes = self.retired_counts.len() as u8;
         put_u8(out, num_axes);
-        for &count in &self.consumed_counts {
+        for &count in &self.retired_counts {
             put_u32(out, count);
         }
     }
@@ -334,14 +336,14 @@ impl Decode for StatusHeartbeat {
                 available: c.remaining(),
             });
         }
-        let mut consumed_counts = Vec::with_capacity(num_axes as usize);
+        let mut retired_counts = Vec::with_capacity(num_axes as usize);
         for _ in 0..num_axes {
-            consumed_counts.push(get_u32(c)?);
+            retired_counts.push(get_u32(c)?);
         }
         Ok(Self {
             engine_state,
             fault_code,
-            consumed_counts,
+            retired_counts,
         })
     }
 }

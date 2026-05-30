@@ -357,7 +357,7 @@ impl Engine {
     }
 
     /// Returns per-axis retired piece counts for the heartbeat.
-    pub fn consumed_counts(&self) -> [u32; MAX_AXES] {
+    pub fn retired_counts(&self) -> [u32; MAX_AXES] {
         let mut out = [0u32; MAX_AXES];
         for i in 0..MAX_AXES {
             if let Some(Some(axis)) = self.stepping_axes.get(i) {

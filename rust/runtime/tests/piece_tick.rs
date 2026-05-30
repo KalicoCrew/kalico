@@ -103,7 +103,7 @@ fn tick_arms_piece_when_start_time_reached() {
     // 0.001 * 520e6 = 533_000 >> TICK_CYCLES=13_000). Under retire-time
     // semantics the cursor does not advance until the window elapses.
     assert_eq!(
-        engine.consumed_counts()[0],
+        engine.retired_counts()[0],
         0,
         "piece armed but still playing -> retired must be 0 at arm time"
     );
@@ -166,7 +166,7 @@ fn tick_holds_at_t0_before_start_time() {
         "no fault for a future piece held at t=0"
     );
     assert_eq!(
-        engine.consumed_counts()[0],
+        engine.retired_counts()[0],
         0,
         "future piece is armed but its window has not ended -> retired must be 0"
     );
@@ -180,7 +180,7 @@ fn tick_holds_at_t0_before_start_time() {
         "still no fault on a later pre-start tick"
     );
     assert_eq!(
-        engine.consumed_counts()[0],
+        engine.retired_counts()[0],
         0,
         "piece still playing (future start, held at t=0) -> retired must remain 0"
     );
@@ -218,7 +218,7 @@ fn tick_idle_when_ring_empty() {
         0,
         "no fault for empty ring"
     );
-    assert_eq!(engine.consumed_counts()[0], 0);
+    assert_eq!(engine.retired_counts()[0], 0);
 }
 
 // ── Test 4: fault on piece start in past ─────────────────────────────────────
@@ -305,7 +305,7 @@ fn tick_within_fault_tolerance_arms_ok() {
     );
     // Piece was armed; window ends at start + 0.001 * 520e6 = 521_000 cycles,
     // well after now = 14_000. Under retire-time semantics retired stays 0.
-    assert_eq!(engine.consumed_counts()[0], 0, "piece armed but still playing -> retired must be 0");
+    assert_eq!(engine.retired_counts()[0], 0, "piece armed but still playing -> retired must be 0");
 }
 
 // ── Test 6: advance through consecutive pieces ───────────────────────────────
@@ -366,7 +366,7 @@ fn tick_advances_through_consecutive_pieces() {
         "no fault after arming piece A"
     );
     assert_eq!(
-        engine.consumed_counts()[0],
+        engine.retired_counts()[0],
         0,
         "piece A armed but still playing -> retired must be 0"
     );
@@ -380,7 +380,7 @@ fn tick_advances_through_consecutive_pieces() {
         "no fault after retiring A and arming piece B"
     );
     assert_eq!(
-        engine.consumed_counts()[0],
+        engine.retired_counts()[0],
         1,
         "piece A retired; piece B still playing -> retired must be 1"
     );
@@ -450,7 +450,7 @@ fn retired_count_bumps_at_window_end_not_arm() {
     engine.tick(p0_start, &shared, &mut storage);
     assert_eq!(shared.last_error.load(Ordering::Acquire), 0, "no fault arming piece 0");
     assert_eq!(
-        engine.consumed_counts()[0],
+        engine.retired_counts()[0],
         0,
         "piece 0 just armed and still playing -> retired must be 0"
     );
@@ -458,7 +458,7 @@ fn retired_count_bumps_at_window_end_not_arm() {
     // Tick 2: mid-way through piece 0. Still playing → retired == 0.
     engine.tick(p0_start + d / 2, &shared, &mut storage);
     assert_eq!(
-        engine.consumed_counts()[0],
+        engine.retired_counts()[0],
         0,
         "piece 0 still playing -> retired must be 0"
     );
@@ -468,7 +468,7 @@ fn retired_count_bumps_at_window_end_not_arm() {
     engine.tick(p1_start, &shared, &mut storage);
     assert_eq!(shared.last_error.load(Ordering::Acquire), 0, "no fault retiring p0 / arming p1");
     assert_eq!(
-        engine.consumed_counts()[0],
+        engine.retired_counts()[0],
         1,
         "piece 0 window ended -> retired must be 1"
     );
@@ -476,7 +476,7 @@ fn retired_count_bumps_at_window_end_not_arm() {
     // Tick 4: mid-way through piece 1. Still playing → retired == 1.
     engine.tick(p1_start + d / 2, &shared, &mut storage);
     assert_eq!(
-        engine.consumed_counts()[0],
+        engine.retired_counts()[0],
         1,
         "piece 1 still playing -> retired must be 1"
     );
@@ -484,7 +484,7 @@ fn retired_count_bumps_at_window_end_not_arm() {
     // Tick 5: one cycle past piece 1's end. Engine retires piece 1 → retired == 2.
     engine.tick(p1_start + d + 1, &shared, &mut storage);
     assert_eq!(
-        engine.consumed_counts()[0],
+        engine.retired_counts()[0],
         2,
         "both pieces finished -> retired must equal sent (2)"
     );
