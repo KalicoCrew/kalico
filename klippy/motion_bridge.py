@@ -371,6 +371,15 @@ class MotionBridgeWrapper:
     def software_trip(self, mcu, arm_id, timeout_s=2.0):
         return self._bridge.software_trip(mcu, arm_id, timeout_s)
 
+    def trip_dispatch_prepare(self, sources, sinks):
+        # sources: [(kind, mcu_handle, id)]  kind 0=BridgeGpio(id=arm_id),
+        #                                    kind 1=Trsync(id=trsync_oid)
+        # sinks:   [(mcu_handle, trsync_oid)]
+        return self._bridge.trip_dispatch_prepare(sources, sinks)
+
+    def trip_dispatch_cleanup(self, handle_id):
+        return self._bridge.trip_dispatch_cleanup(handle_id)
+
     def extend_homing_deadline(self, mcu, arm_id):
         return self._bridge.extend_homing_deadline(mcu, arm_id)
 
@@ -464,6 +473,8 @@ class BridgeTriggerDispatch:
         self._arm_print_time = None # print_time at arm time (fallback trigger)
         self._handler_registered = False
         self._toolhead_arms = None  # set at start() for stop() cleanup
+        self._sink_trsyncs = {}     # MCU object → MCU_trsync (firmware sink)
+        self._trip_handle_id = None # TripDispatch relay handle (None=inactive)
 
     # ── legacy TriggerDispatch surface ──────────────────────────────
 
@@ -481,6 +492,17 @@ class BridgeTriggerDispatch:
         # the runtime_arm_endstop wire format expects (spec §3.1).
         self._stepper_oids.append(mcu_stepper.get_oid())
         self._steppers.append(mcu_stepper)
+        # Create one firmware sink trsync per distinct stepper MCU (config-time
+        # oid alloc, mirroring legacy TriggerDispatch.add_stepper). At homing
+        # start each is armed with runtime_stop_on_trigger so a relayed
+        # trsync_trigger freezes that MCU's curve evaluator.
+        from .mcu import MCU_trsync
+        stepper_mcu = mcu_stepper.get_mcu()
+        trsync = self._sink_trsyncs.get(stepper_mcu)
+        if trsync is None:
+            trsync = MCU_trsync(stepper_mcu, None)
+            self._sink_trsyncs[stepper_mcu] = trsync
+        trsync.add_stepper(mcu_stepper)
 
     def get_steppers(self):
         return list(self._steppers)
@@ -551,6 +573,28 @@ class BridgeTriggerDispatch:
             self._toolhead_arms = toolhead.active_homing_arms
             self._toolhead_arms.add(self._arm_id)
 
+        # Arm the per-MCU sink trsyncs and wire the cross-MCU trip relay.
+        # Each sink trsync freezes its MCU's curve evaluator when the relay
+        # sends trsync_trigger; the detecting (endstop) MCU is the source.
+        # Done BEFORE endstop_arm starts GPIO sampling so a trip can't be
+        # missed.
+        sinks = []
+        for trsync in self._sink_trsyncs.values():
+            trsync._bridge_arm_id = self._arm_id
+            trsync.start(arm_print_time, 0., self._completion, 0.)
+            sinks.append((trsync.get_mcu()._bridge_handle, trsync.get_oid()))
+        if sinks:
+            sources = [(0, self._mcu, self._arm_id)]
+            self._trip_handle_id = self._bridge.trip_dispatch_prepare(
+                sources, sinks
+            )
+        else:
+            logging.warning(
+                "[bridge-trace] homing arm_id=%s has NO sink trsyncs — "
+                "nothing will stop motion on trip (no steppers registered?)",
+                self._arm_id,
+            )
+
         logging.info(
             "[bridge-trace] endstop_arm arm_id=%s sources=%s steppers=%s",
             self._arm_id, self._sources, self._stepper_oids,
@@ -602,7 +646,12 @@ class BridgeTriggerDispatch:
         self._completion.complete(self._reason)
 
     def stop(self):
-        # Called from MCU_endstop.home_wait. Disarm if no trip yet.
+        # Called from MCU_endstop.home_wait. Tear down the cross-MCU trip
+        # relay first so no further trsync_triggers fire on the sinks.
+        if self._trip_handle_id is not None:
+            self._bridge.trip_dispatch_cleanup(self._trip_handle_id)
+            self._trip_handle_id = None
+        # Disarm if no trip yet.
         if self._reason is None:
             try:
                 status = self._bridge.endstop_disarm(
