@@ -86,12 +86,9 @@ fn source_policy_sample_matrix() {
 
                 for i in 1..=sample_n {
                     let action = tick(10 + u64::from(i), [V_MIN, 0, 0], &[10, 20]);
-                    if i < sample_n {
-                        assert_eq!(action, TripAction::Continue);
-                    } else {
-                        // Siren disabled: fresh GPIO detection returns Continue
-                        // (not AbortNow). The trip is still queued for the relay.
-                        assert_eq!(action, TripAction::Continue);
+                    // Siren disabled → all samples Continue, including the terminal one.
+                    assert_eq!(action, TripAction::Continue);
+                    if i == sample_n {
                         let evt = drain_trip();
                         assert_eq!(evt.trip_source_idx, 0);
                     }
