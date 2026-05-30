@@ -2717,7 +2717,7 @@ impl PyMotionBridge {
     /// surfaced if the planner channel has closed (planner thread
     /// crashed) so callers see the failure rather than silently losing
     /// the re-anchor.
-    fn set_position(&self, x: f64, y: f64, z: f64) -> PyResult<()> {
+    fn set_position(&self, py: Python<'_>, x: f64, y: f64, z: f64) -> PyResult<()> {
         {
             let mut pos = self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
             *pos = [x, y, z];
@@ -2729,6 +2729,15 @@ impl PyMotionBridge {
         // `PlannerHandle::kalico_stream_open` and
         // `streaming::ShaperState::reset`).
         if let Some(planner) = self.planner.get() {
+            // Re-seeding position while an axis is still stepping would stomp a
+            // moving axis. Wait for the MCU to physically finish first.
+            py.allow_threads(|| planner.flush()).map_err(planner_err)?;
+            {
+                let drain = self.drain.clone();
+                py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT))
+                    .map_err(PyRuntimeError::new_err)?;
+            }
+
             planner
                 .kalico_stream_open([x, y, z, 0.0])
                 .map_err(planner_err)?;
@@ -2746,9 +2755,10 @@ impl PyMotionBridge {
             // on the host (shared `dispatch::cfg_is_corexy`); the MCU stays dumb.
             //
             // This is a direct fire-and-forget command (NOT a pump message): the
-            // MCU handles it via its command dispatcher, not the piece ring. The
-            // host is responsible for flushing before re-seeding; ordering against
-            // in-flight pieces is out of scope (see the design spec).
+            // MCU handles it via its command dispatcher, not the piece ring.
+            // Ordering against in-flight pieces IS handled: we drained above, so
+            // every axis has retired == sent before this re-seed. The stream
+            // re-open above zeroes both the MCU ring and the host drain counters.
             let sends = {
                 let configs = self
                     .mcu_axis_configs
