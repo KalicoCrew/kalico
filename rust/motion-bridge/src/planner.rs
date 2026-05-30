@@ -758,6 +758,10 @@ fn run_loop(
                 // MCU's past -> -308 PieceStartInPast. Scope: T_COMMIT only;
                 // Flush / M400 is handled separately.
                 let settled = state.current_position();
+                log::info!(
+                    "[idle-reanchor] T_COMMIT fired: settled={:?}",
+                    settled,
+                );
                 state.reset(settled);
                 last_append_time = None;
                 continue;
