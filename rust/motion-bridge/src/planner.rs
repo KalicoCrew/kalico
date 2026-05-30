@@ -748,6 +748,17 @@ fn run_loop(
                     &last_move_time_bits,
                     &commit_fire_count,
                 );
+                // Idle re-anchor (spec 2026-05-30-idle-reanchor): the
+                // quiescence commit has flushed the decel-to-zero tail — the
+                // toolhead is stopped. Rewind the planner timeline to 0,
+                // reseeding the shaper history at the settled position, so the
+                // next move arrives as a backward jump and the bridge `Anchor`
+                // re-anchors it to `host_now + LEAD`, exactly like a first move.
+                // Without this, a move after an idle gap is stamped in the
+                // MCU's past -> -308 PieceStartInPast. Scope: T_COMMIT only;
+                // Flush / M400 is handled separately.
+                let settled = state.current_position();
+                state.reset(settled);
                 last_append_time = None;
                 continue;
             }

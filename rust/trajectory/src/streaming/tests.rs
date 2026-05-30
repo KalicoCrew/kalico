@@ -1296,6 +1296,54 @@ fn reset_after_motion_clears_state_and_reseeds_at_home() {
     }
 }
 
+/// `current_position` reads the settled unshaped endpoint for shaped axes
+/// after a move that decelerates to zero. The unshaped X curve lands exactly
+/// at 200.0 (the target); Y never moved, so it reads its seed (0.0).
+#[test]
+fn current_position_reads_settled_endpoint_after_motion() {
+    let shapers = replan_shapers(); // X,Y = SmoothMzv (h>0); Z passthrough; E none
+    let mut state = ShaperState::new([0.0; 4], &shapers);
+    let ctx_replan = replan_context();
+    let kernels = replan_kernels_piecewise();
+    let halos: Vec<EHalo> = Vec::new();
+    let ctx_emit = emit_context_default(&kernels, &halos);
+
+    // Move X 0 -> 200; append + emit advances t_appended to the move's end
+    // (including the decel-to-zero ramp), with the X curve settled at 200, v=0.
+    let m1 = linear_x_segment(0.0, 200.0, 200.0);
+    state.append_and_replan(m1, &ctx_replan).expect("append");
+    let _ = state.emit_committed(&ctx_emit).expect("emit");
+    assert!(state.t_appended > 0.0, "precondition: t_appended advanced");
+
+    let pos = state.current_position();
+    // Shaped X axis reads its settled endpoint from the unshaped curve.
+    assert!(
+        (pos[0] - 200.0).abs() < 1e-2,
+        "X should settle at endpoint 200, got {}",
+        pos[0]
+    );
+    // Y never moved: shaped Y seed is the home 0.0.
+    assert!((pos[1] - 0.0).abs() < 1e-2, "Y stays at home 0, got {}", pos[1]);
+}
+
+/// `current_position` on a freshly-constructed `ShaperState` reads the seed
+/// position back from the constant piece that `new` installs for shaped axes.
+#[test]
+fn current_position_on_fresh_shaped_state_reads_seed() {
+    let shapers = replan_shapers();
+    // Shaped axes (X,Y) seed a constant `home_pos` piece over [-2h, 0]; at
+    // t_appended == 0 current_position reads that seed back exactly.
+    let state = ShaperState::new([7.0, 9.0, 5.0, 3.0], &shapers);
+    let pos = state.current_position();
+    assert!((pos[0] - 7.0).abs() < 1e-12, "X seed, got {}", pos[0]);
+    assert!((pos[1] - 9.0).abs() < 1e-12, "Y seed, got {}", pos[1]);
+    // Z (passthrough) and E (none) have empty queues, so current_position
+    // returns the 0.0 don't-care fallback (NOT the 5.0/3.0 construction args —
+    // reseed discards the seed for h==0 axes). reset() ignores these anyway.
+    assert_eq!(pos[2], 0.0, "passthrough Z falls back to 0.0, got {}", pos[2]);
+    assert_eq!(pos[3], 0.0, "none-shaper E falls back to 0.0, got {}", pos[3]);
+}
+
 /// Regression test for the path-frame jerk min() bug fixed in
 /// `per_segment_limits`. Pre-fix, the SOCP used
 /// `min(j_max[X], j_max[Y], j_max[Z])` for the path-frame jerk bound;

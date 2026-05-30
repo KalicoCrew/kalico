@@ -524,6 +524,47 @@ impl ShaperState {
         None
     }
 
+    /// The settled toolhead position: each axis's unshaped curve evaluated at
+    /// the end of the appended timeline (`t_appended`). After a `T_COMMIT`
+    /// decel-to-zero commit this is the rest position, suitable for feeding to
+    /// [`Self::reset`] to rewind the planner clock without moving the toolhead.
+    ///
+    /// Shaped axes (`h > 0`) always carry pieces covering `t_appended`, so they
+    /// read exactly. Passthrough / none axes (`h == 0`) may have an empty queue;
+    /// their fallback (`0.0`) is a don't-care because [`reseed_axis_queue`]
+    /// discards the seed position for `h == 0` axes — an empty queue carries no
+    /// position, and the next move on such an axis re-derives position from its
+    /// own absolute geometry.
+    #[must_use]
+    pub fn current_position(&self) -> [f64; 4] {
+        std::array::from_fn(|i| self.axis_position_at(i, self.t_appended).unwrap_or(0.0))
+    }
+
+    /// Evaluate axis `axis_idx`'s unshaped position curve at time `t`. Mirrors
+    /// [`Self::axis_velocity_at`] (same piece-walk and terminal clamp) but
+    /// evaluates the piece itself rather than its derivative. `None` when the
+    /// axis queue is empty or no piece covers `t`.
+    fn axis_position_at(&self, axis_idx: usize, t: f64) -> Option<f64> {
+        let pieces = &self.axes[axis_idx].pieces;
+        if pieces.is_empty() {
+            return None;
+        }
+
+        // Last-piece terminal: clamp `t` to `u_end` (the decel-to-zero ends at
+        // the target position; evaluating at `u_end` returns it).
+        let last = pieces.back().unwrap();
+        if t >= last.u_end && t <= last.u_end + TIME_LOOKUP_TOLERANCE {
+            return Some(last.evaluate(last.u_end));
+        }
+
+        for p in pieces {
+            if p.u_start - TIME_LOOKUP_TOLERANCE <= t && t < p.u_end {
+                return Some(p.evaluate(t));
+            }
+        }
+        None
+    }
+
     /// **Phase 3 Task 3.1.5 — partial-commit replan.** Identify the move
     /// (if any) whose time domain straddles `t_dispatched`, read the
     /// unshaped toolhead position at `t_dispatched` from the **prior**
