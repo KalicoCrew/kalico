@@ -33,7 +33,7 @@
 
 - `rust/runtime/src/piece_ring.rs` — rename field/methods; the bump site moves out of here conceptually (engine calls `advance_counter()` at a new point).
 - `rust/runtime/src/engine.rs` — relocate the counter bump in `get_position_and_velocity`; rename `consumed_counts()`.
-- `rust/kalico-c-api/src/runtime_ffi.rs` — rename FFI symbol + param.
+- `rust/kalico-c-api/src/runtime_ffi.rs` — the heartbeat FFI is `kalico_runtime_get_heartbeat` (NOT a standalone `*_consumed_counts` symbol); update its internal `engine.consumed_counts()` call → `engine.retired_counts()`, rename the `out_consumed` param → `out_retired`, and update its doc comment.
 - `rust/kalico-protocol/src/messages.rs` — rename wire struct field + docs.
 - `rust/motion-bridge/src/pump.rs` — rename mirror field.
 - `rust/motion-bridge/src/bridge.rs` — `DrainSync` state, heartbeat→retired + dispatch→sent tracking, `drain_motion()` method, `set_position` drains first.
@@ -291,66 +291,28 @@ git commit -m "feat(runtime): retire cursor at piece window end, not at arm"
 - Modify: `rust/runtime/src/engine.rs` (`consumed_counts` → `retired_counts`)
 - Sweep: `src/`, `klippy/chelper/` for the FFI symbol / field name
 
-- [ ] **Step 1: Sweep C and headers for the ring field and FFI symbol**
+- [ ] **Step 1: Sweep C and headers for the ring field and heartbeat FFI**
 
-Run: `grep -rn "kalico_runtime_consumed_counts\|consumed_counts\|->consumed\|\.consumed" src/ klippy/chelper/ firmware/ 2>/dev/null`
-Expected: the only hits should be the FFI symbol declaration (if C declares the extern) and possibly heartbeat-builder C code. Note each file/line — they must be renamed to `retired` in the steps below. If C accesses the ring's `consumed` field by name, rename it there too (the `#[repr(C)]` offset is unchanged, so only name references break). If there are zero C hits, record that and proceed.
+Run: `grep -rn "kalico_runtime_get_heartbeat\|consumed_counts\|out_consumed\|->consumed\|\.consumed" src/ klippy/chelper/ firmware/ 2>/dev/null`
+Expected: C calls the heartbeat FFI as `kalico_runtime_get_heartbeat` (passing an `out_consumed`-style buffer). The Rust *symbol name* does not change (only the param name + internal call do), so C call sites likely need **no** change unless they name a local buffer `consumed_counts` for clarity. If C accesses the ring's `consumed` field by name directly, rename it to `retired` (the `#[repr(C)]` offset is unchanged, so only name references break). Note every hit; if there are zero C hits, record that and proceed.
 
 - [ ] **Step 2: Rename the engine accessor**
 
 In `rust/runtime/src/engine.rs`, rename `pub fn consumed_counts(&self) -> [u32; MAX_AXES]` → `retired_counts`, and its body's `axis.ring.retired_count()` is already correct from Task 1. Update the doc comment ("per-axis consumed piece counts" → "per-axis retired piece counts").
 
-- [ ] **Step 3: Rename the FFI symbol and param**
+- [ ] **Step 3: Update the heartbeat FFI internals (keep the symbol name)**
 
-In `rust/kalico-c-api/src/runtime_ffi.rs`, replace:
+The heartbeat FFI is `kalico_runtime_get_heartbeat` (`rust/kalico-c-api/src/runtime_ffi.rs:~1735`). **Do not rename the exported symbol** — C calls it by that name. Make these in-body changes:
 
-```rust
-    #[no_mangle]
-    pub extern "C" fn kalico_runtime_consumed_counts(
-        engine: *mut MotionEngine,
-        out_consumed: *mut u32,
-        max_axes: usize,
-    ) -> i32 {
-        if engine.is_null() || out_consumed.is_null() {
-            return -1;
-        }
-        let engine = unsafe { &*engine };
-        let counts = engine.consumed_counts();
-        let n = max_axes.min(counts.len());
-        for i in 0..n {
-            unsafe { out_consumed.add(i).write(counts[i]) };
-        }
-        0
-    }
-```
+- Rename the param `out_consumed: *mut u32` → `out_retired: *mut u32`, and the two uses inside (`out_retired.is_null()` in the null check, and `out_retired.add(i).write(counts[i])` in the write loop).
+- Change the engine call `let counts = engine.consumed_counts();` → `let counts = engine.retired_counts();`.
+- Update the doc comment (`per-axis consumed piece counts` → `per-axis retired piece counts`; `out_consumed` mentions → `out_retired`; the SAFETY note "written exclusively by the ISR pop path" → "written exclusively by the ISR retire path").
 
-with:
+The exported C ABI (symbol name, arg order, arg types) is unchanged — only the internal param identifier and the Rust call differ.
 
-```rust
-    #[no_mangle]
-    pub extern "C" fn kalico_runtime_retired_counts(
-        engine: *mut MotionEngine,
-        out_retired: *mut u32,
-        max_axes: usize,
-    ) -> i32 {
-        if engine.is_null() || out_retired.is_null() {
-            return -1;
-        }
-        let engine = unsafe { &*engine };
-        let counts = engine.retired_counts();
-        let n = max_axes.min(counts.len());
-        for i in 0..n {
-            unsafe { out_retired.add(i).write(counts[i]) };
-        }
-        0
-    }
-```
+- [ ] **Step 4: Update C callers found in Step 1 (likely none)**
 
-Update the doc comment above it accordingly.
-
-- [ ] **Step 4: Update C callers found in Step 1**
-
-For each C file from Step 1 that calls `kalico_runtime_consumed_counts` or names the ring `consumed` field, rename to `kalico_runtime_retired_counts` / `retired`. If the symbol is declared in a generated header or `__init__.py` cffi cdef (`klippy/chelper/__init__.py`), update that declaration too.
+If Step 1 found C code that names the ring `consumed` field directly, rename it to `retired`. The `kalico_runtime_get_heartbeat` symbol is unchanged, so C call sites should not need editing unless a local buffer was named for clarity. If `klippy/chelper/__init__.py` cffi cdef declares `kalico_runtime_get_heartbeat`, confirm its signature still matches (it does — no ABI change) and leave it.
 
 - [ ] **Step 5: Rename the wire field**
 
@@ -369,7 +331,7 @@ Expected: PASS.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add rust/runtime/src/engine.rs rust/kalico-c-api/src/runtime_ffi.rs rust/kalico-protocol/src/messages.rs rust/kalico-protocol/src/messages/tests.rs klippy/chelper/__init__.py
+git add rust/runtime/src/engine.rs rust/kalico-c-api/src/runtime_ffi.rs rust/kalico-protocol/src/messages.rs rust/kalico-protocol/src/messages/tests.rs
 git commit -m "refactor(protocol,ffi): rename consumed_counts -> retired_counts"
 ```
 
@@ -586,13 +548,13 @@ Expected: the heartbeat callback closure (captures `pump_tx_hb`, receives `consu
 
 - [ ] **Step 2: Clone the drain handle for both closures**
 
-Just before the heartbeat callback is attached, add:
+The heartbeat callbacks are attached in a `for cfg_mcu in &mcu_configs` loop (`bridge.rs:~2193`), so the per-MCU clone must happen **inside** that loop next to `let pump_tx_hb = pump_tx_init.clone();`:
 
 ```rust
-        let drain_hb = self.drain.clone();
+            let drain_hb = self.drain.clone();
 ```
 
-and just before the dispatch closure is created, add:
+The dispatch closure is created once; add its clone just before `let dispatch: Arc<...>` (next to `let pump_tx_for_cb = pump_tx_init.clone();`, ~line 2223):
 
 ```rust
         let drain_disp = self.drain.clone();
@@ -600,30 +562,40 @@ and just before the dispatch closure is created, add:
 
 - [ ] **Step 3: Update the heartbeat callback to record retired**
 
-Inside the `attach_heartbeat_callback` closure (it already has `mcu_id` in scope and `consumed: &[u32]` — note the param is the renamed `retired_counts` payload now, same shape), after the existing `pump_tx_hb.send(...)`, add:
+The closure is `io.attach_heartbeat_callback(Arc::new(move |consumed: &[u32]| { ... }))` (`bridge.rs:~2200`); it has `mcu_id` in scope and the `&[u32]` slice now carries the retire counts (same wire shape). After the existing `pump_tx_hb.send(...)` call inside it, add:
 
 ```rust
-            for (axis, &r) in consumed.iter().enumerate() {
-                drain_hb.set_retired(mcu_id, axis as u8, r);
-            }
+                for (axis, &r) in consumed.iter().enumerate() {
+                    drain_hb.set_retired(mcu_id, axis as u8, r);
+                }
 ```
 
-(Leave the closure param named `consumed` or rename to `retired` for clarity — cosmetic.)
+(Leave the closure param named `consumed` or rename to `retired` for clarity — cosmetic. The `move` closure already captures by move, so `drain_hb` must be cloned per-MCU in the loop — see Step 2.)
 
 - [ ] **Step 4: Update the dispatch closure to record sent**
 
-At the site that sends each `EnqueueMsg` to the pump (the `pump_tx_for_cb.send(PumpMsg::Enqueue(m))` loop), record the count BEFORE moving `m`:
+The existing dispatch closure ends with this loop (`bridge.rs:~2268`):
 
 ```rust
-            for m in enqueue_msgs {              // match the existing iteration var
-                drain_disp.add_sent(m.key.mcu_id, m.key.axis, m.pieces.len() as u32);
-                if let Err(e) = pump_tx_for_cb.send(crate::pump::PumpMsg::Enqueue(m)) {
-                    log::error!("pump enqueue send failed: {e}");
+                for m in msgs {
+                    pump_tx_for_cb
+                        .send(crate::pump::PumpMsg::Enqueue(m))
+                        .map_err(|_| DispatchError::PumpGone)?;
                 }
-            }
 ```
 
-If the existing code sends a single `m` (not a loop), add the one `drain_disp.add_sent(...)` line immediately before that send. The key invariant: every piece handed to the pump increments `sent` exactly once for its `(mcu, axis)`.
+Record the count BEFORE `m` is moved into the send. `EnqueueMsg` has `key: AxisKey { mcu_id, axis }` and `pieces: Vec<PieceEntry>` (see `pump.rs`). Replace the loop body with:
+
+```rust
+                for m in msgs {
+                    drain_disp.add_sent(m.key.mcu_id, m.key.axis, m.pieces.len() as u32);
+                    pump_tx_for_cb
+                        .send(crate::pump::PumpMsg::Enqueue(m))
+                        .map_err(|_| DispatchError::PumpGone)?;
+                }
+```
+
+The key invariant: every piece handed to the pump increments `sent` exactly once for its `(mcu, axis)`.
 
 - [ ] **Step 5: Build**
 
