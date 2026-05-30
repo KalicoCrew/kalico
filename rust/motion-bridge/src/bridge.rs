@@ -16,7 +16,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use kalico_host_rt::clock::RealClock;
-use kalico_host_rt::host_io::parser::{DataDictionary, MsgProtoParser};
+use kalico_host_rt::host_io::parser::{DataDictionary, FieldValue, MsgProtoParser};
 use kalico_host_rt::host_io::{KalicoHostIo, KalicoHostIoConfig};
 use kalico_host_rt::passthrough_queue::{NotifyId, PassthroughEntry, PassthroughRouter};
 use trajectory::{AxisShaper, ShaperConfig};
@@ -29,22 +29,6 @@ use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
 // ── Internal types ──────────────────────────────────────────────────────
-
-/// MCU seed position queued by `set_position` and drained by the dispatch
-/// closure before the next segment is sent.
-///
-/// Storing the seed here (rather than firing `runtime_seed_position`
-/// immediately in `set_position`) guarantees that the seed arrives at the
-/// MCU **after** all previously-dispatched segments (e.g. a retract during
-/// homing) have been placed on the wire.  The dispatch closure processes
-/// segments sequentially, so draining the pending seed at the head of each
-/// dispatch invocation provides the required ordering without any extra
-/// synchronisation.
-struct SeedPosition {
-    x: f64,
-    y: f64,
-    z: f64,
-}
 
 /// Retained copy of the last homing segment's per-axis NURBS curves.
 /// Used by the host to evaluate toolhead position at the trigger instant.
@@ -400,10 +384,6 @@ pub struct PyMotionBridge {
     /// those relative times onto the MCU's live clock domain.
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
     homing: Arc<HomingState>,
-    /// Pending MCU seed position stored by `set_position` and drained by the
-    /// dispatch closure before each segment is sent.  `None` when no seed is
-    /// outstanding (normal steady-state path).
-    pending_seed: Arc<Mutex<Option<SeedPosition>>>,
     /// Retained homing segment curves.  Populated by the dispatch closure when
     /// a homing-active segment is dispatched; cleared by `set_position` (stream
     /// open / planner reset).  `None` outside of an active homing sequence.
@@ -672,7 +652,6 @@ impl PyMotionBridge {
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             homing: Arc::new(HomingState::new()),
-            pending_seed: Arc::new(Mutex::new(None)),
             retained_homing_curve: Arc::new(Mutex::new(None)),
             probe_handles: Mutex::new(HashMap::new()),
             probe_handle_counter: AtomicU64::new(1),
@@ -2721,26 +2700,61 @@ impl PyMotionBridge {
             planner
                 .kalico_stream_open([x, y, z, 0.0])
                 .map_err(planner_err)?;
-        }
 
-        // Seed the MCU engine's prev_x/y/z so the first segment after
-        // SET_KINEMATIC_POSITION computes its delta against the correct
-        // origin rather than the boot-time (0, 0, 0). Without this the
-        // delta for a move starting at e.g. Y=100 is computed as
-        // (Y_end - 0) instead of (Y_end - 100), which exceeds
-        // MAX_STEPS_PER_TICK_DEFAULT and raises FaultCode::StepBurstExceeded.
-        //
-        // We do NOT send `runtime_seed_position` here directly.  In-flight
-        // segments from a previous move (e.g. a retract queued during homing)
-        // may not have reached the MCU yet.  Firing the seed immediately would
-        // overwrite the MCU's `prev_x/y/z` before the retract finishes,
-        // corrupting its step-delta computation.
-        //
-        // Instead, store the seed as `pending_seed`.  The dispatch closure
-        // (planner thread) drains it before sending the next segment, which
-        // guarantees the seed arrives AFTER all previously-dispatched segments.
-        *self.pending_seed.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(SeedPosition { x, y, z });
+            // Re-establish each MCU's motor-frame `last_step_count` baseline so
+            // the first move after homing / G92 / SET_KINEMATIC_POSITION computes
+            // a correct step delta. The connect-time runtime reset zeroed every
+            // baseline; without this the delta for a move starting at e.g.
+            // motor-A = X+Y = 300 is computed against 0 and trips
+            // StepsPerSampleExceeded. The CoreXY transform (A=X+Y, B=X-Y) lives
+            // on the host (shared `dispatch::cfg_is_corexy`); the MCU stays dumb.
+            //
+            // This is a direct fire-and-forget command (NOT a pump message): the
+            // MCU handles it via its command dispatcher, not the piece ring. The
+            // host is responsible for flushing before re-seeding; ordering against
+            // in-flight pieces is out of scope (see the design spec).
+            let sends = {
+                let configs = self
+                    .mcu_axis_configs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                crate::dispatch::build_seed_sends(&configs, x, y, z)
+            };
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            for s in sends {
+                // Planner is up ⇒ init_planner guaranteed these configs come from
+                // real, attached MCUs. A missing connection/io here is a broken
+                // invariant — fail loudly.
+                let conn = mcus.get(&s.mcu_id).unwrap_or_else(|| {
+                    panic!(
+                        "set_position seed: planner up but mcu_id {} absent \
+                         (broken invariant)",
+                        s.mcu_id
+                    )
+                });
+                let io = conn.host_io.as_ref().unwrap_or_else(|| {
+                    panic!(
+                        "set_position seed: mcu_id {} has no host_io \
+                         (broken invariant)",
+                        s.mcu_id
+                    )
+                });
+                io.send_typed(
+                    "runtime_seed_position",
+                    &[
+                        ("x_q16", FieldValue::I32(s.x_q16)),
+                        ("y_q16", FieldValue::I32(s.y_q16)),
+                        ("z_q16", FieldValue::I32(s.z_q16)),
+                    ],
+                )
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!(
+                        "set_position seed send to mcu_id {} failed: {e:?}",
+                        s.mcu_id
+                    ))
+                })?;
+            }
+        }
 
         // Clear any retained homing curve — the stream is being re-opened
         // and the previous homing segment is no longer valid.
