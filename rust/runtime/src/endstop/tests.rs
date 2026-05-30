@@ -597,6 +597,71 @@ fn software_trip_causes_tick_to_abort() {
     );
 }
 
+/// Fresh GPIO detection must return `Continue` (siren disabled) AND queue
+/// the trip event so the relay can observe it.
+///
+/// When the local endstop siren is disabled, the detecting MCU does not
+/// self-freeze — it only reports the trip. The cross-MCU relay (bridge
+/// reactor TripDispatch) sends trsync_trigger, which freezes via the
+/// top-of-tick AbortNow path (TrippedReady|Tripping → AbortNow). That
+/// relay path is tested separately and is unaffected by this change.
+///
+/// See docs/superpowers/specs/2026-05-31-trsync-cross-mcu-homing-design.md
+#[test]
+fn fresh_gpio_trip_returns_continue_and_queues_event() {
+    let _guard = reset();
+
+    // Arm a single active-high GPIO source on pin 20.
+    let mut sources = [SourceConfig::EMPTY; MAX_SOURCES];
+    sources[0] = SourceConfig {
+        kind: SourceKind::Physical,
+        gpio: 20,
+        active_high: true,
+        policy: ArmPolicy::TripImmediately,
+        sample_n: 1,
+        velocity_axis: VelocityAxis::X,
+        v_min_q16: 0,
+    };
+    arm(ArmMsg {
+        arm_id: 1,
+        arm_clock: 0,
+        source_count: 1,
+        sources,
+        stepper_count: 1,
+        stepper_oids: [7, 0, 0, 0, 0, 0, 0, 0],
+        grant_ticks: 0,
+    })
+    .expect("arm should succeed");
+
+    // Assert the pin — source is now asserted.
+    set_pin_level(20, true);
+
+    // Tick at arm_clock (clock=0): the source should detect the assertion.
+    // Siren is disabled: tick() must return Continue, NOT AbortNow.
+    let action = tick(0, [0, 0, 0], &[0]);
+    assert_eq!(
+        action,
+        TripAction::Continue,
+        "fresh GPIO detection must return Continue (siren disabled); \
+         got {action:?} — the local AbortNow has not been suppressed yet"
+    );
+
+    // The trip must still be reported: poll_trip() must return Some with
+    // the correct arm_id so the relay can observe and dispatch it.
+    let event = poll_trip().expect(
+        "poll_trip() must return Some after a fresh GPIO trip — \
+         the report (publish_snapshot + TRIP_EVENT_QUEUED) must still happen",
+    );
+    assert_eq!(
+        event.arm_id, 1,
+        "trip event arm_id must match the armed arm_id"
+    );
+    assert_eq!(
+        event.trip_source_idx, 0,
+        "trip event source index must be 0 (first and only source)"
+    );
+}
+
 /// Same as above but for the case where software_trip arrives BEFORE
 /// the first tick past arm_clock (the deadline isn't active yet).
 /// tick() must still return AbortNow.
