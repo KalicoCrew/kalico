@@ -653,39 +653,40 @@ fn get_position_and_velocity(
     // Fault check: piece start_time is too far in the past.
     let fault_tolerance = u64::from(sample_period_cycles) * 2;
     if now.saturating_sub(next_entry.start_time) > fault_tolerance {
-        // DIAG(sip) SIPDIAG9: SIPDIAG8 already proved the TIM5 ISR is starved
-        // ~200µs at arm-time (gap == run-max gap, sub-wrap). The only contiguous
-        // irq-disabled stretch that long is a SINGLE Klipper timer callback
-        // dispatched by SysTick_Handler (priority 2, same as TIM5, irq_disable
-        // held across each `t->func(t)`). The C side (sched.c) now times every
-        // callback; `kalico_dispatch_max_cyc` / `_func` hold the longest one and
-        // its function pointer. Pack BOTH so the host can name the offender:
-        //   high 8 bits = duration in µs (cap 255) → confirms ≈200µs.
-        //   low 24 bits = func & 0x00FF_FFFF → reconstruct on host as
-        //                 0x0800_0000 | low24 (H7 flash is 0x08xx_xxxx), then
-        //                 addr2line out/klipper.elf <addr> names the callback.
+        // DIAG(sip) SIPDIAG10: SIPDIAG8 proved TIM5 is starved ~200µs at
+        // arm-time; SIPDIAG9 proved the longest timer CALLBACK is <1µs, so the
+        // blocker is NOT a SysTick dispatch. The remaining culprit is either a
+        // foreground PRIMASK-disabled critical section or a long higher-priority
+        // ISR body. armcm_irq.c now times the longest foreground irq-off window
+        // and records the caller that opened it (`kalico_irqoff_max_cyc` /
+        // `_caller`). Pack BOTH:
+        //   high 8 bits = window duration in µs (cap 255). ≈200 → a foreground
+        //                 critical section IS the blocker; small → it's an ISR
+        //                 body (PRIMASK never masked that long) and we pivot.
+        //   low 24 bits = caller & 0x00FF_FFFF → reconstruct 0x0800_0000 | low24
+        //                 and addr2line out/klipper.elf <addr> names the section.
         // REVERT to the bare `raise_piece_start_in_past` call after concluding.
         let _ = axis_idx;
         // Scoped unsafe (the crate is `-D unsafe-code`; deny is overridable,
-        // unlike forbid). Reads two plain u32 C globals from sched.c.
+        // unlike forbid). Reads two plain u32 C globals from armcm_irq.c.
         #[allow(unsafe_code)]
-        fn read_dispatch_max() -> (u32, u32) {
+        fn read_irqoff_max() -> (u32, u32) {
             unsafe extern "C" {
-                static kalico_dispatch_max_cyc: u32;
-                static kalico_dispatch_max_func: u32;
+                static kalico_irqoff_max_cyc: u32;
+                static kalico_irqoff_max_caller: u32;
             }
             // SAFETY: single-word volatile reads of C-owned u32 globals.
             unsafe {
                 (
-                    core::ptr::read_volatile(core::ptr::addr_of!(kalico_dispatch_max_cyc)),
-                    core::ptr::read_volatile(core::ptr::addr_of!(kalico_dispatch_max_func)),
+                    core::ptr::read_volatile(core::ptr::addr_of!(kalico_irqoff_max_cyc)),
+                    core::ptr::read_volatile(core::ptr::addr_of!(kalico_irqoff_max_caller)),
                 )
             }
         }
-        let (dmax_cyc, dmax_func) = read_dispatch_max();
+        let (irqoff_cyc, irqoff_caller) = read_irqoff_max();
         let cyc_per_us = (cycles_per_second / 1.0e6) as u32; // ≈520 on H7
-        let dmax_us = if cyc_per_us > 0 { (dmax_cyc / cyc_per_us).min(0xFF) } else { 0xFF };
-        let detail = (dmax_us << 24) | (dmax_func & 0x00FF_FFFF);
+        let irqoff_us = if cyc_per_us > 0 { (irqoff_cyc / cyc_per_us).min(0xFF) } else { 0xFF };
+        let detail = (irqoff_us << 24) | (irqoff_caller & 0x00FF_FFFF);
         shared.fault_detail.store(detail, Ordering::Release);
         shared
             .last_error
