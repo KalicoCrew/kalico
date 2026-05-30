@@ -2199,6 +2199,7 @@ impl PyMotionBridge {
                 .expect("host_io map built from mcu_configs")
                 .clone();
             let pump_tx_hb = pump_tx_init.clone();
+            let drain_hb = self.drain.clone();
             let mcu_id = cfg_mcu.mcu_id;
             io.attach_heartbeat_callback(Arc::new(move |retired: &[u32]| {
                 // PIECEDIAG (revert)
@@ -2209,6 +2210,9 @@ impl PyMotionBridge {
                         retired_counts: retired.to_vec(),
                     },
                 ));
+                for (axis, &r) in retired.iter().enumerate() {
+                    drain_hb.set_retired(mcu_id, axis as u8, r);
+                }
             }));
         }
 
@@ -2224,6 +2228,7 @@ impl PyMotionBridge {
         // time from its run-loop), so the mutex is always uncontended.
         let anchor_mutex = std::sync::Mutex::new(crate::anchor::Anchor::new());
         let pump_tx_for_cb = pump_tx_init.clone();
+        let drain_disp = self.drain.clone();
         // `counter` is Arc<AtomicU64>; captured into the closure to keep
         // `dispatched_segments` accurate for `run_probe_homing` diagnostics.
         let counter_for_cb = Arc::clone(&counter);
@@ -2269,6 +2274,7 @@ impl PyMotionBridge {
                 );
 
                 for m in msgs {
+                    drain_disp.add_sent(m.key.mcu_id, m.key.axis, m.pieces.len() as u32);
                     pump_tx_for_cb
                         .send(crate::pump::PumpMsg::Enqueue(m))
                         .map_err(|_| DispatchError::PumpGone)?;

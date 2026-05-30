@@ -57,7 +57,7 @@ fn pump_stalls_on_ring_full_resumes_on_heartbeat() {
 
     tx.send(PumpMsg::Heartbeat(HeartbeatMsg {
         mcu_id: 1,
-        consumed_counts: vec![2],
+        retired_counts: vec![2],
     }))
     .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(50));
