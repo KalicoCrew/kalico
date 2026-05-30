@@ -78,3 +78,59 @@ impl McuCaps {
         self.total_piece_memory as usize / 32
     }
 }
+
+/// True when this MCU drives both CoreXY motors and must receive motor-frame
+/// `(A, B)` values rather than Cartesian `(X, Y)`. Single source of truth for
+/// the CoreXY decision, shared by the piece path (`enqueue.rs`) and the seed
+/// path (`build_seed_sends`) so they cannot drift.
+pub fn cfg_is_corexy(cfg: &McuAxisConfig) -> bool {
+    cfg.kinematics == KINEMATICS_COREXY
+        && cfg.axes.contains(&AXIS_X)
+        && cfg.axes.contains(&AXIS_Y)
+}
+
+/// Map a Cartesian `(x, y)` into this MCU's motor frame:
+/// CoreXY → `(x + y, x − y)`; otherwise passthrough `(x, y)`. Z is always
+/// passthrough and handled by the caller.
+pub fn motor_frame_xy(cfg: &McuAxisConfig, x: f64, y: f64) -> (f64, f64) {
+    if cfg_is_corexy(cfg) {
+        (x + y, x - y)
+    } else {
+        (x, y)
+    }
+}
+
+#[cfg(test)]
+mod seed_tests {
+    use super::*;
+
+    fn corexy_cfg() -> McuAxisConfig {
+        McuAxisConfig {
+            mcu_id: 1,
+            axes: vec![AXIS_X, AXIS_Y, AXIS_E],
+            kinematics: KINEMATICS_COREXY,
+            caps: McuCaps { total_piece_memory: 62 * 1024 },
+        }
+    }
+    fn cartesian_z_cfg() -> McuAxisConfig {
+        McuAxisConfig {
+            mcu_id: 2,
+            axes: vec![AXIS_Z],
+            kinematics: 1, // CartesianXyzAndE
+            caps: McuCaps { total_piece_memory: 62 * 1024 },
+        }
+    }
+
+    #[test]
+    fn cfg_is_corexy_true_only_for_corexy_xy_mcu() {
+        assert!(cfg_is_corexy(&corexy_cfg()));
+        assert!(!cfg_is_corexy(&cartesian_z_cfg()));
+    }
+
+    #[test]
+    fn motor_frame_xy_transforms_corexy_passes_through_cartesian() {
+        assert_eq!(motor_frame_xy(&corexy_cfg(), 150.0, 150.0), (300.0, 0.0));
+        assert_eq!(motor_frame_xy(&corexy_cfg(), 10.0, 4.0), (14.0, 6.0));
+        assert_eq!(motor_frame_xy(&cartesian_z_cfg(), 150.0, 150.0), (150.0, 150.0));
+    }
+}
