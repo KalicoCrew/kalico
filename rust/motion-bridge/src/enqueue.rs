@@ -20,7 +20,7 @@
 //! XY motion; `seg.extrusion_per_xy_mm` and `seg.e_independent` are handled
 //! upstream. This adapter only produces pieces for the axes in `cfg.axes`.
 
-use crate::dispatch::{McuAxisConfig, AXIS_X, AXIS_Y, KINEMATICS_COREXY};
+use crate::dispatch::{cfg_is_corexy, McuAxisConfig, AXIS_X, AXIS_Y};
 use crate::pump::{AxisKey, EnqueueMsg};
 use nurbs::ScalarNurbs;
 use runtime::piece_ring::PieceEntry;
@@ -63,9 +63,10 @@ where
         // CoreXY: pre-compute motor-frame A = X+Y, B = X−Y for MCUs that
         // drive both logical axes. The motor struct holds the owned results so
         // lifetime extends to the per-axis flatten step below.
-        let corexy = cfg.kinematics == KINEMATICS_COREXY
-            && cfg.axes.contains(&AXIS_X)
-            && cfg.axes.contains(&AXIS_Y)
+        // Shared predicate (dispatch::cfg_is_corexy) owns the "is this MCU CoreXY"
+        // decision so the piece path and the seed path cannot drift. The
+        // segment-arity check stays here — it is specific to the curve path.
+        let corexy = cfg_is_corexy(cfg)
             && AXIS_X < seg.axes.len()
             && AXIS_Y < seg.axes.len();
 
@@ -173,7 +174,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dispatch::McuCaps;
+    use crate::dispatch::{McuCaps, KINEMATICS_COREXY};
     use geometry::segment::EMode;
 
     /// Build a linear scalar NURBS over `[0, 1]` from Bernstein control points.
