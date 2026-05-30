@@ -598,14 +598,43 @@ fn flush_blocks_until_motion_complete_by_clock() {
 
 #[test]
 fn flush_then_move_dispatches_without_error() {
-    let (dispatch, counter) = counting_dispatch();
+    // Use a capturing dispatch so we can assert both "segments were dispatched"
+    // and the M400-then-move timeline monotonicity invariant (move 2's minimum
+    // t_start >= move 1's maximum t_end). This is the -308-prevention check
+    // for the Flush-boundary case.
+    let (dispatch, log) = capturing_dispatch();
     let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+
+    // Move 1: submit and flush (M400 equivalent).
     h.submit_move(long_move()).unwrap();
     h.flush().unwrap();
-    let before = counter.load(Ordering::Relaxed);
+    let m1_max_t_end = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|&(_, e)| e)
+        .fold(0.0_f64, f64::max);
+    assert!(m1_max_t_end > 0.0, "move 1 produced no dispatched segments");
+
+    // Move 2: submit and flush after the M400 boundary.
+    log.lock().unwrap().clear();
     let m2 = classify_and_build([200.0, 0.0, 0.0], 200.0, 0.0, 0.0, 0.0, 200.0).unwrap();
     h.submit_move(m2).unwrap();
     h.flush().unwrap();
-    assert!(counter.load(Ordering::Relaxed) > before);
+    let m2_log = log.lock().unwrap().clone();
+
+    // "Segments were dispatched" check (replaces the old counter assertion).
+    assert!(!m2_log.is_empty(), "move 2 produced no dispatched segments");
+
+    let m2_min_t_start = m2_log.iter().map(|&(s, _)| s).fold(f64::INFINITY, f64::min);
+
+    // Timeline monotonicity across the M400 boundary: move 2 must not rewind
+    // behind move 1's last dispatched t_end.
+    assert!(
+        m2_min_t_start >= m1_max_t_end - 1e-3,
+        "timeline rewound across flush boundary: \
+         move 2 t_start={m2_min_t_start:.6} < move 1 t_end={m1_max_t_end:.6}",
+    );
+
     h.shutdown();
 }
