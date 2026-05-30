@@ -5,6 +5,8 @@ mod drain;
 #[doc(hidden)]
 pub mod probe_homing;
 #[doc(hidden)]
+pub mod trip_dispatch;
+#[doc(hidden)]
 pub mod classify;
 #[doc(hidden)]
 pub mod config;
