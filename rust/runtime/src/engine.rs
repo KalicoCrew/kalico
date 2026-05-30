@@ -608,6 +608,23 @@ impl Default for Engine {
 
 // ── get_piece_for_time (per spec §4.2) ────────────────────────────────────────
 
+/// ⚠️ DO NOT MODIFY THIS FUNCTION WITHOUT DIRECT CONFIRMATION FROM THE USER. ⚠️
+///
+/// This loop and its exact shape are load-bearing. The four-branch structure,
+/// their ordering, the removal of the old "gap" branch (future pieces are held
+/// at `t = 0` by `eval_horner`'s saturating elapsed, NOT by a separate check),
+/// and the placement of the 2-tick `PieceStartInPast` check at the *adoption*
+/// point were derived and verified on hardware together with the user. They
+/// fix the spurious `-308 PieceStartInPast` regression that the piece-ring
+/// rewrite introduced by dropping the spec §4.4 advancement loop.
+///
+/// Reordering the advance/fault/arm steps, re-adding a gap branch, gating the
+/// fault on "first load only", or adding a min-duration guard all silently
+/// reintroduce the bug (the spec explicitly rejected min-duration in favour of
+/// this loop). Do NOT refactor, "simplify", reorder, or "optimize" this
+/// function without explicit sign-off from the user — even if it looks like it
+/// could be cleaner. If you think it needs to change, ask first.
+///
 /// Advance the axis to the correct piece for `now`, returning
 /// `(position, velocity)` if an active piece exists.
 ///
