@@ -87,6 +87,10 @@ impl DrainSync {
     }
 }
 
+// These tests cover pump ring flow-control accounting (pushed/retired).
+// This mechanism is UNCHANGED by the monotonic-clock design (spec §E):
+// DrainSync.add_sent / set_retired remain the sole flow-control path and are
+// NOT replaced by the clock-based Flush.
 #[cfg(test)]
 mod tests {
     use super::*;

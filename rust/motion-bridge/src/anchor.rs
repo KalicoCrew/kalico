@@ -30,10 +30,6 @@ impl Anchor {
             None => true,
             Some(_) => seg_t_start + CONTIGUITY_EPS < self.last_t_end, // backward jump
         };
-        log::info!(
-            "[anchor] seg_t=[{:.6},{:.6}] host_now={:.3} last_t_end={:.6} fresh={} t0={:?}",
-            seg_t_start, seg_t_end, host_now, self.last_t_end, fresh, self.t0,
-        );
         if fresh {
             self.t0 = Some(host_now + self.lead_secs - seg_t_start);
         }
