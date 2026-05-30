@@ -650,6 +650,8 @@ fn get_position_and_velocity(
         // start_time (genuine starvation) or only became visible after it
         // (commit/visibility bug).
         crate::tick::IDLE_VISIBLE_COUNT.fetch_add(1, Ordering::Relaxed);
+        // SIPDIAG16: mark that THIS front piece was seen before its start_time.
+        axis.front_seen_idle = true;
         // Axis idles — not a fault.
         axis.has_piece = false;
         return None;
@@ -680,12 +682,28 @@ fn get_position_and_velocity(
         //   was NOT peek-visible for most of that window => VISIBILITY FLICKER.
         // gap_max ≈ lateness -> one big starvation gap straddled start_time.
         // REVERT to the bare `raise_piece_start_in_past` call after concluding.
+        // SIPDIAG16: DIRECT discriminator. `front_seen_idle` is true iff this
+        // faulting front piece was EVER peeked with now < start_time (visible
+        // before it started). With the arithmetic already showing lateness
+        // (607-1074µs) > gap_max (~199µs) — impossible on the visible-early
+        // path, where lateness <= one straddling gap — the prediction is
+        // front_seen_idle == FALSE: the piece was BORN LATE (host committed it
+        // already past start_time), never visible-early. flag==TRUE would
+        // instead mean visible-early-then-lost (true flicker) — keep both
+        // gap_max and the flag so the two are decided in ONE run.
+        //   bit 31     : front_seen_idle (1 = visible-early, 0 = born-late)
+        //   bits 30..16: lateness µs (15-bit, cap 0x7FFF ≈ 32ms)
+        //   bits 15..0 : run-max TIM5 inter-tick gap µs (16-bit, cap 0xFFFF)
+        // REVERT to the bare `raise_piece_start_in_past` call after concluding.
         let _ = axis_idx;
         let lateness_cyc = now.saturating_sub(next_entry.start_time); // u64
         let gap_max_cyc = u64::from(crate::tick::TICK_GAP_MAX_CYC.load(Ordering::Relaxed));
         let cyc_per_us = (cycles_per_second / 1.0e6) as u64; // ≈520 on H7
-        let to_us = |c: u64| if cyc_per_us > 0 { (c / cyc_per_us).min(0xFFFF) } else { 0xFFFF };
-        let detail = ((to_us(lateness_cyc) << 16) | to_us(gap_max_cyc)) as u32;
+        let to_us = |c: u64, cap: u64| if cyc_per_us > 0 { (c / cyc_per_us).min(cap) } else { cap };
+        let seen_idle_bit: u32 = if axis.front_seen_idle { 1 } else { 0 };
+        let lateness_us = to_us(lateness_cyc, 0x7FFF) as u32;
+        let gap_max_us = to_us(gap_max_cyc, 0xFFFF) as u32;
+        let detail = (seen_idle_bit << 31) | (lateness_us << 16) | gap_max_us;
         shared.fault_detail.store(detail, Ordering::Release);
         shared
             .last_error
@@ -705,6 +723,9 @@ fn get_position_and_velocity(
     axis.has_piece = true;
     // Now free the ring slot (the entry is fully cached above).
     axis.ring.pop();
+    // SIPDIAG16: front piece advanced — reset the "seen-before-start" flag so
+    // it reflects only the NEXT front piece's pre-start visibility.
+    axis.front_seen_idle = false;
 
     Some(eval_horner(
         &axis.mono_coeffs,
