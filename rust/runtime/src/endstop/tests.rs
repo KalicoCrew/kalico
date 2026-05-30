@@ -89,7 +89,9 @@ fn source_policy_sample_matrix() {
                     if i < sample_n {
                         assert_eq!(action, TripAction::Continue);
                     } else {
-                        assert_eq!(action, TripAction::AbortNow);
+                        // Siren disabled: fresh GPIO detection returns Continue
+                        // (not AbortNow). The trip is still queued for the relay.
+                        assert_eq!(action, TripAction::Continue);
                         let evt = drain_trip();
                         assert_eq!(evt.trip_source_idx, 0);
                     }
@@ -116,7 +118,8 @@ fn ignore_until_moving_latch_requires_velocity_then_clear_once() {
     set_pin_level(2, false);
     assert_eq!(tick(3, [V_MIN, 0, 0], &[1]), TripAction::Continue);
     set_pin_level(2, true);
-    assert_eq!(tick(4, [V_MIN, 0, 0], &[1]), TripAction::AbortNow);
+    // Siren disabled: fresh GPIO detection returns Continue, trip still queued.
+    assert_eq!(tick(4, [V_MIN, 0, 0], &[1]), TripAction::Continue);
     assert_eq!(drain_trip().trip_clock, 4);
 
     reset_for_test();
@@ -130,7 +133,9 @@ fn ignore_until_moving_latch_requires_velocity_then_clear_once() {
     set_pin_level(2, false);
     assert_eq!(tick(1, [V_MIN, 0, 0], &[1]), TripAction::Continue);
     set_pin_level(2, true);
-    assert_eq!(tick(2, [0, 0, 0], &[1]), TripAction::AbortNow);
+    // Siren disabled: fresh GPIO detection returns Continue, trip still queued.
+    assert_eq!(tick(2, [0, 0, 0], &[1]), TripAction::Continue);
+    assert!(poll_trip().is_some());
 }
 
 #[test]
@@ -148,7 +153,9 @@ fn wait_for_clear_ignores_assertion_at_arm() {
     set_pin_level(3, false);
     assert_eq!(tick(2, [0, 0, 0], &[1]), TripAction::Continue);
     set_pin_level(3, true);
-    assert_eq!(tick(3, [0, 0, 0], &[1]), TripAction::AbortNow);
+    // Siren disabled: fresh GPIO detection returns Continue, trip still queued.
+    assert_eq!(tick(3, [0, 0, 0], &[1]), TripAction::Continue);
+    assert!(poll_trip().is_some());
 }
 
 #[test]
@@ -162,7 +169,9 @@ fn trip_immediately_assertion_at_arm_trips_on_first_sample() {
     )))
     .expect("arm");
     set_pin_level(4, true);
-    assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::AbortNow);
+    // Siren disabled: fresh GPIO detection returns Continue, trip still queued.
+    assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::Continue);
+    assert!(poll_trip().is_some());
 }
 
 #[test]
@@ -194,7 +203,9 @@ fn unknown_policy_byte_falls_back_to_trip_immediately_behavior() {
     // Plant a bogus byte directly into the source's policy atomic.
     ARM.sources[0].policy.store(99, Ordering::Release);
     set_pin_level(4, true);
-    assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::AbortNow);
+    // Siren disabled: fresh GPIO detection returns Continue, trip still queued.
+    assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::Continue);
+    assert!(poll_trip().is_some());
 }
 
 #[test]
@@ -214,7 +225,8 @@ fn multi_source_or_reports_first_asserted_source_index() {
     })
     .expect("arm");
     set_pin_level(6, true);
-    assert_eq!(tick(1, [0, 0, 0], &[100, -200]), TripAction::AbortNow);
+    // Siren disabled: fresh GPIO detection returns Continue, trip still queued.
+    assert_eq!(tick(1, [0, 0, 0], &[100, -200]), TripAction::Continue);
     let evt = drain_trip();
     assert_eq!(evt.arm_id, 77);
     assert_eq!(evt.trip_source_idx, 1);
@@ -234,7 +246,8 @@ fn future_arm_clock_ignores_early_assertions() {
     set_pin_level(7, true);
     assert_eq!(tick(49, [0, 0, 0], &[1]), TripAction::Continue);
     assert!(poll_trip().is_none());
-    assert_eq!(tick(50, [0, 0, 0], &[2]), TripAction::AbortNow);
+    // Siren disabled: fresh GPIO detection returns Continue, trip still queued.
+    assert_eq!(tick(50, [0, 0, 0], &[2]), TripAction::Continue);
     assert_eq!(drain_trip().trip_clock, 50);
 }
 
@@ -287,7 +300,8 @@ fn exactly_one_terminal_for_trip_vs_disarm_schedules() {
     )))
     .expect("arm");
     set_pin_level(9, true);
-    assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::AbortNow);
+    // Siren disabled: fresh GPIO detection returns Continue, trip still queued.
+    assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::Continue);
     assert_eq!(disarm(42), DisarmStatus::AlreadyTripped);
     assert!(poll_trip().is_some());
 }
@@ -303,9 +317,10 @@ fn snapshot_seqlock_reader_retries_odd_and_never_returns_torn_read() {
     )))
     .expect("arm");
     set_pin_level(10, true);
+    // Siren disabled: fresh GPIO detection returns Continue, trip still queued.
     assert_eq!(
         tick(0x1_0000_0002, [0, 0, 0], &[123, 456]),
-        TripAction::AbortNow
+        TripAction::Continue
     );
     let evt = drain_trip();
     assert_eq!(evt.trip_clock, 0x1_0000_0002);
@@ -325,7 +340,9 @@ fn active_low_polarity_uses_explicit_branch_not_xor() {
     arm(msg(source)).expect("arm");
     assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::Continue);
     set_pin_level(11, false);
-    assert_eq!(tick(2, [0, 0, 0], &[1]), TripAction::AbortNow);
+    // Siren disabled: fresh GPIO detection returns Continue, trip still queued.
+    assert_eq!(tick(2, [0, 0, 0], &[1]), TripAction::Continue);
+    assert!(poll_trip().is_some());
 }
 
 #[test]
@@ -542,7 +559,8 @@ fn software_source_skips_gpio_no_gpio_trip() {
     assert_eq!(tick(1, [0, 0, 0], &[]), TripAction::Continue);
     // Assert the Physical pin → Physical source trips.
     set_pin_level(15, true);
-    assert_eq!(tick(2, [0, 0, 0], &[]), TripAction::AbortNow);
+    // Siren disabled: fresh GPIO detection returns Continue, trip still queued.
+    assert_eq!(tick(2, [0, 0, 0], &[]), TripAction::Continue);
     let evt = drain_trip();
     // Should be source index 1 (the Physical source), not the Software one.
     assert_eq!(evt.trip_source_idx, 1);

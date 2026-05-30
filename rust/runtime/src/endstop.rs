@@ -421,7 +421,7 @@ static ARM: Arm = Arm::new();
 static TRIP_EVENT_QUEUED: AtomicBool = AtomicBool::new(false);
 static PIN_LEVELS: [AtomicBool; MAX_GPIO_PINS] = [const { AtomicBool::new(false) }; MAX_GPIO_PINS];
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 static TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub fn set_pin_level(gpio: PinId, pin_high: bool) -> bool {
@@ -434,8 +434,13 @@ pub fn set_pin_level(gpio: PinId, pin_high: bool) -> bool {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+/// Acquire the global endstop test mutex and reset all state to a clean
+/// baseline. Returns a guard that, when dropped, releases the mutex.
+///
+/// Available under `#[cfg(test)]` (unit tests) and `feature = "test-helpers"`
+/// (integration tests). Never compiled into production builds.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     let guard = match TEST_MUTEX.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -444,7 +449,7 @@ pub(crate) fn test_guard() -> std::sync::MutexGuard<'static, ()> {
     guard
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 fn reset_for_test() {
     ARM.state.store(ArmState::Idle as u8, Ordering::Release);
     ARM.arm_id.store(0, Ordering::Release);
@@ -673,7 +678,14 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
         ARM.state
             .store(ArmState::TrippedReady as u8, Ordering::Release);
         TRIP_EVENT_QUEUED.store(true, Ordering::Release);
-        return TripAction::AbortNow;
+        // DISABLED FOR TESTING: local siren. The detecting MCU intentionally
+        // does NOT self-freeze here — it only reports the trip. The cross-MCU
+        // relay (bridge reactor TripDispatch) sends trsync_trigger, which
+        // freezes via runtime_stop_on_trigger. Suppressing the local freeze
+        // lets us verify the relay on a single board. Re-enable as the
+        // same-MCU fast-path once the relay is confirmed.
+        // See docs/superpowers/specs/2026-05-31-trsync-cross-mcu-homing-design.md
+        return TripAction::Continue;
     }
 
     tick_software_deadline(clock, stepper_counts)

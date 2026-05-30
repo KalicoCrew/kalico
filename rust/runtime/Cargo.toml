@@ -65,6 +65,19 @@ loom = []  # gates loom-tests under cfg(loom)
 # test-injection` rather than wiring it into the default set, because we
 # don't want production builds to carry the injection field.
 test-injection = []
+# Exposes endstop test helpers (test_guard, reset_for_test) publicly so
+# integration tests in tests/ can reset the global endstop state without
+# duplicating the reset logic or relying on #[cfg(test)] which is not
+# visible across the lib/integration-test crate boundary.
+# NEVER enable in production or default features.
+test-helpers = []
+
+# Integration tests that require the `test-helpers` feature (endstop mutex +
+# reset) must be listed here so `cargo test -p runtime` without the feature
+# skips them rather than failing to compile.
+[[test]]
+name = "endstop_siren_disabled"
+required-features = ["test-helpers"]
 
 [lints]
 workspace = true
