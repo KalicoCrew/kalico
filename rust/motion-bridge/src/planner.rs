@@ -59,6 +59,18 @@ const T_COMMIT: Duration = Duration::from_millis(50);
 /// on `Shutdown` (the channel close fires `Disconnected`, not `Timeout`).
 const T_IDLE: Duration = Duration::from_secs(3600);
 
+/// Lead time (s) the Anchor inserts between planner time 0 and `host_now` at
+/// first dispatch. Must equal `anchor::DEFAULT_LEAD_SECS`; duplicated here so
+/// run_loop can compute clock-derived deadlines without depending on anchor's
+/// private constant. Keep in sync manually (anchor.rs is unchanged).
+const LEAD: f64 = 0.25;
+
+/// Safety margin (s) for the decel-commit deadline: the commit must reach the
+/// MCU at least this long before the on-wire buffer (`t_dispatched + LEAD`)
+/// drains. Covers shaping + dispatch + pump + wire latency. Starting value
+/// per spec §G; tune on hardware.
+const SAFETY_MARGIN: f64 = 0.050;
+
 // ---------------------------------------------------------------------------
 // Messages
 // ---------------------------------------------------------------------------
@@ -688,6 +700,13 @@ fn run_loop(
     // `commit_decel_to_zero` semantics land.
     let mut last_append_time: Option<Instant> = None;
     let mut last_recv_time: Option<Instant> = None;
+    // The `Instant` of the stream's first dispatch. `None` until the first
+    // non-empty dispatch after a genuine reset; re-set to `None` on every
+    // genuine reset (stream-open, homing, SET_KINEMATIC, Underrun, ForceIdle)
+    // so it is re-captured at the next first dispatch. Same OS monotonic clock
+    // as the projection's host-time input, so `elapsed_since_sync` carries no
+    // drift.
+    let mut sync_instant: Option<Instant> = None;
 
     loop {
         // Compute the next timeout. The held-back-tail proxy is "an append
