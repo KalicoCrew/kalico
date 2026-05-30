@@ -28,12 +28,21 @@ pub struct SinkSpec {
 /// Identifies a trip source to monitor. The `mcu` field selects which
 /// `KalicoHostIo` the interceptor is registered on (passed as part of the
 /// `sources` slice to [`prepare`]).
+#[derive(Debug)]
 pub enum SourceSpec {
     /// Bridge GPIO endstop — listens for `kalico_endstop_tripped` filtered
     /// by `arm_id`.
     BridgeGpio { mcu: u32, arm_id: u32 },
     /// Classic/Beacon trsync — listens for `trsync_state` (by oid) and
     /// triggers when `can_trigger == 0`.
+    ///
+    /// # Caller contract
+    ///
+    /// A `trsync_state` frame with `can_trigger == 0` can also arrive
+    /// **before** the homing arm (e.g. during MCU init). The caller MUST
+    /// register the dispatch only when arming the move — mirroring
+    /// `probe_homing.rs`'s "call before home_start" contract — so that a
+    /// spurious pre-arm trip is not relayed to the sink trsyncs.
     Trsync { mcu: u32, trsync_oid: u8 },
 }
 
@@ -85,6 +94,7 @@ impl FanOut {
 /// Opaque handle returned by [`prepare`]. Holds the interceptor registrations
 /// and the shared `triggered` flag. Pass to [`cleanup`] when the homing move
 /// is complete.
+#[derive(Debug)]
 pub struct TripDispatchHandle {
     pub(crate) triggered: Arc<AtomicBool>,
     pub(crate) registrations: Vec<(Arc<KalicoHostIo>, InterceptorId)>,
@@ -104,10 +114,18 @@ impl TripDispatchHandle {
 /// `sink_ios` maps MCU id → `KalicoHostIo` for all sink MCUs listed in
 /// `sinks`. The fan-out sends directly via [`KalicoHostIo::send_fire_and_forget`].
 ///
+/// # Caller contract
+///
+/// Call `prepare` only when arming the move (never at init time), so that
+/// any pre-arm `trsync_state` frames with `can_trigger == 0` are not yet
+/// intercepted. See [`SourceSpec::Trsync`] for details.
+///
 /// # Errors
 ///
 /// Returns `TransportError::Closed` if any source's reactor has exited, or
-/// another `TransportError` variant if interceptor registration fails.
+/// another `TransportError` variant if interceptor registration fails. On a
+/// partial failure (some sources registered, then a later one errors), all
+/// previously registered interceptors are unregistered before returning.
 pub fn prepare(
     sources: Vec<(SourceSpec, Arc<KalicoHostIo>)>,
     sinks: Vec<SinkSpec>,
@@ -115,7 +133,7 @@ pub fn prepare(
 ) -> Result<TripDispatchHandle, TransportError> {
     let triggered = Arc::new(AtomicBool::new(false));
     let fan = Arc::new(FanOut::new(sinks));
-    let mut registrations = Vec::new();
+    let mut registrations: Vec<(Arc<KalicoHostIo>, InterceptorId)> = Vec::new();
 
     for (spec, src_io) in sources {
         let fan = Arc::clone(&fan);
@@ -129,7 +147,7 @@ pub fn prepare(
                 ("trsync_state", Some(u32::from(*trsync_oid)), None)
             }
         };
-        let id = src_io.register_frame_interceptor(
+        let id = match src_io.register_frame_interceptor(
             name,
             oid_filter,
             Box::new(move |params| {
@@ -154,7 +172,15 @@ pub fn prepare(
                 });
                 triggered.store(true, Ordering::Release);
             }),
-        )?;
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                for (io, prev_id) in registrations {
+                    let _ = io.unregister_frame_interceptor(prev_id);
+                }
+                return Err(e);
+            }
+        };
         registrations.push((src_io, id));
     }
 
