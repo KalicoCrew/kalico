@@ -687,7 +687,11 @@ fn get_position_and_velocity(
     axis_idx: usize,
 ) -> Option<(f32, f32)> {
     loop {
-        // Branch 1: current armed piece still inside its window.
+        // Branch 1: current armed piece still inside its window. This also
+        // covers a not-yet-started piece (now < piece_start_cycles): it returns
+        // here too, and eval_horner's saturating elapsed clamps t to 0, holding
+        // the start position until `now` crosses the start. No separate gap
+        // branch is needed.
         if axis.has_piece && now < axis.piece_end_cycles {
             return Some(eval_horner(
                 &axis.mono_coeffs,
