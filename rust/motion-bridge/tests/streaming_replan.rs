@@ -497,20 +497,40 @@ fn slow_jogs_decelerate_to_zero_between() {
          append",
     );
 
-    // Seam continuity across **all** dispatched segments — including
-    // the boundary between segments that were emitted before the first
-    // flush and segments that were emitted after the second submit's
-    // replan. This is the test's load-bearing assertion.
+    // Task 6 — time-based flush: `flush` sleeps until `sync_instant +
+    // t_appended + LEAD`, so the second move arrives after real wall-clock
+    // time has advanced past move 1's planner-time end. The placement rule
+    // (spec §A) then inserts a rest-hold (advance_idle) bridging the gap,
+    // meaning move 2's segments start at a higher planner-time than move 1's
+    // segments end. Temporal contiguity therefore holds **within** each
+    // move's segment batch but NOT across the cross-flush boundary.
+    //
+    // Position continuity at the cross-flush boundary still holds: move 1
+    // ends at X=1.0 mm and move 2 starts from X=1.0 mm (the rest-hold is
+    // zero velocity, same position). All other adjacent seams remain both
+    // temporally and positionally contiguous.
     const SEAM_BUDGET_MM: f64 = 5.0e-2; // 50 µm
+    let cross_flush = count_after_first.saturating_sub(1); // index of the boundary seam
     for i in 0..segs.len().saturating_sub(1) {
         let a = &segs[i];
         let b = &segs[i + 1];
-        assert!(
-            (a.t_end - b.t_start).abs() < 1e-9,
-            "seam {i}: t_end {} != next t_start {} (planner contract)",
-            a.t_end,
-            b.t_start,
-        );
+        // Temporal contiguity: strict within each batch; relaxed at the
+        // cross-flush boundary (a gap ≥ 0 is expected there).
+        if i != cross_flush {
+            assert!(
+                (a.t_end - b.t_start).abs() < 1e-9,
+                "seam {i}: t_end {} != next t_start {} (planner contract)",
+                a.t_end,
+                b.t_start,
+            );
+        } else {
+            assert!(
+                b.t_start >= a.t_end - 1e-9,
+                "seam {i} (cross-flush): move 2 starts ({}) before move 1 ends ({})",
+                b.t_start,
+                a.t_end,
+            );
+        }
         let x_left = x_pos_at(a, a.t_end);
         let x_right = x_pos_at(b, b.t_start);
         let diff = (x_left - x_right).abs();
@@ -523,20 +543,17 @@ fn slow_jogs_decelerate_to_zero_between() {
         );
     }
 
-    // Phase 4 Task 4.3 — cumulative dispatched X equals the full
-    // submitted distance (2.0 mm) within refit budget. Each flush
-    // synchronously committed its move's trailing decel-to-zero, so
-    // the wire saw both jogs end-to-end before the second flush
-    // returned. Pre-Task-4.3 this assertion was "0.5 mm < x < 2.0 mm"
-    // because flush left the trailing decel speculative; the tighter
-    // bound is the regression gate for synchronous flush-commit.
+    // Cumulative dispatched X equals the full submitted distance (2.0 mm)
+    // within refit budget. Each flush synchronously committed its move's
+    // trailing decel-to-zero, so the wire saw both jogs before the second
+    // flush returned (Task 4.3). Task 6 adds a clock-based wait on top but
+    // does not change the committed X distance.
     let terminal_seg = segs.last().unwrap();
     let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
     assert!(
         (terminal_x - 2.0).abs() < SEAM_BUDGET_MM,
         "terminal dispatched X = {} mm should equal 2.0 mm within refit \
-         budget {} mm — Phase 4 Task 4.3's flush-commit must have \
-         dispatched both moves' trailing decel-to-zero before return",
+         budget {} mm — both moves' trailing decel-to-zero must be on the wire",
         terminal_x,
         SEAM_BUDGET_MM,
     );

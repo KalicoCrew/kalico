@@ -582,3 +582,30 @@ fn z_only_move_no_prior_xy_motion() {
         "Z-only move without prior XY motion: Y deviated by {max_dev_y:.6}mm (expected < 10µm)",
     );
 }
+
+#[test]
+#[ignore] // slow (~250 ms+): exercises the real clock wait
+fn flush_blocks_until_motion_complete_by_clock() {
+    let (dispatch, _counter) = counting_dispatch();
+    let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+    let t0 = std::time::Instant::now();
+    h.submit_move(long_move()).unwrap();
+    h.flush().unwrap();
+    let elapsed = t0.elapsed().as_secs_f64();
+    assert!(elapsed >= 0.25 * 0.9, "flush returned too early: {:.4}s", elapsed); // ~LEAD floor
+    h.shutdown();
+}
+
+#[test]
+fn flush_then_move_dispatches_without_error() {
+    let (dispatch, counter) = counting_dispatch();
+    let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+    h.submit_move(long_move()).unwrap();
+    h.flush().unwrap();
+    let before = counter.load(Ordering::Relaxed);
+    let m2 = classify_and_build([200.0, 0.0, 0.0], 200.0, 0.0, 0.0, 0.0, 200.0).unwrap();
+    h.submit_move(m2).unwrap();
+    h.flush().unwrap();
+    assert!(counter.load(Ordering::Relaxed) > before);
+    h.shutdown();
+}

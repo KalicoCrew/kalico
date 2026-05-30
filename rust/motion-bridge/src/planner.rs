@@ -95,7 +95,11 @@ pub enum PlannerMsg {
         notify: Sender<()>,
     },
     Flush {
-        notify: Sender<()>,
+        /// Planner sends the wall-clock `Instant` at which all committed
+        /// motion finishes executing (`sync_instant + t_appended + LEAD`), or
+        /// `None` if nothing is in flight (no dispatch yet). The caller waits
+        /// until then before returning from `flush`.
+        notify: Sender<Option<Instant>>,
     },
     UpdateLimits(PlannerLimits),
     UpdateShaper(ShaperConfig),
@@ -314,17 +318,22 @@ impl PlannerHandle {
     }
 
     pub fn flush(&self) -> Result<(), PlannerError> {
-        eprintln!("[move-diag] planner.flush enter (caller wait_moves)");
         self.check_error()?;
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.sender
             .send(PlannerMsg::Flush { notify: tx })
             .map_err(|_| PlannerError::ChannelClosed)?;
         match rx.recv() {
-            Ok(()) => self.check_error(),
+            Ok(finish) => {
+                if let Some(deadline) = finish {
+                    let now = Instant::now();
+                    if deadline > now {
+                        std::thread::sleep(deadline - now);
+                    }
+                }
+                self.check_error()
+            }
             Err(_) => {
-                // Sender dropped: either pipeline error trashed pending_flush,
-                // or thread exited. Surface the stored error if present.
                 self.check_error()?;
                 Err(PlannerError::ChannelClosed)
             }
@@ -904,32 +913,11 @@ fn run_loop(
             }
 
             PlannerMsg::Flush { notify } => {
-                eprintln!(
-                    "[move-diag] Flush arm: last_append_time.is_some={} t_app={:.6} t_disp={:.6}",
-                    last_append_time.is_some(),
-                    state.t_appended,
-                    state.t_dispatched,
-                );
-                // Phase 4 Task 4.3 — `Flush` collapses `T_commit` → now
-                // (spec §3.4 lifecycle row). The streaming-native model
-                // holds the trailing decel-to-zero of the most recent
-                // `Move` speculatively until either the quiescence timer
-                // fires or a follow-on `Move` re-anchors the decel
-                // further out. `wait_moves` / `M400` / homing barriers
-                // need to block until *all* submitted motion is on the
-                // wire — including that held-back tail — so `Flush`
-                // synchronously invokes `commit_decel_to_zero` and
-                // dispatches the drained segments before notifying the
-                // waiter.
-                //
-                // Guarding on `last_append_time.is_some()` keeps the
-                // arm a no-op (modulo the notify) when the queue is
-                // already fully committed (every prior commit cleared
-                // the timer). The `_ok` ignore matches the timer arm's
-                // behaviour: a pipeline error has already been stored
-                // and will surface via `PlannerHandle::check_error` on
-                // the caller's next API entry.
-                if last_append_time.is_some() {
+                // Commit the held-back decel-to-zero (spec §E) so all submitted
+                // motion reaches the wire; idempotent when already committed.
+                // No timeline reset — the monotonic clock keeps running and the
+                // next move self-places via the placement rule.
+                if state.t_dispatched < state.t_appended - 1e-12 {
                     let _ok = run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
@@ -938,9 +926,20 @@ fn run_loop(
                         &last_move_time_bits,
                         &commit_fire_count,
                     );
-                    last_append_time = None;
                 }
-                let _ = notify.send(());
+                // The last committed piece ends at planner-time t_appended and
+                // executes at wall-clock sync_instant + t_appended + LEAD. Hand
+                // that finish instant back; the caller waits (keeps the run-loop
+                // responsive). `None` when nothing was ever dispatched.
+                // Mirror the next_timeout deadline policy: never panic the
+                // run-loop thread on a degenerate t_appended. A degenerate
+                // value yields ZERO → caller does not wait → the latched error
+                // (if any) still surfaces via the caller's check_error().
+                let finish = sync_instant.map(|t| {
+                    t + Duration::try_from_secs_f64(state.t_appended + LEAD)
+                        .unwrap_or(Duration::ZERO)
+                });
+                let _ = notify.send(finish);
             }
 
             PlannerMsg::Dwell { duration_s, notify } => {
