@@ -660,6 +660,14 @@ impl PieceSink for WireSink {
         // PushPieces is sent on KALICO_CHANNEL_PIECES (0x02). The response
         // (PushPiecesResponse) arrives on the control channel matched by
         // correlation_id — no change to the response handling path.
+        // DIAG(sip): time the PushPieces round-trip. If this is ~0.25s the
+        // first piece is committed to the ring ~that-late (the MCU commits
+        // before responding), eating the 0.25s lead → -308. REVERT after.
+        let _ptx_t0 = std::time::Instant::now();
+        let _ptx_wall = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_micros())
+            .unwrap_or(0);
         let (_kind, resp) = io
             .kalico_call_on_channel(
                 kalico_protocol::KALICO_CHANNEL_PIECES,
@@ -668,6 +676,21 @@ impl PieceSink for WireSink {
                 self.timeout,
             )
             .map_err(|e| format!("kalico_call PushPieces: {e:?}"))?;
+        {
+            use std::io::Write as _;
+            if let Ok(mut fh) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/home/dderg/printer_data/logs/piece-tx.log")
+            {
+                let _ = writeln!(
+                    fh,
+                    "[ptx-send] wall_us={} mcu={} axis={} count={} start_slot={} new_head={} call_us={}",
+                    _ptx_wall, key.mcu_id, key.axis, pieces.len(), start_slot, new_head,
+                    _ptx_t0.elapsed().as_micros(),
+                );
+            }
+        }
         use kalico_protocol::codec::Decode as _;
         let r = kalico_protocol::messages::PushPiecesResponse::decode(&resp)
             .map_err(|e| format!("decode PushPiecesResponse: {e:?}"))?;

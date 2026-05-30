@@ -2385,6 +2385,28 @@ impl PyMotionBridge {
                     }
                 }
 
+                // DIAG(sip): wall-clock at dispatch of the FIRST (fresh) segment
+                // so we can measure dispatch -> wire-send latency vs the
+                // PushPieces round-trip ([ptx-send]). REVERT after.
+                if fresh {
+                    use std::io::Write as _;
+                    if let Ok(mut fh) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("/home/dderg/printer_data/logs/piece-tx.log")
+                    {
+                        let wall = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_micros())
+                            .unwrap_or(0);
+                        let _ = writeln!(
+                            fh,
+                            "[ptx-disp] wall_us={} fresh seg.t_start={:.6} n_msgs={}",
+                            wall, seg.t_start, msgs.len(),
+                        );
+                    }
+                }
+
                 for m in msgs {
                     pump_tx_for_cb
                         .send(crate::pump::PumpMsg::Enqueue(m))
