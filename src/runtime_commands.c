@@ -253,11 +253,21 @@ DECL_COMMAND(command_runtime_software_trip,
 //
 // One active homing arm per MCU at a time, so a single static instance is
 // sufficient. (Multiple concurrent arms would need an array keyed by trsync.)
+// Re-arming while the prior signal is still registered is caught loudly by
+// trsync_add_signal itself (shutdown("Can't add signal that is already
+// active") in src/trsync.c), so the one-arm contract is enforced fail-loudly
+// rather than silently overwriting a live binding.
 static struct runtime_stop_binding {
     struct trsync_signal signal;
     uint32_t arm_id;
 } runtime_stop_binding;
 
+// IRQ-context invariant: trsync_do_trigger invokes this callback inside an
+// irq_save()/irq_restore() critical section, reachable from the timer-IRQ
+// path (trsync_expire_event) and from the endstop GPIO IRQ. So the C->Rust
+// kalico_software_trip call below MUST be non-blocking, allocation-free, and
+// lock-free against the curve-eval path. It is: it only records a trip into
+// the endstop state. (See docs/kalico-rewrite/mcu-c-rust-boundary.md.)
 static void
 runtime_stop_on_trigger_cb(struct trsync_signal *tss, uint8_t reason)
 {
@@ -266,7 +276,8 @@ runtime_stop_on_trigger_cb(struct trsync_signal *tss, uint8_t reason)
         container_of(tss, struct runtime_stop_binding, signal);
     uint32_t clock_lo = timer_read_time();
     uint32_t clock_hi = stats_send_time_high + (clock_lo < stats_send_time);
-    uint8_t status = 1; // NotArmed default
+    // NotArmed default; discarded — no reply channel from trigger/IRQ context.
+    uint8_t status = 1;
     (void)kalico_software_trip(b->arm_id, clock_lo, clock_hi, &status);
 }
 
