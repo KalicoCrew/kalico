@@ -1379,3 +1379,117 @@ fn live_limits_50mm_pure_x_completes_quickly() {
     );
 }
 
+// -----------------------------------------------------------------
+// advance_idle — monotonic-clock rest-hold primitive
+// -----------------------------------------------------------------
+
+/// Queued-ahead case: `target_t <= t_appended` is a no-op. Neither the
+/// timeline cursors nor the per-axis piece queues should change.
+#[test]
+fn advance_idle_is_noop_when_target_not_past_t_appended() {
+    let mut state = ShaperState::new([0.0; 4], &replan_shapers());
+    let ctx_replan = replan_context();
+    state
+        .append_and_replan(linear_x_segment(0.0, 200.0, 200.0), &ctx_replan)
+        .expect("append");
+    let t_app_before = state.t_appended;
+    let pieces_x_before = state.axes[0].pieces.len();
+
+    state.advance_idle(state.t_appended * 0.5); // target < t_appended
+
+    assert!(
+        (state.t_appended - t_app_before).abs() < 1e-12,
+        "queued-ahead: t_appended must not change"
+    );
+    assert_eq!(
+        state.axes[0].pieces.len(),
+        pieces_x_before,
+        "queued-ahead: no piece inserted"
+    );
+}
+
+/// Drained case: after `emit_committed` + `commit_decel_to_zero` the planner
+/// is fully dispatched (`t_dispatched == t_appended`). `advance_idle` must
+/// extend `t_appended` (and `t_decel_start`) to `target_t` by appending a
+/// constant-position (degree-0) rest piece on every shaped axis, and the
+/// position read via `current_position()` must be continuous across the hold.
+#[test]
+fn advance_idle_when_drained_extends_to_target_preserving_position() {
+    let mut state = ShaperState::new([0.0; 4], &replan_shapers());
+    let ctx_replan = replan_context();
+    state
+        .append_and_replan(linear_x_segment(0.0, 200.0, 200.0), &ctx_replan)
+        .expect("append");
+    // Commit fully so t_dispatched == t_appended (the post-decel state).
+    let kernels = replan_kernels_piecewise();
+    let halos: Vec<EHalo> = Vec::new();
+    let ctx_emit = emit_context_default(&kernels, &halos);
+    let _ = state.emit_committed(&ctx_emit).expect("emit");
+    let _ = state.commit_decel_to_zero(&ctx_emit).expect("commit");
+
+    let t_app_before = state.t_appended;
+    let pos_before = state.current_position(); // [f64; 4] at t_appended
+
+    let target = t_app_before + 0.3;
+    state.advance_idle(target);
+
+    assert!(
+        (state.t_appended - target).abs() < 1e-12,
+        "t_appended -> target"
+    );
+    assert!(
+        (state.t_decel_start - target).abs() < 1e-12,
+        "t_decel_start -> target"
+    );
+    assert!(
+        (state.t_dispatched - target).abs() < 1e-12,
+        "t_dispatched must advance to target"
+    );
+    let pos_after = state.current_position(); // now read at t_appended == target
+    for i in 0..4 {
+        assert!(
+            (pos_after[i] - pos_before[i]).abs() < 1e-6,
+            "axis {i} position must be continuous across the rest-hold"
+        );
+    }
+    // The hold piece on a shaped axis spans [t_app_before, target].
+    let last_x = state.axes[0].pieces.back().unwrap();
+    assert!(
+        (last_x.u_end - target).abs() < 1e-12,
+        "hold piece u_end must equal target"
+    );
+    assert!(
+        (last_x.u_start - t_app_before).abs() < 1e-12,
+        "hold piece u_start must equal t_app_before"
+    );
+}
+
+/// Regression guard for the `t_dispatched`-unchanged bug: after `advance_idle`,
+/// `append_and_replan` must plan the new move from `target_t` (now), not from
+/// the old `t_appended`. With the old code `t_dispatched` was left behind, so
+/// `replace_uncommitted_axis_pieces` dropped the hold (its `u_start` equalled
+/// the old `t_appended` which was `>= t_dispatched`) and planned the new move
+/// back at the old time — re-creating the -308 PieceStartInPast fault.
+#[test]
+fn advance_idle_then_append_places_new_move_at_target() {
+    let mut state = ShaperState::new([0.0; 4], &replan_shapers());
+    let ctx = replan_context();
+    let kernels = replan_kernels_piecewise();
+    let halos: Vec<EHalo> = Vec::new();
+    let ctx_emit = emit_context_default(&kernels, &halos);
+    // Move 1, fully committed (t_dispatched == t_appended).
+    state.append_and_replan(linear_x_segment(0.0, 200.0, 200.0), &ctx).expect("m1");
+    let _ = state.emit_committed(&ctx_emit).expect("emit1");
+    let _ = state.commit_decel_to_zero(&ctx_emit).expect("commit1");
+    let t_after_m1 = state.t_appended;
+
+    let target = t_after_m1 + 0.5;
+    state.advance_idle(target);
+    assert!((state.t_dispatched - target).abs() < 1e-12, "t_dispatched must advance to target");
+
+    // The next move must plan from `target` (now), not from t_after_m1.
+    state.append_and_replan(linear_x_segment(200.0, 400.0, 200.0), &ctx).expect("m2");
+    let m2_start = state.uncommitted_moves.front().expect("m2 queued").t_start;
+    assert!((m2_start - target).abs() < 1e-9,
+        "new move must start at target (now), got {m2_start} vs target {target}");
+}
