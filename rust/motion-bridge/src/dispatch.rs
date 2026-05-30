@@ -100,6 +100,41 @@ pub fn motor_frame_xy(cfg: &McuAxisConfig, x: f64, y: f64) -> (f64, f64) {
     }
 }
 
+/// One MCU's motor-frame seed, already Q16.16-encoded for the
+/// `runtime_seed_position` wire command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SeedSend {
+    pub mcu_id: u32,
+    pub x_q16: i32,
+    pub y_q16: i32,
+    pub z_q16: i32,
+}
+
+/// Encode millimetres as Q16.16 fixed point (the `runtime_seed_position` wire
+/// format), rounding to nearest and clamping into `i32` range.
+pub fn encode_q16(mm: f64) -> i32 {
+    let raw = mm * 65536.0;
+    raw.round().clamp(i32::MIN as f64, i32::MAX as f64) as i32
+}
+
+/// Build one [`SeedSend`] per configured MCU: apply the per-MCU motor-frame
+/// transform to `(x, y)` (Z always passthrough) and Q16.16-encode. Pure — the
+/// caller performs the actual `runtime_seed_position` send.
+pub fn build_seed_sends(configs: &[McuAxisConfig], x: f64, y: f64, z: f64) -> Vec<SeedSend> {
+    configs
+        .iter()
+        .map(|cfg| {
+            let (mx, my) = motor_frame_xy(cfg, x, y);
+            SeedSend {
+                mcu_id: cfg.mcu_id,
+                x_q16: encode_q16(mx),
+                y_q16: encode_q16(my),
+                z_q16: encode_q16(z),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod seed_tests {
     use super::*;
@@ -132,5 +167,30 @@ mod seed_tests {
         assert_eq!(motor_frame_xy(&corexy_cfg(), 150.0, 150.0), (300.0, 0.0));
         assert_eq!(motor_frame_xy(&corexy_cfg(), 10.0, 4.0), (14.0, 6.0));
         assert_eq!(motor_frame_xy(&cartesian_z_cfg(), 150.0, 150.0), (150.0, 150.0));
+    }
+
+    #[test]
+    fn encode_q16_is_mm_times_65536_rounded() {
+        assert_eq!(encode_q16(0.0), 0);
+        assert_eq!(encode_q16(50.0), 3_276_800);     // 50 * 65536
+        assert_eq!(encode_q16(150.0), 9_830_400);    // 150 * 65536
+        assert_eq!(encode_q16(300.0), 19_660_800);   // 300 * 65536
+    }
+
+    #[test]
+    fn build_seed_sends_applies_per_mcu_transform() {
+        let configs = vec![corexy_cfg(), cartesian_z_cfg()];
+        let sends = build_seed_sends(&configs, 150.0, 150.0, 50.0);
+        assert_eq!(sends.len(), 2);
+
+        let octo = sends.iter().find(|s| s.mcu_id == 1).expect("octopus seed");
+        assert_eq!(octo.x_q16, encode_q16(300.0)); // motor-A = X+Y
+        assert_eq!(octo.y_q16, encode_q16(0.0));   // motor-B = X-Y
+        assert_eq!(octo.z_q16, encode_q16(50.0));  // Z passthrough
+
+        let z = sends.iter().find(|s| s.mcu_id == 2).expect("f446 seed");
+        assert_eq!(z.x_q16, encode_q16(150.0));    // cartesian passthrough
+        assert_eq!(z.y_q16, encode_q16(150.0));
+        assert_eq!(z.z_q16, encode_q16(50.0));
     }
 }
