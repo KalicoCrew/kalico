@@ -682,28 +682,27 @@ fn get_position_and_velocity(
         //   was NOT peek-visible for most of that window => VISIBILITY FLICKER.
         // gap_max ≈ lateness -> one big starvation gap straddled start_time.
         // REVERT to the bare `raise_piece_start_in_past` call after concluding.
-        // SIPDIAG16: DIRECT discriminator. `front_seen_idle` is true iff this
-        // faulting front piece was EVER peeked with now < start_time (visible
-        // before it started). With the arithmetic already showing lateness
-        // (607-1074µs) > gap_max (~199µs) — impossible on the visible-early
-        // path, where lateness <= one straddling gap — the prediction is
-        // front_seen_idle == FALSE: the piece was BORN LATE (host committed it
-        // already past start_time), never visible-early. flag==TRUE would
-        // instead mean visible-early-then-lost (true flicker) — keep both
-        // gap_max and the flag so the two are decided in ONE run.
-        //   bit 31     : front_seen_idle (1 = visible-early, 0 = born-late)
-        //   bits 30..16: lateness µs (15-bit, cap 0x7FFF ≈ 32ms)
-        //   bits 15..0 : run-max TIM5 inter-tick gap µs (16-bit, cap 0xFFFF)
+        // SIPDIAG18: born-late is confirmed (front_seen_idle=0) and lead-invariant
+        // → consumption-rate hypothesis: the engine drains <=1 piece per tick, so a
+        // burst of pieces shorter than the tick period (100µs @ 10kHz) cannot be
+        // drained fast enough and piles up into the past. Pack the two tests:
+        //   bit  31    : front_seen_idle (1 = visible-early, 0 = born-late)
+        //   bits 30..21: consumed_count (10-bit, cap 1023) — #pieces popped before
+        //                the fault. 0 = FIRST piece faulted; >0 = a SUBSEQUENT
+        //                piece (answers "first vs subsequent").
+        //   bits 20..10: lateness µs (11-bit, cap 2047)
+        //   bits  9..0 : faulting piece duration µs (10-bit, cap 1023) — if short
+        //                (< tick period) it supports the pile-up mechanism.
         // REVERT to the bare `raise_piece_start_in_past` call after concluding.
         let _ = axis_idx;
         let lateness_cyc = now.saturating_sub(next_entry.start_time); // u64
-        let gap_max_cyc = u64::from(crate::tick::TICK_GAP_MAX_CYC.load(Ordering::Relaxed));
         let cyc_per_us = (cycles_per_second / 1.0e6) as u64; // ≈520 on H7
         let to_us = |c: u64, cap: u64| if cyc_per_us > 0 { (c / cyc_per_us).min(cap) } else { cap };
         let seen_idle_bit: u32 = if axis.front_seen_idle { 1 } else { 0 };
-        let lateness_us = to_us(lateness_cyc, 0x7FFF) as u32;
-        let gap_max_us = to_us(gap_max_cyc, 0xFFFF) as u32;
-        let detail = (seen_idle_bit << 31) | (lateness_us << 16) | gap_max_us;
+        let consumed = (axis.ring.consumed_count() & 0x3FF) as u32; // cap 1023
+        let lateness_us = to_us(lateness_cyc, 0x7FF) as u32; // cap 2047
+        let dur_us = ((next_entry.duration * 1.0e6) as u32).min(0x3FF); // cap 1023µs
+        let detail = (seen_idle_bit << 31) | (consumed << 21) | (lateness_us << 10) | dur_us;
         shared.fault_detail.store(detail, Ordering::Release);
         shared
             .last_error
