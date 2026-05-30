@@ -690,15 +690,6 @@ fn run_loop(
         );
     }
 
-    // Phase 4 Task 4.1 — `last_append_time` tracks whether a held-back tail
-    // exists. `Some(t)` means a real append landed at `t`; `None` means the
-    // queue is fully quiesced or no append has happened yet. After Task 4
-    // (clock-derived decel-commit deadline), `last_append_time` is no longer
-    // the timeout trigger — `next_timeout` is now computed from
-    // `t_dispatched + LEAD - SAFETY_MARGIN` vs. `sync_instant`. The variable
-    // survives as the "held-back tail proxy" used by `Flush`, `UpdateShaper`,
-    // and `ClockSyncRearm` to decide whether to drain before acting.
-    let mut last_append_time: Option<Instant> = None;
     let mut last_recv_time: Option<Instant> = None;
     // The `Instant` of the stream's first dispatch. `None` until the first
     // non-empty dispatch after a genuine reset; re-set to `None` on every
@@ -904,12 +895,9 @@ fn run_loop(
                     rectify_last_move_time(&last_move_time_bits, delta);
                 }
 
-                // Arm / re-arm the quiescence-commit timer. Setting
-                // `last_append_time = Some(Instant::now())` on every
-                // successful append (even when `emit_committed` produced
-                // nothing this round) is what makes the timer the single
-                // "did the user stop submitting moves?" signal.
-                last_append_time = Some(Instant::now());
+                // The quiescence-commit timer is armed by the cursor guard
+                // `state.t_dispatched < state.t_appended - 1e-12` in
+                // `next_timeout` — no separate tracking variable needed.
             }
 
             PlannerMsg::Flush { notify } => {
@@ -973,9 +961,9 @@ fn run_loop(
                 //
                 // The drain uses the run-loop's existing commit path
                 // (`run_commit_and_dispatch`, shared with `Flush` and
-                // the quiescence-timer fire). The post-drain
-                // `last_append_time = None` matches the other two
-                // call-sites' invariant.
+                // the quiescence-timer fire). The cursor guard
+                // `t_dispatched < t_appended - 1e-12` is the single
+                // "held-back tail" signal across all commit call-sites.
                 //
                 // The handler then rebuilds the kernels / replan
                 // context on the updated config and **also** rebuilds
@@ -994,7 +982,7 @@ fn run_loop(
                 // multi-axis already so we can't single-axis the
                 // drain on the receive side without re-shaping the
                 // message.
-                if last_append_time.is_some() {
+                if state.t_dispatched < state.t_appended - 1e-12 {
                     let _ok = run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
@@ -1003,7 +991,6 @@ fn run_loop(
                         &last_move_time_bits,
                         &commit_fire_count,
                     );
-                    last_append_time = None;
                 }
                 config.shaper = s;
                 let shapers = shaper_config_to_axis_shapers(&config.shaper);
@@ -1020,15 +1007,16 @@ fn run_loop(
                 //
                 // Reset the run-loop's quiescence-timer book-keeping
                 // alongside the state — a held-back tail from the prior
-                // timeline is no longer meaningful and the planner is
-                // back to "no append observed since reset." The commit
-                // counter is observability state; we keep it monotonic
-                // across resets so the test/diagnostic counters reflect
+                // timeline is no longer meaningful. After reset,
+                // `state.t_dispatched == state.t_appended == 0` so the
+                // cursor guard (`t_dispatched < t_appended - 1e-12`) is
+                // false and no spurious commit fires. The commit counter
+                // is observability state; we keep it monotonic across
+                // resets so the test/diagnostic counters reflect
                 // cumulative timer-fire history (resetting it would
                 // confuse downstream consumers reading the AtomicU32).
                 sync_instant = None; // re-captured at next first dispatch
                 state.reset(home_pos);
-                last_append_time = None;
             }
 
             PlannerMsg::Underrun { recovered_pos } | PlannerMsg::ForceIdle { recovered_pos } => {
@@ -1048,10 +1036,11 @@ fn run_loop(
                 // and re-seeds each axis queue with the new home
                 // position at `v = 0`. Per-axis kernels are
                 // preserved (this is a position re-anchor, not a
-                // shaper config swap). The run-loop's
-                // `last_append_time` is reset alongside the state — a
-                // held-back tail from the prior timeline is no longer
-                // meaningful.
+                // shaper config swap). After reset,
+                // `state.t_dispatched == state.t_appended == 0` so the
+                // cursor guard (`t_dispatched < t_appended - 1e-12`)
+                // correctly reads "no held-back tail" — a held-back
+                // tail from the prior timeline is no longer meaningful.
                 //
                 // **Scope note for Task 5.2 bridge integration.** The
                 // bridge currently surfaces `RuntimeEvent::Fault` to
@@ -1075,7 +1064,6 @@ fn run_loop(
                 // constructs a fresh `ShaperState`.
                 sync_instant = None; // re-captured at next first dispatch
                 state.reset(recovered_pos);
-                last_append_time = None;
             }
 
             PlannerMsg::ClockSyncRearm { new_bias: _ } => {
@@ -1131,7 +1119,7 @@ fn run_loop(
                 // the variant is retained so the wire-format is
                 // forward-compatible once the bridge takes the
                 // ordering-(1) path.
-                if last_append_time.is_some() {
+                if state.t_dispatched < state.t_appended - 1e-12 {
                     let _ok = run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
@@ -1140,7 +1128,6 @@ fn run_loop(
                         &last_move_time_bits,
                         &commit_fire_count,
                     );
-                    last_append_time = None;
                 }
             }
 
