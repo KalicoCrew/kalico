@@ -208,6 +208,34 @@ impl ReactorHarness {
         }
     }
 
+    /// Like [`new`] but uses an explicit parser.
+    ///
+    /// Use this when the test needs to inject inbound frames that the reactor
+    /// must decode (e.g. `kalico_endstop_tripped` for relay interceptor tests).
+    /// The harness otherwise starts with an empty parser that cannot decode any
+    /// msgid and will silently drop all inbound data frames.
+    pub fn new_with_parser(parser: Arc<MsgProtoParser>) -> Self {
+        let (port, port_handles) = FakeSerialPort::new();
+        let clock = MockClock::new();
+        let (submission_tx, submission_rx) = std::sync::mpsc::channel();
+        let status_snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+        let config = KalicoHostIoConfig::default();
+        let reactor = Reactor::new_for_tests(
+            port,
+            parser,
+            submission_rx,
+            status_snapshot,
+            config,
+            clock.clone(),
+        );
+        Self {
+            reactor,
+            clock,
+            port_handles,
+            submission_tx,
+        }
+    }
+
     /// Construct a harness with an explicit `IdentifySeqState`, simulating
     /// a reactor coming up after identify burned a non-zero number of
     /// sequences. Used by the H7 regression test (spec §3.3, §5.2).
@@ -289,6 +317,37 @@ impl ReactorHarness {
             deadline,
         );
         rx
+    }
+
+    // ── Interceptor helpers (used by relay integration tests) ──────────────
+
+    /// Register a frame interceptor on the harness reactor synchronously.
+    ///
+    /// Sends `ReactorCommand::RegisterInterceptor`, ticks once to process it,
+    /// then reads the allocated [`InterceptorId`] from the reply channel.
+    /// Mirrors what [`kalico_host_rt::host_io::KalicoHostIo::register_frame_interceptor`]
+    /// does against a live background reactor, but works on the single-threaded
+    /// test harness.
+    pub fn register_interceptor(
+        &mut self,
+        msg_name: &str,
+        oid: Option<u32>,
+        callback: Box<dyn Fn(&crate::transport::MessageParams) + Send + Sync>,
+    ) -> crate::host_io::InterceptorId {
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        self.submission_tx
+            .send(crate::host_io::ReactorCommand::RegisterInterceptor {
+                msg_name: msg_name.to_owned(),
+                oid,
+                callback: crate::host_io::interceptor::InterceptorCallback(callback),
+                reply: reply_tx,
+            })
+            .expect("submission_tx send failed in register_interceptor");
+        // Tick once so the reactor processes the RegisterInterceptor command.
+        self.reactor.tick_once();
+        reply_rx
+            .recv()
+            .expect("reply_rx recv failed in register_interceptor")
     }
 
     // ── Passthrough-router helpers (used by external integration tests) ──

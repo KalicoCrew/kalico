@@ -34,6 +34,11 @@ thiserror = { workspace = true }
 [dev-dependencies]
 rustfft = "6"
 heapless = { workspace = true }
+kalico-host-rt = { path = "../kalico-host-rt", features = ["test-harness"] }
+
+[[test]]
+name = "relay_reactor_integration"
+required-features = []
 
 [lints]
 workspace = true
