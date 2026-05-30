@@ -653,34 +653,30 @@ fn get_position_and_velocity(
     // Fault check: piece start_time is too far in the past.
     let fault_tolerance = u64::from(sample_period_cycles) * 2;
     if now.saturating_sub(next_entry.start_time) > fault_tolerance {
-        // DIAG(sip) SIPDIAG12: SIPDIAG11 proved the longest foreground PRIMASK
-        // window is ~1µs, so no foreground critical section blocks TIM5. The
-        // blocker is the SysTick scheduler: SysTick is priority 2 (== TIM5), so
-        // equal-priority TIM5 cannot preempt an active SysTick_Handler — it is
-        // blocked for the handler's FULL entry->exit duration (callbacks + the
-        // up-to-100µs busy-waits in timer_dispatch_many). armcm_timer.c now
-        // records that max in `kalico_systick_max_cyc`. Cross-check it against
-        // the TIM5 inter-tick gap that actually triggered this fault:
-        //   high 16 = SysTick_Handler max duration µs (cap 0xFFFF).
-        //   low  16 = TIM5 gap at fault µs (cap 0xFFFF).
-        // systick_max ≈ gap ≈ 200µs => the SysTick batch IS the TIM5 starvation.
+        // DIAG(sip) SIPDIAG13: the existing diag_tim5_account proves the TIM5
+        // handler entry->exit max is 605 cyc (~1.16µs) over 8.8M ticks (hist all
+        // in bucket 0, no DIAG_EV_TIM5_LONG) — so the body is ALWAYS short, the
+        // 200µs gap is a GENUINE entry-to-entry no-fire (ffi-gap and true-entry
+        // gap can differ by at most the <=605cyc handler width), and both the
+        // "long body" and "sampling point" hypotheses are dead. The remaining
+        // open question (panel red-team): lateness (now - start_time) and the
+        // gap are DIFFERENT quantities never latched together. Latch BOTH now:
+        //   high 16 = lateness µs = (now - start_time) (cap 0xFFFF = 65ms).
+        //   low  16 = TIM5 inter-tick gap µs (cap 0xFFFF).
+        // Decode:
+        //   lateness ≈ gap ≈ 200  -> genuine arm-coincident 200µs starvation.
+        //   lateness ≈ 20000-30000, gap ≈ 25 -> CLOCK-DOMAIN skew (gap is a red
+        //                                        herring; engine-now runs ahead
+        //                                        of the host-stats start_time).
+        //   lateness ≈ 55, gap ≈ 200 -> tolerance/boundary miss decoupled from
+        //                               a separate 200µs gap event.
         // REVERT to the bare `raise_piece_start_in_past` call after concluding.
         let _ = axis_idx;
-        // Scoped unsafe (the crate is `-D unsafe-code`; deny is overridable,
-        // unlike forbid). Reads a plain u32 C global from armcm_timer.c.
-        #[allow(unsafe_code)]
-        fn read_systick_max() -> u32 {
-            unsafe extern "C" {
-                static kalico_systick_max_cyc: u32;
-            }
-            // SAFETY: single-word volatile read of a C-owned u32 global.
-            unsafe { core::ptr::read_volatile(core::ptr::addr_of!(kalico_systick_max_cyc)) }
-        }
-        let systick_cyc = read_systick_max();
-        let gap_cyc = crate::tick::TICK_GAP_CYC.load(Ordering::Relaxed);
-        let cyc_per_us = (cycles_per_second / 1.0e6) as u32; // ≈520 on H7
-        let to_us = |c: u32| if cyc_per_us > 0 { (c / cyc_per_us).min(0xFFFF) } else { 0xFFFF };
-        let detail = (to_us(systick_cyc) << 16) | to_us(gap_cyc);
+        let lateness_cyc = now.saturating_sub(next_entry.start_time); // u64
+        let gap_cyc = u64::from(crate::tick::TICK_GAP_CYC.load(Ordering::Relaxed));
+        let cyc_per_us = (cycles_per_second / 1.0e6) as u64; // ≈520 on H7
+        let to_us = |c: u64| if cyc_per_us > 0 { (c / cyc_per_us).min(0xFFFF) } else { 0xFFFF };
+        let detail = ((to_us(lateness_cyc) << 16) | to_us(gap_cyc)) as u32;
         shared.fault_detail.store(detail, Ordering::Release);
         shared
             .last_error
