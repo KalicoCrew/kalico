@@ -668,28 +668,24 @@ fn get_position_and_velocity(
         // gap are DIFFERENT quantities never latched together. Latch BOTH now:
         //   high 16 = lateness µs = (now - start_time) (cap 0xFFFF = 65ms).
         //   low  16 = TIM5 inter-tick gap µs (cap 0xFFFF).
-        // SIPDIAG14: SIPDIAG13 measured lateness=1074µs vs gap=199µs — decoupled,
-        // and (sub-wrap) refutes clock-domain skew, so `now` is genuinely 1074µs
-        // past start_time IN-DOMAIN. A single 199µs gap can't make the arm 1074µs
-        // late, so the question is whether the first piece was VISIBLE before
-        // start_time (starvation) or only after it (commit/visibility). Latch the
-        // idle-with-visible-piece count vs the lateness:
-        //   high 16 = idle-visible tick count (cap 0xFFFF).
-        //   low  16 = lateness µs (cap 0xFFFF).
-        // idle_visible ~10k+ -> visible early, late arm is genuine starvation.
-        // idle_visible ~0    -> piece became peekable only AFTER start_time
-        //                       (commit/visibility bug — NOT starvation).
+        // SIPDIAG15: SIPDIAG14 showed idle_visible=2282 (~28ms) — piece 0 IS
+        // peek-visible ~28ms before start_time — and lateness=607µs. With
+        // lateness (1074µs in SIPDIAG13) > gap (199µs), the faulting tick does
+        // NOT immediately follow an idle-visible tick. Discriminate flicker vs
+        // one-big-gap by latching lateness against the run-MAX gap:
+        //   high 16 = lateness µs (cap 0xFFFF).
+        //   low  16 = run-max TIM5 inter-tick gap µs (cap 0xFFFF).
+        // gap_max < lateness  -> engine ticked through [start_time, fault] with
+        //   no single gap that long, yet didn't fault until the end => piece 0
+        //   was NOT peek-visible for most of that window => VISIBILITY FLICKER.
+        // gap_max ≈ lateness -> one big starvation gap straddled start_time.
         // REVERT to the bare `raise_piece_start_in_past` call after concluding.
         let _ = axis_idx;
         let lateness_cyc = now.saturating_sub(next_entry.start_time); // u64
+        let gap_max_cyc = u64::from(crate::tick::TICK_GAP_MAX_CYC.load(Ordering::Relaxed));
         let cyc_per_us = (cycles_per_second / 1.0e6) as u64; // ≈520 on H7
-        let lateness_us = if cyc_per_us > 0 {
-            (lateness_cyc / cyc_per_us).min(0xFFFF)
-        } else {
-            0xFFFF
-        } as u32;
-        let idle_visible = crate::tick::IDLE_VISIBLE_COUNT.load(Ordering::Relaxed).min(0xFFFF);
-        let detail = (idle_visible << 16) | lateness_us;
+        let to_us = |c: u64| if cyc_per_us > 0 { (c / cyc_per_us).min(0xFFFF) } else { 0xFFFF };
+        let detail = ((to_us(lateness_cyc) << 16) | to_us(gap_max_cyc)) as u32;
         shared.fault_detail.store(detail, Ordering::Release);
         shared
             .last_error
