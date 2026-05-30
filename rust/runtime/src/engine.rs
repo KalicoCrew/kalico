@@ -653,23 +653,39 @@ fn get_position_and_velocity(
     // Fault check: piece start_time is too far in the past.
     let fault_tolerance = u64::from(sample_period_cycles) * 2;
     if now.saturating_sub(next_entry.start_time) > fault_tolerance {
-        // DIAG(sip): late_cycles (now - start_time) is already known sub-wrap
-        // (~246µs-1ms). Emit instead the INTER-TICK GAP at the faulting tick
-        // (now - prev_tick_now) so we can tell WHY the engine missed the
-        // [start_time, start_time+50µs] arming window:
-        //   gap ≈ 13000 cyc  (25µs, one period) → ticks were smooth; the engine
-        //         peeked the piece every tick but still faulted (logic issue:
-        //         piece not the head, stale has_piece, or a non-tick mechanism).
-        //   gap ≫ 13000 cyc (e.g. ~200000 = ~400µs) → the TIM5 ISR was starved
-        //         / skipped ticks at arm-time, so `now` jumped past the window.
-        // The TICK_GAP_MAX is the largest gap seen all run (not just this tick).
+        // DIAG(sip) SIPDIAG9: SIPDIAG8 already proved the TIM5 ISR is starved
+        // ~200µs at arm-time (gap == run-max gap, sub-wrap). The only contiguous
+        // irq-disabled stretch that long is a SINGLE Klipper timer callback
+        // dispatched by SysTick_Handler (priority 2, same as TIM5, irq_disable
+        // held across each `t->func(t)`). The C side (sched.c) now times every
+        // callback; `kalico_dispatch_max_cyc` / `_func` hold the longest one and
+        // its function pointer. Pack BOTH so the host can name the offender:
+        //   high 8 bits = duration in µs (cap 255) → confirms ≈200µs.
+        //   low 24 bits = func & 0x00FF_FFFF → reconstruct on host as
+        //                 0x0800_0000 | low24 (H7 flash is 0x08xx_xxxx), then
+        //                 addr2line out/klipper.elf <addr> names the callback.
         // REVERT to the bare `raise_piece_start_in_past` call after concluding.
         let _ = axis_idx;
-        let gap = crate::tick::TICK_GAP_CYC.load(Ordering::Relaxed);
-        let gap_max = crate::tick::TICK_GAP_MAX_CYC.load(Ordering::Relaxed);
-        // Pack: high 16 = min(gap_max/16, 0xFFFF), low 16 = min(gap/16, 0xFFFF)
-        // (units of 16 cycles ≈ 30ns; resolves up to ~2ms per field).
-        let detail = ((gap_max / 16).min(0xFFFF) << 16) | (gap / 16).min(0xFFFF);
+        // Scoped unsafe (the crate is `-D unsafe-code`; deny is overridable,
+        // unlike forbid). Reads two plain u32 C globals from sched.c.
+        #[allow(unsafe_code)]
+        fn read_dispatch_max() -> (u32, u32) {
+            unsafe extern "C" {
+                static kalico_dispatch_max_cyc: u32;
+                static kalico_dispatch_max_func: u32;
+            }
+            // SAFETY: single-word volatile reads of C-owned u32 globals.
+            unsafe {
+                (
+                    core::ptr::read_volatile(core::ptr::addr_of!(kalico_dispatch_max_cyc)),
+                    core::ptr::read_volatile(core::ptr::addr_of!(kalico_dispatch_max_func)),
+                )
+            }
+        }
+        let (dmax_cyc, dmax_func) = read_dispatch_max();
+        let cyc_per_us = (cycles_per_second / 1.0e6) as u32; // ≈520 on H7
+        let dmax_us = if cyc_per_us > 0 { (dmax_cyc / cyc_per_us).min(0xFF) } else { 0xFF };
+        let detail = (dmax_us << 24) | (dmax_func & 0x00FF_FFFF);
         shared.fault_detail.store(detail, Ordering::Release);
         shared
             .last_error

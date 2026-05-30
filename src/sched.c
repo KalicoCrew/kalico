@@ -276,6 +276,15 @@ static volatile uint32_t sched_dispatch_history_addr[SCHED_DISPATCH_HISTORY_N];
 static volatile uint32_t sched_dispatch_history_func[SCHED_DISPATCH_HISTORY_N];
 static volatile uint32_t sched_dispatch_history_idx;
 
+// SIPDIAG9: longest single timer-callback execution observed, in CYCCNT
+// cycles, plus the func pointer of that callback. SysTick_Handler runs at
+// priority 2 (same as the TIM5 evaluator) with irq_disable held across each
+// callback, so one long callback blocks the 40 kHz evaluator ISR for its full
+// duration. Capturing the max + offender lets the host addr2line the callback
+// that starves the evaluator at piece arm-time. Read from the Rust -308 path.
+volatile uint32_t kalico_dispatch_max_cyc;
+volatile uint32_t kalico_dispatch_max_func;
+
 void
 sched_get_dispatch_history(uint32_t *idx,
                            uint32_t addrs[SCHED_DISPATCH_HISTORY_N],
@@ -312,7 +321,15 @@ sched_timer_dispatch(void)
     // step pulses from the TIM5 ISR via runtime_emit_step_pulses, not by
     // queueing timer callbacks. All scheduled timers now go through
     // t->func(t).
+    // SIPDIAG9: time the callback itself — this runs with irq_disable held
+    // (SysTick context), so its duration is exactly how long TIM5 is starved.
+    uint32_t st_t0 = timer_read_time();
     uint_fast8_t res = t->func(t);
+    uint32_t st_dur = timer_read_time() - st_t0;
+    if (st_dur > kalico_dispatch_max_cyc) {
+        kalico_dispatch_max_cyc = st_dur;
+        kalico_dispatch_max_func = (uint32_t)t->func;
+    }
     uint32_t updated_waketime = t->waketime;
 
     // Update timer_list (rescheduling current timer if necessary)
