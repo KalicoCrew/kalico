@@ -139,6 +139,25 @@ fn relaxed_limits() -> PlannerLimits {
 }
 
 // ---------------------------------------------------------------------------
+// Commit-wait helper
+// ---------------------------------------------------------------------------
+
+/// Poll until the planner has fired at least `target` decel-commits, or panic
+/// after 5s. Deterministic replacement for a fixed sleep when waiting for the
+/// clock-derived commit deadline to fire.
+fn wait_for_commits(h: &PlannerHandle, target: u32) {
+    let start = std::time::Instant::now();
+    while h.commit_fire_count() < target {
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "commit fired only {} of {target} times within 5s",
+            h.commit_fire_count()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Segment helpers
 // ---------------------------------------------------------------------------
 
@@ -641,10 +660,10 @@ fn replan_during_long_cruise_preserves_committed_position() {
 // Phase 4 Task 4.1 — quiescence-commit timer wiring
 // ---------------------------------------------------------------------------
 
-/// Submitting a single move and then idling past `T_commit` (~50 ms) must
-/// cause the planner thread's quiescence timer to fire and invoke
-/// `ShaperState::commit_decel_to_zero` exactly once. We observe the timer
-/// wiring via the planner-handle counter (`PlannerHandle::commit_fire_count`).
+/// Submitting a single move and then idling past the clock-derived decel-commit
+/// deadline must cause the planner thread to invoke
+/// `ShaperState::commit_decel_to_zero` exactly once. We observe the wiring
+/// via the planner-handle counter (`PlannerHandle::commit_fire_count`).
 ///
 /// **Why this is sufficient as a wiring test.** Under Task 4.2 the commit
 /// handler actually dispatches the held-back trailing decel-to-zero, but
@@ -652,16 +671,18 @@ fn replan_during_long_cruise_preserves_committed_position() {
 /// "dispatch reaches the wire" property is covered by
 /// `commit_after_quiescence_dispatches_terminal_decel` below.
 ///
-/// **Why ~150 ms.** `T_commit` is 50 ms; we wait 150 ms to give the
-/// scheduler comfortable headroom over `T_commit` plus the
-/// `append_and_replan` work the move triggers (typically tens of ms for a
-/// short move under β-medium). On a wedged thread the counter stays at 0
-/// and the assertion fails fast.
+/// **Task 4 clock-derived deadline.** The old fixed 50 ms `T_COMMIT` was
+/// replaced by `t_dispatched + LEAD - SAFETY_MARGIN`. For a 1 mm move at
+/// 100 mm/s, `t_dispatched ≈ 71 ms`; with `LEAD = 250 ms` and
+/// `SAFETY_MARGIN = 50 ms` the deadline fires at ≈ 271 ms after
+/// `sync_instant` (the moment of first dispatch). 500 ms from submit
+/// covers both the planner thread's processing time and the deadline with
+/// ample scheduler headroom.
 ///
 /// **Phase 4 Task 4.3 note.** `flush` now also invokes
 /// `commit_decel_to_zero` synchronously. To keep this test focused on
 /// the *timer* path, we do NOT call `flush` after the submit — instead
-/// we sleep directly past `T_commit`. The counter increment is then
+/// we sleep directly past the deadline. The counter increment is then
 /// solely the timer's responsibility.
 #[test]
 fn quiescence_timer_fires_after_single_move() {
@@ -681,34 +702,24 @@ fn quiescence_timer_fires_after_single_move() {
     // No `flush` here — Phase 4 Task 4.3 made `flush` force-commit, so
     // calling it would increment the counter via the Flush arm rather
     // than the Timeout arm under test. The wall-clock sleep below
-    // covers both `append_and_replan`'s work and the `T_commit`
-    // window.
+    // covers both `append_and_replan`'s work and the clock-derived
+    // deadline window.
 
-    // Wait comfortably past `T_commit` (50 ms). 150 ms accommodates host
-    // scheduler jitter plus the `append_and_replan` work the move
-    // triggers, and gives a clear margin over the 50 ms threshold.
-    std::thread::sleep(Duration::from_millis(150));
-
+    // Poll until the clock-derived decel-commit deadline fires (≈ 271 ms
+    // for this 1 mm move). `wait_for_commits` retries every 2 ms up to
+    // 5 s, avoiding a fixed 500 ms sleep that can be tight on slow CI.
+    wait_for_commits(&h, 1);
     let fires = h.commit_fire_count();
-    assert!(
-        fires >= 1,
-        "commit_decel_to_zero was never invoked after {} ms of quiescence (got {} fires)",
-        150,
-        fires,
-    );
 
-    // The run-loop disarms `last_append_time` after firing, so a second
-    // sleep should NOT produce more fires (the timer is one-shot per
-    // `Move`). The Task 4.2 handler is also idempotent — even if the
-    // timer were to re-fire spuriously, the second call would return
-    // empty — but the disarm is the authoritative invariant Task 4.1 +
-    // 4.2 jointly establish.
-    std::thread::sleep(Duration::from_millis(150));
+    // Once the deadline fired and t_dispatched == t_appended, the
+    // `next_timeout` guard returns `T_IDLE` (no held-back tail), so the
+    // deadline must NOT re-fire without a new submit_move.
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         h.commit_fire_count(),
         fires,
         "commit timer re-fired without a new submit_move — \
-         the disarm step in run_loop's timeout branch is broken",
+         the t_dispatched < t_appended guard in run_loop's timeout branch is broken",
     );
 
     h.shutdown();
@@ -718,8 +729,8 @@ fn quiescence_timer_fires_after_single_move() {
 // Phase 4 Task 4.2 — commit_decel_to_zero dispatches the trailing decel
 // ---------------------------------------------------------------------------
 
-/// Submitting a single 1 mm move and idling past `T_commit + h + slack`
-/// must dispatch the **full** `[0, t_appended]` range — including the
+/// Submitting a single 1 mm move and idling past the clock-derived decel-commit
+/// deadline must dispatch the **full** `[0, t_appended]` range — including the
 /// trailing decel-to-zero region `emit_committed` deliberately held back.
 /// The cumulative final X position must reach ~1.0 mm within the C¹ refit
 /// budget (50 µm under `smooth_zv_186hz_config`).
@@ -731,15 +742,18 @@ fn quiescence_timer_fires_after_single_move() {
 /// constant-extension at `(end_pos, v = 0)`, so the dispatched cumulative
 /// X matches the submitted distance.
 ///
+/// **Task 4 clock-derived deadline.** The old fixed 50 ms `T_COMMIT` was
+/// replaced. For this 1 mm move the deadline fires at ≈ 271 ms after first
+/// dispatch. 500 ms from submit covers the processing time and the deadline
+/// with ample headroom.
+///
 /// **Phase 4 Task 4.3 note.** Since `flush` would now itself commit and
 /// pre-empt the timer path under test, we skip the sync barrier and
-/// sleep directly past `T_commit`. The remaining assertions (timer
+/// sleep directly past the deadline. The remaining assertions (timer
 /// fired exactly once, terminal X = 1.0 mm ± 50 µm) still pin the
 /// Task 4.2 acceptance property.
 #[test]
 fn commit_after_quiescence_dispatches_terminal_decel() {
-    use std::time::Duration;
-
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
@@ -749,15 +763,15 @@ fn commit_after_quiescence_dispatches_terminal_decel() {
         .expect("submit move");
 
     // No `flush` here — Phase 4 Task 4.3 made `flush` force-commit, so
-    // calling it would dispatch the trailing decel before the timer
+    // calling it would dispatch the trailing decel before the deadline
     // got a chance. We rely on the wall-clock sleep below to give the
-    // planner thread enough time to process the move and then fire
-    // `T_commit`.
+    // planner thread enough time to process the move and then fire the
+    // clock-derived decel-commit deadline.
 
-    // Wait past `T_commit + h + slack`. `T_commit = 50 ms`,
-    // h = 0.8025/186/2 ≈ 2.16 ms. 150 ms covers both with ample scheduler
-    // headroom.
-    std::thread::sleep(Duration::from_millis(150));
+    // Poll until the clock-derived decel-commit deadline fires (≈ 271 ms
+    // for this 1 mm move). `wait_for_commits` retries every 2 ms up to
+    // 5 s, avoiding a fixed 500 ms sleep that can be tight on slow CI.
+    wait_for_commits(&h, 1);
 
     // The commit timer must have fired exactly once.
     assert_eq!(
@@ -817,10 +831,10 @@ fn commit_after_quiescence_dispatches_terminal_decel() {
     h.shutdown();
 }
 
-/// Submit move 1, sleep past `T_commit` so the planner commits and the
-/// toolhead comes to rest, then submit move 2. Move 2 must start from
-/// rest (initial velocity ≈ 0), and the cumulative dispatched X after
-/// move 2's commit must reach ~2.0 mm.
+/// Submit move 1, sleep past the clock-derived decel-commit deadline so the
+/// planner commits and the toolhead comes to rest, then submit move 2. Move 2
+/// must start from rest (initial velocity ≈ 0), and the cumulative dispatched
+/// X after move 2's commit must reach ~2.0 mm.
 ///
 /// This pins the cross-commit continuity invariant: a commit advances
 /// `t_dispatched = t_appended`, so the next `append_and_replan` reads
@@ -828,14 +842,16 @@ fn commit_after_quiescence_dispatches_terminal_decel() {
 /// moves then chain as two independent 0-to-cruise-to-0 profiles
 /// rather than overlapping through a junction.
 ///
+/// **Task 4 clock-derived deadline.** For this 1 mm move the deadline fires
+/// at ≈ 271 ms after first dispatch. 500 ms from submit covers processing
+/// time and the deadline with ample headroom.
+///
 /// **Phase 4 Task 4.3 note.** `flush` now also commits. We avoid
 /// calling `flush` between submit + sleep so the commit-fire counter
-/// is solely incremented by the timer (keeping this test's "the timer
+/// is solely incremented by the deadline (keeping this test's "the deadline
 /// committed move 1, then move 2 starts from rest" intent intact).
 #[test]
 fn commit_then_new_move_starts_from_rest() {
-    use std::time::Duration;
-
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
@@ -845,12 +861,14 @@ fn commit_then_new_move_starts_from_rest() {
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 1");
 
-    // Sleep past `T_commit` so the planner thread commits move 1.
-    std::thread::sleep(Duration::from_millis(150));
+    // Poll until move 1's clock-derived decel-commit deadline fires
+    // (≈ 271 ms for this 1 mm move). `wait_for_commits` retries every
+    // 2 ms up to 5 s, avoiding a fixed 500 ms sleep on slow CI.
+    wait_for_commits(&h, 1);
     assert_eq!(
         h.commit_fire_count(),
         1,
-        "move 1's quiescence commit must have fired"
+        "move 1's decel-commit deadline must have fired"
     );
 
     let segs_after_move_1 = recorded.lock().unwrap().clone();
@@ -880,16 +898,16 @@ fn commit_then_new_move_starts_from_rest() {
 
     // Move 2: 1 mm pure-X from x=1.0 at 100 mm/s. No flush — same
     // reason as move 1 above (keep the commit count attributable to
-    // the timer only).
+    // the deadline only).
     h.submit_move(classify_and_build([1.0, 0.0, 0.0], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 2");
 
-    // Sleep past `T_commit` so move 2 also commits.
-    std::thread::sleep(Duration::from_millis(150));
+    // Poll until move 2's clock-derived decel-commit deadline fires.
+    wait_for_commits(&h, 2);
     assert_eq!(
         h.commit_fire_count(),
         2,
-        "move 2's quiescence commit must have fired"
+        "move 2's decel-commit deadline must have fired"
     );
 
     let segs = recorded.lock().unwrap().clone();
@@ -941,23 +959,18 @@ fn commit_then_new_move_starts_from_rest() {
     h.shutdown();
 }
 
-/// Calling `commit_decel_to_zero` twice in a row (via two `T_commit`
-/// timer expirations) must be idempotent: the second call sees
-/// `t_dispatched == t_appended` and returns empty, so no segments are
-/// re-dispatched.
+/// Calling `commit_decel_to_zero` twice in a row (via two deadline expirations)
+/// must be idempotent: the second call sees `t_dispatched == t_appended` and
+/// returns empty, so no segments are re-dispatched.
 ///
-/// In practice the run_loop disarms `last_append_time` after the first
-/// fire, so the second fire would only happen if a new `submit_move`
-/// re-armed the timer. This test still pins the handler-level
-/// idempotence invariant: the planner thread asserts "two consecutive
-/// fires" via a synthetic re-arm path, ensuring the underlying handler
-/// is correct even if the run-loop disarm logic ever regresses.
+/// After the first commit, `next_timeout` returns `T_IDLE` (the
+/// `t_dispatched < t_appended - 1e-12` guard is false), so the deadline must
+/// NOT re-fire without a new `submit_move`. This test pins that guard is
+/// correct — sleeping past where a second deadline would have fired must not
+/// increment the counter.
 ///
-/// Specifically: submit + sleep (commit fires once), then submit + sleep
-/// (commit fires once more, on the *new* move). The second commit must
-/// produce non-empty dispatch (it's a new move with a new
-/// `t_appended`), distinguishing "handler is idempotent" from "handler
-/// silently no-ops on every call."
+/// Specifically: submit + sleep until deadline fires (commit fires once), then
+/// sleep another 300 ms and confirm the counter did not advance again.
 #[test]
 fn commit_decel_to_zero_is_idempotent_across_re_armed_timer() {
     use std::time::Duration;
@@ -968,25 +981,27 @@ fn commit_decel_to_zero_is_idempotent_across_re_armed_timer() {
 
     // First submit + commit. No `flush` — Phase 4 Task 4.3 made `flush`
     // force-commit, which would conflate Flush-arm and Timeout-arm
-    // fires and break the "exactly one timer fire" assertion this
+    // fires and break the "exactly one deadline fire" assertion this
     // test pins.
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 1");
-    std::thread::sleep(Duration::from_millis(150));
+    // Poll until the clock-derived deadline fires (≈ 271 ms for this 1 mm
+    // move). `wait_for_commits` retries every 2 ms up to 5 s.
+    wait_for_commits(&h, 1);
     assert_eq!(h.commit_fire_count(), 1);
     let after_first_commit = recorded.lock().unwrap().len();
 
-    // Sleep past `T_commit` again without submitting — the run-loop has
-    // disarmed `last_append_time` so the timer must NOT re-fire. This is
-    // the test that distinguishes Task 4.2 from a hypothetical Task 4.1
-    // regression where the handler silently re-dispatches.
-    std::thread::sleep(Duration::from_millis(150));
+    // Sleep again without submitting — the `t_dispatched < t_appended`
+    // guard is now false so `next_timeout = T_IDLE` and the deadline
+    // must NOT re-fire. This is the test that distinguishes the guard
+    // from a hypothetical regression where the handler silently re-dispatches.
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         h.commit_fire_count(),
         1,
-        "commit timer re-fired without a new submit — the disarm path \
-         in run_loop's timeout branch is broken, OR commit_decel_to_zero \
-         is producing spurious dispatch"
+        "commit deadline re-fired without a new submit — the \
+         t_dispatched < t_appended guard in run_loop's timeout branch is broken, \
+         OR commit_decel_to_zero is producing spurious dispatch"
     );
     let no_extra_dispatch = recorded.lock().unwrap().len();
     assert_eq!(

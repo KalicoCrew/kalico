@@ -470,55 +470,44 @@ fn capturing_dispatch() -> (
 }
 
 #[test]
-fn quiescence_rewinds_timeline_so_next_move_restarts_near_zero() {
+fn quiescence_keeps_timeline_monotone_next_move_does_not_rewind() {
     let (dispatch, log) = capturing_dispatch();
     let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
 
-    // Spin (bounded) until the quiescence timer has fired `target` times. Each
-    // fire is the T_COMMIT arm committing the decel-to-zero tail and (with the
-    // fix) rewinding the timeline. Polling the counter rather than sleeping a
-    // fixed duration makes the test self-timing instead of calendar-dependent.
     fn wait_for_commits(h: &PlannerHandle, target: u32) {
         let start = std::time::Instant::now();
         while h.commit_fire_count() < target {
             assert!(
                 start.elapsed() < Duration::from_secs(5),
-                "T_COMMIT fired only {} of {target} times within 5s",
+                "commit fired only {} of {target} times within 5s",
                 h.commit_fire_count()
             );
             std::thread::sleep(Duration::from_millis(2));
         }
     }
 
-    // Move 1: X 0 -> 200. Wait for commit #1 (decel-to-zero committed + rewind).
+    // Move 1: X 0 -> 200. Wait for the decel-commit (commit #1).
     h.submit_move(long_move()).unwrap();
     wait_for_commits(&h, 1);
     let m1_max_t_end = log
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|&(_, e)| e)
-        .fold(0.0_f64, f64::max);
+        .lock().unwrap().iter().map(|&(_, e)| e).fold(0.0_f64, f64::max);
     assert!(m1_max_t_end > 0.0, "move 1 produced no dispatched segments");
 
-    // Move 2: continuous X 200 -> 400. Wait for commit #2 (its tail dispatched).
+    // Move 2: X 200 -> 400, submitted after a real idle gap so the monotonic
+    // clock has advanced past move 1's end.
     log.lock().unwrap().clear();
+    std::thread::sleep(Duration::from_millis(400));
     let m2 = classify_and_build([200.0, 0.0, 0.0], 200.0, 0.0, 0.0, 0.0, 200.0).unwrap();
     h.submit_move(m2).unwrap();
     wait_for_commits(&h, 2);
     let m2_min_t_start = log
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|&(s, _)| s)
-        .fold(f64::INFINITY, f64::min);
+        .lock().unwrap().iter().map(|&(s, _)| s).fold(f64::INFINITY, f64::min);
+    assert!(m2_min_t_start.is_finite(), "move 2 produced no dispatched segments");
+
+    // Monotone clock: move 2 starts at or after move 1's end — NOT rewound.
     assert!(
-        m2_min_t_start.is_finite(),
-        "move 2 produced no dispatched segments"
-    );
-    assert!(
-        m2_min_t_start < m1_max_t_end,
-        "timeline did not rewind: move 2 started at {m2_min_t_start}, move 1 ended at {m1_max_t_end}"
+        m2_min_t_start >= m1_max_t_end - 1e-3,
+        "timeline rewound: move 2 started at {m2_min_t_start}, move 1 ended at {m1_max_t_end}"
     );
 
     h.shutdown();

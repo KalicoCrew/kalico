@@ -1464,6 +1464,36 @@ fn advance_idle_when_drained_extends_to_target_preserving_position() {
     );
 }
 
+/// `commit_decel_to_zero` advances `t_dispatched` to `t_appended`, and a
+/// second call is a no-op (idempotent). This property is load-bearing for the
+/// clock-derived decel-commit deadline in `run_loop`: the deadline guard
+/// (`t_dispatched < t_appended - 1e-12`) must be false after the first commit,
+/// so the Timeout arm skips the call on re-entry.
+#[test]
+fn commit_decel_to_zero_advances_t_dispatched_to_t_appended_and_is_idempotent() {
+    let mut state = ShaperState::new([0.0; 4], &replan_shapers());
+    let ctx_replan = replan_context();
+    state
+        .append_and_replan(linear_x_segment(0.0, 200.0, 200.0), &ctx_replan)
+        .expect("append");
+    let kernels = replan_kernels_piecewise();
+    let halos: Vec<EHalo> = Vec::new();
+    let ctx_emit = emit_context_default(&kernels, &halos);
+
+    let partial = state.emit_committed(&ctx_emit).expect("emit");
+    assert!(!partial.is_empty());
+    assert!(state.t_dispatched < state.t_appended, "tail held back before commit");
+
+    let committed = state.commit_decel_to_zero(&ctx_emit).expect("commit");
+    assert!(!committed.is_empty(), "commit emits the decel tail");
+    assert!((state.t_dispatched - state.t_appended).abs() < 1e-12,
+        "after commit t_dispatched == t_appended");
+
+    let again = state.commit_decel_to_zero(&ctx_emit).expect("commit2");
+    assert!(again.is_empty(), "second commit is a no-op");
+    assert!((state.t_dispatched - state.t_appended).abs() < 1e-12);
+}
+
 /// Regression guard for the `t_dispatched`-unchanged bug: after `advance_idle`,
 /// `append_and_replan` must plan the new move from `target_t` (now), not from
 /// the old `t_appended`. With the old code `t_dispatched` was left behind, so

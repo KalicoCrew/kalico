@@ -44,14 +44,6 @@ use trajectory::{AxisShaper, EHalo, RequiredShaper, ShapedSegment, ShaperConfig}
 // Quiescence-commit timer
 // ---------------------------------------------------------------------------
 
-/// Inter-move quiescence threshold for the single-timer commit model
-/// (spec §3.5). If no `PlannerMsg::Move` arrives within this window after
-/// the most recent append, the planner thread calls
-/// [`ShaperState::commit_decel_to_zero`] to dispatch the held-back trailing
-/// decel-to-zero ramp. 50 ms is the spec's proposed default; open-question 1
-/// in §6 reserves empirical calibration on Trident for Phase 7.
-const T_COMMIT: Duration = Duration::from_millis(50);
-
 /// Sentinel "long" timeout used when there is no held-back tail to commit.
 /// We still call `recv_timeout` (rather than `recv`) so the loop reaches a
 /// single uniform message-handling site; an effectively-forever bound keeps
@@ -455,14 +447,15 @@ impl PlannerHandle {
         f64::from_bits(self.last_move_time_bits.load(Ordering::Acquire))
     }
 
-    /// Number of times the quiescence-commit timer has fired on the planner
-    /// thread (i.e., `recv_timeout(T_COMMIT − elapsed)` returned
-    /// `RecvTimeoutError::Timeout` and the run-loop invoked
+    /// Number of times the decel-commit deadline has fired on the planner
+    /// thread (i.e., `recv_timeout` returned `RecvTimeoutError::Timeout` while
+    /// a held-back tail existed and the run-loop invoked
     /// [`ShaperState::commit_decel_to_zero`]). Wired by Phase 4 Task 4.1;
-    /// the underlying handler became real in Task 4.2 (the run-loop now
-    /// dispatches the held-back trailing decel-to-zero on timer fire). The
-    /// counter remains a cheap observability hook on the timer integration
-    /// point.
+    /// the underlying handler became real in Task 4.2 (the run-loop dispatches
+    /// the held-back trailing decel-to-zero on deadline fire). Task 4 replaced
+    /// the fixed 50 ms `T_COMMIT` quiescence timer with a clock-derived
+    /// deadline (`t_dispatched + LEAD - SAFETY_MARGIN`). The counter remains
+    /// a cheap observability hook on the commit integration point.
     pub fn commit_fire_count(&self) -> u32 {
         self.commit_fire_count.load(Ordering::Acquire)
     }
@@ -688,16 +681,14 @@ fn run_loop(
         );
     }
 
-    // Phase 4 Task 4.1 — single-timer quiescence-commit state. `Some(t)`
-    // means a real append landed at `t` and the loop should call
-    // `commit_decel_to_zero` if no follow-on message arrives within
-    // `T_COMMIT − t.elapsed()`. `None` means the queue is fully quiesced
-    // (already committed) or no append has happened yet; the loop sleeps
-    // on the long sentinel until a new `Move` arrives. Task 4.1 uses
-    // `is_some()` as the proxy for "held-back tail exists" per the task
-    // spec; Task 4.2 will refine to a precise `t_dispatched <
-    // t_decel_start − max_h` check on `ShaperState` once the real
-    // `commit_decel_to_zero` semantics land.
+    // Phase 4 Task 4.1 — `last_append_time` tracks whether a held-back tail
+    // exists. `Some(t)` means a real append landed at `t`; `None` means the
+    // queue is fully quiesced or no append has happened yet. After Task 4
+    // (clock-derived decel-commit deadline), `last_append_time` is no longer
+    // the timeout trigger — `next_timeout` is now computed from
+    // `t_dispatched + LEAD - SAFETY_MARGIN` vs. `sync_instant`. The variable
+    // survives as the "held-back tail proxy" used by `Flush`, `UpdateShaper`,
+    // and `ClockSyncRearm` to decide whether to drain before acting.
     let mut last_append_time: Option<Instant> = None;
     let mut last_recv_time: Option<Instant> = None;
     // The `Instant` of the stream's first dispatch. `None` until the first
@@ -709,14 +700,22 @@ fn run_loop(
     let mut sync_instant: Option<Instant> = None;
 
     loop {
-        // Compute the next timeout. The held-back-tail proxy is "an append
-        // happened and we haven't committed since" (`last_append_time.is_some()`);
-        // when there is no held-back tail, fall through to the long
-        // sentinel so the receiver is effectively a blocking `recv` while
-        // still cancellable on channel close.
-        let next_timeout = match last_append_time {
-            Some(t) => T_COMMIT.checked_sub(t.elapsed()).unwrap_or(Duration::ZERO),
-            None => T_IDLE,
+        // Clock-derived decel-commit deadline. The MCU starts executing
+        // planner-time 0 at elapsed_since_sync == LEAD and plays forward 1:1,
+        // so the on-wire buffer (ending at t_dispatched) drains at
+        // elapsed_since_sync == t_dispatched + LEAD. Commit SAFETY_MARGIN
+        // before that. When there is no held-back tail (t_dispatched ≈
+        // t_appended), sleep on the long sentinel until the next Move.
+        let next_timeout = if state.t_dispatched < state.t_appended - 1e-12 {
+            let esc = sync_instant.map_or(0.0, |t| t.elapsed().as_secs_f64());
+            let remaining = (state.t_dispatched + LEAD - SAFETY_MARGIN) - esc;
+            // `try_from_secs_f64` returns Err on NaN / infinite / negative,
+            // covering all non-finite hazards at once — never panic the
+            // planner thread on a degenerate deadline; fall back to an
+            // immediate wake (the commit guard re-checks the real condition).
+            Duration::try_from_secs_f64(remaining.max(0.0)).unwrap_or(Duration::ZERO)
+        } else {
+            T_IDLE
         };
 
         let msg = match rx.recv_timeout(next_timeout) {
@@ -743,46 +742,20 @@ fn run_loop(
                 m
             }
             Err(RecvTimeoutError::Timeout) => {
-                // `T_commit` elapsed without a follow-on message. Task 4.2
-                // shipped the real body of `commit_decel_to_zero`: shape
-                // and dispatch the held-back trailing region
-                // `[t_dispatched, t_appended]` (including the terminal
-                // decel-to-zero ramp `emit_committed` deliberately holds
-                // back). This branch dispatches those segments the same
-                // way the `Move` arm dispatches `emit_committed` output —
-                // print-time accounting + per-segment dispatch + commit
-                // counter increment, all factored into
-                // `run_commit_and_dispatch` (shared with the `Flush` arm
-                // wired by Task 4.3). Clearing `last_append_time` disarms
-                // the timer until the next `Move` arrives.
-                let since_arm_ms = last_append_time
-                    .map(|t| t.elapsed().as_micros() as i64)
-                    .unwrap_or(-1);
-                eprintln!("[move-diag] planner T_commit fire since_arm_us={since_arm_ms}");
-                let _ok = run_commit_and_dispatch(
-                    &mut state,
-                    &thread_state,
-                    &dispatch,
-                    &error,
-                    &last_move_time_bits,
-                    &commit_fire_count,
-                );
-                // Idle re-anchor (spec 2026-05-30-idle-reanchor): the
-                // quiescence commit has flushed the decel-to-zero tail — the
-                // toolhead is stopped. Rewind the planner timeline to 0,
-                // reseeding the shaper history at the settled position, so the
-                // next move arrives as a backward jump and the bridge `Anchor`
-                // re-anchors it to `host_now + LEAD`, exactly like a first move.
-                // Without this, a move after an idle gap is stamped in the
-                // MCU's past -> -308 PieceStartInPast. Scope: T_COMMIT only;
-                // Flush / M400 is handled separately.
-                let settled = state.current_position();
-                log::info!(
-                    "[idle-reanchor] T_COMMIT fired: settled={:?}",
-                    settled,
-                );
-                state.reset(settled);
-                last_append_time = None;
+                // Decel-commit deadline: the on-wire buffer is about to drain;
+                // commit the held-back decel-to-zero so the MCU stops cleanly.
+                // DO NOT reset the timeline — the monotonic clock keeps running;
+                // the next move self-places via max(t_appended, elapsed_since_sync).
+                if state.t_dispatched < state.t_appended - 1e-12 {
+                    let _ok = run_commit_and_dispatch(
+                        &mut state,
+                        &thread_state,
+                        &dispatch,
+                        &error,
+                        &last_move_time_bits,
+                        &commit_fire_count,
+                    );
+                }
                 continue;
             }
             Err(RecvTimeoutError::Disconnected) => return,
