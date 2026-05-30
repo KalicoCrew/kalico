@@ -401,6 +401,8 @@ pub struct PyMotionBridge {
     /// Join handle for the `"push-pieces-pump"` thread. `None` until
     /// `init_planner` runs.
     pump_thread: Mutex<Option<JoinHandle<()>>>,
+    /// Per-(mcu, axis) sent/retired tracking for `drain_motion`.
+    drain: std::sync::Arc<crate::drain::DrainSync>,
 }
 
 /// Build the kalico-native `ConfigureAxes` wire body.
@@ -657,6 +659,7 @@ impl PyMotionBridge {
             probe_handle_counter: AtomicU64::new(1),
             pump_tx: Mutex::new(None),
             pump_thread: Mutex::new(None),
+            drain: std::sync::Arc::new(crate::drain::DrainSync::new()),
         }
     }
 
