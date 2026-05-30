@@ -7,8 +7,3 @@
 - Host: Pi 5
 - MCU1: Octopus Pro with H723, 4 5160 drivers for AB steppers, 1 more 5160 for extruder
 - MCU2: Octopus with F4x chip, 2209 for Z
-
-# Nice to have
-
-- A mechanical-frequency tracking system separate from the shaper, alerting on drift without auto-applying changes
-- Ability to generate a look up table of rotor angles for a given microstep for phase stepping using toolhead mounted accelerometer.
