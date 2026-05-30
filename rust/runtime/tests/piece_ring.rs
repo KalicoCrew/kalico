@@ -209,16 +209,16 @@ fn ring_wrap_around() {
 }
 
 #[test]
-fn ring_consumed_count_monotonic() {
+fn ring_retired_count_monotonic() {
     let mut storage = make_storage::<4>();
     let mut ring = PieceRing::new(&mut storage);
-    assert_eq!(ring.consumed_count(), 0);
+    assert_eq!(ring.retired_count(), 0);
     ring.push(make_piece(100, 0.001)).unwrap();
     ring.push(make_piece(200, 0.001)).unwrap();
     ring.pop();
-    assert_eq!(ring.consumed_count(), 1);
+    assert_eq!(ring.retired_count(), 1);
     ring.pop();
-    assert_eq!(ring.consumed_count(), 2);
+    assert_eq!(ring.retired_count(), 2);
 }
 
 #[test]
@@ -233,10 +233,10 @@ fn ring_pop_empty_is_noop() {
     let mut storage = make_storage::<4>();
     let mut ring = PieceRing::new(&mut storage);
     ring.pop(); // should not panic
-    assert_eq!(ring.consumed_count(), 0);
+    assert_eq!(ring.retired_count(), 0);
 }
 
-// ── RingDescriptor — monotonic head/consumed + write_slot/commit_head ─────────
+// ── RingDescriptor — monotonic head/retired + write_slot/commit_head ──────────
 
 use runtime::piece_ring::RingDescriptor;
 
@@ -282,14 +282,14 @@ fn commit_head_makes_slots_visible_and_is_monotone() {
 }
 
 #[test]
-fn pop_advances_physical_tail_and_monotonic_consumed() {
+fn advance_counter_retires_front_and_increments_retired() {
     let mut storage = make_rd_storage::<4>();
     let mut ring = RingDescriptor::new(0, 4);
     ring.write_slot(&mut storage, 0, pe(10));
     ring.write_slot(&mut storage, 1, pe(20));
     ring.commit_head(2);
-    ring.pop();
-    assert_eq!(ring.consumed_count(), 1);
+    ring.advance_counter();
+    assert_eq!(ring.retired_count(), 1);
     assert_eq!(ring.peek(&storage).unwrap().start_time, 20);
     assert_eq!(ring.len(), 1);
 }
@@ -306,14 +306,15 @@ fn empty_full_distinct_via_monotonic_difference() {
     assert!(!ring.is_empty());
 }
 
-// ── RingDescriptor — physical tail wrap ──────────────────────────────────────
+// ── RingDescriptor — retired cursor wraps modulo ring_depth ──────────────────
 
-/// Fill a depth-2 ring, pop both entries (verifying tail wraps 1→0 on the
-/// second pop), then write and commit two more entries and confirm peek returns
-/// the first new one.  This directly exercises the `tail += 1; if tail >=
-/// ring_depth { tail = 0 }` branch inside `pop`.
+/// Fill a depth-2 ring, advance_counter both entries (verifying that
+/// `retired % ring_depth` wraps 0→1→0), then write and commit two more entries
+/// and confirm peek returns the first new one.  `peek` reads at
+/// `retired % ring_depth`, so after two retires (retired==2) the read cursor
+/// wraps back to slot 0 in the backing store.
 #[test]
-fn rd_physical_tail_wraps_after_depth_pops() {
+fn rd_retired_cursor_wraps_after_depth_advances() {
     let mut storage = make_rd_storage::<2>();
     let mut ring = RingDescriptor::new(0, 2);
 
@@ -323,17 +324,17 @@ fn rd_physical_tail_wraps_after_depth_pops() {
     ring.commit_head(2);
     assert_eq!(ring.len(), 2);
 
-    // First pop: tail 0→1, consumed 0→1.
-    ring.pop();
-    assert_eq!(ring.consumed_count(), 1);
+    // First advance: retired 0→1; peek reads slot 1 % 2 = 1 → pe(20).
+    ring.advance_counter();
+    assert_eq!(ring.retired_count(), 1);
     assert_eq!(ring.peek(&storage).unwrap().start_time, 20);
 
-    // Second pop: tail 1→0 (wraps), consumed 1→2.
-    ring.pop();
-    assert_eq!(ring.consumed_count(), 2);
+    // Second advance: retired 1→2 (ring now empty: head==retired==2).
+    ring.advance_counter();
+    assert_eq!(ring.retired_count(), 2);
     assert!(ring.is_empty());
-    // tail must have wrapped back to 0 — verify by writing fresh entries and
-    // confirming peek sees the first one (slot 0 in the backing store).
+    // Retired cursor has wrapped back to slot 0 mod 2 — verify by writing
+    // fresh entries and confirming peek sees the first one (slot 0).
     ring.write_slot(&mut storage, 0, pe(30));
     ring.write_slot(&mut storage, 1, pe(40));
     ring.commit_head(4);
@@ -344,10 +345,10 @@ fn rd_physical_tail_wraps_after_depth_pops() {
 // ── RingDescriptor — commit_head capacity-bound enforcement ──────────────────
 
 /// Verify that commit_head rejects a new_head whose implied occupancy would
-/// exceed ring_depth, and that an out-of-domain value behind consumed (which
+/// exceed ring_depth, and that an out-of-domain value behind retired (which
 /// wraps to a huge distance) is also rejected.
 #[test]
-fn rd_commit_head_rejects_over_capacity_and_stale_behind_consumed() {
+fn rd_commit_head_rejects_over_capacity_and_stale_behind_retired() {
     let mut storage = make_rd_storage::<4>();
     // depth=4; write all four slots up-front so storage is populated.
     let mut ring = RingDescriptor::new(0, 4);
@@ -356,13 +357,13 @@ fn rd_commit_head_rejects_over_capacity_and_stale_behind_consumed() {
     ring.write_slot(&mut storage, 2, pe(3));
     ring.write_slot(&mut storage, 3, pe(4));
 
-    // Commit 3 entries: occupancy 3, consumed=0, head=3.
+    // Commit 3 entries: occupancy 3, retired=0, head=3.
     ring.commit_head(3);
     assert_eq!(ring.len(), 3);
 
-    // Pop one: consumed=1, head=3, occupancy=2.
-    ring.pop();
-    assert_eq!(ring.consumed_count(), 1);
+    // Advance one: retired=1, head=3, occupancy=2.
+    ring.advance_counter();
+    assert_eq!(ring.retired_count(), 1);
     assert_eq!(ring.len(), 2);
 
     // Attempt to commit a head that would bring occupancy to 5 (>ring_depth=4).
@@ -371,13 +372,13 @@ fn rd_commit_head_rejects_over_capacity_and_stale_behind_consumed() {
     ring.commit_head(6);
     assert_eq!(ring.head, head_before, "over-capacity commit_head must be rejected");
 
-    // Attempt to commit an out-of-domain value behind consumed (consumed=1,
+    // Attempt to commit an out-of-domain value behind retired (retired=1,
     // new_head=0: proposed = 0u32.wrapping_sub(1) = u32::MAX → REJECTED).
     ring.commit_head(0);
-    assert_eq!(ring.head, head_before, "behind-consumed commit_head must be rejected");
+    assert_eq!(ring.head, head_before, "behind-retired commit_head must be rejected");
 
-    // A legitimate advance to exactly consumed+ring_depth (occupancy=4) IS accepted.
-    // consumed=1, ring_depth=4 → new_head=5, proposed=4 == ring_depth → OK.
+    // A legitimate advance to exactly retired+ring_depth (occupancy=4) IS accepted.
+    // retired=1, ring_depth=4 → new_head=5, proposed=4 == ring_depth → OK.
     ring.write_slot(&mut storage, ring.head as usize % 4, pe(50));
     ring.write_slot(&mut storage, (ring.head as usize + 1) % 4, pe(60));
     ring.commit_head(5);

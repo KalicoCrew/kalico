@@ -356,12 +356,12 @@ impl Engine {
         }
     }
 
-    /// Returns per-axis consumed piece counts for the heartbeat.
+    /// Returns per-axis retired piece counts for the heartbeat.
     pub fn consumed_counts(&self) -> [u32; MAX_AXES] {
         let mut out = [0u32; MAX_AXES];
         for i in 0..MAX_AXES {
             if let Some(Some(axis)) = self.stepping_axes.get(i) {
-                out[i] = axis.ring.consumed_count();
+                out[i] = axis.ring.retired_count();
             }
         }
         out
@@ -724,7 +724,7 @@ fn get_position_and_velocity(
         axis.piece_start_cycles = next_entry.start_time;
         axis.piece_end_cycles = next_entry.end_time(cycles_per_second);
         axis.has_piece = true;
-        axis.ring.pop();
+        axis.ring.advance_counter();
     }
 }
 

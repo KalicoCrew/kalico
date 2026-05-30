@@ -49,15 +49,15 @@ use crate::monomial::bernstein_to_monomial_with_duration;
 /// ## Cursor semantics
 ///
 /// - `head` — monotonic valid frontier (u32, wrapping).  Slots with indices
-///   `[consumed, head)` (modulo arithmetic) are visible to the consumer.
+///   `[retired, head)` (modulo arithmetic) are visible to the consumer.
 ///   Advanced **only** by [`commit_head`][Self::commit_head]; slot writes via
 ///   [`write_slot`][Self::write_slot] do **not** advance it.
-/// - `tail` — physical read cursor in `[0, ring_depth)`.  Advanced one step
-///   per [`pop`][Self::pop] (wrapping at `ring_depth`).
-/// - `consumed` — monotonic consumed counter (u32, wrapping).  Tracks how
-///   many entries have been popped; incremented one per [`pop`][Self::pop].
+/// - `retired` — monotonic retire counter (u32, wrapping).  Tracks how many
+///   entries have fully elapsed their time window; incremented one per
+///   [`advance_counter`][Self::advance_counter].  Also serves as the read
+///   cursor: `peek` reads slot `retired % ring_depth`.
 ///
-/// Occupancy: `len() = head.wrapping_sub(consumed) as usize`.  Empty (`len==0`)
+/// Occupancy: `len() = head.wrapping_sub(retired) as usize`.  Empty (`len==0`)
 /// and full (`len==ring_depth`) are distinct because the difference is of
 /// monotonic counters, never reduced mod N.
 ///
@@ -72,12 +72,10 @@ pub struct RingDescriptor {
     /// Monotonic valid frontier (host-driven); advanced only by
     /// [`commit_head`][Self::commit_head].
     pub head: u32,
-    /// Physical read cursor in `[0, ring_depth)`; advanced one per
-    /// [`pop`][Self::pop].
-    pub tail: usize,
-    /// Monotonic consumed counter (wrapping u32); advanced one per
-    /// [`pop`][Self::pop].
-    pub consumed: u32,
+    /// Monotonic retire counter (wrapping u32); advanced one per
+    /// [`advance_counter`][Self::advance_counter]. Also the read cursor:
+    /// `peek` reads at `retired % ring_depth`.
+    pub retired: u32,
 }
 
 impl RingDescriptor {
@@ -89,8 +87,7 @@ impl RingDescriptor {
             ring_offset: 0,
             ring_depth: 0,
             head: 0,
-            tail: 0,
-            consumed: 0,
+            retired: 0,
         }
     }
 
@@ -102,8 +99,7 @@ impl RingDescriptor {
             ring_offset: offset,
             ring_depth: depth,
             head: 0,
-            tail: 0,
-            consumed: 0,
+            retired: 0,
         }
     }
 
@@ -114,16 +110,16 @@ impl RingDescriptor {
     }
 
     /// Returns the number of entries currently visible (committed but not yet
-    /// consumed): `head.wrapping_sub(consumed)`.
+    /// retired): `head.wrapping_sub(retired)`.
     #[inline]
     pub fn len(&self) -> usize {
-        self.head.wrapping_sub(self.consumed) as usize
+        self.head.wrapping_sub(self.retired) as usize
     }
 
     /// Returns `true` if the ring contains no visible entries.
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.head == self.consumed
+        self.head == self.retired
     }
 
     /// Returns `true` if the ring is at capacity (all slots occupied).
@@ -167,12 +163,12 @@ impl RingDescriptor {
     ///
     /// A `new_head` is accepted only when it represents a strict advance
     /// over the current `head` **and** the resulting occupancy does not exceed
-    /// `ring_depth` (the flow-control invariant `head − consumed ≤ ring_depth`).
-    /// Both comparisons are made relative to `consumed` so they remain correct
+    /// `ring_depth` (the flow-control invariant `head − retired ≤ ring_depth`).
+    /// Both comparisons are made relative to `retired` so they remain correct
     /// across the u32 counter wrap for in-order frames.
     ///
     /// The capacity bound also rejects an out-of-domain `new_head` that lands
-    /// behind `consumed` — such a value produces a huge wrapping distance that
+    /// behind `retired` — such a value produces a huge wrapping distance that
     /// exceeds `ring_depth`, and is therefore silently dropped rather than
     /// accepted as a spurious advance.
     ///
@@ -180,11 +176,11 @@ impl RingDescriptor {
     /// the capacity bound; it assumes the host sends monotone, in-range heads.
     #[inline]
     pub fn commit_head(&mut self, new_head: u32) {
-        let cur = self.head.wrapping_sub(self.consumed);
-        let proposed = new_head.wrapping_sub(self.consumed);
+        let cur = self.head.wrapping_sub(self.retired);
+        let proposed = new_head.wrapping_sub(self.retired);
         // Accept only a strict advance that keeps occupancy within capacity.
-        // (`head − consumed ≤ ring_depth` is the flow-control invariant; this
-        // also rejects an out-of-domain `new_head` that lands behind `consumed`
+        // (`head − retired ≤ ring_depth` is the flow-control invariant; this
+        // also rejects an out-of-domain `new_head` that lands behind `retired`
         // and would otherwise read as a huge wrapping advance.)
         if proposed > cur && proposed <= self.ring_depth as u32 {
             self.head = new_head;
@@ -217,35 +213,33 @@ impl RingDescriptor {
 
     /// Peek the front entry without removing it.
     ///
-    /// Returns `None` if the ring is empty.
+    /// Returns `None` if the ring is empty. Reads from slot
+    /// `retired % ring_depth` — the currently-armed-or-next piece.
     #[inline]
     pub fn peek<'s>(&self, storage: &'s [PieceEntry]) -> Option<&'s PieceEntry> {
         if self.is_empty() {
             return None;
         }
-        storage.get(self.ring_offset + self.tail)
+        let slot = (self.retired as usize) % self.ring_depth;
+        storage.get(self.ring_offset + slot)
     }
 
-    /// Remove the front entry, advancing the physical tail (wrapping) and
-    /// incrementing the monotonic `consumed` counter.
-    ///
-    /// No-op if the ring is empty or unconfigured.
+    /// Advance the retire cursor by one (the front piece's window has fully
+    /// elapsed). No-op when empty or unconfigured. The engine copies the
+    /// piece's coefficients via `peek` before playing it, so nothing here
+    /// needs to return the entry.
     #[inline]
-    pub fn pop(&mut self) {
+    pub fn advance_counter(&mut self) {
         if self.ring_depth == 0 || self.is_empty() {
             return;
         }
-        self.tail += 1;
-        if self.tail >= self.ring_depth {
-            self.tail = 0;
-        }
-        self.consumed = self.consumed.wrapping_add(1);
+        self.retired = self.retired.wrapping_add(1);
     }
 
-    /// Monotonically increasing count of consumed entries (wrapping u32).
+    /// Monotonic count of pieces whose window has fully elapsed (wrapping u32).
     #[inline]
-    pub fn consumed_count(&self) -> u32 {
-        self.consumed
+    pub fn retired_count(&self) -> u32 {
+        self.retired
     }
 }
 
@@ -276,7 +270,7 @@ impl RingDescriptor {
 /// assert!(ring.push(entry).is_ok());
 /// assert_eq!(ring.peek().unwrap().start_time, 1000);
 /// ring.pop();
-/// assert_eq!(ring.consumed_count(), 1);
+/// assert_eq!(ring.retired_count(), 1);
 /// ```
 #[derive(Debug)]
 pub struct PieceRing<'a> {
@@ -287,8 +281,8 @@ pub struct PieceRing<'a> {
     tail: usize,
     /// Current number of entries in the ring.
     count: usize,
-    /// Monotonic counter of consumed (popped) pieces, for heartbeat reporting.
-    consumed: u32,
+    /// Monotonic counter of retired (popped) pieces, for heartbeat reporting.
+    retired: u32,
 }
 
 impl<'a> PieceRing<'a> {
@@ -302,7 +296,7 @@ impl<'a> PieceRing<'a> {
             head: 0,
             tail: 0,
             count: 0,
-            consumed: 0,
+            retired: 0,
         }
     }
 
@@ -355,7 +349,7 @@ impl<'a> PieceRing<'a> {
         Some(&self.buf[self.tail])
     }
 
-    /// Remove the front entry and increment the monotonic [`consumed_count`][Self::consumed_count].
+    /// Remove the front entry and increment the monotonic [`retired_count`][Self::retired_count].
     ///
     /// If the ring is empty this is a no-op.
     #[inline]
@@ -365,16 +359,16 @@ impl<'a> PieceRing<'a> {
         }
         self.tail = (self.tail + 1) % self.buf.len();
         self.count -= 1;
-        self.consumed = self.consumed.wrapping_add(1);
+        self.retired = self.retired.wrapping_add(1);
     }
 
-    /// Monotonically increasing count of entries consumed via [`pop`][Self::pop].
+    /// Monotonically increasing count of entries retired via [`pop`][Self::pop].
     ///
     /// Wraps on overflow (u32). Used by the heartbeat subsystem to confirm the
     /// ISR is making forward progress.
     #[inline]
-    pub fn consumed_count(&self) -> u32 {
-        self.consumed
+    pub fn retired_count(&self) -> u32 {
+        self.retired
     }
 }
 
