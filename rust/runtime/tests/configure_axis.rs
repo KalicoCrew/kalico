@@ -63,7 +63,7 @@ fn configure_axis_publishes_mode_and_scalars() {
     assert!((axis.microstep_distance - 0.0125).abs() < 1e-9);
     // After configure, no piece is active and counters are zeroed so the
     // next segment-arrival path can re-seed cleanly.
-    assert!(!axis.has_piece);
+    assert!(axis.armed.is_none());
     assert_eq!(axis.last_step_count, 0);
     // Stepper binding populated.
     assert_eq!(axis.steppers.len(), 1);

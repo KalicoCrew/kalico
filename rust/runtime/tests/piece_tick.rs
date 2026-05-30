@@ -128,7 +128,7 @@ fn tick_arms_piece_when_start_time_reached() {
 /// it at `t = 0` via `eval_horner`'s saturating elapsed — it does NOT idle in
 /// the ring.  Observable contract before `start_time`:
 ///   - no fault is latched (a future piece passes the 2-tick check trivially);
-///   - the piece is armed (`has_piece = true`) but NOT retired — under
+///   - the piece is armed (`armed.is_some()`) but NOT retired — under
 ///     retire-time semantics `retired` stays 0 until the piece's window ends;
 ///   - no motion is produced (the constant piece dispatches no steps).
 #[test]

@@ -77,6 +77,22 @@ const _: () = assert!(core::mem::size_of::<StepperBindingRust>() == 4);
 
 pub const TMC_CS_OID_NONE: u8 = 0xFF;
 
+/// The ISR's cached working copy of the currently-armed piece: monomial
+/// coefficients plus the piece's MCU-clock window. Bundled into one struct so
+/// "is a piece loaded?" is `AxisState::armed.is_some()` — no separate validity
+/// flag to keep in sync.
+#[derive(Debug, Clone, Copy)]
+pub struct ArmedPiece {
+    /// Position monomial coefficients (c0, c1, c2, c3).
+    pub mono_coeffs: [f32; 4],
+    /// Velocity coefficients (vc0, vc1, vc2).
+    pub vel_coeffs: [f32; 3],
+    /// MCU clock cycle at which the piece starts.
+    pub piece_start_cycles: u64,
+    /// MCU clock cycle at which the piece ends.
+    pub piece_end_cycles: u64,
+}
+
 /// Per-logical-axis state for the piece-ring walker engine.
 ///
 /// Holds:
@@ -98,16 +114,10 @@ pub struct AxisState {
     // ── Ring bookkeeping (logical descriptor into shared piece_storage) ──
     pub ring: RingDescriptor,
     // ── ISR working cache for the current piece ──
-    /// `true` when a piece has been armed and `piece_end_cycles` is valid.
-    pub has_piece: bool,
-    /// Position monomial coefficients (c0, c1, c2, c3) for the current piece.
-    pub mono_coeffs: [f32; 4],
-    /// Velocity coefficients (vc0, vc1, vc2) for the current piece.
-    pub vel_coeffs: [f32; 3],
-    /// MCU clock cycle at which the current piece starts.
-    pub piece_start_cycles: u64,
-    /// MCU clock cycle at which the current piece ends (cached on arm).
-    pub piece_end_cycles: u64,
+    /// ISR working cache for the currently-armed piece. `Some` exactly when a
+    /// piece is loaded and its coefficients/window are valid; `None` when no
+    /// piece is armed (nothing playing, or just retired and not yet re-armed).
+    pub armed: Option<ArmedPiece>,
     pub last_step_count: i32,
     // ── Sub-sample timing carry ──
     pub p_prev: f32,
@@ -123,11 +133,7 @@ impl AxisState {
             steppers: Vec::new(),
             microstep_distance: 0.0,
             ring: RingDescriptor::new_unconfigured(),
-            has_piece: false,
-            mono_coeffs: [0.0; 4],
-            vel_coeffs: [0.0; 3],
-            piece_start_cycles: 0,
-            piece_end_cycles: 0,
+            armed: None,
             last_step_count: 0,
             p_prev: 0.0,
             v_prev: 0.0,
@@ -136,11 +142,7 @@ impl AxisState {
 
     /// Reset ISR working state (called by `configure_axis`).
     pub fn reset_isr_cache(&mut self) {
-        self.has_piece = false;
-        self.mono_coeffs = [0.0; 4];
-        self.vel_coeffs = [0.0; 3];
-        self.piece_start_cycles = 0;
-        self.piece_end_cycles = 0;
+        self.armed = None;
         self.last_step_count = 0;
         self.p_prev = 0.0;
         self.v_prev = 0.0;

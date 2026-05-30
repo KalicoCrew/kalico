@@ -27,7 +27,7 @@ use crate::fault_helpers::raise_piece_start_in_past;
 use crate::piece_ring::PieceEntry;
 use crate::state::SharedState;
 use crate::step::StepMotorState;
-use crate::stepping_state::{AxisState, MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
+use crate::stepping_state::{ArmedPiece, AxisState, MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
 
 pub use crate::stepping_state::N_AXES;
 
@@ -428,7 +428,7 @@ impl Engine {
         let motion_active = self
             .stepping_axes
             .iter()
-            .any(|a| a.as_ref().map_or(false, |ax| ax.has_piece));
+            .any(|a| a.as_ref().map_or(false, |ax| ax.armed.is_some()));
         if motion_active {
             return -2;
         }
@@ -617,7 +617,7 @@ impl Engine {
     pub fn debug_current_is_some(&self) -> bool {
         self.stepping_axes
             .iter()
-            .any(|a| a.as_ref().map_or(false, |ax| ax.has_piece))
+            .any(|a| a.as_ref().map_or(false, |ax| ax.armed.is_some()))
     }
 }
 
@@ -692,23 +692,25 @@ fn get_position_and_velocity(
         // here too, and eval_horner's saturating elapsed clamps t to 0, holding
         // the start position until `now` crosses the start. No separate gap
         // branch is needed.
-        if axis.has_piece && now < axis.piece_end_cycles {
-            return Some(eval_horner(
-                &axis.mono_coeffs,
-                &axis.vel_coeffs,
-                axis.piece_start_cycles,
-                now,
-                cycles_per_second,
-            ));
+        if let Some(p) = &axis.armed {
+            if now < p.piece_end_cycles {
+                return Some(eval_horner(
+                    &p.mono_coeffs,
+                    &p.vel_coeffs,
+                    p.piece_start_cycles,
+                    now,
+                    cycles_per_second,
+                ));
+            }
         }
 
         // The armed piece (if any) has now finished its window. Retire it:
         // advance the cursor (which also advances the read position to the
-        // next slot) and mark no piece armed. This is the ONLY bump site, so
+        // next slot) and clear the cache. This is the ONLY bump site, so
         // `retired` counts pieces whose window has fully elapsed.
-        if axis.has_piece {
+        if axis.armed.is_some() {
             axis.ring.advance_counter();
-            axis.has_piece = false;
+            axis.armed = None;
         }
 
         // Branch 2: nothing more to play -> idle / underrun. `retired` now
@@ -727,11 +729,12 @@ fn get_position_and_velocity(
         // Branch 4: arm the next piece (cache coeffs). Do NOT advance the
         // cursor here — the slot stays occupied until this piece retires.
         let (mono, vel) = next_entry.to_monomial();
-        axis.mono_coeffs = mono;
-        axis.vel_coeffs = vel;
-        axis.piece_start_cycles = next_entry.start_time;
-        axis.piece_end_cycles = next_entry.end_time(cycles_per_second);
-        axis.has_piece = true;
+        axis.armed = Some(ArmedPiece {
+            mono_coeffs: mono,
+            vel_coeffs: vel,
+            piece_start_cycles: next_entry.start_time,
+            piece_end_cycles: next_entry.end_time(cycles_per_second),
+        });
     }
 }
 
