@@ -870,6 +870,18 @@ fn run_loop(
                     }
                 }
 
+                // KNOWN LIMITATION (follow-up): captured only on a non-empty
+                // dispatch. If a stream's very first move is sub-`LEAD` short so
+                // its `emit_committed` yields no segments (all output held in the
+                // speculative decel), `sync_instant` stays None until the held
+                // tail commits later. Until then `esc` reads 0.0 and the
+                // clock-derived deadline / Flush-wait degrade to no-ops (both
+                // idempotent / harmless). The fix is to also capture at the first
+                // *commit*-dispatch — NOT at append: capturing before dispatch
+                // would run `elapsed_since_sync` ahead of the MCU playhead and
+                // spuriously trip idle-detection during continuous printing
+                // (throughput regression). Unreachable for real >=1mm jogs.
+                //
                 // Capture the stream's sync origin at its first dispatch, in
                 // the same sub-ms window the Anchor establishes `t0`. Residual
                 // skew is absorbed by LEAD.
