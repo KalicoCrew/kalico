@@ -213,6 +213,30 @@ fn spawn_periodic_clock_sync(
                                     / 2.0) as u64;
                                 let mcu_at_send =
                                     mcu_at_response.saturating_sub(one_way_cycles);
+                                // DIAG(sip): the host's clock model lags the true
+                                // MCU clock if the clock-sync RTT is large + the
+                                // round-trip is asymmetric (RTT/2 over-corrects
+                                // mcu_at_send low). Log rtt + the correction so we
+                                // can see the lag magnitude directly. REVERT after.
+                                {
+                                    use std::io::Write as _;
+                                    if let Ok(mut fh) = std::fs::OpenOptions::new()
+                                        .create(true)
+                                        .append(true)
+                                        .open("/home/dderg/printer_data/logs/clksync-diag.log")
+                                    {
+                                        let _ = writeln!(
+                                            fh,
+                                            "[clksync] mcu={} rtt_us={} one_way_cyc={} mcu_at_response={} mcu_at_send={} freq={}",
+                                            mcu_handle_raw,
+                                            rtt.as_micros(),
+                                            one_way_cycles,
+                                            mcu_at_response,
+                                            mcu_at_send,
+                                            estimator.clock_freq_estimate as u64,
+                                        );
+                                    }
+                                }
                                 let mut r = router.lock().unwrap_or_else(|p| p.into_inner());
                                 let _ = r.set_clock_est_from_sample(
                                     mcu_h,
@@ -1941,6 +1965,24 @@ impl PyMotionBridge {
                 offset,
                 last_clock,
             );
+        }
+        // DIAG(sip): klippy's clocksync may overwrite the accurate periodic
+        // RTT-corrected sample with a stale/lagging estimate. Log every arrival
+        // so we can see whether this path races the periodic sync and biases
+        // the model low. REVERT after.
+        {
+            use std::io::Write as _;
+            if let Ok(mut fh) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("/home/dderg/printer_data/logs/clksync-diag.log")
+            {
+                let _ = writeln!(
+                    fh,
+                    "[clk-rebased] mcu={} freq={} klippy_offset={:.6} last_clock={} host_now_same_epoch={:.6}",
+                    mcu, freq as u64, offset, last_clock, host_now_same_epoch,
+                );
+            }
         }
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
