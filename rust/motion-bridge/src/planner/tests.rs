@@ -454,6 +454,76 @@ fn z_move_with_tiny_x_after_homing_xy_deviation_proportional() {
     );
 }
 
+/// Dispatch closure that records each dispatched segment's (t_start, t_end).
+fn capturing_dispatch() -> (
+    Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
+    Arc<Mutex<Vec<(f64, f64)>>>,
+) {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let l = Arc::clone(&log);
+    let cb: Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync> =
+        Arc::new(move |seg: &ShapedSegment| {
+            l.lock().unwrap().push((seg.t_start, seg.t_end));
+            Ok(())
+        });
+    (cb, log)
+}
+
+#[test]
+fn quiescence_rewinds_timeline_so_next_move_restarts_near_zero() {
+    let (dispatch, log) = capturing_dispatch();
+    let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+
+    // Spin (bounded) until the quiescence timer has fired `target` times. Each
+    // fire is the T_COMMIT arm committing the decel-to-zero tail and (with the
+    // fix) rewinding the timeline. Polling the counter rather than sleeping a
+    // fixed duration makes the test self-timing instead of calendar-dependent.
+    fn wait_for_commits(h: &PlannerHandle, target: u32) {
+        let start = std::time::Instant::now();
+        while h.commit_fire_count() < target {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "T_COMMIT fired only {} of {target} times within 5s",
+                h.commit_fire_count()
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    // Move 1: X 0 -> 200. Wait for commit #1 (decel-to-zero committed + rewind).
+    h.submit_move(long_move()).unwrap();
+    wait_for_commits(&h, 1);
+    let m1_max_t_end = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|&(_, e)| e)
+        .fold(0.0_f64, f64::max);
+    assert!(m1_max_t_end > 0.0, "move 1 produced no dispatched segments");
+
+    // Move 2: continuous X 200 -> 400. Wait for commit #2 (its tail dispatched).
+    log.lock().unwrap().clear();
+    let m2 = classify_and_build([200.0, 0.0, 0.0], 200.0, 0.0, 0.0, 0.0, 200.0).unwrap();
+    h.submit_move(m2).unwrap();
+    wait_for_commits(&h, 2);
+    let m2_min_t_start = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|&(s, _)| s)
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        m2_min_t_start.is_finite(),
+        "move 2 produced no dispatched segments"
+    );
+    assert!(
+        m2_min_t_start < m1_max_t_end,
+        "timeline did not rewind: move 2 started at {m2_min_t_start}, move 1 ended at {m1_max_t_end}"
+    );
+
+    h.shutdown();
+}
+
 /// No homing — just reset to a position and do a Z-only move.
 /// If the bug requires prior XY motion through the shaper,
 /// this should pass cleanly.
