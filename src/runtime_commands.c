@@ -15,6 +15,8 @@
 #include "board/misc.h"           // timer_read_time
 #include "kalico_runtime.h"       // FFI export prototypes
 #include "kalico_dispatch.h"      // kalico_native_emit_*
+#include "trsync.h"               // trsync_add_signal, trsync_oid_lookup
+#include "compiler.h"             // container_of
 #if CONFIG_MACH_STM32
 #include "stm32/phase_stepping_spi.h"
 #elif CONFIG_MACH_LINUX
@@ -241,6 +243,44 @@ command_runtime_software_trip(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_software_trip,
     "runtime_software_trip arm_id=%u");
+
+// ---- runtime_stop_on_trigger: trsync signal that freezes the curve evaluator
+//
+// This is the bridge twin of stepper.c's stepper_stop_on_trigger. Where
+// stepper_stop clears the (unused-in-bridge) C step queue, this freezes the
+// curve evaluator via kalico_software_trip. The bridge reactor's TripDispatch
+// relays `trsync_trigger` here; trsync_do_trigger fires this signal.
+//
+// One active homing arm per MCU at a time, so a single static instance is
+// sufficient. (Multiple concurrent arms would need an array keyed by trsync.)
+static struct runtime_stop_binding {
+    struct trsync_signal signal;
+    uint32_t arm_id;
+} runtime_stop_binding;
+
+static void
+runtime_stop_on_trigger_cb(struct trsync_signal *tss, uint8_t reason)
+{
+    (void)reason;
+    struct runtime_stop_binding *b =
+        container_of(tss, struct runtime_stop_binding, signal);
+    uint32_t clock_lo = timer_read_time();
+    uint32_t clock_hi = stats_send_time_high + (clock_lo < stats_send_time);
+    uint8_t status = 1; // NotArmed default
+    (void)kalico_software_trip(b->arm_id, clock_lo, clock_hi, &status);
+}
+
+void
+command_runtime_stop_on_trigger(uint32_t *args)
+{
+    uint32_t arm_id = args[0];
+    struct trsync *ts = trsync_oid_lookup(args[1]);
+    runtime_stop_binding.arm_id = arm_id;
+    trsync_add_signal(ts, &runtime_stop_binding.signal,
+                      runtime_stop_on_trigger_cb);
+}
+DECL_COMMAND(command_runtime_stop_on_trigger,
+    "runtime_stop_on_trigger arm_id=%u trsync_oid=%c");
 
 
 void
