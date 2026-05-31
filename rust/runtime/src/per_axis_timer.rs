@@ -7,9 +7,10 @@
 //! (Task 10 of 2026-05-19-stepping-redesign-implementation.md).
 //!
 //! Lifecycle:
-//! 1. C-side `init_per_axis_step_timers` installs four `struct timer`s, one
-//!    per axis (X=0, Y=1, Z=2, E=3), each bound to a thin C trampoline that
-//!    calls into this module.
+//! 1. C-side `arm_per_axis_step_timer` installs a `struct timer` for each axis
+//!    this MCU drives (as that axis is configured), bound to a thin C
+//!    trampoline (X=0, Y=1, Z=2, E=3) that calls into this module. Axes the
+//!    MCU does not own get no timer (avoids needless sample-rate dispatch).
 //! 2. Each dispatch peeks the head of `step_queues[axis_idx]` and, if its
 //!    `cycle_abs` is at-or-before `now`, pops + emits one step pulse via
 //!    `runtime_emit_step_pulses(axis_idx, dir)`.
@@ -80,7 +81,7 @@ pub extern "C" fn kalico_per_axis_step_event(axis_idx: u8) -> u32 {
 
     // Pop one entry if its `cycle_abs` has arrived. Guard against a null
     // queue pointer (host builds and pre-Task-11 boot states) to keep this
-    // entry point sound even before `init_per_axis_step_timers` would have
+    // entry point sound even before `arm_per_axis_step_timer` would have
     // populated the C-side `step_queues` array.
     if !queue_ptr.is_null() {
         // SAFETY: `queue_ptr` is non-null, points at a live `StepQueue` for

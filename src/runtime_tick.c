@@ -601,7 +601,8 @@ extern void runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps);
 // StepEntry from `step_queues[axis_idx]` if its `cycle_abs` has arrived,
 // emits the GPIO pulses via `runtime_emit_step_pulses`, and returns the
 // next waketime. Wired into `command_kalico_configure_axis` (stepper.c)
-// via `init_per_axis_step_timers`.
+// via `arm_per_axis_step_timer`, which arms a timer only for axes this MCU
+// actually drives.
 
 extern uint32_t kalico_per_axis_step_event(uint8_t axis_idx);
 
@@ -634,26 +635,43 @@ static uint_fast8_t (*const per_axis_handlers[4])(struct timer *) = {
     per_axis_timer_event_3,
 };
 
-// Install the four per-axis timers. Called once per boot from
-// `command_kalico_configure_axis` (stepper.c) via the static-flag guard.
-// Not idempotent — caller must ensure only one invocation per boot.
+// Arm the per-axis step-emission timer for a single axis, the first time
+// that axis is configured. Called per-axis from `command_kalico_configure_axis`
+// (stepper.c) so an MCU only runs step timers for axes it actually drives.
+//
+// Rationale: every armed per-axis timer reschedules itself at the sample rate
+// even when its step queue is empty (see kalico_per_axis_step_event's empty-
+// queue path: it returns `now + sample_period`). Arming a timer for an axis
+// this MCU does NOT own (e.g. Z on the XY board) therefore adds a needless
+// sample-rate dispatch load at the SAME NVIC priority as TIM5 — and since
+// TIM5 cannot preempt the SysTick dispatch loop, a cluster of those dispatches
+// can starve the motion tick past 2 sample periods → -311 TickIntervalExceeded.
+// Bench addr2line confirmed the starving callbacks were exactly the unowned-
+// axis timers (per_axis_timer_event_2 on the H7, _3 on the F446). Only arming
+// owned axes removes that load at the source.
+//
+// Re-adding an already-queued timer would corrupt the scheduler's linked list,
+// so each axis is armed at most once (tracked by `per_axis_armed_mask`).
 //
 // `runtime_emit_step_pulses` is defined in src/stepper.c. The Rust body
 // resolves the C-declared `step_queues` array internally; this file owns
 // the trampolines + scheduler wiring.
 void
-init_per_axis_step_timers(void)
+arm_per_axis_step_timer(uint8_t axis_idx)
 {
-    uint32_t now = timer_read_time();
-    for (int i = 0; i < 4; i++) {
-        per_axis_timers[i].func = per_axis_handlers[i];
-        // 1 ms boot delay so the first dispatch lands strictly in the
-        // future (sched_add_timer trips "Timer too close" on a past
-        // waketime). Subsequent waketimes come from
-        // kalico_per_axis_step_event's return value.
-        per_axis_timers[i].waketime = now + (uint32_t)0x3FFFFFFF;
-        sched_add_timer(&per_axis_timers[i]);
-    }
+    static uint8_t per_axis_armed_mask;
+    if (axis_idx >= 4)
+        return;
+    if (per_axis_armed_mask & (uint8_t)(1u << axis_idx))
+        return; // already queued — re-adding would corrupt the timer list
+    per_axis_armed_mask |= (uint8_t)(1u << axis_idx);
+
+    per_axis_timers[axis_idx].func = per_axis_handlers[axis_idx];
+    // Park the first dispatch far in the future (sched_add_timer trips
+    // "Timer too close" on a past waketime). Subsequent waketimes come from
+    // kalico_per_axis_step_event's return value.
+    per_axis_timers[axis_idx].waketime = timer_read_time() + (uint32_t)0x3FFFFFFF;
+    sched_add_timer(&per_axis_timers[axis_idx]);
 }
 
 // Task 14 SPI queue drain removed — dispatch_phase now calls
