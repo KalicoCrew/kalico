@@ -21,14 +21,16 @@ Logging today is a flat, unstructured text pile that is hard to search and impos
 ## 2. Goals / Non-goals
 
 **Goals (this spec):**
-1. A single structured logging pipeline for the **Python host** and **Rust host**. No parallel legacy logging code path.
-2. **Plug-pull durability:** the on-disk structured record is the source of truth, written under `~/printer_data/logs/`.
-3. A **queryable store** (VictoriaLogs) the agent can drive via a repo-committed **skill** (LogsQL over HTTP), with an optional first-party MCP.
-4. **Noise control:** per-subsystem level gating, runtime-adjustable.
-5. **Back-compat:** a human-readable `klippy.log` rendered from the same structured stream (for Mainsail, `kalico-sim`, and the "fetch klippy.log to /tmp" workflow).
-6. A schema that the MCU follow-on can feed into unchanged.
+1. A single structured logging pipeline for the **Python host** and **Rust host**. No parallel legacy logging code path: emitters produce **one** structured record, consumed by a set of pluggable sinks.
+2. **Pluggable sink architecture:** a registerable sink interface (klippy `extras` style) with built-in `text` and `jsonl` sinks; future/third-party sinks (a direct Loki sink, remote syslog, a Moonraker bridge) plug in without core changes.
+3. **Plug-pull durability:** the on-disk JSONL record is the source of truth, written under `~/printer_data/logs/`.
+4. A **queryable store** (VictoriaLogs) the agent can drive via a repo-committed **skill** (LogsQL over HTTP), with an optional first-party MCP. VL is an *external opt-in* fed by the `jsonl` sink.
+5. **Stock-format text view:** the `text` sink emits the stock Klipper `klippy.log` format, so existing log analytics (`logextract.py`, `graphstats.py`, Klippain, Moonraker's log view) keep working in every configuration.
+6. **Noise control:** per-subsystem default levels.
+7. A schema that the MCU follow-on can feed into unchanged.
 
 **Non-goals (deferred):**
+- **User-facing sink/tier selection config** (e.g. `[logging] backend = klipper|structured|victorialogs`, disabling the `jsonl` sink to save SSD writes, runtime level changes). The sink interface is *built for* this, but the config surface is a deliberate follow-on — this spec hard-wires the default active set (`text` + `jsonl`).
 - MCU-side structured log emission / transport (spec #2).
 - Any Grafana / Mainsail dashboard work (spec #3).
 - Migrating historical log files into VictoriaLogs (we start fresh; "no old logs").
@@ -43,43 +45,58 @@ Logging today is a flat, unstructured text pile that is hard to search and impos
 | Ingestion | **File-first + shipper** | JSONL on disk = durable source of truth (survives plug-pull); VL is a rebuildable index; the realtime path never blocks on the store. |
 | Session model | **`session_id` + `print_id`**, `op_id` reserved | Scope to a whole boot or one print now; per-command/op tracing later with no schema change. |
 | Migration | **Facade backend-swap + structured helper** | Instant blanket coverage of all ~480 sites with zero call-site edits, plus a clean forward API for new/hot-path code. No big-bang, no throwaway. |
-| Legacy text log | **Kept as a derived rendering** of the structured stream | One source of records, two views. Preserves Mainsail/sim/fetch-to-tmp without a second logging path. |
+| Legacy text log | **Kept as a derived rendering** of the structured stream (the `text` sink) | One source of records, two views. Preserves Mainsail/sim/fetch-to-tmp without a second logging path. |
+| Sink architecture | **Pluggable sink registry** (built now); built-in `text` + `jsonl` | Generalizes "two views" into N sinks; this is the "make the logger a plugin" requirement. |
+| Default active sinks | **`text` + `jsonl`** | Agent-queryable out of the box with no external processes; VL is an opt-in upgrade; SSD-light hosts drop to text-only later. |
+| Sink/tier selection config | **Deferred** (interface designed for it) | User-facing toggle to disable sinks / drop to text-only for SSD savings comes later; not needed to ship value now. |
 
 ## 4. Architecture
 
+Emitters produce one structured record; a **sink registry** fans it out to the active sinks (§4.1). This spec ships `text` + `jsonl` active by default. VictoriaLogs is an *external opt-in* fed by the `jsonl` sink — klippy needs no config to enable it, and a host that never installs it pays nothing.
+
 ```
-  ┌─────────────────────────── emitters (one structured stream) ───────────────────────────┐
-  │                                                                                          │
-  │  Python host (klippy)                         Rust host (motion-bridge / host-rt)        │
-  │  stdlib logging  ── facade swap ──┐           log:: + tracing ── tracing subscriber ──┐  │
-  │  structured_log.event(...) ───────┤           klog! structured helper ───────────────┤  │
-  │                                   │                                                   │  │
-  │            ContextFilter (session_id, print_id, source, target)                      │  │
-  │                                   │                                                   │  │
-  │         ┌─────────────────────────┴───────────────┐         ┌─────────────────────────┘  │
-  │         ▼ JSONL (canonical)        ▼ text (view)   │         ▼ JSONL (canonical)          │
-  │  printer_data/logs/events/host-py.jsonl   klippy.log    printer_data/logs/events/host-rust.jsonl
-  └──────────────────────────────────────────────────────────────────────────────────────────┘
-                          │                                              │
-                          └──────────────► shipper (Vector) ◄───────────┘
-                                   tails events/*.jsonl, checkpointed
+  Python host (klippy)                         Rust host (motion-bridge / host-rt)
+  stdlib logging ─ facade swap ─┐              log:: + tracing ─ subscriber ─┐
+  structured_log.event(...) ────┤              klog!(...) ──────────────────┤
+                                ▼                                            ▼
+        ContextFilter: session_id, print_id, source, target, subsystem, level
+                                │                                            │
+                                ▼                                            ▼
+                       ┌──────────────────── SINK REGISTRY ─────────────────────┐
+                       │  active set selected by config (default: text + jsonl)  │
+                       │   • text  sink  → klippy.log  (stock Klipper format)     │
+                       │   • jsonl sink  → printer_data/logs/events/*.jsonl       │
+                       │   • <custom>    → registerable (Loki, syslog, Moonraker) │
+                       └─────────────────────────────────────────────────────────┘
+                                                  │  jsonl files (durable truth)
+                                                  ▼
+                                shipper (Vector) — external, opt-in
+                                  tails events/*.jsonl, checkpointed
                                                   │
                                                   ▼
-                                      VictoriaLogs  (127.0.0.1:9428)
-                                       /insert/jsonline   (ingest)
-                                       /select/logsql/query (query)
+                                  VictoriaLogs (127.0.0.1:9428)
+                              /insert/jsonline · /select/logsql/query
                                                   │
-                 ┌────────────────────────────────┼────────────────────────────────┐
-                 ▼                                 ▼                                 ▼
-        query-logs skill (curl)          mcp-victorialogs (optional)         built-in VL Web UI
-        primary agent interface           drop-in, same VL endpoint           Grafana plugin (spec #3)
+            ┌──────────────────────────────────────┼──────────────────────────────┐
+            ▼                                        ▼                              ▼
+   query-logs skill (curl)              mcp-victorialogs (optional)         VL Web UI / Grafana
+   primary agent interface               drop-in, same endpoint                  (spec #3)
 ```
 
+### 4.1 Pluggable sinks
+
+A **sink** is a small interface that consumes structured records and decides what to do with them. The registry holds the active set; emitters never reference sinks directly.
+
+- **Built-in now:** `text` (stock `klippy.log` format — keeps existing analytics working) and `jsonl` (per-source files under `printer_data/logs/events/`, the durable source of truth).
+- **Registerable:** new sinks register as klippy `extras` modules (klippy's existing extension model), so a direct Loki sink, remote syslog, or a Moonraker bridge can be added **without touching core**. This is the "logger as a plugin" requirement.
+- **Cross-language:** the active-sink set is pushed across the FFI, so Rust `tracing` events (and decoded MCU frames, spec #2) land in exactly the active sinks. In a text-only configuration the JSON serialization + `jsonl` file I/O are never paid — that is the "lightweight on a Pi 3B" mode.
+- **Selection is deferred config:** this spec hard-wires the default active set (`text` + `jsonl`). The user-facing switch to change/disable sinks (e.g. text-only to save SSD writes) is a documented follow-on the interface is built for (§2 non-goals, §16).
+
 **Data-flow invariants:**
-- An emitter writes a JSONL record to its per-source file **before** anything else. That write is the durability point. If VL or the shipper is down, no record is lost.
-- The shipper (Vector) tails the JSONL files with an on-disk checkpoint, so a restart neither re-sends nor loses lines.
-- VictoriaLogs holds an **index**, not the source of truth. It can be wiped and rebuilt by re-tailing the JSONL files.
-- The text `klippy.log` is produced from the *same* record objects by a second formatter — never a separate logging call.
+- The `jsonl` sink writes a record to its per-source file **before** anything downstream. That write is the durability point: if VL or the shipper is down, nothing is lost.
+- Vector tails the JSONL files with an on-disk checkpoint — a restart neither re-sends nor loses lines.
+- VictoriaLogs holds an **index**, not the source of truth; it can be wiped and rebuilt by re-tailing the JSONL.
+- The `text` and `jsonl` sinks render the *same* record objects — never separate logging calls.
 
 ## 5. Log record schema
 
@@ -139,10 +156,11 @@ One JSONL line = one event. VictoriaLogs reserves `_time`, `_msg`, `_stream`, `_
 Keep the existing async design (`QueueHandler` → background `QueueListener`); it is non-blocking and good. Change only what is behind the facade:
 
 1. **`ContextFilter`** — injects `session_id`, `print_id`, `source="host-py"`, and `target` (logger name) into every record from contextvars. Added at the root logger (`printer.py` setup).
-2. **`JSONLFormatter`** — renders the record to a schema-conformant JSON line; promotes `extra=` keys to top-level fields; maps `levelno`→`level`; uses record creation time for `_time`. Writes to `printer_data/logs/events/host-py.jsonl` (rotating).
-3. **`TextViewFormatter`** — renders the *same* record to a compact human line for `klippy.log` (back-compat). Second handler, same records.
-4. **`structured_log.py`** — thin forward helper: `event(subsystem, event, *, level="info", msg=None, **fields)` calls stdlib logging with `extra=`. New/hot-path code uses this; it can **require** `subsystem`+`event` (fail-loudly). Existing `logging.*` calls keep working untouched and still get `_time`/`level`/`source`/`target`/`session_id`/`print_id` for free.
-5. **Incremental enrichment:** the ad-hoc `[bridge-trace]`/`[probe-homing]`/`[diag]` prefixes get migrated to real `subsystem`/`event` fields in the high-traffic paths (homing, bridge, clocksync) over time. No big-bang.
+2. **`jsonl` sink** — renders the record to a schema-conformant JSON line; promotes `extra=` keys to top-level fields; maps `levelno`→`level`; uses record creation time for `_time`. Writes to `printer_data/logs/events/host-py.jsonl` (rotating). The durable source of truth.
+3. **`text` sink** — renders the *same* record to the **stock Klipper** `klippy.log` line format (back-compat with existing analytics). Same records, never a separate logging call.
+4. Both sinks are entries in the **`SinkRegistry`**; the formatted output of the async `QueueListener` is fanned out to the active set (default `{text, jsonl}`).
+5. **`structured_log.py`** — thin forward helper: `event(subsystem, event, *, level="info", msg=None, **fields)` calls stdlib logging with `extra=`. New/hot-path code uses this; it can **require** `subsystem`+`event` (fail-loudly). Existing `logging.*` calls keep working untouched and still get `_time`/`level`/`source`/`target`/`session_id`/`print_id` for free.
+6. **Incremental enrichment:** the ad-hoc `[bridge-trace]`/`[probe-homing]`/`[diag]` prefixes get migrated to real `subsystem`/`event` fields in the high-traffic paths (homing, bridge, clocksync) over time. No big-bang.
 
 No new hard dependency: stdlib `logging` + `contextvars` + a JSON serializer. (structlog considered; rejected for the backbone because the facade-swap needs zero call-site changes and fewer deps. It remains an option if ergonomics demand it.)
 
@@ -159,6 +177,8 @@ Replace `env_logger` with a `tracing` stack (this is real Rust work — implemen
 
 ## 8. Ingestion / shipper / store
 
+VictoriaLogs and Vector are **external, opt-in** components fed by the `jsonl` sink's files. klippy needs no configuration to enable them; a host that doesn't install them is unaffected and pays nothing. "Turning on VL" = installing/running Vector + VL pointed at the JSONL files — not a klippy code path.
+
 - **Shipper:** **Vector** (single Rust binary, robust checkpointed `file` source, backpressure). Config tails `printer_data/logs/events/*.jsonl` and pushes NDJSON to VL `/insert/jsonline`. *Alternatives considered:* Fluent Bit (lighter C footprint) and a VL-native agent — to be confirmed at plan time; Vector is the default for checkpoint durability and Rust-stack fit.
 - **VictoriaLogs:** runs as a systemd service, bound to `127.0.0.1:9428`. Ingest `/insert/jsonline`; query `/select/logsql/query` (NDJSON out).
 - **VL data placement (SD-wear option):** default on-disk data dir under `printer_data/`. Because the JSONL files are the durable source of truth, an SD-wear-sensitive option is to put the **VL index on tmpfs (RAM)** and let Vector re-ingest from the JSONL on boot — zero index writes to SD, durability preserved. Default off (on-disk) for simplicity; documented as a toggle.
@@ -167,7 +187,7 @@ Replace `env_logger` with a `tracing` stack (this is real Rust work — implemen
 ## 9. Noise control
 
 - Global default level `info`. `trace`/`debug` retained on disk only when enabled (so default ingest volume stays modest → less SD/RAM pressure).
-- **Per-subsystem level gating**, runtime-adjustable via a gcode/console command (e.g. `SET_LOG_LEVEL SUBSYSTEM=bridge LEVEL=debug`) and via config defaults. Mirrors to both Python and Rust (the Rust level is pushed across FFI).
+- **Per-subsystem default levels** (config), mirrored to both Python and Rust (the Rust level is pushed across FFI). A runtime `SET_LOG_LEVEL SUBSYSTEM=… LEVEL=…` command and live sink toggling are part of the **deferred configuration follow-on** (§2 non-goals, §16) — the static defaults ship now.
 - Because filtering is now a *field query*, "noise" is also handled at read time: the agent narrows by `subsystem`/`level`/`event` instead of grepping.
 
 ## 10. The `query-logs` skill
@@ -189,7 +209,10 @@ Each unit has one purpose, a defined interface, and explicit deps:
 | Unit | Purpose | Interface | Depends on |
 |---|---|---|---|
 | `structured_log.py` | Python forward API + context binding | `event(...)`, `bind_session/print(...)` | stdlib logging, contextvars |
-| `JSONLFormatter` / `ContextFilter` / `TextViewFormatter` | render + enrich records | logging handler/formatter API | schema |
+| `SinkRegistry` | hold the active sink set, fan out records | `register(sink)`, `emit(record)` | — |
+| `text` sink | render stock `klippy.log` | sink interface | — |
+| `jsonl` sink | render durable per-source JSONL | sink interface | schema |
+| `ContextFilter` | enrich records (session/print/source/target) | logging filter API | contextvars |
 | Rust `tracing` layer + `klog!` | Rust emission + enrichment | `tracing` macros, FFI ctx setter | tracing crates |
 | FFI session bridge | pass session/print ids Python→Rust | `extern "C"` setter at bridge init | PyO3 boundary |
 | Vector config | tail JSONL → VL | files in, HTTP out | Vector |
@@ -209,7 +232,7 @@ Each unit has one purpose, a defined interface, and explicit deps:
 
 ## 14. Testing strategy
 
-- **Unit:** `JSONLFormatter` schema conformance; `ContextFilter` injection; level gating; Rust layer field injection; code→code_name resolution.
+- **Unit:** `jsonl` sink schema conformance; `text` sink stock-format conformance; `ContextFilter` injection; level gating; Rust layer field injection; code→code_name resolution.
 - **Integration:** emit (Python + Rust) → JSONL on disk → Vector → VL → `query-logs` round-trip returns the expected records by `session_id`/`subsystem`/`event`.
 - **Durability:** kill VL mid-run, confirm JSONL intact and VL backfills on restart (and the tmpfs-rebuild path if enabled).
 - **Sim:** existing grep-based `kalico-sim` assertions still pass against the derived text log.
@@ -226,3 +249,4 @@ Each unit has one purpose, a defined interface, and explicit deps:
 3. **VL index on tmpfs vs disk:** default disk; tmpfs toggle for SD-wear.
 4. **Write-failure policy:** warn+counter vs hard error (fail-loudly leaning).
 5. **session_id format:** `k-<unix>-<pid>` (sortable, greppable).
+6. **Sink-selection config surface (deferred follow-on):** when added, a `[logging]` section selects the active sink set (e.g. `backend = klipper|structured|victorialogs` or an explicit sink list), enables runtime `SET_LOG_LEVEL`, and lets SSD-constrained hosts drop to text-only. This spec builds the registry/interface so this is a small, additive change — no rework.
