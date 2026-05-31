@@ -59,3 +59,61 @@ def test_get_session_unbound_is_sentinel():
     # returns the queryable sentinel rather than crashing.
     sl.clear_session()
     assert sl.get_session() == sl.UNBOUND_SESSION
+
+
+def _make_record(msg="hello", level=logging.INFO, name="mod.Cls", **extra):
+    rec = logging.LogRecord(
+        name=name, level=level, pathname=__file__, lineno=1,
+        msg=msg, args=(), exc_info=None,
+    )
+    rec.created = 1780185600.0
+    rec.session_id = "k-1779840000-1"
+    rec.print_id = ""
+    rec.source = sl.SOURCE_HOST_PY
+    for k, v in extra.items():
+        setattr(rec, k, v)
+    return rec
+
+
+def test_record_to_dict_core_fields():
+    rec = _make_record()
+    rec.message = rec.getMessage()
+    d = sl.record_to_dict(rec)
+    assert d["_time"] == "2026-05-31T00:00:00.000Z"
+    assert d["_msg"] == "hello"
+    assert d["level"] == "info"
+    assert d["source"] == "host-py"
+    assert d["session_id"] == "k-1779840000-1"
+    assert d["target"] == "mod.Cls"
+    assert d["print_id"] == ""  # empty allowed
+
+
+def test_record_to_dict_promotes_extra_fields():
+    rec = _make_record(subsystem="homing", event="homing.trip", axis="z")
+    rec.message = rec.getMessage()
+    d = sl.record_to_dict(rec)
+    assert d["subsystem"] == "homing"
+    assert d["event"] == "homing.trip"
+    assert d["axis"] == "z"
+
+
+def test_record_to_dict_captures_exception_traceback():
+    # logging.exception() / exc_info populates record.exc_text during format();
+    # the traceback must survive into the JSONL schema, not be dropped.
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        rec = logging.LogRecord(
+            "mod.Cls", logging.ERROR, __file__, 1,
+            "handler failed", (), sys.exc_info(),
+        )
+    rec.created = 1780185600.0
+    rec.session_id = "k-1779840000-1"
+    rec.print_id = ""
+    rec.source = sl.SOURCE_HOST_PY
+    # Formatter.format() is what sets exc_text; emulate the QueueHandler path.
+    logging.Formatter().format(rec)
+    rec.message = rec.getMessage()
+    d = sl.record_to_dict(rec)
+    assert "ValueError: boom" in d["exception"]
+    assert "Traceback" in d["exception"]

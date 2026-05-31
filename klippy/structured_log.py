@@ -84,3 +84,47 @@ def clear_print():
 
 def get_print():
     return _print_var.get()
+
+
+# LogRecord attributes that are stdlib bookkeeping, not schema payload.
+_STD_ATTRS = frozenset(
+    logging.LogRecord(
+        "x", logging.INFO, "x", 0, "x", (), None
+    ).__dict__.keys()
+) | {"message", "asctime", "session_id", "print_id", "source", "taskName"}
+
+# Schema fields that get a dedicated slot (everything else is free payload).
+_RESERVED_OUT = frozenset(
+    ["_time", "_msg", "level", "source", "session_id", "target", "print_id"]
+)
+
+
+def record_to_dict(record):
+    # `record.message` must already be set (QueueHandler does this).
+    msg = getattr(record, "message", None)
+    if msg is None:
+        msg = record.getMessage()
+    out = {
+        "_time": format_time(record.created),
+        "_msg": msg,
+        "level": level_name(record.levelno),
+        "source": getattr(record, "source", SOURCE_HOST_PY),
+        "session_id": getattr(record, "session_id", UNBOUND_SESSION),
+        "target": record.name,
+    }
+    print_id = getattr(record, "print_id", "")
+    out["print_id"] = print_id if print_id else ""
+    # Capture the formatted exception traceback if present. QueueHandler clears
+    # record.exc_info but the Formatter has already rendered record.exc_text,
+    # which would otherwise be dropped (it lives in stdlib's _STD_ATTRS).
+    exc_text = getattr(record, "exc_text", None)
+    if exc_text:
+        out["exception"] = exc_text
+    # Promote any non-standard attribute (from logging `extra=`) to a field.
+    for key, val in record.__dict__.items():
+        if key in _STD_ATTRS or key in _RESERVED_OUT:
+            continue
+        if key.startswith("_"):
+            continue
+        out[key] = val
+    return out
