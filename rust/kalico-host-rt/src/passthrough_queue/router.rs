@@ -455,6 +455,45 @@ impl PassthroughRouter {
         Ok(projected)
     }
 
+    /// DIAG (temporary, -308 investigation): log segment-0's projected MCU
+    /// start_time vs this MCU's current projected clock. Negative deficit ⇒
+    /// the piece is already in the MCU's past and will fault PieceStartInPast.
+    pub fn log_seg0_deficit(&self, mcu: McuHandle, seg0_host_secs: f64, t0: f64) {
+        let rec = match self.mcus.get(&mcu) {
+            Some(r) => r,
+            None => {
+                log::warn!("[seg0-deficit] mcu={:?} UNKNOWN", mcu);
+                return;
+            }
+        };
+        if rec.clock_freq == 0.0 {
+            log::warn!(
+                "[seg0-deficit] mcu={:?} clock_freq=0 (not yet synced) t0={:.6} seg0_host={:.6}",
+                mcu,
+                t0,
+                seg0_host_secs
+            );
+            return;
+        }
+        let start_time = self.host_time_to_mcu_clock(mcu, seg0_host_secs).unwrap_or(0);
+        let ack_now = self.compute_ack_clock(mcu).unwrap_or(0);
+        let deficit_ticks = start_time as i64 - ack_now as i64;
+        let deficit_us = (deficit_ticks as f64 / rec.clock_freq) * 1e6;
+        log::warn!(
+            "[seg0-deficit] mcu={:?} freq={:.1} offset={:.6} last_clock={} t0={:.6} seg0_host={:.6} start_time={} ack_now={} deficit_ticks={} deficit_us={:.1} (negative=>in past)",
+            mcu,
+            rec.clock_freq,
+            rec.clock_offset,
+            rec.last_clock,
+            t0,
+            seg0_host_secs,
+            start_time,
+            ack_now,
+            deficit_ticks,
+            deficit_us
+        );
+    }
+
     // ── Stats ────────────────────────────────────────────────────────────
 
     /// Snapshot current statistics for the given MCU.

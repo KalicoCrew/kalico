@@ -2257,6 +2257,17 @@ impl PyMotionBridge {
                     .unwrap_or_else(|p| p.into_inner())
                     .anchor_segment(seg.t_start, seg.t_end, host_now);
 
+                // DIAG (temporary, -308 investigation): on the first dispatch
+                // of a stream, log segment-0's projected start_time vs each
+                // MCU's clock-now to expose any per-MCU past-deficit.
+                if fresh {
+                    let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
+                    for cfg in mcu_configs_for_cb.iter() {
+                        let h = crate::types::mcu_handle_from_raw(cfg.mcu_id);
+                        r.log_seg0_deficit(h, t0 + seg.t_start, t0);
+                    }
+                }
+
                 // `project`: host-time seconds → MCU absolute clock ticks.
                 // Locks the router once per (mcu_id, piece); router is held
                 // only for the arithmetic, not for any I/O.
