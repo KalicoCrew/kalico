@@ -631,7 +631,7 @@ impl Engine {
 #[cfg(test)]
 impl Default for Engine {
     fn default() -> Self {
-        Self::new(520_000_000, crate::clock::TICK_RATE_HZ)
+        Self::new(520_000_000, crate::clock::TEST_ONLY_TICK_RATE_HZ)
     }
 }
 
