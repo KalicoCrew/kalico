@@ -668,13 +668,24 @@ fault_capture_and_reset(uint32_t kind, uint32_t *frame, uint32_t exc_return)
     fault_rec.psr = frame[7];
     fault_rec.exc_return = exc_return;
 
-    // Fault status registers.
+    // Fault status registers. ARMv7-M (Cortex-M3+) only — ARMv6-M (Cortex-M0+,
+    // e.g. STM32G0) has no Configurable Fault Status / fault-address registers;
+    // it only has HardFault. Record zeros there. SHCSR exists on both.
+#if (__CORTEX_M >= 3)
     fault_rec.cfsr  = SCB->CFSR;
     fault_rec.hfsr  = SCB->HFSR;
     fault_rec.dfsr  = SCB->DFSR;
     fault_rec.bfar  = SCB->BFAR;
     fault_rec.mmfar = SCB->MMFAR;
     fault_rec.afsr  = SCB->AFSR;
+#else
+    fault_rec.cfsr  = 0;
+    fault_rec.hfsr  = 0;
+    fault_rec.dfsr  = 0;
+    fault_rec.bfar  = 0;
+    fault_rec.mmfar = 0;
+    fault_rec.afsr  = 0;
+#endif
     fault_rec.shcsr = SCB->SHCSR;
 
     fault_rec.exc_kind = kind;
