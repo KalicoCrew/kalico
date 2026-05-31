@@ -701,3 +701,40 @@ fn corexy_diagonal_jog_both_motors_step_at_distinct_rates() {
         "motor-A and motor-B must differ on a diagonal jog"
     );
 }
+
+#[test]
+fn axis_e_is_three() {
+    assert_eq!(AXIS_E, 3);
+}
+
+#[test]
+fn build_mcu_configs_two_mcu_corexy_with_e() {
+    use std::collections::HashMap;
+    let mut caps = HashMap::new();
+    caps.insert(7u32, McuCaps { curve_pool_n: 12, max_pieces_per_curve: 4 });
+    caps.insert(9u32, McuCaps { curve_pool_n: 8, max_pieces_per_curve: 2 });
+    // octopus(7) carries X,Y,E corexy; f446(9) carries Z cartesian.
+    let mcus = vec![
+        (7u32, vec![AXIS_X as u8, AXIS_Y as u8, AXIS_E as u8], 0u8),
+        (9u32, vec![AXIS_Z as u8], 1u8),
+    ];
+    let cfgs = build_mcu_configs(&mcus, &caps);
+    assert_eq!(cfgs.len(), 2);
+    assert_eq!(cfgs[0].mcu_id, 7);
+    assert_eq!(cfgs[0].axes, vec![AXIS_X, AXIS_Y, AXIS_E]);
+    assert_eq!(cfgs[0].kinematics, 0);
+    assert_eq!(cfgs[0].caps, McuCaps { curve_pool_n: 12, max_pieces_per_curve: 4 });
+    assert_eq!(cfgs[1].mcu_id, 9);
+    assert_eq!(cfgs[1].axes, vec![AXIS_Z]);
+    assert_eq!(cfgs[1].kinematics, 1);
+}
+
+#[test]
+fn build_mcu_configs_missing_caps_falls_back_to_default() {
+    use std::collections::HashMap;
+    let caps: HashMap<u32, McuCaps> = HashMap::new();
+    let mcus = vec![(7u32, vec![AXIS_X as u8, AXIS_Y as u8], 0u8)];
+    let cfgs = build_mcu_configs(&mcus, &caps);
+    assert_eq!(cfgs.len(), 1);
+    assert_eq!(cfgs[0].caps, McuCaps::default());
+}

@@ -8,6 +8,8 @@
 //! motor-frame curves in its X/Y handle slots and has no CoreXY transform in
 //! its hot path.
 
+use std::collections::HashMap;
+
 use crate::planner::DispatchError;
 use kalico_host_rt::producer::{CurveLoadParams, SegmentPushParams};
 use runtime::segment::KinematicTag;
@@ -34,6 +36,11 @@ pub const UNUSED_HANDLE: u32 = 0xFFFE_FFFE;
 pub const AXIS_X: usize = 0;
 pub const AXIS_Y: usize = 1;
 pub const AXIS_Z: usize = 2;
+/// Extruder axis. Reserved in the axis vocabulary so the host can place E on
+/// the MCU that carries the extruder stepper. Inert until E-curve shaping
+/// lands: `build_push_params` range-skips it while `shaped.axes` has only
+/// X/Y/Z entries.
+pub const AXIS_E: usize = 3;
 
 /// Epsilon for the "all control points equal" trivial-constant test.
 const EPS_CONST: f64 = 1e-12;
@@ -82,6 +89,30 @@ impl From<kalico_protocol::messages::RuntimeCapsResponse> for McuCaps {
             max_pieces_per_curve: r.max_pieces_per_curve,
         }
     }
+}
+
+/// Build the per-MCU planner topology from a host-supplied descriptor list.
+///
+/// Each `mcus` entry is `(bridge_handle, axes, kinematics_tag)` where `axes`
+/// holds `AXIS_*` indices as `u8` and `kinematics_tag` is a `KinematicTag`
+/// discriminant. `caps_by_handle` supplies the per-MCU runtime capabilities;
+/// a handle absent from the map gets `McuCaps::default()` (large-profile
+/// fallback for firmware predating `QueryRuntimeCaps`).
+///
+/// Order is preserved from `mcus`. No hardcoded MCU identity, axis set, or
+/// kinematics — every field comes from the caller.
+pub fn build_mcu_configs(
+    mcus: &[(u32, Vec<u8>, u8)],
+    caps_by_handle: &HashMap<u32, McuCaps>,
+) -> Vec<McuAxisConfig> {
+    mcus.iter()
+        .map(|(handle, axes, tag)| McuAxisConfig {
+            mcu_id: *handle,
+            axes: axes.iter().map(|&a| a as usize).collect(),
+            kinematics: *tag,
+            caps: caps_by_handle.get(handle).copied().unwrap_or_default(),
+        })
+        .collect()
 }
 
 /// One MCU's slice of work for a single shaped segment: the curves it must
