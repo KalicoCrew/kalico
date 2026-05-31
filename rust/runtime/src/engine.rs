@@ -640,53 +640,28 @@ impl Default for Engine {
     }
 }
 
-// ── get_piece_for_time (per spec §4.2) ────────────────────────────────────────
+// ── get_position_and_velocity (per spec §4.2) ─────────────────────────────────
 
 /// ⚠️ DO NOT MODIFY THIS FUNCTION WITHOUT DIRECT CONFIRMATION FROM THE USER. ⚠️
 ///
-/// This loop and its exact shape are load-bearing. The four-branch structure,
-/// their ordering, the removal of the old "gap" branch (future pieces are held
-/// at `t = 0` by `eval_horner`'s saturating elapsed, NOT by a separate check),
-/// and the placement of the 2-tick `PieceStartInPast` check at the *adoption*
-/// point were derived and verified on hardware together with the user. They
-/// fix the spurious `-308 PieceStartInPast` regression that the piece-ring
-/// rewrite introduced by dropping the spec §4.4 advancement loop.
+/// This function and its helpers (`get_piece_for_time`, `arm_and_load`) encode
+/// four-branch semantics whose exact shape is load-bearing:
 ///
-/// Reordering the advance/fault/arm steps, re-adding a gap branch, gating the
-/// fault on "first load only", or adding a min-duration guard all silently
-/// reintroduce the bug (the spec explicitly rejected min-duration in favour of
-/// this loop). Do NOT refactor, "simplify", reorder, or "optimize" this
-/// function without explicit sign-off from the user — even if it looks like it
-/// could be cleaner. If you think it needs to change, ask first.
+/// 1. **Continuing in-window piece** — branch 1 short-circuits before the
+///    walk/fault so a long hold is never charged a fault.
+/// 2. **Ring empty** — `get_piece_for_time` returns `None` → idle/underrun.
+/// 3. **Adopted piece starts > 2 ticks in the past** — hard fault.
+///    Order inside `get_piece_for_time`: fault-check BEFORE `now < end` return.
+///    Reversing that order silently drops the cold-adoption fault.
+/// 4. **Arm the landed piece** — `arm_and_load` is the ONLY `to_monomial` call
+///    on the hot path; walked-past pieces are never converted.
 ///
-/// Advance the axis to the correct piece for `now`, returning
-/// `(position, velocity)` if an active piece exists.
+/// The split (walk without converting + load once) eliminates the per-tick
+/// `to_monomial` cost for sub-tick burst traversal that caused the `-311`
+/// (`fault_detail 2` ISR overrun) on the F446.
 ///
-/// This is the cursor-walking loop from the stepping-redesign spec §4.4
-/// (`advance_piece_if_needed`), rendered in the ring's peek/pop vocabulary.
-/// A single sample can legitimately cross many sub-tick pieces (corner-
-/// rounding splines, host-side step-burst smoothing), so we loop until the
-/// front piece contains `now` rather than advancing at most one piece per
-/// tick. Four branches:
-///
-/// 1. **Current piece still relevant** (`now < piece_end`) — evaluate and
-///    return. This also covers "next piece hasn't started yet": a future
-///    piece returns here and [`eval_horner`]'s saturating elapsed clamps it
-///    to `t = 0`, holding the start position until `now` crosses `start_time`.
-///    No separate gap branch is needed.
-/// 2. **Ring empty** — nothing to advance to → idle / underrun, return `None`.
-/// 3. **Adopted piece starts > 2 ticks in the past** — the MCU was not fed in
-///    time (genuine late delivery, or a multi-tick ISR stall). Hard fault.
-///    Walking a contiguous sub-tick burst never trips this: lateness strictly
-///    shrinks as we advance (each step subtracts a positive `duration` from
-///    `now − start`), and branch 1 keeps us on the current piece until `now`
-///    barely passes its end, so a successor is at most ~1 tick behind `now`.
-/// 4. **Arm the piece** (cache coeffs before freeing the slot, §4.2 slot-free
-///    order), then loop to re-test branch 1 against the just-armed piece.
-///
-/// The loop is bounded by ring occupancy — each iteration `pop()`s one entry,
-/// so it terminates at branch 2 once the ring drains; no separate runaway cap
-/// is required.
+/// Do NOT reorder the fault/window check inside `get_piece_for_time`, re-add
+/// `arm_next`, or gate the fault on "first load only" without explicit sign-off.
 fn get_position_and_velocity(
     axis: &mut AxisState,
     now: u64,
@@ -696,54 +671,86 @@ fn get_position_and_velocity(
     storage: &mut [PieceEntry],
     axis_idx: usize,
 ) -> Option<(f32, f32)> {
+    // Branch 1: reuse the cached piece while `now` is inside its window.
+    // This also covers the future-held-at-t=0 case via eval_horner's saturating
+    // elapsed, and short-circuits a long hold so the walk/fault never sees it.
+    if let Some(p) = &axis.armed {
+        if now < p.piece_end_cycles {
+            return Some(eval_horner(
+                &p.mono_coeffs,
+                &p.vel_coeffs,
+                p.piece_start_cycles,
+                now,
+                cycles_per_second,
+            ));
+        }
+        // Elapsed: retire before walking (§4.2 slot-free order).
+        axis.armed = None;
+        axis.ring.advance_counter();
+    }
+
+    // Walk to the piece containing `now` (no monomialisation), then load once.
+    let slot = get_piece_for_time(axis, storage, now, sample_period_cycles, cycles_per_second, shared, axis_idx)?;
+    let p = arm_and_load(axis, &storage[slot], cycles_per_second);
+    Some(eval_horner(
+        &p.mono_coeffs,
+        &p.vel_coeffs,
+        p.piece_start_cycles,
+        now,
+        cycles_per_second,
+    ))
+}
+
+/// Advance to the ring entry whose window contains `now`, retiring every
+/// elapsed front along the way. Returns its physical slot index, or `None` when
+/// the ring drains. Hard-faults `PieceStartInPast` (-308) when a freshly adopted
+/// piece starts more than 2 ticks before `now`. Does NOT monomialise — that is
+/// deferred to `arm_and_load` for the landed piece only.
+///
+/// CRITICAL: fault-check runs BEFORE the `now < end` return so that a
+/// cold-adopted front is always checked. Inverting the order silently drops
+/// the cold-adoption fault.
+fn get_piece_for_time(
+    axis: &mut AxisState,
+    storage: &[PieceEntry],
+    now: u64,
+    sample_period_cycles: u32,
+    cycles_per_second: f32,
+    shared: &SharedState,
+    axis_idx: usize,
+) -> Option<usize> {
+    let fault_tolerance = u64::from(sample_period_cycles) * 2;
     loop {
-        // Branch 1: current armed piece still inside its window (or a future
-        // piece held at t=0 by eval_horner's saturating elapsed).
-        if let Some(p) = &axis.armed {
-            if now < p.piece_end_cycles {
-                return Some(eval_horner(
-                    &p.mono_coeffs,
-                    &p.vel_coeffs,
-                    p.piece_start_cycles,
-                    now,
-                    cycles_per_second,
-                ));
-            }
-        }
-
-        if axis.armed.take().is_some() {
-            axis.ring.advance_counter();
-        }
-
-        let Some(p) = arm_next(axis, storage, cycles_per_second) else {
-            return None;
-        };
-
-        let fault_tolerance = u64::from(sample_period_cycles) * 2;
-        if now.saturating_sub(p.piece_start_cycles) > fault_tolerance {
+        let slot = axis.ring.front_slot()?; // ring empty → underrun
+        let entry = &storage[slot];
+        // Fault-check BEFORE the window return (preserves cold-adoption fault).
+        if now.saturating_sub(entry.start_time) > fault_tolerance {
             raise_piece_start_in_past(shared, axis_idx);
             return None;
         }
+        if now < entry.end_time(cycles_per_second) {
+            // Window contains now (including future-held pieces).
+            return Some(slot);
+        }
+        // Elapsed — retire and keep walking.
+        axis.ring.advance_counter();
     }
 }
 
-/// Peek the next ring entry, convert to monomial, and arm it.  Returns
-/// the armed piece, or `None` (clearing the cache) when the ring is empty.
-fn arm_next<'a>(
+/// Monomialise the landed piece and cache it. The only `to_monomial` call on the
+/// hot path — walked-past pieces in `get_piece_for_time` never reach here.
+fn arm_and_load<'a>(
     axis: &'a mut AxisState,
-    storage: &[PieceEntry],
+    entry: &PieceEntry,
     cycles_per_second: f32,
-) -> Option<&'a ArmedPiece> {
-    let Some(entry) = axis.ring.peek(storage).copied() else {
-        return None;
-    };
+) -> &'a ArmedPiece {
     let (mono, vel) = entry.to_monomial();
-    Some(axis.armed.insert(ArmedPiece {
+    axis.armed.insert(ArmedPiece {
         mono_coeffs: mono,
         vel_coeffs: vel,
         piece_start_cycles: entry.start_time,
         piece_end_cycles: entry.end_time(cycles_per_second),
-    }))
+    })
 }
 
 /// Evaluate position and velocity via Horner using the axis's cached
