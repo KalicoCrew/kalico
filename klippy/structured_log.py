@@ -48,18 +48,39 @@ def format_time(created):
     )
 
 
-# Minimal stubs so the autouse test fixture can call clear_session/clear_print
-# before Task 2 adds the full context-var implementation.  Task 2 overwrites
-# these with the real ContextVar-backed versions.
+import os
+import time
+
+UNBOUND_SESSION = "__unbound__"
+
 _session_var = contextvars.ContextVar("kalico_session_id", default=None)
 _print_var = contextvars.ContextVar("kalico_print_id", default="")
 
-UNBOUND_SESSION = "__unbound__"
+
+def make_session_id():
+    return "k-%d-%d" % (int(time.time()), os.getpid())
+
+
+def bind_session(session_id):
+    _session_var.set(session_id)
 
 
 def clear_session():
     _session_var.set(None)
 
 
+def get_session():
+    val = _session_var.get()
+    return UNBOUND_SESSION if val is None else val
+
+
+def bind_print(print_id):
+    _print_var.set(print_id)
+
+
 def clear_print():
     _print_var.set("")
+
+
+def get_print():
+    return _print_var.get()
