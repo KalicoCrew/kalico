@@ -4,6 +4,8 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
+from .. import structured_log
+
 
 class PrintStats:
     def __init__(self, config):
@@ -46,6 +48,7 @@ class PrintStats:
         self.state = "printing"
         self.printer.send_event("print_stats:start_printing")
         self.error_message = ""
+        structured_log.bind_print(structured_log.make_print_id())
 
     def note_pause(self):
         if self.last_pause_time is None:
@@ -60,14 +63,17 @@ class PrintStats:
     def note_complete(self):
         self._note_finish("complete")
         self.printer.send_event("print_stats:complete_printing")
+        structured_log.clear_print()
 
     def note_error(self, message):
         self._note_finish("error", message)
         self.printer.send_event("print_stats:error_printing")
+        structured_log.clear_print()
 
     def note_cancel(self):
         self._note_finish("cancelled")
         self.printer.send_event("print_stats:cancelled_printing")
+        structured_log.clear_print()
 
     def _note_finish(self, state, error_message=""):
         if self.print_start_time is None:
@@ -116,6 +122,7 @@ class PrintStats:
         self.info_total_layer = None
         self.info_current_layer = None
         self.printer.send_event("print_stats:reset")
+        structured_log.clear_print()
 
     def get_status(self, eventtime):
         time_paused = self.prev_pause_duration
