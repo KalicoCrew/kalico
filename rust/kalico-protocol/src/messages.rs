@@ -5,8 +5,8 @@
 //! [`crate::bootstrap`] with a separate, fixed-forever byte layout.
 
 use crate::codec::{
-    Cursor, Decode, DecodeError, Encode, get_f32, get_i32, get_u8, get_u16, get_u32, put_f32,
-    put_i32, put_u8, put_u16, put_u32,
+    Cursor, Decode, DecodeError, Encode, get_f32, get_i32, get_u8, get_u16, get_u32, get_u64,
+    put_f32, put_i32, put_u8, put_u16, put_u32, put_u64,
 };
 
 /// Layer-4 message-type discriminants. Per spec §7.1.
@@ -176,7 +176,17 @@ impl Decode for RuntimeCapsResponse {
 // Total body = 8 + piece_count * 32 bytes.
 //
 // PushPiecesResponse (0x0061) — MCU → Host
-//   result: i32  — 0 = OK, negative = error code
+//
+// Wire layout (little-endian):
+//   result:           i32   (bytes 0..4)  — 0 = OK, negative = error code
+//   arrival_clock:    u64   (bytes 4..12) — widened MCU clock at piece_sink_commit
+//   front_start_time: u64   (bytes 12..20) — start_time of first piece (0 if none)
+//
+// Total body = 20 bytes.
+//
+// Diagnostic extension (2026-05-31): the two u64 fields are always present
+// in firmware; the host uses them to measure host→MCU transit time and
+// arrival-lead for -308 PieceStartInPast diagnosis.
 // =============================================================================
 
 #[derive(Debug, Clone, PartialEq)]
@@ -235,12 +245,21 @@ impl Decode for PushPieces {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PushPiecesResponse {
+    /// 0 = OK, negative = error code.
     pub result: i32,
+    /// Widened MCU clock (ticks) captured at `piece_sink_commit` on the MCU.
+    /// 0 when the MCU replied with an error before clocking the arrival.
+    pub arrival_clock: u64,
+    /// `start_time` (MCU ticks) of the first piece in the batch as decoded by
+    /// the MCU. 0 when the batch was empty or an error occurred before parsing.
+    pub front_start_time: u64,
 }
 
 impl Encode for PushPiecesResponse {
     fn encode(&self, out: &mut Vec<u8>) {
         put_i32(out, self.result);
+        put_u64(out, self.arrival_clock);
+        put_u64(out, self.front_start_time);
     }
 }
 
@@ -248,6 +267,8 @@ impl Decode for PushPiecesResponse {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             result: get_i32(c)?,
+            arrival_clock: get_u64(c)?,
+            front_start_time: get_u64(c)?,
         })
     }
 }

@@ -646,6 +646,19 @@ impl PieceSink for WireSink {
         for p in pieces {
             pieces_bytes.extend_from_slice(&p.to_le_bytes());
         }
+        // Capture the first piece's start_time from the raw bytes (bytes 0..8 LE
+        // within pieces_bytes) before encoding into the message body.
+        // This is the host's view of front_start_time; it must match the MCU's
+        // decoded value (logged alongside for confirmation).
+        let host_front_start_time: u64 = if pieces_bytes.len() >= 8 {
+            u64::from_le_bytes([
+                pieces_bytes[0], pieces_bytes[1], pieces_bytes[2], pieces_bytes[3],
+                pieces_bytes[4], pieces_bytes[5], pieces_bytes[6], pieces_bytes[7],
+            ])
+        } else {
+            0
+        };
+
         let msg = kalico_protocol::messages::PushPieces {
             axis_idx: key.axis,
             piece_count: pieces.len() as u8,
@@ -657,6 +670,12 @@ impl PieceSink for WireSink {
         let mut body =
             Vec::with_capacity(2 + pieces.len() * std::mem::size_of::<PieceEntry>());
         kalico_protocol::codec::Encode::encode(&msg, &mut body);
+
+        // Record host send instant just before the call for transit-time derivation.
+        // (Clock projection from host Instant → MCU ticks is not reachable from
+        // WireSink; derive send_mcu_clock offline using the klippy clock-sync log.)
+        let host_send_instant = std::time::Instant::now();
+
         // PushPieces is sent on KALICO_CHANNEL_PIECES (0x02). The response
         // (PushPiecesResponse) arrives on the control channel matched by
         // correlation_id — no change to the response handling path.
@@ -671,12 +690,63 @@ impl PieceSink for WireSink {
         use kalico_protocol::codec::Decode as _;
         let r = kalico_protocol::messages::PushPiecesResponse::decode(&resp)
             .map_err(|e| format!("decode PushPiecesResponse: {e:?}"))?;
+
+        // Emit transit/arrival-lead diagnostic for every non-empty, non-error batch.
+        // Skipped when front_start_time==0 (empty batch or early error path).
+        // arrival_lead = front_start_time - arrival_clock (both in MCU ticks).
+        // Negative means the piece arrived already in the MCU's past → -308 risk.
+        // transit_us is NOT computed here: host→MCU clock projection (freq, offset)
+        // lives in PassthroughRouter, which is not reachable from WireSink without
+        // cross-crate plumbing. Derive offline: transit_us ≈ (arrival_clock -
+        // send_mcu_clock) / mcu_freq, where send_mcu_clock = project(host_send_instant).
+        if host_front_start_time != 0 {
+            // Assume ~520 MHz for H723, ~180 MHz for F446. If this MCU's actual freq
+            // is different the µs value is approximate — log raw ticks too so the
+            // exact value can be derived offline with the per-MCU freq from klippy log.
+            // The arithmetic uses i64 to correctly represent negative arrival-lead.
+            let arrival_lead_ticks =
+                r.front_start_time as i64 - r.arrival_clock as i64;
+            // Use 180 MHz as a conservative estimate (F446); H723 at 520 MHz will
+            // give a proportionally smaller µs value. Both raw-ticks and µs are logged.
+            const MCU_FREQ_APPROX_HZ: f64 = 180_000_000.0;
+            let arrival_lead_us = (arrival_lead_ticks as f64 / MCU_FREQ_APPROX_HZ) * 1e6;
+            // host_send_secs: wall-clock seconds as a monotonic f64 for offline
+            // correlation with klippy's clock-sync records.
+            let host_send_secs = {
+                use std::time::{SystemTime, UNIX_EPOCH};
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_secs_f64())
+                    .unwrap_or(0.0)
+            };
+            log::warn!(
+                "[transit-diag] mcu={} axis={} \
+                 host_front_start_time={} mcu_front_start_time={} \
+                 arrival_clock={} \
+                 arrival_lead_ticks={} arrival_lead_us={:.1} \
+                 host_send_unix_secs={:.6} \
+                 (transit_us=offline: project host_send_unix_secs via klippy clock-sync)",
+                key.mcu_id,
+                key.axis,
+                host_front_start_time,
+                r.front_start_time,
+                r.arrival_clock,
+                arrival_lead_ticks,
+                arrival_lead_us,
+                host_send_secs,
+            );
+        }
+
         if r.result != kalico_protocol::result_codes::OK {
             return Err(format!(
                 "MCU rejected PushPieces (mcu {} axis {}): {}",
                 key.mcu_id, key.axis, r.result
             ));
         }
+        // Suppress unused-variable warning for host_send_instant; it is the
+        // timing anchor for offline transit computation and kept for future use
+        // when the projection becomes accessible here.
+        let _ = host_send_instant;
         Ok(r.result)
     }
 }

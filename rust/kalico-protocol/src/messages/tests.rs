@@ -178,12 +178,43 @@ fn push_pieces_roundtrip_multiple() {
 
 #[test]
 fn push_pieces_response_roundtrip() {
-    let msg = PushPiecesResponse { result: -2 };
-    let mut buf = Vec::new();
-    msg.encode(&mut buf);
-    let mut cursor = Cursor::new(&buf);
-    let decoded = PushPiecesResponse::decode_from(&mut cursor).unwrap();
+    // Wire layout: result(i32 LE, 4 bytes) | arrival_clock(u64 LE, 8 bytes) |
+    //              front_start_time(u64 LE, 8 bytes) = 20 bytes total.
+    let msg = PushPiecesResponse {
+        result: -2,
+        arrival_clock: 0x0102_0304_0506_0708_u64,
+        front_start_time: 0xDEAD_BEEF_CAFE_1234_u64,
+    };
+    let buf = msg.encoded_to_vec();
+    assert_eq!(buf.len(), 20, "PushPiecesResponse body must be exactly 20 bytes");
+    // Byte-level layout verification (all little-endian).
+    // result = -2 => 0xFFFFFFFE LE
+    assert_eq!(&buf[0..4], &0xFFFF_FFFE_u32.to_le_bytes());
+    // arrival_clock LE
+    assert_eq!(&buf[4..12], &0x0102_0304_0506_0708_u64.to_le_bytes());
+    // front_start_time LE
+    assert_eq!(&buf[12..20], &0xDEAD_BEEF_CAFE_1234_u64.to_le_bytes());
+    // Full roundtrip.
+    let decoded = PushPiecesResponse::decode(&buf).expect("decode ok");
     assert_eq!(decoded.result, -2);
+    assert_eq!(decoded.arrival_clock, 0x0102_0304_0506_0708_u64);
+    assert_eq!(decoded.front_start_time, 0xDEAD_BEEF_CAFE_1234_u64);
+}
+
+#[test]
+fn push_pieces_response_error_path_zeros() {
+    // Error-path responses (arrival_clock=0, front_start_time=0) must round-trip.
+    let msg = PushPiecesResponse {
+        result: -7,
+        arrival_clock: 0,
+        front_start_time: 0,
+    };
+    let buf = msg.encoded_to_vec();
+    assert_eq!(buf.len(), 20);
+    let decoded = PushPiecesResponse::decode(&buf).expect("decode ok");
+    assert_eq!(decoded.result, -7);
+    assert_eq!(decoded.arrival_clock, 0);
+    assert_eq!(decoded.front_start_time, 0);
 }
 
 #[test]

@@ -318,17 +318,47 @@ handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
 // belt-and-suspenders bound on the write index.
 #define PIECE_SINK_MAX_PIECES 0xFFu
 
+// Clock-widening variables from basecmd.c — same externs used by
+// command_runtime_clock_sync_request and command_runtime_software_trip.
+extern uint32_t stats_send_time;        // basecmd.c
+extern uint32_t stats_send_time_high;   // basecmd.c
+// timer_read_time() is the standard Klipper low-level clock read.
+uint32_t timer_read_time(void);
+
+// Wire layout (matching PushPiecesResponse Rust decode):
+//   result(i32 LE, 4 bytes) | arrival_clock(u64 LE, 8 bytes) |
+//   front_start_time(u64 LE, 8 bytes) = 20 bytes body.
 static void
-send_push_pieces_response(uint32_t correlation_id, int32_t result)
+send_push_pieces_response(uint32_t correlation_id, int32_t result,
+                          uint64_t arrival_clock, uint64_t front_start_time)
 {
-    uint8_t payload[PER_MESSAGE_HEADER_LEN + 4];
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 4 + 16];
     encode_message_header(payload, KALICO_MSG_PUSH_PIECES_RESPONSE,
                           MESSAGE_VERSION_DEFAULT, correlation_id);
     uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
+    // result: i32 LE (bytes 0..4)
     b[0] = (uint8_t)(result & 0xFF);
     b[1] = (uint8_t)((result >> 8) & 0xFF);
     b[2] = (uint8_t)((result >> 16) & 0xFF);
     b[3] = (uint8_t)((result >> 24) & 0xFF);
+    // arrival_clock: u64 LE (bytes 4..12)
+    b[4]  = (uint8_t)(arrival_clock & 0xFF);
+    b[5]  = (uint8_t)((arrival_clock >> 8) & 0xFF);
+    b[6]  = (uint8_t)((arrival_clock >> 16) & 0xFF);
+    b[7]  = (uint8_t)((arrival_clock >> 24) & 0xFF);
+    b[8]  = (uint8_t)((arrival_clock >> 32) & 0xFF);
+    b[9]  = (uint8_t)((arrival_clock >> 40) & 0xFF);
+    b[10] = (uint8_t)((arrival_clock >> 48) & 0xFF);
+    b[11] = (uint8_t)((arrival_clock >> 56) & 0xFF);
+    // front_start_time: u64 LE (bytes 12..20)
+    b[12] = (uint8_t)(front_start_time & 0xFF);
+    b[13] = (uint8_t)((front_start_time >> 8) & 0xFF);
+    b[14] = (uint8_t)((front_start_time >> 16) & 0xFF);
+    b[15] = (uint8_t)((front_start_time >> 24) & 0xFF);
+    b[16] = (uint8_t)((front_start_time >> 32) & 0xFF);
+    b[17] = (uint8_t)((front_start_time >> 40) & 0xFF);
+    b[18] = (uint8_t)((front_start_time >> 48) & 0xFF);
+    b[19] = (uint8_t)((front_start_time >> 56) & 0xFF);
     kalico_transport_send_frame(KALICO_CHANNEL_CONTROL,
                                 payload, sizeof(payload));
 }
@@ -348,6 +378,9 @@ static struct {
     uint8_t  piece_count;
     uint8_t  header_parsed;
     int32_t  write_rc;                 // first non-OK write_piece rc, or OK
+    // Diagnostic: start_time of the first piece (bytes 0..8 LE), captured when
+    // the first 32-byte piece completes. 0 until then.
+    uint64_t first_start_time;
 } piece_sink;
 
 void
@@ -362,6 +395,7 @@ piece_sink_begin(void)
     piece_sink.start_slot = 0;
     piece_sink.axis_idx = 0;
     piece_sink.piece_count = 0;
+    piece_sink.first_start_time = 0;
 }
 
 void
@@ -395,8 +429,21 @@ piece_sink_feed(uint8_t b)
     piece_sink.scratch[piece_off] = b;
     piece_sink.bytes_seen = i + 1;
     if (piece_off == PIECE_ENTRY_LEN - 1) {
-        // A full 32-byte piece just completed. Write it pre-CRC; the slot is
-        // not visible to the ISR until commit advances the frontier.
+        // A full 32-byte piece just completed. Capture first piece's start_time
+        // (bytes 0..8 LE) before pieces_seen is incremented.
+        if (piece_sink.pieces_seen == 0) {
+            piece_sink.first_start_time =
+                (uint64_t)piece_sink.scratch[0]
+                | ((uint64_t)piece_sink.scratch[1] << 8)
+                | ((uint64_t)piece_sink.scratch[2] << 16)
+                | ((uint64_t)piece_sink.scratch[3] << 24)
+                | ((uint64_t)piece_sink.scratch[4] << 32)
+                | ((uint64_t)piece_sink.scratch[5] << 40)
+                | ((uint64_t)piece_sink.scratch[6] << 48)
+                | ((uint64_t)piece_sink.scratch[7] << 56);
+        }
+        // Write it pre-CRC; the slot is not visible to the ISR until commit
+        // advances the frontier.
         if (runtime_handle && piece_sink.pieces_seen < PIECE_SINK_MAX_PIECES) {
             int32_t r = kalico_runtime_write_piece(
                 runtime_handle, piece_sink.axis_idx, piece_sink.start_slot,
@@ -411,17 +458,26 @@ piece_sink_feed(uint8_t b)
 void
 piece_sink_commit(void)
 {
+    // Widen the MCU clock using the same pattern as
+    // command_runtime_clock_sync_request / command_runtime_software_trip:
+    //   low = timer_read_time(); high = stats_send_time_high + (low < stats_send_time);
+    //   arrival_clock = ((uint64_t)high << 32) | low;
+    uint32_t clk_lo = timer_read_time();
+    uint32_t clk_hi = stats_send_time_high + (clk_lo < stats_send_time);
+    uint64_t arrival_clock = ((uint64_t)clk_hi << 32) | (uint64_t)clk_lo;
+
     // Called only after the demuxer verified the frame CRC. If runtime_handle
     // was null, no slots were written; report NOT_INIT and skip commit_head.
     if (!runtime_handle) {
-        send_push_pieces_response(piece_sink.correlation_id, KALICO_ERR_NOT_INIT);
+        send_push_pieces_response(piece_sink.correlation_id,
+                                  KALICO_ERR_NOT_INIT, 0, 0);
         return;
     }
     // If a header never completed (truncated/malformed frame that still
     // matched a CRC over too-few bytes), correlation_id is 0; respond with an
     // error rather than advancing the frontier.
     if (!piece_sink.header_parsed) {
-        send_push_pieces_response(0, KALICO_ERR_INVALID_CURVE);
+        send_push_pieces_response(0, KALICO_ERR_INVALID_CURVE, 0, 0);
         return;
     }
     // Self-check the framing: the number of 32-byte pieces actually streamed
@@ -432,7 +488,7 @@ piece_sink_commit(void)
     // the un-advanced head and are invisible to the ISR.
     if (piece_sink.pieces_seen != (uint32_t)piece_sink.piece_count) {
         send_push_pieces_response(piece_sink.correlation_id,
-                                  KALICO_ERR_INVALID_CURVE);
+                                  KALICO_ERR_INVALID_CURVE, 0, 0);
         return;
     }
     int32_t rc = piece_sink.write_rc;
@@ -440,7 +496,8 @@ piece_sink_commit(void)
         rc = kalico_runtime_commit_head(
             runtime_handle, piece_sink.axis_idx, piece_sink.new_head);
     }
-    send_push_pieces_response(piece_sink.correlation_id, rc);
+    send_push_pieces_response(piece_sink.correlation_id, rc,
+                              arrival_clock, piece_sink.first_start_time);
 }
 
 // ---------------------------------------------------------------------------
