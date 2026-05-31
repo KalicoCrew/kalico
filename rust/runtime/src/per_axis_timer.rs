@@ -16,7 +16,10 @@
 //!    `runtime_emit_step_pulses(axis_idx, dir)`.
 //! 3. The returned `u32` is the next waketime: the next entry's `cycle_abs`
 //!    (floored by `dispatcher_floor_cycles` to prevent runaway re-entry), or
-//!    `now + sample_period_cycles` if the queue is empty.
+//!    `now + idle_park_cycles` (a long ~100 ms / 10 Hz fallback) if the
+//!    queue is empty. The empty queue is NOT polled at the sample rate; the
+//!    producer (TIM5 ISR) kicks this timer forward on the idle→active
+//!    transition (`kalico_kick_per_axis_timer`).
 //!
 //! Coexists alongside the legacy `step_time_event` / `runtime_producer_event`
 //! path until Task 16 removes the older code.
@@ -43,6 +46,13 @@ unsafe extern "C" {
 unsafe extern "C" {
     fn kalico_runtime_get_dispatcher_floor_cycles() -> u32;
     fn kalico_runtime_get_sample_period_cycles() -> u32;
+    // C-side getter (src/runtime_tick.c): `timer_from_us(100000)` — the long
+    // (~100 ms / 10 Hz) fallback an idle axis parks at when its queue is
+    // empty. The producer (TIM5 ISR) kicks the timer forward on the
+    // idle→active transition (see `kalico_kick_per_axis_timer`), so this is
+    // only a safety net, never the steady-motion cadence. Lives in C because
+    // the µs→cycles conversion (`timer_from_us`) is a per-MCU C primitive.
+    fn kalico_runtime_get_idle_park_cycles() -> u32;
 }
 
 #[cfg(any(test, feature = "host"))]
@@ -61,6 +71,10 @@ unsafe fn kalico_runtime_get_dispatcher_floor_cycles() -> u32 {
 }
 #[cfg(any(test, feature = "host"))]
 unsafe fn kalico_runtime_get_sample_period_cycles() -> u32 {
+    0
+}
+#[cfg(any(test, feature = "host"))]
+unsafe fn kalico_runtime_get_idle_park_cycles() -> u32 {
     0
 }
 
@@ -105,19 +119,26 @@ pub extern "C" fn kalico_per_axis_step_event(axis_idx: u8) -> u32 {
 
     // Next waketime: prefer the next pending entry's `cycle_abs`, floored
     // by `dispatcher_floor_cycles` to prevent runaway re-entry; if the
-    // queue is empty, sleep until the next sample boundary.
+    // queue is empty, PARK at the long idle fallback (~100 ms). The empty
+    // queue is no longer polled at the sample rate — the producer (TIM5
+    // ISR) kicks this timer forward via `kalico_kick_per_axis_timer` the
+    // moment it pushes the first step into a previously-empty queue, so the
+    // park is only a safety net (10 Hz), never the cadence that drives
+    // motion. This removes the idle-axis sample-rate dispatch load that
+    // starved the motion tick (-311 TickIntervalExceeded).
     // SAFETY: both accessors are read-only AtomicU32 loads on `SharedState`
-    // (via `runtime_handle_or_null`); they return 0 if the runtime hasn't
-    // initialised yet. `0` for either tunable degrades safely: a 0 floor
-    // means "no extra padding," and a 0 sample period means "wake `now`,"
-    // which the next dispatch will immediately reschedule.
+    // (via `runtime_handle_or_null`); `kalico_runtime_get_idle_park_cycles`
+    // is a side-effect-free C `timer_from_us` conversion. They return 0 if
+    // the runtime hasn't initialised yet; a 0 floor means "no extra
+    // padding," and a 0 idle park means "wake `now`," which the next
+    // dispatch will immediately reschedule (degrades safely).
     let floor_cycles = unsafe { kalico_runtime_get_dispatcher_floor_cycles() };
-    let sample_period = unsafe { kalico_runtime_get_sample_period_cycles() };
+    let idle_park = unsafe { kalico_runtime_get_idle_park_cycles() };
     let floor_time = now.wrapping_add(floor_cycles);
-    let next_sample = now.wrapping_add(sample_period);
+    let idle_park_time = now.wrapping_add(idle_park);
 
     if queue_ptr.is_null() {
-        return next_sample;
+        return idle_park_time;
     }
 
     // SAFETY: `queue_ptr` non-null + sole-consumer as above.
@@ -134,7 +155,7 @@ pub extern "C" fn kalico_per_axis_step_event(axis_idx: u8) -> u32 {
                 next.cycle_abs
             }
         }
-        None => next_sample,
+        None => idle_park_time,
     }
 }
 

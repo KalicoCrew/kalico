@@ -17,7 +17,7 @@ use crate::fault_helpers::{
 };
 use crate::phase_lut::PHASE_LUT;
 use crate::state::SharedState;
-use crate::step_queue::{StepEntry, StepQueue, push as queue_push};
+use crate::step_queue::{StepEntry, StepQueue, peek as queue_peek, push as queue_push};
 use crate::stepping_state::{AxisConfig, StepMode};
 use crate::sub_sample_timing::{StepTimeInputs, StepTimingResult, compute_step_times};
 
@@ -201,6 +201,21 @@ fn dispatch_pulse(
     };
 
     let dir: i8 = if signed_steps > 0 { 1 } else { -1 };
+
+    // Record whether the consumer queue was empty BEFORE we push. If it was,
+    // the consumer timer for this axis is parked at its long idle fallback
+    // (~100 ms); after pushing the first entry we must kick it forward to the
+    // earliest step's `cycle_abs` so the step fires promptly. When the queue
+    // is already non-empty (steady continuous motion) the consumer is already
+    // scheduled at the queue front, so we skip the kick to avoid per-tick
+    // sched del/add churn.
+    // SAFETY: `queue_ptr` is supplied by the TIM5 ISR; this core is the sole
+    // consumer-side reader for `peek` purposes too (the consumer timer cannot
+    // run concurrently with the TIM5 ISR — same NVIC priority).
+    let was_empty = unsafe { queue_peek(queue_ptr) }.is_none();
+    // Earliest pushed step time = new queue front when the queue was empty.
+    let first_cycle_abs = times.first().copied();
+
     let mut steps_committed: i32 = 0;
     #[allow(clippy::explicit_counter_loop)]
     for cycle_abs in times.iter().copied() {
@@ -217,11 +232,27 @@ fn dispatch_pulse(
         if push_res.is_err() {
             let committed_delta = steps_committed * (i32::from(dir));
             commit_position_count(axis, axis_idx, shared, committed_delta);
+            // If the queue was empty and we managed to push ≥1 entry before
+            // overflowing, still kick the parked consumer so the steps we did
+            // commit fire promptly rather than waiting out the idle park.
+            if was_empty && steps_committed > 0 {
+                if let Some(wt) = first_cycle_abs {
+                    kick_per_axis_timer(axis_idx, wt);
+                }
+            }
             raise_step_queue_overflow(shared, axis_idx);
             axis.last_step_count = prev_step_count + committed_delta;
             return;
         }
         steps_committed += 1;
+    }
+
+    // Idle→active kick: the queue was empty and we pushed at least one entry,
+    // so the parked consumer timer must be repositioned to the first step.
+    if was_empty && steps_committed > 0 {
+        if let Some(wt) = first_cycle_abs {
+            kick_per_axis_timer(axis_idx, wt);
+        }
     }
 
     commit_position_count(axis, axis_idx, shared, signed_steps);
@@ -440,6 +471,29 @@ pub fn isr_sample_tick(
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
     fn runtime_cyccnt_read() -> u32;
+    // C-side producer→consumer kick (src/runtime_tick.c). Repositions the
+    // per-axis step-consumer timer to fire at `waketime`. Called only on the
+    // idle→active transition (queue was empty, now has ≥1 entry) so the first
+    // step after an idle gap is not delayed by the consumer's long idle park.
+    // No-op for unarmed (unowned) axes.
+    fn kalico_kick_per_axis_timer(axis_idx: u8, waketime: u32);
+}
+/// Reposition the per-axis consumer timer to `waketime` (idle→active kick).
+/// No-op on host/test builds (no C scheduler / per-axis timers linked).
+#[inline]
+fn kick_per_axis_timer(axis_idx: usize, waketime: u32) {
+    #[cfg(not(any(test, feature = "host")))]
+    // SAFETY: `kalico_kick_per_axis_timer` bounds-checks `axis_idx` and
+    // no-ops for unarmed axes; it runs at the same NVIC priority as the
+    // SysTick scheduler (cannot nest), so the target timer is never
+    // mid-dispatch when this is reached from the TIM5 ISR.
+    unsafe {
+        kalico_kick_per_axis_timer(axis_idx as u8, waketime);
+    }
+    #[cfg(any(test, feature = "host"))]
+    {
+        let _ = (axis_idx, waketime);
+    }
 }
 #[cfg(not(any(test, feature = "host")))]
 #[inline]
