@@ -158,6 +158,10 @@ class ContextFilter(logging.Filter):
         return True
 
 
+def make_print_id():
+    return "print-%d" % (int(time.time()),)
+
+
 _event_logger = logging.getLogger("kalico.event")
 
 
