@@ -85,6 +85,10 @@ extern uint32_t _sched_protected_end;
 static inline void
 mpu_set_region0_ap(uint32_t ap_mask)
 {
+    // ARMv7-M (Cortex-M3+) PMSAv7 MPU programming. ARMv6-M (Cortex-M0+, e.g.
+    // STM32G0) has no compatible MPU here and routes any violation to HardFault
+    // rather than MemManage — the sched-protection window is a no-op there.
+#if (__CORTEX_M >= 3)
     MPU->RNR = 0;
     uint32_t rasr = MPU->RASR;
     rasr &= ~(7u << 24);   // clear AP field
@@ -92,6 +96,9 @@ mpu_set_region0_ap(uint32_t ap_mask)
     MPU->RASR = rasr;
     __DSB();
     __ISB();
+#else
+    (void)ap_mask;
+#endif
 }
 
 // Re-entrant depth counter for the writable window.
@@ -166,6 +173,10 @@ mpu_protect_init(void)
     if (end - start != 128u || (start & 127u) != 0u)
         shutdown(".sched_protected size/alignment mismatch");
 
+    // ARMv6-M (Cortex-M0+) has no PMSAv7 MPU / MemManage routing — sched-state
+    // write-protection is skipped there (the linker-layout assertion above
+    // still runs). H7/F4 (Cortex-M4/M7) program the MPU below.
+#if (__CORTEX_M >= 3)
     // Disable MPU during config (writes to MPU regs are otherwise UB).
     MPU->CTRL = 0;
     __DSB();
@@ -192,4 +203,5 @@ mpu_protect_init(void)
     // fault_handler_init's DECL_INIT runs) still go through the proper
     // handler. Idempotent — fault_handler_init sets the same bit later.
     SCB->SHCSR |= SCB_SHCSR_MEMFAULTENA_Msk;
+#endif // __CORTEX_M >= 3
 }

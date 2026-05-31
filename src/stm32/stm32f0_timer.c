@@ -64,7 +64,14 @@ timer_kick(void)
 static uint32_t timer_high;
 
 // Return the current time (in absolute clock ticks).
-uint32_t __always_inline
+//
+// used, externally_visible (and no longer __always_inline): the kalico Rust
+// staticlib (per_axis_timer.rs) calls this via the C ABI, and under
+// -fwhole-program LTO an always-inlined definition leaves no standalone symbol
+// for the separately-compiled Rust archive to link against. Mirrors
+// src/generic/armcm_timer.c's timer_read_time on the SysTick backend.
+__attribute__((used, externally_visible))
+uint32_t
 timer_read_time(void)
 {
     if (HAVE_TIMER_32BIT)
@@ -96,6 +103,20 @@ timer_reset(void)
         sched_add_timer(&wrap_timer);
 }
 DECL_SHUTDOWN(timer_reset);
+
+// SchedState.wrap_timer callback. The fork's sched.c stores this function
+// pointer in the MPU-protected SchedState initializer unconditionally, so the
+// symbol must resolve on every timer backend. On this (timer_irq) backend the
+// 16/32-bit wrap is handled by the private `wrap_timer` above; SchedState's
+// wrap_timer is only ever scheduled by armcm_timer.c::timer_reset, which is NOT
+// built on the F0/G0 path — so this is effectively a link-time stub here. It
+// mirrors armcm_timer.c's implementation should it ever be scheduled.
+uint_fast8_t
+timer_wrap_event(struct timer *t)
+{
+    t->waketime += 0xffffff;
+    return SF_RESCHEDULE;
+}
 
 
 /****************************************************************

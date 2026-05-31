@@ -23,7 +23,7 @@ use trajectory::{AxisShaper, ShaperConfig};
 
 use crate::classify;
 use crate::config::{self, PlannerConfig, PlannerLimits, parse_required_shaper};
-use crate::dispatch::{AXIS_E, AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, McuCaps};
+use crate::dispatch::{McuAxisConfig, McuCaps, build_mcu_configs};
 use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
@@ -1988,10 +1988,12 @@ impl PyMotionBridge {
 
     /// Initialize the planner thread with config from `printer.cfg`.
     ///
-    /// `octopus_handle` and `f446_handle` are the raw `claim_mcu()` handles
-    /// for the two-MCU first-print MVP topology:
-    ///   - Octopus drives X+Y (CoreXyAndE = kinematics 0).
-    ///   - F446 drives Z (CartesianXyzAndE = kinematics 1).
+    /// `mcus` is the host-derived topology: one `(bridge_handle, axes,
+    /// kinematics_tag)` entry per motion MCU, where `axes` holds `AXIS_*`
+    /// indices and `kinematics_tag` is a `KinematicTag` discriminant. The
+    /// host builds this from the global `kinematics` setting plus the
+    /// stepper→MCU assignment — no MCU identity is hardcoded here. Supports
+    /// 1..N MCUs and any axis partition.
     #[pyo3(signature = (
         max_velocity,
         max_accel,
@@ -2002,8 +2004,7 @@ impl PyMotionBridge {
         shaper_freq_x,
         shaper_type_y,
         shaper_freq_y,
-        octopus_handle,
-        f446_handle,
+        mcus,
         window_capacity = 32,
         beta_max_iters = 10,
     ))]
@@ -2019,8 +2020,7 @@ impl PyMotionBridge {
         shaper_freq_x: f64,
         shaper_type_y: &str,
         shaper_freq_y: f64,
-        octopus_handle: u32,
-        f446_handle: u32,
+        mcus: Vec<(u32, Vec<u8>, u8)>,
         window_capacity: usize,
         beta_max_iters: u8,
     ) -> PyResult<()> {
@@ -2052,47 +2052,24 @@ impl PyMotionBridge {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = cfg.clone();
 
-        // Two-MCU first-print MVP topology. Pull `runtime_caps` from each
-        // `McuConnection` (set during attach by `query_runtime_caps`). Missing
-        // caps for a motion MCU is a hard failure — the host cannot size piece
-        // rings without `total_piece_memory`, and guessing risks desyncing
-        // host flow-control from the real MCU ring.
-        let (octopus_caps, f446_caps) = {
-            // `mcus` guard drops at this block's closing brace — including when
-            // `resolve_motion_caps(...)?` below propagates an Err — so the lock
-            // is never held across the error return.
-            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            let oc = resolve_motion_caps(
-                mcus.get(&octopus_handle).and_then(|c| c.runtime_caps),
-                "octopus",
-                octopus_handle,
-            )
-            .map_err(PyRuntimeError::new_err)?;
-            let fc = resolve_motion_caps(
-                mcus.get(&f446_handle).and_then(|c| c.runtime_caps),
-                "f446",
-                f446_handle,
-            )
-            .map_err(PyRuntimeError::new_err)?;
-            (oc, fc)
+        // Host-supplied N-MCU topology. Pull `runtime_caps` from each
+        // `McuConnection` (set during bootstrap by `query_runtime_caps`);
+        // fall back to large-profile defaults if the firmware predates
+        // `QueryRuntimeCaps`.
+        let caps_by_handle: std::collections::HashMap<u32, McuCaps> = {
+            let mcus_lock = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            mcus.iter()
+                .map(|(handle, _, _)| {
+                    let caps = mcus_lock
+                        .get(handle)
+                        .and_then(|c| c.runtime_caps)
+                        .map(McuCaps::from)
+                        .unwrap_or_default();
+                    (*handle, caps)
+                })
+                .collect()
         };
-        let mcu_configs = vec![
-            McuAxisConfig {
-                mcu_id: octopus_handle,
-                // X, Y, and E (follower) — 3 motor rings on this MCU;
-                // ring depth divides total_pieces by 3. The enqueue adapter
-                // skips E (index ≥ segment arity) so no E pieces are emitted.
-                axes: vec![AXIS_X, AXIS_Y, AXIS_E],
-                kinematics: 0, // CoreXyAndE
-                caps: octopus_caps,
-            },
-            McuAxisConfig {
-                mcu_id: f446_handle,
-                axes: vec![AXIS_Z],
-                kinematics: 1, // CartesianXyzAndE
-                caps: f446_caps,
-            },
-        ];
+        let mcu_configs = build_mcu_configs(&mcus, &caps_by_handle);
         *self
             .mcu_axis_configs
             .lock()

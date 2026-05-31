@@ -41,6 +41,7 @@ default = ["host"]
 host = ["nurbs/host"]
 mcu-h7 = ["nurbs/mcu-h7"]
 mcu-f4 = ["nurbs/mcu-f4"]
+mcu-g0 = ["nurbs/mcu-g0"]
 # Phase 12.2: gates the `Engine::inject_iter_count` test-only injection
 # so integration tests can reach the otherwise-defense-in-depth
 # `MAX_BOUNDARY_ITERS` fault path. NOT in default. Consumers (kalico-c-api,

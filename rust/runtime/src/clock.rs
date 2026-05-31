@@ -9,7 +9,11 @@
 //! sequence-counter pattern lets the foreground reader pull the most recent
 //! widened `now: u64` published by the ISR with bounded retry.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+// `AtomicU32` from `portable_atomic` so that `TickCounter::increment`'s
+// `fetch_add` compiles on ARMv6-M (thumbv6m / STM32G0), which has no native
+// LDREX/STREX. On thumbv7em the codegen is identical to `core::sync::atomic`.
+use core::sync::atomic::Ordering;
+use portable_atomic::AtomicU32;
 
 use crate::state::SharedState;
 

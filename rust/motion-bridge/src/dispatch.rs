@@ -7,6 +7,7 @@
 //! `CurveLoadParams`, `SegmentPushParams`, `fits_curve_load`, `UNUSED_HANDLE`,
 //! `is_trivially_constant`) has been removed (Task 10).
 
+use std::collections::HashMap;
 use runtime::segment::KinematicTag;
 
 /// `McuAxisConfig::kinematics` tag: Octopus CoreXY, motors A (slot 0) + B (slot 1).
@@ -79,6 +80,38 @@ impl McuCaps {
     }
 }
 
+impl Default for McuCaps {
+    fn default() -> Self {
+        // Large-profile fallback for firmware predating `QueryRuntimeCaps`.
+        // 62 KB is the H7 SRAM budget for piece storage on the Octopus Pro.
+        Self { total_piece_memory: 62 * 1024 }
+    }
+}
+
+/// Build the per-MCU planner topology from a host-supplied descriptor list.
+///
+/// Each `mcus` entry is `(bridge_handle, axes, kinematics_tag)` where `axes`
+/// holds `AXIS_*` indices as `u8` and `kinematics_tag` is a `KinematicTag`
+/// discriminant. `caps_by_handle` supplies the per-MCU runtime capabilities;
+/// a handle absent from the map gets `McuCaps::default()` (large-profile
+/// fallback for firmware predating `QueryRuntimeCaps`).
+///
+/// Order is preserved from `mcus`. No hardcoded MCU identity, axis set, or
+/// kinematics — every field comes from the caller.
+pub fn build_mcu_configs(
+    mcus: &[(u32, Vec<u8>, u8)],
+    caps_by_handle: &HashMap<u32, McuCaps>,
+) -> Vec<McuAxisConfig> {
+    mcus.iter()
+        .map(|(handle, axes, tag)| McuAxisConfig {
+            mcu_id: *handle,
+            axes: axes.iter().map(|&a| a as usize).collect(),
+            kinematics: *tag,
+            caps: caps_by_handle.get(handle).copied().unwrap_or_default(),
+        })
+        .collect()
+}
+
 /// True when this MCU drives both CoreXY motors and must receive motor-frame
 /// `(A, B)` values rather than Cartesian `(X, Y)`. Single source of truth for
 /// the CoreXY decision, shared by the piece path (`enqueue.rs`) and the seed
@@ -133,6 +166,47 @@ pub fn build_seed_sends(configs: &[McuAxisConfig], x: f64, y: f64, z: f64) -> Ve
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod topology_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn axis_e_is_three() {
+        assert_eq!(AXIS_E, 3);
+    }
+
+    #[test]
+    fn build_mcu_configs_two_mcu_corexy_with_e() {
+        let mut caps = HashMap::new();
+        caps.insert(7u32, McuCaps { total_piece_memory: 62 * 1024 });
+        caps.insert(9u32, McuCaps { total_piece_memory: 32 * 1024 });
+        // octopus(7) carries X,Y,E corexy; f446(9) carries Z cartesian.
+        let mcus = vec![
+            (7u32, vec![AXIS_X as u8, AXIS_Y as u8, AXIS_E as u8], 0u8),
+            (9u32, vec![AXIS_Z as u8], 1u8),
+        ];
+        let cfgs = build_mcu_configs(&mcus, &caps);
+        assert_eq!(cfgs.len(), 2);
+        assert_eq!(cfgs[0].mcu_id, 7);
+        assert_eq!(cfgs[0].axes, vec![AXIS_X, AXIS_Y, AXIS_E]);
+        assert_eq!(cfgs[0].kinematics, 0);
+        assert_eq!(cfgs[0].caps, McuCaps { total_piece_memory: 62 * 1024 });
+        assert_eq!(cfgs[1].mcu_id, 9);
+        assert_eq!(cfgs[1].axes, vec![AXIS_Z]);
+        assert_eq!(cfgs[1].kinematics, 1);
+    }
+
+    #[test]
+    fn build_mcu_configs_missing_caps_falls_back_to_default() {
+        let caps: HashMap<u32, McuCaps> = HashMap::new();
+        let mcus = vec![(7u32, vec![AXIS_X as u8, AXIS_Y as u8], 0u8)];
+        let cfgs = build_mcu_configs(&mcus, &caps);
+        assert_eq!(cfgs.len(), 1);
+        assert_eq!(cfgs[0].caps, McuCaps::default());
+    }
 }
 
 #[cfg(test)]

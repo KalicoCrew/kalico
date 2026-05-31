@@ -55,6 +55,45 @@ def _stepper_motor_slot(stepper_obj):
     return None if info is None else info[0]
 
 
+# Axis indices — mirror rust/motion-bridge/src/dispatch.rs AXIS_* and the
+# _MOTOR_SLOT_PREFIXES slot order (X=0, Y=1, Z=2, E=3).
+_AXIS_X = 0
+_AXIS_Y = 1
+
+# Kinematics tags — mirror rust KinematicTag discriminants
+# (CoreXyAndE = 0, CartesianXyzAndE = 1).
+_KIN_COREXY = 0
+_KIN_CARTESIAN = 1
+
+
+def _derive_mcu_topology(axis_to_handle, kinematics_name):
+    """Derive the per-MCU planner topology from the axis->MCU assignment.
+
+    `axis_to_handle` maps each present axis index (0=X, 1=Y, 2=Z, 3=E) to its
+    MCU's bridge handle. `kinematics_name` is the printer's global kinematics
+    (e.g. "corexy", "cartesian").
+
+    Returns a list of `(handle, sorted_axes, kinematics_tag)` tuples — one per
+    distinct handle, ordered by handle. An MCU's tag is COREXY iff the printer
+    is corexy AND that MCU carries both X and Y; otherwise CARTESIAN. This
+    reproduces the historical hardcoded topology (XY-MCU -> corexy, Z-MCU ->
+    cartesian) without hardcoding MCU identity.
+    """
+    by_handle = {}
+    for axis_idx, handle in axis_to_handle.items():
+        by_handle.setdefault(handle, []).append(axis_idx)
+    is_corexy = (kinematics_name or "").lower() == "corexy"
+    topo = []
+    for handle in sorted(by_handle):
+        axes = sorted(by_handle[handle])
+        if is_corexy and _AXIS_X in axes and _AXIS_Y in axes:
+            tag = _KIN_COREXY
+        else:
+            tag = _KIN_CARTESIAN
+        topo.append((handle, axes, tag))
+    return topo
+
+
 def _open_sim_control():
     """Open the shim's control socket. Returns SimControlClient or None
     if shim is not in use (real hardware or vanilla MACH_LINUX).
@@ -836,33 +875,48 @@ class MotionToolhead(ToolHead):
     # ------------------------------------------------------------------
 
     def _init_planner(self):
-        # Locate the two MVP MCUs by name. First-print topology:
-        #   "mcu" (Octopus) drives X+Y; "mcu z" drives Z.
-        # If only one MCU is configured, reuse its handle for Z.
-        octopus = None
-        f446 = None
+        # Build the planner topology from existing config: each kinematic
+        # stepper's MCU (via get_mcu()._bridge_handle) gives axis->MCU, and
+        # the global kinematics name gives each MCU's kinematics tag. No MCU
+        # identity is hardcoded.
         bridge_mcus = []
         for name, mcu in self.printer.lookup_objects(module="mcu"):
             handle = getattr(mcu, "_bridge_handle", None)
             if handle is None:
                 continue
             bridge_mcus.append((name, mcu, handle))
-            mcu_name = getattr(mcu, "_name", name)
-            if octopus is None or mcu_name in ("mcu", "octopus"):
-                if octopus is None:
-                    octopus = handle
-                elif f446 is None:
-                    f446 = handle
-            elif f446 is None:
-                f446 = handle
-        if octopus is None:
+        if not bridge_mcus:
             logging.warning(
                 "MotionToolhead: no MCU bridge handles available; "
                 "skipping init_planner"
             )
             return
-        if f446 is None:
-            f446 = octopus
+
+        # axis index (0=X,1=Y,2=Z,3=E) -> bridge handle of the MCU that
+        # drives that axis's primary stepper. AWD partners share their
+        # primary's axis/MCU, so only primaries contribute.
+        axis_to_handle = {}
+        fm = self.printer.lookup_object("force_move", None)
+        if fm is not None:
+            for sname, s in fm.steppers.items():
+                info = _name_motor_slot(sname)
+                if info is None:
+                    continue
+                slot_idx, is_primary = info
+                if not is_primary:
+                    continue
+                s_handle = getattr(s.get_mcu(), "_bridge_handle", None)
+                if s_handle is None:
+                    continue
+                axis_to_handle[slot_idx] = s_handle
+
+        topology = _derive_mcu_topology(axis_to_handle, self.kinematics_name)
+        if not topology:
+            logging.warning(
+                "MotionToolhead: no axis->MCU assignment resolved; "
+                "skipping init_planner"
+            )
+            return
 
         # Pull initial shaper params from [input_shaper] config, if present.
         shaper_type_x = "smooth_zv"
@@ -896,8 +950,7 @@ class MotionToolhead(ToolHead):
                 shaper_freq_x,
                 shaper_type_y,
                 shaper_freq_y,
-                octopus,
-                f446,
+                topology,
             )
             self._configure_axes_per_mcu(bridge_mcus)
 

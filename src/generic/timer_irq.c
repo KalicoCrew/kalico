@@ -23,6 +23,12 @@ timer_from_us(uint32_t us)
 // Return true if time1 is before time2.  Always use this function to
 // compare times as regular C comparisons can fail if the counter
 // rolls over.
+//
+// used, externally_visible: under -fwhole-program LTO the C callers inline
+// this one-liner, leaving no standalone symbol; the kalico Rust staticlib
+// (per_axis_timer.rs) calls it via the C ABI and needs the out-of-line copy.
+// Mirrors src/generic/armcm_timer.c's timer_is_before (the SysTick backend).
+__attribute__((used, externally_visible))
 uint8_t
 timer_is_before(uint32_t time1, uint32_t time2)
 {

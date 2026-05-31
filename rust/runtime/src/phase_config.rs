@@ -11,7 +11,12 @@
 //! Spec: docs/superpowers/specs/2026-05-18-phase-stepping-sim-design.md §3.2,
 //! §4.1.
 
-use core::sync::atomic::{AtomicU16, Ordering};
+// `AtomicU16` from `portable_atomic` to match the `SharedState.phase_config`
+// field type. Only load/store are performed here; using portable_atomic keeps
+// the type consistent across the crate boundary so callers passing
+// `&SharedState.phase_config[n]` do not require a cast.
+use core::sync::atomic::Ordering;
+use portable_atomic::AtomicU16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhaseConfig {
