@@ -44,9 +44,7 @@ def level_name(levelno):
 
 def format_time(created):
     # RFC3339 UTC with millisecond precision and a trailing 'Z'.
-    dt = datetime.datetime.fromtimestamp(
-        created, tz=datetime.timezone.utc
-    )
+    dt = datetime.datetime.fromtimestamp(created, tz=datetime.timezone.utc)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (
         dt.microsecond // 1000,
     )
@@ -89,9 +87,7 @@ def get_print():
 
 # LogRecord attributes that are stdlib bookkeeping, not schema payload.
 _STD_ATTRS = frozenset(
-    logging.LogRecord(
-        "x", logging.INFO, "x", 0, "x", (), None
-    ).__dict__.keys()
+    logging.LogRecord("x", logging.INFO, "x", 0, "x", (), None).__dict__.keys()
 ) | {"message", "asctime", "session_id", "print_id", "source", "taskName"}
 
 # Schema fields that get a dedicated slot (everything else is free payload).
@@ -111,7 +107,7 @@ def record_to_dict(record):
         "level": level_name(record.levelno),
         "source": getattr(record, "source", SOURCE_HOST_PY),
         "session_id": getattr(record, "session_id", UNBOUND_SESSION),
-        "target": record.name,
+        "target": getattr(record, "target", record.name),
     }
     print_id = getattr(record, "print_id", "")
     out["print_id"] = print_id if print_id else ""
@@ -187,8 +183,16 @@ class LogSpaceError(Exception):
 
 
 def check_log_space(path, reserve_bytes=LOG_SPACE_RESERVE_BYTES):
-    os.makedirs(path, exist_ok=True)
-    free = shutil.disk_usage(path).free
+    # Pure check: never creates directories (that is the caller's job). Probe
+    # the nearest existing ancestor of `path` for free space, so the preflight
+    # works even when the logs directory has not been created yet.
+    probe = os.path.abspath(path)
+    while not os.path.isdir(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            break
+        probe = parent
+    free = shutil.disk_usage(probe).free
     if free < reserve_bytes:
         raise LogSpaceError(
             "insufficient free space for logs at %s: %d < %d"

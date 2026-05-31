@@ -46,9 +46,9 @@ class PrintStats:
         gc_status = self.gcode_move.get_status(curtime)
         self.last_epos = gc_status["position"].e
         self.state = "printing"
+        structured_log.bind_print(structured_log.make_print_id())
         self.printer.send_event("print_stats:start_printing")
         self.error_message = ""
-        structured_log.bind_print(structured_log.make_print_id())
 
     def note_pause(self):
         if self.last_pause_time is None:

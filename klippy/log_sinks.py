@@ -68,8 +68,7 @@ class TextSink(Sink):
     def do_rollover(self):
         self._handler.doRollover()
         lines = [
-            self._rollover_info[name]
-            for name in sorted(self._rollover_info)
+            self._rollover_info[name] for name in sorted(self._rollover_info)
         ]
         lines.append(
             "=============== Log rollover at %s ==============="
@@ -77,7 +76,7 @@ class TextSink(Sink):
         )
         self._handler.emit(
             logging.makeLogRecord(
-                {"msg": "\n".join(lines), "level": logging.INFO}
+                {"msg": "\n".join(lines), "levelno": logging.INFO}
             )
         )
 

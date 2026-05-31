@@ -64,8 +64,13 @@ def test_get_session_unbound_is_sentinel():
 
 def _make_record(msg="hello", level=logging.INFO, name="mod.Cls", **extra):
     rec = logging.LogRecord(
-        name=name, level=level, pathname=__file__, lineno=1,
-        msg=msg, args=(), exc_info=None,
+        name=name,
+        level=level,
+        pathname=__file__,
+        lineno=1,
+        msg=msg,
+        args=(),
+        exc_info=None,
     )
     rec.created = 1780185600.0
     rec.session_id = "k-1779840000-1"
@@ -105,8 +110,13 @@ def test_record_to_dict_captures_exception_traceback():
         raise ValueError("boom")
     except ValueError:
         rec = logging.LogRecord(
-            "mod.Cls", logging.ERROR, __file__, 1,
-            "handler failed", (), sys.exc_info(),
+            "mod.Cls",
+            logging.ERROR,
+            __file__,
+            1,
+            "handler failed",
+            (),
+            sys.exc_info(),
         )
     rec.created = 1780185600.0
     rec.session_id = "k-1779840000-1"
@@ -121,14 +131,14 @@ def test_record_to_dict_captures_exception_traceback():
 
 
 def test_serialize_is_single_line_and_round_trips():
-    rec = _make_record(msg="line1\nline2\twith \"quote\" and \x01 ctrl")
+    rec = _make_record(msg='line1\nline2\twith "quote" and \x01 ctrl')
     rec.message = rec.getMessage()
     line = sl.serialize_record(sl.record_to_dict(rec))
     # Exactly one physical line (trailing newline only).
     assert line.endswith("\n")
     assert line.count("\n") == 1
     obj = json.loads(line)
-    assert obj["_msg"] == "line1\nline2\twith \"quote\" and \x01 ctrl"
+    assert obj["_msg"] == 'line1\nline2\twith "quote" and \x01 ctrl'
 
 
 def test_serialize_handles_nonjson_value():
@@ -157,9 +167,7 @@ def test_context_filter_injects_bound_context():
 
 def test_context_filter_does_not_overwrite_existing_source():
     f = sl.ContextFilter()
-    rec = logging.LogRecord(
-        "x", logging.INFO, __file__, 1, "m", (), None
-    )
+    rec = logging.LogRecord("x", logging.INFO, __file__, 1, "m", (), None)
     rec.source = "sim"
     f.filter(rec)
     assert rec.source == "sim"  # re-emitted records keep their source
@@ -176,11 +184,9 @@ def test_event_emits_with_required_fields(caplog):
 
 
 def test_event_requires_subsystem_and_event():
-    import pytest as _pytest
-
-    with _pytest.raises(ValueError):
+    with pytest.raises(ValueError):
         sl.event("", "x")
-    with _pytest.raises(ValueError):
+    with pytest.raises(ValueError):
         sl.event("motion", "")
 
 
@@ -191,7 +197,42 @@ def test_check_log_space_ok_for_tmp(tmp_path):
 
 
 def test_check_log_space_raises_when_below_reserve(tmp_path):
-    import pytest as _pytest
-    huge = 10 ** 18  # 1 EB reserve cannot be satisfied
-    with _pytest.raises(sl.LogSpaceError):
+    huge = 10**18  # 1 EB reserve cannot be satisfied
+    with pytest.raises(sl.LogSpaceError):
         sl.check_log_space(str(tmp_path), reserve_bytes=huge)
+
+
+def test_check_log_space_does_not_create_directory(tmp_path):
+    # Pure check: probing a not-yet-existing logs dir must NOT create it; it
+    # walks up to the nearest existing ancestor for the free-space probe.
+    missing = tmp_path / "logs" / "nested"
+    free = sl.check_log_space(str(missing), reserve_bytes=1)
+    assert free > 1
+    assert not missing.exists()
+    assert not (tmp_path / "logs").exists()
+
+
+def test_check_log_space_below_reserve_for_missing_dir(tmp_path):
+    # The ancestor-probe path still enforces the reserve when the target dir
+    # does not exist yet, and still creates nothing.
+    missing = tmp_path / "logs" / "nested"
+    huge = 10**18  # 1 EB reserve cannot be satisfied
+    with pytest.raises(sl.LogSpaceError):
+        sl.check_log_space(str(missing), reserve_bytes=huge)
+    assert not missing.exists()
+
+
+def test_record_to_dict_honors_explicit_target():
+    # An explicitly-set record.target overrides the logger name in the schema.
+    rec = _make_record(name="some.logger", target="motion.toolhead")
+    rec.message = rec.getMessage()
+    d = sl.record_to_dict(rec)
+    assert d["target"] == "motion.toolhead"
+
+
+def test_record_to_dict_defaults_target_to_logger_name():
+    # With no explicit target, the schema falls back to the logger name.
+    rec = _make_record(name="some.logger")
+    rec.message = rec.getMessage()
+    d = sl.record_to_dict(rec)
+    assert d["target"] == "some.logger"
