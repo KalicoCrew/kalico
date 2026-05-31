@@ -55,6 +55,7 @@ class QueueListener:
             sinks.append(self._jsonl)
         self.registry = log_sinks.SinkRegistry(sinks)
         self.bg_queue = queue.Queue(maxsize=LOG_QUEUE_MAXSIZE)
+        self._bg_exc = None
         self.bg_thread = threading.Thread(target=self._bg_thread)
         self.bg_thread.start()
 
@@ -63,12 +64,26 @@ class QueueListener:
             record = self.bg_queue.get(True)
             if record is None:
                 break
-            self.registry.emit(record)
+            try:
+                self.registry.emit(record)
+            except Exception as e:
+                # A sink failed (e.g. disk full). Stop draining and remember
+                # why, so stop() can surface it loudly rather than hang.
+                self._bg_exc = e
+                break
 
     def stop(self):
-        self.bg_queue.put(None)
-        self.bg_thread.join()
+        if self.bg_thread.is_alive():
+            try:
+                self.bg_queue.put(None, timeout=5.0)
+            except queue.Full:
+                # bg thread is wedged/dead and the queue is saturated;
+                # don't block shutdown forever.
+                pass
+            self.bg_thread.join(timeout=5.0)
         self.registry.close()
+        if self._bg_exc is not None:
+            raise self._bg_exc
 
     # --- back-compat surface used by printer.py / configfile / mcu / etc. ---
     def set_rollover_info(self, name, info):
