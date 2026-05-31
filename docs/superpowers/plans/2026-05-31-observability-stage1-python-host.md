@@ -6,7 +6,7 @@
 
 **Architecture:** Keep klippy's existing async design (`QueueHandler` on the calling thread → bounded queue → one background `QueueListener` thread). Behind that thread, replace the single file handler with a **`SinkRegistry`** that fans each record out to a **`TextSink`** (stock `klippy.log`) and a **`JsonlSink`** (durable structured JSONL). A `ContextFilter` on the root logger injects `session_id` / `print_id` / `source` / `target` into every record at emit time (correct for `contextvars`). A small `structured_log` module owns the schema, the context vars, the serializer, and a forward `event()` helper for new code.
 
-**Tech Stack:** Python 3 (target py38, runs on 3.13), stdlib `logging` + `logging.handlers` + `contextvars` + `json`, pytest. No new third-party dependencies.
+**Tech Stack:** Python 3 (project `requires-python >=3.9`; this dev host runs 3.14), stdlib `logging` + `logging.handlers` + `contextvars` + `json`, pytest, ruff (lint+format, line-length 80, configured in `pyproject.toml`). No new third-party dependencies.
 
 **Spec:** `docs/superpowers/specs/2026-05-31-observability-logging-pipeline-design.md` (this plan implements §17 Stage 1).
 
@@ -49,8 +49,22 @@ Expected: existing suite passes (collection succeeds, 0 failures). If pytest is 
 ```python
 # test/test_structured_log.py
 import logging
+import sys
+
+import pytest
 
 from klippy import structured_log as sl
+
+
+@pytest.fixture(autouse=True)
+def _reset_log_context():
+    # The session/print contextvars are module-level globals; reset them
+    # before AND after every test so the suite is order-independent.
+    sl.clear_session()
+    sl.clear_print()
+    yield
+    sl.clear_session()
+    sl.clear_print()
 
 
 def test_level_name_maps_stdlib_levels():
@@ -63,8 +77,8 @@ def test_level_name_maps_stdlib_levels():
 
 
 def test_format_time_is_rfc3339_utc_millis_z():
-    # 2026-05-31T00:00:00Z == 1779840000 (UTC)
-    out = sl.format_time(1779840000.0)
+    # 2026-05-31T00:00:00Z == 1780185600 (UTC)
+    out = sl.format_time(1780185600.0)
     assert out == "2026-05-31T00:00:00.000Z"
 ```
 
@@ -172,13 +186,10 @@ def test_make_session_id_shape():
 
 
 def test_get_session_unbound_is_sentinel():
-    # Fresh contextvar in a child context: unbound -> sentinel, not crash.
-    import contextvars
-
-    def _read():
-        return sl.get_session()
-
-    assert contextvars.copy_context().run(_read) == sl.UNBOUND_SESSION
+    # The autouse fixture has cleared the session var, so an unbound read
+    # returns the queryable sentinel rather than crashing.
+    sl.clear_session()
+    assert sl.get_session() == sl.UNBOUND_SESSION
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -205,6 +216,10 @@ def make_session_id():
 
 def bind_session(session_id):
     _session_var.set(session_id)
+
+
+def clear_session():
+    _session_var.set(None)
 
 
 def get_session():
@@ -253,7 +268,7 @@ def _make_record(msg="hello", level=logging.INFO, name="mod.Cls", **extra):
         name=name, level=level, pathname=__file__, lineno=1,
         msg=msg, args=(), exc_info=None,
     )
-    rec.created = 1779840000.0
+    rec.created = 1780185600.0
     rec.session_id = "k-1779840000-1"
     rec.print_id = ""
     rec.source = sl.SOURCE_HOST_PY
@@ -282,6 +297,28 @@ def test_record_to_dict_promotes_extra_fields():
     assert d["subsystem"] == "homing"
     assert d["event"] == "homing.trip"
     assert d["axis"] == "z"
+
+
+def test_record_to_dict_captures_exception_traceback():
+    # logging.exception() / exc_info populates record.exc_text during format();
+    # the traceback must survive into the JSONL schema, not be dropped.
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        rec = logging.LogRecord(
+            "mod.Cls", logging.ERROR, __file__, 1,
+            "handler failed", (), sys.exc_info(),
+        )
+    rec.created = 1780185600.0
+    rec.session_id = "k-1779840000-1"
+    rec.print_id = ""
+    rec.source = sl.SOURCE_HOST_PY
+    # Formatter.format() is what sets exc_text; emulate the QueueHandler path.
+    logging.Formatter().format(rec)
+    rec.message = rec.getMessage()
+    d = sl.record_to_dict(rec)
+    assert "ValueError: boom" in d["exception"]
+    assert "Traceback" in d["exception"]
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -322,10 +359,13 @@ def record_to_dict(record):
         "target": record.name,
     }
     print_id = getattr(record, "print_id", "")
-    if print_id:
-        out["print_id"] = print_id
-    else:
-        out["print_id"] = ""
+    out["print_id"] = print_id if print_id else ""
+    # Capture the formatted exception traceback if present. QueueHandler clears
+    # record.exc_info but the Formatter has already rendered record.exc_text,
+    # which would otherwise be dropped (it lives in stdlib's _STD_ATTRS).
+    exc_text = getattr(record, "exc_text", None)
+    if exc_text:
+        out["exception"] = exc_text
     # Promote any non-standard attribute (from logging `extra=`) to a field.
     for key, val in record.__dict__.items():
         if key in _STD_ATTRS or key in _RESERVED_OUT:
@@ -830,6 +870,36 @@ def test_jsonl_sink_flushes_each_record(tmp_path):
     with open(path) as f:
         assert f.read().count("\n") == 1  # visible before close
     sink.close()
+
+
+def test_jsonl_sink_periodic_fsync_backstop(tmp_path, monkeypatch):
+    # Spec §3/§7: relaxed default = flush-per-record + a periodic fsync
+    # backstop. With interval 0 every emit fsyncs; close() always fsyncs.
+    calls = []
+    monkeypatch.setattr(log_sinks.os, "fsync", lambda fd: calls.append(fd))
+    path = str(tmp_path / "host-py.jsonl")
+    sink = log_sinks.JsonlSink(path, fsync_interval=0.0)
+    sink.emit_record(_rec("a"))
+    sink.emit_record(_rec("b"))
+    assert len(calls) >= 2  # fsynced on each emit when interval elapsed
+    pre_close = len(calls)
+    sink.close()
+    assert len(calls) == pre_close + 1  # final fsync on close
+
+
+def test_jsonl_sink_default_interval_does_not_fsync_every_record(
+    tmp_path, monkeypatch
+):
+    calls = []
+    monkeypatch.setattr(log_sinks.os, "fsync", lambda fd: calls.append(fd))
+    path = str(tmp_path / "host-py.jsonl")
+    sink = log_sinks.JsonlSink(path)  # default interval (>0)
+    sink.emit_record(_rec("a"))
+    sink.emit_record(_rec("b"))
+    # The two back-to-back emits are within the interval: no per-record fsync.
+    assert calls == []
+    sink.close()  # close still fsyncs once
+    assert len(calls) == 1
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -842,6 +912,7 @@ Expected: FAIL — `AttributeError: ... 'JsonlSink'`.
 ```python
 # append to klippy/log_sinks.py
 import os
+import time
 
 from . import structured_log
 
@@ -849,16 +920,21 @@ from . import structured_log
 # cannot resume reading a gzipped file.
 JSONL_MAX_BYTES = 32 * 1024 * 1024
 JSONL_BACKUP_COUNT = 5
+# Periodic fsync backstop interval (spec §3/§7 relaxed-durability contract).
+JSONL_FSYNC_INTERVAL = 15.0
 
 
 class JsonlSink(Sink):
     def __init__(self, filename, max_bytes=JSONL_MAX_BYTES,
-                 backup_count=JSONL_BACKUP_COUNT):
+                 backup_count=JSONL_BACKUP_COUNT,
+                 fsync_interval=JSONL_FSYNC_INTERVAL):
         os.makedirs(os.path.dirname(filename) or ".", exist_ok=True)
         self._handler = logging.handlers.RotatingFileHandler(
             filename, maxBytes=max_bytes, backupCount=backup_count,
             encoding="utf-8", delay=False,
         )
+        self._fsync_interval = fsync_interval
+        self._last_fsync = time.monotonic()
 
     def emit_record(self, record):
         line = structured_log.serialize_record(
@@ -871,24 +947,32 @@ class JsonlSink(Sink):
         if self._handler.shouldRollover(record):
             self._handler.doRollover()
             stream = self._handler.stream
+            self._last_fsync = time.monotonic()
         stream.write(line)
         stream.flush()
+        # Periodic fsync backstop: bound power-loss exposure to ~interval
+        # without paying an fsync on every record. Runs on the single
+        # QueueListener bg thread, so no extra thread or lock is needed.
+        now = time.monotonic()
+        if now - self._last_fsync >= self._fsync_interval:
+            os.fsync(stream.fileno())
+            self._last_fsync = now
 
     def close(self):
+        # Final fsync so a clean shutdown is fully durable, then close.
+        stream = self._handler.stream
+        if stream is not None:
+            stream.flush()
+            os.fsync(stream.fileno())
         self._handler.close()
 ```
 
-> Note: `RotatingFileHandler.shouldRollover` calls `self.format(record)` to size the message; since we write our own line, size-based rotation is approximate (good enough — exact byte caps are a §16 tunable). This keeps us on the stdlib rotation machinery rather than hand-rolling it.
-
-- [ ] **Step 2b: Adjust the rollover sizing test if needed**
-
-Run: `python3 -m pytest test/test_log_sinks.py -q`
-Expected: PASS (7 tests). If `shouldRollover` errors because the record has no formatter message, the handler's default formatter handles it; no change expected.
+> Note: `RotatingFileHandler.shouldRollover` calls `self.format(record)` to size the message; since we write our own line, size-based rotation is approximate (good enough — exact byte caps are a §16 tunable). This keeps us on the stdlib rotation machinery rather than hand-rolling it. The fsync is on the handler's file descriptor; `flush()` first guarantees Python's buffer is in the OS before the fd is fsync'd.
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python3 -m pytest test/test_log_sinks.py -q`
-Expected: PASS (7 tests).
+Expected: PASS (9 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -1192,7 +1276,7 @@ def events_dir_for(logfile):
     return os.path.join(os.path.dirname(os.path.abspath(logfile)), "events")
 ```
 
-Then in `main()`, **before** `logging.info("=======================")` (line 704), bind the session and pass `events_dir`. Change the logfile block (lines 693-703) to:
+Then in `main()`, **before** `logging.info("=======================")` (line 704), bind the session and pass `events_dir`. Change the logfile block (current lines 692-703, which start at `bglogger = None`) to the following. Note `edir` is computed **once** here so Task 13 can insert its preflight cleanly with no second edit of these lines:
 
 ```python
     # Bind the session id BEFORE the first log line (spec §6 binding-timing).
@@ -1200,6 +1284,7 @@ Then in `main()`, **before** `logging.info("=======================")` (line 704
     structured_log.bind_session(session_id)
     start_args["session_id"] = session_id
 
+    edir = events_dir_for(options.logfile)
     bglogger = None
     if options.logfile:
         start_args["log_file"] = options.logfile
@@ -1207,7 +1292,7 @@ Then in `main()`, **before** `logging.info("=======================")` (line 704
             filename=options.logfile,
             debuglevel=debuglevel,
             rotate_log_at_restart=options.rotate_log_at_restart,
-            events_dir=events_dir_for(options.logfile),
+            events_dir=edir,
         )
         if options.rotate_log_at_restart:
             bglogger.doRollover()
@@ -1285,15 +1370,14 @@ def check_log_space(path, reserve_bytes=LOG_SPACE_RESERVE_BYTES):
     return free
 ```
 
-Then call it in `klippy/printer.py:main()` right after binding the session, only when a logfile (hence events dir) is configured:
+Then call it in `klippy/printer.py:main()`. Task 12 already introduced the `edir = events_dir_for(options.logfile)` line; insert the preflight immediately **after** that line and **before** `bglogger = None` (do not recompute `edir`):
 
 ```python
     edir = events_dir_for(options.logfile)
     if edir is not None:
         structured_log.check_log_space(edir)
+    bglogger = None
 ```
-
-(Place this before `setup_bg_logging` and pass `events_dir=edir` instead of recomputing.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1377,38 +1461,50 @@ git commit -m "feat(logging): bind print_id across the print lifecycle"
 
 ---
 
-## Task 15: Full-suite regression + black/isort
+## Task 15: Full-suite regression + ruff (lint + format)
 
 **Files:** none (verification task)
 
-- [ ] **Step 1: Format to project style**
+The project uses **ruff** (configured in `pyproject.toml`: `line-length = 80`, import-sort rules `I001`/`I002`). There is no black/isort here.
 
-Run: `python3 -m black klippy/structured_log.py klippy/log_sinks.py klippy/queuelogger.py klippy/printer.py klippy/extras/print_stats.py test/test_structured_log.py test/test_log_sinks.py test/test_queuelogger_pipeline.py test/test_session_binding.py test/test_print_id_binding.py`
-Then: `python3 -m isort` on the same files.
-Expected: files reformatted to line-length 79 (or "already formatted").
+- [ ] **Step 1: Lint + format to project style**
 
-- [ ] **Step 2: Run the full test suite**
+Run (auto-fix import sorting and other fixable lints, then format):
+```bash
+python3 -m ruff check --fix klippy/structured_log.py klippy/log_sinks.py klippy/queuelogger.py klippy/printer.py klippy/extras/print_stats.py test/test_structured_log.py test/test_log_sinks.py test/test_queuelogger_pipeline.py test/test_session_binding.py test/test_print_id_binding.py
+python3 -m ruff format klippy/structured_log.py klippy/log_sinks.py klippy/queuelogger.py klippy/printer.py klippy/extras/print_stats.py test/test_structured_log.py test/test_log_sinks.py test/test_queuelogger_pipeline.py test/test_session_binding.py test/test_print_id_binding.py
+```
+Expected: files reformatted to line-length 80 with sorted imports (or "N files left unchanged"). If `ruff` is not installed, run `python3 -m pip install ruff` first.
+
+- [ ] **Step 2: Lint check passes clean**
+
+Run: `python3 -m ruff check klippy/structured_log.py klippy/log_sinks.py klippy/queuelogger.py klippy/printer.py klippy/extras/print_stats.py test/`
+Expected: `All checks passed!`
+
+- [ ] **Step 3: Run the full test suite**
 
 Run: `python3 -m pytest test/ -q`
 Expected: all green, including the new files and the pre-existing baseline.
 
-- [ ] **Step 3: Smoke-check the import graph**
+- [ ] **Step 4: Smoke-check the import graph**
 
 Run: `python3 -c "import klippy.queuelogger, klippy.structured_log, klippy.log_sinks, klippy.printer"`
 Expected: no output (clean import).
 
-- [ ] **Step 4: Commit any formatting changes**
+- [ ] **Step 5: Commit any formatting changes**
 
 ```bash
 git add -A
-git commit -m "chore(logging): black/isort formatting for stage 1"
+git commit -m "chore(logging): ruff lint+format for stage 1"
 ```
 
 ---
 
 ## Self-review (completed during authoring)
 
-**Spec coverage (Stage 1 scope, §17):** SinkRegistry → Task 7; text + jsonl sinks → Tasks 8, 9; ContextFilter → Task 5; structured_log.event → Task 6; session binding + binding-timing invariant → Task 12; print_id lifecycle → Task 14; sanitization/one-line → Task 4; bounded fail-loud queue → Task 10; write-failure fail-loud → Tasks 7, 9 (propagate) + §12; relaxed durability (flush-per-record) → Task 9; disk preflight → Task 13; stock-format text view → Task 8; events dir under printer_data/logs → Tasks 9, 11, 12.
+**Spec coverage (Stage 1 scope, §17):** SinkRegistry → Task 7; text + jsonl sinks → Tasks 8, 9; ContextFilter → Task 5; structured_log.event → Task 6; session binding + binding-timing invariant → Task 12; print_id lifecycle → Task 14; sanitization/one-line → Task 4; exception-traceback capture → Task 3; bounded fail-loud queue → Task 10; write-failure fail-loud → Tasks 7, 9 (propagate) + §12; relaxed durability (flush-per-record **+ periodic fsync backstop + fsync-on-close**) → Task 9; disk preflight → Task 13; stock-format text view → Task 8; events dir under printer_data/logs → Tasks 9, 11, 12.
+
+**Review fixes applied (post adversarial review, 0 blockers / 6 confirmed findings):** corrected the test epoch to `1780185600` (= 2026-05-31T00:00:00Z) in Tasks 1 & 3; added exception-traceback capture (`record.exc_text` → `exception` field) in Task 3; added an autouse contextvars-reset fixture + `clear_session()` for test isolation (Tasks 2, 5, 6); implemented the spec-locked periodic-fsync backstop + fsync-on-close in Task 9; removed the stray "Step 2b"; de-duplicated the `edir` computation across Tasks 12/13; switched Task 15 from black/isort to the project's **ruff**; cleaned the Task 11 filter-placement guidance to the single correct handler form.
 
 **Deferred-correctly (NOT in this plan):** Rust `tracing` (Stage 2), Vector/VL/skill (Stage 3), runtime `SET_LOG_LEVEL` + sink-selection config (follow-on), tmpfs index (§16), per-subsystem default-level table + Pi profiling (a Stage-1-adjacent task that needs hardware — see "Open" below).
 
