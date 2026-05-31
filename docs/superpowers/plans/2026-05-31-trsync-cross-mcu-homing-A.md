@@ -988,3 +988,52 @@ trusted.
 - **Beacon arming through the bridge serial shim** is not exercised by Part A's
   hardware test (bridge-GPIO source instead). Confirm separately before relying
   on Beacon+Z.
+
+## Post-implementation notes (2026-05-31)
+
+Tasks 1–7 implemented + reviewed (spec + code-quality). Validation done:
+`cargo build -p motion-bridge` clean; trip_dispatch (4) + endstop (30) unit
+tests pass; H723 sim firmware builds with the changes and exports
+`runtime_stop_on_trigger arm_id=%u trsync_oid=%c` in `out/klipper.dict`
+alongside `trsync_trigger`/`trsync_start`. Final whole-branch review confirmed
+the arm_id (u32) / oid (u8) / reason (u8=1) contract is consistent across C
+(`runtime_commands.c`), Rust (`trip_dispatch.rs`/FFI), and Python
+(`mcu.py`/`motion_bridge.py`), with no legacy `stepper_stop_on_trigger`
+double-stop on the bridge path (bridge steppers get `runtime_stop_on_trigger`
+exclusively).
+
+- **Task 8 divergence (intentional):** the plan's Task 8 modified
+  `tools/test_renode_endstop_e2e.py` (Python `KalicoHostIO` + `sim.is_frozen`
+  helpers) — but that harness drives the firmware directly and **never calls the
+  relay**, so it would prove nothing about the new code. Replaced with a
+  pure-Rust live-reactor integration test
+  (`rust/motion-bridge/tests/relay_reactor_integration.rs`, commit `9bcb688a8`):
+  feeds an inbound `kalico_endstop_tripped` frame through a real `Reactor`
+  (`ReactorHarness`), and asserts the interceptor fires and emits a real
+  outbound `trsync_trigger oid=S reason=1` on the sink wire (positive +
+  wrong-arm_id-filtered + FanOut-one-shot cases). Covers the reactor-decode →
+  InterceptorTable → relay closure (real `FanOut`/`build_trigger_cmd`) → wire
+  seam — the gap the unit tests left. Does NOT cover the firmware half
+  (`trsync_do_trigger → runtime_stop_on_trigger → software_trip`); that is
+  Task 9. Added two minimal additive `ReactorHarness` helpers
+  (`new_with_parser`, `register_interceptor`). (Pre-existing, unrelated: 2
+  `kalico-host-rt` `arm_flow_unit` tests fail at the merge-base too —
+  clock-sync-request harness issue, not from this branch.)
+
+- **Follow-up F1 (hygiene, deferrable past bench):** `BridgeTriggerDispatch.stop()`
+  tears down the host relay + GPIO endstop but does NOT disarm sink firmware
+  trsyncs on the no-trip path (`MCU_trsync.stop()` bridge branch is a no-op). A
+  sink that didn't fire stays armed (with its `runtime_stop_binding`) until the
+  next `trsync_start` clears it. Benign — no report/expire timer is armed
+  (`report_ticks=0`, no `trsync_set_timeout`), so it cannot spuriously fire, and
+  each homing move re-sends `trsync_start` (→ `trsync_clear`) first. A clean
+  disarm has no existing firmware command (force-`trsync_trigger` would wrongly
+  fire the freeze; `trsync_start`-to-clear is hacky), so the proper fix is a
+  design piece for Part B / the same-MCU fast-path re-enable, not a bench
+  blocker.
+
+- **Follow-up F2 (Task 9 watch / Part B):** sinks arm no `trsync_set_timeout`, so
+  with `report_ticks=0` there is no firmware expire timer — if the host dies
+  mid-homing the sink does NOT auto-freeze; the metered drip-drain (Part B) is
+  the only host-death safety net. Validate the drain actually freezes on
+  host-death during a homing move when Part B lands.
