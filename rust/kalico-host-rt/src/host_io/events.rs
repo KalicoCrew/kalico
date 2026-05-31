@@ -261,6 +261,30 @@ impl EventDispatcher {
                     .dispatch(RuntimeEvent::CreditFreed(e));
             }
             RuntimeEvent::Fault(e) => {
+                // Log at warn immediately on receipt — this fires BEFORE
+                // shutdown() races with the USB-CDC drop, so the numeric
+                // code reaches the systemd journal even when the
+                // kalico_native FaultEvent frame is lost after reset.
+                // Readable without sudo: journalctl -u klippy -g KALICO-FAULT
+                // Decode the u16 wire value back to a signed fault code.
+                // The MCU encodes negative i32 codes as (i32 as i16) as u16
+                // (FaultCode::as_u16); reversing that is (u16 as i16) as i32.
+                let signed_code = e.fault_code as i16 as i32;
+                log::warn!(
+                    "[KALICO-FAULT] received FaultEvent \
+                     fault_code={} (wire_u16={}) fault_detail={:#010x} \
+                     segment_id={} synthesized={} \
+                     (see runtime::error::FaultCode: \
+                     -308=PieceStartInPast -309=RingFull \
+                     -310=StepsPerSampleExceeded -311=TickIntervalExceeded \
+                     -302=MathNonFinite -303=PieceAdvanceUnderflow \
+                     -300=StepQueueOverflow)",
+                    signed_code,
+                    e.fault_code,
+                    e.fault_detail,
+                    e.segment_id,
+                    e.synthesized,
+                );
                 self.fault_latch.dispatch(e.clone());
                 // Forward to the python bridge poller too — fault visibility
                 // matters end-to-end. Pre-Phase-C this rode the legacy

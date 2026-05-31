@@ -18,6 +18,12 @@ extern "C" {
 #define DIAG_EV_TX_DROP_KAL   5
 #define DIAG_EV_TX_DROP_KLP   6
 #define DIAG_EV_ENGINE_XITION 7
+// Rust-raised runtime fault captured at the last_error escalation point in
+// runtime_drain (runtime_tick.c). Stored in the BKPSRAM ring so the next
+// boot's prior_diag_ring dump emits it even if the USB-CDC frame was lost.
+// a = (uint32_t)last_error (i32 cast; negative fault codes wrap as expected
+//     because the host reads them back as i32), b = fault_detail.
+#define DIAG_EV_RUST_FAULT    8
 
 // Push a tagged record to the BKPSRAM event ring. IRQ-safe.
 void diag_ring_push(uint8_t tag, uint32_t a, uint32_t b);

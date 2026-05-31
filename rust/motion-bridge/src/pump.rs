@@ -691,27 +691,26 @@ impl PieceSink for WireSink {
         let r = kalico_protocol::messages::PushPiecesResponse::decode(&resp)
             .map_err(|e| format!("decode PushPiecesResponse: {e:?}"))?;
 
-        // Emit transit/arrival-lead diagnostic for every non-empty, non-error batch.
-        // Skipped when front_start_time==0 (empty batch or early error path).
-        // arrival_lead = front_start_time - arrival_clock (both in MCU ticks).
-        // Negative means the piece arrived already in the MCU's past → -308 risk.
-        // transit_us is NOT computed here: host→MCU clock projection (freq, offset)
-        // lives in PassthroughRouter, which is not reachable from WireSink without
-        // cross-crate plumbing. Derive offline: transit_us ≈ (arrival_clock -
-        // send_mcu_clock) / mcu_freq, where send_mcu_clock = project(host_send_instant).
-        if host_front_start_time != 0 {
-            // Assume ~520 MHz for H723, ~180 MHz for F446. If this MCU's actual freq
-            // is different the µs value is approximate — log raw ticks too so the
-            // exact value can be derived offline with the per-MCU freq from klippy log.
+        // Emit transit/arrival-lead diagnostic for every successful PushPieces.
+        // arrival_lead = mcu_front_start_time - arrival_clock (both MCU ticks).
+        // Negative → piece already in MCU past at commit time → -308 risk.
+        // host_front_start_time==0 means the router had no clock sync when the
+        // piece was dispatched (project() returned 0); log it as a zero so the
+        // gap is visible rather than silently skipped.
+        {
             // The arithmetic uses i64 to correctly represent negative arrival-lead.
             let arrival_lead_ticks =
                 r.front_start_time as i64 - r.arrival_clock as i64;
-            // Use 180 MHz as a conservative estimate (F446); H723 at 520 MHz will
-            // give a proportionally smaller µs value. Both raw-ticks and µs are logged.
-            const MCU_FREQ_APPROX_HZ: f64 = 180_000_000.0;
-            let arrival_lead_us = (arrival_lead_ticks as f64 / MCU_FREQ_APPROX_HZ) * 1e6;
-            // host_send_secs: wall-clock seconds as a monotonic f64 for offline
-            // correlation with klippy's clock-sync records.
+            // Approximate µs: use 520 MHz for H723 (mcu_id 0) and 180 MHz for
+            // F446 (mcu_id 1). Both raw-ticks and µs are logged so the exact
+            // value can be derived offline with the per-MCU freq from klippy log.
+            let mcu_freq_approx_hz: f64 = if key.mcu_id == 0 {
+                520_000_000.0
+            } else {
+                180_000_000.0
+            };
+            let arrival_lead_us = (arrival_lead_ticks as f64 / mcu_freq_approx_hz) * 1e6;
+            // Wall-clock seconds for offline correlation with klippy clock-sync.
             let host_send_secs = {
                 use std::time::{SystemTime, UNIX_EPOCH};
                 SystemTime::now()
@@ -719,22 +718,53 @@ impl PieceSink for WireSink {
                     .map(|d| d.as_secs_f64())
                     .unwrap_or(0.0)
             };
-            log::warn!(
-                "[transit-diag] mcu={} axis={} \
-                 host_front_start_time={} mcu_front_start_time={} \
-                 arrival_clock={} \
-                 arrival_lead_ticks={} arrival_lead_us={:.1} \
-                 host_send_unix_secs={:.6} \
-                 (transit_us=offline: project host_send_unix_secs via klippy clock-sync)",
-                key.mcu_id,
-                key.axis,
-                host_front_start_time,
-                r.front_start_time,
-                r.arrival_clock,
-                arrival_lead_ticks,
-                arrival_lead_us,
-                host_send_secs,
-            );
+            // Warn when arrival_lead is negative (piece arrived in MCU's past)
+            // or when host_front_start_time is zero (clock-sync gap on dispatch).
+            // Log at info for positive lead so routine-operation frames don't
+            // flood the journal; warn on the cases that indicate a -308 risk.
+            let zero_st = host_front_start_time == 0;
+            let past_arrival = arrival_lead_ticks < 0;
+            if zero_st || past_arrival {
+                log::warn!(
+                    "[transit-diag] mcu={} axis={} \
+                     host_front_start_time={} mcu_front_start_time={} \
+                     arrival_clock={} \
+                     arrival_lead_ticks={} arrival_lead_us={:.1} \
+                     host_send_unix_secs={:.6} \
+                     ALERT: {}",
+                    key.mcu_id,
+                    key.axis,
+                    host_front_start_time,
+                    r.front_start_time,
+                    r.arrival_clock,
+                    arrival_lead_ticks,
+                    arrival_lead_us,
+                    host_send_secs,
+                    if zero_st && past_arrival {
+                        "host_start_time=0 (clock-sync gap) AND piece in MCU past"
+                    } else if zero_st {
+                        "host_start_time=0 (router clock_freq=0 at dispatch — clock-sync gap)"
+                    } else {
+                        "piece arrived in MCU past (arrival_lead<0) — PieceStartInPast risk"
+                    },
+                );
+            } else {
+                log::info!(
+                    "[transit-diag] mcu={} axis={} \
+                     host_front_start_time={} mcu_front_start_time={} \
+                     arrival_clock={} \
+                     arrival_lead_ticks={} arrival_lead_us={:.1} \
+                     host_send_unix_secs={:.6}",
+                    key.mcu_id,
+                    key.axis,
+                    host_front_start_time,
+                    r.front_start_time,
+                    r.arrival_clock,
+                    arrival_lead_ticks,
+                    arrival_lead_us,
+                    host_send_secs,
+                );
+            }
         }
 
         if r.result != kalico_protocol::result_codes::OK {

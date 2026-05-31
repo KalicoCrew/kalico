@@ -417,6 +417,14 @@ runtime_drain(void)
         // Segment ids are gone (piece-ring model); pass 0 for the legacy
         // segment-id slot, matching the dormant cur_status fault emit above.
         kalico_native_emit_fault_event((uint16_t)cur_error, fdetail, 0);
+        // Belt-and-suspenders: persist the fault code + detail into the
+        // BKPSRAM diagnostic ring BEFORE shutdown() resets the USB stack.
+        // The ring survives a soft reset and is emitted by fault_handler_
+        // report_task on the next boot as `prior_diag_ring ... tag 8`.
+        // This captures the numeric code even when the USB-CDC FaultEvent
+        // frame is lost (shutdown → USB drop race). Readable without sudo:
+        // grep 'prior_diag_ring.*tag 8' ~/printer_data/logs/klippy.log
+        diag_ring_push(DIAG_EV_RUST_FAULT, (uint32_t)cur_error, fdetail);
         runtime_liveness_ok = 0;
         shutdown("kalico runtime fault");
     }
