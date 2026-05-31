@@ -408,6 +408,7 @@ endchoice
 
 config RUNTIME_CURVE_POOL_N
     int "Curve-pool slot count (planner look-ahead depth)"
+    default 2 if MACH_STM32G0
     default 16 if RUNTIME_TARGET_LARGE
     default 4 if RUNTIME_TARGET_SMALL
     default 4
@@ -415,6 +416,7 @@ config RUNTIME_CURVE_POOL_N
 
 config RUNTIME_MAX_PIECES_PER_CURVE
     int "Maximum cubic Bézier pieces per curve slot"
+    default 32 if MACH_STM32G0
     default 128
     range 1 256
     help
@@ -493,7 +495,8 @@ config RUNTIME_STORAGE_SIZE_LARGE
       exceeds this value at compile time.
 
 config RUNTIME_STORAGE_SIZE_SMALL
-    int "rt_storage byte ceiling (small profile, F4)"
+    int "rt_storage byte ceiling (small profile, F4/G0)"
+    default 57344 if MACH_STM32G0
     default 73728
     range 32768 131072
     help

@@ -97,6 +97,20 @@ timer_reset(void)
 }
 DECL_SHUTDOWN(timer_reset);
 
+// SchedState.wrap_timer callback. The fork's sched.c stores this function
+// pointer in the MPU-protected SchedState initializer unconditionally, so the
+// symbol must resolve on every timer backend. On this (timer_irq) backend the
+// 16/32-bit wrap is handled by the private `wrap_timer` above; SchedState's
+// wrap_timer is only ever scheduled by armcm_timer.c::timer_reset, which is NOT
+// built on the F0/G0 path — so this is effectively a link-time stub here. It
+// mirrors armcm_timer.c's implementation should it ever be scheduled.
+uint_fast8_t
+timer_wrap_event(struct timer *t)
+{
+    t->waketime += 0xffffff;
+    return SF_RESCHEDULE;
+}
+
 
 /****************************************************************
  * Setup and irqs
