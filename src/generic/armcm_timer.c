@@ -11,6 +11,7 @@
 #include "board/misc.h" // timer_from_us
 #include "command.h" // shutdown
 #include "sched.h" // sched_timer_dispatch
+#include "generic/kalico_nvic_prio.h" // KALICO_SCHED_NVIC_PRIO
 
 DECL_CONSTANT("CLOCK_FREQ", CONFIG_CLOCK_FREQ);
 
@@ -151,7 +152,7 @@ timer_init(void)
 
     // Enable SysTick
     irqstatus_t flag = irq_save();
-    NVIC_SetPriority(SysTick_IRQn, 2);
+    NVIC_SetPriority(SysTick_IRQn, KALICO_SCHED_NVIC_PRIO);
     SysTick->CTRL = (SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_TICKINT_Msk
                      | SysTick_CTRL_ENABLE_Msk);
     timer_kick();
