@@ -10,6 +10,10 @@ import threading
 import time
 
 
+class LogQueueOverflow(Exception):
+    pass
+
+
 # Class to forward all messages through a queue to a background thread
 class QueueHandler(logging.Handler):
     def __init__(self, queue):
@@ -22,9 +26,16 @@ class QueueHandler(logging.Handler):
             record.msg = record.message
             record.args = None
             record.exc_info = None
-            self.queue.put_nowait(record)
         except Exception:
             self.handleError(record)
+            return
+        try:
+            self.queue.put_nowait(record)
+        except queue.Full:
+            # Fail loudly (spec §7.1): never silently drop a durable record.
+            raise LogQueueOverflow(
+                "klippy log queue overflow; logging cannot keep up"
+            )
 
 
 # Class to poll a queue in a background thread and log each message
