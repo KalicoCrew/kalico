@@ -8,12 +8,17 @@
 #include "kalico_runtime.h"
 #include "generic/runtime_tick.h"   // interface contract
 #include "generic/runtime_bench.h" // runtime_bench_capture hook
+#include "generic/kalico_nvic_prio.h" // KALICO_MOTION_NVIC_PRIO
 
 #if CONFIG_MACH_STM32H7
 
 extern const uint32_t runtime_clock_freq;
 
 extern void* runtime_handle;   // exposed in src/runtime_tick.c
+
+// Dedicated step-output timer (TIM3, 16-bit) setup. Defined later in this file;
+// forward-declared so runtime_tick_init can stand it up after arming TIM5.
+static void step_output_timer_init(void);
 
 // Stepping-redesign Task 17: TIM5 ISR body. The canonical prototype for
 // `kalico_runtime_tick_sample` is supplied by the included
@@ -119,7 +124,12 @@ runtime_tick_init(void)
     // which is bounded by motion correctness (must fit in the 25 µs
     // modulation period at 40 kHz) and orders of magnitude below the 3 s
     // heater deadline / 500 ms IWDG window.
-    NVIC_SetPriority(TIM5_IRQn, 2);
+    //
+    // KALICO_MOTION_NVIC_PRIO (= 2 today) is shared with the dedicated
+    // step-output timer (step_output_timer_init below) so producer and
+    // consumer are EQUAL — the non-nesting invariant the step_queue SPSC
+    // relies on. See src/generic/kalico_nvic_prio.h.
+    NVIC_SetPriority(TIM5_IRQn, KALICO_MOTION_NVIC_PRIO);
 
     // Always-on (spec 2026-05-28): the piece-ring engine has no per-push event
     // to lazily start TIM5 (segments are gone), so the ISR free-runs from boot.
@@ -130,6 +140,10 @@ runtime_tick_init(void)
     TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
     TIM5->CR1 |= TIM_CR1_CEN;
     NVIC_EnableIRQ(TIM5_IRQn);
+
+    // Stand up the dedicated step-output timer (motion-tick priority-lift
+    // Step 1). It free-runs disabled until the first owned step arrives.
+    step_output_timer_init();
 }
 
 void
@@ -199,5 +213,141 @@ TIM5_IRQHandler(void)
 // from DECL_ARMCM_IRQ entries. Without this, TIM5_IRQHandler will not be wired
 // into the vector table and the IRQ silently drops.
 DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
+
+// ===========================================================================
+// Dedicated step-output timer (TIM3) — motion-tick priority-lift Step 1
+// ===========================================================================
+//
+// Task 0 closed TIM3 for the H7: TIM2 is taken by caselight hardware PWM and
+// TIM5 by the motion tick; those are the only 32-bit GP timers, so the
+// step-output timer is 16-bit TIM3. The consumer is event-driven and only ever
+// near-step (the producer kick arms it to the soonest pending step's cycle),
+// so a 16-bit one-shot horizon is sufficient with simple chaining for the rare
+// far re-arm — see step_output_timer_arm's ≤0xF000 clamp + the IRQ re-arm.
+//
+// Counter mode: free-running 16-bit up-counter at the timer clock (PSC = 0,
+// ARR = 0xFFFF), output-compare channel 1 (CC1) as the wake source. We arm by
+// writing CCR1 and enabling CC1IE; we disable by clearing CC1IE. The compare
+// match sets SR.CC1IF and fires TIM3_IRQHandler.
+//
+// Reference for 16-bit chaining already in-tree: src/stm32/stm32f0_timer.c and
+// src/stm32/runtime_tick_g0.c.
+//
+// NVIC priority: KALICO_MOTION_NVIC_PRIO — IDENTICAL to TIM5 (Step 1 parity;
+// no flip). Same-number Cortex-M interrupts cannot nest, so this consumer and
+// the TIM5 producer never preempt each other → the step_queues SPSC and the
+// kalico_kick_step_output compare poke stay non-racing.
+
+// Largest 16-bit one-shot delta we program in a single arm. Below 0x10000 with
+// margin so the chained re-arm always lands strictly before a full wrap, and so
+// the "already past" check below has slack. 0xF000 cycles ≈ 230 µs @ 275 MHz.
+#define STEP_OUT_MAX_DELTA 0xF000u
+
+// Bridge between the 32-bit absolute `cycle_abs` domain (DWT/TIM5 frame) and
+// the 16-bit TIM3 counter. We cannot directly compare a 16-bit TIM3 CNT to a
+// 32-bit cycle, so we track the absolute target here and, on each (re)arm or
+// IRQ, compute the remaining delta against the 32-bit DWT clock (runtime_cyccnt
+// _read), clamp it to STEP_OUT_MAX_DELTA, and set CCR1 = TIM3->CNT + delta.
+//
+// `step_out_target`   : absolute cycle the consumer must next fire at.
+// `step_out_running`  : 1 while CC1IE is enabled (timer is arming toward a step).
+static volatile uint32_t step_out_target;
+static volatile uint8_t  step_out_running;
+
+// Program TIM3 CC1 to fire `delta` (clamped) timer-ticks from the current CNT.
+static inline void
+step_output_program_delta(uint32_t delta)
+{
+    if (delta > STEP_OUT_MAX_DELTA)
+        delta = STEP_OUT_MAX_DELTA;
+    if (delta == 0)
+        delta = 1;  // never arm in the past; fire next tick
+    uint16_t ccr = (uint16_t)(TIM3->CNT + (uint16_t)delta);
+    TIM3->CCR1 = ccr;
+    TIM3->SR = (uint16_t)~TIM_SR_CC1IF;  // clear stale compare flag
+    TIM3->DIER |= TIM_DIER_CC1IE;
+}
+
+// (Re)arm the step-output timer to fire at absolute cycle `cycle_abs`, or
+// disable it when `cycle_abs == KALICO_STEP_OUTPUT_DISABLE`. Called from the
+// Rust kick path (kalico_kick_step_output) and from the IRQ re-arm below.
+//
+// used, externally_visible: referenced from the Rust archive (via the C kick
+// shim in runtime_tick.c) — keep it past --gc-sections / -fwhole-program LTO.
+__attribute__((used, externally_visible))
+void
+step_output_timer_arm(uint32_t cycle_abs)
+{
+    if (cycle_abs == 0xFFFFFFFFu /* KALICO_STEP_OUTPUT_DISABLE */) {
+        TIM3->DIER &= ~TIM_DIER_CC1IE;
+        step_out_running = 0;
+        return;
+    }
+    step_out_target = cycle_abs;
+    step_out_running = 1;
+    uint32_t now = runtime_cyccnt_read();
+    uint32_t delta = cycle_abs - now;     // wrap-safe; >2^31 ⇒ already due
+    if ((int32_t)delta <= 0)
+        delta = 1;                         // due/late → fire next tick
+    step_output_program_delta(delta);
+}
+
+__attribute__((used, externally_visible))
+uint32_t
+step_output_timer_armed_target(void)
+{
+    return step_out_target;
+}
+
+__attribute__((used, externally_visible))
+uint8_t
+step_output_timer_is_running(void)
+{
+    return step_out_running;
+}
+
+static void
+step_output_timer_init(void)
+{
+    NVIC_DisableIRQ(TIM3_IRQn);
+
+    // Enable TIM3 peripheral clock (APB1L on H7) before touching its registers.
+    RCC->APB1LENR |= RCC_APB1LENR_TIM3EN;
+    __DSB();
+
+    TIM3->CR1 &= ~TIM_CR1_CEN;
+    TIM3->SR = 0;
+    TIM3->PSC = 0;
+    TIM3->ARR = 0xFFFF;                 // free-running 16-bit up-counter
+    TIM3->CCMR1 = 0;                    // CC1 = output compare, frozen output
+    TIM3->CCR1 = 0;
+    TIM3->DIER = 0;                     // CC1IE enabled only when armed
+    TIM3->CR1 = TIM_CR1_ARPE;
+    TIM3->EGR = TIM_EGR_UG;
+    TIM3->SR = 0;
+    TIM3->CR1 |= TIM_CR1_CEN;           // counter free-runs; no IRQ until armed
+
+    step_out_running = 0;
+    step_out_target = 0;
+
+    NVIC_SetPriority(TIM3_IRQn, KALICO_MOTION_NVIC_PRIO);
+    NVIC_EnableIRQ(TIM3_IRQn);
+}
+
+void
+TIM3_IRQHandler(void)
+{
+    TIM3->SR = (uint16_t)~TIM_SR_CC1IF;   // ack the compare match
+
+    // Run the Rust consumer: emit due steps, get the soonest remaining head
+    // (or KALICO_STEP_OUTPUT_DISABLE). If the 16-bit horizon hasn't elapsed yet
+    // (a chained far re-arm), the consumer returns the same far target and we
+    // re-arm another chunk without emitting — handled inside step_output_timer_arm.
+    extern uint32_t kalico_step_output_event(void);
+    uint32_t next = kalico_step_output_event();
+    step_output_timer_arm(next);
+}
+
+DECL_ARMCM_IRQ(TIM3_IRQHandler, TIM3_IRQn);
 
 #endif

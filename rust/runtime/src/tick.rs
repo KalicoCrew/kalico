@@ -471,28 +471,34 @@ pub fn isr_sample_tick(
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
     fn runtime_cyccnt_read() -> u32;
-    // C-side producer→consumer kick (src/runtime_tick.c). Repositions the
-    // per-axis step-consumer timer to fire at `waketime`. Called only on the
-    // idle→active transition (queue was empty, now has ≥1 entry) so the first
-    // step after an idle gap is not delayed by the consumer's long idle park.
-    // No-op for unarmed (unowned) axes.
-    fn kalico_kick_per_axis_timer(axis_idx: u8, waketime: u32);
+    // C-side producer→consumer kick (src/runtime_tick.c). (Re)arms the single
+    // dedicated step-output hardware timer's compare to `cycle_abs` if that is
+    // sooner than the currently-armed target — or arms it from disabled.
+    // Called from the TIM5 ISR on the idle→active transition (an owned queue
+    // went empty→non-empty) so the first step after an idle gap is not delayed.
+    //
+    // Race-free: the step-output timer is at the SAME NVIC priority as TIM5
+    // (motion-tick priority-lift Step 1 keeps them equal), so this compare-
+    // register poke from the TIM5 ISR can never interleave with the step-output
+    // ISR's own re-arm — same-priority interrupts do not nest on this core.
+    // Also registers the axis in the owned-axis mask the consumer scans.
+    fn kalico_kick_step_output(axis_idx: u8, cycle_abs: u32);
 }
-/// Reposition the per-axis consumer timer to `waketime` (idle→active kick).
-/// No-op on host/test builds (no C scheduler / per-axis timers linked).
+/// (Re)arm the dedicated step-output timer to fire no later than `cycle_abs`
+/// (idle→active kick). No-op on host/test builds (no C timer linked).
 #[inline]
-fn kick_per_axis_timer(axis_idx: usize, waketime: u32) {
+fn kick_per_axis_timer(axis_idx: usize, cycle_abs: u32) {
     #[cfg(not(any(test, feature = "host")))]
-    // SAFETY: `kalico_kick_per_axis_timer` bounds-checks `axis_idx` and
-    // no-ops for unarmed axes; it runs at the same NVIC priority as the
-    // SysTick scheduler (cannot nest), so the target timer is never
-    // mid-dispatch when this is reached from the TIM5 ISR.
+    // SAFETY: `kalico_kick_step_output` only writes a timer compare register
+    // (and an owned-mask bit). It runs at the same NVIC priority as the
+    // step-output ISR (cannot nest), so the compare write is non-racing when
+    // reached from the TIM5 ISR.
     unsafe {
-        kalico_kick_per_axis_timer(axis_idx as u8, waketime);
+        kalico_kick_step_output(axis_idx as u8, cycle_abs);
     }
     #[cfg(any(test, feature = "host"))]
     {
-        let _ = (axis_idx, waketime);
+        let _ = (axis_idx, cycle_abs);
     }
 }
 #[cfg(not(any(test, feature = "host")))]

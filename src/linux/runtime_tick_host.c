@@ -211,3 +211,35 @@ runtime_tick_disable(void)
 {
     atomic_store_explicit(&host_tick_enabled, 0, memory_order_release);
 }
+
+// ── Dedicated step-output timer: host stubs (motion-tick priority-lift Step 1)
+//
+// On the MCU the step-output timer is a hardware timer (TIM3 on H7, TIM2 on F4)
+// whose ISR drains the step_queues. The host build has no such timer: the
+// host_tick_main pthread above already drains step_queues inline after each
+// kalico_runtime_tick_sample. These stubs satisfy the extern references in
+// src/runtime_tick.c (step_output_timer_arm / _armed_target / _is_running,
+// reached via kalico_kick_step_output) without doing anything — the kick is a
+// no-op here because the pthread loop already consumes every queued step.
+//
+// used, externally_visible mirrors the MCU symbols' attributes so the symbols
+// survive the cdylib link.
+static uint32_t host_step_out_target;
+
+__attribute__((used)) void
+step_output_timer_arm(uint32_t cycle_abs)
+{
+    host_step_out_target = cycle_abs;
+}
+
+__attribute__((used)) uint32_t
+step_output_timer_armed_target(void)
+{
+    return host_step_out_target;
+}
+
+__attribute__((used)) uint8_t
+step_output_timer_is_running(void)
+{
+    return 0;  // host: never "running"; kick always treated as first-arm (no-op)
+}

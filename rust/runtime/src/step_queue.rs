@@ -21,6 +21,28 @@
 //! fence + volatile write to `tail`; the consumer reads `tail` first, takes
 //! an Acquire fence, then consumes `buf[slot]`. Volatile counter accesses
 //! prevent the compiler from caching them across the fence.
+//!
+//! ## Load-bearing invariant: producer and consumer at the SAME NVIC priority
+//!
+//! This SPSC is **non-racing, not lock-free**. The fences guard compiler /
+//! cross-core ordering, but single-core safety rests entirely on the producer
+//! and consumer never running *concurrently*. As of the motion-tick
+//! priority-lift (2026-05-31, Step 1) the producer is the TIM5 ISR and the
+//! consumer is the dedicated **step-output hardware-timer ISR** (TIM3 on H7,
+//! TIM2 on F4) — replacing the former per-axis SysTick `struct timer`
+//! consumer. Both run at the **same** NVIC priority, and on this ARMv7-M core
+//! with PRIGROUP = 0 same-priority interrupts cannot preempt each other, so a
+//! `push` and a `pop`/`peek` against the same queue can never interleave.
+//!
+//! The producer's `kalico_kick_step_output` compare-register poke (issued from
+//! the TIM5 ISR) is non-racing against the step-output ISR's own re-arm for the
+//! same reason. If a future change ever makes the producer and the step-output
+//! consumer **different** NVIC priorities (so one can preempt the other
+//! mid-update), this volatile-u16 + fence discipline is no longer sufficient —
+//! a preempting reader could observe a torn `buf[slot]`/counter pair — and the
+//! queue MUST be upgraded to a true preemption-safe SPSC (full
+//! `core::sync::atomic` counters with a single-word commit so no torn entry is
+//! ever observable). Keep producer and consumer EQUAL to each other.
 
 #![allow(unsafe_code)]
 

@@ -10,12 +10,17 @@
 #include "kalico_runtime.h"
 #include "generic/runtime_tick.h"   // interface contract
 #include "generic/runtime_bench.h" // runtime_bench_capture hook
+#include "generic/kalico_nvic_prio.h" // KALICO_MOTION_NVIC_PRIO
 
 #if CONFIG_MACH_STM32F4
 
 extern const uint32_t runtime_clock_freq;
 
 extern void* runtime_handle;   // exposed in src/runtime_tick.c
+
+// Dedicated step-output timer (TIM2, 32-bit) setup. Defined later in this file;
+// forward-declared so runtime_tick_init can stand it up after arming TIM5.
+static void step_output_timer_init(void);
 
 // Stepping-redesign Task 17: TIM5 ISR body. The canonical prototype for
 // `kalico_runtime_tick_sample` is supplied by the included
@@ -136,7 +141,12 @@ runtime_tick_init(void)
     // SysTick-dispatched `runtime_producer_event` both form `&mut IsrState`
     // soundly — neither can preempt the other. See the matching comment in
     // runtime_tick_h7.c for the full rationale.
-    NVIC_SetPriority(TIM5_IRQn, 2);
+    //
+    // KALICO_MOTION_NVIC_PRIO (= 2 today) is shared with the dedicated
+    // step-output timer (step_output_timer_init below) so producer and
+    // consumer are EQUAL — the non-nesting invariant the step_queue SPSC
+    // relies on. See src/generic/kalico_nvic_prio.h.
+    NVIC_SetPriority(TIM5_IRQn, KALICO_MOTION_NVIC_PRIO);
 
     // Always-on (spec 2026-05-28): the piece-ring engine has no per-push event
     // to lazily start TIM5 (segments are gone), so the ISR free-runs from boot.
@@ -147,6 +157,10 @@ runtime_tick_init(void)
     TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
     TIM5->CR1 |= TIM_CR1_CEN;
     NVIC_EnableIRQ(TIM5_IRQn);
+
+    // Stand up the dedicated step-output timer (motion-tick priority-lift
+    // Step 1). It free-runs disabled until the first owned step arrives.
+    step_output_timer_init();
 }
 
 void
@@ -202,5 +216,111 @@ TIM5_IRQHandler(void)
 // from DECL_ARMCM_IRQ entries. Without this, TIM5_IRQHandler will not be wired
 // into the vector table and the IRQ silently drops.
 DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
+
+// ===========================================================================
+// Dedicated step-output timer (TIM2) — motion-tick priority-lift Step 1
+// ===========================================================================
+//
+// Task 0 closed TIM2 for the F446: it is a free 32-bit GP timer. 32-bit means
+// the one-shot compare reaches any near-future step directly (no 16-bit
+// chaining like the H7's TIM3). Counter mode: free-running 32-bit up-counter at
+// the timer clock (PSC = 0, ARR = 0xFFFFFFFF), output-compare channel 1 (CC1)
+// as the wake source — arm by writing CCR1 + enabling CC1IE, disable by
+// clearing CC1IE. The compare match sets SR.CC1IF and fires TIM2_IRQHandler.
+//
+// NVIC priority: KALICO_MOTION_NVIC_PRIO — IDENTICAL to TIM5 (Step 1 parity;
+// no flip). Same-number Cortex-M interrupts cannot nest, so this consumer and
+// the TIM5 producer never preempt each other → the step_queues SPSC and the
+// kalico_kick_step_output compare poke stay non-racing.
+
+// `step_out_target`  : absolute cycle the consumer must next fire at (32-bit).
+// `step_out_running` : 1 while CC1IE is enabled (timer is arming toward a step).
+static volatile uint32_t step_out_target;
+static volatile uint8_t  step_out_running;
+
+// (Re)arm the step-output timer to fire at absolute cycle `cycle_abs`, or
+// disable it when `cycle_abs == KALICO_STEP_OUTPUT_DISABLE`. Called from the
+// Rust kick path (kalico_kick_step_output) and from the IRQ re-arm below.
+//
+// 32-bit TIM2: the absolute `cycle_abs` IS the compare value, because TIM2->CNT
+// runs in the same 32-bit cycle frame as the DWT clock the engine schedules in
+// (both PSC = 0 off the same timer clock). A due/late step (compare just behind
+// CNT) fires within one full 32-bit wrap, which at these horizons is "next
+// tick" in practice; the engine never schedules a step more than a small
+// fraction of 2^31 cycles out, so the wrap-safe arm cannot misfire.
+//
+// used, externally_visible: referenced from the Rust archive (via the C kick
+// shim in runtime_tick.c) — keep it past --gc-sections / -fwhole-program LTO.
+__attribute__((used, externally_visible))
+void
+step_output_timer_arm(uint32_t cycle_abs)
+{
+    if (cycle_abs == 0xFFFFFFFFu /* KALICO_STEP_OUTPUT_DISABLE */) {
+        TIM2->DIER &= ~TIM_DIER_CC1IE;
+        step_out_running = 0;
+        return;
+    }
+    step_out_target = cycle_abs;
+    step_out_running = 1;
+    TIM2->CCR1 = cycle_abs;
+    TIM2->SR = ~TIM_SR_CC1IF;          // clear stale compare flag
+    TIM2->DIER |= TIM_DIER_CC1IE;
+}
+
+__attribute__((used, externally_visible))
+uint32_t
+step_output_timer_armed_target(void)
+{
+    return step_out_target;
+}
+
+__attribute__((used, externally_visible))
+uint8_t
+step_output_timer_is_running(void)
+{
+    return step_out_running;
+}
+
+static void
+step_output_timer_init(void)
+{
+    NVIC_DisableIRQ(TIM2_IRQn);
+
+    // Enable TIM2 peripheral clock (APB1 on F4) before touching its registers.
+    RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+    __DSB();
+
+    TIM2->CR1 &= ~TIM_CR1_CEN;
+    TIM2->SR = 0;
+    TIM2->PSC = 0;
+    TIM2->ARR = 0xFFFFFFFFu;            // free-running 32-bit up-counter
+    TIM2->CCMR1 = 0;                    // CC1 = output compare, frozen output
+    TIM2->CCR1 = 0;
+    TIM2->DIER = 0;                     // CC1IE enabled only when armed
+    TIM2->CR1 = TIM_CR1_ARPE;
+    TIM2->EGR = TIM_EGR_UG;
+    TIM2->SR = 0;
+    TIM2->CR1 |= TIM_CR1_CEN;           // counter free-runs; no IRQ until armed
+
+    step_out_running = 0;
+    step_out_target = 0;
+
+    NVIC_SetPriority(TIM2_IRQn, KALICO_MOTION_NVIC_PRIO);
+    NVIC_EnableIRQ(TIM2_IRQn);
+}
+
+void
+TIM2_IRQHandler(void)
+{
+    TIM2->SR = ~TIM_SR_CC1IF;           // ack the compare match
+
+    // Run the Rust consumer: emit due steps, return the soonest remaining head
+    // (or KALICO_STEP_OUTPUT_DISABLE), then re-arm / disable accordingly.
+    extern uint32_t kalico_step_output_event(void);
+    uint32_t next = kalico_step_output_event();
+    step_output_timer_arm(next);
+}
+
+DECL_ARMCM_IRQ(TIM2_IRQHandler, TIM2_IRQn);
 
 #endif

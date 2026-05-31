@@ -455,10 +455,13 @@ runtime_drain(void)
 DECL_TASK(runtime_drain);
 
 // Single stop state (spec 2026-05-28): TIM5 goes off when Klipper shuts down.
-// The per-axis step-consumer timers are already wiped by sched_timer_reset
-// during shutdown, so motion has stopped; this just halts the now-pointless ISR
-// compute (and avoids Renode USART2 starvation). Re-armed on FIRMWARE_RESTART
-// via runtime_tick_init.
+// The dedicated step-output timer is a hardware timer (not on the SysTick
+// software-timer queue), so sched_timer_reset no longer touches step emission;
+// runtime_tick_disable() stops the TIM5 producer, after which no new steps are
+// pushed and the step-output timer naturally parks itself (empty owned queues
+// → KALICO_STEP_OUTPUT_DISABLE). This also halts the now-pointless ISR compute
+// (and avoids Renode USART2 starvation). Re-armed on FIRMWARE_RESTART via
+// runtime_tick_init.
 void
 runtime_tick_shutdown(void)
 {
@@ -593,142 +596,107 @@ DECL_TASK(runtime_endstop_drain);
 extern void runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps);
 
 // ===========================================================================
-// Per-axis step timer consumers (stepping-redesign Task 10)
+// Dedicated step-output timer wiring (motion-tick priority-lift Step 1)
 // ===========================================================================
 //
-// One Klipper timer per axis (X=0, Y=1, Z=2, E=3). Each timer's `func`
-// calls into the Rust body `kalico_per_axis_step_event`, which pops one
-// StepEntry from `step_queues[axis_idx]` if its `cycle_abs` has arrived,
-// emits the GPIO pulses via `runtime_emit_step_pulses`, and returns the
-// next waketime. Wired into `command_kalico_configure_axis` (stepper.c)
-// via `arm_per_axis_step_timer`, which arms a timer only for axes this MCU
-// actually drives.
-
-extern uint32_t kalico_per_axis_step_event(uint8_t axis_idx);
-
-// Per-axis timers (4 axes). The `func` slot is dispatched by Klipper's
-// SysTick scheduler; each trampoline below binds a literal axis_idx that
-// the Rust body uses to project to `step_queues[axis_idx]`.
-static struct timer per_axis_timers[4];
-
-// Bitmask of axes whose per-axis step timer has been armed (added to the
-// scheduler) by `arm_per_axis_step_timer`. File-scope so the producer-side
-// kick (`kalico_kick_per_axis_timer`) can no-op for unarmed axes. Bit N set
-// ⇒ per_axis_timers[N] is in the scheduler's timer list.
-static uint8_t per_axis_armed_mask;
-
-static uint_fast8_t per_axis_timer_event_0(struct timer *t) {
-    t->waketime = kalico_per_axis_step_event(0);
-    return SF_RESCHEDULE;
-}
-static uint_fast8_t per_axis_timer_event_1(struct timer *t) {
-    t->waketime = kalico_per_axis_step_event(1);
-    return SF_RESCHEDULE;
-}
-static uint_fast8_t per_axis_timer_event_2(struct timer *t) {
-    t->waketime = kalico_per_axis_step_event(2);
-    return SF_RESCHEDULE;
-}
-static uint_fast8_t per_axis_timer_event_3(struct timer *t) {
-    t->waketime = kalico_per_axis_step_event(3);
-    return SF_RESCHEDULE;
-}
-
-static uint_fast8_t (*const per_axis_handlers[4])(struct timer *) = {
-    per_axis_timer_event_0,
-    per_axis_timer_event_1,
-    per_axis_timer_event_2,
-    per_axis_timer_event_3,
-};
-
-// Arm the per-axis step-emission timer for a single axis, the first time
-// that axis is configured. Called per-axis from `command_kalico_configure_axis`
-// (stepper.c) so an MCU only runs step timers for axes it actually drives.
+// Step emission moved OFF Klipper's per-axis SysTick software timers ONTO a
+// single dedicated hardware step-output timer (TIM3 on H7, TIM2 on F4 — set
+// up per-family in src/stm32/runtime_tick_{h7,f4}.c). Its ISR calls the Rust
+// body `kalico_step_output_event()` (rust/runtime/src/per_axis_timer.rs),
+// which scans the owned-axis step_queues, emits every step whose `cycle_abs`
+// has arrived (bounded per dispatch), and returns the soonest remaining head
+// across owned axes — or KALICO_STEP_OUTPUT_DISABLE (u32::MAX) to switch the
+// timer off (event-driven: an empty all-owned set parks the timer, no idle
+// poll). The per-family arm helper (step_output_timer_arm) reprograms the
+// compare register; on 16-bit TIM3 it chains the far re-arm in ≤0xF000 chunks.
 //
-// Rationale: every armed per-axis timer reschedules itself at the sample rate
-// even when its step queue is empty (see kalico_per_axis_step_event's empty-
-// queue path: it returns `now + sample_period`). Arming a timer for an axis
-// this MCU does NOT own (e.g. Z on the XY board) therefore adds a needless
-// sample-rate dispatch load at the SAME NVIC priority as TIM5 — and since
-// TIM5 cannot preempt the SysTick dispatch loop, a cluster of those dispatches
-// can starve the motion tick past 2 sample periods → -311 TickIntervalExceeded.
-// Bench addr2line confirmed the starving callbacks were exactly the unowned-
-// axis timers (per_axis_timer_event_2 on the H7, _3 on the F446). Only arming
-// owned axes removes that load at the source.
-//
-// Re-adding an already-queued timer would corrupt the scheduler's linked list,
-// so each axis is armed at most once (tracked by `per_axis_armed_mask`).
-//
-// `runtime_emit_step_pulses` is defined in src/stepper.c. The Rust body
-// resolves the C-declared `step_queues` array internally; this file owns
-// the trampolines + scheduler wiring.
+// Same-priority invariant: the step-output timer and TIM5 producer share
+// KALICO_MOTION_NVIC_PRIO (see src/generic/kalico_nvic_prio.h). Same-number
+// Cortex-M interrupts cannot nest, so (a) the step_queues SPSC stays
+// non-racing and (b) the producer kick below can poke the compare register
+// from the TIM5 ISR without racing the step-output ISR's own re-arm.
+
+// Sentinel mirrored from rust/runtime/src/per_axis_timer.rs::STEP_OUTPUT_DISABLE.
+#define KALICO_STEP_OUTPUT_DISABLE 0xFFFFFFFFu
+
+// Per-family hardware backend (src/stm32/runtime_tick_{h7,f4}.c, host stub in
+// src/linux/runtime_tick_host.c). `step_output_timer_arm` (re)programs the
+// one-shot compare to fire at the absolute cycle `cycle_abs`, or disables the
+// timer when `cycle_abs == KALICO_STEP_OUTPUT_DISABLE`. `step_output_timer_armed_target`
+// returns the currently-armed absolute compare (only meaningful when running).
+extern void step_output_timer_arm(uint32_t cycle_abs);
+extern uint32_t step_output_timer_armed_target(void);
+extern uint8_t step_output_timer_is_running(void);
+
+// Bitmask of axes this MCU owns (drives). Bit N set ⇒ axis N participates in
+// the Rust soonest-across-owned scan. Set by `arm_per_axis_step_timer` at
+// configure time (kept name for the stepper.c call site) and additionally by
+// the producer kick (so a push to a never-configured-here axis is impossible
+// by construction, but the bit is idempotent). File-scope; read by Rust via
+// the getter below.
+static uint8_t step_output_owned_mask;
+
+// Owned-axis mask getter — read by the Rust step-output consumer
+// (kalico_step_output_event) to scope its soonest-across scan to this MCU's
+// axes. used, externally_visible: referenced only from the Rust archive, so
+// --gc-sections / -fwhole-program LTO would otherwise drop it (same link trap
+// as runtime_emit_step_pulses / timer_read_time).
+__attribute__((used, externally_visible))
+uint8_t
+kalico_step_output_owned_mask(void)
+{
+    return step_output_owned_mask;
+}
+
+// Mark an axis as owned by this MCU. Called per-axis from
+// `command_kalico_configure_axis` (stepper.c) so the soonest-across scan only
+// covers axes this MCU actually drives — an unowned axis must never emit. The
+// step-output timer itself is event-driven: it stays disabled until the first
+// owned step arrives (producer kick), so registering ownership alone does NOT
+// arm it (no idle-poll load — the hazard the old per-axis SysTick timers had).
+// Idempotent (just sets a bit), so repeat configure_axis calls are safe.
 void
 arm_per_axis_step_timer(uint8_t axis_idx)
 {
     if (axis_idx >= 4)
         return;
-    if (per_axis_armed_mask & (uint8_t)(1u << axis_idx))
-        return; // already queued — re-adding would corrupt the timer list
-    per_axis_armed_mask |= (uint8_t)(1u << axis_idx);
-
-    per_axis_timers[axis_idx].func = per_axis_handlers[axis_idx];
-    // Park the first dispatch far in the future (sched_add_timer trips
-    // "Timer too close" on a past waketime). Subsequent waketimes come from
-    // kalico_per_axis_step_event's return value.
-    per_axis_timers[axis_idx].waketime = timer_read_time() + (uint32_t)0x3FFFFFFF;
-    sched_add_timer(&per_axis_timers[axis_idx]);
+    step_output_owned_mask |= (uint8_t)(1u << axis_idx);
 }
 
-// Producer-side kick (called from the Rust TIM5 ISR via `dispatch_axis`).
-// When the ISR pushes the first StepEntry into a previously-empty queue, the
-// consumer timer for that axis is parked at the long idle fallback (~100 ms,
-// see kalico_runtime_get_idle_park_cycles). Reposition it to fire at the new
-// step's `waketime` so the step isn't delayed by up to the park window.
+// Producer-side kick (called from the Rust TIM5 ISR via `dispatch_axis` when a
+// previously-empty owned queue gets its first step). (Re)arm the dedicated
+// step-output timer to fire no later than `cycle_abs`: if the timer is
+// disabled, arm it; if it is already armed at a LATER target, pull the compare
+// forward. Wrap-safe via the signed-delta compare.
 //
-// No-op unless the axis is armed (owned by this MCU) — kicking an unarmed
-// axis would touch a timer that is not in the scheduler list.
+// Soundness: runs from the TIM5 ISR at KALICO_MOTION_NVIC_PRIO, identical to
+// the step-output timer's own ISR priority. Same-number Cortex-M interrupts
+// cannot nest, so the step-output ISR is never mid-`step_output_timer_arm`
+// when this poke runs — the compare register write is non-racing.
 //
-// Soundness: TIM5 and Klipper's SysTick scheduler are at the SAME NVIC
-// priority and cannot nest, so when this runs (from the TIM5 ISR) the
-// per-axis timer is never mid-dispatch. `sched_del_timer` / `sched_add_timer`
-// each do their own irq_save + sched_writable_begin/end and tolerate being
-// nested, so calling them here is safe even though we are inside the ISR.
-// `sched_del_timer` correctly unlinks the timer whether it is the list head
-// or parked far out.
-//
-// __attribute__((used, externally_visible)): this symbol is referenced ONLY
-// from the Rust archive (kalico_runtime.a). Without the attribute,
-// --gc-sections / -fwhole-program LTO drops it and the H7 link fails with an
-// undefined reference (same trap as sched_last_dispatched_func /
-// timer_read_time / runtime_emit_step_pulses).
+// __attribute__((used, externally_visible)): referenced ONLY from the Rust
+// archive (kalico_runtime.a). Without it, --gc-sections / -fwhole-program LTO
+// drops the symbol and the H7 link fails with an undefined reference (same
+// trap as sched_last_dispatched_func / timer_read_time / runtime_emit_step_pulses).
 __attribute__((used, externally_visible))
 void
-kalico_kick_per_axis_timer(uint8_t axis_idx, uint32_t waketime)
+kalico_kick_step_output(uint8_t axis_idx, uint32_t cycle_abs)
 {
     if (axis_idx >= 4)
         return;
-    if (!(per_axis_armed_mask & (uint8_t)(1u << axis_idx)))
-        return; // unarmed axis — its timer is not in the scheduler list
-    sched_del_timer(&per_axis_timers[axis_idx]);
-    per_axis_timers[axis_idx].waketime = waketime;
-    sched_add_timer(&per_axis_timers[axis_idx]);
-}
+    // Belt-and-suspenders: a kick implies the axis is producing, so it must be
+    // in the owned set the consumer scans.
+    step_output_owned_mask |= (uint8_t)(1u << axis_idx);
 
-// Long idle-queue park interval in MCU cycles (~100 ms / 10 Hz). Returned to
-// the Rust per-axis timer body (kalico_per_axis_step_event) as the waketime
-// to use when its step queue is empty. The producer kick above provides the
-// real promptness; this is only a safety net so a kick that is somehow missed
-// still re-checks the queue at 10 Hz instead of stalling forever. `timer_from
-// _us` is a per-MCU C primitive (clock-frequency aware), which is why this
-// conversion lives in C rather than as a Rust constant.
-//
-// used, externally_visible: referenced only from the Rust archive — same
-// link-trap rationale as kalico_kick_per_axis_timer above.
-__attribute__((used, externally_visible))
-uint32_t
-kalico_runtime_get_idle_park_cycles(void)
-{
-    return timer_from_us(100000);
+    if (!step_output_timer_is_running()) {
+        step_output_timer_arm(cycle_abs);
+        return;
+    }
+    // Timer already running: only pull the compare forward if the new step is
+    // sooner than the currently-armed target (wrap-safe signed compare).
+    uint32_t cur = step_output_timer_armed_target();
+    if ((int32_t)(cycle_abs - cur) < 0)
+        step_output_timer_arm(cycle_abs);
 }
 
 // Task 14 SPI queue drain removed — dispatch_phase now calls
