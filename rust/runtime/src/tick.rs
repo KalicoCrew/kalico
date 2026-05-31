@@ -27,6 +27,34 @@ unsafe extern "C" {
     fn phase_stepping_write_xdirect(motor_idx: u8, coil_a: i16, coil_b: i16);
 }
 
+// C-side scheduler accessor: the `func` of the most-recently dispatched
+// scheduler timer. Read only on the `-311 TickIntervalExceeded` path to name
+// the callback that blocked the late TIM5 tick. A plain register read with no
+// side effects — `no_std`-safe to call from the ISR. Present only in the MCU
+// firmware link (and the kalico-sim shim); host/test builds substitute 0.
+#[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+unsafe extern "C" {
+    fn sched_last_dispatched_func() -> u32;
+}
+
+/// Read the C scheduler's newest dispatch-history `func` address (the
+/// callback that just blocked the ISR). Returns 0 on host/test builds where
+/// no C scheduler is linked.
+#[inline]
+fn last_dispatched_func() -> u32 {
+    #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+    // SAFETY: `sched_last_dispatched_func` is a side-effect-free C function
+    // that reads a static ring-buffer index and returns a `u32`. Safe to call
+    // from the TIM5 ISR.
+    unsafe {
+        sched_last_dispatched_func()
+    }
+    #[cfg(not(any(not(any(test, feature = "host")), feature = "kalico-sim")))]
+    {
+        0
+    }
+}
+
 /// `|P_end - P_start|` below this triggers the uniform-spacing fallback
 /// in `dispatch_pulse`.
 pub const DISPLACEMENT_THRESHOLD_MM: f32 = 1e-4;
@@ -380,6 +408,13 @@ pub fn isr_sample_tick(
         let gap = now.wrapping_sub(last);
         if period != 0 && gap > period * TICK_GAP_FAULT_MULT {
             let gap_ticks = (gap / period) as u32;
+            // Capture the scheduler callback that blocked this tick. Stored
+            // before the fault code latches so a host reader observing the
+            // -311 always sees a populated blocker address. Surfaced via the
+            // fault event's segment_id field for addr2line.
+            shared
+                .tick_blocker_func
+                .store(last_dispatched_func(), Ordering::Release);
             raise_tick_interval_exceeded(shared, gap_ticks);
             isr.last_tick_now = Some(now);
             return; // skip dispatch; publish already happened; foreground escalation shuts down

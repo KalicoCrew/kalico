@@ -458,6 +458,27 @@ pub mod exports {
         }
     }
 
+    /// Read the address of the scheduler timer callback that was executing
+    /// when the most recent `-311 TickIntervalExceeded` fault latched. `0`
+    /// for any other fault (or before any `-311` fires). Wired into the
+    /// fault event's `segment_id` field by `runtime_tick.c` so `addr2line`
+    /// can name the blocking callback from the host journal.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn runtime_handle_tick_blocker(rt: *mut KalicoRuntime) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState atomics-only access.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).tick_blocker_func.load(Ordering::Acquire)
+        }
+    }
+
     /// Diagnostic: read the configured `steps_per_mm` for axis `oid` (0..=3
     /// in motor space). Returns 0.0 if `oid` is out of range or runtime
     /// uninitialised. Used by Phase 4 sim test to verify axis configuration

@@ -288,6 +288,21 @@ sched_get_dispatch_history(uint32_t *idx,
     }
 }
 
+// Return the `func` of the most-recently-dispatched scheduler timer (the
+// newest dispatch-history entry), or 0 if no timer has dispatched yet.
+// Cold path: called only at fault time (from the Rust -311 raise), so it
+// adds zero hot-path cost and intentionally does not touch the recording in
+// sched_timer_dispatch. See sched.h for the timing argument that makes the
+// newest entry the callback that blocked the late TIM5 tick.
+uint32_t
+sched_last_dispatched_func(void)
+{
+    uint32_t idx = sched_dispatch_history_idx;
+    if (idx == 0)
+        return 0;
+    return sched_dispatch_history_func[(idx - 1) % SCHED_DISPATCH_HISTORY_N];
+}
+
 // Invoke the next timer - called from board hardware irq code.
 // Caller (timer_dispatch_many in armcm_timer.c) is responsible for holding
 // the MPU writable window open across the dispatch loop — we do not toggle

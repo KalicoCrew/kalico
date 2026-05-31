@@ -213,6 +213,13 @@ pub struct SharedState {
     /// `0` when no fault has latched OR when the fault carries no
     /// per-event detail.
     pub fault_detail: AtomicU32,
+    /// Address of the scheduler timer callback (`struct timer::func`) that was
+    /// executing when a `-311 TickIntervalExceeded` fault latched. Captured
+    /// strictly on the `-311` path by reading the C scheduler's newest
+    /// dispatch-history entry (`sched_last_dispatched_func`). `0` until a
+    /// `-311` fault fires. Surfaced to the host through the fault event's
+    /// `segment_id` field so `addr2line` can name the blocking callback.
+    pub tick_blocker_func: AtomicU32,
     // Step 7-D: signed per-stepper pulse counters, indexed by stepper oid.
     pub stepper_counts: [AtomicI32; MAX_STEPPER_OIDS],
     /// Per-stepper `StepMode` (spec §5). Atomic so the host can flip a
@@ -553,6 +560,7 @@ impl SharedState {
             modulated_retire_successes: AtomicU32::new(0),
             last_retire_consumers_after_clear: AtomicU32::new(0),
             fault_detail: AtomicU32::new(0),
+            tick_blocker_func: AtomicU32::new(0),
             stepper_counts: [
                 AtomicI32::new(0),
                 AtomicI32::new(0),
