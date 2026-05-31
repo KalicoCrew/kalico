@@ -71,3 +71,66 @@ def test_text_sink_rollover_info_header(tmp_path):
         content = f.read()
     assert "Git version: 'abc'" in content
     assert "Log rollover at" in content
+
+
+import json
+
+
+def test_jsonl_sink_writes_valid_json_line(tmp_path):
+    path = str(tmp_path / "host-py.jsonl")
+    sink = log_sinks.JsonlSink(path)
+    r = _rec("endstop trip")
+    r.session_id = "k-1-2"
+    r.print_id = ""
+    r.source = "host-py"
+    r.subsystem = "homing"
+    sink.emit_record(r)
+    sink.close()
+    with open(path) as f:
+        lines = f.readlines()
+    assert len(lines) == 1
+    obj = json.loads(lines[0])
+    assert obj["_msg"] == "endstop trip"
+    assert obj["subsystem"] == "homing"
+    assert obj["source"] == "host-py"
+
+
+def test_jsonl_sink_flushes_each_record(tmp_path):
+    # Relaxed durability: each record is flushed to the OS immediately so it
+    # is readable without closing the file (spec §3/§7 durability contract).
+    path = str(tmp_path / "host-py.jsonl")
+    sink = log_sinks.JsonlSink(path)
+    sink.emit_record(_rec("one"))
+    with open(path) as f:
+        assert f.read().count("\n") == 1  # visible before close
+    sink.close()
+
+
+def test_jsonl_sink_periodic_fsync_backstop(tmp_path, monkeypatch):
+    # Spec §3/§7: relaxed default = flush-per-record + a periodic fsync
+    # backstop. With interval 0 every emit fsyncs; close() always fsyncs.
+    calls = []
+    monkeypatch.setattr(log_sinks.os, "fsync", lambda fd: calls.append(fd))
+    path = str(tmp_path / "host-py.jsonl")
+    sink = log_sinks.JsonlSink(path, fsync_interval=0.0)
+    sink.emit_record(_rec("a"))
+    sink.emit_record(_rec("b"))
+    assert len(calls) >= 2  # fsynced on each emit when interval elapsed
+    pre_close = len(calls)
+    sink.close()
+    assert len(calls) == pre_close + 1  # final fsync on close
+
+
+def test_jsonl_sink_default_interval_does_not_fsync_every_record(
+    tmp_path, monkeypatch
+):
+    calls = []
+    monkeypatch.setattr(log_sinks.os, "fsync", lambda fd: calls.append(fd))
+    path = str(tmp_path / "host-py.jsonl")
+    sink = log_sinks.JsonlSink(path)  # default interval (>0)
+    sink.emit_record(_rec("a"))
+    sink.emit_record(_rec("b"))
+    # The two back-to-back emits are within the interval: no per-record fsync.
+    assert calls == []
+    sink.close()  # close still fsyncs once
+    assert len(calls) == 1
