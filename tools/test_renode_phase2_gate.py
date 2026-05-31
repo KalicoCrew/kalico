@@ -184,17 +184,20 @@ def main():
         bridge.set_msgproto_dict(raw_dict)
         print("[gate] bridge.set_msgproto_dict ok")
 
-        # The bridge's two-MCU MVP topology expects two distinct handles
-        # even when the test only has one underlying serial connection.
-        # The dispatch closure picks per-MCU CommandQueueIds off these
-        # handles; since this harness does not pump bytes through
-        # RouterTransport, the handles' practical role here is just to
-        # make `init_planner` happy.
+        # The bridge derives its MCU topology from the host-supplied
+        # descriptor list. This harness fabricates two handles off one serial
+        # connection; since it does not pump bytes through RouterTransport,
+        # the handles' practical role here is just to make init_planner happy.
         octopus = bridge.claim_mcu("octopus", args.port, 0)
         f446 = bridge.claim_mcu("f446", args.port, 0)
         print("[gate] bridge.claim_mcu ok (octopus=%d, f446=%d)"
               % (octopus, f446))
 
+        # corexy topology: octopus drives X,Y,E (tag 0); f446 drives Z (tag 1).
+        topology = [
+            (octopus, [0, 1, 3], 0),
+            (f446, [2], 1),
+        ]
         bridge.init_planner(
             300.0,   # max_velocity (mm/s)
             5000.0,  # max_accel
@@ -203,7 +206,7 @@ def main():
             5.0,     # square_corner_velocity
             "smooth_zv", 40.0,  # X shaper
             "smooth_zv", 40.0,  # Y shaper
-            octopus, f446,
+            topology,
         )
         print("[gate] bridge.init_planner ok")
 

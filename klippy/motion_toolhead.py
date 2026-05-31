@@ -868,33 +868,48 @@ class MotionToolhead(ToolHead):
     # ------------------------------------------------------------------
 
     def _init_planner(self):
-        # Locate the two MVP MCUs by name. First-print topology:
-        #   "mcu" (Octopus) drives X+Y; "mcu z" drives Z.
-        # If only one MCU is configured, reuse its handle for Z.
-        octopus = None
-        f446 = None
+        # Build the planner topology from existing config: each kinematic
+        # stepper's MCU (via get_mcu()._bridge_handle) gives axis->MCU, and
+        # the global kinematics name gives each MCU's kinematics tag. No MCU
+        # identity is hardcoded.
         bridge_mcus = []
         for name, mcu in self.printer.lookup_objects(module="mcu"):
             handle = getattr(mcu, "_bridge_handle", None)
             if handle is None:
                 continue
             bridge_mcus.append((name, mcu, handle))
-            mcu_name = getattr(mcu, "_name", name)
-            if octopus is None or mcu_name in ("mcu", "octopus"):
-                if octopus is None:
-                    octopus = handle
-                elif f446 is None:
-                    f446 = handle
-            elif f446 is None:
-                f446 = handle
-        if octopus is None:
+        if not bridge_mcus:
             logging.warning(
                 "MotionToolhead: no MCU bridge handles available; "
                 "skipping init_planner"
             )
             return
-        if f446 is None:
-            f446 = octopus
+
+        # axis index (0=X,1=Y,2=Z,3=E) -> bridge handle of the MCU that
+        # drives that axis's primary stepper. AWD partners share their
+        # primary's axis/MCU, so only primaries contribute.
+        axis_to_handle = {}
+        fm = self.printer.lookup_object("force_move", None)
+        if fm is not None:
+            for sname, s in fm.steppers.items():
+                info = _name_motor_slot(sname)
+                if info is None:
+                    continue
+                slot_idx, is_primary = info
+                if not is_primary:
+                    continue
+                s_handle = getattr(s.get_mcu(), "_bridge_handle", None)
+                if s_handle is None:
+                    continue
+                axis_to_handle[slot_idx] = s_handle
+
+        topology = _derive_mcu_topology(axis_to_handle, self.kinematics_name)
+        if not topology:
+            logging.warning(
+                "MotionToolhead: no axis->MCU assignment resolved; "
+                "skipping init_planner"
+            )
+            return
 
         # Pull initial shaper params from [input_shaper] config, if present.
         shaper_type_x = "smooth_zv"
@@ -928,8 +943,7 @@ class MotionToolhead(ToolHead):
                 shaper_freq_x,
                 shaper_type_y,
                 shaper_freq_y,
-                octopus,
-                f446,
+                topology,
             )
             self._configure_axes_per_mcu(bridge_mcus)
 

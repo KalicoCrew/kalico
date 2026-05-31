@@ -278,8 +278,7 @@ class MotionBridgeWrapper:
         shaper_freq_x,
         shaper_type_y,
         shaper_freq_y,
-        octopus_handle,
-        f446_handle,
+        mcus,
         window_capacity=32,
         beta_max_iters=10,
     ):
@@ -293,8 +292,7 @@ class MotionBridgeWrapper:
             shaper_freq_x,
             shaper_type_y,
             shaper_freq_y,
-            octopus_handle,
-            f446_handle,
+            mcus,
             window_capacity,
             beta_max_iters,
         )
