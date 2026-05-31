@@ -124,11 +124,6 @@ pub const KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING: i32 = -307;
 pub const KALICO_ERR_PIECE_START_IN_PAST: i32 = -308;
 /// Ring is full — `PushPieces` rejected because the axis ring has no space.
 pub const KALICO_ERR_RING_FULL: i32 = -309;
-/// Steps-per-sample limit exceeded — unrecoverable position-baseline discontinuity.
-pub const KALICO_ERR_STEPS_PER_SAMPLE_EXCEEDED: i32 = -310;
-/// TIM5 inter-arrival gap exceeded the allowed multiple of `sample_period_cycles`.
-/// The ISR was starved; fail loud before acting on stale time.
-pub const KALICO_ERR_TICK_INTERVAL_EXCEEDED: i32 = -311;
 
 /// Fault taxonomy. Spec §9.1. Each code has a specific recovery semantic;
 /// collapsing to a catch-all loses diagnostic information.
@@ -234,11 +229,6 @@ pub enum FaultCode {
     /// All motion stops; the host must reset before resuming (mirrors
     /// `PieceStartInPast`).
     StepsPerSampleExceeded = -310,
-    /// Gap between consecutive TIM5 ticks exceeded the allowed multiple of
-    /// `sample_period_cycles` — the ISR was starved (interrupts masked, an
-    /// equal-priority handler overran, or a tick was skipped/coalesced). The MCU
-    /// froze; fail loud before acting on stale time.
-    TickIntervalExceeded = -311,
 }
 
 impl FaultCode {

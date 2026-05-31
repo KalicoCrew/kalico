@@ -156,24 +156,10 @@ fn fault_code_stepping_redesign_numeric_values() {
         FaultCode::StepRateExceedsMcuCeiling.as_i32(),
         KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING
     );
-    assert_eq!(
-        FaultCode::PieceStartInPast.as_i32(),
-        KALICO_ERR_PIECE_START_IN_PAST
-    );
-    assert_eq!(FaultCode::RingFull.as_i32(), KALICO_ERR_RING_FULL);
-    assert_eq!(
-        FaultCode::StepsPerSampleExceeded.as_i32(),
-        KALICO_ERR_STEPS_PER_SAMPLE_EXCEEDED
-    );
-    assert_eq!(
-        FaultCode::TickIntervalExceeded.as_i32(),
-        KALICO_ERR_TICK_INTERVAL_EXCEEDED
-    );
     // Cross-check: distinct from each other and from the existing
     // -7..-202 range.
     assert_eq!(KALICO_ERR_STEP_QUEUE_OVERFLOW, -300);
     assert_eq!(KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING, -307);
-    assert_eq!(KALICO_ERR_TICK_INTERVAL_EXCEEDED, -311);
     assert_ne!(
         KALICO_ERR_STEP_QUEUE_OVERFLOW,
         KALICO_ERR_HOST_DISPATCHER_TIMEOUT

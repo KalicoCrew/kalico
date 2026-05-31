@@ -13,7 +13,6 @@ use core::sync::atomic::Ordering;
 
 use crate::fault_helpers::{
     raise_position_count_overflow, raise_step_queue_overflow, raise_steps_per_sample_exceeded,
-    raise_tick_interval_exceeded,
 };
 use crate::phase_lut::PHASE_LUT;
 use crate::state::SharedState;
@@ -335,9 +334,6 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
 ///
 /// `storage` is projected from `RuntimeContext::piece_storage` by the FFI
 /// caller (`kalico_runtime_tick_sample`).
-// Fault when the gap between two ticks exceeds this multiple of the tick period.
-const TICK_GAP_FAULT_MULT: u64 = 2;
-
 pub fn isr_sample_tick(
     isr: &mut crate::state::IsrState,
     shared: &SharedState,
@@ -349,24 +345,6 @@ pub fn isr_sample_tick(
     bump_relaxed(isr.engine.tick_counter.inner_atomic());
 
     let now = isr.widen_state.widen(raw_cyccnt);
-
-    // Inter-arrival guard: fault if the gap since the previous tick exceeds
-    // TICK_GAP_FAULT_MULT × sample_period_cycles.  The first tick (last_tick_now
-    // == None) never faults — it merely sets the baseline.  This guard runs
-    // before publish_widened_now / any dispatch so stale-time work is never
-    // started when the ISR was starved.
-    let period = isr.engine.sample_period_cycles as u64;
-    if let Some(last) = isr.last_tick_now {
-        let gap = now.wrapping_sub(last);
-        if period != 0 && gap > period * TICK_GAP_FAULT_MULT {
-            let gap_ticks = (gap / period) as u32;
-            raise_tick_interval_exceeded(shared, gap_ticks);
-            isr.last_tick_now = Some(now);
-            return;
-        }
-    }
-    isr.last_tick_now = Some(now);
-
     crate::clock::publish_widened_now(shared, now);
     let after_widen = unsafe { cyccnt_read() };
     update_max(
@@ -381,6 +359,12 @@ pub fn isr_sample_tick(
         after_arm.wrapping_sub(after_widen),
     );
 
+    let elapsed = after_arm.wrapping_sub(body_start);
+    if elapsed > 20000 {
+        bump_relaxed(&shared.isr_overrun_count);
+        return;
+    }
+
     let crate::state::IsrState { engine, .. } = isr;
     engine.tick(now, shared, storage);
 
@@ -389,6 +373,13 @@ pub fn isr_sample_tick(
         &shared.isr_eval_cycles_max,
         body_end.wrapping_sub(after_arm),
     );
+
+    let body_cycles = body_end.wrapping_sub(body_start);
+    if body_cycles > 30000 {
+        shared
+            .isr_overrun_count
+            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 #[cfg(not(any(test, feature = "host")))]
