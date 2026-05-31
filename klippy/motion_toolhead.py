@@ -55,6 +55,45 @@ def _stepper_motor_slot(stepper_obj):
     return None if info is None else info[0]
 
 
+# Axis indices — mirror rust/motion-bridge/src/dispatch.rs AXIS_* and the
+# _MOTOR_SLOT_PREFIXES slot order (X=0, Y=1, Z=2, E=3).
+_AXIS_X = 0
+_AXIS_Y = 1
+
+# Kinematics tags — mirror rust KinematicTag discriminants
+# (CoreXyAndE = 0, CartesianXyzAndE = 1).
+_KIN_COREXY = 0
+_KIN_CARTESIAN = 1
+
+
+def _derive_mcu_topology(axis_to_handle, kinematics_name):
+    """Derive the per-MCU planner topology from the axis->MCU assignment.
+
+    `axis_to_handle` maps each present axis index (0=X, 1=Y, 2=Z, 3=E) to its
+    MCU's bridge handle. `kinematics_name` is the printer's global kinematics
+    (e.g. "corexy", "cartesian").
+
+    Returns a list of `(handle, sorted_axes, kinematics_tag)` tuples — one per
+    distinct handle, ordered by handle. An MCU's tag is COREXY iff the printer
+    is corexy AND that MCU carries both X and Y; otherwise CARTESIAN. This
+    reproduces the historical hardcoded topology (XY-MCU -> corexy, Z-MCU ->
+    cartesian) without hardcoding MCU identity.
+    """
+    by_handle = {}
+    for axis_idx, handle in axis_to_handle.items():
+        by_handle.setdefault(handle, []).append(axis_idx)
+    is_corexy = (kinematics_name or "").lower() == "corexy"
+    topo = []
+    for handle in sorted(by_handle):
+        axes = sorted(by_handle[handle])
+        if is_corexy and _AXIS_X in axes and _AXIS_Y in axes:
+            tag = _KIN_COREXY
+        else:
+            tag = _KIN_CARTESIAN
+        topo.append((handle, axes, tag))
+    return topo
+
+
 def _open_sim_control():
     """Open the shim's control socket. Returns SimControlClient or None
     if shim is not in use (real hardware or vanilla MACH_LINUX).
