@@ -703,6 +703,8 @@ def main():
     start_args["session_id"] = session_id
 
     edir = events_dir_for(options.logfile)
+    if edir is not None:
+        structured_log.check_log_space(edir)
     bglogger = None
     if options.logfile:
         start_args["log_file"] = options.logfile

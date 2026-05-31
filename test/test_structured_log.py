@@ -182,3 +182,16 @@ def test_event_requires_subsystem_and_event():
         sl.event("", "x")
     with _pytest.raises(ValueError):
         sl.event("motion", "")
+
+
+def test_check_log_space_ok_for_tmp(tmp_path):
+    # Plenty of space in tmp; returns free bytes, does not raise.
+    free = sl.check_log_space(str(tmp_path), reserve_bytes=1)
+    assert free > 1
+
+
+def test_check_log_space_raises_when_below_reserve(tmp_path):
+    import pytest as _pytest
+    huge = 10 ** 18  # 1 EB reserve cannot be satisfied
+    with _pytest.raises(sl.LogSpaceError):
+        sl.check_log_space(str(tmp_path), reserve_bytes=huge)

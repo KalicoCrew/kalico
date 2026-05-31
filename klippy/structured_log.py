@@ -8,6 +8,7 @@ import datetime
 import json
 import logging
 import os
+import shutil
 import time
 
 # A "trace" level below DEBUG (stdlib has no TRACE).
@@ -175,3 +176,22 @@ def event(subsystem, event, *, level=logging.INFO, msg=None, **fields):
     extra = {"subsystem": subsystem, "event": event}
     extra.update(fields)
     _event_logger.log(level, msg if msg is not None else event, extra=extra)
+
+
+# Default reserve below which we refuse to start (spec §16 tunable).
+LOG_SPACE_RESERVE_BYTES = 64 * 1024 * 1024
+
+
+class LogSpaceError(Exception):
+    pass
+
+
+def check_log_space(path, reserve_bytes=LOG_SPACE_RESERVE_BYTES):
+    os.makedirs(path, exist_ok=True)
+    free = shutil.disk_usage(path).free
+    if free < reserve_bytes:
+        raise LogSpaceError(
+            "insufficient free space for logs at %s: %d < %d"
+            % (path, free, reserve_bytes)
+        )
+    return free
