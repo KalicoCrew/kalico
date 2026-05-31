@@ -117,3 +117,25 @@ def test_record_to_dict_captures_exception_traceback():
     d = sl.record_to_dict(rec)
     assert "ValueError: boom" in d["exception"]
     assert "Traceback" in d["exception"]
+
+
+import json
+
+
+def test_serialize_is_single_line_and_round_trips():
+    rec = _make_record(msg="line1\nline2\twith \"quote\" and \x01 ctrl")
+    rec.message = rec.getMessage()
+    line = sl.serialize_record(sl.record_to_dict(rec))
+    # Exactly one physical line (trailing newline only).
+    assert line.endswith("\n")
+    assert line.count("\n") == 1
+    obj = json.loads(line)
+    assert obj["_msg"] == "line1\nline2\twith \"quote\" and \x01 ctrl"
+
+
+def test_serialize_handles_nonjson_value():
+    rec = _make_record(weird=object())
+    rec.message = rec.getMessage()
+    # Must not raise; non-serializable value is stringified.
+    line = sl.serialize_record(sl.record_to_dict(rec))
+    assert "weird" in json.loads(line)

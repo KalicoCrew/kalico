@@ -128,3 +128,16 @@ def record_to_dict(record):
             continue
         out[key] = val
     return out
+
+
+import json
+
+
+def serialize_record(record_dict):
+    # json.dumps escapes embedded newlines/quotes/control chars, guaranteeing
+    # exactly one physical line per record (NDJSON-safe; injection-safe for
+    # user-controlled values such as gcode comments / M117 text).
+    line = json.dumps(
+        record_dict, ensure_ascii=False, separators=(",", ":"), default=repr
+    )
+    return line + "\n"
