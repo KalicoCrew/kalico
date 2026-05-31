@@ -64,7 +64,14 @@ timer_kick(void)
 static uint32_t timer_high;
 
 // Return the current time (in absolute clock ticks).
-uint32_t __always_inline
+//
+// used, externally_visible (and no longer __always_inline): the kalico Rust
+// staticlib (per_axis_timer.rs) calls this via the C ABI, and under
+// -fwhole-program LTO an always-inlined definition leaves no standalone symbol
+// for the separately-compiled Rust archive to link against. Mirrors
+// src/generic/armcm_timer.c's timer_read_time on the SysTick backend.
+__attribute__((used, externally_visible))
+uint32_t
 timer_read_time(void)
 {
     if (HAVE_TIMER_32BIT)
