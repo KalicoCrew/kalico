@@ -17,7 +17,12 @@ use portable_atomic::AtomicU32;
 
 use crate::state::SharedState;
 
-pub const TICK_RATE_HZ: u32 = 40_000;
+/// TEST/SIM ONLY. Not a production source of truth — the firmware reads the
+/// real per-board TIM5 cadence from `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ`
+/// (H7 40 kHz default / flashed 10 kHz, F4 20 kHz) via the `runtime_sample_rate_hz`
+/// extern in `state.rs`. This constant exists solely so test/sim fixtures have
+/// a fixed rate; nothing compiled into the MCU image consults it.
+pub const TEST_ONLY_TICK_RATE_HZ: u32 = 40_000;
 
 #[derive(Debug, Default)]
 pub struct WidenState {
@@ -105,15 +110,17 @@ impl WidenState {
     }
 }
 
-/// How many CPU cycles make up one 40 kHz tick at the given clock frequency.
+/// TEST/SIM ONLY. How many CPU cycles make up one `TEST_ONLY_TICK_RATE_HZ`
+/// tick at the given clock frequency. Production code derives the tick period
+/// from the real per-board sample rate (see `TEST_ONLY_TICK_RATE_HZ`).
 ///
 /// Integer division is intentional here: we want a whole-cycle count, and
-/// `TICK_RATE_HZ` (40 000) divides evenly into all supported STM32 clock
-/// frequencies (multiples of 1 MHz). The truncation is by design.
+/// `TEST_ONLY_TICK_RATE_HZ` (40 000) divides evenly into all supported STM32
+/// clock frequencies (multiples of 1 MHz). The truncation is by design.
 #[allow(clippy::integer_division)]
 #[inline]
 pub fn one_tick_cycles(clock_freq: u32) -> u32 {
-    clock_freq / TICK_RATE_HZ
+    clock_freq / TEST_ONLY_TICK_RATE_HZ
 }
 
 #[inline]

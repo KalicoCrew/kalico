@@ -11,13 +11,8 @@
 //!   `correlation_id`;
 //! * surfaces `IdentifyResponse` (bootstrap ABI per spec §5) to the
 //!   identify caller, validating `proto_version` and `schema_hash`;
-//! * lifts `StatusEvent` / `CreditFreed` / `FaultEvent` to
-//!   [`RuntimeEvent`] variants so motion-bridge's existing event
-//!   plumbing keeps working unchanged;
-//! * tracks `reset_epoch` and forces a fault on mismatch so motion
-//!   dispatch refuses to continue against a rebooted MCU mid-print
-//!   (spec §9). Mid-session re-identify is deferred to a follow-up;
-//!   the FIRST observed StatusEvent epoch gates motion start.
+//! * lifts `FaultEvent` / `StatusHeartbeat` to [`RuntimeEvent`] variants
+//!   so motion-bridge's existing event plumbing keeps working unchanged;
 //!
 //! The Phase A `KalicoNativeTransport<C: Connection>` is retained for
 //! the `sim_handshake` example and unit tests; production traffic flows
@@ -35,11 +30,11 @@ use kalico_native_transport::{
     encode_identify,
 };
 use kalico_protocol::{
-    CreditFreed as KCreditFreed, Decode, FaultEvent as KFaultEvent, MessageKind, PROTO_VERSION,
-    SCHEMA_HASH, StatusEvent as KStatusEvent,
+    Decode, FaultEvent as KFaultEvent, MessageKind, PROTO_VERSION, SCHEMA_HASH,
+    StatusHeartbeat as KStatusHeartbeat,
 };
 
-use crate::host_io::runtime_events::{CreditFreedEvent, FaultEvent, RuntimeEvent, StatusEvent};
+use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent};
 use crate::transport::TransportError;
 
 /// Outcome surfaced to the bridge for a kalico control-channel call.
@@ -106,9 +101,17 @@ impl KalicoNativeState {
     }
 }
 
-/// Build a control-channel frame: per-message header + body, wrapped in
-/// the Layer-1 frame envelope.
-pub fn build_kalico_control_frame(kind: MessageKind, correlation_id: u32, body: &[u8]) -> Vec<u8> {
+/// Build a kalico frame on an explicit channel: per-message header + body,
+/// wrapped in the Layer-1 frame envelope. For control-channel calls use
+/// `CHANNEL_CONTROL` (0x00); for pieces use
+/// [`kalico_protocol::KALICO_CHANNEL_PIECES`] (0x02).
+/// Responses always arrive on the control channel keyed by correlation_id.
+pub fn build_kalico_frame(
+    channel: u8,
+    kind: MessageKind,
+    correlation_id: u32,
+    body: &[u8],
+) -> Vec<u8> {
     let mut payload = Vec::with_capacity(7 + body.len());
     payload.extend_from_slice(&encode_message_header(
         kind,
@@ -116,7 +119,13 @@ pub fn build_kalico_control_frame(kind: MessageKind, correlation_id: u32, body: 
         correlation_id,
     ));
     payload.extend_from_slice(body);
-    encode_frame(CHANNEL_CONTROL, &payload)
+    encode_frame(channel, &payload)
+}
+
+/// Build a control-channel frame: per-message header + body, wrapped in
+/// the Layer-1 frame envelope.
+pub fn build_kalico_control_frame(kind: MessageKind, correlation_id: u32, body: &[u8]) -> Vec<u8> {
+    build_kalico_frame(CHANNEL_CONTROL, kind, correlation_id, body)
 }
 
 /// Build an Identify (bootstrap-ABI) frame.
@@ -127,6 +136,7 @@ pub fn build_kalico_identify_frame(correlation_id: u32) -> Vec<u8> {
 
 /// Result of dispatching a single complete kalico frame at the reactor's
 /// byte-stream level.
+#[derive(Debug)]
 pub enum KalicoDispatchResult {
     /// The frame was routed to a pending call, an identify, or as an event
     /// already lifted by the dispatcher.
@@ -264,73 +274,8 @@ fn lift_event_to_runtime_event(
     kind: MessageKind,
     body: &[u8],
 ) -> KalicoDispatchResult {
+    let _ = state; // no per-event state mutations required for surviving events
     match kind {
-        MessageKind::StatusEvent => match KStatusEvent::decode(body) {
-            Ok(s) => {
-                // Reset-epoch tracking (spec §9). FIRST observation seeds
-                // state.reset_epoch on the cold-start path; mismatch faults
-                // the host so motion dispatch refuses to continue.
-                if state.reset_epoch.is_none() {
-                    state.reset_epoch = Some(s.reset_epoch);
-                    eprintln!(
-                        "[kalico-id] seed reset_epoch via StatusEvent epoch=0x{:08x}",
-                        s.reset_epoch,
-                    );
-                } else if state.reset_epoch != Some(s.reset_epoch) {
-                    let old = state.reset_epoch.unwrap_or(0);
-                    eprintln!(
-                        "[kalico-id] reset_epoch MISMATCH state=0x{:08x} status=0x{:08x} — draining {} pending",
-                        old,
-                        s.reset_epoch,
-                        state.pending.len(),
-                    );
-                    log::error!(
-                        "kalico reset_epoch changed mid-session ({:#010x} -> {:#010x}); \
-                         marking host as un-identified — motion dispatch will refuse new sends",
-                        old,
-                        s.reset_epoch
-                    );
-                    state.identified = false;
-                    state.reset_epoch = Some(s.reset_epoch);
-                    // Drain pending calls with Reset.
-                    let drained: Vec<_> = state.pending.drain().collect();
-                    for (_, p) in drained {
-                        let _ = p.completion.send(Ok(KalicoCallOutcome::Reset));
-                    }
-                    // Surface a fault so klippy logs it. Mid-session
-                    // re-identify is intentionally deferred — the print is
-                    // unrecoverable per spec §9.
-                    return KalicoDispatchResult::Event(RuntimeEvent::Fault(FaultEvent {
-                        fault_code: 0xFFFE,
-                        fault_detail: s.reset_epoch,
-                        segment_id: s.current_segment_id,
-                        synthesized: true,
-                    }));
-                }
-                KalicoDispatchResult::Event(RuntimeEvent::Status(StatusEvent {
-                    engine_status: s.engine_status,
-                    queue_depth: s.queue_depth,
-                    current_segment_id: s.current_segment_id,
-                    last_fault: s.last_fault as u16,
-                    fault_detail: s.fault_detail,
-                    retired_through_segment_id: s.retired_through_segment_id,
-                }))
-            }
-            Err(e) => {
-                log::warn!("kalico StatusEvent decode failed: {e:?}");
-                KalicoDispatchResult::Ignored
-            }
-        },
-        MessageKind::CreditFreed => match KCreditFreed::decode(body) {
-            Ok(c) => KalicoDispatchResult::Event(RuntimeEvent::CreditFreed(CreditFreedEvent {
-                retired_through_segment_id: c.retired_through_segment_id,
-                free_slots: c.free_slots,
-            })),
-            Err(e) => {
-                log::warn!("kalico CreditFreed decode failed: {e:?}");
-                KalicoDispatchResult::Ignored
-            }
-        },
         MessageKind::FaultEvent => match KFaultEvent::decode(body) {
             Ok(f) => KalicoDispatchResult::Event(RuntimeEvent::Fault(FaultEvent {
                 fault_code: f.fault_code,
@@ -340,6 +285,18 @@ fn lift_event_to_runtime_event(
             })),
             Err(e) => {
                 log::warn!("kalico FaultEvent decode failed: {e:?}");
+                KalicoDispatchResult::Ignored
+            }
+        },
+        MessageKind::StatusHeartbeat => match KStatusHeartbeat::decode(body) {
+            Ok(hb) => {
+                // engine_state / fault_code intentionally dropped — the pump needs only retired_counts.
+                KalicoDispatchResult::Event(RuntimeEvent::Heartbeat {
+                    retired_counts: hb.retired_counts,
+                })
+            }
+            Err(e) => {
+                log::warn!("kalico StatusHeartbeat decode failed: {e:?}");
                 KalicoDispatchResult::Ignored
             }
         },
@@ -356,4 +313,32 @@ fn hex32(bytes: &[u8; 32]) -> String {
         s.push_str(&format!("{b:02x}"));
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kalico_protocol::{Encode, StatusHeartbeat};
+
+    fn make_state() -> KalicoNativeState {
+        KalicoNativeState::default()
+    }
+
+    #[test]
+    fn status_heartbeat_lifts_to_runtime_event() {
+        let hb = StatusHeartbeat {
+            engine_state: 1,
+            fault_code: 0,
+            retired_counts: vec![7, 0, 3],
+        };
+        let mut body = Vec::new();
+        hb.encode(&mut body);
+        let mut st = make_state();
+        match lift_event_to_runtime_event(&mut st, MessageKind::StatusHeartbeat, &body) {
+            KalicoDispatchResult::Event(RuntimeEvent::Heartbeat { retired_counts }) => {
+                assert_eq!(retired_counts, vec![7, 0, 3]);
+            }
+            other => panic!("expected Heartbeat event, got {:?}", other),
+        }
+    }
 }

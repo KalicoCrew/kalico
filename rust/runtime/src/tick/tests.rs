@@ -3,7 +3,6 @@
 //! lives in Task 8's test suite.
 
 use super::{DISPLACEMENT_THRESHOLD_MM, dispatch_axis};
-use crate::monomial::BezierPieceMonomial;
 use crate::state::SharedState;
 use crate::step_queue::StepQueue;
 use crate::stepping_state::{AxisConfig, StepMode, StepperRef};
@@ -29,12 +28,8 @@ fn make_axis(mode: StepMode, microstep_distance: f32) -> AxisConfig {
     AxisConfig {
         mode: AtomicU8::new(mode as u8),
         steppers,
-        curve_handle: None,
-        piece_cursor: 0,
-        piece: None::<BezierPieceMonomial>,
-        piece_start_time_cycles: 0,
-        last_step_count: 0,
         microstep_distance,
+        ..AxisConfig::new_unconfigured()
     }
 }
 

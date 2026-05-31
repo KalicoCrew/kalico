@@ -41,7 +41,6 @@ pub fn raise_step_queue_overflow(shared: &SharedState, axis_idx: usize) {
     }
 }
 
-
 /// Latch a `PositionCountOverflow` fault.
 ///
 /// `axis_idx` is the per-axis index in `0..4`; for steppers paired to an
@@ -116,6 +115,57 @@ pub fn raise_jog_parameters_invalid(shared: &SharedState) {
     shared
         .last_error
         .store(FaultCode::JogParametersInvalid.as_i32(), Ordering::Release);
+}
+
+/// Latch a `PieceStartInPast` fault (spec §6 safety invariant).
+///
+/// Raised by the ISR `get_piece_for_time` logic when the candidate next piece's
+/// `start_time` is more than `2 * sample_period_cycles` in the past — the MCU
+/// was not fed in time.  All motion stops; the host must reset before resuming.
+/// `axis_idx` is encoded into bits 16..24 of `fault_detail`.
+#[inline]
+pub fn raise_piece_start_in_past(shared: &SharedState, axis_idx: usize) {
+    let detail = (axis_idx as u32 & 0xFF) << 16;
+    shared.fault_detail.store(detail, Ordering::Release);
+    shared
+        .last_error
+        .store(FaultCode::PieceStartInPast.as_i32(), Ordering::Release);
+}
+
+/// Latch a `TickIntervalExceeded` fault (ISR inter-arrival guard).
+///
+/// Raised when the gap between two consecutive TIM5 ticks exceeds
+/// `2 * sample_period_cycles` — the ISR was starved. The measured gap in
+/// units of tick periods (saturated to 16 bits) is stored in the low 16
+/// bits of `fault_detail` for host diagnosis. Detail-first ordering is
+/// mandatory: the foreground reads `last_error` first, then `fault_detail`;
+/// storing detail before code guarantees the host always sees a valid pair.
+#[inline]
+pub fn raise_tick_interval_exceeded(shared: &SharedState, gap_ticks: u32) {
+    shared
+        .fault_detail
+        .store(gap_ticks.min(0xFFFF), Ordering::Release);
+    shared
+        .last_error
+        .store(FaultCode::TickIntervalExceeded.as_i32(), Ordering::Release);
+}
+
+/// Latch a `StepsPerSampleExceeded` fault.
+///
+/// Raised by the ISR pulse-dispatch path when a single TIM5 sample window
+/// would require more than `MAX_STEPS_PER_SAMPLE` microsteps. This is an
+/// unrecoverable discontinuity — most commonly a missing/incorrect position
+/// seed, so the motor-frame baseline disagrees with the piece stream. Mirrors
+/// `raise_piece_start_in_past`: all motion stops, the host must reset.
+/// `axis_idx` is encoded into bits 16..24 of `fault_detail`; the saturated
+/// per-sample step count is carried in the low 16 bits for host diagnosis.
+#[inline]
+pub fn raise_steps_per_sample_exceeded(shared: &SharedState, axis_idx: usize, abs_steps: u32) {
+    let detail = ((axis_idx as u32 & 0xFF) << 16) | abs_steps.min(0xFFFF);
+    shared.fault_detail.store(detail, Ordering::Release);
+    shared
+        .last_error
+        .store(FaultCode::StepsPerSampleExceeded.as_i32(), Ordering::Release);
 }
 
 #[cfg(test)]

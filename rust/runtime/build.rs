@@ -14,16 +14,22 @@
 //!    vars exported by Klipper's Makefile (which sources them from the
 //!    matching `CONFIG_RUNTIME_*` Kconfig values). Defaults match the H7
 //!    `large` profile so host-only / sim builds (which don't go through the
-//!    Klipper Makefile) still compile.
+//!    Klipper Makefile) still compile. **For bare-metal MCU builds
+//!    (`CARGO_CFG_TARGET_OS == "none"`) a missing or empty env var is a
+//!    hard build error** — a silent default would desync Rust's
+//!    `RT_STORAGE_SIZE` / `PIECE_RING_SIZE` from the C-declared
+//!    `rt_storage[]` / piece-ring buffers and cause memory corruption at
+//!    runtime (the exact failure mode observed with stale `.config` on F4:
+//!    C buffer = 73728, Rust constant silently fell back to 122880).
 //!
 //!    Spec: docs/superpowers/specs/2026-05-06-runtime-sizing-per-mcu-design.md §4.3.
 //!    `RT_STORAGE_SIZE` is the byte ceiling for the C-declared `rt_storage`
 //!    buffer (replaces the prior Rust-side `RT_CELL` with `#[link_section]`).
 //!    See `docs/superpowers/specs/2026-05-19-mcu-c-rust-boundary-refactor-design.md`.
 //!
-//!    NURBS sizing constants (`MAX_CONTROL_POINTS`, `MAX_KNOT_VECTOR_LEN`,
-//!    `MAX_DEGREE`) were removed in the 2026-05-20 stepping-redesign refactor;
-//!    the runtime now uses uniform cubic Bézier pieces exclusively.
+//!    Curve-pool sizing constants (`CURVE_POOL_N`, `MAX_PIECES_PER_CURVE`) were
+//!    removed in the 2026-05-28 dead-code purge; the runtime uses the piece-ring
+//!    model exclusively. NURBS sizing constants were removed earlier (2026-05-20).
 //!
 //! 3. Pre-compute an identity-sinusoid LUT for phase stepping (Step 10).
 //!    Writes `phase_lut_table.rs` into `OUT_DIR` with a `pub const LUT_ENTRIES`
@@ -35,11 +41,40 @@ use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
 
-fn lookup(name: &str, default: &str) -> String {
+/// Resolve a build-env var.
+///
+/// - When the env var is set and non-empty, its value is returned regardless
+///   of target.
+/// - When the env var is missing or empty **and `is_mcu` is `false`** (host /
+///   sim build), the supplied `default` is returned — these callers do not go
+///   through Klipper's Makefile and the default is intentional.
+/// - When the env var is missing or empty **and `is_mcu` is `true`** (bare-
+///   metal `thumbv*-none-*` target), the build panics with an actionable
+///   message.  A silent default would desync this Rust constant from the
+///   C-declared buffer size and cause runtime memory corruption (stale
+///   `.config` F4 incident: C buffer = 73728, Rust silently used 122880).
+fn lookup(name: &str, default: &str, is_mcu: bool) -> String {
     println!("cargo:rerun-if-env-changed={name}");
     match env::var(name) {
         Ok(s) if !s.is_empty() => s,
-        _ => default.to_string(),
+        _ => {
+            if is_mcu {
+                panic!(
+                    "\n\
+                     build.rs: `{name}` is missing or empty for a bare-metal MCU build.\n\
+                     This variable must be exported by Klipper's Makefile from the\n\
+                     `CONFIG_RUNTIME_*` Kconfig value matching the active `.config`.\n\
+                     A missing value silently desyncs Rust's compile-time constant from\n\
+                     the C-declared `rt_storage[]` / piece-ring buffer size, causing\n\
+                     memory corruption at runtime (observed on F4 with stale `.config`:\n\
+                     C buffer = 73728 bytes, Rust constant fell back to 122880 bytes).\n\
+                     Fix: ensure `make` is run from the Klipper tree with a current\n\
+                     `.config` so the KALICO_RUNTIME_* vars are in the environment\n\
+                     when Cargo is invoked.\n"
+                );
+            }
+            default.to_string()
+        }
     }
 }
 
@@ -47,17 +82,27 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(loom)");
     println!("cargo:rerun-if-changed=build.rs");
 
-    let cpn = lookup("KALICO_RUNTIME_CURVE_POOL_N", "16");
-    let mpc = lookup("KALICO_RUNTIME_MAX_PIECES_PER_CURVE", "128");
-    let rss = lookup("KALICO_RUNTIME_STORAGE_SIZE", "122880");
+    // Cargo sets CARGO_CFG_TARGET_OS to "none" for bare-metal thumbv*-none-*
+    // targets.  For host and MACH_LINUX sim builds it is "linux", "macos",
+    // etc.  Missing means the toolchain is very old; treat it as host-like.
+    let is_mcu = env::var("CARGO_CFG_TARGET_OS")
+        .map(|v| v == "none")
+        .unwrap_or(false);
+
+    let rss = lookup("KALICO_RUNTIME_STORAGE_SIZE", "122880", is_mcu);
+    // PIECE_RING_SIZE: total bytes for piece ring storage.
+    // Default 63488 on H7; override via KALICO_RUNTIME_PIECE_RING_SIZE.
+    let prs = lookup("KALICO_RUNTIME_PIECE_RING_SIZE", "63488", is_mcu);
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set by cargo"));
 
     let sizing_body = format!(
         "// Auto-generated by runtime/build.rs — do not edit.\n\
-         pub const CURVE_POOL_N: usize = {cpn};\n\
          pub const RT_STORAGE_SIZE: usize = {rss};\n\
-         pub const MAX_PIECES_PER_CURVE: usize = {mpc};\n"
+         /// Total byte budget for all per-axis piece rings. Each entry is 32 bytes.\n\
+         pub const PIECE_RING_SIZE: usize = {prs};\n\
+         /// Maximum number of piece entries across all axes combined.\n\
+         pub const TOTAL_RING_PIECES: usize = {prs} / 32;\n"
     );
     fs::write(out_dir.join("sizing.rs"), sizing_body).expect("write sizing.rs");
 
@@ -73,7 +118,7 @@ fn gen_phase_lut(out_dir: &std::path::Path) {
 
     writeln!(f, "// Auto-generated by build.rs — do not edit.").unwrap();
 
-    // Legacy `(i_a = sin, i_b = cos)` table consumed by `modulator.rs`.
+    // Legacy `(i_a = sin, i_b = cos)` table retained for `phase_lut::lookup` (`LUT_ENTRIES`).
     writeln!(f, "pub const LUT_ENTRIES: [(i16, i16); {MOTOR_PERIOD}] = [").unwrap();
     for i in 0..MOTOR_PERIOD {
         let angle = 2.0 * std::f64::consts::PI * (i as f64) / (MOTOR_PERIOD as f64);

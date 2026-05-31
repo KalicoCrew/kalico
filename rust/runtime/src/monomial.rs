@@ -9,9 +9,9 @@
 /// Velocity coefficients pre-baked: V(t) = vc0 + vc1·t + vc2·t².
 #[derive(Clone, Copy, Debug)]
 pub struct BezierPieceMonomial {
-    pub coeffs: [f32; 4],      // c0, c1, c2, c3 for position
-    pub vel_coeffs: [f32; 3],  // vc0=c1, vc1=2·c2, vc2=3·c3
-    pub duration: f32,          // seconds in this piece
+    pub coeffs: [f32; 4],     // c0, c1, c2, c3 for position
+    pub vel_coeffs: [f32; 3], // vc0=c1, vc1=2·c2, vc2=3·c3
+    pub duration: f32,        // seconds in this piece
 }
 
 /// Convert Bernstein control points [b0, b1, b2, b3] to monomial form.
@@ -43,10 +43,7 @@ pub fn bernstein_to_monomial(bp: [f32; 4]) -> BezierPieceMonomial {
 ///
 /// Spec: `docs/superpowers/specs/2026-05-20-stepping-redesign-finish-design.md` §3.2.
 #[inline]
-pub fn bernstein_to_monomial_with_duration(
-    bp: [f32; 4],
-    duration_sec: f32,
-) -> BezierPieceMonomial {
+pub fn bernstein_to_monomial_with_duration(bp: [f32; 4], duration_sec: f32) -> BezierPieceMonomial {
     let m = bernstein_to_monomial(bp);
     let c0 = m.coeffs[0];
     let c1 = m.coeffs[1] / duration_sec;

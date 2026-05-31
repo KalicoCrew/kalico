@@ -4,6 +4,7 @@ use crate::host_io::test_harness::ReactorHarness;
 use std::sync::Arc;
 use std::sync::mpsc::sync_channel;
 use std::time::{Duration, Instant};
+use kalico_native_transport;
 
 /// Same as the BrokenWritePort declared in the inner `tests` module above
 /// — duplicated here so this module sees a SerialPort. The inner module's
@@ -213,7 +214,8 @@ fn kalico_call_io_error_transitions_closed() {
 
     let (completion_tx, completion_rx) = sync_channel(1);
     tx.send(ReactorCommand::KalicoCall {
-        kind: MessageKind::LoadCurveCubic,
+        channel: kalico_native_transport::CHANNEL_CONTROL,
+        kind: MessageKind::PushPieces,
         body: vec![0; 16],
         completion: completion_tx,
         deadline: Instant::now() + Duration::from_secs(1),

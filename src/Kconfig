@@ -406,34 +406,21 @@ choice
         bool "Custom (override individual values)"
 endchoice
 
-config RUNTIME_CURVE_POOL_N
-    int "Curve-pool slot count (planner look-ahead depth)"
-    default 2 if MACH_STM32G0
-    default 16 if RUNTIME_TARGET_LARGE
-    default 4 if RUNTIME_TARGET_SMALL
-    default 4
-    range 1 64
-
-config RUNTIME_MAX_PIECES_PER_CURVE
-    int "Maximum cubic Bézier pieces per curve slot"
-    default 32 if MACH_STM32G0
-    default 128
-    range 1 256
+config RUNTIME_PIECE_RING_SIZE
+    int "Piece-ring byte budget (total across all axes)"
+    default 4096 if MACH_STM32G0
+    default 63488 if RUNTIME_TARGET_LARGE
+    default 63488 if RUNTIME_TARGET_SMALL
+    default 63488
+    range 1024 524288
     help
-      Per-slot ceiling on cubic Bézier pieces. Both `RUNTIME_CURVE_POOL_N`
-      and this value back the static cubic piece pool: total storage is
-      `CURVE_POOL_N * MAX_PIECES_PER_CURVE * sizeof(BezierPieceMonomial)`
-      (BezierPieceMonomial is 32 bytes in-memory; the wire encoding is
-      20 bytes — see rust/runtime/src/monomial.rs).
-      Reported to the host via `RuntimeCapsResponse.max_pieces_per_curve`;
-      the host's pre-upload validator rejects curves whose piece count
-      exceeds this value.
-      Default bumped from 16 to 64 on 2026-05-20: bench-observed
-      10mm@100mm/s jogs shape to 23 pieces after input-shaping
-      convolution; 16 rejects them with `CapsExceeded`. Logical-move
-      splitting (Task 13 follow-up) is the long-term answer for unbounded
-      move length; until then, raising the cap covers reasonable manual
-      jogs and most print-relevant segments.
+      Total byte budget for all per-axis piece rings. Each PieceEntry is
+      32 bytes; TOTAL_RING_PIECES = PIECE_RING_SIZE / 32. The budget is
+      divided evenly across configured axes at runtime via the per-axis
+      RingDescriptor. Default 63488 (62 KB) gives 1984 entries spread
+      across 4 axes (496 entries each) — sufficient for lookahead at
+      40 kHz with typical slicer output. Exported to the Rust build as
+      KALICO_RUNTIME_PIECE_RING_SIZE.
 
 config KALICO_MOTION_SAMPLE_RATE_HZ
     int "Motion engine sample rate in Hz (motion-timer ISR fire rate)"
@@ -485,14 +472,13 @@ config RUNTIME_STORAGE_SIZE_LARGE
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
       replaces RT_CELL's Rust-side #[link_section] placement). Task 18
-      measured size_of::<RuntimeContext>() = 59048 bytes (57 KB) after
-      the 2026-05-20 stepping redesign replaced the NURBS curve pool
-      (~298 KB on LARGE) with a uniform cubic Bézier piece pool (~8 KB
-      at CURVE_POOL_N=16). Default is 63488 bytes (62 KB), providing
-      4440 bytes of headroom. The AXI SRAM ceiling on H7 is 320 KB;
-      the C-side _Static_assert in src/runtime_storage.c enforces 2 KB
-      headroom. The Rust-side const_assert fires if RuntimeContext
-      exceeds this value at compile time.
+      measured size_of::<RuntimeContext>() = 59048 bytes (57 KB) with
+      the piece-ring model (PIECE_RING_SIZE = 63488 bytes). Default is
+      122880 bytes (120 KB), providing ample headroom for piece-ring
+      growth. The AXI SRAM ceiling on H7 is 320 KB; the C-side
+      _Static_assert in src/runtime_storage.c enforces 2 KB headroom.
+      The Rust-side const_assert fires if RuntimeContext exceeds this
+      value at compile time.
 
 config RUNTIME_STORAGE_SIZE_SMALL
     int "rt_storage byte ceiling (small profile, F4/G0)"
@@ -502,16 +488,11 @@ config RUNTIME_STORAGE_SIZE_SMALL
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
       replaces RT_CELL's Rust-side #[link_section] placement). Task 18
-      measured size_of::<RuntimeContext>() = 59048 bytes (57 KB) after
-      the 2026-05-20 stepping redesign replaced the NURBS curve pool
-      (~103 KB on SMALL) with a uniform cubic Bézier piece pool (~4 KB
-      at CURVE_POOL_N=4). Default is 63488 bytes (62 KB) — the same as
-      LARGE because the measured size is identical and well below the F4
-      SRAM cap; no separate profile needed. Provides 4440 bytes of
-      headroom. F4's total SRAM is 128 KB; a 62 KB rt_storage leaves
-      ~66 KB for Klipper's .bss + stack + heap, which is ample.
-      Const_assert on Rust catches RuntimeContext growth at compile
-      time.
+      measured size_of::<RuntimeContext>() = 59048 bytes (57 KB) with
+      the piece-ring model (PIECE_RING_SIZE = 63488 bytes). Default is
+      73728 bytes (72 KB), providing headroom for piece-ring growth on
+      F4's 128 KB SRAM. Const_assert on Rust catches RuntimeContext
+      growth at compile time.
 
 config KALICO_SIM
     bool "Build for simulator (disables IWDG, enables Linux sim shims)"

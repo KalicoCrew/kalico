@@ -4,7 +4,7 @@ src-y += sched.c command.c basecmd.c debugcmds.c
 # Kalico-native transport — stream-level demuxer + Layer 4 dispatcher.
 # Spec: docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md.
 src-y += kalico_demux.c kalico_dispatch.c \
-    kalico_segment_queue.c runtime_storage.c runtime_panic.c step_queue.c \
+    runtime_storage.c runtime_panic.c step_queue.c \
     spi_queue.c
 src-y += runtime_tick_weak.c
 src-$(CONFIG_RUNTIME_BENCH) += generic/runtime_bench.c
@@ -98,9 +98,8 @@ $(KALICO_LIB): FORCE
 			cargo clean -p runtime 2>/dev/null || true; \
 			cargo clean -p nurbs 2>/dev/null || true; \
 		fi && \
-		KALICO_RUNTIME_CURVE_POOL_N=$(CONFIG_RUNTIME_CURVE_POOL_N) \
-		KALICO_RUNTIME_MAX_PIECES_PER_CURVE=$(CONFIG_RUNTIME_MAX_PIECES_PER_CURVE) \
 		KALICO_RUNTIME_STORAGE_SIZE=$(if $(filter y,$(CONFIG_RUNTIME_TARGET_LARGE)),$(CONFIG_RUNTIME_STORAGE_SIZE_LARGE),$(CONFIG_RUNTIME_STORAGE_SIZE_SMALL)) \
+		KALICO_RUNTIME_PIECE_RING_SIZE=$(CONFIG_RUNTIME_PIECE_RING_SIZE) \
 		KALICO_RUNTIME_SAMPLE_RATE_HZ=$(CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) \
 		cargo build -p kalico-c-api \
 		--no-default-features \
@@ -116,8 +115,7 @@ KALICO_RUST_FEATURES := host,header-nurbs,header-runtime,kalico-sim
 
 rust/target/release/libkalico_c_api.a: FORCE
 	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" \
-		KALICO_RUNTIME_CURVE_POOL_N=$(CONFIG_RUNTIME_CURVE_POOL_N) \
-		KALICO_RUNTIME_MAX_PIECES_PER_CURVE=$(CONFIG_RUNTIME_MAX_PIECES_PER_CURVE) \
+		KALICO_RUNTIME_PIECE_RING_SIZE=$(CONFIG_RUNTIME_PIECE_RING_SIZE) \
 		KALICO_RUNTIME_SAMPLE_RATE_HZ=$(CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) \
 		cargo build -p kalico-c-api \
 		--no-default-features \

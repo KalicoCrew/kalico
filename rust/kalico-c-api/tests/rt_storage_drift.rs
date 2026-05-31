@@ -15,8 +15,8 @@
 
 #![cfg(feature = "host")]
 
-use runtime::state::RuntimeContext;
 use runtime::RT_STORAGE_SIZE;
+use runtime::state::RuntimeContext;
 
 #[test]
 fn rt_storage_size_within_plausible_bounds() {

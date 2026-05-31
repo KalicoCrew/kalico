@@ -44,20 +44,24 @@ use trajectory::{AxisShaper, EHalo, RequiredShaper, ShapedSegment, ShaperConfig}
 // Quiescence-commit timer
 // ---------------------------------------------------------------------------
 
-/// Inter-move quiescence threshold for the single-timer commit model
-/// (spec §3.5). If no `PlannerMsg::Move` arrives within this window after
-/// the most recent append, the planner thread calls
-/// [`ShaperState::commit_decel_to_zero`] to dispatch the held-back trailing
-/// decel-to-zero ramp. 50 ms is the spec's proposed default; open-question 1
-/// in §6 reserves empirical calibration on Trident for Phase 7.
-const T_COMMIT: Duration = Duration::from_millis(50);
-
 /// Sentinel "long" timeout used when there is no held-back tail to commit.
 /// We still call `recv_timeout` (rather than `recv`) so the loop reaches a
 /// single uniform message-handling site; an effectively-forever bound keeps
 /// the wake-up overhead negligible while preserving cancellation semantics
 /// on `Shutdown` (the channel close fires `Disconnected`, not `Timeout`).
 const T_IDLE: Duration = Duration::from_secs(3600);
+
+/// Lead time (s) the Anchor inserts between planner time 0 and `host_now` at
+/// first dispatch. Must equal `anchor::DEFAULT_LEAD_SECS`; duplicated here so
+/// run_loop can compute clock-derived deadlines without depending on anchor's
+/// private constant. Keep in sync manually (anchor.rs is unchanged).
+const LEAD: f64 = 0.25;
+
+/// Safety margin (s) for the decel-commit deadline: the commit must reach the
+/// MCU at least this long before the on-wire buffer (`t_dispatched + LEAD`)
+/// drains. Covers shaping + dispatch + pump + wire latency. Starting value
+/// per spec §G; tune on hardware.
+const SAFETY_MARGIN: f64 = 0.050;
 
 // ---------------------------------------------------------------------------
 // Messages
@@ -91,7 +95,11 @@ pub enum PlannerMsg {
         notify: Sender<()>,
     },
     Flush {
-        notify: Sender<()>,
+        /// Planner sends the wall-clock `Instant` at which all committed
+        /// motion finishes executing (`sync_instant + t_appended + LEAD`), or
+        /// `None` if nothing is in flight (no dispatch yet). The caller waits
+        /// until then before returning from `flush`.
+        notify: Sender<Option<Instant>>,
     },
     UpdateLimits(PlannerLimits),
     UpdateShaper(ShaperConfig),
@@ -180,34 +188,15 @@ pub enum DispatchError {
         mcu_id: u32,
         mcu_handle: kalico_host_rt::passthrough_queue::McuHandle,
     },
-    #[error(
-        "slot pool exhausted for mcu={mcu_id} (capacity={capacity}, in_flight={in_flight}); \
-         awaiting kalico_credit_freed retirement events"
-    )]
-    SlotPoolExhausted {
-        mcu_id: u32,
-        capacity: usize,
-        in_flight: usize,
-    },
-    #[error(
-        "load_curve mcu={mcu_id} slot={slot} seg_id={seg_id} axis={axis} host_gen={host_gen}: {detail}"
-    )]
-    LoadCurve {
-        mcu_id: u32,
-        slot: u16,
-        seg_id: u32,
-        axis: usize,
-        host_gen: u16,
-        detail: String,
-    },
-    #[error("push_segment mcu={mcu_id}: {detail}")]
-    PushSegment { mcu_id: u32, detail: String },
     /// The `Arc<KalicoHostIo>` for the given MCU was dropped (e.g. by
     /// `attach_serial` during a FIRMWARE_RESTART) before this dispatch
     /// completed. The dispatch closure holds only a `Weak` reference and
     /// `upgrade()` returned `None`. The segment was not sent.
     #[error("MCU {0}: connection dropped during dispatch")]
     ConnectionDropped(u32),
+    /// The piece pump's receiver was dropped (pump thread exited/panicked) — a dispatch send had nowhere to go.
+    #[error("piece pump thread is gone; cannot dispatch")]
+    PumpGone,
 }
 
 // ---------------------------------------------------------------------------
@@ -329,17 +318,22 @@ impl PlannerHandle {
     }
 
     pub fn flush(&self) -> Result<(), PlannerError> {
-        eprintln!("[move-diag] planner.flush enter (caller wait_moves)");
         self.check_error()?;
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.sender
             .send(PlannerMsg::Flush { notify: tx })
             .map_err(|_| PlannerError::ChannelClosed)?;
         match rx.recv() {
-            Ok(()) => self.check_error(),
+            Ok(finish) => {
+                if let Some(deadline) = finish {
+                    let now = Instant::now();
+                    if deadline > now {
+                        std::thread::sleep(deadline - now);
+                    }
+                }
+                self.check_error()
+            }
             Err(_) => {
-                // Sender dropped: either pipeline error trashed pending_flush,
-                // or thread exited. Surface the stored error if present.
                 self.check_error()?;
                 Err(PlannerError::ChannelClosed)
             }
@@ -462,14 +456,15 @@ impl PlannerHandle {
         f64::from_bits(self.last_move_time_bits.load(Ordering::Acquire))
     }
 
-    /// Number of times the quiescence-commit timer has fired on the planner
-    /// thread (i.e., `recv_timeout(T_COMMIT − elapsed)` returned
-    /// `RecvTimeoutError::Timeout` and the run-loop invoked
+    /// Number of times the decel-commit deadline has fired on the planner
+    /// thread (i.e., `recv_timeout` returned `RecvTimeoutError::Timeout` while
+    /// a held-back tail existed and the run-loop invoked
     /// [`ShaperState::commit_decel_to_zero`]). Wired by Phase 4 Task 4.1;
-    /// the underlying handler became real in Task 4.2 (the run-loop now
-    /// dispatches the held-back trailing decel-to-zero on timer fire). The
-    /// counter remains a cheap observability hook on the timer integration
-    /// point.
+    /// the underlying handler became real in Task 4.2 (the run-loop dispatches
+    /// the held-back trailing decel-to-zero on deadline fire). Task 4 replaced
+    /// the fixed 50 ms `T_COMMIT` quiescence timer with a clock-derived
+    /// deadline (`t_dispatched + LEAD - SAFETY_MARGIN`). The counter remains
+    /// a cheap observability hook on the commit integration point.
     pub fn commit_fire_count(&self) -> u32 {
         self.commit_fire_count.load(Ordering::Acquire)
     }
@@ -695,28 +690,32 @@ fn run_loop(
         );
     }
 
-    // Phase 4 Task 4.1 — single-timer quiescence-commit state. `Some(t)`
-    // means a real append landed at `t` and the loop should call
-    // `commit_decel_to_zero` if no follow-on message arrives within
-    // `T_COMMIT − t.elapsed()`. `None` means the queue is fully quiesced
-    // (already committed) or no append has happened yet; the loop sleeps
-    // on the long sentinel until a new `Move` arrives. Task 4.1 uses
-    // `is_some()` as the proxy for "held-back tail exists" per the task
-    // spec; Task 4.2 will refine to a precise `t_dispatched <
-    // t_decel_start − max_h` check on `ShaperState` once the real
-    // `commit_decel_to_zero` semantics land.
-    let mut last_append_time: Option<Instant> = None;
     let mut last_recv_time: Option<Instant> = None;
+    // The `Instant` of the stream's first dispatch. `None` until the first
+    // non-empty dispatch after a genuine reset; re-set to `None` on every
+    // genuine reset (stream-open, homing, SET_KINEMATIC, Underrun, ForceIdle)
+    // so it is re-captured at the next first dispatch. Same OS monotonic clock
+    // as the projection's host-time input, so `elapsed_since_sync` carries no
+    // drift.
+    let mut sync_instant: Option<Instant> = None;
 
     loop {
-        // Compute the next timeout. The held-back-tail proxy is "an append
-        // happened and we haven't committed since" (`last_append_time.is_some()`);
-        // when there is no held-back tail, fall through to the long
-        // sentinel so the receiver is effectively a blocking `recv` while
-        // still cancellable on channel close.
-        let next_timeout = match last_append_time {
-            Some(t) => T_COMMIT.checked_sub(t.elapsed()).unwrap_or(Duration::ZERO),
-            None => T_IDLE,
+        // Clock-derived decel-commit deadline. The MCU starts executing
+        // planner-time 0 at elapsed_since_sync == LEAD and plays forward 1:1,
+        // so the on-wire buffer (ending at t_dispatched) drains at
+        // elapsed_since_sync == t_dispatched + LEAD. Commit SAFETY_MARGIN
+        // before that. When there is no held-back tail (t_dispatched ≈
+        // t_appended), sleep on the long sentinel until the next Move.
+        let next_timeout = if state.t_dispatched < state.t_appended - 1e-12 {
+            let esc = sync_instant.map_or(0.0, |t| t.elapsed().as_secs_f64());
+            let remaining = (state.t_dispatched + LEAD - SAFETY_MARGIN) - esc;
+            // `try_from_secs_f64` returns Err on NaN / infinite / negative,
+            // covering all non-finite hazards at once — never panic the
+            // planner thread on a degenerate deadline; fall back to an
+            // immediate wake (the commit guard re-checks the real condition).
+            Duration::try_from_secs_f64(remaining.max(0.0)).unwrap_or(Duration::ZERO)
+        } else {
+            T_IDLE
         };
 
         let msg = match rx.recv_timeout(next_timeout) {
@@ -743,31 +742,20 @@ fn run_loop(
                 m
             }
             Err(RecvTimeoutError::Timeout) => {
-                // `T_commit` elapsed without a follow-on message. Task 4.2
-                // shipped the real body of `commit_decel_to_zero`: shape
-                // and dispatch the held-back trailing region
-                // `[t_dispatched, t_appended]` (including the terminal
-                // decel-to-zero ramp `emit_committed` deliberately holds
-                // back). This branch dispatches those segments the same
-                // way the `Move` arm dispatches `emit_committed` output —
-                // print-time accounting + per-segment dispatch + commit
-                // counter increment, all factored into
-                // `run_commit_and_dispatch` (shared with the `Flush` arm
-                // wired by Task 4.3). Clearing `last_append_time` disarms
-                // the timer until the next `Move` arrives.
-                let since_arm_ms = last_append_time
-                    .map(|t| t.elapsed().as_micros() as i64)
-                    .unwrap_or(-1);
-                eprintln!("[move-diag] planner T_commit fire since_arm_us={since_arm_ms}");
-                let _ok = run_commit_and_dispatch(
-                    &mut state,
-                    &thread_state,
-                    &dispatch,
-                    &error,
-                    &last_move_time_bits,
-                    &commit_fire_count,
-                );
-                last_append_time = None;
+                // Decel-commit deadline: the on-wire buffer is about to drain;
+                // commit the held-back decel-to-zero so the MCU stops cleanly.
+                // DO NOT reset the timeline — the monotonic clock keeps running;
+                // the next move self-places via max(t_appended, elapsed_since_sync).
+                if state.t_dispatched < state.t_appended - 1e-12 {
+                    let _ok = run_commit_and_dispatch(
+                        &mut state,
+                        &thread_state,
+                        &dispatch,
+                        &error,
+                        &last_move_time_bits,
+                        &commit_fire_count,
+                    );
+                }
                 continue;
             }
             Err(RecvTimeoutError::Disconnected) => return,
@@ -794,6 +782,38 @@ fn run_loop(
                 let prior_t_disp = state.t_dispatched;
                 let move_dist = m.distance_mm;
                 let move_feed = m.segment.feedrate_mm_s;
+
+                // Placement rule (spec §A): if the clock has run past the plan
+                // tail, the toolhead is genuinely idle. Commit any held-back
+                // tail first (so the MCU gets the prior decel-to-zero), then
+                // insert a rest-hold advancing t_appended to "now" so the new
+                // move starts at elapsed_since_sync (== host_now + LEAD via the
+                // Anchor) instead of overlapping the prior committed tail.
+                let esc = sync_instant.map_or(0.0, |t| t.elapsed().as_secs_f64());
+                if esc > state.t_appended + 1e-6 {
+                    // Commit any held-back decel-to-zero first; only insert the
+                    // rest-hold if that succeeded. On a commit/dispatch failure
+                    // `run_commit_and_dispatch` leaves t_dispatched < t_appended
+                    // and latches the error — advancing the timeline then would
+                    // trip advance_idle's fully-committed precondition (debug) or
+                    // silently drop the uncommitted tail (release). Skip it; the
+                    // latched error surfaces on the caller's next check_error.
+                    let committed_ok = if state.t_dispatched < state.t_appended - 1e-12 {
+                        run_commit_and_dispatch(
+                            &mut state,
+                            &thread_state,
+                            &dispatch,
+                            &error,
+                            &last_move_time_bits,
+                            &commit_fire_count,
+                        )
+                    } else {
+                        true
+                    };
+                    if committed_ok {
+                        state.advance_idle(esc);
+                    }
+                }
 
                 let replan_start = Instant::now();
                 if let Err(e) = state.append_and_replan(m.segment, &thread_state.replan_ctx) {
@@ -850,6 +870,25 @@ fn run_loop(
                     }
                 }
 
+                // KNOWN LIMITATION (follow-up): captured only on a non-empty
+                // dispatch. If a stream's very first move is sub-`LEAD` short so
+                // its `emit_committed` yields no segments (all output held in the
+                // speculative decel), `sync_instant` stays None until the held
+                // tail commits later. Until then `esc` reads 0.0 and the
+                // clock-derived deadline / Flush-wait degrade to no-ops (both
+                // idempotent / harmless). The fix is to also capture at the first
+                // *commit*-dispatch — NOT at append: capturing before dispatch
+                // would run `elapsed_since_sync` ahead of the MCU playhead and
+                // spuriously trip idle-detection during continuous printing
+                // (throughput regression). Unreachable for real >=1mm jogs.
+                //
+                // Capture the stream's sync origin at its first dispatch, in
+                // the same sub-ms window the Anchor establishes `t0`. Residual
+                // skew is absorbed by LEAD.
+                if sync_instant.is_none() && !drained.is_empty() {
+                    sync_instant = Some(Instant::now());
+                }
+
                 // Compute `actual = t_appended_after − t_appended_before`.
                 // For the **streaming** path this is the right measure of
                 // "what duration did this move add to the queue?" — not
@@ -868,41 +907,17 @@ fn run_loop(
                     rectify_last_move_time(&last_move_time_bits, delta);
                 }
 
-                // Arm / re-arm the quiescence-commit timer. Setting
-                // `last_append_time = Some(Instant::now())` on every
-                // successful append (even when `emit_committed` produced
-                // nothing this round) is what makes the timer the single
-                // "did the user stop submitting moves?" signal.
-                last_append_time = Some(Instant::now());
+                // The quiescence-commit timer is armed by the cursor guard
+                // `state.t_dispatched < state.t_appended - 1e-12` in
+                // `next_timeout` — no separate tracking variable needed.
             }
 
             PlannerMsg::Flush { notify } => {
-                eprintln!(
-                    "[move-diag] Flush arm: last_append_time.is_some={} t_app={:.6} t_disp={:.6}",
-                    last_append_time.is_some(),
-                    state.t_appended,
-                    state.t_dispatched,
-                );
-                // Phase 4 Task 4.3 — `Flush` collapses `T_commit` → now
-                // (spec §3.4 lifecycle row). The streaming-native model
-                // holds the trailing decel-to-zero of the most recent
-                // `Move` speculatively until either the quiescence timer
-                // fires or a follow-on `Move` re-anchors the decel
-                // further out. `wait_moves` / `M400` / homing barriers
-                // need to block until *all* submitted motion is on the
-                // wire — including that held-back tail — so `Flush`
-                // synchronously invokes `commit_decel_to_zero` and
-                // dispatches the drained segments before notifying the
-                // waiter.
-                //
-                // Guarding on `last_append_time.is_some()` keeps the
-                // arm a no-op (modulo the notify) when the queue is
-                // already fully committed (every prior commit cleared
-                // the timer). The `_ok` ignore matches the timer arm's
-                // behaviour: a pipeline error has already been stored
-                // and will surface via `PlannerHandle::check_error` on
-                // the caller's next API entry.
-                if last_append_time.is_some() {
+                // Commit the held-back decel-to-zero (spec §E) so all submitted
+                // motion reaches the wire; idempotent when already committed.
+                // No timeline reset — the monotonic clock keeps running and the
+                // next move self-places via the placement rule.
+                if state.t_dispatched < state.t_appended - 1e-12 {
                     let _ok = run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
@@ -911,9 +926,20 @@ fn run_loop(
                         &last_move_time_bits,
                         &commit_fire_count,
                     );
-                    last_append_time = None;
                 }
-                let _ = notify.send(());
+                // The last committed piece ends at planner-time t_appended and
+                // executes at wall-clock sync_instant + t_appended + LEAD. Hand
+                // that finish instant back; the caller waits (keeps the run-loop
+                // responsive). `None` when nothing was ever dispatched.
+                // Mirror the next_timeout deadline policy: never panic the
+                // run-loop thread on a degenerate t_appended. A degenerate
+                // value yields ZERO → caller does not wait → the latched error
+                // (if any) still surfaces via the caller's check_error().
+                let finish = sync_instant.map(|t| {
+                    t + Duration::try_from_secs_f64(state.t_appended + LEAD)
+                        .unwrap_or(Duration::ZERO)
+                });
+                let _ = notify.send(finish);
             }
 
             PlannerMsg::Dwell { duration_s, notify } => {
@@ -947,9 +973,9 @@ fn run_loop(
                 //
                 // The drain uses the run-loop's existing commit path
                 // (`run_commit_and_dispatch`, shared with `Flush` and
-                // the quiescence-timer fire). The post-drain
-                // `last_append_time = None` matches the other two
-                // call-sites' invariant.
+                // the quiescence-timer fire). The cursor guard
+                // `t_dispatched < t_appended - 1e-12` is the single
+                // "held-back tail" signal across all commit call-sites.
                 //
                 // The handler then rebuilds the kernels / replan
                 // context on the updated config and **also** rebuilds
@@ -968,7 +994,7 @@ fn run_loop(
                 // multi-axis already so we can't single-axis the
                 // drain on the receive side without re-shaping the
                 // message.
-                if last_append_time.is_some() {
+                if state.t_dispatched < state.t_appended - 1e-12 {
                     let _ok = run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
@@ -977,7 +1003,6 @@ fn run_loop(
                         &last_move_time_bits,
                         &commit_fire_count,
                     );
-                    last_append_time = None;
                 }
                 config.shaper = s;
                 let shapers = shaper_config_to_axis_shapers(&config.shaper);
@@ -994,14 +1019,16 @@ fn run_loop(
                 //
                 // Reset the run-loop's quiescence-timer book-keeping
                 // alongside the state — a held-back tail from the prior
-                // timeline is no longer meaningful and the planner is
-                // back to "no append observed since reset." The commit
-                // counter is observability state; we keep it monotonic
-                // across resets so the test/diagnostic counters reflect
+                // timeline is no longer meaningful. After reset,
+                // `state.t_dispatched == state.t_appended == 0` so the
+                // cursor guard (`t_dispatched < t_appended - 1e-12`) is
+                // false and no spurious commit fires. The commit counter
+                // is observability state; we keep it monotonic across
+                // resets so the test/diagnostic counters reflect
                 // cumulative timer-fire history (resetting it would
                 // confuse downstream consumers reading the AtomicU32).
+                sync_instant = None; // re-captured at next first dispatch
                 state.reset(home_pos);
-                last_append_time = None;
             }
 
             PlannerMsg::Underrun { recovered_pos } | PlannerMsg::ForceIdle { recovered_pos } => {
@@ -1021,10 +1048,11 @@ fn run_loop(
                 // and re-seeds each axis queue with the new home
                 // position at `v = 0`. Per-axis kernels are
                 // preserved (this is a position re-anchor, not a
-                // shaper config swap). The run-loop's
-                // `last_append_time` is reset alongside the state — a
-                // held-back tail from the prior timeline is no longer
-                // meaningful.
+                // shaper config swap). After reset,
+                // `state.t_dispatched == state.t_appended == 0` so the
+                // cursor guard (`t_dispatched < t_appended - 1e-12`)
+                // correctly reads "no held-back tail" — a held-back
+                // tail from the prior timeline is no longer meaningful.
                 //
                 // **Scope note for Task 5.2 bridge integration.** The
                 // bridge currently surfaces `RuntimeEvent::Fault` to
@@ -1046,8 +1074,8 @@ fn run_loop(
                 // fault as a connection break, drops the planner,
                 // re-`init_planner`s, and re-homes — which
                 // constructs a fresh `ShaperState`.
+                sync_instant = None; // re-captured at next first dispatch
                 state.reset(recovered_pos);
-                last_append_time = None;
             }
 
             PlannerMsg::ClockSyncRearm { new_bias: _ } => {
@@ -1103,7 +1131,7 @@ fn run_loop(
                 // the variant is retained so the wire-format is
                 // forward-compatible once the bridge takes the
                 // ordering-(1) path.
-                if last_append_time.is_some() {
+                if state.t_dispatched < state.t_appended - 1e-12 {
                     let _ok = run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
@@ -1112,7 +1140,6 @@ fn run_loop(
                         &last_move_time_bits,
                         &commit_fire_count,
                     );
-                    last_append_time = None;
                 }
             }
 
@@ -1233,4 +1260,3 @@ fn required_to_axis(req: RequiredShaper) -> AxisShaper {
 
 #[cfg(test)]
 mod tests;
-

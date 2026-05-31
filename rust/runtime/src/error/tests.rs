@@ -15,8 +15,14 @@ fn every_runtime_error_variant_maps_to_a_distinct_or_grouped_code() {
         ),
         (RuntimeError::FaultLatched, KALICO_ERR_FAULT_LATCHED),
         (RuntimeError::Underrun, KALICO_ERR_UNDERRUN),
-        (RuntimeError::StepBurstExceeded, KALICO_ERR_STEP_BURST_EXCEEDED),
-        (RuntimeError::ZeroDurationSegment, KALICO_ERR_ZERO_DURATION_SEGMENT),
+        (
+            RuntimeError::StepBurstExceeded,
+            KALICO_ERR_STEP_BURST_EXCEEDED,
+        ),
+        (
+            RuntimeError::ZeroDurationSegment,
+            KALICO_ERR_ZERO_DURATION_SEGMENT,
+        ),
         (RuntimeError::HomingTrip, KALICO_ERR_HOMING_TRIP),
         (RuntimeError::BoundaryLoopExhausted, KALICO_ERR_INTERNAL),
         (RuntimeError::NaNOrInfFromEval, KALICO_ERR_INTERNAL),
@@ -63,7 +69,10 @@ fn fault_code_step6_numeric_values() {
 
 #[test]
 fn host_disconnect_round_trips() {
-    assert_eq!(FaultCode::HostDisconnect.as_i32(), KALICO_ERR_HOST_DISCONNECT);
+    assert_eq!(
+        FaultCode::HostDisconnect.as_i32(),
+        KALICO_ERR_HOST_DISCONNECT
+    );
     assert_eq!(KALICO_ERR_HOST_DISCONNECT, -200);
 }
 
@@ -88,10 +97,22 @@ fn host_dispatcher_timeout_round_trips() {
 #[test]
 fn host_codes_distinct_from_mcu() {
     assert_ne!(KALICO_ERR_HOST_DISCONNECT, KALICO_ERR_TRACE_OVERFLOW);
-    assert_ne!(KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED, KALICO_ERR_TRACE_OVERFLOW);
-    assert_ne!(KALICO_ERR_HOST_DISPATCHER_TIMEOUT, KALICO_ERR_TRACE_OVERFLOW);
-    assert_ne!(KALICO_ERR_HOST_DISCONNECT, KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED);
-    assert_ne!(KALICO_ERR_HOST_DISCONNECT, KALICO_ERR_HOST_DISPATCHER_TIMEOUT);
+    assert_ne!(
+        KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED,
+        KALICO_ERR_TRACE_OVERFLOW
+    );
+    assert_ne!(
+        KALICO_ERR_HOST_DISPATCHER_TIMEOUT,
+        KALICO_ERR_TRACE_OVERFLOW
+    );
+    assert_ne!(
+        KALICO_ERR_HOST_DISCONNECT,
+        KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED
+    );
+    assert_ne!(
+        KALICO_ERR_HOST_DISCONNECT,
+        KALICO_ERR_HOST_DISPATCHER_TIMEOUT
+    );
     assert_ne!(
         KALICO_ERR_HOST_RETRANSMIT_EXHAUSTED,
         KALICO_ERR_HOST_DISPATCHER_TIMEOUT
@@ -111,7 +132,10 @@ fn fault_code_stepping_redesign_numeric_values() {
         FaultCode::SpiQueueOverflow.as_i32(),
         KALICO_ERR_SPI_QUEUE_OVERFLOW
     );
-    assert_eq!(FaultCode::MathNonFinite.as_i32(), KALICO_ERR_MATH_NON_FINITE);
+    assert_eq!(
+        FaultCode::MathNonFinite.as_i32(),
+        KALICO_ERR_MATH_NON_FINITE
+    );
     assert_eq!(
         FaultCode::PieceAdvanceUnderflow.as_i32(),
         KALICO_ERR_PIECE_ADVANCE_UNDERFLOW
@@ -132,10 +156,24 @@ fn fault_code_stepping_redesign_numeric_values() {
         FaultCode::StepRateExceedsMcuCeiling.as_i32(),
         KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING
     );
+    assert_eq!(
+        FaultCode::PieceStartInPast.as_i32(),
+        KALICO_ERR_PIECE_START_IN_PAST
+    );
+    assert_eq!(FaultCode::RingFull.as_i32(), KALICO_ERR_RING_FULL);
+    assert_eq!(
+        FaultCode::StepsPerSampleExceeded.as_i32(),
+        KALICO_ERR_STEPS_PER_SAMPLE_EXCEEDED
+    );
+    assert_eq!(
+        FaultCode::TickIntervalExceeded.as_i32(),
+        KALICO_ERR_TICK_INTERVAL_EXCEEDED
+    );
     // Cross-check: distinct from each other and from the existing
     // -7..-202 range.
     assert_eq!(KALICO_ERR_STEP_QUEUE_OVERFLOW, -300);
     assert_eq!(KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING, -307);
+    assert_eq!(KALICO_ERR_TICK_INTERVAL_EXCEEDED, -311);
     assert_ne!(
         KALICO_ERR_STEP_QUEUE_OVERFLOW,
         KALICO_ERR_HOST_DISPATCHER_TIMEOUT

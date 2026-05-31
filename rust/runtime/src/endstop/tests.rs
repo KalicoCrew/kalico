@@ -169,7 +169,10 @@ fn trip_immediately_assertion_at_arm_trips_on_first_sample() {
 fn arm_policy_try_from_decodes_known_variants_and_rejects_others() {
     assert_eq!(ArmPolicy::try_from(0).unwrap(), ArmPolicy::TripImmediately);
     assert_eq!(ArmPolicy::try_from(1).unwrap(), ArmPolicy::WaitForClear);
-    assert_eq!(ArmPolicy::try_from(2).unwrap(), ArmPolicy::IgnoreUntilMoving);
+    assert_eq!(
+        ArmPolicy::try_from(2).unwrap(),
+        ArmPolicy::IgnoreUntilMoving
+    );
     assert_eq!(ArmPolicy::try_from(3).unwrap_err(), 3);
     assert_eq!(ArmPolicy::try_from(255).unwrap_err(), 255);
 }
@@ -239,11 +242,7 @@ fn future_arm_clock_ignores_early_assertions() {
 fn tick_returns_continue_for_non_armed_non_tripped_states() {
     let _guard = reset();
     set_pin_level(8, true);
-    for state in [
-        ArmState::Idle,
-        ArmState::TrippedSent,
-        ArmState::Disarmed,
-    ] {
+    for state in [ArmState::Idle, ArmState::TrippedSent, ArmState::Disarmed] {
         ARM.state.store(state as u8, Ordering::Release);
         assert_eq!(tick(1, [0, 0, 0], &[1]), TripAction::Continue);
     }
@@ -445,10 +444,7 @@ fn extend_deadline_ignored_before_first_tick() {
 fn software_trip_transitions_armed_to_tripped_ready() {
     let _guard = reset();
     arm(sw_msg(10_000)).expect("arm");
-    assert_eq!(
-        software_trip(42, 500, &[10, 20]),
-        TripResult::Tripped
-    );
+    assert_eq!(software_trip(42, 500, &[10, 20]), TripResult::Tripped);
     let evt = drain_trip();
     assert_eq!(evt.arm_id, 42);
     assert_eq!(evt.trip_source_idx, TRIP_SOURCE_SOFTWARE);
@@ -459,10 +455,7 @@ fn software_trip_transitions_armed_to_tripped_ready() {
 fn software_trip_wrong_arm_id_is_no_op() {
     let _guard = reset();
     arm(sw_msg(10_000)).expect("arm");
-    assert_eq!(
-        software_trip(99, 500, &[10, 20]),
-        TripResult::WrongArmId
-    );
+    assert_eq!(software_trip(99, 500, &[10, 20]), TripResult::WrongArmId);
     // Still armed.
     assert!(matches_u8(
         ARM.state.load(Ordering::Acquire),
@@ -478,10 +471,7 @@ fn software_trip_on_non_armed_state_is_not_armed() {
     // fails) rather than WrongArmId (arm_id check fails).
     ARM.arm_id.store(0, Ordering::Release);
     ARM.state.store(ArmState::Disarmed as u8, Ordering::Release);
-    assert_eq!(
-        software_trip(0, 500, &[]),
-        TripResult::NotArmed
-    );
+    assert_eq!(software_trip(0, 500, &[]), TripResult::NotArmed);
 }
 
 #[test]

@@ -134,11 +134,9 @@ uint32_t diag_get_tim5_count(void);
 uint32_t diag_get_rt_tick_count(void);
 uint32_t diag_get_rt_tick_cycles_max(void);
 
-// LIVE counter accessors for TX-side drops — exposed for the 2026-05-17
-// "credit_freed never reaches host" investigation (fault_detail tag 0xF9).
-// kalico_native_emit_credit_freed silently drops the frame when
-// transmit_buf is full; if retired_through_segment_id advanced but the
-// host sees zero kalico_credit_freed events, this is the suspect path.
+// LIVE counter accessors for TX-side drops — kalico-native frame emits
+// silently drop the frame when transmit_buf is full. Useful for diagnosing
+// dropped StatusHeartbeat / FaultEvent frames under USB-CDC TX congestion.
 uint32_t diag_get_tx_drops_kalico(void);
 uint32_t diag_get_tx_drops_klipper(void);
 

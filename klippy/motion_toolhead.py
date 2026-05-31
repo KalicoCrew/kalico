@@ -747,7 +747,14 @@ class MotionToolhead(ToolHead):
         self.bridge.wait_moves()
 
     def wait_moves_and_mcu(self):
-        self.flush_step_generation()
+        self.bridge.drain_motion()
+        self._ground_pending_end_time_after_bridge_drain()
+
+    def cmd_M400(self, gcmd):
+        # Upstream ToolHead.__init__ registers M400 -> self.cmd_M400; via
+        # Python MRO that binds to this override in bridge mode, so M400
+        # routes through the full motion drain instead of wait_moves().
+        self.wait_moves_and_mcu()
 
     def _bridge_mcus(self):
         if not hasattr(self, '_cached_bridge_mcus'):
@@ -952,12 +959,15 @@ class MotionToolhead(ToolHead):
             raise
 
     def _configure_axes_per_mcu(self, bridge_mcus):
-        """Send `ConfigureAxes` over the kalico-native transport for each
-        bridge-attached MCU. Maps klippy `MCU_stepper` objects to motor
-        slots per kinematics:
+        """Configure each bridge-attached MCU's axes via the per-axis
+        `kalico_configure_axis` text command. Maps klippy `MCU_stepper`
+        objects to motor slots per kinematics:
           corexy:    [A=stepper_x, B=stepper_y, Z=stepper_z, E=extruder]
           cartesian: [X=stepper_x, Y=stepper_y, Z=stepper_z, E=extruder]
-        Steppers not on a given MCU are omitted from that MCU's blob.
+        Steppers not on a given MCU are omitted from that MCU's bindings.
+
+        The legacy batch `ConfigureAxes` (binary 0x0030) blob is no longer
+        sent — see the note at its former call site below.
         """
         kin = (self.kinematics_name or "").lower()
         if kin == "corexy":
@@ -1165,11 +1175,19 @@ class MotionToolhead(ToolHead):
                     self.bridge.register_phase_motor(
                         mcu_handle, motor_idx, bus_id, cs_pin_id,
                     )
-            self.bridge.configure_axes(
-                mcu_handle, kin_tag, present_mask, awd_mask,
-                invert_mask, steps_per_mm, step_modes,
-                phase_configs=phase_configs if any_phase_stepping else None,
-            )
+            # NOTE: the legacy batch `ConfigureAxes` (binary 0x0030) blob send
+            # was removed here. Per the simple-MCU-contract design (§3.3,
+            # docs/superpowers/specs/2026-05-27-simple-mcu-contract-design.md)
+            # the batch blob — kinematics tag, present/awd/invert masks, and a
+            # fixed [f32;4] steps_per_mm array — is superseded by the per-axis
+            # `ConfigureAxis` whose currently-implemented realization is the
+            # `kalico_configure_axis` text command issued below (microstep_
+            # distance = 1/steps_per_mm, per-stepper bindings, dir-invert,
+            # mode). The MCU dispatcher (src/kalico_dispatch.c) never had a
+            # 0x0030 handler, so the blob always timed out; nothing it carried
+            # is lost — every field is either removed-by-design (kinematics is
+            # host-pre-baked; no fixed-4 axis assumption) or already sent
+            # per-axis below.
             # Step 7-D: bind every stepper attached to each runtime motor
             # index to the C-side runtime emit table. config_stepper was
             # already issued during MCU config phase; the runtime binding is
@@ -1196,7 +1214,7 @@ class MotionToolhead(ToolHead):
                 configure_axis_cmd = mcu_obj.lookup_command(
                     "kalico_configure_axis axis_idx=%c mode=%c"
                     " microstep_distance=%u extrusion_per_xy_mm=%u"
-                    " stepper_count=%c steppers=%*s"
+                    " stepper_count=%c ring_depth=%hu steppers=%*s"
                 )
             except Exception:
                 logging.info(
@@ -1206,6 +1224,24 @@ class MotionToolhead(ToolHead):
                     name,
                 )
                 continue
+
+            # Clean-state reset before (re)configuring this MCU's axes. The
+            # engine's ring bump allocator never frees, and configure_axis is
+            # re-sent on every klippy:connect; without this reset a plain
+            # RESTART / systemctl restart / crash-reconnect (which does NOT
+            # reboot bridge MCUs) overflows the pool -> KALICO_ERR_RING_FULL.
+            # Idempotent: a no-op on a freshly-booted MCU. Same command queue,
+            # so it is processed before the configure_axis commands below.
+            try:
+                reset_cmd = mcu_obj.lookup_command("kalico_runtime_reset")
+            except Exception:
+                reset_cmd = None
+            if reset_cmd is not None:
+                reset_cmd.send([])
+                logging.info(
+                    "MotionToolhead: sent kalico_runtime_reset to mcu=%s",
+                    name,
+                )
 
             # Group bind_list by axis (motor_idx). bind_list entries are
             # (motor_idx, stepper_name, stepper_oid, invert_dir) tuples.
@@ -1255,9 +1291,12 @@ class MotionToolhead(ToolHead):
                                 break
                     blob.append(tmc_oid)
                     blob.append(FLAGS_DEFAULT)
+                ring_depth = self.bridge.ring_depth_for_axis(
+                    mcu_handle, axis_idx
+                )
                 configure_axis_cmd.send([
                     axis_idx, MODE_PULSE, microstep_bits, extrusion_bits,
-                    len(bindings), bytes(blob),
+                    len(bindings), ring_depth, bytes(blob),
                 ])
             logging.info(
                 "MotionToolhead: configure_axes mcu=%s kin=%d "

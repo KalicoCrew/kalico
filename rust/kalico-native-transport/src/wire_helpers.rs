@@ -37,17 +37,12 @@ pub fn decode_message_header(buf: &[u8]) -> Option<(MessageHeader, &[u8])> {
     let kind_raw = u16::from_le_bytes([buf[0], buf[1]]);
     let version = buf[2];
     let correlation_id = u32::from_le_bytes([buf[3], buf[4], buf[5], buf[6]]);
-    Some((MessageHeader { kind_raw, version, correlation_id }, &buf[PER_MESSAGE_HEADER_LEN..]))
-}
-
-/// Decode just the `reset_epoch` field out of a `StatusEvent` body (§7.4).
-/// Layout: `engine_status` u8 | `queue_depth` u8 | `current_segment_id` u32 |
-/// `last_fault` i32 | `fault_detail` u32 | `reset_epoch` u32. `reset_epoch` is at
-/// offset 14.
-#[must_use]
-pub fn status_event_reset_epoch(body: &[u8]) -> Option<u32> {
-    if body.len() < 18 {
-        return None;
-    }
-    Some(u32::from_le_bytes([body[14], body[15], body[16], body[17]]))
+    Some((
+        MessageHeader {
+            kind_raw,
+            version,
+            correlation_id,
+        },
+        &buf[PER_MESSAGE_HEADER_LEN..],
+    ))
 }

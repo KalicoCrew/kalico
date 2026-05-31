@@ -17,9 +17,9 @@
 //! There are two compile-time tables in this module, both 1024-entry, both
 //! amplitude 248, but ordered differently:
 //!
-//! - `LUT_ENTRIES` — `(i_a = sin, i_b = cos)`. Pre-existing, consumed by
-//!   `modulator.rs` and the modulator integration tests. Anchor at idx 0
-//!   is `(0, 248)`. Do not change without sweeping all consumers.
+//! - `LUT_ENTRIES` — `(i_a = sin, i_b = cos)`. Pre-existing; consumed by
+//!   `phase_lut::lookup` (and the `legacy_lut_entries_anchors` test). Anchor
+//!   at idx 0 is `(0, 248)`. Do not change without sweeping all consumers.
 //!
 //! - `PHASE_LUT` — `(coil_A = cos, coil_B = sin)`. Added by the
 //!   stepping-redesign work (spec 2026-05-19) so the TIM5 dispatch path
@@ -30,8 +30,8 @@
 //! Both tables are emitted by `build.rs`; the duplication is intentional
 //! and the per-table doc comments here document the swap. When silicon
 //! follow-up replaces the identity sinusoid with a calibration LUT, the
-//! two tables will need to be reconciled (probably by retiring
-//! `LUT_ENTRIES` once the old modulator is removed).
+//! two tables will need to be reconciled — `LUT_ENTRIES` is now only used
+//! by `lookup` and could be retired in that follow-up.
 
 pub const MOTOR_PERIOD: usize = 1024;
 pub const CURRENT_AMPLITUDE: i16 = 248;

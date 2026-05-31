@@ -32,12 +32,6 @@ pub static runtime_clock_freq: u32 = 520_000_000;
 pub static runtime_sample_rate_hz: u32 = 40_000;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn runtime_tick_enable() {}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn runtime_tick_disable() {}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn runtime_cyccnt_read() -> u32 {
     0
 }
@@ -52,9 +46,6 @@ static STUB_MCU_CLOCK: AtomicU64 = AtomicU64::new(0xDEAD_BEEF_CAFE_BABE);
 pub extern "C" fn runtime_widened_host_clock() -> u64 {
     STUB_MCU_CLOCK.load(Ordering::Relaxed)
 }
-
-#[unsafe(no_mangle)]
-pub extern "C" fn runtime_reset_stepper_bindings() {}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn runtime_diag_progress(_tag: u32, _stage: u32, _value: u32) {}
@@ -74,16 +65,15 @@ fn clock_sync_returns_widened_host_clock_not_seqlock() {
     let r = unsafe {
         kalico_c_api::kalico_runtime_clock_sync_request(
             rt,
-            42,    // request_id (echoed; we don't care here)
-            0,     // host_send_time_lo (foreground unused)
-            0,     // host_send_time_hi (foreground unused)
+            42, // request_id (echoed; we don't care here)
+            0,  // host_send_time_lo (foreground unused)
+            0,  // host_send_time_hi (foreground unused)
             &mut mcu_clock,
         )
     };
     assert_eq!(r, 0, "clock_sync_request returned non-OK: {r}");
     assert_eq!(
-        mcu_clock,
-        0xDEAD_BEEF_CAFE_BABE,
+        mcu_clock, 0xDEAD_BEEF_CAFE_BABE,
         "clock_sync surfaced the wrong clock source — expected the stub's \
          runtime_widened_host_clock value, got something else. This means \
          the handler is reading from the §11.4 seqlock (which freezes \
@@ -95,15 +85,8 @@ fn clock_sync_returns_widened_host_clock_not_seqlock() {
     // value — proves the function reads the clock on every call rather
     // than caching at init.
     STUB_MCU_CLOCK.store(0x1234_5678_9ABC_DEF0, Ordering::Relaxed);
-    let r2 = unsafe {
-        kalico_c_api::kalico_runtime_clock_sync_request(
-            rt,
-            43,
-            0,
-            0,
-            &mut mcu_clock,
-        )
-    };
+    let r2 =
+        unsafe { kalico_c_api::kalico_runtime_clock_sync_request(rt, 43, 0, 0, &mut mcu_clock) };
     assert_eq!(r2, 0);
     assert_eq!(mcu_clock, 0x1234_5678_9ABC_DEF0);
 }

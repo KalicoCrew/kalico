@@ -196,26 +196,6 @@ runtime_motor_binding_count(uint8_t motor_idx)
     return runtime_motor_stepper_count[motor_idx];
 }
 
-// Foreground reset — clears the motor→stepper binding table so the next
-// `kalico_configure_axes_blob` populates a fresh slate. Called from the Rust
-// FFI on a fresh klippy session (see `kalico_runtime_configure_axes_blob`
-// in `rust/kalico-c-api/src/runtime_ffi.rs`). Without this, the table
-// accumulates across klippy reconnects (the MCU stays powered) and a
-// reconnected klippy hits `RUNTIME_MAX_STEPPERS_PER_MOTOR` after two
-// reconnects.
-__attribute__((used, externally_visible))
-void
-runtime_reset_stepper_bindings(void)
-{
-    for (uint8_t m = 0; m < RUNTIME_MOTOR_COUNT; m++) {
-        runtime_motor_stepper_count[m] = 0;
-        runtime_motor_last_dir[m] = -1;
-        for (uint8_t i = 0; i < RUNTIME_MAX_STEPPERS_PER_MOTOR; i++) {
-            runtime_motor_steppers[m][i].stepper = NULL;
-            runtime_motor_steppers[m][i].invert_dir = 0;
-        }
-    }
-}
 
 // ─── Stepping-redesign Task 11 — kalico_configure_* command handlers ─────
 //
@@ -246,8 +226,9 @@ command_kalico_configure_axis(uint32_t *args)
     uint32_t mstep_bits     = args[2];
     uint32_t extrusion_bits = args[3]; // reserved — not forwarded to current Rust FFI
     uint8_t stepper_count   = args[4];
-    uint16_t blob_len       = (uint16_t)args[5];
-    const uint8_t *blob     = command_decode_ptr(args[6]);
+    uint16_t ring_depth     = (uint16_t)args[5];
+    uint16_t blob_len       = (uint16_t)args[6];
+    const uint8_t *blob     = command_decode_ptr(args[7]);
 
     // ── Phase 1: validate every input + every binding, no mutations.
     if (axis_idx >= RUNTIME_MOTOR_COUNT)
@@ -258,6 +239,8 @@ command_kalico_configure_axis(uint32_t *args)
         shutdown("configure_axis too many steppers per axis");
     if (blob_len != (uint16_t)stepper_count * 4)
         shutdown("configure_axis blob length mismatch");
+    if (ring_depth == 0)
+        shutdown("configure_axis ring_depth must be nonzero");
     if (!runtime_handle)
         shutdown("configure_axis before runtime init");
 
@@ -294,8 +277,12 @@ command_kalico_configure_axis(uint32_t *args)
         bindings[i]._pad[0] = 0;
         bindings[i]._pad[1] = 0;
     }
+    // ring_depth: host-supplied number of 32-byte PieceEntry slots for this
+    // axis, derived as total_piece_memory / 32 / num_axes in the Rust bridge
+    // (axis_ring_depth in rust/motion-bridge/src/bridge.rs).
     int32_t rc = kalico_runtime_configure_axis(
         runtime_handle, axis_idx, mode, mstep_bits,
+        ring_depth,
         stepper_count > 0 ? bindings : 0,
         stepper_count);
     if (rc != 0)
@@ -322,10 +309,41 @@ command_kalico_configure_axis(uint32_t *args)
         per_axis_timers_installed = 1;
         init_per_axis_step_timers();
     }
+
+    // Drive the platform tick-enable now that an axis is configured. On STM32
+    // TIM5 is already armed at init, so the idempotent CR1.CEN guard makes this
+    // a no-op; on the Linux MCU build this performs the post-connect widen-seed
+    // + step-queue install (src/linux/runtime_tick_host.c). Replaces the old
+    // set_step_mode-driven enable (removed 2026-05-28).
+    extern void runtime_tick_enable(void);
+    runtime_tick_enable();
 }
 DECL_COMMAND(command_kalico_configure_axis,
              "kalico_configure_axis axis_idx=%c mode=%c microstep_distance=%u"
-             " extrusion_per_xy_mm=%u stepper_count=%c steppers=%*s");
+             " extrusion_per_xy_mm=%u stepper_count=%c ring_depth=%hu"
+             " steppers=%*s");
+
+// Host-issued clean-state reset. Sent once per MCU on every klippy:connect,
+// before the per-axis configure_axis calls, so the Rust engine's ring bump
+// allocator (and all per-axis state) starts fresh whether or not the MCU was
+// rebooted. Idempotent: a no-op on a freshly-booted MCU.
+//
+// IRQ guard: the reset clears engine state + the per-axis step queues, both of
+// which are concurrently touched by the always-armed TIM5 sample ISR and the
+// per-axis step-event timers. irq_save() blocks both for the bounded reset.
+void
+command_kalico_runtime_reset(uint32_t *args)
+{
+    (void)args;
+    if (!runtime_handle)
+        shutdown("runtime reset before runtime init");
+    irqstatus_t flag = irq_save();
+    int32_t rc = kalico_runtime_reset(runtime_handle);
+    irq_restore(flag);
+    if (rc != 0)
+        shutdown("runtime reset rejected");
+}
+DECL_COMMAND(command_kalico_runtime_reset, "kalico_runtime_reset");
 
 void
 command_kalico_phase_stepping_enable_spi(uint32_t *args)

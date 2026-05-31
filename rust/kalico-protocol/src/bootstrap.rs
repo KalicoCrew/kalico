@@ -12,8 +12,8 @@
 //! emitted by the framing layer. This module encodes/decodes the
 //! **fixed-layout body only**, exactly as specified in §5.
 //!
-//! Identify body: 1 byte.
-//! IdentifyResponse body: 81 bytes.
+//! `Identify` body: 1 byte.
+//! `IdentifyResponse` body: 81 bytes.
 
 /// Spec §5: `proto_version: u8`. Single field, single byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,7 +40,9 @@ impl Identify {
                 got: buf.len(),
             });
         }
-        Ok(Self { proto_version: buf[0] })
+        Ok(Self {
+            proto_version: buf[0],
+        })
     }
 }
 
@@ -84,6 +86,7 @@ impl IdentifyResponse {
         out.extend_from_slice(&arr);
     }
 
+    #[allow(clippy::range_plus_one)] // `BASE..BASE+LEN` is clearer than `BASE..=BASE+LEN-1` for fixed-layout offsets
     pub fn encode_body_to_array(&self) -> [u8; IDENTIFY_RESPONSE_BODY_LEN] {
         let mut b = [0u8; IDENTIFY_RESPONSE_BODY_LEN];
         b[IDR_OFF_PROTO_VERSION] = self.proto_version;
@@ -99,6 +102,7 @@ impl IdentifyResponse {
         b
     }
 
+    #[allow(clippy::range_plus_one)] // `BASE..BASE+LEN` is clearer than `BASE..=BASE+LEN-1` for fixed-layout offsets
     pub fn decode_body(buf: &[u8]) -> Result<Self, BootstrapDecodeError> {
         if buf.len() != IDENTIFY_RESPONSE_BODY_LEN {
             return Err(BootstrapDecodeError::WrongLength {

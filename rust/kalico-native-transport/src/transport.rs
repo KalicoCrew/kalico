@@ -10,19 +10,16 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
+use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use thiserror::Error;
 
 use crate::bootstrap::{
-    decode_identify_response, encode_identify, BOOTSTRAP_IDENTIFY_RESPONSE_LEN,
+    BOOTSTRAP_IDENTIFY_RESPONSE_LEN, decode_identify_response, encode_identify,
 };
 use crate::connection::Connection;
 use crate::demux::{Demuxer, Frame, StreamError};
-use crate::frame::{encode_frame, CHANNEL_CONTROL, CHANNEL_EVENTS};
-use crate::wire_helpers::{
-    decode_message_header, encode_message_header, status_event_reset_epoch,
-    MESSAGE_VERSION_DEFAULT,
-};
+use crate::frame::{CHANNEL_CONTROL, CHANNEL_EVENTS, encode_frame};
+use crate::wire_helpers::{MESSAGE_VERSION_DEFAULT, decode_message_header, encode_message_header};
 use kalico_protocol::{MessageKind, PROTO_VERSION};
 
 #[derive(Debug, Error)]
@@ -185,7 +182,10 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
         // prior session can't keep us in Identified.
         *self.inner.state.lock().unwrap() = ConnectionState::Unidentified;
 
-        let cid = self.inner.next_correlation_id.fetch_add(1, Ordering::SeqCst);
+        let cid = self
+            .inner
+            .next_correlation_id
+            .fetch_add(1, Ordering::SeqCst);
         let payload = encode_identify(cid, self.inner.expected_proto_version);
         let frame = encode_frame(CHANNEL_CONTROL, &payload);
         self.inner.conn.lock().unwrap().write_all(&frame)?;
@@ -223,8 +223,12 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
             return Ok(());
         }
         let (frames, errors) = self.inner.demuxer.lock().unwrap().feed_slice(&buf[..n]);
-        for e in errors { self.dispatch_error(e); }
-        for f in frames { self.dispatch_frame(f); }
+        for e in errors {
+            self.dispatch_error(e);
+        }
+        for f in frames {
+            self.dispatch_frame(f);
+        }
         Ok(())
     }
 
@@ -259,7 +263,10 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
         }
         // For every other message we need to be Identified. If a stale frame
         // arrives mid-reset, drop it.
-        if !matches!(*self.inner.state.lock().unwrap(), ConnectionState::Identified { .. }) {
+        if !matches!(
+            *self.inner.state.lock().unwrap(),
+            ConnectionState::Identified { .. }
+        ) {
             log::trace!("dropping kalico frame in non-Identified state, kind 0x{kind_raw:04x}");
             return;
         }
@@ -268,28 +275,25 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
             return;
         };
 
-        // Reset-epoch detection for StatusEvent.
-        if kind == MessageKind::StatusEvent {
-            if let Some(epoch) = status_event_reset_epoch(body) {
-                self.maybe_handle_epoch(epoch);
-            }
-        }
-
         if channel == CHANNEL_EVENTS || kind.is_event() {
-            let _ = self.inner.events_tx.send(EventMessage { kind, body: body.to_vec() });
+            let _ = self.inner.events_tx.send(EventMessage {
+                kind,
+                body: body.to_vec(),
+            });
             return;
         }
 
         // Control-channel response: route to pending call by correlation_id.
         if header.correlation_id == 0 {
-            log::warn!(
-                "control-channel response with correlation_id=0 (kind 0x{kind_raw:04x})"
-            );
+            log::warn!("control-channel response with correlation_id=0 (kind 0x{kind_raw:04x})");
             return;
         }
         let mut pending = self.inner.pending.lock().unwrap();
         if let Some(p) = pending.remove(&header.correlation_id) {
-            let _ = p.notify.send(CallOutcome::Response { kind, body: body.to_vec() });
+            let _ = p.notify.send(CallOutcome::Response {
+                kind,
+                body: body.to_vec(),
+            });
         } else {
             log::warn!(
                 "no pending call for correlation_id {} (kind 0x{:04x})",
@@ -331,49 +335,22 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
         let new_epoch = resp.reset_epoch;
         let prior = std::mem::replace(
             &mut *self.inner.state.lock().unwrap(),
-            ConnectionState::Identified { reset_epoch: new_epoch },
+            ConnectionState::Identified {
+                reset_epoch: new_epoch,
+            },
         );
         let evt = match prior {
             ConnectionState::Identified { reset_epoch: old } if old != new_epoch => {
-                EpochChange::Changed { old, new: new_epoch }
+                EpochChange::Changed {
+                    old,
+                    new: new_epoch,
+                }
             }
-            _ => EpochChange::Established { reset_epoch: new_epoch },
+            _ => EpochChange::Established {
+                reset_epoch: new_epoch,
+            },
         };
         let _ = self.inner.epoch_tx.send(evt);
-    }
-
-    fn maybe_handle_epoch(&self, observed: u32) {
-        let mut state = self.inner.state.lock().unwrap();
-        let ConnectionState::Identified { reset_epoch } = &*state else {
-            return;
-        };
-        if *reset_epoch == observed {
-            return;
-        }
-        let old = *reset_epoch;
-        // Atomic transition per spec §9 step (1)..(5):
-        //  1. Stop new sends — done by transitioning out of Identified.
-        //  2. Drop in-flight correlation IDs (return TransportError::Reset).
-        //  3. Discard pending RX bytes that haven't been dispatched.
-        //  4. Bubble up an "epoch-changed" signal.
-        //  5. Re-issue Identify and re-validate (caller drives this).
-        *state = ConnectionState::Unidentified;
-        drop(state);
-
-        // (2) drain pending calls.
-        let drained: Vec<PendingCall> = {
-            let mut p = self.inner.pending.lock().unwrap();
-            p.drain().map(|(_, v)| v).collect()
-        };
-        for p in drained {
-            let _ = p.notify.send(CallOutcome::Reset);
-        }
-        // (3) reset demuxer state.
-        *self.inner.demuxer.lock().unwrap() = Demuxer::new();
-        // (4) signal epoch change.
-        let _ = self.inner.epoch_tx.send(EpochChange::Changed { old, new: observed });
-        // (5) re-identify is the caller's job (reactor / motion-bridge); we
-        // surface enough state for them to drive it.
     }
 
     fn fault(&self, msg: String) {
@@ -411,14 +388,25 @@ impl<C: Connection + 'static> Transport for KalicoNativeTransport<C> {
         if tag != ConnectionStateTag::Identified {
             return Err(TransportError::NotIdentified(tag));
         }
-        let cid = self.inner.next_correlation_id.fetch_add(1, Ordering::SeqCst);
+        let cid = self
+            .inner
+            .next_correlation_id
+            .fetch_add(1, Ordering::SeqCst);
         // Allocate the wait slot before sending so a fast response can't race past it.
         let (tx, rx) = bounded::<CallOutcome>(1);
-        self.inner.pending.lock().unwrap().insert(cid, PendingCall { notify: tx });
+        self.inner
+            .pending
+            .lock()
+            .unwrap()
+            .insert(cid, PendingCall { notify: tx });
 
         // Build payload: per-message header + caller body.
         let mut payload = Vec::with_capacity(7 + body.len());
-        payload.extend_from_slice(&encode_message_header(msg_type, MESSAGE_VERSION_DEFAULT, cid));
+        payload.extend_from_slice(&encode_message_header(
+            msg_type,
+            MESSAGE_VERSION_DEFAULT,
+            cid,
+        ));
         payload.extend_from_slice(body);
         let frame = encode_frame(CHANNEL_CONTROL, &payload);
         self.inner.conn.lock().unwrap().write_all(&frame)?;

@@ -524,6 +524,107 @@ impl ShaperState {
         None
     }
 
+    /// The settled toolhead position: each axis's unshaped curve evaluated at
+    /// the end of the appended timeline (`t_appended`). After a `T_COMMIT`
+    /// decel-to-zero commit this is the rest position, suitable for feeding to
+    /// [`Self::reset`] to rewind the planner clock without moving the toolhead.
+    ///
+    /// Shaped axes (`h > 0`) always carry pieces covering `t_appended`, so they
+    /// read exactly. Passthrough / none axes (`h == 0`) may have an empty queue;
+    /// their fallback (`0.0`) is a don't-care because [`reseed_axis_queue`]
+    /// discards the seed position for `h == 0` axes — an empty queue carries no
+    /// position, and the next move on such an axis re-derives position from its
+    /// own absolute geometry.
+    #[must_use]
+    pub fn current_position(&self) -> [f64; 4] {
+        std::array::from_fn(|i| self.axis_position_at(i, self.t_appended).unwrap_or(0.0))
+    }
+
+    /// Advance the planner timeline from the current `t_appended` to `target_t`
+    /// by inserting a "park at current position, v=0" rest segment on every
+    /// shaped axis. Host-side only — nothing is dispatched; the MCU is genuinely
+    /// at rest (it holds position with an empty queue), so the shaper history
+    /// window stays valid with no reseed — the hold *is* the rest extension.
+    ///
+    /// No-op when `target_t <= t_appended` (caller's "queued-ahead" branch).
+    ///
+    /// **Precondition:** fully-committed state — `t_dispatched == t_appended` and
+    /// `pending_dispatch` empty. The Move-arm placement rule commits the held-back
+    /// tail via `run_commit_and_dispatch` immediately before calling this.
+    ///
+    /// After this call ALL FOUR cursors advance to `target_t`
+    /// (`t_appended == t_decel_start == t_dispatched == t_shaped == target_t`),
+    /// and `uncommitted_moves` / `planned_fitted` / `planned_meta` are cleared.
+    /// `t_dispatched` MUST advance: `append_and_replan` plans the next move at
+    /// `time_offset = t_dispatched` and `replace_uncommitted_axis_pieces` drops
+    /// pieces with `u_start >= t_dispatched`. Leaving it behind would drop the
+    /// hold (`u_start == old t_appended`) and plan the next move back at the old
+    /// time — re-creating the -308. With `t_dispatched = target_t`, the hold
+    /// pieces (`u_start < t_dispatched`) survive as committed shaping history and
+    /// the next move plans from "now".
+    pub fn advance_idle(&mut self, target_t: f64) {
+        if target_t <= self.t_appended + 1e-12 {
+            return;
+        }
+        debug_assert!(
+            (self.t_dispatched - self.t_appended).abs() < 1e-9,
+            "advance_idle requires fully-committed state: t_dispatched {} != t_appended {}",
+            self.t_dispatched,
+            self.t_appended,
+        );
+        debug_assert!(
+            self.pending_dispatch.is_empty(),
+            "advance_idle requires pending_dispatch drained before advancing",
+        );
+        let hold_start = self.t_appended;
+        let hold_end = target_t;
+        let end_pos: [f64; 4] =
+            std::array::from_fn(|i| self.axis_position_at(i, hold_start).unwrap_or(0.0));
+
+        for (i, axis) in self.axes.iter_mut().enumerate() {
+            if axis.h > 0.0 {
+                axis.pieces.push_back(BezierPiece {
+                    u_start: hold_start,
+                    u_end: hold_end,
+                    coeffs: vec![end_pos[i]],
+                });
+            }
+        }
+
+        self.uncommitted_moves.clear();
+        self.planned_fitted.clear();
+        self.planned_meta.clear();
+        self.t_appended = hold_end;
+        self.t_decel_start = hold_end;
+        self.t_dispatched = hold_end;
+        self.t_shaped = hold_end;
+    }
+
+    /// Evaluate axis `axis_idx`'s unshaped position curve at time `t`. Mirrors
+    /// [`Self::axis_velocity_at`] (same piece-walk and terminal clamp) but
+    /// evaluates the piece itself rather than its derivative. `None` when the
+    /// axis queue is empty or no piece covers `t`.
+    fn axis_position_at(&self, axis_idx: usize, t: f64) -> Option<f64> {
+        let pieces = &self.axes[axis_idx].pieces;
+        if pieces.is_empty() {
+            return None;
+        }
+
+        // Last-piece terminal: clamp `t` to `u_end` (the decel-to-zero ends at
+        // the target position; evaluating at `u_end` returns it).
+        let last = pieces.back().unwrap();
+        if t >= last.u_end && t <= last.u_end + TIME_LOOKUP_TOLERANCE {
+            return Some(last.evaluate(last.u_end));
+        }
+
+        for p in pieces {
+            if p.u_start - TIME_LOOKUP_TOLERANCE <= t && t < p.u_end {
+                return Some(p.evaluate(t));
+            }
+        }
+        None
+    }
+
     /// **Phase 3 Task 3.1.5 — partial-commit replan.** Identify the move
     /// (if any) whose time domain straddles `t_dispatched`, read the
     /// unshaped toolhead position at `t_dispatched` from the **prior**

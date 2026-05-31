@@ -93,8 +93,7 @@ pub const KALICO_ERR_INVALID_ARG: i32 = -26;
 
 // Phase-stepping configure_axes (Task 4 / spec §3.2, §4.1).
 /// Spec §3.2 audible-band protection: at most 2 motors may be configured for
-/// phase stepping. Hard parse-time reject when the 33-byte
-/// `configure_axes_blob` requests more.
+/// phase stepping. Hard parse-time reject on excess motor count.
 pub const KALICO_ERR_INVALID_PHASE_AXIS_COUNT: i32 = -27;
 /// Two phase-stepped motors attempted to share a single SPI bus. Reserved
 /// for Task 6 (`runtime_modulated_tick`); declared here so the configure
@@ -120,6 +119,16 @@ pub const KALICO_ERR_SAMPLE_RATE_MISCONFIGURED: i32 = -304;
 pub const KALICO_ERR_POSITION_COUNT_OVERFLOW: i32 = -305;
 pub const KALICO_ERR_JOG_PARAMETERS_INVALID: i32 = -306;
 pub const KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING: i32 = -307;
+/// Spec §6 safety invariant: ISR reached a piece whose start_time is more than
+/// 2 ISR ticks in the past — MCU was not fed in time.  Hard fault.
+pub const KALICO_ERR_PIECE_START_IN_PAST: i32 = -308;
+/// Ring is full — `PushPieces` rejected because the axis ring has no space.
+pub const KALICO_ERR_RING_FULL: i32 = -309;
+/// Steps-per-sample limit exceeded — unrecoverable position-baseline discontinuity.
+pub const KALICO_ERR_STEPS_PER_SAMPLE_EXCEEDED: i32 = -310;
+/// TIM5 inter-arrival gap exceeded the allowed multiple of `sample_period_cycles`.
+/// The ISR was starved; fail loud before acting on stale time.
+pub const KALICO_ERR_TICK_INTERVAL_EXCEEDED: i32 = -311;
 
 /// Fault taxonomy. Spec §9.1. Each code has a specific recovery semantic;
 /// collapsing to a catch-all loses diagnostic information.
@@ -214,6 +223,22 @@ pub enum FaultCode {
     PositionCountOverflow = -305,
     JogParametersInvalid = -306,
     StepRateExceedsMcuCeiling = -307,
+    /// ISR reached a piece whose start_time is more than 2 ISR ticks in the past.
+    PieceStartInPast = -308,
+    /// `PushPieces` rejected: axis ring is full.
+    RingFull = -309,
+    /// ISR pulse dispatch computed a single-sample step delta larger than
+    /// `MAX_STEPS_PER_SAMPLE`. This is an unrecoverable position-baseline
+    /// discontinuity — most commonly a missing/incorrect position seed, so the
+    /// motor-frame `last_step_count` baseline disagrees with the piece stream.
+    /// All motion stops; the host must reset before resuming (mirrors
+    /// `PieceStartInPast`).
+    StepsPerSampleExceeded = -310,
+    /// Gap between consecutive TIM5 ticks exceeded the allowed multiple of
+    /// `sample_period_cycles` — the ISR was starved (interrupts masked, an
+    /// equal-priority handler overran, or a tick was skipped/coalesced). The MCU
+    /// froze; fail loud before acting on stale time.
+    TickIntervalExceeded = -311,
 }
 
 impl FaultCode {

@@ -1,6 +1,7 @@
-mod bridge;
 #[doc(hidden)]
-pub mod cap_check;
+pub mod anchor;
+mod bridge;
+mod drain;
 #[doc(hidden)]
 pub mod probe_homing;
 #[doc(hidden)]
@@ -10,12 +11,14 @@ pub mod config;
 #[doc(hidden)]
 pub mod dispatch;
 #[doc(hidden)]
+pub mod enqueue;
+#[doc(hidden)]
 pub mod homing;
 #[doc(hidden)]
 pub mod planner;
-mod router_transport;
 #[doc(hidden)]
-pub mod slot_pool;
+pub mod pump;
+mod router_transport;
 mod types;
 
 use pyo3::prelude::*;

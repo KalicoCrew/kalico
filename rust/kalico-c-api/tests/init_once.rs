@@ -23,18 +23,9 @@ pub static runtime_clock_freq: u32 = 520_000_000;
 pub static runtime_sample_rate_hz: u32 = 40_000;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn runtime_tick_enable() {}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn runtime_tick_disable() {}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn runtime_cyccnt_read() -> u32 {
     0
 }
-
-#[unsafe(no_mangle)]
-pub extern "C" fn runtime_reset_stepper_bindings() {}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn runtime_diag_progress(_tag: u32, _stage: u32, _value: u32) {}
@@ -52,24 +43,18 @@ fn second_init_returns_null() {
 
 #[test]
 fn null_handle_returns_null_ptr_error() {
-    // Step 7-B: push_segment now takes 4 per-axis handles (x, y, z, e),
-    // e_mode, extrusion_ratio_bits, plus t_start, t_end, kinematics.
-    // Pass nulls for the out-params (they're optional).
+    // Verify that the piece-ring write path rejects a null runtime handle.
+    // `kalico_runtime_write_piece` replaced `kalico_runtime_push_pieces`
+    // (Task 4); it must return KALICO_ERR_NULL_PTR before dereferencing
+    // the handle.
+    let piece = [0u8; 32];
     let r = unsafe {
-        kalico_c_api::runtime_handle_push_segment(
+        kalico_c_api::kalico_runtime_write_piece(
             std::ptr::null_mut(),
-            0,    // id
-            0,    // x_handle_packed
-            0,    // y_handle_packed
-            0,    // z_handle_packed
-            0,    // e_handle_packed
-            0,    // t_start
-            100,  // t_end
-            0,    // kinematics
-            0,    // e_mode
-            0,    // extrusion_ratio_bits
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            0,                  // axis_idx
+            0,                  // start_slot
+            0,                  // index
+            piece.as_ptr(),
         )
     };
     assert_eq!(r, kalico_c_api::KALICO_ERR_NULL_PTR);

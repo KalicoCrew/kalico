@@ -29,11 +29,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 
-use crate::credit::CreditCounter;
 use crate::host_io::events::HostEvent;
 use crate::host_io::parser::MsgProtoParser;
 use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent, StatusEvent, TraceEvent};
@@ -75,14 +74,14 @@ impl Default for KalicoHostIoConfig {
     }
 }
 
-/// Newtype wrapper for a retirement callback so `ReactorCommand` can remain
-/// `#[derive(Debug)]`. The underlying `Arc<dyn Fn(u32) + Send + Sync>` does
-/// not implement `Debug`, so we provide a trivial opaque representation.
-pub struct RetirementCallback(pub Arc<dyn Fn(u32) + Send + Sync>);
+/// Newtype wrapper for a heartbeat callback so `ReactorCommand` can remain
+/// `#[derive(Debug)]`. Fired on every `StatusHeartbeat` with the per-axis
+/// consumed-piece counts.
+pub struct HeartbeatCallback(pub Arc<dyn Fn(&[u32]) + Send + Sync>);
 
-impl std::fmt::Debug for RetirementCallback {
+impl std::fmt::Debug for HeartbeatCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RetirementCallback(<fn>)")
+        f.write_str("HeartbeatCallback(<fn>)")
     }
 }
 
@@ -103,8 +102,7 @@ pub enum ReactorCommand {
         deadline: std::time::Instant,
     },
     Abandon(u64),
-    AttachCreditCounter(std::sync::Arc<CreditCounter>),
-    AttachRetirementCallback(RetirementCallback),
+    AttachHeartbeatCallback(HeartbeatCallback),
     SubscribeFault {
         sender: SyncSender<FaultEvent>,
         reply: SyncSender<Result<(), SubscribeError>>,
@@ -153,10 +151,16 @@ pub enum ReactorCommand {
             SyncSender<Result<crate::host_io::kalico_native::IdentifyOutcome, TransportError>>,
         deadline: std::time::Instant,
     },
-    /// Phase C-B: kalico-native control-channel call. The reactor allocates
-    /// a correlation_id, builds the frame from `kind` + `body`, writes it,
-    /// and parks `completion` keyed by correlation_id. Spec §7.2.
+    /// Phase C-B: kalico-native call on `channel`. The reactor allocates a
+    /// correlation_id, builds the frame from `kind` + `body` on the specified
+    /// channel, writes it, and parks `completion` keyed by correlation_id.
+    /// Spec §7.2. Outbound channel is explicit; the response always arrives on
+    /// the control channel matched by correlation_id.
     KalicoCall {
+        /// Layer-1 channel byte for the outbound frame. Control-channel calls
+        /// use `CHANNEL_CONTROL` (0x00); PushPieces uses
+        /// [`kalico_protocol::KALICO_CHANNEL_PIECES`] (0x02).
+        channel: u8,
         kind: kalico_protocol::MessageKind,
         body: Vec<u8>,
         completion:
@@ -540,22 +544,15 @@ impl KalicoHostIo {
         self.submission_tx.send(ReactorCommand::Noop).is_ok()
     }
 
-    pub fn attach_credit_counter(&self, counter: std::sync::Arc<crate::credit::CreditCounter>) {
+    /// Register a callback fired on every `StatusHeartbeat` with the per-axis
+    /// consumed-piece counts. Runs on the reactor/event thread — must be
+    /// non-blocking (it only sends on a channel; see motion-bridge pump).
+    pub fn attach_heartbeat_callback(&self, cb: Arc<dyn Fn(&[u32]) + Send + Sync>) {
         let _ = self
             .submission_tx
-            .send(ReactorCommand::AttachCreditCounter(counter));
-    }
-
-    /// Install a callback that is invoked on the reactor thread with
-    /// `retired_through_segment_id` on every `CreditFreed` event — both
-    /// direct frames from the MCU and synthesized events from the 10 Hz
-    /// status watermark path. Avoids a circular crate dependency: since
-    /// `motion-bridge` depends on `kalico-host-rt`, the bridge installs its
-    /// slot-retirement logic here rather than importing a bridge type.
-    pub fn attach_retirement_callback(&self, cb: Arc<dyn Fn(u32) + Send + Sync>) {
-        let _ = self
-            .submission_tx
-            .send(ReactorCommand::AttachRetirementCallback(RetirementCallback(cb)));
+            .send(ReactorCommand::AttachHeartbeatCallback(HeartbeatCallback(
+                cb,
+            )));
     }
 
     pub fn subscribe_fault(&self) -> Result<std::sync::mpsc::Receiver<FaultEvent>, SubscribeError> {
@@ -748,39 +745,47 @@ impl KalicoHostIo {
     }
 
     /// Issue a kalico-native control-channel call (spec §7.2): one frame
-    /// out (kind + body), one frame in (matching correlation_id). Used by
-    /// `producer::load_curve` / `producer::push_segment` and similar.
+    /// out on `CHANNEL_CONTROL` (kind + body), one frame in (matching
+    /// correlation_id). Used by `producer::load_curve` / `push_segment` etc.
+    /// See also [`kalico_call_on_channel`] for the pieces channel.
     pub fn kalico_call(
         &self,
         kind: kalico_protocol::MessageKind,
         body: Vec<u8>,
         timeout: Duration,
     ) -> Result<(kalico_protocol::MessageKind, Vec<u8>), TransportError> {
-        eprintln!(
-            "[trace-kcall-host] enter kind={kind:?} body_len={} timeout_ms={}",
-            body.len(),
-            timeout.as_millis()
-        );
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let deadline = self.clock.now() + timeout;
-        if let Err(e) = self.submission_tx.send(ReactorCommand::KalicoCall {
+        self.kalico_call_on_channel(
+            kalico_native_transport::CHANNEL_CONTROL,
             kind,
             body,
-            completion: tx,
-            deadline,
-        }) {
-            eprintln!(
-                "[trace-kcall-host] FAIL submission_tx.send returned Err — reactor thread dead/dropped. e={e:?}"
-            );
-            return Err(TransportError::Closed);
-        }
-        eprintln!("[trace-kcall-host] submitted, awaiting response kind={kind:?}");
-        let outcome = rx.recv_timeout(timeout);
-        eprintln!(
-            "[trace-kcall-host] response received kind={kind:?} outcome_is_ok={}",
-            outcome.is_ok()
-        );
-        match outcome {
+            timeout,
+        )
+    }
+
+    /// Issue a kalico-native call on an explicit outbound `channel`. The
+    /// response always arrives on the control channel matched by
+    /// correlation_id. Used by the pump to send `PushPieces` on
+    /// `CHANNEL_PIECES` (0x02) while receiving `PushPiecesResponse` on the
+    /// control channel.
+    pub fn kalico_call_on_channel(
+        &self,
+        channel: u8,
+        kind: kalico_protocol::MessageKind,
+        body: Vec<u8>,
+        timeout: Duration,
+    ) -> Result<(kalico_protocol::MessageKind, Vec<u8>), TransportError> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let deadline = self.clock.now() + timeout;
+        self.submission_tx
+            .send(ReactorCommand::KalicoCall {
+                channel,
+                kind,
+                body,
+                completion: tx,
+                deadline,
+            })
+            .map_err(|_| TransportError::Closed)?;
+        match rx.recv_timeout(timeout) {
             Ok(Ok(crate::host_io::kalico_native::KalicoCallOutcome::Response { kind, body })) => {
                 Ok((kind, body))
             }
@@ -789,10 +794,7 @@ impl KalicoHostIo {
             }
             Ok(Err(e)) => Err(e),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Timeout),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                eprintln!("[trace-kcall-host] FAIL recv Disconnected — completion sender dropped");
-                Err(TransportError::Closed)
-            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
         }
     }
 }

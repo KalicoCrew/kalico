@@ -114,12 +114,12 @@ fn bernstein_to_monomial_with_duration_rescales_coefficients() {
     // Linear ramp from 0 to 10mm over 25 µs:
     // Unit-interval Bernstein for P(τ) = 10·τ is [0, 10/3, 20/3, 10].
     // Seconds-domain monomial: c0=0, c1=10/25e-6=4e5, c2=0, c3=0.
-    let piece = bernstein_to_monomial_with_duration([0.0, 10.0/3.0, 20.0/3.0, 10.0], 25e-6);
+    let piece = bernstein_to_monomial_with_duration([0.0, 10.0 / 3.0, 20.0 / 3.0, 10.0], 25e-6);
     // Evaluate at t=25e-6 should give 10.0 mm.
     let p = piece.coeffs[0]
-          + piece.coeffs[1] * 25e-6
-          + piece.coeffs[2] * (25e-6 * 25e-6)
-          + piece.coeffs[3] * (25e-6 * 25e-6 * 25e-6);
+        + piece.coeffs[1] * 25e-6
+        + piece.coeffs[2] * (25e-6 * 25e-6)
+        + piece.coeffs[3] * (25e-6 * 25e-6 * 25e-6);
     assert!((p - 10.0).abs() < 1e-3, "P(25µs) = {} (expected 10.0)", p);
     assert!((piece.duration - 25e-6).abs() < 1e-12);
     // vel_coeffs pre-baked: vc0 = c1, vc1 = 2*c2, vc2 = 3*c3
@@ -131,14 +131,12 @@ fn bernstein_to_monomial_with_duration_quadratic() {
     use runtime::monomial::bernstein_to_monomial_with_duration;
     // Pure quadratic P(τ) = τ² in unit interval.
     // Bernstein CPs for τ² are [0, 0, 1/3, 1] (degree-3 elevation of τ²).
-    let piece = bernstein_to_monomial_with_duration([0.0, 0.0, 1.0/3.0, 1.0], 1.0);
+    let piece = bernstein_to_monomial_with_duration([0.0, 0.0, 1.0 / 3.0, 1.0], 1.0);
     // At t=1.0, P should = 1.0
     let p = piece.coeffs[0] + piece.coeffs[1] + piece.coeffs[2] + piece.coeffs[3];
     assert!((p - 1.0).abs() < 1e-5);
     // At t=0.5, P should = 0.25
-    let p = piece.coeffs[0]
-          + piece.coeffs[1] * 0.5
-          + piece.coeffs[2] * 0.25
-          + piece.coeffs[3] * 0.125;
+    let p =
+        piece.coeffs[0] + piece.coeffs[1] * 0.5 + piece.coeffs[2] * 0.25 + piece.coeffs[3] * 0.125;
     assert!((p - 0.25).abs() < 1e-5);
 }

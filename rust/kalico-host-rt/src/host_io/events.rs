@@ -6,7 +6,6 @@ use std::time::Instant;
 
 use arc_swap::ArcSwap;
 
-use crate::credit::CreditCounter;
 use crate::fault::FaultLatch;
 use crate::host_io::runtime_events::{CreditFreedEvent, RuntimeEvent, StatusEvent, TraceEvent};
 
@@ -209,7 +208,6 @@ impl HostEventDispatcher {
 // ─── D9: EventDispatcher composition ─────────────────────────────────────────
 
 pub struct EventDispatcher {
-    pub credit_counter: Option<Arc<CreditCounter>>,
     pub fault_latch: FaultLatch,
     pub trace_ring: TraceRing,
     pub status_snapshot: Arc<ArcSwap<StatusEvent>>,
@@ -222,14 +220,11 @@ pub struct EventDispatcher {
     /// periodic status frame is monotonic state so we can recover credit
     /// flow from it deterministically).
     status_retired_watermark: u32,
-    /// Optional callback installed by the bridge at init time. Called with
-    /// `retired_through_segment_id` on every `CreditFreed` event — both
-    /// direct frames from the MCU and synthesized events from the 10 Hz
-    /// status watermark path. Avoids a circular crate dependency: since
-    /// `motion-bridge` depends on `kalico-host-rt`, the callback direction
-    /// must go from `kalico-host-rt` out to `motion-bridge`, not via an
-    /// import. Set via [`ReactorCommand::AttachRetirementCallback`].
-    pub retirement_callback: Option<Arc<dyn Fn(u32) + Send + Sync>>,
+    /// Optional callback fired on every `StatusHeartbeat` (0x0083) with the
+    /// per-axis consumed-piece counts. Pump-private: the event is consumed
+    /// here and NOT forwarded to the general `runtime_rx` channel.
+    /// Set via [`ReactorCommand::AttachHeartbeatCallback`].
+    pub heartbeat_callback: Option<Arc<dyn Fn(&[u32]) + Send + Sync>>,
 }
 
 impl EventDispatcher {
@@ -245,62 +240,23 @@ impl EventDispatcher {
         let mut trace_ring = TraceRing::new(trace_capacity);
         trace_ring.set_host_event_tx(host_tx);
         Self {
-            credit_counter: None,
             fault_latch: FaultLatch::default(),
             trace_ring,
             status_snapshot,
             runtime_event_dispatcher: RuntimeEventDispatcher::default(),
             host_event_dispatcher: HostEventDispatcher::new(host_rx),
             status_retired_watermark: 0,
-            retirement_callback: None,
+            heartbeat_callback: None,
         }
     }
 
     pub fn dispatch(&mut self, event: RuntimeEvent) {
         match event {
             RuntimeEvent::CreditFreed(e) => {
-                let available_before = self
-                    .credit_counter
-                    .as_ref()
-                    .map(|c| c.available())
-                    .unwrap_or(-1);
-                if let Some(counter) = &self.credit_counter {
-                    counter.on_credit_freed(e.free_slots);
-                }
-                let available_after = self
-                    .credit_counter
-                    .as_ref()
-                    .map(|c| c.available())
-                    .unwrap_or(-1);
-                let events = self
-                    .credit_counter
-                    .as_ref()
-                    .map(|c| c.credit_freed_events())
-                    .unwrap_or(0);
-                // Diag (bench-session 2026-05-11): every credit_freed
-                // arrival, with before/after available and cumulative
-                // event count. Proves whether MCU is actually emitting
-                // credit_freed and whether free_slots=0 events are
-                // stalling the host.
-                eprintln!(
-                    "[bridge-trace] CreditFreed retired={} free_slots={} available {}->{} events={}",
-                    e.retired_through_segment_id,
-                    e.free_slots,
-                    available_before,
-                    available_after,
-                    events,
-                );
-                if let Some(cb) = &self.retirement_callback {
-                    cb(e.retired_through_segment_id);
-                }
-                // Phase C-B (kalico-native transport): forward CreditFreed
-                // to the python bridge poller so motion-bridge.on_credit_freed
-                // releases curve-pool slots. Pre-Phase-C the legacy Klipper
-                // `kalico_credit_freed` output handled this via klippy's
-                // SerialReader; the new transport delivers it as a kalico
-                // event lifted into RuntimeEvent::CreditFreed, and the
-                // python `_bridge_event_poller` already maps `credit_freed`
-                // -> `kalico_credit_freed` for the existing handler.
+                // Forward to the python bridge poller so motion-bridge can
+                // observe credit_freed events for diagnostics. The credit
+                // counter and slot-pool retirement wiring have been removed
+                // (Task 10); only the forwarding path remains.
                 self.runtime_event_dispatcher
                     .dispatch(RuntimeEvent::CreditFreed(e));
             }
@@ -326,12 +282,18 @@ impl EventDispatcher {
                     .dispatch(RuntimeEvent::Status(e));
                 // v2 architectural credit-flow: status frames carry the retirement
                 // watermark. On advance, synthesize a CreditFreed and dispatch
-                // through the normal CreditFreed path. This keeps slot-pool
-                // retirement working even when fire-and-forget CreditFreed frames
-                // are dropped under USB-CDC TX congestion (10 Hz periodic Status
-                // is the floor — slot pool catches up within 100 ms regardless).
+                // through the normal CreditFreed path so the bridge poller can
+                // observe it via take_runtime_event.
                 if let Some(c) = synth_credit {
                     self.dispatch(RuntimeEvent::CreditFreed(c));
+                }
+            }
+            RuntimeEvent::Heartbeat { retired_counts } => {
+                // Pump-private: consumed here, NOT forwarded to the general
+                // runtime_rx channel. The heartbeat callback feeds the host
+                // pump's flow-control logic directly over a channel.
+                if let Some(cb) = &self.heartbeat_callback {
+                    cb(&retired_counts);
                 }
             }
             RuntimeEvent::EndstopTripped(_)
@@ -348,7 +310,7 @@ impl EventDispatcher {
     /// Returns `Some(CreditFreedEvent)` when the retirement watermark advanced
     /// past the previously observed value — the caller dispatches that
     /// synthesized event through the normal `CreditFreed` machinery so the
-    /// slot pool releases retired slots even when the firmware's
+    /// bridge poller can observe retirement progress even when the firmware's
     /// fire-and-forget `CreditFreed` frame was dropped under TX congestion.
     fn handle_status_frame(&mut self, frame: &StatusEvent) -> Option<CreditFreedEvent> {
         self.status_snapshot.store(Arc::new(frame.clone()));

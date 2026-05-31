@@ -8,7 +8,7 @@
 
 use std::cell::UnsafeCell;
 
-use runtime::step_queue::{len, pop, push, StepEntry, StepQueue, StepQueueFull, STEP_QUEUE_DEPTH};
+use runtime::step_queue::{STEP_QUEUE_DEPTH, StepEntry, StepQueue, StepQueueFull, len, pop, push};
 
 fn entry(cycle_abs: u32, dir: i8) -> StepEntry {
     StepEntry {
@@ -63,7 +63,10 @@ fn overflow_detected_at_full_capacity() {
     // would index when `tail == 32`).
     for i in 0..STEP_QUEUE_DEPTH as u32 {
         let got = unsafe { pop(qp) }.expect("pop should yield entry");
-        assert_eq!(got.cycle_abs, i, "FIFO contents corrupted by overflow at {i}");
+        assert_eq!(
+            got.cycle_abs, i,
+            "FIFO contents corrupted by overflow at {i}"
+        );
     }
 }
 
@@ -90,7 +93,10 @@ fn wraparound_u16_counters_correct() {
         for i in 0..25u32 {
             let v = round * 25 + i;
             let got = unsafe { pop(qp) }.expect("pop should yield entry");
-            assert_eq!(got.cycle_abs, v, "wraparound corrupted ordering at round={round} i={i}");
+            assert_eq!(
+                got.cycle_abs, v,
+                "wraparound corrupted ordering at round={round} i={i}"
+            );
         }
         assert_eq!(unsafe { len(qp) }, 0);
     }
