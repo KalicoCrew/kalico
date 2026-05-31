@@ -114,6 +114,7 @@ pub fn init_test_runtime() -> Box<crate::state::RuntimeContext> {
         isr: UnsafeCell::new(IsrState {
             engine,
             widen_state: WidenState::default(),
+            last_tick_now: None,
         }),
         shared: SharedState::new(),
         piece_storage: UnsafeCell::new(

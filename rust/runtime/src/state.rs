@@ -133,6 +133,10 @@ pub struct IsrState {
     /// CYCCNT widening. The ISR is the sole writer; foreground must not call
     /// `widen()` directly.
     pub widen_state: WidenState,
+    /// Widened `now` from the previous `isr_sample_tick` call.
+    /// `None` until the first tick sets a baseline; used by the inter-arrival
+    /// guard to detect starvation before acting on stale time.
+    pub last_tick_now: Option<u64>,
 }
 
 impl IsrState {
@@ -287,8 +291,10 @@ pub struct SharedState {
     /// runtime_status_drain rotation as tags 0xE6/0xE7/0xE8. If any
     /// stage's max approaches the TIM5 period (~13000 cycles at 40 kHz
     /// on H7), that's the section starving foreground.
-    /// `isr_overrun_count` increments per ISR that exceeds 30000 cycles
-    /// (~58 µs) of total body time — that's the circuit-breaker signal.
+    /// `isr_overrun_count` is incremented by the `StepsPerSampleExceeded`
+    /// fault path (`tick.rs`), not by any ISR body-duration threshold — the
+    /// old 30000-cycle body-time gate was removed in favour of the tick-start
+    /// inter-arrival guard (`TickIntervalExceeded`, -311).
     pub isr_widen_cycles_max: AtomicU32,
     pub isr_arm_cycles_max: AtomicU32,
     pub isr_eval_cycles_max: AtomicU32,
@@ -856,6 +862,7 @@ impl RuntimeContext {
                 sample_rate_hz,
             );
             core::ptr::addr_of_mut!((*inner_ptr).widen_state).write(WidenState::default());
+            core::ptr::addr_of_mut!((*inner_ptr).last_tick_now).write(None);
         }
     }
 }
