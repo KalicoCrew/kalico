@@ -139,3 +139,29 @@ def test_serialize_handles_nonjson_value():
     # Must not raise; non-serializable value is stringified.
     line = sl.serialize_record(sl.record_to_dict(rec))
     assert "weird" in json.loads(line)
+
+
+def test_context_filter_injects_bound_context():
+    sl.bind_session("k-1779840000-7")
+    sl.clear_print()
+    sl.bind_print("print-77")
+    f = sl.ContextFilter()
+    rec = logging.LogRecord(
+        "some.logger", logging.INFO, __file__, 1, "m", (), None
+    )
+    assert f.filter(rec) is True
+    assert rec.session_id == "k-1779840000-7"
+    assert rec.print_id == "print-77"
+    assert rec.source == "host-py"
+    assert rec.target == "some.logger"
+    sl.clear_print()
+
+
+def test_context_filter_does_not_overwrite_existing_source():
+    f = sl.ContextFilter()
+    rec = logging.LogRecord(
+        "x", logging.INFO, __file__, 1, "m", (), None
+    )
+    rec.source = "sim"
+    f.filter(rec)
+    assert rec.source == "sim"  # re-emitted records keep their source

@@ -141,3 +141,21 @@ def serialize_record(record_dict):
         record_dict, ensure_ascii=False, separators=(",", ":"), default=repr
     )
     return line + "\n"
+
+
+class ContextFilter(logging.Filter):
+    # Injected on the root logger; runs on the CALLING thread, so contextvars
+    # are read correctly. Never raises (raising inside logging is unsafe);
+    # an unbound session shows up as the queryable UNBOUND_SESSION sentinel,
+    # which the startup ordering invariant (printer.main) guarantees we never
+    # actually hit in normal operation.
+    def filter(self, record):
+        if not hasattr(record, "session_id"):
+            record.session_id = get_session()
+        if not hasattr(record, "print_id"):
+            record.print_id = get_print()
+        if not hasattr(record, "source"):
+            record.source = SOURCE_HOST_PY
+        if not hasattr(record, "target"):
+            record.target = record.name
+        return True
