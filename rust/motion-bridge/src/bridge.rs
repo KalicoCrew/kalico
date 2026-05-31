@@ -25,7 +25,7 @@ use trajectory::{AxisShaper, ShaperConfig};
 
 use crate::classify;
 use crate::config::{self, PlannerConfig, PlannerLimits, parse_required_shaper};
-use crate::dispatch::{self, AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, McuCaps, build_push_params};
+use crate::dispatch::{self, McuAxisConfig, McuCaps, build_mcu_configs, build_push_params};
 use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::slot_pool::SharedSlotPool;
@@ -1836,10 +1836,12 @@ impl PyMotionBridge {
 
     /// Initialize the planner thread with config from `printer.cfg`.
     ///
-    /// `octopus_handle` and `f446_handle` are the raw `claim_mcu()` handles
-    /// for the two-MCU first-print MVP topology:
-    ///   - Octopus drives X+Y (CoreXyAndE = kinematics 0).
-    ///   - F446 drives Z (CartesianXyzAndE = kinematics 1).
+    /// `mcus` is the host-derived topology: one `(bridge_handle, axes,
+    /// kinematics_tag)` entry per motion MCU, where `axes` holds `AXIS_*`
+    /// indices and `kinematics_tag` is a `KinematicTag` discriminant. The
+    /// host builds this from the global `kinematics` setting plus the
+    /// stepper→MCU assignment — no MCU identity is hardcoded here. Supports
+    /// 1..N MCUs and any axis partition.
     #[pyo3(signature = (
         max_velocity,
         max_accel,
@@ -1850,8 +1852,7 @@ impl PyMotionBridge {
         shaper_freq_x,
         shaper_type_y,
         shaper_freq_y,
-        octopus_handle,
-        f446_handle,
+        mcus,
         window_capacity = 32,
         beta_max_iters = 10,
     ))]
@@ -1867,8 +1868,7 @@ impl PyMotionBridge {
         shaper_freq_x: f64,
         shaper_type_y: &str,
         shaper_freq_y: f64,
-        octopus_handle: u32,
-        f446_handle: u32,
+        mcus: Vec<(u32, Vec<u8>, u8)>,
         window_capacity: usize,
         beta_max_iters: u8,
     ) -> PyResult<()> {
@@ -1900,38 +1900,24 @@ impl PyMotionBridge {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = cfg.clone();
 
-        // Two-MCU first-print MVP topology. Pull `runtime_caps` from each
-        // `McuConnection` (set during bootstrap by `query_runtime_caps`); fall
-        // back to large-profile defaults if the firmware predates
+        // Host-supplied N-MCU topology. Pull `runtime_caps` from each
+        // `McuConnection` (set during bootstrap by `query_runtime_caps`);
+        // fall back to large-profile defaults if the firmware predates
         // `QueryRuntimeCaps`.
-        let (octopus_caps, f446_caps) = {
-            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            let oc = mcus
-                .get(&octopus_handle)
-                .and_then(|c| c.runtime_caps)
-                .map(McuCaps::from)
-                .unwrap_or_default();
-            let fc = mcus
-                .get(&f446_handle)
-                .and_then(|c| c.runtime_caps)
-                .map(McuCaps::from)
-                .unwrap_or_default();
-            (oc, fc)
+        let caps_by_handle: std::collections::HashMap<u32, McuCaps> = {
+            let mcus_lock = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            mcus.iter()
+                .map(|(handle, _, _)| {
+                    let caps = mcus_lock
+                        .get(handle)
+                        .and_then(|c| c.runtime_caps)
+                        .map(McuCaps::from)
+                        .unwrap_or_default();
+                    (*handle, caps)
+                })
+                .collect()
         };
-        let mcu_configs = vec![
-            McuAxisConfig {
-                mcu_id: octopus_handle,
-                axes: vec![AXIS_X, AXIS_Y],
-                kinematics: 0, // CoreXyAndE
-                caps: octopus_caps,
-            },
-            McuAxisConfig {
-                mcu_id: f446_handle,
-                axes: vec![AXIS_Z],
-                kinematics: 1, // CartesianXyzAndE
-                caps: f446_caps,
-            },
-        ];
+        let mcu_configs = build_mcu_configs(&mcus, &caps_by_handle);
         *self
             .mcu_axis_configs
             .lock()
