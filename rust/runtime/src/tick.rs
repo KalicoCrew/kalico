@@ -1116,7 +1116,7 @@ pub fn isr_sample_tick(
     if body_cycles > 30000 {
         shared
             .isr_overrun_count
-            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -1139,7 +1139,7 @@ unsafe fn cyccnt_read() -> u32 {
 }
 
 #[inline]
-fn update_max(slot: &core::sync::atomic::AtomicU32, val: u32) {
+fn update_max(slot: &portable_atomic::AtomicU32, val: u32) {
     use core::sync::atomic::Ordering;
     let prev = slot.load(Ordering::Relaxed);
     if val > prev {
@@ -1160,7 +1160,7 @@ fn update_max(slot: &core::sync::atomic::AtomicU32, val: u32) {
 // the same codegen path the working counter uses applies to all writers.
 // ISR is the single writer for these counters; race-free.
 #[inline]
-fn bump_relaxed(slot: &core::sync::atomic::AtomicU32) {
+fn bump_relaxed(slot: &portable_atomic::AtomicU32) {
     use core::sync::atomic::Ordering;
     let prev = slot.load(Ordering::Relaxed);
     slot.store(prev.wrapping_add(1), Ordering::Relaxed);

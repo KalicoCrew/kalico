@@ -19,6 +19,7 @@ required-features = ["host"]
 default = ["host", "header-nurbs", "header-runtime"]
 mcu-h7 = ["nurbs/mcu-h7", "runtime/mcu-h7"]
 mcu-f4 = ["nurbs/mcu-f4", "runtime/mcu-f4"]
+mcu-g0 = ["nurbs/mcu-g0", "runtime/mcu-g0"]
 host = ["nurbs/host", "runtime/host", "dep:cbindgen"]
 header-nurbs = []
 header-runtime = []
@@ -30,6 +31,10 @@ kalico-sim = ["runtime/kalico-sim"]
 nurbs = { path = "../nurbs", default-features = false }
 runtime = { path = "../runtime", default-features = false }
 cbindgen = { version = "0.29", optional = true, package = "cbindgen" }
+# Required for RMW atomic operations on MCU targets: on thumbv7em lowers to
+# native LDREX/STREX; on thumbv6m (STM32G0) uses interrupt-masking fallback.
+# Version and features match runtime's dependency so cargo deduplicates.
+portable-atomic = { version = "1", default-features = false, features = ["fallback"] }
 
 [lints]
 workspace = true

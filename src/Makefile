@@ -56,18 +56,30 @@ KALICO_RUST_FEATURES := mcu-h7,header-nurbs,header-runtime
 # on every MCU switch (~minutes on the Pi). Separate dirs keep both caches
 # warm so each MCU switch is incremental, not from-scratch.
 KALICO_CARGO_TARGET_DIR := target-h7
+KALICO_RUST_TARGET := thumbv7em-none-eabi
 else ifeq ($(CONFIG_MACH_STM32F4),y)
 KALICO_RUST_FEATURES := mcu-f4,header-nurbs,header-runtime
 KALICO_CARGO_TARGET_DIR := target-f4
+KALICO_RUST_TARGET := thumbv7em-none-eabi
+else ifeq ($(CONFIG_MACH_STM32G0),y)
+# STM32G0B1 (Cortex-M0+) = ARMv6-M = thumbv6m-none-eabi, a DIFFERENT rustc
+# triple than H7/F4. The thumbv6m target build sets
+# `--cfg portable_atomic_unsafe_assume_single_core` in rust/.cargo/config.toml
+# because ARMv6-M has no LDREX/STREX (see the design record). Own target dir
+# keeps the thumbv6m cache from colliding with the thumbv7em caches.
+KALICO_RUST_FEATURES := mcu-g0,header-nurbs,header-runtime
+KALICO_CARGO_TARGET_DIR := target-g0
+KALICO_RUST_TARGET := thumbv6m-none-eabi
 endif
 ifeq ($(CONFIG_KALICO_SIM),y)
 KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),kalico-sim
 endif
 
-ifneq (,$(filter y,$(CONFIG_MACH_STM32H7) $(CONFIG_MACH_STM32F4)))
+ifneq (,$(filter y,$(CONFIG_MACH_STM32H7) $(CONFIG_MACH_STM32F4) $(CONFIG_MACH_STM32G0)))
 # Exported so src/stm32/Makefile depends on (and links against) the right
-# archive without re-deriving the path.
-KALICO_LIB := rust/$(KALICO_CARGO_TARGET_DIR)/thumbv7em-none-eabi/release/libkalico_c_api.a
+# archive without re-deriving the path. KALICO_RUST_TARGET is the rustc
+# triple for the active MCU (thumbv7em for H7/F4, thumbv6m for G0).
+KALICO_LIB := rust/$(KALICO_CARGO_TARGET_DIR)/$(KALICO_RUST_TARGET)/release/libkalico_c_api.a
 
 # Per-MCU target dir gives H7 and F4 their own caches (see above). Within
 # a single MCU's dir, the kalico-sim feature toggle is the only remaining
@@ -93,7 +105,7 @@ $(KALICO_LIB): FORCE
 		cargo build -p kalico-c-api \
 		--no-default-features \
 		--features $(KALICO_RUST_FEATURES) \
-		--target thumbv7em-none-eabi --release && \
+		--target $(KALICO_RUST_TARGET) --release && \
 		echo "$(KALICO_RUST_FEATURES)" > "$$CARGO_TARGET_DIR/.kalico-features-stamp"
 endif
 

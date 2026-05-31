@@ -19,7 +19,11 @@
 #![allow(unsafe_code)]
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU16, Ordering};
+// `AtomicU16` from `portable_atomic` so that the `compare_exchange_weak` in
+// `try_confirm_retired` compiles on ARMv6-M (STM32G0). On thumbv7em the
+// codegen is identical to `core::sync::atomic`.
+use core::sync::atomic::Ordering;
+use portable_atomic::AtomicU16;
 
 use crate::cubic_curve::{populate_from_wire, CubicLoadError, LoadedCubicCurve, WirePiece};
 

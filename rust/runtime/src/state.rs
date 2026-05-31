@@ -21,14 +21,19 @@
 #![allow(unsafe_code)]
 
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32};
-// `AtomicU64` comes from `portable-atomic` because thumbv7em-none-eabi[hf]
-// (Cortex-M7) lacks native 64-bit CAS — `core::sync::atomic::AtomicU64` is
-// not provided on that target. `portable-atomic`'s `fallback` feature
-// implements u64 atomics via a critical section, which is correct for our
-// usage (counters bumped from the producer/consumer paths and read by the
-// foreground). API is drop-in compatible with `core::sync::atomic::AtomicU64`.
-use portable_atomic::AtomicU64;
+// All atomic types come from `portable-atomic` rather than `core::sync::atomic`.
+//
+// Reason: `core::sync::atomic` does not provide RMW operations (fetch_add,
+// compare_exchange, swap) on ARMv6-M (thumbv6m-none-eabi / STM32G0), because
+// that architecture has no LDREX/STREX instructions. `portable_atomic` fills
+// the gap: on thumbv7em it lowers to the native exclusive-monitor instructions
+// (identical codegen, zero overhead); on thumbv6m it uses brief
+// interrupt-disable critical sections (sound — single core, per the
+// `portable_atomic_unsafe_assume_single_core` rustflag in .cargo/config.toml).
+//
+// `Ordering` and `fence` remain from `core::sync::atomic` — they are the same
+// types `portable_atomic` accepts, so no call-site changes are needed.
+use portable_atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32, AtomicU64};
 
 use heapless::spsc::{Consumer, Producer, Queue};
 

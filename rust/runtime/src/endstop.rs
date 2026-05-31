@@ -4,7 +4,12 @@
 //! layered on later. The global single-arm slot is intentionally represented
 //! with atomics only because the runtime crate denies unsafe code.
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32, Ordering};
+// Atomic types from `portable_atomic` so that RMW operations (`swap` on
+// `TRIP_EVENT_QUEUED`, `compare_exchange` on `ARM.state`) compile on
+// ARMv6-M (STM32G0), which has no LDREX/STREX. On thumbv7em the codegen
+// is identical to `core::sync::atomic`. `Ordering` stays from `core`.
+use core::sync::atomic::Ordering;
+use portable_atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32};
 
 pub const MAX_SOURCES: usize = 4;
 pub const MAX_STEPPERS: usize = 8;

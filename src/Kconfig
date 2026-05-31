@@ -386,19 +386,21 @@ choice
     prompt "Runtime sizing profile"
     default RUNTIME_TARGET_LARGE if MACH_STM32H7
     default RUNTIME_TARGET_SMALL if MACH_STM32F4
+    default RUNTIME_TARGET_SMALL if MACH_STM32G0
     default RUNTIME_TARGET_LARGE
-    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_LINUX
+    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_STM32G0 || MACH_LINUX
     help
       Selects per-MCU runtime sizing presets. `large` is the H7-class
       profile that places the curve pool in AXI SRAM. `small` is the
-      F4-class profile that fits in 128 KB SRAM. `custom` lets you
-      override individual values below.
+      F4-class profile that fits in 128 KB SRAM (and the G0-class profile
+      that fits in the G0B1's 144 KB SRAM). `custom` lets you override
+      individual values below.
 
     config RUNTIME_TARGET_LARGE
         bool "Large (H7-class — fits in AXI SRAM)"
 
     config RUNTIME_TARGET_SMALL
-        bool "Small (F4-class — fits in 128 KB SRAM)"
+        bool "Small (F4/G0-class — fits in 128 KB SRAM)"
 
     config RUNTIME_TARGET_CUSTOM
         bool "Custom (override individual values)"
@@ -432,19 +434,47 @@ config RUNTIME_MAX_PIECES_PER_CURVE
       jogs and most print-relevant segments.
 
 config KALICO_MOTION_SAMPLE_RATE_HZ
-    int "Motion engine sample rate in Hz (TIM5 ISR fire rate)"
-    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_LINUX
+    int "Motion engine sample rate in Hz (motion-timer ISR fire rate)"
+    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_STM32G0 || MACH_LINUX
     default 40000 if MACH_STM32H7
     default 20000 if MACH_STM32F4
+    default 2000 if MACH_STM32G0
     default 10000
     range 1000 100000
     help
-      Rate at which the TIM5 ISR evaluates motion curves and emits step
-      pulses. Higher rates give better velocity-extrapolation accuracy
+      Rate at which the motion-engine ISR evaluates motion curves and emits
+      step pulses. Higher rates give better velocity-extrapolation accuracy
       but cost more CPU. Defaults to 40 kHz on H7 (520 MHz) and 20 kHz
       on F4 (180 MHz); see docs/superpowers/specs/2026-05-19-stepping-
       redesign-design.md for the per-MCU step-rate ceilings these
-      enable.
+      enable. Defaults to 2 kHz on G0B1 (64 MHz Cortex-M0+, soft-float):
+      this is a low-rate bring-up target, not a throughput target —
+      see docs/superpowers/specs/2026-05-31-stm32g0-sb2209-target-design.md.
+
+# Motion-engine ISR timer selection. The physical timer is chosen per
+# architecture via the alias in src/stm32/runtime_tick_timer.h: H7/F4 use
+# TIM5 (hardcoded in their runtime_tick_{h7,f4}.c). STM32G0B1 has no TIM5
+# (timers: TIM1/2/3/4/6/7/14/15/16/17), and TIM2 is already Klipper's 32-bit
+# scheduler clock (stm32f0_timer.c), so the motion ISR needs a different free
+# timer. TIM6/TIM7 are basic timers with no output channels — hard_pwm can
+# never claim them — making them the safe choices. Default TIM7 (its only
+# shared-vector neighbor is LPTIM2, unused on a toolhead board).
+choice
+    prompt "Motion-engine ISR timer (STM32G0)"
+    default KALICO_MOTION_TIMER_TIM7
+    depends on MACH_STM32G0
+    help
+      Selects which hardware timer drives the motion-engine sample ISR on
+      STM32G0. Pick one not otherwise used by your board's PWM/peripherals.
+      TIM6 and TIM7 are basic timers (no PWM channels) and are the
+      recommended choices.
+
+    config KALICO_MOTION_TIMER_TIM7
+        bool "TIM7 (basic timer, shares vector with LPTIM2)"
+
+    config KALICO_MOTION_TIMER_TIM6
+        bool "TIM6 (basic timer, shares vector with DAC/LPTIM1)"
+endchoice
 
 config RUNTIME_STORAGE_SIZE_LARGE
     int "rt_storage byte ceiling (large profile, H7)"

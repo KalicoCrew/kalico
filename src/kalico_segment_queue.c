@@ -66,8 +66,16 @@ kalico_native_queue_enqueue(const void *seg_bytes)
     memcpy(kalico_seg_queue.buf[tail], seg_bytes, KALICO_SEGMENT_SIZE);
     atomic_store_explicit(&kalico_seg_queue.tail, next_tail,
                           memory_order_release);
-    atomic_fetch_add_explicit(&kalico_seg_queue_enqueue_total, 1u,
-                              memory_order_relaxed);
+    // Single-writer diag counter (only the producer touches enqueue_total),
+    // bumped with load+store rather than an RMW. ARMv6-M (Cortex-M0+, the G0
+    // target) has no LDREX/STREX, so `atomic_fetch_add` would lower to a
+    // libatomic call that the firmware doesn't link; load+store is race-free
+    // here because there is exactly one writer, and matches the relaxed
+    // semantics the counter had. Inline-lowered on every target.
+    atomic_store_explicit(&kalico_seg_queue_enqueue_total,
+                          atomic_load_explicit(&kalico_seg_queue_enqueue_total,
+                                               memory_order_relaxed) + 1u,
+                          memory_order_relaxed);
     return 0;
 }
 
@@ -86,8 +94,12 @@ kalico_native_queue_dequeue(void *out_seg_bytes)
     unsigned next_head = (head + 1u) % KALICO_SEG_QUEUE_N;
     atomic_store_explicit(&kalico_seg_queue.head, next_head,
                           memory_order_release);
-    atomic_fetch_add_explicit(&kalico_seg_queue_dequeue_total, 1u,
-                              memory_order_relaxed);
+    // Single-writer diag counter (only the consumer touches dequeue_total);
+    // load+store instead of RMW for ARMv6-M. See the enqueue path above.
+    atomic_store_explicit(&kalico_seg_queue_dequeue_total,
+                          atomic_load_explicit(&kalico_seg_queue_dequeue_total,
+                                               memory_order_relaxed) + 1u,
+                          memory_order_relaxed);
     return 0;
 }
 

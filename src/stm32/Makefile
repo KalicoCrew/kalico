@@ -60,9 +60,12 @@ src-y += generic/armcm_boot.c generic/armcm_irq.c generic/armcm_reset.c
 src-y += generic/fault_handler.c
 src-y += generic/mpu_protect.c
 
-# Kalico runtime glue. Per-family TIM5 backend selected by CONFIG_MACH_STM32*.
+# Kalico runtime glue. Per-family motion-timer backend selected by
+# CONFIG_MACH_STM32*. H7/F4 use TIM5; G0B1 has no TIM5 and uses a configurable
+# basic timer (default TIM7) plus a software CYCCNT (no DWT on Cortex-M0+).
 src-$(CONFIG_MACH_STM32H7) += stm32/runtime_tick_h7.c
 src-$(CONFIG_MACH_STM32F4) += stm32/runtime_tick_f4.c
+src-$(CONFIG_MACH_STM32G0) += stm32/runtime_tick_g0.c
 src-y += runtime_tick.c
 src-y += runtime_commands.c
 # Phase-stepping XDIRECT SPI helper (Step 7-D / phase-stepping sim slice).
