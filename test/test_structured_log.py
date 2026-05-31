@@ -165,3 +165,22 @@ def test_context_filter_does_not_overwrite_existing_source():
     rec.source = "sim"
     f.filter(rec)
     assert rec.source == "sim"  # re-emitted records keep their source
+
+
+def test_event_emits_with_required_fields(caplog):
+    with caplog.at_level(logging.INFO):
+        sl.event("homing", "homing.endstop_trip", axis="z", trigger_mm=12.4)
+    rec = caplog.records[-1]
+    assert rec.subsystem == "homing"
+    assert rec.event == "homing.endstop_trip"
+    assert rec.axis == "z"
+    assert rec.trigger_mm == 12.4
+
+
+def test_event_requires_subsystem_and_event():
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        sl.event("", "x")
+    with _pytest.raises(ValueError):
+        sl.event("motion", "")

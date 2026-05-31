@@ -159,3 +159,18 @@ class ContextFilter(logging.Filter):
         if not hasattr(record, "target"):
             record.target = record.name
         return True
+
+
+_event_logger = logging.getLogger("kalico.event")
+
+
+def event(subsystem, event, *, level=logging.INFO, msg=None, **fields):
+    # Forward helper for NEW / hot-path code: emits a fully structured record.
+    # Fail loudly (per project policy) if the required fields are missing.
+    if not subsystem or not event:
+        raise ValueError(
+            "structured_log.event requires non-empty subsystem and event"
+        )
+    extra = {"subsystem": subsystem, "event": event}
+    extra.update(fields)
+    _event_logger.log(level, msg if msg is not None else event, extra=extra)
