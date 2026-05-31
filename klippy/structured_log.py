@@ -5,7 +5,10 @@
 # earliest point in startup (before the reactor/printer exist).
 import contextvars
 import datetime
+import json
 import logging
+import os
+import time
 
 # A "trace" level below DEBUG (stdlib has no TRACE).
 TRACE_LEVEL = 5
@@ -47,9 +50,6 @@ def format_time(created):
         dt.microsecond // 1000,
     )
 
-
-import os
-import time
 
 UNBOUND_SESSION = "__unbound__"
 
@@ -128,9 +128,6 @@ def record_to_dict(record):
             continue
         out[key] = val
     return out
-
-
-import json
 
 
 def serialize_record(record_dict):

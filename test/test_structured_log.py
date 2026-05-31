@@ -1,4 +1,5 @@
 # test/test_structured_log.py
+import json
 import logging
 import sys
 
@@ -117,9 +118,6 @@ def test_record_to_dict_captures_exception_traceback():
     d = sl.record_to_dict(rec)
     assert "ValueError: boom" in d["exception"]
     assert "Traceback" in d["exception"]
-
-
-import json
 
 
 def test_serialize_is_single_line_and_round_trips():
