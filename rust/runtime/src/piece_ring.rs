@@ -252,6 +252,20 @@ impl RingDescriptor {
         }
     }
 
+    /// Discard all visible (committed-but-unretired) entries by advancing the
+    /// retire cursor to `head`, so the consumer will not re-arm an aborted
+    /// timeline after `force_idle`. Touches only consumer-owned cursors
+    /// (`retired`, `tail`) — never `head` — preserving the C/Rust ownership
+    /// boundary. No-op when unconfigured. Preserves `tail == retired % ring_depth`.
+    #[inline]
+    pub fn drain(&mut self) {
+        if self.ring_depth == 0 {
+            return;
+        }
+        self.retired = self.head;
+        self.tail = (self.head as usize) % self.ring_depth;
+    }
+
     /// Monotonic count of pieces whose window has fully elapsed (wrapping u32).
     #[inline]
     pub fn retired_count(&self) -> u32 {

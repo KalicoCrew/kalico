@@ -567,7 +567,11 @@ impl Engine {
         (0, 0, 0)
     }
 
-    /// Stub `runtime_force_idle` — drains pending state.
+    /// Reset the ISR cache and drain each axis ring on force-idle.
+    ///
+    /// Resets the step accumulators, clears `armed` on every configured axis,
+    /// and advances each axis's ring retire cursor to `head` so that stale
+    /// pre-abort pieces cannot be re-armed on the next ISR tick.
     pub fn runtime_force_idle(&mut self, shared: &SharedState) {
         for ss in &mut self.step_state {
             ss.reset_accumulator();
@@ -575,6 +579,7 @@ impl Engine {
         for axis_opt in &mut self.stepping_axes {
             if let Some(axis) = axis_opt.as_mut() {
                 axis.reset_isr_cache();
+                axis.ring.drain(); // discard stale pre-abort pieces
             }
         }
         self.last_motors = [0.0; MAX_AXES];
