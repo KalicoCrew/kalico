@@ -11,6 +11,7 @@ def test_session_id_format_round_trip():
 
 def test_events_dir_derivation():
     from klippy import printer
+
     assert printer.events_dir_for("/home/pi/printer_data/logs/klippy.log") == (
         "/home/pi/printer_data/logs/events"
     )

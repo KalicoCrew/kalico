@@ -28,11 +28,11 @@ from . import (
     configfile,
     gcode,
     mcu,
+    motion_toolhead,
     msgproto,
     pins,
     queuelogger,
     reactor,
-    motion_toolhead,
     structured_log,
     util,
     webhooks,
@@ -319,8 +319,9 @@ class Printer:
         self._register_subsystem_components()
         # Instantiate the motion bridge BEFORE MCU objects are constructed
         from . import motion_bridge as motion_bridge_mod
+
         bridge = motion_bridge_mod.MotionBridgeWrapper(self.reactor)
-        self.add_object('motion_bridge', bridge)
+        self.add_object("motion_bridge", bridge)
         # Create printer objects
         for m in [pins, mcu]:
             m.add_printer_objects(config)
@@ -482,11 +483,13 @@ class Printer:
                     ],
                 )
                 for idx, cb in enumerate(handlers):
-                    owner = getattr(getattr(cb, "__self__", None),
-                                    "_name", None) or repr(cb)
+                    owner = getattr(
+                        getattr(cb, "__self__", None), "_name", None
+                    ) or repr(cb)
                     logging.info(
-                        "[firmware-restart-trace] before handler[%d]"
-                        " owner=%s", idx, owner,
+                        "[firmware-restart-trace] before handler[%d] owner=%s",
+                        idx,
+                        owner,
                     )
                     try:
                         cb()
@@ -496,12 +499,11 @@ class Printer:
                             idx,
                         )
                     logging.info(
-                        "[firmware-restart-trace] after handler[%d]"
-                        " owner=%s", idx, owner,
+                        "[firmware-restart-trace] after handler[%d] owner=%s",
+                        idx,
+                        owner,
                     )
-                logging.info(
-                    "[firmware-restart-trace] all handlers done"
-                )
+                logging.info("[firmware-restart-trace] all handlers done")
             self.send_event("klippy:disconnect")
         except:
             logging.exception("Unhandled exception during post run")

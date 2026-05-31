@@ -1,4 +1,5 @@
 # test/test_log_sinks.py
+import json
 import logging
 
 import pytest
@@ -71,9 +72,6 @@ def test_text_sink_rollover_info_header(tmp_path):
         content = f.read()
     assert "Git version: 'abc'" in content
     assert "Log rollover at" in content
-
-
-import json
 
 
 def test_jsonl_sink_writes_valid_json_line(tmp_path):
