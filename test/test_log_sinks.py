@@ -1,0 +1,50 @@
+# test/test_log_sinks.py
+import logging
+
+import pytest
+
+from klippy import log_sinks
+
+
+class _RecordingSink(log_sinks.Sink):
+    def __init__(self):
+        self.records = []
+        self.closed = False
+
+    def emit_record(self, record):
+        self.records.append(record)
+
+    def close(self):
+        self.closed = True
+
+
+def _rec(msg="m"):
+    r = logging.LogRecord("t", logging.INFO, __file__, 1, msg, (), None)
+    r.message = msg
+    return r
+
+
+def test_registry_fans_out_to_all_sinks():
+    a, b = _RecordingSink(), _RecordingSink()
+    reg = log_sinks.SinkRegistry([a, b])
+    reg.emit(_rec("hi"))
+    assert len(a.records) == 1 and len(b.records) == 1
+
+
+def test_registry_close_closes_all():
+    a, b = _RecordingSink(), _RecordingSink()
+    reg = log_sinks.SinkRegistry([a, b])
+    reg.close()
+    assert a.closed and b.closed
+
+
+class _BoomSink(log_sinks.Sink):
+    def emit_record(self, record):
+        raise OSError("disk full")
+
+
+def test_registry_emit_failure_is_loud():
+    # Per spec §12 a write failure is a hard error, not silently swallowed.
+    reg = log_sinks.SinkRegistry([_BoomSink()])
+    with pytest.raises(OSError):
+        reg.emit(_rec())
