@@ -33,10 +33,18 @@ from . import (
     queuelogger,
     reactor,
     motion_toolhead,
+    structured_log,
     util,
     webhooks,
 )
 from .extras.danger_options import get_danger_options
+
+
+def events_dir_for(logfile):
+    if not logfile:
+        return None
+    return os.path.join(os.path.dirname(os.path.abspath(logfile)), "events")
+
 
 message_ready = "Printer is ready"
 
@@ -689,6 +697,12 @@ def main():
     if options.debugoutput:
         start_args["debugoutput"] = options.debugoutput
         start_args.update(options.dictionary)
+    # Bind the session id BEFORE the first log line (spec §6 binding-timing).
+    session_id = structured_log.make_session_id()
+    structured_log.bind_session(session_id)
+    start_args["session_id"] = session_id
+
+    edir = events_dir_for(options.logfile)
     bglogger = None
     if options.logfile:
         start_args["log_file"] = options.logfile
@@ -696,6 +710,7 @@ def main():
             filename=options.logfile,
             debuglevel=debuglevel,
             rotate_log_at_restart=options.rotate_log_at_restart,
+            events_dir=edir,
         )
         if options.rotate_log_at_restart:
             bglogger.doRollover()
