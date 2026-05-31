@@ -709,17 +709,41 @@ fault_capture_and_reset(uint32_t kind, uint32_t *frame, uint32_t exc_return)
 // EXC_RETURN bit 2) and the EXC_RETURN value, then tail into the C handler.
 // This must be inline asm in a naked function so the compiler doesn't push
 // anything onto the stack before we sample SP.
+// The stack-pointer select + tail-call differs by architecture. ARMv7-M uses an
+// IT block + conditional MRS. ARMv6-M (Cortex-M0+) has neither IT blocks nor
+// conditional MRS, TST takes only registers (not an immediate), and the narrow
+// unconditional B's ±2KB range can't reach fault_capture_and_reset across the
+// firmware's .text — so it uses an explicit branch over a register-form TST and
+// tail-calls with BL (±4MB; lr is dead afterward since the callee is noreturn).
+#if (__CORTEX_M >= 3)
+#define FAULT_TRAMPOLINE_SELECT_SP                                      \
+            "tst lr, #4\n\t"                                            \
+            "ite eq\n\t"                                                \
+            "mrseq r1, msp\n\t"                                         \
+            "mrsne r1, psp\n\t"
+#define FAULT_TRAMPOLINE_TAIL "b fault_capture_and_reset\n\t"
+#else
+#define FAULT_TRAMPOLINE_SELECT_SP                                      \
+            "movs r1, #4\n\t"                                          \
+            "mov  r2, lr\n\t"                                          \
+            "tst  r2, r1\n\t"                                          \
+            "beq  1f\n\t"                                              \
+            "mrs  r1, psp\n\t"                                         \
+            "b    2f\n\t"                                              \
+            "1:\n\t"                                                  \
+            "mrs  r1, msp\n\t"                                        \
+            "2:\n\t"
+#define FAULT_TRAMPOLINE_TAIL "bl fault_capture_and_reset\n\t"
+#endif
+
 #define FAULT_TRAMPOLINE(NAME, KIND, IRQ_NUM)                           \
     void __attribute__((naked, used)) NAME(void)                        \
     {                                                                   \
         asm volatile (                                                  \
-            "tst lr, #4\n\t"                                            \
-            "ite eq\n\t"                                                \
-            "mrseq r1, msp\n\t"                                         \
-            "mrsne r1, psp\n\t"                                         \
+            FAULT_TRAMPOLINE_SELECT_SP                                  \
             "mov r0, %0\n\t"                                            \
             "mov r2, lr\n\t"                                            \
-            "b fault_capture_and_reset\n\t"                             \
+            FAULT_TRAMPOLINE_TAIL                                       \
             : : "i"(KIND) : "r0", "r1", "r2"                            \
         );                                                              \
     }                                                                   \
