@@ -291,7 +291,7 @@ impl Engine {
         now: u64,
         shared: &SharedState,
         storage: &mut [PieceEntry],
-    ) {
+    ) -> bool {
         use crate::tick::dispatch_axis;
         #[cfg(any(test, feature = "host"))]
         let get_queue = |i: usize| {
@@ -312,6 +312,8 @@ impl Engine {
         #[allow(clippy::cast_possible_truncation)]
         let now_lo = now as u32;
 
+        let mut active = false;
+
         for i in 0..(self.num_axes as usize) {
             // Pull out the axis + storage borrow in a single block to avoid
             // aliasing the mutable reference.
@@ -331,6 +333,7 @@ impl Engine {
                 ) else {
                     continue;
                 };
+                active = true;
                 let p_sample_start = axis.p_prev;
                 axis.p_prev = p_end;
                 axis.v_prev = v_end;
@@ -354,6 +357,8 @@ impl Engine {
                 self.cycles_per_second,
             );
         }
+
+        active
     }
 
     /// Returns per-axis retired piece counts for the heartbeat.

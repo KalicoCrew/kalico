@@ -132,6 +132,24 @@ pub fn raise_piece_start_in_past(shared: &SharedState, axis_idx: usize) {
         .store(FaultCode::PieceStartInPast.as_i32(), Ordering::Release);
 }
 
+/// Latch a `TickIntervalExceeded` fault (ISR inter-arrival guard).
+///
+/// Raised when the gap between two consecutive TIM5 ticks exceeds
+/// `2 * sample_period_cycles` — the ISR was starved. The measured gap in
+/// units of tick periods (saturated to 16 bits) is stored in the low 16
+/// bits of `fault_detail` for host diagnosis. Detail-first ordering is
+/// mandatory: the foreground reads `last_error` first, then `fault_detail`;
+/// storing detail before code guarantees the host always sees a valid pair.
+#[inline]
+pub fn raise_tick_interval_exceeded(shared: &SharedState, gap_ticks: u32) {
+    shared
+        .fault_detail
+        .store(gap_ticks.min(0xFFFF), Ordering::Release);
+    shared
+        .last_error
+        .store(FaultCode::TickIntervalExceeded.as_i32(), Ordering::Release);
+}
+
 /// Latch a `StepsPerSampleExceeded` fault.
 ///
 /// Raised by the ISR pulse-dispatch path when a single TIM5 sample window

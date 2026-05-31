@@ -133,6 +133,12 @@ pub struct IsrState {
     /// CYCCNT widening. The ISR is the sole writer; foreground must not call
     /// `widen()` directly.
     pub widen_state: WidenState,
+    /// Widened `now` from the previous `isr_sample_tick` call.
+    /// `None` until the first active tick sets a baseline; used by the
+    /// inter-arrival guard to detect starvation before acting on stale time.
+    /// Set to `Some` only when the previous tick had active motion; idle ticks
+    /// clear it to `None` so the guard never fires during boot/config.
+    pub last_tick_now: Option<u64>,
 }
 
 impl IsrState {
@@ -856,6 +862,7 @@ impl RuntimeContext {
                 sample_rate_hz,
             );
             core::ptr::addr_of_mut!((*inner_ptr).widen_state).write(WidenState::default());
+            core::ptr::addr_of_mut!((*inner_ptr).last_tick_now).write(None);
         }
     }
 }

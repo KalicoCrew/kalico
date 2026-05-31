@@ -13,6 +13,7 @@ use core::sync::atomic::Ordering;
 
 use crate::fault_helpers::{
     raise_position_count_overflow, raise_step_queue_overflow, raise_steps_per_sample_exceeded,
+    raise_tick_interval_exceeded,
 };
 use crate::phase_lut::PHASE_LUT;
 use crate::state::SharedState;
@@ -326,11 +327,17 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
 
 // ─── ISR sample entry ─────────────────────────────────────────────────────
 
+/// Fault when the gap between two consecutive active ticks exceeds this
+/// multiple of the tick period.
+const TICK_GAP_FAULT_MULT: u64 = 2;
+
 /// Single-call ISR body for the piece-ring walker engine (Task 6).
 ///
-/// Widens the 32-bit DWT clock, publishes `widened_now`, then delegates to
-/// `Engine::tick` which walks each configured axis's ring, evaluates the
-/// Horner polynomial, and calls `dispatch_axis`.
+/// Widens the 32-bit DWT clock, publishes `widened_now` unconditionally (so
+/// the foreground clock never stalls), then checks the inter-arrival gap —
+/// but only if the previous tick was active (had a piece playing). Idle and
+/// boot ticks clear `last_tick_now` to `None`, so the guard never fires
+/// during config or between moves.
 ///
 /// `storage` is projected from `RuntimeContext::piece_storage` by the FFI
 /// caller (`kalico_runtime_tick_sample`).
@@ -345,7 +352,11 @@ pub fn isr_sample_tick(
     bump_relaxed(isr.engine.tick_counter.inner_atomic());
 
     let now = isr.widen_state.widen(raw_cyccnt);
+
+    // Publish unconditionally — skipping this on a fault tick freezes the
+    // foreground clock and pegs the scheduler.
     crate::clock::publish_widened_now(shared, now);
+
     let after_widen = unsafe { cyccnt_read() };
     update_max(
         &shared.isr_widen_cycles_max,
@@ -359,14 +370,26 @@ pub fn isr_sample_tick(
         after_arm.wrapping_sub(after_widen),
     );
 
-    let elapsed = after_arm.wrapping_sub(body_start);
-    if elapsed > 20000 {
-        bump_relaxed(&shared.isr_overrun_count);
-        return;
+    // Inter-arrival guard: only fires when the previous tick was active
+    // (last_tick_now == Some).  Idle/boot ticks leave it None, so the guard
+    // never trips during config or between moves.  An idle→active transition
+    // re-baselines: the first active tick sets Some, the second is the first
+    // one compared.
+    let period = isr.engine.sample_period_cycles as u64;
+    if let Some(last) = isr.last_tick_now {
+        let gap = now.wrapping_sub(last);
+        if period != 0 && gap > period * TICK_GAP_FAULT_MULT {
+            let gap_ticks = (gap / period) as u32;
+            raise_tick_interval_exceeded(shared, gap_ticks);
+            isr.last_tick_now = Some(now);
+            return; // skip dispatch; publish already happened; foreground escalation shuts down
+        }
     }
 
-    let crate::state::IsrState { engine, .. } = isr;
-    engine.tick(now, shared, storage);
+    let active = {
+        let crate::state::IsrState { engine, .. } = isr;
+        engine.tick(now, shared, storage)
+    };
 
     let body_end = unsafe { cyccnt_read() };
     update_max(
@@ -374,12 +397,9 @@ pub fn isr_sample_tick(
         body_end.wrapping_sub(after_arm),
     );
 
-    let body_cycles = body_end.wrapping_sub(body_start);
-    if body_cycles > 30000 {
-        shared
-            .isr_overrun_count
-            .fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    }
+    // Update baseline: Some only when this tick was active; idle ticks clear it
+    // so the gap check never straddles an idle gap.
+    isr.last_tick_now = if active { Some(now) } else { None };
 }
 
 #[cfg(not(any(test, feature = "host")))]
