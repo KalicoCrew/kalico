@@ -42,6 +42,15 @@ Flash both per the flashing-trident-mcus skill. Heaters cold throughout.
 - [5832b0e9e] MCU `prior_diag_summary_block` at jog: `systick 1331 stepout 782 stepout_burst 23566 usb_burst 129017` (DWT cycles). `otg_max_cyc 1151` (idle dumps).
 - [5832b0e9e] MCU `prior_diag_tasks` at jog: `out_max_gap 3949284761 in_max_gap 2649850198 drain_max_gap 534756 stat_max_gap 52037838` (timer ticks; 20 ms threshold = ~10.4e6 ticks @520 MHz). (Note: these gaps may include the boot/connect transient — not isolated to the jog.)
 
+## USB-core state at the halt (bench, `prior_diag_summary_usb`)
+
+- [63537cdb9] Jog (X 100↔200 @50 mm/s) → same halt (BrokenPipe → SIGABRT, EXIT_ON_FAULT/ABRT count 0→3). klippy auto-recovers.
+- [63537cdb9] H7: `in_busy 40`; F446: `in_busy 75`. (usb_send_bulk_in returned -1 / EPENA-still-set this many times: bulk-IN endpoint backed up — host not draining IN.)
+- [63537cdb9] Both MCUs: `gintsts = gintsts_sticky = 0x548C4C38`. Set bits include SOF(0x8), RXFLVL(0x10), NPTXFE(0x20), ESUSP(0x400), USBSUSP(0x800), USBRST(0x1000), ENUMDNE(0x2000), EOPF(0x8000), IEPINT(0x40000), + high bits 0x04000000/0x10000000(SRQINT)/0x40000000. NOTE: GINTSTS USBRST/USBSUSP are W1C and this firmware never clears them (masked: GINTMSK=0x40000=IEPINT only at dump), so their set state does NOT distinguish boot enumeration from a halt-time reset — inconclusive by construction.
+- [63537cdb9] At dump time (post-halt): H7 `in_diepctl 0x498100`, F446 `0x488100` — EPENA(0x80000000) CLEAR, USBAEP(0x8000) set. `in_diepint 0x2093` (XFRC|EPDISD|ITTXFE|...). `in_dtxfsts 16` (IN TX FIFO fully free = empty). `out_doepctl 0xB8000` — NAKSTS(0x20000) set, EPENA clear. `out_doepint 0x11`. (i.e. endpoints idle/quiescent at dump — not a stuck-armed endpoint; but this is post-halt + post-reconnect, not the halt instant.)
+- [63537cdb9] tim5_ia under jog: H7 min/last/max 50399/51996/52490 period 52000 (1.0×); F446 7970/9034/9440 period 9000 (1.0×).
+- [63537cdb9] `prior_diag_summary_block` under jog: H7 `systick 587 stepout 0 stepout_burst 0 usb_burst 129508`; F446 `systick 681 stepout 629 stepout_burst 629 usb_burst 146896`. (H7 stepout=0 this run — H7 step-output timer recorded no fires during an X-only CoreXY jog; unexplained, noted as fact.)
+
 ## Host / USB architecture (source read)
 
 - [c4ed8d740] `usbotg.c:513` `GAHBCFG = GINT` only (no DMAEN). `:512` `GINTMSK = RXFLVLM | IEPINT`. ISR (`OTG_FS_IRQHandler` ~:417) sets wake flags only; on RXFLVL it masks RXFLVLM (~:437). All FIFO movement is CPU-copy in foreground DECL_TASKs (`usb_bulk_out_task`/`usb_bulk_in_task`, `fifo_read_packet`/`fifo_write_packet`).
