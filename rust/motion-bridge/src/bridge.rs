@@ -1392,18 +1392,18 @@ impl PyMotionBridge {
         phase_configs: Option<Vec<(u8, u8, u8)>>,
         timeout_s: f64,
     ) -> PyResult<()> {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open("/tmp/cax-trace.log")
-        {
-            let _ = writeln!(
-                f,
-                "configure_axes ENTRY mcu_handle={mcu_handle} kin={kinematics} present=0x{present_mask:x} awd=0x{awd_mask:x} invert=0x{invert_mask:x} steps_per_mm_len={} step_modes={step_modes:?}",
-                steps_per_mm.len()
-            );
-        }
+        tracing::info!(
+            subsystem = "bridge",
+            event = "configure_axes_entry",
+            mcu_handle,
+            kinematics,
+            present_mask,
+            awd_mask,
+            invert_mask,
+            steps_per_mm_len = steps_per_mm.len(),
+            step_modes = ?step_modes,
+            "configure_axes entry"
+        );
         if steps_per_mm.len() != 4 {
             return Err(PyRuntimeError::new_err(
                 "configure_axes: steps_per_mm must be a list of 4 floats",
@@ -2326,9 +2326,15 @@ impl PyMotionBridge {
         de: f64,
         feedrate: f64,
     ) -> PyResult<()> {
-        eprintln!(
-            "[move-diag] bridge.submit_move enter dx={:.3} dy={:.3} dz={:.3} de={:.3} feed={:.1}",
-            dx, dy, dz, de, feedrate,
+        tracing::debug!(
+            subsystem = "motion",
+            event = "submit_move_enter",
+            dx,
+            dy,
+            dz,
+            de,
+            feedrate,
+            "bridge.submit_move enter"
         );
         py.allow_threads(|| -> PyResult<()> {
             let pos = *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
@@ -2483,25 +2489,15 @@ impl PyMotionBridge {
             timeout,
         )
         .map_err(|e| PyRuntimeError::new_err(format!("endstop_arm: {e}")))?;
-        // DIAG: log arm result to trace file
-        {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/interceptor_trace.log")
-            {
-                let _ = writeln!(
-                    f,
-                    "[{:?}] ENDSTOP_ARM mcu={} arm_id={} arm_clock={} status={} (0=Armed 1=AlreadyTripped 2=Rejected)",
-                    std::time::SystemTime::now(),
-                    mcu,
-                    arm_id,
-                    arm_clock,
-                    status as u8,
-                );
-            }
-        }
+        tracing::info!(
+            subsystem = "homing",
+            event = "endstop_arm_result",
+            mcu,
+            arm_id,
+            arm_clock,
+            status = status as u8,
+            "endstop_arm result"
+        );
         Ok(status as u8)
     }
 
@@ -2655,24 +2651,14 @@ impl PyMotionBridge {
         let seg_count_before = self.dispatched_segments.load(Ordering::Relaxed);
         self.submit_homing_move_inner(&move_pos, speed, &[handle.arm_id])?;
         let seg_count_after = self.dispatched_segments.load(Ordering::Relaxed);
-        // DIAG: log how many segments were dispatched for this homing move
-        {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open("/tmp/interceptor_trace.log")
-            {
-                let _ = writeln!(
-                    f,
-                    "[{:?}] HOMING_MOVE_DISPATCH seg_before={} seg_after={} dispatched={}",
-                    std::time::SystemTime::now(),
-                    seg_count_before,
-                    seg_count_after,
-                    seg_count_after - seg_count_before,
-                );
-            }
-        }
+        tracing::info!(
+            subsystem = "homing",
+            event = "homing_move_dispatch",
+            seg_before = seg_count_before,
+            seg_after = seg_count_after,
+            dispatched = seg_count_after - seg_count_before,
+            "run_probe_homing homing move dispatched"
+        );
 
         let result = py.allow_threads(|| crate::probe_homing::run_probe_homing(&handle));
 
