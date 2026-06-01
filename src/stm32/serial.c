@@ -108,7 +108,11 @@ serial_init(void)
     USARTx->BRR = (((div / 16) << USART_BRR_DIV_Mantissa_Pos)
                    | ((div % 16) << USART_BRR_DIV_Fraction_Pos));
     USARTx->CR1 = CR1_FLAGS;
-    armcm_enable_irq(USARTx_IRQHandler, USARTx_IRQn, 0);
+    // Demoted below the motion pair (KALICO_MOTION_NVIC_PRIO=0): on kalico
+    // motion MCUs the TIM5 motion tick is the highest maskable priority, so
+    // serial must not sit at 0 where it could fence the tick. (These bench
+    // MCUs are USB-CDC, so this handler isn't built — kept correct regardless.)
+    armcm_enable_irq(USARTx_IRQHandler, USARTx_IRQn, 2);
 
     gpio_peripheral(GPIO_Rx, GPIO_FUNCTION(GPIO_AF_MODE), 1);
     gpio_peripheral(GPIO_Tx, GPIO_FUNCTION(GPIO_AF_MODE), 0);

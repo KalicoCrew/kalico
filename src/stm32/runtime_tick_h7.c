@@ -114,21 +114,13 @@ runtime_tick_init(void)
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-    // Set IRQ priority 2 — same as SysTick (the Klipper scheduler dispatch
-    // ISR, set in armcm_timer.c). Same-priority Cortex-M interrupts do not
-    // nest: whichever fires first runs to completion before the other.
-    // This is the mutual-exclusion guarantee that lets TIM5 and the
-    // SysTick-dispatched `runtime_producer_event` both form `&mut IsrState`
-    // soundly — neither can preempt the other. Promoting from 3 to 2 trades
-    // at most "TIM5 ISR worst-case duration" of scheduler-dispatch latency,
-    // which is bounded by motion correctness (must fit in the 25 µs
-    // modulation period at 40 kHz) and orders of magnitude below the 3 s
-    // heater deadline / 500 ms IWDG window.
-    //
-    // KALICO_MOTION_NVIC_PRIO (= 2 today) is shared with the dedicated
-    // step-output timer (step_output_timer_init below) so producer and
-    // consumer are EQUAL — the non-nesting invariant the step_queue SPSC
-    // relies on. See src/generic/kalico_nvic_prio.h.
+    // Set the motion-tick IRQ to KALICO_MOTION_NVIC_PRIO (= 0, the highest
+    // maskable priority) so TIM5 preempts the USB OTG burst that was fencing
+    // it (-311 fix). The same constant is also applied to the dedicated
+    // step-output timer (step_output_timer_init below), keeping producer
+    // (TIM5) and consumer (step-output) EQUAL — the non-nesting invariant the
+    // step_queue SPSC relies on. SysTick is demoted to 3. Rationale, the full
+    // NVIC map, and the heater-safety note are in src/generic/kalico_nvic_prio.h.
     NVIC_SetPriority(TIM5_IRQn, KALICO_MOTION_NVIC_PRIO);
 
     // Always-on (spec 2026-05-28): the piece-ring engine has no per-push event
@@ -313,10 +305,11 @@ DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
 // Reference for 16-bit chaining already in-tree: src/stm32/stm32f0_timer.c and
 // src/stm32/runtime_tick_g0.c.
 //
-// NVIC priority: KALICO_MOTION_NVIC_PRIO — IDENTICAL to TIM5 (Step 1 parity;
-// no flip). Same-number Cortex-M interrupts cannot nest, so this consumer and
-// the TIM5 producer never preempt each other → the step_queues SPSC and the
-// kalico_kick_step_output compare poke stay non-racing.
+// NVIC priority: KALICO_MOTION_NVIC_PRIO (= 0) — IDENTICAL to TIM5 (the motion
+// pair moves together via the one constant). Same-number Cortex-M interrupts
+// cannot nest, so this consumer and the TIM5 producer never preempt each other
+// → the step_queues SPSC and the kalico_kick_step_output compare poke stay
+// non-racing. Both are now above USB/SysTick (see kalico_nvic_prio.h).
 
 // Largest 16-bit one-shot delta we program in a single arm. Below 0x10000 with
 // margin so the chained re-arm always lands strictly before a full wrap, and so
