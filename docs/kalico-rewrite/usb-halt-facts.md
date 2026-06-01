@@ -170,6 +170,32 @@ F3000` x10 (X only, 50 mm/s). Failure reproduced first attempt.
   piece's start_time, not a `now` jump. Direct deficit measurement still pending
   (fault_detail does not yet encode now-start_time).
 
+## Host PRODUCE path (source read + bench, cb54339ea)
+
+- [cb54339ea] Piece start_time is set in motion-bridge/src/enqueue.rs:160:
+  `start_time = project(mcu_id, t0 + bp.u_start)`, `duration = u_end - u_start`.
+  Curves are ABSOLUTE planner time: emit.rs `restrict_to_domain(axes, t_lo, t_hi)`
+  sets the axis u-domain to [t_start, t_end]; state.rs shifts fitted pieces by
+  `time_offset = t_dispatched`. So within a contiguous stream pieces tile exactly;
+  no segment-local-domain bug.
+- [cb54339ea] anchor.rs: `t0 = host_now + 0.25 - seg_t_start` on a FRESH stream
+  (DEFAULT_LEAD_SECS=0.25), constant for contiguous segments, re-anchored only on
+  a BACKWARD planner-time jump. A forward jog is one stream; fresh only at start.
+- [cb54339ea] [seg0-deficit] (router.rs:482) at both jogs, both MCUs: seg0
+  `deficit_us = +249998` (~+250 ms, POSITIVE/future = healthy). Stream START is
+  fine; the -308 is a later piece.
+- [cb54339ea] project = router.rs:443 `host_time_to_mcu_clock` =
+  `last_clock + (host_secs - clock_offset) * clock_freq` — a LINEAR extrapolation
+  of the live clock-sync estimate (updated periodically by set_clock_est_from_sample
+  via spawn_periodic_clock_sync).
+- [cb54339ea] Pump flow control is by piece COUNT, not time: pump.rs `room() =
+  ring_depth - in_flight` (ring_depth: H7 661, F446 512); StallFull when room==0.
+  So the committed time-lead is unbounded for long-duration pieces.
+- [cb54339ea] Measured arrival_lead (transit-diag, commit-time front_start_time -
+  arrival_clock): H7 (mcu=0, axes 0/1) +0.24 s .. +1.42 s; F446 (mcu=1, axis 2/Z)
+  +0.24 s .. +16.3 s, growing. (Z is far deeper because Z-at-0 hold pieces are
+  long, so 512 pieces span ~16 s.) NO negative leads at commit on either MCU.
+
 ## Host / USB architecture (source read)
 
 - [c4ed8d740] `usbotg.c:513` `GAHBCFG = GINT` only (no DMAEN). `:512` `GINTMSK = RXFLVLM | IEPINT`. ISR (`OTG_FS_IRQHandler` ~:417) sets wake flags only; on RXFLVL it masks RXFLVLM (~:437). All FIFO movement is CPU-copy in foreground DECL_TASKs (`usb_bulk_out_task`/`usb_bulk_in_task`, `fifo_read_packet`/`fifo_write_packet`).
