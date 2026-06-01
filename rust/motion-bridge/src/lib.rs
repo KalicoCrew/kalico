@@ -1,3 +1,4 @@
+mod logging;
 #[doc(hidden)]
 pub mod anchor;
 mod bridge;
