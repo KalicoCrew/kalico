@@ -347,6 +347,24 @@ struct diag_counters {
     uint32_t tim5_ia_min_cyc;
     uint32_t tim5_ia_max_cyc;
     uint32_t tim5_ia_last_cyc;
+
+    // USB-CDC halt instrumentation (2026-06-01). The H7 drops off USB under
+    // sustained motion (host read -> EPIPE) while the MCU stays alive. Polled
+    // from foreground (usb_diag_poll_task in usbotg.c) + counted in the bulk-IN
+    // send path. usb_in_busy_n is the direct "host stopped draining the IN
+    // endpoint" signal (usb_send_bulk_in found EPENA still set). gintsts_sticky
+    // is the OR of every GINTSTS sample — catches a transient USBRST/USBSUSP
+    // (host reset/suspended the device) even between polls. The rest are the
+    // latest bulk-IN / bulk-OUT endpoint register snapshots.
+    uint32_t usb_in_busy_n;        // bulk-IN send blocked (EPENA set: host not draining)
+    uint32_t usb_gintsts_sticky;   // OR of all GINTSTS samples
+    uint32_t usb_gintsts_now;      // latest GINTSTS
+    uint32_t usb_gintmsk_now;      // latest GINTMSK
+    uint32_t usb_in_diepctl;       // latest bulk-IN DIEPCTL
+    uint32_t usb_in_diepint;       // latest bulk-IN DIEPINT
+    uint32_t usb_in_dtxfsts;       // latest bulk-IN TX-FIFO free words
+    uint32_t usb_out_doepctl;      // latest bulk-OUT DOEPCTL
+    uint32_t usb_out_doepint;      // latest bulk-OUT DOEPINT
 };
 
 #if CONFIG_MACH_STM32H7
@@ -778,6 +796,33 @@ diag_snapshot_otg_regs(uint32_t gintmsk, uint32_t gintsts)
     diag.otg_gintsts_now = gintsts;
 }
 
+// USB-CDC halt instrumentation (2026-06-01). Called every foreground iteration
+// from usb_diag_poll_task (usbotg.c). Sticky-OR of GINTSTS persists any
+// USBRST/USBSUSP across the run; the endpoint registers hold the latest state.
+void
+diag_usb_poll(uint32_t gintsts, uint32_t gintmsk, uint32_t in_diepctl,
+              uint32_t in_diepint, uint32_t in_dtxfsts, uint32_t out_doepctl,
+              uint32_t out_doepint)
+{
+    diag.usb_gintsts_sticky |= gintsts;
+    diag.usb_gintsts_now = gintsts;
+    diag.usb_gintmsk_now = gintmsk;
+    diag.usb_in_diepctl = in_diepctl;
+    diag.usb_in_diepint = in_diepint;
+    diag.usb_in_dtxfsts = in_dtxfsts;
+    diag.usb_out_doepctl = out_doepctl;
+    diag.usb_out_doepint = out_doepint;
+}
+
+// Bumped from usb_send_bulk_in when the bulk-IN endpoint still has EPENA set
+// (the prior packet has not been drained by the host) — the direct "host
+// stopped reading the IN endpoint" onset signal.
+void
+diag_note_usb_in_busy(void)
+{
+    diag.usb_in_busy_n++;
+}
+
 // Round 2 — extended snapshot accessors.
 uint32_t diag_get_otg_rxflvl(void)        { return diag.otg_rxflvl_fires; }
 uint32_t diag_get_otg_iepint(void)        { return diag.otg_iepint_fires; }
@@ -1085,6 +1130,15 @@ fault_handler_report_task(void)
             prior_diag.tim5_ia_min_cyc        = diag.tim5_ia_min_cyc;
             prior_diag.tim5_ia_max_cyc        = diag.tim5_ia_max_cyc;
             prior_diag.tim5_ia_last_cyc       = diag.tim5_ia_last_cyc;
+            prior_diag.usb_in_busy_n          = diag.usb_in_busy_n;
+            prior_diag.usb_gintsts_sticky     = diag.usb_gintsts_sticky;
+            prior_diag.usb_gintsts_now        = diag.usb_gintsts_now;
+            prior_diag.usb_gintmsk_now        = diag.usb_gintmsk_now;
+            prior_diag.usb_in_diepctl         = diag.usb_in_diepctl;
+            prior_diag.usb_in_diepint         = diag.usb_in_diepint;
+            prior_diag.usb_in_dtxfsts         = diag.usb_in_dtxfsts;
+            prior_diag.usb_out_doepctl        = diag.usb_out_doepctl;
+            prior_diag.usb_out_doepint        = diag.usb_out_doepint;
             // Capture the ring contents into a non-volatile copy so the
             // emit loop below has a stable snapshot to walk.
             for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
@@ -1300,6 +1354,22 @@ fault_handler_report_task(void)
                prior_diag.tim5_ia_max_cyc,
                prior_diag.tim5_ia_last_cyc,
                (uint32_t)(CONFIG_CLOCK_FREQ / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ));
+        // USB-CDC halt instrumentation: in_busy = bulk-IN send blocked (host
+        // not draining IN); gintsts_sticky = OR of all GINTSTS (USBRST=0x1000,
+        // USBSUSP=0x800, ENUMDNE=0x2000, MMIS=0x2); in_* / out_* = latest
+        // bulk endpoint register state.
+        output("prior_diag_summary_usb in_busy %u gintsts_sticky %u gintsts %u"
+               " gintmsk %u in_diepctl %u in_diepint %u in_dtxfsts %u"
+               " out_doepctl %u out_doepint %u",
+               prior_diag.usb_in_busy_n,
+               prior_diag.usb_gintsts_sticky,
+               prior_diag.usb_gintsts_now,
+               prior_diag.usb_gintmsk_now,
+               prior_diag.usb_in_diepctl,
+               prior_diag.usb_in_diepint,
+               prior_diag.usb_in_dtxfsts,
+               prior_diag.usb_out_doepctl,
+               prior_diag.usb_out_doepint);
         output("prior_diag_tasks out_n %u out_max_gap %u in_n %u in_max_gap %u"
                " drain_n %u drain_max_gap %u stat_n %u stat_max_gap %u",
                prior_diag.usb_out_calls,
