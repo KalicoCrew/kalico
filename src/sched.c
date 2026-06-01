@@ -108,11 +108,25 @@ sentinel_event(struct timer *t)
     shutdown("sentinel timer called");
 }
 
+// Largest number of timers insert_timer's walk should ever traverse. A
+// well-formed list ends at the sentinel_timer (waketime = max), so the walk
+// always breaks within the live timer count (a handful). This bound is far
+// above any real count; exceeding it means the list is corrupt (a bad/cyclic
+// `.next` pointer — e.g. a stray write into a `struct timer`).
+#define SCHED_INSERT_MAX_WALK 1024u
+
+// Captured for the corruption hunt: the pos pointer the walk was traversing
+// when it ran away, and a count of how many times the guard tripped. Persisted
+// in .bss (survives the try_shutdown longjmp; readable while shut down).
+volatile uint32_t sched_insert_corrupt_pos;
+volatile uint32_t sched_insert_corrupt_count;
+
 // Find position for a timer in timer_list and insert it
 static void __always_inline
 insert_timer(struct timer *pos, struct timer *t, uint32_t waketime)
 {
     struct timer *prev;
+    uint32_t walk = 0;
     for (;;) {
         prev = pos;
         if (CONFIG_MACH_AVR)
@@ -121,6 +135,17 @@ insert_timer(struct timer *pos, struct timer *t, uint32_t waketime)
         pos = pos->next;
         if (timer_is_before(waketime, pos->waketime))
             break;
+        // Fail loud, do NOT spin: a runaway walk means the timer list is
+        // corrupt. Spinning here runs under the SysTick irq_disable, masking
+        // TIM5 and starving the IWDG pet -> ~0.5s freeze -> watchdog reset ->
+        // USB-CDC drop -> klippy abort (the silent failure we chased). Shut
+        // down cleanly instead so the cause is named and the host stays up.
+        if (unlikely(++walk > SCHED_INSERT_MAX_WALK)) {
+            sched_insert_corrupt_pos = (uint32_t)pos;
+            sched_insert_corrupt_count++;
+            sched_writable_end();  // mirror try_shutdown sites: close RW window
+            try_shutdown("insert_timer: scheduler timer list corrupt");
+        }
     }
     t->next = pos;
     prev->next = t;
