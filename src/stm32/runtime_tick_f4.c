@@ -176,7 +176,12 @@ runtime_tick_init(void)
 // extended (lazy-FP) frame stacks {S0..S15,FPSCR}+align ABOVE those 8 words.
 // So frame[6]==PC and frame[7]==xPSR hold for both frame shapes — no need to
 // inspect EXC_RETURN bit 4.
-static volatile uint32_t *tim5_exc_frame;
+//
+// NOT static + used,externally_visible: the only writer is the naked wrapper's
+// inline asm (`ldr r1, =tim5_exc_frame`), opaque to the compiler — so a
+// file-local static gets dropped by --gc-sections and the asm reference fails
+// to link (undefined reference). Same gc-sections trap as runtime_clock_freq.
+volatile uint32_t *tim5_exc_frame __attribute__((used, externally_visible));
 
 __attribute__((used))
 static void TIM5_IRQHandler_body(uint32_t *frame);

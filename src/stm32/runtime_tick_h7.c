@@ -167,7 +167,12 @@ runtime_tick_init(void)
 // frame[6] == PC and frame[7] == xPSR hold for BOTH the basic and the extended
 // frame — the core-register offsets never move. We therefore do not need to
 // inspect EXC_RETURN bit 4 to read PC/xPSR correctly.
-static volatile uint32_t *tim5_exc_frame;
+//
+// NOT static + used,externally_visible: the only writer is the naked wrapper's
+// inline asm (`ldr r1, =tim5_exc_frame`), opaque to the compiler — so a
+// file-local static gets dropped by --gc-sections and the asm reference fails
+// to link (undefined reference). Same gc-sections trap as runtime_clock_freq.
+volatile uint32_t *tim5_exc_frame __attribute__((used, externally_visible));
 
 // Capture the exception frame pointer, then run the original handler body.
 // Marked `used` so LTO/--gc-sections keep it (reached only via the naked
