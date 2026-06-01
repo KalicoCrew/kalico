@@ -22,6 +22,27 @@ extern void* runtime_handle;   // exposed in src/runtime_tick.c
 // forward-declared so runtime_tick_init can stand it up after arming TIM5.
 static void step_output_timer_init(void);
 
+// True TIM5 / step-output kernel clock — NOT runtime_clock_freq.
+//
+// runtime_clock_freq == CONFIG_CLOCK_FREQ is the CPU/DWT clock (180 MHz on the
+// F446), which is what the engine's `now` (DWT->CYCCNT) counts in. But TIM5 and
+// TIM2 sit on APB1, and an STM32 timer whose APB prescaler != 1 runs at 2x the
+// APB peripheral clock (RM "TIMxCLK = 2 x PCLKx"). Here HCLK = sys_ck = 180 MHz
+// and PPRE1 = DIV4 so pclk1 = 45 MHz, giving timer kernel clock = 2 x 45 = 90
+// MHz = CONFIG_CLOCK_FREQ/2. Programming ARR from runtime_clock_freq therefore
+// made TIM5 fire at HALF the configured rate — the -311 TickIntervalExceeded
+// root cause (bench-confirmed: TIM5 inter-arrival = 2x the guard's sample
+// period). Mirrors src/stm32/hard_pwm.c:323-326.
+static uint32_t
+motion_timer_clk(void)
+{
+    uint32_t pclk = get_pclock_frequency((uint32_t)TIM5);
+    uint32_t clkdiv = CONFIG_CLOCK_FREQ / pclk;
+    if (clkdiv > 1)
+        clkdiv /= 2;  // timer doubler when the APB prescaler != 1
+    return CONFIG_CLOCK_FREQ / clkdiv;
+}
+
 // Stepping-redesign Task 17: TIM5 ISR body. The canonical prototype for
 // `kalico_runtime_tick_sample` is supplied by the included
 // `kalico_runtime.h`; no local extern needed.
@@ -73,7 +94,7 @@ runtime_tick_enable(void)
         return;
     }
     TIM5->CR1 &= ~TIM_CR1_CEN;
-    TIM5->ARR  = (runtime_clock_freq / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
+    TIM5->ARR  = (motion_timer_clk() / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
     TIM5->EGR  = TIM_EGR_UG;
     TIM5->SR   = 0;
     TIM5->SR   = ~TIM_SR_UIF;
@@ -114,7 +135,9 @@ runtime_tick_init(void)
     // by the dedicated step-output timer (TIM2, see below) rather than this
     // sample tick directly.
     TIM5->PSC = 0;
-    TIM5->ARR = (runtime_clock_freq / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
+    // ARR from the true TIM5 kernel clock (CONFIG_CLOCK_FREQ/2), NOT
+    // runtime_clock_freq — see motion_timer_clk() above (the -311 fix).
+    TIM5->ARR = (motion_timer_clk() / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
 
     // Auto-reload, update interrupt enable.
     TIM5->CR1 = TIM_CR1_ARPE;
@@ -282,19 +305,24 @@ DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
 
 // `step_out_target`  : absolute cycle the consumer must next fire at (32-bit).
 // `step_out_running` : 1 while CC1IE is enabled (timer is arming toward a step).
+// `step_out_clkdiv`  : DWT-cycles-per-TIM2-tick (= CONFIG_CLOCK_FREQ/timer_clk
+//                      = 2), set in step_output_timer_init before any arm.
 static volatile uint32_t step_out_target;
 static volatile uint8_t  step_out_running;
+static uint32_t          step_out_clkdiv = 1;
 
 // (Re)arm the step-output timer to fire at absolute cycle `cycle_abs`, or
 // disable it when `cycle_abs == KALICO_STEP_OUTPUT_DISABLE`. Called from the
 // Rust kick path (kalico_kick_step_output) and from the IRQ re-arm below.
 //
-// 32-bit TIM2: the absolute `cycle_abs` IS the compare value, because TIM2->CNT
-// runs in the same 32-bit cycle frame as the DWT clock the engine schedules in
-// (both PSC = 0 off the same timer clock). A due/late step (compare just behind
-// CNT) fires within one full 32-bit wrap, which at these horizons is "next
-// tick" in practice; the engine never schedules a step more than a small
-// fraction of 2^31 cycles out, so the wrap-safe arm cannot misfire.
+// `cycle_abs` is in the DWT frame (counted at CONFIG_CLOCK_FREQ), but TIM2->CNT
+// ticks at the timer kernel clock = CONFIG_CLOCK_FREQ/2 (see motion_timer_clk)
+// — so an absolute compare (CCR1 = cycle_abs) would be doubly wrong (rate AND
+// phase). Instead compute the remaining delta against the DWT clock, SCALE it
+// from DWT cycles to TIM2 ticks (divide by step_out_clkdiv), and program
+// CCR1 = TIM2->CNT + delta. 32-bit TIM2 reaches any near-future step within one
+// wrap (the engine never schedules more than a small fraction of 2^31 out), so
+// no chaining is needed. Without the scale, every step fired ~2x late.
 //
 // used, externally_visible: referenced from the Rust archive (via the C kick
 // shim in runtime_tick.c) — keep it past --gc-sections / -fwhole-program LTO.
@@ -309,7 +337,14 @@ step_output_timer_arm(uint32_t cycle_abs)
     }
     step_out_target = cycle_abs;
     step_out_running = 1;
-    TIM2->CCR1 = cycle_abs;
+    uint32_t now = runtime_cyccnt_read();
+    uint32_t dwt_delta = cycle_abs - now;          // wrap-safe; >2^31 ⇒ already due
+    if ((int32_t)dwt_delta <= 0)
+        dwt_delta = step_out_clkdiv;               // due/late → ~next tick
+    uint32_t delta = dwt_delta / step_out_clkdiv;  // DWT cycles -> TIM2 ticks
+    if (delta == 0)
+        delta = 1;
+    TIM2->CCR1 = TIM2->CNT + delta;
     TIM2->SR = ~TIM_SR_CC1IF;          // clear stale compare flag
     TIM2->DIER |= TIM_DIER_CC1IE;
 }
@@ -351,6 +386,10 @@ step_output_timer_init(void)
 
     step_out_running = 0;
     step_out_target = 0;
+    // DWT-cycles-per-TIM2-tick: TIM2 ticks at motion_timer_clk()
+    // (CONFIG_CLOCK_FREQ/2) while cycle_abs is in the DWT frame
+    // (CONFIG_CLOCK_FREQ). Set before any arm can run (init is at boot).
+    step_out_clkdiv = CONFIG_CLOCK_FREQ / motion_timer_clk();
 
     NVIC_SetPriority(TIM2_IRQn, KALICO_MOTION_NVIC_PRIO);
     NVIC_EnableIRQ(TIM2_IRQn);

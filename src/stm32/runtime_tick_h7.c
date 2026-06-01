@@ -20,6 +20,27 @@ extern void* runtime_handle;   // exposed in src/runtime_tick.c
 // forward-declared so runtime_tick_init can stand it up after arming TIM5.
 static void step_output_timer_init(void);
 
+// True TIM5 / step-output kernel clock — NOT runtime_clock_freq.
+//
+// runtime_clock_freq == CONFIG_CLOCK_FREQ is the CPU/DWT clock (520 MHz on the
+// H723), which is what the engine's `now` (DWT->CYCCNT) counts in. But TIM5 and
+// TIM3 sit on APB1, and an STM32 timer whose APB prescaler != 1 runs at 2x the
+// APB peripheral clock (RM "TIMxCLK = 2 x PCLKx"). Here pclk1 = HCLK/2 = 130 MHz
+// and HCLK = sys_ck/2 = 260 MHz, so the timer kernel clock = 2 x 130 = 260 MHz
+// = CONFIG_CLOCK_FREQ/2. Programming ARR from runtime_clock_freq therefore made
+// TIM5 fire at HALF the configured rate — the -311 TickIntervalExceeded root
+// cause (bench-confirmed: TIM5 inter-arrival = 2x the guard's sample period).
+// Mirrors src/stm32/hard_pwm.c:323-326.
+static uint32_t
+motion_timer_clk(void)
+{
+    uint32_t pclk = get_pclock_frequency((uint32_t)TIM5);
+    uint32_t clkdiv = CONFIG_CLOCK_FREQ / pclk;
+    if (clkdiv > 1)
+        clkdiv /= 2;  // timer doubler when the APB prescaler != 1
+    return CONFIG_CLOCK_FREQ / clkdiv;
+}
+
 // Stepping-redesign Task 17: TIM5 ISR body. The canonical prototype for
 // `kalico_runtime_tick_sample` is supplied by the included
 // `kalico_runtime.h`; no local extern needed.
@@ -71,7 +92,7 @@ runtime_tick_enable(void)
         return;
     }
     TIM5->CR1 &= ~TIM_CR1_CEN;
-    TIM5->ARR  = (runtime_clock_freq / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
+    TIM5->ARR  = (motion_timer_clk() / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
     TIM5->EGR  = TIM_EGR_UG;
     TIM5->SR   = 0;
     TIM5->SR   = ~TIM_SR_UIF;
@@ -99,11 +120,12 @@ runtime_tick_init(void)
     TIM5->CR1 &= ~TIM_CR1_CEN;
     TIM5->SR = 0;
 
-    // T17: TIM5 rate from CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ (see
-    // comment in runtime_tick_enable for the rationale).
-    // PSC = 0, ARR = (clock_freq / SAMPLE_RATE_HZ) - 1.
+    // T17: TIM5 rate from CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ.
+    // PSC = 0, ARR = (timer_clock / SAMPLE_RATE_HZ) - 1, where timer_clock is
+    // the true TIM5 kernel clock (CONFIG_CLOCK_FREQ/2), NOT runtime_clock_freq
+    // — see motion_timer_clk() above for why (the -311 fix).
     TIM5->PSC = 0;
-    TIM5->ARR = (runtime_clock_freq / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
+    TIM5->ARR = (motion_timer_clk() / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
 
     // Auto-reload, update interrupt enable.
     TIM5->CR1 = TIM_CR1_ARPE;
@@ -315,21 +337,30 @@ DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
 // the "already past" check below has slack. 0xF000 cycles ≈ 230 µs @ 275 MHz.
 #define STEP_OUT_MAX_DELTA 0xF000u
 
-// Bridge between the 32-bit absolute `cycle_abs` domain (DWT/TIM5 frame) and
-// the 16-bit TIM3 counter. We cannot directly compare a 16-bit TIM3 CNT to a
-// 32-bit cycle, so we track the absolute target here and, on each (re)arm or
-// IRQ, compute the remaining delta against the 32-bit DWT clock (runtime_cyccnt
-// _read), clamp it to STEP_OUT_MAX_DELTA, and set CCR1 = TIM3->CNT + delta.
+// Bridge between the 32-bit absolute `cycle_abs` domain (DWT frame, counted at
+// CONFIG_CLOCK_FREQ) and the 16-bit TIM3 counter (which ticks at the timer
+// kernel clock = CONFIG_CLOCK_FREQ/2 — see motion_timer_clk). We cannot
+// directly compare a 16-bit TIM3 CNT to a 32-bit cycle, so we track the
+// absolute target here and, on each (re)arm or IRQ, compute the remaining delta
+// against the 32-bit DWT clock (runtime_cyccnt_read), SCALE it from DWT cycles
+// to TIM3 ticks (divide by step_out_clkdiv), clamp to STEP_OUT_MAX_DELTA, and
+// set CCR1 = TIM3->CNT + delta. Without the scale, every step fired ~2x late.
 //
 // `step_out_target`   : absolute cycle the consumer must next fire at.
 // `step_out_running`  : 1 while CC1IE is enabled (timer is arming toward a step).
+// `step_out_clkdiv`   : DWT-cycles-per-TIM3-tick (= CONFIG_CLOCK_FREQ/timer_clk
+//                       = 2), set in step_output_timer_init before any arm.
 static volatile uint32_t step_out_target;
 static volatile uint8_t  step_out_running;
+static uint32_t          step_out_clkdiv = 1;
 
-// Program TIM3 CC1 to fire `delta` (clamped) timer-ticks from the current CNT.
+// Program TIM3 CC1 to fire `dwt_delta` DWT-cycles from the current CNT. The
+// delta is scaled into TIM3 ticks (DWT runs 2x the TIM3 kernel clock) and
+// clamped to the 16-bit horizon.
 static inline void
-step_output_program_delta(uint32_t delta)
+step_output_program_delta(uint32_t dwt_delta)
 {
+    uint32_t delta = dwt_delta / step_out_clkdiv;  // DWT cycles -> TIM3 ticks
     if (delta > STEP_OUT_MAX_DELTA)
         delta = STEP_OUT_MAX_DELTA;
     if (delta == 0)
@@ -401,6 +432,10 @@ step_output_timer_init(void)
 
     step_out_running = 0;
     step_out_target = 0;
+    // DWT-cycles-per-TIM3-tick: TIM3 ticks at motion_timer_clk()
+    // (CONFIG_CLOCK_FREQ/2) while cycle_abs is in the DWT frame
+    // (CONFIG_CLOCK_FREQ). Set before any arm can run (init is at boot).
+    step_out_clkdiv = CONFIG_CLOCK_FREQ / motion_timer_clk();
 
     NVIC_SetPriority(TIM3_IRQn, KALICO_MOTION_NVIC_PRIO);
     NVIC_EnableIRQ(TIM3_IRQn);
