@@ -337,6 +337,20 @@ DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
 // the "already past" check below has slack. 0xF000 cycles ≈ 230 µs @ 275 MHz.
 #define STEP_OUT_MAX_DELTA 0xF000u
 
+// Step-output YIELD FLOOR (USB co-existence fix, 2026-06-01). On the re-arm
+// chain — the back-to-back TIM3 fires that drain a dense step burst — force a
+// minimum gap before the next fire so the cooperative FOREGROUND (which moves
+// USB packets, re-enables RXFLVLM, re-arms the single-buffered bulk-IN FIFO,
+// and pets the IWDG) gets a CPU window. Without it the chain starves the
+// foreground and USB-CDC halts (host EPIPE). Applied ONLY on the IRQ re-arm
+// path (TIM3_IRQHandler), never on the producer kick (kalico_kick_step_output
+// must always pull forward). ~4 µs expressed in DWT cycles, auto-scaling per
+// MCU; comfortably exceeds one OTG ISR (~2.2 µs) + a foreground task pass, and
+// bounds the worst-case TIM5 fence to ~one ISR (so it also protects the -311
+// deadline at the 40 kHz target). Tunable single constant; verify via the
+// USB foreground heartbeat (usb_*_max_gap < 20 ms) and tim5_ia_max < 2x period.
+#define STEP_OUT_YIELD_MIN_DWT ((CONFIG_CLOCK_FREQ / 1000000u) * 4u)
+
 // Bridge between the 32-bit absolute `cycle_abs` domain (DWT frame, counted at
 // CONFIG_CLOCK_FREQ) and the 16-bit TIM3 counter (which ticks at the timer
 // kernel clock = CONFIG_CLOCK_FREQ/2 — see motion_timer_clk). We cannot
@@ -445,12 +459,10 @@ void
 TIM3_IRQHandler(void)
 {
     // diag_stepout_account records single-invocation max AND the contiguous-
-    // burst span (first fire to last exit before a >1-period gap) of this
-    // step-output ISR. Retained as a -311 fence-fallback discriminator: the
-    // ISR runs at KALICO_MOTION_NVIC_PRIO (== TIM5, no nesting), so a
-    // back-to-back chain via the 16-bit TIM3 STEP_OUT_MAX_DELTA re-arm could in
-    // principle fence TIM5. (Primary -311 cause is the clock-domain half-rate
-    // bug; see fault_handler.c tim5_ia_*.)
+    // burst span of this step-output ISR. The ISR runs at KALICO_MOTION_NVIC_
+    // PRIO (== TIM5 and co-equal with USB, no nesting); the YIELD floor below
+    // bounds the re-arm chain so it cannot starve the foreground/USB or fence
+    // TIM5 past its deadline.
     extern void diag_stepout_account(uint32_t enter, uint32_t exit);
     uint32_t diag_enter = DWT->CYCCNT;
 
@@ -462,6 +474,20 @@ TIM3_IRQHandler(void)
     // re-arm another chunk without emitting — handled inside step_output_timer_arm.
     extern uint32_t kalico_step_output_event(void);
     uint32_t next = kalico_step_output_event();
+    // Yield floor: if the consumer wants to re-fire sooner than
+    // STEP_OUT_YIELD_MIN_DWT (a dense already-due/near-due chain), defer the
+    // re-arm to that floor so the cooperative foreground + USB get a window.
+    // Signed `< YIELD_MIN` covers BOTH already-due (next-now negative) AND
+    // small-positive near-due — clamping only `<= 0` would miss steps that
+    // became due mid-burst and let the chain (and the USB halt) continue.
+    // Computed here at re-arm time against a fresh clock; the current due batch
+    // was already emitted by the call above, so this only skews the NEXT batch
+    // (bounded, DUE_WINDOW=0 keeps order). The kick path bypasses this.
+    if (next != 0xFFFFFFFFu /* KALICO_STEP_OUTPUT_DISABLE */) {
+        uint32_t now = runtime_cyccnt_read();
+        if ((int32_t)(next - now) < (int32_t)STEP_OUT_YIELD_MIN_DWT)
+            next = now + STEP_OUT_YIELD_MIN_DWT;
+    }
     step_output_timer_arm(next);
 
     diag_stepout_account(diag_enter, DWT->CYCCNT);
