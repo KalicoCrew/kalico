@@ -543,21 +543,33 @@ diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
         diag_ring_push(DIAG_EV_TIM5_LONG, dur, enter_cycles);
 
     // Foreground-freeze watchdog (2026-06-01). This ISR keeps firing even when
-    // the cooperative foreground is frozen. Watch the foreground heartbeat
-    // (live_snap.samples_taken, bumped every report-task iteration); if it stops
-    // advancing WHILE THE ENGINE IS RUNNING, the foreground is stalled mid-
-    // motion. Latch the worst stall + the stacked PC/exc of the frozen context
-    // into the cross-boot-persistent live_snap so it survives the IWDG-reset /
-    // klippy-reconnect churn. Gating on engine==RUNNING excludes the boot window
-    // (before the report task first runs) and idle (heartbeat legitimately
-    // sparse), so a nonzero worst_fg_stall_ticks means a real mid-motion freeze.
+    // the cooperative foreground is stalled (so long as interrupts aren't
+    // masked). Watch the foreground heartbeat (live_snap.samples_taken, bumped
+    // every report-task iteration); if it stops advancing, the foreground is
+    // stuck. Latch the worst stall + the stacked PC/exc of the frozen context
+    // into cross-boot-persistent live_snap so it survives the IWDG-reset /
+    // klippy-reconnect churn. Gating: count only AFTER the heartbeat has
+    // genuinely advanced once (fg_seen_advance) — `fg_init` records the boot
+    // baseline without judging it, so the boot window (samples_taken holding the
+    // prior-boot value until the report task resets it) is excluded. (Do NOT
+    // gate on engine_status==RUNNING — runtime_status is dormant at Idle today,
+    // so that gate would never fire; that was a bug that disabled this detector.)
+    // If the foreground spins with interrupts ON, worst_fg_stall_pc names it
+    // directly; if it stays 0 across a known freeze, interrupts were masked
+    // (this ISR couldn't run) — a PRIMASK-held hang.
     static uint32_t fg_hb_prev;
     static uint32_t fg_stall_ticks;
+    static uint8_t  fg_init;
+    static uint8_t  fg_seen_advance;
     uint32_t hb = live_snap.samples_taken;
-    if (hb != fg_hb_prev) {
+    if (!fg_init) {
+        fg_hb_prev = hb;
+        fg_init = 1;
+    } else if (hb != fg_hb_prev) {
         fg_hb_prev = hb;
         fg_stall_ticks = 0;
-    } else if (live_snap.engine_status == 1 /* RUNNING */) {
+        fg_seen_advance = 1;
+    } else if (fg_seen_advance) {
         fg_stall_ticks++;
         if (fg_stall_ticks > live_snap.worst_fg_stall_ticks) {
             extern uint32_t runtime_tim5_stacked_pc(void);
