@@ -712,12 +712,19 @@ fn get_position_and_velocity(
 /// Advance to the ring entry whose window contains `now`, retiring every
 /// elapsed front along the way. Returns its physical slot index, or `None` when
 /// the ring drains. Hard-faults `PieceStartInPast` (-308) when a freshly adopted
-/// piece starts more than 2 ticks before `now`. Does NOT monomialise — that is
-/// deferred to `arm_and_load` for the landed piece only.
+/// piece starts too far before `now`. Does NOT monomialise — that is deferred to
+/// `arm_and_load` for the landed piece only.
 ///
 /// CRITICAL: fault-check runs BEFORE the `now < end` return so that a
 /// cold-adopted front is always checked. Inverting the order silently drops
 /// the cold-adoption fault.
+///
+/// Tolerance basis (sign-off approved 2026-06-01): a fixed clock-skew budget
+/// over the pump's bounded commit-lead (`MAX_START_IN_PAST_SECS`) plus one
+/// sample period for adoption quantization (a piece is picked up on the first
+/// tick at or after its start, so up to ~1 tick late is legitimate at any
+/// rate). The budget is a fixed TIME — not a multiple of `sample_period_cycles`
+/// — so raising the sample rate does not shrink the drift allowance.
 fn get_piece_for_time(
     axis: &mut AxisState,
     storage: &[PieceEntry],
@@ -727,7 +734,14 @@ fn get_piece_for_time(
     shared: &SharedState,
     axis_idx: usize,
 ) -> Option<usize> {
-    let fault_tolerance = u64::from(sample_period_cycles) * 2;
+    // Max tolerated "start in the past": a clock-skew budget over the bounded
+    // pump commit-lead (a fixed TIME, NOT a multiple of the sample period — so
+    // raising the sample rate does not shrink the drift allowance) + one sample
+    // period for adoption quantization (a piece is picked up on the first tick
+    // at/after its start, so up to ~1 tick late is legitimate at any rate).
+    const MAX_START_IN_PAST_SECS: f32 = 200e-6; // tune vs the pump MAX_LEAD_SECS (>= expected drift over the lead)
+    let drift_budget = (MAX_START_IN_PAST_SECS * cycles_per_second) as u64;
+    let fault_tolerance = drift_budget + u64::from(sample_period_cycles);
     loop {
         let slot = axis.ring.front_slot()?; // ring empty → underrun
         let entry = &storage[slot];

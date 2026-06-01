@@ -414,6 +414,30 @@ impl PassthroughRouter {
         Ok(())
     }
 
+    /// Projected MCU ack-clock and oscillator frequency for the given MCU,
+    /// or `None` when clock-sync has not yet been established (`clock_freq ==
+    /// 0`).
+    ///
+    /// Returns `Some((ack_now_ticks, freq_hz))` where `ack_now_ticks` is the
+    /// same value as `compute_ack_clock` would return and `freq_hz` is the
+    /// oscillator frequency in Hz. The caller can derive a commit-lead horizon
+    /// as `ack_now_ticks + (lead_secs * freq_hz) as u64`.
+    ///
+    /// Returning `None` (no sync yet) means the caller should apply no
+    /// time-based gate — count-only flow-control is the correct fallback
+    /// during startup.
+    pub fn ack_clock_and_freq(&self, mcu: McuHandle) -> Option<(u64, f64)> {
+        let rec = self.mcus.get(&mcu)?;
+        if rec.clock_freq == 0.0 {
+            return None;
+        }
+        let host_now = instant_to_f64(self.clock.now());
+        let delta = (host_now - rec.clock_offset) * rec.clock_freq;
+        #[allow(clippy::cast_sign_loss)]
+        let projected = rec.last_clock.wrapping_add(delta.max(0.0) as u64);
+        Some((projected, rec.clock_freq))
+    }
+
     /// Compute the projected MCU ack-clock from the current host time and
     /// clock estimation parameters.
     ///

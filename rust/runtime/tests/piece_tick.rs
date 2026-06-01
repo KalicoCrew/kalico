@@ -5,7 +5,7 @@
 //!   - Arming a piece when start_time is reached
 //!   - Holding at t=0 before start_time (future piece adopted into cache)
 //!   - Idle behaviour with an empty ring
-//!   - Hard fault when a piece's start_time is more than 2 ticks in the past
+//!   - Hard fault when a piece's start_time exceeds the drift-budget tolerance
 //!   - Within-tolerance arming (1 tick late — must NOT fault)
 //!   - Advancing through consecutive pieces
 //!   - push_pieces rejection when the ring is full
@@ -223,9 +223,15 @@ fn tick_idle_when_ring_empty() {
 
 // ── Test 4: fault on piece start in past ─────────────────────────────────────
 
-/// Push a piece with `start_time = 1_000`.  Tick at 3 ticks past that start
-/// time (`now = 1_000 + 3*TICK_CYCLES`).  The fault tolerance is 2 ticks, so
-/// this must latch `PieceStartInPast`.
+/// Push a piece with `start_time = 1_000`.  Tick well past the drift-budget
+/// fault tolerance and confirm `PieceStartInPast` is latched.
+///
+/// Tolerance at 520 MHz / 40 kHz (TICK_CYCLES = 13_000):
+///   drift_budget = 200 µs × 520_000_000 Hz = 104_000 cycles
+///   fault_tolerance = 104_000 + 13_000 = 117_000 cycles
+///
+/// We tick at start + 10 × TICK_CYCLES = start + 130_000, which exceeds
+/// 117_000 and must trigger the fault.
 #[test]
 fn tick_faults_on_piece_start_in_past() {
     let mut engine = make_engine();
@@ -252,22 +258,22 @@ fn tick_faults_on_piece_start_in_past() {
     engine.test_install_step_queues(qs);
 
     let shared = SharedState::new();
-    // 3 ticks past start — exceeds 2-tick tolerance.
-    let now = start + TICK_CYCLES * 3;
+    // 10 ticks past start (130_000 cycles) — exceeds drift-budget tolerance (117_000).
+    let now = start + TICK_CYCLES * 10;
     engine.tick(now, &shared, &mut storage);
 
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
         FaultCode::PieceStartInPast.as_i32(),
-        "PieceStartInPast fault must be latched when piece is >2 ticks in the past"
+        "PieceStartInPast fault must be latched when piece exceeds drift-budget tolerance"
     );
 }
 
 // ── Test 5: within-fault-tolerance arms ok ───────────────────────────────────
 
 /// Push a piece with `start_time = 1_000`.  Tick at exactly 1 tick past start
-/// (`now = 1_000 + TICK_CYCLES`).  This is within the 2-tick tolerance so the
-/// piece must ARM (no fault).
+/// (`now = 1_000 + TICK_CYCLES`).  This is well within the drift-budget tolerance
+/// (1 tick = 13_000 cycles << 117_000 cycles) so the piece must ARM (no fault).
 #[test]
 fn tick_within_fault_tolerance_arms_ok() {
     let mut engine = make_engine();
@@ -301,7 +307,7 @@ fn tick_within_fault_tolerance_arms_ok() {
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
         0,
-        "no fault expected within 2-tick tolerance"
+        "no fault expected within drift-budget tolerance"
     );
     // Piece was armed; window ends at start + 0.001 * 520e6 = 521_000 cycles,
     // well after now = 14_000. Under retire-time semantics retired stays 0.

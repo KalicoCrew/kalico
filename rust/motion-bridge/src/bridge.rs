@@ -2177,6 +2177,9 @@ impl PyMotionBridge {
             .collect();
         let pump_timeout = Duration::from_secs(5);
         let ring_depth_table_for_pump = ring_depth_table.clone();
+        // Clone the router Arc into the pump thread so it can query the
+        // per-MCU projected clock for the commit-lead horizon gate.
+        let router_for_pump = Arc::clone(&self.router);
         let pump_thread_handle = std::thread::Builder::new()
             .name("push-pieces-pump".into())
             .spawn(move || {
@@ -2184,16 +2187,26 @@ impl PyMotionBridge {
                     ios: wire_ios,
                     timeout: pump_timeout,
                 };
-                crate::pump::run_pump(pump_rx, sink, move |k| {
-                    ring_depth_table_for_pump.get(&k).copied().unwrap_or_else(|| {
-                        log::error!(
-                            "pump: no ring_depth for {k:?} — axis absent from \
-                             init_planner config; using sentinel depth 1 \
-                             (expect PieceStartInPast fault)"
-                        );
-                        1
-                    })
-                });
+                crate::pump::run_pump(
+                    pump_rx,
+                    sink,
+                    move |k| {
+                        ring_depth_table_for_pump.get(&k).copied().unwrap_or_else(|| {
+                            log::error!(
+                                "pump: no ring_depth for {k:?} — axis absent from \
+                                 init_planner config; using sentinel depth 1 \
+                                 (expect PieceStartInPast fault)"
+                            );
+                            1
+                        })
+                    },
+                    move |mcu_id: u32| {
+                        let r = router_for_pump
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
+                        r.ack_clock_and_freq(mcu_handle_from_raw(mcu_id))
+                    },
+                );
             })
             .expect("spawn push-pieces-pump thread");
 
