@@ -417,6 +417,15 @@ step_output_timer_init(void)
 void
 TIM3_IRQHandler(void)
 {
+    // -311 block-source instrumentation (2026-06-01): step-output ISR is prio
+    // 2 (== TIM5, no nesting), so a back-to-back chain of these fences TIM5.
+    // diag_stepout_account records single-invocation max AND the contiguous-
+    // burst span (first fire to last exit before a >1-period gap). The 16-bit
+    // TIM3 chaining re-fires via STEP_OUT_MAX_DELTA, which this burst tracker
+    // is specifically meant to catch.
+    extern void diag_stepout_account(uint32_t enter, uint32_t exit);
+    uint32_t diag_enter = DWT->CYCCNT;
+
     TIM3->SR = (uint16_t)~TIM_SR_CC1IF;   // ack the compare match
 
     // Run the Rust consumer: emit due steps, get the soonest remaining head
@@ -426,6 +435,8 @@ TIM3_IRQHandler(void)
     extern uint32_t kalico_step_output_event(void);
     uint32_t next = kalico_step_output_event();
     step_output_timer_arm(next);
+
+    diag_stepout_account(diag_enter, DWT->CYCCNT);
 }
 
 DECL_ARMCM_IRQ(TIM3_IRQHandler, TIM3_IRQn);

@@ -101,27 +101,18 @@ runtime_tick_init(void)
     TIM5->CR1 &= ~TIM_CR1_CEN;
     TIM5->SR = 0;
 
-    // F4 band-aid (2026-05-12): 10 kHz tick instead of 40 kHz.
+    // TIM5 tick rate is driven by CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ (the
+    // F446 runs at 20 kHz today; the H7 at 40 kHz). PSC = 0, ARR =
+    // (clock_freq / SAMPLE_RATE_HZ) - 1.
     //
-    // F446 at 180 MHz can't sustain the runtime engine eval (~24 µs avg per
-    // call for a degree-3 NURBS with 64 control points) at 40 kHz: each TIM5
-    // fire takes 50+ µs, the IRQ tail-chains continuously, foreground is
-    // starved for >1 second and IWDG fires at 511 ms. Captured via F4
-    // prior_diag bench 2026-05-12 (tim5_max_cyc=10420, out_max_gap=191M
-    // cycles, eval avg=4304 cycles, hist bucket 2 = 11290 fires at 45-68 µs).
-    //
-    // 10 kHz puts the IRQ at ~50% CPU and gives foreground the other ~50%,
-    // which is enough for usb_bulk_out_task + watchdog kick. Step jitter
-    // becomes 100 µs (vs 25 µs at 40 kHz), invisible on Z which doesn't do
-    // phase stepping. The runtime engine handles multistepping per tick (one
-    // ISR emits as many step pulses as the accumulator crossed), so max step
-    // rate is not bound by tick rate.
-    //
-    // PROPER FIX: per-stepper StepTime scheduling for non-phase-stepped axes.
-    // Spec: docs/superpowers/specs/2026-05-12-step-time-scheduling-design.md
-    // (forthcoming). Once that lands, this rate can move back to whatever
-    // makes sense for any phase-stepped axes hosted on F4 in the future
-    // (none today), or TIM5 can be disabled entirely.
+    // The per-tick cost on F4 is light: the current engine evaluates a
+    // degree-3 cubic Bezier piece per active axis (not the old degree-3 /
+    // 64-control-point NURBS that motivated the historical 10 kHz "band-aid"
+    // rate). The runtime engine also handles multistepping per tick — one ISR
+    // emits as many step pulses as the per-tick accumulator crossed — so max
+    // step rate is not bound by the tick rate, and step output is now driven
+    // by the dedicated step-output timer (TIM2, see below) rather than this
+    // sample tick directly.
     TIM5->PSC = 0;
     TIM5->ARR = (runtime_clock_freq / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
 
@@ -374,6 +365,15 @@ step_output_timer_init(void)
 void
 TIM2_IRQHandler(void)
 {
+    // -311 block-source instrumentation (2026-06-01): step-output ISR is prio
+    // 2 (== TIM5, no nesting), so a back-to-back chain of these fences TIM5.
+    // diag_stepout_account records single-invocation max AND the contiguous-
+    // burst span. F4's TIM2 is 32-bit so it does not chain like the H7 TIM3,
+    // but a dense run of due steps still fires the ISR repeatedly; the burst
+    // tracker captures that.
+    extern void diag_stepout_account(uint32_t enter, uint32_t exit);
+    uint32_t diag_enter = DWT->CYCCNT;
+
     TIM2->SR = ~TIM_SR_CC1IF;           // ack the compare match
 
     // Run the Rust consumer: emit due steps, return the soonest remaining head
@@ -381,6 +381,8 @@ TIM2_IRQHandler(void)
     extern uint32_t kalico_step_output_event(void);
     uint32_t next = kalico_step_output_event();
     step_output_timer_arm(next);
+
+    diag_stepout_account(diag_enter, DWT->CYCCNT);
 }
 
 DECL_ARMCM_IRQ(TIM2_IRQHandler, TIM2_IRQn);

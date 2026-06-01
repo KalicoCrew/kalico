@@ -500,7 +500,8 @@ runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps)
     }
 
     // gpio_out_toggle_noirq is the irq-safe variant — caller (us) is in
-    // ISR context with IRQs off by virtue of the priority-3 TIM5 vector.
+    // ISR context with IRQs off by virtue of the priority-2 TIM5 vector
+    // (KALICO_MOTION_NVIC_PRIO = 2; see src/generic/kalico_nvic_prio.h).
     for (uint32_t i = 0; i < count; i++) {
         for (uint8_t j = 0; j < cnt; j++)
             gpio_out_toggle_noirq(runtime_motor_steppers[motor_idx][j].stepper->step_pin);

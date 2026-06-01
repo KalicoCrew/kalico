@@ -276,6 +276,23 @@ void __visible __aligned(16) // aligning helps stabilize perf benchmarks
 SysTick_Handler(void)
 {
     irq_disable();
+    // -311 block-source instrumentation (2026-06-01). The whole entry->exit
+    // window fences the prio-2 TIM5 motion tick: SysTick and TIM5 share NVIC
+    // priority 2 and same-priority Cortex-M interrupts cannot nest, so a TIM5
+    // tick that comes due during this handler stays pending until SysTick
+    // returns — even across the irq_enable() windows inside
+    // timer_dispatch_many()'s wait loop (PRIMASK is cleared there, but that
+    // only lets HIGHER-prio sources in, not equal-prio TIM5). So entry->exit
+    // is the true TIM5 fence duration. Stamp DWT->CYCCNT at entry; account at
+    // exit.
+    // STM32-only: diag_systick_account lives in src/generic/fault_handler.c
+    // which is built for STM32 boards; DWT is the ARMv7-M cycle counter and
+    // is already enabled by the motion-tick init. Gated so non-STM32 boards
+    // (and ARMv6-M parts without DWT) still link without the diag dependency.
+#if CONFIG_MACH_STM32
+    extern void diag_systick_account(uint32_t enter, uint32_t exit);
+    uint32_t diag_systick_enter = DWT->CYCCNT;
+#endif
 #if CONFIG_KALICO_SIM
     // CONFIG_KALICO_SIM uses a software CYCCNT (runtime_sim_cyccnt) because
     // Renode's H7 model returns 0 from DWT->CYCCNT. SysTick fires
@@ -301,6 +318,9 @@ SysTick_Handler(void)
 #endif
     uint32_t diff = timer_dispatch_many();
     timer_set_diff(diff);
+#if CONFIG_MACH_STM32
+    diag_systick_account(diag_systick_enter, DWT->CYCCNT);
+#endif
     irq_enable();
 }
 DECL_ARMCM_IRQ(SysTick_Handler, SysTick_IRQn);

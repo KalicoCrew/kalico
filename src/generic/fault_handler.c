@@ -297,6 +297,37 @@ struct diag_counters {
     // (path B, drained it).
     uint32_t peek_empty_n;
     uint32_t peek_data_n;
+
+    // -311 TickIntervalExceeded block-source instrumentation (2026-06-01).
+    //
+    // The -311 fires when the TIM5 ISR is kept out for ~2-3 sample periods,
+    // yet every individual instrumented ISR cost is far under one period.
+    // The hypothesis is a CONTIGUOUS burst of prio<=2 ISRs (SysTick @2,
+    // step-output @2, USB @1) fencing TIM5 back-to-back. These counters
+    // measure, for each candidate source, BOTH the max single-invocation
+    // duration AND the max contiguous-busy span (back-to-back fires with no
+    // gap long enough for TIM5 to slip in). All in DWT cycles.
+    //
+    // The blocker is whichever *_burst_max_cyc (or systick single) reaches
+    // ~2 periods: H7 >= 26000 cyc (2x 13000), F446 >= 18000 cyc (2x 9000).
+
+    // SysTick_Handler entry->exit. SysTick holds PRIMASK across its dispatch,
+    // so the single-invocation duration directly bounds how long it fences
+    // TIM5. SysTick is not a re-firing one-shot, so no separate burst counter.
+    uint32_t systick_max_cyc;
+
+    // Step-output one-shot (TIM3 on H7 / TIM2 on F4), prio 2 == TIM5 (no
+    // nesting). single = one handler entry->exit. burst = first fire of a
+    // chain to the last exit before a gap > ~1 TIM5 period (the H7 16-bit
+    // re-arm chains can fence TIM5 across several back-to-back fires).
+    uint32_t stepout_max_cyc;
+    uint32_t stepout_burst_max_cyc;
+
+    // USB OTG_FS_IRQHandler burst, prio 1 (strictly above TIM5). single is
+    // already otg_irq_cycles_max above. burst = first USB ISR entry of a run
+    // to the last exit before a gap > ~1 TIM5 period — the prime suspect for
+    // a higher-prio fence during the host piece-stream.
+    uint32_t usb_burst_max_cyc;
 };
 
 #if CONFIG_MACH_STM32H7
@@ -492,6 +523,9 @@ diag_runtime_tick_account(uint32_t cycles)
     diag.rt_tick_buckets[bucket]++;
 }
 
+// Forward decl — defined below in the -311 block-source section.
+void diag_usb_burst_track(uint32_t enter_cycles, uint32_t exit_cycles);
+
 void
 diag_otg_account(uint32_t enter_cycles, uint32_t exit_cycles)
 {
@@ -502,6 +536,92 @@ diag_otg_account(uint32_t enter_cycles, uint32_t exit_cycles)
         diag.otg_irq_cycles_max = dur;
     if (dur > 26000u)
         diag_ring_push(DIAG_EV_OTG_LONG, dur, enter_cycles);
+    diag_usb_burst_track(enter_cycles, exit_cycles);
+}
+
+// =============================================================================
+// -311 block-source instrumentation (2026-06-01).
+//
+// Each *_account below takes the DWT-cyccnt at the instrumented ISR's entry
+// and exit. Single-invocation max is `exit - enter`. The contiguous-burst
+// tracker stitches together back-to-back invocations: if a new invocation
+// ENTERS within ~1 TIM5 period of the previous invocation's EXIT, TIM5 could
+// not have slipped a tick in between, so the two belong to the same fence. We
+// accumulate the span from the burst's first entry to the latest exit and
+// record the max such span. A gap larger than one period closes the burst and
+// the next entry starts a fresh one.
+//
+// Gap threshold is one TIM5 period. The actual period differs per MCU (H7
+// 13000 cyc @ 40 kHz/520 MHz, F446 9000 cyc @ 20 kHz/180 MHz), but a single
+// conservative constant works: if TIM5's UIF is pending it preempts/runs at
+// equal-or-higher prio the instant the fence lifts, so any inter-ISR gap of a
+// full period means a tick had room. We use the larger period (13000) as the
+// threshold so we never falsely split a real fence on the slower MCU; the
+// effect of using the larger value on F446 is at worst that two genuinely
+// separate bursts get merged (conservative — overstates the fence, never
+// understates it, so a recorded burst that clears the -311 bar is real).
+//
+// `burst_start`/`burst_last_exit` hold the in-flight burst's first-entry and
+// most-recent-exit cyccnt. They are transient working state (regular .bss);
+// only the max spans need to survive the reboot, and those live in `diag`.
+// =============================================================================
+#define DIAG_BURST_GAP_CYC 13000u   // ~1 TIM5 period (H7 worst case)
+
+// Update a burst tracker. `start`/`last_exit` are the caller's persistent
+// burst state; `max_out` is the diag field to bump. Returns nothing; folds
+// the single-invocation [enter, exit] window into the running burst.
+static inline void
+diag_burst_fold(volatile uint32_t *max_out,
+                uint32_t *start, uint32_t *last_exit,
+                uint32_t enter_cycles, uint32_t exit_cycles)
+{
+    // Gap since the previous invocation's exit. Wrap-safe subtraction.
+    uint32_t gap = enter_cycles - *last_exit;
+    if (*last_exit == 0 || gap > DIAG_BURST_GAP_CYC) {
+        // Burst closed (or first ever) — start a fresh one at this entry.
+        *start = enter_cycles;
+    }
+    *last_exit = exit_cycles;
+    uint32_t span = exit_cycles - *start;
+    if (span > *max_out)
+        *max_out = span;
+}
+
+// SysTick handler single-invocation. SysTick holds PRIMASK across its whole
+// dispatch and does not re-fire back-to-back, so only the single max matters.
+void
+diag_systick_account(uint32_t enter_cycles, uint32_t exit_cycles)
+{
+    uint32_t dur = exit_cycles - enter_cycles;
+    if (dur > diag.systick_max_cyc)
+        diag.systick_max_cyc = dur;
+}
+
+// Step-output one-shot ISR (TIM3 H7 / TIM2 F4). Single + contiguous burst.
+void
+diag_stepout_account(uint32_t enter_cycles, uint32_t exit_cycles)
+{
+    static uint32_t burst_start;
+    static uint32_t burst_last_exit;
+    uint32_t dur = exit_cycles - enter_cycles;
+    if (dur > diag.stepout_max_cyc)
+        diag.stepout_max_cyc = dur;
+    diag_burst_fold(&diag.stepout_burst_max_cyc,
+                    &burst_start, &burst_last_exit,
+                    enter_cycles, exit_cycles);
+}
+
+// USB OTG ISR contiguous burst. Single max is otg_irq_cycles_max (recorded by
+// diag_otg_account). Called from diag_otg_account so the USB site only stamps
+// cyccnt once. Static burst state, same pattern as step-output.
+void
+diag_usb_burst_track(uint32_t enter_cycles, uint32_t exit_cycles)
+{
+    static uint32_t burst_start;
+    static uint32_t burst_last_exit;
+    diag_burst_fold(&diag.usb_burst_max_cyc,
+                    &burst_start, &burst_last_exit,
+                    enter_cycles, exit_cycles);
 }
 
 // =============================================================================
@@ -919,6 +1039,11 @@ fault_handler_report_task(void)
             prior_diag.ring_seq             = diag.ring_seq;
             prior_diag.ring_overflow        = diag.ring_overflow;
             prior_diag.boot_count           = diag.boot_count;
+            // -311 block-source counters.
+            prior_diag.systick_max_cyc        = diag.systick_max_cyc;
+            prior_diag.stepout_max_cyc        = diag.stepout_max_cyc;
+            prior_diag.stepout_burst_max_cyc  = diag.stepout_burst_max_cyc;
+            prior_diag.usb_burst_max_cyc      = diag.usb_burst_max_cyc;
             // Capture the ring contents into a non-volatile copy so the
             // emit loop below has a stable snapshot to walk.
             for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
@@ -1114,6 +1239,17 @@ fault_handler_report_task(void)
                prior_diag.otg_irq_cycles_max,
                (uint32_t)(prior_diag.otg_irq_cycles_total & 0xFFFFFFFFu),
                (uint32_t)(prior_diag.otg_irq_cycles_total >> 32));
+        // -311 block-source dump: max single-invocation SysTick dispatch, max
+        // single + contiguous-burst step-output, and max contiguous USB burst,
+        // all in DWT cycles. The blocker is whichever value reaches ~2 TIM5
+        // periods: H7 >= 26000 cyc, F446 >= 18000 cyc. usb single is otg_max_cyc
+        // (line above); usb_burst here is the back-to-back USB-ISR fence span.
+        output("prior_diag_summary_block systick %u stepout %u"
+               " stepout_burst %u usb_burst %u",
+               prior_diag.systick_max_cyc,
+               prior_diag.stepout_max_cyc,
+               prior_diag.stepout_burst_max_cyc,
+               prior_diag.usb_burst_max_cyc);
         output("prior_diag_tasks out_n %u out_max_gap %u in_n %u in_max_gap %u"
                " drain_n %u drain_max_gap %u stat_n %u stat_max_gap %u",
                prior_diag.usb_out_calls,
