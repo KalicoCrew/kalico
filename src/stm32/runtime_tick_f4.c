@@ -148,11 +148,10 @@ runtime_tick_init(void)
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-    // Set the motion-tick IRQ to KALICO_MOTION_NVIC_PRIO (= 0, highest maskable).
-    // The same constant is applied to the step-output timer below, keeping
-    // producer (TIM5) and consumer EQUAL — the step_queue SPSC non-nesting
-    // invariant. Full NVIC map + SPSC invariant + heater-safety note in
-    // src/generic/kalico_nvic_prio.h.
+    // Set the motion-tick IRQ to KALICO_MOTION_NVIC_PRIO. The same constant is
+    // applied to the step-output timer below, keeping producer (TIM5) and
+    // consumer EQUAL — the step_queue SPSC non-nesting invariant. NVIC map +
+    // SPSC invariant + heater-safety note in src/generic/kalico_nvic_prio.h.
     NVIC_SetPriority(TIM5_IRQn, KALICO_MOTION_NVIC_PRIO);
 
     // Always-on (spec 2026-05-28): the piece-ring engine has no per-push event
@@ -297,11 +296,11 @@ DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
 // as the wake source — arm by writing CCR1 + enabling CC1IE, disable by
 // clearing CC1IE. The compare match sets SR.CC1IF and fires TIM2_IRQHandler.
 //
-// NVIC priority: KALICO_MOTION_NVIC_PRIO (= 1) — IDENTICAL to TIM5 (the motion
-// pair moves together via the one constant). Same-number Cortex-M interrupts
-// cannot nest, so this consumer and the TIM5 producer never preempt each other
-// → the step_queues SPSC and the kalico_kick_step_output compare poke stay
-// non-racing. Co-equal with USB/CAN (see kalico_nvic_prio.h).
+// NVIC priority: KALICO_MOTION_NVIC_PRIO — IDENTICAL to TIM5 (the motion pair
+// moves together via the one constant). Same-number Cortex-M interrupts cannot
+// nest, so this consumer and the TIM5 producer never preempt each other → the
+// step_queues SPSC and the kalico_kick_step_output compare poke stay non-racing
+// (see kalico_nvic_prio.h).
 
 // `step_out_target`  : absolute cycle the consumer must next fire at (32-bit).
 // `step_out_running` : 1 while CC1IE is enabled (timer is arming toward a step).
@@ -310,16 +309,6 @@ DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
 static volatile uint32_t step_out_target;
 static volatile uint8_t  step_out_running;
 static uint32_t          step_out_clkdiv = 1;
-
-// Step-output YIELD FLOOR (USB co-existence fix, 2026-06-01) — mirror of the H7
-// path. On the re-arm chain (dense back-to-back TIM2 fires draining a step
-// burst), force a minimum gap before the next fire so the cooperative
-// FOREGROUND + USB get a CPU window; without it the chain starves the
-// foreground and USB-CDC halts (host EPIPE). Applied ONLY on the IRQ re-arm
-// (TIM2_IRQHandler), never on the producer kick. ~4 µs in DWT cycles,
-// auto-scaling per MCU; > one OTG ISR + a foreground task pass, and bounds the
-// worst-case TIM5 fence to ~one ISR (protects the -311 deadline at 40 kHz).
-#define STEP_OUT_YIELD_MIN_DWT ((CONFIG_CLOCK_FREQ / 1000000u) * 4u)
 
 // (Re)arm the step-output timer to fire at absolute cycle `cycle_abs`, or
 // disable it when `cycle_abs == KALICO_STEP_OUTPUT_DISABLE`. Called from the
@@ -409,10 +398,7 @@ void
 TIM2_IRQHandler(void)
 {
     // diag_stepout_account records single-invocation max AND the contiguous-
-    // burst span of this step-output ISR. The ISR runs at KALICO_MOTION_NVIC_
-    // PRIO (== TIM5 and co-equal with USB, no nesting). F4's TIM2 is 32-bit so
-    // it does not chain like the H7 TIM3, but a dense run of due steps still
-    // fires the ISR repeatedly; the YIELD floor below bounds that chain.
+    // burst span of this step-output ISR (== TIM5 priority, no nesting).
     extern void diag_stepout_account(uint32_t enter, uint32_t exit);
     uint32_t diag_enter = DWT->CYCCNT;
 
@@ -422,15 +408,6 @@ TIM2_IRQHandler(void)
     // (or KALICO_STEP_OUTPUT_DISABLE), then re-arm / disable accordingly.
     extern uint32_t kalico_step_output_event(void);
     uint32_t next = kalico_step_output_event();
-    // Yield floor (see STEP_OUT_YIELD_MIN_DWT): defer a sooner-than-floor re-arm
-    // so the cooperative foreground + USB get a window. Signed `< YIELD_MIN`
-    // covers already-due (negative) AND small-positive near-due. Fresh clock at
-    // re-arm time; the kick path bypasses this. Mirror of the H7 TIM3 path.
-    if (next != 0xFFFFFFFFu /* KALICO_STEP_OUTPUT_DISABLE */) {
-        uint32_t now = runtime_cyccnt_read();
-        if ((int32_t)(next - now) < (int32_t)STEP_OUT_YIELD_MIN_DWT)
-            next = now + STEP_OUT_YIELD_MIN_DWT;
-    }
     step_output_timer_arm(next);
 
     diag_stepout_account(diag_enter, DWT->CYCCNT);
