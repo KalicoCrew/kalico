@@ -672,6 +672,26 @@ impl PyMotionBridge {
         env!("CARGO_PKG_VERSION")
     }
 
+    // ── Observability Stage 2: structured logging setters ──────────────
+
+    /// Install the Rust host structured-logging subscriber, writing
+    /// `<events_dir>/host-rust.jsonl`. Called once from Python at bridge setup,
+    /// before any other bridge method. Fails loudly if already initialized or
+    /// if the file cannot be opened (project fail-loudly policy).
+    fn init_logging(&self, events_dir: String) -> PyResult<()> {
+        crate::logging::init_logging(std::path::Path::new(&events_dir)).map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("init_logging failed: {e}"))
+        })
+    }
+
+    /// Set/update the session + print correlation context stamped on every Rust
+    /// log record. Called at bridge setup (with the current session_id and an
+    /// empty print_id) and on every print-state change.
+    #[pyo3(signature = (session_id, print_id=String::new()))]
+    fn set_session_context(&self, session_id: String, print_id: String) {
+        crate::logging::set_context(session_id, print_id);
+    }
+
     // ── Task 32: claim_mcu ──────────────────────────────────────────────
 
     /// Register an MCU with the bridge. Returns the opaque handle as int.
