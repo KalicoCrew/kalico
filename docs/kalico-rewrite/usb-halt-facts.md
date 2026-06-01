@@ -77,6 +77,37 @@ Flash both per the flashing-trident-mcus skill. Heaters cold throughout.
 - [36391d0b1] usbotg.c contains NO soft-disconnect (no `DCTL.SDIS` set anywhere); the only GRSTCTL writes are TX-FIFO flushes + the init AHB-idle wait. The firmware never deliberately disconnects/re-attaches USB during operation. ISR GINTMSK = RXFLVLM|IEPINT (USBRST/USBSUSP not serviced).
 - [36391d0b1] => the disconnect is not firmware-initiated and not VBUS-sense: the device drops off the bus electrically (signal/clock/power) during motor stepping, then re-enumerates. Reproduces at all jog speeds (F1200/F3000/F6000); does not occur at idle.
 
+## ROOT CAUSE: MCU freeze -> IWDG reset -> USB re-enumerate (NOT hardware)
+
+User: bench prints fine at full amps over USB on main => not hardware; the MCU
+must be freezing. Confirmed:
+- [f2f3f94ab] `fg_freeze ... iwdg 1` after one jog: an IWDG (independent
+  hardware watchdog) reset fired. The MCU froze >= the ~0.5s IWDG window ->
+  reset -> USB re-enumerate (the kernel "USB disconnect + new device ~1s later"
+  IS the reset+reboot+re-enum). No prior_fault => a hang, not a crash. No
+  prior_diag_ring tag 8 (DIAG_EV_RUST_FAULT) => no runtime fault, shutdown() not
+  reached.
+- [fe1787c62] With the freeze-detector gate fixed (it had been gated on
+  engine_status==RUNNING, which is never set — runtime_tick.c:421): under jog,
+  `fg_freeze stall_ticks 10 (H7) / 20 (F446)` = only ~1ms foreground stalls
+  caught (exc 0 = thread). The >=0.5s killer freeze is NOT caught => during it
+  the TIM5 ISR itself is masked => interrupts OFF (PRIMASK held) for the freeze.
+- [13b2b9a33 / f2f3f94ab / fe1787c62] dispatch breadcrumb `last_disp_func`
+  resolves (addr2line) to `runtime_drain_event` (src/runtime_tick.c:261) on BOTH
+  MCUs — the 1 kHz drain-wake timer. It is the last timer dispatched before
+  interrupts were masked.
+- Source inference: `runtime_drain_event` returns quickly (no hang). After it,
+  `sched_timer_dispatch` reschedules it via `insert_timer` (src/sched.c:113),
+  whose `for(;;)` list-walk (pos = pos->next until a later waketime) never
+  breaks if the timer list is corrupted/cyclic -> spins forever under the
+  SysTick `irq_disable` (armcm_timer.c:278 + timer_dispatch_many) -> PRIMASK
+  held -> TIM5 masked -> IWDG. This spin runs BEFORE timer_dispatch_many's
+  "Rescheduled timer in the past" guard (armcm_timer.c:256), so that guard never
+  fires (consistent with no rsched_past output). => the scheduler timer list is
+  being corrupted during motion; insert_timer spinning on it is the freeze.
+- Open: WHAT corrupts a timer `.next` during motion (bad/out-of-bounds write).
+  insert_timer should also fail loudly (cycle/iteration cap) instead of freezing.
+
 ## Host / USB architecture (source read)
 
 - [c4ed8d740] `usbotg.c:513` `GAHBCFG = GINT` only (no DMAEN). `:512` `GINTMSK = RXFLVLM | IEPINT`. ISR (`OTG_FS_IRQHandler` ~:417) sets wake flags only; on RXFLVL it masks RXFLVLM (~:437). All FIFO movement is CPU-copy in foreground DECL_TASKs (`usb_bulk_out_task`/`usb_bulk_in_task`, `fifo_read_packet`/`fifo_write_packet`).
