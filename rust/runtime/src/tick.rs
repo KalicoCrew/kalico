@@ -458,6 +458,7 @@ pub fn isr_sample_tick(
     raw_cyccnt: u32,
 ) {
     let body_start = unsafe { cyccnt_read() };
+    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_ISR_ENTER);
 
     bump_relaxed(isr.engine.tick_counter.inner_atomic());
 
@@ -510,10 +511,12 @@ pub fn isr_sample_tick(
                 .store(last_dispatched_func(), Ordering::Release);
             raise_tick_interval_exceeded(shared, gap_ticks);
             isr.last_tick_now = Some(now);
+            crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_ISR_EXIT);
             return; // skip dispatch; publish already happened; foreground escalation shuts down
         }
     }
 
+    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_TICK);
     let active = {
         let crate::state::IsrState { engine, .. } = isr;
         engine.tick(now, shared, storage)
@@ -528,11 +531,11 @@ pub fn isr_sample_tick(
     // Update baseline: Some only when this tick was active; idle ticks clear it
     // so the gap check never straddles an idle gap.
     isr.last_tick_now = if active { Some(now) } else { None };
+    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_ISR_EXIT);
 }
 
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
-    fn runtime_cyccnt_read() -> u32;
     // C-side producer→consumer kick (src/runtime_tick.c). (Re)arms the single
     // dedicated step-output hardware timer's compare to `cycle_abs` if that is
     // sooner than the currently-armed target — or arms it from disabled.
@@ -563,15 +566,12 @@ fn kick_per_axis_timer(axis_idx: usize, cycle_abs: u32) {
         let _ = (axis_idx, cycle_abs);
     }
 }
-#[cfg(not(any(test, feature = "host")))]
+/// Read the DWT cycle counter. Delegates to `isr_phase::cyccnt()` — the sole
+/// `runtime_cyccnt_read` declaration lives there to avoid duplicate `extern "C"`
+/// symbols across compilation units.
 #[inline]
 unsafe fn cyccnt_read() -> u32 {
-    unsafe { runtime_cyccnt_read() }
-}
-#[cfg(any(test, feature = "host"))]
-#[inline]
-unsafe fn cyccnt_read() -> u32 {
-    0
+    crate::isr_phase::cyccnt()
 }
 
 #[inline]

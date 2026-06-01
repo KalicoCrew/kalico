@@ -41,6 +41,21 @@ void diag_runtime_tick_account(uint32_t cycles)
     (void)cycles;
 }
 
+void diag_walk_account(uint32_t cycles)
+{
+    (void)cycles;
+}
+
+void diag_monomial_account(uint32_t cycles)
+{
+    (void)cycles;
+}
+
+void runtime_set_isr_phase(uint32_t phase)
+{
+    (void)phase;
+}
+
 #define DIAG_SLOT_STUB(name) \
     volatile uint32_t *diag_slot_##name(void) { return &stub_zero; }
 

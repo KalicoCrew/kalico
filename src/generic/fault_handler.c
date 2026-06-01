@@ -237,6 +237,24 @@ struct diag_counters {
     uint32_t rt_dvel_cycles_max;
     uint64_t rt_dvel_cycles_total;
 
+    // Walk/monomialise split timing (2026-06-01, new engine). walk_* covers the
+    // get_piece_for_time ring-walk (cheap — no conversion); monomial_* covers
+    // the arm_and_load to_monomial conversion (runs on cold-load ticks only).
+    // Together they decompose the worst-case tick under the per-tick deadline,
+    // which is what bounds the achievable SAMPLE_RATE_HZ. (rt_eval_*/rt_dvel_*
+    // above are vestigial from the old scalar-eval engine — no callers today.)
+    uint32_t walk_cycles_max;
+    uint32_t walk_n;
+    uint32_t monomial_cycles_max;
+    uint32_t monomial_n;
+
+    // ISR-phase breadcrumb (2026-06-01). Written by the Rust motion ISR at each
+    // phase boundary (runtime_set_isr_phase, RT_PHASE_* in fault_handler.h). The
+    // value live here at an IWDG reset names the phase the freeze hung in — the
+    // one signal that survives a PRIMASK-masked / ISR-never-returns hang, since
+    // the store landed before the hang and this struct is persistent.
+    uint32_t rt_isr_phase;
+
     // Curve-shape characterization. The Rust engine writes the most-recent
     // segment's per-axis (degree, cps_len) on segment activation so we can
     // see what shape post-shape curves actually take on representative
@@ -616,6 +634,38 @@ diag_rt_dvel_account(uint32_t cycles)
     diag.rt_dvel_cycles_total += cycles;
     if (cycles > diag.rt_dvel_cycles_max)
         diag.rt_dvel_cycles_max = cycles;
+}
+
+// Walk/monomialise split timing (new engine). Called from the Rust motion ISR
+// with the DWT-cycle delta around get_piece_for_time (walk) and arm_and_load
+// (monomial). Cost: an increment + a max compare. Rust-only callers.
+__attribute__((used, externally_visible))
+void
+diag_walk_account(uint32_t cycles)
+{
+    diag.walk_n++;
+    if (cycles > diag.walk_cycles_max)
+        diag.walk_cycles_max = cycles;
+}
+
+__attribute__((used, externally_visible))
+void
+diag_monomial_account(uint32_t cycles)
+{
+    diag.monomial_n++;
+    if (cycles > diag.monomial_cycles_max)
+        diag.monomial_cycles_max = cycles;
+}
+
+// ISR-phase breadcrumb setter. Single store to the persistent diag struct so
+// the value survives a reset (named the phase the freeze hung in). Called at
+// each phase boundary in the Rust motion ISR — kept to one store on the hot
+// path. Rust-only caller (must survive LTO -fwhole-program).
+__attribute__((used, externally_visible))
+void
+runtime_set_isr_phase(uint32_t phase)
+{
+    diag.rt_isr_phase = phase;
 }
 
 // Histogram-only sibling for the runtime_handle_tick subwindow. Caller
@@ -1182,6 +1232,11 @@ fault_handler_report_task(void)
             prior_diag.rt_dvel_n            = diag.rt_dvel_n;
             prior_diag.rt_dvel_cycles_max   = diag.rt_dvel_cycles_max;
             prior_diag.rt_dvel_cycles_total = diag.rt_dvel_cycles_total;
+            prior_diag.walk_cycles_max      = diag.walk_cycles_max;
+            prior_diag.walk_n               = diag.walk_n;
+            prior_diag.monomial_cycles_max  = diag.monomial_cycles_max;
+            prior_diag.monomial_n           = diag.monomial_n;
+            prior_diag.rt_isr_phase         = diag.rt_isr_phase;
             for (uint32_t axis = 0; axis < 3; axis++) {
                 prior_diag.rt_curve_degree[axis]    = diag.rt_curve_degree[axis];
                 prior_diag.rt_curve_cps_len[axis]   = diag.rt_curve_cps_len[axis];
@@ -1414,6 +1469,16 @@ fault_handler_report_task(void)
                prior_diag.rt_dvel_n, prior_diag.rt_dvel_cycles_max,
                (uint32_t)(prior_diag.rt_dvel_cycles_total & 0xFFFFFFFFu),
                (uint32_t)(prior_diag.rt_dvel_cycles_total >> 32));
+        // Per-phase worst-case tick decomposition + the ISR-phase breadcrumb.
+        // walk_max / mono_max in DWT cycles; isr_phase is the RT_PHASE_* value
+        // live at the prior reset (the freeze's phase if the prior run hung).
+        // (The full TIM5 ISR duration histogram is already emitted below as
+        // prior_diag_hist_irq_lo/hi — #2 was already in place.)
+        output("prior_diag_phase walk_max %u walk_n %u mono_max %u mono_n %u"
+               " isr_phase %u",
+               prior_diag.walk_cycles_max, prior_diag.walk_n,
+               prior_diag.monomial_cycles_max, prior_diag.monomial_n,
+               prior_diag.rt_isr_phase);
         output("prior_diag_summary_curve x_deg %u x_cps %u x_knots %u"
                " y_deg %u y_cps %u y_knots %u z_deg %u z_cps %u z_knots %u",
                (uint32_t)prior_diag.rt_curve_degree[0],

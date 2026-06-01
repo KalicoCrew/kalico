@@ -676,6 +676,7 @@ fn get_position_and_velocity(
     // elapsed, and short-circuits a long hold so the walk/fault never sees it.
     if let Some(p) = &axis.armed {
         if now < p.piece_end_cycles {
+            crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_HORNER);
             return Some(eval_horner(
                 &p.mono_coeffs,
                 &p.vel_coeffs,
@@ -690,8 +691,15 @@ fn get_position_and_velocity(
     }
 
     // Walk to the piece containing `now` (no monomialisation), then load once.
+    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_WALK);
+    let walk_start = crate::isr_phase::cyccnt();
     let slot = get_piece_for_time(axis, storage, now, sample_period_cycles, cycles_per_second, shared, axis_idx)?;
+    crate::isr_phase::walk_account(crate::isr_phase::cyccnt().wrapping_sub(walk_start));
+    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_MONOMIAL);
+    let mono_start = crate::isr_phase::cyccnt();
     let p = arm_and_load(axis, &storage[slot], cycles_per_second);
+    crate::isr_phase::monomial_account(crate::isr_phase::cyccnt().wrapping_sub(mono_start));
+    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_HORNER);
     Some(eval_horner(
         &p.mono_coeffs,
         &p.vel_coeffs,

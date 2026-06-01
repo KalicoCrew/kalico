@@ -97,6 +97,7 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
     let now = unsafe { timer_read_time() };
     // SAFETY: side-effect-free C getter (host: a test hook).
     let owned = unsafe { kalico_step_output_owned_mask() };
+    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_STEPOUT_ENTER);
 
     let mut emitted: u32 = 0;
     // Emit due steps across owned axes until the per-dispatch cap is hit or no
@@ -116,6 +117,7 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
             }
             // SAFETY: `q` is non-null (checked) and points at a live StepQueue;
             // this body is the sole consumer (same-priority invariant).
+            crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_STEPOUT_POP);
             let Some(entry) = (unsafe { queue_peek(q) }) else {
                 continue;
             };
@@ -125,6 +127,7 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
                 // SAFETY: sole-consumer discipline as above.
                 let _ = unsafe { queue_pop(q) };
                 // SAFETY: C step emitter guards out-of-range motor indices.
+                crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_STEPOUT_EMIT);
                 unsafe { runtime_emit_step_pulses(axis_idx as u8, i32::from(entry.dir)) };
                 emitted += 1;
                 emitted_this_pass = true;
@@ -137,10 +140,12 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
 
     // If the cap stopped us with work still due, re-fire immediately.
     if emitted >= MAX_STEPS_PER_EVENT {
+        crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_STEPOUT_EXIT);
         return now;
     }
 
     // Otherwise return the soonest remaining head across owned axes, wrap-safe.
+    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_STEPOUT_EXIT);
     next_wake_across_owned(now, owned).unwrap_or(STEP_OUTPUT_DISABLE)
 }
 

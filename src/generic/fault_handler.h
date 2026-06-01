@@ -25,6 +25,26 @@ extern "C" {
 //     because the host reads them back as i32), b = fault_detail.
 #define DIAG_EV_RUST_FAULT    8
 
+// ISR-phase breadcrumb values (2026-06-01). The Rust motion ISR writes
+// diag.rt_isr_phase at each phase boundary via runtime_set_isr_phase(); the
+// value live at an IWDG reset names the phase the freeze hung in (the byte is
+// in the persistent diag struct, so it survives the reset). These MUST match
+// the mirror constants in rust/runtime/src/{tick,engine,per_axis_timer}.rs.
+#define RT_PHASE_IDLE          0   // between ticks (foreground running)
+#define RT_PHASE_ISR_ENTER     1   // TIM5 Rust ISR body entered
+#define RT_PHASE_WIDEN         2   // clock widen + publish_widened_now
+#define RT_PHASE_GUARD         3   // inter-arrival guard window
+#define RT_PHASE_TICK          4   // engine.tick() entered (pre-walk)
+#define RT_PHASE_WALK          5   // get_piece_for_time ring-walk
+#define RT_PHASE_MONOMIAL      6   // arm_and_load / to_monomial (cold-load)
+#define RT_PHASE_HORNER        7   // eval_horner
+#define RT_PHASE_STEP_ENQ      8   // step enqueue / kick_per_axis_timer
+#define RT_PHASE_ISR_EXIT      9   // TIM5 Rust ISR body returning
+#define RT_PHASE_STEPOUT_ENTER 10  // kalico_step_output_event entered
+#define RT_PHASE_STEPOUT_POP   11  // inside C queue_peek/pop (.axi_bss SPSC)
+#define RT_PHASE_STEPOUT_EMIT  12  // runtime_emit_step_pulses
+#define RT_PHASE_STEPOUT_EXIT  13  // step-output ISR returning
+
 // Push a tagged record to the BKPSRAM event ring. IRQ-safe.
 void diag_ring_push(uint8_t tag, uint32_t a, uint32_t b);
 
@@ -44,6 +64,20 @@ void diag_otg_account(uint32_t enter_cycles, uint32_t exit_cycles);
 // Histogram accounting for the runtime_handle_tick subwindow alone. Call
 // from the TIM5 ISR with the already-computed `after - before` cycle delta.
 void diag_runtime_tick_account(uint32_t cycles);
+
+// Per-phase ISR accounting (2026-06-01). Called from the Rust motion ISR with
+// DWT-cycle deltas to decompose the worst-case tick: walk = get_piece_for_time
+// ring-walk (cheap, no conversion); monomial = arm_and_load to_monomial
+// conversion (cold-load only). Surfaced as prior_diag_phase. Rust-only callers,
+// so these need external linkage preserved through LTO -fwhole-program.
+void diag_walk_account(uint32_t cycles);
+void diag_monomial_account(uint32_t cycles);
+
+// ISR-phase breadcrumb setter (2026-06-01). The Rust motion ISR calls this at
+// each phase boundary with a RT_PHASE_* value; the value live in the persistent
+// diag struct at an IWDG reset names the phase the freeze hung in. Rust-only
+// caller — must survive LTO. Cheap (single store to the persistent struct).
+void runtime_set_isr_phase(uint32_t phase);
 
 // Heartbeat slot accessors — pointer to the BKPSRAM struct member, suitable
 // to pass into diag_task_heartbeat. Each function names the task slot.
