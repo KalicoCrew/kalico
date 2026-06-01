@@ -746,8 +746,13 @@ fn get_piece_for_time(
         let slot = axis.ring.front_slot()?; // ring empty → underrun
         let entry = &storage[slot];
         // Fault-check BEFORE the window return (preserves cold-adoption fault).
-        if now.saturating_sub(entry.start_time) > fault_tolerance {
-            raise_piece_start_in_past(shared, axis_idx);
+        let deficit_cycles = now.saturating_sub(entry.start_time);
+        if deficit_cycles > fault_tolerance {
+            // cycles -> µs via f32 FPU (single-precision is fine: near-miss
+            // values (~1e5 cyc) are exact in f32, and large values are
+            // saturated to 0xFFFF by raise_piece_start_in_past anyway).
+            let deficit_us = (deficit_cycles as f32 * (1.0e6_f32 / cycles_per_second)) as u32;
+            raise_piece_start_in_past(shared, axis_idx, deficit_us);
             return None;
         }
         if now < entry.end_time(cycles_per_second) {
