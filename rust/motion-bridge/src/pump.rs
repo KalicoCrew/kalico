@@ -593,7 +593,13 @@ where
     C: Fn(u32) -> Option<(u64, f64)>,
 {
     let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
-    const MAX_PER_FRAME: usize = 255; // u8 wire piece_count
+    // Cap pieces per PushPieces frame to bound the USB OTG ISR burst that fences
+    // the motion tick. Bench (2026-06-01, diff-minimization iter 1): at the 255
+    // wire-max the F446 -308 trips ~5 s into a jog; at 32 it holds ~13-17 s — so
+    // the cap is load-bearing, an active mitigation of the F446 USB fence behind
+    // the residual -308 (NOT a -311 leftover; the -311 fix was the clock-domain
+    // bug). A smaller per-MCU cap for the F446 is a candidate for the -308 fix.
+    const MAX_PER_FRAME: usize = 32;
 
     let apply = |msg: PumpMsg, queues: &mut BTreeMap<AxisKey, AxisQueue>| -> bool {
         match msg {
