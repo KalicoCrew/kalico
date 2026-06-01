@@ -108,6 +108,44 @@ must be freezing. Confirmed:
 - Open: WHAT corrupts a timer `.next` during motion (bad/out-of-bounds write).
   insert_timer should also fail loudly (cycle/iteration cap) instead of freezing.
 
+## REVISED ROOT CAUSE: F446 raises -308 PieceStartInPast on Z (NOT a freeze)
+
+Measured at e552d6491 (ISR-phase breadcrumb + walk/monomial split + both MCUs
+flashed). Repro: `SET_KINEMATIC_POSITION X=150 Y=150 Z=10` then jog `G1 X100/X200
+F3000` x10 (X only, 50 mm/s). Failure reproduced first attempt.
+
+- [e552d6491] klippy.log (rotated `klippy.log.2026-06-01_17-16-17`, the jog run):
+  `mcu 'bottom': got {'type':'fault','fault_code':65228,'fault_detail':131072,
+  'segment_id':0,'synthesized':False,'#name':'kalico_fault'}` then `MCU 'bottom'
+  shutdown: kalico runtime fault`. 65228 = -308 as u16 = `PieceStartInPast`
+  (error.rs:124, raised in engine.rs:736 inside `get_piece_for_time`). fault_detail
+  131072 = 0x20000 = (axis_idx 2 << 16) per fault_helpers.rs:128 => axis_idx=2=Z.
+- [e552d6491] After 'bottom' faulted, klippy commanded the others down:
+  `MCU 'mcu' shutdown: Command request`, `MCU 'beacon' shutdown: Emergency stop`.
+  The H7 did NOT fault itself; it was shut down by klippy.
+- [e552d6491] H7 ('mcu') post-reset prior_diag (its reset = klippy's shutdown ->
+  reconnect software reset): `prior_diag_phase walk_max 311 walk_n 10670 mono_max
+  358 mono_n 10670 isr_phase 9` (9 = RT_PHASE_ISR_EXIT = ISR completed cleanly;
+  freeze NOT in the Rust motion ISR). `prior_diag_summary boot 33718 tim5_n
+  1960459 tim5_max_cyc 3131`; `prior_diag_hist_irq b0 1960459` (ALL 1.96M TIM5
+  ISRs in bucket 0, <4096 cyc; zero slow ticks). `tim5ia min 50269 max 53354 last
+  52006 period 52000` (metronomic, max 1.03x). `fg_freeze stall_ticks 10 exc 0
+  iwdg 0` (iwdg counter 0 => NOT an IWDG reset). `boot_diag rcc 0x01420000` (SFTRSTF
+  bit24 set; IWDG bit not set).
+- [e552d6491] F446 ('bottom') emitted NO `#output` prior_diag lines in any log
+  slice (0 of 80 'bottom' lines). The F446 diag burst was not captured (report
+  task absent on F4, or `.persistent_diag` did not survive its reset, or scrolled).
+  => no F446 isr_phase / walk / tim5ia captured this run.
+- [e552d6491] Kernel (`dmesg -T`): F446 (`stm32f446xx`, usb 3-1) USB disconnect
+  17:16:17 -> re-enumerate 17:16:18. H7 (`stm32h723xx`, usb 3-2) disconnect
+  17:16:29 -> re-enumerate 17:16:30. **F446 dropped first, ~12 s before the H7.**
+  The re-enumerations follow the kalico fault + klippy restart (consequence, not
+  cause). I jogged X (H7 axis); the Z MCU (F446) faulted.
+- [e552d6491] F446 config: SAMPLE_RATE_HZ=20000 (period 9000 cyc @ 180 MHz; -308
+  tolerance = 2 ticks = 18000 cyc = 100 us). H7: 10000 Hz (200 us tolerance).
+- [e552d6491] fault_detail for -308 carries ONLY axis_idx (bits 16..24); the
+  actual deficit (now - start_time) is NOT encoded => magnitude of lateness unknown.
+
 ## Host / USB architecture (source read)
 
 - [c4ed8d740] `usbotg.c:513` `GAHBCFG = GINT` only (no DMAEN). `:512` `GINTMSK = RXFLVLM | IEPINT`. ISR (`OTG_FS_IRQHandler` ~:417) sets wake flags only; on RXFLVL it masks RXFLVLM (~:437). All FIFO movement is CPU-copy in foreground DECL_TASKs (`usb_bulk_out_task`/`usb_bulk_in_task`, `fifo_read_packet`/`fifo_write_packet`).
