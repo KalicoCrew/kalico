@@ -1012,13 +1012,14 @@ impl PyMotionBridge {
     ///
     /// Call once per MCU after `claim_mcu`. Calling again on an already-
     /// attached MCU replaces the existing `KalicoHostIo`.
-    #[pyo3(signature = (mcu_handle, serial_path, baud, timeout_s = 30.0))]
+    #[pyo3(signature = (mcu_handle, serial_path, baud, timeout_s = 30.0, klippy_non_critical = false))]
     fn attach_serial(
         &self,
         mcu_handle: u32,
         serial_path: &str,
         baud: u32,
         timeout_s: f64,
+        klippy_non_critical: bool,
     ) -> PyResult<()> {
         use std::time::{Duration, Instant};
         let deadline = Instant::now() + Duration::from_secs_f64(timeout_s);
@@ -1102,6 +1103,21 @@ impl PyMotionBridge {
                     } else {
                         None
                     };
+
+                    // Criticality gate for the reactor's EXIT_ON_FAULT wedge
+                    // detector. An MCU is CRITICAL (drop ⇒ abort) only if it
+                    // is a kalico-native motion MCU AND klippy did not mark it
+                    // `is_non_critical`. A Klipper-protocol-only MCU (identify
+                    // timed out — by definition not a motion MCU, e.g. the
+                    // Beacon) is non-critical regardless. See
+                    // `KalicoHostIo::set_critical`.
+                    let critical = kalico_native_supported && !klippy_non_critical;
+                    io.set_critical(critical);
+                    log::info!(
+                        "attach_serial: reuse — {serial_path} criticality \
+                         critical={critical} (kalico_native={kalico_native_supported} \
+                         klippy_non_critical={klippy_non_critical})"
+                    );
 
                     let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
                     let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
@@ -1254,6 +1270,23 @@ impl PyMotionBridge {
         } else {
             None
         };
+
+        // Criticality gate for the reactor's EXIT_ON_FAULT wedge detector.
+        // An MCU is CRITICAL (transport drop ⇒ process abort) only if it is a
+        // kalico-native motion MCU AND klippy did not mark it
+        // `is_non_critical`. A Klipper-protocol-only MCU (kalico_identify
+        // timed out — by definition not a motion MCU, e.g. the Beacon) is
+        // treated as non-critical regardless of config: its drop must not
+        // wedge the bench. Non-critical drops exit the reactor cleanly so
+        // klippy's own non-critical-disconnect / reconnect machinery handles
+        // recovery. See `KalicoHostIo::set_critical`.
+        let critical = kalico_native_supported && !klippy_non_critical;
+        host_io.set_critical(critical);
+        log::info!(
+            "attach_serial: {serial_path} criticality critical={critical} \
+             (kalico_native={kalico_native_supported} \
+             klippy_non_critical={klippy_non_critical})"
+        );
 
         let host_io_arc = Arc::new(host_io);
 
