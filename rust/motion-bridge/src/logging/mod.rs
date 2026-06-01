@@ -8,7 +8,6 @@ pub mod writer;
 
 use std::path::Path;
 use std::sync::OnceLock;
-use std::time::Duration;
 
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::filter::EnvFilter;

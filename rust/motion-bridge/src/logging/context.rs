@@ -61,16 +61,18 @@ mod tests {
         assert_eq!(c.print_id, "");
     }
 
+    /// Merged test: exercises set→load roundtrip and print_id clearing in a
+    /// single test function so parallel test threads cannot interleave on the
+    /// process-global `ArcSwap`.
     #[test]
-    fn set_then_load_roundtrips() {
+    fn set_load_and_clear_sequence() {
+        // set→load roundtrip
         set_context("k-1748700131-4412".to_string(), "print-1748700500".to_string());
         let c = load_context();
         assert_eq!(c.session_id, "k-1748700131-4412");
         assert_eq!(c.print_id, "print-1748700500");
-    }
 
-    #[test]
-    fn print_id_can_be_cleared() {
+        // print_id can be cleared (second store on same session)
         set_context("k-1".to_string(), "print-x".to_string());
         set_context("k-1".to_string(), String::new());
         assert_eq!(load_context().print_id, "");
