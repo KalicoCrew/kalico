@@ -477,7 +477,15 @@ where
     F: Fn(AxisKey) -> u32,
 {
     let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
-    const MAX_PER_FRAME: usize = 255; // u8 wire piece_count
+    // Bench-confirmed (2026-06-01): a full 255-piece frame (~8 KB) arriving over
+    // HS USB-CDC fences the H7 TIM5 motion tick for ~249 µs (~10 sample periods)
+    // — the OTG_FS ISR (NVIC prio 1, above TIM5 prio 2) runs back-to-back across
+    // the whole transfer, tripping -311 TickIntervalExceeded. Each PushPieces is
+    // request-response (blocking), so the per-frame OTG burst scales with frame
+    // size; capping at 32 pieces (~1 KB) shortens it. EXPERIMENTAL value — verify
+    // `prior_diag_summary_block usb_burst` drops below ~1.5 TIM5 periods AND that
+    // ring-fill still keeps the engine fed (no underrun) before treating final.
+    const MAX_PER_FRAME: usize = 32;
 
     let apply = |msg: PumpMsg, queues: &mut BTreeMap<AxisKey, AxisQueue>| -> bool {
         match msg {
