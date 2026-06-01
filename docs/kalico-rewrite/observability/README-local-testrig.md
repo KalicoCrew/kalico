@@ -46,34 +46,31 @@ numeric range filters (`trigger_mm:>10`), `| stats by (f) count() as n | sort by
 (n) desc` (aggregates must be aliased — `sort by (count(*))` does not parse),
 and `_msg` sanitization (an embedded newline/quote stays exactly one record).
 
-## Vector (the shipper) — fetch for the full e2e
+## Vector (the shipper) — validated: v0.55.0, arm64-apple-darwin
 
-Vector v0.55.0 no longer publishes a plain static tarball on GitHub releases /
-packages.timber.io. Two clean options to complete the shipper round-trip:
-
-```bash
-# Option A — official installer into a contained prefix (no system change):
-curl --proto '=https' --tlsv1.2 -sSfL https://sh.vector.dev \
-  | bash -s -- -y --prefix .tools/observability/vector-home
-
-# Option B — Homebrew (adds a third-party tap to the system):
-brew tap vectordotdev/brew && brew install vector
-```
-
-Then run it against the scratch events dir:
+The darwin asset is a direct GitHub release tarball — note Vector names it
+`arm64` (not `aarch64`):
 
 ```bash
-# dev override of config/observability/vector.toml:
-#   include  -> .tools/observability/events/*.jsonl
-#   data_dir -> .tools/observability/vector-data
-<vector-bin> --config .tools/observability/vector.dev.toml
+curl -sL -o /tmp/vector.tar.gz \
+  https://github.com/vectordotdev/vector/releases/download/v0.55.0/vector-0.55.0-arm64-apple-darwin.tar.gz
+tar xzf /tmp/vector.tar.gz -C .tools/observability/   # -> vector-arm64-apple-darwin/bin/vector
+.tools/observability/vector-arm64-apple-darwin/bin/vector --version
 ```
 
-Until Vector is fetched, the pipeline is verified up to the VL boundary via the
-direct-ingest path above (which uses the identical ingest params), plus the
-host-side emit/JSONL/schema/sanitization is covered by the Python + Rust unit
-and integration suites. The remaining Vector-in-the-loop checks (config
-`validate`, checkpoint resume on restart) run with Option A/B or on the printer.
+Run it against the scratch events dir using the dev-override config (same
+structure as `config/observability/vector.toml`, with dev paths and a writable
+`data_dir`). The committed config uses a `remap` transform (`. =
+parse_json!(.message)`) because Vector's `file` source emits the raw line in
+`message` — it has no per-line JSON decoder. Validated:
+
+```bash
+.tools/observability/vector-arm64-apple-darwin/bin/vector validate \
+  .tools/observability/vector.dev.toml          # -> Validated, health check OK
+```
+
+The full round-trip (emit → JSONL → Vector → VL → query) plus the VL-down /
+backfill durability check are scripted in `test/observability/e2e_local.sh`.
 
 ## Teardown
 

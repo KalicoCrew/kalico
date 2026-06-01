@@ -29,14 +29,19 @@ include = ["/home/pi/printer_data/logs/events/*.jsonl"]
 # the checkpoint takes over on subsequent restarts.
 read_from = "beginning"
 
-[sources.kalico_events.decoding]
-# Each physical line is already one complete JSON object (Stage 1/2 guarantee),
-# so decode it as JSON — no remap/transform needed; the fields ARE the schema.
-codec = "json"
+# Each physical line is already one complete JSON object (Stage 1/2 guarantee).
+# Vector's `file` source emits the raw line in `message` (it has no per-line
+# JSON decoder), so parse it and replace the event with the parsed schema
+# object — this drops Vector's own metadata (file/host/timestamp) and keeps
+# exactly our schema fields for VictoriaLogs. Validated with Vector 0.55.0.
+[transforms.parse]
+type = "remap"
+inputs = ["kalico_events"]
+source = '. = parse_json!(.message)'
 
 [sinks.victorialogs]
 type = "http"
-inputs = ["kalico_events"]
+inputs = ["parse"]
 uri = "http://127.0.0.1:9428/insert/jsonline?_stream_fields=source,subsystem&_time_field=_time&_msg_field=_msg"
 method = "post"
 
