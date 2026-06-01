@@ -105,6 +105,11 @@ void diag_snapshot_out_ep(uint32_t doepctl, uint32_t doeptsiz, uint32_t doepint)
     (void)doepctl; (void)doeptsiz; (void)doepint;
 }
 
+void diag_note_dispatch(uint32_t func, uint32_t addr)
+{
+    (void)func; (void)addr;
+}
+
 #define DIAG_GET_STUB(name) \
     uint32_t diag_get_##name(void) { return 0; }
 

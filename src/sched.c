@@ -326,6 +326,10 @@ sched_timer_dispatch(void)
     sched_dispatch_history_addr[hidx % SCHED_DISPATCH_HISTORY_N] = (uint32_t)t;
     sched_dispatch_history_func[hidx % SCHED_DISPATCH_HISTORY_N] = (uint32_t)t->func;
     sched_dispatch_history_idx = hidx + 1;
+    // Mirror into cross-boot-persistent diag so a callback that hangs (PRIMASK
+    // held -> full freeze -> IWDG reset) is identifiable after the reset.
+    extern void diag_note_dispatch(uint32_t func, uint32_t addr);
+    diag_note_dispatch((uint32_t)t->func, (uint32_t)t);
 
     // The legacy "inline stepper" optimization (CONFIG_INLINE_STEPPER_HACK
     // + stepper_event when t->func is NULL) was removed alongside the

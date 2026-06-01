@@ -77,6 +77,12 @@ struct live_snapshot {
     uint32_t worst_fg_stall_pc;    // stacked PC of the frozen context at that stall
     uint32_t worst_fg_stall_exc;   // stacked xPSR exception# (0 = thread/foreground)
     uint32_t iwdg_reset_count;     // # boots whose reset cause was IWDG
+    // Last scheduler-timer callback dispatched, mirrored here (persistent)
+    // BEFORE the callback runs. A timer callback that hangs under the SysTick
+    // dispatch loop's irq_disable holds PRIMASK -> full freeze -> IWDG. After
+    // the reset this is the func/struct of the callback that froze (addr2line).
+    uint32_t last_dispatch_func;
+    uint32_t last_dispatch_addr;
 };
 
 // Place in AXI SRAM on H7 (survives soft reset, not cleared by boot
@@ -861,6 +867,17 @@ diag_note_usb_in_busy(void)
     diag.usb_in_busy_n++;
 }
 
+// Called from sched_timer_dispatch BEFORE each timer callback runs, mirroring
+// the dispatched (func, struct) into cross-boot-persistent live_snap so a
+// callback that hangs (PRIMASK held by the SysTick dispatch loop -> full freeze
+// -> IWDG reset) is identifiable by addr2line after the reset.
+void
+diag_note_dispatch(uint32_t func, uint32_t addr)
+{
+    live_snap.last_dispatch_func = func;
+    live_snap.last_dispatch_addr = addr;
+}
+
 // Round 2 — extended snapshot accessors.
 uint32_t diag_get_otg_rxflvl(void)        { return diag.otg_rxflvl_fires; }
 uint32_t diag_get_otg_iepint(void)        { return diag.otg_iepint_fires; }
@@ -1110,6 +1127,8 @@ fault_handler_report_task(void)
             live_snap.worst_fg_stall_pc    = 0;
             live_snap.worst_fg_stall_exc   = 0;
             live_snap.iwdg_reset_count     = 0;
+            live_snap.last_dispatch_func   = 0;
+            live_snap.last_dispatch_addr   = 0;
         }
         // Count an IWDG-caused reset — the signature of a foreground freeze that
         // starved the watchdog pet. reset_cause_raw was just captured above.
@@ -1302,11 +1321,13 @@ fault_handler_report_task(void)
     // the foreground heartbeat failed to advance — i.e. how long the foreground
     // was frozen; pc/exc = the frozen context (exc 0 = thread/foreground).
     // iwdg = # IWDG resets seen (freeze long enough to starve the watchdog pet).
-    output("fg_freeze stall_ticks %u pc %u exc %u iwdg %u",
+    output("fg_freeze stall_ticks %u pc %u exc %u iwdg %u last_disp_func %u last_disp_addr %u",
            live_snap.worst_fg_stall_ticks,
            live_snap.worst_fg_stall_pc,
            live_snap.worst_fg_stall_exc,
-           live_snap.iwdg_reset_count);
+           live_snap.iwdg_reset_count,
+           live_snap.last_dispatch_func,
+           live_snap.last_dispatch_addr);
     if (fault_rec.magic == FAULT_MAGIC) {
         output("prior_fault kind %u count %u pc %u lr %u psr %u"
                " r0 %u r1 %u r2 %u r3 %u r12 %u",
