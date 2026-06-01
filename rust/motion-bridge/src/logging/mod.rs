@@ -18,7 +18,12 @@ use crate::logging::writer::{
     RotatingJsonlWriter, DEFAULT_BACKUP_COUNT, DEFAULT_MAX_BYTES, FSYNC_INTERVAL,
 };
 
-pub use crate::logging::context::{load_context, set_context, UNBOUND_SESSION};
+// `set_context` is the only re-export with an in-crate consumer (the PyO3
+// setter in bridge.rs). `load_context` (used by layer.rs via the direct
+// `context::` path) and `UNBOUND_SESSION` stay reachable as
+// `logging::context::{load_context, UNBOUND_SESSION}` without a convenience
+// re-export, which would otherwise warn as unused in the cdylib build.
+pub use crate::logging::context::set_context;
 
 // Keep the appender worker alive for the process lifetime; dropping it flushes
 // and stops the worker thread. Stored once at init.
