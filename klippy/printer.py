@@ -322,6 +322,14 @@ class Printer:
 
         bridge = motion_bridge_mod.MotionBridgeWrapper(self.reactor)
         self.add_object("motion_bridge", bridge)
+        # Wire the Rust host structured-logging subscriber + push the session
+        # context across the PyO3 seam, before any MCU attach/configure call
+        # can emit a Rust log (binding-timing invariant, spec §6).
+        motion_bridge_mod.attach_structured_logging(
+            bridge.get_bridge(),
+            self,
+            self.get_start_args().get("log_events_dir"),
+        )
         # Create printer objects
         for m in [pins, mcu]:
             m.add_printer_objects(config)
@@ -705,6 +713,7 @@ def main():
     start_args["session_id"] = session_id
 
     edir = events_dir_for(options.logfile)
+    start_args["log_events_dir"] = edir
     if edir is not None:
         structured_log.check_log_space(edir)
     bglogger = None

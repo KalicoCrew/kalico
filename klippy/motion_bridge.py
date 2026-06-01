@@ -6,6 +6,55 @@
 import logging
 
 from . import motion_bridge_native as _native
+from . import structured_log
+
+# Print-state events that START or CONTINUE a print: the active print_id is
+# bound in the contextvar before the event fires (Stage 1 ordering), so the
+# handler pushes the current session + print context to the Rust host.
+_PRINT_ACTIVE_EVENTS = (
+    "print_stats:start_printing",
+    "print_stats:paused_printing",
+)
+# Print-state events that END a print: print_stats fires these BEFORE clearing
+# the print_id contextvar, so the handler must push an explicit empty print_id
+# rather than reading the (still-stale) contextvar value.
+_PRINT_FINISH_EVENTS = (
+    "print_stats:complete_printing",
+    "print_stats:error_printing",
+    "print_stats:cancelled_printing",
+    "print_stats:reset",
+)
+
+
+def attach_structured_logging(native, printer, events_dir):
+    # Install the Rust host structured-logging subscriber and push the current
+    # session/print context across the PyO3 seam. Honors the binding-timing
+    # invariant: session_id is already bound (printer.py startup) by the time
+    # the bridge is constructed, and this runs before any MCU attach/configure
+    # call that could emit a Rust log.
+    #
+    # events_dir is None on a host with no logfile (e.g. --debugoutput); in that
+    # case the durable jsonl sink is not initialized, but the session context is
+    # still pushed so any Rust logging that an external subscriber captures
+    # carries the session id.
+    if events_dir:
+        native.init_logging(events_dir)
+    native.set_session_context(
+        structured_log.get_session(), structured_log.get_print()
+    )
+
+    def _push_ctx(*_args):
+        native.set_session_context(
+            structured_log.get_session(), structured_log.get_print()
+        )
+
+    def _clear_ctx(*_args):
+        native.set_session_context(structured_log.get_session(), "")
+
+    for ev in _PRINT_ACTIVE_EVENTS:
+        printer.register_event_handler(ev, _push_ctx)
+    for ev in _PRINT_FINISH_EVENTS:
+        printer.register_event_handler(ev, _clear_ctx)
 
 
 class MotionBridgeWrapper:
