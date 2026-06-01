@@ -51,18 +51,16 @@ pub fn load_context() -> Arc<SessionContext> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    /// Serialises all tests that write the process-global `ArcSwap`. Each test
-    /// that calls `set_context` must hold this lock for the duration of the test
-    /// body so that parallel `cargo test` threads cannot interleave their writes
-    /// and produce spurious assertion failures.
+    /// All tests that call `set_context` acquire `CONTEXT_TEST_LOCK` from the
+    /// parent module for their entire duration. This serialises against layer
+    /// tests (which also write the process-global ArcSwap) running in parallel
+    /// in the same test binary.
     ///
-    /// Note: the `arc_swap_concurrent_coherence` test intentionally spawns a
-    /// writer thread that calls `set_context` while *this* test holds the lock.
-    /// That is correct — the lock serialises against OTHER tests, not against the
-    /// test's own writer thread.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
+    /// Note: `arc_swap_concurrent_coherence` intentionally spawns a writer
+    /// thread that calls `set_context` while this test holds the lock — that is
+    /// correct; the lock serialises against OTHER tests, not the test's own thread.
+    use crate::logging::CONTEXT_TEST_LOCK;
 
     #[test]
     fn defaults_to_unbound_sentinel() {
@@ -78,7 +76,7 @@ mod tests {
     /// process-global `ArcSwap`.
     #[test]
     fn set_load_and_clear_sequence() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = CONTEXT_TEST_LOCK.lock().unwrap();
 
         // set→load roundtrip
         set_context("k-1748700131-4412".to_string(), "print-1748700500".to_string());
@@ -108,7 +106,7 @@ mod tests {
     /// design — this test documents and exercises that guarantee.
     #[test]
     fn arc_swap_concurrent_coherence() {
-        let _guard = TEST_LOCK.lock().unwrap();
+        let _guard = CONTEXT_TEST_LOCK.lock().unwrap();
 
         const WRITER_ITERS: usize = 50_000;
         const READER_ITERS: usize = 100_000;

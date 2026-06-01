@@ -30,6 +30,14 @@ pub use crate::logging::context::set_context;
 static GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 static INITIALIZED: OnceLock<()> = OnceLock::new();
 
+/// Process-global mutex serialising every test that writes the `ArcSwap`
+/// session context. All tests in `context::tests` and `layer::tests` that call
+/// `set_context` must hold this lock for their entire duration so that parallel
+/// `cargo test` threads cannot interleave writes and produce spurious
+/// assertion failures on the shared global.
+#[cfg(test)]
+pub(crate) static CONTEXT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Errors from logging initialization (fail-loudly; surfaced to Python).
 #[derive(Debug, thiserror::Error)]
 pub enum LogInitError {
@@ -47,7 +55,14 @@ pub enum LogInitError {
 /// overrides for debugging. Known-noisy debug logs (clocksync) are already
 /// below `info` and dropped by the default.
 pub fn init_logging(events_dir: &Path) -> Result<(), LogInitError> {
-    if INITIALIZED.get().is_some() {
+    // Use `set` itself as the atomic guard: exactly one concurrent caller wins;
+    // all others bail before touching any global state. This eliminates the
+    // TOCTOU window of the old get-then-later-set pattern.
+    //
+    // NOTE: if initialization fails after this point (e.g. file open error),
+    // `INITIALIZED` remains set and a retry returns `AlreadyInitialized`. That
+    // is intentional — a failed init is a hard startup error (fail-loudly).
+    if INITIALIZED.set(()).is_err() {
         return Err(LogInitError::AlreadyInitialized);
     }
     let path = events_dir.join("host-rust.jsonl");
@@ -77,7 +92,6 @@ pub fn init_logging(events_dir: &Path) -> Result<(), LogInitError> {
     })?;
 
     let _ = GUARD.set(guard);
-    let _ = INITIALIZED.set(());
     Ok(())
 }
 

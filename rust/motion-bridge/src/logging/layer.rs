@@ -51,20 +51,12 @@ impl Visit for FieldVisitor {
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        // The tracing macro records format-string messages via record_debug when
-        // the message is a format expression. For the "message" field we want
-        // the clean string without extra Debug quotes, so use Display via {:?}
-        // then strip the surrounding quotes that Debug adds to &str.
+        // tracing records format-string messages as `std::fmt::Arguments`, whose
+        // `Debug` impl is Display-equivalent and adds NO surrounding quotes.
+        // Store verbatim; no stripping is correct or safe here.
         let s = format!("{value:?}");
         if field.name() == "message" {
-            // Debug-format of &str wraps in quotes: `"the message"`.
-            // Strip them to produce the clean text expected by the schema.
-            let clean = if s.starts_with('"') && s.ends_with('"') && s.len() >= 2 {
-                s[1..s.len() - 1].replace("\\n", "\n").replace("\\\"", "\"")
-            } else {
-                s
-            };
-            self.message = Some(clean);
+            self.message = Some(s);
         } else {
             self.map
                 .insert(field.name().to_string(), Value::String(s));
@@ -156,6 +148,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tracing_subscriber::prelude::*;
 
+    use crate::logging::CONTEXT_TEST_LOCK;
+
     #[derive(Clone, Default)]
     struct BufWriter(Arc<Mutex<Vec<u8>>>);
     impl<'a> MakeWriter<'a> for BufWriter {
@@ -191,6 +185,7 @@ mod tests {
 
     #[test]
     fn emits_core_schema_fields() {
+        let _ctx_guard = CONTEXT_TEST_LOCK.lock().unwrap();
         super::super::context::set_context("k-1-2".into(), "".into());
         let recs = capture(|| {
             tracing::info!(
@@ -218,6 +213,7 @@ mod tests {
 
     #[test]
     fn subsystem_falls_back_to_target_mapping() {
+        let _ctx_guard = CONTEXT_TEST_LOCK.lock().unwrap();
         super::super::context::set_context("k-1-2".into(), "".into());
         let recs = capture(|| {
             tracing::warn!(event = "retry", "attach_serial retry");
@@ -228,6 +224,7 @@ mod tests {
 
     #[test]
     fn embedded_newline_yields_one_line() {
+        let _ctx_guard = CONTEXT_TEST_LOCK.lock().unwrap();
         super::super::context::set_context("k-1-2".into(), "".into());
         let recs = capture(|| {
             tracing::info!("line one\nline two\u{0007}");
@@ -235,5 +232,18 @@ mod tests {
         // One record despite the embedded newline (it is JSON-escaped).
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0]["_msg"], "line one\nline two\u{0007}");
+    }
+
+    /// A message whose content begins and ends with a literal `"` must survive
+    /// intact. The old quote-stripping branch incorrectly removed those chars.
+    #[test]
+    fn message_with_literal_quotes_is_preserved() {
+        let _ctx_guard = CONTEXT_TEST_LOCK.lock().unwrap();
+        super::super::context::set_context("k-1-2".into(), "".into());
+        let recs = capture(|| {
+            tracing::info!("{}", "\"hello\"");
+        });
+        assert_eq!(recs.len(), 1);
+        assert_eq!(recs[0]["_msg"], "\"hello\"");
     }
 }
