@@ -3,5 +3,6 @@
 //! `<events_dir>/host-rust.jsonl`.
 
 pub mod context;
+pub mod layer;
 pub mod schema;
 pub mod writer;
