@@ -33,10 +33,6 @@ use bridge::PyMotionBridge;
 // `from . import motion_bridge_native as _native`.
 #[pymodule]
 fn motion_bridge_native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Initialize env_logger so RUST_LOG=info captures bridge-trace
-    // events (push_segment, seg-dispatch, etc.) into stderr. Silently
-    // no-ops if already initialized (parallel pyimports).
-    let _ = env_logger::try_init();
     m.add_class::<PyMotionBridge>()?;
     Ok(())
 }

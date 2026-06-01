@@ -23,6 +23,7 @@ libc = "0.2"
 # polynomials don't match. Step-7 MVP can revisit if the hand-rolled
 # loop becomes a hotspot.
 log = "0.4"
+tracing = "0.1"
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
