@@ -257,9 +257,13 @@ fn handle_identify_response(state: &mut KalicoNativeState, payload: &[u8]) -> Ka
             capabilities: resp.capabilities,
         }));
     }
-    eprintln!(
-        "[kalico-id] identified reset_epoch=0x{:08x} caps=0x{:016x} state_epoch={:?}",
-        resp.reset_epoch, resp.capabilities, state.reset_epoch,
+    tracing::info!(
+        subsystem = "bridge",
+        event = "identify_complete",
+        reset_epoch = resp.reset_epoch,
+        capabilities = resp.capabilities,
+        state_epoch = ?state.reset_epoch,
+        "kalico identify complete"
     );
     log::info!(
         "kalico identified: reset_epoch=0x{:08x}, caps=0x{:016x}, schema_hash matches",
