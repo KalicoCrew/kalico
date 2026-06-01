@@ -392,12 +392,17 @@ runtime_drain(void)
         if (prev_engine_status != 3 /* FAULT */) {
             int32_t fault_code = runtime_handle_last_error(runtime_handle);
             uint32_t fault_detail = runtime_handle_fault_detail(runtime_handle);
-            // segment_id carries the -311 TickIntervalExceeded blocker func
-            // address (0 for any other fault) so addr2line can name the
-            // scheduler callback that starved the TIM5 tick.
-            uint32_t tick_blocker = runtime_handle_tick_blocker(runtime_handle);
+            // segment_id carries the -311 TickIntervalExceeded stacked PC (the
+            // exception-frame return address captured at TIM5 entry: the
+            // instruction the interrupted context was about to execute, i.e.
+            // the code that held the CPU/PRIMASK across the late tick). 0 for
+            // any other fault. Feed it to addr2line to name the blocking code.
+            // The stacked exception number and the legacy dispatch-history func
+            // are also captured in SharedState (tick_blocker_exc /
+            // tick_blocker_func) if a fuller picture is needed.
+            uint32_t tick_blocker_pc = runtime_handle_tick_blocker_pc(runtime_handle);
             kalico_native_emit_fault_event((uint16_t)fault_code, fault_detail,
-                                           tick_blocker);
+                                           tick_blocker_pc);
         }
     }
 
@@ -420,12 +425,16 @@ runtime_drain(void)
         last_acted_error = cur_error;
         uint32_t fdetail = runtime_handle_fault_detail(runtime_handle);
         // Segment ids are gone (piece-ring model); the legacy segment-id slot
-        // now carries the -311 TickIntervalExceeded blocker func address (0
-        // for any other fault) so addr2line can name the scheduler callback
-        // that starved the TIM5 tick.
-        uint32_t tick_blocker = runtime_handle_tick_blocker(runtime_handle);
+        // now carries the -311 TickIntervalExceeded stacked PC (the
+        // exception-frame return address captured at TIM5 entry: the
+        // instruction the interrupted context was about to execute, i.e. the
+        // code that held the CPU/PRIMASK across the late tick). 0 for any
+        // other fault. Feed it to addr2line to name the blocking code. The
+        // stacked exception number and the legacy dispatch-history func are
+        // also in SharedState (tick_blocker_exc / tick_blocker_func).
+        uint32_t tick_blocker_pc = runtime_handle_tick_blocker_pc(runtime_handle);
         kalico_native_emit_fault_event((uint16_t)cur_error, fdetail,
-                                       tick_blocker);
+                                       tick_blocker_pc);
         // Belt-and-suspenders: persist the fault code + detail into the
         // BKPSRAM diagnostic ring BEFORE shutdown() resets the USB stack.
         // The ring survives a soft reset and is emitted by fault_handler_

@@ -37,6 +37,57 @@ unsafe extern "C" {
     fn sched_last_dispatched_func() -> u32;
 }
 
+// C-side capture of the TIM5 exception stack frame (src/stm32/runtime_tick_*.c
+// naked-wrapper shim). Read only on the `-311 TickIntervalExceeded` path:
+//   - `runtime_tim5_stacked_pc()` returns the stacked return-address (PC) — the
+//     instruction that was about to execute when TIM5 preempted/resumed, i.e.
+//     the code that held the CPU / global interrupt mask across the late tick.
+//   - `runtime_tim5_stacked_exc()` returns the stacked xPSR exception number
+//     (`xPSR & 0x1FF`): 0 = foreground/thread was interrupted; nonzero = that
+//     IRQ number was the interrupted context (TIM5 tail-chained behind it).
+// Both are plain pointer reads of the captured frame, side-effect-free and
+// `no_std`-safe to call from the ISR. Present only in the MCU firmware link
+// (and the kalico-sim shim); host/test builds substitute 0.
+#[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+unsafe extern "C" {
+    fn runtime_tim5_stacked_pc() -> u32;
+    fn runtime_tim5_stacked_exc() -> u32;
+}
+
+/// Read the stacked exception-frame return address (PC) captured at TIM5
+/// handler entry. Returns 0 on host/test builds.
+#[inline]
+fn tim5_stacked_pc() -> u32 {
+    #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+    // SAFETY: `runtime_tim5_stacked_pc` is a side-effect-free C function that
+    // reads a captured volatile frame pointer and returns a `u32`. Safe from
+    // the TIM5 ISR.
+    unsafe {
+        runtime_tim5_stacked_pc()
+    }
+    #[cfg(not(any(not(any(test, feature = "host")), feature = "kalico-sim")))]
+    {
+        0
+    }
+}
+
+/// Read the stacked xPSR exception number captured at TIM5 handler entry.
+/// Returns 0 on host/test builds.
+#[inline]
+fn tim5_stacked_exc() -> u32 {
+    #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+    // SAFETY: `runtime_tim5_stacked_exc` is a side-effect-free C function that
+    // reads a captured volatile frame pointer and returns a `u32`. Safe from
+    // the TIM5 ISR.
+    unsafe {
+        runtime_tim5_stacked_exc()
+    }
+    #[cfg(not(any(not(any(test, feature = "host")), feature = "kalico-sim")))]
+    {
+        0
+    }
+}
+
 /// Read the C scheduler's newest dispatch-history `func` address (the
 /// callback that just blocked the ISR). Returns 0 on host/test builds where
 /// no C scheduler is linked.
@@ -439,10 +490,21 @@ pub fn isr_sample_tick(
         let gap = now.wrapping_sub(last);
         if period != 0 && gap > period * TICK_GAP_FAULT_MULT {
             let gap_ticks = (gap / period) as u32;
-            // Capture the scheduler callback that blocked this tick. Stored
-            // before the fault code latches so a host reader observing the
-            // -311 always sees a populated blocker address. Surfaced via the
-            // fault event's segment_id field for addr2line.
+            // Capture WHAT held the CPU across the late tick. The primary,
+            // reliable signal is the stacked exception-frame return address
+            // (the instruction TIM5 preempted/resumed) plus the stacked xPSR
+            // exception number (foreground vs. another ISR). The legacy
+            // software-timer dispatch-history guess is kept for reference.
+            // All stored before the fault code latches so a host reader
+            // observing the -311 always sees populated values. The stacked PC
+            // is surfaced via the fault event's segment_id field as the
+            // addr2line target.
+            shared
+                .tick_blocker_pc
+                .store(tim5_stacked_pc(), Ordering::Release);
+            shared
+                .tick_blocker_exc
+                .store(tim5_stacked_exc(), Ordering::Release);
             shared
                 .tick_blocker_func
                 .store(last_dispatched_func(), Ordering::Release);

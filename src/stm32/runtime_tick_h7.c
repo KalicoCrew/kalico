@@ -146,9 +146,84 @@ runtime_tick_init(void)
     step_output_timer_init();
 }
 
+// ── -311 stacked-PC capture (diagnostic, 2026-06-01) ──────────────────────
+//
+// On a `-311 TickIntervalExceeded` we want to know WHAT code held the CPU /
+// global interrupt mask (PRIMASK; `irq_disable` == `cpsid i`) across the late
+// tick. The most direct evidence is the exception stack frame the hardware
+// pushed when TIM5 was taken: its stacked PC is the instruction that was about
+// to execute in the interrupted context, and its stacked xPSR carries the
+// active-exception number of that context.
+//
+// We capture the active exception stack-frame base pointer at handler entry
+// into `tim5_exc_frame`, every tick. The Rust `-311` path then reads
+// frame[6] (stacked PC) and frame[7] (stacked xPSR) via the getters below.
+//
+// FP-frame correctness (M7 has an FPU): on exception entry the core ALWAYS
+// pushes the 8-word basic frame {R0,R1,R2,R3,R12,LR,PC,xPSR} at the LOWEST
+// addresses of the stacked frame. If lazy FP context is active (EXC_RETURN
+// bit 4 == 0, "extended frame"), the FP registers {S0..S15,FPSCR} plus an
+// alignment word are stacked ABOVE those 8 words (higher addresses). So
+// frame[6] == PC and frame[7] == xPSR hold for BOTH the basic and the extended
+// frame — the core-register offsets never move. We therefore do not need to
+// inspect EXC_RETURN bit 4 to read PC/xPSR correctly.
+static volatile uint32_t *tim5_exc_frame;
+
+// Capture the exception frame pointer, then run the original handler body.
+// Marked `used` so LTO/--gc-sections keep it (reached only via the naked
+// wrapper's tail-branch, which is opaque to the optimizer).
+__attribute__((used))
+static void TIM5_IRQHandler_body(uint32_t *frame);
+
+// Naked entry: select MSP vs PSP from EXC_RETURN bit 2 (the value still in LR
+// on handler entry), stash it in `tim5_exc_frame`, and tail-call the body with
+// the frame pointer in r0. A handful of instructions per tick — acceptable for
+// a diagnostic build. (LR holds EXC_RETURN here; bit 2 == 0 ⇒ frame was on MSP,
+// == 1 ⇒ on PSP. On this firmware the foreground also runs on MSP, so this is
+// almost always MSP, but the test is correct for either.)
+__attribute__((naked))
 void
 TIM5_IRQHandler(void)
 {
+    __asm volatile (
+        "tst    lr, #4              \n"  // EXC_RETURN bit 2: 0=MSP, 1=PSP
+        "ite    eq                  \n"
+        "mrseq  r0, msp             \n"
+        "mrsne  r0, psp             \n"
+        "ldr    r1, =tim5_exc_frame \n"
+        "str    r0, [r1]            \n"  // tim5_exc_frame = frame base
+        "b      TIM5_IRQHandler_body\n"  // tail-call; LR (EXC_RETURN) preserved
+    );
+}
+
+// Stacked-PC getter — frame[6] is the return address (PC) of the interrupted
+// context. Read only on the -311 path. used, externally_visible: referenced
+// ONLY from the Rust archive, so --gc-sections / -fwhole-program LTO would
+// otherwise drop it (same link trap as sched_last_dispatched_func).
+__attribute__((used, externally_visible))
+uint32_t
+runtime_tim5_stacked_pc(void)
+{
+    if (!tim5_exc_frame)
+        return 0;
+    return tim5_exc_frame[6];
+}
+
+// Stacked-xPSR exception-number getter — frame[7] is the interrupted context's
+// xPSR; its low 9 bits are the active-exception number (0 = thread/foreground).
+__attribute__((used, externally_visible))
+uint32_t
+runtime_tim5_stacked_exc(void)
+{
+    if (!tim5_exc_frame)
+        return 0;
+    return tim5_exc_frame[7] & 0x1FFu;
+}
+
+static void
+TIM5_IRQHandler_body(uint32_t *frame)
+{
+    (void)frame;
     // Diag instrumentation: cycle stamp at IRQ entry. DWT->CYCCNT is
     // already enabled in this file's init (TRCENA + CYCCNTENA above).
     extern void diag_tim5_account(uint32_t enter, uint32_t exit);

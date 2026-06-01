@@ -479,6 +479,50 @@ pub mod exports {
         }
     }
 
+    /// Read the stacked exception-frame return address (PC) captured at TIM5
+    /// handler entry on the most recent `-311 TickIntervalExceeded` fault.
+    /// This is the instruction that was about to execute when TIM5
+    /// preempted/resumed — the addr2line target naming the code that held the
+    /// CPU / PRIMASK across the late tick. `0` before any `-311` fires (or on
+    /// host/test builds). Wired into the fault event's `segment_id` field by
+    /// `runtime_tick.c`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn runtime_handle_tick_blocker_pc(rt: *mut KalicoRuntime) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState atomics-only access.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).tick_blocker_pc.load(Ordering::Acquire)
+        }
+    }
+
+    /// Read the stacked xPSR exception number captured at TIM5 handler entry
+    /// on the most recent `-311 TickIntervalExceeded` fault. `0` =
+    /// thread/foreground was the interrupted context; nonzero = that IRQ/
+    /// exception number was the interrupted context (TIM5 tail-chained behind
+    /// it). `0` before any `-311` fires (or on host/test builds).
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn runtime_handle_tick_blocker_exc(rt: *mut KalicoRuntime) -> u32 {
+        if rt.is_null() {
+            return 0;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return 0;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: SharedState atomics-only access.
+        unsafe {
+            let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
+            (*shared_ptr).tick_blocker_exc.load(Ordering::Acquire)
+        }
+    }
+
     /// Diagnostic: read the configured `steps_per_mm` for axis `oid` (0..=3
     /// in motor space). Returns 0.0 if `oid` is out of range or runtime
     /// uninitialised. Used by Phase 4 sim test to verify axis configuration

@@ -273,8 +273,12 @@ impl EventDispatcher {
                 log::warn!(
                     "[KALICO-FAULT] received FaultEvent \
                      fault_code={} (wire_u16={}) fault_detail={:#010x} \
-                     segment_id={} synthesized={} \
-                     (see runtime::error::FaultCode: \
+                     segment_id={:#010x} synthesized={} \
+                     (segment_id is the -311 stacked PC = addr2line target: \
+                     the instruction the interrupted context was about to \
+                     execute, i.e. the code holding the CPU/PRIMASK across the \
+                     late tick; 0 for non-311 faults. \
+                     see runtime::error::FaultCode: \
                      -308=PieceStartInPast -309=RingFull \
                      -310=StepsPerSampleExceeded -311=TickIntervalExceeded \
                      -302=MathNonFinite -303=PieceAdvanceUnderflow \

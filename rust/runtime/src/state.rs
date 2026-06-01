@@ -224,7 +224,31 @@ pub struct SharedState {
     /// dispatch-history entry (`sched_last_dispatched_func`). `0` until a
     /// `-311` fault fires. Surfaced to the host through the fault event's
     /// `segment_id` field so `addr2line` can name the blocking callback.
+    ///
+    /// NOTE (2026-06-01): `sched_last_dispatched_func` only sees the SysTick
+    /// *software-timer* dispatch history and has proven an unreliable signal
+    /// for what actually held the CPU/PRIMASK across the late tick. It is
+    /// retained here for reference but the host-visible `segment_id` now
+    /// carries `tick_blocker_pc` (the stacked exception-frame return address)
+    /// instead — see below.
     pub tick_blocker_func: AtomicU32,
+    /// Stacked exception-frame return address (PC) captured at TIM5 handler
+    /// entry, read on the `-311 TickIntervalExceeded` path. This is the
+    /// instruction that was about to execute when TIM5 preempted/resumed —
+    /// i.e. it points into whatever code held the CPU / global interrupt mask
+    /// (PRIMASK; `irq_disable` = `cpsid i`) across the late tick. Far more
+    /// reliable than `tick_blocker_func` because it is the *actual* interrupted
+    /// PC, not a software-timer dispatch-history guess. `0` until a `-311`
+    /// fires (or on host/test builds with no exception frame). Surfaced to the
+    /// host through the fault event's `segment_id` field (the addr2line target).
+    pub tick_blocker_pc: AtomicU32,
+    /// Active-exception number from the stacked xPSR (`xPSR & 0x1FF`) at the
+    /// moment the `-311` fired. `0` = thread/foreground code was the
+    /// interrupted context (PC is foreground code holding PRIMASK); nonzero =
+    /// that IRQ/exception number was the interrupted context, i.e. TIM5
+    /// tail-chained after a higher-priority (or same-priority, non-nesting)
+    /// ISR that overran. `0` until a `-311` fires (or on host/test builds).
+    pub tick_blocker_exc: AtomicU32,
     // Step 7-D: signed per-stepper pulse counters, indexed by stepper oid.
     pub stepper_counts: [AtomicI32; MAX_STEPPER_OIDS],
     /// Per-stepper `StepMode` (spec §5). Atomic so the host can flip a
@@ -566,6 +590,8 @@ impl SharedState {
             last_retire_consumers_after_clear: AtomicU32::new(0),
             fault_detail: AtomicU32::new(0),
             tick_blocker_func: AtomicU32::new(0),
+            tick_blocker_pc: AtomicU32::new(0),
+            tick_blocker_exc: AtomicU32::new(0),
             stepper_counts: [
                 AtomicI32::new(0),
                 AtomicI32::new(0),

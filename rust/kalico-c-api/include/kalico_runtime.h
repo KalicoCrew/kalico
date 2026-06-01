@@ -195,6 +195,23 @@ uint32_t runtime_handle_fault_detail(struct KalicoRuntime *rt);
 uint32_t runtime_handle_tick_blocker(struct KalicoRuntime *rt);
 
 /**
+ * Read the stacked exception-frame return address (PC) captured at TIM5
+ * handler entry on the most recent `-311 TickIntervalExceeded` fault — the
+ * instruction TIM5 preempted/resumed, i.e. the addr2line target naming the
+ * code that held the CPU / PRIMASK across the late tick. `0` before any `-311`
+ * fires. Wired into the fault event's `segment_id` field by `runtime_tick.c`.
+ */
+uint32_t runtime_handle_tick_blocker_pc(struct KalicoRuntime *rt);
+
+/**
+ * Read the stacked xPSR exception number captured at TIM5 handler entry on the
+ * most recent `-311 TickIntervalExceeded` fault. `0` = thread/foreground was
+ * interrupted; nonzero = that IRQ/exception number was the interrupted context
+ * (TIM5 tail-chained behind it). `0` before any `-311` fires.
+ */
+uint32_t runtime_handle_tick_blocker_exc(struct KalicoRuntime *rt);
+
+/**
  * Diagnostic: read the configured `steps_per_mm` for axis `oid` (0..=3
  * in motor space). Returns 0.0 if `oid` is out of range or runtime
  * uninitialised. Used by Phase 4 sim test to verify axis configuration

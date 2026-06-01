@@ -163,9 +163,66 @@ runtime_tick_init(void)
     step_output_timer_init();
 }
 
+// ── -311 stacked-PC capture (diagnostic, 2026-06-01) ──────────────────────
+//
+// Mirror of the H7 path (see src/stm32/runtime_tick_h7.c for the full
+// rationale). On a `-311 TickIntervalExceeded` the Rust path reads frame[6]
+// (stacked PC — the instruction the interrupted context was about to execute,
+// i.e. the code holding the CPU/PRIMASK across the late tick) and frame[7]
+// (stacked xPSR — active-exception number of the interrupted context).
+//
+// FP-frame correctness (M4F has an FPU): the core always pushes the 8-word
+// basic frame {R0,R1,R2,R3,R12,LR,PC,xPSR} at the LOWEST addresses; an
+// extended (lazy-FP) frame stacks {S0..S15,FPSCR}+align ABOVE those 8 words.
+// So frame[6]==PC and frame[7]==xPSR hold for both frame shapes — no need to
+// inspect EXC_RETURN bit 4.
+static volatile uint32_t *tim5_exc_frame;
+
+__attribute__((used))
+static void TIM5_IRQHandler_body(uint32_t *frame);
+
+// Naked entry: select MSP vs PSP from EXC_RETURN bit 2, stash the frame base in
+// `tim5_exc_frame`, tail-call the body. A few instructions per tick.
+__attribute__((naked))
 void
 TIM5_IRQHandler(void)
 {
+    __asm volatile (
+        "tst    lr, #4              \n"  // EXC_RETURN bit 2: 0=MSP, 1=PSP
+        "ite    eq                  \n"
+        "mrseq  r0, msp             \n"
+        "mrsne  r0, psp             \n"
+        "ldr    r1, =tim5_exc_frame \n"
+        "str    r0, [r1]            \n"  // tim5_exc_frame = frame base
+        "b      TIM5_IRQHandler_body\n"  // tail-call; LR (EXC_RETURN) preserved
+    );
+}
+
+// used, externally_visible: referenced ONLY from the Rust archive, so
+// --gc-sections / -fwhole-program LTO would otherwise drop these (same link
+// trap as sched_last_dispatched_func).
+__attribute__((used, externally_visible))
+uint32_t
+runtime_tim5_stacked_pc(void)
+{
+    if (!tim5_exc_frame)
+        return 0;
+    return tim5_exc_frame[6];
+}
+
+__attribute__((used, externally_visible))
+uint32_t
+runtime_tim5_stacked_exc(void)
+{
+    if (!tim5_exc_frame)
+        return 0;
+    return tim5_exc_frame[7] & 0x1FFu;
+}
+
+static void
+TIM5_IRQHandler_body(uint32_t *frame)
+{
+    (void)frame;
     extern void diag_tim5_account(uint32_t enter, uint32_t exit);
     uint32_t diag_enter = DWT->CYCCNT;
 

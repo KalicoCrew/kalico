@@ -43,6 +43,15 @@ volatile uint8_t runtime_liveness_ok = 1;
 // monotonic-derived counter that runtime_cyccnt_read returns.
 volatile uint32_t runtime_sim_cyccnt = 0;
 
+// -311 stacked-PC capture (src/stm32/runtime_tick_*.c on silicon). The host /
+// kalico-sim build has no TIM5 exception frame, so the Rust `-311` path's
+// externs resolve to these stubs returning 0. used, externally_visible so the
+// staticlib reference survives the host link (mirrors the silicon attribute).
+__attribute__((used, externally_visible))
+uint32_t runtime_tim5_stacked_pc(void) { return 0; }
+__attribute__((used, externally_visible))
+uint32_t runtime_tim5_stacked_exc(void) { return 0; }
+
 #define HOST_TICK_HZ 40000UL
 #define HOST_TICK_NS (1000000000UL / HOST_TICK_HZ)
 
