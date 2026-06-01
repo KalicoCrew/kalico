@@ -143,3 +143,34 @@ def test_stop_does_not_hang_when_thread_dead_and_queue_full():
     with pytest.raises(RuntimeError, match="sink exploded"):
         ql.stop()
     assert sink.closed
+
+
+def test_bg_sink_failure_emits_last_gasp(capsys, tmp_path):
+    # A mid-run sink failure must be surfaced PROACTIVELY (spec §16 item 11):
+    # a last-gasp to stderr (journald-captured on the Pi) plus the human text
+    # log, not only at the next enqueue / at shutdown.
+    structured_log.bind_session("k-1-1")
+    structured_log.clear_print()
+    klippy_log = str(tmp_path / "klippy.log")
+    ql = queuelogger.QueueListener(
+        filename=klippy_log,
+        rotate_log_at_restart=False,
+        events_dir=None,
+    )
+    # Register a sink that blows up; the healthy text sink is still first, so it
+    # both writes the record AND receives the last-gasp.
+    ql.registry.register(_RaisingSink())
+    r = logging.LogRecord("t", logging.INFO, __file__, 1, "boom", (), None)
+    ql.bg_queue.put(r)
+    _wait_thread_dead(ql)
+    assert isinstance(ql._bg_exc, RuntimeError)
+
+    with pytest.raises(RuntimeError, match="sink exploded"):
+        ql.stop()
+
+    # last-gasp reached stderr (the reliable operator channel)...
+    assert "kalico log sink failed" in capsys.readouterr().err
+    # ...and the human-readable klippy.log (the failed sink was not the text one)
+    with open(klippy_log) as fh:
+        text = fh.read()
+    assert "kalico log sink failed" in text
