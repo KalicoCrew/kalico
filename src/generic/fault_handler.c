@@ -65,6 +65,18 @@ struct live_snapshot {
     uint32_t boot_count;    // bumped each boot, helps confirm fresh-vs-stale
     uint32_t last_engine_running_tick; // tick_counter sampled while RUNNING
     uint32_t samples_taken;
+    // Foreground-freeze watchdog (2026-06-01). CROSS-BOOT persistent (never
+    // reset per boot, only zeroed on first-ever init) so it survives the
+    // IWDG-reset / klippy-reconnect churn that overwrites the per-boot diag.
+    // The TIM5 ISR runs even when the cooperative foreground is frozen, so it
+    // watches the foreground heartbeat (samples_taken) and latches the worst
+    // stall + the stacked PC/exc of the frozen context. iwdg_reset_count counts
+    // boots whose reset cause was the independent watchdog (the signature of a
+    // foreground freeze long enough to starve the IWDG pet).
+    uint32_t worst_fg_stall_ticks; // max consecutive TIM5 ticks samples_taken stalled
+    uint32_t worst_fg_stall_pc;    // stacked PC of the frozen context at that stall
+    uint32_t worst_fg_stall_exc;   // stacked xPSR exception# (0 = thread/foreground)
+    uint32_t iwdg_reset_count;     // # boots whose reset cause was IWDG
 };
 
 // Place in AXI SRAM on H7 (survives soft reset, not cleared by boot
@@ -523,6 +535,32 @@ diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
     // cycles. 50us ≈ 8x normal — a real outlier worth recording.
     if (dur > 26000u)
         diag_ring_push(DIAG_EV_TIM5_LONG, dur, enter_cycles);
+
+    // Foreground-freeze watchdog (2026-06-01). This ISR keeps firing even when
+    // the cooperative foreground is frozen. Watch the foreground heartbeat
+    // (live_snap.samples_taken, bumped every report-task iteration); if it stops
+    // advancing WHILE THE ENGINE IS RUNNING, the foreground is stalled mid-
+    // motion. Latch the worst stall + the stacked PC/exc of the frozen context
+    // into the cross-boot-persistent live_snap so it survives the IWDG-reset /
+    // klippy-reconnect churn. Gating on engine==RUNNING excludes the boot window
+    // (before the report task first runs) and idle (heartbeat legitimately
+    // sparse), so a nonzero worst_fg_stall_ticks means a real mid-motion freeze.
+    static uint32_t fg_hb_prev;
+    static uint32_t fg_stall_ticks;
+    uint32_t hb = live_snap.samples_taken;
+    if (hb != fg_hb_prev) {
+        fg_hb_prev = hb;
+        fg_stall_ticks = 0;
+    } else if (live_snap.engine_status == 1 /* RUNNING */) {
+        fg_stall_ticks++;
+        if (fg_stall_ticks > live_snap.worst_fg_stall_ticks) {
+            extern uint32_t runtime_tim5_stacked_pc(void);
+            extern uint32_t runtime_tim5_stacked_exc(void);
+            live_snap.worst_fg_stall_ticks = fg_stall_ticks;
+            live_snap.worst_fg_stall_pc    = runtime_tim5_stacked_pc();
+            live_snap.worst_fg_stall_exc   = runtime_tim5_stacked_exc();
+        }
+    }
 }
 
 // Per-stage timing inside runtime_handle_tick. Called from Rust at each
@@ -1065,7 +1103,23 @@ fault_handler_report_task(void)
             saved_prior_tick          = live_snap.tick_counter;
             saved_prior_last_run_tick = live_snap.last_engine_running_tick;
             saved_prior_samples       = live_snap.samples_taken;
+        } else {
+            // First-ever boot (BKPSRAM uninitialised): zero the cross-boot
+            // foreground-freeze record before anything updates it.
+            live_snap.worst_fg_stall_ticks = 0;
+            live_snap.worst_fg_stall_pc    = 0;
+            live_snap.worst_fg_stall_exc   = 0;
+            live_snap.iwdg_reset_count     = 0;
         }
+        // Count an IWDG-caused reset — the signature of a foreground freeze that
+        // starved the watchdog pet. reset_cause_raw was just captured above.
+#if CONFIG_MACH_STM32H7
+        if (reset_cause_raw & RCC_RSR_IWDG1RSTF)
+            live_snap.iwdg_reset_count++;
+#elif CONFIG_MACH_STM32F4
+        if (reset_cause_raw & RCC_CSR_IWDGRSTF)
+            live_snap.iwdg_reset_count++;
+#endif
         live_snap.samples_taken = 0;  // reset for this run
 
         // Snapshot the prior-run diag counters + ring before the new run
@@ -1243,6 +1297,16 @@ fault_handler_report_task(void)
                saved_prior_tick, saved_prior_last_run_tick,
                saved_prior_samples);
     }
+    // Foreground-freeze watchdog (cross-boot persistent). stall_ticks is the
+    // worst run of consecutive TIM5 ticks (≈100us each @10kHz / 50us @20kHz)
+    // the foreground heartbeat failed to advance — i.e. how long the foreground
+    // was frozen; pc/exc = the frozen context (exc 0 = thread/foreground).
+    // iwdg = # IWDG resets seen (freeze long enough to starve the watchdog pet).
+    output("fg_freeze stall_ticks %u pc %u exc %u iwdg %u",
+           live_snap.worst_fg_stall_ticks,
+           live_snap.worst_fg_stall_pc,
+           live_snap.worst_fg_stall_exc,
+           live_snap.iwdg_reset_count);
     if (fault_rec.magic == FAULT_MAGIC) {
         output("prior_fault kind %u count %u pc %u lr %u psr %u"
                " r0 %u r1 %u r2 %u r3 %u r12 %u",
