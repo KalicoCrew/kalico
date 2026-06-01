@@ -3,7 +3,6 @@
 #
 # This module never imports heavy klippy objects so it can be used from the
 # earliest point in startup (before the reactor/printer exist).
-import contextvars
 import datetime
 import json
 import logging
@@ -52,8 +51,18 @@ def format_time(created):
 
 UNBOUND_SESSION = "__unbound__"
 
-_session_var = contextvars.ContextVar("kalico_session_id", default=None)
-_print_var = contextvars.ContextVar("kalico_print_id", default="")
+# Session/print correlation is process-wide: the session is bound once at
+# startup, the print id is set/cleared per print — never concurrent. We use
+# plain module globals rather than `contextvars`, because klippy's reactor runs
+# callbacks in greenlets and `greenlet` gives each greenlet its OWN
+# `contextvars.Context`. A ContextVar bound in main() is therefore invisible to
+# records emitted from reactor greenlets (observed live: the bound session
+# reached only main()-context records; everything from the reactor carried the
+# UNBOUND sentinel). A module global is visible across all greenlets/threads —
+# which is exactly what this correlation needs. Simple assignment + read is
+# GIL-atomic; no lock required.
+_session_id = None
+_print_id = ""
 
 
 def make_session_id():
@@ -61,28 +70,31 @@ def make_session_id():
 
 
 def bind_session(session_id):
-    _session_var.set(session_id)
+    global _session_id
+    _session_id = session_id
 
 
 def clear_session():
-    _session_var.set(None)
+    global _session_id
+    _session_id = None
 
 
 def get_session():
-    val = _session_var.get()
-    return UNBOUND_SESSION if val is None else val
+    return UNBOUND_SESSION if _session_id is None else _session_id
 
 
 def bind_print(print_id):
-    _print_var.set(print_id)
+    global _print_id
+    _print_id = print_id
 
 
 def clear_print():
-    _print_var.set("")
+    global _print_id
+    _print_id = ""
 
 
 def get_print():
-    return _print_var.get()
+    return _print_id
 
 
 # LogRecord attributes that are stdlib bookkeeping, not schema payload.
@@ -138,11 +150,11 @@ def serialize_record(record_dict):
 
 
 class ContextFilter(logging.Filter):
-    # Injected on the root logger; runs on the CALLING thread, so contextvars
-    # are read correctly. Never raises (raising inside logging is unsafe);
-    # an unbound session shows up as the queryable UNBOUND_SESSION sentinel,
-    # which the startup ordering invariant (printer.main) guarantees we never
-    # actually hit in normal operation.
+    # Injected on the root logger; reads the process-global session/print, so
+    # it is correct from any thread or reactor greenlet. Never raises (raising
+    # inside logging is unsafe); an unbound session shows up as the queryable
+    # UNBOUND_SESSION sentinel, which the startup ordering invariant
+    # (printer.main) keeps us off in normal operation.
     def filter(self, record):
         if not hasattr(record, "session_id"):
             record.session_id = get_session()
