@@ -125,11 +125,10 @@ runtime_tick_init(void)
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-    // Set the motion-tick IRQ to KALICO_MOTION_NVIC_PRIO (= 0, highest maskable)
-    // so TIM5 preempts the USB OTG burst that was fencing it (-311 fix). The
-    // same constant is applied to the step-output timer below, keeping producer
-    // (TIM5) and consumer EQUAL — the step_queue SPSC non-nesting invariant.
-    // SysTick is demoted to 3. Full rationale + NVIC map + heater-safety note in
+    // Set the motion-tick IRQ to KALICO_MOTION_NVIC_PRIO (= 0, highest maskable).
+    // The same constant is applied to the step-output timer below, keeping
+    // producer (TIM5) and consumer EQUAL — the step_queue SPSC non-nesting
+    // invariant. Full NVIC map + SPSC invariant + heater-safety note in
     // src/generic/kalico_nvic_prio.h.
     NVIC_SetPriority(TIM5_IRQn, KALICO_MOTION_NVIC_PRIO);
 
@@ -360,12 +359,13 @@ step_output_timer_init(void)
 void
 TIM2_IRQHandler(void)
 {
-    // -311 block-source instrumentation (2026-06-01): step-output ISR is prio
-    // 2 (== TIM5, no nesting), so a back-to-back chain of these fences TIM5.
     // diag_stepout_account records single-invocation max AND the contiguous-
-    // burst span. F4's TIM2 is 32-bit so it does not chain like the H7 TIM3,
-    // but a dense run of due steps still fires the ISR repeatedly; the burst
-    // tracker captures that.
+    // burst span of this step-output ISR. Retained as a -311 fence-fallback
+    // discriminator: the ISR runs at KALICO_MOTION_NVIC_PRIO (== TIM5, no
+    // nesting). F4's TIM2 is 32-bit so it does not chain like the H7 TIM3, but
+    // a dense run of due steps still fires the ISR repeatedly; the burst
+    // tracker captures that. (Primary -311 cause is the clock-domain half-rate
+    // bug; see fault_handler.c tim5_ia_*.)
     extern void diag_stepout_account(uint32_t enter, uint32_t exit);
     uint32_t diag_enter = DWT->CYCCNT;
 

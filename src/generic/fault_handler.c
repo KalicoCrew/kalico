@@ -298,18 +298,23 @@ struct diag_counters {
     uint32_t peek_empty_n;
     uint32_t peek_data_n;
 
-    // -311 TickIntervalExceeded block-source instrumentation (2026-06-01).
+    // -311 TickIntervalExceeded discriminators.
     //
-    // The -311 fires when the TIM5 ISR is kept out for ~2-3 sample periods,
-    // yet every individual instrumented ISR cost is far under one period.
-    // The hypothesis is a CONTIGUOUS burst of prio<=2 ISRs (SysTick @2,
-    // step-output @2, USB @1) fencing TIM5 back-to-back. These counters
-    // measure, for each candidate source, BOTH the max single-invocation
-    // duration AND the max contiguous-busy span (back-to-back fires with no
-    // gap long enough for TIM5 to slip in). All in DWT cycles.
+    // PRIMARY hypothesis (2026-06-01, static-verified): not a fence at all.
+    // TIM5's ARR is programmed from CONFIG_CLOCK_FREQ (the DWT/CPU clock) but
+    // its kernel clock is CONFIG_CLOCK_FREQ/2 on both MCUs (APB timer-doubler
+    // vs HPRE on H7; PPRE1 doubler on F4), so TIM5 free-runs at HALF the
+    // configured rate and the guard's 2x-period threshold sits exactly on the
+    // steady inter-arrival -> trips on any jitter, always detail=2. The
+    // decisive measurement is tim5_ia_* below (entry-to-entry inter-arrival).
     //
-    // The blocker is whichever *_burst_max_cyc (or systick single) reaches
-    // ~2 periods: H7 >= 26000 cyc (2x 13000), F446 >= 18000 cyc (2x 9000).
+    // The burst counters here are the FENCE-fallback discriminators, retained
+    // in case the inter-arrival comes back ~1x period (which would resurrect a
+    // real PRIMASK/NVIC fence theory). They measure, for each candidate prio
+    // source, the max single-invocation duration AND the max contiguous-busy
+    // span (back-to-back fires with no gap long enough for TIM5 to slip in),
+    // in DWT cycles. A fence blocker would reach ~2 periods: H7 >= 26000 cyc
+    // (2x 13000), F446 >= 18000 cyc (2x 9000).
 
     // SysTick_Handler entry->exit. SysTick holds PRIMASK across its dispatch,
     // so the single-invocation duration directly bounds how long it fences
@@ -328,6 +333,20 @@ struct diag_counters {
     // to the last exit before a gap > ~1 TIM5 period — the prime suspect for
     // a higher-prio fence during the host piece-stream.
     uint32_t usb_burst_max_cyc;
+
+    // -311 PRIMARY discriminator (2026-06-01): TIM5 entry-to-entry
+    // inter-arrival in DWT cycles — the quantity the guard actually trips on,
+    // which no prior diagnostic measured (diag_tim5_account only timed the ISR
+    // *body*, exit-enter). Computed in diag_tim5_account from a static prev.
+    //   * clock-domain bug -> min ~= max ~= 2x sample period (H7 ~26000, F446
+    //     ~18000), tight, even at idle: TIM5 literally fires at half rate.
+    //   * real PRIMASK/NVIC fence -> min ~= 1x period (~13000 / ~9000), with
+    //     max spiking >> 2x on the fenced ticks; wide spread.
+    // MIN is the decisive figure and is immune to stale-prev across a
+    // disable/enable (that only injects a spuriously LARGE gap, into max).
+    uint32_t tim5_ia_min_cyc;
+    uint32_t tim5_ia_max_cyc;
+    uint32_t tim5_ia_last_cyc;
 };
 
 #if CONFIG_MACH_STM32H7
@@ -456,6 +475,25 @@ diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
 {
     uint32_t dur = exit_cycles - enter_cycles;
     diag.tim5_irq_count++;
+
+    // -311 PRIMARY discriminator: entry-to-entry inter-arrival (DWT frame).
+    // See the tim5_ia_* field comment in struct diag_counters. prev_enter is
+    // a .bss static (zeroed on reset), so no stale value survives a reboot;
+    // within a run, a disable/enable only injects one spuriously large gap
+    // into max, never into min — so min is the robust read.
+    static uint32_t prev_enter;
+    static uint8_t  have_prev;
+    if (have_prev) {
+        uint32_t ia = enter_cycles - prev_enter;  // wrap-safe u32 DWT delta
+        diag.tim5_ia_last_cyc = ia;
+        if (ia > diag.tim5_ia_max_cyc)
+            diag.tim5_ia_max_cyc = ia;
+        if (diag.tim5_ia_min_cyc == 0 || ia < diag.tim5_ia_min_cyc)
+            diag.tim5_ia_min_cyc = ia;
+    }
+    prev_enter = enter_cycles;
+    have_prev = 1;
+
     diag.tim5_irq_cycles_total += dur;
     if (dur > diag.tim5_irq_cycles_max)
         diag.tim5_irq_cycles_max = dur;
@@ -1044,6 +1082,9 @@ fault_handler_report_task(void)
             prior_diag.stepout_max_cyc        = diag.stepout_max_cyc;
             prior_diag.stepout_burst_max_cyc  = diag.stepout_burst_max_cyc;
             prior_diag.usb_burst_max_cyc      = diag.usb_burst_max_cyc;
+            prior_diag.tim5_ia_min_cyc        = diag.tim5_ia_min_cyc;
+            prior_diag.tim5_ia_max_cyc        = diag.tim5_ia_max_cyc;
+            prior_diag.tim5_ia_last_cyc       = diag.tim5_ia_last_cyc;
             // Capture the ring contents into a non-volatile copy so the
             // emit loop below has a stable snapshot to walk.
             for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
@@ -1250,6 +1291,15 @@ fault_handler_report_task(void)
                prior_diag.stepout_max_cyc,
                prior_diag.stepout_burst_max_cyc,
                prior_diag.usb_burst_max_cyc);
+        // -311 PRIMARY discriminator: TIM5 entry-to-entry inter-arrival, DWT
+        // cycles, vs the guard's sample-period (CONFIG_CLOCK_FREQ/SAMPLE_RATE).
+        // min/period ~= 2.0 => clock-domain half-rate (the standing theory);
+        // min/period ~= 1.0 with max spiking => a real fence after all.
+        output("prior_diag_summary_tim5ia min %u max %u last %u period %u",
+               prior_diag.tim5_ia_min_cyc,
+               prior_diag.tim5_ia_max_cyc,
+               prior_diag.tim5_ia_last_cyc,
+               (uint32_t)(CONFIG_CLOCK_FREQ / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ));
         output("prior_diag_tasks out_n %u out_max_gap %u in_n %u in_max_gap %u"
                " drain_n %u drain_max_gap %u stat_n %u stat_max_gap %u",
                prior_diag.usb_out_calls,

@@ -115,12 +115,11 @@ runtime_tick_init(void)
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
     // Set the motion-tick IRQ to KALICO_MOTION_NVIC_PRIO (= 0, the highest
-    // maskable priority) so TIM5 preempts the USB OTG burst that was fencing
-    // it (-311 fix). The same constant is also applied to the dedicated
+    // maskable priority). The same constant is also applied to the dedicated
     // step-output timer (step_output_timer_init below), keeping producer
     // (TIM5) and consumer (step-output) EQUAL — the non-nesting invariant the
-    // step_queue SPSC relies on. SysTick is demoted to 3. Rationale, the full
-    // NVIC map, and the heater-safety note are in src/generic/kalico_nvic_prio.h.
+    // step_queue SPSC relies on. The full NVIC map, the SPSC invariant, and the
+    // heater-safety note are in src/generic/kalico_nvic_prio.h.
     NVIC_SetPriority(TIM5_IRQn, KALICO_MOTION_NVIC_PRIO);
 
     // Always-on (spec 2026-05-28): the piece-ring engine has no per-push event
@@ -410,12 +409,13 @@ step_output_timer_init(void)
 void
 TIM3_IRQHandler(void)
 {
-    // -311 block-source instrumentation (2026-06-01): step-output ISR is prio
-    // 2 (== TIM5, no nesting), so a back-to-back chain of these fences TIM5.
     // diag_stepout_account records single-invocation max AND the contiguous-
-    // burst span (first fire to last exit before a >1-period gap). The 16-bit
-    // TIM3 chaining re-fires via STEP_OUT_MAX_DELTA, which this burst tracker
-    // is specifically meant to catch.
+    // burst span (first fire to last exit before a >1-period gap) of this
+    // step-output ISR. Retained as a -311 fence-fallback discriminator: the
+    // ISR runs at KALICO_MOTION_NVIC_PRIO (== TIM5, no nesting), so a
+    // back-to-back chain via the 16-bit TIM3 STEP_OUT_MAX_DELTA re-arm could in
+    // principle fence TIM5. (Primary -311 cause is the clock-domain half-rate
+    // bug; see fault_handler.c tim5_ia_*.)
     extern void diag_stepout_account(uint32_t enter, uint32_t exit);
     uint32_t diag_enter = DWT->CYCCNT;
 
