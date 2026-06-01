@@ -69,7 +69,7 @@ void phase_stepping_write_xdirect(uint8_t motor_idx,
 
 // ---------- 2026-05-18 SPI3 contention arbitration ----------------------
 // Cooperative busy-flag mediating SPI3 access between two writers:
-//   - TIM5-rate (40 kHz) phase_stepping_write_xdirect from the ISR
+//   - TIM5-rate (CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) phase_stepping_write_xdirect from the ISR
 //   - Lower-priority TMC SPI register access from Klipper task code
 //     (e.g. _do_periodic_check's 1 Hz DRV_STATUS polling)
 //

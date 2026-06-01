@@ -122,9 +122,9 @@ runtime_tick_init(void)
     TIM5->CR1 &= ~TIM_CR1_CEN;
     TIM5->SR = 0;
 
-    // TIM5 tick rate is driven by CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ (the
-    // F446 runs at 20 kHz today; the H7 at 40 kHz). PSC = 0, ARR =
-    // (clock_freq / SAMPLE_RATE_HZ) - 1.
+    // TIM5 tick rate is driven by CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ (set
+    // per board/config — not a fixed rate). PSC = 0, ARR =
+    // (timer_clock / SAMPLE_RATE_HZ) - 1.
     //
     // The per-tick cost on F4 is light: the current engine evaluates a
     // degree-3 cubic Bezier piece per active axis (not the old degree-3 /

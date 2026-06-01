@@ -57,7 +57,8 @@ const uint32_t runtime_clock_freq __attribute__((used, externally_visible))
 // `extern "C" { static runtime_sample_rate_hz: u32; }` so Engine::init can
 // publish `sample_period_sec = 1.0 / runtime_sample_rate_hz` without
 // embedding a magic constant. Source: CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ
-// (src/Kconfig); defaults: 40000 (H7), 20000 (F4), 10000 (Linux sim).
+// (src/Kconfig), set per board/config — the bench currently runs it below the
+// Kconfig default for testing, so do not assume a fixed rate here.
 // __attribute__((used, externally_visible)) survives -fwhole-program LTO + GC.
 const uint32_t runtime_sample_rate_hz __attribute__((used, externally_visible))
     = CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ;
@@ -710,7 +711,8 @@ kalico_kick_step_output(uint8_t axis_idx, uint32_t cycle_abs)
 
 // Task 14 SPI queue drain removed — dispatch_phase now calls
 // phase_stepping_write_xdirect directly from the ISR. The SPSC queue
-// could never keep up (160K entries/sec from 40 kHz ISR × 4 motors,
-// drain processed ~10K/sec with blocking SPI). Direct ISR write with
+// could never keep up (the sample-rate ISR × 4 motors produces far more
+// entries/sec than the ~10K/sec a blocking-SPI drain could process). Direct
+// ISR write with
 // skip-not-block (phase_spi_try_acquire) matches mass3d/kalico's
 // working architecture.

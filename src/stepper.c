@@ -5,7 +5,8 @@
 // This file may be distributed under the terms of the GNU GPLv3 license.
 //
 // The Rust runtime is the sole producer of step pulses on this fork
-// (Layer 4 motion planner, 40 kHz TIM5 tick on H7, 10 kHz on F4). The
+// (Layer 4 motion planner, TIM5 sample tick at CONFIG_KALICO_MOTION_SAMPLE_RATE
+// _HZ — per board/config, not a fixed rate). The
 // legacy klipper-protocol queue_step / set_next_step_dir / stepper_event
 // scheduling path is gone; this file is a thin host→MCU stepper-binding
 // layer plus the runtime's GPIO emission helper.
@@ -148,8 +149,9 @@ DECL_SHUTDOWN(stepper_shutdown);
 // ---------------------------------------------------------------------------
 // Runtime-engine step pulse emission (Step 7-D first-light).
 //
-// The Rust runtime evaluates the trajectory inside the TIM5 ISR (40 kHz on
-// H7) and produces a signed integer step delta per motor per tick. This file
+// The Rust runtime evaluates the trajectory inside the TIM5 ISR (at the
+// configured CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) and produces a signed integer
+// step delta per motor per tick. This file
 // owns the GPIO toggle path: a small lookup table maps runtime motor index
 // (0..3, post-kinematic-transform) to the existing klipper-protocol
 // `struct stepper` already configured by `command_config_stepper` from
