@@ -146,6 +146,30 @@ F3000` x10 (X only, 50 mm/s). Failure reproduced first attempt.
 - [e552d6491] fault_detail for -308 carries ONLY axis_idx (bits 16..24); the
   actual deficit (now - start_time) is NOT encoded => magnitude of lateness unknown.
 
+## -308 is HOST-EARLY + SYSTEMIC (transit-diag + 5 kHz bisect, cb54339ea)
+
+- [cb54339ea] Host bridge log now persists to ~/printer_data/logs/kalico-bridge.log
+  (env_logger -> file, default info). transit-diag emits per PushPieces frame.
+- [cb54339ea] Jog (X 100<->200 F3000 x10), F446 @ 20 kHz: F446 (mcu=1 axis=2/Z)
+  transit-diag `arrival_lead_us` = +244665 .. +16326230 (0.24 .. 16.3 s POSITIVE),
+  monotonically GROWING over the jog. ZERO negative-lead / ALERT / WARN lines on
+  either MCU. host_front_start_time == mcu_front_start_time (no clock-sync gap).
+  => the host delivers Z pieces 0.24-16 s EARLY; the ring net-fills. -308 is NOT
+  late delivery; it is the FRONT (oldest) piece being >2 ticks stale at ADOPTION.
+- [cb54339ea, F446 rebuilt @ 5 kHz, working .config only; .config.f446.test
+  untouched; H7 left at e552d6491] Same jog: -308 STILL fires, but on the H7
+  ('mcu') axis_idx=1=Y (fault_detail 0x10000), NOT the F446. klippy then shuts
+  the others down. => -308 is systemic across MCUs/axes; the first node to exceed
+  its 2-tick tolerance trips. F446@5kHz tolerance=400us (2*36000cyc@180MHz) was
+  enough that the H7@10kHz tolerance=200us tripped first instead.
+- [cb54339ea] Magnitude bracket implied by the move: F446 stopped tripping when
+  its tolerance went 100us->400us, and H7 (200us tol) trips => the adoption
+  deficit is order ~100-400 us (a piece-boundary/tick-scale slip), NOT seconds.
+  Cross-check: [e552d6491] H7 first-run tim5ia max was 1.03x period (metronomic,
+  ~2.5us jitter) => `now` advances smoothly; the staleness is in the adopted
+  piece's start_time, not a `now` jump. Direct deficit measurement still pending
+  (fault_detail does not yet encode now-start_time).
+
 ## Host / USB architecture (source read)
 
 - [c4ed8d740] `usbotg.c:513` `GAHBCFG = GINT` only (no DMAEN). `:512` `GINTMSK = RXFLVLM | IEPINT`. ISR (`OTG_FS_IRQHandler` ~:417) sets wake flags only; on RXFLVL it masks RXFLVLM (~:437). All FIFO movement is CPU-copy in foreground DECL_TASKs (`usb_bulk_out_task`/`usb_bulk_in_task`, `fifo_read_packet`/`fifo_write_packet`).
