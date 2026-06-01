@@ -30,6 +30,7 @@ pub mod endstop;
 pub mod engine;
 pub mod error;
 pub mod fault_helpers;
+pub mod log_codes;
 pub mod monomial;
 pub mod per_axis_timer;
 pub mod phase_config;

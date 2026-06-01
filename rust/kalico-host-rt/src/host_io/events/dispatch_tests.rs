@@ -29,7 +29,7 @@ fn fault_status_synthesizes_when_no_edge_observed() {
         .as_ref()
         .expect("fault should be synthesized");
     assert_eq!(cell.fault_code, 17);
-    assert_eq!(cell.synthesized, true);
+    assert!(cell.synthesized);
     assert_eq!(cell.segment_id, 42);
 }
 
@@ -40,7 +40,7 @@ fn synthesis_idempotent_across_repeated_status_frames() {
     d.dispatch(fault_status(3, 17, 42));
     // Still latched once (cell still present, still synthesized).
     let cell = d.fault_latch.cell.as_ref().unwrap();
-    assert_eq!(cell.synthesized, true);
+    assert!(cell.synthesized);
 }
 
 #[test]
@@ -81,9 +81,9 @@ fn status_with_watermark(queue_depth: u8, retired_through: u32) -> RuntimeEvent 
 }
 
 /// v2: a Status frame whose watermark advances past the previous
-/// observation must synthesize a CreditFreed dispatched through the
-/// normal CreditFreed path — forwarded to the bridge poller via
-/// take_runtime_event.
+/// observation must synthesize a `CreditFreed` dispatched through the
+/// normal `CreditFreed` path — forwarded to the bridge poller via
+/// `take_runtime_event`.
 #[test]
 fn status_watermark_advance_synthesizes_credit_freed() {
     use std::sync::mpsc::sync_channel;
@@ -107,13 +107,13 @@ fn status_watermark_advance_synthesizes_credit_freed() {
             assert_eq!(c.retired_through_segment_id, 5);
             assert_eq!(c.free_slots, 5);
         }
-        other => panic!("expected synthesized CreditFreed, got {:?}", other),
+        other => panic!("expected synthesized CreditFreed, got {other:?}"),
     }
     assert!(rx.try_recv().is_err(), "no further events");
 }
 
 /// Repeated Status frames with the same watermark must NOT re-synthesize
-/// CreditFreed.
+/// `CreditFreed`.
 #[test]
 fn status_watermark_unchanged_does_not_synthesize() {
     use std::sync::mpsc::sync_channel;
@@ -194,4 +194,84 @@ fn heartbeat_is_not_forwarded_to_runtime_rx() {
         rx.try_recv().is_err(),
         "Heartbeat must NOT reach the runtime_rx channel"
     );
+}
+
+#[test]
+fn mcu_log_hook_is_called_on_mcu_log_event() {
+    use std::time::Instant;
+    use crate::host_io::runtime_events::McuLogEvent;
+
+    let snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+    let mut dispatcher = EventDispatcher::new(snapshot, 16, 8);
+
+    let received: Arc<Mutex<Vec<McuLogEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let received_clone = received.clone();
+    dispatcher.set_mcu_log_hook(move |e: McuLogEvent| {
+        received_clone.lock().unwrap().push(e);
+    });
+
+    let event = RuntimeEvent::McuLog(McuLogEvent {
+        mcu_tick: 12345,
+        level: 2,
+        subsystem: 1,
+        event: 1,
+        code: 0xFEC9,
+        seq: 1,
+        args: [0, 0],
+        host_recv: Instant::now(),
+    });
+    dispatcher.dispatch(event);
+
+    let got = received.lock().unwrap();
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].mcu_tick, 12345);
+}
+
+#[test]
+fn mcu_log_without_hook_does_not_panic() {
+    use std::time::Instant;
+    use crate::host_io::runtime_events::McuLogEvent;
+
+    let snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+    let mut dispatcher = EventDispatcher::new(snapshot, 16, 8);
+    // No hook set — must not panic.
+    dispatcher.dispatch(RuntimeEvent::McuLog(McuLogEvent {
+        mcu_tick: 0,
+        level: 0,
+        subsystem: 0,
+        event: 0,
+        code: 0,
+        seq: 0,
+        args: [0, 0],
+        host_recv: Instant::now(),
+    }));
+}
+
+#[test]
+fn mcu_log_also_forwarded_to_runtime_rx() {
+    use std::sync::mpsc::sync_channel;
+    use std::time::Instant;
+    use crate::host_io::runtime_events::McuLogEvent;
+
+    let snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+    let mut dispatcher = EventDispatcher::new(snapshot, 16, 8);
+
+    let (tx, rx) = sync_channel::<RuntimeEvent>(8);
+    dispatcher.runtime_event_dispatcher.subscribe(tx).unwrap();
+
+    dispatcher.dispatch(RuntimeEvent::McuLog(McuLogEvent {
+        mcu_tick: 99,
+        level: 3,
+        subsystem: 0,
+        event: 0,
+        code: 0,
+        seq: 0,
+        args: [0, 0],
+        host_recv: Instant::now(),
+    }));
+
+    match rx.recv().unwrap() {
+        RuntimeEvent::McuLog(e) => assert_eq!(e.mcu_tick, 99),
+        other => panic!("expected McuLog on runtime_rx, got {other:?}"),
+    }
 }

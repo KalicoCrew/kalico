@@ -1,4 +1,5 @@
 pub mod logging;
+pub mod mcu_log;
 #[doc(hidden)]
 pub mod anchor;
 mod bridge;

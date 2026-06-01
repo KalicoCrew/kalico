@@ -35,7 +35,9 @@ use arc_swap::ArcSwap;
 
 use crate::host_io::events::HostEvent;
 use crate::host_io::parser::MsgProtoParser;
-use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent, StatusEvent, TraceEvent};
+use crate::host_io::runtime_events::{
+    FaultEvent, McuLogEvent, RuntimeEvent, StatusEvent, TraceEvent,
+};
 use crate::passthrough_queue::{CommandQueueId, McuHandle, PassthroughEntry, PassthroughRouter};
 use crate::transport::{MessageParams, SubscribeError, Transport, TransportError};
 use std::sync::mpsc::SyncSender;
@@ -85,6 +87,16 @@ impl std::fmt::Debug for HeartbeatCallback {
     }
 }
 
+/// Boxed hook fired on every decoded `McuLog (0x0084)` event. Runs on the
+/// reactor thread — must be non-blocking. Mirrors `HeartbeatCallback`.
+pub struct McuLogHook(pub Box<dyn Fn(McuLogEvent) + Send + Sync>);
+
+impl std::fmt::Debug for McuLogHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("McuLogHook(<fn>)")
+    }
+}
+
 #[derive(Debug)]
 pub enum ReactorCommand {
     Submit {
@@ -103,6 +115,9 @@ pub enum ReactorCommand {
     },
     Abandon(u64),
     AttachHeartbeatCallback(HeartbeatCallback),
+    /// Install the MCU-log hook (`KalicoHostIo::set_mcu_log_hook`). Replaces
+    /// any previously installed hook.
+    SetMcuLogHook(McuLogHook),
     SubscribeFault {
         sender: SyncSender<FaultEvent>,
         reply: SyncSender<Result<(), SubscribeError>>,
@@ -571,6 +586,15 @@ impl KalicoHostIo {
             .send(ReactorCommand::AttachHeartbeatCallback(HeartbeatCallback(
                 cb,
             )));
+    }
+
+    /// Attach a hook fired on every decoded `McuLog (0x0084)` event. The hook
+    /// receives an owned [`McuLogEvent`] and runs on the reactor thread — must
+    /// be non-blocking. Replaces any previously installed hook.
+    pub fn set_mcu_log_hook(&self, hook: Box<dyn Fn(McuLogEvent) + Send + Sync>) {
+        let _ = self
+            .submission_tx
+            .send(ReactorCommand::SetMcuLogHook(McuLogHook(hook)));
     }
 
     pub fn subscribe_fault(&self) -> Result<std::sync::mpsc::Receiver<FaultEvent>, SubscribeError> {

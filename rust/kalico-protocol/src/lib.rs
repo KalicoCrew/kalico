@@ -16,7 +16,8 @@ pub mod messages;
 pub use bootstrap::{Identify, IdentifyResponse};
 pub use codec::{Decode, DecodeError, Encode};
 pub use messages::{
-    FaultEvent, MessageKind, PushPieces, PushPiecesResponse, RuntimeCapsResponse, StatusHeartbeat,
+    FaultEvent, McuLog, MessageKind, PushPieces, PushPiecesResponse, RuntimeCapsResponse,
+    StatusHeartbeat,
 };
 
 // Generated at build time. Provides:
@@ -58,6 +59,12 @@ pub mod result_codes {
     pub const INVALID_ARG: i32 = -26;
 }
 
+/// Per-message header size in bytes (`type:u16 + version:u8 + correlation_id:u32`),
+/// per spec §7.2. The header is the transport crate's responsibility; this
+/// constant is exposed here so encoders/decoders on the transport side can
+/// reserve the right amount of space.
+pub const PER_MESSAGE_HEADER_LEN: usize = 7;
+
 #[cfg(test)]
 mod tests {
     use super::result_codes;
@@ -70,9 +77,3 @@ mod tests {
         assert_ne!(result_codes::RING_FULL, result_codes::INVALID_ARG);
     }
 }
-
-/// Per-message header size in bytes (`type:u16 + version:u8 + correlation_id:u32`),
-/// per spec §7.2. The header is the transport crate's responsibility; this
-/// constant is exposed here so encoders/decoders on the transport side can
-/// reserve the right amount of space.
-pub const PER_MESSAGE_HEADER_LEN: usize = 7;

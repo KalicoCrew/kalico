@@ -1095,6 +1095,10 @@ impl Reactor {
             ReactorCommand::AttachHeartbeatCallback(wrapper) => {
                 self.event_dispatcher.heartbeat_callback = Some(wrapper.0);
             }
+            ReactorCommand::SetMcuLogHook(wrapper) => {
+                self.event_dispatcher
+                    .set_mcu_log_hook(move |e| (wrapper.0)(e));
+            }
             ReactorCommand::SubscribeFault { sender, reply } => {
                 let result = self.event_dispatcher.fault_latch.subscribe(sender);
                 let _ = reply.send(result);

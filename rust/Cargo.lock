@@ -683,6 +683,7 @@ dependencies = [
  "serde_json",
  "serialport",
  "thiserror 2.0.18",
+ "time",
  "tracing",
 ]
 

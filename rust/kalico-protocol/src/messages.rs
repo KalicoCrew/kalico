@@ -26,6 +26,7 @@ pub enum MessageKind {
     PushPiecesResponse = 0x0061,
     FaultEvent = 0x0082,
     StatusHeartbeat = 0x0083,
+    McuLog = 0x0084,
 }
 
 impl MessageKind {
@@ -41,6 +42,7 @@ impl MessageKind {
             0x0061 => Self::PushPiecesResponse,
             0x0082 => Self::FaultEvent,
             0x0083 => Self::StatusHeartbeat,
+            0x0084 => Self::McuLog,
             _ => return None,
         })
     }
@@ -369,5 +371,75 @@ impl Decode for StatusHeartbeat {
     }
 }
 
+// =============================================================================
+// McuLog (0x0084) — MCU → Host structured log event.
+//
+// Wire layout (little-endian), fixed 24 bytes:
+//   mcu_tick:  u64  (bytes  0..8)  — MCU-pre-widened clock at log-emit
+//   level:     u8   (byte   8)     — 0=trace 1=debug 2=warn 3=error
+//   subsystem: u8   (byte   9)     — subsystem id (resolved host-side)
+//   event:     u16  (bytes 10..12) — event code (resolved host-side)
+//   code:      u16  (bytes 12..14) — fault code as_u16 (sign-wrapped; 0 = none)
+//   seq:       u16  (bytes 14..16) — per-MCU monotonic sequence for drop detection
+//   arg0:      u32  (bytes 16..20) — first numeric argument
+//   arg1:      u32  (bytes 20..24) — second numeric argument
+//
+// Total body = 24 bytes.
+// =============================================================================
+
+/// Decoded `KALICO_MSG_LOG (0x0084)` frame.
+///
+/// The MCU pre-widens `mcu_tick` to `u64` before transmit (via
+/// `runtime_widened_host_clock()` in the drain task). The host never widens.
+///
+/// `code` is a sign-wrapped `u16` — see `FaultCode::as_u16` / `FaultCode::from_u16`
+/// in `runtime::error` for the round-trip. Zero means no fault code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McuLog {
+    /// MCU-pre-widened clock ticks at emit time.
+    pub mcu_tick: u64,
+    /// Log level (0=trace, 1=debug, 2=warn, 3=error).
+    pub level: u8,
+    /// Subsystem id (resolved to name on host).
+    pub subsystem: u8,
+    /// Event code (resolved to name/template on host).
+    pub event: u16,
+    /// Fault code sign-wrapped as u16 via `FaultCode::as_u16`. 0 = no fault code.
+    pub code: u16,
+    /// Per-MCU monotonic sequence number for host drop detection.
+    pub seq: u16,
+    /// Numeric arguments `[arg0, arg1]`.
+    pub args: [u32; 2],
+}
+
+impl Encode for McuLog {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_u64(out, self.mcu_tick);
+        put_u8(out, self.level);
+        put_u8(out, self.subsystem);
+        put_u16(out, self.event);
+        put_u16(out, self.code);
+        put_u16(out, self.seq);
+        put_u32(out, self.args[0]);
+        put_u32(out, self.args[1]);
+    }
+}
+
+impl Decode for McuLog {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            mcu_tick: get_u64(c)?,
+            level: get_u8(c)?,
+            subsystem: get_u8(c)?,
+            event: get_u16(c)?,
+            code: get_u16(c)?,
+            seq: get_u16(c)?,
+            args: [get_u32(c)?, get_u32(c)?],
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod mcu_log_tests;

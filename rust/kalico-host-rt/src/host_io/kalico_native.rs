@@ -30,11 +30,11 @@ use kalico_native_transport::{
     encode_identify,
 };
 use kalico_protocol::{
-    Decode, FaultEvent as KFaultEvent, MessageKind, PROTO_VERSION, SCHEMA_HASH,
+    Decode, FaultEvent as KFaultEvent, McuLog as KMcuLog, MessageKind, PROTO_VERSION, SCHEMA_HASH,
     StatusHeartbeat as KStatusHeartbeat,
 };
 
-use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent};
+use crate::host_io::runtime_events::{FaultEvent, McuLogEvent, RuntimeEvent};
 use crate::transport::TransportError;
 
 /// Outcome surfaced to the bridge for a kalico control-channel call.
@@ -56,22 +56,32 @@ pub struct IdentifyOutcome {
 }
 
 /// Per-call wait state held by the reactor. The bridge's `kalico_call`
-/// allocates the bounded sync_channel, hands the sender here, and blocks
+/// allocates the bounded `sync_channel`, hands the sender here, and blocks
 /// on the receiver.
 pub struct PendingKalicoCall {
     pub completion: SyncSender<Result<KalicoCallOutcome, TransportError>>,
     pub deadline: Instant,
 }
 
+impl std::fmt::Debug for PendingKalicoCall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PendingKalicoCall")
+            .field("completion", &"<SyncSender>")
+            .field("deadline", &self.deadline)
+            .finish()
+    }
+}
+
 /// Reactor-side state machine for kalico-native traffic.
+#[derive(Debug)]
 pub struct KalicoNativeState {
-    /// In-flight calls keyed by correlation_id.
+    /// In-flight calls keyed by `correlation_id`.
     pub pending: HashMap<u32, PendingKalicoCall>,
-    /// Monotonic correlation_id allocator. 0 is reserved (events).
+    /// Monotonic `correlation_id` allocator. 0 is reserved (events).
     pub next_correlation_id: u32,
     /// Pending identify handshake completion.
     pub identify_pending: Option<SyncSender<Result<IdentifyOutcome, TransportError>>>,
-    /// First-observed reset_epoch from IdentifyResponse / StatusEvent.
+    /// First-observed `reset_epoch` from `IdentifyResponse` / `StatusEvent`.
     pub reset_epoch: Option<u32>,
     /// True after a successful identify handshake — motion dispatch is
     /// gated on this on the bridge side.
@@ -105,7 +115,7 @@ impl KalicoNativeState {
 /// wrapped in the Layer-1 frame envelope. For control-channel calls use
 /// `CHANNEL_CONTROL` (0x00); for pieces use
 /// [`kalico_protocol::KALICO_CHANNEL_PIECES`] (0x02).
-/// Responses always arrive on the control channel keyed by correlation_id.
+/// Responses always arrive on the control channel keyed by `correlation_id`.
 pub fn build_kalico_frame(
     channel: u8,
     kind: MessageKind,
@@ -304,6 +314,22 @@ fn lift_event_to_runtime_event(
                 KalicoDispatchResult::Ignored
             }
         },
+        MessageKind::McuLog => match KMcuLog::decode(body) {
+            Ok(msg) => KalicoDispatchResult::Event(RuntimeEvent::McuLog(McuLogEvent {
+                mcu_tick: msg.mcu_tick,
+                level: msg.level,
+                subsystem: msg.subsystem,
+                event: msg.event,
+                code: msg.code,
+                seq: msg.seq,
+                args: msg.args,
+                host_recv: Instant::now(),
+            })),
+            Err(e) => {
+                log::warn!("kalico McuLog decode failed: {e:?}");
+                KalicoDispatchResult::Ignored
+            }
+        },
         _ => {
             log::warn!("unexpected event kind on events channel: {kind:?}");
             KalicoDispatchResult::Ignored
@@ -342,7 +368,7 @@ mod tests {
             KalicoDispatchResult::Event(RuntimeEvent::Heartbeat { retired_counts }) => {
                 assert_eq!(retired_counts, vec![7, 0, 3]);
             }
-            other => panic!("expected Heartbeat event, got {:?}", other),
+            other => panic!("expected Heartbeat event, got {other:?}"),
         }
     }
 }

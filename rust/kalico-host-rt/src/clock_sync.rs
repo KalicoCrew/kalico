@@ -13,7 +13,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::clock::{Clock, RealClock};
 
@@ -67,6 +67,14 @@ pub struct ClockSyncEstimator {
     /// Round-2 B04: epoch fixed at construction; all sample
     /// `host_time_secs` are measured relative to this anchor.
     epoch: Instant,
+    /// Wall-clock anchor captured at the same instant as `epoch`.
+    ///
+    /// Together, `wall_epoch` and `epoch` allow `wall_time_at_mcu` to
+    /// map any host-time-secs offset (measured from `epoch`) to a
+    /// [`SystemTime`] and thence to a [`time::OffsetDateTime`] for
+    /// RFC3339 formatting.  Captured via `SystemTime::now()` — the only
+    /// call site that accesses real wall time in this struct.
+    wall_epoch: SystemTime,
     samples: VecDeque<Sample>,
     /// Current frequency estimate (ticks/sec). Slope of the regression
     /// line `mcu_clock = freq · host_time + offset`.
@@ -88,11 +96,11 @@ pub struct ClockSyncEstimator {
     /// sample. Plan-decision B uses this for the arm-time freshness
     /// check.
     pub last_dedicated_sample: Option<Instant>,
-    /// Per-spec §5.9: monotonic request_id for this MCU's
+    /// Per-spec §5.9: monotonic `request_id` for this MCU's
     /// `kalico_clock_sync_request`. Lives on the estimator so the
     /// counter persists across `arm_all_mcus` retries — a delayed
     /// response from a previous arm attempt cannot collide with a
-    /// fresh request_id and slip through the echo check.
+    /// fresh `request_id` and slip through the echo check.
     clock_sync_request_id: u32,
     /// Injected clock seam (spec §2.3). Routes `Instant::now()` and
     /// freshness `.elapsed()` so tests can age samples deterministically.
@@ -103,6 +111,7 @@ impl std::fmt::Debug for ClockSyncEstimator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClockSyncEstimator")
             .field("epoch", &self.epoch)
+            .field("wall_epoch", &self.wall_epoch)
             .field("samples", &self.samples)
             .field("clock_freq_estimate", &self.clock_freq_estimate)
             .field("anchor_host_time", &self.anchor_host_time)
@@ -126,8 +135,14 @@ impl ClockSyncEstimator {
     /// freshness deterministically; production callers use `new()`.
     pub fn new_with_clock(initial_freq_estimate: f64, clock: Arc<dyn Clock>) -> Self {
         let epoch = clock.now();
+        // Capture the wall-clock anchor at the same logical instant as `epoch`.
+        // `SystemTime::now()` is not injectable via the `Clock` seam (which
+        // returns `Instant`) — this is intentional: wall_epoch is used only for
+        // RFC3339 formatting, not for timing-sensitive frequency estimation.
+        let wall_epoch = SystemTime::now();
         Self {
             epoch,
+            wall_epoch,
             samples: VecDeque::with_capacity(WINDOW),
             clock_freq_estimate: initial_freq_estimate,
             anchor_host_time: 0.0,
@@ -149,7 +164,7 @@ impl ClockSyncEstimator {
     /// Allocate the next monotonic `request_id` for this MCU's
     /// `kalico_clock_sync_request`. Counter persists across arm
     /// attempts so stale responses from a prior round cannot match a
-    /// fresh request_id (spec §5.9).
+    /// fresh `request_id` (spec §5.9).
     pub fn next_clock_sync_request_id(&mut self) -> u32 {
         self.clock_sync_request_id = self.clock_sync_request_id.wrapping_add(1);
         self.clock_sync_request_id
@@ -191,6 +206,67 @@ impl ClockSyncEstimator {
             let base = self.anchor_mcu_clock as i64;
             (base.saturating_add(delta_cycles).max(0)) as u64
         }
+    }
+
+    /// Convert an MCU tick count to a host-side wall-clock time.
+    ///
+    /// Returns `None` when no samples have been received (estimator not yet
+    /// converged).  The caller should fall back to the `Instant` stamped at
+    /// decode time and set `time_estimated = true`.
+    ///
+    /// Returns `Some((dt, estimated))` otherwise:
+    /// - `estimated = false` when `mcu_ticks` falls within the regression
+    ///   window (between the minimum and maximum `mcu_clock` of the current
+    ///   sample set) — the regression interpolates.
+    /// - `estimated = true` when extrapolating outside the window.
+    ///
+    /// Inverse formula:
+    /// ```text
+    /// host_secs = anchor_host_time + (mcu_ticks − anchor_mcu_clock) / freq
+    /// wall_time = wall_epoch + Duration::from_secs_f64(host_secs)
+    /// ```
+    /// Both `wall_epoch` and `epoch` are captured at construction, so
+    /// `host_secs = 0` maps to `wall_epoch` exactly.
+    pub fn wall_time_at_mcu(&self, mcu_ticks: u64) -> Option<(time::OffsetDateTime, bool)> {
+        if self.samples.is_empty() {
+            return None;
+        }
+
+        // Determine whether the query is within the regression window.
+        let min_mcu = self.samples.iter().map(|s| s.mcu_clock).min().unwrap_or(0);
+        let max_mcu = self.samples.iter().map(|s| s.mcu_clock).max().unwrap_or(0);
+        let estimated = mcu_ticks < min_mcu || mcu_ticks > max_mcu;
+
+        let freq = self.clock_freq_estimate;
+        if freq.abs() < 1e-6 {
+            // Degenerate: single sample or zero slope — return wall_epoch
+            // directly with estimated=true.
+            let dt = time::OffsetDateTime::from(self.wall_epoch);
+            return Some((dt, true));
+        }
+
+        // Invert the regression.  Both quantities are cast to f64 before
+        // subtraction so the signed delta is computed correctly even when
+        // mcu_ticks < anchor_mcu_clock (which is a valid extrapolation case).
+        #[allow(clippy::cast_precision_loss)]
+        let delta_ticks = (mcu_ticks as f64) - (self.anchor_mcu_clock as f64);
+        let host_secs = self.anchor_host_time + delta_ticks / freq;
+
+        // Map to wall time: wall_epoch + host_secs.
+        // host_secs may be negative (querying before the window) — handle
+        // both directions via checked_add / checked_sub so we never panic
+        // on Duration conversion of a negative value.
+        let wall_time = if host_secs >= 0.0 {
+            self.wall_epoch
+                .checked_add(Duration::from_secs_f64(host_secs))
+                .unwrap_or(self.wall_epoch)
+        } else {
+            self.wall_epoch
+                .checked_sub(Duration::from_secs_f64(-host_secs))
+                .unwrap_or(self.wall_epoch)
+        };
+
+        Some((time::OffsetDateTime::from(wall_time), estimated))
     }
 
     /// Record a dedicated (RTT-aware) sample from a
@@ -358,13 +434,13 @@ impl ClockSyncEstimator {
             Some(age) => {
                 return Err(QualityGateFailure::LastSampleStale {
                     age,
-                    max_age: std::time::Duration::from_millis(u64::from(MAX_SAMPLE_AGE_MS_DEFAULT)),
+                    max_age: std::time::Duration::from_millis(MAX_SAMPLE_AGE_MS_DEFAULT),
                 });
             }
             None => {
                 return Err(QualityGateFailure::LastSampleStale {
                     age: std::time::Duration::MAX,
-                    max_age: std::time::Duration::from_millis(u64::from(MAX_SAMPLE_AGE_MS_DEFAULT)),
+                    max_age: std::time::Duration::from_millis(MAX_SAMPLE_AGE_MS_DEFAULT),
                 });
             }
         }
@@ -373,13 +449,13 @@ impl ClockSyncEstimator {
             Some(age) => {
                 return Err(QualityGateFailure::DedicatedSampleStale {
                     age,
-                    max_age: std::time::Duration::from_millis(u64::from(MAX_RTT_AGE_MS_DEFAULT)),
+                    max_age: std::time::Duration::from_millis(MAX_RTT_AGE_MS_DEFAULT),
                 });
             }
             None => {
                 return Err(QualityGateFailure::DedicatedSampleStale {
                     age: std::time::Duration::MAX,
-                    max_age: std::time::Duration::from_millis(u64::from(MAX_RTT_AGE_MS_DEFAULT)),
+                    max_age: std::time::Duration::from_millis(MAX_RTT_AGE_MS_DEFAULT),
                 });
             }
         }
@@ -413,7 +489,7 @@ pub enum QualityGateFailure {
 
 impl std::fmt::Display for QualityGateFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
+        write!(f, "{self:?}")
     }
 }
 
