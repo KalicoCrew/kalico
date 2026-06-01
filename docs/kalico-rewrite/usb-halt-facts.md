@@ -51,6 +51,32 @@ Flash both per the flashing-trident-mcus skill. Heaters cold throughout.
 - [63537cdb9] tim5_ia under jog: H7 min/last/max 50399/51996/52490 period 52000 (1.0×); F446 7970/9034/9440 period 9000 (1.0×).
 - [63537cdb9] `prior_diag_summary_block` under jog: H7 `systick 587 stepout 0 stepout_burst 0 usb_burst 129508`; F446 `systick 681 stepout 629 stepout_burst 629 usb_burst 146896`. (H7 stepout=0 this run — H7 step-output timer recorded no fires during an X-only CoreXY jog; unexplained, noted as fact.)
 
+## Host-side reactor timing at the drop (bench, `[usb-drop]` log)
+
+- [36391d0b1] Host `.so` rebuilt with reactor timing instrumentation (no MCU flash; MCU stays 63537cdb9). Jog still halts identically.
+- [36391d0b1] `[usb-drop]` samples (silence_ms = since last inbound bytes; since_write_ms = since last successful port write; consec_zero = consecutive Ok(0) reads before the error):
+  - F3000: silence 37, since_write 325, consec_zero 0
+  - F3000: silence 28, since_write 417, consec_zero 0
+  - F1200: silence 108, since_write 271, consec_zero 0
+  - F6000: silence 19, since_write 30, consec_zero 0
+  - All: `err=Io(BrokenPipe "Broken pipe")`.
+- [36391d0b1] consec_zero = 0 in ALL samples (abrupt error, no Ok(0) preamble). silence_ms small (19–108) in all (MCU sending bytes shortly before the drop). since_write_ms varies 30–417 (tracks write cadence/speed, NOT a fixed timeout). Halt reproduces at F1200, F3000, F6000 (all speeds tried).
+- [36391d0b1] Host kinematic config (klippy.log `configure_axes`): `step_modes=[1,1,1,1] any_phase_stepping=False phase_motor_count=0` — H7 X/Y use step pulses, NOT phase-stepping.
+
+## PushPieces round-trip / non-blocking (source read)
+
+- [9c016776d] `PushPiecesResponse` carries `result:i32` (0=OK, neg=MCU reject), `arrival_clock:u64`, `front_start_time:u64` (messages.rs ~247-256). Pump (`pump.rs` send_frame ~583-596) gates `pushed`/cursor advance on `result==OK`; arrival_clock/front_start_time are diagnostic-only (`[transit-diag]`); `retired` comes from the StatusHeartbeat (pump.rs ~505-523), NOT the response; `new_head` computed host-side.
+- [9c016776d] Wire-level ACK/NAK + UnackedWindow already handle frame delivery / retransmit independently of the app-level response. The only load-bearing role of `PushPiecesResponse` is surfacing an MCU commit-rejection (result != OK). Fire-and-forget PushPieces is feasible host-side but would make a MCU commit-rejection invisible (silent ring divergence) unless the MCU emits an out-of-band FaultEvent on rejection (protocol change).
+
+## Kernel USB view at the drop (bench, `journalctl -k` / dmesg) — DECISIVE
+
+- [36391d0b1] At each halt the Pi kernel logs `usb 3-2: USB disconnect, device number N` immediately followed by `usb 3-2: new full-speed USB device number N+1 ... Product: stm32h723xx`. I.e. the H7 USB device fully DISCONNECTS from the bus and RE-ENUMERATES. NOT a transfer error / babble / -EPROTO / over-current — a clean disconnect+re-enumerate.
+- [36391d0b1] The F446 (`stm32f446xx`, usb 3-1) also disconnects+re-enumerates in the same episodes.
+- [36391d0b1] MCU does not reboot across this (no boot_diag, motion continuous) — the USB peripheral re-attaches without an MCU reset.
+- [36391d0b1] usbotg.c: VBUS sensing is DISABLED — `GOTGCTL = BVALOEN|BVALOVAL` (session forced valid) + `GCCFG |= NOVBUSSENS` (usbotg.c:513,515). So a VBUS/power dip cannot make the OTG see "unplugged".
+- [36391d0b1] usbotg.c contains NO soft-disconnect (no `DCTL.SDIS` set anywhere); the only GRSTCTL writes are TX-FIFO flushes + the init AHB-idle wait. The firmware never deliberately disconnects/re-attaches USB during operation. ISR GINTMSK = RXFLVLM|IEPINT (USBRST/USBSUSP not serviced).
+- [36391d0b1] => the disconnect is not firmware-initiated and not VBUS-sense: the device drops off the bus electrically (signal/clock/power) during motor stepping, then re-enumerates. Reproduces at all jog speeds (F1200/F3000/F6000); does not occur at idle.
+
 ## Host / USB architecture (source read)
 
 - [c4ed8d740] `usbotg.c:513` `GAHBCFG = GINT` only (no DMAEN). `:512` `GINTMSK = RXFLVLM | IEPINT`. ISR (`OTG_FS_IRQHandler` ~:417) sets wake flags only; on RXFLVL it masks RXFLVLM (~:437). All FIFO movement is CPU-copy in foreground DECL_TASKs (`usb_bulk_out_task`/`usb_bulk_in_task`, `fifo_read_packet`/`fifo_write_packet`).
