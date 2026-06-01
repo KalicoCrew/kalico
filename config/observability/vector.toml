@@ -1,0 +1,55 @@
+# Vector config for the kalico observability pipeline.
+#
+# Tails the host's durable JSONL (the source of truth) and ships it to a local
+# VictoriaLogs. The JSONL files survive plug-pull; Vector resumes from its
+# on-disk checkpoint (data_dir) so restarts neither lose nor duplicate lines.
+#
+# Rotated JSONL files MUST stay uncompressed (spec §8): Vector cannot seek into
+# a gzipped file and would lose any un-shipped tail.
+#
+# The VictoriaLogs ingest URL params below (_stream_fields / _time_field /
+# _msg_field) were validated against VictoriaLogs v1.50.0 — a direct
+# /insert/jsonline POST with these params stores the schema correctly and the
+# records are queryable by source/subsystem/session_id/event with working
+# numeric range filters.
+#
+# Local-test override: copy this file and point `include` at the scratch dir
+# (e.g. .tools/observability/events/*.jsonl) and `data_dir` somewhere writable.
+
+# Vector's checkpoint/state dir. Override per host (the systemd unit runs as the
+# pi user; ensure this is writable by that user).
+data_dir = "/var/lib/vector"
+
+[sources.kalico_events]
+type = "file"
+# Both host sources land here: host-py.jsonl + host-rust.jsonl (and, later,
+# decoded MCU logs). Override the path per host if printer_data lives elsewhere.
+include = ["/home/pi/printer_data/logs/events/*.jsonl"]
+# Read existing content on first start so nothing already on disk is skipped;
+# the checkpoint takes over on subsequent restarts.
+read_from = "beginning"
+
+[sources.kalico_events.decoding]
+# Each physical line is already one complete JSON object (Stage 1/2 guarantee),
+# so decode it as JSON — no remap/transform needed; the fields ARE the schema.
+codec = "json"
+
+[sinks.victorialogs]
+type = "http"
+inputs = ["kalico_events"]
+uri = "http://127.0.0.1:9428/insert/jsonline?_stream_fields=source,subsystem&_time_field=_time&_msg_field=_msg"
+method = "post"
+
+# One JSON object per line (NDJSON), which is exactly what /insert/jsonline
+# expects with the application/stream+json content type.
+encoding.codec = "json"
+framing.method = "newline_delimited"
+request.headers.Content-Type = "application/stream+json"
+
+# Backpressure, never silent drop (fail-loud posture, spec §7.1/§12): if VL is
+# down or slow, Vector buffers to disk and blocks rather than dropping lines.
+# The JSONL on disk remains the source of truth regardless.
+[sinks.victorialogs.buffer]
+type = "disk"
+max_size = 268435488   # 256 MiB on-disk buffer
+when_full = "block"
