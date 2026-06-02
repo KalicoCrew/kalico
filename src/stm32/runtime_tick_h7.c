@@ -20,17 +20,8 @@ extern void* runtime_handle;   // exposed in src/runtime_tick.c
 // forward-declared so runtime_tick_init can stand it up after arming TIM5.
 static void step_output_timer_init(void);
 
-// True TIM5 / step-output kernel clock — NOT runtime_clock_freq.
-//
-// runtime_clock_freq == CONFIG_CLOCK_FREQ is the CPU/DWT clock (520 MHz on the
-// H723), which is what the engine's `now` (DWT->CYCCNT) counts in. But TIM5 and
-// TIM3 sit on APB1, and an STM32 timer whose APB prescaler != 1 runs at 2x the
-// APB peripheral clock (RM "TIMxCLK = 2 x PCLKx"). Here pclk1 = HCLK/2 = 130 MHz
-// and HCLK = sys_ck/2 = 260 MHz, so the timer kernel clock = 2 x 130 = 260 MHz
-// = CONFIG_CLOCK_FREQ/2. Programming ARR from runtime_clock_freq therefore made
-// TIM5 fire at HALF the configured rate — the -311 TickIntervalExceeded root
-// cause (bench-confirmed: TIM5 inter-arrival = 2x the guard's sample period).
-// Mirrors src/stm32/hard_pwm.c:323-326.
+// TIM5/TIM3 kernel clock = CONFIG_CLOCK_FREQ/2 when APB prescaler != 1
+// (APB timer-doubler: TIMxCLK = 2 x PCLKx). Use this, not runtime_clock_freq.
 static uint32_t
 motion_timer_clk(void)
 {
@@ -41,16 +32,7 @@ motion_timer_clk(void)
     return CONFIG_CLOCK_FREQ / clkdiv;
 }
 
-// Stepping-redesign Task 17: TIM5 ISR body. The canonical prototype for
-// `kalico_runtime_tick_sample` is supplied by the included
-// `kalico_runtime.h`; no local extern needed.
-
-// These three are referenced ONLY from Rust (kalico-c-api's runtime_ffi.rs),
-// not from any C translation unit. Klipper builds with `-fwhole-program -flto`
-// which would otherwise treat them as internal and either inline them or
-// strip them, leaving the Rust archive with unresolved references. The
-// `used, externally_visible` attribute pair survives LTO + whole-program +
-// --gc-sections, mirroring runtime_clock_freq / runtime_liveness_ok.
+// used, externally_visible: referenced from Rust only — survives LTO/--gc-sections.
 __attribute__((used, externally_visible))
 void
 runtime_tick_disable(void)
@@ -59,14 +41,8 @@ runtime_tick_disable(void)
     NVIC_DisableIRQ(TIM5_IRQn);
 }
 
-// Helper for Rust's CYCCNT widen-reinit on producer-driven re-enable path.
-//
-// Per Step-6 spec §3.1: under CONFIG_KALICO_SIM, Renode's H7 .repl tags
-// DWT->CYCCNT as opaque memory (reads return 0), which freezes the engine's
-// widening loop in sim. Fork to a software counter (runtime_sim_cyccnt) bumped
-// from the TIM5 ISR. Production firmware (CONFIG_KALICO_SIM=n) reads the
-// hardware DWT register directly. NEVER flash a CONFIG_KALICO_SIM=y image to
-// silicon — IWDG-disable + software CYCCNT is a debugging build only.
+// NEVER flash CONFIG_KALICO_SIM=y to silicon — IWDG-disable + software CYCCNT
+// is a debug-only build. Sim: Renode returns 0 for DWT->CYCCNT; use SW counter.
 __attribute__((used, externally_visible))
 uint32_t
 runtime_cyccnt_read(void)
@@ -83,11 +59,7 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // Idempotent re-arm. TIM5 is armed at init and disabled only on Klipper
-    // shutdown, so on STM32 this is normally a no-op (CR1.CEN already set).
-    // The entry point is retained because the Linux build's runtime_tick_enable
-    // performs the post-connect widen-seed + step-queue install
-    // (src/linux/runtime_tick_host.c); configure_axis calls it on every build.
+    // Idempotent re-arm; on STM32 normally a no-op (CEN already set after init).
     if (TIM5->CR1 & TIM_CR1_CEN) {
         return;
     }
@@ -103,88 +75,49 @@ runtime_tick_enable(void)
 void
 runtime_tick_init(void)
 {
-    // Disable IRQ at the NVIC first — that's safe even with TIM5 clock off,
-    // since NVIC is core-local. Touching TIM5 registers before its peripheral
-    // clock is enabled raises a bus fault on H7 (caused first-light hangs in
-    // early bring-up, manifesting as USB-CDC enumerating briefly then the MCU
-    // resetting in a loop). So clock-on must come first.
+    // Disable IRQ before touching TIM5 registers (bus fault if peripheral
+    // clock is off — clock-on must come first).
     NVIC_DisableIRQ(TIM5_IRQn);
 
-    // Enable TIM5 peripheral clock. APB1L bus, gated by RCC. The RMB barrier
-    // (DSB) ensures the clock is up before subsequent register accesses.
     RCC->APB1LENR |= RCC_APB1LENR_TIM5EN;
-    __DSB();
+    __DSB();  // clock must be up before register access
 
-    // Now safe to touch TIM5 registers. Per spec §2.4 init invariant: clear
-    // CEN + SR.UIF before any path could fire.
     TIM5->CR1 &= ~TIM_CR1_CEN;
     TIM5->SR = 0;
 
-    // T17: TIM5 rate from CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ.
-    // PSC = 0, ARR = (timer_clock / SAMPLE_RATE_HZ) - 1, where timer_clock is
-    // the true TIM5 kernel clock (CONFIG_CLOCK_FREQ/2), NOT runtime_clock_freq
-    // — see motion_timer_clk() above for why (the -311 fix).
+    // ARR from the true TIM5 kernel clock (motion_timer_clk = CONFIG_CLOCK_FREQ/2).
     TIM5->PSC = 0;
     TIM5->ARR = (motion_timer_clk() / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
 
-    // Auto-reload, update interrupt enable.
     TIM5->CR1 = TIM_CR1_ARPE;
     TIM5->DIER = TIM_DIER_UIE;
 
-    // Enable DWT cycle counter for raw_cyccnt reads in the ISR.
+    // Enable DWT cycle counter.
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
 
-    // Set the motion-tick IRQ to KALICO_MOTION_NVIC_PRIO. The same constant is
-    // also applied to the dedicated step-output timer (step_output_timer_init
-    // below), keeping producer (TIM5) and consumer (step-output) EQUAL — the
-    // non-nesting invariant the step_queue SPSC relies on. The NVIC map, the
-    // SPSC invariant, and the heater-safety note are in
-    // src/generic/kalico_nvic_prio.h.
+    // KALICO_MOTION_NVIC_PRIO: TIM5 + step-output timer are EQUAL — the SPSC
+    // same-priority invariant (see kalico_nvic_prio.h).
     NVIC_SetPriority(TIM5_IRQn, KALICO_MOTION_NVIC_PRIO);
 
-    // Always-on (spec 2026-05-28): the piece-ring engine has no per-push event
-    // to lazily start TIM5 (segments are gone), so the ISR free-runs from boot.
-    // It idles cheaply when no axis has an active piece. TIM5 is disabled only
-    // when the firmware stops motion (Klipper shutdown) and re-armed here on
-    // FIRMWARE_RESTART.
+    // TIM5 free-runs from boot; idles cheaply with no active piece.
+    // Disabled only on Klipper shutdown; re-armed on FIRMWARE_RESTART.
     TIM5->EGR  = TIM_EGR_UG;
     TIM5->SR   = ~TIM_SR_UIF;     // clear stale UIF before enabling
     TIM5->CR1 |= TIM_CR1_CEN;
     NVIC_EnableIRQ(TIM5_IRQn);
 
-    // Stand up the dedicated step-output timer (motion-tick priority-lift
-    // Step 1). It free-runs disabled until the first owned step arrives.
+    // Stand up the dedicated step-output timer (free-runs disabled until first step).
     step_output_timer_init();
 }
 
-// ── -311 stacked-PC capture (diagnostic, 2026-06-01) ──────────────────────
-//
-// On a `-311 TickIntervalExceeded` we want to know WHAT code held the CPU /
-// global interrupt mask (PRIMASK; `irq_disable` == `cpsid i`) across the late
-// tick. The most direct evidence is the exception stack frame the hardware
-// pushed when TIM5 was taken: its stacked PC is the instruction that was about
-// to execute in the interrupted context, and its stacked xPSR carries the
-// active-exception number of that context.
-//
-// We capture the active exception stack-frame base pointer at handler entry
-// into `tim5_exc_frame`, every tick. The Rust `-311` path then reads
-// frame[6] (stacked PC) and frame[7] (stacked xPSR) via the getters below.
-//
-// FP-frame correctness (M7 has an FPU): on exception entry the core ALWAYS
-// pushes the 8-word basic frame {R0,R1,R2,R3,R12,LR,PC,xPSR} at the LOWEST
-// addresses of the stacked frame. If lazy FP context is active (EXC_RETURN
-// bit 4 == 0, "extended frame"), the FP registers {S0..S15,FPSCR} plus an
-// alignment word are stacked ABOVE those 8 words (higher addresses). So
-// frame[6] == PC and frame[7] == xPSR hold for BOTH the basic and the extended
-// frame — the core-register offsets never move. We therefore do not need to
-// inspect EXC_RETURN bit 4 to read PC/xPSR correctly.
-//
-// NOT static + used,externally_visible: the only writer is the naked wrapper's
-// inline asm (`ldr r1, =tim5_exc_frame`), opaque to the compiler — so a
-// file-local static gets dropped by --gc-sections and the asm reference fails
-// to link (undefined reference). Same gc-sections trap as runtime_clock_freq.
+// ── -311 stacked-PC capture ────────────────────────────────────────────────
+// Naked wrapper saves the exception frame base into tim5_exc_frame on every
+// tick. Rust reads frame[6] (PC) and frame[7] (xPSR) on the -311 path.
+// frame[6/7] hold for both basic and extended FP frames (core regs always at
+// the lowest addresses). NOT static: the naked asm is the sole writer; a
+// file-local static would be GC-stripped (same trap as runtime_clock_freq).
 volatile uint32_t *tim5_exc_frame __attribute__((used, externally_visible));
 
 // Capture the exception frame pointer, then run the original handler body.
@@ -227,8 +160,7 @@ runtime_tim5_stacked_pc(void)
     return tim5_exc_frame[6];
 }
 
-// Stacked-xPSR exception-number getter — frame[7] is the interrupted context's
-// xPSR; its low 9 bits are the active-exception number (0 = thread/foreground).
+// frame[7] xPSR low 9 bits = active exception number (0 = thread/foreground).
 __attribute__((used, externally_visible))
 uint32_t
 runtime_tim5_stacked_exc(void)
@@ -242,44 +174,26 @@ static void
 TIM5_IRQHandler_body(uint32_t *frame)
 {
     (void)frame;
-    // Diag instrumentation: cycle stamp at IRQ entry. DWT->CYCCNT is
-    // already enabled in this file's init (TRCENA + CYCCNTENA above).
     extern void diag_tim5_account(uint32_t enter, uint32_t exit);
     uint32_t diag_enter = DWT->CYCCNT;
 
     TIM5->SR = ~TIM_SR_UIF;            // entry-time ack (spec §2.4)
 
 #if CONFIG_KALICO_SIM
-    // Step-6 spec §3.1: Renode's H7 model returns 0 for DWT->CYCCNT, so the
-    // engine widening loop has no forward progress source unless we drive a
-    // software counter from this ISR. Delta = cycles-per-tick so the widened
-    // u64 advances at the same rate the engine would observe on silicon.
+    // Renode returns 0 for DWT->CYCCNT; drive a software counter so the
+    // widened u64 advances at the expected rate.
     extern volatile uint32_t runtime_sim_cyccnt;
     runtime_sim_cyccnt += (runtime_clock_freq / 40000U);
-    // Sim-only wake of the drain task; the foreground timer system is
-    // unreliable under Renode (DWT-based dispatch) so we drive the drain
-    // cadence deterministically off TIM5 fires. Throttled in runtime_tick.c.
     extern void runtime_sim_isr_wake_drain(void);
     runtime_sim_isr_wake_drain();
 #endif
 
-    // Step 7.5 — sample any armed endstop GPIOs before the engine tick so
-    // `endstop::tick` observes fresh pin levels in the same modulation
-    // period. No-op when no arm is active (table empty).
+    // Sample armed endstop GPIOs before the engine tick (no-op if none armed).
     extern void runtime_endstop_sample_pins(void);
     runtime_endstop_sample_pins();
 
-    // T17 (stepping-redesign): TIM5 dispatches the unified per-sample
-    // evaluator `kalico_runtime_tick_sample`, which evaluates the
-    // active per-axis Bezier piece(s), runs Newton iteration for step
-    // waketimes, and pushes step entries into the per-axis SPSC
-    // step_queues. Replaces the prior modulator-polled-tick path
-    // (`kalico_runtime_modulated_tick`); the legacy symbol stays
-    // linkable for parts not yet cut over but isn't called from here.
-    // The widened MCU clock is published by the producer Klipper timer
-    // (`runtime_widened_host_clock` in src/runtime_tick.c) into
-    // `SharedState::widened_now_lo`; the Rust ISR reads that value
-    // directly. No CYCCNT widening seed is needed here.
+    // Dispatch the unified per-sample evaluator: evaluates Bézier pieces,
+    // runs Newton step-waketime iteration, pushes into per-axis SPSC step_queues.
     uint32_t before = runtime_cyccnt_read();
     if (runtime_handle) {
         kalico_runtime_tick_sample(runtime_handle);
@@ -290,73 +204,34 @@ TIM5_IRQHandler_body(uint32_t *frame)
     runtime_bench_capture(after - before);
     // No late ack.
 
-    // Histogram the modulated-tick subwindow before the full-IRQ
-    // accounting at exit. Distinguishing the two tells us whether the IRQ
-    // cost lives in the engine evaluator or in the surrounding ISR overhead
-    // (endstop sample, accounting, vector entry/exit).
+    // Histogram engine-evaluator cost separately from full-IRQ overhead.
     extern void diag_runtime_tick_account(uint32_t cycles);
     diag_runtime_tick_account(after - before);
 
-    // Diag accounting at IRQ exit. Cost: ~10 cycles (DWT read + 3 mem
-    // increments + max compare + threshold check). Negligible at 40 kHz.
     diag_tim5_account(diag_enter, DWT->CYCCNT);
 }
 
-// Klipper's IRQ vector-table dispatch is generated by scripts/buildcommands.py
-// from DECL_ARMCM_IRQ entries. Without this, TIM5_IRQHandler will not be wired
-// into the vector table and the IRQ silently drops.
 DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
 
 // ===========================================================================
-// Dedicated step-output timer (TIM3) — motion-tick priority-lift Step 1
+// Dedicated step-output timer (TIM3)
 // ===========================================================================
-//
-// Task 0 closed TIM3 for the H7: TIM2 is taken by caselight hardware PWM and
-// TIM5 by the motion tick; those are the only 32-bit GP timers, so the
-// step-output timer is 16-bit TIM3. The consumer is event-driven and only ever
-// near-step (the producer kick arms it to the soonest pending step's cycle),
-// so a 16-bit one-shot horizon is sufficient with simple chaining for the rare
-// far re-arm — see step_output_timer_arm's ≤0xF000 clamp + the IRQ re-arm.
-//
-// Counter mode: free-running 16-bit up-counter at the timer clock (PSC = 0,
-// ARR = 0xFFFF), output-compare channel 1 (CC1) as the wake source. We arm by
-// writing CCR1 and enabling CC1IE; we disable by clearing CC1IE. The compare
-// match sets SR.CC1IF and fires TIM3_IRQHandler.
-//
-// Reference for 16-bit chaining already in-tree: src/stm32/stm32f0_timer.c and
-// src/stm32/runtime_tick_g0.c.
-//
-// NVIC priority: KALICO_MOTION_NVIC_PRIO — IDENTICAL to TIM5 (the motion pair
-// moves together via the one constant). Same-number Cortex-M interrupts cannot
-// nest, so this consumer and the TIM5 producer never preempt each other → the
-// step_queues SPSC and the kalico_kick_step_output compare poke stay non-racing
-// (see kalico_nvic_prio.h).
+// TIM2 is taken by PWM, TIM5 by motion tick; TIM3 (16-bit) is the step-output
+// timer. Free-running 16-bit up-counter, CC1 one-shot wake, chained for far
+// targets via the ≤0xF000-clamp + IRQ re-arm.
+// NVIC priority = KALICO_MOTION_NVIC_PRIO (same as TIM5) — no nesting, SPSC is safe.
 
-// Largest 16-bit one-shot delta we program in a single arm. Below 0x10000 with
-// margin so the chained re-arm always lands strictly before a full wrap, and so
-// the "already past" check below has slack. 0xF000 cycles ≈ 230 µs @ 275 MHz.
+// Max one-shot delta (16-bit, with wrap margin). Chained re-arm covers far targets.
 #define STEP_OUT_MAX_DELTA 0xF000u
 
-// Bridge between the 32-bit absolute `cycle_abs` domain (DWT frame, counted at
-// CONFIG_CLOCK_FREQ) and the 16-bit TIM3 counter (which ticks at the timer
-// kernel clock = CONFIG_CLOCK_FREQ/2 — see motion_timer_clk). We cannot
-// directly compare a 16-bit TIM3 CNT to a 32-bit cycle, so we track the
-// absolute target here and, on each (re)arm or IRQ, compute the remaining delta
-// against the 32-bit DWT clock (runtime_cyccnt_read), SCALE it from DWT cycles
-// to TIM3 ticks (divide by step_out_clkdiv), clamp to STEP_OUT_MAX_DELTA, and
-// set CCR1 = TIM3->CNT + delta. Without the scale, every step fired ~2x late.
-//
-// `step_out_target`   : absolute cycle the consumer must next fire at.
-// `step_out_running`  : 1 while CC1IE is enabled (timer is arming toward a step).
-// `step_out_clkdiv`   : DWT-cycles-per-TIM3-tick (= CONFIG_CLOCK_FREQ/timer_clk
-//                       = 2), set in step_output_timer_init before any arm.
+// cycle_abs is in DWT ticks (CONFIG_CLOCK_FREQ); TIM3 ticks at half that rate.
+// step_out_clkdiv (= 2) scales DWT deltas to TIM3 ticks on each arm/re-arm.
+// step_out_target: absolute DWT cycle of the next fire; step_out_running: CC1IE active.
 static volatile uint32_t step_out_target;
 static volatile uint8_t  step_out_running;
 static uint32_t          step_out_clkdiv = 1;
 
-// Program TIM3 CC1 to fire `dwt_delta` DWT-cycles from the current CNT. The
-// delta is scaled into TIM3 ticks (DWT runs 2x the TIM3 kernel clock) and
-// clamped to the 16-bit horizon.
+// Scale dwt_delta to TIM3 ticks and program CC1 (clamped to 16-bit horizon).
 static inline void
 step_output_program_delta(uint32_t dwt_delta)
 {
@@ -371,12 +246,8 @@ step_output_program_delta(uint32_t dwt_delta)
     TIM3->DIER |= TIM_DIER_CC1IE;
 }
 
-// (Re)arm the step-output timer to fire at absolute cycle `cycle_abs`, or
-// disable it when `cycle_abs == KALICO_STEP_OUTPUT_DISABLE`. Called from the
-// Rust kick path (kalico_kick_step_output) and from the IRQ re-arm below.
-//
-// used, externally_visible: referenced from the Rust archive (via the C kick
-// shim in runtime_tick.c) — keep it past --gc-sections / -fwhole-program LTO.
+// Arm TIM3 CC1 to fire at absolute DWT cycle cycle_abs, or disable when DISABLE sentinel.
+// used,externally_visible: called from Rust via C shim; must survive --gc-sections LTO.
 __attribute__((used, externally_visible))
 void
 step_output_timer_arm(uint32_t cycle_abs)
@@ -432,10 +303,7 @@ step_output_timer_init(void)
 
     step_out_running = 0;
     step_out_target = 0;
-    // DWT-cycles-per-TIM3-tick: TIM3 ticks at motion_timer_clk()
-    // (CONFIG_CLOCK_FREQ/2) while cycle_abs is in the DWT frame
-    // (CONFIG_CLOCK_FREQ). Set before any arm can run (init is at boot).
-    step_out_clkdiv = CONFIG_CLOCK_FREQ / motion_timer_clk();
+    step_out_clkdiv = CONFIG_CLOCK_FREQ / motion_timer_clk(); // DWT/TIM3 rate ratio (= 2)
 
     NVIC_SetPriority(TIM3_IRQn, KALICO_MOTION_NVIC_PRIO);
     NVIC_EnableIRQ(TIM3_IRQn);
@@ -444,17 +312,12 @@ step_output_timer_init(void)
 void
 TIM3_IRQHandler(void)
 {
-    // diag_stepout_account records single-invocation max AND the contiguous-
-    // burst span of this step-output ISR (== TIM5 priority, no nesting).
     extern void diag_stepout_account(uint32_t enter, uint32_t exit);
     uint32_t diag_enter = DWT->CYCCNT;
 
     TIM3->SR = (uint16_t)~TIM_SR_CC1IF;   // ack the compare match
 
-    // Run the Rust consumer: emit due steps, get the soonest remaining head
-    // (or KALICO_STEP_OUTPUT_DISABLE). If the 16-bit horizon hasn't elapsed yet
-    // (a chained far re-arm), the consumer returns the same far target and we
-    // re-arm another chunk without emitting — handled inside step_output_timer_arm.
+    // Emit due steps; returns soonest remaining target (or DISABLE for idle).
     extern uint32_t kalico_step_output_event(void);
     uint32_t next = kalico_step_output_event();
     step_output_timer_arm(next);

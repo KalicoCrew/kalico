@@ -31,13 +31,6 @@
 #include "kalico_dispatch.h" // kalico_native_emit_*
 #include "generic/runtime_tick.h"   // backend interface (consumer view)
 #include "generic/fault_handler.h"  // diag_record_engine_xition, diag_take_snapshot
-#if CONFIG_MACH_LINUX
-// Host build: pthread-driven tick replaces the TIM5 ISR. The only Rust→C
-// call across this boundary now is runtime_cyccnt_read; runtime_tick_enable
-// and runtime_tick_disable are called from C (configure_axis / the
-// DECL_SHUTDOWN handler), not from Rust. Host-side implementations live in
-// src/linux/runtime_tick_host.c.
-#endif
 
 
 // H7 CMSIS only defines IWDG1/IWDG2; map the generic name to IWDG1
@@ -52,72 +45,28 @@
 const uint32_t runtime_clock_freq __attribute__((used, externally_visible))
     = CONFIG_CLOCK_FREQ;
 
-// Motion-engine sample rate (TIM5 ISR fire rate on STM32; host-pthread tick
-// rate on Linux). Exposed to Rust via
-// `extern "C" { static runtime_sample_rate_hz: u32; }` so Engine::init can
-// publish `sample_period_sec = 1.0 / runtime_sample_rate_hz` without
-// embedding a magic constant. Source: CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ
-// (src/Kconfig), set per board/config — the bench currently runs it below the
-// Kconfig default for testing, so do not assume a fixed rate here.
-// __attribute__((used, externally_visible)) survives -fwhole-program LTO + GC.
 const uint32_t runtime_sample_rate_hz __attribute__((used, externally_visible))
     = CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ;
 
 
 extern volatile uint8_t runtime_liveness_ok;  // defined in src/stm32/watchdog.c
 
-// Foreground host-clock helper for §8.5 flush ack-wait timeout. Returns
-// wall-clock µs since boot, derived from Klipper's `timer_read_time()`
-// (DWT->CYCCNT widened by Klipper's foreground task) divided by the clock
-// frequency in MHz. NEVER call from ISR — `timer_read_time` is
-// foreground-only by Klipper convention. Used only by the runtime's
-// flush() ack-wait spin loop, which is foreground command dispatch.
-//
-// Wrap behaviour: `timer_read_time()` is u32, wraps every ~8.3 s at 520 MHz.
-// The flush window is bounded to ≤1 ms by design, so a single wrap during
-// the spin loop is the worst case — the saturating_add at the Rust caller
-// site prevents UB from u64 overflow if we hit the boundary.
-//
-// Spec §8.5 + plan Phase 7 Task 7.2.
+// Foreground-only host-clock helper (flush ack-wait timeout). NEVER call from ISR.
 __attribute__((used, externally_visible))
 uint64_t
 runtime_host_now_us(void)
 {
     uint32_t cycles = timer_read_time();
-    // CONFIG_CLOCK_FREQ is in Hz; divide by 1e6 to get cycles-per-µs.
-    // Integer division here is fine — CONFIG_CLOCK_FREQ is always a
-    // multiple of 1 MHz on supported STM32 targets.
     return ((uint64_t)cycles) / (CONFIG_CLOCK_FREQ / 1000000U);
 }
 
-// Boot/dispatch progress diagnostic (2026-05-11). Packs the latest
-// (tag, stage, value) triple into a single u32 word that
-// `runtime_status_drain` piggybacks onto the periodic `kalico_status_v6`
-// frame's `fault_detail` field when no real fault is latched.
-//
-// Why not `output(...)` directly: kalico-native dispatch context (FFI
-// handlers reached via the kalico-native demux) blocks the foreground
-// task that drains the USB-CDC TX buffer until the handler returns.
-// On F446, the kalico-native FFI handler crashes BEFORE that return, so any
-// `output()` line queued during the FFI never flushes — klippy sees
-// nothing. The status-frame piggyback uses an already-running drain
-// task (10 Hz cadence) that emits even while the foreground is busy.
-//
-// Layout: bits 24-31 = tag, 16-23 = stage, 0-15 = low 16 bits of value.
-// Read by `runtime_status_drain` and surfaced as `fault_detail` when
-// `last_err == 0`.
-// Live diag: updated every call, sampled into the kalico_status_v6
-// fault_detail field by the 10 Hz status drain (volatile so the
-// compiler doesn't reorder writes — there are no atomic ordering
-// requirements because foreground is single-threaded).
+// Boot/dispatch progress: (tag, stage, value) packed into a u32, piggybacked
+// onto the 10 Hz kalico_status_v6 fault_detail field. bits[31:24]=tag,
+// [23:16]=stage, [15:0]=value. Volatile: foreground single-threaded, no atomics needed.
 volatile uint32_t runtime_diag_last_packed __attribute__((used, externally_visible));
 
-// Persistent crash diag: survives `NVIC_SystemReset` via the
-// .persistent_diag linker section (NOLOAD, outside [_bss_start.._bss_end]
-// so armcm_boot.c's bss-zero pass leaves it alone). On the next boot,
-// `command_runtime_post_init` checks `magic == RT_DIAG_MAGIC` and emits
-// the captured stage via output() so we can see WHERE the previous run
-// crashed even when no BKPSRAM is available (F446 case).
+// Crash diag survives NVIC_SystemReset via .persistent_diag (NOLOAD, outside bss).
+// Next boot checks magic == RT_DIAG_MAGIC and emits the prior stage via output().
 #define RT_DIAG_MAGIC 0xD1A6BABE
 
 struct rt_diag_persistent {
@@ -127,27 +76,14 @@ struct rt_diag_persistent {
     uint32_t fault_count;
 };
 
-// Non-static + volatile so fault_handler.c can `extern` it directly
-// and LTO can't constant-propagate the zero-init values into the
-// output() arguments. Section attribute places it outside `.bss` so
-// armcm_boot.c's zero-pass leaves it alone across soft reset.
 volatile struct rt_diag_persistent rt_diag_persistent
     __attribute__((section(".persistent_diag"), used, externally_visible));
 
-// Snapshot of the prior run's packed-diag value, captured at runtime_init
-// time BEFORE the current run starts overwriting rt_diag_persistent. The
-// 10 Hz status drain alternates between the LIVE diag (runtime_diag_last_packed)
-// and this BOOT snapshot (when valid) so klippy.log sees both — needed to
-// catch F446 cause-of-death after NVIC_SystemReset, since the output() emit
-// in fault_handler_report_task gets dropped by USB-CDC TX overrun during
-// the boot_diag burst (320-byte transmit_buf vs ~600 B/cycle).
+// Prior-boot packed-diag snapshot, captured at runtime_init before the current
+// run overwrites rt_diag_persistent. Status drain emits both live and snapshot.
 volatile uint32_t runtime_diag_prior_boot_snapshot
     __attribute__((used, externally_visible));
 
-// Verification globals — capture rt_diag_persistent contents at runtime_init
-// time so we can confirm whether .persistent_diag actually survives a soft
-// reset on STM32F4 (unverified before this commit; F4 reference manual is
-// ambiguous about SRAM survival across SYSRESETREQ).
 volatile uint32_t runtime_diag_prior_magic_raw
     __attribute__((used, externally_visible));
 volatile uint32_t runtime_diag_prior_packed_raw
@@ -166,26 +102,9 @@ runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value)
     rt_diag_persistent.last_us = timer_read_time();
 }
 
-// Emission of rt_diag_persistent is inlined into
-// `src/generic/fault_handler.c::fault_handler_report_task` because
-// whole-program LTO was stripping a standalone helper.
-
-// Klipper-widened DWT/timer clock (cycles, u64). Mirrors
-// command_get_uptime's widening (basecmd.c:300-304): reads `cur` first,
-// then the high half with a "pre-stats_update wrap" lookback against
-// stats_send_time. Because this widening rides on Klipper's stats task
-// (~5 s cadence) and not on the kalico TIM5 ISR, the value advances
-// monotonically regardless of whether the engine is Idle / Running /
-// Drained / Fault — which is the property kalico_clock_sync_response
-// needs after a drain. Foreground-only; do NOT call from ISR.
-//
-// Bench symptom 2026-05-11: clock_sync_respond read engine-side
-// `read_widened_now` which is published only by the TIM5 ISR. On Drained
-// → TIM5 disabled → widened_now froze → host's regression flatlined →
-// the next jog's t_start_clock landed in the MCU's real past →
-// boundary loop silently retired the segment without producing step
-// pulses. Using Klipper's stats-based widening here decouples
-// clock-sync from engine activity.
+// Klipper-stats-based widened clock: advances regardless of engine state
+// (Idle/Drained/Fault), unlike the ISR-published engine widened_now.
+// Foreground-only; do NOT call from ISR.
 __attribute__((used, externally_visible))
 uint64_t
 runtime_widened_host_clock(void)
@@ -197,20 +116,8 @@ runtime_widened_host_clock(void)
     return ((uint64_t)high << 32) | (uint64_t)cur;
 }
 
-// kalico's stream::flush() FFI calls into Klipper's `irq_save` and
-// `irq_restore` (board/irq.h) under the §8.5 disabled-IRQ window. The
-// build uses `-flto=auto -fwhole-program`, which lets GCC consider
-// non-`extern` definitions internal-only and inline/DCE them out — that
-// drops the standalone `irq_save` / `irq_restore` symbols even though
-// other Klipper TUs (sched.c, basecmd.c, …) call them, because LTO can
-// inline the body at every callsite. The kalico_c_api.a archive then
-// fails to resolve the symbols during the final link.
-//
-// Solution: provide thin wrappers `runtime_irq_save` / `runtime_irq_restore`
-// that the staticlib calls instead of `irq_save` / `irq_restore` directly.
-// The wrappers are marked `used, externally_visible` so LTO keeps them.
-// They forward to the real functions, which LTO can still inline if it
-// wants — but the staticlib only sees the wrapper symbols.
+// Thin wrappers so the Rust staticlib can call irq_save/irq_restore without
+// LTO DCE-ing the standalone symbols (used,externally_visible keeps them).
 __attribute__((used, externally_visible))
 uint32_t
 runtime_irq_save(void)
@@ -229,11 +136,7 @@ void* runtime_handle = 0;            // exposed (non-static) for runtime_tick_h7
 struct task_wake runtime_drain_wake;  // non-static: shared with runtime_sim_commands.c
 static struct timer runtime_drain_timer;
 
-// Phase 11 §5.3 periodic status frame state. Emit cadence is ~10 Hz against
-// `timer_read_time()` (Klipper's u32 cycle clock). One-shot tracking of the
-// last engine_status lets us emit a `kalico_fault` async event ONCE on
-// the FAULT-state transition, not every 10 Hz tick — host gets one
-// notification per fault, not a spam stream.
+// 10 Hz status frame state; prev_engine_status gates the one-shot kalico_fault emit.
 static uint32_t last_status_emit_time = 0;
 static uint8_t prev_engine_status = 0;
 
@@ -241,45 +144,22 @@ static uint8_t prev_engine_status = 0;
 static uint32_t last_seen_tick_counter = 0;
 static uint32_t last_progress_time = 0;
 
-// First-light status LED removed for Surface C bring-up.
-//
-// The plan-literal placeholder pin was PA13, which is SWDIO on the H7 —
-// reconfiguring it as a GPIO output kills the SWD debugger and is
-// generally hostile to debugability during early bring-up. The PASS/FAIL
-// gate of test_h723_first_light.py is the `kalico_status` response over
-// USB-CDC, not a visual LED, so the visual signal is dispensable.
-//
-// Future work: pick a non-SWD pin from the actual Octopus Pro silkscreen
-// (e.g. one of the unused fan headers or a dedicated debug LED) and
-// reintroduce the toggle. Tracked as a Step-5 follow-up in plan-changes-log.
 static uint8_t last_seen_status = 255;
 
-// Periodic timer callback at ~1 kHz: sets the drain wake flag.
-// Per spec §4.5 — sched_check_wake throttle prevents spinning the drain
-// task at full FG iteration rate when the trace ring is empty.
+// ~1 kHz drain wake. Reschedule from now (not +=1ms) to avoid "timer in past"
+// shutdown if the foreground stalls for >1 ms.
 static uint_fast8_t
 runtime_drain_event(struct timer *t)
 {
     sched_wake_task(&runtime_drain_wake);
-    // Now-relative reschedule, NOT `+= 1 ms` from the previous waketime.
-    // Any 1 ms+ of foreground starvation makes the `+=` form's next
-    // reschedule a past clock relative to wall-clock now, and Klipper's
-    // armcm_timer.c dispatcher fires `try_shutdown("Rescheduled timer
-    // in the past")`. Anchoring to `timer_read_time()` keeps the
-    // reschedule strictly in the future regardless of upstream delay;
-    // the drain timer's role is sample-shipping and 10 Hz status emit,
-    // neither of which cares about exact phase-locking.
-    t->waketime = timer_read_time() + timer_from_us(1000);  // 1 kHz
+    t->waketime = timer_read_time() + timer_from_us(1000);
     return SF_RESCHEDULE;
 }
 
 void
 runtime_init(void)
 {
-    // 2026-05-20: capture prior-boot diag FIRST (before our markers
-    // overwrite it). Status drain emits this snapshot via klippy
-    // periodic-status, so once we enumerate we can read the prior
-    // boot's last marker over USB.
+    // Capture prior-boot diag FIRST (before our markers overwrite it).
     extern volatile uint32_t runtime_diag_prior_magic_raw;
     extern volatile uint32_t runtime_diag_prior_packed_raw;
     runtime_diag_prior_magic_raw = rt_diag_persistent.magic;
@@ -289,54 +169,34 @@ runtime_init(void)
         runtime_diag_prior_boot_snapshot = rt_diag_persistent.last_packed;
     }
 
-    // 2026-05-20 bisect probe.
     runtime_diag_progress(0xB0, 0, 0);
 
-    // 2026-05-20 bisect: STUB=1 short-circuits runtime_init's body.
-    // With STUB=1, USB enumeration tells us the crash is below this
-    // point. The prior-boot snapshot capture above survives so a klippy
-    // status frame can tell us the last marker the crashing firmware
-    // wrote.
-#define RUNTIME_INIT_STUB 0  /* DIAG: 1 stubs runtime_init for bisect */
+#define RUNTIME_INIT_STUB 0  /* DIAG: 1 stubs runtime_init for crash bisect */
 #if RUNTIME_INIT_STUB
     runtime_diag_progress(0xBF, 0, 0xCAFE);
     return;
 #endif
 
-    runtime_diag_progress(0xB1, 0, 0);  // about to call runtime_handle_create
+    runtime_diag_progress(0xB1, 0, 0);
     runtime_handle = runtime_handle_create();
     if (!runtime_handle) {
-        // Init failed — leave liveness flag at default (1 = OK) but handle unset;
-        // calls into the runtime will short-circuit safely.
-        runtime_diag_progress(0xB1, 1, 0xFFFF);  // handle_create returned NULL
+        runtime_diag_progress(0xB1, 1, 0xFFFF);
         return;
     }
-    runtime_diag_progress(0xB2, 0, 0);  // handle_create succeeded
+    runtime_diag_progress(0xB2, 0, 0);
     last_seen_tick_counter = runtime_handle_tick_counter(runtime_handle);
     last_progress_time = timer_read_time();
     last_seen_status = runtime_handle_status(runtime_handle);
-    runtime_diag_progress(0xB3, 0, 0);  // status reads done
+    runtime_diag_progress(0xB3, 0, 0);
 
-    // Initialize the modulation tick driver. On STM32H7 this configures AND
-    // arms TIM5 — it free-runs from boot now, with no arm gate (the old
-    // "first segment push enables via the producer protocol" path is gone).
-    // On Linux it spawns the host pthread that calls runtime_handle_tick at
-    // the configured sample rate.
-    runtime_diag_progress(0xB4, 0, 0);  // about to call runtime_tick_init
+    runtime_diag_progress(0xB4, 0, 0);
     runtime_tick_init();
-    runtime_diag_progress(0xB5, 0, 0);  // tick_init done
+    runtime_diag_progress(0xB5, 0, 0);
 
-    // Wire the periodic 1 kHz drain wake.
     runtime_drain_timer.func = runtime_drain_event;
     runtime_drain_timer.waketime = timer_read_time() + timer_from_us(1000);
     sched_add_timer(&runtime_drain_timer);
 
-    // Phase 11 §5.3: anchor the periodic-status emit timer so the first
-    // status frame fires within one period of boot. The static `0` default
-    // works fine in production where `timer_read_time()` quickly exceeds
-    // the period; under CONFIG_KALICO_SIM with the software CYCCNT it can
-    // take a noticeable fraction of a real-time second to advance one
-    // period, but the gate self-corrects on the second iteration.
     last_status_emit_time = timer_read_time();
 }
 DECL_INIT(runtime_init);
@@ -355,19 +215,13 @@ runtime_drain(void)
     if (!runtime_handle) return;
     if (!sched_check_wake(&runtime_drain_wake)) return;
 
-    // Diag heartbeat for runtime_drain. Threshold: 50 ms (engine drain is
-    // expected to run ~1 kHz under load).
     diag_task_heartbeat(diag_slot_rt_drain_calls(),
                         diag_slot_rt_drain_last_tick(),
                         diag_slot_rt_drain_max_gap(),
                         timer_from_us(50000),
                         0); // no event tag — runtime_drain idle gaps are normal
 
-    // Liveness check. Only meaningful when the runtime is RUNNING — the gate
-    // is keyed on RUNNING status, not on the ISR being off. (TIM5 free-runs
-    // from boot, so the ISR and tick_counter advance even in IDLE/DRAINED;
-    // the liveness logic just doesn't act unless status == RUNNING.) We
-    // refresh the last_progress_time anchor in non-RUNNING states so a state
+    // Liveness: only acts on RUNNING; refreshes anchor in other states so a
     // transition INTO RUNNING doesn't immediately trip on a stale anchor.
     uint32_t cur_counter = runtime_handle_tick_counter(runtime_handle);
     uint32_t cur_time = timer_read_time();
@@ -385,93 +239,48 @@ runtime_drain(void)
         last_seen_tick_counter = cur_counter;
     }
 
-    // FAULT → also block kicks. Emit one-shot kalico_fault event if the
-    // engine just transitioned INTO Fault since the last drain (so the host
-    // gets a single notification, not a 1 kHz spam stream).
+    // One-shot kalico_fault emit on FAULT transition; also block watchdog kicks.
     if (cur_status == 3 /* FAULT */) {
         runtime_liveness_ok = 0;
         if (prev_engine_status != 3 /* FAULT */) {
             int32_t fault_code = runtime_handle_last_error(runtime_handle);
             uint32_t fault_detail = runtime_handle_fault_detail(runtime_handle);
-            // segment_id carries the -311 TickIntervalExceeded stacked PC (the
-            // exception-frame return address captured at TIM5 entry: the
-            // instruction the interrupted context was about to execute, i.e.
-            // the code that held the CPU/PRIMASK across the late tick). 0 for
-            // any other fault. Feed it to addr2line to name the blocking code.
-            // The stacked exception number and the legacy dispatch-history func
-            // are also captured in SharedState (tick_blocker_exc /
-            // tick_blocker_func) if a fuller picture is needed.
+            // tick_blocker_pc: stacked PC from TIM5 exception frame on -311 path.
+            // Feed to addr2line to identify the code holding the CPU at the late tick.
             uint32_t tick_blocker_pc = runtime_handle_tick_blocker_pc(runtime_handle);
             kalico_native_emit_fault_event((uint16_t)fault_code, fault_detail,
                                            tick_blocker_pc);
         }
     }
 
-    // Hard-fault escalation (spec 2026-05-28 §3.4). The runtime status machine
-    // is dormant, so we key off last_error directly: on a fresh nonzero fault
-    // code, notify the host with the specifics, then enter Klipper's global
-    // shutdown — the single stop state. shutdown() does irq_disable()+longjmp
-    // back to sched_main; that is safe HERE in foreground (DECL_TASK context)
-    // but NOT from the ISR/Rust tick path, which is why escalation lives in this
-    // drain rather than at the fault site. The edge guard matters because after
-    // shutdown() longjmps, sched_main resumes run_tasks() and this drain can run
-    // once more with last_error still latched; last_acted_error is stored before
-    // shutdown() (and survives the longjmp as a static), so the trailing pass is
-    // suppressed instead of re-emitting + re-shutting-down.
-    // (The cur_status == 3 block above is dormant — runtime_status is never set
-    // away from Idle today — so this last_error path is the live escalation.)
+    // Live fault escalation: emit + Klipper shutdown on fresh nonzero last_error.
+    // shutdown() is safe in foreground (DECL_TASK) but NOT from ISR.
+    // last_acted_error (static) suppresses re-emit on the post-longjmp trailing pass.
     static int32_t last_acted_error;
     int32_t cur_error = runtime_handle_last_error(runtime_handle);
     if (cur_error != 0 && cur_error != last_acted_error) {
         last_acted_error = cur_error;
         uint32_t fdetail = runtime_handle_fault_detail(runtime_handle);
-        // Segment ids are gone (piece-ring model); the legacy segment-id slot
-        // now carries the -311 TickIntervalExceeded stacked PC (the
-        // exception-frame return address captured at TIM5 entry: the
-        // instruction the interrupted context was about to execute, i.e. the
-        // code that held the CPU/PRIMASK across the late tick). 0 for any
-        // other fault. Feed it to addr2line to name the blocking code. The
-        // stacked exception number and the legacy dispatch-history func are
-        // also in SharedState (tick_blocker_exc / tick_blocker_func).
         uint32_t tick_blocker_pc = runtime_handle_tick_blocker_pc(runtime_handle);
         kalico_native_emit_fault_event((uint16_t)cur_error, fdetail,
                                        tick_blocker_pc);
-        // Belt-and-suspenders: persist the fault code + detail into the
-        // BKPSRAM diagnostic ring BEFORE shutdown() resets the USB stack.
-        // The ring survives a soft reset and is emitted by fault_handler_
-        // report_task on the next boot as `prior_diag_ring ... tag 8`.
-        // This captures the numeric code even when the USB-CDC FaultEvent
-        // frame is lost (shutdown → USB drop race). Readable without sudo:
-        // grep 'prior_diag_ring.*tag 8' ~/printer_data/logs/klippy.log
+        // Persist into BKPSRAM ring before shutdown resets the USB stack.
         diag_ring_push(DIAG_EV_RUST_FAULT, (uint32_t)cur_error, fdetail);
         runtime_liveness_ok = 0;
         shutdown("kalico runtime fault");
     }
 
     if (cur_status != prev_engine_status) {
-        // Diag: capture every engine state transition with the engine's
-        // own tick_counter as temporal context. Catches the hypothesised
-        // "engine briefly armed in IRQ then reverted" scenario by virtue
-        // of having multiple xitions in tight succession.
         diag_record_engine_xition(prev_engine_status, cur_status, cur_counter);
     }
     prev_engine_status = cur_status;
-
-    // Track last status (used by future LED hook on a non-SWD pin).
     if (cur_status != last_seen_status) {
         last_seen_status = cur_status;
     }
 }
 DECL_TASK(runtime_drain);
 
-// Single stop state (spec 2026-05-28): TIM5 goes off when Klipper shuts down.
-// The dedicated step-output timer is a hardware timer (not on the SysTick
-// software-timer queue), so sched_timer_reset no longer touches step emission;
-// runtime_tick_disable() stops the TIM5 producer, after which no new steps are
-// pushed and the step-output timer naturally parks itself (empty owned queues
-// → KALICO_STEP_OUTPUT_DISABLE). This also halts the now-pointless ISR compute
-// (and avoids Renode USART2 starvation). Re-armed on FIRMWARE_RESTART via
-// runtime_tick_init.
+// TIM5 off on Klipper shutdown; step-output timer parks itself (no new steps pushed).
 void
 runtime_tick_shutdown(void)
 {
@@ -479,28 +288,17 @@ runtime_tick_shutdown(void)
 }
 DECL_SHUTDOWN(runtime_tick_shutdown);
 
-// Phase 11 Task 11.1 §5.3 periodic 10 Hz `kalico_status_v6` frame.
-// Background task that polls the wake flag and emits a status frame at the
-// 10 Hz cadence. Distinct from runtime_drain — this task does not depend on
-// trace-ring state, so it keeps publishing status even when the engine is
-// Idle/Drained and runtime_drain has nothing to do.
 void
 runtime_status_drain(void)
 {
     if (!runtime_handle) return;
     uint32_t now = timer_read_time();
-    // Spec §5.3: 10 Hz cadence. The cast through int32_t handles u32 wrap
-    // (~8.3 s at 520 MHz, ~83 s in sim) — at 100 ms cadence the difference
-    // fits well inside a signed window.
     const uint32_t status_period_ticks = CONFIG_CLOCK_FREQ / 10;
     if ((int32_t)(now - last_status_emit_time) < (int32_t)status_period_ticks)
         return;
     last_status_emit_time = now;
     send_status_heartbeat();
 
-    // Diag heartbeat for the status emit task. Threshold: 200 ms (we run
-    // at 10 Hz so a 200 ms gap means we missed two cycles, which is what
-    // we expect during the 500 ms stall).
     diag_task_heartbeat(diag_slot_rt_status_calls(),
                         diag_slot_rt_status_last_tick(),
                         diag_slot_rt_status_max_gap(),
@@ -508,9 +306,6 @@ runtime_status_drain(void)
                         0); // no event tag — emit gap shows up as missing emits
 
 #if defined(__linux__) || defined(__APPLE__)
-    // Sim-only: dump stepper counters so a test that lost its klippy
-    // bridge_call link can still observe motion progress via the elf log.
-    // Phase 4 test polls this to confirm GATE GREEN.
     uint8_t status = runtime_handle_status(runtime_handle);
     int32_t c0 = kalico_runtime_get_stepper_count(runtime_handle, 0);
     int32_t c1 = kalico_runtime_get_stepper_count(runtime_handle, 1);
@@ -526,29 +321,8 @@ runtime_status_drain(void)
 }
 DECL_TASK(runtime_status_drain);
 
-// DECL_COMMAND surface — test harness loads curves and pushes segments.
-//
-// Klipper's %*s blob format consumes TWO args slots per blob: a length
-// followed by an encoded pointer that must be reconstituted via
-// `command_decode_ptr` (declared in command.h). See src/i2ccmds.c and
-// src/spicmds.c for canonical usage. Each f32 scalar control point is
-// 4 bytes; each knot is a single f32 (4 bytes). We derive `n_cp`,
-// `n_knots` from the blob byte-lengths and validate before calling
-// into Rust.
-// Cubic-only revision (2026-05-20 stepping redesign): the
-// `runtime_aligned_cps` / `runtime_aligned_knots` scratch buffers that backed
-// the legacy NURBS LoadCurve path were removed along with the NURBS upload
-// command. Cubic-piece uploads (LoadCurveCubic, kalico_dispatch.c) carry
-// fixed-stride 20-byte monomial pieces and do not need pre-aligned host-side
-// scratch.
-
-
-// Command surface (query_status, arm_endstop, disarm_endstop,
-// stream_flush, clock_sync_request) and the endstop GPIO sampler
-// hot-path (`runtime_endstop_sample_pins` + `endstop_pin_table`) live
-// in src/runtime_commands.c. This file keeps only lifecycle
-// (init/drain), sibling drains (status_drain, endstop_drain), and
-// shared globals.
+// Command surface and endstop GPIO sampler live in src/runtime_commands.c.
+// This file: lifecycle (init/drain), sibling drains, shared globals.
 
 DECL_CTR("_DECL_OUTPUT "
          "kalico_endstop_tripped arm_id=%u "
@@ -556,11 +330,6 @@ DECL_CTR("_DECL_OUTPUT "
          "trip_source_idx=%c fmt_version=%c "
          "stepper_count=%c stepper_data=%*s");
 
-// Periodic task: drain runtime-side trip events into async msgproto
-// `kalico_endstop_tripped` outputs. Modeled on `runtime_status_drain` —
-// runs at task cadence. Trips are infrequent (one per homing); the
-// in-buffer max length matches kalico-c-api's KALICO_TRIP_EVENT_V1_MAX_LEN
-// (15 header + 8 steppers * 5 = 55 bytes).
 void
 runtime_endstop_drain(void)
 {
@@ -590,67 +359,26 @@ runtime_endstop_drain(void)
 }
 DECL_TASK(runtime_endstop_drain);
 
-// kalico_fault is an MCU-emitted async event. It rides the kalico-native
-// events channel via kalico_native_emit_fault_event in src/kalico_dispatch.c.
-// The periodic StatusHeartbeat (send_status_heartbeat) carries per-axis
-// consumed-count credit flow and engine state.
-// Sim-only commands and the sim drain-wake hook live in
-// src/runtime_sim_commands.c (CONFIG_KALICO_SIM). Spec §4.5.
-
-// Cycle-count bench command + storage moved to src/generic/runtime_bench.c
-// (selected by CONFIG_RUNTIME_BENCH). The H7 ISR calls the unconditional
-// `runtime_bench_capture` hook; the weak fallback in
-// src/runtime_tick_weak.c resolves when bench is disabled.
-
-// Forward decl: defined in src/stepper.c.
 extern void runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps);
 
 // ===========================================================================
-// Dedicated step-output timer wiring (motion-tick priority-lift Step 1)
+// Step-output timer wiring (TIM3 on H7, TIM2 on F4)
 // ===========================================================================
-//
-// Step emission moved OFF Klipper's per-axis SysTick software timers ONTO a
-// single dedicated hardware step-output timer (TIM3 on H7, TIM2 on F4 — set
-// up per-family in src/stm32/runtime_tick_{h7,f4}.c). Its ISR calls the Rust
-// body `kalico_step_output_event()` (rust/runtime/src/per_axis_timer.rs),
-// which scans the owned-axis step_queues, emits every step whose `cycle_abs`
-// has arrived (bounded per dispatch), and returns the soonest remaining head
-// across owned axes — or KALICO_STEP_OUTPUT_DISABLE (u32::MAX) to switch the
-// timer off (event-driven: an empty all-owned set parks the timer, no idle
-// poll). The per-family arm helper (step_output_timer_arm) reprograms the
-// compare register; on 16-bit TIM3 it chains the far re-arm in ≤0xF000 chunks.
-//
-// Same-priority invariant: the step-output timer and TIM5 producer share
-// KALICO_MOTION_NVIC_PRIO (see src/generic/kalico_nvic_prio.h). Same-number
-// Cortex-M interrupts cannot nest, so (a) the step_queues SPSC stays
-// non-racing and (b) the producer kick below can poke the compare register
-// from the TIM5 ISR without racing the step-output ISR's own re-arm.
+// ISR calls kalico_step_output_event() (per_axis_timer.rs): emits due steps,
+// returns soonest remaining head or DISABLE. Same NVIC priority as TIM5 —
+// SPSC non-racing, kick from TIM5 ISR is safe (see kalico_nvic_prio.h).
 
-// Sentinel mirrored from rust/runtime/src/per_axis_timer.rs::STEP_OUTPUT_DISABLE.
+// Sentinel mirrored from per_axis_timer.rs::STEP_OUTPUT_DISABLE.
 #define KALICO_STEP_OUTPUT_DISABLE 0xFFFFFFFFu
 
-// Per-family hardware backend (src/stm32/runtime_tick_{h7,f4}.c, host stub in
-// src/linux/runtime_tick_host.c). `step_output_timer_arm` (re)programs the
-// one-shot compare to fire at the absolute cycle `cycle_abs`, or disables the
-// timer when `cycle_abs == KALICO_STEP_OUTPUT_DISABLE`. `step_output_timer_armed_target`
-// returns the currently-armed absolute compare (only meaningful when running).
 extern void step_output_timer_arm(uint32_t cycle_abs);
 extern uint32_t step_output_timer_armed_target(void);
 extern uint8_t step_output_timer_is_running(void);
 
-// Bitmask of axes this MCU owns (drives). Bit N set ⇒ axis N participates in
-// the Rust soonest-across-owned scan. Set by `arm_per_axis_step_timer` at
-// configure time (kept name for the stepper.c call site) and additionally by
-// the producer kick (so a push to a never-configured-here axis is impossible
-// by construction, but the bit is idempotent). File-scope; read by Rust via
-// the getter below.
+// Bitmask of axes this MCU owns; read by Rust to scope the soonest-across scan.
 static uint8_t step_output_owned_mask;
 
-// Owned-axis mask getter — read by the Rust step-output consumer
-// (kalico_step_output_event) to scope its soonest-across scan to this MCU's
-// axes. used, externally_visible: referenced only from the Rust archive, so
-// --gc-sections / -fwhole-program LTO would otherwise drop it (same link trap
-// as runtime_emit_step_pulses / timer_read_time).
+// used,externally_visible: referenced only from Rust; must survive --gc-sections LTO.
 __attribute__((used, externally_visible))
 uint8_t
 kalico_step_output_owned_mask(void)
@@ -658,13 +386,7 @@ kalico_step_output_owned_mask(void)
     return step_output_owned_mask;
 }
 
-// Mark an axis as owned by this MCU. Called per-axis from
-// `command_kalico_configure_axis` (stepper.c) so the soonest-across scan only
-// covers axes this MCU actually drives — an unowned axis must never emit. The
-// step-output timer itself is event-driven: it stays disabled until the first
-// owned step arrives (producer kick), so registering ownership alone does NOT
-// arm it (no idle-poll load — the hazard the old per-axis SysTick timers had).
-// Idempotent (just sets a bit), so repeat configure_axis calls are safe.
+// Register axis ownership for the soonest-across scan. Idempotent; does NOT arm the timer.
 void
 arm_per_axis_step_timer(uint8_t axis_idx)
 {
@@ -673,46 +395,24 @@ arm_per_axis_step_timer(uint8_t axis_idx)
     step_output_owned_mask |= (uint8_t)(1u << axis_idx);
 }
 
-// Producer-side kick (called from the Rust TIM5 ISR via `dispatch_axis` when a
-// previously-empty owned queue gets its first step). (Re)arm the dedicated
-// step-output timer to fire no later than `cycle_abs`: if the timer is
-// disabled, arm it; if it is already armed at a LATER target, pull the compare
-// forward. Wrap-safe via the signed-delta compare.
-//
-// Soundness: runs from the TIM5 ISR at KALICO_MOTION_NVIC_PRIO, identical to
-// the step-output timer's own ISR priority. Same-number Cortex-M interrupts
-// cannot nest, so the step-output ISR is never mid-`step_output_timer_arm`
-// when this poke runs — the compare register write is non-racing.
-//
-// __attribute__((used, externally_visible)): referenced ONLY from the Rust
-// archive (kalico_runtime.a). Without it, --gc-sections / -fwhole-program LTO
-// drops the symbol and the H7 link fails with an undefined reference (same
-// trap as sched_last_dispatched_func / timer_read_time / runtime_emit_step_pulses).
+// (Re)arm the step-output timer no later than cycle_abs (producer kick from TIM5 ISR).
+// Same-priority as step-output ISR: no nesting, compare write is non-racing.
+// used,externally_visible: referenced only from Rust archive; must survive LTO.
 __attribute__((used, externally_visible))
 void
 kalico_kick_step_output(uint8_t axis_idx, uint32_t cycle_abs)
 {
     if (axis_idx >= 4)
         return;
-    // Belt-and-suspenders: a kick implies the axis is producing, so it must be
-    // in the owned set the consumer scans.
     step_output_owned_mask |= (uint8_t)(1u << axis_idx);
 
     if (!step_output_timer_is_running()) {
         step_output_timer_arm(cycle_abs);
         return;
     }
-    // Timer already running: only pull the compare forward if the new step is
-    // sooner than the currently-armed target (wrap-safe signed compare).
+    // Pull compare forward only if the new step is sooner (wrap-safe signed compare).
     uint32_t cur = step_output_timer_armed_target();
     if ((int32_t)(cycle_abs - cur) < 0)
         step_output_timer_arm(cycle_abs);
 }
 
-// Task 14 SPI queue drain removed — dispatch_phase now calls
-// phase_stepping_write_xdirect directly from the ISR. The SPSC queue
-// could never keep up (the sample-rate ISR × 4 motors produces far more
-// entries/sec than the ~10K/sec a blocking-SPI drain could process). Direct
-// ISR write with
-// skip-not-block (phase_spi_try_acquire) matches mass3d/kalico's
-// working architecture.

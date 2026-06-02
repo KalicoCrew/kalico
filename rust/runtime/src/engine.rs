@@ -642,26 +642,16 @@ impl Default for Engine {
 
 // ── get_position_and_velocity (per spec §4.2) ─────────────────────────────────
 
-/// ⚠️ DO NOT MODIFY THIS FUNCTION WITHOUT DIRECT CONFIRMATION FROM THE USER. ⚠️
+/// WARNING: DO NOT MODIFY WITHOUT EXPLICIT SIGN-OFF FROM THE USER.
 ///
-/// This function and its helpers (`get_piece_for_time`, `arm_and_load`) encode
-/// four-branch semantics whose exact shape is load-bearing:
+/// The four-branch semantics are load-bearing:
+/// 1. In-window piece → short-circuit before walk/fault (avoids spurious fault on long hold).
+/// 2. Ring empty → `None` → idle/underrun.
+/// 3. Cold-adopted piece too far in past → hard fault. Fault-check is BEFORE the
+///    `now < end` return in `get_piece_for_time`; reversing that order silently drops it.
+/// 4. Landed piece → `arm_and_load` (the ONLY `to_monomial` call on the hot path).
 ///
-/// 1. **Continuing in-window piece** — branch 1 short-circuits before the
-///    walk/fault so a long hold is never charged a fault.
-/// 2. **Ring empty** — `get_piece_for_time` returns `None` → idle/underrun.
-/// 3. **Adopted piece starts > 2 ticks in the past** — hard fault.
-///    Order inside `get_piece_for_time`: fault-check BEFORE `now < end` return.
-///    Reversing that order silently drops the cold-adoption fault.
-/// 4. **Arm the landed piece** — `arm_and_load` is the ONLY `to_monomial` call
-///    on the hot path; walked-past pieces are never converted.
-///
-/// The split (walk without converting + load once) eliminates the per-tick
-/// `to_monomial` cost for sub-tick burst traversal that caused the `-311`
-/// (`fault_detail 2` ISR overrun) on the F446.
-///
-/// Do NOT reorder the fault/window check inside `get_piece_for_time`, re-add
-/// `arm_next`, or gate the fault on "first load only" without explicit sign-off.
+/// Do NOT reorder fault/window check, re-add `arm_next`, or gate the fault without sign-off.
 fn get_position_and_velocity(
     axis: &mut AxisState,
     now: u64,
@@ -718,13 +708,6 @@ fn get_position_and_velocity(
 /// CRITICAL: fault-check runs BEFORE the `now < end` return so that a
 /// cold-adopted front is always checked. Inverting the order silently drops
 /// the cold-adoption fault.
-///
-/// Tolerance basis (sign-off approved 2026-06-01): a fixed clock-skew budget
-/// over the pump's bounded commit-lead (`MAX_START_IN_PAST_SECS`) plus one
-/// sample period for adoption quantization (a piece is picked up on the first
-/// tick at or after its start, so up to ~1 tick late is legitimate at any
-/// rate). The budget is a fixed TIME — not a multiple of `sample_period_cycles`
-/// — so raising the sample rate does not shrink the drift allowance.
 fn get_piece_for_time(
     axis: &mut AxisState,
     storage: &[PieceEntry],
@@ -734,12 +717,11 @@ fn get_piece_for_time(
     shared: &SharedState,
     axis_idx: usize,
 ) -> Option<usize> {
-    // Max tolerated "start in the past": a clock-skew budget over the bounded
-    // pump commit-lead (a fixed TIME, NOT a multiple of the sample period — so
-    // raising the sample rate does not shrink the drift allowance) + one sample
-    // period for adoption quantization (a piece is picked up on the first tick
-    // at/after its start, so up to ~1 tick late is legitimate at any rate).
-    const MAX_START_IN_PAST_SECS: f32 = 200e-6; // tune vs the pump MAX_LEAD_SECS (>= expected drift over the lead)
+    // NOT PROVEN / NOT FINAL: the -308 drift tolerance. Related to pump's
+    // MAX_LEAD_SECS (motion-bridge/src/pump.rs) through clock drift, but the
+    // correct value and ratio are not yet established. Do not couple them
+    // numerically — that would hide a new magic number.
+    const MAX_START_IN_PAST_SECS: f32 = 200e-6;
     let drift_budget = (MAX_START_IN_PAST_SECS * cycles_per_second) as u64;
     let fault_tolerance = drift_budget + u64::from(sample_period_cycles);
     loop {

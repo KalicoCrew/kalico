@@ -458,11 +458,9 @@ pub mod exports {
         }
     }
 
-    /// Read the address of the scheduler timer callback that was executing
-    /// when the most recent `-311 TickIntervalExceeded` fault latched. `0`
-    /// for any other fault (or before any `-311` fires). Wired into the
-    /// fault event's `segment_id` field by `runtime_tick.c` so `addr2line`
-    /// can name the blocking callback from the host journal.
+    /// Read the scheduler dispatch-history func addr at the most recent `-311`.
+    /// Reference-only, not wired into the fault event — `runtime_handle_tick_blocker_pc`
+    /// carries the addr2line target instead. `0` before any `-311` fires.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn runtime_handle_tick_blocker(rt: *mut KalicoRuntime) -> u32 {
         if rt.is_null() {

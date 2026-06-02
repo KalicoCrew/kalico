@@ -573,12 +573,11 @@ pub trait PieceSink: Send {
 // ── run_pump ─────────────────────────────────────────────────────────────────
 
 /// Commit-lead horizon: the pump will not commit a piece whose `start_time` is
-/// more than this many seconds ahead of the MCU's projected clock-now. This
-/// bounds the extrapolation error from linear clock-sync estimates, preventing
-/// pieces from arriving in the MCU's past once the estimate drifts.
+/// more than this many seconds ahead of the MCU's projected clock-now.
 ///
-/// Tweak this against actual drift observations. Keep it a plain const — no
-/// config knob, so the value is always visible in source history.
+/// NOT PROVEN / NOT FINAL: related to engine's MAX_START_IN_PAST_SECS
+/// (rust/runtime/src/engine.rs) through clock drift, but the correct value and
+/// ratio are not established. Do not couple them numerically.
 const MAX_LEAD_SECS: f64 = 1.0;
 
 /// Run the pump until `Shutdown`. `ring_depth_of` supplies each ring's depth
@@ -802,12 +801,11 @@ impl PieceSink for WireSink {
         start_slot: u16,
         new_head: u32,
     ) -> Result<i32, String> {
-        // schedule() caps frames at MAX_PER_FRAME = 255, so this is unreachable
-        // in the production path; the assert guards against callers bypassing
-        // schedule() and hitting a silent truncation.
+        // schedule() caps frames at MAX_PER_FRAME (currently 32); this guards
+        // against callers bypassing schedule() and hitting a silent truncation.
         debug_assert!(
             pieces.len() <= 255,
-            "PushPieces frame exceeds u8 piece_count; schedule() must cap at 255"
+            "PushPieces frame exceeds u8 piece_count; schedule() must cap at MAX_PER_FRAME"
         );
         let io = self
             .ios
