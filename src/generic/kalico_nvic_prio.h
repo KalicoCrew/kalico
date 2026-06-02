@@ -17,14 +17,6 @@
 // and consumer can never interleave). If a future change ever splits their
 // priorities, the volatile SPSC must become true-atomic first. Both timers read
 // this one constant, so they move together by construction.
-//
-// HISTORY (2026-06-01): lifting the motion pair above USB / SysTick was tried as
-// a -311 TickIntervalExceeded fix and REVERTED. It never fixed -311 (root cause
-// was a clock-domain miscalibration — TIM5's ARR was programmed from the DWT/CPU
-// clock while its kernel clock is CONFIG_CLOCK_FREQ/2; fixed in
-// runtime_tick_{h7,f4}.c) and it broke USB-CDC liveness under sustained motion.
-// Priorities are back to the pre-experiment baseline. Heater-off safety
-// (MCU-side max_duration + IWDG) is priority-independent regardless.
 
 // TIM5 motion-sample producer + the dedicated step-output consumer timer.
 #define KALICO_MOTION_NVIC_PRIO 2

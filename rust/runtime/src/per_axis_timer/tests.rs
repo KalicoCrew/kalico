@@ -1,8 +1,6 @@
-//! Host tests for the step-output timer scheduler logic (motion-tick
-//! priority-lift Step 1). Fail-loud-and-early: the soonest-across-owned scan,
-//! wrap-safe selection, due/late emit, per-dispatch cap, all-empty disable, and
-//! unowned-axis isolation are all exercised here. The actual TIM3/TIM2 hardware
-//! firing is MCU-only and bench-verified.
+//! Host tests for the step-output timer body. Covers: soonest-across-owned
+//! scan, wrap-safe selection, due/late emit, per-dispatch cap, all-empty
+//! disable, and unowned-axis isolation. Hardware firing is MCU-only.
 
 use super::test_hooks::{queue_for_axis, reset, set_now, set_owned_mask, take_emits};
 use super::{MAX_STEPS_PER_EVENT, STEP_OUTPUT_DISABLE, kalico_step_output_event};

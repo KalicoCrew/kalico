@@ -27,41 +27,30 @@ unsafe extern "C" {
     fn phase_stepping_write_xdirect(motor_idx: u8, coil_a: i16, coil_b: i16);
 }
 
-// C-side scheduler accessor: the `func` of the most-recently dispatched
-// scheduler timer. Read only on the `-311 TickIntervalExceeded` path to name
-// the callback that blocked the late TIM5 tick. A plain register read with no
-// side effects — `no_std`-safe to call from the ISR. Present only in the MCU
-// firmware link (and the kalico-sim shim); host/test builds substitute 0.
+// C-side scheduler accessor for the most-recently-dispatched timer func.
+// Read only on the `-311` fault path. MCU/sim link only; host/test → 0.
 #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
 unsafe extern "C" {
     fn sched_last_dispatched_func() -> u32;
 }
 
-// C-side capture of the TIM5 exception stack frame (src/stm32/runtime_tick_*.c
-// naked-wrapper shim). Read only on the `-311 TickIntervalExceeded` path:
-//   - `runtime_tim5_stacked_pc()` returns the stacked return-address (PC) — the
-//     instruction that was about to execute when TIM5 preempted/resumed, i.e.
-//     the code that held the CPU / global interrupt mask across the late tick.
-//   - `runtime_tim5_stacked_exc()` returns the stacked xPSR exception number
-//     (`xPSR & 0x1FF`): 0 = foreground/thread was interrupted; nonzero = that
-//     IRQ number was the interrupted context (TIM5 tail-chained behind it).
-// Both are plain pointer reads of the captured frame, side-effect-free and
-// `no_std`-safe to call from the ISR. Present only in the MCU firmware link
-// (and the kalico-sim shim); host/test builds substitute 0.
+// Stacked exception-frame captures from the TIM5 naked-wrapper shim
+// (src/stm32/runtime_tick_*.c). Read only on the `-311` fault path:
+//   - `runtime_tim5_stacked_pc()`: instruction that was about to execute when
+//     TIM5 preempted — the code that held the CPU/PRIMASK across the late tick.
+//   - `runtime_tim5_stacked_exc()`: stacked xPSR exception number (0 = thread).
 #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
 unsafe extern "C" {
     fn runtime_tim5_stacked_pc() -> u32;
     fn runtime_tim5_stacked_exc() -> u32;
 }
 
-/// Read the stacked exception-frame return address (PC) captured at TIM5
-/// handler entry. Returns 0 on host/test builds.
+/// Stacked PC at TIM5 entry — the instruction that held the CPU across the late
+/// tick. Returns 0 on host/test builds.
 #[inline]
 fn tim5_stacked_pc() -> u32 {
     #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
-    // SAFETY: `runtime_tim5_stacked_pc` is a side-effect-free C function that
-    // reads a captured volatile frame pointer and returns a `u32`. Safe from
-    // the TIM5 ISR.
+    // SAFETY: side-effect-free volatile frame read. Safe from the TIM5 ISR.
     unsafe {
         runtime_tim5_stacked_pc()
     }
@@ -71,14 +60,12 @@ fn tim5_stacked_pc() -> u32 {
     }
 }
 
-/// Read the stacked xPSR exception number captured at TIM5 handler entry.
-/// Returns 0 on host/test builds.
+/// Stacked xPSR exception number at TIM5 entry (0 = thread). Returns 0 on
+/// host/test builds.
 #[inline]
 fn tim5_stacked_exc() -> u32 {
     #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
-    // SAFETY: `runtime_tim5_stacked_exc` is a side-effect-free C function that
-    // reads a captured volatile frame pointer and returns a `u32`. Safe from
-    // the TIM5 ISR.
+    // SAFETY: side-effect-free volatile frame read. Safe from the TIM5 ISR.
     unsafe {
         runtime_tim5_stacked_exc()
     }
@@ -88,15 +75,12 @@ fn tim5_stacked_exc() -> u32 {
     }
 }
 
-/// Read the C scheduler's newest dispatch-history `func` address (the
-/// callback that just blocked the ISR). Returns 0 on host/test builds where
-/// no C scheduler is linked.
+/// Most-recently-dispatched scheduler timer func address. Returns 0 on
+/// host/test builds (no C scheduler linked).
 #[inline]
 fn last_dispatched_func() -> u32 {
     #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
-    // SAFETY: `sched_last_dispatched_func` is a side-effect-free C function
-    // that reads a static ring-buffer index and returns a `u32`. Safe to call
-    // from the TIM5 ISR.
+    // SAFETY: side-effect-free ring-buffer index read. Safe from the TIM5 ISR.
     unsafe {
         sched_last_dispatched_func()
     }
@@ -253,18 +237,10 @@ fn dispatch_pulse(
 
     let dir: i8 = if signed_steps > 0 { 1 } else { -1 };
 
-    // Record whether the consumer queue was empty BEFORE we push. If it was,
-    // the consumer timer for this axis is parked at its long idle fallback
-    // (~100 ms); after pushing the first entry we must kick it forward to the
-    // earliest step's `cycle_abs` so the step fires promptly. When the queue
-    // is already non-empty (steady continuous motion) the consumer is already
-    // scheduled at the queue front, so we skip the kick to avoid per-tick
-    // sched del/add churn.
-    // SAFETY: `queue_ptr` is supplied by the TIM5 ISR; this core is the sole
-    // consumer-side reader for `peek` purposes too (the consumer timer cannot
-    // run concurrently with the TIM5 ISR — same NVIC priority).
+    // If the queue was empty, the consumer timer is parked; kick it to the
+    // first step after pushing. Non-empty means it is already scheduled.
+    // SAFETY: sole consumer at same NVIC priority — cannot race with peek.
     let was_empty = unsafe { queue_peek(queue_ptr) }.is_none();
-    // Earliest pushed step time = new queue front when the queue was empty.
     let first_cycle_abs = times.first().copied();
 
     let mut steps_committed: i32 = 0;
@@ -283,9 +259,7 @@ fn dispatch_pulse(
         if push_res.is_err() {
             let committed_delta = steps_committed * (i32::from(dir));
             commit_position_count(axis, axis_idx, shared, committed_delta);
-            // If the queue was empty and we managed to push ≥1 entry before
-            // overflowing, still kick the parked consumer so the steps we did
-            // commit fire promptly rather than waiting out the idle park.
+            // Kick even on overflow if ≥1 entry committed, so those steps fire.
             if was_empty && steps_committed > 0 {
                 if let Some(wt) = first_cycle_abs {
                     kick_per_axis_timer(axis_idx, wt);
@@ -298,8 +272,7 @@ fn dispatch_pulse(
         steps_committed += 1;
     }
 
-    // Idle→active kick: the queue was empty and we pushed at least one entry,
-    // so the parked consumer timer must be repositioned to the first step.
+    // Idle→active: queue was empty, reposition parked consumer to first step.
     if was_empty && steps_committed > 0 {
         if let Some(wt) = first_cycle_abs {
             kick_per_axis_timer(axis_idx, wt);
@@ -491,15 +464,8 @@ pub fn isr_sample_tick(
         let gap = now.wrapping_sub(last);
         if period != 0 && gap > period * TICK_GAP_FAULT_MULT {
             let gap_ticks = (gap / period) as u32;
-            // Capture WHAT held the CPU across the late tick. The primary,
-            // reliable signal is the stacked exception-frame return address
-            // (the instruction TIM5 preempted/resumed) plus the stacked xPSR
-            // exception number (foreground vs. another ISR). The legacy
-            // software-timer dispatch-history guess is kept for reference.
-            // All stored before the fault code latches so a host reader
-            // observing the -311 always sees populated values. The stacked PC
-            // is surfaced via the fault event's segment_id field as the
-            // addr2line target.
+            // Store before the fault code latches so the host always sees
+            // populated values. Stacked PC is the primary addr2line target.
             shared
                 .tick_blocker_pc
                 .store(tim5_stacked_pc(), Ordering::Release);
@@ -536,28 +502,17 @@ pub fn isr_sample_tick(
 
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
-    // C-side producer→consumer kick (src/runtime_tick.c). (Re)arms the single
-    // dedicated step-output hardware timer's compare to `cycle_abs` if that is
-    // sooner than the currently-armed target — or arms it from disabled.
-    // Called from the TIM5 ISR on the idle→active transition (an owned queue
-    // went empty→non-empty) so the first step after an idle gap is not delayed.
-    //
-    // Race-free: the step-output timer is at the SAME NVIC priority as TIM5
-    // (motion-tick priority-lift Step 1 keeps them equal), so this compare-
-    // register poke from the TIM5 ISR can never interleave with the step-output
-    // ISR's own re-arm — same-priority interrupts do not nest on this core.
-    // Also registers the axis in the owned-axis mask the consumer scans.
+    // (Re)arm the step-output timer compare to `cycle_abs` (or arm from
+    // disabled) and register `axis_idx` in the owned-axis mask.
+    // Race-free: same NVIC priority as TIM5 — see kalico_nvic_prio.h.
     fn kalico_kick_step_output(axis_idx: u8, cycle_abs: u32);
 }
-/// (Re)arm the dedicated step-output timer to fire no later than `cycle_abs`
-/// (idle→active kick). No-op on host/test builds (no C timer linked).
+/// (Re)arm the dedicated step-output timer (idle→active kick). No-op on host/test.
 #[inline]
 fn kick_per_axis_timer(axis_idx: usize, cycle_abs: u32) {
     #[cfg(not(any(test, feature = "host")))]
-    // SAFETY: `kalico_kick_step_output` only writes a timer compare register
-    // (and an owned-mask bit). It runs at the same NVIC priority as the
-    // step-output ISR (cannot nest), so the compare write is non-racing when
-    // reached from the TIM5 ISR.
+    // SAFETY: writes only a timer compare register and an owned-mask bit;
+    // same NVIC priority as the step-output ISR so cannot interleave.
     unsafe {
         kalico_kick_step_output(axis_idx as u8, cycle_abs);
     }
@@ -566,9 +521,8 @@ fn kick_per_axis_timer(axis_idx: usize, cycle_abs: u32) {
         let _ = (axis_idx, cycle_abs);
     }
 }
-/// Read the DWT cycle counter. Delegates to `isr_phase::cyccnt()` — the sole
-/// `runtime_cyccnt_read` declaration lives there to avoid duplicate `extern "C"`
-/// symbols across compilation units.
+/// Read the DWT cycle counter. Delegates to `isr_phase::cyccnt()` — sole
+/// declaration there avoids duplicate `extern "C"` symbols at link time.
 #[inline]
 unsafe fn cyccnt_read() -> u32 {
     crate::isr_phase::cyccnt()

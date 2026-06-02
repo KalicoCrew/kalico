@@ -1104,13 +1104,7 @@ impl PyMotionBridge {
                         None
                     };
 
-                    // Criticality gate for the reactor's EXIT_ON_FAULT wedge
-                    // detector. An MCU is CRITICAL (drop ⇒ abort) only if it
-                    // is a kalico-native motion MCU AND klippy did not mark it
-                    // `is_non_critical`. A Klipper-protocol-only MCU (identify
-                    // timed out — by definition not a motion MCU, e.g. the
-                    // Beacon) is non-critical regardless. See
-                    // `KalicoHostIo::set_critical`.
+                    // Critical iff kalico-native motion MCU and not marked non-critical by klippy.
                     let critical = kalico_native_supported && !klippy_non_critical;
                     io.set_critical(critical);
                     log::info!(
@@ -1271,15 +1265,7 @@ impl PyMotionBridge {
             None
         };
 
-        // Criticality gate for the reactor's EXIT_ON_FAULT wedge detector.
-        // An MCU is CRITICAL (transport drop ⇒ process abort) only if it is a
-        // kalico-native motion MCU AND klippy did not mark it
-        // `is_non_critical`. A Klipper-protocol-only MCU (kalico_identify
-        // timed out — by definition not a motion MCU, e.g. the Beacon) is
-        // treated as non-critical regardless of config: its drop must not
-        // wedge the bench. Non-critical drops exit the reactor cleanly so
-        // klippy's own non-critical-disconnect / reconnect machinery handles
-        // recovery. See `KalicoHostIo::set_critical`.
+        // Critical iff kalico-native motion MCU and not marked non-critical by klippy.
         let critical = kalico_native_supported && !klippy_non_critical;
         host_io.set_critical(critical);
         log::info!(

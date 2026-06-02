@@ -261,14 +261,11 @@ impl EventDispatcher {
                     .dispatch(RuntimeEvent::CreditFreed(e));
             }
             RuntimeEvent::Fault(e) => {
-                // Log at warn immediately on receipt — this fires BEFORE
-                // shutdown() races with the USB-CDC drop, so the numeric
-                // code reaches the systemd journal even when the
-                // kalico_native FaultEvent frame is lost after reset.
-                // Readable without sudo: journalctl -u klippy -g KALICO-FAULT
-                // Decode the u16 wire value back to a signed fault code.
-                // The MCU encodes negative i32 codes as (i32 as i16) as u16
-                // (FaultCode::as_u16); reversing that is (u16 as i16) as i32.
+                // Log before shutdown() races with the USB-CDC drop so the
+                // fault code reaches the journal even if the FaultEvent frame
+                // is lost after reset. `journalctl -u klippy -g KALICO-FAULT`
+                // MCU wire encoding: negative i32 as (i32 as i16) as u16;
+                // reverse: (u16 as i16) as i32.
                 let signed_code = e.fault_code as i16 as i32;
                 log::warn!(
                     "[KALICO-FAULT] received FaultEvent \

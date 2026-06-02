@@ -90,11 +90,8 @@ usb_diag_read_out_ep(uint32_t *doepctl, uint32_t *doeptsiz, uint32_t *doepint)
     *doepint  = epo->DOEPINT;
 }
 
-// USB-CDC halt instrumentation (2026-06-01): poll OTG global + bulk-IN/OUT
-// endpoint state every foreground iteration so a USB drop under sustained
-// motion is captured (the MCU stays alive; only the host read fails). Plain
-// volatile MMIO reads — safe concurrently with the OTG ISR. Surfaced via the
-// prior_diag dump (prior_diag_summary_usb).
+// Poll OTG endpoint state every foreground iteration. Safe concurrent MMIO
+// reads; captured in the prior_diag dump (prior_diag_summary_usb).
 void
 usb_diag_poll_task(void)
 {
@@ -270,9 +267,7 @@ usb_send_bulk_in(void *data, uint_fast8_t len)
         return len;
     }
     if (ctl & USB_OTG_DIEPCTL_EPENA) {
-        // Wait for space to transmit — the previous IN packet is still pending
-        // (host has not drained it). Count it: a rising usb_in_busy_n under load
-        // is the direct onset signal for the USB-CDC halt.
+        // Previous IN packet still pending; count for USB-CDC halt onset detection.
         extern void diag_note_usb_in_busy(void);
         diag_note_usb_in_busy();
         OTGD->DAINTMSK |= 1 << USB_CDC_EP_BULK_IN;

@@ -25,11 +25,9 @@ extern "C" {
 //     because the host reads them back as i32), b = fault_detail.
 #define DIAG_EV_RUST_FAULT    8
 
-// ISR-phase breadcrumb values (2026-06-01). The Rust motion ISR writes
-// diag.rt_isr_phase at each phase boundary via runtime_set_isr_phase(); the
-// value live at an IWDG reset names the phase the freeze hung in (the byte is
-// in the persistent diag struct, so it survives the reset). These MUST match
-// the mirror constants in rust/runtime/src/{tick,engine,per_axis_timer}.rs.
+// ISR-phase breadcrumb values. Written by the Rust motion ISR via
+// runtime_set_isr_phase(); value at IWDG reset names the hung phase.
+// MUST match rust/runtime/src/isr_phase.rs.
 #define RT_PHASE_IDLE          0   // between ticks (foreground running)
 #define RT_PHASE_ISR_ENTER     1   // TIM5 Rust ISR body entered
 #define RT_PHASE_WIDEN         2   // clock widen + publish_widened_now
@@ -65,18 +63,12 @@ void diag_otg_account(uint32_t enter_cycles, uint32_t exit_cycles);
 // from the TIM5 ISR with the already-computed `after - before` cycle delta.
 void diag_runtime_tick_account(uint32_t cycles);
 
-// Per-phase ISR accounting (2026-06-01). Called from the Rust motion ISR with
-// DWT-cycle deltas to decompose the worst-case tick: walk = get_piece_for_time
-// ring-walk (cheap, no conversion); monomial = arm_and_load to_monomial
-// conversion (cold-load only). Surfaced as prior_diag_phase. Rust-only callers,
-// so these need external linkage preserved through LTO -fwhole-program.
+// Per-phase DWT accounting called from the Rust motion ISR. Rust-only callers —
+// must keep external linkage through LTO (-fwhole-program).
 void diag_walk_account(uint32_t cycles);
 void diag_monomial_account(uint32_t cycles);
 
-// ISR-phase breadcrumb setter (2026-06-01). The Rust motion ISR calls this at
-// each phase boundary with a RT_PHASE_* value; the value live in the persistent
-// diag struct at an IWDG reset names the phase the freeze hung in. Rust-only
-// caller — must survive LTO. Cheap (single store to the persistent struct).
+// Write the ISR-phase breadcrumb. Rust-only caller — must survive LTO.
 void runtime_set_isr_phase(uint32_t phase);
 
 // Heartbeat slot accessors — pointer to the BKPSRAM struct member, suitable

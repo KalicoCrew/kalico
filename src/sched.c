@@ -313,17 +313,9 @@ sched_get_dispatch_history(uint32_t *idx,
     }
 }
 
-// Return the `func` of the most-recently-dispatched scheduler timer (the
-// newest dispatch-history entry), or 0 if no timer has dispatched yet.
-// Cold path: called only at fault time (from the Rust -311 raise), so it
-// adds zero hot-path cost and intentionally does not touch the recording in
-// sched_timer_dispatch. See sched.h for the timing argument that makes the
-// newest entry the callback that blocked the late TIM5 tick.
-//
-// `used, externally_visible`: referenced ONLY from the Rust runtime archive
-// (the -311 raise), never from C. Without the attribute, -ffunction-sections
-// + --gc-sections drops the section before the Rust reference resolves →
-// "undefined reference". Same pattern as timer_read_time / timer_is_before.
+// Most-recently-dispatched scheduler timer func, or 0. Cold path (fault only).
+// `used, externally_visible`: Rust-only caller; attribute prevents --gc-sections
+// from dropping the section before the Rust archive reference resolves.
 __attribute__((used, externally_visible))
 uint32_t
 sched_last_dispatched_func(void)

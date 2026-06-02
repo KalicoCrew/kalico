@@ -11,11 +11,6 @@
 #![allow(unsafe_code)] // FFI into the C diag layer; same as tick.rs / per_axis_timer.rs
 
 // ── Phase constants (must match src/generic/fault_handler.h exactly) ─────────
-//
-// All 14 values are defined here as the single source of truth mirroring the C
-// header. Some are currently set only on the C side (WIDEN, GUARD, STEP_ENQ,
-// IDLE) or reserved for future Rust call sites; suppress the dead-code lint so
-// the complete table is kept for cross-reference.
 #[allow(dead_code)]
 pub(crate) const RT_PHASE_IDLE: u32 = 0;
 pub(crate) const RT_PHASE_ISR_ENTER: u32 = 1;
@@ -39,16 +34,9 @@ pub(crate) const RT_PHASE_STEPOUT_EXIT: u32 = 13;
 
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
-    /// Write the current ISR phase breadcrumb to the persistent diagnostic
-    /// struct. Single store — hot-path safe.
     fn runtime_set_isr_phase(phase: u32);
-    /// Record `get_piece_for_time` duration: updates max and count.
     fn diag_walk_account(cycles: u32);
-    /// Record `arm_and_load`/`to_monomial` duration: updates max and count.
     fn diag_monomial_account(cycles: u32);
-    /// Read the DWT cycle counter. Shared declaration — callers in tick.rs
-    /// use the module-private `cyccnt_read()`; callers in engine.rs and
-    /// per_axis_timer.rs use the crate-internal `cyccnt()` exported here.
     fn runtime_cyccnt_read() -> u32;
 }
 
@@ -100,11 +88,8 @@ pub(crate) fn monomial_account(cycles: u32) {
     }
 }
 
-/// Read the DWT cycle counter. Returns 0 on host/test.
-///
-/// This is the one crate-level declaration of `runtime_cyccnt_read`. The
-/// existing module-private `cyccnt_read()` in `tick.rs` delegates here so
-/// there is no duplicate `extern "C"` symbol in the final link.
+/// Read the DWT cycle counter. Returns 0 on host/test. Single declaration here;
+/// `tick::cyccnt_read()` delegates here to avoid a duplicate `extern "C"` symbol.
 #[inline]
 pub(crate) fn cyccnt() -> u32 {
     #[cfg(not(any(test, feature = "host")))]

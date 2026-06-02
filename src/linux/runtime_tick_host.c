@@ -43,10 +43,7 @@ volatile uint8_t runtime_liveness_ok = 1;
 // monotonic-derived counter that runtime_cyccnt_read returns.
 volatile uint32_t runtime_sim_cyccnt = 0;
 
-// -311 stacked-PC capture (src/stm32/runtime_tick_*.c on silicon). The host /
-// kalico-sim build has no TIM5 exception frame, so the Rust `-311` path's
-// externs resolve to these stubs returning 0. used, externally_visible so the
-// staticlib reference survives the host link (mirrors the silicon attribute).
+// Host stubs: no TIM5 exception frame; Rust -311 path externs resolve to 0.
 __attribute__((used, externally_visible))
 uint32_t runtime_tim5_stacked_pc(void) { return 0; }
 __attribute__((used, externally_visible))
@@ -221,18 +218,10 @@ runtime_tick_disable(void)
     atomic_store_explicit(&host_tick_enabled, 0, memory_order_release);
 }
 
-// ── Dedicated step-output timer: host stubs (motion-tick priority-lift Step 1)
-//
-// On the MCU the step-output timer is a hardware timer (TIM3 on H7, TIM2 on F4)
-// whose ISR drains the step_queues. The host build has no such timer: the
-// host_tick_main pthread above already drains step_queues inline after each
-// kalico_runtime_tick_sample. These stubs satisfy the extern references in
-// src/runtime_tick.c (step_output_timer_arm / _armed_target / _is_running,
-// reached via kalico_kick_step_output) without doing anything — the kick is a
-// no-op here because the pthread loop already consumes every queued step.
-//
-// used, externally_visible mirrors the MCU symbols' attributes so the symbols
-// survive the cdylib link.
+// Host stubs for the dedicated step-output timer. On the MCU a hardware timer
+// (TIM3/TIM2) drains step_queues; on the host the pthread loop drains them
+// inline, so the kick is a no-op here. Stubs satisfy extern references from
+// src/runtime_tick.c; `used` prevents --gc-sections from dropping them.
 static uint32_t host_step_out_target;
 
 __attribute__((used)) void

@@ -212,19 +212,11 @@ pub struct KalicoHostIo {
     /// Raw identify bytes (zlib-compressed blob as received from firmware).
     /// Suitable for passing directly to klippy's `process_identify`.
     raw_identify_bytes: Vec<u8>,
-    /// Per-MCU criticality gate for the spawn-time EXIT_ON_FAULT wedge
-    /// detector. `true` (the default) means a non-graceful transport drop
-    /// aborts the whole process — the correct behaviour for the critical
-    /// motion MCUs (H7 / F446), whose silent death must bring the system
-    /// down. `false` means the drop is reported (the reactor exits, the
-    /// `is_alive()` probe goes false) but the process is NOT aborted, so
-    /// klippy's own non-critical-disconnect / reconnect machinery handles
-    /// it. The flag is shared (`Arc`) with the reactor-thread closure that
-    /// performs the abort, and is settable at runtime via
-    /// [`KalicoHostIo::set_critical`] because the bridge only learns an
-    /// MCU's criticality (klippy `is_non_critical`, or a
-    /// Klipper-protocol-only attachment) AFTER `open` has spawned the
-    /// reactor.
+    /// EXIT_ON_FAULT gate. `true` (default) = non-graceful transport drop
+    /// aborts the process (motion MCUs). `false` = reactor exits cleanly,
+    /// `is_alive()` goes false, klippy reconnect machinery takes over.
+    /// Settable after `open` via `set_critical` because criticality is only
+    /// known after the kalico identify handshake.
     is_critical: Arc<AtomicBool>,
 }
 
@@ -396,11 +388,7 @@ impl KalicoHostIo {
         let reactor_status = Arc::clone(&status_snapshot);
         let reactor_config = config.clone();
         let reactor_clock = Arc::clone(&clock);
-        // Default to critical: a freshly-opened connection is assumed to be a
-        // motion MCU until the caller (the bridge) downgrades it via
-        // `set_critical(false)`. Failing critical is the safe default — the
-        // wedge detector stays armed unless something explicitly tells us the
-        // MCU is non-critical.
+        // Default critical until the bridge downgrades after identify.
         let is_critical = Arc::new(AtomicBool::new(true));
         let reactor_is_critical = Arc::clone(&is_critical);
         let reactor_handle = std::thread::spawn(move || {
@@ -427,15 +415,6 @@ impl KalicoHostIo {
             // silent. Aborting forces systemd to restart klipper, which is
             // the recovery action a human would take anyway.
             if !reactor.exited_gracefully() {
-                // Per-MCU criticality gate. Only the critical motion MCUs
-                // (H7 / F446) abort on a non-graceful transport drop — their
-                // silent death must bring the whole system down so systemd
-                // restarts klipper. A non-critical MCU (e.g. the Beacon,
-                // attached as a Klipper-protocol-only MCU, or any [mcu] the
-                // operator marked `is_non_critical`) must NOT abort: the
-                // reactor simply exits, `is_alive()` goes false, and klippy's
-                // own non-critical-disconnect / reconnect machinery
-                // (mcu.py: handle_non_critical_disconnect) takes over.
                 let critical = reactor_is_critical.load(Ordering::Acquire);
                 if !critical {
                     eprintln!(
@@ -588,29 +567,14 @@ impl KalicoHostIo {
         self.submission_tx.send(ReactorCommand::Noop).is_ok()
     }
 
-    /// Set this MCU's criticality for the spawn-time EXIT_ON_FAULT wedge
-    /// detector. Defaults to `true` (critical) when the connection opens.
-    ///
-    /// Pass `false` for a non-critical MCU (e.g. the Beacon, which attaches
-    /// as a Klipper-protocol-only MCU because its `kalico_identify` times
-    /// out, or any `[mcu]` the operator marked `is_non_critical`). A
-    /// non-critical MCU's transport drop then exits the reactor cleanly
-    /// (so `is_alive()` reports false to klippy) WITHOUT aborting the
-    /// process — letting klippy's own non-critical-disconnect / reconnect
-    /// machinery handle the recovery. Critical MCUs keep the abort, which
-    /// is the wedge detector that forces a systemd restart when a motion
-    /// MCU dies silently.
-    ///
-    /// Settable at runtime (the flag is an `Arc<AtomicBool>` shared with the
-    /// reactor-thread closure) because criticality is only known after the
-    /// kalico-native identify handshake completes — which happens in the
-    /// bridge's `attach_serial`, after `open` has already spawned the
-    /// reactor.
+    /// Gate the EXIT_ON_FAULT abort for this MCU. `true` (default) aborts on
+    /// non-graceful transport drop (motion MCUs). `false` exits cleanly so
+    /// klippy's non-critical-disconnect machinery handles reconnect.
     pub fn set_critical(&self, critical: bool) {
         self.is_critical.store(critical, Ordering::Release);
     }
 
-    /// Read this MCU's current criticality flag (see [`set_critical`]).
+    /// Read the current criticality flag (see [`set_critical`]).
     pub fn is_critical(&self) -> bool {
         self.is_critical.load(Ordering::Acquire)
     }

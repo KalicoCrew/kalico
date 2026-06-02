@@ -299,12 +299,8 @@ command_kalico_configure_axis(uint32_t *args)
     runtime_motor_last_dir[axis_idx] = -1;
     (void)extrusion_bits; // parsed for wire compatibility; no Rust FFI param yet
 
-    // Register the per-axis Klipper timer consumer for THIS axis only — an MCU
-    // arms a step-emission timer solely for axes it actually drives. Arming a
-    // timer for an unowned axis adds a needless sample-rate dispatch at TIM5's
-    // priority and can starve the motion tick (-311); see arm_per_axis_step_timer.
-    // Idempotent per axis (the callee tracks an armed mask), so repeat
-    // configure_axis calls for the same axis are safe.
+    // Arm the step-output timer for this axis only. Idempotent (callee tracks
+    // an armed mask); unowned axes must not be armed (starves the motion tick).
     extern void arm_per_axis_step_timer(uint8_t axis_idx);
     arm_per_axis_step_timer(axis_idx);
 

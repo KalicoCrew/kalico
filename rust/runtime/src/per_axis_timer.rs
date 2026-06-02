@@ -1,60 +1,28 @@
-//! Step-output timer consumer (motion-tick priority-lift Step 1).
+//! Step-output timer ISR body (TIM3 on H7, TIM2 on F4).
 //!
-//! A single dedicated hardware timer (TIM3 on H7, TIM2 on F4 — see
-//! `src/stm32/runtime_tick_h7.c` / `runtime_tick_f4.c`) fires this body. The
-//! body scans the per-axis SPSC `step_queues[]` this MCU owns, emits every
-//! step whose `cycle_abs` has arrived (bounded per dispatch), and returns the
-//! soonest *absolute* cycle the timer must next fire at — or
-//! [`STEP_OUTPUT_DISABLE`] when no owned queue has pending work, telling the C
-//! side to switch the timer off (event-driven, NOT idle-polling).
+//! Scans per-axis SPSC `step_queues[]` this MCU owns, emits every step whose
+//! `cycle_abs` has arrived (bounded per dispatch), and returns the soonest
+//! absolute cycle to fire at next — or [`STEP_OUTPUT_DISABLE`] when all owned
+//! queues are empty (event-driven, not idle-polling).
 //!
-//! Spec: docs/superpowers/specs/2026-05-31-motion-tick-priority-lift-design.md
-//! (Step 1: dedicated step-output timer at PARITY priority — same NVIC
-//! priority as the TIM5 producer and SysTick; no priority flip in this step).
-//!
-//! ## Replaces the per-axis SysTick consumer
-//!
-//! Previously there was one Klipper `struct timer` per axis on the SysTick
-//! software-timer queue, each calling `kalico_per_axis_step_event(axis)`. That
-//! substrate is gone: the four trampolines, `arm_per_axis_step_timer`'s
-//! `sched_add_timer` body, and `kalico_kick_per_axis_timer` are all removed
-//! from `src/runtime_tick.c`. Emission now lives on one hardware timer.
-//!
-//! ## Load-bearing invariant: same NVIC priority
-//!
-//! The producer (TIM5 ISR, `tick.rs`) and this consumer (the step-output timer
-//! ISR) run at the *same* NVIC priority. On a single ARMv7-M core with
-//! PRIGROUP = 0, same-priority interrupts cannot preempt each other, so the
-//! `step_queues` u16/volatile SPSC stays non-racing without atomics, and the
-//! producer's `kalico_kick_step_output` compare-register poke is non-racing
-//! against this body's own re-arm. If a future change ever makes producer and
-//! consumer DIFFERENT priorities, both the SPSC and the kick must move to a
-//! true preemption-safe scheme (see `step_queue.rs`).
+//! NVIC-priority invariant: producer (TIM5) and this consumer run at the same
+//! priority; see `src/generic/kalico_nvic_prio.h` for the full rationale.
 
 #![allow(unsafe_code)]
 
 use crate::step_queue::{N_AXIS_STEP_QUEUES, peek as queue_peek, pop as queue_pop};
 
-/// Sentinel returned by [`kalico_step_output_event`] when no owned queue has a
-/// pending step: the C side disables the step-output timer (no idle poll). The
-/// producer kick (`kalico_kick_step_output`) re-arms it on the next push into a
-/// previously-empty owned queue. `u32::MAX` is safe as a sentinel because a
-/// real `cycle_abs` landing exactly on `u32::MAX` is reinterpreted by the C
-/// side as "disable", costing at most one delayed step (the next push re-arms).
+/// Returned when no owned queue has a pending step — tells C to disable the
+/// timer. `u32::MAX` is the sentinel; a `cycle_abs` landing exactly there costs
+/// at most one delayed step (the next producer kick re-arms).
 pub const STEP_OUTPUT_DISABLE: u32 = u32::MAX;
 
-/// A step whose `cycle_abs` is within this signed window of `now` (at-or-before,
-/// plus a tiny forward slack) is emitted on this dispatch. Mirrors the
-/// mainline "fire when arrived, never early" rule: the window is 0 so a step is
-/// emitted only once `now >= cycle_abs` (wrap-safe signed compare). Kept as a
-/// named constant so the bench can widen it if hardware compare latency ever
-/// demands a small lead.
+/// Emit window: 0 means "fire only once `now >= cycle_abs`" (wrap-safe signed
+/// compare). Named so the bench can widen it if compare latency demands a lead.
 const DUE_WINDOW_CYCLES: i32 = 0;
 
-/// Maximum steps emitted across all owned axes in a single dispatch. Bounds ISR
-/// duration; if the cap is hit with work remaining, the body returns `now` so
-/// the C side re-fires immediately (same semantics as the old per-axis path's
-/// floor re-entry).
+/// Steps emitted per dispatch across all owned axes. Cap exceeded → return
+/// `now` so C re-fires immediately rather than dropping the remaining work.
 pub const MAX_STEPS_PER_EVENT: u32 = 32;
 
 // MCU build links these C symbols. Host builds (`feature = "host"`) and unit
@@ -63,9 +31,7 @@ pub const MAX_STEPS_PER_EVENT: u32 = 32;
 unsafe extern "C" {
     fn timer_read_time() -> u32;
     fn runtime_emit_step_pulses(axis_idx: u8, n_steps: i32);
-    // C-side getter (src/runtime_tick.c): bitmask of axes this MCU owns
-    // (drives). Bit N set ⇒ axis N participates in the soonest-across scan.
-    // Self-populated by the producer kick the first time an axis is pushed.
+    // Bitmask of axes this MCU owns; bit N ⇒ axis N is scanned.
     fn kalico_step_output_owned_mask() -> u8;
 }
 
@@ -86,11 +52,7 @@ unsafe fn kalico_step_output_owned_mask() -> u8 {
 }
 
 /// Step-output timer ISR body. Returns the next absolute cycle to fire at, or
-/// [`STEP_OUTPUT_DISABLE`] to switch the timer off.
-///
-/// Called from the C `STEP_OUT_TIM_IRQHandler` via `extern "C"`. The C side
-/// arms its compare register to the returned value (with 16-bit chaining on
-/// H7's TIM3, where the far re-arm is split into ≤0xF000 chunks).
+/// [`STEP_OUTPUT_DISABLE`] to switch the timer off until the next producer kick.
 #[unsafe(no_mangle)]
 pub extern "C" fn kalico_step_output_event() -> u32 {
     // SAFETY: `timer_read_time` is a single u32 MMIO read (host: a test hook).
@@ -149,10 +111,8 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
     next_wake_across_owned(now, owned).unwrap_or(STEP_OUTPUT_DISABLE)
 }
 
-/// Soonest (wrap-safe-minimum) `cycle_abs` of the head of every owned non-empty
-/// queue, or `None` if all owned queues are empty. "Soonest" is the entry whose
-/// signed delta from `now` is smallest, so a head just past a u32 wrap boundary
-/// still compares correctly against one just before it.
+/// Wrap-safe minimum `cycle_abs` across all owned non-empty queues, or `None`.
+/// Uses signed delta from `now` so heads across the u32 wrap boundary compare correctly.
 fn next_wake_across_owned(now: u32, owned: u8) -> Option<u32> {
     let mut best: Option<(i32, u32)> = None;
     for axis_idx in 0..N_AXIS_STEP_QUEUES {

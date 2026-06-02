@@ -33,17 +33,10 @@ use bridge::PyMotionBridge;
 // `from . import motion_bridge_native as _native`.
 #[pymodule]
 fn motion_bridge_native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Initialize env_logger so bridge-trace events ([transit-diag],
-    // [usb-drop], push_segment, seg-dispatch, etc.) land in a
-    // persistent append file that survives plug-pull and journalctl
-    // rotation.  Path resolution order:
-    //   1. $KALICO_BRIDGE_LOG  (explicit override)
-    //   2. $HOME/printer_data/logs/kalico-bridge.log
-    //   3. /tmp/kalico-bridge.log  (last resort)
-    // Default filter is "info"; $RUST_LOG overrides when set.
-    // If the file cannot be opened for any reason we fall back to
-    // stderr so klippy load is never broken.  `.try_init()` is a
-    // silent no-op on double-init (parallel pyimports).
+    // Log to a persistent append file ($KALICO_BRIDGE_LOG, then
+    // ~/printer_data/logs/kalico-bridge.log, then /tmp/kalico-bridge.log)
+    // so traces survive plug-pull. Falls back to stderr on open failure.
+    // `.try_init()` is a no-op on double-init (parallel pyimports).
     let log_path = std::env::var("KALICO_BRIDGE_LOG").ok().or_else(|| {
         std::env::var("HOME")
             .ok()
