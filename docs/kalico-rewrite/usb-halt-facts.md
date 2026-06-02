@@ -7,6 +7,15 @@ elsewhere. Append new measurements; do not edit old ones.
 Bench: Trident, H7 "mcu" (X/Y/E, CoreXY) + F446 "bottom" (Z) + Beacon probe.
 Flash both per the flashing-trident-mcus skill. Heaters cold throughout.
 
+## CURRENT (2026-06-02): it is a -308 PieceStartInPast fault, not a freeze
+
+The "USB halt" is a clean kalico runtime fault (-308 PieceStartInPast) that makes
+klippy shut down all MCUs and restart — the USB re-enumerate is the consequence,
+NOT an MCU freeze, NOT IWDG, NOT a USB-electrical drop. Those early theories
+(sections below marked SUPERSEDED) were disproven. The -308 has two run-to-run
+variable faces; see "-308 CHARACTERIZED". The -311 was a real, SEPARATE, FIXED
+bug (clock-domain, a6c172f89); the title is kept as history.
+
 ## Config (Pi: ~/klipper/.config.h7.bak, .config.f446.test)
 
 - [c4ed8d740] H7: `CONFIG_CLOCK_FREQ=520000000`, `CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ=10000`.
@@ -68,45 +77,30 @@ Flash both per the flashing-trident-mcus skill. Heaters cold throughout.
 - [9c016776d] `PushPiecesResponse` carries `result:i32` (0=OK, neg=MCU reject), `arrival_clock:u64`, `front_start_time:u64` (messages.rs ~247-256). Pump (`pump.rs` send_frame ~583-596) gates `pushed`/cursor advance on `result==OK`; arrival_clock/front_start_time are diagnostic-only (`[transit-diag]`); `retired` comes from the StatusHeartbeat (pump.rs ~505-523), NOT the response; `new_head` computed host-side.
 - [9c016776d] Wire-level ACK/NAK + UnackedWindow already handle frame delivery / retransmit independently of the app-level response. The only load-bearing role of `PushPiecesResponse` is surfacing an MCU commit-rejection (result != OK). Fire-and-forget PushPieces is feasible host-side but would make a MCU commit-rejection invisible (silent ring divergence) unless the MCU emits an out-of-band FaultEvent on rejection (protocol change).
 
-## Kernel USB view at the drop (bench, `journalctl -k` / dmesg) — DECISIVE
+## Kernel USB view at the drop (bench, `journalctl -k` / dmesg)
 
 - [36391d0b1] At each halt the Pi kernel logs `usb 3-2: USB disconnect, device number N` immediately followed by `usb 3-2: new full-speed USB device number N+1 ... Product: stm32h723xx`. I.e. the H7 USB device fully DISCONNECTS from the bus and RE-ENUMERATES. NOT a transfer error / babble / -EPROTO / over-current — a clean disconnect+re-enumerate.
 - [36391d0b1] The F446 (`stm32f446xx`, usb 3-1) also disconnects+re-enumerates in the same episodes.
 - [36391d0b1] MCU does not reboot across this (no boot_diag, motion continuous) — the USB peripheral re-attaches without an MCU reset.
 - [36391d0b1] usbotg.c: VBUS sensing is DISABLED — `GOTGCTL = BVALOEN|BVALOVAL` (session forced valid) + `GCCFG |= NOVBUSSENS` (usbotg.c:513,515). So a VBUS/power dip cannot make the OTG see "unplugged".
 - [36391d0b1] usbotg.c contains NO soft-disconnect (no `DCTL.SDIS` set anywhere); the only GRSTCTL writes are TX-FIFO flushes + the init AHB-idle wait. The firmware never deliberately disconnects/re-attaches USB during operation. ISR GINTMSK = RXFLVLM|IEPINT (USBRST/USBSUSP not serviced).
-- [36391d0b1] => the disconnect is not firmware-initiated and not VBUS-sense: the device drops off the bus electrically (signal/clock/power) during motor stepping, then re-enumerates. Reproduces at all jog speeds (F1200/F3000/F6000); does not occur at idle.
+- [36391d0b1] => not firmware-initiated, not VBUS-sense. SUPERSEDED interpretation: originally read as an electrical drop during stepping. Actual cause (b0c3d6565): the re-enumerate is the consequence of the -308 fault -> klippy shuts down all MCUs -> systemd restart -> klippy resets the MCUs on reconnect (software/SFTRST). The 36391d0b1 "no MCU reboot" note predates the clean -308 capture. Reproduces at all jog speeds; not at idle.
 
-## ROOT CAUSE: MCU freeze -> IWDG reset -> USB re-enumerate (NOT hardware)
+## Freeze theory — SUPERSEDED (it is the -308 fault, not a freeze)
 
-User: bench prints fine at full amps over USB on main => not hardware; the MCU
-must be freezing. Confirmed:
-- [f2f3f94ab] `fg_freeze ... iwdg 1` after one jog: an IWDG (independent
-  hardware watchdog) reset fired. The MCU froze >= the ~0.5s IWDG window ->
-  reset -> USB re-enumerate (the kernel "USB disconnect + new device ~1s later"
-  IS the reset+reboot+re-enum). No prior_fault => a hang, not a crash. No
-  prior_diag_ring tag 8 (DIAG_EV_RUST_FAULT) => no runtime fault, shutdown() not
-  reached.
-- [fe1787c62] With the freeze-detector gate fixed (it had been gated on
-  engine_status==RUNNING, which is never set — runtime_tick.c:421): under jog,
-  `fg_freeze stall_ticks 10 (H7) / 20 (F446)` = only ~1ms foreground stalls
-  caught (exc 0 = thread). The >=0.5s killer freeze is NOT caught => during it
-  the TIM5 ISR itself is masked => interrupts OFF (PRIMASK held) for the freeze.
-- [13b2b9a33 / f2f3f94ab / fe1787c62] dispatch breadcrumb `last_disp_func`
-  resolves (addr2line) to `runtime_drain_event` (src/runtime_tick.c:261) on BOTH
-  MCUs — the 1 kHz drain-wake timer. It is the last timer dispatched before
-  interrupts were masked.
-- Source inference: `runtime_drain_event` returns quickly (no hang). After it,
-  `sched_timer_dispatch` reschedules it via `insert_timer` (src/sched.c:113),
-  whose `for(;;)` list-walk (pos = pos->next until a later waketime) never
-  breaks if the timer list is corrupted/cyclic -> spins forever under the
-  SysTick `irq_disable` (armcm_timer.c:278 + timer_dispatch_many) -> PRIMASK
-  held -> TIM5 masked -> IWDG. This spin runs BEFORE timer_dispatch_many's
-  "Rescheduled timer in the past" guard (armcm_timer.c:256), so that guard never
-  fires (consistent with no rsched_past output). => the scheduler timer list is
-  being corrupted during motion; insert_timer spinning on it is the freeze.
-- Open: WHAT corrupts a timer `.next` during motion (bad/out-of-bounds write).
-  insert_timer should also fail loudly (cycle/iteration cap) instead of freezing.
+The "MCU freeze -> IWDG reset" theory was investigated and DISPROVEN at
+e552d6491: the event is a clean -308 PieceStartInPast runtime fault (code +
+detail captured; see the -308 sections below), not a hang. Measurements that
+still stand:
+- [fe1787c62] under jog, `fg_freeze stall_ticks 10 (H7) / 20 (F446)` = ~1ms
+  foreground stalls (exc 0 = thread). Now understood as the ~1ms USB-burst
+  fence behind Face A of the -308, not a >=0.5s freeze.
+- [13b2b9a33] dispatch breadcrumb `last_disp_func` = `runtime_drain_event` (the
+  1kHz drain-wake timer) on both MCUs.
+Disproven and dropped: the insert_timer-spin / PRIMASK-held / IWDG-reset chain.
+Evidence against it: the insert_timer fail-loud guard (c185d1483) never fired;
+the isr_phase breadcrumb reads `ISR_EXIT` (the Rust motion ISR completes
+cleanly); the actual fault is -308.
 
 ## REVISED ROOT CAUSE: F446 raises -308 PieceStartInPast on Z (NOT a freeze)
 
@@ -205,3 +199,47 @@ F3000` x10 (X only, 50 mm/s). Failure reproduced first attempt.
 - [c4ed8d740] Reactor (`reactor.rs:1`) is a single-thread poll-reactor (reads + writes + round-trips on one thread). `READ_TIMEOUT = 1 ms`.
 - [c4ed8d740] pump.rs run loop blocks on `rx.recv()`, drains, then `'send` loop; on `StallFull` it logs and `break 'send` back to `recv()` (no busy-spin). `MAX_PER_FRAME = 32` (pump.rs:488).
 - [c4ed8d740] On a critical-MCU transport IO error the host reactor aborts the klippy process (SIGABRT); systemd `Restart=always` relaunches it. Per-MCU `is_critical` default true.
+
+## -308 CHARACTERIZED: two faces, deficit-instrumented, A/B-verified
+
+- [ff6a011e7] -308 `fault_detail` now encodes the adoption deficit (now-start_time)
+  in microseconds (low 16 bits, saturated 0xFFFF = 65 ms) + axis_idx (bits 16-23).
+- [b0c3d6565] Repro: `SET_KINEMATIC_POSITION` + jog X 100<->200 @ F3000 x10 (X only;
+  10 forced direction-reversal stops). 10-run A/B (pre vs post comment-cleanup,
+  byte-identical behavior) => -308 is RUN-TO-RUN VARIABLE, two faces:
+  - **Face A (majority): F446/Z (axis 2), deficit ~0.5-3 ms, mid-motion (~3-18 s).**
+    The ~1 ms USB-OTG-ISR-burst fence on the 180 MHz M4 @ 20 kHz (OTG NVIC prio 1,
+    above TIM5 prio 2); when TIM5 resumes, `now` has jumped past the front piece.
+  - **Face B (minority): H7/X (axis 0), deficit SATURATED >=65 ms, at motion-END /
+    idle transition (~16-22 s).** Stale-at-idle / re-anchor — only visible when a
+    jog runs to completion (Face A usually kills the run first).
+- [cb4492e2b] `MAX_PER_FRAME` is load-bearing (NOT a -311 leftover): reverting the
+  32-piece cap to 255 regressed Face-A time-to-fault ~13-17 s -> ~5 s — it bounds
+  the F446 USB-burst fence.
+- [a6c172f89] tim5_ia under jog = 1.0x period (metronomic) on the H7 => `now`
+  advances smoothly; -308 staleness is the adopted piece's start_time vs now, not
+  a `now` jump.
+
+## Host produce/idle handling (source read) + FIX IN PROGRESS
+
+- Piece start_time = `project(t0 + u_start)` (enqueue.rs); `project` = linear
+  extrapolation of the live clock-sync estimate (router.rs `host_time_to_mcu_clock`).
+- MCU `now` free-runs continuously (widened DWT); never stops/resets at idle on the
+  real MCUs (the DRAINED->RUNNING reseed path is dormant — Linux-sim only).
+- Host idle handling: `advance_idle(sync_instant.elapsed())` fast-forwards the
+  planner clock to wall-time on a detected idle gap (planner.rs ~814). It does NOT
+  fire at within-jog reversals (planner queued ahead there). `reset(home_pos)`
+  zeroes the clock only on SKP / underrun / force_idle / reconnect.
+- [23855b56a] FIX (partial): pump commits no piece whose projected start_time is
+  > `MAX_LEAD_SECS` (1.0 s) ahead of the MCU's projected clock (`StallAhead` + poll
+  resume); -308 tolerance = `MAX_START_IN_PAST_SECS` (200 us drift budget) + 1
+  sample period, decoupled from the sample rate. Bench: commit-lead bounded 16 s ->
+  1 s, steady-state far-ahead -308 eliminated. Did NOT fix the two faces above.
+  `MAX_LEAD_SECS` / `MAX_START_IN_PAST_SECS` are NOT proven / NOT final.
+
+## OPEN
+
+- Face A: stop the USB-OTG burst from fencing the F446 TIM5 (~1 ms) — smaller
+  per-MCU frame cap / USB below TIM5 / DMA. NOT a tolerance tweak.
+- Face B: the idle/end-transition stale piece (>=65 ms) on the H7 — the anchor /
+  `advance_idle` handling at a true motion-end.
