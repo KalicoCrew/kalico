@@ -11,6 +11,7 @@
 #include "board/misc.h" // timer_from_us
 #include "command.h" // shutdown
 #include "sched.h" // sched_timer_dispatch
+#include "generic/kalico_nvic_prio.h" // KALICO_SCHED_NVIC_PRIO
 
 DECL_CONSTANT("CLOCK_FREQ", CONFIG_CLOCK_FREQ);
 
@@ -151,7 +152,7 @@ timer_init(void)
 
     // Enable SysTick
     irqstatus_t flag = irq_save();
-    NVIC_SetPriority(SysTick_IRQn, 2);
+    NVIC_SetPriority(SysTick_IRQn, KALICO_SCHED_NVIC_PRIO);
     SysTick->CTRL = (SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_TICKINT_Msk
                      | SysTick_CTRL_ENABLE_Msk);
     timer_kick();
@@ -275,6 +276,16 @@ void __visible __aligned(16) // aligning helps stabilize perf benchmarks
 SysTick_Handler(void)
 {
     irq_disable();
+    // SysTick and TIM5 share the same NVIC priority (KALICO_MOTION_NVIC_PRIO).
+    // Same-priority interrupts cannot nest, so a TIM5 tick that comes due
+    // during this handler stays pending until SysTick returns — even across
+    // the irq_enable() windows in timer_dispatch_many (PRIMASK cleared there
+    // lets only higher-priority sources in, not equal-priority TIM5). The
+    // whole entry→exit window is therefore the true TIM5 fence duration.
+#if CONFIG_MACH_STM32
+    extern void diag_systick_account(uint32_t enter, uint32_t exit);
+    uint32_t diag_systick_enter = DWT->CYCCNT;
+#endif
 #if CONFIG_KALICO_SIM
     // CONFIG_KALICO_SIM uses a software CYCCNT (runtime_sim_cyccnt) because
     // Renode's H7 model returns 0 from DWT->CYCCNT. SysTick fires
@@ -300,6 +311,9 @@ SysTick_Handler(void)
 #endif
     uint32_t diff = timer_dispatch_many();
     timer_set_diff(diff);
+#if CONFIG_MACH_STM32
+    diag_systick_account(diag_systick_enter, DWT->CYCCNT);
+#endif
     irq_enable();
 }
 DECL_ARMCM_IRQ(SysTick_Handler, SysTick_IRQn);

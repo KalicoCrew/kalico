@@ -222,6 +222,17 @@ impl RingDescriptor {
         Ok(())
     }
 
+    /// Physical storage index of the front (consumer) entry, or `None` if empty.
+    /// Same addressing as [`peek`] (`ring_offset + tail`), returned as an index so
+    /// the walker can read the slot without holding a borrow of `storage`.
+    #[inline]
+    pub fn front_slot(&self) -> Option<usize> {
+        if self.is_empty() {
+            return None;
+        }
+        Some(self.ring_offset + self.tail)
+    }
+
     /// Peek the front entry without removing it.
     ///
     /// Returns `None` if the ring is empty.  Reads from the physical cursor

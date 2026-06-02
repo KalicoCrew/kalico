@@ -49,11 +49,8 @@ struct fault_record {
     uint32_t fault_count;
 };
 
-// Liveness snapshot in AXI SRAM. Periodically refreshed while the system
-// is healthy; on next boot, the most-recent values tell us what state the
-// runtime engine was in just before the crash. `magic2` lets the boot
-// distinguish "fresh power-on, garbage in SRAM" from "previous run wrote
-// a real snapshot here".
+// Liveness snapshot in persistent SRAM — survives soft reset. `magic` lets
+// boot distinguish "fresh power-on" from "valid prior-run snapshot".
 #define LIVE_MAGIC 0x4C495645u  // "LIVE"
 
 struct live_snapshot {
@@ -62,28 +59,26 @@ struct live_snapshot {
     uint32_t engine_status; // runtime_handle_status (0=IDLE 1=RUNNING 2=DRAINED 3=FAULT)
     uint32_t tick_counter;  // runtime_handle_tick_counter
     uint32_t sample_time;   // timer_read_time() at sample
-    uint32_t boot_count;    // bumped each boot, helps confirm fresh-vs-stale
-    uint32_t last_engine_running_tick; // tick_counter sampled while RUNNING
+    uint32_t boot_count;
+    uint32_t last_engine_running_tick;
     uint32_t samples_taken;
+    // Cross-boot persistent foreground-freeze watchdog. TIM5 ISR watches
+    // the foreground heartbeat (samples_taken); latches worst stall + stacked
+    // PC/exc so a PRIMASK-freeze is identifiable after the IWDG reset.
+    uint32_t worst_fg_stall_ticks;
+    uint32_t worst_fg_stall_pc;
+    uint32_t worst_fg_stall_exc;
+    uint32_t iwdg_reset_count;     // # boots reset by IWDG (signature of foreground freeze)
+    // Last scheduler callback dispatched (persistent, written BEFORE the call).
+    // A hanging callback → PRIMASK held → IWDG → after reset, addr2line this.
+    uint32_t last_dispatch_func;
+    uint32_t last_dispatch_addr;
 };
 
-// Place in AXI SRAM on H7 (survives soft reset, not cleared by boot
-// .bss memset). On other targets fall through to .bss — RAM contents
-// still survive soft reset on Cortex-M, but the boot memset clears
-// .bss before main runs, so the record would be lost. Move it to a
-// `.noinit` section if/when other STM32 families need this.
-// Place in backup SRAM (D3 domain) on H7 — survives IWDG / software /
-// NRST resets. Requires PWR->CR2.BREN + RCC->AHB4ENR.BKPRAMEN to be
-// set at init (see fault_handler_init below); without those the
-// region reads as zero and writes are silently dropped.
-//
-// On non-H7 (notably STM32F4 without BKPSRAM wired through), fall back
-// to `.persistent_diag` — a NOLOAD section in main RAM that lives
-// outside `[_bss_start.._bss_end]` and past `_persistent_diag_end`
-// (which `dynmem_start()` returns). Main RAM survives soft reset (IWDG
-// / NVIC_SystemReset / NRST) on every STM32 family we care about; only
-// a full power cycle wipes it. That's sufficient to capture wedge
-// forensics on the F446 where BKPSRAM isn't wired up.
+// H7: backup SRAM (.bkp_bss) — survives IWDG/soft reset; requires
+// PWR->CR2.BREN + RCC->AHB4ENR.BKPRAMEN (see fault_handler_init).
+// non-H7: .persistent_diag NOLOAD section outside [_bss_start.._bss_end]
+// so the boot zero-pass leaves it alone; main RAM survives soft reset.
 #if CONFIG_MACH_STM32H7
 __attribute__((section(".bkp_bss"), used))
 #else
@@ -98,18 +93,8 @@ __attribute__((section(".persistent_diag"), used))
 #endif
 static volatile struct live_snapshot live_snap;
 
-// Cortex-M7 D-cache is enabled on H7 (see src/stm32/stm32h7.c::SCB_EnableDCache).
-// BKPSRAM (D3 domain) ends up cached too, which means writes sit in cache and
-// don't commit to the actual SRAM until eviction. Round 1's prior_diag dump
-// caught this — `ring_seq` came back 0 even though live emits had observed
-// it growing past 7000. The fix: clean the BKPSRAM cache lines after every
-// significant write set, AND once at the end of each periodic emit cycle, so
-// the SRAM is guaranteed in sync within ~100 ms of any counter update.
-//
-// `__DSB()` alone (Round 1's barrier) only flushes the CPU's store buffer; it
-// does not push cached lines to memory. We need `SCB_CleanDCache_by_Addr` for
-// that. The clean operation is non-trivial cycle-wise but bounded — the
-// BKPSRAM region is < 1 KB.
+// H7: BKPSRAM is D-cache-backed; SCB_CleanDCache_by_Addr is required after
+// writes — __DSB() alone only drains the store buffer, not the cache lines.
 #if CONFIG_MACH_STM32H7
 static inline void
 diag_cache_clean(void)
@@ -125,23 +110,8 @@ static inline void diag_cache_clean(void) { __DSB(); }
 #endif
 
 // =============================================================================
-// Diagnostic counters + event ring — for the bridge-call stall investigation.
-//
-// The bug under test (`docs/superpowers/specs/2026-05-09-bridge-call-stall-*`)
-// causes a ~500 ms USB-OUT NAK from the H7 during an `_do_enable` SPI burst
-// concurrent with motion-bridge planner traffic. Existing firmware diagnostics
-// don't observe what runs in that window — `runtime_status_drain` (which would
-// emit) is itself starved.
-//
-// The strategy: keep monotonic counters in BKPSRAM updated from each IRQ /
-// task entry, plus an event ring of "long IRQ" / "task gap" / "TX drop" /
-// "engine state transition" records. The current run's emit task surfaces
-// counter deltas at 10 Hz when foreground runs; the ring captures whatever
-// happened during the windows it didn't. On next boot, both are dumped via
-// the existing `fault_handler_report_task`.
-//
-// IRQ-safety: ring push uses `irq_save` / `irq_restore` (cpsid/cpsie). Cost
-// in the IRQ path is ~10 cycles for the push window — negligible at 40 kHz.
+// Diagnostic counters + event ring (persistent across soft reset).
+// IRQ-safe ring push uses irq_save/irq_restore; cost ~10 cycles — negligible.
 // =============================================================================
 #define DIAG_MAGIC      0x4449414Eu  // "DIAN" — diagnostic counters present
 #define DIAG_RING_LEN   32           // power-of-two for cheap mask
@@ -168,26 +138,17 @@ struct diag_event {
     uint32_t b;
 };
 
-// Histogram of per-IRQ DWT cycle durations. 16 buckets × 4096 cycles each;
-// at 520 MHz that's ~7.88 µs per bucket, covering 0–126 µs. Anything >126 µs
-// lands in the top bucket (the absolute peak is still tracked separately by
-// `*_cycles_max`). Bucket index = clamp(dur >> 12, 0..15).
-//
-// The 8 µs bucket width is chosen so the "interesting" region (a 25 µs tick
-// interval at 40 kHz, with tails to 65+ µs) spreads across buckets 3–8
-// instead of all collapsing into one. Trades off resolution at the low end,
-// which we don't currently care about (no fast-path ticks observed).
+// Per-IRQ DWT duration histogram: 16 buckets × 4096 cycles (~7.88 µs each
+// at 520 MHz). Bucket index = clamp(dur >> 12, 0..15); bucket 15 absorbs
+// everything ≥ 126 µs; absolute peak is tracked separately in *_cycles_max.
 #define DIAG_HIST_NBUCKETS 16
 #define DIAG_HIST_SHIFT    12
 
 struct diag_counters {
     uint32_t magic;
 
-    // IRQ counters. `cycles_*` are DWT cycles (520 MHz on H7 — 1us = 520
-    // cycles). Both production and prior-run dumps use the same units;
-    // emit converts to us for human readability. `cycles_total` is u64 so
-    // it doesn't wrap silently — at 40 kHz × 60 µs/tick = 31 M cycles/sec,
-    // a u32 wraps in ~138 s; u64 is good for ~18000 years.
+    // IRQ counters. cycles_* in DWT units (520 MHz on H7). total is u64 to
+    // avoid silent wrap (~138 s at 40 kHz × 60 µs/tick on u32).
     uint32_t tim5_irq_count;
     uint64_t tim5_irq_cycles_total;
     uint32_t tim5_irq_cycles_max;
@@ -195,23 +156,16 @@ struct diag_counters {
     uint64_t otg_irq_cycles_total;
     uint32_t otg_irq_cycles_max;
 
-    // Per-IRQ duration distribution. tim5_irq_buckets covers the full
-    // TIM5_IRQHandler entry-to-exit window (incl. endstop sampling, runtime
-    // tick, and accounting); rt_tick_buckets covers `runtime_handle_tick`
-    // alone. Pairing these tells us whether the cost is concentrated in
-    // the engine evaluator or in surrounding ISR overhead.
+    // tim5_irq_buckets: full ISR entry→exit; rt_tick_buckets: engine only.
+    // Pair them to isolate cost in engine vs. surrounding ISR overhead.
     uint32_t tim5_irq_buckets[DIAG_HIST_NBUCKETS];
     uint32_t rt_tick_count;
     uint32_t rt_tick_cycles_max;
     uint64_t rt_tick_cycles_total;
     uint32_t rt_tick_buckets[DIAG_HIST_NBUCKETS];
 
-    // Per-stage cumulative timing inside runtime_handle_tick. `eval_*` covers
-    // every scalar_eval call (≈3–4 per tick: X, Y, Z, optionally E). `dvel_*`
-    // covers every axis_velocity_q16 call (3 per tick: X, Y, Z) — that's the
-    // call that internally invokes `scalar_derivative_eval`, the function
-    // that allocates two ~7 KB stack arrays per call. Whichever pair carries
-    // most of the per-tick cost is the optimization target.
+    // Per-stage cumulative timing inside runtime_handle_tick (vestigial from
+    // the old scalar-eval engine — no active callers; retained for reference).
     uint32_t rt_eval_n;
     uint32_t rt_eval_cycles_max;
     uint64_t rt_eval_cycles_total;
@@ -219,21 +173,24 @@ struct diag_counters {
     uint32_t rt_dvel_cycles_max;
     uint64_t rt_dvel_cycles_total;
 
-    // Curve-shape characterization. The Rust engine writes the most-recent
-    // segment's per-axis (degree, cps_len) on segment activation so we can
-    // see what shape post-shape curves actually take on representative
-    // workloads. Matters for picking the right per-tick eval optimization
-    // (e.g. piecewise-Bezier fast path requires piecewise-polynomial form).
-    // Per-axis: [0]=X, [1]=Y, [2]=Z. degree=0 / cps_len=0 means "axis idle"
-    // (UNUSED_SENTINEL handle on this segment).
+    // Walk/monomialise split: walk = ring-walk (no conversion); monomial =
+    // arm_and_load on cold-load ticks only. Decompose worst-case tick cost.
+    uint32_t walk_cycles_max;
+    uint32_t walk_n;
+    uint32_t monomial_cycles_max;
+    uint32_t monomial_n;
+
+    // ISR-phase breadcrumb (RT_PHASE_* from fault_handler.h). Survives IWDG
+    // reset; names the phase a PRIMASK-freeze hung in.
+    uint32_t rt_isr_phase;
+
+    // Curve shape: per-axis (degree, cps_len, knots_len) at last activation.
+    // [0]=X, [1]=Y, [2]=Z; 0/0 = axis idle.
     uint8_t  rt_curve_degree[3];
     uint16_t rt_curve_cps_len[3];
     uint16_t rt_curve_knots_len[3];
 
-    // Foreground task heartbeats. `last_tick` is timer_read_time() at the
-    // most recent task entry; max_gap_ticks is the largest observed gap
-    // between consecutive entries (in timer ticks, same units as
-    // timer_read_time()).
+    // Foreground task heartbeats: calls, last_tick, max_gap (timer_read_time units).
     uint32_t usb_out_calls;
     uint32_t usb_out_last_tick;
     uint32_t usb_out_max_gap_ticks;
@@ -247,8 +204,7 @@ struct diag_counters {
     uint32_t runtime_status_last_tick;
     uint32_t runtime_status_max_gap_ticks;
 
-    // TX-drop counters. Investigation says these aren't firing on real
-    // hardware, but cheap to confirm.
+    // TX-drop counters.
     uint32_t tx_drops_kalico;
     uint32_t tx_drops_klipper;
     uint32_t tx_drops_kalico_last_len;
@@ -262,41 +218,59 @@ struct diag_counters {
     // Boot-time bookkeeping.
     uint32_t boot_count;
 
-    // Round 2 — wedge-mechanism instrumentation.
     // Per-flag OTG IRQ counters (RXFLVL → host-to-MCU notify path).
     uint32_t otg_rxflvl_fires;
     uint32_t otg_iepint_fires;
     uint32_t otg_otherflag_fires;
     uint32_t otg_otherflag_last_sts;
 
-    // Wake / task / read-side counters for the bulk-OUT path.
+    // Bulk-OUT path counters.
     uint32_t notify_bulk_out_calls;     // usb_notify_bulk_out invocations
     uint32_t task_invoke_count;         // usb_bulk_out_task entries (before wake gate)
     uint32_t usb_read_zero_returns;     // usb_read_bulk_out returned <= 0
     uint32_t usb_read_data_returns;     // usb_read_bulk_out returned > 0
 
-    // Snapshots of OTG live state (read at periodic emit time).
+    // OTG live register snapshots (read at periodic emit).
     uint32_t otg_gintmsk_now;
     uint32_t otg_gintsts_now;
 
-    // Round 3 — OUT EP state and re-arm bookkeeping.
-    // Snapshots of the bulk-OUT EP control / size / interrupt registers.
-    // EPENA bit (0x80000000) tells us if the EP is currently enabled.
-    // NAKSTS (0x00020000) tells us if it's NAKing. PKTCNT in DOEPTSIZ
-    // tells us how many slots remain to receive into. DOEPINT exposes
-    // per-EP interrupt flags (XFRC, EPDISD, etc).
+    // Bulk-OUT EP register snapshots and re-arm accounting.
     uint32_t out_ep_doepctl;
     uint32_t out_ep_doeptsiz;
     uint32_t out_ep_doepint;
-    // enable_rx_endpoint accounting. enable_n is total invocations;
-    // enable_rearmed_n is the branch that actually wrote EPENA|CNAK.
-    uint32_t enable_rx_n;
-    uint32_t enable_rx_rearmed_n;
-    // usb_read_bulk_out path classifier. peek_empty_n = queue had no
-    // packet (path A, re-enabled RXFLVLM). peek_data_n = queue had data
-    // (path B, drained it).
-    uint32_t peek_empty_n;
-    uint32_t peek_data_n;
+    uint32_t enable_rx_n;           // total enable_rx_endpoint calls
+    uint32_t enable_rx_rearmed_n;   // branch that actually wrote EPENA|CNAK
+    uint32_t peek_empty_n;          // queue empty → re-enable RXFLVLM
+    uint32_t peek_data_n;           // queue had data → drained
+
+    // -311 block-source discriminators (DWT cycles).
+    // systick_max: SysTick single dispatch (holds PRIMASK — direct TIM5 fence).
+    // stepout_max/burst: step-output one-shot single + contiguous-burst span.
+    // usb_burst: USB OTG ISR contiguous-burst span (higher prio than TIM5).
+    // A fence blocker reaches ~2x TIM5 period: H7 >= 26000 cyc, F446 >= 18000.
+    uint32_t systick_max_cyc;
+    uint32_t stepout_max_cyc;
+    uint32_t stepout_burst_max_cyc;
+    uint32_t usb_burst_max_cyc;
+
+    // -311 PRIMARY discriminator: TIM5 entry-to-entry inter-arrival (DWT).
+    // min ~= 2x period → clock-domain half-rate; min ~= 1x period → real fence.
+    // min is immune to stale-prev (disable/enable only injects a large gap into max).
+    uint32_t tim5_ia_min_cyc;
+    uint32_t tim5_ia_max_cyc;
+    uint32_t tim5_ia_last_cyc;
+
+    // USB-CDC halt: in_busy = bulk-IN EPENA still set (host not draining);
+    // gintsts_sticky = OR of all GINTSTS (catches transient USBRST/USBSUSP).
+    uint32_t usb_in_busy_n;
+    uint32_t usb_gintsts_sticky;
+    uint32_t usb_gintsts_now;
+    uint32_t usb_gintmsk_now;
+    uint32_t usb_in_diepctl;
+    uint32_t usb_in_diepint;
+    uint32_t usb_in_dtxfsts;
+    uint32_t usb_out_doepctl;
+    uint32_t usb_out_doepint;
 };
 
 #if CONFIG_MACH_STM32H7
@@ -425,6 +399,22 @@ diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
 {
     uint32_t dur = exit_cycles - enter_cycles;
     diag.tim5_irq_count++;
+
+    // -311 PRIMARY: entry-to-entry inter-arrival. min is robust (disable/enable
+    // only injects a large gap into max, never into min).
+    static uint32_t prev_enter;
+    static uint8_t  have_prev;
+    if (have_prev) {
+        uint32_t ia = enter_cycles - prev_enter;  // wrap-safe u32 DWT delta
+        diag.tim5_ia_last_cyc = ia;
+        if (ia > diag.tim5_ia_max_cyc)
+            diag.tim5_ia_max_cyc = ia;
+        if (diag.tim5_ia_min_cyc == 0 || ia < diag.tim5_ia_min_cyc)
+            diag.tim5_ia_min_cyc = ia;
+    }
+    prev_enter = enter_cycles;
+    have_prev = 1;
+
     diag.tim5_irq_cycles_total += dur;
     if (dur > diag.tim5_irq_cycles_max)
         diag.tim5_irq_cycles_max = dur;
@@ -436,11 +426,36 @@ diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
     // cycles. 50us ≈ 8x normal — a real outlier worth recording.
     if (dur > 26000u)
         diag_ring_push(DIAG_EV_TIM5_LONG, dur, enter_cycles);
+
+    // Foreground-freeze watchdog: watches samples_taken; latches worst stall +
+    // stacked PC/exc into cross-boot-persistent live_snap. fg_seen_advance gates
+    // counting until the heartbeat has advanced at least once (excludes boot
+    // window). If worst_fg_stall_pc stays 0 across a known freeze, PRIMASK held.
+    static uint32_t fg_hb_prev;
+    static uint32_t fg_stall_ticks;
+    static uint8_t  fg_init;
+    static uint8_t  fg_seen_advance;
+    uint32_t hb = live_snap.samples_taken;
+    if (!fg_init) {
+        fg_hb_prev = hb;
+        fg_init = 1;
+    } else if (hb != fg_hb_prev) {
+        fg_hb_prev = hb;
+        fg_stall_ticks = 0;
+        fg_seen_advance = 1;
+    } else if (fg_seen_advance) {
+        fg_stall_ticks++;
+        if (fg_stall_ticks > live_snap.worst_fg_stall_ticks) {
+            extern uint32_t runtime_tim5_stacked_pc(void);
+            extern uint32_t runtime_tim5_stacked_exc(void);
+            live_snap.worst_fg_stall_ticks = fg_stall_ticks;
+            live_snap.worst_fg_stall_pc    = runtime_tim5_stacked_pc();
+            live_snap.worst_fg_stall_exc   = runtime_tim5_stacked_exc();
+        }
+    }
 }
 
-// Per-stage timing inside runtime_handle_tick. Called from Rust at each
-// scalar_eval / axis_velocity_q16 call boundary. `cycles` is the elapsed
-// DWT cycle delta (caller computed `t1.wrapping_sub(t0)`).
+// Per-stage timing inside runtime_handle_tick (vestigial; no active callers).
 __attribute__((used, externally_visible))
 void
 diag_rt_eval_account(uint32_t cycles)
@@ -451,9 +466,7 @@ diag_rt_eval_account(uint32_t cycles)
         diag.rt_eval_cycles_max = cycles;
 }
 
-// Curve-shape capture: called from the Rust engine on segment activation
-// for each non-idle axis. axis_idx in 0..=2 (X/Y/Z). cps_len/knots_len
-// truncated to u16 (curve pool's hard cap is 1850, fits in u16).
+// Curve-shape capture on segment activation. axis_idx 0..=2 (X/Y/Z).
 __attribute__((used, externally_visible))
 void
 diag_rt_curve_meta(uint32_t axis_idx, uint32_t degree,
@@ -475,10 +488,34 @@ diag_rt_dvel_account(uint32_t cycles)
         diag.rt_dvel_cycles_max = cycles;
 }
 
-// Histogram-only sibling for the runtime_handle_tick subwindow. Caller
-// provides the already-computed delta in DWT cycles (i.e. `after - before`
-// from the IRQ, where the runtime_handle_tick call is bracketed). Cost is
-// bounded to a few cycles: shift, clamp, two stores.
+// Walk/monomialise split timing. Rust-only callers.
+__attribute__((used, externally_visible))
+void
+diag_walk_account(uint32_t cycles)
+{
+    diag.walk_n++;
+    if (cycles > diag.walk_cycles_max)
+        diag.walk_cycles_max = cycles;
+}
+
+__attribute__((used, externally_visible))
+void
+diag_monomial_account(uint32_t cycles)
+{
+    diag.monomial_n++;
+    if (cycles > diag.monomial_cycles_max)
+        diag.monomial_cycles_max = cycles;
+}
+
+// ISR-phase breadcrumb setter. Survives reset; names the phase a freeze hung in.
+__attribute__((used, externally_visible))
+void
+runtime_set_isr_phase(uint32_t phase)
+{
+    diag.rt_isr_phase = phase;
+}
+
+// Histogram the runtime_handle_tick subwindow (already-computed DWT delta).
 void
 diag_runtime_tick_account(uint32_t cycles)
 {
@@ -492,6 +529,8 @@ diag_runtime_tick_account(uint32_t cycles)
     diag.rt_tick_buckets[bucket]++;
 }
 
+void diag_usb_burst_track(uint32_t enter_cycles, uint32_t exit_cycles); // defined below
+
 void
 diag_otg_account(uint32_t enter_cycles, uint32_t exit_cycles)
 {
@@ -502,12 +541,71 @@ diag_otg_account(uint32_t enter_cycles, uint32_t exit_cycles)
         diag.otg_irq_cycles_max = dur;
     if (dur > 26000u)
         diag_ring_push(DIAG_EV_OTG_LONG, dur, enter_cycles);
+    diag_usb_burst_track(enter_cycles, exit_cycles);
 }
 
 // =============================================================================
-// Accessors — invoked from the periodic emit in runtime_status_drain to read
-// counter snapshots. Use a brief irq_save to take a coherent snapshot of
-// counters that change in IRQ context.
+// -311 block-source burst tracking.
+// Stitches back-to-back ISR invocations into a contiguous fence span.
+// Gap threshold = H7 TIM5 period (13000 cyc @ 40 kHz/520 MHz) — conservative
+// upper bound so bursts on F446 are never falsely split.
+// =============================================================================
+#define DIAG_BURST_GAP_CYC 13000u   // ~1 TIM5 period (H7 worst case)
+
+// Fold [enter, exit] into the running burst; bump max_out if span is larger.
+static inline void
+diag_burst_fold(volatile uint32_t *max_out,
+                uint32_t *start, uint32_t *last_exit,
+                uint32_t enter_cycles, uint32_t exit_cycles)
+{
+    // Gap since the previous invocation's exit. Wrap-safe subtraction.
+    uint32_t gap = enter_cycles - *last_exit;
+    if (*last_exit == 0 || gap > DIAG_BURST_GAP_CYC) {
+        // Burst closed (or first ever) — start a fresh one at this entry.
+        *start = enter_cycles;
+    }
+    *last_exit = exit_cycles;
+    uint32_t span = exit_cycles - *start;
+    if (span > *max_out)
+        *max_out = span;
+}
+
+// SysTick: holds PRIMASK across dispatch; only single-invocation max needed.
+void
+diag_systick_account(uint32_t enter_cycles, uint32_t exit_cycles)
+{
+    uint32_t dur = exit_cycles - enter_cycles;
+    if (dur > diag.systick_max_cyc)
+        diag.systick_max_cyc = dur;
+}
+
+// Step-output one-shot ISR (TIM3 H7 / TIM2 F4): single + contiguous burst.
+void
+diag_stepout_account(uint32_t enter_cycles, uint32_t exit_cycles)
+{
+    static uint32_t burst_start;
+    static uint32_t burst_last_exit;
+    uint32_t dur = exit_cycles - enter_cycles;
+    if (dur > diag.stepout_max_cyc)
+        diag.stepout_max_cyc = dur;
+    diag_burst_fold(&diag.stepout_burst_max_cyc,
+                    &burst_start, &burst_last_exit,
+                    enter_cycles, exit_cycles);
+}
+
+// USB OTG ISR contiguous burst. Called from diag_otg_account (single-stamp).
+void
+diag_usb_burst_track(uint32_t enter_cycles, uint32_t exit_cycles)
+{
+    static uint32_t burst_start;
+    static uint32_t burst_last_exit;
+    diag_burst_fold(&diag.usb_burst_max_cyc,
+                    &burst_start, &burst_last_exit,
+                    enter_cycles, exit_cycles);
+}
+
+// =============================================================================
+// Snapshot accessors — irq_save for coherence with IRQ-updated counters.
 // =============================================================================
 struct diag_snapshot {
     uint32_t tim5_n, tim5_total, tim5_max;
@@ -525,9 +623,7 @@ diag_take_snapshot(struct diag_snapshot *s)
 {
     irqstatus_t flag = irq_save();
     s->tim5_n      = diag.tim5_irq_count;
-    // Snapshot truncates u64 totals to u32 — this snapshot only feeds the
-    // currently-disabled live periodic emit. The prior_diag dump path emits
-    // the full u64 as lo/hi pairs.
+    // u64 totals truncated to u32 here; prior_diag dump emits lo/hi pairs.
     s->tim5_total  = (uint32_t)diag.tim5_irq_cycles_total;
     s->tim5_max    = diag.tim5_irq_cycles_max;
     s->otg_n       = diag.otg_irq_count;
@@ -545,8 +641,7 @@ diag_take_snapshot(struct diag_snapshot *s)
     s->tx_drops_klipper = diag.tx_drops_klipper;
     s->ring_seq      = diag.ring_seq;
     s->ring_overflow = diag.ring_overflow;
-    // Reset max trackers for next interval (so emits show per-interval peaks
-    // instead of all-time peaks). Counts and totals are cumulative.
+    // Reset max trackers per interval; counts/totals remain cumulative.
     diag.tim5_irq_cycles_max = 0;
     diag.otg_irq_cycles_max  = 0;
     diag.usb_out_max_gap_ticks = 0;
@@ -557,9 +652,7 @@ diag_take_snapshot(struct diag_snapshot *s)
     irq_restore(flag);
 }
 
-// Heartbeat slot accessors — exposed so other compilation units can pass
-// pointers into our BKPSRAM struct without taking direct addresses of
-// volatile members across translation units (which compilers warn about).
+// Heartbeat slot accessors (avoid taking addresses of volatile members across TUs).
 volatile uint32_t *diag_slot_usb_out_calls(void)        { return &diag.usb_out_calls; }
 volatile uint32_t *diag_slot_usb_out_last_tick(void)    { return &diag.usb_out_last_tick; }
 volatile uint32_t *diag_slot_usb_out_max_gap(void)      { return &diag.usb_out_max_gap_ticks; }
@@ -573,7 +666,7 @@ volatile uint32_t *diag_slot_rt_status_calls(void)      { return &diag.runtime_s
 volatile uint32_t *diag_slot_rt_status_last_tick(void)  { return &diag.runtime_status_last_tick; }
 volatile uint32_t *diag_slot_rt_status_max_gap(void)    { return &diag.runtime_status_max_gap_ticks; }
 
-// Drop-event helpers — called from the TX-buffer-full early-return paths.
+// TX-drop helpers — called from TX-buffer-full early-return paths.
 void
 diag_record_tx_drop_kalico(uint32_t len, uint32_t tpos)
 {
@@ -598,10 +691,7 @@ diag_record_engine_xition(uint8_t prev, uint8_t cur, uint32_t samples_taken)
                    samples_taken);
 }
 
-// Round 2 — wedge instrumentation accessors. All increments via volatile
-// stores; called from IRQ + task paths. Returning pointers lets callers
-// use simple pre-increment without taking ad-hoc addresses of volatile
-// struct members across compilation units.
+// OTG/bulk-OUT slot accessors (same rationale as heartbeat slots above).
 volatile uint32_t *diag_slot_otg_rxflvl(void)         { return &diag.otg_rxflvl_fires; }
 volatile uint32_t *diag_slot_otg_iepint(void)         { return &diag.otg_iepint_fires; }
 volatile uint32_t *diag_slot_otg_other(void)          { return &diag.otg_otherflag_fires; }
@@ -611,8 +701,7 @@ volatile uint32_t *diag_slot_task_invoke(void)        { return &diag.task_invoke
 volatile uint32_t *diag_slot_read_zero(void)          { return &diag.usb_read_zero_returns; }
 volatile uint32_t *diag_slot_read_data(void)          { return &diag.usb_read_data_returns; }
 
-// Snapshot OTG live registers into BKPSRAM before periodic emit reads them.
-// Called from runtime_status_drain (foreground); no IRQ-safety needed.
+// Snapshot OTG live registers (foreground; no IRQ-safety needed).
 void
 diag_snapshot_otg_regs(uint32_t gintmsk, uint32_t gintsts)
 {
@@ -620,7 +709,39 @@ diag_snapshot_otg_regs(uint32_t gintmsk, uint32_t gintsts)
     diag.otg_gintsts_now = gintsts;
 }
 
-// Round 2 — extended snapshot accessors.
+// USB-CDC halt: called from usb_diag_poll_task each foreground iteration.
+void
+diag_usb_poll(uint32_t gintsts, uint32_t gintmsk, uint32_t in_diepctl,
+              uint32_t in_diepint, uint32_t in_dtxfsts, uint32_t out_doepctl,
+              uint32_t out_doepint)
+{
+    diag.usb_gintsts_sticky |= gintsts;
+    diag.usb_gintsts_now = gintsts;
+    diag.usb_gintmsk_now = gintmsk;
+    diag.usb_in_diepctl = in_diepctl;
+    diag.usb_in_diepint = in_diepint;
+    diag.usb_in_dtxfsts = in_dtxfsts;
+    diag.usb_out_doepctl = out_doepctl;
+    diag.usb_out_doepint = out_doepint;
+}
+
+// Bumped when bulk-IN EPENA is still set (host stopped draining the IN endpoint).
+void
+diag_note_usb_in_busy(void)
+{
+    diag.usb_in_busy_n++;
+}
+
+// Mirror last-dispatched (func, addr) to persistent live_snap before the call.
+// A hanging callback → PRIMASK → IWDG reset → addr2line from live_snap after reset.
+void
+diag_note_dispatch(uint32_t func, uint32_t addr)
+{
+    live_snap.last_dispatch_func = func;
+    live_snap.last_dispatch_addr = addr;
+}
+
+// Extended snapshot accessors.
 uint32_t diag_get_otg_rxflvl(void)        { return diag.otg_rxflvl_fires; }
 uint32_t diag_get_otg_iepint(void)        { return diag.otg_iepint_fires; }
 uint32_t diag_get_otg_other(void)         { return diag.otg_otherflag_fires; }
@@ -632,7 +753,7 @@ uint32_t diag_get_read_data(void)         { return diag.usb_read_data_returns; }
 uint32_t diag_get_otg_gintmsk_now(void)   { return diag.otg_gintmsk_now; }
 uint32_t diag_get_otg_gintsts_now(void)   { return diag.otg_gintsts_now; }
 
-// Round 3 — OUT EP and enable_rx counters.
+// OUT EP and enable_rx counters.
 volatile uint32_t *diag_slot_enable_rx(void)        { return &diag.enable_rx_n; }
 volatile uint32_t *diag_slot_enable_rx_rearm(void)  { return &diag.enable_rx_rearmed_n; }
 volatile uint32_t *diag_slot_peek_empty(void)       { return &diag.peek_empty_n; }
@@ -694,10 +815,7 @@ fault_capture_and_reset(uint32_t kind, uint32_t *frame, uint32_t exc_return)
     fault_rec.fault_count++;
     fault_rec.magic = FAULT_MAGIC;
 
-    // Make sure the record is actually written before we reset.
-    __DSB();
-
-    // Soft reset.
+    __DSB();  // flush to SRAM before reset
     NVIC_SystemReset();
 
     for (;;);
@@ -705,16 +823,9 @@ fault_capture_and_reset(uint32_t kind, uint32_t *frame, uint32_t exc_return)
 
 #include "armcm_boot.h"  // DECL_ARMCM_IRQ
 
-// Naked trampolines: extract the active stack pointer (MSP or PSP based on
-// EXC_RETURN bit 2) and the EXC_RETURN value, then tail into the C handler.
-// This must be inline asm in a naked function so the compiler doesn't push
-// anything onto the stack before we sample SP.
-// The stack-pointer select + tail-call differs by architecture. ARMv7-M uses an
-// IT block + conditional MRS. ARMv6-M (Cortex-M0+) has neither IT blocks nor
-// conditional MRS, TST takes only registers (not an immediate), and the narrow
-// unconditional B's ±2KB range can't reach fault_capture_and_reset across the
-// firmware's .text — so it uses an explicit branch over a register-form TST and
-// tail-calls with BL (±4MB; lr is dead afterward since the callee is noreturn).
+// Naked trampolines: select MSP vs PSP from EXC_RETURN bit 2, tail-call the C
+// handler. ARMv7-M uses IT+conditional MRS; ARMv6-M uses a branch-over+BL
+// (no IT blocks, no conditional MRS, narrow B can't reach across .text).
 #if (__CORTEX_M >= 3)
 #define FAULT_TRAMPOLINE_SELECT_SP                                      \
             "tst lr, #4\n\t"                                            \
@@ -757,10 +868,8 @@ FAULT_TRAMPOLINE(UsageFault_Handler, 3, -10);
 FAULT_TRAMPOLINE(MemManage_Handler, 4, -12);
 #endif
 
-// On boot, enable the configurable fault exceptions so they don't all
-// escalate into HardFault (HardFault still catches them too if the
-// configurable handlers escalate). Also enable divide-by-zero and
-// unaligned-access trapping so we get UsageFault on those.
+// Enable configurable fault exceptions (BusFault, UsageFault, MemManage) and
+// divide-by-zero trapping so they don't all escalate into HardFault.
 void
 fault_handler_init(void)
 {
@@ -768,22 +877,15 @@ fault_handler_init(void)
     SCB->SHCSR |= SCB_SHCSR_USGFAULTENA_Msk
                 | SCB_SHCSR_BUSFAULTENA_Msk
                 | SCB_SHCSR_MEMFAULTENA_Msk;
-    SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;  // trap divide by zero
-    // Don't enable unalign trap — half-word/word unaligned loads are common.
+    SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;  // trap divide-by-zero
+    // Unaligned-access trap left off — half-word/word unaligned loads are common.
 #endif
 #if CONFIG_MACH_STM32H7
-    // Enable backup SRAM. Steps from RM0468 §6.6.7:
-    // 1. Clock the BKPRAM peripheral (AHB4ENR.BKPRAMEN).
-    // 2. Disable backup-domain write protection (PWR->CR1.DBP).
-    // 3. Enable the backup regulator (PWR->CR2.BREN) so the contents
-    //    are retained during VBAT-only operation. Even without VBAT
-    //    connected, the SRAM is RAM-backed and survives any reset
-    //    short of a full power cycle, which is what we need.
+    // Enable backup SRAM (RM0468 §6.6.7): clock BKPRAM, lift write
+    // protection, enable the backup regulator. Wait for BRRDY.
     RCC->AHB4ENR |= RCC_AHB4ENR_BKPRAMEN;
     PWR->CR1 |= PWR_CR1_DBP;
     PWR->CR2 |= PWR_CR2_BREN;
-    // Wait briefly for the regulator-ready flag — the snapshot writes
-    // happen well after init runs, so a tight poll here is fine.
     {
         volatile int spin = 0;
         while (!(PWR->CR2 & PWR_CR2_BRRDY) && spin < 100000) spin++;
@@ -792,12 +894,9 @@ fault_handler_init(void)
 }
 DECL_INIT(fault_handler_init);
 
-// Re-emit the boot diagnostic and (if present) the prior-fault record on
-// a slow timer so it survives klippy reconnect. Most embedded silent-
-// reset bugs are not caught by HardFault — they're watchdog resets, BOR,
-// PMU events, etc — so even when our handler never ran, the RCC reset-
-// cause flags still tell us how the chip got reset. We capture them at
-// init and report every ~2s of MCU time for the first 60s of each boot.
+// Emit boot diagnostic + prior-fault record on a slow timer so they survive
+// klippy reconnect. RCC reset-cause flags tell us how the chip got reset even
+// when our fault handler never ran (IWDG, BOR, PMU, etc).
 #include "board/misc.h"   // timer_read_time, timer_from_us
 
 static uint32_t boot_first_tick;
@@ -806,9 +905,7 @@ static uint32_t last_emit_tick;
 static uint32_t emits_done;
 static uint32_t reset_cause_snapshot;
 static uint32_t reset_cause_raw;
-// Cached prior-run snapshot, captured at boot before we overwrite live_snap
-// with this-run state. Static .bss = zero on each boot so the cache is
-// derived once and reused.
+// Cached prior-run live_snap (captured at boot before overwrite; .bss = zero).
 static uint32_t prior_live_present_at_boot;
 static uint32_t saved_prior_live;
 static uint32_t saved_prior_engine;
@@ -853,8 +950,7 @@ fault_handler_report_task(void)
         reset_cause_snapshot = read_reset_cause();
         reset_cause_raw = reset_cause_snapshot;
         clear_reset_cause();
-        // Snapshot the prior-run live_snap BEFORE this run starts
-        // overwriting it on subsequent task calls.
+        // Capture prior-run live_snap before this run overwrites it.
         if (live_snap.magic == LIVE_MAGIC) {
             prior_live_present_at_boot = 1;
             saved_prior_live          = live_snap.live;
@@ -862,22 +958,30 @@ fault_handler_report_task(void)
             saved_prior_tick          = live_snap.tick_counter;
             saved_prior_last_run_tick = live_snap.last_engine_running_tick;
             saved_prior_samples       = live_snap.samples_taken;
+        } else {
+            // First-ever boot: zero cross-boot freeze record before use.
+            live_snap.worst_fg_stall_ticks = 0;
+            live_snap.worst_fg_stall_pc    = 0;
+            live_snap.worst_fg_stall_exc   = 0;
+            live_snap.iwdg_reset_count     = 0;
+            live_snap.last_dispatch_func   = 0;
+            live_snap.last_dispatch_addr   = 0;
         }
+        // Count IWDG resets (foreground freeze signature).
+#if CONFIG_MACH_STM32H7
+        if (reset_cause_raw & RCC_RSR_IWDG1RSTF)
+            live_snap.iwdg_reset_count++;
+#elif CONFIG_MACH_STM32F4
+        if (reset_cause_raw & RCC_CSR_IWDGRSTF)
+            live_snap.iwdg_reset_count++;
+#endif
         live_snap.samples_taken = 0;  // reset for this run
 
-        // Snapshot the prior-run diag counters + ring before the new run
-        // overwrites them. Both live in BKPSRAM on H7 and in
-        // `.persistent_diag` (NOLOAD main-RAM section past
-        // `_persistent_diag_end`) on F4 — `armcm_boot.c::boot_memset`
-        // only zeroes `[_bss_start.._bss_end]`, so the section survives
-        // soft reset. `diag.magic` will equal DIAG_MAGIC after at least
-        // one prior boot wrote it; on the very first power-on this is
-        // undefined RAM and the snapshot is skipped (probabilistically
-        // — 1-in-2^32 false positive is acceptable).
+        // Snapshot prior-run diag before new run overwrites. Skipped on first
+        // power-on (magic uninitialised; 1-in-2^32 false-positive is acceptable).
         if (diag.magic == DIAG_MAGIC) {
             prior_diag_present = 1;
-            // Memcpy through volatile via field-by-field copy. The struct
-            // is small enough (~128 B) that this is acceptable cost.
+            // Field-by-field copy through volatile (struct is small).
             prior_diag.magic                = diag.magic;
             prior_diag.tim5_irq_count       = diag.tim5_irq_count;
             prior_diag.tim5_irq_cycles_total = diag.tim5_irq_cycles_total;
@@ -894,6 +998,11 @@ fault_handler_report_task(void)
             prior_diag.rt_dvel_n            = diag.rt_dvel_n;
             prior_diag.rt_dvel_cycles_max   = diag.rt_dvel_cycles_max;
             prior_diag.rt_dvel_cycles_total = diag.rt_dvel_cycles_total;
+            prior_diag.walk_cycles_max      = diag.walk_cycles_max;
+            prior_diag.walk_n               = diag.walk_n;
+            prior_diag.monomial_cycles_max  = diag.monomial_cycles_max;
+            prior_diag.monomial_n           = diag.monomial_n;
+            prior_diag.rt_isr_phase         = diag.rt_isr_phase;
             for (uint32_t axis = 0; axis < 3; axis++) {
                 prior_diag.rt_curve_degree[axis]    = diag.rt_curve_degree[axis];
                 prior_diag.rt_curve_cps_len[axis]   = diag.rt_curve_cps_len[axis];
@@ -919,8 +1028,23 @@ fault_handler_report_task(void)
             prior_diag.ring_seq             = diag.ring_seq;
             prior_diag.ring_overflow        = diag.ring_overflow;
             prior_diag.boot_count           = diag.boot_count;
-            // Capture the ring contents into a non-volatile copy so the
-            // emit loop below has a stable snapshot to walk.
+            prior_diag.systick_max_cyc        = diag.systick_max_cyc;
+            prior_diag.stepout_max_cyc        = diag.stepout_max_cyc;
+            prior_diag.stepout_burst_max_cyc  = diag.stepout_burst_max_cyc;
+            prior_diag.usb_burst_max_cyc      = diag.usb_burst_max_cyc;
+            prior_diag.tim5_ia_min_cyc        = diag.tim5_ia_min_cyc;
+            prior_diag.tim5_ia_max_cyc        = diag.tim5_ia_max_cyc;
+            prior_diag.tim5_ia_last_cyc       = diag.tim5_ia_last_cyc;
+            prior_diag.usb_in_busy_n          = diag.usb_in_busy_n;
+            prior_diag.usb_gintsts_sticky     = diag.usb_gintsts_sticky;
+            prior_diag.usb_gintsts_now        = diag.usb_gintsts_now;
+            prior_diag.usb_gintmsk_now        = diag.usb_gintmsk_now;
+            prior_diag.usb_in_diepctl         = diag.usb_in_diepctl;
+            prior_diag.usb_in_diepint         = diag.usb_in_diepint;
+            prior_diag.usb_in_dtxfsts         = diag.usb_in_dtxfsts;
+            prior_diag.usb_out_doepctl        = diag.usb_out_doepctl;
+            prior_diag.usb_out_doepint        = diag.usb_out_doepint;
+            // Capture ring into non-volatile copy for stable iteration below.
             for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
                 prior_ring[i].tag       = diag_ring[i].tag;
                 prior_ring[i]._pad0     = diag_ring[i]._pad0;
@@ -930,12 +1054,10 @@ fault_handler_report_task(void)
                 prior_ring[i].b         = diag_ring[i].b;
             }
         }
-        // Reset BKPSRAM diag for the new run. Set magic so next boot
-        // recognises a valid record exists.
+        // Reset diag for new run (old entries now in prior_ring).
         memset((void *)&diag, 0, sizeof(diag));
         diag.magic = DIAG_MAGIC;
         diag.boot_count = prior_diag_present ? (prior_diag.boot_count + 1) : 1;
-        // Zero the ring too — old entries are in prior_ring now.
         for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
             diag_ring[i].tag = DIAG_EV_NONE;
             diag_ring[i].seq = 0;
@@ -943,12 +1065,6 @@ fault_handler_report_task(void)
             diag_ring[i].a = 0;
             diag_ring[i].b = 0;
         }
-        // Sanity-check emit: capture prior_diag values RIGHT NOW so we
-        // can compare against the periodic-emit version that fires later.
-        // If these values match the periodic emit, prior_diag is being
-        // captured correctly. If they differ, the periodic emit has a
-        // staleness bug. Emitting BEFORE the first non-init code path
-        // touches anything related to BKPSRAM.
         if (prior_diag_present) {
             output("prior_diag_at_init boot %u tim5_n %u otg_n %u out_n %u in_n %u"
                    " drain_n %u stat_n %u ring_seq %u ring_overflow %u"
@@ -968,10 +1084,7 @@ fault_handler_report_task(void)
         diag_cache_clean();
         return;
     }
-    // Refresh the liveness snapshot every task call (once per scheduler
-    // iteration) so the snapshot is fresh when the IWDG fires. Saving
-    // here rather than gated on `emits_done` ensures we capture state
-    // right up to the crash, not just every 2 s.
+    // Refresh liveness snapshot every task call so it is fresh at any crash.
     {
         uint32_t live_now = runtime_liveness_ok;
         uint8_t engine_now = 0xFF;
@@ -991,11 +1104,7 @@ fault_handler_report_task(void)
             live_snap.last_engine_running_tick = tick_now;
         live_snap.magic = LIVE_MAGIC;
     }
-    // Emit every 2 seconds for the first 6 seconds of boot. This is enough
-    // for one full pass over the 32-entry diag ring (12 entries per cycle
-    // below) plus modest summary-line redundancy, while leaving the USB
-    // bridge clear during the post-boot TMC autotune window where bridge
-    // saturation correlates with host-side stalls.
+    // Emit every 2 s for the first 6 s of boot (3 cycles covers all 32 ring entries).
     if (emits_done >= 3)
         return;
     uint32_t elapsed = now - last_emit_tick;
@@ -1005,24 +1114,25 @@ fault_handler_report_task(void)
     uint32_t since_boot_us = (uint32_t)((uint64_t)(now - boot_first_tick)
                                         * 1000000u
                                         / CONFIG_CLOCK_FREQ);
-    // Use free-form `%u` (no `name=%u`) so the parser flags these as
-    // free-form outputs and the decoder populates `#msg` with the
-    // interpolated string. With `name=%u` syntax the decoder routes
-    // structured-style by message name and never builds `#msg`, leaving
-    // klippy's handle_output logging an empty line.
+    // Free-form %u (not name=%u) so the decoder builds #msg for klippy log.
     output("boot_diag emit %u since_us %u rcc %u prior %u live %u engine %u tick %u",
            emits_done, since_boot_us, reset_cause_raw,
            (uint32_t)(fault_rec.magic == FAULT_MAGIC),
            live_snap.live, live_snap.engine_status, live_snap.tick_counter);
-    // Re-emit the prior-run snapshot every cycle for the first 30 emits
-    // to ensure delivery survives any USB enumeration / klippy reconnect
-    // timing.
     if (prior_live_present_at_boot) {
         output("prior_live live %u engine %u tick %u last_run_tick %u samples %u",
                saved_prior_live, saved_prior_engine,
                saved_prior_tick, saved_prior_last_run_tick,
                saved_prior_samples);
     }
+    // Cross-boot foreground-freeze watchdog (worst stall ticks, frozen PC/exc, IWDG count).
+    output("fg_freeze stall_ticks %u pc %u exc %u iwdg %u last_disp_func %u last_disp_addr %u",
+           live_snap.worst_fg_stall_ticks,
+           live_snap.worst_fg_stall_pc,
+           live_snap.worst_fg_stall_exc,
+           live_snap.iwdg_reset_count,
+           live_snap.last_dispatch_func,
+           live_snap.last_dispatch_addr);
     if (fault_rec.magic == FAULT_MAGIC) {
         output("prior_fault kind %u count %u pc %u lr %u psr %u"
                " r0 %u r1 %u r2 %u r3 %u r12 %u",
@@ -1036,25 +1146,14 @@ fault_handler_report_task(void)
                fault_rec.bfar, fault_rec.mmfar,
                fault_rec.shcsr, fault_rec.exc_return);
     }
-    // Persistent runtime-diag snapshot (set by runtime_diag_progress in
-    // src/runtime_tick.c). Survives `NVIC_SystemReset` via the
-    // .persistent_diag linker section. Inlined here rather than a separate
-    // function because whole-program LTO was stripping the standalone helper
-    // even with `__attribute__((used, externally_visible))`.
+    // Persistent runtime-diag snapshot (src/runtime_tick.c). Inlined here
+    // because whole-program LTO was stripping a standalone helper.
     output("rt_diag_prior magic=%u packed=%u us=%u faults=%u",
            rt_diag_persistent.magic,
            rt_diag_persistent.last_packed,
            rt_diag_persistent.last_us,
            rt_diag_persistent.fault_count);
-    // MPU MemManage violations (writes to .sched_protected from outside
-    // sched.c) are captured by the existing FAULT_TRAMPOLINE path above:
-    // fault_rec.pc holds the writing PC and fault_rec.mmfar holds the
-    // faulting address. The prior_fault / prior_fault_status outputs
-    // emitted earlier in this task already surface them.
-
-    // Bogus-add diagnostic (sched.c::sched_add_timer). Emits even when
-    // klippy never reaches the "Rescheduled timer in past" detection
-    // (e.g. when the chip is reset-cycling before homing can run).
+    // Bogus-add diagnostic (sched.c::sched_add_timer).
     extern volatile uint32_t sched_bad_add_caller;
     extern volatile uint32_t sched_bad_add_value;
     extern volatile uint32_t sched_bad_add_stack0;
@@ -1069,13 +1168,9 @@ fault_handler_report_task(void)
            sched_bad_add_stack1,
            sched_bad_add_stack2);
 
-    // Prior-run diag dump: one summary line each emit cycle, plus a few
-    // ring entries per cycle (throttled to avoid flooding `transmit_buf`
-    // with 32 entries in one go). Across 30 emit cycles we get plenty
-    // of redundancy for the host to pick up at least one full pass.
     if (prior_diag_present) {
-        // *_total_cyc fields are u64 — split as lo/hi u32 pairs for Klipper's
-        // output() which only knows %u. Combine on host: total = (hi<<32)|lo.
+        // u64 totals split as lo/hi u32 pairs (output() only knows %u).
+        // Combine on host: total = (hi<<32)|lo.
         output("prior_diag_summary boot %u tim5_n %u tim5_max_cyc %u"
                " tim5_total_lo %u tim5_total_hi %u",
                prior_diag.boot_count,
@@ -1097,6 +1192,11 @@ fault_handler_report_task(void)
                prior_diag.rt_dvel_n, prior_diag.rt_dvel_cycles_max,
                (uint32_t)(prior_diag.rt_dvel_cycles_total & 0xFFFFFFFFu),
                (uint32_t)(prior_diag.rt_dvel_cycles_total >> 32));
+        output("prior_diag_phase walk_max %u walk_n %u mono_max %u mono_n %u"
+               " isr_phase %u",
+               prior_diag.walk_cycles_max, prior_diag.walk_n,
+               prior_diag.monomial_cycles_max, prior_diag.monomial_n,
+               prior_diag.rt_isr_phase);
         output("prior_diag_summary_curve x_deg %u x_cps %u x_knots %u"
                " y_deg %u y_cps %u y_knots %u z_deg %u z_cps %u z_knots %u",
                (uint32_t)prior_diag.rt_curve_degree[0],
@@ -1114,6 +1214,33 @@ fault_handler_report_task(void)
                prior_diag.otg_irq_cycles_max,
                (uint32_t)(prior_diag.otg_irq_cycles_total & 0xFFFFFFFFu),
                (uint32_t)(prior_diag.otg_irq_cycles_total >> 32));
+        // -311 block-source dump (DWT cyc): blocker reaches ~2x TIM5 period
+        // (H7 >= 26000, F446 >= 18000). USB single is already in otg_max_cyc.
+        output("prior_diag_summary_block systick %u stepout %u"
+               " stepout_burst %u usb_burst %u",
+               prior_diag.systick_max_cyc,
+               prior_diag.stepout_max_cyc,
+               prior_diag.stepout_burst_max_cyc,
+               prior_diag.usb_burst_max_cyc);
+        // -311 PRIMARY: TIM5 inter-arrival vs sample period.
+        // min ~= 2x period → clock-domain half-rate; min ~= 1x → real fence.
+        output("prior_diag_summary_tim5ia min %u max %u last %u period %u",
+               prior_diag.tim5_ia_min_cyc,
+               prior_diag.tim5_ia_max_cyc,
+               prior_diag.tim5_ia_last_cyc,
+               (uint32_t)(CONFIG_CLOCK_FREQ / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ));
+        output("prior_diag_summary_usb in_busy %u gintsts_sticky %u gintsts %u"
+               " gintmsk %u in_diepctl %u in_diepint %u in_dtxfsts %u"
+               " out_doepctl %u out_doepint %u",
+               prior_diag.usb_in_busy_n,
+               prior_diag.usb_gintsts_sticky,
+               prior_diag.usb_gintsts_now,
+               prior_diag.usb_gintmsk_now,
+               prior_diag.usb_in_diepctl,
+               prior_diag.usb_in_diepint,
+               prior_diag.usb_in_dtxfsts,
+               prior_diag.usb_out_doepctl,
+               prior_diag.usb_out_doepint);
         output("prior_diag_tasks out_n %u out_max_gap %u in_n %u in_max_gap %u"
                " drain_n %u drain_max_gap %u stat_n %u stat_max_gap %u",
                prior_diag.usb_out_calls,
@@ -1132,12 +1259,7 @@ fault_handler_report_task(void)
                prior_diag.tx_drops_klipper_last_max,
                prior_diag.ring_seq,
                prior_diag.ring_overflow);
-        // IRQ duration histogram (buckets are 2048 DWT cycles ≈ 3.94 µs each
-        // on H7; bucket 15 absorbs everything ≥59 µs — see tim5_max_cyc /
-        // rt_max_cyc for the absolute peak). Klipper's wire framing caps at
-        // MESSAGE_MAX=64 bytes per output(), so each histogram is split
-        // across two lines (low / high 8 buckets) to stay well below that
-        // limit. The lo line carries the bucket count for context.
+        // IRQ duration histogram (split lo/hi to stay within MESSAGE_MAX=64 B).
         output("prior_diag_hist_irq_lo b0 %u b1 %u b2 %u b3 %u b4 %u b5 %u b6 %u b7 %u",
                prior_diag.tim5_irq_buckets[0], prior_diag.tim5_irq_buckets[1],
                prior_diag.tim5_irq_buckets[2], prior_diag.tim5_irq_buckets[3],
@@ -1158,9 +1280,7 @@ fault_handler_report_task(void)
                prior_diag.rt_tick_buckets[10], prior_diag.rt_tick_buckets[11],
                prior_diag.rt_tick_buckets[12], prior_diag.rt_tick_buckets[13],
                prior_diag.rt_tick_buckets[14], prior_diag.rt_tick_buckets[15]);
-        // Walk the ring in stored order (head = next write slot, so the
-        // OLDEST entry is at index `head`). Emit up to 12 per cycle so 3
-        // cycles cover all 32 entries with margin.
+        // Emit ring entries in chronological order (oldest at head).
         const uint32_t per_cycle = 12;
         uint32_t start = prior_ring_emit_idx;
         uint32_t end = start + per_cycle;
@@ -1168,8 +1288,6 @@ fault_handler_report_task(void)
             end = DIAG_RING_LEN;
         uint32_t head = prior_diag.ring_head & DIAG_RING_MASK;
         for (uint32_t i = start; i < end; i++) {
-            // Index into the ring in chronological order: oldest is at
-            // `head`, newest is at `(head - 1) & MASK`.
             uint32_t idx = (head + i) & DIAG_RING_MASK;
             if (prior_ring[idx].tag != DIAG_EV_NONE) {
                 output("prior_diag_ring i %u tag %u seq %u ts %u a %u b %u",
@@ -1182,11 +1300,8 @@ fault_handler_report_task(void)
             }
         }
         prior_ring_emit_idx = end;
-        if (prior_ring_emit_idx >= DIAG_RING_LEN) {
-            // Wrap so subsequent cycles re-emit the same content (host
-            // reconnect race tolerance).
-            prior_ring_emit_idx = 0;
-        }
+        if (prior_ring_emit_idx >= DIAG_RING_LEN)
+            prior_ring_emit_idx = 0;  // wrap: re-emit for reconnect tolerance
     }
 
     emits_done++;

@@ -41,6 +41,21 @@ void diag_runtime_tick_account(uint32_t cycles)
     (void)cycles;
 }
 
+void diag_walk_account(uint32_t cycles)
+{
+    (void)cycles;
+}
+
+void diag_monomial_account(uint32_t cycles)
+{
+    (void)cycles;
+}
+
+void runtime_set_isr_phase(uint32_t phase)
+{
+    (void)phase;
+}
+
 #define DIAG_SLOT_STUB(name) \
     volatile uint32_t *diag_slot_##name(void) { return &stub_zero; }
 
@@ -103,6 +118,11 @@ void diag_snapshot_otg_regs(uint32_t gintmsk, uint32_t gintsts)
 void diag_snapshot_out_ep(uint32_t doepctl, uint32_t doeptsiz, uint32_t doepint)
 {
     (void)doepctl; (void)doeptsiz; (void)doepint;
+}
+
+void diag_note_dispatch(uint32_t func, uint32_t addr)
+{
+    (void)func; (void)addr;
 }
 
 #define DIAG_GET_STUB(name) \

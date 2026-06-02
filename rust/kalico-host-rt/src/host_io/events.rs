@@ -261,6 +261,31 @@ impl EventDispatcher {
                     .dispatch(RuntimeEvent::CreditFreed(e));
             }
             RuntimeEvent::Fault(e) => {
+                // Log before shutdown() races with the USB-CDC drop so the
+                // fault code reaches the journal even if the FaultEvent frame
+                // is lost after reset. `journalctl -u klippy -g KALICO-FAULT`
+                // MCU wire encoding: negative i32 as (i32 as i16) as u16;
+                // reverse: (u16 as i16) as i32.
+                let signed_code = e.fault_code as i16 as i32;
+                log::warn!(
+                    "[KALICO-FAULT] received FaultEvent \
+                     fault_code={} (wire_u16={}) fault_detail={:#010x} \
+                     segment_id={:#010x} synthesized={} \
+                     (segment_id is the -311 stacked PC = addr2line target: \
+                     the instruction the interrupted context was about to \
+                     execute, i.e. the code holding the CPU/PRIMASK across the \
+                     late tick; 0 for non-311 faults. \
+                     see runtime::error::FaultCode: \
+                     -308=PieceStartInPast -309=RingFull \
+                     -310=StepsPerSampleExceeded -311=TickIntervalExceeded \
+                     -302=MathNonFinite -303=PieceAdvanceUnderflow \
+                     -300=StepQueueOverflow)",
+                    signed_code,
+                    e.fault_code,
+                    e.fault_detail,
+                    e.segment_id,
+                    e.synthesized,
+                );
                 self.fault_latch.dispatch(e.clone());
                 // Forward to the python bridge poller too — fault visibility
                 // matters end-to-end. Pre-Phase-C this rode the legacy

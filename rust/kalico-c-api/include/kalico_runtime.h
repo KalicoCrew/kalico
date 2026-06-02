@@ -23,6 +23,13 @@
 
 #define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
 
+enum ArmPolicy {
+  TripImmediately = 0,
+  WaitForClear = 1,
+  IgnoreUntilMoving = 2,
+};
+typedef uint8_t ArmPolicy;
+
 enum SourceKind {
   Physical = 0,
   TmcDiag = 1,
@@ -36,13 +43,6 @@ enum SourceKind {
   Software = 2,
 };
 typedef uint8_t SourceKind;
-
-enum ArmPolicy {
-  TripImmediately = 0,
-  WaitForClear = 1,
-  IgnoreUntilMoving = 2,
-};
-typedef uint8_t ArmPolicy;
 
 typedef struct SourceConfig SourceConfig;
 
@@ -184,6 +184,30 @@ uint32_t runtime_handle_last_retire_consumers_after_clear(struct KalicoRuntime *
  * no fault has latched OR the latched fault carries no detail.
  */
 uint32_t runtime_handle_fault_detail(struct KalicoRuntime *rt);
+
+/**
+ * Read the scheduler dispatch-history func addr at the most recent `-311`.
+ * Reference-only, not wired into the fault event — runtime_handle_tick_blocker_pc
+ * carries the addr2line target instead. `0` before any `-311` fires.
+ */
+uint32_t runtime_handle_tick_blocker(struct KalicoRuntime *rt);
+
+/**
+ * Read the stacked exception-frame return address (PC) captured at TIM5
+ * handler entry on the most recent `-311 TickIntervalExceeded` fault — the
+ * instruction TIM5 preempted/resumed, i.e. the addr2line target naming the
+ * code that held the CPU / PRIMASK across the late tick. `0` before any `-311`
+ * fires. Wired into the fault event's `segment_id` field by `runtime_tick.c`.
+ */
+uint32_t runtime_handle_tick_blocker_pc(struct KalicoRuntime *rt);
+
+/**
+ * Read the stacked xPSR exception number captured at TIM5 handler entry on the
+ * most recent `-311 TickIntervalExceeded` fault. `0` = thread/foreground was
+ * interrupted; nonzero = that IRQ/exception number was the interrupted context
+ * (TIM5 tail-chained behind it). `0` before any `-311` fires.
+ */
+uint32_t runtime_handle_tick_blocker_exc(struct KalicoRuntime *rt);
 
 /**
  * Diagnostic: read the configured `steps_per_mm` for axis `oid` (0..=3
@@ -604,7 +628,7 @@ int32_t kalico_runtime_set_stepper_offset(struct KalicoRuntime *rt,
  * Fill caller buffers with the current heartbeat snapshot.
  *
  * Writes `engine_state`, `fault_code`, and up to `max_axes`
- * per-axis consumed piece counts into the caller-provided buffers.
+ * per-axis retired piece counts into the caller-provided buffers.
  *
  * Returns the number of axes actually written (>= 0) on success, or a
  * negative error code:
@@ -612,19 +636,19 @@ int32_t kalico_runtime_set_stepper_offset(struct KalicoRuntime *rt,
  * - `-2` (`KALICO_ERR_NOT_INIT`)  — runtime not yet initialised.
  *
  * Only `[..min(num_axes, max_axes)]` entries are written to
- * `out_consumed`; the caller must allocate at least `max_axes` u32s.
+ * `out_retired`; the caller must allocate at least `max_axes` u32s.
  *
  * # Safety
  * - `rt` must be the handle returned by `runtime_handle_create`.
  * - `out_engine_state`, `out_fault_code` must be valid for a single-byte
  *   write.
- * - `out_consumed` must be valid for `max_axes` u32 writes (≥ 4-byte
+ * - `out_retired` must be valid for `max_axes` u32 writes (≥ 4-byte
  *   aligned, as a C `uint32_t[8]` is).
  */
 int32_t kalico_runtime_get_heartbeat(struct KalicoRuntime *rt,
                                      uint8_t *out_engine_state,
                                      uint8_t *out_fault_code,
-                                     uint32_t *out_consumed,
+                                     uint32_t *out_retired,
                                      uintptr_t max_axes);
 
 /**

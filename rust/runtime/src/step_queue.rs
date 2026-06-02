@@ -21,6 +21,12 @@
 //! fence + volatile write to `tail`; the consumer reads `tail` first, takes
 //! an Acquire fence, then consumes `buf[slot]`. Volatile counter accesses
 //! prevent the compiler from caching them across the fence.
+//!
+//! NON-RACING, not lock-free: single-core safety requires the producer (TIM5
+//! ISR) and consumer (step-output timer ISR) to share one NVIC priority so they
+//! never interleave. If that ever splits, the volatile-u16 + fence discipline is
+//! insufficient (torn slot/counter) — upgrade to a true-atomic SPSC. Invariant
+//! + priority map: `src/generic/kalico_nvic_prio.h`.
 
 #![allow(unsafe_code)]
 

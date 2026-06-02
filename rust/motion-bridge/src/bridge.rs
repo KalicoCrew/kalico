@@ -1012,13 +1012,14 @@ impl PyMotionBridge {
     ///
     /// Call once per MCU after `claim_mcu`. Calling again on an already-
     /// attached MCU replaces the existing `KalicoHostIo`.
-    #[pyo3(signature = (mcu_handle, serial_path, baud, timeout_s = 30.0))]
+    #[pyo3(signature = (mcu_handle, serial_path, baud, timeout_s = 30.0, klippy_non_critical = false))]
     fn attach_serial(
         &self,
         mcu_handle: u32,
         serial_path: &str,
         baud: u32,
         timeout_s: f64,
+        klippy_non_critical: bool,
     ) -> PyResult<()> {
         use std::time::{Duration, Instant};
         let deadline = Instant::now() + Duration::from_secs_f64(timeout_s);
@@ -1102,6 +1103,15 @@ impl PyMotionBridge {
                     } else {
                         None
                     };
+
+                    // Critical iff kalico-native motion MCU and not marked non-critical by klippy.
+                    let critical = kalico_native_supported && !klippy_non_critical;
+                    io.set_critical(critical);
+                    log::info!(
+                        "attach_serial: reuse — {serial_path} criticality \
+                         critical={critical} (kalico_native={kalico_native_supported} \
+                         klippy_non_critical={klippy_non_critical})"
+                    );
 
                     let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
                     let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
@@ -1254,6 +1264,15 @@ impl PyMotionBridge {
         } else {
             None
         };
+
+        // Critical iff kalico-native motion MCU and not marked non-critical by klippy.
+        let critical = kalico_native_supported && !klippy_non_critical;
+        host_io.set_critical(critical);
+        log::info!(
+            "attach_serial: {serial_path} criticality critical={critical} \
+             (kalico_native={kalico_native_supported} \
+             klippy_non_critical={klippy_non_critical})"
+        );
 
         let host_io_arc = Arc::new(host_io);
 
@@ -2144,6 +2163,9 @@ impl PyMotionBridge {
             .collect();
         let pump_timeout = Duration::from_secs(5);
         let ring_depth_table_for_pump = ring_depth_table.clone();
+        // Clone the router Arc into the pump thread so it can query the
+        // per-MCU projected clock for the commit-lead horizon gate.
+        let router_for_pump = Arc::clone(&self.router);
         let pump_thread_handle = std::thread::Builder::new()
             .name("push-pieces-pump".into())
             .spawn(move || {
@@ -2151,16 +2173,26 @@ impl PyMotionBridge {
                     ios: wire_ios,
                     timeout: pump_timeout,
                 };
-                crate::pump::run_pump(pump_rx, sink, move |k| {
-                    ring_depth_table_for_pump.get(&k).copied().unwrap_or_else(|| {
-                        log::error!(
-                            "pump: no ring_depth for {k:?} — axis absent from \
-                             init_planner config; using sentinel depth 1 \
-                             (expect PieceStartInPast fault)"
-                        );
-                        1
-                    })
-                });
+                crate::pump::run_pump(
+                    pump_rx,
+                    sink,
+                    move |k| {
+                        ring_depth_table_for_pump.get(&k).copied().unwrap_or_else(|| {
+                            log::error!(
+                                "pump: no ring_depth for {k:?} — axis absent from \
+                                 init_planner config; using sentinel depth 1 \
+                                 (expect PieceStartInPast fault)"
+                            );
+                            1
+                        })
+                    },
+                    move |mcu_id: u32| {
+                        let r = router_for_pump
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
+                        r.ack_clock_and_freq(mcu_handle_from_raw(mcu_id))
+                    },
+                );
             })
             .expect("spawn push-pieces-pump thread");
 

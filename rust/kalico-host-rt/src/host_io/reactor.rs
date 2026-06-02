@@ -88,6 +88,22 @@ pub struct Reactor {
     /// MCU silence past `MCU_SILENCE_FOR_CLOSE`.
     pub(crate) last_recv_time: Instant,
 
+    /// Most recent moment `write_frame` completed a successful port write.
+    /// Used alongside `last_recv_time` at the disconnect site to distinguish
+    /// "MCU went quiet while we were still sending" (host-side write activity
+    /// present, no inbound bytes) from "both directions dropped simultaneously"
+    /// (USB-CDC link collapse) vs "we stopped writing before the disconnect"
+    /// (idle / backpressure scenario). Initialised to `clock.now()` at
+    /// construction; updated in `write_frame` on every successful `io.write_all`.
+    pub(crate) last_write_time: Instant,
+
+    /// Count of consecutive `PhantomZero` outcomes from `poll_serial` (one
+    /// per reactor tick ≈ 1 ms per count). Reset to 0 on any non-zero read
+    /// (Frames or Timeout). Surfaced in the `[usb-drop]` diagnostic log line
+    /// so the difference between "always zero" and "wedged at 0 for 100 ticks
+    /// then suddenly Err" is visible without doing arithmetic on timestamps.
+    pub(crate) zero_byte_consec: u32,
+
     /// Injected clock seam (spec §2.3). Routes `Instant::now()` so tests
     /// can deterministically advance time via `MockClock`.
     pub(crate) clock: Arc<dyn Clock>,
@@ -198,6 +214,8 @@ impl Reactor {
             pending_outbound_order: VecDeque::new(),
             zero_byte_first_seen: None,
             last_recv_time: clock.now(),
+            last_write_time: clock.now(),
+            zero_byte_consec: 0,
             clock,
             passthrough_router: None,
             passthrough_notify_map: std::collections::HashMap::new(),
@@ -256,6 +274,9 @@ impl Reactor {
             self.io.flush()?;
             Ok(())
         })();
+        if result.is_ok() {
+            self.last_write_time = std::time::Instant::now();
+        }
         let dt = t0.elapsed();
         // Wedge-isolation: log EVERY write unconditionally. Volume is
         // bounded and we need full visibility around the bridge_call hang.
@@ -903,6 +924,7 @@ impl Reactor {
         match outcome {
             Ok(PollOutcome::Frames { frames, errors }) => {
                 self.zero_byte_first_seen = None;
+                self.zero_byte_consec = 0;
                 // Any non-empty read counts as MCU activity. Even an
                 // errors-only batch (CRC failures, malformed Klipper
                 // frames) means the wire delivered bytes — the MCU is
@@ -929,13 +951,18 @@ impl Reactor {
             }
             Ok(PollOutcome::Timeout) => {
                 self.zero_byte_first_seen = None;
+                self.zero_byte_consec = 0;
             }
             Ok(PollOutcome::PhantomZero) => {
+                self.zero_byte_consec = self.zero_byte_consec.saturating_add(1);
                 let now = self.clock.now();
                 let first = *self.zero_byte_first_seen.get_or_insert(now);
                 if now.duration_since(first) >= ZERO_BYTE_DEBOUNCE {
+                    let silence_ms = now.duration_since(self.last_recv_time).as_millis();
+                    let since_write_ms = now.duration_since(self.last_write_time).as_millis();
                     log::warn!(
-                        "port read returned Ok(0) for >= {ZERO_BYTE_DEBOUNCE:?}; transitioning to Closed"
+                        "[usb-drop] silence_ms={} since_write_ms={} consec_zero={} err=PhantomZero(Ok(0) for >={ZERO_BYTE_DEBOUNCE:?})",
+                        silence_ms, since_write_ms, self.zero_byte_consec,
                     );
                     self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                         fault_code: FaultCode::HostDisconnect.as_u16(),
@@ -947,7 +974,13 @@ impl Reactor {
                 }
             }
             Err(e) => {
-                log::warn!("port read error: {e:?}; transitioning to Closed");
+                let now = self.clock.now();
+                let silence_ms = now.duration_since(self.last_recv_time).as_millis();
+                let since_write_ms = now.duration_since(self.last_write_time).as_millis();
+                log::warn!(
+                    "[usb-drop] silence_ms={} since_write_ms={} consec_zero={} err={:?}",
+                    silence_ms, since_write_ms, self.zero_byte_consec, e,
+                );
                 self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                     fault_code: FaultCode::HostDisconnect.as_u16(),
                     fault_detail: 0,

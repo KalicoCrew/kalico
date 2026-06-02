@@ -17,7 +17,7 @@ use crate::fault_helpers::{
 };
 use crate::phase_lut::PHASE_LUT;
 use crate::state::SharedState;
-use crate::step_queue::{StepEntry, StepQueue, push as queue_push};
+use crate::step_queue::{StepEntry, StepQueue, peek as queue_peek, push as queue_push};
 use crate::stepping_state::{AxisConfig, StepMode};
 use crate::sub_sample_timing::{StepTimeInputs, StepTimingResult, compute_step_times};
 
@@ -25,6 +25,69 @@ use crate::sub_sample_timing::{StepTimeInputs, StepTimingResult, compute_step_ti
 #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
 unsafe extern "C" {
     fn phase_stepping_write_xdirect(motor_idx: u8, coil_a: i16, coil_b: i16);
+}
+
+// C-side scheduler accessor for the most-recently-dispatched timer func.
+// Read only on the `-311` fault path. MCU/sim link only; host/test → 0.
+#[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+unsafe extern "C" {
+    fn sched_last_dispatched_func() -> u32;
+}
+
+// Stacked exception-frame captures from the TIM5 naked-wrapper shim
+// (src/stm32/runtime_tick_*.c). Read only on the `-311` fault path:
+//   - `runtime_tim5_stacked_pc()`: instruction that was about to execute when
+//     TIM5 preempted — the code that held the CPU/PRIMASK across the late tick.
+//   - `runtime_tim5_stacked_exc()`: stacked xPSR exception number (0 = thread).
+#[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+unsafe extern "C" {
+    fn runtime_tim5_stacked_pc() -> u32;
+    fn runtime_tim5_stacked_exc() -> u32;
+}
+
+/// Stacked PC at TIM5 entry — the instruction that held the CPU across the late
+/// tick. Returns 0 on host/test builds.
+#[inline]
+fn tim5_stacked_pc() -> u32 {
+    #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+    // SAFETY: side-effect-free volatile frame read. Safe from the TIM5 ISR.
+    unsafe {
+        runtime_tim5_stacked_pc()
+    }
+    #[cfg(not(any(not(any(test, feature = "host")), feature = "kalico-sim")))]
+    {
+        0
+    }
+}
+
+/// Stacked xPSR exception number at TIM5 entry (0 = thread). Returns 0 on
+/// host/test builds.
+#[inline]
+fn tim5_stacked_exc() -> u32 {
+    #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+    // SAFETY: side-effect-free volatile frame read. Safe from the TIM5 ISR.
+    unsafe {
+        runtime_tim5_stacked_exc()
+    }
+    #[cfg(not(any(not(any(test, feature = "host")), feature = "kalico-sim")))]
+    {
+        0
+    }
+}
+
+/// Most-recently-dispatched scheduler timer func address. Returns 0 on
+/// host/test builds (no C scheduler linked).
+#[inline]
+fn last_dispatched_func() -> u32 {
+    #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
+    // SAFETY: side-effect-free ring-buffer index read. Safe from the TIM5 ISR.
+    unsafe {
+        sched_last_dispatched_func()
+    }
+    #[cfg(not(any(not(any(test, feature = "host")), feature = "kalico-sim")))]
+    {
+        0
+    }
 }
 
 /// `|P_end - P_start|` below this triggers the uniform-spacing fallback
@@ -173,6 +236,13 @@ fn dispatch_pulse(
     };
 
     let dir: i8 = if signed_steps > 0 { 1 } else { -1 };
+
+    // If the queue was empty, the consumer timer is parked; kick it to the
+    // first step after pushing. Non-empty means it is already scheduled.
+    // SAFETY: sole consumer at same NVIC priority — cannot race with peek.
+    let was_empty = unsafe { queue_peek(queue_ptr) }.is_none();
+    let first_cycle_abs = times.first().copied();
+
     let mut steps_committed: i32 = 0;
     #[allow(clippy::explicit_counter_loop)]
     for cycle_abs in times.iter().copied() {
@@ -189,11 +259,24 @@ fn dispatch_pulse(
         if push_res.is_err() {
             let committed_delta = steps_committed * (i32::from(dir));
             commit_position_count(axis, axis_idx, shared, committed_delta);
+            // Kick even on overflow if ≥1 entry committed, so those steps fire.
+            if was_empty && steps_committed > 0 {
+                if let Some(wt) = first_cycle_abs {
+                    kick_per_axis_timer(axis_idx, wt);
+                }
+            }
             raise_step_queue_overflow(shared, axis_idx);
             axis.last_step_count = prev_step_count + committed_delta;
             return;
         }
         steps_committed += 1;
+    }
+
+    // Idle→active: queue was empty, reposition parked consumer to first step.
+    if was_empty && steps_committed > 0 {
+        if let Some(wt) = first_cycle_abs {
+            kick_per_axis_timer(axis_idx, wt);
+        }
     }
 
     commit_position_count(axis, axis_idx, shared, signed_steps);
@@ -348,6 +431,7 @@ pub fn isr_sample_tick(
     raw_cyccnt: u32,
 ) {
     let body_start = unsafe { cyccnt_read() };
+    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_ISR_ENTER);
 
     bump_relaxed(isr.engine.tick_counter.inner_atomic());
 
@@ -380,12 +464,25 @@ pub fn isr_sample_tick(
         let gap = now.wrapping_sub(last);
         if period != 0 && gap > period * TICK_GAP_FAULT_MULT {
             let gap_ticks = (gap / period) as u32;
+            // Store before the fault code latches so the host always sees
+            // populated values. Stacked PC is the primary addr2line target.
+            shared
+                .tick_blocker_pc
+                .store(tim5_stacked_pc(), Ordering::Release);
+            shared
+                .tick_blocker_exc
+                .store(tim5_stacked_exc(), Ordering::Release);
+            shared
+                .tick_blocker_func
+                .store(last_dispatched_func(), Ordering::Release);
             raise_tick_interval_exceeded(shared, gap_ticks);
             isr.last_tick_now = Some(now);
+            crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_ISR_EXIT);
             return; // skip dispatch; publish already happened; foreground escalation shuts down
         }
     }
 
+    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_TICK);
     let active = {
         let crate::state::IsrState { engine, .. } = isr;
         engine.tick(now, shared, storage)
@@ -400,21 +497,35 @@ pub fn isr_sample_tick(
     // Update baseline: Some only when this tick was active; idle ticks clear it
     // so the gap check never straddles an idle gap.
     isr.last_tick_now = if active { Some(now) } else { None };
+    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_ISR_EXIT);
 }
 
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
-    fn runtime_cyccnt_read() -> u32;
+    // (Re)arm the step-output timer compare to `cycle_abs` (or arm from
+    // disabled) and register `axis_idx` in the owned-axis mask.
+    // Race-free: same NVIC priority as TIM5 — see kalico_nvic_prio.h.
+    fn kalico_kick_step_output(axis_idx: u8, cycle_abs: u32);
 }
-#[cfg(not(any(test, feature = "host")))]
+/// (Re)arm the dedicated step-output timer (idle→active kick). No-op on host/test.
+#[inline]
+fn kick_per_axis_timer(axis_idx: usize, cycle_abs: u32) {
+    #[cfg(not(any(test, feature = "host")))]
+    // SAFETY: writes only a timer compare register and an owned-mask bit;
+    // same NVIC priority as the step-output ISR so cannot interleave.
+    unsafe {
+        kalico_kick_step_output(axis_idx as u8, cycle_abs);
+    }
+    #[cfg(any(test, feature = "host"))]
+    {
+        let _ = (axis_idx, cycle_abs);
+    }
+}
+/// Read the DWT cycle counter. Delegates to `isr_phase::cyccnt()` — sole
+/// declaration there avoids duplicate `extern "C"` symbols at link time.
 #[inline]
 unsafe fn cyccnt_read() -> u32 {
-    unsafe { runtime_cyccnt_read() }
-}
-#[cfg(any(test, feature = "host"))]
-#[inline]
-unsafe fn cyccnt_read() -> u32 {
-    0
+    crate::isr_phase::cyccnt()
 }
 
 #[inline]

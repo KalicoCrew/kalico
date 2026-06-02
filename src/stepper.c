@@ -5,7 +5,8 @@
 // This file may be distributed under the terms of the GNU GPLv3 license.
 //
 // The Rust runtime is the sole producer of step pulses on this fork
-// (Layer 4 motion planner, 40 kHz TIM5 tick on H7, 10 kHz on F4). The
+// (Layer 4 motion planner, TIM5 sample tick at CONFIG_KALICO_MOTION_SAMPLE_RATE
+// _HZ — per board/config, not a fixed rate). The
 // legacy klipper-protocol queue_step / set_next_step_dir / stepper_event
 // scheduling path is gone; this file is a thin host→MCU stepper-binding
 // layer plus the runtime's GPIO emission helper.
@@ -148,8 +149,9 @@ DECL_SHUTDOWN(stepper_shutdown);
 // ---------------------------------------------------------------------------
 // Runtime-engine step pulse emission (Step 7-D first-light).
 //
-// The Rust runtime evaluates the trajectory inside the TIM5 ISR (40 kHz on
-// H7) and produces a signed integer step delta per motor per tick. This file
+// The Rust runtime evaluates the trajectory inside the TIM5 ISR (at the
+// configured CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) and produces a signed integer
+// step delta per motor per tick. This file
 // owns the GPIO toggle path: a small lookup table maps runtime motor index
 // (0..3, post-kinematic-transform) to the existing klipper-protocol
 // `struct stepper` already configured by `command_config_stepper` from
@@ -297,18 +299,10 @@ command_kalico_configure_axis(uint32_t *args)
     runtime_motor_last_dir[axis_idx] = -1;
     (void)extrusion_bits; // parsed for wire compatibility; no Rust FFI param yet
 
-    // Register the per-axis Klipper timer consumers on the first successful
-    // configure_axis call per boot. Re-adding an already-queued timer would
-    // corrupt the scheduler's linked list, so we gate on a static flag.
-    // Timers are installed once and run for the lifetime of the boot; new
-    // configure_axis calls just update the engine's axis config while the
-    // existing timers keep polling.
-    extern void init_per_axis_step_timers(void);
-    static uint8_t per_axis_timers_installed;
-    if (!per_axis_timers_installed) {
-        per_axis_timers_installed = 1;
-        init_per_axis_step_timers();
-    }
+    // Arm the step-output timer for this axis only. Idempotent (callee tracks
+    // an armed mask); unowned axes must not be armed (starves the motion tick).
+    extern void arm_per_axis_step_timer(uint8_t axis_idx);
+    arm_per_axis_step_timer(axis_idx);
 
     // Drive the platform tick-enable now that an axis is configured. On STM32
     // TIM5 is already armed at init, so the idempotent CR1.CEN guard makes this
@@ -504,7 +498,8 @@ runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps)
     }
 
     // gpio_out_toggle_noirq is the irq-safe variant — caller (us) is in
-    // ISR context with IRQs off by virtue of the priority-3 TIM5 vector.
+    // ISR context with IRQs off by virtue of the priority-2 TIM5 vector
+    // (KALICO_MOTION_NVIC_PRIO = 2; see src/generic/kalico_nvic_prio.h).
     for (uint32_t i = 0; i < count; i++) {
         for (uint8_t j = 0; j < cnt; j++)
             gpio_out_toggle_noirq(runtime_motor_steppers[motor_idx][j].stepper->step_pin);

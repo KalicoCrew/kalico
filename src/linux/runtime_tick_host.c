@@ -43,6 +43,12 @@ volatile uint8_t runtime_liveness_ok = 1;
 // monotonic-derived counter that runtime_cyccnt_read returns.
 volatile uint32_t runtime_sim_cyccnt = 0;
 
+// Host stubs: no TIM5 exception frame; Rust -311 path externs resolve to 0.
+__attribute__((used, externally_visible))
+uint32_t runtime_tim5_stacked_pc(void) { return 0; }
+__attribute__((used, externally_visible))
+uint32_t runtime_tim5_stacked_exc(void) { return 0; }
+
 #define HOST_TICK_HZ 40000UL
 #define HOST_TICK_NS (1000000000UL / HOST_TICK_HZ)
 
@@ -210,4 +216,28 @@ __attribute__((used)) void
 runtime_tick_disable(void)
 {
     atomic_store_explicit(&host_tick_enabled, 0, memory_order_release);
+}
+
+// Host stubs for the dedicated step-output timer. On the MCU a hardware timer
+// (TIM3/TIM2) drains step_queues; on the host the pthread loop drains them
+// inline, so the kick is a no-op here. Stubs satisfy extern references from
+// src/runtime_tick.c; `used` prevents --gc-sections from dropping them.
+static uint32_t host_step_out_target;
+
+__attribute__((used)) void
+step_output_timer_arm(uint32_t cycle_abs)
+{
+    host_step_out_target = cycle_abs;
+}
+
+__attribute__((used)) uint32_t
+step_output_timer_armed_target(void)
+{
+    return host_step_out_target;
+}
+
+__attribute__((used)) uint8_t
+step_output_timer_is_running(void)
+{
+    return 0;  // host: never "running"; kick always treated as first-arm (no-op)
 }

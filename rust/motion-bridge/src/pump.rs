@@ -4,7 +4,7 @@
 //! `docs/superpowers/specs/2026-05-28-push-pieces-wiring-design.md`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::sync::mpsc::{Receiver, RecvError};
+use std::sync::mpsc::{Receiver, RecvError, RecvTimeoutError};
 use std::sync::Weak;
 use std::time::Duration;
 use runtime::piece_ring::PieceEntry;
@@ -87,6 +87,11 @@ pub enum Schedule {
     Send(Vec<FramePlan>),
     /// Global head's ring is full — wait for a heartbeat. Do not send anything.
     StallFull(AxisKey),
+    /// Global head has ring room but its start_time exceeds the MCU's current
+    /// commit-lead horizon. Wait for the MCU clock to advance. The contained
+    /// key is the earliest-start non-empty axis that has room but is
+    /// time-gated.
+    StallAhead(AxisKey),
     /// No pieces queued anywhere.
     Idle,
 }
@@ -94,9 +99,22 @@ pub enum Schedule {
 /// Decide the next action over the queue map. Does **not** mutate the queues;
 /// the caller applies the returned plan (pops pieces, bumps `pushed`).
 /// `max_per_frame` caps a single PushPieces frame's piece_count (u8 wire field).
+///
+/// `horizon_of(mcu_id)` returns the MCU-tick deadline beyond which a piece's
+/// `start_time` must not be committed this pass. `None` means "not synced
+/// yet — apply no time gate for this MCU" (count-only, same as pre-sync
+/// behaviour).
 #[must_use]
-pub fn schedule(queues: &BTreeMap<AxisKey, AxisQueue>, max_per_frame: usize) -> Schedule {
-    // Earliest non-empty queue head, tie-broken by (mcu_id, axis).
+pub fn schedule(
+    queues: &BTreeMap<AxisKey, AxisQueue>,
+    max_per_frame: usize,
+    horizon_of: impl Fn(u32) -> Option<u64>,
+) -> Schedule {
+    // A queue head is "sendable" iff it has room AND passes the time gate.
+    // Collect the earliest sendable head first; if there are non-empty heads
+    // with room that are only blocked by the horizon, return StallAhead.
+    let mut stall_ahead_candidate: Option<AxisKey> = None;
+
     let head = queues
         .iter()
         .filter(|(_, q)| !q.pieces.is_empty())
@@ -109,18 +127,31 @@ pub fn schedule(queues: &BTreeMap<AxisKey, AxisQueue>, max_per_frame: usize) -> 
         None => return Schedule::Idle,
         Some(h) => h,
     };
+    let head_start = head_q.pieces.front().unwrap().start_time;
+
+    // Ring-full check (global head has no room).
     if head_q.room() == 0 {
         return Schedule::StallFull(head_key);
     }
 
+    // Time-gate check for the global head.
+    if let Some(horizon) = horizon_of(head_key.mcu_id) {
+        if head_start > horizon {
+            // The global head has room but is too far ahead — StallAhead.
+            return Schedule::StallAhead(head_key);
+        }
+    }
+
     // Greedily take the contiguous prefix of global time order that stays on
-    // head_key.mcu_id and has room. Simulate room locally so a single
-    // scheduling pass never plans more than each ring can hold.
+    // head_key.mcu_id, has room, and passes the time gate. Simulate room
+    // locally so a single scheduling pass never plans more than each ring can
+    // hold.
     //
-    // `maxed` tracks same-MCU axes that have hit their room or frame cap this
-    // pass. They are excluded from candidate selection to avoid re-selecting
-    // them every iteration (which would infinite-loop), but their saturation
-    // does NOT end the batch — other same-MCU axes with room still get pieces.
+    // `maxed` tracks same-MCU axes that have hit their room, frame cap, or
+    // time-horizon this pass. They are excluded from candidate selection to
+    // avoid re-selecting them every iteration (which would infinite-loop), but
+    // their saturation does NOT end the batch — other same-MCU axes with room
+    // still get pieces.
     let mut taken: BTreeMap<AxisKey, usize> = BTreeMap::new(); // key -> count planned
     let mut maxed: BTreeSet<AxisKey> = BTreeSet::new();
     loop {
@@ -134,7 +165,7 @@ pub fn schedule(queues: &BTreeMap<AxisKey, AxisQueue>, max_per_frame: usize) -> 
                 q.pieces.get(already).map(|p| (*k, p.start_time))
             })
             .min_by(|(ka, sa), (kb, sb)| sa.cmp(sb).then(ka.cmp(kb)));
-        let (k, _start) = match next {
+        let (k, start) = match next {
             Some(n) => n,
             None => break,
         };
@@ -150,7 +181,31 @@ pub fn schedule(queues: &BTreeMap<AxisKey, AxisQueue>, max_per_frame: usize) -> 
             maxed.insert(k);
             continue;
         }
+        // Time-gate: a piece beyond the horizon makes this axis maxed for this
+        // pass, but does NOT end the batch (other same-MCU axes with earlier
+        // pieces may still be eligible).
+        if let Some(horizon) = horizon_of(k.mcu_id) {
+            if start > horizon {
+                // Track for StallAhead in case taken is empty at the end.
+                if stall_ahead_candidate.is_none() {
+                    stall_ahead_candidate = Some(k);
+                }
+                maxed.insert(k);
+                continue;
+            }
+        }
         *taken.entry(k).or_insert(0) += 1;
+    }
+
+    // If nothing was taken but at least one axis is time-gated (has room but
+    // is beyond the horizon), return StallAhead so the pump knows to poll.
+    if taken.is_empty() {
+        if let Some(k) = stall_ahead_candidate {
+            return Schedule::StallAhead(k);
+        }
+        // All axes are either empty or maxed by count only (should not happen
+        // given the head-room check above, but be safe).
+        return Schedule::StallFull(head_key);
     }
 
     // `taken` entries are always ≥1 by construction (the only path into `taken`
@@ -192,7 +247,7 @@ mod sched_tests {
     #[test]
     fn idle_when_empty() {
         let queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
-        assert!(matches!(schedule(&queues, 255), Schedule::Idle));
+        assert!(matches!(schedule(&queues, 255, |_| None), Schedule::Idle));
     }
 
     #[test]
@@ -204,7 +259,7 @@ mod sched_tests {
         queues.insert(AxisKey { mcu_id: 1, axis: 0 }, a);
         queues.insert(AxisKey { mcu_id: 2, axis: 0 }, q_with(8, &[20]));
         assert!(matches!(
-            schedule(&queues, 255),
+            schedule(&queues, 255, |_| None),
             Schedule::StallFull(AxisKey { mcu_id: 1, axis: 0 })
         ));
     }
@@ -216,7 +271,7 @@ mod sched_tests {
         queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[0, 3]));
         queues.insert(AxisKey { mcu_id: 1, axis: 1 }, q_with(8, &[1]));
         queues.insert(AxisKey { mcu_id: 2, axis: 0 }, q_with(8, &[2]));
-        let s = schedule(&queues, 255);
+        let s = schedule(&queues, 255, |_| None);
         // batch stops at B/x@2 → A/x gets [0] only (A/x@3 is after the B boundary),
         // A/y gets [1]. B/x not included.
         match s {
@@ -234,7 +289,7 @@ mod sched_tests {
     fn frame_cap_splits() {
         let mut queues = BTreeMap::new();
         queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[0, 1, 2, 3]));
-        let s = schedule(&queues, 2);
+        let s = schedule(&queues, 2, |_| None);
         match s {
             Schedule::Send(frames) => {
                 assert_eq!(frames.len(), 1);
@@ -257,7 +312,7 @@ mod sched_tests {
         q.insert(AxisKey { mcu_id: 1, axis: 1 }, yq);
         q.insert(AxisKey { mcu_id: 1, axis: 0 }, xq);
         // Y@0 is the global head and has room → top-level StallFull does NOT fire.
-        match schedule(&q, 255) {
+        match schedule(&q, 255, |_| None) {
             Schedule::Send(frames) => {
                 // Y must be batched despite full sibling X.
                 let yf = frames.iter().find(|f| f.key == AxisKey { mcu_id: 1, axis: 1 });
@@ -269,6 +324,54 @@ mod sched_tests {
                 );
             }
             other => panic!("expected Send, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn time_gate_blocks_piece_beyond_horizon() {
+        // Two axes on MCU 1. Head (axis 0) has start_time=100 within horizon=150.
+        // Axis 1 has start_time=200 beyond the horizon → only axis 0 is planned.
+        let mut queues = BTreeMap::new();
+        queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[100]));
+        queues.insert(AxisKey { mcu_id: 1, axis: 1 }, q_with(8, &[200]));
+        // horizon = 150: axis 0 passes (100 <= 150), axis 1 blocked (200 > 150).
+        match schedule(&queues, 255, |_| Some(150)) {
+            Schedule::Send(frames) => {
+                assert_eq!(frames.len(), 1, "only axis 0 should be batched");
+                assert_eq!(frames[0].key, AxisKey { mcu_id: 1, axis: 0 });
+                assert_eq!(frames[0].pieces.len(), 1);
+            }
+            other => panic!("expected Send, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_beyond_horizon_returns_stall_ahead() {
+        // Single axis on MCU 1. Its piece start_time=1000 is beyond horizon=500.
+        // Ring has room (pushed=0). Should return StallAhead, not StallFull.
+        let mut queues = BTreeMap::new();
+        queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[1000]));
+        assert!(
+            matches!(
+                schedule(&queues, 255, |_| Some(500)),
+                Schedule::StallAhead(AxisKey { mcu_id: 1, axis: 0 })
+            ),
+            "expected StallAhead when sole piece is beyond horizon"
+        );
+    }
+
+    #[test]
+    fn no_horizon_none_uses_count_only_gate() {
+        // When horizon_of returns None, no time gate applies even if the piece
+        // start_time is arbitrarily large. Verifies startup-before-clock-sync path.
+        let mut queues = BTreeMap::new();
+        queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[u64::MAX]));
+        match schedule(&queues, 255, |_| None) {
+            Schedule::Send(frames) => {
+                assert_eq!(frames.len(), 1);
+                assert_eq!(frames[0].pieces.len(), 1);
+            }
+            other => panic!("expected Send (no time gate), got {other:?}"),
         }
     }
 }
@@ -363,7 +466,7 @@ mod tests {
         let (tx, rx) = mpsc::channel::<PumpMsg>();
         let sink_clone = sink.clone();
         let handle = std::thread::spawn(move || {
-            run_pump(rx, sink_clone, |_key| RING_DEPTH);
+            run_pump(rx, sink_clone, |_key| RING_DEPTH, |_mcu| None);
         });
 
         // Enqueue first batch of N pieces and spin-wait until the pump drains it.
@@ -469,15 +572,33 @@ pub trait PieceSink: Send {
 
 // ── run_pump ─────────────────────────────────────────────────────────────────
 
+/// Commit-lead horizon: the pump will not commit a piece whose `start_time` is
+/// more than this many seconds ahead of the MCU's projected clock-now.
+///
+/// NOT PROVEN / NOT FINAL: related to engine's MAX_START_IN_PAST_SECS
+/// (rust/runtime/src/engine.rs) through clock drift, but the correct value and
+/// ratio are not established. Do not couple them numerically.
+const MAX_LEAD_SECS: f64 = 1.0;
+
 /// Run the pump until `Shutdown`. `ring_depth_of` supplies each ring's depth
 /// the first time its key is seen. `sink` performs the actual wire send.
-pub fn run_pump<S, F>(rx: Receiver<PumpMsg>, sink: S, ring_depth_of: F)
+/// `mcu_clock_of(mcu_id)` returns `Some((ack_now_ticks, freq_hz))` when the
+/// MCU's clock-sync is established, or `None` before sync — in which case no
+/// time gate is applied for that MCU (count-only, safe for startup).
+pub fn run_pump<S, F, C>(rx: Receiver<PumpMsg>, sink: S, ring_depth_of: F, mcu_clock_of: C)
 where
     S: PieceSink,
     F: Fn(AxisKey) -> u32,
+    C: Fn(u32) -> Option<(u64, f64)>,
 {
     let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
-    const MAX_PER_FRAME: usize = 255; // u8 wire piece_count
+    // Cap pieces per PushPieces frame to bound the USB OTG ISR burst that fences
+    // the motion tick. Bench (2026-06-01, diff-minimization iter 1): at the 255
+    // wire-max the F446 -308 trips ~5 s into a jog; at 32 it holds ~13-17 s — so
+    // the cap is load-bearing, an active mitigation of the F446 USB fence behind
+    // the residual -308 (NOT a -311 leftover; the -311 fix was the clock-domain
+    // bug). A smaller per-MCU cap for the F446 is a candidate for the -308 fix.
+    const MAX_PER_FRAME: usize = 32;
 
     let apply = |msg: PumpMsg, queues: &mut BTreeMap<AxisKey, AxisQueue>| -> bool {
         match msg {
@@ -517,27 +638,62 @@ where
         true
     };
 
-    // Block for the first message, then process bursts.
+    // Build a horizon closure from the mcu_clock_of callback. Called once per
+    // schedule pass so the horizon tracks the advancing MCU clock.
+    let horizon_of = |mcu_id: u32| -> Option<u64> {
+        let (ack_now, freq) = mcu_clock_of(mcu_id)?;
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        Some(ack_now + (MAX_LEAD_SECS * freq) as u64)
+    };
+
+    // Whether the most recent schedule decision was StallAhead. When true the
+    // outer wait uses recv_timeout(50 ms) so the horizon can advance even with
+    // no inbound messages; when false (idle or count-stalled) blocking recv()
+    // is fine — heartbeats/enqueues wake it.
+    let mut holding_ahead = false;
+
     loop {
-        let first = match rx.recv() {
-            Ok(m) => m,
-            Err(RecvError) => return,
+        // If we are holding pieces that are time-gated, poll every 50 ms so
+        // the horizon sweeps forward (ack_now advances with the MCU clock).
+        // Otherwise block indefinitely — a heartbeat or enqueue will wake us.
+        let first = if holding_ahead {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(m) => Some(m),
+                Err(RecvTimeoutError::Timeout) => {
+                    // MCU clock has advanced; re-evaluate the send loop without
+                    // consuming a message. `holding_ahead` stays true until the
+                    // schedule loop clears it.
+                    None
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        } else {
+            match rx.recv() {
+                Ok(m) => Some(m),
+                Err(RecvError) => return,
+            }
         };
-        if !apply(first, &mut queues) {
-            return;
-        }
-        // Drain anything else already queued (coalesce bursts before sending).
-        while let Ok(m) = rx.try_recv() {
-            if !apply(m, &mut queues) {
+
+        if let Some(msg) = first {
+            if !apply(msg, &mut queues) {
                 return;
             }
+            // Drain anything else already queued (coalesce bursts before sending).
+            while let Ok(m) = rx.try_recv() {
+                if !apply(m, &mut queues) {
+                    return;
+                }
+            }
         }
+
         // Send as far as the schedule allows. A send failure breaks all the
-        // way back to `recv()` (labeled break) instead of re-running schedule
-        // on the still-queued pieces — otherwise a persistent failure spins a
-        // tight busy-loop. The next inbound message (heartbeat/enqueue) retries.
+        // way back to the outer wait (labeled break) instead of re-running
+        // schedule on the still-queued pieces — otherwise a persistent failure
+        // spins a tight busy-loop. The next inbound message (heartbeat/enqueue)
+        // retries.
+        holding_ahead = false;
         'send: loop {
-            match schedule(&queues, MAX_PER_FRAME) {
+            match schedule(&queues, MAX_PER_FRAME, &horizon_of) {
                 Schedule::Idle => break 'send,
                 Schedule::StallFull(stall_key) => {
                     // PIECEDIAG (revert)
@@ -550,6 +706,22 @@ where
                         q.map_or(0, |q| q.ring_depth),
                         q.map_or(0, |q| q.room()),
                     );
+                    break 'send;
+                }
+                Schedule::StallAhead(stall_key) => {
+                    // Ring has room but the head piece is beyond the current
+                    // commit-lead horizon. Log and arm the 50 ms poll so we
+                    // re-evaluate as the MCU clock advances.
+                    let head_start = queues
+                        .get(&stall_key)
+                        .and_then(|q| q.pieces.front())
+                        .map_or(0, |p| p.start_time);
+                    let horizon = horizon_of(stall_key.mcu_id).unwrap_or(0);
+                    log::info!(
+                        "PIECEDIAG STALL_AHEAD axis={} start={} horizon={}",
+                        stall_key.axis, head_start, horizon,
+                    );
+                    holding_ahead = true;
                     break 'send;
                 }
                 Schedule::Send(frames) => {
@@ -629,12 +801,11 @@ impl PieceSink for WireSink {
         start_slot: u16,
         new_head: u32,
     ) -> Result<i32, String> {
-        // schedule() caps frames at MAX_PER_FRAME = 255, so this is unreachable
-        // in the production path; the assert guards against callers bypassing
-        // schedule() and hitting a silent truncation.
+        // schedule() caps frames at MAX_PER_FRAME (currently 32); this guards
+        // against callers bypassing schedule() and hitting a silent truncation.
         debug_assert!(
             pieces.len() <= 255,
-            "PushPieces frame exceeds u8 piece_count; schedule() must cap at 255"
+            "PushPieces frame exceeds u8 piece_count; schedule() must cap at MAX_PER_FRAME"
         );
         let io = self
             .ios
@@ -691,27 +862,26 @@ impl PieceSink for WireSink {
         let r = kalico_protocol::messages::PushPiecesResponse::decode(&resp)
             .map_err(|e| format!("decode PushPiecesResponse: {e:?}"))?;
 
-        // Emit transit/arrival-lead diagnostic for every non-empty, non-error batch.
-        // Skipped when front_start_time==0 (empty batch or early error path).
-        // arrival_lead = front_start_time - arrival_clock (both in MCU ticks).
-        // Negative means the piece arrived already in the MCU's past → -308 risk.
-        // transit_us is NOT computed here: host→MCU clock projection (freq, offset)
-        // lives in PassthroughRouter, which is not reachable from WireSink without
-        // cross-crate plumbing. Derive offline: transit_us ≈ (arrival_clock -
-        // send_mcu_clock) / mcu_freq, where send_mcu_clock = project(host_send_instant).
-        if host_front_start_time != 0 {
-            // Assume ~520 MHz for H723, ~180 MHz for F446. If this MCU's actual freq
-            // is different the µs value is approximate — log raw ticks too so the
-            // exact value can be derived offline with the per-MCU freq from klippy log.
+        // Emit transit/arrival-lead diagnostic for every successful PushPieces.
+        // arrival_lead = mcu_front_start_time - arrival_clock (both MCU ticks).
+        // Negative → piece already in MCU past at commit time → -308 risk.
+        // host_front_start_time==0 means the router had no clock sync when the
+        // piece was dispatched (project() returned 0); log it as a zero so the
+        // gap is visible rather than silently skipped.
+        {
             // The arithmetic uses i64 to correctly represent negative arrival-lead.
             let arrival_lead_ticks =
                 r.front_start_time as i64 - r.arrival_clock as i64;
-            // Use 180 MHz as a conservative estimate (F446); H723 at 520 MHz will
-            // give a proportionally smaller µs value. Both raw-ticks and µs are logged.
-            const MCU_FREQ_APPROX_HZ: f64 = 180_000_000.0;
-            let arrival_lead_us = (arrival_lead_ticks as f64 / MCU_FREQ_APPROX_HZ) * 1e6;
-            // host_send_secs: wall-clock seconds as a monotonic f64 for offline
-            // correlation with klippy's clock-sync records.
+            // Approximate µs: use 520 MHz for H723 (mcu_id 0) and 180 MHz for
+            // F446 (mcu_id 1). Both raw-ticks and µs are logged so the exact
+            // value can be derived offline with the per-MCU freq from klippy log.
+            let mcu_freq_approx_hz: f64 = if key.mcu_id == 0 {
+                520_000_000.0
+            } else {
+                180_000_000.0
+            };
+            let arrival_lead_us = (arrival_lead_ticks as f64 / mcu_freq_approx_hz) * 1e6;
+            // Wall-clock seconds for offline correlation with klippy clock-sync.
             let host_send_secs = {
                 use std::time::{SystemTime, UNIX_EPOCH};
                 SystemTime::now()
@@ -719,22 +889,53 @@ impl PieceSink for WireSink {
                     .map(|d| d.as_secs_f64())
                     .unwrap_or(0.0)
             };
-            log::warn!(
-                "[transit-diag] mcu={} axis={} \
-                 host_front_start_time={} mcu_front_start_time={} \
-                 arrival_clock={} \
-                 arrival_lead_ticks={} arrival_lead_us={:.1} \
-                 host_send_unix_secs={:.6} \
-                 (transit_us=offline: project host_send_unix_secs via klippy clock-sync)",
-                key.mcu_id,
-                key.axis,
-                host_front_start_time,
-                r.front_start_time,
-                r.arrival_clock,
-                arrival_lead_ticks,
-                arrival_lead_us,
-                host_send_secs,
-            );
+            // Warn when arrival_lead is negative (piece arrived in MCU's past)
+            // or when host_front_start_time is zero (clock-sync gap on dispatch).
+            // Log at info for positive lead so routine-operation frames don't
+            // flood the journal; warn on the cases that indicate a -308 risk.
+            let zero_st = host_front_start_time == 0;
+            let past_arrival = arrival_lead_ticks < 0;
+            if zero_st || past_arrival {
+                log::warn!(
+                    "[transit-diag] mcu={} axis={} \
+                     host_front_start_time={} mcu_front_start_time={} \
+                     arrival_clock={} \
+                     arrival_lead_ticks={} arrival_lead_us={:.1} \
+                     host_send_unix_secs={:.6} \
+                     ALERT: {}",
+                    key.mcu_id,
+                    key.axis,
+                    host_front_start_time,
+                    r.front_start_time,
+                    r.arrival_clock,
+                    arrival_lead_ticks,
+                    arrival_lead_us,
+                    host_send_secs,
+                    if zero_st && past_arrival {
+                        "host_start_time=0 (clock-sync gap) AND piece in MCU past"
+                    } else if zero_st {
+                        "host_start_time=0 (router clock_freq=0 at dispatch — clock-sync gap)"
+                    } else {
+                        "piece arrived in MCU past (arrival_lead<0) — PieceStartInPast risk"
+                    },
+                );
+            } else {
+                log::info!(
+                    "[transit-diag] mcu={} axis={} \
+                     host_front_start_time={} mcu_front_start_time={} \
+                     arrival_clock={} \
+                     arrival_lead_ticks={} arrival_lead_us={:.1} \
+                     host_send_unix_secs={:.6}",
+                    key.mcu_id,
+                    key.axis,
+                    host_front_start_time,
+                    r.front_start_time,
+                    r.arrival_clock,
+                    arrival_lead_ticks,
+                    arrival_lead_us,
+                    host_send_secs,
+                );
+            }
         }
 
         if r.result != kalico_protocol::result_codes::OK {

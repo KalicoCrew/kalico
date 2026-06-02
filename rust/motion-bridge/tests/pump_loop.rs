@@ -30,7 +30,7 @@ fn pump_stalls_on_ring_full_resumes_on_heartbeat() {
     let (tx, rx) = mpsc::channel();
     let depth = |_k: AxisKey| 2u32;
     let sink = RecordingSink(rec.clone());
-    let handle = std::thread::spawn(move || run_pump(rx, sink, depth));
+    let handle = std::thread::spawn(move || run_pump(rx, sink, depth, |_| None));
 
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key: AxisKey { mcu_id: 1, axis: 0 },
