@@ -1,7 +1,9 @@
 #[doc(hidden)]
 pub mod anchor;
 mod bridge;
-mod drain;
+pub mod drain;
+#[doc(hidden)]
+pub mod motion_node;
 #[doc(hidden)]
 pub mod probe_homing;
 #[doc(hidden)]

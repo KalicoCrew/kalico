@@ -174,5 +174,19 @@ pub fn raise_steps_per_sample_exceeded(shared: &SharedState, axis_idx: usize, ab
         .store(FaultCode::StepsPerSampleExceeded.as_i32(), Ordering::Release);
 }
 
+/// Latch an `UnknownStepMode` fault.
+///
+/// Silently dropping an unrecognized mode would hide a host/firmware version
+/// mismatch; we fail loud instead. Detail encoding:
+/// `((axis_idx & 0xFF) << 16) | (mode & 0xFF)`.
+#[inline]
+pub fn raise_unknown_step_mode(shared: &SharedState, axis_idx: usize, mode: u8) {
+    let detail = ((axis_idx as u32 & 0xFF) << 16) | u32::from(mode);
+    shared.fault_detail.store(detail, Ordering::Release);
+    shared
+        .last_error
+        .store(FaultCode::UnknownStepMode.as_i32(), Ordering::Release);
+}
+
 #[cfg(test)]
 mod tests;

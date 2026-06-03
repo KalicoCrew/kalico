@@ -37,11 +37,23 @@ serde_json = "1"
 loom = "0.7"
 
 [features]
-default = ["host"]
+default = ["host", "motion-module-stepper"]
 host = ["nurbs/host"]
 mcu-h7 = ["nurbs/mcu-h7"]
 mcu-f4 = ["nurbs/mcu-f4"]
 mcu-g0 = ["nurbs/mcu-g0"]
+# Marker feature for real Linux-MCU firmware builds (MACH_LINUX without
+# CONFIG_KALICO_SIM).  Implies `host` (f64 numeric profile) and additionally
+# signals that the build links the C step/SPI symbols from
+# src/linux/phase_stepping_spi.c.  Set only by the MACH_LINUX Makefile path,
+# never by the host planner lib or unit tests.  Parallel to mcu-h7/f4/g0 which
+# imply bare-metal numeric profiles.
+mcu-linux = ["host"]
+# Stepper pulse/phase dispatch backend.  Enabled by default so host builds and
+# tests carry the full dispatch.  MCU builds enable it explicitly via the
+# Makefile/Kconfig wiring.  Servo / EtherCAT nodes omit it to get a
+# position-tracking-only runtime with no dispatch object code.
+motion-module-stepper = []
 # Phase 12.2: gates the `Engine::inject_iter_count` test-only injection
 # so integration tests can reach the otherwise-defense-in-depth
 # `MAX_BOUNDARY_ITERS` fault path. NOT in default. Consumers (kalico-c-api,

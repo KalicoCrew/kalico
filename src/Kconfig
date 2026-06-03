@@ -428,6 +428,7 @@ config KALICO_MOTION_SAMPLE_RATE_HZ
     default 40000 if MACH_STM32H7
     default 20000 if MACH_STM32F4
     default 2000 if MACH_STM32G0
+    default 1000 if MACH_LINUX
     default 10000
     range 1000 100000
     help
@@ -439,6 +440,12 @@ config KALICO_MOTION_SAMPLE_RATE_HZ
       enable. Defaults to 2 kHz on G0B1 (64 MHz Cortex-M0+, soft-float):
       this is a low-rate bring-up target, not a throughput target —
       see docs/superpowers/specs/2026-05-31-stm32g0-sb2209-target-design.md.
+      Defaults to 1 kHz on MACH_LINUX: the host tick
+      (linux/runtime_tick_host.c) drives the ISR from a clock_nanosleep loop
+      whose resolution floor on a stock (non-PREEMPT_RT) kernel is ~1 ms, and
+      this rate MUST equal the tick rate or the runtime's TickIntervalExceeded
+      guard fires on the first active tick. Raising it requires a PREEMPT_RT
+      kernel and a SCHED_FIFO launch (klipper_mcu -r).
 
 # Motion-engine ISR timer selection. The physical timer is chosen per
 # architecture via the alias in src/stm32/runtime_tick_timer.h: H7/F4 use
@@ -529,5 +536,17 @@ config RUNTIME_BENCH
       Captures per-tick cycle counts for performance regression tracking.
       Enabled by default on H7. F4 / host targets do not currently provide
       a cycle counter suitable for bench; left unselected.
+
+menu "Motion dispatch modules"
+    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_STM32G0 || MACH_LINUX
+config MOTION_MODULE_STEPPER
+    bool "Stepper pulse/phase dispatch"
+    default y if MACH_STM32H7 || MACH_STM32F4 || MACH_STM32G0
+    default n
+    help
+      Compiles the STEP/DIR pulse and TMC phase-stepping dispatch backend
+      into this firmware. Required for any build that drives stepper motors;
+      a servo/EtherCAT node leaves it off.
+endmenu
 
 source "src/extras/Kconfig"

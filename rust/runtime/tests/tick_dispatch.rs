@@ -1,18 +1,22 @@
-//! Integration smoke tests for `runtime::tick::dispatch_axis`.
+#![cfg(feature = "motion-module-stepper")]
+//! Integration smoke tests for `runtime::dispatch_stepper::dispatch_axis`.
 //!
 //! Lives in `tests/` so it can be exercised even when the broader
 //! library test build is broken by unrelated engine.rs type drift. The
-//! finer-grained `#[cfg(test)] mod tests` blocks inside `src/tick.rs`
-//! re-validate the same invariants once the lib-test path compiles.
+//! finer-grained `#[cfg(test)] mod tests` blocks inside
+//! `src/dispatch_stepper.rs` re-validate the same invariants once the
+//! lib-test path compiles.
+//!
+//! This test file is only meaningful with the `motion-module-stepper` feature.
 
 use core::sync::atomic::{AtomicI16, AtomicI32, AtomicU8, Ordering};
 use heapless::Vec;
 
+use runtime::dispatch_stepper::dispatch_axis;
 use runtime::error::FaultCode;
 use runtime::state::SharedState;
 use runtime::step_queue::{STEP_QUEUE_DEPTH, StepQueue};
 use runtime::stepping_state::{AxisConfig, MAX_STEPPERS_PER_AXIS, StepMode, StepperRef};
-use runtime::tick::dispatch_axis;
 
 fn make_stepper() -> StepperRef {
     StepperRef {

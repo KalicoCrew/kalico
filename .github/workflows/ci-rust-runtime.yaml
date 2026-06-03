@@ -112,9 +112,17 @@ jobs:
           workspaces: rust
           key: mcu-h7
       - name: cargo build (mcu-h7)
+        # Include motion-module-stepper to match what the Makefile/Kconfig
+        # produce for real firmware; without it the dispatch-less MCU build
+        # fires the compile_error guard added in lib.rs fix #3.
+        # KALICO_RUNTIME_* are mandatory on bare-metal targets (build.rs panics
+        # otherwise); the real firmware build gets them from Kconfig via the
+        # Makefile. For this staticlib compile-check the H7 pair is a
+        # self-consistent value set that compiles for any arch.
         run: >
+          KALICO_RUNTIME_STORAGE_SIZE=122880 KALICO_RUNTIME_PIECE_RING_SIZE=63488
           cargo build -p kalico-c-api --no-default-features
-          --features mcu-h7,header-nurbs,header-runtime
+          --features mcu-h7,header-nurbs,header-runtime,motion-module-stepper
           --target thumbv7em-none-eabi
 
   rust-mcu-f4:
@@ -135,10 +143,70 @@ jobs:
           workspaces: rust
           key: mcu-f4
       - name: cargo build (mcu-f4)
+        # Include motion-module-stepper to match what the Makefile/Kconfig
+        # produce for real firmware; without it the dispatch-less MCU build
+        # fires the compile_error guard added in lib.rs fix #3.
         run: >
+          KALICO_RUNTIME_STORAGE_SIZE=122880 KALICO_RUNTIME_PIECE_RING_SIZE=63488
           cargo build -p kalico-c-api --no-default-features
-          --features mcu-f4,header-nurbs,header-runtime
+          --features mcu-f4,header-nurbs,header-runtime,motion-module-stepper
           --target thumbv7em-none-eabi
+
+  rust-mcu-g0:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv6m-none-eabi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: mcu-g0
+      - name: cargo build (mcu-g0)
+        # G0 (Cortex-M0+, thumbv6m). CI never compiled mcu-g0 at all, and the
+        # runtime_tick_g0.c FFI-drift bug was G0-only — this closes the Rust-side
+        # gap. The full C link per arch is covered by ci-mcu-firmware.yaml.
+        run: >
+          KALICO_RUNTIME_STORAGE_SIZE=122880 KALICO_RUNTIME_PIECE_RING_SIZE=63488
+          cargo build -p kalico-c-api --no-default-features
+          --features mcu-g0,header-nurbs,header-runtime,motion-module-stepper
+          --target thumbv6m-none-eabi
+
+  # Validate the EtherCAT servo-node / no-stepper compile path: runtime built
+  # with --no-default-features --features host omits motion-module-stepper, so
+  # the compile_error guard in lib.rs must NOT fire (host builds are valid
+  # without a dispatch module). Also confirms fix #2: the two dispatch_stepper
+  # test files are fully suppressed by their #![cfg(feature = "motion-module-stepper")].
+  rust-no-stepper:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: no-stepper
+      - name: cargo build (runtime, no-stepper servo-node path)
+        run: >
+          cargo build -p runtime --no-default-features --features host
+      - name: cargo test --no-run (runtime, no-stepper — compile gate)
+        run: >
+          cargo test -p runtime --no-default-features --features host --no-run
 
   rust-cbindgen-drift:
     needs: changes

@@ -12,6 +12,7 @@ members = [
     "motion-bridge",
     "kalico-native-transport",
     "kalico-protocol",
+    "kalico-ethercat-rt",
 ]
 exclude = ["gcode/fuzz"]
 resolver = "2"
@@ -71,6 +72,34 @@ codegen-units = 1
 panic = "abort"
 debug = true
 overflow-checks = false
+
+# Build-time tooling (proc-macros, build scripts, and their dependencies — e.g.
+# syn, cbindgen) is never shipped and does not need optimization or debuginfo.
+# The release profile's opt-level=3 + debug=true makes compiling `syn` alone
+# OOM-kill rustc on a 1 GB host (Pi 3B), and it needlessly slows every build.
+# opt-level=0 + no debuginfo cuts that compile's peak memory ~4x. This applies
+# ONLY to build-time crates (cargo's build-override never touches normal
+# dependencies), so emitted runtime/MCU code — and the firmware
+# disasm-identical guarantee — is unaffected.
+[profile.release.build-override]
+opt-level = 0
+debug = false
+
+# `cbindgen` is a normal `[dependencies]` entry (kalico-c-api, behind the
+# `dep:cbindgen` feature, used by the gen-headers binary), so cargo's
+# build-override above does NOT cover it. `syn` is pulled in again via
+# cbindgen → serde_derive on that path and compiles at opt-level=3 under the
+# base release profile, which is the heavy compile that re-triggers OOM.
+# Per-package overrides apply to normal deps, closing the gap. These crates
+# are build-time-only and never appear in the shipped staticlib or MCU
+# firmware, so opt0 is free — MCU builds pull zero syn or cbindgen.
+[profile.release.package.syn]
+opt-level = 0
+debug = false
+
+[profile.release.package.cbindgen]
+opt-level = 0
+debug = false
 
 [profile.dev]
 opt-level = 1            # eval correctness tests run faster than -O0; still debuggable

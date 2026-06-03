@@ -4,6 +4,7 @@
 //
 // This file may be distributed under the terms of the GNU GPLv3 license.
 
+#include <stdio.h> // FILE, fopen, fprintf, fclose
 #include <time.h> // struct timespec
 #include "autoconf.h" // CONFIG_CLOCK_FREQ
 #include "board/io.h" // readl
@@ -162,8 +163,37 @@ timer_dispatch(void)
 
         if (unlikely(!repeat_count)) {
             // Check if there are too many repeat timers
-            if (diff < (int32_t)(-timer_from_us(100000)))
+            if (diff < (int32_t)(-timer_from_us(100000))) {
+                // Diagnostic: write to a file so it survives even when
+                // journald stderr is suppressed. Include the dispatch
+                // history ring so we can see which timer fed the bad next.
+                uint32_t dbg_now_lo = timer_read_time();
+                uint64_t dbg_now_hi = timer_read_time_u64();
+                uint32_t dh_idx;
+                uint32_t dh_addrs[SCHED_DISPATCH_HISTORY_N];
+                uint32_t dh_funcs[SCHED_DISPATCH_HISTORY_N];
+                sched_get_dispatch_history(&dh_idx, dh_addrs, dh_funcs);
+                FILE *dbg_f = fopen(
+                    "/tmp/klipper_timer_past.log", "w");
+                if (dbg_f) {
+                    fprintf(dbg_f,
+                        "[timer_past] next=0x%x now_lo=0x%x diff=%d "
+                        "u64_now=%llu nwc=0x%x\n",
+                        (unsigned)next, (unsigned)dbg_now_lo, (int)diff,
+                        (unsigned long long)dbg_now_hi,
+                        (unsigned)TimerInfo.next_wake_counter);
+                    for (int _i = 0; _i < SCHED_DISPATCH_HISTORY_N; _i++) {
+                        uint32_t _slot =
+                            (dh_idx + _i) % SCHED_DISPATCH_HISTORY_N;
+                        fprintf(dbg_f,
+                            "  hist[%d] addr=0x%x func=0x%x\n",
+                            _i, (unsigned)dh_addrs[_slot],
+                            (unsigned)dh_funcs[_slot]);
+                    }
+                    fclose(dbg_f);
+                }
                 try_shutdown("Rescheduled timer in the past");
+            }
             if (sched_check_set_tasks_busy())
                 return;
             repeat_count = TIMER_IDLE_REPEAT_COUNT;

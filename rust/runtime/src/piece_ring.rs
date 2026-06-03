@@ -205,10 +205,15 @@ impl RingDescriptor {
     /// visible to the consumer.
     ///
     /// **Interim compatibility shim** — this method exists for the current
-    /// `engine::push_pieces` path.  Task 4 replaces that call site with
-    /// explicit `write_slot` + `commit_head` (batch write before a single
-    /// commit); at that point `push` will be removed or demoted to
-    /// `#[cfg(test)]`.  Do not add new callers.
+    /// `engine::push_pieces` path and the EtherCAT `AxisRing` (one entry per
+    /// DC cycle — a legitimate single-entry push pattern distinct from the MCU
+    /// batch path).  Task 4 migrates `engine::push_pieces` to explicit
+    /// `write_slot` + `commit_head` (batch write before a single commit); at
+    /// that point `push` will be removed or demoted to `#[cfg(test)]`.
+    ///
+    /// **Sanctioned callers:** `engine::push_pieces` (MCU path, pending
+    /// migration) and the EtherCAT `AxisRing` (servo-node path, permanent
+    /// single-entry use).  Do not add new callers beyond these two.
     ///
     /// Returns `Err(())` if the ring is full or unconfigured.
     #[inline]

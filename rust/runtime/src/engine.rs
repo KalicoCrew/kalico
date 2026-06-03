@@ -23,13 +23,29 @@ use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 use crate::clock::TickCounter;
 use crate::error::{KALICO_ERR_INVALID_ARG, KALICO_ERR_RING_FULL, KALICO_OK};
-use crate::fault_helpers::raise_piece_start_in_past;
+use crate::fault_sink::FaultSink;
 use crate::piece_ring::PieceEntry;
 use crate::state::SharedState;
 use crate::step::StepMotorState;
-use crate::stepping_state::{ArmedPiece, AxisState, MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
+use crate::stepping_state::{AxisState, MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
 
 pub use crate::stepping_state::N_AXES;
+
+/// MCU-side [`FaultSink`] implementation that routes faults through
+/// [`SharedState`] atomics.
+///
+/// Lives in this module so that `SharedState` stays out of the walker module
+/// while the walker's single fault call still reaches it.
+pub(crate) struct SharedFaultSink<'a> {
+    pub shared: &'a SharedState,
+}
+
+impl FaultSink for SharedFaultSink<'_> {
+    #[inline]
+    fn piece_start_in_past(&self, axis_idx: usize, deficit_us: u32) {
+        crate::fault_helpers::raise_piece_start_in_past(self.shared, axis_idx, deficit_us);
+    }
+}
 
 /// Engine status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,7 +308,10 @@ impl Engine {
         shared: &SharedState,
         storage: &mut [PieceEntry],
     ) -> bool {
-        use crate::tick::dispatch_axis;
+        #[cfg(feature = "motion-module-stepper")]
+        use crate::dispatch_stepper::dispatch_axis;
+
+        #[cfg(feature = "motion-module-stepper")]
         #[cfg(any(test, feature = "host"))]
         let get_queue = |i: usize| {
             self.test_queue_ptrs
@@ -300,15 +319,18 @@ impl Engine {
                 .copied()
                 .unwrap_or(core::ptr::null_mut())
         };
+        #[cfg(feature = "motion-module-stepper")]
         #[cfg(not(any(test, feature = "host")))]
         let get_queue = |i: usize| crate::step_queue::queue_for_axis(i);
 
+        #[cfg(feature = "motion-module-stepper")]
         let sample_period_sec = if self.sample_period_cycles == 0 || self.cycles_per_second == 0.0 {
             0.0_f32
         } else {
             self.sample_period_cycles as f32 / self.cycles_per_second
         };
 
+        #[cfg(feature = "motion-module-stepper")]
         #[allow(clippy::cast_possible_truncation)]
         let now_lo = now as u32;
 
@@ -322,14 +344,16 @@ impl Engine {
                     continue;
                 };
                 let cps = self.cycles_per_second;
-                let Some((p_end, v_end)) = get_position_and_velocity(
-                    axis,
+                let fault = SharedFaultSink { shared };
+                let Some((p_end, v_end)) = crate::motion_core::get_position_and_velocity(
+                    &mut axis.armed,
+                    &mut axis.ring,
+                    storage,
                     now,
                     self.sample_period_cycles,
                     cps,
-                    shared,
-                    storage,
                     i,
+                    &fault,
                 ) else {
                     continue;
                 };
@@ -340,22 +364,36 @@ impl Engine {
                 (p_end, v_end, p_sample_start)
             };
 
-            let Some(axis) = self.stepping_axes.get_mut(i).and_then(|s| s.as_mut()) else {
-                continue;
-            };
-            let queue_ptr = get_queue(i);
-            dispatch_axis(
-                i,
-                axis,
-                queue_ptr,
-                shared,
-                p_end,
-                v_end,
-                p_sample_start,
-                sample_period_sec,
-                now_lo,
-                self.cycles_per_second,
-            );
+            // Stepper dispatch: only compiled when motion-module-stepper is
+            // active. When the feature is OFF (servo/EtherCAT node), the walk
+            // and p_prev/v_prev updates above still execute — the node tracks
+            // position but emits no step pulses.
+            #[cfg(feature = "motion-module-stepper")]
+            {
+                let Some(axis) = self.stepping_axes.get_mut(i).and_then(|s| s.as_mut()) else {
+                    continue;
+                };
+                let queue_ptr = get_queue(i);
+                dispatch_axis(
+                    i,
+                    axis,
+                    queue_ptr,
+                    shared,
+                    p_end,
+                    v_end,
+                    p_sample_start,
+                    sample_period_sec,
+                    now_lo,
+                    self.cycles_per_second,
+                );
+            }
+
+            // Without motion-module-stepper, suppress unused-variable warnings
+            // from the walk outputs.
+            #[cfg(not(feature = "motion-module-stepper"))]
+            {
+                let _ = (p_end, v_end, p_sample_start);
+            }
         }
 
         active
@@ -640,145 +678,4 @@ impl Default for Engine {
     }
 }
 
-// ── get_position_and_velocity (per spec §4.2) ─────────────────────────────────
 
-/// WARNING: DO NOT MODIFY WITHOUT EXPLICIT SIGN-OFF FROM THE USER.
-///
-/// The four-branch semantics are load-bearing:
-/// 1. In-window piece → short-circuit before walk/fault (avoids spurious fault on long hold).
-/// 2. Ring empty → `None` → idle/underrun.
-/// 3. Cold-adopted piece too far in past → hard fault. Fault-check is BEFORE the
-///    `now < end` return in `get_piece_for_time`; reversing that order silently drops it.
-/// 4. Landed piece → `arm_and_load` (the ONLY `to_monomial` call on the hot path).
-///
-/// Do NOT reorder fault/window check, re-add `arm_next`, or gate the fault without sign-off.
-fn get_position_and_velocity(
-    axis: &mut AxisState,
-    now: u64,
-    sample_period_cycles: u32,
-    cycles_per_second: f32,
-    shared: &SharedState,
-    storage: &mut [PieceEntry],
-    axis_idx: usize,
-) -> Option<(f32, f32)> {
-    // Branch 1: reuse the cached piece while `now` is inside its window.
-    // This also covers the future-held-at-t=0 case via eval_horner's saturating
-    // elapsed, and short-circuits a long hold so the walk/fault never sees it.
-    if let Some(p) = &axis.armed {
-        if now < p.piece_end_cycles {
-            crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_HORNER);
-            return Some(eval_horner(
-                &p.mono_coeffs,
-                &p.vel_coeffs,
-                p.piece_start_cycles,
-                now,
-                cycles_per_second,
-            ));
-        }
-        // Elapsed: retire before walking (§4.2 slot-free order).
-        axis.armed = None;
-        axis.ring.advance_counter();
-    }
-
-    // Walk to the piece containing `now` (no monomialisation), then load once.
-    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_WALK);
-    let walk_start = crate::isr_phase::cyccnt();
-    let slot = get_piece_for_time(axis, storage, now, sample_period_cycles, cycles_per_second, shared, axis_idx)?;
-    crate::isr_phase::walk_account(crate::isr_phase::cyccnt().wrapping_sub(walk_start));
-    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_MONOMIAL);
-    let mono_start = crate::isr_phase::cyccnt();
-    let p = arm_and_load(axis, &storage[slot], cycles_per_second);
-    crate::isr_phase::monomial_account(crate::isr_phase::cyccnt().wrapping_sub(mono_start));
-    crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_HORNER);
-    Some(eval_horner(
-        &p.mono_coeffs,
-        &p.vel_coeffs,
-        p.piece_start_cycles,
-        now,
-        cycles_per_second,
-    ))
-}
-
-/// Advance to the ring entry whose window contains `now`, retiring every
-/// elapsed front along the way. Returns its physical slot index, or `None` when
-/// the ring drains. Hard-faults `PieceStartInPast` (-308) when a freshly adopted
-/// piece starts too far before `now`. Does NOT monomialise — that is deferred to
-/// `arm_and_load` for the landed piece only.
-///
-/// CRITICAL: fault-check runs BEFORE the `now < end` return so that a
-/// cold-adopted front is always checked. Inverting the order silently drops
-/// the cold-adoption fault.
-fn get_piece_for_time(
-    axis: &mut AxisState,
-    storage: &[PieceEntry],
-    now: u64,
-    sample_period_cycles: u32,
-    cycles_per_second: f32,
-    shared: &SharedState,
-    axis_idx: usize,
-) -> Option<usize> {
-    // NOT PROVEN / NOT FINAL: the -308 drift tolerance. Related to pump's
-    // MAX_LEAD_SECS (motion-bridge/src/pump.rs) through clock drift, but the
-    // correct value and ratio are not yet established. Do not couple them
-    // numerically — that would hide a new magic number.
-    const MAX_START_IN_PAST_SECS: f32 = 200e-6;
-    let drift_budget = (MAX_START_IN_PAST_SECS * cycles_per_second) as u64;
-    let fault_tolerance = drift_budget + u64::from(sample_period_cycles);
-    loop {
-        let slot = axis.ring.front_slot()?; // ring empty → underrun
-        let entry = &storage[slot];
-        // Fault-check BEFORE the window return (preserves cold-adoption fault).
-        let deficit_cycles = now.saturating_sub(entry.start_time);
-        if deficit_cycles > fault_tolerance {
-            // cycles -> µs via f32 FPU (single-precision is fine: near-miss
-            // values (~1e5 cyc) are exact in f32, and large values are
-            // saturated to 0xFFFF by raise_piece_start_in_past anyway).
-            let deficit_us = (deficit_cycles as f32 * (1.0e6_f32 / cycles_per_second)) as u32;
-            raise_piece_start_in_past(shared, axis_idx, deficit_us);
-            return None;
-        }
-        if now < entry.end_time(cycles_per_second) {
-            // Window contains now (including future-held pieces).
-            return Some(slot);
-        }
-        // Elapsed — retire and keep walking.
-        axis.ring.advance_counter();
-    }
-}
-
-/// Monomialise the landed piece and cache it. The only `to_monomial` call on the
-/// hot path — walked-past pieces in `get_piece_for_time` never reach here.
-fn arm_and_load<'a>(
-    axis: &'a mut AxisState,
-    entry: &PieceEntry,
-    cycles_per_second: f32,
-) -> &'a ArmedPiece {
-    let (mono, vel) = entry.to_monomial();
-    axis.armed.insert(ArmedPiece {
-        mono_coeffs: mono,
-        vel_coeffs: vel,
-        piece_start_cycles: entry.start_time,
-        piece_end_cycles: entry.end_time(cycles_per_second),
-    })
-}
-
-/// Evaluate position and velocity via Horner using the axis's cached
-/// coefficients.  Returns `(p_end, v_end)` in mm and mm/s.
-#[inline]
-fn eval_horner(
-    mono: &[f32; 4],
-    vel: &[f32; 3],
-    piece_start_cycles: u64,
-    now: u64,
-    cycles_per_second: f32,
-) -> (f32, f32) {
-    let elapsed_cycles = now.saturating_sub(piece_start_cycles);
-    let t = if cycles_per_second > 0.0 {
-        elapsed_cycles as f32 / cycles_per_second
-    } else {
-        0.0_f32
-    };
-    let p = mono[0] + t * (mono[1] + t * (mono[2] + t * mono[3]));
-    let v = vel[0] + t * (vel[1] + t * vel[2]);
-    (p, v)
-}

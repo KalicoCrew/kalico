@@ -607,13 +607,7 @@ where
                 let q = queues
                     .entry(key)
                     .or_insert_with(|| AxisQueue::new(ring_depth_of(key)));
-                let count_added = pieces.len();
                 q.pieces.extend(pieces);
-                // PIECEDIAG (revert)
-                log::info!(
-                    "PIECEDIAG enqueue axis={} n={} qlen={}",
-                    key.axis, count_added, q.pieces.len()
-                );
             }
             PumpMsg::Heartbeat(HeartbeatMsg { mcu_id, retired_counts }) => {
                 // INVARIANT: retired_counts[i] is axis index i, the SAME axis
@@ -622,11 +616,6 @@ where
                 // writes retired_counts()[i] = stepping_axes[i].ring.retired_count()
                 // in index order (runtime_ffi.rs), and push_pieces(axis_idx) targets
                 // that same stepping_axes[axis_idx]. Do not reorder either side.
-                // PIECEDIAG (revert)
-                log::info!(
-                    "PIECEDIAG HB mcu={} retired={:?}",
-                    mcu_id, retired_counts
-                );
                 for (axis, &c) in retired_counts.iter().enumerate() {
                     let key = AxisKey { mcu_id, axis: axis as u8 };
                     if let Some(q) = queues.get_mut(&key) {
@@ -695,32 +684,13 @@ where
         'send: loop {
             match schedule(&queues, MAX_PER_FRAME, &horizon_of) {
                 Schedule::Idle => break 'send,
-                Schedule::StallFull(stall_key) => {
-                    // PIECEDIAG (revert)
-                    let q = queues.get(&stall_key);
-                    log::info!(
-                        "PIECEDIAG STALL axis={} pushed={} retired={} ring_depth={} room={}",
-                        stall_key.axis,
-                        q.map_or(0, |q| q.pushed),
-                        q.map_or(0, |q| q.retired),
-                        q.map_or(0, |q| q.ring_depth),
-                        q.map_or(0, |q| q.room()),
-                    );
+                Schedule::StallFull(_stall_key) => {
                     break 'send;
                 }
-                Schedule::StallAhead(stall_key) => {
+                Schedule::StallAhead(_stall_key) => {
                     // Ring has room but the head piece is beyond the current
-                    // commit-lead horizon. Log and arm the 50 ms poll so we
+                    // commit-lead horizon. Arm the 50 ms poll so we
                     // re-evaluate as the MCU clock advances.
-                    let head_start = queues
-                        .get(&stall_key)
-                        .and_then(|q| q.pieces.front())
-                        .map_or(0, |p| p.start_time);
-                    let horizon = horizon_of(stall_key.mcu_id).unwrap_or(0);
-                    log::info!(
-                        "PIECEDIAG STALL_AHEAD axis={} start={} horizon={}",
-                        stall_key.axis, head_start, horizon,
-                    );
                     holding_ahead = true;
                     break 'send;
                 }
@@ -744,12 +714,7 @@ where
                             q.pushed.wrapping_add(n)
                         };
                         match sink.send_frame(f.key, &f.pieces, f.start_slot, new_head) {
-                            Ok(code) => {
-                                // PIECEDIAG (revert)
-                                log::info!(
-                                    "PIECEDIAG SEND axis={} count={} start_slot={} new_head={} -> OK rc={}",
-                                    f.key.axis, n, f.start_slot, new_head, code
-                                );
+                            Ok(_) => {
                                 let q =
                                     queues.get_mut(&f.key).expect("planned key exists");
                                 for _ in 0..f.pieces.len() {
@@ -759,11 +724,6 @@ where
                                 q.advance_write_cursor(n);
                             }
                             Err(ref e) => {
-                                // PIECEDIAG (revert)
-                                log::info!(
-                                    "PIECEDIAG SEND axis={} count={} start_slot={} new_head={} -> ERR {}",
-                                    f.key.axis, n, f.start_slot, new_head, e
-                                );
                                 log::error!(
                                     "pump send_frame failed for {:?}: {e}",
                                     f.key
@@ -781,16 +741,114 @@ where
 
 // ── WireSink ─────────────────────────────────────────────────────────────────
 
+/// Per-MCU transport variant held by `WireSink`.
+///
+/// Serial MCUs communicate via `KalicoHostIo` (the reactor-backed serial
+/// transport). EtherCAT MCUs communicate via `UnixNativeConn` (a same-host
+/// Unix-socket client). Both implement the `PushPieces` / `PushPiecesResponse`
+/// exchange; they differ only in the underlying byte pipe.
+///
+/// `Weak<KalicoHostIo>` is intentional: `detach_serial` drops the strong
+/// `Arc` to tear down the reactor; the pump must not pin the IO alive.
+/// `Arc<UnixNativeConn>` for EtherCAT: there is no separate "detach" path for
+/// EtherCAT conns; the pump holds the only strong ref and the conn drops with
+/// it.
+pub enum McuTransport {
+    Serial(Weak<kalico_host_rt::host_io::KalicoHostIo>),
+    EtherCat(std::sync::Arc<kalico_host_rt::unix_native_conn::UnixNativeConn>),
+}
+
+impl std::fmt::Debug for McuTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Serial(_) => write!(f, "McuTransport::Serial"),
+            Self::EtherCat(_) => write!(f, "McuTransport::EtherCat"),
+        }
+    }
+}
+
 /// Production sink: one `kalico_call(PushPieces)` per frame.
 ///
-/// Holds `Weak<KalicoHostIo>` — NOT `Arc` — mirroring the dispatch_ios design
-/// in bridge.rs: `detach_serial` drops the strong `Arc` to tear down the
-/// reactor, so the pump must not pin the IO alive. An upgrade failure means
-/// the MCU was detached; the frame is dropped with an error (the pump logs
-/// and leaves the pieces queued — a detached MCU is a stream teardown).
+/// Routes each frame to the appropriate transport by `mcu_id`:
+/// - Serial MCUs → `Weak<KalicoHostIo>::kalico_call_on_channel`
+/// - EtherCAT MCUs → `Arc<UnixNativeConn>::kalico_call_on_channel`
+///
+/// A missing transport entry for an `mcu_id` is a hard error — it indicates
+/// a logic bug in `init_planner` that left an axis without a transport.
 pub struct WireSink {
-    pub ios: HashMap<u32, Weak<kalico_host_rt::host_io::KalicoHostIo>>,
+    pub transports: HashMap<u32, McuTransport>,
     pub timeout: Duration,
+}
+
+impl WireSink {
+    /// Build the encoded PushPieces body and call it on the appropriate
+    /// transport for `key.mcu_id`. Returns the raw `result` field from
+    /// `PushPiecesResponse` on success.
+    fn call_push_pieces(
+        &self,
+        key: AxisKey,
+        pieces: &[PieceEntry],
+        start_slot: u16,
+        new_head: u32,
+    ) -> Result<kalico_protocol::messages::PushPiecesResponse, String> {
+        let mut pieces_bytes =
+            Vec::with_capacity(pieces.len() * std::mem::size_of::<PieceEntry>());
+        for p in pieces {
+            pieces_bytes.extend_from_slice(&p.to_le_bytes());
+        }
+
+        let msg = kalico_protocol::messages::PushPieces {
+            axis_idx: key.axis,
+            piece_count: pieces.len() as u8,
+            start_slot,
+            new_head,
+            pieces_bytes,
+        };
+        let mut body =
+            Vec::with_capacity(8 + pieces.len() * std::mem::size_of::<PieceEntry>());
+        kalico_protocol::codec::Encode::encode(&msg, &mut body);
+
+        let transport = self.transports.get(&key.mcu_id).ok_or_else(|| {
+            format!(
+                "WireSink: no transport for mcu_id {} (axis {}); \
+                 this is a logic bug in init_planner — the axis was enqueued \
+                 without registering its transport",
+                key.mcu_id, key.axis
+            )
+        })?;
+
+        let resp_body = match transport {
+            McuTransport::Serial(weak) => {
+                let io = weak.upgrade().ok_or_else(|| {
+                    format!("KalicoHostIo for mcu {} detached", key.mcu_id)
+                })?;
+                let (_kind, b) = io
+                    .kalico_call_on_channel(
+                        kalico_protocol::KALICO_CHANNEL_PIECES,
+                        kalico_protocol::MessageKind::PushPieces,
+                        body,
+                        self.timeout,
+                    )
+                    .map_err(|e| format!("serial PushPieces mcu {}: {e:?}", key.mcu_id))?;
+                b
+            }
+            McuTransport::EtherCat(conn) => {
+                let (_kind, b) = conn
+                    .kalico_call_on_channel(
+                        kalico_protocol::KALICO_CHANNEL_PIECES,
+                        kalico_protocol::MessageKind::PushPieces,
+                        body,
+                        self.timeout,
+                    )
+                    .map_err(|e| format!("ethercat PushPieces mcu {}: {e:?}", key.mcu_id))?;
+                b
+            }
+        };
+
+        use kalico_protocol::codec::Decode as _;
+        kalico_protocol::messages::PushPiecesResponse::decode(&resp_body)
+            .map_err(|e| format!("decode PushPiecesResponse mcu {}: {e:?}", key.mcu_id))
+    }
 }
 
 impl PieceSink for WireSink {
@@ -807,60 +865,13 @@ impl PieceSink for WireSink {
             pieces.len() <= 255,
             "PushPieces frame exceeds u8 piece_count; schedule() must cap at MAX_PER_FRAME"
         );
-        let io = self
-            .ios
-            .get(&key.mcu_id)
-            .and_then(Weak::upgrade)
-            .ok_or_else(|| format!("KalicoHostIo for mcu {} detached", key.mcu_id))?;
-        let mut pieces_bytes =
-            Vec::with_capacity(pieces.len() * std::mem::size_of::<PieceEntry>());
-        for p in pieces {
-            pieces_bytes.extend_from_slice(&p.to_le_bytes());
-        }
-        // Capture the first piece's start_time from the raw bytes (bytes 0..8 LE
-        // within pieces_bytes) before encoding into the message body.
-        // This is the host's view of front_start_time; it must match the MCU's
-        // decoded value (logged alongside for confirmation).
-        let host_front_start_time: u64 = if pieces_bytes.len() >= 8 {
-            u64::from_le_bytes([
-                pieces_bytes[0], pieces_bytes[1], pieces_bytes[2], pieces_bytes[3],
-                pieces_bytes[4], pieces_bytes[5], pieces_bytes[6], pieces_bytes[7],
-            ])
-        } else {
-            0
-        };
 
-        let msg = kalico_protocol::messages::PushPieces {
-            axis_idx: key.axis,
-            piece_count: pieces.len() as u8,
-            start_slot,
-            new_head,
-            pieces_bytes,
-        };
-        // 2 header bytes (axis_idx + piece_count) + serialised piece data.
-        let mut body =
-            Vec::with_capacity(2 + pieces.len() * std::mem::size_of::<PieceEntry>());
-        kalico_protocol::codec::Encode::encode(&msg, &mut body);
+        let host_front_start_time: u64 = pieces
+            .first()
+            .map(|p| p.start_time)
+            .unwrap_or(0);
 
-        // Record host send instant just before the call for transit-time derivation.
-        // (Clock projection from host Instant → MCU ticks is not reachable from
-        // WireSink; derive send_mcu_clock offline using the klippy clock-sync log.)
-        let host_send_instant = std::time::Instant::now();
-
-        // PushPieces is sent on KALICO_CHANNEL_PIECES (0x02). The response
-        // (PushPiecesResponse) arrives on the control channel matched by
-        // correlation_id — no change to the response handling path.
-        let (_kind, resp) = io
-            .kalico_call_on_channel(
-                kalico_protocol::KALICO_CHANNEL_PIECES,
-                kalico_protocol::MessageKind::PushPieces,
-                body,
-                self.timeout,
-            )
-            .map_err(|e| format!("kalico_call PushPieces: {e:?}"))?;
-        use kalico_protocol::codec::Decode as _;
-        let r = kalico_protocol::messages::PushPiecesResponse::decode(&resp)
-            .map_err(|e| format!("decode PushPiecesResponse: {e:?}"))?;
+        let r = self.call_push_pieces(key, pieces, start_slot, new_head)?;
 
         // Emit transit/arrival-lead diagnostic for every successful PushPieces.
         // arrival_lead = mcu_front_start_time - arrival_clock (both MCU ticks).
@@ -872,15 +883,19 @@ impl PieceSink for WireSink {
             // The arithmetic uses i64 to correctly represent negative arrival-lead.
             let arrival_lead_ticks =
                 r.front_start_time as i64 - r.arrival_clock as i64;
-            // Approximate µs: use 520 MHz for H723 (mcu_id 0) and 180 MHz for
-            // F446 (mcu_id 1). Both raw-ticks and µs are logged so the exact
+            // Approximate µs: EtherCAT clocks are CLOCK_MONOTONIC nanoseconds
+            // (>> 1e12 on a running system); serial MCU clocks are < 1e12. For
+            // serial, use per-MCU frequency: 520 MHz for H723 (mcu_id 0), 180 MHz
+            // for F446 (mcu_id 1+). Both raw-ticks and µs are logged so the exact
             // value can be derived offline with the per-MCU freq from klippy log.
-            let mcu_freq_approx_hz: f64 = if key.mcu_id == 0 {
-                520_000_000.0
+            let approx_freq_hz: f64 = if r.arrival_clock > 1_000_000_000_000 {
+                1_000_000_000.0 // EtherCAT: CLOCK_MONOTONIC ns domain
+            } else if key.mcu_id == 0 {
+                520_000_000.0 // H723 (serial MCU 0)
             } else {
-                180_000_000.0
+                180_000_000.0 // F446 and other serial MCUs
             };
-            let arrival_lead_us = (arrival_lead_ticks as f64 / mcu_freq_approx_hz) * 1e6;
+            let arrival_lead_us = (arrival_lead_ticks as f64 / approx_freq_hz) * 1e6;
             // Wall-clock seconds for offline correlation with klippy clock-sync.
             let host_send_secs = {
                 use std::time::{SystemTime, UNIX_EPOCH};
@@ -944,10 +959,6 @@ impl PieceSink for WireSink {
                 key.mcu_id, key.axis, r.result
             ));
         }
-        // Suppress unused-variable warning for host_send_instant; it is the
-        // timing anchor for offline transit computation and kept for future use
-        // when the projection becomes accessible here.
-        let _ = host_send_instant;
         Ok(r.result)
     }
 }

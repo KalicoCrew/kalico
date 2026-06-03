@@ -9,6 +9,7 @@
 use core::sync::atomic::{AtomicI16, AtomicI32, AtomicU8};
 use heapless::Vec;
 
+use crate::motion_core::ArmedPiece;
 use crate::piece_ring::RingDescriptor;
 
 /// Maximum configured axes.
@@ -76,22 +77,6 @@ pub struct StepperBindingRust {
 const _: () = assert!(core::mem::size_of::<StepperBindingRust>() == 4);
 
 pub const TMC_CS_OID_NONE: u8 = 0xFF;
-
-/// The ISR's cached working copy of the currently-armed piece: monomial
-/// coefficients plus the piece's MCU-clock window. Bundled into one struct so
-/// "is a piece loaded?" is `AxisState::armed.is_some()` — no separate validity
-/// flag to keep in sync.
-#[derive(Debug, Clone, Copy)]
-pub struct ArmedPiece {
-    /// Position monomial coefficients (c0, c1, c2, c3).
-    pub mono_coeffs: [f32; 4],
-    /// Velocity coefficients (vc0, vc1, vc2).
-    pub vel_coeffs: [f32; 3],
-    /// MCU clock cycle at which the piece starts.
-    pub piece_start_cycles: u64,
-    /// MCU clock cycle at which the piece ends.
-    pub piece_end_cycles: u64,
-}
 
 /// Per-logical-axis state for the piece-ring walker engine.
 ///

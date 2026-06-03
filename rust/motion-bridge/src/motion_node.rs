@@ -1,0 +1,30 @@
+//! EtherCAT clock-domain utilities: host `CLOCK_MONOTONIC` reader.
+
+/// Read the host-wide `CLOCK_MONOTONIC` in nanoseconds.
+pub fn monotonic_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable `timespec`; `CLOCK_MONOTONIC` is
+    // available on Linux and macOS. The call writes only `ts` and returns 0 on
+    // success, -1 on error. A `clock_gettime` failure produces a zero
+    // timestamp, which tests catch via monotonicity assertions.
+    #[allow(unsafe_code)]
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts);
+    }
+    (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn monotonic_ns_is_monotone() {
+        let t0 = monotonic_ns();
+        let t1 = monotonic_ns();
+        assert!(t1 >= t0, "monotonic clock must not go backwards: t0={t0} t1={t1}");
+    }
+}
