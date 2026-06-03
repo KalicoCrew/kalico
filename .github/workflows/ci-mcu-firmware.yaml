@@ -1,0 +1,123 @@
+name: MCU firmware build (C + Rust full link)
+
+# Builds the FULL MCU firmware (C compile + Rust staticlib + link) for each
+# kalico board config, across all runtime architectures: the `mcu-firmware`
+# job cross-compiles the STM32 archs (H7/thumbv7em, F4/thumbv7em, G0/thumbv6m)
+# via arm-none-eabi; the `linux-mcu` job builds the native MACH_LINUX arch
+# (x86-64 host, `mcu-linux` feature). This is the gate that catches C<->Rust
+# FFI drift and stale per-arch C files — the class of bug that `cargo build`-only
+# CI cannot see (e.g. runtime_tick_g0.c calling a removed c-api symbol, or the
+# real Linux MCU dropping phase_stepping_write_xdirect: staticlib builds, link
+# fails). See scripts/ci-build-mcu-kalico.sh.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'lib/**'
+      - 'rust/**'
+      - 'Cargo.lock'
+      - 'test/configs/kalico-*.config'
+      - 'scripts/ci-build-mcu-kalico.sh'
+      - '.github/workflows/ci-mcu-firmware.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mcu-firmware:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # ARM cross-compiler (same packages mainline Klipper's ci-install.sh uses).
+      - name: Install arm-none-eabi toolchain + build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gcc-arm-none-eabi binutils-arm-none-eabi libnewlib-arm-none-eabi
+          pip3 install pyelftools
+
+      # Rust + both MCU targets (H7/F4 = thumbv7em soft-float, G0 = thumbv6m).
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabi,thumbv6m-none-eabi
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: mcu-firmware-full
+
+      # Full firmware build for every test/configs/kalico-*.config.
+      # A missing Rust FFI symbol => arm-none-eabi-ld undefined reference =>
+      # make fails => job fails.
+      - name: Build kalico firmware (all MCU archs)
+        run: bash scripts/ci-build-mcu-kalico.sh
+
+      - name: Upload firmware data dictionaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kalico-mcu-dicts
+          path: out/ci-mcu-kalico-dicts/
+          if-no-files-found: ignore
+
+  # Native MACH_LINUX firmware: the first-class Linux MCU (real /dev/gpiochip,
+  # /dev/spidev) plus the sim variant. This is the link-coverage that catches
+  # the class of bug the unhack fixed — the real (kalico-sim ABSENT) build must
+  # resolve the C step/SPI FFI (phase_stepping_write_xdirect) against
+  # linux/phase_stepping_spi.c via the `mcu-linux` Rust feature.
+  linux-mcu:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Native gcc + kernel uapi headers (linux/gpio.h, linux/spi/spidev.h) for
+      # the real-hardware Linux drivers. No arm cross-compiler needed.
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential linux-libc-dev
+
+      # Host Rust toolchain only — MACH_LINUX builds the `mcu-linux` feature on
+      # the native target.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: linux-mcu-firmware
+
+      - name: Build REAL Linux MCU (kalico-linux.config, KALICO_SIM=n)
+        run: |
+          make clean && make distclean
+          cp test/configs/kalico-linux.config .config
+          make olddefconfig
+          grep -qxF 'CONFIG_KALICO_RUNTIME=y' .config || echo 'CONFIG_KALICO_RUNTIME=y' >> .config
+          make V=1 -j"$(nproc)"
+          test -f out/klipper.elf
+          # C side: the symbol is DEFINED (T) in the linked elf.
+          nm out/klipper.elf | grep -qE ' T (_)?phase_stepping_write_xdirect' \
+            || { echo "ERROR: phase_stepping_write_xdirect not DEFINED in real Linux MCU elf"; exit 1; }
+          # Rust side: the staticlib carries an UNDEFINED (U) reference, proving
+          # the mcu-linux dispatch_stepper gate actually EMITS the FFI call. The
+          # 'T'-in-elf check alone would still pass if that gate regressed
+          # (phase_stepping_spi.c keeps the symbol live via __attribute__((used))),
+          # silently losing FFI-edge coverage — this asserts the edge is real.
+          nm rust/target-linux/release/libkalico_c_api.a 2>/dev/null | grep -qE ' U _?phase_stepping_write_xdirect' \
+            || { echo "ERROR: Rust staticlib has no UNDEFINED phase_stepping_write_xdirect ref — mcu-linux FFI gate not emitting the call"; exit 1; }
+          echo "OK: real Linux MCU linked; FFI edge live (Rust U -> C T phase_stepping_write_xdirect)"
+
+      - name: Build SIM Linux MCU (.config.linux, KALICO_SIM=y)
+        run: |
+          make clean && make distclean
+          cp .config.linux .config
+          make olddefconfig
+          grep -qxF 'CONFIG_KALICO_RUNTIME=y' .config || echo 'CONFIG_KALICO_RUNTIME=y' >> .config
+          make V=1 -j"$(nproc)"
+          test -f out/klipper.elf
+          echo "OK: sim Linux MCU linked"

@@ -656,6 +656,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kalico-ethercat-rt"
+version = "0.1.0"
+dependencies = [
+ "kalico-host-rt",
+ "kalico-native-transport",
+ "kalico-protocol",
+ "libc",
+ "log",
+ "runtime",
+]
+
+[[package]]
 name = "kalico-host-rt"
 version = "0.1.0"
 dependencies = [
@@ -814,6 +826,7 @@ dependencies = [
  "heapless",
  "kalico-host-rt",
  "kalico-protocol",
+ "libc",
  "log",
  "nurbs",
  "pyo3",

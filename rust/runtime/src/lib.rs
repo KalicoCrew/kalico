@@ -15,6 +15,16 @@
     unsafe_op_in_unsafe_fn
 )]
 
+// A bare-metal motion node must have at least one dispatch module active.
+// Host builds (feature = "host") and test builds are valid without a dispatch
+// module (e.g. the EtherCAT servo node links runtime with --no-default-features
+// --features host and defines its own dispatch logic externally).
+#[cfg(all(not(feature = "host"), not(test), not(feature = "motion-module-stepper")))]
+compile_error!(
+    "a bare-metal motion node must enable a dispatch module \
+     (e.g. motion-module-stepper); none is active"
+);
+
 // `alloc` is needed by the `sim_fixtures::init_test_runtime` helper on hosted
 // environments. Gate to match the helper's `#[cfg(not(target_os = "none"))]`
 // so the embedded sim build stays allocator-free.
@@ -26,11 +36,15 @@ pub mod segment;
 pub mod sizing;
 pub use sizing::RT_STORAGE_SIZE;
 pub mod clock;
+#[cfg(feature = "motion-module-stepper")]
+pub mod dispatch_stepper;
 pub mod endstop;
 pub mod engine;
 pub mod error;
 pub mod fault_helpers;
+pub mod fault_sink;
 pub(crate) mod isr_phase;
+pub mod motion_core;
 pub mod monomial;
 pub mod per_axis_timer;
 pub mod phase_config;

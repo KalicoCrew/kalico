@@ -7,7 +7,7 @@
 //! `CurveLoadParams`, `SegmentPushParams`, `fits_curve_load`, `UNUSED_HANDLE`,
 //! `is_trivially_constant`) has been removed (Task 10).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use runtime::segment::KinematicTag;
 
 /// `McuAxisConfig::kinematics` tag: Octopus CoreXY, motors A (slot 0) + B (slot 1).
@@ -168,6 +168,39 @@ pub fn build_seed_sends(configs: &[McuAxisConfig], x: f64, y: f64, z: f64) -> Ve
         .collect()
 }
 
+/// Build serial-only [`SeedSend`]s: like [`build_seed_sends`] but skips any
+/// MCU whose `mcu_id` is present in `ethercat_mcu_ids`.
+///
+/// # Why EtherCAT nodes are excluded
+///
+/// `runtime_seed_position` is a stepper-only serial command: EtherCAT servo
+/// endpoints are position-commanded (absolute) and have no serial transport.
+/// `kalico_stream_open` already re-seeds all nodes (including EtherCAT) before
+/// this loop runs, so skipping EtherCAT here is correct, not an error.
+/// Serial MCUs that genuinely lack `host_io` are a broken invariant and must
+/// be caught by the caller.
+pub fn build_serial_seed_sends(
+    configs: &[McuAxisConfig],
+    ethercat_mcu_ids: &HashSet<u32>,
+    x: f64,
+    y: f64,
+    z: f64,
+) -> Vec<SeedSend> {
+    configs
+        .iter()
+        .filter(|cfg| !ethercat_mcu_ids.contains(&cfg.mcu_id))
+        .map(|cfg| {
+            let (mx, my) = motor_frame_xy(cfg, x, y);
+            SeedSend {
+                mcu_id: cfg.mcu_id,
+                x_q16: encode_q16(mx),
+                y_q16: encode_q16(my),
+                z_q16: encode_q16(z),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod topology_tests {
     use super::*;
@@ -266,5 +299,103 @@ mod seed_tests {
         assert_eq!(z.x_q16, encode_q16(150.0));    // cartesian passthrough
         assert_eq!(z.y_q16, encode_q16(150.0));
         assert_eq!(z.z_q16, encode_q16(50.0));
+    }
+
+    // ── Regression: mixed topology (serial + EtherCAT) seed routing ───────
+    //
+    // Regression for the bench bug: a config with one serial stepper MCU
+    // (mcu_id=2, stepper_y + stepper_z) and one EtherCAT node (mcu_id=1,
+    // servo on axis X) caused `set_position` / `SET_KINEMATIC_POSITION` to
+    // SIGABRT with "mcu_id 1 has no host_io (broken invariant)" because the
+    // seed loop blindly sent `runtime_seed_position` to every McuAxisConfig,
+    // including the EtherCAT one which has no serial transport.
+    //
+    // `build_serial_seed_sends` is the pure helper that makes the routing
+    // decision testable without any PyO3 / KalicoHostIo wiring.
+
+    /// Mixed topology: one serial stepper MCU (mcu_id=2) + one EtherCAT servo
+    /// node (mcu_id=1). `build_serial_seed_sends` must emit exactly one send
+    /// (for the serial MCU) and must not include the EtherCAT mcu_id.
+    #[test]
+    fn build_serial_seed_sends_skips_ethercat_node() {
+        // mcu_id=1 is the EtherCAT servo (X axis, CoreXY kinematics).
+        // The kinematics field is intentionally left as KINEMATICS_COREXY even
+        // though axes=[AXIS_X] alone is structurally inconsistent for a real
+        // CoreXY node — the EtherCAT node is filtered out on mcu_id membership
+        // before any kinematics transform (motor_frame_xy) is ever invoked, so
+        // the value here is irrelevant for this test.
+        let ec_cfg = McuAxisConfig {
+            mcu_id: 1,
+            axes: vec![AXIS_X],
+            kinematics: KINEMATICS_COREXY,
+            caps: McuCaps { total_piece_memory: 32 * 1024 },
+        };
+        // mcu_id=2 is the serial stepper MCU (Y+Z, cartesian).
+        let serial_cfg = McuAxisConfig {
+            mcu_id: 2,
+            axes: vec![AXIS_Y, AXIS_Z],
+            kinematics: 1, // CartesianXyzAndE
+            caps: McuCaps { total_piece_memory: 62 * 1024 },
+        };
+        let configs = vec![ec_cfg, serial_cfg];
+        let ethercat_mcu_ids: HashSet<u32> = [1u32].into_iter().collect();
+
+        let sends = build_serial_seed_sends(&configs, &ethercat_mcu_ids, 100.0, 50.0, 10.0);
+
+        // EtherCAT node must be skipped entirely.
+        assert!(
+            sends.iter().all(|s| s.mcu_id != 1),
+            "EtherCAT mcu_id=1 must not appear in serial seed sends; got: {sends:?}"
+        );
+        // Serial MCU must receive its seed.
+        assert_eq!(
+            sends.len(),
+            1,
+            "exactly one send for the serial MCU; got {sends:?}"
+        );
+        let serial = &sends[0];
+        assert_eq!(serial.mcu_id, 2);
+        // mcu_id=2 is cartesian: X and Y are passthroughs.
+        assert_eq!(serial.x_q16, encode_q16(100.0));
+        assert_eq!(serial.y_q16, encode_q16(50.0));
+        assert_eq!(serial.z_q16, encode_q16(10.0));
+    }
+
+    /// All-serial topology: no EtherCAT nodes → `build_serial_seed_sends`
+    /// must be identical to `build_seed_sends`.
+    #[test]
+    fn build_serial_seed_sends_all_serial_matches_build_seed_sends() {
+        let configs = vec![corexy_cfg(), cartesian_z_cfg()];
+        let ethercat_mcu_ids: HashSet<u32> = HashSet::new();
+        let serial_sends = build_serial_seed_sends(&configs, &ethercat_mcu_ids, 150.0, 150.0, 50.0);
+        let full_sends = build_seed_sends(&configs, 150.0, 150.0, 50.0);
+        assert_eq!(
+            serial_sends, full_sends,
+            "with no EtherCAT nodes, build_serial_seed_sends must match build_seed_sends"
+        );
+    }
+
+    /// All-EtherCAT topology: every MCU is an EtherCAT node → no sends.
+    #[test]
+    fn build_serial_seed_sends_all_ethercat_returns_empty() {
+        let ec_cfg_1 = McuAxisConfig {
+            mcu_id: 1,
+            axes: vec![AXIS_X],
+            kinematics: KINEMATICS_COREXY,
+            caps: McuCaps { total_piece_memory: 32 * 1024 },
+        };
+        let ec_cfg_2 = McuAxisConfig {
+            mcu_id: 3,
+            axes: vec![AXIS_Y],
+            kinematics: 1,
+            caps: McuCaps { total_piece_memory: 32 * 1024 },
+        };
+        let configs = vec![ec_cfg_1, ec_cfg_2];
+        let ethercat_mcu_ids: HashSet<u32> = [1u32, 3u32].into_iter().collect();
+        let sends = build_serial_seed_sends(&configs, &ethercat_mcu_ids, 100.0, 50.0, 10.0);
+        assert!(
+            sends.is_empty(),
+            "all-EtherCAT topology must produce zero serial seed sends; got {sends:?}"
+        );
     }
 }

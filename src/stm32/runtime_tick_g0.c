@@ -16,6 +16,12 @@
 //      cycles (clock_freq / sample_rate) so the widened clock tracks real time at
 //      the CONFIG_CLOCK_FREQ rate Klipper's own clock uses.
 //
+// Always-on timer (spec 2026-05-28): mirrors runtime_tick_h7.c /
+// runtime_tick_f4.c. The piece-ring engine has no per-push event to lazily
+// start the timer; the ISR free-runs from boot and idles cheaply when no axis
+// has an active piece. The timer is disabled only on Klipper shutdown
+// (runtime_tick_disable) and re-armed in runtime_tick_init on FIRMWARE_RESTART.
+//
 // See docs/superpowers/specs/2026-05-31-stm32g0-sb2209-target-design.md.
 
 #include "autoconf.h"
@@ -31,10 +37,6 @@
 extern const uint32_t runtime_clock_freq;
 
 extern void* runtime_handle;   // exposed in src/runtime_tick.c
-
-// Live C-side queue length — gates the motion timer on a pending segment.
-// See runtime_tick_f4.c for the boot-time rationale (id=0 minus id=0 = 0).
-extern unsigned kalico_native_queue_len(void);
 
 // Software cycle counter standing in for DWT->CYCCNT (absent on Cortex-M0+).
 // Single-writer: only MOTION_TIM_IRQHandler advances it. `volatile` so the
@@ -73,17 +75,10 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // Same producer-protocol gate as F4/H7: arm the timer iff a phase-stepping
-    // consumer exists OR a segment is pending. The next push_segment /
-    // set_step_mode re-enters and arms it otherwise.
-    if (!runtime_handle) {
+    // No-op if already running; configure_axis calls this on every build.
+    if (MOTION_TIM->CR1 & TIM_CR1_CEN) {
         return;
     }
-    if (kalico_runtime_count_modulated_steppers(runtime_handle) == 0
-        && kalico_native_queue_len() == 0) {
-        return;
-    }
-
     MOTION_TIM->CR1 &= ~TIM_CR1_CEN;
     MOTION_TIM->ARR  = (runtime_clock_freq / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) - 1U;
     MOTION_TIM->EGR  = TIM_EGR_UG;
@@ -126,8 +121,10 @@ runtime_tick_init(void)
     // See the matching comment in runtime_tick_f4.c.
     NVIC_SetPriority(MOTION_TIM_IRQn, 2);
 
-    // Don't enable yet — the first segment push arms the timer via
-    // runtime_tick_enable() through the producer protocol.
+    MOTION_TIM->EGR  = TIM_EGR_UG;
+    MOTION_TIM->SR   = ~TIM_SR_UIF;    // clear stale UIF before enabling
+    MOTION_TIM->CR1 |= TIM_CR1_CEN;
+    NVIC_EnableIRQ(MOTION_TIM_IRQn);
 }
 
 void
