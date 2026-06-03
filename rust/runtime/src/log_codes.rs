@@ -70,6 +70,16 @@ pub const EVENT_RUNTIME_MCU_READY: u16 = 3;
 /// The MCU dropped N structured-log entries on ring overflow since the last
 /// drain (fail-loud overflow accounting); `arg0` = dropped count.
 pub const EVENT_RUNTIME_LOG_DROPS: u16 = 4;
+/// MCU hardware reset; arg0 = reset-cause bits (RCC RSR/CSR), arg1 = cumulative IWDG resets.
+pub const EVENT_RUNTIME_MCU_RESET: u16 = 5;
+/// Prior-boot CPU hard fault; code = exc_kind, arg0 = fault PC, arg1 = LR.
+pub const EVENT_RUNTIME_HARD_FAULT: u16 = 6;
+/// Prior-boot fault status registers; arg0 = CFSR, arg1 = HFSR.
+pub const EVENT_RUNTIME_FAULT_STATUS: u16 = 7;
+/// Prior-boot foreground freeze; arg0 = hung PC, arg1 = stall ticks.
+pub const EVENT_RUNTIME_FG_FREEZE: u16 = 8;
+/// Prior-boot runtime progress at crash; arg0 = packed tag/stage/value, arg1 = fault_count.
+pub const EVENT_RUNTIME_RT_PROGRESS: u16 = 9;
 
 // motion subsystem events
 /// A piece was rejected because its start time is already in the past.
@@ -122,6 +132,21 @@ pub fn event_info(subsystem: u8, event: u16) -> (&'static str, &'static str) {
         }
         (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_LOG_DROPS) => {
             ("runtime.log_drops", "dropped {arg0} log entries (ring overflow)")
+        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_MCU_RESET) => {
+            ("runtime.mcu_reset", "mcu reset (cause bits={arg0}, iwdg_resets={arg1})")
+        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_HARD_FAULT) => {
+            ("runtime.hard_fault", "cpu hard fault pc={arg0} lr={arg1}")
+        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_FAULT_STATUS) => {
+            ("runtime.fault_status", "fault status cfsr={arg0} hfsr={arg1}")
+        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_FG_FREEZE) => {
+            ("runtime.fg_freeze", "foreground freeze pc={arg0} stall_ticks={arg1}")
+        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_RT_PROGRESS) => {
+            ("runtime.rt_progress", "runtime progress packed={arg0} fault_count={arg1}")
         }
         (SUBSYSTEM_MOTION, EVENT_MOTION_PIECE_START_PAST) => (
             "motion.piece_start_past",
@@ -214,6 +239,26 @@ mod tests {
         let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_LOG_DROPS);
         assert_eq!(name, "runtime.log_drops");
         assert!(tmpl.contains("{arg0}"), "log_drops template must reference {{arg0}}");
+
+        let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_MCU_RESET);
+        assert_eq!(name, "runtime.mcu_reset");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_HARD_FAULT);
+        assert_eq!(name, "runtime.hard_fault");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_FAULT_STATUS);
+        assert_eq!(name, "runtime.fault_status");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_FG_FREEZE);
+        assert_eq!(name, "runtime.fg_freeze");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_RT_PROGRESS);
+        assert_eq!(name, "runtime.rt_progress");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
     }
 
     #[test]

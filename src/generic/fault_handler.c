@@ -18,6 +18,7 @@
 #include "board/irq.h"        // irq_save / irq_restore for ring push
 #include "command.h"
 #include "sched.h"
+#include "kalico_log.h"       // kalico_log_emit + KALICO_LOG_* (crash-forensics emit)
 
 extern volatile uint8_t runtime_liveness_ok;
 extern void *runtime_handle;
@@ -1307,3 +1308,61 @@ fault_handler_report_task(void)
     emits_done++;
 }
 DECL_TASK(fault_handler_report_task);
+
+// Re-emit the prior-boot crash summary through the structured-log path so a hard
+// reset (watchdog / CPU fault) shows up in the host log store, not just
+// klippy.log output() strings. Called once from the post-connect configure path
+// (stepper.c) — by then the host has installed its mcu-log hook; emitting at
+// boot would be lost (same timing constraint as runtime.mcu_ready). All sources
+// are the prior-boot snapshot captured at boot-init / persistent SRAM, readable
+// here because the current run hasn't overwritten them (fault_rec) or they're
+// cross-boot accumulators (live_snap freeze/iwdg) / boot snapshots
+// (reset_cause_snapshot). 2x u32 args, so the crash story is a few frames.
+void
+kalico_diag_emit_prior_crash(void)
+{
+    uint8_t iwdg = 0;
+#if CONFIG_MACH_STM32H7
+    iwdg = (reset_cause_snapshot & RCC_RSR_IWDG1RSTF) ? 1u : 0u;
+#elif CONFIG_MACH_STM32F4
+    iwdg = (reset_cause_snapshot & RCC_CSR_IWDGRSTF) ? 1u : 0u;
+#endif
+    uint8_t had_fault = (fault_rec.magic == FAULT_MAGIC) ? 1u : 0u;
+    uint8_t abnormal = iwdg || had_fault;
+
+    // Reset-cause marker (always): warn if the prior reset was abnormal
+    // (watchdog or CPU fault), else debug for a clean power-on / pin reset.
+    kalico_log_emit(abnormal ? KALICO_LOG_LEVEL_WARN : KALICO_LOG_LEVEL_DEBUG,
+                    KALICO_LOG_SUBSYS_RUNTIME, KALICO_LOG_EVENT_RUNTIME_MCU_RESET,
+                    0, reset_cause_snapshot, live_snap.iwdg_reset_count);
+
+    // CPU hard fault: what (exc_kind in code) + where (pc, lr) + status regs
+    // (cfsr, hfsr). Only when a fault record is present.
+    if (had_fault) {
+        kalico_log_emit(KALICO_LOG_LEVEL_ERROR, KALICO_LOG_SUBSYS_RUNTIME,
+                        KALICO_LOG_EVENT_RUNTIME_HARD_FAULT,
+                        (uint16_t)fault_rec.exc_kind, fault_rec.pc, fault_rec.lr);
+        kalico_log_emit(KALICO_LOG_LEVEL_ERROR, KALICO_LOG_SUBSYS_RUNTIME,
+                        KALICO_LOG_EVENT_RUNTIME_FAULT_STATUS, 0,
+                        fault_rec.cfsr, fault_rec.hfsr);
+    }
+
+    // Foreground-freeze: the PC where foreground/ISR hung before the watchdog
+    // fired (PRIMASK-freeze signature). Only when latched.
+    if (live_snap.worst_fg_stall_ticks) {
+        kalico_log_emit(KALICO_LOG_LEVEL_WARN, KALICO_LOG_SUBSYS_RUNTIME,
+                        KALICO_LOG_EVENT_RUNTIME_FG_FREEZE, 0,
+                        live_snap.worst_fg_stall_pc,
+                        live_snap.worst_fg_stall_ticks);
+    }
+
+    // How far the runtime got (packed tag/stage/value) + cumulative CPU-fault
+    // count. Only on an abnormal reset.
+    if (abnormal) {
+        extern volatile uint32_t runtime_diag_prior_packed_raw;
+        uint32_t fc = had_fault ? fault_rec.fault_count : 0u;
+        kalico_log_emit(KALICO_LOG_LEVEL_WARN, KALICO_LOG_SUBSYS_RUNTIME,
+                        KALICO_LOG_EVENT_RUNTIME_RT_PROGRESS, 0,
+                        runtime_diag_prior_packed_raw, fc);
+    }
+}

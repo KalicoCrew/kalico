@@ -22,6 +22,7 @@
 #include "trsync.h" // trsync_add_signal
 #include "kalico_runtime.h" // StepperBindingRust
 #include "kalico_log.h" // kalico_log_emit (mcu structured-log ready marker)
+#include "generic/fault_handler.h" // kalico_diag_emit_prior_crash (Stage 5)
 
 struct stepper {
     struct gpio_out step_pin, dir_pin;
@@ -326,6 +327,8 @@ command_kalico_configure_axis(uint32_t *args)
         kalico_log_ready_emitted = 1;
         kalico_log_emit(KALICO_LOG_LEVEL_DEBUG, KALICO_LOG_SUBSYS_RUNTIME,
                         KALICO_LOG_EVENT_RUNTIME_MCU_READY, 0, 0, 0);
+        // Stage 5: flush the prior-boot crash summary now the host is listening.
+        kalico_diag_emit_prior_crash();
     }
 }
 DECL_COMMAND(command_kalico_configure_axis,

@@ -18,6 +18,12 @@
 #define KALICO_LOG_SUBSYS_RUNTIME 0
 #define KALICO_LOG_EVENT_RUNTIME_MCU_READY 3
 #define KALICO_LOG_EVENT_RUNTIME_LOG_DROPS 4
+// Stage 5 crash-forensics (emitted from fault_handler.c on the next boot).
+#define KALICO_LOG_EVENT_RUNTIME_MCU_RESET 5
+#define KALICO_LOG_EVENT_RUNTIME_HARD_FAULT 6
+#define KALICO_LOG_EVENT_RUNTIME_FAULT_STATUS 7
+#define KALICO_LOG_EVENT_RUNTIME_FG_FREEZE 8
+#define KALICO_LOG_EVENT_RUNTIME_RT_PROGRESS 9
 
 // Enqueue one structured log entry into the C-owned ring. Safe from ISR or
 // foreground (irq_save critical section). Captures the raw 32-bit
