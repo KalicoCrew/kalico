@@ -58,6 +58,10 @@ class ClogDetect:
         self._prev_pos = None
         self._prev_lost_steps = None
         self._clog_detected = False
+        if self._printer.lookup_object("clog_detect_commands", None) is None:
+            self._printer.add_object(
+                "clog_detect_commands", ClogDetectCommands(self._printer)
+            )
         self._printer.register_event_handler("klippy:connect", self._on_connect)
         self._printer.register_event_handler("klippy:ready", self._on_ready)
 
@@ -158,11 +162,11 @@ class ClogDetect:
 
             def _run(et):
                 gcode.run_script(script)
-                self._clog_detected = False
 
             reactor.register_callback(_run)
-        else:
-            self._clog_detected = False
+
+    def reset(self):
+        self._clog_detected = False
 
     def get_status(self, eventtime):
         return {
@@ -173,3 +177,31 @@ class ClogDetect:
 
 def load_config_prefix(config):
     return ClogDetect(config)
+
+
+class ClogDetectCommands:
+    def __init__(self, printer):
+        self._printer = printer
+        gcode = printer.lookup_object("gcode")
+        gcode.register_command(
+            "CLOG_DETECT_RESET",
+            self._cmd_reset,
+            desc="Reset clog detection state",
+        )
+
+    def _cmd_reset(self, gcmd):
+        name = gcmd.get("NAME", None)
+        instances = dict(self._printer.lookup_objects("clog_detect"))
+        if name is None:
+            if len(instances) == 1:
+                list(instances.values())[0].reset()
+            else:
+                raise gcmd.error(
+                    "NAME required: %s"
+                    % ", ".join(n.split()[-1] for n in instances)
+                )
+        else:
+            instance = instances.get("clog_detect " + name)
+            if instance is None:
+                raise gcmd.error("Unknown clog_detect '%s'" % (name,))
+            instance.reset()
