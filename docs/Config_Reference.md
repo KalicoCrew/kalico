@@ -6167,6 +6167,47 @@ sensor_type:
 
 See [Tap Quality Components](Load_Cell.md#tap-quality-components) for more details on maximum for tap quality.
 
+### [clog_detect]
+
+Clog Detection. Detects a clogged nozzle by combining two signals: sustained
+downward force on a load cell, and extruder motor stall events reported by a
+TMC driver. Both conditions must occur together to avoid false positives.
+
+Multiple named sections are supported for multi-toolhead configurations —
+one section per tool, each bound to its own `extruder` and `load_cell`.
+
+See the [clog_detect GCode commands](G-Codes.md#clog_detect) for the
+`CLOG_DETECT_RESET` command.
+
+```
+[clog_detect my_name]
+#load_cell: load_cell_probe
+#   The name of the [load_cell] or [load_cell_probe] section to read force
+#   data from. The default is "load_cell_probe".
+#extruder: extruder
+#   The name of the extruder this detector is bound to. In multi-toolhead
+#   setups, detection is skipped when this extruder is not the active tool.
+#   The default is "extruder".
+#skipped_steps: 20
+#   The estimated number of lost steps required to trigger clog detection.
+#   For TMC drivers with a LOST_STEPS register (e.g. TMC5160), this is a
+#   count of actual lost steps. For drivers using SG_RESULT (e.g. TMC2209),
+#   this is an estimate derived from the commanded extruder position delta
+#   during each stall event. The default is 20.
+#force: 4000
+#   The downward force magnitude in grams that must be present for stall
+#   events to be counted. Force is read from the load cell as a negative
+#   value; this parameter is a positive magnitude and the comparison is
+#   applied internally. The default is 4000g.
+#poll_rate: 4
+#   How many times per second to check the force and stall conditions.
+#   The default is 4.
+#clog_detected_gcode:
+#   An optional GCode command or macro to run when a clog is detected.
+#   The detected state is not cleared automatically — use
+#   CLOG_DETECT_RESET to reset it. The default is no action.
+```
+
 ## Board specific hardware support
 
 ### [sx1509]

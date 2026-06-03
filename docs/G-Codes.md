@@ -1090,6 +1090,20 @@ corresponding settings from the
 - `MIN_TAP_QUALITY=<percent>`
 - `DECOMPRESSION_ANGLE=<angle>`
 
+### [clog_detect]
+
+The following commands are enabled if a
+[clog_detect config section](Config_Reference.md#clog_detect) has been enabled.
+
+### CLOG_DETECT_RESET
+`CLOG_DETECT_RESET [NAME=<name>]`: Clears the clog detected state for a
+[clog_detect] instance. Once a clog is detected, the state remains set until
+this command is issued — it is not cleared automatically, even after the
+`clog_detected_gcode` macro has run. For example:
+- `CLOG_DETECT_RESET NAME=T0` — resets the instance named `T0`.
+- `CLOG_DETECT_RESET` — resets the only instance when a single `[clog_detect]`
+  section is configured. If multiple sections are configured, `NAME` is required.
+
 ### [manual_probe]
 
 The manual_probe module is automatically loaded.
