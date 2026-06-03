@@ -41,29 +41,30 @@ pub(crate) static CONTEXT_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::ne
 /// Errors from logging initialization (fail-loudly; surfaced to Python).
 #[derive(Debug, thiserror::Error)]
 pub enum LogInitError {
-    #[error("logging already initialized")]
-    AlreadyInitialized,
     #[error("opening host-rust.jsonl failed: {0}")]
     Io(#[from] std::io::Error),
 }
 
 /// Install the global tracing subscriber writing schema-conformant NDJSON to
-/// `<events_dir>/host-rust.jsonl`. Idempotent-by-failure: a second call is a
-/// hard error (fail-loudly), so a duplicate bridge construction is caught.
+/// `<events_dir>/host-rust.jsonl`.
+///
+/// Idempotent: a second call is a silent no-op and returns `Ok(())`. This is
+/// correct because the `tracing` global subscriber is process-global and can
+/// only be installed once; klippy re-runs `_read_config` (→
+/// `attach_structured_logging` → `init_logging`) on every in-process
+/// connect/reconnect, so subsequent calls must not be treated as errors. The
+/// first (winning) call still surfaces a real init failure (e.g. file open)
+/// loudly via `Err(LogInitError::Io(...))`.
 ///
 /// Default level is `info` (drops trace/debug at emit per spec §9); `RUST_LOG`
 /// overrides for debugging. Known-noisy debug logs (clocksync) are already
 /// below `info` and dropped by the default.
 pub fn init_logging(events_dir: &Path) -> Result<(), LogInitError> {
     // Use `set` itself as the atomic guard: exactly one concurrent caller wins;
-    // all others bail before touching any global state. This eliminates the
-    // TOCTOU window of the old get-then-later-set pattern.
-    //
-    // NOTE: if initialization fails after this point (e.g. file open error),
-    // `INITIALIZED` remains set and a retry returns `AlreadyInitialized`. That
-    // is intentional — a failed init is a hard startup error (fail-loudly).
+    // all others see is_err() and return Ok(()) immediately. This eliminates
+    // the TOCTOU window of the old get-then-later-set pattern.
     if INITIALIZED.set(()).is_err() {
-        return Err(LogInitError::AlreadyInitialized);
+        return Ok(());
     }
     let path = events_dir.join("host-rust.jsonl");
     let rotating = RotatingJsonlWriter::new(
@@ -119,9 +120,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn double_init_is_a_hard_error() {
+    fn double_init_is_idempotent() {
         // First init may already have happened in another test in this binary;
-        // assert that *some* init succeeds and a subsequent one errors.
+        // assert that *some* init succeeds and a subsequent one is a no-op.
         let dir = std::env::temp_dir().join(format!(
             "kalico-init-test-{}",
             std::process::id()
@@ -129,9 +130,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let first = init_logging(&dir);
         // Either this call initialized it, or a prior test did. In both cases a
-        // *second* explicit call here must be AlreadyInitialized.
+        // *second* explicit call must be a silent Ok(()) (idempotent no-op).
         let second = init_logging(&dir);
-        assert!(matches!(second, Err(LogInitError::AlreadyInitialized)));
+        assert!(matches!(second, Ok(())));
         let _ = first;
     }
 }
