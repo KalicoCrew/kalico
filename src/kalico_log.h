@@ -13,9 +13,11 @@
 // Subsystem / event codes used by C-side emit sites. These MIRROR the
 // canonical table in rust/runtime/src/log_codes.rs — keep in sync. Rust emit
 // sites (Stage 3, fault_helpers.rs) use the Rust constants directly; only the
-// C boot marker needs these mirrors, so the drift surface is one pair.
+// C-side emits (the boot marker + the drain's ring-overflow report) need these
+// mirrors.
 #define KALICO_LOG_SUBSYS_RUNTIME 0
 #define KALICO_LOG_EVENT_RUNTIME_MCU_READY 3
+#define KALICO_LOG_EVENT_RUNTIME_LOG_DROPS 4
 
 // Enqueue one structured log entry into the C-owned ring. Safe from ISR or
 // foreground (irq_save critical section). Captures the raw 32-bit

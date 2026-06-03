@@ -59,13 +59,17 @@ pub fn subsystem_name(id: u8) -> &'static str {
 // Start at 1; 0 is reserved as "no event".
 
 // runtime subsystem events
-/// A fault was latched in the engine; `arg0` = raw fault code, `arg1` = detail.
+/// A fault was latched in the engine; `code`/`code_name` carry the fault
+/// identity (host resolves `code` → `code_name`); `arg0` = `fault_detail`.
 pub const EVENT_RUNTIME_FAULT_LATCHED: u16 = 1;
 /// The engine was reset; `arg0` = epoch counter.
 pub const EVENT_RUNTIME_ENGINE_RESET: u16 = 2;
 /// The MCU firmware runtime is up and the log drain is online (emitted once
 /// per boot from the C `runtime_drain` task). No args.
 pub const EVENT_RUNTIME_MCU_READY: u16 = 3;
+/// The MCU dropped N structured-log entries on ring overflow since the last
+/// drain (fail-loud overflow accounting); `arg0` = dropped count.
+pub const EVENT_RUNTIME_LOG_DROPS: u16 = 4;
 
 // motion subsystem events
 /// A piece was rejected because its start time is already in the past.
@@ -108,13 +112,16 @@ pub fn event_info(subsystem: u8, event: u16) -> (&'static str, &'static str) {
     match (subsystem, event) {
         (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_FAULT_LATCHED) => (
             "runtime.fault_latched",
-            "fault latched code={arg0} detail={arg1}",
+            "fault latched, detail={arg0}",
         ),
         (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_ENGINE_RESET) => {
             ("runtime.engine_reset", "engine reset epoch={arg0}")
         }
         (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_MCU_READY) => {
             ("runtime.mcu_ready", "mcu firmware ready, log drain online")
+        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_LOG_DROPS) => {
+            ("runtime.log_drops", "dropped {arg0} log entries (ring overflow)")
         }
         (SUBSYSTEM_MOTION, EVENT_MOTION_PIECE_START_PAST) => (
             "motion.piece_start_past",
@@ -196,12 +203,17 @@ mod tests {
     fn event_info_all_runtime_events() {
         let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_FAULT_LATCHED);
         assert_eq!(name, "runtime.fault_latched");
+        // fault identity rides in `code`/`code_name`; arg0 = fault_detail.
         assert!(tmpl.contains("{arg0}"), "template must reference {{arg0}}");
-        assert!(tmpl.contains("{arg1}"), "template must reference {{arg1}}");
+        assert!(!tmpl.contains("{arg1}"), "template must NOT reference {{arg1}} — fault identity moved to code field");
 
         let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_ENGINE_RESET);
         assert_eq!(name, "runtime.engine_reset");
         assert!(tmpl.contains("{arg0}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_LOG_DROPS);
+        assert_eq!(name, "runtime.log_drops");
+        assert!(tmpl.contains("{arg0}"), "log_drops template must reference {{arg0}}");
     }
 
     #[test]

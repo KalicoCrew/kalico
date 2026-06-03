@@ -157,6 +157,19 @@ send_log_frame(const struct kalico_log_entry *e)
 void
 kalico_log_drain(void)
 {
+    // Ring-overflow accounting (spec §7): report any entries dropped since the
+    // last drain, then reset. Fail-loud — loss is surfaced, never silent. The
+    // report is enqueued here so the loop below ships it the same cycle; if the
+    // ring is momentarily full the report itself drops and is re-counted next
+    // drain (self-healing).
+    irqstatus_t df = irq_save();
+    uint32_t drops = kalico_log_drops;
+    kalico_log_drops = 0;
+    irq_restore(df);
+    if (drops)
+        kalico_log_emit(KALICO_LOG_LEVEL_WARN, KALICO_LOG_SUBSYS_RUNTIME,
+                        KALICO_LOG_EVENT_RUNTIME_LOG_DROPS, 0, drops, 0);
+
     for (;;) {
         struct kalico_log_entry e;
         irqstatus_t flag = irq_save();
