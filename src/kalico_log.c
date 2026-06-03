@@ -66,6 +66,12 @@ static volatile uint32_t kalico_log_seq;
 // Ring-overflow drop accounting (surfaced as a drop frame in Stage 3).
 static volatile uint32_t kalico_log_drops;
 
+// `used, externally_visible` so the function survives -fwhole-program LTO + GC
+// and stays resolvable from the Rust kalico runtime staticlib, which calls it
+// from the fault-raise path (Stage 3). Without it, LTO internalizes the symbol
+// — its only C caller (stepper.c) is LTO-visible — and the Rust references go
+// undefined at link. Mirrors timer_read_time / runtime_widened_host_clock.
+__attribute__((used, externally_visible))
 void
 kalico_log_emit(uint8_t level, uint8_t subsystem, uint16_t event,
                 uint16_t code, uint32_t arg0, uint32_t arg1)
