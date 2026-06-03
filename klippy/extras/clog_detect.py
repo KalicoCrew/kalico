@@ -175,6 +175,10 @@ class ClogDetect:
         }
 
 
+def load_config(config):
+    return ClogDetect(config)
+
+
 def load_config_prefix(config):
     return ClogDetect(config)
 
