@@ -4,7 +4,7 @@
 //! `docs/superpowers/specs/2026-05-28-push-pieces-wiring-design.md`.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::sync::mpsc::{Receiver, RecvError};
+use std::sync::mpsc::{Receiver, RecvError, RecvTimeoutError};
 use std::sync::Weak;
 use std::time::Duration;
 use runtime::piece_ring::PieceEntry;
@@ -87,6 +87,11 @@ pub enum Schedule {
     Send(Vec<FramePlan>),
     /// Global head's ring is full — wait for a heartbeat. Do not send anything.
     StallFull(AxisKey),
+    /// Global head has ring room but its start_time exceeds the MCU's current
+    /// commit-lead horizon. Wait for the MCU clock to advance. The contained
+    /// key is the earliest-start non-empty axis that has room but is
+    /// time-gated.
+    StallAhead(AxisKey),
     /// No pieces queued anywhere.
     Idle,
 }
@@ -94,9 +99,22 @@ pub enum Schedule {
 /// Decide the next action over the queue map. Does **not** mutate the queues;
 /// the caller applies the returned plan (pops pieces, bumps `pushed`).
 /// `max_per_frame` caps a single PushPieces frame's piece_count (u8 wire field).
+///
+/// `horizon_of(mcu_id)` returns the MCU-tick deadline beyond which a piece's
+/// `start_time` must not be committed this pass. `None` means "not synced
+/// yet — apply no time gate for this MCU" (count-only, same as pre-sync
+/// behaviour).
 #[must_use]
-pub fn schedule(queues: &BTreeMap<AxisKey, AxisQueue>, max_per_frame: usize) -> Schedule {
-    // Earliest non-empty queue head, tie-broken by (mcu_id, axis).
+pub fn schedule(
+    queues: &BTreeMap<AxisKey, AxisQueue>,
+    max_per_frame: usize,
+    horizon_of: impl Fn(u32) -> Option<u64>,
+) -> Schedule {
+    // A queue head is "sendable" iff it has room AND passes the time gate.
+    // Collect the earliest sendable head first; if there are non-empty heads
+    // with room that are only blocked by the horizon, return StallAhead.
+    let mut stall_ahead_candidate: Option<AxisKey> = None;
+
     let head = queues
         .iter()
         .filter(|(_, q)| !q.pieces.is_empty())
@@ -109,18 +127,31 @@ pub fn schedule(queues: &BTreeMap<AxisKey, AxisQueue>, max_per_frame: usize) -> 
         None => return Schedule::Idle,
         Some(h) => h,
     };
+    let head_start = head_q.pieces.front().unwrap().start_time;
+
+    // Ring-full check (global head has no room).
     if head_q.room() == 0 {
         return Schedule::StallFull(head_key);
     }
 
+    // Time-gate check for the global head.
+    if let Some(horizon) = horizon_of(head_key.mcu_id) {
+        if head_start > horizon {
+            // The global head has room but is too far ahead — StallAhead.
+            return Schedule::StallAhead(head_key);
+        }
+    }
+
     // Greedily take the contiguous prefix of global time order that stays on
-    // head_key.mcu_id and has room. Simulate room locally so a single
-    // scheduling pass never plans more than each ring can hold.
+    // head_key.mcu_id, has room, and passes the time gate. Simulate room
+    // locally so a single scheduling pass never plans more than each ring can
+    // hold.
     //
-    // `maxed` tracks same-MCU axes that have hit their room or frame cap this
-    // pass. They are excluded from candidate selection to avoid re-selecting
-    // them every iteration (which would infinite-loop), but their saturation
-    // does NOT end the batch — other same-MCU axes with room still get pieces.
+    // `maxed` tracks same-MCU axes that have hit their room, frame cap, or
+    // time-horizon this pass. They are excluded from candidate selection to
+    // avoid re-selecting them every iteration (which would infinite-loop), but
+    // their saturation does NOT end the batch — other same-MCU axes with room
+    // still get pieces.
     let mut taken: BTreeMap<AxisKey, usize> = BTreeMap::new(); // key -> count planned
     let mut maxed: BTreeSet<AxisKey> = BTreeSet::new();
     loop {
@@ -134,7 +165,7 @@ pub fn schedule(queues: &BTreeMap<AxisKey, AxisQueue>, max_per_frame: usize) -> 
                 q.pieces.get(already).map(|p| (*k, p.start_time))
             })
             .min_by(|(ka, sa), (kb, sb)| sa.cmp(sb).then(ka.cmp(kb)));
-        let (k, _start) = match next {
+        let (k, start) = match next {
             Some(n) => n,
             None => break,
         };
@@ -150,7 +181,31 @@ pub fn schedule(queues: &BTreeMap<AxisKey, AxisQueue>, max_per_frame: usize) -> 
             maxed.insert(k);
             continue;
         }
+        // Time-gate: a piece beyond the horizon makes this axis maxed for this
+        // pass, but does NOT end the batch (other same-MCU axes with earlier
+        // pieces may still be eligible).
+        if let Some(horizon) = horizon_of(k.mcu_id) {
+            if start > horizon {
+                // Track for StallAhead in case taken is empty at the end.
+                if stall_ahead_candidate.is_none() {
+                    stall_ahead_candidate = Some(k);
+                }
+                maxed.insert(k);
+                continue;
+            }
+        }
         *taken.entry(k).or_insert(0) += 1;
+    }
+
+    // If nothing was taken but at least one axis is time-gated (has room but
+    // is beyond the horizon), return StallAhead so the pump knows to poll.
+    if taken.is_empty() {
+        if let Some(k) = stall_ahead_candidate {
+            return Schedule::StallAhead(k);
+        }
+        // All axes are either empty or maxed by count only (should not happen
+        // given the head-room check above, but be safe).
+        return Schedule::StallFull(head_key);
     }
 
     // `taken` entries are always ≥1 by construction (the only path into `taken`
@@ -192,7 +247,7 @@ mod sched_tests {
     #[test]
     fn idle_when_empty() {
         let queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
-        assert!(matches!(schedule(&queues, 255), Schedule::Idle));
+        assert!(matches!(schedule(&queues, 255, |_| None), Schedule::Idle));
     }
 
     #[test]
@@ -204,7 +259,7 @@ mod sched_tests {
         queues.insert(AxisKey { mcu_id: 1, axis: 0 }, a);
         queues.insert(AxisKey { mcu_id: 2, axis: 0 }, q_with(8, &[20]));
         assert!(matches!(
-            schedule(&queues, 255),
+            schedule(&queues, 255, |_| None),
             Schedule::StallFull(AxisKey { mcu_id: 1, axis: 0 })
         ));
     }
@@ -216,7 +271,7 @@ mod sched_tests {
         queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[0, 3]));
         queues.insert(AxisKey { mcu_id: 1, axis: 1 }, q_with(8, &[1]));
         queues.insert(AxisKey { mcu_id: 2, axis: 0 }, q_with(8, &[2]));
-        let s = schedule(&queues, 255);
+        let s = schedule(&queues, 255, |_| None);
         // batch stops at B/x@2 → A/x gets [0] only (A/x@3 is after the B boundary),
         // A/y gets [1]. B/x not included.
         match s {
@@ -234,7 +289,7 @@ mod sched_tests {
     fn frame_cap_splits() {
         let mut queues = BTreeMap::new();
         queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[0, 1, 2, 3]));
-        let s = schedule(&queues, 2);
+        let s = schedule(&queues, 2, |_| None);
         match s {
             Schedule::Send(frames) => {
                 assert_eq!(frames.len(), 1);
@@ -257,7 +312,7 @@ mod sched_tests {
         q.insert(AxisKey { mcu_id: 1, axis: 1 }, yq);
         q.insert(AxisKey { mcu_id: 1, axis: 0 }, xq);
         // Y@0 is the global head and has room → top-level StallFull does NOT fire.
-        match schedule(&q, 255) {
+        match schedule(&q, 255, |_| None) {
             Schedule::Send(frames) => {
                 // Y must be batched despite full sibling X.
                 let yf = frames.iter().find(|f| f.key == AxisKey { mcu_id: 1, axis: 1 });
@@ -269,6 +324,54 @@ mod sched_tests {
                 );
             }
             other => panic!("expected Send, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn time_gate_blocks_piece_beyond_horizon() {
+        // Two axes on MCU 1. Head (axis 0) has start_time=100 within horizon=150.
+        // Axis 1 has start_time=200 beyond the horizon → only axis 0 is planned.
+        let mut queues = BTreeMap::new();
+        queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[100]));
+        queues.insert(AxisKey { mcu_id: 1, axis: 1 }, q_with(8, &[200]));
+        // horizon = 150: axis 0 passes (100 <= 150), axis 1 blocked (200 > 150).
+        match schedule(&queues, 255, |_| Some(150)) {
+            Schedule::Send(frames) => {
+                assert_eq!(frames.len(), 1, "only axis 0 should be batched");
+                assert_eq!(frames[0].key, AxisKey { mcu_id: 1, axis: 0 });
+                assert_eq!(frames[0].pieces.len(), 1);
+            }
+            other => panic!("expected Send, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn all_beyond_horizon_returns_stall_ahead() {
+        // Single axis on MCU 1. Its piece start_time=1000 is beyond horizon=500.
+        // Ring has room (pushed=0). Should return StallAhead, not StallFull.
+        let mut queues = BTreeMap::new();
+        queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[1000]));
+        assert!(
+            matches!(
+                schedule(&queues, 255, |_| Some(500)),
+                Schedule::StallAhead(AxisKey { mcu_id: 1, axis: 0 })
+            ),
+            "expected StallAhead when sole piece is beyond horizon"
+        );
+    }
+
+    #[test]
+    fn no_horizon_none_uses_count_only_gate() {
+        // When horizon_of returns None, no time gate applies even if the piece
+        // start_time is arbitrarily large. Verifies startup-before-clock-sync path.
+        let mut queues = BTreeMap::new();
+        queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[u64::MAX]));
+        match schedule(&queues, 255, |_| None) {
+            Schedule::Send(frames) => {
+                assert_eq!(frames.len(), 1);
+                assert_eq!(frames[0].pieces.len(), 1);
+            }
+            other => panic!("expected Send (no time gate), got {other:?}"),
         }
     }
 }
@@ -363,7 +466,7 @@ mod tests {
         let (tx, rx) = mpsc::channel::<PumpMsg>();
         let sink_clone = sink.clone();
         let handle = std::thread::spawn(move || {
-            run_pump(rx, sink_clone, |_key| RING_DEPTH);
+            run_pump(rx, sink_clone, |_key| RING_DEPTH, |_mcu| None);
         });
 
         // Enqueue first batch of N pieces and spin-wait until the pump drains it.
@@ -469,15 +572,33 @@ pub trait PieceSink: Send {
 
 // ── run_pump ─────────────────────────────────────────────────────────────────
 
+/// Commit-lead horizon: the pump will not commit a piece whose `start_time` is
+/// more than this many seconds ahead of the MCU's projected clock-now.
+///
+/// NOT PROVEN / NOT FINAL: related to engine's MAX_START_IN_PAST_SECS
+/// (rust/runtime/src/engine.rs) through clock drift, but the correct value and
+/// ratio are not established. Do not couple them numerically.
+const MAX_LEAD_SECS: f64 = 1.0;
+
 /// Run the pump until `Shutdown`. `ring_depth_of` supplies each ring's depth
 /// the first time its key is seen. `sink` performs the actual wire send.
-pub fn run_pump<S, F>(rx: Receiver<PumpMsg>, sink: S, ring_depth_of: F)
+/// `mcu_clock_of(mcu_id)` returns `Some((ack_now_ticks, freq_hz))` when the
+/// MCU's clock-sync is established, or `None` before sync — in which case no
+/// time gate is applied for that MCU (count-only, safe for startup).
+pub fn run_pump<S, F, C>(rx: Receiver<PumpMsg>, sink: S, ring_depth_of: F, mcu_clock_of: C)
 where
     S: PieceSink,
     F: Fn(AxisKey) -> u32,
+    C: Fn(u32) -> Option<(u64, f64)>,
 {
     let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
-    const MAX_PER_FRAME: usize = 255; // u8 wire piece_count
+    // Cap pieces per PushPieces frame to bound the USB OTG ISR burst that fences
+    // the motion tick. Bench (2026-06-01, diff-minimization iter 1): at the 255
+    // wire-max the F446 -308 trips ~5 s into a jog; at 32 it holds ~13-17 s — so
+    // the cap is load-bearing, an active mitigation of the F446 USB fence behind
+    // the residual -308 (NOT a -311 leftover; the -311 fix was the clock-domain
+    // bug). A smaller per-MCU cap for the F446 is a candidate for the -308 fix.
+    const MAX_PER_FRAME: usize = 32;
 
     let apply = |msg: PumpMsg, queues: &mut BTreeMap<AxisKey, AxisQueue>| -> bool {
         match msg {
@@ -486,13 +607,7 @@ where
                 let q = queues
                     .entry(key)
                     .or_insert_with(|| AxisQueue::new(ring_depth_of(key)));
-                let count_added = pieces.len();
                 q.pieces.extend(pieces);
-                // PIECEDIAG (revert)
-                log::info!(
-                    "PIECEDIAG enqueue axis={} n={} qlen={}",
-                    key.axis, count_added, q.pieces.len()
-                );
             }
             PumpMsg::Heartbeat(HeartbeatMsg { mcu_id, retired_counts }) => {
                 // INVARIANT: retired_counts[i] is axis index i, the SAME axis
@@ -501,11 +616,6 @@ where
                 // writes retired_counts()[i] = stepping_axes[i].ring.retired_count()
                 // in index order (runtime_ffi.rs), and push_pieces(axis_idx) targets
                 // that same stepping_axes[axis_idx]. Do not reorder either side.
-                // PIECEDIAG (revert)
-                log::info!(
-                    "PIECEDIAG HB mcu={} retired={:?}",
-                    mcu_id, retired_counts
-                );
                 for (axis, &c) in retired_counts.iter().enumerate() {
                     let key = AxisKey { mcu_id, axis: axis as u8 };
                     if let Some(q) = queues.get_mut(&key) {
@@ -517,39 +627,71 @@ where
         true
     };
 
-    // Block for the first message, then process bursts.
+    // Build a horizon closure from the mcu_clock_of callback. Called once per
+    // schedule pass so the horizon tracks the advancing MCU clock.
+    let horizon_of = |mcu_id: u32| -> Option<u64> {
+        let (ack_now, freq) = mcu_clock_of(mcu_id)?;
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        Some(ack_now + (MAX_LEAD_SECS * freq) as u64)
+    };
+
+    // Whether the most recent schedule decision was StallAhead. When true the
+    // outer wait uses recv_timeout(50 ms) so the horizon can advance even with
+    // no inbound messages; when false (idle or count-stalled) blocking recv()
+    // is fine — heartbeats/enqueues wake it.
+    let mut holding_ahead = false;
+
     loop {
-        let first = match rx.recv() {
-            Ok(m) => m,
-            Err(RecvError) => return,
+        // If we are holding pieces that are time-gated, poll every 50 ms so
+        // the horizon sweeps forward (ack_now advances with the MCU clock).
+        // Otherwise block indefinitely — a heartbeat or enqueue will wake us.
+        let first = if holding_ahead {
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Ok(m) => Some(m),
+                Err(RecvTimeoutError::Timeout) => {
+                    // MCU clock has advanced; re-evaluate the send loop without
+                    // consuming a message. `holding_ahead` stays true until the
+                    // schedule loop clears it.
+                    None
+                }
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        } else {
+            match rx.recv() {
+                Ok(m) => Some(m),
+                Err(RecvError) => return,
+            }
         };
-        if !apply(first, &mut queues) {
-            return;
-        }
-        // Drain anything else already queued (coalesce bursts before sending).
-        while let Ok(m) = rx.try_recv() {
-            if !apply(m, &mut queues) {
+
+        if let Some(msg) = first {
+            if !apply(msg, &mut queues) {
                 return;
             }
+            // Drain anything else already queued (coalesce bursts before sending).
+            while let Ok(m) = rx.try_recv() {
+                if !apply(m, &mut queues) {
+                    return;
+                }
+            }
         }
+
         // Send as far as the schedule allows. A send failure breaks all the
-        // way back to `recv()` (labeled break) instead of re-running schedule
-        // on the still-queued pieces — otherwise a persistent failure spins a
-        // tight busy-loop. The next inbound message (heartbeat/enqueue) retries.
+        // way back to the outer wait (labeled break) instead of re-running
+        // schedule on the still-queued pieces — otherwise a persistent failure
+        // spins a tight busy-loop. The next inbound message (heartbeat/enqueue)
+        // retries.
+        holding_ahead = false;
         'send: loop {
-            match schedule(&queues, MAX_PER_FRAME) {
+            match schedule(&queues, MAX_PER_FRAME, &horizon_of) {
                 Schedule::Idle => break 'send,
-                Schedule::StallFull(stall_key) => {
-                    // PIECEDIAG (revert)
-                    let q = queues.get(&stall_key);
-                    log::info!(
-                        "PIECEDIAG STALL axis={} pushed={} retired={} ring_depth={} room={}",
-                        stall_key.axis,
-                        q.map_or(0, |q| q.pushed),
-                        q.map_or(0, |q| q.retired),
-                        q.map_or(0, |q| q.ring_depth),
-                        q.map_or(0, |q| q.room()),
-                    );
+                Schedule::StallFull(_stall_key) => {
+                    break 'send;
+                }
+                Schedule::StallAhead(_stall_key) => {
+                    // Ring has room but the head piece is beyond the current
+                    // commit-lead horizon. Arm the 50 ms poll so we
+                    // re-evaluate as the MCU clock advances.
+                    holding_ahead = true;
                     break 'send;
                 }
                 Schedule::Send(frames) => {
@@ -572,12 +714,7 @@ where
                             q.pushed.wrapping_add(n)
                         };
                         match sink.send_frame(f.key, &f.pieces, f.start_slot, new_head) {
-                            Ok(code) => {
-                                // PIECEDIAG (revert)
-                                log::info!(
-                                    "PIECEDIAG SEND axis={} count={} start_slot={} new_head={} -> OK rc={}",
-                                    f.key.axis, n, f.start_slot, new_head, code
-                                );
+                            Ok(_) => {
                                 let q =
                                     queues.get_mut(&f.key).expect("planned key exists");
                                 for _ in 0..f.pieces.len() {
@@ -587,11 +724,6 @@ where
                                 q.advance_write_cursor(n);
                             }
                             Err(ref e) => {
-                                // PIECEDIAG (revert)
-                                log::info!(
-                                    "PIECEDIAG SEND axis={} count={} start_slot={} new_head={} -> ERR {}",
-                                    f.key.axis, n, f.start_slot, new_head, e
-                                );
                                 log::error!(
                                     "pump send_frame failed for {:?}: {e}",
                                     f.key
@@ -609,16 +741,114 @@ where
 
 // ── WireSink ─────────────────────────────────────────────────────────────────
 
+/// Per-MCU transport variant held by `WireSink`.
+///
+/// Serial MCUs communicate via `KalicoHostIo` (the reactor-backed serial
+/// transport). EtherCAT MCUs communicate via `UnixNativeConn` (a same-host
+/// Unix-socket client). Both implement the `PushPieces` / `PushPiecesResponse`
+/// exchange; they differ only in the underlying byte pipe.
+///
+/// `Weak<KalicoHostIo>` is intentional: `detach_serial` drops the strong
+/// `Arc` to tear down the reactor; the pump must not pin the IO alive.
+/// `Arc<UnixNativeConn>` for EtherCAT: there is no separate "detach" path for
+/// EtherCAT conns; the pump holds the only strong ref and the conn drops with
+/// it.
+pub enum McuTransport {
+    Serial(Weak<kalico_host_rt::host_io::KalicoHostIo>),
+    EtherCat(std::sync::Arc<kalico_host_rt::unix_native_conn::UnixNativeConn>),
+}
+
+impl std::fmt::Debug for McuTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Serial(_) => write!(f, "McuTransport::Serial"),
+            Self::EtherCat(_) => write!(f, "McuTransport::EtherCat"),
+        }
+    }
+}
+
 /// Production sink: one `kalico_call(PushPieces)` per frame.
 ///
-/// Holds `Weak<KalicoHostIo>` — NOT `Arc` — mirroring the dispatch_ios design
-/// in bridge.rs: `detach_serial` drops the strong `Arc` to tear down the
-/// reactor, so the pump must not pin the IO alive. An upgrade failure means
-/// the MCU was detached; the frame is dropped with an error (the pump logs
-/// and leaves the pieces queued — a detached MCU is a stream teardown).
+/// Routes each frame to the appropriate transport by `mcu_id`:
+/// - Serial MCUs → `Weak<KalicoHostIo>::kalico_call_on_channel`
+/// - EtherCAT MCUs → `Arc<UnixNativeConn>::kalico_call_on_channel`
+///
+/// A missing transport entry for an `mcu_id` is a hard error — it indicates
+/// a logic bug in `init_planner` that left an axis without a transport.
 pub struct WireSink {
-    pub ios: HashMap<u32, Weak<kalico_host_rt::host_io::KalicoHostIo>>,
+    pub transports: HashMap<u32, McuTransport>,
     pub timeout: Duration,
+}
+
+impl WireSink {
+    /// Build the encoded PushPieces body and call it on the appropriate
+    /// transport for `key.mcu_id`. Returns the raw `result` field from
+    /// `PushPiecesResponse` on success.
+    fn call_push_pieces(
+        &self,
+        key: AxisKey,
+        pieces: &[PieceEntry],
+        start_slot: u16,
+        new_head: u32,
+    ) -> Result<kalico_protocol::messages::PushPiecesResponse, String> {
+        let mut pieces_bytes =
+            Vec::with_capacity(pieces.len() * std::mem::size_of::<PieceEntry>());
+        for p in pieces {
+            pieces_bytes.extend_from_slice(&p.to_le_bytes());
+        }
+
+        let msg = kalico_protocol::messages::PushPieces {
+            axis_idx: key.axis,
+            piece_count: pieces.len() as u8,
+            start_slot,
+            new_head,
+            pieces_bytes,
+        };
+        let mut body =
+            Vec::with_capacity(8 + pieces.len() * std::mem::size_of::<PieceEntry>());
+        kalico_protocol::codec::Encode::encode(&msg, &mut body);
+
+        let transport = self.transports.get(&key.mcu_id).ok_or_else(|| {
+            format!(
+                "WireSink: no transport for mcu_id {} (axis {}); \
+                 this is a logic bug in init_planner — the axis was enqueued \
+                 without registering its transport",
+                key.mcu_id, key.axis
+            )
+        })?;
+
+        let resp_body = match transport {
+            McuTransport::Serial(weak) => {
+                let io = weak.upgrade().ok_or_else(|| {
+                    format!("KalicoHostIo for mcu {} detached", key.mcu_id)
+                })?;
+                let (_kind, b) = io
+                    .kalico_call_on_channel(
+                        kalico_protocol::KALICO_CHANNEL_PIECES,
+                        kalico_protocol::MessageKind::PushPieces,
+                        body,
+                        self.timeout,
+                    )
+                    .map_err(|e| format!("serial PushPieces mcu {}: {e:?}", key.mcu_id))?;
+                b
+            }
+            McuTransport::EtherCat(conn) => {
+                let (_kind, b) = conn
+                    .kalico_call_on_channel(
+                        kalico_protocol::KALICO_CHANNEL_PIECES,
+                        kalico_protocol::MessageKind::PushPieces,
+                        body,
+                        self.timeout,
+                    )
+                    .map_err(|e| format!("ethercat PushPieces mcu {}: {e:?}", key.mcu_id))?;
+                b
+            }
+        };
+
+        use kalico_protocol::codec::Decode as _;
+        kalico_protocol::messages::PushPiecesResponse::decode(&resp_body)
+            .map_err(|e| format!("decode PushPiecesResponse mcu {}: {e:?}", key.mcu_id))
+    }
 }
 
 impl PieceSink for WireSink {
@@ -629,89 +859,44 @@ impl PieceSink for WireSink {
         start_slot: u16,
         new_head: u32,
     ) -> Result<i32, String> {
-        // schedule() caps frames at MAX_PER_FRAME = 255, so this is unreachable
-        // in the production path; the assert guards against callers bypassing
-        // schedule() and hitting a silent truncation.
+        // schedule() caps frames at MAX_PER_FRAME (currently 32); this guards
+        // against callers bypassing schedule() and hitting a silent truncation.
         debug_assert!(
             pieces.len() <= 255,
-            "PushPieces frame exceeds u8 piece_count; schedule() must cap at 255"
+            "PushPieces frame exceeds u8 piece_count; schedule() must cap at MAX_PER_FRAME"
         );
-        let io = self
-            .ios
-            .get(&key.mcu_id)
-            .and_then(Weak::upgrade)
-            .ok_or_else(|| format!("KalicoHostIo for mcu {} detached", key.mcu_id))?;
-        let mut pieces_bytes =
-            Vec::with_capacity(pieces.len() * std::mem::size_of::<PieceEntry>());
-        for p in pieces {
-            pieces_bytes.extend_from_slice(&p.to_le_bytes());
-        }
-        // Capture the first piece's start_time from the raw bytes (bytes 0..8 LE
-        // within pieces_bytes) before encoding into the message body.
-        // This is the host's view of front_start_time; it must match the MCU's
-        // decoded value (logged alongside for confirmation).
-        let host_front_start_time: u64 = if pieces_bytes.len() >= 8 {
-            u64::from_le_bytes([
-                pieces_bytes[0], pieces_bytes[1], pieces_bytes[2], pieces_bytes[3],
-                pieces_bytes[4], pieces_bytes[5], pieces_bytes[6], pieces_bytes[7],
-            ])
-        } else {
-            0
-        };
 
-        let msg = kalico_protocol::messages::PushPieces {
-            axis_idx: key.axis,
-            piece_count: pieces.len() as u8,
-            start_slot,
-            new_head,
-            pieces_bytes,
-        };
-        // 2 header bytes (axis_idx + piece_count) + serialised piece data.
-        let mut body =
-            Vec::with_capacity(2 + pieces.len() * std::mem::size_of::<PieceEntry>());
-        kalico_protocol::codec::Encode::encode(&msg, &mut body);
+        let host_front_start_time: u64 = pieces
+            .first()
+            .map(|p| p.start_time)
+            .unwrap_or(0);
 
-        // Record host send instant just before the call for transit-time derivation.
-        // (Clock projection from host Instant → MCU ticks is not reachable from
-        // WireSink; derive send_mcu_clock offline using the klippy clock-sync log.)
-        let host_send_instant = std::time::Instant::now();
+        let r = self.call_push_pieces(key, pieces, start_slot, new_head)?;
 
-        // PushPieces is sent on KALICO_CHANNEL_PIECES (0x02). The response
-        // (PushPiecesResponse) arrives on the control channel matched by
-        // correlation_id — no change to the response handling path.
-        let (_kind, resp) = io
-            .kalico_call_on_channel(
-                kalico_protocol::KALICO_CHANNEL_PIECES,
-                kalico_protocol::MessageKind::PushPieces,
-                body,
-                self.timeout,
-            )
-            .map_err(|e| format!("kalico_call PushPieces: {e:?}"))?;
-        use kalico_protocol::codec::Decode as _;
-        let r = kalico_protocol::messages::PushPiecesResponse::decode(&resp)
-            .map_err(|e| format!("decode PushPiecesResponse: {e:?}"))?;
-
-        // Emit transit/arrival-lead diagnostic for every non-empty, non-error batch.
-        // Skipped when front_start_time==0 (empty batch or early error path).
-        // arrival_lead = front_start_time - arrival_clock (both in MCU ticks).
-        // Negative means the piece arrived already in the MCU's past → -308 risk.
-        // transit_us is NOT computed here: host→MCU clock projection (freq, offset)
-        // lives in PassthroughRouter, which is not reachable from WireSink without
-        // cross-crate plumbing. Derive offline: transit_us ≈ (arrival_clock -
-        // send_mcu_clock) / mcu_freq, where send_mcu_clock = project(host_send_instant).
-        if host_front_start_time != 0 {
-            // Assume ~520 MHz for H723, ~180 MHz for F446. If this MCU's actual freq
-            // is different the µs value is approximate — log raw ticks too so the
-            // exact value can be derived offline with the per-MCU freq from klippy log.
+        // Emit transit/arrival-lead diagnostic for every successful PushPieces.
+        // arrival_lead = mcu_front_start_time - arrival_clock (both MCU ticks).
+        // Negative → piece already in MCU past at commit time → -308 risk.
+        // host_front_start_time==0 means the router had no clock sync when the
+        // piece was dispatched (project() returned 0); log it as a zero so the
+        // gap is visible rather than silently skipped.
+        {
             // The arithmetic uses i64 to correctly represent negative arrival-lead.
             let arrival_lead_ticks =
                 r.front_start_time as i64 - r.arrival_clock as i64;
-            // Use 180 MHz as a conservative estimate (F446); H723 at 520 MHz will
-            // give a proportionally smaller µs value. Both raw-ticks and µs are logged.
-            const MCU_FREQ_APPROX_HZ: f64 = 180_000_000.0;
-            let arrival_lead_us = (arrival_lead_ticks as f64 / MCU_FREQ_APPROX_HZ) * 1e6;
-            // host_send_secs: wall-clock seconds as a monotonic f64 for offline
-            // correlation with klippy's clock-sync records.
+            // Approximate µs: EtherCAT clocks are CLOCK_MONOTONIC nanoseconds
+            // (>> 1e12 on a running system); serial MCU clocks are < 1e12. For
+            // serial, use per-MCU frequency: 520 MHz for H723 (mcu_id 0), 180 MHz
+            // for F446 (mcu_id 1+). Both raw-ticks and µs are logged so the exact
+            // value can be derived offline with the per-MCU freq from klippy log.
+            let approx_freq_hz: f64 = if r.arrival_clock > 1_000_000_000_000 {
+                1_000_000_000.0 // EtherCAT: CLOCK_MONOTONIC ns domain
+            } else if key.mcu_id == 0 {
+                520_000_000.0 // H723 (serial MCU 0)
+            } else {
+                180_000_000.0 // F446 and other serial MCUs
+            };
+            let arrival_lead_us = (arrival_lead_ticks as f64 / approx_freq_hz) * 1e6;
+            // Wall-clock seconds for offline correlation with klippy clock-sync.
             let host_send_secs = {
                 use std::time::{SystemTime, UNIX_EPOCH};
                 SystemTime::now()
@@ -719,22 +904,53 @@ impl PieceSink for WireSink {
                     .map(|d| d.as_secs_f64())
                     .unwrap_or(0.0)
             };
-            log::warn!(
-                "[transit-diag] mcu={} axis={} \
-                 host_front_start_time={} mcu_front_start_time={} \
-                 arrival_clock={} \
-                 arrival_lead_ticks={} arrival_lead_us={:.1} \
-                 host_send_unix_secs={:.6} \
-                 (transit_us=offline: project host_send_unix_secs via klippy clock-sync)",
-                key.mcu_id,
-                key.axis,
-                host_front_start_time,
-                r.front_start_time,
-                r.arrival_clock,
-                arrival_lead_ticks,
-                arrival_lead_us,
-                host_send_secs,
-            );
+            // Warn when arrival_lead is negative (piece arrived in MCU's past)
+            // or when host_front_start_time is zero (clock-sync gap on dispatch).
+            // Log at info for positive lead so routine-operation frames don't
+            // flood the journal; warn on the cases that indicate a -308 risk.
+            let zero_st = host_front_start_time == 0;
+            let past_arrival = arrival_lead_ticks < 0;
+            if zero_st || past_arrival {
+                log::warn!(
+                    "[transit-diag] mcu={} axis={} \
+                     host_front_start_time={} mcu_front_start_time={} \
+                     arrival_clock={} \
+                     arrival_lead_ticks={} arrival_lead_us={:.1} \
+                     host_send_unix_secs={:.6} \
+                     ALERT: {}",
+                    key.mcu_id,
+                    key.axis,
+                    host_front_start_time,
+                    r.front_start_time,
+                    r.arrival_clock,
+                    arrival_lead_ticks,
+                    arrival_lead_us,
+                    host_send_secs,
+                    if zero_st && past_arrival {
+                        "host_start_time=0 (clock-sync gap) AND piece in MCU past"
+                    } else if zero_st {
+                        "host_start_time=0 (router clock_freq=0 at dispatch — clock-sync gap)"
+                    } else {
+                        "piece arrived in MCU past (arrival_lead<0) — PieceStartInPast risk"
+                    },
+                );
+            } else {
+                log::info!(
+                    "[transit-diag] mcu={} axis={} \
+                     host_front_start_time={} mcu_front_start_time={} \
+                     arrival_clock={} \
+                     arrival_lead_ticks={} arrival_lead_us={:.1} \
+                     host_send_unix_secs={:.6}",
+                    key.mcu_id,
+                    key.axis,
+                    host_front_start_time,
+                    r.front_start_time,
+                    r.arrival_clock,
+                    arrival_lead_ticks,
+                    arrival_lead_us,
+                    host_send_secs,
+                );
+            }
         }
 
         if r.result != kalico_protocol::result_codes::OK {
@@ -743,10 +959,6 @@ impl PieceSink for WireSink {
                 key.mcu_id, key.axis, r.result
             ));
         }
-        // Suppress unused-variable warning for host_send_instant; it is the
-        // timing anchor for offline transit computation and kept for future use
-        // when the projection becomes accessible here.
-        let _ = host_send_instant;
         Ok(r.result)
     }
 }

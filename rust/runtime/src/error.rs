@@ -129,6 +129,10 @@ pub const KALICO_ERR_STEPS_PER_SAMPLE_EXCEEDED: i32 = -310;
 /// TIM5 inter-arrival gap exceeded the allowed multiple of `sample_period_cycles`.
 /// The ISR was starved; fail loud before acting on stale time.
 pub const KALICO_ERR_TICK_INTERVAL_EXCEEDED: i32 = -311;
+/// `dispatch_axis` encountered a `StepMode` byte that is not `Pulse` (0) or
+/// `Phase` (1). Unknown mode — fails loud rather than silently dropping steps.
+/// Detail: `((axis_idx & 0xFF) << 16) | (mode & 0xFF)`.
+pub const KALICO_ERR_UNKNOWN_STEP_MODE: i32 = -312;
 
 /// Fault taxonomy. Spec §9.1. Each code has a specific recovery semantic;
 /// collapsing to a catch-all loses diagnostic information.
@@ -248,6 +252,11 @@ pub enum FaultCode {
     /// equal-priority handler overran, or a tick was skipped/coalesced). The MCU
     /// froze; fail loud before acting on stale time.
     TickIntervalExceeded = -311,
+    /// `dispatch_axis` encountered a `StepMode` byte that is not `Pulse` (0)
+    /// or `Phase` (1). The byte is unknown to this firmware build; silently
+    /// dropping it would hide a host/firmware version mismatch, so we fail loud.
+    /// Detail encoding: `((axis_idx & 0xFF) << 16) | (mode & 0xFF)`.
+    UnknownStepMode = -312,
 }
 
 impl FaultCode {
@@ -443,6 +452,7 @@ impl FaultCode {
             Self::RingFull => "RingFull",
             Self::StepsPerSampleExceeded => "StepsPerSampleExceeded",
             Self::TickIntervalExceeded => "TickIntervalExceeded",
+            Self::UnknownStepMode => "UnknownStepMode",
         }
     }
 }

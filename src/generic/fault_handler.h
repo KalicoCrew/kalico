@@ -18,6 +18,30 @@ extern "C" {
 #define DIAG_EV_TX_DROP_KAL   5
 #define DIAG_EV_TX_DROP_KLP   6
 #define DIAG_EV_ENGINE_XITION 7
+// Rust-raised runtime fault captured at the last_error escalation point in
+// runtime_drain (runtime_tick.c). Stored in the BKPSRAM ring so the next
+// boot's prior_diag_ring dump emits it even if the USB-CDC frame was lost.
+// a = (uint32_t)last_error (i32 cast; negative fault codes wrap as expected
+//     because the host reads them back as i32), b = fault_detail.
+#define DIAG_EV_RUST_FAULT    8
+
+// ISR-phase breadcrumb values. Written by the Rust motion ISR via
+// runtime_set_isr_phase(); value at IWDG reset names the hung phase.
+// MUST match rust/runtime/src/isr_phase.rs.
+#define RT_PHASE_IDLE          0   // between ticks (foreground running)
+#define RT_PHASE_ISR_ENTER     1   // TIM5 Rust ISR body entered
+#define RT_PHASE_WIDEN         2   // clock widen + publish_widened_now
+#define RT_PHASE_GUARD         3   // inter-arrival guard window
+#define RT_PHASE_TICK          4   // engine.tick() entered (pre-walk)
+#define RT_PHASE_WALK          5   // get_piece_for_time ring-walk
+#define RT_PHASE_MONOMIAL      6   // arm_and_load / to_monomial (cold-load)
+#define RT_PHASE_HORNER        7   // eval_horner
+#define RT_PHASE_STEP_ENQ      8   // step enqueue / kick_per_axis_timer
+#define RT_PHASE_ISR_EXIT      9   // TIM5 Rust ISR body returning
+#define RT_PHASE_STEPOUT_ENTER 10  // kalico_step_output_event entered
+#define RT_PHASE_STEPOUT_POP   11  // inside C queue_peek/pop (.axi_bss SPSC)
+#define RT_PHASE_STEPOUT_EMIT  12  // runtime_emit_step_pulses
+#define RT_PHASE_STEPOUT_EXIT  13  // step-output ISR returning
 
 // Push a tagged record to the BKPSRAM event ring. IRQ-safe.
 void diag_ring_push(uint8_t tag, uint32_t a, uint32_t b);
@@ -38,6 +62,14 @@ void diag_otg_account(uint32_t enter_cycles, uint32_t exit_cycles);
 // Histogram accounting for the runtime_handle_tick subwindow alone. Call
 // from the TIM5 ISR with the already-computed `after - before` cycle delta.
 void diag_runtime_tick_account(uint32_t cycles);
+
+// Per-phase DWT accounting called from the Rust motion ISR. Rust-only callers —
+// must keep external linkage through LTO (-fwhole-program).
+void diag_walk_account(uint32_t cycles);
+void diag_monomial_account(uint32_t cycles);
+
+// Write the ISR-phase breadcrumb. Rust-only caller — must survive LTO.
+void runtime_set_isr_phase(uint32_t phase);
 
 // Heartbeat slot accessors — pointer to the BKPSRAM struct member, suitable
 // to pass into diag_task_heartbeat. Each function names the task slot.

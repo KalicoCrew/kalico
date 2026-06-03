@@ -171,11 +171,16 @@ fn fault_code_stepping_redesign_numeric_values() {
         FaultCode::TickIntervalExceeded.as_i32(),
         KALICO_ERR_TICK_INTERVAL_EXCEEDED
     );
+    assert_eq!(
+        FaultCode::UnknownStepMode.as_i32(),
+        KALICO_ERR_UNKNOWN_STEP_MODE
+    );
     // Cross-check: distinct from each other and from the existing
     // -7..-202 range.
     assert_eq!(KALICO_ERR_STEP_QUEUE_OVERFLOW, -300);
     assert_eq!(KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING, -307);
     assert_eq!(KALICO_ERR_TICK_INTERVAL_EXCEEDED, -311);
+    assert_eq!(KALICO_ERR_UNKNOWN_STEP_MODE, -312);
     assert_ne!(
         KALICO_ERR_STEP_QUEUE_OVERFLOW,
         KALICO_ERR_HOST_DISPATCHER_TIMEOUT

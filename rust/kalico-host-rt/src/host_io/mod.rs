@@ -26,7 +26,7 @@ pub mod window;
 pub mod wire;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -227,6 +227,12 @@ pub struct KalicoHostIo {
     /// Raw identify bytes (zlib-compressed blob as received from firmware).
     /// Suitable for passing directly to klippy's `process_identify`.
     raw_identify_bytes: Vec<u8>,
+    /// EXIT_ON_FAULT gate. `true` (default) = non-graceful transport drop
+    /// aborts the process (motion MCUs). `false` = reactor exits cleanly,
+    /// `is_alive()` goes false, klippy reconnect machinery takes over.
+    /// Settable after `open` via `set_critical` because criticality is only
+    /// known after the kalico identify handshake.
+    is_critical: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for KalicoHostIo {
@@ -412,6 +418,9 @@ impl KalicoHostIo {
         let reactor_status = Arc::clone(&status_snapshot);
         let reactor_config = config.clone();
         let reactor_clock = Arc::clone(&clock);
+        // Default critical until the bridge downgrades after identify.
+        let is_critical = Arc::new(AtomicBool::new(true));
+        let reactor_is_critical = Arc::clone(&is_critical);
         let reactor_handle = std::thread::spawn(move || {
             tracing::info!(
                 subsystem = "mcu-comms",
@@ -438,11 +447,22 @@ impl KalicoHostIo {
             // silent. Aborting forces systemd to restart klipper, which is
             // the recovery action a human would take anyway.
             if !reactor.exited_gracefully() {
+                let critical = reactor_is_critical.load(Ordering::Acquire);
+                if !critical {
+                    tracing::warn!(
+                        subsystem = "mcu-comms",
+                        event = "reactor_exit_non_critical",
+                        thread_id = ?std::thread::current().id(),
+                        "transport closed via IO error on NON-CRITICAL MCU; reactor exiting without abort — klippy reconnect path will handle recovery"
+                    );
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                    return;
+                }
                 tracing::error!(
                     subsystem = "mcu-comms",
                     event = "reactor_exit_on_fault",
                     thread_id = ?std::thread::current().id(),
-                    "EXIT_ON_FAULT — transport closed via IO error; aborting klippy so systemd restarts it"
+                    "EXIT_ON_FAULT — transport closed via IO error on CRITICAL MCU; aborting klippy so systemd restarts it"
                 );
                 // Flush stderr so the message reaches journalctl before we
                 // tear the process down.
@@ -467,6 +487,7 @@ impl KalicoHostIo {
             config,
             clock,
             raw_identify_bytes,
+            is_critical,
         })
     }
 }
@@ -575,6 +596,18 @@ impl KalicoHostIo {
     /// when the receiver is disconnected.
     pub fn is_alive(&self) -> bool {
         self.submission_tx.send(ReactorCommand::Noop).is_ok()
+    }
+
+    /// Gate the EXIT_ON_FAULT abort for this MCU. `true` (default) aborts on
+    /// non-graceful transport drop (motion MCUs). `false` exits cleanly so
+    /// klippy's non-critical-disconnect machinery handles reconnect.
+    pub fn set_critical(&self, critical: bool) {
+        self.is_critical.store(critical, Ordering::Release);
+    }
+
+    /// Read the current criticality flag (see [`set_critical`]).
+    pub fn is_critical(&self) -> bool {
+        self.is_critical.load(Ordering::Acquire)
     }
 
     /// Register a callback fired on every `StatusHeartbeat` with the per-axis

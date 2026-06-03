@@ -74,6 +74,9 @@ endif
 ifeq ($(CONFIG_KALICO_SIM),y)
 KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),kalico-sim
 endif
+ifeq ($(CONFIG_MOTION_MODULE_STEPPER),y)
+KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),motion-module-stepper
+endif
 
 ifneq (,$(filter y,$(CONFIG_MACH_STM32H7) $(CONFIG_MACH_STM32F4) $(CONFIG_MACH_STM32G0)))
 # Exported so src/stm32/Makefile depends on (and links against) the right
@@ -109,18 +112,47 @@ $(KALICO_LIB): FORCE
 endif
 
 ifeq ($(CONFIG_MACH_LINUX),y)
-# Host build: f64 host features for klippy-in-loop integration testing.
-# Always includes `kalico-sim` (the Linux build is itself a sim variant).
-KALICO_RUST_FEATURES := host,header-nurbs,header-runtime,kalico-sim
+# First-class Linux MCU build. The `mcu-linux` feature is the f64 host numeric
+# profile (the Pi has an FPU) PLUS the "real MCU firmware" marker that links
+# the C step/SPI FFI (linux/phase_stepping_spi.c) — distinct from a bare `host`
+# build (the motion-bridge planner cdylib / unit tests), which must NOT
+# reference that symbol. kalico-sim is OPT-IN here exactly like the STM32
+# families (CONFIG_KALICO_SIM), not hardwired: a Linux MCU drives real
+# /dev/gpiochip / /dev/spidev by default.
+KALICO_RUST_FEATURES := mcu-linux,header-nurbs,header-runtime
+ifeq ($(CONFIG_KALICO_SIM),y)
+KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),kalico-sim
+endif
+ifeq ($(CONFIG_MOTION_MODULE_STEPPER),y)
+KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),motion-module-stepper
+endif
+# Own target dir: the motion-bridge cdylib builds the shared crates (runtime,
+# nurbs, ...) with different host features into rust/target/, and a kalico-sim
+# flip changes this firmware's feature set — keeping them separate avoids
+# mutual incremental-cache thrash (slow on the Pi). Mirrors the per-arch STM32
+# dirs. Exported for src/linux/Makefile's link rule.
+KALICO_CARGO_TARGET_DIR := target-linux
+KALICO_LIB := rust/$(KALICO_CARGO_TARGET_DIR)/release/libkalico_c_api.a
 
-rust/target/release/libkalico_c_api.a: FORCE
-	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" \
+$(KALICO_LIB): FORCE
+	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" && \
+		export CARGO_TARGET_DIR="$(KALICO_CARGO_TARGET_DIR)" && \
+		mkdir -p "$$CARGO_TARGET_DIR" && \
+		PREV=$$(cat "$$CARGO_TARGET_DIR/.kalico-features-stamp" 2>/dev/null || echo ""); \
+		if [ "$$PREV" != "$(KALICO_RUST_FEATURES)" ]; then \
+			echo "kalico-c-api features changed ($$PREV -> $(KALICO_RUST_FEATURES)); cargo clean"; \
+			cargo clean -p kalico-c-api 2>/dev/null || true; \
+			cargo clean -p kalico-host-rt 2>/dev/null || true; \
+			cargo clean -p runtime 2>/dev/null || true; \
+			cargo clean -p nurbs 2>/dev/null || true; \
+		fi && \
 		KALICO_RUNTIME_PIECE_RING_SIZE=$(CONFIG_RUNTIME_PIECE_RING_SIZE) \
 		KALICO_RUNTIME_SAMPLE_RATE_HZ=$(CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) \
 		cargo build -p kalico-c-api \
 		--no-default-features \
 		--features $(KALICO_RUST_FEATURES) \
-		--release
+		--release && \
+		echo "$(KALICO_RUST_FEATURES)" > "$$CARGO_TARGET_DIR/.kalico-features-stamp"
 endif
 
 .PHONY: FORCE

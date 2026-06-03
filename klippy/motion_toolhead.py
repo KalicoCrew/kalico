@@ -10,6 +10,7 @@ from collections import defaultdict
 from . import chelper
 from . import motion_kinematics
 from . import stepper
+from .extras import servo_axis
 from .kinematics import extruder
 from .toolhead import Move, ToolHead, BUFFER_TIME_START
 
@@ -176,6 +177,25 @@ class BridgeKinematics:
         self.clear_homing_state((0, 1, 2))
 
     def _register_axis(self, config, axis, trapq, extras=()):
+        # EtherCAT servo axis branch (Part A). A `[servo_<axis>]` section
+        # routes this axis to a position-commanded EtherCAT node instead of
+        # host-side step generation. The ServoRail honors the same rail
+        # contract BridgeKinematics reaches on `self.rails` entries
+        # (get_name/get_steppers/get_endstops/get_range/get_homing_info/
+        # set_position) but carries no MCU steppers, no itersolve, and no
+        # `_bridge_drives_steppers` marker (there is no stepper MCU to mark).
+        servo_sec = "servo_" + axis
+        stepper_sec = "stepper_" + axis
+        has_servo = config.has_section(servo_sec)
+        has_stepper = config.has_section(stepper_sec)
+        if has_servo and has_stepper:
+            raise config.error(
+                "axis %s has both [%s] and [%s]; pick one"
+                % (axis, servo_sec, stepper_sec))
+        if has_servo:
+            rail = servo_axis.ServoRail(config.getsection(servo_sec))
+            self.rails.append(rail)
+            return
         rail = stepper.PrinterRail(config.getsection("stepper_" + axis))
         for suffix in extras:
             extra_name = "stepper_" + axis + suffix
@@ -909,6 +929,27 @@ class MotionToolhead(ToolHead):
                 if s_handle is None:
                     continue
                 axis_to_handle[slot_idx] = s_handle
+
+        # Servo axes (e.g. an EtherCAT-driven X) are not steppers and so do not
+        # appear in force_move.steppers. Map each servo rail's axis to its
+        # node's bridge handle so the derived topology places that axis on the
+        # node — the EtherCAT node then participates in the data-driven topology
+        # exactly like a stepper MCU, with no hardcoded routing.
+        servo_axis_index = {"x": _AXIS_X, "y": _AXIS_Y, "z": 2}
+        for rail in getattr(self.kin, "rails", ()):
+            if not isinstance(rail, servo_axis.ServoRail):
+                continue
+            node = self.printer.lookup_object(
+                "ethercat_node " + rail.get_node_name(), None
+            )
+            if node is None:
+                continue
+            handle = node.get_bridge_handle()
+            if not handle:
+                continue
+            axis_idx = servo_axis_index.get(rail.axis)
+            if axis_idx is not None:
+                axis_to_handle[axis_idx] = handle
 
         topology = _derive_mcu_topology(axis_to_handle, self.kinematics_name)
         if not topology:

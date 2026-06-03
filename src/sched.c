@@ -108,11 +108,25 @@ sentinel_event(struct timer *t)
     shutdown("sentinel timer called");
 }
 
+// Largest number of timers insert_timer's walk should ever traverse. A
+// well-formed list ends at the sentinel_timer (waketime = max), so the walk
+// always breaks within the live timer count (a handful). This bound is far
+// above any real count; exceeding it means the list is corrupt (a bad/cyclic
+// `.next` pointer — e.g. a stray write into a `struct timer`).
+#define SCHED_INSERT_MAX_WALK 1024u
+
+// Captured for the corruption hunt: the pos pointer the walk was traversing
+// when it ran away, and a count of how many times the guard tripped. Persisted
+// in .bss (survives the try_shutdown longjmp; readable while shut down).
+volatile uint32_t sched_insert_corrupt_pos;
+volatile uint32_t sched_insert_corrupt_count;
+
 // Find position for a timer in timer_list and insert it
 static void __always_inline
 insert_timer(struct timer *pos, struct timer *t, uint32_t waketime)
 {
     struct timer *prev;
+    uint32_t walk = 0;
     for (;;) {
         prev = pos;
         if (CONFIG_MACH_AVR)
@@ -121,6 +135,17 @@ insert_timer(struct timer *pos, struct timer *t, uint32_t waketime)
         pos = pos->next;
         if (timer_is_before(waketime, pos->waketime))
             break;
+        // Fail loud, do NOT spin: a runaway walk means the timer list is
+        // corrupt. Spinning here runs under the SysTick irq_disable, masking
+        // TIM5 and starving the IWDG pet -> ~0.5s freeze -> watchdog reset ->
+        // USB-CDC drop -> klippy abort (the silent failure we chased). Shut
+        // down cleanly instead so the cause is named and the host stays up.
+        if (unlikely(++walk > SCHED_INSERT_MAX_WALK)) {
+            sched_insert_corrupt_pos = (uint32_t)pos;
+            sched_insert_corrupt_count++;
+            sched_writable_end();  // mirror try_shutdown sites: close RW window
+            try_shutdown("insert_timer: scheduler timer list corrupt");
+        }
     }
     t->next = pos;
     prev->next = t;
@@ -288,6 +313,19 @@ sched_get_dispatch_history(uint32_t *idx,
     }
 }
 
+// Most-recently-dispatched scheduler timer func, or 0. Cold path (fault only).
+// `used, externally_visible`: Rust-only caller; attribute prevents --gc-sections
+// from dropping the section before the Rust archive reference resolves.
+__attribute__((used, externally_visible))
+uint32_t
+sched_last_dispatched_func(void)
+{
+    uint32_t idx = sched_dispatch_history_idx;
+    if (idx == 0)
+        return 0;
+    return sched_dispatch_history_func[(idx - 1) % SCHED_DISPATCH_HISTORY_N];
+}
+
 // Invoke the next timer - called from board hardware irq code.
 // Caller (timer_dispatch_many in armcm_timer.c) is responsible for holding
 // the MPU writable window open across the dispatch loop — we do not toggle
@@ -305,6 +343,10 @@ sched_timer_dispatch(void)
     sched_dispatch_history_addr[hidx % SCHED_DISPATCH_HISTORY_N] = (uint32_t)t;
     sched_dispatch_history_func[hidx % SCHED_DISPATCH_HISTORY_N] = (uint32_t)t->func;
     sched_dispatch_history_idx = hidx + 1;
+    // Mirror into cross-boot-persistent diag so a callback that hangs (PRIMASK
+    // held -> full freeze -> IWDG reset) is identifiable after the reset.
+    extern void diag_note_dispatch(uint32_t func, uint32_t addr);
+    diag_note_dispatch((uint32_t)t->func, (uint32_t)t);
 
     // The legacy "inline stepper" optimization (CONFIG_INLINE_STEPPER_HACK
     // + stepper_event when t->func is NULL) was removed alongside the

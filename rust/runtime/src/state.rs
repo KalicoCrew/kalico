@@ -218,6 +218,17 @@ pub struct SharedState {
     /// `0` when no fault has latched OR when the fault carries no
     /// per-event detail.
     pub fault_detail: AtomicU32,
+    /// Most-recently-dispatched scheduler timer func at `-311` fault time
+    /// (`sched_last_dispatched_func`). Unreliable as a blocker signal —
+    /// `tick_blocker_pc` is the primary `addr2line` target. `0` until `-311`.
+    pub tick_blocker_func: AtomicU32,
+    /// Stacked exception-frame PC at TIM5 handler entry, captured on the `-311`
+    /// path: the instruction that held the CPU/PRIMASK across the late tick.
+    /// Surfaced via the fault event's `segment_id` field. `0` until `-311`.
+    pub tick_blocker_pc: AtomicU32,
+    /// Stacked xPSR exception number at `-311` time (`xPSR & 0x1FF`).
+    /// `0` = foreground was interrupted; nonzero = that IRQ overran into TIM5.
+    pub tick_blocker_exc: AtomicU32,
     // Step 7-D: signed per-stepper pulse counters, indexed by stepper oid.
     pub stepper_counts: [AtomicI32; MAX_STEPPER_OIDS],
     /// Per-stepper `StepMode` (spec §5). Atomic so the host can flip a
@@ -558,6 +569,9 @@ impl SharedState {
             modulated_retire_successes: AtomicU32::new(0),
             last_retire_consumers_after_clear: AtomicU32::new(0),
             fault_detail: AtomicU32::new(0),
+            tick_blocker_func: AtomicU32::new(0),
+            tick_blocker_pc: AtomicU32::new(0),
+            tick_blocker_exc: AtomicU32::new(0),
             stepper_counts: [
                 AtomicI32::new(0),
                 AtomicI32::new(0),

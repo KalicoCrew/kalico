@@ -55,6 +55,8 @@ void mpu_protect_init(void);
 void sched_get_dispatch_history(uint32_t *idx,
                                 uint32_t addrs[SCHED_DISPATCH_HISTORY_N],
                                 uint32_t funcs[SCHED_DISPATCH_HISTORY_N]);
+// Newest dispatch-history func, or 0. Cold path (fault time only).
+uint32_t sched_last_dispatched_func(void);
 
 // Walk the chain forward from periodic_timer (a known-good root since it
 // lives inside the MPU-protected SchedState). Returns up to N (timer addr,

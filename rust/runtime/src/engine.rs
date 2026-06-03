@@ -23,13 +23,29 @@ use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 use crate::clock::TickCounter;
 use crate::error::{KALICO_ERR_INVALID_ARG, KALICO_ERR_RING_FULL, KALICO_OK};
-use crate::fault_helpers::raise_piece_start_in_past;
+use crate::fault_sink::FaultSink;
 use crate::piece_ring::PieceEntry;
 use crate::state::SharedState;
 use crate::step::StepMotorState;
-use crate::stepping_state::{ArmedPiece, AxisState, MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
+use crate::stepping_state::{AxisState, MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
 
 pub use crate::stepping_state::N_AXES;
+
+/// MCU-side [`FaultSink`] implementation that routes faults through
+/// [`SharedState`] atomics.
+///
+/// Lives in this module so that `SharedState` stays out of the walker module
+/// while the walker's single fault call still reaches it.
+pub(crate) struct SharedFaultSink<'a> {
+    pub shared: &'a SharedState,
+}
+
+impl FaultSink for SharedFaultSink<'_> {
+    #[inline]
+    fn piece_start_in_past(&self, axis_idx: usize, deficit_us: u32) {
+        crate::fault_helpers::raise_piece_start_in_past(self.shared, axis_idx, deficit_us);
+    }
+}
 
 /// Engine status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,7 +308,10 @@ impl Engine {
         shared: &SharedState,
         storage: &mut [PieceEntry],
     ) -> bool {
-        use crate::tick::dispatch_axis;
+        #[cfg(feature = "motion-module-stepper")]
+        use crate::dispatch_stepper::dispatch_axis;
+
+        #[cfg(feature = "motion-module-stepper")]
         #[cfg(any(test, feature = "host"))]
         let get_queue = |i: usize| {
             self.test_queue_ptrs
@@ -300,15 +319,18 @@ impl Engine {
                 .copied()
                 .unwrap_or(core::ptr::null_mut())
         };
+        #[cfg(feature = "motion-module-stepper")]
         #[cfg(not(any(test, feature = "host")))]
         let get_queue = |i: usize| crate::step_queue::queue_for_axis(i);
 
+        #[cfg(feature = "motion-module-stepper")]
         let sample_period_sec = if self.sample_period_cycles == 0 || self.cycles_per_second == 0.0 {
             0.0_f32
         } else {
             self.sample_period_cycles as f32 / self.cycles_per_second
         };
 
+        #[cfg(feature = "motion-module-stepper")]
         #[allow(clippy::cast_possible_truncation)]
         let now_lo = now as u32;
 
@@ -322,14 +344,16 @@ impl Engine {
                     continue;
                 };
                 let cps = self.cycles_per_second;
-                let Some((p_end, v_end)) = get_position_and_velocity(
-                    axis,
+                let fault = SharedFaultSink { shared };
+                let Some((p_end, v_end)) = crate::motion_core::get_position_and_velocity(
+                    &mut axis.armed,
+                    &mut axis.ring,
+                    storage,
                     now,
                     self.sample_period_cycles,
                     cps,
-                    shared,
-                    storage,
                     i,
+                    &fault,
                 ) else {
                     continue;
                 };
@@ -340,22 +364,36 @@ impl Engine {
                 (p_end, v_end, p_sample_start)
             };
 
-            let Some(axis) = self.stepping_axes.get_mut(i).and_then(|s| s.as_mut()) else {
-                continue;
-            };
-            let queue_ptr = get_queue(i);
-            dispatch_axis(
-                i,
-                axis,
-                queue_ptr,
-                shared,
-                p_end,
-                v_end,
-                p_sample_start,
-                sample_period_sec,
-                now_lo,
-                self.cycles_per_second,
-            );
+            // Stepper dispatch: only compiled when motion-module-stepper is
+            // active. When the feature is OFF (servo/EtherCAT node), the walk
+            // and p_prev/v_prev updates above still execute — the node tracks
+            // position but emits no step pulses.
+            #[cfg(feature = "motion-module-stepper")]
+            {
+                let Some(axis) = self.stepping_axes.get_mut(i).and_then(|s| s.as_mut()) else {
+                    continue;
+                };
+                let queue_ptr = get_queue(i);
+                dispatch_axis(
+                    i,
+                    axis,
+                    queue_ptr,
+                    shared,
+                    p_end,
+                    v_end,
+                    p_sample_start,
+                    sample_period_sec,
+                    now_lo,
+                    self.cycles_per_second,
+                );
+            }
+
+            // Without motion-module-stepper, suppress unused-variable warnings
+            // from the walk outputs.
+            #[cfg(not(feature = "motion-module-stepper"))]
+            {
+                let _ = (p_end, v_end, p_sample_start);
+            }
         }
 
         active
@@ -640,129 +678,4 @@ impl Default for Engine {
     }
 }
 
-// ── get_piece_for_time (per spec §4.2) ────────────────────────────────────────
 
-/// ⚠️ DO NOT MODIFY THIS FUNCTION WITHOUT DIRECT CONFIRMATION FROM THE USER. ⚠️
-///
-/// This loop and its exact shape are load-bearing. The four-branch structure,
-/// their ordering, the removal of the old "gap" branch (future pieces are held
-/// at `t = 0` by `eval_horner`'s saturating elapsed, NOT by a separate check),
-/// and the placement of the 2-tick `PieceStartInPast` check at the *adoption*
-/// point were derived and verified on hardware together with the user. They
-/// fix the spurious `-308 PieceStartInPast` regression that the piece-ring
-/// rewrite introduced by dropping the spec §4.4 advancement loop.
-///
-/// Reordering the advance/fault/arm steps, re-adding a gap branch, gating the
-/// fault on "first load only", or adding a min-duration guard all silently
-/// reintroduce the bug (the spec explicitly rejected min-duration in favour of
-/// this loop). Do NOT refactor, "simplify", reorder, or "optimize" this
-/// function without explicit sign-off from the user — even if it looks like it
-/// could be cleaner. If you think it needs to change, ask first.
-///
-/// Advance the axis to the correct piece for `now`, returning
-/// `(position, velocity)` if an active piece exists.
-///
-/// This is the cursor-walking loop from the stepping-redesign spec §4.4
-/// (`advance_piece_if_needed`), rendered in the ring's peek/pop vocabulary.
-/// A single sample can legitimately cross many sub-tick pieces (corner-
-/// rounding splines, host-side step-burst smoothing), so we loop until the
-/// front piece contains `now` rather than advancing at most one piece per
-/// tick. Four branches:
-///
-/// 1. **Current piece still relevant** (`now < piece_end`) — evaluate and
-///    return. This also covers "next piece hasn't started yet": a future
-///    piece returns here and [`eval_horner`]'s saturating elapsed clamps it
-///    to `t = 0`, holding the start position until `now` crosses `start_time`.
-///    No separate gap branch is needed.
-/// 2. **Ring empty** — nothing to advance to → idle / underrun, return `None`.
-/// 3. **Adopted piece starts > 2 ticks in the past** — the MCU was not fed in
-///    time (genuine late delivery, or a multi-tick ISR stall). Hard fault.
-///    Walking a contiguous sub-tick burst never trips this: lateness strictly
-///    shrinks as we advance (each step subtracts a positive `duration` from
-///    `now − start`), and branch 1 keeps us on the current piece until `now`
-///    barely passes its end, so a successor is at most ~1 tick behind `now`.
-/// 4. **Arm the piece** (cache coeffs before freeing the slot, §4.2 slot-free
-///    order), then loop to re-test branch 1 against the just-armed piece.
-///
-/// The loop is bounded by ring occupancy — each iteration `pop()`s one entry,
-/// so it terminates at branch 2 once the ring drains; no separate runaway cap
-/// is required.
-fn get_position_and_velocity(
-    axis: &mut AxisState,
-    now: u64,
-    sample_period_cycles: u32,
-    cycles_per_second: f32,
-    shared: &SharedState,
-    storage: &mut [PieceEntry],
-    axis_idx: usize,
-) -> Option<(f32, f32)> {
-    loop {
-        // Branch 1: current armed piece still inside its window (or a future
-        // piece held at t=0 by eval_horner's saturating elapsed).
-        if let Some(p) = &axis.armed {
-            if now < p.piece_end_cycles {
-                return Some(eval_horner(
-                    &p.mono_coeffs,
-                    &p.vel_coeffs,
-                    p.piece_start_cycles,
-                    now,
-                    cycles_per_second,
-                ));
-            }
-        }
-
-        if axis.armed.take().is_some() {
-            axis.ring.advance_counter();
-        }
-
-        let Some(p) = arm_next(axis, storage, cycles_per_second) else {
-            return None;
-        };
-
-        let fault_tolerance = u64::from(sample_period_cycles) * 2;
-        if now.saturating_sub(p.piece_start_cycles) > fault_tolerance {
-            raise_piece_start_in_past(shared, axis_idx);
-            return None;
-        }
-    }
-}
-
-/// Peek the next ring entry, convert to monomial, and arm it.  Returns
-/// the armed piece, or `None` (clearing the cache) when the ring is empty.
-fn arm_next<'a>(
-    axis: &'a mut AxisState,
-    storage: &[PieceEntry],
-    cycles_per_second: f32,
-) -> Option<&'a ArmedPiece> {
-    let Some(entry) = axis.ring.peek(storage).copied() else {
-        return None;
-    };
-    let (mono, vel) = entry.to_monomial();
-    Some(axis.armed.insert(ArmedPiece {
-        mono_coeffs: mono,
-        vel_coeffs: vel,
-        piece_start_cycles: entry.start_time,
-        piece_end_cycles: entry.end_time(cycles_per_second),
-    }))
-}
-
-/// Evaluate position and velocity via Horner using the axis's cached
-/// coefficients.  Returns `(p_end, v_end)` in mm and mm/s.
-#[inline]
-fn eval_horner(
-    mono: &[f32; 4],
-    vel: &[f32; 3],
-    piece_start_cycles: u64,
-    now: u64,
-    cycles_per_second: f32,
-) -> (f32, f32) {
-    let elapsed_cycles = now.saturating_sub(piece_start_cycles);
-    let t = if cycles_per_second > 0.0 {
-        elapsed_cycles as f32 / cycles_per_second
-    } else {
-        0.0_f32
-    };
-    let p = mono[0] + t * (mono[1] + t * (mono[2] + t * mono[3]));
-    let v = vel[0] + t * (vel[1] + t * vel[2]);
-    (p, v)
-}

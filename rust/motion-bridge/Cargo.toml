@@ -25,6 +25,7 @@ compat = { path = "../compat" }
 nurbs = { path = "../nurbs", features = ["host"] }
 runtime = { path = "../runtime" }
 crossbeam-channel = "0.5"
+libc = "0.2"
 log = "0.4"
 arc-swap = "1"
 tracing = "0.1"

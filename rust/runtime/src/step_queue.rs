@@ -21,6 +21,12 @@
 //! fence + volatile write to `tail`; the consumer reads `tail` first, takes
 //! an Acquire fence, then consumes `buf[slot]`. Volatile counter accesses
 //! prevent the compiler from caching them across the fence.
+//!
+//! NON-RACING, not lock-free: single-core safety requires the producer (TIM5
+//! ISR) and consumer (step-output timer ISR) to share one NVIC priority so they
+//! never interleave. If that ever splits, the volatile-u16 + fence discipline is
+//! insufficient (torn slot/counter) — upgrade to a true-atomic SPSC. Invariant
+//! + priority map: `src/generic/kalico_nvic_prio.h`.
 
 #![allow(unsafe_code)]
 
@@ -138,6 +144,15 @@ pub fn queue_for_axis(i: usize) -> *mut StepQueue {
 ///
 /// The caller (`kalico_runtime_reset`) holds the IRQ guard, so no producer
 /// ISR or consumer timer runs concurrently with these writes.
+///
+/// TODO(mcu-linux/step-dir): compiled out on `mcu-linux` (feature "host"
+/// implies the cfg gate is false), so `step_queues[]` is not zeroed on a
+/// Klipper runtime reset on Linux. When STEP/DIR GPIO pulse output on Linux
+/// is wired, add an `mcu-linux` reset path — the correct mechanism is a
+/// C-side helper that clears `step_queues[]` directly (do NOT extend the
+/// bare-metal Rust `step_queues` extern to `mcu-linux`; that target uses
+/// `test_queue_ptrs` instead). Harmless today: phase-stepping; C drain
+/// discards stale entries each tick.
 #[cfg(not(any(test, feature = "host")))]
 pub fn reset_all_queues() {
     for i in 0..N_AXIS_STEP_QUEUES {

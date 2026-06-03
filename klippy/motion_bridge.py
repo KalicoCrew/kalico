@@ -80,6 +80,9 @@ class MotionBridgeWrapper:
     def claim_mcu(self, label, serial_path, baud):
         return self._bridge.claim_mcu(label, serial_path, baud)
 
+    def claim_ethercat_node(self, label, socket_path):
+        return self._bridge.claim_ethercat_node(label, socket_path)
+
     def release_mcu(self, handle):
         return self._bridge.release_mcu(handle)
 
@@ -155,9 +158,28 @@ class MotionBridgeWrapper:
     # Phase 1: serial attach + identify
     # ------------------------------------------------------------------
 
-    def attach_serial(self, mcu_handle, serial_path, baud, timeout_s=30.0):
-        """Open serial port, run identify handshake, spawn reactor thread."""
-        return self._bridge.attach_serial(mcu_handle, serial_path, baud, timeout_s)
+    def attach_serial(
+        self,
+        mcu_handle,
+        serial_path,
+        baud,
+        timeout_s=30.0,
+        klippy_non_critical=False,
+    ):
+        """Open serial port, run identify handshake, spawn reactor thread.
+
+        ``klippy_non_critical`` mirrors the owning MCU's ``is_non_critical``
+        config flag. It feeds the bridge's per-MCU criticality gate: a
+        non-critical MCU's transport drop does NOT abort the klippy process
+        (klippy's own non-critical-disconnect / reconnect path handles it),
+        whereas a critical motion MCU's drop keeps the abort that forces a
+        systemd restart. The bridge additionally treats any
+        Klipper-protocol-only attachment (kalico identify timed out) as
+        non-critical regardless of this flag.
+        """
+        return self._bridge.attach_serial(
+            mcu_handle, serial_path, baud, timeout_s, klippy_non_critical
+        )
 
     def get_identify_data(self, mcu_handle):
         """Return raw zlib identify bytes for process_identify."""

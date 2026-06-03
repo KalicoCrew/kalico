@@ -4,10 +4,10 @@
 //! no real serial I/O. The API surface matches what klippy will need so
 //! that the Python-side code can be developed in parallel.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,7 @@ use kalico_host_rt::clock::RealClock;
 use kalico_host_rt::host_io::parser::{DataDictionary, FieldValue, MsgProtoParser};
 use kalico_host_rt::host_io::{KalicoHostIo, KalicoHostIoConfig};
 use kalico_host_rt::passthrough_queue::{NotifyId, PassthroughEntry, PassthroughRouter};
+use kalico_host_rt::unix_native_conn::UnixNativeConn;
 use trajectory::{AxisShaper, ShaperConfig};
 
 use crate::classify;
@@ -80,6 +81,9 @@ struct McuConnection {
     /// Shared between the clock-sync thread (writer) and the mcu_log_hook
     /// closure (reader) so `wall_time_at_mcu` can convert MCU ticks to RFC3339.
     clock_sync_estimator: Option<Arc<std::sync::RwLock<kalico_host_rt::clock_sync::ClockSyncEstimator>>>,
+    /// EtherCAT endpoint socket path. `Some` for an EtherCAT node, `None` for
+    /// a serial MCU. Mutually exclusive with a live `serial_path` connection.
+    ethercat_socket: Option<String>,
 }
 
 /// Sample interval for the periodic `kalico_clock_sync_request` driver.
@@ -285,6 +289,26 @@ fn query_runtime_caps(
 ) -> Result<kalico_protocol::messages::RuntimeCapsResponse, RuntimeCapsError> {
     use kalico_protocol::MessageKind;
     let (kind, body) = io
+        .kalico_call(MessageKind::QueryRuntimeCaps, Vec::new(), timeout)
+        .map_err(|e| RuntimeCapsError::Call(format!("{e:?}")))?;
+    if kind != MessageKind::RuntimeCapsResponse {
+        return Err(RuntimeCapsError::UnexpectedKind { got: kind });
+    }
+    decode_runtime_caps_body(&body)
+}
+
+/// Issue a `QueryRuntimeCaps` call over a `UnixNativeConn` (EtherCAT path)
+/// and decode the `RuntimeCapsResponse`. Fatal on any transport or decode
+/// error — the host cannot size EtherCAT piece rings without the endpoint's
+/// reported `total_piece_memory`. Uses `kalico_call` (control channel, ch=0),
+/// matching the channel the EtherCAT endpoint's `decode_command` listens on.
+fn query_ethercat_runtime_caps(
+    conn: &UnixNativeConn,
+    timeout: std::time::Duration,
+) -> Result<kalico_protocol::messages::RuntimeCapsResponse, RuntimeCapsError> {
+    use kalico_host_rt::native_call::NativeCall;
+    use kalico_protocol::MessageKind;
+    let (kind, body) = conn
         .kalico_call(MessageKind::QueryRuntimeCaps, Vec::new(), timeout)
         .map_err(|e| RuntimeCapsError::Call(format!("{e:?}")))?;
     if kind != MessageKind::RuntimeCapsResponse {
@@ -781,6 +805,39 @@ impl PyMotionBridge {
                 clock_sync_stop: None,
                 clock_sync_thread: None,
                 clock_sync_estimator: None,
+                ethercat_socket: None,
+            },
+        );
+        Ok(raw)
+    }
+
+    // ── EtherCAT: claim_ethercat_node ───────────────────────────────────
+
+    /// Register an EtherCAT node with the bridge. Like `claim_mcu` but the
+    /// transport is a same-host Unix socket (the kalico-ethercat-rt endpoint),
+    /// not a serial port. The node is marked kalico-native here at claim time
+    /// (it speaks the protocol by construction; no identify handshake needed).
+    /// The socket is connected later in `init_planner`. Returns the opaque mcu_id handle.
+    #[pyo3(signature = (label, socket_path))]
+    fn claim_ethercat_node(&self, label: &str, socket_path: &str) -> PyResult<u32> {
+        let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
+        let handle = router.claim_mcu(label);
+        let raw = handle.raw();
+        self.mcus.lock().unwrap_or_else(|p| p.into_inner()).insert(
+            raw,
+            McuConnection {
+                label: label.to_owned(),
+                serial_path: String::new(),
+                baud: 0,
+                host_io: None,
+                runtime_rx: None,
+                runtime_caps: None,
+                identify_caps: 0,
+                kalico_native_supported: true, // EtherCAT endpoint speaks kalico-native
+                clock_sync_stop: None,
+                clock_sync_thread: None,
+                clock_sync_estimator: None,
+                ethercat_socket: Some(socket_path.to_owned()),
             },
         );
         Ok(raw)
@@ -1097,13 +1154,14 @@ impl PyMotionBridge {
     ///
     /// Call once per MCU after `claim_mcu`. Calling again on an already-
     /// attached MCU replaces the existing `KalicoHostIo`.
-    #[pyo3(signature = (mcu_handle, serial_path, baud, timeout_s = 30.0))]
+    #[pyo3(signature = (mcu_handle, serial_path, baud, timeout_s = 30.0, klippy_non_critical = false))]
     fn attach_serial(
         &self,
         mcu_handle: u32,
         serial_path: &str,
         baud: u32,
         timeout_s: f64,
+        klippy_non_critical: bool,
     ) -> PyResult<()> {
         use std::time::{Duration, Instant};
         let deadline = Instant::now() + Duration::from_secs_f64(timeout_s);
@@ -1187,6 +1245,15 @@ impl PyMotionBridge {
                     } else {
                         None
                     };
+
+                    // Critical iff kalico-native motion MCU and not marked non-critical by klippy.
+                    let critical = kalico_native_supported && !klippy_non_critical;
+                    io.set_critical(critical);
+                    log::info!(
+                        "attach_serial: reuse — {serial_path} criticality \
+                         critical={critical} (kalico_native={kalico_native_supported} \
+                         klippy_non_critical={klippy_non_critical})"
+                    );
 
                     let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
                     let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
@@ -1350,6 +1417,15 @@ impl PyMotionBridge {
         } else {
             None
         };
+
+        // Critical iff kalico-native motion MCU and not marked non-critical by klippy.
+        let critical = kalico_native_supported && !klippy_non_critical;
+        host_io.set_critical(critical);
+        log::info!(
+            "attach_serial: {serial_path} criticality critical={critical} \
+             (kalico_native={kalico_native_supported} \
+             klippy_non_critical={klippy_non_critical})"
+        );
 
         let host_io_arc = Arc::new(host_io);
 
@@ -2230,10 +2306,69 @@ impl PyMotionBridge {
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = cfg.clone();
 
+        // ── Connect EtherCAT Unix sockets + QueryRuntimeCaps ─────────────
+        //
+        // Open each EtherCAT endpoint and query its ring caps. Both must
+        // succeed or we fail loudly — the host cannot size piece rings without
+        // `total_piece_memory`. Must run before `caps_by_handle` is built.
+        let ec_conns: HashMap<u32, Arc<UnixNativeConn>> = {
+            // First pass: find all EtherCAT MCU ids from the raw mcus map
+            // (scan for ethercat_socket.is_some()). We cannot use
+            // `ethercat_mcu_ids` here because it is computed from `mcu_configs`
+            // which hasn't been built yet — but `mcus` already has the
+            // `ethercat_socket` field from `claim_ethercat_node`.
+            let socket_by_id: Vec<(u32, String)> = {
+                let mcus_lock = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+                mcus.iter()
+                    .filter_map(|(handle, _, _)| {
+                        mcus_lock.get(handle).and_then(|c| {
+                            c.ethercat_socket.as_ref().map(|s| (*handle, s.clone()))
+                        })
+                    })
+                    .collect()
+            };
+
+            let mut out = HashMap::new();
+            for (mcu_id, socket) in socket_by_id {
+                let conn = UnixNativeConn::connect(&socket).map_err(|e| {
+                    PyRuntimeError::new_err(format!(
+                        "init_planner: failed to connect to ethercat socket {socket}: {e}"
+                    ))
+                })?;
+                // Query the endpoint's real ring capacity. Fatal on failure —
+                // a caps-query failure means the host cannot size piece rings.
+                let caps =
+                    query_ethercat_runtime_caps(&conn, std::time::Duration::from_secs(5))
+                        .map_err(|e| {
+                            PyRuntimeError::new_err(format!(
+                                "init_planner: QueryRuntimeCaps failed for ethercat mcu \
+                                 {mcu_id} ({socket}): {e} — endpoint must respond with \
+                                 RuntimeCapsResponse; is kalico-ethercat-rt running?"
+                            ))
+                        })?;
+                log::debug!(
+                    "[caps-trace] init_planner: ethercat mcu {mcu_id} caps \
+                     total_piece_memory={}",
+                    caps.total_piece_memory,
+                );
+                // Write the queried caps back into McuConnection so the
+                // caps_by_handle block below picks them up naturally.
+                {
+                    let mut mcus_lock =
+                        self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(c) = mcus_lock.get_mut(&mcu_id) {
+                        c.runtime_caps = Some(caps);
+                    }
+                }
+                out.insert(mcu_id, Arc::new(conn));
+            }
+            out
+        };
+
         // Host-supplied N-MCU topology. Pull `runtime_caps` from each
-        // `McuConnection` (set during bootstrap by `query_runtime_caps`);
-        // fall back to large-profile defaults if the firmware predates
-        // `QueryRuntimeCaps`.
+        // `McuConnection`. EtherCAT nodes now have `Some(caps)` from the
+        // `QueryRuntimeCaps` round-trip above; serial nodes had caps set by
+        // `attach_serial`. A `None` for a motion MCU is a hard error.
         let caps_by_handle: std::collections::HashMap<u32, McuCaps> = {
             let mcus_lock = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             mcus.iter()
@@ -2256,10 +2391,28 @@ impl PyMotionBridge {
         let counter = Arc::clone(&self.dispatched_segments);
         let router_arc = Arc::clone(&self.router);
 
+        // EtherCAT nodes carry no serial transport; see dispatch.rs::build_serial_seed_sends.
+        let ethercat_mcu_ids: HashSet<u32> = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            mcu_configs
+                .iter()
+                .filter(|c| {
+                    mcus.get(&c.mcu_id)
+                        .map_or(false, |conn| conn.ethercat_socket.is_some())
+                })
+                .map(|c| c.mcu_id)
+                .collect()
+        };
+
         let host_ios: HashMap<u32, Arc<KalicoHostIo>> = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let mut out = HashMap::new();
             for cfg_mcu in &mcu_configs {
+                // EtherCAT nodes have no serial KalicoHostIo — skip them here;
+                // they are handled via UnixNativeConn heartbeat.
+                if ethercat_mcu_ids.contains(&cfg_mcu.mcu_id) {
+                    continue;
+                }
                 let conn = mcus.get(&cfg_mcu.mcu_id).ok_or_else(|| {
                     PyRuntimeError::new_err(format!(
                         "init_planner: unknown mcu_handle {}",
@@ -2284,14 +2437,10 @@ impl PyMotionBridge {
         // heartbeat callback, and sends `PushPieces` frames in strict
         // time order with per-ring flow control.
         //
-        // The pump holds `Weak<KalicoHostIo>` — NOT `Arc` — mirroring
-        // `dispatch_ios` below: `detach_serial` drops the strong Arc to
-        // tear down the reactor; the pump must not pin the IO alive.
-        //
-        // Ring depth per (mcu,axis): total_piece_memory / 32 / num_axes.
-        // Computed by `axis_ring_depth` — the single source of truth shared
-        // with the `ring_depth_for_axis` Python-facing getter so the pump and
-        // the MCU allocator always agree on the ring size.
+        // Ring depth per (mcu,axis): total_piece_memory / 32 / num_axes,
+        // derived from the caps each MCU reported at connect time (serial:
+        // during attach_serial; EtherCAT: QueryRuntimeCaps above). There is
+        // no special-casing: all MCUs go through axis_ring_depth uniformly.
         let ring_depth_table: HashMap<crate::pump::AxisKey, u32> = {
             let mut t = HashMap::new();
             for cfg_mcu in &mcu_configs {
@@ -2311,34 +2460,71 @@ impl PyMotionBridge {
             t
         };
 
+        // Register CLOCK_MONOTONIC (freq=1e9) for each EtherCAT MCU in the router.
+        // The dispatch `project` closure calls `host_time_to_mcu_clock` for all
+        // MCUs uniformly; the 1e9 Hz freq makes it return nanoseconds, which is
+        // what the kalico-ethercat-rt endpoint expects as `start_time`.
+        {
+            let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
+            let now_ns = crate::motion_node::monotonic_ns();
+            for &mcu_id in &ethercat_mcu_ids {
+                let mcu_h = mcu_handle_from_raw(mcu_id);
+                // freq=1e9 because EtherCAT timestamps are CLOCK_MONOTONIC ns.
+                // Seed: at the current Instant the EtherCAT clock reads now_ns.
+                let _ = router.set_clock_est_from_sample(
+                    mcu_h,
+                    1_000_000_000.0_f64,
+                    Instant::now(),
+                    now_ns,
+                );
+            }
+        }
+
         let (pump_tx_init, pump_rx) = std::sync::mpsc::channel::<crate::pump::PumpMsg>();
 
-        // Downgrade to Weak so the pump never pins an IO alive across
-        // detach_serial. Built BEFORE the dispatch_ios loop which also
-        // calls Arc::downgrade on the same map.
-        let wire_ios: HashMap<u32, Weak<KalicoHostIo>> = host_ios
-            .iter()
-            .map(|(&id, io)| (id, Arc::downgrade(io)))
-            .collect();
+        let wire_transports: HashMap<u32, crate::pump::McuTransport> = {
+            let mut t = HashMap::new();
+            for (&id, io) in &host_ios {
+                t.insert(id, crate::pump::McuTransport::Serial(Arc::downgrade(io)));
+            }
+            for (&id, conn) in &ec_conns {
+                t.insert(id, crate::pump::McuTransport::EtherCat(Arc::clone(conn)));
+            }
+            t
+        };
+
         let pump_timeout = Duration::from_secs(5);
         let ring_depth_table_for_pump = ring_depth_table.clone();
+        // Clone the router Arc into the pump thread so it can query the
+        // per-MCU projected clock for the commit-lead horizon gate.
+        let router_for_pump = Arc::clone(&self.router);
         let pump_thread_handle = std::thread::Builder::new()
             .name("push-pieces-pump".into())
             .spawn(move || {
                 let sink = crate::pump::WireSink {
-                    ios: wire_ios,
+                    transports: wire_transports,
                     timeout: pump_timeout,
                 };
-                crate::pump::run_pump(pump_rx, sink, move |k| {
-                    ring_depth_table_for_pump.get(&k).copied().unwrap_or_else(|| {
-                        log::error!(
-                            "pump: no ring_depth for {k:?} — axis absent from \
-                             init_planner config; using sentinel depth 1 \
-                             (expect PieceStartInPast fault)"
-                        );
-                        1
-                    })
-                });
+                crate::pump::run_pump(
+                    pump_rx,
+                    sink,
+                    move |k| {
+                        ring_depth_table_for_pump.get(&k).copied().unwrap_or_else(|| {
+                            log::error!(
+                                "pump: no ring_depth for {k:?} — axis absent from \
+                                 init_planner config; using sentinel depth 1 \
+                                 (expect PieceStartInPast fault)"
+                            );
+                            1
+                        })
+                    },
+                    move |mcu_id: u32| {
+                        let r = router_for_pump
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
+                        r.ack_clock_and_freq(mcu_handle_from_raw(mcu_id))
+                    },
+                );
             })
             .expect("spawn push-pieces-pump thread");
 
@@ -2353,26 +2539,57 @@ impl PyMotionBridge {
         // Attach heartbeat callbacks — route StatusHeartbeat retired_counts
         // to the pump so it can update per-ring flow-control accounting.
         for cfg_mcu in &mcu_configs {
-            let io = host_ios
-                .get(&cfg_mcu.mcu_id)
-                .expect("host_io map built from mcu_configs")
-                .clone();
+            let mcu_id = cfg_mcu.mcu_id;
             let pump_tx_hb = pump_tx_init.clone();
             let drain_hb = self.drain.clone();
-            let mcu_id = cfg_mcu.mcu_id;
-            io.attach_heartbeat_callback(Arc::new(move |retired: &[u32]| {
-                // PIECEDIAG (revert)
-                log::info!("PIECEDIAG HB mcu={} retired={:?}", mcu_id, retired);
-                let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
-                    crate::pump::HeartbeatMsg {
-                        mcu_id,
-                        retired_counts: retired.to_vec(),
-                    },
-                ));
-                for (axis, &r) in retired.iter().enumerate() {
-                    drain_hb.set_retired(mcu_id, axis as u8, r);
-                }
-            }));
+
+            if ethercat_mcu_ids.contains(&mcu_id) {
+                // EtherCAT: heartbeat arrives via UnixNativeConn events channel.
+                // Install the same callback as serial MCUs, then spawn a
+                // poll-events thread that drains inbound frames continuously.
+                let conn = ec_conns
+                    .get(&mcu_id)
+                    .expect("ec_conns built from ethercat_mcu_ids")
+                    .clone();
+                conn.attach_heartbeat_callback(Arc::new(move |retired: &[u32]| {
+                    let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
+                        crate::pump::HeartbeatMsg {
+                            mcu_id,
+                            retired_counts: retired.to_vec(),
+                        },
+                    ));
+                    for (axis, &r) in retired.iter().enumerate() {
+                        drain_hb.set_retired(mcu_id, axis as u8, r);
+                    }
+                }));
+                let conn_for_poll = Arc::clone(&conn);
+                let _ = std::thread::Builder::new()
+                    .name(format!("ec-heartbeat-poll-{mcu_id}"))
+                    .spawn(move || {
+                        loop {
+                            conn_for_poll.poll_events();
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                    })
+                    .expect("spawn ec-heartbeat-poll thread");
+            } else {
+                // Serial: heartbeat arrives via KalicoHostIo's reactor.
+                let io = host_ios
+                    .get(&mcu_id)
+                    .expect("host_io map built from mcu_configs")
+                    .clone();
+                io.attach_heartbeat_callback(Arc::new(move |retired: &[u32]| {
+                    let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
+                        crate::pump::HeartbeatMsg {
+                            mcu_id,
+                            retired_counts: retired.to_vec(),
+                        },
+                    ));
+                    for (axis, &r) in retired.iter().enumerate() {
+                        drain_hb.set_retired(mcu_id, axis as u8, r);
+                    }
+                }));
+            }
         }
 
         let mcu_configs_for_cb = mcu_configs;
@@ -2911,18 +3128,39 @@ impl PyMotionBridge {
             // Ordering against in-flight pieces IS handled: we drained above, so
             // every axis has retired == sent before this re-seed. The stream
             // re-open above zeroes both the MCU ring and the host drain counters.
+            // Build the set of EtherCAT mcu_ids from the live McuConnection map
+            // so we can filter them out of the seed loop below. EtherCAT nodes
+            // must be skipped: `runtime_seed_position` is a stepper-only serial
+            // command that resets the motor-frame `last_step_count` baseline for
+            // step-delta computation. EtherCAT servo endpoints are
+            // position-commanded (absolute), self-seed their rotor origin from
+            // the first sample's encoder count, and have no serial transport.
+            // The `kalico_stream_open` call above already re-seeded the streamed
+            // position for every node (including EtherCAT ones); the serial seed
+            // is genuinely not needed for them. See
+            // `dispatch::build_serial_seed_sends` for the full rationale.
             let sends = {
                 let configs = self
                     .mcu_axis_configs
                     .lock()
                     .unwrap_or_else(|p| p.into_inner());
-                crate::dispatch::build_seed_sends(&configs, x, y, z)
+                let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+                let ethercat_mcu_ids: HashSet<u32> = configs
+                    .iter()
+                    .filter(|c| {
+                        mcus.get(&c.mcu_id)
+                            .map_or(false, |conn| conn.ethercat_socket.is_some())
+                    })
+                    .map(|c| c.mcu_id)
+                    .collect();
+                crate::dispatch::build_serial_seed_sends(&configs, &ethercat_mcu_ids, x, y, z)
             };
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             for s in sends {
                 // Planner is up ⇒ init_planner guaranteed these configs come from
-                // real, attached MCUs. A missing connection/io here is a broken
-                // invariant — fail loudly.
+                // real, attached MCUs. A missing mcu_id here is a broken invariant
+                // — fail loudly. EtherCAT nodes were already filtered above and
+                // never reach this point.
                 let conn = mcus.get(&s.mcu_id).unwrap_or_else(|| {
                     panic!(
                         "set_position seed: planner up but mcu_id {} absent \
@@ -2930,10 +3168,14 @@ impl PyMotionBridge {
                         s.mcu_id
                     )
                 });
+                // A serial MCU that genuinely lacks host_io at this point is a
+                // broken invariant (attach_serial must have been called before
+                // init_planner). EtherCAT nodes are never in `sends` (filtered
+                // above), so host_io == None here is always a real error.
                 let io = conn.host_io.as_ref().unwrap_or_else(|| {
                     panic!(
-                        "set_position seed: mcu_id {} has no host_io \
-                         (broken invariant)",
+                        "set_position seed: serial mcu_id {} has no host_io \
+                         (broken invariant — attach_serial not called?)",
                         s.mcu_id
                     )
                 });

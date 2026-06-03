@@ -192,8 +192,8 @@ handle_identify(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
     body_out[60] = (uint8_t)((epoch >> 24) & 0xFF);
     // capabilities: bit 0 = PHASE_STEPPING_CAPABLE. Advertised
     // unconditionally — every supported MCU runs the kalico runtime
-    // (H7 modulates at 40 kHz via runtime_tick_h7.c, F4 at 10 kHz via
-    // runtime_tick_f4.c). Until Step 10 wires true coil-current
+    // (H7 and F4 both tick via runtime_tick_{h7,f4}.c at the configured
+    // CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ). Until Step 10 wires true coil-current
     // synthesis to TMC5160 XDIRECT, both chips route Modulated mode
     // through the same `emit_step_pulses` GPIO path; the bit reflects
     // "this firmware can service a Modulated motor at this chip's tick
