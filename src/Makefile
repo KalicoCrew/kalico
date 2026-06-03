@@ -5,7 +5,7 @@ src-y += sched.c command.c basecmd.c debugcmds.c
 # Spec: docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md.
 src-y += kalico_demux.c kalico_dispatch.c \
     runtime_storage.c runtime_panic.c step_queue.c \
-    spi_queue.c
+    spi_queue.c kalico_log.c
 src-y += runtime_tick_weak.c
 src-$(CONFIG_RUNTIME_BENCH) += generic/runtime_bench.c
 src-$(CONFIG_HAVE_GPIO) += initial_pins.c gpiocmds.c stepper.c endstop.c \

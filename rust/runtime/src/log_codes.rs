@@ -63,6 +63,9 @@ pub fn subsystem_name(id: u8) -> &'static str {
 pub const EVENT_RUNTIME_FAULT_LATCHED: u16 = 1;
 /// The engine was reset; `arg0` = epoch counter.
 pub const EVENT_RUNTIME_ENGINE_RESET: u16 = 2;
+/// The MCU firmware runtime is up and the log drain is online (emitted once
+/// per boot from the C `runtime_drain` task). No args.
+pub const EVENT_RUNTIME_MCU_READY: u16 = 3;
 
 // motion subsystem events
 /// A piece was rejected because its start time is already in the past.
@@ -109,6 +112,9 @@ pub fn event_info(subsystem: u8, event: u16) -> (&'static str, &'static str) {
         ),
         (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_ENGINE_RESET) => {
             ("runtime.engine_reset", "engine reset epoch={arg0}")
+        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_MCU_READY) => {
+            ("runtime.mcu_ready", "mcu firmware ready, log drain online")
         }
         (SUBSYSTEM_MOTION, EVENT_MOTION_PIECE_START_PAST) => (
             "motion.piece_start_past",
@@ -177,6 +183,13 @@ mod tests {
         assert_eq!(subsystem_name(0xFF), "unknown");
         assert_eq!(subsystem_name(4), "unknown");
         assert_eq!(subsystem_name(100), "unknown");
+    }
+
+    #[test]
+    fn mcu_ready_resolves() {
+        let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_MCU_READY);
+        assert_eq!(name, "runtime.mcu_ready");
+        assert_eq!(tmpl, "mcu firmware ready, log drain online");
     }
 
     #[test]
