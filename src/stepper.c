@@ -21,6 +21,7 @@
 #include "stepper.h"
 #include "trsync.h" // trsync_add_signal
 #include "kalico_runtime.h" // StepperBindingRust
+#include "kalico_log.h" // kalico_log_emit (mcu structured-log ready marker)
 
 struct stepper {
     struct gpio_out step_pin, dir_pin;
@@ -311,6 +312,21 @@ command_kalico_configure_axis(uint32_t *args)
     // set_step_mode-driven enable (removed 2026-05-28).
     extern void runtime_tick_enable(void);
     runtime_tick_enable();
+
+    // Observability spec #2 Stage 2: emit the one structured "runtime ready"
+    // marker once, after the first axis is configured. This is the live config
+    // command (the legacy kalico_configure_kinematics path is no longer sent
+    // post motion-node-unification). The config phase runs after the host's
+    // identify/attach handshake — which installs the mcu-log hook — so the host
+    // is connected and listening here. (Emitting at MCU boot / first drain
+    // races ahead of the host connecting and the frame is lost.) The next
+    // runtime_drain ships it as KALICO_MSG_LOG (0x0084).
+    static uint8_t kalico_log_ready_emitted;
+    if (!kalico_log_ready_emitted) {
+        kalico_log_ready_emitted = 1;
+        kalico_log_emit(KALICO_LOG_LEVEL_DEBUG, KALICO_LOG_SUBSYS_RUNTIME,
+                        KALICO_LOG_EVENT_RUNTIME_MCU_READY, 0, 0, 0);
+    }
 }
 DECL_COMMAND(command_kalico_configure_axis,
              "kalico_configure_axis axis_idx=%c mode=%c microstep_distance=%u"
