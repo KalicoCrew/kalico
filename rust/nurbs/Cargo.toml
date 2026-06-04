@@ -16,6 +16,7 @@ f64 = []
 host = ["f64"]
 mcu-h7 = ["dep:libm"]
 mcu-f4 = ["dep:libm"]
+mcu-g0 = ["dep:libm"]
 
 [dev-dependencies]
 proptest = "1.5"

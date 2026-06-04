@@ -95,6 +95,9 @@ jobs:
           workspaces: rust
           key: mcu-h7
       - name: cargo build (mcu-h7)
+        # Env (KALICO_RUNTIME_STORAGE_SIZE / _PIECE_RING_SIZE) and the
+        # motion-module-stepper feature live inside scripts/ci.sh so CI and
+        # local stay one source of truth — see job_rust_mcu_h7.
         run: ./scripts/ci.sh rust-mcu-h7
 
   rust-mcu-f4:
@@ -112,7 +115,52 @@ jobs:
           workspaces: rust
           key: mcu-f4
       - name: cargo build (mcu-f4)
+        # Env + motion-module-stepper feature live inside scripts/ci.sh
+        # (job_rust_mcu_f4) so CI and local stay one source of truth.
         run: ./scripts/ci.sh rust-mcu-f4
+
+  # G0 (Cortex-M0+, thumbv6m). CI never compiled mcu-g0 at all, and the
+  # runtime_tick_g0.c FFI-drift bug was G0-only — this closes the Rust-side
+  # gap. The full C link per arch is covered by ci-mcu-firmware.yaml.
+  # Env + motion-module-stepper feature live in scripts/ci.sh (job_rust_mcu_g0).
+  rust-mcu-g0:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv6m-none-eabi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: mcu-g0
+      - name: cargo build (mcu-g0)
+        run: ./scripts/ci.sh rust-mcu-g0
+
+  # Validate the EtherCAT servo-node / no-stepper compile path: runtime built
+  # with --no-default-features --features host omits motion-module-stepper, so
+  # the compile_error guard in lib.rs must NOT fire (host builds are valid
+  # without a dispatch module). Also confirms the two dispatch_stepper test
+  # files are fully suppressed by their #![cfg(feature = "motion-module-stepper")].
+  rust-no-stepper:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: no-stepper
+      - name: cargo build + test --no-run (runtime, no-stepper servo-node path)
+        run: ./scripts/ci.sh rust-no-stepper
 
   rust-cbindgen-drift:
     needs: changes

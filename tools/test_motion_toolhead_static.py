@@ -58,6 +58,11 @@ EXPECTED_LOCAL_METHODS = frozenset(
         "cmd_KALICO_SIM_AXIS_STEPS",
         "cmd_KALICO_SIM_AXIS_ACCUM",
         "cmd_KALICO_SIM_ENDSTOP_SET_PIN",
+        # M400 (wait-for-moves) and KALICO_DIAG_DUMP (live MCU diag
+        # snapshot to the structured-log store) are bridge-mode gcode
+        # commands owned by MotionToolhead.
+        "cmd_M400",
+        "cmd_KALICO_DIAG_DUMP",
         # Bridge-mode overrides of the upstream lifecycle / motion surface.
         # MotionToolhead drives motion through the native bridge instead of
         # the legacy trapq/stepcompress path, so it overrides connection

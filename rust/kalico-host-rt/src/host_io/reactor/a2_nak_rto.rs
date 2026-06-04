@@ -135,16 +135,11 @@ fn max_retry_count_closes_with_fault_and_completes_pending() {
     // Force 8 successive TimeoutDriven retransmits via clock advance.
     // Each tick advances clock past current RTO; write_retransmit increments
     // retry_count for every unacked entry. On the 8th call,
-    // retry_count >= MAX_RETRY_COUNT AND silence >= MCU_SILENCE_FOR_CLOSE
-    // (currently 120 s) → state→Closed, Err returned.
-    // We advance 20s per iteration (8 × 20s = 160s > MCU_SILENCE_FOR_CLOSE),
-    // which is well past the MAX_RTO ceiling (5s) so the RTO guard fires
-    // on every tick, and well past MCU_SILENCE_FOR_CLOSE so the silence
-    // gate is satisfied before retry_count reaches MAX_RETRY_COUNT.
+    // retry_count >= MAX_RETRY_COUNT=8 AND silence >= MCU_SILENCE_FOR_CLOSE=120s
+    // → state→Closed. Each tick must advance ≥ 15s so that 8 ticks ≥ 120s.
     for _ in 0..8 {
-        // 20s >> MAX_RTO (5s) ensures RTO fires; 8 × 20s = 160s >
-        // MCU_SILENCE_FOR_CLOSE (120s) satisfies the silence gate.
-        h.advance_clock(Duration::from_secs(20));
+        // 16s > RTO ceiling (5s) and 8 × 16s = 128s ≥ MCU_SILENCE_FOR_CLOSE.
+        h.advance_clock(Duration::from_secs(16));
         h.tick();
     }
     // Reactor should now be Closed.

@@ -21,6 +21,12 @@
 //! fence + volatile write to `tail`; the consumer reads `tail` first, takes
 //! an Acquire fence, then consumes `buf[slot]`. Volatile counter accesses
 //! prevent the compiler from caching them across the fence.
+//!
+//! NON-RACING, not lock-free: single-core safety requires the producer (TIM5
+//! ISR) and consumer (step-output timer ISR) to share one NVIC priority so they
+//! never interleave. If that ever splits, the volatile-u16 + fence discipline is
+//! insufficient (torn slot/counter) — upgrade to a true-atomic SPSC. Invariant
+//! + priority map: `src/generic/kalico_nvic_prio.h`.
 
 #![allow(unsafe_code)]
 
@@ -78,6 +84,16 @@ impl StepQueue {
             }; STEP_QUEUE_DEPTH],
         }
     }
+
+    /// Empty the queue by resetting both SPSC counters to 0.
+    ///
+    /// The caller must hold exclusive access (an IRQ guard): both the producer
+    /// (writes `tail`) and the consumer (writes `head`) must be quiescent.
+    #[inline]
+    pub fn clear(&mut self) {
+        self.tail = 0;
+        self.head = 0;
+    }
 }
 
 #[cfg(any(test, feature = "host"))]
@@ -102,6 +118,51 @@ const _: () = {
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
     pub static step_queues: core::cell::UnsafeCell<[StepQueue; N_AXIS_STEP_QUEUES]>;
+}
+
+/// Raw pointer to the C-owned step queue for axis `i`, or null if `i` is out
+/// of range. MCU-only — host/test builds keep their queues in
+/// `Engine::test_queue_ptrs` instead.
+///
+/// This concentrates the one piece of pointer arithmetic over the C-declared
+/// `step_queues` static in the boundary module that owns it (and already opts
+/// into `unsafe_code`), so the engine hot path stays free of `unsafe`.
+#[cfg(not(any(test, feature = "host")))]
+#[must_use]
+pub fn queue_for_axis(i: usize) -> *mut StepQueue {
+    if i >= N_AXIS_STEP_QUEUES {
+        return ptr::null_mut();
+    }
+    // SAFETY: `i < N_AXIS_STEP_QUEUES` is checked above, and `step_queues` is
+    // the C-declared array of exactly `N_AXIS_STEP_QUEUES` queues, so `add(i)`
+    // stays in-bounds and yields a pointer to a live, aligned `StepQueue`.
+    unsafe { step_queues.get().cast::<StepQueue>().add(i) }
+}
+
+/// Clear all per-axis step queues. MCU-only — host/test builds keep their
+/// queues in `Engine::test_queue_ptrs` and have no `step_queues` global.
+///
+/// The caller (`kalico_runtime_reset`) holds the IRQ guard, so no producer
+/// ISR or consumer timer runs concurrently with these writes.
+///
+/// TODO(mcu-linux/step-dir): compiled out on `mcu-linux` (feature "host"
+/// implies the cfg gate is false), so `step_queues[]` is not zeroed on a
+/// Klipper runtime reset on Linux. When STEP/DIR GPIO pulse output on Linux
+/// is wired, add an `mcu-linux` reset path — the correct mechanism is a
+/// C-side helper that clears `step_queues[]` directly (do NOT extend the
+/// bare-metal Rust `step_queues` extern to `mcu-linux`; that target uses
+/// `test_queue_ptrs` instead). Harmless today: phase-stepping; C drain
+/// discards stale entries each tick.
+#[cfg(not(any(test, feature = "host")))]
+pub fn reset_all_queues() {
+    for i in 0..N_AXIS_STEP_QUEUES {
+        let q = queue_for_axis(i);
+        // SAFETY: `i < N_AXIS_STEP_QUEUES` so `q` is non-null and points at a
+        // live `StepQueue`; the IRQ guard guarantees exclusive access.
+        unsafe {
+            (*q).clear();
+        }
+    }
 }
 
 /// Returned by `push` when the ring is full.
@@ -197,4 +258,21 @@ pub unsafe fn len(q: *mut StepQueue) -> u16 {
     let tail = unsafe { ptr::read_volatile(&(*q).tail) };
     let head = unsafe { ptr::read_volatile(&(*q).head) };
     tail.wrapping_sub(head)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clear_empties_queue() {
+        let mut q = StepQueue::new();
+        // 3 entries outstanding (tail ahead of head).
+        q.tail = 5;
+        q.head = 2;
+        assert_ne!(q.tail, q.head);
+        q.clear();
+        assert_eq!(q.tail, 0);
+        assert_eq!(q.head, 0);
+    }
 }

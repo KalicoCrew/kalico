@@ -24,7 +24,7 @@
 # runtime_query_status / runtime_stream_open and friends in parallel; the
 # bench loop captures the worst ISR-side tick across that load.
 #
-# Pre-flight: requires flashed H723 hardware with CONFIG_KALICO_RUNTIME=y.
+# Pre-flight: requires flashed H723 hardware (kalico runtime firmware).
 import argparse
 import json
 import logging

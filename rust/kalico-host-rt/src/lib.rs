@@ -28,12 +28,13 @@
 
 pub mod clock;
 pub mod clock_sync;
-pub mod credit;
 pub mod endstop;
 pub mod fault;
 pub mod host_io;
+pub mod native_call;
 pub mod passthrough_queue;
 pub mod producer;
 pub mod stream;
 pub mod transport;
+pub mod unix_native_conn;
 pub mod wire;

@@ -12,7 +12,7 @@ use crate::host_io::ReactorCommand;
 use crate::host_io::events::EventDispatcher;
 use crate::host_io::identify::IdentifySeqState;
 use crate::host_io::kalico_native::{
-    KalicoDispatchResult, KalicoNativeState, PendingKalicoCall, build_kalico_control_frame,
+    KalicoDispatchResult, KalicoNativeState, PendingKalicoCall, build_kalico_frame,
     build_kalico_identify_frame, dispatch_kalico_frame,
 };
 use crate::host_io::parser::MsgProtoParser;
@@ -87,6 +87,22 @@ pub struct Reactor {
     /// Closed only fires when retry exhaustion coincides with genuine
     /// MCU silence past `MCU_SILENCE_FOR_CLOSE`.
     pub(crate) last_recv_time: Instant,
+
+    /// Most recent moment `write_frame` completed a successful port write.
+    /// Used alongside `last_recv_time` at the disconnect site to distinguish
+    /// "MCU went quiet while we were still sending" (host-side write activity
+    /// present, no inbound bytes) from "both directions dropped simultaneously"
+    /// (USB-CDC link collapse) vs "we stopped writing before the disconnect"
+    /// (idle / backpressure scenario). Initialised to `clock.now()` at
+    /// construction; updated in `write_frame` on every successful `io.write_all`.
+    pub(crate) last_write_time: Instant,
+
+    /// Count of consecutive `PhantomZero` outcomes from `poll_serial` (one
+    /// per reactor tick ≈ 1 ms per count). Reset to 0 on any non-zero read
+    /// (Frames or Timeout). Surfaced in the `[usb-drop]` diagnostic log line
+    /// so the difference between "always zero" and "wedged at 0 for 100 ticks
+    /// then suddenly Err" is visible without doing arithmetic on timestamps.
+    pub(crate) zero_byte_consec: u32,
 
     /// Injected clock seam (spec §2.3). Routes `Instant::now()` so tests
     /// can deterministically advance time via `MockClock`.
@@ -198,6 +214,8 @@ impl Reactor {
             pending_outbound_order: VecDeque::new(),
             zero_byte_first_seen: None,
             last_recv_time: clock.now(),
+            last_write_time: clock.now(),
+            zero_byte_consec: 0,
             clock,
             passthrough_router: None,
             passthrough_notify_map: std::collections::HashMap::new(),
@@ -256,15 +274,23 @@ impl Reactor {
             self.io.flush()?;
             Ok(())
         })();
+        if result.is_ok() {
+            self.last_write_time = std::time::Instant::now();
+        }
         let dt = t0.elapsed();
         // Wedge-isolation: log EVERY write unconditionally. Volume is
         // bounded and we need full visibility around the bridge_call hang.
-        eprintln!(
-            "[trace-write] tid={:?} seq={seq} proto={proto} bytes={bytes} dt_ms={:.3} result={:?} first8={:02x?}",
-            std::thread::current().id(),
-            dt.as_secs_f64() * 1000.0,
-            result.as_ref().map(|_| "OK"),
-            &frame[..frame.len().min(8)]
+        tracing::trace!(
+            subsystem = "mcu-comms",
+            event = "frame_write",
+            tid = ?std::thread::current().id(),
+            seq,
+            proto,
+            bytes,
+            dt_ms = dt.as_secs_f64() * 1000.0,
+            result = ?result.as_ref().map(|_| "OK"),
+            first8 = ?&frame[..frame.len().min(8)],
+            "frame write"
         );
         result
     }
@@ -368,10 +394,15 @@ impl Reactor {
                 deadline,
                 abandoned: false,
             })?;
-        eprintln!(
-            "[trace-await] tid={:?} push call_id={call_id} seq={seq} name={_trace_name} await_len={}",
-            std::thread::current().id(),
-            self.awaiting_response.len()
+        tracing::trace!(
+            subsystem = "mcu-comms",
+            event = "await_response",
+            tid = ?std::thread::current().id(),
+            call_id,
+            seq,
+            name = %_trace_name,
+            await_len = self.awaiting_response.len(),
+            "push await entry"
         );
 
         if !self.rtt_sample_armed {
@@ -448,12 +479,6 @@ impl Reactor {
                         let is_io = matches!(e, TransportError::Io(_));
                         let _ = p.completion.send(Err(e));
                         if is_io {
-                            eprintln!(
-                                "[trace-close] drain_pending_submissions Io error kalico_pending={} await_n={} unacked_n={}",
-                                self.kalico_state.pending.len(),
-                                self.awaiting_response.len(),
-                                self.unacked_window.len(),
-                            );
                             if self.pending_host_fault.is_none() {
                                 self.pending_host_fault =
                                     Some(crate::host_io::runtime_events::FaultEvent {
@@ -475,9 +500,6 @@ impl Reactor {
                     };
                     if let Err(e) = self.dispatch_fire_and_forget(payload) {
                         if matches!(e, TransportError::Io(_)) {
-                            eprintln!(
-                                "[trace-close] drain pending fire-and-forget Io error: {e:?}"
-                            );
                             if self.pending_host_fault.is_none() {
                                 self.pending_host_fault =
                                     Some(crate::host_io::runtime_events::FaultEvent {
@@ -539,7 +561,6 @@ impl Reactor {
             let frame = crate::host_io::wire::build_frame(entry.bytes(), wire_seq);
 
             if let Err(_e) = self.write_frame(&frame) {
-                eprintln!("[trace-close] drain_passthrough write_frame Io error: {_e:?}");
                 if self.pending_host_fault.is_none() {
                     self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                         fault_code: FaultCode::HostDisconnect.as_u16(),
@@ -744,9 +765,13 @@ impl Reactor {
         let rseq = crate::host_io::wire::decode_absolute(self.receive_seq, wire_seq_nibble);
         let rseq_jump = rseq.saturating_sub(self.receive_seq);
         if rseq_jump > 1 {
-            eprintln!(
-                "[trace-rx-jump] receive_seq prev={} new={} jump={} (>1 means MCU dropped a response or we missed a frame)",
-                self.receive_seq, rseq, rseq_jump
+            tracing::warn!(
+                subsystem = "mcu-comms",
+                event = "rx_seq_jump",
+                receive_seq_prev = self.receive_seq,
+                receive_seq_new = rseq,
+                jump = rseq_jump,
+                "receive_seq jumped >1: MCU dropped a response or we missed a frame"
             );
         }
         if rseq != self.receive_seq {
@@ -757,10 +782,13 @@ impl Reactor {
         let decoded = match self.parser.decode(bytes) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!(
-                    "[trace-decode-err] decode error: {e:?}; bytes_len={} first16={:02x?}",
-                    bytes.len(),
-                    &bytes[..bytes.len().min(16)]
+                tracing::warn!(
+                    subsystem = "mcu-comms",
+                    event = "decode_error",
+                    error = ?e,
+                    bytes_len = bytes.len(),
+                    first16 = ?&bytes[..bytes.len().min(16)],
+                    "frame decode error"
                 );
                 return Ok(());
             }
@@ -783,11 +811,16 @@ impl Reactor {
                 let await_len_before = self.awaiting_response.len();
                 if let Some(idx) = self.awaiting_response.find_match(&name) {
                     let entry = self.awaiting_response.remove(idx);
-                    eprintln!(
-                        "[trace-resp] tid={:?} match name={name} idx={idx} await_len={await_len_before} matched_call_id={} matched_seq={}",
-                        std::thread::current().id(),
-                        entry.call_id,
-                        entry.seq
+                    tracing::debug!(
+                        subsystem = "mcu-comms",
+                        event = "await_response",
+                        tid = ?std::thread::current().id(),
+                        %name,
+                        idx,
+                        await_len = await_len_before,
+                        matched_call_id = entry.call_id,
+                        matched_seq = entry.seq,
+                        "solicited response matched"
                     );
                     let _ = entry.completion.send(Ok(params));
                 } else {
@@ -797,41 +830,36 @@ impl Reactor {
                         _ => None,
                     });
                     // DIAG: trace every unsolicited frame + interceptor state
-                    {
-                        use std::io::Write;
-                        if let Ok(mut f) = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open("/tmp/interceptor_trace.log")
-                        {
-                            if name.contains("software_trip") || name.contains("trsync_state") {
-                                let _ = writeln!(
-                                    f,
-                                    "[{:?}] unsolicited name={} oid={:?} interceptor_count={} params={:?}",
-                                    std::time::SystemTime::now(),
-                                    name,
-                                    oid,
-                                    self.interceptors.entry_count(),
-                                    params,
-                                );
-                            } else {
-                                let _ = writeln!(
-                                    f,
-                                    "[{:?}] unsolicited name={} oid={:?} interceptor_count={}",
-                                    std::time::SystemTime::now(),
-                                    name,
-                                    oid,
-                                    self.interceptors.entry_count(),
-                                );
-                            }
-                        }
+                    if name.contains("software_trip") || name.contains("trsync_state") {
+                        tracing::debug!(
+                            subsystem = "mcu-comms",
+                            event = "unsolicited_frame",
+                            %name,
+                            ?oid,
+                            interceptor_count = self.interceptors.entry_count(),
+                            params = ?params,
+                            "unsolicited frame (software_trip/trsync_state)"
+                        );
+                    } else {
+                        tracing::debug!(
+                            subsystem = "mcu-comms",
+                            event = "unsolicited_frame",
+                            %name,
+                            ?oid,
+                            interceptor_count = self.interceptors.entry_count(),
+                            "unsolicited frame"
+                        );
                     }
                     self.interceptors.dispatch(&name, oid, &params);
 
                     if !self.try_dispatch_passthrough_response(&raw_payload) {
-                        eprintln!(
-                            "[trace-resp] tid={:?} unsolicited name={name} await_len={await_len_before}",
-                            std::thread::current().id()
+                        tracing::debug!(
+                            subsystem = "mcu-comms",
+                            event = "unsolicited_no_interceptor",
+                            tid = ?std::thread::current().id(),
+                            %name,
+                            await_len = await_len_before,
+                            "unsolicited frame with no interceptor match"
                         );
                         let event =
                             crate::host_io::runtime_events::RuntimeEvent::PassthroughResponse {
@@ -911,14 +939,18 @@ impl Reactor {
                 Ok(PollOutcome::PhantomZero) => "PhantomZero",
                 Err(_) => "Err",
             };
-            eprintln!(
-                "[trace-poll] dt_ms={:.2} outcome={label}",
-                dt.as_secs_f64() * 1000.0
+            tracing::debug!(
+                subsystem = "mcu-comms",
+                event = "slow_poll",
+                dt_ms = dt.as_secs_f64() * 1000.0,
+                outcome = label,
+                "poll_serial exceeded 5ms"
             );
         }
         match outcome {
             Ok(PollOutcome::Frames { frames, errors }) => {
                 self.zero_byte_first_seen = None;
+                self.zero_byte_consec = 0;
                 // Any non-empty read counts as MCU activity. Even an
                 // errors-only batch (CRC failures, malformed Klipper
                 // frames) means the wire delivered bytes — the MCU is
@@ -945,19 +977,20 @@ impl Reactor {
             }
             Ok(PollOutcome::Timeout) => {
                 self.zero_byte_first_seen = None;
+                self.zero_byte_consec = 0;
             }
             Ok(PollOutcome::PhantomZero) => {
+                self.zero_byte_consec = self.zero_byte_consec.saturating_add(1);
                 let now = self.clock.now();
                 let first = *self.zero_byte_first_seen.get_or_insert(now);
                 if now.duration_since(first) >= ZERO_BYTE_DEBOUNCE {
-                    eprintln!(
-                        "[trace-close] poll_serial PhantomZero exceeded debounce kalico_pending={} await_n={} unacked_n={}",
-                        self.kalico_state.pending.len(),
-                        self.awaiting_response.len(),
-                        self.unacked_window.len(),
-                    );
+                    let silence_ms = now.duration_since(self.last_recv_time).as_millis();
+                    let since_write_ms = now.duration_since(self.last_write_time).as_millis();
                     log::warn!(
-                        "port read returned Ok(0) for >= {ZERO_BYTE_DEBOUNCE:?}; transitioning to Closed"
+                        "[usb-drop] silence_ms={} since_write_ms={} consec_zero={} err=PhantomZero(Ok(0) for >={ZERO_BYTE_DEBOUNCE:?})",
+                        silence_ms,
+                        since_write_ms,
+                        self.zero_byte_consec,
                     );
                     self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                         fault_code: FaultCode::HostDisconnect.as_u16(),
@@ -969,13 +1002,16 @@ impl Reactor {
                 }
             }
             Err(e) => {
-                eprintln!(
-                    "[trace-close] poll_serial Io error: {e:?} kalico_pending={} await_n={} unacked_n={}",
-                    self.kalico_state.pending.len(),
-                    self.awaiting_response.len(),
-                    self.unacked_window.len(),
+                let now = self.clock.now();
+                let silence_ms = now.duration_since(self.last_recv_time).as_millis();
+                let since_write_ms = now.duration_since(self.last_write_time).as_millis();
+                log::warn!(
+                    "[usb-drop] silence_ms={} since_write_ms={} consec_zero={} err={:?}",
+                    silence_ms,
+                    since_write_ms,
+                    self.zero_byte_consec,
+                    e,
                 );
-                log::warn!("port read error: {e:?}; transitioning to Closed");
                 self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                     fault_code: FaultCode::HostDisconnect.as_u16(),
                     fault_detail: 0,
@@ -999,13 +1035,6 @@ impl Reactor {
     /// KalicoCall) and the RTO retransmit path to mirror the established
     /// drain-path / poll_serial behavior.
     pub(crate) fn transition_closed_on_io_fault(&mut self) {
-        eprintln!(
-            "[trace-close] transition_closed_on_io_fault (write-path Io error) state_was={:?} kalico_pending={} await_n={} unacked_n={}",
-            self.state,
-            self.kalico_state.pending.len(),
-            self.awaiting_response.len(),
-            self.unacked_window.len(),
-        );
         if self.pending_host_fault.is_none() {
             self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                 fault_code: FaultCode::HostDisconnect.as_u16(),
@@ -1053,24 +1082,17 @@ impl Reactor {
                 completion,
                 deadline,
             } => {
-                {
-                    use std::io::Write as _;
-                    if let Ok(mut f) = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("/tmp/kalico-firewire.log")
-                    {
-                        let _ = writeln!(
-                            f,
-                            "[diag-submit] SubmitTyped call_id={call_id} resp={expected_response_name} \
-                             payload_len={} unacked={} pending_sub={} state={:?}",
-                            payload.len(),
-                            self.unacked_window.len(),
-                            self.pending_submissions.len(),
-                            self.state,
-                        );
-                    }
-                }
+                tracing::debug!(
+                    subsystem = "mcu-comms",
+                    event = "submit_typed",
+                    call_id,
+                    resp = %expected_response_name,
+                    payload_len = payload.len(),
+                    unacked = self.unacked_window.len(),
+                    pending_sub = self.pending_submissions.len(),
+                    state = ?self.state,
+                    "SubmitTyped"
+                );
                 if let Err(e) = self.dispatch_submission(
                     call_id,
                     payload,
@@ -1089,12 +1111,6 @@ impl Reactor {
                 self.awaiting_response.mark_abandoned(call_id);
             }
             ReactorCommand::Shutdown => {
-                eprintln!(
-                    "[trace-close] ReactorCommand::Shutdown received kalico_pending={} await_n={} unacked_n={}",
-                    self.kalico_state.pending.len(),
-                    self.awaiting_response.len(),
-                    self.unacked_window.len(),
-                );
                 self.state = ReactorState::Closed;
                 self.closed_via_shutdown = true;
             }
@@ -1105,20 +1121,22 @@ impl Reactor {
                 // EXIT_ON_FAULT guard sees `exited_gracefully() == true`
                 // when the BrokenPipe arrives, and klippy can continue its
                 // in-process restart without systemd having to interpose.
-                eprintln!(
-                    "[trace-close] ReactorCommand::MarkExpectedDisconnect \
-                     received kalico_pending={} await_n={} unacked_n={}",
-                    self.kalico_state.pending.len(),
-                    self.awaiting_response.len(),
-                    self.unacked_window.len(),
+                tracing::info!(
+                    subsystem = "mcu-comms",
+                    event = "expected_disconnect",
+                    kalico_pending = self.kalico_state.pending.len(),
+                    await_n = self.awaiting_response.len(),
+                    unacked_n = self.unacked_window.len(),
+                    "MarkExpectedDisconnect received"
                 );
                 self.closed_via_shutdown = true;
             }
-            ReactorCommand::AttachCreditCounter(counter) => {
-                self.event_dispatcher.credit_counter = Some(counter);
+            ReactorCommand::AttachHeartbeatCallback(wrapper) => {
+                self.event_dispatcher.heartbeat_callback = Some(wrapper.0);
             }
-            ReactorCommand::AttachRetirementCallback(wrapper) => {
-                self.event_dispatcher.retirement_callback = Some(wrapper.0);
+            ReactorCommand::SetMcuLogHook(wrapper) => {
+                self.event_dispatcher
+                    .set_mcu_log_hook(move |e| (wrapper.0)(e));
             }
             ReactorCommand::SubscribeFault { sender, reply } => {
                 let result = self.event_dispatcher.fault_latch.subscribe(sender);
@@ -1160,64 +1178,50 @@ impl Reactor {
                     let _ = router.push(mcu, queue_id, entry);
                 }
             }
-            ReactorCommand::FireAndForget { cmd } => {
-                // Diag 2026-05-19: write every FireAndForget event to a
-                // dedicated trace file at /tmp/kalico-firewire.log because
-                // log::info/eprintln stderr output is getting swallowed by
-                // klippy's systemd wrapper. Append-only, line-per-event.
-                use std::io::Write as _;
-                let mut trace = std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("/tmp/kalico-firewire.log")
-                    .ok();
-                match self.parser.encode(&cmd) {
-                    Ok(payload) => {
-                        let cmd_disp = if cmd.len() > 120 {
-                            &cmd[..120]
-                        } else {
-                            cmd.as_str()
-                        };
-                        let head: Vec<String> = payload
-                            .iter()
-                            .take(16)
-                            .map(|b| format!("{:02x}", b))
-                            .collect();
-                        if let Some(ref mut f) = trace {
-                            let _ = writeln!(
-                                f,
-                                "[firewire] OK cmd=\"{}\" payload_len={} head=[{}]",
-                                cmd_disp,
-                                payload.len(),
-                                head.join(",")
-                            );
-                        }
-                        if let Err(e) = self.dispatch_fire_and_forget(payload) {
-                            let is_io = matches!(e, TransportError::Io(_));
-                            if let Some(ref mut f) = trace {
-                                let _ = writeln!(
-                                    f,
-                                    "[firewire] dispatch_err cmd=\"{}\" err={}",
-                                    cmd_disp, e
-                                );
-                            }
-                            eprintln!("[bridge-error] FireAndForget send: {e}");
-                            if is_io {
-                                self.transition_closed_on_io_fault();
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        if let Some(ref mut f) = trace {
-                            let _ =
-                                writeln!(f, "[firewire] ENCODE_FAILED cmd=\"{}\" err={:?}", cmd, e);
-                        }
-                        eprintln!(
-                            "[bridge-error] FireAndForget encode failed for cmd={cmd:?}: {e:?}"
+            ReactorCommand::FireAndForget { cmd } => match self.parser.encode(&cmd) {
+                Ok(payload) => {
+                    let cmd_disp = if cmd.len() > 120 {
+                        &cmd[..120]
+                    } else {
+                        cmd.as_str()
+                    };
+                    let head: Vec<String> = payload
+                        .iter()
+                        .take(16)
+                        .map(|b| format!("{b:02x}"))
+                        .collect();
+                    tracing::debug!(
+                        subsystem = "mcu-comms",
+                        event = "fire_and_forget_sent",
+                        cmd = %cmd_disp,
+                        payload_len = payload.len(),
+                        head = %head.join(","),
+                        "FireAndForget encoded OK"
+                    );
+                    if let Err(e) = self.dispatch_fire_and_forget(payload) {
+                        let is_io = matches!(e, TransportError::Io(_));
+                        tracing::error!(
+                            subsystem = "mcu-comms",
+                            event = "fire_and_forget_send_error",
+                            cmd = %cmd_disp,
+                            error = %e,
+                            "FireAndForget dispatch failed"
                         );
+                        if is_io {
+                            self.transition_closed_on_io_fault();
+                        }
                     }
                 }
-            }
+                Err(e) => {
+                    tracing::error!(
+                        subsystem = "mcu-comms",
+                        event = "fire_and_forget_encode_error",
+                        cmd = ?cmd,
+                        error = ?e,
+                        "FireAndForget encode failed"
+                    );
+                }
+            },
             ReactorCommand::FireAndForgetTyped { payload } => {
                 if let Err(e) = self.dispatch_fire_and_forget(payload) {
                     let is_io = matches!(e, TransportError::Io(_));
@@ -1252,38 +1256,20 @@ impl Reactor {
                 }
             }
             ReactorCommand::KalicoCall {
+                channel,
                 kind,
                 body,
                 completion,
                 deadline,
             } => {
-                eprintln!(
-                    "[trace-kcall] entry kind={kind:?} body_len={} state={:?} identified={} pending_n={}",
-                    body.len(),
-                    self.state,
-                    self.kalico_state.identified,
-                    self.kalico_state.pending.len(),
-                );
-                if matches!(self.state, ReactorState::Closed) {
-                    eprintln!(
-                        "[trace-kcall] FAIL: reactor already Closed before write — completing with TransportError::Closed"
-                    );
-                    let _ = completion.send(Err(TransportError::Closed));
-                    return;
-                }
                 if !self.kalico_state.identified {
-                    eprintln!("[trace-kcall] FAIL: not identified");
                     let _ = completion.send(Err(TransportError::Parse(
                         "kalico transport not yet identified".into(),
                     )));
                     return;
                 }
                 let cid = self.kalico_state.allocate_correlation_id();
-                let frame = build_kalico_control_frame(kind, cid, &body);
-                eprintln!(
-                    "[trace-kcall] write_frame kind={kind:?} cid={cid} frame_len={}",
-                    frame.len()
-                );
+                let frame = build_kalico_frame(channel, kind, cid, &body);
                 self.kalico_state.pending.insert(
                     cid,
                     PendingKalicoCall {
@@ -1292,7 +1278,6 @@ impl Reactor {
                     },
                 );
                 if let Err(e) = self.write_frame(&frame) {
-                    eprintln!("[trace-kcall] write_frame ERROR cid={cid} kind={kind:?} err={e:?}");
                     let is_io = matches!(e, TransportError::Io(_));
                     if let Some(p) = self.kalico_state.pending.remove(&cid) {
                         let _ = p.completion.send(Err(e));
@@ -1300,8 +1285,6 @@ impl Reactor {
                     if is_io {
                         self.transition_closed_on_io_fault();
                     }
-                } else {
-                    eprintln!("[trace-kcall] write_frame OK cid={cid} kind={kind:?}");
                 }
             }
             ReactorCommand::Noop => {
@@ -1423,12 +1406,6 @@ impl Reactor {
                 Ok(cmd) => self.handle_command(cmd),
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    eprintln!(
-                        "[trace-close] submission_rx Disconnected — all senders dropped kalico_pending={} await_n={} unacked_n={}",
-                        self.kalico_state.pending.len(),
-                        self.awaiting_response.len(),
-                        self.unacked_window.len(),
-                    );
                     self.state = ReactorState::Closed;
                     break;
                 }
@@ -1463,8 +1440,13 @@ impl Reactor {
                 let unacked_n = self.unacked_window.len();
                 let front_seq = front.seq;
                 if let Err(e) = self.write_retransmit(RetransmitTrigger::TimeoutDriven) {
-                    eprintln!(
-                        "[trace-rto] retransmit error front_seq={front_seq} unacked_n={unacked_n} err={e:?}"
+                    tracing::debug!(
+                        subsystem = "mcu-comms",
+                        event = "retransmit",
+                        front_seq = front_seq,
+                        unacked_n = unacked_n,
+                        error = ?e,
+                        "retransmit error"
                     );
                     if matches!(e, TransportError::Io(_)) {
                         log::warn!("retransmit Io error: {e:?}; transitioning Closed");
@@ -1504,14 +1486,16 @@ impl Reactor {
 
         let dt_tick = t_tick.elapsed();
         if dt_tick > std::time::Duration::from_millis(5) {
-            eprintln!(
-                "[trace-tick] dt_ms={:.2} step1={:.2} step2={:.2} step3={:.2} step3b={:.2} step4={:.2}",
-                dt_tick.as_secs_f64() * 1000.0,
-                t_step1.as_secs_f64() * 1000.0,
-                t_step2.as_secs_f64() * 1000.0,
-                t_step3.as_secs_f64() * 1000.0,
-                t_step3b.as_secs_f64() * 1000.0,
-                t_step4.as_secs_f64() * 1000.0
+            tracing::debug!(
+                subsystem = "mcu-comms",
+                event = "slow_tick",
+                dt_ms = dt_tick.as_secs_f64() * 1000.0,
+                step1_ms = t_step1.as_secs_f64() * 1000.0,
+                step2_ms = t_step2.as_secs_f64() * 1000.0,
+                step3_ms = t_step3.as_secs_f64() * 1000.0,
+                step3b_ms = t_step3b.as_secs_f64() * 1000.0,
+                step4_ms = t_step4.as_secs_f64() * 1000.0,
+                "tick_once exceeded 5ms"
             );
         }
         TickOutcome::Continue

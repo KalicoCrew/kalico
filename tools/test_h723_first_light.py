@@ -4,7 +4,7 @@
 #
 # Per Step-5 plan Task 26. PASS/FAIL gate is the kalico_status response.
 #
-# Pre-flight: requires flashed H723 hardware and CONFIG_KALICO_RUNTIME=y.
+# Pre-flight: requires flashed H723 hardware (kalico runtime firmware).
 # This script is hardware-deferred; it runs only when the user has the bench
 # wired up.
 import argparse

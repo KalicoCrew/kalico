@@ -459,6 +459,76 @@ fn z_move_with_tiny_x_after_homing_xy_deviation_proportional() {
     );
 }
 
+/// Dispatch closure that records each dispatched segment's (t_start, t_end).
+fn capturing_dispatch() -> (
+    Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
+    Arc<Mutex<Vec<(f64, f64)>>>,
+) {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let l = Arc::clone(&log);
+    let cb: Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync> =
+        Arc::new(move |seg: &ShapedSegment| {
+            l.lock().unwrap().push((seg.t_start, seg.t_end));
+            Ok(())
+        });
+    (cb, log)
+}
+
+#[test]
+fn quiescence_keeps_timeline_monotone_next_move_does_not_rewind() {
+    let (dispatch, log) = capturing_dispatch();
+    let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+
+    fn wait_for_commits(h: &PlannerHandle, target: u32) {
+        let start = std::time::Instant::now();
+        while h.commit_fire_count() < target {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "commit fired only {} of {target} times within 5s",
+                h.commit_fire_count()
+            );
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    // Move 1: X 0 -> 200. Wait for the decel-commit (commit #1).
+    h.submit_move(long_move()).unwrap();
+    wait_for_commits(&h, 1);
+    let m1_max_t_end = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|&(_, e)| e)
+        .fold(0.0_f64, f64::max);
+    assert!(m1_max_t_end > 0.0, "move 1 produced no dispatched segments");
+
+    // Move 2: X 200 -> 400, submitted after a real idle gap so the monotonic
+    // clock has advanced past move 1's end.
+    log.lock().unwrap().clear();
+    std::thread::sleep(Duration::from_millis(400));
+    let m2 = classify_and_build([200.0, 0.0, 0.0], 200.0, 0.0, 0.0, 0.0, 200.0).unwrap();
+    h.submit_move(m2).unwrap();
+    wait_for_commits(&h, 2);
+    let m2_min_t_start = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|&(s, _)| s)
+        .fold(f64::INFINITY, f64::min);
+    assert!(
+        m2_min_t_start.is_finite(),
+        "move 2 produced no dispatched segments"
+    );
+
+    // Monotone clock: move 2 starts at or after move 1's end — NOT rewound.
+    assert!(
+        m2_min_t_start >= m1_max_t_end - 1e-3,
+        "timeline rewound: move 2 started at {m2_min_t_start}, move 1 ended at {m1_max_t_end}"
+    );
+
+    h.shutdown();
+}
+
 /// No homing — just reset to a position and do a Z-only move.
 /// If the bug requires prior XY motion through the shaper,
 /// this should pass cleanly.
@@ -537,4 +607,64 @@ fn z_only_move_no_prior_xy_motion() {
         max_dev_y < 0.01,
         "Z-only move without prior XY motion: Y deviated by {max_dev_y:.6}mm (expected < 10µm)",
     );
+}
+
+#[test]
+#[ignore] // slow (~250 ms+): exercises the real clock wait
+fn flush_blocks_until_motion_complete_by_clock() {
+    let (dispatch, _counter) = counting_dispatch();
+    let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+    let t0 = std::time::Instant::now();
+    h.submit_move(long_move()).unwrap();
+    h.flush().unwrap();
+    let elapsed = t0.elapsed().as_secs_f64();
+    assert!(
+        elapsed >= 0.25 * 0.9,
+        "flush returned too early: {:.4}s",
+        elapsed
+    ); // ~LEAD floor
+    h.shutdown();
+}
+
+#[test]
+fn flush_then_move_dispatches_without_error() {
+    // Use a capturing dispatch so we can assert both "segments were dispatched"
+    // and the M400-then-move timeline monotonicity invariant (move 2's minimum
+    // t_start >= move 1's maximum t_end). This is the -308-prevention check
+    // for the Flush-boundary case.
+    let (dispatch, log) = capturing_dispatch();
+    let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+
+    // Move 1: submit and flush (M400 equivalent).
+    h.submit_move(long_move()).unwrap();
+    h.flush().unwrap();
+    let m1_max_t_end = log
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|&(_, e)| e)
+        .fold(0.0_f64, f64::max);
+    assert!(m1_max_t_end > 0.0, "move 1 produced no dispatched segments");
+
+    // Move 2: submit and flush after the M400 boundary.
+    log.lock().unwrap().clear();
+    let m2 = classify_and_build([200.0, 0.0, 0.0], 200.0, 0.0, 0.0, 0.0, 200.0).unwrap();
+    h.submit_move(m2).unwrap();
+    h.flush().unwrap();
+    let m2_log = log.lock().unwrap().clone();
+
+    // "Segments were dispatched" check (replaces the old counter assertion).
+    assert!(!m2_log.is_empty(), "move 2 produced no dispatched segments");
+
+    let m2_min_t_start = m2_log.iter().map(|&(s, _)| s).fold(f64::INFINITY, f64::min);
+
+    // Timeline monotonicity across the M400 boundary: move 2 must not rewind
+    // behind move 1's last dispatched t_end.
+    assert!(
+        m2_min_t_start >= m1_max_t_end - 1e-3,
+        "timeline rewound across flush boundary: \
+         move 2 t_start={m2_min_t_start:.6} < move 1 t_end={m1_max_t_end:.6}",
+    );
+
+    h.shutdown();
 }

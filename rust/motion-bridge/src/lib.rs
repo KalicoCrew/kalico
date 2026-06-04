@@ -1,21 +1,28 @@
-mod bridge;
 #[doc(hidden)]
-pub mod cap_check;
+pub mod anchor;
+mod bridge;
 #[doc(hidden)]
 pub mod classify;
 #[doc(hidden)]
 pub mod config;
 #[doc(hidden)]
 pub mod dispatch;
+pub mod drain;
+#[doc(hidden)]
+pub mod enqueue;
 #[doc(hidden)]
 pub mod homing;
+pub mod logging;
+pub mod mcu_log;
+#[doc(hidden)]
+pub mod motion_node;
 #[doc(hidden)]
 pub mod planner;
 #[doc(hidden)]
 pub mod probe_homing;
-mod router_transport;
 #[doc(hidden)]
-pub mod slot_pool;
+pub mod pump;
+mod router_transport;
 mod types;
 
 use pyo3::prelude::*;
@@ -30,10 +37,6 @@ use bridge::PyMotionBridge;
 // `from . import motion_bridge_native as _native`.
 #[pymodule]
 fn motion_bridge_native(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
-    // Initialize env_logger so RUST_LOG=info captures bridge-trace
-    // events (push_segment, seg-dispatch, etc.) into stderr. Silently
-    // no-ops if already initialized (parallel pyimports).
-    let _ = env_logger::try_init();
     m.add_class::<PyMotionBridge>()?;
     Ok(())
 }

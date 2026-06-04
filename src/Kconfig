@@ -386,65 +386,91 @@ choice
     prompt "Runtime sizing profile"
     default RUNTIME_TARGET_LARGE if MACH_STM32H7
     default RUNTIME_TARGET_SMALL if MACH_STM32F4
+    default RUNTIME_TARGET_SMALL if MACH_STM32G0
     default RUNTIME_TARGET_LARGE
-    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_LINUX
+    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_STM32G0 || MACH_LINUX
     help
       Selects per-MCU runtime sizing presets. `large` is the H7-class
       profile that places the curve pool in AXI SRAM. `small` is the
-      F4-class profile that fits in 128 KB SRAM. `custom` lets you
-      override individual values below.
+      F4-class profile that fits in 128 KB SRAM (and the G0-class profile
+      that fits in the G0B1's 144 KB SRAM). `custom` lets you override
+      individual values below.
 
     config RUNTIME_TARGET_LARGE
         bool "Large (H7-class — fits in AXI SRAM)"
 
     config RUNTIME_TARGET_SMALL
-        bool "Small (F4-class — fits in 128 KB SRAM)"
+        bool "Small (F4/G0-class — fits in 128 KB SRAM)"
 
     config RUNTIME_TARGET_CUSTOM
         bool "Custom (override individual values)"
 endchoice
 
-config RUNTIME_CURVE_POOL_N
-    int "Curve-pool slot count (planner look-ahead depth)"
-    default 16 if RUNTIME_TARGET_LARGE
-    default 4 if RUNTIME_TARGET_SMALL
-    default 4
-    range 1 64
-
-config RUNTIME_MAX_PIECES_PER_CURVE
-    int "Maximum cubic Bézier pieces per curve slot"
-    default 128
-    range 1 256
+config RUNTIME_PIECE_RING_SIZE
+    int "Piece-ring byte budget (total across all axes)"
+    default 4096 if MACH_STM32G0
+    default 63488 if RUNTIME_TARGET_LARGE
+    default 63488 if RUNTIME_TARGET_SMALL
+    default 63488
+    range 1024 524288
     help
-      Per-slot ceiling on cubic Bézier pieces. Both `RUNTIME_CURVE_POOL_N`
-      and this value back the static cubic piece pool: total storage is
-      `CURVE_POOL_N * MAX_PIECES_PER_CURVE * sizeof(BezierPieceMonomial)`
-      (BezierPieceMonomial is 32 bytes in-memory; the wire encoding is
-      20 bytes — see rust/runtime/src/monomial.rs).
-      Reported to the host via `RuntimeCapsResponse.max_pieces_per_curve`;
-      the host's pre-upload validator rejects curves whose piece count
-      exceeds this value.
-      Default bumped from 16 to 64 on 2026-05-20: bench-observed
-      10mm@100mm/s jogs shape to 23 pieces after input-shaping
-      convolution; 16 rejects them with `CapsExceeded`. Logical-move
-      splitting (Task 13 follow-up) is the long-term answer for unbounded
-      move length; until then, raising the cap covers reasonable manual
-      jogs and most print-relevant segments.
+      Total byte budget for all per-axis piece rings. Each PieceEntry is
+      32 bytes; TOTAL_RING_PIECES = PIECE_RING_SIZE / 32. The budget is
+      divided evenly across configured axes at runtime via the per-axis
+      RingDescriptor. Default 63488 (62 KB) gives 1984 entries spread
+      across 4 axes (496 entries each) — sufficient for lookahead at
+      40 kHz with typical slicer output. Exported to the Rust build as
+      KALICO_RUNTIME_PIECE_RING_SIZE.
 
 config KALICO_MOTION_SAMPLE_RATE_HZ
-    int "Motion engine sample rate in Hz (TIM5 ISR fire rate)"
-    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_LINUX
+    int "Motion engine sample rate in Hz (motion-timer ISR fire rate)"
+    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_STM32G0 || MACH_LINUX
     default 40000 if MACH_STM32H7
     default 20000 if MACH_STM32F4
+    default 2000 if MACH_STM32G0
+    default 1000 if MACH_LINUX
     default 10000
     range 1000 100000
     help
-      Rate at which the TIM5 ISR evaluates motion curves and emits step
-      pulses. Higher rates give better velocity-extrapolation accuracy
+      Rate at which the motion-engine ISR evaluates motion curves and emits
+      step pulses. Higher rates give better velocity-extrapolation accuracy
       but cost more CPU. Defaults to 40 kHz on H7 (520 MHz) and 20 kHz
       on F4 (180 MHz); see docs/superpowers/specs/2026-05-19-stepping-
       redesign-design.md for the per-MCU step-rate ceilings these
-      enable.
+      enable. Defaults to 2 kHz on G0B1 (64 MHz Cortex-M0+, soft-float):
+      this is a low-rate bring-up target, not a throughput target —
+      see docs/superpowers/specs/2026-05-31-stm32g0-sb2209-target-design.md.
+      Defaults to 1 kHz on MACH_LINUX: the host tick
+      (linux/runtime_tick_host.c) drives the ISR from a clock_nanosleep loop
+      whose resolution floor on a stock (non-PREEMPT_RT) kernel is ~1 ms, and
+      this rate MUST equal the tick rate or the runtime's TickIntervalExceeded
+      guard fires on the first active tick. Raising it requires a PREEMPT_RT
+      kernel and a SCHED_FIFO launch (klipper_mcu -r).
+
+# Motion-engine ISR timer selection. The physical timer is chosen per
+# architecture via the alias in src/stm32/runtime_tick_timer.h: H7/F4 use
+# TIM5 (hardcoded in their runtime_tick_{h7,f4}.c). STM32G0B1 has no TIM5
+# (timers: TIM1/2/3/4/6/7/14/15/16/17), and TIM2 is already Klipper's 32-bit
+# scheduler clock (stm32f0_timer.c), so the motion ISR needs a different free
+# timer. TIM6/TIM7 are basic timers with no output channels — hard_pwm can
+# never claim them — making them the safe choices. Default TIM7 (its only
+# shared-vector neighbor is LPTIM2, unused on a toolhead board).
+choice
+    prompt "Motion-engine ISR timer (STM32G0)"
+    default KALICO_MOTION_TIMER_TIM7
+    depends on MACH_STM32G0
+    help
+      Selects which hardware timer drives the motion-engine sample ISR on
+      STM32G0. Pick one not otherwise used by your board's PWM/peripherals.
+      TIM6 and TIM7 are basic timers (no PWM channels) and are the
+      recommended choices.
+
+    config KALICO_MOTION_TIMER_TIM7
+        bool "TIM7 (basic timer, shares vector with LPTIM2)"
+
+    config KALICO_MOTION_TIMER_TIM6
+        bool "TIM6 (basic timer, shares vector with DAC/LPTIM1)"
+endchoice
 
 config RUNTIME_STORAGE_SIZE_LARGE
     int "rt_storage byte ceiling (large profile, H7)"
@@ -453,32 +479,27 @@ config RUNTIME_STORAGE_SIZE_LARGE
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
       replaces RT_CELL's Rust-side #[link_section] placement). Task 18
-      measured size_of::<RuntimeContext>() = 59048 bytes (57 KB) after
-      the 2026-05-20 stepping redesign replaced the NURBS curve pool
-      (~298 KB on LARGE) with a uniform cubic Bézier piece pool (~8 KB
-      at CURVE_POOL_N=16). Default is 63488 bytes (62 KB), providing
-      4440 bytes of headroom. The AXI SRAM ceiling on H7 is 320 KB;
-      the C-side _Static_assert in src/runtime_storage.c enforces 2 KB
-      headroom. The Rust-side const_assert fires if RuntimeContext
-      exceeds this value at compile time.
+      measured size_of::<RuntimeContext>() = 59048 bytes (57 KB) with
+      the piece-ring model (PIECE_RING_SIZE = 63488 bytes). Default is
+      122880 bytes (120 KB), providing ample headroom for piece-ring
+      growth. The AXI SRAM ceiling on H7 is 320 KB; the C-side
+      _Static_assert in src/runtime_storage.c enforces 2 KB headroom.
+      The Rust-side const_assert fires if RuntimeContext exceeds this
+      value at compile time.
 
 config RUNTIME_STORAGE_SIZE_SMALL
-    int "rt_storage byte ceiling (small profile, F4)"
+    int "rt_storage byte ceiling (small profile, F4/G0)"
+    default 57344 if MACH_STM32G0
     default 73728
     range 32768 131072
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
       replaces RT_CELL's Rust-side #[link_section] placement). Task 18
-      measured size_of::<RuntimeContext>() = 59048 bytes (57 KB) after
-      the 2026-05-20 stepping redesign replaced the NURBS curve pool
-      (~103 KB on SMALL) with a uniform cubic Bézier piece pool (~4 KB
-      at CURVE_POOL_N=4). Default is 63488 bytes (62 KB) — the same as
-      LARGE because the measured size is identical and well below the F4
-      SRAM cap; no separate profile needed. Provides 4440 bytes of
-      headroom. F4's total SRAM is 128 KB; a 62 KB rt_storage leaves
-      ~66 KB for Klipper's .bss + stack + heap, which is ample.
-      Const_assert on Rust catches RuntimeContext growth at compile
-      time.
+      measured size_of::<RuntimeContext>() = 59048 bytes (57 KB) with
+      the piece-ring model (PIECE_RING_SIZE = 63488 bytes). Default is
+      73728 bytes (72 KB), providing headroom for piece-ring growth on
+      F4's 128 KB SRAM. Const_assert on Rust catches RuntimeContext
+      growth at compile time.
 
 config KALICO_SIM
     bool "Build for simulator (disables IWDG, enables Linux sim shims)"
@@ -515,5 +536,17 @@ config RUNTIME_BENCH
       Captures per-tick cycle counts for performance regression tracking.
       Enabled by default on H7. F4 / host targets do not currently provide
       a cycle counter suitable for bench; left unselected.
+
+menu "Motion dispatch modules"
+    depends on MACH_STM32H7 || MACH_STM32F4 || MACH_STM32G0 || MACH_LINUX
+config MOTION_MODULE_STEPPER
+    bool "Stepper pulse/phase dispatch"
+    default y if MACH_STM32H7 || MACH_STM32F4 || MACH_STM32G0
+    default n
+    help
+      Compiles the STEP/DIR pulse and TMC phase-stepping dispatch backend
+      into this firmware. Required for any build that drives stepper motors;
+      a servo/EtherCAT node leaves it off.
+endmenu
 
 source "src/extras/Kconfig"

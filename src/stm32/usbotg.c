@@ -90,6 +90,23 @@ usb_diag_read_out_ep(uint32_t *doepctl, uint32_t *doeptsiz, uint32_t *doepint)
     *doepint  = epo->DOEPINT;
 }
 
+// Poll OTG endpoint state every foreground iteration. Safe concurrent MMIO
+// reads; captured in the prior_diag dump (prior_diag_summary_usb).
+void
+usb_diag_poll_task(void)
+{
+    extern void diag_usb_poll(uint32_t gintsts, uint32_t gintmsk,
+                              uint32_t in_diepctl, uint32_t in_diepint,
+                              uint32_t in_dtxfsts, uint32_t out_doepctl,
+                              uint32_t out_doepint);
+    USB_OTG_INEndpointTypeDef  *epi = EPIN(USB_CDC_EP_BULK_IN);
+    USB_OTG_OUTEndpointTypeDef *epo = EPOUT(USB_CDC_EP_BULK_OUT);
+    diag_usb_poll(OTG->GINTSTS, OTG->GINTMSK,
+                  epi->DIEPCTL, epi->DIEPINT, epi->DTXFSTS,
+                  epo->DOEPCTL, epo->DOEPINT);
+}
+DECL_TASK(usb_diag_poll_task);
+
 // Setup the USB fifos
 static void
 fifo_configure(void)
@@ -250,7 +267,9 @@ usb_send_bulk_in(void *data, uint_fast8_t len)
         return len;
     }
     if (ctl & USB_OTG_DIEPCTL_EPENA) {
-        // Wait for space to transmit
+        // Previous IN packet still pending; count for USB-CDC halt onset detection.
+        extern void diag_note_usb_in_busy(void);
+        diag_note_usb_in_busy();
         OTGD->DAINTMSK |= 1 << USB_CDC_EP_BULK_IN;
         usb_irq_enable();
         return -1;

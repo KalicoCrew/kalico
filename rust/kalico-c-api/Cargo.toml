@@ -19,17 +19,31 @@ required-features = ["host"]
 default = ["host", "header-nurbs", "header-runtime"]
 mcu-h7 = ["nurbs/mcu-h7", "runtime/mcu-h7"]
 mcu-f4 = ["nurbs/mcu-f4", "runtime/mcu-f4"]
+mcu-g0 = ["nurbs/mcu-g0", "runtime/mcu-g0"]
 host = ["nurbs/host", "runtime/host", "dep:cbindgen"]
+# Marker feature for real Linux-MCU firmware builds (MACH_LINUX without
+# CONFIG_KALICO_SIM).  Implies `host` and threads runtime/mcu-linux so the
+# phase_stepping_write_xdirect FFI is emitted rather than the in-memory
+# capture sink.  Set only by the MACH_LINUX Makefile path.
+mcu-linux = ["host", "runtime/mcu-linux"]
 header-nurbs = []
 header-runtime = []
 # Pass-through to runtime/kalico-sim. See runtime/Cargo.toml for the
 # rationale and the production-firmware safety boundary.
 kalico-sim = ["runtime/kalico-sim"]
+# Pass-through: enables the stepper pulse/phase dispatch backend in the
+# runtime crate.  The Makefile appends `motion-module-stepper` to
+# KALICO_RUST_FEATURES when CONFIG_MOTION_MODULE_STEPPER=y.
+motion-module-stepper = ["runtime/motion-module-stepper"]
 
 [dependencies]
 nurbs = { path = "../nurbs", default-features = false }
 runtime = { path = "../runtime", default-features = false }
 cbindgen = { version = "0.29", optional = true, package = "cbindgen" }
+# Required for RMW atomic operations on MCU targets: on thumbv7em lowers to
+# native LDREX/STREX; on thumbv6m (STM32G0) uses interrupt-masking fallback.
+# Version and features match runtime's dependency so cargo deduplicates.
+portable-atomic = { version = "1", default-features = false, features = ["fallback"] }
 
 [lints]
 workspace = true

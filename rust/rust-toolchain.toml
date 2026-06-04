@@ -3,6 +3,7 @@ channel = "1.85.0"
 components = ["rustfmt", "clippy"]
 targets = [
     "thumbv7em-none-eabi",
+    "thumbv6m-none-eabi",
     "x86_64-unknown-linux-gnu",
     "aarch64-unknown-linux-gnu",
 ]

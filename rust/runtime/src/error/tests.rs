@@ -1,3 +1,5 @@
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use super::*;
 
 #[test]
@@ -156,10 +158,29 @@ fn fault_code_stepping_redesign_numeric_values() {
         FaultCode::StepRateExceedsMcuCeiling.as_i32(),
         KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING
     );
+    assert_eq!(
+        FaultCode::PieceStartInPast.as_i32(),
+        KALICO_ERR_PIECE_START_IN_PAST
+    );
+    assert_eq!(FaultCode::RingFull.as_i32(), KALICO_ERR_RING_FULL);
+    assert_eq!(
+        FaultCode::StepsPerSampleExceeded.as_i32(),
+        KALICO_ERR_STEPS_PER_SAMPLE_EXCEEDED
+    );
+    assert_eq!(
+        FaultCode::TickIntervalExceeded.as_i32(),
+        KALICO_ERR_TICK_INTERVAL_EXCEEDED
+    );
+    assert_eq!(
+        FaultCode::UnknownStepMode.as_i32(),
+        KALICO_ERR_UNKNOWN_STEP_MODE
+    );
     // Cross-check: distinct from each other and from the existing
     // -7..-202 range.
     assert_eq!(KALICO_ERR_STEP_QUEUE_OVERFLOW, -300);
     assert_eq!(KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING, -307);
+    assert_eq!(KALICO_ERR_TICK_INTERVAL_EXCEEDED, -311);
+    assert_eq!(KALICO_ERR_UNKNOWN_STEP_MODE, -312);
     assert_ne!(
         KALICO_ERR_STEP_QUEUE_OVERFLOW,
         KALICO_ERR_HOST_DISPATCHER_TIMEOUT
@@ -175,4 +196,170 @@ fn fault_code_as_u16_round_trips_negative_codes() {
     #[allow(clippy::cast_sign_loss)]
     let expected = (-160_i16) as u16;
     assert_eq!(code, expected);
+}
+
+// ── from_u16 + code_name tests (Task 4) ─────────────────────────────────────
+
+#[test]
+fn fault_code_from_u16_round_trip_positive_zero() {
+    assert_eq!(FaultCode::from_u16(0), Some(FaultCode::None));
+}
+
+#[test]
+fn fault_code_from_u16_sign_wrap_piece_start_in_past() {
+    // -308 as i16 = -308; -308i16 as u16 = 65228 = 0xFECC
+    let wire = FaultCode::PieceStartInPast.as_u16();
+    assert_eq!(wire, 0xFECC);
+    assert_eq!(FaultCode::from_u16(wire), Some(FaultCode::PieceStartInPast));
+}
+
+#[test]
+fn fault_code_from_u16_sign_wrap_tick_interval_exceeded() {
+    // -311 as i16 = -311; -311i16 as u16 = 65225 = 0xFEC9
+    let wire = FaultCode::TickIntervalExceeded.as_u16();
+    assert_eq!(wire, 0xFEC9);
+    assert_eq!(
+        FaultCode::from_u16(wire),
+        Some(FaultCode::TickIntervalExceeded)
+    );
+}
+
+#[test]
+fn fault_code_from_u16_sign_wrap_host_disconnect() {
+    let wire = FaultCode::HostDisconnect.as_u16();
+    assert_eq!(FaultCode::from_u16(wire), Some(FaultCode::HostDisconnect));
+}
+
+#[test]
+fn fault_code_from_u16_unknown_returns_none() {
+    // 0x1234 does not correspond to any FaultCode discriminant
+    assert_eq!(FaultCode::from_u16(0x1234), None);
+}
+
+#[test]
+fn code_name_piece_start_in_past() {
+    assert_eq!(FaultCode::PieceStartInPast.code_name(), "PieceStartInPast");
+}
+
+#[test]
+fn code_name_none() {
+    assert_eq!(FaultCode::None.code_name(), "None");
+}
+
+#[test]
+fn code_name_tick_interval_exceeded() {
+    assert_eq!(
+        FaultCode::TickIntervalExceeded.code_name(),
+        "TickIntervalExceeded"
+    );
+}
+
+#[test]
+fn from_u16_then_code_name_for_all_step8_codes() {
+    // Every Step-8 code must survive the round-trip as_u16 -> from_u16 -> code_name
+    let codes = [
+        FaultCode::StepQueueOverflow,
+        FaultCode::SpiQueueOverflow,
+        FaultCode::MathNonFinite,
+        FaultCode::PieceAdvanceUnderflow,
+        FaultCode::SampleRateMisconfigured,
+        FaultCode::PositionCountOverflow,
+        FaultCode::JogParametersInvalid,
+        FaultCode::StepRateExceedsMcuCeiling,
+        FaultCode::PieceStartInPast,
+        FaultCode::RingFull,
+        FaultCode::StepsPerSampleExceeded,
+        FaultCode::TickIntervalExceeded,
+    ];
+    for code in codes {
+        let wire = code.as_u16();
+        let recovered = FaultCode::from_u16(wire)
+            .expect("from_u16 must succeed for every known FaultCode variant");
+        assert_eq!(recovered, code, "round-trip mismatch for {code:?}");
+        let name = recovered.code_name();
+        assert!(!name.is_empty(), "code_name empty for {code:?}");
+        assert_ne!(
+            name, "unknown",
+            "code_name returned 'unknown' for known variant {code:?}"
+        );
+    }
+}
+
+#[test]
+fn from_u16_round_trip_all_variants() {
+    // Every FaultCode variant must survive as_u16 -> from_u16 intact.
+    let all_codes = [
+        FaultCode::None,
+        FaultCode::QueueFull,
+        FaultCode::InvalidCurve,
+        FaultCode::InvalidHandle,
+        FaultCode::InvalidDuration,
+        FaultCode::InvalidKinematics,
+        FaultCode::NullPtr,
+        FaultCode::NotInit,
+        FaultCode::FaultLatched,
+        FaultCode::Internal,
+        FaultCode::StepBurstExceeded,
+        FaultCode::ZeroDurationSegment,
+        FaultCode::HomingTrip,
+        FaultCode::CapabilityMissing,
+        FaultCode::NoStep,
+        FaultCode::InvalidArg,
+        FaultCode::InvalidPhaseAxisCount,
+        FaultCode::PhaseBusReentrant,
+        FaultCode::PhaseModeNotAvailable,
+        FaultCode::CurveLoadInvalid,
+        FaultCode::MotionInProgress,
+        FaultCode::BadCrc,
+        FaultCode::FramingViolation,
+        FaultCode::Disconnect,
+        FaultCode::ProtocolVersionUnsupported,
+        FaultCode::ClockSyncQuality,
+        FaultCode::ClockSyncTimeout,
+        FaultCode::ArmTimeout,
+        FaultCode::ArmRejected,
+        FaultCode::CrossMcuDesync,
+        FaultCode::Underrun,
+        FaultCode::QueueOverrun,
+        FaultCode::LivenessStalled,
+        FaultCode::TraceOverflow,
+        FaultCode::StreamStateViolation,
+        FaultCode::SegmentIdNonMonotonic,
+        FaultCode::TStartInPast,
+        FaultCode::TEndBeforeTStart,
+        FaultCode::SegmentTooShort,
+        FaultCode::SegmentTooLong,
+        FaultCode::InvalidCurveHandle,
+        FaultCode::CurveReloadRejected,
+        FaultCode::CurveFormatInvalid,
+        FaultCode::NanInfOutput,
+        FaultCode::BoundaryLoopOverflow,
+        FaultCode::InternalInvariant,
+        FaultCode::HostDisconnect,
+        FaultCode::HostRetransmitExhausted,
+        FaultCode::HostDispatcherTimeout,
+        FaultCode::StepQueueOverflow,
+        FaultCode::SpiQueueOverflow,
+        FaultCode::MathNonFinite,
+        FaultCode::PieceAdvanceUnderflow,
+        FaultCode::SampleRateMisconfigured,
+        FaultCode::PositionCountOverflow,
+        FaultCode::JogParametersInvalid,
+        FaultCode::StepRateExceedsMcuCeiling,
+        FaultCode::PieceStartInPast,
+        FaultCode::RingFull,
+        FaultCode::StepsPerSampleExceeded,
+        FaultCode::TickIntervalExceeded,
+    ];
+    // Verify the count matches the spec (60 total: None + 59 non-zero variants,
+    // spanning non-contiguous discriminants — we test all of them).
+    for code in all_codes {
+        let wire = code.as_u16();
+        let recovered = FaultCode::from_u16(wire)
+            .expect("from_u16 must succeed for every known FaultCode variant");
+        assert_eq!(recovered, code, "round-trip mismatch for {code:?}");
+        // code_name must be non-empty for every known variant
+        let name = code.code_name();
+        assert!(!name.is_empty(), "code_name empty for {code:?}");
+    }
 }

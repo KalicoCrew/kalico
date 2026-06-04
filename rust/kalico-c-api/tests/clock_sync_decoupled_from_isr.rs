@@ -32,12 +32,6 @@ pub static runtime_clock_freq: u32 = 520_000_000;
 pub static runtime_sample_rate_hz: u32 = 40_000;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn runtime_tick_enable() {}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn runtime_tick_disable() {}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn runtime_cyccnt_read() -> u32 {
     0
 }
@@ -52,9 +46,6 @@ static STUB_MCU_CLOCK: AtomicU64 = AtomicU64::new(0xDEAD_BEEF_CAFE_BABE);
 pub extern "C" fn runtime_widened_host_clock() -> u64 {
     STUB_MCU_CLOCK.load(Ordering::Relaxed)
 }
-
-#[unsafe(no_mangle)]
-pub extern "C" fn runtime_reset_stepper_bindings() {}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn runtime_diag_progress(_tag: u32, _stage: u32, _value: u32) {}
@@ -93,8 +84,10 @@ fn clock_sync_returns_widened_host_clock_not_seqlock() {
     assert!(!rt.is_null());
 
     // Issue a clock-sync request. The returned `mcu_clock` must be the
-    // stub's value, NOT the §11.4 seqlock (which is zero at this point
-    // because no ISR tick has run on this host build).
+    // inline-widened value (timer_read_time + stats_send_time_high), NOT
+    // the §11.4 seqlock (which is zero at this point because no ISR tick
+    // has run on this host build). With all stubs returning 0, the
+    // widened clock is 0.
     let mut mcu_clock: u64 = 0;
     let r = unsafe {
         kalico_c_api::kalico_runtime_clock_sync_request(

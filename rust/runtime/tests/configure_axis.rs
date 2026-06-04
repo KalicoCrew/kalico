@@ -28,22 +28,16 @@
 use core::sync::atomic::Ordering;
 
 use runtime::engine::Engine;
-use runtime::slot::{NoopIs, NoopPa};
-use runtime::stepping_state::{N_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
+use runtime::stepping_state::{MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
 
-type EngineImpl = Engine<NoopPa, NoopIs>;
+/// Compile-time guard: the unified per-axis array has exactly 8 entries.
+const _ASSERT_MAX_AXES: () = assert!(MAX_AXES == 8);
 
-/// Compile-time guard: the unified per-axis array has exactly 4 entries.
-/// If this ever changes (e.g. AB-CoreXY-with-independent-A2-B2 industrial
-/// configs grow it to 8), every site that hand-initializes a 4-element
-/// array literal in `Engine::new` must be revisited.
-const _ASSERT_N_AXES: () = assert!(N_AXES == 4);
-
-fn new_engine() -> EngineImpl {
+fn new_engine() -> Engine {
     // 520 MHz matches the H723 Kconfig default; any positive freq works
     // for the configure_* surface (it touches cycles_per_second only as
     // a cached scalar).
-    EngineImpl::new(520_000_000, 40_000)
+    Engine::new(520_000_000, 40_000)
 }
 
 fn pulse_binding() -> StepperBindingRust {
@@ -66,20 +60,21 @@ fn configure_axis_publishes_mode_and_scalars() {
         0,
         StepMode::Pulse,
         0.0125, // microstep_distance
+        256,    // ring_depth
         &[binding],
+        512, // total_ring_pieces
     );
     assert_eq!(rc, 0, "configure_axis returned non-zero");
 
-    let axis = &e.stepping_axes[0];
+    let axis = e.stepping_axes[0]
+        .as_ref()
+        .expect("axis should be configured");
     assert_eq!(axis.mode.load(Ordering::Acquire), StepMode::Pulse as u8);
     assert!((axis.microstep_distance - 0.0125).abs() < 1e-9);
     // After configure, no piece is active and counters are zeroed so the
     // next segment-arrival path can re-seed cleanly.
-    assert!(axis.piece.is_none());
-    assert_eq!(axis.piece_start_time_cycles, 0);
+    assert!(axis.armed.is_none());
     assert_eq!(axis.last_step_count, 0);
-    assert!(axis.curve_handle.is_none());
-    assert_eq!(axis.piece_cursor, 0);
     // Stepper binding populated.
     assert_eq!(axis.steppers.len(), 1);
     assert_eq!(axis.steppers[0].stepper_oid, 0);
@@ -92,17 +87,29 @@ fn configure_axis_rejects_invalid_inputs() {
     let b = pulse_binding();
 
     // Out-of-range axis index.
-    assert_ne!(e.configure_axis(4, StepMode::Pulse, 0.01, &[b]), 0);
-    assert_ne!(e.configure_axis(255, StepMode::Pulse, 0.01, &[b]), 0);
+    assert_ne!(e.configure_axis(8, StepMode::Pulse, 0.01, 64, &[b], 512), 0);
+    assert_ne!(
+        e.configure_axis(255, StepMode::Pulse, 0.01, 64, &[b], 512),
+        0
+    );
 
     // Non-finite microstep_distance.
-    assert_ne!(e.configure_axis(0, StepMode::Pulse, f32::NAN, &[b]), 0);
-    assert_ne!(e.configure_axis(0, StepMode::Pulse, f32::INFINITY, &[b]), 0,);
+    assert_ne!(
+        e.configure_axis(0, StepMode::Pulse, f32::NAN, 64, &[b], 512),
+        0
+    );
+    assert_ne!(
+        e.configure_axis(0, StepMode::Pulse, f32::INFINITY, 64, &[b], 512),
+        0
+    );
     // Zero / negative microstep_distance.
-    assert_ne!(e.configure_axis(0, StepMode::Pulse, 0.0, &[b]), 0);
-    assert_ne!(e.configure_axis(0, StepMode::Pulse, -0.01, &[b]), 0);
+    assert_ne!(e.configure_axis(0, StepMode::Pulse, 0.0, 64, &[b], 512), 0);
+    assert_ne!(
+        e.configure_axis(0, StepMode::Pulse, -0.01, 64, &[b], 512),
+        0
+    );
     // Phase mode with a valid microstep_distance is now accepted.
-    assert_eq!(e.configure_axis(0, StepMode::Phase, 0.01, &[b]), 0);
+    assert_eq!(e.configure_axis(0, StepMode::Phase, 0.01, 64, &[b], 512), 0);
 }
 
 // configure_kinematics and configure_pressure_advance are now no-op stubs —

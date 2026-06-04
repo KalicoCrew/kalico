@@ -348,14 +348,41 @@ def run_simulation(
     verbose: bool = False,
     phase_stepping: bool = False,
     homing_test: bool = False,
+    serve: bool = False,
+    serve_data_dir=None,
 ) -> SimResult:
     """Run a complete simulation. Returns SimResult."""
     wall_start = time.monotonic()
 
     with tempfile.TemporaryDirectory(prefix="kalico_sim_") as tmpdir:
-        tmp = pathlib.Path(tmpdir)
+        tmp = (
+            pathlib.Path(serve_data_dir)
+            if serve_data_dir
+            else pathlib.Path(tmpdir)
+        )
+        if serve_data_dir:
+            tmp.mkdir(parents=True, exist_ok=True)
+            # Restart hygiene: a supervisor restart re-enters on the same
+            # persistent volume. Drop transient state (stale socket, marker,
+            # sim sock dirs) and reap orphaned sim processes from a prior
+            # crashed run so the fresh spawn is clean. events/*.jsonl logs
+            # are deliberately preserved across restarts.
+            for _name in ("klippy.sock", "SERVE_READY"):
+                try:
+                    (tmp / _name).unlink()
+                except FileNotFoundError:
+                    pass
+            try:
+                for _pat in (
+                    "klipper-h7-sim.elf",
+                    "klipper-f4-sim.elf",
+                    "beacon_mcu",
+                ):
+                    subprocess.run(["pkill", "-f", _pat], check=False)
+            except Exception:
+                pass
         log_dir = tmp / "logs"
-        log_dir.mkdir()
+        log_dir.mkdir(parents=True, exist_ok=True)
 
         # Build shims
         shim_so, vtime_so = ensure_shims_built(repo_root)
@@ -373,8 +400,8 @@ def run_simulation(
             # Socket directories for chip emulators
             h7_sock_dir = tmp / "sim" / "h7"
             f4_sock_dir = tmp / "sim" / "f4"
-            h7_sock_dir.mkdir(parents=True)
-            f4_sock_dir.mkdir(parents=True)
+            h7_sock_dir.mkdir(parents=True, exist_ok=True)
+            f4_sock_dir.mkdir(parents=True, exist_ok=True)
 
             # Detect available ELFs
             h7_elf = repo_root / "out" / "klipper-h7-sim.elf"
@@ -445,9 +472,27 @@ def run_simulation(
                 homing_test=homing_test,
             )
 
+            if serve:
+                # Mainsail/Moonraker-friendly sections, INTERACTIVE ONLY. full
+                # and batch keep the plain minimal config so their print-time
+                # predictions are unchanged. smooth_mzv shaper is required on
+                # sota-motion (the kalico motion bridge rejects freq=0).
+                with open(rendered_cfg, "a") as _cfgf:
+                    _cfgf.write(
+                        "\n[input_shaper]\nshaper_freq_x: 50\nshaper_freq_y: 50\n"
+                        "shaper_type: smooth_mzv\n\n[pause_resume]\n\n"
+                        "[display_status]\n\n[exclude_object]\n\n"
+                        "[gcode_macro PAUSE]\nrename_existing: BASE_PAUSE\n"
+                        "gcode:\n  BASE_PAUSE\n\n"
+                        "[gcode_macro RESUME]\nrename_existing: BASE_RESUME\n"
+                        "gcode:\n  BASE_RESUME\n\n"
+                        "[gcode_macro CANCEL_PRINT]\nrename_existing: BASE_CANCEL_PRINT\n"
+                        "gcode:\n  CLEAR_PAUSE\n  BASE_CANCEL_PRINT\n"
+                    )
+
             # Copy G-code to virtual SD card location
             gcode_dir = tmp / "gcodes"
-            gcode_dir.mkdir()
+            gcode_dir.mkdir(parents=True, exist_ok=True)
             if gcode_path:
                 import shutil
 
@@ -534,6 +579,33 @@ def run_simulation(
                     klippy_log=content,
                 )
             log.info("Klippy ready")
+
+            if serve:
+                log.info(
+                    "SERVE: klippy ready, holding for Moonraker. api=%s",
+                    api_socket,
+                )
+                (tmp / "SERVE_READY").write_text(
+                    "api_socket=%s\nklippy_log=%s\nevents_dir=%s\n"
+                    % (api_socket, klippy_log, log_dir / "events")
+                )
+                try:
+                    while klippy_proc.poll() is None:
+                        time.sleep(1.0)
+                except KeyboardInterrupt:
+                    pass
+                return SimResult(
+                    success=(klippy_proc.poll() in (None, 0)),
+                    print_time_s=0,
+                    wall_time_s=time.monotonic() - wall_start,
+                    speedup=0,
+                    error=None,
+                    klippy_log=(
+                        klippy_log.read_text(errors="replace")
+                        if klippy_log.exists()
+                        else ""
+                    ),
+                )
 
             # Endstop triggering is handled by the libsim_intercept.so
             # shim's auto-endstop feature (step counting → GPIO trigger).
@@ -1547,6 +1619,17 @@ def main():
         default=str(REPO_ROOT),
         help="Repository root (default: auto-detect)",
     )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Long-lived interactive mode for Moonraker/Mainsail",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Stable printer_data dir for --serve",
+    )
     args = parser.parse_args()
 
     if args.verbose:
@@ -1576,6 +1659,8 @@ def main():
             verbose=args.verbose,
             phase_stepping=args.phase_test,
             homing_test=args.homing_test,
+            serve=args.serve,
+            serve_data_dir=args.data_dir,
         )
 
     print("\n" + "=" * 60)

@@ -10,6 +10,25 @@ try:
 except ImportError:
     _native = None
 
+from . import structured_log
+
+# Print-state events that START or CONTINUE a print: the active print_id is
+# bound in the module global before the event fires (Stage 1 ordering), so the
+# handler pushes the current session + print context to the Rust host.
+_PRINT_ACTIVE_EVENTS = (
+    "print_stats:start_printing",
+    "print_stats:paused_printing",
+)
+# Print-state events that END a print: print_stats fires these BEFORE clearing
+# the print_id module global, so the handler must push an explicit empty print_id
+# rather than reading the (still-stale) module-global value.
+_PRINT_FINISH_EVENTS = (
+    "print_stats:complete_printing",
+    "print_stats:error_printing",
+    "print_stats:cancelled_printing",
+    "print_stats:reset",
+)
+
 
 # Methods that issue real motion / planner / MCU traffic. Under the stub
 # bridge there is no Rust engine to talk to, so these MUST NOT silently
@@ -24,6 +43,7 @@ _STUB_MOTION_METHODS = frozenset(
         "submit_move",
         "submit_dwell",
         "wait_moves",
+        "drain_motion",
         "set_position",
         "get_last_move_time",
         "update_limits",
@@ -35,6 +55,7 @@ _STUB_MOTION_METHODS = frozenset(
         "register_phase_bus",
         "register_phase_motor",
         "get_mcu_capabilities",
+        "ring_depth_for_axis",
         # Homing / endstop / probe motion
         "submit_homing_move",
         "submit_homing_move_async",
@@ -50,6 +71,7 @@ _STUB_MOTION_METHODS = frozenset(
         "get_homing_segment_reason",
         # MCU lifecycle / transport (no native engine to drive these either)
         "claim_mcu",
+        "claim_ethercat_node",
         "release_mcu",
         "detach_serial",
         "attach_serial",
@@ -61,6 +83,37 @@ _STUB_MOTION_METHODS = frozenset(
         "bridge_send",
     }
 )
+
+
+def attach_structured_logging(native, printer, events_dir):
+    # Install the Rust host structured-logging subscriber and push the current
+    # session/print context across the PyO3 seam. Honors the binding-timing
+    # invariant: session_id is already bound (printer.py startup) by the time
+    # the bridge is constructed, and this runs before any MCU attach/configure
+    # call that could emit a Rust log.
+    #
+    # events_dir is None on a host with no logfile (e.g. --debugoutput); in that
+    # case the durable jsonl sink is not initialized, but the session context is
+    # still pushed so any Rust logging that an external subscriber captures
+    # carries the session id.
+    if events_dir:
+        native.init_logging(events_dir)
+    native.set_session_context(
+        structured_log.get_session(), structured_log.get_print()
+    )
+
+    def _push_ctx(*_args):
+        native.set_session_context(
+            structured_log.get_session(), structured_log.get_print()
+        )
+
+    def _clear_ctx(*_args):
+        native.set_session_context(structured_log.get_session(), "")
+
+    for ev in _PRINT_ACTIVE_EVENTS:
+        printer.register_event_handler(ev, _push_ctx)
+    for ev in _PRINT_FINISH_EVENTS:
+        printer.register_event_handler(ev, _clear_ctx)
 
 
 class _StubBridge:
@@ -126,6 +179,9 @@ class MotionBridgeWrapper:
 
     def claim_mcu(self, label, serial_path, baud):
         return self._bridge.claim_mcu(label, serial_path, baud)
+
+    def claim_ethercat_node(self, label, socket_path):
+        return self._bridge.claim_ethercat_node(label, socket_path)
 
     def release_mcu(self, handle):
         return self._bridge.release_mcu(handle)
@@ -210,10 +266,27 @@ class MotionBridgeWrapper:
     # Phase 1: serial attach + identify
     # ------------------------------------------------------------------
 
-    def attach_serial(self, mcu_handle, serial_path, baud, timeout_s=30.0):
-        """Open serial port, run identify handshake, spawn reactor thread."""
+    def attach_serial(
+        self,
+        mcu_handle,
+        serial_path,
+        baud,
+        timeout_s=30.0,
+        klippy_non_critical=False,
+    ):
+        """Open serial port, run identify handshake, spawn reactor thread.
+
+        ``klippy_non_critical`` mirrors the owning MCU's ``is_non_critical``
+        config flag. It feeds the bridge's per-MCU criticality gate: a
+        non-critical MCU's transport drop does NOT abort the klippy process
+        (klippy's own non-critical-disconnect / reconnect path handles it),
+        whereas a critical motion MCU's drop keeps the abort that forces a
+        systemd restart. The bridge additionally treats any
+        Klipper-protocol-only attachment (kalico identify timed out) as
+        non-critical regardless of this flag.
+        """
         return self._bridge.attach_serial(
-            mcu_handle, serial_path, baud, timeout_s
+            mcu_handle, serial_path, baud, timeout_s, klippy_non_critical
         )
 
     def get_identify_data(self, mcu_handle):
@@ -227,6 +300,15 @@ class MotionBridgeWrapper:
         don't speak kalico-native, or before attach_serial has completed.
         """
         return self._bridge.get_mcu_capabilities(mcu_handle)
+
+    def ring_depth_for_axis(self, mcu_handle, axis_idx):
+        """Return the per-axis ring depth (u16) for the given MCU and axis.
+
+        This is the single source of truth shared between the pump's flow-
+        control accounting and the kalico_configure_axis wire command.
+        init_planner must have been called before this method.
+        """
+        return self._bridge.ring_depth_for_axis(mcu_handle, axis_idx)
 
     def configure_axes(
         self,
@@ -394,8 +476,7 @@ class MotionBridgeWrapper:
         shaper_freq_x,
         shaper_type_y,
         shaper_freq_y,
-        octopus_handle,
-        f446_handle,
+        mcus,
         window_capacity=32,
         beta_max_iters=10,
     ):
@@ -409,8 +490,7 @@ class MotionBridgeWrapper:
             shaper_freq_x,
             shaper_type_y,
             shaper_freq_y,
-            octopus_handle,
-            f446_handle,
+            mcus,
             window_capacity,
             beta_max_iters,
         )
@@ -420,6 +500,9 @@ class MotionBridgeWrapper:
 
     def wait_moves(self):
         return self._bridge.wait_moves()
+
+    def drain_motion(self):
+        return self._bridge.drain_motion()
 
     def submit_dwell(self, duration_s):
         return self._bridge.submit_dwell(duration_s)

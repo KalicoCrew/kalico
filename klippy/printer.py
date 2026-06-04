@@ -33,10 +33,18 @@ from . import (
     pins,
     queuelogger,
     reactor,
+    structured_log,
     util,
     webhooks,
 )
 from .extras.danger_options import get_danger_options
+
+
+def events_dir_for(logfile):
+    if not logfile:
+        return None
+    return os.path.join(os.path.dirname(os.path.abspath(logfile)), "events")
+
 
 message_ready = "Printer is ready"
 
@@ -318,6 +326,15 @@ class Printer:
 
             bridge = motion_bridge_mod.MotionBridgeWrapper(self.reactor)
             self.add_object("motion_bridge", bridge)
+            # Wire the Rust host structured-logging subscriber + push the
+            # session context across the PyO3 seam, before any MCU
+            # attach/configure call can emit a Rust log (binding-timing
+            # invariant, spec §6). Inside the try block: no bridge → no attach.
+            motion_bridge_mod.attach_structured_logging(
+                bridge.get_bridge(),
+                self,
+                self.get_start_args().get("log_events_dir"),
+            )
         except (ImportError, TypeError):
             pass
         # Create printer objects
@@ -331,6 +348,7 @@ class Printer:
             "respond",
             "exclude_object",
             "telemetry",
+            "log_observability",
         ]:
             self.load_object(config, section_config, None)
         if self.get_start_args().get("debuginput") is not None:
@@ -697,6 +715,15 @@ def main():
     if options.debugoutput:
         start_args["debugoutput"] = options.debugoutput
         start_args.update(options.dictionary)
+    # Bind the session id BEFORE the first log line (spec §6 binding-timing).
+    session_id = structured_log.make_session_id()
+    structured_log.bind_session(session_id)
+    start_args["session_id"] = session_id
+
+    edir = events_dir_for(options.logfile)
+    start_args["log_events_dir"] = edir
+    if edir is not None:
+        structured_log.check_log_space(edir)
     bglogger = None
     if options.logfile:
         start_args["log_file"] = options.logfile
@@ -704,6 +731,7 @@ def main():
             filename=options.logfile,
             debuglevel=debuglevel,
             rotate_log_at_restart=options.rotate_log_at_restart,
+            events_dir=edir,
         )
         if options.rotate_log_at_restart:
             bglogger.doRollover()

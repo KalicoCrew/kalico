@@ -40,7 +40,7 @@ fn step_mode_discriminants_are_stable() {
 
 #[test]
 fn constants_match_spec() {
-    assert_eq!(N_AXES, 4);
+    assert_eq!(N_AXES, 8);
     assert_eq!(MAX_STEPPERS_PER_AXIS, 4);
     // Sanity: TypeIds we expect to construct exist and are nameable.
     let _ = core::mem::size_of::<StepperRef>();

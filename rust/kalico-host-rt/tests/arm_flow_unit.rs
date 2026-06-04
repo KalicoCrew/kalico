@@ -341,21 +341,18 @@ fn request_id_is_monotonic_across_arm_attempts() {
         ])
     });
 
-    // Two separate arm responders (one per arm attempt).
-    for _ in 0..2 {
-        let mock_clone = mock.clone();
-        std::thread::spawn(move || {
-            let _ = mock_clone.wait_for_call("kalico_stream_arm_response");
-            mock_clone.complete_call(
-                "kalico_stream_arm_response",
-                mp_with(&[
-                    ("result", MessageValue::I32(0)),
-                    ("armed_t_start_lo", MessageValue::U32(0)),
-                    ("armed_t_start_hi", MessageValue::U32(0)),
-                ]),
-            );
-        });
-    }
+    // Arm: synchronous responder shared by both arm attempts. The old
+    // shape — two spawned wait_for_call threads on the same response
+    // name — raced: wait_for_call is level-triggered and does not claim
+    // the pending call, so both threads could wake on the first arm and
+    // leave the second arm unanswered → Transport(Timeout) flake.
+    mock.install_responder("kalico_stream_arm_response", |_cmd, _call_time| {
+        mp_with(&[
+            ("result", MessageValue::I32(0)),
+            ("armed_t_start_lo", MessageValue::U32(0)),
+            ("armed_t_start_hi", MessageValue::U32(0)),
+        ])
+    });
 
     let mut mcus: Vec<(SharedMock, ClockSyncEstimator)> = vec![(mock.clone(), est)];
 

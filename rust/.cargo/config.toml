@@ -28,6 +28,30 @@ rustflags = ["-C", "link-arg=-undefined", "-C", "link-arg=dynamic_lookup"]
 # disconnect (host BrokenPipe) because the FFI's engine.configure() pulled
 # in a cortex-m7-only instruction encoding compiled under the prior
 # target-cpu=cortex-m7 setting. Switching to cortex-m4 here is the fix.
+# Cortex-M0+ (ARMv6-M) — STM32G0B1, BTT EBB SB2209.
+#
+# WHY `--cfg portable_atomic_unsafe_assume_single_core`:
+#   ARMv6-M has no LDREX/STREX instructions, so the standard library's
+#   `core::sync::atomic` does NOT provide fetch_add / compare_exchange /
+#   swap on this architecture. `portable_atomic`'s software fallback for
+#   those operations uses brief interrupt-disable critical sections instead.
+#   The `portable_atomic_unsafe_assume_single_core` cfg activates that
+#   fallback. It is SOUND here because the STM32G0B1 is a single-core MCU;
+#   the engine's atomics are used only for ISR↔foreground coordination,
+#   which interrupt masking serialises correctly on a single core.
+#
+# WHY this cfg is NOT added to the thumbv7em section:
+#   H7 and F4 are ARMv7-M targets that DO have LDREX/STREX. On thumbv7em,
+#   `portable_atomic` compiles RMW operations to native exclusive-monitor
+#   instructions — the interrupt-mask fallback is never used. Adding the
+#   cfg there would be misleading and unnecessary.
+[target.thumbv6m-none-eabi]
+rustflags = [
+    "-C", "target-cpu=cortex-m0plus",
+    "-C", "link-arg=--nmagic",
+    "--cfg", "portable_atomic_unsafe_assume_single_core",
+]
+
 [target.thumbv7em-none-eabi]
 rustflags = [
     "-C", "target-cpu=cortex-m4",

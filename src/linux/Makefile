@@ -24,7 +24,8 @@ CFLAGS += -Irust/kalico-c-api/include
 # host_tick.o calls into libkalico (kalico_runtime_tick) and libkalico
 # calls back out (runtime_tick_enable / read_cyccnt). Wrap with
 # --start-group/--end-group so ld iterates until both sides resolve.
-KALICO_LIB := rust/target/release/libkalico_c_api.a
+# KALICO_LIB is set by src/Makefile's MACH_LINUX block (its own target-linux
+# dir, mirroring the per-arch STM32 paths) — included before this file.
 CFLAGS_klipper.elf := -Wl,--start-group $(KALICO_LIB) -Wl,--end-group $(CFLAGS_klipper.elf)
 $(OUT)klipper.elf: $(KALICO_LIB)
 

@@ -12,6 +12,7 @@ members = [
     "motion-bridge",
     "kalico-native-transport",
     "kalico-protocol",
+    "kalico-ethercat-rt",
 ]
 exclude = ["gcode/fuzz"]
 resolver = "2"
@@ -70,12 +71,10 @@ float_cmp = "allow"
 uninlined_format_args = "allow"
 unreadable_literal = "allow"
 wildcard_in_or_patterns = "allow"
-manual_map_entry = "allow"
 map_unwrap_or = "allow"
 let_and_return = "allow"
 redundant_closure_for_method_calls = "allow"
 ref_as_ptr = "allow"
-borrow_as_raw_pointer = "allow"
 large_stack_arrays = "allow"
 missing_fields_in_debug = "allow"
 cast_possible_wrap = "allow"
@@ -100,7 +99,6 @@ trivially_copy_pass_by_ref = "allow"
 semicolon_if_nothing_returned = "allow"
 match_on_vec_items = "allow"
 manual_let_else = "allow"
-match_unit_value = "allow"
 bool_assert_comparison = "allow"
 checked_conversions = "allow"
 enum_variant_names = "allow"
@@ -110,12 +108,10 @@ manual_clamp = "allow"
 if_then_some_else_none = "allow"
 only_used_in_recursion = "allow"
 default_trait_access = "allow"
-manual_slice_copy = "allow"
 map_err_ignore = "allow"
 result_unit_err = "allow"
 or_fun_call = "allow"
 single_match = "allow"
-manual_copy = "allow"
 derivable_impls = "allow"
 panic_in_result_fn = "allow"
 if_same_then_else = "allow"
@@ -126,7 +122,6 @@ option_map_or_none = "allow"
 panic = "allow"
 manual_memcpy = "allow"
 new_without_default = "allow"
-if_then_panic = "allow"
 ignored_unit_patterns = "allow"
 extra_unused_lifetimes = "allow"
 unnecessary_map_or = "allow"
@@ -159,6 +154,34 @@ codegen-units = 1
 panic = "abort"
 debug = true
 overflow-checks = false
+
+# Build-time tooling (proc-macros, build scripts, and their dependencies — e.g.
+# syn, cbindgen) is never shipped and does not need optimization or debuginfo.
+# The release profile's opt-level=3 + debug=true makes compiling `syn` alone
+# OOM-kill rustc on a 1 GB host (Pi 3B), and it needlessly slows every build.
+# opt-level=0 + no debuginfo cuts that compile's peak memory ~4x. This applies
+# ONLY to build-time crates (cargo's build-override never touches normal
+# dependencies), so emitted runtime/MCU code — and the firmware
+# disasm-identical guarantee — is unaffected.
+[profile.release.build-override]
+opt-level = 0
+debug = false
+
+# `cbindgen` is a normal `[dependencies]` entry (kalico-c-api, behind the
+# `dep:cbindgen` feature, used by the gen-headers binary), so cargo's
+# build-override above does NOT cover it. `syn` is pulled in again via
+# cbindgen → serde_derive on that path and compiles at opt-level=3 under the
+# base release profile, which is the heavy compile that re-triggers OOM.
+# Per-package overrides apply to normal deps, closing the gap. These crates
+# are build-time-only and never appear in the shipped staticlib or MCU
+# firmware, so opt0 is free — MCU builds pull zero syn or cbindgen.
+[profile.release.package.syn]
+opt-level = 0
+debug = false
+
+[profile.release.package.cbindgen]
+opt-level = 0
+debug = false
 
 [profile.dev]
 opt-level = 1            # eval correctness tests run faster than -O0; still debuggable

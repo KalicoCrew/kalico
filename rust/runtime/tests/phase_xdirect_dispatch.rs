@@ -1,13 +1,4 @@
-#![allow(
-    clippy::ref_as_ptr,
-    clippy::float_cmp,
-    clippy::cast_sign_loss,
-    clippy::cast_lossless,
-    clippy::too_many_lines,
-    clippy::uninlined_format_args,
-    clippy::doc_markdown
-)]
-
+#![cfg(feature = "motion-module-stepper")]
 //! End-to-end test for the Phase-mode dispatch path.
 //!
 //! Verifies that, given:
@@ -30,12 +21,12 @@
 use core::sync::atomic::{AtomicI16, AtomicI32, AtomicU8, Ordering};
 use heapless::Vec;
 
+use runtime::dispatch_stepper::dispatch_axis;
 use runtime::phase_lut::PHASE_LUT;
 use runtime::state::{MAX_STEPPER_OIDS, SharedState};
 use runtime::step_queue::StepQueue;
 use runtime::stepping_state::{AxisConfig, MAX_STEPPERS_PER_AXIS, StepMode, StepperRef};
 use runtime::test_xdirect_capture;
-use runtime::tick::dispatch_axis;
 
 /// Build a minimal `StepperRef` with a real TMC CS OID so `dispatch_phase`
 /// enters the SPI-capture branch.
@@ -59,12 +50,8 @@ fn make_phase_axis(microstep_distance: f32, stepper: StepperRef) -> AxisConfig {
     AxisConfig {
         mode: AtomicU8::new(StepMode::Phase as u8),
         steppers,
-        curve_handle: None,
-        piece_cursor: 0,
-        piece: None,
-        piece_start_time_cycles: 0,
-        last_step_count: 0,
         microstep_distance,
+        ..AxisConfig::new_unconfigured()
     }
 }
 
@@ -95,6 +82,7 @@ fn configure_phase_slot(shared: &SharedState, motor_idx: usize, axis_idx: usize)
 /// may drift if the LUT precision changes.
 #[test]
 fn phase_dispatch_records_correct_coils_for_motor_0() {
+    let _guard = test_xdirect_capture::lock_for_test();
     test_xdirect_capture::clear();
 
     let shared = SharedState::new();
@@ -144,6 +132,7 @@ fn phase_dispatch_records_correct_coils_for_motor_0() {
 /// entry by scanning `phase_slot_idx`. Motor 2 maps to axis 1 (Y).
 #[test]
 fn phase_dispatch_resolves_motor_idx_from_slot_table() {
+    let _guard = test_xdirect_capture::lock_for_test();
     test_xdirect_capture::clear();
 
     let shared = SharedState::new();
@@ -194,6 +183,7 @@ fn phase_dispatch_resolves_motor_idx_from_slot_table() {
 /// produce a capture — it has no TMC driver to write to.
 #[test]
 fn phase_dispatch_no_capture_for_pulse_only_stepper() {
+    let _guard = test_xdirect_capture::lock_for_test();
     test_xdirect_capture::clear();
 
     let shared = SharedState::new();
@@ -252,6 +242,7 @@ fn phase_dispatch_no_capture_for_pulse_only_stepper() {
 /// from consecutive phase_slot_idx entries for the same axis.
 #[test]
 fn phase_dispatch_two_steppers_two_captures() {
+    let _guard = test_xdirect_capture::lock_for_test();
     test_xdirect_capture::clear();
 
     let shared = SharedState::new();
@@ -270,12 +261,8 @@ fn phase_dispatch_two_steppers_two_captures() {
     let mut axis = AxisConfig {
         mode: AtomicU8::new(StepMode::Phase as u8),
         steppers,
-        curve_handle: None,
-        piece_cursor: 0,
-        piece: None,
-        piece_start_time_cycles: 0,
-        last_step_count: 0,
         microstep_distance: 0.0125,
+        ..AxisConfig::new_unconfigured()
     };
 
     let q_ptr: *mut StepQueue = &mut q;
@@ -317,6 +304,7 @@ fn phase_dispatch_two_steppers_two_captures() {
 /// PHASE_LUT[0] = (0, 248) by the sin/cos construction (sin(0)=0, cos(0)=1).
 #[test]
 fn phase_dispatch_at_phase_zero() {
+    let _guard = test_xdirect_capture::lock_for_test();
     test_xdirect_capture::clear();
 
     let shared = SharedState::new();
@@ -355,6 +343,7 @@ fn phase_dispatch_at_phase_zero() {
 /// the misconfiguration.
 #[test]
 fn phase_dispatch_empty_slot_table_uses_sentinel_motor_idx() {
+    let _guard = test_xdirect_capture::lock_for_test();
     test_xdirect_capture::clear();
 
     let shared = SharedState::new();

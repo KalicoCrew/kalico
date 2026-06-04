@@ -5,7 +5,7 @@
 # Polls runtime_query_status every 1 second for `--minutes` minutes; FAILs
 # immediately on any FAULT status. Idempotent — can be killed and restarted.
 #
-# Pre-flight: requires flashed H723 hardware with CONFIG_KALICO_RUNTIME=y
+# Pre-flight: requires flashed H723 hardware (kalico runtime firmware)
 # and a representative segment chain pushed to the runtime (e.g. by running
 # test_h723_first_light.py beforehand, or by a parallel slicer-driven workload).
 import argparse

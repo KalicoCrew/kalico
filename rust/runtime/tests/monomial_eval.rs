@@ -130,7 +130,7 @@ fn bernstein_to_monomial_with_duration_rescales_coefficients() {
         + piece.coeffs[1] * 25e-6
         + piece.coeffs[2] * (25e-6 * 25e-6)
         + piece.coeffs[3] * (25e-6 * 25e-6 * 25e-6);
-    assert!((p - 10.0).abs() < 1e-3, "P(25µs) = {p} (expected 10.0)");
+    assert!((p - 10.0).abs() < 1e-3, "P(25µs) = {} (expected 10.0)", p);
     assert!((piece.duration - 25e-6).abs() < 1e-12);
     // vel_coeffs pre-baked: vc0 = c1, vc1 = 2*c2, vc2 = 3*c3
     assert!((piece.vel_coeffs[0] - 4e5).abs() < 1e-3);

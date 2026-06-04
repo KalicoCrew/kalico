@@ -400,13 +400,26 @@ class SerialReader:
                 0,
             )
         handle = self.mcu._bridge_handle
+        # Forward klippy's per-MCU criticality so the bridge's reactor wedge
+        # detector matches klippy's own non-critical-disconnect machinery: a
+        # non-critical MCU (e.g. the Beacon) must not abort the whole process
+        # on a transport drop. Default False (critical) if the MCU predates
+        # the attribute.
+        klippy_non_critical = bool(getattr(self.mcu, "is_non_critical", False))
         logging.info(
-            "%sbridge attach_serial %s (handle=%s)",
+            "%sbridge attach_serial %s (handle=%s, non_critical=%s)",
             self.warn_prefix,
             filename,
             handle,
+            klippy_non_critical,
         )
-        bridge.attach_serial(handle, filename, 0, timeout_s=30.0)
+        bridge.attach_serial(
+            handle,
+            filename,
+            0,
+            timeout_s=30.0,
+            klippy_non_critical=klippy_non_critical,
+        )
         identify_data = bridge.get_identify_data(handle)
         logging.info(
             "%sbridge identify done (%d bytes)",

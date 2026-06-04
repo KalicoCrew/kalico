@@ -43,7 +43,26 @@ volatile uint8_t runtime_liveness_ok = 1;
 // monotonic-derived counter that runtime_cyccnt_read returns.
 volatile uint32_t runtime_sim_cyccnt = 0;
 
-#define HOST_TICK_HZ 40000UL
+// Host stubs: no TIM5 exception frame; Rust -311 path externs resolve to 0.
+__attribute__((used, externally_visible))
+uint32_t runtime_tim5_stacked_pc(void) { return 0; }
+__attribute__((used, externally_visible))
+uint32_t runtime_tim5_stacked_exc(void) { return 0; }
+
+// The host tick fires at the motion sample rate. It MUST equal the rate the
+// engine derives its sample_period from (CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ,
+// sample_period_cycles = CLOCK_FREQ / sample_rate). If the tick rate and the
+// engine's expected period disagree, the per-tick inter-arrival gap differs
+// from sample_period and the runtime's TickIntervalExceeded guard
+// (rust/runtime/src/tick.rs) fires on the first active tick — which is exactly
+// the -311 fault seen on the Pi 3B when this was hardwired to 1000 while the
+// MACH_LINUX sample-rate default was 10000 (a 10x mismatch).
+//
+// On a stock (non-PREEMPT_RT) Pi kernel the achievable rate is ~1 kHz
+// (clock_nanosleep resolution floor at HZ=1000), so the MACH_LINUX Kconfig
+// default for CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ is 1000; higher rates need
+// a PREEMPT_RT kernel and a SCHED_FIFO launch (-r).
+#define HOST_TICK_HZ ((unsigned long)CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ)
 #define HOST_TICK_NS (1000000000UL / HOST_TICK_HZ)
 
 static atomic_int host_tick_enabled = 0;
@@ -83,6 +102,7 @@ runtime_host_widened_clock_now(void)
     return timer_read_time_u64();
 }
 
+#if CONFIG_KALICO_SIM
 // Step pin → GPIO line mapping for the sim step queue consumer.
 // Matches printer_real/config after pin-overrides.toml:
 // X(motor0)=PG4→gpio18, Y(motor1)=PF11→gpio7, Z(motor2)=PG0→gpio15.
@@ -90,19 +110,29 @@ static const int step_gpio_lines[N_AXIS_STEP_QUEUES] = { 18, 7, 15, -1 };
 
 // dlsym-resolved shim function for notifying auto-endstop of steps.
 static void (*sim_notify_step)(int chip, int line, int32_t n_steps);
+#endif
 
 static void *
 host_tick_main(void *arg)
 {
     (void)arg;
 
-    // Lower priority so the main thread's ppoll (which advances vtime)
-    // preempts us when both are runnable.
+#if CONFIG_KALICO_SIM
+    // Sim build: throughput is irrelevant and the main thread's ppoll must
+    // advance virtual time, so deprioritise the tick thread below it.
     pid_t tid = (pid_t)syscall(SYS_gettid);
     setpriority(PRIO_PROCESS, tid, 19);
 
     // Resolve the shim's step-notification function.
     sim_notify_step = dlsym(RTLD_DEFAULT, "sim_intercept_notify_step");
+#else
+    // Real Linux MCU: this tick is the motion ISR. Inherit the process
+    // scheduler — SCHED_FIFO at real-time priority when launched with `-r`
+    // (see main.c realtime_setup) — rather than self-demoting. A
+    // deprioritised tick thread cannot hold cadence under load and trips
+    // TickIntervalExceeded. (nice has no effect on a SCHED_FIFO thread; the
+    // old setpriority was only meaningful, and only correct, for sim.)
+#endif
 
     struct timespec next;
     clock_gettime(CLOCK_MONOTONIC, &next);
@@ -127,17 +157,26 @@ host_tick_main(void *arg)
         (void)runtime_cyccnt_read();
         kalico_runtime_tick_sample(runtime_handle);
 
-        // Drain step queues: pop entries pushed by tick_sample and
-        // notify the auto-endstop shim so it can count step pulses.
+        // Drain the step queues populated by tick_sample. The drain MUST run
+        // every tick in every build flavor, or the queue overflows
+        // (StepQueueOverflow). In a sim build, notify the auto-endstop shim so
+        // it can count pulses. NOTE: raw STEP/DIR GPIO pulse emission on a real
+        // Linux MCU is not yet wired here — TMC phase-stepping over SPI
+        // (dispatch_phase → phase_stepping_write_xdirect) is the supported
+        // real-hardware stepping path; STEP/DIR GPIO output is a follow-on.
         for (int axis = 0; axis < N_AXIS_STEP_QUEUES; axis++) {
             StepQueue *q = &step_queues[axis];
             while (q->head != q->tail) {
+#if CONFIG_KALICO_SIM
                 uint16_t idx = q->head & (STEP_QUEUE_DEPTH - 1);
                 int8_t dir = q->buf[idx].dir;
+#endif
                 q->head++;
+#if CONFIG_KALICO_SIM
                 if (sim_notify_step && step_gpio_lines[axis] >= 0)
                     sim_notify_step(0, step_gpio_lines[axis],
                                     dir ? -1 : 1);
+#endif
             }
         }
     }
@@ -198,11 +237,11 @@ runtime_tick_enable(void)
         kalico_runtime_install_step_queues(runtime_handle,
                                            (uint8_t *)step_queues);
     }
-    // MACH_LINUX always enables the tick so the runtime evaluates
-    // segments and pushes to the step queues installed above. On real
-    // MCU hardware the tick is gated on count_modulated_steppers > 0,
-    // but the Linux sim needs it unconditionally because there is no
-    // separate step-event path for regular-stepping motors.
+    // Enable the tick unconditionally so the runtime evaluates segments and
+    // pushes to the step queues installed above. This matches the MCU, which
+    // now arms TIM5 unconditionally at init (free-running from boot, no arm
+    // gate); the Linux sim likewise has no separate step-event path for
+    // regular-stepping motors, so the tick must always be on.
     atomic_store_explicit(&host_tick_enabled, 1, memory_order_release);
 }
 
@@ -210,4 +249,28 @@ __attribute__((used)) void
 runtime_tick_disable(void)
 {
     atomic_store_explicit(&host_tick_enabled, 0, memory_order_release);
+}
+
+// Host stubs for the dedicated step-output timer. On the MCU a hardware timer
+// (TIM3/TIM2) drains step_queues; on the host the pthread loop drains them
+// inline, so the kick is a no-op here. Stubs satisfy extern references from
+// src/runtime_tick.c; `used` prevents --gc-sections from dropping them.
+static uint32_t host_step_out_target;
+
+__attribute__((used)) void
+step_output_timer_arm(uint32_t cycle_abs)
+{
+    host_step_out_target = cycle_abs;
+}
+
+__attribute__((used)) uint32_t
+step_output_timer_armed_target(void)
+{
+    return host_step_out_target;
+}
+
+__attribute__((used)) uint8_t
+step_output_timer_is_running(void)
+{
+    return 0;  // host: never "running"; kick always treated as first-arm (no-op)
 }

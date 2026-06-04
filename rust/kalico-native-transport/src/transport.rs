@@ -19,9 +19,7 @@ use crate::bootstrap::{
 use crate::connection::Connection;
 use crate::demux::{Demuxer, Frame, StreamError};
 use crate::frame::{CHANNEL_CONTROL, CHANNEL_EVENTS, encode_frame};
-use crate::wire_helpers::{
-    MESSAGE_VERSION_DEFAULT, decode_message_header, encode_message_header, status_event_reset_epoch,
-};
+use crate::wire_helpers::{MESSAGE_VERSION_DEFAULT, decode_message_header, encode_message_header};
 use kalico_protocol::{MessageKind, PROTO_VERSION};
 
 #[derive(Debug, Error)]
@@ -225,8 +223,8 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
             return Ok(());
         }
         let (frames, errors) = self.inner.demuxer.lock().unwrap().feed_slice(&buf[..n]);
-        for e in &errors {
-            Self::dispatch_error(e);
+        for e in errors {
+            self.dispatch_error(e);
         }
         for f in frames {
             self.dispatch_frame(f);
@@ -234,7 +232,7 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
         Ok(())
     }
 
-    fn dispatch_error(e: &StreamError) {
+    fn dispatch_error(&self, e: StreamError) {
         log::warn!("kalico stream error: {e}");
     }
 
@@ -276,13 +274,6 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
             log::warn!("unknown kalico message kind 0x{kind_raw:04x}");
             return;
         };
-
-        // Reset-epoch detection for StatusEvent.
-        if kind == MessageKind::StatusEvent {
-            if let Some(epoch) = status_event_reset_epoch(body) {
-                self.maybe_handle_epoch(epoch);
-            }
-        }
 
         if channel == CHANNEL_EVENTS || kind.is_event() {
             let _ = self.inner.events_tx.send(EventMessage {
@@ -360,43 +351,6 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
             },
         };
         let _ = self.inner.epoch_tx.send(evt);
-    }
-
-    fn maybe_handle_epoch(&self, observed: u32) {
-        let mut state = self.inner.state.lock().unwrap();
-        let ConnectionState::Identified { reset_epoch } = &*state else {
-            return;
-        };
-        if *reset_epoch == observed {
-            return;
-        }
-        let old = *reset_epoch;
-        // Atomic transition per spec §9 step (1)..(5):
-        //  1. Stop new sends — done by transitioning out of Identified.
-        //  2. Drop in-flight correlation IDs (return TransportError::Reset).
-        //  3. Discard pending RX bytes that haven't been dispatched.
-        //  4. Bubble up an "epoch-changed" signal.
-        //  5. Re-issue Identify and re-validate (caller drives this).
-        *state = ConnectionState::Unidentified;
-        drop(state);
-
-        // (2) drain pending calls.
-        let drained: Vec<PendingCall> = {
-            let mut p = self.inner.pending.lock().unwrap();
-            p.drain().map(|(_, v)| v).collect()
-        };
-        for p in drained {
-            let _ = p.notify.send(CallOutcome::Reset);
-        }
-        // (3) reset demuxer state.
-        *self.inner.demuxer.lock().unwrap() = Demuxer::new();
-        // (4) signal epoch change.
-        let _ = self
-            .inner
-            .epoch_tx
-            .send(EpochChange::Changed { old, new: observed });
-        // (5) re-identify is the caller's job (reactor / motion-bridge); we
-        // surface enough state for them to drive it.
     }
 
     fn fault(&self, msg: String) {

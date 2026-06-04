@@ -93,8 +93,7 @@ pub const KALICO_ERR_INVALID_ARG: i32 = -26;
 
 // Phase-stepping configure_axes (Task 4 / spec §3.2, §4.1).
 /// Spec §3.2 audible-band protection: at most 2 motors may be configured for
-/// phase stepping. Hard parse-time reject when the 33-byte
-/// `configure_axes_blob` requests more.
+/// phase stepping. Hard parse-time reject on excess motor count.
 pub const KALICO_ERR_INVALID_PHASE_AXIS_COUNT: i32 = -27;
 /// Two phase-stepped motors attempted to share a single SPI bus. Reserved
 /// for Task 6 (`runtime_modulated_tick`); declared here so the configure
@@ -120,6 +119,20 @@ pub const KALICO_ERR_SAMPLE_RATE_MISCONFIGURED: i32 = -304;
 pub const KALICO_ERR_POSITION_COUNT_OVERFLOW: i32 = -305;
 pub const KALICO_ERR_JOG_PARAMETERS_INVALID: i32 = -306;
 pub const KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING: i32 = -307;
+/// Spec §6 safety invariant: ISR reached a piece whose `start_time` is more than
+/// 2 ISR ticks in the past — MCU was not fed in time.  Hard fault.
+pub const KALICO_ERR_PIECE_START_IN_PAST: i32 = -308;
+/// Ring is full — `PushPieces` rejected because the axis ring has no space.
+pub const KALICO_ERR_RING_FULL: i32 = -309;
+/// Steps-per-sample limit exceeded — unrecoverable position-baseline discontinuity.
+pub const KALICO_ERR_STEPS_PER_SAMPLE_EXCEEDED: i32 = -310;
+/// TIM5 inter-arrival gap exceeded the allowed multiple of `sample_period_cycles`.
+/// The ISR was starved; fail loud before acting on stale time.
+pub const KALICO_ERR_TICK_INTERVAL_EXCEEDED: i32 = -311;
+/// `dispatch_axis` encountered a `StepMode` byte that is not `Pulse` (0) or
+/// `Phase` (1). Unknown mode — fails loud rather than silently dropping steps.
+/// Detail: `((axis_idx & 0xFF) << 16) | (mode & 0xFF)`.
+pub const KALICO_ERR_UNKNOWN_STEP_MODE: i32 = -312;
 
 /// Fault taxonomy. Spec §9.1. Each code has a specific recovery semantic;
 /// collapsing to a catch-all loses diagnostic information.
@@ -192,6 +205,15 @@ pub enum FaultCode {
     NoStep = -25,
     InvalidArg = -26,
 
+    // Phase-stepping configure_axes (Task 4 / spec §3.2, §4.1).
+    /// Spec §3.2 audible-band protection: at most 2 motors may be configured
+    /// for phase stepping. Hard parse-time reject on excess motor count.
+    InvalidPhaseAxisCount = -27,
+    /// Two phase-stepped motors attempted to share a single SPI bus. Reserved
+    /// for Task 6 (`runtime_modulated_tick`); declared here so the configure
+    /// path can future-detect the case at install time.
+    PhaseBusReentrant = -28,
+
     // Task 14: two-phase configure_axis faults.
     /// Phase mode is not yet available (SPI dispatch path is a follow-up).
     PhaseModeNotAvailable = -29,
@@ -214,6 +236,27 @@ pub enum FaultCode {
     PositionCountOverflow = -305,
     JogParametersInvalid = -306,
     StepRateExceedsMcuCeiling = -307,
+    /// ISR reached a piece whose `start_time` is more than 2 ISR ticks in the past.
+    PieceStartInPast = -308,
+    /// `PushPieces` rejected: axis ring is full.
+    RingFull = -309,
+    /// ISR pulse dispatch computed a single-sample step delta larger than
+    /// `MAX_STEPS_PER_SAMPLE`. This is an unrecoverable position-baseline
+    /// discontinuity — most commonly a missing/incorrect position seed, so the
+    /// motor-frame `last_step_count` baseline disagrees with the piece stream.
+    /// All motion stops; the host must reset before resuming (mirrors
+    /// `PieceStartInPast`).
+    StepsPerSampleExceeded = -310,
+    /// Gap between consecutive TIM5 ticks exceeded the allowed multiple of
+    /// `sample_period_cycles` — the ISR was starved (interrupts masked, an
+    /// equal-priority handler overran, or a tick was skipped/coalesced). The MCU
+    /// froze; fail loud before acting on stale time.
+    TickIntervalExceeded = -311,
+    /// `dispatch_axis` encountered a `StepMode` byte that is not `Pulse` (0)
+    /// or `Phase` (1). The byte is unknown to this firmware build; silently
+    /// dropping it would hide a host/firmware version mismatch, so we fail loud.
+    /// Detail encoding: `((axis_idx & 0xFF) << 16) | (mode & 0xFF)`.
+    UnknownStepMode = -312,
 }
 
 impl FaultCode {
@@ -229,6 +272,188 @@ impl FaultCode {
     #[allow(clippy::cast_sign_loss)] // intentional: negative i16 → u16 wire encoding
     pub const fn as_u16(self) -> u16 {
         (self as i32 as i16) as u16
+    }
+
+    /// Reconstruct a [`FaultCode`] from its sign-wrapped `u16` wire encoding.
+    ///
+    /// The wire carries `(self as i32 as i16) as u16` (see [`as_u16`]). To
+    /// invert: sign-extend `u16 → i16 → i32`, then match against every known
+    /// discriminant. Returns `None` for values that do not correspond to any
+    /// known variant.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use runtime::error::FaultCode;
+    /// assert_eq!(FaultCode::from_u16(0), Some(FaultCode::None));
+    /// // PieceStartInPast = -308; -308i16 as u16 = 0xFECC
+    /// assert_eq!(FaultCode::from_u16(0xFECC), Some(FaultCode::PieceStartInPast));
+    /// // TickIntervalExceeded = -311; -311i16 as u16 = 0xFEC9
+    /// assert_eq!(FaultCode::from_u16(0xFEC9), Some(FaultCode::TickIntervalExceeded));
+    /// assert_eq!(FaultCode::from_u16(0x1234), None);
+    /// ```
+    #[allow(clippy::cast_possible_wrap)] // intentional: sign-extend u16 → i16 → i32
+    pub fn from_u16(v: u16) -> Option<Self> {
+        let i = i32::from(v as i16);
+        Some(match i {
+            0 => Self::None,
+            // Step-5 carryover
+            -1 => Self::QueueFull,
+            -2 => Self::InvalidCurve,
+            -3 => Self::InvalidHandle,
+            -4 => Self::InvalidDuration,
+            -5 => Self::InvalidKinematics,
+            -6 => Self::NullPtr,
+            -7 => Self::NotInit,
+            -8 => Self::FaultLatched,
+            -9 => Self::Internal,
+            // Step 7-B motion-safety
+            -21 => Self::StepBurstExceeded,
+            -22 => Self::ZeroDurationSegment,
+            -23 => Self::HomingTrip,
+            // Step 7-D step-time scheduling
+            -24 => Self::CapabilityMissing,
+            -25 => Self::NoStep,
+            -26 => Self::InvalidArg,
+            // Phase-stepping configure_axes
+            -27 => Self::InvalidPhaseAxisCount,
+            -28 => Self::PhaseBusReentrant,
+            // Task 14 two-phase configure_axis
+            -29 => Self::PhaseModeNotAvailable,
+            -30 => Self::CurveLoadInvalid,
+            -31 => Self::MotionInProgress,
+            // Step-6 transport-layer
+            -100 => Self::BadCrc,
+            -101 => Self::FramingViolation,
+            -102 => Self::Disconnect,
+            -103 => Self::ProtocolVersionUnsupported,
+            // Step-6 clock-sync
+            -110 => Self::ClockSyncQuality,
+            -111 => Self::ClockSyncTimeout,
+            // Step-6 multi-MCU coordination
+            -120 => Self::ArmTimeout,
+            -121 => Self::ArmRejected,
+            -122 => Self::CrossMcuDesync,
+            // Step-6 buffer-budget
+            -130 => Self::Underrun,
+            -131 => Self::QueueOverrun,
+            -132 => Self::LivenessStalled,
+            -133 => Self::TraceOverflow,
+            // Step-6 protocol / state-machine
+            -140 => Self::StreamStateViolation,
+            -141 => Self::SegmentIdNonMonotonic,
+            // Step-6 time-domain
+            -150 => Self::TStartInPast,
+            -151 => Self::TEndBeforeTStart,
+            -152 => Self::SegmentTooShort,
+            -153 => Self::SegmentTooLong,
+            // Step-6 curve-pool
+            -160 => Self::InvalidCurveHandle,
+            -161 => Self::CurveReloadRejected,
+            -162 => Self::CurveFormatInvalid,
+            // Step-6 runtime-numerical
+            -170 => Self::NanInfOutput,
+            -171 => Self::BoundaryLoopOverflow,
+            -172 => Self::InternalInvariant,
+            // Step 7-C-io host-originated
+            -200 => Self::HostDisconnect,
+            -201 => Self::HostRetransmitExhausted,
+            -202 => Self::HostDispatcherTimeout,
+            // Step 8 stepping-redesign
+            -300 => Self::StepQueueOverflow,
+            -301 => Self::SpiQueueOverflow,
+            -302 => Self::MathNonFinite,
+            -303 => Self::PieceAdvanceUnderflow,
+            -304 => Self::SampleRateMisconfigured,
+            -305 => Self::PositionCountOverflow,
+            -306 => Self::JogParametersInvalid,
+            -307 => Self::StepRateExceedsMcuCeiling,
+            -308 => Self::PieceStartInPast,
+            -309 => Self::RingFull,
+            -310 => Self::StepsPerSampleExceeded,
+            -311 => Self::TickIntervalExceeded,
+            _ => return None,
+        })
+    }
+
+    /// Human-readable variant name for use in structured log output.
+    ///
+    /// Returns the variant's Rust identifier as a `&'static str`; never
+    /// allocates and is `no_std`-compatible.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use runtime::error::FaultCode;
+    /// assert_eq!(FaultCode::None.code_name(), "None");
+    /// assert_eq!(FaultCode::PieceStartInPast.code_name(), "PieceStartInPast");
+    /// assert_eq!(FaultCode::TickIntervalExceeded.code_name(), "TickIntervalExceeded");
+    /// ```
+    pub fn code_name(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::QueueFull => "QueueFull",
+            Self::InvalidCurve => "InvalidCurve",
+            Self::InvalidHandle => "InvalidHandle",
+            Self::InvalidDuration => "InvalidDuration",
+            Self::InvalidKinematics => "InvalidKinematics",
+            Self::NullPtr => "NullPtr",
+            Self::NotInit => "NotInit",
+            Self::FaultLatched => "FaultLatched",
+            Self::Internal => "Internal",
+            Self::StepBurstExceeded => "StepBurstExceeded",
+            Self::ZeroDurationSegment => "ZeroDurationSegment",
+            Self::HomingTrip => "HomingTrip",
+            Self::CapabilityMissing => "CapabilityMissing",
+            Self::NoStep => "NoStep",
+            Self::InvalidArg => "InvalidArg",
+            Self::InvalidPhaseAxisCount => "InvalidPhaseAxisCount",
+            Self::PhaseBusReentrant => "PhaseBusReentrant",
+            Self::PhaseModeNotAvailable => "PhaseModeNotAvailable",
+            Self::CurveLoadInvalid => "CurveLoadInvalid",
+            Self::MotionInProgress => "MotionInProgress",
+            Self::BadCrc => "BadCrc",
+            Self::FramingViolation => "FramingViolation",
+            Self::Disconnect => "Disconnect",
+            Self::ProtocolVersionUnsupported => "ProtocolVersionUnsupported",
+            Self::ClockSyncQuality => "ClockSyncQuality",
+            Self::ClockSyncTimeout => "ClockSyncTimeout",
+            Self::ArmTimeout => "ArmTimeout",
+            Self::ArmRejected => "ArmRejected",
+            Self::CrossMcuDesync => "CrossMcuDesync",
+            Self::Underrun => "Underrun",
+            Self::QueueOverrun => "QueueOverrun",
+            Self::LivenessStalled => "LivenessStalled",
+            Self::TraceOverflow => "TraceOverflow",
+            Self::StreamStateViolation => "StreamStateViolation",
+            Self::SegmentIdNonMonotonic => "SegmentIdNonMonotonic",
+            Self::TStartInPast => "TStartInPast",
+            Self::TEndBeforeTStart => "TEndBeforeTStart",
+            Self::SegmentTooShort => "SegmentTooShort",
+            Self::SegmentTooLong => "SegmentTooLong",
+            Self::InvalidCurveHandle => "InvalidCurveHandle",
+            Self::CurveReloadRejected => "CurveReloadRejected",
+            Self::CurveFormatInvalid => "CurveFormatInvalid",
+            Self::NanInfOutput => "NanInfOutput",
+            Self::BoundaryLoopOverflow => "BoundaryLoopOverflow",
+            Self::InternalInvariant => "InternalInvariant",
+            Self::HostDisconnect => "HostDisconnect",
+            Self::HostRetransmitExhausted => "HostRetransmitExhausted",
+            Self::HostDispatcherTimeout => "HostDispatcherTimeout",
+            Self::StepQueueOverflow => "StepQueueOverflow",
+            Self::SpiQueueOverflow => "SpiQueueOverflow",
+            Self::MathNonFinite => "MathNonFinite",
+            Self::PieceAdvanceUnderflow => "PieceAdvanceUnderflow",
+            Self::SampleRateMisconfigured => "SampleRateMisconfigured",
+            Self::PositionCountOverflow => "PositionCountOverflow",
+            Self::JogParametersInvalid => "JogParametersInvalid",
+            Self::StepRateExceedsMcuCeiling => "StepRateExceedsMcuCeiling",
+            Self::PieceStartInPast => "PieceStartInPast",
+            Self::RingFull => "RingFull",
+            Self::StepsPerSampleExceeded => "StepsPerSampleExceeded",
+            Self::TickIntervalExceeded => "TickIntervalExceeded",
+            Self::UnknownStepMode => "UnknownStepMode",
+        }
     }
 }
 

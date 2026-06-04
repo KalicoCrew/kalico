@@ -14,8 +14,7 @@
 //!
 //! Schema-level types (`MessageKind`, `PROTO_VERSION`, `SCHEMA_HASH`,
 //! `Identify`/`IdentifyResponse`) are re-exported from `kalico-protocol`.
-//! Wire-level helpers (per-message header encode/decode, `StatusEvent`
-//! field accessors used during demux) live in [`wire_helpers`].
+//! Wire-level helpers (per-message header encode/decode) live in [`wire_helpers`].
 
 pub mod bootstrap;
 pub mod connection;

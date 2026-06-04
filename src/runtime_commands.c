@@ -24,9 +24,8 @@
 
 extern void *runtime_handle;      // defined in src/runtime_tick.c
 
-// Aligned scratch buffers for curve-load are also declared here for
-// continuity with the legacy file layout — definitions live in
-// src/runtime_tick.c.
+// Scratch buffer declarations for the curve-load path are kept in
+// src/runtime_tick.c for historical layout continuity.
 
 void
 command_runtime_query_status(uint32_t *args)
@@ -255,19 +254,6 @@ command_runtime_extend_homing_deadline(uint32_t *args)
 DECL_COMMAND(command_runtime_extend_homing_deadline,
     "runtime_extend_homing_deadline arm_id=%u");
 
-void
-command_runtime_configure_axes(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf("kalico_configure_axes_response result=%i", -7);
-        return;
-    }
-    uint8_t kinematics = args[0];
-    int32_t r = kalico_configure_axes(runtime_handle, kinematics);
-    sendf("kalico_configure_axes_response result=%i", r);
-}
-DECL_COMMAND(command_runtime_configure_axes, "runtime_configure_axes kinematics=%c");
-
 // ---- Seed position: SET_KINEMATIC_POSITION → MCU engine origin fix --------
 //
 // When klippy issues SET_KINEMATIC_POSITION the host-side ShaperState is
@@ -298,62 +284,6 @@ command_runtime_seed_position(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_seed_position,
     "runtime_seed_position x_q16=%i y_q16=%i z_q16=%i");
-
-// ---- Step-6 §8.3 stream lifecycle commands ----------------------------
-// Phase 3.2 declares the wire surface; Phase 6 wires the actual state-
-// machine transitions in `runtime::stream`. The FFIs return -140
-// (KALICO_ERR_STREAM_STATE_VIOLATION) until Phase 6 lands.
-
-void
-command_runtime_stream_open(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf("kalico_stream_open_response result=%i credit_epoch=%u", -7, 0);
-        return;
-    }
-    uint32_t stream_id = args[0];
-    uint32_t credit_epoch = 0;
-    int32_t r = kalico_runtime_stream_open(
-        runtime_handle, stream_id, &credit_epoch);
-    sendf("kalico_stream_open_response result=%i credit_epoch=%u",
-          r, credit_epoch);
-}
-DECL_COMMAND(command_runtime_stream_open, "runtime_stream_open stream_id=%u");
-
-void
-command_runtime_stream_arm(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf(
-            "kalico_stream_arm_response result=%i armed_t_start_lo=%u armed_t_start_hi=%u",
-            -7, 0, 0);
-        return;
-    }
-    uint64_t t_start_t0 = ((uint64_t)args[1] << 32) | args[0];
-    uint32_t arm_lead_cycles = args[2];
-    uint64_t armed_t_start = 0;
-    int32_t r = kalico_runtime_stream_arm(
-        runtime_handle, t_start_t0, arm_lead_cycles, &armed_t_start);
-    sendf(
-        "kalico_stream_arm_response result=%i armed_t_start_lo=%u armed_t_start_hi=%u",
-        r, (uint32_t)armed_t_start, (uint32_t)(armed_t_start >> 32));
-}
-DECL_COMMAND(command_runtime_stream_arm,
-    "runtime_stream_arm t_start_t0_lo=%u t_start_t0_hi=%u arm_lead_cycles=%u");
-
-void
-command_runtime_stream_terminal(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf("kalico_stream_terminal_response result=%i", -7);
-        return;
-    }
-    uint32_t segment_id = args[0];
-    int32_t r = kalico_runtime_stream_terminal(runtime_handle, segment_id);
-    sendf("kalico_stream_terminal_response result=%i", r);
-}
-DECL_COMMAND(command_runtime_stream_terminal,
-    "runtime_stream_terminal segment_id=%u");
 
 void
 command_runtime_stream_flush(uint32_t *args)
@@ -399,167 +329,11 @@ DECL_COMMAND(command_runtime_clock_sync_request,
     "runtime_clock_sync_request request_id=%u "
     "host_send_time_lo=%u host_send_time_hi=%u");
 
-// ---- Step-6 §10.4 / Round-1 B9 diagnostic --------------------------------
-// Per-slot curve-pool generation snapshot. Used by the host after a fault to
-// decide whether the pool can be reused or a power-cycle is required.
-void
-command_runtime_query_pool_state(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf(
-            "kalico_pool_state_response result=%i slot_idx=%hu current_gen=%hu last_retired_gen=%hu",
-            -7, (uint16_t)0, (uint16_t)0, (uint16_t)0);
-        return;
-    }
-    uint16_t slot = args[0];
-    uint16_t current_gen = 0;
-    uint16_t last_retired_gen = 0;
-    int32_t r = runtime_handle_query_pool_state(
-        runtime_handle, slot, &current_gen, &last_retired_gen);
-    sendf(
-        "kalico_pool_state_response result=%i slot_idx=%hu current_gen=%hu last_retired_gen=%hu",
-        r, slot, current_gen, last_retired_gen);
-}
-DECL_COMMAND(command_runtime_query_pool_state,
-    "runtime_query_pool_state slot=%hu");
-
-// ---- 2026-05-18 phase-stepping diagnostic gate -----------------------------
-// Exposes `kalico_runtime_set_phase_trace_enabled` on the wire so host-side
-// sim tests (tools/test_sim_phase_stepping.py) can flip the per-print
-// PhaseStep trace push without going through the Klippy bridge crate.
-// Production builds default to off; tests turn it on for the duration of a
-// jog, drain the trace ring via the existing `kalico_trace` output frame,
-// and turn it off again.
-void
-command_runtime_set_phase_trace(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf("kalico_set_phase_trace_response result=%i", -7);
-        return;
-    }
-    uint8_t enabled = (uint8_t)args[0];
-    int32_t r = kalico_runtime_set_phase_trace_enabled(runtime_handle, enabled);
-    sendf("kalico_set_phase_trace_response result=%i", r);
-}
-DECL_COMMAND(command_runtime_set_phase_trace,
-    "runtime_set_phase_trace enabled=%c");
-
-// ---- 2026-05-18 configure_axes binary blob via msgproto --------------------
-// Production routes configure_axes through the kalico-native binary frame
-// transport (KALICO_MSG_CONFIGURE_AXES, see src/kalico_dispatch.c). That
-// path requires a separate sync byte (0x55) and CRC scheme that the
-// standalone host-io helper (tools/kalico_host_io.py) does not demux —
-// responses never reach Python callers driving the sim from a plain
-// pyserial socket. This DECL_COMMAND surfaces the same Rust FFI through
-// the standard Klipper msgproto path so sim tests can install per-motor
-// phase config (33-byte blob) without standing up the full bridge crate.
-// Accepts 20-byte (legacy), 25-byte (extended StepMode), or 33-byte
-// (phase-stepping per-motor SPI config) blobs.
-void
-command_runtime_configure_axes_blob(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf("kalico_configure_axes_blob_response result=%i", -7);
-        return;
-    }
-    uint32_t blob_len = args[0];
-    uint8_t *blob_ptr = command_decode_ptr(args[1]);
-    // Accept 20 / 25 / 26+3N (N in 0..=16). Rust parser validates the
-    // per-motor entries; wrapper only gates length to a recognized shape.
-    int accept = (blob_len == 20) || (blob_len == 25);
-    if (!accept && blob_len >= 26) {
-        uint32_t tail = blob_len - 26;
-        if (tail % 3 == 0 && (tail / 3) <= 16) {
-            accept = 1;
-        }
-    }
-    if (!accept) {
-        sendf("kalico_configure_axes_blob_response result=%i", -1);
-        return;
-    }
-    int32_t r = kalico_runtime_configure_axes_blob(runtime_handle,
-                                                   blob_ptr,
-                                                   blob_len);
-    if (r == 0) {
-        // New stepping path uses init_per_axis_step_timers; deleted in
-        // stepping-redesign-finish Task 17.
-    }
-    sendf("kalico_configure_axes_blob_response result=%i", r);
-}
-DECL_COMMAND(command_runtime_configure_axes_blob,
-    "runtime_configure_axes_blob blob=%*s");
-
-// ---- 2026-05-18 sim test driver: push_segment via msgproto -----------------
-// Mirrors KALICO_MSG_PUSH_SEGMENT through Klipper msgproto. The full 42-byte
-// segment body is encoded as a single %*s blob to keep the framed packet
-// under MESSAGE_MAX = 64 bytes (12 separate PT_uint32 args at max-varint
-// width would exceed the cap).
-//
-// Wire body layout matches kalico_dispatch.c::handle_push_segment §7.4:
-//   id u32 | x/y/z/e u32 each | t_start u64 | t_end u64 |
-//   kinematics u8 | e_mode u8 | extrusion_ratio_bits u32  (42 bytes total)
-void
-command_runtime_push_segment_msgproto(uint32_t *args)
-{
-    if (!runtime_handle) {
-        sendf(
-            "kalico_push_segment_msgproto_response result=%i "
-            "accepted_segment_id=%u credit_epoch=%u",
-            -7, 0, 0);
-        return;
-    }
-    uint32_t body_len = args[0];
-    uint8_t *body = command_decode_ptr(args[1]);
-    if (body_len != 42) {
-        sendf(
-            "kalico_push_segment_msgproto_response result=%i "
-            "accepted_segment_id=%u credit_epoch=%u",
-            -1, 0, 0);
-        return;
-    }
-    uint32_t id = (uint32_t)body[0] | ((uint32_t)body[1] << 8)
-                | ((uint32_t)body[2] << 16) | ((uint32_t)body[3] << 24);
-    uint32_t x_handle = (uint32_t)body[4] | ((uint32_t)body[5] << 8)
-                      | ((uint32_t)body[6] << 16) | ((uint32_t)body[7] << 24);
-    uint32_t y_handle = (uint32_t)body[8] | ((uint32_t)body[9] << 8)
-                      | ((uint32_t)body[10] << 16) | ((uint32_t)body[11] << 24);
-    uint32_t z_handle = (uint32_t)body[12] | ((uint32_t)body[13] << 8)
-                      | ((uint32_t)body[14] << 16) | ((uint32_t)body[15] << 24);
-    uint32_t e_handle = (uint32_t)body[16] | ((uint32_t)body[17] << 8)
-                      | ((uint32_t)body[18] << 16) | ((uint32_t)body[19] << 24);
-    uint64_t t_start = 0;
-    for (int i = 0; i < 8; i++)
-        t_start |= ((uint64_t)body[20 + i]) << (8 * i);
-    uint64_t t_end = 0;
-    for (int i = 0; i < 8; i++)
-        t_end |= ((uint64_t)body[28 + i]) << (8 * i);
-    uint8_t kinematics = body[36];
-    uint8_t e_mode = body[37];
-    uint32_t extrusion_ratio_bits = (uint32_t)body[38] | ((uint32_t)body[39] << 8)
-                                  | ((uint32_t)body[40] << 16) | ((uint32_t)body[41] << 24);
-    uint32_t accepted_id = 0, credit_epoch = 0;
-    int32_t r = runtime_handle_push_segment(
-        runtime_handle, id, x_handle, y_handle, z_handle, e_handle,
-        t_start, t_end, kinematics, e_mode, extrusion_ratio_bits,
-        &accepted_id, &credit_epoch);
-    if (r == 0) {
-        // New stepping path's TIM5 ISR dequeues segments directly; no
-        // producer timer to arm. Stepping-redesign-finish Task 17.
-    }
-    sendf(
-        "kalico_push_segment_msgproto_response result=%i "
-        "accepted_segment_id=%u credit_epoch=%u",
-        r, accepted_id, credit_epoch);
-}
-DECL_COMMAND(command_runtime_push_segment_msgproto,
-    "runtime_push_segment_msgproto body=%*s");
-
 // ---- 2026-05-18 phase-stepping SPI bus registration ----------------------
 // Closes the gap between the Rust runtime's per-motor phase_config storage
-// (installed via runtime_configure_axes_blob) and the C-side
-// `phase_stepping_write_xdirect` path. Without this command, every XDIRECT
-// write from the modulator hits the `if (!configured) return;` early-exit
-// in src/stm32/phase_stepping_spi.c and silently drops.
+// and the C-side `phase_stepping_write_xdirect` path. Without this command,
+// every XDIRECT write from the modulator hits the `if (!configured) return;`
+// early-exit in src/stm32/phase_stepping_spi.c and silently drops.
 //
 // Two-stage registration (2026-05-19 — fixes the multi-TMC5160-on-one-bus
 // CS-aliasing bug, see docs/superpowers/specs/2026-05-19-phase-stepping-
@@ -568,7 +342,7 @@ DECL_COMMAND(command_runtime_push_segment_msgproto,
 //      bus_id, installs the shared SPI cfg (rate, mode 3).
 //   2. `runtime_register_phase_motor motor_idx=%c bus_id=%c cs_pin_id=%c`
 //      — once per phase-stepped motor, installs that motor's CS GPIO.
-// Both must precede `runtime_configure_axes_blob`.
+// Both must precede the first `kalico_configure_axis` command.
 //
 // STM32-only because the underlying phase_stepping_spi.c is STM32-only.
 // On linux/sim hosts (non-STM32 mach) both return -88 ("not supported on
@@ -596,7 +370,7 @@ DECL_COMMAND(command_runtime_register_phase_bus,
 // would force the host to send symbolic pin names ("PA5") instead of the
 // raw stm32 GPIO encoding (port*16+pin = 5) used by the rest of the
 // phase_config wire surface. The `_id` suffix sidesteps the enum lookup
-// and keeps the encoding consistent with the 33-byte configure_axes blob.
+// and keeps the encoding consistent with the `kalico_configure_axis` path.
 void
 command_runtime_register_phase_motor(uint32_t *args)
 {

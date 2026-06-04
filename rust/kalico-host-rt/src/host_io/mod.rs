@@ -26,17 +26,18 @@ pub mod window;
 pub mod wire;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use arc_swap::ArcSwap;
 
-use crate::credit::CreditCounter;
 use crate::host_io::events::HostEvent;
 use crate::host_io::parser::MsgProtoParser;
-use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent, StatusEvent, TraceEvent};
+use crate::host_io::runtime_events::{
+    FaultEvent, McuLogEvent, RuntimeEvent, StatusEvent, TraceEvent,
+};
 use crate::passthrough_queue::{CommandQueueId, McuHandle, PassthroughEntry, PassthroughRouter};
 use crate::transport::{MessageParams, SubscribeError, Transport, TransportError};
 use std::sync::mpsc::SyncSender;
@@ -75,14 +76,24 @@ impl Default for KalicoHostIoConfig {
     }
 }
 
-/// Newtype wrapper for a retirement callback so `ReactorCommand` can remain
-/// `#[derive(Debug)]`. The underlying `Arc<dyn Fn(u32) + Send + Sync>` does
-/// not implement `Debug`, so we provide a trivial opaque representation.
-pub struct RetirementCallback(pub Arc<dyn Fn(u32) + Send + Sync>);
+/// Newtype wrapper for a heartbeat callback so `ReactorCommand` can remain
+/// `#[derive(Debug)]`. Fired on every `StatusHeartbeat` with the per-axis
+/// consumed-piece counts.
+pub struct HeartbeatCallback(pub Arc<dyn Fn(&[u32]) + Send + Sync>);
 
-impl std::fmt::Debug for RetirementCallback {
+impl std::fmt::Debug for HeartbeatCallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RetirementCallback(<fn>)")
+        f.write_str("HeartbeatCallback(<fn>)")
+    }
+}
+
+/// Boxed hook fired on every decoded `McuLog (0x0084)` event. Runs on the
+/// reactor thread — must be non-blocking. Mirrors `HeartbeatCallback`.
+pub struct McuLogHook(pub Box<dyn Fn(McuLogEvent) + Send + Sync>);
+
+impl std::fmt::Debug for McuLogHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("McuLogHook(<fn>)")
     }
 }
 
@@ -103,8 +114,10 @@ pub enum ReactorCommand {
         deadline: std::time::Instant,
     },
     Abandon(u64),
-    AttachCreditCounter(std::sync::Arc<CreditCounter>),
-    AttachRetirementCallback(RetirementCallback),
+    AttachHeartbeatCallback(HeartbeatCallback),
+    /// Install the MCU-log hook (`KalicoHostIo::set_mcu_log_hook`). Replaces
+    /// any previously installed hook.
+    SetMcuLogHook(McuLogHook),
     SubscribeFault {
         sender: SyncSender<FaultEvent>,
         reply: SyncSender<Result<(), SubscribeError>>,
@@ -153,10 +166,16 @@ pub enum ReactorCommand {
             SyncSender<Result<crate::host_io::kalico_native::IdentifyOutcome, TransportError>>,
         deadline: std::time::Instant,
     },
-    /// Phase C-B: kalico-native control-channel call. The reactor allocates
-    /// a correlation_id, builds the frame from `kind` + `body`, writes it,
-    /// and parks `completion` keyed by correlation_id. Spec §7.2.
+    /// Phase C-B: kalico-native call on `channel`. The reactor allocates a
+    /// correlation_id, builds the frame from `kind` + `body` on the specified
+    /// channel, writes it, and parks `completion` keyed by correlation_id.
+    /// Spec §7.2. Outbound channel is explicit; the response always arrives on
+    /// the control channel matched by correlation_id.
     KalicoCall {
+        /// Layer-1 channel byte for the outbound frame. Control-channel calls
+        /// use `CHANNEL_CONTROL` (0x00); PushPieces uses
+        /// [`kalico_protocol::KALICO_CHANNEL_PIECES`] (0x02).
+        channel: u8,
         kind: kalico_protocol::MessageKind,
         body: Vec<u8>,
         completion:
@@ -208,6 +227,12 @@ pub struct KalicoHostIo {
     /// Raw identify bytes (zlib-compressed blob as received from firmware).
     /// Suitable for passing directly to klippy's `process_identify`.
     raw_identify_bytes: Vec<u8>,
+    /// EXIT_ON_FAULT gate. `true` (default) = non-graceful transport drop
+    /// aborts the process (motion MCUs). `false` = reactor exits cleanly,
+    /// `is_alive()` goes false, klippy reconnect machinery takes over.
+    /// Settable after `open` via `set_critical` because criticality is only
+    /// known after the kalico identify handshake.
+    is_critical: Arc<AtomicBool>,
 }
 
 impl std::fmt::Debug for KalicoHostIo {
@@ -278,9 +303,16 @@ impl KalicoHostIo {
             unsafe {
                 let mut tio: libc::termios = std::mem::zeroed();
                 if libc::tcgetattr(fd, &mut tio) == 0 {
-                    eprintln!(
-                        "[tio-pre-cfmakeraw] {path} iflag=0x{:x} oflag=0x{:x} cflag=0x{:x} lflag=0x{:x}",
-                        tio.c_iflag, tio.c_oflag, tio.c_cflag, tio.c_lflag,
+                    tracing::debug!(
+                        subsystem = "mcu-comms",
+                        event = "termios_setup",
+                        phase = "pre-cfmakeraw",
+                        path,
+                        iflag = tio.c_iflag,
+                        oflag = tio.c_oflag,
+                        cflag = tio.c_cflag,
+                        lflag = tio.c_lflag,
+                        "termios pre-cfmakeraw"
                     );
                     libc::cfmakeraw(&mut tio);
                     if libc::tcsetattr(fd, libc::TCSANOW, &tio) != 0 {
@@ -293,14 +325,18 @@ impl KalicoHostIo {
                     // Read back to verify cfmakeraw stuck.
                     let mut tio2: libc::termios = std::mem::zeroed();
                     if libc::tcgetattr(fd, &mut tio2) == 0 {
-                        eprintln!(
-                            "[tio-post-cfmakeraw] {path} iflag=0x{:x} oflag=0x{:x} cflag=0x{:x} lflag=0x{:x} vmin={} vtime={}",
-                            tio2.c_iflag,
-                            tio2.c_oflag,
-                            tio2.c_cflag,
-                            tio2.c_lflag,
-                            tio2.c_cc[libc::VMIN],
-                            tio2.c_cc[libc::VTIME],
+                        tracing::debug!(
+                            subsystem = "mcu-comms",
+                            event = "termios_setup",
+                            phase = "post-cfmakeraw",
+                            path,
+                            iflag = tio2.c_iflag,
+                            oflag = tio2.c_oflag,
+                            cflag = tio2.c_cflag,
+                            lflag = tio2.c_lflag,
+                            vmin = tio2.c_cc[libc::VMIN],
+                            vtime = tio2.c_cc[libc::VTIME],
+                            "termios post-cfmakeraw"
                         );
                     }
                 }
@@ -311,14 +347,18 @@ impl KalicoHostIo {
             unsafe {
                 let mut tio3: libc::termios = std::mem::zeroed();
                 if libc::tcgetattr(fd, &mut tio3) == 0 {
-                    eprintln!(
-                        "[tio-post-serialport] {path} iflag=0x{:x} oflag=0x{:x} cflag=0x{:x} lflag=0x{:x} vmin={} vtime={}",
-                        tio3.c_iflag,
-                        tio3.c_oflag,
-                        tio3.c_cflag,
-                        tio3.c_lflag,
-                        tio3.c_cc[libc::VMIN],
-                        tio3.c_cc[libc::VTIME],
+                    tracing::debug!(
+                        subsystem = "mcu-comms",
+                        event = "termios_setup",
+                        phase = "post-serialport",
+                        path,
+                        iflag = tio3.c_iflag,
+                        oflag = tio3.c_oflag,
+                        cflag = tio3.c_cflag,
+                        lflag = tio3.c_lflag,
+                        vmin = tio3.c_cc[libc::VMIN],
+                        vtime = tio3.c_cc[libc::VTIME],
+                        "termios post-serialport"
                     );
                 }
             }
@@ -378,10 +418,15 @@ impl KalicoHostIo {
         let reactor_status = Arc::clone(&status_snapshot);
         let reactor_config = config.clone();
         let reactor_clock = Arc::clone(&clock);
+        // Default critical until the bridge downgrades after identify.
+        let is_critical = Arc::new(AtomicBool::new(true));
+        let reactor_is_critical = Arc::clone(&is_critical);
         let reactor_handle = std::thread::spawn(move || {
-            eprintln!(
-                "[reactor-spawn] thread_id={:?} port-bound reactor starting",
-                std::thread::current().id()
+            tracing::info!(
+                subsystem = "mcu-comms",
+                event = "reactor_spawn",
+                thread_id = ?std::thread::current().id(),
+                "port-bound reactor starting"
             );
             let mut reactor = crate::host_io::reactor::Reactor::new_with_clock(
                 io,
@@ -402,10 +447,22 @@ impl KalicoHostIo {
             // silent. Aborting forces systemd to restart klipper, which is
             // the recovery action a human would take anyway.
             if !reactor.exited_gracefully() {
-                eprintln!(
-                    "[reactor-spawn] thread_id={:?} EXIT_ON_FAULT — transport \
-                     closed via IO error; aborting klippy so systemd restarts it",
-                    std::thread::current().id()
+                let critical = reactor_is_critical.load(Ordering::Acquire);
+                if !critical {
+                    tracing::warn!(
+                        subsystem = "mcu-comms",
+                        event = "reactor_exit_non_critical",
+                        thread_id = ?std::thread::current().id(),
+                        "transport closed via IO error on NON-CRITICAL MCU; reactor exiting without abort — klippy reconnect path will handle recovery"
+                    );
+                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                    return;
+                }
+                tracing::error!(
+                    subsystem = "mcu-comms",
+                    event = "reactor_exit_on_fault",
+                    thread_id = ?std::thread::current().id(),
+                    "EXIT_ON_FAULT — transport closed via IO error on CRITICAL MCU; aborting klippy so systemd restarts it"
                 );
                 // Flush stderr so the message reaches journalctl before we
                 // tear the process down.
@@ -430,6 +487,7 @@ impl KalicoHostIo {
             config,
             clock,
             raw_identify_bytes,
+            is_critical,
         })
     }
 }
@@ -540,24 +598,36 @@ impl KalicoHostIo {
         self.submission_tx.send(ReactorCommand::Noop).is_ok()
     }
 
-    pub fn attach_credit_counter(&self, counter: std::sync::Arc<crate::credit::CreditCounter>) {
-        let _ = self
-            .submission_tx
-            .send(ReactorCommand::AttachCreditCounter(counter));
+    /// Gate the EXIT_ON_FAULT abort for this MCU. `true` (default) aborts on
+    /// non-graceful transport drop (motion MCUs). `false` exits cleanly so
+    /// klippy's non-critical-disconnect machinery handles reconnect.
+    pub fn set_critical(&self, critical: bool) {
+        self.is_critical.store(critical, Ordering::Release);
     }
 
-    /// Install a callback that is invoked on the reactor thread with
-    /// `retired_through_segment_id` on every `CreditFreed` event — both
-    /// direct frames from the MCU and synthesized events from the 10 Hz
-    /// status watermark path. Avoids a circular crate dependency: since
-    /// `motion-bridge` depends on `kalico-host-rt`, the bridge installs its
-    /// slot-retirement logic here rather than importing a bridge type.
-    pub fn attach_retirement_callback(&self, cb: Arc<dyn Fn(u32) + Send + Sync>) {
+    /// Read the current criticality flag (see [`set_critical`]).
+    pub fn is_critical(&self) -> bool {
+        self.is_critical.load(Ordering::Acquire)
+    }
+
+    /// Register a callback fired on every `StatusHeartbeat` with the per-axis
+    /// consumed-piece counts. Runs on the reactor/event thread — must be
+    /// non-blocking (it only sends on a channel; see motion-bridge pump).
+    pub fn attach_heartbeat_callback(&self, cb: Arc<dyn Fn(&[u32]) + Send + Sync>) {
         let _ = self
             .submission_tx
-            .send(ReactorCommand::AttachRetirementCallback(
-                RetirementCallback(cb),
-            ));
+            .send(ReactorCommand::AttachHeartbeatCallback(HeartbeatCallback(
+                cb,
+            )));
+    }
+
+    /// Attach a hook fired on every decoded `McuLog (0x0084)` event. The hook
+    /// receives an owned [`McuLogEvent`] and runs on the reactor thread — must
+    /// be non-blocking. Replaces any previously installed hook.
+    pub fn set_mcu_log_hook(&self, hook: Box<dyn Fn(McuLogEvent) + Send + Sync>) {
+        let _ = self
+            .submission_tx
+            .send(ReactorCommand::SetMcuLogHook(McuLogHook(hook)));
     }
 
     pub fn subscribe_fault(&self) -> Result<std::sync::mpsc::Receiver<FaultEvent>, SubscribeError> {
@@ -750,39 +820,47 @@ impl KalicoHostIo {
     }
 
     /// Issue a kalico-native control-channel call (spec §7.2): one frame
-    /// out (kind + body), one frame in (matching correlation_id). Used by
-    /// `producer::load_curve` / `producer::push_segment` and similar.
+    /// out on `CHANNEL_CONTROL` (kind + body), one frame in (matching
+    /// correlation_id). Used by `producer::load_curve` / `push_segment` etc.
+    /// See also [`kalico_call_on_channel`] for the pieces channel.
     pub fn kalico_call(
         &self,
         kind: kalico_protocol::MessageKind,
         body: Vec<u8>,
         timeout: Duration,
     ) -> Result<(kalico_protocol::MessageKind, Vec<u8>), TransportError> {
-        eprintln!(
-            "[trace-kcall-host] enter kind={kind:?} body_len={} timeout_ms={}",
-            body.len(),
-            timeout.as_millis()
-        );
-        let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        let deadline = self.clock.now() + timeout;
-        if let Err(e) = self.submission_tx.send(ReactorCommand::KalicoCall {
+        self.kalico_call_on_channel(
+            kalico_native_transport::CHANNEL_CONTROL,
             kind,
             body,
-            completion: tx,
-            deadline,
-        }) {
-            eprintln!(
-                "[trace-kcall-host] FAIL submission_tx.send returned Err — reactor thread dead/dropped. e={e:?}"
-            );
-            return Err(TransportError::Closed);
-        }
-        eprintln!("[trace-kcall-host] submitted, awaiting response kind={kind:?}");
-        let outcome = rx.recv_timeout(timeout);
-        eprintln!(
-            "[trace-kcall-host] response received kind={kind:?} outcome_is_ok={}",
-            outcome.is_ok()
-        );
-        match outcome {
+            timeout,
+        )
+    }
+
+    /// Issue a kalico-native call on an explicit outbound `channel`. The
+    /// response always arrives on the control channel matched by
+    /// correlation_id. Used by the pump to send `PushPieces` on
+    /// `CHANNEL_PIECES` (0x02) while receiving `PushPiecesResponse` on the
+    /// control channel.
+    pub fn kalico_call_on_channel(
+        &self,
+        channel: u8,
+        kind: kalico_protocol::MessageKind,
+        body: Vec<u8>,
+        timeout: Duration,
+    ) -> Result<(kalico_protocol::MessageKind, Vec<u8>), TransportError> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let deadline = self.clock.now() + timeout;
+        self.submission_tx
+            .send(ReactorCommand::KalicoCall {
+                channel,
+                kind,
+                body,
+                completion: tx,
+                deadline,
+            })
+            .map_err(|_| TransportError::Closed)?;
+        match rx.recv_timeout(timeout) {
             Ok(Ok(crate::host_io::kalico_native::KalicoCallOutcome::Response { kind, body })) => {
                 Ok((kind, body))
             }
@@ -791,10 +869,7 @@ impl KalicoHostIo {
             }
             Ok(Err(e)) => Err(e),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(TransportError::Timeout),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                eprintln!("[trace-kcall-host] FAIL recv Disconnected — completion sender dropped");
-                Err(TransportError::Closed)
-            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(TransportError::Closed),
         }
     }
 }

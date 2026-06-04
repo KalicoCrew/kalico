@@ -4,14 +4,26 @@
 
 #![cfg_attr(not(feature = "host"), no_std)]
 
-#[cfg(all(feature = "mcu-h7", feature = "mcu-f4"))]
-compile_error!("features `mcu-h7` and `mcu-f4` are mutually exclusive");
+#[cfg(any(
+    all(feature = "mcu-h7", feature = "mcu-f4"),
+    all(feature = "mcu-h7", feature = "mcu-g0"),
+    all(feature = "mcu-f4", feature = "mcu-g0"),
+))]
+compile_error!("features `mcu-h7`, `mcu-f4`, and `mcu-g0` are mutually exclusive");
 
-#[cfg(all(feature = "host", any(feature = "mcu-h7", feature = "mcu-f4")))]
+#[cfg(all(
+    feature = "host",
+    any(feature = "mcu-h7", feature = "mcu-f4", feature = "mcu-g0")
+))]
 compile_error!("feature `host` is incompatible with `mcu-*` features");
 
-#[cfg(not(any(feature = "host", feature = "mcu-h7", feature = "mcu-f4")))]
-compile_error!("must specify exactly one of: `host`, `mcu-h7`, `mcu-f4`");
+#[cfg(not(any(
+    feature = "host",
+    feature = "mcu-h7",
+    feature = "mcu-f4",
+    feature = "mcu-g0"
+)))]
+compile_error!("must specify exactly one of: `host`, `mcu-h7`, `mcu-f4`, `mcu-g0`");
 
 mod float;
 pub use float::Float;

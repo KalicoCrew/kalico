@@ -5,7 +5,8 @@
 // This file may be distributed under the terms of the GNU GPLv3 license.
 //
 // The Rust runtime is the sole producer of step pulses on this fork
-// (Layer 4 motion planner, 40 kHz TIM5 tick on H7, 10 kHz on F4). The
+// (Layer 4 motion planner, TIM5 sample tick at CONFIG_KALICO_MOTION_SAMPLE_RATE
+// _HZ — per board/config, not a fixed rate). The
 // legacy klipper-protocol queue_step / set_next_step_dir / stepper_event
 // scheduling path is gone; this file is a thin host→MCU stepper-binding
 // layer plus the runtime's GPIO emission helper.
@@ -20,6 +21,8 @@
 #include "stepper.h"
 #include "trsync.h" // trsync_add_signal
 #include "kalico_runtime.h" // StepperBindingRust
+#include "kalico_log.h" // kalico_log_emit (mcu structured-log ready marker)
+#include "generic/fault_handler.h" // kalico_diag_emit_prior_crash (Stage 5)
 
 struct stepper {
     struct gpio_out step_pin, dir_pin;
@@ -148,8 +151,9 @@ DECL_SHUTDOWN(stepper_shutdown);
 // ---------------------------------------------------------------------------
 // Runtime-engine step pulse emission (Step 7-D first-light).
 //
-// The Rust runtime evaluates the trajectory inside the TIM5 ISR (40 kHz on
-// H7) and produces a signed integer step delta per motor per tick. This file
+// The Rust runtime evaluates the trajectory inside the TIM5 ISR (at the
+// configured CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) and produces a signed integer
+// step delta per motor per tick. This file
 // owns the GPIO toggle path: a small lookup table maps runtime motor index
 // (0..3, post-kinematic-transform) to the existing klipper-protocol
 // `struct stepper` already configured by `command_config_stepper` from
@@ -196,26 +200,6 @@ runtime_motor_binding_count(uint8_t motor_idx)
     return runtime_motor_stepper_count[motor_idx];
 }
 
-// Foreground reset — clears the motor→stepper binding table so the next
-// `kalico_configure_axes_blob` populates a fresh slate. Called from the Rust
-// FFI on a fresh klippy session (see `kalico_runtime_configure_axes_blob`
-// in `rust/kalico-c-api/src/runtime_ffi.rs`). Without this, the table
-// accumulates across klippy reconnects (the MCU stays powered) and a
-// reconnected klippy hits `RUNTIME_MAX_STEPPERS_PER_MOTOR` after two
-// reconnects.
-__attribute__((used, externally_visible))
-void
-runtime_reset_stepper_bindings(void)
-{
-    for (uint8_t m = 0; m < RUNTIME_MOTOR_COUNT; m++) {
-        runtime_motor_stepper_count[m] = 0;
-        runtime_motor_last_dir[m] = -1;
-        for (uint8_t i = 0; i < RUNTIME_MAX_STEPPERS_PER_MOTOR; i++) {
-            runtime_motor_steppers[m][i].stepper = NULL;
-            runtime_motor_steppers[m][i].invert_dir = 0;
-        }
-    }
-}
 
 // ─── Stepping-redesign Task 11 — kalico_configure_* command handlers ─────
 //
@@ -246,8 +230,9 @@ command_kalico_configure_axis(uint32_t *args)
     uint32_t mstep_bits     = args[2];
     uint32_t extrusion_bits = args[3]; // reserved — not forwarded to current Rust FFI
     uint8_t stepper_count   = args[4];
-    uint16_t blob_len       = (uint16_t)args[5];
-    const uint8_t *blob     = command_decode_ptr(args[6]);
+    uint16_t ring_depth     = (uint16_t)args[5];
+    uint16_t blob_len       = (uint16_t)args[6];
+    const uint8_t *blob     = command_decode_ptr(args[7]);
 
     // ── Phase 1: validate every input + every binding, no mutations.
     if (axis_idx >= RUNTIME_MOTOR_COUNT)
@@ -258,6 +243,8 @@ command_kalico_configure_axis(uint32_t *args)
         shutdown("configure_axis too many steppers per axis");
     if (blob_len != (uint16_t)stepper_count * 4)
         shutdown("configure_axis blob length mismatch");
+    if (ring_depth == 0)
+        shutdown("configure_axis ring_depth must be nonzero");
     if (!runtime_handle)
         shutdown("configure_axis before runtime init");
 
@@ -294,8 +281,12 @@ command_kalico_configure_axis(uint32_t *args)
         bindings[i]._pad[0] = 0;
         bindings[i]._pad[1] = 0;
     }
+    // ring_depth: host-supplied number of 32-byte PieceEntry slots for this
+    // axis, derived as total_piece_memory / 32 / num_axes in the Rust bridge
+    // (axis_ring_depth in rust/motion-bridge/src/bridge.rs).
     int32_t rc = kalico_runtime_configure_axis(
         runtime_handle, axis_idx, mode, mstep_bits,
+        ring_depth,
         stepper_count > 0 ? bindings : 0,
         stepper_count);
     if (rc != 0)
@@ -310,22 +301,73 @@ command_kalico_configure_axis(uint32_t *args)
     runtime_motor_last_dir[axis_idx] = -1;
     (void)extrusion_bits; // parsed for wire compatibility; no Rust FFI param yet
 
-    // Register the per-axis Klipper timer consumers on the first successful
-    // configure_axis call per boot. Re-adding an already-queued timer would
-    // corrupt the scheduler's linked list, so we gate on a static flag.
-    // Timers are installed once and run for the lifetime of the boot; new
-    // configure_axis calls just update the engine's axis config while the
-    // existing timers keep polling.
-    extern void init_per_axis_step_timers(void);
-    static uint8_t per_axis_timers_installed;
-    if (!per_axis_timers_installed) {
-        per_axis_timers_installed = 1;
-        init_per_axis_step_timers();
+    // Arm the step-output timer for this axis only. Idempotent (callee tracks
+    // an armed mask); unowned axes must not be armed (starves the motion tick).
+    extern void arm_per_axis_step_timer(uint8_t axis_idx);
+    arm_per_axis_step_timer(axis_idx);
+
+    // Drive the platform tick-enable now that an axis is configured. On STM32
+    // TIM5 is already armed at init, so the idempotent CR1.CEN guard makes this
+    // a no-op; on the Linux MCU build this performs the post-connect widen-seed
+    // + step-queue install (src/linux/runtime_tick_host.c). Replaces the old
+    // set_step_mode-driven enable (removed 2026-05-28).
+    extern void runtime_tick_enable(void);
+    runtime_tick_enable();
+
+    // Observability spec #2 Stage 2: emit the one structured "runtime ready"
+    // marker once, after the first axis is configured. This is the live config
+    // command (the legacy kalico_configure_kinematics path is no longer sent
+    // post motion-node-unification). The config phase runs after the host's
+    // identify/attach handshake — which installs the mcu-log hook — so the host
+    // is connected and listening here. (Emitting at MCU boot / first drain
+    // races ahead of the host connecting and the frame is lost.) The next
+    // runtime_drain ships it as KALICO_MSG_LOG (0x0084).
+    static uint8_t kalico_log_ready_emitted;
+    if (!kalico_log_ready_emitted) {
+        kalico_log_ready_emitted = 1;
+        kalico_log_emit(KALICO_LOG_LEVEL_DEBUG, KALICO_LOG_SUBSYS_RUNTIME,
+                        KALICO_LOG_EVENT_RUNTIME_MCU_READY, 0, 0, 0);
+        // Stage 5: flush the prior-boot crash summary now the host is listening.
+        kalico_diag_emit_prior_crash();
     }
 }
 DECL_COMMAND(command_kalico_configure_axis,
              "kalico_configure_axis axis_idx=%c mode=%c microstep_distance=%u"
-             " extrusion_per_xy_mm=%u stepper_count=%c steppers=%*s");
+             " extrusion_per_xy_mm=%u stepper_count=%c ring_depth=%hu"
+             " steppers=%*s");
+
+// Host-issued clean-state reset. Sent once per MCU on every klippy:connect,
+// before the per-axis configure_axis calls, so the Rust engine's ring bump
+// allocator (and all per-axis state) starts fresh whether or not the MCU was
+// rebooted. Idempotent: a no-op on a freshly-booted MCU.
+//
+// IRQ guard: the reset clears engine state + the per-axis step queues, both of
+// which are concurrently touched by the always-armed TIM5 sample ISR and the
+// per-axis step-event timers. irq_save() blocks both for the bounded reset.
+void
+command_kalico_runtime_reset(uint32_t *args)
+{
+    (void)args;
+    if (!runtime_handle)
+        shutdown("runtime reset before runtime init");
+    irqstatus_t flag = irq_save();
+    int32_t rc = kalico_runtime_reset(runtime_handle);
+    irq_restore(flag);
+    if (rc != 0)
+        shutdown("runtime reset rejected");
+}
+DECL_COMMAND(command_kalico_runtime_reset, "kalico_runtime_reset");
+
+// On-demand live diag dump: emit the current diag state (cause discriminators +
+// live event ring) to the structured-log store without a reset. Host-facing as
+// the KALICO_DIAG_DUMP gcode (klippy/motion_toolhead.py).
+void
+command_kalico_diag_dump(uint32_t *args)
+{
+    (void)args;
+    kalico_diag_emit_live();
+}
+DECL_COMMAND(command_kalico_diag_dump, "kalico_diag_dump");
 
 void
 command_kalico_phase_stepping_enable_spi(uint32_t *args)
@@ -486,7 +528,8 @@ runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps)
     }
 
     // gpio_out_toggle_noirq is the irq-safe variant — caller (us) is in
-    // ISR context with IRQs off by virtue of the priority-3 TIM5 vector.
+    // ISR context with IRQs off by virtue of the priority-2 TIM5 vector
+    // (KALICO_MOTION_NVIC_PRIO = 2; see src/generic/kalico_nvic_prio.h).
     for (uint32_t i = 0; i < count; i++) {
         for (uint8_t j = 0; j < cnt; j++)
             gpio_out_toggle_noirq(runtime_motor_steppers[motor_idx][j].stepper->step_pin);

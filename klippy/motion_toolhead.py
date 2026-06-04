@@ -8,6 +8,7 @@ import struct
 from collections import defaultdict
 
 from . import motion_kinematics, stepper
+from .extras import servo_axis
 from .kinematics import extruder
 from .toolhead import BUFFER_TIME_START, Move, ToolHead
 
@@ -50,6 +51,45 @@ def _stepper_motor_slot(stepper_obj):
     """
     info = _name_motor_slot(stepper_obj.get_name())
     return None if info is None else info[0]
+
+
+# Axis indices — mirror rust/motion-bridge/src/dispatch.rs AXIS_* and the
+# _MOTOR_SLOT_PREFIXES slot order (X=0, Y=1, Z=2, E=3).
+_AXIS_X = 0
+_AXIS_Y = 1
+
+# Kinematics tags — mirror rust KinematicTag discriminants
+# (CoreXyAndE = 0, CartesianXyzAndE = 1).
+_KIN_COREXY = 0
+_KIN_CARTESIAN = 1
+
+
+def _derive_mcu_topology(axis_to_handle, kinematics_name):
+    """Derive the per-MCU planner topology from the axis->MCU assignment.
+
+    `axis_to_handle` maps each present axis index (0=X, 1=Y, 2=Z, 3=E) to its
+    MCU's bridge handle. `kinematics_name` is the printer's global kinematics
+    (e.g. "corexy", "cartesian").
+
+    Returns a list of `(handle, sorted_axes, kinematics_tag)` tuples — one per
+    distinct handle, ordered by handle. An MCU's tag is COREXY iff the printer
+    is corexy AND that MCU carries both X and Y; otherwise CARTESIAN. This
+    reproduces the historical hardcoded topology (XY-MCU -> corexy, Z-MCU ->
+    cartesian) without hardcoding MCU identity.
+    """
+    by_handle = {}
+    for axis_idx, handle in axis_to_handle.items():
+        by_handle.setdefault(handle, []).append(axis_idx)
+    is_corexy = (kinematics_name or "").lower() == "corexy"
+    topo = []
+    for handle in sorted(by_handle):
+        axes = sorted(by_handle[handle])
+        if is_corexy and _AXIS_X in axes and _AXIS_Y in axes:
+            tag = _KIN_COREXY
+        else:
+            tag = _KIN_CARTESIAN
+        topo.append((handle, axes, tag))
+    return topo
 
 
 def _open_sim_control():
@@ -136,6 +176,26 @@ class BridgeKinematics:
         self.clear_homing_state((0, 1, 2))
 
     def _register_axis(self, config, axis, trapq, extras=()):
+        # EtherCAT servo axis branch (Part A). A `[servo_<axis>]` section
+        # routes this axis to a position-commanded EtherCAT node instead of
+        # host-side step generation. The ServoRail honors the same rail
+        # contract BridgeKinematics reaches on `self.rails` entries
+        # (get_name/get_steppers/get_endstops/get_range/get_homing_info/
+        # set_position) but carries no MCU steppers, no itersolve, and no
+        # `_bridge_drives_steppers` marker (there is no stepper MCU to mark).
+        servo_sec = "servo_" + axis
+        stepper_sec = "stepper_" + axis
+        has_servo = config.has_section(servo_sec)
+        has_stepper = config.has_section(stepper_sec)
+        if has_servo and has_stepper:
+            raise config.error(
+                "axis %s has both [%s] and [%s]; pick one"
+                % (axis, servo_sec, stepper_sec)
+            )
+        if has_servo:
+            rail = servo_axis.ServoRail(config.getsection(servo_sec))
+            self.rails.append(rail)
+            return
         rail = stepper.PrinterRail(config.getsection("stepper_" + axis))
         for suffix in extras:
             extra_name = "stepper_" + axis + suffix
@@ -361,6 +421,12 @@ class MotionToolhead(ToolHead):
             "KALICO_SIM_ENDSTOP_SET_PIN",
             self.cmd_KALICO_SIM_ENDSTOP_SET_PIN,
             desc="[sim] Drive a Linux-MCU GPIO level (test fixture)",
+        )
+        gcode.register_command(
+            "KALICO_DIAG_DUMP",
+            self.cmd_KALICO_DIAG_DUMP,
+            desc="Emit the live MCU diag snapshot (cause discriminators + "
+            "event ring) to the structured-log store; no reset required",
         )
 
         # Planner initialization runs once all MCUs have connected.
@@ -733,7 +799,14 @@ class MotionToolhead(ToolHead):
         self.bridge.wait_moves()
 
     def wait_moves_and_mcu(self):
-        self.flush_step_generation()
+        self.bridge.drain_motion()
+        self._ground_pending_end_time_after_bridge_drain()
+
+    def cmd_M400(self, gcmd):
+        # Upstream ToolHead.__init__ registers M400 -> self.cmd_M400; via
+        # Python MRO that binds to this override in bridge mode, so M400
+        # routes through the full motion drain instead of wait_moves().
+        self.wait_moves_and_mcu()
 
     def _bridge_mcus(self):
         if not hasattr(self, "_cached_bridge_mcus"):
@@ -854,33 +927,69 @@ class MotionToolhead(ToolHead):
     # ------------------------------------------------------------------
 
     def _init_planner(self):
-        # Locate the two MVP MCUs by name. First-print topology:
-        #   "mcu" (Octopus) drives X+Y; "mcu z" drives Z.
-        # If only one MCU is configured, reuse its handle for Z.
-        octopus = None
-        f446 = None
+        # Build the planner topology from existing config: each kinematic
+        # stepper's MCU (via get_mcu()._bridge_handle) gives axis->MCU, and
+        # the global kinematics name gives each MCU's kinematics tag. No MCU
+        # identity is hardcoded.
         bridge_mcus = []
         for name, mcu in self.printer.lookup_objects(module="mcu"):
             handle = getattr(mcu, "_bridge_handle", None)
             if handle is None:
                 continue
             bridge_mcus.append((name, mcu, handle))
-            mcu_name = getattr(mcu, "_name", name)
-            if octopus is None or mcu_name in ("mcu", "octopus"):
-                if octopus is None:
-                    octopus = handle
-                elif f446 is None:
-                    f446 = handle
-            elif f446 is None:
-                f446 = handle
-        if octopus is None:
+        if not bridge_mcus:
             logging.warning(
                 "MotionToolhead: no MCU bridge handles available; "
                 "skipping init_planner"
             )
             return
-        if f446 is None:
-            f446 = octopus
+
+        # axis index (0=X,1=Y,2=Z,3=E) -> bridge handle of the MCU that
+        # drives that axis's primary stepper. AWD partners share their
+        # primary's axis/MCU, so only primaries contribute.
+        axis_to_handle = {}
+        fm = self.printer.lookup_object("force_move", None)
+        if fm is not None:
+            for sname, s in fm.steppers.items():
+                info = _name_motor_slot(sname)
+                if info is None:
+                    continue
+                slot_idx, is_primary = info
+                if not is_primary:
+                    continue
+                s_handle = getattr(s.get_mcu(), "_bridge_handle", None)
+                if s_handle is None:
+                    continue
+                axis_to_handle[slot_idx] = s_handle
+
+        # Servo axes (e.g. an EtherCAT-driven X) are not steppers and so do not
+        # appear in force_move.steppers. Map each servo rail's axis to its
+        # node's bridge handle so the derived topology places that axis on the
+        # node — the EtherCAT node then participates in the data-driven topology
+        # exactly like a stepper MCU, with no hardcoded routing.
+        servo_axis_index = {"x": _AXIS_X, "y": _AXIS_Y, "z": 2}
+        for rail in getattr(self.kin, "rails", ()):
+            if not isinstance(rail, servo_axis.ServoRail):
+                continue
+            node = self.printer.lookup_object(
+                "ethercat_node " + rail.get_node_name(), None
+            )
+            if node is None:
+                continue
+            handle = node.get_bridge_handle()
+            if not handle:
+                continue
+            axis_idx = servo_axis_index.get(rail.axis)
+            if axis_idx is not None:
+                axis_to_handle[axis_idx] = handle
+
+        topology = _derive_mcu_topology(axis_to_handle, self.kinematics_name)
+        if not topology:
+            logging.warning(
+                "MotionToolhead: no axis->MCU assignment resolved; "
+                "skipping init_planner"
+            )
+            return
 
         # Pull initial shaper params from [input_shaper] config, if present.
         shaper_type_x = "smooth_zv"
@@ -914,8 +1023,7 @@ class MotionToolhead(ToolHead):
                 shaper_freq_x,
                 shaper_type_y,
                 shaper_freq_y,
-                octopus,
-                f446,
+                topology,
             )
             self._configure_axes_per_mcu(bridge_mcus)
 
@@ -924,12 +1032,15 @@ class MotionToolhead(ToolHead):
             raise
 
     def _configure_axes_per_mcu(self, bridge_mcus):
-        """Send `ConfigureAxes` over the kalico-native transport for each
-        bridge-attached MCU. Maps klippy `MCU_stepper` objects to motor
-        slots per kinematics:
+        """Configure each bridge-attached MCU's axes via the per-axis
+        `kalico_configure_axis` text command. Maps klippy `MCU_stepper`
+        objects to motor slots per kinematics:
           corexy:    [A=stepper_x, B=stepper_y, Z=stepper_z, E=extruder]
           cartesian: [X=stepper_x, Y=stepper_y, Z=stepper_z, E=extruder]
-        Steppers not on a given MCU are omitted from that MCU's blob.
+        Steppers not on a given MCU are omitted from that MCU's bindings.
+
+        The legacy batch `ConfigureAxes` (binary 0x0030) blob is no longer
+        sent — see the note at its former call site below.
         """
         kin = (self.kinematics_name or "").lower()
         if kin == "corexy":
@@ -1148,16 +1259,19 @@ class MotionToolhead(ToolHead):
                         bus_id,
                         cs_pin_id,
                     )
-            self.bridge.configure_axes(
-                mcu_handle,
-                kin_tag,
-                present_mask,
-                awd_mask,
-                invert_mask,
-                steps_per_mm,
-                step_modes,
-                phase_configs=phase_configs if any_phase_stepping else None,
-            )
+            # NOTE: the legacy batch `ConfigureAxes` (binary 0x0030) blob send
+            # was removed here. Per the simple-MCU-contract design (§3.3,
+            # docs/superpowers/specs/2026-05-27-simple-mcu-contract-design.md)
+            # the batch blob — kinematics tag, present/awd/invert masks, and a
+            # fixed [f32;4] steps_per_mm array — is superseded by the per-axis
+            # `ConfigureAxis` whose currently-implemented realization is the
+            # `kalico_configure_axis` text command issued below (microstep_
+            # distance = 1/steps_per_mm, per-stepper bindings, dir-invert,
+            # mode). The MCU dispatcher (src/kalico_dispatch.c) never had a
+            # 0x0030 handler, so the blob always timed out; nothing it carried
+            # is lost — every field is either removed-by-design (kinematics is
+            # host-pre-baked; no fixed-4 axis assumption) or already sent
+            # per-axis below.
             # Step 7-D: bind every stepper attached to each runtime motor
             # index to the C-side runtime emit table. config_stepper was
             # already issued during MCU config phase; the runtime binding is
@@ -1184,7 +1298,7 @@ class MotionToolhead(ToolHead):
                 configure_axis_cmd = mcu_obj.lookup_command(
                     "kalico_configure_axis axis_idx=%c mode=%c"
                     " microstep_distance=%u extrusion_per_xy_mm=%u"
-                    " stepper_count=%c steppers=%*s"
+                    " stepper_count=%c ring_depth=%hu steppers=%*s"
                 )
             except Exception:
                 logging.info(
@@ -1194,6 +1308,24 @@ class MotionToolhead(ToolHead):
                     name,
                 )
                 continue
+
+            # Clean-state reset before (re)configuring this MCU's axes. The
+            # engine's ring bump allocator never frees, and configure_axis is
+            # re-sent on every klippy:connect; without this reset a plain
+            # RESTART / systemctl restart / crash-reconnect (which does NOT
+            # reboot bridge MCUs) overflows the pool -> KALICO_ERR_RING_FULL.
+            # Idempotent: a no-op on a freshly-booted MCU. Same command queue,
+            # so it is processed before the configure_axis commands below.
+            try:
+                reset_cmd = mcu_obj.lookup_command("kalico_runtime_reset")
+            except Exception:
+                reset_cmd = None
+            if reset_cmd is not None:
+                reset_cmd.send([])
+                logging.info(
+                    "MotionToolhead: sent kalico_runtime_reset to mcu=%s",
+                    name,
+                )
 
             # Group bind_list by axis (motor_idx). bind_list entries are
             # (motor_idx, stepper_name, stepper_oid, invert_dir) tuples.
@@ -1243,6 +1375,9 @@ class MotionToolhead(ToolHead):
                                 break
                     blob.append(tmc_oid)
                     blob.append(FLAGS_DEFAULT)
+                ring_depth = self.bridge.ring_depth_for_axis(
+                    mcu_handle, axis_idx
+                )
                 configure_axis_cmd.send(
                     [
                         axis_idx,
@@ -1250,6 +1385,7 @@ class MotionToolhead(ToolHead):
                         microstep_bits,
                         extrusion_bits,
                         len(bindings),
+                        ring_depth,
                         bytes(blob),
                     ]
                 )
@@ -1274,6 +1410,34 @@ class MotionToolhead(ToolHead):
             )
             # phase_stepping_enable_spi is sent from TMC5160._xdirect_preload
             # after all TMC register init is complete, not here.
+
+    # ------------------------------------------------------------------
+    # Live diagnostics
+    # ------------------------------------------------------------------
+
+    def cmd_KALICO_DIAG_DUMP(self, gcmd):
+        # Ask every kalico-capable MCU to emit its live diag snapshot (cause
+        # discriminators + event ring) to the structured-log store, no reset.
+        # The MCU command is parameterless; MCUs lacking it (no diag build) are
+        # skipped silently, mirroring the kalico_configure_axis lookup pattern.
+        sent = []
+        for name, mcu_obj in self.printer.lookup_objects(module="mcu"):
+            try:
+                cmd = mcu_obj.lookup_command("kalico_diag_dump")
+            except Exception:
+                continue
+            cmd.send([])
+            sent.append(name)
+        if sent:
+            gcmd.respond_info(
+                "KALICO_DIAG_DUMP: requested live diag from %s "
+                "(see printer_data/logs/events/<mcu>.jsonl)"
+                % (", ".join(sent),)
+            )
+        else:
+            gcmd.respond_info(
+                "KALICO_DIAG_DUMP: no MCU exposes kalico_diag_dump"
+            )
 
     # ------------------------------------------------------------------
     # Sim-only diagnostic gcode commands

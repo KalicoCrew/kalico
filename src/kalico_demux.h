@@ -16,9 +16,9 @@
 // After consuming the frame, the caller calls kalico_demux_consume() to
 // reset the accumulator.
 //
-// Buffers are static; sized to fit the largest expected frame. The kalico
-// buffer is sized for an 8 KB upper bound on the LoadCurve frame for now;
-// bump KALICO_DEMUX_KALICO_BUF_SIZE when the per-MCU pool sizing changes.
+// Buffers are static; sized to fit the largest expected frame. Pieces stream
+// directly into the ring on KALICO_CHANNEL_PIECES (Task 7) and never touch the
+// kalico buffer, so it is now sized only for the largest inbound CONTROL frame.
 
 #ifndef __KALICO_DEMUX_H
 #define __KALICO_DEMUX_H
@@ -28,16 +28,25 @@
 #include "command.h" // MESSAGE_MAX
 
 #define KALICO_DEMUX_KLIPPER_BUF_SIZE MESSAGE_MAX
-// Largest in-bound kalico frame is a LoadCurveCubic carrying one slot's
-// worth of cubic Bézier pieces, plus the per-frame header. Sizing: each
-// piece is 5 × u32 LE = 20 bytes (monomial form for one axis); the
-// LoadCurveCubic body is `4 + piece_count * 20` bytes (slot_idx u16 +
-// axis_idx u8 + piece_count u8 + pieces[]); plus 32 bytes for the
-// sync/len/channel/header/CRC envelope. Stays in lockstep with the Rust
-// runtime's `MAX_PIECES_PER_CURVE` (mirrored from Kconfig) so the firmware
-// never has to drop a curve upload that the Rust side would still accept.
-#define KALICO_DEMUX_KALICO_BUF_SIZE \
-    (4u + 20u * (CONFIG_RUNTIME_MAX_PIECES_PER_CURVE) + 32u)
+/* Pieces stream straight into the ring on KALICO_CHANNEL_PIECES (Task 7) and
+ * never touch kalico_buf. This buffer now only stages the largest inbound
+ * CONTROL frame: [sync(1)][len(2)][channel(1)][per-msg hdr(7)][body][crc(2)].
+ * ConfigureAxis is the largest control body; 512 B leaves generous margin. */
+#define KALICO_DEMUX_KALICO_BUF_SIZE 512u
+_Static_assert(KALICO_DEMUX_KALICO_BUF_SIZE >= 64u,
+               "kalico_buf too small for control frames");
+
+/* Largest legal kalico frame of ANY channel is a full pieces frame:
+ *   envelope(sync+len2+channel = 4) + per-msg header(7) + piece header(8)
+ *   + 255 pieces * 32 B + crc(2) = 8181 bytes.
+ * Pieces stream straight into the ring and never accumulate in kalico_buf,
+ * so a pieces frame's declared length is bounded by THIS, not by the (much
+ * smaller) staging buffer. The channel byte is not known until pos==4, so the
+ * header-length sanity check applies this global bound; the staging-buffer
+ * bound is then applied only to non-pieces channels once the channel decodes. */
+#define KALICO_FRAME_MAX_LEN (4u + 7u + 8u + 255u * 32u + 2u) /* = 8181 */
+_Static_assert(KALICO_FRAME_MAX_LEN >= KALICO_DEMUX_KALICO_BUF_SIZE,
+               "global frame bound must cover the staging buffer");
 
 typedef enum {
     KALICO_DEMUX_OUT_NONE,    // need more bytes; no frame ready

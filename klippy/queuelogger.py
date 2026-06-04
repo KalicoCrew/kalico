@@ -4,10 +4,18 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
-import logging.handlers
+import os
 import queue
+import sys
 import threading
-import time
+
+from . import log_sinks, structured_log
+
+LOG_QUEUE_MAXSIZE = 100000
+
+
+class LogQueueOverflow(Exception):
+    pass
 
 
 # Class to forward all messages through a queue to a background thread
@@ -22,72 +30,118 @@ class QueueHandler(logging.Handler):
             record.msg = record.message
             record.args = None
             record.exc_info = None
-            self.queue.put_nowait(record)
         except Exception:
             self.handleError(record)
+            return
+        try:
+            self.queue.put_nowait(record)
+        except queue.Full:
+            # Fail loudly (spec §7.1): never silently drop a durable record.
+            raise LogQueueOverflow(
+                "klippy log queue overflow; logging cannot keep up"
+            )
 
 
-# Class to poll a queue in a background thread and log each message
-class QueueListener(logging.handlers.TimedRotatingFileHandler):
-    def __init__(self, filename, rotate_log_at_restart):
-        if rotate_log_at_restart:
-            logging.handlers.TimedRotatingFileHandler.__init__(
-                self, filename, when="S", interval=60 * 60 * 24, backupCount=5
+# Polls the queue in a background thread and fans each record out to sinks.
+class QueueListener:
+    def __init__(self, filename, rotate_log_at_restart, events_dir):
+        self._text = log_sinks.TextSink(filename, rotate_log_at_restart)
+        sinks = [self._text]
+        self._jsonl = None
+        if events_dir:
+            os.makedirs(events_dir, exist_ok=True)
+            self._jsonl = log_sinks.JsonlSink(
+                os.path.join(events_dir, "host-py.jsonl")
             )
-        else:
-            logging.handlers.TimedRotatingFileHandler.__init__(
-                self, filename, when="midnight", backupCount=5
-            )
-        self.bg_queue = queue.Queue()
+            sinks.append(self._jsonl)
+        self.registry = log_sinks.SinkRegistry(sinks)
+        self.bg_queue = queue.Queue(maxsize=LOG_QUEUE_MAXSIZE)
+        self._bg_exc = None
         self.bg_thread = threading.Thread(target=self._bg_thread)
         self.bg_thread.start()
-        self.rollover_info = {}
 
     def _bg_thread(self):
         while True:
             record = self.bg_queue.get(True)
             if record is None:
                 break
-            self.handle(record)
+            try:
+                self.registry.emit(record)
+            except Exception as e:
+                # A sink failed (e.g. disk full). Stop draining and remember
+                # why, so stop() can surface it loudly rather than hang.
+                self._bg_exc = e
+                self._last_gasp(e)
+                break
+
+    def _last_gasp(self, exc):
+        # Proactively surface a mid-run sink failure (spec §16 item 11). The
+        # drain loop is stopping, so without this the failure would only be seen
+        # at the next producer enqueue (LogQueueOverflow once the queue fills) or
+        # at shutdown (stop() re-raises _bg_exc). Best-effort and never raises —
+        # those two remain the authoritative fail-loud paths.
+        msg = (
+            "FATAL: kalico log sink failed; structured logging stopped: %r"
+            % (exc,)
+        )
+        try:
+            sys.stderr.write(msg + "\n")
+            sys.stderr.flush()
+        except Exception:
+            pass
+        # Also try the human-readable text log, in case the failed sink was the
+        # jsonl sink and klippy.log is still healthy (the common disk-full case).
+        try:
+            rec = logging.makeLogRecord(
+                {
+                    "msg": msg,
+                    "levelno": logging.CRITICAL,
+                    "levelname": "CRITICAL",
+                    "name": "kalico.observability",
+                }
+            )
+            self._text.emit_record(rec)
+        except Exception:
+            pass
 
     def stop(self):
-        self.bg_queue.put_nowait(None)
-        self.bg_thread.join()
+        if self.bg_thread.is_alive():
+            try:
+                self.bg_queue.put(None, timeout=5.0)
+            except queue.Full:
+                # bg thread is wedged/dead and the queue is saturated;
+                # don't block shutdown forever.
+                pass
+            self.bg_thread.join(timeout=5.0)
+        self.registry.close()
+        if self._bg_exc is not None:
+            raise self._bg_exc
 
+    # --- back-compat surface used by printer.py / configfile / mcu / etc. ---
     def set_rollover_info(self, name, info):
-        if info is None:
-            self.rollover_info.pop(name, None)
-            return
-        self.rollover_info[name] = info
+        self._text.set_rollover_info(name, info)
 
     def clear_rollover_info(self):
-        self.rollover_info.clear()
+        self._text.clear_rollover_info()
 
     def doRollover(self):
-        logging.handlers.TimedRotatingFileHandler.doRollover(self)
-        lines = [
-            self.rollover_info[name] for name in sorted(self.rollover_info)
-        ]
-        lines.append(
-            "=============== Log rollover at %s ==============="
-            % (time.asctime(),)
-        )
-        self.emit(
-            logging.makeLogRecord(
-                {"msg": "\n".join(lines), "level": logging.INFO}
-            )
-        )
+        self._text.do_rollover()
 
 
 MainQueueHandler = None
 
 
-def setup_bg_logging(filename, debuglevel, rotate_log_at_restart):
+def setup_bg_logging(
+    filename, debuglevel, rotate_log_at_restart, events_dir=None
+):
     global MainQueueHandler
     ql = QueueListener(
-        filename=filename, rotate_log_at_restart=rotate_log_at_restart
+        filename=filename,
+        rotate_log_at_restart=rotate_log_at_restart,
+        events_dir=events_dir,
     )
     MainQueueHandler = QueueHandler(ql.bg_queue)
+    MainQueueHandler.addFilter(structured_log.ContextFilter())
     root = logging.getLogger()
     root.addHandler(MainQueueHandler)
     root.setLevel(debuglevel)

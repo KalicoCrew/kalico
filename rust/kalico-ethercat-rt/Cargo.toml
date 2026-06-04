@@ -1,0 +1,48 @@
+[package]
+name = "kalico-ethercat-rt"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license.workspace = true
+
+[lib]
+name = "kalico_ethercat_rt"
+crate-type = ["rlib"]
+
+# `hw` gates the EtherCAT FFI (`ffi` module) and the native link to libecrt/SOEM.
+# OFF by default so the pure scale/wire/curves unit tests build and run on any
+# machine (and in CI) without the Pi's C libraries. Build with `--features hw`
+# on the target host to produce the hardware endpoint binary.
+[features]
+default = []
+hw = []
+
+# The endpoint binary drives real hardware via the FFI; it only exists with `hw`.
+[[bin]]
+name = "kalico-ethercat-rt"
+path = "src/bin/kalico-ethercat-rt.rs"
+required-features = ["hw"]
+
+# The test client speaks the socket protocol only (no FFI) — builds without `hw`.
+[[bin]]
+name = "ec-test-client"
+path = "src/bin/ec-test-client.rs"
+
+# No-hardware stub: serves the kalico-native socket and answers the protocol
+# without driving EtherCAT. For drive-off integration testing. No `hw` feature.
+[[bin]]
+name = "kalico-ethercat-rt-stub"
+path = "src/bin/kalico-ethercat-rt-stub.rs"
+
+[dependencies]
+runtime = { path = "../runtime", default-features = false, features = ["host"] }  # servo node: no stepper dispatch
+kalico-protocol = { path = "../kalico-protocol" }
+kalico-native-transport = { path = "../kalico-native-transport" }
+libc = "0.2"                                       # raw clock_gettime(CLOCK_MONOTONIC)
+log = "0.4"
+
+[dev-dependencies]
+kalico-host-rt = { path = "../kalico-host-rt" }
+
+[lints]
+workspace = true

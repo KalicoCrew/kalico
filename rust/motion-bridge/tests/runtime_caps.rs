@@ -18,11 +18,14 @@ use kalico_protocol::messages::{RUNTIME_CAPS_RESPONSE_BODY_LEN, RuntimeCapsRespo
 /// `RuntimeCapsResponse::decode_from(&mut Cursor::new(body))`. Any change to
 /// the wire layout that breaks this round-trip would silently regress the
 /// per-MCU sizing path landed in Task 10.
+///
+/// Simple-MCU-contract revision (Task 4, 2026-05-28): RuntimeCapsResponse now
+/// carries a single `total_piece_memory: u32` field (4 bytes) in place of the
+/// previous `curve_pool_n: u16` + `max_pieces_per_curve: u16` two-field layout.
 #[test]
 fn query_runtime_caps_roundtrip_via_codec() {
     let original = RuntimeCapsResponse {
-        curve_pool_n: 4,
-        max_pieces_per_curve: 16,
+        total_piece_memory: 63488,
     };
 
     let mut body = Vec::new();

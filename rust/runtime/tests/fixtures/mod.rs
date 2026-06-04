@@ -28,36 +28,3 @@ pub fn load() -> FixtureSet {
     serde_json::from_str(RAW).expect("fixture parse failed")
 }
 
-// ─── Scalar NURBS helpers (Task 6) ──────────────────────────────────────
-
-/// Create a degree-1 linear scalar NURBS from `start` to `end` on [0, 1].
-/// Returns `(degree, knots, control_points)`.
-pub fn linear_scalar(start: f32, end: f32) -> (u8, Vec<f32>, Vec<f32>) {
-    let degree = 1u8;
-    let knots = vec![0.0, 0.0, 1.0, 1.0];
-    let cps = vec![start, end];
-    (degree, knots, cps)
-}
-
-/// Create a degree-1 constant scalar NURBS holding `value` on [0, 1].
-/// Returns `(degree, knots, control_points)`.
-pub fn constant_scalar(value: f32) -> (u8, Vec<f32>, Vec<f32>) {
-    linear_scalar(value, value)
-}
-
-/// Load a scalar NURBS into the curve pool, returning the handle. Scans
-/// for a free slot starting from `start_slot`.
-pub fn load_scalar(
-    pool: &runtime::curve_pool::CurvePool,
-    start_slot: u16,
-    degree: u8,
-    knots: &[f32],
-    cps: &[f32],
-) -> runtime::curve_pool::CurveHandle {
-    for slot_idx in (start_slot as usize)..runtime::curve_pool::CURVE_POOL_N {
-        if let Ok(handle) = pool.validate_and_load(slot_idx as u16, degree, knots, cps) {
-            return handle;
-        }
-    }
-    panic!("no free curve pool slots starting from {start_slot}");
-}

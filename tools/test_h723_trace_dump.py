@@ -9,7 +9,7 @@
 #
 # Acceptance: max |motor_traced - motor_analytical| < TOLERANCE_MM (0.05 mm).
 #
-# Pre-flight: requires flashed H723 hardware with CONFIG_KALICO_RUNTIME=y.
+# Pre-flight: requires flashed H723 hardware (kalico runtime firmware).
 # Hardware-deferred. The plot-output mentioned in the plan sketch is a TODO;
 # the bring-up gate is the position-error check.
 import argparse

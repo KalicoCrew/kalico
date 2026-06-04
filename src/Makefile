@@ -4,8 +4,8 @@ src-y += sched.c command.c basecmd.c debugcmds.c
 # Kalico-native transport — stream-level demuxer + Layer 4 dispatcher.
 # Spec: docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md.
 src-y += kalico_demux.c kalico_dispatch.c \
-    kalico_segment_queue.c runtime_storage.c runtime_panic.c step_queue.c \
-    spi_queue.c
+    runtime_storage.c runtime_panic.c step_queue.c \
+    spi_queue.c kalico_log.c
 src-y += runtime_tick_weak.c
 src-$(CONFIG_RUNTIME_BENCH) += generic/runtime_bench.c
 src-$(CONFIG_HAVE_GPIO) += initial_pins.c gpiocmds.c stepper.c endstop.c \
@@ -56,18 +56,33 @@ KALICO_RUST_FEATURES := mcu-h7,header-nurbs,header-runtime
 # on every MCU switch (~minutes on the Pi). Separate dirs keep both caches
 # warm so each MCU switch is incremental, not from-scratch.
 KALICO_CARGO_TARGET_DIR := target-h7
+KALICO_RUST_TARGET := thumbv7em-none-eabi
 else ifeq ($(CONFIG_MACH_STM32F4),y)
 KALICO_RUST_FEATURES := mcu-f4,header-nurbs,header-runtime
 KALICO_CARGO_TARGET_DIR := target-f4
+KALICO_RUST_TARGET := thumbv7em-none-eabi
+else ifeq ($(CONFIG_MACH_STM32G0),y)
+# STM32G0B1 (Cortex-M0+) = ARMv6-M = thumbv6m-none-eabi, a DIFFERENT rustc
+# triple than H7/F4. The thumbv6m target build sets
+# `--cfg portable_atomic_unsafe_assume_single_core` in rust/.cargo/config.toml
+# because ARMv6-M has no LDREX/STREX (see the design record). Own target dir
+# keeps the thumbv6m cache from colliding with the thumbv7em caches.
+KALICO_RUST_FEATURES := mcu-g0,header-nurbs,header-runtime
+KALICO_CARGO_TARGET_DIR := target-g0
+KALICO_RUST_TARGET := thumbv6m-none-eabi
 endif
 ifeq ($(CONFIG_KALICO_SIM),y)
 KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),kalico-sim
 endif
+ifeq ($(CONFIG_MOTION_MODULE_STEPPER),y)
+KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),motion-module-stepper
+endif
 
-ifneq (,$(filter y,$(CONFIG_MACH_STM32H7) $(CONFIG_MACH_STM32F4)))
+ifneq (,$(filter y,$(CONFIG_MACH_STM32H7) $(CONFIG_MACH_STM32F4) $(CONFIG_MACH_STM32G0)))
 # Exported so src/stm32/Makefile depends on (and links against) the right
-# archive without re-deriving the path.
-KALICO_LIB := rust/$(KALICO_CARGO_TARGET_DIR)/thumbv7em-none-eabi/release/libkalico_c_api.a
+# archive without re-deriving the path. KALICO_RUST_TARGET is the rustc
+# triple for the active MCU (thumbv7em for H7/F4, thumbv6m for G0).
+KALICO_LIB := rust/$(KALICO_CARGO_TARGET_DIR)/$(KALICO_RUST_TARGET)/release/libkalico_c_api.a
 
 # Per-MCU target dir gives H7 and F4 their own caches (see above). Within
 # a single MCU's dir, the kalico-sim feature toggle is the only remaining
@@ -86,31 +101,58 @@ $(KALICO_LIB): FORCE
 			cargo clean -p runtime 2>/dev/null || true; \
 			cargo clean -p nurbs 2>/dev/null || true; \
 		fi && \
-		KALICO_RUNTIME_CURVE_POOL_N=$(CONFIG_RUNTIME_CURVE_POOL_N) \
-		KALICO_RUNTIME_MAX_PIECES_PER_CURVE=$(CONFIG_RUNTIME_MAX_PIECES_PER_CURVE) \
 		KALICO_RUNTIME_STORAGE_SIZE=$(if $(filter y,$(CONFIG_RUNTIME_TARGET_LARGE)),$(CONFIG_RUNTIME_STORAGE_SIZE_LARGE),$(CONFIG_RUNTIME_STORAGE_SIZE_SMALL)) \
+		KALICO_RUNTIME_PIECE_RING_SIZE=$(CONFIG_RUNTIME_PIECE_RING_SIZE) \
 		KALICO_RUNTIME_SAMPLE_RATE_HZ=$(CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) \
 		cargo build -p kalico-c-api \
 		--no-default-features \
 		--features $(KALICO_RUST_FEATURES) \
-		--target thumbv7em-none-eabi --release && \
+		--target $(KALICO_RUST_TARGET) --release && \
 		echo "$(KALICO_RUST_FEATURES)" > "$$CARGO_TARGET_DIR/.kalico-features-stamp"
 endif
 
 ifeq ($(CONFIG_MACH_LINUX),y)
-# Host build: f64 host features for klippy-in-loop integration testing.
-# Always includes `kalico-sim` (the Linux build is itself a sim variant).
-KALICO_RUST_FEATURES := host,header-nurbs,header-runtime,kalico-sim
+# First-class Linux MCU build. The `mcu-linux` feature is the f64 host numeric
+# profile (the Pi has an FPU) PLUS the "real MCU firmware" marker that links
+# the C step/SPI FFI (linux/phase_stepping_spi.c) — distinct from a bare `host`
+# build (the motion-bridge planner cdylib / unit tests), which must NOT
+# reference that symbol. kalico-sim is OPT-IN here exactly like the STM32
+# families (CONFIG_KALICO_SIM), not hardwired: a Linux MCU drives real
+# /dev/gpiochip / /dev/spidev by default.
+KALICO_RUST_FEATURES := mcu-linux,header-nurbs,header-runtime
+ifeq ($(CONFIG_KALICO_SIM),y)
+KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),kalico-sim
+endif
+ifeq ($(CONFIG_MOTION_MODULE_STEPPER),y)
+KALICO_RUST_FEATURES := $(KALICO_RUST_FEATURES),motion-module-stepper
+endif
+# Own target dir: the motion-bridge cdylib builds the shared crates (runtime,
+# nurbs, ...) with different host features into rust/target/, and a kalico-sim
+# flip changes this firmware's feature set — keeping them separate avoids
+# mutual incremental-cache thrash (slow on the Pi). Mirrors the per-arch STM32
+# dirs. Exported for src/linux/Makefile's link rule.
+KALICO_CARGO_TARGET_DIR := target-linux
+KALICO_LIB := rust/$(KALICO_CARGO_TARGET_DIR)/release/libkalico_c_api.a
 
-rust/target/release/libkalico_c_api.a: FORCE
-	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" \
-		KALICO_RUNTIME_CURVE_POOL_N=$(CONFIG_RUNTIME_CURVE_POOL_N) \
-		KALICO_RUNTIME_MAX_PIECES_PER_CURVE=$(CONFIG_RUNTIME_MAX_PIECES_PER_CURVE) \
+$(KALICO_LIB): FORCE
+	cd rust && PATH="$(HOME)/.cargo/bin:$$PATH" && \
+		export CARGO_TARGET_DIR="$(KALICO_CARGO_TARGET_DIR)" && \
+		mkdir -p "$$CARGO_TARGET_DIR" && \
+		PREV=$$(cat "$$CARGO_TARGET_DIR/.kalico-features-stamp" 2>/dev/null || echo ""); \
+		if [ "$$PREV" != "$(KALICO_RUST_FEATURES)" ]; then \
+			echo "kalico-c-api features changed ($$PREV -> $(KALICO_RUST_FEATURES)); cargo clean"; \
+			cargo clean -p kalico-c-api 2>/dev/null || true; \
+			cargo clean -p kalico-host-rt 2>/dev/null || true; \
+			cargo clean -p runtime 2>/dev/null || true; \
+			cargo clean -p nurbs 2>/dev/null || true; \
+		fi && \
+		KALICO_RUNTIME_PIECE_RING_SIZE=$(CONFIG_RUNTIME_PIECE_RING_SIZE) \
 		KALICO_RUNTIME_SAMPLE_RATE_HZ=$(CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ) \
 		cargo build -p kalico-c-api \
 		--no-default-features \
 		--features $(KALICO_RUST_FEATURES) \
-		--release
+		--release && \
+		echo "$(KALICO_RUST_FEATURES)" > "$$CARGO_TARGET_DIR/.kalico-features-stamp"
 endif
 
 .PHONY: FORCE

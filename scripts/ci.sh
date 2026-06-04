@@ -15,8 +15,8 @@
 #   ./scripts/ci.sh <job>           # run one gate, exit with its status (CI)
 #
 # Jobs: ruff rust-host rust-build rust-test rust-clippy rust-fmt rust-loom
-#       rust-mcu-h7 rust-mcu-f4 cbindgen-drift c-smoke deny miri panic-grep
-#       watchdog-canary py docs sim
+#       rust-mcu-h7 rust-mcu-f4 rust-mcu-g0 rust-no-stepper cbindgen-drift
+#       c-smoke deny miri panic-grep watchdog-canary py docs sim
 #
 # Prerequisites (one-time, for the full local run):
 #   rustup target add thumbv7em-none-eabi
@@ -53,23 +53,53 @@ job_rust_loom() {
     cd "$RUST"
     RUSTFLAGS="--cfg loom" cargo test -p runtime --release \
         --test loom_seqlock \
-        --test loom_spsc_split \
         --test loom_force_idle \
-        --test loom_curve_pool_alloc
+        --test loom
 }
+
+# KALICO_RUNTIME_* are mandatory on bare-metal targets (build.rs panics
+# otherwise); the real firmware build gets them from Kconfig via the Makefile.
+# For this staticlib compile-check the H7/F4/G0 pair is a self-consistent value
+# set that compiles for any arch. motion-module-stepper matches what the
+# Makefile/Kconfig produce for real firmware; without it the dispatch-less MCU
+# build fires the compile_error guard in lib.rs.
+KALICO_MCU_ENV=(KALICO_RUNTIME_STORAGE_SIZE=122880 KALICO_RUNTIME_PIECE_RING_SIZE=63488)
 
 job_rust_mcu_h7() {
     cd "$RUST"
-    cargo build -p kalico-c-api --no-default-features \
-        --features mcu-h7,header-nurbs,header-runtime \
+    env "${KALICO_MCU_ENV[@]}" \
+        cargo build -p kalico-c-api --no-default-features \
+        --features mcu-h7,header-nurbs,header-runtime,motion-module-stepper \
         --target thumbv7em-none-eabi
 }
 
 job_rust_mcu_f4() {
     cd "$RUST"
-    cargo build -p kalico-c-api --no-default-features \
-        --features mcu-f4,header-nurbs,header-runtime \
+    env "${KALICO_MCU_ENV[@]}" \
+        cargo build -p kalico-c-api --no-default-features \
+        --features mcu-f4,header-nurbs,header-runtime,motion-module-stepper \
         --target thumbv7em-none-eabi
+}
+
+# G0 (Cortex-M0+, thumbv6m). CI never compiled mcu-g0 at all, and the
+# runtime_tick_g0.c FFI-drift bug was G0-only — this closes the Rust-side gap.
+# The full C link per arch is covered by ci-mcu-firmware.yaml.
+job_rust_mcu_g0() {
+    cd "$RUST"
+    env "${KALICO_MCU_ENV[@]}" \
+        cargo build -p kalico-c-api --no-default-features \
+        --features mcu-g0,header-nurbs,header-runtime,motion-module-stepper \
+        --target thumbv6m-none-eabi
+}
+
+# Validates the EtherCAT servo-node compile path: runtime built without
+# motion-module-stepper, so lib.rs's compile_error guard must NOT fire (host
+# builds are valid without a dispatch module). The dispatch_stepper tests are
+# fully suppressed by their #![cfg(feature = "motion-module-stepper")].
+job_rust_no_stepper() {
+    cd "$RUST"
+    cargo build -p runtime --no-default-features --features host
+    cargo test -p runtime --no-default-features --features host --no-run
 }
 
 job_cbindgen_drift() {
@@ -101,8 +131,7 @@ job_miri() {
         --test fault_encoding \
         --test monomial_eval \
         --test phase_lut_anchors \
-        --test seqlock_unit \
-        --test trace_overflow
+        --test seqlock_unit
 }
 
 job_panic_grep() {
@@ -118,8 +147,12 @@ job_panic_grep() {
     # produce false reds on routine rustc-stable bumps. Ratchet those to a
     # hard gate once PR #11 lands and the endstop path is proven.
     cd "$RUST"
-    cargo rustc -p kalico-c-api --release \
-        --no-default-features --features mcu-h7,header-nurbs,header-runtime \
+    # Mirror the real mcu-h7 firmware build (env + motion-module-stepper) so the
+    # panic-freedom check sees the same code the device runs.
+    env "${KALICO_MCU_ENV[@]}" \
+        cargo rustc -p kalico-c-api --release \
+        --no-default-features \
+        --features mcu-h7,header-nurbs,header-runtime,motion-module-stepper \
         --target thumbv7em-none-eabi -- --emit=llvm-ir
     shopt -s nullglob
     local ll_files=(target/thumbv7em-none-eabi/release/deps/*.ll)
@@ -235,6 +268,8 @@ run_all() {
         run_check "c-smoke"         job_c_smoke
         run_check "rust-mcu-h7"     job_rust_mcu_h7
         run_check "rust-mcu-f4"     job_rust_mcu_f4
+        run_check "rust-mcu-g0"     job_rust_mcu_g0
+        run_check "rust-no-stepper" job_rust_no_stepper
         run_check "rust-loom"       job_rust_loom
         run_check "miri"            job_miri
         run_check "panic-grep"      job_panic_grep
@@ -279,6 +314,8 @@ case "${1:-all}" in
     rust-loom)        job_rust_loom ;;
     rust-mcu-h7)      job_rust_mcu_h7 ;;
     rust-mcu-f4)      job_rust_mcu_f4 ;;
+    rust-mcu-g0)      job_rust_mcu_g0 ;;
+    rust-no-stepper)  job_rust_no_stepper ;;
     cbindgen-drift)   job_cbindgen_drift ;;
     c-smoke)          job_c_smoke ;;
     deny)             job_deny ;;
