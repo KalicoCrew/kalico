@@ -126,7 +126,7 @@ static inline void diag_cache_clean(void) { __DSB(); }
 // Foreground stall ticks (TIM5-ISR-counted, one per sample period) that mark a
 // genuine freeze for the per-run this_run_froze flag. 8 ≈ 0.8 ms of stalled
 // foreground at the H7 sample rate — above scheduling jitter, below the IWDG
-// timeout. Observed crash worst was 10.
+// timeout.
 #define FG_FREEZE_REPORT_THRESHOLD 8
 
 // Event tags — small u8 so we have headroom for future events.
@@ -1467,13 +1467,12 @@ kalico_diag_emit_live(void)
     uint32_t head          = diag.ring_head & DIAG_RING_MASK;
     uint32_t ring_seq      = diag.ring_seq;
     uint32_t ring_overflow = diag.ring_overflow;
+    // Only tag/a/b are emitted (seq/timestamp dropped — emit order is
+    // chronology, as in the prior-crash replay).
     for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
-        dump_ring[i].tag       = diag_ring[i].tag;
-        dump_ring[i]._pad0     = diag_ring[i]._pad0;
-        dump_ring[i].seq       = diag_ring[i].seq;
-        dump_ring[i].timestamp = diag_ring[i].timestamp;
-        dump_ring[i].a         = diag_ring[i].a;
-        dump_ring[i].b         = diag_ring[i].b;
+        dump_ring[i].tag = diag_ring[i].tag;
+        dump_ring[i].a   = diag_ring[i].a;
+        dump_ring[i].b   = diag_ring[i].b;
     }
     irq_restore(flag);
 

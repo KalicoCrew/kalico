@@ -27,7 +27,7 @@
 extern uint64_t runtime_widened_host_clock(void);
 
 // Per-message protocol version. Mirrors MESSAGE_VERSION_DEFAULT in
-// kalico_dispatch.c (file-local #define, not exported).
+// kalico_dispatch.c.
 #define KALICO_LOG_MSG_VERSION 0x01
 // Per-message header: type(u16) | version(u8) | corr_id(u32) = 7 bytes.
 #define KALICO_LOG_HEADER_LEN 7

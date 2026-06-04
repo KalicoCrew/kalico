@@ -9,15 +9,15 @@ from . import motion_bridge_native as _native
 from . import structured_log
 
 # Print-state events that START or CONTINUE a print: the active print_id is
-# bound in the contextvar before the event fires (Stage 1 ordering), so the
+# bound in the module global before the event fires (Stage 1 ordering), so the
 # handler pushes the current session + print context to the Rust host.
 _PRINT_ACTIVE_EVENTS = (
     "print_stats:start_printing",
     "print_stats:paused_printing",
 )
 # Print-state events that END a print: print_stats fires these BEFORE clearing
-# the print_id contextvar, so the handler must push an explicit empty print_id
-# rather than reading the (still-stale) contextvar value.
+# the print_id module global, so the handler must push an explicit empty print_id
+# rather than reading the (still-stale) module-global value.
 _PRINT_FINISH_EVENTS = (
     "print_stats:complete_printing",
     "print_stats:error_printing",

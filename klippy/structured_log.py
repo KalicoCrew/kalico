@@ -1,4 +1,3 @@
-# klippy/structured_log.py
 # Structured logging schema, context, and forward helper for the klippy host.
 #
 # This module never imports heavy klippy objects so it can be used from the

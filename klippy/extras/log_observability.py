@@ -8,7 +8,6 @@
 #
 # Loaded on-by-default (printer.py extras list); no user config required.
 import logging
-import os
 
 from .. import structured_log
 
@@ -63,8 +62,6 @@ class LogObservability:
         # Vector data_dir layout on the printer (a Trident-only follow-up in
         # the Stage 3 plan). Until then this returns None so the heartbeat is
         # the active liveness signal and no false "stale" is raised.
-        if not self.events_dir or not os.path.isdir(self.events_dir):
-            return None
         return None
 
     def _lag_timer(self, eventtime):

@@ -1,4 +1,3 @@
-# klippy/log_sinks.py
 # Pluggable log sinks and the registry that fans records out to them.
 #
 # A Sink consumes a (context-enriched, message-formatted) logging.LogRecord.

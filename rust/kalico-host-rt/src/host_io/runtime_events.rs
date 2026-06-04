@@ -67,7 +67,7 @@ pub struct McuLogEvent {
     pub code: u16,
     /// Per-MCU monotonic sequence number for host drop detection.
     pub seq: u16,
-    /// Numeric args `[arg0, arg1]`.
+    /// The two positional payload args, forwarded verbatim from the MCU frame.
     pub args: [u32; 2],
     /// Host-side `Instant` stamped at decode (in the reactor dispatch loop).
     pub host_recv: Instant,

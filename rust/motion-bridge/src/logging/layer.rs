@@ -235,7 +235,7 @@ mod tests {
     }
 
     /// A message whose content begins and ends with a literal `"` must survive
-    /// intact. The old quote-stripping branch incorrectly removed those chars.
+    /// intact.
     #[test]
     fn message_with_literal_quotes_is_preserved() {
         let _ctx_guard = CONTEXT_TEST_LOCK.lock().unwrap();

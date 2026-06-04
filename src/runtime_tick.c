@@ -279,13 +279,9 @@ runtime_drain(void)
         last_seen_status = cur_status;
     }
 
-    // Observability spec #2 Stage 2: ship any queued MCU log entries on the
-    // wire (KALICO_MSG_LOG / 0x0084). The "runtime ready" marker is emitted
-    // from the configure path (stepper.c), NOT here: runtime_init runs at MCU
-    // boot (DECL_INIT), so the first drain fires seconds before the host
-    // connects + installs its mcu-log hook — a marker emitted here is sent into
-    // a dead transport and lost. The config phase runs after the identify/attach
-    // handshake, so emitting there guarantees the host is listening.
+    // Ship any queued MCU log entries (KALICO_MSG_LOG / 0x0084). The "runtime
+    // ready" marker is emitted from the configure path (stepper.c), not here —
+    // see that site for why (a boot-time emit would race the host connect).
     kalico_log_drain();
 }
 DECL_TASK(runtime_drain);
