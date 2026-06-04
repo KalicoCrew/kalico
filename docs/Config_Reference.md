@@ -6169,63 +6169,60 @@ See [Tap Quality Components](Load_Cell.md#tap-quality-components) for more detai
 
 ### [clog_detect]
 
-Clog Detection. Detects a clogged nozzle by combining two signals: sustained
-downward force on a load cell, and extruder motor stall events reported by a
-TMC driver. Both conditions must occur together to avoid false positives.
-Detection is armed automatically after the first load cell tare (e.g. at the
-start of a homing sequence).
+Clog Detection.
 
-Multiple named sections are supported for multi-toolhead configurations —
-one section per tool, each bound to its own `extruder` and `load_cell`.
+Monitors the extruder stepper motor for stall events.
+When a stall is detected, this then reads the load cell force, and determines
+whether this indicates a clog.
 
-The extruder's TMC stepper driver must be configured for stall detection before
-this module will function. Requirements vary by driver:
-- **TMC2209, TMC2208**: set `driver_sgthrs` to a non-zero value and configure
-  `coolstep_threshold` to enable stall guard at typical extrusion velocities.
-- **TMC2240**: set `driver_sg4_thrs` to a non-zero value and configure
-  `coolstep_threshold`. The dedicated StallGuard4 registers (`SG4_RESULT`,
-  `SG4_THRS`) are used in preference to the legacy `sg_result` field.
-- **TMC5160, TMC2130**: no additional driver configuration is required; the
-  `LOST_STEPS` register is used directly.
+If both signals meet the threshold criteria (TMC StallGuard, force),
+this triggers a clog detection event, and executes the provided gcode.
 
-See the relevant `[tmc2209]`, `[tmc2240]`, or `[tmc5160]` documentation for
-details.
+In mutli-tool setups, where there is one load cell and extruder per tool,
+it is possible to define these independently, so that clog detection is applied
+to all tools. In this scenario, only the active extruder is ever monitored.
+
+See [Clog Detection](TMC_Drivers.md#clog-detection) in TMC_Drivers.md for
+full setup and tuning guidance.
 
 See the [clog_detect GCode commands](G-Codes.md#clog_detect) for runtime
 control via `CLOG_DETECTION`.
 
+For single extruder setups, this can be simplified:
+
 ```
-[clog_detect my_name]
-#load_cell: load_cell_probe
-#   The name of the [load_cell] or [load_cell_probe] section to read force
-#   data from. The default is "load_cell_probe".
-#extruder: extruder
-#   The name of the extruder this detector is bound to. In multi-toolhead
-#   setups, detection is skipped when this extruder is not the active tool.
-#   The default is "extruder".
-#skipped_steps: 20
-#   The estimated number of lost steps required to trigger clog detection.
-#   For TMC drivers with a LOST_STEPS register (e.g. TMC5160), this is a
-#   count of actual lost steps. For drivers using SG_RESULT (e.g. TMC2209),
-#   this is an estimate derived from the commanded extruder position delta
-#   during each stall event. The default is 20.
+[clog_detect]
 #force: 4000
-#   The downward force magnitude in grams that must be present for stall
-#   events to be counted. Force is read from the load cell as a negative
-#   value; this parameter is a positive magnitude and the comparison is
-#   applied internally. The default is 4000g.
-#poll_rate: 4
-#   How many times per second to check the force and stall conditions.
-#   The default is 4.
-#force_hysteresis: 1.0
-#   Time in seconds that force must remain above the threshold before the
-#   stall count is reset. This allows stall events to accumulate across the
-#   brief pressure-relief cycles characteristic of a clogged nozzle.
-#   The default is 1.0 seconds.
+#   The downward force magnitude in grams that must be present when a stall
+#   is detected for clog detection to trigger.
+#   The default is 4000g.
 #clog_detected_gcode:
 #   An optional GCode command or macro to run when a clog is detected.
-#   The detected state is not cleared automatically — use CLOG_DETECTION RESET=1
-#   to re-arm detection. The default is no action.
+#   The detected state is not cleared automatically.
+#   Use CLOG_DETECTION RESET=1 to re-arm the detection.
+#   The default is no action.
+```
+
+For a multi-extruder, multi-tool configurations:
+
+```
+[clog_detect T1]
+#load_cell: load_cell_probe T1
+#   The name of the [load_cell] or [load_cell_probe] section to read force
+#   data from.
+#   The default is "load_cell_probe".
+#extruder: extruder1
+#   The name of the extruder this detector is bound to.
+#   The default is "extruder".
+#force: 4000
+#   The downward force magnitude in grams that must be present when a stall
+#   is detected for clog detection to trigger.
+#   The default is 4000g.
+#clog_detected_gcode:
+#   An optional GCode command or macro to run when a clog is detected.
+#   The detected state is not cleared automatically.
+#   Use CLOG_DETECTION NAME=T1 RESET=1 to re-arm the detection.
+#   The default is no action.
 ```
 
 ## Board specific hardware support

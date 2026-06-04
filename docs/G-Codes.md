@@ -1097,18 +1097,18 @@ The following commands are available when a
 configured.
 
 ### CLOG_DETECTION
-`CLOG_DETECTION [NAME=<name>] [RESET] [ENABLED=<true/false>]`: Controls a
+`CLOG_DETECTION [NAME=<name>] [RESET=1] [ENABLED=<true/false>]`: Controls a
 [clog_detect] instance. `NAME` identifies the target instance by its section
 name suffix (e.g. `T0` for `[clog_detect T0]`). `NAME` is optional when only
 one `[clog_detect]` section is configured; it is required when multiple
 sections are configured.
-- `CLOG_DETECTION RESET=1` — clears the `clog_detected` state and re-arms
+- `CLOG_DETECTION RESET=1` - clears the `clog_detected` state and re-arms
   detection. The detected state is not cleared automatically, even after the
   `clog_detected_gcode` macro has run.
-- `CLOG_DETECTION ENABLED=true` — enables detection for the instance.
-- `CLOG_DETECTION ENABLED=false` — disables detection for the instance without
+- `CLOG_DETECTION RESET=1 NAME=T0` - resets the instance named `T0`.
+- `CLOG_DETECTION ENABLED=true` - enables detection for the instance.
+- `CLOG_DETECTION ENABLED=false` - disables detection for the instance without
   removing the configuration.
-- `CLOG_DETECTION RESET=1 NAME=T0` — resets the instance named `T0`.
 
 ### [manual_probe]
 
