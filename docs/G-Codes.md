@@ -1090,7 +1090,7 @@ corresponding settings from the
 - `MIN_TAP_QUALITY=<percent>`
 - `DECOMPRESSION_ANGLE=<angle>`
 
-### [clog_detect]
+### ⚠️  [clog_detect]
 
 The following commands are available when a
 [clog_detect config section](Config_Reference.md#clog_detect) has been

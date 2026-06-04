@@ -6167,7 +6167,7 @@ sensor_type:
 
 See [Tap Quality Components](Load_Cell.md#tap-quality-components) for more details on maximum for tap quality.
 
-### [clog_detect]
+### ⚠️ [clog_detect]
 
 Clog Detection.
 
