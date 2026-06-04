@@ -16,6 +16,9 @@
 // C-side emits (the boot marker + the drain's ring-overflow report) need these
 // mirrors.
 #define KALICO_LOG_SUBSYS_RUNTIME 0
+// Stage 5 v1.1 play-by-play: the prior-boot diag event ring is replayed under
+// this subsystem with event-code == the DIAG_EV_* tag (1:1, see fault_handler).
+#define KALICO_LOG_SUBSYS_DIAG    4
 #define KALICO_LOG_EVENT_RUNTIME_MCU_READY 3
 #define KALICO_LOG_EVENT_RUNTIME_LOG_DROPS 4
 // Stage 5 crash-forensics (emitted from fault_handler.c on the next boot).
@@ -24,6 +27,12 @@
 #define KALICO_LOG_EVENT_RUNTIME_FAULT_STATUS 7
 #define KALICO_LOG_EVENT_RUNTIME_FG_FREEZE 8
 #define KALICO_LOG_EVENT_RUNTIME_RT_PROGRESS 9
+// Stage 5 v1.1 crash-cause discriminators (runtime subsystem, emitted with the
+// play-by-play when the prior boot ended abnormally).
+#define KALICO_LOG_EVENT_RUNTIME_LAST_DISPATCH 10
+#define KALICO_LOG_EVENT_RUNTIME_ISR_PHASE     11
+#define KALICO_LOG_EVENT_RUNTIME_BLOCK_SOURCE  12
+#define KALICO_LOG_EVENT_RUNTIME_TIM5_IA       13
 
 // Enqueue one structured log entry into the C-owned ring. Safe from ISR or
 // foreground (irq_save critical section). Captures the raw 32-bit

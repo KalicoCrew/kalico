@@ -30,6 +30,8 @@ pub const SUBSYSTEM_MOTION: u8 = 1;
 pub const SUBSYSTEM_TICK: u8 = 2;
 /// Subsystem id for the endstop arm/trip logic.
 pub const SUBSYSTEM_ENDSTOP: u8 = 3;
+/// Subsystem id for the prior-boot diagnostic event ring / crash play-by-play timeline.
+pub const SUBSYSTEM_DIAG: u8 = 4;
 
 /// Resolve a subsystem id to its `&'static str` name.
 ///
@@ -48,6 +50,7 @@ pub fn subsystem_name(id: u8) -> &'static str {
         SUBSYSTEM_MOTION => "motion",
         SUBSYSTEM_TICK => "tick",
         SUBSYSTEM_ENDSTOP => "endstop",
+        SUBSYSTEM_DIAG => "diag",
         _ => "unknown",
     }
 }
@@ -80,6 +83,14 @@ pub const EVENT_RUNTIME_FAULT_STATUS: u16 = 7;
 pub const EVENT_RUNTIME_FG_FREEZE: u16 = 8;
 /// Prior-boot runtime progress at crash; arg0 = packed tag/stage/value, arg1 = fault_count.
 pub const EVENT_RUNTIME_RT_PROGRESS: u16 = 9;
+/// Crash discriminator: last dispatched function; arg0 = function-id, arg1 = function address.
+pub const EVENT_RUNTIME_LAST_DISPATCH: u16 = 10;
+/// Crash discriminator: ISR phase at fault time; arg0 = phase, arg1 = ring_overflow flag.
+pub const EVENT_RUNTIME_ISR_PHASE: u16 = 11;
+/// Crash discriminator: USB/stepout burst accounting; arg0 = usb_burst cyc, arg1 = stepout_burst cyc.
+pub const EVENT_RUNTIME_BLOCK_SOURCE: u16 = 12;
+/// Crash discriminator: TIM5 inter-arrival extremes; arg0 = min cyc, arg1 = max cyc.
+pub const EVENT_RUNTIME_TIM5_IA: u16 = 13;
 
 // motion subsystem events
 /// A piece was rejected because its start time is already in the past.
@@ -100,6 +111,24 @@ pub const EVENT_TICK_UNDERRUN: u16 = 2;
 pub const EVENT_ENDSTOP_TRIP: u16 = 1;
 /// An endstop arm timed out waiting for a trigger; `arg0` = arm id.
 pub const EVENT_ENDSTOP_ARM_TIMEOUT: u16 = 2;
+
+// diag subsystem events (codes mirror MCU DIAG_EV_* tag values 1..=8)
+/// TIM5 ISR ran long; arg0 = duration in cycles, arg1 = timestamp.
+pub const EVENT_DIAG_TIM5_LONG: u16 = 1;
+/// OTG (USB) ISR ran long; arg0 = duration in cycles, arg1 = timestamp.
+pub const EVENT_DIAG_OTG_LONG: u16 = 2;
+/// USB OUT endpoint inter-packet gap; arg0 = gap in ticks, arg1 = previous-packet timestamp.
+pub const EVENT_DIAG_USB_OUT_GAP: u16 = 3;
+/// USB IN endpoint inter-packet gap; arg0 = gap in ticks, arg1 = previous-packet timestamp.
+pub const EVENT_DIAG_USB_IN_GAP: u16 = 4;
+/// Kalico TX drop (USB output buffer overrun); arg0 = dropped length, arg1 = transmit position.
+pub const EVENT_DIAG_TX_DROP_KAL: u16 = 5;
+/// Klipper TX drop (output buffer overrun); arg0 = max length, arg1 = transmit position.
+pub const EVENT_DIAG_TX_DROP_KLP: u16 = 6;
+/// Engine state transition captured in the diagnostic ring; arg0 = packed state, arg1 = sample count.
+pub const EVENT_DIAG_ENGINE_XITION: u16 = 7;
+/// Rust fault captured in the diagnostic ring; arg0 = error code, arg1 = fault detail.
+pub const EVENT_DIAG_RUST_FAULT: u16 = 8;
 
 /// Resolve a `(subsystem, event)` pair to a `(name, template)` tuple.
 ///
@@ -147,6 +176,43 @@ pub fn event_info(subsystem: u8, event: u16) -> (&'static str, &'static str) {
         }
         (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_RT_PROGRESS) => {
             ("runtime.rt_progress", "runtime progress packed={arg0} fault_count={arg1}")
+        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_LAST_DISPATCH) => {
+            ("runtime.last_dispatch", "last dispatch func={arg0} addr={arg1}")
+        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_ISR_PHASE) => {
+            ("runtime.isr_phase", "isr phase={arg0} ring_overflow={arg1}")
+        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_BLOCK_SOURCE) => (
+            "runtime.block_source",
+            "block usb_burst={arg0} cyc stepout_burst={arg1} cyc",
+        ),
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_TIM5_IA) => {
+            ("runtime.tim5_ia", "tim5 inter-arrival min={arg0} max={arg1} cyc")
+        }
+        (SUBSYSTEM_DIAG, EVENT_DIAG_TIM5_LONG) => {
+            ("diag.tim5_long", "TIM5 ISR long {arg0} cyc at t={arg1}")
+        }
+        (SUBSYSTEM_DIAG, EVENT_DIAG_OTG_LONG) => {
+            ("diag.otg_long", "OTG ISR long {arg0} cyc at t={arg1}")
+        }
+        (SUBSYSTEM_DIAG, EVENT_DIAG_USB_OUT_GAP) => {
+            ("diag.usb_out_gap", "USB-OUT gap {arg0} ticks, prev t={arg1}")
+        }
+        (SUBSYSTEM_DIAG, EVENT_DIAG_USB_IN_GAP) => {
+            ("diag.usb_in_gap", "USB-IN gap {arg0} ticks, prev t={arg1}")
+        }
+        (SUBSYSTEM_DIAG, EVENT_DIAG_TX_DROP_KAL) => {
+            ("diag.tx_drop_kalico", "kalico TX drop len={arg0} tpos={arg1}")
+        }
+        (SUBSYSTEM_DIAG, EVENT_DIAG_TX_DROP_KLP) => {
+            ("diag.tx_drop_klipper", "klipper TX drop max={arg0} tpos={arg1}")
+        }
+        (SUBSYSTEM_DIAG, EVENT_DIAG_ENGINE_XITION) => {
+            ("diag.engine_xition", "engine state packed={arg0} samples={arg1}")
+        }
+        (SUBSYSTEM_DIAG, EVENT_DIAG_RUST_FAULT) => {
+            ("diag.rust_fault", "rust fault err={arg0} detail={arg1}")
         }
         (SUBSYSTEM_MOTION, EVENT_MOTION_PIECE_START_PAST) => (
             "motion.piece_start_past",
@@ -213,7 +279,7 @@ mod tests {
     #[test]
     fn subsystem_name_unknown_returns_unknown() {
         assert_eq!(subsystem_name(0xFF), "unknown");
-        assert_eq!(subsystem_name(4), "unknown");
+        assert_eq!(subsystem_name(5), "unknown"); // 4 is now SUBSYSTEM_DIAG; 5 is unregistered
         assert_eq!(subsystem_name(100), "unknown");
     }
 
@@ -316,6 +382,83 @@ mod tests {
         // Event code 1 is defined for SUBSYSTEM_TICK but not for SUBSYSTEM_ENDSTOP's code 99
         let (name, _) = event_info(SUBSYSTEM_TICK, 99);
         assert_eq!(name, "unknown");
+    }
+
+    #[test]
+    fn subsystem_name_diag() {
+        assert_eq!(subsystem_name(SUBSYSTEM_DIAG), "diag");
+        // diag must be distinct from all other known subsystem names
+        let diag = subsystem_name(SUBSYSTEM_DIAG);
+        assert_ne!(diag, subsystem_name(SUBSYSTEM_RUNTIME));
+        assert_ne!(diag, subsystem_name(SUBSYSTEM_MOTION));
+        assert_ne!(diag, subsystem_name(SUBSYSTEM_TICK));
+        assert_ne!(diag, subsystem_name(SUBSYSTEM_ENDSTOP));
+    }
+
+    #[test]
+    fn event_info_all_diag_events() {
+        let (name, tmpl) = event_info(SUBSYSTEM_DIAG, EVENT_DIAG_TIM5_LONG);
+        assert_eq!(name, "diag.tim5_long");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_DIAG, EVENT_DIAG_OTG_LONG);
+        assert_eq!(name, "diag.otg_long");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_DIAG, EVENT_DIAG_USB_OUT_GAP);
+        assert_eq!(name, "diag.usb_out_gap");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_DIAG, EVENT_DIAG_USB_IN_GAP);
+        assert_eq!(name, "diag.usb_in_gap");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_DIAG, EVENT_DIAG_TX_DROP_KAL);
+        assert_eq!(name, "diag.tx_drop_kalico");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_DIAG, EVENT_DIAG_TX_DROP_KLP);
+        assert_eq!(name, "diag.tx_drop_klipper");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_DIAG, EVENT_DIAG_ENGINE_XITION);
+        assert_eq!(name, "diag.engine_xition");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_DIAG, EVENT_DIAG_RUST_FAULT);
+        assert_eq!(name, "diag.rust_fault");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+    }
+
+    #[test]
+    fn event_info_diag_unknown_boundaries() {
+        // 0 is reserved; 99 is undefined — both must return ("unknown", "")
+        let (name, tmpl) = event_info(SUBSYSTEM_DIAG, 0);
+        assert_eq!(name, "unknown");
+        assert_eq!(tmpl, "");
+
+        let (name, tmpl) = event_info(SUBSYSTEM_DIAG, 99);
+        assert_eq!(name, "unknown");
+        assert_eq!(tmpl, "");
+    }
+
+    #[test]
+    fn event_info_new_runtime_crash_discriminators() {
+        let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_LAST_DISPATCH);
+        assert_eq!(name, "runtime.last_dispatch");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_ISR_PHASE);
+        assert_eq!(name, "runtime.isr_phase");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_BLOCK_SOURCE);
+        assert_eq!(name, "runtime.block_source");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_TIM5_IA);
+        assert_eq!(name, "runtime.tim5_ia");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
     }
 
     #[cfg(feature = "host")]

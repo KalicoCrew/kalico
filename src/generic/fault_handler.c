@@ -74,6 +74,12 @@ struct live_snapshot {
     // A hanging callback → PRIMASK held → IWDG → after reset, addr2line this.
     uint32_t last_dispatch_func;
     uint32_t last_dispatch_addr;
+    // Per-run foreground-freeze flag (set THIS run when fg_stall_ticks crosses
+    // FG_FREEZE_REPORT_THRESHOLD). Unlike worst_fg_stall_* (cross-boot max), this
+    // describes only the current run, so the next boot can gate the crash report
+    // on "the run that just ended froze" — surviving klippy's connect-reset,
+    // which masks the immediate RCC reset cause. Reset to 0 at each boot-init.
+    uint32_t this_run_froze;
 };
 
 // H7: backup SRAM (.bkp_bss) — survives IWDG/soft reset; requires
@@ -117,6 +123,11 @@ static inline void diag_cache_clean(void) { __DSB(); }
 #define DIAG_MAGIC      0x4449414Eu  // "DIAN" — diagnostic counters present
 #define DIAG_RING_LEN   32           // power-of-two for cheap mask
 #define DIAG_RING_MASK  (DIAG_RING_LEN - 1)
+// Foreground stall ticks (TIM5-ISR-counted, one per sample period) that mark a
+// genuine freeze for the per-run this_run_froze flag. 8 ≈ 0.8 ms of stalled
+// foreground at the H7 sample rate — above scheduling jitter, below the IWDG
+// timeout. Observed crash worst was 10.
+#define FG_FREEZE_REPORT_THRESHOLD 8
 
 // Event tags — small u8 so we have headroom for future events.
 enum {
@@ -128,6 +139,8 @@ enum {
     DIAG_EV_TX_DROP_KAL   = 5,   // a=len, b=transmit_pos_at_drop
     DIAG_EV_TX_DROP_KLP   = 6,   // a=max_size, b=transmit_pos_at_drop
     DIAG_EV_ENGINE_XITION = 7,   // a=(prev<<8)|new, b=samples_taken
+    DIAG_EV_RUST_FAULT    = 8,   // a=(uint32_t)last_error, b=fault_detail
+                                 // (pushed from runtime_tick.c; see header)
 };
 
 struct diag_event {
@@ -446,6 +459,10 @@ diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
         fg_seen_advance = 1;
     } else if (fg_seen_advance) {
         fg_stall_ticks++;
+        // Per-run freeze flag (gates the next boot's crash report; survives
+        // klippy's connect-reset via BKPSRAM, unlike the immediate RCC cause).
+        if (fg_stall_ticks >= FG_FREEZE_REPORT_THRESHOLD)
+            live_snap.this_run_froze = 1;
         if (fg_stall_ticks > live_snap.worst_fg_stall_ticks) {
             extern uint32_t runtime_tim5_stacked_pc(void);
             extern uint32_t runtime_tim5_stacked_exc(void);
@@ -913,6 +930,16 @@ static uint32_t saved_prior_engine;
 static uint32_t saved_prior_tick;
 static uint32_t saved_prior_last_run_tick;
 static uint32_t saved_prior_samples;
+// Did the run that just ended set the per-run freeze flag? Captured at boot-init
+// from live_snap.this_run_froze (which the next line clears for the new run).
+// Gates the crash report independently of the immediate RCC reset cause.
+static uint32_t prior_run_froze;
+// Last scheduler callback dispatched, snapshotted at boot-init. live_snap's copy
+// is overwritten on the new run's first dispatch, so this is only faithful to
+// the crash for an immediate-reset hang (PRIMASK/IWDG); for a late host reset it
+// reflects whatever ran just before boot-init. Best-effort addr2line target.
+static uint32_t saved_prior_last_dispatch_func;
+static uint32_t saved_prior_last_dispatch_addr;
 
 #if CONFIG_MACH_STM32H7
 #include "board/internal.h"  // RCC, etc — pulls in stm32h7xx headers
@@ -959,6 +986,13 @@ fault_handler_report_task(void)
             saved_prior_tick          = live_snap.tick_counter;
             saved_prior_last_run_tick = live_snap.last_engine_running_tick;
             saved_prior_samples       = live_snap.samples_taken;
+            // Capture the prior run's freeze flag, then clear for the new run.
+            prior_run_froze           = live_snap.this_run_froze;
+            live_snap.this_run_froze  = 0;
+            // Snapshot last-dispatch before the new run overwrites it (best-effort
+            // — faithful only for an immediate-reset hang).
+            saved_prior_last_dispatch_func = live_snap.last_dispatch_func;
+            saved_prior_last_dispatch_addr = live_snap.last_dispatch_addr;
         } else {
             // First-ever boot: zero cross-boot freeze record before use.
             live_snap.worst_fg_stall_ticks = 0;
@@ -967,6 +1001,7 @@ fault_handler_report_task(void)
             live_snap.iwdg_reset_count     = 0;
             live_snap.last_dispatch_func   = 0;
             live_snap.last_dispatch_addr   = 0;
+            live_snap.this_run_froze       = 0;
         }
         // Count IWDG resets (foreground freeze signature).
 #if CONFIG_MACH_STM32H7
@@ -1309,6 +1344,25 @@ fault_handler_report_task(void)
 }
 DECL_TASK(fault_handler_report_task);
 
+// Map a diag ring tag to a structured-log level for the play-by-play replay.
+// Long ISRs and TX drops are notable (warn); a Rust fault is an error; USB gaps
+// and engine transitions are context (debug).
+static uint8_t
+diag_ring_tag_level(uint8_t tag)
+{
+    switch (tag) {
+    case DIAG_EV_RUST_FAULT:
+        return KALICO_LOG_LEVEL_ERROR;
+    case DIAG_EV_TIM5_LONG:
+    case DIAG_EV_OTG_LONG:
+    case DIAG_EV_TX_DROP_KAL:
+    case DIAG_EV_TX_DROP_KLP:
+        return KALICO_LOG_LEVEL_WARN;
+    default:
+        return KALICO_LOG_LEVEL_DEBUG;
+    }
+}
+
 // Re-emit the prior-boot crash summary through the structured-log path so a hard
 // reset (watchdog / CPU fault) shows up in the host log store, not just
 // klippy.log output() strings. Called once from the post-connect configure path
@@ -1328,7 +1382,12 @@ kalico_diag_emit_prior_crash(void)
     iwdg = (reset_cause_snapshot & RCC_CSR_IWDGRSTF) ? 1u : 0u;
 #endif
     uint8_t had_fault = (fault_rec.magic == FAULT_MAGIC) ? 1u : 0u;
-    uint8_t abnormal = iwdg || had_fault;
+    // `abnormal` gates the warn level + the play-by-play. It must NOT rely solely
+    // on the immediate RCC cause (`iwdg`): klippy's connect-reset overwrites it
+    // with SFTRST, so a real foreground freeze shows up only as the per-run
+    // prior_run_froze flag (set this-run in the TIM5-ISR watchdog, survives the
+    // connect-reset via BKPSRAM). had_fault covers true CPU faults.
+    uint8_t abnormal = iwdg || had_fault || prior_run_froze;
 
     // Reset-cause marker (always): warn if the prior reset was abnormal
     // (watchdog or CPU fault), else debug for a clean power-on / pin reset.
@@ -1364,5 +1423,46 @@ kalico_diag_emit_prior_crash(void)
         kalico_log_emit(KALICO_LOG_LEVEL_WARN, KALICO_LOG_SUBSYS_RUNTIME,
                         KALICO_LOG_EVENT_RUNTIME_RT_PROGRESS, 0,
                         runtime_diag_prior_packed_raw, fc);
+
+        // Last scheduler callback running before the freeze (addr2line target).
+        kalico_log_emit(KALICO_LOG_LEVEL_WARN, KALICO_LOG_SUBSYS_RUNTIME,
+                        KALICO_LOG_EVENT_RUNTIME_LAST_DISPATCH, 0,
+                        saved_prior_last_dispatch_func,
+                        saved_prior_last_dispatch_addr);
+
+        // Cause-naming discriminators + the play-by-play ring. Only meaningful
+        // when the prior-boot diag snapshot is present (else all-zero).
+        if (prior_diag_present) {
+            // Which engine ISR phase was executing (RT_PHASE_*) + ring churn.
+            kalico_log_emit(KALICO_LOG_LEVEL_WARN, KALICO_LOG_SUBSYS_RUNTIME,
+                            KALICO_LOG_EVENT_RUNTIME_ISR_PHASE, 0,
+                            prior_diag.rt_isr_phase, prior_diag.ring_overflow);
+            // Who hogged the CPU (contiguous-burst DWT spans) — the cause-namer:
+            // a span >~2x the TIM5 period starves the foreground.
+            kalico_log_emit(KALICO_LOG_LEVEL_WARN, KALICO_LOG_SUBSYS_RUNTIME,
+                            KALICO_LOG_EVENT_RUNTIME_BLOCK_SOURCE, 0,
+                            prior_diag.usb_burst_max_cyc,
+                            prior_diag.stepout_burst_max_cyc);
+            // Was the engine itself starved? TIM5 entry-to-entry vs sample period.
+            kalico_log_emit(KALICO_LOG_LEVEL_WARN, KALICO_LOG_SUBSYS_RUNTIME,
+                            KALICO_LOG_EVENT_RUNTIME_TIM5_IA, 0,
+                            prior_diag.tim5_ia_min_cyc,
+                            prior_diag.tim5_ia_max_cyc);
+
+            // Play-by-play: replay the prior-boot diag event ring oldest-first
+            // (head = oldest). Each entry rides the diag subsystem with the
+            // event-code == its DIAG_EV_* tag (1:1 with log_codes.rs). The
+            // entry's own seq/timestamp are dropped — emit order is chronology,
+            // and the salient timing rides in a/b. Skips empty slots.
+            uint32_t head = prior_diag.ring_head & DIAG_RING_MASK;
+            for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
+                uint32_t idx = (head + i) & DIAG_RING_MASK;
+                uint8_t tag = prior_ring[idx].tag;
+                if (tag == DIAG_EV_NONE)
+                    continue;
+                kalico_log_emit(diag_ring_tag_level(tag), KALICO_LOG_SUBSYS_DIAG,
+                                tag, 0, prior_ring[idx].a, prior_ring[idx].b);
+            }
+        }
     }
 }
