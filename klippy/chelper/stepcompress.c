@@ -254,28 +254,6 @@ stepcompress_alloc(uint32_t oid)
     return sc;
 }
 
-// Fill message id information
-void __visible
-stepcompress_fill(struct stepcompress *sc, uint32_t max_error
-                  , int32_t queue_step_msgtag, int32_t set_next_step_dir_msgtag)
-{
-    sc->max_error = max_error;
-    sc->queue_step_msgtag = queue_step_msgtag;
-    sc->set_next_step_dir_msgtag = set_next_step_dir_msgtag;
-}
-
-// Set the inverted stepper direction flag
-void __visible
-stepcompress_set_invert_sdir(struct stepcompress *sc, uint32_t invert_sdir)
-{
-    invert_sdir = !!invert_sdir;
-    if (invert_sdir != sc->invert_sdir) {
-        sc->invert_sdir = invert_sdir;
-        if (sc->sdir >= 0)
-            sc->sdir ^= 1;
-    }
-}
-
 // Helper to free items from the history_list
 static void
 free_history(struct stepcompress *sc, uint64_t end_clock)
@@ -290,13 +268,6 @@ free_history(struct stepcompress *sc, uint64_t end_clock)
     }
 }
 
-// Expire the stepcompress history older than the given clock
-static void
-stepcompress_history_expire(struct stepcompress *sc, uint64_t end_clock)
-{
-    free_history(sc, end_clock);
-}
-
 // Free memory associated with a 'stepcompress' object
 void __visible
 stepcompress_free(struct stepcompress *sc)
@@ -309,34 +280,12 @@ stepcompress_free(struct stepcompress *sc)
     free(sc);
 }
 
-uint32_t
-stepcompress_get_oid(struct stepcompress *sc)
-{
-    return sc->oid;
-}
-
-int
-stepcompress_get_step_dir(struct stepcompress *sc)
-{
-    return sc->next_step_dir;
-}
-
 // Determine the "print time" of the last_step_clock
 static void
 calc_last_step_print_time(struct stepcompress *sc)
 {
     double lsc = sc->last_step_clock;
     sc->last_step_print_time = sc->mcu_time_offset + (lsc - .5) / sc->mcu_freq;
-}
-
-// Set the conversion rate of 'print_time' to mcu clock
-static void
-stepcompress_set_time(struct stepcompress *sc
-                      , double time_offset, double mcu_freq)
-{
-    sc->mcu_time_offset = time_offset;
-    sc->mcu_freq = mcu_freq;
-    calc_last_step_print_time(sc);
 }
 
 // Maximium clock delta between messages in the queue
@@ -497,47 +446,6 @@ queue_append(struct stepcompress *sc)
     return 0;
 }
 
-#define SDS_FILTER_TIME .000750
-
-// Add next step time
-int
-stepcompress_append(struct stepcompress *sc, int sdir
-                    , double print_time, double step_time)
-{
-    // Calculate step clock
-    double offset = print_time - sc->last_step_print_time;
-    double rel_sc = (step_time + offset) * sc->mcu_freq;
-    uint64_t step_clock = sc->last_step_clock + (uint64_t)rel_sc;
-    // Flush previous pending step (if any)
-    if (sc->next_step_clock) {
-        if (unlikely(sdir != sc->next_step_dir)) {
-            double diff = (int64_t)(step_clock - sc->next_step_clock);
-            if (diff < SDS_FILTER_TIME * sc->mcu_freq) {
-                // Rollback last step to avoid rapid step+dir+step
-                sc->next_step_clock = 0;
-                sc->next_step_dir = sdir;
-                return 0;
-            }
-        }
-        int ret = queue_append(sc);
-        if (ret)
-            return ret;
-    }
-    // Store this step as the next pending step
-    sc->next_step_clock = step_clock;
-    sc->next_step_dir = sdir;
-    return 0;
-}
-
-// Commit next pending step (ie, do not allow a rollback)
-int
-stepcompress_commit(struct stepcompress *sc)
-{
-    if (sc->next_step_clock)
-        return queue_append(sc);
-    return 0;
-}
-
 // Flush pending steps
 static int
 stepcompress_flush(struct stepcompress *sc, uint64_t move_clock)
@@ -548,81 +456,6 @@ stepcompress_flush(struct stepcompress *sc, uint64_t move_clock)
             return ret;
     }
     return queue_flush(sc, move_clock);
-}
-
-// Reset the internal state of the stepcompress object
-int __visible
-stepcompress_reset(struct stepcompress *sc, uint64_t last_step_clock)
-{
-    int ret = stepcompress_flush(sc, UINT64_MAX);
-    if (ret)
-        return ret;
-    sc->last_step_clock = last_step_clock;
-    sc->sdir = -1;
-    calc_last_step_print_time(sc);
-    return 0;
-}
-
-// Set last_position in the stepcompress object
-int __visible
-stepcompress_set_last_position(struct stepcompress *sc, uint64_t clock
-                               , int64_t last_position)
-{
-    int ret = stepcompress_flush(sc, UINT64_MAX);
-    if (ret)
-        return ret;
-    sc->last_position = last_position;
-
-    // Add a marker to the history list
-    struct history_steps *hs = malloc(sizeof(*hs));
-    memset(hs, 0, sizeof(*hs));
-    hs->first_clock = hs->last_clock = clock;
-    hs->start_position = last_position;
-    list_add_head(&hs->node, &sc->history_list);
-    return 0;
-}
-
-// Search history of moves to find a past position at a given clock
-int64_t __visible
-stepcompress_find_past_position(struct stepcompress *sc, uint64_t clock)
-{
-    int64_t last_position = sc->last_position;
-    struct history_steps *hs;
-    list_for_each_entry(hs, &sc->history_list, node) {
-        if (clock < hs->first_clock) {
-            last_position = hs->start_position;
-            continue;
-        }
-        if (clock >= hs->last_clock)
-            return hs->start_position + hs->step_count;
-        int32_t interval = hs->interval, add = hs->add;
-        int32_t ticks = (int32_t)(clock - hs->first_clock) + interval, offset;
-        if (!add) {
-            offset = ticks / interval;
-        } else {
-            // Solve for "count" using quadratic formula
-            double a = .5 * add, b = interval - .5 * add, c = -ticks;
-            offset = (sqrt(b*b - 4*a*c) - b) / (2. * a);
-        }
-        if (hs->step_count < 0)
-            return hs->start_position - offset;
-        return hs->start_position + offset;
-    }
-    return last_position;
-}
-
-// Queue an mcu command to go out in order with stepper commands
-int __visible
-stepcompress_queue_msg(struct stepcompress *sc, uint32_t *data, int len)
-{
-    int ret = stepcompress_flush(sc, UINT64_MAX);
-    if (ret)
-        return ret;
-
-    struct queue_message *qm = message_alloc_and_encode(data, len);
-    qm->req_clock = sc->last_step_clock;
-    list_add_tail(&qm->node, &sc->msg_queue);
-    return 0;
 }
 
 // Queue an mcu command that will consume space in the mcu move queue
@@ -637,191 +470,5 @@ stepcompress_queue_mq_msg(struct stepcompress *sc, uint64_t req_clock
     struct queue_message *qm = message_alloc_and_encode(data, len);
     qm->min_clock = qm->req_clock = req_clock;
     list_add_tail(&qm->node, &sc->msg_queue);
-    return 0;
-}
-
-// Return history of queue_step commands
-int __visible
-stepcompress_extract_old(struct stepcompress *sc, struct pull_history_steps *p
-                         , int max, uint64_t start_clock, uint64_t end_clock)
-{
-    int res = 0;
-    struct history_steps *hs;
-    list_for_each_entry(hs, &sc->history_list, node) {
-        if (start_clock >= hs->last_clock || res >= max)
-            break;
-        if (end_clock <= hs->first_clock)
-            continue;
-        p->first_clock = hs->first_clock;
-        p->last_clock = hs->last_clock;
-        p->start_position = hs->start_position;
-        p->step_count = hs->step_count;
-        p->interval = hs->interval;
-        p->add = hs->add;
-        p++;
-        res++;
-    }
-    return res;
-}
-
-
-/****************************************************************
- * Step compress synchronization
- ****************************************************************/
-
-// The steppersync object is used to synchronize the output of mcu
-// step commands.  The mcu can only queue a limited number of step
-// commands - this code tracks when items on the mcu step queue become
-// free so that new commands can be transmitted.  It also ensures the
-// mcu step queue is ordered between steppers so that no stepper
-// starves the other steppers of space in the mcu step queue.
-
-struct steppersync {
-    // Serial port
-    struct serialqueue *sq;
-    struct command_queue *cq;
-    // Storage for associated stepcompress objects
-    struct stepcompress **sc_list;
-    int sc_num;
-    // Storage for list of pending move clocks
-    uint64_t *move_clocks;
-    int num_move_clocks;
-};
-
-// Allocate a new 'steppersync' object
-struct steppersync * __visible
-steppersync_alloc(struct serialqueue *sq, struct stepcompress **sc_list
-                  , int sc_num, int move_num)
-{
-    struct steppersync *ss = malloc(sizeof(*ss));
-    memset(ss, 0, sizeof(*ss));
-    ss->sq = sq;
-    ss->cq = serialqueue_alloc_commandqueue();
-
-    ss->sc_list = malloc(sizeof(*sc_list)*sc_num);
-    memcpy(ss->sc_list, sc_list, sizeof(*sc_list)*sc_num);
-    ss->sc_num = sc_num;
-
-    ss->move_clocks = malloc(sizeof(*ss->move_clocks)*move_num);
-    memset(ss->move_clocks, 0, sizeof(*ss->move_clocks)*move_num);
-    ss->num_move_clocks = move_num;
-
-    return ss;
-}
-
-// Free memory associated with a 'steppersync' object
-void __visible
-steppersync_free(struct steppersync *ss)
-{
-    if (!ss)
-        return;
-    free(ss->sc_list);
-    free(ss->move_clocks);
-    serialqueue_free_commandqueue(ss->cq);
-    free(ss);
-}
-
-// Set the conversion rate of 'print_time' to mcu clock
-void __visible
-steppersync_set_time(struct steppersync *ss, double time_offset
-                     , double mcu_freq)
-{
-    int i;
-    for (i=0; i<ss->sc_num; i++) {
-        struct stepcompress *sc = ss->sc_list[i];
-        stepcompress_set_time(sc, time_offset, mcu_freq);
-    }
-}
-
-// Expire the stepcompress history before the given clock time
-static void
-steppersync_history_expire(struct steppersync *ss, uint64_t end_clock)
-{
-    int i;
-    for (i = 0; i < ss->sc_num; i++)
-    {
-        struct stepcompress *sc = ss->sc_list[i];
-        stepcompress_history_expire(sc, end_clock);
-    }
-}
-
-// Implement a binary heap algorithm to track when the next available
-// 'struct move' in the mcu will be available
-static void
-heap_replace(struct steppersync *ss, uint64_t req_clock)
-{
-    uint64_t *mc = ss->move_clocks;
-    int nmc = ss->num_move_clocks, pos = 0;
-    for (;;) {
-        int child1_pos = 2*pos+1, child2_pos = 2*pos+2;
-        uint64_t child2_clock = child2_pos < nmc ? mc[child2_pos] : UINT64_MAX;
-        uint64_t child1_clock = child1_pos < nmc ? mc[child1_pos] : UINT64_MAX;
-        if (req_clock <= child1_clock && req_clock <= child2_clock) {
-            mc[pos] = req_clock;
-            break;
-        }
-        if (child1_clock < child2_clock) {
-            mc[pos] = child1_clock;
-            pos = child1_pos;
-        } else {
-            mc[pos] = child2_clock;
-            pos = child2_pos;
-        }
-    }
-}
-
-// Find and transmit any scheduled steps prior to the given 'move_clock'
-int __visible
-steppersync_flush(struct steppersync *ss, uint64_t move_clock
-                  , uint64_t clear_history_clock)
-{
-    // Flush each stepcompress to the specified move_clock
-    int i;
-    for (i=0; i<ss->sc_num; i++) {
-        int ret = stepcompress_flush(ss->sc_list[i], move_clock);
-        if (ret)
-            return ret;
-    }
-
-    // Order commands by the reqclock of each pending command
-    struct list_head msgs;
-    list_init(&msgs);
-    for (;;) {
-        // Find message with lowest reqclock
-        uint64_t req_clock = MAX_CLOCK;
-        struct queue_message *qm = NULL;
-        for (i=0; i<ss->sc_num; i++) {
-            struct stepcompress *sc = ss->sc_list[i];
-            if (!list_empty(&sc->msg_queue)) {
-                struct queue_message *m = list_first_entry(
-                    &sc->msg_queue, struct queue_message, node);
-                if (m->req_clock < req_clock) {
-                    qm = m;
-                    req_clock = m->req_clock;
-                }
-            }
-        }
-        if (!qm || (qm->min_clock && req_clock > move_clock))
-            break;
-
-        uint64_t next_avail = ss->move_clocks[0];
-        if (qm->min_clock)
-            // The qm->min_clock field is overloaded to indicate that
-            // the command uses the 'move queue' and to store the time
-            // that move queue item becomes available.
-            heap_replace(ss, qm->min_clock);
-        // Reset the min_clock to its normal meaning (minimum transmit time)
-        qm->min_clock = next_avail;
-
-        // Batch this command
-        list_del(&qm->node);
-        list_add_tail(&qm->node, &msgs);
-    }
-
-    // Transmit commands
-    if (!list_empty(&msgs))
-        serialqueue_send_batch(ss->sq, ss->cq, &msgs);
-
-    steppersync_history_expire(ss, clear_history_clock);
     return 0;
 }

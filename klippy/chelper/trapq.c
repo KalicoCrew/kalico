@@ -226,31 +226,3 @@ trapq_set_position(struct trapq *tq, double print_time
     m->start_pos.z = pos_z;
     list_add_head(&m->node, &tq->history);
 }
-
-// Return history of movement queue
-int __visible
-trapq_extract_old(struct trapq *tq, struct pull_move *p, int max
-                  , double start_time, double end_time)
-{
-    int res = 0;
-    struct move *m;
-    list_for_each_entry(m, &tq->history, node) {
-        if (start_time >= m->print_time + m->move_t || res >= max)
-            break;
-        if (end_time <= m->print_time)
-            continue;
-        p->print_time = m->print_time;
-        p->move_t = m->move_t;
-        p->start_v = m->start_v;
-        p->accel = 2. * m->half_accel;
-        p->start_x = m->start_pos.x;
-        p->start_y = m->start_pos.y;
-        p->start_z = m->start_pos.z;
-        p->x_r = m->axes_r.x;
-        p->y_r = m->axes_r.y;
-        p->z_r = m->axes_r.z;
-        p++;
-        res++;
-    }
-    return res;
-}
