@@ -6224,7 +6224,7 @@ control via `CLOG_DETECTION`.
 #   The default is 1.0 seconds.
 #clog_detected_gcode:
 #   An optional GCode command or macro to run when a clog is detected.
-#   The detected state is not cleared automatically — use CLOG_DETECTION RESET
+#   The detected state is not cleared automatically — use CLOG_DETECTION RESET=1
 #   to re-arm detection. The default is no action.
 ```
 

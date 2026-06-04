@@ -1102,13 +1102,13 @@ configured.
 name suffix (e.g. `T0` for `[clog_detect T0]`). `NAME` is optional when only
 one `[clog_detect]` section is configured; it is required when multiple
 sections are configured.
-- `CLOG_DETECTION RESET` — clears the `clog_detected` state and re-arms
+- `CLOG_DETECTION RESET=1` — clears the `clog_detected` state and re-arms
   detection. The detected state is not cleared automatically, even after the
   `clog_detected_gcode` macro has run.
 - `CLOG_DETECTION ENABLED=true` — enables detection for the instance.
 - `CLOG_DETECTION ENABLED=false` — disables detection for the instance without
   removing the configuration.
-- `CLOG_DETECTION RESET NAME=T0` — resets the instance named `T0`.
+- `CLOG_DETECTION RESET=1 NAME=T0` — resets the instance named `T0`.
 
 ### [manual_probe]
 
