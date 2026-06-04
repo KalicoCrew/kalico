@@ -6,7 +6,6 @@ fn schedule_segment_straight_line_returns_profile() {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]],
-        None,
     )
     .unwrap();
     let limits = Limits {

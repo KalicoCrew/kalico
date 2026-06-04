@@ -195,7 +195,6 @@ fn compose_straight_line_constant_velocity() {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [50.0, 0.0, 0.0]],
-        None,
     )
     .unwrap();
 
@@ -250,7 +249,6 @@ fn compose_diagonal_line() {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [30.0, 40.0, 0.0]],
-        None,
     )
     .unwrap();
 

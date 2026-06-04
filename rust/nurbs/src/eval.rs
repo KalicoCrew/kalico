@@ -124,86 +124,10 @@ pub(crate) fn de_boor_inner<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) 
 
 /// Evaluate a scalar NURBS at parameter `u`.
 /// Hot path. MCU + host. No allocation.
-///
-/// For non-rational curves: one de Boor walk.
-/// For rational curves: two de Boor walks (weighted CPs and weights), then divide.
 #[inline]
 pub fn eval<T: Float, V: NurbsView<T>>(curve: &V, u: T) -> T {
     debug_assert!((curve.degree() as usize) <= MAX_DEGREE);
-    match curve.weights() {
-        None => de_boor_inner(curve.control_points(), curve.knots(), curve.degree(), u),
-        Some(w) => {
-            let numer =
-                de_boor_homogeneous(curve.control_points(), w, curve.knots(), curve.degree(), u);
-            let denom = de_boor_inner(w, curve.knots(), curve.degree(), u);
-            let floor = T::from_f64(MIN_PARAMETRIC_SPEED);
-            debug_assert!(denom.abs() > floor);
-            numer / denom.max(floor)
-        }
-    }
-}
-
-/// de Boor over `weighted_cps[i] = cps[i] * weights[i]`, computed in a single
-/// pass without allocating a weighted-cps vector.
-///
-/// Reference: Piegl & Tiller "The NURBS Book" §4.4 (rational evaluation via
-/// homogeneous coordinates). The weighting is applied at the de Boor
-/// initialization step; the recurrence is identical to `de_boor_inner`.
-///
-/// # Index-safety invariant
-///
-/// Same as `de_boor_inner`: `find_knot_span` returns `k ∈ [p, n-1]`, so
-/// `k - p + j ∈ [0, n-1]` for `j ∈ 0..=p`, and `k + 1 + j - r ≤ k + p ≤ n + p - 1`.
-/// All `cps`, `weights`, and `knots` accesses below are in-bounds by this
-/// invariant; `get_unchecked` eliminates MCU-build panic paths.
-#[inline]
-pub(crate) fn de_boor_homogeneous<T: Float>(
-    cps: &[T],
-    weights: &[T],
-    knots: &[T],
-    degree: u8,
-    u: T,
-) -> T {
-    debug_assert!((degree as usize) <= MAX_DEGREE);
-    debug_assert!(cps.len() == weights.len());
-    let p = degree as usize;
-    let n = cps.len();
-    let k = find_knot_span(knots, p, n, u);
-
-    // SAFETY: k ∈ [p, n-1] from find_knot_span, so k-p+j ∈ [0, n-1] for j ∈ 0..=p.
-    debug_assert!(k >= p && k < n, "find_knot_span invariant: k ∈ [p, n-1]");
-    debug_assert!(knots.len() == n + p + 1, "knots len == n + p + 1");
-
-    let mut d = [T::ZERO; WORKSPACE_SIZE];
-    for j in 0..=p {
-        // SAFETY: k - p + j ∈ [0, n-1] < cps.len() == weights.len()
-        // SAFETY: j ≤ p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
-        unsafe {
-            *d.get_unchecked_mut(j) =
-                *cps.get_unchecked(k - p + j) * *weights.get_unchecked(k - p + j);
-        }
-    }
-
-    for r in 1..=p {
-        for j in (r..=p).rev() {
-            // SAFETY: same knots-index invariant as de_boor_inner.
-            // SAFETY: j ≤ p ≤ MAX_DEGREE < WORKSPACE_SIZE; j-1 ≥ r-1 ≥ 0.
-            let knot_lo = unsafe { *knots.get_unchecked(k - p + j) };
-            let knot_hi = unsafe { *knots.get_unchecked(k + 1 + j - r) };
-            let denom = knot_hi - knot_lo;
-            let alpha = if denom > T::ZERO {
-                (u - knot_lo) / denom
-            } else {
-                T::ZERO
-            };
-            let dj = unsafe { *d.get_unchecked(j) };
-            let djm1 = unsafe { *d.get_unchecked(j - 1) };
-            unsafe { *d.get_unchecked_mut(j) = (dj - djm1).mul_add(alpha, djm1) };
-        }
-    }
-
-    // SAFETY: p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
-    unsafe { *d.get_unchecked(p) }
+    de_boor_inner(curve.control_points(), curve.knots(), curve.degree(), u)
 }
 
 /// Evaluate a vector NURBS at parameter `u`. Shares knot-span lookup and alpha
@@ -218,10 +142,7 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V
     let n = cps.len();
     let k = find_knot_span(knots, p, n, u);
 
-    let has_weights = curve.weights().is_some();
-
     let mut d_axes: [[T; WORKSPACE_SIZE]; N] = [[T::ZERO; WORKSPACE_SIZE]; N];
-    let mut d_w = [T::ZERO; WORKSPACE_SIZE];
 
     // SAFETY: k ∈ [p, n-1] from find_knot_span (same invariant as de_boor_inner).
     debug_assert!(k >= p && k < n, "find_knot_span invariant: k ∈ [p, n-1]");
@@ -232,17 +153,8 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V
         // SAFETY: k - p + j ∈ [0, n-1] < cps.len()
         // SAFETY: j ≤ p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
         let cp = unsafe { cps.get_unchecked(k - p + j) };
-        if let Some(w) = curve.weights() {
-            // SAFETY: same index, w.len() == cps.len()
-            let wj = unsafe { *w.get_unchecked(k - p + j) };
-            for axis in 0..N {
-                unsafe { *d_axes[axis].get_unchecked_mut(j) = cp[axis] * wj };
-            }
-            unsafe { *d_w.get_unchecked_mut(j) = wj };
-        } else {
-            for axis in 0..N {
-                unsafe { *d_axes[axis].get_unchecked_mut(j) = cp[axis] };
-            }
+        for axis in 0..N {
+            unsafe { *d_axes[axis].get_unchecked_mut(j) = cp[axis] };
         }
     }
 
@@ -264,30 +176,13 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V
                 let djm1 = unsafe { *d_axes[axis].get_unchecked(j - 1) };
                 unsafe { *d_axes[axis].get_unchecked_mut(j) = (dj - djm1).mul_add(alpha, djm1) };
             }
-            if has_weights {
-                let dj = unsafe { *d_w.get_unchecked(j) };
-                let djm1 = unsafe { *d_w.get_unchecked(j - 1) };
-                unsafe { *d_w.get_unchecked_mut(j) = (dj - djm1).mul_add(alpha, djm1) };
-            }
         }
     }
 
     let mut result = [T::ZERO; N];
-    if has_weights {
+    for axis in 0..N {
         // SAFETY: p ≤ MAX_DEGREE < WORKSPACE_SIZE
-        let denom = unsafe { *d_w.get_unchecked(p) };
-        let floor = T::from_f64(MIN_PARAMETRIC_SPEED);
-        debug_assert!(denom.abs() > floor);
-        let denom_clamp = denom.max(floor);
-        for axis in 0..N {
-            // SAFETY: p ≤ MAX_DEGREE < WORKSPACE_SIZE
-            result[axis] = unsafe { *d_axes[axis].get_unchecked(p) } / denom_clamp;
-        }
-    } else {
-        for axis in 0..N {
-            // SAFETY: p ≤ MAX_DEGREE < WORKSPACE_SIZE
-            result[axis] = unsafe { *d_axes[axis].get_unchecked(p) };
-        }
+        result[axis] = unsafe { *d_axes[axis].get_unchecked(p) };
     }
     result
 }
@@ -306,9 +201,6 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V
 /// MCU hot path: callers are responsible for ensuring slice shapes satisfy
 /// `knots.len() == cps.len() + degree + 1` and that the curve was validated
 /// upstream (e.g. `CurvePool` on segment load).
-///
-/// Polynomial (non-rational) only — for weighted curves go via separate
-/// `eval` + appropriate quotient-rule construction.
 ///
 /// Reference: differentiate the de Boor recurrence
 /// `d^(r)_j = (1 - α) * d^(r-1)_{j-1} + α * d^(r-1)_j` w.r.t. `u`:
@@ -561,8 +453,6 @@ pub fn eval_polynomial_f32_with_pos_vel_accel_f64(
 /// are responsible for ensuring slice shapes satisfy
 /// `knots.len() == cps.len() + degree + 1` and that the curve was validated
 /// upstream (e.g. `CurvePool` on segment load).
-///
-/// Polynomial (non-rational) only — for weighted curves go through `eval`.
 #[inline]
 pub fn eval_polynomial<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T {
     debug_assert!((degree as usize) <= MAX_DEGREE);
@@ -582,9 +472,7 @@ pub fn eval_polynomial<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T 
 /// every entry; this windowed form keeps stack usage to a couple hundred
 /// bytes.
 ///
-/// Polynomial (non-rational) NURBS only — for weighted curves, project to
-/// homogeneous coordinates upstream. `degree` must be ≥ 1 (returns
-/// `T::ZERO` for `degree == 0`).
+/// `degree` must be ≥ 1 (returns `T::ZERO` for `degree == 0`).
 ///
 /// Reference: Piegl & Tiller "The NURBS Book" eq. 3.7 (derivative cps),
 /// Algorithm A4.1 (de Boor) on the lowered knot vector.
@@ -667,10 +555,7 @@ pub fn eval_derivative<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T 
 /// knots dropped, and control points
 ///   `Q_i = p * (P_{i+1} - P_i) / (u_{i+p+1} - u_{i+1})`.
 ///
-/// Host-only — allocates new `Vec`s. For weighted (rational) NURBS, the host
-/// pre-bake pipeline should project to homogeneous coordinates first; this
-/// function handles unweighted (B-spline) NURBS only. Rational derivative is
-/// the consumer's responsibility (composed via the quotient rule downstream).
+/// Host-only — allocates new `Vec`s.
 ///
 /// Reference: Piegl & Tiller "The NURBS Book" eq. 3.7 / Algorithm A3.3.
 #[cfg(feature = "host")]
@@ -700,7 +585,7 @@ pub fn derivative<T: Float>(curve: &crate::ScalarNurbs<T>) -> crate::ScalarNurbs
     // New knot vector drops the first and last entries.
     let new_knots: Vec<T> = knots[1..knots.len() - 1].to_vec();
 
-    crate::ScalarNurbs::try_new(new_degree, new_knots, new_cps, None)
+    crate::ScalarNurbs::try_new(new_degree, new_knots, new_cps)
         .expect("degree-lowered NURBS satisfies invariants by construction")
 }
 
@@ -735,7 +620,7 @@ pub fn vector_derivative<T: Float, const N: usize>(
 
     let new_knots: Vec<T> = knots[1..knots.len() - 1].to_vec();
 
-    crate::VectorNurbs::try_new(new_degree, new_knots, new_cps, None)
+    crate::VectorNurbs::try_new(new_degree, new_knots, new_cps)
         .expect("degree-lowered NURBS satisfies invariants by construction")
 }
 

@@ -3,7 +3,7 @@ use crate::ConstructError;
 
 fn linear_curve() -> ScalarNurbs<f64> {
     // Degree-1 NURBS, 2 control points, knots {0,0,1,1}.
-    ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap()
+    ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap()
 }
 
 #[test]
@@ -15,7 +15,7 @@ fn try_new_accepts_valid_linear() {
 
 #[test]
 fn try_new_rejects_degree_exceeded() {
-    let result = ScalarNurbs::<f64>::try_new(21, vec![0.0; 23], vec![0.0; 1], None);
+    let result = ScalarNurbs::<f64>::try_new(21, vec![0.0; 23], vec![0.0; 1]);
     assert!(matches!(
         result,
         Err(ConstructError::DegreeExceeded {
@@ -31,7 +31,6 @@ fn try_new_rejects_knot_count_mismatch() {
         1,
         vec![0.0, 0.0, 1.0], // 3 knots, but 2 cps + 1 + 1 = 4 expected
         vec![0.0, 1.0],
-        None,
     );
     assert!(matches!(
         result,
@@ -45,7 +44,6 @@ fn try_new_rejects_unclamped_start() {
         1,
         vec![0.0, 0.5, 1.0, 1.0], // not clamped at start
         vec![0.0, 1.0],
-        None,
     );
     assert!(matches!(result, Err(ConstructError::KnotsNotClamped)));
 }
@@ -56,7 +54,6 @@ fn try_new_rejects_unclamped_end() {
         1,
         vec![0.0, 0.0, 0.5, 1.0], // not clamped at end
         vec![0.0, 1.0],
-        None,
     );
     assert!(matches!(result, Err(ConstructError::KnotsNotClamped)));
 }
@@ -67,40 +64,14 @@ fn try_new_rejects_non_monotone_knots() {
         2,
         vec![0.0, 0.0, 0.0, 0.4, 0.3, 1.0, 1.0, 1.0], // 0.3 < 0.4
         vec![0.0, 0.5, 1.0, 1.5, 2.0],
-        None,
     );
     assert!(matches!(result, Err(ConstructError::KnotsNotMonotone)));
 }
 
 #[test]
 fn try_new_rejects_degenerate_knot_range() {
-    let result = ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 0.0, 0.0], vec![0.0, 1.0], None);
+    let result = ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 0.0, 0.0], vec![0.0, 1.0]);
     assert!(matches!(result, Err(ConstructError::DegenerateKnotRange)));
-}
-
-#[test]
-fn try_new_rejects_weight_count_mismatch() {
-    let result = ScalarNurbs::<f64>::try_new(
-        1,
-        vec![0.0, 0.0, 1.0, 1.0],
-        vec![0.0, 1.0],
-        Some(vec![1.0]), // 1 weight for 2 cps
-    );
-    assert!(matches!(
-        result,
-        Err(ConstructError::WeightCountMismatch { .. })
-    ));
-}
-
-#[test]
-fn try_new_rejects_non_positive_weight() {
-    let result = ScalarNurbs::<f64>::try_new(
-        1,
-        vec![0.0, 0.0, 1.0, 1.0],
-        vec![0.0, 1.0],
-        Some(vec![1.0, 0.0]),
-    );
-    assert!(matches!(result, Err(ConstructError::NonPositiveWeight)));
 }
 
 #[test]
@@ -116,7 +87,7 @@ fn as_view_provides_borrowed_access() {
 fn ref_try_new_accepts_valid_data() {
     let knots = [0.0_f64, 0.0, 1.0, 1.0];
     let cps = [0.0_f64, 1.0];
-    let r = ScalarNurbsRef::try_new(1, &knots, &cps, None).unwrap();
+    let r = ScalarNurbsRef::try_new(1, &knots, &cps).unwrap();
     assert_eq!(r.degree(), 1);
 }
 
@@ -141,7 +112,6 @@ fn try_from_wire_parses_unweighted_linear() {
     let r = ScalarNurbsRef::<f32>::try_from_wire(aligned.as_slice()).unwrap();
     assert_eq!(r.degree(), 1);
     assert_eq!(r.control_points(), &[0.0_f32, 1.0]);
-    assert!(r.weights().is_none());
 }
 
 #[test]
@@ -179,6 +149,20 @@ fn try_from_wire_rejects_truncated_header() {
         result,
         Err(crate::WireError::TruncatedBuffer { .. })
     ));
+}
+
+#[test]
+fn try_from_wire_rejects_has_weights_flag() {
+    // Legacy rational header (has_weights=1) must be rejected loudly, not
+    // parsed with a misaligned payload assumption.
+    let buf = align_buf(
+        &[
+            1u8, 1, 1, 0, 4, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+        4,
+    );
+    let result = ScalarNurbsRef::<f32>::try_from_wire(buf.as_slice());
+    assert!(matches!(result, Err(crate::WireError::WeightsUnsupported)));
 }
 
 /// Owns a 4-byte-aligned byte buffer for wire-format tests. The backing

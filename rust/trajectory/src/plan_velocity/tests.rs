@@ -4,7 +4,7 @@ use geometry::segment::EMode;
 use nurbs::VectorNurbs;
 
 fn straight_linear(start: [f64; 3], end: [f64; 3]) -> VectorNurbs<f64, 3> {
-    VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![start, end], None).unwrap()
+    VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![start, end]).unwrap()
 }
 
 fn default_limits() -> temporal::Limits {

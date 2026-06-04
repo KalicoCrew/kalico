@@ -487,15 +487,10 @@ impl<T: Float> std::ops::Add<&BezierPiece<T>> for &BezierPiece<T> {
     }
 }
 
-/// Decompose a polynomial NURBS into its constituent Bézier pieces in the
+/// Decompose a NURBS into its constituent Bézier pieces in the
 /// Pascal-shifted monomial basis. Internally raises every interior knot to
 /// multiplicity = degree (Boehm), then converts each Bernstein piece to monomial.
 pub fn extract_bezier_pieces<T: Float>(curve: &ScalarNurbs<T>) -> Vec<BezierPiece<T>> {
-    assert!(
-        curve.weights().is_none(),
-        "extract_bezier_pieces: rational input not supported in v1"
-    );
-
     let refined = crate::knot::refined_to_full_multiplicity(curve);
     let p = refined.degree() as usize;
     let knots = refined.knots();
@@ -564,7 +559,7 @@ pub fn bezier_pieces_to_nurbs<T: Float>(pieces: &[BezierPiece<T>]) -> ScalarNurb
         }
     }
 
-    ScalarNurbs::try_new(p as u8, knots, cps, None)
+    ScalarNurbs::try_new(p as u8, knots, cps)
         .expect("bezier_pieces_to_nurbs: invariants should hold")
 }
 

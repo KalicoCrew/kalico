@@ -5,7 +5,7 @@ use nurbs::eval::eval;
 /// [v_start, v_end]. Used to exercise the already-low-degree passthrough.
 fn linear_curve(v_start: f64, v_end: f64) -> ScalarNurbs<f64> {
     // Degree 1, knots = [0, 0, 1, 1], cps = [v_start, v_end].
-    ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![v_start, v_end], None)
+    ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![v_start, v_end])
         .expect("linear NURBS construction")
 }
 

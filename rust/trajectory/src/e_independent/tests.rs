@@ -2,7 +2,7 @@ use super::*;
 
 /// Build a simple linear E NURBS from `e_start` to `e_end` in `[0, 1]`.
 fn linear_e_nurbs(e_start: f64, e_end: f64) -> ScalarNurbs<f64> {
-    ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![e_start, e_end], None).unwrap()
+    ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![e_start, e_end]).unwrap()
 }
 
 fn default_limits() -> ELimits {

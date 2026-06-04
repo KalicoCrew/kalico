@@ -45,7 +45,6 @@ fn single_g5_emits_one_cubic_segment() {
     let cps = c.xyz.control_points();
     assert!(approx(cps[1][0], 3.0) && approx(cps[1][1], 3.0));
     assert!(approx(cps[2][0], 7.0) && approx(cps[2][1], 3.0));
-    assert!(c.xyz.weights().is_none());
 }
 
 #[test]
@@ -65,13 +64,9 @@ fn single_g5_1_emits_one_non_rational_cubic_via_degree_elevation() {
         cubics.len()
     );
     let c = cubics[0];
-    // Post-elevation: degree 3, 4 CPs, non-rational.
+    // Post-elevation: degree 3, 4 CPs, clamped knots.
     assert_eq!(c.xyz.degree(), 3);
     assert_eq!(c.xyz.control_points().len(), 4);
-    assert!(
-        c.xyz.weights().is_none(),
-        "G5.1 → cubic must remain non-rational (distinguishes from Arc)"
-    );
 }
 
 #[test]

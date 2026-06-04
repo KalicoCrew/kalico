@@ -63,7 +63,6 @@ pub fn schedule_e_full(
             1,
             vec![t_start, t_start, t_start + 1e-6, t_start + 1e-6],
             vec![e_start, e_start],
-            None,
         )
         .map_err(construct_to_shape_error);
     }
@@ -257,7 +256,6 @@ pub fn schedule_e_full(
                 t_end_safe,
             ],
             cps,
-            None,
         )
         .map_err(construct_to_shape_error);
     }
@@ -321,7 +319,6 @@ pub fn schedule_e_full(
             t0, t0, t0, t1_safe, t1_safe, t2_safe, t2_safe, t_end_safe, t_end_safe, t_end_safe,
         ],
         cps,
-        None,
     )
     .map_err(construct_to_shape_error)
 }
@@ -350,10 +347,6 @@ fn construct_to_shape_error(e: nurbs::ConstructError) -> crate::ShapeError {
                 nurbs::ConstructError::DegenerateKnotRange => {
                     "e_independent: degenerate knot range"
                 }
-                nurbs::ConstructError::WeightCountMismatch { .. } => {
-                    "e_independent: weight count mismatch"
-                }
-                nurbs::ConstructError::NonPositiveWeight => "e_independent: non-positive weight",
             },
         ),
     }

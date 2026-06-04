@@ -5,31 +5,10 @@
 
 #[test]
 fn tiny_knot_range_evaluates_without_nan() {
-    let curve =
-        nurbs::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1e-8, 1e-8], vec![0.0, 1.0], None)
-            .expect("tiny but positive range is valid");
+    let curve = nurbs::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1e-8, 1e-8], vec![0.0, 1.0])
+        .expect("tiny but positive range is valid");
     let mid = nurbs::eval::eval(&curve.as_view(), 5e-9);
     assert!(mid.is_finite(), "expected finite eval, got {mid}");
-}
-
-#[test]
-fn near_zero_weight_evaluates_within_clamp() {
-    // The trailing weight is small (stress for the rational denominator) but
-    // chosen above MIN_PARAMETRIC_SPEED = 1e-9 so the eval-time
-    // `debug_assert!(denom.abs() > floor)` does not fire in debug builds.
-    // Plan §Task 30 used 1e-12 which trips the debug_assert at u=1.0; that
-    // path is a release-only clamp branch, not exercisable from a regular
-    // test build. Bumping to 1e-6 keeps the spirit (near-zero weight,
-    // finite eval) without violating the substrate's debug contract.
-    let curve = nurbs::ScalarNurbs::try_new(
-        1,
-        vec![0.0_f64, 0.0, 1.0, 1.0],
-        vec![1.0, 2.0],
-        Some(vec![1.0, 1e-6]),
-    )
-    .expect("positive weight passes validation");
-    let v = nurbs::eval::eval(&curve.as_view(), 1.0);
-    assert!(v.is_finite(), "expected finite, got {v}");
 }
 
 #[test]
@@ -40,7 +19,6 @@ fn curvature_clamps_at_cusp_like_input() {
         2,
         vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [1e-10, 0.0, 0.0], [1.0, 0.0, 0.0]],
-        None,
     )
     .unwrap();
     let first = nurbs::eval::vector_derivative(&curve);
@@ -56,7 +34,6 @@ fn arc_length_builder_rejects_truly_degenerate_curve() {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]],
-        None,
     )
     .unwrap();
     let result = nurbs::arc_length::build_arc_length_table_vector(&curve, 1e-6, 64);

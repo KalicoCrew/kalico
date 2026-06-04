@@ -37,21 +37,24 @@ fn straight() -> VectorNurbs<f64, 3> {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]],
-        None,
     )
     .unwrap()
 }
 
-/// Spec §5.1 fixture 3 equivalent: quarter-circle arc, R=20mm, 90° sweep,
-/// rational quadratic NURBS. Hand-rolled (geometry crate's reduce path is
-/// equivalent but heavier to set up).
+/// Spec §5.1 fixture 3 equivalent: quarter-circle arc, R=20mm, 90° sweep.
+/// Cubic Bézier polynomial approximation: k = (4/3)(√2 − 1) ≈ 0.5523.
 fn arc() -> VectorNurbs<f64, 3> {
-    let w = std::f64::consts::FRAC_1_SQRT_2; // sqrt(2)/2
+    let r = 20.0_f64;
+    let k = (4.0 / 3.0) * (std::f64::consts::SQRT_2 - 1.0);
     VectorNurbs::<f64, 3>::try_new(
-        2,
-        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        vec![[0.0, 0.0, 0.0], [20.0, 0.0, 0.0], [20.0, 20.0, 0.0]],
-        Some(vec![1.0, w, 1.0]),
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![
+            [r, 0.0, 0.0],
+            [r, k * r, 0.0],
+            [k * r, r, 0.0],
+            [0.0, r, 0.0],
+        ],
     )
     .unwrap()
 }
@@ -69,7 +72,6 @@ fn cubic() -> VectorNurbs<f64, 3> {
             [70.0, 50.0, 0.0],
             [100.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap()
 }

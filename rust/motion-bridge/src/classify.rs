@@ -93,7 +93,6 @@ pub fn classify_and_build(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
         cps.to_vec(),
-        None,
     )
     .map_err(|e| ClassifyError::NurbsConstruction(format!("{e:?}")))?;
 

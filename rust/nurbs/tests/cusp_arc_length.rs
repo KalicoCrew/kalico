@@ -30,7 +30,6 @@ fn true_cusp_at_u_half_succeeds() {
             [0.0, 1.0, 0.0],
             [2.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
     let table = build_arc_length_table_vector(&xyz, 1e-3, 64)
@@ -56,7 +55,6 @@ fn modest_perturbation_min_speed_3e_minus_3_succeeds() {
             [0.0, 1.1, 0.0],
             [2.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
     let table = build_arc_length_table_vector(&xyz, 1e-3, 64)
@@ -78,7 +76,6 @@ fn out_and_back_collinear_succeeds() {
             [-3.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
     let table = build_arc_length_table_vector(&xyz, 1e-3, 64)
@@ -90,8 +87,7 @@ fn out_and_back_collinear_succeeds() {
 fn whole_curve_zero_length_still_rejected() {
     // Genuine degeneracy: all four CPs at the origin. Total arc length = 0.
     // Approach A's whole-curve check must preserve this rejection.
-    let xyz =
-        VectorNurbs::<f64, 3>::try_new(3, cubic_clamped_knots(), vec![[0.0; 3]; 4], None).unwrap();
+    let xyz = VectorNurbs::<f64, 3>::try_new(3, cubic_clamped_knots(), vec![[0.0; 3]; 4]).unwrap();
     let result = build_arc_length_table_vector(&xyz, 1e-9, 64);
     assert!(
         matches!(result, Err(nurbs::ArcLengthError::DegenerateCurve)),
@@ -112,7 +108,6 @@ fn param_from_arc_length_handles_plateau_at_cusp() {
             [0.0, 1.0, 0.0],
             [2.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
     let table = build_arc_length_table_vector(&xyz, 1e-3, 64).unwrap();

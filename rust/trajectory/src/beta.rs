@@ -1088,7 +1088,6 @@ fn constant_nurbs(value: f64, t_start: f64, t_end: f64) -> ScalarNurbs<f64> {
         1,
         vec![t_start, t_start, t_end_safe, t_end_safe],
         vec![value, value],
-        None,
     )
     .expect("constant NURBS construction should never fail")
 }

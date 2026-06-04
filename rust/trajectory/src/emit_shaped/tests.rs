@@ -9,7 +9,7 @@ use nurbs::bezier::{bezier_pieces_to_nurbs, extract_bezier_pieces};
 use nurbs::VectorNurbs;
 
 fn straight_linear(start: [f64; 3], end: [f64; 3]) -> VectorNurbs<f64, 3> {
-    VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![start, end], None).unwrap()
+    VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![start, end]).unwrap()
 }
 
 fn default_limits() -> temporal::Limits {
@@ -85,22 +85,6 @@ fn assert_nurbs_near_equal(a: &ScalarNurbs<f64>, b: &ScalarNurbs<f64>, label: &s
         max_cp_diff < 1e-12,
         "{label}: control points differ by {max_cp_diff:.2e} mm"
     );
-    assert_eq!(
-        a.weights().is_some(),
-        b.weights().is_some(),
-        "{label}: weight presence differs"
-    );
-    if let (Some(wa), Some(wb)) = (a.weights(), b.weights()) {
-        let max_w_diff = wa
-            .iter()
-            .zip(wb.iter())
-            .map(|(wa, wb)| (wa - wb).abs())
-            .fold(0.0_f64, f64::max);
-        assert!(
-            max_w_diff < 1e-12,
-            "{label}: weights differ by {max_w_diff:.2e}"
-        );
-    }
 }
 
 /// **Byte-identity contract.** With an empty [`PerAxisHistory`] and the

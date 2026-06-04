@@ -8,7 +8,6 @@ fn straight() -> VectorNurbs<f64, 3> {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [50.0, 0.0, 0.0]],
-        None,
     )
     .unwrap()
 }

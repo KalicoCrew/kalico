@@ -22,16 +22,14 @@ fn vector_eval_f32_matches_f64_within_tolerance() {
         [4.0, 0.0, 0.0],
     ];
     let curve_f64 =
-        nurbs::VectorNurbs::<f64, 3>::try_new(degree, knots_f64.clone(), cps_f64.clone(), None)
-            .unwrap();
+        nurbs::VectorNurbs::<f64, 3>::try_new(degree, knots_f64.clone(), cps_f64.clone()).unwrap();
 
     let knots_f32: Vec<f32> = knots_f64.iter().map(|&x| x as f32).collect();
     let cps_f32: Vec<[f32; 3]> = cps_f64
         .iter()
         .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
         .collect();
-    let curve_f32 =
-        nurbs::VectorNurbs::<f32, 3>::try_new(degree, knots_f32, cps_f32, None).unwrap();
+    let curve_f32 = nurbs::VectorNurbs::<f32, 3>::try_new(degree, knots_f32, cps_f32).unwrap();
 
     for u in [0.0_f64, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0] {
         let p64 = nurbs::eval::vector_eval(&curve_f64.as_view(), u);

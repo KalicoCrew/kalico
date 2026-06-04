@@ -214,13 +214,7 @@ fn extract_bezier_pieces_vector(xyz: &VectorNurbs<f64, 3>) -> [Vec<BezierPiece<f
 
 fn project_axis_to_scalar(xyz: &VectorNurbs<f64, 3>, axis: usize) -> ScalarNurbs<f64> {
     let cps: Vec<f64> = xyz.control_points().iter().map(|cp| cp[axis]).collect();
-    ScalarNurbs::try_new(
-        xyz.degree(),
-        xyz.knots().to_vec(),
-        cps,
-        xyz.weights().map(<[f64]>::to_vec),
-    )
-    .expect("projection always valid")
+    ScalarNurbs::try_new(xyz.degree(), xyz.knots().to_vec(), cps).expect("projection always valid")
 }
 
 fn vector_nurbs_from_pieces(pieces: [&BezierPiece<f64>; 3]) -> VectorNurbs<f64, 3> {
@@ -232,6 +226,6 @@ fn vector_nurbs_from_pieces(pieces: [&BezierPiece<f64>; 3]) -> VectorNurbs<f64, 
     let bern_y = pieces[1].to_bernstein();
     let bern_z = pieces[2].to_bernstein();
     let cps: Vec<[f64; 3]> = (0..4).map(|i| [bern_x[i], bern_y[i], bern_z[i]]).collect();
-    VectorNurbs::<f64, 3>::try_new(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], cps, None)
+    VectorNurbs::<f64, 3>::try_new(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], cps)
         .expect("valid cubic from pieces")
 }

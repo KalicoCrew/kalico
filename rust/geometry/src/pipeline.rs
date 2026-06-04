@@ -361,7 +361,7 @@ fn classify_e_mode(
 /// Build a degree-1 linear scalar NURBS for `Independent`-mode E motion:
 /// `e(u) = (1−u)·0 + u·e_delta`, knots `[0,0,1,1]`.
 fn build_linear_e_curve(e_delta: f64) -> nurbs::ScalarNurbs<f64> {
-    nurbs::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, e_delta], None)
+    nurbs::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, e_delta])
         .expect("linear E curve always valid")
 }
 
@@ -376,7 +376,6 @@ fn build_linear_e_curve(e_delta: f64) -> nurbs::ScalarNurbs<f64> {
 pub fn degree_elevate_2_to_3(quadratic: &nurbs::VectorNurbs<f64, 3>) -> nurbs::VectorNurbs<f64, 3> {
     debug_assert_eq!(quadratic.degree(), 2);
     debug_assert_eq!(quadratic.control_points().len(), 3);
-    debug_assert!(quadratic.weights().is_none(), "G5.1 is non-rational");
     let q = quadratic.control_points();
     let p0 = q[0];
     let p1 = [
@@ -394,14 +393,13 @@ pub fn degree_elevate_2_to_3(quadratic: &nurbs::VectorNurbs<f64, 3>) -> nurbs::V
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
         vec![p0, p1, p2, p3],
-        None,
     )
     .expect("degree-elevation always valid")
 }
 
 fn nurbs_from_quadratic(cps: [[f64; 3]; 3]) -> nurbs::VectorNurbs<f64, 3> {
-    nurbs::VectorNurbs::<f64, 3>::try_new(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], cps.to_vec(), None)
-        .expect("non-rational quadratic Bézier with 3 CPs and clamped knots is always valid")
+    nurbs::VectorNurbs::<f64, 3>::try_new(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], cps.to_vec())
+        .expect("quadratic Bézier with 3 CPs and clamped knots is always valid")
 }
 
 fn nurbs_from_cubic(cps: [[f64; 3]; 4]) -> nurbs::VectorNurbs<f64, 3> {
@@ -409,9 +407,8 @@ fn nurbs_from_cubic(cps: [[f64; 3]; 4]) -> nurbs::VectorNurbs<f64, 3> {
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
         cps.to_vec(),
-        None,
     )
-    .expect("non-rational cubic Bézier with 4 CPs and clamped knots is always valid")
+    .expect("cubic Bézier with 4 CPs and clamped knots is always valid")
 }
 
 #[cfg(test)]

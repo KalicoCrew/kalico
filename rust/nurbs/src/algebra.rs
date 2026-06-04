@@ -4,15 +4,14 @@
 use crate::bezier::binomial;
 use crate::{AlgebraError, Float};
 
-/// Multiply control points by a scalar. Weights, knots, degree unchanged.
+/// Multiply control points by a scalar. Knots and degree unchanged.
 #[cfg(feature = "host")]
 pub fn scalar_multiply<T: Float>(
     curve: &crate::ScalarNurbs<T>,
     scalar: T,
 ) -> crate::ScalarNurbs<T> {
     let new_cps: Vec<T> = curve.control_points().iter().map(|c| *c * scalar).collect();
-    let weights = curve.weights().map(<[T]>::to_vec);
-    crate::ScalarNurbs::try_new(curve.degree(), curve.knots().to_vec(), new_cps, weights)
+    crate::ScalarNurbs::try_new(curve.degree(), curve.knots().to_vec(), new_cps)
         .expect("scalar_multiply preserves invariants")
 }
 
@@ -33,18 +32,13 @@ pub fn add<T: Float>(
     if a.knots() != b.knots() {
         return Err(AlgebraError::KnotMismatch);
     }
-    if a.weights().is_some() || b.weights().is_some() {
-        return Err(AlgebraError::NotImplemented(
-            "weighted add — homogeneous lift required",
-        ));
-    }
     let new_cps: Vec<T> = a
         .control_points()
         .iter()
         .zip(b.control_points().iter())
         .map(|(x, y)| *x + *y)
         .collect();
-    crate::ScalarNurbs::try_new(a.degree(), a.knots().to_vec(), new_cps, None)
+    crate::ScalarNurbs::try_new(a.degree(), a.knots().to_vec(), new_cps)
         .map_err(|_| AlgebraError::KnotMismatch)
 }
 
@@ -63,8 +57,7 @@ pub fn add<T: Float>(
 ///
 /// - `AlgebraError::KnotMismatch` — degrees differ, or either curve has no pieces.
 /// - `AlgebraError::SupportMismatch` — the two curves span different parameter domains.
-/// - `AlgebraError::NotImplemented` — either operand carries non-unit weights (weighted
-///   addition requires a homogeneous lift and is deferred).
+/// - `AlgebraError::NotImplemented` — internal array-length mismatch (unreachable in practice).
 ///
 /// # Panics
 ///
@@ -104,11 +97,6 @@ pub fn add_with_knot_union<T: Float>(
 ) -> Result<crate::ScalarNurbs<T>, AlgebraError> {
     if a.degree() != b.degree() {
         return Err(AlgebraError::KnotMismatch);
-    }
-    if a.weights().is_some() || b.weights().is_some() {
-        return Err(AlgebraError::NotImplemented(
-            "add_with_knot_union weighted — homogeneous lift required",
-        ));
     }
 
     // Fast path: already compatible — delegate directly.
@@ -936,19 +924,11 @@ impl<T: Float> PiecewisePolynomialKernel<T> {
 
 /// Multiply two scalar NURBS pointwise: `c(u) = a(u) * b(u)`.
 /// Result degree = `degree(a) + degree(b)`.
-///
-/// Polynomial inputs only in v1; rational inputs return `RationalNotSupported`.
 #[cfg(feature = "host")]
 pub fn multiply<T: Float>(
     a: &crate::ScalarNurbs<T>,
     b: &crate::ScalarNurbs<T>,
 ) -> Result<crate::ScalarNurbs<T>, AlgebraError> {
-    if a.weights().is_some() || b.weights().is_some() {
-        return Err(AlgebraError::RationalNotSupported {
-            operation: "multiply",
-            workaround: "use polynomial_refit (Layer 3 utility) before calling",
-        });
-    }
     // Capture original interior knot multiplicities BEFORE Bezier extraction
     // lifts everything to full multiplicity. The post-pass needs the original
     // multiplicities to compute Mørken Eq. (1) target multiplicities for the
@@ -1142,19 +1122,11 @@ fn refine_pieces_to_breakpoints<T: Float>(
 ///
 /// Output domain = Minkowski sum of input and kernel supports. Caller
 /// (Layer 3) handles cross-segment stitching for trajectories.
-///
-/// Polynomial inputs only in v1.
 #[cfg(feature = "host")]
 pub fn convolve<T: Float>(
     curve: &crate::ScalarNurbs<T>,
     kernel: &PiecewisePolynomialKernel<T>,
 ) -> Result<crate::ScalarNurbs<T>, AlgebraError> {
-    if curve.weights().is_some() {
-        return Err(AlgebraError::RationalNotSupported {
-            operation: "convolve",
-            workaround: "use polynomial_refit (Layer 3 utility) before calling",
-        });
-    }
     let x_pieces = crate::bezier::extract_bezier_pieces(curve);
     let w_pieces = &kernel.pieces;
 

@@ -106,7 +106,6 @@ pub fn insert_knot<T: Float>(
     let p = curve.degree() as usize;
     let knots = curve.knots();
     let cps = curve.control_points();
-    let weights = curve.weights();
 
     // Validate u is in (knots[0], knots[last]) — strictly interior.
     if u <= knots[0] || u >= knots[knots.len() - 1] {
@@ -140,27 +139,9 @@ pub fn insert_knot<T: Float>(
     // Apply r single Boehm A5.1 insertions to control points (see
     // `boehm_insert_unweighted` for the rationale; the fused A5.3 form had an
     // indexing bug for the r >= 2 AND existing >= 1 case).
-    let new_cps = if let Some(w) = weights {
-        // Homogeneous lift: (cp * w, w), insert, project.
-        let homo: Vec<(T, T)> = cps
-            .iter()
-            .zip(w.iter())
-            .map(|(c, w)| (*c * *w, *w))
-            .collect();
-        let new_homo = boehm_insert_homogeneous(&homo, knots, p, k, u, existing, multiplicity);
-        new_homo
-            .into_iter()
-            .map(|(num, w)| num / w)
-            .collect::<Vec<T>>()
-    } else {
-        boehm_insert_unweighted(cps, knots, p, k, u, existing, multiplicity)
-    };
+    let new_cps = boehm_insert_unweighted(cps, knots, p, k, u, existing, multiplicity);
 
-    let new_weights =
-        weights.map(|w| boehm_insert_unweighted(w, knots, p, k, u, existing, multiplicity));
-
-    ScalarNurbs::try_new(curve.degree(), new_knots, new_cps, new_weights)
-        .map_err(|_| KnotError::Invalid)
+    ScalarNurbs::try_new(curve.degree(), new_knots, new_cps).map_err(|_| KnotError::Invalid)
 }
 
 /// Insert ū r times into the control polygon, returning the new control points.
@@ -277,19 +258,12 @@ pub fn refined_to_full_multiplicity<T: Float>(curve: &ScalarNurbs<T>) -> ScalarN
 /// `count` times if removal preserves the curve within chord-error `tol` in
 /// control-point space. Returns the new curve and the number of removals
 /// actually performed (may be less than `count`).
-///
-/// For unweighted curves only in v1; weighted (rational) curves return the
-/// input unchanged with count 0 (no error — caller can detect via the count).
 pub fn remove_knot<T: Float>(
     curve: &ScalarNurbs<T>,
     u: T,
     count: usize,
     tol: T,
 ) -> (ScalarNurbs<T>, usize) {
-    if curve.weights().is_some() {
-        // v1: rational removal not supported; return input unchanged.
-        return (curve.clone(), 0);
-    }
     let p = curve.degree() as usize;
     let knots = curve.knots();
     let cps = curve.control_points();
@@ -441,26 +415,9 @@ pub fn remove_knot<T: Float>(
     debug_assert_eq!(new_cps.len(), pw.len() - t);
     debug_assert_eq!(new_knots.len(), knots_ref.len() - t);
 
-    let new_curve = ScalarNurbs::try_new(curve.degree(), new_knots, new_cps, None)
+    let new_curve = ScalarNurbs::try_new(curve.degree(), new_knots, new_cps)
         .expect("remove_knot: result invariants should hold");
     (new_curve, t)
-}
-
-/// Homogeneous variant: blends (num, w) tuples.
-fn boehm_insert_homogeneous<T: Float>(
-    homo: &[(T, T)],
-    knots: &[T],
-    p: usize,
-    k: usize,
-    u: T,
-    existing: usize,
-    r: usize,
-) -> Vec<(T, T)> {
-    let nums: Vec<T> = homo.iter().map(|(n, _)| *n).collect();
-    let ws: Vec<T> = homo.iter().map(|(_, w)| *w).collect();
-    let new_nums = boehm_insert_unweighted(&nums, knots, p, k, u, existing, r);
-    let new_ws = boehm_insert_unweighted(&ws, knots, p, k, u, existing, r);
-    new_nums.into_iter().zip(new_ws).collect()
 }
 
 #[cfg(test)]

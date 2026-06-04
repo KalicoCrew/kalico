@@ -7,7 +7,6 @@ fn straight_50mm() -> VectorNurbs<f64, 3> {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [50.0, 0.0, 0.0]],
-        None,
     )
     .unwrap()
 }
@@ -60,7 +59,6 @@ fn plan_batch_threads_nonzero_initial_velocity() {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [200.0, 0.0, 0.0]],
-        None,
     )
     .unwrap();
     let segment = SegmentInput {

@@ -49,14 +49,12 @@ mod fixture_1_two_g1_sharp_corner {
             1,
             vec![0.0, 0.0, 1.0, 1.0],
             vec![[0.0, 0.0, 0.0], [50.0, 0.0, 0.0]],
-            None,
         )
         .unwrap();
         let right = VectorNurbs::<f64, 3>::try_new(
             1,
             vec![0.0, 0.0, 1.0, 1.0],
             vec![[50.0, 0.0, 0.0], [50.0, 50.0, 0.0]],
-            None,
         )
         .unwrap();
         let limits = textbook_limits();
@@ -117,7 +115,6 @@ mod fixture_2_g1_to_g5_smooth {
             1,
             vec![0.0, 0.0, 1.0, 1.0],
             vec![[0.0, 0.0, 0.0], [50.0, 0.0, 0.0]],
-            None,
         )
         .unwrap();
         // Cubic G5-style with tangent matching at u=0 (also +X), curving away.
@@ -130,7 +127,6 @@ mod fixture_2_g1_to_g5_smooth {
                 [70.0, 30.0, 0.0],
                 [100.0, 50.0, 0.0],
             ],
-            None,
         )
         .unwrap();
         let limits = textbook_limits();
@@ -192,14 +188,12 @@ mod fixture_3_long_straight_then_corner {
             1,
             vec![0.0, 0.0, 1.0, 1.0],
             vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]],
-            None,
         )
         .unwrap();
         let corner_right = VectorNurbs::<f64, 3>::try_new(
             1,
             vec![0.0, 0.0, 1.0, 1.0],
             vec![[100.0, 0.0, 0.0], [100.0, 50.0, 0.0]],
-            None,
         )
         .unwrap();
         let limits = textbook_limits();
@@ -283,7 +277,6 @@ mod fixture_4_per_segment_limits_change {
                         [i as f64 * 50.0, 0.0, 0.0],
                         [(i + 1) as f64 * 50.0, 0.0, 0.0],
                     ],
-                    None,
                 )
                 .unwrap()
             })
@@ -381,7 +374,7 @@ mod fixture_5_star_pattern {
         let curves: Vec<_> = points
             .windows(2)
             .map(|w| {
-                VectorNurbs::<f64, 3>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![w[0], w[1]], None)
+                VectorNurbs::<f64, 3>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![w[0], w[1]])
                     .unwrap()
             })
             .collect();
@@ -430,7 +423,7 @@ mod fixture_6_long_realistic_chain {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn fixture_6() {
-        // 10 segments: 6 G1 straights + 2 G5 cubics + 2 G2 quarter-arcs.
+        // 10 segments: 6 G1 straights + 2 G5 cubics + 2 quarter-arc cubics.
         // All segments are geometrically connected end-to-end.
         // Minimum segment length chosen so v_jct=1000, a_max=65000 is reachable
         // (requires ≥ 7.7 mm to accelerate from 0 to 1000 mm/s at 65k mm/s²).
@@ -448,7 +441,6 @@ mod fixture_6_long_realistic_chain {
                     1,
                     vec![0.0, 0.0, 1.0, 1.0],
                     vec![[px, py, 0.0], [px + len, py, 0.0]],
-                    None,
                 )
                 .unwrap(),
             );
@@ -466,34 +458,34 @@ mod fixture_6_long_realistic_chain {
                     3,
                     vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
                     vec![p0, p1, p2, p3],
-                    None,
                 )
                 .unwrap(),
             );
             px += 40.0;
         }
 
-        // 2 G2 quarter-arcs: rational quadratic, radius 20 mm.
-        // Each arc goes from [px, py] toward [px+20, py+20] (quarter-circle in +X/+Y).
-        // Endpoint of arc: [px+20, py+20]. The intermediate CP is [px+20, py] (right angle).
-        // After each arc we advance both px by 20 and py by 20.
-        let w = std::f64::consts::FRAC_1_SQRT_2;
+        // 2 quarter-arc approximations: cubic Bézier polynomial, radius 20 mm.
+        // Standard cubic approximation: k = (4/3)(√2 − 1) ≈ 0.5523.
+        // CP layout for 90° sweep from [px,py] to [px+r,py+r]:
+        //   P0 = [px, py], P1 = [px+r*k, py], P2 = [px+r, py+r*(1-k)], P3 = [px+r, py+r].
+        let k = (4.0 / 3.0) * (std::f64::consts::SQRT_2 - 1.0);
         for _ in 0..2 {
-            let p0 = [px, py, 0.0];
-            let p_mid = [px + 20.0, py, 0.0];
-            let p2 = [px + 20.0, py + 20.0, 0.0];
+            let r = 20.0_f64;
             curves.push(
                 VectorNurbs::<f64, 3>::try_new(
-                    2,
-                    vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-                    vec![p0, p_mid, p2],
-                    Some(vec![1.0, w, 1.0]),
+                    3,
+                    vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                    vec![
+                        [px, py, 0.0],
+                        [px + r * k, py, 0.0],
+                        [px + r, py + r * (1.0 - k), 0.0],
+                        [px + r, py + r, 0.0],
+                    ],
                 )
                 .unwrap(),
             );
-            // Arc endpoint is p2; advance current position there.
-            px += 20.0;
-            py += 20.0;
+            px += r;
+            py += r;
         }
 
         let limits = realistic_machine_limits();
@@ -653,7 +645,6 @@ mod fixture_7_curvature_spike_intergrid_sanity {
                 [3.0, 2.0, 0.0],
                 [5.0, 0.0, 0.0],
             ],
-            None,
         )
         .unwrap();
         let limits = textbook_limits();

@@ -22,7 +22,7 @@ use trajectory::{
 
 /// Build a degree-1 (linear) vector NURBS from `from` to `to`.
 fn make_straight_line(from: [f64; 3], to: [f64; 3]) -> VectorNurbs<f64, 3> {
-    VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![from, to], None).unwrap()
+    VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![from, to]).unwrap()
 }
 
 /// Default dynamic limits for test segments.
@@ -265,8 +265,7 @@ fn shape_batch_with_retraction() {
     let curve2 = make_straight_line([50.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
 
     // Retraction E NURBS: 5mm retraction from 10.0 to 5.0.
-    let e_retract =
-        ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![10.0, 5.0], None).unwrap();
+    let e_retract = ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![10.0, 5.0]).unwrap();
 
     let segments = [
         ShapeSegmentInput {

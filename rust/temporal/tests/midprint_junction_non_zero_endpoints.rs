@@ -23,7 +23,6 @@ fn pure_x_50mm_collinear_cubic() -> VectorNurbs<f64, 3> {
             [100.0 / 3.0, 0.0, 0.0],
             [50.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap()
 }

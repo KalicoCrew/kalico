@@ -137,7 +137,6 @@ mod fixture_1_straight_line_x_aligned {
             1,
             vec![0.0, 0.0, 1.0, 1.0],
             vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]],
-            None,
         )
         .unwrap();
 
@@ -218,7 +217,6 @@ mod fixture_2_diagonal {
             1,
             vec![0.0, 0.0, 1.0, 1.0],
             vec![[0.0, 0.0, 0.0], [h, h, 0.0]],
-            None,
         )
         .unwrap();
 
@@ -417,7 +415,6 @@ mod fixture_5_curvature_spike {
                 [31.0, 5.0, 0.0],
                 [60.0, 0.0, 0.0],
             ],
-            None,
         )
         .unwrap();
 
@@ -499,7 +496,6 @@ mod fixture_6_mixed_feature {
                 [180.0, 0.0, 0.0],  // inner lead-out (close to spike)
                 [305.0, 0.0, 0.0],  // end of lead-out
             ],
-            None,
         )
         .unwrap()
     }
@@ -678,9 +674,8 @@ mod fixture_3_constant_curvature_arc {
     /// Acceptance: §6.1 status, §6.2 post-solve feasibility (handled by pipeline).
     ///
     /// **Known limitation (2026-05-05 stencil unification, spec §6.6 + §10).**
-    /// Constant-curvature arc — same SLP per-axis-jerk linearization gap
-    /// documented for `tests/conditioning.rs::rational_quadratic_arc_n200_*`
-    /// and `tests/multi_segment.rs::fixture_6`: ~0.3% Y-jerk overshoot from
+    /// Approximately-constant-curvature arc — same SLP per-axis-jerk linearization
+    /// gap documented for `tests/multi_segment.rs::fixture_6`: ~0.3% Y-jerk overshoot from
     /// the `3·c''·ṡ·s̈ + c'''·ṡ³` cross-terms that the path-jerk SOC chain
     /// alone cannot eliminate, and that the SLP first-order Taylor cuts
     /// cannot drive below `EPS_FEAS=2e-3`. Pre-fix the width-2 a-FD verifier
@@ -690,9 +685,7 @@ mod fixture_3_constant_curvature_arc {
     /// behavior pending curvature-aware cuts (spec §10).
     #[test]
     fn fixture_3() {
-        // Construct the NURBS by running a synthetic G2 G-code line through
-        // geometry::pipeline. Arc: start (0,0), center (0,20) [I=0,J=20],
-        // end (20,20), 90° CW — radius 20 mm, κ = 1/R = 0.05 mm⁻¹.
+        // Quarter-circle cubic Bézier approximation: R=20 mm, κ ≈ 1/R = 0.05 mm⁻¹.
         let curve = build_g2_arc_via_geometry();
 
         let limits = textbook_limits();
@@ -752,22 +745,26 @@ mod fixture_3_constant_curvature_arc {
         );
     }
 
-    /// Build a 90° arc, R=20 mm directly as a rational quadratic NURBS.
+    /// Build a 90° arc, R=20 mm as a cubic Bézier polynomial approximation.
     ///
-    /// Geometry: start (0,0), end (20,20), centre (0,20), radius 20 mm,
-    /// κ = 1/R = 0.05 mm⁻¹. Piegl & Tiller §7.2 construction:
-    ///   half-sweep = π/4, cos(π/4) = √2/2.
-    ///   P0 = (0,0,0), P1 = (20,0,0), P2 = (20,20,0).
-    ///   weights = [1, √2/2, 1].
-    /// Knot vector [0,0,0,1,1,1] (clamped quadratic).
+    /// Geometry: start (0,0), end (20,20), radius 20 mm, κ ≈ 1/R = 0.05 mm⁻¹.
+    /// Standard cubic approximation: k = (4/3)(√2 − 1) ≈ 0.5523.
+    ///   P0 = (20,0,0), P1 = (20,k·20,0), P2 = (k·20,20,0), P3 = (0,20,0)
+    ///   shifted to start at (0,0): P0=(0,0), P1=(k·r,0), P2=(r,r*(1-k)), P3=(r,r).
+    /// Knot vector [0,0,0,0,1,1,1,1] (clamped cubic).
     fn build_g2_arc_via_geometry() -> nurbs::VectorNurbs<f64, 3> {
-        let cos_half = std::f64::consts::FRAC_1_SQRT_2; // cos(π/4) = √2/2
+        let r = 20.0_f64;
+        let k = (4.0 / 3.0) * (std::f64::consts::SQRT_2 - 1.0);
         nurbs::VectorNurbs::<f64, 3>::try_new(
-            2,
-            vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-            vec![[0.0, 0.0, 0.0], [20.0, 0.0, 0.0], [20.0, 20.0, 0.0]],
-            Some(vec![1.0, cos_half, 1.0]),
+            3,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+            vec![
+                [0.0, 0.0, 0.0],
+                [r * k, 0.0, 0.0],
+                [r, r * (1.0 - k), 0.0],
+                [r, r, 0.0],
+            ],
         )
-        .expect("rational quadratic arc NURBS always valid")
+        .expect("cubic arc approximation NURBS always valid")
     }
 }

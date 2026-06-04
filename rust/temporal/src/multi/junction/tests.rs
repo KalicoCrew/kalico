@@ -40,14 +40,12 @@ fn compute_junction_velocity_g1_to_g1_90deg() {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [50.0, 0.0, 0.0]],
-        None,
     )
     .unwrap();
     let right = VectorNurbs::<f64, 3>::try_new(
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[50.0, 0.0, 0.0], [50.0, 50.0, 0.0]],
-        None,
     )
     .unwrap();
     let limits = textbook_limits();

@@ -57,14 +57,3 @@ fn knot_error_displays_clearly() {
     assert!(s.contains('2'));
     assert!(s.contains('3'));
 }
-
-#[test]
-fn rational_not_supported_displays_with_workaround() {
-    let e = AlgebraError::RationalNotSupported {
-        operation: "multiply",
-        workaround: "use polynomial_refit",
-    };
-    let s = format!("{e}");
-    assert!(s.contains("multiply"));
-    assert!(s.contains("polynomial_refit"));
-}

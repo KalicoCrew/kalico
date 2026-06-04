@@ -45,9 +45,8 @@ fn convolve_matches_scipy_reference_for_smooth_zv_kernel() {
         coeffs: vec![0.0, 0.0, 0.5 * accel],
     };
     let bernstein = mono.to_bernstein();
-    let curve =
-        nurbs::ScalarNurbs::try_new(2, vec![0.0, 0.0, 0.0, t_end, t_end, t_end], bernstein, None)
-            .unwrap();
+    let curve = nurbs::ScalarNurbs::try_new(2, vec![0.0, 0.0, 0.0, t_end, t_end, t_end], bernstein)
+        .unwrap();
 
     let kernel = nurbs::algebra::PiecewisePolynomialKernel::single_poly_from_absolute(
         kernel_coeffs,

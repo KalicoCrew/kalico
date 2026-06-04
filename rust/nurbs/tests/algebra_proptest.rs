@@ -17,7 +17,7 @@ fn arb_simple_polynomial_curve() -> impl Strategy<Value = nurbs::ScalarNurbs<f64
             let pad = p as usize + 1;
             let mut knots = vec![0.0; pad];
             knots.extend(vec![1.0; pad]);
-            nurbs::ScalarNurbs::try_new(p, knots, cps_vec, None).unwrap()
+            nurbs::ScalarNurbs::try_new(p, knots, cps_vec).unwrap()
         })
     })
 }
@@ -41,7 +41,7 @@ fn arb_multi_piece_curve() -> impl Strategy<Value = nurbs::ScalarNurbs<f64>> {
             let mut knots = vec![0.0; pad];
             knots.extend(ints);
             knots.extend(vec![1.0; pad]);
-            nurbs::ScalarNurbs::try_new(p, knots, cps_vec, None).unwrap()
+            nurbs::ScalarNurbs::try_new(p, knots, cps_vec).unwrap()
         })
     })
 }
@@ -94,7 +94,7 @@ fn arb_curve_with_existing_interior_multiplicity()
                     knots.push(hi_val);
                 }
                 knots.extend(vec![1.0; pad]);
-                let curve = nurbs::ScalarNurbs::try_new(p, knots, cps, None).unwrap();
+                let curve = nurbs::ScalarNurbs::try_new(p, knots, cps).unwrap();
                 (curve, u_knot, p as usize, existing)
             })
         })
@@ -116,7 +116,7 @@ fn arb_curve_with_c0_kink() -> impl Strategy<Value = (nurbs::ScalarNurbs<f64>, f
                 knots.push(kink);
             } // multiplicity = p (= degree) → C⁰
             knots.extend(vec![1.0; pad]);
-            let curve = nurbs::ScalarNurbs::try_new(p, knots, cps_vec, None).unwrap();
+            let curve = nurbs::ScalarNurbs::try_new(p, knots, cps_vec).unwrap();
             (curve, kink)
         })
     })

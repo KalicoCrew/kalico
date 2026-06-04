@@ -81,96 +81,6 @@ use nurbs::{
     eval::{vector_derivative, vector_eval},
 };
 
-/// Evaluate the k-th parametric derivative of a *rational* NURBS at `u` via
-/// central finite differences of `vector_eval`.
-///
-/// `vector_derivative` is exact (Piegl & Tiller A3.3 degree-lowering) but only
-/// for non-rational (B-spline) NURBS — it silently ignores weights. For rational
-/// NURBS (G2/G3 arcs) the quotient rule is needed; we fall back to finite
-/// differences here at the Lyness 1968 / Numerical Recipes 3rd ed. §5.7
-/// optimal step `h_opt = ε^(1/(k+1))`:
-///   k=1 → 1.49e-8 (not used here; k=1 goes through analytical for rational
-///                   too via the existing chain rule on `vector_eval`)
-///   k=2 → 6.06e-6
-///   k=3 → 1.22e-4
-///
-/// The previous implementation used `h*0.01 = 1e-7` as the endpoint floor,
-/// which is ~1000x smaller than the optimal for k=3 and produced catastrophic
-/// cancellation noise (`pp - 2p + 2m - mm` is dominated by round-off when the
-/// stencil samples agree to ~16 digits). See `/tmp/path_diag.json` and
-/// `/tmp/path_verifier.json` for the diagnosis.
-///
-/// Used only on the rational branch in `sample_arclength_grid`. Non-rational
-/// curves go through `vector_derivative` instead.
-fn eval_kth_deriv_rational(curve: &VectorNurbs<f64, 3>, u: f64, k: usize) -> [f64; 3] {
-    let knots = curve.knots();
-    let u_start = knots[0];
-    let u_end = *knots.last().expect("non-empty knot vector");
-    let view = curve.as_view();
-
-    match k {
-        0 => vector_eval(&view, u),
-        1 => {
-            // Lyness optimal for k=1: ε^(1/2) ≈ 1.49e-8. Round to 1e-8.
-            let h = 1e-8_f64;
-            // Central difference: (C(u+h) - C(u-h)) / (u_p - u_m)
-            // Clamp so we never evaluate outside [u_start, u_end].
-            let u_p = (u + h).min(u_end);
-            let u_m = (u - h).max(u_start);
-            let step = (u_p - u_m).max(MIN_PARAMETRIC_SPEED);
-            let plus = vector_eval(&view, u_p);
-            let minus = vector_eval(&view, u_m);
-            [
-                (plus[0] - minus[0]) / step,
-                (plus[1] - minus[1]) / step,
-                (plus[2] - minus[2]) / step,
-            ]
-        }
-        2 => {
-            // Lyness optimal for k=2: ε^(1/3) ≈ 6.06e-6.
-            let h_opt = 6.06e-6_f64;
-            // Symmetric clamp: don't evaluate outside [u_start, u_end].
-            let avail_h = (u - u_start).min(u_end - u).min(h_opt);
-            // Endpoint floor at h_opt itself — accept asymmetric stencil error
-            // rather than degenerate step. (At endpoints, one of u-u_start or
-            // u_end-u is 0; we cap at h_opt and let the stencil straddle the
-            // endpoint, valid de Boor extrapolation for clamped polynomial
-            // pieces; only used here in the rational branch which has weights
-            // that gracefully handle out-of-domain via clamping in vector_eval.)
-            let avail_h = avail_h.max(h_opt);
-            let c = vector_eval(&view, u);
-            let plus = vector_eval(&view, u + avail_h);
-            let minus = vector_eval(&view, u - avail_h);
-            let h2 = avail_h * avail_h;
-            [
-                (plus[0] - 2.0 * c[0] + minus[0]) / h2,
-                (plus[1] - 2.0 * c[1] + minus[1]) / h2,
-                (plus[2] - 2.0 * c[2] + minus[2]) / h2,
-            ]
-        }
-        3 => {
-            // Lyness optimal for k=3: ε^(1/4) ≈ 1.22e-4.
-            let h_opt = 1.22e-4_f64;
-            // Third central difference: (C(u+2h) - 2C(u+h) + 2C(u-h) - C(u-2h)) / (2h³)
-            // Symmetric clamp: maximum step that fits in the domain (each side
-            // takes 2h, so the per-side cap is (u-u_start)/2 and (u_end-u)/2).
-            let avail_h = ((u - u_start) / 2.0).min((u_end - u) / 2.0).min(h_opt);
-            let avail_h = avail_h.max(h_opt);
-            let pp = vector_eval(&view, u + 2.0 * avail_h);
-            let p = vector_eval(&view, u + avail_h);
-            let m = vector_eval(&view, u - avail_h);
-            let mm = vector_eval(&view, u - 2.0 * avail_h);
-            let two_h3 = 2.0 * avail_h * avail_h * avail_h;
-            [
-                (pp[0] - 2.0 * p[0] + 2.0 * m[0] - mm[0]) / two_h3,
-                (pp[1] - 2.0 * p[1] + 2.0 * m[1] - mm[1]) / two_h3,
-                (pp[2] - 2.0 * p[2] + 2.0 * m[2] - mm[2]) / two_h3,
-            ]
-        }
-        _ => [0.0, 0.0, 0.0],
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct ArclengthGrid {
     /// `s_i ∈ [0, L]`, length N.
@@ -221,49 +131,32 @@ pub fn sample_arclength_grid(
     let total_length = arc_table.s_max();
     let table_ref = arc_table.as_view();
 
-    // ---- Step 2: Build derivative NURBSes (non-rational) or prepare FD path --
+    // ---- Step 2: Build derivative NURBSes via degree-lowering ------------------
     //
-    // For non-rational (B-spline) curves we compose derivative NURBSes once via
-    // Piegl & Tiller A3.3 degree-lowering (`vector_derivative`). This is *exact*
-    // to floating-point precision: a polynomial of degree p has constant p-th
-    // derivative, identically zero (p+1)-th and higher. The previous FD path
-    // suffered catastrophic cancellation at endpoints (numerator `pp - 2p + 2m
-    // - mm` collapses to round-off noise when the stencil samples agree to ~16
-    // digits) — see /tmp/path_diag.json.
-    //
-    // For rational (weighted) curves `vector_derivative` is wrong (it silently
-    // discards weights and returns the unweighted control polygon's
-    // derivative). The quotient rule is the analytical fix; until that lands
-    // we fall back to FD with Lyness-optimal steps (`eval_kth_deriv_rational`).
+    // Compose derivative NURBSes once via Piegl & Tiller A3.3 degree-lowering
+    // (`vector_derivative`). This is *exact* to floating-point precision: a
+    // polynomial of degree p has constant p-th derivative, identically zero
+    // (p+1)-th and higher.
     //
     // Degree-too-low guard: a polynomial of degree p has identically zero
     // (p+1)-th and higher derivatives. We materialize derivative NURBSes only
     // up to `min(3, degree())`; lookups of higher orders return [0,0,0]
-    // without panicking. Required for G0/G1 (degree-1) and G5.1 (degree-2)
-    // inputs, which would otherwise hit `vector_derivative`'s `assert!(p>=1)`.
-    let is_rational = curve.weights().is_some();
+    // without panicking. Required for G5.1 (degree-2) inputs, which would
+    // otherwise hit `vector_derivative`'s `assert!(p>=1)`.
     let curve_degree = usize::from(curve.degree());
 
-    // For non-rational only: pre-build d1, d2, d3 (each up to degree-lowering
-    // limit). Materialize lazily; if `curve_degree` < k, we use a sentinel
-    // `None` and the loop returns [0,0,0] for that order.
-    let (d1, d2, d3) = if is_rational {
-        (None, None, None)
+    let d1 = if curve_degree >= 1 {
+        Some(vector_derivative(curve))
     } else {
-        let d1 = if curve_degree >= 1 {
-            Some(vector_derivative(curve))
-        } else {
-            None
-        };
-        let d2 = match d1.as_ref() {
-            Some(d1c) if d1c.degree() >= 1 => Some(vector_derivative(d1c)),
-            _ => None,
-        };
-        let d3 = match d2.as_ref() {
-            Some(d2c) if d2c.degree() >= 1 => Some(vector_derivative(d2c)),
-            _ => None,
-        };
-        (d1, d2, d3)
+        None
+    };
+    let d2 = match d1.as_ref() {
+        Some(d1c) if d1c.degree() >= 1 => Some(vector_derivative(d1c)),
+        _ => None,
+    };
+    let d3 = match d2.as_ref() {
+        Some(d2c) if d2c.degree() >= 1 => Some(vector_derivative(d2c)),
+        _ => None,
     };
 
     // ---- Step 3: Evaluate at each grid point ----------------------------------
@@ -287,31 +180,17 @@ pub fn sample_arclength_grid(
         // Curve position.
         let c_i = vector_eval(&curve_view, u_i);
 
-        // u-parameterized derivatives.
-        // - Non-rational: analytical via vector_eval on degree-lowered NURBSes
-        //   (exact to floating-point precision).
-        // - Rational: FD with Lyness-optimal step (asymmetric at endpoints,
-        //   accepted error per spec §11 / verifier-caveat 1).
-        // - Degree-too-low for k: return [0,0,0] (mathematically correct).
-        let (dc_du, d2c_du2, d3c_du3) = if is_rational {
-            (
-                eval_kth_deriv_rational(curve, u_i, 1),
-                eval_kth_deriv_rational(curve, u_i, 2),
-                eval_kth_deriv_rational(curve, u_i, 3),
-            )
-        } else {
-            let eval_or_zero = |dn: &Option<VectorNurbs<f64, 3>>, u: f64| -> [f64; 3] {
-                match dn {
-                    Some(c) => vector_eval(&c.as_view(), u),
-                    None => [0.0, 0.0, 0.0],
-                }
-            };
-            (
-                eval_or_zero(&d1, u_i),
-                eval_or_zero(&d2, u_i),
-                eval_or_zero(&d3, u_i),
-            )
+        // u-parameterized derivatives via degree-lowered NURBSes.
+        // Degree-too-low for k → [0,0,0] (mathematically correct).
+        let eval_or_zero = |dn: &Option<VectorNurbs<f64, 3>>, u: f64| -> [f64; 3] {
+            match dn {
+                Some(c) => vector_eval(&c.as_view(), u),
+                None => [0.0, 0.0, 0.0],
+            }
         };
+        let dc_du = eval_or_zero(&d1, u_i);
+        let d2c_du2 = eval_or_zero(&d2, u_i);
+        let d3c_du3 = eval_or_zero(&d3, u_i);
 
         // ---- Parametric speed and its derivatives ----------------------------
         //

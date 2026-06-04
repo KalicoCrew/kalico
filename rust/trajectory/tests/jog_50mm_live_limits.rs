@@ -27,7 +27,6 @@ fn x_50mm_collinear_cubic() -> VectorNurbs<f64, 3> {
             [2.0 * 50.0 / 3.0, 0.0, 0.0],
             [50.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap()
 }
@@ -181,7 +180,6 @@ fn probe_with_feedrate(feedrate: f64, dist_mm: f64) -> f64 {
             [2.0 * dist_mm / 3.0, 0.0, 0.0],
             [dist_mm, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
     let limits = live_limits();

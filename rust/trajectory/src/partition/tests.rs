@@ -20,14 +20,13 @@ fn make_xyz_curve(start: [f64; 3], end: [f64; 3]) -> VectorNurbs<f64, 3> {
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
         vec![start, cp1, cp2, end],
-        None,
     )
     .unwrap()
 }
 
 /// Build a linear E NURBS for retraction/prime.
 fn make_e_nurbs(e_start: f64, e_end: f64) -> ScalarNurbs<f64> {
-    ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![e_start, e_end], None).unwrap()
+    ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![e_start, e_end]).unwrap()
 }
 
 fn default_limits() -> temporal::Limits {

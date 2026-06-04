@@ -32,7 +32,7 @@ fn default_e_limits() -> ELimits {
 
 /// Build a degree-1 (truly linear) NURBS from `start` to `end`.
 fn straight_linear(start: [f64; 3], end: [f64; 3]) -> VectorNurbs<f64, 3> {
-    VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![start, end], None).unwrap()
+    VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![start, end]).unwrap()
 }
 
 // ------------------------------------------------------------------
@@ -101,7 +101,7 @@ fn two_segments_with_e_gap() {
     let curve2 = straight_linear([50.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
     let e_hold = straight_linear([50.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
     let e_nurbs =
-        nurbs::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![10.0, 5.0], None).unwrap();
+        nurbs::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![10.0, 5.0]).unwrap();
 
     let segments = [
         ShapeSegmentInput {
@@ -210,7 +210,7 @@ fn derate_detects_exceeding_peaks() {
 fn all_e_gaps_output() {
     let e_hold = straight_linear([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
     let e_nurbs =
-        nurbs::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![10.0, 5.0], None).unwrap();
+        nurbs::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![10.0, 5.0]).unwrap();
 
     let segments = [ShapeSegmentInput {
         temporal: temporal::multi::SegmentInput {

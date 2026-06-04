@@ -34,11 +34,11 @@ pub struct JunctionDeviation {
 }
 
 /// Live-pipeline cubic-Bézier segment. Single-piece cubic Bézier in `xyz` (degree 3,
-/// 4 control points, no weights, clamped knot vector). E classification per `EMode`.
+/// 4 control points, clamped knot vector). E classification per `EMode`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CubicSegment {
     /// XYZ trajectory in u-domain. **Invariant** (enforced by `try_new`): single-piece
-    /// cubic Bézier — degree 3, 4 control points, no weights, clamped knot vector.
+    /// cubic Bézier — degree 3, 4 control points, clamped knot vector.
     pub xyz: VectorNurbs<f64, 3>,
     pub e_mode: EMode,
     /// Valid when `e_mode == CoupledToXy`. Signed: negative for retract-during-XY-motion
@@ -57,7 +57,7 @@ pub struct CubicSegment {
 impl CubicSegment {
     /// Construct a `CubicSegment`, validating invariants. Returns `Err` on:
     /// - `NotSinglePieceCubic`: xyz is not single-piece cubic (degree != 3,
-    ///   != 4 CPs, has weights, or knots are not clamped `[0,0,0,0,1,1,1,1]`).
+    ///   != 4 CPs, or knots are not clamped `[0,0,0,0,1,1,1,1]`).
     /// - `EModeInvariantViolation`: `e_mode` and the corresponding fields disagree.
     pub fn try_new(
         xyz: VectorNurbs<f64, 3>,
@@ -77,11 +77,6 @@ impl CubicSegment {
         if xyz.control_points().len() != 4 {
             return Err(crate::GeometryError::NotSinglePieceCubic {
                 reason: "control_points.len() != 4",
-            });
-        }
-        if xyz.weights().is_some() {
-            return Err(crate::GeometryError::NotSinglePieceCubic {
-                reason: "weights present (must be polynomial)",
             });
         }
         let expected_knots: [f64; 8] = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
@@ -210,10 +205,6 @@ pub fn split_cubic_bezier(
         4,
         "split_cubic_bezier: must have 4 control points"
     );
-    assert!(
-        xyz.weights().is_none(),
-        "split_cubic_bezier: weights must be absent (polynomial Bézier)",
-    );
     let expected_knots: [f64; 8] = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
     assert_eq!(
         xyz.knots(),
@@ -253,9 +244,9 @@ pub fn split_cubic_bezier(
     let s0 = lerp(r0, r1, s);
 
     let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
-    let left = VectorNurbs::<f64, 3>::try_new(3, knots.clone(), vec![p0, q0, r0, s0], None)
+    let left = VectorNurbs::<f64, 3>::try_new(3, knots.clone(), vec![p0, q0, r0, s0])
         .expect("split_cubic_bezier: left half is a valid single-piece cubic Bézier");
-    let right = VectorNurbs::<f64, 3>::try_new(3, knots, vec![s0, r1, q2, p3], None)
+    let right = VectorNurbs::<f64, 3>::try_new(3, knots, vec![s0, r1, q2, p3])
         .expect("split_cubic_bezier: right half is a valid single-piece cubic Bézier");
     (left, right)
 }

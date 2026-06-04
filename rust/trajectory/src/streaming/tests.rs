@@ -92,22 +92,6 @@ fn assert_nurbs_near_equal(a: &ScalarNurbs<f64>, b: &ScalarNurbs<f64>, label: &s
         max_cp_diff < 1e-12,
         "{label}: control points differ by {max_cp_diff:.2e} mm",
     );
-    assert_eq!(
-        a.weights().is_some(),
-        b.weights().is_some(),
-        "{label}: weight presence differs"
-    );
-    if let (Some(wa), Some(wb)) = (a.weights(), b.weights()) {
-        let max_w_diff = wa
-            .iter()
-            .zip(wb.iter())
-            .map(|(wa, wb)| (wa - wb).abs())
-            .fold(0.0_f64, f64::max);
-        assert!(
-            max_w_diff < 1e-12,
-            "{label}: weights differ by {max_w_diff:.2e}",
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -337,9 +321,8 @@ fn linear_x_segment(start_x: f64, end_x: f64, feedrate: f64) -> CubicSegment {
         ]
     };
     let cps = vec![p0, lerp(1.0 / 3.0), lerp(2.0 / 3.0), p3];
-    let xyz =
-        VectorNurbs::<f64, 3>::try_new(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], cps, None)
-            .unwrap();
+    let xyz = VectorNurbs::<f64, 3>::try_new(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], cps)
+        .unwrap();
     CubicSegment::try_new(
         xyz,
         EMode::Travel,

@@ -26,7 +26,6 @@ fn pure_x_collinear_cubic(start_x: f64) -> VectorNurbs<f64, 3> {
             [start_x / 3.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap()
 }

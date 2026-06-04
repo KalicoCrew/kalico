@@ -30,7 +30,6 @@ fn pure_x_300mm_collinear_cubic() -> VectorNurbs<f64, 3> {
             [-100.0, 0.0, 0.0],
             [0.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap()
 }
