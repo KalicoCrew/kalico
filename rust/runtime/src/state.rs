@@ -279,9 +279,9 @@ pub struct SharedState {
     pub isr_deq_none_count: AtomicU32,
     pub isr_parked_count: AtomicU32,
     pub isr_armed_count: AtomicU32,
-    /// Comparands at the most-recent park/arm decision. If `isr_parked_count
-    /// > 0`, `isr_last_t_start_lo > isr_last_widened_lo` is the actual park
-    /// reason.
+    /// Comparands at the most-recent park/arm decision. If
+    /// `isr_parked_count > 0`, `isr_last_t_start_lo > isr_last_widened_lo`
+    /// is the actual park reason.
     pub isr_last_t_start_lo: AtomicU32,
     pub isr_last_widened_lo: AtomicU32,
     /// High 32 bits of `seg.t_start` and `widened_now` at the most-recent

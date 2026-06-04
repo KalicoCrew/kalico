@@ -75,13 +75,11 @@ pub fn add<T: Float>(
 ///     1,
 ///     vec![0.0_f64, 0.0, 0.5, 1.0, 1.0],
 ///     vec![0.0, 5.0, 10.0],
-///     None,
 /// ).unwrap();
 /// let y = ScalarNurbs::try_new(
 ///     1,
 ///     vec![0.0_f64, 0.0, 1.0, 1.0],
 ///     vec![20.0, 20.0],
-///     None,
 /// ).unwrap();
 /// let sum = add_with_knot_union(&x, &y).unwrap();
 /// // At u=0: 0+20=20; at u=1: 10+20=30.
