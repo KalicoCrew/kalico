@@ -28,23 +28,21 @@ fn scalar_encoder_values_are_le() {
 fn header_and_length_are_correct() {
     let cps: [[f32; 3]; 2] = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]];
     let knots = [0.0_f32, 0.0, 1.0, 1.0];
-    let weights = [1.0_f32, 1.0];
-    let blob = encode_load_curve_v1(1, &cps, &knots, &weights).unwrap();
+    let blob = encode_load_curve_v1(1, &cps, &knots).unwrap();
     assert_eq!(blob[0], FORMAT_VERSION_V1);
     assert_eq!(blob[1], 1, "degree");
     assert_eq!(blob[2], 2, "num_cps");
     assert_eq!(blob[3], 4, "num_knots");
-    assert_eq!(blob[4], 2, "num_weights");
-    // 5-byte header + 24 cp-bytes + 16 knot-bytes + 8 weight-bytes.
-    assert_eq!(blob.len(), 5 + 24 + 16 + 8);
+    assert_eq!(blob[4], 0, "num_weights (always 0)");
+    // 5-byte header + 24 cp-bytes + 16 knot-bytes.
+    assert_eq!(blob.len(), 5 + 24 + 16);
 }
 
 #[test]
 fn encodes_floats_little_endian() {
     let cps = [[1.5_f32, 0.0, 0.0]];
     let knots = [0.0_f32];
-    let weights = [1.0_f32];
-    let blob = encode_load_curve_v1(0, &cps, &knots, &weights).unwrap();
+    let blob = encode_load_curve_v1(0, &cps, &knots).unwrap();
     // 1.5_f32 little-endian = [0x00, 0x00, 0xC0, 0x3F].
     assert_eq!(&blob[5..9], &[0x00, 0x00, 0xC0, 0x3F]);
 }
@@ -55,8 +53,7 @@ fn count_overflow_returns_error_in_release() {
     // truncate the header byte (debug_assert stripped in release).
     let cps = vec![[0.0_f32; 3]; 256];
     let knots = [0.0_f32, 1.0];
-    let weights = [1.0_f32];
-    let err = encode_load_curve_v1(0, &cps, &knots, &weights).unwrap_err();
+    let err = encode_load_curve_v1(0, &cps, &knots).unwrap_err();
     assert!(matches!(
         err,
         WireError::CountOverflow {

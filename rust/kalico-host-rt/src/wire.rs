@@ -30,10 +30,9 @@ pub enum WireError {
 /// [u8 degree]
 /// [u8 num_cps]
 /// [u8 num_knots]
-/// [u8 num_weights]
+/// [u8 num_weights=0]           // always 0; rational weights removed
 /// [num_cps × (3 × f32_le)]   // (x, y, z) control points
 /// [num_knots × f32_le]       // knot vector
-/// [num_weights × f32_le]     // per-cp weights
 /// ```
 ///
 /// Returns [`WireError::CountOverflow`] if any of the variable-length
@@ -45,7 +44,6 @@ pub fn encode_load_curve_v1(
     degree: u8,
     cps: &[[f32; 3]],
     knots: &[f32],
-    weights: &[f32],
 ) -> Result<Vec<u8>, WireError> {
     let num_cps = u8::try_from(cps.len()).map_err(|_| WireError::CountOverflow {
         field: "num_cps",
@@ -55,16 +53,12 @@ pub fn encode_load_curve_v1(
         field: "num_knots",
         len: knots.len(),
     })?;
-    let num_weights = u8::try_from(weights.len()).map_err(|_| WireError::CountOverflow {
-        field: "num_weights",
-        len: weights.len(),
-    })?;
-    let mut out = Vec::with_capacity(5 + cps.len() * 12 + knots.len() * 4 + weights.len() * 4);
+    let mut out = Vec::with_capacity(5 + cps.len() * 12 + knots.len() * 4);
     out.push(FORMAT_VERSION_V1);
     out.push(degree);
     out.push(num_cps);
     out.push(num_knots);
-    out.push(num_weights);
+    out.push(0); // num_weights — always 0 for polynomial curves
     for cp in cps {
         for &v in cp {
             out.extend_from_slice(&v.to_le_bytes());
@@ -72,9 +66,6 @@ pub fn encode_load_curve_v1(
     }
     for &k in knots {
         out.extend_from_slice(&k.to_le_bytes());
-    }
-    for &w in weights {
-        out.extend_from_slice(&w.to_le_bytes());
     }
     Ok(out)
 }
