@@ -7,7 +7,6 @@
 #include "internal.h"          // STM32-internal helpers — TIM5, RCC, DWT
 #include "kalico_runtime.h"
 #include "generic/runtime_tick.h"   // interface contract
-#include "generic/runtime_bench.h" // runtime_bench_capture hook
 #include "generic/kalico_nvic_prio.h" // KALICO_MOTION_NVIC_PRIO
 
 #if CONFIG_MACH_STM32H7
@@ -184,8 +183,6 @@ TIM5_IRQHandler_body(uint32_t *frame)
     // widened u64 advances at the expected rate.
     extern volatile uint32_t runtime_sim_cyccnt;
     runtime_sim_cyccnt += (runtime_clock_freq / 40000U);
-    extern void runtime_sim_isr_wake_drain(void);
-    runtime_sim_isr_wake_drain();
 #endif
 
     // Sample armed endstop GPIOs before the engine tick (no-op if none armed).
@@ -199,10 +196,6 @@ TIM5_IRQHandler_body(uint32_t *frame)
         kalico_runtime_tick_sample(runtime_handle);
     }
     uint32_t after = runtime_cyccnt_read();
-
-    // Bench capture: weak no-op unless CONFIG_RUNTIME_BENCH=y.
-    runtime_bench_capture(after - before);
-    // No late ack.
 
     // Histogram engine-evaluator cost separately from full-IRQ overhead.
     extern void diag_runtime_tick_account(uint32_t cycles);

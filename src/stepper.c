@@ -18,7 +18,6 @@
 #include "board/misc.h" // timer_from_us, timer_read_time, timer_is_before
 #include "command.h" // DECL_COMMAND, command_decode_ptr
 #include "sched.h" // DECL_SHUTDOWN
-#include "stepper.h"
 #include "trsync.h" // trsync_add_signal
 #include "kalico_runtime.h" // StepperBindingRust
 #include "kalico_log.h" // kalico_log_emit (mcu structured-log ready marker)

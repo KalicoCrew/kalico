@@ -7,22 +7,19 @@
 // definition site.
 //
 // Klipper command surface is in src/runtime_commands.c.
-// Sim-only commands are in src/runtime_sim_commands.c (gated CONFIG_KALICO_SIM).
-// Bench is in src/generic/runtime_bench.c (gated CONFIG_RUNTIME_BENCH).
 // Per-family backends:
 //   src/stm32/runtime_tick_h7.c   (H7 TIM5 ISR)
 //   src/linux/runtime_tick_host.c (pthread tick for host-sim)
 // Backend interface contract: src/generic/runtime_tick.h.
 
 #include <string.h>         // memcpy
-#include "stepper.h"        // runtime_emit_step_pulses (via stepper.c)
 #if defined(__linux__) || defined(__APPLE__)
 #include <stdio.h>          // fprintf, stderr
 #include <time.h>           // clock_gettime
 #endif
 #include "autoconf.h"
 #include "board/gpio.h"     // gpio_in_setup / gpio_in_read
-#include "board/internal.h" // NVIC_*, IWDG, OTG_HS_IRQn, USART2_IRQn
+#include "board/internal.h" // NVIC_*, OTG_HS_IRQn, USART2_IRQn
 #include "board/irq.h"      // irq_save, irq_restore (Step-6 §8.5 flush)
 #include "board/misc.h"     // timer_read_time
 #include "command.h"        // DECL_COMMAND
@@ -33,13 +30,6 @@
 #include "generic/runtime_tick.h"   // backend interface (consumer view)
 #include "generic/fault_handler.h"  // diag_record_engine_xition, diag_take_snapshot
 
-
-// H7 CMSIS only defines IWDG1/IWDG2; map the generic name to IWDG1
-// (matching src/stm32/watchdog.c's pattern) so the bench-loop kick
-// compiles cleanly.
-#if CONFIG_MACH_STM32H7
-#define IWDG IWDG1
-#endif
 
 // Exposed to Rust via `extern "C" { static runtime_clock_freq: u32; }`.
 // __attribute__((used, externally_visible)) survives -fwhole-program LTO + GC.
@@ -134,7 +124,7 @@ runtime_irq_restore(uint32_t flags)
 }
 
 void* runtime_handle = 0;            // exposed (non-static) for runtime_tick_h7.c
-struct task_wake runtime_drain_wake;  // non-static: shared with runtime_sim_commands.c
+static struct task_wake runtime_drain_wake;
 static struct timer runtime_drain_timer;
 
 // 10 Hz status frame state; prev_engine_status gates the one-shot kalico_fault emit.
@@ -205,10 +195,6 @@ DECL_INIT(runtime_init);
 #define KALICO_LIVENESS_THRESHOLD_MS 25
 #define KALICO_LIVENESS_THRESHOLD_TICKS  \
     ((KALICO_LIVENESS_THRESHOLD_MS) * (CONFIG_CLOCK_FREQ / 1000))
-
-// runtime_sim_drain_calls extern retired with runtime_sim_commands.c in
-// 085b4b16f; the diag-heartbeat scaffolding now lives in
-// diag_task_heartbeat below.
 
 void
 runtime_drain(void)

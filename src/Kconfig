@@ -324,29 +324,6 @@ config CAN_UUID_USE_CHIPID
 config CAN_UUID_CUSTOM
     default "abc1234"
 
-# Stepper optimizations
-config INLINE_STEPPER_HACK
-    # Enables gcc to inline stepper_event() into the main timer irq handler
-    bool
-    depends on HAVE_GPIO
-    default y
-config HAVE_STEPPER_OPTIMIZED_BOTH_EDGE
-    bool
-config WANT_STEPPER_OPTIMIZED_BOTH_EDGE
-    bool "Optimize stepper code for 'step on both edges'" if LOW_LEVEL_OPTIONS
-    depends on INLINE_STEPPER_HACK && HAVE_STEPPER_OPTIMIZED_BOTH_EDGE
-    default y
-    help
-        Optimize the stepper code for Trinamic stepper motor drivers
-        that are configured in UART or SPI mode (and thus can perform
-        a step on both "edges" of the step pin).  Enabling this option
-        typically improves the stepper cpu performance by about 20%
-        when using these drivers.  If this option is disabled the code
-        will instead deploy optimizations that improve the cpu
-        performance by about 20% for traditional drivers (those that
-        take a step only on the "rising" or "falling" level of the
-        step pin).
-
 # Support setting gpio state at startup
 config INITIAL_PINS
     string "GPIO pins to set at micro-controller startup"
@@ -527,15 +504,6 @@ config KALICO_SIM_TMCUART_BYPASS
       jitter would make a shim-side decoder flake intermittently. See
       docs/superpowers/specs/2026-05-08-syscall-shim-design.md
       §"Chip emulator routing → tmcuart" for rationale.
-
-config RUNTIME_BENCH
-    bool "Cycle-count benchmark for runtime tick"
-    depends on MACH_STM32H7
-    default y if MACH_STM32H7
-    help
-      Captures per-tick cycle counts for performance regression tracking.
-      Enabled by default on H7. F4 / host targets do not currently provide
-      a cycle counter suitable for bench; left unselected.
 
 menu "Motion dispatch modules"
     depends on MACH_STM32H7 || MACH_STM32F4 || MACH_STM32G0 || MACH_LINUX

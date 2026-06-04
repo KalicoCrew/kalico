@@ -30,7 +30,6 @@
 #include "runtime_tick_timer.h"     // MOTION_TIM* alias
 #include "kalico_runtime.h"
 #include "generic/runtime_tick.h"   // interface contract
-#include "generic/runtime_bench.h"  // runtime_bench_capture hook
 
 #if CONFIG_MACH_STM32G0
 
@@ -181,11 +180,8 @@ MOTION_TIM_IRQHandler(void)
     }
     uint32_t after = runtime_cyccnt_read();
 
-    // Bench capture: weak no-op unless CONFIG_RUNTIME_BENCH=y. On M0+ the
-    // software counter does not advance within a single ISR, so the reported
-    // per-tick cycle delta is 0 (no DWT to measure real cycles with).
-    runtime_bench_capture(after - before);
-
+    // M0+ has no DWT cycle counter; the software counter does not advance within
+    // a single ISR, so the per-tick cycle delta below is always 0 here.
     extern void diag_runtime_tick_account(uint32_t cycles);
     diag_runtime_tick_account(after - before);
 

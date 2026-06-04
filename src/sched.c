@@ -348,12 +348,6 @@ sched_timer_dispatch(void)
     extern void diag_note_dispatch(uint32_t func, uint32_t addr);
     diag_note_dispatch((uint32_t)t->func, (uint32_t)t);
 
-    // The legacy "inline stepper" optimization (CONFIG_INLINE_STEPPER_HACK
-    // + stepper_event when t->func is NULL) was removed alongside the
-    // queue_step / stepper_event_* scheduler — the Rust runtime emits
-    // step pulses from the TIM5 ISR via runtime_emit_step_pulses, not by
-    // queueing timer callbacks. All scheduled timers now go through
-    // t->func(t).
     uint_fast8_t res = t->func(t);
     uint32_t updated_waketime = t->waketime;
 
