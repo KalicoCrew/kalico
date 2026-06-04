@@ -307,7 +307,6 @@ static volatile struct diag_event diag_ring[DIAG_RING_LEN];
 static struct diag_counters prior_diag;
 static struct diag_event    prior_ring[DIAG_RING_LEN];
 static uint32_t             prior_diag_present;
-static uint32_t             prior_ring_emit_idx;
 // Scratch copy for kalico_diag_emit_live: the live ring is snapshotted here
 // under irq_save (ISRs push concurrently), then emitted outside the critical
 // section. File-static to keep it off the command-handler stack.
@@ -1320,28 +1319,11 @@ fault_handler_report_task(void)
                prior_diag.rt_tick_buckets[10], prior_diag.rt_tick_buckets[11],
                prior_diag.rt_tick_buckets[12], prior_diag.rt_tick_buckets[13],
                prior_diag.rt_tick_buckets[14], prior_diag.rt_tick_buckets[15]);
-        // Emit ring entries in chronological order (oldest at head).
-        const uint32_t per_cycle = 12;
-        uint32_t start = prior_ring_emit_idx;
-        uint32_t end = start + per_cycle;
-        if (end > DIAG_RING_LEN)
-            end = DIAG_RING_LEN;
-        uint32_t head = prior_diag.ring_head & DIAG_RING_MASK;
-        for (uint32_t i = start; i < end; i++) {
-            uint32_t idx = (head + i) & DIAG_RING_MASK;
-            if (prior_ring[idx].tag != DIAG_EV_NONE) {
-                output("prior_diag_ring i %u tag %u seq %u ts %u a %u b %u",
-                       i,
-                       prior_ring[idx].tag,
-                       prior_ring[idx].seq,
-                       prior_ring[idx].timestamp,
-                       prior_ring[idx].a,
-                       prior_ring[idx].b);
-            }
-        }
-        prior_ring_emit_idx = end;
-        if (prior_ring_emit_idx >= DIAG_RING_LEN)
-            prior_ring_emit_idx = 0;  // wrap: re-emit for reconnect tolerance
+        // The prior-boot event ring is no longer dumped as text here — it is
+        // replayed structured (diag.* under KALICO_LOG_SUBSYS_DIAG) by
+        // kalico_diag_emit_prior_crash. The verbose summary above is kept as the
+        // klippy.log deep-debug fallback (histograms, USB registers, task
+        // heartbeats, fault addresses — fields the structured path doesn't carry).
     }
 
     emits_done++;
