@@ -1,12 +1,7 @@
 // SPSC SPI write queue per bus. Producer = TIM5 ISR (Rust), consumer =
-// foreground struct-timer (Klipper SysTick) that pops entries and
-// dispatches through Klipper's spidev / bus.c. Storage is C-owned per
-// architectural invariant B2/B3 in docs/kalico-rewrite/mcu-c-rust-boundary.md.
-//
-// 16-entry SPSC ring with u16 head/tail counters using wrapping
-// subtraction for length. Power-of-2 depth allows mask indexing
-// (& SPI_QUEUE_DEPTH_MASK) on the hot path. Mirror struct lives in
-// rust/runtime/src/spi_queue.rs.
+// foreground struct-timer (Klipper SysTick). Storage C-owned per the B2/B3
+// invariant in docs/kalico-rewrite/mcu-c-rust-boundary.md; struct layout
+// mirrors rust/runtime/src/spi_queue.rs — keep in sync (static_asserts below).
 
 #ifndef __KALICO_SPI_QUEUE_H
 #define __KALICO_SPI_QUEUE_H
@@ -16,10 +11,10 @@
 
 #define SPI_QUEUE_DEPTH       16
 #define SPI_QUEUE_DEPTH_MASK  0x0F
-#define N_SPI_BUSES           3   // headroom for SPI1/SPI3 + future expansion
+#define N_SPI_BUSES           3
 
 typedef struct {
-    uint8_t  motor_idx;    // index into phase_motors[] for write_xdirect dispatch
+    uint8_t  motor_idx;    // index into phase_motors[] for write_xdirect
     uint8_t  _pad;
     int16_t  coil_a;
     int16_t  coil_b;

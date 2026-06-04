@@ -6,9 +6,6 @@ use std::sync::Arc;
 use std::sync::mpsc::sync_channel;
 use std::time::{Duration, Instant};
 
-/// Same as the BrokenWritePort declared in the inner `tests` module above
-/// — duplicated here so this module sees a SerialPort. The inner module's
-/// fixture is private to its scope.
 struct BrokenWritePort;
 impl std::io::Read for BrokenWritePort {
     fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
@@ -126,10 +123,6 @@ fn fresh_reactor_with_broken_write() -> (Reactor, std::sync::mpsc::Sender<Reacto
     (reactor, tx)
 }
 
-/// SubmitTyped (the bridge_call path used by tmc.py SPI writes) hits
-/// dispatch_submission's IMMEDIATE branch (window not full). On
-/// TransportError::Io from write_frame, completion gets the Io error
-/// AND the reactor transitions Closed + stages HostDisconnect.
 #[test]
 fn submit_typed_io_error_transitions_closed() {
     let (mut reactor, tx) = fresh_reactor_with_broken_write();
@@ -152,10 +145,6 @@ fn submit_typed_io_error_transitions_closed() {
         Err(TransportError::Io(e)) => assert_eq!(e.kind(), std::io::ErrorKind::BrokenPipe),
         other => panic!("expected Io(BrokenPipe), got {other:?}"),
     }
-    // POST-FIX (2026-05-09 Fix 1): reactor MUST transition Closed +
-    // stage HostDisconnect. Mirrors drain_pending_submissions behavior.
-    // Note: pending_host_fault gets drained into fault_latch within the
-    // same tick (step 4b), so we check the latch.
     assert_eq!(
         reactor.state,
         ReactorState::Closed,
@@ -168,20 +157,15 @@ fn submit_typed_io_error_transitions_closed() {
         .as_ref()
         .expect("Fix 1: HostDisconnect fault MUST be latched");
     assert_eq!(cell.fault_code, FaultCode::HostDisconnect.as_u16());
-    // Submit doesn't reach awaiting_response.push since write failed.
     assert!(reactor.unacked_window.is_empty());
-    // tick_once detects Closed in step 6 within the SAME tick that
-    // staged the fault. Outcome is Closed (not Continue).
     assert_eq!(
         outcome,
         TickOutcome::Closed,
         "tick_once returns Closed when state transitioned this tick"
     );
-    // send_seq still advances (write attempted, just failed).
     assert_eq!(reactor.send_seq, 2);
 }
 
-/// FireAndForgetTyped (passthrough fire-and-forget) — same fix.
 #[test]
 fn fire_and_forget_typed_io_error_transitions_closed() {
     let (mut reactor, tx) = fresh_reactor_with_broken_write();
@@ -204,7 +188,6 @@ fn fire_and_forget_typed_io_error_transitions_closed() {
     assert_eq!(outcome, TickOutcome::Closed);
 }
 
-/// KalicoCall (motion-bridge producer load_curve / push_segment) — same fix.
 #[test]
 fn kalico_call_io_error_transitions_closed() {
     use kalico_protocol::MessageKind;
@@ -245,10 +228,6 @@ fn kalico_call_io_error_transitions_closed() {
     );
 }
 
-/// Multi-Submit hammer: a single Io fault should immediately close the
-/// transport, so subsequent Submits in the same tick batch are flushed
-/// with Err(Closed) (or, post-tick, the next tick_once returns Closed
-/// outcome and flush_all_completions fires).
 #[test]
 fn one_io_fault_closes_transport_no_storm() {
     let (mut reactor, tx) = fresh_reactor_with_broken_write();
@@ -267,12 +246,6 @@ fn one_io_fault_closes_transport_no_storm() {
         completion_rxs.push(crx);
     }
 
-    // First tick processes MAX_SUBMITS_PER_ITER=4 commands.
-    // The first Submit's Io error transitions state=Closed.
-    // Subsequent Submits in the same batch still get Io errors via
-    // their completion channels (they were already enqueued before
-    // state transitioned). Outcome is Closed (state went Closed in
-    // this tick).
     let outcome1 = reactor.tick_once();
     assert_eq!(
         outcome1,
@@ -281,9 +254,6 @@ fn one_io_fault_closes_transport_no_storm() {
     );
     assert_eq!(reactor.state, ReactorState::Closed);
 
-    // At least the first 4 (one batch) got Io. The exact count depends
-    // on how many made it through before Closed transitioned. We just
-    // assert SOMETHING was delivered and the transport is dead now.
     let mut delivered_io = 0;
     for rx in &completion_rxs {
         if let Ok(Err(_)) = rx.try_recv() {
@@ -296,7 +266,6 @@ fn one_io_fault_closes_transport_no_storm() {
     );
 }
 
-/// Drain path — already correct pre-fix, regression-guard test.
 #[test]
 fn drain_path_transitions_closed_on_io_error() {
     let _ = ReactorHarness::new();
@@ -332,19 +301,9 @@ fn drain_path_transitions_closed_on_io_error() {
     let result = completion_rx.try_recv().expect("completion delivered");
     assert!(matches!(result, Err(TransportError::Io(_))));
     assert_eq!(reactor.state, ReactorState::Closed);
-    // pending_host_fault stays Some here because we called drain
-    // directly without going through tick_once (which would consume
-    // it into fault_latch in step 4b).
     assert!(reactor.pending_host_fault.is_some());
 }
 
-// ---------------------------------------------------------------------
-// Fix 6+7: RTO retransmit error escalation + fire-storm rate limit.
-// ---------------------------------------------------------------------
-
-/// FlakyWritePort: succeeds on the first N writes, then fails Io(Other).
-/// Used to model the observed real-hardware failure: the initial Submit
-/// goes out fine (after a long block), but subsequent retransmits fail.
 struct FlakyWritePort {
     writes_until_fail: std::sync::atomic::AtomicU32,
 }
@@ -481,15 +440,8 @@ fn fresh_reactor_with_flaky_port(
     (reactor, tx)
 }
 
-/// Replay the real-hardware failure from 2026-05-09 (10:51:28 trace):
-/// initial Submit's write succeeds (kernel finally flushed after 509ms);
-/// reactor's RTO timer fires immediately because clock jumped 509ms;
-/// retransmit's write fails Io(Other,None). Pre-fix: reactor ignored
-/// the error and looped 5+ times in 4ms. Post-fix: ONE retransmit
-/// failure is enough to transition Closed.
 #[test]
 fn rto_retransmit_io_error_transitions_closed() {
-    // Allow exactly 1 successful write (the initial Submit), then fail.
     let (mut reactor, tx) = fresh_reactor_with_flaky_port(1);
 
     let (completion_tx, completion_rx) = sync_channel(1);
@@ -502,23 +454,16 @@ fn rto_retransmit_io_error_transitions_closed() {
     })
     .expect("submission_tx open");
 
-    // Tick 1: process Submit, write succeeds. Awaiter is in
-    // awaiting_response. Front of unacked_window is fresh.
     let outcome1 = reactor.tick_once();
     assert_eq!(outcome1, TickOutcome::Continue);
     assert_eq!(reactor.state, ReactorState::Active);
     assert_eq!(reactor.unacked_window.len(), 1);
     assert_eq!(reactor.awaiting_response.len(), 1);
 
-    // Force RTO to fire: pretend a long time passed since the front
-    // entry was sent. (Default RTO is MIN_RTO = 25ms.)
     if let Some(front_mut) = reactor.unacked_window.iter_mut().next() {
         front_mut.sent_at = Instant::now() - Duration::from_secs(1);
     }
 
-    // Tick 2: RTO fires, write_retransmit's write_frame fails Io(Other),
-    // transition_closed_on_io_fault MUST run. tick_once returns Closed
-    // in the same tick.
     let outcome2 = reactor.tick_once();
     assert_eq!(
         outcome2,
@@ -526,13 +471,11 @@ fn rto_retransmit_io_error_transitions_closed() {
         "Fix 6: RTO retransmit Io error closes transport in same tick"
     );
     assert_eq!(reactor.state, ReactorState::Closed);
-    // fault_latch holds the HostDisconnect after step 4b drains.
     assert!(
         reactor.event_dispatcher.fault_latch.cell.is_some(),
         "Fix 6: HostDisconnect fault MUST be latched"
     );
 
-    // The awaiter was flushed with Closed.
     let result = completion_rx
         .try_recv()
         .expect("flush_all_completions delivered");

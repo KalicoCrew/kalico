@@ -1,14 +1,10 @@
-//! Move classification and CubicSegment construction.
-
 use compat::collinear::to_collinear_bezier;
 use geometry::segment::{CubicSegment, EMode, SourceRange};
 use nurbs::VectorNurbs;
 
 #[derive(Debug)]
 pub enum MoveClass {
-    /// XY travel (no Z, no E). Includes pure-X and pure-Y.
     XyTravel,
-    /// Z-only move.
     ZOnly,
 }
 
@@ -16,40 +12,10 @@ pub enum MoveClass {
 pub struct ClassifiedMove {
     pub segment: CubicSegment,
     pub class: MoveClass,
-    /// Total straight-line distance of the move in mm (the L2 norm of
-    /// `(dx, dy, dz)` at classify time). Cached here so [`Self::nominal_duration`]
-    /// is an O(1) read — the segment's `xyz` arc-length is identical to this
-    /// for a collinear-cubic move (the only shape the bridge produces today),
-    /// but going through `nurbs::arc_length::xy_arc_length` would re-walk the
-    /// curve on every submit. Stored at classify time when the deltas are
-    /// already in hand.
     pub distance_mm: f64,
 }
 
 impl ClassifiedMove {
-    /// Klippy-equivalent **nominal** duration of the move (seconds): the
-    /// time klippy's `toolhead` model would advance its `print_time` by on
-    /// the corresponding `move()` call. Used by
-    /// [`crate::planner::PlannerHandle::submit_move`] to advance
-    /// `last_move_time_bits` **synchronously, caller-side, before the
-    /// channel send** so klippy sees queued-time semantics immediately
-    /// after `submit_move` returns (spec §3.8 / §4.5). The planner thread
-    /// later rectifies if the actual TOPP-RA-shaped duration differs (see
-    /// `run_loop`'s `Move` arm).
-    ///
-    /// The estimate is the cruise-velocity time `distance / feedrate`. This
-    /// is the simplest correct upper-bound-ish nominal:
-    ///
-    /// - Klippy's `toolhead` itself does a trapezoidal accel/cruise/decel
-    ///   estimate, but the bridge does not have klippy's accel state. The
-    ///   actual TOPP-RA-shaped duration is typically *longer* than the
-    ///   cruise estimate (accel/decel ramps slow the move), so the
-    ///   rectification delta in `run_loop` is almost always positive —
-    ///   `last_move_time_bits` strictly advances after the rectify, never
-    ///   retreats past a synchronously-published value.
-    /// - Returns `0.0` for degenerate `feedrate <= 0.0` (the constructor
-    ///   accepts any positive feedrate; defensive against any future
-    ///   call-site that bypasses the constructor's validation).
     #[must_use]
     pub fn nominal_duration(&self) -> f64 {
         if self.segment.feedrate_mm_s <= 0.0 {
@@ -59,10 +25,6 @@ impl ClassifiedMove {
     }
 }
 
-/// Classify a G1-style delta move and construct a `CubicSegment`.
-///
-/// Returns `Err` if `de != 0` (Phase 2 does not support extrusion) or
-/// if the move has zero displacement.
 pub fn classify_and_build(
     start: [f64; 3],
     dx: f64,
@@ -93,7 +55,6 @@ pub fn classify_and_build(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
         cps.to_vec(),
-        None,
     )
     .map_err(|e| ClassifyError::NurbsConstruction(format!("{e:?}")))?;
 

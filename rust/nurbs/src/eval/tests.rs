@@ -1,18 +1,12 @@
 use super::*;
 
 fn linear_curve_f64() -> crate::ScalarNurbs<f64> {
-    crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap()
+    crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap()
 }
 
 fn quadratic_curve_f64() -> crate::ScalarNurbs<f64> {
     // Bezier-ish: degree 2, knots {0,0,0,1,1,1}, cps {0, 0.5, 1}.
-    crate::ScalarNurbs::try_new(
-        2,
-        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        vec![0.0, 0.5, 1.0],
-        None,
-    )
-    .unwrap()
+    crate::ScalarNurbs::try_new(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![0.0, 0.5, 1.0]).unwrap()
 }
 
 #[test]
@@ -68,45 +62,11 @@ fn eval_quadratic_at_midpoint_matches_bernstein() {
     assert!((eval(&v, 0.5_f64) - 0.5).abs() < 1e-12);
 }
 
-fn rational_quadratic_arc() -> crate::ScalarNurbs<f64> {
-    // Rational quadratic: 90° arc from (1,0) to (0,1) projected to scalar X.
-    // We model the X channel: cps = [1, 1, 0], weights = [1, sqrt(2)/2, 1].
-    // At u=0: X=1; at u=1: X=0; at u=0.5: ~0.707 (approximately cos(45°)).
-    crate::ScalarNurbs::try_new(
-        2,
-        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        vec![1.0, 1.0, 0.0],
-        Some(vec![1.0, std::f64::consts::SQRT_2 / 2.0, 1.0]),
-    )
-    .unwrap()
-}
-
-#[test]
-fn eval_rational_at_endpoints() {
-    let curve = rational_quadratic_arc();
-    let v = curve.as_view();
-    assert!((eval(&v, 0.0_f64) - 1.0).abs() < 1e-12);
-    assert!((eval(&v, 1.0_f64) - 0.0).abs() < 1e-12);
-}
-
-#[test]
-fn eval_rational_at_midpoint() {
-    let curve = rational_quadratic_arc();
-    let v = curve.as_view();
-    // Standard rational quadratic formula with symmetric weights yields cos(45°) ≈ 0.7071
-    let mid = eval(&v, 0.5_f64);
-    let expected = (std::f64::consts::SQRT_2 / 2.0_f64).powi(2)
-        / ((std::f64::consts::SQRT_2 / 2.0_f64).powi(2) + 0.5_f64);
-    // simpler check: result lies in (0.69, 0.72) for this specific arc
-    assert!(mid > 0.69 && mid < 0.72, "got {mid}, expected ~{expected}");
-}
-
 fn linear_3d_curve_f64() -> crate::VectorNurbs<f64, 3> {
     crate::VectorNurbs::try_new(
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]],
-        None,
     )
     .unwrap()
 }
@@ -134,8 +94,7 @@ fn vector_eval_matches_per_axis_scalar() {
     // Reconstruct each axis as a scalar curve and compare.
     for axis in 0..3 {
         let cps_axis: Vec<f64> = v.control_points().iter().map(|cp| cp[axis]).collect();
-        let scalar =
-            crate::ScalarNurbs::try_new(v.degree(), v.knots().to_vec(), cps_axis, None).unwrap();
+        let scalar = crate::ScalarNurbs::try_new(v.degree(), v.knots().to_vec(), cps_axis).unwrap();
         let expected = eval(&scalar.as_view(), 0.3_f64);
         assert!(
             (result[axis] - expected).abs() < 1e-12,
@@ -204,7 +163,6 @@ fn eval_polynomial_with_derivative_matches_separate_calls_cubic() {
         3,
         vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
         vec![0.0, 1.0, 2.5, 4.0, 5.0],
-        None,
     )
     .unwrap();
     for u_pct in 0..=100 {
@@ -255,7 +213,6 @@ fn eval_derivative_cubic_matches_materialized() {
         3,
         vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
         vec![0.0, 1.0, 2.5, 4.0, 5.0],
-        None,
     )
     .unwrap();
     let lowered = derivative(&curve);
@@ -282,8 +239,7 @@ fn vector_derivative_matches_per_axis_scalar() {
     for axis in 0..3 {
         let cps_axis: Vec<f64> = curve.control_points().iter().map(|cp| cp[axis]).collect();
         let scalar =
-            crate::ScalarNurbs::try_new(curve.degree(), curve.knots().to_vec(), cps_axis, None)
-                .unwrap();
+            crate::ScalarNurbs::try_new(curve.degree(), curve.knots().to_vec(), cps_axis).unwrap();
         let scalar_d = derivative(&scalar);
         let expected = eval(&scalar_d.as_view(), 0.3_f64);
         assert!((result[axis] - expected).abs() < 1e-12);
@@ -300,7 +256,6 @@ fn curvature_of_straight_line_is_zero() {
         2,
         vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
-        None,
     )
     .unwrap();
     let first = vector_derivative(&parabolic);
@@ -364,7 +319,6 @@ fn curvature_of_arc_matches_known_value() {
         2,
         vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
         vec![[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
-        None,
     )
     .unwrap();
     let first = vector_derivative(&arc);

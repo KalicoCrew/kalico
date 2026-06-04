@@ -31,7 +31,7 @@ fn arb_curve() -> impl Strategy<Value = nurbs::ScalarNurbs<f64>> {
                     knots.push(i as f64 / (interior + 1) as f64);
                 }
                 knots.resize(knots.len() + pad, 1.0);
-                nurbs::ScalarNurbs::try_new(p, knots, cps_vec, None).unwrap()
+                nurbs::ScalarNurbs::try_new(p, knots, cps_vec).unwrap()
             })
         })
     })
@@ -68,7 +68,7 @@ proptest! {
             knots.push(i as f64 / (interior + 1) as f64);
         }
         knots.resize(knots.len() + pad, 1.0);
-        let curve = nurbs::ScalarNurbs::try_new(p, knots, cps, None).unwrap();
+        let curve = nurbs::ScalarNurbs::try_new(p, knots, cps).unwrap();
         let d = nurbs::eval::derivative(&curve);
         for u in [0.0, 0.25, 0.5, 0.75, 1.0] {
             let val = nurbs::eval::eval(&d.as_view(), u);

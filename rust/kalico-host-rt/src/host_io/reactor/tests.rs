@@ -2,10 +2,6 @@ use super::*;
 use crate::host_io::wire;
 use std::sync::{Arc, Mutex};
 
-// -----------------------------------------------------------------------
-// MockPort: a SerialPort that reads TimedOut and captures writes.
-// -----------------------------------------------------------------------
-
 struct MockPort {
     written: Arc<Mutex<Vec<u8>>>,
 }
@@ -107,17 +103,12 @@ impl serialport::SerialPort for MockPort {
     }
 }
 
-// -----------------------------------------------------------------------
-// Helper: build a Reactor with the given seqs pre-populated in the window.
-// -----------------------------------------------------------------------
-
 fn test_reactor_with_inflight(seqs: &[u64]) -> (Reactor, Arc<Mutex<Vec<u8>>>) {
     let written = Arc::new(Mutex::new(Vec::<u8>::new()));
     let port = MockPort {
         written: Arc::clone(&written),
     };
 
-    // Build a minimal MsgProtoParser (empty data dict is fine for these tests).
     let parser = Arc::new(crate::host_io::parser::MsgProtoParser::new_empty());
 
     let (_, rx) = std::sync::mpsc::channel();
@@ -134,7 +125,6 @@ fn test_reactor_with_inflight(seqs: &[u64]) -> (Reactor, Arc<Mutex<Vec<u8>>>) {
         Arc::new(crate::clock::RealClock),
     );
 
-    // Pre-populate the unacked window.
     let max_seq = seqs.iter().copied().max().unwrap_or(0);
     for &seq in seqs {
         reactor
@@ -149,57 +139,37 @@ fn test_reactor_with_inflight(seqs: &[u64]) -> (Reactor, Arc<Mutex<Vec<u8>>>) {
     if max_seq > 0 {
         reactor.send_seq = max_seq + 1;
     }
-    // receive_seq=1, last_ack_seq=0 are the Reactor::new defaults.
 
     (reactor, written)
 }
 
-// -----------------------------------------------------------------------
-// Test 1 — decode_absolute wraps correctly.
-// -----------------------------------------------------------------------
-
 #[test]
 fn decode_absolute_wraps_correctly() {
     let (reactor, _) = test_reactor_with_inflight(&[]);
-    // receive_seq = 1 (default). Wire nibble 0x02 → delta = (2 - 1) & 0x0F = 1 → abs = 2.
     assert_eq!(wire::decode_absolute(reactor.receive_seq, 0x02), 2);
 
-    // Simulate receive_seq = 14.
     let mut r2 = test_reactor_with_inflight(&[]).0;
     r2.receive_seq = 14;
-    // Wire nibble 0x01 → delta = (1 - 14) & 0x0F = (-13 mod 16) = 3 → abs = 14 + 3 = 17.
     assert_eq!(wire::decode_absolute(r2.receive_seq, 0x01), 17);
 }
 
-// -----------------------------------------------------------------------
-// Test 2 — forward-progress ack updates last_ack_seq.
-// -----------------------------------------------------------------------
-
 #[test]
 fn forward_progress_ack_updates_last_ack_seq() {
-    // One in-flight entry with seq=2; receive_seq=1, last_ack_seq=0.
     let (mut reactor, _written) = test_reactor_with_inflight(&[2]);
 
     reactor.handle_ack_nak(0x02).expect("handle_ack_nak");
     assert_eq!(reactor.last_ack_seq, 2);
 }
 
-// -----------------------------------------------------------------------
-// Test 3 — duplicate ack triggers retransmit.
-// -----------------------------------------------------------------------
-
 #[test]
 fn duplicate_ack_triggers_retransmit() {
-    // Window: seqs=[1, 2].  receive_seq=1, last_ack_seq=0.
     let (mut reactor, written) = test_reactor_with_inflight(&[1, 2]);
 
-    // First call: rseq=2 → forward progress, last_ack_seq=2, pops seq=1.
     reactor.handle_ack_nak(0x02).expect("first handle_ack_nak");
     assert_eq!(reactor.last_ack_seq, 2);
 
     let bytes_before = written.lock().unwrap().len();
 
-    // Second call: rseq=2 again → duplicate ack → retransmit should fire.
     reactor.handle_ack_nak(0x02).expect("second handle_ack_nak");
 
     let bytes_after = written.lock().unwrap().len();
@@ -209,22 +179,15 @@ fn duplicate_ack_triggers_retransmit() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Test 4 — stale ack damped by ignore_nak_seq.
-// -----------------------------------------------------------------------
-
 #[test]
 fn stale_ack_damped_by_ignore_nak_seq() {
-    // Window: seqs=[1, 2]; ignore_nak_seq=10 (high sentinel — damps retransmit).
     let (mut reactor, written) = test_reactor_with_inflight(&[1, 2]);
     reactor.ignore_nak_seq = 10;
 
-    // First call: rseq=2 → forward progress, last_ack_seq=2.
     reactor.handle_ack_nak(0x02).expect("first handle_ack_nak");
 
     let bytes_before = written.lock().unwrap().len();
 
-    // Second call: rseq=2 again.  rseq(2) > ignore_nak_seq(10) is FALSE → no retransmit.
     reactor.handle_ack_nak(0x02).expect("second handle_ack_nak");
 
     let bytes_after = written.lock().unwrap().len();
@@ -234,30 +197,26 @@ fn stale_ack_damped_by_ignore_nak_seq() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Tests 5–9 — write_retransmit two-arm logic.
-// -----------------------------------------------------------------------
-
 #[test]
 fn nak_driven_sets_ignore_nak_to_receive_seq() {
     let (mut reactor, _port) = test_reactor_with_inflight(&[1, 2, 3]);
     reactor.receive_seq = 5;
-    reactor.retransmit_seq = 0; // receive_seq >= retransmit_seq → arm 1
+    reactor.retransmit_seq = 0;
     reactor
         .write_retransmit(RetransmitTrigger::NakDriven)
         .unwrap();
-    assert_eq!(reactor.ignore_nak_seq, 5); // = receive_seq
+    assert_eq!(reactor.ignore_nak_seq, 5);
 }
 
 #[test]
 fn second_nak_uses_retransmit_seq() {
     let (mut reactor, _port) = test_reactor_with_inflight(&[1, 2, 3]);
     reactor.receive_seq = 3;
-    reactor.retransmit_seq = 7; // receive_seq < retransmit_seq → arm 2
+    reactor.retransmit_seq = 7;
     reactor
         .write_retransmit(RetransmitTrigger::NakDriven)
         .unwrap();
-    assert_eq!(reactor.ignore_nak_seq, 7); // = retransmit_seq
+    assert_eq!(reactor.ignore_nak_seq, 7);
 }
 
 #[test]
@@ -267,7 +226,7 @@ fn timeout_driven_sets_ignore_nak_to_send_seq() {
     reactor
         .write_retransmit(RetransmitTrigger::TimeoutDriven)
         .unwrap();
-    assert_eq!(reactor.ignore_nak_seq, 10); // = send_seq
+    assert_eq!(reactor.ignore_nak_seq, 10);
 }
 
 #[test]
@@ -289,10 +248,6 @@ fn timeout_driven_doubles_rto() {
         .unwrap();
     assert!(reactor.rtt.current_rto() >= rto_before * 2);
 }
-
-// -----------------------------------------------------------------------
-// BrokenPipePort: a SerialPort that returns BrokenPipe from read.
-// -----------------------------------------------------------------------
 
 struct BrokenPipePort;
 
@@ -395,10 +350,6 @@ impl serialport::SerialPort for BrokenPipePort {
     }
 }
 
-// -----------------------------------------------------------------------
-// BrokenWritePort: a SerialPort whose writes fail with BrokenPipe.
-// -----------------------------------------------------------------------
-
 struct BrokenWritePort;
 
 impl std::io::Read for BrokenWritePort {
@@ -498,12 +449,6 @@ impl serialport::SerialPort for BrokenWritePort {
     }
 }
 
-// -----------------------------------------------------------------------
-// Test: drain_pending_submissions surfaces write errors to the caller
-// (Codex finding) — completion sees TransportError::Io, host fault is
-// staged, and the reactor transitions to Closed.
-// -----------------------------------------------------------------------
-
 #[test]
 fn drain_pending_surfaces_write_failure() {
     let (_, rx) = std::sync::mpsc::channel::<crate::host_io::ReactorCommand>();
@@ -520,8 +465,6 @@ fn drain_pending_surfaces_write_failure() {
         Arc::new(crate::clock::RealClock),
     );
 
-    // Queue one pending submission. unacked_window is empty so the
-    // drain loop will pop it and try to dispatch immediately.
     let (tx, completion_rx) =
         std::sync::mpsc::sync_channel::<Result<crate::transport::MessageParams, TransportError>>(1);
     reactor.pending_submissions.push_back(PendingSubmission {
@@ -560,11 +503,6 @@ fn drain_pending_surfaces_write_failure() {
     );
 }
 
-// -----------------------------------------------------------------------
-// Test: BrokenPipe on poll_serial sets pending_host_fault and closes.
-// After run(), event_dispatcher.fault_latch.cell is populated.
-// -----------------------------------------------------------------------
-
 #[test]
 fn broken_pipe_latches_host_disconnect_fault() {
     let (_, rx) = std::sync::mpsc::channel::<crate::host_io::ReactorCommand>();
@@ -581,9 +519,8 @@ fn broken_pipe_latches_host_disconnect_fault() {
         Arc::new(crate::clock::RealClock),
     );
 
-    reactor.run(); // runs until Closed
+    reactor.run();
 
-    // The fault should be latched in the FaultLatch cell.
     assert!(
         reactor.event_dispatcher.fault_latch.cell.is_some(),
         "FaultLatch should have a cell after BrokenPipe"

@@ -22,11 +22,6 @@ pub fn build_frame(payload: &[u8], seq: u8) -> Vec<u8> {
     frame
 }
 
-/// Offline klipper-frame parser. Retained for `tests/captures_replay.rs`,
-/// `tests/partial_frame_assembly.rs`, `tests/passthrough_integration.rs`,
-/// and reactor's own test module to decode bytes the reactor wrote through
-/// SerialFrameIo::write_all (raw passthrough). The live reactor path no
-/// longer calls this — see SerialFrameIo + Demuxer for live decoding.
 #[doc(hidden)]
 pub fn extract_packet(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
     while !buf.is_empty() {
@@ -57,23 +52,11 @@ pub fn extract_packet(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
     None
 }
 
-/// Decode a 4-bit wire-seq nibble back to an absolute u64 by computing
-/// the mod-16 delta from `prev_abs` and adding it. Outstanding window
-/// ≤ 12 entries, so one mod-16 delta always uniquely identifies the
-/// next absolute seq. Modular arithmetic on the 64-bit counter is via
-/// `wrapping_add` so tests can probe the high end without debug panics
-/// (true wraparound is unreachable in practice — >500 years at 1 GHz
-/// frame rate).
-///
-/// Hoisted from `Reactor::decode_absolute` (was a method) so identify
-/// and other callers can reuse the logic without holding a Reactor.
 pub fn decode_absolute(prev_abs: u64, wire_seq: u8) -> u64 {
     let delta = (u64::from(wire_seq).wrapping_sub(prev_abs)) & 0x0F;
     prev_abs.wrapping_add(delta)
 }
 
-/// Build a retransmit buffer: leading MESSAGE_SYNC byte followed by every
-/// frame in the unacked window concatenated. Per spec §3.8 step 1+2.
 pub fn build_retransmit_buffer<'a>(frames: impl IntoIterator<Item = &'a [u8]>) -> Vec<u8> {
     let mut buf = Vec::new();
     buf.push(MESSAGE_SYNC);

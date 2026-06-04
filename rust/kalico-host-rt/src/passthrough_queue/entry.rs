@@ -1,12 +1,5 @@
-//! Core data types for passthrough queue entries.
-
-/// Sentinel `req_clock` value: entries with this priority are only emitted
-/// when no non-background entries exist across any queue. Mirrors
-/// `BACKGROUND_PRIORITY_CLOCK` in serialqueue.c.
 pub const BACKGROUND_PRIORITY_CLOCK: u64 = u64::MAX;
 
-/// Opaque identifier used to correlate a sent command with its MCU response.
-/// A value of 0 means "no notification requested."
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NotifyId(u64);
 
@@ -28,12 +21,6 @@ impl NotifyId {
     }
 }
 
-/// A single message queued for transmission to an MCU.
-///
-/// - `min_clock`: the promotion gate — the entry stays in `upcoming` until
-///   `ack_clock >= min_clock`.
-/// - `req_clock`: the emission priority key — lower values go first when
-///   picking from the ready queue.
 #[derive(Debug, Clone)]
 pub struct PassthroughEntry {
     bytes: Vec<u8>,
@@ -68,9 +55,6 @@ impl PassthroughEntry {
         self.notify_id
     }
 
-    /// Returns `true` when this entry carries the background-priority
-    /// sentinel, meaning it should only be emitted when no non-background
-    /// entries exist.
     pub fn is_background_priority(&self) -> bool {
         self.req_clock == BACKGROUND_PRIORITY_CLOCK
     }

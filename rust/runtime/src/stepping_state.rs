@@ -1,31 +1,16 @@
-//! Per-axis state for the piece-ring walker engine.
-//!
-//! `AxisState` replaces the old `AxisConfig` and carries:
-//!   - stepper bindings (unchanged)
-//!   - a `RingDescriptor` for the axis's region of the shared piece_storage
-//!   - ISR working cache: current piece coefficients and timing
-//!   - sub-sample carry-over: p_prev / v_prev
-
 use core::sync::atomic::{AtomicI16, AtomicI32, AtomicU8};
 use heapless::Vec;
 
 use crate::motion_core::ArmedPiece;
 use crate::piece_ring::RingDescriptor;
 
-/// Maximum configured axes.
 pub const MAX_AXES: usize = 8;
 
 /// Legacy alias kept for FFI / tick.rs call sites that reference N_AXES.
-/// The engine itself uses MAX_AXES; the tick dispatch constants still use the
-/// alias for readability.
 pub const N_AXES: usize = MAX_AXES;
 
 pub const MAX_STEPPERS_PER_AXIS: usize = 4;
 
-/// Per-stepper output mode.
-///
-/// `Pulse` drives the classic STEP/DIR GPIO path.
-/// `Phase` drives the TMC5160 SPI coil-current path for true phase stepping.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StepMode {
@@ -33,7 +18,6 @@ pub enum StepMode {
     Phase = 1,
 }
 
-/// Per-stepper Rust-side state.
 #[allow(non_snake_case)]
 #[derive(Debug)]
 pub struct StepperRef {
@@ -80,38 +64,21 @@ pub const TMC_CS_OID_NONE: u8 = 0xFF;
 
 /// Per-logical-axis state for the piece-ring walker engine.
 ///
-/// Holds:
-/// - Stepper bindings (which physical steppers this axis drives).
-/// - A `RingDescriptor` pointing into `RuntimeContext::piece_storage`.
-/// - ISR working cache for the current piece (mono/vel coefficients,
-///   start/end timestamps). Recomputed once per piece transition.
-/// - Sub-sample position/velocity carry-over (`p_prev`, `v_prev`) for
-///   the secant-slope step-timing path.
-///
 /// `mode` is atomic so the host can flip between Pulse and Phase without
-/// a stop-the-world handshake (e.g. sensorless homing temporarily reverts
-/// a phase-stepped axis to Pulse mode).
+/// a stop-the-world handshake.
 #[derive(Debug)]
 pub struct AxisState {
     pub mode: AtomicU8,
     pub steppers: Vec<StepperRef, MAX_STEPPERS_PER_AXIS>,
     pub microstep_distance: f32,
-    // ── Ring bookkeeping (logical descriptor into shared piece_storage) ──
     pub ring: RingDescriptor,
-    // ── ISR working cache for the current piece ──
-    /// ISR working cache for the currently-armed piece. `Some` exactly when a
-    /// piece is loaded and its coefficients/window are valid; `None` when no
-    /// piece is armed (nothing playing, or just retired and not yet re-armed).
     pub armed: Option<ArmedPiece>,
     pub last_step_count: i32,
-    // ── Sub-sample timing carry ──
     pub p_prev: f32,
     pub v_prev: f32,
 }
 
 impl AxisState {
-    /// Construct a default (unconfigured) `AxisState`. `mode` defaults to
-    /// `StepMode::Pulse`; no ring is allocated; no piece is active.
     pub const fn new_unconfigured() -> Self {
         Self {
             mode: AtomicU8::new(StepMode::Pulse as u8),
@@ -125,7 +92,6 @@ impl AxisState {
         }
     }
 
-    /// Reset ISR working state (called by `configure_axis`).
     pub fn reset_isr_cache(&mut self) {
         self.armed = None;
         self.last_step_count = 0;
@@ -134,17 +100,9 @@ impl AxisState {
     }
 }
 
-/// Backward-compat alias for call sites in tick.rs that still reference the
-/// old name.  Task 7 will update those sites; for now the alias keeps them
-/// compiling without changes to the dispatch signatures.
+/// Backward-compat alias for call sites in tick.rs that still reference the old name.
 pub type AxisConfig = AxisState;
 
-/// ISR-local scratch state carried across consecutive sample ticks.
-///
-/// Kept for compatibility with `seed_position` and legacy callers that still
-/// reference `TickCaches`.  For the new engine the per-axis `p_prev`/`v_prev`
-/// fields on `AxisState` supersede this; `TickCaches` is retained as an alias
-/// to avoid churning tick.rs call sites in this task.
 #[derive(Debug)]
 pub struct TickCaches {
     pub p_prev: [f32; MAX_AXES],

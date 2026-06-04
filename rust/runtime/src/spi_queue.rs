@@ -1,26 +1,13 @@
-//! Rust mirror of the C-side `SpiQueue` (`src/spi_queue.h`).
-//!
-//! Storage is owned by C — on the MCU the C translation unit declares a
-//! `[SpiQueue; N_SPI_BUSES]` and this module provides typed accessors via
-//! the `spi_queues` extern. On host / test builds, callers construct
-//! `SpiQueue::new()` instances directly and pass `*mut SpiQueue` into the
-//! free functions below.
-//!
-//! The queue is a single-producer / single-consumer ring buffer of
-//! power-of-two depth (`SPI_QUEUE_DEPTH = 16`) using free-running `u16`
-//! counters; the slot index is `counter & SPI_QUEUE_DEPTH_MASK`.
-//! Wraparound is correct by construction because `tail.wrapping_sub(head)`
-//! returns the populated length even when `tail` has wrapped past `head` —
-//! both unsigned values advance monotonically modulo `2^16`, and the
-//! difference modulo `2^16` equals the true outstanding count whenever it
-//! is `< 2^16` (here it is bounded by `SPI_QUEUE_DEPTH = 16`).
-//!
-//! Cross-core ordering follows the same release/acquire discipline as
-//! `step_queue.rs`: the producer fills `buf[slot]` then publishes via a
-//! Release fence + volatile write to `tail`; the consumer reads `tail`
-//! first, takes an Acquire fence, then consumes `buf[slot]`. Volatile
-//! counter accesses prevent the compiler from caching them across the
-//! fence.
+// Rust mirror of the C-side `SpiQueue` (`src/spi_queue.h`).
+//
+// Storage is owned by C on the MCU; on host/test builds callers construct
+// `SpiQueue::new()` instances directly.
+//
+// SPSC ring of power-of-two depth (`SPI_QUEUE_DEPTH = 16`) using free-running
+// `u16` counters. Cross-core ordering follows the same release/acquire
+// discipline as `step_queue.rs`: producer fills `buf[slot]` then publishes
+// via Release fence + volatile write to `tail`; consumer reads `tail` first,
+// takes Acquire fence, then consumes `buf[slot]`.
 
 #![allow(unsafe_code)]
 
@@ -31,20 +18,15 @@ use core::sync::atomic::{Ordering, fence};
 pub const SPI_QUEUE_DEPTH: usize = 16;
 /// Index mask derived from the depth — `counter & MASK` is the slot index.
 pub const SPI_QUEUE_DEPTH_MASK: u16 = (SPI_QUEUE_DEPTH as u16) - 1;
-/// Number of independent SPI buses (SPI1 / SPI3 + headroom).
 pub const N_SPI_BUSES: usize = 3;
 
 /// One pending SPI write: motor slot index, signed coil-A and coil-B
 /// currents for the TMC5160 XDIRECT register.
 ///
-/// Layout must match the C struct exactly — `#[repr(C)]` + the same field
-/// order + the explicit pad fields give an 8-byte entry on every target
-/// we care about (ABI-stable across H7 / F4 / host).
+/// Layout must match the C struct exactly — `#[repr(C)]` + explicit pads
+/// give an 8-byte entry on every target we care about.
 ///
-/// `motor_idx` is the index into the C-side `phase_motors[]` table; the C
-/// consumer resolves the SPI bus and chip-select from that table.
-/// `_pad` rounds `motor_idx` to 2 bytes so `coil_a` lands on a 2-byte
-/// alignment boundary. `_pad2` rounds the struct to 8 bytes.
+/// `motor_idx` is the index into the C-side `phase_motors[]` table.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct SpiWrite {
@@ -70,8 +52,6 @@ pub struct SpiQueue {
 }
 
 impl SpiQueue {
-    /// Construct an empty `SpiQueue` on the host / in tests. Not available
-    /// on the MCU because the storage there lives in a fixed C array.
     #[cfg(any(test, feature = "host"))]
     #[must_use]
     pub const fn new() -> Self {
@@ -97,16 +77,13 @@ impl Default for SpiQueue {
     }
 }
 
-// Layout invariants — these must match the C-side struct exactly. If a
-// future refactor changes field order or padding the build will fail here
-// rather than silently corrupting cross-language reads.
+// Layout invariants — must match the C-side struct exactly.
 const _: () = {
     assert!(core::mem::size_of::<SpiWrite>() == 8);
     assert!(core::mem::size_of::<SpiQueue>() == 136);
     assert!(SPI_QUEUE_DEPTH.is_power_of_two());
 };
 
-/// Returned by `push` when the ring is full.
 #[derive(Debug, PartialEq, Eq)]
 pub struct SpiQueueFull;
 
@@ -167,8 +144,7 @@ pub unsafe fn pop(q: *mut SpiQueue) -> Option<SpiWrite> {
 /// # Safety
 ///
 /// Same constraints as [`pop`] — `q` must be live and the caller must be
-/// the sole consumer (peek advances no counters but must still see a
-/// consistent snapshot of `buf[head]`).
+/// the sole consumer.
 pub unsafe fn peek(q: *mut SpiQueue) -> Option<SpiWrite> {
     let tail = unsafe { ptr::read_volatile(&(*q).tail) };
     let head = unsafe { ptr::read_volatile(&(*q).head) };
@@ -190,9 +166,7 @@ pub unsafe fn peek(q: *mut SpiQueue) -> Option<SpiWrite> {
 ///
 /// - `q` must be a non-null, properly aligned pointer to a live `SpiQueue`
 ///   whose storage outlives this call.
-/// - Safe to call from any context (producer, consumer, or a third
-///   observer); does not advance counters and so cannot violate SPSC
-///   discipline.
+/// - Safe to call from any context; does not advance counters.
 pub unsafe fn len(q: *mut SpiQueue) -> u16 {
     let tail = unsafe { ptr::read_volatile(&(*q).tail) };
     let head = unsafe { ptr::read_volatile(&(*q).head) };

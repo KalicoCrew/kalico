@@ -1,5 +1,3 @@
-//! Layer B structured event extension. Spec §4.8.
-
 use std::time::Instant;
 
 use crate::transport::MessageParams;
@@ -25,11 +23,6 @@ pub struct StatusEvent {
     pub current_segment_id: u32,
     pub last_fault: u16,
     pub fault_detail: u32,
-    /// v2 (2026-05-17): credit-flow watermark piggybacked on the 10 Hz
-    /// periodic status frame. EventDispatcher synthesizes a `CreditFreed`
-    /// dispatch from each advance so the slot-pool retirement path is
-    /// driven by reliable periodic state rather than fire-and-forget
-    /// events that get dropped under USB-CDC TX congestion.
     pub retired_through_segment_id: u32,
 }
 
@@ -50,26 +43,15 @@ pub struct EndstopTrippedEvent {
     pub steppers: Vec<crate::endstop::TripStepperRecord>,
 }
 
-/// Decoded `KALICO_MSG_LOG (0x0084)` frame. The MCU pre-widens the tick to
-/// `u64`; the host stamps `host_recv` at decode time (inside the reactor
-/// dispatch loop, mirroring the `add_piggyback_sample` pattern).
 #[derive(Debug, Clone)]
 pub struct McuLogEvent {
-    /// MCU-pre-widened clock ticks at log-emit.
     pub mcu_tick: u64,
-    /// Log level (0=trace, 1=debug, 2=warn, 3=error).
     pub level: u8,
-    /// Subsystem id — resolved to a name host-side.
     pub subsystem: u8,
-    /// Event code — resolved to (name, template) host-side.
     pub event: u16,
-    /// Fault code sign-wrapped as `u16` via `FaultCode::as_u16`. 0 = no code.
     pub code: u16,
-    /// Per-MCU monotonic sequence number for host drop detection.
     pub seq: u16,
-    /// The two positional payload args, forwarded verbatim from the MCU frame.
     pub args: [u32; 2],
-    /// Host-side `Instant` stamped at decode (in the reactor dispatch loop).
     pub host_recv: Instant,
 }
 
@@ -80,30 +62,10 @@ pub enum RuntimeEvent {
     Status(StatusEvent),
     Trace(TraceEvent),
     EndstopTripped(EndstopTrippedEvent),
-    /// Decoded `KALICO_MSG_LOG (0x0084)` — MCU structured log event.
     McuLog(McuLogEvent),
-    /// Per-axis retired-piece counts from `StatusHeartbeat` (0x0083),
-    /// used by the host pump for flow control.
-    Heartbeat {
-        retired_counts: Vec<u32>,
-    },
-    /// Free-form `output("...")` from firmware that the host parser decodes
-    /// into the canonical `('#output', {'#msg': formatted})` form. Routed to
-    /// klippy's `#output` handler.
-    UnknownOutput {
-        format: String,
-        msg: String,
-    },
-    /// Klipper-protocol response frames the firmware emits unsolicited
-    /// (analog_in_state, trsync_state, stats, homing_state, …). The bridge
-    /// owns the wire so klippy's serialqueue never sees these directly; they
-    /// have to be forwarded by name+oid to klippy's `register_response`-set
-    /// handlers. Carries the full decoded params dict so per-OID dispatch can
-    /// resolve the right callback and pass the structured fields through.
-    PassthroughResponse {
-        name: String,
-        params: MessageParams,
-    },
+    Heartbeat { retired_counts: Vec<u32> },
+    UnknownOutput { format: String, msg: String },
+    PassthroughResponse { name: String, params: MessageParams },
 }
 
 impl RuntimeEvent {
@@ -163,10 +125,6 @@ impl RuntimeEvent {
             }
             _ => {
                 let msg = params.try_get_str("#msg").unwrap_or("").to_string();
-                // For canonical-Python free-form formats decode_output stashes
-                // the firmware-side format string in `#format` so we can surface
-                // it (spec §4.8). For structured outputs that fall through to
-                // catch-all (no typed branch matched) we fall back to `name`.
                 let format = params
                     .try_get_str("#format")
                     .map(str::to_string)

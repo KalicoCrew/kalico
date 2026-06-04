@@ -1,10 +1,5 @@
-// src/runtime_commands.c
-//
-// Klipper command surface for the kalico runtime. Every DECL_COMMAND that
-// is not part of the lifecycle (runtime_init / runtime_drain / sibling
-// drains, which stay in src/runtime_tick.c) lives here. Also hosts the
-// endstop arm/disarm commands and the per-tick endstop sampler called from
-// each backend's ISR.
+// Klipper command surface for the kalico runtime; also hosts the endstop
+// arm/disarm commands and the per-tick endstop sampler.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -23,9 +18,6 @@
 
 
 extern void *runtime_handle;      // defined in src/runtime_tick.c
-
-// Scratch buffer declarations for the curve-load path are kept in
-// src/runtime_tick.c for historical layout continuity.
 
 void
 command_runtime_query_status(uint32_t *args)
@@ -46,39 +38,27 @@ command_runtime_query_status(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_query_status, "runtime_query_status");
 
-// ---- Step 7-D: endstop arm/disarm/tripped wire surface --------------------
-
-// Step 7.5 — Production GPIO sampler. The runtime endstop module reads pin
-// levels from an internal abstract pin table (rust/runtime/src/endstop.rs's
-// PIN_LEVELS). To trip on real hardware we sample the configured GPIOs from
-// the modulation ISR (TIM5_IRQHandler) once per tick and push the result
-// through `kalico_endstop_set_pin_level` before `runtime_handle_tick`
-// observes the table. The active set is populated when an arm succeeds and
-// cleared on disarm. Slot count must match runtime::endstop::MAX_SOURCES.
+// Sample the configured GPIOs from the modulation ISR and push results through
+// kalico_endstop_set_pin_level before runtime_handle_tick observes the table.
+// Slot count must match runtime::endstop::MAX_SOURCES.
 #define KALICO_ENDSTOP_MAX_SOURCES 4
 #define KALICO_ENDSTOP_SOURCE_RECORD_LEN 11
 struct endstop_pin_slot {
-    uint8_t        active;     // 0 = empty, non-zero = sampled each tick
-    uint16_t       gpio_id;    // mirrored into runtime PIN_LEVELS index
+    uint8_t        active;
+    uint16_t       gpio_id;    // index into runtime PIN_LEVELS
     struct gpio_in pin;
 };
 static struct endstop_pin_slot endstop_pin_table[KALICO_ENDSTOP_MAX_SOURCES];
 
 extern int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
 
-/// Scan all active endstop sources and update their trigger state.
-///
-/// `stepper_idx` is currently unused — the endstop pin table is
-/// indexed by source slot, not by stepper OID, so any call samples
-/// all active sources. The argument is kept for API symmetry with
-/// `runtime_endstop_sample_one(stepper_idx)`, which the step-time
-/// ISR calls per-step. If the pin table is ever made stepper-indexed,
-/// this helper can be specialized; for now it's a single function
-/// shared by both paths.
+// stepper_idx is unused — the pin table is source-indexed, so any call samples
+// all active sources. The argument is kept for symmetry with
+// runtime_endstop_sample_one.
 static inline void
 sample_endstops_for_stepper(uint8_t stepper_idx)
 {
-    (void)stepper_idx;  // unused — documented above
+    (void)stepper_idx;
     for (int i = 0; i < KALICO_ENDSTOP_MAX_SOURCES; i++) {
         if (!endstop_pin_table[i].active)
             continue;
@@ -87,25 +67,16 @@ sample_endstops_for_stepper(uint8_t stepper_idx)
     }
 }
 
-// Called from TIM5_IRQHandler immediately before runtime_handle_tick.
-// Hot path: at most KALICO_ENDSTOP_MAX_SOURCES (=4) register reads per tick.
-// The helper does a full scan of active sources internally; call it once.
+// Called from TIM5_IRQHandler immediately before runtime_handle_tick — at most
+// KALICO_ENDSTOP_MAX_SOURCES (=4) register reads per tick.
 void
 runtime_endstop_sample_pins(void)
 {
-    // The helper does a full scan of active endstop sources internally.
-    // The stepper_idx argument is unused (source-indexed table, not
-    // stepper-indexed) — pass 0 as a convention.
     sample_endstops_for_stepper(0);
 }
 
-// Called from the per-stepper step-time ISR (Task D1) so the step-time
-// path samples endstops at step resolution, not only at TIM5 cadence.
-// Bounds-checked defensively against the engine stepper limit (8 —
-// must match MAX_STEPPER_OIDS_C in src/runtime_tick.c and
-// MAX_STEPPER_OIDS in rust/runtime/src/state.rs).
-// The endstop_pin_table is source-indexed, not stepper-indexed, so any
-// valid stepper_idx triggers a full active-source scan.
+// Bound must match MAX_STEPPER_OIDS_C (runtime_tick.c) / MAX_STEPPER_OIDS
+// (rust/runtime/src/state.rs).
 __attribute__((used, visibility("default")))
 void
 runtime_endstop_sample_one(uint8_t stepper_idx)
@@ -122,20 +93,14 @@ endstop_pin_table_clear(void)
         endstop_pin_table[i].active = 0;
 }
 
-// Populate the sampler table from the wire-format sources blob. Mirrors
-// rust/kalico-c-api/src/runtime_ffi.rs::kalico_endstop_arm decode (record
-// layout: kind u8, gpio u16 LE, active_high u8, policy u8, sample_n u8,
-// velocity_axis u8, v_min_q16 u32 LE — 11 bytes).
+// Record layout mirrors rust/kalico-c-api/src/runtime_ffi.rs::kalico_endstop_arm
+// decode: kind u8, gpio u16 LE, active_high u8, policy u8, sample_n u8,
+// velocity_axis u8, v_min_q16 u32 LE — 11 bytes.
 //
-// Pull configuration: TMC DIAG outputs are open-drain by default (TMC5160
-// GCONF.diag1_int_pushpull == 0 at reset); without an internal pullup the
-// pin floats LOW when stallguard is inactive and `^!PG9`-style configs see
-// `asserted=True` at idle, so the post-retract "endstop still triggered"
-// check fires before the motor moves. The host's pullup flag (the `^` in
-// e.g. `^!PG9`) is not carried on the wire yet, so apply the
-// "TmcDiag → pullup, Physical → no pull" convention here. Physical mech
-// limits typically have external pulls per board and the firmware uses
-// `pull_up=0` for them.
+// TMC DIAG outputs are open-drain (GCONF.diag1_int_pushpull==0 at reset) and
+// float LOW without a pullup, so a `^!PG9`-style config reads asserted at idle.
+// The host's pullup flag is not on the wire yet, so apply "TmcDiag → pullup,
+// Physical → no pull" here.
 static void
 endstop_pin_table_populate(uint8_t source_count, const uint8_t *sources_ptr)
 {
@@ -147,10 +112,9 @@ endstop_pin_table_populate(uint8_t source_count, const uint8_t *sources_ptr)
         n = KALICO_ENDSTOP_MAX_SOURCES;
     for (uint8_t i = 0; i < n; i++) {
         const uint8_t *r = sources_ptr + (uint32_t)i * KALICO_ENDSTOP_SOURCE_RECORD_LEN;
-        // r[0] = kind (0 = Physical, 1 = TmcDiag, 2 = Software).
-        uint8_t kind = r[0];
+        uint8_t kind = r[0];   // 0=Physical, 1=TmcDiag, 2=Software
         if (kind == 2)
-            continue;   // Software sources have no GPIO to sample
+            continue;   // Software: no GPIO to sample
         uint16_t gpio_id = (uint16_t)r[1] | ((uint16_t)r[2] << 8);
         int32_t pull_up = (kind == 1) ? 1 : 0;
         endstop_pin_table[i].gpio_id = gpio_id;
@@ -171,15 +135,14 @@ command_runtime_arm_endstop(uint32_t *args)
     uint32_t arm_clock_hi = args[2];
     uint8_t source_count = args[3];
     uint32_t sources_len = args[4];
-    // PT_buffer args carry an encoded pointer (offset on 64-bit hosts);
-    // command_decode_ptr resolves it to a real address. A bare cast
-    // works on 32-bit MCUs but segfaults on Linux/64-bit sim.
+    // PT_buffer args carry an encoded pointer; command_decode_ptr resolves it.
+    // A bare cast works on 32-bit MCUs but segfaults on 64-bit sim.
     uint8_t *sources_ptr = command_decode_ptr(args[5]);
     uint8_t stepper_count = args[6];
     uint32_t steppers_len = args[7];
     uint8_t *steppers_ptr = command_decode_ptr(args[8]);
     uint8_t status = 2; // Rejected
-    // Compute grant_ticks: 50ms at MCU clock freq for Software sources
+    // grant_ticks = 50 ms at MCU clock freq for Software sources.
     uint64_t grant_ticks = 0;
     if (sources_ptr && source_count > 0) {
         for (uint8_t i = 0; i < source_count; i++) {
@@ -195,9 +158,8 @@ command_runtime_arm_endstop(uint32_t *args)
                              (uint32_t)grant_ticks,
                              (uint32_t)(grant_ticks >> 32),
                              &status);
-    // Only wire up GPIO sampling when the runtime accepted the arm.
-    // status: 0 = Armed, 1 = AlreadyTripped, 2 = Rejected. AlreadyTripped
-    // means the snapshot is already published — no further sampling needed.
+    // status: 0=Armed, 1=AlreadyTripped, 2=Rejected. Sample GPIOs only on
+    // Armed; AlreadyTripped already published its snapshot.
     if (status == 0)
         endstop_pin_table_populate(source_count, sources_ptr);
     sendf("kalico_arm_endstop_response arm_id=%u status=%c", arm_id, status);
@@ -213,17 +175,12 @@ command_runtime_disarm_endstop(uint32_t *args)
     uint32_t arm_id = args[0];
     uint8_t status = 2; // Unknown
     (void)kalico_endstop_disarm(arm_id, &status);
-    // Stop sampling regardless of disarm outcome — Disarmed and
-    // AlreadyTripped both terminate the active arm; Unknown means the
-    // table is already stale.
+    // Stop sampling regardless of outcome.
     endstop_pin_table_clear();
     sendf("kalico_disarm_endstop_response arm_id=%u status=%c", arm_id, status);
 }
 DECL_COMMAND(command_runtime_disarm_endstop, "runtime_disarm_endstop arm_id=%u");
 
-// ---- Software trip + deadline extension for external probe homing --------
-// These use the basecmd.c clock-widening variables declared below the
-// clock-sync handler — forward-declare here so the handlers compile.
 extern uint32_t stats_send_time;        // basecmd.c
 extern uint32_t stats_send_time_high;   // basecmd.c
 
@@ -232,7 +189,6 @@ command_runtime_software_trip(uint32_t *args)
 {
     uint32_t arm_id = args[0];
     uint32_t clock_lo = timer_read_time();
-    // Widen using the same pattern as command_runtime_clock_sync_request
     uint32_t clock_hi = stats_send_time_high + (clock_lo < stats_send_time);
     uint8_t status = 1; // NotArmed default
     (void)kalico_software_trip(arm_id, clock_lo, clock_hi, &status);
@@ -254,24 +210,10 @@ command_runtime_extend_homing_deadline(uint32_t *args)
 DECL_COMMAND(command_runtime_extend_homing_deadline,
     "runtime_extend_homing_deadline arm_id=%u");
 
-// ---- Seed position: SET_KINEMATIC_POSITION → MCU engine origin fix --------
-//
-// When klippy issues SET_KINEMATIC_POSITION the host-side ShaperState is
-// re-anchored but the MCU engine's prev_x/y/z stay at their boot values
-// (0.0). The first segment after the anchor change carries the correct
-// endpoint but the engine's delta = (endpoint - 0) instead of
-// (endpoint - anchor), blowing past MAX_STEPS_PER_TICK_DEFAULT (65 536)
-// and raising FaultCode::StepBurstExceeded (65515).
-//
-// This command seeds the MCU engine's position origin so its
-// prev_x/y/z match the host's commanded position before the first
-// segment arrives.
-//
-// Positions are Q16.16 fixed-point (i32 = mm * 65536). Decoded to f32
-// in the Rust FFI. No response is sent — this is fire-and-forget;
-// the following PushSegment provides the real sequencing guarantee.
-// kalico_runtime_seed_position is declared in kalico_runtime.h (included above).
-
+// Seed the MCU engine's position origin (SET_KINEMATIC_POSITION) so prev_x/y/z
+// match the host's commanded position before the first segment, avoiding a
+// huge first-segment delta. Positions are Q16.16 fixed-point (mm * 65536).
+// Fire-and-forget; the following PushSegment provides sequencing.
 void
 command_runtime_seed_position(uint32_t *args)
 {
@@ -300,25 +242,16 @@ command_runtime_stream_flush(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_stream_flush, "runtime_stream_flush");
 
-// ---- Step-6 §12.1 clock-sync request ----------------------------------
-//
-// Compute the widened MCU clock in C using the same formula as
-// `command_get_uptime` (basecmd.c): `low = timer_read_time(); high =
-// stats_send_time_high + (low < stats_send_time)`. We do NOT call into Rust
-// for this — `runtime::stream::clock_sync_respond` reads a SharedState
-// seqlock populated only by the TIM5 ISR, which stays disabled in the
-// all-StepTime MVP, so the seqlock returns 0 and the host's clock-sync
-// driver filters out every sample as "uninitialised". Bypassing the FFI
-// keeps everything in C and matches the widening Klippy itself uses.
+// Widen the MCU clock in C with command_get_uptime's formula instead of the
+// Rust FFI: runtime::stream::clock_sync_respond reads a TIM5-ISR-populated
+// seqlock that the host filters as uninitialised in the all-StepTime path.
 extern uint32_t stats_send_time;        // basecmd.c
 extern uint32_t stats_send_time_high;   // basecmd.c
 void
 command_runtime_clock_sync_request(uint32_t *args)
 {
     uint32_t request_id = args[0];
-    // args[1] / args[2] = host_send_time_{lo,hi} — unused by the current
-    // bridge regression (it derives RTT from wall-clock send/recv timestamps).
-    // Retained on the wire for forward compatibility with §12.1 RTT bounding.
+    // args[1]/args[2] = host_send_time_{lo,hi} — unused; retained on the wire.
     uint32_t low = timer_read_time();
     uint32_t high = stats_send_time_high + (low < stats_send_time);
     sendf(
@@ -329,24 +262,10 @@ DECL_COMMAND(command_runtime_clock_sync_request,
     "runtime_clock_sync_request request_id=%u "
     "host_send_time_lo=%u host_send_time_hi=%u");
 
-// ---- 2026-05-18 phase-stepping SPI bus registration ----------------------
-// Closes the gap between the Rust runtime's per-motor phase_config storage
-// and the C-side `phase_stepping_write_xdirect` path. Without this command,
-// every XDIRECT write from the modulator hits the `if (!configured) return;`
-// early-exit in src/stm32/phase_stepping_spi.c and silently drops.
-//
-// Two-stage registration (2026-05-19 — fixes the multi-TMC5160-on-one-bus
-// CS-aliasing bug, see docs/superpowers/specs/2026-05-19-phase-stepping-
-// per-motor-cs-design.md):
-//   1. `runtime_register_phase_bus bus_id=%c rate=%u` — once per unique
-//      bus_id, installs the shared SPI cfg (rate, mode 3).
-//   2. `runtime_register_phase_motor motor_idx=%c bus_id=%c cs_pin_id=%c`
-//      — once per phase-stepped motor, installs that motor's CS GPIO.
-// Both must precede the first `kalico_configure_axis` command.
-//
-// STM32-only because the underlying phase_stepping_spi.c is STM32-only.
-// On linux/sim hosts (non-STM32 mach) both return -88 ("not supported on
-// this target"); the Renode sim is STM32H7 so they are no-ops for it.
+// Two-stage phase-stepping registration, both before the first
+// kalico_configure_axis: register_phase_bus once per bus_id (shared SPI cfg),
+// register_phase_motor once per motor (its own CS GPIO — multiple TMC5160s
+// share a bus). Non-STM32 hosts return -88.
 void
 command_runtime_register_phase_bus(uint32_t *args)
 {
@@ -364,13 +283,9 @@ command_runtime_register_phase_bus(uint32_t *args)
 DECL_COMMAND(command_runtime_register_phase_bus,
     "runtime_register_phase_bus bus_id=%c rate=%u");
 
-// NOTE: param is `cs_pin_id` not `cs_pin` deliberately. Klipper's msgproto
-// matches param names against the `pin` enumeration via
-// `name.endswith("_pin")` (see klippy/msgproto.py::lookup_params), which
-// would force the host to send symbolic pin names ("PA5") instead of the
-// raw stm32 GPIO encoding (port*16+pin = 5) used by the rest of the
-// phase_config wire surface. The `_id` suffix sidesteps the enum lookup
-// and keeps the encoding consistent with the `kalico_configure_axis` path.
+// Param is cs_pin_id, not cs_pin: msgproto resolves any `*_pin` param against
+// the pin enumeration, which would force symbolic pin names instead of the raw
+// GPIO encoding (port*16+pin) the rest of the phase_config surface uses.
 void
 command_runtime_register_phase_motor(uint32_t *args)
 {

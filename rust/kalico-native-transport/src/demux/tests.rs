@@ -2,7 +2,6 @@ use super::*;
 use crate::frame::{CHANNEL_CONTROL, encode_frame};
 
 fn good_klipper_frame(payload: &[u8], seq: u8) -> Vec<u8> {
-    // Build a valid Klipper frame: [len][seq|DEST][payload][crc_hi][crc_lo][0x7E]
     let len = 5 + payload.len();
     assert!(len <= 64);
     let mut buf = Vec::with_capacity(len);
@@ -37,7 +36,7 @@ fn klipper_validates_good_crc_and_trailer() {
 fn klipper_bad_crc_emits_stream_error() {
     let mut frame = good_klipper_frame(&[0x01, 0x02, 0x03], 0);
     let len = frame.len();
-    frame[len - 3] ^= 0xFF; // corrupt CRC hi
+    frame[len - 3] ^= 0xFF;
     let mut d = Demuxer::new();
     let (_, errors) = d.feed_slice(&frame);
     assert!(!errors.is_empty(), "expected a StreamError, got none");
@@ -47,7 +46,7 @@ fn klipper_bad_crc_emits_stream_error() {
 fn klipper_bad_trailer_emits_stream_error() {
     let mut frame = good_klipper_frame(&[0x01, 0x02, 0x03], 0);
     let last = frame.len() - 1;
-    frame[last] = 0x00; // not 0x7E
+    frame[last] = 0x00;
     let mut d = Demuxer::new();
     let (_, errors) = d.feed_slice(&frame);
     assert!(!errors.is_empty(), "expected a StreamError, got none");
@@ -87,8 +86,6 @@ fn klipper_then_kalico_then_klipper() {
 
 #[test]
 fn kalico_payload_with_7e_does_not_resync() {
-    // Payload contains the Klipper inter-frame sync byte; demuxer must
-    // not break out of kalico state mid-frame.
     let payload = vec![0x7E; 200];
     let kal = encode_frame(CHANNEL_CONTROL, &payload);
     let mut d = Demuxer::new();
@@ -122,7 +119,6 @@ fn kalico_payload_with_55_does_not_confuse() {
 fn partial_frames_split_across_feeds() {
     let kal = encode_frame(CHANNEL_CONTROL, &(0u8..200).collect::<Vec<u8>>());
     let mut d = Demuxer::new();
-    // Feed in 17-byte chunks.
     let mut total = 0;
     for chunk in kal.chunks(17) {
         let (frames, _) = d.feed_slice(chunk);
@@ -137,7 +133,6 @@ fn partial_frames_split_across_feeds() {
 
 #[test]
 fn malformed_kalico_len_recovers() {
-    // sync + len=2 (below min). Demuxer flags error and resyncs.
     let mut d = Demuxer::new();
     let mut bytes = vec![FRAME_SYNC];
     bytes.extend_from_slice(&2u16.to_le_bytes());
@@ -145,7 +140,6 @@ fn malformed_kalico_len_recovers() {
     assert!(frames.is_empty(), "expected no frames, got {frames:?}");
     assert_eq!(errors.len(), 1);
     assert!(matches!(&errors[0], StreamError::KalicoLenBelowMin { .. }));
-    // Now feed a valid Klipper frame; should still parse.
     let k = fake_klipper_frame(&[1]);
     let (frames, errors) = d.feed_slice(&k);
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
@@ -169,7 +163,6 @@ fn stray_7e_between_frames_tolerated() {
 #[test]
 fn out_of_frame_garbage_dropped() {
     let mut d = Demuxer::new();
-    // 0x80 is not Klipper-len-range (5..=64), not 0x55, not 0x7E.
     let (frames, errors) = d.feed_slice(&[0x80, 0x81, 0x82]);
     assert!(frames.is_empty());
     assert!(errors.is_empty());
@@ -180,25 +173,12 @@ fn out_of_frame_garbage_dropped() {
 
 #[test]
 fn klipper_bad_crc_followed_immediately_by_valid_frame_recovers() {
-    // Produce a stream where a "false length latch" byte starts a fake
-    // klipper frame that overlaps the start of a real, valid frame.
-    // After the false frame fails validation, 1-byte-shift resync MUST
-    // recover and emit the real frame.
     let real = good_klipper_frame(&[0xAA, 0xBB], 0);
-    // Prepend one byte in the Klipper-len-range (5..=64) to force a false latch.
-    // 5 = minimum Klipper length, which consumes 4 bytes of `real` as payload;
-    // the false frame's trailer check fails, triggering 1-byte-shift resync.
     let mut stream = Vec::new();
-    // False latch: 5 (minimum Klipper len). The false frame consumes
-    // real[0..4] as its payload bytes, then fails trailer validation
-    // (real[3]=0xBB ≠ 0x7E). The replay queue then re-feeds real[0..4],
-    // and together with the remaining real[4..7] the demuxer reassembles
-    // and validates the true frame.
     stream.push(5u8);
     stream.extend_from_slice(&real);
     let mut d = Demuxer::new();
     let (frames, errors) = d.feed_slice(&stream);
-    // Expect: at least one StreamError + the real KlipperFrame.
     assert!(
         !errors.is_empty(),
         "expected stream error from false latch, got {errors:?}"
@@ -218,14 +198,8 @@ fn klipper_bad_crc_followed_immediately_by_valid_frame_recovers() {
 
 #[test]
 fn klipper_false_length_latch_recovers_to_valid_frame() {
-    // Stream: a false-length-latch byte in 5..=64 range that partially
-    // overlaps the start of a real frame, followed by the real frame's
-    // remaining bytes. The demuxer must recover the real frame via resync.
     let real = good_klipper_frame(&[0xAA], 0);
     let mut stream = Vec::new();
-    // False latch 5 (minimum Klipper len) consumes 4 bytes of `real` as payload;
-    // the trailer check fails, replay re-feeds those 4 bytes, and the remaining
-    // live bytes from `real` complete the valid frame.
     stream.push(5u8);
     stream.extend_from_slice(&real);
     let mut d = Demuxer::new();
@@ -245,11 +219,8 @@ fn klipper_false_length_latch_recovers_to_valid_frame() {
 
 #[test]
 fn klipper_bad_dest_emits_stream_error() {
-    // Build a real frame, then clobber the seq byte's DEST flag (upper nibble).
-    // Both DEST-clear and DEST-with-extra-bits should fail.
     let mut frame = good_klipper_frame(&[0x01, 0x02], 0);
-    frame[1] = 0x05; // DEST bit clear, low nibble 5
-    // CRC is now stale; recompute so we test ONLY the DEST check, not CRC.
+    frame[1] = 0x05;
     let crc_off = frame.len() - 3;
     let crc = crc16_ccitt(&frame[..crc_off]);
     frame[crc_off] = (crc >> 8) as u8;

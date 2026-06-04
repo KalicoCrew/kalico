@@ -58,7 +58,6 @@ fn remove_knot_returns_zero_when_tolerance_not_met() {
         2,
         vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
         vec![0.0, 1.0, 5.0, 0.0, 1.0], // sharp jump at the corner
-        None,
     )
     .unwrap();
 
@@ -70,13 +69,9 @@ fn remove_knot_returns_zero_when_tolerance_not_met() {
 
 #[test]
 fn remove_knot_undoes_insertion_within_tolerance() {
-    let curve = ScalarNurbs::<f64>::try_new(
-        2,
-        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        vec![0.0, 1.0, 2.0],
-        None,
-    )
-    .unwrap();
+    let curve =
+        ScalarNurbs::<f64>::try_new(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![0.0, 1.0, 2.0])
+            .unwrap();
 
     let inserted = insert_knot(&curve, 0.5, 1).unwrap();
     let (removed, count) = remove_knot(&inserted, 0.5, 1, 1e-10);
@@ -99,7 +94,6 @@ fn remove_knot_undoes_insertion_for_cubic_with_irregular_cps() {
         3,
         vec![0.0, 0.0, 0.0, 0.0, 0.7, 1.0, 1.0, 1.0, 1.0],
         vec![0.0, 1.0, 4.0, 9.0, 16.0],
-        None,
     )
     .unwrap();
 
@@ -137,7 +131,6 @@ fn remove_knot_two_round_trips_for_cubic_with_irregular_cps() {
         4,
         vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0],
         vec![0.0, 2.5, -1.0, 3.0, 0.5],
-        None,
     )
     .unwrap();
 
@@ -168,7 +161,6 @@ fn refined_to_full_multiplicity_raises_interior_knots() {
         3,
         vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
         vec![0.0, 1.0, 2.0, 3.0, 4.0],
-        None,
     )
     .unwrap();
 
@@ -199,7 +191,6 @@ fn insert_knot_multifold_at_existing_preserves_evaluation_for_failing_case() {
         3,
         vec![0.0, 0.0, 0.0, 0.0, 0.1, 0.55, 1.0, 1.0, 1.0, 1.0],
         vec![0.0, 0.0, 0.0, 0.181_828_016_839_598_23, 0.0, 0.0],
-        None,
     )
     .unwrap();
 
@@ -238,7 +229,6 @@ fn insert_knot_at_existing_multiplicity_preserves_evaluation() {
         2,
         vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
         vec![0.0, 1.0, 2.0, 3.0],
-        None,
     )
     .unwrap();
 
@@ -263,7 +253,6 @@ fn insert_knot_rejects_multiplicity_exceeded() {
         2,
         vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
         vec![0.0, 1.0, 2.0, 3.0],
-        None,
     )
     .unwrap();
 
@@ -281,8 +270,7 @@ fn insert_knot_rejects_multiplicity_exceeded() {
 
 #[test]
 fn insert_knot_rejects_clamped_boundary() {
-    let curve =
-        ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap();
+    let curve = ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap();
 
     assert!(matches!(
         insert_knot(&curve, 0.0, 1),
@@ -295,43 +283,9 @@ fn insert_knot_rejects_clamped_boundary() {
 }
 
 #[test]
-fn insert_knot_into_rational_curve_preserves_evaluation() {
-    // Quarter-arc rational quadratic NURBS (y-component of a unit circle
-    // from (1, 0) to (0, 1)). Exercises the boehm_insert_homogeneous path
-    // which Layer 1 will use on G2/G3 arcs.
-    let w_mid = (2.0_f64).sqrt() / 2.0;
-    let curve = ScalarNurbs::<f64>::try_new(
-        2,
-        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        vec![0.0, 1.0, 1.0],
-        Some(vec![1.0, w_mid, 1.0]),
-    )
-    .unwrap();
-
-    let samples = [0.0, 0.25, 0.5, 0.75, 1.0];
-    let before: Vec<f64> = samples.iter().map(|&u| eval(&curve.as_view(), u)).collect();
-
-    let inserted = insert_knot(&curve, 0.5, 1).unwrap();
-
-    assert_eq!(inserted.knots(), &[0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0]);
-    assert!(inserted.weights().is_some());
-    assert_eq!(inserted.weights().unwrap().len(), 4);
-
-    for (i, &u) in samples.iter().enumerate() {
-        let after = eval(&inserted.as_view(), u);
-        assert!(
-            (before[i] - after).abs() < 1e-12,
-            "u={u}: before={} vs after={after}",
-            before[i],
-        );
-    }
-}
-
-#[test]
 fn insert_knot_into_simple_curve_preserves_evaluation() {
     // Linear curve from 0 to 2 over [0, 1]. Insert knot at u=0.5.
-    let curve =
-        ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 2.0], None).unwrap();
+    let curve = ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 2.0]).unwrap();
 
     let inserted = insert_knot(&curve, 0.5, 1).unwrap();
 

@@ -13,7 +13,6 @@ fn pure_xy_straight_line_collinear_cubic() {
             [2.0, 0.0, 0.0],
             [3.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
 
@@ -33,7 +32,6 @@ fn pure_z_motion_xy_length_zero() {
             [0.0, 0.0, 2.0],
             [0.0, 0.0, 3.0],
         ],
-        None,
     )
     .unwrap();
 
@@ -53,7 +51,6 @@ fn diagonal_xy_straight_line() {
             [2.0, 2.0, 0.0],
             [3.0, 3.0, 0.0],
         ],
-        None,
     )
     .unwrap();
 
@@ -76,7 +73,6 @@ fn pure_xy_curve_matches_3d_length() {
             [k, 1.0, 0.0],
             [0.0, 1.0, 0.0],
         ],
-        None,
     )
     .unwrap();
 
@@ -103,7 +99,6 @@ fn xy_loop_chord_zero_arc_length_nonzero() {
             [-1.0, 1.0, 0.0],
             [0.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
 

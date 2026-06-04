@@ -1,9 +1,4 @@
-//! `host_io` — production host I/O implementing [`Transport`].
-//!
-//! Phase C: `KalicoHostIo` spawns a background reactor thread on `open`.
-//! `Transport::call` / `call_typed` submit commands via an mpsc channel
-//! and block on a rendezvous channel for the response. The Phase-B
-//! mutex shim has been removed.
+//! Production host I/O implementing [`Transport`].
 
 pub mod call_handle;
 pub mod events;
@@ -50,13 +45,8 @@ const DEFAULT_BAUD: u32 = 250_000;
 
 #[derive(Debug, Clone)]
 pub struct KalicoHostIoConfig {
-    /// Capacity of the bounded ring delivering `TraceEvent` to the trace
-    /// subscriber. Overruns set the sticky `OVERFLOW` flag on the next event.
     pub trace_capacity: usize,
-    /// Capacity of the bounded host-event inbox shared by the reactor (TraceRing
-    /// overflow/disconnect/reattach diagnostics). Drained once per loop iter.
     pub host_event_capacity: usize,
-    /// Capacity of the bounded `RuntimeEvent` catch-all subscriber channel.
     pub runtime_event_capacity: usize,
     pub default_call_timeout: Duration,
     pub identify_timeout: Duration,
@@ -76,9 +66,6 @@ impl Default for KalicoHostIoConfig {
     }
 }
 
-/// Newtype wrapper for a heartbeat callback so `ReactorCommand` can remain
-/// `#[derive(Debug)]`. Fired on every `StatusHeartbeat` with the per-axis
-/// consumed-piece counts.
 pub struct HeartbeatCallback(pub Arc<dyn Fn(&[u32]) + Send + Sync>);
 
 impl std::fmt::Debug for HeartbeatCallback {
@@ -87,8 +74,6 @@ impl std::fmt::Debug for HeartbeatCallback {
     }
 }
 
-/// Boxed hook fired on every decoded `McuLog (0x0084)` event. Runs on the
-/// reactor thread — must be non-blocking. Mirrors `HeartbeatCallback`.
 pub struct McuLogHook(pub Box<dyn Fn(McuLogEvent) + Send + Sync>);
 
 impl std::fmt::Debug for McuLogHook {
@@ -115,8 +100,6 @@ pub enum ReactorCommand {
     },
     Abandon(u64),
     AttachHeartbeatCallback(HeartbeatCallback),
-    /// Install the MCU-log hook (`KalicoHostIo::set_mcu_log_hook`). Replaces
-    /// any previously installed hook.
     SetMcuLogHook(McuLogHook),
     SubscribeFault {
         sender: SyncSender<FaultEvent>,
@@ -134,47 +117,24 @@ pub enum ReactorCommand {
         sender: SyncSender<HostEvent>,
         reply: SyncSender<Result<(), SubscribeError>>,
     },
-    /// Install the passthrough router (bridge startup). Replaces any
-    /// previously installed router.
     InstallPassthroughRouter(PassthroughRouter),
-    /// Push a raw passthrough entry into the router for a specific MCU.
     PassthroughSend {
         mcu: McuHandle,
         queue_id: CommandQueueId,
         entry: PassthroughEntry,
     },
-    /// Send a command with no expected response (fire-and-forget).
-    /// The frame is still tracked in the unacked window for wire-level
-    /// retransmit on NAK, but no application-level response is awaited.
     FireAndForget {
         cmd: String,
     },
-    /// Send a pre-encoded payload with no expected response (fire-and-forget).
-    /// Sibling of `FireAndForget` for the typed-args path; the payload has
-    /// already been encoded via `parser.encode_typed`. Routed through the
-    /// reactor's `dispatch_fire_and_forget`, which respects the
-    /// `pending_fire_and_forget` backpressure queue (spec §6.0).
     FireAndForgetTyped {
         payload: Vec<u8>,
     },
-    /// Phase C-B: kalico-native bootstrap-ABI Identify handshake.
-    /// The reactor allocates a correlation_id, builds the bootstrap frame,
-    /// writes it to the wire, and parks `completion` until the
-    /// `IdentifyResponse` arrives (or the deadline fires).
     KalicoIdentify {
         completion:
             SyncSender<Result<crate::host_io::kalico_native::IdentifyOutcome, TransportError>>,
         deadline: std::time::Instant,
     },
-    /// Phase C-B: kalico-native call on `channel`. The reactor allocates a
-    /// correlation_id, builds the frame from `kind` + `body` on the specified
-    /// channel, writes it, and parks `completion` keyed by correlation_id.
-    /// Spec §7.2. Outbound channel is explicit; the response always arrives on
-    /// the control channel matched by correlation_id.
     KalicoCall {
-        /// Layer-1 channel byte for the outbound frame. Control-channel calls
-        /// use `CHANNEL_CONTROL` (0x00); PushPieces uses
-        /// [`kalico_protocol::KALICO_CHANNEL_PIECES`] (0x02).
         channel: u8,
         kind: kalico_protocol::MessageKind,
         body: Vec<u8>,
@@ -183,36 +143,16 @@ pub enum ReactorCommand {
         deadline: std::time::Instant,
     },
     Shutdown,
-    /// No-op sent by `KalicoHostIo::is_alive` to probe whether the reactor
-    /// thread is still running. The reactor discards it immediately. If
-    /// `send()` returns `Err`, the receiver (reactor) has dropped and the
-    /// connection is dead.
     Noop,
-    /// Register a frame interceptor. The reactor calls `callback` on the
-    /// reactor thread for every unsolicited frame matching `(msg_name, oid)`
-    /// before forwarding to the `RuntimeEvent` dispatcher. Replies with the
-    /// allocated `InterceptorId` so the caller can later unregister.
     RegisterInterceptor {
         msg_name: String,
         oid: Option<u32>,
         callback: crate::host_io::interceptor::InterceptorCallback,
         reply: SyncSender<crate::host_io::InterceptorId>,
     },
-    /// Unregister a previously registered frame interceptor.
     UnregisterInterceptor {
         id: crate::host_io::InterceptorId,
     },
-    /// 2026-05-18: marks the reactor's pending close as graceful so a
-    /// subsequent transport drop does NOT trigger the EXIT_ON_FAULT abort
-    /// in the spawn-time guard. Used by klippy's bridge-MCU
-    /// `_restart_via_command` path right before sending the firmware `reset`
-    /// command — the reset triggers `NVIC_SystemReset` on the MCU which
-    /// drops USB-CDC, and without this signal the reactor would interpret
-    /// the kernel BrokenPipe as a wedge and abort the whole klippy
-    /// process. The reactor handles this by setting
-    /// `closed_via_shutdown = true` without transitioning to `Closed` —
-    /// it keeps running until either an actual `Shutdown` command arrives
-    /// or the transport drops.
     MarkExpectedDisconnect,
 }
 
@@ -224,14 +164,7 @@ pub struct KalicoHostIo {
     parser: Arc<MsgProtoParser>,
     config: KalicoHostIoConfig,
     clock: Arc<dyn crate::clock::Clock>,
-    /// Raw identify bytes (zlib-compressed blob as received from firmware).
-    /// Suitable for passing directly to klippy's `process_identify`.
     raw_identify_bytes: Vec<u8>,
-    /// EXIT_ON_FAULT gate. `true` (default) = non-graceful transport drop
-    /// aborts the process (motion MCUs). `false` = reactor exits cleanly,
-    /// `is_alive()` goes false, klippy reconnect machinery takes over.
-    /// Settable after `open` via `set_critical` because criticality is only
-    /// known after the kalico identify handshake.
     is_critical: Arc<AtomicBool>,
 }
 
@@ -261,11 +194,6 @@ impl KalicoHostIo {
         Self::open(path, DEFAULT_BAUD)
     }
 
-    /// Open a Linux PTY or pipe path using `O_RDWR | O_NOCTTY`, bypassing the
-    /// `serialport` baud-rate configuration that can interfere with pseudo-
-    /// terminals. Use this for paths like `/tmp/klipper_sim_socket` (a symlink
-    /// to `/dev/pts/N`) or `/tmp/klipper_host_*` that klipper's Linux MCU
-    /// creates.
     #[cfg(target_family = "unix")]
     pub fn open_pipe(path: &str) -> Result<Self, TransportError> {
         Self::open_pipe_with_config(path, KalicoHostIoConfig::default())
@@ -288,17 +216,6 @@ impl KalicoHostIo {
             if fd < 0 {
                 return Err(TransportError::Io(std::io::Error::last_os_error()));
             }
-            // Apply cfmakeraw — required for real CDC ACM TTYs (/dev/ttyACM*).
-            // libc::open leaves the TTY in cooked mode (ECHO=on, ICANON=on,
-            // ICRNL=on). On firmware that emits continuous unsolicited frames
-            // (kalico_status @ 10 Hz on H7) the kernel echoes every device→host
-            // byte back to the device's bulk-OUT endpoint, drowning identify
-            // and corrupting the on-firmware demux state. PTYs are usually OK
-            // either way (no flood), but real CDC ACM is not — so apply raw
-            // mode unconditionally on this path. tcgetattr returns ENOTTY for
-            // non-TTY fds (regular files / pipes), in which case we silently
-            // skip raw setup so non-TTY callers (e.g. fixtures using fifos)
-            // still work.
             #[allow(unsafe_code)]
             unsafe {
                 let mut tio: libc::termios = std::mem::zeroed();
@@ -322,7 +239,6 @@ impl KalicoHostIo {
                             "tcsetattr({path}): {err}"
                         ))));
                     }
-                    // Read back to verify cfmakeraw stuck.
                     let mut tio2: libc::termios = std::mem::zeroed();
                     if libc::tcgetattr(fd, &mut tio2) == 0 {
                         tracing::debug!(
@@ -342,7 +258,6 @@ impl KalicoHostIo {
                 }
             }
             let port = unsafe { Box::new(serialport::TTYPort::from_raw_fd(fd)) };
-            // Verify serialport::TTYPort didn't mutate termios behind our back.
             #[allow(unsafe_code)]
             unsafe {
                 let mut tio3: libc::termios = std::mem::zeroed();
@@ -383,26 +298,16 @@ impl KalicoHostIo {
         Self::open_with_port(port_box, config)
     }
 
-    /// Open a TCP connection wrapped in a `SerialPort` adapter. Used by sim
-    /// integration tests where Renode exposes the firmware's USART2 over a
-    /// TCP socket (see `tools/sim/h723_sim.resc`'s `CreateServerSocketTerminal`).
-    /// The adapter shims `read`/`write`/`set_timeout` onto a real `TcpStream`;
-    /// other `SerialPort` methods (RTS, parity, baud) return no-op / NotSupported
-    /// because Renode's UART model ignores them.
     pub fn open_tcp(addr: &str, config: KalicoHostIoConfig) -> Result<Self, TransportError> {
         let port_box: Box<dyn serialport::SerialPort> =
             Box::new(tcp_serial_port::TcpSerialPort::connect(addr)?);
         Self::open_with_port(port_box, config)
     }
 
-    /// Construct a `KalicoHostIo` from a caller-supplied `SerialPort`. Used
-    /// by integration tests (e.g. the Renode TCP socket adapter) and by
-    /// `open_with_config` / `open_pipe_with_config` / `open_tcp`.
     pub fn open_with_port(
         mut port_box: Box<dyn serialport::SerialPort>,
         config: KalicoHostIoConfig,
     ) -> Result<Self, TransportError> {
-        // Ensure read timeout is set (pipe_open path skips .timeout() builder).
         let _ = port_box.set_timeout(Duration::from_millis(100));
         let mut io = crate::host_io::serial_frame_io::SerialFrameIo::new(port_box);
 
@@ -418,7 +323,6 @@ impl KalicoHostIo {
         let reactor_status = Arc::clone(&status_snapshot);
         let reactor_config = config.clone();
         let reactor_clock = Arc::clone(&clock);
-        // Default critical until the bridge downgrades after identify.
         let is_critical = Arc::new(AtomicBool::new(true));
         let reactor_is_critical = Arc::clone(&is_critical);
         let reactor_handle = std::thread::spawn(move || {
@@ -438,14 +342,6 @@ impl KalicoHostIo {
                 reactor_clock,
             );
             reactor.run();
-            // 2026-05-17 wedge-detection: if the reactor exited because the
-            // MCU's transport died (USB disconnect, kernel ENODEV, etc.)
-            // instead of because `KalicoHostIo::drop` sent a graceful
-            // Shutdown, abort the process. Without this, klippy keeps
-            // "running" with a dead bridge FD — the operator sees
-            // /proc/<pid>/fd missing the ttyACMx entry and klippy.log
-            // silent. Aborting forces systemd to restart klipper, which is
-            // the recovery action a human would take anyway.
             if !reactor.exited_gracefully() {
                 let critical = reactor_is_critical.load(Ordering::Acquire);
                 if !critical {
@@ -464,14 +360,7 @@ impl KalicoHostIo {
                     thread_id = ?std::thread::current().id(),
                     "EXIT_ON_FAULT — transport closed via IO error on CRITICAL MCU; aborting klippy so systemd restarts it"
                 );
-                // Flush stderr so the message reaches journalctl before we
-                // tear the process down.
                 let _ = std::io::Write::flush(&mut std::io::stderr());
-                // Test harnesses (e.g. tools/sim/run_sim_motion_jogs.sh)
-                // need to observe the wedge and continue with assertions,
-                // not get SIGABRT'd. Setting KALICO_NO_EXIT_ON_FAULT=1
-                // suppresses the abort while still emitting the warning.
-                // Production never sets this env var.
                 if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
                     std::process::abort();
                 }
@@ -518,11 +407,6 @@ impl Transport for KalicoHostIo {
             submission_tx: self.submission_tx.clone(),
         };
 
-        // Spec §5.5: defuse only on a real completion (Ok or reactor-side Err),
-        // i.e. when the reactor already cleaned up the AwaitEntry. On caller-side
-        // Timeout / Disconnected the reactor still owns the entry — let Drop fire
-        // ReactorCommand::Abandon so Layer-1 GC removes it promptly instead of
-        // waiting for the Layer-2 dispatcher deadline.
         match rx.recv_timeout(timeout) {
             Ok(r) => {
                 handle.defuse();
@@ -564,7 +448,6 @@ impl Transport for KalicoHostIo {
             submission_tx: self.submission_tx.clone(),
         };
 
-        // See `call` above for the defuse semantics rationale.
         match rx.recv_timeout(timeout) {
             Ok(r) => {
                 handle.defuse();
@@ -580,39 +463,23 @@ impl Transport for KalicoHostIo {
         name: &str,
         args: &[(&str, crate::host_io::parser::FieldValue<'_>)],
     ) -> Result<(), TransportError> {
-        // Forward to the inherent method (same encoding + reactor dispatch).
         KalicoHostIo::send_typed(self, name, args)
     }
 }
 
 impl KalicoHostIo {
-    /// Check whether the reactor thread is still running.
-    ///
-    /// Probes by sending a [`ReactorCommand::Noop`] on the submission channel.
-    /// Returns `true` if the send succeeds (receiver alive), `false` if the
-    /// reactor has exited and dropped its receiver end.
-    ///
-    /// Non-blocking: `std::sync::mpsc::Sender::send` returns `Err` immediately
-    /// when the receiver is disconnected.
     pub fn is_alive(&self) -> bool {
         self.submission_tx.send(ReactorCommand::Noop).is_ok()
     }
 
-    /// Gate the EXIT_ON_FAULT abort for this MCU. `true` (default) aborts on
-    /// non-graceful transport drop (motion MCUs). `false` exits cleanly so
-    /// klippy's non-critical-disconnect machinery handles reconnect.
     pub fn set_critical(&self, critical: bool) {
         self.is_critical.store(critical, Ordering::Release);
     }
 
-    /// Read the current criticality flag (see [`set_critical`]).
     pub fn is_critical(&self) -> bool {
         self.is_critical.load(Ordering::Acquire)
     }
 
-    /// Register a callback fired on every `StatusHeartbeat` with the per-axis
-    /// consumed-piece counts. Runs on the reactor/event thread — must be
-    /// non-blocking (it only sends on a channel; see motion-bridge pump).
     pub fn attach_heartbeat_callback(&self, cb: Arc<dyn Fn(&[u32]) + Send + Sync>) {
         let _ = self
             .submission_tx
@@ -621,9 +488,6 @@ impl KalicoHostIo {
             )));
     }
 
-    /// Attach a hook fired on every decoded `McuLog (0x0084)` event. The hook
-    /// receives an owned [`McuLogEvent`] and runs on the reactor thread — must
-    /// be non-blocking. Replaces any previously installed hook.
     pub fn set_mcu_log_hook(&self, hook: Box<dyn Fn(McuLogEvent) + Send + Sync>) {
         let _ = self
             .submission_tx
@@ -692,17 +556,10 @@ impl KalicoHostIo {
         self.status_snapshot.load_full()
     }
 
-    /// Return the raw identify bytes (zlib-compressed blob from firmware).
-    /// Pass directly to klippy's `msgproto.MessageParser.process_identify`.
     pub fn raw_identify_bytes(&self) -> &[u8] {
         &self.raw_identify_bytes
     }
 
-    /// Send a human-readable command string (e.g. `"get_uptime"`) and wait
-    /// for a response with the given name. Returns a `HashMap<String, i64>`
-    /// for integer fields; callers cast as needed.
-    ///
-    /// This is the Rust equivalent of klippy's `serial.send_with_response`.
     pub fn send_with_response(
         &self,
         cmd: &str,
@@ -712,11 +569,6 @@ impl KalicoHostIo {
         self.call(cmd, response, timeout)
     }
 
-    /// Register a callback that fires on the reactor thread for every
-    /// unsolicited frame whose `msg_name` (and optional `oid`) matches,
-    /// before the frame is forwarded to the `RuntimeEvent` dispatcher.
-    /// Returns an [`InterceptorId`] that can be passed to
-    /// [`unregister_frame_interceptor`] to remove the callback.
     pub fn register_frame_interceptor(
         &self,
         msg_name: &str,
@@ -735,17 +587,12 @@ impl KalicoHostIo {
         reply_rx.recv().map_err(|_| TransportError::Closed)
     }
 
-    /// Remove a previously registered frame interceptor. The callback will
-    /// not fire for any frames processed after this call returns.
     pub fn unregister_frame_interceptor(&self, id: InterceptorId) -> Result<(), TransportError> {
         self.submission_tx
             .send(ReactorCommand::UnregisterInterceptor { id })
             .map_err(|_| TransportError::Closed)
     }
 
-    /// Send a command to the MCU without waiting for any response.
-    /// The frame is wire-level ACKed by the MCU's next outbound frame but no
-    /// application-level reply is expected.
     pub fn send_fire_and_forget(&self, cmd: &str) -> Result<(), TransportError> {
         self.submission_tx
             .send(ReactorCommand::FireAndForget {
@@ -754,26 +601,12 @@ impl KalicoHostIo {
             .map_err(|_| TransportError::Closed)
     }
 
-    /// 2026-05-18: tell the reactor that a transport drop is imminent and
-    /// must NOT trigger the EXIT_ON_FAULT abort. Used by klippy's
-    /// bridge-mode `_restart_via_command` path right before sending the
-    /// firmware `reset` command — `NVIC_SystemReset` on the MCU drops
-    /// USB-CDC at the kernel and the reactor's BrokenPipe handler would
-    /// otherwise interpret that as a wedge and abort the whole klippy
-    /// process. The reactor handles `MarkExpectedDisconnect` by setting
-    /// its internal `closed_via_shutdown` flag so the spawn-time
-    /// `!reactor.exited_gracefully()` check sees the close as graceful.
     pub fn mark_expected_disconnect(&self) -> Result<(), TransportError> {
         self.submission_tx
             .send(ReactorCommand::MarkExpectedDisconnect)
             .map_err(|_| TransportError::Closed)
     }
 
-    /// Typed-args fire-and-forget. Encodes via `parser.encode_typed` (the same
-    /// path as `call_typed`) and dispatches through the reactor's
-    /// backpressure-respecting fire-and-forget queue (spec §6.0 / §6.1).
-    /// No response is awaited; caller surfaces errors via the encoded payload
-    /// being late or via length mismatch at higher protocol layers.
     pub fn send_typed(
         &self,
         name: &str,
@@ -788,18 +621,6 @@ impl KalicoHostIo {
             .map_err(|_| TransportError::Closed)
     }
 
-    // ── Phase C-B: kalico-native transport surface ─────────────────────
-    //
-    // The reactor owns the wire and runs both protocols' demux state
-    // machines. These methods submit kalico-native commands via the same
-    // submission channel that drives the Klipper-protocol surface; the
-    // reactor allocates correlation_ids, encodes frames, parks the caller
-    // on a `SyncSender<...>`, and unblocks them when the response arrives.
-
-    /// Run the bootstrap-ABI Identify handshake (spec §5). Validates
-    /// `proto_version` and `schema_hash` against the host's compiled
-    /// constants; on mismatch returns an error and motion dispatch must
-    /// refuse to start. Returns the MCU's `reset_epoch` (spec §9).
     pub fn kalico_identify(
         &self,
         timeout: Duration,
@@ -819,10 +640,6 @@ impl KalicoHostIo {
         }
     }
 
-    /// Issue a kalico-native control-channel call (spec §7.2): one frame
-    /// out on `CHANNEL_CONTROL` (kind + body), one frame in (matching
-    /// correlation_id). Used by `producer::load_curve` / `push_segment` etc.
-    /// See also [`kalico_call_on_channel`] for the pieces channel.
     pub fn kalico_call(
         &self,
         kind: kalico_protocol::MessageKind,
@@ -837,11 +654,6 @@ impl KalicoHostIo {
         )
     }
 
-    /// Issue a kalico-native call on an explicit outbound `channel`. The
-    /// response always arrives on the control channel matched by
-    /// correlation_id. Used by the pump to send `PushPieces` on
-    /// `CHANNEL_PIECES` (0x02) while receiving `PushPiecesResponse` on the
-    /// control channel.
     pub fn kalico_call_on_channel(
         &self,
         channel: u8,

@@ -48,7 +48,7 @@ fn synthetic_postshape_curve() -> ScalarNurbs<f64> {
         })
         .collect();
 
-    ScalarNurbs::try_new(degree, knots, cps, None).unwrap()
+    ScalarNurbs::try_new(degree, knots, cps).unwrap()
 }
 
 /// Single-piece cubic Bézier (the live G5/G1 input shape pre-shape).
@@ -57,7 +57,6 @@ fn cubic_bezier_curve() -> ScalarNurbs<f64> {
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
         vec![0.0, 1.0, 2.0, 3.0],
-        None,
     )
     .unwrap()
 }
@@ -130,7 +129,6 @@ fn eval_polynomial_at_least_as_fast_as_eval_for_validated_curves() {
                 curve.degree(),
                 curve.knots(),
                 curve.control_points(),
-                None,
             )
             .unwrap();
             sink += eval::eval(&view, u);

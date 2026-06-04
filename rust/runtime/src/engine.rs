@@ -1,23 +1,9 @@
-//! Per-axis piece-ring walker engine — Task 6 rewrite.
-//!
-//! The `Engine` struct replaces the old curve-pool + segment architecture with
-//! a simple per-axis polynomial playback engine:
-//!
-//! - Up to [`MAX_AXES`] axes, each backed by a contiguous region of the shared
-//!   `piece_storage` array in `RuntimeContext`.
-//! - The ISR (`tick`) iterates over configured axes, calls
-//!   `get_piece_for_time`, evaluates the Horner polynomial, and dispatches
-//!   stepping via the unchanged `dispatch_axis` backend in `tick.rs`.
-//! - No curve pool, no segments, no kinematic transforms, no E-follower on
-//!   the MCU.
-//!
-//! Ring layout rationale: splitting one flat `[PieceEntry; N]` array into N
-//! independent `&mut PieceRing` borrows fights the borrow checker (the entire
-//! array would need to be behind a single `&mut`).  Instead, each axis carries
-//! a `RingDescriptor` — a borrow-free set of bookkeeping integers — and all
-//! mutation goes through `&mut [PieceEntry]` passed explicitly into every
-//! operation.  `PieceRing<'a>` is kept for host unit tests; `RingDescriptor`
-//! is used exclusively by the engine.
+// Per-axis piece-ring walker engine.
+//
+// Ring layout: each axis carries a `RingDescriptor` — a borrow-free set of
+// bookkeeping integers — and all mutation goes through `&mut [PieceEntry]`
+// passed explicitly into every operation. `PieceRing<'a>` is kept for host
+// unit tests; `RingDescriptor` is used exclusively by the engine.
 
 use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
@@ -31,11 +17,6 @@ use crate::stepping_state::{AxisState, MAX_AXES, StepMode, StepperBindingRust, T
 
 pub use crate::stepping_state::N_AXES;
 
-/// MCU-side [`FaultSink`] implementation that routes faults through
-/// [`SharedState`] atomics.
-///
-/// Lives in this module so that `SharedState` stays out of the walker module
-/// while the walker's single fault call still reaches it.
 pub(crate) struct SharedFaultSink<'a> {
     pub shared: &'a SharedState,
 }
@@ -47,7 +28,6 @@ impl FaultSink for SharedFaultSink<'_> {
     }
 }
 
-/// Engine status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum RuntimeStatus {
@@ -69,18 +49,6 @@ impl RuntimeStatus {
     }
 }
 
-/// The per-axis piece-ring walker engine.
-///
-/// Generic parameters and pressure-advance / input-shaping slot types have
-/// been dropped: the host pre-bakes those transforms before uploading pieces.
-///
-/// Storage model:
-/// - `RuntimeContext::piece_storage` holds a flat `[PieceEntry; TOTAL_RING_PIECES]`.
-/// - Each configured axis owns a contiguous sub-slice described by
-///   `AxisState::ring` (`RingDescriptor` — offset + depth + monotonic head +
-///   tail + monotonic consumed).
-/// - The engine bump-allocates axis regions from a running `ring_alloc_cursor`
-///   during `configure_axis`.
 #[allow(missing_debug_implementations)]
 pub struct Engine {
     pub(crate) status: AtomicU8,
@@ -88,17 +56,11 @@ pub struct Engine {
     pub(crate) tick_counter: TickCounter,
     pub sample_period_cycles: u32,
     pub cycles_per_second: f32,
-    /// Per-axis state.  `Option` allows the array to be const-initialized;
-    /// `Some` once `configure_axis` runs for that slot.
     pub stepping_axes: [Option<AxisState>; MAX_AXES],
     pub num_axes: u8,
-    /// Bump-allocate cursor: next unused index in piece_storage.
     ring_alloc_cursor: usize,
-    // Per-axis `StepMotorState` for the accumulator-based step path.
-    // Indexed 0..MAX_AXES; entries beyond num_axes are unused.
     pub(crate) step_state: [StepMotorState; MAX_AXES],
     pub(crate) last_motors: [f32; MAX_AXES],
-    // Tick caches kept for `seed_position` compatibility.
     pub tick_caches: crate::stepping_state::TickCaches,
     #[cfg(any(test, feature = "host"))]
     test_queue_ptrs: [*mut crate::step_queue::StepQueue; MAX_AXES],
@@ -139,8 +101,6 @@ impl Engine {
         (sec, cycles)
     }
 
-    /// In-place initialization — avoids materializing the struct on the stack.
-    ///
     /// # Safety
     /// `ptr` must be valid for writes of `size_of::<Engine>()` bytes and must
     /// not be aliased for the duration of this call.
@@ -186,13 +146,6 @@ impl Engine {
         self.tick_counter.snapshot()
     }
 
-    /// Register an axis and allocate its ring region from the shared storage.
-    ///
-    /// `ring_depth` is the number of piece entries to allocate for this axis.
-    /// The engine bump-allocates from `ring_alloc_cursor`; returns
-    /// `KALICO_ERR_RING_FULL` if the remaining space is insufficient.
-    ///
-    /// Returns `KALICO_OK` (0) on success.
     pub fn configure_axis(
         &mut self,
         axis_idx: u8,
@@ -208,7 +161,6 @@ impl Engine {
         if !microstep_distance.is_finite() || microstep_distance <= 0.0 {
             return KALICO_ERR_INVALID_ARG;
         }
-        // Check that we have enough room left.
         if self.ring_alloc_cursor + ring_depth > total_ring_pieces {
             return KALICO_ERR_RING_FULL;
         }
@@ -217,8 +169,7 @@ impl Engine {
         self.ring_alloc_cursor += ring_depth;
 
         let idx = axis_idx as usize;
-        // SAFETY: `idx < MAX_AXES` is guaranteed by the bounds check at the
-        // top of this function (`axis_idx as usize >= MAX_AXES` returns early).
+        // SAFETY: `idx < MAX_AXES` is guaranteed by the bounds check above.
         // `stepping_axes` has exactly `MAX_AXES` elements.
         #[allow(clippy::indexing_slicing)]
         let axis = self.stepping_axes[idx].get_or_insert_with(AxisState::new_unconfigured);
@@ -238,7 +189,6 @@ impl Engine {
         }
         axis.mode.store(mode as u8, Ordering::Release);
 
-        // Track num_axes as the high-water mark of configured indices.
         if idx + 1 > self.num_axes as usize {
             #[allow(clippy::cast_possible_truncation)]
             {
@@ -251,17 +201,11 @@ impl Engine {
 
     /// Reset the engine to a clean, just-initialized motion state.
     ///
-    /// Issued by the host on every (re)connect before reconfiguring axes, so
-    /// the bump allocator (`ring_alloc_cursor`) and all per-axis state start
-    /// fresh regardless of whether the MCU was rebooted. Idempotent: on a
-    /// freshly-constructed engine this is a no-op.
+    /// Preserves `sample_period_cycles`, `cycles_per_second`, and the running
+    /// `tick_counter` — resetting those would desync the ISR time base.
     ///
-    /// Preserves the immutable hardware config (`sample_period_cycles`,
-    /// `cycles_per_second`) and the running `tick_counter` clock — resetting
-    /// those would desync the ISR time base.
-    ///
-    /// The per-axis C step queues live outside the engine and are cleared
-    /// separately by the FFI caller (`kalico_runtime_reset`).
+    /// The per-axis C step queues are cleared separately by the FFI caller
+    /// (`kalico_runtime_reset`).
     pub fn reset(&mut self) {
         self.ring_alloc_cursor = 0;
         self.stepping_axes = [const { None }; MAX_AXES];
@@ -274,11 +218,6 @@ impl Engine {
         self.last_error.store(0, Ordering::Release);
     }
 
-    /// Append pieces into an axis's ring region.
-    ///
-    /// `storage` is the shared piece_storage array.
-    /// Returns `KALICO_OK` on success, `KALICO_ERR_RING_FULL` if the ring is
-    /// full, `KALICO_ERR_INVALID_ARG` if the axis is not configured.
     pub fn push_pieces(
         &mut self,
         axis_idx: u8,
@@ -300,13 +239,6 @@ impl Engine {
         KALICO_OK
     }
 
-    /// Per-sample ISR body.
-    ///
-    /// For each configured axis: advance to the correct piece for `now`,
-    /// evaluate the Horner polynomial, and call `dispatch_axis`.
-    ///
-    /// `storage` is projected from `RuntimeContext::piece_storage` by the
-    /// caller.
     pub fn tick(&mut self, now: u64, shared: &SharedState, storage: &mut [PieceEntry]) -> bool {
         #[cfg(feature = "motion-module-stepper")]
         use crate::dispatch_stepper::dispatch_axis;
@@ -337,8 +269,6 @@ impl Engine {
         let mut active = false;
 
         for i in 0..(self.num_axes as usize) {
-            // Pull out the axis + storage borrow in a single block to avoid
-            // aliasing the mutable reference.
             let (p_end, v_end, p_sample_start) = {
                 let Some(axis) = self.stepping_axes.get_mut(i).and_then(|s| s.as_mut()) else {
                     continue;
@@ -364,10 +294,6 @@ impl Engine {
                 (p_end, v_end, p_sample_start)
             };
 
-            // Stepper dispatch: only compiled when motion-module-stepper is
-            // active. When the feature is OFF (servo/EtherCAT node), the walk
-            // and p_prev/v_prev updates above still execute — the node tracks
-            // position but emits no step pulses.
             #[cfg(feature = "motion-module-stepper")]
             {
                 let Some(axis) = self.stepping_axes.get_mut(i).and_then(|s| s.as_mut()) else {
@@ -388,8 +314,6 @@ impl Engine {
                 );
             }
 
-            // Without motion-module-stepper, suppress unused-variable warnings
-            // from the walk outputs.
             #[cfg(not(feature = "motion-module-stepper"))]
             {
                 let _ = (p_end, v_end, p_sample_start);
@@ -399,7 +323,6 @@ impl Engine {
         active
     }
 
-    /// Returns per-axis retired piece counts for the heartbeat.
     pub fn retired_counts(&self) -> [u32; MAX_AXES] {
         let mut out = [0u32; MAX_AXES];
         for (slot, entry) in out.iter_mut().zip(self.stepping_axes.iter()) {
@@ -410,9 +333,6 @@ impl Engine {
         out
     }
 
-    // ── Legacy stubs retained for FFI call sites ──────────────────────────
-
-    /// No-op stub retained for FFI ABI compatibility (kinematics now on host).
     pub fn configure_kinematics(&mut self, k_xy: f32) -> i32 {
         if !k_xy.is_finite() || k_xy <= 0.0 {
             return -1;
@@ -420,7 +340,6 @@ impl Engine {
         0
     }
 
-    /// No-op stub retained for FFI ABI compatibility (PA now on host).
     pub fn configure_pressure_advance(&mut self, advance_accel: f32, advance_decel: f32) -> i32 {
         if !advance_accel.is_finite() || !advance_decel.is_finite() {
             return -1;
@@ -431,12 +350,10 @@ impl Engine {
         0
     }
 
-    /// Legacy `configure_axis` overload without `ring_depth` — used by the
-    /// existing `kalico_runtime_configure_axis` FFI which does not yet carry
-    /// a ring_depth field on the wire.  Allocates a default region of 64
+    /// Legacy `configure_axis` overload without `ring_depth` — used by
+    /// `kalico_runtime_configure_axis` FFI which does not yet carry a
+    /// ring_depth field on the wire. Allocates a default region of 64
     /// pieces per axis.
-    ///
-    /// TODO(task7): update the wire protocol and FFI to pass ring_depth.
     pub fn configure_axis_legacy(
         &mut self,
         axis_idx: u8,
@@ -445,8 +362,6 @@ impl Engine {
         bindings: &[StepperBindingRust],
         total_ring_pieces: usize,
     ) -> i32 {
-        // Default per-axis depth: divide remaining space equally among unconfigured
-        // axes, but floor at 64 and cap at remaining.
         let remaining = total_ring_pieces.saturating_sub(self.ring_alloc_cursor);
         let default_depth = remaining.min(64).max(1);
         self.configure_axis(
@@ -552,7 +467,6 @@ impl Engine {
 
     pub fn seed_position(&mut self, xyz: [f32; 3]) {
         use core::sync::atomic::Ordering;
-        // Map logical xyz to motor positions (no kinematics on MCU).
         let motor_positions = [xyz[0], xyz[1], xyz[2], 0.0_f32, 0.0, 0.0, 0.0, 0.0];
         for (ss, &pos) in self.step_state.iter_mut().zip(motor_positions.iter()) {
             ss.seed(pos);
@@ -615,11 +529,6 @@ impl Engine {
         (0, 0, 0)
     }
 
-    /// Reset the ISR cache and drain each axis ring on force-idle.
-    ///
-    /// Resets the step accumulators, clears `armed` on every configured axis,
-    /// and advances each axis's ring retire cursor to `head` so that stale
-    /// pre-abort pieces cannot be re-armed on the next ISR tick.
     pub fn runtime_force_idle(&mut self, shared: &SharedState) {
         for ss in &mut self.step_state {
             ss.reset_accumulator();
@@ -627,7 +536,7 @@ impl Engine {
         for axis_opt in &mut self.stepping_axes {
             if let Some(axis) = axis_opt.as_mut() {
                 axis.reset_isr_cache();
-                axis.ring.drain(); // discard stale pre-abort pieces
+                axis.ring.drain();
             }
         }
         self.last_motors = [0.0; MAX_AXES];
@@ -637,8 +546,6 @@ impl Engine {
         }
         shared.acked_force_idle.store(true, Ordering::Release);
     }
-
-    // ── Test helpers ──────────────────────────────────────────────────────
 
     #[cfg(any(test, feature = "host"))]
     pub fn test_set_sample_period(&mut self, sample_rate_hz: u32) {
@@ -673,8 +580,6 @@ impl Engine {
             .any(|a| a.as_ref().map_or(false, |ax| ax.armed.is_some()))
     }
 }
-
-// ── Default for tests ─────────────────────────────────────────────────────────
 
 #[cfg(test)]
 impl Default for Engine {

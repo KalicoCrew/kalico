@@ -1,18 +1,8 @@
-//! `MessageKind` discriminants + per-message structs (spec §7).
-//!
-//! Each non-bootstrap message has a hand-written `Encode` and `Decode` impl.
-//! Bootstrap messages (`Identify`, `IdentifyResponse`) live in
-//! [`crate::bootstrap`] with a separate, fixed-forever byte layout.
-
 use crate::codec::{
     Cursor, Decode, DecodeError, Encode, get_f32, get_i32, get_u8, get_u16, get_u32, get_u64,
     put_f32, put_i32, put_u8, put_u16, put_u32, put_u64,
 };
 
-/// Layer-4 message-type discriminants. Per spec §7.1.
-///
-/// Bootstrap (0x0001, 0x0002) is part of the catalog but never decoded
-/// through the schema — they have a fixed-forever byte layout (spec §5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u16)]
 pub enum MessageKind {
@@ -51,24 +41,15 @@ impl MessageKind {
         self as u16
     }
 
-    /// True if this message is decoded via the schema. False for bootstrap
-    /// (Identify / `IdentifyResponse`), which use [`crate::bootstrap`].
     pub fn is_schema_validated(self) -> bool {
         !matches!(self, Self::Identify | Self::IdentifyResponse)
     }
 
-    /// True if this message belongs on the events channel (§7.1: tags
-    /// `0x0080..=0x00BF`). False for control-channel messages (commands,
-    /// responses, bootstrap).
     pub fn is_event(self) -> bool {
         let tag = self as u16;
         (0x0080..=0x00BF).contains(&tag)
     }
 }
-
-// =============================================================================
-// ConfigureAxes (0x0030)
-// =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ConfigureAxes {
@@ -108,10 +89,6 @@ impl Decode for ConfigureAxes {
     }
 }
 
-// =============================================================================
-// ConfigureAxesResponse (0x0031)
-// =============================================================================
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConfigureAxesResponse {
     pub result: i32,
@@ -130,19 +107,6 @@ impl Decode for ConfigureAxesResponse {
         })
     }
 }
-
-// =============================================================================
-// QueryRuntimeCaps (0x0040) — request body: empty.
-// RuntimeCapsResponse (0x0041) — body layout:
-//   0..4  total_piece_memory : u32_le
-// Total: 4 bytes.
-//
-// Simple-MCU-contract revision (2026-05-28): replaced the two-field layout
-// (curve_pool_n: u16, max_pieces_per_curve: u16) with a single
-// total_piece_memory: u32 representing the total bytes available for piece
-// storage across all per-axis rings on the MCU. The host derives per-axis
-// budgets from this figure at init_planner time.
-// =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeCapsResponse {
@@ -165,41 +129,14 @@ impl Decode for RuntimeCapsResponse {
     }
 }
 
-// =============================================================================
-// PushPieces (0x0060) — Host → MCU
-//
-// Wire layout v2 (little-endian):
-//   axis_idx:    u8   (offset 0) — which axis ring to push to
-//   piece_count: u8   (offset 1) — number of 32-byte pieces in this message
-//   start_slot:  u16  (offset 2) — physical ring slot index for the first piece
-//   new_head:    u32  (offset 4) — monotonic valid-frontier the MCU advances to
-//   pieces_bytes: piece_count × 32 bytes (offset 8) — raw piece data
-//
-// Total body = 8 + piece_count * 32 bytes.
-//
-// PushPiecesResponse (0x0061) — MCU → Host
-//
-// Wire layout (little-endian):
-//   result:           i32   (bytes 0..4)  — 0 = OK, negative = error code
-//   arrival_clock:    u64   (bytes 4..12) — widened MCU clock at piece_sink_commit
-//   front_start_time: u64   (bytes 12..20) — start_time of first piece (0 if none)
-//
-// Total body = 20 bytes.
-//
-// Diagnostic extension (2026-05-31): the two u64 fields are always present
-// in firmware; the host uses them to measure host→MCU transit time and
-// arrival-lead for -308 PieceStartInPast diagnosis.
-// =============================================================================
-
+// PushPieces (0x0060) body: axis_idx:u8, piece_count:u8, start_slot:u16, new_head:u32, pieces_bytes[piece_count*32]
+// PushPiecesResponse (0x0061) body: result:i32, arrival_clock:u64, front_start_time:u64  (20 bytes)
 #[derive(Debug, Clone, PartialEq)]
 pub struct PushPieces {
     pub axis_idx: u8,
     pub piece_count: u8,
-    /// Physical ring slot index where the host wants the first piece placed.
     pub start_slot: u16,
-    /// Monotonic valid-frontier the MCU should advance to after CRC.
     pub new_head: u32,
-    /// Raw piece bytes: `piece_count * 32` bytes.
     pub pieces_bytes: Vec<u8>,
 }
 
@@ -247,13 +184,8 @@ impl Decode for PushPieces {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PushPiecesResponse {
-    /// 0 = OK, negative = error code.
     pub result: i32,
-    /// Widened MCU clock (ticks) captured at `piece_sink_commit` on the MCU.
-    /// 0 when the MCU replied with an error before clocking the arrival.
     pub arrival_clock: u64,
-    /// `start_time` (MCU ticks) of the first piece in the batch as decoded by
-    /// the MCU. 0 when the batch was empty or an error occurred before parsing.
     pub front_start_time: u64,
 }
 
@@ -274,10 +206,6 @@ impl Decode for PushPiecesResponse {
         })
     }
 }
-
-// =============================================================================
-// FaultEvent (0x0082) — spec §7.4
-// =============================================================================
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FaultEvent {
@@ -304,28 +232,10 @@ impl Decode for FaultEvent {
     }
 }
 
-// =============================================================================
-// StatusHeartbeat (0x0083) — MCU → Host periodic status event.
-//
-// Wire layout (little-endian):
-//   engine_state:   u8
-//   fault_code:     u8
-//   num_axes:       u8  — length of the retired_counts array that follows
-//   retired_counts: num_axes × u32_le
-//
-// Total body = 3 + num_axes * 4 bytes.
-//
-// Sent by the MCU at the heartbeat rate (typically 10 Hz) so the host can
-// track per-axis piece retirement without a separate query round-trip.
-// The host uses `retired_counts` to implement the "motion drain" barrier:
-// `retired == sent` per axis ⟺ that axis has physically finished all motion.
-// =============================================================================
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusHeartbeat {
     pub engine_state: u8,
     pub fault_code: u8,
-    /// Per-axis retired piece counts, one entry per configured axis.
     pub retired_counts: Vec<u32>,
 }
 
@@ -371,44 +281,14 @@ impl Decode for StatusHeartbeat {
     }
 }
 
-// =============================================================================
-// McuLog (0x0084) — MCU → Host structured log event.
-//
-// Wire layout (little-endian), fixed 24 bytes:
-//   mcu_tick:  u64  (bytes  0..8)  — MCU-pre-widened clock at log-emit
-//   level:     u8   (byte   8)     — 0=trace 1=debug 2=warn 3=error
-//   subsystem: u8   (byte   9)     — subsystem id (resolved host-side)
-//   event:     u16  (bytes 10..12) — event code (resolved host-side)
-//   code:      u16  (bytes 12..14) — fault code as_u16 (sign-wrapped; 0 = none)
-//   seq:       u16  (bytes 14..16) — per-MCU monotonic sequence for drop detection
-//   arg0:      u32  (bytes 16..20) — first numeric argument
-//   arg1:      u32  (bytes 20..24) — second numeric argument
-//
-// Total body = 24 bytes.
-// =============================================================================
-
-/// Decoded `KALICO_MSG_LOG (0x0084)` frame.
-///
-/// The MCU pre-widens `mcu_tick` to `u64` before transmit (via
-/// `runtime_widened_host_clock()` in the drain task). The host never widens.
-///
-/// `code` is a sign-wrapped `u16` — see `FaultCode::as_u16` / `FaultCode::from_u16`
-/// in `runtime::error` for the round-trip. Zero means no fault code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct McuLog {
-    /// MCU-pre-widened clock ticks at emit time.
     pub mcu_tick: u64,
-    /// Log level (0=trace, 1=debug, 2=warn, 3=error).
     pub level: u8,
-    /// Subsystem id (resolved to name on host).
     pub subsystem: u8,
-    /// Event code (resolved to name/template on host).
     pub event: u16,
-    /// Fault code sign-wrapped as u16 via `FaultCode::as_u16`. 0 = no fault code.
     pub code: u16,
-    /// Per-MCU monotonic sequence number for host drop detection.
     pub seq: u16,
-    /// Numeric arguments `[arg0, arg1]`.
     pub args: [u32; 2],
 }
 

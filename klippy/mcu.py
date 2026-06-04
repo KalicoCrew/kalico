@@ -1721,9 +1721,6 @@ class MCU:
     def seconds_to_clock(self, time):
         return int(time * self._mcu_freq)
 
-    def get_max_stepper_error(self):
-        return self._max_stepper_error
-
     def min_schedule_time(self):
         return MIN_SCHEDULE_TIME
 

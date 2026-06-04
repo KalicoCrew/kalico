@@ -1,32 +1,14 @@
-//! Abstract transport layer. Hides whether the underlying wire I/O is the
-//! Step-6 [`crate::host_io::KalicoHostIo`] (real serial port) or a test
-//! harness (`MockTransport`, lives in `tests/`).
-//!
-//! Step-6 Phase-10 modules consume `&mut dyn Transport` (or `T: Transport`
-//! generics) so they can be unit-tested against `MockTransport` and run in
-//! production against the minimal shim. Production-grade hardening
-//! (Step-7 MVP) replaces the shim's body but keeps the trait shape.
-
 use std::collections::HashMap;
 use std::io;
 use std::time::Duration;
 
-/// Errors surfaced by every [`Transport`] method.
 #[derive(Debug)]
 pub enum TransportError {
-    /// Underlying I/O failure (port closed, permission denied, ...).
     Io(io::Error),
-    /// `wait_for_response` exceeded the caller's timeout.
     Timeout,
-    /// The transport has been closed by the peer or by `disconnect`.
     Closed,
-    /// Wire-format / parser error (malformed frame, unknown msg-id, ...).
     Parse(String),
-    /// Dispatcher entry passed its deadline before being serviced.
     DispatcherTimeout,
-    /// Reactor's pending-submission queue is full (window stalled and
-    /// caller backlog exceeded `PENDING_SUBMISSION_CEILING`). Distinct from
-    /// `Closed` — the transport is still alive, just over capacity.
     Backpressure,
 }
 
@@ -81,15 +63,7 @@ impl std::fmt::Display for SubscribeError {
 
 impl std::error::Error for SubscribeError {}
 
-/// Wire-protocol transport. Issues a Klipper-msgproto-style command,
-/// waits for the named response, and returns the parsed fields.
-///
-/// The trait is `Send + Sync` so it can be shared across threads (e.g.
-/// an `Arc<T>` used from multiple producer threads). Implementations
-/// use internal synchronization (`Mutex` / channels) to satisfy `&self`.
 pub trait Transport: Send + Sync {
-    /// Send `cmd` (Klipper msgproto format) and block until a message
-    /// named `expected_response_name` arrives or `timeout` elapses.
     fn call(
         &self,
         cmd: &str,
@@ -97,8 +71,6 @@ pub trait Transport: Send + Sync {
         timeout: Duration,
     ) -> Result<MessageParams, TransportError>;
 
-    /// Typed variant: encodes `name` + `args` via the loaded data
-    /// dictionary and waits for `expected_response_name`.
     fn call_typed(
         &self,
         name: &str,
@@ -107,12 +79,6 @@ pub trait Transport: Send + Sync {
         timeout: Duration,
     ) -> Result<MessageParams, TransportError>;
 
-    /// Typed-args fire-and-forget. Encodes `name` + `args` against the
-    /// loaded data dictionary and dispatches without awaiting any response.
-    /// The frame is still tracked in the wire-level unacked window for
-    /// NAK retransmit; this is the primitive used by the incremental
-    /// curve-upload protocol's `begin` and `chunk` commands (spec
-    /// §6.0 / §6.1).
     fn send_typed(
         &self,
         name: &str,
@@ -120,10 +86,6 @@ pub trait Transport: Send + Sync {
     ) -> Result<(), TransportError>;
 }
 
-/// Parsed key=value pairs from a wire response. Field accessors return a
-/// type-defaulted value (zero) when the key is absent or carries the
-/// wrong scalar type — host-rt callers use this with known schemas, so
-/// missing fields are programmer errors rather than runtime conditions.
 #[derive(Debug, Default, Clone)]
 pub struct MessageParams {
     pub fields: HashMap<String, MessageValue>,
@@ -141,8 +103,6 @@ impl MessageParams {
     pub fn get_i32(&self, k: &str) -> i32 {
         match self.fields.get(k) {
             Some(MessageValue::I32(v)) => *v,
-            // Wire schema sometimes carries result codes as unsigned;
-            // we accept either tag and reinterpret the bit pattern.
             #[allow(clippy::cast_possible_wrap)]
             Some(MessageValue::U32(v)) => *v as i32,
             _ => 0,
@@ -152,7 +112,6 @@ impl MessageParams {
     pub fn get_u32(&self, k: &str) -> u32 {
         match self.fields.get(k) {
             Some(MessageValue::U32(v)) => *v,
-            // See get_i32: tolerate either signed/unsigned tag.
             #[allow(clippy::cast_sign_loss)]
             Some(MessageValue::I32(v)) => *v as u32,
             _ => 0,
@@ -167,14 +126,6 @@ impl MessageParams {
         }
     }
 
-    // --- Fallible accessors ------------------------------------------------
-    //
-    // I1 fix: load-bearing fields (`result`, etc.) cannot fall back to
-    // `0` on a malformed response — `result == 0` means "success", so a
-    // missing field would be silently treated as a successful push. The
-    // `try_get_*` family returns `None` if the field is absent or
-    // carries a wrong scalar type, letting the caller surface a
-    // `Parse` transport error instead.
     pub fn try_get_i32(&self, k: &str) -> Option<i32> {
         match self.fields.get(k)? {
             MessageValue::I32(v) => Some(*v),
@@ -217,18 +168,12 @@ impl MessageParams {
     }
 }
 
-/// Scalar variants the wire schema can carry. The Klipper VLQ encoding
-/// distinguishes signed/unsigned but msgproto's parser already maps
-/// fields to Python ints; we keep the tagged variant so Rust callers
-/// don't have to `reinterpret_cast`.
 #[derive(Debug, Clone)]
 pub enum MessageValue {
     I32(i32),
     U32(u32),
     U64(u64),
     Bytes(Vec<u8>),
-    /// Carries %s text fields AND resolved enum names
-    /// (format!("?{i}") for unknown enum ints). Per spec §4.11.
     String(String),
 }
 

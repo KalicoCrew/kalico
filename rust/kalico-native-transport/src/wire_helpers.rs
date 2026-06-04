@@ -1,20 +1,7 @@
-//! Wire-level helpers for the kalico-native transport: per-message header
-//! encode/decode and field-level decoders the framer / transport layer need
-//! during demux.
-//!
-//! Schema-level types (`MessageKind`, `PROTO_VERSION`, `SCHEMA_HASH`,
-//! per-message structs) are owned by the `kalico-protocol` crate. Wire-level
-//! plumbing is owned here. The split keeps `kalico-protocol` foundational
-//! (zero deps on transport) and lets the transport own framing / dispatch
-//! concerns.
-
 use kalico_protocol::{MessageKind, PER_MESSAGE_HEADER_LEN};
 
-/// Default per-message schema version. All MVP messages start at `0x01`.
 pub const MESSAGE_VERSION_DEFAULT: u8 = 0x01;
 
-/// Encode the per-message header (type | version | `correlation_id`) prefix
-/// of a control-channel payload (§7.2). Body bytes go after.
 #[must_use]
 pub fn encode_message_header(kind: MessageKind, version: u8, correlation_id: u32) -> [u8; 7] {
     let tag = (kind as u16).to_le_bytes();

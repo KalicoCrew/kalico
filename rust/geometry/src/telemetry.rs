@@ -1,5 +1,3 @@
-//! Observability events emitted to the consumer-supplied closure sink.
-
 use crate::Recovery;
 
 #[derive(Debug, Clone, PartialEq)]

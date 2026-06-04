@@ -145,13 +145,9 @@ use crate::ScalarNurbs;
 #[test]
 fn extract_single_bezier_piece_from_clamped_curve() {
     // Quadratic with no interior knots — already a single Bezier piece.
-    let curve = ScalarNurbs::<f64>::try_new(
-        2,
-        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        vec![0.0, 1.0, 4.0],
-        None,
-    )
-    .unwrap();
+    let curve =
+        ScalarNurbs::<f64>::try_new(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![0.0, 1.0, 4.0])
+            .unwrap();
 
     let pieces = extract_bezier_pieces(&curve);
     assert_eq!(pieces.len(), 1);
@@ -174,7 +170,6 @@ fn extract_two_bezier_pieces_from_curve_with_interior_knot() {
         2,
         vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
         vec![0.0, 1.0, 2.0, 3.0],
-        None,
     )
     .unwrap();
 
@@ -235,7 +230,6 @@ fn bezier_pieces_to_nurbs_round_trips_extraction() {
         2,
         vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
         vec![0.0, 1.0, 2.0, 3.0],
-        None,
     )
     .unwrap();
 

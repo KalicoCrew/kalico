@@ -1,19 +1,6 @@
-// Stage 3b-c: per-axis convolution + trim.
-//
-// Convolves a padded per-axis curve with the smooth-shaper kernel, then trims
-// the result back to the segment's time domain.
-
 use nurbs::algebra::PiecewisePolynomialKernel;
 use nurbs::ScalarNurbs;
 
-/// Convolve a padded per-axis curve with the shaper kernel, then trim to the
-/// segment's `[t_start, t_end]` domain.
-///
-/// The input `padded` must extend at least `t_sm/2` beyond `[t_start, t_end]`
-/// on each side (produced by `pad::pad_segment_axis`).
-///
-/// For passthrough axes (Z by default), skip this function and return the
-/// fitted axis NURBS directly.
 const INPUT_SAMPLES_PER_KERNEL_WIDTH: usize = 40;
 const OUTPUT_SAMPLES_PER_KERNEL_WIDTH: usize = 12;
 
@@ -103,7 +90,6 @@ fn convolve_discrete(
         output_values.push(fir_at(t_out));
     }
 
-    // Ensure the last sample is exactly at t_end
     if let Some(last_t) = output_times.last() {
         if (*last_t - t_end).abs() > dt_out * 0.01 {
             output_times.push(t_end);

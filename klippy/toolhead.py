@@ -7,7 +7,6 @@ import importlib
 import logging
 import math
 
-from . import chelper
 from .extras.danger_options import get_danger_options
 from .kinematics import extruder
 
@@ -316,11 +315,12 @@ class ToolHead:
         # Kinematic step generation scan window time tracking
         self.kin_flush_delay = SDS_CHECK_TIME
         self.kin_flush_times = []
-        # Setup iterative solver
-        ffi_main, ffi_lib = chelper.get_ffi()
-        self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
-        self.trapq_append = ffi_lib.trapq_append
-        self.trapq_finalize_moves = ffi_lib.trapq_finalize_moves
+        # Bridge: the C trapq was removed with the legacy planner. The
+        # attribute stays as None so extras' get_trapq()/set_trapq() calls
+        # remain no-op shims.
+        self.trapq = None
+        self.trapq_append = lambda *args: None
+        self.trapq_finalize_moves = lambda *args: None
         self.step_generators = []
         # Create kinematics class
         gcode = self.printer.lookup_object("gcode")
@@ -602,10 +602,6 @@ class ToolHead:
 
     def set_position(self, newpos, homing_axes=()):
         self.flush_step_generation()
-        ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.trapq_set_position(
-            self.trapq, self.print_time, newpos[0], newpos[1], newpos[2]
-        )
         self.commanded_pos[:] = newpos
         self.kin.set_position(newpos, homing_axes)
         self.printer.send_event("toolhead:set_position")

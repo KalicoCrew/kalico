@@ -30,7 +30,6 @@ fn parse_shaper_types() {
     ));
     assert!(parse_required_shaper("ei", 50.0).is_err());
 
-    // freq=0 must be rejected with an error mentioning the field name
     let err = parse_required_shaper("smooth_zv", 0.0)
         .unwrap_err()
         .to_string();
@@ -39,10 +38,8 @@ fn parse_shaper_types() {
         "error must name the field, got: {err}"
     );
 
-    // negative freq rejected
     assert!(parse_required_shaper("smooth_mzv", -1.0).is_err());
 
-    // NaN/Inf rejected
     assert!(parse_required_shaper("smooth_zv", f64::NAN).is_err());
     assert!(parse_required_shaper("smooth_zv", f64::INFINITY).is_err());
 }

@@ -1,12 +1,5 @@
 //! Wire helpers for the EtherCAT RT endpoint: `PushPieces` decode, response
 //! builders, and `StatusHeartbeat` event emission.
-//!
-//! The old `LoadCurveCubic` / `PushSegment` / `ResetCurvePool` / `CreditFreed`
-//! protocol has been replaced by the push-pieces model (§7.3 / §7.4):
-//!
-//! - Host → endpoint: `PushPieces` (0x0060) on `KALICO_CHANNEL_PIECES` (0x02)
-//! - Endpoint → host: `PushPiecesResponse` (0x0061) on the control channel
-//! - Endpoint → host: `StatusHeartbeat` (0x0083) on the events channel
 
 use kalico_native_transport::frame::{encode_frame, CHANNEL_CONTROL, CHANNEL_EVENTS};
 use kalico_native_transport::wire_helpers::{
@@ -30,9 +23,6 @@ pub enum Command {
         correlation_id: u32,
         msg: PushPieces,
     },
-    /// Host issued `QueryRuntimeCaps` (0x0040) on the control channel.
-    /// The endpoint must respond with `RuntimeCapsResponse` carrying
-    /// `total_piece_memory = AXIS_RING_CAPACITY * NUM_AXES * size_of::<PieceEntry>()`.
     QueryRuntimeCaps {
         correlation_id: u32,
     },
@@ -48,16 +38,9 @@ pub enum DecodeCmdError {
     BadBody,
 }
 
-/// Decode a command from a `Frame::Kalico` payload on any channel.
-///
-/// The `channel` parameter disambiguates `PushPieces` (sent on
-/// `KALICO_CHANNEL_PIECES = 0x02`) from control-channel messages.
 pub fn decode_command(channel: u8, payload: &[u8]) -> Result<Command, DecodeCmdError> {
     let (hdr, body) = decode_message_header(payload).ok_or(DecodeCmdError::BadHeader)?;
     let cid = hdr.correlation_id;
-    // PushPieces arrives on KALICO_CHANNEL_PIECES; decode it regardless of the
-    // `kind_raw` guard so the endpoint handles it correctly even if the host
-    // sends it with MessageKind::PushPieces (0x0060).
     if channel == KALICO_CHANNEL_PIECES
         || MessageKind::from_u16(hdr.kind_raw) == Some(MessageKind::PushPieces)
     {
@@ -75,12 +58,9 @@ pub fn decode_command(channel: u8, payload: &[u8]) -> Result<Command, DecodeCmdE
                 proto_version,
             })
         }
-        Some(MessageKind::QueryRuntimeCaps) => {
-            // Body is empty (the request carries no parameters).
-            Ok(Command::QueryRuntimeCaps {
-                correlation_id: cid,
-            })
-        }
+        Some(MessageKind::QueryRuntimeCaps) => Ok(Command::QueryRuntimeCaps {
+            correlation_id: cid,
+        }),
         _ => Ok(Command::Unknown {
             correlation_id: cid,
             kind_raw: hdr.kind_raw,
@@ -88,7 +68,6 @@ pub fn decode_command(channel: u8, payload: &[u8]) -> Result<Command, DecodeCmdE
     }
 }
 
-/// Build a control-channel command payload (header + body).
 pub fn frame_payload(kind: MessageKind, correlation_id: u32, body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(7 + body.len());
     out.extend_from_slice(&encode_message_header(
@@ -100,19 +79,10 @@ pub fn frame_payload(kind: MessageKind, correlation_id: u32, body: &[u8]) -> Vec
     out
 }
 
-/// Wrap a header+body payload into a full Layer-1 frame on the control channel.
 pub fn control_frame(kind: MessageKind, correlation_id: u32, body: &[u8]) -> Vec<u8> {
     encode_frame(CHANNEL_CONTROL, &frame_payload(kind, correlation_id, body))
 }
 
-/// Build a `PushPiecesResponse` (0x0061) control frame.
-///
-/// - `result`: 0 = OK, negative = error code.
-/// - `arrival_clock`: MCU-clock ticks at piece_sink_commit (0 for EtherCAT — not a
-///   hardware MCU clock; `clock_freq = 1e9` Hz would require converting ns to ticks
-///   which is identity; kept at 0 for the endpoint stub).
-/// - `front_start_time`: `start_time` of the first piece (ns) so the host can
-///   compute arrival lead.
 pub fn push_pieces_response_frame(
     cid: u32,
     result: i32,
@@ -128,11 +98,6 @@ pub fn push_pieces_response_frame(
     control_frame(MessageKind::PushPiecesResponse, cid, &body)
 }
 
-/// Build a `StatusHeartbeat` (0x0083) event frame.
-///
-/// `retired_counts` is one entry per configured axis (one for EtherCAT endpoints
-/// that track a single servo axis). `engine_state` is 1 (running) unless the
-/// ring is empty (0 = idle).
 pub fn status_heartbeat_frame(engine_state: u8, retired_counts: &[u32]) -> Vec<u8> {
     let hb = StatusHeartbeat {
         engine_state,
@@ -149,18 +114,11 @@ pub fn status_heartbeat_frame(engine_state: u8, retired_counts: &[u32]) -> Vec<u
     encode_frame(CHANNEL_EVENTS, &payload)
 }
 
-/// Build a `RuntimeCapsResponse` (0x0041) control frame.
-///
-/// `total_piece_memory` is the total bytes of piece storage this endpoint
-/// provides: `AXIS_RING_CAPACITY * NUM_AXES * size_of::<PieceEntry>()`.
-/// The host divides by `size_of::<PieceEntry>()` (= 32) and by the axis
-/// count to recover the per-axis ring depth = `AXIS_RING_CAPACITY`.
 pub fn runtime_caps_response_frame(cid: u32, total_piece_memory: u32) -> Vec<u8> {
     let body = RuntimeCapsResponse { total_piece_memory }.encoded_to_vec();
     control_frame(MessageKind::RuntimeCapsResponse, cid, &body)
 }
 
-/// Canned identify response advertising one motion channel, no special caps.
 pub fn identify_response_frame(cid: u32, proto_version: u8) -> Vec<u8> {
     let resp = IdentifyResponse {
         proto_version,
@@ -195,7 +153,6 @@ mod tests {
 
     #[test]
     fn decodes_push_pieces_on_pieces_channel() {
-        // Minimal valid PushPieces: 0 pieces (piece_count=0, no bytes).
         let msg = PushPieces {
             axis_idx: 0,
             piece_count: 0,
@@ -244,7 +201,6 @@ mod tests {
             MessageKind::from_u16(hdr.kind_raw),
             Some(MessageKind::StatusHeartbeat)
         );
-        // Unsolicited — correlation_id is 0.
         assert_eq!(hdr.correlation_id, 0);
         let hb = StatusHeartbeat::decode(body).unwrap();
         assert_eq!(hb.engine_state, 1);

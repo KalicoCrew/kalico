@@ -38,7 +38,6 @@ fn synthesis_idempotent_across_repeated_status_frames() {
     let mut d = make_dispatcher();
     d.dispatch(fault_status(3, 17, 42));
     d.dispatch(fault_status(3, 17, 42));
-    // Still latched once (cell still present, still synthesized).
     let cell = d.fault_latch.cell.as_ref().unwrap();
     assert!(cell.synthesized);
 }
@@ -47,7 +46,6 @@ fn synthesis_idempotent_across_repeated_status_frames() {
 fn edge_event_upgrades_synthesized_in_place() {
     let mut d = make_dispatcher();
     d.dispatch(fault_status(3, 17, 42));
-    // Edge event with exact segment_id preferred.
     d.dispatch(RuntimeEvent::Fault(FaultEvent {
         fault_code: 17,
         fault_detail: 0,
@@ -62,13 +60,10 @@ fn edge_event_upgrades_synthesized_in_place() {
 #[test]
 fn status_without_fault_does_not_synthesize() {
     let mut d = make_dispatcher();
-    d.dispatch(fault_status(1, 0, 0)); // engine_status != 3
+    d.dispatch(fault_status(1, 0, 0));
     assert!(d.fault_latch.cell.is_none());
 }
 
-// Helper for the v2 credit-flow synthesis tests. queue_depth and the
-// retirement watermark are the only fields that matter for the
-// synthesized CreditFreed; engine_status is RUNNING and no fault.
 fn status_with_watermark(queue_depth: u8, retired_through: u32) -> RuntimeEvent {
     RuntimeEvent::Status(StatusEvent {
         engine_status: 1,
@@ -80,25 +75,16 @@ fn status_with_watermark(queue_depth: u8, retired_through: u32) -> RuntimeEvent 
     })
 }
 
-/// v2: a Status frame whose watermark advances past the previous
-/// observation must synthesize a `CreditFreed` dispatched through the
-/// normal `CreditFreed` path — forwarded to the bridge poller via
-/// `take_runtime_event`.
 #[test]
 fn status_watermark_advance_synthesizes_credit_freed() {
     use std::sync::mpsc::sync_channel;
     let mut d = make_dispatcher();
 
-    // Subscribe to the runtime-event channel so we can observe the
-    // synthesized CreditFreed forwarded to the bridge poller.
     let (tx, rx) = sync_channel::<RuntimeEvent>(8);
     d.runtime_event_dispatcher.subscribe(tx).unwrap();
 
-    // First Status with watermark=5 and queue_depth=2 → free_slots=5.
     d.dispatch(status_with_watermark(2, 5));
 
-    // Drain channel — exactly 1 Status and 1 CreditFreed must have
-    // been dispatched, in that order.
     let evt1 = rx.recv().unwrap();
     let evt2 = rx.recv().unwrap();
     assert!(matches!(evt1, RuntimeEvent::Status(_)));
@@ -112,8 +98,6 @@ fn status_watermark_advance_synthesizes_credit_freed() {
     assert!(rx.try_recv().is_err(), "no further events");
 }
 
-/// Repeated Status frames with the same watermark must NOT re-synthesize
-/// `CreditFreed`.
 #[test]
 fn status_watermark_unchanged_does_not_synthesize() {
     use std::sync::mpsc::sync_channel;
@@ -122,15 +106,11 @@ fn status_watermark_unchanged_does_not_synthesize() {
     let (tx, rx) = sync_channel::<RuntimeEvent>(8);
     d.runtime_event_dispatcher.subscribe(tx).unwrap();
 
-    // Prime: watermark=5 advances from 0 → 1 CreditFreed.
     d.dispatch(status_with_watermark(0, 5));
-    // Drain: 1 Status + 1 CreditFreed.
     let _ = rx.recv().unwrap();
     let _ = rx.recv().unwrap();
 
-    // Same watermark again — no new CreditFreed.
     d.dispatch(status_with_watermark(0, 5));
-    // Only 1 Status arrives.
     let _ = rx.recv().unwrap();
     assert!(
         rx.try_recv().is_err(),
@@ -138,7 +118,6 @@ fn status_watermark_unchanged_does_not_synthesize() {
     );
 }
 
-/// Stale Status frames (watermark < last seen) must not synthesize.
 #[test]
 fn status_watermark_regression_does_not_synthesize() {
     use std::sync::mpsc::sync_channel;
@@ -148,13 +127,10 @@ fn status_watermark_regression_does_not_synthesize() {
     d.runtime_event_dispatcher.subscribe(tx).unwrap();
 
     d.dispatch(status_with_watermark(0, 10));
-    // Drain 1 Status + 1 CreditFreed.
     let _ = rx.recv().unwrap();
     let _ = rx.recv().unwrap();
 
-    // Regress to 8 (an out-of-order or stale frame).
     d.dispatch(status_with_watermark(0, 8));
-    // Only 1 Status arrives.
     let _ = rx.recv().unwrap();
     assert!(
         rx.try_recv().is_err(),
@@ -240,7 +216,6 @@ fn mcu_log_without_hook_does_not_panic() {
 
     let snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
     let mut dispatcher = EventDispatcher::new(snapshot, 16, 8);
-    // No hook set — must not panic.
     dispatcher.dispatch(RuntimeEvent::McuLog(McuLogEvent {
         mcu_tick: 0,
         level: 0,

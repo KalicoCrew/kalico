@@ -48,10 +48,6 @@ typedef struct SourceConfig SourceConfig;
 
 typedef struct VelocityAxis VelocityAxis;
 
-/**
- * The opaque type C sees — never dereferenced on the C side.
- * Matches spec §3.2 / §5.6 handle discipline.
- */
 typedef struct KalicoRuntime {
   uint8_t _private[0];
 } KalicoRuntime;
@@ -78,16 +74,6 @@ typedef struct StepperBindingRust {
 
 
 
-/**
- * Arm an endstop. The blob layouts match spec §3.1:
- * - `sources`: `source_count` records of 11 bytes each
- *   (kind u8, gpio u16 LE, polarity u8, arm_policy u8, sample_n u8,
- *    velocity_axis u8, v_min_q16 u32 LE).
- * - `steppers`: `stepper_count` records of 1 byte (stepper_oid u8).
- *
- * Writes one of the spec §3.2 status values into `*out_status`:
- * 0 = Armed, 1 = AlreadyTripped, 2 = Rejected.
- */
 int32_t kalico_endstop_arm(uint32_t arm_id,
                            uint32_t arm_clock_lo,
                            uint32_t arm_clock_hi,
@@ -101,107 +87,24 @@ int32_t kalico_endstop_arm(uint32_t arm_id,
                            uint32_t grant_ticks_hi,
                            uint8_t *out_status);
 
-/**
- * Disarm an active endstop arm. `out_status` writes spec §3.5 codes:
- * 0 = Disarmed, 1 = AlreadyTripped, 2 = Unknown.
- */
 int32_t kalico_endstop_disarm(uint32_t arm_id, uint8_t *out_status);
 
-/**
- * Drain the next pending trip event into a host-side buffer.
- *
- * Wire format v1, little-endian, total length =
- * `KALICO_TRIP_EVENT_V1_HEADER_LEN + stepper_count *
- * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN`. Header layout:
- * `arm_id u32 | trip_clock_lo u32 | trip_clock_hi u32 |
- *  trip_source_idx u8 | fmt_version u8 (=1) | stepper_count u8`.
- * Each stepper record: `stepper_oid u8 | step_count i32`.
- *
- * Returns:
- * - `1`  + `*out_actual_len` = encoded length: an event was drained.
- * - `0`  + `*out_actual_len = 0`: no event ready.
- * - `KALICO_ERR_NULL_PTR` on argument errors (incl. out_buf too small).
- */
 int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
                                  uintptr_t out_buf_len,
                                  uintptr_t *out_actual_len);
 
-/**
- * Push a sampled GPIO level into the runtime's abstract pin table.
- *
- * The runtime's endstop module reads pin levels from an internal
- * `PIN_LEVELS: [AtomicBool; MAX_GPIO_PINS]` table (rust/runtime/src/
- * endstop.rs:311). The C ISR shim samples real GPIOs via
- * `gpio_in_read` once per modulation tick (TIM5_IRQHandler at
- * src/stm32/runtime_tick_h7.c, just before `runtime_handle_tick`)
- * and pushes each result through this FFI before `endstop::tick`
- * observes it. Sim builds (Renode e2e at
- * tools/test_renode_endstop_e2e.py) call the same FFI directly via
- * the `command_runtime_sim_endstop_set_pin` shim, bypassing real GPIO.
- */
 int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
 
-/**
- * Extend the homing deadline by one grant window. Called from the C
- * command handler `command_runtime_extend_homing_deadline`.
- */
 int32_t kalico_extend_deadline(uint32_t arm_id, uint32_t clock_lo, uint32_t clock_hi);
 
-/**
- * `kalico_clock_sync_request` — RTT-aware clock-sync ping (§12.1).
- *
- * Returns the on-demand widened MCU clock (timer_read_time +
- * stats_send_time_high), NOT the engine seqlock value. The seqlock is
- * updated only from the TIM5 ISR, so this path computes the widened clock
- * on-demand and is correct regardless of whether TIM5 is running.
- *
- * The on-demand widening uses Klipper's `stats_send_time_high` (updated
- * by the stats DECL_TASK at ~0.2 Hz). Its ~5 s lag in the high half is
- * invisible to the bridge's RTT-aware linear regression — the
- * regression amortises samples over many ticks.
- */
 int32_t kalico_runtime_clock_sync_request(struct KalicoRuntime *rt,
                                           uint32_t request_id,
                                           uint32_t host_send_time_lo,
                                           uint32_t host_send_time_hi,
                                           uint64_t *out_mcu_clock);
 
-/**
- * Advance the axis ring's monotonic valid frontier to `new_head`.
- *
- * The advance is accepted only when `new_head` represents a strict
- * increase over the current frontier and keeps occupancy within
- * `ring_depth` (flow-control invariant). A stale re-send with a lower
- * `new_head` is silently ignored. Called post-CRC by the transport
- * (Task 7) after a batch of slots has been written via
- * [`kalico_runtime_write_piece`].
- *
- * Returns `KALICO_OK` on success (including the monotone no-op case);
- * `KALICO_ERR_NULL_PTR` if `rt` is null; `KALICO_ERR_NOT_INIT` if the
- * runtime has not been initialised; `KALICO_ERR_INVALID_ARG` if
- * `axis_idx` is out of range or the axis has not been configured.
- */
 int32_t kalico_runtime_commit_head(struct KalicoRuntime *rt, uint8_t axis_idx, uint32_t new_head);
 
-/**
- * Stepping-redesign Task 14. Publish per-axis configuration with
- * explicit stepper bindings. `microstep_distance_f32_bits` is
- * `f32::to_bits` of the per-step distance (Klipper carries f32 as u32
- * on the wire). `mode` is `0` for Pulse; `1` for Phase (TMC5160
- * XDIRECT coil-current modulation). Other mode values return
- * `KALICO_ERR_INVALID_ARG`. `ring_depth` is the number of
- * [`PieceEntry`] slots to allocate for this axis's ring region
- * from the shared `piece_storage`; the engine bump-allocates
- * contiguously. The C caller currently passes a compile-time
- * default (see `command_kalico_configure_axis` in `src/stepper.c`);
- * a future protocol revision will let the host drive this via
- * the wire. `bindings_ptr` points to an array of `stepper_count`
- * [`runtime::stepping_state::StepperBindingRust`] entries; a null
- * pointer with `stepper_count == 0` is legal (axis with no steppers,
- * e.g. virtual / logical-only). Returns `0` on success, negative on
- * validation failure. The C handler treats any non-zero return as a
- * hard error and shuts the MCU down.
- */
 int32_t kalico_runtime_configure_axis(struct KalicoRuntime *rt,
                                       uint8_t axis_idx,
                                       uint8_t mode,
@@ -210,328 +113,76 @@ int32_t kalico_runtime_configure_axis(struct KalicoRuntime *rt,
                                       const struct StepperBindingRust *bindings_ptr,
                                       uint8_t stepper_count);
 
-/**
- * Stepping-redesign Task 11. Publish the kinematic scale factor
- * relating logical-XY velocity to physical motor-coordinate velocity
- * (`1.0` Cartesian, `1/√2` CoreXY). `k_xy_f32_bits` is `f32::to_bits`
- * of the scalar. Rejected if not finite or not strictly positive.
- */
-int32_t kalico_runtime_configure_kinematics(struct KalicoRuntime *rt, uint32_t k_xy_f32_bits);
-
-/**
- * Stepping-redesign Task 11. Publish asymmetric pressure-advance
- * coefficients (seconds). `0.0` on either side disables PA in that
- * phase. Negative values are rejected (PA is never physically
- * negative).
- */
-int32_t kalico_runtime_configure_pressure_advance(struct KalicoRuntime *rt,
-                                                  uint32_t advance_accel_f32_bits,
-                                                  uint32_t advance_decel_f32_bits);
-
-/**
- * Diagnostic: read the low 32 bits of `producer_enqueue_success_total`.
- * Bumps AFTER `fg.queue_producer.enqueue(seg)` returns Ok in
- * `push_segment_impl`. If non-zero while
- * `producer_segment_dequeued_total` is 0, the queue split is broken
- * (producer and consumer ends not sharing the backing buffer).
- */
 uint32_t kalico_runtime_enqueue_success_lo(struct KalicoRuntime *rt);
 
-/**
- * Diagnostic: read step accumulator (sub-step residual + integer state)
- * for axis `oid`.  Returns 0.0 if invalid.
- */
 double kalico_runtime_get_axis_accumulator(struct KalicoRuntime *rt, uint8_t oid);
 
-/**
- * Diagnostic: read most recent post-PA/IS motor position for axis `oid`.
- */
 float kalico_runtime_get_axis_motor(struct KalicoRuntime *rt, uint8_t oid);
 
-/**
- * Read the per-axis-timer dispatcher floor (cycles). The minimum
- * number of MCU clock cycles into the future the per-axis timer adds
- * to `now` when computing its next waketime; prevents runaway
- * re-entry. Published by Task 11's `configure_kinematics`. Returns 0
- * until the runtime is initialised.
- */
 uint32_t kalico_runtime_get_dispatcher_floor_cycles(void);
 
-/**
- * Fill caller buffers with the current heartbeat snapshot.
- *
- * Writes `engine_state`, `fault_code`, and up to `max_axes`
- * per-axis retired piece counts into the caller-provided buffers.
- *
- * Returns the number of axes actually written (>= 0) on success, or a
- * negative error code:
- * - `-1` (`KALICO_ERR_NULL_PTR`)  — `rt` or any out-pointer is null.
- * - `-2` (`KALICO_ERR_NOT_INIT`)  — runtime not yet initialised.
- *
- * Only `[..min(num_axes, max_axes)]` entries are written to
- * `out_retired`; the caller must allocate at least `max_axes` u32s.
- *
- * # Safety
- * - `rt` must be the handle returned by `runtime_handle_create`.
- * - `out_engine_state`, `out_fault_code` must be valid for a single-byte
- *   write.
- * - `out_retired` must be valid for `max_axes` u32 writes (≥ 4-byte
- *   aligned, as a C `uint32_t[8]` is).
- */
 int32_t kalico_runtime_get_heartbeat(struct KalicoRuntime *rt,
                                      uint8_t *out_engine_state,
                                      uint8_t *out_fault_code,
                                      uint32_t *out_retired,
                                      uintptr_t max_axes);
 
-/**
- * Diagnostic: read most recent (now, t_start, duration) into the three
- * out pointers. All u64 cycle counts.
- */
 void kalico_runtime_get_last_timing(struct KalicoRuntime *rt,
                                     uint64_t *now_out,
                                     uint64_t *t_start_out,
                                     uint64_t *duration_out);
 
-/**
- * Read the per-axis-timer empty-queue poll cadence (cycles). Used by
- * the per-axis timer when its queue is empty: it reschedules at
- * `now + sample_period_cycles`. Typically set to the modulation-rate
- * period (25 µs at 40 kHz). Published by Task 11's
- * `configure_kinematics`. Returns 0 until the runtime is initialised
- * — `0` cycles means "wake `now`," which the next dispatch will
- * immediately reschedule.
- */
 uint32_t kalico_runtime_get_sample_period_cycles(void);
 
-/**
- * Read the current `StepMode` discriminant for `stepper_idx`.
- *
- * Used by the C-side `arm_step_time_steppers_after_push` to determine
- * whether a stepper should be registered with Klipper's scheduler (mode
- * `StepTime = 1`) or driven by the TIM5 ISR (mode `Modulated = 0`).
- *
- * Returns:
- * - `0`    — `StepMode::Modulated` (phase-stepping via TIM5 ISR).
- * - `1`    — `StepMode::StepTime`  (classic Klipper timer scheduling).
- * - `0xFF` — null `rt`, `INIT_DONE == false`, or `stepper_idx` out of range.
- */
 uint8_t kalico_runtime_get_step_mode(struct KalicoRuntime *rt, uint8_t stepper_idx);
 
-/**
- * Read the cumulative signed step count for stepper `oid` (0-indexed).
- * Returns 0 for an invalid `rt` / uninitialised runtime / out-of-range oid.
- * Used by the sim diagnostic command `runtime_sim_stepper_count_query`.
- */
 int32_t kalico_runtime_get_stepper_count(struct KalicoRuntime *rt, uint8_t oid);
 
-/**
- * Alias for `runtime_handle_tick_counter` with the
- * `kalico_runtime_get_*` naming the bench diag rotation uses. Same
- * underlying read — `Engine::tick_counter.snapshot()`. Returns 0 on a
- * null handle or before `INIT_DONE`.
- */
 uint32_t kalico_runtime_get_tick_counter(struct KalicoRuntime *rt);
 
 uint32_t kalico_runtime_get_xdirect_write_count(void);
 
-/**
- * Install C-owned `step_queues` into the Rust engine on host/MACH_LINUX
- * builds so `tick_sample`'s `dispatch_axis` can push step entries.
- *
- * On the MCU the engine resolves the C `step_queues` extern directly
- * via `#[cfg(not(target_os = "none"))]`; on host builds
- * `test_queue_ptrs` stays null unless explicitly installed here.
- *
- * Called once from `runtime_tick_enable` in `src/linux/runtime_tick_host.c`
- * before the tick thread is armed, so there is no concurrent ISR writer.
- *
- * Returns `KALICO_OK` (0) on success, or a negative error code:
- * - `KALICO_ERR_NULL_PTR`  — `rt` or `queues` is null.
- * - `KALICO_ERR_NOT_INIT`  — runtime has not been initialised yet.
- */
 int32_t kalico_runtime_install_step_queues(struct KalicoRuntime *rt, uint8_t *queues);
 
-/**
- * 2026-05-15 live diagnosis: read the last `consumers_remaining`
- * mask computed by `push_segment_impl`. Zero means every handle on
- * the most recent push_segment was UNUSED.
- */
 uint32_t kalico_runtime_last_push_consumers_remaining(struct KalicoRuntime *rt);
 
-/**
- * 2026-05-15 live diagnosis: read the packed last `x_handle` from
- * `push_segment_impl`. Layout: `(gen << 16) | slot_idx`. UNUSED
- * sentinel = 0xFFFE_FFFE.
- */
 uint32_t kalico_runtime_last_push_x_handle(struct KalicoRuntime *rt);
 
-/**
- * 2026-05-15 live diagnosis: read the packed last `y_handle` from
- * `push_segment_impl`.
- */
 uint32_t kalico_runtime_last_push_y_handle(struct KalicoRuntime *rt);
 
-/**
- * 2026-05-15 live diagnosis: read the low 32 bits of
- * `push_segment_all_unused_total`. If this counter advances during a
- * jog, the bridge sent push_segment frames with every handle set to
- * the UNUSED sentinel — the segment retires on producer dequeue
- * without ever invoking motor processing, which matches the
- * "energized but no motion" symptom.
- */
 uint32_t kalico_runtime_push_seg_all_unused_lo(struct KalicoRuntime *rt);
 
-/**
- * Read back the parsed phase-stepping SPI config for motor `motor_idx`
- * (Task 4 / spec §4.1 introspection).
- *
- * Returns the packed `AtomicU16` payload: high byte = `spi_bus_id`, low
- * byte = `cs_pin_id`. `0xFFFF` means no phase config is installed on
- * that motor (the default), and is also returned for a null `rt`,
- * uninitialised runtime, or `motor_idx >= 4`.
- *
- * Use `runtime::phase_config::PhaseConfig::unpack` on the host side to
- * decode.
- */
 uint16_t kalico_runtime_query_phase_config(struct KalicoRuntime *rt, uint8_t motor_idx);
 
-/**
- * Reset the motion engine to a clean state — issued by the host on every
- * (re)connect before reconfiguring axes. Rewinds the ring bump allocator
- * and clears all per-axis state so re-sent `configure_axis` commands never
- * overflow `piece_storage` on a reconnect-without-reboot.
- *
- * Must be called from foreground inside an IRQ-disabled window (the C
- * command handler holds `irq_save`/`irq_restore`): the engine state and the
- * per-axis step queues this clears are concurrently touched by the TIM5
- * sample ISR and the per-axis step-event timers.
- *
- * Returns `KALICO_OK` (0), `KALICO_ERR_NULL_PTR`, or `KALICO_ERR_NOT_INIT`.
- */
 int32_t kalico_runtime_reset(struct KalicoRuntime *rt);
 
-/**
- * Seed the engine's `prev_x/y/z` position origin and `StepMotorState`
- * accumulators so the first segment after `SET_KINEMATIC_POSITION`
- * computes its delta against the correct origin rather than `(0, 0, 0)`.
- *
- * Called by the C `DECL_COMMAND` handler for `runtime_seed_position`
- * immediately before the host sends the first `PushSegment` of the
- * new stream. Fire-and-forget from the host side; no response is
- * required because the following `PushSegment` provides ordering.
- *
- * `x_q16`, `y_q16`, `z_q16` are Q16.16 fixed-point mm values
- * (`i32 = mm * 65536`). Decoded to `f32` here; the precision loss
- * (≈ 15 µm at 1 m) is negligible relative to the step-size floor.
- *
- * Foreground-only. Projects `&mut IsrState` under the same
- * single-threaded-foreground precondition as `kalico_runtime_configure_axis`.
- */
 int32_t kalico_runtime_seed_position(struct KalicoRuntime *rt,
                                      int32_t x_q16,
                                      int32_t y_q16,
                                      int32_t z_q16);
 
-/**
- * Stepping-redesign Task 12. Flip a logical axis between `Pulse` and
- * `Phase` output modes. `axis_idx` is `0..N_AXES` (X=0, Y=1, Z=2,
- * E=3); `new_mode` is `0` for Pulse, `1` for Phase. Rejected (returns
- * `-2`) if any axis currently has an active Bezier piece — the flip
- * must happen between segments. Other validation failures return
- * `-1`. On success, the engine flushes the per-axis step queue,
- * resyncs the Phase-side `last_phase_target` counters when entering
- * Phase mode, and publishes the new mode atomically. See
- * `Engine::set_axis_mode` for the full spec-step sequence.
- */
 int32_t kalico_runtime_set_axis_mode(struct KalicoRuntime *rt, uint8_t axis_idx, uint8_t new_mode);
 
-/**
- * Flip a stepper's `StepMode` at runtime. Spec §10.
- *
- * `mode`: 0 = Modulated (phase-stepping), 1 = StepTime (classic).
- * `mcu_supports_phase`: non-zero if the MCU advertises phase-stepping
- * capability.
- *
- * Returns:
- * - `KALICO_OK` on success.
- * - `KALICO_ERR_INVALID_HANDLE` if `handle` is null or
- *   `stepper_idx >= MAX_STEPPER_OIDS`.
- * - `KALICO_ERR_INVALID_ARG` if `mode` is not a recognised `StepMode`
- *   discriminant.
- * - `KALICO_ERR_CAPABILITY_MISSING` if `mode == Modulated` and
- *   `mcu_supports_phase == 0`.
- */
 int32_t kalico_runtime_set_step_mode(struct KalicoRuntime *rt,
                                      uint8_t stepper_idx,
                                      uint8_t mode,
                                      uint8_t mcu_supports_phase);
 
-/**
- * Stepping-redesign Task 12. Add `delta_microsteps` to a single
- * physical stepper's `phase_offset_target`. The Task-13 TIM5 ramp
- * helper walks `phase_offset_microsteps` toward this target at no
- * more than `max_microsteps_per_sample` microsteps per sample.
- * `stepper_idx` is the global stepper index across all configured
- * axes (sum of per-axis stepper counts in axis order). Validated
- * `max_microsteps_per_sample ∈ 1..=256`; an invalid argument latches
- * `FaultCode::JogParametersInvalid` and returns `-1`.
- */
 int32_t kalico_runtime_set_stepper_offset(struct KalicoRuntime *rt,
                                           uint8_t stepper_idx,
                                           int32_t delta_microsteps,
                                           uint16_t max_microsteps_per_sample);
 
-/**
- * `kalico_stream_flush` — `force_idle` handshake (§8.5).
- *
- * `flush()` projects to both halves under disabled-IRQ, so we hand it
- * the raw `*mut RuntimeContext` directly rather than going through
- * the foreground-only `project_fg` helper. SAFETY: caller is the
- * single-threaded foreground command dispatch.
- */
 int32_t kalico_runtime_stream_flush(struct KalicoRuntime *rt, uint32_t *out_credit_epoch);
 
-/**
- * Task 6 TIM5 ISR body — piece-ring walker.
- *
- * Projects `&mut IsrState`, `&SharedState`, and a `&mut [PieceEntry]`
- * slice over `piece_storage` from `RuntimeContext` and delegates to
- * `runtime::tick::isr_sample_tick`.
- *
- * Called from `TIM5_IRQHandler` in `src/stm32/runtime_tick_{h7,f4}.c`.
- */
 void kalico_runtime_tick_sample(struct KalicoRuntime *rt);
 
-/**
- * Write one 32-byte [`PieceEntry`] to absolute physical slot
- * `(start_slot + index) mod ring_depth` for `axis_idx`. Does **not**
- * advance the frontier — the slot becomes visible to the ISR consumer
- * only after a subsequent [`kalico_runtime_commit_head`] call.
- * Streamed pre-CRC by the transport (Task 7); the CRC verification step
- * calls `commit_head` to expose the batch atomically.
- *
- * `piece_ptr` points to exactly 32 raw bytes in `PieceEntry` wire format
- * (little-endian, 8-byte-aligned field layout). The pointer may be
- * unaligned relative to 8-byte boundaries — `read_unaligned` is used
- * internally, matching the same `read_unaligned` discipline used throughout this FFI.
- *
- * Returns `KALICO_OK` on success; `KALICO_ERR_NULL_PTR` if `rt` or
- * `piece_ptr` is null; `KALICO_ERR_NOT_INIT` if the runtime has not been
- * initialised; `KALICO_ERR_INVALID_ARG` if `axis_idx` is out of range or
- * the axis has not been configured.
- */
 int32_t kalico_runtime_write_piece(struct KalicoRuntime *rt,
                                    uint8_t axis_idx,
                                    uint16_t start_slot,
                                    uint8_t index,
                                    const uint8_t *piece_ptr);
 
-/**
- * Software-trip an armed endstop. Called from the C command handler
- * `command_runtime_software_trip`. Writes a status byte into `*out_status`:
- * 0 = Tripped, 1 = NotArmed, 2 = WrongArmId.
- */
 int32_t kalico_software_trip(uint32_t arm_id,
                              uint32_t clock_lo,
                              uint32_t clock_hi,
@@ -539,136 +190,38 @@ int32_t kalico_software_trip(uint32_t arm_id,
 
 extern uint32_t runtime_cyccnt_read(void);
 
-/**
- * Validate a versioned blob payload's leading version byte (§4.2).
- * Foreground entrypoint for the C handler that reads payload bytes off
- * the wire and routes the post-version-byte slice into the Step-5
- * flat-pointer load path. Returns `KALICO_OK` on a recognised version
- * or `KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED` otherwise.
- */
 int32_t runtime_handle_check_blob_version(const uint8_t *payload_ptr, uint32_t payload_len);
 
-/**
- * Init-once. Spec §3.2.
- *
- * Returns a valid handle on the first successful call; null on any
- * subsequent call. The handle is the address of the static
- * `RuntimeContext` storage; its lifetime is `'static`.
- */
 struct KalicoRuntime *runtime_handle_create(void);
 
-/**
- * Read the latched `fault_detail` payload (§9.2). Mirrors the value
- * the foreground emits with the async `kalico_fault` event. `0` when
- * no fault has latched OR the latched fault carries no detail.
- */
 uint32_t runtime_handle_fault_detail(struct KalicoRuntime *rt);
 
-/**
- * Diagnostic: read the configured `steps_per_mm` for axis `oid` (0..=3
- * in motor space). Returns 0.0 if `oid` is out of range or runtime
- * uninitialised. Used by Phase 4 sim test to verify axis configuration
- * reached the engine.
- */
 float runtime_handle_get_axis_steps_per_mm(struct KalicoRuntime *rt, uint8_t oid);
 
 int32_t runtime_handle_last_error(struct KalicoRuntime *rt);
 
-/**
- * Companion to `runtime_handle_last_modulated_elapsed_lo`: low 32 bits
- * of the active segment's `duration()`. If `elapsed_lo` >= this value,
- * the retirement branch should fire on the next tick.
- */
 uint32_t runtime_handle_last_modulated_duration_lo(struct KalicoRuntime *rt);
 
-/**
- * 2026-05-17 F4-retire-stall diagnostic: read low 32 bits of the most
- * recent `now - seg.t_start` observed inside `runtime_modulated_tick`.
- * `0` if no segment has been processed yet OR if the engine clock is
- * behind the segment's t_start (saturating_sub clamps to 0).
- */
 uint32_t runtime_handle_last_modulated_elapsed_lo(struct KalicoRuntime *rt);
 
-/**
- * Last snapshot of seg.consumers_remaining AFTER the clear-all-motors
- * loop in modulated_tick's retirement branch. If retire_attempts >
- * retire_successes and this is non-zero, the bits in this value are
- * what the per-motor clear didn't reach.
- */
 uint32_t runtime_handle_last_retire_consumers_after_clear(struct KalicoRuntime *rt);
 
-/**
- * Number of times `runtime_modulated_tick`'s retirement branch was
- * entered (`elapsed >= duration` was true). Pair with the success
- * counter via `runtime_handle_modulated_retire_successes` to decide
- * whether retirement is failing on the `consumers_done` check.
- */
 uint32_t runtime_handle_modulated_retire_attempts(struct KalicoRuntime *rt);
 
-/**
- * Number of times `runtime_modulated_tick` actually retired a segment
- * (`consumers_done` was true after clearing the motor bits). If this
- * is less than `runtime_handle_modulated_retire_attempts`, some entries
- * to the retirement branch are still leaving consumer bits set.
- */
 uint32_t runtime_handle_modulated_retire_successes(struct KalicoRuntime *rt);
 
-/**
- * Seed the engine's widen state with a u64 baseline so the engine's
- * `now` agrees with Klipper's widened MCU clock. Called by the Linux
- * sim host once at runtime_init, BEFORE the engine pthread starts
- * ticking. `baseline_widened_clock` is whatever value timer_read_time()
- * would map to in the widened (no-wrap) frame at this instant; the
- * caller computes it from clock_gettime so wrap counts already passed
- * in u32 timer_read_time space are folded in.
- */
 void runtime_handle_seed_widen(struct KalicoRuntime *rt, uint64_t baseline_widened_clock);
 
 uint8_t runtime_handle_status(struct KalicoRuntime *rt);
 
-/**
- * Read the scheduler dispatch-history func addr at the most recent `-311`.
- * Reference-only, not wired into the fault event — `runtime_handle_tick_blocker_pc`
- * carries the addr2line target instead. `0` before any `-311` fires.
- */
 uint32_t runtime_handle_tick_blocker(struct KalicoRuntime *rt);
 
-/**
- * Read the stacked xPSR exception number captured at TIM5 handler entry
- * on the most recent `-311 TickIntervalExceeded` fault. `0` =
- * thread/foreground was the interrupted context; nonzero = that IRQ/
- * exception number was the interrupted context (TIM5 tail-chained behind
- * it). `0` before any `-311` fires (or on host/test builds).
- */
 uint32_t runtime_handle_tick_blocker_exc(struct KalicoRuntime *rt);
 
-/**
- * Read the stacked exception-frame return address (PC) captured at TIM5
- * handler entry on the most recent `-311 TickIntervalExceeded` fault.
- * This is the instruction that was about to execute when TIM5
- * preempted/resumed — the addr2line target naming the code that held the
- * CPU / PRIMASK across the late tick. `0` before any `-311` fires (or on
- * host/test builds). Wired into the fault event's `segment_id` field by
- * `runtime_tick.c`.
- */
 uint32_t runtime_handle_tick_blocker_pc(struct KalicoRuntime *rt);
 
 uint32_t runtime_handle_tick_counter(struct KalicoRuntime *rt);
 
-/**
- * Read the widened MCU clock. Spec §3.9 — on-demand widening from
- * Klipper's `timer_read_time` + the `stats_send_time` / `stats_send_time_high`
- * counters that Klipper's stats task maintains (basecmd.c). TIM5 now
- * free-runs from boot, so the engine seqlock is continuously republished
- * while the firmware is alive; the stats-task path remains the correct
- * choice here because it avoids ISR-context re-entrancy with the
- * `timer_read_time` wrap update. The stats task runs unconditionally,
- * so this widening advances regardless of engine activity.
- *
- * Mirrors the C-side `runtime_widened_host_clock` in `src/runtime_tick.c`.
- * Foreground-only — `timer_read_time()` is not re-entrant with the
- * stats-task wrap update; do not call from ISR context.
- */
 uint64_t runtime_handle_widened_now(struct KalicoRuntime *rt);
 
 #endif  /* KALICO_RUNTIME_H */

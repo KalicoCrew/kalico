@@ -1,175 +1,8 @@
-//! Arclength-grid sampler.
-//!
-//! Spec §3, §3.3, §4.3 stage 1.
-//!
-//! # Reparameterization math
-//!
-//! The NURBS evaluator gives derivatives w.r.t. the native parameter `u`. The
-//! Consolini-Locatelli relaxation requires `|C'(s)| = 1`, i.e. derivatives
-//! w.r.t. arclength `s`. We convert via the full Faà di Bruno chain rule below.
-//!
-//! ## Notation
-//!
-//! - `C(u)` — the curve in R³, native parameter.
-//! - `f(u) = |dC/du|` — parametric speed (always ≥ `MIN_PARAMETRIC_SPEED`).
-//! - `s` — arclength. `ds/du = f`, so `du/ds = 1/f`.
-//! - `' ` suffix denotes d/ds; ˙ denotes d/du.
-//! - Dot `·` is 3D inner product; `×` is cross product.
-//!
-//! ## Scalar chain-rule quantities
-//!
-//! ```text
-//! df/du   = (Ċ · C̈) / f                          [where C̈ = d²C/du²]
-//!
-//! d²f/du² = (|C̈|² + Ċ · C⃛) / f  −  (df/du)² / f    [where C⃛ = d³C/du³]
-//!
-//! du/ds   = 1/f
-//!
-//! d²u/ds² = −(df/du) / f³
-//!
-//! d³u/ds³ = −(d²f/du²) / f⁴  +  3(df/du)² / f⁵
-//! ```
-//!
-//! ### Derivation of d³u/ds³
-//!
-//! Let `q(u) = d²u/ds² = −(df/du)/f³`.
-//!
-//! ```text
-//! d³u/ds³ = dq/ds = (dq/du) · (du/ds)
-//!
-//! dq/du = d/du[−(df/du)/f³]
-//!       = −(d²f/du²)/f³  +  (df/du) · 3f²·(df/du) / f⁶
-//!       = −(d²f/du²)/f³  +  3(df/du)²/f⁴
-//!
-//! d³u/ds³ = (dq/du) / f = −(d²f/du²)/f⁴  +  3(df/du)²/f⁵
-//! ```
-//!
-//! **Dimension check** (u dimensionless, s in mm, f in mm):
-//! - `d²f/du²` is mm;  `f⁴` is mm⁴  →  `mm/mm⁴ = mm⁻³` ✓
-//! - `(df/du)²` is mm²; `f⁵` is mm⁵  →  `mm²/mm⁵ = mm⁻³` ✓
-//!
-//! **NOTE:** The task prompt contained an algebra error in the explicit formula for
-//! `d³u/ds³`, stating exponents `f⁵` and `f⁶` instead of `f⁴` and `f⁵`. The
-//! prompt also states those denominators are `f⁵` for the first term, which is
-//! dimensionally inconsistent (gives mm⁻⁴ rather than mm⁻³). The correct formula
-//! derived above uses `f⁴` and `f⁵`. This is documented here as the corrected form;
-//! the formula for `d³C/ds³` in the prompt (which treats `d³u/ds³` symbolically)
-//! remains correct once this correction is substituted.
-//!
-//! ## Curve derivatives by chain rule (Faà di Bruno, k = 1, 2, 3)
-//!
-//! ```text
-//! dC/ds   = Ċ / f
-//!
-//! d²C/ds² = C̈ / f²  −  (df/du / f³) · Ċ
-//!
-//! d³C/ds³ = C⃛ / f³  −  3·(df/du / f⁴) · C̈  +  Ċ · d³u/ds³
-//! ```
-//!
-//! ## Curvature
-//!
-//! With arclength parameterization `|C'(s)| = 1`:
-//! ```text
-//! κ(s) = |C'(s) × C''(s)|
-//! ```
-//! This equals `|C''(s)|` when C'(s) is a unit vector, but the cross-product form
-//! is more robust to numerical drift.
-
 use nurbs::{
     MIN_PARAMETRIC_SPEED, VectorNurbs,
     arc_length::{build_arc_length_table_vector, param_from_arc_length},
     eval::{vector_derivative, vector_eval},
 };
-
-/// Evaluate the k-th parametric derivative of a *rational* NURBS at `u` via
-/// central finite differences of `vector_eval`.
-///
-/// `vector_derivative` is exact (Piegl & Tiller A3.3 degree-lowering) but only
-/// for non-rational (B-spline) NURBS — it silently ignores weights. For rational
-/// NURBS (G2/G3 arcs) the quotient rule is needed; we fall back to finite
-/// differences here at the Lyness 1968 / Numerical Recipes 3rd ed. §5.7
-/// optimal step `h_opt = ε^(1/(k+1))`:
-///   k=1 → 1.49e-8 (not used here; k=1 goes through analytical for rational
-///                   too via the existing chain rule on `vector_eval`)
-///   k=2 → 6.06e-6
-///   k=3 → 1.22e-4
-///
-/// The previous implementation used `h*0.01 = 1e-7` as the endpoint floor,
-/// which is ~1000x smaller than the optimal for k=3 and produced catastrophic
-/// cancellation noise (`pp - 2p + 2m - mm` is dominated by round-off when the
-/// stencil samples agree to ~16 digits). See `/tmp/path_diag.json` and
-/// `/tmp/path_verifier.json` for the diagnosis.
-///
-/// Used only on the rational branch in `sample_arclength_grid`. Non-rational
-/// curves go through `vector_derivative` instead.
-fn eval_kth_deriv_rational(curve: &VectorNurbs<f64, 3>, u: f64, k: usize) -> [f64; 3] {
-    let knots = curve.knots();
-    let u_start = knots[0];
-    let u_end = *knots.last().expect("non-empty knot vector");
-    let view = curve.as_view();
-
-    match k {
-        0 => vector_eval(&view, u),
-        1 => {
-            // Lyness optimal for k=1: ε^(1/2) ≈ 1.49e-8. Round to 1e-8.
-            let h = 1e-8_f64;
-            // Central difference: (C(u+h) - C(u-h)) / (u_p - u_m)
-            // Clamp so we never evaluate outside [u_start, u_end].
-            let u_p = (u + h).min(u_end);
-            let u_m = (u - h).max(u_start);
-            let step = (u_p - u_m).max(MIN_PARAMETRIC_SPEED);
-            let plus = vector_eval(&view, u_p);
-            let minus = vector_eval(&view, u_m);
-            [
-                (plus[0] - minus[0]) / step,
-                (plus[1] - minus[1]) / step,
-                (plus[2] - minus[2]) / step,
-            ]
-        }
-        2 => {
-            // Lyness optimal for k=2: ε^(1/3) ≈ 6.06e-6.
-            let h_opt = 6.06e-6_f64;
-            // Symmetric clamp: don't evaluate outside [u_start, u_end].
-            let avail_h = (u - u_start).min(u_end - u).min(h_opt);
-            // Endpoint floor at h_opt itself — accept asymmetric stencil error
-            // rather than degenerate step. (At endpoints, one of u-u_start or
-            // u_end-u is 0; we cap at h_opt and let the stencil straddle the
-            // endpoint, valid de Boor extrapolation for clamped polynomial
-            // pieces; only used here in the rational branch which has weights
-            // that gracefully handle out-of-domain via clamping in vector_eval.)
-            let avail_h = avail_h.max(h_opt);
-            let c = vector_eval(&view, u);
-            let plus = vector_eval(&view, u + avail_h);
-            let minus = vector_eval(&view, u - avail_h);
-            let h2 = avail_h * avail_h;
-            [
-                (plus[0] - 2.0 * c[0] + minus[0]) / h2,
-                (plus[1] - 2.0 * c[1] + minus[1]) / h2,
-                (plus[2] - 2.0 * c[2] + minus[2]) / h2,
-            ]
-        }
-        3 => {
-            // Lyness optimal for k=3: ε^(1/4) ≈ 1.22e-4.
-            let h_opt = 1.22e-4_f64;
-            // Third central difference: (C(u+2h) - 2C(u+h) + 2C(u-h) - C(u-2h)) / (2h³)
-            // Symmetric clamp: maximum step that fits in the domain (each side
-            // takes 2h, so the per-side cap is (u-u_start)/2 and (u_end-u)/2).
-            let avail_h = ((u - u_start) / 2.0).min((u_end - u) / 2.0).min(h_opt);
-            let avail_h = avail_h.max(h_opt);
-            let pp = vector_eval(&view, u + 2.0 * avail_h);
-            let p = vector_eval(&view, u + avail_h);
-            let m = vector_eval(&view, u - avail_h);
-            let mm = vector_eval(&view, u - 2.0 * avail_h);
-            let two_h3 = 2.0 * avail_h * avail_h * avail_h;
-            [
-                (pp[0] - 2.0 * p[0] + 2.0 * m[0] - mm[0]) / two_h3,
-                (pp[1] - 2.0 * p[1] + 2.0 * m[1] - mm[1]) / two_h3,
-                (pp[2] - 2.0 * p[2] + 2.0 * m[2] - mm[2]) / two_h3,
-            ]
-        }
-        _ => [0.0, 0.0, 0.0],
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct ArclengthGrid {
@@ -200,8 +33,6 @@ pub enum PathSampleError {
 }
 
 /// Build `ArclengthGrid` for a single 3D NURBS at uniform-in-`s` resolution `n`.
-///
-/// Spec §3.1, §3.3.
 pub fn sample_arclength_grid(
     curve: &VectorNurbs<f64, 3>,
     n: usize,
@@ -210,63 +41,30 @@ pub fn sample_arclength_grid(
         return Err(PathSampleError::GridTooSmall(n));
     }
 
-    // ---- Step 1: Build arclength table for u(s) --------------------------------
-    //
-    // tolerance = 1e-6 mm; max_samples = 1024. The adaptive builder doubles the
-    // internal sample count until the GL-residual is below tolerance. 1024 samples
-    // is more than enough for any reasonable segment at 1e-6 mm precision.
     let arc_table = build_arc_length_table_vector(curve, 1e-6_f64, 1024)
         .map_err(|e| PathSampleError::ArcLengthTable(e.to_string()))?;
 
     let total_length = arc_table.s_max();
     let table_ref = arc_table.as_view();
 
-    // ---- Step 2: Build derivative NURBSes (non-rational) or prepare FD path --
-    //
-    // For non-rational (B-spline) curves we compose derivative NURBSes once via
-    // Piegl & Tiller A3.3 degree-lowering (`vector_derivative`). This is *exact*
-    // to floating-point precision: a polynomial of degree p has constant p-th
-    // derivative, identically zero (p+1)-th and higher. The previous FD path
-    // suffered catastrophic cancellation at endpoints (numerator `pp - 2p + 2m
-    // - mm` collapses to round-off noise when the stencil samples agree to ~16
-    // digits) — see /tmp/path_diag.json.
-    //
-    // For rational (weighted) curves `vector_derivative` is wrong (it silently
-    // discards weights and returns the unweighted control polygon's
-    // derivative). The quotient rule is the analytical fix; until that lands
-    // we fall back to FD with Lyness-optimal steps (`eval_kth_deriv_rational`).
-    //
     // Degree-too-low guard: a polynomial of degree p has identically zero
-    // (p+1)-th and higher derivatives. We materialize derivative NURBSes only
-    // up to `min(3, degree())`; lookups of higher orders return [0,0,0]
-    // without panicking. Required for G0/G1 (degree-1) and G5.1 (degree-2)
-    // inputs, which would otherwise hit `vector_derivative`'s `assert!(p>=1)`.
-    let is_rational = curve.weights().is_some();
+    // (p+1)-th and higher derivatives. Materialize only up to min(3, degree()).
     let curve_degree = usize::from(curve.degree());
 
-    // For non-rational only: pre-build d1, d2, d3 (each up to degree-lowering
-    // limit). Materialize lazily; if `curve_degree` < k, we use a sentinel
-    // `None` and the loop returns [0,0,0] for that order.
-    let (d1, d2, d3) = if is_rational {
-        (None, None, None)
+    let d1 = if curve_degree >= 1 {
+        Some(vector_derivative(curve))
     } else {
-        let d1 = if curve_degree >= 1 {
-            Some(vector_derivative(curve))
-        } else {
-            None
-        };
-        let d2 = match d1.as_ref() {
-            Some(d1c) if d1c.degree() >= 1 => Some(vector_derivative(d1c)),
-            _ => None,
-        };
-        let d3 = match d2.as_ref() {
-            Some(d2c) if d2c.degree() >= 1 => Some(vector_derivative(d2c)),
-            _ => None,
-        };
-        (d1, d2, d3)
+        None
+    };
+    let d2 = match d1.as_ref() {
+        Some(d1c) if d1c.degree() >= 1 => Some(vector_derivative(d1c)),
+        _ => None,
+    };
+    let d3 = match d2.as_ref() {
+        Some(d2c) if d2c.degree() >= 1 => Some(vector_derivative(d2c)),
+        _ => None,
     };
 
-    // ---- Step 3: Evaluate at each grid point ----------------------------------
     let mut s_vec = Vec::with_capacity(n);
     let mut u_vec = Vec::with_capacity(n);
     let mut c_vec = Vec::with_capacity(n);
@@ -280,71 +78,41 @@ pub fn sample_arclength_grid(
     let floor = MIN_PARAMETRIC_SPEED;
 
     for i in 0..n {
-        // Uniform-in-s grid.
         let s_i = (i as f64) / ((n - 1) as f64) * total_length;
         let u_i = param_from_arc_length(&table_ref, s_i);
 
-        // Curve position.
         let c_i = vector_eval(&curve_view, u_i);
 
-        // u-parameterized derivatives.
-        // - Non-rational: analytical via vector_eval on degree-lowered NURBSes
-        //   (exact to floating-point precision).
-        // - Rational: FD with Lyness-optimal step (asymmetric at endpoints,
-        //   accepted error per spec §11 / verifier-caveat 1).
-        // - Degree-too-low for k: return [0,0,0] (mathematically correct).
-        let (dc_du, d2c_du2, d3c_du3) = if is_rational {
-            (
-                eval_kth_deriv_rational(curve, u_i, 1),
-                eval_kth_deriv_rational(curve, u_i, 2),
-                eval_kth_deriv_rational(curve, u_i, 3),
-            )
-        } else {
-            let eval_or_zero = |dn: &Option<VectorNurbs<f64, 3>>, u: f64| -> [f64; 3] {
-                match dn {
-                    Some(c) => vector_eval(&c.as_view(), u),
-                    None => [0.0, 0.0, 0.0],
-                }
-            };
-            (
-                eval_or_zero(&d1, u_i),
-                eval_or_zero(&d2, u_i),
-                eval_or_zero(&d3, u_i),
-            )
+        let eval_or_zero = |dn: &Option<VectorNurbs<f64, 3>>, u: f64| -> [f64; 3] {
+            match dn {
+                Some(c) => vector_eval(&c.as_view(), u),
+                None => [0.0, 0.0, 0.0],
+            }
         };
+        let dc_du = eval_or_zero(&d1, u_i);
+        let d2c_du2 = eval_or_zero(&d2, u_i);
+        let d3c_du3 = eval_or_zero(&d3, u_i);
 
-        // ---- Parametric speed and its derivatives ----------------------------
-        //
-        // f = |dC/du|
+        // f = |dC/du|; df/du = (d²C/du² · dC/du) / f.
         let f_sq = dot3(dc_du, dc_du);
         let f = f_sq.sqrt().max(floor);
 
-        // df/du = (d²C/du² · dC/du) / f
         let df_du = dot3(d2c_du2, dc_du) / f;
 
-        // d²f/du² = (|d²C/du²|² + dC/du · d³C/du³) / f  −  (df/du)² / f
         let d2f_du2 = (dot3(d2c_du2, d2c_du2) + dot3(dc_du, d3c_du3)) / f - (df_du * df_du) / f;
 
-        // du/ds, d²u/ds², d³u/ds³
         let du_ds = 1.0 / f;
-        let d2u_ds2 = -df_du / (f * f * f); // = -(df/du) / f³
-        // d³u/ds³ = -(d²f/du²)/f⁴  +  3(df/du)²/f⁵  (see module-level derivation)
+        let d2u_ds2 = -df_du / (f * f * f);
+        // d³u/ds³ = -(d²f/du²)/f⁴ + 3(df/du)²/f⁵
         let f4 = f * f * f * f;
         let f5 = f4 * f;
         let d3u_ds3 = -(d2f_du2) / f4 + 3.0 * df_du * df_du / f5;
 
-        // ---- Arclength derivatives of C via Faà di Bruno --------------------
-
-        // dC/ds = dC/du · (du/ds)
         let c_prime_i = scale3(dc_du, du_ds);
 
-        // d²C/ds² = d²C/du² · (du/ds)²  +  dC/du · d²u/ds²
         let du_ds_sq = du_ds * du_ds;
         let c_double_prime_i = add3(scale3(d2c_du2, du_ds_sq), scale3(dc_du, d2u_ds2));
 
-        // d³C/ds³ = d³C/du³ · (du/ds)³
-        //           + 3 · d²C/du² · (du/ds) · d²u/ds²
-        //           + dC/du · d³u/ds³
         let du_ds_cu = du_ds_sq * du_ds;
         let c_triple_prime_i = add3(
             add3(
@@ -354,7 +122,6 @@ pub fn sample_arclength_grid(
             scale3(dc_du, d3u_ds3),
         );
 
-        // ---- Curvature κ = |C'(s) × C''(s)| ---------------------------------
         let cross = cross3(c_prime_i, c_double_prime_i);
         let kappa_i = (dot3(cross, cross)).sqrt();
 
@@ -378,8 +145,6 @@ pub fn sample_arclength_grid(
         total_length,
     })
 }
-
-// ---- Vector helpers (inline, no alloc) --------------------------------------
 
 #[inline]
 fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {

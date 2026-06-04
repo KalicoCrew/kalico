@@ -1,9 +1,5 @@
-# MotionMcuProxy — MCU API surface that delegates to the Rust bridge
-#
-# This file is part of the Kalico motion-bridge integration (Stage D).
-# It implements the same public API as klippy's MCU class but routes
-# serial/command traffic through the MotionBridgeWrapper instead of the
-# C serialqueue path.
+# MCU API surface that delegates to the Rust bridge instead of the C
+# serialqueue path.
 import logging
 
 
@@ -14,11 +10,9 @@ class MotionCommandWrapper:
         self._proxy = proxy
         self._msgformat = msgformat
         self._cq = cq
-        # Phase 1: command tag is a hash of the format string
         self._msgtag = hash(msgformat) & 0xFFFFFFFF
 
     def send(self, data=(), minclock=0, reqclock=0):
-        # Phase 1 stub: log but do not crash
         logging.debug(
             "MotionCommandWrapper.send: %s data=%s", self._msgformat, data
         )
@@ -50,7 +44,6 @@ class MotionQueryCommandWrapper:
             self._msgformat,
             data,
         )
-        # Phase 1: return a synthetic response dict
         return {
             "#name": self._respformat.split()[0],
             "#sent_time": 0.0,
@@ -70,11 +63,8 @@ class MotionQueryCommandWrapper:
 
 
 class MotionMcuProxy:
-    """Implements the MCU public API surface, delegating to the Rust bridge.
-
-    Non-motion peripherals (heaters, fans, TMC UART) flow through here
-    unchanged — the bridge's passthrough layer forwards their commands
-    to the real serialqueue on the Rust side.
+    """MCU public API surface, delegating to the Rust bridge. Non-motion
+    peripherals flow through unchanged via the bridge's passthrough layer.
     """
 
     def __init__(self, bridge_wrapper, name, printer):
@@ -97,20 +87,14 @@ class MotionMcuProxy:
         self._is_shutdown = False
         self._mcu_freq = 0.0
 
-        # noncritical mcu compat fields
         self.non_critical_disconnected = False
         self.is_non_critical = False
 
     def setup(self, serial_path, baud):
         self._mcu_handle = self._bridge.claim_mcu(self._name, serial_path, baud)
-        self._bridge_handle = (
-            self._mcu_handle
-        )  # alias for motion_toolhead._init_planner
+        # alias read by motion_toolhead._init_planner
+        self._bridge_handle = self._mcu_handle
         self._command_queue = self._bridge.alloc_command_queue(self._mcu_handle)
-
-    # ------------------------------------------------------------------
-    # MCU API — identity / lifecycle
-    # ------------------------------------------------------------------
 
     def get_printer(self):
         return self._printer
@@ -123,10 +107,6 @@ class MotionMcuProxy:
 
     def is_shutdown(self):
         return self._is_shutdown
-
-    # ------------------------------------------------------------------
-    # MCU API — OIDs and config commands
-    # ------------------------------------------------------------------
 
     def create_oid(self):
         oid = self._oid_count
@@ -144,10 +124,6 @@ class MotionMcuProxy:
         else:
             self._config_cmds.append(cmd)
 
-    # ------------------------------------------------------------------
-    # MCU API — command wrappers
-    # ------------------------------------------------------------------
-
     def lookup_command(self, msgformat, cq=None):
         return MotionCommandWrapper(self, msgformat, cq)
 
@@ -159,10 +135,6 @@ class MotionMcuProxy:
     def try_lookup_command(self, msgformat):
         return self.lookup_command(msgformat)
 
-    # ------------------------------------------------------------------
-    # MCU API — response / flush registration
-    # ------------------------------------------------------------------
-
     def register_response(self, cb, msg, oid=None):
         if self._mcu_handle is not None and cb is not None:
             self._bridge.passthrough_register_handler(
@@ -172,10 +144,6 @@ class MotionMcuProxy:
     def register_flush_callback(self, callback):
         self._flush_callbacks.append(callback)
 
-    # ------------------------------------------------------------------
-    # MCU API — command queues
-    # ------------------------------------------------------------------
-
     def alloc_command_queue(self):
         if self._mcu_handle is not None:
             return self._bridge.alloc_command_queue(self._mcu_handle)
@@ -184,12 +152,8 @@ class MotionMcuProxy:
     def get_default_command_queue(self):
         return self._command_queue
 
-    # ------------------------------------------------------------------
-    # MCU API — clock conversions  (Phase 1 stubs)
-    # ------------------------------------------------------------------
-
     def estimated_print_time(self, eventtime):
-        return eventtime  # Phase 1 stub
+        return eventtime
 
     def print_time_to_clock(self, print_time):
         return int(print_time * self._mcu_freq) if self._mcu_freq else 0
@@ -204,7 +168,7 @@ class MotionMcuProxy:
         return clock / self._mcu_freq if self._mcu_freq else 0.0
 
     def clock32_to_clock64(self, clock32):
-        return clock32  # Phase 1 stub
+        return clock32
 
     def get_constant_float(self, name):
         val = self._constants.get(name)
@@ -221,18 +185,11 @@ class MotionMcuProxy:
     def get_query_slot(self, oid):
         return 0
 
-    # ------------------------------------------------------------------
-    # MCU API — stepper / move queue
-    # ------------------------------------------------------------------
-
     def register_stepqueue(self, stepqueue):
         self._stepqueues.append(stepqueue)
 
     def request_move_queue_slot(self):
         self._reserved_move_slots += 1
-
-    def get_max_stepper_error(self):
-        return 0.000025
 
     def min_schedule_time(self):
         return 0.100
@@ -241,14 +198,10 @@ class MotionMcuProxy:
         return 3.0
 
     def flush_moves(self, print_time, clear_history_time):
-        pass  # Phase 1 stub
+        pass
 
     def check_active(self, print_time, eventtime):
-        pass  # Phase 1 stub
-
-    # ------------------------------------------------------------------
-    # MCU API — status / stats
-    # ------------------------------------------------------------------
+        pass
 
     def get_status(self, eventtime=None):
         return dict(self._get_status_info)
@@ -258,10 +211,6 @@ class MotionMcuProxy:
 
     def get_shutdown_clock(self):
         return 0
-
-    # ------------------------------------------------------------------
-    # MCU API — setup_pin (delegate to real pin types)
-    # ------------------------------------------------------------------
 
     def setup_pin(self, pin_type, pin_params):
         # Import here to avoid circular import at module level
@@ -278,10 +227,6 @@ class MotionMcuProxy:
 
             raise pins.error("pin type %s not supported on mcu" % (pin_type,))
         return pcs[pin_type](self, pin_params)
-
-    # ------------------------------------------------------------------
-    # MCU API — misc
-    # ------------------------------------------------------------------
 
     def dump_debug(self):
         return "MotionMcuProxy '%s': phase_1 bridge mode" % self._name

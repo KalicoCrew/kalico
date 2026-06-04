@@ -1,27 +1,9 @@
-//! Bootstrap ABI — `Identify` and `IdentifyResponse` (spec §5).
-//!
-//! **These byte layouts are frozen forever at protocol version 1.** They are
-//! intentionally NOT routed through the [`Encode`]/[`Decode`] traits used for
-//! schema-validated messages — those traits are an implementation detail of
-//! the schema, and the bootstrap exists precisely so the host and MCU can
-//! agree on `schema_hash` before trusting the schema. Any change to these
-//! offsets or field types is a protocol-incompatibility break.
-//!
-//! Both messages still ride the framing layer (sync + len + channel + crc)
-//! and carry the per-message header (`type` + `version` + `correlation_id`)
-//! emitted by the framing layer. This module encodes/decodes the
-//! **fixed-layout body only**, exactly as specified in §5.
-//!
-//! `Identify` body: 1 byte.
-//! `IdentifyResponse` body: 81 bytes.
-
-/// Spec §5: `proto_version: u8`. Single field, single byte.
+// IdentifyResponse byte layout is frozen at proto v1; any offset change is a wire break.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Identify {
     pub proto_version: u8,
 }
 
-/// Body length in bytes. Fixed forever.
 pub const IDENTIFY_BODY_LEN: usize = 1;
 
 impl Identify {
@@ -46,17 +28,14 @@ impl Identify {
     }
 }
 
-/// Spec §5 byte layout (frozen forever):
-///
-/// ```text
-///  0..1   proto_version : u8
-///  1..5   firmware_ver  : u32_le
-///  5..25  build_hash    : [u8; 20]    git commit SHA-1 (informational)
-/// 25..57  schema_hash   : [u8; 32]    SHA-256 over canonicalized schema
-/// 57..61  reset_epoch   : u32_le      nonzero, unique per MCU boot
-/// 61..69  capabilities  : u64_le      bitmap (phase_stepping=0x1, ...)
-/// 69..81  mcu_serial    : [u8; 12]    chip serial (informational)
-/// ```
+// IdentifyResponse body (81 bytes, frozen):
+//  0     proto_version : u8
+//  1..5  firmware_ver  : u32_le
+//  5..25 build_hash    : [u8; 20]
+// 25..57 schema_hash   : [u8; 32]
+// 57..61 reset_epoch   : u32_le
+// 61..69 capabilities  : u64_le
+// 69..81 mcu_serial    : [u8; 12]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdentifyResponse {
     pub proto_version: u8,
@@ -68,10 +47,9 @@ pub struct IdentifyResponse {
     pub mcu_serial: [u8; 12],
 }
 
-/// Body length in bytes. Fixed forever (`81 = 1 + 4 + 20 + 32 + 4 + 8 + 12`).
 pub const IDENTIFY_RESPONSE_BODY_LEN: usize = 81;
 
-// Field offsets, frozen forever. Exposed for the C side and for tests.
+// Field offsets frozen forever; exposed for C side and tests.
 pub const IDR_OFF_PROTO_VERSION: usize = 0;
 pub const IDR_OFF_FIRMWARE_VER: usize = 1;
 pub const IDR_OFF_BUILD_HASH: usize = 5;

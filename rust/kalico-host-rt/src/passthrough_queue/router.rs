@@ -1,6 +1,3 @@
-//! Top-level passthrough router — the boundary the bridge calls.
-//! Owns one `McuState` + `NotifyTable` + `ReceiveWindow` per MCU.
-
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -24,10 +21,6 @@ impl McuHandle {
         self.0
     }
 
-    /// Reconstruct an `McuHandle` from a raw `u32` previously obtained via
-    /// [`raw()`](Self::raw). The caller is responsible for ensuring the
-    /// value refers to a live MCU — the router will return
-    /// `RouterError::UnknownMcu` if it does not.
     pub fn from_raw(raw: u32) -> Self {
         Self(raw)
     }
@@ -60,20 +53,12 @@ struct McuRecord {
     window: ReceiveWindow,
     sent_times: HashMap<NotifyId, f64>,
     config_stage: ConfigStage,
-    /// MCU oscillator frequency in Hz.
     clock_freq: f64,
-    /// Offset for host_time -> mcu_clock conversion.
     clock_offset: f64,
-    /// Last known MCU clock value.
     last_clock: u64,
-    /// Callbacks fired on the non-empty -> empty transition.
     flush_callbacks: Vec<Box<dyn Fn() + Send>>,
-    /// Tracks whether the queues were non-empty at some point, so the
-    /// callback only fires on a genuine non-empty -> empty transition.
     was_non_empty: bool,
-    /// Per-MCU stats counters.
     stats: StatsCounters,
-    /// Rolling debug log for crash diagnostics.
     debug_log: DebugLog,
 }
 
@@ -111,8 +96,6 @@ impl std::fmt::Debug for PassthroughRouter {
     }
 }
 
-/// Convert an `Instant` to a monotonic f64 seconds relative to a
-/// process-lifetime anchor. Only deltas between two values are meaningful.
 fn instant_to_f64(instant: Instant) -> f64 {
     static ANCHOR: OnceLock<Instant> = OnceLock::new();
     let anchor = ANCHOR.get_or_init(Instant::now);
@@ -132,12 +115,10 @@ impl PassthroughRouter {
         }
     }
 
-    /// Iterate over all claimed MCU handles.
     pub fn mcu_handles(&self) -> impl Iterator<Item = &McuHandle> {
         self.mcus.keys()
     }
 
-    /// Register a new MCU and return its handle.
     pub fn claim_mcu(&mut self, label: &str) -> McuHandle {
         let handle = McuHandle(self.next_handle);
         self.next_handle += 1;
@@ -162,7 +143,6 @@ impl PassthroughRouter {
         handle
     }
 
-    /// Remove an MCU. Outstanding notify callbacks are dropped.
     pub fn release_mcu(&mut self, handle: McuHandle) {
         self.mcus.swap_remove(&handle);
     }
@@ -209,10 +189,6 @@ impl PassthroughRouter {
         Ok(())
     }
 
-    /// Pop the next entry for emission if the receive window allows it.
-    /// Records the emit in the window and stores the sent timestamp for
-    /// any notify-bearing entry. Also tracks the non-empty state for flush
-    /// callback triggering.
     pub fn pop_next_for_emission(
         &mut self,
         mcu: McuHandle,
@@ -241,17 +217,6 @@ impl PassthroughRouter {
         Ok(entry)
     }
 
-    /// Dispatch a response for a previously-sent notify-bearing entry.
-    ///
-    /// # Wire contract
-    ///
-    /// `response_bytes` MUST be the message **body**: `[msgid VLQ |
-    /// fields...]` — i.e. the same bytes that `MsgProtoParser::decode_body`
-    /// expects. No frame header (length / seq) and no trailer (CRC / sync
-    /// byte). The bytes are passed through verbatim into
-    /// [`NotifyResponse::bytes`] without inspection or transformation;
-    /// callers (e.g. `RouterTransport::submit_and_wait`) decode them
-    /// directly with the parser.
     pub fn dispatch_response(
         &mut self,
         mcu: McuHandle,
@@ -288,8 +253,6 @@ impl PassthroughRouter {
         Ok(())
     }
 
-    // ── Config-stage API ────────────────────────────────────────────────
-
     pub fn add_config_cmd(&mut self, mcu: McuHandle, bytes: Vec<u8>) -> Result<bool, RouterError> {
         let rec = self
             .mcus
@@ -314,7 +277,6 @@ impl PassthroughRouter {
         Ok(rec.config_stage.add_restart_cmd(bytes))
     }
 
-    /// Transition to `SendingConfig` — begin draining config commands.
     pub fn begin_config_phase(&mut self, mcu: McuHandle) -> Result<(), RouterError> {
         let rec = self
             .mcus
@@ -324,7 +286,6 @@ impl PassthroughRouter {
         Ok(())
     }
 
-    /// Get the next config/init entry, or `None` when all have been sent.
     pub fn next_config_entry(&mut self, mcu: McuHandle) -> Result<Option<Vec<u8>>, RouterError> {
         let rec = self
             .mcus
@@ -333,16 +294,11 @@ impl PassthroughRouter {
         Ok(rec.config_stage.next_config_entry())
     }
 
-    /// Current config-stage phase for the given MCU.
     pub fn config_phase(&self, mcu: McuHandle) -> Result<ConfigStagePhase, RouterError> {
         let rec = self.mcus.get(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
         Ok(rec.config_stage.phase())
     }
 
-    // ── Clock estimation API ────────────────────────────────────────────
-
-    /// Update the clock estimation parameters for an MCU.
-    /// Called by the clock-sync subsystem whenever it refines its estimate.
     pub fn set_clock_est(
         &mut self,
         mcu: McuHandle,
@@ -355,19 +311,11 @@ impl PassthroughRouter {
             .get_mut(&mcu)
             .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.clock_freq = freq;
-        // Keep the host timestamp paired with the MCU clock value supplied
-        // by the clocksync estimate. Rebasing the timestamp to "now" while
-        // retaining an older MCU clock makes projections lag by callback
-        // transit latency.
         rec.clock_offset = offset;
         rec.last_clock = last_clock;
         Ok(())
     }
 
-    /// Update clock estimation when the incoming host timestamp is in a
-    /// caller-owned monotonic clock domain. `host_now_same_epoch` must be
-    /// sampled in that same domain at the time this method is called; the
-    /// router rebases the estimate into its own deterministic clock domain.
     pub fn set_clock_est_rebased(
         &mut self,
         mcu: McuHandle,
@@ -388,15 +336,6 @@ impl PassthroughRouter {
         Ok(())
     }
 
-    /// Update clock-sync state from a freshly recorded RTT-aware sample.
-    /// Used by the bridge's periodic `kalico_clock_sync_request` driver
-    /// (`spawn_periodic_clock_sync`) to keep `compute_ack_clock` from
-    /// drifting once klippy's bridge-mode clocksync stops emitting
-    /// `clock` responses (klippy's `_get_clock_event` raw_send is a
-    /// no-op in bridge mode — there is no other update path).
-    ///
-    /// `host_send` is the wire-send instant; `mcu_at_send` is the MCU
-    /// clock value at that instant (RTT-corrected by the caller).
     pub fn set_clock_est_from_sample(
         &mut self,
         mcu: McuHandle,
@@ -414,18 +353,6 @@ impl PassthroughRouter {
         Ok(())
     }
 
-    /// Projected MCU ack-clock and oscillator frequency for the given MCU,
-    /// or `None` when clock-sync has not yet been established (`clock_freq ==
-    /// 0`).
-    ///
-    /// Returns `Some((ack_now_ticks, freq_hz))` where `ack_now_ticks` is the
-    /// same value as `compute_ack_clock` would return and `freq_hz` is the
-    /// oscillator frequency in Hz. The caller can derive a commit-lead horizon
-    /// as `ack_now_ticks + (lead_secs * freq_hz) as u64`.
-    ///
-    /// Returning `None` (no sync yet) means the caller should apply no
-    /// time-based gate — count-only flow-control is the correct fallback
-    /// during startup.
     pub fn ack_clock_and_freq(&self, mcu: McuHandle) -> Option<(u64, f64)> {
         let rec = self.mcus.get(&mcu)?;
         if rec.clock_freq == 0.0 {
@@ -438,12 +365,6 @@ impl PassthroughRouter {
         Some((projected, rec.clock_freq))
     }
 
-    /// Compute the projected MCU ack-clock from the current host time and
-    /// clock estimation parameters.
-    ///
-    /// `projected_clock = last_clock + (host_now_secs - clock_offset) * clock_freq`
-    ///
-    /// Returns 0 if clock estimation has not been set (freq == 0).
     pub fn compute_ack_clock(&self, mcu: McuHandle) -> Result<u64, RouterError> {
         let rec = self.mcus.get(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
         if rec.clock_freq == 0.0 {
@@ -456,14 +377,10 @@ impl PassthroughRouter {
         Ok(projected)
     }
 
-    /// Shared host clock "now" in seconds — the time base the dispatch anchor uses. Reads the same clock source as the ack-clock projections (via a different formula).
     pub fn host_now_secs(&self) -> f64 {
         instant_to_f64(self.clock.now())
     }
 
-    /// Convert a host-time-seconds value to the projected MCU clock for
-    /// the given MCU, using the linear estimate set by `set_clock_est`.
-    /// Returns 0 if the estimate has not been initialised (`freq == 0`).
     pub fn host_time_to_mcu_clock(
         &self,
         mcu: McuHandle,
@@ -479,9 +396,6 @@ impl PassthroughRouter {
         Ok(projected)
     }
 
-    /// DIAG (temporary, -308 investigation): log segment-0's projected MCU
-    /// start_time vs this MCU's current projected clock. Negative deficit ⇒
-    /// the piece is already in the MCU's past and will fault PieceStartInPast.
     pub fn log_seg0_deficit(&self, mcu: McuHandle, seg0_host_secs: f64, t0: f64) {
         let rec = match self.mcus.get(&mcu) {
             Some(r) => r,
@@ -520,9 +434,6 @@ impl PassthroughRouter {
         );
     }
 
-    // ── Stats ────────────────────────────────────────────────────────────
-
-    /// Snapshot current statistics for the given MCU.
     pub fn get_stats(&self, mcu: McuHandle) -> Result<PassthroughStats, RouterError> {
         let rec = self.mcus.get(&mcu).ok_or(RouterError::UnknownMcu(mcu))?;
         let mut snap = rec.stats.snapshot();
@@ -531,10 +442,6 @@ impl PassthroughRouter {
         Ok(snap)
     }
 
-    // ── Debug log / extract_old ───────────────────────────────────────────
-
-    /// Drain the rolling debug log for crash diagnostics.
-    /// Returns `(old_sent, old_received)`.
     pub fn extract_old(
         &mut self,
         mcu: McuHandle,
@@ -546,10 +453,6 @@ impl PassthroughRouter {
         Ok(rec.debug_log.extract_old())
     }
 
-    // ── Flush callbacks ─────────────────────────────────────────────────
-
-    /// Register a callback that fires on the non-empty -> empty transition
-    /// for the given MCU's queues.
     pub fn register_flush_callback(
         &mut self,
         mcu: McuHandle,
@@ -563,10 +466,6 @@ impl PassthroughRouter {
         Ok(())
     }
 
-    /// Check whether the MCU's queues transitioned from non-empty to empty.
-    /// If so, fire all registered flush callbacks.
-    ///
-    /// Call this after draining emissions for a tick.
     pub fn check_flush(&mut self, mcu: McuHandle) -> Result<(), RouterError> {
         let rec = self
             .mcus

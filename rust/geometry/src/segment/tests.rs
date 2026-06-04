@@ -12,7 +12,6 @@ fn cubic_variant_constructs() {
             [2.0, 0.0, 0.0],
             [3.0, 0.0, 0.0],
         ],
-        None,
     )
     .expect("valid cubic");
     let cs = CubicSegment::try_new(
@@ -52,7 +51,6 @@ fn split_cubic_bezier_preserves_position_at_split_and_along_curve() {
             [30.0, 5.0, 2.0],
             [40.0, 25.0, 3.0],
         ],
-        None,
     )
     .unwrap();
 
@@ -123,8 +121,6 @@ fn split_cubic_bezier_preserves_position_at_split_and_along_curve() {
         let expected: [f64; 8] = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
         assert_eq!(left.knots(), expected.as_slice());
         assert_eq!(right.knots(), expected.as_slice());
-        assert!(left.weights().is_none());
-        assert!(right.weights().is_none());
     }
 }
 
@@ -141,7 +137,6 @@ fn split_cubic_bezier_panics_on_boundary_s() {
             [2.0, 0.0, 0.0],
             [3.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
     let _ = split_cubic_bezier(&xyz, 0.0);

@@ -1,32 +1,16 @@
-//! Rust mirror of the C-side `StepQueue` (`src/step_queue.h`).
-//!
-//! Storage is owned by C — on the MCU, the C translation unit declares a
-//! `[StepQueue; N_AXIS_STEP_QUEUES]` placed in `.axi_bss` (or equivalent),
-//! and this module provides typed accessors via the `step_queues` extern.
-//! On host / test builds, callers construct `StepQueue::new()` instances
-//! on the stack or in a `Box` and pass `*mut StepQueue` into the free
-//! functions below.
-//!
-//! The queue is a single-producer / single-consumer ring buffer of power-of-two
-//! depth (`STEP_QUEUE_DEPTH = 32`) using free-running `u16` counters; the slot
-//! index is `counter & STEP_QUEUE_DEPTH_MASK`. Counter wraparound is correct
-//! by construction because `tail.wrapping_sub(head)` returns the populated
-//! length even when `tail` has wrapped past `head` — both unsigned values
-//! advance monotonically modulo `2^16`, and the difference modulo `2^16`
-//! equals the true outstanding count whenever it is `< 2^16` (here it is
-//! bounded by `STEP_QUEUE_DEPTH = 32`).
-//!
-//! Cross-core ordering on the H7 follows the standard SPSC release/acquire
-//! discipline: the producer fills `buf[slot]` then publishes via a Release
-//! fence + volatile write to `tail`; the consumer reads `tail` first, takes
-//! an Acquire fence, then consumes `buf[slot]`. Volatile counter accesses
-//! prevent the compiler from caching them across the fence.
-//!
-//! NON-RACING, not lock-free: single-core safety requires the producer (TIM5
-//! ISR) and consumer (step-output timer ISR) to share one NVIC priority so they
-//! never interleave. If that ever splits, the volatile-u16 + fence discipline is
-//! insufficient (torn slot/counter) — upgrade to a true-atomic SPSC. Invariant
-//! + priority map: `src/generic/kalico_nvic_prio.h`.
+// Rust mirror of the C-side `StepQueue` (`src/step_queue.h`).
+//
+// Storage is owned by C on the MCU; on host/test builds callers construct
+// `StepQueue::new()` instances directly.
+//
+// SPSC ring of power-of-two depth (`STEP_QUEUE_DEPTH = 32`) using free-running
+// `u16` counters; slot index = `counter & STEP_QUEUE_DEPTH_MASK`.
+//
+// NON-RACING, not lock-free: single-core safety requires the producer (TIM5
+// ISR) and consumer (step-output timer ISR) to share one NVIC priority so they
+// never interleave. If that ever splits, the volatile-u16 + fence discipline is
+// insufficient (torn slot/counter) — upgrade to a true-atomic SPSC. Invariant
+// + priority map: `src/generic/kalico_nvic_prio.h`.
 
 #![allow(unsafe_code)]
 
@@ -37,7 +21,6 @@ use core::sync::atomic::{Ordering, fence};
 pub const STEP_QUEUE_DEPTH: usize = 32;
 /// Index mask derived from the depth — `counter & MASK` is the slot index.
 pub const STEP_QUEUE_DEPTH_MASK: u16 = (STEP_QUEUE_DEPTH as u16) - 1;
-/// Number of per-axis step queues (X, Y, Z, E).
 pub const N_AXIS_STEP_QUEUES: usize = 4;
 
 /// One pending step pulse: an absolute MCU cycle time and a direction.
@@ -50,8 +33,6 @@ pub const N_AXIS_STEP_QUEUES: usize = 4;
 pub struct StepEntry {
     pub cycle_abs: u32,
     pub dir: i8,
-    // ABI tail padding so each entry is 8 bytes. Public for FFI layout;
-    // never read from Rust.
     #[allow(clippy::pub_underscore_fields)]
     pub _pad: [u8; 3],
 }
@@ -68,8 +49,6 @@ pub struct StepQueue {
 }
 
 impl StepQueue {
-    /// Construct an empty `StepQueue` on the host / in tests. Not available
-    /// on the MCU because the storage there lives in a fixed C array.
     #[cfg(any(test, feature = "host"))]
     #[must_use]
     pub fn new() -> Self {
@@ -87,8 +66,8 @@ impl StepQueue {
 
     /// Empty the queue by resetting both SPSC counters to 0.
     ///
-    /// The caller must hold exclusive access (an IRQ guard): both the producer
-    /// (writes `tail`) and the consumer (writes `head`) must be quiescent.
+    /// The caller must hold exclusive access (an IRQ guard): both producer
+    /// (writes `tail`) and consumer (writes `head`) must be quiescent.
     #[inline]
     pub fn clear(&mut self) {
         self.tail = 0;
@@ -103,30 +82,25 @@ impl Default for StepQueue {
     }
 }
 
-// Layout invariants — these must match the C-side struct exactly. If a
-// future refactor changes field order or padding the build will fail here
-// rather than silently corrupting cross-language reads.
+// Layout invariants — must match the C-side struct exactly. A future
+// refactor that changes field order or padding will fail here rather than
+// silently corrupting cross-language reads.
 const _: () = {
     assert!(core::mem::size_of::<StepEntry>() == 8);
     assert!(core::mem::size_of::<StepQueue>() == 264);
     assert!(STEP_QUEUE_DEPTH.is_power_of_two());
 };
 
-// On MCU builds, storage is the C-declared `step_queues` symbol; the
-// `UnsafeCell` wrapper is purely a marker that interior mutation is
-// expected. Host / test builds construct queues directly via `new()`.
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
     pub static step_queues: core::cell::UnsafeCell<[StepQueue; N_AXIS_STEP_QUEUES]>;
 }
 
 /// Raw pointer to the C-owned step queue for axis `i`, or null if `i` is out
-/// of range. MCU-only — host/test builds keep their queues in
-/// `Engine::test_queue_ptrs` instead.
+/// of range. MCU-only — host/test builds use `Engine::test_queue_ptrs` instead.
 ///
-/// This concentrates the one piece of pointer arithmetic over the C-declared
-/// `step_queues` static in the boundary module that owns it (and already opts
-/// into `unsafe_code`), so the engine hot path stays free of `unsafe`.
+/// Concentrates the pointer arithmetic over `step_queues` in the boundary
+/// module that owns it, keeping the engine hot path free of `unsafe`.
 #[cfg(not(any(test, feature = "host")))]
 #[must_use]
 pub fn queue_for_axis(i: usize) -> *mut StepQueue {
@@ -139,20 +113,10 @@ pub fn queue_for_axis(i: usize) -> *mut StepQueue {
     unsafe { step_queues.get().cast::<StepQueue>().add(i) }
 }
 
-/// Clear all per-axis step queues. MCU-only — host/test builds keep their
-/// queues in `Engine::test_queue_ptrs` and have no `step_queues` global.
+/// Clear all per-axis step queues. MCU-only.
 ///
 /// The caller (`kalico_runtime_reset`) holds the IRQ guard, so no producer
 /// ISR or consumer timer runs concurrently with these writes.
-///
-/// TODO(mcu-linux/step-dir): compiled out on `mcu-linux` (feature "host"
-/// implies the cfg gate is false), so `step_queues[]` is not zeroed on a
-/// Klipper runtime reset on Linux. When STEP/DIR GPIO pulse output on Linux
-/// is wired, add an `mcu-linux` reset path — the correct mechanism is a
-/// C-side helper that clears `step_queues[]` directly (do NOT extend the
-/// bare-metal Rust `step_queues` extern to `mcu-linux`; that target uses
-/// `test_queue_ptrs` instead). Harmless today: phase-stepping; C drain
-/// discards stale entries each tick.
 #[cfg(not(any(test, feature = "host")))]
 pub fn reset_all_queues() {
     for i in 0..N_AXIS_STEP_QUEUES {
@@ -165,7 +129,6 @@ pub fn reset_all_queues() {
     }
 }
 
-/// Returned by `push` when the ring is full.
 #[derive(Debug, PartialEq, Eq)]
 pub struct StepQueueFull;
 
@@ -226,8 +189,7 @@ pub unsafe fn pop(q: *mut StepQueue) -> Option<StepEntry> {
 /// # Safety
 ///
 /// Same constraints as [`pop`] — `q` must be live and the caller must be
-/// the sole consumer (peek advances no counters but must still see a
-/// consistent snapshot of `buf[head]`).
+/// the sole consumer.
 pub unsafe fn peek(q: *mut StepQueue) -> Option<StepEntry> {
     let tail = unsafe { ptr::read_volatile(&(*q).tail) };
     let head = unsafe { ptr::read_volatile(&(*q).head) };
@@ -243,17 +205,14 @@ pub unsafe fn peek(q: *mut StepQueue) -> Option<StepEntry> {
 }
 
 /// Current populated length. Racy by design — both endpoints may read
-/// this for monitoring without coordination. The result is always a valid
-/// `u16` in `0..=STEP_QUEUE_DEPTH`, but may be stale by the time the
-/// caller inspects it.
+/// this for monitoring without coordination.
 ///
 /// # Safety
 ///
 /// - `q` must be a non-null, properly aligned pointer to a live `StepQueue`
 ///   whose storage outlives this call.
-/// - Safe to call from any context (producer, consumer, or a third
-///   observer); does not advance counters and so cannot violate SPSC
-///   discipline.
+/// - Safe to call from any context; does not advance counters and cannot
+///   violate SPSC discipline.
 pub unsafe fn len(q: *mut StepQueue) -> u16 {
     let tail = unsafe { ptr::read_volatile(&(*q).tail) };
     let head = unsafe { ptr::read_volatile(&(*q).head) };
@@ -267,7 +226,6 @@ mod tests {
     #[test]
     fn clear_empties_queue() {
         let mut q = StepQueue::new();
-        // 3 entries outstanding (tail ahead of head).
         q.tail = 5;
         q.head = 2;
         assert_ne!(q.tail, q.head);

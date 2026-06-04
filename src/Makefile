@@ -6,10 +6,7 @@ src-y += sched.c command.c basecmd.c debugcmds.c
 src-y += kalico_demux.c kalico_dispatch.c \
     runtime_storage.c runtime_panic.c step_queue.c \
     spi_queue.c kalico_log.c
-src-y += runtime_tick_weak.c
-src-$(CONFIG_RUNTIME_BENCH) += generic/runtime_bench.c
-src-$(CONFIG_HAVE_GPIO) += initial_pins.c gpiocmds.c stepper.c endstop.c \
-    trsync.c
+src-$(CONFIG_HAVE_GPIO) += initial_pins.c gpiocmds.c stepper.c trsync.c
 src-$(CONFIG_WANT_ADC) += adccmds.c
 src-$(CONFIG_WANT_SPI) += spicmds.c
 src-$(CONFIG_WANT_I2C) += i2ccmds.c
@@ -44,10 +41,8 @@ src-$(CONFIG_NEED_LOAD_CELL_PROBE) += load_cell_probe.c
 # cargo is invoked every build — cargo itself handles up-to-date checks
 # (incremental compilation), so this is cheap on no-op builds.
 # Production firmware: thumbv7em + per-MCU-family Rust features. Sim build
-# (CONFIG_KALICO_SIM=y) appends `kalico-sim` to compile in the sim-only
-# fixture path (sim_fixtures.rs + kalico_runtime_load_fixture FFI), per
-# Step-6 plan Phase 0 Task 0.2. Never include in production firmware —
-# the fixture path skips curve validation; it's safe only under sim.
+# (CONFIG_KALICO_SIM=y) appends `kalico-sim` to keep MCU-style tick paths
+# active under the sim clock. Never in production firmware.
 ifeq ($(CONFIG_MACH_STM32H7),y)
 KALICO_RUST_FEATURES := mcu-h7,header-nurbs,header-runtime
 # Per-MCU cargo target dir. H7 and F4 both use the thumbv7em-none-eabi

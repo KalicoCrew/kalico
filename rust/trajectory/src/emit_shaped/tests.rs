@@ -9,7 +9,7 @@ use nurbs::bezier::{bezier_pieces_to_nurbs, extract_bezier_pieces};
 use nurbs::VectorNurbs;
 
 fn straight_linear(start: [f64; 3], end: [f64; 3]) -> VectorNurbs<f64, 3> {
-    VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![start, end], None).unwrap()
+    VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![start, end]).unwrap()
 }
 
 fn default_limits() -> temporal::Limits {
@@ -85,27 +85,8 @@ fn assert_nurbs_near_equal(a: &ScalarNurbs<f64>, b: &ScalarNurbs<f64>, label: &s
         max_cp_diff < 1e-12,
         "{label}: control points differ by {max_cp_diff:.2e} mm"
     );
-    assert_eq!(
-        a.weights().is_some(),
-        b.weights().is_some(),
-        "{label}: weight presence differs"
-    );
-    if let (Some(wa), Some(wb)) = (a.weights(), b.weights()) {
-        let max_w_diff = wa
-            .iter()
-            .zip(wb.iter())
-            .map(|(wa, wb)| (wa - wb).abs())
-            .fold(0.0_f64, f64::max);
-        assert!(
-            max_w_diff < 1e-12,
-            "{label}: weights differ by {max_w_diff:.2e}"
-        );
-    }
 }
 
-/// **Byte-identity contract.** With an empty [`PerAxisHistory`] and the
-/// non-streaming right-pad behaviour, `plan_velocity + emit_shaped`
-/// must match `shape_batch`'s output byte-for-byte on the same input.
 #[test]
 fn empty_history_matches_shape_batch_byte_identical() {
     let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
@@ -172,7 +153,6 @@ fn empty_history_matches_shape_batch_byte_identical() {
     )
     .expect("emit_shaped should succeed");
 
-    // Reference: `shape_batch` on the same input.
     let segs = [ShapeSegmentInput {
         temporal: plan_segs[0].temporal,
         e_mode: plan_segs[0].e_mode,
@@ -212,13 +192,8 @@ fn empty_history_matches_shape_batch_byte_identical() {
     }
 }
 
-/// **History-aware left-pad.** With a single known history piece
-/// ending at `batch_t_start`, the padded curve must read its tail
-/// value at the seam (rather than the constant `start_val` fallback
-/// produced by the no-history path).
 #[test]
 fn pad_segment_axis_with_history_seam_reads_history_tail() {
-    // Single fitted segment on `t ∈ [1.0, 2.0]`, X linear from 10 → 30.
     let x_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
         u_start: 1.0,
         u_end: 2.0,
@@ -240,19 +215,13 @@ fn pad_segment_axis_with_history_seam_reads_history_tail() {
         t_end: 2.0,
     }];
 
-    // History piece on `t ∈ [0.0, 1.0]`, X linear from 0 → 10. At
-    // `t = 1.0` it evaluates to 10.0 — matching the segment's
-    // start. The padded value sampled inside the history domain
-    // (e.g. at `t = 0.8`) should be 8.0, not the constant fallback
-    // (which would also be 10.0 for this contrived case but would
-    // mis-represent the slope).
     let history_x = vec![BezierPiece {
         u_start: 0.0,
         u_end: 1.0,
         coeffs: vec![0.0, 10.0],
     }];
 
-    let t_sm_half = 0.3; // pad target: t = 0.7
+    let t_sm_half = 0.3;
     let padded = crate::pad::pad_segment_axis_with_history(
         0,
         0,
@@ -265,27 +234,22 @@ fn pad_segment_axis_with_history_seam_reads_history_tail() {
     );
 
     let pieces = extract_bezier_pieces(&padded);
-    // Padded must extend back to at least t = 0.7.
     assert!(
         pieces[0].u_start <= 0.7 + 1e-12,
         "padded must cover at least back to 0.7, got {}",
         pieces[0].u_start,
     );
 
-    // Find the piece containing t = 0.8 and evaluate.
     let val_08 = pieces
         .iter()
         .find(|p| 0.8 >= p.u_start - 1e-12 && 0.8 <= p.u_end + 1e-12)
         .expect("padded curve should cover t = 0.8")
         .evaluate(0.8);
-    // History X at t = 0.8: 0 + 10·0.8 = 8.0.
     assert!(
         (val_08 - 8.0).abs() < 1e-9,
         "expected 8.0 from history at t=0.8, got {val_08}",
     );
 
-    // At the seam (t = 1.0), the value should also be 10.0 (matches
-    // both segment-start and history-tail).
     let val_10 = pieces
         .iter()
         .find(|p| 1.0 >= p.u_start - 1e-12 && 1.0 <= p.u_end + 1e-12)
@@ -296,8 +260,6 @@ fn pad_segment_axis_with_history_seam_reads_history_tail() {
         "expected 10.0 at seam, got {val_10}",
     );
 
-    // ---- Sanity: the no-history call uses constant-extension and
-    // therefore reads start_val (= 10.0 here) at t = 0.8, not 8.0. ----
     let padded_no_history = crate::pad::pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 1.0, 2.0);
     let pieces_no_history = extract_bezier_pieces(&padded_no_history);
     let val_08_no_history = pieces_no_history
@@ -309,16 +271,12 @@ fn pad_segment_axis_with_history_seam_reads_history_tail() {
         (val_08_no_history - 10.0).abs() < 1e-9,
         "no-history path should read constant start_val (10.0) at t=0.8, got {val_08_no_history}",
     );
-    // The two paths must disagree — that's the whole point of the
-    // streaming-shaper history hook.
     assert!(
         (val_08 - val_08_no_history).abs() > 1.0,
         "history vs no-history must disagree at t=0.8 (history 8.0 vs constant 10.0)",
     );
 }
 
-/// `PerAxisHistory::empty()` must produce byte-identical pad output to
-/// the legacy `pad_segment_axis` wrapper (which itself passes `&[]`).
 #[test]
 fn empty_history_pad_matches_legacy() {
     let x_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {

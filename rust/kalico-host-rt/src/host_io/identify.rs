@@ -1,5 +1,4 @@
-//! Synchronous identify handshake — extracts the firmware data-dictionary
-//! so we can build a [`MsgProtoParser`] before the reactor starts.
+//! Synchronous identify handshake.
 
 use std::time::{Duration, Instant};
 
@@ -13,64 +12,28 @@ use crate::host_io::wire::{
 use crate::transport::{MessageParams, MessageValue, TransportError};
 use kalico_native_transport::demux::{Frame, PollOutcome};
 
-/// Sequence-state snapshot returned by identify, adopted by the reactor.
-/// See spec §3.1, §3.3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IdentifySeqState {
-    /// Next absolute send-seq the reactor should use for its first
-    /// outbound frame after identify completes.
     pub next_send_seq_abs: u64,
-    /// Absolute receive-seq adopted from the seq nibble of the last
-    /// validated Klipper frame seen during identify (walked across
-    /// all responses via wire::decode_absolute).
     pub mcu_receive_seq_abs: u64,
 }
 
 const IDENTIFY_CHUNK: u32 = 40;
 
-/// Synchronous identify handshake.
-///
-/// Drains stale RX bytes, then issues `identify offset=N count=40` until
-/// the response data terminates with an empty chunk. Returns `(parser,
-/// raw_identify_bytes, seq)` on success. `raw_identify_bytes` is the raw
-/// (zlib-compressed or plain) blob as received from the firmware — suitable
-/// for passing to klippy's `msgproto.MessageParser.process_identify`. `seq`
-/// is the next sequence number to use on the wire (wired into the reactor as
-/// `IdentifySeqState` in commit 2).
 pub fn identify_handshake(
     io: &mut SerialFrameIo,
     timeout: Duration,
 ) -> Result<(MsgProtoParser, Vec<u8>, IdentifySeqState), TransportError> {
     let deadline = Instant::now() + timeout;
 
-    // Demuxer-flush phase. Between USB enumeration and the moment our caller
-    // applied raw-mode termios (cfmakeraw inside `serialport::open`), the
-    // Linux TTY layer ran with default cooked-mode settings — including
-    // `ECHO=on`. That echoes every byte the firmware emits (our periodic
-    // kalico-native StatusEvent frames) right back to the device as bulk-OUT
-    // data. The firmware's demuxer is byte-stateful: a leading `0x55` puts
-    // it into `DEMUX_S_KALICO`, where it sits accumulating bytes until a
-    // length-determined frame size is reached and CRC-validated. If raw mode
-    // takes effect mid-StatusEvent-echo, the demuxer is left holding a
-    // partial frame and waits for more bytes. The first identify request we
-    // send then gets consumed as the *tail* of that corrupt kalico frame
-    // instead of being recognized as a fresh Klipper frame — identify times
-    // out without ever reaching command_find_and_dispatch.
-    //
-    // Fix: write 70 bytes of `0x7E` (Klipper's interframe sync byte) before
-    // the drain. After at most 63 bytes any partial frame in either state
-    // overflows its known length and falls through to validation (which
-    // fails on the all-`0x7E` payload), and the demuxer resets to WAITING.
-    // Subsequent `0x7E` bytes are tolerated in WAITING. The flush is
-    // idempotent on a clean demuxer, so it costs us nothing in the common
-    // case and rescues us in the racy hot-plug case.
+    // Write 70 × 0x7E before draining: flushes any partial frame in the MCU
+    // demuxer caused by TTY ECHO being on during USB enumeration (cooked mode
+    // echoes our own unsolicited frames back to the device, corrupting the
+    // demux state machine). 63 bytes is enough to overflow any partial frame;
+    // 70 is conservative and idempotent on a clean demuxer.
     io.write_all(&[MESSAGE_SYNC; 70])?;
     io.flush()?;
 
-    // Drain phase: poll for ~300ms and discard everything (frames + errors).
-    // The firmware emits unsolicited `kalico_status` frames on channel 1 from
-    // boot, plus any pre-existing klipper output and any frames our flush
-    // bytes triggered (e.g. a stale partial-frame's CRC-fail dispatch).
     let drain_until = Instant::now() + Duration::from_millis(300);
     while Instant::now() < drain_until {
         match io.poll_frames_until(drain_until)? {
@@ -79,43 +42,17 @@ pub fn identify_handshake(
         }
     }
 
-    // Absolute seq counters per spec §4.2. The firmware's `next_sequence`
-    // (command.c:16) starts at `MESSAGE_DEST | 0x0` on boot but advances
-    // every time it dispatches a valid host message. If we open the device
-    // long after boot — or after an earlier failed bridge attempt that
-    // managed to land a few valid frames — firmware's `next_sequence` is
-    // ahead of zero. The firmware's NAK path (command.c:298) does NOT
-    // advance `next_sequence`, but it DOES emit an empty-body response
-    // frame whose own seq byte echoes its current `next_sequence`. We use
-    // that to resync.
-    //
-    // We start from 0 and let the resync logic take over on the first
-    // received frame. mcu_recv_abs is the absolute counter walked via
-    // wire::decode_absolute on every validated Klipper frame.
     let mut next_send_seq_abs: u64 = 0;
     let mut mcu_recv_abs: u64 = 0;
     let mut identify_data: Vec<u8> = Vec::new();
 
     let chunk_deadline_per_attempt = Duration::from_millis(200);
-    // With stale-ACK suppression (see wait_for_klipper_frame), the steady
-    // state is 1 attempt per chunk on both silicon and Renode. The cap
-    // exists for genuine seq divergence on reconnect to a running MCU —
-    // each NAK advances mcu_recv_abs by 1 mod 16, so up to ~16 retries
-    // can be needed to converge. 64 is conservative.
     let max_resync_attempts = 64usize;
 
     'outer: loop {
-        // Each iteration of the outer loop tries to advance one identify
-        // chunk. We may issue several wire requests per chunk to handle
-        // NAK resyncs from the firmware.
         for _attempt in 0..max_resync_attempts {
-            // Encode `identify offset=N count=40` by hand (no dict yet).
-            // Hardcoded msgids per klippy/msgproto.py:11-12 and the firmware's
-            // baked-in command table:
-            //   identify offset=%u count=%c           → msgid 1 (host→fw)
-            //   identify_response offset=%u data=%.*s → msgid 0 (fw→host)
             let mut payload = Vec::with_capacity(16);
-            payload.push(1u8); // msgid=1 → identify request
+            payload.push(1u8); // msgid=1 = identify request (hardcoded; no dict yet)
             encode_vlq(&mut payload, identify_data.len() as i64)
                 .expect("identify offset is u32-range");
             encode_vlq(&mut payload, i64::from(IDENTIFY_CHUNK))
@@ -132,20 +69,10 @@ pub fn identify_handshake(
 
             match outcome {
                 IdentifyOutcome::Response(params) => {
-                    // Firmware dispatched our identify and sent
-                    // identify_response. Both that response frame and the
-                    // following ACK each carry firmware's NEW next_sequence
-                    // — wait_for_klipper_frame walked mcu_recv_abs to that
-                    // value already. Adopt it as our next send seq so
-                    // subsequent chunks match firmware's expectation.
                     next_send_seq_abs = mcu_recv_abs;
 
                     let offset = params.get_u32("offset") as usize;
                     if offset != identify_data.len() {
-                        // Stale response from a prior in-flight request —
-                        // ignore the data, but our seq has already been
-                        // resynced. Re-issue the request for the correct
-                        // offset on the next iteration.
                         continue;
                     }
                     let chunk = params
@@ -162,11 +89,6 @@ pub fn identify_handshake(
                     continue 'outer;
                 }
                 IdentifyOutcome::Nak => {
-                    // Empty-body Klipper frame = NAK or in-band ACK. Either
-                    // way, mcu_recv_abs has been walked to firmware's
-                    // current `next_sequence`, which is exactly what
-                    // firmware expects from us next. Adopt it and retry the
-                    // same identify request (same offset, same payload).
                     next_send_seq_abs = mcu_recv_abs;
                     continue;
                 }
@@ -176,9 +98,6 @@ pub fn identify_handshake(
                             "identify timed out (no firmware response)".into(),
                         ));
                     }
-                    // Firmware silent within this attempt. Loop and retry —
-                    // the next request goes out under whatever seq we have
-                    // (likely unchanged from before).
                     continue;
                 }
             }
@@ -200,17 +119,9 @@ pub fn identify_handshake(
     ))
 }
 
-/// What the identify wait loop saw on the wire.
 enum IdentifyOutcome {
-    /// A Klipper frame whose body decoded to a real `identify_response`.
     Response(MessageParams),
-    /// A Klipper frame with no decodable body — either firmware's NAK
-    /// (seq mismatch on a host message) or its ACK (sent after dispatching
-    /// any host message, including a previously-pending identify). In both
-    /// cases mcu_recv_abs has been walked to firmware's current
-    /// `next_sequence`, which is the seq the host should send next.
     Nak,
-    /// No frame arrived within the deadline.
     Timeout,
 }
 
@@ -232,67 +143,27 @@ fn wait_for_klipper_frame(
                 }
                 for f in frames {
                     if let Frame::Klipper(kf) = f {
-                        // Walk mcu_recv_abs for every validated Klipper
-                        // frame before attempting to decode the body. Stray
-                        // frames during identify (NAKs, ACKs, residual
-                        // responses to in-flight requests) all carry seq
-                        // info that we want to absorb so the next host
-                        // send matches firmware's expectation (spec §4.2).
                         let frame_seq_nibble = kf.seq_byte() & MESSAGE_SEQ_MASK;
                         *mcu_recv_abs = wire::decode_absolute(*mcu_recv_abs, frame_seq_nibble);
                         if let Some(params) = decode_identify_response(kf.bytes()) {
                             return Ok(IdentifyOutcome::Response(params));
                         }
-                        // Empty-body Klipper frame. Two cases per
-                        // command.c::command_find_block + command_send_ack:
-                        //
-                        //   * Stale ACK: firmware has not yet processed the
-                        //     request we just sent (this frame is the ACK
-                        //     emitted after dispatching the *previous*
-                        //     chunk's request). Its seq nibble equals what
-                        //     we sent on the wire; mcu_recv_abs is unchanged
-                        //     (delta=0). Returning Nak here would trigger a
-                        //     spurious retransmit, which firmware NAKs (seq
-                        //     advances past us) — that retransmit-storm
-                        //     accumulates ACK/NAK frames in the firmware's
-                        //     320-byte TX buffer until console_sendf
-                        //     silently drops the next identify_response.
-                        //     Keep waiting: the real response (different
-                        //     seq) is right behind this ACK in the pipe.
-                        //
-                        //   * Real NAK: seq differs from what we sent,
-                        //     signaling firmware's `next_sequence` diverged
-                        //     from ours (e.g. host opened the device
-                        //     mid-session). Caller adopts mcu_recv_abs and
-                        //     retries with the corrected seq.
-                        //
-                        // Python's reference identify (tools/kalico_host_io.py::
-                        // _handle_identify_sync_packet) draws the same
-                        // distinction.
+                        // Suppress stale ACKs (seq nibble matches what we just sent):
+                        // the real identify_response is right behind in the pipe.
+                        // A different nibble is a real NAK — caller adopts mcu_recv_abs.
                         if sent_seq_nibble == Some(frame_seq_nibble) {
                             continue;
                         }
                         return Ok(IdentifyOutcome::Nak);
                     }
-                    // Kalico-native frames that arrive during identify are
-                    // discarded — the reactor's `kalico_state` is not yet
-                    // initialized to receive them.
                 }
             }
-            PollOutcome::Timeout | PollOutcome::PhantomZero => {
-                // Loop back, re-checking the deadline. PhantomZero during
-                // identify is treated as a benign idle tick; SerialFrameIo's
-                // debounce semantics belong to the reactor.
-            }
+            PollOutcome::Timeout | PollOutcome::PhantomZero => {}
         }
     }
 }
 
 fn build_parser_from_identify(identify_data: &[u8]) -> Result<MsgProtoParser, TransportError> {
-    // Klipper firmware compresses the data dictionary with zlib. Spec §4.1
-    // mandates a hard error on any parse failure — silently degrading to an
-    // empty parser would cascade-fail every subsequent decode with
-    // UnknownMsgid, hiding the root cause.
     let json_bytes = if identify_data.first() == Some(&0x78) {
         let mut decoder = flate2::read::ZlibDecoder::new(identify_data);
         let mut out = Vec::new();

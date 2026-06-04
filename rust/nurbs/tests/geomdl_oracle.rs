@@ -45,20 +45,12 @@ fn oracle_matches_for_corpus_curves() {
                 ]
             })
             .collect();
-        let weights: Option<Vec<f64>> = if curve_v["weights"].is_null() {
-            None
-        } else {
-            Some(
-                curve_v["weights"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|x| x.as_f64().unwrap())
-                    .collect(),
-            )
-        };
+        // Skip rational (weighted) corpus entries — rational NURBS are no longer supported.
+        if !curve_v["weights"].is_null() {
+            continue;
+        }
 
-        let curve = nurbs::VectorNurbs::<f64, 3>::try_new(degree, knots, cps_3d, weights)
+        let curve = nurbs::VectorNurbs::<f64, 3>::try_new(degree, knots, cps_3d)
             .unwrap_or_else(|e| panic!("{name}: try_new failed: {e:?}"));
 
         for sample in curve_v["samples"].as_array().unwrap() {

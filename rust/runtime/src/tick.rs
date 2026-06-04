@@ -1,14 +1,6 @@
-//! TIM5 ISR body — the unified motion evaluator (clock + timing stage).
-//!
-//! This module owns the ISR entry point (`isr_sample_tick`), the DWT clock
-//! widening, the inter-arrival gap guard, and the `Engine::tick` call.
-//! Stepper dispatch (pulse / phase) has been extracted to the
-//! `dispatch_stepper` module, which is compiled only when the
-//! `motion-module-stepper` Cargo feature is active.
-//!
-//! Utility functions `bump_relaxed` and `update_max` are `pub(crate)` so
-//! that `dispatch_stepper` can import them without duplicating the
-//! implementations.
+// TIM5 ISR body — clock widening, inter-arrival gap guard, and `Engine::tick`.
+// Stepper dispatch is in `dispatch_stepper` (compiled only with
+// `motion-module-stepper`).
 
 #![allow(unsafe_code)]
 
@@ -17,16 +9,10 @@ use core::sync::atomic::Ordering;
 use crate::fault_helpers::raise_tick_interval_exceeded;
 use crate::state::SharedState;
 
-// ── Re-exports for backward compatibility ────────────────────────────────────
-
-/// Axis-index constants and `N_AXES` re-exported from dispatch_stepper when
-/// the feature is active, or from stepping_state directly when it is not.
 #[cfg(feature = "motion-module-stepper")]
 pub use crate::dispatch_stepper::{AXIS_A, AXIS_B, AXIS_E, AXIS_Z, DISPLACEMENT_THRESHOLD_MM};
 
 pub use crate::stepping_state::N_AXES;
-
-// ── -311 diagnostic externs ───────────────────────────────────────────────────
 
 // C-side scheduler accessor for the most-recently-dispatched timer func.
 // Read only on the `-311` fault path. MCU/sim link only; host/test → 0.
@@ -37,8 +23,7 @@ unsafe extern "C" {
 
 // Stacked exception-frame captures from the TIM5 naked-wrapper shim
 // (src/stm32/runtime_tick_*.c). Read only on the `-311` fault path:
-//   - `runtime_tim5_stacked_pc()`: instruction that was about to execute when
-//     TIM5 preempted — the code that held the CPU/PRIMASK across the late tick.
+//   - `runtime_tim5_stacked_pc()`: instruction about to execute when TIM5 preempted.
 //   - `runtime_tim5_stacked_exc()`: stacked xPSR exception number (0 = thread).
 #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
 unsafe extern "C" {
@@ -46,8 +31,6 @@ unsafe extern "C" {
     fn runtime_tim5_stacked_exc() -> u32;
 }
 
-/// Stacked PC at TIM5 entry — the instruction that held the CPU across the late
-/// tick. Returns 0 on host/test builds.
 #[inline]
 fn tim5_stacked_pc() -> u32 {
     #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
@@ -61,8 +44,6 @@ fn tim5_stacked_pc() -> u32 {
     }
 }
 
-/// Stacked xPSR exception number at TIM5 entry (0 = thread). Returns 0 on
-/// host/test builds.
 #[inline]
 fn tim5_stacked_exc() -> u32 {
     #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
@@ -76,8 +57,6 @@ fn tim5_stacked_exc() -> u32 {
     }
 }
 
-/// Most-recently-dispatched scheduler timer func address. Returns 0 on
-/// host/test builds (no C scheduler linked).
 #[inline]
 fn last_dispatched_func() -> u32 {
     #[cfg(any(not(any(test, feature = "host")), feature = "kalico-sim"))]
@@ -91,22 +70,8 @@ fn last_dispatched_func() -> u32 {
     }
 }
 
-// ─── ISR sample entry ─────────────────────────────────────────────────────
-
-/// Fault when the gap between two consecutive active ticks exceeds this
-/// multiple of the tick period.
 const TICK_GAP_FAULT_MULT: u64 = 2;
 
-/// Single-call ISR body for the piece-ring walker engine (Task 6).
-///
-/// Widens the 32-bit DWT clock, publishes `widened_now` unconditionally (so
-/// the foreground clock never stalls), then checks the inter-arrival gap —
-/// but only if the previous tick was active (had a piece playing). Idle and
-/// boot ticks clear `last_tick_now` to `None`, so the guard never fires
-/// during config or between moves.
-///
-/// `storage` is projected from `RuntimeContext::piece_storage` by the FFI
-/// caller (`kalico_runtime_tick_sample`).
 pub fn isr_sample_tick(
     isr: &mut crate::state::IsrState,
     shared: &SharedState,
@@ -120,7 +85,7 @@ pub fn isr_sample_tick(
 
     let now = isr.widen_state.widen(raw_cyccnt);
 
-    // Publish unconditionally — skipping this on a fault tick freezes the
+    // Publish unconditionally — skipping on a fault tick freezes the
     // foreground clock and pegs the scheduler.
     crate::clock::publish_widened_now(shared, now);
 
@@ -130,7 +95,6 @@ pub fn isr_sample_tick(
         after_widen.wrapping_sub(body_start),
     );
 
-    // No segment-arm stage — the new engine manages its own piece advancement.
     let after_arm = after_widen;
     update_max(
         &shared.isr_arm_cycles_max,
@@ -138,17 +102,14 @@ pub fn isr_sample_tick(
     );
 
     // Inter-arrival guard: only fires when the previous tick was active
-    // (last_tick_now == Some).  Idle/boot ticks leave it None, so the guard
-    // never trips during config or between moves.  An idle→active transition
-    // re-baselines: the first active tick sets Some, the second is the first
-    // one compared.
+    // (last_tick_now == Some). Idle/boot ticks leave it None so the guard
+    // never trips during config or between moves.
     let period = isr.engine.sample_period_cycles as u64;
     if let Some(last) = isr.last_tick_now {
         let gap = now.wrapping_sub(last);
         if period != 0 && gap > period * TICK_GAP_FAULT_MULT {
             // Integer division is intentional: `gap_ticks` is the integer
             // count of sample periods elapsed, used as a fault detail tag.
-            // `period != 0` is guarded by the enclosing `if period != 0`.
             #[allow(clippy::integer_division)]
             let gap_ticks = (gap / period) as u32;
             // Store before the fault code latches so the host always sees
@@ -165,7 +126,7 @@ pub fn isr_sample_tick(
             raise_tick_interval_exceeded(shared, gap_ticks);
             isr.last_tick_now = Some(now);
             crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_ISR_EXIT);
-            return; // skip dispatch; publish already happened; foreground escalation shuts down
+            return;
         }
     }
 
@@ -181,14 +142,14 @@ pub fn isr_sample_tick(
         body_end.wrapping_sub(after_arm),
     );
 
-    // Update baseline: Some only when this tick was active; idle ticks clear it
-    // so the gap check never straddles an idle gap.
+    // Some only when this tick was active; idle ticks clear it so the gap
+    // check never straddles an idle gap.
     isr.last_tick_now = if active { Some(now) } else { None };
     crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_ISR_EXIT);
 }
 
-/// Read the DWT cycle counter. Delegates to `isr_phase::cyccnt()` — sole
-/// declaration there avoids duplicate `extern "C"` symbols at link time.
+/// Read the DWT cycle counter via `isr_phase::cyccnt()` — sole declaration
+/// there avoids duplicate `extern "C"` symbols at link time.
 #[inline]
 unsafe fn cyccnt_read() -> u32 {
     crate::isr_phase::cyccnt()

@@ -1,46 +1,9 @@
-//! Generate `kalico_nurbs.h` and `kalico_runtime.h` via cbindgen.
-//!
-//! Per spec §3.2: cbindgen has no prefix-filter mode, so we run it *twice*
-//! against the same staticlib crate with different `cfg` flags via
-//! `cargo run --features` to gate which FFI module expands. Each invocation
-//! produces exactly one header.
-//!
-//! ## Invocation
-//!
-//! The crate's `default = ["host", "header-nurbs", "header-runtime"]` would
-//! activate *both* header gates simultaneously, which this binary rejects
-//! (cbindgen would emit the union of symbols into whichever header runs
-//! last). Always invoke with `--no-default-features` and the desired single
-//! header gate:
-//!
-//! ```text
-//! cargo run -p kalico-c-api --bin gen-headers \
-//!     --no-default-features --features host,header-nurbs
-//! cargo run -p kalico-c-api --bin gen-headers \
-//!     --no-default-features --features host,header-runtime
-//! ```
-//!
-//! The wrapper script `tools/regen_headers.sh` runs both invocations.
-
 /// Re-sort cbindgen's leading block of fieldless (untagged) C enums into a
 /// canonical, name-sorted order.
 ///
-/// cbindgen 0.29.2 emits fieldless enums in filesystem-discovery order (its
-/// `dependencies.rs::sort` returns `Ordering::Equal` for two untagged enums
-/// under a *stable* sort), so the same source produces byte-different headers
-/// on macOS vs. Linux CI and the `cbindgen-drift` gate false-fails. cbindgen
-/// groups untagged enums into their own leading layer ("they don't depend on
-/// each other or anything else"), so re-sorting that block by name is
-/// dependency-safe and makes header generation deterministic on every platform.
-///
-/// # Algorithm
-///
-/// 1. Split on `"\n\n"` to recover cbindgen's paragraph-per-item layout.
-/// 2. Identify paragraphs that are fieldless C enums via `fieldless_enum_name`.
-/// 3. Collect their indices, sort the paragraphs themselves by name, and write
-///    the sorted paragraphs back into those same index positions (all other
-///    paragraphs are untouched).
-/// 4. Re-join with `"\n\n"` — identity transform for everything non-enum.
+/// cbindgen 0.29.2 emits fieldless enums in filesystem-discovery order so the
+/// same source produces byte-different headers on macOS vs. Linux. This
+/// normalises that block to make header generation deterministic.
 ///
 /// # Examples
 ///
@@ -52,24 +15,17 @@
 fn canonicalize_untagged_enums(src: &str) -> String {
     let mut paragraphs: Vec<&str> = src.split("\n\n").collect();
 
-    // Collect (index, name) for every fieldless-enum paragraph.
     let enum_positions: Vec<usize> = (0..paragraphs.len())
         .filter(|&i| fieldless_enum_name(paragraphs[i]).is_some())
         .collect();
 
     if enum_positions.len() < 2 {
-        // Nothing to reorder.
         return paragraphs.join("\n\n");
     }
 
-    // Gather the paragraphs that correspond to fieldless enums, then sort by
-    // name.  We need owned strings here because we are about to mutate
-    // `paragraphs` in place.
     let mut enum_paragraphs: Vec<&str> = enum_positions.iter().map(|&i| paragraphs[i]).collect();
-
     enum_paragraphs.sort_by_key(|p| fieldless_enum_name(p).unwrap());
 
-    // Write sorted paragraphs back into the slots they originally occupied.
     for (slot, paragraph) in enum_positions.iter().zip(enum_paragraphs) {
         paragraphs[*slot] = paragraph;
     }
@@ -77,34 +33,9 @@ fn canonicalize_untagged_enums(src: &str) -> String {
     paragraphs.join("\n\n")
 }
 
-/// Return `Some(name)` when `paragraph` is a cbindgen fieldless (untagged) C
-/// enum paragraph, or `None` otherwise.
-///
-/// A fieldless enum paragraph looks like:
-///
-/// ```text
-/// enum SomeName {
-///   Variant = 0,
-/// };
-/// typedef uint8_t SomeName;
-/// ```
-///
-/// The paragraph may optionally be preceded by a doc-comment block
-/// (`/** ... */`) with no intervening blank line (cbindgen attaches comments
-/// directly to their item in the same paragraph).
-///
-/// Detection criteria (all must hold):
-/// - After skipping any leading `/** ... */` block, the next non-empty line
-///   (trimmed) starts with `"enum "` and ends with `" {"`.
-/// - The name between `"enum "` and `" {"` consists solely of ASCII
-///   alphanumeric or `_` characters.
-/// - The paragraph contains a line whose trimmed form starts with `"typedef "`
-///   and ends with `" <name>;"` (cbindgen's companion typedef for fieldless
-///   enums).
 fn fieldless_enum_name(paragraph: &str) -> Option<String> {
     let mut lines = paragraph.lines();
 
-    // Skip a leading doc-comment block if present.
     let first_non_empty = loop {
         match lines.next() {
             None => return None,
@@ -114,7 +45,6 @@ fn fieldless_enum_name(paragraph: &str) -> Option<String> {
                     continue;
                 }
                 if trimmed.starts_with("/**") || trimmed.starts_with("/*") {
-                    // Consume lines through the closing `*/`.
                     loop {
                         match lines.next() {
                             None => return None,
@@ -132,7 +62,6 @@ fn fieldless_enum_name(paragraph: &str) -> Option<String> {
         }
     };
 
-    // The next non-empty non-comment line must be `enum <Name> {`.
     if !first_non_empty.starts_with("enum ") || !first_non_empty.ends_with(" {") {
         return None;
     }
@@ -140,12 +69,10 @@ fn fieldless_enum_name(paragraph: &str) -> Option<String> {
     let after_enum = &first_non_empty["enum ".len()..];
     let name = after_enum.strip_suffix(" {")?;
 
-    // Validate: name must be a non-empty C identifier (ASCII alnum or `_`).
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return None;
     }
 
-    // The paragraph must also contain the companion typedef line.
     let expected_typedef = format!("typedef uint8_t {name};");
     let has_typedef = paragraph
         .lines()
@@ -158,8 +85,6 @@ fn fieldless_enum_name(paragraph: &str) -> Option<String> {
     }
 }
 
-/// Capture cbindgen's output into a `String`, canonicalize fieldless enum
-/// order, and write to `out_path`.
 fn write_canonical(bindings: cbindgen::Bindings, out_path: &str) {
     let mut buf: Vec<u8> = Vec::new();
     bindings.write(&mut buf);
@@ -214,7 +139,6 @@ fn main() {
 mod tests {
     use super::{canonicalize_untagged_enums, fieldless_enum_name};
 
-    // Realistic preamble paragraph (copyright + include guard + includes).
     const PREAMBLE: &str = "/*\n* kalico_runtime.h — generated by cbindgen.\n*/\n\n\
         #ifndef KALICO_RUNTIME_H\n#define KALICO_RUNTIME_H\n\n\
         #pragma once\n\n\
@@ -232,18 +156,12 @@ mod tests {
         "typedef struct Foo Foo;"
     }
 
-    /// Build a full header string from the given ordered paragraphs.
     fn join(paragraphs: &[&str]) -> String {
         paragraphs.join("\n\n")
     }
 
-    // ------------------------------------------------------------------
-    // canonicalize_untagged_enums — behavioural tests
-    // ------------------------------------------------------------------
-
     #[test]
     fn canonicalize_reorders_two_fieldless_enums_into_name_order() {
-        // SourceKind comes BEFORE ArmPolicy — that is the "wrong" Linux order.
         let src = join(&[
             PREAMBLE,
             source_kind_para(),
@@ -259,13 +177,11 @@ mod tests {
             "ArmPolicy must appear before SourceKind after canonicalization"
         );
 
-        // Preamble is unchanged and leads.
         assert!(
             out.starts_with(PREAMBLE),
             "preamble must be unchanged and first"
         );
 
-        // Struct paragraph is unchanged and trails.
         assert!(
             out.ends_with(struct_para()),
             "struct paragraph must be unchanged and last"
@@ -287,7 +203,6 @@ mod tests {
 
     #[test]
     fn canonicalize_is_noop_when_no_fieldless_enums() {
-        // A nurbs-style header: only typedef struct / function declarations.
         let src = join(&[
             PREAMBLE,
             "typedef struct KalicoNurbs KalicoNurbs;",
@@ -302,12 +217,10 @@ mod tests {
 
     #[test]
     fn canonicalize_handles_doc_commented_fieldless_enum() {
-        // A paragraph with a leading /** ... */ doc-comment block before `enum X {`.
         let commented_enum = "/**\n * A doc comment.\n */\n\
             enum Zephyr {\n  Alpha = 0,\n};\ntypedef uint8_t Zephyr;";
         let plain_enum = "enum Alpha {\n  Beta = 0,\n};\ntypedef uint8_t Alpha;";
 
-        // Zephyr (Z) before Alpha (A) — wrong order.
         let src = join(&[PREAMBLE, commented_enum, plain_enum, struct_para()]);
         let out = canonicalize_untagged_enums(&src);
 
@@ -318,8 +231,6 @@ mod tests {
             "Alpha must appear before Zephyr after canonicalization"
         );
 
-        // The doc comment must still be attached to the Zephyr paragraph
-        // (it moved as a unit with the paragraph).
         let zephyr_start = out.find("/**").expect("doc comment present");
         let zephyr_enum = out.find("enum Zephyr").expect("enum Zephyr present");
         assert!(
@@ -327,10 +238,6 @@ mod tests {
             "doc comment must precede enum Zephyr in output"
         );
     }
-
-    // ------------------------------------------------------------------
-    // fieldless_enum_name — unit tests
-    // ------------------------------------------------------------------
 
     #[test]
     fn fieldless_enum_name_returns_some_for_valid_fieldless_enum() {
@@ -364,7 +271,6 @@ mod tests {
 
     #[test]
     fn fieldless_enum_name_returns_none_when_typedef_missing() {
-        // Has the enum opener but no companion typedef uint8_t line.
         let para = "enum NoTypedef {\n  X = 0,\n};";
         assert_eq!(
             fieldless_enum_name(para),

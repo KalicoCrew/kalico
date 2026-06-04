@@ -1,28 +1,10 @@
-//! RFC 6298 RTT estimator. Spec §3.9.
-
 use std::time::Duration;
 
 const ALPHA: f64 = 0.125;
 const BETA: f64 = 0.25;
 const K: f64 = 4.0;
-/// Floor on the RFC 6298 retransmission timeout.
-///
-/// The original 25 ms was tuned for the Klipper C reference implementation
-/// where RTT on hardware is in microseconds. In our Rust transport, when the
-/// MCU is in the middle of a long-running command (e.g. LoadCurve under the
-/// Renode 1 µs quantum, where command_task can hold the CPU for seconds),
-/// retransmits at 25→50→100→200 ms intervals flood firmware's 192-byte
-/// `receive_buf` with stale Klipper bytes faster than the firmware can drain
-/// them. Each stale frame produces a NAK; the NAKs queue in firmware's
-/// 320-byte `transmit_buf`, and once it overflows `console_sendf` silently
-/// drops the next response — including the response the host is waiting on.
-///
-/// 500 ms is well above the worst observed command_task stall on real
-/// silicon (<10 ms) yet still tight enough that an actually-dropped frame
-/// retransmits within half a second. Once the RTT estimator gets a single
-/// real sample, `current_rto()` is driven by `srtt + 4×rttvar` so this
-/// floor only matters before the first sample — which is exactly the
-/// retransmit-storm window we want to slow down.
+// 500 ms floor: prevents retransmit storms flooding firmware's 192-byte receive_buf
+// during long-running command_task stalls (e.g. Renode). Driven by srtt+4×rttvar after first sample.
 pub const MIN_RTO: Duration = Duration::from_millis(500);
 pub const MAX_RTO: Duration = Duration::from_secs(5);
 const G: Duration = Duration::from_millis(1);

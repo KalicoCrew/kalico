@@ -24,19 +24,12 @@ fn parse_curve(v: &Value) -> nurbs::ScalarNurbs<f64> {
         .iter()
         .map(|x| x.as_f64().unwrap())
         .collect();
-    let weights: Option<Vec<f64>> = if v["weights"].is_null() {
-        None
-    } else {
-        Some(
-            v["weights"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|x| x.as_f64().unwrap())
-                .collect(),
-        )
-    };
-    nurbs::ScalarNurbs::try_new(degree, knots, cps, weights).unwrap()
+    // Rational (weighted) curves are no longer supported; all corpus entries are non-rational.
+    assert!(
+        v["weights"].is_null(),
+        "algebra_oracle: unexpected weighted curve in corpus"
+    );
+    nurbs::ScalarNurbs::try_new(degree, knots, cps).unwrap()
 }
 
 fn parse_kernel(v: &Value) -> nurbs::algebra::PiecewisePolynomialKernel<f64> {

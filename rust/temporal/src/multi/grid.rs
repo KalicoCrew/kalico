@@ -1,5 +1,3 @@
-//! Adaptive-N policy per spec §2.5.
-
 use crate::multi::GridStrategy;
 use nurbs::VectorNurbs;
 
@@ -16,8 +14,6 @@ pub(crate) fn compute_n(strategy: &GridStrategy, curve: &VectorNurbs<f64, 3>) ->
                 "target_grid_spacing_mm must be > 0; got {target_grid_spacing_mm}"
             );
             let l = control_polygon_length_mm(curve);
-            // `l / target_grid_spacing_mm` is non-negative (both positive by construction)
-            // and bounded by `max_n` after the clamp, so truncation is lossless.
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
             let n = (l / target_grid_spacing_mm).ceil() as usize;
             n.clamp(min_n, max_n)
@@ -25,12 +21,11 @@ pub(crate) fn compute_n(strategy: &GridStrategy, curve: &VectorNurbs<f64, 3>) ->
     }
 }
 
-/// Returns control-polygon length (sum of `‖cp[i+1] − cp[i]‖`).
+/// Control-polygon length (sum of `‖cp[i+1] − cp[i]‖`).
 ///
 /// For non-rational degree-1 NURBS this equals arclength exactly; for
-/// higher-degree or rational curves it is a strict upper bound — `compute_n`
-/// only uses it as a heuristic for grid-density and the `max_n` clamp absorbs
-/// over-estimates.
+/// higher-degree or rational curves it is a strict upper bound — used only
+/// as a heuristic for grid-density.
 fn control_polygon_length_mm(curve: &VectorNurbs<f64, 3>) -> f64 {
     let cps = curve.control_points();
     cps.windows(2)

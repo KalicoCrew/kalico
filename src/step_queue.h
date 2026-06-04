@@ -1,11 +1,7 @@
-// SPSC step queue per motor axis. Producer = TIM5 ISR (Rust);
-// consumer = per-axis Klipper timer (Rust extern "C", called from
-// Klipper SysTick dispatch). Storage C-owned per architectural
-// invariant B2/B3 in docs/kalico-rewrite/mcu-c-rust-boundary.md.
-//
-// 32-entry SPSC ring with u16 head/tail counters using wrapping
-// subtraction for length. Power-of-2 depth allows mask indexing
-// (& STEP_QUEUE_DEPTH_MASK) on the hot path.
+// SPSC step queue per motor axis. Producer = TIM5 ISR (Rust); consumer =
+// per-axis Klipper timer (Rust, via SysTick dispatch). Storage C-owned per the
+// B2/B3 invariant in docs/kalico-rewrite/mcu-c-rust-boundary.md. The struct
+// layout mirrors Rust #[repr(C)] — keep in sync (static_asserts below).
 
 #ifndef __KALICO_STEP_QUEUE_H
 #define __KALICO_STEP_QUEUE_H
@@ -18,9 +14,9 @@
 #define N_AXIS_STEP_QUEUES     4     // A, B, Z, E
 
 typedef struct {
-    uint32_t cycle_abs;   // lower 32 bits of DWT CYCCNT; wrap-aware compare only
-    int8_t   dir;         // +1 / -1
-    uint8_t  _pad[3];     // explicit padding, matches Rust #[repr(C)]
+    uint32_t cycle_abs;   // low 32 bits of DWT CYCCNT; wrap-aware compare only
+    int8_t   dir;
+    uint8_t  _pad[3];
 } StepEntry;
 
 typedef struct {

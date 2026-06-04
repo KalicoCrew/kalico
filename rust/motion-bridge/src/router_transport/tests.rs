@@ -30,13 +30,11 @@ fn no_parser_returns_parse_error() {
 
 #[test]
 fn host_time_to_mcu_clock_helper_round_trips() {
-    // Sanity-check the new router accessor used by the dispatch closure.
     let router = router();
     let mcu = {
         let mut r = router.lock().unwrap();
         r.claim_mcu("clk")
     };
-    // freq=1e6, offset=0, last_clock=0 -> 1.5s -> 1_500_000.
     {
         let mut r = router.lock().unwrap();
         r.set_clock_est(mcu, 1_000_000.0, 0.0, 0).unwrap();

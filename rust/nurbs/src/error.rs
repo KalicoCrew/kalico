@@ -11,8 +11,6 @@ pub enum ConstructError {
     KnotsNotClamped,
     KnotsNotMonotone,
     DegenerateKnotRange,
-    WeightCountMismatch { expected: usize, got: usize },
-    NonPositiveWeight,
 }
 
 impl fmt::Display for ConstructError {
@@ -29,10 +27,6 @@ impl fmt::Display for ConstructError {
             Self::DegenerateKnotRange => {
                 write!(f, "knot range is degenerate (knots[last] <= knots[0])")
             }
-            Self::WeightCountMismatch { expected, got } => {
-                write!(f, "weight count: expected {expected}, got {got}")
-            }
-            Self::NonPositiveWeight => write!(f, "weight is non-positive"),
         }
     }
 }
@@ -45,6 +39,7 @@ pub enum WireError {
     UnknownVersion(u8),
     TruncatedBuffer { expected_len: usize, got: usize },
     AxisCountMismatch { expected: usize, got: u8 },
+    WeightsUnsupported,
     Construct(ConstructError),
 }
 
@@ -60,6 +55,10 @@ impl fmt::Display for WireError {
             Self::AxisCountMismatch { expected, got } => write!(
                 f,
                 "axis count mismatch: header says {got}, type expects {expected}"
+            ),
+            Self::WeightsUnsupported => write!(
+                f,
+                "wire header has has_weights set; rational curves are unsupported"
             ),
             Self::Construct(e) => write!(f, "wire content invalid: {e}"),
         }
@@ -105,17 +104,10 @@ impl<T: Float> core::error::Error for ArcLengthError<T> {}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AlgebraError {
-    DegreeExceeded {
-        result_degree: u8,
-        max: u8,
-    },
+    DegreeExceeded { result_degree: u8, max: u8 },
     KnotMismatch,
     NotImplemented(&'static str),
     SupportMismatch,
-    RationalNotSupported {
-        operation: &'static str,
-        workaround: &'static str,
-    },
 }
 
 impl fmt::Display for AlgebraError {
@@ -127,15 +119,6 @@ impl fmt::Display for AlgebraError {
             Self::KnotMismatch => write!(f, "operands have incompatible knot vectors"),
             Self::NotImplemented(s) => write!(f, "algorithm not implemented: {s}"),
             Self::SupportMismatch => write!(f, "Bezier pieces have mismatched support"),
-            Self::RationalNotSupported {
-                operation,
-                workaround,
-            } => {
-                write!(
-                    f,
-                    "{operation} does not support rational input; {workaround}"
-                )
-            }
         }
     }
 }

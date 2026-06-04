@@ -1,6 +1,3 @@
-//! Layer 4 MCU runtime — 40 kHz hard-real-time ISR with stub NURBS evaluator.
-//! See `docs/superpowers/specs/2026-04-28-layer-4-mcu-framework-stub-design.md`.
-
 #![cfg_attr(not(feature = "host"), no_std)]
 #![deny(
     clippy::panic,
@@ -29,12 +26,6 @@ compile_error!(
      (e.g. motion-module-stepper); none is active"
 );
 
-// `alloc` is needed by the `sim_fixtures::init_test_runtime` helper on hosted
-// environments. Gate to match the helper's `#[cfg(not(target_os = "none"))]`
-// so the embedded sim build stays allocator-free.
-#[cfg(all(feature = "kalico-sim", not(target_os = "none")))]
-extern crate alloc;
-
 pub mod bezier_root;
 pub mod segment;
 pub mod sizing;
@@ -55,8 +46,6 @@ pub mod per_axis_timer;
 pub mod phase_config;
 pub mod phase_lut;
 pub mod piece_ring;
-#[cfg(feature = "kalico-sim")]
-pub mod sim_fixtures;
 pub mod spi_queue;
 pub mod state;
 pub use state::{SetStepModeError, StepMode, set_step_mode};

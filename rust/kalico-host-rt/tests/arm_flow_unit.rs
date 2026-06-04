@@ -1,12 +1,3 @@
-//! Phase 8 Task 8.2 unit tests: `stream::arm_all_mcus` against
-//! `MockTransport`.
-//!
-//! Covers:
-//! * happy path (single MCU + dual MCU)
-//! * deadline-miss aborts
-//! * quality-gate failure aborts
-//! * `kalico_stream_arm_response.result != 0` aborts
-
 #![allow(clippy::cast_sign_loss, clippy::cast_lossless)]
 
 mod mock_transport;
@@ -24,8 +15,6 @@ use mock_transport::{MockTransport, SharedMock, mp_with};
 const FREQ: f64 = 550_000_000.0;
 const EPOCH_OFFSET: u64 = 1_000_000_000;
 
-/// Pre-warm an estimator with `MIN_WARMUP_SAMPLES` piggyback samples
-/// on the synthetic regression line `mcu = EPOCH_OFFSET + freq · t_secs`.
 fn warm_estimator(est: &mut ClockSyncEstimator) {
     let n = MIN_WARMUP_SAMPLES;
     let cadence_ms = 1_u64;
@@ -38,11 +27,6 @@ fn warm_estimator(est: &mut ClockSyncEstimator) {
     }
 }
 
-/// Construct an MCU-clock value that, when reported by the mock as
-/// `mcu_clock_lo/hi` in a `kalico_clock_sync_response` AND back-
-/// calculated by `ClockSyncEstimator::add_dedicated_sample` (which
-/// subtracts half the RTT in mcu-cycles), lands on the synthetic
-/// regression line at `host_send_secs`.
 fn make_clock_sync_response(host_send_secs: f64, rtt_us: u32) -> (u32, u32) {
     let one_way = f64::from(rtt_us) * 1e-6 / 2.0;
     let mcu_send = EPOCH_OFFSET + (host_send_secs * FREQ) as u64;
@@ -50,20 +34,12 @@ fn make_clock_sync_response(host_send_secs: f64, rtt_us: u32) -> (u32, u32) {
     (mcu_response as u32, (mcu_response >> 32) as u32)
 }
 
-/// Build a fully-warmed `(SharedMock, ClockSyncEstimator)` pair.
-///
-/// The clock-sync response is handled by a synchronous `install_responder`
-/// (runs inside `call()` with zero latency) so the `ClockSyncEstimator`
-/// residual stays well below MAX_RESIDUAL_US_DEFAULT = 100 µs even under
-/// heavy parallel test load. The arm response is handled from a thread
-/// (no timing constraint on that side).
 fn make_warm_mcu(arm_result: i32) -> (SharedMock, ClockSyncEstimator) {
     let mock = SharedMock::new();
     let mut est = ClockSyncEstimator::new(FREQ);
     warm_estimator(&mut est);
     let epoch = est.epoch();
 
-    // Clock-sync: synchronous responder so RTT ≈ 0.
     mock.install_responder("kalico_clock_sync_response", move |_cmd, call_time| {
         let send_secs = call_time.saturating_duration_since(epoch).as_secs_f64();
         let (lo, hi) = make_clock_sync_response(send_secs, 0);
@@ -74,7 +50,6 @@ fn make_warm_mcu(arm_result: i32) -> (SharedMock, ClockSyncEstimator) {
         ])
     });
 
-    // Arm: async from a thread (no residual constraint).
     let mock_clone = mock.clone();
     std::thread::spawn(move || {
         let _ = mock_clone.wait_for_call("kalico_stream_arm_response");
@@ -135,8 +110,6 @@ fn quality_gate_failure_aborts() {
     let mock = SharedMock::new();
     let est = ClockSyncEstimator::new(FREQ);
 
-    // Install a synchronous responder so arm_all_mcus doesn't stall,
-    // but the estimator has no warmup → quality gate fails regardless.
     mock.install_responder("kalico_clock_sync_response", |_cmd, _call_time| {
         let (lo, hi) = make_clock_sync_response(1.0, 200);
         mp_with(&[
@@ -193,7 +166,6 @@ fn mcu_rejected_aborts_with_result_code() {
 
 #[test]
 fn deadline_missed_when_arm_lead_time_too_short() {
-    // arm_lead_time = 0 → deadline is now → first deadline-check fires.
     let mock = SharedMock::new();
     let est = ClockSyncEstimator::new(FREQ);
     let mut mcus: Vec<(SharedMock, ClockSyncEstimator)> = vec![(mock, est)];
@@ -214,15 +186,12 @@ fn deadline_missed_when_arm_lead_time_too_short() {
 
 #[test]
 fn transport_timeout_propagates() {
-    // No response will be completed → call() times out naturally.
     let mock = SharedMock::new();
     let est = ClockSyncEstimator::new(FREQ);
     let mut mcus: Vec<(SharedMock, ClockSyncEstimator)> = vec![(mock, est)];
     let failure = arm_all_mcus(
         &mut mcus,
         Instant::now() + Duration::from_secs(1),
-        // arm_lead_time must be large enough that we don't hit DeadlineMissed
-        // before the clock-sync timeout fires (CLOCK_SYNC_REQUEST_TIMEOUT = 50ms).
         Duration::from_millis(200),
         0,
         FREQ,
@@ -235,7 +204,6 @@ fn transport_timeout_propagates() {
     );
 }
 
-/// Spec §6.3 + §12.4 cross-MCU drift check (GAP-1 fix).
 #[test]
 fn cross_mcu_desync_rejects_pair_above_threshold() {
     let freqs = [550_000_000.0, 550_000_000.0 * 1.005];
@@ -288,7 +256,6 @@ fn cross_mcu_desync_arm_error_displays() {
 
 #[test]
 fn partial_arm_failure_reports_armed_indices() {
-    // MCU 0 arms successfully, MCU 1 rejects the arm.
     let mut mcus: Vec<(SharedMock, ClockSyncEstimator)> =
         vec![make_warm_mcu(0), make_warm_mcu(-42)];
     let failure = arm_all_mcus(
@@ -312,19 +279,11 @@ fn partial_arm_failure_reports_armed_indices() {
 
 #[test]
 fn request_id_is_monotonic_across_arm_attempts() {
-    // Codex finding: a delayed clock_sync_response from a prior arm
-    // must not collide with a fresh request_id. Counter lives on the
-    // estimator, so a second arm_all_mcus call must send a strictly
-    // larger request_id than the first.
     let mock = SharedMock::new();
     let mut est = ClockSyncEstimator::new(FREQ);
     warm_estimator(&mut est);
     let epoch = est.epoch();
 
-    // Echo whatever request_id the host sent. Parse it from the cmd
-    // string the responder receives directly — the mock holds its
-    // state mutex while invoking the responder, so calling back into
-    // the mock (e.g. last_sent()) would deadlock.
     mock.install_responder("kalico_clock_sync_response", move |cmd, call_time| {
         let request_id: u32 = cmd
             .split_whitespace()
@@ -341,11 +300,6 @@ fn request_id_is_monotonic_across_arm_attempts() {
         ])
     });
 
-    // Arm: synchronous responder shared by both arm attempts. The old
-    // shape — two spawned wait_for_call threads on the same response
-    // name — raced: wait_for_call is level-triggered and does not claim
-    // the pending call, so both threads could wake on the first arm and
-    // leave the second arm unanswered → Transport(Timeout) flake.
     mock.install_responder("kalico_stream_arm_response", |_cmd, _call_time| {
         mp_with(&[
             ("result", MessageValue::I32(0)),
@@ -406,11 +360,10 @@ fn arm_fails_on_request_id_mismatch() {
     let mock = SharedMock::new();
     let est = ClockSyncEstimator::new(FREQ);
 
-    // Return request_id=99; arm_all_mcus sends request_id=1 (first fetch_add).
     mock.install_responder("kalico_clock_sync_response", |_cmd, _call_time| {
         let (lo, hi) = make_clock_sync_response(1.0, 0);
         mp_with(&[
-            ("request_id", MessageValue::U32(99)), // wrong: sent 1, echo 99
+            ("request_id", MessageValue::U32(99)),
             ("mcu_clock_lo", MessageValue::U32(lo)),
             ("mcu_clock_hi", MessageValue::U32(hi)),
         ])

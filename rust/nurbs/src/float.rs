@@ -1,9 +1,3 @@
-//! Float abstraction for f32 / f64 single-source.
-//! See spec §Substrate / Float abstraction.
-
-/// Single-source numeric trait for the eval crate. Tight surface — only the
-/// operations the math actually uses. Both `f32` and `f64` impls live in this
-/// module; `f64` is feature-gated so the MCU build closure stays tight.
 pub trait Float:
     Copy
     + Default
@@ -19,12 +13,8 @@ pub trait Float:
     const ZERO: Self;
     const ONE: Self;
 
-    /// Lift a compile-time `f64` literal into `Self`. Truncates for `f32`.
     fn from_f64(x: f64) -> Self;
-
-    /// Fused multiply-add: `self * a + b`. Load-bearing on M7 — codegen
-    /// emits a single `VFMA.F32` instruction. Do not rely on opportunistic
-    /// FMA fusion via fast-math flags; this trait method is the contract.
+    // mul_add is load-bearing on M7: emits a single VFMA.F32 instruction in release.
     fn mul_add(self, a: Self, b: Self) -> Self;
 
     fn sqrt(self) -> Self;
@@ -45,9 +35,7 @@ impl Float for f32 {
 
     #[inline]
     fn mul_add(self, a: Self, b: Self) -> Self {
-        // `f32::mul_add` is an inherent method only when `std` is linked.
-        // In `no_std` MCU builds it falls back to the trait method via name
-        // resolution and recurses; route to `libm::fmaf` instead.
+        // no_std: f32::mul_add recurses via trait; use libm::fmaf instead.
         #[cfg(feature = "host")]
         {
             f32::mul_add(self, a, b)
@@ -60,7 +48,6 @@ impl Float for f32 {
 
     #[inline]
     fn sqrt(self) -> Self {
-        // libm-style: hardware on M7/M4; std::f32::sqrt on host.
         #[cfg(feature = "host")]
         {
             f32::sqrt(self)
@@ -141,5 +128,5 @@ impl Float for f64 {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)] // tests assert exact bit-for-bit values for constants and round-trips
+#[allow(clippy::float_cmp)]
 mod tests;

@@ -1,12 +1,8 @@
-//! Segment types — the product of the iterator. Layer 2 reads these.
-
 use nurbs::{ScalarNurbs, VectorNurbs};
 
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Segment {
-    /// Live-pipeline cubic Bézier segment with E-mode classification. Produced by
-    /// `reduce.rs` from G5/G5.1 input.
     Cubic(CubicSegment),
     CornerBlend(CornerBlendSlot),
     Junction(JunctionDeviation),
@@ -33,32 +29,18 @@ pub struct JunctionDeviation {
     pub source: SourceRange,
 }
 
-/// Live-pipeline cubic-Bézier segment. Single-piece cubic Bézier in `xyz` (degree 3,
-/// 4 control points, no weights, clamped knot vector). E classification per `EMode`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CubicSegment {
-    /// XYZ trajectory in u-domain. **Invariant** (enforced by `try_new`): single-piece
-    /// cubic Bézier — degree 3, 4 control points, no weights, clamped knot vector.
     pub xyz: VectorNurbs<f64, 3>,
     pub e_mode: EMode,
-    /// Valid when `e_mode == CoupledToXy`. Signed: negative for retract-during-XY-motion
-    /// / wipe / coast. Zero when `e_mode == Travel`. Unused when `e_mode == Independent`
-    /// (use `e_independent` instead).
     pub extrusion_per_xy_mm: f64,
-    /// `Some(curve)` iff `e_mode == Independent`; carries the E trajectory for
-    /// retraction / prime / filament-change segments.
     pub e_independent: Option<ScalarNurbs<f64>>,
     pub feedrate_mm_s: f64,
     pub source: SourceRange,
-    /// `None` on un-split segments; `Some` on splitter output.
     pub split_info: Option<SplitInfo>,
 }
 
 impl CubicSegment {
-    /// Construct a `CubicSegment`, validating invariants. Returns `Err` on:
-    /// - `NotSinglePieceCubic`: xyz is not single-piece cubic (degree != 3,
-    ///   != 4 CPs, has weights, or knots are not clamped `[0,0,0,0,1,1,1,1]`).
-    /// - `EModeInvariantViolation`: `e_mode` and the corresponding fields disagree.
     pub fn try_new(
         xyz: VectorNurbs<f64, 3>,
         e_mode: EMode,
@@ -68,7 +50,6 @@ impl CubicSegment {
         source: SourceRange,
         split_info: Option<SplitInfo>,
     ) -> Result<Self, crate::GeometryError> {
-        // xyz must be single-piece cubic Bézier.
         if xyz.degree() != 3 {
             return Err(crate::GeometryError::NotSinglePieceCubic {
                 reason: "degree != 3",
@@ -79,11 +60,6 @@ impl CubicSegment {
                 reason: "control_points.len() != 4",
             });
         }
-        if xyz.weights().is_some() {
-            return Err(crate::GeometryError::NotSinglePieceCubic {
-                reason: "weights present (must be polynomial)",
-            });
-        }
         let expected_knots: [f64; 8] = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
         if xyz.knots() != expected_knots.as_slice() {
             return Err(crate::GeometryError::NotSinglePieceCubic {
@@ -91,7 +67,6 @@ impl CubicSegment {
             });
         }
 
-        // EMode invariants.
         match e_mode {
             EMode::CoupledToXy => {
                 if e_independent.is_some() {
@@ -126,12 +101,6 @@ impl CubicSegment {
             }
         }
 
-        // Defense-in-depth: callers bypassing the lexer (tests, Step-13 output
-        // handlers, hand-built segments) must not be able to construct a
-        // CubicSegment with non-finite values. Non-finite cps poison
-        // xy_arc_length and downstream classification; non-finite feedrate /
-        // extrusion ratio poisons TOPP-RA scheduling; non-finite e_independent
-        // curve poisons E integration on the MCU.
         for cp in xyz.control_points() {
             for &v in cp {
                 if !v.is_finite() {
@@ -180,24 +149,6 @@ impl CubicSegment {
     }
 }
 
-/// Subdivide a single-piece cubic Bézier curve at parameter `s ∈ (0, 1)` using
-/// the de Casteljau algorithm. Returns `(left, right)` — each a single-piece
-/// cubic Bézier covering the input curve's `[0, s]` and `[s, 1]` respectively,
-/// re-parameterized so each half's parameter domain is `[0, 1]` (clamped
-/// `[0,0,0,0,1,1,1,1]` knot vector).
-///
-/// **Position continuity invariant.** Evaluating `left` at `u = 1` and `right`
-/// at `u = 0` both reproduce `xyz(s)` to within floating-point round-off. The
-/// caller is expected to use this property when chaining the right half back
-/// into the planner (e.g., the streaming shaper's partial-commit replan,
-/// where the toolhead's mid-move position must align with the new plan's
-/// starting position).
-///
-/// # Panics
-///
-/// Panics if `xyz` is not a valid single-piece cubic Bézier (`CubicSegment`'s
-/// `try_new` invariants — degree 3, 4 control points, no weights, clamped
-/// knot vector). Panics if `s` is not strictly interior to `(0, 1)`.
 #[must_use]
 pub fn split_cubic_bezier(
     xyz: &VectorNurbs<f64, 3>,
@@ -209,10 +160,6 @@ pub fn split_cubic_bezier(
         cps.len(),
         4,
         "split_cubic_bezier: must have 4 control points"
-    );
-    assert!(
-        xyz.weights().is_none(),
-        "split_cubic_bezier: weights must be absent (polynomial Bézier)",
     );
     let expected_knots: [f64; 8] = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
     assert_eq!(
@@ -230,14 +177,6 @@ pub fn split_cubic_bezier(
     let p2 = cps[2];
     let p3 = cps[3];
 
-    // de Casteljau lerps. For a cubic Bézier:
-    //   Q0 = lerp(P0, P1, s), Q1 = lerp(P1, P2, s), Q2 = lerp(P2, P3, s)
-    //   R0 = lerp(Q0, Q1, s), R1 = lerp(Q1, Q2, s)
-    //   S0 = lerp(R0, R1, s)
-    // Left half (covering original [0, s]) is [P0, Q0, R0, S0]; right half
-    // (covering original [s, 1]) is [S0, R1, Q2, P3]. Both are cubic Béziers
-    // by the standard de Casteljau subdivision identity (Farin, "Curves and
-    // Surfaces for CAGD", §6.3).
     let lerp = |a: [f64; 3], b: [f64; 3], t: f64| -> [f64; 3] {
         [
             a[0] + (b[0] - a[0]) * t,
@@ -253,9 +192,9 @@ pub fn split_cubic_bezier(
     let s0 = lerp(r0, r1, s);
 
     let knots = vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
-    let left = VectorNurbs::<f64, 3>::try_new(3, knots.clone(), vec![p0, q0, r0, s0], None)
+    let left = VectorNurbs::<f64, 3>::try_new(3, knots.clone(), vec![p0, q0, r0, s0])
         .expect("split_cubic_bezier: left half is a valid single-piece cubic Bézier");
-    let right = VectorNurbs::<f64, 3>::try_new(3, knots, vec![s0, r1, q2, p3], None)
+    let right = VectorNurbs::<f64, 3>::try_new(3, knots, vec![s0, r1, q2, p3])
         .expect("split_cubic_bezier: right half is a valid single-piece cubic Bézier");
     (left, right)
 }
@@ -266,40 +205,17 @@ pub enum BlendFamily {
     CubicBezier,
 }
 
-/// E-axis classification per CLAUDE.md feature scope. `CubicSegment::try_new`
-/// applies the §6.1 classification rules to derive this from raw `(ΔX, ΔY, ΔZ, ΔE)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EMode {
-    /// Extrusion proportional to actual XY shaped motion: `e_actual(t) = ratio × ∫|v_xy| dt`.
-    /// `extrusion_per_xy_mm` is nonzero and signed (positive for normal extrusion;
-    /// negative for retract-during-XY-motion / wipe / coast). Used for moves with
-    /// `ΔXY > ε_xyz`, `ΔZ ≤ ε_z`, and `abs(ΔE) > ε_e`.
     CoupledToXy,
-    /// Travel move: XY motion with no extrusion. Equivalent to `CoupledToXy` with
-    /// `extrusion_per_xy_mm = 0`. Modeled distinctly for clarity in logs/telemetry
-    /// and to allow a future plan layer to skip per-sample E integration when the
-    /// ratio is definitionally zero.
     Travel,
-    /// E motion not coupled to XY: own E NURBS carries the trajectory in time.
-    /// In 7-pre's live pipeline, `Independent` always implies null `xyz` motion
-    /// (`cp_polygon_length` and midpoint parametric speed both below thresholds).
-    /// Helical extrusion (XYZ + E) is rejected upstream; never produces `Independent`
-    /// in the live pipeline.
     Independent,
 }
 
-/// Sub-segment provenance, populated by `split_segment_to_cap` (`geometry::splitter`).
-/// `None` when the segment was not split.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SplitInfo {
-    /// 0-indexed position of this child within the parent's sub-segment sequence.
     pub sub_index: u32,
-    /// Total sub-segments produced from the parent. May be < the originally-planned
-    /// `k` if epsilon-filtering at splitter step 6 dropped near-boundary breakpoints.
     pub sub_count: u32,
-    /// Arc-length range this sub-segment occupies in the parent's arc-length domain.
-    /// Computed at split time by querying the parent's arc-length table at the child's
-    /// `xyz.u_start` and `xyz.u_end`.
     pub s_lo_mm: f64,
     pub s_hi_mm: f64,
 }

@@ -1,6 +1,3 @@
-//! Per-MCU statistics counters — `serialqueue_get_stats` parity.
-
-/// Snapshot of passthrough-queue statistics for one MCU.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct PassthroughStats {
     pub bytes_write: u64,
@@ -15,7 +12,6 @@ pub struct PassthroughStats {
     pub stalled_bytes: u64,
 }
 
-/// Mutable counters stored inside `McuRecord`.
 #[derive(Debug, Default)]
 pub struct StatsCounters {
     pub bytes_write: u64,
@@ -41,8 +37,6 @@ impl StatsCounters {
             send_seq: self.send_seq,
             receive_seq: self.receive_seq,
             retransmit_seq: self.retransmit_seq,
-            // ready/upcoming/stalled bytes are filled in by the router
-            // from live queue state, not from counters.
             ready_bytes: 0,
             upcoming_bytes: 0,
             stalled_bytes: 0,

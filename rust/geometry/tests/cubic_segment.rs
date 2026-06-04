@@ -11,7 +11,6 @@ fn valid_cubic_xyz() -> VectorNurbs<f64, 3> {
             [2.0, 0.0, 0.0],
             [3.0, 0.0, 0.0],
         ],
-        None,
     )
     .expect("valid cubic")
 }
@@ -29,40 +28,10 @@ fn try_new_rejects_non_cubic() {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-        None,
     )
     .expect("valid linear");
     let result = CubicSegment::try_new(
         linear,
-        EMode::Travel,
-        0.0,
-        None,
-        100.0,
-        dummy_source(),
-        None,
-    );
-    assert!(matches!(
-        result,
-        Err(GeometryError::NotSinglePieceCubic { .. })
-    ));
-}
-
-#[test]
-fn try_new_rejects_weighted() {
-    let weighted = VectorNurbs::<f64, 3>::try_new(
-        3,
-        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        vec![
-            [0.0, 0.0, 0.0],
-            [1.0, 0.0, 0.0],
-            [2.0, 0.0, 0.0],
-            [3.0, 0.0, 0.0],
-        ],
-        Some(vec![1.0, 0.5, 0.5, 1.0]),
-    )
-    .expect("valid weighted cubic");
-    let result = CubicSegment::try_new(
-        weighted,
         EMode::Travel,
         0.0,
         None,
@@ -170,7 +139,6 @@ fn degree_elevation_preserves_curve() {
         2,
         vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]],
-        None,
     )
     .unwrap();
 
@@ -465,7 +433,6 @@ fn try_new_rejects_non_finite_control_point() {
             [2.0, 0.0, 0.0],
             [3.0, 0.0, 0.0],
         ],
-        None,
     )
     .expect("VectorNurbs accepts NaN at the type level; CubicSegment::try_new must catch it");
     let result = CubicSegment::try_new(
@@ -497,7 +464,6 @@ fn try_new_rejects_non_finite_feedrate() {
             [2.0, 0.0, 0.0],
             [3.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
     let result = CubicSegment::try_new(
@@ -529,7 +495,6 @@ fn try_new_rejects_non_finite_extrusion_ratio() {
             [2.0, 0.0, 0.0],
             [3.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
     let result = CubicSegment::try_new(
@@ -556,12 +521,10 @@ fn try_new_rejects_non_finite_e_independent_curve() {
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
         vec![[0.0; 3]; 4],
-        None,
     )
     .unwrap();
     let bad_e =
-        ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, f64::INFINITY], None)
-            .unwrap();
+        ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, f64::INFINITY]).unwrap();
     let result = CubicSegment::try_new(
         xyz,
         EMode::Independent,

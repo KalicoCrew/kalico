@@ -73,10 +73,6 @@ src-y += runtime_commands.c
 src-y += stm32/phase_stepping_spi.c
 # Sim-only: software CYCCNT under CONFIG_KALICO_SIM. Per Step-6 spec §3.1.
 src-$(CONFIG_KALICO_SIM) += stm32/kalico_sim_clock.c
-# Note: runtime_sim_commands.c was retired in 085b4b16f (feat(build): drop
-# runtime_sim_commands; gate sim_chip_socket on TMCUART_BYPASS). Stale
-# reference removed so `make -j` with CONFIG_KALICO_SIM=y succeeds — the
-# sim-build path is needed by the Renode bench-repro harness.
 
 src-$(CONFIG_MACH_STM32F0) += stm32/stm32f0.c ../lib/stm32f0/system_stm32f0xx.c
 src-$(CONFIG_MACH_STM32F1) += stm32/stm32f1.c ../lib/stm32f1/system_stm32f1xx.c

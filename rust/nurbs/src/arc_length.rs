@@ -1,21 +1,9 @@
-//! Arc-length parameterization.
-//! See spec §`arc_length` module.
-//!
-//! # Safety note
-//!
-//! `param_from_arc_length` and `arc_length_from_param` use `get_unchecked`
-//! for hot-path binary-search accesses. All indices are proved in-bounds by
-//! the binary-search loop invariants (standard binary-search correctness);
-//! each site is annotated with a SAFETY comment. This is the same pattern
-//! used in `eval.rs` for the de Boor recurrence.
-// `unsafe_code` is workspace-denied; this module is a targeted exception for
-// the MCU hot-path arc-length lookup that the release build must not panic in.
+// `unsafe_code` is workspace-denied; targeted exception for MCU hot-path arc-length
+// lookup — release builds must not call the panic symbol from inside binary search.
 #![allow(unsafe_code)]
 
 use crate::Float;
 
-/// Owned arc-length table. Built on host via `build_arc_length_table_*`,
-/// shipped to the MCU as a borrowed view via the wire format.
 #[cfg(feature = "host")]
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArcLengthTable<T: Float> {
@@ -25,8 +13,6 @@ pub struct ArcLengthTable<T: Float> {
 
 #[cfg(feature = "host")]
 impl<T: Float> ArcLengthTable<T> {
-    /// Construct from monotone non-decreasing s and u sample arrays.
-    /// Caller is the builder — already validated.
     #[must_use]
     pub fn new(s: Vec<T>, u: Vec<T>) -> Self {
         debug_assert_eq!(s.len(), u.len());
@@ -70,7 +56,6 @@ impl<T: Float> ArcLengthTable<T> {
     }
 }
 
-/// Borrowed arc-length table. Available on host and MCU. Pure lookup.
 #[derive(Debug, Clone, Copy)]
 pub struct ArcLengthTableRef<'a, T: Float> {
     pub(crate) s: &'a [T],
@@ -78,7 +63,6 @@ pub struct ArcLengthTableRef<'a, T: Float> {
 }
 
 impl<'a, T: Float> ArcLengthTableRef<'a, T> {
-    /// Construct from already-validated slices.
     pub fn new(s: &'a [T], u: &'a [T]) -> Self {
         debug_assert_eq!(s.len(), u.len());
         debug_assert!(s.len() >= 2);
@@ -103,8 +87,6 @@ impl<'a, T: Float> ArcLengthTableRef<'a, T> {
     }
 }
 
-/// 5-point Gauss-Legendre nodes (in [-1, 1]) and weights. Exact for polynomials
-/// up to degree 9. Sufficient for our integrand magnitudes.
 #[cfg(feature = "host")]
 const GAUSS_LEGENDRE_5_NODES: [f64; 5] = [
     -0.906_179_845_938_664,
@@ -122,9 +104,6 @@ const GAUSS_LEGENDRE_5_WEIGHTS: [f64; 5] = [
     0.236_926_885_056_189_1,
 ];
 
-/// Integrate `integrand` over `[u_start, u_end]` via Gauss-Legendre quadrature.
-/// `quadrature_points` must be 5; v1 hardcodes 5-point GL — argument reserved
-/// for future adaptation (e.g. higher-order for high-degree integrands).
 #[cfg(feature = "host")]
 pub(crate) fn integrate_arc_length<T: Float, F: Fn(T) -> T>(
     integrand: F,
@@ -157,17 +136,10 @@ use crate::eval::{eval, vector_derivative, vector_eval};
 #[cfg(feature = "host")]
 use crate::{ArcLengthError, NurbsView, VectorNurbsView};
 
-/// Given an arc-length table and a query `s`, return the parameter `u` such
-/// that `arc_length(u) = s`. Binary search on `s` plus linear interpolation.
-///
-/// Contract: `s` is segment-local (relative to this segment's table). Out-of-
-/// range queries debug-assert in development and clamp silently in release.
-/// Index-safety invariant for `param_from_arc_length` and `arc_length_from_param`:
-/// The table has `debug_assert!(len >= 2)` at construction. Binary search
-/// initialises `lo = 0`, `hi = last = len - 1` and loop terminates with
-/// `hi - lo == 1`, so `lo ∈ [0, last-1]` and `lo+1 = hi ≤ last = len-1`.
-/// All accesses `arr[0]`, `arr[last]`, `arr[mid]`, `arr[lo]`, `arr[lo+1]`
-/// are in `[0, len-1]`.
+// SAFETY invariant for param_from_arc_length and arc_length_from_param:
+// Table construction asserts len >= 2. Binary search maintains lo = 0, hi = last = len-1;
+// loop exits with hi - lo == 1, so lo ∈ [0, last-1] and lo+1 ≤ last < len.
+// All get_unchecked accesses are to indices in [0, last].
 #[inline]
 pub fn param_from_arc_length<T: Float>(table: &ArcLengthTableRef<'_, T>, s: T) -> T {
     debug_assert!(s >= T::ZERO);
@@ -178,7 +150,6 @@ pub fn param_from_arc_length<T: Float>(table: &ArcLengthTableRef<'_, T>, s: T) -
     let u_arr = table.u();
     debug_assert!(s_arr.len() >= 2);
     debug_assert_eq!(s_arr.len(), u_arr.len());
-    // Endpoint short-circuit.
     // SAFETY: len >= 2 → index 0 is valid.
     if s_clamped <= unsafe { *s_arr.get_unchecked(0) } {
         return unsafe { *u_arr.get_unchecked(0) };
@@ -189,8 +160,6 @@ pub fn param_from_arc_length<T: Float>(table: &ArcLengthTableRef<'_, T>, s: T) -
         return unsafe { *u_arr.get_unchecked(last) };
     }
 
-    // Binary search for the span [i, i+1] where s_arr[i] <= s_clamped < s_arr[i+1].
-    // Invariant: s_arr[lo] <= s_clamped < s_arr[hi], lo < hi.
     let mut lo = 0usize;
     let mut hi = last;
     while hi - lo > 1 {
@@ -202,8 +171,7 @@ pub fn param_from_arc_length<T: Float>(table: &ArcLengthTableRef<'_, T>, s: T) -
             hi = mid;
         }
     }
-    // Loop exits with hi - lo == 1, so lo ∈ [0, last-1] and lo+1 = hi ≤ last < len.
-    // SAFETY: lo and lo+1 both in [0, last] < len; same for u_arr (same length).
+    // SAFETY: loop invariant → lo ∈ [0, last-1], lo+1 ≤ last < len; u_arr same length.
     let s_lo = unsafe { *s_arr.get_unchecked(lo) };
     let s_hi = unsafe { *s_arr.get_unchecked(lo + 1) };
     let u_lo = unsafe { *u_arr.get_unchecked(lo) };
@@ -215,9 +183,6 @@ pub fn param_from_arc_length<T: Float>(table: &ArcLengthTableRef<'_, T>, s: T) -
     u_lo + (u_hi - u_lo) * frac
 }
 
-/// Inverse: given parameter `u`, return arc length `s = arc_length(u)`.
-/// Binary search on `u` plus linear interpolation. Same contract as `param_from_arc_length`.
-/// Same index-safety invariant as `param_from_arc_length` — see its comment.
 #[inline]
 pub fn arc_length_from_param<T: Float>(table: &ArcLengthTableRef<'_, T>, u: T) -> T {
     debug_assert!(u >= T::ZERO);
@@ -249,7 +214,7 @@ pub fn arc_length_from_param<T: Float>(table: &ArcLengthTableRef<'_, T>, u: T) -
             hi = mid;
         }
     }
-    // SAFETY: lo and lo+1 both in [0, last] < len (same for s_arr).
+    // SAFETY: loop invariant → lo ∈ [0, last-1], lo+1 ≤ last < len.
     let u_lo = unsafe { *u_arr.get_unchecked(lo) };
     let u_hi = unsafe { *u_arr.get_unchecked(lo + 1) };
     let s_lo = unsafe { *s_arr.get_unchecked(lo) };
@@ -261,16 +226,6 @@ pub fn arc_length_from_param<T: Float>(table: &ArcLengthTableRef<'_, T>, u: T) -
     s_lo + (s_hi - s_lo) * frac
 }
 
-/// Build an arc-length table for a scalar NURBS via adaptive sampling.
-///
-/// Strategy: start with a small uniform grid in u; at each step, double the
-/// sample count if the linear-interpolation residual against a refined estimate
-/// exceeds `tolerance`. Cap at `max_samples`.
-///
-/// Integrand is `|dP/du|`; for scalar curves we use the absolute value of the
-/// scalar derivative evaluated by central difference (we don't take a
-/// degree-lowered derivative here because it'd allocate twice for the same
-/// information; central difference is cheap on the host).
 #[cfg(feature = "host")]
 pub fn build_arc_length_table_scalar<T: Float, V: NurbsView<T>>(
     curve: &V,
@@ -292,7 +247,6 @@ pub fn build_arc_length_table_scalar<T: Float, V: NurbsView<T>>(
     build_table_via_integrand(integrand, u_start, u_end, tolerance, max_samples)
 }
 
-/// Build an arc-length table for a vector NURBS in R^3.
 #[cfg(feature = "host")]
 pub fn build_arc_length_table_vector<T: Float, V: VectorNurbsView<T, 3>>(
     curve: &V,
@@ -318,20 +272,6 @@ pub fn build_arc_length_table_vector<T: Float, V: VectorNurbsView<T, 3>>(
     build_table_via_integrand(integrand, u_start, u_end, tolerance, max_samples)
 }
 
-/// One-shot scalar query for the XY-projected arc length of a 3D (or higher)
-/// vector NURBS path. Integrates `√(x'(u)² + y'(u)²) du` over the full knot
-/// span via 5-point Gauss-Legendre quadrature with adaptive doubling until the
-/// residual relative to the previous estimate is below `1e-9 · |estimate|`
-/// (capped at 64 subintervals).
-///
-/// Used by:
-/// - Layer 1 E-mode classification (Task 1.6) — compares per-segment XY arc
-///   length against a threshold to decide `COUPLED_TO_XY` vs `INDEPENDENT`.
-/// - Step-7-pre segment splitter (Task 3.1) — caps per-segment XY length so
-///   downstream curve-pool slots stay bounded.
-///
-/// For a path lying entirely in the XY plane (Z constant), the result matches
-/// the full 3D arc length to f64 round-off.
 #[cfg(feature = "host")]
 #[must_use]
 pub fn xy_arc_length<const D: usize>(xyz: &crate::VectorNurbs<f64, D>) -> f64
@@ -344,8 +284,6 @@ where
     let u_start = knots[0];
     let u_end = knots[knots.len() - 1];
 
-    // Compute the parametric derivative once outside the quadrature loop —
-    // for cubic input this is degree-2, evaluated 5·subintervals times.
     let deriv = vector_derivative(xyz);
 
     let xy_speed = |u: f64| -> f64 {
@@ -355,8 +293,6 @@ where
         (dx * dx + dy * dy).sqrt()
     };
 
-    // Adaptive doubling: 1, 2, 4, ..., up to 64 subintervals. Stop when the
-    // estimate stops moving by more than `1e-9 · |estimate|`.
     let span = u_end - u_start;
     let mut prev_estimate: Option<f64> = None;
     let mut subintervals: usize = 1;
@@ -389,10 +325,6 @@ use crate::WireError;
 use crate::wire::{ARC_LENGTH_HEADER_BYTES, FORMAT_VERSION_V1};
 
 impl<'a> ArcLengthTableRef<'a, f32> {
-    /// Zero-copy parse of a wire-format buffer.
-    ///
-    /// Layout: `u8 version, u8 reserved, u16 sample_count, u32 reserved2,`
-    /// `f32[sample_count] s, f32[sample_count] u`.
     pub fn try_from_wire(buf: &'a [u8]) -> Result<Self, WireError> {
         if (buf.as_ptr() as usize) % core::mem::align_of::<f32>() != 0 {
             return Err(WireError::Misaligned);
@@ -444,8 +376,6 @@ impl<'a> ArcLengthTableRef<'a, f32> {
     }
 }
 
-/// Adaptive table builder. Doubles sample count until linear-interp residual
-/// is below tolerance or we hit the cap.
 #[cfg(feature = "host")]
 fn build_table_via_integrand<T: Float, F: Fn(T) -> T + Copy>(
     integrand: F,
@@ -456,7 +386,6 @@ fn build_table_via_integrand<T: Float, F: Fn(T) -> T + Copy>(
 ) -> Result<ArcLengthTable<T>, ArcLengthError<T>> {
     let mut count = 8;
     loop {
-        // Build a table at this sample count by integrating between adjacent u's.
         let mut u_samples: Vec<T> = Vec::with_capacity(count);
         let mut s_samples: Vec<T> = Vec::with_capacity(count);
 
@@ -473,7 +402,6 @@ fn build_table_via_integrand<T: Float, F: Fn(T) -> T + Copy>(
             s_samples.push(prev + segment_length);
         }
 
-        // Estimate residual: refine to 2*count and compare s_max.
         let span_full = u_end - u_start;
         let s_refined: T = {
             let count_refined = (count - 1) * 2 + 1;
@@ -489,12 +417,6 @@ fn build_table_via_integrand<T: Float, F: Fn(T) -> T + Copy>(
 
         let residual = (s_samples[count - 1] - s_refined).abs();
         if residual <= tolerance {
-            // Whole-curve degeneracy: a curve whose integrated arc length is below
-            // floating-point noise has no meaningful parameterization. (The
-            // pre-existing per-midpoint floor was overly aggressive — it rejected
-            // geometrically valid cubics with isolated speed minima where central-
-            // difference integration noise dropped below 1e-9 even though the
-            // analytic min |dr/du| was orders of magnitude higher.)
             let s_total = *s_samples.last().expect("s_samples is non-empty");
             if s_total <= T::from_f64(MIN_PARAMETRIC_SPEED) {
                 return Err(ArcLengthError::DegenerateCurve);

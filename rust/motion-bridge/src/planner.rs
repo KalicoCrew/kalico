@@ -1,31 +1,3 @@
-//! Planner thread core.
-//!
-//! Receives `PlannerMsg` messages and runs the streaming-shaper pipeline:
-//! every `PlannerMsg::Move(m)` triggers `ShaperState::append_and_replan` over
-//! the un-committed tail, followed by `ShaperState::emit_committed` to
-//! dispatch any newly-eligible shaped output.
-//!
-//! Phase 3 Task 3.3 replaced the Phase-1 buffered-window shim (which called
-//! `trajectory::shape_batch` on a `Vec<CubicSegment>` window and staged the
-//! result through `ShaperState::pending_dispatch`) with the streaming-native
-//! path. Two consequences for tests / callers:
-//!
-//! - The `window_capacity` field on [`crate::config::PlannerConfig`] is no
-//!   longer consulted — replan + emit happens per `submit_move`. The field
-//!   is retained on the config (the PyO3 surface still accepts it) for
-//!   forward compatibility with Phase 6 print-time rectification; it is
-//!   silently ignored on the streaming hot path.
-//! - `emit_committed` only dispatches up to `t_decel_start − max_h` —
-//!   the trailing decel-to-zero region of the most recent replan is held
-//!   speculatively until either a follow-on move arrives (in which case the
-//!   replan re-anchors the decel-to-zero point further out and more of the
-//!   prior plan becomes committed) or Phase 4's quiescence commit adopts
-//!   the planned decel as the actual trajectory. Tests that submit a single
-//!   short move and immediately flush will therefore see strictly less
-//!   shaped output than the Phase-1 shim produced. For now we keep those
-//!   assertions only on long-enough moves; the dwell / commit handler in
-//!   Phase 4 will let short moves dispatch the full plan on flush.
-
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -40,112 +12,40 @@ use trajectory::plan_velocity::{PlanShaper, SafetyMode};
 use trajectory::streaming::{EmitContext, ReplanContext, ShaperState};
 use trajectory::{AxisShaper, EHalo, RequiredShaper, ShapedSegment, ShaperConfig};
 
-// ---------------------------------------------------------------------------
-// Quiescence-commit timer
-// ---------------------------------------------------------------------------
-
-/// Sentinel "long" timeout used when there is no held-back tail to commit.
-/// We still call `recv_timeout` (rather than `recv`) so the loop reaches a
-/// single uniform message-handling site; an effectively-forever bound keeps
-/// the wake-up overhead negligible while preserving cancellation semantics
-/// on `Shutdown` (the channel close fires `Disconnected`, not `Timeout`).
 const T_IDLE: Duration = Duration::from_secs(3600);
 
-/// Lead time (s) the Anchor inserts between planner time 0 and `host_now` at
-/// first dispatch. Must equal `anchor::DEFAULT_LEAD_SECS`; duplicated here so
-/// run_loop can compute clock-derived deadlines without depending on anchor's
-/// private constant. Keep in sync manually (anchor.rs is unchanged).
+/// Must equal `anchor::DEFAULT_LEAD_SECS`. Keep in sync with anchor.rs.
 const LEAD: f64 = 0.25;
 
-/// Safety margin (s) for the decel-commit deadline: the commit must reach the
-/// MCU at least this long before the on-wire buffer (`t_dispatched + LEAD`)
-/// drains. Covers shaping + dispatch + pump + wire latency. Starting value
-/// per spec §G; tune on hardware.
+/// Safety margin for the decel-commit deadline: covers shaping + dispatch + pump + wire latency.
 const SAFETY_MARGIN: f64 = 0.050;
 
-// ---------------------------------------------------------------------------
-// Messages
-// ---------------------------------------------------------------------------
-
-/// Clock-sync bias snapshot — the host-side `(freq, offset, last_clock)` triple
-/// the bridge's per-MCU clock-sync driver maintains. Phase 5 Task 5.1 adds the
-/// `PlannerMsg::ClockSyncRearm` variant that will carry this through to the
-/// planner thread once Task 5.4 wires the host-side detection / dispatch.
-///
-/// The triple matches `kalico_host_rt::router_state::Router::set_clock_est_from_sample`'s
-/// argument shape (freq Hz, offset s, last_clock ticks) so callers reading
-/// existing clock-sync state can forward it verbatim. Task 5.4 will refine the
-/// type if a narrower shape suffices; for now we preserve the full sample
-/// payload so the planner-side handler has everything the dispatch layer needs.
 #[derive(Debug, Clone, Copy)]
 pub struct ClockBias {
-    /// Estimated MCU clock frequency in Hz.
     pub freq: f64,
-    /// Host-time offset (seconds) of the most recent clock-sync sample.
     pub offset_s: f64,
-    /// MCU clock counter (ticks) at the time of the most recent sample.
     pub last_clock: u64,
 }
 
 #[derive(Debug)]
 pub enum PlannerMsg {
     Move(ClassifiedMove),
-    Dwell {
-        duration_s: f64,
-        notify: Sender<()>,
-    },
-    Flush {
-        /// Planner sends the wall-clock `Instant` at which all committed
-        /// motion finishes executing (`sync_instant + t_appended + LEAD`), or
-        /// `None` if nothing is in flight (no dispatch yet). The caller waits
-        /// until then before returning from `flush`.
-        notify: Sender<Option<Instant>>,
-    },
+    Dwell { duration_s: f64, notify: Sender<()> },
+    Flush { notify: Sender<Option<Instant>> },
     UpdateLimits(PlannerLimits),
     UpdateShaper(ShaperConfig),
     Shutdown,
-    /// Phase 5 Task 5.1 — `kalico_stream_open` arrived. Reset `ShaperState`
-    /// to the supplied home position before processing any further moves.
-    /// Wired now (see `run_loop`'s match arm).
-    KalicoStreamOpen {
-        home_pos: [f64; 4],
-    },
-    /// Phase 5 Task 5.1 — homing / `SET_KINEMATIC_POSITION` succeeded.
-    /// Reset `ShaperState` to the supplied home position. Wired now.
-    Homing {
-        home_pos: [f64; 4],
-    },
-    /// Phase 5 Task 5.1 — engine `Underrun` fault detected. Host-side
-    /// detection lands in Task 5.2; for now this variant exists so callers
-    /// can be wired against a stable enum, but the run-loop handler logs a
-    /// warning and drops the message. Task 5.2 will replace the placeholder
-    /// with the real reset-to-recovered-position path.
-    Underrun {
-        recovered_pos: [f64; 4],
-    },
-    /// Phase 5 Task 5.1 — engine `force_idle` detected. Same handling as
-    /// `Underrun` (placeholder until Task 5.2 wires the recovery path).
-    ForceIdle {
-        recovered_pos: [f64; 4],
-    },
-    /// Phase 5 Task 5.1 — clock-sync re-arm event. Task 5.4 will wire the
-    /// real handler (drain pending shaped output under the old bias, then
-    /// update the bias for future dispatches per spec §3.7). For now the
-    /// run-loop logs a warning and drops the message.
-    ClockSyncRearm {
-        new_bias: ClockBias,
-    },
+    KalicoStreamOpen { home_pos: [f64; 4] },
+    Homing { home_pos: [f64; 4] },
+    Underrun { recovered_pos: [f64; 4] },
+    ForceIdle { recovered_pos: [f64; 4] },
+    ClockSyncRearm { new_bias: ClockBias },
 }
-
-// ---------------------------------------------------------------------------
-// Errors
-// ---------------------------------------------------------------------------
 
 #[derive(Debug)]
 pub enum PlannerError {
     Shape(trajectory::ShapeError),
     ChannelClosed,
-    /// Dispatch callback (e.g. wire push) returned an error.
     Dispatch(DispatchError),
 }
 
@@ -161,11 +61,6 @@ impl std::fmt::Display for PlannerError {
 
 impl std::error::Error for PlannerError {}
 
-/// Failures the wire-side dispatch closure can surface to the planner
-/// thread. Each variant carries enough structured context that future
-/// telemetry / retry policy can discriminate transient (clock-sync,
-/// transport hiccup) from terminal (caps-exceeded) cases without
-/// string-matching.
 #[derive(Debug, thiserror::Error)]
 pub enum DispatchError {
     #[error(
@@ -188,35 +83,18 @@ pub enum DispatchError {
         mcu_id: u32,
         mcu_handle: kalico_host_rt::passthrough_queue::McuHandle,
     },
-    /// The `Arc<KalicoHostIo>` for the given MCU was dropped (e.g. by
-    /// `attach_serial` during a FIRMWARE_RESTART) before this dispatch
-    /// completed. The dispatch closure holds only a `Weak` reference and
-    /// `upgrade()` returned `None`. The segment was not sent.
     #[error("MCU {0}: connection dropped during dispatch")]
     ConnectionDropped(u32),
-    /// The piece pump's receiver was dropped (pump thread exited/panicked) — a dispatch send had nowhere to go.
     #[error("piece pump thread is gone; cannot dispatch")]
     PumpGone,
 }
-
-// ---------------------------------------------------------------------------
-// Handle
-// ---------------------------------------------------------------------------
 
 #[allow(missing_debug_implementations)]
 pub struct PlannerHandle {
     sender: Sender<PlannerMsg>,
     join_handle: Option<JoinHandle<()>>,
-    /// Single-slot: a second error before the caller observes the first overwrites it.
     error: Arc<Mutex<Option<PlannerError>>>,
-    /// Latest "last move time" snapshot — bits of an f64.
     last_move_time_bits: Arc<AtomicU64>,
-    /// Monotonic counter incremented every time the planner thread's
-    /// quiescence-commit timer expires and calls
-    /// [`ShaperState::commit_decel_to_zero`]. Phase 4 Task 4.1 uses this
-    /// purely as a wiring-confidence signal for tests; Phase 4 Task 4.3
-    /// keeps the counter live (it remains a cheap observability hook on
-    /// the timer integration point).
     commit_fire_count: Arc<AtomicU32>,
 }
 
@@ -230,10 +108,6 @@ impl PlannerHandle {
         let last_move_time_bits = Arc::new(AtomicU64::new(0u64));
         let commit_fire_count = Arc::new(AtomicU32::new(0));
 
-        // Streaming-native state. `ShaperState` owns the per-axis queues +
-        // un-committed tail; the per-iteration `ReplanContext` /
-        // `EmitContext` are rebuilt on every shaper/limits update so live
-        // config changes take effect on the next `submit_move`.
         let shapers = shaper_config_to_axis_shapers(&config.shaper);
         let state = ShaperState::new([0.0; 4], &shapers);
 
@@ -283,34 +157,8 @@ impl PlannerHandle {
         );
         self.check_error()?;
 
-        // **Phase 6 Task 7.1 — caller-side `last_move_time_bits` advance.**
-        // Spec §3.8 / §4.5: klippy reads `last_move_time` (the queued-time
-        // atomic) immediately after `submit_move` returns to schedule
-        // inline events (`M106 S128`, `SET_PIN AT_TIME`, etc.) relative to
-        // motion. Before this change, `last_move_time_bits` was only
-        // advanced inside the planner thread after TOPP-RA + shaping
-        // completed — so an inline event issued right after `G1 X1` saw a
-        // stale value and landed against the *previous* move's print_time.
-        //
-        // The advance is unconditional on a successful classify and uses
-        // the klippy-equivalent nominal estimate (`distance / feedrate`).
-        // The planner thread later rectifies if the actual shaped
-        // duration differs from the nominal (Task 7.2 in `run_loop`'s
-        // `Move` arm).
-        //
-        // CAS rather than a bare `store(load + nominal)` so a parallel
-        // planner-thread rectification or `Dwell`/commit advance — both
-        // of which `fetch_add`-style adjust the same atomic — cannot be
-        // clobbered by a load+store from this call. Klippy's normal
-        // submission path is single-threaded (the toolhead lock serialises
-        // moves), so this CAS is uncontended in practice; the loop is
-        // defence-in-depth against bridge call-sites that bypass the
-        // serialisation (e.g. homing's `submit_homing_move`).
-        //
-        // Order matters: advance **before** the channel send so the
-        // post-send `submit_move` return guarantees the atomic is fresh.
-        // A `Release` store pairs with klippy's `Acquire` load in
-        // `last_move_time()`.
+        // Advance before channel send so the atomic is fresh when submit_move returns.
+        // CAS guards against concurrent rectification from the planner thread.
         let nominal = m.nominal_duration();
         advance_last_move_time(&self.last_move_time_bits, nominal);
 
@@ -354,8 +202,6 @@ impl PlannerHandle {
         match rx.recv() {
             Ok(()) => self.check_error(),
             Err(_) => {
-                // Sender dropped: either pipeline error trashed pending_dwell,
-                // or thread exited. Surface the stored error if present.
                 self.check_error()?;
                 Err(PlannerError::ChannelClosed)
             }
@@ -374,99 +220,42 @@ impl PlannerHandle {
             .map_err(|_| PlannerError::ChannelClosed)
     }
 
-    /// Phase 5 Task 5.1 — `kalico_stream_open` entry point. Resets the
-    /// planner's `ShaperState` to the supplied home position. Caller-side
-    /// hook for the klippy bridge's first connect / stream-open handshake
-    /// (the spec §3.7 lifecycle row "kalico_stream_open, homing,
-    /// SET_KINEMATIC_POSITION").
-    ///
-    /// Fire-and-forget: the channel send returns immediately; the planner
-    /// thread will apply the reset on the next message-dispatch tick. No
-    /// barrier semantics — callers that need to know the reset has applied
-    /// should issue a subsequent `flush()` (which is a sync barrier).
     pub fn kalico_stream_open(&self, home_pos: [f64; 4]) -> Result<(), PlannerError> {
         self.sender
             .send(PlannerMsg::KalicoStreamOpen { home_pos })
             .map_err(|_| PlannerError::ChannelClosed)
     }
 
-    /// Phase 5 Task 5.1 — homing / `SET_KINEMATIC_POSITION` entry point.
-    /// Same shape and semantics as [`Self::kalico_stream_open`]; named
-    /// differently to make the call-site intent legible (the bridge wires
-    /// these to distinct klippy hooks even though the planner's response is
-    /// identical — a position re-anchor).
     pub fn homing(&self, home_pos: [f64; 4]) -> Result<(), PlannerError> {
         self.sender
             .send(PlannerMsg::Homing { home_pos })
             .map_err(|_| PlannerError::ChannelClosed)
     }
 
-    /// **Phase 5 Task 5.2** — fire a host-derived `Underrun` recovery into
-    /// the planner. Resets `ShaperState` to `recovered_pos` (the last MCU-
-    /// confirmed position the bridge could derive from the dispatched
-    /// curve pool keyed by `current_segment_id`) before processing any
-    /// further moves. Fire-and-forget — no barrier semantics, mirrors
-    /// [`Self::kalico_stream_open`].
-    ///
-    /// Wire-up status: the planner-side handler is wired (the run-loop's
-    /// `PlannerMsg::Underrun` arm calls `state.reset(recovered_pos)`).
-    /// Bridge-side detection — the `StatusEvent` → `PlannerMsg::Underrun`
-    /// routing — is **deferred**. The bridge's `take_runtime_event`
-    /// surfaces `Fault` events directly to klippy today; the klippy-side
-    /// reconnect path is the load-bearing recovery handle (Task 5.5).
-    /// Once we want the bridge to recover *without* a klippy round-trip,
-    /// the bridge's fault handler will gain a `PlannerHandle.underrun(...)`
-    /// call here. This method exists so that call-site is wirable now.
     pub fn underrun(&self, recovered_pos: [f64; 4]) -> Result<(), PlannerError> {
         self.sender
             .send(PlannerMsg::Underrun { recovered_pos })
             .map_err(|_| PlannerError::ChannelClosed)
     }
 
-    /// **Phase 5 Task 5.2** — fire a host-derived `ForceIdle` recovery
-    /// into the planner. Same shape and semantics as [`Self::underrun`]
-    /// (the run-loop collapses both arms into the same
-    /// `state.reset(recovered_pos)` call).
     pub fn force_idle(&self, recovered_pos: [f64; 4]) -> Result<(), PlannerError> {
         self.sender
             .send(PlannerMsg::ForceIdle { recovered_pos })
             .map_err(|_| PlannerError::ChannelClosed)
     }
 
-    /// **Phase 5 Task 5.4** — fire a clock-sync re-arm into the planner.
-    /// The planner-side handler synchronously drains any held-back
-    /// shaped output (via `commit_decel_to_zero`) so dispatched samples
-    /// land under the old bias *before* the bias swap takes effect.
-    ///
-    /// Wire-up status: the planner-side handler is wired (see the
-    /// run-loop's `PlannerMsg::ClockSyncRearm` arm — it calls
-    /// `run_commit_and_dispatch` on the held-back tail). The bias-swap
-    /// itself happens on the bridge thread that owns the `Router`
-    /// (`spawn_periodic_clock_sync`'s `set_clock_est_from_sample` call)
-    /// — see this method's comment in `bridge.rs` for the
-    /// ordering-contract follow-up. This method is the entry point the
-    /// bridge will call **before** swapping the bias when we wire the
-    /// pre-swap barrier.
+    /// Must be called *before* `Router::set_clock_est_from_sample` to drain
+    /// held-back output under the old bias first.
     pub fn clock_sync_rearm(&self, new_bias: ClockBias) -> Result<(), PlannerError> {
         self.sender
             .send(PlannerMsg::ClockSyncRearm { new_bias })
             .map_err(|_| PlannerError::ChannelClosed)
     }
 
-    /// Snapshot of the current "last move time" (cumulative print_time, seconds).
     pub fn last_move_time(&self) -> f64 {
         f64::from_bits(self.last_move_time_bits.load(Ordering::Acquire))
     }
 
-    /// Number of times the decel-commit deadline has fired on the planner
-    /// thread (i.e., `recv_timeout` returned `RecvTimeoutError::Timeout` while
-    /// a held-back tail existed and the run-loop invoked
-    /// [`ShaperState::commit_decel_to_zero`]). Wired by Phase 4 Task 4.1;
-    /// the underlying handler became real in Task 4.2 (the run-loop dispatches
-    /// the held-back trailing decel-to-zero on deadline fire). Task 4 replaced
-    /// the fixed 50 ms `T_COMMIT` quiescence timer with a clock-derived
-    /// deadline (`t_dispatched + LEAD - SAFETY_MARGIN`). The counter remains
-    /// a cheap observability hook on the commit integration point.
     pub fn commit_fire_count(&self) -> u32 {
         self.commit_fire_count.load(Ordering::Acquire)
     }
@@ -487,39 +276,12 @@ impl Drop for PlannerHandle {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Loop
-// ---------------------------------------------------------------------------
-
-/// Rectification threshold for the `Move`-arm `delta = actual − nominal`
-/// CAS. Below this magnitude (in seconds) we skip the CAS — the delta is
-/// indistinguishable from floating-point noise around the nominal estimate
-/// and there is no scheduling consumer that cares about sub-microsecond
-/// adjustments. 1 µs = 1e-6 s is well below the MCU tick rate (~10 µs)
-/// and the host stepper-dispatch quantum, so any threshold below this is
-/// observably ignored downstream.
+/// Below this magnitude the `actual − nominal` delta is indistinguishable from
+/// floating-point noise (well below the MCU tick rate ~10 µs).
 const RECTIFICATION_TOLERANCE_S: f64 = 1e-6;
 
-/// Bounded retry count for the rectification CAS loop. Quadratically more
-/// than enough — the only writer racing this thread is `submit_move`, and
-/// each call to `submit_move` issues at most one CAS attempt before
-/// returning. 100 attempts cover an absurd scenario of 100 back-to-back
-/// `submit_move` calls all winning the race against this thread, which is
-/// physically impossible at klippy's submission cadence.
 const RECTIFICATION_CAS_MAX_ATTEMPTS: usize = 100;
 
-/// Atomically add `delta` to `last_move_time_bits` via a bounded CAS
-/// loop. Used by the `Move` arm's rectification path — the caller-side
-/// `submit_move` advance and this rectification are the two writers
-/// touching the atomic across threads, so we use `compare_exchange` to
-/// avoid clobbering an in-flight caller-side advance from a follow-on
-/// `submit_move`.
-///
-/// Returns `true` if the CAS landed within `RECTIFICATION_CAS_MAX_ATTEMPTS`,
-/// `false` if every attempt was contended (a giveup-with-warning path —
-/// `log::debug!` is emitted). The current-load + add-delta + try-store
-/// shape is deliberate: we want the delta applied **on top of** whatever
-/// the caller-side advance currently shows, not against a stale snapshot.
 fn rectify_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) -> bool {
     for _ in 0..RECTIFICATION_CAS_MAX_ATTEMPTS {
         let cur = last_move_time_bits.load(Ordering::Acquire);
@@ -541,44 +303,10 @@ fn rectify_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) -> bool {
     false
 }
 
-/// Atomically add `delta` to `last_move_time_bits` for the non-`Move`
-/// arms (Dwell / Flush / quiescence-commit). These advances are
-/// **planner-thread-owned** event durations (dwell duration; the
-/// trailing decel-to-zero dispatched on a held-back tail). They also
-/// race the caller-side `submit_move` advance — a `Dwell` arm running
-/// while a follow-on `submit_move` lands would see the atomic moving
-/// underneath it — so the same CAS loop applies. Naming distinguishes
-/// the call-sites in tracing output.
 fn advance_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) {
     rectify_last_move_time(last_move_time_bits, delta);
 }
 
-/// Drive `ShaperState::commit_decel_to_zero` to completion: shape the
-/// held-back tail, dispatch each segment, and book-keep print-time +
-/// the commit counter. Shared by the quiescence-timer (`T_commit` fire)
-/// and `PlannerMsg::Flush` paths so both routes through commit have
-/// byte-identical accounting behaviour. Phase 4 Task 4.3 added the
-/// `Flush` caller; Task 4.2 added the timer caller.
-///
-/// **Phase 6 Task 7.2 — atomic-relative advance.** The local `print_time`
-/// accumulator was retired: `last_move_time_bits` is now the single
-/// source of truth (the `Move` arm advances it caller-side, the
-/// non-`Move` arms — including this one — advance it via the CAS-loop
-/// helper). The drained-batch duration is the right increment here
-/// because the held-back tail's nominal portion was already published
-/// by the originating `Move`'s caller-side advance; this function fires
-/// **only on the commit-decel-to-zero path**, where the drained
-/// segments are the trailing decel that streams `emit_committed`
-/// deliberately held back past `t_decel_start − max_h`. That tail's
-/// time was *not* covered by the nominal advance (the nominal is the
-/// klippy-equivalent "cruise"; the post-cruise decel-to-zero ramp is
-/// the planner-side overhead). So this advance is additive on top of
-/// the nominal, exactly mirroring the pre-Task-7.2 semantics.
-///
-/// Returns `true` if commit succeeded (even if zero segments were
-/// drained — the handler is idempotent for an already-fully-committed
-/// queue). Returns `false` if a pipeline error was stored; callers
-/// should not advance further state in that case.
 fn run_commit_and_dispatch(
     state: &mut ShaperState,
     thread_state: &PlannerThreadState,
@@ -630,16 +358,9 @@ fn run_commit_and_dispatch(
     true
 }
 
-/// Owned per-thread context buffers consumed by `ShaperState::append_and_replan`
-/// and `ShaperState::emit_committed`. `EmitContext` borrows from the kernel
-/// array + halo list, so we keep both owned on this struct and reborrow on
-/// every call. Rebuilt on `UpdateShaper` so live shaper-config changes
-/// propagate to the next `submit_move`.
 struct PlannerThreadState {
     emit_kernels: [Option<PiecewisePolynomialKernel<f64>>; 4],
-    /// Streaming `emit_committed` never has E-only gaps (the extruder
-    /// follows shaped XY arc-length on coupled moves; independent-E moves
-    /// don't reach the streaming path today). Retained as an empty slot so
+    /// Empty: streaming `emit_committed` never has E-only gaps. Retained so
     /// the borrow plumbing into `EmitContext` is straight-line.
     e_halos: Vec<EHalo>,
     replan_ctx: ReplanContext,
@@ -695,28 +416,12 @@ fn run_loop(
     }
 
     let mut last_recv_time: Option<Instant> = None;
-    // The `Instant` of the stream's first dispatch. `None` until the first
-    // non-empty dispatch after a genuine reset; re-set to `None` on every
-    // genuine reset (stream-open, homing, SET_KINEMATIC, Underrun, ForceIdle)
-    // so it is re-captured at the next first dispatch. Same OS monotonic clock
-    // as the projection's host-time input, so `elapsed_since_sync` carries no
-    // drift.
     let mut sync_instant: Option<Instant> = None;
 
     loop {
-        // Clock-derived decel-commit deadline. The MCU starts executing
-        // planner-time 0 at elapsed_since_sync == LEAD and plays forward 1:1,
-        // so the on-wire buffer (ending at t_dispatched) drains at
-        // elapsed_since_sync == t_dispatched + LEAD. Commit SAFETY_MARGIN
-        // before that. When there is no held-back tail (t_dispatched ≈
-        // t_appended), sleep on the long sentinel until the next Move.
         let next_timeout = if state.t_dispatched < state.t_appended - 1e-12 {
             let esc = sync_instant.map_or(0.0, |t| t.elapsed().as_secs_f64());
             let remaining = (state.t_dispatched + LEAD - SAFETY_MARGIN) - esc;
-            // `try_from_secs_f64` returns Err on NaN / infinite / negative,
-            // covering all non-finite hazards at once — never panic the
-            // planner thread on a degenerate deadline; fall back to an
-            // immediate wake (the commit guard re-checks the real condition).
             Duration::try_from_secs_f64(remaining.max(0.0)).unwrap_or(Duration::ZERO)
         } else {
             T_IDLE
@@ -752,10 +457,6 @@ fn run_loop(
                 m
             }
             Err(RecvTimeoutError::Timeout) => {
-                // Decel-commit deadline: the on-wire buffer is about to drain;
-                // commit the held-back decel-to-zero so the MCU stops cleanly.
-                // DO NOT reset the timeline — the monotonic clock keeps running;
-                // the next move self-places via max(t_appended, elapsed_since_sync).
                 if state.t_dispatched < state.t_appended - 1e-12 {
                     let _ok = run_commit_and_dispatch(
                         &mut state,
@@ -773,19 +474,9 @@ fn run_loop(
 
         match msg {
             PlannerMsg::Move(m) => {
-                // **Phase 6 Task 7.2 — rectification.** The caller-side
-                // `submit_move` has already advanced
-                // `last_move_time_bits` by `m.nominal_duration()` (spec
-                // §3.8). The planner thread now runs the real plan and
-                // compares: `actual` = the new move's contribution to
-                // `state.t_appended` (which is exactly the planner-time
-                // duration the replan added to the queue) vs. `nominal`
-                // (the klippy-equivalent cruise estimate). If the two
-                // diverge by more than `RECTIFICATION_TOLERANCE_S` we
-                // apply the delta to the atomic via a CAS loop — the
-                // caller-side advance is a writer on the same atomic, so
-                // a blind `store` would race against an in-flight
-                // follow-on `submit_move`.
+                // `submit_move` already advanced `last_move_time_bits` by the nominal.
+                // Rectify if actual diverges: use CAS since submit_move is a concurrent writer.
+                // Rectify against t_appended delta (not dispatched): the decel tail is held back.
                 let nominal = m.nominal_duration();
                 let prior_t_appended = state.t_appended;
                 let prior_t_decel = state.t_decel_start;
@@ -793,21 +484,9 @@ fn run_loop(
                 let move_dist = m.distance_mm;
                 let move_feed = m.segment.feedrate_mm_s;
 
-                // Placement rule (spec §A): if the clock has run past the plan
-                // tail, the toolhead is genuinely idle. Commit any held-back
-                // tail first (so the MCU gets the prior decel-to-zero), then
-                // insert a rest-hold advancing t_appended to "now" so the new
-                // move starts at elapsed_since_sync (== host_now + LEAD via the
-                // Anchor) instead of overlapping the prior committed tail.
+                // Commit held-back tail before inserting an idle rest-hold when clock outran plan.
                 let esc = sync_instant.map_or(0.0, |t| t.elapsed().as_secs_f64());
                 if esc > state.t_appended + 1e-6 {
-                    // Commit any held-back decel-to-zero first; only insert the
-                    // rest-hold if that succeeded. On a commit/dispatch failure
-                    // `run_commit_and_dispatch` leaves t_dispatched < t_appended
-                    // and latches the error — advancing the timeline then would
-                    // trip advance_idle's fully-committed precondition (debug) or
-                    // silently drop the uncommitted tail (release). Skip it; the
-                    // latched error surfaces on the caller's next check_error.
                     let committed_ok = if state.t_dispatched < state.t_appended - 1e-12 {
                         run_commit_and_dispatch(
                             &mut state,
@@ -882,53 +561,21 @@ fn run_loop(
                     }
                 }
 
-                // KNOWN LIMITATION (follow-up): captured only on a non-empty
-                // dispatch. If a stream's very first move is sub-`LEAD` short so
-                // its `emit_committed` yields no segments (all output held in the
-                // speculative decel), `sync_instant` stays None until the held
-                // tail commits later. Until then `esc` reads 0.0 and the
-                // clock-derived deadline / Flush-wait degrade to no-ops (both
-                // idempotent / harmless). The fix is to also capture at the first
-                // *commit*-dispatch — NOT at append: capturing before dispatch
-                // would run `elapsed_since_sync` ahead of the MCU playhead and
-                // spuriously trip idle-detection during continuous printing
-                // (throughput regression). Unreachable for real >=1mm jogs.
-                //
-                // Capture the stream's sync origin at its first dispatch, in
-                // the same sub-ms window the Anchor establishes `t0`. Residual
-                // skew is absorbed by LEAD.
+                // Capture sync_instant only on non-empty dispatch, not at append.
+                // Capturing at append would make elapsed_since_sync run ahead of the MCU playhead.
                 if sync_instant.is_none() && !drained.is_empty() {
                     sync_instant = Some(Instant::now());
                 }
 
-                // Compute `actual = t_appended_after − t_appended_before`.
-                // For the **streaming** path this is the right measure of
-                // "what duration did this move add to the queue?" — not
-                // the `drained` batch's duration (which is only the
-                // committed-to-wire portion; the post-decel speculative
-                // tail is still part of the appended-but-not-yet-drained
-                // region). The spec §3.8 rectification is against the
-                // *appended* duration, not the dispatched-this-round
-                // duration. The latter would chronically under-rectify
-                // because the trailing decel-to-zero is held back until
-                // a commit fires (timer / Flush / UpdateShaper /
-                // ClockSyncRearm).
                 let actual = state.t_appended - prior_t_appended;
                 let delta = actual - nominal;
                 if delta.abs() > RECTIFICATION_TOLERANCE_S {
                     rectify_last_move_time(&last_move_time_bits, delta);
                 }
-
-                // The quiescence-commit timer is armed by the cursor guard
-                // `state.t_dispatched < state.t_appended - 1e-12` in
-                // `next_timeout` — no separate tracking variable needed.
             }
 
             PlannerMsg::Flush { notify } => {
-                // Commit the held-back decel-to-zero (spec §E) so all submitted
-                // motion reaches the wire; idempotent when already committed.
-                // No timeline reset — the monotonic clock keeps running and the
-                // next move self-places via the placement rule.
+                // Commit held-back decel-to-zero; idempotent when already committed.
                 if state.t_dispatched < state.t_appended - 1e-12 {
                     let _ok = run_commit_and_dispatch(
                         &mut state,
@@ -939,14 +586,6 @@ fn run_loop(
                         &commit_fire_count,
                     );
                 }
-                // The last committed piece ends at planner-time t_appended and
-                // executes at wall-clock sync_instant + t_appended + LEAD. Hand
-                // that finish instant back; the caller waits (keeps the run-loop
-                // responsive). `None` when nothing was ever dispatched.
-                // Mirror the next_timeout deadline policy: never panic the
-                // run-loop thread on a degenerate t_appended. A degenerate
-                // value yields ZERO → caller does not wait → the latched error
-                // (if any) still surfaces via the caller's check_error().
                 let finish = sync_instant.map(|t| {
                     t + Duration::try_from_secs_f64(state.t_appended + LEAD)
                         .unwrap_or(Duration::ZERO)
@@ -955,13 +594,6 @@ fn run_loop(
             }
 
             PlannerMsg::Dwell { duration_s, notify } => {
-                // Advance the queued-time atomic by `duration_s` and
-                // unblock the caller. Phase 6 Task 7.2 routed this
-                // through the CAS-loop helper because the caller-side
-                // `submit_move` advance is now a parallel writer on the
-                // same atomic; the previous unconditional `store` would
-                // have clobbered an in-flight caller-side advance from
-                // a follow-on `submit_move` racing this `Dwell`.
                 advance_last_move_time(&last_move_time_bits, duration_s);
                 let _ = notify.send(());
             }
@@ -972,40 +604,9 @@ fn run_loop(
             }
 
             PlannerMsg::UpdateShaper(s) => {
-                // **Phase 5 Task 5.3 — cross-axis barrier on
-                // UpdateShaper.** Spec §3.7 ("Drain any held-back shaped
-                // output on the affected axis to wire (use old kernel),
-                // then swap kernel. Subsequent plans use new kernel."):
-                // we must dispatch any uncommitted shaped output under
-                // the **old** kernels before swapping in the new ones.
-                // Otherwise the trailing tail of the prior trajectory
-                // would be shaped by a kernel it was never planned
-                // against — producing exactly the post-shape `|ẍ_shaped|`
-                // overshoot β-medium was supposed to prevent.
-                //
-                // The drain uses the run-loop's existing commit path
-                // (`run_commit_and_dispatch`, shared with `Flush` and
-                // the quiescence-timer fire). The cursor guard
-                // `t_dispatched < t_appended - 1e-12` is the single
-                // "held-back tail" signal across all commit call-sites.
-                //
-                // The handler then rebuilds the kernels / replan
-                // context on the updated config and **also** rebuilds
-                // the `ShaperState` so the per-axis queues are
-                // re-seeded with the new `h` values (the kernel
-                // half-support drives the seed's left-pad span — see
-                // `build_axis_queue`). The re-seed loses the
-                // committed-history left-pad for the next move's
-                // convolution, but that move's `append_and_replan`
-                // starts from `v = 0` (the drained queue terminus) so
-                // the prior history is moot. Spec §3.7 frames this as
-                // a single per-axis event but the cross-axis barrier
-                // (we drain *any* axis with held output, not just the
-                // changed one) is the simplest correct discipline —
-                // the wire format `UpdateShaper(ShaperConfig)` is
-                // multi-axis already so we can't single-axis the
-                // drain on the receive side without re-shaping the
-                // message.
+                // Drain held-back tail under the old kernels before swapping.
+                // Without this the trailing tail would be shaped by a kernel it was never
+                // planned against, producing post-shape acceleration overshoot.
                 if state.t_dispatched < state.t_appended - 1e-12 {
                     let _ok = run_commit_and_dispatch(
                         &mut state,
@@ -1023,126 +624,19 @@ fn run_loop(
             }
 
             PlannerMsg::KalicoStreamOpen { home_pos } | PlannerMsg::Homing { home_pos } => {
-                // Phase 5 Task 5.1 — reset the streaming state to the new
-                // home position. `ShaperState::reset` preserves per-axis
-                // kernels (this is a position re-anchor, not a shaper
-                // config swap — see spec §3.7), so we don't rebuild
-                // `thread_state` here.
-                //
-                // Reset the run-loop's quiescence-timer book-keeping
-                // alongside the state — a held-back tail from the prior
-                // timeline is no longer meaningful. After reset,
-                // `state.t_dispatched == state.t_appended == 0` so the
-                // cursor guard (`t_dispatched < t_appended - 1e-12`) is
-                // false and no spurious commit fires. The commit counter
-                // is observability state; we keep it monotonic across
-                // resets so the test/diagnostic counters reflect
-                // cumulative timer-fire history (resetting it would
-                // confuse downstream consumers reading the AtomicU32).
-                sync_instant = None; // re-captured at next first dispatch
+                sync_instant = None;
                 state.reset(home_pos);
             }
 
             PlannerMsg::Underrun { recovered_pos } | PlannerMsg::ForceIdle { recovered_pos } => {
-                // **Phase 5 Task 5.2 — planner-side reset to recovered
-                // position.** Engine `Underrun` / `force_idle` faults
-                // invalidate the in-flight planner timeline: the MCU
-                // has stopped executing whatever was on the wire, and
-                // the host's planned-but-undispatched tail is no longer
-                // valid (the engine will resume from
-                // `recovered_pos`, not from the trajectory's expected
-                // continuation). Spec §3.7 maps both events to
-                // "Reset queues to the MCU's last-confirmed position,
-                // host-derived from `current_segment_id` + dispatched
-                // curve pool (no schema change)."
-                //
-                // `ShaperState::reset` zeroes the absolute-time line
-                // and re-seeds each axis queue with the new home
-                // position at `v = 0`. Per-axis kernels are
-                // preserved (this is a position re-anchor, not a
-                // shaper config swap). After reset,
-                // `state.t_dispatched == state.t_appended == 0` so the
-                // cursor guard (`t_dispatched < t_appended - 1e-12`)
-                // correctly reads "no held-back tail" — a held-back
-                // tail from the prior timeline is no longer meaningful.
-                //
-                // **Scope note for Task 5.2 bridge integration.** The
-                // bridge currently surfaces `RuntimeEvent::Fault` to
-                // klippy directly via `take_runtime_event`; klippy's
-                // reactor then drives the recovery (calls back through
-                // the bridge to set positions, etc.). There is no
-                // central bridge-side fault → planner routing today.
-                // The dispatched-curve-pool → `current_segment_id`
-                // → `recovered_pos` lookup is non-trivial (it needs
-                // the bridge's per-MCU curve-pool state +
-                // engine-side segment ID retirement tracking). We
-                // therefore land the planner-side handler now — the
-                // `PlannerHandle::underrun(..)` / `force_idle(..)`
-                // entry points are public so the bridge can wire
-                // them when the lookup machinery lands — and defer
-                // the bridge-side detection to a follow-up. In the
-                // interim, klippy reconnect (Task 5.5) is the
-                // load-bearing recovery handle: klippy treats the
-                // fault as a connection break, drops the planner,
-                // re-`init_planner`s, and re-homes — which
-                // constructs a fresh `ShaperState`.
-                sync_instant = None; // re-captured at next first dispatch
+                sync_instant = None;
                 state.reset(recovered_pos);
             }
 
             PlannerMsg::ClockSyncRearm { new_bias: _ } => {
-                // **Phase 5 Task 5.4 — planner-side pre-swap barrier.**
-                // Spec §3.7 ("Clock-sync re-arm"): "Flush any pending
-                // shaped output under the old clock bias to the wire,
-                // then update the bias for future dispatches. Queue
-                // content (in planner-time) is unaffected."
-                //
-                // The planner-thread side of the barrier is exactly
-                // the same commit-and-dispatch call that `Flush` /
-                // `UpdateShaper` / the quiescence timer use: drain
-                // any held-back shaped output to the wire so the
-                // dispatched samples land under the bias that was
-                // active when they were planned. Queue content (in
-                // planner-time) survives — we only drain the
-                // committable region; `t_dispatched` advances; the
-                // next `append_and_replan` continues seamlessly under
-                // whatever bias the dispatch closure now uses.
-                //
-                // **The bias swap itself is bridge-thread work.** The
-                // `Router::set_clock_est_from_sample` call lives on
-                // the periodic clock-sync thread
-                // (`spawn_periodic_clock_sync`), not the planner
-                // thread — the planner doesn't carry a `Router`
-                // handle today and the dispatch closure consults the
-                // router on every push for `host_time_to_mcu_clock`.
-                // Two orderings are possible for the full barrier:
-                //
-                //   1. Bridge calls `planner.clock_sync_rearm(...)`
-                //      *before* it calls
-                //      `Router::set_clock_est_from_sample`. The
-                //      planner drains held output; the router
-                //      hasn't swapped yet so the drain runs under
-                //      the old bias. Then the bridge swaps.
-                //
-                //   2. Bridge swaps the router first, then notifies
-                //      the planner. The planner's drain shapes
-                //      samples to dispatch under the **new** bias.
-                //      Wrong: spec requires "old bias" for the
-                //      drained tail.
-                //
-                // Ordering (1) is what we need. The planner-side
-                // handler is now ready (this arm); the bridge-side
-                // wiring — replacing `spawn_periodic_clock_sync`'s
-                // unconditional `set_clock_est_from_sample` with a
-                // pre-barrier `clock_sync_rearm(new_bias)` call to
-                // the planner — is a small follow-up that lives in
-                // `bridge.rs` (Task 5.4 follow-up). The `new_bias`
-                // payload is carried verbatim so the bridge can
-                // apply it post-barrier without re-deriving the
-                // sample. We do not consume `new_bias` here today;
-                // the variant is retained so the wire-format is
-                // forward-compatible once the bridge takes the
-                // ordering-(1) path.
+                // Pre-swap barrier: flush held-back output under the old clock bias.
+                // Must run before Router::set_clock_est_from_sample — calling after
+                // would shape the drained tail under the new bias.
                 if state.t_dispatched < state.t_appended - 1e-12 {
                     let _ok = run_commit_and_dispatch(
                         &mut state,
@@ -1160,13 +654,6 @@ fn run_loop(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Context construction helpers
-// ---------------------------------------------------------------------------
-
-/// Build a `ReplanContext` from the current `PlannerConfig`. Captures the
-/// snapshot the next `append_and_replan` will use; rebuilt on
-/// `UpdateLimits` / `UpdateShaper`.
 fn build_replan_context(config: &PlannerConfig) -> ReplanContext {
     ReplanContext {
         limits: config.limits.to_temporal_limits(),
@@ -1175,10 +662,6 @@ fn build_replan_context(config: &PlannerConfig) -> ReplanContext {
         beta_max_iters: config.beta_max_iters,
         beta_convergence_ratio: config.beta_convergence_ratio,
         e_limits: config.e_limits,
-        // Slicer-supplied per-segment in the full pipeline; the streaming
-        // planner does not currently have a per-move plumb, so we use the
-        // same default (`0.05 mm` = 50 µm) the legacy `run_pipeline` used
-        // when it built `ShapeSegmentInput.trailing_junction_chord_tolerance_mm`.
         junction_chord_tolerance_mm: 0.05,
         worker_threads: config.worker_threads,
         grid_strategy: temporal::multi::GridStrategy::Adaptive {
@@ -1186,22 +669,11 @@ fn build_replan_context(config: &PlannerConfig) -> ReplanContext {
             max_n: 200,
             target_grid_spacing_mm: 0.5,
         },
-        // The streaming planner samples the actual velocity at
-        // `t_dispatched` off its own `pieces` queue when available; this
-        // fallback fires only when the cursor sits outside the pieces'
-        // domain (e.g., the very first `append_and_replan` after a fresh
-        // `ShaperState::new`). At-rest startup is the right default.
         fallback_initial_v: 0.0,
-        // Phase 3 always uses the worst-case-future safety mode — the
-        // trailing decel-to-zero is speculative until the next move
-        // arrives or quiescence commit fires.
         safety_mode: SafetyMode::WorstCaseFuture,
     }
 }
 
-/// Materialize the per-axis `PiecewisePolynomialKernel`s that
-/// `emit_committed`'s convolution consumes. E slot is `None` (extruder is
-/// followed off the shaped XY arc-length, not separately shaped).
 fn shaper_config_to_emit_kernels(
     cfg: &ShaperConfig,
 ) -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
@@ -1217,10 +689,6 @@ fn required_to_kernel(req: RequiredShaper) -> PiecewisePolynomialKernel<f64> {
     req.to_kernel()
 }
 
-/// Map the planner-side `ShaperConfig` to the `[Option<PlanShaper>; 4]` form
-/// `ReplanContext.kernels` expects. The X and Y axes are always populated
-/// (the `RequiredShaper` types statically guarantee this); Z is taken from
-/// the optional axis enum; E is always `None` (extruder is not shaped here).
 fn shaper_config_to_plan_shapers(cfg: &ShaperConfig) -> [Option<PlanShaper>; 4] {
     [
         Some(required_to_plan(cfg.x)),
@@ -1245,11 +713,6 @@ fn axis_to_plan(ax: AxisShaper) -> PlanShaper {
     }
 }
 
-/// Convert the planner-config-level `ShaperConfig` (X/Y required + Z
-/// optional) into the per-axis `[Option<AxisShaper>; 4]` array
-/// `streaming::ShaperState::new` consumes (X, Y, Z, E). The E slot is
-/// `None` — extruder follows the shaped XY arc-length and is not a
-/// separately shaped axis in MVP scope.
 fn shaper_config_to_axis_shapers(cfg: &ShaperConfig) -> [Option<AxisShaper>; 4] {
     [
         Some(required_to_axis(cfg.x)),
@@ -1265,10 +728,6 @@ fn required_to_axis(req: RequiredShaper) -> AxisShaper {
         RequiredShaper::SmoothMzv { frequency_hz } => AxisShaper::SmoothMzv { frequency_hz },
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests;

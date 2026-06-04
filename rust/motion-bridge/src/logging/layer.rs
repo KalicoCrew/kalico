@@ -1,8 +1,3 @@
-//! Custom `tracing_subscriber::Layer` that serializes each event to the Stage 1
-//! NDJSON schema and injects the session/print context. Generic over a
-//! `MakeWriter` so production uses the non-blocking rotating writer and tests
-//! use an in-memory buffer.
-
 use std::io::Write;
 
 use serde_json::{Map, Value};
@@ -16,8 +11,6 @@ use tracing_subscriber::layer::Context;
 use super::context::load_context;
 use super::schema::{SOURCE_HOST_RUST, format_time, level_str, subsystem_for_target};
 
-/// Collects event fields into a JSON map, special-casing `message`,
-/// `subsystem`, `event`, `code`, `code_name`.
 #[derive(Default)]
 struct FieldVisitor {
     map: Map<String, Value>,
@@ -55,9 +48,6 @@ impl Visit for FieldVisitor {
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        // tracing records format-string messages as `std::fmt::Arguments`, whose
-        // `Debug` impl is Display-equivalent and adds NO surrounding quotes.
-        // Store verbatim; no stripping is correct or safe here.
         let s = format!("{value:?}");
         if field.name() == "message" {
             self.message = Some(s);
@@ -111,7 +101,6 @@ where
         );
         out.insert("source".into(), Value::String(SOURCE_HOST_RUST.into()));
 
-        // subsystem: explicit field wins, else target mapping.
         let subsystem = match visitor.map.remove("subsystem") {
             Some(Value::String(s)) => s,
             _ => subsystem_for_target(target).to_string(),
@@ -121,21 +110,15 @@ where
         out.insert("target".into(), Value::String(target.to_string()));
         out.insert("print_id".into(), Value::String(ctx.print_id.clone()));
 
-        // Promote remaining payload fields (event, code, code_name, axis, ...).
         for (k, v) in visitor.map {
             out.entry(k).or_insert(v);
         }
 
-        // Compact, one physical line, UTF-8 passthrough — matches the Python
-        // serializer. serde_json escapes embedded newlines/quotes/control chars.
         let mut line = serde_json::to_string(&Value::Object(out))
             .unwrap_or_else(|e| format!("{{\"_msg\":\"serialize error: {e}\"}}"));
         line.push('\n');
 
         let mut w = self.make_writer.make_writer();
-        // Fail-loudly posture: a write error here is surfaced by the worker /
-        // Stage 3 liveness. At the layer we cannot return Result; on error we
-        // emit to stderr as the last-gasp (Stage 3 will route this properly).
         if let Err(e) = w.write_all(line.as_bytes()) {
             eprintln!("[host-rust-log] sink write failed: {e}");
         }
@@ -204,7 +187,6 @@ mod tests {
         assert_eq!(r["subsystem"], "homing");
         assert_eq!(r["event"], "homing.endstop_trip");
         assert_eq!(r["axis"], "z");
-        // numeric stays a JSON number
         assert!((r["trigger_mm"].as_f64().unwrap() - 12.40).abs() < 1e-9);
         assert_eq!(r["session_id"], "k-1-2");
         assert_eq!(r["print_id"], "");
@@ -218,7 +200,6 @@ mod tests {
         let recs = capture(|| {
             tracing::warn!(event = "retry", "attach_serial retry");
         });
-        // target is this test module path; mapping default is "host-rust"
         assert!(recs[0]["subsystem"].is_string());
     }
 
@@ -229,13 +210,10 @@ mod tests {
         let recs = capture(|| {
             tracing::info!("line one\nline two\u{0007}");
         });
-        // One record despite the embedded newline (it is JSON-escaped).
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0]["_msg"], "line one\nline two\u{0007}");
     }
 
-    /// A message whose content begins and ends with a literal `"` must survive
-    /// intact.
     #[test]
     fn message_with_literal_quotes_is_preserved() {
         let _ctx_guard = CONTEXT_TEST_LOCK.lock().unwrap();

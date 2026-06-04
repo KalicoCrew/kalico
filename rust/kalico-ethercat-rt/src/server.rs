@@ -1,5 +1,4 @@
-//! Unix-socket server: decode kalico-native command frames, hand them to a
-//! handler, write framed responses. Non-blocking poll suited to a DC loop.
+//! Unix-socket server for the EtherCAT DC loop.
 
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
@@ -25,15 +24,11 @@ impl core::fmt::Debug for FrameServer {
 }
 
 impl FrameServer {
-    /// Bind a unix-domain socket at `path`. Removes any stale socket file first.
     pub fn bind(path: &str) -> std::io::Result<Self> {
         let _ = std::fs::remove_file(path);
         let listener = UnixListener::bind(path)?;
         listener.set_nonblocking(true)?;
-        // The endpoint runs as root (raw EtherCAT socket), so the bind would
-        // otherwise leave the socket root-only. Relax to 0o666 so a non-root
-        // client — the bench `ec-test-client` now, the klipper-user motion-bridge
-        // later — can connect. This is a local-only UDS on a single-purpose host.
+        // 0o666: endpoint runs as root; non-root clients (motion-bridge) must connect.
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))?;
         Ok(Self {
             listener,
@@ -43,19 +38,12 @@ impl FrameServer {
         })
     }
 
-    /// Accept a pending client if we do not already have one.
     fn try_accept(&mut self) {
         if self.conn.is_none() {
             match self.listener.accept() {
                 Ok((stream, _)) => {
-                    // Non-blocking, NOT a read timeout. This server's poll runs
-                    // inside the endpoint's single-threaded 1 ms EtherCAT DC loop.
-                    // A blocking read — even a 200 µs timeout — stalls that loop:
-                    // once a client connected, the per-cycle read latency pushed
-                    // the PDO exchange past the A6-EC's sync watchdog and faulted
-                    // the drive (wkc 3->1, errc1.1). Non-blocking returns WouldBlock
-                    // instantly when the socket is idle; partial/burst frames simply
-                    // accumulate in the demuxer across DC cycles.
+                    // Non-blocking: a blocking read stalls the 1 ms DC loop and
+                    // pushes the PDO exchange past the A6-EC sync watchdog (wkc 3→1).
                     let _ = stream.set_nonblocking(true);
                     self.conn = Some(stream);
                     eprintln!("ec-rt: client connected");
@@ -66,8 +54,6 @@ impl FrameServer {
         }
     }
 
-    /// Drain whatever bytes are available from the client and return decoded
-    /// commands. Responses are written by the caller via [`respond`].
     pub fn poll_commands(&mut self) -> Vec<Command> {
         self.try_accept();
         let mut cmds = Vec::new();
@@ -102,7 +88,6 @@ impl FrameServer {
         cmds
     }
 
-    /// Write a framed response to the connected client. Drops the connection on write error.
     pub fn respond(&mut self, frame: &[u8]) {
         if let Some(stream) = self.conn.as_mut() {
             if let Err(e) = stream.write_all(frame) {

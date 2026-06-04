@@ -1,7 +1,4 @@
-// Stream-level demuxer for the kalico-native transport.
-//
-// C-side mirror of rust/kalico-native-transport/src/demux.rs.
-// Spec: docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md §6.
+// C-side mirror of rust/kalico-native-transport/src/demux.rs — keep in sync.
 
 #include <stdio.h>
 #include <string.h>
@@ -15,27 +12,21 @@
 #define KLIPPER_LEN_MAX          64
 #define KLIPPER_INTERFRAME_SYNC  0x7E
 #define KALICO_FRAME_SYNC        0x55
-// Minimum value of the on-wire kalico `len` field: u16 len(2) + channel(1) +
-// crc(2). Smaller values are malformed.
 #define KALICO_FRAME_MIN_LEN_FIELD  5
-// Non-payload bytes in a kalico frame: envelope sync(1) + len(2) + channel(1)
-// = 4, plus trailing crc(2). Subtract from the total frame length to get the
-// CRC-covered payload length.
 #define KALICO_FRAME_OVERHEAD       6u  /* envelope(sync+len2+channel=4) + crc(2) */
 
 typedef enum {
     DEMUX_S_WAITING,
     DEMUX_S_KLIPPER,
     DEMUX_S_KALICO,
-    DEMUX_S_PIECES,   // streaming PushPieces payload straight into the ring
+    DEMUX_S_PIECES,
 } demux_state_t;
 
 static demux_state_t state;
 
-// Incremental crc16-ccitt fold — one byte at a time. Matches the one-shot
-// crc16_ccitt() in src/generic/crc16_ccitt.c exactly (seed 0xffff). Used by
-// the streaming pieces path, which never materialises the whole frame in a
-// contiguous buffer, so the one-shot crc16_ccitt(buf,len) cannot be applied.
+// Must match the one-shot crc16_ccitt() in src/generic/crc16_ccitt.c (seed
+// 0xffff); the streaming pieces path folds byte-by-byte and never has a
+// contiguous buffer to pass to the one-shot variant.
 static inline uint16_t
 crc16_ccitt_update(uint16_t crc, uint8_t b)
 {
@@ -45,19 +36,11 @@ crc16_ccitt_update(uint16_t crc, uint8_t b)
             ^ (uint8_t)(data >> 4) ^ ((uint16_t)data << 3));
 }
 
-// Streaming state for a KALICO_CHANNEL_PIECES frame. The payload is fed
-// byte-by-byte into piece_sink_feed and never lands in kalico_buf; the CRC is
-// folded incrementally over [len_lo, len_hi, channel, payload...] to match the
-// host's one-shot crc16_ccitt over the same span.
-static uint16_t pieces_payload_remaining; // payload bytes still to stream
-static uint16_t pieces_crc;               // running fold
-static uint8_t  pieces_crc_byte;          // count of trailing crc bytes seen
-static uint8_t  pieces_crc_lo;            // first (low) crc byte
+static uint16_t pieces_payload_remaining;
+static uint16_t pieces_crc;
+static uint8_t  pieces_crc_byte;
+static uint8_t  pieces_crc_lo;
 
-// 2026-05-14 PushSegment dispatch investigation. handle_push_segment is
-// never entered despite host write_frame of kalico-native PushSegment.
-// Counters at the demuxer level distinguish "frames reach the demuxer
-// state machine" from "frames pass CRC" from "frames fail CRC silently".
 volatile uint32_t kalico_demux_out_kalico_total
                 __attribute__((used, externally_visible));
 volatile uint32_t kalico_demux_out_error_total
@@ -71,9 +54,8 @@ static uint8_t klipper_buf[KALICO_DEMUX_KLIPPER_BUF_SIZE];
 static uint16_t klipper_pos;
 static uint16_t klipper_remaining;
 
-// Layout of kalico_buf: [sync(1)][len_lo(1)][len_hi(1)][channel(1)][payload..][crc(2)].
-// We accumulate the entire on-wire frame here, including the sync byte,
-// because that simplifies header parsing (matches the Rust implementation).
+// Holds the whole on-wire frame including the sync byte:
+// [sync(1)][len_lo(1)][len_hi(1)][channel(1)][payload..][crc(2)].
 #if CONFIG_MACH_STM32H7
 __attribute__((section(".axi_bss")))
 #endif
@@ -95,8 +77,7 @@ DECL_INIT(kalico_demux_init);
 static kalico_demux_output_t
 finalize_kalico_frame(void)
 {
-    // CRC covers [len .. crc-start) per spec §4. kalico_pos is the total
-    // frame length (sync + len_field). Validate CRC, then expose payload.
+    // CRC covers [len .. crc-start).
     if (kalico_pos < 1 + KALICO_FRAME_MIN_LEN_FIELD)
         return KALICO_DEMUX_OUT_ERROR;
     uint16_t payload_end = kalico_pos - 2;
@@ -134,7 +115,6 @@ kalico_demux_feed_byte(uint8_t b)
             state = DEMUX_S_KALICO;
             return KALICO_DEMUX_OUT_NONE;
         }
-        // Stray inter-frame 0x7E: tolerated; everything else: drop silently.
         return KALICO_DEMUX_OUT_NONE;
 
     case DEMUX_S_KLIPPER:
@@ -148,7 +128,6 @@ kalico_demux_feed_byte(uint8_t b)
 
     case DEMUX_S_KALICO:
         if (kalico_pos >= KALICO_DEMUX_KALICO_BUF_SIZE) {
-            // Overflow: resync.
             state = DEMUX_S_WAITING;
             return KALICO_DEMUX_OUT_ERROR;
         }
@@ -161,31 +140,24 @@ kalico_demux_feed_byte(uint8_t b)
                 return KALICO_DEMUX_OUT_ERROR;
             }
             uint32_t total = 1u + (uint32_t)len_field;
-            // Channel is not known yet (it lands at pos==4), so bound by the
-            // largest legal frame of ANY channel — a full pieces frame. The
-            // smaller staging-buffer bound is applied per-channel at pos==4
-            // below, because pieces stream straight to the ring and never
-            // accumulate in kalico_buf.
+            // Channel is unknown until pos==4, so bound by the largest legal
+            // frame of any channel; the staging-buffer bound is applied
+            // per-channel below.
             if (total > KALICO_FRAME_MAX_LEN) {
                 state = DEMUX_S_WAITING;
                 return KALICO_DEMUX_OUT_ERROR;
             }
             kalico_total_len = (uint16_t)total;
         }
-        // Once the channel byte has been stored (kalico_pos == 4) and the
-        // total length is known, a pieces-channel frame switches to the
-        // streaming sink: its payload bytes are fed straight into the ring
-        // and never accumulated in kalico_buf. kalico_total_len is computed
-        // at pos>=3 above, so it is always known by pos==4. Any other channel
-        // stays in DEMUX_S_KALICO and accumulates + finalizes exactly as
-        // before (control/events path unchanged).
+        // Pieces stream straight into the ring instead of accumulating in
+        // kalico_buf; the channel byte (and thus this branch) is reached at
+        // pos==4, by which point kalico_total_len is known.
         if (kalico_pos == 4 && kalico_buf[3] == KALICO_CHANNEL_PIECES
             && kalico_total_len > 0) {
-            // payload = total frame - envelope(4: sync+len+channel) - crc(2).
             pieces_payload_remaining =
                 (uint16_t)(kalico_total_len - KALICO_FRAME_OVERHEAD);
-            // Seed CRC over [len_lo, len_hi, channel]; payload bytes folded
-            // as they stream in (DEMUX_S_PIECES case below).
+            // Seed CRC over [len_lo, len_hi, channel]; payload folded as it
+            // streams in (DEMUX_S_PIECES below).
             pieces_crc = 0xffff;
             pieces_crc = crc16_ccitt_update(pieces_crc, kalico_buf[1]);
             pieces_crc = crc16_ccitt_update(pieces_crc, kalico_buf[2]);
@@ -195,10 +167,8 @@ kalico_demux_feed_byte(uint8_t b)
             state = DEMUX_S_PIECES;
             return KALICO_DEMUX_OUT_NONE;
         }
-        // Non-pieces frames (control/events) accumulate in kalico_buf and must
-        // fit it. The channel is known at pos==4, so enforce the staging-buffer
-        // bound here — an oversized control frame is rejected before it can
-        // overflow the buffer (the per-byte guard above is the backstop).
+        // Non-pieces frames accumulate in kalico_buf and must fit it; reject
+        // an oversized control frame at pos==4 before the per-byte guard hits.
         if (kalico_pos == 4 && kalico_buf[3] != KALICO_CHANNEL_PIECES
             && kalico_total_len > KALICO_DEMUX_KALICO_BUF_SIZE) {
             state = DEMUX_S_WAITING;
@@ -218,7 +188,7 @@ kalico_demux_feed_byte(uint8_t b)
             pieces_payload_remaining--;
             return KALICO_DEMUX_OUT_NONE;
         }
-        // Trailing CRC bytes, little-endian: low byte first, then high.
+        // Trailing CRC, little-endian (low byte first).
         if (pieces_crc_byte == 0) {
             pieces_crc_lo = b;
             pieces_crc_byte = 1;
@@ -227,31 +197,20 @@ kalico_demux_feed_byte(uint8_t b)
         {
             uint16_t crc_expected = (uint16_t)pieces_crc_lo
                                   | ((uint16_t)b << 8);
-            // Frame complete either way; reset for the next frame. This reset
-            // is load-bearing, not cosmetic: the pieces path returns OUT_NONE
-            // (commit happens inline here, no pump-visible output), so it
-            // BYPASSES kalico_demux_consume() — the function that resets
-            // kalico_pos/kalico_total_len on the KLIPPER/KALICO/ERROR paths.
-            // This is therefore the only reset that runs for a committed
-            // pieces frame; without it a stale kalico_total_len would linger
-            // into the next frame's header parse.
+            // The pieces path commits inline and returns OUT_NONE, bypassing
+            // kalico_demux_consume(); this is the only reset of kalico_pos /
+            // kalico_total_len for a committed pieces frame.
             state = DEMUX_S_WAITING;
             kalico_pos = 0;
             kalico_total_len = 0;
             if (crc_expected == pieces_crc) {
-                // CRC verified: commit advances the ring frontier and sends
-                // the PushPiecesResponse itself, so the pump does nothing.
                 piece_sink_commit();
                 return KALICO_DEMUX_OUT_NONE;
             }
-            // CRC mismatch: no commit, no response. The pieces written
-            // pre-CRC stay below the un-advanced frontier and are invisible
-            // to the ISR.
             kalico_demux_crc_mismatch_total++;
             return KALICO_DEMUX_OUT_ERROR;
         }
     }
-    // Unreachable.
     state = DEMUX_S_WAITING;
     return KALICO_DEMUX_OUT_ERROR;
 }
@@ -280,7 +239,6 @@ kalico_demux_klipper_len(void)
 const uint8_t *
 kalico_demux_kalico_payload(void)
 {
-    // Payload starts after sync(1) + len(2) + channel(1) = 4 bytes.
     return &kalico_buf[4];
 }
 
@@ -289,7 +247,6 @@ kalico_demux_kalico_payload_len(void)
 {
     if (kalico_pos < 1 + KALICO_FRAME_MIN_LEN_FIELD)
         return 0;
-    // total frame = sync + len_field; payload = total - 4 (header) - 2 (crc).
     return (uint16_t)(kalico_pos - KALICO_FRAME_OVERHEAD);
 }
 
@@ -299,12 +256,9 @@ kalico_demux_kalico_channel(void)
     return kalico_buf[3];
 }
 
-// Idle-reset timeout for the demuxer's per-frame state. If a frame starts
-// (sync byte received) but never finishes, we resync to WAITING after this
-// many idle ticks, regardless of which mid-frame state we got stuck in.
-// 100 ms is well above any legitimate inter-byte gap inside a single host
-// frame on USB-CDC FS and short enough that a stuck demuxer self-heals
-// before the host's identify timeout elapses.
+// 100 ms is above any legitimate inter-byte gap inside one host frame on
+// USB-CDC FS, and below the host's identify timeout, so a stuck mid-frame
+// demuxer self-heals before the host gives up.
 static uint32_t last_byte_time;
 
 void
@@ -340,13 +294,9 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
                 fflush(stderr);
             }
 #endif
-            // Bootloader-request sentinel detection. The 32-byte sentinel
-            // begins with 0x20 (= 32 decimal), which falls inside the
-            // demuxer's [KLIPPER_LEN_MIN=5, KLIPPER_LEN_MAX=64] range, so
-            // the demuxer reassembles all 32 bytes into klipper_buf
-            // regardless of how the bytes arrive at the transport (one
-            // burst, many small bursts, byte-by-byte). Checking here is
-            // the only location that survives fragmentation.
+            // The 32-byte sentinel reassembles into klipper_buf regardless of
+            // transport fragmentation, so checking here is the only
+            // fragmentation-proof location.
             const uint8_t *kbuf = kalico_demux_klipper_buf();
             uint8_t klen = kalico_demux_klipper_len();
             if (CONFIG_HAVE_BOOTLOADER_REQUEST && klen == 32

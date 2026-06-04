@@ -5,7 +5,6 @@ use crate::pad::pad_segment_axis;
 use nurbs::algebra::convolve;
 use nurbs::bezier::{bezier_pieces_to_nurbs, extract_bezier_pieces, BezierPiece};
 
-/// Build a `FittedSegment` with constant position on all axes.
 fn constant_segment(x: f64, y: f64, z: f64, t_start: f64, t_end: f64) -> FittedSegment {
     let make_axis = |val: f64| {
         bezier_pieces_to_nurbs(&[BezierPiece {
@@ -21,7 +20,6 @@ fn constant_segment(x: f64, y: f64, z: f64, t_start: f64, t_end: f64) -> FittedS
     }
 }
 
-/// Build a `FittedSegment` with linear X motion, constant Y and Z.
 fn linear_segment(x_start: f64, x_end: f64, t_start: f64, t_end: f64) -> FittedSegment {
     let dt = t_end - t_start;
     let slope = (x_end - x_start) / dt;
@@ -47,14 +45,8 @@ fn linear_segment(x_start: f64, x_end: f64, t_start: f64, t_end: f64) -> FittedS
     }
 }
 
-// ------------------------------------------------------------------
-// Test 1: Convolution of constant produces constant
-// ------------------------------------------------------------------
-
 #[test]
 fn shape_constant_is_constant() {
-    // A constant position curve, after convolution with a normalized kernel
-    // (DC gain = 1), should remain constant.
     let freq = 150.0;
     let t_sm = 0.8025 / freq;
     let t_sm_half = t_sm / 2.0;
@@ -66,10 +58,6 @@ fn shape_constant_is_constant() {
     let padded = pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 0.0, 1.0);
     let shaped = shape_axis(&padded, &kernel, 0.0, 1.0);
 
-    // Sample at multiple points — all should be close to x_val.
-    // Tolerance 1e-4 mm (100 nm): the discrete FIR's kernel normalization
-    // introduces ~16 nm error on a constant; 100 nm gives 6× margin while
-    // staying well below the 5 µm refit budget.
     let pieces = extract_bezier_pieces(&shaped);
     for &t in &[0.0, 0.25, 0.5, 0.75, 1.0] {
         let val = eval_at(&pieces, t);
@@ -80,21 +68,13 @@ fn shape_constant_is_constant() {
     }
 }
 
-// ------------------------------------------------------------------
-// Test 2: Pad-and-trim matches global convolve on 3 segments
-// ------------------------------------------------------------------
-
 #[test]
 fn pad_trim_matches_global_convolve() {
-    // Use a low frequency (wide kernel) to avoid numerical ill-conditioning
-    // from very large kernel coefficients. 10 Hz gives t_sm ≈ 0.08s, kernel
-    // coefficients of manageable magnitude.
     let freq = 10.0;
     let t_sm = 0.8025 / freq;
     let t_sm_half = t_sm / 2.0;
     let kernel = build_smooth_zv_kernel(t_sm);
 
-    // 3 segments with linear motion on X, each 1s long.
     let fitted = vec![
         linear_segment(0.0, 10.0, 0.0, 1.0),
         linear_segment(10.0, 30.0, 1.0, 2.0),
@@ -103,7 +83,6 @@ fn pad_trim_matches_global_convolve() {
     let batch_t_start = 0.0;
     let batch_t_end = 3.0;
 
-    // Method A: pad each segment, convolve each, trim each.
     let mut shaped_per_seg: Vec<ScalarNurbs<f64>> = Vec::new();
     for seg_idx in 0..3 {
         let padded = pad_segment_axis(
@@ -124,38 +103,27 @@ fn pad_trim_matches_global_convolve() {
         shaped_per_seg.push(shaped);
     }
 
-    // Method B: build one global padded curve and convolve once.
     let mut global_pieces: Vec<BezierPiece<f64>> = Vec::new();
 
-    // Left constant extension.
     global_pieces.push(BezierPiece {
         u_start: -t_sm_half,
         u_end: 0.0,
-        coeffs: vec![0.0, 0.0], // constant 0 at degree 1
+        coeffs: vec![0.0, 0.0],
     });
 
-    // All 3 segments' X-axis pieces.
     for seg in &fitted {
         global_pieces.extend(extract_bezier_pieces(&seg.axes[0]));
     }
 
-    // Right constant extension.
     global_pieces.push(BezierPiece {
         u_start: 3.0,
         u_end: 3.0 + t_sm_half,
-        coeffs: vec![35.0, 0.0], // constant 35 at degree 1
+        coeffs: vec![35.0, 0.0],
     });
 
     let global_nurbs = bezier_pieces_to_nurbs(&global_pieces);
     let global_convolved = convolve(&global_nurbs, &kernel).unwrap();
 
-    // Compare at interior sample points within each segment's domain.
-    // The per-segment discrete FIR and the global NURBS convolve use
-    // fundamentally different algorithms; the FIR introduces
-    // discretization error proportional to (kernel_width / N_samples)².
-    // At 10 Hz (wide kernel, dt_in ≈ 2ms) the peak error is ~10 nm.
-    // Tolerance 1e-4 mm (100 nm) gives 10× margin while staying well
-    // below the 5 µm refit budget.
     for seg_idx in 0..3 {
         let seg = &fitted[seg_idx];
         let per_seg_pieces = extract_bezier_pieces(&shaped_per_seg[seg_idx]);
@@ -175,10 +143,6 @@ fn pad_trim_matches_global_convolve() {
     }
 }
 
-// ------------------------------------------------------------------
-// Test 3: Boundary extension at batch edges
-// ------------------------------------------------------------------
-
 #[test]
 fn batch_edge_constant_extension() {
     let freq = 150.0;
@@ -186,7 +150,6 @@ fn batch_edge_constant_extension() {
     let t_sm_half = t_sm / 2.0;
     let kernel = build_smooth_zv_kernel(t_sm);
 
-    // Single segment — batch edges get constant-position extension.
     let x_start = 5.0;
     let x_end = 15.0;
     let fitted = vec![linear_segment(x_start, x_end, 0.0, 1.0)];
@@ -194,34 +157,27 @@ fn batch_edge_constant_extension() {
     let padded = pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 0.0, 1.0);
     let pieces = extract_bezier_pieces(&padded);
 
-    // Verify the padded curve extends beyond [0, 1].
     assert!(pieces[0].u_start < 0.0, "padding should extend before t=0");
     assert!(
         pieces.last().unwrap().u_end > 1.0,
         "padding should extend past t=1"
     );
 
-    // The shaped result should be valid on [0, 1].
     let shaped = shape_axis(&padded, &kernel, 0.0, 1.0);
     let shaped_pieces = extract_bezier_pieces(&shaped);
 
-    // At t=0, the shaped value should be close to x_start (constant extension
-    // means the shaper "sees" x_start to the left).
     let val_at_0 = eval_at(&shaped_pieces, 0.0);
     assert!(
         (val_at_0 - x_start).abs() < 0.5,
         "at t=0: expected ~{x_start}, got {val_at_0}"
     );
 
-    // At t=1, the shaped value should be close to x_end.
     let val_at_1 = eval_at(&shaped_pieces, 1.0);
     assert!(
         (val_at_1 - x_end).abs() < 0.5,
         "at t=1: expected ~{x_end}, got {val_at_1}"
     );
 
-    // The shaped output should be monotonically increasing (linear + constant
-    // extension with a symmetric kernel).
     let n_samples = 50;
     let mut prev = f64::NEG_INFINITY;
     for i in 0..=n_samples {
@@ -234,10 +190,6 @@ fn batch_edge_constant_extension() {
         prev = val;
     }
 }
-
-// ------------------------------------------------------------------
-// Helper: evaluate piecewise Bezier at a parameter value
-// ------------------------------------------------------------------
 
 fn eval_at(pieces: &[BezierPiece<f64>], t: f64) -> f64 {
     for p in pieces {

@@ -7,8 +7,8 @@ fn convolve_linear_input_with_constant_kernel_yields_correct_integral() {
     // y(u) = ∫_{u-0.25}^{u+0.25} s ds = (1/2) * ((u+0.25)^2 - (u-0.25)^2) = u/2
     // for u in [0.25, 0.75] (kernel window fully inside x's support).
     // y(0.5) = 0.5/2 = 0.25.  Equivalently: width * average = 0.5 * 0.5 = 0.25.
-    let x = crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None)
-        .unwrap();
+    let x =
+        crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap();
     let kernel = PiecewisePolynomialKernel::single_poly(vec![1.0_f64], (-0.25, 0.25));
 
     let y = convolve(&x, &kernel).unwrap();
@@ -29,8 +29,8 @@ fn convolve_constant_input_with_constant_kernel_gives_triangle() {
     // x(s) = 2 on [0, 1], w(t) = 3 on [-0.5, 0.5].
     // Convolution support: [0 + (-0.5), 1 + 0.5] = [-0.5, 1.5].
     // Output: triangle peaking in [0.5, 0.5] at value 6, sloping linearly to 0 at boundaries.
-    let x = crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![2.0, 2.0], None)
-        .unwrap();
+    let x =
+        crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![2.0, 2.0]).unwrap();
     let kernel = PiecewisePolynomialKernel::single_poly(vec![3.0_f64], (-0.5, 0.5));
 
     let y = convolve(&x, &kernel).unwrap();
@@ -83,26 +83,6 @@ fn integrate_product_constant_input_constant_kernel_yields_linear_result() {
 }
 
 #[test]
-fn convolve_rejects_rational_input() {
-    let curve = crate::ScalarNurbs::try_new(
-        1,
-        vec![0.0, 0.0, 1.0, 1.0],
-        vec![0.0_f64, 1.0],
-        Some(vec![1.0, 1.0]),
-    )
-    .unwrap();
-    let kernel = PiecewisePolynomialKernel::single_poly(vec![1.0_f64], (-0.1, 0.1));
-    let result = convolve(&curve, &kernel);
-    assert!(matches!(
-        result,
-        Err(AlgebraError::RationalNotSupported {
-            operation: "convolve",
-            ..
-        })
-    ));
-}
-
-#[test]
 fn single_poly_kernel_constructs_one_piece() {
     let k = PiecewisePolynomialKernel::single_poly(vec![1.0, 0.5_f64], (-1.0, 1.0));
     assert_eq!(k.pieces.len(), 1);
@@ -119,8 +99,8 @@ fn kernel_support_returns_endpoints() {
 
 #[test]
 fn knot_remove_redundant_simplifies_overproduct() {
-    let a = crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None)
-        .unwrap();
+    let a =
+        crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap();
     let b = a.clone();
     let mut c = multiply(&a, &b).unwrap();
     let initial_knot_count = c.knots().len();
@@ -144,14 +124,12 @@ fn multiply_curves_with_different_interior_knots() {
         2,
         vec![0.0, 0.0, 0.0, 0.4, 1.0, 1.0, 1.0],
         vec![0.0, 1.0, 2.0, 3.0],
-        None,
     )
     .unwrap();
     let b = crate::ScalarNurbs::<f64>::try_new(
         2,
         vec![0.0, 0.0, 0.0, 0.7, 1.0, 1.0, 1.0],
         vec![1.0, 2.0, 0.0, 1.0],
-        None,
     )
     .unwrap();
     let c = multiply(&a, &b).unwrap();
@@ -166,10 +144,10 @@ fn multiply_curves_with_different_interior_knots() {
 #[test]
 fn multiply_two_linear_curves_gives_quadratic() {
     // a(u) = u, b(u) = 2u + 1, expected c(u) = u(2u + 1) = 2u^2 + u.
-    let a = crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None)
-        .unwrap();
-    let b = crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![1.0, 3.0], None)
-        .unwrap();
+    let a =
+        crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap();
+    let b =
+        crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![1.0, 3.0]).unwrap();
     let c = multiply(&a, &b).unwrap();
     assert_eq!(c.degree(), 2);
     for u in [0.0, 0.25, 0.5, 0.75, 1.0] {
@@ -181,30 +159,15 @@ fn multiply_two_linear_curves_gives_quadratic() {
 
 #[test]
 fn scalar_multiply_doubles_evaluation() {
-    let curve =
-        crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap();
+    let curve = crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap();
     let doubled = scalar_multiply(&curve, 2.0_f64);
     assert!((eval(&doubled.as_view(), 0.5_f64) - 1.0).abs() < 1e-12);
 }
 
 #[test]
-fn scalar_multiply_preserves_weights() {
-    let curve = crate::ScalarNurbs::try_new(
-        1,
-        vec![0.0, 0.0, 1.0, 1.0],
-        vec![1.0, 2.0],
-        Some(vec![1.0, 1.0]),
-    )
-    .unwrap();
-    let result = scalar_multiply(&curve, 3.0_f64);
-    assert_eq!(result.weights().unwrap(), &[1.0, 1.0]);
-    assert_eq!(result.control_points(), &[3.0, 6.0]);
-}
-
-#[test]
 fn add_two_compatible_curves() {
-    let a = crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap();
-    let b = crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![2.0, 3.0], None).unwrap();
+    let a = crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap();
+    let b = crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![2.0, 3.0]).unwrap();
     let sum = add(&a, &b).unwrap();
     // At u=0.5: 0.5 + 2.5 = 3.0
     assert!((eval(&sum.as_view(), 0.5_f64) - 3.0).abs() < 1e-12);
@@ -212,36 +175,11 @@ fn add_two_compatible_curves() {
 
 #[test]
 fn add_rejects_mismatched_degree() {
-    let a = crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap();
-    let b = crate::ScalarNurbs::try_new(
-        2,
-        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        vec![0.0, 0.5, 1.0],
-        None,
-    )
-    .unwrap();
+    let a = crate::ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap();
+    let b = crate::ScalarNurbs::try_new(2, vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], vec![0.0, 0.5, 1.0])
+        .unwrap();
     let result = add(&a, &b);
     assert!(matches!(result, Err(crate::AlgebraError::KnotMismatch)));
-}
-
-#[test]
-fn multiply_rejects_rational_input() {
-    let a = crate::ScalarNurbs::try_new(
-        1,
-        vec![0.0, 0.0, 1.0, 1.0],
-        vec![0.0, 1.0],
-        Some(vec![1.0, 1.0]),
-    )
-    .unwrap();
-    let b = a.clone();
-    let result = multiply(&a, &b);
-    assert!(matches!(
-        result,
-        Err(crate::AlgebraError::RationalNotSupported {
-            operation: "multiply",
-            ..
-        })
-    ));
 }
 
 #[test]
@@ -357,14 +295,12 @@ fn multiply_regression_proptest_shrunk_failing_input() {
         3,
         vec![0.0, 0.0, 0.0, 0.0, 0.1, 0.55, 1.0, 1.0, 1.0, 1.0],
         vec![0.0, 0.0, 0.0, 0.181_828_016_839_598_23, 0.0, 0.0],
-        None,
     )
     .unwrap();
     let b = crate::ScalarNurbs::<f64>::try_new(
         1,
         vec![0.0, 0.0, 0.1, 1.0, 1.0],
         vec![0.0, 4.267_190_258_636_853, 0.0],
-        None,
     )
     .unwrap();
     let c = multiply(&a, &b).unwrap();
@@ -385,12 +321,11 @@ fn multiply_quadratic_x_linear_gives_cubic() {
         2,
         vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
         vec![0.0, 0.0, 1.0],
-        None,
     )
     .unwrap();
     // b(u) = u, same as before.
-    let b = crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0], None)
-        .unwrap();
+    let b =
+        crate::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap();
     let c = multiply(&a, &b).unwrap();
     assert_eq!(c.degree(), 3);
     // Expected: c(u) = u^3.
@@ -444,7 +379,6 @@ fn convolve_multi_piece_input_with_c0_kink_preserves_natural_multiplicity() {
         2,
         vec![0.0, 0.0, 0.0, 0.3, 0.3, 1.0, 1.0, 1.0],
         vec![0.0, 1.0, 4.0, 0.5, 0.2],
-        None,
     )
     .unwrap();
     // w(t) = 1 on [-0.1, 0.1] — single piece, no interior knots.
@@ -516,10 +450,8 @@ fn convolve_multi_piece_input_with_c0_kink_preserves_natural_multiplicity() {
 /// Identical knot vectors → fast path: delegates to `add`, no refine.
 #[test]
 fn add_with_knot_union_identical_knots_fast_path() {
-    let a =
-        crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap();
-    let b =
-        crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![2.0, 3.0], None).unwrap();
+    let a = crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap();
+    let b = crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![2.0, 3.0]).unwrap();
     let sum = add_with_knot_union(&a, &b).unwrap();
     // At u=0: 0+2=2. At u=1: 1+3=4. At u=0.5 (midpoint): 0.5+2.5=3.
     assert!(
@@ -560,8 +492,7 @@ fn add_with_knot_union_mismatched_knots_union_path() {
         },
     ]);
     // Single-piece constant 20.
-    let b = crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![20.0, 20.0], None)
-        .unwrap();
+    let b = crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![20.0, 20.0]).unwrap();
 
     let sum = add_with_knot_union(&a, &b).unwrap();
     // Check at domain boundary and midpoint of each piece.
@@ -584,43 +515,16 @@ fn add_with_knot_union_mismatched_knots_union_path() {
 /// Degree mismatch → `KnotMismatch` error (same as `add`'s contract).
 #[test]
 fn add_with_knot_union_rejects_degree_mismatch() {
-    let a =
-        crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap();
+    let a = crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap();
     let b = crate::ScalarNurbs::try_new(
         2,
         vec![0.0_f64, 0.0, 0.0, 1.0, 1.0, 1.0],
         vec![0.0, 0.5, 1.0],
-        None,
     )
     .unwrap();
     let result = add_with_knot_union(&a, &b);
     assert!(
         matches!(result, Err(crate::AlgebraError::KnotMismatch)),
         "expected KnotMismatch, got {result:?}",
-    );
-}
-
-/// Weighted curve → `NotImplemented` error (homogeneous lift deferred).
-#[test]
-fn add_with_knot_union_rejects_weighted_curves() {
-    let a = crate::ScalarNurbs::try_new(
-        1,
-        vec![0.0_f64, 0.0, 1.0, 1.0],
-        vec![0.0, 1.0],
-        Some(vec![1.0, 2.0]),
-    )
-    .unwrap();
-    let b =
-        crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap();
-    let result = add_with_knot_union(&a, &b);
-    assert!(
-        matches!(result, Err(crate::AlgebraError::NotImplemented(_))),
-        "expected NotImplemented for weighted operand, got {result:?}",
-    );
-    // Also: b weighted, a not.
-    let result2 = add_with_knot_union(&b, &a);
-    assert!(
-        matches!(result2, Err(crate::AlgebraError::NotImplemented(_))),
-        "expected NotImplemented for weighted operand (swapped), got {result2:?}",
     );
 }

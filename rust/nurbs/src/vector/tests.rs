@@ -5,7 +5,6 @@ fn linear_3d_curve() -> VectorNurbs<f64, 3> {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]],
-        None,
     )
     .unwrap()
 }
@@ -19,7 +18,7 @@ fn try_new_accepts_valid_linear_3d() {
 
 #[test]
 fn try_new_rejects_degree_exceeded() {
-    let result = VectorNurbs::<f64, 3>::try_new(21, vec![0.0; 23], vec![[0.0; 3]; 1], None);
+    let result = VectorNurbs::<f64, 3>::try_new(21, vec![0.0; 23], vec![[0.0; 3]; 1]);
     assert!(matches!(
         result,
         Err(crate::ConstructError::DegreeExceeded { .. })
@@ -28,8 +27,7 @@ fn try_new_rejects_degree_exceeded() {
 
 #[test]
 fn try_new_rejects_knot_count_mismatch() {
-    let result =
-        VectorNurbs::<f64, 3>::try_new(1, vec![0.0, 0.0, 1.0], vec![[0.0; 3], [1.0; 3]], None);
+    let result = VectorNurbs::<f64, 3>::try_new(1, vec![0.0, 0.0, 1.0], vec![[0.0; 3], [1.0; 3]]);
     assert!(matches!(
         result,
         Err(crate::ConstructError::KnotCountMismatch { .. })
@@ -64,6 +62,20 @@ fn try_from_wire_parses_3d_unweighted_linear() {
     let r = VectorNurbsRef::<f32, 3>::try_from_wire(aligned.as_slice()).unwrap();
     assert_eq!(r.degree(), 1);
     assert_eq!(r.control_points()[1], [1.0, 2.0, 3.0]);
+}
+
+#[test]
+fn try_from_wire_rejects_has_weights_flag() {
+    // Legacy rational header (has_weights=1) must be rejected loudly, not
+    // parsed with a misaligned payload assumption.
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&[1, 1, 1, 3]); // version, degree, has_weights=1, axes_n
+    buf.extend_from_slice(&4u16.to_ne_bytes());
+    buf.extend_from_slice(&2u16.to_ne_bytes());
+    buf.resize(64, 0);
+    let aligned = test_align_buf(&buf, 4);
+    let result = VectorNurbsRef::<f32, 3>::try_from_wire(aligned.as_slice());
+    assert!(matches!(result, Err(crate::WireError::WeightsUnsupported)));
 }
 
 #[test]

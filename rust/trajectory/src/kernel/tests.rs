@@ -4,7 +4,6 @@ use super::*;
 fn smooth_zv_kernel_is_normalized() {
     let kernel = build_smooth_zv_kernel(0.8025 / 150.0);
     let (lo, hi) = kernel.support();
-    // Simpson's rule integration
     let n = 1000;
     let step = (hi - lo) / f64::from(n);
     let mut integral = 0.0;
@@ -58,9 +57,7 @@ fn kernel_derivative_vanishes_at_boundaries() {
     let kernel = build_smooth_zv_kernel(0.8025 / 150.0);
     let (lo, hi) = kernel.support();
     let dk = kernel.pieces[0].differentiate();
-    // The lo boundary evaluates at the shifted-basis origin (exact zero).
-    // The hi boundary evaluates at s = 2h where large-magnitude terms
-    // cancel, so floating-point error is O(eps * |max_term|) ≈ 1e-8.
+    // hi: large-magnitude terms cancel at s=2h, so float error ≈ 1e-8, not 1e-12.
     assert!(dk.evaluate(lo).abs() < 1e-10, "lo = {}", dk.evaluate(lo));
     assert!(dk.evaluate(hi).abs() < 1e-8, "hi = {}", dk.evaluate(hi));
 }

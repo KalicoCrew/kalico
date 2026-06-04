@@ -1,34 +1,3 @@
-//! Integration test: the stub's DC loop logic — `FrameServer::poll_commands` +
-//! `AxisRing` + `StatusHeartbeat` emission — exercised against a live
-//! `UnixStream::pair`. Verifies the full closed loop:
-//!
-//!   host → PushPieces → stub → AxisRing.push → PushPiecesResponse
-//!   stub DC-cycle → AxisRing.sample past expiry → StatusHeartbeat(retired_count)
-//!   host ← StatusHeartbeat.retired_counts[0] = N
-//!
-//! This is the key correctness property: N pieces pushed, N pieces eventually
-//! retired, heartbeat carries N — so the pump's `AxisQueue.retired` reaches
-//! `pushed` and room is replenished.
-//!
-//! No hardware, no subprocess. The stub's `FrameServer` is constructed from
-//! a `UnixListener` at a temp socket path; the client side uses a `UnixStream`
-//! connect. The DC loop runs inline for a bounded number of iterations.
-//!
-//! ## Synthetic clock (deterministic retirement)
-//!
-//! The hardened walker (`motion_core::get_position_and_velocity`) faults and
-//! returns `None` when it adopts a piece whose start is more than
-//! `drift_budget + EC_DC_PERIOD_NS` (1.2 ms) in the past — so the old strategy
-//! of pushing pieces 10 s in the past no longer causes retirement; it causes a
-//! fault instead.
-//!
-//! Both tests therefore use a **synthetic clock**: pieces start at a known
-//! `base` ns, and the test drives the stub's sample loop with `now` values
-//! that advance in controlled 1 ms steps from `base`. Each piece is sampled
-//! while current (no fault), then retired once `now` crosses its end.
-//! Wall-clock sleeps are not used for retirement logic — only for socket
-//! synchronisation where unavoidable.
-
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::thread;
@@ -52,8 +21,6 @@ use kalico_protocol::messages::{
 };
 use kalico_protocol::KALICO_CHANNEL_PIECES;
 use runtime::piece_ring::PieceEntry;
-
-// ── Wire helpers (mirrors push_pieces_frame from ec-test-client) ─────────
 
 fn encode_frame(channel: u8, payload: &[u8]) -> Vec<u8> {
     kalico_native_transport::frame::encode_frame(channel, payload)
@@ -79,8 +46,6 @@ fn push_pieces_wire_frame(cid: u32, axis: u8, pieces: &[PieceEntry], new_head: u
     encode_frame(KALICO_CHANNEL_PIECES, &payload)
 }
 
-/// Drain all available frames from a non-blocking `stream` and decode them.
-/// Returns `(push_pieces_responses, heartbeats)`.
 fn drain_frames(
     stream: &mut UnixStream,
     demux: &mut Demuxer,
@@ -118,7 +83,7 @@ fn drain_frames(
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
-                break; // nothing more available right now
+                break;
             }
             Err(_) => break,
         }
@@ -126,49 +91,24 @@ fn drain_frames(
     (ppr, hbs)
 }
 
-/// Verify the full ring-walk + heartbeat emission loop using a **synthetic clock**.
-///
-/// Strategy: N contiguous 1 ms pieces. The server thread has two phases:
-///
-/// 1. **Command phase** (no sampling): poll the socket until PushPieces arrives;
-///    push the pieces and respond. This ensures the ring is populated before the
-///    synthetic clock starts advancing, eliminating the race between the advancing
-///    `now` and late PushPieces delivery.
-/// 2. **DC loop phase**: advance a synthetic `now` from `BASE_NS` in 1 ms steps.
-///    Each piece is adopted while current (no PieceStartInPast fault) and retired
-///    once `now` crosses its end.
-///
-/// Only wall-clock `sleep` is used for socket synchronisation (yielding between
-/// command-phase polls and DC cycles), never for retirement timing.
-///
-/// Asserts:
-/// - `PushPiecesResponse.result == 0` (all pieces accepted).
-/// - A `StatusHeartbeat` eventually carries `retired_counts[0] == N`.
 #[test]
 fn push_pieces_and_heartbeat_closes_the_loop() {
-    // Use a temp socket file.
     let socket_path = format!("/tmp/kalico-ethercat-test-{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
 
-    // N contiguous 1 ms pieces. The synthetic clock advances in 1 ms steps,
-    // retiring one piece per step once the DC phase begins.
     const N: usize = 3;
-    const PIECE_DUR_NS: u64 = 1_000_000; // 1 ms in ns — one DC cycle
+    const PIECE_DUR_NS: u64 = 1_000_000;
+    const BASE_NS: u64 = 10_000_000_000;
 
-    // Synthetic epoch. Well clear of 0 to avoid underflow in saturating_sub.
-    const BASE_NS: u64 = 10_000_000_000; // 10 s in ns (arbitrary non-zero epoch)
-
-    // Build pieces before spawning: piece i starts at BASE_NS + i*1ms.
     let pieces: Vec<PieceEntry> = (0..N)
         .map(|i| PieceEntry {
             start_time: BASE_NS + i as u64 * PIECE_DUR_NS,
             coeffs: [0.0_f32; 4],
-            duration: PIECE_DUR_NS as f32 / 1_000_000_000.0, // 1 ms in seconds
+            duration: PIECE_DUR_NS as f32 / 1_000_000_000.0,
             _reserved: 0,
         })
         .collect();
 
-    // Channel through which the server thread reports the final retired count.
     let (tx, rx) = std::sync::mpsc::channel::<u32>();
 
     let socket_path_sv = socket_path.clone();
@@ -178,10 +118,6 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
         let mut last_sent_retired: u32 = 0;
         let mut heartbeat_sent = false;
 
-        // ── Phase 1: command phase ────────────────────────────────────────
-        // Poll until PushPieces arrives and the ring is populated. The synthetic
-        // clock does NOT advance in this phase, so pieces (which start at BASE_NS)
-        // are always fresh when we begin sampling.
         let cmd_deadline = std::time::Instant::now() + Duration::from_secs(2);
         let mut push_received = false;
         while !push_received {
@@ -216,7 +152,7 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                         server.respond(&push_pieces_response_frame(
                             correlation_id,
                             result,
-                            BASE_NS, // arrival_clock: synthetic ns
+                            BASE_NS,
                             front_start_time,
                         ));
                         push_received = true;
@@ -233,16 +169,9 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
             }
         }
 
-        // ── Phase 2: DC loop with synthetic clock ─────────────────────────
-        // Pieces start at BASE_NS + k*1ms. Advance `now` from BASE_NS in 1 ms
-        // steps. Each piece is adopted while current (fault check passes) and
-        // retired once `now` crosses piece_end. N+4 steps is sufficient for all
-        // N pieces to retire plus a few extra heartbeat flush cycles.
         let mut now: u64 = BASE_NS;
         let total_cycles = (N as u64) + 4;
         for _ in 0..total_cycles {
-            // No new commands expected in DC phase; drain anyway to flush any
-            // stray socket data (e.g. the client dropping the connection).
             for cmd in server.poll_commands() {
                 match cmd {
                     Command::Unknown { .. }
@@ -252,7 +181,6 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                 }
             }
 
-            // Sample with the synthetic clock: no wall-clock sleep for retirement.
             let _ = ring.sample(now);
 
             let current_retired = ring.retired_count();
@@ -264,18 +192,14 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                 heartbeat_sent = true;
             }
 
-            // Advance synthetic clock by one 1 ms step.
             now = now.saturating_add(PIECE_DUR_NS);
 
-            // Brief yield so the client can drain the socket.
             thread::sleep(Duration::from_millis(1));
         }
 
-        // Report the final retired count back to the test.
         let _ = tx.send(ring.retired_count());
     });
 
-    // Wait for the socket to appear (up to 500 ms).
     let wait_deadline = std::time::Instant::now() + Duration::from_millis(500);
     loop {
         if std::path::Path::new(&socket_path).exists() {
@@ -288,11 +212,9 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
         thread::sleep(Duration::from_millis(5));
     }
 
-    // Connect the client in non-blocking mode so reads don't stall.
     let mut client = UnixStream::connect(&socket_path).expect("connect client");
     client.set_nonblocking(true).expect("set_nonblocking");
 
-    // Send PushPieces with all N pieces.
     let frame = push_pieces_wire_frame(1, 0, &pieces, N as u32);
     client.write_all(&frame).expect("write PushPieces");
 
@@ -341,7 +263,6 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
         N
     );
 
-    // Drop client to let the server thread finish its loop.
     drop(client);
     let final_count = rx
         .recv_timeout(Duration::from_secs(2))
@@ -354,38 +275,21 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
     let _ = std::fs::remove_file(&socket_path);
 }
 
-/// Verify the `PieceStartInPast` fault path of the hardened walker.
-///
-/// The walker faults when a freshly adopted piece's start is more than
-/// `fault_tolerance = drift_budget + EC_DC_PERIOD_NS` in the past, where:
-///   `drift_budget = (200e-6 * 1_000_000_000) = 200_000 ns`
-///   `fault_tolerance = 200_000 + 1_000_000 = 1_200_000 ns = 1.2 ms`
-///
-/// `get_position_and_velocity` calls `EtherCatFaultSink::piece_start_in_past`
-/// and returns `None`. This test asserts that `sample()` returns `None` for
-/// such a stale piece, locking in the "host pump fell behind" semantics.
-///
-/// The piece starts 1 s before `now` — far exceeding the 1.2 ms fault tolerance.
 #[test]
 fn piece_start_in_past_faults_and_returns_none() {
     let mut ring = AxisRing::new();
 
-    // `now` is a concrete synthetic time (10 s into the epoch).
     let now_ns: u64 = 10_000_000_000;
-
-    // Piece starts 1 s before now — 1_000_000_000 ns >> 1.2 ms fault tolerance.
     let stale_start = now_ns - 1_000_000_000;
 
     ring.push_entry(PieceEntry {
         start_time: stale_start,
         coeffs: [0.0_f32; 4],
-        duration: 0.001, // 1 ms — nominally still within its window, but stale at adoption
+        duration: 0.001,
         _reserved: 0,
     })
     .unwrap();
 
-    // The walker adopts the piece, detects start is > 8.2 ms in the past, faults,
-    // and returns None. We are 1_000_000_000 ns (1 s) late — solidly in the fault window.
     let result = ring.sample(now_ns);
     assert!(
         result.is_none(),
@@ -394,39 +298,20 @@ fn piece_start_in_past_faults_and_returns_none() {
     );
 }
 
-/// Verify that the EtherCAT endpoint answers `QueryRuntimeCaps` with a
-/// `RuntimeCapsResponse` whose `total_piece_memory` encodes the real ring
-/// capacity, and that the host's `axis_ring_depth` derivation recovers
-/// `AXIS_RING_CAPACITY` exactly.
-///
-/// Protocol path exercised (same as `init_planner` in `motion-bridge`):
-///   host → QueryRuntimeCaps (control channel 0)
-///   endpoint → RuntimeCapsResponse { total_piece_memory }
-///   host: ring_depth = (total_piece_memory / 32) / NUM_AXES
-///         → must equal AXIS_RING_CAPACITY (= 256)
-///
-/// This pins the single-source-of-truth invariant: the host never uses a
-/// hard-coded constant; it always reads the depth from the endpoint's report.
 #[test]
 fn ethercat_endpoint_query_runtime_caps_round_trip() {
     use kalico_host_rt::unix_native_conn::UnixNativeConn;
 
-    // Bind a temp socket for the in-process endpoint.
     let socket_path = format!("/tmp/kalico-caps-rt-{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
 
-    // Expected total_piece_memory the endpoint should report.
-    // size_of::<PieceEntry>() == 32 is verified by a compile-time assert in
-    // runtime::piece_ring.
     const PIECE_ENTRY_SIZE: usize = 32;
     let expected_total: u32 = (AXIS_RING_CAPACITY * NUM_AXES * PIECE_ENTRY_SIZE) as u32;
 
-    // ── Spawn endpoint thread ──────────────────────────────────────────────
     {
         let sp = socket_path.clone();
         thread::spawn(move || {
             let mut server = FrameServer::bind(&sp).expect("endpoint: bind");
-            // Service exactly one QueryRuntimeCaps call, then exit.
             let deadline = std::time::Instant::now() + Duration::from_secs(5);
             loop {
                 assert!(
@@ -437,9 +322,8 @@ fn ethercat_endpoint_query_runtime_caps_round_trip() {
                     if let Command::QueryRuntimeCaps { correlation_id } = cmd {
                         let total = (AXIS_RING_CAPACITY * NUM_AXES * PIECE_ENTRY_SIZE) as u32;
                         server.respond(&runtime_caps_response_frame(correlation_id, total));
-                        return; // one call is enough for this test
+                        return;
                     }
-                    // Respond to stray Identify or Unknown without failing the test.
                     if let Command::Identify {
                         correlation_id,
                         proto_version,
@@ -453,7 +337,6 @@ fn ethercat_endpoint_query_runtime_caps_round_trip() {
         });
     }
 
-    // Wait for the socket to appear (up to 500 ms).
     {
         let wait_deadline = std::time::Instant::now() + Duration::from_millis(500);
         loop {
@@ -468,7 +351,6 @@ fn ethercat_endpoint_query_runtime_caps_round_trip() {
         }
     }
 
-    // ── Host side: connect UnixNativeConn and issue QueryRuntimeCaps ───────
     let conn = UnixNativeConn::connect(&socket_path).expect("UnixNativeConn::connect must succeed");
 
     let (resp_kind, resp_body) = conn
@@ -496,9 +378,6 @@ fn ethercat_endpoint_query_runtime_caps_round_trip() {
         caps.total_piece_memory,
     );
 
-    // Derive ring_depth the same way motion-bridge does:
-    //   axis_ring_depth(total_pieces, num_axes) = max(total_pieces / num_axes, 1)
-    //   where total_pieces = total_piece_memory / 32
     let total_pieces = caps.total_piece_memory / PIECE_ENTRY_SIZE as u32;
     let ring_depth = if NUM_AXES as u32 == 0 {
         total_pieces

@@ -17,7 +17,6 @@ fn straight_cubic(length_mm: f64) -> CubicSegment {
             [2.0 * length_mm / 3.0, 0.0, 0.0],
             [length_mm, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
     CubicSegment::try_new(
@@ -112,14 +111,12 @@ fn pure_e_only_independent_passthrough() {
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
         vec![[0.0; 3]; 4], // all four CPs at origin → cp_polygon_length == 0
-        None,
     )
     .unwrap();
     let e_curve = ScalarNurbs::<f64>::try_new(
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![0.0, -2.0], // retraction
-        None,
     )
     .unwrap();
     let seg = CubicSegment::try_new(
@@ -152,7 +149,6 @@ fn closed_loop_chord_zero_splits_by_arc_length() {
             [-50.0, 50.0, 0.0],
             [0.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
     let seg = CubicSegment::try_new(
@@ -229,11 +225,9 @@ fn rejects_independent_with_non_trivial_xyz() {
             [0.0, 0.0, 20.0],
             [0.0, 0.0, 30.0],
         ],
-        None,
     )
     .unwrap();
-    let e_curve =
-        ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 5.0], None).unwrap();
+    let e_curve = ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 5.0]).unwrap();
     let seg = CubicSegment::try_new(
         xyz,
         EMode::Independent,

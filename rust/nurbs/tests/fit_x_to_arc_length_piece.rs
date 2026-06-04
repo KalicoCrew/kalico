@@ -16,7 +16,6 @@ fn cubic_straight_line() -> VectorNurbs<f64, 3> {
             [20.0 / 3.0, 0.0, 0.0],
             [10.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap()
 }
@@ -54,7 +53,6 @@ fn quarter_arc_fits_at_low_degree() {
             [r * k, r, 0.0],
             [0.0, r, 0.0],
         ],
-        None,
     )
     .unwrap();
 
@@ -93,7 +91,6 @@ fn tight_arc_r1mm_residual_within_tolerance() {
             [r * k, r, 0.0],
             [0.0, r, 0.0],
         ],
-        None,
     )
     .unwrap();
 

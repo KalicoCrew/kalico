@@ -80,8 +80,6 @@ fn g5_emits_cubic_segment() {
     // Knot vector [0,0,0,0,1,1,1,1].
     let knots = c.xyz.knots();
     assert_eq!(knots, &[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
-    // Non-rational.
-    assert!(c.xyz.weights().is_none(), "G5 cubic must be non-rational");
     // No E delta → Travel.
     assert_eq!(c.e_mode, crate::EMode::Travel);
     // No JD before the G5 in the live pipeline.
@@ -101,13 +99,9 @@ fn g5_1_emits_cubic_via_degree_elevation() {
         _ => None,
     });
     let c = cubic_seg.expect("expected a Segment::Cubic from G5.1");
-    // Post-elevation invariants: degree 3, 4 CPs, non-rational.
+    // Post-elevation invariants: degree 3, 4 CPs, clamped knots.
     assert_eq!(c.xyz.degree(), 3);
     assert_eq!(c.xyz.control_points().len(), 4);
-    assert!(
-        c.xyz.weights().is_none(),
-        "G5.1 → G5 must remain non-rational"
-    );
     // Knot vector [0,0,0,0,1,1,1,1].
     let knots = c.xyz.knots();
     assert_eq!(knots, &[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);

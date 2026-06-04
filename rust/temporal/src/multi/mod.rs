@@ -1,6 +1,3 @@
-//! Layer 2 multi-segment integration. See spec
-//! `docs/superpowers/specs/2026-04-27-layer-2-multi-segment-design.md`.
-
 use crate::{Limits, TopProfile};
 use nurbs::VectorNurbs;
 use thiserror::Error;
@@ -8,9 +5,7 @@ use thiserror::Error;
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum GridStrategy {
-    /// Fixed-N for every segment. Step 4 backward-compatible.
     Fixed(usize),
-    /// Adaptive N per segment per spec §2.5.
     Adaptive {
         min_n: usize,
         max_n: usize,
@@ -22,9 +17,6 @@ pub enum GridStrategy {
 pub struct SegmentInput<'a> {
     pub curve: &'a VectorNurbs<f64, 3>,
     pub limits: Limits,
-    /// Per-junction chord-error tolerance for the *trailing* junction
-    /// (between this segment and the next). Slicer-supplied for sharp
-    /// G1↔G1 corners; ignored for smooth-κ junctions per spec §2.2.
     pub trailing_junction_chord_tolerance_mm: f64,
 }
 
@@ -32,20 +24,8 @@ pub struct SegmentInput<'a> {
 pub struct BatchInput<'a> {
     pub segments: &'a [SegmentInput<'a>],
     pub grid_strategy: GridStrategy,
-    /// Default 3 on Pi 5 per spec §2.6 (avoids Klipper contention on cores 0-1).
     pub worker_threads: usize,
-    /// Velocity boundary at the **batch start** (`segments[0]`'s `u = 0`),
-    /// in mm/s. Threaded into the seed of `joining::SegmentState[0].v_start`.
-    /// Defaults to `0.0` for legacy callers that always start from rest.
-    ///
-    /// Used by the streaming shaper (Phase 3 `append_and_replan`) to chain
-    /// the un-committed replan window into the committed motion already in
-    /// flight on the MCU.
     pub initial_velocity: f64,
-    /// Velocity boundary at the **batch end** (`segments[last]`'s `u = 1`),
-    /// in mm/s. Threaded into the seed of `joining::SegmentState[last].v_end`.
-    /// Defaults to `0.0` for legacy callers (the streaming shaper's
-    /// decel-to-zero default also uses `0.0`).
     pub terminal_velocity: f64,
 }
 
@@ -60,65 +40,26 @@ pub struct BatchOutput {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum JoiningStatus {
-    /// Velocities stabilized AND all segments solved cleanly.
     Converged,
-    /// Velocity propagation stabilized, but some segments still have
-    /// non-success solver status (`Infeasible` / `MaxIter` / `DivergedSlp` /
-    /// `MaxIterSlp`). `schedule_segment` is deterministic, so re-solving with
-    /// the same inputs would produce the same status — no point continuing.
-    /// Diagnostic: indicates pathological segment(s) that need looser
-    /// endpoints, finer N, or v2 algorithmic improvement.
-    /// (Per round-4 review: split out from `CappedAtMaxSweeps` for caller
-    /// diagnostic clarity.)
     StalledOnInfeasibleSegment { last_dirty_count: usize },
-    /// Reached `MAX_SWEEPS` without velocity stabilization. Indicates
-    /// joining-loop oscillation — different (and worse) failure mode than
-    /// `StalledOnInfeasibleSegment`. Should not happen on the test fixtures;
-    /// surfacing this means joining algorithm has a bug.
     CappedAtMaxSweeps { last_dirty_count: usize },
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct JunctionInfo {
-    /// Indices of the two segments this junction sits between (left, right).
     pub between_segments: (usize, usize),
-    /// Post-joining **converged** junction velocity — equal to
-    /// `output.profiles[left].samples.last().v` and
-    /// `output.profiles[right].samples[0].v` within `ε_velocity` = 1 mm/s
-    /// (spec §6.2). Always ≤ the upfront-cap value identified by
-    /// `binding_cap`. May be lower if the joining loop drove the velocity
-    /// below the cap due to ramp-feasibility from short adjacent segments.
     pub v_junction: f64,
-    /// Identifies which **upfront cap** was binding when the junction
-    /// velocity was computed (spec §2.2): per-axis MVC, centripetal,
-    /// sharp-corner JD, or global `v_max`. Diagnostic; not necessarily
-    /// equal to the cap whose value is reflected in the converged
-    /// `v_junction`.
     pub binding_cap: JunctionBindingCap,
-    /// Curvature on the left side of the junction (segment
-    /// `between_segments.0` at u=1).
     pub kappa_left: f64,
-    /// Curvature on the right side of the junction (segment
-    /// `between_segments.1` at u=0).
     pub kappa_right: f64,
 }
 
-/// Identifies which **upfront junction-velocity cap** was binding when the
-/// junction's velocity was computed (spec §2.2). The four caps are evaluated
-/// against the geometry on each side of the junction; the binding (smallest)
-/// cap is recorded here.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 pub enum JunctionBindingCap {
-    /// Per-axis MVC: `v_max_axis / |T_axis|`.
     PerAxisVelocity,
-    /// Centripetal cap: `sqrt(a_centripetal_max / κ)`.
     Centripetal,
-    /// Global per-axis `v_max` minimum (rare — usually dominated by
-    /// `PerAxisVelocity`).
     GlobalVMax,
-    /// Sharp-corner G1↔G1 chord-error JD cap:
-    /// `sqrt(a · δ · cos(α/2) / (1 − cos(α/2)))`.
     SharpCornerChord,
 }
 
@@ -139,17 +80,6 @@ pub enum BatchError {
 /// - [`BatchError::InvalidThreads`] — `input.worker_threads` is zero.
 /// - [`BatchError::Segment`] — a segment-level [`crate::ScheduleError`] was
 ///   returned by [`crate::topp::schedule_segment_with_tolerance`].
-///
-/// # Pipeline
-/// 1. Validate inputs.
-/// 2. Compute per-segment grid sizes via [`multi::grid::compute_n`] and
-///    [`BatchInput::grid_strategy`].
-/// 3. Compute k−1 junction velocities via
-///    [`multi::junction::compute_junction_velocity`].
-/// 4. Seed per-segment [`multi::joining::SegmentState`] from junction velocities.
-/// 5. Initial [`multi::parallel::fan_out_solves`] (all segments dirty).
-/// 6. Joining loop via [`multi::joining::join_until_converged`].
-/// 7. Assemble [`BatchOutput`].
 pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
     use crate::GridConfig;
     use crate::multi::{grid, joining, junction, parallel};
@@ -163,7 +93,6 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
 
     let k = input.segments.len();
 
-    // Stage 1: per-segment grid sizes.
     let grids: Vec<GridConfig> = input
         .segments
         .iter()
@@ -173,7 +102,6 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
         })
         .collect();
 
-    // Stage 2: junction velocities (k-1 junctions).
     let junctions: Vec<junction::JunctionResult> = (0..k - 1)
         .map(|i| {
             junction::compute_junction_velocity(
@@ -186,11 +114,6 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
         })
         .collect();
 
-    // Stage 3: seed per-segment states. The batch's first segment's `v_start`
-    // and last segment's `v_end` come from the caller-supplied
-    // `initial_velocity` / `terminal_velocity` (defaulting to 0.0 — the
-    // legacy contract). Interior boundaries come from the upfront junction
-    // velocity caps and are subsequently tightened by the joining loop.
     let mut states: Vec<joining::SegmentState> = (0..k)
         .map(|i| {
             let v_start = if i == 0 {
@@ -212,10 +135,8 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
         })
         .collect();
 
-    // Stage 4: initial fan-out (all dirty).
     parallel::fan_out_solves(input.segments, &mut states, &grids, input.worker_threads)?;
 
-    // Stage 5: joining loop with in-loop re-solves (review-1 corrected algorithm).
     let (sweeps, joining_status) = joining::join_until_converged(
         input.segments,
         &grids,
@@ -224,7 +145,6 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
         input.worker_threads,
     )?;
 
-    // Stage 6: assemble output.
     let profiles: Vec<_> = states
         .into_iter()
         .map(|s| s.profile.expect("all profiles solved by stage 5"))
@@ -233,13 +153,8 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
         .into_iter()
         .enumerate()
         .map(|(i, j)| {
-            // Use the actual converged junction speed from the profile pair rather than
-            // the upfront-computed cap (`j.v_junction`). The cap is an upper bound; the
-            // joining loop may have driven the effective velocity lower (e.g., when a
-            // very short segment cannot reach the cap speed). The converged value is the
-            // v_end of profile[i] — which equals v_start of profile[i+1] to within the
-            // joining tolerance. Callers (e.g., `assert_junction_continuity_for_all`)
-            // expect `v_junction` to match the profile endpoints, not the upfront cap.
+            // Use the converged profile endpoint, not the upfront cap: the joining
+            // loop may have driven the velocity below the cap on short segments.
             let v_converged = profiles[i].samples.last().map_or(0.0, |s| s.v);
             JunctionInfo {
                 between_segments: (i, i + 1),

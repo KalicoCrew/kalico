@@ -1,21 +1,16 @@
-//! Helper conversions between Rust passthrough_queue types and Python.
-
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use kalico_host_rt::passthrough_queue::{CommandQueueId, McuHandle, PassthroughStats};
 
-/// Wrap a raw `u32` back into an `McuHandle`.
 pub(crate) fn mcu_handle_from_raw(raw: u32) -> McuHandle {
     McuHandle::from_raw(raw)
 }
 
-/// Wrap a raw `u32` back into a `CommandQueueId`.
 pub(crate) fn cq_id_from_raw(raw: u32) -> CommandQueueId {
     CommandQueueId::from_raw(raw)
 }
 
-/// Convert `PassthroughStats` to a Python dict.
 pub(crate) fn stats_to_pydict(py: Python<'_>, s: &PassthroughStats) -> PyResult<Py<PyDict>> {
     let d = PyDict::new(py);
     d.set_item("bytes_write", s.bytes_write)?;

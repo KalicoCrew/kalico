@@ -1,7 +1,6 @@
 use super::*;
 use temporal::{BindingConstraint, GridSample, GridScheme, SolveStatus, TopProfile};
 
-/// Build a synthetic `TopProfile` with uniform velocity and uniform grid.
 fn uniform_profile(n: usize, total_length: f64, velocity: f64) -> TopProfile {
     let mut samples = Vec::with_capacity(n);
     let b = velocity * velocity;
@@ -32,14 +31,12 @@ fn s_of_t_uniform_velocity_is_linear() {
     assert_eq!(s_pieces.pieces.len(), 10);
     assert!(s_pieces.near_zero.iter().all(|nz| !nz));
 
-    // Total duration should be 50 / 500 = 0.1 s.
     assert!(
         (s_pieces.total_duration - 0.1).abs() < 1e-12,
         "total_duration = {}",
         s_pieces.total_duration
     );
 
-    // Each piece should be linear (a_k = 0 since b is constant).
     for piece in &s_pieces.pieces {
         assert_eq!(piece.coeffs.len(), 3);
         assert!(
@@ -68,8 +65,6 @@ fn s_of_t_endpoint_consistency() {
             binding: BindingConstraint::None,
         });
     }
-    // First sample has v=0, so the first interval has one near-zero endpoint.
-    // But v_k1 for k=0 is 10.0, which is > NEAR_ZERO_V, so not near-zero.
     let profile = TopProfile {
         samples,
         status: SolveStatus::Solved,
@@ -80,7 +75,6 @@ fn s_of_t_endpoint_consistency() {
     let s_pieces = build_s_of_t_pieces(&profile, 0.0);
     assert_eq!(s_pieces.pieces.len(), 10);
 
-    // Check that s(t_end) of each piece matches s_{k+1} from the profile.
     for k in 0..s_pieces.pieces.len() {
         let piece = &s_pieces.pieces[k];
         let s_at_end = piece.evaluate(piece.u_end);
@@ -92,7 +86,6 @@ fn s_of_t_endpoint_consistency() {
         );
     }
 
-    // Also check start-of-piece matches s_k.
     for k in 0..s_pieces.pieces.len() {
         let piece = &s_pieces.pieces[k];
         let s_at_start = piece.evaluate(piece.u_start);
@@ -141,7 +134,6 @@ fn s_of_t_near_zero_handling() {
     assert!(s_pieces.near_zero[0]);
     assert!(s_pieces.near_zero[1]);
 
-    // Near-zero pieces should have zero velocity and acceleration coefficients.
     for piece in &s_pieces.pieces {
         assert!(
             piece.coeffs[1].abs() < 1e-15,
@@ -177,7 +169,6 @@ fn s_of_t_pieces_contiguous() {
     let profile = uniform_profile(6, 25.0, 200.0);
     let s_pieces = build_s_of_t_pieces(&profile, 1.0);
 
-    // Adjacent pieces should share endpoints.
     for k in 0..s_pieces.pieces.len() - 1 {
         assert!(
             (s_pieces.pieces[k].u_end - s_pieces.pieces[k + 1].u_start).abs() < 1e-15,
@@ -195,7 +186,6 @@ fn compose_straight_line_constant_velocity() {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [50.0, 0.0, 0.0]],
-        None,
     )
     .unwrap();
 
@@ -208,7 +198,6 @@ fn compose_straight_line_constant_velocity() {
 
     assert_eq!(composed.len(), s_pieces.pieces.len());
 
-    // At t=0, x should be 0; at t=total_duration, x should be ~50.
     let first = &composed[0];
     let x_at_start = first[0].evaluate(first[0].u_start);
     assert!(
@@ -223,7 +212,6 @@ fn compose_straight_line_constant_velocity() {
         "x(t_end) = {x_at_end}, expected ~50"
     );
 
-    // Y and Z should remain ~0 throughout.
     for pieces_k in &composed {
         let y_mid = pieces_k[1].evaluate((pieces_k[1].u_start + pieces_k[1].u_end) / 2.0);
         let z_mid = pieces_k[2].evaluate((pieces_k[2].u_start + pieces_k[2].u_end) / 2.0);
@@ -231,7 +219,6 @@ fn compose_straight_line_constant_velocity() {
         assert!(z_mid.abs() < 1e-6, "z should be ~0, got {z_mid}");
     }
 
-    // X should be monotonically increasing: check at piece boundaries.
     let mut prev_x = f64::NEG_INFINITY;
     for pieces_k in &composed {
         let x_start = pieces_k[0].evaluate(pieces_k[0].u_start);
@@ -250,7 +237,6 @@ fn compose_diagonal_line() {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [30.0, 40.0, 0.0]],
-        None,
     )
     .unwrap();
 
@@ -265,7 +251,6 @@ fn compose_diagonal_line() {
     let s_pieces = build_s_of_t_pieces(&profile, 0.0);
     let composed = compose_segment(&curve, &table.as_view(), &s_pieces, 1e-4).unwrap();
 
-    // At the end, position should be ~(30, 40, 0).
     let last = &composed[composed.len() - 1];
     let x_end = last[0].evaluate(last[0].u_end);
     let y_end = last[1].evaluate(last[1].u_end);

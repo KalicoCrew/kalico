@@ -7,7 +7,6 @@ fn straight_line_x_aligned_returns_unit_tangent_and_zero_curvature() {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
-        None,
     )
     .unwrap();
 
@@ -32,45 +31,12 @@ fn rejects_grid_size_below_two() {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
-        None,
     )
     .unwrap();
     assert!(matches!(
         sample_arclength_grid(&curve, 1),
         Err(PathSampleError::GridTooSmall(1))
     ));
-}
-
-#[test]
-fn rational_quadratic_arc_returns_constant_curvature() {
-    // Build a quarter-circle (R=20mm) as a rational quadratic NURBS.
-    // Standard NURBS quarter-circle: 3 control points with weights [1, sqrt(2)/2, 1].
-    //   P0 = (R, 0, 0), P1 = (R, R, 0), P2 = (0, R, 0)
-    //   weights = [1, sqrt(2)/2, 1]
-    //   knots = [0, 0, 0, 1, 1, 1] (degree 2, 3 CPs, clamped)
-    // True curvature κ = 1/R = 0.05.
-    let r = 20.0_f64;
-    let w = std::f64::consts::FRAC_1_SQRT_2;
-    let curve = VectorNurbs::<f64, 3>::try_new(
-        2,
-        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        vec![[r, 0.0, 0.0], [r, r, 0.0], [0.0, r, 0.0]],
-        Some(vec![1.0, w, 1.0]),
-    )
-    .unwrap();
-    let grid = sample_arclength_grid(&curve, 11).unwrap();
-    let expected_kappa = 1.0 / r;
-    for k in &grid.kappa {
-        // Tolerance is loose because arclength reparameterization + numerical
-        // chain rule has accumulated error on a NURBS arc; ~1% is typical.
-        assert!(
-            (k - expected_kappa).abs() / expected_kappa < 0.01,
-            "kappa = {k}, expected {expected_kappa}"
-        );
-    }
-    // Total arclength of a quarter-circle of radius R = π·R/2.
-    let expected_length = std::f64::consts::FRAC_PI_2 * r;
-    assert!((grid.total_length - expected_length).abs() / expected_length < 0.01);
 }
 
 /// Pin `c_triple_prime` to a known closed-form value on a non-trivial cubic Bezier.
@@ -138,7 +104,6 @@ fn cubic_bezier_pins_third_derivative_at_start() {
             [2.0, 0.0, 0.0],
             [3.0, 1.0, 0.0],
         ],
-        None,
     )
     .unwrap();
 
@@ -218,7 +183,6 @@ fn cubic_bezier_c3_at_endpoints_matches_closed_form() {
             [7.0, 3.0, 0.0],
             [10.0, 0.0, 0.0],
         ],
-        None,
     )
     .unwrap();
 
@@ -272,7 +236,6 @@ fn degenerate_g1_curve_does_not_panic() {
         1,
         vec![0.0, 0.0, 1.0, 1.0],
         vec![[0.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
-        None,
     )
     .unwrap();
 
@@ -293,45 +256,4 @@ fn degenerate_g1_curve_does_not_panic() {
             "c_double_prime[{i}] = {c2:?} should be ~0 on a straight line",
         );
     }
-}
-
-/// Pin `c_double_prime` endpoints on the rational quarter-circle. Per
-/// `/tmp/path_verifier.json` caveat 1, the rational FD branch also needed
-/// to be hardened (Lyness-optimal step instead of `h*0.01`). On a
-/// uniformly-curved arc, |C''(s)| at any s should equal κ = 1/R.
-#[test]
-fn rational_quadratic_arc_c2_endpoints() {
-    let r = 20.0_f64;
-    let w = std::f64::consts::FRAC_1_SQRT_2;
-    let curve = VectorNurbs::<f64, 3>::try_new(
-        2,
-        vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
-        vec![[r, 0.0, 0.0], [r, r, 0.0], [0.0, r, 0.0]],
-        Some(vec![1.0, w, 1.0]),
-    )
-    .unwrap();
-    // n=51 gives endpoint κ from the chain rule against FD c'' values.
-    let grid = sample_arclength_grid(&curve, 51).unwrap();
-
-    let kappa_expected = 1.0 / r; // 0.05
-    // |C''(s)| = κ on an arclength-parameterized curve.
-    let c2_start_mag = {
-        let v = grid.c_double_prime[0];
-        (v[0].powi(2) + v[1].powi(2) + v[2].powi(2)).sqrt()
-    };
-    let c2_end_mag = {
-        let v = *grid.c_double_prime.last().unwrap();
-        (v[0].powi(2) + v[1].powi(2) + v[2].powi(2)).sqrt()
-    };
-    // 5 % tolerance — rational FD with Lyness step is well-conditioned
-    // here but still has truncation error from the asymmetric stencil at
-    // u=0 / u=1.
-    assert!(
-        (c2_start_mag - kappa_expected).abs() / kappa_expected < 0.05,
-        "|c''(0)| = {c2_start_mag}, expected ~{kappa_expected}",
-    );
-    assert!(
-        (c2_end_mag - kappa_expected).abs() / kappa_expected < 0.05,
-        "|c''(L)| = {c2_end_mag}, expected ~{kappa_expected}",
-    );
 }

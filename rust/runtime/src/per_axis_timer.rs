@@ -1,13 +1,3 @@
-//! Step-output timer ISR body (TIM3 on H7, TIM2 on F4).
-//!
-//! Scans per-axis SPSC `step_queues[]` this MCU owns, emits every step whose
-//! `cycle_abs` has arrived (bounded per dispatch), and returns the soonest
-//! absolute cycle to fire at next — or [`STEP_OUTPUT_DISABLE`] when all owned
-//! queues are empty (event-driven, not idle-polling).
-//!
-//! NVIC-priority invariant: producer (TIM5) and this consumer run at the same
-//! priority; see `src/generic/kalico_nvic_prio.h` for the full rationale.
-
 #![allow(unsafe_code)]
 
 use crate::step_queue::{N_AXIS_STEP_QUEUES, peek as queue_peek, pop as queue_pop};
@@ -25,8 +15,6 @@ const DUE_WINDOW_CYCLES: i32 = 0;
 /// `now` so C re-fires immediately rather than dropping the remaining work.
 pub const MAX_STEPS_PER_EVENT: u32 = 32;
 
-// MCU build links these C symbols. Host builds (`feature = "host"`) and unit
-// tests must not pull undefined symbols into the cdylib, so they are stubbed.
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
     fn timer_read_time() -> u32;
@@ -51,8 +39,6 @@ unsafe fn kalico_step_output_owned_mask() -> u8 {
     test_hooks::owned_mask()
 }
 
-/// Step-output timer ISR body. Returns the next absolute cycle to fire at, or
-/// [`STEP_OUTPUT_DISABLE`] to switch the timer off until the next producer kick.
 #[unsafe(no_mangle)]
 pub extern "C" fn kalico_step_output_event() -> u32 {
     // SAFETY: `timer_read_time` is a single u32 MMIO read (host: a test hook).
@@ -62,8 +48,6 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
     crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_STEPOUT_ENTER);
 
     let mut emitted: u32 = 0;
-    // Emit due steps across owned axes until the per-dispatch cap is hit or no
-    // owned queue has a due head left.
     'outer: loop {
         let mut emitted_this_pass = false;
         for axis_idx in 0..N_AXIS_STEP_QUEUES {
@@ -100,19 +84,16 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
         }
     }
 
-    // If the cap stopped us with work still due, re-fire immediately.
     if emitted >= MAX_STEPS_PER_EVENT {
         crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_STEPOUT_EXIT);
         return now;
     }
 
-    // Otherwise return the soonest remaining head across owned axes, wrap-safe.
     crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_STEPOUT_EXIT);
     next_wake_across_owned(now, owned).unwrap_or(STEP_OUTPUT_DISABLE)
 }
 
 /// Wrap-safe minimum `cycle_abs` across all owned non-empty queues, or `None`.
-/// Uses signed delta from `now` so heads across the u32 wrap boundary compare correctly.
 fn next_wake_across_owned(now: u32, owned: u8) -> Option<u32> {
     let mut best: Option<(i32, u32)> = None;
     for axis_idx in 0..N_AXIS_STEP_QUEUES {
@@ -135,23 +116,16 @@ fn next_wake_across_owned(now: u32, owned: u8) -> Option<u32> {
     best.map(|(_, cycle_abs)| cycle_abs)
 }
 
-/// MCU build: resolve the C-declared `step_queues[N_AXIS_STEP_QUEUES]` pointer.
 #[cfg(not(any(test, feature = "host")))]
 fn resolve_queue_ptr(axis_idx: usize) -> *mut crate::step_queue::StepQueue {
     crate::step_queue::queue_for_axis(axis_idx)
 }
 
-/// Host / test build: queues live in a test-local array (see `test_hooks`).
 #[cfg(any(test, feature = "host"))]
 fn resolve_queue_ptr(axis_idx: usize) -> *mut crate::step_queue::StepQueue {
     test_hooks::queue_for_axis(axis_idx)
 }
 
-// ─── Host/test hooks ──────────────────────────────────────────────────────
-//
-// The MCU resolves `step_queues`, `timer_read_time`, the owned mask and the
-// emitter through the C link. Host/test builds back those with thread-local
-// state so `cargo test -p runtime` can drive the scheduler deterministically.
 #[cfg(any(test, feature = "host"))]
 pub mod test_hooks {
     use crate::step_queue::StepQueue;
@@ -205,8 +179,6 @@ pub mod test_hooks {
         }
         QUEUES.with(|c| {
             let mut arr = c.borrow_mut();
-            // axis_idx < N_QUEUES checked above; matches step_queue.rs's
-            // explicit-allow pattern for the deny(indexing_slicing) lint.
             #[allow(clippy::indexing_slicing)]
             let ptr: *mut StepQueue = &mut arr[axis_idx];
             ptr

@@ -1,5 +1,3 @@
-//! UnackedWindow + AwaitingResponse. Spec §3.3.
-
 use std::collections::VecDeque;
 use std::sync::mpsc::SyncSender;
 use std::time::Instant;
@@ -40,7 +38,6 @@ impl UnackedWindow {
         self.entries.push_back(entry);
     }
 
-    /// Pop entries with seq < rseq (strict; per Codex finding #2).
     pub fn pop_acked(&mut self, rseq: u64) -> Vec<UnackedEntry> {
         let mut popped = Vec::new();
         while let Some(front) = self.entries.front() {
@@ -61,7 +58,6 @@ impl UnackedWindow {
         self.entries.iter_mut()
     }
 
-    /// Drop every in-flight entry. Called from `transition_closed` per spec §3.11.
     pub fn clear(&mut self) {
         self.entries.clear();
     }
@@ -100,7 +96,6 @@ impl AwaitingResponse {
         Ok(())
     }
 
-    /// FIFO match against expected_response_name, skipping abandoned entries.
     pub fn find_match(&self, name: &str) -> Option<usize> {
         self.entries
             .iter()
@@ -117,7 +112,6 @@ impl AwaitingResponse {
         }
     }
 
-    /// GC: evict entries past their deadline. Returns evicted entries.
     pub fn evict_expired(&mut self, now: Instant) -> Vec<AwaitEntry> {
         let mut evicted = Vec::new();
         let mut idx = 0;
@@ -131,7 +125,6 @@ impl AwaitingResponse {
         evicted
     }
 
-    /// Drain all entries (for disconnect GC).
     pub fn drain_all(&mut self) -> Vec<AwaitEntry> {
         std::mem::take(&mut self.entries).into_iter().collect()
     }
