@@ -308,6 +308,10 @@ static struct diag_counters prior_diag;
 static struct diag_event    prior_ring[DIAG_RING_LEN];
 static uint32_t             prior_diag_present;
 static uint32_t             prior_ring_emit_idx;
+// Scratch copy for kalico_diag_emit_live: the live ring is snapshotted here
+// under irq_save (ISRs push concurrently), then emitted outside the critical
+// section. File-static to keep it off the command-handler stack.
+static struct diag_event    dump_ring[DIAG_RING_LEN];
 
 // IRQ-safe push to the diag ring. Used from foreground AND IRQ context, so
 // the head/seq update is protected with irq_save. The struct stores are
@@ -1464,5 +1468,68 @@ kalico_diag_emit_prior_crash(void)
                                 tag, 0, prior_ring[idx].a, prior_ring[idx].b);
             }
         }
+    }
+}
+
+// On-demand live diag dump (KALICO_DIAG_DUMP gcode → command_kalico_diag_dump).
+// Sibling of kalico_diag_emit_prior_crash, but reads the LIVE diag/live_snap
+// (this run) so hiccups surface in the structured store without a reset. All
+// frames at debug level (informational snapshot; the diag_dump header event
+// name distinguishes it from a prior-boot crash replay). Foreground-only.
+void
+kalico_diag_emit_live(void)
+{
+    // Coherent snapshot of the live ring — ISRs push to diag_ring concurrently,
+    // so copy head + entries under one irq_save, then emit from the copy.
+    irqstatus_t flag = irq_save();
+    uint32_t head          = diag.ring_head & DIAG_RING_MASK;
+    uint32_t ring_seq      = diag.ring_seq;
+    uint32_t ring_overflow = diag.ring_overflow;
+    for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
+        dump_ring[i].tag       = diag_ring[i].tag;
+        dump_ring[i]._pad0     = diag_ring[i]._pad0;
+        dump_ring[i].seq       = diag_ring[i].seq;
+        dump_ring[i].timestamp = diag_ring[i].timestamp;
+        dump_ring[i].a         = diag_ring[i].a;
+        dump_ring[i].b         = diag_ring[i].b;
+    }
+    irq_restore(flag);
+
+    // Header: marks a live dump + how far the run has progressed. Scalar diag
+    // reads below are aligned u32 (atomic) — minor staleness is acceptable.
+    uint32_t now = timer_read_time();
+    uint32_t uptime_us = boot_tick_initialized
+        ? (uint32_t)((uint64_t)(now - boot_first_tick) * 1000000u / CONFIG_CLOCK_FREQ)
+        : 0u;
+    kalico_log_emit(KALICO_LOG_LEVEL_DEBUG, KALICO_LOG_SUBSYS_RUNTIME,
+                    KALICO_LOG_EVENT_RUNTIME_DIAG_DUMP, 0, uptime_us, ring_seq);
+
+    // Live cause discriminators (whole-run-so-far extremes).
+    kalico_log_emit(KALICO_LOG_LEVEL_DEBUG, KALICO_LOG_SUBSYS_RUNTIME,
+                    KALICO_LOG_EVENT_RUNTIME_ISR_PHASE, 0,
+                    diag.rt_isr_phase, ring_overflow);
+    kalico_log_emit(KALICO_LOG_LEVEL_DEBUG, KALICO_LOG_SUBSYS_RUNTIME,
+                    KALICO_LOG_EVENT_RUNTIME_BLOCK_SOURCE, 0,
+                    diag.usb_burst_max_cyc, diag.stepout_burst_max_cyc);
+    kalico_log_emit(KALICO_LOG_LEVEL_DEBUG, KALICO_LOG_SUBSYS_RUNTIME,
+                    KALICO_LOG_EVENT_RUNTIME_TIM5_IA, 0,
+                    diag.tim5_ia_min_cyc, diag.tim5_ia_max_cyc);
+
+    // Foreground-freeze (worst stall latched this run, if any).
+    if (live_snap.worst_fg_stall_ticks) {
+        kalico_log_emit(KALICO_LOG_LEVEL_DEBUG, KALICO_LOG_SUBSYS_RUNTIME,
+                        KALICO_LOG_EVENT_RUNTIME_FG_FREEZE, 0,
+                        live_snap.worst_fg_stall_pc,
+                        live_snap.worst_fg_stall_ticks);
+    }
+
+    // Live ring play-by-play, oldest-first (head = oldest), skip empty slots.
+    for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
+        uint32_t idx = (head + i) & DIAG_RING_MASK;
+        uint8_t tag = dump_ring[idx].tag;
+        if (tag == DIAG_EV_NONE)
+            continue;
+        kalico_log_emit(diag_ring_tag_level(tag), KALICO_LOG_SUBSYS_DIAG,
+                        tag, 0, dump_ring[idx].a, dump_ring[idx].b);
     }
 }

@@ -91,6 +91,9 @@ pub const EVENT_RUNTIME_ISR_PHASE: u16 = 11;
 pub const EVENT_RUNTIME_BLOCK_SOURCE: u16 = 12;
 /// Crash discriminator: TIM5 inter-arrival extremes; arg0 = min cyc, arg1 = max cyc.
 pub const EVENT_RUNTIME_TIM5_IA: u16 = 13;
+/// On-demand live diag dump header (KALICO_DIAG_DUMP). arg0 = uptime_us, arg1 = ring_seq
+/// (total diag events so far). Distinguishes a live dump from a prior-boot crash replay.
+pub const EVENT_RUNTIME_DIAG_DUMP: u16 = 14;
 
 // motion subsystem events
 /// A piece was rejected because its start time is already in the past.
@@ -189,6 +192,9 @@ pub fn event_info(subsystem: u8, event: u16) -> (&'static str, &'static str) {
         ),
         (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_TIM5_IA) => {
             ("runtime.tim5_ia", "tim5 inter-arrival min={arg0} max={arg1} cyc")
+        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_DIAG_DUMP) => {
+            ("runtime.diag_dump", "live diag dump uptime_us={arg0} ring_seq={arg1}")
         }
         (SUBSYSTEM_DIAG, EVENT_DIAG_TIM5_LONG) => {
             ("diag.tim5_long", "TIM5 ISR long {arg0} cyc at t={arg1}")
@@ -458,6 +464,10 @@ mod tests {
 
         let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_TIM5_IA);
         assert_eq!(name, "runtime.tim5_ia");
+        assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+        let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_DIAG_DUMP);
+        assert_eq!(name, "runtime.diag_dump");
         assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
     }
 

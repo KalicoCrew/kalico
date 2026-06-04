@@ -358,6 +358,17 @@ command_kalico_runtime_reset(uint32_t *args)
 }
 DECL_COMMAND(command_kalico_runtime_reset, "kalico_runtime_reset");
 
+// On-demand live diag dump: emit the current diag state (cause discriminators +
+// live event ring) to the structured-log store without a reset. Host-facing as
+// the KALICO_DIAG_DUMP gcode (klippy/motion_toolhead.py).
+void
+command_kalico_diag_dump(uint32_t *args)
+{
+    (void)args;
+    kalico_diag_emit_live();
+}
+DECL_COMMAND(command_kalico_diag_dump, "kalico_diag_dump");
+
 void
 command_kalico_phase_stepping_enable_spi(uint32_t *args)
 {

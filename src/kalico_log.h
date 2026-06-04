@@ -33,6 +33,9 @@
 #define KALICO_LOG_EVENT_RUNTIME_ISR_PHASE     11
 #define KALICO_LOG_EVENT_RUNTIME_BLOCK_SOURCE  12
 #define KALICO_LOG_EVENT_RUNTIME_TIM5_IA       13
+// On-demand live diag dump header (KALICO_DIAG_DUMP gcode). Marks a live
+// snapshot (current run) vs. a prior-boot crash replay.
+#define KALICO_LOG_EVENT_RUNTIME_DIAG_DUMP     14
 
 // Enqueue one structured log entry into the C-owned ring. Safe from ISR or
 // foreground (irq_save critical section). Captures the raw 32-bit
