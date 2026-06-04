@@ -231,9 +231,6 @@ class MotionMcuProxy:
     def request_move_queue_slot(self):
         self._reserved_move_slots += 1
 
-    def get_max_stepper_error(self):
-        return 0.000025
-
     def min_schedule_time(self):
         return 0.100
 

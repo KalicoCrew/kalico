@@ -130,7 +130,7 @@ class BridgeKinematics:
 
     supports_dual_carriage = False
 
-    def __init__(self, toolhead, config, trapq):
+    def __init__(self, toolhead, config):
         self._toolhead = toolhead
         kin_name = config.get("kinematics")
         if kin_name not in ("cartesian", "corexy", "hybrid_corexy"):
@@ -145,7 +145,7 @@ class BridgeKinematics:
         if kin_name in ("cartesian", "hybrid_corexy"):
             axes = "xyz"
         for axis in axes:
-            self._register_axis(config, axis, trapq, extras=("1",))
+            self._register_axis(config, axis, extras=("1",))
         if kin_name == "corexy" and len(self.rails) >= 2:
             x_endstop = self.rails[0].get_endstops()[0][0]
             y_endstop = self.rails[1].get_endstops()[0][0]
@@ -157,7 +157,7 @@ class BridgeKinematics:
         # bridge dispatches Z curves to the Z MCU normally. Register Z rails
         # so printer.cfg validation passes and homing/move-checking works.
         if kin_name == "corexy" and config.has_section("stepper_z"):
-            self._register_axis(config, "z", trapq, extras=("1", "2", "3"))
+            self._register_axis(config, "z", extras=("1", "2", "3"))
 
         # Per-axis (low, high) bounds. `low > high` means "unhomed" and is
         # what triggers the "Must home axis first" path in `_check_endstops`.
@@ -175,7 +175,7 @@ class BridgeKinematics:
     def _handle_motor_off(self, print_time):
         self.clear_homing_state((0, 1, 2))
 
-    def _register_axis(self, config, axis, trapq, extras=()):
+    def _register_axis(self, config, axis, extras=()):
         # EtherCAT servo axis branch (Part A). A `[servo_<axis>]` section
         # routes this axis to a position-commanded EtherCAT node instead of
         # host-side step generation. The ServoRail honors the same rail
@@ -205,10 +205,6 @@ class BridgeKinematics:
             mcu_stepper.setup_itersolve(
                 "cartesian_stepper_alloc", axis.encode()
             )
-            # DIAG: do NOT connect steppers to trapq — bridge mode
-            # generates steps via the Rust runtime, not the C trapq.
-            # If Z still moves after this, the motion source is NOT trapq.
-            # mcu_stepper.set_trapq(trapq)
             mcu_stepper.get_mcu()._bridge_drives_steppers = True
         self.rails.append(rail)
 
@@ -381,7 +377,7 @@ class MotionToolhead(ToolHead):
         # move. See get_last_move_time / _bump_pending_end_time.
         self._mcu_pending_end_time = 0.0
 
-        # Run upstream init: trapq alloc, gcode commands (G4/M400/
+        # Run upstream init: gcode commands (G4/M400/
         # SET_VELOCITY_LIMIT/RESET_VELOCITY_LIMIT/M204), helper modules
         # (gcode_move/homing/idle_timeout/statistics/manual_probe/
         # tuning_tower/garbage_collection), lookahead, flush_timer,
@@ -457,7 +453,7 @@ class MotionToolhead(ToolHead):
     # ------------------------------------------------------------------
 
     def _load_kinematics(self, config):
-        return BridgeKinematics(self, config, self.trapq)
+        return BridgeKinematics(self, config)
 
     # ------------------------------------------------------------------
     # Move issuance — bridge owns these
