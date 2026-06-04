@@ -1,5 +1,5 @@
 //! Clarabel SOCP construction + solve. INTERNAL — Clarabel types do not
-//! escape this module per spec §1.1 / §2.3.
+//! escape this module.
 //!
 //! # Sign-convention note
 //!
@@ -11,13 +11,10 @@
 #![allow(clippy::doc_markdown)]
 //!
 //! Clarabel solves: `Ax + s = b`, `s ∈ K`
-//! The "point in K" is the slack `s = b - Ax`.
 //!
-//! The kalico `ConstraintBundle` uses the convention: `A_k * x + b_rhs ∈ K`
-//! where the "point in K" is `A_k * x + b_rhs`.
-//!
+//! The kalico `ConstraintBundle` uses: `A_k * x + b_rhs ∈ K`.
 //! These are equal when `A_clarabel = -A_k` and `b_clarabel = b_rhs`:
-//!   `s = b_rhs - (-A_k)*x = b_rhs + A_k*x = A_k*x + b_rhs` ∈ K  ✓
+//!   `s = b_rhs - (-A_k)*x = A_k*x + b_rhs` ∈ K  ✓
 //!
 //! This negation is applied uniformly to every row of A regardless of cone type.
 //!
@@ -30,12 +27,10 @@
 //! | `SecondOrder`            | `SecondOrderConeT(dim)`    |
 //! | `RotatedSecondOrder`     | (not emitted by `build()`) |
 //!
-//! Note: `RotatedSecondOrderConeT` does not exist in Clarabel 0.11. The
-//! `constraints::build()` function never emits `Cone::RotatedSecondOrder`;
-//! it encodes jerk constraints using the norm-form identity
-//! `z² ≤ u·v ↔ ||(2z, u-v)|| ≤ u+v` (standard SOC). The enum variant exists
-//! for spec completeness but `solve()` will return `SolverSetupError` if
-//! a bundle somehow contains it.
+//! `RotatedSecondOrderConeT` does not exist in Clarabel 0.11. `constraints::build()`
+//! never emits `Cone::RotatedSecondOrder`; jerk constraints use the norm-form
+//! identity `z² ≤ u·v ↔ ||(2z, u-v)|| ≤ u+v` (standard SOC). The variant exists
+//! for exhaustiveness but `solve()` returns `SolverSetupError` if a bundle contains it.
 //!
 //! # Clarabel `SolverStatus` → kalico `SolverStatus`
 //!
@@ -54,8 +49,8 @@
 //! | `CallbackTerminated`             | `SolverStatus::Infeasible`         |
 //! | `Unsolved`                       | `SolverStatus::Infeasible`         |
 //!
-//! `InsufficientProgress` maps to `MaxIter` (closer to "gave up" than
-//! "structurally infeasible"). Spec §4.2.
+//! `InsufficientProgress` → `MaxIter` (closer to "gave up" than "structurally
+//! infeasible"). Spec §4.2.
 
 use clarabel::algebra::CscMatrix;
 use clarabel::solver::{
@@ -67,98 +62,73 @@ use crate::topp::constraints::{Cone, ConstraintBundle};
 
 /// One linearized Taylor cut produced by the SLP outer loop.
 ///
-/// Two flavors are emitted:
-///
 /// - `PathJerk { i, b_bar }`: scalar-tangential path-jerk envelope cut. Two
-///   `Nonneg` rows are appended per cut, encoding the convex first-order
-///   Taylor expansion of `1/√b` at iterate `b̄_i = b_bar`. Convex-down
-///   tangent ⇒ global underestimator ⇒ tightens the relaxation. See
-///   `append_path_jerk_cut_to_clarabel` for the row-coefficient derivation.
+///   `Nonneg` rows encode the first-order Taylor expansion of `1/√b` at
+///   iterate `b̄_i`. Convex-down tangent ⇒ global underestimator ⇒ tightens
+///   the relaxation. See `append_path_jerk_cut_to_clarabel` for coefficients.
 ///
-/// - `AxisJerk { ... }`: per-axis Cartesian jerk cut at the verifier-stencil
-///   linearization (Step 9). Two `Nonneg` rows per cut (positive and
-///   negative side, |j_axis| ≤ j_max bound). Couples `b_i` and the
-///   neighborhood of `a` (3 nonzeros interior, 2 nonzeros at boundaries).
-///   See `append_axis_jerk_cut_to_clarabel`.
-///
-///   The AxisJerk cut linearizes `j_axis = c'''·b^(3/2) + 3·c''·a·√b + c'·s⃛`
-///   at the iterate, where `s⃛ = (da/ds)·√b` is reconstructed from the
-///   verifier's central / one-sided FD on `a`. The Taylor expansion is exact
-///   at the iterate (verified numerically by
-///   `tests/step9_cut_identity.rs`); convexity is *not* global because the
-///   cross-term `a·√b` is bilinear-times-sqrt (indefinite Hessian on
-///   `(a,b)`), so the cut is a LOCAL approximation. The L∞ trust region
-///   on `(b, a)` plus accept-only-if-decrease backtracking in
-///   `slp_solve_with_axis_jerk` is what makes the SLP converge despite the
-///   non-convex linearization.
+/// - `AxisJerk`: per-axis Cartesian jerk cut linearizing
+///   `j_axis = c'''·b^(3/2) + 3·c''·a·√b + c'·s⃛` at the iterate. The
+///   cross-term `a·√b` is bilinear-times-sqrt (indefinite Hessian on `(a,b)`),
+///   so the cut is a LOCAL approximation only. The L∞ trust region + accept-
+///   only-if-decrease backtracking in `slp_solve_with_axis_jerk` is what makes
+///   the SLP converge despite the non-convex linearization.
+///   Numerical identity check: `tests/step9_cut_identity.rs`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SlpCut {
     /// Scalar-tangential path-jerk cut (Lee 2024 §III–§IV; spec §11).
-    /// Interior grid index `i` (1 ≤ i ≤ N − 2); iterate value `b̄_i = b_bar`.
     PathJerk { i: usize, b_bar: f64 },
-    /// Per-axis Cartesian jerk cut at the verifier stencil (Step 9; spec §11).
+    /// Per-axis Cartesian jerk cut at the verifier stencil (spec §11).
     AxisJerk(AxisJerkCut),
 }
 
-/// Per-axis Cartesian jerk cut details. Spec §5; Step 9 with width-1 b-FD
-/// stencil unification per
-/// `docs/superpowers/specs/2026-05-05-stencil-unification-design.md`.
+/// Per-axis Cartesian jerk cut details. Spec §5; width-1 b-FD stencil.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AxisJerkCut {
-    /// Grid index at which the cut is anchored (`0 ≤ i ≤ n−1`).
     pub i: usize,
-    /// Axis index (0 = X, 1 = Y, 2 = Z). Held for diagnostic / future
-    /// telemetry; the row coefficients only depend on `(cp, cpp, cppp)` for
-    /// that axis, which the caller pre-extracts.
+    /// Retained for diagnostic / future telemetry; row coefficients depend only
+    /// on `(cp, cpp, cppp)`, which the caller pre-extracts.
     #[allow(dead_code)]
     pub axis: usize,
-    /// Stencil kind — controls FD shape and which `b`-variables the row touches.
+    /// Controls FD shape and which `b`-variables the row touches.
     pub stencil: AxisJerkStencil,
     /// Iterate values for the three `b̄` indices the stencil reads.
-    /// Interior at i:    `[b̄_{i-1}, b̄_i, b̄_{i+1}]`.
-    /// StartBoundary:    `[b̄_0,    b̄_1, b̄_2]`.
-    /// EndBoundary:      `[b̄_{n-3}, b̄_{n-2}, b̄_{n-1}]`.
+    /// Interior: `[b̄_{i-1}, b̄_i, b̄_{i+1}]`.
+    /// StartBoundary: `[b̄_0, b̄_1, b̄_2]`.
+    /// EndBoundary: `[b̄_{n-3}, b̄_{n-2}, b̄_{n-1}]`.
     pub b_bars: [f64; 3],
-    /// Iterate value `ā_i` at the anchor index. Single index — under
-    /// width-1 b-FD the cut row only touches `a_i`, never neighbours.
+    /// Under width-1 b-FD the cut row touches only `a_i`, never neighbours.
     pub a_bar_i: f64,
     /// Path derivatives at `s_i` along `axis`: `(c', c'', c''')`.
     pub cp: f64,
     pub cpp: f64,
     pub cppp: f64,
-    /// Per-axis jerk bound `j_max[axis] · target_ratio`, inflated by the
-    /// SLP target-ratio schedule. Used directly as the cut RHS magnitude.
+    /// `j_max[axis] · target_ratio`, inflated by the SLP target-ratio schedule.
     pub j_lim_inflated: f64,
 }
 
-/// Discrete shape of the stencil under width-1 b-FD. Mirrors
-/// `topp::stencil::SDddotStencil`.
+/// Discrete shape of the stencil under width-1 b-FD.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AxisJerkStencil {
-    /// Central FD: row touches `b_{i-1}, b_i, b_{i+1}, a_i`.
+    /// Central FD: touches `b_{i-1}, b_i, b_{i+1}, a_i`.
     Interior,
-    /// Forward FD at i=0: row touches `b_0, b_1, b_2, a_0`.
+    /// Forward FD at i=0: touches `b_0, b_1, b_2, a_0`.
     StartBoundary,
-    /// Backward FD at i=n-1: row touches `b_{n-3}, b_{n-2}, b_{n-1}, a_{n-1}`.
+    /// Backward FD at i=n-1: touches `b_{n-3}, b_{n-2}, b_{n-1}, a_{n-1}`.
     EndBoundary,
 }
-
-// ---------------------------------------------------------------------------
-// Public(crate) types
-// ---------------------------------------------------------------------------
 
 /// Result of a successful SOCP solve.
 #[derive(Debug, Clone)]
 pub(crate) struct SolverResult {
-    /// Solved primal `b_i = ṡ²` per grid point.
+    /// `b_i = ṡ²` per grid point.
     pub b: Vec<f64>,
-    /// Solved auxiliary `a_i` per grid point (path acceleration `s̈_i`).
+    /// `a_i = s̈_i` per grid point.
     pub a: Vec<f64>,
-    /// Solver status, mapped to a kalico-defined enum (no Clarabel types).
     pub status: SolverStatus,
 }
 
-/// Kalico-internal solver status. No Clarabel types.
+/// Kalico-internal solver status (no Clarabel types escape this module).
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SolverStatus {
     Solved,
@@ -166,29 +136,20 @@ pub(crate) enum SolverStatus {
         residual: f64,
     },
     Infeasible,
-    /// Renamed from `last_residual` to `residual` for consistency with
-    /// `SolvedInexact`; both encode `max(r_prim, r_dual)`.
+    /// `residual = max(r_prim, r_dual)`.
     MaxIter {
         residual: f64,
     },
 }
 
-/// Error from solver setup (invalid bundle). Not a solver runtime infeasibility.
+/// Error from solver setup (invalid bundle), not a runtime infeasibility.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SolverSetupError {
     #[error("invalid constraint bundle: {0}")]
     InvalidBundle(String),
 }
 
-// ---------------------------------------------------------------------------
-// Helper: zero P matrix (pure linear objective)
-// ---------------------------------------------------------------------------
-
-/// Build the zero `n_vars × n_vars` upper-triangle CSC matrix for
-/// Clarabel's quadratic objective term.
-///
-/// For a pure linear objective there is no quadratic term. CSC encoding of
-/// the zero matrix: `colptr = [0; n_vars+1]`, `rowval = []`, `nzval = []`.
+/// Zero upper-triangle CSC for Clarabel's quadratic term (pure linear objective).
 fn build_p_zero(n_vars: usize) -> CscMatrix<f64> {
     CscMatrix::<f64> {
         m: n_vars,
@@ -199,14 +160,9 @@ fn build_p_zero(n_vars: usize) -> CscMatrix<f64> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: map kalico cones → Clarabel SupportedConeT
-// ---------------------------------------------------------------------------
-
 /// Convert each kalico `Cone` to the matching Clarabel cone.
-///
-/// Returns `SolverSetupError` if a `RotatedSecondOrder` cone is encountered
-/// (not supported in Clarabel 0.11; `build()` should never emit it).
+/// Returns `SolverSetupError` for `RotatedSecondOrder` (not in Clarabel 0.11;
+/// `build()` should never emit it).
 fn map_clarabel_cones(
     bundle: &ConstraintBundle,
 ) -> Result<Vec<clarabel::solver::SupportedConeT<f64>>, SolverSetupError> {
@@ -229,34 +185,20 @@ fn map_clarabel_cones(
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
-// Helper: map Clarabel SolverStatus → kalico SolverStatus
-// ---------------------------------------------------------------------------
-
-/// Map a Clarabel `SolverStatus` to the kalico-internal `SolverStatus`.
+/// Map Clarabel status → kalico status. `residual = max(r_prim, r_dual)`.
 ///
-/// `residual` is `max(r_prim, r_dual)` from the solution, passed through for
-/// inexact / max-iter outcomes.
-///
-/// The match is exhaustive against Clarabel 0.11.1's enum so that a future
-/// Clarabel bump that adds a new variant will fail to compile — intentional.
+/// Exhaustive match against Clarabel 0.11.1 — a future version adding a new
+/// variant will fail to compile, which is intentional.
 fn map_status(status: ClarabelStatus, residual: f64) -> SolverStatus {
     match status {
-        // Clean solve.
         ClarabelStatus::Solved => SolverStatus::Solved,
-
-        // Near-optimal: feasible but residuals above tolerance.
         ClarabelStatus::AlmostSolved => SolverStatus::SolvedInexact { residual },
-
-        // Iteration / time budget exhausted — no certificate either way.
-        // InsufficientProgress is also "gave up" rather than "infeasible",
-        // so it maps here rather than to Infeasible.
+        // InsufficientProgress is "gave up", not "structurally infeasible".
         ClarabelStatus::MaxIterations
         | ClarabelStatus::MaxTime
         | ClarabelStatus::InsufficientProgress => SolverStatus::MaxIter { residual },
-
-        // Structural infeasibility certificates, solver errors, user-aborted,
-        // and never-ran all map to Infeasible — no usable primal solution.
+        // All infeasibility certificates, solver errors, and never-ran states:
+        // no usable primal solution.
         ClarabelStatus::PrimalInfeasible
         | ClarabelStatus::DualInfeasible
         | ClarabelStatus::AlmostPrimalInfeasible
@@ -267,31 +209,16 @@ fn map_status(status: ClarabelStatus, residual: f64) -> SolverStatus {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper: extract b and a from solution vector
-// ---------------------------------------------------------------------------
-
-/// Slice the Clarabel primal solution `x` into per-grid-point `b` and `a`
-/// vectors.
-///
-/// Variable layout (pinned in `constraints.rs`):
-///   - `x[0..n_grid]`          → `b_i = ṡ²`
-///   - `x[n_grid..2*n_grid]`   → `a_i = s̈_i`
+/// Slice the primal solution into `b` and `a`. Variable layout (pinned in
+/// `constraints.rs`): `x[0..n_grid]` → `b_i`, `x[n_grid..2*n_grid]` → `a_i`.
 fn extract_solution(x: &[f64], n_grid: usize, status: SolverStatus) -> SolverResult {
     let b: Vec<f64> = x[..n_grid].to_vec();
     let a: Vec<f64> = x[n_grid..2 * n_grid].to_vec();
     SolverResult { b, a, status }
 }
 
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-/// Construct the Clarabel SOCP from `bundle` and solve it.
-///
-/// Equivalent to `solve_with_cuts(bundle, &[], tol)` — kept as the public(crate)
-/// entry point for the unit-test surface (no cuts → original Consolini-Locatelli
-/// SOCP).
+/// Solve the original Consolini-Locatelli SOCP with no SLP cuts.
+/// Kept as the unit-test entry point.
 #[allow(dead_code)]
 pub(crate) fn solve(bundle: &ConstraintBundle) -> Result<SolverResult, SolverSetupError> {
     solve_with_cuts(bundle, &[], 1e-8)
@@ -330,7 +257,7 @@ pub(crate) fn solve(bundle: &ConstraintBundle) -> Result<SolverResult, SolverSet
 ///
 /// `b̄` MUST be positive; the SLP loop guarantees this by clamping with a
 /// small floor before constructing each cut.
-#[allow(clippy::too_many_arguments)] // CSC builder has many concurrent state vectors.
+#[allow(clippy::too_many_arguments)]
 fn append_path_jerk_cut_to_clarabel(
     i: usize,
     b_bar: f64,
@@ -343,13 +270,10 @@ fn append_path_jerk_cut_to_clarabel(
     n_grid: usize,
 ) {
     let sqrt_b = b_bar.sqrt();
-    let alpha = j_path * h * h / (b_bar * sqrt_b); // = J·h² / b̄^{3/2}
+    let alpha = j_path * h * h / (b_bar * sqrt_b); // J·h² / b̄^{3/2}
     let rhs = 3.0 * j_path * h * h / sqrt_b;
 
-    // Sign-convention negation: A_clarabel = -A_k. We build both signs of A_k
-    // here and negate when pushing into nzval.
-    //
-    // Variable layout from constraints.rs: b_i at index i (off_b = 0).
+    // Sign-convention: A_clarabel = -A_k; negation baked into push_nz values.
     let bm1 = i - 1;
     let bi = i;
     let bp1 = i + 1;
@@ -357,9 +281,9 @@ fn append_path_jerk_cut_to_clarabel(
 
     // Positive side: A_k row = [b_{i-1}: -1, b_i: -α + 2, b_{i+1}: -1], rhs = +rhs.
     let pos_row = *n_rows;
-    push_nz(rowval, nzval, bm1, pos_row, -(-1.0)); // = +1
+    push_nz(rowval, nzval, bm1, pos_row, -(-1.0));
     push_nz(rowval, nzval, bi, pos_row, -(2.0 - alpha));
-    push_nz(rowval, nzval, bp1, pos_row, -(-1.0)); // = +1
+    push_nz(rowval, nzval, bp1, pos_row, -(-1.0));
     b_rhs.push(rhs);
     *n_rows += 1;
 
@@ -373,8 +297,8 @@ fn append_path_jerk_cut_to_clarabel(
 }
 
 /// Append one per-axis Cartesian jerk SLP cut as two `Nonneg` rows
-/// (positive- and negative-side ⇒ |j_axis| ≤ j_max·(1+ε)). Spec §5; Step 9
-/// with width-1 b-FD stencil unification.
+/// (positive- and negative-side ⇒ |j_axis| ≤ j_max·(1+ε)). Spec §5;
+/// width-1 b-FD stencil.
 ///
 /// # Cut algebra
 ///
@@ -456,12 +380,11 @@ fn append_axis_jerk_cut_to_clarabel(
     let cppp = cut.cppp;
     let j = cut.j_lim_inflated;
 
-    // SOCP variable layout: b at 0..n_grid, a at n_grid..2*n_grid.
+    // Variable layout (pinned in constraints.rs): b at 0..n_grid, a at n_grid..2*n_grid.
     let off_b = 0usize;
     let off_a = n_grid;
 
-    // Compute (α at anchor b-var, three other (var_idx, α) entries, K) per stencil.
-    // The `b_anchor` is floored at SLP_B_FLOOR to keep 1/√b̄ bounded.
+    // b_anchor floored at SLP_B_FLOOR to keep 1/√b̄ bounded.
     let (alpha_b_anchor, entries_extra, k_const): (f64, [(usize, f64); 3], f64) = match cut.stencil
     {
         AxisJerkStencil::Interior => {
@@ -547,10 +470,9 @@ fn append_axis_jerk_cut_to_clarabel(
         }
     };
 
-    // The "anchor" b-variable column is at the absolute grid index `off_b + i`.
     let anchor_b_col = off_b + i;
 
-    // Sign-convention negation: A_clarabel = -A_k.
+    // Sign-convention: A_clarabel = -A_k.
     // Positive side: A_k row = [-α], rhs = J - K. Clarabel pushes +α.
     let pos_row = *n_rows;
     push_nz(rowval, nzval, anchor_b_col, pos_row, alpha_b_anchor);
@@ -574,7 +496,6 @@ fn append_axis_jerk_cut_to_clarabel(
     *n_rows += 1;
 }
 
-/// Helper: append a single non-zero entry into a column-bucketed CSC builder.
 #[inline]
 fn push_nz(rowval: &mut [Vec<usize>], nzval: &mut [Vec<f64>], col: usize, row: usize, v: f64) {
     if v != 0.0 {
@@ -602,29 +523,18 @@ pub(crate) struct TrustRegion {
     pub rho_a: f64,
 }
 
-/// Floor on |ā_i| used when sizing the a-trust-region radius. Pure-zero `ā`
-/// would give zero-width trust region and pin `a_i` to its previous iterate;
-/// a positive floor on the order of `a_max` lets the inner SOCP swing `a`
-/// across the per-axis acceleration range when the iterate's `ā` is small
-/// or has the wrong sign at a grid point. Verifier non-blocker: tuned
-/// against fixture 4; revisit if observed to over-relax.
+/// Floor on |ā_i| for the a-trust-region radius. Without a positive floor,
+/// near-zero iterates give a zero-width TR that pins `a_i` in place; the
+/// floor lets the SOCP swing `a` across the acceleration range. Tuned against
+/// fixture 4; revisit if observed to over-relax.
 const A_TR_FLOOR: f64 = 5_000.0; // mm/s² (≈ a_max)
 
-/// Floor on `b̄_i` used when sizing the b-trust-region radius. Without this,
-/// a small iterate value (cruise drop, near-boundary ramp-up) gives a
-/// near-zero TR that the SOCP can't satisfy against block (e) centripetal
-/// caps or other lower bounds. Floor = (50 mm/s)² = 2500.
+/// Floor on `b̄_i` for the b-trust-region radius. Prevents near-zero iterate
+/// values (boundary ramp-up, cruise drop) from producing a near-zero TR that
+/// Clarabel can't satisfy against centripetal caps. (50 mm/s)² = 2500.
 const B_TR_FLOOR: f64 = 2_500.0;
 
-/// Construct the Clarabel SOCP from `bundle` and solve it, with optional SLP
-/// cut rows and trust-region rows appended.
-///
-/// `cuts`, when non-empty, becomes additional `Nonneg` rows of the SOCP. The
-/// cuts reference only `b` and `a` variables that already exist in the bundle;
-/// no new variables are introduced (`n_vars` unchanged).
-///
-/// `trust_region`, when `Some`, additionally appends 2-sided box rows on every
-/// `b_i` (interior) and every `a_i`, anchored at `(b_bar, a_bar)`.
+/// Solve the SOCP with optional SLP cut rows; no trust region.
 fn solve_with_cuts(
     bundle: &ConstraintBundle,
     cuts: &[SlpCut],
@@ -645,14 +555,13 @@ fn solve_with_cuts_and_trust_region(
     let n_vars = bundle.n_vars;
     let n_grid = bundle.n_grid;
 
-    // Step 1: cones — append a Nonneg block for SLP cuts and trust region.
     let mut cones_clarabel = map_clarabel_cones(bundle)?;
     let cut_rows = 2 * cuts.len();
     if cut_rows > 0 {
         cones_clarabel.push(NonnegativeConeT(cut_rows));
     }
-    // Trust-region rows: for each interior `b_i` two rows (lower + upper),
-    // for every `a_i` two rows. Boundary b rows skipped (pinned by block (a)).
+    // Trust-region rows: 2 per interior b_i (boundary b pinned by block (a)),
+    // 2 per a_i.
     let tr_rows = if trust_region.is_some() {
         if n_grid >= 2 {
             2 * (n_grid - 2) + 2 * n_grid
@@ -666,9 +575,7 @@ fn solve_with_cuts_and_trust_region(
         cones_clarabel.push(NonnegativeConeT(tr_rows));
     }
 
-    // Step 2: build sparse A column-bucketed (with sign-convention negation
-    // applied inside). We construct rowval/nzval per column so we can append
-    // SLP-cut rows incrementally without reshuffling.
+    // Build A column-bucketed so SLP-cut rows can be appended without reshuffling.
     let mut rowval_per_col: Vec<Vec<usize>> = vec![Vec::new(); n_vars];
     let mut nzval_per_col: Vec<Vec<f64>> = vec![Vec::new(); n_vars];
     let mut n_rows = 0_usize;
@@ -677,17 +584,13 @@ fn solve_with_cuts_and_trust_region(
         for (col, &v) in row.iter().enumerate() {
             if v != 0.0 {
                 rowval_per_col[col].push(n_rows);
-                // Sign-convention negation: A_clarabel = -A_k.
-                nzval_per_col[col].push(-v);
+                nzval_per_col[col].push(-v); // sign-convention: A_clarabel = -A_k
             }
         }
         n_rows += 1;
     }
 
-    // Step 3: RHS vector (sign-convention: unchanged from bundle).
     let mut b_rhs: Vec<f64> = bundle.b_rhs.clone();
-
-    // Step 3b: append SLP-cut rows (negation already baked into the helper).
     let j_path = bundle.j_path;
     let h = bundle.h;
     debug_assert!(
@@ -724,20 +627,15 @@ fn solve_with_cuts_and_trust_region(
         }
     }
 
-    // Step 3c: append trust-region rows.
     if let Some(tr) = trust_region {
         debug_assert_eq!(b_bar.len(), n_grid);
         debug_assert_eq!(a_bar.len(), n_grid);
-        // b_i interior: |b_i − b̄_i| ≤ ρ_b · max(b̄_i, B_TR_FLOOR)
-        // (boundary b_0, b_{N-1} pinned by block (a); skip).
         let off_b = 0;
         for i in 1..n_grid.saturating_sub(1) {
             let bb = b_bar[i].max(0.0);
             let radius = tr.rho_b * bb.max(B_TR_FLOOR);
             let lo = bb - radius;
             let hi = bb + radius;
-            // Lower: b_i − lo ≥ 0  →  A_k row [+1 on b_i], rhs = −lo
-            // Upper: hi − b_i ≥ 0  →  A_k row [−1 on b_i], rhs = +hi
             let row_lo = n_rows;
             push_nz(
                 &mut rowval_per_col,
@@ -759,7 +657,6 @@ fn solve_with_cuts_and_trust_region(
             b_rhs.push(hi);
             n_rows += 1;
         }
-        // a_i: ā_i − ρ_a·max(|ā|, FLOOR) ≤ a_i ≤ ā_i + ρ_a·max(|ā|, FLOOR).
         let off_a = n_grid;
         for i in 0..n_grid {
             let ab = a_bar[i];
@@ -789,7 +686,6 @@ fn solve_with_cuts_and_trust_region(
         }
     }
 
-    // Step 4: assemble final CSC.
     let mut colptr: Vec<usize> = Vec::with_capacity(n_vars + 1);
     let mut rowval: Vec<usize> = Vec::new();
     let mut nzval: Vec<f64> = Vec::new();
@@ -807,188 +703,113 @@ fn solve_with_cuts_and_trust_region(
         nzval,
     };
 
-    // Step 5: zero P for pure linear objective.
     let p_zero = build_p_zero(n_vars);
-
-    // Step 6: objective vector.
     let q: &[f64] = &bundle.objective;
 
-    // Step 7: settings — spec §4.2: Clarabel defaults except verbose = false
-    // (suppress solver output; diagnostics go through kalico telemetry).
-    // SLP-cut SOCPs need more interior-point iterations than the base SOCP:
-    // adding linearized cuts to the base relaxation tightens conditioning,
-    // and the default 200-iter budget produces `InsufficientProgress` on
-    // the empirical CL-2024 counterexample fixture. 1000 iters is enough
-    // headroom; runtime is still ≤ 1 s per outer iteration on N=200 grids.
-    //
-    // Reduced tolerances match verify::check's EPS_FEAS=2e-3 (spec §6.2).
-    // Allows AlmostSolved states at this tolerance to map to SolvedInexact
-    // instead of MaxIter; SLP outer loop can then continue with cuts.
-    // Solved gating remains at default eps_abs.
+    // Spec §4.2: verbose=false (diagnostics via kalico telemetry).
+    // max_iter=1000: SLP-cut SOCPs condition more tightly than the base SOCP;
+    //   the default 200-iter budget produces `InsufficientProgress` on the
+    //   CL-2024 counterexample fixture. 1000 is sufficient; runtime stays
+    //   ≤ 1 s per outer iter at N=200.
+    // reduced_tol_*=1e-3: lets Clarabel report `AlmostSolved` (→ SolvedInexact)
+    //   when the primary tol can't be met; dropping these restores Clarabel
+    //   defaults (5e-5/5e-5/1e-4) and silently changes `AlmostSolved` semantics.
+    // direct_solve_method="qdldl", max_threads=1: determinism pin — single-
+    //   threaded QDLDL backend keeps the joining-loop early-bail deterministic
+    //   across future Clarabel versions / feature-flag changes.
     #[allow(clippy::similar_names)]
     let settings = DefaultSettings::<f64> {
         verbose: false,
         max_iter: 1000,
-        // Primary tolerances (per-call adaptive — see `ToleranceMode`).
         tol_gap_abs: tol,
         tol_gap_rel: tol,
         tol_feas: tol,
-        // Reduced (AlmostSolved) tolerances — preserve existing 1e-3 overrides.
-        // These let Clarabel report `SolvedInexact` (mapped to public `SolveStatus`
-        // via `output::assemble`) when the primary tolerance can't be reached;
-        // SLP and downstream `verify::check` (ε_feas = 1e-3) rely on this gating.
-        // Per Codex review-4: dropping these would silently restore Clarabel
-        // defaults (5e-5 / 5e-5 / 1e-4), changing `AlmostSolved` semantics.
         reduced_tol_gap_abs: 1e-3,
         reduced_tol_gap_rel: 1e-3,
         reduced_tol_feas: 1e-3,
-        // Determinism pin (per Codex review-4 + kalico-verifier round-3
-        // recommendation): explicitly use single-threaded QDLDL backend so the
-        // joining-loop early-bail's determinism premise stays valid against
-        // future Clarabel versions / feature-flag changes.
         direct_solve_method: "qdldl".to_string(),
         max_threads: 1,
         ..Default::default()
     };
 
-    // Step 8: construct and run.
     let mut solver = DefaultSolver::new(&p_zero, q, &a_csc, &b_rhs, &cones_clarabel, settings)
         .map_err(|e| SolverSetupError::InvalidBundle(e.to_string()))?;
-
     solver.solve();
 
-    // Step 9: map status; residual = max(r_prim, r_dual).
     let soln = &solver.solution;
     let residual = soln.r_prim.max(soln.r_dual);
     let status = map_status(soln.status, residual);
-
-    // Step 10: extract b_i and a_i.
     Ok(extract_solution(&soln.x, n_grid, status))
 }
 
-// ---------------------------------------------------------------------------
-// SLP outer iteration (Lee 2024 §III–§IV) — fallback for the empirical
-// CL-2024 Conjecture-4.1 counterexample on curved high-jerk-load segments.
+// SLP outer iteration (Lee 2024 §III–§IV).
 //
-// The Consolini-Locatelli SOCP relaxation is faithful but its tightness is
-// conjectural and demonstrably loose on curved high-jerk-load segments
-// (e.g. a R=20 mm rational-quadratic 90° arc at N=200, J=1e5 — see
-// docs/research/jerk-constrained-socp-relaxation-tightness.md). The single
-// non-convex constraint `|b''|·√b ≤ 2J` cannot be tightened inside one SOCP;
-// the convex sublevel set `b·w² ≤ 1` is non-convex on the positive orthant
-// (Hessian determinant -4w² < 0). Lee 2024's mitigation: solve the current
-// SOCP, append a first-order Taylor cut on `1/√b` at the current iterate,
-// re-solve. Each inner SOCP stays convex; the linearized cut lies below
-// the original convex-down `1/√b` curve so it tightens (rather than
-// loosens) the relaxation.
+// The CL-2024 SOCP relaxation is demonstrably loose on curved high-jerk-load
+// segments (e.g. R=20 mm 90° arc, N=200, J=1e5). The non-convex constraint
+// `|b''|·√b ≤ 2J` cannot be tightened inside one SOCP. Lee 2024's mitigation:
+// append a first-order Taylor cut on `1/√b` at the current iterate and re-solve.
+// Each inner SOCP stays convex; the cut lies below the convex-down `1/√b` curve
+// and thus tightens the relaxation.
 //
-// # Cut placement: full-grid linearization vs. active-set
-//
-// Two natural cut-placement strategies were tried during implementation:
-//
-// 1. *Active-set* — cut only at currently violating grid points, drop
-//    older cuts. Standard SLP. **Oscillated** on the empirical fixture:
-//    cuts at one set of indices push the iterate to a configuration that
-//    violates a different set, ad infinitum.
-// 2. *Active-set with cumulative cuts* — accumulate cuts at every violator
-//    seen so far. Eventually wrecks Clarabel's interior-point conditioning
-//    after ~50 rows on N=200 grids; produces `InsufficientProgress`.
-//
-// What works: **full-grid linearization** — every iteration, drop the
-// prior cut set and rebuild fresh cuts at *every interior grid point*
-// (with `b̄ ≥ SLP_B_CUT_FLOOR`) using the latest iterate. Each cut is a
-// valid global underestimator of `1/√b` by convexity, so the joint cut
-// set is a tight envelope around the current iterate. Empirically
-// converges in 1–3 outer iterations on the kalico fixtures; row count
-// stays bounded at `N − 2` (cuts replace each iteration, not accumulate).
-// ---------------------------------------------------------------------------
+// Cut placement: active-set-only oscillates (cuts at one index unmask new
+// violators elsewhere). Cumulative cuts wreck Clarabel conditioning after
+// ~50 rows at N=200. **Full-grid linearization** — rebuild fresh cuts at
+// every interior grid point each iteration — converges in 1–3 iters;
+// row count is bounded at N−2 (replaced, not accumulated).
 
-/// Maximum SLP outer iterations before declaring `MaxIterSlp`. Hard cap to
-/// guard against pathological no-convergence inputs; Lee 2024 reports ~5–30
-/// iterations in practice.
+/// Hard cap; Lee 2024 reports ~5–30 iterations in practice.
 const SLP_MAX_OUTER_ITERS: u32 = 50;
 
-/// Feasibility tolerance for the path-jerk violation predicate. Looser
-/// than `verify::EPS_FEAS` (spec §6.2) because the SLP predicate uses a
-/// finite-difference estimate of `b''(s)` directly (`Δ²b/h²`), which is
-/// noisy around constraint-switch grid points on straight-line fixtures
-/// (1–2% spurious "violations" at the fade-in/fade-out kinks). The CL-2024
-/// Conjecture-4.1 counterexample fixture violates by ~143% at the worst
-/// grid point (ratio 2.43); 5% is tight enough to catch real gaps and
-/// loose enough to skip discretization noise. The post-solve verifier
-/// uses the time-domain per-axis Cartesian jerk and remains the
-/// authoritative feasibility check at `EPS_FEAS = 1e-3`.
+/// Looser than `verify::EPS_FEAS` (spec §6.2): the SLP predicate uses a
+/// raw FD estimate of `b''(s)` (`Δ²b/h²`), which is noisy near constraint-
+/// switch kinks (1–2% spurious violations). Real violations on the CL-2024
+/// counterexample are ~143% (ratio 2.43); 5% separates signal from noise.
+/// The post-solve verifier at `EPS_FEAS = 1e-3` remains the authority.
 const SLP_EPS_FEAS: f64 = 5e-2;
 
-/// Floor on `b̄` used when constructing a cut at a grid point with very
-/// small primal `b`. Avoids `1/√0` in the linearization. The floor is
-/// physically irrelevant (cut is then trivially satisfied at the iterate
-/// since the violation predicate requires `b > 0` to be non-trivial).
+/// Avoids `1/√0` in the path-jerk linearization. Physically irrelevant at
+/// these speeds (cut trivially satisfied; violation predicate requires `b > 0`).
 const SLP_B_FLOOR: f64 = 1.0;
 
-/// Threshold on `b̄` below which a violator does NOT receive a cut: the
-/// linearization coefficient `α = J·h²/b̄^{3/2}` grows like `b̄⁻³ᐟ²`, so
-/// cuts at near-boundary grid points (where Clarabel's primal tends to
-/// have small numerical artifacts) inject very steep rows that wreck the
-/// next inner SOCP's conditioning. The path-jerk constraint at small `b`
-/// is dominated by the boundary equality / centripetal cap anyway, so the
-/// missing cut is safely picked up by the main relaxation. Tuned against
-/// the R=20 mm 90° rational-quadratic arc fixture; `B_CUT_FLOOR ≈ (10
-/// mm/s)²`.
+/// Below this `b̄` a violator does not receive a cut. `α = J·h²/b̄^{3/2}`
+/// diverges as b̄ → 0, producing very steep rows that wreck the next inner
+/// SOCP's conditioning. Near-boundary small-b points are dominated by the
+/// boundary equality / centripetal cap in the base relaxation. ≈ (10 mm/s)².
 const SLP_B_CUT_FLOOR: f64 = 100.0;
 
-/// Warm-up window (in iterations) before the divergence rule fires. Allows
-/// the loop to add cuts from a cold start; SLP iterates routinely bounce
-/// around the true optimum for several iterations before settling (Lee 2024
-/// reports 5–30 iterations to converge in practice).
+/// Warm-up before divergence rule fires; iterates routinely bounce for
+/// several iterations before settling (Lee 2024: 5–30 iterations typical).
 const SLP_WARMUP_ITERS: u32 = 8;
 
-/// Required relative improvement in best-so-far max-violator ratio over the
-/// trailing `SLP_NO_IMPROVEMENT_WINDOW` iterations. If best-so-far hasn't
-/// dropped by ≥ this fraction across the window, the loop is declared
-/// diverged. Empirically: SLP can have non-monotone iterate-by-iterate
-/// behavior (cuts at one violator unmask different violators on the next
-/// iterate), so the only reliable signal is best-so-far progress.
+/// Required best-so-far improvement across the trailing window. Per-iterate
+/// monotone descent is too strict (one cut can unmask new violators); the
+/// best-so-far sliding-window signal is more robust.
 const SLP_MIN_IMPROVEMENT: f64 = 0.01;
 
-/// Sliding-window length (in iterations) for the no-improvement divergence
-/// rule. After warm-up, the loop tracks `best_ratio[k] − best_ratio[k − W]`
-/// and declares divergence if it falls below `SLP_MIN_IMPROVEMENT`.
+/// Sliding window length for the no-improvement divergence rule.
 const SLP_NO_IMPROVEMENT_WINDOW: usize = 10;
 
-/// Outcome of the SLP outer iteration. Carried back to `schedule_segment`
-/// where it is mapped onto the public `SolveStatus` enum.
+/// Outcome of the SLP outer iteration.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SlpOutcome {
-    /// Inner SOCP converged with no violators (within `SLP_EPS_FEAS`).
-    /// `outer_iters = 0` corresponds to the original SOCP — no cuts were
-    /// needed; this is the common straight-line case.
+    /// No violators within `SLP_EPS_FEAS`. `outer_iters = 0` means the
+    /// base SOCP was already feasible (common straight-line case).
     Converged { outer_iters: u32 },
-    /// Loop hit `SLP_MAX_OUTER_ITERS` without driving the violator ratio
-    /// below `1 + ε_feas`.
+    /// Hit `SLP_MAX_OUTER_ITERS` without feasibility.
     MaxIters { last_max_ratio: f64 },
-    /// `last_max_ratio` failed to drop monotonically across the warm-up
-    /// window — declared diverged.
+    /// Best-so-far ratio failed to improve over the sliding window.
     Diverged {
         last_max_ratio: f64,
         outer_iters: u32,
     },
-    /// Inner SOCP returned a non-feasible status (Infeasible or `MaxIter`
-    /// from Clarabel itself). Surface that without further SLP iteration.
+    /// Inner SOCP returned Infeasible or MaxIter; no usable primal to iterate.
     InnerSolverFailure,
 }
 
-/// Run the SLP outer-iteration loop. Returns the final `SolverResult` plus
-/// an `SlpOutcome` describing how the loop terminated.
-///
-/// On entry, no cuts have been added; iteration 0 solves the original
-/// Consolini-Locatelli SOCP. If the iteration-0 primal is path-jerk-feasible
-/// within `SLP_EPS_FEAS`, the loop returns immediately with
-/// `SlpOutcome::Converged { outer_iters: 0 }` — i.e. straight-line and other
-/// non-counterexample inputs see no SLP overhead. Otherwise each subsequent
-/// iteration replaces the cut set with fresh full-grid linearizations of
-/// `1/√b` at the latest iterate (see module-level comment for the
-/// full-grid-vs-active-set rationale) and re-solves.
+/// Run the path-jerk SLP outer loop (Lee 2024 §III–§IV). Returns the best
+/// `SolverResult` and an `SlpOutcome`. Iteration 0 is the base CL-2024 SOCP;
+/// subsequent iterations rebuild full-grid `1/√b` cuts at the latest iterate.
+/// Straight-line inputs see no SLP overhead (`outer_iters = 0`).
 pub(crate) fn slp_solve(
     bundle: &ConstraintBundle,
     tol: f64,
@@ -1000,8 +821,7 @@ pub(crate) fn slp_solve(
     let mut cuts: Vec<SlpCut> = Vec::new();
     let mut last_result = solve_with_cuts(bundle, &cuts, tol)?;
 
-    // Iteration-0: structurally-infeasible or solver-MaxIter at iter 0 means
-    // there's no usable primal to scan; surface that without iterating.
+    // No usable primal at iter 0; surface immediately.
     if matches!(
         last_result.status,
         SolverStatus::Infeasible | SolverStatus::MaxIter { .. }
@@ -1009,38 +829,23 @@ pub(crate) fn slp_solve(
         return Ok((last_result, SlpOutcome::InnerSolverFailure));
     }
 
-    // Iteration-0 violator scan.
     let mut violators = find_jerk_violators(&last_result.b, h, j_path);
     if violators.is_empty() {
         return Ok((last_result, SlpOutcome::Converged { outer_iters: 0 }));
     }
 
-    // Track the best iterate seen so far (lowest max-violator ratio). When
-    // the SLP loop fails to converge, this is the iterate we surface so the
-    // caller has the most-feasible primal even if the loop terminated badly.
+    // Track best-so-far (lowest max-violator ratio) so we surface the most-
+    // feasible primal even when the loop terminates without convergence.
     let mut best_result = last_result.clone();
     let mut best_ratio_so_far = max_ratio(&violators);
-
-    // Track the per-iteration max-violator ratio AND the running best-so-far.
-    // Best-so-far is the divergence signal: SLP cuts at one grid point can
-    // unmask new violators elsewhere on the next iterate, so iterate-by-iterate
-    // monotone descent is too strict. Best-so-far across a sliding window is
-    // the conservative-but-meaningful progress metric.
     let mut max_ratio_history: Vec<f64> = Vec::new();
     let mut best_ratio_history: Vec<f64> = Vec::new();
     let initial_max = max_ratio(&violators);
     max_ratio_history.push(initial_max);
     best_ratio_history.push(initial_max);
     for outer in 1..=SLP_MAX_OUTER_ITERS {
-        // Hybrid cut strategy: keep cuts at ALL interior grid points (not
-        // just current violators), re-linearizing at the current iterate
-        // each pass. Block (h)'s SOC chain is convex but loose (the CL-2024
-        // Conjecture-4.1 gap); the cuts give a tighter local approximation
-        // of `|b''|·√b ≤ 2J` valid at this iterate, valid bound everywhere
-        // by convexity. Re-linearizing each pass avoids the iterate-by-
-        // iterate oscillation that pure-active-set SLP exhibits on this
-        // fixture; coverage across the whole grid prevents the relaxation
-        // from finding new violators outside the prior active set.
+        // Full-grid linearization: rebuild cuts at every interior point each
+        // pass to avoid active-set oscillation (see module-level comment).
         cuts.clear();
         let mut added = 0_usize;
         let n = last_result.b.len();
@@ -1053,10 +858,8 @@ pub(crate) fn slp_solve(
             added += 1;
         }
         if added == 0 {
-            // All remaining violators are below the cut floor; they're
-            // dominated by other constraints in the relaxation. Surface the
-            // best-so-far iterate with a `MaxIters` outcome so the public
-            // API carries the residual.
+            // All remaining violators below the cut floor; dominated by other
+            // constraints in the relaxation.
             return Ok((
                 best_result,
                 SlpOutcome::MaxIters {
@@ -1066,10 +869,7 @@ pub(crate) fn slp_solve(
         }
 
         let new_result = solve_with_cuts(bundle, &cuts, tol)?;
-        // Structural infeasibility / Clarabel MaxIter on the inner solve:
-        // the new primal is not trustworthy as an iterate. Stop iterating
-        // and surface the best-so-far iterate with a `MaxIters` outcome so
-        // downstream consumers see the most-feasible primal we found.
+        // Inner solve failed: new primal not trustworthy; return best-so-far.
         if matches!(
             new_result.status,
             SolverStatus::Infeasible | SolverStatus::MaxIter { .. }
@@ -1099,13 +899,6 @@ pub(crate) fn slp_solve(
         }
         let _ = cur_best; // tracking only; surfaced via SlpOutcome.
 
-        // Divergence detection (verifier-recommended "no-improvement" rule).
-        // After the warm-up window, require best-so-far ratio to have dropped
-        // by ≥ SLP_MIN_IMPROVEMENT relative to its value SLP_NO_IMPROVEMENT_WINDOW
-        // iterations ago. SLP iterates routinely bounce around the optimum
-        // (cuts at one grid point can unmask new violators elsewhere on the
-        // next iterate), so iterate-by-iterate monotone descent is too strict;
-        // best-so-far across a sliding window is the robust progress metric.
         if outer > SLP_WARMUP_ITERS && best_ratio_history.len() > SLP_NO_IMPROVEMENT_WINDOW {
             let len = best_ratio_history.len();
             let baseline = best_ratio_history[len - 1 - SLP_NO_IMPROVEMENT_WINDOW];
@@ -1131,22 +924,16 @@ pub(crate) fn slp_solve(
     ))
 }
 
-/// One violator of the path-jerk constraint at iteration `k`.
+/// One violator of the path-jerk constraint.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct JerkViolator {
-    /// Interior grid index of the violation (`1 ≤ i ≤ N − 2`). Currently
-    /// unused under the full-grid-linearization cut strategy (cuts are
-    /// placed at every interior grid point regardless), but retained for
-    /// future telemetry / per-violator-cut variants.
+    /// Unused under full-grid-linearization; retained for future telemetry.
     #[allow(dead_code)]
     pub i: usize,
-    /// `|Δ²b_i|·√b_i / (2J·h²)` at the current iterate. `> 1 + ε` for a
-    /// violator.
+    /// `|Δ²b_i|·√b_i / (2J·h²)`; `> 1 + ε` for a violator.
     pub ratio: f64,
 }
 
-/// Scan the interior grid points and return all violators of
-/// `|Δ²b_i|·√b_i ≤ 2J·h²·(1 + ε_feas)`.
 fn find_jerk_violators(b: &[f64], h: f64, j_path: f64) -> Vec<JerkViolator> {
     let n = b.len();
     if n < 3 {
@@ -1157,7 +944,7 @@ fn find_jerk_violators(b: &[f64], h: f64, j_path: f64) -> Vec<JerkViolator> {
     for i in 1..n - 1 {
         let bi = b[i];
         if bi <= 0.0 {
-            continue; // nothing to bind against (and √b would be undefined)
+            continue; // √b undefined
         }
         let d2b = b[i - 1] - 2.0 * bi + b[i + 1];
         let ratio = d2b.abs() * bi.sqrt() / two_jh2;
@@ -1173,71 +960,37 @@ fn max_ratio(vs: &[JerkViolator]) -> f64 {
     vs.iter().map(|v| v.ratio).fold(0.0_f64, f64::max)
 }
 
-// ---------------------------------------------------------------------------
-// Per-axis Cartesian jerk SLP outer loop (Step 9; spec §11)
-// ---------------------------------------------------------------------------
+// Per-axis Cartesian jerk SLP outer loop (spec §11).
 //
-// Layered on top of `slp_solve` (path-jerk SLP). The path-jerk loop tightens
-// the SOCP relaxation against `|s⃛| ≤ J_path` (scalar tangential jerk). That
-// is necessary but insufficient: per-axis Cartesian jerk
+// Path-jerk feasibility (`|s⃛| ≤ J_path`) is necessary but not sufficient:
+// hardware checks per-axis `j_axis = c'''·b^(3/2) + 3·c''·a·√b + c'·s⃛`.
+// On curved paths the path-jerk-feasible iterate can violate per-axis jerk
+// by tens of percent. Mitigation: a second SLP loop using verifier-stencil
+// cuts on j_axis.
 //
-//     j_axis = c'''·b^(3/2) + 3·c''·a·√b + c'·s⃛
+// Because `j_axis` has bilinear-times-sqrt cross-terms (`a·√b`), the Hessian
+// is indefinite — the linearization is only locally valid. Three mechanisms:
 //
-// is what the verifier (and physical hardware) checks. On curved paths with
-// non-zero endpoint velocity (fixture 4), the path-jerk-feasible iterate
-// can violate per-axis jerk by tens of percent at the boundary.
+// 1. Active-set placement: cut only at (i, axis) pairs with ratio > 1 + ε.
+// 2. L∞ trust region: ρ_b = 0.05, ρ_a = 0.10 (tighter than 0.20/0.30 from
+//    initial diagnosis; larger radii let the cross-terms invalidate the cut).
+//    Expand 1.5× on accept, contract 0.5× on reject.
+//    Caps: ρ_b ∈ [0.005, 0.20], ρ_a ∈ [0.01, 0.40].
+// 3. Accept-only-if-decrease: up to MAX_BACKTRACKS=3 trust-region halvings
+//    per outer iter before falling back to solving without a TR.
 //
-// Mitigation: a SECOND SLP loop using verifier-stencil cuts on j_axis. The
-// cuts are first-order Taylor expansions of `j_axis(b, a)` at the iterate;
-// because `j_axis` has bilinear-times-sqrt cross-terms (term 2: 3·c''·a·√b,
-// term 3 via `s⃛`), the linearization is non-convex (Hessian indefinite on
-// `(a, b)`). Three coupled remedies make convergence reliable:
-//
-//   1. **Active-set placement.** Cut only at (i, axis) pairs where the
-//      verifier-form ratio > 1 + ε at the current iterate. Avoids over-
-//      tightening at points where the relaxation is already feasible.
-//
-//   2. **L∞ trust region** on `(b, a)` around the current iterate. Initial
-//      ρ_b = 0.05, ρ_a = 0.10 (tightened from the diagnosis's recommended
-//      0.20/0.30 — the non-convex Term 2/Term 3 `a·√b` cross-terms
-//      invalidate the linearization at larger radii in fixture-4 testing).
-//      Adapts: expand by 1.5× on accept, contract by 0.5× on reject.
-//      Caps: ρ_b ∈ [0.005, 0.20], ρ_a ∈ [0.01, 0.40].
-//
-//   3. **Accept-only-if-decrease.** After each inner SOCP, evaluate the
-//      verifier-form max-ratio at the new iterate. If it does not decrease
-//      below the previous best, the trust-region radii ρ_b, ρ_a are halved
-//      (ρ ← ρ × 0.5^backtrack_count) and the inner SOCP is re-solved with
-//      the tighter feasibility region, up to MAX_BACKTRACKS=3 retries per
-//      outer iter.
-//
-// Verifier-non-blocker note: future widening to ±2 neighborhood for the
-// active set may help if non-adjacent oscillation appears. Not implemented;
-// add if observed.
-//
-// Source: Nocedal & Wright Numerical Optimization 2e, §18.5 (trust-region
-// SQP). Step 9 design: /tmp/pf_diagnosis.json, spec §11.
+// Source: Nocedal & Wright §18.5 (trust-region SQP).
 
-/// Maximum per-axis-jerk SLP outer iterations. Verifier non-blocker note
-/// requested 30 (bumped from 15) with a soft warning at iter 15.
 const SLP9_MAX_OUTER_ITERS: u32 = 30;
-
-/// Soft-warning threshold for slow per-axis SLP convergence.
 const SLP9_WARN_AT_ITER: u32 = 15;
 
-/// Per-axis-jerk feasibility tolerance. Mirrors `verify::EPS_FEAS = 1e-3`
-/// (spec §6.2): the SOCP cut and the verifier check use the SAME stencil,
-/// so the cut tolerance can match the verifier tolerance directly.
+/// Matches `verify::EPS_FEAS = 1e-3` (spec §6.2): cut and verifier use the
+/// same stencil, so tolerances can align directly.
 const SLP9_EPS_FEAS: f64 = 1e-3;
 
-/// Initial L∞ trust-region radii. Diagnosis recommendation was 0.20/0.30,
-/// but empirically those values let the inner SOCP move far enough that the
-/// non-convex `a·√b` cross-terms invalidate the linearization (cuts at
-/// the iterate are satisfied at the new point, but the verifier-form ratio
-/// at the new point is significantly worse than the cut model predicted).
-/// Tightening to 0.05/0.10 keeps the iterate in the local-validity
-/// neighborhood. The tighter step costs more outer iterations but converges
-/// reliably on fixture 4 (v_end=0).
+/// Tightened from initial diagnosis's 0.20/0.30: larger radii let the inner
+/// SOCP move far enough that the `a·√b` cross-terms invalidate the cut.
+/// 0.05/0.10 keeps the iterate in the local-validity neighborhood.
 const SLP9_RHO_B_INIT: f64 = 0.05;
 const SLP9_RHO_A_INIT: f64 = 0.10;
 const SLP9_RHO_B_MIN: f64 = 0.005;
@@ -1245,48 +998,19 @@ const SLP9_RHO_B_MAX: f64 = 0.20;
 const SLP9_RHO_A_MIN: f64 = 0.01;
 const SLP9_RHO_A_MAX: f64 = 0.40;
 
-/// Maximum backtracks per outer iter before giving up the step and treating
-/// the outer iter as a no-op (will retry from a contracted trust region next
-/// outer iter).
+/// Max trust-region halvings per outer iter before treating the step as a no-op.
 const SLP9_MAX_BACKTRACKS: u32 = 3;
 
-/// Continuation factor on the cut RHS. When the iterate's verifier-form
-/// per-axis ratio is `R > 1`, an iter-1 cut at the strict feasibility
-/// tolerance `j_max·(1 + ε)` is infeasible inside any reasonable trust
-/// region (the iterate lies far outside the cut). We instead inflate the
-/// cut RHS to `j_max · target_ratio_k`, where
-///
-/// ```text
-///     target_ratio_k = max(1 + ε, R_k · SLP9_TARGET_DECAY)
-/// ```
-///
-/// and `R_k` is the best ratio seen at outer iter `k`. This is a
-/// continuation / homotopy schedule: the cut starts loose enough to admit
-/// the current iterate, then tightens by `SLP9_TARGET_DECAY` per outer iter
-/// until it matches the verifier's `1 + ε` feasibility tolerance.
-///
-/// `SLP9_TARGET_DECAY = 0.85` — gentle geometric tightening per outer iter.
-/// More-aggressive decay (0.5) is feasible inside the trust region only when
-/// the iterate is already close to feasibility; for fixture 4 (initial
-/// ratio R ≈ 1.24 at v_end=0), even target_ratio = 1.001 with R · 0.5 = 0.62
-/// (clamped) leaves the inner SOCP infeasible because the cut at the worst
-/// violator demands a linear improvement that's too large for the
-/// trust-region neighborhood. A gentle 0.85 decay allows the SOCP to make
-/// incremental progress; ~30 iters from R=1.24 to R=1.001.
+/// Homotopy schedule: cut RHS = `j_max · max(1+ε, R_k · decay)`. Cuts start
+/// loose enough to admit the current iterate and tighten each outer iter.
+/// 0.85 (gentle) vs 0.5 (aggressive): at R≈1.24 (fixture 4), decay=0.5 clamps
+/// target below the iterate, making the cut infeasible inside the TR. ~30 iters
+/// at 0.85 vs divergence at 0.5.
 const SLP9_TARGET_DECAY: f64 = 0.85;
 
-/// Run the per-axis Cartesian jerk SLP outer loop on top of the path-jerk
-/// SLP. Spec §11; Step 9.
-///
-/// 1. Calls `slp_solve` to get a path-jerk-feasible iterate (b̄_0, ā_0).
-/// 2. Checks per-axis jerk violators using the verifier stencil.
-/// 3. If any violator exceeds (1 + SLP9_EPS_FEAS), enters the per-axis SLP
-///    outer loop with active-set cuts + L∞ trust region + accept-only-if-
-///    decrease backtracking.
-///
-/// Returns the converged iterate plus the worst-case `SlpOutcome` across the
-/// two stages (path-jerk and per-axis). Path-jerk failures (Diverged,
-/// InnerSolverFailure) short-circuit per-axis processing.
+/// Path-jerk SLP (stage 1) then per-axis-jerk SLP (stage 2; spec §11).
+/// Path-jerk failures short-circuit stage 2. Returns the best iterate and the
+/// worst-case `SlpOutcome` across both stages.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn slp_solve_with_axis_jerk(
     bundle: &ConstraintBundle,
@@ -1294,12 +1018,8 @@ pub(crate) fn slp_solve_with_axis_jerk(
     limits: &crate::Limits,
     tol: f64,
 ) -> Result<(SolverResult, SlpOutcome), SolverSetupError> {
-    // Stage 1: path-jerk SLP. Existing logic, untouched.
     let (path_result, path_outcome) = slp_solve(bundle, tol)?;
 
-    // Path-jerk failure modes: surface immediately. The per-axis loop has
-    // nothing useful to add when the inner SOCP is already not producing a
-    // trustworthy iterate.
     if matches!(
         path_outcome,
         SlpOutcome::InnerSolverFailure | SlpOutcome::Diverged { .. } | SlpOutcome::MaxIters { .. }
@@ -1309,19 +1029,15 @@ pub(crate) fn slp_solve_with_axis_jerk(
 
     debug_assert_eq!(grid.s.len(), path_result.b.len());
 
-    // Stage 2: per-axis-jerk active-set + trust-region SLP.
     let mut last_result = path_result.clone();
-    // path_outer_iters: how many path-jerk outer iters were used (carried into
-    // the final SlpOutcome::Converged so the caller sees total work).
+    // Carried into the final SlpOutcome::Converged so the caller sees total work.
     let path_outer_iters = match path_outcome {
         SlpOutcome::Converged { outer_iters } => outer_iters,
         _ => 0,
     };
 
-    // Initial violator scan.
     let initial_max = max_axis_ratio(&last_result, grid, limits, bundle.h);
     if initial_max <= 1.0 + SLP9_EPS_FEAS {
-        // Path-jerk-feasible iterate is also per-axis-feasible. Return it.
         return Ok((
             last_result,
             SlpOutcome::Converged {
@@ -1337,22 +1053,13 @@ pub(crate) fn slp_solve_with_axis_jerk(
 
     for outer in 1..=SLP9_MAX_OUTER_ITERS {
         if outer == SLP9_WARN_AT_ITER {
-            // Soft warning to log; do not fail.
             eprintln!(
                 "slp9 warning: per-axis SLP not converged at iter {outer} \
                  (best ratio = {best_ratio:.4})",
             );
         }
 
-        // Continuation schedule on the cut RHS: tighten geometrically toward
-        // (1 + ε) from the current best ratio. The first cuts are loose
-        // enough that the current iterate isn't trivially infeasible inside
-        // the trust region.
         let target_ratio = (best_ratio * SLP9_TARGET_DECAY).max(1.0 + SLP9_EPS_FEAS);
-
-        // Build active-set cuts at violators (and immediate neighbors to
-        // avoid one-sided over-tightening; ±0 for now per task brief, the
-        // ±1 widening is reserved for the diagnosis non-blocker note).
         let cuts = build_axis_jerk_cuts(&last_result, grid, limits, target_ratio, bundle.h);
         if cuts.is_empty() {
             // No violators above threshold: converged.
@@ -1364,12 +1071,6 @@ pub(crate) fn slp_solve_with_axis_jerk(
             ));
         }
 
-        // ---- Inner solve sequence: first try with trust region (the
-        // standard SLP iteration); if that's infeasible, retry without
-        // the trust region (allowing a larger jump). The second case is
-        // common on the first iteration when the path-jerk-converged
-        // iterate is far outside per-axis feasibility (e.g. fixture 4
-        // boundary, ratio = 185×).
         let mut accepted: Option<SolverResult> = None;
         for backtrack in 0..=SLP9_MAX_BACKTRACKS {
             let bt_i32 = i32::try_from(backtrack).unwrap_or(i32::MAX);
@@ -1389,28 +1090,20 @@ pub(crate) fn slp_solve_with_axis_jerk(
                 candidate.status,
                 SolverStatus::Infeasible | SolverStatus::MaxIter { .. }
             ) {
-                // Inner SOCP failed at this trust-region size; halve and retry.
-                continue;
+                continue; // inner SOCP failed at this TR size; halve and retry
             }
-            // Evaluate verifier-form max-ratio at the candidate.
             let cand_ratio = max_axis_ratio(&candidate, grid, limits, bundle.h);
             if cand_ratio < best_ratio {
                 accepted = Some(candidate);
                 best_ratio = cand_ratio;
                 break;
             }
-            // Strict decrease failed; backtrack.
         }
         if accepted.is_none() {
-            // Fallback: solve with cuts but NO trust region. The trust
-            // region is a stability device; on iterations where the
-            // iterate is far outside the cut-feasible region (typical
-            // first per-axis SLP iter on fixture 4 with high-curvature
-            // boundary), no point inside the TR satisfies the cut.
-            // Without the TR, Clarabel can jump to a cut-feasible iterate
-            // (potentially far). We still gate acceptance on max-ratio
-            // decrease — non-decrease is a signal the cut linearization
-            // was poor and the iterate shouldn't be trusted.
+            // Fallback: solve without TR. Common on the first per-axis iter
+            // when the path-jerk iterate is far outside per-axis feasibility
+            // (fixture 4 boundary, ratio = 185×): no point inside the TR
+            // satisfies the cut. Still gate acceptance on max-ratio decrease.
             let candidate = solve_with_cuts(bundle, &cuts, tol)?;
             if !matches!(
                 candidate.status,
@@ -1427,8 +1120,6 @@ pub(crate) fn slp_solve_with_axis_jerk(
         if let Some(new_result) = accepted {
             last_result = new_result.clone();
             best_result = new_result;
-            // Expand trust region for the next outer iter (rewards
-            // good steps with bigger ones).
             rho_b = (rho_b * 1.5).min(SLP9_RHO_B_MAX);
             rho_a = (rho_a * 1.5).min(SLP9_RHO_A_MAX);
 
@@ -1441,12 +1132,9 @@ pub(crate) fn slp_solve_with_axis_jerk(
                 ));
             }
         } else {
-            // No accepted step in any of the backtracks. Contract the
-            // trust region for next iter and try again.
             rho_b = (rho_b * 0.5).max(SLP9_RHO_B_MIN);
             rho_a = (rho_a * 0.5).max(SLP9_RHO_A_MIN);
-            // If we're already at the minimum and still no step, declare
-            // divergence so the caller sees the best-so-far iterate.
+            // At minimum TR and still no step: declare divergence.
             if rho_b <= SLP9_RHO_B_MIN * 1.0001 && rho_a <= SLP9_RHO_A_MIN * 1.0001 {
                 return Ok((
                     best_result,
@@ -1467,9 +1155,8 @@ pub(crate) fn slp_solve_with_axis_jerk(
     ))
 }
 
-/// Verifier-form per-axis Cartesian jerk ratio at every (i, axis), max over
-/// the whole grid. Mirrors `verify::check`'s formula and uses the shared
-/// width-1 b-FD stencil from `topp::stencil::s_dddot_at`.
+/// Max per-axis jerk ratio over the whole grid, using the same stencil as
+/// `verify::check` (`topp::stencil::s_dddot_at`).
 fn max_axis_ratio(
     result: &SolverResult,
     grid: &crate::topp::path::ArclengthGrid,
@@ -1499,21 +1186,11 @@ fn max_axis_ratio(
     worst
 }
 
-/// Build the active set of per-axis jerk cuts: one cut per (i, axis) pair
-/// whose verifier-form ratio exceeds 1 + SLP9_EPS_FEAS at the current iterate.
-///
-/// `target_ratio` controls the cut RHS via continuation: cuts demand
-/// `|j_axis| ≤ j_max · target_ratio` rather than `|j_axis| ≤ j_max·(1+ε)`
-/// directly. The caller schedules `target_ratio` to decay from
-/// `R_current · SLP9_TARGET_DECAY` toward `1 + ε` over outer iters; iter-1
-/// thus solves a relaxation that admits the (still-inflated) iterate, with
-/// successive iters tightening. Without this, the iter-1 cut at strict
-/// `(1+ε)` is infeasible inside the trust region whenever `R_current ≫ 1`.
-///
-/// All cuts use the width-1 backward FD stencil from `stencil::s_dddot_at`
-/// (with i=0 mirrored to forward FD on (b₀, b₁)); same stencil as
-/// `verify::check` and `max_axis_ratio`. See
-/// `append_axis_jerk_cut_to_clarabel` for the row-coefficient algebra.
+/// Build active-set per-axis jerk cuts: one `SlpCut::AxisJerk` per (i, axis)
+/// pair with ratio > 1 + SLP9_EPS_FEAS. `target_ratio` inflates the cut RHS
+/// so the current iterate is not immediately infeasible (see `SLP9_TARGET_DECAY`).
+/// Same stencil as `verify::check`; see `append_axis_jerk_cut_to_clarabel`
+/// for row-coefficient algebra.
 fn build_axis_jerk_cuts(
     result: &SolverResult,
     grid: &crate::topp::path::ArclengthGrid,
@@ -1535,9 +1212,6 @@ fn build_axis_jerk_cuts(
             let j = cppp * s_dot3 + 3.0 * cpp * s_dot * s_ddot + cp * s_dddot;
             let lim = limits.j_max[ax];
             let ratio = j.abs() / lim;
-            // Active-set: only cut at indices that violate strict feasibility.
-            // The cut's RHS uses the (looser) target_ratio so the iterate is
-            // not trivially-infeasible against the cut at iter 1.
             if ratio <= 1.0 + SLP9_EPS_FEAS {
                 continue;
             }
@@ -1569,10 +1243,6 @@ fn build_axis_jerk_cuts(
     }
     cuts
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests;

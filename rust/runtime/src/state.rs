@@ -1,4 +1,4 @@
-//! Half-split runtime state per Step-6 spec §11.
+//! Half-split runtime state.
 //!
 //! `FgState` is touched only from foreground command-dispatch.
 //! `IsrState` is touched only from the TIM5 ISR.
@@ -97,21 +97,18 @@ pub struct TickState {
     pub motors: [f32; 4],    // [a, b, z, e] or [x, y, z, e] post-kinematic
 }
 
-/// Production `Engine` type alias — the PA/IS generic params have been removed
-/// in the Task 6 rewrite (host pre-bakes them).  The alias is kept so all
-/// existing call sites (`IsrState::engine`, `init`, FFI) compile without
-/// changes to their type annotations.
+/// Production `Engine` type alias. Kept so all existing call sites
+/// (`IsrState::engine`, `init`, FFI) compile without annotation changes.
 pub type EngineImpl = Engine;
 
-// Phase 7 §8.5 force_idle handshake calls Klipper's `irq_save`/`irq_restore`
-// to gate the queue-drain step. We import via thin C wrappers
-// `runtime_irq_save` / `runtime_irq_restore` defined in `src/runtime_tick.c`,
-// not the bare functions directly: Klipper's MCU build uses
-// `-flto=auto -fwhole-program`, which empirically lets the LTO/whole-program
-// inliner DCE the standalone `irq_save` / `irq_restore` symbols (their
-// bodies get inlined at every Klipper callsite) — leaving the kalico
-// staticlib's references unresolvable at the final link. The wrappers are
-// marked `used + externally_visible` on the C side so LTO keeps them.
+// `force_idle` handshake calls Klipper's `irq_save`/`irq_restore` to gate
+// the queue-drain step. We import via thin C wrappers `runtime_irq_save` /
+// `runtime_irq_restore` defined in `src/runtime_tick.c`, not the bare
+// functions directly: Klipper's MCU build uses `-flto=auto -fwhole-program`,
+// which lets the LTO inliner DCE the standalone `irq_save` / `irq_restore`
+// symbols (their bodies get inlined at every Klipper callsite) — leaving the
+// kalico staticlib's references unresolvable at the final link. The wrappers
+// are marked `used + externally_visible` on the C side so LTO keeps them.
 unsafe extern "C" {
     pub fn runtime_irq_save() -> u32;
     pub fn runtime_irq_restore(flags: u32);
@@ -120,11 +117,11 @@ unsafe extern "C" {
 /// Foreground-only state. Touched exclusively by the command-dispatch task.
 #[derive(Debug)]
 pub struct FgState {
-    /// Stream-open identity tracking for §8.5 idempotency (same-`stream_id` rule).
+    /// Stream-open identity for idempotency (same-`stream_id` rule).
     pub current_stream_id: Option<u32>,
-    /// Arm-time idempotency (§8.5: arm with same `t_start_t0` returns OK).
+    /// Arm-time idempotency (arm with same `t_start_t0` returns OK).
     pub armed_t_start_t0: Option<u64>,
-    /// Used by §8.5 flush spin-wait deadline computation.
+    /// Flush spin-wait deadline.
     pub flush_start_tick: Option<u64>,
 }
 
@@ -139,10 +136,8 @@ pub struct IsrState {
     /// `widen()` directly.
     pub widen_state: WidenState,
     /// Widened `now` from the previous `isr_sample_tick` call.
-    /// `None` until the first active tick sets a baseline; used by the
-    /// inter-arrival guard to detect starvation before acting on stale time.
-    /// Set to `Some` only when the previous tick had active motion; idle ticks
-    /// clear it to `None` so the guard never fires during boot/config.
+    /// `None` until the first active tick; idle ticks clear it to `None` so
+    /// the inter-arrival guard never fires during boot/config.
     pub last_tick_now: Option<u64>,
 }
 
@@ -166,70 +161,51 @@ impl IsrState {
 #[derive(Debug)]
 #[repr(C)]
 pub struct SharedState {
-    // Step-5 carryover.
     pub last_error: AtomicI32,
     pub runtime_status: AtomicU8,
-    // Step-6: stream lifecycle (§8).
     pub stream_open: AtomicBool,
-    // Step-6: flush handshake (Plan-decision A — foreground sets force_idle
-    // FIRST, ack-waits, THEN clears stream_open).
+    /// Foreground sets `force_idle` first, ack-waits, then clears
+    /// `stream_open` (flush handshake decision A).
     pub force_idle: AtomicBool,
     pub acked_force_idle: AtomicBool,
-    // Step-6: §11.4 widened-clock seqlock — foreground reads, ISR writes.
+    /// §11.4 widened-clock seqlock — foreground reads, ISR writes.
     pub widened_now_lo: AtomicU32,
     pub widened_now_hi: AtomicU32,
     pub widened_now_seq: AtomicU32,
-    // Step-6: §13.1 trace-overflow latch (ISR sets, foreground latches fault).
     pub sample_drop_pending: AtomicBool,
-    /// 2026-05-17 F4-retire-stall diagnostic: low 32 bits of the most
-    /// recent `now - seg.t_start` value computed inside
-    /// `runtime_modulated_tick`. Exposed via fault_detail tag 0xFB. If
-    /// this stays at 0 while a segment is queued, the engine's clock
-    /// (`now` from `runtime_widened_host_clock`) is stuck or behind
-    /// `seg.t_start`, so the `elapsed >= duration` retirement check
-    /// can never fire.
+    /// fault_detail 0xFB: low 32 bits of `now - seg.t_start` inside
+    /// `runtime_modulated_tick`. If stuck at 0, the clock is behind
+    /// `seg.t_start` and the `elapsed >= duration` retirement check can't fire.
     pub last_modulated_elapsed_lo: AtomicU32,
-    /// Companion to `last_modulated_elapsed_lo`: low 32 bits of the
-    /// active segment's `duration()`. Exposed via fault_detail tag 0xFC.
-    /// Comparing tag 0xFB ≥ tag 0xFC tells us whether the retirement
-    /// branch should fire on the next tick.
+    /// fault_detail 0xFC: companion to `last_modulated_elapsed_lo`.
+    /// `0xFB >= 0xFC` means retirement should fire on the next tick.
     pub last_modulated_duration_lo: AtomicU32,
-    /// 2026-05-17 F4 retire-stall diagnostic: increments on every entry
-    /// into `runtime_modulated_tick`'s `elapsed >= duration` branch.
-    /// If this stays 0, retirement isn't being reached (clock not
-    /// advancing past t_start + duration). If > 0 but
-    /// `retired_through_segment_id` stays 0, the retirement branch
-    /// enters but consumers_done returns false (motor bits not cleared).
+    /// Increments on every entry into the `elapsed >= duration` retirement
+    /// branch of `runtime_modulated_tick`.
     pub modulated_retire_attempts: AtomicU32,
-    /// Increments on every successful retirement (consumers_done == true
-    /// path). Should equal `modulated_retire_attempts` if the consumers
-    /// mask is being cleared correctly.
+    /// Increments on every successful retirement (`consumers_done == true`).
+    /// Should equal `modulated_retire_attempts` when the consumers mask clears correctly.
     pub modulated_retire_successes: AtomicU32,
-    /// 2026-05-17: snapshot of `seg.consumers_remaining` AFTER the
-    /// clear-all-motors loop in modulated_tick's retirement branch.
-    /// If non-zero, the clear loop missed bits that compute_consumers_remaining
-    /// set — the remaining bits tell us which positions need investigation.
+    /// Snapshot of `seg.consumers_remaining` after the clear-all-motors loop
+    /// in `modulated_tick`'s retirement branch. Non-zero means the clear loop
+    /// missed bits — remaining bits identify which positions need investigation.
     pub last_retire_consumers_after_clear: AtomicU32,
     /// §9.2 + §5.3 — last latched fault's encoded `fault_detail` payload.
-    /// Set in lockstep with `last_error` whenever a fault latches; read by
-    /// the periodic 10 Hz `kalico_status_v6` frame and the async
-    /// `kalico_fault` event so the host can decode the fault context
-    /// (slot index, observed/expected generation, etc.) per spec §9.2.
-    /// `0` when no fault has latched OR when the fault carries no
-    /// per-event detail.
+    /// Set in lockstep with `last_error`. `0` when no fault has latched or
+    /// when the fault carries no per-event detail.
     pub fault_detail: AtomicU32,
-    /// Most-recently-dispatched scheduler timer func at `-311` fault time
-    /// (`sched_last_dispatched_func`). Unreliable as a blocker signal —
-    /// `tick_blocker_pc` is the primary `addr2line` target. `0` until `-311`.
+    /// Most-recently-dispatched scheduler timer func at `-311` fault time.
+    /// Unreliable as a blocker signal — `tick_blocker_pc` is the primary
+    /// `addr2line` target. `0` until `-311`.
     pub tick_blocker_func: AtomicU32,
-    /// Stacked exception-frame PC at TIM5 handler entry, captured on the `-311`
-    /// path: the instruction that held the CPU/PRIMASK across the late tick.
-    /// Surfaced via the fault event's `segment_id` field. `0` until `-311`.
+    /// Stacked exception-frame PC at TIM5 handler entry, captured on the
+    /// `-311` path. Surfaced via the fault event's `segment_id` field.
+    /// `0` until `-311`.
     pub tick_blocker_pc: AtomicU32,
     /// Stacked xPSR exception number at `-311` time (`xPSR & 0x1FF`).
     /// `0` = foreground was interrupted; nonzero = that IRQ overran into TIM5.
     pub tick_blocker_exc: AtomicU32,
-    // Step 7-D: signed per-stepper pulse counters, indexed by stepper oid.
+    /// Signed per-stepper pulse counters, indexed by stepper oid.
     pub stepper_counts: [AtomicI32; MAX_STEPPER_OIDS],
     /// Per-stepper `StepMode` (spec §5). Atomic so the host can flip a
     /// stepper between Modulated and StepTime at runtime (needed for future
@@ -258,295 +234,209 @@ pub struct SharedState {
     pub phase_slot_idx: [AtomicU8; MAX_STEPPER_OIDS],
     /// Number of valid entries in `phase_config` / `phase_slot_idx`. The
     /// ISR loops `0..phase_motor_count` rather than scanning the full
-    /// `MAX_STEPPER_OIDS` array. Stored as `AtomicU8` so the foreground
-    /// can re-publish a fresh count from the configure path. `0`
-    /// disables phase stepping entirely on this MCU.
+    /// `MAX_STEPPER_OIDS` array. `0` disables phase stepping on this MCU.
     pub phase_motor_count: AtomicU8,
 
-    // ─── Step 7-emission (Task 5) diagnostics ─────────────────────────────
-    // Spec: docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md §6.
-    /// Dedupe flag for producer-timer kicks. Kickers (push_segment + the
-    /// per-motor consumer low-water hook) CAS-set this `false→true`; the
-    /// CAS-winner schedules the producer struct timer. The producer clears
-    /// this on entry. A spurious double-kick is benign (producer runs once
-    /// more with little work to do).
+    /// Dedupe flag for producer-timer kicks. Kickers CAS-set `false→true`;
+    /// the CAS-winner schedules the producer struct timer. Producer clears
+    /// on entry. A spurious double-kick is benign.
     pub producer_pending: AtomicBool,
-    /// Number of times `Engine::producer_step` has entered. Replaces the
-    /// pre-emission-rewrite `Engine::tick_counter` diagnostic; host
-    /// telemetry plots this as the producer heartbeat.
+    /// Count of `Engine::producer_step` entries (producer heartbeat).
     pub producer_runs_total: AtomicU64,
-    /// Per-motor consumer step-pulse counter. Matches `stepper_counts`
-    /// cumulatively; surfaced as a sanity-check that the consumer is
-    /// firing the entries the producer pushed.
+    /// Per-motor consumer step-pulse counter. Sanity-checks that the consumer
+    /// fires the entries the producer pushed.
     pub consumer_pulses_total: [AtomicU64; 4],
-    /// Per-motor consumer underrun count. Bumped when the per-stepper
-    /// consumer timer wakes up to find its ring empty (the poll-cadence
-    /// fallback in spec §3.5). A non-zero value means the producer is
-    /// falling behind for that motor — either insufficient ring depth
-    /// at the natural step rate or a foreground stall hiding kicks.
+    /// Per-motor consumer underrun count. Non-zero means the producer is
+    /// falling behind for that motor.
     pub consumer_underrun_total: [AtomicU64; 4],
-    /// Per-motor peak `available` ever observed in the StepRing. Surfaces
-    /// how close we are to ring-full back-pressure during steady state.
+    /// Per-motor peak `available` ever observed in the StepRing. Shows how
+    /// close we are to ring-full back-pressure during steady state.
     pub ring_high_water: [AtomicU32; 4],
     /// Total successful `ring.push` calls across all motors in
-    /// `Engine::producer_step`. If `producer_runs_total` is growing but
-    /// this stays at 0, the producer is running but every motor either
-    /// hits SegmentExhausted on first Cardano call OR `fetch_segment_for_motor`
-    /// returns None.
+    /// `Engine::producer_step`. If `producer_runs_total` grows but this
+    /// stays 0, the producer is running but every motor hits
+    /// `SegmentExhausted` on first Cardano call OR `fetch_segment_for_motor`
+    /// returns `None`.
     pub producer_steps_pushed_total: AtomicU64,
-    /// Total times `compute_next_step_time` returned `SegmentExhausted` in
-    /// `Engine::producer_step` (per motor, summed across motors). Tells us
-    /// whether Cardano is finding zero roots immediately.
+    /// Total times `compute_next_step_time` returned `SegmentExhausted`
+    /// (per motor, summed across motors). Non-zero when Cardano finds zero
+    /// roots immediately.
     pub producer_motor_finished_curve_total: AtomicU64,
-    /// Total times a full segment was retired (all consumers_remaining
-    /// bits cleared) by `Engine::producer_step`. Increments once per
-    /// dequeued+retired segment.
+    /// Total full-segment retirements in `Engine::producer_step`.
     pub producer_segment_retired_total: AtomicU64,
-    /// 2026-05-21 bench diag — per-stage isr_sample_tick cycle costs.
-    /// Each holds the running MAX cycle count for that stage of
-    /// `runtime::tick::isr_sample_tick`. Read by the
-    /// runtime_status_drain rotation as tags 0xE6/0xE7/0xE8. If any
-    /// stage's max approaches the TIM5 period (~13000 cycles at 40 kHz
-    /// on H7), that's the section starving foreground.
-    /// `isr_overrun_count` increments per ISR that exceeds 30000 cycles
-    /// (~58 µs) of total body time — that's the circuit-breaker signal.
+    /// Per-stage running MAX cycle counts for `runtime::tick::isr_sample_tick`.
+    /// Read via status_drain rotation as tags 0xE6/0xE7/0xE8.
+    /// If any stage approaches the TIM5 period (~13000 cycles at 40 kHz on H7),
+    /// that stage is starving the foreground.
     pub isr_widen_cycles_max: AtomicU32,
     pub isr_arm_cycles_max: AtomicU32,
     pub isr_eval_cycles_max: AtomicU32,
+    /// Increments per ISR that exceeds 30000 cycles (~58 µs) of total body
+    /// time — circuit-breaker signal.
     pub isr_overrun_count: AtomicU32,
-    /// Decision-path counters in isr_sample_tick's dequeue/park/arm block.
-    /// Tell us exactly WHICH branch the ISR takes for every candidate.
+    /// Decision-path counters in `isr_sample_tick`'s dequeue/park/arm block.
     pub isr_deq_some_count: AtomicU32,
     pub isr_deq_none_count: AtomicU32,
     pub isr_parked_count: AtomicU32,
     pub isr_armed_count: AtomicU32,
-    /// Last observed comparands at the most-recent park/arm decision.
-    /// If isr_parked_count > 0, `isr_last_t_start_lo > isr_last_widened_lo`
-    /// (in their low-32 domain) is the actual park reason.
+    /// Comparands at the most-recent park/arm decision. If `isr_parked_count
+    /// > 0`, `isr_last_t_start_lo > isr_last_widened_lo` is the actual park
+    /// reason.
     pub isr_last_t_start_lo: AtomicU32,
     pub isr_last_widened_lo: AtomicU32,
-    /// 2026-05-21 epoch-diagnosis diag: HIGH 32 bits of seg.t_start and
-    /// widened_now at the most-recent park/arm decision, plus lo/hi of the
-    /// signed cycle-delta (now - t_start) as saturating_sub.
-    /// These four expose whether hypothesis (a) or (b) is the root cause:
-    ///   (a) t_start is in a wrong epoch (e.g., host sent seconds×freq rather
-    ///       than MCU-native DWT cycles): both _hi would be non-zero but wildly
-    ///       different magnitudes.
-    ///   (b) t_start was narrowed to u32 on the wire or in C-side decode:
-    ///       isr_last_t_start_hi would be 0 while isr_last_widened_hi would be
-    ///       non-zero (MCU has been up > 8.3 s → high bits accumulated).
+    /// High 32 bits of `seg.t_start` and `widened_now` at the most-recent
+    /// park/arm decision, plus lo/hi of `now.saturating_sub(seg.t_start)`.
+    /// Distinguishes wrong-epoch t_start (both _hi non-zero but wildly
+    /// different magnitudes) from narrowed-to-u32-on-wire t_start
+    /// (`isr_last_t_start_hi == 0` while `isr_last_widened_hi != 0`).
     pub isr_last_t_start_hi: AtomicU32,
     pub isr_last_widened_hi: AtomicU32,
-    /// Low / high 32 bits of `now.saturating_sub(seg.t_start)` captured at the
-    /// same park/arm decision. If this is ≈ uptime×clock_freq (e.g., 32 s ×
-    /// 520 MHz = 16.6 G cycles), t_start was 0 or in the wrong epoch.
+    /// Low / high 32 bits of `now.saturating_sub(seg.t_start)` at the
+    /// same park/arm decision. If ≈ uptime×clock_freq, t_start was 0 or
+    /// in the wrong epoch.
     pub isr_arm_delta_lo: AtomicU32,
     pub isr_arm_delta_hi: AtomicU32,
-    /// Bit-pattern of the last `p_end` value passed to dispatch_pulse
-    /// when the overflow guard tripped. f32::to_bits stored verbatim;
-    /// host decodes via f32::from_bits(...) for the actual magnitude.
+    /// f32-bits of `p_end` when the overflow guard tripped (decode via
+    /// `f32::from_bits`).
     pub isr_last_p_end_bits: AtomicU32,
-    /// Bit-pattern of `microstep_distance` from the same call. Same
-    /// encoding rationale.
+    /// f32-bits of `microstep_distance` from the same call.
     pub isr_last_microstep_bits: AtomicU32,
-    /// `piece.coeffs[0]` (c0) bits from the active piece at the same
-    /// instant. ~90mm if the curve_pool slot is loaded correctly.
+    /// f32-bits of `piece.coeffs[0]` (c0) at the same instant. ~90 mm if
+    /// the curve_pool slot is loaded correctly.
     pub isr_last_c0_bits: AtomicU32,
-    /// `t_local` (sec since piece start) bits. If huge, the time-domain
-    /// mapping between seg.t_start (cycles) and widened_now (cycles) is
-    /// broken or the duration is wrongly tiny.
+    /// f32-bits of `t_local` (sec since piece start). If huge, the
+    /// time-domain mapping between seg.t_start (cycles) and widened_now
+    /// (cycles) is broken or duration is wrongly tiny.
     pub isr_last_t_local_bits: AtomicU32,
-    /// Total step entries successfully pushed via queue_push across all
-    /// dispatch_pulse calls. If this stays 0 while EA/ED bump, then
-    /// `dispatch_pulse` is early-returning at `signed_steps == 0` —
-    /// the eval isn't producing enough p_end change to cross microstep
-    /// thresholds. If non-zero while motors stay silent, the per-axis
-    /// timer or runtime_emit_step_pulses GPIO toggle is broken.
+    /// Total step entries pushed via `queue_push` across all
+    /// `dispatch_pulse` calls. If 0 while EA/ED bump, `dispatch_pulse` is
+    /// early-returning at `signed_steps == 0`.
     pub isr_step_push_count: AtomicU32,
-    /// Last non-zero `signed_steps` value (i.e., last actual step demand)
-    /// in `dispatch_pulse`. Stays at 0 if no sample ever produced a
-    /// non-zero step demand.
+    /// Last non-zero `signed_steps` value in `dispatch_pulse`. `0` if no
+    /// sample ever produced a non-zero step demand.
     pub isr_last_signed_steps: AtomicU32,
-    /// Pulse-path branch diagnostics. These distinguish "never entered
-    /// Pulse dispatch" from "entered but every sample had zero demand" and
-    /// from "configuration made microstep_distance invalid".
+    /// Pulse-path branch diagnostics. Distinguish "never entered Pulse
+    /// dispatch" from "entered but every sample had zero demand" and from
+    /// "microstep_distance invalid."
     pub isr_pulse_call_count: AtomicU32,
     pub isr_pulse_zero_step_count: AtomicU32,
     pub isr_pulse_bad_mstep_count: AtomicU32,
     pub isr_phase_call_count: AtomicU32,
     /// Packed `(axis_idx << 16) | raw_mode_byte` from the most recent
-    /// dispatch_axis call.
+    /// `dispatch_axis` call.
     pub isr_last_axis_mode_packed: AtomicU32,
     /// Packed `(target_step_count low16 << 16) | prev_step_count low16`
     /// from the most recent Pulse dispatch.
     pub isr_last_step_counts_packed: AtomicU32,
-    /// 2026-05-21 arm-time diagnostic: raw packed `seg.x_handle` of the
-    /// most recently armed segment. 0xFFFE_FFFE = UNUSED_SENTINEL (bridge
-    /// did not associate an X curve). Other values mean bridge sent a
-    /// real handle.
+    /// Raw packed `seg.x_handle` of the most recently armed segment.
+    /// `0xFFFE_FFFE` = UNUSED_SENTINEL (bridge sent no X curve).
     pub isr_last_arm_x_handle: AtomicU32,
-    /// 2026-05-21 arm-time diagnostic: outcome of arm for X axis.
-    /// 0 = never armed, 1 = UNUSED handle, 2 = lookup_active returned
-    /// None (slot/gen mismatch), 3 = curve loaded but piece_count==0,
-    /// 4 = OK (axis.piece set to Some). Tells us which of the three
-    /// "axis.piece becomes None" funnel paths actually fired.
+    /// Outcome of arm for X axis: 0 = never armed, 1 = UNUSED handle,
+    /// 2 = `lookup_active` returned None (slot/gen mismatch),
+    /// 3 = curve loaded but `piece_count == 0`, 4 = OK.
     pub isr_last_arm_x_outcome: AtomicU32,
-    /// 2026-05-21 arm-time diagnostic: piece_count of the X curve at arm
-    /// time (only meaningful when outcome >= 3). 0 confirms the
-    /// piece_count==0 branch fired; >0 + outcome=4 means arm succeeded
-    /// and the failure is downstream (advance_piece_if_needed walking
-    /// past exhaustion is the prime remaining suspect).
+    /// `piece_count` of the X curve at arm time (meaningful when outcome ≥ 3).
+    /// `0` confirms the `piece_count == 0` branch fired.
     pub isr_last_arm_x_piece_count: AtomicU32,
-    /// 2026-05-21 arm-time diagnostic: `participating_mask` snapshot at
-    /// end of arm. Bit 0 = A/X, bit 1 = B/Y, bit 2 = Z, bit 3 = E. If 0,
-    /// no axes participated → instant retire (matches observed "ghost
-    /// retire" symptom).
+    /// `participating_mask` snapshot at end of arm.
+    /// Bit 0 = A/X, 1 = B/Y, 2 = Z, 3 = E. If 0, no axes participated
+    /// → instant retire ("ghost retire" symptom).
     pub isr_last_arm_participating: AtomicU32,
-    /// 2026-05-21 arm-time: f32-bits of `pieces[0].duration` for the X
-    /// curve at arm. If 0 (= 0.0 seconds), `bernstein_to_monomial_with_duration`
-    /// divides coeffs by 0 → inf/NaN → Bezier eval returns NaN → signed_steps=0.
-    /// Wire-side defect: load_curve sent duration_bits=0 or `populate_from_wire`
-    /// converted incorrectly.
+    /// f32-bits of `pieces[0].duration` for the X curve at arm. If 0
+    /// (= 0.0 s), `bernstein_to_monomial_with_duration` divides by 0
+    /// → inf/NaN → signed_steps=0. Indicates a wire-side defect in
+    /// `load_curve` or `populate_from_wire`.
     pub isr_last_arm_x_piece0_duration_bits: AtomicU32,
-    /// 2026-05-18 wedge diag: incremented in `producer_step` every time the
-    /// `producer_current.is_none()` branch is entered, regardless of whether
-    /// the subsequent `queue.dequeue()` returned Some or None. Cross-check
-    /// with `producer_segment_dequeued_total`:
-    ///   observed_none == dequeued → ISR not setting producer_current=None
-    ///                                after retire (sticky-Some).
-    ///   observed_none >> dequeued → queue.dequeue() returns None despite
-    ///                                queue having entries (SPSC bug).
+    /// Incremented in `producer_step` every time `producer_current.is_none()`
+    /// is entered, regardless of whether `queue.dequeue()` returned Some or None.
+    /// Cross-check with `producer_segment_dequeued_total`:
+    ///   `observed_none == dequeued` → ISR not clearing producer_current after retire.
+    ///   `observed_none >> dequeued` → `queue.dequeue()` returns None despite entries (SPSC bug).
     pub producer_observed_none_total: AtomicU64,
-    /// 2026-05-18 wedge diag: latest `queue.len()` snapshot from producer_step's
-    /// perspective. Compare with `kalico_runtime_queue_len_diag` (called from
-    /// status_drain at a different time / via &IsrState borrow) to detect if
-    /// the SPSC Consumer's view of head/tail diverges between call sites.
+    /// Latest `queue.len()` snapshot from `producer_step`'s perspective.
     pub producer_step_last_len_snapshot: AtomicU32,
-    /// 2026-05-18 wedge diag: producer_step's OWN view of
-    /// `engine.producer_current.is_some()` (0/1). Written at the entry to
-    /// producer_step on every call. Compare with status_drain's
-    /// kalico_runtime_producer_current_is_some_diag (read via a different
-    /// borrow path). If they disagree, producer_current is being read
-    /// inconsistently between call sites (compiler caching a non-atomic
-    /// field across function boundaries despite the field changing
-    /// in-between).
+    /// `producer_step`'s view of `engine.producer_current.is_some()` (0/1).
+    /// Written at every `producer_step` entry.
     pub producer_step_current_is_some_snapshot: AtomicU8,
-    /// 2026-05-18 wedge fix: atomic gate flag for `engine.producer_current`.
-    /// Mirrors `producer_current.is_some()` but is atomic-readable across
-    /// the &mut Engine borrow boundary. The non-atomic Option<Segment>
-    /// field gets cached by the compiler under LTO; reads of THIS atomic
-    /// can't be cached and force a fresh memory access. Used by
-    /// `producer_step` as the gate for "should I dequeue?" instead of
-    /// `self.producer_current.is_none()`.
+    /// Atomic mirror of `producer_current.is_some()`. The non-atomic
+    /// `Option<Segment>` field can be cached by the compiler under LTO;
+    /// reads of this atomic can't be cached and force a fresh memory access.
+    /// Used by `producer_step` as the "should I dequeue?" gate.
     pub producer_current_present: AtomicBool,
-    /// Total times `Engine::fetch_segment_for_motor` was called. Bumps
-    /// unconditionally at function entry — distinguishes "producer loop
-    /// is filtering out all motors at the gates" from "fetch is called
-    /// but queue.dequeue always returns None".
+    /// Total `Engine::fetch_segment_for_motor` calls. Bumps at function
+    /// entry unconditionally — distinguishes "producer loop filters all
+    /// motors" from "fetch called but queue.dequeue always returns None."
     pub producer_fetch_attempts_total: AtomicU64,
     /// Total times `push_segment_impl` reached its successful enqueue.
-    /// Bumps AFTER `fg.queue_producer.enqueue(seg)` returns Ok. If this
-    /// is non-zero while `producer_segment_dequeued_total` is 0, the
-    /// queue's enqueue/dequeue ends aren't sharing the backing buffer.
+    /// Non-zero while `producer_segment_dequeued_total` is 0 → the queue's
+    /// enqueue/dequeue ends aren't sharing the backing buffer.
     pub producer_enqueue_success_total: AtomicU64,
-    /// Last result code returned from `push_segment_impl`. 0 = KALICO_OK,
-    /// negative = an error path (see error.rs constants). Set on every
-    /// call so the C-side diag can show which rejection path is firing.
+    /// Last result code from `push_segment_impl`. 0 = KALICO_OK, negative = error.
     pub last_push_segment_result: AtomicI32,
     /// Count of times `pool.resolve(primary)` returned `Some` in
-    /// `Engine::producer_step` (i.e. the primary curve handle was valid
-    /// and the slot's generation matched). Cross-check against
-    /// `producer_fetch_attempts_total`: if the latter is non-zero but
-    /// this is 0, every primary handle is either UNUSED or the slot's
-    /// generation has been retired without a matching reload.
+    /// `Engine::producer_step`. If `producer_fetch_attempts_total` is non-zero
+    /// but this is 0, every primary handle is UNUSED or the slot's generation
+    /// has been retired without a matching reload.
     pub producer_primary_resolved_total: AtomicU64,
-    /// Count of times `pool.resolve(primary)` returned `None` AND the
-    /// handle was NOT the UNUSED sentinel. Distinguishes "host sent
-    /// a real handle but the pool no longer has it" from "host sent
-    /// UNUSED on purpose."
+    /// Count of times `pool.resolve(primary)` returned `None` AND the handle
+    /// was NOT the UNUSED sentinel. Distinguishes "host sent a real handle
+    /// but the pool no longer has it" from "host sent UNUSED on purpose."
     pub producer_primary_stale_total: AtomicU64,
-    /// Count of times `primary.is_unused_sentinel()` was true. The
-    /// natural case for a stationary-axis segment.
+    /// Count of times `primary.is_unused_sentinel()` was true.
     pub producer_primary_unused_total: AtomicU64,
-    /// 2026-05-15 live diagnosis: count of `push_segment_impl` calls
-    /// where the computed `consumers_remaining` mask is zero (i.e. every
-    /// handle was UNUSED). Such segments retire on the producer's very
-    /// first dequeue without ever invoking the motor processing path.
-    /// If this counter advances during a jog, the bridge is sending
-    /// no-handle segments to the MCU.
+    /// Count of `push_segment_impl` calls where `consumers_remaining` is zero
+    /// (every handle UNUSED). Such segments retire on the producer's first
+    /// dequeue without touching the motor path. Non-zero during a jog means
+    /// the bridge is sending no-handle segments.
     pub push_segment_all_unused_total: AtomicU64,
-    /// Last `x_handle.pack()` value observed by `push_segment_impl`. Used
-    /// only for live diagnosis; not part of any production invariant.
+    /// Last `x_handle.pack()` observed by `push_segment_impl` (live diagnosis).
     pub last_push_x_handle_packed: AtomicU32,
-    /// Last `y_handle.pack()` value observed by `push_segment_impl`.
+    /// Last `y_handle.pack()` observed by `push_segment_impl`.
     pub last_push_y_handle_packed: AtomicU32,
     /// Last `consumers_remaining` mask computed by `push_segment_impl`.
     pub last_push_consumers_remaining: AtomicU32,
-    /// 2026-05-15 live diagnosis (CP capture): cps[0] (start control
-    /// point, mm) of the last resolved primary X curve, raw f32 bits.
-    /// Captured in producer_step right after `pool.resolve(primary)`
-    /// returns Some. For a 0.5 mm X jog starting at X=125.0, this should
-    /// be 125.0 (= 0x42FA0000). If the bits look corrupted or constant,
-    /// the curve_pool's slot contents have been corrupted on the wire.
+    /// `cps[0]` (start CP, mm) of the last resolved primary X curve, raw f32
+    /// bits. For a 0.5 mm X jog at X=125.0 → `0x42FA0000`. Corrupted or
+    /// constant bits indicate curve_pool slot corruption on the wire.
     pub last_resolved_primary_cps_0: AtomicU32,
-    /// Last resolved primary X curve's cps[3] (end control point, mm),
-    /// raw f32 bits. For a 0.5 mm X jog starting at X=125.0, this should
-    /// be 125.5 (= 0x42FB0000). Compare with cps_0 — if they match, the
-    /// curve has zero displacement and the producer correctly returns
-    /// `SegmentExhausted` (which would indicate a planner-side bug, not
-    /// MCU corruption).
+    /// `cps[3]` (end CP, mm) of the last resolved primary X curve, raw f32
+    /// bits. For a 0.5 mm X jog at X=125.0 → `0x42FB0000`. Matching `cps_0`
+    /// means zero displacement — if so, `SegmentExhausted` on first call is
+    /// correct and indicates a planner-side bug, not MCU corruption.
     pub last_resolved_primary_cps_3: AtomicU32,
-    /// CoreXY-combined cps[0] after `kine.combine` for motor A
-    /// (A = X + Y). f32 bits. Compare with last_resolved_primary_cps_0
-    /// to detect kinematic-mixing bugs (e.g. Y curve resolves to a
-    /// non-constant when it should be constant for a pure-X jog).
+    /// CoreXY-combined `cps[0]` after `kine.combine` for motor A (A = X + Y),
+    /// f32 bits. Compare with `last_resolved_primary_cps_0` to detect kinematic-
+    /// mixing bugs (e.g. Y resolves non-constant on a pure-X jog).
     pub last_combined_motor_a_cps_0: AtomicU32,
-    /// CoreXY-combined cps[3] after `kine.combine` for motor A. f32 bits.
+    /// CoreXY-combined `cps[3]` after `kine.combine` for motor A, f32 bits.
     pub last_combined_motor_a_cps_3: AtomicU32,
 
-    // Stepping-redesign telemetry (per 2026-05-19 design §10).
     /// Per-axis high-water mark for the per-axis step-event queue depth.
     /// ISR samples post-enqueue; foreground reads via the 10 Hz status frame.
     pub queue_high_water: [AtomicU32; 4],
-    /// Per-axis count of `StepQueueOverflow` events. Bumps each time the
-    /// per-axis queue refuses an enqueue. Cumulative — never decremented.
+    /// Per-axis count of `StepQueueOverflow` events. Cumulative.
     pub queue_overflow_count: [AtomicU32; 4],
-    /// Count of sample ticks in which the phase-stepping SPI bus saturated
-    /// (a frame had to be dropped or coalesced because the DMA pipe was full).
+    /// Count of sample ticks where the phase-stepping SPI bus saturated.
     pub spi_saturated_samples: AtomicU32,
-    /// Peak observed cycles spent inside the sample ISR, across all ticks
-    /// since boot. Use the rdcyc / DWT-CYCCNT counter; never decreases.
+    /// Peak cycles inside the sample ISR since boot. Never decreases.
     pub sample_isr_peak_cycles: AtomicU32,
-    /// Peak observed cycles spent inside the per-axis consumer hook, indexed
-    /// by axis. Used to spot a runaway axis-local hot path independently of
-    /// the global `sample_isr_peak_cycles`.
+    /// Peak cycles inside the per-axis consumer hook, indexed by axis.
     pub per_axis_consumer_peak_cycles: [AtomicU32; 4],
 
-    // Stepping-redesign Task 10: scheduler tunables published by the
-    // foreground config path; consumed by the per-axis timer.
-    //
-    // `dispatcher_floor_cycles` is the minimum cycles-into-future the
-    // per-axis timer adds to `now` when computing its next waketime; it
-    // prevents runaway re-entry when entries' `cycle_abs` values land in
-    // the past.
-    //
-    // `sample_period_cycles` is the empty-queue poll cadence (typically the
-    // sample-rate period — 25 µs at 40 kHz).
-    //
-    // Foreground sets both via `configure_kinematics` in Task 11. Until
-    // then, 0 means "always reschedule for next sample without floor."
+    /// Minimum cycles-into-future the per-axis timer adds to `now` when
+    /// computing its next waketime; prevents runaway re-entry when entries'
+    /// `cycle_abs` values land in the past. Published by `configure_kinematics`;
+    /// `0` until then (no floor, immediate-resample on empty-queue wake).
     pub dispatcher_floor_cycles: AtomicU32,
+    /// Empty-queue poll cadence in cycles (typically the sample-rate period —
+    /// 25 µs at 40 kHz). Published by `configure_kinematics`; `0` until then.
     pub sample_period_cycles: AtomicU32,
 
-    // Stepping-redesign Task 12: ramp rate for `set_stepper_offset`.
-    //
-    // Published by the foreground command handler; consumed by the Task-13
-    // ramp helper that walks `phase_offset_microsteps` toward
-    // `phase_offset_target` at most `max_phase_offset_ramp_per_sample`
-    // microsteps per sample. Validated `1..=256` at the command boundary.
-    // `0` means "Task-13 helper not configured yet" — the helper treats
-    // that as a hard skip (no ramp happens) so an unconfigured runtime
-    // can't run away with a stale target.
+    /// Ramp rate for `set_stepper_offset`. Published by the foreground command
+    /// handler; consumed by the ramp helper that walks `phase_offset_microsteps`
+    /// toward `phase_offset_target` at most this many microsteps per sample.
+    /// Validated `1..=256` at the command boundary. `0` = unconfigured; ramp
+    /// helper skips entirely to avoid running away with a stale target.
     pub max_phase_offset_ramp_per_sample: AtomicU16,
 }
 
@@ -717,7 +607,6 @@ impl SharedState {
             last_combined_motor_a_cps_0: AtomicU32::new(0),
             last_combined_motor_a_cps_3: AtomicU32::new(0),
 
-            // Stepping-redesign telemetry (per 2026-05-19 design §10).
             // `AtomicU32` is not `Copy`, so `[AtomicU32::new(0); 4]` doesn't
             // compile. Use `[const { ... }; N]` (Rust 1.79+) for clean,
             // const-evaluable array initialization.
@@ -727,15 +616,9 @@ impl SharedState {
             sample_isr_peak_cycles: AtomicU32::new(0),
             per_axis_consumer_peak_cycles: [const { AtomicU32::new(0) }; 4],
 
-            // Stepping-redesign Task 10. Both 0 until Task 11 publishes
-            // real values from configure_kinematics; 0 degrades safely
-            // (no floor, immediate-resample empty-queue wake).
             dispatcher_floor_cycles: AtomicU32::new(0),
             sample_period_cycles: AtomicU32::new(0),
 
-            // Task 12 ramp rate. `0` is "unconfigured"; Task 13's ramp
-            // helper does nothing until a `set_stepper_offset` command
-            // has validated and published a value in `1..=256`.
             max_phase_offset_ramp_per_sample: AtomicU16::new(0),
         }
     }
@@ -747,41 +630,26 @@ impl Default for SharedState {
     }
 }
 
-/// Step-6 half-split runtime context. Replaces Step-5's monolithic struct.
+/// Half-split runtime context. `fg` and `isr` are disjoint memory regions
+/// behind `UnsafeCell` so the FFI shim can project to either half via
+/// `core::ptr::addr_of!` + `UnsafeCell::raw_get` without materializing
+/// `&mut RuntimeContext`. At most ONE `&mut FgState` OR `&mut IsrState`
+/// (disjoint memory) exists at a time. `shared` uses no `UnsafeCell` — all
+/// writes go through atomics.
 ///
-/// Layout invariants:
-/// - `fg` and `isr` are `UnsafeCell<…>` so the FFI shim can project to either
-///   half-state via `core::ptr::addr_of!` + `UnsafeCell::raw_get` without
-///   ever materializing `&mut RuntimeContext`. Spec §11.2 closes the Step-5
-///   latent UB by ensuring at most ONE `&mut FgState` OR `&mut IsrState`
-///   (disjoint memory) exists at a time.
-/// - `shared` is plain (no `UnsafeCell`); all writes go through atomics.
-/// - `piece_storage` is the flat `[PieceEntry; TOTAL_RING_PIECES]` array that
-///   all per-axis ring regions carve into. It is `UnsafeCell` so the ISR can
-///   project a `&mut [PieceEntry]` slice through the `RuntimeContext` shared
-///   reference while the foreground simultaneously holds `&mut FgState` — the
-///   two borrows are to disjoint memory. The foreground writes via
-///   `Engine::push_pieces`; the ISR reads/pops via `Engine::tick`. Mutual
-///   exclusion is the same as the existing ISR/foreground discipline.
+/// `piece_storage` is `UnsafeCell` so the ISR can project a `&mut
+/// [PieceEntry]` slice while the foreground simultaneously holds `&mut
+/// FgState` — the two borrows are to disjoint memory.
+///
+/// C/Rust boundary: `piece_storage` lives inside the C-declared `rt_storage`
+/// buffer; C owns linker-section placement on the MCU
+/// (docs/kalico-rewrite/mcu-c-rust-boundary.md rule B2). No additional
+/// `#[link_section]` is needed here.
 #[allow(missing_debug_implementations)] // Inner half-states wrap non-Debug types.
 pub struct RuntimeContext {
-    /// Foreground-only half. Reach via `addr_of!((*ctx).fg)` →
-    /// `UnsafeCell::raw_get` → `&mut FgState`. Spec §11.2.
     pub fg: UnsafeCell<FgState>,
-    /// ISR-only half. Same projection pattern as `fg`. Spec §11.2.
     pub isr: UnsafeCell<IsrState>,
-    /// Cross-half atomics. Read/written through `&SharedState` (atomics
-    /// supply the synchronization). Spec §11.3.
     pub shared: SharedState,
-    /// Flat piece ring backing store.  Each axis gets a contiguous sub-region
-    /// described by `AxisState::ring` (a `RingDescriptor` — offset + depth).
-    /// `UnsafeCell` so the ISR can mutate (pop) while the foreground pushes
-    /// into distinct ring regions without forming overlapping `&mut` borrows.
-    ///
-    /// C/Rust boundary: `piece_storage` lives inside the C-declared
-    /// `rt_storage` buffer, so C owns linker-section placement on the MCU
-    /// (docs/kalico-rewrite/mcu-c-rust-boundary.md rule B2). No additional
-    /// `#[link_section]` is needed here.
     pub piece_storage: UnsafeCell<[PieceEntry; TOTAL_RING_PIECES]>,
 }
 
@@ -840,15 +708,11 @@ impl RuntimeContext {
             let sample_rate_hz =
                 core::ptr::read_volatile(core::ptr::addr_of!(runtime_sample_rate_hz));
 
-            // Stepping-redesign Task 10 / Codex M4 (2026-05-20): publish the
-            // scheduler tunables to `SharedState` so the per-axis Klipper
-            // timer's empty-queue rescheduling math uses the real sample-period
-            // cadence (typically 25 µs at 40 kHz on H7) instead of the
-            // `0 → waketime = now` fallback that pegged the foreground
-            // scheduler.
-            // Integer division is intentional: round-to-nearest cycles, then
-            // cycles-per-µs floor. Both are MCU fixed-point tunable constants,
-            // not geometric arithmetic.
+            // Publish scheduler tunables to SharedState so the per-axis
+            // Klipper timer's empty-queue rescheduling math uses the real
+            // sample-period cadence (typically 25 µs at 40 kHz on H7) instead
+            // of the `0 → waketime = now` fallback.
+            // Integer division is intentional: round-to-nearest cycles.
             #[allow(clippy::integer_division)]
             let sample_period_cycles_init: u32 = if sample_rate_hz == 0 {
                 0

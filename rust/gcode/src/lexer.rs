@@ -4,8 +4,8 @@ use crate::{ParseError, Token};
 
 /// Tokenize a complete G-code buffer. Returns an iterator over per-line
 /// tokenization results. Empty lines and pure-whitespace lines yield no tokens.
-/// Comments yield `Token::Comment` (Task 8 will promote slicer-recognized
-/// comments to `Token::Marker`).
+/// Comments yield `Token::Comment`; promoting slicer-recognized comments to
+/// `Token::Marker` is future work.
 pub fn lex(text: &str) -> Lexer<'_> {
     Lexer {
         lines: text.lines().enumerate(),

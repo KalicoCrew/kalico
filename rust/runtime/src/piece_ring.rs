@@ -39,51 +39,42 @@ use crate::monomial::bernstein_to_monomial_with_duration;
 /// Borrow-free logical descriptor for a ring region within a shared
 /// `[PieceEntry]` backing store.
 ///
-/// This is the engine-side counterpart to [`PieceRing`]: it holds only
-/// integer bookkeeping fields and every operation takes the backing store by
-/// explicit `&mut [PieceEntry]` parameter.  That design avoids splitting a
-/// single `UnsafeCell<[PieceEntry; N]>` array into N disjoint `&mut` borrows —
-/// an operation the borrow checker cannot verify is disjoint without unsafe
-/// code.
+/// Avoids splitting a single `UnsafeCell<[PieceEntry; N]>` into N disjoint
+/// `&mut` borrows — an operation the borrow checker cannot verify is disjoint
+/// without unsafe code. Every operation takes the backing store by explicit
+/// `&mut [PieceEntry]` parameter instead.
 ///
-/// ## Cursor semantics
+/// ## Cursor invariants (ISR/host safety boundary)
 ///
-/// - `head` — monotonic valid frontier (u32, wrapping).  Slots with indices
-///   `[retired, head)` (modulo arithmetic) are visible to the consumer.
-///   Advanced **only** by [`commit_head`][Self::commit_head]; slot writes via
-///   [`write_slot`][Self::write_slot] do **not** advance it.
-/// - `retired` — monotonic retire counter (u32, wrapping).  Tracks how many
-///   entries have fully elapsed their time window; incremented one per
-///   [`advance_counter`][Self::advance_counter].  Purely a flow-control
-///   frontier; **not** used to derive the read slot.
-/// - `tail` — physical read cursor in `[0, ring_depth)`.  The front slot is
-///   always `ring_offset + tail`; advanced together with `retired` inside
-///   [`advance_counter`][Self::advance_counter] (wraps at `ring_depth`).
-///   The invariant `tail == retired % ring_depth` holds because both cursors
-///   advance only in `advance_counter`, starting from 0.
+/// - `head` — monotonic valid frontier (wrapping u32). Slots `[retired, head)`
+///   are visible to the consumer. Advanced **only** by `commit_head`; slot
+///   writes via `write_slot` do **not** advance it.
+/// - `retired` — monotonic retire counter (wrapping u32). Incremented one per
+///   `advance_counter`. Purely a flow-control frontier; **not** used to derive
+///   the read slot.
+/// - `tail` — physical read cursor in `[0, ring_depth)`. Advanced together
+///   with `retired` inside `advance_counter` (wraps at `ring_depth`).
+///   Invariant: `tail == retired % ring_depth` — both cursors advance only in
+///   `advance_counter` starting from 0, so no division is needed on the hot path.
 ///
-/// Occupancy: `len() = head.wrapping_sub(retired) as usize`.  Empty (`len==0`)
-/// and full (`len==ring_depth`) are distinct because the difference is of
-/// monotonic counters, never reduced mod N.
+/// Occupancy: `head.wrapping_sub(retired)`. Empty and full are distinct because
+/// the difference is of monotonic counters, never reduced mod N.
 ///
-/// `PieceRing<'a>` is preserved for host unit tests (it holds a borrow for
-/// ergonomics in test code).  The engine uses `RingDescriptor` exclusively.
+/// `PieceRing<'a>` is preserved for host unit tests (ergonomic borrow wrapper).
+/// The engine uses `RingDescriptor` exclusively.
 #[derive(Debug, Clone, Copy)]
 pub struct RingDescriptor {
     /// Start index into the shared storage array for this axis's region.
     pub ring_offset: usize,
     /// Capacity of this axis's ring region (number of entries).
     pub ring_depth: usize,
-    /// Monotonic valid frontier (host-driven); advanced only by
-    /// [`commit_head`][Self::commit_head].
+    /// Monotonic valid frontier (host-driven); advanced only by `commit_head`.
     pub head: u32,
-    /// Monotonic retire counter (wrapping u32); advanced one per
-    /// [`advance_counter`][Self::advance_counter].  Purely a flow-control
-    /// frontier; the read slot is tracked separately by `tail`.
+    /// Monotonic retire counter (wrapping u32); `tail` tracks the physical
+    /// read position so the consumer needs no division.
     pub retired: u32,
-    /// Physical read cursor in `[0, ring_depth)`.  Advanced one step per
-    /// [`advance_counter`][Self::advance_counter], wrapping at `ring_depth`.
-    /// `peek` reads from `ring_offset + tail` — no division required.
+    /// Physical read cursor in `[0, ring_depth)`. `peek` reads from
+    /// `ring_offset + tail` — no division required on the hot path.
     pub tail: usize,
 }
 
@@ -143,15 +134,10 @@ impl RingDescriptor {
     /// `head`; the slot becomes visible to the consumer only after a
     /// subsequent [`commit_head`][Self::commit_head] call.
     ///
-    /// `physical_slot` must be in `[0, ring_depth)` — the FFI guarantees this
-    /// (the host computes `(start_slot + index) % depth` before calling).
-    /// Out-of-range writes (including `ring_depth == 0`) panic in debug builds
-    /// via the `debug_assert!` below and index-out-of-bounds panic in release;
-    /// silent drops would hide misconfiguration.
-    ///
     /// `configure_axis` guarantees `ring_offset + ring_depth <= storage.len()`,
     /// so `ring_offset + physical_slot < storage.len()` holds whenever
-    /// `physical_slot < ring_depth`.
+    /// `physical_slot < ring_depth`. Out-of-range writes (including
+    /// `ring_depth == 0`) fail loudly — silent drops would hide misconfiguration.
     #[inline]
     pub fn write_slot(&self, storage: &mut [PieceEntry], physical_slot: usize, entry: PieceEntry) {
         if self.ring_depth == 0 || physical_slot >= self.ring_depth {
@@ -174,48 +160,30 @@ impl RingDescriptor {
     /// Advance the valid frontier to `new_head`, monotonically, within ring
     /// capacity.
     ///
-    /// A `new_head` is accepted only when it represents a strict advance
-    /// over the current `head` **and** the resulting occupancy does not exceed
-    /// `ring_depth` (the flow-control invariant `head − retired ≤ ring_depth`).
-    /// Both comparisons are made relative to `retired` so they remain correct
-    /// across the u32 counter wrap for in-order frames.
+    /// Accepted only when `new_head` is a strict advance over `head` **and**
+    /// the resulting occupancy does not exceed `ring_depth` (the flow-control
+    /// invariant `head − retired ≤ ring_depth`). Both comparisons are relative
+    /// to `retired` so they remain correct across wrapping u32 counters.
     ///
     /// The capacity bound also rejects an out-of-domain `new_head` that lands
     /// behind `retired` — such a value produces a huge wrapping distance that
-    /// exceeds `ring_depth`, and is therefore silently dropped rather than
-    /// accepted as a spurious advance.
-    ///
-    /// This function does **not** sanitize arbitrary adversarial values beyond
-    /// the capacity bound; it assumes the host sends monotone, in-range heads.
+    /// exceeds `ring_depth` and is silently dropped.
     #[inline]
     pub fn commit_head(&mut self, new_head: u32) {
         let cur = self.head.wrapping_sub(self.retired);
         let proposed = new_head.wrapping_sub(self.retired);
-        // Accept only a strict advance that keeps occupancy within capacity.
-        // (`head − retired ≤ ring_depth` is the flow-control invariant; this
-        // also rejects an out-of-domain `new_head` that lands behind `retired`
-        // and would otherwise read as a huge wrapping advance.)
+        // Accept only a strict advance within capacity; also rejects a
+        // behind-retired new_head that would read as a huge wrapping advance.
         if proposed > cur && proposed <= self.ring_depth as u32 {
             self.head = new_head;
         }
     }
 
-    /// Convenience append used by the host-side test path and `push_pieces`.
+    /// Append `entry` at the next free slot and immediately commit the new head.
     ///
-    /// Writes `entry` at the next free physical slot (derived from the current
-    /// head position) and immediately commits the new head, making the entry
-    /// visible to the consumer.
-    ///
-    /// **Interim compatibility shim** — this method exists for the current
-    /// `engine::push_pieces` path and the EtherCAT `AxisRing` (one entry per
-    /// DC cycle — a legitimate single-entry push pattern distinct from the MCU
-    /// batch path).  Task 4 migrates `engine::push_pieces` to explicit
-    /// `write_slot` + `commit_head` (batch write before a single commit); at
-    /// that point `push` will be removed or demoted to `#[cfg(test)]`.
-    ///
-    /// **Sanctioned callers:** `engine::push_pieces` (MCU path, pending
-    /// migration) and the EtherCAT `AxisRing` (servo-node path, permanent
-    /// single-entry use).  Do not add new callers beyond these two.
+    /// Single-entry push — used by the EtherCAT `AxisRing` (one entry per DC
+    /// cycle, permanent). Do not add new callers that can batch writes; prefer
+    /// explicit `write_slot` + `commit_head` for the MCU batch path.
     ///
     /// Returns `Err(())` if the ring is full or unconfigured.
     #[inline]
@@ -230,8 +198,6 @@ impl RingDescriptor {
     }
 
     /// Physical storage index of the front (consumer) entry, or `None` if empty.
-    /// Same addressing as [`peek`] (`ring_offset + tail`), returned as an index so
-    /// the walker can read the slot without holding a borrow of `storage`.
     #[inline]
     pub fn front_slot(&self) -> Option<usize> {
         if self.is_empty() {
@@ -323,13 +289,9 @@ impl RingDescriptor {
 #[derive(Debug)]
 pub struct PieceRing<'a> {
     buf: &'a mut [PieceEntry],
-    /// Next write position (producer index).
     head: usize,
-    /// Next read position (consumer index).
     tail: usize,
-    /// Current number of entries in the ring.
     count: usize,
-    /// Monotonic counter of retired (popped) pieces, for heartbeat reporting.
     retired: u32,
 }
 
@@ -456,10 +418,8 @@ pub struct PieceEntry {
     pub _reserved: u32,
 }
 
-// Compile-time layout assertions — verified at crate compile time for every
-// target (host and MCU alike).  We use `const _` blocks rather than a
-// dev-dependency so the contract is checked in production builds, not just
-// test builds.
+// Compile-time layout assertions — checked in production builds (not just
+// tests) for both host and MCU targets.
 const _: () = {
     assert!(core::mem::size_of::<PieceEntry>() == 32);
     assert!(core::mem::align_of::<PieceEntry>() == 8);
