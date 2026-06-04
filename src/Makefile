@@ -6,8 +6,7 @@ src-y += sched.c command.c basecmd.c debugcmds.c
 src-y += kalico_demux.c kalico_dispatch.c \
     runtime_storage.c runtime_panic.c step_queue.c \
     spi_queue.c kalico_log.c
-src-$(CONFIG_HAVE_GPIO) += initial_pins.c gpiocmds.c stepper.c endstop.c \
-    trsync.c
+src-$(CONFIG_HAVE_GPIO) += initial_pins.c gpiocmds.c stepper.c trsync.c
 src-$(CONFIG_WANT_ADC) += adccmds.c
 src-$(CONFIG_WANT_SPI) += spicmds.c
 src-$(CONFIG_WANT_I2C) += i2ccmds.c

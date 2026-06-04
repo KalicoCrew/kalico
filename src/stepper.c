@@ -218,8 +218,6 @@ runtime_motor_binding_count(uint8_t motor_idx)
 // `f32::from_bits` reconstructs on the Rust side). `%u` matches u32.
 
 extern void *runtime_handle; // defined in src/runtime_tick.c
-// kalico_runtime_configure_axis / _kinematics / _pressure_advance are
-// declared in kalico_runtime.h (included above).
 
 void
 command_kalico_configure_axis(uint32_t *args)
@@ -313,10 +311,8 @@ command_kalico_configure_axis(uint32_t *args)
     extern void runtime_tick_enable(void);
     runtime_tick_enable();
 
-    // Observability spec #2 Stage 2: emit the one structured "runtime ready"
-    // marker once, after the first axis is configured. This is the live config
-    // command (the legacy kalico_configure_kinematics path is no longer sent
-    // post motion-node-unification). The config phase runs after the host's
+    // Emit the one structured "runtime ready" marker once, after the first
+    // axis is configured. The config phase runs after the host's
     // identify/attach handshake — which installs the mcu-log hook — so the host
     // is connected and listening here. (Emitting at MCU boot / first drain
     // races ahead of the host connecting and the frame is lost.) The next
@@ -387,35 +383,6 @@ command_kalico_phase_stepping_disable_spi(uint32_t *args)
 }
 DECL_COMMAND(command_kalico_phase_stepping_disable_spi,
              "kalico_phase_stepping_disable_spi");
-
-void
-command_kalico_configure_kinematics(uint32_t *args)
-{
-    uint32_t k_xy_bits = args[0];
-    if (!runtime_handle)
-        shutdown("kalico_configure_kinematics before runtime init");
-    int32_t rc = kalico_runtime_configure_kinematics(runtime_handle, k_xy_bits);
-    if (rc != 0)
-        shutdown("kalico_configure_kinematics rejected by runtime");
-}
-DECL_COMMAND(command_kalico_configure_kinematics,
-             "kalico_configure_kinematics k_xy=%u");
-
-void
-command_kalico_configure_pressure_advance(uint32_t *args)
-{
-    uint32_t aa = args[0];
-    uint32_t ad = args[1];
-    if (!runtime_handle)
-        shutdown("kalico_configure_pressure_advance before runtime init");
-    int32_t rc = kalico_runtime_configure_pressure_advance(runtime_handle,
-                                                            aa, ad);
-    if (rc != 0)
-        shutdown("kalico_configure_pressure_advance rejected by runtime");
-}
-DECL_COMMAND(command_kalico_configure_pressure_advance,
-             "kalico_configure_pressure_advance advance_accel=%u"
-             " advance_decel=%u");
 
 // === Task 12: stepping-redesign axis-mode + stepper-offset handlers ===
 //

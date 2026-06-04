@@ -1360,54 +1360,6 @@ pub mod exports {
         KALICO_OK
     }
 
-    /// Publish the kinematic scale factor (logical-XY → motor-coord velocity):
-    /// `1.0` Cartesian, `1/√2` CoreXY. Rejected if not finite or ≤ 0.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_configure_kinematics(
-        rt: *mut KalicoRuntime,
-        k_xy_f32_bits: u32,
-    ) -> i32 {
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        let k_xy = f32::from_bits(k_xy_f32_bits);
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: see `kalico_runtime_configure_axis` SAFETY note.
-        unsafe {
-            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
-            (*isr_ptr).engine.configure_kinematics(k_xy)
-        }
-    }
-
-    /// Publish asymmetric pressure-advance coefficients (seconds).
-    /// `0.0` disables PA for that phase; negative values are rejected.
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_runtime_configure_pressure_advance(
-        rt: *mut KalicoRuntime,
-        advance_accel_f32_bits: u32,
-        advance_decel_f32_bits: u32,
-    ) -> i32 {
-        if rt.is_null() {
-            return KALICO_ERR_NULL_PTR;
-        }
-        if !INIT_DONE.load(Ordering::Acquire) {
-            return KALICO_ERR_NOT_INIT;
-        }
-        let advance_accel = f32::from_bits(advance_accel_f32_bits);
-        let advance_decel = f32::from_bits(advance_decel_f32_bits);
-        let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: see `kalico_runtime_configure_axis` SAFETY note.
-        unsafe {
-            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
-            (*isr_ptr)
-                .engine
-                .configure_pressure_advance(advance_accel, advance_decel)
-        }
-    }
-
     /// Flip axis `axis_idx` between Pulse (0) and Phase (1) output modes.
     /// Rejected (`-2`) if any axis has an active Bezier piece — must happen
     /// between segments. On success the engine flushes the step queue and
