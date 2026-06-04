@@ -6179,11 +6179,17 @@ Multiple named sections are supported for multi-toolhead configurations —
 one section per tool, each bound to its own `extruder` and `load_cell`.
 
 The extruder's TMC stepper driver must be configured for stall detection before
-this module will function. For TMC2209 and TMC2208, `driver_sgthrs` must be set
-to a non-zero value and `coolstep_threshold` must be configured to enable stall
-guard at typical extrusion velocities. For TMC5160 and TMC2130, the `LOST_STEPS`
-register is used directly and no additional driver configuration is required.
-See the relevant `[tmc2209]` or `[tmc5160]` documentation for details.
+this module will function. Requirements vary by driver:
+- **TMC2209, TMC2208**: set `driver_sgthrs` to a non-zero value and configure
+  `coolstep_threshold` to enable stall guard at typical extrusion velocities.
+- **TMC2240**: set `driver_sg4_thrs` to a non-zero value and configure
+  `coolstep_threshold`. The dedicated StallGuard4 registers (`SG4_RESULT`,
+  `SG4_THRS`) are used in preference to the legacy `sg_result` field.
+- **TMC5160, TMC2130**: no additional driver configuration is required; the
+  `LOST_STEPS` register is used directly.
+
+See the relevant `[tmc2209]`, `[tmc2240]`, or `[tmc5160]` documentation for
+details.
 
 See the [clog_detect GCode commands](G-Codes.md#clog_detect) for runtime
 control via `CLOG_DETECTION`.

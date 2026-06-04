@@ -53,7 +53,9 @@ class ClogDetect:
         self._tmc = None
         self._stall_mode = None
         self._steps_per_mm = None
-        self._sgthrs = 0
+        self._sg_register = ""
+        self._sg_field = ""
+        self._sg_threshold = 0
         self._mcu = None
         self._stall_count = 0.0
         self._prev_pos = None
@@ -103,15 +105,30 @@ class ClogDetect:
             )
         if self._tmc.fields.lookup_register("lost_steps") is not None:
             self._stall_mode = "lost_steps"
+        elif self._tmc.fields.lookup_register("sg4_result") is not None:
+            self._stall_mode = "sg_result"
+            self._steps_per_mm = 1.0 / stepper.get_step_dist()
+            self._sg_register = "SG4_RESULT"
+            self._sg_field = "sg4_result"
+            sg4_thrs = self._tmc.fields.get_field("sg4_thrs")
+            if sg4_thrs == 0:
+                raise self._printer.config_error(
+                    "clog_detect: driver_sg4_thrs must be non-zero for"
+                    " stall detection on extruder '%s'" % (stepper_name,)
+                )
+            self._sg_threshold = 2 * sg4_thrs
         elif self._tmc.fields.lookup_register("sg_result") is not None:
             self._stall_mode = "sg_result"
             self._steps_per_mm = 1.0 / stepper.get_step_dist()
-            self._sgthrs = self._tmc.fields.get_field("sgthrs")
-            if self._sgthrs == 0:
+            self._sg_register = "SG_RESULT"
+            self._sg_field = "sg_result"
+            sgthrs = self._tmc.fields.get_field("sgthrs")
+            if sgthrs == 0:
                 raise self._printer.config_error(
                     "clog_detect: driver_sgthrs must be non-zero for"
                     " stall detection on extruder '%s'" % (stepper_name,)
                 )
+            self._sg_threshold = 2 * sgthrs
         else:
             raise self._printer.config_error(
                 "clog_detect: the driver for extruder '%s' does not support"
@@ -120,9 +137,8 @@ class ClogDetect:
         self._mcu = stepper.get_mcu()
         if self._stall_mode == "sg_result":
             logging.info(
-                "clog_detect: sgthrs=%d, stall threshold sg_result <= %d",
-                self._sgthrs,
-                2 * self._sgthrs,
+                "clog_detect: stall threshold %s <= %d",
+                self._sg_field, self._sg_threshold,
             )
         logging.info(
             "clog_detect: using %s mode for '%s'",
@@ -185,11 +201,11 @@ class ClogDetect:
                     )
             self._prev_lost_steps = lost
         else:
-            val = self._tmc.mcu_tmc.get_register("SG_RESULT")
-            sg = self._tmc.fields.get_field("sg_result", val)
+            val = self._tmc.mcu_tmc.get_register(self._sg_register)
+            sg = self._tmc.fields.get_field(self._sg_field, val)
             print_time = self._mcu.estimated_print_time(eventtime)
             pos_now = self._extruder.find_past_position(print_time)
-            if sg <= 2 * self._sgthrs and self._prev_pos is not None:
+            if sg <= self._sg_threshold and self._prev_pos is not None:
                 added = (pos_now - self._prev_pos) * self._steps_per_mm
                 self._stall_count = max(0.0, self._stall_count + added)
                 logging.info(
