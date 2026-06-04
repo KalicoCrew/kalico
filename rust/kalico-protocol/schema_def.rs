@@ -83,10 +83,12 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
     SchemaMessage {
         type_tag: 0x0061,
         name: "PushPiecesResponse",
-        version: 1,
+        version: 2,
         channel: "control",
         fields: &[
             SchemaField { name: "result", ty: "i32" },
+            SchemaField { name: "arrival_clock", ty: "u64" },
+            SchemaField { name: "front_start_time", ty: "u64" },
         ],
     },
     SchemaMessage {
@@ -112,6 +114,22 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
             // retired_counts: num_axes × u32 — variable-length, length-prefixed
             // by num_axes on the wire.
             SchemaField { name: "retired_counts", ty: "array<u32>" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0084,
+        name: "McuLog",
+        version: 1,
+        channel: "events",
+        fields: &[
+            SchemaField { name: "mcu_tick", ty: "u64" },
+            SchemaField { name: "level", ty: "u8" },
+            SchemaField { name: "subsystem", ty: "u8" },
+            SchemaField { name: "event", ty: "u16" },
+            SchemaField { name: "code", ty: "u16" },
+            SchemaField { name: "seq", ty: "u16" },
+            SchemaField { name: "arg0", ty: "u32" },
+            SchemaField { name: "arg1", ty: "u32" },
         ],
     },
 ];

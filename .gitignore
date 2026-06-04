@@ -56,3 +56,6 @@ klippy/extras/motor_constants.py
 
 # Third-party plugin sources (fetched on demand by tools/sim_klippy/fetch_plugins.sh)
 tools/sim_klippy/printer_real/third_party_repos/
+
+# Local observability test rig (VictoriaLogs + Vector binaries + scratch data)
+.tools/

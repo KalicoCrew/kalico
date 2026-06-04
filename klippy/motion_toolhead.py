@@ -421,6 +421,12 @@ class MotionToolhead(ToolHead):
             self.cmd_KALICO_SIM_ENDSTOP_SET_PIN,
             desc="[sim] Drive a Linux-MCU GPIO level (test fixture)",
         )
+        gcode.register_command(
+            "KALICO_DIAG_DUMP",
+            self.cmd_KALICO_DIAG_DUMP,
+            desc="Emit the live MCU diag snapshot (cause discriminators + "
+            "event ring) to the structured-log store; no reset required",
+        )
 
         # Planner initialization runs once all MCUs have connected.
         self.printer.register_event_handler(
@@ -1353,6 +1359,34 @@ class MotionToolhead(ToolHead):
             )
             # phase_stepping_enable_spi is sent from TMC5160._xdirect_preload
             # after all TMC register init is complete, not here.
+
+    # ------------------------------------------------------------------
+    # Live diagnostics
+    # ------------------------------------------------------------------
+
+    def cmd_KALICO_DIAG_DUMP(self, gcmd):
+        # Ask every kalico-capable MCU to emit its live diag snapshot (cause
+        # discriminators + event ring) to the structured-log store, no reset.
+        # The MCU command is parameterless; MCUs lacking it (no diag build) are
+        # skipped silently, mirroring the kalico_configure_axis lookup pattern.
+        sent = []
+        for name, mcu_obj in self.printer.lookup_objects(module="mcu"):
+            try:
+                cmd = mcu_obj.lookup_command("kalico_diag_dump")
+            except Exception:
+                continue
+            cmd.send([])
+            sent.append(name)
+        if sent:
+            gcmd.respond_info(
+                "KALICO_DIAG_DUMP: requested live diag from %s "
+                "(see printer_data/logs/events/<mcu>.jsonl)"
+                % (", ".join(sent),)
+            )
+        else:
+            gcmd.respond_info(
+                "KALICO_DIAG_DUMP: no MCU exposes kalico_diag_dump"
+            )
 
     # ------------------------------------------------------------------
     # Sim-only diagnostic gcode commands

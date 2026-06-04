@@ -29,6 +29,7 @@
 #include "sched.h"          // DECL_INIT, DECL_TASK
 #include "kalico_runtime.h"
 #include "kalico_dispatch.h" // kalico_native_emit_*
+#include "kalico_log.h"      // kalico_log_emit, kalico_log_drain
 #include "generic/runtime_tick.h"   // backend interface (consumer view)
 #include "generic/fault_handler.h"  // diag_record_engine_xition, diag_take_snapshot
 
@@ -277,6 +278,11 @@ runtime_drain(void)
     if (cur_status != last_seen_status) {
         last_seen_status = cur_status;
     }
+
+    // Ship any queued MCU log entries (KALICO_MSG_LOG / 0x0084). The "runtime
+    // ready" marker is emitted from the configure path (stepper.c), not here —
+    // see that site for why (a boot-time emit would race the host connect).
+    kalico_log_drain();
 }
 DECL_TASK(runtime_drain);
 

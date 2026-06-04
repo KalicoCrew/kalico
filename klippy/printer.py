@@ -28,15 +28,23 @@ from . import (
     configfile,
     gcode,
     mcu,
+    motion_toolhead,
     msgproto,
     pins,
     queuelogger,
     reactor,
-    motion_toolhead,
+    structured_log,
     util,
     webhooks,
 )
 from .extras.danger_options import get_danger_options
+
+
+def events_dir_for(logfile):
+    if not logfile:
+        return None
+    return os.path.join(os.path.dirname(os.path.abspath(logfile)), "events")
+
 
 message_ready = "Printer is ready"
 
@@ -311,8 +319,17 @@ class Printer:
         self._register_subsystem_components()
         # Instantiate the motion bridge BEFORE MCU objects are constructed
         from . import motion_bridge as motion_bridge_mod
+
         bridge = motion_bridge_mod.MotionBridgeWrapper(self.reactor)
-        self.add_object('motion_bridge', bridge)
+        self.add_object("motion_bridge", bridge)
+        # Wire the Rust host structured-logging subscriber + push the session
+        # context across the PyO3 seam, before any MCU attach/configure call
+        # can emit a Rust log (binding-timing invariant, spec §6).
+        motion_bridge_mod.attach_structured_logging(
+            bridge.get_bridge(),
+            self,
+            self.get_start_args().get("log_events_dir"),
+        )
         # Create printer objects
         for m in [pins, mcu]:
             m.add_printer_objects(config)
@@ -324,6 +341,7 @@ class Printer:
             "respond",
             "exclude_object",
             "telemetry",
+            "log_observability",
         ]:
             self.load_object(config, section_config, None)
         if self.get_start_args().get("debuginput") is not None:
@@ -474,11 +492,13 @@ class Printer:
                     ],
                 )
                 for idx, cb in enumerate(handlers):
-                    owner = getattr(getattr(cb, "__self__", None),
-                                    "_name", None) or repr(cb)
+                    owner = getattr(
+                        getattr(cb, "__self__", None), "_name", None
+                    ) or repr(cb)
                     logging.info(
-                        "[firmware-restart-trace] before handler[%d]"
-                        " owner=%s", idx, owner,
+                        "[firmware-restart-trace] before handler[%d] owner=%s",
+                        idx,
+                        owner,
                     )
                     try:
                         cb()
@@ -488,12 +508,11 @@ class Printer:
                             idx,
                         )
                     logging.info(
-                        "[firmware-restart-trace] after handler[%d]"
-                        " owner=%s", idx, owner,
+                        "[firmware-restart-trace] after handler[%d] owner=%s",
+                        idx,
+                        owner,
                     )
-                logging.info(
-                    "[firmware-restart-trace] all handlers done"
-                )
+                logging.info("[firmware-restart-trace] all handlers done")
             self.send_event("klippy:disconnect")
         except:
             logging.exception("Unhandled exception during post run")
@@ -689,6 +708,15 @@ def main():
     if options.debugoutput:
         start_args["debugoutput"] = options.debugoutput
         start_args.update(options.dictionary)
+    # Bind the session id BEFORE the first log line (spec §6 binding-timing).
+    session_id = structured_log.make_session_id()
+    structured_log.bind_session(session_id)
+    start_args["session_id"] = session_id
+
+    edir = events_dir_for(options.logfile)
+    start_args["log_events_dir"] = edir
+    if edir is not None:
+        structured_log.check_log_space(edir)
     bglogger = None
     if options.logfile:
         start_args["log_file"] = options.logfile
@@ -696,6 +724,7 @@ def main():
             filename=options.logfile,
             debuglevel=debuglevel,
             rotate_log_at_restart=options.rotate_log_at_restart,
+            events_dir=edir,
         )
         if options.rotate_log_at_restart:
             bglogger.doRollover()

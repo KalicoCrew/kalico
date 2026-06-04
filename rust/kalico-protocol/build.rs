@@ -116,24 +116,29 @@ fn main() {
 
     h.push_str("#endif /* KALICO_PROTOCOL_SCHEMA_H */\n");
 
-    // Best-effort write: don't hard-fail the build if the path doesn't exist
-    // (e.g. publishing the crate stand-alone would lose the firmware tree).
-    // We do still print a cargo:warning so it's visible.
+    // Guard: skip header generation only when `src/` doesn't exist at all —
+    // that is the standalone-crate-publish path where the firmware tree is
+    // absent. Any other failure (disk full, permissions, …) is a hard error:
+    // a silently stale C header violates the deploy-lockstep guarantee.
     if let Some(parent) = header_path.parent() {
         if !parent.exists() {
+            // Standalone-crate-publish: firmware src/ absent — skip silently.
             println!(
-                "cargo:warning=kalico-protocol: skipping C header generation; {} does not exist",
+                "cargo:warning=kalico-protocol: skipping C header generation; {} does not exist \
+                 (standalone-crate-publish path — expected)",
                 parent.display()
             );
             return;
         }
     }
-    if let Err(e) = fs::write(&header_path, h) {
-        println!(
-            "cargo:warning=kalico-protocol: failed to write {}: {e}",
+    // src/ exists — any write failure is fatal.
+    fs::write(&header_path, h).unwrap_or_else(|e| {
+        panic!(
+            "kalico-protocol build.rs: failed to write C header {}: {e}\n\
+             (src/ exists but write failed — disk full, permissions issue, or path wrong)",
             header_path.display()
-        );
-    }
+        )
+    });
 }
 
 fn upper_snake(name: &str) -> String {

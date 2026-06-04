@@ -1,5 +1,7 @@
 //! Layer B structured event extension. Spec §4.8.
 
+use std::time::Instant;
+
 use crate::transport::MessageParams;
 
 #[derive(Debug, Clone)]
@@ -48,6 +50,29 @@ pub struct EndstopTrippedEvent {
     pub steppers: Vec<crate::endstop::TripStepperRecord>,
 }
 
+/// Decoded `KALICO_MSG_LOG (0x0084)` frame. The MCU pre-widens the tick to
+/// `u64`; the host stamps `host_recv` at decode time (inside the reactor
+/// dispatch loop, mirroring the `add_piggyback_sample` pattern).
+#[derive(Debug, Clone)]
+pub struct McuLogEvent {
+    /// MCU-pre-widened clock ticks at log-emit.
+    pub mcu_tick: u64,
+    /// Log level (0=trace, 1=debug, 2=warn, 3=error).
+    pub level: u8,
+    /// Subsystem id — resolved to a name host-side.
+    pub subsystem: u8,
+    /// Event code — resolved to (name, template) host-side.
+    pub event: u16,
+    /// Fault code sign-wrapped as `u16` via `FaultCode::as_u16`. 0 = no code.
+    pub code: u16,
+    /// Per-MCU monotonic sequence number for host drop detection.
+    pub seq: u16,
+    /// The two positional payload args, forwarded verbatim from the MCU frame.
+    pub args: [u32; 2],
+    /// Host-side `Instant` stamped at decode (in the reactor dispatch loop).
+    pub host_recv: Instant,
+}
+
 #[derive(Debug, Clone)]
 pub enum RuntimeEvent {
     CreditFreed(CreditFreedEvent),
@@ -55,6 +80,8 @@ pub enum RuntimeEvent {
     Status(StatusEvent),
     Trace(TraceEvent),
     EndstopTripped(EndstopTrippedEvent),
+    /// Decoded `KALICO_MSG_LOG (0x0084)` — MCU structured log event.
+    McuLog(McuLogEvent),
     /// Per-axis retired-piece counts from `StatusHeartbeat` (0x0083),
     /// used by the host pump for flow control.
     Heartbeat {

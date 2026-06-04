@@ -1,4 +1,4 @@
-//! EventDispatcher subsystem. Spec §6. (Phase-C stub; Phase D adds the rest.)
+//! `EventDispatcher` subsystem. Spec §6. (Phase-C stub; Phase D adds the rest.)
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
@@ -7,7 +7,7 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 
 use crate::fault::FaultLatch;
-use crate::host_io::runtime_events::{CreditFreedEvent, RuntimeEvent, StatusEvent, TraceEvent};
+use crate::host_io::runtime_events::{CreditFreedEvent, McuLogEvent, RuntimeEvent, StatusEvent, TraceEvent};
 
 #[derive(Debug, Clone)]
 pub enum HostEvent {
@@ -28,6 +28,7 @@ pub enum HostEvent {
 
 #[derive(Debug)]
 pub struct TraceRing {
+    #[allow(dead_code)] // stored at construction, future use for overflow policy
     capacity: usize,
     sticky_overflow: bool,
     subscriber: Option<SyncSender<TraceEvent>>,
@@ -53,7 +54,7 @@ impl TraceRing {
 
         match self.subscriber.as_ref() {
             Some(tx) => match tx.try_send(event) {
-                Ok(_) => {
+                Ok(()) => {
                     self.sticky_overflow = false; // Bug 3 fix: clear only on successful delivery
                 }
                 Err(TrySendError::Full(_)) => {
@@ -118,7 +119,7 @@ impl RuntimeEventDispatcher {
     pub fn dispatch(&mut self, event: RuntimeEvent) {
         if let Some(tx) = &self.subscriber {
             match tx.try_send(event) {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(TrySendError::Full(e)) => {
                     log::warn!("runtime-event subscriber overflow; dropping: {e:?}");
                 }
@@ -176,7 +177,7 @@ impl HostEventDispatcher {
     pub fn dispatch(&mut self, event: HostEvent) {
         if let Some(tx) = &self.subscriber {
             match tx.try_send(event) {
-                Ok(_) => {}
+                Ok(()) => {}
                 Err(TrySendError::Full(_)) => {
                     log::warn!("host-event subscriber overflow; dropping");
                 }
@@ -207,6 +208,37 @@ impl HostEventDispatcher {
 
 // ─── D9: EventDispatcher composition ─────────────────────────────────────────
 
+/// Manual `Debug` — `heartbeat_callback` and `mcu_log_hook` are trait objects
+/// and cannot derive.
+impl std::fmt::Debug for EventDispatcher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventDispatcher")
+            .field("fault_latch", &self.fault_latch)
+            .field("trace_ring", &self.trace_ring)
+            .field("status_snapshot", &"<ArcSwap<StatusEvent>>")
+            .field("runtime_event_dispatcher", &self.runtime_event_dispatcher)
+            .field("host_event_dispatcher", &self.host_event_dispatcher)
+            .field("status_retired_watermark", &self.status_retired_watermark)
+            .field(
+                "heartbeat_callback",
+                if self.heartbeat_callback.is_some() {
+                    &"Some(<fn>)"
+                } else {
+                    &"None"
+                },
+            )
+            .field(
+                "mcu_log_hook",
+                if self.mcu_log_hook.is_some() {
+                    &"Some(<fn>)"
+                } else {
+                    &"None"
+                },
+            )
+            .finish_non_exhaustive()
+    }
+}
+
 pub struct EventDispatcher {
     pub fault_latch: FaultLatch,
     pub trace_ring: TraceRing,
@@ -225,6 +257,10 @@ pub struct EventDispatcher {
     /// here and NOT forwarded to the general `runtime_rx` channel.
     /// Set via [`ReactorCommand::AttachHeartbeatCallback`].
     pub heartbeat_callback: Option<Arc<dyn Fn(&[u32]) + Send + Sync>>,
+    /// Optional hook fired on every decoded `McuLog (0x0084)` event with an
+    /// owned `McuLogEvent`. The hook is called before the event is forwarded
+    /// to the general `runtime_rx` channel. Set via [`Self::set_mcu_log_hook`].
+    pub mcu_log_hook: Option<Box<dyn Fn(McuLogEvent) + Send + Sync>>,
 }
 
 impl EventDispatcher {
@@ -247,7 +283,21 @@ impl EventDispatcher {
             host_event_dispatcher: HostEventDispatcher::new(host_rx),
             status_retired_watermark: 0,
             heartbeat_callback: None,
+            mcu_log_hook: None,
         }
+    }
+
+    /// Attach a closure that fires on every decoded `McuLog (0x0084)` event.
+    ///
+    /// The closure receives an owned [`McuLogEvent`] so it can move the value
+    /// into a channel or process it without holding a borrow on the dispatcher.
+    /// Replaces any previously set hook. The hook fires before the event is
+    /// forwarded to the general `runtime_rx` subscriber channel.
+    pub fn set_mcu_log_hook<F>(&mut self, f: F)
+    where
+        F: Fn(McuLogEvent) + Send + Sync + 'static,
+    {
+        self.mcu_log_hook = Some(Box::new(f));
     }
 
     pub fn dispatch(&mut self, event: RuntimeEvent) {
@@ -326,10 +376,19 @@ impl EventDispatcher {
             | RuntimeEvent::PassthroughResponse { .. } => {
                 self.runtime_event_dispatcher.dispatch(event);
             }
+            RuntimeEvent::McuLog(e) => {
+                if let Some(hook) = &self.mcu_log_hook {
+                    hook(e.clone());
+                }
+                // Also forward to the general runtime channel so callers that
+                // subscribe to take_runtime_event_subscription can observe it.
+                self.runtime_event_dispatcher
+                    .dispatch(RuntimeEvent::McuLog(e));
+            }
         }
     }
 
-    /// Per spec §6.5. Update snapshot AND synthesize FaultEvent if engine_status
+    /// Per spec §6.5. Update snapshot AND synthesize `FaultEvent` if `engine_status`
     /// is FAULT and no fault has been latched on the host.
     ///
     /// Returns `Some(CreditFreedEvent)` when the retirement watermark advanced
@@ -338,9 +397,11 @@ impl EventDispatcher {
     /// bridge poller can observe retirement progress even when the firmware's
     /// fire-and-forget `CreditFreed` frame was dropped under TX congestion.
     fn handle_status_frame(&mut self, frame: &StatusEvent) -> Option<CreditFreedEvent> {
+        const ENGINE_STATUS_FAULT: u8 = 3;
+        const Q_N_MINUS_1: u8 = 7;
+
         self.status_snapshot.store(Arc::new(frame.clone()));
 
-        const ENGINE_STATUS_FAULT: u8 = 3;
         if frame.engine_status == ENGINE_STATUS_FAULT && self.fault_latch.cell.is_none() {
             let synthesized = crate::host_io::runtime_events::FaultEvent {
                 fault_code: frame.last_fault,
@@ -356,10 +417,10 @@ impl EventDispatcher {
         // after MCU reset. The firmware encodes free_slots = Q_N-1 -
         // queue_depth (saturated at 0) — replicate the same computation here.
         let watermark = frame.retired_through_segment_id;
+        #[allow(clippy::cast_possible_wrap)] // intentional signed-difference comparison for wrap detection
         let advanced = (watermark.wrapping_sub(self.status_retired_watermark) as i32) > 0;
         if advanced {
             self.status_retired_watermark = watermark;
-            const Q_N_MINUS_1: u8 = 7;
             let free_slots = Q_N_MINUS_1.saturating_sub(frame.queue_depth);
             Some(CreditFreedEvent {
                 retired_through_segment_id: watermark,

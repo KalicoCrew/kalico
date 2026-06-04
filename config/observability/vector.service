@@ -1,0 +1,20 @@
+# Vector — the kalico observability shipper. Tails the host's durable JSONL
+# (events/*.jsonl) and ships to VictoriaLogs. Deploy on the printer host.
+#
+# Install: copy `vector` to /usr/local/bin and vector.toml to /etc/kalico/, then:
+#   sudo cp vector.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vector
+[Unit]
+Description=Vector (kalico observability shipper)
+After=network.target victorialogs.service
+Wants=victorialogs.service
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/usr/local/bin/vector --config /etc/kalico/vector.toml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

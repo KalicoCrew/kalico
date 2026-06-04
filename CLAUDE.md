@@ -17,6 +17,14 @@ We are working on a complete rewrite of the motion planner and more:
 
   The `compat` crate has two callers: the offline Step-13 binary (file → file) and the live bridge (terminal/macro G1/G2/G3 conversion via `compat::collinear::to_collinear_g5`, `compat::arc::arc_to_g5`, `compat::degree_elev::elevate_g51_to_g5`). Both share the lexer.
 
+# Observability / structured logging
+
+Log via the structured pipeline (`kalico_log_emit` → `events/*.jsonl`), not
+`printf`/`output()` — it replaces `klippy.log` for MCU/structured diagnostics;
+the wire-stable event table is `rust/runtime/src/log_codes.rs`. To read or add
+logs — `KALICO_DIAG_DUMP`, crash forensics, filtering — use the `mcu-diagnostics`
+and `query-logs` skills.
+
 # Reference docs
 
 - **Target hardware** [`docs/kalico-rewrite/hardware.md`](docs/kalico-rewrite/hardware.md)

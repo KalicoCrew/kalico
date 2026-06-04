@@ -35,7 +35,9 @@ use arc_swap::ArcSwap;
 
 use crate::host_io::events::HostEvent;
 use crate::host_io::parser::MsgProtoParser;
-use crate::host_io::runtime_events::{FaultEvent, RuntimeEvent, StatusEvent, TraceEvent};
+use crate::host_io::runtime_events::{
+    FaultEvent, McuLogEvent, RuntimeEvent, StatusEvent, TraceEvent,
+};
 use crate::passthrough_queue::{CommandQueueId, McuHandle, PassthroughEntry, PassthroughRouter};
 use crate::transport::{MessageParams, SubscribeError, Transport, TransportError};
 use std::sync::mpsc::SyncSender;
@@ -85,6 +87,16 @@ impl std::fmt::Debug for HeartbeatCallback {
     }
 }
 
+/// Boxed hook fired on every decoded `McuLog (0x0084)` event. Runs on the
+/// reactor thread — must be non-blocking. Mirrors `HeartbeatCallback`.
+pub struct McuLogHook(pub Box<dyn Fn(McuLogEvent) + Send + Sync>);
+
+impl std::fmt::Debug for McuLogHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("McuLogHook(<fn>)")
+    }
+}
+
 #[derive(Debug)]
 pub enum ReactorCommand {
     Submit {
@@ -103,6 +115,9 @@ pub enum ReactorCommand {
     },
     Abandon(u64),
     AttachHeartbeatCallback(HeartbeatCallback),
+    /// Install the MCU-log hook (`KalicoHostIo::set_mcu_log_hook`). Replaces
+    /// any previously installed hook.
+    SetMcuLogHook(McuLogHook),
     SubscribeFault {
         sender: SyncSender<FaultEvent>,
         reply: SyncSender<Result<(), SubscribeError>>,
@@ -288,9 +303,16 @@ impl KalicoHostIo {
             unsafe {
                 let mut tio: libc::termios = std::mem::zeroed();
                 if libc::tcgetattr(fd, &mut tio) == 0 {
-                    eprintln!(
-                        "[tio-pre-cfmakeraw] {path} iflag=0x{:x} oflag=0x{:x} cflag=0x{:x} lflag=0x{:x}",
-                        tio.c_iflag, tio.c_oflag, tio.c_cflag, tio.c_lflag,
+                    tracing::debug!(
+                        subsystem = "mcu-comms",
+                        event = "termios_setup",
+                        phase = "pre-cfmakeraw",
+                        path,
+                        iflag = tio.c_iflag,
+                        oflag = tio.c_oflag,
+                        cflag = tio.c_cflag,
+                        lflag = tio.c_lflag,
+                        "termios pre-cfmakeraw"
                     );
                     libc::cfmakeraw(&mut tio);
                     if libc::tcsetattr(fd, libc::TCSANOW, &tio) != 0 {
@@ -303,14 +325,18 @@ impl KalicoHostIo {
                     // Read back to verify cfmakeraw stuck.
                     let mut tio2: libc::termios = std::mem::zeroed();
                     if libc::tcgetattr(fd, &mut tio2) == 0 {
-                        eprintln!(
-                            "[tio-post-cfmakeraw] {path} iflag=0x{:x} oflag=0x{:x} cflag=0x{:x} lflag=0x{:x} vmin={} vtime={}",
-                            tio2.c_iflag,
-                            tio2.c_oflag,
-                            tio2.c_cflag,
-                            tio2.c_lflag,
-                            tio2.c_cc[libc::VMIN],
-                            tio2.c_cc[libc::VTIME],
+                        tracing::debug!(
+                            subsystem = "mcu-comms",
+                            event = "termios_setup",
+                            phase = "post-cfmakeraw",
+                            path,
+                            iflag = tio2.c_iflag,
+                            oflag = tio2.c_oflag,
+                            cflag = tio2.c_cflag,
+                            lflag = tio2.c_lflag,
+                            vmin = tio2.c_cc[libc::VMIN],
+                            vtime = tio2.c_cc[libc::VTIME],
+                            "termios post-cfmakeraw"
                         );
                     }
                 }
@@ -321,14 +347,18 @@ impl KalicoHostIo {
             unsafe {
                 let mut tio3: libc::termios = std::mem::zeroed();
                 if libc::tcgetattr(fd, &mut tio3) == 0 {
-                    eprintln!(
-                        "[tio-post-serialport] {path} iflag=0x{:x} oflag=0x{:x} cflag=0x{:x} lflag=0x{:x} vmin={} vtime={}",
-                        tio3.c_iflag,
-                        tio3.c_oflag,
-                        tio3.c_cflag,
-                        tio3.c_lflag,
-                        tio3.c_cc[libc::VMIN],
-                        tio3.c_cc[libc::VTIME],
+                    tracing::debug!(
+                        subsystem = "mcu-comms",
+                        event = "termios_setup",
+                        phase = "post-serialport",
+                        path,
+                        iflag = tio3.c_iflag,
+                        oflag = tio3.c_oflag,
+                        cflag = tio3.c_cflag,
+                        lflag = tio3.c_lflag,
+                        vmin = tio3.c_cc[libc::VMIN],
+                        vtime = tio3.c_cc[libc::VTIME],
+                        "termios post-serialport"
                     );
                 }
             }
@@ -392,9 +422,11 @@ impl KalicoHostIo {
         let is_critical = Arc::new(AtomicBool::new(true));
         let reactor_is_critical = Arc::clone(&is_critical);
         let reactor_handle = std::thread::spawn(move || {
-            eprintln!(
-                "[reactor-spawn] thread_id={:?} port-bound reactor starting",
-                std::thread::current().id()
+            tracing::info!(
+                subsystem = "mcu-comms",
+                event = "reactor_spawn",
+                thread_id = ?std::thread::current().id(),
+                "port-bound reactor starting"
             );
             let mut reactor = crate::host_io::reactor::Reactor::new_with_clock(
                 io,
@@ -417,21 +449,20 @@ impl KalicoHostIo {
             if !reactor.exited_gracefully() {
                 let critical = reactor_is_critical.load(Ordering::Acquire);
                 if !critical {
-                    eprintln!(
-                        "[reactor-spawn] thread_id={:?} transport closed via IO \
-                         error on NON-CRITICAL MCU; reactor exiting WITHOUT \
-                         abort — klippy's non-critical-disconnect path will \
-                         reconnect",
-                        std::thread::current().id()
+                    tracing::warn!(
+                        subsystem = "mcu-comms",
+                        event = "reactor_exit_non_critical",
+                        thread_id = ?std::thread::current().id(),
+                        "transport closed via IO error on NON-CRITICAL MCU; reactor exiting without abort — klippy reconnect path will handle recovery"
                     );
                     let _ = std::io::Write::flush(&mut std::io::stderr());
                     return;
                 }
-                eprintln!(
-                    "[reactor-spawn] thread_id={:?} EXIT_ON_FAULT — transport \
-                     closed via IO error on CRITICAL MCU; aborting klippy so \
-                     systemd restarts it",
-                    std::thread::current().id()
+                tracing::error!(
+                    subsystem = "mcu-comms",
+                    event = "reactor_exit_on_fault",
+                    thread_id = ?std::thread::current().id(),
+                    "EXIT_ON_FAULT — transport closed via IO error on CRITICAL MCU; aborting klippy so systemd restarts it"
                 );
                 // Flush stderr so the message reaches journalctl before we
                 // tear the process down.
@@ -588,6 +619,15 @@ impl KalicoHostIo {
             .send(ReactorCommand::AttachHeartbeatCallback(HeartbeatCallback(
                 cb,
             )));
+    }
+
+    /// Attach a hook fired on every decoded `McuLog (0x0084)` event. The hook
+    /// receives an owned [`McuLogEvent`] and runs on the reactor thread — must
+    /// be non-blocking. Replaces any previously installed hook.
+    pub fn set_mcu_log_hook(&self, hook: Box<dyn Fn(McuLogEvent) + Send + Sync>) {
+        let _ = self
+            .submission_tx
+            .send(ReactorCommand::SetMcuLogHook(McuLogHook(hook)));
     }
 
     pub fn subscribe_fault(&self) -> Result<std::sync::mpsc::Receiver<FaultEvent>, SubscribeError> {

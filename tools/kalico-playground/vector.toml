@@ -1,0 +1,28 @@
+# Vector config for the playground container. Tails the klippy serve volume's
+# events JSONL and ships to the victorialogs service. (Mirrors the committed
+# config/observability/vector.toml, with container paths + service DNS.)
+data_dir = "/tmp/vector"
+
+[sources.kalico_events]
+type = "file"
+include = ["/printer_data/logs/events/*.jsonl"]
+read_from = "beginning"
+
+[transforms.parse]
+type = "remap"
+inputs = ["kalico_events"]
+source = '. = parse_json!(.message)'
+
+[sinks.victorialogs]
+type = "http"
+inputs = ["parse"]
+uri = "http://victorialogs:9428/insert/jsonline?_stream_fields=source,subsystem&_time_field=_time&_msg_field=_msg"
+method = "post"
+encoding.codec = "json"
+framing.method = "newline_delimited"
+request.headers.Content-Type = "application/stream+json"
+
+[sinks.victorialogs.buffer]
+type = "disk"
+max_size = 268435488
+when_full = "block"

@@ -46,6 +46,17 @@ extern "C" {
 // Push a tagged record to the BKPSRAM event ring. IRQ-safe.
 void diag_ring_push(uint8_t tag, uint32_t a, uint32_t b);
 
+// Re-emit the prior-boot crash summary (reset cause, CPU fault, foreground
+// freeze) through the structured-log path (KALICO_MSG_LOG). Call once from the
+// post-host-connect path (the host's mcu-log hook must be installed first).
+void kalico_diag_emit_prior_crash(void);
+
+// Emit the CURRENT (live) diag state — cause discriminators + the live event
+// ring — through the structured-log path, on demand (KALICO_DIAG_DUMP gcode →
+// command_kalico_diag_dump). Lets hiccups surface without a reset. All frames
+// at debug level. Foreground-only (snapshots the live ring under irq_save).
+void kalico_diag_emit_live(void);
+
 // Update a task-call heartbeat. Pass `event_tag=0` to suppress event
 // emission (counters still update).
 void diag_task_heartbeat(volatile uint32_t *calls,

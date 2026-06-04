@@ -17,10 +17,59 @@
 //! every call site, and so the encoding stays in one place when the fault
 //! taxonomy evolves.
 
-use core::sync::atomic::Ordering;
+// The fault-emit path FFI-calls the C `kalico_log_emit` (gated to the MCU/sim
+// builds). The crate denies `unsafe_code` by default; opt this module out the
+// same way the other FFI modules do (e.g. dispatch_stepper.rs).
+#![allow(unsafe_code)]
+
+use core::sync::atomic::{AtomicU8, Ordering};
 
 use crate::error::FaultCode;
+#[allow(unused_imports)] // used only in the gated MCU/mcu-linux extern block
+use crate::log_codes::{EVENT_RUNTIME_FAULT_LATCHED, SUBSYSTEM_RUNTIME};
 use crate::state::SharedState;
+
+/// Wire log levels — must match motion-bridge's mcu_level_str (0=trace,1=debug,2=warn,3=error).
+const LOG_LEVEL_ERROR: u8 = 3;
+
+/// Minimum level emitted (gate at emit, spec decision E). Default = warn (2).
+/// Stage 4 adds a runtime setter; Stage 3 leaves the default so error-level
+/// faults always pass. Relaxed ordering is fine.
+static MIN_LEVEL: AtomicU8 = AtomicU8::new(2);
+
+// kalico_log_emit (src/kalico_log.c): present in MCU + mcu-linux sim firmware,
+// absent in the pure-host cdylib / cargo test. Mirror dispatch_stepper.rs gating.
+#[cfg(any(not(any(test, feature = "host")), feature = "mcu-linux"))]
+unsafe extern "C" {
+    fn kalico_log_emit(level: u8, subsystem: u8, event: u16, code: u16, arg0: u32, arg1: u32);
+}
+
+/// Emit a structured log for a latched fault, gated by `MIN_LEVEL`. Fault identity
+/// rides in `code` (host resolves `code_name`); `arg0` = `fault_detail`. No-op on
+/// the pure-host build.
+#[inline]
+fn emit_fault_log(fault: FaultCode, detail: u32) {
+    if LOG_LEVEL_ERROR < MIN_LEVEL.load(Ordering::Relaxed) {
+        return;
+    }
+    #[cfg(any(not(any(test, feature = "host")), feature = "mcu-linux"))]
+    // SAFETY: kalico_log_emit is a pure C logging sink; no aliasing or
+    // ownership constraints on its arguments.
+    unsafe {
+        kalico_log_emit(
+            LOG_LEVEL_ERROR,
+            SUBSYSTEM_RUNTIME,
+            EVENT_RUNTIME_FAULT_LATCHED,
+            fault.as_u16(),
+            detail,
+            0,
+        );
+    }
+    #[cfg(not(any(not(any(test, feature = "host")), feature = "mcu-linux")))]
+    {
+        let _ = (fault, detail);
+    }
+}
 
 /// Latch a `StepQueueOverflow` fault and bump the per-axis overflow counter.
 ///
@@ -35,6 +84,7 @@ pub fn raise_step_queue_overflow(shared: &SharedState, axis_idx: usize) {
     shared
         .last_error
         .store(FaultCode::StepQueueOverflow.as_i32(), Ordering::Release);
+    emit_fault_log(FaultCode::StepQueueOverflow, detail);
     if axis_idx < 4 {
         #[allow(clippy::indexing_slicing)] // bound checked immediately above
         shared.queue_overflow_count[axis_idx].fetch_add(1, Ordering::Release);
@@ -53,6 +103,7 @@ pub fn raise_position_count_overflow(shared: &SharedState, axis_idx: usize) {
     shared
         .last_error
         .store(FaultCode::PositionCountOverflow.as_i32(), Ordering::Release);
+    emit_fault_log(FaultCode::PositionCountOverflow, detail);
 }
 
 /// Latch a `MathNonFinite` fault. `axis_idx` is encoded into the detail
@@ -65,6 +116,7 @@ pub fn raise_math_non_finite(shared: &SharedState, axis_idx: usize) {
     shared
         .last_error
         .store(FaultCode::MathNonFinite.as_i32(), Ordering::Release);
+    emit_fault_log(FaultCode::MathNonFinite, detail);
 }
 
 /// Latch a `PieceAdvanceUnderflow` fault.
@@ -83,6 +135,7 @@ pub fn raise_piece_advance_underflow(shared: &SharedState, axis_idx: usize) {
     shared
         .last_error
         .store(FaultCode::PieceAdvanceUnderflow.as_i32(), Ordering::Release);
+    emit_fault_log(FaultCode::PieceAdvanceUnderflow, detail);
 }
 
 /// Latch a `PhaseModeNotAvailable` fault.
@@ -98,6 +151,7 @@ pub fn raise_phase_mode_not_available(shared: &SharedState, axis_idx: usize) {
     shared
         .last_error
         .store(FaultCode::PhaseModeNotAvailable.as_i32(), Ordering::Release);
+    emit_fault_log(FaultCode::PhaseModeNotAvailable, detail);
 }
 
 /// Latch a `JogParametersInvalid` fault.
@@ -111,10 +165,12 @@ pub fn raise_phase_mode_not_available(shared: &SharedState, axis_idx: usize) {
 /// fault for surfacing through `kalico_status_v6`.
 #[inline]
 pub fn raise_jog_parameters_invalid(shared: &SharedState) {
-    shared.fault_detail.store(0, Ordering::Release);
+    let detail = 0u32;
+    shared.fault_detail.store(detail, Ordering::Release);
     shared
         .last_error
         .store(FaultCode::JogParametersInvalid.as_i32(), Ordering::Release);
+    emit_fault_log(FaultCode::JogParametersInvalid, detail);
 }
 
 /// Latch a `PieceStartInPast` fault (spec §6 safety invariant).
@@ -136,6 +192,7 @@ pub fn raise_piece_start_in_past(shared: &SharedState, axis_idx: usize, deficit_
     shared
         .last_error
         .store(FaultCode::PieceStartInPast.as_i32(), Ordering::Release);
+    emit_fault_log(FaultCode::PieceStartInPast, detail);
 }
 
 /// Latch a `TickIntervalExceeded` fault (ISR inter-arrival guard).
@@ -148,12 +205,12 @@ pub fn raise_piece_start_in_past(shared: &SharedState, axis_idx: usize, deficit_
 /// storing detail before code guarantees the host always sees a valid pair.
 #[inline]
 pub fn raise_tick_interval_exceeded(shared: &SharedState, gap_ticks: u32) {
-    shared
-        .fault_detail
-        .store(gap_ticks.min(0xFFFF), Ordering::Release);
+    let detail = gap_ticks.min(0xFFFF);
+    shared.fault_detail.store(detail, Ordering::Release);
     shared
         .last_error
         .store(FaultCode::TickIntervalExceeded.as_i32(), Ordering::Release);
+    emit_fault_log(FaultCode::TickIntervalExceeded, detail);
 }
 
 /// Latch a `StepsPerSampleExceeded` fault.
@@ -172,6 +229,7 @@ pub fn raise_steps_per_sample_exceeded(shared: &SharedState, axis_idx: usize, ab
     shared
         .last_error
         .store(FaultCode::StepsPerSampleExceeded.as_i32(), Ordering::Release);
+    emit_fault_log(FaultCode::StepsPerSampleExceeded, detail);
 }
 
 /// Latch an `UnknownStepMode` fault.
@@ -186,6 +244,7 @@ pub fn raise_unknown_step_mode(shared: &SharedState, axis_idx: usize, mode: u8) 
     shared
         .last_error
         .store(FaultCode::UnknownStepMode.as_i32(), Ordering::Release);
+    emit_fault_log(FaultCode::UnknownStepMode, detail);
 }
 
 #[cfg(test)]

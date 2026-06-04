@@ -23,11 +23,13 @@ libc = "0.2"
 # polynomials don't match. Step-7 MVP can revisit if the hand-rolled
 # loop becomes a hotspot.
 log = "0.4"
+tracing = "0.1"
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 indexmap = { version = "2", features = ["serde"] }
 arc-swap = "1"
+time = { version = "0.3", default-features = false, features = ["std"] }
 runtime = { path = "../runtime" }
 nurbs = { path = "../nurbs", features = ["host"] }
 kalico-protocol = { path = "../kalico-protocol" }
@@ -42,6 +44,7 @@ optional = true
 default = []
 python-bridge = ["dep:pyo3"]
 test-harness = []
+hardware-test = []
 
 [dev-dependencies]
 proptest = "1"

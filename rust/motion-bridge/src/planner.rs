@@ -273,11 +273,13 @@ impl PlannerHandle {
     }
 
     pub fn submit_move(&self, m: ClassifiedMove) -> Result<(), PlannerError> {
-        eprintln!(
-            "[move-diag] planner.submit_move enter nominal_s={:.6} distance_mm={:.3} feed={:.1}",
-            m.nominal_duration(),
-            m.distance_mm,
-            m.segment.feedrate_mm_s,
+        tracing::debug!(
+            subsystem = "motion",
+            event = "submit_move_enter",
+            nominal_s = m.nominal_duration(),
+            distance_mm = m.distance_mm,
+            feedrate_mm_s = m.segment.feedrate_mm_s,
+            "planner.submit_move enter"
         );
         self.check_error()?;
 
@@ -591,24 +593,26 @@ fn run_commit_and_dispatch(
     let drained = match state.commit_decel_to_zero(&thread_state.emit_ctx()) {
         Ok(out) => out,
         Err(e) => {
-            eprintln!("[move-diag] run_commit_and_dispatch: commit_decel_to_zero ERR {e:?}");
+            tracing::error!(subsystem = "motion", event = "commit_decel_error", error = ?e, "run_commit_and_dispatch: commit_decel_to_zero failed");
             *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
             return false;
         }
     };
     let commit_us = commit_start.elapsed().as_micros();
     let batch_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
-    eprintln!(
-        "[move-diag] run_commit_and_dispatch: drained={} batch_dur_s={:.6} t_app_before={:.6} t_disp_before={:.6}",
-        drained.len(),
-        batch_dur,
+    tracing::debug!(
+        subsystem = "motion",
+        event = "commit_drained",
+        drained = drained.len(),
+        batch_dur_s = batch_dur,
         t_app_before,
         t_disp_before,
+        "run_commit_and_dispatch drained"
     );
     advance_last_move_time(last_move_time_bits, batch_dur);
     for s in &drained {
         if let Err(detail) = dispatch(s) {
-            eprintln!("[move-diag] run_commit_and_dispatch: dispatch ERR {detail:?}");
+            tracing::error!(subsystem = "motion", event = "dispatch_error", error = ?detail, "run_commit_and_dispatch: dispatch failed");
             *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Dispatch(detail));
             break;
         }
@@ -738,7 +742,7 @@ fn run_loop(
                     PlannerMsg::ClockSyncRearm { .. } => "ClockSyncRearm",
                     PlannerMsg::Shutdown => "Shutdown",
                 };
-                eprintln!("[move-diag] planner recv {tag} gap_us={gap_us}");
+                tracing::debug!(subsystem = "motion", event = "planner_recv_gap", tag, gap_us, "planner recv");
                 m
             }
             Err(RecvTimeoutError::Timeout) => {
@@ -817,7 +821,7 @@ fn run_loop(
 
                 let replan_start = Instant::now();
                 if let Err(e) = state.append_and_replan(m.segment, &thread_state.replan_ctx) {
-                    eprintln!("[move-diag] Move arm: append_and_replan ERR {e:?}");
+                    tracing::error!(subsystem = "motion", event = "move_arm_error", phase = "append_and_replan", error = ?e, "Move arm: append_and_replan failed");
                     *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
                     continue;
                 }
@@ -826,21 +830,23 @@ fn run_loop(
                 let drained = match state.emit_committed(&thread_state.emit_ctx()) {
                     Ok(out) => out,
                     Err(e) => {
-                        eprintln!("[move-diag] Move arm: emit_committed ERR {e:?}");
+                        tracing::error!(subsystem = "motion", event = "move_arm_error", phase = "emit_committed", error = ?e, "Move arm: emit_committed failed");
                         *error.lock().unwrap_or_else(|p| p.into_inner()) =
                             Some(PlannerError::Shape(e));
                         continue;
                     }
                 };
-                eprintln!(
-                    "[move-diag] Move arm: drained={} t_app:{:.6}->{:.6} t_decel:{:.6}->{:.6} t_disp:{:.6}->{:.6}",
-                    drained.len(),
-                    prior_t_appended,
-                    state.t_appended,
-                    prior_t_decel,
-                    state.t_decel_start,
-                    prior_t_disp,
-                    state.t_dispatched,
+                tracing::debug!(
+                    subsystem = "motion",
+                    event = "move_arm_drained",
+                    drained = drained.len(),
+                    t_app_before = prior_t_appended,
+                    t_app_after = state.t_appended,
+                    t_decel_before = prior_t_decel,
+                    t_decel_after = state.t_decel_start,
+                    t_disp_before = prior_t_disp,
+                    t_disp_after = state.t_dispatched,
+                    "Move arm: drained"
                 );
                 let emit_us = emit_start.elapsed().as_micros();
                 let drained_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();

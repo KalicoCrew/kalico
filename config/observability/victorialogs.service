@@ -1,0 +1,32 @@
+# VictoriaLogs — the kalico observability store. Deploy on the printer host
+# (or a separate always-on box; see the note below to run it off-printer).
+#
+# Install: copy `victoria-logs-prod` to /usr/local/bin, then:
+#   sudo cp victorialogs.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now victorialogs
+#
+# Retention: 30 days OR ~2 GB on disk, whichever bound is hit first
+# (spec §8/§16). Bound to localhost so it is not exposed on the network.
+[Unit]
+Description=VictoriaLogs (kalico observability store)
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/usr/local/bin/victoria-logs-prod \
+  -storageDataPath=/var/lib/victorialogs \
+  -httpListenAddr=127.0.0.1:9428 \
+  -retentionPeriod=30d \
+  -retention.maxDiskSpaceUsageBytes=2GB
+Restart=on-failure
+RestartSec=5
+
+# To run VictoriaLogs on a SEPARATE machine (logs off the printer): change
+# -httpListenAddr to :9428 (or a bound LAN address), and point Vector's sink
+# URI (vector.toml) at http://<that-host>:9428. The printer's JSONL stays the
+# durable source of truth either way — nothing on the printer depends on this
+# service being reachable.
+
+[Install]
+WantedBy=multi-user.target

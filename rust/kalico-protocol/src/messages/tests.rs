@@ -21,6 +21,7 @@ fn message_kind_round_trips_via_u16() {
         MessageKind::PushPiecesResponse,
         MessageKind::FaultEvent,
         MessageKind::StatusHeartbeat,
+        MessageKind::McuLog,
     ] {
         assert_eq!(MessageKind::from_u16(k.as_u16()), Some(k));
     }

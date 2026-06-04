@@ -1,0 +1,63 @@
+name: kalico-playground
+
+# Interactive Kalico playground: our klippy (+ simulated MCUs) driven via
+# Mainsail, with structured logs flowing into VictoriaLogs so you can watch
+# them light up as you click. See README.md for build + run.
+#   up:     docker compose -f tools/kalico-playground/docker-compose.yml up -d
+#   reset:  docker compose -f tools/kalico-playground/docker-compose.yml down -v
+#   Mainsail:   http://localhost:8080
+#   VL web UI:  http://localhost:9428/select/vmui
+#
+# Note: our motion code can't sustain operation yet, so klippy faults ~every
+# 30s under idle hold (the EXIT_ON_FAULT transport story — captured in the
+# logs). supervisor auto-restarts it, so you get repeated ~30s interactive
+# windows + continuous logging.
+
+services:
+  # --- our klippy + sim MCUs + Moonraker + Mainsail (supervisor), one box ----
+  printer:
+    image: kalico-playground:latest
+    container_name: kpg-printer
+    volumes:
+      - printer_data:/printer_data
+    ports:
+      - "8080:80"      # Mainsail UI
+      - "7125:7125"    # Moonraker API (direct access, optional)
+    environment:
+      # Quiet the debug-grade `PIECEDIAG HB` heartbeat that pump/bridge emit at
+      # info every cycle (it otherwise drowns the Python logs ~14:1). Pinned to
+      # warn so the fault chain (pump send errors, retransmits) still comes
+      # through. Read by the Rust tracing EnvFilter (spec §9 drop-at-emit).
+      # NOTE: a cleaner fix is lowering those log::info! to debug in the Rust
+      # source; this env pin is the no-rebuild stopgap.
+      RUST_LOG: "info,motion_bridge_native::pump=warn,motion_bridge_native::bridge=warn"
+    restart: unless-stopped
+
+  # --- the queryable log store ----------------------------------------------
+  victorialogs:
+    image: victoriametrics/victoria-logs:latest
+    container_name: kpg-victorialogs
+    command:
+      - "-storageDataPath=/vl-data"
+      - "-httpListenAddr=:9428"
+      - "-retentionPeriod=30d"
+    volumes:
+      - vl_data:/vl-data
+    ports:
+      - "9428:9428"
+    restart: unless-stopped
+
+  # --- the shipper: tail events/*.jsonl -> VictoriaLogs ----------------------
+  vector:
+    image: timberio/vector:0.55.0-alpine
+    container_name: kpg-vector
+    depends_on: [victorialogs, printer]
+    volumes:
+      - printer_data:/printer_data:ro
+      - ./vector.toml:/etc/vector/vector.toml:ro
+    command: ["--config", "/etc/vector/vector.toml"]
+    restart: unless-stopped
+
+volumes:
+  printer_data:
+  vl_data:
