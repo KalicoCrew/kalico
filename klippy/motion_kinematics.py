@@ -6,8 +6,8 @@ import logging
 
 def motor_deltas(kin_name, dx, dy, dz, de):
     """Map cartesian deltas to per-motor-slot deltas (0=x,1=y,2=z,3=e):
-      corexy:    (dx+dy, dx-dy, dz, de)
-      cartesian: (dx,    dy,    dz, de)
+    corexy:    (dx+dy, dx-dy, dz, de)
+    cartesian: (dx,    dy,    dz, de)
     """
     if kin_name == "corexy":
         return (dx + dy, dx - dy, dz, de)

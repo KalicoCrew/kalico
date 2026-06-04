@@ -93,9 +93,7 @@ class MotionMcuProxy:
     def setup(self, serial_path, baud):
         self._mcu_handle = self._bridge.claim_mcu(self._name, serial_path, baud)
         # alias read by motion_toolhead._init_planner
-        self._bridge_handle = (
-            self._mcu_handle
-        )
+        self._bridge_handle = self._mcu_handle
         self._command_queue = self._bridge.alloc_command_queue(self._mcu_handle)
 
     def get_printer(self):
