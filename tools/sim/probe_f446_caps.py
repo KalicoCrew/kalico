@@ -28,6 +28,7 @@ Wire format (per src/kalico_dispatch.c + rust/kalico-protocol/src/messages.rs):
     max_degree          u8
     curve_pool_n        u16_le
 """
+
 from __future__ import annotations
 
 import socket
@@ -55,16 +56,22 @@ def crc16_ccitt(data: bytes) -> int:
     rust/kalico-native-transport/src/frame.rs::crc16_ccitt (host)."""
     crc = 0xFFFF
     for byte in data:
-        d = (byte ^ (crc & 0x00FF))
+        d = byte ^ (crc & 0x00FF)
         d = (d ^ ((d << 4) & 0x00FF)) & 0xFF
         crc = ((crc >> 8) ^ (d << 8) ^ (d << 3) ^ (d >> 4)) & 0xFFFF
     return crc
 
 
-def build_kalico_frame(kind: int, version: int, correlation_id: int, body: bytes) -> bytes:
+def build_kalico_frame(
+    kind: int, version: int, correlation_id: int, body: bytes
+) -> bytes:
     msg = struct.pack("<HBI", kind, version, correlation_id) + body
     len_field = 2 + 1 + len(msg) + 2
-    header = struct.pack("<BH", KALICO_SYNC, len_field) + bytes([CHANNEL_CONTROL]) + msg
+    header = (
+        struct.pack("<BH", KALICO_SYNC, len_field)
+        + bytes([CHANNEL_CONTROL])
+        + msg
+    )
     crc = crc16_ccitt(header[1:])
     return header + struct.pack("<H", crc)
 
@@ -116,11 +123,15 @@ def main() -> int:
     except socket.timeout:
         pass
     if drained:
-        print(f"[probe] drained {len(drained)} bytes of pre-existing UART traffic")
+        print(
+            f"[probe] drained {len(drained)} bytes of pre-existing UART traffic"
+        )
 
     correlation_id = 0xCAFEBABE
     frame = build_kalico_frame(KIND_QUERY_RUNTIME_CAPS, 0, correlation_id, b"")
-    print(f"[probe] sending QueryRuntimeCaps ({len(frame)} bytes): {frame.hex()}")
+    print(
+        f"[probe] sending QueryRuntimeCaps ({len(frame)} bytes): {frame.hex()}"
+    )
     s.sendall(frame)
 
     deadline = time.monotonic() + 8.0
@@ -138,13 +149,19 @@ def main() -> int:
             continue
         kind, version, corr, body = result
         if kind != KIND_RUNTIME_CAPS_RESPONSE:
-            print(f"[probe] received non-target frame kind=0x{kind:04x}; continuing")
+            print(
+                f"[probe] received non-target frame kind=0x{kind:04x}; continuing"
+            )
             continue
         if corr != correlation_id:
-            print(f"[probe] correlation mismatch: got 0x{corr:08x}, expected 0x{correlation_id:08x}")
+            print(
+                f"[probe] correlation mismatch: got 0x{corr:08x}, expected 0x{correlation_id:08x}"
+            )
             return 2
         if len(body) != 11:
-            print(f"[probe] response body wrong length: {len(body)} (expected 11)")
+            print(
+                f"[probe] response body wrong length: {len(body)} (expected 11)"
+            )
             return 3
         mcp, mkv = struct.unpack_from("<II", body, 0)
         mdeg = body[8]
@@ -163,7 +180,9 @@ def main() -> int:
         return 4
 
     print("[probe] FAIL — no RuntimeCapsResponse received within timeout")
-    print(f"[probe] received {len(rxbuf)} bytes total: {bytes(rxbuf).hex()[:200]}")
+    print(
+        f"[probe] received {len(rxbuf)} bytes total: {bytes(rxbuf).hex()[:200]}"
+    )
     return 5
 
 

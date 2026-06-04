@@ -153,12 +153,7 @@ impl RingDescriptor {
     /// so `ring_offset + physical_slot < storage.len()` holds whenever
     /// `physical_slot < ring_depth`.
     #[inline]
-    pub fn write_slot(
-        &self,
-        storage: &mut [PieceEntry],
-        physical_slot: usize,
-        entry: PieceEntry,
-    ) {
+    pub fn write_slot(&self, storage: &mut [PieceEntry], physical_slot: usize, entry: PieceEntry) {
         if self.ring_depth == 0 || physical_slot >= self.ring_depth {
             return;
         }
@@ -166,7 +161,14 @@ impl RingDescriptor {
             self.ring_offset + physical_slot < storage.len(),
             "ring slot out of storage bounds"
         );
-        storage[self.ring_offset + physical_slot] = entry;
+        // SAFETY: `configure_axis` guarantees `ring_offset + ring_depth <=
+        // storage.len()`; `physical_slot < ring_depth` is checked by the guard
+        // at the top of this function, so `ring_offset + physical_slot <
+        // storage.len()` holds unconditionally.
+        #[allow(clippy::indexing_slicing)]
+        {
+            storage[self.ring_offset + physical_slot] = entry;
+        }
     }
 
     /// Advance the valid frontier to `new_head`, monotonically, within ring
@@ -378,7 +380,14 @@ impl<'a> PieceRing<'a> {
         if self.is_full() {
             return Err(());
         }
-        self.buf[self.head] = entry;
+        // SAFETY: `head` is always maintained as `head < buf.len()` — it is
+        // initialised to 0 and after every write advances as
+        // `(head + 1) % buf.len()`. The `is_full()` guard above ensures at
+        // least one free slot exists, so `head` can never equal `buf.len()`.
+        #[allow(clippy::indexing_slicing)]
+        {
+            self.buf[self.head] = entry;
+        }
         self.head = (self.head + 1) % self.buf.len();
         self.count += 1;
         Ok(())
@@ -392,6 +401,11 @@ impl<'a> PieceRing<'a> {
         if self.is_empty() {
             return None;
         }
+        // SAFETY: `tail` is always maintained as `tail < buf.len()` — it is
+        // initialised to 0 and after every `pop` advances as
+        // `(tail + 1) % buf.len()`. The `is_empty()` guard above ensures
+        // at least one occupied slot exists, so `tail` is a valid index.
+        #[allow(clippy::indexing_slicing)]
         Some(&self.buf[self.tail])
     }
 
@@ -433,6 +447,12 @@ pub struct PieceEntry {
     pub duration: f32,
     /// Reserved padding — must be written as zero; the C side may use this
     /// field in a future protocol version.
+    // The underscore prefix signals "intentionally unused by Rust callers"
+    // but the field must remain `pub` for `#[repr(C)]` ABI stability (the C
+    // side reads this word). The allow suppresses the `pub_underscore_fields`
+    // lint that would otherwise demand we either remove the underscore or
+    // make the field private — neither is correct here.
+    #[allow(clippy::pub_underscore_fields)]
     pub _reserved: u32,
 }
 

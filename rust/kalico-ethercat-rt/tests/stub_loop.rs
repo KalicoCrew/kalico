@@ -34,17 +34,17 @@ use std::os::unix::net::UnixStream;
 use std::thread;
 use std::time::Duration;
 
-use kalico_ethercat_rt::curves::{AXIS_RING_CAPACITY, AxisRing, NUM_AXES};
+use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, NUM_AXES};
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::wire::{
-    Command, identify_response_frame, push_pieces_response_frame, runtime_caps_response_frame,
-    status_heartbeat_frame,
+    identify_response_frame, push_pieces_response_frame, runtime_caps_response_frame,
+    status_heartbeat_frame, Command,
 };
 use kalico_host_rt::native_call::NativeCall;
 use kalico_native_transport::demux::{Demuxer, Frame};
 use kalico_native_transport::frame::{CHANNEL_CONTROL, CHANNEL_EVENTS};
 use kalico_native_transport::wire_helpers::{
-    MESSAGE_VERSION_DEFAULT, decode_message_header, encode_message_header,
+    decode_message_header, encode_message_header, MESSAGE_VERSION_DEFAULT,
 };
 use kalico_protocol::codec::{Decode, Encode};
 use kalico_protocol::messages::{
@@ -173,8 +173,7 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
 
     let socket_path_sv = socket_path.clone();
     let server_thread = thread::spawn(move || {
-        let mut server =
-            FrameServer::bind(&socket_path_sv).expect("bind server socket");
+        let mut server = FrameServer::bind(&socket_path_sv).expect("bind server socket");
         let mut ring = AxisRing::new();
         let mut last_sent_retired: u32 = 0;
         let mut heartbeat_sent = false;
@@ -192,20 +191,28 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
             );
             for cmd in server.poll_commands() {
                 match cmd {
-                    Command::Identify { correlation_id, proto_version } => {
+                    Command::Identify {
+                        correlation_id,
+                        proto_version,
+                    } => {
                         server.respond(&identify_response_frame(correlation_id, proto_version));
                     }
-                    Command::PushPieces { correlation_id, msg } => {
-                        let front_start_time =
-                            if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8 {
-                                u64::from_le_bytes(
-                                    msg.pieces_bytes[0..8].try_into().unwrap_or([0; 8]),
-                                )
-                            } else {
-                                0
-                            };
+                    Command::PushPieces {
+                        correlation_id,
+                        msg,
+                    } => {
+                        let front_start_time = if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8
+                        {
+                            u64::from_le_bytes(msg.pieces_bytes[0..8].try_into().unwrap_or([0; 8]))
+                        } else {
+                            0
+                        };
                         let pushed = ring.push_from_bytes(msg.piece_count, &msg.pieces_bytes);
-                        let result = if pushed == msg.piece_count { 0i32 } else { -309 };
+                        let result = if pushed == msg.piece_count {
+                            0i32
+                        } else {
+                            -309
+                        };
                         server.respond(&push_pieces_response_frame(
                             correlation_id,
                             result,
@@ -329,17 +336,20 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
 
     assert!(got_response, "PushPiecesResponse must have been received");
     assert_eq!(
-        final_retired,
-        N as u32,
+        final_retired, N as u32,
         "StatusHeartbeat.retired_counts[0] must equal pieces pushed ({})",
         N
     );
 
     // Drop client to let the server thread finish its loop.
     drop(client);
-    let final_count = rx.recv_timeout(Duration::from_secs(2))
+    let final_count = rx
+        .recv_timeout(Duration::from_secs(2))
         .expect("server thread did not report retired count");
-    assert_eq!(final_count, N as u32, "server-side retired count must equal N");
+    assert_eq!(
+        final_count, N as u32,
+        "server-side retired count must equal N"
+    );
     let _ = server_thread.join();
     let _ = std::fs::remove_file(&socket_path);
 }
@@ -402,8 +412,7 @@ fn ethercat_endpoint_query_runtime_caps_round_trip() {
     use kalico_host_rt::unix_native_conn::UnixNativeConn;
 
     // Bind a temp socket for the in-process endpoint.
-    let socket_path =
-        format!("/tmp/kalico-caps-rt-{}.sock", std::process::id());
+    let socket_path = format!("/tmp/kalico-caps-rt-{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
 
     // Expected total_piece_memory the endpoint should report.
@@ -431,7 +440,11 @@ fn ethercat_endpoint_query_runtime_caps_round_trip() {
                         return; // one call is enough for this test
                     }
                     // Respond to stray Identify or Unknown without failing the test.
-                    if let Command::Identify { correlation_id, proto_version } = cmd {
+                    if let Command::Identify {
+                        correlation_id,
+                        proto_version,
+                    } = cmd
+                    {
                         server.respond(&identify_response_frame(correlation_id, proto_version));
                     }
                 }
@@ -456,8 +469,7 @@ fn ethercat_endpoint_query_runtime_caps_round_trip() {
     }
 
     // ── Host side: connect UnixNativeConn and issue QueryRuntimeCaps ───────
-    let conn = UnixNativeConn::connect(&socket_path)
-        .expect("UnixNativeConn::connect must succeed");
+    let conn = UnixNativeConn::connect(&socket_path).expect("UnixNativeConn::connect must succeed");
 
     let (resp_kind, resp_body) = conn
         .kalico_call(
@@ -495,8 +507,7 @@ fn ethercat_endpoint_query_runtime_caps_round_trip() {
     };
 
     assert_eq!(
-        ring_depth,
-        AXIS_RING_CAPACITY as u32,
+        ring_depth, AXIS_RING_CAPACITY as u32,
         "derived ring_depth must equal AXIS_RING_CAPACITY ({AXIS_RING_CAPACITY}), \
          got {ring_depth}"
     );

@@ -2,7 +2,7 @@
 
 use crate::multi::joining::SegmentState;
 use crate::multi::{BatchError, SegmentInput};
-use crate::topp::{schedule_segment_with_tolerance, ToleranceMode};
+use crate::topp::{ToleranceMode, schedule_segment_with_tolerance};
 use crate::{GridConfig, SolveStatus, TopProfile};
 use std::sync::Mutex;
 use std::thread;
@@ -60,18 +60,20 @@ pub(crate) fn fan_out_solves(
 
     thread::scope(|s| {
         for _ in 0..n_threads {
-            s.spawn(|| loop {
-                let Some(idx) = queue.lock().unwrap().pop() else {
-                    break;
-                };
-                let r = solve_with_boundary_fallback(
-                    inputs[idx].curve,
-                    &inputs[idx].limits,
-                    &grids[idx],
-                    v_starts[idx],
-                    v_ends[idx],
-                );
-                results.lock().unwrap().push((idx, r));
+            s.spawn(|| {
+                loop {
+                    let Some(idx) = queue.lock().unwrap().pop() else {
+                        break;
+                    };
+                    let r = solve_with_boundary_fallback(
+                        inputs[idx].curve,
+                        &inputs[idx].limits,
+                        grids[idx],
+                        v_starts[idx],
+                        v_ends[idx],
+                    );
+                    results.lock().unwrap().push((idx, r));
+                }
             });
         }
     });
@@ -112,12 +114,13 @@ pub(crate) fn fan_out_solves(
 fn solve_with_boundary_fallback(
     curve: &nurbs::VectorNurbs<f64, 3>,
     limits: &crate::Limits,
-    grid: &GridConfig,
+    grid: GridConfig,
     v_start: f64,
     v_end: f64,
 ) -> Result<TopProfile, crate::ScheduleError> {
+    const VEL_NEAR_ZERO: f64 = 1e-6;
     let initial =
-        schedule_segment_with_tolerance(curve, limits, grid, v_start, v_end, ToleranceMode::Auto)?;
+        schedule_segment_with_tolerance(curve, limits, &grid, v_start, v_end, ToleranceMode::Auto)?;
     if is_success(initial.status) {
         return Ok(initial);
     }
@@ -134,7 +137,7 @@ fn solve_with_boundary_fallback(
         let candidate = schedule_segment_with_tolerance(
             curve,
             limits,
-            grid,
+            &grid,
             v_start * mid,
             v_end * mid,
             ToleranceMode::Auto,
@@ -158,13 +161,17 @@ fn solve_with_boundary_fallback(
     // precisely). Gated on v_start ≈ v_end ≈ 0 so the more-common
     // junction-cap-too-high case (handled by stage 1) doesn't trigger an
     // unnecessary v_max derate that the joining loop would have to chase.
-    const VEL_NEAR_ZERO: f64 = 1e-6;
     if v_start.abs() > VEL_NEAR_ZERO || v_end.abs() > VEL_NEAR_ZERO {
         // Endpoint scaling exhausted on a non-rest-to-rest segment — fall
         // back to the historical zero-zero solve. The joining sweep will
         // see the achieved zero endpoints and propagate.
         return schedule_segment_with_tolerance(
-            curve, limits, grid, 0.0, 0.0, ToleranceMode::Auto,
+            curve,
+            limits,
+            &grid,
+            0.0,
+            0.0,
+            ToleranceMode::Auto,
         );
     }
     let base_v_max = limits.v_max;
@@ -187,7 +194,7 @@ fn solve_with_boundary_fallback(
         let candidate = schedule_segment_with_tolerance(
             curve,
             &scaled_limits,
-            grid,
+            &grid,
             v_start * mid,
             v_end * mid,
             ToleranceMode::Auto,
@@ -212,7 +219,7 @@ fn solve_with_boundary_fallback(
             limits.j_max,
             limits.a_centripetal_max,
         );
-        schedule_segment_with_tolerance(curve, &scaled_limits, grid, 0.0, 0.0, ToleranceMode::Auto)
+        schedule_segment_with_tolerance(curve, &scaled_limits, &grid, 0.0, 0.0, ToleranceMode::Auto)
     }
 }
 

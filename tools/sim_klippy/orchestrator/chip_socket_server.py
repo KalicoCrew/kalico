@@ -16,6 +16,9 @@ Two wire modes:
 
 Threaded model: one accept thread, one worker thread per connection.
 Sufficient for our handful of chip stubs."""
+
+from __future__ import annotations
+
 import os
 import socket
 import threading
@@ -26,9 +29,13 @@ FramedHandler = Callable[[int, bytes], bytes]
 
 
 class ChipSocketServer:
-    def __init__(self, path: str,
-                 handler: Union[UnframedHandler, FramedHandler],
-                 chunk: int = 16, framed: bool = False):
+    def __init__(
+        self,
+        path: str,
+        handler: Union[UnframedHandler, FramedHandler],
+        chunk: int = 16,
+        framed: bool = False,
+    ):
         self._path = path
         self._handler = handler
         self._chunk = chunk
@@ -66,7 +73,9 @@ class ChipSocketServer:
             except (socket.timeout, OSError):
                 continue
             t = threading.Thread(
-                target=self._serve, args=(client,), daemon=True,
+                target=self._serve,
+                args=(client,),
+                daemon=True,
             )
             t.start()
 

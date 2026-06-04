@@ -22,13 +22,24 @@ use kalico_protocol::KALICO_CHANNEL_PIECES;
 /// A decoded control-channel command plus the correlation id to answer with.
 #[derive(Debug)]
 pub enum Command {
-    Identify { correlation_id: u32, proto_version: u8 },
-    PushPieces { correlation_id: u32, msg: PushPieces },
+    Identify {
+        correlation_id: u32,
+        proto_version: u8,
+    },
+    PushPieces {
+        correlation_id: u32,
+        msg: PushPieces,
+    },
     /// Host issued `QueryRuntimeCaps` (0x0040) on the control channel.
     /// The endpoint must respond with `RuntimeCapsResponse` carrying
     /// `total_piece_memory = AXIS_RING_CAPACITY * NUM_AXES * size_of::<PieceEntry>()`.
-    QueryRuntimeCaps { correlation_id: u32 },
-    Unknown { correlation_id: u32, kind_raw: u16 },
+    QueryRuntimeCaps {
+        correlation_id: u32,
+    },
+    Unknown {
+        correlation_id: u32,
+        kind_raw: u16,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -51,25 +62,40 @@ pub fn decode_command(channel: u8, payload: &[u8]) -> Result<Command, DecodeCmdE
         || MessageKind::from_u16(hdr.kind_raw) == Some(MessageKind::PushPieces)
     {
         let msg = PushPieces::decode(body).map_err(|_| DecodeCmdError::BadBody)?;
-        return Ok(Command::PushPieces { correlation_id: cid, msg });
+        return Ok(Command::PushPieces {
+            correlation_id: cid,
+            msg,
+        });
     }
     match MessageKind::from_u16(hdr.kind_raw) {
         Some(MessageKind::Identify) => {
             let proto_version = body.first().copied().unwrap_or(0);
-            Ok(Command::Identify { correlation_id: cid, proto_version })
+            Ok(Command::Identify {
+                correlation_id: cid,
+                proto_version,
+            })
         }
         Some(MessageKind::QueryRuntimeCaps) => {
             // Body is empty (the request carries no parameters).
-            Ok(Command::QueryRuntimeCaps { correlation_id: cid })
+            Ok(Command::QueryRuntimeCaps {
+                correlation_id: cid,
+            })
         }
-        _ => Ok(Command::Unknown { correlation_id: cid, kind_raw: hdr.kind_raw }),
+        _ => Ok(Command::Unknown {
+            correlation_id: cid,
+            kind_raw: hdr.kind_raw,
+        }),
     }
 }
 
 /// Build a control-channel command payload (header + body).
 pub fn frame_payload(kind: MessageKind, correlation_id: u32, body: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(7 + body.len());
-    out.extend_from_slice(&encode_message_header(kind, MESSAGE_VERSION_DEFAULT, correlation_id));
+    out.extend_from_slice(&encode_message_header(
+        kind,
+        MESSAGE_VERSION_DEFAULT,
+        correlation_id,
+    ));
     out.extend_from_slice(body);
     out
 }
@@ -93,7 +119,12 @@ pub fn push_pieces_response_frame(
     arrival_clock: u64,
     front_start_time: u64,
 ) -> Vec<u8> {
-    let body = PushPiecesResponse { result, arrival_clock, front_start_time }.encoded_to_vec();
+    let body = PushPiecesResponse {
+        result,
+        arrival_clock,
+        front_start_time,
+    }
+    .encoded_to_vec();
     control_frame(MessageKind::PushPiecesResponse, cid, &body)
 }
 
@@ -110,9 +141,8 @@ pub fn status_heartbeat_frame(engine_state: u8, retired_counts: &[u32]) -> Vec<u
     };
     let body = hb.encoded_to_vec();
     let payload = {
-        let mut p =
-            encode_message_header(MessageKind::StatusHeartbeat, MESSAGE_VERSION_DEFAULT, 0)
-                .to_vec();
+        let mut p = encode_message_header(MessageKind::StatusHeartbeat, MESSAGE_VERSION_DEFAULT, 0)
+            .to_vec();
         p.extend_from_slice(&body);
         p
     };
@@ -155,7 +185,10 @@ mod tests {
     fn decodes_identify_on_control_channel() {
         let payload = frame_payload(MessageKind::Identify, 1, &[3u8]);
         match decode_command(0, &payload).unwrap() {
-            Command::Identify { correlation_id: 1, proto_version: 3 } => {}
+            Command::Identify {
+                correlation_id: 1,
+                proto_version: 3,
+            } => {}
             other => panic!("wrong variant: {other:?}"),
         }
     }
@@ -172,7 +205,10 @@ mod tests {
         };
         let payload = frame_payload(MessageKind::PushPieces, 7, &msg.encoded_to_vec());
         match decode_command(KALICO_CHANNEL_PIECES, &payload).unwrap() {
-            Command::PushPieces { correlation_id, msg: m } => {
+            Command::PushPieces {
+                correlation_id,
+                msg: m,
+            } => {
                 assert_eq!(correlation_id, 7);
                 assert_eq!(m.axis_idx, 0);
                 assert_eq!(m.piece_count, 0);

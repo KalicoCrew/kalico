@@ -27,7 +27,7 @@ class SerialReader:
         # Serial port
         self.serial_dev = None
         self.msgparser = msgproto.MessageParser(warn_prefix=warn_prefix)
-        self.ffi_main = self.ffi_lib = None
+        self.ffi_main, self.ffi_lib = chelper.get_ffi()
         self.serialqueue = None
         self.default_cmd_queue = None
         self.stats_buf = None
@@ -97,7 +97,8 @@ class SerialReader:
                         "%s[bridge-async] kalico_status_v6 "
                         "engine_status=%s last_fault=%s",
                         self.warn_prefix,
-                        cur[0], cur[1],
+                        cur[0],
+                        cur[1],
                     )
             elif ev_type == "credit_freed":
                 # Handled directly by Rust EventDispatcher; skip Python routing.
@@ -116,11 +117,16 @@ class SerialReader:
                 ev["#receive_time"] = now
                 ev["#msg"] = ev.get("msg", "")
                 with self.lock:
-                    hdl = self.handlers.get(("#output", None), self.handle_default)
+                    hdl = self.handlers.get(
+                        ("#output", None), self.handle_default
+                    )
                 try:
                     hdl(ev)
                 except Exception:
-                    logging.exception("%sException in bridge output callback", self.warn_prefix)
+                    logging.exception(
+                        "%sException in bridge output callback",
+                        self.warn_prefix,
+                    )
                 continue
             elif ev_type == "response":
                 # Klipper-protocol Response frame the firmware emitted
@@ -135,7 +141,8 @@ class SerialReader:
                         "%s[bridge-poller] trsync_state response: "
                         "oid=%s can_trigger=%s trigger_reason=%s",
                         self.warn_prefix,
-                        ev.get("oid"), ev.get("can_trigger"),
+                        ev.get("oid"),
+                        ev.get("can_trigger"),
                         ev.get("trigger_reason"),
                     )
                 ev["#name"] = name
@@ -152,7 +159,9 @@ class SerialReader:
                         logging.info(
                             "%s[bridge-poller] trsync_state handler "
                             "lookup: key=(%s,%s) found=%s",
-                            self.warn_prefix, name, oid,
+                            self.warn_prefix,
+                            name,
+                            oid,
                             hdl is not self.handle_default,
                         )
                 try:
@@ -160,7 +169,9 @@ class SerialReader:
                 except Exception:
                     logging.exception(
                         "%sException in bridge response callback (name=%s, oid=%s)",
-                        self.warn_prefix, name, oid,
+                        self.warn_prefix,
+                        name,
+                        oid,
                     )
                 continue
             else:
@@ -176,7 +187,9 @@ class SerialReader:
             try:
                 hdl(ev)
             except Exception:
-                logging.exception("%sException in bridge event callback", self.warn_prefix)
+                logging.exception(
+                    "%sException in bridge event callback", self.warn_prefix
+                )
         # Bridge events carry runtime credit and status for the Rust planner.
         # During motion_toolhead.wait_moves(), Python releases the GIL while
         # the planner thread blocks on producer responses, so this timer is
@@ -393,15 +406,25 @@ class SerialReader:
         # on a transport drop. Default False (critical) if the MCU predates
         # the attribute.
         klippy_non_critical = bool(getattr(self.mcu, "is_non_critical", False))
-        logging.info("%sbridge attach_serial %s (handle=%s, non_critical=%s)",
-                     self.warn_prefix, filename, handle, klippy_non_critical)
+        logging.info(
+            "%sbridge attach_serial %s (handle=%s, non_critical=%s)",
+            self.warn_prefix,
+            filename,
+            handle,
+            klippy_non_critical,
+        )
         bridge.attach_serial(
-            handle, filename, 0, timeout_s=30.0,
+            handle,
+            filename,
+            0,
+            timeout_s=30.0,
             klippy_non_critical=klippy_non_critical,
         )
         identify_data = bridge.get_identify_data(handle)
         logging.info(
-            "%sbridge identify done (%d bytes)", self.warn_prefix, len(identify_data)
+            "%sbridge identify done (%d bytes)",
+            self.warn_prefix,
+            len(identify_data),
         )
         msgparser = msgproto.MessageParser(warn_prefix=self.warn_prefix)
         msgparser.process_identify(identify_data)
@@ -413,9 +436,7 @@ class SerialReader:
         # Register a reactor timer that polls runtime events from the
         # bridge and dispatches them to klippy's registered handlers.
         # This is the inbound async path for kalico_status_v6 etc.
-        self.reactor.register_timer(
-            self._bridge_event_poller, self.reactor.NOW
-        )
+        self.reactor.register_timer(self._bridge_event_poller, self.reactor.NOW)
 
     def connect_uart(self, serialport, baud, rts=True):
         # Bridge mode owns the wire for UART transports too; route through
@@ -440,11 +461,16 @@ class SerialReader:
             self.ffi_lib.serialqueue_alloc(self.serial_dev.fileno(), b"f", 0),
             self.ffi_lib.serialqueue_free,
         )
+        self.default_cmd_queue = self.alloc_command_queue()
 
     def set_clock_est(self, freq, conv_time, conv_clock, last_clock):
+        if self.mcu._motion_bridge is None:
+            return
         self.mcu._motion_bridge.set_clock_est(
             self.mcu._bridge_handle,
-            float(freq), float(conv_time), int(conv_clock),
+            float(freq),
+            float(conv_time),
+            int(conv_clock),
         )
 
     def disconnect(self):
@@ -492,38 +518,74 @@ class SerialReader:
 
     # Command sending
     def raw_send(self, cmd, minclock, reqclock, cmd_queue):
-        # Bridge mode: no-op for all MCUs. Bridge-driven MCUs (H7,
-        # F446) use the kalico binary protocol. Non-bridge MCUs
-        # (beacon) get trsync commands via direct serial.send() in
-        # MCU_trsync.start(). Clock sync is handled by the bridge
-        # internally — forwarding get_clock here caused contention
-        # that broke X homing trip event delivery.
         self._check_noncritical_disconnected()
+        if self.serialqueue is not None:
+            if cmd_queue is None:
+                cmd_queue = self.default_cmd_queue
+            if cmd_queue is not None:
+                self.ffi_lib.serialqueue_send(
+                    self.serialqueue,
+                    cmd_queue,
+                    cmd,
+                    len(cmd),
+                    minclock,
+                    reqclock,
+                    0,
+                )
 
     def raw_send_wait_ack(self, cmd, minclock, reqclock, cmd_queue):
         self._check_noncritical_disconnected()
-        return {}
+        if self.serialqueue is not None:
+            if cmd_queue is None:
+                cmd_queue = self.default_cmd_queue
+            if cmd_queue is not None:
+                self.ffi_lib.serialqueue_send(
+                    self.serialqueue,
+                    cmd_queue,
+                    cmd,
+                    len(cmd),
+                    minclock,
+                    reqclock,
+                    0,
+                )
 
     def send(self, msg, minclock=0, reqclock=0):
-        bridge = self.mcu._motion_bridge
-        handle = self.mcu._bridge_handle
-        logging.info(
-            "[serial-send] bridge_send mcu=%s handle=%s msg=%s",
-            getattr(self.mcu, "_name", "?"), handle, msg[:200])
-        bridge.bridge_send(handle, msg)
+        bridge = getattr(self.mcu, "_motion_bridge", None)
+        if bridge is not None:
+            handle = self.mcu._bridge_handle
+            bridge.bridge_send(handle, msg)
+        elif self.serialqueue is not None:
+            cmd = self.msgparser.create_command(msg)
+            self.ffi_lib.serialqueue_send(
+                self.serialqueue,
+                self.default_cmd_queue,
+                cmd,
+                len(cmd),
+                minclock,
+                reqclock,
+                0,
+            )
 
     def send_with_response(self, msg, response):
-        params = self.mcu._motion_bridge.bridge_call(
-            self.mcu._bridge_handle, msg, response,
-        )
-        # Inject timing fields klippy expects (reactor monotonic as approx).
-        now = self.reactor.monotonic()
-        params["#sent_time"] = now
-        params["#receive_time"] = now
-        return params
+        bridge = getattr(self.mcu, "_motion_bridge", None)
+        if bridge is not None:
+            params = bridge.bridge_call(
+                self.mcu._bridge_handle,
+                msg,
+                response,
+            )
+            now = self.reactor.monotonic()
+            params["#sent_time"] = now
+            params["#receive_time"] = now
+            return params
+        raise error("send_with_response requires motion bridge")
 
     def alloc_command_queue(self):
-        # Bridge manages its own command queues in Rust.
+        if self.serialqueue is not None:
+            return self.ffi_main.gc(
+                self.ffi_lib.serialqueue_alloc_commandqueue(),
+                self.ffi_lib.serialqueue_free_commandqueue,
+            )
         return None
 
     # Dumping debug lists

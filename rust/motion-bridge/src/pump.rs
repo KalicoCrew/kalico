@@ -3,11 +3,11 @@
 //! per-ring flow control. See
 //! `docs/superpowers/specs/2026-05-28-push-pieces-wiring-design.md`.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
-use std::sync::mpsc::{Receiver, RecvError, RecvTimeoutError};
-use std::sync::Weak;
-use std::time::Duration;
 use runtime::piece_ring::PieceEntry;
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::Weak;
+use std::sync::mpsc::{Receiver, RecvError, RecvTimeoutError};
+use std::time::Duration;
 
 /// Destination ring identity.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
@@ -119,7 +119,10 @@ pub fn schedule(
         .iter()
         .filter(|(_, q)| !q.pieces.is_empty())
         .min_by(|(ka, qa), (kb, qb)| {
-            qa.pieces.front().unwrap().start_time
+            qa.pieces
+                .front()
+                .unwrap()
+                .start_time
                 .cmp(&qb.pieces.front().unwrap().start_time)
                 .then(ka.cmp(kb))
         });
@@ -315,11 +318,15 @@ mod sched_tests {
         match schedule(&q, 255, |_| None) {
             Schedule::Send(frames) => {
                 // Y must be batched despite full sibling X.
-                let yf = frames.iter().find(|f| f.key == AxisKey { mcu_id: 1, axis: 1 });
+                let yf = frames
+                    .iter()
+                    .find(|f| f.key == AxisKey { mcu_id: 1, axis: 1 });
                 assert!(yf.is_some(), "Y should be batched despite full sibling X");
                 // X is full → contributes nothing to this batch.
                 assert!(
-                    !frames.iter().any(|f| f.key == AxisKey { mcu_id: 1, axis: 0 }),
+                    !frames
+                        .iter()
+                        .any(|f| f.key == AxisKey { mcu_id: 1, axis: 0 }),
                     "full X must not appear in the batch"
                 );
             }
@@ -379,24 +386,24 @@ mod sched_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
     use std::sync::mpsc;
+    use std::sync::{Arc, Mutex};
 
     #[test]
     fn room_full_then_drains() {
         let mut q = AxisQueue::new(4);
         assert_eq!(q.room(), 4);
         q.pushed = 4;
-        assert_eq!(q.room(), 0);          // full
+        assert_eq!(q.room(), 0); // full
         q.retired = 1;
-        assert_eq!(q.room(), 1);          // one freed
+        assert_eq!(q.room(), 1); // one freed
     }
 
     #[test]
     fn room_correct_across_u32_wrap() {
         let mut q = AxisQueue::new(8);
-        q.pushed = 2;                      // wrapped past u32::MAX
-        q.retired = u32::MAX;             // retired is "behind" pushed by 3
+        q.pushed = 2; // wrapped past u32::MAX
+        q.retired = u32::MAX; // retired is "behind" pushed by 3
         // in_flight = 2 - (u32::MAX) wrapping = 3
         assert_eq!(q.room(), 5);
     }
@@ -422,7 +429,9 @@ mod tests {
 
     impl RecordingSink {
         fn new() -> Self {
-            Self { calls: Arc::new(Mutex::new(Vec::new())) }
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+            }
         }
         fn recorded(&self) -> Vec<(u16, u32)> {
             self.calls.lock().unwrap().clone()
@@ -443,7 +452,12 @@ mod tests {
     }
 
     fn make_piece(t: u64) -> PieceEntry {
-        PieceEntry { start_time: t, coeffs: [0.0; 4], duration: 0.001, _reserved: 0 }
+        PieceEntry {
+            start_time: t,
+            coeffs: [0.0; 4],
+            duration: 0.001,
+            _reserved: 0,
+        }
     }
 
     #[test]
@@ -478,7 +492,7 @@ mod tests {
         .unwrap();
         {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-            while sink.recorded().len() < 1 {
+            while sink.recorded().is_empty() {
                 assert!(
                     std::time::Instant::now() < deadline,
                     "pump did not drain first batch within deadline"
@@ -509,7 +523,12 @@ mod tests {
         handle.join().unwrap();
 
         let recorded = sink.recorded();
-        assert_eq!(recorded.len(), 2, "expected exactly 2 sends, got {}", recorded.len());
+        assert_eq!(
+            recorded.len(),
+            2,
+            "expected exactly 2 sends, got {}",
+            recorded.len()
+        );
 
         let (s0, h0) = recorded[0];
         let (s1, h1) = recorded[1];
@@ -603,13 +622,20 @@ where
     let apply = |msg: PumpMsg, queues: &mut BTreeMap<AxisKey, AxisQueue>| -> bool {
         match msg {
             PumpMsg::Shutdown => return false,
-            PumpMsg::Enqueue(EnqueueMsg { key, pieces, fresh_stream: _ }) => {
+            PumpMsg::Enqueue(EnqueueMsg {
+                key,
+                pieces,
+                fresh_stream: _,
+            }) => {
                 let q = queues
                     .entry(key)
                     .or_insert_with(|| AxisQueue::new(ring_depth_of(key)));
                 q.pieces.extend(pieces);
             }
-            PumpMsg::Heartbeat(HeartbeatMsg { mcu_id, retired_counts }) => {
+            PumpMsg::Heartbeat(HeartbeatMsg {
+                mcu_id,
+                retired_counts,
+            }) => {
                 // INVARIANT: retired_counts[i] is axis index i, the SAME axis
                 // numbering used by PushPieces.axis_idx and the enqueue adapter's
                 // AxisKey.axis. Verified end-to-end on the MCU: the heartbeat FFI
@@ -617,7 +643,10 @@ where
                 // in index order (runtime_ffi.rs), and push_pieces(axis_idx) targets
                 // that same stepping_axes[axis_idx]. Do not reorder either side.
                 for (axis, &c) in retired_counts.iter().enumerate() {
-                    let key = AxisKey { mcu_id, axis: axis as u8 };
+                    let key = AxisKey {
+                        mcu_id,
+                        axis: axis as u8,
+                    };
                     if let Some(q) = queues.get_mut(&key) {
                         q.retired = c;
                     }
@@ -715,8 +744,7 @@ where
                         };
                         match sink.send_frame(f.key, &f.pieces, f.start_slot, new_head) {
                             Ok(_) => {
-                                let q =
-                                    queues.get_mut(&f.key).expect("planned key exists");
+                                let q = queues.get_mut(&f.key).expect("planned key exists");
                                 for _ in 0..f.pieces.len() {
                                     q.pieces.pop_front();
                                 }
@@ -724,10 +752,7 @@ where
                                 q.advance_write_cursor(n);
                             }
                             Err(ref e) => {
-                                log::error!(
-                                    "pump send_frame failed for {:?}: {e}",
-                                    f.key
-                                );
+                                log::error!("pump send_frame failed for {:?}: {e}", f.key);
                                 // Leave the pieces queued; retry on next message.
                                 break 'send;
                             }
@@ -791,8 +816,7 @@ impl WireSink {
         start_slot: u16,
         new_head: u32,
     ) -> Result<kalico_protocol::messages::PushPiecesResponse, String> {
-        let mut pieces_bytes =
-            Vec::with_capacity(pieces.len() * std::mem::size_of::<PieceEntry>());
+        let mut pieces_bytes = Vec::with_capacity(std::mem::size_of_val(pieces));
         for p in pieces {
             pieces_bytes.extend_from_slice(&p.to_le_bytes());
         }
@@ -804,8 +828,7 @@ impl WireSink {
             new_head,
             pieces_bytes,
         };
-        let mut body =
-            Vec::with_capacity(8 + pieces.len() * std::mem::size_of::<PieceEntry>());
+        let mut body = Vec::with_capacity(8 + std::mem::size_of_val(pieces));
         kalico_protocol::codec::Encode::encode(&msg, &mut body);
 
         let transport = self.transports.get(&key.mcu_id).ok_or_else(|| {
@@ -819,9 +842,9 @@ impl WireSink {
 
         let resp_body = match transport {
             McuTransport::Serial(weak) => {
-                let io = weak.upgrade().ok_or_else(|| {
-                    format!("KalicoHostIo for mcu {} detached", key.mcu_id)
-                })?;
+                let io = weak
+                    .upgrade()
+                    .ok_or_else(|| format!("KalicoHostIo for mcu {} detached", key.mcu_id))?;
                 let (_kind, b) = io
                     .kalico_call_on_channel(
                         kalico_protocol::KALICO_CHANNEL_PIECES,
@@ -866,10 +889,7 @@ impl PieceSink for WireSink {
             "PushPieces frame exceeds u8 piece_count; schedule() must cap at MAX_PER_FRAME"
         );
 
-        let host_front_start_time: u64 = pieces
-            .first()
-            .map(|p| p.start_time)
-            .unwrap_or(0);
+        let host_front_start_time: u64 = pieces.first().map(|p| p.start_time).unwrap_or(0);
 
         let r = self.call_push_pieces(key, pieces, start_slot, new_head)?;
 
@@ -881,8 +901,7 @@ impl PieceSink for WireSink {
         // gap is visible rather than silently skipped.
         {
             // The arithmetic uses i64 to correctly represent negative arrival-lead.
-            let arrival_lead_ticks =
-                r.front_start_time as i64 - r.arrival_clock as i64;
+            let arrival_lead_ticks = r.front_start_time as i64 - r.arrival_clock as i64;
             // Approximate µs: EtherCAT clocks are CLOCK_MONOTONIC nanoseconds
             // (>> 1e12 on a running system); serial MCU clocks are < 1e12. For
             // serial, use per-MCU frequency: 520 MHz for H723 (mcu_id 0), 180 MHz

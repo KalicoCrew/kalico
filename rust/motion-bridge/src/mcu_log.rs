@@ -61,7 +61,9 @@ pub fn build_mcu_log_hook(
     move |e: McuLogEvent| {
         // 1. Resolve timestamp.
         let (time_str, time_estimated) = {
-            let guard = clock.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let guard = clock
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some((dt, estimated)) = guard.wall_time_at_mcu(e.mcu_tick) {
                 (format_time(dt), estimated)
             } else {
@@ -127,7 +129,9 @@ pub fn build_mcu_log_hook(
         line.push('\n');
 
         // 6. Write to the dedicated MCU JSONL file.
-        let mut w = writer.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut w = writer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Err(err) = w.write_all(line.as_bytes()) {
             // Fail-loudly on write error. Use eprintln because this closure
             // runs on the reactor dispatch thread where the tracing subscriber

@@ -36,7 +36,7 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use runtime::fault_sink::FaultSink;
-use runtime::motion_core::{ArmedPiece, get_position_and_velocity};
+use runtime::motion_core::{get_position_and_velocity, ArmedPiece};
 use runtime::piece_ring::{PieceEntry, RingDescriptor};
 
 /// EtherCAT operates on `CLOCK_MONOTONIC` in nanoseconds.
@@ -194,9 +194,7 @@ impl AxisRing {
         for chunk in bytes[..n * 32].chunks_exact(32) {
             let entry = parse_piece_entry(chunk);
             if self.desc.push(&mut self.storage, entry).is_err() {
-                log::warn!(
-                    "AxisRing::push_from_bytes: ring full at entry {pushed}/{piece_count}"
-                );
+                log::warn!("AxisRing::push_from_bytes: ring full at entry {pushed}/{piece_count}");
                 break;
             }
             pushed += 1;
@@ -206,7 +204,13 @@ impl AxisRing {
 
     /// Sample the axis at `now_ns` (CLOCK_MONOTONIC nanoseconds).
     pub fn sample(&mut self, now_ns: u64) -> Option<(f32, f32)> {
-        let AxisRing { ref mut armed, ref mut desc, ref storage, ref fault, .. } = *self;
+        let AxisRing {
+            ref mut armed,
+            ref mut desc,
+            ref storage,
+            ref fault,
+            ..
+        } = *self;
         let sink = EtherCatFaultSink { reg: fault };
         get_position_and_velocity(
             armed,
@@ -230,7 +234,11 @@ impl AxisRing {
     /// returned value to the host via `StatusHeartbeat`.
     pub fn take_fault(&self) -> Option<u32> {
         let prev = self.fault.swap(FAULT_REG_NONE, Ordering::Acquire);
-        if prev != FAULT_REG_NONE { Some(prev) } else { None }
+        if prev != FAULT_REG_NONE {
+            Some(prev)
+        } else {
+            None
+        }
     }
 
     /// Monotonic count of pieces whose time window has fully elapsed (wrapping u32).
@@ -270,14 +278,10 @@ impl core::fmt::Debug for AxisRing {
 /// Parse one `PieceEntry` from a 32-byte little-endian slice.
 fn parse_piece_entry(chunk: &[u8]) -> PieceEntry {
     debug_assert_eq!(chunk.len(), 32, "piece entry must be 32 bytes");
-    let rd4 = |i: usize| {
-        u32::from_le_bytes([chunk[i], chunk[i + 1], chunk[i + 2], chunk[i + 3]])
-    };
-    let start_time =
-        u64::from_le_bytes([
-            chunk[0], chunk[1], chunk[2], chunk[3],
-            chunk[4], chunk[5], chunk[6], chunk[7],
-        ]);
+    let rd4 = |i: usize| u32::from_le_bytes([chunk[i], chunk[i + 1], chunk[i + 2], chunk[i + 3]]);
+    let start_time = u64::from_le_bytes([
+        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+    ]);
     let c0 = f32::from_bits(rd4(8));
     let c1 = f32::from_bits(rd4(12));
     let c2 = f32::from_bits(rd4(16));
@@ -313,7 +317,7 @@ mod tests {
     fn ring_walk_eval_single_piece() {
         let mut ring = AxisRing::new();
         let t0: u64 = 1_000_000_000; // 1 s in ns
-        let dur: f32 = 1.0;          // 1 s
+        let dur: f32 = 1.0; // 1 s
 
         ring.push_entry(ease_entry(0.0, 10.0, t0, dur)).unwrap();
 
@@ -324,7 +328,10 @@ mod tests {
         assert!((pos_mid - 5.0).abs() < 0.2, "mid pos={pos_mid}");
 
         let pos_after = ring.sample(t0 + 2_000_000_000);
-        assert!(pos_after.is_none(), "ring must be empty after piece expires");
+        assert!(
+            pos_after.is_none(),
+            "ring must be empty after piece expires"
+        );
         assert_eq!(ring.retired_count(), 1);
     }
 
@@ -338,11 +345,12 @@ mod tests {
 
         // Both pieces are 1 ms each. Piece 0 starts at t0, piece 1 at t0+1ms.
         let t0: u64 = 1_000_000_000; // 1 s offset (arbitrary non-zero epoch)
-        let dur_ns: u64 = 1_000_000;  // 1 ms in ns
+        let dur_ns: u64 = 1_000_000; // 1 ms in ns
         let dur_s: f32 = 0.001;
 
         ring.push_entry(ease_entry(0.0, 10.0, t0, dur_s)).unwrap();
-        ring.push_entry(ease_entry(10.0, 0.0, t0 + dur_ns, dur_s)).unwrap();
+        ring.push_entry(ease_entry(10.0, 0.0, t0 + dur_ns, dur_s))
+            .unwrap();
 
         // Sample at exactly t0 (arm piece 0, elapsed=0 → pos=0).
         let (pos_start, _) = ring.sample(t0).unwrap();
@@ -352,12 +360,18 @@ mod tests {
         // Sample at piece 0 end_time (t0 + dur_ns):
         // `now < piece_end_cycles` → FALSE → retire piece 0, arm piece 1 at t=0 → 10.0.
         let (pos_boundary, _) = ring.sample(t0 + dur_ns).unwrap();
-        assert!((pos_boundary - 10.0).abs() < 0.1, "pos at piece0 end={pos_boundary}");
+        assert!(
+            (pos_boundary - 10.0).abs() < 0.1,
+            "pos at piece0 end={pos_boundary}"
+        );
         assert_eq!(ring.retired_count(), 1, "piece 0 retired at boundary");
 
         // Sample just before piece 1 expires.
         let (pos_p1_near_end, _) = ring.sample(t0 + 2 * dur_ns - 1).unwrap();
-        assert!((pos_p1_near_end - 0.0).abs() < 0.1, "piece1 near-end pos={pos_p1_near_end}");
+        assert!(
+            (pos_p1_near_end - 0.0).abs() < 0.1,
+            "piece1 near-end pos={pos_p1_near_end}"
+        );
 
         // Sample at exactly piece 1 end_time → retires piece 1, ring empty → None.
         let pos_gone = ring.sample(t0 + 2 * dur_ns);
@@ -411,11 +425,16 @@ mod tests {
     fn reset_clears_ring() {
         let mut ring = AxisRing::new();
         ring.push_entry(ease_entry(0.0, 1.0, 0, 1.0)).unwrap();
-        ring.push_entry(ease_entry(1.0, 0.0, 1_000_000_000, 1.0)).unwrap();
+        ring.push_entry(ease_entry(1.0, 0.0, 1_000_000_000, 1.0))
+            .unwrap();
         ring.reset();
         assert!(ring.is_empty());
         assert!(ring.armed.is_none());
-        assert_eq!(ring.take_fault(), None, "reset must clear the fault register");
+        assert_eq!(
+            ring.take_fault(),
+            None,
+            "reset must clear the fault register"
+        );
     }
 
     /// A piece whose start is more than `drift_budget + EC_DC_PERIOD_NS` (1.2 ms)
@@ -444,7 +463,8 @@ mod tests {
         // Use start_time = 0 and sample at 20_000_000 ns (20 ms) so gap > 1.2 ms.
         let piece_start_ns: u64 = 0;
         let sample_now_ns: u64 = 20_000_000; // 20 ms > 8.2 ms fault tolerance
-        ring.push_entry(ease_entry(0.0, 1.0, piece_start_ns, 100.0)).unwrap();
+        ring.push_entry(ease_entry(0.0, 1.0, piece_start_ns, 100.0))
+            .unwrap();
 
         // The walker adopts the piece and faults because (now - start) > fault_tolerance.
         let result = ring.sample(sample_now_ns);
@@ -458,7 +478,10 @@ mod tests {
         // KALICO_ERR_PIECE_START_IN_PAST = -308 → as i16 = -308 → as u16 = 0xFECC.
         #[allow(clippy::cast_sign_loss)]
         let expected_code = (-308_i32 as i16) as u16;
-        assert_eq!(code_u16, expected_code, "fault code must be PieceStartInPast wire value");
+        assert_eq!(
+            code_u16, expected_code,
+            "fault code must be PieceStartInPast wire value"
+        );
 
         // High 16 bits: deficit in µs.
         // deficit_cycles = 20_000_000; deficit_us = (20_000_000 * 1e-3) as u32 = 20_000 µs.
@@ -469,7 +492,11 @@ mod tests {
         );
 
         // take_fault() must clear the register — second call returns None.
-        assert_eq!(ring.take_fault(), None, "fault register must be cleared after take");
+        assert_eq!(
+            ring.take_fault(),
+            None,
+            "fault register must be cleared after take"
+        );
 
         // retired_count must still be 0 — the fault path does not advance the counter.
         assert_eq!(ring.retired_count(), 0, "fault must not retire the piece");
@@ -581,8 +608,9 @@ mod tests {
 
         // Sample one nanosecond before the boundary — still on piece 0.
         // Both samples are within the 1.2ms adoption-fault window of their respective pieces.
-        let (pos_before, vel_before) =
-            ring.sample(boundary_ns - 1).expect("sample before boundary must return Some");
+        let (pos_before, vel_before) = ring
+            .sample(boundary_ns - 1)
+            .expect("sample before boundary must return Some");
         // The fault register must not be set.
         assert_eq!(
             ring.take_fault(),
@@ -591,8 +619,9 @@ mod tests {
         );
 
         // sample() at boundary_ns retires piece 0 and arms piece 1.
-        let (pos_after, vel_after) =
-            ring.sample(boundary_ns + 1).expect("sample after boundary must return Some");
+        let (pos_after, vel_after) = ring
+            .sample(boundary_ns + 1)
+            .expect("sample after boundary must return Some");
         assert_eq!(
             ring.take_fault(),
             None,
@@ -779,7 +808,8 @@ mod tests {
         // The piece is NOT armed and the ring stays occupied.
         let now_ns: u64 = 20_000_000; // 20 ms > 1.2 ms tolerance
         let start_ns: u64 = 0;
-        ring.push_entry(ease_entry(0.0, 1.0, start_ns, 0.1)).unwrap(); // 100 ms piece
+        ring.push_entry(ease_entry(0.0, 1.0, start_ns, 0.1))
+            .unwrap(); // 100 ms piece
 
         // First sample — should fault.
         let r1 = ring.sample(now_ns);

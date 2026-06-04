@@ -79,7 +79,10 @@ impl RotatingJsonlWriter {
         if self.path.exists() {
             std::fs::rename(&self.path, self.rotated_path(1))?;
         }
-        self.file = OpenOptions::new().create(true).append(true).open(&self.path)?;
+        self.file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
         self.written = 0;
         self.last_fsync = Instant::now();
         Ok(())

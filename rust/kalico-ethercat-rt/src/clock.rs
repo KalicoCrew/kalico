@@ -11,7 +11,10 @@
 /// Nanoseconds on the host-wide `CLOCK_MONOTONIC` timeline.
 #[must_use]
 pub fn monotonic_ns() -> u64 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
     // SAFETY: `ts` is a valid, fully-initialized `timespec`; `clock_gettime`
     // only writes through the pointer and returns 0 on success for a valid
     // clock id. CLOCK_MONOTONIC is always available on Linux/macOS.

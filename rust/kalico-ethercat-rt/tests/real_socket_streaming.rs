@@ -63,8 +63,8 @@ use kalico_ethercat_rt::curves::AXIS_RING_CAPACITY;
 use kalico_ethercat_rt::curves::NUM_AXES;
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::wire::{
-    Command, identify_response_frame, push_pieces_response_frame, runtime_caps_response_frame,
-    status_heartbeat_frame,
+    identify_response_frame, push_pieces_response_frame, runtime_caps_response_frame,
+    status_heartbeat_frame, Command,
 };
 use kalico_host_rt::unix_native_conn::UnixNativeConn;
 use kalico_protocol::codec::{Decode, Encode};
@@ -130,23 +130,27 @@ fn run_endpoint(socket_path: String, faulted: Arc<AtomicBool>) {
         // ── 1. Command phase per iteration: drain available commands ────────
         for cmd in server.poll_commands() {
             match cmd {
-                Command::Identify { correlation_id, proto_version } => {
+                Command::Identify {
+                    correlation_id,
+                    proto_version,
+                } => {
                     server.respond(&identify_response_frame(correlation_id, proto_version));
                 }
-                Command::PushPieces { correlation_id, msg } => {
-                    let front_start_time = if msg.piece_count > 0
-                        && msg.pieces_bytes.len() >= 8
-                    {
-                        u64::from_le_bytes(
-                            msg.pieces_bytes[0..8].try_into().unwrap_or([0u8; 8]),
-                        )
+                Command::PushPieces {
+                    correlation_id,
+                    msg,
+                } => {
+                    let front_start_time = if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8 {
+                        u64::from_le_bytes(msg.pieces_bytes[0..8].try_into().unwrap_or([0u8; 8]))
                     } else {
                         0
                     };
-                    let pushed =
-                        ring.push_from_bytes(msg.piece_count, &msg.pieces_bytes);
-                    let result =
-                        if pushed == msg.piece_count { 0i32 } else { -309i32 };
+                    let pushed = ring.push_from_bytes(msg.piece_count, &msg.pieces_bytes);
+                    let result = if pushed == msg.piece_count {
+                        0i32
+                    } else {
+                        -309i32
+                    };
                     server.respond(&push_pieces_response_frame(
                         correlation_id,
                         result,
@@ -177,10 +181,7 @@ fn run_endpoint(socket_path: String, faulted: Arc<AtomicBool>) {
             let current_retired = ring.retired_count();
             if current_retired != last_sent_retired {
                 let engine_state: u8 = if ring.is_empty() { 0 } else { 1 };
-                server.respond(&status_heartbeat_frame(
-                    engine_state,
-                    &[current_retired],
-                ));
+                server.respond(&status_heartbeat_frame(engine_state, &[current_retired]));
                 last_sent_retired = current_retired;
             }
 
@@ -192,7 +193,10 @@ fn run_endpoint(socket_path: String, faulted: Arc<AtomicBool>) {
         if total_pushed >= N && ring.retired_count() as usize >= N {
             // Final heartbeat to ensure the client sees the terminal count.
             let engine_state: u8 = 0; // ring is empty
-            server.respond(&status_heartbeat_frame(engine_state, &[ring.retired_count()]));
+            server.respond(&status_heartbeat_frame(
+                engine_state,
+                &[ring.retired_count()],
+            ));
             break;
         }
 
@@ -243,10 +247,7 @@ fn push_pieces_body(pieces: &[PieceEntry], start: usize, end: usize) -> Vec<u8> 
 /// ```
 #[test]
 fn unix_native_conn_and_frame_server_sustain_streaming_past_ring_depth() {
-    let socket_path = format!(
-        "/tmp/kalico-e2e-stream-{}.sock",
-        std::process::id()
-    );
+    let socket_path = format!("/tmp/kalico-e2e-stream-{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
 
     // Build all N contiguous 1 ms pieces up front.
@@ -287,8 +288,7 @@ fn unix_native_conn_and_frame_server_sustain_streaming_past_ring_depth() {
     }
 
     // ── Connect real UnixNativeConn ─────────────────────────────────────────
-    let conn = UnixNativeConn::connect(&socket_path)
-        .expect("UnixNativeConn::connect must succeed");
+    let conn = UnixNativeConn::connect(&socket_path).expect("UnixNativeConn::connect must succeed");
 
     // Install heartbeat callback — monotonically records max(retired_counts[0]).
     {
@@ -301,12 +301,7 @@ fn unix_native_conn_and_frame_server_sustain_streaming_past_ring_depth() {
                     if v <= prev {
                         break;
                     }
-                    match lr.compare_exchange_weak(
-                        prev,
-                        v,
-                        Ordering::AcqRel,
-                        Ordering::Acquire,
-                    ) {
+                    match lr.compare_exchange_weak(prev, v, Ordering::AcqRel, Ordering::Acquire) {
                         Ok(_) => break,
                         Err(cur) => prev = cur,
                     }
@@ -377,8 +372,7 @@ fn unix_native_conn_and_frame_server_sustain_streaming_past_ring_depth() {
             )
         });
         assert_eq!(
-            resp.result,
-            0,
+            resp.result, 0,
             "PushPiecesResponse.result must be 0 (OK) for batch \
              {total_sent}..{batch_end}"
         );

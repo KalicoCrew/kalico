@@ -1,4 +1,3 @@
-#[allow(clippy::float_cmp)] // tests assert exact bit-for-bit values for constants and round-trips
 use super::*;
 
 #[test]

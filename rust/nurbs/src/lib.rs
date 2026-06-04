@@ -11,10 +11,18 @@
 ))]
 compile_error!("features `mcu-h7`, `mcu-f4`, and `mcu-g0` are mutually exclusive");
 
-#[cfg(all(feature = "host", any(feature = "mcu-h7", feature = "mcu-f4", feature = "mcu-g0")))]
+#[cfg(all(
+    feature = "host",
+    any(feature = "mcu-h7", feature = "mcu-f4", feature = "mcu-g0")
+))]
 compile_error!("feature `host` is incompatible with `mcu-*` features");
 
-#[cfg(not(any(feature = "host", feature = "mcu-h7", feature = "mcu-f4", feature = "mcu-g0")))]
+#[cfg(not(any(
+    feature = "host",
+    feature = "mcu-h7",
+    feature = "mcu-f4",
+    feature = "mcu-g0"
+)))]
 compile_error!("must specify exactly one of: `host`, `mcu-h7`, `mcu-f4`, `mcu-g0`");
 
 mod float;

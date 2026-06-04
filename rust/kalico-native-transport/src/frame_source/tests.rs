@@ -1,7 +1,7 @@
 use super::*;
-use std::io::Cursor;
 use crate::demux::Frame;
-use crate::frame::{encode_frame, CHANNEL_CONTROL};
+use crate::frame::{CHANNEL_CONTROL, encode_frame};
+use std::io::Cursor;
 
 #[test]
 fn poll_frames_until_returns_phantom_zero_on_eof() {
@@ -48,7 +48,6 @@ fn poll_frames_until_propagates_set_timeout_error() {
         cursor,
         Box::new(|_, _| Err(io::Error::new(io::ErrorKind::Other, "broken"))),
     );
-    let result =
-        fs.poll_frames_until(Instant::now() + Duration::from_millis(100));
+    let result = fs.poll_frames_until(Instant::now() + Duration::from_millis(100));
     assert!(matches!(result, Err(FrameSourceError::SetTimeout(_))));
 }

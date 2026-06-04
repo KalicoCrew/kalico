@@ -33,7 +33,6 @@ rewired in lockstep with this commit.
 from __future__ import annotations
 
 import logging
-import math
 import os
 import pty
 import select
@@ -43,7 +42,6 @@ import time
 from typing import Optional
 
 from klippy import msgproto
-
 from tools.sim_klippy.orchestrator.beacon_identify_dict import (
     CLOCK_FREQ,
     IDENTIFY_BLOB,
@@ -209,6 +207,7 @@ class BeaconMcuStub:
         # the H7 USB-CDC RX path.
         import termios as _termios
         import tty as _tty
+
         try:
             _tty.setraw(slave_fd, _termios.TCSANOW)
         except _termios.error:
@@ -224,6 +223,7 @@ class BeaconMcuStub:
         # can't deadlock the reactor. In the live klippy case the slave
         # is being drained by serialqueue.c's read thread continuously.
         import fcntl as _fcntl
+
         flags = _fcntl.fcntl(master_fd, _fcntl.F_GETFL)
         _fcntl.fcntl(master_fd, _fcntl.F_SETFL, flags | os.O_NONBLOCK)
         self._thread = threading.Thread(
@@ -307,7 +307,9 @@ class BeaconMcuStub:
         if self._master_fd is None:
             return
         try:
-            cmd = self._parser.lookup_command(msgformat).encode_by_name(**kwargs)
+            cmd = self._parser.lookup_command(msgformat).encode_by_name(
+                **kwargs
+            )
         except msgproto.error:
             logging.exception("beacon-stub: unknown msgformat %r", msgformat)
             return
@@ -455,12 +457,18 @@ class BeaconMcuStub:
             data = b""
         else:
             data = IDENTIFY_BLOB[offset : offset + count]
-        self._send_msg("identify_response offset=%u data=%.*s",
-                       offset=offset, data=list(data))
+        self._send_msg(
+            "identify_response offset=%u data=%.*s",
+            offset=offset,
+            data=list(data),
+        )
 
     def _handle_get_uptime(self, params: dict) -> None:
-        self._send_msg("uptime high=%u clock=%u",
-                       high=self._now_clock_high(), clock=self._now_clock())
+        self._send_msg(
+            "uptime high=%u clock=%u",
+            high=self._now_clock_high(),
+            clock=self._now_clock(),
+        )
 
     def _handle_get_clock(self, params: dict) -> None:
         self._send_msg("clock clock=%u", clock=self._now_clock())
@@ -522,14 +530,16 @@ class BeaconMcuStub:
             data = NVM_IMAGE[offset:end]
         self._send_msg(
             "beacon_nvm_data bytes=%*s offset=%hu",
-            bytes=list(data), offset=offset,
+            bytes=list(data),
+            offset=offset,
         )
 
     def _handle_beacon_contact_query(self, params: dict) -> None:
         # Reply with no trigger.
         self._send_msg(
             "beacon_contact_state triggered=%c detect_clock=%u",
-            triggered=0, detect_clock=0,
+            triggered=0,
+            detect_clock=0,
         )
 
     # -- trsync -------------------------------------------------------
@@ -558,7 +568,9 @@ class BeaconMcuStub:
         reason = params["reason"]
         self._send_msg(
             "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u",
-            oid=oid, can_trigger=0, trigger_reason=reason,
+            oid=oid,
+            can_trigger=0,
+            trigger_reason=reason,
             clock=self._now_clock(),
         )
 
@@ -604,11 +616,16 @@ class BeaconMcuStub:
         BATCH_PERIOD_S = 0.001  # 1 kHz batches → 6 kSps
         # Pre-build the per-sample 6-byte payload (constant Z = +1g).
         z_raw = 16384  # int16, +1g at ±2g scale.
-        sample_bytes = bytes([
-            0x00, 0x00,                               # x = 0
-            0x00, 0x00,                               # y = 0
-            z_raw & 0xFF, (z_raw >> 8) & 0xFF,        # z
-        ])
+        sample_bytes = bytes(
+            [
+                0x00,
+                0x00,  # x = 0
+                0x00,
+                0x00,  # y = 0
+                z_raw & 0xFF,
+                (z_raw >> 8) & 0xFF,  # z
+            ]
+        )
         batch_payload = sample_bytes * SAMPLES_PER_BATCH
         next_tick = time.monotonic()
         last_clock = self._now_clock()
@@ -670,9 +687,13 @@ class BeaconMcuStub:
     # Logging
     # ------------------------------------------------------------------
 
-    def _log(self, direction: str, data: bytes,
-             msgformat: Optional[str] = None,
-             kwargs: Optional[dict] = None) -> None:
+    def _log(
+        self,
+        direction: str,
+        data: bytes,
+        msgformat: Optional[str] = None,
+        kwargs: Optional[dict] = None,
+    ) -> None:
         if self._log_path is None:
             return
         try:
@@ -690,8 +711,10 @@ class BeaconMcuStub:
                         # "<N bytes>" rather than dumping every value.
                         parts = []
                         for k, v in kwargs.items():
-                            if isinstance(v, list) and v and isinstance(
-                                v[0], int
+                            if (
+                                isinstance(v, list)
+                                and v
+                                and isinstance(v[0], int)
                             ):
                                 parts.append(f"{k}=<{len(v)} bytes>")
                             else:
@@ -714,9 +737,13 @@ class BeaconMcuStub:
                 ts = f"{time.monotonic() - self._t0:.6f}"
                 # Drop binary-heavy fields for readability.
                 light = {
-                    k: (f"<{len(v)} bytes>" if isinstance(v, (bytes, bytearray))
-                        else v)
-                    for k, v in params.items() if not k.startswith("#")
+                    k: (
+                        f"<{len(v)} bytes>"
+                        if isinstance(v, (bytes, bytearray))
+                        else v
+                    )
+                    for k, v in params.items()
+                    if not k.startswith("#")
                 }
                 line = f"[{ts}][rx-msg] {name} {light}\n".encode()
                 f.write(line)

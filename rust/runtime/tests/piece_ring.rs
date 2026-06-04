@@ -334,7 +334,10 @@ fn rd_retired_cursor_wraps_after_depth_advances() {
     // Ring now empty: head==retired==2.
     ring.advance_counter();
     assert_eq!(ring.retired_count(), 2);
-    assert_eq!(ring.tail, 0, "tail must wrap to 0 after ring_depth advances");
+    assert_eq!(
+        ring.tail, 0,
+        "tail must wrap to 0 after ring_depth advances"
+    );
     assert!(ring.is_empty());
     // tail is back at slot 0 — verify by writing fresh entries and confirming
     // peek sees the first one (slot 0).
@@ -373,17 +376,27 @@ fn rd_commit_head_rejects_over_capacity_and_stale_behind_retired() {
     // proposed = 6.wrapping_sub(1) = 5 > ring_depth=4 → REJECTED.
     let head_before = ring.head;
     ring.commit_head(6);
-    assert_eq!(ring.head, head_before, "over-capacity commit_head must be rejected");
+    assert_eq!(
+        ring.head, head_before,
+        "over-capacity commit_head must be rejected"
+    );
 
     // Attempt to commit an out-of-domain value behind retired (retired=1,
     // new_head=0: proposed = 0u32.wrapping_sub(1) = u32::MAX → REJECTED).
     ring.commit_head(0);
-    assert_eq!(ring.head, head_before, "behind-retired commit_head must be rejected");
+    assert_eq!(
+        ring.head, head_before,
+        "behind-retired commit_head must be rejected"
+    );
 
     // A legitimate advance to exactly retired+ring_depth (occupancy=4) IS accepted.
     // retired=1, ring_depth=4 → new_head=5, proposed=4 == ring_depth → OK.
     ring.write_slot(&mut storage, ring.head as usize % 4, pe(50));
     ring.write_slot(&mut storage, (ring.head as usize + 1) % 4, pe(60));
     ring.commit_head(5);
-    assert_eq!(ring.len(), 4, "commit to exactly ring_depth occupancy must be accepted");
+    assert_eq!(
+        ring.len(),
+        4,
+        "commit to exactly ring_depth occupancy must be accepted"
+    );
 }

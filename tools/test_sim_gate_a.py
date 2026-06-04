@@ -42,8 +42,15 @@ import struct
 import sys
 import time
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import KalicoHostIO  # noqa: E402
+
+# Renode Gate-A acceptance test; boots the firmware in the Renode sim.
+# A __main__ driver. Tagged needs_renode so it is honestly excluded from CI
+# (no Renode emulation there). Run directly: `python3 <this file> ...`.
+pytestmark = pytest.mark.needs_renode
 
 # Same shapes as runtime/src/sim_fixtures.rs::lookup. Index = fixture_id.
 FIXTURES = [
@@ -119,9 +126,7 @@ def load_via_fixture(io, slot, fixture_id, timeout=5.0):
     return int(r["result"]), int(r.get("curve_handle_packed", 0))
 
 
-def push_segment(
-    io, seg_id, x_handle, t_start_ticks, t_end_ticks, timeout=5.0
-):
+def push_segment(io, seg_id, x_handle, t_start_ticks, t_end_ticks, timeout=5.0):
     """Step 7-B: 4-handle format. x_handle is the loaded scalar curve;
     Y/Z/E use UNUSED_HANDLE sentinel. e_mode=Travel (no extruder)."""
     cmd = (

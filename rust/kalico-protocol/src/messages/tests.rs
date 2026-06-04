@@ -187,7 +187,11 @@ fn push_pieces_response_roundtrip() {
         front_start_time: 0xDEAD_BEEF_CAFE_1234_u64,
     };
     let buf = msg.encoded_to_vec();
-    assert_eq!(buf.len(), 20, "PushPiecesResponse body must be exactly 20 bytes");
+    assert_eq!(
+        buf.len(),
+        20,
+        "PushPiecesResponse body must be exactly 20 bytes"
+    );
     // Byte-level layout verification (all little-endian).
     // result = -2 => 0xFFFFFFFE LE
     assert_eq!(&buf[0..4], &0xFFFF_FFFE_u32.to_le_bytes());

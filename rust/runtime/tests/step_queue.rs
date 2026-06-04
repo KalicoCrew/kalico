@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! SPSC properties for the Rust mirror of the C-side StepQueue.
 //!
 //! All four tests run single-threaded with a host-allocated queue; they

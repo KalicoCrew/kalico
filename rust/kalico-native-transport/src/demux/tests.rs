@@ -1,5 +1,5 @@
 use super::*;
-use crate::frame::{encode_frame, CHANNEL_CONTROL};
+use crate::frame::{CHANNEL_CONTROL, encode_frame};
 
 fn good_klipper_frame(payload: &[u8], seq: u8) -> Vec<u8> {
     // Build a valid Klipper frame: [len][seq|DEST][payload][crc_hi][crc_lo][0x7E]
@@ -96,7 +96,10 @@ fn kalico_payload_with_7e_does_not_resync() {
     assert!(errors.is_empty(), "unexpected errors: {errors:?}");
     assert_eq!(frames.len(), 1);
     match &frames[0] {
-        Frame::Kalico { channel, payload: p } => {
+        Frame::Kalico {
+            channel,
+            payload: p,
+        } => {
             assert_eq!(*channel, CHANNEL_CONTROL);
             assert_eq!(p, &payload);
         }
@@ -196,14 +199,21 @@ fn klipper_bad_crc_followed_immediately_by_valid_frame_recovers() {
     let mut d = Demuxer::new();
     let (frames, errors) = d.feed_slice(&stream);
     // Expect: at least one StreamError + the real KlipperFrame.
-    assert!(!errors.is_empty(),
-        "expected stream error from false latch, got {errors:?}");
-    let klippers: Vec<&[u8]> = frames.iter().filter_map(|f| match f {
-        Frame::Klipper(kf) => Some(kf.bytes()),
-        _ => None,
-    }).collect();
-    assert!(klippers.iter().any(|b| *b == real.as_slice()),
-        "expected the real frame to be recovered after resync; got {klippers:?}");
+    assert!(
+        !errors.is_empty(),
+        "expected stream error from false latch, got {errors:?}"
+    );
+    let klippers: Vec<&[u8]> = frames
+        .iter()
+        .filter_map(|f| match f {
+            Frame::Klipper(kf) => Some(kf.bytes()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        klippers.iter().any(|b| *b == real.as_slice()),
+        "expected the real frame to be recovered after resync; got {klippers:?}"
+    );
 }
 
 #[test]
@@ -220,12 +230,17 @@ fn klipper_false_length_latch_recovers_to_valid_frame() {
     stream.extend_from_slice(&real);
     let mut d = Demuxer::new();
     let (frames, _errors) = d.feed_slice(&stream);
-    let klippers: Vec<&[u8]> = frames.iter().filter_map(|f| match f {
-        Frame::Klipper(kf) => Some(kf.bytes()),
-        _ => None,
-    }).collect();
-    assert!(klippers.iter().any(|b| *b == real.as_slice()),
-        "expected the real frame to be recovered; got {klippers:?}");
+    let klippers: Vec<&[u8]> = frames
+        .iter()
+        .filter_map(|f| match f {
+            Frame::Klipper(kf) => Some(kf.bytes()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        klippers.iter().any(|b| *b == real.as_slice()),
+        "expected the real frame to be recovered; got {klippers:?}"
+    );
 }
 
 #[test]
@@ -241,8 +256,14 @@ fn klipper_bad_dest_emits_stream_error() {
     frame[crc_off + 1] = (crc & 0xFF) as u8;
     let mut d = Demuxer::new();
     let (_, errors) = d.feed_slice(&frame);
-    assert!(!errors.is_empty(),
-        "expected StreamError for bad DEST flag, got none");
-    assert!(errors.iter().any(|e| matches!(e, StreamError::KlipperBadSeqDest { .. })),
-        "expected KlipperBadSeqDest variant, got {errors:?}");
+    assert!(
+        !errors.is_empty(),
+        "expected StreamError for bad DEST flag, got none"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| matches!(e, StreamError::KlipperBadSeqDest { .. })),
+        "expected KlipperBadSeqDest variant, got {errors:?}"
+    );
 }

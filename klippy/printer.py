@@ -317,19 +317,26 @@ class Printer:
             pconfig.log_config(config)
         # Register subsystem components
         self._register_subsystem_components()
-        # Instantiate the motion bridge BEFORE MCU objects are constructed
-        from . import motion_bridge as motion_bridge_mod
+        # Instantiate the motion bridge BEFORE MCU objects are constructed.
+        # Skip when the native Rust .so is unavailable (CI/test) — the
+        # bridge-mode MCU code guards against None and the legacy chelper
+        # serial path handles debuginput mode.
+        try:
+            from . import motion_bridge as motion_bridge_mod
 
-        bridge = motion_bridge_mod.MotionBridgeWrapper(self.reactor)
-        self.add_object("motion_bridge", bridge)
-        # Wire the Rust host structured-logging subscriber + push the session
-        # context across the PyO3 seam, before any MCU attach/configure call
-        # can emit a Rust log (binding-timing invariant, spec §6).
-        motion_bridge_mod.attach_structured_logging(
-            bridge.get_bridge(),
-            self,
-            self.get_start_args().get("log_events_dir"),
-        )
+            bridge = motion_bridge_mod.MotionBridgeWrapper(self.reactor)
+            self.add_object("motion_bridge", bridge)
+            # Wire the Rust host structured-logging subscriber + push the
+            # session context across the PyO3 seam, before any MCU
+            # attach/configure call can emit a Rust log (binding-timing
+            # invariant, spec §6). Inside the try block: no bridge → no attach.
+            motion_bridge_mod.attach_structured_logging(
+                bridge.get_bridge(),
+                self,
+                self.get_start_args().get("log_events_dir"),
+            )
+        except (ImportError, TypeError):
+            pass
         # Create printer objects
         for m in [pins, mcu]:
             m.add_printer_objects(config)

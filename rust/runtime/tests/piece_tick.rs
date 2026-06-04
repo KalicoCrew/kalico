@@ -118,7 +118,10 @@ fn tick_arms_piece_when_start_time_reached() {
     // must succeed.
     let piece2 = const_piece(TICK_CYCLES + 520_000, 0.001);
     let rc2 = engine.push_pieces(0, &[piece2], &mut storage);
-    assert_eq!(rc2, 0, "should be able to push while piece is playing (depth >> 1)");
+    assert_eq!(
+        rc2, 0,
+        "should be able to push while piece is playing (depth >> 1)"
+    );
 }
 
 // ── Test 2: hold at t=0 before start_time ────────────────────────────────────
@@ -311,7 +314,11 @@ fn tick_within_fault_tolerance_arms_ok() {
     );
     // Piece was armed; window ends at start + 0.001 * 520e6 = 521_000 cycles,
     // well after now = 14_000. Under retire-time semantics retired stays 0.
-    assert_eq!(engine.retired_counts()[0], 0, "piece armed but still playing -> retired must be 0");
+    assert_eq!(
+        engine.retired_counts()[0],
+        0,
+        "piece armed but still playing -> retired must be 0"
+    );
 }
 
 // ── Test 6: advance through consecutive pieces ───────────────────────────────
@@ -454,7 +461,11 @@ fn retired_count_bumps_at_window_end_not_arm() {
     // Tick 1: at p0_start → arm piece 0. Window extends to p1_start, so
     // piece 0 is still playing → retired == 0.
     engine.tick(p0_start, &shared, &mut storage);
-    assert_eq!(shared.last_error.load(Ordering::Acquire), 0, "no fault arming piece 0");
+    assert_eq!(
+        shared.last_error.load(Ordering::Acquire),
+        0,
+        "no fault arming piece 0"
+    );
     assert_eq!(
         engine.retired_counts()[0],
         0,
@@ -472,7 +483,11 @@ fn retired_count_bumps_at_window_end_not_arm() {
     // Tick 3: exactly at p1_start (== p0 end). Engine sees piece 0's window
     // has ended, retires it (retired → 1), then arms piece 1 (lateness = 0).
     engine.tick(p1_start, &shared, &mut storage);
-    assert_eq!(shared.last_error.load(Ordering::Acquire), 0, "no fault retiring p0 / arming p1");
+    assert_eq!(
+        shared.last_error.load(Ordering::Acquire),
+        0,
+        "no fault retiring p0 / arming p1"
+    );
     assert_eq!(
         engine.retired_counts()[0],
         1,

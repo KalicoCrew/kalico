@@ -24,7 +24,9 @@ def test_linux_gpiochip_zero():
 
 def test_linux_gpiochip_nonzero_port():
     # MAX_GPIO_LINES=288 in src/linux/internal.h::GPIO.
-    assert MCU_endstop._resolve_bridge_gpio_index("gpiochip2/gpio5") == 2 * 288 + 5
+    assert (
+        MCU_endstop._resolve_bridge_gpio_index("gpiochip2/gpio5") == 2 * 288 + 5
+    )
 
 
 def test_stm32_pa0_is_zero():

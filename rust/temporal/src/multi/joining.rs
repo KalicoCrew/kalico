@@ -1,10 +1,10 @@
 //! Lookahead joining via SOCP-per-iteration (option A). Spec §2.3.
 
+use crate::GridConfig;
+use crate::TopProfile;
 use crate::multi::junction::JunctionResult;
 use crate::multi::parallel::fan_out_solves;
 use crate::multi::{BatchError, JoiningStatus, SegmentInput};
-use crate::GridConfig;
-use crate::TopProfile;
 
 /// Hard cap on joining sweeps. Per spec §2.3 + §6.5: typical convergence is
 /// 1–3 sweeps; cap at 10 to detect bugs.

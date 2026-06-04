@@ -6,7 +6,7 @@
 import logging
 import math
 
-from klippy import chelper, stepper
+from klippy import stepper
 
 from ..extras.danger_options import get_danger_options
 

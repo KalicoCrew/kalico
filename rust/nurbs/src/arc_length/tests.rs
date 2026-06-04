@@ -49,8 +49,7 @@ fn integrate_quadratic_matches_closed_form() {
 fn build_scalar_table_for_linear_curve() {
     // Linear curve from 0 to 1 over u in [0, 1]: arc length = 1.
     let curve =
-        crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![0.0, 1.0], None)
-            .unwrap();
+        crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![0.0, 1.0], None).unwrap();
     let table = build_arc_length_table_scalar(&curve, 1e-6, 64).unwrap();
     assert!((table.s_max() - 1.0).abs() < 1e-6);
     assert_eq!(table.u_max(), 1.0);

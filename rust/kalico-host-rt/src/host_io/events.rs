@@ -7,7 +7,9 @@ use std::time::Instant;
 use arc_swap::ArcSwap;
 
 use crate::fault::FaultLatch;
-use crate::host_io::runtime_events::{CreditFreedEvent, McuLogEvent, RuntimeEvent, StatusEvent, TraceEvent};
+use crate::host_io::runtime_events::{
+    CreditFreedEvent, McuLogEvent, RuntimeEvent, StatusEvent, TraceEvent,
+};
 
 #[derive(Debug, Clone)]
 pub enum HostEvent {
@@ -417,7 +419,8 @@ impl EventDispatcher {
         // after MCU reset. The firmware encodes free_slots = Q_N-1 -
         // queue_depth (saturated at 0) — replicate the same computation here.
         let watermark = frame.retired_through_segment_id;
-        #[allow(clippy::cast_possible_wrap)] // intentional signed-difference comparison for wrap detection
+        #[allow(clippy::cast_possible_wrap)]
+        // intentional signed-difference comparison for wrap detection
         let advanced = (watermark.wrapping_sub(self.status_retired_watermark) as i32) > 0;
         if advanced {
             self.status_retired_watermark = watermark;

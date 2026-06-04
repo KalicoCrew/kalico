@@ -1,25 +1,25 @@
-pub mod logging;
-pub mod mcu_log;
 #[doc(hidden)]
 pub mod anchor;
 mod bridge;
-pub mod drain;
-#[doc(hidden)]
-pub mod motion_node;
-#[doc(hidden)]
-pub mod probe_homing;
 #[doc(hidden)]
 pub mod classify;
 #[doc(hidden)]
 pub mod config;
 #[doc(hidden)]
 pub mod dispatch;
+pub mod drain;
 #[doc(hidden)]
 pub mod enqueue;
 #[doc(hidden)]
 pub mod homing;
+pub mod logging;
+pub mod mcu_log;
+#[doc(hidden)]
+pub mod motion_node;
 #[doc(hidden)]
 pub mod planner;
+#[doc(hidden)]
+pub mod probe_homing;
 #[doc(hidden)]
 pub mod pump;
 mod router_transport;

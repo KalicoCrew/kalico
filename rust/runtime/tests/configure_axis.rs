@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! Stepping-redesign Task 11 — unit-level coverage of the three
 //! `configure_*` methods on `Engine`. These exercise the validation +
 //! state-publish behaviour directly through the engine surface; the

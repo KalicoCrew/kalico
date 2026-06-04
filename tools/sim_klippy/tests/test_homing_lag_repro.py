@@ -19,8 +19,8 @@ This test reproduces both by:
 - Checking the klippy.log for "needs rehome: True" followed by a
   successful second home (not "No trigger")
 """
+
 import json
-import pathlib
 import socket
 import threading
 import time
@@ -28,6 +28,8 @@ import time
 import pytest
 
 from tools.sim_klippy.orchestrator.sim_control_client import SimControlClient
+
+pytestmark = pytest.mark.needs_elf
 
 X_ENDSTOP_LINE = 200
 

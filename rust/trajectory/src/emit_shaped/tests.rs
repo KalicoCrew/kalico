@@ -55,21 +55,51 @@ fn default_kernels() -> [Option<PlanShaper>; 4] {
 
 fn assert_nurbs_near_equal(a: &ScalarNurbs<f64>, b: &ScalarNurbs<f64>, label: &str) {
     assert_eq!(a.degree(), b.degree(), "{label}: degree differs");
-    assert_eq!(a.knots().len(), b.knots().len(), "{label}: knot count differs");
-    let max_knot_diff = a.knots().iter().zip(b.knots().iter())
-        .map(|(ka, kb)| (ka - kb).abs()).fold(0.0_f64, f64::max);
-    assert!(max_knot_diff < 1e-12, "{label}: knots differ by {max_knot_diff:.2e}");
-    assert_eq!(a.control_points().len(), b.control_points().len(),
-        "{label}: control point count differs");
-    let max_cp_diff = a.control_points().iter().zip(b.control_points().iter())
-        .map(|(ca, cb)| (ca - cb).abs()).fold(0.0_f64, f64::max);
-    assert!(max_cp_diff < 1e-12, "{label}: control points differ by {max_cp_diff:.2e} mm");
-    assert_eq!(a.weights().is_some(), b.weights().is_some(),
-        "{label}: weight presence differs");
+    assert_eq!(
+        a.knots().len(),
+        b.knots().len(),
+        "{label}: knot count differs"
+    );
+    let max_knot_diff = a
+        .knots()
+        .iter()
+        .zip(b.knots().iter())
+        .map(|(ka, kb)| (ka - kb).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_knot_diff < 1e-12,
+        "{label}: knots differ by {max_knot_diff:.2e}"
+    );
+    assert_eq!(
+        a.control_points().len(),
+        b.control_points().len(),
+        "{label}: control point count differs"
+    );
+    let max_cp_diff = a
+        .control_points()
+        .iter()
+        .zip(b.control_points().iter())
+        .map(|(ca, cb)| (ca - cb).abs())
+        .fold(0.0_f64, f64::max);
+    assert!(
+        max_cp_diff < 1e-12,
+        "{label}: control points differ by {max_cp_diff:.2e} mm"
+    );
+    assert_eq!(
+        a.weights().is_some(),
+        b.weights().is_some(),
+        "{label}: weight presence differs"
+    );
     if let (Some(wa), Some(wb)) = (a.weights(), b.weights()) {
-        let max_w_diff = wa.iter().zip(wb.iter())
-            .map(|(wa, wb)| (wa - wb).abs()).fold(0.0_f64, f64::max);
-        assert!(max_w_diff < 1e-12, "{label}: weights differ by {max_w_diff:.2e}");
+        let max_w_diff = wa
+            .iter()
+            .zip(wb.iter())
+            .map(|(wa, wb)| (wa - wb).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(
+            max_w_diff < 1e-12,
+            "{label}: weights differ by {max_w_diff:.2e}"
+        );
     }
 }
 
@@ -108,8 +138,18 @@ fn empty_history_matches_shape_batch_byte_identical() {
     assert_eq!(planned.len(), 1);
 
     let kernels: [Option<PiecewisePolynomialKernel<f64>>; 4] = [
-        Some(RequiredShaper::SmoothZv { frequency_hz: 180.0 }.to_kernel()),
-        Some(RequiredShaper::SmoothZv { frequency_hz: 120.0 }.to_kernel()),
+        Some(
+            RequiredShaper::SmoothZv {
+                frequency_hz: 180.0,
+            }
+            .to_kernel(),
+        ),
+        Some(
+            RequiredShaper::SmoothZv {
+                frequency_hz: 120.0,
+            }
+            .to_kernel(),
+        ),
         None,
         None,
     ];
@@ -258,8 +298,7 @@ fn pad_segment_axis_with_history_seam_reads_history_tail() {
 
     // ---- Sanity: the no-history call uses constant-extension and
     // therefore reads start_val (= 10.0 here) at t = 0.8, not 8.0. ----
-    let padded_no_history =
-        crate::pad::pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 1.0, 2.0);
+    let padded_no_history = crate::pad::pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 1.0, 2.0);
     let pieces_no_history = extract_bezier_pieces(&padded_no_history);
     let val_08_no_history = pieces_no_history
         .iter()

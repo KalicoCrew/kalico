@@ -10,6 +10,7 @@ The "Printer is ready" string is not written to klippy.log directly —
 it only appears in the printer.state attribute exposed over the API
 socket. We poll info{} via the api socket and check the state field.
 """
+
 import json
 import pathlib
 import shutil
@@ -17,6 +18,8 @@ import socket
 import time
 
 import pytest
+
+pytestmark = pytest.mark.needs_elf
 
 
 def _save_logs_for_inspection(sim, name: str) -> None:

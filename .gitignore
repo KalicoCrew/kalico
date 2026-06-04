@@ -4,7 +4,7 @@ out
 *.so
 *.pyc
 __pycache__/
-.config
+/.config
 .config.old
 .config.*.*
 klippy/.version
@@ -28,6 +28,10 @@ mkdocs-env/
 
 # fitter prototype run outputs
 scripts/fitter_prototype/corpus_results/
+# local-only g-code corpora — large slicer dumps live here for manual fitter
+# runs; CI test corpora are generated in-test, never committed (see
+# rust/compat/tests/corpus.rs and rust/gcode/tests/golden_corpus_lex.rs).
+scripts/fitter_prototype/corpus/
 
 # git worktrees
 .worktrees/

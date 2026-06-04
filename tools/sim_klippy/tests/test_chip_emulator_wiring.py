@@ -4,16 +4,23 @@ chip latched the value.
 
 Catches: ChipSocketServer chunk size mismatches with the chip framing,
 threading-loop quirks, the round-trip path TMC firmware will use."""
+
 import os
 import socket
 import time
+
 import pytest
 
 from tools.sim_klippy.orchestrator.chip_socket_server import ChipSocketServer
-from tools.sim_klippy.orchestrator.tmc5160_emulator import TMC5160Emulator
 from tools.sim_klippy.orchestrator.tmc2209_emulator import (
-    TMC2209Emulator, crc8, _decode_uart_bits, _encode_uart_bits,
+    TMC2209Emulator,
+    _decode_uart_bits,
+    _encode_uart_bits,
+    crc8,
 )
+from tools.sim_klippy.orchestrator.tmc5160_emulator import TMC5160Emulator
+
+pytestmark = pytest.mark.sim_unit
 
 
 def _wait_for_socket(path, timeout=0.5):

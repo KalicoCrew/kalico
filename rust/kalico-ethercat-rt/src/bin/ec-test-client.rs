@@ -21,7 +21,9 @@ use kalico_protocol::messages::{MessageKind, PushPieces, PushPiecesResponse};
 use kalico_protocol::KALICO_CHANNEL_PIECES;
 
 fn arg_val(args: &[String], key: &str) -> Option<String> {
-    args.iter().position(|a| a == key).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == key)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 /// Append a 32-byte `PieceEntry` in wire format to `out`.
@@ -51,15 +53,18 @@ fn push_pieces_frame(cid: u32, pieces_bytes: Vec<u8>, piece_count: u8, new_head:
     };
     let mut body = Vec::new();
     msg.encode(&mut body);
-    let mut payload = encode_message_header(MessageKind::PushPieces, MESSAGE_VERSION_DEFAULT, cid)
-        .to_vec();
+    let mut payload =
+        encode_message_header(MessageKind::PushPieces, MESSAGE_VERSION_DEFAULT, cid).to_vec();
     payload.extend_from_slice(&body);
     encode_frame(KALICO_CHANNEL_PIECES, &payload)
 }
 
 /// Read bytes from `stream` into a `Demuxer` until we get a `PushPiecesResponse`
 /// or the deadline passes.
-fn read_push_pieces_response(stream: &mut UnixStream, deadline: Instant) -> Option<PushPiecesResponse> {
+fn read_push_pieces_response(
+    stream: &mut UnixStream,
+    deadline: Instant,
+) -> Option<PushPiecesResponse> {
     let mut demux = Demuxer::new();
     let mut buf = [0u8; 1024];
     loop {
@@ -122,10 +127,13 @@ fn read_push_pieces_response(stream: &mut UnixStream, deadline: Instant) -> Opti
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let socket =
-        arg_val(&args, "--socket").unwrap_or_else(|| "/tmp/kalico-ethercat.sock".into());
-    let mm: f32 = arg_val(&args, "--mm").and_then(|s| s.parse().ok()).unwrap_or(20.0);
-    let secs: f32 = arg_val(&args, "--secs").and_then(|s| s.parse().ok()).unwrap_or(2.0);
+    let socket = arg_val(&args, "--socket").unwrap_or_else(|| "/tmp/kalico-ethercat.sock".into());
+    let mm: f32 = arg_val(&args, "--mm")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20.0);
+    let secs: f32 = arg_val(&args, "--secs")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2.0);
 
     let mut stream = UnixStream::connect(&socket).expect("connect");
 
@@ -139,7 +147,12 @@ fn main() {
     // Piece 1: ease mm→0 over secs. Bernstein [mm,mm,0,0].
     let mut pieces_bytes = Vec::with_capacity(2 * 32);
     append_piece([0.0, 0.0, mm, mm], secs, t0_ns, &mut pieces_bytes);
-    append_piece([mm, mm, 0.0, 0.0], secs, t0_ns + piece_dur_ns, &mut pieces_bytes);
+    append_piece(
+        [mm, mm, 0.0, 0.0],
+        secs,
+        t0_ns + piece_dur_ns,
+        &mut pieces_bytes,
+    );
 
     // Send PushPieces on KALICO_CHANNEL_PIECES (channel 0x02).
     let frame = push_pieces_frame(1, pieces_bytes, 2, 2);
@@ -147,7 +160,9 @@ fn main() {
     eprintln!("client: sent PushPieces (axis=0, pieces=2, mm={mm}, secs={secs})");
 
     // Wait for the PushPiecesResponse.
-    stream.set_read_timeout(Some(Duration::from_millis(500))).expect("set_read_timeout");
+    stream
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .expect("set_read_timeout");
     let resp_deadline = Instant::now() + Duration::from_millis(500);
     let _resp = read_push_pieces_response(&mut stream, resp_deadline);
 

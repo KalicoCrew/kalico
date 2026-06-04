@@ -1,9 +1,7 @@
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use motion_bridge_native::pump::{
-    AxisKey, EnqueueMsg, HeartbeatMsg, PieceSink, PumpMsg, run_pump,
-};
+use motion_bridge_native::pump::{AxisKey, EnqueueMsg, HeartbeatMsg, PieceSink, PumpMsg, run_pump};
 use runtime::piece_ring::PieceEntry;
 
 struct RecordingSink(Arc<Mutex<Vec<(AxisKey, usize)>>>);
@@ -21,7 +19,12 @@ impl PieceSink for RecordingSink {
 }
 
 fn p(start: u64) -> PieceEntry {
-    PieceEntry { start_time: start, coeffs: [0.0; 4], duration: 0.001, _reserved: 0 }
+    PieceEntry {
+        start_time: start,
+        coeffs: [0.0; 4],
+        duration: 0.001,
+        _reserved: 0,
+    }
 }
 
 #[test]
@@ -50,10 +53,7 @@ fn pump_stalls_on_ring_full_resumes_on_heartbeat() {
         1,
         "first frame (2 pieces) sent, third stalled"
     );
-    assert_eq!(
-        rec.lock().unwrap()[0],
-        (AxisKey { mcu_id: 1, axis: 0 }, 2)
-    );
+    assert_eq!(rec.lock().unwrap()[0], (AxisKey { mcu_id: 1, axis: 0 }, 2));
 
     tx.send(PumpMsg::Heartbeat(HeartbeatMsg {
         mcu_id: 1,
@@ -62,10 +62,7 @@ fn pump_stalls_on_ring_full_resumes_on_heartbeat() {
     .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(50));
     assert_eq!(rec.lock().unwrap().len(), 2);
-    assert_eq!(
-        rec.lock().unwrap()[1],
-        (AxisKey { mcu_id: 1, axis: 0 }, 1)
-    );
+    assert_eq!(rec.lock().unwrap()[1], (AxisKey { mcu_id: 1, axis: 0 }, 1));
 
     tx.send(PumpMsg::Shutdown).unwrap();
     handle.join().unwrap();

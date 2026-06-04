@@ -23,7 +23,10 @@ pub struct DrainSync {
 
 impl DrainSync {
     pub fn new() -> Self {
-        Self { counts: Mutex::new(Counts::default()), cv: Condvar::new() }
+        Self {
+            counts: Mutex::new(Counts::default()),
+            cv: Condvar::new(),
+        }
     }
 
     /// Record `n` pieces handed to the wire for `(mcu, axis)`.
@@ -53,7 +56,9 @@ impl DrainSync {
 
     /// True iff every axis with sent>0 has retired == sent.
     fn is_drained(c: &Counts) -> bool {
-        c.sent.iter().all(|(k, &s)| c.retired.get(k).copied().unwrap_or(0) == s)
+        c.sent
+            .iter()
+            .all(|(k, &s)| c.retired.get(k).copied().unwrap_or(0) == s)
     }
 
     /// Block until drained or `timeout` elapses. Returns Err(message) on timeout.
@@ -79,8 +84,10 @@ impl DrainSync {
                     lagging.join(", ")
                 ));
             }
-            let (guard, _) =
-                self.cv.wait_timeout(c, deadline - now).unwrap_or_else(|p| p.into_inner());
+            let (guard, _) = self
+                .cv
+                .wait_timeout(c, deadline - now)
+                .unwrap_or_else(|p| p.into_inner());
             c = guard;
         }
         Ok(())

@@ -159,12 +159,11 @@ impl ShaperState {
                 // `restrict_to_domain` is exact under our cubic-Bézier-piecewise
                 // representation (split at boundary via the same `split_piece_at`
                 // used elsewhere in the algebra layer).
-                let restricted = restrict_segment_to(&seg, target).map_err(|detail| {
-                    ShapeError::Algebra {
+                let restricted =
+                    restrict_segment_to(&seg, target).map_err(|detail| ShapeError::Algebra {
                         index: dispatched.len(),
                         detail,
-                    }
-                })?;
+                    })?;
                 dispatched.push(restricted);
                 // The straddling segment is the last partially-eligible one;
                 // segments after it are entirely past the boundary.
@@ -323,12 +322,11 @@ impl ShaperState {
             if (lo - seg.t_start).abs() < T_EPSILON && (hi - seg.t_end).abs() < T_EPSILON {
                 dispatched.push(seg);
             } else {
-                let restricted = restrict_segment_lo_hi(&seg, lo, hi).map_err(|detail| {
-                    ShapeError::Algebra {
+                let restricted =
+                    restrict_segment_lo_hi(&seg, lo, hi).map_err(|detail| ShapeError::Algebra {
                         index: dispatched.len(),
                         detail,
-                    }
-                })?;
+                    })?;
                 dispatched.push(restricted);
             }
         }
@@ -365,11 +363,7 @@ fn build_history_storage(
 /// strictly before `t_dispatched − max_h − δ_safety` (with `δ_safety =
 /// max_h`). Identical policy to [`ShaperState::emit_committed`]'s history
 /// trim — extracted so [`ShaperState::commit_decel_to_zero`] can reuse it.
-fn trim_per_axis_history(
-    axes: &mut [super::AxisShaperQueue; 4],
-    t_dispatched: f64,
-    max_h: f64,
-) {
+fn trim_per_axis_history(axes: &mut [super::AxisShaperQueue; 4], t_dispatched: f64, max_h: f64) {
     let delta_safety = max_h;
     let trim_cutoff = t_dispatched - max_h - delta_safety;
     for axis in axes {

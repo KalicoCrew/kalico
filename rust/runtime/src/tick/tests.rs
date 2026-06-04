@@ -5,6 +5,10 @@
 //! assertion that `Engine::new` constructs a valid, idle engine with the
 //! expected sample-period configuration.
 
+// Test code: integer constant arithmetic (round-to-nearest cycles) is the
+// intended expression here; the production integer_division deny doesn't apply.
+#![allow(clippy::integer_division)]
+
 use crate::clock::TEST_ONLY_TICK_RATE_HZ;
 use crate::engine::Engine;
 
@@ -23,8 +27,7 @@ fn engine_new_has_correct_sample_period() {
     let engine = Engine::new(CLOCK_FREQ, TEST_ONLY_TICK_RATE_HZ);
     let expected_cycles = (CLOCK_FREQ + TEST_ONLY_TICK_RATE_HZ / 2) / TEST_ONLY_TICK_RATE_HZ;
     assert_eq!(
-        engine.sample_period_cycles,
-        expected_cycles,
+        engine.sample_period_cycles, expected_cycles,
         "sample_period_cycles must equal round(clock_freq / sample_rate); \
          got {}, expected {expected_cycles}",
         engine.sample_period_cycles
@@ -40,7 +43,10 @@ fn engine_new_has_correct_sample_period() {
 #[test]
 fn engine_new_starts_idle() {
     let engine = Engine::new(CLOCK_FREQ, TEST_ONLY_TICK_RATE_HZ);
-    assert_eq!(engine.num_axes, 0, "freshly-constructed engine must have 0 axes");
+    assert_eq!(
+        engine.num_axes, 0,
+        "freshly-constructed engine must have 0 axes"
+    );
     let rc = engine.retired_counts();
     assert!(
         rc.iter().all(|&c| c == 0),

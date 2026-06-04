@@ -6,8 +6,7 @@ use std::path::PathBuf;
 
 #[test]
 fn end_to_end_jsonl_has_schema_and_context() {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("kalico-log-it-{}", std::process::id()));
+    let dir: PathBuf = std::env::temp_dir().join(format!("kalico-log-it-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -36,7 +35,11 @@ fn end_to_end_jsonl_has_schema_and_context() {
         .filter(|l| !l.is_empty())
         .map(|l| serde_json::from_str(l).expect("valid JSON line"))
         .collect();
-    assert!(lines.len() >= 2, "expected >=2 records, got {}", lines.len());
+    assert!(
+        lines.len() >= 2,
+        "expected >=2 records, got {}",
+        lines.len()
+    );
     for r in &lines {
         assert_eq!(r["source"], "host-rust");
         assert_eq!(r["session_id"], "k-1748700131-4412");

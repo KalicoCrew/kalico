@@ -162,12 +162,7 @@ pub fn emit_shaped(
                     batch_t_start,
                     batch_t_end,
                 );
-                shape_axis(&padded, kernel, t_start, t_end).map_err(|detail| {
-                    ShapeError::Algebra {
-                        index: seg_idx,
-                        detail,
-                    }
-                })?
+                shape_axis(&padded, kernel, t_start, t_end)
             } else {
                 fitted.axes[axis].clone()
             };

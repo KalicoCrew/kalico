@@ -19,6 +19,7 @@ validation:
 # Planning, research, and spec artifacts live under docs/ for editing
 # convenience but are intentionally excluded from the published site nav.
 not_in_nav: |
+  /kalico-rewrite/
   /research/
   /superpowers/
 

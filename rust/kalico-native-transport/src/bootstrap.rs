@@ -6,7 +6,7 @@
 //! the standard 7-byte per-message header (§7.2).
 //!
 
-use crate::wire_helpers::{encode_message_header, MESSAGE_VERSION_DEFAULT};
+use crate::wire_helpers::{MESSAGE_VERSION_DEFAULT, encode_message_header};
 use kalico_protocol::{MessageKind, PER_MESSAGE_HEADER_LEN};
 
 /// Bootstrap Identify body length: `proto_version` (u8). 1 byte.

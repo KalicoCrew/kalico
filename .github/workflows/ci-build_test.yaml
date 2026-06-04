@@ -11,7 +11,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -55,21 +55,30 @@ jobs:
             docker run -v $PWD:/klipper dangerklippers/klipper-build:latest uv export --frozen -o scripts/klippy-requirements.txt --no-dev --no-hashes
             docker run -v $PWD:/klipper dangerklippers/klipper-build:latest uv export --frozen -o scripts/requirements_dev.txt --only-dev --no-hashes
 
-      # This *could* be done with a matrix, but then we would have to figure out sharing the docker image between builds
+      # Klippy tests across all supported Python versions. Each step runs the
+      # SAME command as `./scripts/ci.sh py <ver>` locally (one source of truth).
       - name: Test Klippy (Python 3.9)
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.9  py.test -n auto
-
+        run: ./scripts/ci.sh py 3.9
       - name: Test Klippy (Python 3.10)
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.10 py.test -n auto
-
+        run: ./scripts/ci.sh py 3.10
       - name: Test Klippy (Python 3.11)
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.11 py.test -n auto
-
+        run: ./scripts/ci.sh py 3.11
       - name: Test Klippy (Python 3.12)
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.12 py.test -n auto
-
+        run: ./scripts/ci.sh py 3.12
       - name: Test Klippy (Python 3.13)
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.13 py.test -n auto
-
+        run: ./scripts/ci.sh py 3.13
       - name: Test Klippy (Python 3.14)
-        run: docker run -v $PWD:/klipper dangerklippers/klipper-build:latest --python 3.14 py.test -n auto
+        run: ./scripts/ci.sh py 3.14
+
+  # kalico-sim in-process unit/contract tests. Hardware (H723/F446/Trident)
+  # and Renode tests are excluded EXPLICITLY by marker (see scripts/ci.sh sim),
+  # not hidden by testpaths.
+  sim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull docker image
+        run: docker pull dangerklippers/klipper-build:latest
+      - name: kalico-sim unit tests
+        run: ./scripts/ci.sh sim

@@ -499,7 +499,9 @@ impl PassthroughRouter {
             );
             return;
         }
-        let start_time = self.host_time_to_mcu_clock(mcu, seg0_host_secs).unwrap_or(0);
+        let start_time = self
+            .host_time_to_mcu_clock(mcu, seg0_host_secs)
+            .unwrap_or(0);
         let ack_now = self.compute_ack_clock(mcu).unwrap_or(0);
         let deficit_ticks = start_time as i64 - ack_now as i64;
         let deficit_us = (deficit_ticks as f64 / rec.clock_freq) * 1e6;

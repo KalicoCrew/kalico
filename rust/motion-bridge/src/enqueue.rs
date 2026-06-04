@@ -20,7 +20,7 @@
 //! XY motion; `seg.extrusion_per_xy_mm` and `seg.e_independent` are handled
 //! upstream. This adapter only produces pieces for the axes in `cfg.axes`.
 
-use crate::dispatch::{cfg_is_corexy, McuAxisConfig, AXIS_X, AXIS_Y};
+use crate::dispatch::{AXIS_X, AXIS_Y, McuAxisConfig, cfg_is_corexy};
 use crate::pump::{AxisKey, EnqueueMsg};
 use nurbs::ScalarNurbs;
 use runtime::piece_ring::PieceEntry;
@@ -66,9 +66,7 @@ where
         // Shared predicate (dispatch::cfg_is_corexy) owns the "is this MCU CoreXY"
         // decision so the piece path and the seed path cannot drift. The
         // segment-arity check stays here — it is specific to the curve path.
-        let corexy = cfg_is_corexy(cfg)
-            && AXIS_X < seg.axes.len()
-            && AXIS_Y < seg.axes.len();
+        let corexy = cfg_is_corexy(cfg) && AXIS_X < seg.axes.len() && AXIS_Y < seg.axes.len();
 
         let motor: Option<(ScalarNurbs<f64>, ScalarNurbs<f64>)> = if corexy {
             let x = &seg.axes[AXIS_X];
@@ -119,12 +117,7 @@ where
 /// Decompose `curve` into its constituent cubic Bézier pieces and produce one
 /// [`PieceEntry`] per piece with Bernstein coefficients cast to `f32` and
 /// `start_time` derived via `project`.
-fn flatten_axis<P>(
-    curve: &ScalarNurbs<f64>,
-    t0: f64,
-    mcu_id: u32,
-    project: &P,
-) -> Vec<PieceEntry>
+fn flatten_axis<P>(curve: &ScalarNurbs<f64>, t0: f64, mcu_id: u32, project: &P) -> Vec<PieceEntry>
 where
     P: Fn(u32, f64) -> u64,
 {
@@ -174,7 +167,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dispatch::{McuCaps, KINEMATICS_COREXY};
+    use crate::dispatch::{KINEMATICS_COREXY, McuCaps};
     use geometry::segment::EMode;
 
     /// Build a linear scalar NURBS over `[0, 1]` from Bernstein control points.
@@ -214,13 +207,9 @@ mod tests {
             },
         }];
 
-        let msgs = enqueue_segment(
-            &seg_x_move(),
-            &cfg,
-            100.0,
-            true,
-            |_mcu, hs| (hs * 1_000.0) as u64,
-        );
+        let msgs = enqueue_segment(&seg_x_move(), &cfg, 100.0, true, |_mcu, hs| {
+            (hs * 1_000.0) as u64
+        });
 
         // X axis must be present.
         let x = msgs

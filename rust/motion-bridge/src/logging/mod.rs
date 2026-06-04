@@ -15,7 +15,7 @@ use tracing_subscriber::prelude::*;
 
 use crate::logging::layer::JsonlLayer;
 use crate::logging::writer::{
-    RotatingJsonlWriter, DEFAULT_BACKUP_COUNT, DEFAULT_MAX_BYTES, FSYNC_INTERVAL,
+    DEFAULT_BACKUP_COUNT, DEFAULT_MAX_BYTES, FSYNC_INTERVAL, RotatingJsonlWriter,
 };
 
 // `set_context` is the only re-export with an in-crate consumer (the PyO3
@@ -85,12 +85,9 @@ pub fn init_logging(events_dir: &Path) -> Result<(), LogInitError> {
         .with(JsonlLayer::new(non_blocking));
 
     // Capture all existing `log::*` calls into tracing (zero call-site edits).
-    tracing_log::LogTracer::init().map_err(|e| {
-        std::io::Error::other(e.to_string())
-    })?;
-    tracing::subscriber::set_global_default(subscriber).map_err(|e| {
-        std::io::Error::other(e.to_string())
-    })?;
+    tracing_log::LogTracer::init().map_err(|e| std::io::Error::other(e.to_string()))?;
+    tracing::subscriber::set_global_default(subscriber)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
 
     let _ = GUARD.set(guard);
     Ok(())
@@ -123,10 +120,7 @@ mod tests {
     fn double_init_is_idempotent() {
         // First init may already have happened in another test in this binary;
         // assert that *some* init succeeds and a subsequent one is a no-op.
-        let dir = std::env::temp_dir().join(format!(
-            "kalico-init-test-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("kalico-init-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let first = init_logging(&dir);
         // Either this call initialized it, or a prior test did. In both cases a

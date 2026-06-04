@@ -5,6 +5,7 @@ position via rotation_distance / steps_per_rotation, computes a
 synthetic SG_RESULT that decreases as the position approaches the
 wall, and asks the chip emulator to assert/clear DIAG via its
 callback when SG_RESULT crosses a threshold."""
+
 from typing import Callable
 
 

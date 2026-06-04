@@ -17,10 +17,10 @@ For writes (bit 7 = 1): stores the value in the shadow register.
 
 import os
 import socket
-import time
 import struct
 import sys
 import threading
+import time
 
 TMC5160_DEFAULTS = {
     0x00: 0x00000009,  # GCONF
@@ -95,17 +95,21 @@ def handle_client(conn, regs, last_read, xdirect_log):
                         xdirect_log.append((time.monotonic(), coil_a, coil_b))
                         sys.stdout.write(
                             f"XDIRECT coil_a={coil_a} coil_b={coil_b} "
-                            f"raw=0x{value:08x}\n")
+                            f"raw=0x{value:08x}\n"
+                        )
                         sys.stdout.flush()
                     elif reg_addr == GCONF_REG:
                         direct_mode = bool(value & (1 << 16))
                         sys.stdout.write(
                             f"GCONF raw=0x{value:08x} "
-                            f"direct_mode={direct_mode}\n")
+                            f"direct_mode={direct_mode}\n"
+                        )
                         sys.stdout.flush()
                 last_read[0] = reg_addr
                 resp = struct.pack(">BI", 0x00, reply_val)
-                time.sleep(0.1)  # exaggerated SPI latency to trigger drain overflow
+                time.sleep(
+                    0.1
+                )  # exaggerated SPI latency to trigger drain overflow
                 try:
                     conn.sendall(resp)
                 except (BrokenPipeError, ConnectionResetError):
@@ -131,17 +135,25 @@ def run_emulator(sock_path):
     while True:
         try:
             conn, _ = srv.accept()
-            t = threading.Thread(target=handle_client,
-                                 args=(conn, regs, last_read, xdirect_log),
-                                 daemon=True)
+            t = threading.Thread(
+                target=handle_client,
+                args=(conn, regs, last_read, xdirect_log),
+                daemon=True,
+            )
             t.start()
         except socket.timeout:
             flush_counter += 1
             if flush_counter % 4 == 0 and xdirect_log:
                 import json
+
                 with open(json_path, "w") as f:
-                    json.dump([{"t": e[0], "a": e[1], "b": e[2]}
-                               for e in xdirect_log], f)
+                    json.dump(
+                        [
+                            {"t": e[0], "a": e[1], "b": e[2]}
+                            for e in xdirect_log
+                        ],
+                        f,
+                    )
             continue
         except Exception:
             break

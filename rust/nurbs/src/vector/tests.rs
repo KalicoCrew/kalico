@@ -1,4 +1,3 @@
-#[allow(clippy::float_cmp)] // tests assert exact stored control-point values, no arithmetic
 use super::*;
 
 fn linear_3d_curve() -> VectorNurbs<f64, 3> {

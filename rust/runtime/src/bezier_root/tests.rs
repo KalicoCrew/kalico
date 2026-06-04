@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)] // test code: panicking on None is the desired failure signal
+
 use super::*;
 
 /// De Casteljau at t=0 must collapse to P0 exactly (degenerate path:

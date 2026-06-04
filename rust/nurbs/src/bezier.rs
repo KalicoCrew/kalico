@@ -634,5 +634,6 @@ pub(crate) fn binomial(n: usize, k: usize) -> u64 {
 }
 
 #[cfg(test)]
-#[allow(clippy::float_cmp)] // tests assert exact stored coords / round-trip values, not arithmetic results
+#[allow(clippy::float_cmp)]
+// tests assert exact stored coords / round-trip values, not arithmetic results
 mod tests;

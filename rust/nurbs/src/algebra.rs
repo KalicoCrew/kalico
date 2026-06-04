@@ -1573,5 +1573,6 @@ pub(crate) fn knot_remove_redundant<T: Float>(curve: &mut crate::ScalarNurbs<T>,
 }
 
 #[cfg(all(test, feature = "host"))]
-#[allow(clippy::float_cmp)] // tests assert exact stored coords / round-trip values, not arithmetic results
+#[allow(clippy::float_cmp)]
+// tests assert exact stored coords / round-trip values, not arithmetic results
 mod tests;

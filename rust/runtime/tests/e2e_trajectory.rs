@@ -110,8 +110,7 @@ fn configure_axis0(engine: &mut Engine) {
 fn setup_queues(engine: &mut Engine) -> (Box<[StepQueue; MAX_AXES]>, SharedState) {
     // Heap-allocate so the queues stay at a fixed address for the engine's
     // raw pointer table.
-    let mut qs: Box<[StepQueue; MAX_AXES]> =
-        Box::new(core::array::from_fn(|_| StepQueue::new()));
+    let mut qs: Box<[StepQueue; MAX_AXES]> = Box::new(core::array::from_fn(|_| StepQueue::new()));
     let mut ptrs: [*mut StepQueue; MAX_AXES] = [core::ptr::null_mut(); MAX_AXES];
     for (i, q) in qs.iter_mut().enumerate() {
         ptrs[i] = q as *mut StepQueue;
@@ -185,7 +184,7 @@ fn e2e_linear_ramp_full_window() {
 
         let current_pos = engine
             .stepping_axes
-            .get(0)
+            .first()
             .and_then(|s| s.as_ref())
             .and_then(|a| a.steppers.first())
             .map(|s| s.position_count.load(Ordering::Acquire))
@@ -207,7 +206,7 @@ fn e2e_linear_ramp_full_window() {
     // ── Assertion 1: final position_count within ±1 of 80 ────────────────
     let final_pos = engine
         .stepping_axes
-        .get(0)
+        .first()
         .and_then(|s| s.as_ref())
         .and_then(|a| a.steppers.first())
         .map(|s| s.position_count.load(Ordering::Acquire))
@@ -291,7 +290,7 @@ fn e2e_ease_ramp_full_window() {
         );
         let current_pos = engine
             .stepping_axes
-            .get(0)
+            .first()
             .and_then(|s| s.as_ref())
             .and_then(|a| a.steppers.first())
             .map(|s| s.position_count.load(Ordering::Acquire))
@@ -306,7 +305,7 @@ fn e2e_ease_ramp_full_window() {
 
     let final_pos = engine
         .stepping_axes
-        .get(0)
+        .first()
         .and_then(|s| s.as_ref())
         .and_then(|a| a.steppers.first())
         .map(|s| s.position_count.load(Ordering::Acquire))
@@ -369,7 +368,12 @@ fn e2e_two_consecutive_moving_pieces() {
     // Piece B: 0.5 → 1.0 mm over 50 ms (absolute positions in the piece stream).
     let piece_b = PieceEntry {
         start_time: b_start,
-        coeffs: [half_mm, half_mm + (half_mm / 3.0), half_mm + 2.0 * (half_mm / 3.0), TARGET_MM],
+        coeffs: [
+            half_mm,
+            half_mm + (half_mm / 3.0),
+            half_mm + 2.0 * (half_mm / 3.0),
+            TARGET_MM,
+        ],
         duration: half_dur,
         _reserved: 0,
     };
@@ -392,7 +396,7 @@ fn e2e_two_consecutive_moving_pieces() {
 
     let final_pos = engine
         .stepping_axes
-        .get(0)
+        .first()
         .and_then(|s| s.as_ref())
         .and_then(|a| a.steppers.first())
         .map(|s| s.position_count.load(Ordering::Acquire))
@@ -408,6 +412,7 @@ fn e2e_two_consecutive_moving_pieces() {
     assert_eq!(
         engine.retired_counts()[0],
         2,
-        "two pieces must both retire; retired_counts={}", engine.retired_counts()[0]
+        "two pieces must both retire; retired_counts={}",
+        engine.retired_counts()[0]
     );
 }

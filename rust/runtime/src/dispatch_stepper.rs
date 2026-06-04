@@ -368,6 +368,9 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
                 }
                 let mut match_count: usize = 0;
                 for m in 0..phase_motor_count.min(crate::state::MAX_STEPPER_OIDS) {
+                    // SAFETY: `m < phase_motor_count.min(MAX_STEPPER_OIDS)`, so
+                    // `m < MAX_STEPPER_OIDS == phase_slot_idx.len()`.
+                    #[allow(clippy::indexing_slicing)]
                     let slot = shared.phase_slot_idx[m].load(Ordering::Acquire);
                     if slot as usize == axis_idx {
                         if match_count == j {

@@ -79,12 +79,12 @@ fn rt() -> *mut kalico_c_api::KalicoRuntime {
             let rc = unsafe {
                 kalico_c_api::kalico_runtime_configure_axis(
                     handle,
-                    0,                                // axis_idx
-                    0,                                // mode = Pulse
+                    0,                               // axis_idx
+                    0,                               // mode = Pulse
                     (1.0_f32 / 160.0_f32).to_bits(), // microstep_distance_f32_bits
-                    64,                               // ring_depth
-                    core::ptr::null(),                // bindings_ptr — null legal when count == 0
-                    0,                                // stepper_count
+                    64,                              // ring_depth
+                    core::ptr::null(),               // bindings_ptr — null legal when count == 0
+                    0,                               // stepper_count
                 )
             };
             assert_eq!(rc, kalico_c_api::KALICO_OK, "configure_axis failed: {rc}");
@@ -114,17 +114,16 @@ fn write_piece_then_commit_head_makes_one_piece_visible() {
     unsafe {
         let rc = kalico_c_api::kalico_runtime_write_piece(
             handle,
-            0,              // axis_idx
-            0,              // start_slot
-            0,              // index
+            0, // axis_idx
+            0, // start_slot
+            0, // index
             piece.as_ptr(),
         );
         assert_eq!(rc, kalico_c_api::KALICO_OK, "write_piece failed: {rc}");
 
         let rc = kalico_c_api::kalico_runtime_commit_head(
-            handle,
-            0,  // axis_idx
-            1,  // new_head — advance from 0 to 1
+            handle, 0, // axis_idx
+            1, // new_head — advance from 0 to 1
         );
         assert_eq!(rc, kalico_c_api::KALICO_OK, "commit_head failed: {rc}");
     }
@@ -138,7 +137,7 @@ fn write_piece_rejects_unconfigured_axis() {
     unsafe {
         let rc = kalico_c_api::kalico_runtime_write_piece(
             handle,
-            3,              // axis_idx 3 — never configured
+            3, // axis_idx 3 — never configured
             0,
             0,
             piece.as_ptr(),

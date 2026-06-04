@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Pre-push hook: run the fast CI subset so you don't push something CI rejects.
+#
+# Enable once per clone:
+#   git config core.hooksPath .githooks
+#
+# Skip for a single push (e.g. WIP branch):
+#   git push --no-verify
+exec "$(git rev-parse --show-toplevel)/scripts/ci.sh" quick

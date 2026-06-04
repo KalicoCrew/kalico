@@ -14,7 +14,12 @@ extern "C" {
     /// map PDOs, reach SAFE-OP, align DC, reach OP, run CiA402 state machine.
     /// Blocks until "operation enabled". Returns 0 on success; <0 on failure
     /// (-1 init, -2 no slaves, -3 SAFE-OP, -4 OP, -5 CiA402 enable timeout).
-    pub fn ec_rt_bringup(ifname: *const c_char, cycle_ns: i64, rt_cpu: c_int, rt_prio: c_int) -> c_int;
+    pub fn ec_rt_bringup(
+        ifname: *const c_char,
+        cycle_ns: i64,
+        rt_cpu: c_int,
+        rt_prio: c_int,
+    ) -> c_int;
 
     /// One steady-state DC cycle: sleep to next deadline, exchange process
     /// data, compute DC PI correction. Writes correction to `*toff_ns`.

@@ -22,15 +22,15 @@ pub fn shape_axis(
     kernel: &PiecewisePolynomialKernel<f64>,
     t_start: f64,
     t_end: f64,
-) -> Result<ScalarNurbs<f64>, nurbs::AlgebraError> {
-    Ok(convolve_discrete(
+) -> ScalarNurbs<f64> {
+    convolve_discrete(
         padded,
         kernel,
         t_start,
         t_end,
         INPUT_SAMPLES_PER_KERNEL_WIDTH,
         OUTPUT_SAMPLES_PER_KERNEL_WIDTH,
-    ))
+    )
 }
 
 fn eval_clamped(curve: &ScalarNurbs<f64>, t: f64) -> f64 {

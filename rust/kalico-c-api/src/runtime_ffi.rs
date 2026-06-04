@@ -27,8 +27,8 @@ pub mod exports {
     use runtime::engine::RuntimeStatus;
     use runtime::error::{
         KALICO_ERR_CAPABILITY_MISSING, KALICO_ERR_INVALID_ARG, KALICO_ERR_INVALID_HANDLE,
-        KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR,
-        KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED, KALICO_OK,
+        KALICO_ERR_NOT_INIT, KALICO_ERR_NULL_PTR, KALICO_ERR_PROTOCOL_VERSION_UNSUPPORTED,
+        KALICO_OK,
     };
     use runtime::state::{IsrState, RuntimeContext, SharedState};
 
@@ -1593,9 +1593,8 @@ pub mod exports {
             }
             let depth = axis.ring.ring_depth;
             let slot = (start_slot as usize + index as usize) % depth;
-            let entry = core::ptr::read_unaligned(
-                piece_ptr as *const runtime::piece_ring::PieceEntry
-            );
+            let entry =
+                core::ptr::read_unaligned(piece_ptr.cast::<runtime::piece_ring::PieceEntry>());
             axis.ring.write_slot(storage, slot, entry);
         }
         KALICO_OK

@@ -6,7 +6,7 @@
 //! foreground writes once during configure.
 //!
 //! `spi_bus_id == 0xFF` (and therefore the packed raw value `0xFFFF`) means
-//! "no phase config for this motor — use the existing StepPulse output path."
+//! "no phase config for this motor — use the existing `StepPulse` output path."
 //!
 //! Spec: docs/superpowers/specs/2026-05-18-phase-stepping-sim-design.md §3.2,
 //! §4.1.

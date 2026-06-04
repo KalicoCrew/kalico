@@ -7,7 +7,7 @@ use std::os::unix::net::{UnixListener, UnixStream};
 
 use kalico_native_transport::demux::{Demuxer, Frame};
 
-use crate::wire::{Command, decode_command};
+use crate::wire::{decode_command, Command};
 
 pub struct FrameServer {
     listener: UnixListener,
@@ -35,7 +35,12 @@ impl FrameServer {
         // client — the bench `ec-test-client` now, the klipper-user motion-bridge
         // later — can connect. This is a local-only UDS on a single-purpose host.
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666))?;
-        Ok(Self { listener, conn: None, demux: Demuxer::new(), buf: [0u8; 4096] })
+        Ok(Self {
+            listener,
+            conn: None,
+            demux: Demuxer::new(),
+            buf: [0u8; 4096],
+        })
     }
 
     /// Accept a pending client if we do not already have one.
@@ -66,7 +71,9 @@ impl FrameServer {
     pub fn poll_commands(&mut self) -> Vec<Command> {
         self.try_accept();
         let mut cmds = Vec::new();
-        let Some(stream) = self.conn.as_mut() else { return cmds };
+        let Some(stream) = self.conn.as_mut() else {
+            return cmds;
+        };
         match stream.read(&mut self.buf) {
             Ok(0) => {
                 eprintln!("ec-rt: client disconnected");

@@ -18,6 +18,7 @@ If the sim crashes (sim process dies, or sim stops emitting any frames for
 > 1 s of wall-clock after the ConfigureAxesResponse), we've reproduced the
 bench bug in sim.
 """
+
 from __future__ import annotations
 
 import socket
@@ -34,16 +35,22 @@ KIND_CONFIGURE_AXES_RESPONSE = 0x0031
 def crc16_ccitt(data: bytes) -> int:
     crc = 0xFFFF
     for byte in data:
-        d = (byte ^ (crc & 0x00FF))
+        d = byte ^ (crc & 0x00FF)
         d = (d ^ ((d << 4) & 0x00FF)) & 0xFF
         crc = ((crc >> 8) ^ (d << 8) ^ (d << 3) ^ (d >> 4)) & 0xFFFF
     return crc
 
 
-def build_kalico_frame(kind: int, version: int, correlation_id: int, body: bytes) -> bytes:
+def build_kalico_frame(
+    kind: int, version: int, correlation_id: int, body: bytes
+) -> bytes:
     msg = struct.pack("<HBI", kind, version, correlation_id) + body
     len_field = 2 + 1 + len(msg) + 2
-    header = struct.pack("<BH", KALICO_SYNC, len_field) + bytes([CHANNEL_CONTROL]) + msg
+    header = (
+        struct.pack("<BH", KALICO_SYNC, len_field)
+        + bytes([CHANNEL_CONTROL])
+        + msg
+    )
     crc = crc16_ccitt(header[1:])
     return header + struct.pack("<H", crc)
 
@@ -138,32 +145,46 @@ def main():
         if chunk:
             now = time.monotonic()
             if now - last_byte_t > 1.0:
-                print(f"[probe] t={now-start:5.2f}s RECOVERY  silence broken after {now-last_byte_t:.2f}s")
+                print(
+                    f"[probe] t={now - start:5.2f}s RECOVERY  silence broken after {now - last_byte_t:.2f}s"
+                )
             last_byte_t = now
             rx_total.extend(chunk)
         # Periodic-status report
         if time.monotonic() - last_emit_t > 1.0:
             silence = time.monotonic() - last_byte_t
-            print(f"[probe] t={time.monotonic()-start:5.2f}s rx_total={len(rx_total)}B silence={silence:.2f}s")
+            print(
+                f"[probe] t={time.monotonic() - start:5.2f}s rx_total={len(rx_total)}B silence={silence:.2f}s"
+            )
             last_emit_t = time.monotonic()
             if silence > 5.0 and not silence_warned:
-                print("[probe] *** F4 sim has been silent >5s after ConfigureAxes — possible crash ***")
+                print(
+                    "[probe] *** F4 sim has been silent >5s after ConfigureAxes — possible crash ***"
+                )
                 silence_warned = True
 
         # Parse frames and look for ConfigureAxesResponse
         frames, _ = collect_frames(bytes(rx_total))
         for (kind, ver, corr, body), off, n in frames:
-            if kind == KIND_CONFIGURE_AXES_RESPONSE and corr == correlation_id and not saw_config_response:
+            if (
+                kind == KIND_CONFIGURE_AXES_RESPONSE
+                and corr == correlation_id
+                and not saw_config_response
+            ):
                 saw_config_response = True
                 result = struct.unpack("<i", body[:4])[0]
-                print(f"[probe] +++ ConfigureAxesResponse result={result} (at offset {off}) +++")
+                print(
+                    f"[probe] +++ ConfigureAxesResponse result={result} (at offset {off}) +++"
+                )
 
     # Final summary
     print("")
     print("=" * 60)
-    print(f"[probe] Total RX: {len(rx_total)} bytes over {time.monotonic()-start:.1f}s")
+    print(
+        f"[probe] Total RX: {len(rx_total)} bytes over {time.monotonic() - start:.1f}s"
+    )
     print(f"[probe] Saw ConfigureAxesResponse: {saw_config_response}")
-    print(f"[probe] Final silence: {time.monotonic()-last_byte_t:.2f}s")
+    print(f"[probe] Final silence: {time.monotonic() - last_byte_t:.2f}s")
 
     # Decode all kalico frames we saw, count by kind
     frames, _ = collect_frames(bytes(rx_total))

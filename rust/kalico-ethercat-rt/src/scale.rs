@@ -12,7 +12,11 @@ impl CountMap {
     /// Capture the origin: `actual_counts` is the rotor position now,
     /// `pos_mm` is the trajectory position at the same instant.
     pub fn new(counts_per_mm: f64, actual_counts: i32, pos_mm: f64) -> Self {
-        Self { counts_per_mm, origin_counts: actual_counts, origin_mm: pos_mm }
+        Self {
+            counts_per_mm,
+            origin_counts: actual_counts,
+            origin_mm: pos_mm,
+        }
     }
 
     /// Map a trajectory position (mm) to an absolute target count.

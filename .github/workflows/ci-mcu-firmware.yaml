@@ -97,7 +97,6 @@ jobs:
           make clean && make distclean
           cp test/configs/kalico-linux.config .config
           make olddefconfig
-          grep -qxF 'CONFIG_KALICO_RUNTIME=y' .config || echo 'CONFIG_KALICO_RUNTIME=y' >> .config
           make V=1 -j"$(nproc)"
           test -f out/klipper.elf
           # C side: the symbol is DEFINED (T) in the linked elf.
@@ -117,7 +116,6 @@ jobs:
           make clean && make distclean
           cp .config.linux .config
           make olddefconfig
-          grep -qxF 'CONFIG_KALICO_RUNTIME=y' .config || echo 'CONFIG_KALICO_RUNTIME=y' >> .config
           make V=1 -j"$(nproc)"
           test -f out/klipper.elf
           echo "OK: sim Linux MCU linked"

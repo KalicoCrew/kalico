@@ -4,7 +4,7 @@
 # Prereqs:
 #   - renode (brew install renode) on PATH
 #   - A simulator-mode firmware build at out/klipper.elf with
-#     CONFIG_STM32_SERIAL_USART2=y and CONFIG_KALICO_RUNTIME=y. See
+#     CONFIG_STM32_SERIAL_USART2=y. See
 #     tools/sim/sim.config and tools/sim/build_sim_firmware.sh.
 #
 # After launch, USART2 is available at tcp localhost:3334. Host tools talk

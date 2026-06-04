@@ -191,8 +191,7 @@ class ZTilt:
 
     def cmd_Z_TILT_ADJUST(self, gcmd):
         raise gcmd.error(
-            "Z_TILT_ADJUST is not yet supported under the new "
-            "motion path"
+            "Z_TILT_ADJUST is not yet supported under the new motion path"
         )
 
     def probe_finalize(self, offsets, positions):

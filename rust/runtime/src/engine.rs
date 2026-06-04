@@ -217,6 +217,10 @@ impl Engine {
         self.ring_alloc_cursor += ring_depth;
 
         let idx = axis_idx as usize;
+        // SAFETY: `idx < MAX_AXES` is guaranteed by the bounds check at the
+        // top of this function (`axis_idx as usize >= MAX_AXES` returns early).
+        // `stepping_axes` has exactly `MAX_AXES` elements.
+        #[allow(clippy::indexing_slicing)]
         let axis = self.stepping_axes[idx].get_or_insert_with(AxisState::new_unconfigured);
 
         axis.microstep_distance = microstep_distance;
@@ -265,7 +269,8 @@ impl Engine {
         self.step_state = [StepMotorState::default(); MAX_AXES];
         self.last_motors = [0.0; MAX_AXES];
         self.tick_caches = crate::stepping_state::TickCaches::new();
-        self.status.store(RuntimeStatus::Idle as u8, Ordering::Release);
+        self.status
+            .store(RuntimeStatus::Idle as u8, Ordering::Release);
         self.last_error.store(0, Ordering::Release);
     }
 
@@ -302,12 +307,7 @@ impl Engine {
     ///
     /// `storage` is projected from `RuntimeContext::piece_storage` by the
     /// caller.
-    pub fn tick(
-        &mut self,
-        now: u64,
-        shared: &SharedState,
-        storage: &mut [PieceEntry],
-    ) -> bool {
+    pub fn tick(&mut self, now: u64, shared: &SharedState, storage: &mut [PieceEntry]) -> bool {
         #[cfg(feature = "motion-module-stepper")]
         use crate::dispatch_stepper::dispatch_axis;
 
@@ -402,9 +402,9 @@ impl Engine {
     /// Returns per-axis retired piece counts for the heartbeat.
     pub fn retired_counts(&self) -> [u32; MAX_AXES] {
         let mut out = [0u32; MAX_AXES];
-        for i in 0..MAX_AXES {
-            if let Some(Some(axis)) = self.stepping_axes.get(i) {
-                out[i] = axis.ring.retired_count();
+        for (slot, entry) in out.iter_mut().zip(self.stepping_axes.iter()) {
+            if let Some(axis) = entry {
+                *slot = axis.ring.retired_count();
             }
         }
         out
@@ -554,15 +554,20 @@ impl Engine {
         use core::sync::atomic::Ordering;
         // Map logical xyz to motor positions (no kinematics on MCU).
         let motor_positions = [xyz[0], xyz[1], xyz[2], 0.0_f32, 0.0, 0.0, 0.0, 0.0];
-        for i in 0..MAX_AXES {
-            if let Some(ss) = self.step_state.get_mut(i) {
-                ss.seed(motor_positions[i]);
-            }
+        for (ss, &pos) in self.step_state.iter_mut().zip(motor_positions.iter()) {
+            ss.seed(pos);
         }
-        for i in 0..MAX_AXES {
-            self.last_motors[i] = motor_positions[i];
-            self.tick_caches.p_prev[i] = motor_positions[i];
-            self.tick_caches.v_prev[i] = 0.0;
+        for ((lm, pp), &pos) in self
+            .last_motors
+            .iter_mut()
+            .zip(self.tick_caches.p_prev.iter_mut())
+            .zip(motor_positions.iter())
+        {
+            *lm = pos;
+            *pp = pos;
+        }
+        for vp in self.tick_caches.v_prev.iter_mut() {
+            *vp = 0.0;
         }
 
         for (i, axis_opt) in self.stepping_axes.iter_mut().enumerate() {
@@ -677,5 +682,3 @@ impl Default for Engine {
         Self::new(520_000_000, crate::clock::TEST_ONLY_TICK_RATE_HZ)
     }
 }
-
-

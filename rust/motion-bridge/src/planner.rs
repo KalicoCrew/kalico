@@ -742,7 +742,13 @@ fn run_loop(
                     PlannerMsg::ClockSyncRearm { .. } => "ClockSyncRearm",
                     PlannerMsg::Shutdown => "Shutdown",
                 };
-                tracing::debug!(subsystem = "motion", event = "planner_recv_gap", tag, gap_us, "planner recv");
+                tracing::debug!(
+                    subsystem = "motion",
+                    event = "planner_recv_gap",
+                    tag,
+                    gap_us,
+                    "planner recv"
+                );
                 m
             }
             Err(RecvTimeoutError::Timeout) => {

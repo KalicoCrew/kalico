@@ -119,9 +119,7 @@ def percentile(sorted_us, q):
     return sorted_us[idx]
 
 
-def push_segment(
-    io, seg_id, x_handle, t_start_ticks, t_end_ticks, timeout=5.0
-):
+def push_segment(io, seg_id, x_handle, t_start_ticks, t_end_ticks, timeout=5.0):
     cmd = (
         f"kalico_push_segment id={seg_id} x_handle={x_handle} "
         f"y_handle={UNUSED_HANDLE} z_handle={UNUSED_HANDLE} "
@@ -212,7 +210,7 @@ def main():
         mcu_now = read_mcu_clock(io)
         t_start_base = max(
             mcu_now + 5 * CLOCK_FREQ,  # +5 s ahead of widened_now
-            10 * CLOCK_FREQ,           # at least 10 s of absolute uptime
+            10 * CLOCK_FREQ,  # at least 10 s of absolute uptime
         )
 
         # Initial fill so the engine has something to chew on while we

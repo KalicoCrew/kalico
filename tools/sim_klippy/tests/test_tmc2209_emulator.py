@@ -16,10 +16,17 @@ The test feeds wire-format input and decodes the wire-format reply for
 assertion, mirroring exactly what the firmware-side bit-bang path sees.
 
 CRC8: polynomial 0x07, init 0, LSB-first within each byte."""
+
 import pytest
+
 from tools.sim_klippy.orchestrator.tmc2209_emulator import (
-    TMC2209Emulator, crc8, _decode_uart_bits, _encode_uart_bits,
+    TMC2209Emulator,
+    _decode_uart_bits,
+    _encode_uart_bits,
+    crc8,
 )
+
+pytestmark = pytest.mark.sim_unit
 
 
 def _wire(logical: bytes) -> bytes:
@@ -50,9 +57,9 @@ def test_write_then_read_roundtrip_gconf():
     read_logical = read_body + bytes([crc8(read_body)])
     reply = _logical(chip.handle(_wire(read_logical)))
     assert len(reply) == 8
-    assert reply[0] == 0x05         # sync
-    assert reply[1] == 0xFF         # master addr (datasheet)
-    assert reply[2] == 0x00         # reg
+    assert reply[0] == 0x05  # sync
+    assert reply[1] == 0xFF  # master addr (datasheet)
+    assert reply[2] == 0x00  # reg
     assert reply[3:7] == bytes([0, 0, 0, 5])
     assert reply[7] == crc8(reply[:7])
 

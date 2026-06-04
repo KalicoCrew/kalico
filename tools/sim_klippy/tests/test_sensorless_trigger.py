@@ -1,8 +1,13 @@
 """SensorlessTrigger tracks step counts → mm position → SG_RESULT.
 When position approaches the wall, SG_RESULT drops; once below SGTHRS
 the chip's DIAG callback fires."""
+
+import pytest
+
 from tools.sim_klippy.orchestrator.sensorless_trigger import SensorlessTrigger
 from tools.sim_klippy.orchestrator.tmc5160_emulator import TMC5160Emulator
+
+pytestmark = pytest.mark.sim_unit
 
 
 class _StepCounter:

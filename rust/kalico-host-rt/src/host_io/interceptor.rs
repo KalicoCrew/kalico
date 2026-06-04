@@ -55,10 +55,10 @@ impl InterceptorTable {
     ) -> InterceptorId {
         let id = InterceptorId::next();
         let key = InterceptorKey { msg_name, oid };
-        self.entries
-            .entry(key)
-            .or_default()
-            .push(InterceptorEntry { id, callback: callback.0 });
+        self.entries.entry(key).or_default().push(InterceptorEntry {
+            id,
+            callback: callback.0,
+        });
         id
     }
 

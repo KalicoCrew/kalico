@@ -205,7 +205,11 @@ pub fn split_cubic_bezier(
 ) -> (VectorNurbs<f64, 3>, VectorNurbs<f64, 3>) {
     assert_eq!(xyz.degree(), 3, "split_cubic_bezier: degree must be 3");
     let cps = xyz.control_points();
-    assert_eq!(cps.len(), 4, "split_cubic_bezier: must have 4 control points");
+    assert_eq!(
+        cps.len(),
+        4,
+        "split_cubic_bezier: must have 4 control points"
+    );
     assert!(
         xyz.weights().is_none(),
         "split_cubic_bezier: weights must be absent (polynomial Bézier)",

@@ -1,5 +1,5 @@
 """Control the shared virtual-time clock used by libvtime.so."""
-import ctypes
+
 import mmap
 import os
 import struct
@@ -60,6 +60,7 @@ def destroy() -> None:
 
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) < 2:
         print(f"Usage: {sys.argv[0]} [create|read|destroy]")
         sys.exit(1)
@@ -67,10 +68,10 @@ if __name__ == "__main__":
     if cmd == "create":
         start = int(sys.argv[2]) if len(sys.argv) > 2 else 1_000_000_000
         create(start)
-        print(f"Created vtime shm at {start} ns ({start/1e9:.3f} s)")
+        print(f"Created vtime shm at {start} ns ({start / 1e9:.3f} s)")
     elif cmd == "read":
         ns = read_ns()
-        print(f"{ns} ns ({ns/1e9:.3f} s)")
+        print(f"{ns} ns ({ns / 1e9:.3f} s)")
     elif cmd == "destroy":
         destroy()
         print("Destroyed vtime shm")

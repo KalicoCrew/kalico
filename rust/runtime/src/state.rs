@@ -263,7 +263,6 @@ pub struct SharedState {
     /// disables phase stepping entirely on this MCU.
     pub phase_motor_count: AtomicU8,
 
-
     // ─── Step 7-emission (Task 5) diagnostics ─────────────────────────────
     // Spec: docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md §6.
     /// Dedupe flag for producer-timer kicks. Kickers (push_segment + the
@@ -847,11 +846,16 @@ impl RuntimeContext {
             // cadence (typically 25 µs at 40 kHz on H7) instead of the
             // `0 → waketime = now` fallback that pegged the foreground
             // scheduler.
+            // Integer division is intentional: round-to-nearest cycles, then
+            // cycles-per-µs floor. Both are MCU fixed-point tunable constants,
+            // not geometric arithmetic.
+            #[allow(clippy::integer_division)]
             let sample_period_cycles_init: u32 = if sample_rate_hz == 0 {
                 0
             } else {
                 (freq + sample_rate_hz / 2) / sample_rate_hz
             };
+            #[allow(clippy::integer_division)]
             let dispatcher_floor_cycles_init: u32 = freq / 1_000_000;
             let shared_ref: *const SharedState = core::ptr::addr_of!((*rt_ptr).shared);
             (*shared_ref).sample_period_cycles.store(
@@ -913,6 +917,8 @@ pub fn set_step_mode(
     if mode == StepMode::Modulated && !mcu_supports_phase {
         return Err(SetStepModeError::CapabilityMissing);
     }
+    // SAFETY: bounds checked above: stepper_idx < MAX_STEPPER_OIDS == step_modes.len()
+    #[allow(clippy::indexing_slicing)]
     shared.step_modes[stepper_idx as usize]
         .store(mode as u8, core::sync::atomic::Ordering::Release);
     Ok(())

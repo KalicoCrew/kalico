@@ -13,6 +13,9 @@ Usage:
 The runner builds firmware, starts emulators, boots klippy, feeds G-code,
 and reports: pass/fail, print time, error details.
 """
+
+from __future__ import annotations
+
 import argparse
 import dataclasses
 import json
@@ -83,13 +86,16 @@ def vtime_destroy() -> None:
         pass
 
 
-def build_firmware(repo_root: pathlib.Path, config_name: str,
-                   output_name: str) -> pathlib.Path:
+def build_firmware(
+    repo_root: pathlib.Path, config_name: str, output_name: str
+) -> pathlib.Path:
     """Build MACH_LINUX firmware ELF from a .config file."""
     config_src = repo_root / "tools" / "kalico-sim" / "configs" / config_name
     if not config_src.exists():
         # Fall back to sim_klippy configs if they exist
-        config_src = repo_root / "tools" / "sim_klippy" / "configs" / config_name
+        config_src = (
+            repo_root / "tools" / "sim_klippy" / "configs" / config_name
+        )
     if not config_src.exists():
         raise RuntimeError(f"Config {config_name} not found")
 
@@ -173,8 +179,10 @@ def spawn_mcu(
     while time.monotonic() < deadline:
         if os.path.exists(pty_path):
             return McuProcess(
-                name=name, process=proc,
-                pty_path=pty_path, log_path=log_path,
+                name=name,
+                process=proc,
+                pty_path=pty_path,
+                log_path=log_path,
             )
         if proc.poll() is not None:
             log_fd.close()
@@ -229,7 +237,12 @@ def query_status(api_socket: str, timeout: float = 5.0) -> dict:
     sock.settimeout(timeout)
     try:
         sock.connect(api_socket)
-    except (ConnectionRefusedError, FileNotFoundError, BlockingIOError, OSError):
+    except (
+        ConnectionRefusedError,
+        FileNotFoundError,
+        BlockingIOError,
+        OSError,
+    ):
         return {}
     req = {
         "id": 1,
@@ -265,9 +278,11 @@ def query_status(api_socket: str, timeout: float = 5.0) -> dict:
     return {}
 
 
-def wait_for_klippy_ready(klippy_log: pathlib.Path,
-                           klippy_proc: subprocess.Popen,
-                           timeout: float = 120.0) -> bool:
+def wait_for_klippy_ready(
+    klippy_log: pathlib.Path,
+    klippy_proc: subprocess.Popen,
+    timeout: float = 120.0,
+) -> bool:
     """Wait for klippy to reach 'Printer is ready' state."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -287,9 +302,12 @@ def wait_for_klippy_ready(klippy_log: pathlib.Path,
     return False
 
 
-def wait_for_print_done(api_socket: str, klippy_proc: subprocess.Popen,
-                        klippy_log: pathlib.Path,
-                        timeout: float = 600.0) -> tuple:
+def wait_for_print_done(
+    api_socket: str,
+    klippy_proc: subprocess.Popen,
+    klippy_log: pathlib.Path,
+    timeout: float = 600.0,
+) -> tuple:
     """Wait for the print to finish. Returns (success, error_msg)."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -337,7 +355,11 @@ def run_simulation(
     wall_start = time.monotonic()
 
     with tempfile.TemporaryDirectory(prefix="kalico_sim_") as tmpdir:
-        tmp = pathlib.Path(serve_data_dir) if serve_data_dir else pathlib.Path(tmpdir)
+        tmp = (
+            pathlib.Path(serve_data_dir)
+            if serve_data_dir
+            else pathlib.Path(tmpdir)
+        )
         if serve_data_dir:
             tmp.mkdir(parents=True, exist_ok=True)
             # Restart hygiene: a supervisor restart re-enters on the same
@@ -351,7 +373,11 @@ def run_simulation(
                 except FileNotFoundError:
                     pass
             try:
-                for _pat in ("klipper-h7-sim.elf", "klipper-f4-sim.elf", "beacon_mcu"):
+                for _pat in (
+                    "klipper-h7-sim.elf",
+                    "klipper-f4-sim.elf",
+                    "beacon_mcu",
+                ):
                     subprocess.run(["pkill", "-f", _pat], check=False)
             except Exception:
                 pass
@@ -382,7 +408,9 @@ def run_simulation(
             f4_elf = repo_root / "out" / "klipper-f4-sim.elf"
             if not h7_elf.exists():
                 return SimResult(
-                    success=False, print_time_s=0, wall_time_s=0,
+                    success=False,
+                    print_time_s=0,
+                    wall_time_s=0,
                     speedup=0,
                     error="Missing H7 firmware ELF (out/klipper-h7-sim.elf)",
                 )
@@ -392,18 +420,28 @@ def run_simulation(
             dual_mcu = f4_elf.exists()
 
             h7 = spawn_mcu(
-                "h7", h7_elf, h7_pty,
-                str(log_dir / "h7.log"), str(h7_sock_dir),
-                shim_so, vtime_so, verbose,
+                "h7",
+                h7_elf,
+                h7_pty,
+                str(log_dir / "h7.log"),
+                str(h7_sock_dir),
+                shim_so,
+                vtime_so,
+                verbose,
             )
             mcus.append(h7)
             log.info("H7 MCU spawned (pid=%d)", h7.process.pid)
 
             if dual_mcu:
                 f4 = spawn_mcu(
-                    "f4", f4_elf, f4_pty,
-                    str(log_dir / "f4.log"), str(f4_sock_dir),
-                    shim_so, vtime_so, verbose,
+                    "f4",
+                    f4_elf,
+                    f4_pty,
+                    str(log_dir / "f4.log"),
+                    str(f4_sock_dir),
+                    shim_so,
+                    vtime_so,
+                    verbose,
                 )
                 mcus.append(f4)
                 log.info("F4 MCU spawned (pid=%d)", f4.process.pid)
@@ -418,11 +456,17 @@ def run_simulation(
             beacon_stub = _start_beacon(beacon_pty, log_dir, repo_root)
 
             # Detect if this branch has the Kalico motion bridge
-            has_motion_bridge = (repo_root / "klippy" / "motion_bridge.py").exists()
+            has_motion_bridge = (
+                repo_root / "klippy" / "motion_bridge.py"
+            ).exists()
 
             rendered_cfg = _prepare_config(
-                tmp, config_dir, repo_root,
-                h7_pty, f4_pty if dual_mcu else None, beacon_pty,
+                tmp,
+                config_dir,
+                repo_root,
+                h7_pty,
+                f4_pty if dual_mcu else None,
+                beacon_pty,
                 has_motion_bridge=has_motion_bridge,
                 phase_stepping=phase_stepping,
                 homing_test=homing_test,
@@ -451,6 +495,7 @@ def run_simulation(
             gcode_dir.mkdir(parents=True, exist_ok=True)
             if gcode_path:
                 import shutil
+
                 gcode_dest = gcode_dir / gcode_path.name
                 shutil.copy2(gcode_path, gcode_dest)
 
@@ -472,16 +517,27 @@ def run_simulation(
             # Add sim_klippy's third-party plugin paths if available.
             # Klipper's module loader scans klippy/extras/ — third-party
             # modules need symlinks there to be discoverable.
-            third_party = repo_root / "tools" / "sim_klippy" / "printer_real" / "third_party_repos"
+            third_party = (
+                repo_root
+                / "tools"
+                / "sim_klippy"
+                / "printer_real"
+                / "third_party_repos"
+            )
             if third_party.exists():
                 pp = env.get("PYTHONPATH", "")
                 beacon_path = third_party / "beacon_klipper"
                 motors_path = third_party / "motors-sync"
-                env["PYTHONPATH"] = ":".join(filter(None, [
-                    str(beacon_path) if beacon_path.exists() else "",
-                    str(motors_path) if motors_path.exists() else "",
-                    pp,
-                ]))
+                env["PYTHONPATH"] = ":".join(
+                    filter(
+                        None,
+                        [
+                            str(beacon_path) if beacon_path.exists() else "",
+                            str(motors_path) if motors_path.exists() else "",
+                            pp,
+                        ],
+                    )
+                )
                 extras_dir = repo_root / "klippy" / "extras"
                 beacon_py = beacon_path / "beacon.py"
                 extras_beacon = extras_dir / "beacon.py"
@@ -497,8 +553,10 @@ def run_simulation(
                     "python3",
                     str(repo_root / "klippy" / "klippy.py"),
                     str(rendered_cfg),
-                    "-l", str(klippy_log),
-                    "-a", api_socket,
+                    "-l",
+                    str(klippy_log),
+                    "-a",
+                    api_socket,
                 ],
                 env=env,
                 stdout=open(log_dir / "klippy.stdout", "wb"),
@@ -513,7 +571,8 @@ def run_simulation(
                 if klippy_log.exists():
                     content = klippy_log.read_text(errors="replace")
                 return SimResult(
-                    success=False, print_time_s=0,
+                    success=False,
+                    print_time_s=0,
                     wall_time_s=time.monotonic() - wall_start,
                     speedup=0,
                     error=f"Klippy failed to start:\n{content[-2000:]}",
@@ -522,7 +581,10 @@ def run_simulation(
             log.info("Klippy ready")
 
             if serve:
-                log.info("SERVE: klippy ready, holding for Moonraker. api=%s", api_socket)
+                log.info(
+                    "SERVE: klippy ready, holding for Moonraker. api=%s",
+                    api_socket,
+                )
                 (tmp / "SERVE_READY").write_text(
                     "api_socket=%s\nklippy_log=%s\nevents_dir=%s\n"
                     % (api_socket, klippy_log, log_dir / "events")
@@ -538,8 +600,11 @@ def run_simulation(
                     wall_time_s=time.monotonic() - wall_start,
                     speedup=0,
                     error=None,
-                    klippy_log=(klippy_log.read_text(errors="replace")
-                                if klippy_log.exists() else ""),
+                    klippy_log=(
+                        klippy_log.read_text(errors="replace")
+                        if klippy_log.exists()
+                        else ""
+                    ),
                 )
 
             # Endstop triggering is handled by the libsim_intercept.so
@@ -621,7 +686,10 @@ def run_simulation(
 
                 # Wait for completion
                 success, error = wait_for_print_done(
-                    api_socket, klippy_proc, klippy_log, timeout,
+                    api_socket,
+                    klippy_proc,
+                    klippy_log,
+                    timeout,
                 )
             else:
                 # No G-code — generate and print a test pattern
@@ -670,7 +738,10 @@ G1 Z125 F300
                 )
                 log.info("Print started: sim_test.gcode")
                 success, error = wait_for_print_done(
-                    api_socket, klippy_proc, klippy_log, timeout,
+                    api_socket,
+                    klippy_proc,
+                    klippy_log,
+                    timeout,
                 )
 
             wall_end = time.monotonic()
@@ -694,6 +765,7 @@ G1 Z125 F300
                 try:
                     klippy_content = klippy_log.read_text(errors="replace")
                     import re
+
                     for line in reversed(klippy_content.split("\n")):
                         m = re.search(r"print_time=(\d+\.?\d*)", line)
                         if m:
@@ -702,7 +774,11 @@ G1 Z125 F300
                 except Exception:
                     pass
 
-            speedup = print_time_s / wall_time_s if (wall_time_s > 0 and print_time_s > 0) else 0
+            speedup = (
+                print_time_s / wall_time_s
+                if (wall_time_s > 0 and print_time_s > 0)
+                else 0
+            )
 
             klippy_content = ""
             if klippy_log.exists():
@@ -761,17 +837,25 @@ def _start_chip_emulators(h7_sock_dir, f4_sock_dir, repo_root):
     servers = []
     try:
         sys.path.insert(0, str(repo_root))
-        from tools.sim_klippy.orchestrator.chip_socket_server import ChipSocketServer
-        from tools.sim_klippy.orchestrator.tmc5160_emulator import TMC5160Emulator
-        from tools.sim_klippy.orchestrator.tmc2209_emulator import TMC2209Emulator
-        from tools.sim_klippy.orchestrator.max31865_emulator import MAX31865Emulator
+        from tools.sim_klippy.orchestrator.chip_socket_server import (
+            ChipSocketServer,
+        )
+        from tools.sim_klippy.orchestrator.max31865_emulator import (
+            MAX31865Emulator,
+        )
+        from tools.sim_klippy.orchestrator.tmc2209_emulator import (
+            TMC2209Emulator,
+        )
+        from tools.sim_klippy.orchestrator.tmc5160_emulator import (
+            TMC5160Emulator,
+        )
 
         # H7 SPI bus 0: TMC5160s + MAX31865
         h7_chips = [
-            (5,  TMC5160Emulator().transfer),   # stepper_x
-            (4,  TMC5160Emulator().transfer),   # stepper_y
-            (6,  TMC5160Emulator().transfer),   # stepper_x1
-            (3,  TMC5160Emulator().transfer),   # stepper_y1
+            (5, TMC5160Emulator().transfer),  # stepper_x
+            (4, TMC5160Emulator().transfer),  # stepper_y
+            (6, TMC5160Emulator().transfer),  # stepper_x1
+            (3, TMC5160Emulator().transfer),  # stepper_y1
             (40, MAX31865Emulator().transfer),  # extruder_rtd
         ]
         for cs_line, transfer in h7_chips:
@@ -781,10 +865,12 @@ def _start_chip_emulators(h7_sock_dir, f4_sock_dir, repo_root):
             servers.append(srv)
 
         # H7 TMC2209 (extruder)
-        from tools.sim_klippy.orchestrator.tmc2209_emulator import TMC2209Emulator
+
         chip = TMC2209Emulator(slave_addr=0)
         srv = ChipSocketServer(
-            str(h7_sock_dir / "tmcuart_0"), chip.handle, chunk=10,
+            str(h7_sock_dir / "tmcuart_0"),
+            chip.handle,
+            chunk=10,
         )
         srv.start()
         servers.append(srv)
@@ -846,13 +932,19 @@ def _prepare_config(
     if config_dir is None:
         if homing_test:
             cfg = _generate_beacon_homing_config(
-                h7_pty, f4_pty, beacon_pty,
+                h7_pty,
+                f4_pty,
+                beacon_pty,
                 gcode_dir=str(tmp_dir / "gcodes"),
             )
         elif phase_stepping:
-            cfg = _generate_phase_stepping_config(h7_pty, f4_pty, gcode_dir=str(tmp_dir / "gcodes"))
+            cfg = _generate_phase_stepping_config(
+                h7_pty, f4_pty, gcode_dir=str(tmp_dir / "gcodes")
+            )
         else:
-            cfg = _generate_minimal_config(h7_pty, f4_pty, gcode_dir=str(tmp_dir / "gcodes"))
+            cfg = _generate_minimal_config(
+                h7_pty, f4_pty, gcode_dir=str(tmp_dir / "gcodes")
+            )
         if has_motion_bridge and not phase_stepping and not homing_test:
             cfg += """
 [input_shaper]
@@ -868,9 +960,13 @@ shaper_type: smooth_mzv
     try:
         sys.path.insert(0, str(repo_root))
         from tools.sim_klippy.orchestrator.overrides import (
-            apply_overrides, load_overrides,
+            apply_overrides,
+            load_overrides,
         )
-        overrides_path = repo_root / "tools" / "sim_klippy" / "pin-overrides.toml"
+
+        overrides_path = (
+            repo_root / "tools" / "sim_klippy" / "pin-overrides.toml"
+        )
         if overrides_path.exists():
             overrides = load_overrides(overrides_path)
         else:
@@ -889,6 +985,7 @@ shaper_type: smooth_mzv
 
         # Stage companion configs
         import shutil
+
         for entry in config_dir.iterdir():
             if entry.name == "printer.cfg":
                 continue
@@ -982,16 +1079,12 @@ class EndstopTrigger:
     def trigger_once(self):
         """Set all endstops to triggered state once."""
         for chip, line in self.endstop_pins:
-            self._send_cmd(
-                f"set_gpio_input chip={chip} line={line} value=1"
-            )
+            self._send_cmd(f"set_gpio_input chip={chip} line={line} value=1")
 
     def clear(self):
         """Clear all endstops."""
         for chip, line in self.endstop_pins:
-            self._send_cmd(
-                f"set_gpio_input chip={chip} line={line} value=0"
-            )
+            self._send_cmd(f"set_gpio_input chip={chip} line={line} value=0")
 
 
 def _generate_beacon_homing_config(
@@ -1107,7 +1200,9 @@ enable_force_move: True
 """
 
 
-def _generate_minimal_config(h7_pty: str, f4_pty: str, gcode_dir: str = "/tmp/kalico_sim_gcodes") -> str:
+def _generate_minimal_config(
+    h7_pty: str, f4_pty: str, gcode_dir: str = "/tmp/kalico_sim_gcodes"
+) -> str:
     """Generate a minimal single-MCU Cartesian config for testing.
 
     MACH_LINUX uses gpiochip0/gpioN pin naming (not STM32 PA3 style).
@@ -1169,7 +1264,9 @@ enable_force_move: True
 """
 
 
-def _generate_phase_stepping_config(h7_pty: str, f4_pty: str, gcode_dir: str = "/tmp/kalico_sim_gcodes") -> str:
+def _generate_phase_stepping_config(
+    h7_pty: str, f4_pty: str, gcode_dir: str = "/tmp/kalico_sim_gcodes"
+) -> str:
     """Generate a config with TMC5160 phase stepping on X axis."""
     return f"""\
 [mcu]
@@ -1263,7 +1360,8 @@ def run_batch_simulation(
         dict_path = repo_root / "out" / "klipper.dict"
         if not dict_path.exists():
             return SimResult(
-                success=False, print_time_s=0,
+                success=False,
+                print_time_s=0,
                 wall_time_s=time.monotonic() - wall_start,
                 speedup=0,
                 error="Missing klipper.dict. Build firmware first.",
@@ -1286,23 +1384,35 @@ def run_batch_simulation(
             "python3",
             str(repo_root / "klippy" / "klippy.py"),
             str(config_path),
-            "-i", str(gcode_path),
-            "-o", debug_output,
-            "-d", str(dict_path),
-            "-l", klippy_log,
+            "-i",
+            str(gcode_path),
+            "-o",
+            debug_output,
+            "-d",
+            str(dict_path),
+            "-l",
+            klippy_log,
         ]
         if verbose:
             cmd.append("-v")
 
         # Preprocess G-code: strip custom macros, replace PRINT_START
-        preprocessor = repo_root / "tools" / "kalico-sim" / "preprocess_gcode.py"
+        preprocessor = (
+            repo_root / "tools" / "kalico-sim" / "preprocess_gcode.py"
+        )
         if preprocessor.exists():
             processed = tmp / "processed.gcode"
             try:
                 subprocess.run(
-                    ["python3", str(preprocessor),
-                     str(gcode_path), str(processed)],
-                    check=True, capture_output=True, text=True,
+                    [
+                        "python3",
+                        str(preprocessor),
+                        str(gcode_path),
+                        str(processed),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
                 )
                 log.info("Preprocessed: %s", processed.name)
                 cmd[cmd.index(str(gcode_path))] = str(processed)
@@ -1322,7 +1432,8 @@ def run_batch_simulation(
             )
         except subprocess.TimeoutExpired:
             return SimResult(
-                success=False, print_time_s=0,
+                success=False,
+                print_time_s=0,
                 wall_time_s=time.monotonic() - wall_start,
                 speedup=0,
                 error=f"Batch simulation timed out after {timeout}s",
@@ -1336,13 +1447,18 @@ def run_batch_simulation(
         error = None
         klippy_content = ""
         try:
-            klippy_content = pathlib.Path(klippy_log).read_text(errors="replace")
+            klippy_content = pathlib.Path(klippy_log).read_text(
+                errors="replace"
+            )
         except FileNotFoundError:
             pass
 
         if result.returncode != 0:
             # Check for known errors
-            if "error" in klippy_content.lower() or "shutdown" in klippy_content.lower():
+            if (
+                "error" in klippy_content.lower()
+                or "shutdown" in klippy_content.lower()
+            ):
                 for line in klippy_content.split("\n"):
                     if "error" in line.lower() or "shutdown" in line.lower():
                         error = line.strip()
@@ -1354,6 +1470,7 @@ def run_batch_simulation(
 
         # Extract print time from log
         import re
+
         # Look for "Exiting (print time X.XXXs)" — the definitive line
         for line in reversed(klippy_content.split("\n")):
             m = re.search(r"print time (\d+\.?\d*)s", line)
@@ -1471,24 +1588,48 @@ enable_force_move: True
 def main():
     parser = argparse.ArgumentParser(description="Kalico Simulator")
     parser.add_argument("--gcode", type=str, help="G-code file to print")
-    parser.add_argument("--config", type=str,
-                        help="Config directory or file")
-    parser.add_argument("--mode", choices=["full", "batch"], default="full",
-                        help="Simulation mode: 'full' (MCU firmware) or "
-                             "'batch' (timing prediction, faster)")
-    parser.add_argument("--timeout", type=float, default=600,
-                        help="Max wall-clock seconds (default: 600)")
+    parser.add_argument("--config", type=str, help="Config directory or file")
+    parser.add_argument(
+        "--mode",
+        choices=["full", "batch"],
+        default="full",
+        help="Simulation mode: 'full' (MCU firmware) or "
+        "'batch' (timing prediction, faster)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=600,
+        help="Max wall-clock seconds (default: 600)",
+    )
     parser.add_argument("--verbose", "-v", action="store_true")
-    parser.add_argument("--phase-test", action="store_true",
-                        help="Enable phase stepping config (TMC5160 on X)")
-    parser.add_argument("--homing-test", action="store_true",
-                        help="Run beacon Z homing test (dual-MCU CoreXY + beacon proximity)")
-    parser.add_argument("--repo", type=str, default=str(REPO_ROOT),
-                        help="Repository root (default: auto-detect)")
-    parser.add_argument("--serve", action="store_true",
-                        help="Long-lived interactive mode for Moonraker/Mainsail")
-    parser.add_argument("--data-dir", type=str, default=None,
-                        help="Stable printer_data dir for --serve")
+    parser.add_argument(
+        "--phase-test",
+        action="store_true",
+        help="Enable phase stepping config (TMC5160 on X)",
+    )
+    parser.add_argument(
+        "--homing-test",
+        action="store_true",
+        help="Run beacon Z homing test (dual-MCU CoreXY + beacon proximity)",
+    )
+    parser.add_argument(
+        "--repo",
+        type=str,
+        default=str(REPO_ROOT),
+        help="Repository root (default: auto-detect)",
+    )
+    parser.add_argument(
+        "--serve",
+        action="store_true",
+        help="Long-lived interactive mode for Moonraker/Mainsail",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Stable printer_data dir for --serve",
+    )
     args = parser.parse_args()
 
     if args.verbose:
@@ -1526,10 +1667,14 @@ def main():
     print(f"SIMULATION RESULT ({args.mode} mode)")
     print("=" * 60)
     print(f"  Status:     {'PASS' if result.success else 'FAIL'}")
-    print(f"  Print time: {result.print_time_s:.1f}s "
-          f"({result.print_time_s/60:.1f} min)")
-    print(f"  Wall time:  {result.wall_time_s:.1f}s "
-          f"({result.wall_time_s/60:.1f} min)")
+    print(
+        f"  Print time: {result.print_time_s:.1f}s "
+        f"({result.print_time_s / 60:.1f} min)"
+    )
+    print(
+        f"  Wall time:  {result.wall_time_s:.1f}s "
+        f"({result.wall_time_s / 60:.1f} min)"
+    )
     if result.speedup > 0:
         print(f"  Speedup:    {result.speedup:.1f}x")
     if result.error:
@@ -1540,15 +1685,34 @@ def main():
         print("\n--- klippy.log (homing-relevant, all lines) ---")
         for line in result.klippy_log.strip().split("\n"):
             lo = line.lower()
-            if any(k in lo for k in (
-                "bridge-trace", "endstop_arm", "arm_id", "arm status",
-                "trip", "drip", "credit", "homing", "home_start",
-                "home_wait", "no trigger", "segment_id",
-                "submit_homing", "homing_move", "error during",
-                "internal error", "mcu silent", "move-diag",
-                "sim-trace", "dispatch closure", "load_curve",
-                "classify", "submit_move",
-            )):
+            if any(
+                k in lo
+                for k in (
+                    "bridge-trace",
+                    "endstop_arm",
+                    "arm_id",
+                    "arm status",
+                    "trip",
+                    "drip",
+                    "credit",
+                    "homing",
+                    "home_start",
+                    "home_wait",
+                    "no trigger",
+                    "segment_id",
+                    "submit_homing",
+                    "homing_move",
+                    "error during",
+                    "internal error",
+                    "mcu silent",
+                    "move-diag",
+                    "sim-trace",
+                    "dispatch closure",
+                    "load_curve",
+                    "classify",
+                    "submit_move",
+                )
+            ):
                 print(line)
         print("--- end klippy.log ---")
 
@@ -1560,9 +1724,14 @@ def main():
             print(f"--- end {name} ---")
 
     if not result.success and result.klippy_log:
-        trace_lines = [l for l in result.klippy_log.split("\n")
-                       if "trace-write" in l or "trace-close" in l or
-                          "trace-kcall" in l or "endstop_arm" in l.lower()]
+        trace_lines = [
+            l
+            for l in result.klippy_log.split("\n")
+            if "trace-write" in l
+            or "trace-close" in l
+            or "trace-kcall" in l
+            or "endstop_arm" in l.lower()
+        ]
         if trace_lines:
             print("\n--- bridge trace lines ---")
             for line in trace_lines[-30:]:
@@ -1573,11 +1742,22 @@ def main():
         print("\n--- Beacon homing log excerpts ---")
         for line in result.klippy_log.split("\n"):
             llow = line.lower()
-            if any(k in llow for k in [
-                "beacon", "homing", "home", "trsync", "trigger",
-                "z_virtual_endstop", "proximity", "endstop",
-                "can_trigger", "threshold", "z_hop",
-            ]):
+            if any(
+                k in llow
+                for k in [
+                    "beacon",
+                    "homing",
+                    "home",
+                    "trsync",
+                    "trigger",
+                    "z_virtual_endstop",
+                    "proximity",
+                    "endstop",
+                    "can_trigger",
+                    "threshold",
+                    "z_hop",
+                ]
+            ):
                 print(f"  {line.strip()}")
         print("---")
 
@@ -1585,21 +1765,37 @@ def main():
         print("\n--- Phase stepping log excerpts ---")
         for line in result.klippy_log.split("\n"):
             llow = line.lower()
-            if any(k in llow for k in [
-                "phase_stepping", "phase_step", "tmc5160",
-                "direct_mode", "configure_axes", "step_mode",
-                "modulated", "phase_config", "register_phase",
-                "bridge-trace", "spi_bus",
-            ]):
+            if any(
+                k in llow
+                for k in [
+                    "phase_stepping",
+                    "phase_step",
+                    "tmc5160",
+                    "direct_mode",
+                    "configure_axes",
+                    "step_mode",
+                    "modulated",
+                    "phase_config",
+                    "register_phase",
+                    "bridge-trace",
+                    "spi_bus",
+                ]
+            ):
                 print(f"  {line.strip()}")
         print("---")
 
     if args.phase_test and result.print_time_s > 0:
-        timer_in_past = result.error and "timer" in result.error.lower() and "past" in result.error.lower()
+        timer_in_past = (
+            result.error
+            and "timer" in result.error.lower()
+            and "past" in result.error.lower()
+        )
         if timer_in_past:
             print("\nNote: 'timer in past' is a known MACH_LINUX timing issue")
             print("      under Docker VM pressure, not a phase stepping bug.")
-            print(f"      Motion ran for {result.print_time_s:.1f}s before the timing fault.")
+            print(
+                f"      Motion ran for {result.print_time_s:.1f}s before the timing fault."
+            )
             sys.exit(0)
 
     sys.exit(0 if result.success else 1)

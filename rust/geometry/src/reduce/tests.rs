@@ -474,9 +474,9 @@ fn g5_chain_broken_by_g92_emits_recovery() {
             kind: ParseErrorKind::G5MissingTangent,
             ..
         } => {}
-        other => panic!(
-            "expected G5MissingTangent on trailing G5 (G92 must clear chain), got {other:?}"
-        ),
+        other => {
+            panic!("expected G5MissingTangent on trailing G5 (G92 must clear chain), got {other:?}")
+        }
     }
 }
 

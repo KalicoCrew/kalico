@@ -9,16 +9,20 @@ Specifically guards against the CoreXY pure-X regression where motor B
 (stepper_y) stayed de-energized because the enable filter was keyed on
 cartesian-axis-letter membership instead of post-transform motor motion.
 """
+
 from __future__ import annotations
+
+import pytest
 
 from klippy import motion_kinematics
 from klippy.motion_toolhead import (
-    MotionToolhead,
     _MOTOR_SLOT_PREFIXES,
+    MotionToolhead,
     _name_motor_slot,
     _stepper_motor_slot,
 )
 
+pytestmark = pytest.mark.sim_unit
 
 # --- motor_deltas: parity with rust/runtime/src/kinematics.rs ---------------
 
@@ -58,13 +62,18 @@ def test_motor_deltas_corexy_mirrors_rust_transform_cases():
         ((-3.0, 4.0, 1.0, -2.0), (1.0, -7.0, 1.0, -2.0)),
     ]
     for (dx, dy, dz, de), expected in cases:
-        assert motion_kinematics.motor_deltas("corexy", dx, dy, dz, de) == expected
+        assert (
+            motion_kinematics.motor_deltas("corexy", dx, dy, dz, de) == expected
+        )
 
 
 def test_motor_deltas_cartesian_is_identity():
-    assert motion_kinematics.motor_deltas(
-        "cartesian", 1.0, 2.0, 3.0, 4.0
-    ) == (1.0, 2.0, 3.0, 4.0)
+    assert motion_kinematics.motor_deltas("cartesian", 1.0, 2.0, 3.0, 4.0) == (
+        1.0,
+        2.0,
+        3.0,
+        4.0,
+    )
 
 
 def test_motor_deltas_unknown_kinematic_falls_back_to_cartesian():

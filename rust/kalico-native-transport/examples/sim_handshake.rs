@@ -9,13 +9,15 @@
 //!   2. Spawn klipper.elf with `-I /tmp/klipper_sim_socket` (it creates a
 //!      symlink at that path pointing at the slave PTY).
 //!   3. Run this example. It opens the PTY symlink, runs the kalico
-//!      transport's `identify` flow, and validates schema_hash + reset_epoch.
+//!      transport's `identify` flow, and validates `schema_hash` + `reset_epoch`.
 //!
 //! Convenience invocation that does (2) + (3) end-to-end inside Docker:
-//!     docker run --rm -v $PWD:/work -w /work --tmpfs /tmp:exec \
-//!       kalico-sim:latest bash -c "out/klipper.elf -I /tmp/klipper_sim_socket & \
-//!         sleep 0.5 && cd rust && cargo run -p kalico-native-transport \
-//!         --example sim_handshake"
+//! ```text
+//! docker run --rm -v $PWD:/work -w /work --tmpfs /tmp:exec \
+//!   kalico-sim:latest bash -c "out/klipper.elf -I /tmp/klipper_sim_socket & \
+//!     sleep 0.5 && cd rust && cargo run -p kalico-native-transport \
+//!     --example sim_handshake"
+//! ```
 
 use std::fs::OpenOptions;
 use std::io::{self, Read, Write};
@@ -23,8 +25,8 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::time::Duration;
 
-use kalico_native_transport::{ConnectionState, KalicoNativeTransport};
 use kalico_native_transport::connection::Connection;
+use kalico_native_transport::{ConnectionState, KalicoNativeTransport};
 
 const SIM_SOCKET: &str = "/tmp/klipper_sim_socket";
 

@@ -60,22 +60,22 @@ def crc8(data: bytes) -> int:
 
 
 # Register addresses
-GCONF       = 0x00
-GSTAT       = 0x01
-IFCNT       = 0x02
-IHOLD_IRUN  = 0x10
-CHOPCONF    = 0x6C
-DRV_STATUS  = 0x6F
-PWMCONF     = 0x70
+GCONF = 0x00
+GSTAT = 0x01
+IFCNT = 0x02
+IHOLD_IRUN = 0x10
+CHOPCONF = 0x6C
+DRV_STATUS = 0x6F
+PWMCONF = 0x70
 
 POR_DEFAULTS = {
-    GCONF:       0x00000000,
-    GSTAT:       0x00000005,
-    IFCNT:       0x00000000,
-    IHOLD_IRUN:  0x00000000,
-    CHOPCONF:    0x10000053,
-    DRV_STATUS:  0x00000000,
-    PWMCONF:     0xC10D0024,
+    GCONF: 0x00000000,
+    GSTAT: 0x00000005,
+    IFCNT: 0x00000000,
+    IHOLD_IRUN: 0x00000000,
+    CHOPCONF: 0x10000053,
+    DRV_STATUS: 0x00000000,
+    PWMCONF: 0xC10D0024,
 }
 
 CLEAR_ON_READ = {GSTAT}
@@ -130,13 +130,17 @@ class TMC2209Emulator:
             value = self._registers.get(reg, 0)
             if reg in CLEAR_ON_READ:
                 self._registers[reg] = 0
-            reply_body = bytes([
-                0x05, 0xFF, reg,
-                (value >> 24) & 0xFF,
-                (value >> 16) & 0xFF,
-                (value >> 8) & 0xFF,
-                value & 0xFF,
-            ])
+            reply_body = bytes(
+                [
+                    0x05,
+                    0xFF,
+                    reg,
+                    (value >> 24) & 0xFF,
+                    (value >> 16) & 0xFF,
+                    (value >> 8) & 0xFF,
+                    value & 0xFF,
+                ]
+            )
             reply = reply_body + bytes([crc8(reply_body)])
             # Re-encode with UART framing so the firmware-side tmcuart
             # decoder receives a real wire signal.

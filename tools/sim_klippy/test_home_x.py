@@ -9,7 +9,21 @@ Two scenarios:
     MCU emits credit-freed; bridge fires past-end-time;
     homing.py raises "No trigger on x".
 """
-import json, os, pathlib, signal, socket, subprocess, sys, time
+
+import json
+import os
+import pathlib
+import socket
+import subprocess
+import sys
+import time
+
+import pytest
+
+# Standalone __main__ script that spawns out/klipper.elf; no pytest test
+# functions. Tagged needs_elf so it is honestly classified (and excluded
+# from the CI sim_unit selection). Run directly: `python3 <this file>`.
+pytestmark = pytest.mark.needs_elf
 
 REPO = pathlib.Path(os.environ.get("KALICO_REPO", "/work"))
 LOGDIR = REPO / "tools" / "sim_klippy" / ".local-logs"
@@ -21,63 +35,104 @@ KLIPPY_API = "/tmp/klippy_sim_api"
 KLIPPY_LOG = LOGDIR / "klippy.log"
 ELF_LOG = LOGDIR / "klipper_elf.log"
 
+
 def cleanup_prior():
-    subprocess.run(["pkill", "-f", str(KLIPPER_ELF)], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["pkill", "-f", "klippy_sim"], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        ["pkill", "-f", str(KLIPPER_ELF)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["pkill", "-f", "klippy_sim"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     time.sleep(0.5)
     for path in (SIM_SOCKET, KLIPPY_INPUT_TTY, KLIPPY_API):
-        try: os.unlink(path)
-        except FileNotFoundError: pass
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+
 
 def spawn_elf():
     LOGDIR.mkdir(parents=True, exist_ok=True)
     elf_log = open(ELF_LOG, "wb")
-    proc = subprocess.Popen([str(KLIPPER_ELF), "-I", SIM_SOCKET],
-                            stdout=elf_log, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(
+        [str(KLIPPER_ELF), "-I", SIM_SOCKET],
+        stdout=elf_log,
+        stderr=subprocess.STDOUT,
+    )
     for _ in range(50):
-        if os.path.exists(SIM_SOCKET): return proc
+        if os.path.exists(SIM_SOCKET):
+            return proc
         time.sleep(0.1)
-    proc.terminate(); raise RuntimeError("elf failed")
+    proc.terminate()
+    raise RuntimeError("elf failed")
+
 
 def spawn_klippy():
     import shutil
+
     py = pathlib.Path(shutil.which("python3") or "python3")
     klippy_stderr = open(LOGDIR / "klippy_stderr.log", "wb")
-    proc = subprocess.Popen([str(py), str(REPO/"klippy"/"klippy.py"),
-                             str(PRINTER_CFG),
-                             "-l", str(KLIPPY_LOG),
-                             "-I", KLIPPY_INPUT_TTY,
-                             "-a", KLIPPY_API],
-                            cwd=str(REPO),
-                            stdout=klippy_stderr, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(
+        [
+            str(py),
+            str(REPO / "klippy" / "klippy.py"),
+            str(PRINTER_CFG),
+            "-l",
+            str(KLIPPY_LOG),
+            "-I",
+            KLIPPY_INPUT_TTY,
+            "-a",
+            KLIPPY_API,
+        ],
+        cwd=str(REPO),
+        stdout=klippy_stderr,
+        stderr=subprocess.STDOUT,
+    )
     for _ in range(150):
         if os.path.exists(KLIPPY_API):
-            time.sleep(5.0); return proc
-        if proc.poll() is not None: raise RuntimeError("klippy died")
+            time.sleep(5.0)
+            return proc
+        if proc.poll() is not None:
+            raise RuntimeError("klippy died")
         time.sleep(0.1)
-    proc.terminate(); raise RuntimeError("klippy api missing")
+    proc.terminate()
+    raise RuntimeError("klippy api missing")
+
 
 def send_gcode(script, timeout=30.0):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout); s.connect(KLIPPY_API)
-    msg = json.dumps({"id":1,"method":"gcode/script",
-                      "params":{"script":script}}).encode()+b"\x03"
+    s.settimeout(timeout)
+    s.connect(KLIPPY_API)
+    msg = (
+        json.dumps(
+            {"id": 1, "method": "gcode/script", "params": {"script": script}}
+        ).encode()
+        + b"\x03"
+    )
     s.sendall(msg)
     buf = b""
     while True:
         c = s.recv(4096)
-        if not c: break
+        if not c:
+            break
         buf += c
-        if b"\x03" in buf: break
+        if b"\x03" in buf:
+            break
     s.close()
-    out = buf.split(b"\x03",1)[0]
+    out = buf.split(b"\x03", 1)[0]
     return json.loads(out.decode()) if out else {}
+
 
 def run_scenario(name, trip_at_arm):
     cleanup_prior()
-    elf = spawn_elf(); klippy = spawn_klippy()
+    elf = spawn_elf()
+    klippy = spawn_klippy()
     try:
         # trip_at_arm=True: pin already HIGH (asserted) when G28 arms
         # the endstop; the bridge returns AlreadyTripped → REASON_ENDSTOP_HIT
@@ -85,8 +140,10 @@ def run_scenario(name, trip_at_arm):
         # trip_at_arm=False: pin LOW; the homing segment retires without
         # a trip; MCU emits credit-freed; bridge fires past-end-time;
         # homing.py raises "No trigger on x".
-        send_gcode("KALICO_SIM_ENDSTOP_SET_PIN GPIO=20 LEVEL=%d"
-                   % (1 if trip_at_arm else 0))
+        send_gcode(
+            "KALICO_SIM_ENDSTOP_SET_PIN GPIO=20 LEVEL=%d"
+            % (1 if trip_at_arm else 0)
+        )
         t0 = time.time()
         r = send_gcode("G28 X", timeout=30.0)
         elapsed = time.time() - t0
@@ -99,8 +156,12 @@ def run_scenario(name, trip_at_arm):
         return ok
     finally:
         for p in (klippy, elf):
-            try: p.terminate(); p.wait(timeout=3)
-            except Exception: p.kill()
+            try:
+                p.terminate()
+                p.wait(timeout=3)
+            except Exception:
+                p.kill()
+
 
 def main():
     failures = []
@@ -109,8 +170,11 @@ def main():
     if not run_scenario("notrip_path", trip_at_arm=False):
         failures.append("notrip_path")
     if failures:
-        print(f"FAIL: {failures}"); return 1
-    print("OK"); return 0
+        print(f"FAIL: {failures}")
+        return 1
+    print("OK")
+    return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

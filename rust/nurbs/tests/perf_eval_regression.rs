@@ -33,16 +33,12 @@ fn synthetic_postshape_curve() -> ScalarNurbs<f64> {
 
     // Clamped open knots: degree+1 zeros, interior, degree+1 ones.
     let mut knots = Vec::with_capacity(n_cps + p + 1);
-    for _ in 0..=p {
-        knots.push(0.0_f64);
-    }
+    knots.resize(p + 1, 0.0_f64);
     let n_interior = n_cps - p - 1;
     for i in 1..=n_interior {
         knots.push(i as f64 / (n_interior + 1) as f64);
     }
-    for _ in 0..=p {
-        knots.push(1.0_f64);
-    }
+    knots.resize(knots.len() + p + 1, 1.0_f64);
 
     // Smoothly varying cps — anything non-degenerate works for timing.
     let cps: Vec<f64> = (0..n_cps)
@@ -107,8 +103,7 @@ fn eval_derivative_windowed_at_least_3x_faster_than_materialized() {
 
     let ratio = baseline.as_nanos() as f64 / windowed.as_nanos().max(1) as f64;
     eprintln!(
-        "eval_derivative perf: baseline={:?}, windowed={:?}, ratio={:.2}x",
-        baseline, windowed, ratio
+        "eval_derivative perf: baseline={baseline:?}, windowed={windowed:?}, ratio={ratio:.2}x"
     );
     assert!(
         ratio >= 3.0,
@@ -156,8 +151,7 @@ fn eval_polynomial_at_least_as_fast_as_eval_for_validated_curves() {
 
     let ratio = via_eval.as_nanos() as f64 / via_polynomial.as_nanos().max(1) as f64;
     eprintln!(
-        "eval_polynomial perf: via_eval(+try_new)={:?}, via_polynomial={:?}, ratio={:.2}x",
-        via_eval, via_polynomial, ratio
+        "eval_polynomial perf: via_eval(+try_new)={via_eval:?}, via_polynomial={via_polynomial:?}, ratio={ratio:.2}x"
     );
     assert!(
         ratio >= 1.3,
@@ -213,8 +207,7 @@ fn eval_polynomial_with_derivative_at_least_1_3x_faster_than_separate_calls() {
 
     let ratio = separate.as_nanos() as f64 / combined.as_nanos().max(1) as f64;
     eprintln!(
-        "combined-eval perf: separate={:?}, combined={:?}, ratio={:.2}x",
-        separate, combined, ratio
+        "combined-eval perf: separate={separate:?}, combined={combined:?}, ratio={ratio:.2}x"
     );
     assert!(
         ratio >= 1.3,
@@ -230,7 +223,7 @@ fn eval_polynomial_with_derivative_matches_separate_calls_bitwise() {
     // forms. Guards against subtle algebraic divergence.
     for curve in [synthetic_postshape_curve(), cubic_bezier_curve()] {
         for i in 0..=200 {
-            let u = i as f64 / 200.0;
+            let u = f64::from(i) / 200.0;
             let (v_combined, d_combined) = eval::eval_polynomial_with_derivative(
                 curve.control_points(),
                 curve.knots(),
@@ -260,7 +253,7 @@ fn eval_polynomial_matches_eval_bitwise_for_polynomial_curves() {
     for curve in [synthetic_postshape_curve(), cubic_bezier_curve()] {
         let view = curve.as_view();
         for i in 0..=200 {
-            let u = i as f64 / 200.0;
+            let u = f64::from(i) / 200.0;
             let v_eval = eval::eval(&view, u);
             let v_poly =
                 eval::eval_polynomial(curve.control_points(), curve.knots(), curve.degree(), u);

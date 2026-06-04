@@ -226,9 +226,10 @@ pub fn raise_tick_interval_exceeded(shared: &SharedState, gap_ticks: u32) {
 pub fn raise_steps_per_sample_exceeded(shared: &SharedState, axis_idx: usize, abs_steps: u32) {
     let detail = ((axis_idx as u32 & 0xFF) << 16) | abs_steps.min(0xFFFF);
     shared.fault_detail.store(detail, Ordering::Release);
-    shared
-        .last_error
-        .store(FaultCode::StepsPerSampleExceeded.as_i32(), Ordering::Release);
+    shared.last_error.store(
+        FaultCode::StepsPerSampleExceeded.as_i32(),
+        Ordering::Release,
+    );
     emit_fault_log(FaultCode::StepsPerSampleExceeded, detail);
 }
 

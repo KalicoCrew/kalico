@@ -56,7 +56,10 @@ fn wall_time_at_mcu_inside_window_returns_some_false() {
     let (dt, estimated) = result.unwrap();
 
     // estimated=false because tick is within the window.
-    assert!(!estimated, "tick inside window must not be estimated; got estimated={estimated}");
+    assert!(
+        !estimated,
+        "tick inside window must not be estimated; got estimated={estimated}"
+    );
 
     // The returned time must be within 60 s of the real wall clock.
     // (The mock clock advances but the wall_epoch anchor comes from the

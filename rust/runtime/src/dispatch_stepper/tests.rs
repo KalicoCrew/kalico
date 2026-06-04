@@ -5,6 +5,11 @@
 //! (queue allocated on the stack via `StepQueue::new()`). End-to-end ISR
 //! integration lives in Task 8's test suite.
 
+// Test code: `axis.steppers[0]` is always valid — `make_axis` constructs
+// the axis with exactly one stepper pushed, and tests intentionally access
+// that single stepper by index for assertion clarity.
+#![allow(clippy::indexing_slicing)]
+
 use super::{DISPLACEMENT_THRESHOLD_MM, dispatch_axis};
 use crate::state::SharedState;
 use crate::step_queue::StepQueue;
@@ -314,7 +319,10 @@ fn unknown_step_mode_raises_fault() {
     );
 
     // Queue must be untouched — no steps dispatched.
-    assert_eq!(q.tail, q.head, "no steps should be enqueued for unknown mode");
+    assert_eq!(
+        q.tail, q.head,
+        "no steps should be enqueued for unknown mode"
+    );
 
     // Fault must be latched.
     let last_err = shared.last_error.load(Ordering::Acquire);

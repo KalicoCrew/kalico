@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use kalico_host_rt::host_io::{InterceptorId, KalicoHostIo};
 use kalico_host_rt::transport::TransportError;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ProbeHomingResult {
@@ -94,13 +93,8 @@ pub fn prepare_probe_homing(
 /// flag or sensor-fault timeout.  Does NOT check HomingSegmentState —
 /// CreditFreed fires on slot-available (not execution-complete), so
 /// segment "retirement" is unreliable during homing.
-pub fn run_probe_homing(
-    handle: &ProbeHomingHandle,
-) -> Result<ProbeHomingResult, TransportError> {
-    let extend_cmd = format!(
-        "runtime_extend_homing_deadline arm_id={}",
-        handle.arm_id
-    );
+pub fn run_probe_homing(handle: &ProbeHomingHandle) -> Result<ProbeHomingResult, TransportError> {
+    let extend_cmd = format!("runtime_extend_homing_deadline arm_id={}", handle.arm_id);
     handle.stepper_io.send_fire_and_forget(&extend_cmd)?;
 
     run_loop(handle, &extend_cmd)
@@ -111,7 +105,9 @@ pub fn run_probe_homing(
 /// before the next homing cycle can register a new interceptor for the
 /// same OID).
 pub fn cleanup_probe_homing(handle: ProbeHomingHandle) {
-    let _ = handle.beacon_io.unregister_frame_interceptor(handle.interceptor_id);
+    let _ = handle
+        .beacon_io
+        .unregister_frame_interceptor(handle.interceptor_id);
 }
 
 fn run_loop(

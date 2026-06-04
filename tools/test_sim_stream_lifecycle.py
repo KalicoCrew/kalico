@@ -30,8 +30,15 @@ import pathlib
 import sys
 import time
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import KalicoHostIO  # noqa: E402
+
+# Renode stream-lifecycle integration test against the Renode sim firmware.
+# A __main__ driver. Tagged needs_renode so it is honestly excluded from CI
+# (no Renode emulation there). Run directly: `python3 <this file> ...`.
+pytestmark = pytest.mark.needs_renode
 
 CLOCK_FREQ = 520_000_000
 TICK_HZ = 40_000

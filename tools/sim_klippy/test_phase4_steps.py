@@ -12,14 +12,21 @@ For stepper_x: rotation_distance=40, microsteps=16, full_steps=200 →
   steps_per_mm = (full_steps × microsteps) / rotation_distance = (200 × 16) / 40 = 80
   10 mm → ~800 steps (corexy shares A+B so actual count may differ).
 """
+
 import json
 import os
 import pathlib
-import signal
 import socket
 import subprocess
 import sys
 import time
+
+import pytest
+
+# Standalone __main__ script that spawns out/klipper.elf; no pytest test
+# functions. Tagged needs_elf so it is honestly classified (and excluded
+# from the CI sim_unit selection). Run directly: `python3 <this file>`.
+pytestmark = pytest.mark.needs_elf
 
 REPO = pathlib.Path(os.environ.get("KALICO_REPO", "/work"))
 LOGDIR = REPO / "tools" / "sim_klippy" / ".local-logs"
@@ -33,10 +40,18 @@ ELF_LOG = LOGDIR / "klipper_elf.log"
 
 
 def cleanup_prior():
-    subprocess.run(["pkill", "-f", str(KLIPPER_ELF)], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["pkill", "-f", "klippy_sim"], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        ["pkill", "-f", str(KLIPPER_ELF)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["pkill", "-f", "klippy_sim"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     time.sleep(0.5)
     for path in (SIM_SOCKET, KLIPPY_INPUT_TTY, KLIPPY_API):
         try:
@@ -60,7 +75,8 @@ def spawn_tmc_emulators():
         emu_log = open(LOGDIR / f"tmc_emu_{line}.log", "w")
         p = subprocess.Popen(
             [sys.executable, str(emu_script), str(sock_path)],
-            stdout=emu_log, stderr=emu_log,
+            stdout=emu_log,
+            stderr=emu_log,
         )
         # Wait for socket to appear
         for _ in range(20):
@@ -76,15 +92,19 @@ def spawn_elf():
     elf_log = open(ELF_LOG, "wb")
     shim_so = REPO / "tools" / "kalico-sim" / "libvtime" / "libsim_intercept.so"
     if not shim_so.exists():
-        subprocess.check_call(["make", "-C", str(shim_so.parent)],
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.check_call(
+            ["make", "-C", str(shim_so.parent)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     env = os.environ.copy()
     env["LD_PRELOAD"] = str(shim_so)
     env["KALICO_SIM_SOCK_DIR"] = str(SIM_SOCK_DIR)
     env["KALICO_SIM_SHIM_VERBOSE"] = "1"
     proc = subprocess.Popen(
         [str(KLIPPER_ELF), "-I", SIM_SOCKET],
-        stdout=elf_log, stderr=subprocess.STDOUT,
+        stdout=elf_log,
+        stderr=subprocess.STDOUT,
         env=env,
     )
     for _ in range(50):
@@ -97,11 +117,20 @@ def spawn_elf():
 
 def spawn_klippy():
     import shutil
+
     klippy_python = pathlib.Path(shutil.which("python3") or "python3")
     proc = subprocess.Popen(
-        [str(klippy_python), str(REPO / "klippy" / "klippy.py"),
-         str(PRINTER_CFG), "-l", str(KLIPPY_LOG),
-         "-I", KLIPPY_INPUT_TTY, "-a", KLIPPY_API],
+        [
+            str(klippy_python),
+            str(REPO / "klippy" / "klippy.py"),
+            str(PRINTER_CFG),
+            "-l",
+            str(KLIPPY_LOG),
+            "-I",
+            KLIPPY_INPUT_TTY,
+            "-a",
+            KLIPPY_API,
+        ],
         cwd=str(REPO),
     )
     for _ in range(150):
@@ -122,9 +151,12 @@ def send_gcode(script, timeout=30.0):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect(KLIPPY_API)
-    msg = json.dumps(
-        {"id": 1, "method": "gcode/script", "params": {"script": script}}
-    ).encode() + b"\x03"
+    msg = (
+        json.dumps(
+            {"id": 1, "method": "gcode/script", "params": {"script": script}}
+        ).encode()
+        + b"\x03"
+    )
     s.sendall(msg)
     buf = b""
     while True:
@@ -161,9 +193,14 @@ def main():
         print(f"  response: {resp}")
         if "error" in resp:
             err_msg = resp.get("error", {}).get("message", "")
-            if "shutdown" in err_msg.lower() or "timed out" in err_msg.lower() \
-                    or "timeout" in err_msg.lower():
-                print(f"\n[phase4] FAIL: MCU shutdown during move: {err_msg[:120]}")
+            if (
+                "shutdown" in err_msg.lower()
+                or "timed out" in err_msg.lower()
+                or "timeout" in err_msg.lower()
+            ):
+                print(
+                    f"\n[phase4] FAIL: MCU shutdown during move: {err_msg[:120]}"
+                )
                 return 1
 
         # The bridge schedules segments at MCU_clock_now + 100ms_lead +
@@ -174,7 +211,9 @@ def main():
         # Poll elf log for non-zero stepper counts. Bypasses bridge_call so
         # we get the answer even if klippy shut down on the M400 timeout.
         print("[phase4] polling elf log for motion + SPI output")
-        elf_log = REPO / "tools" / "sim_klippy" / ".local-logs" / "klipper_elf.log"
+        elf_log = (
+            REPO / "tools" / "sim_klippy" / ".local-logs" / "klipper_elf.log"
+        )
         deadline = time.time() + 60.0
         seen_nonzero = False
         seen_spi_writes = 0
@@ -240,17 +279,32 @@ def main():
             seen_nonzero = True
 
         if not seen_nonzero:
-            print("\n[phase4] FAIL: 0 position counts — move produced no motion")
+            print(
+                "\n[phase4] FAIL: 0 position counts — move produced no motion"
+            )
             for line in log.splitlines():
-                if any(k in line for k in ("Error", "Traceback", "step", "submit_move",
-                                           "bridge-trace", "planner", "bridge-async",
-                                           "KALICO_SIM", "homed")):
+                if any(
+                    k in line
+                    for k in (
+                        "Error",
+                        "Traceback",
+                        "step",
+                        "submit_move",
+                        "bridge-trace",
+                        "planner",
+                        "bridge-async",
+                        "KALICO_SIM",
+                        "homed",
+                    )
+                ):
                     print("  LOG:", line[-200:])
             return 1
 
         if seen_spi_writes == 0:
-            print("\n[phase4] FAIL: 0 SPI XDIRECT writes — "
-                  "phase stepping is not driving coil modulation")
+            print(
+                "\n[phase4] FAIL: 0 SPI XDIRECT writes — "
+                "phase stepping is not driving coil modulation"
+            )
             return 1
 
         print(f"\n[phase4] Phase 4 PASS: motion + {seen_spi_writes} SPI writes")

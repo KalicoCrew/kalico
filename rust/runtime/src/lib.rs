@@ -19,7 +19,11 @@
 // Host builds (feature = "host") and test builds are valid without a dispatch
 // module (e.g. the EtherCAT servo node links runtime with --no-default-features
 // --features host and defines its own dispatch logic externally).
-#[cfg(all(not(feature = "host"), not(test), not(feature = "motion-module-stepper")))]
+#[cfg(all(
+    not(feature = "host"),
+    not(test),
+    not(feature = "motion-module-stepper")
+))]
 compile_error!(
     "a bare-metal motion node must enable a dispatch module \
      (e.g. motion-module-stepper); none is active"
@@ -45,8 +49,8 @@ pub mod fault_helpers;
 pub mod fault_sink;
 pub(crate) mod isr_phase;
 pub mod log_codes;
-pub mod motion_core;
 pub mod monomial;
+pub mod motion_core;
 pub mod per_axis_timer;
 pub mod phase_config;
 pub mod phase_lut;

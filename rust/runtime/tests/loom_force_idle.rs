@@ -1,3 +1,13 @@
+#![allow(
+    clippy::ref_as_ptr,
+    clippy::float_cmp,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    clippy::too_many_lines,
+    clippy::uninlined_format_args,
+    clippy::doc_markdown
+)]
+
 //! Loom model of the §8.5 `force_idle` handshake (Phase 7 + Phase 12).
 //!
 //! Models the cross-half handshake:

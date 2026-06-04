@@ -5,6 +5,12 @@
 //!
 //! A `TestFaultSink` is defined locally (same pattern as the module doc
 //! recommends for external consumers of `FaultSink`).
+
+// `get_position_and_velocity` takes `storage: &[PieceEntry]`; passing
+// `&mut Vec<PieceEntry>` coerces safely but is flagged as unnecessary_mut_passed.
+// The pattern originates from the ring.push calls above in the same block that
+// genuinely need `&mut`; unifying them as `&mut` is harmless and more local.
+#![allow(clippy::unnecessary_mut_passed)]
 //!
 //! ## Branch map
 //!
@@ -42,8 +48,8 @@
 use std::cell::Cell;
 
 use runtime::fault_sink::FaultSink;
-use runtime::motion_core::get_position_and_velocity;
 use runtime::monomial::bernstein_to_monomial_with_duration;
+use runtime::motion_core::get_position_and_velocity;
 use runtime::piece_ring::{PieceEntry, RingDescriptor};
 
 // Hardware constants matching the bench and the other integration tests.
@@ -65,7 +71,9 @@ struct TestFaultSink {
 
 impl TestFaultSink {
     fn new() -> Self {
-        Self { count: Cell::new(0) }
+        Self {
+            count: Cell::new(0),
+        }
     }
     fn fault_count(&self) -> usize {
         self.count.get()
@@ -148,7 +156,10 @@ fn walker_branch1_current_piece_eval() {
     let t025_cycles: u64 = (0.025_f32 * CLOCK_FREQ) as u64;
     let now2 = start + t025_cycles;
     // Piece is still live: now2 < start + dur_cycles.
-    assert!(now2 < start + dur_cycles, "precondition: still inside piece window");
+    assert!(
+        now2 < start + dur_cycles,
+        "precondition: still inside piece window"
+    );
 
     let res2 = get_position_and_velocity(
         &mut armed,
@@ -160,7 +171,10 @@ fn walker_branch1_current_piece_eval() {
         0,
         &fault,
     );
-    assert!(res2.is_some(), "branch 1: piece still live must return Some");
+    assert!(
+        res2.is_some(),
+        "branch 1: piece still live must return Some"
+    );
     let (p2, v2) = res2.unwrap();
 
     // Verify against analytic value via bernstein_to_monomial_with_duration.
@@ -211,7 +225,12 @@ fn walker_branch2_empty_ring_returns_none() {
 #[test]
 fn walker_branch2_configured_empty_ring_returns_none() {
     let mut storage = vec![
-        PieceEntry { start_time: 0, coeffs: [0.0; 4], duration: 0.0, _reserved: 0 };
+        PieceEntry {
+            start_time: 0,
+            coeffs: [0.0; 4],
+            duration: 0.0,
+            _reserved: 0
+        };
         8
     ];
     let mut ring = RingDescriptor::new(0, 8);

@@ -1,3 +1,6 @@
+#![allow(clippy::integer_division)] // LUT sizes are powers of 2; integer division for quarter/half indices is exact
+#![allow(clippy::indexing_slicing)] // LUT index expressions guaranteed in-bounds by construction
+
 use super::{COIL_AMPLITUDE, PHASE_LUT, PHASE_LUT_SIZE};
 
 /// Plan-canonical anchor check: the `(cos, sin)`-ordered LUT must

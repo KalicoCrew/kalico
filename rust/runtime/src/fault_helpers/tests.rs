@@ -92,20 +92,14 @@ fn piece_start_in_past_publishes_code_and_detail() {
         shared.last_error.load(Ordering::Acquire),
         FaultCode::PieceStartInPast.as_i32()
     );
-    assert_eq!(
-        shared.fault_detail.load(Ordering::Acquire),
-        (2 << 16) | 500
-    );
+    assert_eq!(shared.fault_detail.load(Ordering::Acquire), (2 << 16) | 500);
 }
 
 #[test]
 fn piece_start_in_past_saturates_deficit_at_65535() {
     let shared = SharedState::new();
     raise_piece_start_in_past(&shared, 0, 0x1_0000);
-    assert_eq!(
-        shared.fault_detail.load(Ordering::Acquire) & 0xFFFF,
-        0xFFFF
-    );
+    assert_eq!(shared.fault_detail.load(Ordering::Acquire) & 0xFFFF, 0xFFFF);
 }
 
 #[test]
@@ -132,10 +126,7 @@ fn steps_per_sample_exceeded_publishes_code_and_detail() {
         shared.last_error.load(Ordering::Acquire),
         FaultCode::StepsPerSampleExceeded.as_i32()
     );
-    assert_eq!(
-        shared.fault_detail.load(Ordering::Acquire),
-        (3 << 16) | 200
-    );
+    assert_eq!(shared.fault_detail.load(Ordering::Acquire), (3 << 16) | 200);
 }
 
 #[test]

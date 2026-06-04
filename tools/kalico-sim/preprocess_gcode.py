@@ -9,7 +9,7 @@ Usage:
     python3 preprocess_gcode.py input.gcode output.gcode
     python3 preprocess_gcode.py input.gcode -  # stdout
 """
-import re
+
 import sys
 
 SKIP_PREFIXES = (
@@ -20,8 +20,8 @@ SKIP_PREFIXES = (
     "M140 ",  # bed temp
     "M190 ",  # wait for bed temp
     "M106 ",  # fan
-    "M107",   # fan off
-    "M73 ",   # progress display
+    "M107",  # fan off
+    "M73 ",  # progress display
     "M141 ",  # chamber temp
     "M191 ",  # wait for chamber
     "M116 ",  # wait all temps
@@ -75,8 +75,14 @@ if __name__ == "__main__":
         print(f"Usage: {sys.argv[0]} input.gcode output.gcode")
         sys.exit(1)
     stats = preprocess(sys.argv[1], sys.argv[2])
-    g1_count = sum(1 for l in open(sys.argv[2] if sys.argv[2] != "-" else "/dev/stdin")
-                   if l.strip().startswith("G1 "))
-    print(f"Preprocessed: {stats['total']} → {stats['kept']} lines "
-          f"({stats['skipped']} skipped, {stats['replaced']} replaced), "
-          f"{g1_count} G1 moves", file=sys.stderr)
+    g1_count = sum(
+        1
+        for l in open(sys.argv[2] if sys.argv[2] != "-" else "/dev/stdin")
+        if l.strip().startswith("G1 ")
+    )
+    print(
+        f"Preprocessed: {stats['total']} → {stats['kept']} lines "
+        f"({stats['skipped']} skipped, {stats['replaced']} replaced), "
+        f"{g1_count} G1 moves",
+        file=sys.stderr,
+    )

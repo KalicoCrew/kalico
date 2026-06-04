@@ -5,6 +5,7 @@ in the sim — does klippy enter homing, what does the trsync layer do,
 and where does it stall. Real-config X uses sensorless homing via the
 TMC5160 DIAG line on stepper_x1.
 """
+
 import json
 import pathlib
 import shutil
@@ -13,6 +14,7 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.needs_elf
 
 _ARTIFACT_DIR = pathlib.Path("/work/.local-logs/test_g28_x_smoke")
 
@@ -70,7 +72,9 @@ def test_g28_x_smoke(sim):
                 break
             time.sleep(0.5)
         print(f"\n[smoke] printer state at G28 send: {state}")
-        assert state == "ready", f"klippy not ready before G28 X (state={state})"
+        assert state == "ready", (
+            f"klippy not ready before G28 X (state={state})"
+        )
 
         t0 = time.time()
         r = sim.gcode("G28 X", timeout=20.0)

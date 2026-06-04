@@ -30,9 +30,7 @@ class EtherCatNode:
         # handlers (klippy/printer.py), and motion_toolhead._init_planner
         # runs on "klippy:connect" — so the handle is populated before the
         # planner is built. This mirrors MCU._mcu_identify's claim_mcu call.
-        self.printer.register_event_handler(
-            "klippy:mcu_identify", self._claim
-        )
+        self.printer.register_event_handler("klippy:mcu_identify", self._claim)
 
     def _claim(self):
         if self.bridge_handle is not None:
@@ -43,7 +41,9 @@ class EtherCatNode:
         )
         logging.info(
             "ethercat_node %s: claimed handle=%s socket=%s",
-            self.name, self.bridge_handle, self.socket_path,
+            self.name,
+            self.bridge_handle,
+            self.socket_path,
         )
 
     def get_bridge_handle(self):

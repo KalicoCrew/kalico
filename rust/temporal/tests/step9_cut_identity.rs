@@ -5,8 +5,8 @@
 //! This is the de-risk gate for the cut algebra. Before wiring the new cut
 //! into Clarabel, we numerically verify that the cut row coefficients
 //! reproduce the verifier-stencil per-axis Cartesian jerk *exactly* at the
-//! current iterate `(b̄, ā)` for every stencil case (Interior, StartBoundary,
-//! EndBoundary) and every axis.
+//! current iterate `(b̄, ā)` for every stencil case (Interior, `StartBoundary`,
+//! `EndBoundary`) and every axis.
 //!
 //! ## The identity (under width-1 b-FD)
 //!
@@ -20,8 +20,8 @@
 //! b-FD stencil:
 //!
 //! - Interior i ∈ [1, n-2]: `b'' ≈ (b̄_{i-1} − 2·b̄_i + b̄_{i+1}) / h²`.
-//! - StartBoundary i = 0:   `b'' ≈ (b̄_0 − 2·b̄_1 + b̄_2) / h²`.
-//! - EndBoundary i = n-1:   `b'' ≈ (b̄_{n-3} − 2·b̄_{n-2} + b̄_{n-1}) / h²`.
+//! - `StartBoundary` i = 0:   `b'' ≈ (b̄_0 − 2·b̄_1 + b̄_2) / h²`.
+//! - `EndBoundary` i = n-1:   `b'' ≈ (b̄_{n-3} − 2·b̄_{n-2} + b̄_{n-1}) / h²`.
 //!
 //! ## The cut row
 //!
@@ -83,15 +83,13 @@ fn interior_cut_coeffs(
     let alpha_b_im1 = cp * s / (2.0 * H * H);
     let alpha_b_ip1 = cp * s / (2.0 * H * H);
     let alpha_a_i = 3.0 * cpp * s;
-    let alpha_b_i = 1.5 * cppp * s
-        + 3.0 * cpp * a_bars[i] / (2.0 * s)
-        - cp * s / (H * H)
+    let alpha_b_i = 1.5 * cppp * s + 3.0 * cpp * a_bars[i] / (2.0 * s) - cp * s / (H * H)
         + cp * d2 / (4.0 * H * H * s);
     let k = -0.5 * cppp * s3 - 1.5 * cpp * a_bars[i] * s - cp * d2 * s / (4.0 * H * H);
     (alpha_b_im1, alpha_b_i, alpha_b_ip1, alpha_a_i, k)
 }
 
-/// StartBoundary cut coefficient computation per spec §5.4.
+/// `StartBoundary` cut coefficient computation per spec §5.4.
 /// Returns `(α_b_0, α_b_1, α_b_2, α_a_0, K)`.
 fn start_boundary_cut_coeffs(
     b_bars: &[f64],
@@ -115,7 +113,7 @@ fn start_boundary_cut_coeffs(
     (alpha_b_0, alpha_b_1, alpha_b_2, alpha_a_0, k)
 }
 
-/// EndBoundary cut coefficient computation per spec §5.5.
+/// `EndBoundary` cut coefficient computation per spec §5.5.
 /// Returns `(α_b_{n-3}, α_b_{n-2}, α_b_{n-1}, α_a_{n-1}, K)`.
 fn end_boundary_cut_coeffs(
     b_bars: &[f64],
@@ -192,9 +190,7 @@ fn synthetic_iterate() -> (Vec<f64>, Vec<f64>) {
             10.0 + 5.0 * s + 0.1 * s * s
         })
         .collect();
-    let a: Vec<f64> = (0..N_GRID)
-        .map(|i| 2.0 + 0.3 * (i as f64))
-        .collect();
+    let a: Vec<f64> = (0..N_GRID).map(|i| 2.0 + 0.3 * (i as f64)).collect();
     (b, a)
 }
 
@@ -203,7 +199,15 @@ fn row_sum_identity_collinear_paths() {
     // Collinear path: c''_axis = c'''_axis = 0; only c'_axis ≠ 0.
     let (b, a) = synthetic_iterate();
     for &i in &[0usize, 1, 5, 8, 9] {
-        check_identity_at(&b, &a, i, /*cp*/ 1.0, /*cpp*/ 0.0, /*cppp*/ 0.0, "collinear");
+        check_identity_at(
+            &b,
+            &a,
+            i,
+            /*cp*/ 1.0,
+            /*cpp*/ 0.0,
+            /*cppp*/ 0.0,
+            "collinear",
+        );
     }
 }
 
@@ -212,7 +216,9 @@ fn row_sum_identity_curved_paths() {
     // Curved path: c''_axis ≠ 0 active; c'''_axis = 0.
     let (b, a) = synthetic_iterate();
     for &i in &[0usize, 1, 5, 8, 9] {
-        check_identity_at(&b, &a, i, /*cp*/ 0.7, /*cpp*/ 0.4, /*cppp*/ 0.0, "curved");
+        check_identity_at(
+            &b, &a, i, /*cp*/ 0.7, /*cpp*/ 0.4, /*cppp*/ 0.0, "curved",
+        );
     }
 }
 

@@ -21,12 +21,12 @@
 use core::sync::atomic::{AtomicI16, AtomicI32, AtomicU8, Ordering};
 use heapless::Vec;
 
+use runtime::dispatch_stepper::dispatch_axis;
 use runtime::phase_lut::PHASE_LUT;
 use runtime::state::{MAX_STEPPER_OIDS, SharedState};
 use runtime::step_queue::StepQueue;
 use runtime::stepping_state::{AxisConfig, MAX_STEPPERS_PER_AXIS, StepMode, StepperRef};
 use runtime::test_xdirect_capture;
-use runtime::dispatch_stepper::dispatch_axis;
 
 /// Build a minimal `StepperRef` with a real TMC CS OID so `dispatch_phase`
 /// enters the SPI-capture branch.

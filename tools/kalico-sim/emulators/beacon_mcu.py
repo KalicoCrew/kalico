@@ -33,7 +33,6 @@ rewired in lockstep with this commit.
 from __future__ import annotations
 
 import logging
-import math
 import os
 import pty
 import select
@@ -225,9 +224,9 @@ class BeaconMcuStub:
         # At z=5:  freq = 5,283,333 Hz → count = 70,914,218
         # At z=10: freq = 5,268,182 Hz → count = 70,710,853
         self._z_current: float = 10.0  # current simulated Z height in mm
-        self._freq_base: int = 5_183_000     # ~5.18 MHz base
+        self._freq_base: int = 5_183_000  # ~5.18 MHz base
         self._freq_coeff: float = 763_000.0  # tuned to match model polynomial
-        self._freq_offset: float = 2.857     # wider spread across 0-5mm range
+        self._freq_offset: float = 2.857  # wider spread across 0-5mm range
         # Z tracking during proximity homing
         self._homing_approach_speed: float = 5.0  # mm/s (matches homing_speed)
         self._homing_start_z: float = 10.0
@@ -251,6 +250,7 @@ class BeaconMcuStub:
         # the H7 USB-CDC RX path.
         import termios as _termios
         import tty as _tty
+
         try:
             _tty.setraw(slave_fd, _termios.TCSANOW)
         except _termios.error:
@@ -266,6 +266,7 @@ class BeaconMcuStub:
         # can't deadlock the reactor. In the live klippy case the slave
         # is being drained by serialqueue.c's read thread continuously.
         import fcntl as _fcntl
+
         flags = _fcntl.fcntl(master_fd, _fcntl.F_GETFL)
         _fcntl.fcntl(master_fd, _fcntl.F_SETFL, flags | os.O_NONBLOCK)
         self._thread = threading.Thread(
@@ -350,7 +351,9 @@ class BeaconMcuStub:
         if self._master_fd is None:
             return
         try:
-            cmd = self._parser.lookup_command(msgformat).encode_by_name(**kwargs)
+            cmd = self._parser.lookup_command(msgformat).encode_by_name(
+                **kwargs
+            )
         except msgproto.error:
             logging.exception("beacon-stub: unknown msgformat %r", msgformat)
             return
@@ -498,12 +501,18 @@ class BeaconMcuStub:
             data = b""
         else:
             data = IDENTIFY_BLOB[offset : offset + count]
-        self._send_msg("identify_response offset=%u data=%.*s",
-                       offset=offset, data=list(data))
+        self._send_msg(
+            "identify_response offset=%u data=%.*s",
+            offset=offset,
+            data=list(data),
+        )
 
     def _handle_get_uptime(self, params: dict) -> None:
-        self._send_msg("uptime high=%u clock=%u",
-                       high=self._now_clock_high(), clock=self._now_clock())
+        self._send_msg(
+            "uptime high=%u clock=%u",
+            high=self._now_clock_high(),
+            clock=self._now_clock(),
+        )
 
     def _handle_get_clock(self, params: dict) -> None:
         self._send_msg("clock clock=%u", clock=self._now_clock())
@@ -555,9 +564,9 @@ class BeaconMcuStub:
             self._home_active = True
             self._start_homing_monitor()
         logging.info(
-            "beacon-stub: beacon_home trsync_oid=%d "
-            "z=%.2f threshold=%d",
-            self._home_trsync_oid, self._z_current,
+            "beacon-stub: beacon_home trsync_oid=%d z=%.2f threshold=%d",
+            self._home_trsync_oid,
+            self._z_current,
             self._threshold_trigger,
         )
 
@@ -597,7 +606,9 @@ class BeaconMcuStub:
                 logging.info(
                     "beacon-stub: homing monitor z=%.2f freq=%d "
                     "count=%d threshold=%d",
-                    self._z_current, freq, count,
+                    self._z_current,
+                    freq,
+                    count,
                     self._threshold_trigger,
                 )
             if self._threshold_trigger > 0:
@@ -608,7 +619,9 @@ class BeaconMcuStub:
                 if triggered:
                     logging.info(
                         "beacon-stub: TRIGGER z=%.2f count=%d threshold=%d",
-                        self._z_current, count, self._threshold_trigger,
+                        self._z_current,
+                        count,
+                        self._threshold_trigger,
                     )
                     self._fire_homing_trigger()
                     return
@@ -625,7 +638,8 @@ class BeaconMcuStub:
             data = NVM_IMAGE[offset:end]
         self._send_msg(
             "beacon_nvm_data bytes=%*s offset=%hu",
-            bytes=list(data), offset=offset,
+            bytes=list(data),
+            offset=offset,
         )
 
     def _handle_beacon_contact_home(self, params: dict) -> None:
@@ -644,7 +658,8 @@ class BeaconMcuStub:
             self._contact_trigger_freq = self._z_to_frequency(0.0)
             self._send_msg(
                 "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u",
-                oid=trsync_oid, can_trigger=0,
+                oid=trsync_oid,
+                can_trigger=0,
                 trigger_reason=trigger_reason,
                 clock=self._contact_trigger_clock,
             )
@@ -694,7 +709,9 @@ class BeaconMcuStub:
             reason = self._trsync_trigger_reason.get(oid, reason)
         self._send_msg(
             "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u",
-            oid=oid, can_trigger=0, trigger_reason=reason,
+            oid=oid,
+            can_trigger=0,
+            trigger_reason=reason,
             clock=self._now_clock(),
         )
 
@@ -740,11 +757,16 @@ class BeaconMcuStub:
         BATCH_PERIOD_S = 0.001  # 1 kHz batches → 6 kSps
         # Pre-build the per-sample 6-byte payload (constant Z = +1g).
         z_raw = 16384  # int16, +1g at ±2g scale.
-        sample_bytes = bytes([
-            0x00, 0x00,                               # x = 0
-            0x00, 0x00,                               # y = 0
-            z_raw & 0xFF, (z_raw >> 8) & 0xFF,        # z
-        ])
+        sample_bytes = bytes(
+            [
+                0x00,
+                0x00,  # x = 0
+                0x00,
+                0x00,  # y = 0
+                z_raw & 0xFF,
+                (z_raw >> 8) & 0xFF,  # z
+            ]
+        )
         batch_payload = sample_bytes * SAMPLES_PER_BATCH
         next_tick = time.monotonic()
         last_clock = self._now_clock()
@@ -822,7 +844,8 @@ class BeaconMcuStub:
                     elapsed = now - self._homing_start_time
                     self._z_current = max(
                         0.0,
-                        self._homing_start_z - elapsed * self._homing_approach_speed,
+                        self._homing_start_z
+                        - elapsed * self._homing_approach_speed,
                     )
 
                 freq = self._z_to_frequency(self._z_current)
@@ -847,8 +870,10 @@ class BeaconMcuStub:
                         buf.append(data_value & 0xFF)
                     last_data_value = data_value
 
-                delta_clock = int(CLOCK_FREQ / (BATCH_HZ * SAMPLES_PER_BATCH)
-                                  ) * SAMPLES_PER_BATCH
+                delta_clock = (
+                    int(CLOCK_FREQ / (BATCH_HZ * SAMPLES_PER_BATCH))
+                    * SAMPLES_PER_BATCH
+                )
                 self._send_msg(
                     "beacon_data data=%*s samples=%c start_clock=%u delta_clock=%u",
                     data=list(buf),
@@ -872,14 +897,17 @@ class BeaconMcuStub:
                         logging.info(
                             "beacon-stub: trigger check z=%.2f "
                             "count=%d threshold=%d triggered=%s",
-                            self._z_current, count,
-                            self._threshold_trigger, triggered,
+                            self._z_current,
+                            count,
+                            self._threshold_trigger,
+                            triggered,
                         )
                     if triggered:
                         logging.info(
                             "beacon-stub: TRIGGER FIRED z=%.2f "
                             "count=%d threshold=%d",
-                            self._z_current, count,
+                            self._z_current,
+                            count,
                             self._threshold_trigger,
                         )
                         self._fire_homing_trigger()
@@ -889,10 +917,10 @@ class BeaconMcuStub:
                 next_status += status_period
                 self._send_msg(
                     "beacon_status mcu_temp=%u supply_voltage=%u coil_temp=%u status=%u",
-                    mcu_temp=2048,        # raw ADC for MCU temp
+                    mcu_temp=2048,  # raw ADC for MCU temp
                     supply_voltage=3300,  # raw ADC for supply
-                    coil_temp=143_640,    # ~25°C with BEACON_ADC_SMOOTH_COUNT=200
-                    status=0,             # nominal
+                    coil_temp=143_640,  # ~25°C with BEACON_ADC_SMOOTH_COUNT=200
+                    status=0,  # nominal
                 )
 
     def _z_to_frequency(self, z_mm: float) -> int:
@@ -907,7 +935,9 @@ class BeaconMcuStub:
         """
         if z_mm < 0:
             z_mm = 0
-        return int(self._freq_base + self._freq_coeff / (z_mm + self._freq_offset))
+        return int(
+            self._freq_base + self._freq_coeff / (z_mm + self._freq_offset)
+        )
 
     def _freq_to_count(self, freq_hz: int) -> int:
         """Convert frequency (Hz) to beacon COUNT value.
@@ -917,7 +947,7 @@ class BeaconMcuStub:
         This is the inverse of beacon firmware's count→freq mapping:
         freq = count * CLOCK_FREQ / 2^28
         """
-        return int(freq_hz * (2 ** 28) / CLOCK_FREQ)
+        return int(freq_hz * (2**28) / CLOCK_FREQ)
 
     def _fire_homing_trigger(self) -> None:
         """Fire the trsync trigger to signal homing completion."""
@@ -932,7 +962,9 @@ class BeaconMcuStub:
         reason = self._home_trigger_reason
         self._send_msg(
             "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u",
-            oid=oid, can_trigger=0, trigger_reason=reason,
+            oid=oid,
+            can_trigger=0,
+            trigger_reason=reason,
             clock=self._now_clock(),
         )
 
@@ -940,9 +972,13 @@ class BeaconMcuStub:
     # Logging
     # ------------------------------------------------------------------
 
-    def _log(self, direction: str, data: bytes,
-             msgformat: Optional[str] = None,
-             kwargs: Optional[dict] = None) -> None:
+    def _log(
+        self,
+        direction: str,
+        data: bytes,
+        msgformat: Optional[str] = None,
+        kwargs: Optional[dict] = None,
+    ) -> None:
         if self._log_path is None:
             return
         try:
@@ -960,8 +996,10 @@ class BeaconMcuStub:
                         # "<N bytes>" rather than dumping every value.
                         parts = []
                         for k, v in kwargs.items():
-                            if isinstance(v, list) and v and isinstance(
-                                v[0], int
+                            if (
+                                isinstance(v, list)
+                                and v
+                                and isinstance(v[0], int)
                             ):
                                 parts.append(f"{k}=<{len(v)} bytes>")
                             else:
@@ -984,9 +1022,13 @@ class BeaconMcuStub:
                 ts = f"{time.monotonic() - self._t0:.6f}"
                 # Drop binary-heavy fields for readability.
                 light = {
-                    k: (f"<{len(v)} bytes>" if isinstance(v, (bytes, bytearray))
-                        else v)
-                    for k, v in params.items() if not k.startswith("#")
+                    k: (
+                        f"<{len(v)} bytes>"
+                        if isinstance(v, (bytes, bytearray))
+                        else v
+                    )
+                    for k, v in params.items()
+                    if not k.startswith("#")
                 }
                 line = f"[{ts}][rx-msg] {name} {light}\n".encode()
                 f.write(line)

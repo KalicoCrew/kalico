@@ -46,6 +46,7 @@ void runtime_emit_step_pulses(uint8_t axis_idx, int32_t n_steps) {
 }
 uint32_t stats_send_time = 0u;
 uint32_t stats_send_time_high = 0u;
+uint64_t runtime_widened_host_clock(void) { return 0ULL; }
 
 int main(void) {
     /* Trivial smoke — link symbol resolution check. We don't assert on the

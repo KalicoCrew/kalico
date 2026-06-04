@@ -6,8 +6,7 @@ use std::time::Duration;
 
 fn make_router() -> (PassthroughRouter, Arc<MockClock>) {
     let clock = MockClock::new();
-    let router =
-        PassthroughRouter::with_clock(Arc::clone(&clock) as Arc<dyn Clock + Send + Sync>);
+    let router = PassthroughRouter::with_clock(Arc::clone(&clock) as Arc<dyn Clock + Send + Sync>);
     (router, clock)
 }
 

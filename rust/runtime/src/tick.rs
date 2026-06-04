@@ -146,6 +146,10 @@ pub fn isr_sample_tick(
     if let Some(last) = isr.last_tick_now {
         let gap = now.wrapping_sub(last);
         if period != 0 && gap > period * TICK_GAP_FAULT_MULT {
+            // Integer division is intentional: `gap_ticks` is the integer
+            // count of sample periods elapsed, used as a fault detail tag.
+            // `period != 0` is guarded by the enclosing `if period != 0`.
+            #[allow(clippy::integer_division)]
             let gap_ticks = (gap / period) as u32;
             // Store before the fault code latches so the host always sees
             // populated values. Stacked PC is the primary addr2line target.

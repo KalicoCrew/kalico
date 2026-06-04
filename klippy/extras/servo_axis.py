@@ -50,7 +50,8 @@ class ServoRail:
         if self.axis not in ("x", "y", "z"):
             raise config.error(
                 "servo_%s: axis must be one of x/y/z (got %r)"
-                % (self.axis, self.axis))
+                % (self.axis, self.axis)
+            )
         protocol = config.get("protocol")
         if protocol != "ethercat":
             raise config.error(

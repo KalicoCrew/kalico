@@ -1,9 +1,10 @@
 """Spawn the two Linux MACH_LINUX klipper.elf instances that back the
-faithful sim. H7-flavored has KALICO_RUNTIME=y; F4-flavored doesn't.
+faithful sim (H7-flavored and F4-flavored configs).
 
 Each instance opens a PTY at the supplied socket path. We wait for
 both PTYs to exist before returning, so callers can immediately do
 attach_serial against them."""
+
 import dataclasses
 import os
 import pathlib
@@ -59,8 +60,14 @@ def _ensure_shim_built(repo_root: pathlib.Path) -> pathlib.Path:
     return so_path
 
 
-def _spawn_one(elf: str, socket_path: str, log_path: str,
-               name: str, sock_dir: str, shim_so: str) -> McuHandle:
+def _spawn_one(
+    elf: str,
+    socket_path: str,
+    log_path: str,
+    name: str,
+    sock_dir: str,
+    shim_so: str,
+) -> McuHandle:
     if os.path.exists(socket_path):
         os.unlink(socket_path)
     log_fd = open(log_path, "wb")
@@ -77,8 +84,10 @@ def _spawn_one(elf: str, socket_path: str, log_path: str,
     while time.monotonic() < deadline:
         if os.path.exists(socket_path):
             return McuHandle(
-                name=name, process=proc,
-                socket_path=socket_path, log_path=log_path,
+                name=name,
+                process=proc,
+                socket_path=socket_path,
+                log_path=log_path,
             )
         if proc.poll() is not None:
             log_fd.close()
@@ -113,10 +122,20 @@ def spawn_mcus(
     h7_sock_dir.mkdir(exist_ok=True)
     f4_sock_dir.mkdir(exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
-    h7 = _spawn_one(h7_elf, h7_socket,
-                    os.path.join(log_dir, "h7.log"), "h7",
-                    str(h7_sock_dir), shim_so)
-    f4 = _spawn_one(f4_elf, f4_socket,
-                    os.path.join(log_dir, "f4.log"), "f4",
-                    str(f4_sock_dir), shim_so)
+    h7 = _spawn_one(
+        h7_elf,
+        h7_socket,
+        os.path.join(log_dir, "h7.log"),
+        "h7",
+        str(h7_sock_dir),
+        shim_so,
+    )
+    f4 = _spawn_one(
+        f4_elf,
+        f4_socket,
+        os.path.join(log_dir, "f4.log"),
+        "f4",
+        str(f4_sock_dir),
+        shim_so,
+    )
     return McuHandles(h7=h7, f4=f4)

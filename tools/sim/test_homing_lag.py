@@ -7,21 +7,35 @@ Usage inside Docker:
 Usage standalone (if klippy + Renode already running):
     python3 tools/sim/test_homing_lag.py --api /tmp/klippy_api --renode-monitor localhost:3335
 """
+
 import argparse
 import json
 import socket
-import time
 import sys
+import time
+
+import pytest
+
+# Renode-driven __main__ script (drives a Renode monitor); no pytest test
+# functions. Tagged needs_renode so it is honestly excluded from CI. Run
+# directly: `python3 <this file> --api ... --renode-monitor ...`.
+pytestmark = pytest.mark.needs_renode
 
 
 def gcode(api_socket, script, timeout=60.0):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect(api_socket)
-    s.sendall(json.dumps({
-        "id": 1, "method": "gcode/script",
-        "params": {"script": script},
-    }).encode() + b"\x03")
+    s.sendall(
+        json.dumps(
+            {
+                "id": 1,
+                "method": "gcode/script",
+                "params": {"script": script},
+            }
+        ).encode()
+        + b"\x03"
+    )
     buf = b""
     while True:
         c = s.recv(4096)
@@ -59,8 +73,9 @@ class RenodeMonitor:
             text = self._buf.decode(errors="replace")
             # Strip ANSI escape codes for matching
             import re
-            clean = re.sub(r'\x1b\[[0-9;]*m', '', text)
-            if re.search(r'\((monitor|h723)\)\s*$', clean):
+
+            clean = re.sub(r"\x1b\[[0-9;]*m", "", text)
+            if re.search(r"\((monitor|h723)\)\s*$", clean):
                 result = clean.strip()
                 self._buf = b""
                 return result
@@ -86,7 +101,9 @@ def renode_cmd(monitor_addr, cmd):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--api", required=True, help="klippy API socket path")
-    parser.add_argument("--renode-monitor", required=True, help="host:port for Renode monitor")
+    parser.add_argument(
+        "--renode-monitor", required=True, help="host:port for Renode monitor"
+    )
     args = parser.parse_args()
 
     failures = []
@@ -123,11 +140,11 @@ def main():
     # "Endstop still triggered after retract" is expected when the pin
     # stays HIGH through the retract.
     if "still triggered after retract" in err:
-        print(f"  (expected — pin stays HIGH through retract)")
+        print("  (expected — pin stays HIGH through retract)")
     elif err:
         failures.append(f"Test 1 unexpected error: {err[:100]}")
     else:
-        print(f"  Homing succeeded")
+        print("  Homing succeeded")
     if elapsed > 15.0:
         print(f"  BUG: {elapsed:.1f}s total — likely ghost delay")
         failures.append(f"Test 1: {elapsed:.1f}s delay")
@@ -156,7 +173,9 @@ def main():
         print(f"  Error: {err3[:200]}")
 
     if post_homing_elapsed > 3.0:
-        print(f"  BUG: {post_homing_elapsed:.1f}s post-homing delay on SET_KINEMATIC_POSITION")
+        print(
+            f"  BUG: {post_homing_elapsed:.1f}s post-homing delay on SET_KINEMATIC_POSITION"
+        )
         failures.append(f"Test 2: {post_homing_elapsed:.1f}s post-homing delay")
     else:
         print(f"  Post-homing response OK: {post_homing_elapsed:.3f}s")

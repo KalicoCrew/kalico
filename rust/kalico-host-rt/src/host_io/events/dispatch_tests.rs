@@ -132,7 +132,10 @@ fn status_watermark_unchanged_does_not_synthesize() {
     d.dispatch(status_with_watermark(0, 5));
     // Only 1 Status arrives.
     let _ = rx.recv().unwrap();
-    assert!(rx.try_recv().is_err(), "no CreditFreed on unchanged watermark");
+    assert!(
+        rx.try_recv().is_err(),
+        "no CreditFreed on unchanged watermark"
+    );
 }
 
 /// Stale Status frames (watermark < last seen) must not synthesize.
@@ -153,7 +156,10 @@ fn status_watermark_regression_does_not_synthesize() {
     d.dispatch(status_with_watermark(0, 8));
     // Only 1 Status arrives.
     let _ = rx.recv().unwrap();
-    assert!(rx.try_recv().is_err(), "regression ignored — no CreditFreed");
+    assert!(
+        rx.try_recv().is_err(),
+        "regression ignored — no CreditFreed"
+    );
 }
 
 #[test]
@@ -198,8 +204,8 @@ fn heartbeat_is_not_forwarded_to_runtime_rx() {
 
 #[test]
 fn mcu_log_hook_is_called_on_mcu_log_event() {
-    use std::time::Instant;
     use crate::host_io::runtime_events::McuLogEvent;
+    use std::time::Instant;
 
     let snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
     let mut dispatcher = EventDispatcher::new(snapshot, 16, 8);
@@ -229,8 +235,8 @@ fn mcu_log_hook_is_called_on_mcu_log_event() {
 
 #[test]
 fn mcu_log_without_hook_does_not_panic() {
-    use std::time::Instant;
     use crate::host_io::runtime_events::McuLogEvent;
+    use std::time::Instant;
 
     let snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
     let mut dispatcher = EventDispatcher::new(snapshot, 16, 8);
@@ -249,9 +255,9 @@ fn mcu_log_without_hook_does_not_panic() {
 
 #[test]
 fn mcu_log_also_forwarded_to_runtime_rx() {
+    use crate::host_io::runtime_events::McuLogEvent;
     use std::sync::mpsc::sync_channel;
     use std::time::Instant;
-    use crate::host_io::runtime_events::McuLogEvent;
 
     let snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
     let mut dispatcher = EventDispatcher::new(snapshot, 16, 8);

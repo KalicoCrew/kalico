@@ -1,18 +1,17 @@
 //! Non-zero-endpoint mid-print junction fixture.
 //!
 //! Option B's boundary stencils (i=0 and i=n-1) carry O(h)·b''' truncation
-//! that is mass-zero on rest-to-rest moves like homing (√b_endpoint = 0).
-//! This fixture probes a v_start=30 / v_end=50 single-segment scenario where
+//! that is mass-zero on rest-to-rest moves like homing (`√b_endpoint` = 0).
+//! This fixture probes a `v_start`=30 / `v_end`=50 single-segment scenario where
 //! the boundary truncation is non-zero, ensuring the verifier accepts within
 //! `EPS_FEAS=2e-3`.
 //!
 //! Spec section 6.5.
 
-use temporal::{
-    schedule_segment_with_tolerance, GridConfig, GridScheme, Limits, SolveStatus,
-    ToleranceMode,
-};
 use nurbs::VectorNurbs;
+use temporal::{
+    GridConfig, GridScheme, Limits, SolveStatus, ToleranceMode, schedule_segment_with_tolerance,
+};
 
 fn pure_x_50mm_collinear_cubic() -> VectorNurbs<f64, 3> {
     VectorNurbs::<f64, 3>::try_new(
@@ -52,15 +51,9 @@ fn midprint_junction_non_zero_endpoints_converge() {
     let v_start = 30.0;
     let v_end = 50.0;
 
-    let profile = schedule_segment_with_tolerance(
-        &curve,
-        &limits,
-        &cfg,
-        v_start,
-        v_end,
-        ToleranceMode::Auto,
-    )
-    .expect("schedule_segment_with_tolerance");
+    let profile =
+        schedule_segment_with_tolerance(&curve, &limits, &cfg, v_start, v_end, ToleranceMode::Auto)
+            .expect("schedule_segment_with_tolerance");
 
     assert!(
         matches!(

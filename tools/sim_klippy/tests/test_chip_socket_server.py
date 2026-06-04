@@ -2,14 +2,18 @@
 send arbitrary bytes, the registered handler returns its reply bytes
 back. Wire layout is fully driven by the chip emulator — the server is
 just a synchronous request/response framer over the socket."""
+
 import os
 import socket
 import time
+
 import pytest
 
 from tools.sim_klippy.orchestrator.chip_socket_server import (
     ChipSocketServer,
 )
+
+pytestmark = pytest.mark.sim_unit
 
 
 def test_echo_handler_round_trips():

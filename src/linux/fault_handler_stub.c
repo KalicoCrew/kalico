@@ -100,6 +100,21 @@ void diag_record_engine_xition(uint8_t prev, uint8_t cur,
     (void)prev; (void)cur; (void)samples_taken;
 }
 
+// Crash-diag emit hooks. The real (STM32) implementations re-emit the
+// prior-boot crash summary / the live diag state through the structured-log
+// path, reading the .persistent_diag / BKPSRAM-resident counters and event
+// ring. The Linux MCU has no persisted crash-diag RAM (no NOLOAD section that
+// survives a reset, no BKPSRAM), so there is nothing to replay — no-op stubs.
+// Referenced unconditionally from src/stepper.c (configure-axis "runtime ready"
+// path and the kalico_diag_dump command), so they must link.
+void kalico_diag_emit_prior_crash(void)
+{
+}
+
+void kalico_diag_emit_live(void)
+{
+}
+
 void diag_take_snapshot(struct diag_snapshot *s)
 {
     if (s) {

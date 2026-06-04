@@ -1,4 +1,7 @@
 """Shared pytest fixtures for the faithful-sim test suite."""
+
+from __future__ import annotations
+
 import dataclasses
 import json
 import os
@@ -11,24 +14,20 @@ from typing import List, Optional
 
 import pytest
 
-from tools.sim_klippy.orchestrator.launcher import spawn_mcus, McuHandles
-from tools.sim_klippy.orchestrator.chip_socket_server import ChipSocketServer
-from tools.sim_klippy.orchestrator.tmc5160_emulator import TMC5160Emulator
-from tools.sim_klippy.orchestrator.tmc2209_emulator import TMC2209Emulator
-from tools.sim_klippy.orchestrator.max31865_emulator import MAX31865Emulator
-from tools.sim_klippy.orchestrator.spi_router import SpiRouter
 from tools.sim_klippy.orchestrator.beacon_serial_stub import BeaconSerialStub
-from tools.sim_klippy.orchestrator.adc_stub import HeaterModel, temp_to_adc
+from tools.sim_klippy.orchestrator.chip_socket_server import ChipSocketServer
+from tools.sim_klippy.orchestrator.launcher import McuHandles, spawn_mcus
+from tools.sim_klippy.orchestrator.max31865_emulator import MAX31865Emulator
 from tools.sim_klippy.orchestrator.overrides import (
     apply_overrides,
     load_overrides,
 )
+from tools.sim_klippy.orchestrator.tmc2209_emulator import TMC2209Emulator
+from tools.sim_klippy.orchestrator.tmc5160_emulator import TMC5160Emulator
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
-_CFG_DIR = (
-    REPO_ROOT / "tools" / "sim_klippy" / "printer_real" / "config"
-)
+_CFG_DIR = REPO_ROOT / "tools" / "sim_klippy" / "printer_real" / "config"
 _THIRD_PARTY = (
     REPO_ROOT / "tools" / "sim_klippy" / "printer_real" / "third_party_repos"
 )
@@ -43,7 +42,9 @@ _THIRD_PARTY_PLUGINS = {
     "beacon": _THIRD_PARTY / "beacon_klipper" / "beacon.py",
     "motors_sync": _THIRD_PARTY / "motors-sync" / "motors_sync.py",
     "autotune_tmc": _THIRD_PARTY / "klipper_tmc_autotune" / "autotune_tmc.py",
-    "motor_constants": _THIRD_PARTY / "klipper_tmc_autotune" / "motor_constants.py",
+    "motor_constants": _THIRD_PARTY
+    / "klipper_tmc_autotune"
+    / "motor_constants.py",
 }
 
 _FETCH_SCRIPT = REPO_ROOT / "tools" / "sim_klippy" / "fetch_plugins.sh"
@@ -68,7 +69,9 @@ def _ensure_third_party_repos() -> None:
             f"fetch_plugins.sh failed (exit {result.returncode}):\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
-    missing = [str(src) for src in _THIRD_PARTY_PLUGINS.values() if not src.exists()]
+    missing = [
+        str(src) for src in _THIRD_PARTY_PLUGINS.values() if not src.exists()
+    ]
     if missing:
         raise RuntimeError(
             "fetch_plugins.sh ran but these plugin sources are still missing: "
@@ -268,10 +271,10 @@ def sim(tmp_path, sim_extra_overrides):
         # pin-overrides.toml [mcu_main.gpio]: PC7=5, PC6=4, PD11=6,
         # PC4=3, PF8=40.
         h7_chips_by_cs = [
-            (5,  TMC5160Emulator().transfer),   # PC7 stepper_x
-            (4,  TMC5160Emulator().transfer),   # PC6 stepper_y
-            (6,  TMC5160Emulator().transfer),   # PD11 stepper_x1
-            (3,  TMC5160Emulator().transfer),   # PC4 stepper_y1
+            (5, TMC5160Emulator().transfer),  # PC7 stepper_x
+            (4, TMC5160Emulator().transfer),  # PC6 stepper_y
+            (6, TMC5160Emulator().transfer),  # PD11 stepper_x1
+            (3, TMC5160Emulator().transfer),  # PC4 stepper_y1
             (40, MAX31865Emulator().transfer),  # PF8 extruder_rtd
         ]
         for cs_line, transfer in h7_chips_by_cs:
@@ -286,7 +289,9 @@ def sim(tmp_path, sim_extra_overrides):
         # strips start/stop framing internally.
         chip = TMC2209Emulator(slave_addr=0)
         srv = ChipSocketServer(
-            str(h7_sock / "tmcuart_0"), chip.handle, chunk=10,
+            str(h7_sock / "tmcuart_0"),
+            chip.handle,
+            chunk=10,
         )
         srv.start()
         chip_servers.append(srv)
@@ -352,11 +357,14 @@ def sim(tmp_path, sim_extra_overrides):
         env = os.environ.copy()
         existing = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = ":".join(
-            filter(None, [
-                str(beacon_klipper_path),
-                str(motors_sync_path),
-                existing,
-            ])
+            filter(
+                None,
+                [
+                    str(beacon_klipper_path),
+                    str(motors_sync_path),
+                    existing,
+                ],
+            )
         )
         # Expose H7 sock_dir to klippy so cmd_KALICO_SIM_ENDSTOP_SET_PIN
         # can open the sim_control socket (endstops are wired to H7).
@@ -371,8 +379,10 @@ def sim(tmp_path, sim_extra_overrides):
                 "python3",
                 str(REPO_ROOT / "klippy" / "klippy.py"),
                 str(rendered_cfg),
-                "-l", str(klippy_log),
-                "-a", api_socket,
+                "-l",
+                str(klippy_log),
+                "-a",
+                api_socket,
             ],
             env=env,
             stdout=stdout_log,
@@ -394,8 +404,7 @@ def sim(tmp_path, sim_extra_overrides):
                     break
                 if klippy.poll() is not None:
                     break
-                if (b"Internal error" in content or
-                        b"shutdown:" in content):
+                if b"Internal error" in content or b"shutdown:" in content:
                     if klippy.poll() is not None:
                         break
             elif klippy.poll() is not None:

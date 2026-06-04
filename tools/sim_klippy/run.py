@@ -10,14 +10,13 @@ Run on the Pi after `make` builds out/klipper.elf in the sim repo:
 
 Defaults are tuned for ~/klipper-sim/repo on trident.local.
 """
+
 import argparse
 import json
 import os
 import pathlib
-import signal
 import socket
 import subprocess
-import sys
 import time
 
 # Repo root: env override → script dir's grandparent → ~/klipper-sim/repo
@@ -30,7 +29,9 @@ _DEFAULT_REPO = (
 )
 REPO = _DEFAULT_REPO
 LOGDIR = pathlib.Path(
-    os.environ.get("KALICO_SIM_LOGDIR", str(REPO / "tools" / "sim_klippy" / ".local-logs"))
+    os.environ.get(
+        "KALICO_SIM_LOGDIR", str(REPO / "tools" / "sim_klippy" / ".local-logs")
+    )
 )
 RUNDIR = LOGDIR / "run"
 KLIPPER_ELF = REPO / "out" / "klipper.elf"
@@ -92,6 +93,7 @@ def spawn_klippy():
     klippy_python = pathlib.Path.home() / "klippy-env" / "bin" / "python"
     if not klippy_python.exists():
         import shutil
+
         klippy_python = pathlib.Path(shutil.which("python3") or "python3")
     proc = subprocess.Popen(
         [
@@ -133,9 +135,12 @@ def send_gcode(script: str, timeout: float = 30.0) -> dict:
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect(KLIPPY_API)
-    msg = json.dumps(
-        {"id": 1, "method": "gcode/script", "params": {"script": script}}
-    ).encode("utf-8") + b"\x03"
+    msg = (
+        json.dumps(
+            {"id": 1, "method": "gcode/script", "params": {"script": script}}
+        ).encode("utf-8")
+        + b"\x03"
+    )
     s.sendall(msg)
     buf = b""
     while True:
@@ -153,7 +158,9 @@ def send_gcode(script: str, timeout: float = 30.0) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("script", nargs="*", default=["G28 X"])
-    ap.add_argument("--keep", action="store_true", help="leave processes running after")
+    ap.add_argument(
+        "--keep", action="store_true", help="leave processes running after"
+    )
     args = ap.parse_args()
 
     cleanup_prior()

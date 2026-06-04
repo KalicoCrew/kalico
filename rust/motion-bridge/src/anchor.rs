@@ -19,7 +19,11 @@ pub struct Anchor {
 
 impl Anchor {
     pub fn new() -> Self {
-        Self { t0: None, last_t_end: 0.0, lead_secs: DEFAULT_LEAD_SECS }
+        Self {
+            t0: None,
+            last_t_end: 0.0,
+            lead_secs: DEFAULT_LEAD_SECS,
+        }
     }
 
     /// Map a segment to host time. `host_now` is the shared host clock now
@@ -40,7 +44,12 @@ impl Anchor {
     /// time, so condition (b) is false and T0 is preserved unchanged.
     ///
     /// Returns `(t0, fresh_stream)`.
-    pub fn anchor_segment(&mut self, seg_t_start: f64, seg_t_end: f64, host_now: f64) -> (f64, bool) {
+    pub fn anchor_segment(
+        &mut self,
+        seg_t_start: f64,
+        seg_t_end: f64,
+        host_now: f64,
+    ) -> (f64, bool) {
         let fresh = match self.t0 {
             None => true,
             Some(t0) => {
@@ -95,7 +104,10 @@ mod tests {
         // New T0 = host_now + lead - seg_t_start = 104.0 + 0.25 - 1.0 = 103.25
         // so the piece at u_start=1.0 lands at t0_b + 1.0 = 104.25 = now+lead.
         let expected_t0 = 104.0 + DEFAULT_LEAD_SECS - 1.0;
-        assert!((t0_b - expected_t0).abs() < 1e-9, "t0_b={t0_b} expected={expected_t0}");
+        assert!(
+            (t0_b - expected_t0).abs() < 1e-9,
+            "t0_b={t0_b} expected={expected_t0}"
+        );
         // Verify the piece start lands exactly lead_secs ahead of host_now.
         assert!((t0_b + 1.0 - (104.0 + DEFAULT_LEAD_SECS)).abs() < 1e-9);
     }

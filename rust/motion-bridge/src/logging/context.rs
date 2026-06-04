@@ -79,7 +79,10 @@ mod tests {
         let _guard = CONTEXT_TEST_LOCK.lock().unwrap();
 
         // set→load roundtrip
-        set_context("k-1748700131-4412".to_string(), "print-1748700500".to_string());
+        set_context(
+            "k-1748700131-4412".to_string(),
+            "print-1748700500".to_string(),
+        );
         let c = load_context();
         assert_eq!(c.session_id, "k-1748700131-4412");
         assert_eq!(c.print_id, "print-1748700500");

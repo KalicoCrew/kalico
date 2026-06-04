@@ -213,7 +213,10 @@ fn pulse_steps_per_sample_exceeded_hard_faults() {
     );
     // No steps emitted, baseline left unchanged (reverted before the fault).
     assert_eq!(q.tail, q.head, "no steps may be enqueued on overrun");
-    assert_eq!(axis.last_step_count, 0, "baseline must not advance on fault");
+    assert_eq!(
+        axis.last_step_count, 0,
+        "baseline must not advance on fault"
+    );
     // detail = (axis 1 << 16) | abs_steps(40).
     assert_eq!(
         shared.fault_detail.load(Ordering::Acquire),

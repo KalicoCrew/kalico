@@ -6,9 +6,9 @@ within the local-linear-extrapolation tolerance: < 500 ns per step at typical
 accel (the dispatcher jitter under the mainline-style one-pulse-per-fire
 consumer).
 """
-import sys
+
 import os
-import subprocess
+import sys
 
 KLIPPER_SIM_DIR = os.environ.get(
     "KLIPPER_SIM_DIR", os.path.expanduser("~/Developer/klipper-sim/")
@@ -89,7 +89,7 @@ def main():
         f"step count mismatch: {len(mainline)} vs {len(ours)}"
     )
     max_drift = 0
-    for (m, o) in zip(mainline, ours):
+    for m, o in zip(mainline, ours):
         assert m[0] == o[0], f"axis mismatch: {m} vs {o}"
         drift_ns = abs(m[1] - o[1]) * 1000  # convert µs to ns
         max_drift = max(max_drift, drift_ns)

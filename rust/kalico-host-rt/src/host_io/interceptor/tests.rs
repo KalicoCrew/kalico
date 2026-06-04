@@ -1,6 +1,6 @@
 use super::*;
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 #[test]
 fn dispatch_fires_matching_callback() {
@@ -82,7 +82,11 @@ fn unregister_removes_callback() {
 
     table.unregister(id);
     table.dispatch("trsync_state", Some(0), &params);
-    assert_eq!(count.load(Ordering::Relaxed), 1, "should not fire after unregister");
+    assert_eq!(
+        count.load(Ordering::Relaxed),
+        1,
+        "should not fire after unregister"
+    );
 }
 
 #[test]

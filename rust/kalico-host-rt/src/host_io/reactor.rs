@@ -861,10 +861,11 @@ impl Reactor {
                             await_len = await_len_before,
                             "unsolicited frame with no interceptor match"
                         );
-                        let event = crate::host_io::runtime_events::RuntimeEvent::PassthroughResponse {
-                            name,
-                            params,
-                        };
+                        let event =
+                            crate::host_io::runtime_events::RuntimeEvent::PassthroughResponse {
+                                name,
+                                params,
+                            };
                         self.dispatch_runtime_event(event);
                     }
                 }
@@ -987,7 +988,9 @@ impl Reactor {
                     let since_write_ms = now.duration_since(self.last_write_time).as_millis();
                     log::warn!(
                         "[usb-drop] silence_ms={} since_write_ms={} consec_zero={} err=PhantomZero(Ok(0) for >={ZERO_BYTE_DEBOUNCE:?})",
-                        silence_ms, since_write_ms, self.zero_byte_consec,
+                        silence_ms,
+                        since_write_ms,
+                        self.zero_byte_consec,
                     );
                     self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                         fault_code: FaultCode::HostDisconnect.as_u16(),
@@ -1004,7 +1007,10 @@ impl Reactor {
                 let since_write_ms = now.duration_since(self.last_write_time).as_millis();
                 log::warn!(
                     "[usb-drop] silence_ms={} since_write_ms={} consec_zero={} err={:?}",
-                    silence_ms, since_write_ms, self.zero_byte_consec, e,
+                    silence_ms,
+                    since_write_ms,
+                    self.zero_byte_consec,
+                    e,
                 );
                 self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
                     fault_code: FaultCode::HostDisconnect.as_u16(),
@@ -1172,52 +1178,50 @@ impl Reactor {
                     let _ = router.push(mcu, queue_id, entry);
                 }
             }
-            ReactorCommand::FireAndForget { cmd } => {
-                match self.parser.encode(&cmd) {
-                    Ok(payload) => {
-                        let cmd_disp = if cmd.len() > 120 {
-                            &cmd[..120]
-                        } else {
-                            cmd.as_str()
-                        };
-                        let head: Vec<String> = payload
-                            .iter()
-                            .take(16)
-                            .map(|b| format!("{b:02x}"))
-                            .collect();
-                        tracing::debug!(
-                            subsystem = "mcu-comms",
-                            event = "fire_and_forget_sent",
-                            cmd = %cmd_disp,
-                            payload_len = payload.len(),
-                            head = %head.join(","),
-                            "FireAndForget encoded OK"
-                        );
-                        if let Err(e) = self.dispatch_fire_and_forget(payload) {
-                            let is_io = matches!(e, TransportError::Io(_));
-                            tracing::error!(
-                                subsystem = "mcu-comms",
-                                event = "fire_and_forget_send_error",
-                                cmd = %cmd_disp,
-                                error = %e,
-                                "FireAndForget dispatch failed"
-                            );
-                            if is_io {
-                                self.transition_closed_on_io_fault();
-                            }
-                        }
-                    }
-                    Err(e) => {
+            ReactorCommand::FireAndForget { cmd } => match self.parser.encode(&cmd) {
+                Ok(payload) => {
+                    let cmd_disp = if cmd.len() > 120 {
+                        &cmd[..120]
+                    } else {
+                        cmd.as_str()
+                    };
+                    let head: Vec<String> = payload
+                        .iter()
+                        .take(16)
+                        .map(|b| format!("{b:02x}"))
+                        .collect();
+                    tracing::debug!(
+                        subsystem = "mcu-comms",
+                        event = "fire_and_forget_sent",
+                        cmd = %cmd_disp,
+                        payload_len = payload.len(),
+                        head = %head.join(","),
+                        "FireAndForget encoded OK"
+                    );
+                    if let Err(e) = self.dispatch_fire_and_forget(payload) {
+                        let is_io = matches!(e, TransportError::Io(_));
                         tracing::error!(
                             subsystem = "mcu-comms",
-                            event = "fire_and_forget_encode_error",
-                            cmd = ?cmd,
-                            error = ?e,
-                            "FireAndForget encode failed"
+                            event = "fire_and_forget_send_error",
+                            cmd = %cmd_disp,
+                            error = %e,
+                            "FireAndForget dispatch failed"
                         );
+                        if is_io {
+                            self.transition_closed_on_io_fault();
+                        }
                     }
                 }
-            }
+                Err(e) => {
+                    tracing::error!(
+                        subsystem = "mcu-comms",
+                        event = "fire_and_forget_encode_error",
+                        cmd = ?cmd,
+                        error = ?e,
+                        "FireAndForget encode failed"
+                    );
+                }
+            },
             ReactorCommand::FireAndForgetTyped { payload } => {
                 if let Err(e) = self.dispatch_fire_and_forget(payload) {
                     let is_io = matches!(e, TransportError::Io(_));

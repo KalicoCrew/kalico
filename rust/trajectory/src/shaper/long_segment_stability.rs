@@ -48,7 +48,7 @@ fn constant_69s_near_zero_deviation() {
     let fitted = vec![constant_segment_69s(x_val)];
     let padded = pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 0.0, 69.0);
 
-    let shaped = shape_axis(&padded, &kernel, 0.0, 69.0).unwrap();
+    let shaped = shape_axis(&padded, &kernel, 0.0, 69.0);
     let pieces = extract_bezier_pieces(&shaped);
 
     let mut max_dev = 0.0_f64;
@@ -75,7 +75,7 @@ fn stable_where_nurbs_convolve_fails() {
     let fitted = vec![constant_segment_69s(x_val)];
     let padded = pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 0.0, 69.0);
 
-    let shaped = shape_axis(&padded, &kernel, 0.0, 69.0).unwrap();
+    let shaped = shape_axis(&padded, &kernel, 0.0, 69.0);
     let pieces = extract_bezier_pieces(&shaped);
 
     let mut max_dev = 0.0_f64;

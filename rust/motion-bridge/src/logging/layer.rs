@@ -9,12 +9,12 @@ use serde_json::{Map, Value};
 use time::OffsetDateTime;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Subscriber};
+use tracing_subscriber::Layer;
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::Context;
-use tracing_subscriber::Layer;
 
 use super::context::load_context;
-use super::schema::{format_time, level_str, subsystem_for_target, SOURCE_HOST_RUST};
+use super::schema::{SOURCE_HOST_RUST, format_time, level_str, subsystem_for_target};
 
 /// Collects event fields into a JSON map, special-casing `message`,
 /// `subsystem`, `event`, `code`, `code_name`.
@@ -35,19 +35,23 @@ impl Visit for FieldVisitor {
     }
 
     fn record_i64(&mut self, field: &Field, value: i64) {
-        self.map.insert(field.name().to_string(), Value::from(value));
+        self.map
+            .insert(field.name().to_string(), Value::from(value));
     }
 
     fn record_u64(&mut self, field: &Field, value: u64) {
-        self.map.insert(field.name().to_string(), Value::from(value));
+        self.map
+            .insert(field.name().to_string(), Value::from(value));
     }
 
     fn record_f64(&mut self, field: &Field, value: f64) {
-        self.map.insert(field.name().to_string(), Value::from(value));
+        self.map
+            .insert(field.name().to_string(), Value::from(value));
     }
 
     fn record_bool(&mut self, field: &Field, value: bool) {
-        self.map.insert(field.name().to_string(), Value::Bool(value));
+        self.map
+            .insert(field.name().to_string(), Value::Bool(value));
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
@@ -58,8 +62,7 @@ impl Visit for FieldVisitor {
         if field.name() == "message" {
             self.message = Some(s);
         } else {
-            self.map
-                .insert(field.name().to_string(), Value::String(s));
+            self.map.insert(field.name().to_string(), Value::String(s));
         }
     }
 }
@@ -114,10 +117,7 @@ where
             _ => subsystem_for_target(target).to_string(),
         };
         out.insert("subsystem".into(), Value::String(subsystem));
-        out.insert(
-            "session_id".into(),
-            Value::String(ctx.session_id.clone()),
-        );
+        out.insert("session_id".into(), Value::String(ctx.session_id.clone()));
         out.insert("target".into(), Value::String(target.to_string()));
         out.insert("print_id".into(), Value::String(ctx.print_id.clone()));
 
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn emits_core_schema_fields() {
         let _ctx_guard = CONTEXT_TEST_LOCK.lock().unwrap();
-        super::super::context::set_context("k-1-2".into(), "".into());
+        super::super::context::set_context("k-1-2".into(), String::new());
         let recs = capture(|| {
             tracing::info!(
                 subsystem = "homing",
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn subsystem_falls_back_to_target_mapping() {
         let _ctx_guard = CONTEXT_TEST_LOCK.lock().unwrap();
-        super::super::context::set_context("k-1-2".into(), "".into());
+        super::super::context::set_context("k-1-2".into(), String::new());
         let recs = capture(|| {
             tracing::warn!(event = "retry", "attach_serial retry");
         });
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn embedded_newline_yields_one_line() {
         let _ctx_guard = CONTEXT_TEST_LOCK.lock().unwrap();
-        super::super::context::set_context("k-1-2".into(), "".into());
+        super::super::context::set_context("k-1-2".into(), String::new());
         let recs = capture(|| {
             tracing::info!("line one\nline two\u{0007}");
         });
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn message_with_literal_quotes_is_preserved() {
         let _ctx_guard = CONTEXT_TEST_LOCK.lock().unwrap();
-        super::super::context::set_context("k-1-2".into(), "".into());
+        super::super::context::set_context("k-1-2".into(), String::new());
         let recs = capture(|| {
             tracing::info!("{}", "\"hello\"");
         });

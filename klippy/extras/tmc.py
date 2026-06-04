@@ -555,8 +555,7 @@ class TMCCommandHelper:
             self._handle_sync_mcu_pos(self.stepper)
         except (self.printer.command_error, RuntimeError) as e:
             self.printer.invoke_shutdown(
-                "TMC %s _do_enable_bridge failed: %s"
-                % (self.stepper_name, e)
+                "TMC %s _do_enable_bridge failed: %s" % (self.stepper_name, e)
             )
 
     def _handle_connect(self):

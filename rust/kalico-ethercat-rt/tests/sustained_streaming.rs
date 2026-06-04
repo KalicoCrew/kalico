@@ -34,7 +34,7 @@
 //! All time is synthetic. No wall-clock sleeps. The test is entirely
 //! deterministic and runs without the `hw` feature.
 
-use kalico_ethercat_rt::curves::{AXIS_RING_CAPACITY, EC_DC_PERIOD_NS, AxisRing};
+use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, EC_DC_PERIOD_NS};
 use runtime::piece_ring::PieceEntry;
 
 /// Build a single 1 ms linear-ramp piece starting at `start_ns` with
@@ -161,5 +161,8 @@ fn sustained_streaming_past_ring_depth() {
         "no fault must remain latched after full stream"
     );
     // The ring should be empty — all pieces expired.
-    assert!(ring.is_empty(), "ring must be empty after all pieces retire");
+    assert!(
+        ring.is_empty(),
+        "ring must be empty after all pieces retire"
+    );
 }

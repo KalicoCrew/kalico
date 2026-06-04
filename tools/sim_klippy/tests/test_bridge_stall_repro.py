@@ -18,14 +18,18 @@ Run with:
     docker run --rm -v $REPO:/work -w /work --tmpfs /tmp:exec kalico-sim \
         python3 -m pytest tools/sim_klippy/tests/test_bridge_stall_repro.py -v
 """
+
 import time
 
 import pytest
+
+pytestmark = pytest.mark.needs_elf
 
 
 def _wait_ready(sim, timeout: float = 30.0) -> None:
     import json
     import socket as _socket
+
     deadline = time.time() + timeout
     while time.time() < deadline:
         s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
@@ -74,7 +78,9 @@ def test_linear_move_after_set_kinematic_position(sim):
 
     # Force-set kinematic position (no motion, no homing required).
     r = sim.gcode("SET_KINEMATIC_POSITION X=100 Y=100 Z=10", timeout=10.0)
-    err = (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    err = (
+        (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    )
     assert "bridge_call" not in err, (
         f"SET_KINEMATIC_POSITION already failed with bridge_call error: {r}"
     )
@@ -83,7 +89,9 @@ def test_linear_move_after_set_kinematic_position(sim):
     # (-> tmc.py _do_enable burst) and a planner push (-> 2 load_curves
     # + 1 push_segment via kalico_call).
     r = sim.gcode("G1 X101 F6000", timeout=15.0)
-    err = (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    err = (
+        (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    )
     print(f"\n[G1] result={r}")
     assert "transport closed" not in err, (
         f"REPRO: bridge_call: transport closed during linear move\n  result={r}"
@@ -102,25 +110,30 @@ def test_burst_of_linear_moves(sim):
 
     # Force position so we don't need homing.
     r = sim.gcode("SET_KINEMATIC_POSITION X=100 Y=100 Z=10", timeout=10.0)
-    err = (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    err = (
+        (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    )
     assert "bridge_call" not in err
 
     # ~1.5 seconds of motion across multiple moves at moderate speed.
     # Long enough that the 1Hz tmc-poll timer fires at least once.
     moves = [
         "G1 X110 F6000",  # +10 mm
-        "G1 X90 F6000",   # -20 mm
+        "G1 X90 F6000",  # -20 mm
         "G1 Y110 F6000",
         "G1 Y90 F6000",
         "G1 X100 Y100 F6000",
     ]
     for i, mv in enumerate(moves):
         r = sim.gcode(mv, timeout=15.0)
-        err = (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+        err = (
+            (r.get("error") or {}).get("message", "")
+            if isinstance(r, dict)
+            else ""
+        )
         if "transport closed" in err or "transport timed out" in err:
             pytest.fail(
-                f"REPRO at move {i} ({mv!r}): {err}\n"
-                f"  full result: {r}"
+                f"REPRO at move {i} ({mv!r}): {err}\n  full result: {r}"
             )
 
 
@@ -211,13 +224,17 @@ def test_same_direction_jogs_reproduce_slot_pool_exhaustion(sim):
         "SET_KINEMATIC_POSITION X=15 Y=15 Z=10",
         timeout=10.0,
     )
-    err = (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    err = (
+        (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    )
     assert not err, f"SET_KINEMATIC_POSITION failed: {r}"
 
     # Switch to relative coords once; subsequent G1s are 1mm-X jogs.
     # Each G1 = one ShapedSegment to F4 = one F4 slot allocation.
     r = sim.gcode("G91", timeout=5.0)
-    err = (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    err = (
+        (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    )
     assert not err, f"G91 failed: {r}"
 
     # Loop generously — bench reproduces on the 5th, but a sim bring-up
@@ -279,13 +296,17 @@ def test_long_move_during_tmc_poll(sim):
     _wait_ready(sim)
 
     r = sim.gcode("SET_KINEMATIC_POSITION X=100 Y=100 Z=10", timeout=10.0)
-    err = (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    err = (
+        (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    )
     assert "bridge_call" not in err
 
     # Z at moderate speed: 50 mm/min on default Z config is slow enough
     # to give the 1Hz timer multiple chances to fire.
     r = sim.gcode("G1 Z40 F300", timeout=30.0)
-    err = (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    err = (
+        (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
+    )
     print(f"\n[long Z move] result={r}")
     assert "transport closed" not in err, (
         f"REPRO: transport closed during long Z move\n  result={r}"

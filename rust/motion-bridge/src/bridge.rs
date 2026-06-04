@@ -79,7 +79,8 @@ struct McuConnection {
     clock_sync_thread: Option<JoinHandle<()>>,
     /// Shared clock-sync estimator (writer: clock-sync thread; reader:
     /// mcu_log_hook, for tick→RFC3339). `None` for stock-Klipper MCUs.
-    clock_sync_estimator: Option<Arc<std::sync::RwLock<kalico_host_rt::clock_sync::ClockSyncEstimator>>>,
+    clock_sync_estimator:
+        Option<Arc<std::sync::RwLock<kalico_host_rt::clock_sync::ClockSyncEstimator>>>,
     /// EtherCAT endpoint socket path. `Some` for an EtherCAT node, `None` for
     /// a serial MCU. Mutually exclusive with a live `serial_path` connection.
     ethercat_socket: Option<String>,
@@ -637,7 +638,7 @@ pub(crate) fn ring_depth_for_axis_inner(
 #[cfg(test)]
 mod ring_depth_for_axis_tests {
     use super::ring_depth_for_axis_inner;
-    use crate::dispatch::{McuAxisConfig, McuCaps, AXIS_X, AXIS_Y, AXIS_Z};
+    use crate::dispatch::{AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, McuCaps};
 
     fn configs() -> Vec<McuAxisConfig> {
         vec![
@@ -645,13 +646,17 @@ mod ring_depth_for_axis_tests {
                 mcu_id: 1,
                 axes: vec![AXIS_X, AXIS_Y],
                 kinematics: 0,
-                caps: McuCaps { total_piece_memory: 62 * 1024 },
+                caps: McuCaps {
+                    total_piece_memory: 62 * 1024,
+                },
             },
             McuAxisConfig {
                 mcu_id: 2,
                 axes: vec![AXIS_Z],
                 kinematics: 1,
-                caps: McuCaps { total_piece_memory: 62 * 1024 },
+                caps: McuCaps {
+                    total_piece_memory: 62 * 1024,
+                },
             },
         ]
     }
@@ -659,14 +664,23 @@ mod ring_depth_for_axis_tests {
     #[test]
     fn success_two_axis_mcu() {
         // 62 KB / 32 = 1984 pieces; 2 axes → 992 each.
-        assert_eq!(ring_depth_for_axis_inner(&configs(), 1, AXIS_X as u8).unwrap(), 992);
-        assert_eq!(ring_depth_for_axis_inner(&configs(), 1, AXIS_Y as u8).unwrap(), 992);
+        assert_eq!(
+            ring_depth_for_axis_inner(&configs(), 1, AXIS_X as u8).unwrap(),
+            992
+        );
+        assert_eq!(
+            ring_depth_for_axis_inner(&configs(), 1, AXIS_Y as u8).unwrap(),
+            992
+        );
     }
 
     #[test]
     fn success_single_axis_mcu() {
         // 1984 pieces / 1 axis → 1984.
-        assert_eq!(ring_depth_for_axis_inner(&configs(), 2, AXIS_Z as u8).unwrap(), 1984);
+        assert_eq!(
+            ring_depth_for_axis_inner(&configs(), 2, AXIS_Z as u8).unwrap(),
+            1984
+        );
     }
 
     #[test]
@@ -690,10 +704,15 @@ mod ring_depth_for_axis_tests {
             mcu_id: 0,
             axes: vec![AXIS_X],
             kinematics: 0,
-            caps: McuCaps { total_piece_memory: 70_000 * 32 },
+            caps: McuCaps {
+                total_piece_memory: 70_000 * 32,
+            },
         }];
         let res = ring_depth_for_axis_inner(&configs, 0, AXIS_X as u8);
-        assert!(res.is_err(), "depth > u16::MAX must be a hard error, not a clamp");
+        assert!(
+            res.is_err(),
+            "depth > u16::MAX must be a hard error, not a clamp"
+        );
         let e = res.unwrap_err();
         assert!(
             e.contains("exceeds u16::MAX"),
@@ -871,11 +890,18 @@ impl PyMotionBridge {
         // Signal Shutdown first (non-blocking), then join so the thread
         // drains before the process exits — mirrors clock-sync teardown.
         let pump_join = {
-            let tx = self.pump_tx.lock().unwrap_or_else(|p| p.into_inner()).take();
+            let tx = self
+                .pump_tx
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
             if let Some(tx) = tx {
                 let _ = tx.send(crate::pump::PumpMsg::Shutdown);
             }
-            self.pump_thread.lock().unwrap_or_else(|p| p.into_inner()).take()
+            self.pump_thread
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take()
         };
         if let Some(h) = pump_join {
             let _ = h.join();
@@ -1446,11 +1472,11 @@ impl PyMotionBridge {
                 // Wire the mcu_log_hook. The guard above guarantees events_dir
                 // is Some(_) here; the unreachable! below documents that (it is
                 // not a runtime fallback).
-                let events_dir_guard =
-                    self.events_dir.lock().unwrap_or_else(|p| p.into_inner());
+                let events_dir_guard = self.events_dir.lock().unwrap_or_else(|p| p.into_inner());
                 if let Some(ref dir) = *events_dir_guard {
                     use crate::logging::writer::{
-                        DEFAULT_BACKUP_COUNT, DEFAULT_MAX_BYTES, FSYNC_INTERVAL, RotatingJsonlWriter,
+                        DEFAULT_BACKUP_COUNT, DEFAULT_MAX_BYTES, FSYNC_INTERVAL,
+                        RotatingJsonlWriter,
                     };
                     // The MCU label (from claim_mcu) is the structured-log
                     // source field — VictoriaLogs filters on it, match exactly.
@@ -2282,9 +2308,9 @@ impl PyMotionBridge {
                 let mcus_lock = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
                 mcus.iter()
                     .filter_map(|(handle, _, _)| {
-                        mcus_lock.get(handle).and_then(|c| {
-                            c.ethercat_socket.as_ref().map(|s| (*handle, s.clone()))
-                        })
+                        mcus_lock
+                            .get(handle)
+                            .and_then(|c| c.ethercat_socket.as_ref().map(|s| (*handle, s.clone())))
                     })
                     .collect()
             };
@@ -2298,15 +2324,14 @@ impl PyMotionBridge {
                 })?;
                 // Query the endpoint's real ring capacity. Fatal on failure —
                 // a caps-query failure means the host cannot size piece rings.
-                let caps =
-                    query_ethercat_runtime_caps(&conn, std::time::Duration::from_secs(5))
-                        .map_err(|e| {
-                            PyRuntimeError::new_err(format!(
-                                "init_planner: QueryRuntimeCaps failed for ethercat mcu \
+                let caps = query_ethercat_runtime_caps(&conn, std::time::Duration::from_secs(5))
+                    .map_err(|e| {
+                        PyRuntimeError::new_err(format!(
+                            "init_planner: QueryRuntimeCaps failed for ethercat mcu \
                                  {mcu_id} ({socket}): {e} — endpoint must respond with \
                                  RuntimeCapsResponse; is kalico-ethercat-rt running?"
-                            ))
-                        })?;
+                        ))
+                    })?;
                 log::debug!(
                     "[caps-trace] init_planner: ethercat mcu {mcu_id} caps \
                      total_piece_memory={}",
@@ -2315,8 +2340,7 @@ impl PyMotionBridge {
                 // Write the queried caps back into McuConnection so the
                 // caps_by_handle block below picks them up naturally.
                 {
-                    let mut mcus_lock =
-                        self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+                    let mut mcus_lock = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
                     if let Some(c) = mcus_lock.get_mut(&mcu_id) {
                         c.runtime_caps = Some(caps);
                     }
@@ -2470,19 +2494,20 @@ impl PyMotionBridge {
                     pump_rx,
                     sink,
                     move |k| {
-                        ring_depth_table_for_pump.get(&k).copied().unwrap_or_else(|| {
-                            log::error!(
-                                "pump: no ring_depth for {k:?} — axis absent from \
+                        ring_depth_table_for_pump
+                            .get(&k)
+                            .copied()
+                            .unwrap_or_else(|| {
+                                log::error!(
+                                    "pump: no ring_depth for {k:?} — axis absent from \
                                  init_planner config; using sentinel depth 1 \
                                  (expect PieceStartInPast fault)"
-                            );
-                            1
-                        })
+                                );
+                                1
+                            })
                     },
                     move |mcu_id: u32| {
-                        let r = router_for_pump
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner());
+                        let r = router_for_pump.lock().unwrap_or_else(|p| p.into_inner());
                         r.ack_clock_and_freq(mcu_handle_from_raw(mcu_id))
                     },
                 );
@@ -2490,10 +2515,8 @@ impl PyMotionBridge {
             .expect("spawn push-pieces-pump thread");
 
         // Stored for teardown via shutdown() (sends Shutdown, joins the thread). NOTE: not torn down on Drop or detach_serial — acceptable for the current single-session lifecycle (init_planner runs once under OnceLock; klippy always calls shutdown()). Revisit when restart/re-init is wired.
-        *self.pump_tx.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(pump_tx_init.clone());
-        *self.pump_thread.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(pump_thread_handle);
+        *self.pump_tx.lock().unwrap_or_else(|p| p.into_inner()) = Some(pump_tx_init.clone());
+        *self.pump_thread.lock().unwrap_or_else(|p| p.into_inner()) = Some(pump_thread_handle);
 
         // ── End pump setup ────────────────────────────────────────────────
 
@@ -2576,7 +2599,8 @@ impl PyMotionBridge {
             move |seg: &trajectory::ShapedSegment| -> Result<(), DispatchError> {
                 log::debug!(
                     "[bridge-trace] dispatch entered: seg.t_start={:.6} seg.t_end={:.6}",
-                    seg.t_start, seg.t_end,
+                    seg.t_start,
+                    seg.t_end,
                 );
 
                 // Shared host "now" (seconds) from the router's single clock.
@@ -2606,20 +2630,12 @@ impl PyMotionBridge {
                 // only for the arithmetic, not for any I/O.
                 let project = |mcu_id: u32, host_secs: f64| -> u64 {
                     let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
-                    r.host_time_to_mcu_clock(
-                        crate::types::mcu_handle_from_raw(mcu_id),
-                        host_secs,
-                    )
-                    .unwrap_or(0)
+                    r.host_time_to_mcu_clock(crate::types::mcu_handle_from_raw(mcu_id), host_secs)
+                        .unwrap_or(0)
                 };
 
-                let msgs = crate::enqueue::enqueue_segment(
-                    seg,
-                    &mcu_configs_for_cb,
-                    t0,
-                    fresh,
-                    project,
-                );
+                let msgs =
+                    crate::enqueue::enqueue_segment(seg, &mcu_configs_for_cb, t0, fresh, project);
 
                 for m in msgs {
                     drain_disp.add_sent(m.key.mcu_id, m.key.axis, m.pieces.len() as u32);
@@ -3402,7 +3418,10 @@ mod require_events_dir_tests {
     #[test]
     fn native_no_events_dir_is_err_containing_label() {
         let result = require_events_dir_for_kalico_native(true, None, "mcu-h7");
-        assert!(result.is_err(), "native MCU without events_dir must return Err");
+        assert!(
+            result.is_err(),
+            "native MCU without events_dir must return Err"
+        );
         let msg = result.unwrap_err();
         assert!(
             msg.contains("mcu-h7"),

@@ -7,8 +7,8 @@
 //! `CurveLoadParams`, `SegmentPushParams`, `fits_curve_load`, `UNUSED_HANDLE`,
 //! `is_trivially_constant`) has been removed (Task 10).
 
-use std::collections::{HashMap, HashSet};
 use runtime::segment::KinematicTag;
+use std::collections::{HashMap, HashSet};
 
 /// `McuAxisConfig::kinematics` tag: Octopus CoreXY, motors A (slot 0) + B (slot 1).
 ///
@@ -84,7 +84,9 @@ impl Default for McuCaps {
     fn default() -> Self {
         // Large-profile fallback for firmware predating `QueryRuntimeCaps`.
         // 62 KB is the H7 SRAM budget for piece storage on the Octopus Pro.
-        Self { total_piece_memory: 62 * 1024 }
+        Self {
+            total_piece_memory: 62 * 1024,
+        }
     }
 }
 
@@ -98,9 +100,9 @@ impl Default for McuCaps {
 ///
 /// Order is preserved from `mcus`. No hardcoded MCU identity, axis set, or
 /// kinematics — every field comes from the caller.
-pub fn build_mcu_configs(
+pub fn build_mcu_configs<S: ::std::hash::BuildHasher>(
     mcus: &[(u32, Vec<u8>, u8)],
-    caps_by_handle: &HashMap<u32, McuCaps>,
+    caps_by_handle: &HashMap<u32, McuCaps, S>,
 ) -> Vec<McuAxisConfig> {
     mcus.iter()
         .map(|(handle, axes, tag)| McuAxisConfig {
@@ -117,9 +119,7 @@ pub fn build_mcu_configs(
 /// the CoreXY decision, shared by the piece path (`enqueue.rs`) and the seed
 /// path (`build_seed_sends`) so they cannot drift.
 pub fn cfg_is_corexy(cfg: &McuAxisConfig) -> bool {
-    cfg.kinematics == KINEMATICS_COREXY
-        && cfg.axes.contains(&AXIS_X)
-        && cfg.axes.contains(&AXIS_Y)
+    cfg.kinematics == KINEMATICS_COREXY && cfg.axes.contains(&AXIS_X) && cfg.axes.contains(&AXIS_Y)
 }
 
 /// Map a Cartesian `(x, y)` into this MCU's motor frame:
@@ -179,9 +179,9 @@ pub fn build_seed_sends(configs: &[McuAxisConfig], x: f64, y: f64, z: f64) -> Ve
 /// this loop runs, so skipping EtherCAT here is correct, not an error.
 /// Serial MCUs that genuinely lack `host_io` are a broken invariant and must
 /// be caught by the caller.
-pub fn build_serial_seed_sends(
+pub fn build_serial_seed_sends<S: ::std::hash::BuildHasher>(
     configs: &[McuAxisConfig],
-    ethercat_mcu_ids: &HashSet<u32>,
+    ethercat_mcu_ids: &HashSet<u32, S>,
     x: f64,
     y: f64,
     z: f64,
@@ -214,8 +214,18 @@ mod topology_tests {
     #[test]
     fn build_mcu_configs_two_mcu_corexy_with_e() {
         let mut caps = HashMap::new();
-        caps.insert(7u32, McuCaps { total_piece_memory: 62 * 1024 });
-        caps.insert(9u32, McuCaps { total_piece_memory: 32 * 1024 });
+        caps.insert(
+            7u32,
+            McuCaps {
+                total_piece_memory: 62 * 1024,
+            },
+        );
+        caps.insert(
+            9u32,
+            McuCaps {
+                total_piece_memory: 32 * 1024,
+            },
+        );
         // octopus(7) carries X,Y,E corexy; f446(9) carries Z cartesian.
         let mcus = vec![
             (7u32, vec![AXIS_X as u8, AXIS_Y as u8, AXIS_E as u8], 0u8),
@@ -226,7 +236,12 @@ mod topology_tests {
         assert_eq!(cfgs[0].mcu_id, 7);
         assert_eq!(cfgs[0].axes, vec![AXIS_X, AXIS_Y, AXIS_E]);
         assert_eq!(cfgs[0].kinematics, 0);
-        assert_eq!(cfgs[0].caps, McuCaps { total_piece_memory: 62 * 1024 });
+        assert_eq!(
+            cfgs[0].caps,
+            McuCaps {
+                total_piece_memory: 62 * 1024
+            }
+        );
         assert_eq!(cfgs[1].mcu_id, 9);
         assert_eq!(cfgs[1].axes, vec![AXIS_Z]);
         assert_eq!(cfgs[1].kinematics, 1);
@@ -251,7 +266,9 @@ mod seed_tests {
             mcu_id: 1,
             axes: vec![AXIS_X, AXIS_Y, AXIS_E],
             kinematics: KINEMATICS_COREXY,
-            caps: McuCaps { total_piece_memory: 62 * 1024 },
+            caps: McuCaps {
+                total_piece_memory: 62 * 1024,
+            },
         }
     }
     fn cartesian_z_cfg() -> McuAxisConfig {
@@ -259,7 +276,9 @@ mod seed_tests {
             mcu_id: 2,
             axes: vec![AXIS_Z],
             kinematics: 1, // CartesianXyzAndE
-            caps: McuCaps { total_piece_memory: 62 * 1024 },
+            caps: McuCaps {
+                total_piece_memory: 62 * 1024,
+            },
         }
     }
 
@@ -273,15 +292,18 @@ mod seed_tests {
     fn motor_frame_xy_transforms_corexy_passes_through_cartesian() {
         assert_eq!(motor_frame_xy(&corexy_cfg(), 150.0, 150.0), (300.0, 0.0));
         assert_eq!(motor_frame_xy(&corexy_cfg(), 10.0, 4.0), (14.0, 6.0));
-        assert_eq!(motor_frame_xy(&cartesian_z_cfg(), 150.0, 150.0), (150.0, 150.0));
+        assert_eq!(
+            motor_frame_xy(&cartesian_z_cfg(), 150.0, 150.0),
+            (150.0, 150.0)
+        );
     }
 
     #[test]
     fn encode_q16_is_mm_times_65536_rounded() {
         assert_eq!(encode_q16(0.0), 0);
-        assert_eq!(encode_q16(50.0), 3_276_800);     // 50 * 65536
-        assert_eq!(encode_q16(150.0), 9_830_400);    // 150 * 65536
-        assert_eq!(encode_q16(300.0), 19_660_800);   // 300 * 65536
+        assert_eq!(encode_q16(50.0), 3_276_800); // 50 * 65536
+        assert_eq!(encode_q16(150.0), 9_830_400); // 150 * 65536
+        assert_eq!(encode_q16(300.0), 19_660_800); // 300 * 65536
     }
 
     #[test]
@@ -292,11 +314,11 @@ mod seed_tests {
 
         let octo = sends.iter().find(|s| s.mcu_id == 1).expect("octopus seed");
         assert_eq!(octo.x_q16, encode_q16(300.0)); // motor-A = X+Y
-        assert_eq!(octo.y_q16, encode_q16(0.0));   // motor-B = X-Y
-        assert_eq!(octo.z_q16, encode_q16(50.0));  // Z passthrough
+        assert_eq!(octo.y_q16, encode_q16(0.0)); // motor-B = X-Y
+        assert_eq!(octo.z_q16, encode_q16(50.0)); // Z passthrough
 
         let z = sends.iter().find(|s| s.mcu_id == 2).expect("f446 seed");
-        assert_eq!(z.x_q16, encode_q16(150.0));    // cartesian passthrough
+        assert_eq!(z.x_q16, encode_q16(150.0)); // cartesian passthrough
         assert_eq!(z.y_q16, encode_q16(150.0));
         assert_eq!(z.z_q16, encode_q16(50.0));
     }
@@ -328,14 +350,18 @@ mod seed_tests {
             mcu_id: 1,
             axes: vec![AXIS_X],
             kinematics: KINEMATICS_COREXY,
-            caps: McuCaps { total_piece_memory: 32 * 1024 },
+            caps: McuCaps {
+                total_piece_memory: 32 * 1024,
+            },
         };
         // mcu_id=2 is the serial stepper MCU (Y+Z, cartesian).
         let serial_cfg = McuAxisConfig {
             mcu_id: 2,
             axes: vec![AXIS_Y, AXIS_Z],
             kinematics: 1, // CartesianXyzAndE
-            caps: McuCaps { total_piece_memory: 62 * 1024 },
+            caps: McuCaps {
+                total_piece_memory: 62 * 1024,
+            },
         };
         let configs = vec![ec_cfg, serial_cfg];
         let ethercat_mcu_ids: HashSet<u32> = [1u32].into_iter().collect();
@@ -382,13 +408,17 @@ mod seed_tests {
             mcu_id: 1,
             axes: vec![AXIS_X],
             kinematics: KINEMATICS_COREXY,
-            caps: McuCaps { total_piece_memory: 32 * 1024 },
+            caps: McuCaps {
+                total_piece_memory: 32 * 1024,
+            },
         };
         let ec_cfg_2 = McuAxisConfig {
             mcu_id: 3,
             axes: vec![AXIS_Y],
             kinematics: 1,
-            caps: McuCaps { total_piece_memory: 32 * 1024 },
+            caps: McuCaps {
+                total_piece_memory: 32 * 1024,
+            },
         };
         let configs = vec![ec_cfg_1, ec_cfg_2];
         let ethercat_mcu_ids: HashSet<u32> = [1u32, 3u32].into_iter().collect();

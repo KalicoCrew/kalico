@@ -159,7 +159,9 @@ pub fn reset_all_queues() {
         let q = queue_for_axis(i);
         // SAFETY: `i < N_AXIS_STEP_QUEUES` so `q` is non-null and points at a
         // live `StepQueue`; the IRQ guard guarantees exclusive access.
-        unsafe { (*q).clear(); }
+        unsafe {
+            (*q).clear();
+        }
     }
 }
 

@@ -79,7 +79,10 @@ impl UnixNativeConn {
     /// May be called at any time; replaces any previously installed callback.
     /// The callback is invoked on whichever thread drains the socket.
     pub fn attach_heartbeat_callback(&self, cb: Arc<dyn Fn(&[u32]) + Send + Sync>) {
-        let mut guard = self.heartbeat_callback.lock().unwrap_or_else(|p| p.into_inner());
+        let mut guard = self
+            .heartbeat_callback
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         *guard = Some(cb);
     }
 
@@ -92,7 +95,10 @@ impl UnixNativeConn {
     /// Returns the number of `StatusHeartbeat` frames processed.
     pub fn poll_events(&self) -> usize {
         let cb = {
-            let g = self.heartbeat_callback.lock().unwrap_or_else(|p| p.into_inner());
+            let g = self
+                .heartbeat_callback
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             g.clone()
         };
         let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -123,15 +129,21 @@ impl UnixNativeConn {
 
 /// Dispatch a single demuxed frame. Returns 1 if a `StatusHeartbeat` was processed.
 fn dispatch_frame(frame: Frame, cb: Option<&(dyn Fn(&[u32]) + Send + Sync)>) -> usize {
-    let Frame::Kalico { channel, payload } = frame else { return 0 };
+    let Frame::Kalico { channel, payload } = frame else {
+        return 0;
+    };
     if channel != CHANNEL_EVENTS {
         return 0;
     }
-    let Some((hdr, body)) = decode_message_header(&payload) else { return 0 };
+    let Some((hdr, body)) = decode_message_header(&payload) else {
+        return 0;
+    };
     if MessageKind::from_u16(hdr.kind_raw) != Some(MessageKind::StatusHeartbeat) {
         return 0;
     }
-    let Ok(hb) = StatusHeartbeat::decode(body) else { return 0 };
+    let Ok(hb) = StatusHeartbeat::decode(body) else {
+        return 0;
+    };
     if let Some(cb) = cb {
         cb(&hb.retired_counts);
     }
@@ -157,7 +169,10 @@ impl UnixNativeConn {
         let frame = build_kalico_frame(channel, kind, cid, &body);
 
         let cb = {
-            let g = self.heartbeat_callback.lock().unwrap_or_else(|p| p.into_inner());
+            let g = self
+                .heartbeat_callback
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             g.clone()
         };
 
@@ -199,8 +214,8 @@ impl UnixNativeConn {
                 if let Frame::Kalico { payload, .. } = f {
                     if let Some((hdr, resp_body)) = decode_message_header(&payload) {
                         if hdr.correlation_id == cid {
-                            let resp_kind = MessageKind::from_u16(hdr.kind_raw)
-                                .ok_or_else(|| {
+                            let resp_kind =
+                                MessageKind::from_u16(hdr.kind_raw).ok_or_else(|| {
                                     TransportError::Parse(format!(
                                         "unknown response kind 0x{:04x}",
                                         hdr.kind_raw
@@ -226,7 +241,10 @@ impl NativeCall for UnixNativeConn {
         let frame = build_kalico_control_frame(kind, cid, &body);
 
         let cb = {
-            let g = self.heartbeat_callback.lock().unwrap_or_else(|p| p.into_inner());
+            let g = self
+                .heartbeat_callback
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             g.clone()
         };
 
@@ -268,8 +286,8 @@ impl NativeCall for UnixNativeConn {
                 if let Frame::Kalico { payload, .. } = f {
                     if let Some((hdr, resp_body)) = decode_message_header(&payload) {
                         if hdr.correlation_id == cid {
-                            let resp_kind = MessageKind::from_u16(hdr.kind_raw)
-                                .ok_or_else(|| {
+                            let resp_kind =
+                                MessageKind::from_u16(hdr.kind_raw).ok_or_else(|| {
                                     TransportError::Parse(format!(
                                         "unknown response kind 0x{:04x}",
                                         hdr.kind_raw
@@ -287,8 +305,8 @@ impl NativeCall for UnixNativeConn {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kalico_native_transport::frame::{encode_frame, CHANNEL_CONTROL, CHANNEL_EVENTS};
-    use kalico_native_transport::wire_helpers::{encode_message_header, MESSAGE_VERSION_DEFAULT};
+    use kalico_native_transport::frame::{CHANNEL_CONTROL, CHANNEL_EVENTS, encode_frame};
+    use kalico_native_transport::wire_helpers::{MESSAGE_VERSION_DEFAULT, encode_message_header};
     use kalico_protocol::codec::Encode;
     use std::thread;
 
@@ -326,7 +344,11 @@ mod tests {
     #[test]
     fn round_trips_a_call_by_correlation_id() {
         let (client, server) = UnixStream::pair().unwrap();
-        spawn_stub(server, MessageKind::PushPiecesResponse, vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        spawn_stub(
+            server,
+            MessageKind::PushPiecesResponse,
+            vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        );
         let conn = UnixNativeConn::from_stream(client);
         let (kind, _body) = conn
             .kalico_call(MessageKind::PushPieces, vec![0; 8], Duration::from_secs(2))

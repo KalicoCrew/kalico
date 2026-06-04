@@ -28,7 +28,13 @@ exclude = [
     # header. `src/runtime_tick.c` declares it via local `extern` instead,
     # gated on `CONFIG_KALICO_SIM=y`.
     "kalico_runtime_load_fixture",
+    # Engine<P, I> is a 2-param generic; cbindgen 0.29 panics on
+    # monomorphization. Engine is never directly exposed in the C header.
+    "Engine",
 ]
+
+[fn]
+sort_by = "Name"
 
 [parse]
 parse_deps = true

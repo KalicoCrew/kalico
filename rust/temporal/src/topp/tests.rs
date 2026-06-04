@@ -19,8 +19,8 @@ fn schedule_segment_straight_line_returns_profile() {
         scheme: crate::GridScheme::UniformArclength,
         n: 50,
     };
-    let profile = schedule_segment(&curve, &limits, &cfg, 0.0, 0.0)
-        .expect("schedule_segment should succeed");
+    let profile =
+        schedule_segment(&curve, &limits, &cfg, 0.0, 0.0).expect("schedule_segment should succeed");
     assert_eq!(profile.samples.len(), 50);
     assert!(matches!(
         profile.status,

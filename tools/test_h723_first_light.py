@@ -4,7 +4,7 @@
 #
 # Per Step-5 plan Task 26. PASS/FAIL gate is the kalico_status response.
 #
-# Pre-flight: requires flashed H723 hardware and CONFIG_KALICO_RUNTIME=y.
+# Pre-flight: requires flashed H723 hardware (kalico runtime firmware).
 # This script is hardware-deferred; it runs only when the user has the bench
 # wired up.
 import argparse
@@ -15,8 +15,15 @@ import struct
 import sys
 import time
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import KalicoHostIO  # noqa: E402
+
+# Hardware-deferred __main__ script: talks to a flashed H723 bench over
+# serial. No pytest test functions. Tagged needs_hardware so it is honestly
+# excluded from CI. Run directly: `python3 <this file> --serial ...`.
+pytestmark = pytest.mark.needs_hardware
 
 # Runtime status byte values per `runtime/src/engine.rs::RuntimeStatus`:
 #   0 = IDLE, 1 = RUNNING, 2 = DRAINED, 3 = FAULT
@@ -321,7 +328,9 @@ def main():
 
         # Step 8: poll for RUNNING / DRAINED. Engine fires once widened_now
         # reaches t_start, so the worst-case wait is ~t_start_offset_s.
-        deadline = time.monotonic() + t_start_offset_s + (duration_us * 1e-6) + 1.0
+        deadline = (
+            time.monotonic() + t_start_offset_s + (duration_us * 1e-6) + 1.0
+        )
         observed_running = False
         observed_drained = False
         last_status = None

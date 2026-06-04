@@ -2,6 +2,10 @@
 //! scan, wrap-safe selection, due/late emit, per-dispatch cap, all-empty
 //! disable, and unowned-axis isolation. Hardware firing is MCU-only.
 
+// Test code: `.expect()` is the intended failure signal for queue-push errors;
+// the production expect_used deny does not apply to tests.
+#![allow(clippy::expect_used)]
+
 use super::test_hooks::{queue_for_axis, reset, set_now, set_owned_mask, take_emits};
 use super::{MAX_STEPS_PER_EVENT, STEP_OUTPUT_DISABLE, kalico_step_output_event};
 use crate::step_queue::{StepEntry, push};

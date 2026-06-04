@@ -2,7 +2,8 @@ use super::*;
 
 #[test]
 fn parses_kalico_push_segment_format() {
-    let s = "kalico_push_segment id=%u x_handle=%u y_handle=%u z_handle=%u e_handle=%u kinematics=%c";
+    let s =
+        "kalico_push_segment id=%u x_handle=%u y_handle=%u z_handle=%u e_handle=%u kinematics=%c";
     let (name, fields) = parse_format_string(s).unwrap();
     assert_eq!(name, "kalico_push_segment");
     assert_eq!(fields.len(), 6);

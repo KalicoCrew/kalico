@@ -13,6 +13,7 @@ This is the regression test for spec test §4.9, addressing the Codex
 review concern that "inherited unchanged equals beneficial" needs
 empirical verification rather than reasoning alone.
 """
+
 import json
 import os
 import pathlib
@@ -22,6 +23,13 @@ import socket
 import subprocess
 import sys
 import time
+
+import pytest
+
+# Standalone __main__ script that spawns out/klipper.elf; no pytest test
+# functions. Tagged needs_elf so it is honestly classified (and excluded
+# from the CI sim_unit selection). Run directly: `python3 <this file>`.
+pytestmark = pytest.mark.needs_elf
 
 REPO = pathlib.Path(os.environ.get("KALICO_REPO", "/work"))
 LOGDIR = REPO / "tools" / "sim_klippy" / ".local-logs"
@@ -34,10 +42,18 @@ KLIPPY_LOG = LOGDIR / "klippy.log"
 
 
 def cleanup_prior():
-    subprocess.run(["pkill", "-f", str(KLIPPER_ELF)], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["pkill", "-f", "klippy_sim"], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        ["pkill", "-f", str(KLIPPER_ELF)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        ["pkill", "-f", "klippy_sim"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
     time.sleep(0.5)
     for path in (SIM_SOCKET, KLIPPY_INPUT_TTY, KLIPPY_API):
         try:
@@ -51,7 +67,8 @@ def spawn_elf():
     elf_log = open(LOGDIR / "klipper_elf.log", "wb")
     proc = subprocess.Popen(
         [str(KLIPPER_ELF), "-I", SIM_SOCKET],
-        stdout=elf_log, stderr=subprocess.STDOUT,
+        stdout=elf_log,
+        stderr=subprocess.STDOUT,
     )
     for _ in range(50):
         if os.path.exists(SIM_SOCKET):
@@ -64,9 +81,17 @@ def spawn_elf():
 def spawn_klippy():
     klippy_python = pathlib.Path(shutil.which("python3") or "python3")
     proc = subprocess.Popen(
-        [str(klippy_python), str(REPO / "klippy" / "klippy.py"),
-         str(PRINTER_CFG), "-l", str(KLIPPY_LOG),
-         "-I", KLIPPY_INPUT_TTY, "-a", KLIPPY_API],
+        [
+            str(klippy_python),
+            str(REPO / "klippy" / "klippy.py"),
+            str(PRINTER_CFG),
+            "-l",
+            str(KLIPPY_LOG),
+            "-I",
+            KLIPPY_INPUT_TTY,
+            "-a",
+            KLIPPY_API,
+        ],
         cwd=str(REPO),
     )
     for _ in range(150):
@@ -84,7 +109,10 @@ def api_request(msg_id, method, params, timeout=30.0):
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect(KLIPPY_API)
-    msg = json.dumps({"id": msg_id, "method": method, "params": params}).encode() + b"\x03"
+    msg = (
+        json.dumps({"id": msg_id, "method": method, "params": params}).encode()
+        + b"\x03"
+    )
     s.sendall(msg)
     buf = b""
     while True:
@@ -114,20 +142,40 @@ def main():
             y = float(20 + i)
             z = float(30 + i)
             req_id = 100 + i
-            api_request(req_id, "gcode/script", {
-                "script": f"SET_KINEMATIC_POSITION X={x} Y={y} Z={z}"
-            })
-            r = api_request(200 + i, "objects/query", {"objects": {
-                "toolhead": ["position", "max_velocity", "estimated_print_time"]
-            }})
+            api_request(
+                req_id,
+                "gcode/script",
+                {"script": f"SET_KINEMATIC_POSITION X={x} Y={y} Z={z}"},
+            )
+            r = api_request(
+                200 + i,
+                "objects/query",
+                {
+                    "objects": {
+                        "toolhead": [
+                            "position",
+                            "max_velocity",
+                            "estimated_print_time",
+                        ]
+                    }
+                },
+            )
             th = r["result"]["status"]["toolhead"]
-            assert abs(th["position"][0] - x) < 1e-6, f"iter {i}: pos[0]={th['position'][0]} expected {x}"
-            assert th["max_velocity"] == 300.0, f"iter {i}: max_velocity drifted to {th['max_velocity']}"
-            assert th["estimated_print_time"] >= 0.0, f"iter {i}: bad est_print_time {th['estimated_print_time']}"
+            assert abs(th["position"][0] - x) < 1e-6, (
+                f"iter {i}: pos[0]={th['position'][0]} expected {x}"
+            )
+            assert th["max_velocity"] == 300.0, (
+                f"iter {i}: max_velocity drifted to {th['max_velocity']}"
+            )
+            assert th["estimated_print_time"] >= 0.0, (
+                f"iter {i}: bad est_print_time {th['estimated_print_time']}"
+            )
             if i % 5 == 0:
                 print(f"  iter {i}: pos={th['position'][:3]} ok")
 
-        print("OK: set_position with empty trapq is benign across 20 iterations")
+        print(
+            "OK: set_position with empty trapq is benign across 20 iterations"
+        )
 
     except AssertionError as e:
         print(f"[trapq] FAIL: {e}")
@@ -138,10 +186,14 @@ def main():
     finally:
         klippy.send_signal(signal.SIGTERM)
         elf.send_signal(signal.SIGTERM)
-        try: klippy.wait(timeout=5)
-        except subprocess.TimeoutExpired: klippy.kill()
-        try: elf.wait(timeout=5)
-        except subprocess.TimeoutExpired: elf.kill()
+        try:
+            klippy.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            klippy.kill()
+        try:
+            elf.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            elf.kill()
 
     sys.exit(1 if failed else 0)
 

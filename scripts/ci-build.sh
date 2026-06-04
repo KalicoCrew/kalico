@@ -1,14 +1,22 @@
 #!/bin/bash
-# Test script for continuous integration.
+# Test script for continuous integration: klippy host software only.
+#
+# Firmware is NOT built here. The only supported firmware is the kalico
+# motion-runtime firmware (test/configs/kalico-*.config: H723, F446, G0B1
+# boards + the Linux MCU), and building it requires the Rust toolchain,
+# which this image deliberately does not carry. The single firmware gate
+# is .github/workflows/ci-mcu-firmware.yaml (full C + Rust staticlib link
+# per arch via scripts/ci-build-mcu-kalico.sh). There is no other firmware
+# flavor — no legacy motion planner, no step compression — so there is
+# nothing else to compile.
+#
+# The klippy integration (.test) cases that boot a printer skip honestly
+# when the native motion bridge / firmware dicts are absent (see
+# test/klippy/conftest.py); they light up in environments that build the
+# real engine.
 
 # Stop script early on any error; check variables
 set -eu
-
-# Paths to tools installed by ci-install.sh
-MAIN_DIR=${PWD}
-BUILD_DIR=/ci_build
-export PATH=${BUILD_DIR}/or1k-elf/bin:${PATH}
-PYTHON=${BUILD_DIR}/python-env/bin/python
 
 ######################################################################
 # Section grouping output message helpers
@@ -26,38 +34,6 @@ finish_test()
     echo "=============== Finished $2"
     echo "::endgroup::"
 }
-
-######################################################################
-# Run compile tests for several different MCU types
-######################################################################
-
-compile()
-{
-    for TARGET in test/configs/*.config ; do
-        start_test mcu_compile "$TARGET"
-        make clean
-        make distclean
-        unset CC
-        cp ${TARGET} .config
-        make olddefconfig
-        make V=1 -j2
-        size out/*.elf
-        ./scripts/check-software-div.sh .config out/*.elf
-        finish_test mcu_compile "$TARGET"
-        cp out/klipper.dict ${1}/$(basename ${TARGET} .config).dict
-    done
-    make clean
-    make distclean
-}
-
-export DICTDIR=${DICTDIR:-${BUILD_DIR}/dict}
-
-if [ ! -d "${DICTDIR}" ]; then
-    mkdir -p ${DICTDIR}
-    compile ${DICTDIR}
-elif [ ! -z "${1-}" ] && [ $1 == "compile" ]; then
-    compile ${DICTDIR}
-fi
 
 ######################################################################
 # Verify klippy host software

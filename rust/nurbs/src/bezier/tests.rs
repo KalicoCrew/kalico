@@ -1,4 +1,3 @@
-#[allow(clippy::float_cmp)] // tests assert exact stored coords / round-trip values, not arithmetic results
 use super::*;
 
 #[test]

@@ -75,21 +75,34 @@ import pathlib
 import struct
 import sys
 
+import pytest
+
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
 from kalico_host_io import KalicoHostIO  # noqa: E402
 from test_renode_gpio_injection import RenodeMonitor  # noqa: E402
 
+# Renode end-to-end test: its test functions require the io/renode fixtures
+# from the Renode harness. Tagged needs_renode so it is honestly excluded
+# from CI (no Renode emulation available there).
+pytestmark = pytest.mark.needs_renode
+
+
 # Wire encoding: source record (11 bytes LE) per spec §3.1.
 #   kind u8 | gpio u16 | polarity u8 | arm_policy u8 | sample_n u8
 #   | velocity_axis u8 | v_min_q16 u32
-def encode_source(kind, gpio, polarity, policy, sample_n, velocity_axis,
-                  v_min_q16):
+def encode_source(
+    kind, gpio, polarity, policy, sample_n, velocity_axis, v_min_q16
+):
     return struct.pack(
         "<BHBBBBI",
-        int(kind), int(gpio), int(polarity),
-        int(policy), int(sample_n), int(velocity_axis),
+        int(kind),
+        int(gpio),
+        int(polarity),
+        int(policy),
+        int(sample_n),
+        int(velocity_axis),
         int(v_min_q16),
     )
 
@@ -144,6 +157,7 @@ def _send_encoded(io, cmd_bytes):
     string. Maintains the 4-bit seq counter the same way.
     """
     import msgproto
+
     seq = io._next_seq()  # noqa: SLF001 — fixture-internal API.
     msglen = msgproto.MESSAGE_MIN + len(cmd_bytes)
     seq_byte = (seq & msgproto.MESSAGE_SEQ_MASK) | msgproto.MESSAGE_DEST
@@ -161,8 +175,8 @@ def send_disarm_endstop(io, arm_id):
 
 def send_sim_set_endstop_pin(io, gpio, level):
     io.send(
-        "runtime_sim_endstop_set_pin gpio=%d level=%d" %
-        (int(gpio), int(bool(level)))
+        "runtime_sim_endstop_set_pin gpio=%d level=%d"
+        % (int(gpio), int(bool(level)))
     )
 
 
@@ -172,6 +186,7 @@ def send_sim_set_endstop_pin(io, gpio, level):
 def _wait_for_response_with_id(io, name, arm_id, timeout=5.0):
     """Drain `name` responses until one matches `arm_id`."""
     import time
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         remaining = max(0.05, deadline - time.monotonic())
@@ -201,18 +216,23 @@ def test_arm_trip_disarm(io, renode):
     print("[arm_trip] TIM5 enabled")
 
     arm_id = 0xA5A50001
-    test_gpio = 17                       # arbitrary slot in PIN_LEVELS table
-    sample_n = 1                         # trip on first asserted sample
+    test_gpio = 17  # arbitrary slot in PIN_LEVELS table
+    sample_n = 1  # trip on first asserted sample
     sources = [
         # (kind, gpio, polarity, policy, sample_n, velocity_axis, v_min_q16)
         # kind=0 Physical, polarity=1 active-high, policy=0 TripImmediately,
         # velocity_axis=0x01 X (irrelevant for TripImmediately).
         (0, test_gpio, 1, 0, sample_n, 0x01, 0),
     ]
-    stepper_oids = [1, 2]                # arbitrary u8s; runtime indexes by oid.
+    stepper_oids = [1, 2]  # arbitrary u8s; runtime indexes by oid.
 
-    send_arm_endstop(io, arm_id=arm_id, arm_clock=0,
-                     sources=sources, stepper_oids=stepper_oids)
+    send_arm_endstop(
+        io,
+        arm_id=arm_id,
+        arm_clock=0,
+        sources=sources,
+        stepper_oids=stepper_oids,
+    )
     # Run for a few ms to let the MCU process the command and the
     # engine tick a few times in the Armed state with the pin still
     # low (proves no spurious trip).
@@ -220,8 +240,8 @@ def test_arm_trip_disarm(io, renode):
     arm_resp = _wait_for_response_with_id(
         io, "kalico_arm_endstop_response", arm_id, timeout=5.0
     )
-    assert int(arm_resp["status"]) == 0, (
-        "expected status=0 (Armed), got %r" % (arm_resp,)
+    assert int(arm_resp["status"]) == 0, "expected status=0 (Armed), got %r" % (
+        arm_resp,
     )
     print("[arm_trip] arm acked: %r" % (arm_resp,))
 
@@ -230,11 +250,10 @@ def test_arm_trip_disarm(io, renode):
     # 5 ms = 200 periods, plenty of margin).
     send_sim_set_endstop_pin(io, gpio=test_gpio, level=1)
     renode.advance_time(0.010)
-    pin_resp = io.wait_for_response("runtime_sim_endstop_set_pin_response",
-                                    timeout=3.0)
-    assert int(pin_resp["result"]) == 0, (
-        "set_pin failed: %s" % (pin_resp,)
+    pin_resp = io.wait_for_response(
+        "runtime_sim_endstop_set_pin_response", timeout=3.0
     )
+    assert int(pin_resp["result"]) == 0, "set_pin failed: %s" % (pin_resp,)
     print("[arm_trip] pin set high: %r" % (pin_resp,))
     # Give the trip-drain task a few cycles to publish the event.
     renode.advance_time(0.020)
@@ -244,15 +263,14 @@ def test_arm_trip_disarm(io, renode):
     )
     print("[arm_trip] trip event: %r" % (trip,))
 
-    assert int(trip["fmt_version"]) == 1, (
-        "expected fmt_version=1, got %r" % (trip,)
+    assert int(trip["fmt_version"]) == 1, "expected fmt_version=1, got %r" % (
+        trip,
     )
     assert int(trip["trip_source_idx"]) == 0, (
         "expected trip_source_idx=0, got %r" % (trip,)
     )
     assert int(trip["stepper_count"]) == len(stepper_oids), (
-        "expected stepper_count=%d, got %r" %
-        (len(stepper_oids), trip)
+        "expected stepper_count=%d, got %r" % (len(stepper_oids), trip)
     )
     blob = trip.get("stepper_data", b"")
     # Output-frame parsing path renders the blob as a Python repr-style
@@ -260,6 +278,7 @@ def test_arm_trip_disarm(io, renode):
     # tokenizer in kalico_host_io.py. Recover the raw bytes via ast.
     if isinstance(blob, str):
         import ast
+
         try:
             blob = ast.literal_eval(blob)
         except (ValueError, SyntaxError):
@@ -267,28 +286,24 @@ def test_arm_trip_disarm(io, renode):
     if not isinstance(blob, (bytes, bytearray)):
         raise AssertionError("stepper_data not bytes-like: %r" % (blob,))
     expected_blob_len = 5 * len(stepper_oids)
-    assert len(blob) == expected_blob_len, (
-        "stepper_data len=%d expected %d" %
-        (len(blob), expected_blob_len)
+    assert len(blob) == expected_blob_len, "stepper_data len=%d expected %d" % (
+        len(blob),
+        expected_blob_len,
     )
     # Every per-stepper record is `oid u8 | step_count i32 LE`. The
     # runtime never stepped, so step_count must be 0; the oid must
     # match what we bound.
     for i, oid in enumerate(stepper_oids):
-        rec = blob[i * 5:(i + 1) * 5]
+        rec = blob[i * 5 : (i + 1) * 5]
         got_oid = rec[0]
         got_count = struct.unpack("<i", rec[1:5])[0]
-        assert got_oid == oid, (
-            "rec[%d] oid=%d expected %d" % (i, got_oid, oid)
-        )
+        assert got_oid == oid, "rec[%d] oid=%d expected %d" % (i, got_oid, oid)
         assert got_count == 0, (
-            "rec[%d] step_count=%d expected 0 (no motion in test)" %
-            (i, got_count)
+            "rec[%d] step_count=%d expected 0 (no motion in test)"
+            % (i, got_count)
         )
     trip_clock = (int(trip["trip_clock_hi"]) << 32) | int(trip["trip_clock_lo"])
-    assert trip_clock > 0, (
-        "trip_clock=%d expected > 0" % (trip_clock,)
-    )
+    assert trip_clock > 0, "trip_clock=%d expected > 0" % (trip_clock,)
     print("[arm_trip] trip event shape OK; trip_clock=%d" % (trip_clock,))
 
     # Disarm-after-trip must report AlreadyTripped (status=1).
@@ -315,14 +330,19 @@ def test_arm_disarm_clean(io, renode):
     renode.advance_time(0.005)
     io.wait_for_response("runtime_sim_endstop_set_pin_response", timeout=3.0)
 
-    send_arm_endstop(io, arm_id=arm_id, arm_clock=0,
-                     sources=sources, stepper_oids=stepper_oids)
+    send_arm_endstop(
+        io,
+        arm_id=arm_id,
+        arm_clock=0,
+        sources=sources,
+        stepper_oids=stepper_oids,
+    )
     renode.advance_time(0.010)
     arm_resp = _wait_for_response_with_id(
         io, "kalico_arm_endstop_response", arm_id, timeout=5.0
     )
-    assert int(arm_resp["status"]) == 0, (
-        "expected status=0 (Armed), got %r" % (arm_resp,)
+    assert int(arm_resp["status"]) == 0, "expected status=0 (Armed), got %r" % (
+        arm_resp,
     )
     print("[arm_disarm] arm acked: %r" % (arm_resp,))
 
@@ -376,8 +396,8 @@ def run(args):
             "runtime_sim_engine_tick_start",
         ):
             assert need in names, (
-                "%s missing from data dict; rebuild with CONFIG_KALICO_SIM=y" %
-                (need,)
+                "%s missing from data dict; rebuild with CONFIG_KALICO_SIM=y"
+                % (need,)
             )
         print("[e2e] data dict OK")
 

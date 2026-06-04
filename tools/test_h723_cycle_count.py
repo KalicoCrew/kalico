@@ -24,13 +24,15 @@
 # runtime_query_status / runtime_stream_open and friends in parallel; the
 # bench loop captures the worst ISR-side tick across that load.
 #
-# Pre-flight: requires flashed H723 hardware with CONFIG_KALICO_RUNTIME=y.
+# Pre-flight: requires flashed H723 hardware (kalico runtime firmware).
 import argparse
 import json
 import logging
 import pathlib
 import sys
 import time
+
+import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
@@ -40,11 +42,25 @@ from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
 # (Phase-2a finding #1). A fresh-boot bench without bring-up hits
 # KALICO_BENCH_ERR_ISR_TIMEOUT (-101).
 from test_h723_first_light import (  # noqa: E402
-    STATUS_DRAINED, STATUS_FAULT, STATUS_IDLE, STATUS_NAMES, STATUS_RUNNING,
-    expect_status, load_first_fixture, push_segment, query_pool_state,
-    query_status, read_mcu_clock, stream_arm, stream_flush, stream_open,
-    stream_terminal,
+    STATUS_DRAINED,
+    STATUS_FAULT,
+    STATUS_IDLE,
+    STATUS_NAMES,
+    STATUS_RUNNING,
+    load_first_fixture,
+    push_segment,
+    query_pool_state,
+    query_status,
+    read_mcu_clock,
+    stream_arm,
+    stream_flush,
+    stream_open,
 )
+
+# Hardware-deferred __main__ benchmark against a flashed H723 bench; no
+# pytest test functions. Tagged needs_hardware so it is honestly excluded
+# from CI. Run directly: `python3 <this file> ...`.
+pytestmark = pytest.mark.needs_hardware
 
 
 def run_pass(io, isolate, samples, clock_freq_hz, response_timeout=20.0):
@@ -214,7 +230,9 @@ def main():
         status, last_err = query_status(io)
         skip_bringup = False
         if status == STATUS_RUNNING:
-            print("  status=RUNNING already; engine ISR alive; skipping bring-up")
+            print(
+                "  status=RUNNING already; engine ISR alive; skipping bring-up"
+            )
             skip_bringup = True
         elif status not in (STATUS_IDLE, STATUS_DRAINED):
             raise SystemExit(
@@ -359,9 +377,11 @@ def main():
                     for stir in (
                         "runtime_query_status",
                         "runtime_query_pool_state slot=0",
-                        ("kalico_clock_sync_request request_id=%d "
-                         "host_send_time_lo=0 host_send_time_hi=0"
-                         % (round_idx & 0xFFFFFFFF)),
+                        (
+                            "kalico_clock_sync_request request_id=%d "
+                            "host_send_time_lo=0 host_send_time_hi=0"
+                            % (round_idx & 0xFFFFFFFF)
+                        ),
                     ):
                         try:
                             io.send(stir)

@@ -229,6 +229,4 @@ class PrinterOutputPin:
 
 
 def load_config_prefix(config):
-    raise config.error(
-        "[pwm_tool] is not supported under the new motion path"
-    )
+    raise config.error("[pwm_tool] is not supported under the new motion path")

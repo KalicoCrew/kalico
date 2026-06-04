@@ -8,32 +8,37 @@
 use std::ffi::CString;
 
 use kalico_ethercat_rt::clock::monotonic_ns;
-use kalico_ethercat_rt::curves::{AXIS_RING_CAPACITY, AxisRing, ENGINE_STATE_FAULT, NUM_AXES};
+use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::ffi;
 use kalico_ethercat_rt::scale::CountMap;
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::wire::{
-    Command, identify_response_frame, push_pieces_response_frame, runtime_caps_response_frame,
-    status_heartbeat_frame,
+    identify_response_frame, push_pieces_response_frame, runtime_caps_response_frame,
+    status_heartbeat_frame, Command,
 };
 
 fn arg_val(args: &[String], key: &str) -> Option<String> {
-    args.iter().position(|a| a == key).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == key)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let ifname = args.get(1).cloned().unwrap_or_else(|| "eth0".into());
-    let socket =
-        arg_val(&args, "--socket").unwrap_or_else(|| "/tmp/kalico-ethercat.sock".into());
-    let cycle_us: i64 =
-        arg_val(&args, "--cycle-us").and_then(|s| s.parse().ok()).unwrap_or(1000);
-    let counts_per_mm: f64 =
-        arg_val(&args, "--counts-per-mm").and_then(|s| s.parse().ok()).unwrap_or(3276.8);
-    let rt_cpu: i32 =
-        arg_val(&args, "--rt-cpu").and_then(|s| s.parse().ok()).unwrap_or(3);
-    let rt_prio: i32 =
-        arg_val(&args, "--rt-prio").and_then(|s| s.parse().ok()).unwrap_or(80);
+    let socket = arg_val(&args, "--socket").unwrap_or_else(|| "/tmp/kalico-ethercat.sock".into());
+    let cycle_us: i64 = arg_val(&args, "--cycle-us")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1000);
+    let counts_per_mm: f64 = arg_val(&args, "--counts-per-mm")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3276.8);
+    let rt_cpu: i32 = arg_val(&args, "--rt-cpu")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3);
+    let rt_prio: i32 = arg_val(&args, "--rt-prio")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(80);
     let cycle_ns = cycle_us * 1000;
     // Cycles per 0.5 s telemetry period. cycle_us is positive by invariant.
     let telemetry_period = u64::try_from(cycle_us)
@@ -46,9 +51,7 @@ fn main() {
     let mut heartbeat_sent = false;
 
     let mut server = FrameServer::bind(&socket).expect("bind socket");
-    eprintln!(
-        "ec-rt: socket {socket}, cycle {cycle_us}us, counts/mm {counts_per_mm}"
-    );
+    eprintln!("ec-rt: socket {socket}, cycle {cycle_us}us, counts/mm {counts_per_mm}");
 
     // Bring up the drive (blocks until CiA402 operation-enabled).
     let cif = CString::new(ifname.clone()).expect("ifname must not contain NUL");
@@ -63,25 +66,32 @@ fn main() {
     loop {
         for cmd in server.poll_commands() {
             match cmd {
-                Command::Identify { correlation_id, proto_version } => {
+                Command::Identify {
+                    correlation_id,
+                    proto_version,
+                } => {
                     server.respond(&identify_response_frame(correlation_id, proto_version));
                 }
-                Command::PushPieces { correlation_id, msg } => {
-                    let front_start_time =
-                        if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8 {
-                            u64::from_le_bytes(
-                                msg.pieces_bytes[0..8].try_into().unwrap_or([0; 8]),
-                            )
-                        } else {
-                            0
-                        };
+                Command::PushPieces {
+                    correlation_id,
+                    msg,
+                } => {
+                    let front_start_time = if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8 {
+                        u64::from_le_bytes(msg.pieces_bytes[0..8].try_into().unwrap_or([0; 8]))
+                    } else {
+                        0
+                    };
                     let pushed = ring.push_from_bytes(msg.piece_count, &msg.pieces_bytes);
                     eprintln!(
                         "ec-rt: PushPieces axis={} pieces={} pushed={} head={}",
                         msg.axis_idx, msg.piece_count, pushed, msg.new_head
                     );
                     let arrival_clock = monotonic_ns();
-                    let result = if pushed == msg.piece_count { 0i32 } else { -309 };
+                    let result = if pushed == msg.piece_count {
+                        0i32
+                    } else {
+                        -309
+                    };
                     server.respond(&push_pieces_response_frame(
                         correlation_id,
                         result,
@@ -123,7 +133,10 @@ fn main() {
                  — notifying host via heartbeat"
             );
             let current_retired = ring.retired_count();
-            server.respond(&status_heartbeat_frame(ENGINE_STATE_FAULT, &[current_retired]));
+            server.respond(&status_heartbeat_frame(
+                ENGINE_STATE_FAULT,
+                &[current_retired],
+            ));
             last_sent_retired = current_retired;
             heartbeat_sent = true;
 

@@ -522,9 +522,8 @@ fn drain_pending_surfaces_write_failure() {
 
     // Queue one pending submission. unacked_window is empty so the
     // drain loop will pop it and try to dispatch immediately.
-    let (tx, completion_rx) = std::sync::mpsc::sync_channel::<
-        Result<crate::transport::MessageParams, TransportError>,
-    >(1);
+    let (tx, completion_rx) =
+        std::sync::mpsc::sync_channel::<Result<crate::transport::MessageParams, TransportError>>(1);
     reactor.pending_submissions.push_back(PendingSubmission {
         call_id: 7,
         payload: vec![0xAA, 0xBB],

@@ -17,11 +17,11 @@ use time::OffsetDateTime;
 use kalico_host_rt::clock_sync::ClockSyncEstimator;
 use kalico_host_rt::host_io::runtime_events::McuLogEvent;
 use motion_bridge_native::logging::context;
+use motion_bridge_native::logging::writer::RotatingJsonlWriter;
 use motion_bridge_native::logging::writer::{
     DEFAULT_BACKUP_COUNT, DEFAULT_MAX_BYTES, FSYNC_INTERVAL,
 };
 use motion_bridge_native::mcu_log::build_mcu_log_hook;
-use motion_bridge_native::logging::writer::RotatingJsonlWriter;
 
 /// Serialise tests that call `context::set_context` so they don't race on the
 /// process-global `ArcSwap<SessionContext>`.  Integration tests run in the same
@@ -47,8 +47,13 @@ fn re_emit_closure_produces_schema_conformant_line() {
 
     let path = tmp_jsonl("reemit", "mcu-h7.jsonl");
     let writer = Arc::new(Mutex::new(
-        RotatingJsonlWriter::new(&path, DEFAULT_MAX_BYTES, DEFAULT_BACKUP_COUNT, FSYNC_INTERVAL)
-            .unwrap(),
+        RotatingJsonlWriter::new(
+            &path,
+            DEFAULT_MAX_BYTES,
+            DEFAULT_BACKUP_COUNT,
+            FSYNC_INTERVAL,
+        )
+        .unwrap(),
     ));
 
     // Build an estimator with 30 samples so wall_time_at_mcu works.
@@ -62,17 +67,13 @@ fn re_emit_closure_produces_schema_conformant_line() {
         }
     }
 
-    let hook = build_mcu_log_hook(
-        Arc::clone(&est),
-        Arc::clone(&writer),
-        "mcu-h7".to_string(),
-    );
+    let hook = build_mcu_log_hook(Arc::clone(&est), Arc::clone(&writer), "mcu-h7".to_string());
 
     let event = McuLogEvent {
         mcu_tick: 15 * 100_000_000u64,
-        level: 2, // warn
+        level: 2,     // warn
         subsystem: 2, // tick
-        event: 1, // interval_exceeded
+        event: 1,     // interval_exceeded
         code: 0xFEC9, // -311 TickIntervalExceeded
         seq: 7,
         args: [100, 200],
@@ -129,26 +130,30 @@ fn re_emit_closure_produces_schema_conformant_line() {
 #[test]
 fn fallback_stamps_time_estimated_true_when_no_clock_sync_samples() {
     let _ctx_guard = CTX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    context::set_context("k-fallback-session".to_string(), "print-fallback".to_string());
+    context::set_context(
+        "k-fallback-session".to_string(),
+        "print-fallback".to_string(),
+    );
 
     let path = tmp_jsonl("fallback", "mcu-h7-fallback.jsonl");
     let writer = Arc::new(Mutex::new(
-        RotatingJsonlWriter::new(&path, DEFAULT_MAX_BYTES, DEFAULT_BACKUP_COUNT, FSYNC_INTERVAL)
-            .unwrap(),
+        RotatingJsonlWriter::new(
+            &path,
+            DEFAULT_MAX_BYTES,
+            DEFAULT_BACKUP_COUNT,
+            FSYNC_INTERVAL,
+        )
+        .unwrap(),
     ));
 
     // Empty estimator — zero samples, so wall_time_at_mcu always returns None.
     let est = Arc::new(RwLock::new(ClockSyncEstimator::new(100_000_000.0)));
 
-    let hook = build_mcu_log_hook(
-        Arc::clone(&est),
-        Arc::clone(&writer),
-        "mcu-h7".to_string(),
-    );
+    let hook = build_mcu_log_hook(Arc::clone(&est), Arc::clone(&writer), "mcu-h7".to_string());
 
     let event = McuLogEvent {
         mcu_tick: 5 * 100_000_000u64,
-        level: 3, // error
+        level: 3,     // error
         subsystem: 0, // runtime
         event: 0,
         code: 0xFEC9, // -311 TickIntervalExceeded
@@ -224,11 +229,7 @@ fn source_matches_label() {
             }
         }
 
-        let hook = build_mcu_log_hook(
-            Arc::clone(&est),
-            Arc::clone(&writer),
-            (*label).to_string(),
-        );
+        let hook = build_mcu_log_hook(Arc::clone(&est), Arc::clone(&writer), (*label).to_string());
 
         let event = McuLogEvent {
             mcu_tick: 3 * 100_000_000u64,
@@ -254,8 +255,7 @@ fn source_matches_label() {
         let rec: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
 
         assert_eq!(
-            rec["source"],
-            *label,
+            rec["source"], *label,
             "source field must match the label '{label}', got {:?}",
             rec["source"]
         );

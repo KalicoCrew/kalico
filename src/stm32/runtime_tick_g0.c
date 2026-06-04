@@ -127,6 +127,37 @@ runtime_tick_init(void)
     NVIC_EnableIRQ(MOTION_TIM_IRQn);
 }
 
+// ── -311 stacked-PC capture: not available on Cortex-M0+ ────────────────────
+// H7/F4 capture the interrupted context's PC/xPSR via a naked TIM5_IRQHandler
+// wrapper that stashes the exception-frame base, so the -311 late-tick fault
+// path can name the code that held the CPU (frame[6]=PC, frame[7]=xPSR). The G0
+// backend deliberately omits that wrapper: a naked frame-capture shim plus the
+// per-tick stash cost is exactly the profiling overhead this bring-up target
+// drops (see the spec "Out of scope … hardware profiling/bench (no DWT)"), and
+// ARMv6-M has no DWT to time it against anyway. These two accessors are still
+// referenced from src/runtime_tick.c (runtime_handle_tick_blocker_pc path) and
+// from Rust (rust/runtime/src/tick.rs isr_sample_tick), so they MUST resolve at
+// link time. Returning 0 is the HONEST answer — fault_handler / the host treat
+// 0 as "no stacked-PC data captured," not as a real PC of 0x0. This mirrors the
+// Linux host backend (src/linux/runtime_tick_host.c), which stubs the same pair
+// for the same reason (no TIM5 exception frame to read). Do NOT return a
+// fabricated value here: a fake PC would send addr2line chasing a phantom
+// blocker. used,externally_visible: referenced only from Rust; must survive
+// -fwhole-program LTO + --gc-sections.
+__attribute__((used, externally_visible))
+uint32_t
+runtime_tim5_stacked_pc(void)
+{
+    return 0;  // G0: no exception-frame capture (no naked TIM wrapper) → "no data"
+}
+
+__attribute__((used, externally_visible))
+uint32_t
+runtime_tim5_stacked_exc(void)
+{
+    return 0;  // G0: no exception-frame capture → "no data"
+}
+
 void
 MOTION_TIM_IRQHandler(void)
 {
@@ -166,5 +197,56 @@ MOTION_TIM_IRQHandler(void)
 // (TIM7_LPTIM2_IRQHandler or TIM6_DAC_LPTIM1_IRQHandler), which is correct —
 // that is the actual vector the chosen basic timer raises.
 DECL_ARMCM_IRQ(MOTION_TIM_IRQHandler, MOTION_TIM_IRQn);
+
+// ===========================================================================
+// Dedicated step-output timer — NOT IMPLEMENTED on G0 (no compare channel)
+// ===========================================================================
+// On H7/F4 a second hardware timer (TIM3 / TIM2) drains the per-axis step
+// queues: kalico_kick_step_output() (src/runtime_tick.c) arms a CC1 one-shot,
+// and that timer's ISR calls kalico_step_output_event() to emit due steps. That
+// design needs a timer with an output-compare channel.
+//
+// The G0 motion timer is deliberately a *basic* timer (TIM6/TIM7) — chosen in
+// the spec precisely BECAUSE basic timers have no output channels, so hard_pwm
+// can never steal them (docs/.../2026-05-31-stm32g0-sb2209-target-design.md).
+// The flip side is that a basic timer has NO capture/compare channel, so it
+// cannot implement the F4/H7 CC1 one-shot step-output pattern. The only
+// compare-capable G0 timers (TIM2 = Klipper's scheduler clock; TIM3/TIM4 =
+// PWM-contended) are unavailable or out of scope. Standing up a real G0
+// step-output timer is therefore explicitly deferred — the milestone scope is
+// "fits, links, and ticks the engine," with step emission a follow-on (same
+// spec, "Out of scope for this milestone").
+//
+// These three symbols are referenced unconditionally from kalico_kick_step_-
+// output() in src/runtime_tick.c (compiled for every arch), so they MUST
+// resolve at link time. They are no-ops here, mirroring the Linux host backend
+// (src/linux/runtime_tick_host.c) which stubs the same trio for the same shape
+// of reason (no dedicated step-output timer; steps handled elsewhere or not yet
+// at all). is_running() returns 0 so the kick treats every call as a first-arm
+// and never tries to pull a (non-existent) compare forward — a clean no-op, not
+// fabricated state. used,externally_visible: referenced from the Rust archive
+// via kalico_kick_step_output; must survive -fwhole-program LTO + --gc-sections.
+static uint32_t step_out_target_g0;
+
+__attribute__((used, externally_visible))
+void
+step_output_timer_arm(uint32_t cycle_abs)
+{
+    step_out_target_g0 = cycle_abs;  // recorded for armed_target(); no HW timer
+}
+
+__attribute__((used, externally_visible))
+uint32_t
+step_output_timer_armed_target(void)
+{
+    return step_out_target_g0;
+}
+
+__attribute__((used, externally_visible))
+uint8_t
+step_output_timer_is_running(void)
+{
+    return 0;  // G0: no step-output timer → never "running" (kick is a no-op)
+}
 
 #endif

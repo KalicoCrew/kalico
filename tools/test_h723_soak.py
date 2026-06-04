@@ -5,7 +5,7 @@
 # Polls runtime_query_status every 1 second for `--minutes` minutes; FAILs
 # immediately on any FAULT status. Idempotent — can be killed and restarted.
 #
-# Pre-flight: requires flashed H723 hardware with CONFIG_KALICO_RUNTIME=y
+# Pre-flight: requires flashed H723 hardware (kalico runtime firmware)
 # and a representative segment chain pushed to the runtime (e.g. by running
 # test_h723_first_light.py beforehand, or by a parallel slicer-driven workload).
 import argparse
@@ -14,8 +14,15 @@ import pathlib
 import sys
 import time
 
+import pytest
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
+
+# Hardware-deferred __main__ soak test against a flashed H723 bench; no
+# pytest test functions. Tagged needs_hardware so it is honestly excluded
+# from CI. Run directly: `python3 <this file> ...`.
+pytestmark = pytest.mark.needs_hardware
 
 STATUS_NAMES = {0: "IDLE", 1: "LOADED", 2: "RUNNING", 3: "FAULT"}
 

@@ -7,6 +7,16 @@
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/RustSec/advisory-db"]
 yanked = "deny"
+ignore = [
+    # time RFC-2822 *parsing* stack exhaustion. Unreachable here: the only
+    # `time` usage in the workspace is motion-bridge/src/logging/{schema,layer}.rs
+    # — OffsetDateTime::now_utc() + compile-time format_description! FORMATTING
+    # of JSONL timestamps. Nothing parses with `time`, RFC-2822 or otherwise.
+    # The fixed release (0.3.47) requires rustc 1.88; the workspace toolchain
+    # is pinned at 1.85 (rust-toolchain.toml), so we stay on 0.3.45 and ignore.
+    # Drop this entry when the toolchain pin moves to >= 1.88.
+    { id = "RUSTSEC-2026-0009", reason = "time used for formatting only; RFC-2822 parse path unreachable; fix requires rustc 1.88 > pinned 1.85" },
+]
 
 [licenses]
 # Allow-list approach — anything not listed is denied by default in current

@@ -14,21 +14,22 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use kalico_ethercat_rt::clock::monotonic_ns;
-use kalico_ethercat_rt::curves::{AXIS_RING_CAPACITY, AxisRing, ENGINE_STATE_FAULT, NUM_AXES};
+use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::wire::{
-    Command, identify_response_frame, push_pieces_response_frame, runtime_caps_response_frame,
-    status_heartbeat_frame,
+    identify_response_frame, push_pieces_response_frame, runtime_caps_response_frame,
+    status_heartbeat_frame, Command,
 };
 
 fn arg_val(args: &[String], key: &str) -> Option<String> {
-    args.iter().position(|a| a == key).and_then(|i| args.get(i + 1).cloned())
+    args.iter()
+        .position(|a| a == key)
+        .and_then(|i| args.get(i + 1).cloned())
 }
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let socket =
-        arg_val(&args, "--socket").unwrap_or_else(|| "/tmp/kalico-ethercat.sock".into());
+    let socket = arg_val(&args, "--socket").unwrap_or_else(|| "/tmp/kalico-ethercat.sock".into());
 
     let mut ring = AxisRing::new();
     // Last retirement watermark sent to the host in a StatusHeartbeat.
@@ -42,15 +43,19 @@ fn main() {
     loop {
         for cmd in server.poll_commands() {
             match cmd {
-                Command::Identify { correlation_id, proto_version } => {
+                Command::Identify {
+                    correlation_id,
+                    proto_version,
+                } => {
                     server.respond(&identify_response_frame(correlation_id, proto_version));
                 }
-                Command::PushPieces { correlation_id, msg } => {
+                Command::PushPieces {
+                    correlation_id,
+                    msg,
+                } => {
                     let front_start_time = if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8 {
                         // The first 8 bytes of pieces_bytes are the start_time of piece 0.
-                        u64::from_le_bytes(
-                            msg.pieces_bytes[0..8].try_into().unwrap_or([0; 8]),
-                        )
+                        u64::from_le_bytes(msg.pieces_bytes[0..8].try_into().unwrap_or([0; 8]))
                     } else {
                         0
                     };
@@ -61,7 +66,11 @@ fn main() {
                     );
                     // Arrival clock: use monotonic_ns() as the EtherCAT clock.
                     let arrival_clock = monotonic_ns();
-                    let result = if pushed == msg.piece_count { 0i32 } else { -309 };
+                    let result = if pushed == msg.piece_count {
+                        0i32
+                    } else {
+                        -309
+                    };
                     server.respond(&push_pieces_response_frame(
                         correlation_id,
                         result,
@@ -90,7 +99,10 @@ fn main() {
                  — propagating to host via heartbeat, host must shut down"
             );
             let current_retired = ring.retired_count();
-            server.respond(&status_heartbeat_frame(ENGINE_STATE_FAULT, &[current_retired]));
+            server.respond(&status_heartbeat_frame(
+                ENGINE_STATE_FAULT,
+                &[current_retired],
+            ));
             last_sent_retired = current_retired;
             heartbeat_sent = true;
         }

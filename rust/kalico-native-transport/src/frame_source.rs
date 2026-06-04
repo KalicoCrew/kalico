@@ -32,11 +32,13 @@ impl<R: Read + std::fmt::Debug> std::fmt::Debug for FrameSource<R> {
 }
 
 impl<R: Read> FrameSource<R> {
-    pub fn new(
-        reader: R,
-        set_timeout: Box<dyn FnMut(&mut R, Duration) -> io::Result<()>>,
-    ) -> Self {
-        Self { reader, set_timeout, demuxer: Demuxer::new(), scratch: [0u8; 1024] }
+    pub fn new(reader: R, set_timeout: Box<dyn FnMut(&mut R, Duration) -> io::Result<()>>) -> Self {
+        Self {
+            reader,
+            set_timeout,
+            demuxer: Demuxer::new(),
+            scratch: [0u8; 1024],
+        }
     }
 
     pub fn from_read_no_timeout(reader: R) -> Self {
@@ -53,8 +55,7 @@ impl<R: Read> FrameSource<R> {
     ) -> Result<PollOutcome, FrameSourceError> {
         let now = Instant::now();
         let remaining = deadline.saturating_duration_since(now);
-        (self.set_timeout)(&mut self.reader, remaining)
-            .map_err(FrameSourceError::SetTimeout)?;
+        (self.set_timeout)(&mut self.reader, remaining).map_err(FrameSourceError::SetTimeout)?;
         match self.reader.read(&mut self.scratch) {
             Ok(0) => Ok(PollOutcome::PhantomZero),
             Ok(n) => {

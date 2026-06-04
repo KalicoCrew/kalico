@@ -14,6 +14,7 @@ from klippy import Printer, pins
 from klippy.configfile import ConfigWrapper
 from klippy.extras.gcode_macro import Template
 from klippy.gcode import GCodeCommand
+
 from . import manual_probe
 
 HINT_TIMEOUT = """
@@ -513,7 +514,7 @@ class PrinterProbe:
             "SAMPLE_RETRACT_DIST", self.sample_retract_dist, above=0.0
         )
         lift_speed = self.get_lift_speed(gcmd)
-        toolhead: ToolHead = self.printer.lookup_object("toolhead")
+        toolhead = self.printer.lookup_object("toolhead")
         pos = toolhead.get_position()
         self._move([None, None, pos[2] + sample_retract_dist], lift_speed)
 
@@ -597,7 +598,7 @@ class PrinterProbe:
         self.last_z_result = pos[2]
         home = gcmd.get("HOME", default="").lower()
         if home == "z":
-            toolhead: ToolHead = self.printer.lookup_object("toolhead")
+            toolhead = self.printer.lookup_object("toolhead")
             toolhead.get_last_move_time()
             toolhead_pos = toolhead.get_position()
             toolhead_pos[2] = toolhead_pos[2] - self.last_z_result

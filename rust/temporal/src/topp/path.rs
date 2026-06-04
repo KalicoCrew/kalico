@@ -407,4 +407,3 @@ fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 #[cfg(test)]
 mod tests;
-

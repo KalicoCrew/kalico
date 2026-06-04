@@ -73,11 +73,25 @@ pub fn get_position_and_velocity<F: FaultSink>(
 
     crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_WALK);
     let walk_start = crate::isr_phase::cyccnt();
-    let slot = get_piece_for_time(ring, storage, now, sample_period_cycles, cycles_per_second, axis_idx, fault)?;
+    let slot = get_piece_for_time(
+        ring,
+        storage,
+        now,
+        sample_period_cycles,
+        cycles_per_second,
+        axis_idx,
+        fault,
+    )?;
     crate::isr_phase::walk_account(crate::isr_phase::cyccnt().wrapping_sub(walk_start));
 
     crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_MONOMIAL);
     let mono_start = crate::isr_phase::cyccnt();
+    // SAFETY: `slot` was returned by `get_piece_for_time`, which calls
+    // `ring.front_slot()` → `ring_offset + tail`.  `configure_axis` guarantees
+    // `ring_offset + ring_depth <= storage.len()`, and `tail < ring_depth`
+    // always holds (tail advances mod ring_depth).  Therefore `slot <
+    // storage.len()`.
+    #[allow(clippy::indexing_slicing)]
     let p = arm_and_load(armed, &storage[slot], cycles_per_second);
     crate::isr_phase::monomial_account(crate::isr_phase::cyccnt().wrapping_sub(mono_start));
 
@@ -120,6 +134,11 @@ fn get_piece_for_time<F: FaultSink>(
     let fault_tolerance = drift_budget + u64::from(sample_period_cycles);
     loop {
         let slot = ring.front_slot()?; // branch 2: ring empty → underrun
+        // SAFETY: `slot` is `ring_offset + tail` from `front_slot()`.
+        // `configure_axis` guarantees `ring_offset + ring_depth <= storage.len()`,
+        // and `tail < ring_depth` always holds (tail advances mod ring_depth).
+        // Therefore `slot < storage.len()`.
+        #[allow(clippy::indexing_slicing)]
         let entry = &storage[slot];
         // Fault-check BEFORE the window return (preserves cold-adoption fault).
         let deficit_cycles = now.saturating_sub(entry.start_time);

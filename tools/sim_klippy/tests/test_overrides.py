@@ -4,7 +4,12 @@ Given a vendored printer.cfg-style text, applying the overrides yields
 a config where STM32 pin names are replaced with gpiochip0/gpioN
 equivalents, SPI bus names are replaced with sim_spiN, and the [mcu]
 serial line points at our sim socket."""
+
+import pytest
+
 from tools.sim_klippy.orchestrator.overrides import apply_overrides
+
+pytestmark = pytest.mark.sim_unit
 
 
 def test_pin_substitution_basic():
@@ -128,15 +133,16 @@ def test_config_inject_missing_section_is_noop():
 def test_load_overrides(tmp_path):
     """load_overrides reads a TOML file and returns the dict."""
     from tools.sim_klippy.orchestrator.overrides import load_overrides
+
     p = tmp_path / "test.toml"
-    p.write_text('''
+    p.write_text("""
 [mcu_main.gpio]
 PA2 = "gpiochip0/gpio11"
 PG4 = "gpiochip0/gpio9"
 
 [mcu_main.spi]
 spi1 = "sim_spi0"
-''')
+""")
     out = load_overrides(p)
     assert out["mcu_main.gpio"]["PA2"] == "gpiochip0/gpio11"
     assert out["mcu_main.spi"]["spi1"] == "sim_spi0"

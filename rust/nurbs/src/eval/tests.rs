@@ -135,8 +135,7 @@ fn vector_eval_matches_per_axis_scalar() {
     for axis in 0..3 {
         let cps_axis: Vec<f64> = v.control_points().iter().map(|cp| cp[axis]).collect();
         let scalar =
-            crate::ScalarNurbs::try_new(v.degree(), v.knots().to_vec(), cps_axis, None)
-                .unwrap();
+            crate::ScalarNurbs::try_new(v.degree(), v.knots().to_vec(), cps_axis, None).unwrap();
         let expected = eval(&scalar.as_view(), 0.3_f64);
         assert!(
             (result[axis] - expected).abs() < 1e-12,
@@ -166,8 +165,7 @@ fn derivative_of_quadratic_at_midpoint_matches_central_difference() {
     let d = derivative(&curve);
     let v = d.as_view();
     let h = 1e-6_f64;
-    let expected =
-        (eval(&curve.as_view(), 0.5 + h) - eval(&curve.as_view(), 0.5 - h)) / (2.0 * h);
+    let expected = (eval(&curve.as_view(), 0.5 + h) - eval(&curve.as_view(), 0.5 - h)) / (2.0 * h);
     let actual = eval(&v, 0.5);
     assert!(
         (actual - expected).abs() < 1e-6,
@@ -186,18 +184,8 @@ fn eval_polynomial_with_derivative_matches_separate_calls_quadratic() {
             curve.degree(),
             u,
         );
-        let v_sep = eval_polynomial(
-            curve.control_points(),
-            curve.knots(),
-            curve.degree(),
-            u,
-        );
-        let d_sep = eval_derivative(
-            curve.control_points(),
-            curve.knots(),
-            curve.degree(),
-            u,
-        );
+        let v_sep = eval_polynomial(curve.control_points(), curve.knots(), curve.degree(), u);
+        let d_sep = eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
         assert!(
             (v_combined - v_sep).abs() < 1e-12,
             "u={u}: combined value {v_combined} vs separate {v_sep}"
@@ -227,18 +215,8 @@ fn eval_polynomial_with_derivative_matches_separate_calls_cubic() {
             curve.degree(),
             u,
         );
-        let v_sep = eval_polynomial(
-            curve.control_points(),
-            curve.knots(),
-            curve.degree(),
-            u,
-        );
-        let d_sep = eval_derivative(
-            curve.control_points(),
-            curve.knots(),
-            curve.degree(),
-            u,
-        );
+        let v_sep = eval_polynomial(curve.control_points(), curve.knots(), curve.degree(), u);
+        let d_sep = eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
         assert!(
             (v_combined - v_sep).abs() < 1e-12,
             "u={u}: combined value {v_combined} vs separate {v_sep}"
@@ -260,8 +238,7 @@ fn eval_derivative_matches_materialized_derivative_quadratic() {
     for u_pct in 0..=100 {
         let u = u_pct as f64 / 100.0;
         let materialized = eval(&lowered.as_view(), u);
-        let windowed =
-            eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
+        let windowed = eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
         assert!(
             (materialized - windowed).abs() < 1e-12,
             "u={u}: materialized={materialized}, windowed={windowed}"
@@ -285,8 +262,7 @@ fn eval_derivative_cubic_matches_materialized() {
     for u_pct in 0..=100 {
         let u = u_pct as f64 / 100.0;
         let materialized = eval(&lowered.as_view(), u);
-        let windowed =
-            eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
+        let windowed = eval_derivative(curve.control_points(), curve.knots(), curve.degree(), u);
         assert!(
             (materialized - windowed).abs() < 1e-12,
             "u={u}: materialized={materialized}, windowed={windowed}"

@@ -20,7 +20,12 @@ use runtime::piece_ring::PieceEntry;
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 fn piece(t: u64) -> PieceEntry {
-    PieceEntry { start_time: t, coeffs: [0.0; 4], duration: 0.001, _reserved: 0 }
+    PieceEntry {
+        start_time: t,
+        coeffs: [0.0; 4],
+        duration: 0.001,
+        _reserved: 0,
+    }
 }
 
 // ── 1. WireSink hard error on missing transport ───────────────────────────
@@ -36,7 +41,15 @@ fn wire_sink_missing_transport_is_hard_error() {
         timeout: Duration::from_secs(1),
     };
     let p = piece(0);
-    let result = sink.send_frame(AxisKey { mcu_id: 99, axis: 0 }, &[p], 0, 1);
+    let result = sink.send_frame(
+        AxisKey {
+            mcu_id: 99,
+            axis: 0,
+        },
+        &[p],
+        0,
+        1,
+    );
     assert!(
         result.is_err(),
         "missing transport must be a hard error, not silent drop"
@@ -58,11 +71,18 @@ struct PerMcuCountSink {
 
 impl PerMcuCountSink {
     fn new() -> Self {
-        Self { calls: Arc::new(Mutex::new(std::collections::HashMap::new())) }
+        Self {
+            calls: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        }
     }
 
     fn count_for(&self, mcu_id: u32) -> u32 {
-        self.calls.lock().unwrap().get(&mcu_id).copied().unwrap_or(0)
+        self.calls
+            .lock()
+            .unwrap()
+            .get(&mcu_id)
+            .copied()
+            .unwrap_or(0)
     }
 }
 
@@ -129,8 +149,14 @@ fn pump_routes_both_serial_and_ethercat_mcu_ids() {
 
     let final_c1 = counts.lock().unwrap().get(&1).copied().unwrap_or(0);
     let final_c2 = counts.lock().unwrap().get(&2).copied().unwrap_or(0);
-    assert!(final_c1 >= 1, "serial MCU (mcu_id=1) must be serviced at least once");
-    assert!(final_c2 >= 1, "EtherCAT MCU (mcu_id=2) must be serviced at least once");
+    assert!(
+        final_c1 >= 1,
+        "serial MCU (mcu_id=1) must be serviced at least once"
+    );
+    assert!(
+        final_c2 >= 1,
+        "EtherCAT MCU (mcu_id=2) must be serviced at least once"
+    );
 }
 
 // ── 3. EtherCAT heartbeat callback → DrainSync + PumpMsg ─────────────────
@@ -173,7 +199,11 @@ fn ethercat_heartbeat_callback_advances_drain_and_pump() {
     match pump_rx.recv_timeout(Duration::from_millis(100)) {
         Ok(PumpMsg::Heartbeat(hb)) => {
             assert_eq!(hb.mcu_id, 42, "Heartbeat.mcu_id must match");
-            assert_eq!(hb.retired_counts, vec![3u32], "Heartbeat.retired_counts must match");
+            assert_eq!(
+                hb.retired_counts,
+                vec![3u32],
+                "Heartbeat.retired_counts must match"
+            );
         }
         Ok(_) => panic!("expected PumpMsg::Heartbeat"),
         Err(e) => panic!("pump did not receive Heartbeat: {e}"),

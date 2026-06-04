@@ -9,12 +9,12 @@ watches for `is_shutdown` / firmware faults.
 Goal: get the F4 sim to crash the same way the bench does so we can iterate
 on a fix without bench access.
 """
+
 from __future__ import annotations
 
 import json
 import os
 import socket
-import struct
 import sys
 import time
 import zlib
@@ -89,7 +89,9 @@ def send_identify(s, seq, offset, count):
     # cmd id 1, two VLI args: offset (u32), count (u8)
     body = encode_vli(1) + encode_vli(offset) + encode_vli(count)
     frame = build_frame(seq, body)
-    print(f"[probe] -> identify offset={offset} count={count} ({len(frame)}B): {frame.hex()}")
+    print(
+        f"[probe] -> identify offset={offset} count={count} ({len(frame)}B): {frame.hex()}"
+    )
     s.sendall(frame)
 
 
@@ -155,9 +157,13 @@ def fetch_data_dict(s, verbose=False):
             print(f"[probe]   <- {len(rx)} bytes raw: {bytes(rx).hex()}")
         frames, leftover = parse_frames(rx)
         if verbose:
-            print(f"[probe]   parsed {len(frames)} frames, {len(leftover)} bytes leftover")
+            print(
+                f"[probe]   parsed {len(frames)} frames, {len(leftover)} bytes leftover"
+            )
             for fi, (sb, pl, _) in enumerate(frames):
-                print(f"[probe]     frame[{fi}] seq=0x{sb:02x} payload={pl.hex()}")
+                print(
+                    f"[probe]     frame[{fi}] seq=0x{sb:02x} payload={pl.hex()}"
+                )
 
         # If MCU NAK'd (empty payload, seq != our expected ack), re-sync our seq counter
         nak_seq = None
@@ -217,7 +223,9 @@ def main():
         print(f"[probe] drained {len(drain)} bytes pre-existing UART traffic")
 
     blob, last_dict_seq = fetch_data_dict(s)
-    print(f"[probe] data dictionary: {len(blob)} compressed bytes (last seq used: 0x{last_dict_seq:02x})")
+    print(
+        f"[probe] data dictionary: {len(blob)} compressed bytes (last seq used: 0x{last_dict_seq:02x})"
+    )
     if not blob:
         print("[probe] FAIL — no data dictionary received")
         return 1
@@ -228,7 +236,9 @@ def main():
         print(f"[probe]   blob[:64]={blob[:64].hex()}")
         return 2
 
-    print(f"[probe] mcu='{data_dict.get('mcu')}' version='{data_dict.get('version')}'")
+    print(
+        f"[probe] mcu='{data_dict.get('mcu')}' version='{data_dict.get('version')}'"
+    )
     cmds_by_name = sorted(data_dict["commands"].keys())
     print(f"[probe] {len(cmds_by_name)} commands available")
     # Show tmcuart-related commands
@@ -265,9 +275,10 @@ def main():
     # Continue seq from where dict-fetch left off, plus 1 (since each successful
     # frame bumps next_sequence on the MCU).
     seq_counter = [(last_dict_seq + 1) & 0x0F]
+
     def next_seq():
         v = seq_counter[0]
-        seq_counter[0] = ((v + 1) & 0x0F)
+        seq_counter[0] = (v + 1) & 0x0F
         return v
 
     def send_cmd(cmd_id, *args, label=""):
@@ -309,7 +320,9 @@ def main():
     # Per src/tmcuart.c tmcuart_send: oid, write_len, write_data..., read_count
     # In the cmd format string ("tmcuart_send oid=%c write=%*s read=%c"),
     # %*s is PT_buffer = length-prefixed.
-    write_bytes = bytes([0x05, 0x00, 0x00, 0xff])  # arbitrary TMC2209 read frame
+    write_bytes = bytes(
+        [0x05, 0x00, 0x00, 0xFF]
+    )  # arbitrary TMC2209 read frame
     print(f"[probe] -> tmcuart_send oid=0 write={write_bytes.hex()} read=8")
     send_cmd(snd_id, 0, write_bytes, 8, label="tmcuart_send oid=0 write=...")
 
@@ -321,7 +334,9 @@ def main():
 
     # Parse any response frames
     frames, leftover = parse_frames(rx)
-    print(f"[probe] parsed {len(frames)} frames, {len(leftover)} bytes leftover")
+    print(
+        f"[probe] parsed {len(frames)} frames, {len(leftover)} bytes leftover"
+    )
     for i, (sb, pl, _) in enumerate(frames):
         print(f"[probe]   frame[{i}]: seq=0x{sb:02x} payload={pl.hex()}")
 

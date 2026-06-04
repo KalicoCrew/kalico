@@ -152,37 +152,42 @@ pub const EVENT_DIAG_RUST_FAULT: u16 = 8;
 /// ```
 pub fn event_info(subsystem: u8, event: u16) -> (&'static str, &'static str) {
     match (subsystem, event) {
-        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_FAULT_LATCHED) => (
-            "runtime.fault_latched",
-            "fault latched, detail={arg0}",
-        ),
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_FAULT_LATCHED) => {
+            ("runtime.fault_latched", "fault latched, detail={arg0}")
+        }
         (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_ENGINE_RESET) => {
             ("runtime.engine_reset", "engine reset epoch={arg0}")
         }
         (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_MCU_READY) => {
             ("runtime.mcu_ready", "mcu firmware ready, log drain online")
         }
-        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_LOG_DROPS) => {
-            ("runtime.log_drops", "dropped {arg0} log entries (ring overflow)")
-        }
-        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_MCU_RESET) => {
-            ("runtime.mcu_reset", "mcu reset (cause bits={arg0}, iwdg_resets={arg1})")
-        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_LOG_DROPS) => (
+            "runtime.log_drops",
+            "dropped {arg0} log entries (ring overflow)",
+        ),
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_MCU_RESET) => (
+            "runtime.mcu_reset",
+            "mcu reset (cause bits={arg0}, iwdg_resets={arg1})",
+        ),
         (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_HARD_FAULT) => {
             ("runtime.hard_fault", "cpu hard fault pc={arg0} lr={arg1}")
         }
-        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_FAULT_STATUS) => {
-            ("runtime.fault_status", "fault status cfsr={arg0} hfsr={arg1}")
-        }
-        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_FG_FREEZE) => {
-            ("runtime.fg_freeze", "foreground freeze pc={arg0} stall_ticks={arg1}")
-        }
-        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_RT_PROGRESS) => {
-            ("runtime.rt_progress", "runtime progress packed={arg0} fault_count={arg1}")
-        }
-        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_LAST_DISPATCH) => {
-            ("runtime.last_dispatch", "last dispatch func={arg0} addr={arg1}")
-        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_FAULT_STATUS) => (
+            "runtime.fault_status",
+            "fault status cfsr={arg0} hfsr={arg1}",
+        ),
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_FG_FREEZE) => (
+            "runtime.fg_freeze",
+            "foreground freeze pc={arg0} stall_ticks={arg1}",
+        ),
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_RT_PROGRESS) => (
+            "runtime.rt_progress",
+            "runtime progress packed={arg0} fault_count={arg1}",
+        ),
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_LAST_DISPATCH) => (
+            "runtime.last_dispatch",
+            "last dispatch func={arg0} addr={arg1}",
+        ),
         (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_ISR_PHASE) => {
             ("runtime.isr_phase", "isr phase={arg0} ring_overflow={arg1}")
         }
@@ -190,33 +195,39 @@ pub fn event_info(subsystem: u8, event: u16) -> (&'static str, &'static str) {
             "runtime.block_source",
             "block usb_burst={arg0} cyc stepout_burst={arg1} cyc",
         ),
-        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_TIM5_IA) => {
-            ("runtime.tim5_ia", "tim5 inter-arrival min={arg0} max={arg1} cyc")
-        }
-        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_DIAG_DUMP) => {
-            ("runtime.diag_dump", "live diag dump uptime_us={arg0} ring_seq={arg1}")
-        }
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_TIM5_IA) => (
+            "runtime.tim5_ia",
+            "tim5 inter-arrival min={arg0} max={arg1} cyc",
+        ),
+        (SUBSYSTEM_RUNTIME, EVENT_RUNTIME_DIAG_DUMP) => (
+            "runtime.diag_dump",
+            "live diag dump uptime_us={arg0} ring_seq={arg1}",
+        ),
         (SUBSYSTEM_DIAG, EVENT_DIAG_TIM5_LONG) => {
             ("diag.tim5_long", "TIM5 ISR long {arg0} cyc at t={arg1}")
         }
         (SUBSYSTEM_DIAG, EVENT_DIAG_OTG_LONG) => {
             ("diag.otg_long", "OTG ISR long {arg0} cyc at t={arg1}")
         }
-        (SUBSYSTEM_DIAG, EVENT_DIAG_USB_OUT_GAP) => {
-            ("diag.usb_out_gap", "USB-OUT gap {arg0} ticks, prev t={arg1}")
-        }
+        (SUBSYSTEM_DIAG, EVENT_DIAG_USB_OUT_GAP) => (
+            "diag.usb_out_gap",
+            "USB-OUT gap {arg0} ticks, prev t={arg1}",
+        ),
         (SUBSYSTEM_DIAG, EVENT_DIAG_USB_IN_GAP) => {
             ("diag.usb_in_gap", "USB-IN gap {arg0} ticks, prev t={arg1}")
         }
-        (SUBSYSTEM_DIAG, EVENT_DIAG_TX_DROP_KAL) => {
-            ("diag.tx_drop_kalico", "kalico TX drop len={arg0} tpos={arg1}")
-        }
-        (SUBSYSTEM_DIAG, EVENT_DIAG_TX_DROP_KLP) => {
-            ("diag.tx_drop_klipper", "klipper TX drop max={arg0} tpos={arg1}")
-        }
-        (SUBSYSTEM_DIAG, EVENT_DIAG_ENGINE_XITION) => {
-            ("diag.engine_xition", "engine state packed={arg0} samples={arg1}")
-        }
+        (SUBSYSTEM_DIAG, EVENT_DIAG_TX_DROP_KAL) => (
+            "diag.tx_drop_kalico",
+            "kalico TX drop len={arg0} tpos={arg1}",
+        ),
+        (SUBSYSTEM_DIAG, EVENT_DIAG_TX_DROP_KLP) => (
+            "diag.tx_drop_klipper",
+            "klipper TX drop max={arg0} tpos={arg1}",
+        ),
+        (SUBSYSTEM_DIAG, EVENT_DIAG_ENGINE_XITION) => (
+            "diag.engine_xition",
+            "engine state packed={arg0} samples={arg1}",
+        ),
         (SUBSYSTEM_DIAG, EVENT_DIAG_RUST_FAULT) => {
             ("diag.rust_fault", "rust fault err={arg0} detail={arg1}")
         }
@@ -231,13 +242,10 @@ pub fn event_info(subsystem: u8, event: u16) -> (&'static str, &'static str) {
             "tick.interval_exceeded",
             "TIM5 inter-arrival exceeded: got={arg0} limit={arg1}",
         ),
-        (SUBSYSTEM_TICK, EVENT_TICK_UNDERRUN) => {
-            ("tick.underrun", "tick underrun segment={arg0}")
+        (SUBSYSTEM_TICK, EVENT_TICK_UNDERRUN) => ("tick.underrun", "tick underrun segment={arg0}"),
+        (SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_TRIP) => {
+            ("endstop.trip", "endstop tripped arm={arg0} source={arg1}")
         }
-        (SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_TRIP) => (
-            "endstop.trip",
-            "endstop tripped arm={arg0} source={arg1}",
-        ),
         (SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_ARM_TIMEOUT) => {
             ("endstop.arm_timeout", "endstop arm timeout arm={arg0}")
         }
@@ -302,7 +310,10 @@ mod tests {
         assert_eq!(name, "runtime.fault_latched");
         // fault identity rides in `code`/`code_name`; arg0 = fault_detail.
         assert!(tmpl.contains("{arg0}"), "template must reference {{arg0}}");
-        assert!(!tmpl.contains("{arg1}"), "template must NOT reference {{arg1}} — fault identity moved to code field");
+        assert!(
+            !tmpl.contains("{arg1}"),
+            "template must NOT reference {{arg1}} — fault identity moved to code field"
+        );
 
         let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_ENGINE_RESET);
         assert_eq!(name, "runtime.engine_reset");
@@ -310,7 +321,10 @@ mod tests {
 
         let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_LOG_DROPS);
         assert_eq!(name, "runtime.log_drops");
-        assert!(tmpl.contains("{arg0}"), "log_drops template must reference {{arg0}}");
+        assert!(
+            tmpl.contains("{arg0}"),
+            "log_drops template must reference {{arg0}}"
+        );
 
         let (name, tmpl) = event_info(SUBSYSTEM_RUNTIME, EVENT_RUNTIME_MCU_RESET);
         assert_eq!(name, "runtime.mcu_reset");

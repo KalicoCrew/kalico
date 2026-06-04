@@ -361,8 +361,7 @@ fn notify_bearing_entry_tracked_in_map() {
 
     // The notify map should have an entry keyed by the seq that was used.
     assert_eq!(h.reactor.passthrough_notify_map.len(), 1);
-    let (&seq, &(mapped_mcu, mapped_nid)) =
-        h.reactor.passthrough_notify_map.iter().next().unwrap();
+    let (&seq, &(mapped_mcu, mapped_nid)) = h.reactor.passthrough_notify_map.iter().next().unwrap();
     assert_eq!(seq, 1, "first emission gets seq=1");
     assert_eq!(mapped_mcu, mcu);
     assert_eq!(mapped_nid, nid);

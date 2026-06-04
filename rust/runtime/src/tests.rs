@@ -4,9 +4,18 @@
 //! they are the smallest useful assertions that confirm the public API is
 //! wired up correctly.
 
+// Test code: panicking / unwrapping / integer constants are the intended
+// failure signals here; the deny-in-production lints don't apply to tests.
+#![allow(
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::integer_division
+)]
+
 use crate::fault_sink::FaultSink;
-use crate::motion_core::get_position_and_velocity;
 use crate::monomial::bernstein_to_monomial_with_duration;
+use crate::motion_core::get_position_and_velocity;
 use crate::piece_ring::{PieceEntry, RingDescriptor};
 
 // Minimal FaultSink for smoke tests.
@@ -87,10 +96,7 @@ fn walker_at_t0_returns_c0_and_c1() {
     let c0 = m.coeffs[0]; // P(0) = c0
     let c1 = m.vel_coeffs[0]; // V(0) = vc0 = c1
 
-    assert!(
-        (p - c0).abs() < 1e-5,
-        "P(0) must equal c0={c0}; got {p}"
-    );
+    assert!((p - c0).abs() < 1e-5, "P(0) must equal c0={c0}; got {p}");
     assert!(
         (v - c1).abs() < 1e-3,
         "V(0) must equal c1={c1} mm/s; got {v}"

@@ -13,7 +13,7 @@
 //! The state machine is byte-oriented and interruptible at any boundary;
 //! `feed_slice` simply iterates byte-by-byte.
 
-use crate::frame::{crc16_ccitt, FRAME_MIN_LEN_FIELD, FRAME_SYNC};
+use crate::frame::{FRAME_MIN_LEN_FIELD, FRAME_SYNC, crc16_ccitt};
 
 const KLIPPER_LEN_MIN: u8 = 5;
 const KLIPPER_LEN_MAX: u8 = 64;
@@ -55,46 +55,77 @@ impl KlipperFrame {
         Self { bytes }
     }
     /// The seq+DEST byte at index 1.
-    pub fn seq_byte(&self) -> u8 { self.bytes[1] }
+    pub fn seq_byte(&self) -> u8 {
+        self.bytes[1]
+    }
     /// Body slice: bytes[2 .. len-3] (excludes length byte, seq byte, CRC, trailer).
     pub fn body(&self) -> &[u8] {
         let len = self.bytes.len();
         &self.bytes[2..len - 3]
     }
     /// Full validated frame bytes.
-    pub fn bytes(&self) -> &[u8] { &self.bytes }
+    pub fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
     /// Consume into the owned Vec (for retransmit/await-response stash).
-    pub fn into_bytes(self) -> Vec<u8> { self.bytes }
+    pub fn into_bytes(self) -> Vec<u8> {
+        self.bytes
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamError {
-    KlipperCrcMismatch    { seq: u8, expected: u16, actual: u16 },
-    KlipperBadTrailer     { got: u8 },
-    KlipperBadSeqDest     { got: u8 },
-    KlipperLenOutOfRange  { len: u8 },
-    KalicoCrcMismatch     { channel: u8, expected: u16, actual: u16 },
-    KalicoLenBelowMin     { len: u16 },
-    KalicoFrameTooShort   { got: usize },
+    KlipperCrcMismatch {
+        seq: u8,
+        expected: u16,
+        actual: u16,
+    },
+    KlipperBadTrailer {
+        got: u8,
+    },
+    KlipperBadSeqDest {
+        got: u8,
+    },
+    KlipperLenOutOfRange {
+        len: u8,
+    },
+    KalicoCrcMismatch {
+        channel: u8,
+        expected: u16,
+        actual: u16,
+    },
+    KalicoLenBelowMin {
+        len: u16,
+    },
+    KalicoFrameTooShort {
+        got: usize,
+    },
 }
 
 impl std::fmt::Display for StreamError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::KlipperCrcMismatch { seq, expected, actual } =>
-                write!(f, "klipper crc mismatch seq=0x{seq:02x} expected=0x{expected:04x} actual=0x{actual:04x}"),
-            Self::KlipperBadTrailer { got } =>
-                write!(f, "klipper bad trailer 0x{got:02x}"),
-            Self::KlipperBadSeqDest { got } =>
-                write!(f, "klipper bad seq/DEST byte 0x{got:02x}"),
-            Self::KlipperLenOutOfRange { len } =>
-                write!(f, "klipper len out of range: {len}"),
-            Self::KalicoCrcMismatch { channel, expected, actual } =>
-                write!(f, "kalico crc mismatch ch={channel} expected=0x{expected:04x} actual=0x{actual:04x}"),
-            Self::KalicoLenBelowMin { len } =>
-                write!(f, "kalico len below min: {len}"),
-            Self::KalicoFrameTooShort { got } =>
-                write!(f, "kalico frame too short: {got} bytes"),
+            Self::KlipperCrcMismatch {
+                seq,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "klipper crc mismatch seq=0x{seq:02x} expected=0x{expected:04x} actual=0x{actual:04x}"
+            ),
+            Self::KlipperBadTrailer { got } => write!(f, "klipper bad trailer 0x{got:02x}"),
+            Self::KlipperBadSeqDest { got } => write!(f, "klipper bad seq/DEST byte 0x{got:02x}"),
+            Self::KlipperLenOutOfRange { len } => write!(f, "klipper len out of range: {len}"),
+            Self::KalicoCrcMismatch {
+                channel,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "kalico crc mismatch ch={channel} expected=0x{expected:04x} actual=0x{actual:04x}"
+            ),
+            Self::KalicoLenBelowMin { len } => write!(f, "kalico len below min: {len}"),
+            Self::KalicoFrameTooShort { got } => write!(f, "kalico frame too short: {got} bytes"),
         }
     }
 }
@@ -107,7 +138,10 @@ pub enum Frame {
 
 #[derive(Debug)]
 pub enum PollOutcome {
-    Frames { frames: Vec<Frame>, errors: Vec<StreamError> },
+    Frames {
+        frames: Vec<Frame>,
+        errors: Vec<StreamError>,
+    },
     Timeout,
     PhantomZero,
 }
@@ -179,7 +213,10 @@ impl Demuxer {
                         let total = byte as usize;
                         let mut buf = Vec::with_capacity(total);
                         buf.push(byte);
-                        self.state = State::InsideKlipper { buf, remaining: total - 1 };
+                        self.state = State::InsideKlipper {
+                            buf,
+                            remaining: total - 1,
+                        };
                         Ok(None)
                     }
                     FRAME_SYNC => {
@@ -226,7 +263,9 @@ impl Demuxer {
                     let len_field = u16::from_le_bytes([buf[1], buf[2]]) as usize;
                     if len_field < FRAME_MIN_LEN_FIELD {
                         self.state = State::WaitingForFrame;
-                        return Err(StreamError::KalicoLenBelowMin { len: len_field as u16 });
+                        return Err(StreamError::KalicoLenBelowMin {
+                            len: len_field as u16,
+                        });
                     }
                     *total_len = 1 + len_field;
                 }
@@ -246,7 +285,9 @@ fn parse_klipper_frame(frame: &[u8]) -> Result<Frame, StreamError> {
     let len = frame.len();
     // Trailer check.
     if frame[len - 1] != MESSAGE_SYNC {
-        return Err(StreamError::KlipperBadTrailer { got: frame[len - 1] });
+        return Err(StreamError::KlipperBadTrailer {
+            got: frame[len - 1],
+        });
     }
     // Seq-byte DEST flag (per extract_packet at wire.rs:44).
     let seq_byte = frame[1];

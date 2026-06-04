@@ -55,14 +55,6 @@ for TARGET in "${CONFIGS[@]}"; do
     cp "${TARGET}" .config
     make olddefconfig
 
-    # CONFIG_KALICO_RUNTIME is not (yet) a Kconfig symbol, so olddefconfig
-    # drops it from the fragment. The Rust staticlib build is driven by
-    # CONFIG_MACH_STM32{H7,F4,G0} (the KALICO_LIB rule in src/Makefile), not
-    # by this flag, so the FFI link is exercised regardless. We re-add it so
-    # any C #ifdef CONFIG_KALICO_RUNTIME also sees it. (Make this a real
-    # Kconfig bool to drop the hack.)
-    grep -qxF 'CONFIG_KALICO_RUNTIME=y' .config || echo 'CONFIG_KALICO_RUNTIME=y' >> .config
-
     # Full firmware build: C objects + cargo (libkalico_c_api.a) + link.
     # An undefined Rust FFI symbol fails the link here.
     make V=1 -j"$(nproc)"

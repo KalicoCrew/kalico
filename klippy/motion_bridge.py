@@ -5,7 +5,11 @@
 # klippy code calls during startup and MCU communication.
 import logging
 
-from . import motion_bridge_native as _native
+try:
+    from . import motion_bridge_native as _native
+except ImportError:
+    _native = None
+
 from . import structured_log
 
 # Print-state events that START or CONTINUE a print: the active print_id is
@@ -23,6 +27,61 @@ _PRINT_FINISH_EVENTS = (
     "print_stats:error_printing",
     "print_stats:cancelled_printing",
     "print_stats:reset",
+)
+
+
+# Methods that issue real motion / planner / MCU traffic. Under the stub
+# bridge there is no Rust engine to talk to, so these MUST NOT silently
+# return None — doing so makes MotionToolhead.move() compute `None - None`
+# and the klippy test suite hangs/crashes (see PR #7 "make CI trustworthy").
+# Calling any of these under the stub is a hard error: the test reached the
+# real motion path without a real bridge, which is never a valid green.
+_STUB_MOTION_METHODS = frozenset(
+    {
+        # Planner lifecycle + timeline
+        "init_planner",
+        "submit_move",
+        "submit_dwell",
+        "wait_moves",
+        "drain_motion",
+        "set_position",
+        "get_last_move_time",
+        "update_limits",
+        "update_shaper",
+        "fallback_clock_conversions",
+        "dispatched_segment_count",
+        # Per-MCU configuration / phase-stepping registration
+        "configure_axes",
+        "register_phase_bus",
+        "register_phase_motor",
+        "get_mcu_capabilities",
+        "ring_depth_for_axis",
+        # Homing / endstop / probe motion
+        "submit_homing_move",
+        "submit_homing_move_async",
+        "endstop_arm",
+        "endstop_disarm",
+        "software_trip",
+        "extend_homing_deadline",
+        "prepare_probe_homing",
+        "run_probe_homing",
+        "get_homing_position_at_time",
+        "take_trip_event",
+        "is_homing_segment_retired",
+        "get_homing_segment_reason",
+        # MCU lifecycle / transport (no native engine to drive these either)
+        "claim_mcu",
+        "claim_ethercat_node",
+        "release_mcu",
+        "detach_serial",
+        "attach_serial",
+        "alloc_command_queue",
+        "set_clock_est",
+        "set_msgproto_dict",
+        # Async command/response surface
+        "bridge_call",
+        "bridge_send",
+    }
 )
 
 
@@ -57,10 +116,51 @@ def attach_structured_logging(native, printer, events_dir):
         printer.register_event_handler(ev, _clear_ctx)
 
 
+class _StubBridge:
+    """Stand-in for ``MotionBridgeWrapper`` when the native Rust module
+    (``motion_bridge_native``) is unavailable, e.g. in CI where the cdylib
+    is not built.
+
+    This stub is usable ONLY for import / boot / config unit tests that
+    never issue motion. The moment any motion-issuing method (a move, a
+    homing op, planner init, an MCU configure, etc.) is reached, it raises
+    a clear ``RuntimeError`` instead of returning ``None``. That makes a
+    test which reaches the real motion path under the stub FAIL LOUD with
+    an actionable message — never hang on ``None - None`` arithmetic and
+    never silently pass.
+
+    Non-motion lifecycle helpers (e.g. ``shutdown`` during disconnect,
+    homing-dispatch registry bookkeeping) remain no-ops so config-only
+    boots can tear down cleanly.
+    """
+
+    def __getattr__(self, name):
+        if name in _STUB_MOTION_METHODS:
+
+            def _raise(*args, **kwargs):
+                raise RuntimeError(
+                    "motion_bridge_native not built: cannot call "
+                    "%r on the stub bridge. The klippy motion path was "
+                    "exercised without the real Rust engine. Build the "
+                    "cdylib (e.g. `make -f Makefile.kalico motion-bridge`) "
+                    "to exercise real motion, or restrict this test to "
+                    "import/boot/config only." % (name,)
+                )
+
+            return _raise
+
+        def _noop(*args, **kwargs):
+            return None
+
+        return _noop
+
+
 class MotionBridgeWrapper:
     """Thin wrapper registered as printer object 'motion_bridge'."""
 
     def __init__(self, reactor):
+        if _native is None:
+            raise ImportError("motion_bridge_native not available")
         self._bridge = _native.MotionBridge()
         self._reactor = reactor
         # arm_id → BridgeTriggerDispatch registry. Populated by
@@ -104,16 +204,24 @@ class MotionBridgeWrapper:
     # ------------------------------------------------------------------
 
     def passthrough_send(self, handle, cq, data, minclock=0, reqclock=0):
-        return self._bridge.passthrough_send(handle, cq, data, minclock, reqclock)
+        return self._bridge.passthrough_send(
+            handle, cq, data, minclock, reqclock
+        )
 
     def passthrough_query(self, handle, cq, data, minclock=0, reqclock=0):
-        return self._bridge.passthrough_query(handle, cq, data, minclock, reqclock)
+        return self._bridge.passthrough_query(
+            handle, cq, data, minclock, reqclock
+        )
 
     def passthrough_register_handler(self, handle, msg, oid, callback):
-        return self._bridge.passthrough_register_handler(handle, msg, oid, callback)
+        return self._bridge.passthrough_register_handler(
+            handle, msg, oid, callback
+        )
 
     def passthrough_register_flush_callback(self, handle, callback):
-        return self._bridge.passthrough_register_flush_callback(handle, callback)
+        return self._bridge.passthrough_register_flush_callback(
+            handle, callback
+        )
 
     # ------------------------------------------------------------------
     # Event polling
@@ -258,7 +366,10 @@ class MotionBridgeWrapper:
         early-return.
         """
         return self._bridge.register_phase_bus(
-            mcu_handle, bus_id, rate, timeout_s,
+            mcu_handle,
+            bus_id,
+            rate,
+            timeout_s,
         )
 
     def register_phase_motor(
@@ -274,7 +385,11 @@ class MotionBridgeWrapper:
         section).
         """
         return self._bridge.register_phase_motor(
-            mcu_handle, motor_idx, bus_id, cs_pin_id, timeout_s,
+            mcu_handle,
+            motor_idx,
+            bus_id,
+            cs_pin_id,
+            timeout_s,
         )
 
     def bridge_call(self, mcu_handle, msg, response, timeout_s=15.0):
@@ -309,8 +424,9 @@ class MotionBridgeWrapper:
         """Drain one runtime event dict, or None if nothing pending."""
         return self._bridge.take_runtime_event(mcu_handle)
 
-    def on_credit_freed(self, mcu_handle, retired_through_segment_id,
-                        free_slots):
+    def on_credit_freed(
+        self, mcu_handle, retired_through_segment_id, free_slots
+    ):
         """Forward an MCU `kalico_credit_freed` event into the slot pool.
 
         Returns ``(n_released, completed_arm_id_or_None)``. The
@@ -319,7 +435,9 @@ class MotionBridgeWrapper:
         firing the matching dispatch's ``_completion``.
         """
         return self._bridge.on_credit_freed(
-            mcu_handle, retired_through_segment_id, free_slots,
+            mcu_handle,
+            retired_through_segment_id,
+            free_slots,
         )
 
     def register_homing_dispatch(self, arm_id, dispatch):
@@ -411,8 +529,16 @@ class MotionBridgeWrapper:
     # Step 7-D: endstop wire surface
     # ------------------------------------------------------------------
 
-    def endstop_arm(self, mcu, queue, arm_id, arm_clock,
-                    sources, stepper_oids, timeout_s=2.0):
+    def endstop_arm(
+        self,
+        mcu,
+        queue,
+        arm_id,
+        arm_clock,
+        sources,
+        stepper_oids,
+        timeout_s=2.0,
+    ):
         # `sources` is a list of 7-tuples per BridgeTriggerDispatch contract:
         # (kind, gpio, active_high, policy, sample_n, velocity_axis, v_min_q16)
         return self._bridge.endstop_arm(
@@ -443,17 +569,28 @@ class MotionBridgeWrapper:
     def extend_homing_deadline(self, mcu, arm_id):
         return self._bridge.extend_homing_deadline(mcu, arm_id)
 
-    def prepare_probe_homing(self, beacon_handle, beacon_trsync_oid,
-                             stepper_mcu_handle, arm_id,
-                             sensor_fault_timeout):
+    def prepare_probe_homing(
+        self,
+        beacon_handle,
+        beacon_trsync_oid,
+        stepper_mcu_handle,
+        arm_id,
+        sensor_fault_timeout,
+    ):
         return self._bridge.prepare_probe_homing(
-            beacon_handle, beacon_trsync_oid, stepper_mcu_handle,
-            arm_id, sensor_fault_timeout,
+            beacon_handle,
+            beacon_trsync_oid,
+            stepper_mcu_handle,
+            arm_id,
+            sensor_fault_timeout,
         )
 
     def run_probe_homing(self, handle_id, move_pos, speed, stepper_oids):
         return self._bridge.run_probe_homing(
-            handle_id, move_pos, speed, stepper_oids,
+            handle_id,
+            move_pos,
+            speed,
+            stepper_oids,
         )
 
     def get_homing_position_at_time(self, print_time):
@@ -524,13 +661,13 @@ class BridgeTriggerDispatch:
         self._reactor = reactor
         self._arm_id = _alloc_arm_id()
         self._completion = reactor.completion()
-        self._sources = []          # list of (kind, gpio, active_high, policy,
-                                    #          sample_n, velocity_axis, v_min_q16)
+        self._sources = []  # list of (kind, gpio, active_high, policy,
+        #          sample_n, velocity_axis, v_min_q16)
         self._stepper_oids = []
-        self._steppers = []         # list of MCU_stepper, retained for IK lookups
-        self._reason = None         # legacy-compatible reason code
-        self._trip_event = None     # decoded async event payload
-        self._arm_print_time = None # print_time at arm time (fallback trigger)
+        self._steppers = []  # list of MCU_stepper, retained for IK lookups
+        self._reason = None  # legacy-compatible reason code
+        self._trip_event = None  # decoded async event payload
+        self._arm_print_time = None  # print_time at arm time (fallback trigger)
         self._handler_registered = False
         self._toolhead_arms = None  # set at start() for stop() cleanup
 
@@ -556,10 +693,27 @@ class BridgeTriggerDispatch:
 
     # ── new endstop-source binding ──────────────────────────────────
 
-    def add_source(self, kind, gpio, active_high, policy, sample_n,
-                   velocity_axis, v_min_q16):
-        self._sources.append((kind, gpio, active_high, policy, sample_n,
-                              velocity_axis, v_min_q16))
+    def add_source(
+        self,
+        kind,
+        gpio,
+        active_high,
+        policy,
+        sample_n,
+        velocity_axis,
+        v_min_q16,
+    ):
+        self._sources.append(
+            (
+                kind,
+                gpio,
+                active_high,
+                policy,
+                sample_n,
+                velocity_axis,
+                v_min_q16,
+            )
+        )
 
     # ── start / wait / stop ─────────────────────────────────────────
 
@@ -622,12 +776,17 @@ class BridgeTriggerDispatch:
 
         logging.info(
             "[bridge-trace] endstop_arm arm_id=%s sources=%s steppers=%s",
-            self._arm_id, self._sources, self._stepper_oids,
+            self._arm_id,
+            self._sources,
+            self._stepper_oids,
         )
         status = self._bridge.endstop_arm(
-            self._mcu, self._queue,
-            self._arm_id, arm_clock,
-            self._sources, self._stepper_oids,
+            self._mcu,
+            self._queue,
+            self._arm_id,
+            arm_clock,
+            self._sources,
+            self._stepper_oids,
         )
         logging.info("[bridge-trace] endstop_arm status=%s", status)
         if status == ARM_STATUS_ALREADY_TRIPPED:

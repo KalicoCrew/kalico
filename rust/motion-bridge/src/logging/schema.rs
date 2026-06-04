@@ -1,18 +1,17 @@
 //! Schema-conformance helpers shared by the tracing layer. Values here must
 //! match the Stage 1 Python serializer (`klippy/structured_log.py`) exactly.
 
+use time::OffsetDateTime;
 use time::format_description::FormatItem;
 use time::macros::format_description;
-use time::OffsetDateTime;
 use tracing::Level;
 
 pub const SOURCE_HOST_RUST: &str = "host-rust";
 
 /// RFC3339 UTC with millisecond precision + trailing `Z`, matching
 /// `structured_log.format_time` (e.g. `2026-06-01T14:02:11.482Z`).
-const TIME_FMT: &[FormatItem<'static>] = format_description!(
-    "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z"
-);
+const TIME_FMT: &[FormatItem<'static>] =
+    format_description!("[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:3]Z");
 
 /// Map a tracing `Level` to the lowercase schema enum.
 pub fn level_str(level: &Level) -> &'static str {
@@ -87,7 +86,10 @@ mod tests {
             subsystem_for_target("kalico_host_rt::host_io::reactor"),
             "mcu-comms"
         );
-        assert_eq!(subsystem_for_target("motion_bridge::probe_homing"), "homing");
+        assert_eq!(
+            subsystem_for_target("motion_bridge::probe_homing"),
+            "homing"
+        );
         assert_eq!(subsystem_for_target("some::unknown::path"), "host-rust");
     }
 }

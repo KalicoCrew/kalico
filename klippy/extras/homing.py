@@ -44,8 +44,12 @@ class StepperPosition:
         logging.info(
             "homing: stepper=%s endstop=%s start=%d halt=%d trig=%d "
             "trigger_time=%.6f",
-            self.stepper_name, self.endstop_name, self.start_pos,
-            self.halt_pos, self.trig_pos, trigger_time,
+            self.stepper_name,
+            self.endstop_name,
+            self.start_pos,
+            self.halt_pos,
+            self.trig_pos,
+            trigger_time,
         )
 
     def verify_no_probe_skew(self, haltpos):
@@ -209,7 +213,8 @@ class HomingMove:
             self.distance_elapsed = kin.calc_position(filled_steps_moved)
             logging.info(
                 "homing: steps_moved=%s distance_elapsed=%s",
-                steps_moved, self.distance_elapsed,
+                steps_moved,
+                self.distance_elapsed,
             )
             if any(over_steps.values()):
                 self.toolhead.set_position(movepos)

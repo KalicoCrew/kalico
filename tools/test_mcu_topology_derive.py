@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Unit tests for motion_toolhead._derive_mcu_topology (pure, no klippy boot)."""
+
 from __future__ import annotations
 
 from klippy.motion_toolhead import _derive_mcu_topology

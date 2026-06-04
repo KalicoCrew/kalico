@@ -1,5 +1,16 @@
 //! Arc-length parameterization.
 //! See spec §`arc_length` module.
+//!
+//! # Safety note
+//!
+//! `param_from_arc_length` and `arc_length_from_param` use `get_unchecked`
+//! for hot-path binary-search accesses. All indices are proved in-bounds by
+//! the binary-search loop invariants (standard binary-search correctness);
+//! each site is annotated with a SAFETY comment. This is the same pattern
+//! used in `eval.rs` for the de Boor recurrence.
+// `unsafe_code` is workspace-denied; this module is a targeted exception for
+// the MCU hot-path arc-length lookup that the release build must not panic in.
+#![allow(unsafe_code)]
 
 use crate::Float;
 
@@ -151,6 +162,12 @@ use crate::{ArcLengthError, NurbsView, VectorNurbsView};
 ///
 /// Contract: `s` is segment-local (relative to this segment's table). Out-of-
 /// range queries debug-assert in development and clamp silently in release.
+/// Index-safety invariant for `param_from_arc_length` and `arc_length_from_param`:
+/// The table has `debug_assert!(len >= 2)` at construction. Binary search
+/// initialises `lo = 0`, `hi = last = len - 1` and loop terminates with
+/// `hi - lo == 1`, so `lo ∈ [0, last-1]` and `lo+1 = hi ≤ last = len-1`.
+/// All accesses `arr[0]`, `arr[last]`, `arr[mid]`, `arr[lo]`, `arr[lo+1]`
+/// are in `[0, len-1]`.
 #[inline]
 pub fn param_from_arc_length<T: Float>(table: &ArcLengthTableRef<'_, T>, s: T) -> T {
     debug_assert!(s >= T::ZERO);
@@ -159,31 +176,38 @@ pub fn param_from_arc_length<T: Float>(table: &ArcLengthTableRef<'_, T>, s: T) -
 
     let s_arr = table.s();
     let u_arr = table.u();
+    debug_assert!(s_arr.len() >= 2);
+    debug_assert_eq!(s_arr.len(), u_arr.len());
     // Endpoint short-circuit.
-    if s_clamped <= s_arr[0] {
-        return u_arr[0];
+    // SAFETY: len >= 2 → index 0 is valid.
+    if s_clamped <= unsafe { *s_arr.get_unchecked(0) } {
+        return unsafe { *u_arr.get_unchecked(0) };
     }
     let last = s_arr.len() - 1;
-    if s_clamped >= s_arr[last] {
-        return u_arr[last];
+    // SAFETY: last = len-1 < len.
+    if s_clamped >= unsafe { *s_arr.get_unchecked(last) } {
+        return unsafe { *u_arr.get_unchecked(last) };
     }
 
     // Binary search for the span [i, i+1] where s_arr[i] <= s_clamped < s_arr[i+1].
+    // Invariant: s_arr[lo] <= s_clamped < s_arr[hi], lo < hi.
     let mut lo = 0usize;
     let mut hi = last;
     while hi - lo > 1 {
         let mid = usize::midpoint(lo, hi);
-        if s_arr[mid] <= s_clamped {
+        // SAFETY: mid ∈ (lo, hi) ⊆ [0, last] < len.
+        if unsafe { *s_arr.get_unchecked(mid) } <= s_clamped {
             lo = mid;
         } else {
             hi = mid;
         }
     }
-
-    let s_lo = s_arr[lo];
-    let s_hi = s_arr[lo + 1];
-    let u_lo = u_arr[lo];
-    let u_hi = u_arr[lo + 1];
+    // Loop exits with hi - lo == 1, so lo ∈ [0, last-1] and lo+1 = hi ≤ last < len.
+    // SAFETY: lo and lo+1 both in [0, last] < len; same for u_arr (same length).
+    let s_lo = unsafe { *s_arr.get_unchecked(lo) };
+    let s_hi = unsafe { *s_arr.get_unchecked(lo + 1) };
+    let u_lo = unsafe { *u_arr.get_unchecked(lo) };
+    let u_hi = unsafe { *u_arr.get_unchecked(lo + 1) };
 
     let span = s_hi - s_lo;
     let floor = T::from_f64(MIN_PARAMETRIC_SPEED);
@@ -193,6 +217,7 @@ pub fn param_from_arc_length<T: Float>(table: &ArcLengthTableRef<'_, T>, s: T) -
 
 /// Inverse: given parameter `u`, return arc length `s = arc_length(u)`.
 /// Binary search on `u` plus linear interpolation. Same contract as `param_from_arc_length`.
+/// Same index-safety invariant as `param_from_arc_length` — see its comment.
 #[inline]
 pub fn arc_length_from_param<T: Float>(table: &ArcLengthTableRef<'_, T>, u: T) -> T {
     debug_assert!(u >= T::ZERO);
@@ -201,29 +226,34 @@ pub fn arc_length_from_param<T: Float>(table: &ArcLengthTableRef<'_, T>, u: T) -
 
     let s_arr = table.s();
     let u_arr = table.u();
-    if u_clamped <= u_arr[0] {
-        return s_arr[0];
+    debug_assert!(u_arr.len() >= 2);
+    debug_assert_eq!(s_arr.len(), u_arr.len());
+    // SAFETY: len >= 2 → index 0 is valid.
+    if u_clamped <= unsafe { *u_arr.get_unchecked(0) } {
+        return unsafe { *s_arr.get_unchecked(0) };
     }
     let last = u_arr.len() - 1;
-    if u_clamped >= u_arr[last] {
-        return s_arr[last];
+    // SAFETY: last = len-1 < len.
+    if u_clamped >= unsafe { *u_arr.get_unchecked(last) } {
+        return unsafe { *s_arr.get_unchecked(last) };
     }
 
     let mut lo = 0usize;
     let mut hi = last;
     while hi - lo > 1 {
         let mid = usize::midpoint(lo, hi);
-        if u_arr[mid] <= u_clamped {
+        // SAFETY: mid ∈ (lo, hi) ⊆ [0, last] < len.
+        if unsafe { *u_arr.get_unchecked(mid) } <= u_clamped {
             lo = mid;
         } else {
             hi = mid;
         }
     }
-
-    let u_lo = u_arr[lo];
-    let u_hi = u_arr[lo + 1];
-    let s_lo = s_arr[lo];
-    let s_hi = s_arr[lo + 1];
+    // SAFETY: lo and lo+1 both in [0, last] < len (same for s_arr).
+    let u_lo = unsafe { *u_arr.get_unchecked(lo) };
+    let u_hi = unsafe { *u_arr.get_unchecked(lo + 1) };
+    let s_lo = unsafe { *s_arr.get_unchecked(lo) };
+    let s_hi = unsafe { *s_arr.get_unchecked(lo + 1) };
 
     let span = u_hi - u_lo;
     let floor = T::from_f64(MIN_PARAMETRIC_SPEED);

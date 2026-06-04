@@ -64,7 +64,7 @@ fn shape_constant_is_constant() {
     let fitted = vec![constant_segment(x_val, 0.0, 0.0, 0.0, 1.0)];
 
     let padded = pad_segment_axis(0, 0, &fitted, &[], t_sm_half, 0.0, 1.0);
-    let shaped = shape_axis(&padded, &kernel, 0.0, 1.0).unwrap();
+    let shaped = shape_axis(&padded, &kernel, 0.0, 1.0);
 
     // Sample at multiple points — all should be close to x_val.
     // Tolerance 1e-4 mm (100 nm): the discrete FIR's kernel normalization
@@ -120,8 +120,7 @@ fn pad_trim_matches_global_convolve() {
             &kernel,
             fitted[seg_idx].t_start,
             fitted[seg_idx].t_end,
-        )
-        .unwrap();
+        );
         shaped_per_seg.push(shaped);
     }
 
@@ -203,7 +202,7 @@ fn batch_edge_constant_extension() {
     );
 
     // The shaped result should be valid on [0, 1].
-    let shaped = shape_axis(&padded, &kernel, 0.0, 1.0).unwrap();
+    let shaped = shape_axis(&padded, &kernel, 0.0, 1.0);
     let shaped_pieces = extract_bezier_pieces(&shaped);
 
     // At t=0, the shaped value should be close to x_start (constant extension
