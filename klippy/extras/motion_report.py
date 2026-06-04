@@ -1,4 +1,4 @@
-# Diagnostic tool for reporting stepper and kinematic positions
+# Diagnostic tool for reporting stepper positions
 #
 # Copyright (C) 2021  Kevin O'Connor <kevin@koconnor.net>
 #
