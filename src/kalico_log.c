@@ -1,18 +1,10 @@
-// C-owned MCU structured-log ring + transport. Observability spec #2 Stage 2.
+// C-owned MCU structured-log ring + transport. kalico_log_emit is the only
+// ABI seam (no Rust-typed structure crosses it). Push uses irq_save/irq_restore
+// (NOT irq_disable) because OTG (NVIC prio 1) preempts TIM5 (prio 2).
 //
-// Producers: the Rust motion engine (via extern "C" kalico_log_emit) and C
-// foreground/ISR paths. Consumer: the runtime_drain DECL_TASK (~1 kHz), which
-// widens each entry's captured 32-bit tick to u64 and transmits it as
-// KALICO_MSG_LOG (0x0084). Boundary §B2/§B3: C owns the ring storage and the
-// only ABI seam is kalico_log_emit (no Rust-typed structure crosses the ABI;
-// the 2026-05-18 SPSC LLVM-miscompile lesson). irq_save/irq_restore (NOT
-// irq_disable) per diag_ring_push — OTG (NVIC prio 1) preempts TIM5 (prio 2).
-//
-// Memory placement: plain .bss. On H7 that lands in DTCM (non-cached,
-// single-cycle), so the ISR producer and foreground consumer share a coherent
-// view with NO cache maintenance — matching step_queue.c, whose comment warns
-// against .axi_bss (which would reintroduce cache cleans). The ring is drained
-// continuously, so it needs no reset-persistence (unlike diag_ring's .bkp_bss).
+// Plain .bss: on H7 this lands in DTCM (non-cached, coherent), so the ISR
+// producer and foreground consumer share a view with no cache maintenance —
+// do NOT move to .axi_bss (would reintroduce cache cleans).
 
 #include <stdint.h>
 
@@ -22,27 +14,20 @@
 #include "kalico_protocol_schema.h"  // KALICO_MSG_MCU_LOG
 #include "kalico_log.h"
 
-// runtime_widened_host_clock() lives in src/runtime_tick.c (foreground-safe,
-// Klipper-stats-based widening). No public header declares it.
+// Foreground-safe, defined in src/runtime_tick.c; no public header declares it.
 extern uint64_t runtime_widened_host_clock(void);
 
-// Per-message protocol version. Mirrors MESSAGE_VERSION_DEFAULT in
-// kalico_dispatch.c.
 #define KALICO_LOG_MSG_VERSION 0x01
-// Per-message header: type(u16) | version(u8) | corr_id(u32) = 7 bytes.
+// type(u16) | version(u8) | corr_id(u32).
 #define KALICO_LOG_HEADER_LEN 7
-// McuLog body width (messages.rs McuLog wire layout) = 24 bytes.
+// McuLog wire body width (messages.rs) — keep in sync.
 #define KALICO_LOG_BODY_LEN 24
 
-// Ring capacity (power of two for cheap masking). 64 entries is ample for
-// warn/error bursts at the 1 kHz drain rate; ~1 KB in DTCM.
 #define KALICO_LOG_RING_LEN 64
 #define KALICO_LOG_RING_MASK (KALICO_LOG_RING_LEN - 1)
 
-// One pending log entry. Stores the RAW 32-bit tick captured at emit; the
-// drain widens it to u64 just before transmit.
 struct kalico_log_entry {
-    uint32_t tick;       // raw timer_read_time() at emit
+    uint32_t tick;       // raw timer_read_time() at emit; drain widens to u64
     uint16_t event;
     uint16_t code;
     uint16_t seq;
@@ -51,26 +36,18 @@ struct kalico_log_entry {
     uint32_t args[2];
 };
 
-// Plain .bss → DTCM on H7 (non-cached, coherent). volatile: shared across the
-// ISR producer / foreground consumer; the irq_save pair fences ordering.
 static volatile struct kalico_log_entry kalico_log_ring[KALICO_LOG_RING_LEN];
 
-// Free-running head/tail counters (NOT masked — unsigned wrap is well-defined
-// and head - tail gives the live count). Index = counter & MASK. Touched only
-// under irq_save.
+// Free-running (NOT masked — unsigned wrap is well-defined and head - tail
+// gives the live count). Touched only under irq_save.
 static volatile uint32_t kalico_log_head;
 static volatile uint32_t kalico_log_tail;
-// Per-MCU monotonic sequence assigned to each enqueued entry (truncated to u16
-// on the wire for host drop detection).
 static volatile uint32_t kalico_log_seq;
-// Ring-overflow drop accounting (surfaced as a drop frame in Stage 3).
 static volatile uint32_t kalico_log_drops;
 
-// `used, externally_visible` so the function survives -fwhole-program LTO + GC
-// and stays resolvable from the Rust kalico runtime staticlib, which calls it
-// from the fault-raise path (Stage 3). Without it, LTO internalizes the symbol
-// — its only C caller (stepper.c) is LTO-visible — and the Rust references go
-// undefined at link. Mirrors timer_read_time / runtime_widened_host_clock.
+// used,externally_visible: the Rust runtime staticlib calls this from the
+// fault-raise path; without it LTO internalizes the symbol (its only C caller,
+// stepper.c, is LTO-visible) and the Rust references go undefined at link.
 __attribute__((used, externally_visible))
 void
 kalico_log_emit(uint8_t level, uint8_t subsystem, uint16_t event,
@@ -78,7 +55,7 @@ kalico_log_emit(uint8_t level, uint8_t subsystem, uint16_t event,
 {
     irqstatus_t flag = irq_save();
     if ((kalico_log_head - kalico_log_tail) >= KALICO_LOG_RING_LEN) {
-        // Ring full: drop newest, account for it. Never block. Spec §7.
+        // Ring full: drop newest, account for it, never block.
         kalico_log_drops++;
         irq_restore(flag);
         return;
@@ -97,10 +74,9 @@ kalico_log_emit(uint8_t level, uint8_t subsystem, uint16_t event,
     irq_restore(flag);
 }
 
-// Widen a 32-bit tick captured <= 1 ms ago against the current widened clock,
-// mirroring the arrival_clock pattern (kalico_dispatch.c::piece_sink_commit):
-// if the captured low half exceeds the current low half, the u32 counter
-// wrapped between capture and now, so the high half is one less.
+// Widen a 32-bit tick captured <= 1 ms ago: if the captured low half exceeds
+// the current low half, the u32 wrapped since capture, so the high half is one
+// less.
 static uint64_t
 widen_log_tick(uint32_t tick)
 {
@@ -112,15 +88,12 @@ widen_log_tick(uint32_t tick)
     return ((uint64_t)high << 32) | (uint64_t)tick;
 }
 
-// Build + transmit one KALICO_MSG_LOG frame. Returns the send_frame result
-// (frame length on success, -1 on transmit_buf overflow).
 static int
 send_log_frame(const struct kalico_log_entry *e)
 {
     uint64_t mcu_tick = widen_log_tick(e->tick);
 
     uint8_t payload[KALICO_LOG_HEADER_LEN + KALICO_LOG_BODY_LEN];
-    // Per-message header: type(u16 LE) | version(u8) | corr_id(u32 LE)=0.
     payload[0] = (uint8_t)(KALICO_MSG_MCU_LOG & 0xFF);
     payload[1] = (uint8_t)((KALICO_MSG_MCU_LOG >> 8) & 0xFF);
     payload[2] = KALICO_LOG_MSG_VERSION;
@@ -128,8 +101,8 @@ send_log_frame(const struct kalico_log_entry *e)
     payload[4] = 0;
     payload[5] = 0;
     payload[6] = 0;
-    // Body (LE): mcu_tick u64, level u8, subsystem u8, event u16, code u16,
-    // seq u16, arg0 u32, arg1 u32 — must match messages.rs McuLog::decode.
+    // Body (LE), must match messages.rs McuLog::decode: mcu_tick u64, level u8,
+    // subsystem u8, event u16, code u16, seq u16, arg0 u32, arg1 u32.
     uint8_t *b = &payload[KALICO_LOG_HEADER_LEN];
     b[0] = (uint8_t)(mcu_tick & 0xFF);
     b[1] = (uint8_t)((mcu_tick >> 8) & 0xFF);
@@ -163,11 +136,9 @@ send_log_frame(const struct kalico_log_entry *e)
 void
 kalico_log_drain(void)
 {
-    // Ring-overflow accounting (spec §7): report any entries dropped since the
-    // last drain, then reset. Fail-loud — loss is surfaced, never silent. The
-    // report is enqueued here so the loop below ships it the same cycle; if the
-    // ring is momentarily full the report itself drops and is re-counted next
-    // drain (self-healing).
+    // Surface any entries dropped since the last drain (fail-loud), enqueued
+    // here so the loop below ships it the same cycle. If the ring is full the
+    // report itself drops and is re-counted next drain.
     irqstatus_t df = irq_save();
     uint32_t drops = kalico_log_drops;
     kalico_log_drops = 0;
@@ -181,12 +152,11 @@ kalico_log_drain(void)
         irqstatus_t flag = irq_save();
         if (kalico_log_head == kalico_log_tail) {
             irq_restore(flag);
-            break;                       // ring empty
+            break;
         }
-        // Copy the head-of-queue entry; do NOT advance tail until the TX
-        // succeeds, so a transmit_buf-full drop retries on the next drain.
-        // The producer drops-on-full (never overwrites the unconsumed tail),
-        // so the slot is stable across the TX without holding irq.
+        // Do NOT advance tail until the TX succeeds, so a transmit_buf-full
+        // drop retries next drain. The producer never overwrites the
+        // unconsumed tail, so the slot is stable across the TX without irq.
         e = kalico_log_ring[kalico_log_tail & KALICO_LOG_RING_MASK];
         irq_restore(flag);
 

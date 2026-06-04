@@ -1,11 +1,7 @@
-//! Planner configuration types. Parsed from klippy's `printer.cfg` values
-//! passed through PyO3 at bridge init and runtime updates.
-
 use temporal::Limits;
 use thiserror::Error;
 use trajectory::{AxisShaper, ELimits, RequiredShaper, ShaperConfig};
 
-/// Errors returned by `parse_required_shaper` and `build_shaper_config`.
 #[derive(Debug, Error)]
 pub enum ShaperConfigError {
     #[error(
@@ -20,7 +16,6 @@ pub enum ShaperConfigError {
     UnsupportedKind { kind: String },
 }
 
-/// Full planner configuration snapshot.
 #[derive(Debug, Clone)]
 pub struct PlannerConfig {
     pub limits: PlannerLimits,
@@ -33,7 +28,6 @@ pub struct PlannerConfig {
     pub worker_threads: usize,
 }
 
-/// Dynamic velocity/acceleration limits (updateable at runtime).
 #[derive(Debug, Clone, Copy)]
 pub struct PlannerLimits {
     pub max_velocity: f64,
@@ -44,10 +38,6 @@ pub struct PlannerLimits {
 }
 
 impl PlannerLimits {
-    /// Convert to temporal's `Limits` struct.
-    ///
-    /// Jerk is set to 2× accel as a reasonable default; the β-medium loop
-    /// further constrains accel based on post-shape peak.
     pub fn to_temporal_limits(&self) -> Limits {
         Limits::new(
             [self.max_velocity, self.max_velocity, self.max_z_velocity],
@@ -90,7 +80,6 @@ impl Default for PlannerConfig {
     }
 }
 
-/// Parse a shaper type string into a `RequiredShaper`.
 pub fn parse_required_shaper(name: &str, freq: f64) -> Result<RequiredShaper, ShaperConfigError> {
     if !freq.is_finite() || freq <= 0.0 {
         return Err(ShaperConfigError::InvalidFrequency { value: freq });

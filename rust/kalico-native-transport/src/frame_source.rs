@@ -1,6 +1,3 @@
-//! Generic frame-source over any `R: Read`. Test-only / corpus-replay
-//! companion to `kalico-host-rt::SerialFrameIo`. See spec §3.1.
-
 use std::io::{self, Read};
 use std::time::{Duration, Instant};
 

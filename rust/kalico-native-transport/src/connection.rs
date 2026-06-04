@@ -1,8 +1,3 @@
-//! Layer-0 stub: byte-pipe abstraction so the transport is testable without
-//! actual USB-CDC hardware. The real implementation lives elsewhere
-//! (kalico-host-rt or a future kalico-native-io crate); this trait is the
-//! seam.
-
 use std::collections::VecDeque;
 use std::io;
 use std::sync::{Arc, Mutex};
@@ -12,14 +7,9 @@ pub trait Connection: Send {
     fn write_all(&mut self, buf: &[u8]) -> io::Result<()>;
 }
 
-/// In-memory bidirectional connection for tests. Two `MockConnection`
-/// halves share a pair of buffers — `tx` writes go into the peer's `rx`
-/// view and vice versa.
 #[derive(Clone, Debug)]
 pub struct MockConnection {
-    /// Bytes the host has written; the peer reads from here.
     pub host_to_peer: Arc<Mutex<VecDeque<u8>>>,
-    /// Bytes the peer has written; the host reads from here.
     pub peer_to_host: Arc<Mutex<VecDeque<u8>>>,
 }
 
@@ -37,15 +27,12 @@ impl MockConnection {
     }
 }
 
-/// Host-side connection half: writes go onto the wire toward the MCU, reads
-/// pull bytes the MCU has emitted.
 #[derive(Debug, Clone)]
 pub struct HostHalf {
     pub tx: Arc<Mutex<VecDeque<u8>>>,
     pub rx: Arc<Mutex<VecDeque<u8>>>,
 }
 
-/// Peer-side helper for tests pretending to be the MCU.
 #[derive(Debug, Clone)]
 pub struct PeerHalf {
     pub tx: Arc<Mutex<VecDeque<u8>>>,

@@ -1,5 +1,3 @@
-//! Parser encode/decode round-trip property test. Spec §4.13. Always-on.
-
 use kalico_host_rt::host_io::parser::{decode_vlq, encode_vlq};
 use proptest::prelude::*;
 

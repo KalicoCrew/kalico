@@ -1,31 +1,16 @@
-// Stage 2c-d: C1-constrained refit of composed pieces and per-axis split.
-
 use nurbs::bezier::BezierPiece;
 use nurbs::ScalarNurbs;
 
 const HERMITE_REFIT_MAX_SUBDIVISIONS: usize = 8;
 const MIN_HERMITE_PIECE_DURATION: f64 = 1e-12;
 
-/// Result of Stage 2: per-axis fitted trajectories in the time domain.
 #[derive(Debug, Clone)]
 pub struct FittedSegment {
-    /// Per-axis shaped NURBS: `[X(t), Y(t), Z(t)]`.
     pub axes: [ScalarNurbs<f64>; 3],
-    /// Start time of this segment (seconds).
     pub t_start: f64,
-    /// End time of this segment (seconds).
     pub t_end: f64,
 }
 
-/// Stage 2c-d: refit composed pieces via C1 Hermite merge and split to per-axis
-/// scalar NURBS.
-///
-/// **Stage 2c** calls `fit_hermite_c1::<3>` to merge adjacent degree-6 composed
-/// pieces into fewer degree-4 pieces with C1 continuity and <= `tolerance`
-/// position error (L-infinity across all 3 axes).
-///
-/// **Stage 2d** converts each axis's `Vec<BezierPiece<f64>>` into a
-/// `ScalarNurbs<f64>` via `bezier_pieces_to_nurbs`.
 pub fn fit_and_split(
     composed: &[[BezierPiece<f64>; 3]],
     tolerance: f64,
@@ -41,8 +26,6 @@ pub fn fit_and_split(
 
     let fit_input = nondegenerate_composed_pieces(composed)?;
 
-    // Stage 2c: C1 Hermite refit — merge adjacent pieces into fewer degree-4
-    // pieces while maintaining C1 continuity and L-inf error <= tolerance.
     let fitted = fit_hermite_c1_adaptive(&fit_input, tolerance, 4).map_err(|e| {
         crate::ShapeError::FitFailure {
             index: 0,
@@ -50,7 +33,6 @@ pub fn fit_and_split(
         }
     })?;
 
-    // Stage 2d: convert per-axis Vec<BezierPiece> to ScalarNurbs.
     let axes = [
         bezier_pieces_to_nurbs(&fitted[0]),
         bezier_pieces_to_nurbs(&fitted[1]),
@@ -155,14 +137,6 @@ fn split_composed_midpoints(
     Ok(refined)
 }
 
-/// Convert composed pieces directly to per-axis `ScalarNurbs` WITHOUT the
-/// C1 Hermite merge. Preserves exact polynomial accuracy of the composed
-/// pieces (degree ≤ 6 for typical paths).
-///
-/// Use this when the beta-medium loop needs accurate second derivatives for
-/// peak-acceleration checking. The Hermite refit (`fit_and_split`) can be
-/// applied as a post-processing step on the final converged output if
-/// piece-count reduction is desired.
 pub fn split_without_refit(
     composed: &[[BezierPiece<f64>; 3]],
 ) -> Result<FittedSegment, crate::ShapeError> {
@@ -175,9 +149,6 @@ pub fn split_without_refit(
     let t_start = composed[0][0].u_start;
     let t_end = composed.last().unwrap()[0].u_end;
 
-    // Collect per-axis pieces and convert directly. Single-pass split:
-    // walks `composed` once and pushes per-axis clones into preallocated
-    // vecs, avoiding three independent iterator passes.
     let mut x_pieces: Vec<BezierPiece<f64>> = Vec::with_capacity(composed.len());
     let mut y_pieces: Vec<BezierPiece<f64>> = Vec::with_capacity(composed.len());
     let mut z_pieces: Vec<BezierPiece<f64>> = Vec::with_capacity(composed.len());

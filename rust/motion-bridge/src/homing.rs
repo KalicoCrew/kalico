@@ -8,11 +8,6 @@ pub enum HomingSegmentState {
     Active = 1,
     Completed = 2,
     Tripped = 3,
-    /// Terminal state reached when the software deadline expired without the
-    /// host extending it.  This means the probe triggered on the host side and
-    /// the host stopped sending `extend_deadline` commands.  The MCU froze the
-    /// segment autonomously; the `TripEvent` carries
-    /// `trip_source_idx == TRIP_SOURCE_DEADLINE_EXPIRED (0xFF)`.
     DeadlineExpired = 4,
 }
 
@@ -118,13 +113,6 @@ impl HomingState {
         self.pending_trip.lock().unwrap().take()
     }
 
-    /// Take-once accessor for the no-trip terminal. Returns Some(arm_id)
-    /// exactly once after the homing segment retires without a trip, then
-    /// None on every subsequent call until the next `begin()`.
-    ///
-    /// Mirrors `take_trip_event`'s ownership semantics: the caller is
-    /// responsible for delivering the event exactly once. If the state is
-    /// `Tripped`, this returns None — the trip event owns that terminal.
     pub fn take_completion_event(&self) -> Option<u32> {
         if self.state() != HomingSegmentState::Completed {
             return None;

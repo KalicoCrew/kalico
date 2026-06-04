@@ -3,9 +3,7 @@ use crate::{ELimits, ShapeSegmentInput};
 use geometry::segment::EMode;
 use nurbs::{ScalarNurbs, VectorNurbs};
 
-/// Build a simple cubic Bezier XYZ curve from `start` to `end` (straight line).
 fn make_xyz_curve(start: [f64; 3], end: [f64; 3]) -> VectorNurbs<f64, 3> {
-    // Cubic Bezier with collinear control points at 1/3 and 2/3 lerp.
     let cp1 = [
         start[0] + (end[0] - start[0]) / 3.0,
         start[1] + (end[1] - start[1]) / 3.0,
@@ -24,7 +22,6 @@ fn make_xyz_curve(start: [f64; 3], end: [f64; 3]) -> VectorNurbs<f64, 3> {
     .unwrap()
 }
 
-/// Build a linear E NURBS for retraction/prime.
 fn make_e_nurbs(e_start: f64, e_end: f64) -> ScalarNurbs<f64> {
     ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![e_start, e_end]).unwrap()
 }
@@ -82,7 +79,6 @@ fn make_independent_segment<'a>(
 
 #[test]
 fn partition_all_xy_single_run() {
-    // All segments are CoupledToXy — should produce 1 run, 0 gaps.
     let c1 = make_xyz_curve([0.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
     let c2 = make_xyz_curve([10.0, 0.0, 0.0], [20.0, 0.0, 0.0]);
     let c3 = make_xyz_curve([20.0, 0.0, 0.0], [30.0, 0.0, 0.0]);
@@ -102,11 +98,10 @@ fn partition_all_xy_single_run() {
 
 #[test]
 fn partition_with_retraction() {
-    // [CoupledToXy, Independent, CoupledToXy] -> 2 runs, 1 gap.
     let c1 = make_xyz_curve([0.0, 0.0, 0.0], [10.0, 5.0, 0.0]);
-    let c_hold = make_xyz_curve([10.0, 5.0, 0.0], [10.0, 5.0, 0.0]); // stationary
+    let c_hold = make_xyz_curve([10.0, 5.0, 0.0], [10.0, 5.0, 0.0]);
     let c2 = make_xyz_curve([10.0, 5.0, 0.0], [20.0, 5.0, 0.0]);
-    let e_retract = make_e_nurbs(10.0, 5.0); // 5mm retraction
+    let e_retract = make_e_nurbs(10.0, 5.0);
 
     let segments = vec![
         make_xy_segment(&c1, EMode::CoupledToXy, 0.04),
@@ -122,7 +117,6 @@ fn partition_with_retraction() {
     assert_eq!(result.e_gaps.len(), 1);
     assert_eq!(result.e_gaps[0].segment_index, 1);
     assert!(result.e_gaps[0].duration > 0.0);
-    // XYZ position should be the endpoint of segment 0: [10, 5, 0].
     let pos = result.e_gaps[0].xyz_position;
     assert!((pos[0] - 10.0).abs() < 1e-10);
     assert!((pos[1] - 5.0).abs() < 1e-10);
@@ -131,10 +125,9 @@ fn partition_with_retraction() {
 
 #[test]
 fn partition_leading_e() {
-    // [Independent, CoupledToXy] -> 1 run, 1 gap (leading E before first run).
     let c_hold = make_xyz_curve([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
     let c1 = make_xyz_curve([0.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
-    let e_prime = make_e_nurbs(5.0, 10.0); // 5mm prime
+    let e_prime = make_e_nurbs(5.0, 10.0);
 
     let segments = vec![
         make_independent_segment(&c_hold, &e_prime),
@@ -148,7 +141,6 @@ fn partition_leading_e() {
     assert_eq!(result.e_gaps.len(), 1);
     assert_eq!(result.e_gaps[0].segment_index, 0);
     assert!(result.e_gaps[0].duration > 0.0);
-    // No preceding segment — xyz_position should be [0, 0, 0].
     #[allow(clippy::float_cmp)]
     {
         assert_eq!(result.e_gaps[0].xyz_position, [0.0, 0.0, 0.0]);
@@ -157,7 +149,6 @@ fn partition_leading_e() {
 
 #[test]
 fn partition_trailing_e() {
-    // [CoupledToXy, Independent] -> 1 run, 1 gap (trailing E after last run).
     let c1 = make_xyz_curve([0.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
     let c_hold = make_xyz_curve([10.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
     let e_retract = make_e_nurbs(10.0, 5.0);
@@ -179,8 +170,6 @@ fn partition_trailing_e() {
 
 #[test]
 fn partition_consecutive_e_gaps() {
-    // [CoupledToXy, Independent, Independent, CoupledToXy]
-    // -> 2 runs, 2 gaps (retraction then prime).
     let c1 = make_xyz_curve([0.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
     let c_hold1 = make_xyz_curve([10.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
     let c_hold2 = make_xyz_curve([10.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
@@ -214,7 +203,6 @@ fn partition_empty_input() {
 
 #[test]
 fn partition_all_independent() {
-    // All E segments — no runs.
     let c_hold = make_xyz_curve([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
     let e1 = make_e_nurbs(10.0, 5.0);
     let e2 = make_e_nurbs(5.0, 10.0);
@@ -232,7 +220,6 @@ fn partition_all_independent() {
 
 #[test]
 fn e_gap_duration_matches_schedule() {
-    // Verify the duration in the E gap matches what schedule_e_duration returns.
     let c1 = make_xyz_curve([0.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
     let c_hold = make_xyz_curve([10.0, 0.0, 0.0], [10.0, 0.0, 0.0]);
     let e_retract = make_e_nurbs(10.0, 5.0);

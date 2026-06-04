@@ -1,16 +1,3 @@
-//! `UnixNativeConn`: a blocking same-host Unix-socket client speaking pure
-//! kalico-native frames. Implements [`NativeCall`] so producers can drive an
-//! EtherCAT RT endpoint exactly as they drive a serial `KalicoHostIo`.
-//! Same-host => no clock-sync round-trips; the caller stamps segment times on
-//! the shared `CLOCK_MONOTONIC` (see the EtherCAT RT endpoint).
-//!
-//! ## Retirement / heartbeat flow
-//!
-//! The endpoint emits unsolicited `StatusHeartbeat` (0x0083) frames on the
-//! events channel. `UnixNativeConn::poll_events` drains those frames and
-//! invokes the installed heartbeat callback with the `retired_counts` slice so
-//! the bridge can update per-ring flow-control accounting between calls.
-
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -27,7 +14,6 @@ use crate::host_io::kalico_native::{build_kalico_control_frame, build_kalico_fra
 use crate::native_call::NativeCall;
 use crate::transport::TransportError;
 
-/// Mutable I/O state guarded together so `kalico_call(&self, ...)` is `Sync`.
 struct ConnState {
     stream: UnixStream,
     demux: Demuxer,
@@ -37,10 +23,6 @@ struct ConnState {
 pub struct UnixNativeConn {
     state: Mutex<ConnState>,
     next_cid: AtomicU32,
-    /// Optional callback invoked with `retired_counts` whenever a
-    /// `StatusHeartbeat` event frame arrives from the endpoint. Routes
-    /// retirement into the pump's heartbeat channel, symmetric with the serial
-    /// path's `attach_heartbeat_callback`.
     heartbeat_callback: Mutex<Option<Arc<dyn Fn(&[u32]) + Send + Sync>>>,
 }
 
@@ -53,13 +35,11 @@ impl core::fmt::Debug for UnixNativeConn {
 }
 
 impl UnixNativeConn {
-    /// Connect to a listening kalico-native endpoint at `path`.
     pub fn connect(path: &str) -> std::io::Result<Self> {
         let stream = UnixStream::connect(path)?;
         Ok(Self::from_stream(stream))
     }
 
-    /// Wrap an already-connected stream (used by tests via `UnixStream::pair`).
     pub fn from_stream(stream: UnixStream) -> Self {
         Self {
             state: Mutex::new(ConnState {
@@ -67,17 +47,11 @@ impl UnixNativeConn {
                 demux: Demuxer::new(),
                 buf: [0u8; 4096],
             }),
-            // Start at 1 so a zero correlation id never collides with a
-            // freshly-zeroed field on the wire.
             next_cid: AtomicU32::new(1),
             heartbeat_callback: Mutex::new(None),
         }
     }
 
-    /// Install a callback that is invoked with `retired_counts` whenever a
-    /// `StatusHeartbeat` (0x0083) event frame is received from the endpoint.
-    /// May be called at any time; replaces any previously installed callback.
-    /// The callback is invoked on whichever thread drains the socket.
     pub fn attach_heartbeat_callback(&self, cb: Arc<dyn Fn(&[u32]) + Send + Sync>) {
         let mut guard = self
             .heartbeat_callback
@@ -86,13 +60,6 @@ impl UnixNativeConn {
         *guard = Some(cb);
     }
 
-    /// Non-blocking drain of any inbound frames that arrived since the last
-    /// `kalico_call` or `poll_events` call. Dispatches `StatusHeartbeat` events
-    /// to the installed heartbeat callback. Call this periodically from a
-    /// background thread to replenish pump flow-control accounting even when no
-    /// new commands are being dispatched.
-    ///
-    /// Returns the number of `StatusHeartbeat` frames processed.
     pub fn poll_events(&self) -> usize {
         let cb = {
             let g = self
@@ -102,8 +69,6 @@ impl UnixNativeConn {
             g.clone()
         };
         let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        // Set a short timeout for this opportunistic drain — we do not want to
-        // stall the caller if the socket is idle.
         let _ = st.stream.set_read_timeout(Some(Duration::from_millis(1)));
         let mut count = 0usize;
         loop {
@@ -127,7 +92,6 @@ impl UnixNativeConn {
     }
 }
 
-/// Dispatch a single demuxed frame. Returns 1 if a `StatusHeartbeat` was processed.
 fn dispatch_frame(frame: Frame, cb: Option<&(dyn Fn(&[u32]) + Send + Sync)>) -> usize {
     let Frame::Kalico { channel, payload } = frame else {
         return 0;
@@ -151,13 +115,6 @@ fn dispatch_frame(frame: Frame, cb: Option<&(dyn Fn(&[u32]) + Send + Sync)>) -> 
 }
 
 impl UnixNativeConn {
-    /// Issue a kalico-native call on an explicit outbound `channel`. The
-    /// response always arrives on the control channel matched by
-    /// `correlation_id`. Mirrors `KalicoHostIo::kalico_call_on_channel`.
-    ///
-    /// Used by the pump's `WireSink` to send `PushPieces` on
-    /// `KALICO_CHANNEL_PIECES` (0x02) while receiving `PushPiecesResponse`
-    /// on the control channel.
     pub fn kalico_call_on_channel(
         &self,
         channel: u8,
@@ -203,8 +160,6 @@ impl UnixNativeConn {
             };
             let (frames, _errs) = demux.feed_slice(&buf[..n]);
             for f in frames {
-                // Route event-channel frames (StatusHeartbeat) to the heartbeat
-                // callback even while waiting for the control-channel response.
                 if let Frame::Kalico { channel: ch, .. } = &f {
                     if *ch == CHANNEL_EVENTS {
                         dispatch_frame(f, cb.as_deref());
@@ -252,8 +207,6 @@ impl NativeCall for UnixNativeConn {
 
         st.stream.write_all(&frame).map_err(TransportError::Io)?;
 
-        // Bound each blocking read so the deadline is honoured even if the
-        // peer goes silent.
         st.stream
             .set_read_timeout(Some(Duration::from_millis(50)))
             .map_err(TransportError::Io)?;
@@ -310,8 +263,6 @@ mod tests {
     use kalico_protocol::codec::Encode;
     use std::thread;
 
-    /// Stub endpoint: read one framed request, reply with `reply_kind` echoing
-    /// the request's correlation id and a fixed body.
     fn spawn_stub(mut peer: UnixStream, reply_kind: MessageKind, reply_body: Vec<u8>) {
         thread::spawn(move || {
             let mut demux = Demuxer::new();
@@ -359,13 +310,11 @@ mod tests {
     #[test]
     fn times_out_when_peer_silent() {
         let (client, _server) = UnixStream::pair().unwrap();
-        // _server never replies.
         let conn = UnixNativeConn::from_stream(client);
         let r = conn.kalico_call(MessageKind::PushPieces, vec![], Duration::from_millis(150));
         assert!(matches!(r, Err(TransportError::Timeout)));
     }
 
-    /// Helper: build a `StatusHeartbeat` event frame as the endpoint would.
     fn make_heartbeat_frame(retired_counts: &[u32]) -> Vec<u8> {
         let hb = StatusHeartbeat {
             engine_state: 1,
@@ -380,10 +329,6 @@ mod tests {
         encode_frame(CHANNEL_EVENTS, &payload)
     }
 
-    /// Stub endpoint: send a `StatusHeartbeat` event frame *before* replying to
-    /// the control-channel call. Verifies that `kalico_call` drains the event
-    /// frame and invokes the heartbeat callback without mistaking it for the
-    /// correlated response.
     fn spawn_stub_with_event(
         mut peer: UnixStream,
         reply_kind: MessageKind,
@@ -402,7 +347,6 @@ mod tests {
                 for f in frames {
                     if let Frame::Kalico { payload, .. } = f {
                         let (hdr, _b) = decode_message_header(&payload).unwrap();
-                        // Send the event first.
                         peer.write_all(&event_before_reply).unwrap();
                         // Then send the correlated response.
                         let mut out = encode_message_header(
@@ -443,7 +387,6 @@ mod tests {
             .kalico_call(MessageKind::PushPieces, vec![0; 8], Duration::from_secs(2))
             .expect("call ok");
         assert_eq!(kind, MessageKind::PushPiecesResponse);
-        // The heartbeat callback must have been called with retired_counts=[42].
         assert_eq!(last_retired.load(Ordering::SeqCst), 42);
     }
 
@@ -452,7 +395,6 @@ mod tests {
         use std::sync::atomic::{AtomicU32, Ordering};
 
         let (client, server) = UnixStream::pair().unwrap();
-        // Write two heartbeat frames from the "server" side before polling.
         {
             let mut s = server;
             s.write_all(&make_heartbeat_frame(&[3u32])).unwrap();
@@ -468,10 +410,8 @@ mod tests {
             }
         }));
 
-        // Poll should process both frames.
         let count = conn.poll_events();
         assert_eq!(count, 2, "expected 2 StatusHeartbeat frames");
-        // Last callback invocation carries retired_counts=[7].
         assert_eq!(last_retired.load(Ordering::SeqCst), 7);
     }
 }

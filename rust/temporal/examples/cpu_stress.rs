@@ -1,7 +1,3 @@
-//! Stress N OS threads with a tight FP loop to occupy CPU cores while another
-//! process runs the SOCP benchmark. Prints `started <n>` then runs forever
-//! until SIGTERM/SIGINT. Use `pkill cpu_stress` to stop.
-
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -26,7 +22,6 @@ fn main() {
         }));
     }
     println!("started {n}");
-    // Block forever — Ctrl-C / SIGTERM kills us.
     for h in handles {
         let _ = h.join();
     }

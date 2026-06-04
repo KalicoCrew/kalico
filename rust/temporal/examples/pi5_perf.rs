@@ -1,22 +1,3 @@
-//! Pi-5 performance harness for `schedule_segment`.
-//!
-//! Measures per-call wall-clock for representative single-segment SOCP solves.
-//! Used to settle the Step-4.5 (A)-vs-(B) joining-vs-solving architecture choice:
-//! whether re-solving the SOCP on every joining iteration is feasible at MVP
-//! throughput on the actual target host.
-//!
-//! Usage: `pi5_perf <fixture> <iters> [grid_n]`
-//!   fixture  ∈ { straight, arc, cubic }
-//!   `iters`    > 0
-//!   `grid_n`   default 200
-//!
-//! Emits one line per iteration: `<idx> <wallclock_ns>`. Final line: `summary
-//! min=<ns> p50=<ns> p95=<ns> p99=<ns> p999=<ns> max=<ns> mean=<ns> stdev=<ns>
-//! n=<iters> total_s=<f>`.
-//!
-//! Host computes percentiles from the per-iteration stream (so we can re-bucket
-//! without re-running the bench).
-
 use std::time::Instant;
 
 use nurbs::VectorNurbs;
@@ -31,7 +12,6 @@ fn textbook_limits() -> Limits {
     )
 }
 
-/// Spec §5.1 fixture 1: degree-1 NURBS from (0,0,0) to (100,0,0).
 fn straight() -> VectorNurbs<f64, 3> {
     VectorNurbs::<f64, 3>::try_new(
         1,
@@ -41,9 +21,8 @@ fn straight() -> VectorNurbs<f64, 3> {
     .unwrap()
 }
 
-/// Spec §5.1 fixture 3 equivalent: quarter-circle arc, R=20mm, 90° sweep.
-/// Cubic Bézier polynomial approximation: k = (4/3)(√2 − 1) ≈ 0.5523.
 fn arc() -> VectorNurbs<f64, 3> {
+    // Standard cubic Bézier approximation of a quarter circle: k = (4/3)(√2 − 1).
     let r = 20.0_f64;
     let k = (4.0 / 3.0) * (std::f64::consts::SQRT_2 - 1.0);
     VectorNurbs::<f64, 3>::try_new(
@@ -59,9 +38,6 @@ fn arc() -> VectorNurbs<f64, 3> {
     .unwrap()
 }
 
-/// G5-style cubic NURBS with non-zero curvature throughout. Single piece,
-/// degree-3, 4 CPs, clamped knot vector. Designed to exercise the SLP outer
-/// loop on jerk-bounded scheduling of varying curvature.
 fn cubic() -> VectorNurbs<f64, 3> {
     VectorNurbs::<f64, 3>::try_new(
         3,
@@ -100,8 +76,6 @@ fn main() {
         n: grid_n,
     };
 
-    // Warm-up: 5 iterations untimed, to amortize first-solve allocator cost
-    // and let the kernel's CPU governor reach a steady state.
     for _ in 0..5 {
         let _ = schedule_segment(&curve, &limits, &grid, 0.0, 0.0).expect("warm-up");
     }
@@ -112,7 +86,6 @@ fn main() {
         let t0 = Instant::now();
         let profile = schedule_segment(&curve, &limits, &grid, 0.0, 0.0).expect("schedule_segment");
         let ns = t0.elapsed().as_nanos() as u64;
-        // Black-box prevent the compiler from optimizing the call away.
         std::hint::black_box(&profile);
         samples.push(ns);
         println!("{i} {ns}");
@@ -123,7 +96,6 @@ fn main() {
     sorted.sort_unstable();
     let n = sorted.len();
     let pct = |p: f64| -> u64 {
-        // p is always in [0,1]; floor is non-negative. Suppress sign-loss lint.
         #[allow(clippy::cast_sign_loss)]
         let idx = ((p * (n as f64)).floor() as usize).min(n - 1);
         sorted[idx]

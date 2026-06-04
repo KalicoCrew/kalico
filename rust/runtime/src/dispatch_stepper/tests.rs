@@ -1,13 +1,3 @@
-//! Tests for the stepper dispatch backend.
-//!
-//! Moved from `tick/tests.rs` when the dispatch code was extracted to
-//! `dispatch_stepper.rs`. These tests hit only the host-build path
-//! (queue allocated on the stack via `StepQueue::new()`). End-to-end ISR
-//! integration lives in Task 8's test suite.
-
-// Test code: `axis.steppers[0]` is always valid — `make_axis` constructs
-// the axis with exactly one stepper pushed, and tests intentionally access
-// that single stepper by index for assertion clarity.
 #![allow(clippy::indexing_slicing)]
 
 use super::{DISPLACEMENT_THRESHOLD_MM, dispatch_axis};
@@ -80,7 +70,6 @@ fn pulse_positive_motion_enqueues_n_steps() {
     let mut q = StepQueue::new();
     let mut axis = make_axis(StepMode::Pulse, 0.0125);
 
-    // Drive 4 microsteps forward = 4 × 0.0125 mm = 0.05 mm.
     let q_ptr: *mut StepQueue = &mut q;
     dispatch_axis(
         0,
@@ -110,9 +99,6 @@ fn pulse_below_displacement_threshold_uses_uniform_fallback() {
     let mut q = StepQueue::new();
     let mut axis = make_axis(StepMode::Pulse, 0.0125);
 
-    // Two steps but P barely moves (within DISPLACEMENT_THRESHOLD_MM).
-    // We force this by setting last_step_count to -2 and p_* near zero:
-    // signed_steps = round(0 / 0.0125) - (-2) = 0 - (-2) = 2.
     axis.last_step_count = -2;
     let tiny = DISPLACEMENT_THRESHOLD_MM / 10.0;
 
@@ -143,7 +129,6 @@ fn phase_mode_updates_coil_state_no_queue_writes() {
     let mut q = StepQueue::new();
     let mut axis = make_axis(StepMode::Phase, 0.0125);
 
-    // p_end = 256 microsteps → phase = 256 → PHASE_LUT[256] = (0, 248).
     let q_ptr: *mut StepQueue = &mut q;
     dispatch_axis(
         0,
@@ -169,7 +154,7 @@ fn phase_mode_updates_coil_state_no_queue_writes() {
     assert_eq!(axis.steppers[0].position_count.load(Ordering::Acquire), 256);
 }
 
-/// Task 13: Phase mode ramps `phase_offset_microsteps` toward
+/// Phase mode ramps `phase_offset_microsteps` toward
 /// `phase_offset_target` at `max_phase_offset_ramp_per_sample` per
 /// call, clamping on the final step.
 #[test]
@@ -177,7 +162,6 @@ fn phase_mode_ramps_offset_toward_target_at_max_per_sample() {
     let shared = SharedState::new();
     let mut q = StepQueue::new();
     let mut axis = make_axis(StepMode::Phase, 0.0125);
-    // current = 0, target = 10, max = 4 → expect 4, 8, 10.
     axis.steppers[0]
         .phase_offset_target
         .store(10, Ordering::Release);
@@ -209,8 +193,8 @@ fn phase_mode_ramps_offset_toward_target_at_max_per_sample() {
     }
 }
 
-/// Task 13: `max_phase_offset_ramp_per_sample == 0` disables the
-/// ramp — `phase_offset_microsteps` is left untouched even when
+/// `max_phase_offset_ramp_per_sample == 0` disables the ramp —
+/// `phase_offset_microsteps` is left untouched even when
 /// `phase_offset_target` differs.
 #[test]
 fn phase_mode_ramp_disabled_when_max_per_sample_is_zero() {
@@ -223,7 +207,6 @@ fn phase_mode_ramp_disabled_when_max_per_sample_is_zero() {
     axis.steppers[0]
         .phase_offset_target
         .store(99, Ordering::Release);
-    // max_phase_offset_ramp_per_sample defaults to 0 (no ramp).
 
     let q_ptr: *mut StepQueue = &mut q;
     dispatch_axis(
@@ -260,7 +243,6 @@ fn phase_mode_honors_phase_offset() {
         .phase_offset_microsteps
         .store(7, Ordering::Release);
 
-    // axis target = 256, stepper target = 263, phase = 263.
     let q_ptr: *mut StepQueue = &mut q;
     dispatch_axis(
         0,
@@ -292,7 +274,6 @@ fn unknown_step_mode_raises_fault() {
     let shared = SharedState::new();
     let mut q = StepQueue::new();
 
-    // Construct an axis with a raw mode byte that is not Pulse (0) or Phase (1).
     let raw_mode: u8 = 0x42;
     let mut steppers: heapless::Vec<StepperRef, 4> = heapless::Vec::new();
     let _ = steppers.push(make_stepper());
@@ -304,7 +285,7 @@ fn unknown_step_mode_raises_fault() {
     };
 
     let q_ptr: *mut StepQueue = &mut q;
-    let axis_idx: usize = 2; // arbitrary, non-zero for detail encoding coverage
+    let axis_idx: usize = 2;
     dispatch_axis(
         axis_idx,
         &mut axis,
@@ -318,13 +299,11 @@ fn unknown_step_mode_raises_fault() {
         /* cycles_per_second */ 520_000_000.0,
     );
 
-    // Queue must be untouched — no steps dispatched.
     assert_eq!(
         q.tail, q.head,
         "no steps should be enqueued for unknown mode"
     );
 
-    // Fault must be latched.
     let last_err = shared.last_error.load(Ordering::Acquire);
     assert_eq!(
         last_err,
@@ -332,7 +311,6 @@ fn unknown_step_mode_raises_fault() {
         "expected UnknownStepMode fault code, got {last_err}"
     );
 
-    // Detail: (axis_idx << 16) | mode.
     let detail = shared.fault_detail.load(Ordering::Acquire);
     let expected_detail = ((axis_idx as u32 & 0xFF) << 16) | u32::from(raw_mode);
     assert_eq!(

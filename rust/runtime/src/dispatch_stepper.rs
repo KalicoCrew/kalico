@@ -1,20 +1,6 @@
-//! Stepper dispatch backend — STEP/DIR pulse and TMC phase-stepping.
-//!
-//! This module is compiled only when the `motion-module-stepper` Cargo feature
-//! is active (selected by `CONFIG_MOTION_MODULE_STEPPER=y` in the Kconfig /
-//! Makefile build). A servo/EtherCAT node that never drives steppers builds
-//! the runtime crate WITHOUT this feature and gets no dispatch object code.
-//!
-//! ## What lives here
-//! - [`DISPLACEMENT_THRESHOLD_MM`] — secant-slope fallback threshold
-//! - [`AXIS_A`] / [`AXIS_B`] / [`AXIS_Z`] / [`AXIS_E`] axis index constants
-//! - [`dispatch_axis`] — per-sample per-axis dispatch entry point
-//! - `dispatch_pulse` — pulse-mode (STEP/DIR GPIO) inner dispatch
-//! - `dispatch_phase` — phase-mode (TMC5160 XDIRECT SPI) inner dispatch
-//! - `commit_position_count` — position-counter bookkeeping shared by both modes
-//! - `ramp_phase_offset` — per-sample phase-offset ramp toward target
-//! - FFI declaration for `phase_stepping_write_xdirect` (bare-metal MCU builds
-//!   and Linux-MCU firmware builds, i.e. `not(any(test, host)) || mcu-linux`)
+// Stepper dispatch backend — STEP/DIR pulse and TMC phase-stepping.
+//
+// Compiled only when the `motion-module-stepper` Cargo feature is active.
 
 #![allow(unsafe_code)]
 
@@ -29,7 +15,6 @@ use crate::state::SharedState;
 
 // Compile-time proof that `(i32 as u32) & 0x3FF` always indexes within PHASE_LUT.
 // 0x3FF == 1023; PHASE_LUT_SIZE == 1024, so 0x3FF < PHASE_LUT_SIZE must hold.
-// If PHASE_LUT_SIZE is ever changed to something smaller this will catch it.
 const _: () = assert!(
     0x3FF < PHASE_LUT_SIZE,
     "PHASE_LUT_SIZE must be > 0x3FF (1023) for the phase-mask indexing in dispatch_phase to be infallible",
@@ -46,12 +31,6 @@ use crate::tick::bump_relaxed;
 // (`feature = "mcu-linux"`).  The `mcu-linux` feature implies `host`, so a
 // plain `not(any(test, feature = "host"))` would NOT catch a Linux firmware
 // build — `mcu-linux` is the explicit discriminator.
-//
-// Truth table:
-//   bare-metal MCU (no host, no test)       → not(any(test,host)) = true  → FFI emitted ✓
-//   MACH_LINUX firmware (host + mcu-linux)  → mcu-linux           = true  → FFI emitted ✓
-//   motion-bridge cdylib  (host, no mcu-linux, no test) → false             → FFI NOT emitted ✓
-//   `cargo test` (host + test)              → false                          → FFI NOT emitted ✓
 #[cfg(any(not(any(test, feature = "host")), feature = "mcu-linux"))]
 unsafe extern "C" {
     fn phase_stepping_write_xdirect(motor_idx: u8, coil_a: i16, coil_b: i16);
@@ -62,7 +41,6 @@ unsafe extern "C" {
     fn kalico_kick_step_output(axis_idx: u8, cycle_abs: u32);
 }
 
-/// (Re)arm the dedicated step-output timer (idle→active kick). No-op on host/test.
 #[inline]
 fn kick_per_axis_timer(axis_idx: usize, cycle_abs: u32) {
     #[cfg(not(any(test, feature = "host")))]
@@ -77,8 +55,6 @@ fn kick_per_axis_timer(axis_idx: usize, cycle_abs: u32) {
     }
 }
 
-/// `|P_end - P_start|` below this triggers the uniform-spacing fallback
-/// in `dispatch_pulse`.
 pub const DISPLACEMENT_THRESHOLD_MM: f32 = 1e-4;
 
 pub use crate::stepping_state::N_AXES;
@@ -87,7 +63,6 @@ pub const AXIS_B: usize = 1;
 pub const AXIS_Z: usize = 2;
 pub const AXIS_E: usize = 3;
 
-/// Dispatch one TIM5 sample for a single axis.
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch_axis(
     axis_idx: usize,
@@ -130,7 +105,6 @@ pub fn dispatch_axis(
     }
 }
 
-/// Pulse-mode dispatch: schedule step pulses across this sample window.
 #[allow(clippy::too_many_arguments)]
 fn dispatch_pulse(
     axis_idx: usize,
@@ -195,12 +169,6 @@ fn dispatch_pulse(
             );
         }
         bump_relaxed(&shared.isr_overrun_count);
-        // A per-sample delta beyond MAX_STEPS_PER_SAMPLE is not a transient to
-        // silently ride out — it is an unrecoverable baseline discontinuity
-        // (e.g. a missing position seed leaving last_step_count disagreeing with
-        // the motor-frame piece stream). Hard-fault like PieceStartInPast so the
-        // host shuts down and must reset, rather than freezing one motor and
-        // limping through a corrupted move.
         axis.last_step_count = prev_step_count;
         raise_steps_per_sample_exceeded(shared, axis_idx, abs_steps);
         return;
@@ -248,7 +216,6 @@ fn dispatch_pulse(
         if push_res.is_err() {
             let committed_delta = steps_committed * (i32::from(dir));
             commit_position_count(axis, axis_idx, shared, committed_delta);
-            // Kick even on overflow if ≥1 entry committed, so those steps fire.
             if was_empty && steps_committed > 0 {
                 if let Some(wt) = first_cycle_abs {
                     kick_per_axis_timer(axis_idx, wt);
@@ -261,7 +228,6 @@ fn dispatch_pulse(
         steps_committed += 1;
     }
 
-    // Idle→active: queue was empty, reposition parked consumer to first step.
     if was_empty && steps_committed > 0 {
         if let Some(wt) = first_cycle_abs {
             kick_per_axis_timer(axis_idx, wt);
@@ -346,7 +312,7 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
         #[allow(clippy::cast_sign_loss)]
         let phase = (target_stepper as u32) & 0x3FF;
         // The mask guarantees phase ∈ 0..=1023 = 0..PHASE_LUT_SIZE-1; the
-        // compile-time assert below keeps this claim honest across LUT resizes.
+        // compile-time assert above keeps this claim honest across LUT resizes.
         #[allow(clippy::indexing_slicing)] // infallible: phase < PHASE_LUT_SIZE by construction
         let (coil_a, coil_b) = PHASE_LUT[phase as usize];
 
@@ -387,16 +353,9 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
 
             let motor_idx = found_motor_idx.unwrap_or(0xFF);
 
-            // In-memory capture sink: active for the host planner lib and unit
-            // tests, but NOT for real Linux-MCU firmware (`mcu-linux`), which
-            // emits SPI writes via the FFI call below instead.
             #[cfg(all(any(test, feature = "host"), not(feature = "mcu-linux")))]
             crate::test_xdirect_capture::record(motor_idx, coil_a, coil_b);
 
-            // `kalico-sim` is absent from this gate: a sim MACH_LINUX build sets
-            // `mcu-linux + kalico-sim`; the FFI stays active and the C sim-intercept
-            // routes it.
-            //
             // SAFETY: `phase_stepping_write_xdirect` accepts any
             // (motor_idx, coil_a, coil_b) triple; motor_idx 0xFF is the
             // "no slot found" sentinel the C side skips gracefully.

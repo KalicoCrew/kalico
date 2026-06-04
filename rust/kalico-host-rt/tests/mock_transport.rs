@@ -1,19 +1,3 @@
-//! Phase-B MockTransport: `&self` + internal synchronization.
-//!
-//! Two response modes:
-//!
-//! 1. **Static** (`enqueue_static`): pre-load a response that `call()`
-//!    returns immediately — zero latency, suitable for quality-gate tests
-//!    that need the `ClockSyncEstimator` residual < 100 µs.
-//!
-//! 2. **Async** (`wait_for_call` + `complete_call`): a test thread blocks
-//!    on `wait_for_call`, then drives the response from outside `call()`.
-//!    Suitable for tests that need to inspect call ordering but don't have
-//!    tight timing constraints.
-//!
-//! The `call_time` in the pending-call entry is the `Instant` captured
-//! inside `call()` just before it blocks; static responses use it too.
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
@@ -32,7 +16,6 @@ struct MockPendingCall {
     completion: Option<SyncSender<Result<MessageParams, TransportError>>>,
 }
 
-/// One captured `send_typed` invocation.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SendTypedRecord {
@@ -40,8 +23,6 @@ pub struct SendTypedRecord {
     pub args: Vec<(String, OwnedFieldValue)>,
 }
 
-/// Owned snapshot of a `FieldValue` so we can record fire-and-forget
-/// invocations without keeping the caller's borrow alive.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum OwnedFieldValue {
@@ -74,10 +55,7 @@ struct MockState {
     pending_calls: HashMap<u64, MockPendingCall>,
     next_call_id: u64,
     sent_cmds: Vec<String>,
-    /// Captured fire-and-forget `send_typed` invocations, in order.
     sent_typed: Vec<SendTypedRecord>,
-    /// Per-response-name responder: called synchronously inside call() with
-    /// the call_time Instant, returns the MessageParams to complete the call.
     static_responders: HashMap<String, Responder>,
 }
 
@@ -100,11 +78,7 @@ impl MockTransport {
         }
     }
 
-    /// Register a synchronous responder for `expected_response_name`.
-    /// It is called inside `call()` with the just-sent `cmd` and the
-    /// `call_time` Instant. The mock state mutex is held while the
-    /// responder runs, so the closure must NOT call back into
-    /// `MockTransport` (which would deadlock).
+    // Mutex is held while responder runs — closure must NOT call back into MockTransport.
     pub fn install_responder<F>(&self, expected_response_name: &str, f: F)
     where
         F: Fn(&str, Instant) -> MessageParams + Send + Sync + 'static,
@@ -137,13 +111,11 @@ impl MockTransport {
         self.state.lock().unwrap().sent_cmds.last().cloned()
     }
 
-    /// Snapshot of all `send_typed` invocations.
     #[allow(dead_code)]
     pub fn sent_typed(&self) -> Vec<SendTypedRecord> {
         self.state.lock().unwrap().sent_typed.clone()
     }
 
-    /// Filter `send_typed` invocations by command name.
     #[allow(dead_code)]
     pub fn sent_typed_named(&self, name: &str) -> Vec<SendTypedRecord> {
         self.state
@@ -167,8 +139,6 @@ impl MockTransport {
             .collect()
     }
 
-    /// Block until a call with `expected_response_name` is pending.
-    /// Returns `(cmd, call_time)`.
     pub fn wait_for_call(&self, expected_response_name: &str) -> (String, Instant) {
         let mut guard = self.state.lock().unwrap();
         loop {
@@ -281,8 +251,6 @@ impl Transport for MockTransport {
     }
 }
 
-/// Newtype wrapper around `Arc<MockTransport>` that implements `Transport`.
-/// Needed because the orphan rule prevents `impl Transport for Arc<MockTransport>`.
 #[derive(Clone)]
 pub struct SharedMock(pub Arc<MockTransport>);
 
@@ -329,8 +297,6 @@ impl Transport for SharedMock {
     }
 }
 
-// --- shared helpers used by other test files ---------------------------------
-
 #[allow(dead_code)]
 pub fn mp_with(values: &[(&str, MessageValue)]) -> MessageParams {
     let mut p = MessageParams::new();
@@ -339,8 +305,6 @@ pub fn mp_with(values: &[(&str, MessageValue)]) -> MessageParams {
     }
     p
 }
-
-// --- in-file tests -----------------------------------------------------------
 
 #[test]
 fn complete_call_returns_to_caller() {

@@ -1,7 +1,3 @@
-// Streaming-shaper module: per-axis stateful trajectory queue + look-ahead
-// replanning + dispatch-aware emit half.
-// Spec: `docs/superpowers/specs/2026-05-10-streaming-shaper-design.md`
-
 use std::collections::VecDeque;
 
 use geometry::segment::CubicSegment;
@@ -22,15 +18,7 @@ mod state;
 #[cfg(test)]
 mod tests;
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
 /// Per-axis unshaped trajectory queue + kernel + half-support.
-///
-/// `pieces` accumulates the unshaped polynomial pieces the convolution must
-/// see (history, current, lookahead); trimmed against `t_dispatched` on each
-/// `emit_committed` call.
 #[derive(Debug, Clone)]
 pub struct AxisShaperQueue {
     /// Unshaped polynomial pieces, in time order.
@@ -41,12 +29,7 @@ pub struct AxisShaperQueue {
     pub h: f64,
 }
 
-/// Source-geometry record for one un-committed `submit_move`.
-///
-/// Retained alongside `axes[i].pieces` so `append_and_replan` can rebuild
-/// the planning path (un-committed tail + new move) and run TOPP-RA over it.
-/// Dropped once `t_end < t_dispatched`; the `BezierPiece`s remain in
-/// `axes[i].pieces` as left-pad history for `emit_shaped`.
+/// Source-geometry record for one un-committed move.
 #[derive(Debug, Clone)]
 pub struct UncommittedMove {
     pub segment: CubicSegment,
@@ -57,10 +40,6 @@ pub struct UncommittedMove {
 }
 
 /// Configuration the streaming replan needs from the planner caller.
-///
-/// Not owned by the streaming planner — `motion-bridge::planner.rs` holds it
-/// in `PlannerConfig` and passes it on every `append_and_replan` call so live
-/// `update_limits` / `update_shaper` reconfigurations take effect immediately.
 #[derive(Debug, Clone, Copy)]
 pub struct ReplanContext {
     /// Per-axis temporal machine limits.
@@ -75,83 +54,54 @@ pub struct ReplanContext {
     pub beta_convergence_ratio: f64,
     /// Extruder axis dynamic limits.
     pub e_limits: ELimits,
-    /// Per-junction chord-error tolerance (mm). No per-move plumb exists in
-    /// the streaming path yet; sane default is `0.05` (50 µm).
+    /// Per-junction chord-error tolerance (mm).
     pub junction_chord_tolerance_mm: f64,
     /// Worker thread count for TOPP-RA's parallel fan-out.
     pub worker_threads: usize,
     /// Grid strategy for `temporal::multi::plan_batch`.
     pub grid_strategy: temporal::multi::GridStrategy,
-    /// Fallback path speed at `t_dispatched` when the cursor is outside the
-    /// `pieces` domain (e.g., immediately after construction). Defaults to `0.0`.
+    /// Fallback path speed at `t_dispatched` when the cursor is outside the `pieces` domain.
     pub fallback_initial_v: f64,
-    /// Safety mode for `plan_velocity`. Always `WorstCaseFuture` in the
-    /// streaming path: the trailing-h region is β-derated against worst-case
-    /// future arrival to keep dispatch safe.
+    /// Safety mode for `plan_velocity`.
     pub safety_mode: SafetyMode,
 }
 
-/// Configuration the streaming emit half (`emit_committed`) needs from the
-/// caller.
+/// Configuration the streaming emit half (`emit_committed`) needs from the caller.
 ///
-/// Separate from [`ReplanContext`] because the kernel representation differs:
-/// [`ReplanContext::kernels`] carries the planner-side [`PlanShaper`] enum,
-/// while emit needs the materialized [`PiecewisePolynomialKernel`] for the
-/// `emit_shaped` convolution. Both are built from the same `ShaperConfig` at
-/// startup.
+/// Separate from [`ReplanContext`] because emit needs materialized
+/// [`PiecewisePolynomialKernel`]s for the convolution while replan uses the
+/// [`PlanShaper`] enum.
 #[derive(Debug, Clone, Copy)]
 pub struct EmitContext<'a> {
     /// Per-axis shaper kernels `[X, Y, Z, E]`. E slot unused by `emit_shaped`.
     pub kernels: &'a [Option<PiecewisePolynomialKernel<f64>>; 4],
-    /// E-gap halo list. Streaming passes `&[]`; slot retained for future
-    /// Independent-E streaming support.
+    /// E-gap halo list. Streaming passes `&[]`.
     pub e_halos: &'a [EHalo],
 }
 
-// ---------------------------------------------------------------------------
-// ShaperState
-// ---------------------------------------------------------------------------
-
-/// Stateful streaming-shaper planner state, sharing one absolute time line
-/// across all axes (every append is multi-axis).
-///
-/// The v4-era fields `t_tentative`, `rest_tentative`, and `generation` were
-/// removed when the tentative-rest extension model was eliminated: the planner
-/// now appends each move's terminal decel-to-zero outright and tracks where
-/// that decel begins in `t_decel_start`. See spec §3.1 ("State invariants").
+/// Stateful streaming-shaper planner state.
 #[derive(Debug)]
 pub struct ShaperState {
-    /// Per-axis queues (X, Y, Z, E). Z is typically passthrough; E is followed
-    /// off the shaped XY arc-length rather than shaped independently.
+    /// Per-axis queues (X, Y, Z, E).
     pub axes: [AxisShaperQueue; 4],
 
-    /// Source-geometry records for moves appended but not yet fully committed
-    /// (`t_dispatched < move.t_end`). Dropped when `t_end < t_dispatched`;
-    /// their `BezierPiece`s remain in `axes[i].pieces` as left-pad history.
+    /// Source-geometry records for moves not yet fully committed.
     pub uncommitted_moves: VecDeque<UncommittedMove>,
 
     /// Latest absolute time for which `append_and_replan` has been called.
     pub t_appended: f64,
     /// Start of the most-recently-submitted move's terminal decel-to-zero ramp.
-    /// Gates dispatch via `t_decel_start - max_h` in `emit_committed`.
-    /// Equals `t_appended` when the queue is empty.
     pub t_decel_start: f64,
     /// Latest absolute time for which a shaped sample has been computed.
     pub t_shaped: f64,
-    /// Latest absolute time for which a shaped sample has been dispatched to
-    /// the wire.
+    /// Latest absolute time for which a shaped sample has been dispatched to the wire.
     pub t_dispatched: f64,
 
-    /// Shaped output computed but not yet drained. Drained via
-    /// `drain_committed`.
+    /// Shaped output computed but not yet drained.
     pub pending_dispatch: Vec<ShapedSegment>,
 
-    /// Cached fitted plan from the most recent `append_and_replan`. One entry
-    /// per `UncommittedMove`, in the same order. Cleared and rebuilt on every
-    /// replan; sliced by `emit_committed` and fed to `emit_shaped`.
+    /// Cached fitted plan from the most recent `append_and_replan`.
     pub(crate) planned_fitted: Vec<FittedSegment>,
-    /// Per-segment metadata parallel to `planned_fitted` (`e_mode`,
-    /// `extrusion_per_xy_mm`), read from `UncommittedMove::segment` at replan
-    /// time.
+    /// Per-segment metadata parallel to `planned_fitted`.
     pub(crate) planned_meta: Vec<EmitSegmentMeta>,
 }

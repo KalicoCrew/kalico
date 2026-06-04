@@ -1,5 +1,3 @@
-//! Vector NURBS types in R^N: `VectorNurbs`<T, N> (owned) and `VectorNurbsRef`<T, N> (borrowed).
-
 use crate::{ConstructError, Float, VectorNurbsView, scalar::validate};
 
 #[cfg(feature = "host")]
@@ -128,8 +126,6 @@ use crate::{
 };
 
 impl<'a, const N: usize> VectorNurbsRef<'a, f32, N> {
-    /// Zero-copy parse of a wire-format buffer. Same alignment / endianness
-    /// contract as scalar form. Validates `axes_n` against const generic `N`.
     pub fn try_from_wire(buf: &'a [u8]) -> Result<Self, WireError> {
         if (buf.as_ptr() as usize) % core::mem::align_of::<f32>() != 0 {
             return Err(WireError::Misaligned);
@@ -145,8 +141,6 @@ impl<'a, const N: usize> VectorNurbsRef<'a, f32, N> {
             return Err(WireError::UnknownVersion(version));
         }
         let degree = buf[1];
-        // buf[2] is the legacy `has_weights` flag; rational support was
-        // removed, so a set flag means a payload layout we cannot parse.
         if buf[2] != 0 {
             return Err(WireError::WeightsUnsupported);
         }
@@ -170,11 +164,8 @@ impl<'a, const N: usize> VectorNurbsRef<'a, f32, N> {
             });
         }
 
-        // SAFETY: alignment checked above; lengths checked above; f32 has no
-        // invalid bit patterns for any 4-byte sequence; `[f32; N]` has the same
-        // layout as N consecutive f32 values (Rust guarantees array layout is
-        // contiguous with no padding between elements), so `cp_count` such
-        // arrays occupy exactly `cp_count * N * 4` contiguous bytes.
+        // SAFETY: alignment checked; lengths checked; f32 has no invalid bit patterns;
+        // [f32; N] has same layout as N consecutive f32 values (no inter-element padding).
         #[allow(unsafe_code)]
         let (knots, cps) = unsafe {
             let knots_ptr = buf.as_ptr().add(VECTOR_HEADER_BYTES).cast::<f32>();
@@ -192,5 +183,5 @@ impl<'a, const N: usize> VectorNurbsRef<'a, f32, N> {
 }
 
 #[cfg(all(test, feature = "host"))]
-#[allow(clippy::float_cmp)] // tests assert exact stored control-point values, no arithmetic
+#[allow(clippy::float_cmp)]
 mod tests;

@@ -1,5 +1,3 @@
-//! `FitterParams`: tunable knobs for classifier, fitter, lookahead, and corner blend.
-
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct FitterParams {
     pub theta_smooth_deg: f64,

@@ -1,18 +1,13 @@
 use super::*;
 use nurbs::eval::eval;
 
-/// Build a simple degree-1 ScalarNurbs spanning u ∈ [0, 1] with values
-/// [v_start, v_end]. Used to exercise the already-low-degree passthrough.
 fn linear_curve(v_start: f64, v_end: f64) -> ScalarNurbs<f64> {
-    // Degree 1, knots = [0, 0, 1, 1], cps = [v_start, v_end].
     ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![v_start, v_end])
         .expect("linear NURBS construction")
 }
 
 #[test]
 fn refits_linear_passthrough_within_tolerance() {
-    // Linear input is already cubic-representable (with degenerate higher
-    // coeffs). Expect ~0 residual.
     let input = linear_curve(0.0, 5.0);
     let output = refit_to_cubic(&input, REFIT_TOLERANCE_MM).expect("refit succeeds");
     // Sample 33 points and compare against analytic v(u) = 5u.
@@ -29,9 +24,6 @@ fn refits_linear_passthrough_within_tolerance() {
 
 #[test]
 fn refits_high_degree_polynomial_within_tolerance() {
-    // Build a degree-9 BezierPiece. We don't construct an exact analytic
-    // identity — the input's pieced representation IS the truth, and we
-    // verify the refit reproduces it within tolerance.
     let p = 9_usize;
     let cps: Vec<f64> = (0..=p)
         .map(|i| {

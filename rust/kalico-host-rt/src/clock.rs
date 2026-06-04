@@ -16,9 +16,6 @@ impl Clock for RealClock {
     }
 }
 
-/// Hand-driven clock for deterministic tests. Interior-mutable so a single
-/// `Arc<MockClock>` can be shared across all consumers and advanced from
-/// the test thread.
 #[derive(Debug)]
 pub struct MockClock {
     inner: Mutex<Instant>,

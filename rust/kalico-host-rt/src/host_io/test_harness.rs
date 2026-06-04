@@ -1,10 +1,3 @@
-//! Test-only reactor harness. See spec §2.5.
-//!
-//! Provides `ReactorHarness` for `#[cfg(test)] mod` blocks inside `reactor.rs`
-//! that need direct access to `pub(crate)` `Reactor` fields. Constructs a
-//! Reactor outside the production `KalicoHostIo::open` path with a
-//! `FakeSerialPort` and a hand-driven `MockClock`.
-
 #![cfg(any(test, feature = "test-harness"))]
 
 use std::collections::VecDeque;
@@ -26,10 +19,6 @@ use crate::host_io::reactor::{Reactor, TickOutcome};
 use crate::host_io::runtime_events::StatusEvent;
 use crate::host_io::serial_frame_io::SerialFrameIo;
 use crate::transport::{MessageParams, TransportError};
-
-// ---------------------------------------------------------------------------
-// FakeSerialPort
-// ---------------------------------------------------------------------------
 
 #[derive(Clone)]
 pub struct FakePortHandles {
@@ -59,7 +48,6 @@ impl Read for FakeSerialPort {
             *slot = g.pop_front().unwrap();
         }
         if n == 0 {
-            // Mirror non-blocking-read-no-data semantics.
             Err(io::Error::new(io::ErrorKind::TimedOut, "no data"))
         } else {
             Ok(n)
@@ -77,9 +65,6 @@ impl Write for FakeSerialPort {
     }
 }
 
-// Stub the rest of the SerialPort trait. The reactor only calls write_all,
-// flush, set_timeout, and read; everything else returns sensible defaults
-// or Unsupported errors.
 impl SerialPort for FakeSerialPort {
     fn name(&self) -> Option<String> {
         Some("fake".into())
@@ -173,10 +158,6 @@ impl SerialPort for FakeSerialPort {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ReactorHarness
-// ---------------------------------------------------------------------------
-
 pub struct ReactorHarness {
     pub reactor: Reactor,
     pub clock: Arc<MockClock>,
@@ -208,9 +189,6 @@ impl ReactorHarness {
         }
     }
 
-    /// Construct a harness with an explicit `IdentifySeqState`, simulating
-    /// a reactor coming up after identify burned a non-zero number of
-    /// sequences. Used by the H7 regression test (spec §3.3, §5.2).
     pub fn new_with_seq_state(seq: IdentifySeqState) -> Self {
         let (port, port_handles) = FakeSerialPort::new();
         let clock = MockClock::new();
@@ -262,17 +240,12 @@ impl ReactorHarness {
         self.reactor.send_seq
     }
 
-    /// Feed an ACK frame that acknowledges all frames up to (but not
-    /// including) the current `send_seq`. This clears the reactor's unacked
-    /// window so tests can verify resumed emission after backpressure.
     pub fn feed_ack_all(&self) {
         let seq_nibble = (self.reactor.send_seq & 0x0F) as u8;
         let frame = crate::host_io::wire::build_frame(&[], seq_nibble);
         self.feed_rx(&frame);
     }
 
-    /// Submit directly through `Reactor::dispatch_submission`, bypassing the
-    /// mpsc channel. Returns the completion `Receiver` so the test can poll.
     pub fn submit_via_dispatch(
         &mut self,
         call_id: u64,
@@ -291,9 +264,6 @@ impl ReactorHarness {
         rx
     }
 
-    // ── Passthrough-router helpers (used by external integration tests) ──
-
-    /// Install a passthrough router for the given MCU handle.
     pub fn install_passthrough_router(
         &mut self,
         router: crate::passthrough_queue::PassthroughRouter,
@@ -302,7 +272,6 @@ impl ReactorHarness {
         self.reactor.set_passthrough_router(router, mcu);
     }
 
-    /// Push an entry directly into the passthrough router.
     pub fn passthrough_push(
         &mut self,
         mcu: crate::passthrough_queue::McuHandle,
@@ -316,7 +285,6 @@ impl ReactorHarness {
             .push(mcu, queue_id, entry)
     }
 
-    /// Dispatch a response through the passthrough router's notify table.
     pub fn passthrough_dispatch_response(
         &mut self,
         mcu: crate::passthrough_queue::McuHandle,
@@ -330,7 +298,6 @@ impl ReactorHarness {
             .dispatch_response(mcu, notify_id, response_bytes)
     }
 
-    /// Register a notify callback on the passthrough router.
     pub fn passthrough_register_notify(
         &mut self,
         mcu: crate::passthrough_queue::McuHandle,
@@ -343,7 +310,6 @@ impl ReactorHarness {
             .register_notify(mcu, cb)
     }
 
-    /// Acknowledge bytes through the passthrough router's receive window.
     pub fn passthrough_record_ack(
         &mut self,
         mcu: crate::passthrough_queue::McuHandle,
@@ -356,7 +322,6 @@ impl ReactorHarness {
             .record_ack(mcu, acked_bytes)
     }
 
-    /// Add a config command to the MCU's config stage.
     pub fn passthrough_add_config_cmd(
         &mut self,
         mcu: crate::passthrough_queue::McuHandle,
@@ -369,7 +334,6 @@ impl ReactorHarness {
             .add_config_cmd(mcu, bytes)
     }
 
-    /// Add an init command to the MCU's config stage.
     pub fn passthrough_add_init_cmd(
         &mut self,
         mcu: crate::passthrough_queue::McuHandle,
@@ -382,7 +346,6 @@ impl ReactorHarness {
             .add_init_cmd(mcu, bytes)
     }
 
-    /// Begin the config phase for the MCU.
     pub fn passthrough_begin_config_phase(
         &mut self,
         mcu: crate::passthrough_queue::McuHandle,
@@ -394,7 +357,6 @@ impl ReactorHarness {
             .begin_config_phase(mcu)
     }
 
-    /// Drain all available config/init entries from the router.
     pub fn passthrough_drain_config_entries(
         &mut self,
         mcu: crate::passthrough_queue::McuHandle,
@@ -411,7 +373,6 @@ impl ReactorHarness {
         Ok(entries)
     }
 
-    /// Returns the current config-stage phase for the MCU.
     pub fn passthrough_config_phase(
         &self,
         mcu: crate::passthrough_queue::McuHandle,
@@ -424,8 +385,6 @@ impl ReactorHarness {
             .config_phase(mcu)
     }
 
-    /// Number of entries in the passthrough notify map (notify-bearing entries
-    /// that have been emitted and are awaiting a response).
     pub fn passthrough_notify_map_len(&self) -> usize {
         self.reactor.passthrough_notify_map.len()
     }

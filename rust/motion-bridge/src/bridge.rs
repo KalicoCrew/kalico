@@ -1,9 +1,3 @@
-//! `PyMotionBridge` — the PyO3 class that klippy calls.
-//!
-//! Phase 1: direct wrapper around `PassthroughRouter`. No reactor threads,
-//! no real serial I/O. The API surface matches what klippy will need so
-//! that the Python-side code can be developed in parallel.
-
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
@@ -29,97 +23,33 @@ use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
-// ── Internal types ──────────────────────────────────────────────────────
-
-/// Retained copy of the last homing segment's per-axis NURBS curves.
-/// Used by the host to evaluate toolhead position at the trigger instant.
 struct RetainedHomingCurve {
-    /// Per-axis NURBS curves [X, Y, Z] — cloned from ShapedSegment.axes.
     axes: [nurbs::ScalarNurbs<f64>; 3],
-    /// Batch-timeline start time (seconds).
     t_start: f64,
-    /// Batch-timeline end time (seconds).
     t_end: f64,
 }
 
-/// Metadata stored per claimed MCU.
 struct McuConnection {
     label: String,
     serial_path: String,
     baud: u32,
-    /// Live I/O handle — populated by `attach_serial`. `None` until attached.
-    /// Wrapped in `Arc` so callers can clone the reference out of the mutex
-    /// and then call blocking methods without holding the lock.
     host_io: Option<Arc<KalicoHostIo>>,
-    /// Runtime event receiver — populated by `attach_serial`. Drained by
-    /// `take_runtime_event` for klippy-side dispatch.
     runtime_rx: Option<Receiver<kalico_host_rt::host_io::runtime_events::RuntimeEvent>>,
-    /// Per-MCU runtime capabilities from `QueryRuntimeCaps`, populated by
-    /// `attach_serial`. `Some` for kalico-native MCUs; `None` for stock-Klipper
-    /// MCUs that have no motion runtime (caps don't apply). A `None` for an MCU
-    /// that `init_planner` treats as a motion MCU is a hard error — see
-    /// `resolve_motion_caps`, which refuses with a `PyRuntimeError` rather than
-    /// guessing a default.
     runtime_caps: Option<kalico_protocol::messages::RuntimeCapsResponse>,
-    /// Raw `capabilities` bitmap from the `IdentifyResponse` (spec §5 bytes
-    /// 61..69). Bit 0 = `PHASE_STEPPING_CAPABLE`. Set during `attach_serial`;
-    /// 0 when `kalico_native_supported` is false (stock-Klipper MCU).
     identify_caps: u64,
-    /// True when this MCU's kalico-native Identify handshake completed.
-    /// False for stock-Klipper firmware that has no kalico runtime — those
-    /// MCUs still attach for Klipper-protocol commands but cannot accept
-    /// kalico-native bootstrap calls (configure_axes, curve uploads, etc.).
     kalico_native_supported: bool,
-    /// Stop flag for the periodic `kalico_clock_sync_request` driver. Set
-    /// to `true` on `release_mcu` (or PyMotionBridge drop) so the thread
-    /// exits cleanly. `None` when no clock-sync thread is running (stock-
-    /// Klipper firmware that doesn't support kalico-native).
     clock_sync_stop: Option<Arc<AtomicBool>>,
-    /// Join handle for the clock-sync thread. Joined on `release_mcu`.
     clock_sync_thread: Option<JoinHandle<()>>,
-    /// Shared clock-sync estimator (writer: clock-sync thread; reader:
-    /// mcu_log_hook, for tick→RFC3339). `None` for stock-Klipper MCUs.
     clock_sync_estimator:
         Option<Arc<std::sync::RwLock<kalico_host_rt::clock_sync::ClockSyncEstimator>>>,
-    /// EtherCAT endpoint socket path. `Some` for an EtherCAT node, `None` for
-    /// a serial MCU. Mutually exclusive with a live `serial_path` connection.
     ethercat_socket: Option<String>,
 }
 
-/// Sample interval for the periodic `kalico_clock_sync_request` driver.
-/// The host's `compute_ack_clock` extrapolates linearly between samples,
-/// so 500 ms is comfortably below the threshold at which clock-drift
-/// (typically <100 ppm on H7) accumulates enough error to misschedule a
-/// motion segment.
 const CLOCK_SYNC_INTERVAL: Duration = Duration::from_millis(500);
-
-/// Per-request timeout for the periodic clock-sync round-trip. USB-CDC
-/// RTT is microseconds; 100 ms is generous enough to absorb a transient
-/// stall without cascading into the wedge guard.
 const CLOCK_SYNC_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
-
-/// Upper bound on a single motion drain. A real print's longest queued motion
-/// plus buffer is well under this; exceeding it means a wedged MCU -> loud fail.
+/// Exceeding this means a wedged MCU — fail loudly.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Spawn the bridge's per-MCU periodic clock-sync driver.
-///
-/// Why this exists: in bridge mode klippy's `clocksync._get_clock_event`
-/// short-circuits — `serialhdl.raw_send` is a no-op for bridge MCUs, so
-/// the MCU never sees the `get_clock` request, never responds, and
-/// `_handle_clock` never runs. The `_bridge_clock_est_cb` registered at
-/// connect therefore fires exactly once (on the post-connect refresh)
-/// and the router's `(freq, offset, last_clock)` triple is frozen at
-/// connect-time. `compute_ack_clock` then linearly extrapolates into
-/// the future, producing `t_start` values tens of seconds ahead of the
-/// MCU's actual clock — which deadlocks the host's in-flight credit
-/// window because the engine waits on `t_start` and never retires.
-///
-/// This driver issues `runtime_clock_sync_request` directly via the
-/// kalico-native transport (the path that ARMING already uses, spec §6.3),
-/// maintains a per-MCU `ClockSyncEstimator` for RTT-aware regression,
-/// and pushes each fresh estimate into the router via
-/// `set_clock_est_from_sample`.
 fn spawn_periodic_clock_sync(
     mcu_handle_raw: u32,
     host_io: Arc<KalicoHostIo>,
@@ -134,10 +64,7 @@ fn spawn_periodic_clock_sync(
     std::thread::Builder::new()
         .name(format!("clock-sync-mcu-{mcu_handle_raw}"))
         .spawn(move || {
-            // Re-seed the shared estimator with klippy's supplied initial freq
-            // (constructed with a 100 MHz placeholder). Falls back to 100 MHz if
-            // set_clock_est hasn't been called yet — converges in a few samples.
-            {
+                {
                 let initial_freq = {
                     let guard = clock_freqs.lock().unwrap_or_else(|p| p.into_inner());
                     guard.get(&mcu_handle_raw).copied().unwrap_or(100_000_000.0)
@@ -146,8 +73,6 @@ fn spawn_periodic_clock_sync(
                 *est = kalico_host_rt::clock_sync::ClockSyncEstimator::new(initial_freq);
             }
 
-            // Brief startup grace so the reactor's identify/caps round-trips
-            // settle before we add foreground call traffic.
             std::thread::sleep(Duration::from_millis(200));
 
             while !stop.load(Ordering::Relaxed) {
@@ -172,22 +97,9 @@ fn spawn_periodic_clock_sync(
                             let hi = resp.try_get_u32("mcu_clock_hi").unwrap_or(0);
                             let mcu_at_response =
                                 (u64::from(hi) << 32) | u64::from(lo);
-                            // GUARD: firmware returns `read_widened_now(shared)`
-                            // for `kalico_clock_sync_response.mcu_clock_*`.
-                            // Before the very first segment-push fires
-                            // `runtime_tick_enable`, TIM5 ISR hasn't ticked
-                            // and `widened_now=0`. Feeding that 0 sample
-                            // into the regression collapses slope→0 →
-                            // `set_clock_est_from_sample` overwrites
-                            // klippy's valid 520M clock_freq with 0,
-                            // making `compute_ack_clock` return 0 and
-                            // dispatch wedge waiting for clock-sync.
-                            //
-                            // Skip the sample if MCU clock looks
-                            // uninitialised (well below one wrap of the
-                            // wall-clock-equivalent — any printer that
-                            // boots in <1s is fictional). The regression
-                            // is forward-only; skipping samples is safe.
+                            // Skip uninitialised MCU clock samples (TIM5 not yet ticking).
+                            // Feeding 0 into the regression collapses slope→0 and overwrites
+                            // klippy's valid clock_freq, wedging dispatch.
                             const MCU_CLOCK_INIT_FLOOR: u64 = 100_000_000;
                             if mcu_at_response < MCU_CLOCK_INIT_FLOOR {
                                 use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
@@ -232,9 +144,6 @@ fn spawn_periodic_clock_sync(
                         }
                     }
                 }
-                // Sleep with poll-on-stop so shutdown is responsive even
-                // mid-interval (release_mcu join would otherwise wait up
-                // to CLOCK_SYNC_INTERVAL for the loop to come around).
                 let mut remaining = CLOCK_SYNC_INTERVAL;
                 while remaining > Duration::ZERO && !stop.load(Ordering::Relaxed) {
                     let chunk = remaining.min(Duration::from_millis(50));
@@ -246,10 +155,6 @@ fn spawn_periodic_clock_sync(
         .expect("clock-sync thread spawn")
 }
 
-/// Errors returned by `query_runtime_caps` / `decode_runtime_caps_body`.
-/// The caller now treats any error as a fatal attach failure for kalico-native
-/// MCUs (no fallback); the typed variants remain so future routing can
-/// distinguish, e.g., a transport hiccup from an unknown-message reply.
 #[derive(Debug, thiserror::Error)]
 enum RuntimeCapsError {
     #[error("kalico_call QueryRuntimeCaps: {0}")]
@@ -260,10 +165,6 @@ enum RuntimeCapsError {
     Decode(String),
 }
 
-/// Decode a `RuntimeCapsResponse` from a raw control-channel response body.
-/// Extracted so the bootstrap path can be unit-tested without spinning a
-/// reactor + serial port (the actual `kalico_call` round-trip is exercised
-/// in higher-level integration tests against Renode / hardware).
 fn decode_runtime_caps_body(
     body: &[u8],
 ) -> Result<kalico_protocol::messages::RuntimeCapsResponse, RuntimeCapsError> {
@@ -273,12 +174,6 @@ fn decode_runtime_caps_body(
     RuntimeCapsResponse::decode_from(&mut c).map_err(|e| RuntimeCapsError::Decode(format!("{e:?}")))
 }
 
-/// Issue a `QueryRuntimeCaps` control-channel call and decode the response
-/// body. On any transport / decode error returns `Err`.
-///
-/// For kalico-native MCUs a caps-query failure is fatal — the host cannot
-/// size piece rings without `total_piece_memory`. Callers must propagate the
-/// error rather than falling back to a guessed default.
 fn query_runtime_caps(
     io: &KalicoHostIo,
     timeout: std::time::Duration,
@@ -293,11 +188,6 @@ fn query_runtime_caps(
     decode_runtime_caps_body(&body)
 }
 
-/// Issue a `QueryRuntimeCaps` call over a `UnixNativeConn` (EtherCAT path)
-/// and decode the `RuntimeCapsResponse`. Fatal on any transport or decode
-/// error — the host cannot size EtherCAT piece rings without the endpoint's
-/// reported `total_piece_memory`. Uses `kalico_call` (control channel, ch=0),
-/// matching the channel the EtherCAT endpoint's `decode_command` listens on.
 fn query_ethercat_runtime_caps(
     conn: &UnixNativeConn,
     timeout: std::time::Duration,
@@ -313,7 +203,6 @@ fn query_ethercat_runtime_caps(
     decode_runtime_caps_body(&body)
 }
 
-/// An event queued for Python consumption via `poll_event()`.
 #[derive(Debug, Clone)]
 struct BridgeEvent {
     kind: String,
@@ -337,12 +226,10 @@ impl BridgeEvent {
     }
 }
 
-/// Map `RouterError` to a Python `RuntimeError`.
 fn router_err(e: kalico_host_rt::passthrough_queue::RouterError) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
 }
 
-/// Map `PlannerError` to a Python `RuntimeError`.
 fn planner_err(e: PlannerError) -> PyErr {
     PyRuntimeError::new_err(e.to_string())
 }
@@ -360,14 +247,6 @@ fn build_shaper_config(
     })
 }
 
-/// Resolve runtime capabilities for a motion MCU.
-///
-/// Returns `Ok(McuCaps)` when `caps` is `Some`, and `Err(String)` when
-/// `caps` is `None` — meaning the MCU attached without reporting caps (old,
-/// unflashed, or mismatched firmware). Callers map the `Err(String)` to a
-/// `PyRuntimeError`.
-///
-/// Unit tests are in [`resolve_motion_caps_tests`].
 fn resolve_motion_caps(
     caps: Option<kalico_protocol::messages::RuntimeCapsResponse>,
     label: &str,
@@ -381,9 +260,6 @@ fn resolve_motion_caps(
     })
 }
 
-/// Guard: a kalico-native MCU needs `init_logging` (which sets `events_dir`)
-/// before `attach_serial`, so the dedicated `mcu-*.jsonl` writer can be
-/// installed — mandatory per spec §4, Decision C. `Err` if called out of order.
 fn require_events_dir_for_kalico_native(
     kalico_native: bool,
     events_dir: Option<&std::path::Path>,
@@ -402,99 +278,32 @@ fn require_events_dir_for_kalico_native(
     Ok(())
 }
 
-// ── PyMotionBridge ──────────────────────────────────────────────────────
-
 #[pyclass(name = "MotionBridge")]
 #[allow(missing_debug_implementations)]
 pub struct PyMotionBridge {
-    /// Shared for passthrough queue state and MCU clock conversion.
     router: Arc<Mutex<PassthroughRouter>>,
-    /// MsgProto parser populated via `set_msgproto_dict` for passthrough
-    /// compatibility surfaces.
     parser: Arc<Mutex<Option<Arc<MsgProtoParser>>>>,
     mcus: Mutex<HashMap<u32, McuConnection>>,
-    /// Shared event queue — callbacks capture an `Arc` clone so they can
-    /// push events from any thread without holding a reference to `self`.
     events: Arc<Mutex<VecDeque<BridgeEvent>>>,
-    /// Typed-response handlers registered via `passthrough_register_handler`.
-    /// Key: `(mcu_handle, name, oid)`.  Phase 1 stores them but does not
-    /// dispatch — actual dispatch requires the reactor thread.
     #[allow(dead_code)]
     handlers: Mutex<HashMap<(u32, String, u32), PyObject>>,
-
-    // ── Phase-2 motion-submission state (Task 8) ────────────────────────
-    /// Spawned planner thread. `init_planner` sets it exactly once; every
-    /// subsequent motion-submission entry point reads it lock-free via
-    /// `OnceLock::get`. The previous `Mutex<Option<PlannerHandle>>` form
-    /// took an uncontended mutex on every `submit_move` / `flush` /
-    /// `wait_moves` call.
     planner: OnceLock<PlannerHandle>,
-    /// Current planner config snapshot, mutated by `update_limits` / `update_shaper`.
     planner_config: Mutex<PlannerConfig>,
-    /// Last commanded toolhead position (set by `set_position`, advanced by `submit_move`).
     commanded_pos: Mutex<[f64; 3]>,
-    /// Per-MCU axis assignment, populated by `init_planner`.
     mcu_axis_configs: Mutex<Vec<McuAxisConfig>>,
-    /// Counter of shaped segments observed by the dispatch callback. Used by
-    /// tests / sim to verify the planner pipeline ran end-to-end.
     dispatched_segments: Arc<AtomicU64>,
-    /// Total number of times the dispatch closure took the
-    /// `host_time_to_mcu_clock` fallback path (because the per-MCU clock
-    /// estimate had not yet been installed by `set_clock_est`). Production
-    /// integration tests assert this stays zero — non-zero indicates klippy
-    /// has not wired SET_CLOCK_EST before motion submission.
     fallback_clock_conversions: Arc<AtomicU64>,
-    /// Last Klippy clocksync frequency per MCU, mirrored from `set_clock_est`.
-    /// The planner emits batch-local seconds; dispatch uses this to place
-    /// those relative times onto the MCU's live clock domain.
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
     homing: Arc<HomingState>,
-    /// Retained homing segment curves.  Populated by the dispatch closure when
-    /// a homing-active segment is dispatched; cleared by `set_position` (stream
-    /// open / planner reset).  `None` outside of an active homing sequence.
     retained_homing_curve: Arc<Mutex<Option<RetainedHomingCurve>>>,
-    /// Active probe-homing handles keyed by an incrementing ID.
     probe_handles: Mutex<HashMap<u64, crate::probe_homing::ProbeHomingHandle>>,
     probe_handle_counter: AtomicU64,
-
-    /// Events directory for MCU JSONL writers (set by `init_logging`).
-    /// Used by `attach_serial` to construct the dedicated `mcu-*.jsonl` writer.
-    /// `None` until `init_logging` is called.
     events_dir: Mutex<Option<std::path::PathBuf>>,
-
-    // ── Push-pieces pump (Task 8) ────────────────────────────────────────
-    /// Sender side of the pump channel. `None` until `init_planner` runs.
-    /// Cloned into the dispatch closure and into the heartbeat callbacks.
-    /// `detach_serial` / teardown sends `PumpMsg::Shutdown` and joins the
-    /// thread via `pump_thread`.
     pump_tx: Mutex<Option<std::sync::mpsc::Sender<crate::pump::PumpMsg>>>,
-    /// Join handle for the `"push-pieces-pump"` thread. `None` until
-    /// `init_planner` runs.
     pump_thread: Mutex<Option<JoinHandle<()>>>,
-    /// Per-(mcu, axis) sent/retired tracking for `drain_motion`.
     drain: std::sync::Arc<crate::drain::DrainSync>,
 }
 
-/// Build the kalico-native `ConfigureAxes` wire body.
-///
-/// Body layouts (length-discriminated; the firmware parser branches on
-/// `blob_len`):
-///   - 20 bytes when `step_modes` and `phase_configs` are both None
-///     (legacy path; kinematics + 3 masks + 4 × f32 steps_per_mm).
-///   - 25 bytes when `step_modes` is Some, `phase_configs` is None
-///     (Step 7-B: adds phase_capable flag + 4-byte step_mode array).
-///   - 26 + 3·N bytes when both `step_modes` and `phase_configs` are Some
-///     (true phase stepping): byte 25 is `phase_motor_count = N`,
-///     bytes 26 + 3·i .. 26 + 3·i + 2 carry `(bus_id, cs_pin_id, slot_idx)`
-///     for motor `i`. `1 ≤ N ≤ MAX_STEPPER_OIDS` (firmware-side cap of 16
-///     phase-stepped motors per MCU).
-///
-/// `phase_capable` is the identify-time PHASE_STEPPING bit (bit 0 of
-/// `identify_caps`). It is purely an MCU-side sanity check; the wire
-/// position is fixed at byte 20 for the 25-byte and ≥26-byte layouts.
-///
-/// "No phase stepping" emits the 25-byte body — callers should pass
-/// `phase_configs = None` in that case rather than `Some(&[])`.
 pub(crate) fn build_configure_axes_body(
     kinematics: u8,
     present_mask: u8,
@@ -505,8 +314,6 @@ pub(crate) fn build_configure_axes_body(
     phase_configs: Option<&[(u8, u8, u8)]>,
     phase_capable: u8,
 ) -> Vec<u8> {
-    // Worst-case body length: 26 (header + step_modes + count byte) +
-    // 3 × MAX (16) = 74 bytes. Pre-size to that ceiling.
     let mut body = Vec::with_capacity(26 + 3 * 16);
     body.push(kinematics);
     body.push(present_mask);
@@ -522,17 +329,10 @@ pub(crate) fn build_configure_axes_body(
         }
     }
     if let Some(pc) = phase_configs {
-        // Promoted from debug_assert! to assert! so release builds also
-        // enforce this invariant. The PyO3 wrapper checks at the boundary,
-        // but this helper is pub(crate) and could be called from other
-        // in-crate sites; a malformed phase-config body without
-        // step_modes must never silently leave this function.
         assert!(
             step_modes.is_some(),
             "phase_configs requires step_modes (variable-length format extends 25-byte)"
         );
-        // Cap mirrors firmware-side MAX_STEPPER_OIDS=16 (see
-        // `runtime::state::MAX_STEPPER_OIDS`).
         assert!(
             pc.len() <= 16,
             "phase_configs.len()={} exceeds MAX_STEPPER_OIDS=16",
@@ -548,16 +348,6 @@ pub(crate) fn build_configure_axes_body(
     body
 }
 
-/// Per-axis ring depth: split this MCU's piece memory evenly across its axes.
-///
-/// Floor division guarantees the sum of per-axis depths never exceeds
-/// `total_pieces`, so the MCU's bump-allocator over `piece_storage` always
-/// fits.  A lower clamp of 1 prevents a zero-depth ring on pathological
-/// inputs; `num_axes.max(1)` prevents division by zero.
-///
-/// This is the **single source of truth** for the formula.  It is used both
-/// when building the `ring_depth_table` for the pump (in `init_planner`) and
-/// when answering `ring_depth_for_axis` queries from the Python configure path.
 pub(crate) fn axis_ring_depth(total_pieces: u32, num_axes: u32) -> u32 {
     (total_pieces / num_axes.max(1)).max(1)
 }
@@ -568,7 +358,6 @@ mod axis_ring_depth_tests {
 
     #[test]
     fn typical_two_axis_mcu() {
-        // 62 KB / 32 bytes = 1984 pieces; two axes → 992 each.
         assert_eq!(axis_ring_depth(1984, 2), 992);
     }
 
@@ -579,28 +368,20 @@ mod axis_ring_depth_tests {
 
     #[test]
     fn floor_division() {
-        // 5 / 2 = 2 (floor).
         assert_eq!(axis_ring_depth(5, 2), 2);
     }
 
     #[test]
     fn lower_clamp_on_zero_total() {
-        // 0 / 2 = 0 → clamped to 1.
         assert_eq!(axis_ring_depth(0, 2), 1);
     }
 
     #[test]
     fn zero_num_axes_treated_as_one() {
-        // num_axes.max(1) = 1 → 1000 / 1 = 1000.
         assert_eq!(axis_ring_depth(1000, 0), 1000);
     }
 }
 
-/// Pure core of [`MotionBridge::ring_depth_for_axis`], split out so the
-/// lookup/validation/clamp logic is unit-testable without a PyO3 harness.
-/// Returns the per-axis ring depth saturated to `u16`, or an error string
-/// describing the lookup/validation failure (the PyO3 wrapper maps it to a
-/// `PyRuntimeError`).
 pub(crate) fn ring_depth_for_axis_inner(
     configs: &[crate::dispatch::McuAxisConfig],
     mcu_handle: u32,
@@ -663,7 +444,6 @@ mod ring_depth_for_axis_tests {
 
     #[test]
     fn success_two_axis_mcu() {
-        // 62 KB / 32 = 1984 pieces; 2 axes → 992 each.
         assert_eq!(
             ring_depth_for_axis_inner(&configs(), 1, AXIS_X as u8).unwrap(),
             992
@@ -676,7 +456,6 @@ mod ring_depth_for_axis_tests {
 
     #[test]
     fn success_single_axis_mcu() {
-        // 1984 pieces / 1 axis → 1984.
         assert_eq!(
             ring_depth_for_axis_inner(&configs(), 2, AXIS_Z as u8).unwrap(),
             1984
@@ -691,15 +470,12 @@ mod ring_depth_for_axis_tests {
 
     #[test]
     fn axis_not_on_mcu_errors() {
-        // Z is not configured on mcu 1 (X/Y only).
         let e = ring_depth_for_axis_inner(&configs(), 1, AXIS_Z as u8).unwrap_err();
         assert!(e.contains("not configured"), "got: {e}");
     }
 
     #[test]
     fn ring_depth_over_u16_is_hard_error_not_clamp() {
-        // total_piece_memory = 70_000 * 32 bytes → total_pieces = 70_000.
-        // axis_ring_depth(70_000, 1) = 70_000 > 65535 (u16::MAX).
         let configs = vec![McuAxisConfig {
             mcu_id: 0,
             axes: vec![AXIS_X],
@@ -723,8 +499,6 @@ mod ring_depth_for_axis_tests {
 
 #[pymethods]
 impl PyMotionBridge {
-    // ── Task 31: constructor ────────────────────────────────────────────
-
     #[new]
     fn new() -> Self {
         let clock: Arc<dyn kalico_host_rt::clock::Clock + Send + Sync> = Arc::new(RealClock);
@@ -752,43 +526,25 @@ impl PyMotionBridge {
         }
     }
 
-    /// Crate version.
     fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
     }
 
-    // ── Observability Stage 2: structured logging setters ──────────────
-
-    /// Install the Rust host structured-logging subscriber, writing
-    /// `<events_dir>/host-rust.jsonl`. Called once from Python at bridge setup,
-    /// before any other bridge method. Fails loudly if already initialized or
-    /// if the file cannot be opened (project fail-loudly policy).
     fn init_logging(&self, events_dir: String) -> PyResult<()> {
         let path = std::path::Path::new(&events_dir);
         crate::logging::init_logging(path).map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("init_logging failed: {e}"))
         })?;
-        // Store the events directory so attach_serial can construct the
-        // dedicated mcu-*.jsonl writer.
         let mut guard = self.events_dir.lock().unwrap_or_else(|p| p.into_inner());
         *guard = Some(path.to_path_buf());
         Ok(())
     }
 
-    /// Set/update the session + print correlation context stamped on every Rust
-    /// log record. Called at bridge setup (with the current session_id and an
-    /// empty print_id) and on every print-state change.
     #[pyo3(signature = (session_id, print_id=String::new()))]
     fn set_session_context(&self, session_id: String, print_id: String) {
         crate::logging::set_context(session_id, print_id);
     }
 
-    // ── Task 32: claim_mcu ──────────────────────────────────────────────
-
-    /// Register an MCU with the bridge. Returns the opaque handle as int.
-    ///
-    /// Phase 1: stores the label/path/baud but does NOT open the port.
-    /// The actual serial open + identify handshake is Phase 2+.
     #[pyo3(signature = (label, serial_path, baud))]
     fn claim_mcu(&self, label: &str, serial_path: &str, baud: u32) -> PyResult<u32> {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
@@ -814,13 +570,6 @@ impl PyMotionBridge {
         Ok(raw)
     }
 
-    // ── EtherCAT: claim_ethercat_node ───────────────────────────────────
-
-    /// Register an EtherCAT node with the bridge. Like `claim_mcu` but the
-    /// transport is a same-host Unix socket (the kalico-ethercat-rt endpoint),
-    /// not a serial port. The node is marked kalico-native here at claim time
-    /// (it speaks the protocol by construction; no identify handshake needed).
-    /// The socket is connected later in `init_planner`. Returns the opaque mcu_id handle.
     #[pyo3(signature = (label, socket_path))]
     fn claim_ethercat_node(&self, label: &str, socket_path: &str) -> PyResult<u32> {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
@@ -836,7 +585,7 @@ impl PyMotionBridge {
                 runtime_rx: None,
                 runtime_caps: None,
                 identify_caps: 0,
-                kalico_native_supported: true, // EtherCAT endpoint speaks kalico-native
+                kalico_native_supported: true,
                 clock_sync_stop: None,
                 clock_sync_thread: None,
                 clock_sync_estimator: None,
@@ -846,13 +595,7 @@ impl PyMotionBridge {
         Ok(raw)
     }
 
-    // ── Task 33: release_mcu ────────────────────────────────────────────
-
-    /// Unregister an MCU. Outstanding notify callbacks are dropped.
     fn release_mcu(&self, handle: u32) -> PyResult<()> {
-        // Stop and join the per-MCU clock-sync thread before releasing
-        // the router slot. Holds neither lock during the join so the
-        // thread can't deadlock on its final router update.
         let (stop, join) = {
             let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let conn_opt = mcus.remove(&handle);
@@ -886,9 +629,6 @@ impl PyMotionBridge {
             let _ = self.release_mcu(h);
         }
 
-        // Stop the push-pieces pump thread (spawned by init_planner).
-        // Signal Shutdown first (non-blocking), then join so the thread
-        // drains before the process exits — mirrors clock-sync teardown.
         let pump_join = {
             let tx = self
                 .pump_tx
@@ -908,9 +648,6 @@ impl PyMotionBridge {
         }
     }
 
-    // ── Task 34: alloc_command_queue ─────────────────────────────────────
-
-    /// Allocate a command queue for the given MCU. Returns queue id as int.
     fn alloc_command_queue(&self, handle: u32) -> PyResult<u32> {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let qid = router
@@ -919,9 +656,6 @@ impl PyMotionBridge {
         Ok(qid.raw())
     }
 
-    // ── Task 35: passthrough_send (fire-and-forget) ─────────────────────
-
-    /// Push a fire-and-forget command to the router.
     #[pyo3(signature = (mcu, queue, data, min_clock=0, req_clock=0))]
     fn passthrough_send(
         &self,
@@ -939,13 +673,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    // ── Task 36: passthrough_query (returns notify_id) ──────────────────
-
-    /// Push a command that expects a response. Returns the notify_id as int.
-    ///
-    /// When the MCU responds (via `dispatch_response` in the reactor),
-    /// the response is placed in the events queue and can be retrieved
-    /// via `poll_event()`.
     #[pyo3(signature = (mcu, queue, data, min_clock=0, req_clock=0))]
     fn passthrough_query(
         &self,
@@ -958,7 +685,6 @@ impl PyMotionBridge {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let mcu_h = mcu_handle_from_raw(mcu);
 
-        // Clone the Arc so the callback can push to the shared event queue.
         let events_ref = Arc::clone(&self.events);
         let mcu_raw = mcu;
 
@@ -969,7 +695,7 @@ impl PyMotionBridge {
                     let ev = BridgeEvent {
                         kind: "query_response".to_owned(),
                         mcu: mcu_raw,
-                        notify_id: 0, // filled below
+                        notify_id: 0,
                         response_bytes: resp.bytes,
                         sent_time: resp.sent_time,
                         receive_time: resp.receive_time,
@@ -990,9 +716,6 @@ impl PyMotionBridge {
         Ok(nid.raw())
     }
 
-    // ── Task 37: passthrough_send_wait_ack (blocking) ───────────────────
-
-    /// Synchronous blocking send-and-wait. Phase 1: scaffold only.
     #[pyo3(signature = (_mcu, _queue, _data, _timeout))]
     fn passthrough_send_wait_ack(
         &self,
@@ -1006,10 +729,6 @@ impl PyMotionBridge {
         ))
     }
 
-    // ── Task 38: passthrough_register_handler ───────────────────────────
-
-    /// Register a typed-response handler. Phase 1: stores it; actual
-    /// dispatch comes when the reactor routes responses.
     #[pyo3(signature = (mcu, name, oid, callback))]
     fn passthrough_register_handler(
         &self,
@@ -1025,17 +744,10 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    // ── Task 39: passthrough_register_flush_callback ────────────────────
-
-    /// Register a callback that fires when the MCU's queues transition
-    /// from non-empty to empty.
-    ///
-    /// The callback is a Python callable that takes no arguments.
     fn passthrough_register_flush_callback(&self, mcu: u32, callback: PyObject) -> PyResult<()> {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let mcu_h = mcu_handle_from_raw(mcu);
 
-        // Wrap the Python callback so it acquires the GIL when called.
         let cb: Box<dyn Fn() + Send> = Box::new(move || {
             Python::with_gil(|py| {
                 if let Err(e) = callback.call0(py) {
@@ -1050,9 +762,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    // ── Task 40: poll_event ─────────────────────────────────────────────
-
-    /// Drain one event from the events queue. Returns None if empty.
     fn poll_event(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
         let mut events = self.events.lock().unwrap_or_else(|p| p.into_inner());
         match events.pop_front() {
@@ -1061,9 +770,6 @@ impl PyMotionBridge {
         }
     }
 
-    // ── Additional klippy-expected API ──────────────────────────────────
-
-    /// Add a config command for the given MCU.
     fn add_config_cmd(&self, mcu: u32, data: &[u8]) -> PyResult<bool> {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
@@ -1071,7 +777,6 @@ impl PyMotionBridge {
             .map_err(router_err)
     }
 
-    /// Add an init command for the given MCU.
     fn add_init_cmd(&self, mcu: u32, data: &[u8]) -> PyResult<bool> {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
@@ -1079,7 +784,6 @@ impl PyMotionBridge {
             .map_err(router_err)
     }
 
-    /// Add a restart command for the given MCU.
     fn add_restart_cmd(&self, mcu: u32, data: &[u8]) -> PyResult<bool> {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
@@ -1087,7 +791,6 @@ impl PyMotionBridge {
             .map_err(router_err)
     }
 
-    /// Transition the MCU to the config-sending phase.
     fn begin_config_phase(&self, mcu: u32) -> PyResult<()> {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
@@ -1095,7 +798,6 @@ impl PyMotionBridge {
             .map_err(router_err)
     }
 
-    /// Get the next config/init entry for the given MCU, or None.
     fn next_config_entry(&self, mcu: u32) -> PyResult<Option<Vec<u8>>> {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router
@@ -1103,7 +805,6 @@ impl PyMotionBridge {
             .map_err(router_err)
     }
 
-    /// Snapshot statistics for the given MCU as a Python dict.
     fn get_stats(&self, py: Python<'_>, mcu: u32) -> PyResult<Py<PyDict>> {
         let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let stats = router
@@ -1112,12 +813,6 @@ impl PyMotionBridge {
         stats_to_pydict(py, &stats)
     }
 
-    /// Install the MsgProto data dictionary (klippy already retrieves and
-    /// parses this during identify; the bridge needs it to encode/decode
-    /// passthrough commands inside `RouterTransport`).
-    ///
-    /// `dict_json` is the raw `identify_response`-payload JSON bytes.
-    /// Calling this multiple times replaces the parser.
     fn set_msgproto_dict(&self, dict_json: &[u8]) -> PyResult<()> {
         let json_str = std::str::from_utf8(dict_json)
             .map_err(|e| PyRuntimeError::new_err(format!("dict_json utf8: {e}")))?;
@@ -1129,19 +824,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    // ── Phase 1: serial attach + identify ──────────────────────────────
-
-    /// Open the serial port for `mcu_handle`, run the identify handshake,
-    /// and spawn the host-rt reactor thread that owns the FD.
-    ///
-    /// Release the serial port for an MCU without removing the MCU
-    /// entry.  Stops clock-sync, drops the `KalicoHostIo` (which
-    /// shuts down the reactor thread and closes the kernel FD), and
-    /// clears the runtime event receiver.  The MCU handle stays valid
-    /// so a later `attach_serial` can reconnect.
-    ///
-    /// Called from `serialhdl.disconnect()` in bridge mode so that
-    /// `arduino_reset()` can open the port for the DTR-toggle reset.
     fn detach_serial(&self, mcu_handle: u32) -> PyResult<()> {
         let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(conn) = mcus.get_mut(&mcu_handle) {
@@ -1157,13 +839,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    /// Blocks until the port is open and identify completes (or the
-    /// 30-second retry window expires). The raw identify bytes (zlib
-    /// blob from firmware) are stored and can be retrieved via
-    /// `get_identify_data`.
-    ///
-    /// Call once per MCU after `claim_mcu`. Calling again on an already-
-    /// attached MCU replaces the existing `KalicoHostIo`.
     #[pyo3(signature = (mcu_handle, serial_path, baud, timeout_s = 30.0, klippy_non_critical = false))]
     fn attach_serial(
         &self,
@@ -1178,20 +853,6 @@ impl PyMotionBridge {
         let effective_baud = if baud == 0 { 250_000 } else { baud };
         let config = KalicoHostIoConfig::default();
 
-        // ── Reuse path ────────────────────────────────────────────────────────
-        // If an existing KalicoHostIo is alive (reactor thread still running),
-        // reuse it — skip the drop and reopen entirely. This matches mainline
-        // Klipper's behaviour: the serial port stays open through shutdown →
-        // FIRMWARE_RESTART cycles. Dropping an alive connection can wedge
-        // because the Drop's reactor-thread join blocks on a blocking serial
-        // read, and the subsequent reopen gets EBUSY from the kernel's
-        // cdc_acm single-open semantics.
-        //
-        // We do still re-subscribe runtime events (the old channel's buffer
-        // is stale after a firmware restart) and re-run the kalico-native
-        // identify + caps handshake so the host reflects the new firmware
-        // epoch. The clock-sync thread is left running — it holds only a
-        // Weak<KalicoHostIo> and will keep ticking without interruption.
         {
             let existing_io: Option<Arc<KalicoHostIo>> = {
                 let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
@@ -1205,8 +866,6 @@ impl PyMotionBridge {
                          (reactor alive, skipping close/reopen)"
                     );
 
-                    // Re-subscribe so the new runtime-event channel starts
-                    // fresh (the firmware restart will have pushed new events).
                     let runtime_rx = io.take_runtime_event_subscription().map_err(|e| {
                         PyRuntimeError::new_err(format!(
                             "attach_serial: runtime_event re-subscribe: {e:?}"
@@ -1256,7 +915,6 @@ impl PyMotionBridge {
                         None
                     };
 
-                    // Critical iff kalico-native motion MCU and not marked non-critical by klippy.
                     let critical = kalico_native_supported && !klippy_non_critical;
                     io.set_critical(critical);
                     log::info!(
@@ -1275,30 +933,11 @@ impl PyMotionBridge {
                     conn.runtime_caps = runtime_caps;
                     conn.identify_caps = identify_caps;
                     conn.kalico_native_supported = kalico_native_supported;
-                    // clock_sync_stop / clock_sync_thread left intact — the
-                    // thread is already running and does not need a restart.
                     return Ok(());
                 }
             }
         }
 
-        // ── Fresh open path ───────────────────────────────────────────────────
-        // The existing connection is absent or dead. Drop it (if present) to
-        // release the kernel FD before reopening.
-        //
-        // 2026-05-18: drop any existing KalicoHostIo for this mcu_handle
-        // BEFORE trying to open the new serial. The Drop impl sends
-        // `ReactorCommand::Shutdown` and joins the reactor thread, which
-        // is what actually releases the kernel FD. Without this the OLD
-        // session's reactor keeps the serial open exclusively and the new
-        // `open_with_config` below times out for 30 s with "Device or
-        // resource busy" — exactly the wedge klippy's in-process
-        // FIRMWARE_RESTART iteration falls into on the F4 (and on the H7
-        // when the bridge-mode reset path didn't get a chance to issue
-        // `MarkExpectedDisconnect`). Also stop the periodic clock-sync
-        // driver so it doesn't keep using the dying io.
-        // Snapshot the MCU label (the structured-log source field) while we hold
-        // the mcus lock, so the lock-free clock-sync block below has it ready.
         let mcu_label: String = {
             let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
@@ -1306,7 +945,6 @@ impl PyMotionBridge {
                     "attach_serial: unknown mcu_handle {mcu_handle} (claim_mcu not called)"
                 ))
             })?;
-            // While we have the lock, tear down any stale connection.
             if let Some(stop) = conn.clock_sync_stop.take() {
                 stop.store(true, std::sync::atomic::Ordering::Release);
             }
@@ -1314,18 +952,10 @@ impl PyMotionBridge {
                 let _ = h.join();
             }
             conn.runtime_rx = None;
-            // Drop the Arc<KalicoHostIo>: the planner's dispatch closure holds
-            // only Weak refs, so this drives the refcount to zero → Drop shuts
-            // down the reactor and releases the FD before the re-open below
-            // (avoids a 30 s "Device or resource busy" spin).
             conn.host_io = None;
             conn.label.clone()
         };
 
-        // Determine whether this is a PTY/pipe path (baud=0 signals pipe mode)
-        // or a real serial port. Pipe mode uses O_RDWR | O_NOCTTY to open the
-        // PTY without configuring baud rate, which serialport::open() would do
-        // and which interferes with Linux pseudo-terminals.
         let is_pipe = baud == 0
             || serial_path.starts_with("/tmp/")
             || serial_path.starts_with("/dev/pts/")
@@ -1359,18 +989,10 @@ impl PyMotionBridge {
             }
         };
 
-        // Subscribe to runtime events before storing so no events are missed.
         let runtime_rx = host_io.take_runtime_event_subscription().map_err(|e| {
             PyRuntimeError::new_err(format!("attach_serial: runtime_event subscribe: {e:?}"))
         })?;
 
-        // Phase C-B: kalico-native bootstrap-ABI Identify handshake. Stock
-        // Klipper firmware (no CONFIG_KALICO_RUNTIME) does not have the
-        // kalico-native dispatch path, so this query times out. We treat
-        // that case as "no kalico runtime here" rather than refusing the
-        // attach — the bridge still routes Klipper-protocol commands fine
-        // and the runtime-specific surface (curve uploads, etc.) just
-        // stays unused for that MCU.
         let (kalico_native_supported, identify_caps) =
             match host_io.kalico_identify(std::time::Duration::from_secs(5)) {
                 Ok(out) => {
@@ -1391,13 +1013,6 @@ impl PyMotionBridge {
                 }
             };
 
-        // Query per-MCU runtime caps for kalico-native MCUs. The host derives
-        // per-axis ring depths from `total_piece_memory`; guessing the value
-        // would desync host flow-control from the real MCU ring and produce
-        // confusing downstream shutdowns. A failure here means old/unflashed/
-        // mismatched firmware — crash early rather than silently misbehave.
-        // Non-native MCUs (stock-Klipper firmware) don't have a motion runtime
-        // at all, so caps don't apply.
         let runtime_caps = if kalico_native_supported {
             match query_runtime_caps(&host_io, std::time::Duration::from_secs(2)) {
                 Ok(caps) => {
@@ -1421,7 +1036,6 @@ impl PyMotionBridge {
             None
         };
 
-        // Critical iff kalico-native motion MCU and not marked non-critical by klippy.
         let critical = kalico_native_supported && !klippy_non_critical;
         host_io.set_critical(critical);
         log::info!(
@@ -1432,7 +1046,6 @@ impl PyMotionBridge {
 
         let host_io_arc = Arc::new(host_io);
 
-        // Enforce the init_logging-before-attach_serial order (see the guard fn).
         {
             let events_dir_guard = self
                 .events_dir
@@ -1446,17 +1059,9 @@ impl PyMotionBridge {
             .map_err(PyRuntimeError::new_err)?;
         }
 
-        // Spawn the periodic kalico_clock_sync_request driver iff this MCU
-        // speaks kalico-native. Without it, bridge-mode clocksync is a no-op
-        // (legacy serialqueue path bypassed): the projection freezes at the
-        // connect anchor, drifts seconds ahead of MCU time, and deadlocks the
-        // host credit window. Stock firmware ignores the request and doesn't
-        // run the motion path, so it stays on klippy's (stale) anchor.
         let (clock_sync_stop, clock_sync_thread, clock_sync_estimator_arc) =
             if kalico_native_supported {
                 let stop = Arc::new(AtomicBool::new(false));
-                // Construct the shared estimator. The clock-sync thread will
-                // re-seed the initial freq on startup (after reading clock_freqs).
                 let est_arc = Arc::new(std::sync::RwLock::new(
                     kalico_host_rt::clock_sync::ClockSyncEstimator::new(100_000_000.0),
                 ));
@@ -1469,17 +1074,12 @@ impl PyMotionBridge {
                     Arc::clone(&est_arc),
                 );
 
-                // Wire the mcu_log_hook. The guard above guarantees events_dir
-                // is Some(_) here; the unreachable! below documents that (it is
-                // not a runtime fallback).
                 let events_dir_guard = self.events_dir.lock().unwrap_or_else(|p| p.into_inner());
                 if let Some(ref dir) = *events_dir_guard {
                     use crate::logging::writer::{
                         DEFAULT_BACKUP_COUNT, DEFAULT_MAX_BYTES, FSYNC_INTERVAL,
                         RotatingJsonlWriter,
                     };
-                    // The MCU label (from claim_mcu) is the structured-log
-                    // source field — VictoriaLogs filters on it, match exactly.
                     let source = mcu_label.clone();
                     let jsonl_path = dir.join(format!("{source}.jsonl"));
                     match RotatingJsonlWriter::new(
@@ -1532,12 +1132,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    /// Return the `capabilities` bitmap from the MCU's `IdentifyResponse`
-    /// (spec §5, bytes 61..69). Bit 0 = `PHASE_STEPPING_CAPABLE`.
-    ///
-    /// Returns 0 for stock-Klipper MCUs that don't speak kalico-native.
-    /// `claim_mcu` must have been called first; `attach_serial` must have
-    /// completed for the value to reflect the real MCU capabilities.
     fn get_mcu_capabilities(&self, mcu_handle: u32) -> PyResult<u64> {
         let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
         let conn = mcus.get(&mcu_handle).ok_or_else(|| {
@@ -1548,23 +1142,6 @@ impl PyMotionBridge {
         Ok(conn.identify_caps)
     }
 
-    /// Return the per-axis ring depth for `mcu_handle` / `axis`.
-    ///
-    /// This is the **single source of truth** for the value that is written
-    /// into both the `kalico_configure_axis` wire command (consumed by the MCU
-    /// allocator) and the pump's per-ring flow-control accounting.  The Python
-    /// configure-axis path calls this and forwards the result to the MCU; the
-    /// pump reads the same value from `ring_depth_table` which was built with
-    /// `axis_ring_depth` directly.
-    ///
-    /// `init_planner` MUST have been called before this method (it populates
-    /// `mcu_axis_configs`).  `axis` is validated as a member of the MCU's
-    /// configured axis list; an unknown axis returns an error.
-    ///
-    /// The return type is `u16`: the value fits comfortably for any realistic
-    /// `total_piece_memory` (e.g. 992 for a 2-axis MCU with 62 KB).  A
-    /// computed depth exceeding `u16::MAX` (65535) is a hard error: this
-    /// method raises `RuntimeError` and no clamping occurs.
     fn ring_depth_for_axis(&self, mcu_handle: u32, axis: u8) -> PyResult<u16> {
         let configs = self
             .mcu_axis_configs
@@ -1573,27 +1150,6 @@ impl PyMotionBridge {
         ring_depth_for_axis_inner(&configs, mcu_handle, axis).map_err(PyRuntimeError::new_err)
     }
 
-    /// Send the kalico-native `ConfigureAxes` message for an attached MCU.
-    /// Must be called once after `attach_serial` and before the first
-    /// segment is pushed. `kinematics`: 0 = CoreXyAndE, 1 = CartesianXyzAndE.
-    /// `steps_per_mm`: 4 entries indexed [A/X, B/Y, Z, E]; entries whose
-    /// `present_mask` bit is 0 are ignored. `awd_mask` and `invert_mask`
-    /// are 4-bit per-motor flag masks.
-    ///
-    /// `step_modes`: optional list of 4 `u8` values (0 = Modulated / phase
-    /// stepping, 1 = StepTime / classic). When supplied the bridge emits the
-    /// 25-byte extended format (spec §4 C1); when omitted it emits the
-    /// legacy 20-byte format. Firmware accepts both.
-    ///
-    /// `phase_configs`: optional variable-length list of
-    /// `(bus_id, cs_pin_id, slot_idx)` triples — one entry per
-    /// phase-stepped motor. When supplied (and `step_modes` is also Some),
-    /// the bridge emits the variable-length format (byte 25 =
-    /// phase_motor_count, bytes 26+3·i = per-motor entry). Up to 16 motors
-    /// per MCU (mirrors firmware-side `MAX_STEPPER_OIDS`). `slot_idx` must
-    /// be in 0..4 (kinematic-slot index) and `step_modes[slot_idx]` must
-    /// be 0 (Modulated). Pass `None` (not an empty list) when no motors
-    /// are phase stepped — the bridge then emits the 25-byte body.
     #[pyo3(signature = (mcu_handle, kinematics, present_mask, awd_mask, invert_mask, steps_per_mm, step_modes = None, phase_configs = None, timeout_s = 2.0))]
     fn configure_axes(
         &self,
@@ -1633,7 +1189,6 @@ impl PyMotionBridge {
             }
         }
         if let Some(ref pc) = phase_configs {
-            // Cap mirrors firmware-side runtime::state::MAX_STEPPER_OIDS.
             if pc.len() > 16 {
                 return Err(PyRuntimeError::new_err(format!(
                     "configure_axes: phase_configs.len()={} exceeds MAX_STEPPER_OIDS=16",
@@ -1658,10 +1213,6 @@ impl PyMotionBridge {
             let conn = mcus.get(&mcu_handle).ok_or_else(|| {
                 PyRuntimeError::new_err(format!("configure_axes: unknown mcu_handle {mcu_handle}"))
             })?;
-            // Stock-Klipper firmware (no kalico runtime) cannot accept this
-            // bootstrap message. Silently no-op so multi-MCU setups where one
-            // board runs stock Klipper still complete _configure_axes_per_mcu
-            // for the kalico-runtime board(s).
             if !conn.kalico_native_supported {
                 return Ok(());
             }
@@ -1676,11 +1227,6 @@ impl PyMotionBridge {
                 .clone();
             (io, conn.identify_caps)
         };
-        // Always emit the 25-byte extended format when step_modes are provided;
-        // fall back to 20-byte legacy when not. Byte 20 carries the phase-
-        // stepping capability bit from the identify response so the firmware
-        // can double-check the host's understanding. Bytes 21-24 are the per-
-        // motor StepMode array (0=Modulated, 1=StepTime).
         let phase_capable: u8 = if identify_caps & 0x1 != 0 { 1 } else { 0 };
         let steps_arr: [f32; 4] = [
             steps_per_mm[0],
@@ -1725,18 +1271,6 @@ impl PyMotionBridge {
         }
     }
 
-    /// Register a phase-stepping SPI bus (cfg only) with the MCU. Call
-    /// once per unique `bus_id` BEFORE any `register_phase_motor` calls
-    /// referencing that bus, and before `configure_axes` for that MCU.
-    /// Wraps the `runtime_register_phase_bus bus_id=%c rate=%u` wire
-    /// command. The firmware-side handler calls
-    /// `spi_setup(bus_id, mode=3, rate)` and caches the cfg.
-    ///
-    /// Per-motor CS GPIOs are registered separately via
-    /// `register_phase_motor` — multiple TMC5160 drivers on the same SPI
-    /// bus each need their own CS line, so CS state is per-motor, not
-    /// per-bus (2026-05-19 fix; see
-    /// `docs/superpowers/specs/2026-05-19-phase-stepping-per-motor-cs-design.md`).
     #[pyo3(signature = (mcu_handle, bus_id, rate, timeout_s = 5.0))]
     fn register_phase_bus(
         &self,
@@ -1753,10 +1287,6 @@ impl PyMotionBridge {
                     "register_phase_bus: unknown mcu_handle {mcu_handle}"
                 ))
             })?;
-            // Stock-Klipper firmware (no kalico runtime) does not implement
-            // runtime_register_phase_bus. Silently no-op so multi-MCU setups
-            // where one board is stock Klipper (e.g. F446 on Z) still complete
-            // the per-MCU iteration cleanly.
             if !conn.kalico_native_supported {
                 return Ok(());
             }
@@ -1778,11 +1308,6 @@ impl PyMotionBridge {
                     PyRuntimeError::new_err(format!("register_phase_bus: transport error: {e:?}"))
                 })
         })?;
-        // Firmware emits `result=%i` (signed i32). `try_get_i32` accepts
-        // either I32 or U32 (parser may surface a non-negative %i value as
-        // U32 when it fits in u31) and returns None on missing/wrong-type,
-        // so a firmware-side schema drift surfaces as an explicit error
-        // instead of being silently coerced to 0.
         let result = params.try_get_i32("result").ok_or_else(|| {
             PyRuntimeError::new_err(
                 "register_phase_bus: response missing or non-integer result field",
@@ -1796,18 +1321,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    /// Register the CS GPIO for a single phase-stepped motor. Call once
-    /// per phase-stepped motor, after `register_phase_bus` for the named
-    /// `bus_id` and before `configure_axes` for that MCU. Wraps the
-    /// `runtime_register_phase_motor motor_idx=%c bus_id=%c cs_pin_id=%c`
-    /// wire command. The firmware-side handler calls
-    /// `gpio_out_setup(cs_pin_id, 1 /* idle high */)` and stores the
-    /// handle in `phase_motors[motor_idx]` for `write_xdirect` dispatch.
-    ///
-    /// `motor_idx` is the Rust runtime motor slot index in
-    /// `[0, MAX_STEPPER_OIDS=16)`, matching the per-motor
-    /// `shared.phase_config[motor_idx]` storage. `cs_pin_id` is the
-    /// firmware's GPIO encoding (port * 16 + pin on stm32).
     #[pyo3(signature = (mcu_handle, motor_idx, bus_id, cs_pin_id, timeout_s = 5.0))]
     fn register_phase_motor(
         &self,
@@ -1863,11 +1376,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    /// Return the raw identify bytes (zlib-compressed firmware data-dict)
-    /// for the given MCU. `attach_serial` must have been called first.
-    ///
-    /// Pass the returned bytes to klippy's
-    /// `msgproto.MessageParser.process_identify(data)`.
     fn get_identify_data(&self, mcu_handle: u32) -> PyResult<Vec<u8>> {
         let io = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
@@ -1888,13 +1396,6 @@ impl PyMotionBridge {
         Ok(io.raw_identify_bytes().to_vec())
     }
 
-    /// Send a human-readable msgproto command and wait for a response.
-    ///
-    /// Equivalent to klippy's `serial.send_with_response(msg, response)`.
-    /// Returns a Python dict of the response parameters.
-    ///
-    /// `msg` is a command string like `"get_uptime"` or `"get_clock"`.
-    /// `response` is the expected response name like `"uptime"` or `"clock"`.
     #[pyo3(signature = (mcu_handle, msg, response, timeout_s = 5.0))]
     fn bridge_call(
         &self,
@@ -1906,17 +1407,6 @@ impl PyMotionBridge {
     ) -> PyResult<Py<PyDict>> {
         use std::time::Duration;
 
-        // Get the submission_tx from KalicoHostIo — we need to submit
-        // without holding the mutex across a blocking call. KalicoHostIo::call
-        // uses mpsc internally and blocks; we must release the mcus lock before
-        // calling it. We do this by cloning the sender out while locked, then
-        // calling after unlock. Unfortunately KalicoHostIo doesn't expose its
-        // sender directly, so we use py.allow_threads with a short-lived lock.
-        //
-        // Safe because py.allow_threads drops the GIL; the mcus mutex guards
-        // McuConnection which is Send (KalicoHostIo is Send).
-        // Clone the Arc out of the mutex so we can call blocking I/O without
-        // holding the lock.
         let io = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let conn = mcus.get(&mcu_handle).ok_or_else(|| {
@@ -1960,22 +1450,6 @@ impl PyMotionBridge {
         Ok(d.unbind())
     }
 
-    /// Drain one runtime event from the MCU's event queue.
-    ///
-    /// Returns a Python dict describing the event (with a `"type"` key),
-    /// or `None` if no event is pending. Klippy registers a reactor timer
-    /// that polls this and dispatches to registered handlers.
-    ///
-    /// Event types emitted:
-    ///   - `"status"`: kalico_status_v6 heartbeat — keys: `engine_status`,
-    ///     `current_segment_id`, `last_fault`, `fault_detail`
-    ///   - `"credit_freed"`: kalico_credit_freed — keys: `retired_through_segment_id`,
-    ///     `free_slots`
-    ///   - `"fault"`: kalico_fault — keys: `fault_code`, `fault_detail`,
-    ///     `segment_id`, `synthesized`
-    ///   - `"output"`: #output / unknown output — keys: `format`, `msg`
-    ///   - `"endstop_tripped"`: kalico_endstop_tripped — keys: `arm_id`,
-    ///     `trip_clock`, `trip_source_idx`, `fmt_version`, `stepper_count`
     fn take_runtime_event(&self, py: Python<'_>, mcu_handle: u32) -> PyResult<Option<Py<PyDict>>> {
         use kalico_host_rt::host_io::runtime_events::RuntimeEvent;
         use std::sync::mpsc::TryRecvError;
@@ -2006,10 +1480,6 @@ impl PyMotionBridge {
                 d.set_item("current_segment_id", s.current_segment_id)?;
                 d.set_item("last_fault", s.last_fault)?;
                 d.set_item("fault_detail", s.fault_detail)?;
-                // v2: retirement watermark — host EventDispatcher already
-                // synthesizes a CreditFreed from this on watermark advance
-                // (events.rs::handle_status_frame), but expose it to klippy
-                // too for observability.
                 d.set_item("retired_through_segment_id", s.retired_through_segment_id)?;
             }
             RuntimeEvent::CreditFreed(c) => {
@@ -2025,12 +1495,9 @@ impl PyMotionBridge {
                 d.set_item("synthesized", f.synthesized)?;
             }
             RuntimeEvent::Trace(_) => {
-                // Trace events are not klippy-visible; skip silently.
                 return Ok(None);
             }
             RuntimeEvent::Heartbeat { .. } => {
-                // Heartbeat events feed the pump's flow-control accounting and
-                // are not klippy-visible; skip silently.
                 return Ok(None);
             }
             RuntimeEvent::EndstopTripped(e) => {
@@ -2060,11 +1527,6 @@ impl PyMotionBridge {
             RuntimeEvent::PassthroughResponse { name, params } => {
                 d.set_item("type", "response")?;
                 d.set_item("name", name)?;
-                // Spread params fields directly into the dict so klippy's
-                // registered handlers receive them with their original names
-                // (e.g. analog_in_state's `oid`, `value`, `next_clock`,
-                // `value_avg`). Serial-protocol field names never collide
-                // with the keys we set above.
                 for (k, v) in &params.fields {
                     use kalico_host_rt::transport::MessageValue;
                     match v {
@@ -2079,20 +1541,12 @@ impl PyMotionBridge {
                 }
             }
             RuntimeEvent::McuLog(_) => {
-                // McuLog is consumed by the mcu_log_hook + forwarded to the
-                // runtime channel (host-side NDJSON only); not exposed to Python.
                 return Ok(None);
             }
         }
         Ok(Some(d.unbind()))
     }
 
-    /// Send a fire-and-forget command to the MCU (no response expected).
-    ///
-    /// Used for config-phase commands like `allocate_oids`, `config_stepper`,
-    /// `finalize_config` where the MCU processes the command but sends no reply.
-    /// The frame is still wire-level ACKed; only the application-level response
-    /// is absent.
     #[pyo3(signature = (mcu_handle, msg))]
     fn bridge_send(&self, mcu_handle: u32, msg: &str) -> PyResult<()> {
         let io = {
@@ -2113,13 +1567,6 @@ impl PyMotionBridge {
             .map_err(|e| PyRuntimeError::new_err(format!("bridge_send: {e}")))
     }
 
-    /// 2026-05-18: tell the per-MCU reactor that an imminent transport drop
-    /// is expected and must NOT trigger the EXIT_ON_FAULT abort guard.
-    /// Klippy calls this from `_restart_via_command` right before sending
-    /// the firmware `reset` command — `NVIC_SystemReset` on the MCU drops
-    /// USB-CDC and the host reactor would otherwise interpret BrokenPipe as
-    /// a wedge and abort the whole klippy process, breaking
-    /// FIRMWARE_RESTART recovery on bridge MCUs.
     fn bridge_mark_expected_disconnect(&self, mcu_handle: u32) -> PyResult<()> {
         let io = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
@@ -2138,7 +1585,6 @@ impl PyMotionBridge {
             .map_err(|e| PyRuntimeError::new_err(format!("bridge_mark_expected_disconnect: {e}")))
     }
 
-    /// Update clock estimation parameters for the given MCU.
     #[pyo3(signature = (mcu, freq, offset, last_clock))]
     fn set_clock_est(
         &self,
@@ -2153,9 +1599,6 @@ impl PyMotionBridge {
             .getattr("monotonic")?
             .call0()?
             .extract()?;
-        // Diag: log every set_clock_est arrival. Trying to isolate why the
-        // dispatch sees `now_clock=0` despite klippy's clocksync showing
-        // last_clock in the billions.
         use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
         static SET_CLOCK_EST_CALLS: AtomicUsize = AtomicUsize::new(0);
         let call_n = SET_CLOCK_EST_CALLS.fetch_add(1, AOrd::Relaxed);
@@ -2186,8 +1629,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    /// Drain the debug log for crash diagnostics. Returns a dict with
-    /// `sent` and `received` lists of dicts.
     fn extract_old(&self, py: Python<'_>, mcu: u32) -> PyResult<Py<PyDict>> {
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         let (sent, received) = router
@@ -2225,16 +1666,6 @@ impl PyMotionBridge {
         Ok(d.unbind())
     }
 
-    // ── Task 8: motion-submission methods ───────────────────────────────
-
-    /// Initialize the planner thread with config from `printer.cfg`.
-    ///
-    /// `mcus` is the host-derived topology: one `(bridge_handle, axes,
-    /// kinematics_tag)` entry per motion MCU, where `axes` holds `AXIS_*`
-    /// indices and `kinematics_tag` is a `KinematicTag` discriminant. The
-    /// host builds this from the global `kinematics` setting plus the
-    /// stepper→MCU assignment — no MCU identity is hardcoded here. Supports
-    /// 1..N MCUs and any axis partition.
     #[pyo3(signature = (
         max_velocity,
         max_accel,
@@ -2287,23 +1718,12 @@ impl PyMotionBridge {
         cfg.window_capacity = window_capacity;
         cfg.beta_max_iters = beta_max_iters;
 
-        // Persist for runtime updates.
         *self
             .planner_config
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = cfg.clone();
 
-        // ── Connect EtherCAT Unix sockets + QueryRuntimeCaps ─────────────
-        //
-        // Open each EtherCAT endpoint and query its ring caps. Both must
-        // succeed or we fail loudly — the host cannot size piece rings without
-        // `total_piece_memory`. Must run before `caps_by_handle` is built.
         let ec_conns: HashMap<u32, Arc<UnixNativeConn>> = {
-            // First pass: find all EtherCAT MCU ids from the raw mcus map
-            // (scan for ethercat_socket.is_some()). We cannot use
-            // `ethercat_mcu_ids` here because it is computed from `mcu_configs`
-            // which hasn't been built yet — but `mcus` already has the
-            // `ethercat_socket` field from `claim_ethercat_node`.
             let socket_by_id: Vec<(u32, String)> = {
                 let mcus_lock = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
                 mcus.iter()
@@ -2322,8 +1742,6 @@ impl PyMotionBridge {
                         "init_planner: failed to connect to ethercat socket {socket}: {e}"
                     ))
                 })?;
-                // Query the endpoint's real ring capacity. Fatal on failure —
-                // a caps-query failure means the host cannot size piece rings.
                 let caps = query_ethercat_runtime_caps(&conn, std::time::Duration::from_secs(5))
                     .map_err(|e| {
                         PyRuntimeError::new_err(format!(
@@ -2337,8 +1755,6 @@ impl PyMotionBridge {
                      total_piece_memory={}",
                     caps.total_piece_memory,
                 );
-                // Write the queried caps back into McuConnection so the
-                // caps_by_handle block below picks them up naturally.
                 {
                     let mut mcus_lock = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
                     if let Some(c) = mcus_lock.get_mut(&mcu_id) {
@@ -2350,10 +1766,6 @@ impl PyMotionBridge {
             out
         };
 
-        // Host-supplied N-MCU topology. Pull `runtime_caps` from each
-        // `McuConnection`. EtherCAT nodes now have `Some(caps)` from the
-        // `QueryRuntimeCaps` round-trip above; serial nodes had caps set by
-        // `attach_serial`. A `None` for a motion MCU is a hard error.
         let caps_by_handle: std::collections::HashMap<u32, McuCaps> = {
             let mcus_lock = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             mcus.iter()
@@ -2376,7 +1788,6 @@ impl PyMotionBridge {
         let counter = Arc::clone(&self.dispatched_segments);
         let router_arc = Arc::clone(&self.router);
 
-        // EtherCAT nodes carry no serial transport; see dispatch.rs::build_serial_seed_sends.
         let ethercat_mcu_ids: HashSet<u32> = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             mcu_configs
@@ -2393,8 +1804,6 @@ impl PyMotionBridge {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let mut out = HashMap::new();
             for cfg_mcu in &mcu_configs {
-                // EtherCAT nodes have no serial KalicoHostIo — skip them here;
-                // they are handled via UnixNativeConn heartbeat.
                 if ethercat_mcu_ids.contains(&cfg_mcu.mcu_id) {
                     continue;
                 }
@@ -2415,17 +1824,6 @@ impl PyMotionBridge {
             out
         };
 
-        // ── Push-pieces pump (Task 8) ─────────────────────────────────────
-        //
-        // One pump thread per planner session. Receives `EnqueueMsg`s from
-        // the dispatch closure and `HeartbeatMsg`s from the per-MCU
-        // heartbeat callback, and sends `PushPieces` frames in strict
-        // time order with per-ring flow control.
-        //
-        // Ring depth per (mcu,axis): total_piece_memory / 32 / num_axes,
-        // derived from the caps each MCU reported at connect time (serial:
-        // during attach_serial; EtherCAT: QueryRuntimeCaps above). There is
-        // no special-casing: all MCUs go through axis_ring_depth uniformly.
         let ring_depth_table: HashMap<crate::pump::AxisKey, u32> = {
             let mut t = HashMap::new();
             for cfg_mcu in &mcu_configs {
@@ -2445,17 +1843,12 @@ impl PyMotionBridge {
             t
         };
 
-        // Register CLOCK_MONOTONIC (freq=1e9) for each EtherCAT MCU in the router.
-        // The dispatch `project` closure calls `host_time_to_mcu_clock` for all
-        // MCUs uniformly; the 1e9 Hz freq makes it return nanoseconds, which is
-        // what the kalico-ethercat-rt endpoint expects as `start_time`.
         {
             let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
             let now_ns = crate::motion_node::monotonic_ns();
             for &mcu_id in &ethercat_mcu_ids {
                 let mcu_h = mcu_handle_from_raw(mcu_id);
-                // freq=1e9 because EtherCAT timestamps are CLOCK_MONOTONIC ns.
-                // Seed: at the current Instant the EtherCAT clock reads now_ns.
+                // freq=1e9: EtherCAT timestamps are CLOCK_MONOTONIC nanoseconds.
                 let _ = router.set_clock_est_from_sample(
                     mcu_h,
                     1_000_000_000.0_f64,
@@ -2480,8 +1873,6 @@ impl PyMotionBridge {
 
         let pump_timeout = Duration::from_secs(5);
         let ring_depth_table_for_pump = ring_depth_table.clone();
-        // Clone the router Arc into the pump thread so it can query the
-        // per-MCU projected clock for the commit-lead horizon gate.
         let router_for_pump = Arc::clone(&self.router);
         let pump_thread_handle = std::thread::Builder::new()
             .name("push-pieces-pump".into())
@@ -2514,23 +1905,15 @@ impl PyMotionBridge {
             })
             .expect("spawn push-pieces-pump thread");
 
-        // Stored for teardown via shutdown() (sends Shutdown, joins the thread). NOTE: not torn down on Drop or detach_serial — acceptable for the current single-session lifecycle (init_planner runs once under OnceLock; klippy always calls shutdown()). Revisit when restart/re-init is wired.
         *self.pump_tx.lock().unwrap_or_else(|p| p.into_inner()) = Some(pump_tx_init.clone());
         *self.pump_thread.lock().unwrap_or_else(|p| p.into_inner()) = Some(pump_thread_handle);
 
-        // ── End pump setup ────────────────────────────────────────────────
-
-        // Attach heartbeat callbacks — route StatusHeartbeat retired_counts
-        // to the pump so it can update per-ring flow-control accounting.
         for cfg_mcu in &mcu_configs {
             let mcu_id = cfg_mcu.mcu_id;
             let pump_tx_hb = pump_tx_init.clone();
             let drain_hb = self.drain.clone();
 
             if ethercat_mcu_ids.contains(&mcu_id) {
-                // EtherCAT: heartbeat arrives via UnixNativeConn events channel.
-                // Install the same callback as serial MCUs, then spawn a
-                // poll-events thread that drains inbound frames continuously.
                 let conn = ec_conns
                     .get(&mcu_id)
                     .expect("ec_conns built from ethercat_mcu_ids")
@@ -2557,7 +1940,6 @@ impl PyMotionBridge {
                     })
                     .expect("spawn ec-heartbeat-poll thread");
             } else {
-                // Serial: heartbeat arrives via KalicoHostIo's reactor.
                 let io = host_ios
                     .get(&mcu_id)
                     .expect("host_io map built from mcu_configs")
@@ -2579,18 +1961,9 @@ impl PyMotionBridge {
         let mcu_configs_for_cb = mcu_configs;
         let router_for_cb = Arc::clone(&router_arc);
 
-        // ── Task 8: new dispatch wiring ───────────────────────────────────
-        //
-        // `Anchor` tracks the shared host-time T0 for the current stream.
-        // The dispatch type is `Fn` (not `FnMut`) + `Send + Sync`, so we
-        // need interior mutability.  `Mutex<Anchor>` satisfies both `Send`
-        // and `Sync`; the planner calls dispatch serially (one segment at a
-        // time from its run-loop), so the mutex is always uncontended.
         let anchor_mutex = std::sync::Mutex::new(crate::anchor::Anchor::new());
         let pump_tx_for_cb = pump_tx_init.clone();
         let drain_disp = self.drain.clone();
-        // `counter` is Arc<AtomicU64>; captured into the closure to keep
-        // `dispatched_segments` accurate for `run_probe_homing` diagnostics.
         let counter_for_cb = Arc::clone(&counter);
 
         let dispatch: Arc<
@@ -2603,7 +1976,6 @@ impl PyMotionBridge {
                     seg.t_end,
                 );
 
-                // Shared host "now" (seconds) from the router's single clock.
                 let host_now = {
                     let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
                     r.host_now_secs()
@@ -2614,9 +1986,6 @@ impl PyMotionBridge {
                     .unwrap_or_else(|p| p.into_inner())
                     .anchor_segment(seg.t_start, seg.t_end, host_now);
 
-                // DIAG (temporary, -308 investigation): on the first dispatch
-                // of a stream, log segment-0's projected start_time vs each
-                // MCU's clock-now to expose any per-MCU past-deficit.
                 if fresh {
                     let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
                     for cfg in mcu_configs_for_cb.iter() {
@@ -2625,9 +1994,6 @@ impl PyMotionBridge {
                     }
                 }
 
-                // `project`: host-time seconds → MCU absolute clock ticks.
-                // Locks the router once per (mcu_id, piece); router is held
-                // only for the arithmetic, not for any I/O.
                 let project = |mcu_id: u32, host_secs: f64| -> u64 {
                     let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());
                     r.host_time_to_mcu_clock(crate::types::mcu_handle_from_raw(mcu_id), host_secs)
@@ -2649,25 +2015,12 @@ impl PyMotionBridge {
             },
         );
 
-        // `set` returns `Err(handle)` if the slot was concurrently
-        // initialized. The early `get().is_some()` check above (combined
-        // with klippy's GIL-serialized init path) makes this race a
-        // logic bug rather than a benign retry — surface it explicitly.
         self.planner
             .set(PlannerHandle::spawn(cfg, dispatch))
             .map_err(|_| PyRuntimeError::new_err("planner already initialized (raced)"))?;
         Ok(())
     }
 
-    /// Submit a travel move. Phase 2: `de` must be 0.
-    //
-    // `py.allow_threads` releases the GIL across `classify_and_build`
-    // (NURBS construction + validation, real work) and the planner mutex
-    // acquisitions, so the clock-sync thread and other Python callers can
-    // make progress under sustained motion submission. The channel send
-    // inside `planner.submit_move` is unbounded today, but releasing the
-    // GIL here also future-proofs against converting it to bounded
-    // backpressure without retrofitting every call-site.
     #[pyo3(signature = (dx, dy, dz, de, feedrate))]
     fn submit_move(
         &self,
@@ -2706,41 +2059,11 @@ impl PyMotionBridge {
         })
     }
 
-    /// Submit one homing-tagged absolute move. MVP watches the first arm id;
-    /// multi-arm logical OR is Step 10.
     #[pyo3(signature = (newpos, speed, arm_ids))]
     fn submit_homing_move(&self, newpos: Vec<f64>, speed: f64, arm_ids: Vec<u32>) -> PyResult<()> {
         self.submit_homing_move_inner(&newpos, speed, &arm_ids)
     }
 
-    /// Flush all pending moves and block until every queued segment is on
-    /// the wire.
-    ///
-    /// ## Contract (Phase 6 Task 7.3 — "wait_for_dispatch_to_match_append")
-    ///
-    /// When this returns, **dispatched time covers queued time**:
-    /// every move that was previously submitted via `submit_move` /
-    /// `submit_homing_move` has been dispatched all the way through its
-    /// trailing decel-to-zero ramp. The bridge atomic
-    /// (`last_move_time_bits`) reflects `t_appended` (queued time) under
-    /// Phase 6's caller-side-advance semantics; after this call returns,
-    /// the dispatched-segment window covers `[0, last_move_time]` up to
-    /// the rectification tolerance (1 µs).
-    ///
-    /// This is what `M400` and homing actually need: a barrier that
-    /// blocks until the toolhead has been commanded the full submitted
-    /// distance — not just until the planner thread acknowledges the
-    /// queue. Phase 4 Task 4.3 ships the mechanism (`PlannerMsg::Flush`
-    /// synchronously calls `commit_decel_to_zero` + dispatches the
-    /// held-back tail before notifying the waiter); Phase 6 Task 7.3
-    /// pins the integration-layer invariant via
-    /// `streaming_replan::wait_moves_blocks_until_dispatch_catches_up`.
-    ///
-    /// Inline-event scheduling (M106, SET_PIN AT_TIME, TMC register
-    /// updates, fan transitions) does **not** need this barrier — those
-    /// callers read `get_last_move_time` directly and schedule against
-    /// the queued timeline, which advances synchronously on
-    /// `submit_move`.
     fn wait_moves(&self, py: Python<'_>) -> PyResult<()> {
         let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
@@ -2750,18 +2073,11 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    /// Block the calling (G-code) thread until every axis the bridge has sent
-    /// to has `retired == sent` — i.e. the MCU has physically finished all
-    /// queued motion. Flushes the planner first (which shapes + dispatches the
-    /// decel-to-zero tail). The reactor/heartbeat threads keep running while we
-    /// wait (GIL released). Loud timeout error on a wedged MCU.
     fn drain_motion(&self, py: Python<'_>) -> PyResult<()> {
         let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
         })?;
-        // 1) Flush: dispatch the held-back decel-to-zero tail to the pump.
         py.allow_threads(|| planner.flush()).map_err(planner_err)?;
-        // 2) Wait for the MCU to retire everything we sent.
         let drain = self.drain.clone();
         py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT))
             .map_err(PyRuntimeError::new_err)?;
@@ -2776,18 +2092,6 @@ impl PyMotionBridge {
         Ok(Some(trip_event_to_pydict(py, evt)?))
     }
 
-    // ── Step 7-D: endstop arm/disarm wire surface ──────────────────────────
-    //
-    // These call the kalico-host-rt producer functions over the same
-    // KalicoHostIo reactor queue used by bridge_call / bridge_send.
-    // Each Python call is one synchronous msgproto round-trip. The Python
-    // side (`klippy/motion_bridge.py::BridgeTriggerDispatch`) wraps these
-    // and handles async `kalico_endstop_tripped` events via the existing
-    // `passthrough_register_handler` plumbing.
-
-    /// Send `runtime_arm_endstop` and wait for the synchronous response.
-    /// Returns the status byte (0=Armed, 1=AlreadyTripped, 2=Rejected) per
-    /// spec §3.2.
     #[pyo3(signature = (mcu, queue, arm_id, arm_clock, sources, stepper_oids, timeout_s=2.0))]
     #[allow(clippy::too_many_arguments)]
     fn endstop_arm(
@@ -2853,8 +2157,6 @@ impl PyMotionBridge {
         Ok(status as u8)
     }
 
-    /// Send `runtime_disarm_endstop` and wait for the response. Returns the
-    /// status byte (0=Disarmed, 1=AlreadyTripped, 2=Unknown) per spec §3.5.
     #[pyo3(signature = (mcu, queue, arm_id, timeout_s=2.0))]
     fn endstop_disarm(&self, mcu: u32, queue: u32, arm_id: u32, timeout_s: f64) -> PyResult<u8> {
         use kalico_host_rt::endstop;
@@ -2866,17 +2168,6 @@ impl PyMotionBridge {
         Ok(status as u8)
     }
 
-    // ── Step 7-E: async homing submission + software trip + deadline ──────────
-    //
-    // `submit_homing_move_async` submits a homing move without blocking; the
-    // Python caller polls `is_homing_segment_retired` in its credit loop.
-    // `software_trip` and `extend_homing_deadline` are wire commands that map
-    // directly onto the corresponding firmware runtime commands.
-
-    /// Submit one homing-tagged absolute move and return immediately.
-    /// Unlike `submit_homing_move`, this does **not** call `wait_moves` —
-    /// the caller is expected to poll `is_homing_segment_retired` to detect
-    /// completion.
     #[pyo3(signature = (newpos, speed, arm_ids))]
     fn submit_homing_move_async(
         &self,
@@ -2885,11 +2176,8 @@ impl PyMotionBridge {
         arm_ids: Vec<u32>,
     ) -> PyResult<()> {
         self.submit_homing_move_inner(&newpos, speed, &arm_ids)
-        // No wait_moves — returns immediately.
     }
 
-    /// Returns `true` once the homing segment has reached a terminal state:
-    /// `Completed`, `Tripped`, or `DeadlineExpired`.
     fn is_homing_segment_retired(&self) -> bool {
         matches!(
             self.homing.state(),
@@ -2899,14 +2187,6 @@ impl PyMotionBridge {
         )
     }
 
-    /// Returns a reason code after `is_homing_segment_retired` is `true`.
-    ///
-    /// | Code | Meaning |
-    /// |------|---------|
-    /// | 0    | Still active or idle (not yet retired) |
-    /// | 1    | Completed — move ran to end time with no trigger |
-    /// | 2    | Tripped — software_trip or GPIO trigger fired |
-    /// | 3    | DeadlineExpired — deadline elapsed before completion |
     fn get_homing_segment_reason(&self) -> u8 {
         match self.homing.state() {
             crate::homing::HomingSegmentState::Completed => 1,
@@ -2916,8 +2196,6 @@ impl PyMotionBridge {
         }
     }
 
-    /// Send `runtime_software_trip arm_id=%u` to the MCU and wait for the
-    /// `kalico_software_trip_response`. Returns the status byte from the MCU.
     #[pyo3(signature = (mcu, arm_id, timeout_s=2.0))]
     fn software_trip(&self, mcu: u32, arm_id: u32, timeout_s: f64) -> PyResult<u8> {
         let io = self.host_io_for_mcu("software_trip", mcu)?;
@@ -2932,8 +2210,6 @@ impl PyMotionBridge {
         Ok(status)
     }
 
-    /// Send `runtime_extend_homing_deadline arm_id=%u` to the MCU.
-    /// Fire-and-forget — no response is expected.
     #[pyo3(signature = (mcu, arm_id))]
     fn extend_homing_deadline(&self, mcu: u32, arm_id: u32) -> PyResult<()> {
         let io = self.host_io_for_mcu("extend_homing_deadline", mcu)?;
@@ -2943,9 +2219,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    /// Phase 1: register the Beacon trsync interceptor.  Call BEFORE
-    /// `home_start()` sends `beacon_home`, so the interceptor is in
-    /// place when the probe triggers.  Returns an opaque handle ID.
     fn prepare_probe_homing(
         &self,
         beacon_handle: u32,
@@ -2972,9 +2245,6 @@ impl PyMotionBridge {
         Ok(id)
     }
 
-    /// Phase 2: submit the homing move and block (GIL released) until
-    /// the probe triggers, the segment retires, or the sensor-fault
-    /// timeout fires.  Cleans up the interceptor before returning.
     #[pyo3(signature = (
         handle_id,
         move_pos,
@@ -3024,7 +2294,6 @@ impl PyMotionBridge {
         }
     }
 
-    /// Submit a dwell: flush + advance print time.
     fn submit_dwell(&self, duration_s: f64) -> PyResult<()> {
         let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
@@ -3032,51 +2301,12 @@ impl PyMotionBridge {
         planner.dwell(duration_s).map_err(planner_err)
     }
 
-    /// Reset commanded position. Klippy calls this on every homing
-    /// completion (`SET_KINEMATIC_POSITION`, `G28`, manual stepper moves,
-    /// fault-recovery reconnect) so it is the natural hook to re-anchor
-    /// the streaming planner's `ShaperState`.
-    ///
-    /// **Phase 5 Task 5.5 — explicit engine-fault → klippy reset.** Spec
-    /// §3.7 ("Engine fault → klippy reset"): "Explicit
-    /// `ShaperState::reset(home_pos)` on klippy reconnect." `init_planner`
-    /// already does this implicitly by constructing a fresh
-    /// `PlannerHandle::spawn(...)` with `ShaperState::new([0.0; 4], &shapers)`
-    /// — so the *very first* connect / *clean* reconnect (planner is dropped
-    /// and recreated) is already handled. But klippy can also reset the
-    /// kinematic position without reinitialising the planner (e.g.,
-    /// `SET_KINEMATIC_POSITION` after a homing completion, or a
-    /// fault-recovery path that re-uses the existing planner thread). In
-    /// those cases `set_position` is the only signal the bridge receives
-    /// that the host-side notion of "where the toolhead is" has changed.
-    ///
-    /// We forward the new position into the planner via
-    /// `PlannerHandle::kalico_stream_open`, which re-seeds each axis queue
-    /// to `home_pos` at `v = 0` and clears any held-back tail (preserving
-    /// kernels). The E axis tracks shaped XY arc-length under the
-    /// COUPLED_TO_XY model and is not commanded directly via
-    /// `set_position`; we pass `0.0` for the E slot.
-    ///
-    /// If the planner has not yet been initialised the call is a no-op
-    /// (matches the pre-Task-5.5 behaviour — `set_position` worked even
-    /// before motion submission was wired). The forward error is
-    /// surfaced if the planner channel has closed (planner thread
-    /// crashed) so callers see the failure rather than silently losing
-    /// the re-anchor.
     fn set_position(&self, py: Python<'_>, x: f64, y: f64, z: f64) -> PyResult<()> {
         {
             let mut pos = self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
             *pos = [x, y, z];
         }
-        // Forward to the planner so the streaming `ShaperState` is
-        // re-anchored to the new home position. See doc above for the
-        // Task 5.5 rationale; `kalico_stream_open` is the entry point
-        // the planner registers for this lifecycle event (see
-        // `PlannerHandle::kalico_stream_open` and
-        // `streaming::ShaperState::reset`).
         if let Some(planner) = self.planner.get() {
-            // Re-seeding position while an axis is still stepping would stomp a
-            // moving axis. Wait for the MCU to physically finish first.
             py.allow_threads(|| planner.flush()).map_err(planner_err)?;
             {
                 let drain = self.drain.clone();
@@ -3088,34 +2318,8 @@ impl PyMotionBridge {
                 .kalico_stream_open([x, y, z, 0.0])
                 .map_err(planner_err)?;
 
-            // Reset host drain counters to align with the MCU's freshly-zeroed
-            // retired cursor after stream re-open.
             self.drain.reset();
 
-            // Re-establish each MCU's motor-frame `last_step_count` baseline so
-            // the first move after homing / G92 / SET_KINEMATIC_POSITION computes
-            // a correct step delta. The connect-time runtime reset zeroed every
-            // baseline; without this the delta for a move starting at e.g.
-            // motor-A = X+Y = 300 is computed against 0 and trips
-            // StepsPerSampleExceeded. The CoreXY transform (A=X+Y, B=X-Y) lives
-            // on the host (shared `dispatch::cfg_is_corexy`); the MCU stays dumb.
-            //
-            // This is a direct fire-and-forget command (NOT a pump message): the
-            // MCU handles it via its command dispatcher, not the piece ring.
-            // Ordering against in-flight pieces IS handled: we drained above, so
-            // every axis has retired == sent before this re-seed. The stream
-            // re-open above zeroes both the MCU ring and the host drain counters.
-            // Build the set of EtherCAT mcu_ids from the live McuConnection map
-            // so we can filter them out of the seed loop below. EtherCAT nodes
-            // must be skipped: `runtime_seed_position` is a stepper-only serial
-            // command that resets the motor-frame `last_step_count` baseline for
-            // step-delta computation. EtherCAT servo endpoints are
-            // position-commanded (absolute), self-seed their rotor origin from
-            // the first sample's encoder count, and have no serial transport.
-            // The `kalico_stream_open` call above already re-seeded the streamed
-            // position for every node (including EtherCAT ones); the serial seed
-            // is genuinely not needed for them. See
-            // `dispatch::build_serial_seed_sends` for the full rationale.
             let sends = {
                 let configs = self
                     .mcu_axis_configs
@@ -3134,10 +2338,6 @@ impl PyMotionBridge {
             };
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             for s in sends {
-                // Planner is up ⇒ init_planner guaranteed these configs come from
-                // real, attached MCUs. A missing mcu_id here is a broken invariant
-                // — fail loudly. EtherCAT nodes were already filtered above and
-                // never reach this point.
                 let conn = mcus.get(&s.mcu_id).unwrap_or_else(|| {
                     panic!(
                         "set_position seed: planner up but mcu_id {} absent \
@@ -3145,10 +2345,6 @@ impl PyMotionBridge {
                         s.mcu_id
                     )
                 });
-                // A serial MCU that genuinely lacks host_io at this point is a
-                // broken invariant (attach_serial must have been called before
-                // init_planner). EtherCAT nodes are never in `sends` (filtered
-                // above), so host_io == None here is always a real error.
                 let io = conn.host_io.as_ref().unwrap_or_else(|| {
                     panic!(
                         "set_position seed: serial mcu_id {} has no host_io \
@@ -3173,8 +2369,6 @@ impl PyMotionBridge {
             }
         }
 
-        // Clear any retained homing curve — the stream is being re-opened
-        // and the previous homing segment is no longer valid.
         *self
             .retained_homing_curve
             .lock()
@@ -3183,8 +2377,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    /// Update velocity / acceleration limits at runtime
-    /// (klippy `SET_VELOCITY_LIMIT`).
     fn update_limits(&self, max_velocity: f64, max_accel: f64) -> PyResult<()> {
         let mut cfg = self
             .planner_config
@@ -3201,7 +2393,6 @@ impl PyMotionBridge {
         planner.update_limits(new_limits).map_err(planner_err)
     }
 
-    /// Update shaper config at runtime (klippy `SET_INPUT_SHAPER`).
     fn update_shaper(
         &self,
         shaper_type_x: &str,
@@ -3223,7 +2414,6 @@ impl PyMotionBridge {
         planner.update_shaper(shaper).map_err(planner_err)
     }
 
-    /// Estimated print time of the last queued move, in seconds.
     fn get_last_move_time(&self) -> f64 {
         match self.planner.get() {
             Some(p) => p.last_move_time(),
@@ -3231,31 +2421,14 @@ impl PyMotionBridge {
         }
     }
 
-    /// Number of shaped segments observed by the dispatch callback. Test /
-    /// sim hook — not part of the klippy-facing API.
     fn dispatched_segment_count(&self) -> u64 {
         self.dispatched_segments.load(Ordering::Relaxed)
     }
 
-    /// Number of times the dispatch closure took the `t * 1e6` fallback
-    /// path because `set_clock_est` had not yet been wired for the target
-    /// MCU. Production integration tests assert this stays zero — non-zero
-    /// indicates SET_CLOCK_EST was not called before motion submission.
     fn fallback_clock_conversions(&self) -> u64 {
         self.fallback_clock_conversions.load(Ordering::Relaxed)
     }
 
-    /// Evaluate the retained homing curve at the given parameter `t`
-    /// (batch-local seconds).
-    ///
-    /// Returns `[x, y, z]` position in millimetres, or raises `RuntimeError`
-    /// if no homing curve has been retained yet.  `t` is clamped to
-    /// `[t_start, t_end]` of the segment so callers can pass the raw trigger
-    /// clock value without needing to guard the edges themselves.
-    ///
-    /// The retained curve is populated by the dispatch closure the first time
-    /// a homing-active segment is dispatched, and is cleared by `set_position`
-    /// (stream open / planner reset).
     #[pyo3(signature = (t,))]
     fn get_homing_position_at_time(&self, t: f64) -> PyResult<Vec<f64>> {
         let guard = self
@@ -3306,7 +2479,6 @@ impl PyMotionBridge {
         let arm_id = arm_ids.first().copied().ok_or_else(|| {
             PyRuntimeError::new_err("submit_homing_move requires at least one arm id")
         })?;
-        // TODO(Step 10): accept all arm_ids as a logical OR set.
         self.homing.begin(arm_id);
 
         let pos = *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
@@ -3371,8 +2543,6 @@ mod require_events_dir_tests {
     use super::require_events_dir_for_kalico_native;
     use std::path::Path;
 
-    /// Non-native MCU with no events_dir: always `Ok` — the dedicated writer is
-    /// not required for MCUs that don't speak kalico-native.
     #[test]
     fn non_native_no_events_dir_is_ok() {
         assert!(
@@ -3381,8 +2551,6 @@ mod require_events_dir_tests {
         );
     }
 
-    /// Non-native MCU with events_dir present: also `Ok` (`init_logging` happened
-    /// before `attach_serial` — the normal setup order).
     #[test]
     fn non_native_with_events_dir_is_ok() {
         assert!(
@@ -3396,8 +2564,6 @@ mod require_events_dir_tests {
         );
     }
 
-    /// Kalico-native MCU with events_dir present: `Ok` — `init_logging` was
-    /// called in the correct order before `attach_serial`.
     #[test]
     fn native_with_events_dir_is_ok() {
         assert!(
@@ -3411,10 +2577,6 @@ mod require_events_dir_tests {
         );
     }
 
-    /// Kalico-native MCU with no events_dir: `Err` — `attach_serial` was called
-    /// before `init_logging`; hook cannot be installed and `McuLog` events would
-    /// be silently discarded.  The error message must identify the MCU label
-    /// and the missing call so the operator can diagnose the mis-ordering.
     #[test]
     fn native_no_events_dir_is_err_containing_label() {
         let result = require_events_dir_for_kalico_native(true, None, "mcu-h7");
@@ -3433,8 +2595,6 @@ mod require_events_dir_tests {
         );
     }
 
-    /// The error message mentions the concrete consequence so the operator
-    /// understands what would have been silently lost.
     #[test]
     fn native_no_events_dir_err_mentions_mculog_discard() {
         let result = require_events_dir_for_kalico_native(true, None, "mcu-f4");

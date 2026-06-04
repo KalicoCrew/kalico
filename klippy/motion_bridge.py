@@ -1,8 +1,4 @@
-# Python wrapper around the PyO3 motion_bridge native module
-#
-# This file is part of the Kalico motion-bridge integration (Stage D).
-# It wraps the Rust-built .so and provides convenience methods that
-# klippy code calls during startup and MCU communication.
+# Python wrapper around the PyO3 motion_bridge native module.
 import logging
 
 try:
@@ -12,16 +8,14 @@ except ImportError:
 
 from . import structured_log
 
-# Print-state events that START or CONTINUE a print: the active print_id is
-# bound in the module global before the event fires (Stage 1 ordering), so the
-# handler pushes the current session + print context to the Rust host.
+# print_id is already bound when these fire, so the handler pushes the current
+# session + print context.
 _PRINT_ACTIVE_EVENTS = (
     "print_stats:start_printing",
     "print_stats:paused_printing",
 )
-# Print-state events that END a print: print_stats fires these BEFORE clearing
-# the print_id module global, so the handler must push an explicit empty print_id
-# rather than reading the (still-stale) module-global value.
+# These fire BEFORE print_id is cleared, so the handler must push an explicit
+# empty print_id rather than read the still-stale module global.
 _PRINT_FINISH_EVENTS = (
     "print_stats:complete_printing",
     "print_stats:error_printing",
@@ -30,15 +24,12 @@ _PRINT_FINISH_EVENTS = (
 )
 
 
-# Methods that issue real motion / planner / MCU traffic. Under the stub
-# bridge there is no Rust engine to talk to, so these MUST NOT silently
-# return None — doing so makes MotionToolhead.move() compute `None - None`
-# and the klippy test suite hangs/crashes (see PR #7 "make CI trustworthy").
-# Calling any of these under the stub is a hard error: the test reached the
-# real motion path without a real bridge, which is never a valid green.
+# Methods that issue real motion/planner/MCU traffic. Under the stub bridge
+# these MUST raise, not return None — a None would make MotionToolhead.move()
+# compute `None - None`, hanging the test suite on a path that reached real
+# motion without a real bridge.
 _STUB_MOTION_METHODS = frozenset(
     {
-        # Planner lifecycle + timeline
         "init_planner",
         "submit_move",
         "submit_dwell",
@@ -50,13 +41,11 @@ _STUB_MOTION_METHODS = frozenset(
         "update_shaper",
         "fallback_clock_conversions",
         "dispatched_segment_count",
-        # Per-MCU configuration / phase-stepping registration
         "configure_axes",
         "register_phase_bus",
         "register_phase_motor",
         "get_mcu_capabilities",
         "ring_depth_for_axis",
-        # Homing / endstop / probe motion
         "submit_homing_move",
         "submit_homing_move_async",
         "endstop_arm",
@@ -69,7 +58,6 @@ _STUB_MOTION_METHODS = frozenset(
         "take_trip_event",
         "is_homing_segment_retired",
         "get_homing_segment_reason",
-        # MCU lifecycle / transport (no native engine to drive these either)
         "claim_mcu",
         "claim_ethercat_node",
         "release_mcu",
@@ -78,7 +66,6 @@ _STUB_MOTION_METHODS = frozenset(
         "alloc_command_queue",
         "set_clock_est",
         "set_msgproto_dict",
-        # Async command/response surface
         "bridge_call",
         "bridge_send",
     }
@@ -86,16 +73,10 @@ _STUB_MOTION_METHODS = frozenset(
 
 
 def attach_structured_logging(native, printer, events_dir):
-    # Install the Rust host structured-logging subscriber and push the current
-    # session/print context across the PyO3 seam. Honors the binding-timing
-    # invariant: session_id is already bound (printer.py startup) by the time
-    # the bridge is constructed, and this runs before any MCU attach/configure
-    # call that could emit a Rust log.
-    #
-    # events_dir is None on a host with no logfile (e.g. --debugoutput); in that
-    # case the durable jsonl sink is not initialized, but the session context is
-    # still pushed so any Rust logging that an external subscriber captures
-    # carries the session id.
+    # Must run after session_id is bound (printer.py startup) and before any MCU
+    # attach/configure that could emit a Rust log. events_dir is None with no
+    # logfile (--debugoutput): the jsonl sink is skipped but session context is
+    # still pushed.
     if events_dir:
         native.init_logging(events_dir)
     native.set_session_context(
@@ -117,21 +98,11 @@ def attach_structured_logging(native, printer, events_dir):
 
 
 class _StubBridge:
-    """Stand-in for ``MotionBridgeWrapper`` when the native Rust module
-    (``motion_bridge_native``) is unavailable, e.g. in CI where the cdylib
-    is not built.
-
-    This stub is usable ONLY for import / boot / config unit tests that
-    never issue motion. The moment any motion-issuing method (a move, a
-    homing op, planner init, an MCU configure, etc.) is reached, it raises
-    a clear ``RuntimeError`` instead of returning ``None``. That makes a
-    test which reaches the real motion path under the stub FAIL LOUD with
-    an actionable message — never hang on ``None - None`` arithmetic and
-    never silently pass.
-
-    Non-motion lifecycle helpers (e.g. ``shutdown`` during disconnect,
-    homing-dispatch registry bookkeeping) remain no-ops so config-only
-    boots can tear down cleanly.
+    """Stand-in for MotionBridgeWrapper when motion_bridge_native is unavailable
+    (e.g. CI without the cdylib). Usable for import/boot/config tests only: any
+    motion-issuing method raises RuntimeError instead of returning None, so a
+    test reaching real motion under the stub fails loud. Non-motion lifecycle
+    helpers stay no-ops so config-only boots tear down cleanly.
     """
 
     def __getattr__(self, name):
@@ -163,19 +134,14 @@ class MotionBridgeWrapper:
             raise ImportError("motion_bridge_native not available")
         self._bridge = _native.MotionBridge()
         self._reactor = reactor
-        # arm_id → BridgeTriggerDispatch registry. Populated by
-        # BridgeTriggerDispatch.start so the credit-freed handler can
-        # fire _completion on past-end-time.
+        # arm_id → BridgeTriggerDispatch; populated by start() so the
+        # credit-freed handler can fire _completion on past-end-time.
         self._homing_dispatches = {}
         self._software_trip_active = False
         self._homing_print_time_base = 0.0
 
     def get_bridge(self):
         return self._bridge
-
-    # ------------------------------------------------------------------
-    # MCU lifecycle
-    # ------------------------------------------------------------------
 
     def claim_mcu(self, label, serial_path, baud):
         return self._bridge.claim_mcu(label, serial_path, baud)
@@ -192,16 +158,8 @@ class MotionBridgeWrapper:
     def shutdown(self):
         return self._bridge.shutdown()
 
-    # ------------------------------------------------------------------
-    # Command queues
-    # ------------------------------------------------------------------
-
     def alloc_command_queue(self, handle):
         return self._bridge.alloc_command_queue(handle)
-
-    # ------------------------------------------------------------------
-    # Passthrough I/O
-    # ------------------------------------------------------------------
 
     def passthrough_send(self, handle, cq, data, minclock=0, reqclock=0):
         return self._bridge.passthrough_send(
@@ -223,16 +181,8 @@ class MotionBridgeWrapper:
             handle, callback
         )
 
-    # ------------------------------------------------------------------
-    # Event polling
-    # ------------------------------------------------------------------
-
     def poll_event(self):
         return self._bridge.poll_event()
-
-    # ------------------------------------------------------------------
-    # Config phase
-    # ------------------------------------------------------------------
 
     def add_config_cmd(self, handle, cmd_bytes):
         return self._bridge.add_config_cmd(handle, cmd_bytes)
@@ -249,10 +199,6 @@ class MotionBridgeWrapper:
     def next_config_entry(self, handle):
         return self._bridge.next_config_entry(handle)
 
-    # ------------------------------------------------------------------
-    # Stats / clock
-    # ------------------------------------------------------------------
-
     def get_stats(self, handle):
         return self._bridge.get_stats(handle)
 
@@ -262,10 +208,6 @@ class MotionBridgeWrapper:
     def extract_old(self, handle):
         return self._bridge.extract_old(handle)
 
-    # ------------------------------------------------------------------
-    # Phase 1: serial attach + identify
-    # ------------------------------------------------------------------
-
     def attach_serial(
         self,
         mcu_handle,
@@ -274,40 +216,25 @@ class MotionBridgeWrapper:
         timeout_s=30.0,
         klippy_non_critical=False,
     ):
-        """Open serial port, run identify handshake, spawn reactor thread.
-
-        ``klippy_non_critical`` mirrors the owning MCU's ``is_non_critical``
-        config flag. It feeds the bridge's per-MCU criticality gate: a
-        non-critical MCU's transport drop does NOT abort the klippy process
-        (klippy's own non-critical-disconnect / reconnect path handles it),
-        whereas a critical motion MCU's drop keeps the abort that forces a
-        systemd restart. The bridge additionally treats any
-        Klipper-protocol-only attachment (kalico identify timed out) as
-        non-critical regardless of this flag.
+        """klippy_non_critical feeds the per-MCU criticality gate: a
+        non-critical MCU's transport drop does not abort klippy, a critical
+        motion MCU's does. A Klipper-protocol-only attach (identify timed out)
+        is always treated as non-critical.
         """
         return self._bridge.attach_serial(
             mcu_handle, serial_path, baud, timeout_s, klippy_non_critical
         )
 
     def get_identify_data(self, mcu_handle):
-        """Return raw zlib identify bytes for process_identify."""
         return bytes(self._bridge.get_identify_data(mcu_handle))
 
     def get_mcu_capabilities(self, mcu_handle):
-        """Return the raw capabilities bitmap from the MCU's IdentifyResponse.
-
-        Bit 0 = PHASE_STEPPING_CAPABLE. Returns 0 for stock-Klipper MCUs that
-        don't speak kalico-native, or before attach_serial has completed.
-        """
+        # Bit 0 = PHASE_STEPPING_CAPABLE; 0 for stock-Klipper MCUs or before
+        # attach_serial completes.
         return self._bridge.get_mcu_capabilities(mcu_handle)
 
     def ring_depth_for_axis(self, mcu_handle, axis_idx):
-        """Return the per-axis ring depth (u16) for the given MCU and axis.
-
-        This is the single source of truth shared between the pump's flow-
-        control accounting and the kalico_configure_axis wire command.
-        init_planner must have been called before this method.
-        """
+        # Requires init_planner first.
         return self._bridge.ring_depth_for_axis(mcu_handle, axis_idx)
 
     def configure_axes(
@@ -322,23 +249,11 @@ class MotionBridgeWrapper:
         phase_configs=None,
         timeout_s=2.0,
     ):
-        """Send the kalico-native ConfigureAxes message to an attached MCU.
-
-        step_modes: optional list of 4 ints (0=Modulated/phase-stepping,
-        1=StepTime/classic). When supplied the bridge emits the 25-byte
-        extended format (spec §4 C1). Omit for the legacy 20-byte path.
-
-        phase_configs: optional variable-length list of
-        (bus_id, cs_pin_id, slot_idx) triples — one entry per phase-stepped
-        motor. When supplied (alongside step_modes), the bridge emits the
-        variable-length format (byte 25 = phase_motor_count = N,
-        bytes 26+3i carry (bus_id, cs_pin_id, slot_idx) for motor i).
-        `slot_idx` is the kinematic-slot index (0..4) whose commanded
-        motors[slot_idx] position drives that motor's XDIRECT output.
-        Multiple motors may share a slot (AWD pairs, N-motor-per-axis
-        configs). Up to 16 entries; firmware caps at MAX_STEPPER_OIDS=16.
-        Pass None (not an empty list) when no motor is phase stepped — the
-        bridge then emits the 25-byte body.
+        """step_modes: optional [4] ints (0=Modulated, 1=StepTime); when set the
+        bridge emits the 25-byte extended format, else the legacy 20-byte path.
+        phase_configs: optional (bus_id, cs_pin_id, slot_idx) per phase-stepped
+        motor; slot_idx is the kinematic slot driving that motor's XDIRECT. Up
+        to 16. Pass None (not []) when nothing is phase stepped.
         """
         return self._bridge.configure_axes(
             mcu_handle,
@@ -353,17 +268,9 @@ class MotionBridgeWrapper:
         )
 
     def register_phase_bus(self, mcu_handle, bus_id, rate, timeout_s=5.0):
-        """Register an SPI bus cfg with the MCU's phase-stepping subsystem.
-
-        Wraps the runtime_register_phase_bus wire command. Must be called
-        once per unique bus_id on each phase-stepping-capable MCU BEFORE
-        any register_phase_motor for that bus and BEFORE configure_axes.
-        Per-motor CS GPIOs are registered separately via
-        register_phase_motor — multiple TMC5160s on the same bus each
-        need their own CS line (2026-05-19 per-motor-CS refactor; see
-        docs/superpowers/specs/2026-05-19-phase-stepping-per-motor-cs-design.md).
-        Stock-Klipper MCUs (no kalico runtime) are no-op via the bridge's
-        early-return.
+        """Call once per bus_id, BEFORE any register_phase_motor for that bus
+        and BEFORE configure_axes. Per-motor CS GPIOs are registered separately
+        (each TMC5160 on a shared bus needs its own CS). No-op on stock MCUs.
         """
         return self._bridge.register_phase_bus(
             mcu_handle,
@@ -375,14 +282,9 @@ class MotionBridgeWrapper:
     def register_phase_motor(
         self, mcu_handle, motor_idx, bus_id, cs_pin_id, timeout_s=5.0
     ):
-        """Register the CS GPIO for one phase-stepped motor.
-
-        Wraps the runtime_register_phase_motor wire command. Must be
-        called once per phase-stepped motor, AFTER register_phase_bus
-        for the referenced bus_id, and BEFORE configure_axes. motor_idx
-        is the Rust runtime per-motor slot index (matches the order of
-        entries in the configure_axes blob's variable-length phase
-        section).
+        """Call once per phase-stepped motor, AFTER register_phase_bus and
+        BEFORE configure_axes. motor_idx matches the order of entries in the
+        configure_axes blob's phase section.
         """
         return self._bridge.register_phase_motor(
             mcu_handle,
@@ -393,46 +295,27 @@ class MotionBridgeWrapper:
         )
 
     def bridge_call(self, mcu_handle, msg, response, timeout_s=15.0):
-        """Send a msgproto command and wait for the named response dict.
-
-        2026-05-17: bumped default 5.0s → 15.0s. With slot-pool retirement
-        now working, TMC autotune's many tmcuart_send / spi_transfer
-        commands race motion-bridge's push_segment traffic on the same
-        USB-CDC pipe — a 5 s timeout was insufficient for the slowest
-        TMC reads under sustained motion load.
-        """
         return self._bridge.bridge_call(mcu_handle, msg, response, timeout_s)
 
     def bridge_send(self, mcu_handle, msg):
-        """Send a fire-and-forget command (no response expected)."""
         return self._bridge.bridge_send(mcu_handle, msg)
 
     def bridge_mark_expected_disconnect(self, mcu_handle):
-        """Tell the per-MCU reactor a transport drop is imminent and the
-        EXIT_ON_FAULT abort must not fire. Called by klippy's bridge-mode
-        `_restart_via_command` right before sending the firmware `reset`
-        command: the MCU performs NVIC_SystemReset, USB-CDC drops, and the
-        kernel BrokenPipe arrives — without this flag set, the host
-        reactor's EXIT_ON_FAULT guard interprets the drop as a wedge and
-        aborts the whole klippy process. With it, the reactor's
-        `exited_gracefully()` check returns true and klippy can complete
-        its in-process restart and reconnect to the freshly-reset MCU.
+        """Mark an imminent transport drop so the reactor's EXIT_ON_FAULT guard
+        treats it as graceful instead of a wedge. Called before the firmware
+        `reset` command (NVIC_SystemReset drops USB-CDC).
         """
         return self._bridge.bridge_mark_expected_disconnect(mcu_handle)
 
     def take_runtime_event(self, mcu_handle):
-        """Drain one runtime event dict, or None if nothing pending."""
         return self._bridge.take_runtime_event(mcu_handle)
 
     def on_credit_freed(
         self, mcu_handle, retired_through_segment_id, free_slots
     ):
-        """Forward an MCU `kalico_credit_freed` event into the slot pool.
-
-        Returns ``(n_released, completed_arm_id_or_None)``. The
-        ``completed_arm_id`` is set when a homing segment retired without
-        a trip in this credit-freed cycle; the caller is responsible for
-        firing the matching dispatch's ``_completion``.
+        """Returns (n_released, completed_arm_id_or_None); completed_arm_id is
+        set when a homing segment retired without a trip — the caller fires the
+        matching dispatch's _completion.
         """
         return self._bridge.on_credit_freed(
             mcu_handle,
@@ -447,23 +330,13 @@ class MotionBridgeWrapper:
         self._homing_dispatches.pop(int(arm_id), None)
 
     def fire_homing_completion(self, arm_id):
-        """Resolve the BridgeTriggerDispatch for arm_id with
-        REASON_PAST_END_TIME. No-op if no dispatch is registered (race
-        with stop)."""
+        # No-op if no dispatch is registered (race with stop).
         dispatch = self._homing_dispatches.get(int(arm_id))
         if dispatch is not None:
             dispatch._fire_past_end_time()
 
-    # ------------------------------------------------------------------
-    # Phase 2: msgproto handover
-    # ------------------------------------------------------------------
-
     def set_msgproto_dict(self, dict_json):
         return self._bridge.set_msgproto_dict(dict_json)
-
-    # ------------------------------------------------------------------
-    # Phase 2: motion submission
-    # ------------------------------------------------------------------
 
     def init_planner(
         self,
@@ -524,10 +397,6 @@ class MotionBridgeWrapper:
 
     def dispatched_segment_count(self):
         return self._bridge.dispatched_segment_count()
-
-    # ------------------------------------------------------------------
-    # Step 7-D: endstop wire surface
-    # ------------------------------------------------------------------
 
     def endstop_arm(
         self,
@@ -597,18 +466,8 @@ class MotionBridgeWrapper:
         return self._bridge.get_homing_position_at_time(print_time)
 
 
-# ----------------------------------------------------------------------
-# Step 7-D: BridgeTriggerDispatch
-# ----------------------------------------------------------------------
-#
-# Stand-in for klippy's legacy `TriggerDispatch` (klippy/mcu.py:336).
-# Bridge mode is unconditional; this class owns the arm_id, sources, stepper oids
-# associated with one homing operation, and bridges the (future) async
-# trip event back to a reactor completion. Spec §5.2.
-#
-# Reason codes match `MCU_trsync` at klippy/mcu.py:155–158 exactly so
-# downstream `homing.py` consumers don't see a behavior change.
-
+# Reason codes MUST match MCU_trsync (klippy/mcu.py) so homing.py consumers see
+# no behavior change.
 REASON_ENDSTOP_HIT = 1
 REASON_HOST_REQUEST = 2
 REASON_PAST_END_TIME = 3
@@ -622,9 +481,7 @@ DISARM_STATUS_DISARMED = 0
 DISARM_STATUS_ALREADY_TRIPPED = 1
 DISARM_STATUS_UNKNOWN = 2
 
-# Bridge-private homing segment reasons (from Rust bridge's
-# get_homing_segment_reason). Separate namespace from MCU_trsync
-# reasons above.
+# Bridge-private (from get_homing_segment_reason); distinct from MCU_trsync above.
 BRIDGE_REASON_PAST_END_TIME = 1
 BRIDGE_REASON_TRIPPED = 2
 BRIDGE_REASON_DEADLINE_EXPIRED = 3
@@ -644,34 +501,26 @@ def _alloc_arm_id():
 
 
 class BridgeTriggerDispatch:
-    """Bridge-mode replacement for `klippy/mcu.py:TriggerDispatch`.
-
-    Used by `MCU_endstop` when its underlying MCU is the kalico bridge.
-    Public surface mirrors the legacy `TriggerDispatch` so existing
-    `home_start` / `home_wait` callers don't change.
+    """Bridge-mode replacement for klippy/mcu.py:TriggerDispatch; mirrors its
+    surface so home_start / home_wait callers don't change.
     """
 
     def __init__(self, bridge, mcu, queue, reactor):
-        # `bridge` is a MotionBridgeWrapper.
-        # `mcu` and `queue` are the host-side handles (u32) the bridge
-        # uses to address the right MCU command queue.
         self._bridge = bridge
         self._mcu = mcu
         self._queue = queue
         self._reactor = reactor
         self._arm_id = _alloc_arm_id()
         self._completion = reactor.completion()
-        self._sources = []  # list of (kind, gpio, active_high, policy,
-        #          sample_n, velocity_axis, v_min_q16)
+        # (kind, gpio, active_high, policy, sample_n, velocity_axis, v_min_q16)
+        self._sources = []
         self._stepper_oids = []
-        self._steppers = []  # list of MCU_stepper, retained for IK lookups
-        self._reason = None  # legacy-compatible reason code
-        self._trip_event = None  # decoded async event payload
-        self._arm_print_time = None  # print_time at arm time (fallback trigger)
+        self._steppers = []
+        self._reason = None
+        self._trip_event = None
+        self._arm_print_time = None
         self._handler_registered = False
-        self._toolhead_arms = None  # set at start() for stop() cleanup
-
-    # ── legacy TriggerDispatch surface ──────────────────────────────
+        self._toolhead_arms = None
 
     def get_oid(self):
         return self._arm_id
@@ -683,15 +532,11 @@ class BridgeTriggerDispatch:
         return self._arm_id
 
     def add_stepper(self, mcu_stepper):
-        # MCU_stepper.get_oid() returns the per-MCU oid — exactly what
-        # the runtime_arm_endstop wire format expects (spec §3.1).
         self._stepper_oids.append(mcu_stepper.get_oid())
         self._steppers.append(mcu_stepper)
 
     def get_steppers(self):
         return list(self._steppers)
-
-    # ── new endstop-source binding ──────────────────────────────────
 
     def add_source(
         self,
@@ -715,34 +560,19 @@ class BridgeTriggerDispatch:
             )
         )
 
-    # ── start / wait / stop ─────────────────────────────────────────
-
     def start(self, arm_print_time, mcu_obj):
-        # Stash for use as fallback trigger time in AlreadyTripped path.
         self._arm_print_time = arm_print_time
-        # Convert print_time → MCU clock for arm_clock.
         arm_clock = int(mcu_obj.print_time_to_clock(arm_print_time))
-        # 2026-05-18 second-pass fix: ReactorCompletion is single-shot —
-        # once `complete()` runs on a prior trip, `test()` returns True
-        # forever. homing.py's second-homing pass calls `home_start` →
-        # `dispatch.start` on the same `MCU_endstop` (and therefore the
-        # same `BridgeTriggerDispatch` instance), then `drip_move` checks
-        # `drip_completion.test()` to early-return if the endstop is
-        # already tripped. Without a fresh completion at every arm, the
-        # first pass's completed state is inherited by the second pass:
-        # `drip_move` returns without dispatching any motion, `home_wait`
-        # returns the cached trip clock, and `check_no_movement` reports
-        # `start_pos == trig_pos` → "Endstop x still triggered after
-        # retract". Allocate a fresh completion + reset the per-arm
-        # state (reason, trip_event) so each arm cycle starts clean.
+        # ReactorCompletion is single-shot, so allocate a fresh one (and reset
+        # per-arm state) each arm; otherwise homing's second pass inherits the
+        # first's completed state, drip_move early-returns without moving, and
+        # check_no_movement reports "Endstop still triggered after retract".
         self._completion = self._reactor.completion()
         self._reason = None
         self._trip_event = None
 
-        # The MCU_endstop is constructed during config phase, before the
-        # bridge has identified the MCU and assigned `_bridge_handle`.
-        # Refresh the handle (and lazily allocate the bridge command
-        # queue) here so the first homing op sees non-None values.
+        # _bridge_handle isn't assigned until after identify (the MCU_endstop is
+        # built at config phase), so refresh it (and lazily alloc the queue) here.
         if self._mcu is None:
             self._mcu = getattr(mcu_obj, "_bridge_handle", None)
             if self._mcu is None:
@@ -753,21 +583,18 @@ class BridgeTriggerDispatch:
         if self._queue is None:
             self._queue = self._bridge.alloc_command_queue(self._mcu)
 
-        # Register in the bridge's arm_id → dispatch map so the
-        # credit-freed handler can resolve past-end-time terminals.
         self._bridge.register_homing_dispatch(self._arm_id, self)
 
-        # Register an async handler for kalico_endstop_tripped before
-        # arming so we don't race the firmware emitting the event.
+        # Register the async handler BEFORE arming, or we race the firmware's
+        # kalico_endstop_tripped event.
         if not self._handler_registered:
             mcu_obj.register_response(
                 self._on_trip_message, "kalico_endstop_tripped"
             )
             self._handler_registered = True
 
-        # Step 7-D §6.2: register arm_id with motion_toolhead so its
-        # drip_move can pass the right arm_ids set to
-        # bridge.submit_homing_move.
+        # Register arm_id with the toolhead so its drip_move passes the right
+        # arm_ids to submit_homing_move.
         printer = mcu_obj.get_printer()
         toolhead = printer.lookup_object("toolhead", None)
         if toolhead is not None and hasattr(toolhead, "active_homing_arms"):
@@ -790,9 +617,8 @@ class BridgeTriggerDispatch:
         )
         logging.info("[bridge-trace] endstop_arm status=%s", status)
         if status == ARM_STATUS_ALREADY_TRIPPED:
-            # Pin asserted at arm time under TripImmediately. The
-            # firmware published a trip snapshot in arm() itself —
-            # fetch it now so home_wait can return a real trigger time.
+            # Pin asserted at arm time; arm() published a trip snapshot — fetch
+            # it so home_wait can return a real trigger time.
             self._trip_event = self._bridge.take_trip_event() or {}
             self._reason = REASON_ENDSTOP_HIT
             self._completion.complete(self._reason)
@@ -803,18 +629,13 @@ class BridgeTriggerDispatch:
         return self._completion
 
     def _on_trip_message(self, params):
-        # params is a dict-like emitted by klippy's reactor for the
-        # registered response. Filter on arm_id (multiple
-        # BridgeTriggerDispatch instances may live concurrently).
+        # Filter on arm_id (concurrent dispatch instances share the response).
         if int(params.get("arm_id", -1)) != self._arm_id:
             return
         if self._reason is not None:
-            # Already terminal (e.g., from arm-time AlreadyTripped).
             return
-        # Real hardware delivers the authoritative trip snapshot as the
-        # async kalico_endstop_tripped params. Simulation/native tests may
-        # still have it queued in the bridge's local runtime; use params
-        # first so stepper snapshots are not lost.
+        # Real hardware carries the trip snapshot in params; native tests queue
+        # it in the bridge runtime. Prefer params so stepper snapshots survive.
         self._trip_event = dict(params)
         if "steppers" not in self._trip_event:
             self._trip_event = self._bridge.take_trip_event()
@@ -822,15 +643,13 @@ class BridgeTriggerDispatch:
         self._completion.complete(self._reason)
 
     def _fire_past_end_time(self):
-        # MCU-driven no-trip terminal. Mirror _on_trip_message's
-        # ownership semantics: only fire if no terminal yet.
+        # Only fire if no terminal yet (mirror _on_trip_message).
         if self._reason is not None:
             return
         self._reason = REASON_PAST_END_TIME
         self._completion.complete(self._reason)
 
     def stop(self):
-        # Called from MCU_endstop.home_wait. Disarm if no trip yet.
         if self._reason is None:
             try:
                 status = self._bridge.endstop_disarm(
@@ -841,16 +660,14 @@ class BridgeTriggerDispatch:
             if status == DISARM_STATUS_DISARMED:
                 self._reason = REASON_HOST_REQUEST
             else:
-                # AlreadyTripped on race — wait briefly for the async
-                # event to land.
+                # AlreadyTripped on race — take the queued event.
                 self._trip_event = self._bridge.take_trip_event()
                 self._reason = REASON_ENDSTOP_HIT
             if not self._completion.test():
                 self._completion.complete(self._reason)
         self._bridge.unregister_homing_dispatch(self._arm_id)
-        # Unregister from the toolhead's active-arms registry. start()
-        # cached the set reference; this keeps drip_move from passing a
-        # stale arm_id on a subsequent unrelated move.
+        # Drop the arm_id from the toolhead registry so a later unrelated move's
+        # drip_move doesn't pass it.
         if self._toolhead_arms is not None:
             self._toolhead_arms.discard(self._arm_id)
             self._toolhead_arms = None

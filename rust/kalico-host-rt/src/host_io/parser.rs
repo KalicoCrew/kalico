@@ -1,5 +1,3 @@
-//! Production MsgProtoParser. Spec §4.
-
 use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
@@ -12,17 +10,11 @@ use crate::transport::MessageValue;
 pub struct DataDictionary {
     pub commands: IndexMap<String, i32>,
     pub responses: IndexMap<String, i32>,
-    // `output` is emitted by Kalico-runtime firmware and most modern Klipper
-    // builds, but may be absent on older / minimal firmware. Default to empty.
     #[serde(default)]
     pub output: IndexMap<String, i32>,
     #[serde(default)]
     pub enumerations: IndexMap<String, IndexMap<String, EnumValue>>,
     pub config: serde_json::Value,
-    // `version` and `app` are present on Klipper / Kalico firmware but absent
-    // on third-party MCUs that ship a Klipper-compatible identify dict (e.g.
-    // Beacon probe). They are stored for diagnostic logging only — nothing
-    // downstream reads them — so default to empty strings.
     #[serde(default)]
     pub version: String,
     #[serde(default)]
@@ -154,22 +146,11 @@ pub fn parse_format_string(s: &str) -> Result<(String, Vec<(String, FieldType)>)
     Ok((name, fields))
 }
 
-/// Scan a format string for `%`-codes positionally — used for free-form
-/// `output(...)` formats where individual fields are not `name=%type`-tagged
-/// (e.g. `output("debug %u %s", x, y)`). Returns the list of field types in
-/// declaration order. `%%` is treated as a literal percent sign and skipped.
-///
-/// Per spec §4.7, free-form output formats are decoded positionally and the
-/// decoded values are interpolated through the format string for the canonical
-/// `("#output", {"#msg": formatted})` shape. The first whitespace-separated
-/// token is still treated as the message-name leader for routing purposes
-/// (matches the runtime convention used by `decode_output`).
 pub fn extract_free_form_field_types(s: &str) -> Result<Vec<FieldType>, ParseError> {
     let bytes = s.as_bytes();
     let mut codes = Vec::new();
     let mut i = 0;
-    // Order matters: longer prefixes first so `%hu` doesn't match as `%h` + `u`,
-    // and `%.*s` / `%*s` resolve before `%s`.
+    // Longer prefixes first: %hu before %h, %.*s/%*s before %s.
     const CANDIDATES: &[&str] = &["%hu", "%hi", "%.*s", "%*s", "%u", "%i", "%c", "%s"];
     while i < bytes.len() {
         if bytes[i] != b'%' {
@@ -177,7 +158,7 @@ pub fn extract_free_form_field_types(s: &str) -> Result<Vec<FieldType>, ParseErr
             continue;
         }
         if i + 1 < bytes.len() && bytes[i + 1] == b'%' {
-            i += 2; // literal `%%`
+            i += 2;
             continue;
         }
         let rest = &s[i..];
@@ -194,7 +175,6 @@ pub fn extract_free_form_field_types(s: &str) -> Result<Vec<FieldType>, ParseErr
                 i += cand.len();
             }
             None => {
-                // Unknown `%X` — surface so we don't silently drop fields.
                 let next = rest
                     .chars()
                     .nth(1)
@@ -291,9 +271,6 @@ pub struct OutputSpec {
     pub format: String,
     pub fields: Vec<WrappedField>,
     pub field_names: Vec<String>,
-    /// True when the format string lacks `name=%type` recovery for at least
-    /// one field (free-form `output(...)` per spec §4.7). Decode falls back to
-    /// `("#output", {"#msg": formatted_string})` instead of structured fields.
     pub is_free_form: bool,
 }
 
@@ -304,8 +281,6 @@ pub struct OutboundSpec {
 }
 
 impl MsgProtoParser {
-    /// Construct a parser with an empty data dictionary — useful for tests that
-    /// only exercise the wire-protocol layer and never encode/decode messages.
     #[cfg(any(test, feature = "test-harness"))]
     pub fn new_empty() -> Self {
         use indexmap::IndexMap;
@@ -324,7 +299,6 @@ impl MsgProtoParser {
         let mut seen_formats: HashSet<String> = HashSet::new();
         let mut seen_msgnames: HashSet<String> = HashSet::new();
 
-        // Cross-section msgid + format-string collision check.
         for (format, msgid) in dict
             .commands
             .iter()
@@ -339,7 +313,6 @@ impl MsgProtoParser {
             }
         }
 
-        // Message-name collision check (commands + responses only).
         for format in dict.commands.keys().chain(dict.responses.keys()) {
             let name = format.split_whitespace().next().unwrap_or("").to_string();
             if !seen_msgnames.insert(name.clone()) {
@@ -347,7 +320,6 @@ impl MsgProtoParser {
             }
         }
 
-        // Build enumerations.
         let mut enumerations: IndexMap<String, EnumTable> = IndexMap::new();
         for (enum_name, table) in &dict.enumerations {
             enumerations.insert(enum_name.clone(), EnumTable::from_dict(table));
@@ -388,11 +360,6 @@ impl MsgProtoParser {
         }
 
         for (format, msgid) in &dict.output {
-            // Spec §4.7: prefer `name=%type` recovery so subscribers see
-            // structured `MessageParams`. If recovery fails — a free-form
-            // `output(...)` such as `output("debug %u trace")` — fall back to
-            // positional `%`-code extraction; decode emits the canonical
-            // `("#output", {"#msg": formatted})` shape downstream.
             let spec = match parse_format_string(format) {
                 Ok((_name, named_fields)) => {
                     let wrapped = apply_enumeration_wrapping(named_fields, &dict.enumerations);
@@ -438,15 +405,10 @@ impl MsgProtoParser {
 }
 
 pub fn decode_vlq(buf: &[u8]) -> Result<(i64, usize), ParseError> {
-    // Klipper's signed VLQ encoding (matches klippy/msgproto.py PT_uint32.parse):
-    // The sign is encoded in bits [6:5] of the first byte. If those bits are
-    // both set (0x60 mask == 0x60), the 7-bit value is sign-extended by OR-ing
-    // with -0x20, making the accumulator negative before any continuation bytes
-    // are shifted in.
     let first = *buf.first().ok_or(ParseError::BadVlq)?;
     let mut value = i64::from(first & 0x7F);
     if (first & 0x60) == 0x60 {
-        value |= -0x20_i64; // sign-extend the initial 7-bit chunk
+        value |= -0x20_i64;
     }
     if (first & 0x80) == 0 {
         return Ok((value, 1));
@@ -469,9 +431,6 @@ pub fn encode_vlq(out: &mut Vec<u8>, value: i64) -> Result<(), ParseError> {
             range: "[i32::MIN, u32::MAX]",
         });
     }
-    // Mirror klippy/msgproto.py PT_uint32.encode exactly. Each threshold
-    // determines whether an extra 7-bit group is needed. Arithmetic right
-    // shifts on i64 propagate the sign bit, matching Python's behaviour.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     {
         if value >= 0x0C00_0000 || value < -0x0400_0000 {
@@ -564,12 +523,6 @@ pub fn encode_field_str<'a>(
             FieldType::Byte | FieldType::U16 | FieldType::U32 | FieldType::I16 | FieldType::I32 => {
                 let v: i64 = value_str.parse().map_err(|_| ParseError::MalformedField)?;
                 range_check(*ty, v)?;
-                // Clipper-protocol clock fields (clock=%u) carry 64-bit
-                // host-side absolute clocks; the firmware reads 32 bits and
-                // truncates. Mirror klippy/msgproto.py PT_uint32 / PT_int32:
-                // for U32/I32 fields, mask down to 32 bits before VLQ
-                // encoding so encode_vlq's strict [i32::MIN, u32::MAX] range
-                // accepts the value.
                 let v_for_vlq = match ty {
                     FieldType::U32 => i64::from((v as u64 & 0xFFFF_FFFF) as u32),
                     FieldType::I32 => i64::from(v as i32),
@@ -647,28 +600,10 @@ pub fn encode_wrapped_field_typed<'a>(
 }
 
 fn range_check(ty: FieldType, v: i64) -> Result<(), ParseError> {
-    // Klipper's msgproto allows U32/I32 fields to carry 64-bit clock values
-    // and lets the firmware truncate to its native 32-bit register on receipt
-    // (encode_vlq already produces a self-delimited VLQ that the firmware
-    // decodes and masks). Mirror that: U32/I32 accept any i64. U16/I16/Byte
-    // remain strict — those are never used for clocks and a wrong value there
-    // is always a real bug.
     let in_range = match ty {
-        // Klipper's reference msgproto (klippy/msgproto.py PT_byte) inherits
-        // PT_uint32's encoder and allows signed values: the host sends a
-        // VLQ-encoded i64, the MCU parses it, and per-handler C code casts
-        // args[i] to either `uint8_t` or `int_fast8_t` depending on the
-        // intended interpretation. config_stepper's invert_step=-1 from the
-        // bridge path (klippy/stepper.py::_build_config_bridge after commit
-        // 8649861c9) is the live example — the F4/H7 firmware reads it as
-        // int_fast8_t and treats <0 as SF_SINGLE_SCHED.
-        // Accept the union of signed [-128..=127] and unsigned [0..=255]
-        // byte ranges.
+        // invert_step=-1 (SF_SINGLE_SCHED) uses signed byte range; accept [-128..=255].
         FieldType::Byte => (-128..=255).contains(&v),
         FieldType::U16 => (0..=65535).contains(&v),
-        // PT_int16 is also VLQ-extended in reference msgproto; the host can
-        // legitimately send the full -0x8000..=0x7FFF range and the firmware
-        // truncates to int16 on read.
         FieldType::I16 => (-32768..=32767).contains(&v),
         FieldType::U32 | FieldType::I32 => return Ok(()),
         _ => return Ok(()),
@@ -771,9 +706,6 @@ impl MsgProtoParser {
         }
     }
 
-    /// Decode a raw passthrough body (msgid VLQ + fields) into
-    /// `(name, MessageParams)`. Used by `RouterTransport` in the bridge
-    /// where only the body bytes from `dispatch_response` are available.
     pub fn decode_body(&self, body: &[u8]) -> Result<(String, MessageParams), ParseError> {
         let (msgid_signed, n) = decode_vlq(body)?;
         let msgid = msgid_signed as i32;
@@ -813,9 +745,6 @@ impl MsgProtoParser {
         spec: &OutputSpec,
     ) -> Result<(String, MessageParams), ParseError> {
         if spec.is_free_form {
-            // Spec §4.7 fallback: positional decode + format-string interpolation,
-            // surfaced as the canonical Python `("#output", {"#msg": formatted})`
-            // shape. RuntimeEvent::lift routes this to `RuntimeEvent::UnknownOutput`.
             let mut cur = body;
             let mut values: Vec<MessageValue> = Vec::with_capacity(spec.fields.len());
             for wrapped in &spec.fields {
@@ -826,9 +755,6 @@ impl MsgProtoParser {
             let formatted = format_output_message(&spec.format, &values);
             let mut params = MessageParams::new();
             params.insert("#msg", MessageValue::String(formatted));
-            // Carry the original format string so RuntimeEvent::lift can
-            // propagate it into UnknownOutput.format (spec §4.8). lift has no
-            // access to MsgProtoParser, so this is the only path.
             params.insert("#format", MessageValue::String(spec.format.clone()));
             return Ok(("#output".to_string(), params));
         }
@@ -880,7 +806,6 @@ impl MsgProtoParser {
         }
     }
 
-    /// Decodes a packet into the canonical `('#output', {'#msg': formatted})` form, for diagnostic use.
     pub(crate) fn decode_output_canonical(
         &self,
         packet: &[u8],
@@ -919,24 +844,16 @@ const MESSAGE_MIN: usize = 5;
 const MESSAGE_HEADER_SIZE: usize = 2;
 const MESSAGE_TRAILER_SIZE: usize = 3;
 
-/// Per spec §4.7. The §3.6 receive flow branches on this tag.
 #[derive(Debug)]
 pub enum DecodedFrame {
     Response { name: String, params: MessageParams },
     Output { name: String, params: MessageParams },
 }
 
-/// Decode a single field from `body` according to `ty`.
-///
-/// Per spec §4.7:
-///   - %u/%hu/%c → U32 via (raw_i64 as u32) (matches Python's & 0xFFFFFFFF mask exactly)
-///   - %i/%hi → I32 (sign-preserved)
-///   - %s/%*s/%.*s → Bytes, length-prefixed (NOT null-terminated)
 pub fn decode_field_plain(body: &[u8], ty: FieldType) -> Result<(MessageValue, usize), ParseError> {
     match ty {
         FieldType::U32 | FieldType::U16 | FieldType::Byte => {
             let (raw_i64, n) = decode_vlq(body)?;
-            // Mask to u32 to match Python PT_uint32.parse's & 0xFFFFFFFF.
             Ok((MessageValue::U32(raw_i64 as u32), n))
         }
         FieldType::I32 | FieldType::I16 => {
@@ -972,9 +889,6 @@ fn python_repr_bytes(bytes: &[u8]) -> String {
     out
 }
 
-/// Format an output message string by substituting decoded values for
-/// printf-style format codes. Mirrors Python's `debugformat % tuple`.
-/// %c renders as decimal int (NOT character); %s/%*s/%.*s as repr(bytes)-equivalent.
 pub fn format_output_message(format: &str, values: &[MessageValue]) -> String {
     let mut out = String::new();
     let mut iter = format.chars().peekable();

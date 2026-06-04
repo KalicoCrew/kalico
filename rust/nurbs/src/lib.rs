@@ -1,7 +1,3 @@
-//! Layer 0 NURBS substrate.
-//!
-//! See `docs/superpowers/specs/2026-04-26-nurbs-evaluation-library-design.md`.
-
 #![cfg_attr(not(feature = "host"), no_std)]
 
 #[cfg(any(
@@ -66,17 +62,13 @@ pub mod bezier;
 #[cfg(feature = "host")]
 pub use bezier::BezierPiece;
 
-/// Maximum NURBS degree the crate will accept. See spec §Substrate.
 pub const MAX_DEGREE: usize = 20;
 
-/// Stack-workspace size for de Boor's algorithm.
 pub const WORKSPACE_SIZE: usize = MAX_DEGREE + 1;
 
 /// Numerical floor for parametric speed |dP/du|, weight denominators, and
-/// curvature-divisor cubed-norms. Below this, the corresponding computation
-/// either clamps (release) or fires a `debug_assert` (debug).
-///
-/// Exposed as f64 so callers and `Float::from_f64` see a single source of truth.
+/// curvature-divisor cubed-norms. Exposed as f64 so callers and `Float::from_f64`
+/// see a single source of truth.
 pub const MIN_PARAMETRIC_SPEED: f64 = 1e-9;
 
 const _: () = assert!(WORKSPACE_SIZE == MAX_DEGREE + 1);

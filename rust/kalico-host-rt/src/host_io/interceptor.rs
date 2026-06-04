@@ -3,9 +3,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::transport::MessageParams;
 
-/// Newtype wrapper so `ReactorCommand` can remain `#[derive(Debug)]`. The
-/// inner `Box<dyn Fn(&MessageParams) + Send + Sync>` does not implement
-/// `Debug`, so we provide a trivial opaque representation.
 pub struct InterceptorCallback(pub Box<dyn Fn(&MessageParams) + Send + Sync>);
 
 impl std::fmt::Debug for InterceptorCallback {

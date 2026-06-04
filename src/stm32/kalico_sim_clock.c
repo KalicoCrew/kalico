@@ -1,12 +1,7 @@
-// src/stm32/kalico_sim_clock.c
-//
-// Software CYCCNT for sim builds (CONFIG_KALICO_SIM=y). Renode's H7 platform
-// model returns 0 for DWT->CYCCNT reads; this counter is bumped by the TIM5
-// ISR (one-tick-per-fire delta) so the engine's widening loop sees forward
-// progress. NEVER include in production firmware — IWDG-disable + sim CYCCNT
-// is a debugging build only.
-//
-// Per Step-6 spec §3.1.
+// Software CYCCNT for sim builds (CONFIG_KALICO_SIM=y): Renode's H7 model
+// returns 0 for DWT->CYCCNT, so the TIM5 ISR bumps this counter to give the
+// widening loop forward progress. NEVER ship in production firmware — this is
+// an IWDG-disabled debug build only.
 
 #include "autoconf.h"
 
@@ -15,13 +10,11 @@
 #include <stdint.h>
 #include "command.h"
 
-// Bumped by TIM5 ISR (runtime_tick_h7.c) once per tick.
 __attribute__((used, externally_visible))
 volatile uint32_t runtime_sim_cyccnt = 0;
 
-// Directly set a pin level in the runtime's endstop PIN_LEVELS array,
-// bypassing GPIO hardware. For Renode sim where GPIO IDR injection is
-// not supported by the peripheral model.
+// Set a pin level directly in the runtime's PIN_LEVELS array, bypassing GPIO
+// hardware — Renode's peripheral model has no GPIO IDR injection.
 extern int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
 
 void

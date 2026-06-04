@@ -26,10 +26,8 @@ fn two_mcus_claim_release_independently() {
     assert_ne!(a, b);
 
     router.release_mcu(a);
-    // b should still work
     let q = router.alloc_command_queue(b);
     assert!(q.is_ok());
-    // a should be gone
     assert!(router.alloc_command_queue(a).is_err());
 }
 
@@ -74,10 +72,8 @@ fn register_notify_and_dispatch_response_round_trip() {
 
     router.push(mcu, q, entry_with_notify(0, 10, nid)).unwrap();
 
-    // Emit it — records sent_time
     let _ = router.pop_next_for_emission(mcu).unwrap();
 
-    // Advance clock so receive_time > sent_time
     clock.advance(Duration::from_millis(50));
 
     router
@@ -86,7 +82,6 @@ fn register_notify_and_dispatch_response_round_trip() {
 
     let resp = captured.lock().unwrap().take().unwrap();
     assert_eq!(resp.bytes, vec![0xBE, 0xEF]);
-    // receive_time should be after sent_time
     assert!(resp.receive_time >= resp.sent_time);
 }
 
@@ -100,7 +95,6 @@ fn pop_next_for_emission_respects_window_gate() {
         router.push(mcu, q, entry(0, i)).unwrap();
     }
 
-    // The default window should let some through but eventually block.
     let mut emitted = 0u32;
     while router.pop_next_for_emission(mcu).unwrap().is_some() {
         emitted += 1;
@@ -122,30 +116,23 @@ fn record_ack_frees_window_capacity() {
         router.push(mcu, q, entry(0, i)).unwrap();
     }
 
-    // Drain until blocked
     while router.pop_next_for_emission(mcu).unwrap().is_some() {}
 
-    // Ack frees capacity
     router.record_ack(mcu, 50).unwrap();
 
-    // Should be able to emit more now
     let got = router.pop_next_for_emission(mcu).unwrap();
     assert!(got.is_some());
 }
-
-// ── Clock estimation tests ──────────────────────────────────────────
 
 #[test]
 fn set_clock_est_stores_values() {
     let (mut router, _) = make_router();
     let mcu = router.claim_mcu("mcu");
 
-    // Before setting, compute_ack_clock returns 0 (freq == 0).
     assert_eq!(router.compute_ack_clock(mcu).unwrap(), 0);
 
     router.set_clock_est(mcu, 48_000_000.0, 0.0, 1000).unwrap();
 
-    // After setting, compute_ack_clock returns non-zero.
     let ack = router.compute_ack_clock(mcu).unwrap();
     assert!(ack >= 1000, "ack_clock should be at least last_clock");
 }
@@ -155,18 +142,14 @@ fn compute_ack_clock_projects_from_host_time() {
     let (mut router, clock) = make_router();
     let mcu = router.claim_mcu("mcu");
 
-    // Record the base host time, then set clock_offset = base host time.
     let base_host = instant_to_f64(clock.now());
     router
         .set_clock_est(mcu, 1_000_000.0, base_host, 0)
         .unwrap();
 
-    // At t=0 from offset, projected clock = 0 + 0 * freq = 0.
     let ack0 = router.compute_ack_clock(mcu).unwrap();
     assert_eq!(ack0, 0);
 
-    // Advance 1 second — projected clock ~ 0 + 1.0 * 1_000_000.
-    // Allow +-1 for f64 rounding in instant_to_f64 deltas.
     clock.advance(Duration::from_secs(1));
     let ack1 = router.compute_ack_clock(mcu).unwrap();
     let diff = (ack1 as i64 - 1_000_000_i64).unsigned_abs();
@@ -198,8 +181,6 @@ fn compute_ack_clock_unknown_mcu_errors() {
     assert!(router.compute_ack_clock(bogus).is_err());
 }
 
-// ── Flush callback tests ────────────────────────────────────────────
-
 #[test]
 fn flush_callback_fires_on_non_empty_to_empty_transition() {
     let (mut router, _) = make_router();
@@ -217,11 +198,9 @@ fn flush_callback_fires_on_non_empty_to_empty_transition() {
         )
         .unwrap();
 
-    // Enqueue and emit one entry.
     router.push(mcu, q, entry(0, 10)).unwrap();
     let _ = router.pop_next_for_emission(mcu).unwrap();
 
-    // Now queues are empty — check_flush should fire the callback.
     router.check_flush(mcu).unwrap();
     assert_eq!(*count.lock().unwrap(), 1);
 }
@@ -243,7 +222,6 @@ fn flush_callback_does_not_fire_if_never_non_empty() {
         )
         .unwrap();
 
-    // Never pushed anything — check_flush should NOT fire.
     router.check_flush(mcu).unwrap();
     assert_eq!(*count.lock().unwrap(), 0);
 }
@@ -284,8 +262,6 @@ fn flush_multiple_callbacks_all_fire() {
     assert_eq!(*c2.lock().unwrap(), 1);
 }
 
-// ── Stats tests ──────────────────────────────────────────────────────
-
 #[test]
 fn stats_increment_on_emit() {
     let (mut router, _) = make_router();
@@ -300,7 +276,7 @@ fn stats_increment_on_emit() {
     let _ = router.pop_next_for_emission(mcu).unwrap();
 
     let s1 = router.get_stats(mcu).unwrap();
-    assert_eq!(s1.bytes_write, 1); // entry() produces 1-byte payload
+    assert_eq!(s1.bytes_write, 1);
     assert_eq!(s1.send_seq, 1);
 }
 
@@ -356,10 +332,8 @@ fn stats_ready_bytes_reflects_live_queue() {
     router.push(mcu, q, entry(0, 20)).unwrap();
 
     let s = router.get_stats(mcu).unwrap();
-    assert_eq!(s.ready_bytes, 2); // 2 entries x 1 byte each
+    assert_eq!(s.ready_bytes, 2);
 }
-
-// ── Debug log / extract_old tests ──────────────────────────────────
 
 #[test]
 fn extract_old_captures_sent_and_received() {
@@ -389,12 +363,9 @@ fn extract_old_capped_at_100() {
     for i in 0..120 {
         router.push(mcu, q, entry(0, i)).unwrap();
     }
-    // Emit all 120 — window might block, but we only need enough
-    // to exceed 100.
     let mut emitted = 0;
     while router.pop_next_for_emission(mcu).unwrap().is_some() {
         emitted += 1;
-        // Free window capacity for next batch.
         router.record_ack(mcu, 1).unwrap();
     }
     assert!(emitted > 100, "need >100 emits, got {emitted}");
@@ -425,7 +396,6 @@ fn flush_does_not_fire_twice_without_new_entries() {
     router.check_flush(mcu).unwrap();
     assert_eq!(*count.lock().unwrap(), 1);
 
-    // Second check_flush without new entries — should not fire again.
     router.check_flush(mcu).unwrap();
     assert_eq!(*count.lock().unwrap(), 1);
 }

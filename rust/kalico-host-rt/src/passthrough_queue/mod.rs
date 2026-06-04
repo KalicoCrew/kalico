@@ -1,5 +1,3 @@
-//! Passthrough queue — Rust port of `serialqueue.c` core data structures.
-
 mod command_queue;
 mod config_stage;
 mod debug_log;

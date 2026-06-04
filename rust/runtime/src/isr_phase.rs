@@ -1,16 +1,6 @@
-//! ISR-phase breadcrumb helpers.
-//!
-//! Mirrors the `RT_PHASE_*` constants from `src/generic/fault_handler.h` and
-//! wraps the three C diagnostic functions (`runtime_set_isr_phase`,
-//! `diag_walk_account`, `diag_monomial_account`) with the standard dual-cfg
-//! pattern: real FFI on MCU builds, no-ops on host/test.
-//!
-//! All functions are `#[inline]` so the no-op stubs on host/test fold to
-//! nothing. The MCU versions are single-store / single-function-call — safe to
-//! call from within the TIM5 or step-output ISRs.
-#![allow(unsafe_code)] // FFI into the C diag layer; same as tick.rs / per_axis_timer.rs
+#![allow(unsafe_code)]
 
-// ── Phase constants (must match src/generic/fault_handler.h exactly) ─────────
+// Phase constants — must match src/generic/fault_handler.h exactly.
 #[allow(dead_code)]
 pub(crate) const RT_PHASE_IDLE: u32 = 0;
 pub(crate) const RT_PHASE_ISR_ENTER: u32 = 1;
@@ -30,8 +20,6 @@ pub(crate) const RT_PHASE_STEPOUT_POP: u32 = 11;
 pub(crate) const RT_PHASE_STEPOUT_EMIT: u32 = 12;
 pub(crate) const RT_PHASE_STEPOUT_EXIT: u32 = 13;
 
-// ── FFI declarations (MCU build only) ────────────────────────────────────────
-
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
     fn runtime_set_isr_phase(phase: u32);
@@ -40,9 +28,6 @@ unsafe extern "C" {
     fn runtime_cyccnt_read() -> u32;
 }
 
-// ── Crate-internal wrappers ───────────────────────────────────────────────────
-
-/// Write the ISR phase breadcrumb. No-op on host/test.
 #[inline]
 pub(crate) fn set_phase(phase: u32) {
     #[cfg(not(any(test, feature = "host")))]
@@ -58,7 +43,6 @@ pub(crate) fn set_phase(phase: u32) {
     }
 }
 
-/// Account for a `get_piece_for_time` duration sample. No-op on host/test.
 #[inline]
 pub(crate) fn walk_account(cycles: u32) {
     #[cfg(not(any(test, feature = "host")))]
@@ -73,7 +57,6 @@ pub(crate) fn walk_account(cycles: u32) {
     }
 }
 
-/// Account for an `arm_and_load`/`to_monomial` duration sample. No-op on host/test.
 #[inline]
 pub(crate) fn monomial_account(cycles: u32) {
     #[cfg(not(any(test, feature = "host")))]
@@ -88,8 +71,8 @@ pub(crate) fn monomial_account(cycles: u32) {
     }
 }
 
-/// Read the DWT cycle counter. Returns 0 on host/test. Single declaration here;
-/// `tick::cyccnt_read()` delegates here to avoid a duplicate `extern "C"` symbol.
+/// Single declaration here; `tick::cyccnt_read()` delegates here to avoid
+/// a duplicate `extern "C"` symbol.
 #[inline]
 pub(crate) fn cyccnt() -> u32 {
     #[cfg(not(any(test, feature = "host")))]

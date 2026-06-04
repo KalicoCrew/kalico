@@ -30,14 +30,10 @@ fn default_e_limits() -> ELimits {
     }
 }
 
-/// Build a degree-1 (truly linear) NURBS from `start` to `end`.
 fn straight_linear(start: [f64; 3], end: [f64; 3]) -> VectorNurbs<f64, 3> {
     VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![start, end]).unwrap()
 }
 
-// ------------------------------------------------------------------
-// Test 1: Single straight-line segment — pipeline runs end-to-end
-// ------------------------------------------------------------------
 #[test]
 fn single_straight_line_converges() {
     let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
@@ -59,10 +55,6 @@ fn single_straight_line_converges() {
         feedrate_mm_s: 100.0,
     }];
 
-    // Use very high machine-limit ceiling for the beta check so that
-    // post-shape peaks (which are numerically inflated by the convolution
-    // pipeline) don't trigger derating. The TOPP-RA planning limits
-    // are the segment's own limits (5000 mm/s^2).
     let input = ShapeBatchInput {
         segments: &segments,
         grid_strategy: temporal::multi::GridStrategy::Fixed(10),
@@ -83,7 +75,6 @@ fn single_straight_line_converges() {
     assert_eq!(output.segments[0].e_mode, EMode::CoupledToXy);
     assert!((output.segments[0].extrusion_per_xy_mm - 0.04).abs() < 1e-12);
 
-    // The shaped axes should be non-trivial ScalarNurbs.
     for axis_nurbs in &output.segments[0].axes {
         assert!(
             axis_nurbs.control_points().len() >= 2,
@@ -92,9 +83,6 @@ fn single_straight_line_converges() {
     }
 }
 
-// ------------------------------------------------------------------
-// Test 2: Two segments with E-gap — pipeline handles partition
-// ------------------------------------------------------------------
 #[test]
 fn two_segments_with_e_gap() {
     let curve1 = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
@@ -154,27 +142,18 @@ fn two_segments_with_e_gap() {
 
     let output = crate::shape_batch(&input).expect("should succeed");
 
-    // Three output segments: [XY, Independent-E, XY].
     assert_eq!(output.segments.len(), 3);
     assert_eq!(output.segments[0].e_mode, EMode::CoupledToXy);
     assert_eq!(output.segments[1].e_mode, EMode::Independent);
     assert_eq!(output.segments[2].e_mode, EMode::CoupledToXy);
 
-    // The E-gap segment should have an independent E NURBS.
     assert!(output.segments[1].e_independent.is_some());
-
-    // Time ordering: each segment starts after the previous ends.
     assert!(output.segments[0].t_end <= output.segments[1].t_start + 1e-9);
     assert!(output.segments[1].t_end <= output.segments[2].t_start + 1e-9);
 }
 
-// ------------------------------------------------------------------
-// Test 3: Derate logic unit test
-// ------------------------------------------------------------------
 #[test]
 fn derate_detects_exceeding_peaks() {
-    // Build a one-segment fitted with all axes spanning >> MIN_AXIS_SPAN_FOR_DERATE
-    // so the inactive-axis skip does not apply.
     let make_axis = |x_start: f64, x_end: f64| {
         nurbs::bezier::bezier_pieces_to_nurbs(&[nurbs::bezier::BezierPiece {
             u_start: 0.0,
@@ -203,9 +182,6 @@ fn derate_detects_exceeding_peaks() {
     assert_eq!(info.exceeding_indices, vec![0]);
 }
 
-// ------------------------------------------------------------------
-// Test 4: All-E-gap batch
-// ------------------------------------------------------------------
 #[test]
 fn all_e_gaps_output() {
     let e_hold = straight_linear([0.0, 0.0, 0.0], [0.0, 0.0, 0.0]);
@@ -245,14 +221,6 @@ fn all_e_gaps_output() {
     assert!(output.segments[0].t_end > output.segments[0].t_start);
 }
 
-// ------------------------------------------------------------------
-// Test 5: effective_machine_a_max — only last segment is derated
-// ------------------------------------------------------------------
-//
-// Direct unit test of the spec §3.6 derate-target selection. The
-// end-to-end planner can't witness this exactly because TOPP-RA's
-// joining loop propagates segment N's tighter limit back through
-// segment N-1's tail. This test asserts the invariant at its source.
 #[test]
 fn effective_machine_a_max_terminal_known_is_identity() {
     let machine = vec![
@@ -273,10 +241,8 @@ fn effective_machine_a_max_worst_case_only_halves_last_segment() {
     ];
     let effective = effective_machine_a_max(&machine, SafetyMode::WorstCaseFuture);
 
-    // Segments 0 and 1 must be unchanged.
     assert_eq!(effective[0], machine[0]);
     assert_eq!(effective[1], machine[1]);
-    // Segment 2 (last) is halved on every axis.
     for axis in 0..3 {
         assert!(
             (effective[2][axis] - machine[2][axis] * 0.5).abs() < 1e-12,
@@ -290,7 +256,6 @@ fn effective_machine_a_max_worst_case_only_halves_last_segment() {
 
 #[test]
 fn effective_machine_a_max_worst_case_single_segment() {
-    // Single-segment edge case: the only segment IS the last segment.
     let machine = vec![[5_000.0, 4_000.0, 3_000.0]];
     let effective = effective_machine_a_max(&machine, SafetyMode::WorstCaseFuture);
     assert_eq!(effective.len(), 1);

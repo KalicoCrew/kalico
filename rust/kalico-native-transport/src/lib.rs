@@ -1,21 +1,3 @@
-//! Kalico-native transport (host side).
-//!
-//! Implements Phase A of the kalico-native transport design
-//! (`docs/superpowers/specs/2026-05-04-kalico-native-transport-design.md`):
-//!
-//! * Layer-1 frame envelope encode / decode (§4).
-//! * Stream-level demux state machine (§6) — splits a single byte stream into
-//!   complete Klipper frames and complete kalico frames.
-//! * Bootstrap-ABI Identify / `IdentifyResponse` hand codecs (§5).
-//! * `Transport` trait + `KalicoNativeTransport<C: Connection>` impl with
-//!   reset-epoch state machine (§9).
-//! * Connection abstraction (Layer 0 stub) so tests can drive the transport
-//!   over an in-memory pipe.
-//!
-//! Schema-level types (`MessageKind`, `PROTO_VERSION`, `SCHEMA_HASH`,
-//! `Identify`/`IdentifyResponse`) are re-exported from `kalico-protocol`.
-//! Wire-level helpers (per-message header encode/decode) live in [`wire_helpers`].
-
 pub mod bootstrap;
 pub mod connection;
 pub mod demux;

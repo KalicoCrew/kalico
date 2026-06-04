@@ -1,16 +1,3 @@
-//! Throughput benchmark: how many independent `schedule_segment` calls per
-//! second can we sustain across N OS threads on the Pi 5?
-//!
-//! Models the per-segment-parallel batch-planning regime: after joining has
-//! decided every segment's `(v_start, v_end)`, the per-segment SOCPs are
-//! embarrassingly parallel and can fan out across cores.
-//!
-//! Usage: `pi5_parallel <fixture> <total_iters> <threads> [grid_n]`
-//!   fixture     ∈ { straight, arc, cubic }
-//!   `total_iters` > 0     (split evenly across threads)
-//!   `threads`     1..=4   (Pi 5 has 4 A76 cores)
-//!   `grid_n`      default 100
-
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -36,8 +23,7 @@ fn straight() -> VectorNurbs<f64, 3> {
 }
 
 fn arc() -> VectorNurbs<f64, 3> {
-    // Cubic Bézier approximation of a quarter circle (R=20 mm).
-    // Standard polynomial approximation: k = (4/3)(√2 − 1) ≈ 0.5523.
+    // Standard cubic Bézier approximation of a quarter circle: k = (4/3)(√2 − 1).
     let r = 20.0_f64;
     let k = (4.0 / 3.0) * (std::f64::consts::SQRT_2 - 1.0);
     VectorNurbs::<f64, 3>::try_new(
@@ -86,7 +72,6 @@ fn main() {
         n: grid_n,
     };
 
-    // Warm-up across all threads.
     for _ in 0..5 {
         let _ = schedule_segment(&curve, &limits, &grid, 0.0, 0.0).expect("warm-up");
     }

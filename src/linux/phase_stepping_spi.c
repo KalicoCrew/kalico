@@ -1,12 +1,6 @@
-// Phase-stepping XDIRECT SPI writer for TMC5160 (sim scope).
-// See phase_stepping_spi.h for protocol and datagram layout details.
-//
-// Pattern matches src/spicmds.c::spidev_transfer():
-//   spi_prepare(cfg) -> CS low -> spi_transfer(cfg, 0, len, buf) -> CS high.
-// spi_prepare is required on STM32H7 because each bus's CR1 is rewritten
-// per-transaction in stm32h7_spi.c; omitting it would re-use the previous
-// caller's clock divider / mode. In Renode this is benign, but we follow
-// the canonical pattern so the same .c is correct on real silicon.
+// Phase-stepping XDIRECT SPI writer for TMC5160 (host/sim). See
+// phase_stepping_spi.h. Follows spidev_transfer(): spi_prepare -> CS low ->
+// spi_transfer -> CS high.
 
 #include "phase_stepping_spi.h"
 #include "gpio.h"   // struct spi_config, spi_prepare, spi_transfer,
@@ -16,8 +10,7 @@
 #define MAX_PHASE_BUSES  4
 #define MAX_PHASE_MOTORS 16   // matches Rust state::MAX_STEPPER_OIDS
 
-// ---------- 2026-05-18 SPI3 contention arbitration ----------------------
-// See phase_stepping_spi.h for the rationale and contract.
+// SPI3 contention arbitration — see phase_stepping_spi.h.
 static volatile uint8_t  phase_spi_busy = 0;
 static volatile uint32_t phase_spi_skip_count = 0;
 static volatile uint32_t phase_spi_write_count = 0;
@@ -67,18 +60,12 @@ struct phase_motor_state {
     uint8_t configured;
 };
 
-// Static, zero-initialized (.bss). `configured == 0` means "not registered".
+// .bss-zeroed; configured == 0 means "not registered".
 static struct phase_bus_state  phase_buses[MAX_PHASE_BUSES];
 static struct phase_motor_state phase_motors[MAX_PHASE_MOTORS];
 
-// `used + externally_visible`: Klipper's MCU build uses
-// `-flto=auto -fwhole-program`, which DCEs symbols not referenced from
-// any C translation unit. All three helpers are called exclusively from
-// the Rust `runtime` staticlib (via FFI), so without these attributes
-// the LTO inliner drops the function bodies and the final link fails
-// with `undefined reference to ...`. Same pattern used by
-// `runtime_emit_step_pulses` in src/stepper.c and `runtime_irq_save` /
-// `runtime_irq_restore` in src/runtime_tick.c.
+// used,externally_visible: called only from the Rust runtime via FFI, so
+// -fwhole-program LTO would DCE the bodies and the link would fail.
 __attribute__((used, externally_visible))
 void
 phase_stepping_register_bus(uint8_t bus_id, struct spi_config cfg)
@@ -128,17 +115,15 @@ phase_stepping_write_xdirect(uint8_t motor_idx,
     if (bus_id >= MAX_PHASE_BUSES || !phase_buses[bus_id].configured)
         return;
 
-    // ISR-priority: if Klipper's spi_transfer holds the bus, skip this
-    // modulation cycle. One skip = 25 us at 40 kHz, inaudible. The
-    // skip-count telemetry is the canary for SPI3 contention going wild.
+    // If Klipper's spi_transfer holds the bus, skip this cycle (one skip = 25 us,
+    // inaudible); the skip count is the SPI3-contention canary.
     if (!phase_spi_try_acquire()) {
         phase_spi_skip_count++;
         return;
     }
 
-    // Cast through uint16_t before shifting so the sign bit lands in
-    // bit 8 of the source word (C right-shift on signed negative values
-    // is implementation-defined; uint16_t guarantees a logical shift).
+    // Cast through uint16_t so the sign bit shifts logically (signed >> is
+    // implementation-defined).
     uint16_t ua = (uint16_t)coil_a;
     uint16_t ub = (uint16_t)coil_b;
 
@@ -151,13 +136,12 @@ phase_stepping_write_xdirect(uint8_t motor_idx,
     };
 
     spi_prepare(phase_buses[bus_id].cfg);
-    gpio_out_write(phase_motors[motor_idx].cs, 0); // CS low (assert)
-    // 2026-05-19: call the unlocked variant — we already own
-    // phase_spi_busy via phase_spi_try_acquire() above. Calling the
-    // public spi_transfer here would deadlock the ISR on its own lock.
+    gpio_out_write(phase_motors[motor_idx].cs, 0); // CS low
+    // Unlocked variant — we already hold phase_spi_busy; the public
+    // spi_transfer would deadlock the ISR on its own lock.
     spi_transfer_locked(phase_buses[bus_id].cfg, 0,
                         sizeof(datagram), datagram);
-    gpio_out_write(phase_motors[motor_idx].cs, 1); // CS high (deassert)
+    gpio_out_write(phase_motors[motor_idx].cs, 1); // CS high
 
     phase_spi_write_count++;
     phase_spi_release();

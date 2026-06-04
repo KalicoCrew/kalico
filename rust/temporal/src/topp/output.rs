@@ -1,7 +1,3 @@
-//! Profile assembly: solver output + verifier report → public `TopProfile`.
-//!
-//! Spec §4.3 stage 5, §4.4.
-
 use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::{SlpOutcome, SolverResult, SolverStatus};
 use crate::topp::verify::{self, VerifyReport};
@@ -38,7 +34,6 @@ pub(crate) fn assemble(
         if v_sum > 1e-12 {
             total_time += ds * 2.0 / v_sum;
         } else {
-            // Defensive: shouldn't happen mid-profile for feasible solutions.
             total_time += ds / 1e-9_f64.max(samples[i].v.max(samples[i + 1].v));
         }
     }
@@ -51,39 +46,31 @@ pub(crate) fn assemble(
     }
 }
 
-/// Convert internal solver status into public `SolveStatus`. Carries `verify`
-/// so we can override Clarabel-success with feasibility-failure (relaxation
-/// tightness gap, per spec §7.1) and `slp_outcome` so SLP-converged /
-/// diverged / max-iter cases get distinct public statuses (spec §11).
+/// Convert internal solver status into public `SolveStatus`. Overrides
+/// Clarabel-success with feasibility-failure when the verifier rejects, and
+/// promotes MaxIter/Diverged/MaxIters outcomes to SolvedInexact when the
+/// verifier accepts the iterate within EPS_FEAS.
 pub(crate) fn map_status(
     solver_status: SolverStatus,
     verify: &VerifyReport,
     slp_outcome: SlpOutcome,
 ) -> SolveStatus {
-    // First decide based on the inner solver. SLP-driven statuses can only
-    // override a feasible-looking inner outcome.
     let base = match solver_status {
         SolverStatus::Solved if verify.feasible => SolveStatus::Solved,
         SolverStatus::SolvedInexact { residual } if verify.feasible => {
             SolveStatus::SolvedInexact { residual }
         }
-        SolverStatus::Solved | SolverStatus::SolvedInexact { .. } => {
-            // Inner solver succeeded but verifier disagrees: relaxation-gap.
-            SolveStatus::Infeasible {
-                at_grid: verify.worst_violation_grid,
-                reason: InfeasibleReason::SolverInfeasible,
-            }
-        }
+        SolverStatus::Solved | SolverStatus::SolvedInexact { .. } => SolveStatus::Infeasible {
+            at_grid: verify.worst_violation_grid,
+            reason: InfeasibleReason::SolverInfeasible,
+        },
         SolverStatus::Infeasible => SolveStatus::Infeasible {
             at_grid: 0,
             reason: InfeasibleReason::SolverInfeasible,
         },
         SolverStatus::MaxIter { residual } => {
-            // Per spec §6.2, verify::check accepts at EPS_FEAS=1e-3. If
-            // Clarabel terminates with residual below verifier tolerance, the
-            // iterate IS feasible by our standard — promote MaxIter→SolvedInexact
-            // rather than fail. Discovered during fixture_7 N=200
-            // InsufficientProgress investigation; see CLAUDE.md plan-changes-log.
+            // When Clarabel terminates with residual below verifier tolerance, the
+            // iterate IS feasible — promote MaxIter→SolvedInexact rather than fail.
             if residual < verify::EPS_FEAS && verify.feasible {
                 SolveStatus::SolvedInexact { residual }
             } else {
@@ -94,14 +81,7 @@ pub(crate) fn map_status(
         }
     };
 
-    // SLP outcome refines the public status when it carries useful additional
-    // information that isn't already captured by the inner solver / verifier.
     match (slp_outcome, &base) {
-        // SLP cuts were required and converged. Promote a feasible inner
-        // outcome to `SolvedSlp{outer_iters}`; verifier-rejected inner
-        // outcomes pass through as Infeasible (the SLP loop only adds
-        // path-jerk cuts, so an axis-accel verifier veto is still a real
-        // failure even when SLP terminates cleanly).
         (
             SlpOutcome::Converged { outer_iters },
             SolveStatus::Solved | SolveStatus::SolvedInexact { .. },
@@ -113,16 +93,8 @@ pub(crate) fn map_status(
             },
             _,
         ) if verify.feasible => {
-            // Symmetric with the `MaxIters` promotion below: when the SLP
-            // outer loop stalls (ratio plateau or trust-region collapse) at a
-            // band-edge iterate that the verifier nonetheless accepts within
-            // `EPS_FEAS`, the iterate IS feasible by our authoritative bar.
-            // Without this branch, knife-edge cases where the SLP residual sits
-            // just above its internal threshold but below the verifier's would
-            // be rejected even though `verify::check` says feasible — same
-            // pathology that motivated the `MaxIters` promotion (see comment
-            // there). Carry the SLP's measured ratio for diagnostic continuity:
-            // `last_max_ratio - 1.0` is the SLP's own residual estimate.
+            // Verifier accepts the iterate despite SLP stall: the iterate IS
+            // feasible at our authoritative bar. Carry verifier's residual.
             let _ = last_max_ratio;
             SolveStatus::SolvedInexact {
                 residual: verify.worst_violation,
@@ -139,18 +111,9 @@ pub(crate) fn map_status(
             outer_iters,
         },
         (SlpOutcome::MaxIters { last_max_ratio }, _) => {
-            // Symmetric with the Clarabel-MaxIter promotion at the inner-solver
-            // match above: the SLP outer loop's `last_max_ratio` measures the
-            // path-jerk RELAXATION gap (Lee 2024 conservative cut on
-            // `|b''|·√b ≤ 2J`), not a direct feasibility residual. The
-            // authoritative bar is `verify::check`, which evaluates per-axis
-            // Cartesian jerk on the assembled time-domain trajectory. When the
-            // SLP loop times out at a band-edge N (e.g. fixture_6 seg-9 at
-            // N=80, where last_max_ratio plateaus at 1.13 while
-            // verify.worst_violation sits at machine epsilon), the iterate IS
-            // feasible at our standard — promote rather than fail. Same logic,
-            // different inner solver. Carries the verifier's measured
-            // violation as the residual to keep semantics consistent.
+            // When the SLP loop times out but the verifier accepts the iterate,
+            // promote to SolvedInexact (same logic as the MaxIter inner-solver
+            // promotion above).
             if verify.feasible {
                 SolveStatus::SolvedInexact {
                     residual: verify.worst_violation,
@@ -159,8 +122,6 @@ pub(crate) fn map_status(
                 SolveStatus::MaxIterSlp { last_max_ratio }
             }
         }
-        // Iteration-0 convergence (no cuts), verifier-rejected SLP-converged
-        // outcomes, and inner-solver failures all pass `base` through unchanged.
         (SlpOutcome::Converged { .. } | SlpOutcome::InnerSolverFailure, _) => base,
     }
 }

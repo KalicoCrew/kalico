@@ -1,10 +1,3 @@
-//! `ParseError`: errors that can arise during tokenization.
-//!
-//! These are returned from the lexer's iterator items as `Err(ParseError)`.
-//! `geometry::reduce` translates persistent parse errors into
-//! `Recovery::MalformedParams` events. Most lexer errors are localizable to a
-//! single line and don't terminate iteration.
-
 use thiserror::Error;
 
 #[derive(Debug, Error)]

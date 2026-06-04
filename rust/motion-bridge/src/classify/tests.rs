@@ -32,14 +32,12 @@ fn zero_displacement_rejected() {
 
 #[test]
 fn nominal_duration_uses_distance_over_feedrate() {
-    // 10 mm at 100 mm/s ⇒ 0.1 s cruise estimate.
     let m = classify_and_build([0.0; 3], 10.0, 0.0, 0.0, 0.0, 100.0).unwrap();
     assert!((m.nominal_duration() - 0.1).abs() < 1e-12);
 }
 
 #[test]
 fn nominal_duration_uses_3d_distance() {
-    // 3-4-5 triangle in XYZ at 5 mm/s ⇒ 1.0 s.
     let m = classify_and_build([0.0; 3], 3.0, 4.0, 0.0, 0.0, 5.0).unwrap();
     assert!((m.nominal_duration() - 1.0).abs() < 1e-12);
 }

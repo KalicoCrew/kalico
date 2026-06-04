@@ -1,33 +1,8 @@
-//! Cubic Bézier spline fitter with recursive refinement.
-//!
-//! Takes a sequence of 3D waypoints and produces cubic Bézier G5 segments
-//! within a configured tolerance.  The fitter works in XY for curve fitting
-//! and linearly interpolates Z at output piece endpoints.
-//!
-//! Algorithm:
-//! 1. Single-segment runs (2 points): emit a collinear G5.
-//! 2. Longer runs: try fitting a single cubic Bézier to all points via
-//!    chord-length-parameterized least squares.  If the maximum error
-//!    exceeds tolerance, split at the worst-error point and recurse with
-//!    tangent continuity at the split.
-//! 3. Cap recursion at 10 levels; fall back to collinear on exhaustion.
-
 use crate::collinear::to_collinear_g5;
 use crate::emit::G5Line;
 
-/// Maximum recursion depth before falling back to per-segment collinear output.
 const MAX_DEPTH: u32 = 10;
 
-/// Fit a sequence of 3D waypoints to cubic Bézier G5 segments within tolerance.
-///
-/// Returns G5 pieces with `e = 0.0` and `f = None` (caller sets those).
-///
-/// # Parameters
-///
-/// - `points`: ordered XYZ waypoints (at least 2).
-/// - `tolerance_mm`: maximum allowed deviation in XY (mm).
-/// - `start_tangent`: if provided, constrains CP1 direction at the first point.
-/// - `end_tangent`: if provided, constrains CP2 direction at the last point.
 pub fn fit_subrun(
     points: &[[f64; 3]],
     tolerance_mm: f64,
@@ -40,7 +15,6 @@ pub fn fit_subrun(
     fit_recursive(points, tolerance_mm, start_tangent, end_tangent, 0)
 }
 
-/// Recursive fitting worker.
 fn fit_recursive(
     points: &[[f64; 3]],
     tolerance_mm: f64,
@@ -50,17 +24,14 @@ fn fit_recursive(
 ) -> Vec<G5Line> {
     debug_assert!(points.len() >= 2);
 
-    // Single segment: always emit collinear.
     if points.len() == 2 {
         return vec![to_collinear_g5(points[0], points[1], 0.0, None)];
     }
 
-    // Recursion exhausted: fall back to per-segment collinear.
     if depth >= MAX_DEPTH {
         return emit_collinear(points);
     }
 
-    // Try fitting a single cubic Bézier through all the points.
     let polyline_xy: Vec<[f64; 2]> = points.iter().map(|p| [p[0], p[1]]).collect();
     let p0 = polyline_xy[0];
     let p3 = *polyline_xy.last().unwrap();
@@ -69,32 +40,17 @@ fn fit_recursive(
         return emit_collinear(points);
     };
 
-    // Error check: max distance from each input point to the fitted Bézier
-    // at its corresponding chord-length parameter.
-    //
-    // We do NOT use Hausdorff Bézier-to-polyline distance here.  The
-    // polyline is itself a chord approximation of a smooth curve, so any
-    // smooth Bézier that fits the sample points will naturally bulge away
-    // from the straight chord segments -- that is correct behaviour, not
-    // error.  The Hausdorff module is designed for arc-to-Bézier verification
-    // (where the Bézier is an approximation of a known arc), not for this
-    // use case.
     let (worst_idx, worst_t, err) = find_worst_point(&polyline_xy, p0, cp1, cp2, p3);
 
     if err <= tolerance_mm {
-        // Single piece is good enough.
         let z_end = points.last().unwrap()[2];
         return vec![bezier_to_g5(p0, cp1, cp2, p3, z_end)];
     }
 
-    // Split at the worst-error point and recurse.
     if worst_idx == 0 || worst_idx >= points.len() - 1 {
-        // Can't split usefully.
         return emit_collinear(points);
     }
 
-    // Tangent at the split point: derivative of the fitted Bézier at the
-    // chord-length parameter of the worst-error point.
     let tangent = bezier_tangent(p0, cp1, cp2, p3, worst_t);
     let tan_len = (tangent[0] * tangent[0] + tangent[1] * tangent[1]).sqrt();
     let split_tangent = if tan_len > 1e-12 {
@@ -103,7 +59,6 @@ fn fit_recursive(
         None
     };
 
-    // Recurse on both halves.
     let left = fit_recursive(
         &points[..=worst_idx],
         tolerance_mm,
@@ -124,7 +79,6 @@ fn fit_recursive(
     result
 }
 
-/// Emit per-segment collinear G5 for a sequence of points.
 fn emit_collinear(points: &[[f64; 3]]) -> Vec<G5Line> {
     points
         .windows(2)
@@ -132,7 +86,6 @@ fn emit_collinear(points: &[[f64; 3]]) -> Vec<G5Line> {
         .collect()
 }
 
-/// Compute cumulative chord-length parameterization normalized to `[0, 1]`.
 fn chord_length_params(pts: &[[f64; 2]]) -> Vec<f64> {
     let n = pts.len();
     let mut params = Vec::with_capacity(n);
@@ -154,10 +107,6 @@ fn chord_length_params(pts: &[[f64; 2]]) -> Vec<f64> {
     params
 }
 
-/// Fit a single cubic Bézier to XY points via chord-length-parameterized
-/// least squares.
-///
-/// Returns `Some((cp1, cp2))` on success, `None` if the system is degenerate.
 fn fit_single_bezier(
     pts: &[[f64; 2]],
     start_tangent: Option<[f64; 2]>,
@@ -180,7 +129,6 @@ fn fit_single_bezier(
     }
 }
 
-/// Bernstein basis values for a cubic at parameter `t`.
 fn bernstein3(t: f64) -> [f64; 4] {
     let s = 1.0 - t;
     let s2 = s * s;
@@ -188,7 +136,6 @@ fn bernstein3(t: f64) -> [f64; 4] {
     [s2 * s, 3.0 * s2 * t, 3.0 * s * t2, t2 * t]
 }
 
-/// Evaluate a cubic Bézier at parameter `t`.
 fn bezier_eval(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64) -> [f64; 2] {
     let b = bernstein3(t);
     [
@@ -197,15 +144,6 @@ fn bezier_eval(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64) -
     ]
 }
 
-/// Unconstrained fit: solve for CP1 and CP2.
-///
-/// For each interior point `k` with parameter `t_k`, the residual is:
-///
-/// ```text
-/// r_k = point_k - b0(t_k)*P0 - b3(t_k)*P3 = b1(t_k)*CP1 + b2(t_k)*CP2
-/// ```
-///
-/// X and Y decouple into independent 2x2 normal-equations systems.
 fn fit_unconstrained(
     pts: &[[f64; 2]],
     params: &[f64],
@@ -235,7 +173,6 @@ fn fit_unconstrained(
 
     let det = ata[0][0] * ata[1][1] - ata[0][1] * ata[1][0];
     if det.abs() < 1e-20 {
-        // Degenerate -- fall back to collinear control points.
         let dx = p3[0] - p0[0];
         let dy = p3[1] - p0[1];
         return (
@@ -254,10 +191,6 @@ fn fit_unconstrained(
     ([cp1_x, cp1_y], [cp2_x, cp2_y])
 }
 
-/// Fit with both start and end tangent constraints.
-///
-/// `CP1 = P0 + alpha * st`, `CP2 = P3 - beta * et`.
-/// Two unknowns: `alpha`, `beta` (both >= 0).
 fn fit_constrained_both(
     pts: &[[f64; 2]],
     params: &[f64],
@@ -308,9 +241,6 @@ fn fit_constrained_both(
     (cp1, cp2)
 }
 
-/// Fit with only start tangent constrained.
-///
-/// `CP1 = P0 + alpha * st` (1 unknown), CP2 free (2 unknowns).
 fn fit_constrained_start(
     pts: &[[f64; 2]],
     params: &[f64],
@@ -346,9 +276,6 @@ fn fit_constrained_start(
     Some((cp1, cp2))
 }
 
-/// Fit with only end tangent constrained.
-///
-/// CP1 free (2 unknowns), `CP2 = P3 - beta * et` (1 unknown).
 fn fit_constrained_end(
     pts: &[[f64; 2]],
     params: &[f64],
@@ -384,9 +311,6 @@ fn fit_constrained_end(
     Some((cp1, cp2))
 }
 
-/// Solve a 3x3 linear system via Cramer's rule.
-///
-/// Returns `None` if the determinant is near zero.
 fn solve_3x3(a: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
     let det = a[0][0] * (a[1][1] * a[2][2] - a[1][2] * a[2][1])
         - a[0][1] * (a[1][0] * a[2][2] - a[1][2] * a[2][0])
@@ -416,8 +340,6 @@ fn solve_3x3(a: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
     Some([x0, x1, x2])
 }
 
-/// Fallback when tangent-constrained fit fails: produce control points using
-/// the chord direction scaled by 1/3 of the chord length, adjusted by tangent.
 fn fallback_tangent(
     p0: [f64; 2],
     p3: [f64; 2],
@@ -440,10 +362,6 @@ fn fallback_tangent(
     (cp1, cp2)
 }
 
-/// Find the interior polyline point with the worst error relative to the
-/// fitted Bézier at its chord-length parameter.
-///
-/// Returns `(index, t_at_index, max_distance)`.
 fn find_worst_point(
     pts: &[[f64; 2]],
     p0: [f64; 2],
@@ -470,7 +388,6 @@ fn find_worst_point(
     (worst_idx, params[worst_idx], worst_dist)
 }
 
-/// Evaluate the tangent (first derivative) of a cubic Bézier at parameter `t`.
 fn bezier_tangent(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64) -> [f64; 2] {
     let s = 1.0 - t;
     let c0 = 3.0 * s * s;
@@ -482,10 +399,6 @@ fn bezier_tangent(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64
     ]
 }
 
-/// Convert a fitted Bézier (XY control points) to a [`G5Line`].
-///
-/// G5 convention: `I = CP1.x - P0.x`, `J = CP1.y - P0.y`,
-/// `P = CP2.x - P3.x`, `Q = CP2.y - P3.y`, `X/Y/Z = P3`.
 fn bezier_to_g5(p0: [f64; 2], cp1: [f64; 2], cp2: [f64; 2], p3: [f64; 2], z_end: f64) -> G5Line {
     G5Line {
         x: p3[0],

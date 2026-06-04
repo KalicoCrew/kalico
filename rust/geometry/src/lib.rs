@@ -1,6 +1,3 @@
-//! Layer 1 geometry pipeline. Token stream → typed segments.
-//! See `docs/superpowers/specs/2026-04-26-layer-1-rust-architecture-design.md`.
-
 #![cfg_attr(not(test), forbid(unsafe_code))]
 
 pub mod error;

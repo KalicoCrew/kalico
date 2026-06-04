@@ -1,11 +1,5 @@
-//! Lexer entry point: `lex(&str) -> impl Iterator<Item = Result<Token, ParseError>>`.
-
 use crate::{ParseError, Token};
 
-/// Tokenize a complete G-code buffer. Returns an iterator over per-line
-/// tokenization results. Empty lines and pure-whitespace lines yield no tokens.
-/// Comments yield `Token::Comment`; promoting slicer-recognized comments to
-/// `Token::Marker` is future work.
 pub fn lex(text: &str) -> Lexer<'_> {
     Lexer {
         lines: text.lines().enumerate(),
@@ -17,7 +11,6 @@ pub struct Lexer<'a> {
     lines: std::iter::Enumerate<std::str::Lines<'a>>,
 }
 
-/// Strip an inline `;`-comment from a line, returning only the command portion.
 fn strip_inline_comment(line: &str) -> &str {
     match line.find(';') {
         Some(idx) => &line[..idx],
@@ -25,8 +18,6 @@ fn strip_inline_comment(line: &str) -> &str {
     }
 }
 
-/// Parse a `(major, minor)` head number like `1` → `(1, None)` or `5.1` →
-/// `(5, Some(1))`.
 fn parse_head_number(s: &str) -> Option<(u32, Option<u32>)> {
     if let Some((maj, min)) = s.split_once('.') {
         let major = maj.parse::<u32>().ok()?;
@@ -37,11 +28,9 @@ fn parse_head_number(s: &str) -> Option<(u32, Option<u32>)> {
     }
 }
 
-/// Tokenize a single non-comment, non-empty trimmed line into a `Token::Command`.
 fn tokenize_command_line(line: &str, line_no: u32) -> Result<Token, ParseError> {
     let mut chars = line.char_indices();
 
-    // Read the head letter.
     let Some((_, head_char)) = chars.next() else {
         return Err(ParseError::EmptyCommand { line_no });
     };
@@ -58,11 +47,9 @@ fn tokenize_command_line(line: &str, line_no: u32) -> Result<Token, ParseError> 
     }
     let head_byte = head_char as u8;
 
-    // Find start of the remainder after the head letter.
     let after_letter_idx = chars.next().map_or(line.len(), |(i, _)| i);
     let after_letter = &line[after_letter_idx..];
 
-    // Head number runs up to the first whitespace.
     let head_number_str = after_letter.split_whitespace().next().unwrap_or("");
     let (major, minor) =
         parse_head_number(head_number_str).ok_or_else(|| ParseError::UnrecognizedHead {
@@ -70,7 +57,6 @@ fn tokenize_command_line(line: &str, line_no: u32) -> Result<Token, ParseError> 
             head: format!("{head_char}{head_number_str}").into_boxed_str(),
         })?;
 
-    // Parse remaining whitespace-separated tokens as `<letter><number>`.
     let mut params = crate::Params::default();
     let mut seen = [false; 26];
     let after_head_idx = after_letter_idx + head_number_str.len();
@@ -78,8 +64,6 @@ fn tokenize_command_line(line: &str, line_no: u32) -> Result<Token, ParseError> 
     for tok in line[after_head_idx..].split_whitespace() {
         let mut tc = tok.chars();
         let Some(letter_ch) = tc.next() else { continue };
-        // Reject non-ASCII-uppercase letters consistently with the head check above.
-        // Slicer output is always uppercase; tolerating lowercase silently can mask bugs.
         if !letter_ch.is_ascii_uppercase() {
             return Err(ParseError::MalformedNumber {
                 line_no,
@@ -92,14 +76,6 @@ fn tokenize_command_line(line: &str, line_no: u32) -> Result<Token, ParseError> 
             line_no,
             text: tok.to_string().into_boxed_str(),
         })?;
-        // Reject non-finite literals (NaN, +/-inf, infinity). Rust's
-        // f64::FromStr accepts all of these. Without this guard they
-        // silently propagate through reduce → pipeline into planner-visible
-        // segments; worse, NaN-poisoned XY classifies as ZeroMotion (because
-        // `NaN > 1e-6` is false) so the entire move is silently dropped with
-        // no telemetry, and modal state.position becomes NaN-poisoned for
-        // every subsequent G5. (Round-5 review fix: contain at the lexer
-        // boundary — single point, applies uniformly to all parameter letters.)
         if !value.is_finite() {
             return Err(ParseError::MalformedNumber {
                 line_no,

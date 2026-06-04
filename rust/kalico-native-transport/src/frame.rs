@@ -1,24 +1,10 @@
-//! Layer-1 frame envelope (§4 of the kalico-native transport spec).
-//!
-//! ```text
-//! sync (u8 = 0x55) | len (u16_le) | channel (u8) | payload | crc (u16_le)
-//! ```
-//!
-//! `len` covers everything from the `len` field through the `crc` inclusive
-//! (i.e. `total_frame_len - 1`, the "after-sync" byte count). The minimum
-//! legal `len` value is 5 (len:2 + channel:1 + crc:2 — empty payload).
-
 use thiserror::Error;
 
 pub const FRAME_SYNC: u8 = 0x55;
 pub const CHANNEL_CONTROL: u8 = 0;
 pub const CHANNEL_EVENTS: u8 = 1;
 
-/// Minimum value of the on-wire `len` field (header-len + channel + crc, no payload).
 pub const FRAME_MIN_LEN_FIELD: usize = 2 + 1 + 2;
-
-/// Maximum size of a single frame on the wire (sync + u16-len cap).
-/// `len` field is u16, so total frame ≤ 1 + `u16::MAX` bytes.
 pub const FRAME_MAX_TOTAL: usize = 1 + u16::MAX as usize;
 
 #[derive(Debug, Error)]
@@ -33,11 +19,8 @@ pub enum FrameError {
     CrcMismatch { expected: u16, actual: u16 },
 }
 
-/// CRC-16/CCITT (poly 0x1021, init 0xFFFF, no reflection, no final xor).
-///
-/// Copied from `rust/kalico-host-rt/src/host_io/wire.rs:9` so this crate
-/// doesn't pull in the whole host-rt graph just for one routine. Same byte
-/// layout, same test vectors.
+// CRC-16/CCITT (poly 0x1021, init 0xFFFF, no reflection, no final xor).
+// Must stay bit-identical to kalico-host-rt/src/host_io/wire.rs:crc16_ccitt.
 pub fn crc16_ccitt(buf: &[u8]) -> u16 {
     let mut crc: u16 = 0xFFFF;
     for &byte in buf {
@@ -48,7 +31,6 @@ pub fn crc16_ccitt(buf: &[u8]) -> u16 {
     crc
 }
 
-/// Build a complete frame: `sync | len | channel | payload | crc`.
 pub fn encode_frame(channel: u8, payload: &[u8]) -> Vec<u8> {
     let len_field = FRAME_MIN_LEN_FIELD + payload.len();
     assert!(
@@ -63,16 +45,12 @@ pub fn encode_frame(channel: u8, payload: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&(len_field as u16).to_le_bytes());
     out.push(channel);
     out.extend_from_slice(payload);
-    // CRC covers [len .. crc-start) per spec §4.
     let crc = crc16_ccitt(&out[1..out.len()]);
     out.extend_from_slice(&crc.to_le_bytes());
     debug_assert_eq!(out.len(), total);
     out
 }
 
-/// Decode a complete frame in a buffer that starts with the sync byte.
-/// Returns `(channel, payload_slice)`. `buf.len()` must be exactly the
-/// full frame length (the demuxer guarantees this for callers).
 pub fn decode_frame(buf: &[u8]) -> Result<(u8, &[u8]), FrameError> {
     if buf.len() < 1 + FRAME_MIN_LEN_FIELD {
         return Err(FrameError::TooShort {

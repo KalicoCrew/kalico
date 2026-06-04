@@ -1,16 +1,6 @@
-// src/runtime_tick.c
-//
-// Klipper-side lifecycle for the kalico runtime: DECL_INIT brings up the
-// Rust runtime + the per-family tick backend; DECL_TASK pumps drain the
-// Rust → Klipper response queue. Shared globals (runtime_handle,
-// runtime_clock_freq, runtime_aligned_*) live here as the single
-// definition site.
-//
-// Klipper command surface is in src/runtime_commands.c.
-// Per-family backends:
-//   src/stm32/runtime_tick_h7.c   (H7 TIM5 ISR)
-//   src/linux/runtime_tick_host.c (pthread tick for host-sim)
-// Backend interface contract: src/generic/runtime_tick.h.
+// Klipper-side lifecycle for the kalico runtime and the single definition site
+// for shared globals (runtime_handle, runtime_clock_freq, ...). Command surface
+// is in src/runtime_commands.c; per-family tick backends in src/<arch>/.
 
 #include <string.h>         // memcpy
 #if defined(__linux__) || defined(__APPLE__)
@@ -31,8 +21,8 @@
 #include "generic/fault_handler.h"  // diag_record_engine_xition, diag_take_snapshot
 
 
-// Exposed to Rust via `extern "C" { static runtime_clock_freq: u32; }`.
-// __attribute__((used, externally_visible)) survives -fwhole-program LTO + GC.
+// Read from Rust via `extern "C" { static runtime_clock_freq: u32; }`;
+// used,externally_visible keeps it through -fwhole-program LTO.
 const uint32_t runtime_clock_freq __attribute__((used, externally_visible))
     = CONFIG_CLOCK_FREQ;
 
@@ -42,7 +32,7 @@ const uint32_t runtime_sample_rate_hz __attribute__((used, externally_visible))
 
 extern volatile uint8_t runtime_liveness_ok;  // defined in src/stm32/watchdog.c
 
-// Foreground-only host-clock helper (flush ack-wait timeout). NEVER call from ISR.
+// Foreground-only; NEVER call from ISR.
 __attribute__((used, externally_visible))
 uint64_t
 runtime_host_now_us(void)
@@ -51,13 +41,11 @@ runtime_host_now_us(void)
     return ((uint64_t)cycles) / (CONFIG_CLOCK_FREQ / 1000000U);
 }
 
-// Boot/dispatch progress: (tag, stage, value) packed into a u32, piggybacked
-// onto the 10 Hz kalico_status_v6 fault_detail field. bits[31:24]=tag,
-// [23:16]=stage, [15:0]=value. Volatile: foreground single-threaded, no atomics needed.
+// (tag, stage, value) packed: bits[31:24]=tag, [23:16]=stage, [15:0]=value.
 volatile uint32_t runtime_diag_last_packed __attribute__((used, externally_visible));
 
-// Crash diag survives NVIC_SystemReset via .persistent_diag (NOLOAD, outside bss).
-// Next boot checks magic == RT_DIAG_MAGIC and emits the prior stage via output().
+// Survives NVIC_SystemReset via .persistent_diag (NOLOAD, outside bss); next
+// boot checks magic == RT_DIAG_MAGIC.
 #define RT_DIAG_MAGIC 0xD1A6BABE
 
 struct rt_diag_persistent {
@@ -70,8 +58,7 @@ struct rt_diag_persistent {
 volatile struct rt_diag_persistent rt_diag_persistent
     __attribute__((section(".persistent_diag"), used, externally_visible));
 
-// Prior-boot packed-diag snapshot, captured at runtime_init before the current
-// run overwrites rt_diag_persistent. Status drain emits both live and snapshot.
+// Captured at runtime_init before the current run overwrites rt_diag_persistent.
 volatile uint32_t runtime_diag_prior_boot_snapshot
     __attribute__((used, externally_visible));
 
@@ -93,8 +80,7 @@ runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value)
     rt_diag_persistent.last_us = timer_read_time();
 }
 
-// Klipper-stats-based widened clock: advances regardless of engine state
-// (Idle/Drained/Fault), unlike the ISR-published engine widened_now.
+// Advances regardless of engine state, unlike the ISR-published widened_now.
 // Foreground-only; do NOT call from ISR.
 __attribute__((used, externally_visible))
 uint64_t
@@ -107,8 +93,8 @@ runtime_widened_host_clock(void)
     return ((uint64_t)high << 32) | (uint64_t)cur;
 }
 
-// Thin wrappers so the Rust staticlib can call irq_save/irq_restore without
-// LTO DCE-ing the standalone symbols (used,externally_visible keeps them).
+// used,externally_visible: the Rust staticlib calls these; LTO would otherwise
+// DCE the standalone symbols.
 __attribute__((used, externally_visible))
 uint32_t
 runtime_irq_save(void)
@@ -127,18 +113,16 @@ void* runtime_handle = 0;            // exposed (non-static) for runtime_tick_h7
 static struct task_wake runtime_drain_wake;
 static struct timer runtime_drain_timer;
 
-// 10 Hz status frame state; prev_engine_status gates the one-shot kalico_fault emit.
 static uint32_t last_status_emit_time = 0;
 static uint8_t prev_engine_status = 0;
 
-// Liveness monitor state.
 static uint32_t last_seen_tick_counter = 0;
 static uint32_t last_progress_time = 0;
 
 static uint8_t last_seen_status = 255;
 
-// ~1 kHz drain wake. Reschedule from now (not +=1ms) to avoid "timer in past"
-// shutdown if the foreground stalls for >1 ms.
+// Reschedule from now (not +=1ms) to avoid a "timer in past" shutdown if the
+// foreground stalls for >1 ms.
 static uint_fast8_t
 runtime_drain_event(struct timer *t)
 {
@@ -150,7 +134,7 @@ runtime_drain_event(struct timer *t)
 void
 runtime_init(void)
 {
-    // Capture prior-boot diag FIRST (before our markers overwrite it).
+    // Capture prior-boot diag before our markers overwrite it.
     extern volatile uint32_t runtime_diag_prior_magic_raw;
     extern volatile uint32_t runtime_diag_prior_packed_raw;
     runtime_diag_prior_magic_raw = rt_diag_persistent.magic;
@@ -206,10 +190,10 @@ runtime_drain(void)
                         diag_slot_rt_drain_last_tick(),
                         diag_slot_rt_drain_max_gap(),
                         timer_from_us(50000),
-                        0); // no event tag — runtime_drain idle gaps are normal
+                        0); // no event tag — idle gaps are normal
 
-    // Liveness: only acts on RUNNING; refreshes anchor in other states so a
-    // transition INTO RUNNING doesn't immediately trip on a stale anchor.
+    // Liveness acts only on RUNNING; other states refresh the anchor so a
+    // transition INTO RUNNING doesn't trip on a stale anchor.
     uint32_t cur_counter = runtime_handle_tick_counter(runtime_handle);
     uint32_t cur_time = timer_read_time();
     uint8_t cur_status = runtime_handle_status(runtime_handle);
@@ -218,7 +202,7 @@ runtime_drain(void)
             last_seen_tick_counter = cur_counter;
             last_progress_time = cur_time;
         } else if ((cur_time - last_progress_time) > KALICO_LIVENESS_THRESHOLD_TICKS) {
-            // ISR has stalled while RUNNING. Stop kicking the watchdog.
+            // ISR stalled while RUNNING — stop kicking the watchdog.
             runtime_liveness_ok = 0;
         }
     } else {
@@ -226,23 +210,20 @@ runtime_drain(void)
         last_seen_tick_counter = cur_counter;
     }
 
-    // One-shot kalico_fault emit on FAULT transition; also block watchdog kicks.
     if (cur_status == 3 /* FAULT */) {
         runtime_liveness_ok = 0;
         if (prev_engine_status != 3 /* FAULT */) {
             int32_t fault_code = runtime_handle_last_error(runtime_handle);
             uint32_t fault_detail = runtime_handle_fault_detail(runtime_handle);
-            // tick_blocker_pc: stacked PC from TIM5 exception frame on -311 path.
-            // Feed to addr2line to identify the code holding the CPU at the late tick.
             uint32_t tick_blocker_pc = runtime_handle_tick_blocker_pc(runtime_handle);
             kalico_native_emit_fault_event((uint16_t)fault_code, fault_detail,
                                            tick_blocker_pc);
         }
     }
 
-    // Live fault escalation: emit + Klipper shutdown on fresh nonzero last_error.
-    // shutdown() is safe in foreground (DECL_TASK) but NOT from ISR.
-    // last_acted_error (static) suppresses re-emit on the post-longjmp trailing pass.
+    // Fresh nonzero last_error → emit + Klipper shutdown. shutdown() is safe in
+    // foreground (DECL_TASK) but NOT from ISR. last_acted_error suppresses
+    // re-emit on the post-longjmp trailing pass.
     static int32_t last_acted_error;
     int32_t cur_error = runtime_handle_last_error(runtime_handle);
     if (cur_error != 0 && cur_error != last_acted_error) {
@@ -251,7 +232,7 @@ runtime_drain(void)
         uint32_t tick_blocker_pc = runtime_handle_tick_blocker_pc(runtime_handle);
         kalico_native_emit_fault_event((uint16_t)cur_error, fdetail,
                                        tick_blocker_pc);
-        // Persist into BKPSRAM ring before shutdown resets the USB stack.
+        // Persist before shutdown resets the USB stack.
         diag_ring_push(DIAG_EV_RUST_FAULT, (uint32_t)cur_error, fdetail);
         runtime_liveness_ok = 0;
         shutdown("kalico runtime fault");
@@ -265,14 +246,10 @@ runtime_drain(void)
         last_seen_status = cur_status;
     }
 
-    // Ship any queued MCU log entries (KALICO_MSG_LOG / 0x0084). The "runtime
-    // ready" marker is emitted from the configure path (stepper.c), not here —
-    // see that site for why (a boot-time emit would race the host connect).
     kalico_log_drain();
 }
 DECL_TASK(runtime_drain);
 
-// TIM5 off on Klipper shutdown; step-output timer parks itself (no new steps pushed).
 void
 runtime_tick_shutdown(void)
 {
@@ -313,9 +290,6 @@ runtime_status_drain(void)
 }
 DECL_TASK(runtime_status_drain);
 
-// Command surface and endstop GPIO sampler live in src/runtime_commands.c.
-// This file: lifecycle (init/drain), sibling drains, shared globals.
-
 DECL_CTR("_DECL_OUTPUT "
          "kalico_endstop_tripped arm_id=%u "
          "trip_clock_lo=%u trip_clock_hi=%u "
@@ -353,24 +327,21 @@ DECL_TASK(runtime_endstop_drain);
 
 extern void runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps);
 
-// ===========================================================================
-// Step-output timer wiring (TIM3 on H7, TIM2 on F4)
-// ===========================================================================
-// ISR calls kalico_step_output_event() (per_axis_timer.rs): emits due steps,
-// returns soonest remaining head or DISABLE. Same NVIC priority as TIM5 —
-// SPSC non-racing, kick from TIM5 ISR is safe (see kalico_nvic_prio.h).
+// Step-output timer wiring (TIM3 on H7, TIM2 on F4). Step-output ISR runs at
+// the same NVIC priority as TIM5, so the kick from the TIM5 ISR is SPSC-safe
+// (see kalico_nvic_prio.h).
 
-// Sentinel mirrored from per_axis_timer.rs::STEP_OUTPUT_DISABLE.
+// Mirrors per_axis_timer.rs::STEP_OUTPUT_DISABLE.
 #define KALICO_STEP_OUTPUT_DISABLE 0xFFFFFFFFu
 
 extern void step_output_timer_arm(uint32_t cycle_abs);
 extern uint32_t step_output_timer_armed_target(void);
 extern uint8_t step_output_timer_is_running(void);
 
-// Bitmask of axes this MCU owns; read by Rust to scope the soonest-across scan.
+// Read by Rust to scope the soonest-across scan.
 static uint8_t step_output_owned_mask;
 
-// used,externally_visible: referenced only from Rust; must survive --gc-sections LTO.
+// used,externally_visible: Rust-only caller; must survive --gc-sections LTO.
 __attribute__((used, externally_visible))
 uint8_t
 kalico_step_output_owned_mask(void)
@@ -378,7 +349,7 @@ kalico_step_output_owned_mask(void)
     return step_output_owned_mask;
 }
 
-// Register axis ownership for the soonest-across scan. Idempotent; does NOT arm the timer.
+// Idempotent; does NOT arm the timer.
 void
 arm_per_axis_step_timer(uint8_t axis_idx)
 {
@@ -387,9 +358,8 @@ arm_per_axis_step_timer(uint8_t axis_idx)
     step_output_owned_mask |= (uint8_t)(1u << axis_idx);
 }
 
-// (Re)arm the step-output timer no later than cycle_abs (producer kick from TIM5 ISR).
-// Same-priority as step-output ISR: no nesting, compare write is non-racing.
-// used,externally_visible: referenced only from Rust archive; must survive LTO.
+// Producer kick from the TIM5 ISR; same-priority as the step-output ISR, so the
+// compare write is non-racing. used,externally_visible: Rust-only caller.
 __attribute__((used, externally_visible))
 void
 kalico_kick_step_output(uint8_t axis_idx, uint32_t cycle_abs)
@@ -402,7 +372,7 @@ kalico_kick_step_output(uint8_t axis_idx, uint32_t cycle_abs)
         step_output_timer_arm(cycle_abs);
         return;
     }
-    // Pull compare forward only if the new step is sooner (wrap-safe signed compare).
+    // Pull compare forward only if the new step is sooner (wrap-safe).
     uint32_t cur = step_output_timer_armed_target();
     if ((int32_t)(cycle_abs - cur) < 0)
         step_output_timer_arm(cycle_abs);

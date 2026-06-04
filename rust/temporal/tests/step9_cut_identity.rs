@@ -1,56 +1,10 @@
-//! Row-sum identity for the per-axis Cartesian jerk SLP cut (spec §11; Step 9;
-//! width-1 b-FD stencil unification per
-//! `docs/superpowers/specs/2026-05-05-stencil-unification-design.md`).
-//!
-//! This is the de-risk gate for the cut algebra. Before wiring the new cut
-//! into Clarabel, we numerically verify that the cut row coefficients
-//! reproduce the verifier-stencil per-axis Cartesian jerk *exactly* at the
-//! current iterate `(b̄, ā)` for every stencil case (Interior, `StartBoundary`,
-//! `EndBoundary`) and every axis.
-//!
-//! ## The identity (under width-1 b-FD)
-//!
-//! At iterate `(b̄, ā)`, the per-axis Cartesian jerk is:
-//!
-//! ```text
-//!   j_axis(b̄, ā)_i = c'''·b̄_i^(3/2) + 3·c''·ā_i·√b̄_i + c'·s‴_i
-//! ```
-//!
-//! where `s‴_i = √b̄_i · b''(s_i) / 2`, with `b''` evaluated via the width-1
-//! b-FD stencil:
-//!
-//! - Interior i ∈ [1, n-2]: `b'' ≈ (b̄_{i-1} − 2·b̄_i + b̄_{i+1}) / h²`.
-//! - `StartBoundary` i = 0:   `b'' ≈ (b̄_0 − 2·b̄_1 + b̄_2) / h²`.
-//! - `EndBoundary` i = n-1:   `b'' ≈ (b̄_{n-3} − 2·b̄_{n-2} + b̄_{n-1}) / h²`.
-//!
-//! ## The cut row
-//!
-//! The first-order Taylor linearization of `j_axis` at the iterate is
-//!
-//! ```text
-//!   j_lin(b, a) = α_b_{i-1}·b_{i-1} + α_b_i·b_i + α_b_{i+1}·b_{i+1} + α_a_i·a_i + K
-//! ```
-//!
-//! for Interior (analogous variable touch for boundaries). The identity to
-//! verify:
-//!
-//! ```text
-//!   Σ α·iterate_value + K  ==  j_axis(iterate)
-//! ```
-//!
-//! …i.e., evaluating the linearized form at the linearization point reproduces
-//! the original function value exactly (this is the definition of K as the
-//! residual). Any disagreement means the cut algebra is wrong and Clarabel
-//! will be fed garbage.
-
 use temporal::topp::stencil::s_dddot_at;
 
 const H: f64 = 0.4;
 const N_GRID: usize = 10;
 
 /// Direct evaluation of per-axis Cartesian jerk at the iterate `(b̄, ā)`,
-/// using the width-1 b-FD stencil for s‴. This is the "ground truth" the
-/// cut linearization must reproduce.
+/// using the width-1 b-FD stencil for s‴.
 fn j_axis_at_iterate(
     b_bars: &[f64],
     a_bars: &[f64],
@@ -66,8 +20,6 @@ fn j_axis_at_iterate(
     cppp * s3 + 3.0 * cpp * a_bars[i] * s_i + cp * s_dddot
 }
 
-/// Interior cut coefficient computation per spec §5.3. Returns
-/// `(α_b_{i-1}, α_b_i, α_b_{i+1}, α_a_i, K)`.
 fn interior_cut_coeffs(
     b_bars: &[f64],
     a_bars: &[f64],
@@ -89,8 +41,6 @@ fn interior_cut_coeffs(
     (alpha_b_im1, alpha_b_i, alpha_b_ip1, alpha_a_i, k)
 }
 
-/// `StartBoundary` cut coefficient computation per spec §5.4.
-/// Returns `(α_b_0, α_b_1, α_b_2, α_a_0, K)`.
 fn start_boundary_cut_coeffs(
     b_bars: &[f64],
     a_bars: &[f64],
@@ -113,8 +63,6 @@ fn start_boundary_cut_coeffs(
     (alpha_b_0, alpha_b_1, alpha_b_2, alpha_a_0, k)
 }
 
-/// `EndBoundary` cut coefficient computation per spec §5.5.
-/// Returns `(α_b_{n-3}, α_b_{n-2}, α_b_{n-1}, α_a_{n-1}, K)`.
 fn end_boundary_cut_coeffs(
     b_bars: &[f64],
     a_bars: &[f64],
@@ -138,7 +86,6 @@ fn end_boundary_cut_coeffs(
     (alpha_b_nm3, alpha_b_nm2, alpha_b_nm1, alpha_a_nm1, k)
 }
 
-/// Run the row-sum identity at one `(i, axis-derivative-triple)` combination.
 fn check_identity_at(
     b_bars: &[f64],
     a_bars: &[f64],
@@ -180,9 +127,6 @@ fn check_identity_at(
     );
 }
 
-/// Build a synthetic iterate. b values monotonically increasing then
-/// flat; a values reasonable. No physical meaning — purely an algebraic
-/// test fixture.
 fn synthetic_iterate() -> (Vec<f64>, Vec<f64>) {
     let b: Vec<f64> = (0..N_GRID)
         .map(|i| {
@@ -196,56 +140,33 @@ fn synthetic_iterate() -> (Vec<f64>, Vec<f64>) {
 
 #[test]
 fn row_sum_identity_collinear_paths() {
-    // Collinear path: c''_axis = c'''_axis = 0; only c'_axis ≠ 0.
     let (b, a) = synthetic_iterate();
     for &i in &[0usize, 1, 5, 8, 9] {
-        check_identity_at(
-            &b,
-            &a,
-            i,
-            /*cp*/ 1.0,
-            /*cpp*/ 0.0,
-            /*cppp*/ 0.0,
-            "collinear",
-        );
+        check_identity_at(&b, &a, i, 1.0, 0.0, 0.0, "collinear");
     }
 }
 
 #[test]
 fn row_sum_identity_curved_paths() {
-    // Curved path: c''_axis ≠ 0 active; c'''_axis = 0.
     let (b, a) = synthetic_iterate();
     for &i in &[0usize, 1, 5, 8, 9] {
-        check_identity_at(
-            &b, &a, i, /*cp*/ 0.7, /*cpp*/ 0.4, /*cppp*/ 0.0, "curved",
-        );
+        check_identity_at(&b, &a, i, 0.7, 0.4, 0.0, "curved");
     }
 }
 
 #[test]
 fn row_sum_identity_pathological_paths() {
-    // Pathological: all three derivatives non-zero.
     let (b, a) = synthetic_iterate();
     for &i in &[0usize, 1, 5, 8, 9] {
-        check_identity_at(
-            &b,
-            &a,
-            i,
-            /*cp*/ 0.6,
-            /*cpp*/ -0.3,
-            /*cppp*/ 0.2,
-            "pathological",
-        );
+        check_identity_at(&b, &a, i, 0.6, -0.3, 0.2, "pathological");
     }
 }
 
 #[test]
 fn row_sum_identity_holds_at_slp_b_floor() {
-    // One iterate index with b̄ = 0.5 (below SLP_B_FLOOR = 1.0). The cut
-    // helper inside append_axis_jerk_cut_to_clarabel applies
-    // `b_bar.max(SLP_B_FLOOR)` which gives S = √1.0 = 1.0, NOT √0.5. The
-    // identity must hold at the FLOORED value — i.e., the test computes
-    // its own ground-truth using the floored b̄ as well.
+    // The cut helper floors b̄[i] at SLP_B_FLOOR=1.0 before computing coefficients.
+    // The identity must hold at the FLOORED value — compute ground-truth with the
+    // same floor applied.
     let mut b = synthetic_iterate().0;
     let a = synthetic_iterate().1;
     b[5] = 0.5;
@@ -254,9 +175,7 @@ fn row_sum_identity_holds_at_slp_b_floor() {
     let cpp = -0.3;
     let cppp = 0.2;
 
-    // To validate the identity at the cut helper's actual computation:
-    // floor b̄[i] before computing both j_actual and the cut row.
     let mut b_floored = b.clone();
-    b_floored[i] = b[i].max(1.0); // SLP_B_FLOOR = 1.0
+    b_floored[i] = b[i].max(1.0);
     check_identity_at(&b_floored, &a, i, cp, cpp, cppp, "slp_b_floor");
 }

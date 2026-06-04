@@ -1,10 +1,6 @@
-//! Algebraic operations on NURBS. Host-only.
-//! See spec §algebra module.
-
 use crate::bezier::binomial;
 use crate::{AlgebraError, Float};
 
-/// Multiply control points by a scalar. Knots and degree unchanged.
 #[cfg(feature = "host")]
 pub fn scalar_multiply<T: Float>(
     curve: &crate::ScalarNurbs<T>,
@@ -15,12 +11,6 @@ pub fn scalar_multiply<T: Float>(
         .expect("scalar_multiply preserves invariants")
 }
 
-/// Add two scalar NURBS pointwise. v1 requires identical degree and identical
-/// knot vectors; mismatched cases return `KnotMismatch` and the caller is
-/// expected to align via knot insertion (follow-up implementation).
-///
-/// Weights: v1 supports unweighted-only. Weighted addition is non-trivial
-/// (requires homogeneous lift) and is deferred to a follow-up spec.
 #[cfg(feature = "host")]
 pub fn add<T: Float>(
     a: &crate::ScalarNurbs<T>,
@@ -42,31 +32,6 @@ pub fn add<T: Float>(
         .map_err(|_| AlgebraError::KnotMismatch)
 }
 
-/// Add two scalar NURBS curves pointwise, first aligning their knot vectors
-/// via a Bézier-piece union.
-///
-/// Unlike [`add`], this function does not require `a` and `b` to share a knot
-/// vector — it extracts both as Bézier pieces, refines each to the union of
-/// breakpoints (exact knot insertion, no approximation), then adds the control
-/// points piece-by-piece and recomposites the result.
-///
-/// **Fast path:** when `a.knots() == b.knots()` the function delegates directly
-/// to [`add`] without going through extract → refine → recompose.
-///
-/// # Errors
-///
-/// - `AlgebraError::KnotMismatch` — degrees differ, or either curve has no pieces.
-/// - `AlgebraError::SupportMismatch` — the two curves span different parameter domains.
-/// - `AlgebraError::NotImplemented` — internal array-length mismatch (unreachable in practice).
-///
-/// # Panics
-///
-/// After a successful knot-union pass the internal [`add`] call is guaranteed to
-/// succeed; if it returns `Err` despite the union (bridge invariant violation), this
-/// function panics with a diagnostic.
-///
-/// # Example
-///
 /// ```rust
 /// # use nurbs::algebra::add_with_knot_union;
 /// # use nurbs::ScalarNurbs;
@@ -97,7 +62,6 @@ pub fn add_with_knot_union<T: Float>(
         return Err(AlgebraError::KnotMismatch);
     }
 
-    // Fast path: already compatible — delegate directly.
     if a.knots() == b.knots() {
         return add(a, b);
     }
@@ -109,30 +73,19 @@ pub fn add_with_knot_union<T: Float>(
         return Err(AlgebraError::KnotMismatch);
     }
 
-    // Verify both curves span the same parameter domain.
     let a_start = a_pieces[0].u_start;
     let a_end = a_pieces[a_pieces.len() - 1].u_end;
     let b_start = b_pieces[0].u_start;
     let b_end = b_pieces[b_pieces.len() - 1].u_end;
-    // Tolerance chosen to be robust against rounding in knot construction
-    // while still catching genuinely mismatched segments.
     let domain_tol = T::from_f64(1e-12);
     if (a_start - b_start).abs() > domain_tol || (a_end - b_end).abs() > domain_tol {
         return Err(AlgebraError::SupportMismatch);
     }
 
-    // Union of breakpoints: sorted, deduplicated by T::total_cmp (no float tolerance
-    // — exact representation is guaranteed by knot construction).
     let breakpoints = union_breakpoints(&a_pieces, &b_pieces);
     let a_refined = refine_pieces_to_breakpoints(&a_pieces, &breakpoints);
     let b_refined = refine_pieces_to_breakpoints(&b_pieces, &breakpoints);
 
-    // These invariants hold by construction of union_breakpoints +
-    // refine_pieces_to_breakpoints: the union visit produces one output
-    // piece per input piece boundary, and both piece lists are refined
-    // against the same breakpoint set. Use release-active asserts so a
-    // future refine_pieces_to_breakpoints regression surfaces immediately
-    // rather than silently zip-truncating.
     assert_eq!(
         a_refined.len(),
         b_refined.len(),
@@ -142,8 +95,6 @@ pub fn add_with_knot_union<T: Float>(
         b_refined.len(),
     );
 
-    // Add control points piece-by-piece. Piece count and CP count per piece
-    // match by the invariant above.
     let sum_pieces: Vec<crate::bezier::BezierPiece<T>> = a_refined
         .iter()
         .zip(b_refined.iter())
@@ -173,40 +124,13 @@ pub fn add_with_knot_union<T: Float>(
     Ok(crate::bezier::bezier_pieces_to_nurbs(&sum_pieces))
 }
 
-/// Error from `fit_x_to_arc_length_piece`. Distinct from `AlgebraError` —
-/// fit failure is a recoverable signal to the caller (split + recurse), not
-/// a planner-level invariant violation.
 #[cfg(feature = "host")]
 #[derive(Debug, Clone, PartialEq)]
 pub enum FitError {
-    /// Reached `max_degree` without satisfying tolerance — caller should split
-    /// the piece (recurse with two halves) or return a hard planner error if at
-    /// `max_recursion_depth`.
     ToleranceNotReached { achieved_mm: f64, at_degree: u8 },
-    /// Pathological input — table inversion or geometry evaluation failed.
     DegenerateInput { reason: &'static str },
 }
 
-/// Adaptive polynomial fit of a vector NURBS path `geometry` reparameterized
-/// by arc length `s ∈ [s_lo, s_hi]`. Per axis, returns a single Bézier piece
-/// (Pascal-shifted-monomial basis at `u_start = s_lo`) of degree `d`, where
-/// `d` is the smallest integer in `[target_degree, max_degree]` for which the
-/// L∞ residual at `4·(d+1)` uniform sample points is `≤ tolerance_mm`.
-///
-/// **Algorithm (per spec §4.5):**
-/// 1. Generate `d+1` Chebyshev-of-the-second-kind nodes in `[s_lo, s_hi]`
-///    (these include the endpoints by construction).
-/// 2. Query `u(s)` from the arc-length table and evaluate `geometry(u)` at
-///    each node.
-/// 3. Solve Lagrange interpolation per axis on the Pascal-shifted-monomial
-///    Vandermonde matrix `A[i][j] = (s_nodes[i] − s_lo)^j` via Gauss
-///    elimination with partial pivoting.
-/// 4. Verify L∞ residual at `4·(d+1)` uniform samples; on failure bump `d`
-///    and retry until `d == max_degree`.
-///
-/// Returns `FitError::ToleranceNotReached` if convergence fails by `max_degree`
-/// (caller's responsibility to split + recurse), or `FitError::DegenerateInput`
-/// for `s_hi ≤ s_lo`, non-finite endpoints, or `target_degree > max_degree`.
 #[cfg(feature = "host")]
 pub fn fit_x_to_arc_length_piece<const D: usize>(
     geometry: &crate::VectorNurbs<f64, D>,
@@ -220,12 +144,8 @@ pub fn fit_x_to_arc_length_piece<const D: usize>(
 where
     [(); D]:,
 {
-    // Tiny ULP tolerance for endpoint queries the caller may construct via
-    // arc_length_from_param round-trips. Larger violations indicate a stale
-    // arc-length table or off-by-one grid range — fail closed.
     const RANGE_EPS: f64 = 1e-9;
 
-    // Up-front guards.
     if !s_lo.is_finite() || !s_hi.is_finite() {
         return Err(FitError::DegenerateInput {
             reason: "s_lo or s_hi is non-finite",
@@ -254,11 +174,6 @@ where
         let d_usize = d as usize;
         let n_nodes = d_usize + 1;
 
-        // Step 1: Chebyshev-of-the-second-kind nodes in [s_lo, s_hi].
-        // s_i = (s_lo + s_hi)/2 + (s_hi - s_lo)/2 * cos(i * π / d) for i = 0..=d.
-        // For d == 0 we have a single node at the midpoint (the cos is undefined
-        // when d=0 since i*π/0 is indeterminate). Practically a degree-0 fit is a
-        // constant; we fix it at the midpoint.
         let mid = 0.5 * (s_lo + s_hi);
         let half = 0.5 * (s_hi - s_lo);
         let mut s_nodes: Vec<f64> = Vec::with_capacity(n_nodes);
@@ -267,29 +182,20 @@ where
         } else {
             for i in 0..=d_usize {
                 let angle = (i as f64) * std::f64::consts::PI / f64::from(d);
-                // i=0 → cos(0)=1 → s_lo+halflen-actually ordering: i=0 yields s_hi side.
-                // Per spec: s_i = mid + half * cos(i π / d). i=0 gives mid + half = s_hi;
-                // i=d gives mid - half = s_lo. Order is s_hi → s_lo descending.
                 s_nodes.push(mid + half * angle.cos());
             }
         }
 
-        // Step 2: query u(s) and evaluate geometry(u) at each node.
         let mut samples: Vec<[f64; D]> = Vec::with_capacity(n_nodes);
         for &s in &s_nodes {
-            // Clamp s into the table's valid range; at s_lo / s_hi the Chebyshev
-            // formula can produce values that round to ±1ULP outside [s_lo, s_hi]
-            // due to cos(π) ≠ −1 exactly, so the table-lookup clamp is load-bearing.
             let s_clamped = s.clamp(0.0, table.s_max());
             let u = crate::arc_length::param_from_arc_length(table, s_clamped);
             let x = crate::eval::vector_eval(geometry, u);
             samples.push(x);
         }
 
-        // Step 3: Lagrange interpolation, Pascal-shifted basis at s_lo.
         let coeffs_per_axis = lagrange_interpolation_pascal_shifted::<D>(&s_nodes, &samples, s_lo);
 
-        // Step 4: verify L∞ residual at 4·(d+1) uniform samples.
         let n_check = 4 * n_nodes;
         let mut max_err = 0.0_f64;
         for i in 0..=n_check {
@@ -308,7 +214,6 @@ where
         }
 
         if max_err <= tolerance_mm {
-            // Pack each axis's coefficients into a BezierPiece.
             let pieces_vec: Vec<crate::bezier::BezierPiece<f64>> = (0..D)
                 .map(|axis| crate::bezier::BezierPiece {
                     u_start: s_lo,
@@ -334,29 +239,6 @@ where
     }
 }
 
-/// Merge a sequence of exact polynomial pieces into fewer, lower-degree pieces
-/// with C¹ continuity at boundaries and bounded L∞ position error.
-///
-/// **Use case:** TOPP-RA produces ~25 grid pieces per segment. After composition
-/// with geometry, each piece is degree 6. This function reduces to ~5-15
-/// degree-`target_degree` pieces at ≤ `tolerance_mm` error, preserving velocity
-/// (C¹) continuity at output boundaries. Fewer pieces = lower-degree output after
-/// convolution = cheaper MCU evaluation.
-///
-/// **Algorithm (merge-and-bisect):**
-/// 1. Start by trying to merge ALL input pieces into a single output piece.
-/// 2. For a candidate merge region `[u_lo, u_hi]` covering input pieces `i..j`:
-///    a. Fit a degree-`target_degree` Hermite polynomial matching position and
-///       velocity at both endpoints (4 constraints; free DOFs set to 0 for MVP).
-///    b. Check L∞ residual at `4*(target_degree+1)` uniform sample points.
-///    c. Accept if residual ≤ tolerance; otherwise bisect at the midpoint input
-///       piece boundary and recursively fit each half.
-///
-/// Merge boundaries are axis-independent (shared across all D axes); the WORST
-/// axis residual drives accept/bisect decisions.
-///
-/// Returns per-axis `Vec<BezierPiece<f64>>`, or `FitError` if tolerance cannot be
-/// met (when a single input piece already exceeds tolerance).
 #[cfg(feature = "host")]
 pub fn fit_hermite_c1<const D: usize>(
     pieces: &[[crate::bezier::BezierPiece<f64>; D]],
@@ -379,7 +261,6 @@ pub fn fit_hermite_c1<const D: usize>(
         });
     }
 
-    // Validate contiguity: pieces[i][axis].u_end == pieces[i+1][axis].u_start for all axes.
     for w in pieces.windows(2) {
         for axis in 0..D {
             if (w[0][axis].u_end - w[1][axis].u_start).abs() > 1e-12 {
@@ -390,7 +271,6 @@ pub fn fit_hermite_c1<const D: usize>(
         }
     }
 
-    // Recursive merge-and-bisect, producing output pieces with shared boundaries across axes.
     let mut result: [Vec<crate::bezier::BezierPiece<f64>>; D] = std::array::from_fn(|_| Vec::new());
 
     hermite_fit_recursive::<D>(
@@ -405,9 +285,6 @@ pub fn fit_hermite_c1<const D: usize>(
     Ok(result)
 }
 
-/// Recursive helper for `fit_hermite_c1`. Tries to fit `pieces[lo..hi]` into a
-/// single degree-`target_degree` piece per axis. On failure, bisects at the
-/// midpoint input piece boundary and recurses on each half.
 #[cfg(feature = "host")]
 fn hermite_fit_recursive<const D: usize>(
     pieces: &[[crate::bezier::BezierPiece<f64>; D]],
@@ -422,18 +299,10 @@ fn hermite_fit_recursive<const D: usize>(
     let u_lo = pieces[lo][0].u_start;
     let u_hi = pieces[hi - 1][0].u_end;
 
-    // Try fitting the entire range [lo, hi) into one output piece per axis.
     let mut candidate = hermite_fit_one_piece::<D>(pieces, lo, hi, target_degree);
     let max_residual = hermite_check_residual::<D>(pieces, lo, hi, &candidate, target_degree);
 
     if max_residual <= tolerance_mm {
-        // Snap output endpoints to the exact input boundary values so that
-        // adjacent recursion branches produce bit-exactly contiguous pieces.
-        // hermite_fit_one_piece computes u_end as `u_lo + h`, which can drift
-        // by 1 ULP from the input's u_hi due to the subtract-then-add pattern;
-        // bezier_pieces_to_nurbs's strict-equality contiguity assert catches
-        // that drift. Snapping costs nothing (the polynomial still evaluates
-        // correctly inside the interval).
         for axis in 0..D {
             candidate[axis].u_start = pieces[lo][axis].u_start;
             candidate[axis].u_end = pieces[hi - 1][axis].u_end;
@@ -442,8 +311,6 @@ fn hermite_fit_recursive<const D: usize>(
         return Ok(());
     }
 
-    // If we're down to a single input piece and it still doesn't fit, that's a
-    // failure — can't bisect further.
     if hi - lo == 1 {
         return Err(FitError::ToleranceNotReached {
             achieved_mm: max_residual,
@@ -451,9 +318,8 @@ fn hermite_fit_recursive<const D: usize>(
         });
     }
 
-    // Bisect at the midpoint input piece boundary.
     let mid = lo + (hi - lo) / 2;
-    let _ = (u_lo, u_hi); // suppress unused warnings
+    let _ = (u_lo, u_hi);
 
     hermite_fit_recursive::<D>(pieces, lo, mid, tolerance_mm, target_degree, result)?;
     hermite_fit_recursive::<D>(pieces, mid, hi, tolerance_mm, target_degree, result)?;
@@ -461,17 +327,6 @@ fn hermite_fit_recursive<const D: usize>(
     Ok(())
 }
 
-/// Fit a single degree-`target_degree` Hermite polynomial to `pieces[lo..hi]` for
-/// each axis, with the free DOF (c₂ for degree 4) optimized to minimize the maximum
-/// residual across all axes.
-///
-/// For degree `d` with 4 Hermite constraints (position + velocity at both endpoints),
-/// there are `d - 3` free DOFs. For the primary use case (d=4), there is exactly 1
-/// free DOF (c₂). The residual at each sample point depends linearly on c₂, so the
-/// optimal c₂ is found by a 1D Chebyshev minimax search.
-///
-/// For degree 3, the system is fully determined (no free DOFs). For degree > 4, only
-/// c₂ is optimized; remaining free DOFs are set to 0.
 #[cfg(feature = "host")]
 fn hermite_fit_one_piece<const D: usize>(
     pieces: &[[crate::bezier::BezierPiece<f64>; D]],
@@ -484,7 +339,6 @@ fn hermite_fit_one_piece<const D: usize>(
     let h = u_hi - u_lo;
     let d = target_degree as usize;
 
-    // Collect endpoint constraints per axis.
     let constraints: Vec<(f64, f64, f64, f64)> = (0..D)
         .map(|axis| {
             let f_lo = pieces[lo][axis].evaluate(u_lo);
@@ -495,7 +349,6 @@ fn hermite_fit_one_piece<const D: usize>(
         })
         .collect();
 
-    // For degree 3 or degenerate h, no free DOF — just solve directly.
     if d <= 3 || h.abs() < 1e-300 {
         return std::array::from_fn(|axis| {
             let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
@@ -503,16 +356,6 @@ fn hermite_fit_one_piece<const D: usize>(
         });
     }
 
-    // For degree >= 4: optimize the free DOF c₂ to minimize the maximum residual.
-    //
-    // The polynomial p(u; c₂) depends linearly on c₂ (see hermite_construct_poly).
-    // So at each sample point: residual = ref(u) - p(u; c₂) = A - B·c₂
-    // where A = ref(u) - p(u; 0) and B = p(u; 1) - p(u; 0).
-    //
-    // We want c₂ that minimizes max_over_all_axes_and_samples |A_i - B_i * c₂|.
-    // This is a 1D Chebyshev minimax problem solvable by interval bisection.
-
-    // Build sample points.
     let n_check = 4 * (d + 1);
     let mut sample_u: Vec<f64> = Vec::with_capacity(n_check + 1);
     let mut sample_piece_idx: Vec<usize> = Vec::with_capacity(n_check + 1);
@@ -523,7 +366,6 @@ fn hermite_fit_one_piece<const D: usize>(
         sample_piece_idx.push(hermite_find_piece_at(pieces, lo, hi, u));
     }
 
-    // Build the two basis candidates: p(u; c₂=0) and p(u; c₂=1).
     let cand_0: Vec<crate::bezier::BezierPiece<f64>> = (0..D)
         .map(|axis| {
             let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
@@ -537,8 +379,6 @@ fn hermite_fit_one_piece<const D: usize>(
         })
         .collect();
 
-    // Compute (A_i, B_i) for each (sample, axis) pair.
-    // residual = A_i - B_i * c₂
     let mut a_vals: Vec<f64> = Vec::new();
     let mut b_vals: Vec<f64> = Vec::new();
     for (si, &u) in sample_u.iter().enumerate() {
@@ -552,14 +392,6 @@ fn hermite_fit_one_piece<const D: usize>(
         }
     }
 
-    // Find optimal c₂ by minimax: minimize max_i |a_i - b_i * c₂|.
-    // This is equivalent to finding c₂ such that the envelope of lines
-    // y_i(c₂) = a_i - b_i * c₂ has minimum max absolute value.
-    //
-    // Approach: iterate over candidate c₂ values where pairs of constraints
-    // cross, i.e., where |a_i - b_i*c₂| = |a_j - b_j*c₂| and they have
-    // opposite sign. For small sample counts, we can use a simple approach:
-    // the optimal c₂ lies at a crossing of the upper and lower envelopes.
     let optimal_c2 = minimax_1d(&a_vals, &b_vals);
 
     std::array::from_fn(|axis| {
@@ -568,21 +400,15 @@ fn hermite_fit_one_piece<const D: usize>(
     })
 }
 
-/// Solve the 1D minimax problem: find `x` that minimizes `max_i |a_i - b_i * x|`.
-///
-/// The function `|a_i - b_i * x|` is V-shaped in `x` (minimum at `x = a_i/b_i`).
-/// The max of V-shapes is piecewise-linear and convex, so the minimum is unique.
 #[cfg(feature = "host")]
 fn minimax_1d(a: &[f64], b: &[f64]) -> f64 {
     debug_assert_eq!(a.len(), b.len());
 
-    // If all b_i are ~0, c₂ doesn't affect the residual; return 0.
     let max_b = b.iter().map(|v| v.abs()).fold(0.0_f64, f64::max);
     if max_b < 1e-30 {
         return 0.0;
     }
 
-    // Evaluate max|a_i - b_i * x| at a given x.
     let eval_max_err = |x: f64| -> f64 {
         a.iter()
             .zip(b.iter())
@@ -590,9 +416,6 @@ fn minimax_1d(a: &[f64], b: &[f64]) -> f64 {
             .fold(0.0_f64, f64::max)
     };
 
-    // Collect all candidate x values where lines cross: x = (a_i - a_j) / (b_i - b_j)
-    // and where individual lines cross zero: x = a_i / b_i.
-    // The optimal x must be at one of these crossings (piecewise-linear convex function).
     let mut candidates: Vec<f64> = Vec::new();
     candidates.push(0.0);
     let n = a.len();
@@ -601,9 +424,6 @@ fn minimax_1d(a: &[f64], b: &[f64]) -> f64 {
             candidates.push(a[i] / b[i]);
         }
     }
-    // Also check crossings of pairs of upper/lower envelope lines.
-    // For lines: y_i = a_i - b_i*x and y_j = -(a_j - b_j*x) = -a_j + b_j*x
-    // crossing: a_i - b_i*x = -a_j + b_j*x => x = (a_i + a_j) / (b_i + b_j)
     for i in 0..n {
         for j in 0..n {
             let denom = b[i] + b[j];
@@ -617,7 +437,6 @@ fn minimax_1d(a: &[f64], b: &[f64]) -> f64 {
         }
     }
 
-    // Find the candidate with minimum max error.
     let mut best_x = 0.0;
     let mut best_err = eval_max_err(0.0);
     for x in candidates {
@@ -634,14 +453,6 @@ fn minimax_1d(a: &[f64], b: &[f64]) -> f64 {
     best_x
 }
 
-/// Construct a single Hermite polynomial in Pascal-shifted basis at `u_lo`.
-///
-/// For degree `d` with constraints: `c₀ = f_lo`, `c₁ = df_lo` (position +
-/// velocity at `u_lo`); `p(u_hi) = f_hi`, `p'(u_hi) = df_hi` (position +
-/// velocity at `u_hi`).
-///
-/// `c2_val` is the value of the free DOF c₂ (used for degree >= 4).
-/// For degree 3 (4 unknowns), the system is fully determined and `c2_val` is ignored.
 #[cfg(feature = "host")]
 #[allow(clippy::too_many_arguments, clippy::cast_possible_wrap)]
 fn hermite_construct_poly(
@@ -656,23 +467,18 @@ fn hermite_construct_poly(
 ) -> crate::bezier::BezierPiece<f64> {
     let mut coeffs = vec![0.0f64; d + 1];
 
-    // c₀ = f_lo (position at start)
     coeffs[0] = f_lo;
-    // c₁ = df_lo (velocity at start)
     coeffs[1] = df_lo;
 
-    // Set the free DOF c₂ (only used for d >= 4).
     if d >= 4 {
         coeffs[2] = c2_val;
     }
 
-    // Compute the position and derivative residuals after subtracting known terms.
     let mut pos_residual = f_hi - coeffs[0] - coeffs[1] * h;
     let mut vel_residual = df_hi - coeffs[1];
 
-    // Subtract contributions from fixed coefficients c₂..c_{d-2}.
-    let mut h_pow = h * h; // h^2
-    let mut h_pow_deriv = h; // h^1 (for derivative: k*c_k*h^{k-1})
+    let mut h_pow = h * h;
+    let mut h_pow_deriv = h;
     for k in 2..d.saturating_sub(1) {
         pos_residual -= coeffs[k] * h_pow;
         vel_residual -= (k as f64) * coeffs[k] * h_pow_deriv;
@@ -680,11 +486,6 @@ fn hermite_construct_poly(
         h_pow_deriv *= h;
     }
 
-    // Solve the 2x2 system for c_{d-1}, c_d:
-    //   c_{d-1} * h^{d-1} + c_d * h^d = pos_residual
-    //   (d-1) * c_{d-1} * h^{d-2} + d * c_d * h^{d-1} = vel_residual
-    //
-    // Determinant = (d - (d-1)) * h^{2d-2} = h^{2d-2}
     let h_dm2 = h.powi(d as i32 - 2);
     let h_dm1 = h_dm2 * h;
     let h_d = h_dm1 * h;
@@ -713,8 +514,6 @@ fn hermite_construct_poly(
     }
 }
 
-/// Check the L∞ residual of a candidate fit against the reference (input pieces).
-/// Returns the maximum residual across all axes.
 #[cfg(feature = "host")]
 fn hermite_check_residual<const D: usize>(
     pieces: &[[crate::bezier::BezierPiece<f64>; D]],
@@ -746,7 +545,6 @@ fn hermite_check_residual<const D: usize>(
     max_err
 }
 
-/// Find which input piece index in `[lo, hi)` contains parameter `u`.
 #[cfg(feature = "host")]
 fn hermite_find_piece_at<const D: usize>(
     pieces: &[[crate::bezier::BezierPiece<f64>; D]],
@@ -754,23 +552,14 @@ fn hermite_find_piece_at<const D: usize>(
     hi: usize,
     u: f64,
 ) -> usize {
-    // Linear search — piece count is small (~25 max).
     for i in lo..hi {
-        // Use axis 0 for domain queries (all axes share the same domain).
         if u <= pieces[i][0].u_end + 1e-12 {
             return i;
         }
     }
-    // Clamp to last piece for numerical edge cases.
     hi - 1
 }
 
-/// Solve Lagrange interpolation per axis on the Pascal-shifted-monomial-basis
-/// Vandermonde system `A[i][j] = (s_nodes[i] − s_origin)^j`, RHS = sample
-/// per axis. Tiny matrix (max ~10×10); Gauss elimination with partial pivoting.
-///
-/// Returns `Vec<Vec<f64>>` of length `D`, each axis's coefficient vector
-/// length = `s_nodes.len()`.
 #[cfg(feature = "host")]
 fn lagrange_interpolation_pascal_shifted<const D: usize>(
     s_nodes: &[f64],
@@ -780,8 +569,6 @@ fn lagrange_interpolation_pascal_shifted<const D: usize>(
     let n = s_nodes.len();
     debug_assert_eq!(samples.len(), n);
 
-    // Build Vandermonde augmented with D right-hand-side columns.
-    // Layout: aug[i] = [A[i][0..n] | rhs[i][0..D]].
     let mut aug: Vec<Vec<f64>> = Vec::with_capacity(n);
     for i in 0..n {
         let mut row = Vec::with_capacity(n + D);
@@ -797,9 +584,7 @@ fn lagrange_interpolation_pascal_shifted<const D: usize>(
         aug.push(row);
     }
 
-    // Gauss elimination with partial pivoting.
     for k in 0..n {
-        // Find pivot row.
         let mut pivot = k;
         let mut pivot_abs = aug[k][k].abs();
         for i in (k + 1)..n {
@@ -812,8 +597,6 @@ fn lagrange_interpolation_pascal_shifted<const D: usize>(
         if pivot != k {
             aug.swap(k, pivot);
         }
-        // If pivot is effectively zero we proceed anyway — degenerate node
-        // pattern, will surface as a bad residual on verification.
         let pivot_val = aug[k][k];
         if pivot_val.abs() < 1e-300 {
             continue;
@@ -829,7 +612,6 @@ fn lagrange_interpolation_pascal_shifted<const D: usize>(
         }
     }
 
-    // Back-substitution per RHS column.
     let mut out: Vec<Vec<f64>> = (0..D).map(|_| vec![0.0; n]).collect();
     for axis in 0..D {
         let rhs_col = n + axis;
@@ -849,7 +631,6 @@ fn lagrange_interpolation_pascal_shifted<const D: usize>(
     out
 }
 
-/// Evaluate `Σ coeffs[k] * (s − s_origin)^k` via Horner's method.
 #[cfg(feature = "host")]
 fn horner_pascal_shifted(coeffs: &[f64], s: f64, s_origin: f64) -> f64 {
     let dx = s - s_origin;
@@ -860,8 +641,6 @@ fn horner_pascal_shifted(coeffs: &[f64], s: f64, s_origin: f64) -> f64 {
     acc
 }
 
-/// Polynomial kernel for convolution. Pieces are contiguous and ordered.
-/// Each piece is a polynomial in the Pascal-shifted monomial basis.
 #[cfg(feature = "host")]
 #[derive(Debug, Clone)]
 pub struct PiecewisePolynomialKernel<T: Float> {
@@ -870,8 +649,6 @@ pub struct PiecewisePolynomialKernel<T: Float> {
 
 #[cfg(feature = "host")]
 impl<T: Float> PiecewisePolynomialKernel<T> {
-    /// Build a single-piece kernel from monomial coefficients
-    /// `coeffs[k] * (u - u_start)^k` on the interval `support`.
     pub fn single_poly(coeffs: Vec<T>, support: (T, T)) -> Self {
         let piece = crate::bezier::BezierPiece {
             u_start: support.0,
@@ -883,20 +660,12 @@ impl<T: Float> PiecewisePolynomialKernel<T> {
         }
     }
 
-    /// Build a single-piece kernel from coefficients in **absolute monomial basis**:
-    /// `Σ coeffs[k] * u^k`. Internally converts to the Pascal-shifted-at-u_start basis
-    /// that `single_poly` expects.
-    ///
-    /// Use this when your kernel coefficients come from sources that don't know
-    /// about Bézier-piece basis conventions — e.g. Klipper's `init_smoother`,
-    /// scipy / sympy expressions, or the bleeding-edge-v2 smooth-shaper polynomials.
-    #[allow(clippy::needless_pass_by_value)] // API symmetry with `single_poly`
+    #[allow(clippy::needless_pass_by_value)]
     pub fn single_poly_from_absolute(coeffs: Vec<T>, support: (T, T)) -> Self {
         let shifted = absolute_to_pascal_shift(&coeffs, support.0);
         Self::single_poly(shifted, support)
     }
 
-    /// Total support of the kernel: from first piece's `u_start` to last piece's `u_end`.
     pub fn support(&self) -> (T, T) {
         (
             self.pieces.first().unwrap().u_start,
@@ -904,9 +673,6 @@ impl<T: Float> PiecewisePolynomialKernel<T> {
         )
     }
 
-    /// Build a multi-piece kernel from already-constructed pieces.
-    /// Validates non-empty + contiguous (`pieces[i].u_end == pieces[i+1].u_start`).
-    /// Returns `SupportMismatch` if pieces are non-contiguous.
     pub fn from_pieces(pieces: Vec<crate::bezier::BezierPiece<T>>) -> Result<Self, AlgebraError> {
         if pieces.is_empty() {
             return Err(AlgebraError::SupportMismatch);
@@ -920,31 +686,22 @@ impl<T: Float> PiecewisePolynomialKernel<T> {
     }
 }
 
-/// Multiply two scalar NURBS pointwise: `c(u) = a(u) * b(u)`.
-/// Result degree = `degree(a) + degree(b)`.
 #[cfg(feature = "host")]
 pub fn multiply<T: Float>(
     a: &crate::ScalarNurbs<T>,
     b: &crate::ScalarNurbs<T>,
 ) -> Result<crate::ScalarNurbs<T>, AlgebraError> {
-    // Capture original interior knot multiplicities BEFORE Bezier extraction
-    // lifts everything to full multiplicity. The post-pass needs the original
-    // multiplicities to compute Mørken Eq. (1) target multiplicities for the
-    // product; without this, an unbounded knot-removal can peel below the
-    // natural multiplicity at a shared C⁰ kink and produce the wrong curve.
     let a_mults = collect_interior_multiplicities(a);
     let b_mults = collect_interior_multiplicities(b);
 
     let a_pieces = crate::bezier::extract_bezier_pieces(a);
     let b_pieces = crate::bezier::extract_bezier_pieces(b);
 
-    // Refine to common breakpoint set.
     let breakpoints = union_breakpoints(&a_pieces, &b_pieces);
     let a_refined = refine_pieces_to_breakpoints(&a_pieces, &breakpoints);
     let b_refined = refine_pieces_to_breakpoints(&b_pieces, &breakpoints);
     debug_assert_eq!(a_refined.len(), b_refined.len());
 
-    // Per-piece product.
     let mut out_pieces = Vec::with_capacity(a_refined.len());
     for (a_p, b_p) in a_refined.iter().zip(b_refined.iter()) {
         let coeffs = poly_multiply(&a_p.coeffs, &b_p.coeffs);
@@ -957,13 +714,6 @@ pub fn multiply<T: Float>(
 
     let mut result = crate::bezier::bezier_pieces_to_nurbs(&out_pieces);
 
-    // Compute Mørken target multiplicity per interior breakpoint of the
-    // product. For a breakpoint that is interior in only one factor, the
-    // other factor's multiplicity is 0 — the breakpoint may still appear in
-    // the product because Bezier extraction created it. The Mørken formula
-    // with m=0 in one factor reduces to "degree of the other factor + m of
-    // this factor", which is the natural multiplicity contributed by the
-    // factor that has a real knot there.
     let d_a = a.degree() as usize;
     let d_b = b.degree() as usize;
     let p = result.degree() as usize;
@@ -992,10 +742,6 @@ pub fn multiply<T: Float>(
     Ok(result)
 }
 
-/// Mørken Eq. (1) target multiplicity for a shared breakpoint in the product
-/// of two polynomial NURBS. Returns 0 if the breakpoint isn't a knot of
-/// either factor (which shouldn't happen for a real product breakpoint, but
-/// is a safe no-op).
 #[cfg(feature = "host")]
 fn morken_multiplicity(d_a: usize, m_a: usize, d_b: usize, m_b: usize) -> usize {
     match (m_a > 0, m_b > 0) {
@@ -1006,8 +752,6 @@ fn morken_multiplicity(d_a: usize, m_a: usize, d_b: usize, m_b: usize) -> usize 
     }
 }
 
-/// Collect `(knot value, multiplicity)` for each unique INTERIOR knot value
-/// (i.e., excluding the clamped endpoints).
 #[cfg(feature = "host")]
 fn collect_interior_multiplicities<T: Float>(curve: &crate::ScalarNurbs<T>) -> Vec<(T, usize)> {
     let p = curve.degree() as usize;
@@ -1027,7 +771,6 @@ fn collect_interior_multiplicities<T: Float>(curve: &crate::ScalarNurbs<T>) -> V
     out
 }
 
-/// List of unique interior knot values in `curve` (no multiplicities).
 #[cfg(feature = "host")]
 fn collect_interior_breakpoints<T: Float>(curve: &crate::ScalarNurbs<T>) -> Vec<T> {
     collect_interior_multiplicities(curve)
@@ -1036,13 +779,6 @@ fn collect_interior_breakpoints<T: Float>(curve: &crate::ScalarNurbs<T>) -> Vec<
         .collect()
 }
 
-/// Reduce each interior knot's multiplicity to the Mørken target — never
-/// below. `target_mults` maps breakpoint value to the target multiplicity
-/// per Mørken Eq. (1). Tolerance is for the inner Tiller A5.8 numerical
-/// check; if removal is rejected within tolerance for a knot that should
-/// be removable per Mørken, that's a numerical-precision issue (widen tol
-/// or accept the redundant knot — both are safer than peeling past the
-/// target).
 #[cfg(feature = "host")]
 fn knot_remove_to_morken_targets<T: Float>(
     curve: &mut crate::ScalarNurbs<T>,
@@ -1056,16 +792,10 @@ fn knot_remove_to_morken_targets<T: Float>(
             let (new_curve, _actually_removed) =
                 crate::knot::remove_knot(curve, u, n_to_remove, tol);
             *curve = new_curve;
-            // Note: we don't assert `_actually_removed == n_to_remove`. If the
-            // inner chord-error check rejects a removal we'd want, the
-            // redundant knot stays in place — wrong knot vector but correct
-            // curve. A future Fix 2 (target-aware bezier_pieces_to_nurbs)
-            // eliminates this case entirely.
         }
     }
 }
 
-/// Compute the union of distinct breakpoints from two piecewise representations.
 #[cfg(feature = "host")]
 fn union_breakpoints<T: Float>(
     a: &[crate::bezier::BezierPiece<T>],
@@ -1089,8 +819,6 @@ fn union_breakpoints<T: Float>(
     breaks
 }
 
-/// Refine a list of contiguous Bézier pieces so that the piece boundaries
-/// coincide with the given (sorted) breakpoints.
 #[cfg(feature = "host")]
 fn refine_pieces_to_breakpoints<T: Float>(
     pieces: &[crate::bezier::BezierPiece<T>],
@@ -1115,11 +843,6 @@ fn refine_pieces_to_breakpoints<T: Float>(
     result
 }
 
-/// Convolve a polynomial NURBS with a piecewise polynomial kernel:
-/// `y(u) = ∫ x(s) w(u - s) ds`.
-///
-/// Output domain = Minkowski sum of input and kernel supports. Caller
-/// (Layer 3) handles cross-segment stitching for trajectories.
 #[cfg(feature = "host")]
 pub fn convolve<T: Float>(
     curve: &crate::ScalarNurbs<T>,
@@ -1128,7 +851,6 @@ pub fn convolve<T: Float>(
     let x_pieces = crate::bezier::extract_bezier_pieces(curve);
     let w_pieces = &kernel.pieces;
 
-    // Compute output breakpoints: cross-sum of input and kernel breakpoints.
     let x_breaks: Vec<T> = {
         let mut v: Vec<T> = Vec::new();
         for p in &x_pieces {
@@ -1190,26 +912,6 @@ pub fn convolve<T: Float>(
     Ok(result)
 }
 
-/// Polynomial-of-polynomial composition for a fixed-axis-count vector outer
-/// against a scalar inner. For each axis a, computes `outer_a(inner(t))` in
-/// the Pascal-shifted monomial basis native to `BezierPiece`.
-///
-/// Result domain is `[inner.u_start, inner.u_end]`; output basis is shifted
-/// at `inner.u_start`. Per-axis output degree = `outer.degree() × inner.degree()`.
-///
-/// **Algorithm (direct substitution-and-collect in monomial basis):**
-/// 1. Build `shifted_inner = inner.coeffs` with `shifted_inner[0] -= outer_a.u_start`.
-///    This is `inner(t) − outer_a.u_start` as a polynomial in `(t − inner.u_start)`,
-///    which is exactly what we substitute for `(s − outer_a.u_start)` in `outer_a`.
-/// 2. Build powers `shifted_inner^0 … shifted_inner^d_outer` via `poly_multiply`.
-/// 3. Accumulate `result[k] = Σ_i outer_a.coeffs[i] × powers[i][k]`.
-///
-/// **Precondition (runtime-checked):** `outer[a].u_start == inner.evaluate(inner.u_start)`
-/// and `outer[a].u_end == inner.evaluate(inner.u_end)` for every axis (within `1e-9`).
-/// In other words, the inner's image must align with the outer's s-domain.
-/// Violation returns `Err(AlgebraError::SupportMismatch)` in both debug and release builds.
-///
-/// Returns `Ok` with no work done if `D == 0`.
 #[cfg(feature = "host")]
 pub fn compose_vector_piece<const D: usize>(
     outer: &[&crate::bezier::BezierPiece<f64>; D],
@@ -1231,8 +933,6 @@ pub fn compose_vector_piece<const D: usize>(
         .map(|outer_axis| {
             let d_outer = outer_axis.degree();
 
-            // shifted_inner(t) = inner(t) - outer_axis.u_start, expressed in
-            // basis (t - inner.u_start). Subtract from the constant term.
             let mut shifted_inner = inner.coeffs.clone();
             if shifted_inner.is_empty() {
                 shifted_inner.push(-outer_axis.u_start);
@@ -1240,8 +940,6 @@ pub fn compose_vector_piece<const D: usize>(
                 shifted_inner[0] -= outer_axis.u_start;
             }
 
-            // Build powers: powers[i] = shifted_inner^i in basis (t - inner.u_start).
-            // powers[0] = [1] (the constant 1 polynomial).
             let mut powers: Vec<Vec<f64>> = Vec::with_capacity(d_outer + 1);
             powers.push(vec![1.0]);
             for i in 1..=d_outer {
@@ -1249,7 +947,6 @@ pub fn compose_vector_piece<const D: usize>(
                 powers.push(next);
             }
 
-            // Result length = d_outer * d_inner + 1.
             let d_inner = inner.degree();
             let result_len = d_outer * d_inner + 1;
             let mut result_coeffs = vec![0.0_f64; result_len];
@@ -1269,12 +966,10 @@ pub fn compose_vector_piece<const D: usize>(
         .collect();
 
     pieces.try_into().map_err(|_: Vec<_>| {
-        // Unreachable: we built exactly D pieces from a D-length array.
         AlgebraError::NotImplemented("compose_vector_piece: array length mismatch (unreachable)")
     })
 }
 
-/// Polynomial coefficient convolution: out[k] = Σ_{i+j=k} a[i] * b[j].
 #[cfg(feature = "host")]
 fn poly_multiply<T: Float>(a: &[T], b: &[T]) -> Vec<T> {
     let mut out = vec![T::ZERO; a.len() + b.len() - 1];
@@ -1286,15 +981,6 @@ fn poly_multiply<T: Float>(a: &[T], b: &[T]) -> Vec<T> {
     out
 }
 
-/// Integrate `∫ x(s) w(u - s) ds` over the (s, u) region where x's piece i and
-/// w's piece j are simultaneously active, for u in `[α, β]`. Returns the
-/// contribution as a `BezierPiece` on `[α, β]` with degree `d_x + d_w + 1`.
-///
-/// Algorithm sketch (per spec §6.4):
-/// 1. Re-express `w(u-s)` in s-basis with u-dependent coefficients (binomial expansion).
-/// 2. Multiply by `x(s)`; result is a polynomial in s with u-dependent coefficients.
-/// 3. Integrate `s^k → s^(k+1)/(k+1)`, evaluate at `s_hi(u)` and `s_lo(u)`.
-/// 4. Both `s_lo` and `s_hi` are linear in u, so output is polynomial in u.
 #[cfg(feature = "host")]
 fn integrate_product_piece<T: Float>(
     x: &crate::bezier::BezierPiece<T>,
@@ -1306,53 +992,17 @@ fn integrate_product_piece<T: Float>(
     let d_w = w.degree();
     let out_degree = d_x + d_w + 1;
 
-    // Integration limits as polynomials in u (degree 1, in absolute u, NOT shifted).
-    // s_lo(u) = max(x.u_start, u - w.u_end)
-    // s_hi(u) = min(x.u_end,   u - w.u_start)
-    //
-    // For u in [α, β] by construction of out_breaks, the active branch of max/min
-    // is constant; we can determine it from the value at u = (α + β) / 2.
+    // s_lo(u) = max(x.u_start, u - w.u_end); s_hi(u) = min(x.u_end, u - w.u_start).
+    // Active branch is constant on [α, β] by construction; determine from midpoint.
     let u_mid = (alpha + beta) * T::from_f64(0.5);
     let lo_branch_curve = u_mid - w.u_end > x.u_start; // true → s_lo(u) = u - w.u_end
     let hi_branch_curve = u_mid - w.u_start < x.u_end; // true → s_hi(u) = u - w.u_start
 
-    // -------------------------------------------------------------------
-    // Numerical conditioning: do all arithmetic in a frame shifted by α.
-    //
-    // The naive approach (build polynomials in absolute u and s, then
-    // re-shift to Pascal-at-α at the end) suffers from catastrophic
-    // cancellation when α is large and the output piece is narrow:
-    // intermediate u^k ≈ 2^k coefficients up to k = d_x + d_w + 1 grow to
-    // 1e2..1e3, then `absolute_to_pascal_shift` (which sums binomial
-    // products of `α^(n-k)` against those coefficients) yields alternating
-    // huge magnitudes whose cancellations destroy ~10 digits of accuracy
-    // in the trailing piece. The trailing piece's polynomial value at
-    // u = β then disagrees with the value just below by ~10 mm in the
-    // motion-bridge regression scenario (bug #18).
-    //
-    // Working in v = u − α (so v ∈ [0, β − α]) and r = s − α keeps every
-    // intermediate coefficient O(width^k) instead of O(α^k). The final
-    // result is already in the basis (u − α)^k, which is exactly what the
-    // output `BezierPiece` stores — no re-shift required.
-    // -------------------------------------------------------------------
-
-    // Shifted x: x(s) = Σ x.coeffs[k] (s − x.u_start)^k, want absolute-r basis
-    // where r = s − α, so (s − x.u_start) = r − (x.u_start − α).
+    // Work in shifted frame v = u − α, r = s − α to avoid catastrophic cancellation
+    // when α is large. Result is already in (u − α)^k basis; no re-shift needed.
     let x_abs_r = pascal_shift_to_absolute(&x.coeffs, x.u_start - alpha);
-
-    // Shifted w: w(z) where z = u − s = v − r. We want w in absolute-z basis,
-    // and z is unchanged by the α-shift since u and s shift together. So
-    // w_abs_z is the same as the un-shifted version.
     let w_abs_z = pascal_shift_to_absolute(&w.coeffs, w.u_start);
-    // Expand z^j = (v − r)^j via binomial, giving polynomial in v and r.
 
-    // Shifted integration limits:
-    //   r_lo(v) = s_lo(u) − α
-    //   r_hi(v) = s_hi(u) − α
-    //   if lo_branch_curve: s_lo = u − w.u_end → r_lo = v − w.u_end
-    //   else:               s_lo = x.u_start  → r_lo = (x.u_start − α)
-    //   if hi_branch_curve: s_hi = u − w.u_start → r_hi = v − w.u_start
-    //   else:               s_hi = x.u_end  → r_hi = (x.u_end − α)
     let (r_lo_c, r_lo_v): (T, T) = if lo_branch_curve {
         (-w.u_end, T::ONE)
     } else {
@@ -1364,7 +1014,6 @@ fn integrate_product_piece<T: Float>(
         (x.u_end - alpha, T::ZERO)
     };
 
-    // Build 2D coefficient table: integrand[m][n] = coefficient of v^m · r^n.
     let max_m = d_w;
     let max_n = d_x + d_w;
     let mut integrand = vec![vec![T::ZERO; max_n + 1]; max_m + 1];
@@ -1382,9 +1031,6 @@ fn integrate_product_piece<T: Float>(
         }
     }
 
-    // Integrate r^n → r^(n+1) / (n+1), evaluate at r_hi(v) − r_lo(v).
-    // Output `y_v[k]` = coefficient of v^k in the result; this is *exactly*
-    // the Pascal-shifted-at-α coefficient that BezierPiece stores.
     let mut y_v = vec![T::ZERO; out_degree + 1];
     for m in 0..=max_m {
         for n in 0..=max_n {
@@ -1410,7 +1056,6 @@ fn integrate_product_piece<T: Float>(
     }
 }
 
-/// Expand `(c + a*u)^p` as a polynomial in u (length `p+1`, ascending power).
 #[cfg(feature = "host")]
 fn power_of_linear<T: Float>(c: T, a: T, p: usize) -> Vec<T> {
     let mut out = vec![T::ZERO; p + 1];
@@ -1427,14 +1072,11 @@ fn power_of_linear<T: Float>(c: T, a: T, p: usize) -> Vec<T> {
     out
 }
 
-/// Convert Pascal-shifted-at-`shift` coefficients to absolute monomial.
-/// `p(u) = Σ c_k * (u - shift)^k → Σ c'_n * u^n`
 #[cfg(feature = "host")]
 fn pascal_shift_to_absolute<T: Float>(shifted: &[T], shift: T) -> Vec<T> {
     let d = shifted.len() - 1;
     let mut out = vec![T::ZERO; d + 1];
     for k in 0..=d {
-        // (u - shift)^k = (-shift + u)^k
         let exp = power_of_linear(-shift, T::ONE, k);
         for n in 0..exp.len() {
             out[n] = out[n] + shifted[k] * exp[n];
@@ -1443,9 +1085,6 @@ fn pascal_shift_to_absolute<T: Float>(shifted: &[T], shift: T) -> Vec<T> {
     out
 }
 
-/// Inverse: convert absolute monomial to Pascal-shifted-at-`shift`.
-/// `Σ c_n * u^n → Σ c'_k * (u - shift)^k` where
-/// `u^n = Σ_k C(n, k) * shift^(n-k) * (u - shift)^k`.
 #[cfg(feature = "host")]
 fn absolute_to_pascal_shift<T: Float>(absolute: &[T], shift: T) -> Vec<T> {
     let d = absolute.len() - 1;
@@ -1463,11 +1102,6 @@ fn absolute_to_pascal_shift<T: Float>(absolute: &[T], shift: T) -> Vec<T> {
     out
 }
 
-/// Extract the portion of a `ScalarNurbs` on the sub-interval `[t_lo, t_hi]`.
-///
-/// Pieces fully outside the interval are discarded; pieces partially overlapping
-/// are split at the boundary. Returns `SupportMismatch` if `t_lo >= t_hi` or if
-/// no pieces overlap the requested interval.
 #[cfg(feature = "host")]
 pub fn restrict_to_domain<T: Float>(
     curve: &crate::ScalarNurbs<T>,
@@ -1510,9 +1144,6 @@ pub fn restrict_to_domain<T: Float>(
     Ok(bezier_pieces_to_nurbs(&result))
 }
 
-/// Iterate over interior knots and apply `remove_knot` with the given tolerance,
-/// dropping knots whose removal preserves the curve within `tol`. Used by
-/// `multiply` and `convolve` to expose natural smoothness of the result.
 #[cfg(feature = "host")]
 pub(crate) fn knot_remove_redundant<T: Float>(curve: &mut crate::ScalarNurbs<T>, tol: T) {
     let p = curve.degree() as usize;
@@ -1544,5 +1175,4 @@ pub(crate) fn knot_remove_redundant<T: Float>(curve: &mut crate::ScalarNurbs<T>,
 
 #[cfg(all(test, feature = "host"))]
 #[allow(clippy::float_cmp)]
-// tests assert exact stored coords / round-trip values, not arithmetic results
 mod tests;

@@ -1,6 +1,3 @@
-//! kalico-ethercat-rt: bring up the A6-EC in CSP/DC and stream the kalico-native
-//! piece trajectory to it as encoder counts.
-//!
 //! Usage: kalico-ethercat-rt <ifname> [--socket PATH] [--cycle-us N]
 //!        [--counts-per-mm F] [--rt-cpu N] [--rt-prio N]
 #![allow(unsafe_code)]
@@ -40,7 +37,6 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(80);
     let cycle_ns = cycle_us * 1000;
-    // Cycles per 0.5 s telemetry period. cycle_us is positive by invariant.
     let telemetry_period = u64::try_from(cycle_us)
         .map(|u| (500_000u64 / u).max(1))
         .unwrap_or(500);
@@ -113,16 +109,12 @@ fn main() {
 
         if let Some((pos_mm, _vel_mm_s)) = ring.sample(now) {
             let map = cmap.get_or_insert_with(|| {
-                // Capture origin on the first sample of a new run so there is no
-                // startup jump regardless of where the rotor sits at arm time.
                 let actual = unsafe { ffi::ec_rt_get_position_actual() };
                 CountMap::new(counts_per_mm, actual, f64::from(pos_mm))
             });
             let counts = map.target_counts(f64::from(pos_mm));
             unsafe { ffi::ec_rt_set_target_position(counts) };
         } else {
-            // Ring is empty or faulted — drop CountMap so the next batch
-            // recaptures origin.
             cmap = None;
         }
 
@@ -140,7 +132,6 @@ fn main() {
             last_sent_retired = current_retired;
             heartbeat_sent = true;
 
-            // hw safety backstop: after reporting, disable the drive and exit.
             #[cfg(feature = "hw")]
             {
                 eprintln!("ec-rt: disabling drive (hw safety backstop)");
@@ -155,15 +146,11 @@ fn main() {
         let mut toff = 0i64;
         let wkc = unsafe { ffi::ec_rt_cycle(&mut toff) };
 
-        // Bus health: 3 == read+write+config for one slave. A drop to 0 means
-        // the slave fell off the bus — halt rather than stream stale targets.
         if wkc != 3 {
             eprintln!("ec-rt: working counter {wkc} (expected 3) — bus lost, halting");
             break;
         }
 
-        // Emit StatusHeartbeat if the retirement watermark advanced.
-        //    retired_count wraps at u32::MAX; use != to detect any change.
         let current_retired = ring.retired_count();
         let should_emit = !heartbeat_sent || current_retired != last_sent_retired;
         if should_emit {

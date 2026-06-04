@@ -16,10 +16,6 @@ pub enum ProbeHomingResult {
 
 const TICK_INTERVAL: Duration = Duration::from_millis(25);
 
-/// Opaque handle returned by [`prepare_probe_homing`].  Holds the
-/// interceptor registration and the shared trigger flag.  Must be
-/// passed to [`run_probe_homing`] to enter the homing loop, and
-/// cleaned up by [`cleanup_probe_homing`] afterwards.
 pub struct ProbeHomingHandle {
     pub(crate) triggered: Arc<AtomicBool>,
     pub(crate) interceptor_id: InterceptorId,
@@ -29,10 +25,6 @@ pub struct ProbeHomingHandle {
     pub(crate) sensor_fault_timeout: Duration,
 }
 
-/// Phase 1: register the interceptor on the Beacon reactor.
-///
-/// Call this BEFORE `home_start()` sends `beacon_home` to the Beacon
-/// MCU, so the interceptor is in place when the probe triggers.
 pub fn prepare_probe_homing(
     beacon_io: Arc<KalicoHostIo>,
     stepper_io: Arc<KalicoHostIo>,
@@ -86,13 +78,6 @@ pub fn prepare_probe_homing(
     })
 }
 
-/// Phase 2: enter the blocking homing loop.
-///
-/// Call AFTER the homing move has been submitted.  Sends an immediate
-/// deadline extension, then loops at 25 ms checking for the trigger
-/// flag or sensor-fault timeout.  Does NOT check HomingSegmentState —
-/// CreditFreed fires on slot-available (not execution-complete), so
-/// segment "retirement" is unreliable during homing.
 pub fn run_probe_homing(handle: &ProbeHomingHandle) -> Result<ProbeHomingResult, TransportError> {
     let extend_cmd = format!("runtime_extend_homing_deadline arm_id={}", handle.arm_id);
     handle.stepper_io.send_fire_and_forget(&extend_cmd)?;
@@ -100,10 +85,6 @@ pub fn run_probe_homing(handle: &ProbeHomingHandle) -> Result<ProbeHomingResult,
     run_loop(handle, &extend_cmd)
 }
 
-/// Phase 3: unregister the interceptor.  Always call this, even on
-/// error (the handle borrows the Beacon I/O, so it must be cleaned up
-/// before the next homing cycle can register a new interceptor for the
-/// same OID).
 pub fn cleanup_probe_homing(handle: ProbeHomingHandle) {
     let _ = handle
         .beacon_io

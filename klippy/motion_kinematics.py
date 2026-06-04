@@ -1,38 +1,21 @@
-# Motion kinematics config parser + host-side kinematic transforms.
-#
-# This file is part of the Kalico motion-bridge integration (Stage D).
-# Parses [printer] kinematics config and emits a KinematicsSpec for the
-# Rust planner. Also hosts the cartesian→motor-slot transform that ties
-# motor energization to actual motor motion (mirrors
-# rust/runtime/src/kinematics.rs — that file is the authoritative
-# stepping-path transform; this one drives enable-pin decisions on the
-# host).
+# Host-side kinematic transform driving enable-pin decisions; mirrors the
+# authoritative stepping-path transform in rust/runtime/src/kinematics.rs —
+# any kinematic added there needs a matching branch here.
 import logging
 
 
 def motor_deltas(kin_name, dx, dy, dz, de):
-    """Apply the host-side kinematic transform to cartesian deltas.
-
-    Returns a 4-tuple of per-motor-slot deltas:
-      corexy:    (A = dx+dy, B = dx-dy, Z = dz, E = de)
-      cartesian: (X = dx,    Y = dy,    Z = dz, E = de)
-
-    Slot indices match `MotionToolhead._configure_axes_per_mcu`'s
-    `slot_names` ordering: 0=stepper_x, 1=stepper_y, 2=stepper_z,
-    3=extruder. Any kinematic that ships a Rust transform in
-    `rust/runtime/src/kinematics.rs` must also ship a matching branch
-    here so energization stays tied to motion by construction.
+    """Map cartesian deltas to per-motor-slot deltas (0=x,1=y,2=z,3=e):
+      corexy:    (dx+dy, dx-dy, dz, de)
+      cartesian: (dx,    dy,    dz, de)
     """
     if kin_name == "corexy":
         return (dx + dy, dx - dy, dz, de)
-    # cartesian (and hybrid_corexy, which the bridge currently treats as
-    # cartesian on the runtime side — see _configure_axes_per_mcu).
+    # cartesian (and hybrid_corexy, treated as cartesian on the runtime side).
     return (dx, dy, dz, de)
 
 
 class KinematicsSpec:
-    """Parsed kinematics configuration for the Rust planner."""
-
     def __init__(self, kin_type, axes_config):
         self.kin_type = kin_type
         self.axes_config = axes_config
@@ -42,10 +25,6 @@ class KinematicsSpec:
 
 
 def parse_kinematics(config):
-    """Parse [printer] kinematics and return a KinematicsSpec.
-
-    Currently supports 'cartesian' and 'corexy'.
-    """
     kin_name = config.get("kinematics")
     axes_config = {}
 

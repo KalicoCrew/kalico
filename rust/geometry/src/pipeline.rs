@@ -1,10 +1,3 @@
-//! `GeometryPipeline`, `Segments`, `Item`. Drives reduce events into typed
-//! segments. Only G5 / G5.1 produce motion segments and they emit as
-//! `Segment::Cubic` (uniform single-piece cubic Bézier; G5.1 is
-//! degree-elevated 2→3 exactly). G0/G1/G2/G3 are rejected at reduce time
-//! and surface here as `Fatal::UnsupportedGcode`. Legacy G-code is
-//! normalized offline by the Step-13 compatibility layer.
-
 use crate::{
     CubicSegment, EMode, Fatal, FitterParams, GeometryError, JunctionDeviation, Recovery, Segment,
     SourceRange, TelemetryEvent,
@@ -37,11 +30,6 @@ impl GeometryPipeline {
         Self { params }
     }
 
-    /// Process a complete G-code buffer. Returns a borrowing iterator over
-    /// the segment stream. Sink receives observability events synchronously
-    /// during processing.
-    ///
-    /// One-shot per file by convention.
     pub fn process<'a>(
         &'a mut self,
         text: &'a str,
@@ -68,26 +56,16 @@ pub enum Item {
     Fatal(Fatal),
 }
 
-/// Borrowing iterator over the segment stream produced by [`GeometryPipeline::process`].
-///
-/// `Debug` is not derived: `events` is a boxed trait object and `sink` is a
-/// raw `&mut dyn Fn` pointer. A manual impl is not worthwhile while the struct
-/// is still evolving across Tasks 18-22.
 #[allow(missing_debug_implementations)]
 pub struct Segments<'a> {
-    #[allow(dead_code)] // consumed in Tasks 18-22
+    #[allow(dead_code)]
     params: &'a FitterParams,
     events: Box<dyn Iterator<Item = ReduceEvent> + 'a>,
     queue: VecDeque<Item>,
     sink: &'a mut dyn FnMut(TelemetryEvent),
     terminal: bool,
-    /// End-position of the previous emitted G1 segment, for junction-deviation construction.
-    /// In the live pipeline G1 never reaches `handle_curve`; retained for future use.
     prev_g1_end: Option<[f64; 3]>,
-    /// Feedrate of the previous emitted G1, for junction-deviation construction.
     prev_g1_feedrate: Option<f64>,
-    /// 3D unit direction of the previous emitted G1 segment, used to compute
-    /// the junction angle when the next G1 arrives. Cleared at any marker break.
     prev_g1_dir: Option<[f64; 3]>,
 }
 
@@ -107,7 +85,6 @@ impl Iterator for Segments<'_> {
                 }
                 return Some(item);
             }
-            // Drive the reduce iterator forward until something queues an item.
             let event = self.events.next()?;
             self.handle_event(event);
             debug_assert!(
@@ -131,11 +108,9 @@ impl Segments<'_> {
                 self.handle_curve(geom, e_delta, feedrate_mm_s, line_no);
             }
             ReduceEvent::CommentMarker { kind, line_no } => {
-                // LayerType, EndOfPrint, and unknown markers have no Phase 1 telemetry mapping.
                 if let gcode::MarkerKind::LayerChange { layer } = kind {
                     (self.sink)(TelemetryEvent::LayerChange { layer, line_no });
                 }
-                // Marker terminates G1 chain.
                 self.prev_g1_end = None;
                 self.prev_g1_feedrate = None;
                 self.prev_g1_dir = None;
@@ -172,10 +147,6 @@ impl Segments<'_> {
                 text,
             } => match kind {
                 ParseErrorKind::UnsupportedGcode { kind } => {
-                    // Live pipeline cannot continue safely: reduce-stage doesn't
-                    // update modal state for rejected G0/G1/G2/G3, so any later
-                    // G5 would emit cubic segments from stale position. Fail-closed;
-                    // user must run Step-13 compat layer on the input first.
                     self.queue.push_back(Item::Fatal(Fatal::UnsupportedGcode {
                         line_no,
                         gcode_kind: kind,
@@ -207,11 +178,7 @@ impl Segments<'_> {
                             unreachable!("handled above")
                         }
                     };
-                    // Dual-emit: sink fires first per §5.1 ordering contract.
                     (self.sink)(TelemetryEvent::Recovery(recovery.clone()));
-                    // Synthetic zero-length junction at the previous position (or
-                    // origin if none) so the consumer's segment stream sees
-                    // Item::Recovered without losing the error.
                     let pos = self.prev_g1_end.unwrap_or([0.0, 0.0, 0.0]);
                     let jd = JunctionDeviation {
                         position: pos,
@@ -242,14 +209,11 @@ impl Segments<'_> {
             end_line: line_no,
         };
 
-        // Step 1: turn `geom` into a single-piece cubic Bézier xyz NURBS.
-        // G5 → already cubic; G5.1 → exact degree-elevation 2→3.
         let xyz: nurbs::VectorNurbs<f64, 3> = match geom {
             CurveGeom::Cubic { cps } => nurbs_from_cubic(cps),
             CurveGeom::Quadratic { cps } => degree_elevate_2_to_3(&nurbs_from_quadratic(cps)),
         };
 
-        // Step 2: classify E-mode and construct the segment.
         match classify_e_mode(&xyz, e_delta) {
             Ok((e_mode, extrusion_per_xy_mm, e_independent)) => {
                 match CubicSegment::try_new(
@@ -281,41 +245,20 @@ impl Segments<'_> {
                     ),
                 }
             }
-            Err(GeometryError::ZeroMotion) => {
-                // Drop zero-motion segments silently — no Recovery, no Fatal.
-            }
+            Err(GeometryError::ZeroMotion) => {}
             Err(GeometryError::HelicalExtrusionUnsupported) => {
-                // Per design (CLAUDE.md feature scope), extrusion couples to XY
-                // motion only — XY+Z+E and Z+E in one G5 segment are
-                // design-rejected. Fail-closed because reduce-stage already
-                // committed modal-state side effects (position, E, prev_g5_pq)
-                // before classification reached this arm; continuation would
-                // silently start subsequent G5s from the rejected endpoint.
                 self.queue
                     .push_back(Item::Fatal(Fatal::HelicalExtrusionUnsupported { line_no }));
             }
             Err(_) => unreachable!("classify_e_mode return shape is exhaustive"),
         }
 
-        // Cubic segments break the G1-tangent chain (curvature-continuity principle).
         self.prev_g1_end = None;
         self.prev_g1_feedrate = None;
         self.prev_g1_dir = None;
     }
 }
 
-/// Classify a cubic xyz NURBS plus its scalar `e_delta` into an `EMode` plus
-/// the matching companion fields. See CLAUDE.md feature scope §"E-follows-XY".
-///
-/// Returns:
-/// - `Ok((e_mode, extrusion_per_xy_mm, e_independent))` for valid segments.
-/// - `Err(ZeroMotion)` when no motion threshold crosses (caller drops silently).
-/// - `Err(HelicalExtrusionUnsupported)` for the XY+Z+E combination, which the
-///   live MVP rejects.
-///
-/// **Why XY arc length, not endpoint chord:** a cubic with collinear or looping
-/// control points can have zero endpoint chord but a real XY path. ROUND-1
-/// review HIGH-1 fix.
 fn classify_e_mode(
     xyz: &nurbs::VectorNurbs<f64, 3>,
     e_delta: Option<f64>,
@@ -326,7 +269,6 @@ fn classify_e_mode(
 
     let xy_len = nurbs::arc_length::xy_arc_length(xyz);
 
-    // Z motion: endpoint delta on cps[3] - cps[0] (single-piece cubic Bézier).
     let cps = xyz.control_points();
     let dz = (cps[3][2] - cps[0][2]).abs();
 
@@ -338,40 +280,23 @@ fn classify_e_mode(
     let e_motion = abs_de > EPS_E;
 
     match (xyz_motion, z_motion, e_motion) {
-        // Helical extrusion (XY+Z+E) and pure-Z+E: both rejected. Extrusion is
-        // meant to couple to XY motion only (CLAUDE.md feature scope), and the
-        // splitter cannot safely subdivide an Independent segment with
-        // non-trivial xyz motion (it would clone the full E curve into every
-        // child). The (false, true, true) arm closes that pre-Fix-A.1 leak.
         (true | false, true, true) => Err(GeometryError::HelicalExtrusionUnsupported),
-        // Coupled: real XY motion, no Z motion, real E motion. Signed ratio.
         (true, false, true) => Ok((EMode::CoupledToXy, de / xy_len, None)),
-        // Travel: XY motion no E (Z optional), or pure-Z no E.
         (true, _, false) | (false, true, false) => Ok((EMode::Travel, 0.0, None)),
-        // Pure E motion (no XY, no Z): Independent retraction/prime/filament-change.
         (false, false, true) => {
             let e_curve = build_linear_e_curve(de);
             Ok((EMode::Independent, 0.0, Some(e_curve)))
         }
-        // No motion at all.
         (false, false, false) => Err(GeometryError::ZeroMotion),
     }
 }
 
-/// Build a degree-1 linear scalar NURBS for `Independent`-mode E motion:
-/// `e(u) = (1−u)·0 + u·e_delta`, knots `[0,0,1,1]`.
 fn build_linear_e_curve(e_delta: f64) -> nurbs::ScalarNurbs<f64> {
     nurbs::ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, e_delta])
         .expect("linear E curve always valid")
 }
 
-/// Bernstein degree-elevation from a degree-2 Bézier polynomial NURBS to
-/// degree-3, preserving the curve exactly (no fit error). For Bézier control
-/// points `[Q_0, Q_1, Q_2]`, the equivalent degree-3 has CPs:
-///
-/// `[Q_0, (1/3)Q_0 + (2/3)Q_1, (2/3)Q_1 + (1/3)Q_2, Q_2]`
-///
-/// Per Piegl & Tiller §5.5. Used for G5.1 → G5 promotion.
+// Piegl & Tiller §5.5 degree-elevation formula for G5.1 → G5.
 #[must_use]
 pub fn degree_elevate_2_to_3(quadratic: &nurbs::VectorNurbs<f64, 3>) -> nurbs::VectorNurbs<f64, 3> {
     debug_assert_eq!(quadratic.degree(), 2);

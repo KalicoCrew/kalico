@@ -1,21 +1,10 @@
-//! NURBS evaluation: de Boor, vector eval, derivative, curvature.
-//! See spec §eval module.
-//!
-//! # Safety note
-//!
-//! This module uses `unsafe { get_unchecked }` for the de Boor index accesses.
-//! All such accesses are proved in-bounds by the `find_knot_span` invariant
-//! (k ∈ [p, n-1] per Piegl & Tiller Algorithm A4.1); each site is accompanied
-//! by a `SAFETY:` comment and a `debug_assert!` of the precondition.
-// `unsafe_code` is workspace-denied by default; this module is the sole
-// exception because the hot-path MCU de Boor evaluators require provably-safe
-// index elimination to avoid panic-symbol contamination in the release firmware.
+// `unsafe_code` is workspace-denied; this module is the sole exception because
+// the hot-path MCU de Boor evaluators require provably-safe index elimination
+// to avoid panic-symbol contamination in the release firmware.
 #![allow(unsafe_code)]
 
 use crate::{Float, MAX_DEGREE, MIN_PARAMETRIC_SPEED, NurbsView, VectorNurbsView, WORKSPACE_SIZE};
 
-// Re-export from knot module for transitional internal use. Eventually
-// callers should import directly from `crate::knot::find_knot_span`.
 #[cfg(feature = "host")]
 pub(crate) use crate::knot::find_knot_span;
 
@@ -23,12 +12,6 @@ pub(crate) use crate::knot::find_knot_span;
 #[cfg(not(feature = "host"))]
 #[inline]
 pub(crate) fn find_knot_span<T: Float>(knots: &[T], p: usize, n: usize, u: T) -> usize {
-    // Pre-conditions: knots.len() == n + p + 1; n >= 1; p >= 0.
-    // All index accesses below are in-bounds:
-    //   knots[n]     : n < n+p+1 (since p >= 0)
-    //   knots[p]     : p < n+p+1 (since n >= 1)
-    //   knots[mid]   : mid ∈ [low,high] ⊆ [p,n] ⊂ [0, n+p+1)
-    //   knots[mid+1] : mid+1 ≤ n+1 ≤ n+p+1 (since high ≤ n)
     debug_assert!(knots.len() == n + p + 1);
     debug_assert!(n >= 1);
     // SAFETY: n < n+p+1 = knots.len() (p is usize so >= 0, n >= 1)
@@ -62,9 +45,6 @@ pub(crate) fn find_knot_span<T: Float>(knots: &[T], p: usize, n: usize, u: T) ->
 }
 
 /// de Boor's algorithm at parameter `u` over `cps` with degree `p`.
-/// Stack scratch is `[T; WORKSPACE_SIZE]`. Caller has validated that
-/// `p as usize <= MAX_DEGREE`.
-///
 /// Reference: Piegl & Tiller "The NURBS Book" Algorithm A4.1 (de Boor).
 ///
 /// # Index-safety invariant
@@ -76,9 +56,6 @@ pub(crate) fn find_knot_span<T: Float>(knots: &[T], p: usize, n: usize, u: T) ->
 ///
 /// For the recurrence with `r ∈ 1..=p`, `j ∈ r..=p`:
 /// `k + 1 + j - r ≤ k + p ≤ (n-1) + p = n + p - 1 < n + p + 1` — valid.
-///
-/// All accesses below are proved in-bounds by this invariant; `get_unchecked`
-/// eliminates the panic paths that LLVM cannot otherwise remove on the MCU.
 #[inline]
 pub(crate) fn de_boor_inner<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T {
     debug_assert!((degree as usize) <= MAX_DEGREE);
@@ -122,17 +99,14 @@ pub(crate) fn de_boor_inner<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) 
     unsafe { *d.get_unchecked(p) }
 }
 
-/// Evaluate a scalar NURBS at parameter `u`.
-/// Hot path. MCU + host. No allocation.
 #[inline]
 pub fn eval<T: Float, V: NurbsView<T>>(curve: &V, u: T) -> T {
     debug_assert!((curve.degree() as usize) <= MAX_DEGREE);
     de_boor_inner(curve.control_points(), curve.knots(), curve.degree(), u)
 }
 
-/// Evaluate a vector NURBS at parameter `u`. Shares knot-span lookup and alpha
-/// computation across the N axes — meaningfully cheaper than N independent
-/// scalar `eval` calls for shared-knot vector NURBS.
+/// Shared-knot vector eval across N axes. Cheaper than N independent scalar
+/// `eval` calls because knot-span lookup and alpha computation are shared.
 #[inline]
 pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V, u: T) -> [T; N] {
     debug_assert!((curve.degree() as usize) <= MAX_DEGREE);
@@ -148,7 +122,6 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V
     debug_assert!(k >= p && k < n, "find_knot_span invariant: k ∈ [p, n-1]");
     debug_assert!(knots.len() == n + p + 1, "knots len == n + p + 1");
 
-    // Initialize active CPs for this span.
     for j in 0..=p {
         // SAFETY: k - p + j ∈ [0, n-1] < cps.len()
         // SAFETY: j ≤ p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
@@ -158,7 +131,6 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V
         }
     }
 
-    // de Boor recurrence — shared alphas across axes.
     for r in 1..=p {
         for j in (r..=p).rev() {
             // SAFETY: same knots-index invariant as de_boor_inner.
@@ -187,27 +159,12 @@ pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V
     result
 }
 
-/// Evaluate `P(u)` and `dP/du` simultaneously from raw cps + knots slices,
-/// running the de Boor recurrence and its derivative recurrence in parallel.
-/// Saves a second de Boor pyramid pass vs calling `eval_polynomial` and
-/// `eval_derivative` separately.
+/// Evaluate `P(u)` and `dP/du` simultaneously. Runs de Boor and its derivative
+/// recurrence in parallel to avoid a second pass.
 ///
-/// Per-pass cost is `O(p^2)` arithmetic ops; this function does `~2x` the
-/// work of `eval_polynomial` alone, vs `~3x` if you call eval and derivative
-/// separately (eval pays for the lowered curve's de Boor, plus its own
-/// init / `find_knot_span`). On the H7 at degree 9 / 82 cps / 92 knots, the
-/// combined form is materially cheaper than the sum of the separate calls.
-///
-/// MCU hot path: callers are responsible for ensuring slice shapes satisfy
-/// `knots.len() == cps.len() + degree + 1` and that the curve was validated
-/// upstream (e.g. `CurvePool` on segment load).
-///
-/// Reference: differentiate the de Boor recurrence
-/// `d^(r)_j = (1 - α) * d^(r-1)_{j-1} + α * d^(r-1)_j` w.r.t. `u`:
-///   `∂_u d^(r)_j = (1 - α) * ∂_u d^(r-1)_{j-1} + α * ∂_u d^(r-1)_j
-///                + (d^(r-1)_j - d^(r-1)_{j-1}) / denom`.
-/// Initial `∂_u d^(0)_j = 0` since the original cps don't depend on u.
-/// After full recurrence, `dd[p] = P'(u)`.
+/// Derivative recurrence: differentiate `d^(r)_j = (1-α)*d^(r-1)_{j-1} + α*d^(r-1)_j` w.r.t. `u`:
+///   `∂_u d^(r)_j = (1-α)*∂_u d^(r-1)_{j-1} + α*∂_u d^(r-1)_j + (d^(r-1)_j - d^(r-1)_{j-1})/denom`.
+/// Initial `∂_u d^(0)_j = 0`. After full recurrence, `dd[p] = P'(u)`.
 #[inline]
 pub fn eval_polynomial_with_derivative<T: Float>(
     cps: &[T],
@@ -219,7 +176,6 @@ pub fn eval_polynomial_with_derivative<T: Float>(
     debug_assert!(knots.len() == cps.len() + (degree as usize) + 1);
 
     if degree == 0 {
-        // Step function: derivative is 0 everywhere, value is the active cp.
         let p = 0;
         let n = cps.len();
         let k = find_knot_span(knots, p, n, u);
@@ -243,7 +199,6 @@ pub fn eval_polynomial_with_derivative<T: Float>(
         // SAFETY: k - p + j ∈ [0, n-1] < cps.len()
         // SAFETY: j ≤ p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
         unsafe { *d.get_unchecked_mut(j) = *cps.get_unchecked(k - p + j) };
-        // dd[j] = 0 — original cps don't depend on u, already in default.
     }
 
     for r in 1..=p {
@@ -253,8 +208,6 @@ pub fn eval_polynomial_with_derivative<T: Float>(
             let lo = unsafe { *knots.get_unchecked(k - p + j) };
             let hi = unsafe { *knots.get_unchecked(k + 1 + j - r) };
             let denom = hi - lo;
-            // Save old d[j-1] / d[j] / dd[j-1] / dd[j] before any writes.
-            // (Reverse-j iteration means d[j-1] hasn't been touched at this r.)
             let old_d_jm1 = unsafe { *d.get_unchecked(j - 1) };
             let old_d_j = unsafe { *d.get_unchecked(j) };
             let old_dd_jm1 = unsafe { *dd.get_unchecked(j - 1) };
@@ -263,8 +216,6 @@ pub fn eval_polynomial_with_derivative<T: Float>(
                 let inv_denom = T::ONE / denom;
                 let alpha = (u - lo) * inv_denom;
                 let one_minus_alpha = T::ONE - alpha;
-                // dd[j] = (1-α) * dd[j-1] + α * dd[j]
-                //       + (d[j] - d[j-1]) / denom
                 unsafe {
                     *dd.get_unchecked_mut(j) = one_minus_alpha * old_dd_jm1
                         + alpha * old_dd_j
@@ -272,9 +223,7 @@ pub fn eval_polynomial_with_derivative<T: Float>(
                     *d.get_unchecked_mut(j) = (old_d_j - old_d_jm1).mul_add(alpha, old_d_jm1);
                 }
             } else {
-                // Degenerate knot interval: alpha undefined, freeze d[j] to
-                // d[j-1] and dd[j] to dd[j-1] (consistent with the
-                // alpha=0 fallback in `de_boor_inner`).
+                // Degenerate knot interval: freeze to alpha=0 fallback.
                 unsafe {
                     *d.get_unchecked_mut(j) = old_d_jm1;
                     *dd.get_unchecked_mut(j) = old_dd_jm1;
@@ -287,10 +236,6 @@ pub fn eval_polynomial_with_derivative<T: Float>(
     unsafe { (*d.get_unchecked(p), *dd.get_unchecked(p)) }
 }
 
-/// Knot-span lookup variant that takes f32 knots but an f64 query parameter.
-/// Used by `eval_polynomial_f32_with_pos_vel_accel_f64` to drive the de Boor
-/// recurrence in f64 over f32-storage cps/knots without an intermediate
-/// per-knot widening pass.
 // Same index-safety proof as the MCU `find_knot_span` copy:
 //   knots[n]     : n < n+p+1 (p is usize, n >= 1)
 //   knots[p]     : p < n+p+1 (n >= 1)
@@ -328,21 +273,9 @@ fn find_knot_span_f32_with_f64_u(knots: &[f32], p: usize, n: usize, u: f64) -> u
     mid
 }
 
-/// Same recurrence as the f32→f64 de Boor evaluator with first
-/// derivative, but also tracks the second derivative. The position
-/// (`d`) and first derivative (`dd`) follow the standard de Boor
-/// recurrence; we add a parallel `ddd` array whose update rule is the
-/// difference-of-`dd` recurrence — algebraically the second derivative
-/// of the same polynomial.
-///
-/// Cost over the pos+vel variant: one extra triple of f64 ops per
-/// inner iteration. Workspace stays bounded by `WORKSPACE_SIZE` (~168 B
-/// each × 3 = ~504 B stack).
-///
-/// Used by `compute_next_step_time` (in the runtime crate) to obtain
-/// the second derivative needed for the degree-aware Newton seed that
-/// handles `v(0) = 0` cold-start segments — spec
-/// `docs/superpowers/specs/2026-05-14-step-emission-architecture-design.md` §3.6.
+/// Same as `eval_polynomial_with_derivative` but also tracks the second
+/// derivative. The `ddd` update rule is the difference-of-`dd` recurrence —
+/// algebraically the second derivative of the same polynomial.
 #[inline]
 pub fn eval_polynomial_f32_with_pos_vel_accel_f64(
     cps: &[f32],
@@ -358,15 +291,13 @@ pub fn eval_polynomial_f32_with_pos_vel_accel_f64(
     let n = cps.len();
 
     if degree == 0 {
-        // Step function: position is the active cp, derivatives are zero.
         let k = find_knot_span_f32_with_f64_u(knots, p, n, u_f64);
         // SAFETY: find_knot_span returns k ∈ [0, n-1] for p=0.
         debug_assert!(k < n);
         return (f64::from(unsafe { *cps.get_unchecked(k) }), 0.0, 0.0);
     }
     if degree == 1 {
-        // Linear: analytic evaluator. Second derivative is identically zero
-        // on each span (the curve is piecewise-linear in u).
+        // Linear: second derivative is identically zero on each span.
         let k = find_knot_span_f32_with_f64_u(knots, p, n, u_f64);
         // SAFETY: k ∈ [1, n-1] for p=1; k-1 ∈ [0, n-2]; k+1 ≤ n < knots.len().
         debug_assert!(k >= 1 && k < n);
@@ -398,7 +329,6 @@ pub fn eval_polynomial_f32_with_pos_vel_accel_f64(
         // SAFETY: k - p + j ∈ [0, n-1] < cps.len()
         // SAFETY: j ≤ p ≤ MAX_DEGREE = WORKSPACE_SIZE - 1 < WORKSPACE_SIZE
         unsafe { *d.get_unchecked_mut(j) = f64::from(*cps.get_unchecked(k - p + j)) };
-        // dd[j] = 0, ddd[j] = 0 — initial cps don't depend on u.
     }
 
     for r in 1..=p {
@@ -447,12 +377,8 @@ pub fn eval_polynomial_f32_with_pos_vel_accel_f64(
     }
 }
 
-/// Evaluate a scalar B-spline NURBS at `u` directly from raw cps + knots
-/// slices, without going through `ScalarNurbsRef::try_new` (which re-runs the
-/// full O(n) NURBS-invariant validation on every call). MCU hot path: callers
-/// are responsible for ensuring slice shapes satisfy
-/// `knots.len() == cps.len() + degree + 1` and that the curve was validated
-/// upstream (e.g. `CurvePool` on segment load).
+/// Evaluate at `u` from raw slices without going through `ScalarNurbsRef::try_new`.
+/// Caller must ensure `knots.len() == cps.len() + degree + 1` (validated upstream).
 #[inline]
 pub fn eval_polynomial<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T {
     debug_assert!((degree as usize) <= MAX_DEGREE);
@@ -460,22 +386,12 @@ pub fn eval_polynomial<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T 
     de_boor_inner(cps, knots, degree, u)
 }
 
-/// Evaluate `dC/du` for a scalar B-spline NURBS at parameter `u`, without
-/// materializing the degree-lowered curve. Computes only the de Boor window
-/// of derivative control points (`O(p)` of them) and runs one de Boor walk
-/// on a `[T; WORKSPACE_SIZE]` stack scratch.
-///
-/// MCU hot path: `scalar_derivative_eval` in the runtime crate calls this
-/// per-axis at every TIM5 fire (40 kHz × 3 axes). The previous form
-/// allocated `[T; MAX_CONTROL_POINTS]` + `[T; MAX_KNOT_VECTOR_LEN]` stack
-/// arrays per call (~14.7 KB at the H7 sizing) and got memset-zero'd on
-/// every entry; this windowed form keeps stack usage to a couple hundred
-/// bytes.
-///
-/// `degree` must be ≥ 1 (returns `T::ZERO` for `degree == 0`).
+/// Evaluate `dC/du` without materializing the degree-lowered curve. Computes
+/// only the de Boor window of derivative control points and runs one de Boor
+/// walk on a `[T; WORKSPACE_SIZE]` stack scratch.
 ///
 /// Reference: Piegl & Tiller "The NURBS Book" eq. 3.7 (derivative cps),
-/// Algorithm A4.1 (de Boor) on the lowered knot vector.
+/// Algorithm A4.1 on the lowered knot vector.
 #[inline]
 pub fn eval_derivative<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T {
     debug_assert!((degree as usize) <= MAX_DEGREE);
@@ -489,9 +405,7 @@ pub fn eval_derivative<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T 
     }
     let new_p = p - 1;
     let new_n = n - 1;
-    // Lowered knot vector drops first and last entries of original.
-    // Length = (n + p + 1) - 2 = n + p - 1 = new_n + new_p + 1, the
-    // shape `find_knot_span` expects.
+    // Lowered knot vector drops first and last entries; length = new_n + new_p + 1.
     let lowered_knots = &knots[1..n + p];
 
     let k = find_knot_span(lowered_knots, new_p, new_n, u);
@@ -506,10 +420,6 @@ pub fn eval_derivative<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T 
         "find_knot_span invariant on lowered knots"
     );
 
-    // Initialize de Boor scratch from the Q-window only. d[j] (j ∈ 0..=new_p)
-    // corresponds to derivative cp index i = k - new_p + j in the lowered
-    // curve, which maps to original cp index i = k - new_p + j (same offset
-    // because Q_i is defined for i = 0..new_n in the original cp space).
     let mut d = [T::ZERO; WORKSPACE_SIZE];
     let p_t = T::from_f64(f64::from(degree));
     for j in 0..=new_p {
@@ -527,7 +437,6 @@ pub fn eval_derivative<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T 
         }
     }
 
-    // de Boor recurrence on lowered_knots, identical shape to de_boor_inner.
     for r in 1..=new_p {
         for j in (r..=new_p).rev() {
             // SAFETY: lowered_knots indices are in-bounds by the invariant above.
@@ -550,13 +459,7 @@ pub fn eval_derivative<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T 
     unsafe { *d.get_unchecked(new_p) }
 }
 
-/// Compute the parametric derivative `dP/du` as a new owned NURBS via degree
-/// lowering. Result has degree `p - 1`, knot vector with the first and last
-/// knots dropped, and control points
-///   `Q_i = p * (P_{i+1} - P_i) / (u_{i+p+1} - u_{i+1})`.
-///
-/// Host-only — allocates new `Vec`s.
-///
+/// Compute `dP/du` as a new owned NURBS via degree lowering.
 /// Reference: Piegl & Tiller "The NURBS Book" eq. 3.7 / Algorithm A3.3.
 #[cfg(feature = "host")]
 #[must_use]
@@ -582,7 +485,6 @@ pub fn derivative<T: Float>(curve: &crate::ScalarNurbs<T>) -> crate::ScalarNurbs
         new_cps.push(q);
     }
 
-    // New knot vector drops the first and last entries.
     let new_knots: Vec<T> = knots[1..knots.len() - 1].to_vec();
 
     crate::ScalarNurbs::try_new(new_degree, new_knots, new_cps)
@@ -590,8 +492,6 @@ pub fn derivative<T: Float>(curve: &crate::ScalarNurbs<T>) -> crate::ScalarNurbs
 }
 
 /// Compute the parametric derivative of a vector NURBS as a new owned NURBS.
-/// Same algorithm as scalar `derivative` applied per axis; knot vector and
-/// degree handled once.
 #[cfg(feature = "host")]
 #[must_use]
 pub fn vector_derivative<T: Float, const N: usize>(
@@ -624,15 +524,9 @@ pub fn vector_derivative<T: Float, const N: usize>(
         .expect("degree-lowered NURBS satisfies invariants by construction")
 }
 
-/// Compute curvature κ(u) of a 3D path NURBS from its precomputed first and
-/// second derivative NURBSes:
-///   κ = ||r' × r''|| / ||r'||³
-/// The cubed denominator is clamped at `MIN_PARAMETRIC_SPEED` to avoid
-/// divide-by-zero at cusps; the clamp engages only on pathological input
-/// (well-formed G2/G3 and fitter output never trigger it).
-///
-/// Caller owns `first_deriv` and `second_deriv` — typically cached on the
-/// segment, since TOPP-RA queries many u's per segment.
+/// Compute curvature κ(u) = ||r' × r''|| / ||r'||³ for a 3D path NURBS.
+/// Speed-cubed denominator is clamped at `MIN_PARAMETRIC_SPEED` to avoid
+/// divide-by-zero at cusps.
 #[cfg(feature = "host")]
 pub fn curvature_from_derivs<T: Float, const N: usize>(
     first_deriv: &crate::VectorNurbs<T, N>,
@@ -642,8 +536,6 @@ pub fn curvature_from_derivs<T: Float, const N: usize>(
     let r_prime = vector_eval(&first_deriv.as_view(), u);
     let r_double = vector_eval(&second_deriv.as_view(), u);
 
-    // Cross product magnitude: works for N=3; for N=2 we'd lift to 3D with z=0.
-    // We hardcode 3D here per spec — curvature on path is 3D-only.
     assert!(N == 3, "curvature_from_derivs requires N == 3");
 
     let cx = r_prime[1] * r_double[2] - r_prime[2] * r_double[1];

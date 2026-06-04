@@ -1,6 +1,5 @@
 use super::*;
 
-/// Build a simple linear E NURBS from `e_start` to `e_end` in `[0, 1]`.
 fn linear_e_nurbs(e_start: f64, e_end: f64) -> ScalarNurbs<f64> {
     ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![e_start, e_end]).unwrap()
 }
@@ -14,15 +13,7 @@ fn default_limits() -> ELimits {
 
 #[test]
 fn e_duration_simple() {
-    // 5mm retraction at 50mm/s with a_max=5000 mm/s^2.
-    // v_cruise = 50 mm/s (feedrate < v_max).
-    // t_ramp = 50/5000 = 0.01 s.
-    // s_ramp = 0.5 * 5000 * 0.01^2 = 0.25 mm.
-    // 2 * s_ramp = 0.5 mm < 5 mm -> trapezoidal.
-    // s_cruise = 5 - 0.5 = 4.5 mm.
-    // t_cruise = 4.5 / 50 = 0.09 s.
-    // Total = 2*0.01 + 0.09 = 0.11 s.
-    let e_nurbs = linear_e_nurbs(10.0, 5.0); // 5mm retraction (negative direction)
+    let e_nurbs = linear_e_nurbs(10.0, 5.0);
     let limits = default_limits();
     let duration = schedule_e_duration(&e_nurbs, 50.0, &limits);
     assert!(
@@ -33,14 +24,7 @@ fn e_duration_simple() {
 
 #[test]
 fn e_duration_triangular() {
-    // Very short retraction that can't reach cruise speed.
-    // 0.1mm at 100mm/s with a_max=5000 mm/s^2.
-    // t_ramp_full = 100/5000 = 0.02 s.
-    // s_ramp_full = 0.5 * 5000 * 0.02^2 = 1.0 mm.
-    // 2 * s_ramp_full = 2.0 mm > 0.1 mm -> triangular.
-    // t_ramp_tri = sqrt(0.1 / 5000) = sqrt(2e-5) ≈ 0.004472 s.
-    // Total = 2 * t_ramp_tri ≈ 0.008944 s.
-    let e_nurbs = linear_e_nurbs(10.0, 9.9); // 0.1mm retraction
+    let e_nurbs = linear_e_nurbs(10.0, 9.9);
     let limits = default_limits();
     let duration = schedule_e_duration(&e_nurbs, 100.0, &limits);
     let expected = 2.0 * (0.1_f64 / 5000.0).sqrt();
@@ -60,13 +44,6 @@ fn e_duration_zero_length() {
 
 #[test]
 fn e_duration_capped_by_v_max() {
-    // Feedrate 200mm/s but v_max is 100mm/s — should use 100.
-    // 10mm at 100mm/s with a_max=5000.
-    // t_ramp = 100/5000 = 0.02 s.
-    // s_ramp = 0.5 * 5000 * 0.0004 = 1.0 mm.
-    // s_cruise = 10 - 2 = 8 mm.
-    // t_cruise = 8/100 = 0.08 s.
-    // Total = 0.04 + 0.08 = 0.12 s.
     let e_nurbs = linear_e_nurbs(0.0, 10.0);
     let limits = default_limits();
     let duration = schedule_e_duration(&e_nurbs, 200.0, &limits);
@@ -78,8 +55,7 @@ fn e_duration_capped_by_v_max() {
 
 #[test]
 fn e_full_trapezoidal_endpoints() {
-    // Build full E NURBS and verify it hits the right start/end positions.
-    let e_nurbs = linear_e_nurbs(10.0, 5.0); // 5mm retraction
+    let e_nurbs = linear_e_nurbs(10.0, 5.0);
     let limits = default_limits();
     let t_start = 1.0;
     let result = schedule_e_full(&e_nurbs, 50.0, &limits, t_start).unwrap();
@@ -103,7 +79,6 @@ fn e_full_trapezoidal_endpoints() {
 
 #[test]
 fn e_full_triangular_endpoints() {
-    // Triangular profile: 0.1mm retraction.
     let e_nurbs = linear_e_nurbs(10.0, 9.9);
     let limits = default_limits();
     let t_start = 0.0;
@@ -125,7 +100,6 @@ fn e_full_triangular_endpoints() {
 
 #[test]
 fn e_full_monotone_retraction() {
-    // A 5mm retraction should be monotonically decreasing.
     let e_nurbs = linear_e_nurbs(10.0, 5.0);
     let limits = default_limits();
     let result = schedule_e_full(&e_nurbs, 50.0, &limits, 0.0).unwrap();
@@ -147,7 +121,6 @@ fn e_full_monotone_retraction() {
 
 #[test]
 fn e_full_monotone_prime() {
-    // A 5mm prime (positive direction) should be monotonically increasing.
     let e_nurbs = linear_e_nurbs(5.0, 10.0);
     let limits = default_limits();
     let result = schedule_e_full(&e_nurbs, 50.0, &limits, 0.0).unwrap();

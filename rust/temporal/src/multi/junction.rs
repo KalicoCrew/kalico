@@ -1,26 +1,12 @@
-//! Junction velocity from curvature continuity. Per spec §2.2.
-
 use crate::Limits;
 use crate::multi::JunctionBindingCap;
 use nurbs::VectorNurbs;
 use nurbs::eval::{curvature_from_derivs, vector_derivative, vector_eval};
 
-/// Numerical floor on κ — below this the centripetal cap is treated as ∞ and
-/// we fall back to the JD sharp-corner sub-case. Per spec §2.2.
 const KAPPA_FLOOR: f64 = 1e-12;
-
-/// Numerical ceiling on `b = ṡ²` for "no centripetal cap" cases. Per spec §2.2
-/// + matching `constraints.rs::B_MAX_CENT_CAP`. ~10⁴ mm/s.
 const B_MAX_CENT_CAP: f64 = 1e8;
-
-/// Threshold below which the JD branch returns ∞ (no corner cap). Per spec §2.2.
 const ALPHA_COLLINEAR_THRESHOLD: f64 = 1e-3;
-
-/// Threshold above which the JD branch caps `v_jd` at a small positive floor
-/// (avoid exact-zero boundary conditions confusing downstream solver).
 const ALPHA_REVERSAL_THRESHOLD: f64 = std::f64::consts::PI * 0.99;
-
-/// Floor `v_jd` at this value at near-reversal junctions. Per spec §2.2.
 const V_JD_REVERSAL_FLOOR_MM_S: f64 = 1.0;
 
 pub(crate) struct JunctionResult {
@@ -43,24 +29,18 @@ pub(crate) fn compute_junction_velocity(
     let kappa_left = curvature_at_end(left);
     let kappa_right = curvature_at_start(right);
 
-    // Cap 1: per-axis MVC from tangent direction at junction.
-    // Since |t| = 1, |dx_axis/dt| = |t_axis| · |ṡ|, so |ṡ| ≤ v_max,axis / |t_axis|.
-    // Apply on both sides; take the more-restrictive limits.
     let cap_per_axis = per_axis_velocity_cap(&t_left, left_limits)
         .min(per_axis_velocity_cap(&t_right, right_limits));
 
-    // Cap 2: centripetal cap.
     let cap_centripetal =
         centripetal_cap(kappa_left, left_limits).min(centripetal_cap(kappa_right, right_limits));
 
-    // Cap 3: sharp-corner JD when both sides are below the κ floor.
     let cap_sharp = if kappa_left.abs() <= KAPPA_FLOOR && kappa_right.abs() <= KAPPA_FLOOR {
         sharp_corner_jd_cap(&t_left, &t_right, left_limits, chord_tolerance_mm)
     } else {
         f64::INFINITY
     };
 
-    // Cap 4: global per-axis v_max (each axis independently).
     let cap_v_max = left_limits
         .v_max
         .iter()
@@ -68,7 +48,6 @@ pub(crate) fn compute_junction_velocity(
         .copied()
         .fold(f64::INFINITY, f64::min);
 
-    // Take the minimum and tag which cap was binding.
     let (v, binding) = min_with_tag([
         (cap_per_axis, JunctionBindingCap::PerAxisVelocity),
         (cap_centripetal, JunctionBindingCap::Centripetal),
@@ -104,12 +83,10 @@ fn centripetal_cap(kappa: f64, limits: &Limits) -> f64 {
     }
 }
 
-/// Sharp-corner JD cap. Per spec §2.2 sharp-corner sub-case.
+/// Sharp-corner JD cap.
 ///
-/// Uses the deviation-angle convention (α = 0 collinear, α = π reversal) and
-/// computes `cos(α/2)` directly via the half-angle identity to avoid the
-/// `arccos(dot)`-then-`cos(α/2)` NaN trap in f64 (see spec §2.2 numerical-safety
-/// note + `docs/research/junction-deviation-cornering-formula.md`).
+/// Uses `cos(α/2) = sqrt((1 + dot)/2)` (half-angle identity) to avoid the
+/// `arccos(dot)`-then-`cos(α/2)` NaN trap in f64.
 fn sharp_corner_jd_cap(
     t_left: &[f64; 3],
     t_right: &[f64; 3],
@@ -119,10 +96,8 @@ fn sharp_corner_jd_cap(
     let dot =
         (t_left[0] * t_right[0] + t_left[1] * t_right[1] + t_left[2] * t_right[2]).clamp(-1.0, 1.0);
 
-    // Half-angle identity: cos(α/2) = sqrt((1 + dot)/2). Always non-negative.
     let cos_half_alpha = ((1.0 + dot) * 0.5).max(0.0).sqrt();
 
-    // Compute α only for the threshold checks (stable form via `asin` half-angle).
     let sin_half_alpha = ((1.0 - dot) * 0.5).max(0.0).sqrt();
     let alpha = 2.0 * sin_half_alpha.asin();
 
@@ -167,7 +142,7 @@ fn forward_unit_tangent_at_start(curve: &VectorNurbs<f64, 3>) -> [f64; 3] {
 
 fn curvature_at_end(curve: &VectorNurbs<f64, 3>) -> f64 {
     if curve.degree() < 2 {
-        // degree-1 NURBS (`G1` segment) has zero curvature everywhere.
+        // degree-1 NURBS has zero curvature everywhere.
         return 0.0;
     }
     let u_end = *curve.knots().last().expect("knots non-empty");

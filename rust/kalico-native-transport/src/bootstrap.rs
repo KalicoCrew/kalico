@@ -1,20 +1,9 @@
-//! Bootstrap-ABI Identify / `IdentifyResponse` codecs (§5).
-//!
-//! Both messages have a frozen byte layout outside the schema and are
-//! decoded by hand. They still ride the framing layer (sync, len, channel,
-//! crc) and use type tag `0x0001` / `0x0002` on the control channel with
-//! the standard 7-byte per-message header (§7.2).
-//!
-
 use crate::wire_helpers::{MESSAGE_VERSION_DEFAULT, encode_message_header};
 use kalico_protocol::{MessageKind, PER_MESSAGE_HEADER_LEN};
 
-/// Bootstrap Identify body length: `proto_version` (u8). 1 byte.
 pub const BOOTSTRAP_IDENTIFY_BODY_LEN: usize = 1;
-/// Bootstrap `IdentifyResponse` body length per §5: 81 bytes.
 pub const BOOTSTRAP_IDENTIFY_RESPONSE_BODY_LEN: usize = 81;
 
-/// Total kalico-frame payload length (per-message header + body).
 pub const BOOTSTRAP_IDENTIFY_LEN: usize = PER_MESSAGE_HEADER_LEN + BOOTSTRAP_IDENTIFY_BODY_LEN;
 pub const BOOTSTRAP_IDENTIFY_RESPONSE_LEN: usize =
     PER_MESSAGE_HEADER_LEN + BOOTSTRAP_IDENTIFY_RESPONSE_BODY_LEN;
@@ -30,8 +19,6 @@ pub struct IdentifyResponse {
     pub mcu_serial: [u8; 12],
 }
 
-/// Encode the full payload (per-message header + bootstrap body) for an
-/// `Identify` command. The framing layer wraps this further.
 pub fn encode_identify(correlation_id: u32, proto_version: u8) -> Vec<u8> {
     let mut out = Vec::with_capacity(BOOTSTRAP_IDENTIFY_LEN);
     out.extend_from_slice(&encode_message_header(
@@ -43,9 +30,6 @@ pub fn encode_identify(correlation_id: u32, proto_version: u8) -> Vec<u8> {
     out
 }
 
-/// Decode an `IdentifyResponse` payload (per-message header + body). The
-/// caller has already validated framing and CRC. Returns the decoded struct
-/// and the `correlation_id` from the per-message header.
 pub fn decode_identify_response(payload: &[u8]) -> Option<(u32, IdentifyResponse)> {
     if payload.len() != BOOTSTRAP_IDENTIFY_RESPONSE_LEN {
         return None;
@@ -80,7 +64,6 @@ pub fn decode_identify_response(payload: &[u8]) -> Option<(u32, IdentifyResponse
     ))
 }
 
-/// Test helper: encode a complete `IdentifyResponse` payload (header + body).
 pub fn encode_identify_response(correlation_id: u32, resp: &IdentifyResponse) -> Vec<u8> {
     let mut out = Vec::with_capacity(BOOTSTRAP_IDENTIFY_RESPONSE_LEN);
     out.extend_from_slice(&encode_message_header(

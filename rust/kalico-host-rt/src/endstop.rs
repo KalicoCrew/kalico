@@ -1,9 +1,3 @@
-//! Step 7-D — host-side wire codec for endstop arm/disarm/tripped commands.
-//!
-//! Mirrors the firmware-side command surface in `src/runtime_tick.c` and the
-//! C-API in `rust/kalico-c-api/src/runtime_ffi.rs`. Wire formats per spec
-//! §3.1–§3.5 (`docs/superpowers/specs/2026-05-03-step-7d-endstop-homing-design.md`).
-
 use core::time::Duration;
 use std::fmt;
 
@@ -15,8 +9,6 @@ pub const STEPPER_RECORD_LEN: usize = 1;
 pub const MAX_SOURCES: usize = 4;
 pub const MAX_STEPPERS: usize = 8;
 
-/// Trip event format-version 1 (integer step counts only). Step 10 introduces
-/// v2 with a `phase_q16` field per stepper; hosts dispatch on `fmt_version`.
 pub const FMT_VERSION_V1: u8 = 1;
 
 pub const DEFAULT_ARM_TIMEOUT: Duration = Duration::from_millis(100);
@@ -38,7 +30,6 @@ pub enum ArmPolicy {
     IgnoreUntilMoving = 2,
 }
 
-/// Source record per spec §3.1 (sources blob layout).
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct SourceSpec {
     pub kind: SourceKind,
@@ -46,11 +37,10 @@ pub struct SourceSpec {
     pub active_high: bool,
     pub policy: ArmPolicy,
     pub sample_n: u8,
-    pub velocity_axis: u8, // 0x01=X, 0x02=Y, 0x04=Z (bitmask)
+    pub velocity_axis: u8,
     pub v_min_q16: u32,
 }
 
-/// Status code from `kalico_arm_endstop_response` per spec §3.2.
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ArmStatus {
@@ -70,7 +60,6 @@ impl ArmStatus {
     }
 }
 
-/// Status code from `kalico_disarm_endstop_response` per spec §3.5.
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DisarmStatus {
@@ -131,7 +120,6 @@ impl From<TransportError> for EndstopError {
     }
 }
 
-/// Encode a sources blob per spec §3.1 sources layout.
 pub fn encode_sources(sources: &[SourceSpec]) -> Result<Vec<u8>, EndstopError> {
     if sources.len() > MAX_SOURCES {
         return Err(EndstopError::TooManySources(sources.len()));
@@ -149,7 +137,6 @@ pub fn encode_sources(sources: &[SourceSpec]) -> Result<Vec<u8>, EndstopError> {
     Ok(buf)
 }
 
-/// Encode a steppers blob (one u8 per oid) per spec §3.1.
 pub fn encode_steppers(stepper_oids: &[u8]) -> Result<Vec<u8>, EndstopError> {
     if stepper_oids.len() > MAX_STEPPERS {
         return Err(EndstopError::TooManySteppers(stepper_oids.len()));
@@ -157,7 +144,6 @@ pub fn encode_steppers(stepper_oids: &[u8]) -> Result<Vec<u8>, EndstopError> {
     Ok(stepper_oids.to_vec())
 }
 
-/// Decoded async `kalico_endstop_tripped` event payload, fmt_version=1.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TripEventV1 {
     pub arm_id: u32,
@@ -172,7 +158,6 @@ pub struct TripStepperRecord {
     pub step_count: i32,
 }
 
-/// Decode a `kalico_endstop_tripped` async event from msgproto fields.
 pub fn decode_trip_event(params: &MessageParams) -> Result<TripEventV1, EndstopError> {
     let arm_id = params
         .try_get_u32("arm_id")
@@ -221,7 +206,6 @@ pub fn decode_trip_event(params: &MessageParams) -> Result<TripEventV1, EndstopE
     })
 }
 
-/// Send `kalico_arm_endstop` and wait for `kalico_arm_endstop_response`.
 pub fn arm_endstop<T: Transport>(
     io: &T,
     arm_id: u32,
@@ -269,7 +253,6 @@ pub fn arm_endstop_with_timeout<T: Transport>(
     ArmStatus::from_u8(status_byte).ok_or(EndstopError::InvalidStatus(status_byte))
 }
 
-/// Send `kalico_disarm_endstop` and wait for response.
 pub fn disarm_endstop<T: Transport>(io: &T, arm_id: u32) -> Result<DisarmStatus, EndstopError> {
     disarm_endstop_with_timeout(io, arm_id, DEFAULT_DISARM_TIMEOUT)
 }

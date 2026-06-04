@@ -1,13 +1,3 @@
-//! Non-zero-endpoint mid-print junction fixture.
-//!
-//! Option B's boundary stencils (i=0 and i=n-1) carry O(h)·b''' truncation
-//! that is mass-zero on rest-to-rest moves like homing (`√b_endpoint` = 0).
-//! This fixture probes a `v_start`=30 / `v_end`=50 single-segment scenario where
-//! the boundary truncation is non-zero, ensuring the verifier accepts within
-//! `EPS_FEAS=2e-3`.
-//!
-//! Spec section 6.5.
-
 use nurbs::VectorNurbs;
 use temporal::{
     GridConfig, GridScheme, Limits, SolveStatus, ToleranceMode, schedule_segment_with_tolerance,
@@ -32,7 +22,7 @@ fn standard_limits() -> Limits {
         [300.0, 300.0, 15.0],
         [3000.0, 3000.0, 100.0],
         [6000.0, 6000.0, 6000.0],
-        25.0_f64 / 1500.0, // a_centripetal at typical sqv=5
+        25.0_f64 / 1500.0,
     )
 }
 
@@ -45,8 +35,6 @@ fn midprint_junction_non_zero_endpoints_converge() {
         n: 100,
     };
 
-    // v_start=30, v_end=50: non-zero at both endpoints, exercises the
-    // boundary-stencil O(h)*b''' truncation.
     let v_start = 30.0;
     let v_end = 50.0;
 
@@ -63,8 +51,6 @@ fn midprint_junction_non_zero_endpoints_converge() {
         profile.status,
     );
 
-    // Boundary samples should reflect the requested endpoint velocities
-    // within the trapezoidal-integration tolerance.
     let first = profile.samples.first().expect("at least one sample");
     let last = profile.samples.last().expect("at least one sample");
     assert!(
@@ -80,10 +66,6 @@ fn midprint_junction_non_zero_endpoints_converge() {
         v_end
     );
 
-    // Profile total time should be finite and reasonable for a 50mm
-    // segment with v_start=30, v_end=50 under v_max=300, a_max=3000.
-    // Lower bound from average velocity 50/v_max = 0.167s; upper bound
-    // generous to allow for jerk/accel-limited shaping.
     assert!(profile.total_time.is_finite());
     assert!(
         profile.total_time > 0.15 && profile.total_time < 5.0,

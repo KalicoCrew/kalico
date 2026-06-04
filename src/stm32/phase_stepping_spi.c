@@ -1,12 +1,9 @@
-// Phase-stepping XDIRECT SPI writer for TMC5160 (sim scope).
-// See phase_stepping_spi.h for protocol and datagram layout details.
+// Phase-stepping XDIRECT SPI writer for TMC5160. See phase_stepping_spi.h.
 //
-// Pattern matches src/spicmds.c::spidev_transfer():
-//   spi_prepare(cfg) -> CS low -> spi_transfer(cfg, 0, len, buf) -> CS high.
-// spi_prepare is required on STM32H7 because each bus's CR1 is rewritten
-// per-transaction in stm32h7_spi.c; omitting it would re-use the previous
-// caller's clock divider / mode. In Renode this is benign, but we follow
-// the canonical pattern so the same .c is correct on real silicon.
+// Follows src/spicmds.c::spidev_transfer(): spi_prepare(cfg) -> CS low ->
+// spi_transfer -> CS high. spi_prepare is required on STM32H7 (stm32h7_spi.c
+// rewrites each bus's CR1 per-transaction, so omitting it reuses the previous
+// caller's divider/mode).
 
 #include "autoconf.h" // CONFIG_MACH_STM32H7
 #include "phase_stepping_spi.h"
@@ -19,15 +16,13 @@
 #define MAX_PHASE_BUSES  4
 #define MAX_PHASE_MOTORS 16   // matches Rust state::MAX_STEPPER_OIDS
 
-// ---------- 2026-05-18 SPI3 contention arbitration ----------------------
-// See phase_stepping_spi.h for the rationale and contract.
+// SPI3 contention arbitration — see phase_stepping_spi.h.
 static volatile uint8_t  phase_spi_busy = 0;
 static volatile uint32_t phase_spi_skip_count = 0;
 static volatile uint32_t phase_spi_write_count = 0;
 
-// ISR XDIRECT write gate. Set to 1 by phase_stepping_enable_writes()
-// after ALL stepper TMC init is complete. The ISR fires for timekeeping
-// but skips XDIRECT SPI writes until the host signals readiness.
+// Gate set by phase_stepping_enable_writes() once all TMC init is complete; the
+// ISR skips XDIRECT writes until then.
 static volatile uint8_t phase_spi_writes_enabled = 0;
 
 __attribute__((used, externally_visible))
@@ -75,18 +70,12 @@ struct phase_motor_state {
     uint8_t configured;
 };
 
-// Static, zero-initialized (.bss). `configured == 0` means "not registered".
+// .bss-zeroed; configured == 0 means "not registered".
 static struct phase_bus_state  phase_buses[MAX_PHASE_BUSES];
 static struct phase_motor_state phase_motors[MAX_PHASE_MOTORS];
 
-// `used + externally_visible`: Klipper's MCU build uses
-// `-flto=auto -fwhole-program`, which DCEs symbols not referenced from
-// any C translation unit. All three helpers are called exclusively from
-// the Rust `runtime` staticlib (via FFI), so without these attributes
-// the LTO inliner drops the function bodies and the final link fails
-// with `undefined reference to ...`. Same pattern used by
-// `runtime_emit_step_pulses` in src/stepper.c and `runtime_irq_save` /
-// `runtime_irq_restore` in src/runtime_tick.c.
+// used,externally_visible: these are called only from the Rust runtime via FFI,
+// so -fwhole-program LTO would DCE the bodies and the link would fail.
 __attribute__((used, externally_visible))
 void
 phase_stepping_register_bus(uint8_t bus_id, struct spi_config cfg)
@@ -94,11 +83,8 @@ phase_stepping_register_bus(uint8_t bus_id, struct spi_config cfg)
     if (bus_id >= MAX_PHASE_BUSES)
         return;
     phase_buses[bus_id].cfg = cfg;
-    // XDIRECT writes run from the TIM5 ISR at 40 kHz. At the default
-    // TMC SPI rate (~1 MHz) a 5-byte transfer takes ~40 µs — well over
-    // the 25 µs tick budget for even a single motor. Override the MBR
-    // divisor so the XDIRECT path runs at ~4 MHz (5 µs per motor).
-    // TMC5160 datasheet maximum is 8 MHz; 4 MHz is conservative.
+    // A 5-byte transfer at the default ~1 MHz TMC rate is ~40 us, over the
+    // 25 us tick budget; override the MBR divisor for ~8 MHz (TMC5160 max).
     struct spi_config fast = cfg;
     uint32_t pclk = get_pclock_frequency((uint32_t)(uintptr_t)cfg.spi);
     uint32_t target_rate = 8000000;
@@ -149,17 +135,15 @@ phase_stepping_write_xdirect(uint8_t motor_idx,
     if (bus_id >= MAX_PHASE_BUSES || !phase_buses[bus_id].configured)
         return;
 
-    // ISR-priority: if Klipper's spi_transfer holds the bus, skip this
-    // modulation cycle. One skip = 25 us at 40 kHz, inaudible. The
-    // skip-count telemetry is the canary for SPI3 contention going wild.
+    // If Klipper's spi_transfer holds the bus, skip this cycle (one skip = 25 us,
+    // inaudible); the skip count is the SPI3-contention canary.
     if (!phase_spi_try_acquire()) {
         phase_spi_skip_count++;
         return;
     }
 
-    // Cast through uint16_t before shifting so the sign bit lands in
-    // bit 8 of the source word (C right-shift on signed negative values
-    // is implementation-defined; uint16_t guarantees a logical shift).
+    // Cast through uint16_t so the sign bit shifts logically (signed >> is
+    // implementation-defined).
     uint16_t ua = (uint16_t)coil_a;
     uint16_t ub = (uint16_t)coil_b;
 
@@ -172,7 +156,7 @@ phase_stepping_write_xdirect(uint8_t motor_idx,
     };
 
 #if CONFIG_MACH_STM32H7
-    // H7 SPI v2: inline transfer with skip-on-error (no shutdown from ISR).
+    // H7 SPI v2: inline transfer, skip-on-error (no shutdown from the ISR).
     struct spi_config fast = phase_buses[bus_id].fast_cfg;
     SPI_TypeDef *spi = fast.spi;
 

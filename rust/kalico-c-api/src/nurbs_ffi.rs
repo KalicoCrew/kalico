@@ -1,17 +1,10 @@
-//! Kalico nurbs C-FFI surface. cfg-gated by `header-nurbs`.
-//!
-//! Exposes the Layer-0 NURBS evaluation entrypoints to the Klipper C build.
-//! All symbols are namespaced `kalico_nurbs_*` and consumed via cbindgen-
-//! generated headers (`include/kalico_nurbs.h`, checked into source).
-
 #![allow(unsafe_code)]
 
 #[cfg(feature = "header-nurbs")]
 pub mod exports {
     use nurbs::{ArcLengthTableRef, ScalarNurbsRef, VectorNurbsRef};
 
-    /// Evaluate a scalar NURBS at parameter `u`.
-    /// SAFETY: `curve` must be non-null and valid for the duration of the call.
+    // SAFETY: `curve` must be non-null and valid for the duration of the call.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_nurbs_eval_f32(
         curve: *const ScalarNurbsRef<'_, f32>,
@@ -21,7 +14,7 @@ pub mod exports {
         nurbs::eval::eval(curve_ref, u)
     }
 
-    /// Evaluate a vector NURBS in R^3 at `u`; writes 3-vector into `out`.
+    // SAFETY: `curve` non-null and valid; `out` points to a writable [f32; 3].
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_nurbs_vector_eval_3_f32(
         curve: *const VectorNurbsRef<'_, f32, 3>,
@@ -34,7 +27,7 @@ pub mod exports {
         out_slice.copy_from_slice(&result);
     }
 
-    /// Map arc length `s` to parameter `u` via a precomputed table.
+    // SAFETY: `table` must be non-null and valid for the duration of the call.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_nurbs_param_from_arc_length_f32(
         table: *const ArcLengthTableRef<'_, f32>,

@@ -1,10 +1,3 @@
-//! Main converter pipeline: G-code text in, G5-only G-code text out.
-//!
-//! Orchestrates all the compat-layer building blocks (modal state, run
-//! buffering, collinear/degree-elevation/arc/fitter reductions) into a single
-//! `convert()` entry point that accepts raw G-code text and produces a
-//! complete G5-only output string.
-
 use std::fmt::{self, Write as FmtWrite};
 use std::io::Cursor;
 
@@ -20,14 +13,8 @@ use crate::g5_canon::canonicalize_g5;
 use crate::modal::{ModalState, Plane};
 use crate::run::{Run, Waypoint};
 
-// ---------------------------------------------------------------------------
-// Error type
-// ---------------------------------------------------------------------------
-
-/// Errors produced by the converter pipeline.
 #[derive(Debug)]
 pub enum ConvertError {
-    /// A fatal, unrecoverable error (bad input that cannot be worked around).
     Fatal(String),
 }
 
@@ -41,10 +28,6 @@ impl fmt::Display for ConvertError {
 
 impl std::error::Error for ConvertError {}
 
-// ---------------------------------------------------------------------------
-// Converter state (bundles the mutable context threaded through helpers)
-// ---------------------------------------------------------------------------
-
 struct Ctx {
     state: ModalState,
     run_buffer: Option<Run>,
@@ -53,18 +36,6 @@ struct Ctx {
     tolerance_mm: f64,
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/// Convert a complete G-code file to G5-only output.
-///
-/// `input` is the raw G-code text. `input_name` is a human-readable label
-/// (e.g. the filename) for the preamble header. `tolerance_um` is the
-/// arc-to-Bezier tolerance in micrometres.
-///
-/// Returns the full output G-code as a `String`, or a `ConvertError` on
-/// unrecoverable input.
 pub fn convert(input: &str, input_name: &str, tolerance_um: f64) -> Result<String, ConvertError> {
     let tolerance_mm = tolerance_um / 1000.0;
 
@@ -76,7 +47,6 @@ pub fn convert(input: &str, input_name: &str, tolerance_um: f64) -> Result<Strin
         tolerance_mm,
     };
 
-    // Write preamble.
     {
         let mut cursor = Cursor::new(&mut ctx.out);
         write_preamble(&mut cursor, input_name, tolerance_um)
@@ -94,15 +64,10 @@ pub fn convert(input: &str, input_name: &str, tolerance_um: f64) -> Result<Strin
         }
     }
 
-    // Flush any remaining run.
     flush_run(&mut ctx, None);
 
     String::from_utf8(ctx.out).map_err(|e| ConvertError::Fatal(format!("UTF-8 error: {e}")))
 }
-
-// ---------------------------------------------------------------------------
-// Token dispatch
-// ---------------------------------------------------------------------------
 
 fn dispatch_token(
     ctx: &mut Ctx,
@@ -134,7 +99,7 @@ fn dispatch_token(
             *line_no,
             (tokens, idx),
         )?,
-        _ => {} // Token is #[non_exhaustive]
+        _ => {}
     }
     Ok(())
 }
@@ -266,10 +231,6 @@ fn dispatch_g_code(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Per-command handlers
-// ---------------------------------------------------------------------------
-
 fn handle_g0_g1(
     ctx: &mut Ctx,
     major: u32,
@@ -302,7 +263,6 @@ fn handle_g0_g1(
             0.0
         };
 
-        // Check for run breaks: feedrate change or E-ratio change.
         let should_flush = ctx.run_buffer.as_ref().is_some_and(|run| {
             if (run.feedrate_mm_min - feedrate).abs() > 1e-6 {
                 return true;
@@ -338,7 +298,6 @@ fn handle_g0_g1(
             line_no,
         });
     } else {
-        // E-only or Z-only move: flush run, emit collinear, clear tangent.
         flush_run(ctx, None);
         let e_abs = resolved_e.unwrap_or(ctx.state.output_e);
         let f_emit = f_if_changed(feedrate, &mut ctx.last_emitted_f);
@@ -364,7 +323,6 @@ fn handle_g2_g3(
     tokens: &[Result<Token, gcode::ParseError>],
     idx: usize,
 ) -> Result<(), ConvertError> {
-    // Peek for end tangent for the run flush.
     let end_tan = peek_tangent_for_flush(&tokens[idx + 1..], &ctx.state, ctx.tolerance_mm);
     flush_run(ctx, end_tan);
 
@@ -403,7 +361,6 @@ fn handle_g2_g3(
         .resolve_position(params.x(), params.y(), params.z());
     let resolved_e = ctx.state.resolve_input_e(params.e());
 
-    // Radius consistency check.
     let r_start = ((ctx.state.position[0] - center[0]).powi(2)
         + (ctx.state.position[1] - center[1]).powi(2))
     .sqrt();
@@ -426,11 +383,9 @@ fn handle_g2_g3(
 
     let mut pieces = arc::arc_to_g5(&arc_params);
 
-    // Distribute E proportionally by chord length.
     let e_delta = resolved_e.map_or(0.0, |e| e - ctx.state.input_e);
     distribute_e_by_chord(&mut pieces, ctx.state.output_e, e_delta, ctx.state.position);
 
-    // Set F on first piece if changed.
     if let Some(first) = pieces.first_mut() {
         first.f = f_if_changed(feedrate, &mut ctx.last_emitted_f);
     }
@@ -439,7 +394,6 @@ fn handle_g2_g3(
         writeln_out(&mut ctx.out, &line.to_string());
     }
 
-    // Update state.
     let end_tangent = arc::arc_endpoint_tangent(&arc_params);
     ctx.state.prev_tangent = Some(end_tangent);
     if let Some(last) = pieces.last() {
@@ -494,7 +448,6 @@ fn handle_g5(ctx: &mut Ctx, params: &gcode::Params, line_no: u32) -> Result<(), 
 
     ctx.state.prev_g5_pq = Some([cp, cq]);
 
-    // Endpoint tangent: direction from CP2 to P3 = (-p, -q) normalized.
     let tx = -cp;
     let ty = -cq;
     let tlen = tx.hypot(ty);
@@ -547,7 +500,6 @@ fn handle_g51(ctx: &mut Ctx, params: &gcode::Params, line_no: u32) -> Result<(),
     let line = elevate_g51_to_g5(p0, p1, p2, e_abs, f_emit);
     writeln_out(&mut ctx.out, &line.to_string());
 
-    // Endpoint tangent: direction P1 -> P2 normalized.
     let tx = p2[0] - p1[0];
     let ty = p2[1] - p1[1];
     let tlen = tx.hypot(ty);
@@ -564,18 +516,11 @@ fn handle_g51(ctx: &mut Ctx, params: &gcode::Params, line_no: u32) -> Result<(),
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
-/// Append a line (with trailing newline) to the output buffer.
 fn writeln_out(buf: &mut Vec<u8>, line: &str) {
     buf.extend_from_slice(line.as_bytes());
     buf.push(b'\n');
 }
 
-/// Return `Some(feedrate)` if `feedrate` differs from `last_emitted_f`,
-/// and update the tracking variable. Returns `None` if unchanged.
 fn f_if_changed(feedrate: f64, last_emitted_f: &mut Option<f64>) -> Option<f64> {
     let changed = match *last_emitted_f {
         Some(prev) => (prev - feedrate).abs() > 1e-6,
@@ -589,7 +534,6 @@ fn f_if_changed(feedrate: f64, last_emitted_f: &mut Option<f64>) -> Option<f64> 
     }
 }
 
-/// Reconstruct a G-code command line from parsed components.
 fn reconstruct_command(
     letter: u8,
     major: u32,
@@ -617,7 +561,6 @@ fn reconstruct_command(
     s
 }
 
-/// Reconstruct a marker comment from its `MarkerKind`.
 fn reconstruct_marker(kind: &MarkerKind) -> String {
     match kind {
         MarkerKind::LayerChange { layer: Some(n) } => format!(";LAYER:{n}"),
@@ -628,7 +571,6 @@ fn reconstruct_marker(kind: &MarkerKind) -> String {
     }
 }
 
-/// Flush the current G1-run buffer, fitting or emitting collinear G5s.
 fn flush_run(ctx: &mut Ctx, end_tangent: Option<[f64; 2]>) {
     let Some(mut run) = ctx.run_buffer.take() else {
         return;
@@ -644,7 +586,6 @@ fn flush_run(ctx: &mut Ctx, end_tangent: Option<[f64; 2]>) {
     let total_e_delta = run.total_e_delta();
     let feedrate = run.feedrate_mm_min;
 
-    // Detect corners and split.
     let corners = detect_corners(&positions, ctx.tolerance_mm);
     let sub_runs = split_at_corners(&positions, &corners);
 
@@ -673,7 +614,6 @@ fn flush_run(ctx: &mut Ctx, end_tangent: Option<[f64; 2]>) {
         return;
     }
 
-    // Distribute E across all output pieces proportional to chord length.
     distribute_e_by_chord(
         &mut all_pieces,
         ctx.state.output_e,
@@ -681,7 +621,6 @@ fn flush_run(ctx: &mut Ctx, end_tangent: Option<[f64; 2]>) {
         positions[0],
     );
 
-    // Set F on the first piece if changed.
     if let Some(first) = all_pieces.first_mut() {
         first.f = f_if_changed(feedrate, &mut ctx.last_emitted_f);
     }
@@ -690,11 +629,9 @@ fn flush_run(ctx: &mut Ctx, end_tangent: Option<[f64; 2]>) {
         writeln_out(&mut ctx.out, &line.to_string());
     }
 
-    // Update state from the last emitted piece.
     if let Some(last) = all_pieces.last() {
         ctx.state.output_e = last.e;
 
-        // Tangent from the last piece: (-p, -q) normalized.
         let tx = -last.p;
         let ty = -last.q;
         let tlen = tx.hypot(ty);
@@ -704,7 +641,6 @@ fn flush_run(ctx: &mut Ctx, end_tangent: Option<[f64; 2]>) {
     }
 }
 
-/// Distribute E across G5 pieces proportional to chord length.
 fn distribute_e_by_chord(pieces: &mut [G5Line], start_e: f64, e_delta: f64, start_pos: [f64; 3]) {
     if pieces.is_empty() {
         return;
@@ -737,7 +673,6 @@ fn distribute_e_by_chord(pieces: &mut [G5Line], start_e: f64, e_delta: f64, star
     }
 }
 
-/// Peek at the next token to extract a tangent for the run flush end-tangent.
 fn peek_tangent_for_flush(
     remaining: &[Result<Token, gcode::ParseError>],
     state: &ModalState,

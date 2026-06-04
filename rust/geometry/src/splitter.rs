@@ -1,7 +1,3 @@
-//! Path-length-capped subdivision of cubic-Bézier segments. Bounds per-MCU-segment
-//! piece count for downstream Layer 3 (T-A) by capping arc length at
-//! `max_arc_length_mm` (default 12.5 mm). See spec §5 of the 7-pre design doc.
-
 use crate::{CubicSegment, SplitInfo};
 use nurbs::{
     ScalarNurbs, VectorNurbs,
@@ -13,46 +9,16 @@ use nurbs::{
 const EPS_CP_POLYGON: f64 = 3e-6;
 const EPS_U: f64 = 1e-9;
 const MIN_PARAMETRIC_SPEED_FOR_SPLITTER: f64 = 1e-9;
-/// Relative tolerance absorbing arc-length integration round-off so an exact
-/// multiple of `max_arc_length_mm` doesn't get over-split by one. The arc-length
-/// builder integrates via central-difference + Gauss-Legendre with residual
-/// `1e-9 · |estimate|`; this tolerance must be at or above that order.
 const EPS_RATIO: f64 = 1e-8;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum SplitError {
     NotSinglePieceCubic,
-    ArcLengthTableBuildFailed {
-        reason: &'static str,
-    },
-    /// `max_arc_length_mm` was not a positive finite number. Caller passed
-    /// `0.0`, a negative value, NaN, or infinity. The splitter cannot
-    /// compute `k_planned` from such a value — `total_length / 0.0 = ∞`
-    /// then `as usize` saturates to a huge usize and `Vec::with_capacity`
-    /// would panic / OOM.
-    InvalidCap {
-        max_arc_length_mm: f64,
-    },
-    /// An `EMode::Independent` segment with non-trivial xyz motion reached
-    /// the splitter past the zero-motion fast-path. Subdividing such a
-    /// segment would clone the parent's full E curve into every child,
-    /// producing N× over-extrusion. The live pipeline's `classify_e_mode`
-    /// rejects pure-Z+E as `HelicalExtrusionUnsupported` upstream; this
-    /// guard catches the same misuse from any other source (direct API
-    /// caller, future compat-layer admit path) at runtime.
+    ArcLengthTableBuildFailed { reason: &'static str },
+    InvalidCap { max_arc_length_mm: f64 },
     CannotSplitIndependent,
 }
 
-/// Split a cubic-Bézier segment along arc length so that each child segment's
-/// arc length is at most `max_arc_length_mm`.
-///
-/// Passthrough behaviors:
-/// - Zero-motion segments (control polygon length and midpoint parametric speed
-///   both below numerical floors) are returned unchanged. This covers
-///   `EMode::Independent` retraction / prime / filament-change segments whose
-///   `xyz` collapses to a point.
-/// - Segments whose total arc length is below `max_arc_length_mm` are returned
-///   unchanged (`split_info` remains `None`).
 pub fn split_segment_to_cap(
     segment: &CubicSegment,
     max_arc_length_mm: f64,
@@ -65,17 +31,6 @@ pub fn split_segment_to_cap(
         return Ok(vec![segment.clone()]);
     }
 
-    // Defense-in-depth (spec §6.1 closing remark): an Independent segment
-    // reaching here past the zero-motion fast-path means the parent has
-    // non-trivial xyz motion. The splitter cannot safely subdivide such a
-    // segment because the splitter would clone the parent's full E curve
-    // into every child, producing N× over-extrusion.
-    //
-    // Round-1 fix (`classify_e_mode` now rejects pure-Z+E as helical) closes
-    // the live-pipeline path. This guard catches the same misuse from any
-    // other source (direct API caller, future compat-layer admit path) at
-    // runtime — `debug_assert!` is no-op in release and would silently
-    // duplicate extrusion.
     if segment.e_mode == crate::EMode::Independent {
         return Err(SplitError::CannotSplitIndependent);
     }
@@ -88,20 +43,11 @@ pub fn split_segment_to_cap(
     let table_ref = table.as_view();
     let total_length = table.s_max();
 
-    // Below-cap passthrough. Accept arc-length-integration round-off (the table
-    // builder converges to `1e-9 · |estimate|`) so an exact `length == cap`
-    // input passes through instead of producing two children whose `s_hi - s_lo`
-    // differ from the cap by a few parts in 1e10.
     if total_length <= max_arc_length_mm * (1.0 + EPS_RATIO) {
         return Ok(vec![segment.clone()]);
     }
 
-    // Compute target arc-lengths and convert to parameters. The same relative
-    // tolerance pulls back exact-multiple inputs (e.g. 25 mm at a 12.5 mm cap)
-    // from being over-split by one piece.
     let ratio = total_length / max_arc_length_mm;
-    // The ratio is positive (total_length > 0, max_arc_length_mm > 0); the
-    // `.max(2.0)` floor keeps the cast in the safe range.
     #[allow(clippy::cast_sign_loss)]
     let k_planned = (ratio - EPS_RATIO).ceil().max(2.0) as usize;
     debug_assert!(k_planned >= 2, "expected at least two pieces past the cap");
@@ -111,7 +57,6 @@ pub fn split_segment_to_cap(
         u_breaks.push(param_from_arc_length(&table_ref, target));
     }
 
-    // Project xyz onto its three scalar axes and extract the (single) Bézier piece per axis.
     let parent_pieces = extract_bezier_pieces_vector(&segment.xyz);
     debug_assert!(
         parent_pieces
@@ -130,7 +75,6 @@ pub fn split_segment_to_cap(
     for &u in &u_breaks {
         let u_start = current_pieces[0].u_start;
         let u_end = current_pieces[0].u_end;
-        // Skip breakpoints within EPS_U of the carried piece's bounds.
         if u <= u_start + EPS_U || u >= u_end - EPS_U {
             continue;
         }

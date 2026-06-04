@@ -1,21 +1,3 @@
-//! Corner detection for G1-run segmentation.
-//!
-//! Uses the junction-deviation criterion `L * tan(θ/4) > tolerance` to
-//! identify interior waypoints where the path direction changes sharply
-//! enough to require a velocity reduction in the planner.  Runs are split at
-//! those points so that each sub-run can be fitted or emitted independently.
-
-/// Detect corners in a polyline where `L * tan(θ/4) > tolerance`.
-///
-/// `L` is the shorter of the two adjacent segment lengths and `θ` is the
-/// deflection angle at the interior point.  Returns a sorted list of
-/// **interior** point indices (i.e. 1 ≤ i ≤ n−2 for n points) where the
-/// criterion is met.
-///
-/// Only the XY plane is considered; Z is ignored for angle computation.
-///
-/// Degenerate case: if either adjacent segment is shorter than 1 µm the
-/// point is always treated as a corner.
 pub fn detect_corners(points: &[[f64; 3]], tolerance: f64) -> Vec<usize> {
     if points.len() < 3 {
         return Vec::new();
@@ -37,18 +19,15 @@ pub fn detect_corners(points: &[[f64; 3]], tolerance: f64) -> Vec<usize> {
         let len1 = (dx1 * dx1 + dy1 * dy1).sqrt();
         let shorter = len0.min(len1);
 
-        // Degenerate: zero-length segment → always a corner.
         if shorter < 1e-9 {
             corners.push(i);
             continue;
         }
 
-        // θ = angle between the two direction vectors.
         let cross = dx0 * dy1 - dy0 * dx1;
         let dot = dx0 * dx1 + dy0 * dy1;
         let theta = cross.abs().atan2(dot);
 
-        // Deviation = L * tan(θ/4).
         let deviation = shorter * (theta / 4.0).tan();
 
         if deviation > tolerance {
@@ -59,14 +38,6 @@ pub fn detect_corners(points: &[[f64; 3]], tolerance: f64) -> Vec<usize> {
     corners
 }
 
-/// Split a polyline into sub-runs at the given corner indices.
-///
-/// Adjacent sub-runs share the corner point (it becomes the last point of one
-/// sub-run and the first point of the next).  If `corners` is empty the
-/// original slice is returned as a single sub-run.
-///
-/// `corners` must be sorted in ascending order and contain only valid interior
-/// indices (1 ≤ i ≤ n−2).
 pub fn split_at_corners(points: &[[f64; 3]], corners: &[usize]) -> Vec<Vec<[f64; 3]>> {
     if corners.is_empty() {
         return vec![points.to_vec()];
@@ -76,12 +47,10 @@ pub fn split_at_corners(points: &[[f64; 3]], corners: &[usize]) -> Vec<Vec<[f64;
     let mut segment_start = 0;
 
     for &corner in corners {
-        // Include the corner point as the last element of this sub-run.
         result.push(points[segment_start..=corner].to_vec());
         segment_start = corner;
     }
 
-    // Tail: from the last corner to the end.
     result.push(points[segment_start..].to_vec());
 
     result

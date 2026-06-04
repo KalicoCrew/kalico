@@ -17,13 +17,9 @@ class error(Exception):
 ######################################################################
 
 
-# Interface to low-level mcu code. Step pulse generation, position
-# tracking, and kinematics solving all live in the Rust motion engine
-# (klippy/motion_bridge.py + rust/motion-bridge); this class is the
-# host-side bookkeeping shim that records pin assignments, axis
-# membership, and current direction so the planner and helper modules
-# (homing, z_tilt, motion_report, ...) can keep using the existing
-# stepper-object API surface.
+# Host-side bookkeeping shim: records pin assignments, axis membership, and
+# direction. Step generation, position tracking, and kinematics live in the
+# Rust motion engine.
 class MCU_stepper:
     def __init__(
         self,
@@ -57,12 +53,9 @@ class MCU_stepper:
         self._req_step_both_edge = False
         self._mcu_position_offset = 0.0
         self._active_callbacks = []
-        # Axes this stepper drives. Populated by setup_itersolve from the
-        # bridge alloc_func's first bytes-typed argument (e.g. b"z" for
-        # cartesian, b"+x" for corexy); queried by is_active_axis.
+        # Populated by setup_itersolve from the alloc_func's first bytes arg
+        # (e.g. b"z", b"+x"); queried by is_active_axis.
         self._bridge_active_axes = b""
-        # Bridge-mode placeholders kept for API compatibility with helper
-        # modules that still pass / inspect these handles.
         self._stepper_kinematics = None
         self._trapq = None
         self._tmc_current_helper = None
@@ -82,7 +75,6 @@ class MCU_stepper:
         return self._name
 
     def units_in_radians(self):
-        # Returns true if distances are in radians instead of millimeters
         return self._units_in_radians
 
     def get_pulse_duration(self):
@@ -94,25 +86,18 @@ class MCU_stepper:
         self._req_step_both_edge = step_both_edge
 
     def setup_itersolve(self, alloc_func, *params):
-        # Real stepper kinematics live in Rust, but Python-side callers
-        # (z_tilt_ng, quad_gantry_level, homing axis routing) still query
-        # is_active_axis to pick the steppers that move on a given axis.
-        # All bridge alloc_funcs encode the axes the stepper drives in
-        # their first bytes-typed param (e.g. b"z" for cartesian_stepper_alloc,
-        # b"+x" / b"-y" for corexy_stepper_alloc). Stash that as the
-        # axis-membership lookup table.
+        # Callers (z_tilt_ng, quad_gantry_level, homing) still query
+        # is_active_axis; the axes the stepper drives are encoded in the
+        # alloc_func's first bytes param (b"z", b"+x" / b"-y", ...).
         for p in params:
             if isinstance(p, (bytes, bytearray)):
                 self._bridge_active_axes = bytes(p)
                 break
 
     def _build_config(self):
-        # The kalico runtime emits step pulses by toggling step_pin
-        # exactly once per requested step (runtime_emit_step_pulses in
-        # src/stepper.c). Every edge — rising AND falling — counts as
-        # a step, so the TMC driver is configured with DEDGE=1. The
-        # invert_step / step_pulse_ticks args are accepted on the wire
-        # for ABI compatibility but ignored on the MCU side (Stage B).
+        # The runtime toggles step_pin once per step (every edge counts), so the
+        # TMC driver needs DEDGE=1. invert_step / step_pulse_ticks are sent for
+        # ABI compatibility but ignored on the MCU.
         self._step_both_edge = True
         self._step_pulse_duration = 0.0
         invert_step = -1
@@ -156,15 +141,12 @@ class MCU_stepper:
         self._mcu.get_printer().send_event("stepper:set_dir_inverted", self)
 
     def calc_position_from_coord(self, coord):
-        # Bridge: position tracking lives in Rust.
         return 0.0
 
     def set_position(self, coord):
-        # Bridge: position tracking lives in Rust.
         return
 
     def get_commanded_position(self):
-        # Bridge: position tracking lives in Rust.
         return 0.0
 
     def get_mcu_position(self, cmd_pos=None):
@@ -230,10 +212,8 @@ class MCU_stepper:
             return pos_xyz[idx]
 
     def bridge_set_position_from_step_count(self, step_count):
-        # Step 7-D §5.3: bridge-mode trip-position reconciliation. Apply an
-        # authoritative MCU step counter snapshot (from a kalico_endstop
-        # trip event) directly via _set_mcu_position and retain it for
-        # get_past_mcu_position().
+        # Apply an authoritative MCU step-counter snapshot (from a trip event)
+        # and retain it for get_past_mcu_position().
         step_count = int(step_count)
         self._bridge_last_trip_step_count = step_count
         self._set_mcu_position(step_count)
@@ -247,7 +227,6 @@ class MCU_stepper:
         return mcu_pos * self._step_dist - self._mcu_position_offset
 
     def dump_steps(self, count, start_clock, end_clock):
-        # Bridge: step emission lives in Rust, no C stepcompress to drain.
         return ([], 0)
 
     def get_stepper_kinematics(self):
@@ -259,7 +238,6 @@ class MCU_stepper:
         return old_sk
 
     def note_homing_end(self):
-        # Bridge: homing handled in Rust.
         return
 
     def get_trapq(self):
@@ -274,25 +252,19 @@ class MCU_stepper:
         self._active_callbacks.append(cb)
 
     def generate_steps(self, flush_time):
-        # Bridge: step generation lives in Rust. Drain the active-callback
-        # list so callers that registered one don't leak references; the
-        # Rust side already signals these via its own activity surface, so
-        # we don't need to fire them here.
+        # Drain the active-callback list so registrants don't leak references;
+        # the Rust side fires them via its own activity surface.
         if self._active_callbacks:
             self._active_callbacks = []
 
     def is_active_axis(self, axis):
-        # Match against the axes recorded at setup_itersolve time. Strings
-        # like b"+x" / b"-y" (corexy) are scanned membership-style so a
-        # query for "x" returns True on either sign.
+        # Membership scan so a query for "x" matches b"+x" / b"-x".
         return axis.encode() in self._bridge_active_axes
 
 
-# Helper code to build a stepper object from a config section
 def PrinterStepper(config, units_in_radians=False):
     printer = config.get_printer()
     name = config.get_name()
-    # Stepper definition
     ppins = printer.lookup_object("pins")
     step_pin = config.get("step_pin")
     step_pin_params = ppins.lookup_pin(step_pin, can_invert=True)
@@ -313,19 +285,15 @@ def PrinterStepper(config, units_in_radians=False):
         step_pulse_duration,
         units_in_radians,
     )
-    # Phase-stepping mode: read from config; default off (StepTime).
-    # The capability check against the MCU's identify bitmap is deferred to
-    # connect time (MotionToolhead._configure_axes_per_mcu), when the MCU caps
-    # are known.  Config-parse runs before MCU identify.
+    # Capability check is deferred to connect time (the MCU caps aren't known
+    # until after identify, which runs after config-parse).
     mcu_stepper.phase_stepping = config.getboolean("phase_stepping", False)
-    # Register with helper modules
     for mname in ["stepper_enable", "force_move", "motion_report"]:
         m = printer.load_object(config, mname)
         m.register_stepper(config, mcu_stepper)
     return mcu_stepper
 
 
-# Parse stepper gear_ratio config parameter
 def parse_gear_ratio(config, note_valid):
     gear_ratio = config.getlists(
         "gear_ratio",
@@ -341,11 +309,8 @@ def parse_gear_ratio(config, note_valid):
     return result
 
 
-# Obtain "step distance" information from a config section
 def parse_step_distance(config, units_in_radians=None, note_valid=False):
-    # Check rotation_distance and gear_ratio
     if units_in_radians is None:
-        # Caller doesn't know if units are in radians - infer it
         rd = config.get("rotation_distance", None, note_valid=False)
         gr = config.get("gear_ratio", None, note_valid=False)
         units_in_radians = rd is None and gr is not None
@@ -356,7 +321,6 @@ def parse_step_distance(config, units_in_radians=None, note_valid=False):
         rotation_dist = config.getfloat(
             "rotation_distance", above=0.0, note_valid=note_valid
         )
-    # Check microsteps and full_steps_per_rotation
     microsteps = config.getint("microsteps", minval=1, note_valid=note_valid)
     full_steps = config.getint(
         "full_steps_per_rotation", 200, minval=1, note_valid=note_valid
@@ -375,8 +339,6 @@ def parse_step_distance(config, units_in_radians=None, note_valid=False):
 ######################################################################
 
 
-# A motor control "rail" with one (or more) steppers and one (or more)
-# endstops.
 class PrinterRail:
     def __init__(
         self,
@@ -385,7 +347,6 @@ class PrinterRail:
         default_position_endstop=None,
         units_in_radians=False,
     ):
-        # Primary stepper and endstop
         self.stepper_units_in_radians = units_in_radians
         self.steppers = []
         self.endstops = []
@@ -396,7 +357,6 @@ class PrinterRail:
         self.get_name = mcu_stepper.get_name
         self.get_commanded_position = mcu_stepper.get_commanded_position
         self.calc_position_from_coord = mcu_stepper.calc_position_from_coord
-        # Primary endstop position
         mcu_endstop = self.endstops[0][0]
         if hasattr(mcu_endstop, "get_position_endstop"):
             self.position_endstop = mcu_endstop.get_position_endstop()
@@ -412,7 +372,6 @@ class PrinterRail:
             endstop_pin is not None and ":virtual_endstop" in endstop_pin
         )
 
-        # Axis range
         if need_position_minmax:
             self.position_min = config.getfloat("position_min", 0.0)
             self.position_max = config.getfloat(
@@ -429,7 +388,6 @@ class PrinterRail:
                 "position_endstop in section '%s' must be between"
                 " position_min and position_max" % config.get_name()
             )
-        # Homing mechanics
         self.use_sensorless_homing = config.getboolean(
             "use_sensorless_homing", endstop_is_virtual
         )
@@ -530,19 +488,15 @@ class PrinterRail:
         stepper = PrinterStepper(config, self.stepper_units_in_radians)
         self.steppers.append(stepper)
         if self.endstops and config.get("endstop_pin", None) is None:
-            # No endstop defined - use primary endstop
             self.endstops[0][0].add_stepper(stepper)
             return
         endstop_pin = config.get("endstop_pin")
         printer = config.get_printer()
         ppins = printer.lookup_object("pins")
         pin_params = ppins.parse_pin(endstop_pin, True, True)
-        # Normalize pin name
         pin_name = "%s:%s" % (pin_params["chip_name"], pin_params["pin"])
-        # Look for already-registered endstop
         endstop = self.endstop_map.get(pin_name, None)
         if endstop is None:
-            # New endstop, register it
             mcu_endstop = ppins.setup_pin("endstop", endstop_pin)
             self.endstop_map[pin_name] = {
                 "endstop": mcu_endstop,
@@ -582,7 +536,6 @@ class PrinterRail:
             stepper.set_position(coord)
 
 
-# Wrapper for dual stepper motor support
 def LookupMultiRail(
     config,
     need_position_minmax=True,

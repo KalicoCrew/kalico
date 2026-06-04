@@ -1,13 +1,7 @@
-//! Endstop arm/trip primitive for Step 7-D homing.
-//!
-//! Step 1 is pure Rust: firmware pin binding and bridge serialization are
-//! layered on later. The global single-arm slot is intentionally represented
-//! with atomics only because the runtime crate denies unsafe code.
-
-// Atomic types from `portable_atomic` so that RMW operations (`swap` on
-// `TRIP_EVENT_QUEUED`, `compare_exchange` on `ARM.state`) compile on
-// ARMv6-M (STM32G0), which has no LDREX/STREX. On thumbv7em the codegen
-// is identical to `core::sync::atomic`. `Ordering` stays from `core`.
+// `portable_atomic` so that RMW operations (`swap` on `TRIP_EVENT_QUEUED`,
+// `compare_exchange` on `ARM.state`) compile on ARMv6-M (STM32G0), which
+// has no LDREX/STREX. On thumbv7em the codegen is identical to
+// `core::sync::atomic`. `Ordering` stays from `core`.
 use core::sync::atomic::Ordering;
 use portable_atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32};
 
@@ -109,8 +103,6 @@ impl SourceConfig {
     };
 }
 
-/// One source slot. Configuration and ISR-private latch state are atomic so the
-/// global arm can stay safe Rust/no-std without a critical-section dependency.
 #[derive(Debug)]
 pub struct Source {
     pub kind: AtomicU8,
@@ -188,25 +180,16 @@ pub struct Arm {
     pub stepper_count: AtomicU8,
     pub stepper_oids: [AtomicU8; MAX_STEPPERS],
     pub snapshot: TripSnapshot,
-    // --- Software-source deadline state ---
-    /// `true` once the first `tick()` past `arm_clock` has set
-    /// `deadline_clock`. Cleared to `false` on each `arm()`.
     pub deadline_active: AtomicBool,
-    /// Seqlock version for `deadline_clock` lo/hi. Writers (ISR initial
-    /// activation AND command-handler `extend_deadline`) bump to odd
+    /// Seqlock version for `deadline_clock` lo/hi. Writers bump to odd
     /// before writing, then to even after. The ISR reader skips the
     /// expiry check when it catches a mid-write (returns `Continue`
     /// instead of spinning — spinning would deadlock since the ISR
     /// can't yield to the command handler it preempted).
     pub deadline_version: AtomicU32,
-    /// Low 32 bits of `deadline_clock` (the MCU clock value at which the
-    /// deadline expires if no `extend_deadline` call has refreshed it).
     pub deadline_clock_lo: AtomicU32,
-    /// High 32 bits of `deadline_clock`.
     pub deadline_clock_hi: AtomicU32,
-    /// Low 32 bits of `grant_ticks` (window length in MCU clock ticks).
     pub grant_ticks_lo: AtomicU32,
-    /// High 32 bits of `grant_ticks`.
     pub grant_ticks_hi: AtomicU32,
 }
 
@@ -290,7 +273,6 @@ impl Arm {
             .store((ticks >> 32) as u32, Ordering::Release);
     }
 
-    /// Returns `true` if any active source has `SourceKind::Software`.
     fn has_software_source(&self) -> bool {
         let count = usize::from(self.source_count.load(Ordering::Acquire));
         self.sources
@@ -364,9 +346,7 @@ pub struct ArmMsg {
     pub stepper_count: u8,
     pub stepper_oids: [u8; MAX_STEPPERS],
     /// Deadline window length in MCU clock ticks, used when at least one
-    /// source has `SourceKind::Software`. Computed by the C command handler
-    /// from the MCU's clock frequency (e.g. `freq / 20` for a 50 ms window).
-    /// Zero means no Software sources are present and the field is ignored.
+    /// source has `SourceKind::Software`. Zero means no Software sources.
     pub grant_ticks: u64,
 }
 
@@ -516,7 +496,6 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
     ARM.snapshot.version.store(0, Ordering::Release);
     ARM.snapshot.step_count_count.store(0, Ordering::Release);
 
-    // Initialise Software-source deadline state.
     ARM.deadline_active.store(false, Ordering::Release);
     ARM.deadline_version.store(0, Ordering::Release);
     ARM.deadline_clock_lo.store(0, Ordering::Release);
@@ -525,10 +504,6 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
 
     ARM.state.store(ArmState::Armed as u8, Ordering::Release);
 
-    // Synchronous AlreadyTripped: if any TripImmediately source is
-    // already asserted at arm time, publish a snapshot immediately and
-    // return AlreadyTripped so the host can complete the homing terminal
-    // synchronously without waiting for the first ISR tick.
     let source_count = usize::from(msg.source_count);
     for (idx, cfg) in msg.sources.iter().take(source_count).enumerate() {
         if cfg.policy != ArmPolicy::TripImmediately {
@@ -540,10 +515,7 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
         let pin_high = read_pin(cfg.gpio);
         let asserted = if cfg.active_high { pin_high } else { !pin_high };
         if asserted {
-            // Transition to Tripping → TrippedReady.
             ARM.state.store(ArmState::Tripping as u8, Ordering::Release);
-            // Publish snapshot with arm_clock as the trip clock (no
-            // actual MCU tick yet; best-effort timestamp).
             let empty_counts: &[i32] = &[];
             publish_snapshot(msg.arm_clock, idx as u8, empty_counts);
             ARM.state
@@ -594,8 +566,7 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
 
     let source_count = usize::from(ARM.source_count.load(Ordering::Acquire));
     for (idx, src) in ARM.sources.iter().take(source_count).enumerate() {
-        // Software sources have no GPIO pin: skip the GPIO polling loop
-        // entirely and handle them via the deadline check below.
+        // Software sources have no GPIO pin: skip to the deadline check below.
         if src.kind.load(Ordering::Acquire) == SourceKind::Software as u8 {
             continue;
         }
@@ -604,11 +575,6 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
         let pin_high = read_pin(gpio);
         let active_high = src.active_high.load(Ordering::Acquire);
         let asserted = if active_high { pin_high } else { !pin_high };
-        // Decode the policy byte. An unrecognised value (would require a
-        // wire-corruption or future firmware-vs-host version skew) maps
-        // conservatively to `TripImmediately` — that matches the previous
-        // implicit fall-through behaviour (the old `else if !asserted`
-        // arm) without depending on raw-discriminant comparisons.
         let policy = ArmPolicy::try_from(src.policy.load(Ordering::Acquire))
             .unwrap_or(ArmPolicy::TripImmediately);
 
@@ -684,22 +650,11 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
     tick_software_deadline(clock, stepper_counts)
 }
 
-/// Check (or open) the Software-source deadline window.
-///
-/// Called at the end of every [`tick`] when the arm is in the `Armed` state
-/// and has passed `arm_clock`. Handles two sub-cases:
-///
-/// - `deadline_active == false`: first tick past `arm_clock`; opens the
-///   initial window by writing `deadline_clock = clock + grant_ticks`.
-/// - `deadline_active == true && clock >= deadline_clock`: window expired;
-///   transitions `Armed → Tripping → TrippedReady` and returns
-///   [`TripAction::AbortNow`].
 fn tick_software_deadline(clock: u64, stepper_counts: &[i32]) -> TripAction {
     if !ARM.has_software_source() {
         return TripAction::Continue;
     }
     if !ARM.deadline_active.load(Ordering::Acquire) {
-        // First tick past arm_clock: open the initial window.
         let grant = ARM.grant_ticks();
         ARM.store_deadline_clock_seqlocked(clock.saturating_add(grant));
         ARM.deadline_active.store(true, Ordering::Release);
@@ -712,7 +667,6 @@ fn tick_software_deadline(clock: u64, stepper_counts: &[i32]) -> TripAction {
     if clock < deadline {
         return TripAction::Continue;
     }
-    // Deadline expired: attempt to freeze the segment.
     if ARM
         .state
         .compare_exchange(
@@ -732,25 +686,13 @@ fn tick_software_deadline(clock: u64, stepper_counts: &[i32]) -> TripAction {
     TripAction::Continue
 }
 
-/// Result type returned by [`software_trip`].
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum TripResult {
-    /// The arm was in the `Armed` state and has been transitioned to
-    /// `TrippedReady`. A `TripEvent` is now available via [`poll_trip`].
     Tripped,
-    /// The arm was not in the `Armed` state (already tripped, disarmed,
-    /// idle, …). The call is a no-op.
     NotArmed,
-    /// The provided `arm_id` does not match the currently-armed slot.
     WrongArmId,
 }
 
-/// Programmatically trip the currently-armed endstop from a C command
-/// handler (i.e. in response to the host sending a `runtime_software_trip`
-/// command).
-///
-/// `clock` is the current MCU clock value at call time (read via
-/// `timer_read_time()` in the C command handler).
 pub fn software_trip(arm_id: u32, clock: u64, stepper_counts: &[i32]) -> TripResult {
     if ARM.arm_id.load(Ordering::Acquire) != arm_id {
         return TripResult::WrongArmId;
@@ -773,18 +715,7 @@ pub fn software_trip(arm_id: u32, clock: u64, stepper_counts: &[i32]) -> TripRes
     TripResult::Tripped
 }
 
-/// Extend the Software-source deadline by one grant window from `clock`.
-///
-/// Called from the C command handler for `runtime_extend_deadline` when the
-/// host confirms the probe has not yet triggered and wants to keep the MCU
-/// segment running. Silently ignores calls when:
-/// - `arm_id` does not match the active arm, or
-/// - the deadline is not currently active (arm was never ticked past
-///   `arm_clock`, or the arm is already tripped/disarmed).
-///
-/// `clock` is the current MCU clock value at call time.
 pub fn extend_deadline(arm_id: u32, clock: u64) {
-    // Reject stale or mismatched calls.
     if ARM.arm_id.load(Ordering::Acquire) != arm_id {
         return;
     }

@@ -1,9 +1,3 @@
-//! `Transport` trait and `KalicoNativeTransport<C: Connection>` impl.
-//!
-//! Owns the connection bytes, runs the demuxer, dispatches schema-validated
-//! messages to in-flight calls + the events ring, and implements the
-//! reset-epoch state machine (§9).
-
 use std::collections::HashMap;
 use std::io;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -98,8 +92,6 @@ pub trait Transport: Send + Sync {
     fn subscribe_events(&self) -> Receiver<EventMessage>;
 }
 
-// In-flight call slot. The reactor sets either `response` or `reset_flag` and
-// signals the waiter via a single-shot bounded channel.
 struct PendingCall {
     notify: Sender<CallOutcome>,
 }
@@ -137,9 +129,6 @@ impl<C: Connection> std::fmt::Debug for KalicoNativeTransport<C> {
 }
 
 impl<C: Connection + 'static> KalicoNativeTransport<C> {
-    /// Build a new transport. Use the default `kalico_protocol::SCHEMA_HASH`
-    /// (currently the all-zero stub) and `PROTO_VERSION = 0x01`. Tests inject
-    /// their own via [`Self::with_schema_hash`].
     pub fn new(conn: C) -> Self {
         Self::with_schema_hash(conn, kalico_protocol::SCHEMA_HASH, PROTO_VERSION)
     }
@@ -168,18 +157,11 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
         self.inner.state.lock().unwrap().clone()
     }
 
-    /// Subscribe to epoch changes (Established / Changed / Faulted). Used
-    /// by motion-bridge to invalidate its slot pool view without polling.
     pub fn epoch_change_subscribe(&self) -> Receiver<EpochChange> {
         self.inner.epoch_rx.clone()
     }
 
-    /// Drive identification: send Identify, await `IdentifyResponse`, validate.
-    /// On success transitions to `Identified`; on mismatch transitions to
-    /// `Faulted`.
     pub fn identify(&self, timeout: Duration) -> Result<u32, TransportError> {
-        // Mark Unidentified before sending so a racing reset detection from a
-        // prior session can't keep us in Identified.
         *self.inner.state.lock().unwrap() = ConnectionState::Unidentified;
 
         let cid = self
@@ -190,15 +172,9 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
         let frame = encode_frame(CHANNEL_CONTROL, &payload);
         self.inner.conn.lock().unwrap().write_all(&frame)?;
 
-        // Pump RX bytes until we see an IdentifyResponse, the deadline fires,
-        // or we transition to Faulted.
         let deadline = Instant::now() + timeout;
         loop {
             self.pump_rx_once()?;
-            // Check pending bootstrap response: bootstrap responses arrive
-            // through the events bus pre-Identified or via the demuxer; we
-            // dispatch them inline in `pump_rx_once`. But the actual decoded
-            // result is stored in `state`.
             match &*self.inner.state.lock().unwrap() {
                 ConnectionState::Identified { reset_epoch } => return Ok(*reset_epoch),
                 ConnectionState::Faulted(s) => {
@@ -213,9 +189,6 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
         }
     }
 
-    /// Single iteration of the RX reactor: read whatever bytes are available,
-    /// drive the demuxer, dispatch resulting frames. Public for tests; in
-    /// production a dedicated thread loops on this.
     pub fn pump_rx_once(&self) -> Result<(), TransportError> {
         let mut buf = [0u8; 4096];
         let n = self.inner.conn.lock().unwrap().read(&mut buf)?;
@@ -238,12 +211,7 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
 
     fn dispatch_frame(&self, f: Frame) {
         match f {
-            Frame::Klipper(_) => {
-                // Klipper bytes are not this transport's concern; in
-                // production they're forwarded to kalico-host-rt's parser.
-                // Here we drop them (tests inject only kalico bytes through
-                // the kalico-native demuxer).
-            }
+            Frame::Klipper(_) => {}
             Frame::Kalico { channel, payload } => {
                 self.dispatch_kalico(channel, &payload);
             }
@@ -256,13 +224,10 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
             return;
         };
         let kind_raw = header.kind_raw;
-        // Bootstrap dispatch: handle IdentifyResponse outside the schema.
         if kind_raw == MessageKind::IdentifyResponse as u16 {
             self.handle_identify_response(payload);
             return;
         }
-        // For every other message we need to be Identified. If a stale frame
-        // arrives mid-reset, drop it.
         if !matches!(
             *self.inner.state.lock().unwrap(),
             ConnectionState::Identified { .. }
@@ -283,7 +248,6 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
             return;
         }
 
-        // Control-channel response: route to pending call by correlation_id.
         if header.correlation_id == 0 {
             log::warn!("control-channel response with correlation_id=0 (kind 0x{kind_raw:04x})");
             return;
@@ -331,7 +295,6 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
             ));
             return;
         }
-        // Success.
         let new_epoch = resp.reset_epoch;
         let prior = std::mem::replace(
             &mut *self.inner.state.lock().unwrap(),
@@ -356,7 +319,6 @@ impl<C: Connection + 'static> KalicoNativeTransport<C> {
     fn fault(&self, msg: String) {
         log::error!("kalico transport faulted: {msg}");
         *self.inner.state.lock().unwrap() = ConnectionState::Faulted(msg.clone());
-        // Drain pending and notify epoch subscribers.
         let drained: Vec<PendingCall> = {
             let mut p = self.inner.pending.lock().unwrap();
             p.drain().map(|(_, v)| v).collect()
@@ -383,7 +345,6 @@ impl<C: Connection + 'static> Transport for KalicoNativeTransport<C> {
         body: &[u8],
         timeout: Duration,
     ) -> Result<(MessageKind, Vec<u8>), TransportError> {
-        // Refuse unless Identified.
         let tag = self.inner.state.lock().unwrap().tag();
         if tag != ConnectionStateTag::Identified {
             return Err(TransportError::NotIdentified(tag));
@@ -392,7 +353,6 @@ impl<C: Connection + 'static> Transport for KalicoNativeTransport<C> {
             .inner
             .next_correlation_id
             .fetch_add(1, Ordering::SeqCst);
-        // Allocate the wait slot before sending so a fast response can't race past it.
         let (tx, rx) = bounded::<CallOutcome>(1);
         self.inner
             .pending
@@ -400,7 +360,6 @@ impl<C: Connection + 'static> Transport for KalicoNativeTransport<C> {
             .unwrap()
             .insert(cid, PendingCall { notify: tx });
 
-        // Build payload: per-message header + caller body.
         let mut payload = Vec::with_capacity(7 + body.len());
         payload.extend_from_slice(&encode_message_header(
             msg_type,
@@ -413,15 +372,12 @@ impl<C: Connection + 'static> Transport for KalicoNativeTransport<C> {
 
         let deadline = Instant::now() + timeout;
         loop {
-            // Pump the reactor so responses get dispatched even without a
-            // background thread (tests run single-threaded).
             self.pump_rx_once()?;
             match rx.recv_timeout(Duration::from_millis(1)) {
                 Ok(CallOutcome::Response { kind, body }) => return Ok((kind, body)),
                 Ok(CallOutcome::Reset) => return Err(TransportError::Reset),
                 Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                     if Instant::now() >= deadline {
-                        // Cancel the slot.
                         self.inner.pending.lock().unwrap().remove(&cid);
                         return Err(TransportError::Timeout(timeout));
                     }
@@ -447,7 +403,6 @@ impl<C: Connection + 'static> Transport for KalicoNativeTransport<C> {
         if tag != ConnectionStateTag::Identified {
             return Err(TransportError::NotIdentified(tag));
         }
-        // correlation_id = 0 on events per §7.2.
         let mut payload = Vec::with_capacity(7 + body.len());
         payload.extend_from_slice(&encode_message_header(msg_type, MESSAGE_VERSION_DEFAULT, 0));
         payload.extend_from_slice(body);

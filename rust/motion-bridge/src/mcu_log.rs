@@ -1,13 +1,3 @@
-//! Re-emit closure factory for MCU structured-log events.
-//!
-//! `build_mcu_log_hook` constructs the closure injected into
-//! `EventDispatcher::set_mcu_log_hook` (via `KalicoHostIo::set_mcu_log_hook`).
-//! It captures:
-//!   - `Arc<RwLock<ClockSyncEstimator>>` — shared with the clock-sync thread
-//!   - `Arc<Mutex<RotatingJsonlWriter>>` — dedicated NDJSON writer for
-//!     `events/<source>.jsonl` (separate from `host-rust.jsonl`)
-//!   - `source: String` — `"mcu-h7"` or `"mcu-f4"`
-
 use std::io::Write;
 use std::sync::{Arc, Mutex, RwLock};
 
@@ -23,43 +13,21 @@ use crate::logging::context::load_context;
 use crate::logging::schema::format_time;
 use crate::logging::writer::RotatingJsonlWriter;
 
-/// Map a raw `u8` MCU level to a `&'static str` for the schema `level` field.
-///
-/// Any unrecognised value is treated as `"error"` (fail-loudly posture).
 fn mcu_level_str(level: u8) -> &'static str {
     match level {
         0 => "trace",
         1 => "debug",
         2 => "warn",
-        // 3 and all unrecognised levels map to "error".
         _ => "error",
     }
 }
 
-/// Build the re-emit closure for MCU structured-log events.
-///
-/// The returned closure is `Fn(McuLogEvent) + Send + Sync + 'static` and can be
-/// passed directly to [`kalico_host_rt::host_io::KalicoHostIo::set_mcu_log_hook`].
-///
-/// # Arguments
-///
-/// * `clock`  — shared clock-sync estimator (write-locked by the clock-sync
-///   thread; read-locked here for `wall_time_at_mcu`).
-/// * `writer` — dedicated rotating NDJSON writer for `events/<source>.jsonl`.
-/// * `source` — value written into the `source` field, e.g. `"mcu-h7"`.
-///
-/// # Timestamp fallback
-///
-/// When the estimator has no samples yet (`wall_time_at_mcu` returns `None`),
-/// the closure reconstructs an approximate wall-clock from `host_recv`
-/// (the `Instant` stamped at decode time) and sets `time_estimated = true`.
 pub fn build_mcu_log_hook(
     clock: Arc<RwLock<ClockSyncEstimator>>,
     writer: Arc<Mutex<RotatingJsonlWriter>>,
     source: String,
 ) -> impl Fn(McuLogEvent) + Send + Sync + 'static {
     move |e: McuLogEvent| {
-        // 1. Resolve timestamp.
         let (time_str, time_estimated) = {
             let guard = clock
                 .read()
@@ -67,8 +35,6 @@ pub fn build_mcu_log_hook(
             if let Some((dt, estimated)) = guard.wall_time_at_mcu(e.mcu_tick) {
                 (format_time(dt), estimated)
             } else {
-                // No clock-sync samples yet — fall back to host_recv.
-                // `host_recv` is an `Instant`; convert via SystemTime.
                 let elapsed = e.host_recv.elapsed();
                 let sys = std::time::SystemTime::now()
                     .checked_sub(elapsed)
@@ -77,12 +43,10 @@ pub fn build_mcu_log_hook(
             }
         };
 
-        // 2. Resolve names.
         let subsys_name = subsystem_name(e.subsystem);
         let (event_name, template) = event_info(e.subsystem, e.event);
         let msg = compose_msg(template, e.args[0], e.args[1]);
 
-        // 3. Resolve fault code (sign-wrapped u16; 0 means no fault code).
         let (code_val, code_name_val): (Option<u16>, Option<&'static str>) = if e.code != 0 {
             let name = FaultCode::from_u16(e.code)
                 .map(FaultCode::code_name)
@@ -92,10 +56,8 @@ pub fn build_mcu_log_hook(
             (None, None)
         };
 
-        // 4. Stamp session context.
         let ctx = load_context();
 
-        // 5. Compose the NDJSON record.
         let mut rec = Map::new();
         rec.insert("_time".into(), Value::String(time_str));
         rec.insert("_msg".into(), Value::String(msg));
@@ -128,14 +90,10 @@ pub fn build_mcu_log_hook(
             .unwrap_or_else(|err| format!("{{\"_msg\":\"mcu-log serialize error: {err}\"}}"));
         line.push('\n');
 
-        // 6. Write to the dedicated MCU JSONL file.
         let mut w = writer
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Err(err) = w.write_all(line.as_bytes()) {
-            // Fail-loudly on write error. Use eprintln because this closure
-            // runs on the reactor dispatch thread where the tracing subscriber
-            // may not be safely reachable.
             eprintln!("[mcu-log] JSONL write failed: {err}");
         }
     }

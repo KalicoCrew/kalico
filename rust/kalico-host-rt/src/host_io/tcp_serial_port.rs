@@ -1,22 +1,3 @@
-//! `TcpSerialPort` — a `serialport::SerialPort` adapter backed by a `TcpStream`.
-//!
-//! Renode exposes the simulated USART2 as a TCP listener (see
-//! `tools/sim/h723_sim.resc`'s `CreateServerSocketTerminal 3334`). This adapter
-//! lets `KalicoHostIo` connect to it without modifying the SerialFrameIo /
-//! reactor stack — the port reads/writes look like a normal serial connection.
-//!
-//! Only `read`, `write`, `flush`, `set_timeout`, and `timeout` are exercised
-//! by the production reactor. Everything else (RTS, parity, baud, break) is
-//! a no-op or returns `NotSupported`, matching Renode's UART model which
-//! ignores those settings.
-//!
-//! ## Test-only
-//!
-//! This adapter is shipped as part of the host runtime so tests in other
-//! crates (`motion-bridge`, etc.) can wire `KalicoHostIo` against Renode
-//! without depending on platform-specific PTY plumbing. Production code
-//! uses real `/dev/ttyACM*` paths via `open_with_config`.
-
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
@@ -32,23 +13,13 @@ pub struct TcpSerialPort {
 }
 
 impl TcpSerialPort {
-    /// Connect to `addr` (host:port or `127.0.0.1:3334`-style). Disables
-    /// Nagle so command writes go on the wire immediately (the Klipper
-    /// wire protocol is latency-sensitive; coalescing small frames adds
-    /// 40 ms+ on macOS).
     pub fn connect(addr: &str) -> Result<Self, TransportError> {
         let stream = TcpStream::connect(addr).map_err(|e| {
             TransportError::Io(io::Error::other(format!(
                 "TcpSerialPort::connect({addr}): {e}"
             )))
         })?;
-        // Note: NOT setting TCP_NODELAY. pyserial's `socket://` URL handler
-        // doesn't either, and the Renode TCP bridge appears sensitive to
-        // small-batch writes when Nagle is off — sub-millisecond identify-
-        // NAK retries flood the firmware's USART2 RX FIFO faster than the
-        // 1µs simulation quantum can drain it (Renode's USART model
-        // overruns on >1 byte/µs sustained, dropping bytes silently).
-        // Default read timeout: 100 ms, matching `SerialFrameIo::new` callers.
+        // Not setting TCP_NODELAY: Renode's USART2 TCP bridge overruns when Nagle is off.
         let default_timeout = Duration::from_millis(100);
         stream
             .set_read_timeout(Some(default_timeout))
@@ -57,12 +28,7 @@ impl TcpSerialPort {
                     "TcpSerialPort: set_read_timeout: {e}"
                 )))
             })?;
-        // Long write timeout — Renode's TCP server can stall briefly under
-        // heavy traffic but never refuses inbound. A 100 ms write timeout
-        // (the read default) caused identify-NAK loops to abort mid-frame:
-        // partial-frame remnant on the firmware's USART RX buffer wedged
-        // the demuxer until the next chunk completed an unrelated frame
-        // boundary.
+        // 5 s write timeout: Renode stalls under heavy load but never refuses inbound; 100 ms aborted mid-frame.
         stream
             .set_write_timeout(Some(Duration::from_secs(5)))
             .map_err(|e| {
@@ -85,21 +51,10 @@ impl Read for TcpSerialPort {
 }
 
 impl Write for TcpSerialPort {
-    // Throttled chunk-write. Renode 1.16's STM32F7_USART model accepts bytes
-    // from the TCP terminal connector at TCP arrival rate — no baud-rate gating
-    // — and Kalico's firmware uses non-FIFO USART2 mode (1-byte RDR). When the
-    // host sends a 700+ byte LoadCurve frame in one TCP write, the USART model
-    // calls WriteChar() back-to-back faster than the CPU's USART2_IRQHandler
-    // can drain RDR, raising ORE on every byte after the first. OVRDIS in CR3
-    // would tell the silicon to keep the byte despite ORE, but Renode 1.16
-    // doesn't implement that bit (logs `Unhandled bits: [12]` on CR3 write).
-    //
-    // Tunable via env vars for diagnostic iteration:
-    //   KALICO_TCP_WRITE_CHUNK  = bytes per chunk before the inter-chunk pause
-    //                            (default 1 — most conservative)
-    //   KALICO_TCP_WRITE_DELAY_US = inter-chunk pause in microseconds
-    //                               (default 100 — 7.4 ms per 744 B LoadCurve)
-    // Short frames (< chunk) bypass the pause entirely.
+    // Throttled chunk-write: Renode 1.16 STM32F7_USART raises ORE on every byte after the first
+    // when a large frame arrives faster than USART2_IRQHandler drains RDR. OVRDIS (CR3 bit 12)
+    // would suppress ORE but Renode 1.16 ignores it. Chunk/delay tunable via
+    // KALICO_TCP_WRITE_CHUNK / KALICO_TCP_WRITE_DELAY_US.
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         use std::sync::OnceLock;
         static CHUNK: OnceLock<usize> = OnceLock::new();
@@ -147,8 +102,6 @@ impl SerialPort for TcpSerialPort {
         Some(self.name.clone())
     }
 
-    // Renode UART ignores these — return plausible defaults so callers
-    // logging the values get something sensible.
     fn baud_rate(&self) -> serialport::Result<u32> {
         Ok(250_000)
     }
@@ -186,15 +139,7 @@ impl SerialPort for TcpSerialPort {
     }
 
     fn set_timeout(&mut self, timeout: Duration) -> serialport::Result<()> {
-        // TcpStream uses `None` to mean "block forever". 100 ms floor:
-        // macOS SO_RCVTIMEO with sub-ms durations sometimes returns
-        // immediately with WouldBlock before any bytes can land in the
-        // socket buffer (kernel scheduling vs. timeout resolution race),
-        // and intermittently rejects sub-10 ms values with EINVAL under
-        // syscall pressure. The reactor's per-poll deadline can drop to
-        // single-millisecond budgets during LoadCurve read-waits; clamp
-        // the OS-visible timeout to 100 ms so we get reliable reads, and
-        // dedupe identical-value re-sets to keep setsockopt rate low.
+        // 100 ms floor: macOS SO_RCVTIMEO rejects sub-10 ms values under syscall pressure (EINVAL).
         let effective = timeout.max(Duration::from_millis(100));
         if effective == self.timeout {
             return Ok(());
@@ -205,12 +150,6 @@ impl SerialPort for TcpSerialPort {
                 format!("TcpSerialPort: set_read_timeout: {e}"),
             )
         })?;
-        // Write timeout intentionally left at the construction default (100 ms).
-        // The reactor's `SerialFrameIo::poll_frames_until` shrinks the read
-        // timeout to whatever budget remains — sometimes a single millisecond
-        // — but our write path (frame send + write_all) shouldn't be subject
-        // to the same per-poll shrinkage. A 100 ms write timeout is plenty
-        // for Renode's TCP bridge, which never throttles inbound bytes.
         self.timeout = effective;
         Ok(())
     }

@@ -1,14 +1,10 @@
-//! System-wide monotonic clock in nanoseconds (`CLOCK_MONOTONIC`).
+//! Nanoseconds on the host-wide `CLOCK_MONOTONIC` timeline.
 //!
-//! `std::time::Instant` reads `CLOCK_MONOTONIC` but its value is opaque and
-//! anchored per-process, so timestamps are NOT comparable between the endpoint
-//! and the test client. The raw `CLOCK_MONOTONIC` epoch is shared by every
-//! process on the host, so reading it directly gives both processes one common
-//! timeline — which is what makes `PushSegment.t_start`/`t_end` (absolute ns)
-//! meaningful across the socket.
+//! `std::time::Instant` is per-process; `CLOCK_MONOTONIC` is shared across
+//! processes on the same host, which is required for piece `start_time` values
+//! to be comparable between the host pump and this endpoint.
 #![allow(unsafe_code)]
 
-/// Nanoseconds on the host-wide `CLOCK_MONOTONIC` timeline.
 #[must_use]
 pub fn monotonic_ns() -> u64 {
     let mut ts = libc::timespec {

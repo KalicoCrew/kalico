@@ -1,6 +1,3 @@
-//! Layer 4 MCU runtime — 40 kHz hard-real-time ISR with stub NURBS evaluator.
-//! See `docs/superpowers/specs/2026-04-28-layer-4-mcu-framework-stub-design.md`.
-
 #![cfg_attr(not(feature = "host"), no_std)]
 #![deny(
     clippy::panic,

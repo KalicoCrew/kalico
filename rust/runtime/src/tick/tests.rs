@@ -1,12 +1,3 @@
-//! Non-tautological smoke tests for the tick module.
-//!
-//! The original `tick_module_compiles` test was an empty body — it only
-//! confirmed compilation, not behaviour. Replaced here with a minimal
-//! assertion that `Engine::new` constructs a valid, idle engine with the
-//! expected sample-period configuration.
-
-// Test code: integer constant arithmetic (round-to-nearest cycles) is the
-// intended expression here; the production integer_division deny doesn't apply.
 #![allow(clippy::integer_division)]
 
 use crate::clock::TEST_ONLY_TICK_RATE_HZ;
@@ -18,7 +9,7 @@ const CLOCK_FREQ: u32 = 520_000_000;
 /// with the correct `sample_period_cycles`:
 ///   `cycles = round(clock_freq / sample_rate)`.
 ///
-/// This guards against the sample-period computation being zeroed or
+/// Guards against the sample-period computation being zeroed or
 /// misconfigured, which would silently disable the fault-tolerance check
 /// in `get_position_and_velocity` (the `> 2 * sample_period_cycles` guard
 /// degenerates to `> 0` when `sample_period_cycles == 0`).

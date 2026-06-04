@@ -1,4 +1,4 @@
-//! Single-thread poll-reactor. Spec §3.7.
+//! Single-thread poll-reactor.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -35,7 +35,6 @@ pub struct Reactor {
     pub(crate) status_snapshot: Arc<ArcSwap<StatusEvent>>,
     pub(crate) event_dispatcher: EventDispatcher,
 
-    // 64-bit absolute sequence counters. Per spec §3.1 / serialqueue.c:660-666.
     pub(crate) send_seq: u64,
     pub(crate) receive_seq: u64,
     pub(crate) last_ack_seq: u64,
@@ -46,92 +45,23 @@ pub struct Reactor {
 
     pub(crate) state: ReactorState,
 
-    /// 2026-05-17 wedge-detection: distinguishes the "graceful shutdown"
-    /// Closed transition (driven by `ReactorCommand::Shutdown` from
-    /// `KalicoHostIo::drop` on process exit) from the "unexpected IO
-    /// fault" Closed transition (transport_closed_on_io_fault). Set
-    /// `true` only in the Shutdown handler. The thread-exit hook in
-    /// `KalicoHostIo::open_with_port` reads this AFTER `reactor.run()`
-    /// returns; if `false` (we exited due to a fault), it aborts the
-    /// process so klippy crashes cleanly instead of silently
-    /// pretending-to-be-up with a dead MCU FD.
     pub(crate) closed_via_shutdown: bool,
 
     pub(crate) pending_host_fault: Option<FaultEvent>,
 
     pub(crate) pending_submissions: VecDeque<PendingSubmission>,
 
-    /// Backpressure-respecting fire-and-forget queue. When the unacked window
-    /// is full, fire-and-forget payloads are enqueued here instead of dropped,
-    /// then drained alongside `pending_submissions` once the window opens.
-    /// See spec §6.0 in `2026-05-04-incremental-curve-upload-design.md`.
     pub(crate) pending_fire_and_forget: VecDeque<Vec<u8>>,
-
-    /// FIFO order for pending submissions and fire-and-forget frames. Klipper
-    /// config relies on strict wire order: a response-bearing barrier such as
-    /// `get_config` must not overtake earlier fire-and-forget config frames.
     pub(crate) pending_outbound_order: VecDeque<PendingOutboundKind>,
-
-    /// First-observed instant of a phantom `Ok(0)` from `port.read`.
-    /// Per spec §3.11, treat as Closed only if it persists past
-    /// `ZERO_BYTE_DEBOUNCE`. Cleared on any non-zero read.
     pub(crate) zero_byte_first_seen: Option<Instant>,
-
-    /// Most recent moment `poll_serial` saw bytes-from-the-wire (Frames
-    /// outcome, with or without complete frames). Used to gate the
-    /// `MAX_RETRY_COUNT`-driven Closed escalation in `write_retransmit`
-    /// — if the MCU is still actively emitting frames (e.g. periodic
-    /// kalico_status at 10 Hz, or responses to other in-flight commands),
-    /// we should not give up on a specific unacked entry just because its
-    /// ACK got dropped by the firmware's 320-byte transmit_buf overflow.
-    /// Closed only fires when retry exhaustion coincides with genuine
-    /// MCU silence past `MCU_SILENCE_FOR_CLOSE`.
     pub(crate) last_recv_time: Instant,
-
-    /// Most recent moment `write_frame` completed a successful port write.
-    /// Used alongside `last_recv_time` at the disconnect site to distinguish
-    /// "MCU went quiet while we were still sending" (host-side write activity
-    /// present, no inbound bytes) from "both directions dropped simultaneously"
-    /// (USB-CDC link collapse) vs "we stopped writing before the disconnect"
-    /// (idle / backpressure scenario). Initialised to `clock.now()` at
-    /// construction; updated in `write_frame` on every successful `io.write_all`.
     pub(crate) last_write_time: Instant,
-
-    /// Count of consecutive `PhantomZero` outcomes from `poll_serial` (one
-    /// per reactor tick ≈ 1 ms per count). Reset to 0 on any non-zero read
-    /// (Frames or Timeout). Surfaced in the `[usb-drop]` diagnostic log line
-    /// so the difference between "always zero" and "wedged at 0 for 100 ticks
-    /// then suddenly Err" is visible without doing arithmetic on timestamps.
     pub(crate) zero_byte_consec: u32,
-
-    /// Injected clock seam (spec §2.3). Routes `Instant::now()` so tests
-    /// can deterministically advance time via `MockClock`.
     pub(crate) clock: Arc<dyn Clock>,
-
-    /// Optional passthrough router for klippy bridge integration. When
-    /// `Some`, passthrough entries are emitted alongside typed commands
-    /// using the same wire framing and sequence numbers.
     pub(crate) passthrough_router: Option<PassthroughRouter>,
-
-    /// Maps wire sequence numbers to `(McuHandle, NotifyId)` so inbound
-    /// responses can be routed back through the passthrough router's
-    /// `dispatch_response`. Entries are inserted when a notify-bearing
-    /// passthrough entry is emitted and removed when the response arrives
-    /// or the entry is acked.
     pub(crate) passthrough_notify_map: std::collections::HashMap<u64, (McuHandle, NotifyId)>,
-
-    /// The MCU handle that this reactor serves. Set when the passthrough
-    /// router is installed. Phase 1 has one reactor per MCU.
     pub(crate) passthrough_mcu: Option<McuHandle>,
-
-    // ── Phase C-B: kalico-native transport state ───────────────────────
-    /// Pending kalico calls / identify state. Stream demuxing now lives
-    /// inside `io: SerialFrameIo`.
     pub(crate) kalico_state: KalicoNativeState,
-
-    /// Frame interceptor table. Callbacks registered here fire on the
-    /// reactor thread before an unsolicited frame is forwarded to the
-    /// `RuntimeEvent` dispatcher. Keyed by `(msg_name, oid)`.
     pub(crate) interceptors: crate::host_io::interceptor::InterceptorTable,
 }
 
@@ -225,10 +155,6 @@ impl Reactor {
         }
     }
 
-    /// Test-only constructor that wraps a raw `Box<dyn SerialPort>` in a
-    /// `SerialFrameIo` internally. Lets the existing test fixtures and
-    /// harnesses keep using bespoke `SerialPort` implementations without
-    /// each callsite having to know about `SerialFrameIo`.
     #[cfg(any(test, feature = "test-harness"))]
     pub fn new_for_tests(
         port: Box<dyn serialport::SerialPort>,
@@ -252,13 +178,7 @@ impl Reactor {
         )
     }
 
-    /// Single chokepoint for all wire writes. Per spec §3.7.
     pub(crate) fn write_frame(&mut self, frame: &[u8]) -> Result<(), TransportError> {
-        // Diag: trace write durations and errors. Every write is logged with
-        // a monotonic sequence number so we can correlate against the MCU
-        // diag's rxflvl_n. If write_n grows during the wedge but rxflvl_n
-        // stays frozen, the bytes left the host but never reached the MCU.
-        // If write_n also freezes, the reactor itself is starving.
         use std::sync::atomic::{AtomicU64, Ordering};
         static WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
         let seq = WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
@@ -278,8 +198,6 @@ impl Reactor {
             self.last_write_time = std::time::Instant::now();
         }
         let dt = t0.elapsed();
-        // Wedge-isolation: log EVERY write unconditionally. Volume is
-        // bounded and we need full visibility around the bridge_call hang.
         tracing::trace!(
             subsystem = "mcu-comms",
             event = "frame_write",
@@ -297,15 +215,12 @@ impl Reactor {
 }
 
 impl Reactor {
-    /// Install a passthrough router for bridge integration. The `mcu` handle
-    /// identifies which MCU record in the router this reactor serves.
     pub fn set_passthrough_router(&mut self, router: PassthroughRouter, mcu: McuHandle) {
         self.passthrough_router = Some(router);
         self.passthrough_mcu = Some(mcu);
     }
 }
 
-/// Why a retransmit was triggered. C20 uses this to select the retransmit arm.
 #[derive(Debug, Clone, Copy)]
 pub enum RetransmitTrigger {
     NakDriven,
@@ -316,27 +231,13 @@ const PENDING_SUBMISSION_CEILING: usize = 256;
 pub const PENDING_FIRE_AND_FORGET_CEILING: usize = 256;
 const MAX_RETRY_COUNT: u32 = 8;
 
-/// Minimum wire silence (no Frames/errors batch observed from `poll_serial`)
-/// required, on top of `retry_count >= MAX_RETRY_COUNT`, before declaring
-/// the transport Closed via the retransmit-exhaustion path.
-///
-/// In production, MCU emits `kalico_status` at ~10 Hz, but under Renode (1 µs
-/// quantum, ~0.2× wall) a long-running command like LoadCurve can block
-/// `command_task` from yielding to status emits for 3-5 seconds wall — the
-/// MCU is alive and will eventually respond, it just can't talk while
-/// crunching. 10 seconds is well past the worst sim stall observed
-/// (3.2 s) yet still surfaces a genuinely hung MCU within a reasonable
-/// window. Port-level disconnects (USB unplug, TCP close) bypass this
-/// guard via the `PhantomZero` / `Err(_)` arms of `poll_serial` →
-/// `HostDisconnect` fault.
+// Retry exhaustion alone is not sufficient to declare Closed: under Renode
+// (1 µs quantum) a long-running MCU command can stall status emission for
+// several seconds wall while the wire remains healthy. Only close when
+// retry exhaustion coincides with genuine MCU silence.
 const MCU_SILENCE_FOR_CLOSE: Duration = Duration::from_secs(120);
 
 const MAX_SUBMITS_PER_ITER: usize = 4;
-// The reactor has no FD/eventfd wakeup for submissions sent over
-// `submission_rx`; planner dispatch can therefore be waiting on a
-// `kalico_call` while this thread is blocked in the serial read. Keep the
-// read poll bounded to 1 ms so producer LoadCurve/PushSegment calls are not
-// blocked by a coarse read timeout.
 const READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1);
 const ZERO_BYTE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -412,17 +313,11 @@ impl Reactor {
         Ok(())
     }
 
-    /// Send a command with no expected application-level response.
-    /// The frame is still tracked in the unacked window for wire-level
-    /// retransmit on NAK.
     pub(crate) fn dispatch_fire_and_forget(
         &mut self,
         payload: Vec<u8>,
     ) -> Result<(), TransportError> {
         if self.unacked_window.is_full() {
-            // Spec §6.0: enqueue instead of dropping. Drained by
-            // `drain_pending_submissions` once the window opens. Overflow of
-            // the queue itself is a host-side bug — surface as Backpressure.
             if self.pending_fire_and_forget.len() >= PENDING_FIRE_AND_FORGET_CEILING {
                 log::error!(
                     "dispatch_fire_and_forget: pending_fire_and_forget at ceiling ({}); refusing payload",
@@ -470,12 +365,8 @@ impl Reactor {
                         completion,
                         p.deadline,
                     ) {
-                        // The queued submission is already popped — propagate
-                        // the underlying transport error to the caller so it
-                        // doesn't surface as a `DispatcherTimeout`. On I/O
-                        // failure also stage a HostDisconnect fault and stop
-                        // draining; the run loop will observe the Closed state
-                        // on the next iteration.
+                        // Propagate the transport error itself, not a
+                        // misleading DispatcherTimeout.
                         let is_io = matches!(e, TransportError::Io(_));
                         let _ = p.completion.send(Err(e));
                         if is_io {
@@ -512,10 +403,6 @@ impl Reactor {
                             self.state = ReactorState::Closed;
                             return;
                         }
-                        // Non-I/O errors (e.g. window-full / Backpressure on re-enqueue):
-                        // drop the payload silently and continue. Backpressure here
-                        // means the queue is at the ceiling, which the dispatch path
-                        // already logged.
                         log::warn!(
                             "drain_pending_submissions: fire-and-forget redispatch error: {e}"
                         );
@@ -525,27 +412,19 @@ impl Reactor {
         }
     }
 
-    /// Drain passthrough entries from the router onto the wire. Called after
-    /// `drain_pending_submissions` in the tick loop so both typed commands
-    /// and passthrough entries share the same wire, sequence numbers, and
-    /// unacked window.
     pub(crate) fn drain_passthrough(&mut self) {
         let mcu = match self.passthrough_mcu {
             Some(m) => m,
             None => return,
         };
 
-        // Take the router out temporarily to avoid double-borrow of `self`.
         let mut router = match self.passthrough_router.take() {
             Some(r) => r,
             None => return,
         };
 
-        // Promote entries whose min_clock has been reached. Placeholder
-        // ack_clock=0 until Task 20 wires real clock_sync.
         let _ = router.promote_all(mcu, 0);
 
-        // Emit entries while window has room and router has entries.
         loop {
             if self.unacked_window.is_full() {
                 break;
@@ -583,8 +462,6 @@ impl Reactor {
                     retry_count: 0,
                 });
 
-            // Track notify association so inbound responses can be
-            // routed back through the router's dispatch_response.
             if !entry.notify_id().is_none() {
                 self.passthrough_notify_map
                     .insert(seq, (mcu, entry.notify_id()));
@@ -596,21 +473,11 @@ impl Reactor {
             }
         }
 
-        // Put the router back.
         self.passthrough_router = Some(router);
     }
 
-    // -------------------------------------------------------------------------
-    // Wire-protocol ack/nak handling — spec §3.5 (Codex finding #1 corrected).
-    // -------------------------------------------------------------------------
-
-    /// Advance `receive_seq` and pop newly-acked entries from the window.
-    ///
-    /// Special case: if the unacked window is empty this is the very first
-    /// response from the MCU (first-connection sentinel) — snap both counters.
     fn update_receive_seq(&mut self, rseq: u64) -> Result<(), TransportError> {
         if self.unacked_window.is_empty() {
-            // First-connection sentinel: snap both seqs.
             self.send_seq = rseq;
             self.receive_seq = rseq;
             return Ok(());
@@ -624,7 +491,6 @@ impl Reactor {
                 break;
             }
         }
-        // Inform the passthrough router's receive window about acked bytes.
         if let (Some(router), Some(mcu)) = (self.passthrough_router.as_mut(), self.passthrough_mcu)
         {
             for entry in &popped {
@@ -634,33 +500,18 @@ impl Reactor {
                     .saturating_sub(crate::host_io::wire::MESSAGE_MIN);
                 let _ = router.record_ack(mcu, payload_len as u64);
             }
-            // Notify map entries are NOT removed on ACK — an ACK only proves
-            // the MCU received the command, not that the response has arrived.
-            // Entries are removed when the response is dispatched
-            // (try_dispatch_passthrough_response) or on disconnect
-            // (flush_all_completions).
         }
         self.receive_seq = rseq;
         Ok(())
     }
 
-    /// Process one ack/nak nibble from the MCU.
-    ///
-    /// Algorithm (Codex finding #1 corrected order):
-    ///   Step 1 — advance receive_seq if rseq is new (forward progress).
-    ///   Step 2 — ack/nak discrimination:
-    ///     • last_ack_seq < rseq  → forward-progress ack; update last_ack_seq.
-    ///     • rseq > ignore_nak_seq AND window non-empty → duplicate-ack NAK.
-    ///     • else → stale, drop.
     pub(crate) fn handle_ack_nak(&mut self, wire_seq_nibble: u8) -> Result<(), TransportError> {
         let rseq = crate::host_io::wire::decode_absolute(self.receive_seq, wire_seq_nibble);
 
-        // Step 1: advance receive_seq if rseq is new.
         if rseq > self.receive_seq {
             self.update_receive_seq(rseq)?;
         }
 
-        // Step 2: ack/nak discrimination.
         if self.last_ack_seq < rseq {
             self.last_ack_seq = rseq;
         } else if rseq > self.ignore_nak_seq && !self.unacked_window.is_empty() {
@@ -673,7 +524,6 @@ impl Reactor {
         &mut self,
         trigger: RetransmitTrigger,
     ) -> Result<(), TransportError> {
-        // Build retransmit buffer: leading SYNC + all unacked frames.
         let buf = {
             let frames: Vec<&[u8]> = self
                 .unacked_window
@@ -684,7 +534,6 @@ impl Reactor {
         };
         self.write_frame(&buf)?;
 
-        // Two-arm ignore_nak_seq (Codex finding #7).
         match trigger {
             RetransmitTrigger::NakDriven => {
                 if self.receive_seq < self.retransmit_seq {
@@ -700,24 +549,6 @@ impl Reactor {
         self.retransmit_seq = self.send_seq;
         self.rtt_sample_armed = false;
 
-        // Retry cap: increment all; fault only on exhaustion AND silence.
-        //
-        // The retry counter alone is a poor proxy for "MCU is dead": a
-        // single long-running MCU command (LoadCurve takes several
-        // seconds wall under Renode's 1µs quantum) can stall the
-        // command_task long enough for the host's RFC-6298 RTO ladder
-        // (25→50→100→…→3200 ms, sum 6.4 s) to fire 8 times — meanwhile
-        // the MCU is still emitting kalico_status at 10 Hz and the wire
-        // is healthy. The earlier behavior tore the reactor down with
-        // HostRetransmitExhausted in exactly that scenario, blocking
-        // every motion test at LoadCurve #2.
-        //
-        // Real "MCU dead" signature: no frames OR stream errors arrive
-        // for at least `MCU_SILENCE_FOR_CLOSE`. Gate the escalation on
-        // both retry exhaustion AND silence so we still trip when the
-        // wire is truly down (HostDisconnect already handles port-level
-        // EOF / errors via the `PhantomZero` / `Err(_)` arms of
-        // `poll_serial`).
         let now = self.clock.now();
         let silence = now.duration_since(self.last_recv_time);
         for entry in self.unacked_window.iter_mut() {
@@ -734,17 +565,12 @@ impl Reactor {
             }
         }
 
-        // RTO backoff ONLY on TimeoutDriven.
         if matches!(trigger, RetransmitTrigger::TimeoutDriven) {
             self.rtt.backoff();
         }
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Inbound frame routing — spec §3.5 / §3.6.
-// ---------------------------------------------------------------------------
 
 impl Reactor {
     pub(crate) fn handle_inbound_frame(
@@ -757,11 +583,9 @@ impl Reactor {
         }
         let wire_seq_nibble = bytes[1] & 0x0F;
         if bytes.len() == crate::host_io::wire::MESSAGE_MIN {
-            // 5-byte ack/nak frame.
             self.handle_ack_nak(wire_seq_nibble)?;
             return Ok(());
         }
-        // Real msg-id frame — advance receive_seq if needed.
         let rseq = crate::host_io::wire::decode_absolute(self.receive_seq, wire_seq_nibble);
         let rseq_jump = rseq.saturating_sub(self.receive_seq);
         if rseq_jump > 1 {
@@ -777,8 +601,6 @@ impl Reactor {
         if rseq != self.receive_seq {
             self.update_receive_seq(rseq)?;
         }
-        // Parse + dispatch. Decode errors are warn-logged and the frame is dropped
-        // (not propagated as Closed) — dictionary version skew is recoverable.
         let decoded = match self.parser.decode(bytes) {
             Ok(d) => d,
             Err(e) => {
@@ -793,8 +615,6 @@ impl Reactor {
                 return Ok(());
             }
         };
-        // Extract the raw payload (between header and trailer) for
-        // passthrough notify dispatch. The payload is bytes [2..msglen-3].
         let raw_payload = {
             let msglen = bytes[0] as usize;
             let trailer = crate::host_io::wire::MESSAGE_TRAILER_SIZE;
@@ -829,7 +649,6 @@ impl Reactor {
                         crate::transport::MessageValue::I32(n) => Some(*n as u32),
                         _ => None,
                     });
-                    // DIAG: trace every unsolicited frame + interceptor state
                     if name.contains("software_trip") || name.contains("trsync_state") {
                         tracing::debug!(
                             subsystem = "mcu-comms",
@@ -878,15 +697,10 @@ impl Reactor {
         Ok(())
     }
 
-    /// Try to dispatch a raw response payload through the passthrough router's
-    /// notify table. Returns `true` if a pending passthrough notify consumed
-    /// the response, `false` otherwise (caller should fall through to the
-    /// runtime event dispatcher).
     fn try_dispatch_passthrough_response(&mut self, raw_payload: &[u8]) -> bool {
         if self.passthrough_notify_map.is_empty() {
             return false;
         }
-        // FIFO: find the lowest seq with a pending notify.
         let oldest_seq = match self.passthrough_notify_map.keys().copied().min() {
             Some(s) => s,
             None => return false,
@@ -905,9 +719,6 @@ impl Reactor {
         self.event_dispatcher.dispatch(event);
     }
 
-    /// Handle a complete kalico-native frame surfaced by the demuxer.
-    /// Routes responses to pending calls, identify-response to the
-    /// identify caller, and events into [`event_dispatcher`].
     pub(crate) fn handle_kalico_frame(&mut self, channel: u8, payload: &[u8]) {
         match dispatch_kalico_frame(&mut self.kalico_state, channel, payload) {
             KalicoDispatchResult::Handled | KalicoDispatchResult::Ignored => {}
@@ -918,10 +729,6 @@ impl Reactor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Serial polling — spec §3.7.
-// ---------------------------------------------------------------------------
-
 impl Reactor {
     fn poll_serial(&mut self) {
         let t0 = std::time::Instant::now();
@@ -929,10 +736,6 @@ impl Reactor {
         let outcome = self.io.poll_frames_until(deadline);
         let dt = t0.elapsed();
         if dt > std::time::Duration::from_millis(5) {
-            // Long polls indicate either a slow underlying read (host-side
-            // kernel issue) or that the read itself blocks past its
-            // intended deadline. The READ_TIMEOUT is ~1 ms; anything
-            // beyond 5 ms is anomalous.
             let label: &'static str = match &outcome {
                 Ok(PollOutcome::Frames { .. }) => "Frames",
                 Ok(PollOutcome::Timeout) => "Timeout",
@@ -951,11 +754,6 @@ impl Reactor {
             Ok(PollOutcome::Frames { frames, errors }) => {
                 self.zero_byte_first_seen = None;
                 self.zero_byte_consec = 0;
-                // Any non-empty read counts as MCU activity. Even an
-                // errors-only batch (CRC failures, malformed Klipper
-                // frames) means the wire delivered bytes — the MCU is
-                // alive, just talking imperfectly. Gates the
-                // retry-exhaustion logic in `write_retransmit`.
                 if !frames.is_empty() || !errors.is_empty() {
                     self.last_recv_time = self.clock.now();
                 }
@@ -1024,16 +822,7 @@ impl Reactor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Command dispatch — spec §3.7.
-// ---------------------------------------------------------------------------
-
 impl Reactor {
-    /// Stage HostDisconnect + transition to Closed on a transport-level
-    /// Io fault. Idempotent — won't overwrite an existing pending_host_fault.
-    /// Used by the immediate-dispatch paths (Submit, FireAndForget,
-    /// KalicoCall) and the RTO retransmit path to mirror the established
-    /// drain-path / poll_serial behavior.
     pub(crate) fn transition_closed_on_io_fault(&mut self) {
         if self.pending_host_fault.is_none() {
             self.pending_host_fault = Some(crate::host_io::runtime_events::FaultEvent {
@@ -1115,12 +904,6 @@ impl Reactor {
                 self.closed_via_shutdown = true;
             }
             ReactorCommand::MarkExpectedDisconnect => {
-                // 2026-05-18: klippy's bridge-mode firmware_restart path sent
-                // a `reset` command which is about to drop the MCU's USB-CDC.
-                // Mark the eventual close as graceful so the spawn-time
-                // EXIT_ON_FAULT guard sees `exited_gracefully() == true`
-                // when the BrokenPipe arrives, and klippy can continue its
-                // in-process restart without systemd having to interpose.
                 tracing::info!(
                     subsystem = "mcu-comms",
                     event = "expected_disconnect",
@@ -1161,10 +944,6 @@ impl Reactor {
                 let _ = reply.send(result);
             }
             ReactorCommand::InstallPassthroughRouter(router) => {
-                // The MCU handle is expected to already be claimed inside
-                // the router by the bridge before sending this command.
-                // For Phase 1 (one reactor per MCU), we peek at the first
-                // MCU handle in the router.
                 let mcu = router.mcu_handles().next().copied();
                 self.passthrough_router = Some(router);
                 self.passthrough_mcu = mcu;
@@ -1235,11 +1014,8 @@ impl Reactor {
                 completion,
                 deadline: _,
             } => {
-                // Bootstrap-ABI Identify: hand-encoded frame, no schema.
                 let cid = self.kalico_state.allocate_correlation_id();
                 let frame = build_kalico_identify_frame(cid);
-                // Park the completion before writing to avoid losing a fast
-                // response.
                 if self.kalico_state.identify_pending.is_some() {
                     let _ = completion.send(Err(TransportError::Backpressure));
                     return;
@@ -1287,9 +1063,7 @@ impl Reactor {
                     }
                 }
             }
-            ReactorCommand::Noop => {
-                // Liveness probe from `KalicoHostIo::is_alive`. Nothing to do.
-            }
+            ReactorCommand::Noop => {}
             ReactorCommand::RegisterInterceptor {
                 msg_name,
                 oid,
@@ -1306,29 +1080,19 @@ impl Reactor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Disconnect GC — spec §3.7.
-// ---------------------------------------------------------------------------
-
 impl Reactor {
     fn flush_all_completions(&mut self) {
         for entry in self.awaiting_response.drain_all() {
             let _ = entry.completion.send(Err(TransportError::Closed));
         }
-        // Spec §3.11: clear UnackedWindow on transition to Closed. Pending
-        // submissions also evicted with Closed so callers learn the channel
-        // is dead rather than hanging on the rendezvous channel.
         self.unacked_window.clear();
         for p in self.pending_submissions.drain(..) {
             let _ = p.completion.send(Err(TransportError::Closed));
         }
-        // Spec §6.0: pending fire-and-forget payloads have no caller to
-        // notify; drop them on disconnect.
         self.pending_fire_and_forget.clear();
         self.pending_outbound_order.clear();
         self.passthrough_notify_map.clear();
 
-        // Phase C-B: drop in-flight kalico calls + identify caller.
         let drained: Vec<PendingKalicoCall> =
             self.kalico_state.pending.drain().map(|(_, v)| v).collect();
         for p in drained {
@@ -1339,10 +1103,6 @@ impl Reactor {
         }
     }
 
-    /// GC kalico calls whose deadline has passed. The caller side already
-    /// imposes its own `recv_timeout`, so this is belt-and-braces — keeps
-    /// the `pending` map from growing if a caller stops waiting before the
-    /// reactor times out.
     pub(crate) fn gc_kalico_pending(&mut self) {
         let now = self.clock.now();
         let expired: Vec<u32> = self
@@ -1359,10 +1119,6 @@ impl Reactor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Main poll loop — spec §3.7.
-// ---------------------------------------------------------------------------
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum TickOutcome {
     Continue,
@@ -1378,28 +1134,13 @@ impl Reactor {
         }
     }
 
-    /// True iff the reactor reached `Closed` via the graceful
-    /// `ReactorCommand::Shutdown` path (which `KalicoHostIo::drop` sends on
-    /// process exit). False iff the transition was forced by an unexpected
-    /// IO fault — in that case the caller (the thread spawn site in
-    /// `KalicoHostIo::open_with_port`) aborts the process so klippy fails
-    /// cleanly instead of pretending-to-be-up with a stale FD.
     pub fn exited_gracefully(&self) -> bool {
         self.closed_via_shutdown
     }
 
-    /// One iteration of the reactor's main loop. Extracted from `run()` so
-    /// tests can drive the reactor deterministically via the test harness
-    /// (spec §2.4). Closed-state cleanup runs inside; on `TickOutcome::Closed`
-    /// the next call must not be made (the loop in `run()` exits).
     pub fn tick_once(&mut self) -> TickOutcome {
-        // Diag: tick_once duration. Long ticks (>5 ms) point at reactor
-        // thread starvation independent of write_frame / poll_serial. Per-
-        // step breakdown (drain_pending, poll_serial, drain_passthrough,
-        // RTO step) helps isolate where the time went.
         let t_tick = std::time::Instant::now();
 
-        // 1. Drain reactor commands (bounded per iteration).
         let s1 = std::time::Instant::now();
         for _ in 0..MAX_SUBMITS_PER_ITER {
             match self.submission_rx.try_recv() {
@@ -1414,25 +1155,18 @@ impl Reactor {
 
         let t_step1 = s1.elapsed();
 
-        // 2. Poll serial port.
         let s2 = std::time::Instant::now();
         self.poll_serial();
         let t_step2 = s2.elapsed();
 
-        // 3. Drain pending submissions (ack in step 2 may have freed window slots).
         let s3 = std::time::Instant::now();
         self.drain_pending_submissions();
         let t_step3 = s3.elapsed();
 
-        // 3b. Drain passthrough entries from the router onto the wire.
         let s3b = std::time::Instant::now();
         self.drain_passthrough();
         let t_step3b = s3b.elapsed();
 
-        // 4. RTO timer step. On Io error from write_retransmit, escalate
-        // to Closed (mirrors drain-path / poll_serial / dispatch_submission
-        // Io-error handling). See Finding 6 in
-        // docs/superpowers/specs/2026-05-09-bridge-call-stall-investigation.md.
         let s4 = std::time::Instant::now();
         if let Some(front) = self.unacked_window.front() {
             let now = self.clock.now();
@@ -1457,16 +1191,12 @@ impl Reactor {
         }
         let t_step4 = s4.elapsed();
 
-        // 4b. Drain staged host fault into the FaultLatch.
         if let Some(fault) = self.pending_host_fault.take() {
             self.event_dispatcher.fault_latch.dispatch(fault);
         }
 
-        // 4c. Forward any TraceRing host-event diagnostics queued in the
-        //     shared inbox to the host-event subscriber.
         self.event_dispatcher.host_event_dispatcher.drain_pending();
 
-        // 5. AwaitingResponse GC (layer 2 — per-entry deadline).
         let now = self.clock.now();
         let evicted = self.awaiting_response.evict_expired(now);
         for entry in evicted {
@@ -1475,10 +1205,8 @@ impl Reactor {
                 .send(Err(TransportError::DispatcherTimeout));
         }
 
-        // 5b. Phase C-B: GC expired kalico calls.
         self.gc_kalico_pending();
 
-        // 6. Closed-state exit.
         if self.state == ReactorState::Closed {
             self.flush_all_completions();
             return TickOutcome::Closed;
@@ -1502,80 +1230,29 @@ impl Reactor {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests;
-
-// ---------------------------------------------------------------------------
-// A1 — seq-wrap boundaries. Spec §3.1.
-// Three boundaries: empty-window snap, mid-range mod-16, near u64::MAX.
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod a1_seq_wrap;
 
-// ---------------------------------------------------------------------------
-// A2 — NAK/RTO branches. Spec §3.2.
-// Six sub-tests, one per branch.
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod a2_nak_rto;
-
-// ---------------------------------------------------------------------------
-// A4 — NAK + submit same-tick race consistency. Spec §3.4.
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod a4_nak_submit_race;
 
-// ---------------------------------------------------------------------------
-// A3 — AwaitingResponse three-layer GC. Spec §3.3.
-// Three sub-tests, one per GC layer.
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod a3_awaiting_response_gc;
-
-// ---------------------------------------------------------------------------
-// A5 — Passthrough queue reactor integration. Task 17.
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod a5_passthrough_integration;
 
-// ---------------------------------------------------------------------------
-// A8 — Backpressure-respecting fire-and-forget. Spec §6.0 of
-// `2026-05-04-incremental-curve-upload-design.md`.
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod a8_fire_and_forget_backpressure;
 
-// ---------------------------------------------------------------------------
-// FireAndForgetTyped routing — Step 2 of incremental-curve-upload spec.
-// Validates ReactorCommand::FireAndForgetTyped is routed through
-// dispatch_fire_and_forget and lands on the wire.
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod fire_and_forget_typed_routing;
-
-// ---------------------------------------------------------------------------
-// Io-fault propagation tests. Every code path that calls write_frame must
-// transition to Closed + stage HostDisconnect on Io error, mirroring the
-// behavior of drain_pending_submissions / drain_passthrough / poll_serial.
-//
-// Pre-fix (Finding 1 in 2026-05-09 bridge-call stall investigation), the
-// IMMEDIATE-dispatch paths in handle_command (Submit / SubmitTyped /
-// FireAndForget / FireAndForgetTyped / KalicoCall / KalicoIdentify) and
-// the RTO retransmit path silently swallowed Io errors — completion got
-// the error but reactor stayed Active. This module asserts the FIXED
-// behavior: every Io-faulting path transitions to Closed.
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod io_fault_propagation;

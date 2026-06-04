@@ -1,6 +1,3 @@
-//! Cross-queue priority emission: owns all `CommandQueue`s for one MCU
-//! and picks the ready-head with the lowest `req_clock`.
-
 use indexmap::IndexMap;
 
 use super::command_queue::CommandQueue;
@@ -14,9 +11,6 @@ impl CommandQueueId {
         self.0
     }
 
-    /// Reconstruct a `CommandQueueId` from a raw `u32` previously obtained
-    /// via [`raw()`](Self::raw). The caller is responsible for ensuring the
-    /// value refers to an allocated queue.
     pub fn from_raw(raw: u32) -> Self {
         Self(raw)
     }
@@ -67,17 +61,12 @@ impl McuState {
         Ok(())
     }
 
-    /// Run `promote(ack_clock)` across all queues.
     pub fn promote_all(&mut self, ack_clock: u64) {
         for q in self.queues.values_mut() {
             q.promote(ack_clock);
         }
     }
 
-    /// Pick the queue whose ready-head has the lowest `req_clock` and pop it.
-    ///
-    /// Background-priority entries (`req_clock == BACKGROUND_PRIORITY_CLOCK`)
-    /// are only popped when *no* non-background entries exist across any queue.
     pub fn pop_next(&mut self) -> Option<PassthroughEntry> {
         // Check whether any queue has a non-background ready entry.
         let has_non_bg = self
@@ -90,7 +79,6 @@ impl McuState {
             .iter()
             .filter_map(|(id, q)| {
                 let rc = q.peek_ready_req_clock()?;
-                // Skip background entries while non-background exist.
                 if has_non_bg && rc == BACKGROUND_PRIORITY_CLOCK {
                     return None;
                 }
@@ -102,25 +90,18 @@ impl McuState {
         best_key.and_then(|id| self.queues.get_mut(&id).and_then(CommandQueue::pop_ready))
     }
 
-    /// Returns `true` if all ready queues are empty (no entries to emit).
     pub fn is_all_ready_empty(&self) -> bool {
         self.queues.values().all(CommandQueue::is_ready_empty)
     }
 
-    /// Total bytes across all ready queues.
     pub fn total_ready_bytes(&self) -> u64 {
         self.queues.values().map(CommandQueue::ready_bytes).sum()
     }
 
-    /// Total bytes across all upcoming queues.
     pub fn total_upcoming_bytes(&self) -> u64 {
         self.queues.values().map(CommandQueue::upcoming_bytes).sum()
     }
 
-    /// Peek at the lowest `req_clock` across all queues without popping.
-    ///
-    /// If non-background entries exist, background entries are excluded from
-    /// the minimum. If only background entries remain, returns the sentinel.
     pub fn peek_next_req_clock(&self) -> Option<u64> {
         let has_non_bg = self
             .queues

@@ -1,14 +1,4 @@
-//! kalico-ethercat-rt-stub: no-hardware endpoint. Binds the kalico-native
-//! socket and answers Identify / PushPieces, exercising the piece ring +
-//! evaluator, but drives NO hardware. For drive-off integration testing
-//! (the real endpoint is `required-features = ["hw"]`).
-//!
 //! Usage: kalico-ethercat-rt-stub [--socket PATH]
-//!
-//! The stub services `PushPieces` by writing pieces into an `AxisRing`, samples
-//! position each DC cycle (1 ms sleep), and emits `StatusHeartbeat` whenever
-//! new pieces are retired. Retirement semantics are identical to the real
-//! endpoint: a piece is retired when `monotonic_ns() >= piece.end_time(1e9)`.
 
 use std::thread::sleep;
 use std::time::Duration;
@@ -32,9 +22,7 @@ fn main() {
     let socket = arg_val(&args, "--socket").unwrap_or_else(|| "/tmp/kalico-ethercat.sock".into());
 
     let mut ring = AxisRing::new();
-    // Last retirement watermark sent to the host in a StatusHeartbeat.
     let mut last_sent_retired: u32 = 0;
-    // Whether we have ever sent a heartbeat (to handle the initial 0 case).
     let mut heartbeat_sent = false;
 
     let mut server = FrameServer::bind(&socket).expect("bind socket");
@@ -54,7 +42,6 @@ fn main() {
                     msg,
                 } => {
                     let front_start_time = if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8 {
-                        // The first 8 bytes of pieces_bytes are the start_time of piece 0.
                         u64::from_le_bytes(msg.pieces_bytes[0..8].try_into().unwrap_or([0; 8]))
                     } else {
                         0
@@ -64,7 +51,6 @@ fn main() {
                         "ec-rt-stub: PushPieces axis={} pieces={} pushed={} head={}",
                         msg.axis_idx, msg.piece_count, pushed, msg.new_head
                     );
-                    // Arrival clock: use monotonic_ns() as the EtherCAT clock.
                     let arrival_clock = monotonic_ns();
                     let result = if pushed == msg.piece_count {
                         0i32
@@ -107,7 +93,6 @@ fn main() {
             heartbeat_sent = true;
         }
 
-        // Emit StatusHeartbeat if the retirement watermark advanced.
         let current_retired = ring.retired_count();
         let should_emit = !heartbeat_sent || current_retired != last_sent_retired;
         if should_emit {

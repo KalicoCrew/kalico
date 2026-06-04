@@ -1,8 +1,3 @@
-//! Size-based rotating NDJSON writer for `host-rust.jsonl`. Mirrors the Stage 1
-//! Python `JsonlSink`: uncompressed rotation (`.1`..`.N`), flush per write, a
-//! periodic fsync backstop, and fsync on rotate/close. Single-threaded: owned
-//! by the `tracing-appender` worker, so no locking.
-
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -61,11 +56,9 @@ impl RotatingJsonlWriter {
         PathBuf::from(s)
     }
 
-    /// Close + fsync the current file, shift `.N-1`->`.N` ... base->`.1`, reopen.
     fn rotate(&mut self) -> io::Result<()> {
         self.file.flush()?;
-        self.file.sync_all()?; // fsync before rotate so no partial tail is lost
-        // Drop the oldest, then cascade.
+        self.file.sync_all()?;
         let oldest = self.rotated_path(self.backup_count);
         if oldest.exists() {
             std::fs::remove_file(&oldest)?;
@@ -111,8 +104,6 @@ impl Write for RotatingJsonlWriter {
 
 impl Drop for RotatingJsonlWriter {
     fn drop(&mut self) {
-        // Best-effort durable close. Errors at drop cannot be propagated; this
-        // is the documented exception to fail-loudly (matches Python close()).
         let _ = self.file.flush();
         let _ = self.file.sync_all();
     }
@@ -124,7 +115,6 @@ mod tests {
 
     fn tmp(name: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        // Per-test unique dir; std::process::id avoids cross-test collisions.
         p.push(format!("kalico-jsonl-test-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
@@ -145,13 +135,11 @@ mod tests {
     #[test]
     fn rotates_when_exceeding_max_bytes() {
         let path = tmp("rotate");
-        // tiny max so the 2nd write triggers a rotation
         let mut w = RotatingJsonlWriter::new(&path, 8, 3, FSYNC_INTERVAL).unwrap();
-        w.write_all(b"AAAAAAA\n").unwrap(); // 8 bytes -> fills
-        w.write_all(b"BBBBBBB\n").unwrap(); // triggers rotate before write
+        w.write_all(b"AAAAAAA\n").unwrap();
+        w.write_all(b"BBBBBBB\n").unwrap();
         w.flush().unwrap();
         let base = std::fs::read_to_string(&path).unwrap();
-        // rotated_path appends ".1" to full filename: host-rust.jsonl -> host-rust.jsonl.1
         let mut rotated_name = path.as_os_str().to_os_string();
         rotated_name.push(".1");
         let rotated = std::fs::read_to_string(PathBuf::from(&rotated_name)).unwrap();
@@ -167,7 +155,6 @@ mod tests {
             w.write_all(&[b'0' + i, b'\n', b'x', b'\n']).unwrap();
         }
         w.flush().unwrap();
-        // backup_count=2 => base + .1 + .2 exist, no .3
         assert!(path.exists());
         let mut p1 = path.as_os_str().to_os_string();
         p1.push(".1");
