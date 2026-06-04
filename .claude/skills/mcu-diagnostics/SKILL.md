@@ -144,8 +144,8 @@ fallback for when the host structured-logging layer is unavailable.
 
 ## Adding new MCU logs
 
-See `CLAUDE.md` → "Observability". Briefly: pick/add an event in
-`rust/runtime/src/log_codes.rs` (the wire-stable table), mirror any new C event in
-`src/kalico_log.h`, and call `kalico_log_emit(level, subsystem, event, code,
-arg0, arg1)` at the emit site. Engine faults go through the `raise_*` helpers in
-`rust/runtime/src/fault_helpers.rs` (auto-emit `runtime.fault_latched`).
+Pick/add an event in `rust/runtime/src/log_codes.rs` (the wire-stable table),
+mirror any new C event in `src/kalico_log.h`, and call `kalico_log_emit(level,
+subsystem, event, code, arg0, arg1)` at the emit site. Engine faults go through
+the `raise_*` helpers in `rust/runtime/src/fault_helpers.rs` (auto-emit
+`runtime.fault_latched`).

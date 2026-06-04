@@ -77,9 +77,8 @@ struct McuConnection {
     clock_sync_stop: Option<Arc<AtomicBool>>,
     /// Join handle for the clock-sync thread. Joined on `release_mcu`.
     clock_sync_thread: Option<JoinHandle<()>>,
-    /// Shared clock-sync estimator. `None` for stock-Klipper MCUs.
-    /// Shared between the clock-sync thread (writer) and the mcu_log_hook
-    /// closure (reader) so `wall_time_at_mcu` can convert MCU ticks to RFC3339.
+    /// Shared clock-sync estimator (writer: clock-sync thread; reader:
+    /// mcu_log_hook, for tick→RFC3339). `None` for stock-Klipper MCUs.
     clock_sync_estimator: Option<Arc<std::sync::RwLock<kalico_host_rt::clock_sync::ClockSyncEstimator>>>,
     /// EtherCAT endpoint socket path. `Some` for an EtherCAT node, `None` for
     /// a serial MCU. Mutually exclusive with a live `serial_path` connection.
@@ -134,18 +133,14 @@ fn spawn_periodic_clock_sync(
     std::thread::Builder::new()
         .name(format!("clock-sync-mcu-{mcu_handle_raw}"))
         .spawn(move || {
-            // Seed the estimator's initial freq from klippy's supplied value.
-            // If klippy hasn't called set_clock_est yet, fall back to 100 MHz
-            // (the regression converges within a few samples regardless).
+            // Re-seed the shared estimator with klippy's supplied initial freq
+            // (constructed with a 100 MHz placeholder). Falls back to 100 MHz if
+            // set_clock_est hasn't been called yet — converges in a few samples.
             {
                 let initial_freq = {
                     let guard = clock_freqs.lock().unwrap_or_else(|p| p.into_inner());
                     guard.get(&mcu_handle_raw).copied().unwrap_or(100_000_000.0)
                 };
-                // Re-initialise the shared estimator with the correct initial freq.
-                // The estimator was constructed with 100 MHz as a placeholder;
-                // update it here before the first sample so the very first RTT
-                // correction uses a reasonable seed.
                 let mut est = estimator.write().unwrap_or_else(|p| p.into_inner());
                 *est = kalico_host_rt::clock_sync::ClockSyncEstimator::new(initial_freq);
             }
@@ -385,20 +380,9 @@ fn resolve_motion_caps(
     })
 }
 
-/// Guard: a kalico-native MCU requires `init_logging` to have been called
-/// before `attach_serial` so the dedicated `mcu-*.jsonl` writer can be
-/// installed.  The spec (§4, Decision C) treats the dedicated writer as
-/// mandatory for kalico-native MCUs — not optional.
-///
-/// Returns `Ok(())` when:
-///   - `kalico_native` is `false` (non-native MCU; writer not needed), or
-///   - `events_dir` is `Some(_)` (`init_logging` was called; dir is ready).
-///
-/// Returns `Err(String)` when `kalico_native` is `true` but `events_dir` is
-/// `None`, meaning `attach_serial` was called before `init_logging`.  The
-/// caller must convert this to a `PyRuntimeError` and return early.
-///
-/// Unit tests are in [`require_events_dir_tests`].
+/// Guard: a kalico-native MCU needs `init_logging` (which sets `events_dir`)
+/// before `attach_serial`, so the dedicated `mcu-*.jsonl` writer can be
+/// installed — mandatory per spec §4, Decision C. `Err` if called out of order.
 fn require_events_dir_for_kalico_native(
     kalico_native: bool,
     events_dir: Option<&std::path::Path>,
@@ -1287,12 +1271,8 @@ impl PyMotionBridge {
         // when the bridge-mode reset path didn't get a chance to issue
         // `MarkExpectedDisconnect`). Also stop the periodic clock-sync
         // driver so it doesn't keep using the dying io.
-        // Read the MCU label (e.g. "mcu-h7") for use as the structured-log
-        // source field.  claim_mcu stores it in McuConnection::label; we
-        // snapshot it here so the clock-sync block below (which must not hold
-        // the mcus lock) has the value ready.  We fail-loud if claim_mcu was
-        // never called — the same invariant that the later get_mut check
-        // enforces, just surfaced one step earlier with a clearer site.
+        // Snapshot the MCU label (the structured-log source field) while we hold
+        // the mcus lock, so the lock-free clock-sync block below has it ready.
         let mcu_label: String = {
             let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
@@ -1308,13 +1288,10 @@ impl PyMotionBridge {
                 let _ = h.join();
             }
             conn.runtime_rx = None;
-            // Drop the Arc<KalicoHostIo>. The dispatch closure in the
-            // planner thread holds only Weak<KalicoHostIo> references
-            // (downgraded at dispatch_ios insertion in init_planner), so
-            // dropping this Arc here drives the refcount to zero, causing
-            // the Drop impl to send Shutdown to the reactor and join it —
-            // which releases the kernel FD before the re-open loop below
-            // runs. No 30-second "Device or resource busy" spin.
+            // Drop the Arc<KalicoHostIo>: the planner's dispatch closure holds
+            // only Weak refs, so this drives the refcount to zero → Drop shuts
+            // down the reactor and releases the FD before the re-open below
+            // (avoids a 30 s "Device or resource busy" spin).
             conn.host_io = None;
             conn.label.clone()
         };
@@ -1429,10 +1406,7 @@ impl PyMotionBridge {
 
         let host_io_arc = Arc::new(host_io);
 
-        // Enforce call-order contract: init_logging must precede attach_serial
-        // for kalico-native MCUs.  Without events_dir the dedicated
-        // mcu-*.jsonl hook cannot be installed and all McuLog events would
-        // be silently dropped — a spec violation (§4, Decision C).
+        // Enforce the init_logging-before-attach_serial order (see the guard fn).
         {
             let events_dir_guard = self
                 .events_dir
@@ -1446,17 +1420,12 @@ impl PyMotionBridge {
             .map_err(PyRuntimeError::new_err)?;
         }
 
-        // Spawn the periodic `kalico_clock_sync_request` driver iff this
-        // MCU speaks kalico-native. Without this, klippy's bridge-mode
-        // clocksync `_get_clock_event` is a no-op (the legacy serialqueue
-        // path is bypassed) — the regression freezes at the connect-time
-        // anchor and `compute_ack_clock` linearly drifts into the future,
-        // producing motion segments scheduled tens of seconds ahead of
-        // MCU time and deadlocking the host's in-flight credit window.
-        // Stock-Klipper firmware doesn't accept `kalico_clock_sync_request`,
-        // so for those MCUs we leave clock projection on the (admittedly
-        // stale) klippy-side anchor — the motion path doesn't execute on
-        // them anyway.
+        // Spawn the periodic kalico_clock_sync_request driver iff this MCU
+        // speaks kalico-native. Without it, bridge-mode clocksync is a no-op
+        // (legacy serialqueue path bypassed): the projection freezes at the
+        // connect anchor, drifts seconds ahead of MCU time, and deadlocks the
+        // host credit window. Stock firmware ignores the request and doesn't
+        // run the motion path, so it stays on klippy's (stale) anchor.
         let (clock_sync_stop, clock_sync_thread, clock_sync_estimator_arc) =
             if kalico_native_supported {
                 let stop = Arc::new(AtomicBool::new(false));
@@ -1474,23 +1443,17 @@ impl PyMotionBridge {
                     Arc::clone(&est_arc),
                 );
 
-                // Wire the mcu_log_hook.
-                //
-                // INVARIANT: the require_events_dir_for_kalico_native guard
-                // above guarantees events_dir is Some(_) for every
-                // kalico-native MCU that reaches this point.  The
-                // unreachable! below documents that; it is not a runtime
-                // fallback.
+                // Wire the mcu_log_hook. The guard above guarantees events_dir
+                // is Some(_) here; the unreachable! below documents that (it is
+                // not a runtime fallback).
                 let events_dir_guard =
                     self.events_dir.lock().unwrap_or_else(|p| p.into_inner());
                 if let Some(ref dir) = *events_dir_guard {
                     use crate::logging::writer::{
                         DEFAULT_BACKUP_COUNT, DEFAULT_MAX_BYTES, FSYNC_INTERVAL, RotatingJsonlWriter,
                     };
-                    // Use the MCU label supplied to claim_mcu (e.g. "mcu-h7",
-                    // "mcu-f4") as the structured-log source field.  This is
-                    // the value VictoriaLogs queries filter on
-                    // (source:=mcu-h7), so it must match exactly.
+                    // The MCU label (from claim_mcu) is the structured-log
+                    // source field — VictoriaLogs filters on it, match exactly.
                     let source = mcu_label.clone();
                     let jsonl_path = dir.join(format!("{source}.jsonl"));
                     match RotatingJsonlWriter::new(
@@ -2090,10 +2053,8 @@ impl PyMotionBridge {
                 }
             }
             RuntimeEvent::McuLog(_) => {
-                // McuLog events are consumed by the mcu_log_hook (wired in
-                // attach_serial) and also forwarded to the general runtime
-                // channel by EventDispatcher::dispatch. They are not exposed
-                // to klippy Python — the NDJSON path is host-side only.
+                // McuLog is consumed by the mcu_log_hook + forwarded to the
+                // runtime channel (host-side NDJSON only); not exposed to Python.
                 return Ok(None);
             }
         }
