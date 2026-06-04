@@ -6172,12 +6172,21 @@ See [Tap Quality Components](Load_Cell.md#tap-quality-components) for more detai
 Clog Detection. Detects a clogged nozzle by combining two signals: sustained
 downward force on a load cell, and extruder motor stall events reported by a
 TMC driver. Both conditions must occur together to avoid false positives.
+Detection is armed automatically after the first load cell tare (e.g. at the
+start of a homing sequence).
 
 Multiple named sections are supported for multi-toolhead configurations —
 one section per tool, each bound to its own `extruder` and `load_cell`.
 
-See the [clog_detect GCode commands](G-Codes.md#clog_detect) for the
-`CLOG_DETECT_RESET` command.
+The extruder's TMC stepper driver must be configured for stall detection before
+this module will function. For TMC2209 and TMC2208, `driver_sgthrs` must be set
+to a non-zero value and `coolstep_threshold` must be configured to enable stall
+guard at typical extrusion velocities. For TMC5160 and TMC2130, the `LOST_STEPS`
+register is used directly and no additional driver configuration is required.
+See the relevant `[tmc2209]` or `[tmc5160]` documentation for details.
+
+See the [clog_detect GCode commands](G-Codes.md#clog_detect) for runtime
+control via `CLOG_DETECTION`.
 
 ```
 [clog_detect my_name]
@@ -6202,10 +6211,15 @@ See the [clog_detect GCode commands](G-Codes.md#clog_detect) for the
 #poll_rate: 4
 #   How many times per second to check the force and stall conditions.
 #   The default is 4.
+#force_hysteresis: 1.0
+#   Time in seconds that force must remain above the threshold before the
+#   stall count is reset. This allows stall events to accumulate across the
+#   brief pressure-relief cycles characteristic of a clogged nozzle.
+#   The default is 1.0 seconds.
 #clog_detected_gcode:
 #   An optional GCode command or macro to run when a clog is detected.
-#   The detected state is not cleared automatically — use
-#   CLOG_DETECT_RESET to reset it. The default is no action.
+#   The detected state is not cleared automatically — use CLOG_DETECTION RESET
+#   to re-arm detection. The default is no action.
 ```
 
 ## Board specific hardware support
