@@ -17,6 +17,42 @@ We are working on a complete rewrite of the motion planner and more:
 
   The `compat` crate has two callers: the offline Step-13 binary (file → file) and the live bridge (terminal/macro G1/G2/G3 conversion via `compat::collinear::to_collinear_g5`, `compat::arc::arc_to_g5`, `compat::degree_elev::elevate_g51_to_g5`). Both share the lexer.
 
+# Observability / structured logging
+
+We log via a **structured pipeline, not `printf`/`output()`**. The MCU emits
+typed records through `kalico_log_emit` → `KALICO_MSG_LOG` → the host writes
+NDJSON to `~/printer_data/logs/events/<source>.jsonl` (`mcu`, `bottom`, `host-py`,
+`host-rust`; rotating 32 MB × 5). **This store replaces `klippy.log` for
+structured / MCU diagnostics.** `klippy.log` is kept only as the always-works
+fallback (host Python tracebacks + the verbose `prior_diag_summary_*` deep-debug
+text whose fields the structured path doesn't carry).
+
+Tools we built (this branch): the C-owned `kalico_log` ring + `kalico_log_emit`
+(the sole ABI seam, `src/kalico_log.{c,h}`); the `McuLog` wire message; the
+`events/*.jsonl` store + host re-emit (`rust/motion-bridge/src/mcu_log.rs`);
+**`KALICO_DIAG_DUMP`** gcode (on-demand live diag snapshot, no reset); auto
+crash-forensics replay on the boot after a reset; and the `diag.*` event-ring
+play-by-play. Spec: `docs/superpowers/specs/2026-06-01-mcu-log-endpoint-design.md`.
+
+**Adding a log line:**
+- The event/subsystem tables in `rust/runtime/src/log_codes.rs` are the
+  **wire-stable source of truth** (event code, name, `{arg0}`/`{arg1}` template).
+  Add the `(subsystem, event)` arm there first.
+- **C emit:** `#include "kalico_log.h"`, mirror any new event `#define`, then
+  `kalico_log_emit(level, subsystem, event, code, arg0, arg1)`. C functions the
+  Rust staticlib calls need `__attribute__((used, externally_visible))` to survive
+  LTO.
+- **Rust emit:** use the gated `extern "C" kalico_log_emit` (see
+  `rust/runtime/src/fault_helpers.rs`). Engine faults go through the `raise_*`
+  helpers there (auto-emit `runtime.fault_latched` with `code = FaultCode`); to add
+  a fault, add the `FaultCode` + `code_name` and a `raise_*` helper.
+- This is the mechanism behind the **fail-loud** rule above: surface an
+  unexpected condition as a structured fault/log, don't silently recover.
+
+**Reading logs — use the skills:** `mcu-diagnostics` (MCU diag, crash forensics,
+`KALICO_DIAG_DUMP`, the event catalog, raw `events/*.jsonl`) and `query-logs`
+(LogsQL queries over VictoriaLogs by session/print/level/field).
+
 # Reference docs
 
 - **Target hardware** [`docs/kalico-rewrite/hardware.md`](docs/kalico-rewrite/hardware.md)
