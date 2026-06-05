@@ -5,6 +5,7 @@
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use kalico_ethercat_rt::claim::{single_slave_reply, wait_for_claim};
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::ffi;
@@ -14,7 +15,7 @@ use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
     runtime_caps_response_frame, status_heartbeat_frame, Command,
 };
-use kalico_protocol::messages::{ClaimHandshakeReply, SlaveState, SlaveStatus};
+use kalico_protocol::messages::SlaveState;
 
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
 
@@ -26,34 +27,6 @@ fn arg_val(args: &[String], key: &str) -> Option<String> {
     args.iter()
         .position(|a| a == key)
         .and_then(|i| args.get(i + 1).cloned())
-}
-
-fn wait_for_claim(server: &mut FrameServer, deadline: std::time::Instant) -> Option<u32> {
-    loop {
-        for cmd in server.poll_commands() {
-            if let Command::ClaimHandshake { correlation_id } = cmd {
-                return Some(correlation_id);
-            }
-            eprintln!("ec-rt: unexpected pre-handshake command: {cmd:?}");
-        }
-        if std::time::Instant::now() >= deadline {
-            return None;
-        }
-        if SIGTERM_RECEIVED.load(Ordering::Acquire) {
-            return None;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-}
-
-fn single_slave_reply(state: SlaveState, fault_code: u16) -> ClaimHandshakeReply {
-    ClaimHandshakeReply {
-        slave_statuses: vec![SlaveStatus {
-            slave_idx: 1,
-            state,
-            fault_code,
-        }],
-    }
 }
 
 fn main() {
@@ -100,7 +73,7 @@ fn main() {
     if rc != 0 {
         eprintln!("ec-rt: bringup failed rc={rc}, sending handshake-fail then exiting");
         let claim_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        if let Some(cid) = wait_for_claim(&mut server, claim_deadline) {
+        if let Some(cid) = wait_for_claim(&mut server, claim_deadline, &SIGTERM_RECEIVED) {
             let reply = single_slave_reply(
                 SlaveState::Offline,
                 u16::try_from(rc.unsigned_abs()).unwrap_or(u16::MAX),
@@ -117,6 +90,7 @@ fn main() {
     match wait_for_claim(
         &mut server,
         std::time::Instant::now() + std::time::Duration::from_secs(5),
+        &SIGTERM_RECEIVED,
     ) {
         Some(cid) => {
             server.respond(&claim_handshake_reply_frame(
