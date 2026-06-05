@@ -12,7 +12,7 @@ pub struct AxisKey {
 
 #[derive(Debug)]
 pub struct AxisQueue {
-    pub pieces: VecDeque<PieceEntry>,
+    pub pieces: VecDeque<(PieceEntry, f64)>,
     pub pushed: u32,
     pub retired: u32,
     pub ring_depth: u32,
@@ -56,6 +56,21 @@ pub enum Schedule {
     Idle,
 }
 
+/// Select the globally earliest-host-time piece across all queues, then emit
+/// the same-MCU prefix as one frame batch.
+///
+/// ## Invariants preserved
+///
+/// 1. **Global gating is intentional.** A stalled MCU (StallFull / StallAhead)
+///    gates issuance to all other MCUs — cross-MCU issue-side coherence requires
+///    that a blocked MCU is never overtaken.
+///
+/// 2. **Ordering must use host time.** `start_time` values are raw MCU clock
+///    ticks in per-MCU clock domains (H7: ~520 MHz / own epoch; F446: ~180 MHz /
+///    own epoch). Comparing ticks across MCUs is meaningless; F446 values are
+///    numerically smaller and would always win, starving the H7.  The `f64`
+///    sidecar in each `(PieceEntry, f64)` pair carries the minting host time
+///    (`t0 + u_start`, seconds) and is the only valid cross-queue ordering key.
 #[must_use]
 pub fn schedule(
     queues: &BTreeMap<AxisKey, AxisQueue>,
@@ -64,29 +79,28 @@ pub fn schedule(
 ) -> Schedule {
     let mut stall_ahead_candidate: Option<AxisKey> = None;
 
+    // Head selection: earliest host time across all non-empty queues.
     let head = queues
         .iter()
         .filter(|(_, q)| !q.pieces.is_empty())
         .min_by(|(ka, qa), (kb, qb)| {
-            qa.pieces
-                .front()
-                .unwrap()
-                .start_time
-                .cmp(&qb.pieces.front().unwrap().start_time)
-                .then(ka.cmp(kb))
+            let ha = qa.pieces.front().unwrap().1;
+            let hb = qb.pieces.front().unwrap().1;
+            ha.total_cmp(&hb).then(ka.cmp(kb))
         });
     let (&head_key, head_q) = match head {
         None => return Schedule::Idle,
         Some(h) => h,
     };
-    let head_start = head_q.pieces.front().unwrap().start_time;
+    let (head_entry, _head_host) = head_q.pieces.front().unwrap();
+    let head_start_ticks = head_entry.start_time;
 
     if head_q.room() == 0 {
         return Schedule::StallFull(head_key);
     }
 
     if let Some(horizon) = horizon_of(head_key.mcu_id) {
-        if head_start > horizon {
+        if head_start_ticks > horizon {
             return Schedule::StallAhead(head_key);
         }
     }
@@ -94,6 +108,7 @@ pub fn schedule(
     let mut taken: BTreeMap<AxisKey, usize> = BTreeMap::new();
     let mut maxed: BTreeSet<AxisKey> = BTreeSet::new();
     loop {
+        // Inner batching: order candidates by host time within the same MCU prefix.
         let next = queues
             .iter()
             .filter_map(|(k, q)| {
@@ -101,10 +116,12 @@ pub fn schedule(
                     return None;
                 }
                 let already = taken.get(k).copied().unwrap_or(0);
-                q.pieces.get(already).map(|p| (*k, p.start_time))
+                q.pieces
+                    .get(already)
+                    .map(|&(ref p, host)| (*k, p.start_time, host))
             })
-            .min_by(|(ka, sa), (kb, sb)| sa.cmp(sb).then(ka.cmp(kb)));
-        let (k, start) = match next {
+            .min_by(|(ka, _, ha), (kb, _, hb)| ha.total_cmp(hb).then(ka.cmp(kb)));
+        let (k, start_ticks, _host) = match next {
             Some(n) => n,
             None => break,
         };
@@ -119,7 +136,7 @@ pub fn schedule(
             continue;
         }
         if let Some(horizon) = horizon_of(k.mcu_id) {
-            if start > horizon {
+            if start_ticks > horizon {
                 if stall_ahead_candidate.is_none() {
                     stall_ahead_candidate = Some(k);
                 }
@@ -142,7 +159,7 @@ pub fn schedule(
         .filter(|(_, n)| *n > 0)
         .map(|(k, n)| FramePlan {
             key: k,
-            pieces: queues[&k].pieces.iter().take(n).copied().collect(),
+            pieces: queues[&k].pieces.iter().take(n).map(|(p, _)| *p).collect(),
             start_slot: 0,
         })
         .collect();
@@ -154,17 +171,27 @@ pub fn schedule(
 mod sched_tests {
     use super::*;
 
-    fn q_with(ring_depth: u32, starts: &[u64]) -> AxisQueue {
+    /// Build a queue from (tick_start, host_time) pairs.
+    fn q_with_host(ring_depth: u32, starts: &[(u64, f64)]) -> AxisQueue {
         let mut q = AxisQueue::new(ring_depth);
-        for &s in starts {
-            q.pieces.push_back(PieceEntry {
-                start_time: s,
-                coeffs: [0.0; 4],
-                duration: 0.001,
-                _reserved: 0,
-            });
+        for &(s, h) in starts {
+            q.pieces.push_back((
+                PieceEntry {
+                    start_time: s,
+                    coeffs: [0.0; 4],
+                    duration: 0.001,
+                    _reserved: 0,
+                },
+                h,
+            ));
         }
         q
+    }
+
+    /// Convenience wrapper for single-MCU tests where host_time == tick as f64.
+    fn q_with(ring_depth: u32, starts: &[u64]) -> AxisQueue {
+        let pairs: Vec<(u64, f64)> = starts.iter().map(|&s| (s, s as f64)).collect();
+        q_with_host(ring_depth, &pairs)
     }
 
     #[test]
@@ -283,6 +310,82 @@ mod sched_tests {
             other => panic!("expected Send (no time gate), got {other:?}"),
         }
     }
+
+    /// Regression: bench shape from 2026-06-04.
+    ///
+    /// mcu1 (F446, 180 MHz) has a far-future piece whose tick value is numerically
+    /// small (~4.8e12) but whose host time is large (beyond mcu1's horizon).
+    /// mcu0 (H7, 520 MHz) has past-due pieces whose tick value is numerically large
+    /// (~13.8e12) but whose host time is now-ish (within mcu0's horizon, room available).
+    ///
+    /// Old code: `min_by` on raw ticks → mcu1's small ticks win → StallAhead(mcu1),
+    /// H7 starved for up to 2+ seconds.
+    /// New code: `min_by` on host time → mcu0's smaller host time wins → Send(mcu0).
+    #[test]
+    fn cross_mcu_host_time_ordering_bench_regression() {
+        let f446_tick: u64 = 4_790_000_000_000;
+        let h7_tick: u64 = 13_800_000_000_000;
+
+        // mcu1 (F446): numerically smaller tick, but host time is far in the future
+        let f446_host: f64 = 1_000.0; // far future, beyond any horizon
+        // mcu0 (H7): numerically larger tick, but host time is now-ish
+        let h7_host: f64 = 1.0; // near present
+
+        let mut queues = BTreeMap::new();
+        queues.insert(
+            AxisKey { mcu_id: 1, axis: 2 }, // F446, Z axis
+            q_with_host(8, &[(f446_tick, f446_host)]),
+        );
+        queues.insert(
+            AxisKey { mcu_id: 0, axis: 0 }, // H7, X axis
+            q_with_host(8, &[(h7_tick, h7_host)]),
+        );
+
+        // mcu0 horizon covers h7_tick; mcu1 horizon does NOT cover f446_tick.
+        let horizon_of = |mcu_id: u32| -> Option<u64> {
+            if mcu_id == 0 {
+                Some(h7_tick + 1_000_000)
+            } else {
+                Some(f446_tick - 1) // mcu1 piece is ahead of this horizon
+            }
+        };
+
+        match schedule(&queues, 255, horizon_of) {
+            Schedule::Send(frames) => {
+                assert_eq!(frames.len(), 1);
+                assert_eq!(
+                    frames[0].key.mcu_id, 0,
+                    "H7 (mcu0) should be selected, not F446 (mcu1)"
+                );
+            }
+            other => panic!(
+                "expected Send(mcu0) — cross-MCU host-time ordering regression, got {other:?}"
+            ),
+        }
+    }
+
+    /// The globally host-earliest piece's queue having room==0 must block everything
+    /// (intentional global-gating invariant).
+    #[test]
+    fn stall_full_on_globally_earliest_gates_all() {
+        let mut queues = BTreeMap::new();
+
+        // mcu0: host-earliest piece, but ring is full
+        let mut mcu0_q = q_with_host(2, &[(100, 1.0)]);
+        mcu0_q.pushed = 2; // full
+        queues.insert(AxisKey { mcu_id: 0, axis: 0 }, mcu0_q);
+
+        // mcu1: host-later piece, ring has room
+        queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with_host(8, &[(50, 5.0)]));
+
+        assert!(
+            matches!(
+                schedule(&queues, 255, |_| None),
+                Schedule::StallFull(AxisKey { mcu_id: 0, axis: 0 })
+            ),
+            "StallFull on the globally host-earliest queue must gate all issuance"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -348,13 +451,16 @@ mod tests {
         }
     }
 
-    fn make_piece(t: u64) -> PieceEntry {
-        PieceEntry {
-            start_time: t,
-            coeffs: [0.0; 4],
-            duration: 0.001,
-            _reserved: 0,
-        }
+    fn make_piece(t: u64) -> (PieceEntry, f64) {
+        (
+            PieceEntry {
+                start_time: t,
+                coeffs: [0.0; 4],
+                duration: 0.001,
+                _reserved: 0,
+            },
+            t as f64,
+        )
     }
 
     #[test]
@@ -424,11 +530,38 @@ mod tests {
         assert_eq!(s1, expected_s1, "second start_slot should be {expected_s1}");
         assert_eq!(h1, N * 2, "second new_head should be {}", N * 2);
     }
+
+    #[test]
+    fn junction_jumps_math() {
+        // Exact gap: first piece starts exactly where previous ended.
+        let (tick_us, host_us) = junction_jumps(2000, 2.0e-3, 1000, 1.0e-3, 1_000_000.0);
+        assert!((tick_us - 1000.0).abs() < 1e-6, "tick_jump_us={tick_us}");
+        assert!((host_us - 1000.0).abs() < 1e-6, "host_jump_us={host_us}");
+
+        // Overlap (negative jump).
+        let (tick_us2, host_us2) = junction_jumps(900, 0.9e-3, 1000, 1.0e-3, 1_000_000.0);
+        assert!(tick_us2 < 0.0, "overlap should be negative tick jump");
+        assert!(host_us2 < 0.0, "overlap should be negative host jump");
+
+        // Cross-domain divergence: tick gap == 0 µs but host gap == 500 µs.
+        let freq = 520_000_000.0_f64;
+        let prev_end_ticks: u64 = 10_000;
+        let (tick_us3, host_us3) =
+            junction_jumps(prev_end_ticks, 5.0e-4, prev_end_ticks, 0.0, freq);
+        assert!(
+            (tick_us3).abs() < 1e-6,
+            "tick gap should be zero, got {tick_us3}"
+        );
+        assert!((host_us3 - 500.0).abs() < 1e-3, "host_jump_us={host_us3}");
+    }
 }
 
 pub struct EnqueueMsg {
     pub key: AxisKey,
-    pub pieces: Vec<PieceEntry>,
+    /// Each entry pairs the `PieceEntry` with its minting host time (`t0 + u_start`, seconds).
+    /// The host time is the ordering key used by `schedule()`; the raw `start_time` tick is
+    /// MCU-clock-domain-specific and incomparable across MCUs.
+    pub pieces: Vec<(PieceEntry, f64)>,
     pub fresh_stream: bool,
 }
 
@@ -453,6 +586,23 @@ pub trait PieceSink: Send {
     ) -> Result<i32, String>;
 }
 
+/// Compute the tick-domain and host-domain gaps at a batch boundary.
+///
+/// Returns `(tick_jump_us, host_jump_us)` where negative values indicate overlap.
+/// The difference between the two isolates clock-projection error from planner-intent gaps.
+pub fn junction_jumps(
+    first_start_ticks: u64,
+    first_host: f64,
+    prev_end_ticks: u64,
+    prev_end_host: f64,
+    approx_freq_hz: f64,
+) -> (f64, f64) {
+    let tick_jump_us =
+        (first_start_ticks as i64 - prev_end_ticks as i64) as f64 / approx_freq_hz * 1e6;
+    let host_jump_us = (first_host - prev_end_host) * 1e6;
+    (tick_jump_us, host_jump_us)
+}
+
 const MAX_LEAD_SECS: f64 = 1.0;
 
 pub fn run_pump<S, F, C>(rx: Receiver<PumpMsg>, sink: S, ring_depth_of: F, mcu_clock_of: C)
@@ -462,16 +612,70 @@ where
     C: Fn(u32) -> Option<(u64, f64)>,
 {
     let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
+    // Per-axis junction tracking for clock-projection jitter measurement.
+    let mut junction_ends: BTreeMap<AxisKey, (u64, f64)> = BTreeMap::new();
     const MAX_PER_FRAME: usize = 32;
 
-    let apply = |msg: PumpMsg, queues: &mut BTreeMap<AxisKey, AxisQueue>| -> bool {
+    let apply = |msg: PumpMsg,
+                 queues: &mut BTreeMap<AxisKey, AxisQueue>,
+                 junction_ends: &mut BTreeMap<AxisKey, (u64, f64)>|
+     -> bool {
         match msg {
             PumpMsg::Shutdown => return false,
             PumpMsg::Enqueue(EnqueueMsg {
                 key,
                 pieces,
-                fresh_stream: _,
+                fresh_stream,
             }) => {
+                if fresh_stream {
+                    junction_ends.remove(&key);
+                }
+                if !pieces.is_empty() {
+                    // Clock not yet synced — skip junction bookkeeping; µs math is
+                    // meaningless without a real frequency and end_time needs it too.
+                    if let Some((_ack_now, freq)) = mcu_clock_of(key.mcu_id) {
+                        let (first_entry, first_host) = &pieces[0];
+                        if let Some(&(prev_end_ticks, prev_end_host)) = junction_ends.get(&key) {
+                            let (tick_jump_us, host_jump_us) = junction_jumps(
+                                first_entry.start_time,
+                                *first_host,
+                                prev_end_ticks,
+                                prev_end_host,
+                                freq,
+                            );
+                            let anomalous =
+                                tick_jump_us < -50.0 || (tick_jump_us - host_jump_us).abs() > 50.0;
+                            if fresh_stream || !anomalous {
+                                log::debug!(
+                                    "[junction] key={:?} tick_jump_us={:.1} host_jump_us={:.1} fresh={}",
+                                    key,
+                                    tick_jump_us,
+                                    host_jump_us,
+                                    fresh_stream,
+                                );
+                            } else {
+                                let reason = if tick_jump_us < -50.0 {
+                                    "overlap_risk"
+                                } else {
+                                    "projection_divergence"
+                                };
+                                log::warn!(
+                                    "[junction] key={:?} tick_jump_us={:.1} host_jump_us={:.1} fresh={} reason={}",
+                                    key,
+                                    tick_jump_us,
+                                    host_jump_us,
+                                    fresh_stream,
+                                    reason,
+                                );
+                            }
+                        }
+                        let (last_entry, last_host) = pieces.last().unwrap();
+                        #[allow(clippy::cast_possible_truncation)]
+                        let last_end_ticks = last_entry.end_time(freq as f32);
+                        let last_end_host = last_host + last_entry.duration as f64;
+                        junction_ends.insert(key, (last_end_ticks, last_end_host));
+                    }
+                }
                 let q = queues
                     .entry(key)
                     .or_insert_with(|| AxisQueue::new(ring_depth_of(key)));
@@ -522,11 +726,11 @@ where
         };
 
         if let Some(msg) = first {
-            if !apply(msg, &mut queues) {
+            if !apply(msg, &mut queues, &mut junction_ends) {
                 return;
             }
             while let Ok(m) = rx.try_recv() {
-                if !apply(m, &mut queues) {
+                if !apply(m, &mut queues, &mut junction_ends) {
                     return;
                 }
             }

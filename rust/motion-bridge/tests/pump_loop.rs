@@ -18,13 +18,16 @@ impl PieceSink for RecordingSink {
     }
 }
 
-fn p(start: u64) -> PieceEntry {
-    PieceEntry {
-        start_time: start,
-        coeffs: [0.0; 4],
-        duration: 0.001,
-        _reserved: 0,
-    }
+fn p(start: u64) -> (PieceEntry, f64) {
+    (
+        PieceEntry {
+            start_time: start,
+            coeffs: [0.0; 4],
+            duration: 0.001,
+            _reserved: 0,
+        },
+        start as f64,
+    )
 }
 
 #[test]

@@ -146,8 +146,25 @@ class SerialReader:
                         ev.get("trigger_reason"),
                     )
                 ev["#name"] = name
-                ev["#sent_time"] = now
-                ev["#receive_time"] = now
+                # Use CLOCK_MONOTONIC_RAW stamps when the Rust bridge supplied
+                # them (non-zero); this happens for "clock" responses dispatched
+                # via bridge_get_clock_async so _handle_clock sees honest RTTs.
+                sent_raw = ev.get("#sent_time_raw", 0.0)
+                recv_raw = ev.get("#receive_time_raw", 0.0)
+                if sent_raw != 0.0 and recv_raw != 0.0:
+                    ev["#sent_time"] = sent_raw
+                    ev["#receive_time"] = recv_raw
+                elif name == "clock":
+                    # A clock sample without wire stamps (missed interception,
+                    # duplicate, late arrival) must be DROPPED by clocksync —
+                    # fabricating sent==recv here would feed half_rtt=0 into
+                    # min_half_rtt and permanently bias the estimate.
+                    # _handle_clock's `if not sent_time: return` does the drop.
+                    ev["#sent_time"] = 0.0
+                    ev["#receive_time"] = now
+                else:
+                    ev["#sent_time"] = now
+                    ev["#receive_time"] = now
                 oid = ev.get("oid")
                 with self.lock:
                     hdl = (
@@ -466,11 +483,13 @@ class SerialReader:
     def set_clock_est(self, freq, conv_time, conv_clock, last_clock):
         if self.mcu._motion_bridge is None:
             return
+        host_now_raw = self.reactor.monotonic()
         self.mcu._motion_bridge.set_clock_est(
             self.mcu._bridge_handle,
             float(freq),
             float(conv_time),
             int(conv_clock),
+            host_now_raw,
         )
 
     def disconnect(self):
@@ -517,6 +536,26 @@ class SerialReader:
             self._error("non-critical MCU is disconnected")
 
     # Command sending
+    def bridge_get_clock_async(self):
+        """Send a get_clock request through the bridge with RAW timestamp
+        capture.  Used by clocksync._get_clock_event to replace the no-op
+        raw_send path.  The response arrives via take_runtime_event as a
+        PassthroughResponse with sent_time_raw/recv_time_raw filled in.
+
+        This no-arg form is the hasattr target in clocksync._get_clock_event
+        (``hasattr(self.serial, "bridge_get_clock_async")``); it resolves the
+        MCU handle internally.  MotionBridgeWrapper also exposes a
+        bridge_get_clock_async(handle) method — passing a wrapper object where
+        a SerialReader is expected would TypeError at the hasattr call site
+        because the wrapper's method requires an explicit handle argument."""
+        bridge = getattr(self.mcu, "_motion_bridge", None)
+        if bridge is None:
+            return
+        handle = self.mcu._bridge_handle
+        if handle is None:
+            return
+        bridge.bridge_get_clock_async(handle)
+
     def raw_send(self, cmd, minclock, reqclock, cmd_queue):
         self._check_noncritical_disconnected()
         if self.serialqueue is not None:
@@ -574,9 +613,19 @@ class SerialReader:
                 msg,
                 response,
             )
-            now = self.reactor.monotonic()
-            params["#sent_time"] = now
-            params["#receive_time"] = now
+            # Use CLOCK_MONOTONIC_RAW timestamps if the Rust bridge supplied them
+            # (non-zero means a real RTT was measured on the wire).  Fall back to
+            # reactor.monotonic() only when both sides stamp the same instant (the
+            # old behaviour, which gives half_rtt=0 and breaks min_half_rtt).
+            sent_raw = params.get("#sent_time_raw", 0.0)
+            recv_raw = params.get("#receive_time_raw", 0.0)
+            if sent_raw != 0.0 and recv_raw != 0.0:
+                params["#sent_time"] = sent_raw
+                params["#receive_time"] = recv_raw
+            else:
+                now = self.reactor.monotonic()
+                params["#sent_time"] = now
+                params["#receive_time"] = now
             return params
         raise error("send_with_response requires motion bridge")
 

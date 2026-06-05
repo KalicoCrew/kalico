@@ -60,7 +60,12 @@ where
     out
 }
 
-fn flatten_axis<P>(curve: &ScalarNurbs<f64>, t0: f64, mcu_id: u32, project: &P) -> Vec<PieceEntry>
+fn flatten_axis<P>(
+    curve: &ScalarNurbs<f64>,
+    t0: f64,
+    mcu_id: u32,
+    project: &P,
+) -> Vec<(PieceEntry, f64)>
 where
     P: Fn(u32, f64) -> u64,
 {
@@ -88,15 +93,19 @@ where
             }
         }
 
-        let start_time = project(mcu_id, t0 + bp.u_start);
+        let host_secs = t0 + bp.u_start;
+        let start_time = project(mcu_id, host_secs);
         let duration = (bp.u_end - bp.u_start) as f32;
 
-        out.push(PieceEntry {
-            start_time,
-            coeffs,
-            duration,
-            _reserved: 0,
-        });
+        out.push((
+            PieceEntry {
+                start_time,
+                coeffs,
+                duration,
+                _reserved: 0,
+            },
+            host_secs,
+        ));
     }
 
     out
@@ -152,11 +161,11 @@ mod tests {
 
         assert!(!x.pieces.is_empty(), "X must have at least one piece");
         assert_eq!(
-            x.pieces[0].start_time, 100_000,
+            x.pieces[0].0.start_time, 100_000,
             "start_time = (t0=100) * 1000 = 100_000"
         );
         assert!(
-            x.pieces.iter().all(|p| p.duration > 0.0),
+            x.pieces.iter().all(|(p, _)| p.duration > 0.0),
             "all piece durations must be positive"
         );
 
@@ -201,7 +210,7 @@ mod tests {
             .find(|m| m.key == AxisKey { mcu_id: 1, axis: 0 })
             .expect("motor-A (AXIS_X slot) must be present");
 
-        let last_coeff = a.pieces.last().unwrap().coeffs[3];
+        let last_coeff = a.pieces.last().unwrap().0.coeffs[3];
         assert!(
             (last_coeff - 14.0_f32).abs() < 1e-3,
             "motor-A endpoint coefficient expected ≈14, got {last_coeff}"
@@ -212,7 +221,7 @@ mod tests {
             .find(|m| m.key == AxisKey { mcu_id: 1, axis: 1 })
             .expect("motor-B (AXIS_Y slot) must be present");
 
-        let b_last = b.pieces.last().unwrap().coeffs[3];
+        let b_last = b.pieces.last().unwrap().0.coeffs[3];
         assert!(
             (b_last - 6.0_f32).abs() < 1e-3,
             "motor-B endpoint coefficient expected ≈6, got {b_last}"

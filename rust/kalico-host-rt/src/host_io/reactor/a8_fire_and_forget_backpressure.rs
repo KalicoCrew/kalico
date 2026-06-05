@@ -35,7 +35,7 @@ fn a8_fire_and_forget_enqueues_under_window_full() {
     // Dispatch a fire-and-forget payload while the window is full.
     let payload = vec![0xAB, 0xCD, 0xEF];
     h.reactor
-        .dispatch_fire_and_forget(payload.clone())
+        .dispatch_fire_and_forget(payload.clone(), false)
         .expect("enqueue should not error under ceiling");
 
     // The payload must NOT have been written to the wire — it should be
@@ -73,7 +73,7 @@ fn a8_pending_fire_and_submission_drain_in_fifo_order() {
     fill_window(&mut h);
 
     h.reactor
-        .dispatch_fire_and_forget(vec![0xF1])
+        .dispatch_fire_and_forget(vec![0xF1], false)
         .expect("first fire-and-forget enqueues");
     let (tx, _rx) = sync_channel(1);
     h.reactor
@@ -86,7 +86,7 @@ fn a8_pending_fire_and_submission_drain_in_fifo_order() {
         )
         .expect("submission enqueues");
     h.reactor
-        .dispatch_fire_and_forget(vec![0xF2])
+        .dispatch_fire_and_forget(vec![0xF2], false)
         .expect("second fire-and-forget enqueues");
 
     assert_eq!(
@@ -130,7 +130,7 @@ fn a8_overflow_returns_backpressure_error() {
     // Fill the pending_fire_and_forget queue to the ceiling.
     for _ in 0..PENDING_FIRE_AND_FORGET_CEILING {
         h.reactor
-            .dispatch_fire_and_forget(vec![0x01])
+            .dispatch_fire_and_forget(vec![0x01], false)
             .expect("enqueue should succeed up to ceiling");
     }
     assert_eq!(
@@ -139,7 +139,7 @@ fn a8_overflow_returns_backpressure_error() {
     );
 
     // The next payload must error with Backpressure (not silent-drop).
-    let result = h.reactor.dispatch_fire_and_forget(vec![0x02]);
+    let result = h.reactor.dispatch_fire_and_forget(vec![0x02], false);
     assert!(
         matches!(result, Err(TransportError::Backpressure)),
         "overflow must return Backpressure, got {result:?}",

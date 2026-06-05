@@ -89,6 +89,12 @@ pub trait Transport: Send + Sync {
 #[derive(Debug, Default, Clone)]
 pub struct MessageParams {
     pub fields: HashMap<String, MessageValue>,
+    /// CLOCK_MONOTONIC_RAW seconds at the instant the request frame was written to
+    /// the wire. Zero when not measured (e.g. non-bridge path or before first sample).
+    pub sent_time_raw: f64,
+    /// CLOCK_MONOTONIC_RAW seconds at the instant the matching response frame was
+    /// received. Zero when not measured.
+    pub recv_time_raw: f64,
 }
 
 impl MessageParams {

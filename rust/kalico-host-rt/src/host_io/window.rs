@@ -72,6 +72,9 @@ pub struct AwaitEntry {
     pub submitted_at: Instant,
     pub deadline: Instant,
     pub abandoned: bool,
+    /// CLOCK_MONOTONIC_RAW seconds captured just before the frame was written to wire.
+    /// Zero when not measured.
+    pub sent_time_raw: f64,
 }
 
 #[derive(Debug, Default)]

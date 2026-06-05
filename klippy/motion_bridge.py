@@ -202,8 +202,13 @@ class MotionBridgeWrapper:
     def get_stats(self, handle):
         return self._bridge.get_stats(handle)
 
-    def set_clock_est(self, handle, freq, offset, last_clock):
-        return self._bridge.set_clock_est(handle, freq, offset, last_clock)
+    def set_clock_est(self, handle, freq, offset, last_clock, host_now_raw):
+        return self._bridge.set_clock_est(
+            handle, freq, offset, last_clock, host_now_raw
+        )
+
+    def bridge_get_clock_async(self, handle):
+        return self._bridge.bridge_get_clock_async(handle)
 
     def extract_old(self, handle):
         return self._bridge.extract_old(handle)

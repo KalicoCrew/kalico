@@ -20,6 +20,7 @@ fn make_entry(
             submitted_at: Instant::now(),
             deadline,
             abandoned: false,
+            sent_time_raw: 0.0,
         },
         rx,
     )

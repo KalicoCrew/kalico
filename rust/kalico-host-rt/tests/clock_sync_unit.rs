@@ -42,7 +42,7 @@ fn quality_gate_requires_recent_dedicated_sample_per_plan_decision_b() {
         est.is_quality_gate_passed(freq).is_ok(),
         "should pass with fresh dedicated sample on regression line; \
          residual_max={} drift_ppm={} samples={}",
-        est.residual_max_in_window,
+        est.residual_ewma_us,
         est.drift_ppm(freq),
         est.sample_count(),
     );

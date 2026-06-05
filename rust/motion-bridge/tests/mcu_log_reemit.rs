@@ -9,13 +9,14 @@
 //! explicitly exercises this for both canonical label values so a regression
 //! to a numeric handle-based name (e.g. "mcu-0") is caught immediately.
 
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use time::OffsetDateTime;
 
-use kalico_host_rt::clock_sync::ClockSyncEstimator;
+use kalico_host_rt::clock::RealClock;
 use kalico_host_rt::host_io::runtime_events::McuLogEvent;
+use kalico_host_rt::passthrough_queue::{McuHandle, PassthroughRouter};
 use motion_bridge_native::logging::context;
 use motion_bridge_native::logging::writer::RotatingJsonlWriter;
 use motion_bridge_native::logging::writer::{
@@ -39,6 +40,32 @@ fn tmp_jsonl(dir_suffix: &str, filename: &str) -> std::path::PathBuf {
     p
 }
 
+fn make_router_with_clock_record(label: &str) -> (Arc<Mutex<PassthroughRouter>>, McuHandle) {
+    let router = Arc::new(Mutex::new(PassthroughRouter::with_clock(Arc::new(
+        RealClock,
+    ))));
+    let mcu = router.lock().unwrap().claim_mcu(label);
+    // Seed a valid clock record anchored at the current instant so
+    // wall_time_at_mcu returns a real time (not None).
+    // freq=100 MHz, current instant as the anchor, last_clock=15*100M (matches
+    // the mcu_tick used in re_emit_closure_produces_schema_conformant_line).
+    router
+        .lock()
+        .unwrap()
+        .set_clock_est_from_sample(mcu, 100_000_000.0, Instant::now(), 15 * 100_000_000)
+        .unwrap();
+    (router, mcu)
+}
+
+fn make_empty_router(label: &str) -> (Arc<Mutex<PassthroughRouter>>, McuHandle) {
+    let router = Arc::new(Mutex::new(PassthroughRouter::with_clock(Arc::new(
+        RealClock,
+    ))));
+    let mcu = router.lock().unwrap().claim_mcu(label);
+    // No clock record set — clock_freq stays 0.0, wall_time_at_mcu returns None.
+    (router, mcu)
+}
+
 #[test]
 fn re_emit_closure_produces_schema_conformant_line() {
     let _ctx_guard = CTX_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -56,18 +83,8 @@ fn re_emit_closure_produces_schema_conformant_line() {
         .unwrap(),
     ));
 
-    // Build an estimator with 30 samples so wall_time_at_mcu works.
-    let est = Arc::new(RwLock::new(ClockSyncEstimator::new(100_000_000.0)));
-    {
-        let mut guard = est.write().unwrap();
-        let now = Instant::now();
-        for i in 0..30u64 {
-            let t = now + std::time::Duration::from_secs(i);
-            guard.add_piggyback_sample(t, (i + 1) * 100_000_000);
-        }
-    }
-
-    let hook = build_mcu_log_hook(Arc::clone(&est), Arc::clone(&writer), "mcu-h7".to_string());
+    let (router, mcu) = make_router_with_clock_record("mcu-h7");
+    let hook = build_mcu_log_hook(router, mcu, Arc::clone(&writer), "mcu-h7".to_string());
 
     let event = McuLogEvent {
         mcu_tick: 15 * 100_000_000u64,
@@ -120,11 +137,11 @@ fn re_emit_closure_produces_schema_conformant_line() {
     assert_eq!(rec["arg1"], 200u64);
 }
 
-/// When the clock-sync estimator has no samples, `wall_time_at_mcu` returns
+/// When the router has no clock record for the MCU, `wall_time_at_mcu` returns
 /// `None`.  The hook must fall back to `host_recv`-derived wall time and set
-/// `time_estimated = true`.  This test constructs a freshly-allocated estimator
-/// (zero samples) and verifies both invariants: a valid RFC3339 `_time` **and**
-/// `time_estimated == true`.
+/// `time_estimated = true`.  This test constructs a router with no clock record
+/// (clock_freq == 0.0) and verifies both invariants: a valid RFC3339 `_time`
+/// **and** `time_estimated == true`.
 ///
 /// Spec §7 / §8 (fallback branch, `mcu_log.rs:67-75`).
 #[test]
@@ -146,10 +163,9 @@ fn fallback_stamps_time_estimated_true_when_no_clock_sync_samples() {
         .unwrap(),
     ));
 
-    // Empty estimator — zero samples, so wall_time_at_mcu always returns None.
-    let est = Arc::new(RwLock::new(ClockSyncEstimator::new(100_000_000.0)));
-
-    let hook = build_mcu_log_hook(Arc::clone(&est), Arc::clone(&writer), "mcu-h7".to_string());
+    // Empty router — no clock record, so wall_time_at_mcu always returns None.
+    let (router, mcu) = make_empty_router("mcu-h7");
+    let hook = build_mcu_log_hook(router, mcu, Arc::clone(&writer), "mcu-h7".to_string());
 
     let event = McuLogEvent {
         mcu_tick: 5 * 100_000_000u64,
@@ -187,7 +203,7 @@ fn fallback_stamps_time_estimated_true_when_no_clock_sync_samples() {
     assert_eq!(
         rec["time_estimated"],
         serde_json::Value::Bool(true),
-        "time_estimated must be true when the estimator has no samples (fallback path)"
+        "time_estimated must be true when the router has no clock record (fallback path)"
     );
 }
 
@@ -219,17 +235,8 @@ fn source_matches_label() {
             .unwrap(),
         ));
 
-        let est = Arc::new(RwLock::new(ClockSyncEstimator::new(100_000_000.0)));
-        {
-            let mut guard = est.write().unwrap();
-            let now = Instant::now();
-            for i in 0..5u64 {
-                let t = now + std::time::Duration::from_secs(i);
-                guard.add_piggyback_sample(t, (i + 1) * 100_000_000);
-            }
-        }
-
-        let hook = build_mcu_log_hook(Arc::clone(&est), Arc::clone(&writer), (*label).to_string());
+        let (router, mcu) = make_router_with_clock_record(label);
+        let hook = build_mcu_log_hook(router, mcu, Arc::clone(&writer), (*label).to_string());
 
         let event = McuLogEvent {
             mcu_tick: 3 * 100_000_000u64,

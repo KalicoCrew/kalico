@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 use indexmap::IndexMap;
@@ -11,7 +11,7 @@ use super::mcu_state::{CommandQueueId, McuState, PushError};
 use super::notify::{NotifyCallback, NotifyResponse, NotifyTable};
 use super::receive_window::ReceiveWindow;
 use super::stats::{PassthroughStats, StatsCounters};
-use crate::clock::Clock;
+use crate::clock::{Clock, instant_to_f64};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct McuHandle(u32);
@@ -93,16 +93,6 @@ impl std::fmt::Debug for PassthroughRouter {
             .field("mcus", &self.mcus)
             .field("next_handle", &self.next_handle)
             .finish()
-    }
-}
-
-fn instant_to_f64(instant: Instant) -> f64 {
-    static ANCHOR: OnceLock<Instant> = OnceLock::new();
-    let anchor = ANCHOR.get_or_init(Instant::now);
-    if instant >= *anchor {
-        instant.duration_since(*anchor).as_secs_f64()
-    } else {
-        -(anchor.duration_since(instant).as_secs_f64())
     }
 }
 
@@ -316,23 +306,31 @@ impl PassthroughRouter {
         Ok(())
     }
 
+    /// Set the router's clock record from a Python-side clocksync estimate.
+    ///
+    /// `offset_raw` is `time_avg + min_half_rtt` in CLOCK_MONOTONIC_RAW seconds
+    /// (what Python's `_handle_clock` computes and the mirror callback exports).
+    /// `host_now_raw` must be a CLOCK_MONOTONIC_RAW reading captured on the Rust
+    /// side (via `kalico_host_rt::clock::monotonic_raw_secs()`) at the same
+    /// instant as the `instant_to_f64(self.clock.now())` reading, so both sides
+    /// of the domain conversion are in RAW units and the resulting `clock_offset`
+    /// lands in the Rust `Instant` epoch used everywhere else in the router.
     pub fn set_clock_est_rebased(
         &mut self,
         mcu: McuHandle,
         freq: f64,
-        offset: f64,
+        offset_raw: f64,
         last_clock: u64,
-        host_now_same_epoch: f64,
+        host_now_raw: f64,
     ) -> Result<(), RouterError> {
-        let bridge_now = instant_to_f64(self.clock.now());
+        let bridge_now_instant = instant_to_f64(self.clock.now());
         let rec = self
             .mcus
             .get_mut(&mcu)
             .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.clock_freq = freq;
-        rec.clock_offset = bridge_now - (host_now_same_epoch - offset);
+        rec.clock_offset = bridge_now_instant - (host_now_raw - offset_raw);
         rec.last_clock = last_clock;
-
         Ok(())
     }
 
@@ -351,6 +349,44 @@ impl PassthroughRouter {
         rec.clock_offset = instant_to_f64(host_send);
         rec.last_clock = mcu_at_send;
         Ok(())
+    }
+
+    /// Convert an MCU tick count to a wall-clock `OffsetDateTime`.
+    ///
+    /// Returns `None` when no clock record has been set for this MCU
+    /// (i.e. `clock_freq == 0.0` — no `set_clock_est_rebased` call yet).
+    ///
+    /// `estimated = true` when the tick is more than one frequency-second from
+    /// the anchor, i.e. significant extrapolation.
+    pub fn wall_time_at_mcu(
+        &self,
+        mcu: McuHandle,
+        mcu_ticks: u64,
+    ) -> Option<(time::OffsetDateTime, bool)> {
+        let rec = self.mcus.get(&mcu)?;
+        if rec.clock_freq == 0.0 {
+            return None;
+        }
+        // Project the tick into the Instant epoch used throughout the router.
+        #[allow(clippy::cast_precision_loss)]
+        let delta_ticks = (mcu_ticks as f64) - (rec.last_clock as f64);
+        let mcu_host_instant = rec.clock_offset + delta_ticks / rec.clock_freq;
+        // Anchor Instant epoch → wall time via the gap between the projection
+        // point and the current instant.
+        let now_instant = instant_to_f64(self.clock.now());
+        let delta_from_now = mcu_host_instant - now_instant;
+        let wall_now = std::time::SystemTime::now();
+        let wall_time = if delta_from_now >= 0.0 {
+            wall_now
+                .checked_add(std::time::Duration::from_secs_f64(delta_from_now))
+                .unwrap_or(wall_now)
+        } else {
+            wall_now
+                .checked_sub(std::time::Duration::from_secs_f64(-delta_from_now))
+                .unwrap_or(wall_now)
+        };
+        let estimated = delta_ticks.abs() / rec.clock_freq > 1.0;
+        Some((time::OffsetDateTime::from(wall_time), estimated))
     }
 
     pub fn ack_clock_and_freq(&self, mcu: McuHandle) -> Option<(u64, f64)> {
