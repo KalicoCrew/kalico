@@ -475,11 +475,13 @@ class SerialReader:
     def set_clock_est(self, freq, conv_time, conv_clock, last_clock):
         if self.mcu._motion_bridge is None:
             return
+        host_now_raw = self.reactor.monotonic()
         self.mcu._motion_bridge.set_clock_est(
             self.mcu._bridge_handle,
             float(freq),
             float(conv_time),
             int(conv_clock),
+            host_now_raw,
         )
 
     def disconnect(self):
@@ -530,7 +532,14 @@ class SerialReader:
         """Send a get_clock request through the bridge with RAW timestamp
         capture.  Used by clocksync._get_clock_event to replace the no-op
         raw_send path.  The response arrives via take_runtime_event as a
-        PassthroughResponse with sent_time_raw/recv_time_raw filled in."""
+        PassthroughResponse with sent_time_raw/recv_time_raw filled in.
+
+        This no-arg form is the hasattr target in clocksync._get_clock_event
+        (``hasattr(self.serial, "bridge_get_clock_async")``); it resolves the
+        MCU handle internally.  MotionBridgeWrapper also exposes a
+        bridge_get_clock_async(handle) method — passing a wrapper object where
+        a SerialReader is expected would TypeError at the hasattr call site
+        because the wrapper's method requires an explicit handle argument."""
         bridge = getattr(self.mcu, "_motion_bridge", None)
         if bridge is None:
             return

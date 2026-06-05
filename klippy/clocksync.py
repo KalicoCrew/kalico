@@ -192,7 +192,11 @@ class ClockSync:
         cb = self._clock_est_callback
         if cb is not None:
             try:
-                cb(new_freq, self.time_avg + self.min_half_rtt, int(self.clock_avg))
+                cb(
+                    new_freq,
+                    self.time_avg + self.min_half_rtt,
+                    int(self.clock_avg),
+                )
             except Exception:
                 logging.exception("clocksync: set_clock_est callback")
         # logging.debug("regr %.3f: freq=%.3f d=%d(%.3f)",

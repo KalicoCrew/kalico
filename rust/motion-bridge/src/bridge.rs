@@ -1467,7 +1467,7 @@ impl PyMotionBridge {
             .map_err(|e| PyRuntimeError::new_err(format!("bridge_mark_expected_disconnect: {e}")))
     }
 
-    #[pyo3(signature = (mcu, freq, offset, last_clock))]
+    #[pyo3(signature = (mcu, freq, offset, last_clock, host_now_raw))]
     fn set_clock_est(
         &self,
         _py: Python<'_>,
@@ -1475,6 +1475,7 @@ impl PyMotionBridge {
         freq: f64,
         offset: f64,
         last_clock: u64,
+        host_now_raw: f64,
     ) -> PyResult<()> {
         // Python clocksync is the single writer of the router clock record for
         // all MCUs (including kalico-native H7/F446 and Beacon).  The former
@@ -1483,15 +1484,14 @@ impl PyMotionBridge {
         //
         // `offset` arrives as `time_avg + min_half_rtt` in CLOCK_MONOTONIC_RAW
         // seconds (the mirror callback now exports the faithful clock_est triple
-        // rather than TRANSMIT_EXTRA-biased values).  Capture a RAW reading on
-        // the Rust side so both sides of the epoch translation are in the same
-        // domain, then rebase into the Rust Instant epoch.
+        // rather than TRANSMIT_EXTRA-biased values).  `host_now_raw` is captured
+        // by the Python callback as its first action (reactor.monotonic() ==
+        // CLOCK_MONOTONIC_RAW) so both sides of the epoch translation are in the
+        // same domain with no GIL-hop jitter added on the Rust side.
         self.clock_freqs
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(mcu, freq);
-
-        let host_now_raw = kalico_host_rt::clock::monotonic_raw_secs();
 
         use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
         static SET_CLOCK_EST_CALLS: AtomicUsize = AtomicUsize::new(0);

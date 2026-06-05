@@ -1653,12 +1653,19 @@ class MCU:
             bridge = self._motion_bridge
             handle = self._bridge_handle
 
+            reactor = self._reactor
+
             def _bridge_clock_est_cb(
-                freq, offset, last_clock, b=bridge, h=handle
+                freq, offset, last_clock, b=bridge, h=handle, r=reactor
             ):
+                host_now_raw = r.monotonic()
                 try:
                     b.set_clock_est(
-                        h, float(freq), float(offset), int(last_clock)
+                        h,
+                        float(freq),
+                        float(offset),
+                        int(last_clock),
+                        host_now_raw,
                     )
                 except Exception:
                     logging.exception("motion_bridge: set_clock_est failed")
