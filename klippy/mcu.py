@@ -1923,8 +1923,7 @@ class MCU:
         return
 
     def check_active(self, print_time, eventtime):
-        # Bridge mode: clock sync runs through motion_bridge; the legacy
-        # steppersync clock-calibration path no longer has work to do here.
+        self._clocksync.calibrate_clock(print_time, eventtime)
         if (
             self._clocksync.is_active()
             or self.is_fileoutput()

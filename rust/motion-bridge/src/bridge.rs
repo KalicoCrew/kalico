@@ -1645,49 +1645,29 @@ impl PyMotionBridge {
     #[pyo3(signature = (mcu, freq, offset, last_clock))]
     fn set_clock_est(
         &self,
-        py: Python<'_>,
+        _py: Python<'_>,
         mcu: u32,
         freq: f64,
         offset: f64,
         last_clock: u64,
     ) -> PyResult<()> {
-        // If the Rust periodic sync loop is running for this MCU, it is the
-        // single writer of the router clock record.  Suppress the Python-driven
-        // write to prevent two different estimators alternately re-anchoring
-        // the same projection record, which produces offset steps.
+        // Python clocksync is the single writer of the router clock record for
+        // all MCUs (including kalico-native H7/F446 and Beacon).  The former
+        // Rust periodic sync loop has been retired — clocksync.py feeds every
+        // MCU via this path.
         //
-        // We still update clock_freqs so the Rust loop can seed its estimator
-        // with the correct nominal frequency even when suppressed.
-        let dedicated_sync_active = {
-            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            mcus.get(&mcu)
-                .map(|c| c.clock_sync_stop.is_some())
-                .unwrap_or(false)
-        };
-
+        // `offset` arrives as `time_avg + min_half_rtt` in CLOCK_MONOTONIC_RAW
+        // seconds (the mirror callback now exports the faithful clock_est triple
+        // rather than TRANSMIT_EXTRA-biased values).  Capture a RAW reading on
+        // the Rust side so both sides of the epoch translation are in the same
+        // domain, then rebase into the Rust Instant epoch.
         self.clock_freqs
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .insert(mcu, freq);
 
-        if dedicated_sync_active {
-            use std::sync::atomic::{AtomicBool, Ordering as AOrd};
-            static LOGGED: AtomicBool = AtomicBool::new(false);
-            if !LOGGED.swap(true, AOrd::Relaxed) {
-                log::info!(
-                    "[clocksync] mcu={mcu}: dedicated Rust sync loop active — \
-                     suppressing Python-driven set_clock_est writes to router \
-                     (single-writer discipline)"
-                );
-            }
-            return Ok(());
-        }
+        let host_now_raw = kalico_host_rt::clock::monotonic_raw_secs();
 
-        let host_now_same_epoch: f64 = py
-            .import("time")?
-            .getattr("monotonic")?
-            .call0()?
-            .extract()?;
         use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
         static SET_CLOCK_EST_CALLS: AtomicUsize = AtomicUsize::new(0);
         let call_n = SET_CLOCK_EST_CALLS.fetch_add(1, AOrd::Relaxed);
@@ -1708,7 +1688,7 @@ impl PyMotionBridge {
                 freq,
                 offset,
                 last_clock,
-                host_now_same_epoch,
+                host_now_raw,
             )
             .map_err(router_err)?;
         Ok(())

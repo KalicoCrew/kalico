@@ -316,23 +316,31 @@ impl PassthroughRouter {
         Ok(())
     }
 
+    /// Set the router's clock record from a Python-side clocksync estimate.
+    ///
+    /// `offset_raw` is `time_avg + min_half_rtt` in CLOCK_MONOTONIC_RAW seconds
+    /// (what Python's `_handle_clock` computes and the mirror callback exports).
+    /// `host_now_raw` must be a CLOCK_MONOTONIC_RAW reading captured on the Rust
+    /// side (via `kalico_host_rt::clock::monotonic_raw_secs()`) at the same
+    /// instant as the `instant_to_f64(self.clock.now())` reading, so both sides
+    /// of the domain conversion are in RAW units and the resulting `clock_offset`
+    /// lands in the Rust `Instant` epoch used everywhere else in the router.
     pub fn set_clock_est_rebased(
         &mut self,
         mcu: McuHandle,
         freq: f64,
-        offset: f64,
+        offset_raw: f64,
         last_clock: u64,
-        host_now_same_epoch: f64,
+        host_now_raw: f64,
     ) -> Result<(), RouterError> {
-        let bridge_now = instant_to_f64(self.clock.now());
+        let bridge_now_instant = instant_to_f64(self.clock.now());
         let rec = self
             .mcus
             .get_mut(&mcu)
             .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.clock_freq = freq;
-        rec.clock_offset = bridge_now - (host_now_same_epoch - offset);
+        rec.clock_offset = bridge_now_instant - (host_now_raw - offset_raw);
         rec.last_clock = last_clock;
-
         Ok(())
     }
 

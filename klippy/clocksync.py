@@ -49,8 +49,8 @@ class ClockSync:
             try:
                 cb(
                     self.clock_est[2],
-                    self.time_avg + TRANSMIT_EXTRA,
-                    self.last_clock,
+                    self.time_avg + self.min_half_rtt,
+                    int(self.clock_avg),
                 )
             except Exception:
                 logging.exception("clocksync: initial set_clock_est callback")
@@ -186,10 +186,13 @@ class ClockSync:
             new_freq,
         )
         # Mirror the regression update into the motion_bridge.
+        # Export the same triple as clock_est: (freq, time_avg+min_half_rtt,
+        # clock_avg).  TRANSMIT_EXTRA is a serialqueue scheduling bias — not a
+        # projection parameter — and must not contaminate the router anchor.
         cb = self._clock_est_callback
         if cb is not None:
             try:
-                cb(new_freq, self.time_avg + TRANSMIT_EXTRA, clock)
+                cb(new_freq, self.time_avg + self.min_half_rtt, int(self.clock_avg))
             except Exception:
                 logging.exception("clocksync: set_clock_est callback")
         # logging.debug("regr %.3f: freq=%.3f d=%d(%.3f)",
