@@ -361,6 +361,44 @@ impl PassthroughRouter {
         Ok(())
     }
 
+    /// Convert an MCU tick count to a wall-clock `OffsetDateTime`.
+    ///
+    /// Returns `None` when no clock record has been set for this MCU
+    /// (i.e. `clock_freq == 0.0` — no `set_clock_est_rebased` call yet).
+    ///
+    /// `estimated = true` when the tick is more than one frequency-second from
+    /// the anchor, i.e. significant extrapolation.
+    pub fn wall_time_at_mcu(
+        &self,
+        mcu: McuHandle,
+        mcu_ticks: u64,
+    ) -> Option<(time::OffsetDateTime, bool)> {
+        let rec = self.mcus.get(&mcu)?;
+        if rec.clock_freq == 0.0 {
+            return None;
+        }
+        // Project the tick into the Instant epoch used throughout the router.
+        #[allow(clippy::cast_precision_loss)]
+        let delta_ticks = (mcu_ticks as f64) - (rec.last_clock as f64);
+        let mcu_host_instant = rec.clock_offset + delta_ticks / rec.clock_freq;
+        // Anchor Instant epoch → wall time via the gap between the projection
+        // point and the current instant.
+        let now_instant = instant_to_f64(self.clock.now());
+        let delta_from_now = mcu_host_instant - now_instant;
+        let wall_now = std::time::SystemTime::now();
+        let wall_time = if delta_from_now >= 0.0 {
+            wall_now
+                .checked_add(std::time::Duration::from_secs_f64(delta_from_now))
+                .unwrap_or(wall_now)
+        } else {
+            wall_now
+                .checked_sub(std::time::Duration::from_secs_f64(-delta_from_now))
+                .unwrap_or(wall_now)
+        };
+        let estimated = delta_ticks.abs() / rec.clock_freq > 1.0;
+        Some((time::OffsetDateTime::from(wall_time), estimated))
+    }
+
     pub fn ack_clock_and_freq(&self, mcu: McuHandle) -> Option<(u64, f64)> {
         let rec = self.mcus.get(&mcu)?;
         if rec.clock_freq == 0.0 {

@@ -1,11 +1,11 @@
 use std::io::Write;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
 
-use kalico_host_rt::clock_sync::ClockSyncEstimator;
 use kalico_host_rt::host_io::runtime_events::McuLogEvent;
+use kalico_host_rt::passthrough_queue::{McuHandle, PassthroughRouter};
 use runtime::error::FaultCode;
 use runtime::log_codes::{compose_msg, event_info, subsystem_name};
 
@@ -23,16 +23,15 @@ fn mcu_level_str(level: u8) -> &'static str {
 }
 
 pub fn build_mcu_log_hook(
-    clock: Arc<RwLock<ClockSyncEstimator>>,
+    router: Arc<Mutex<PassthroughRouter>>,
+    mcu: McuHandle,
     writer: Arc<Mutex<RotatingJsonlWriter>>,
     source: String,
 ) -> impl Fn(McuLogEvent) + Send + Sync + 'static {
     move |e: McuLogEvent| {
         let (time_str, time_estimated) = {
-            let guard = clock
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if let Some((dt, estimated)) = guard.wall_time_at_mcu(e.mcu_tick) {
+            let guard = router.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some((dt, estimated)) = guard.wall_time_at_mcu(mcu, e.mcu_tick) {
                 (format_time(dt), estimated)
             } else {
                 let elapsed = e.host_recv.elapsed();
