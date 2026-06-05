@@ -73,15 +73,16 @@ fn main() {
     if rc != 0 {
         eprintln!("ec-rt: bringup failed rc={rc}, sending handshake-fail then exiting");
         let claim_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        if let Some(cid) = wait_for_claim(&mut server, claim_deadline, &SIGTERM_RECEIVED) {
+        if let Some(cid) = wait_for_claim(&mut server, claim_deadline, &SIGTERM_RECEIVED, "ec-rt") {
             let reply = single_slave_reply(
+                1,
                 SlaveState::Offline,
                 u16::try_from(rc.unsigned_abs()).unwrap_or(u16::MAX),
             );
             server.respond_and_close(&claim_handshake_reply_frame(cid, &reply));
             eprintln!("ec-rt: sent offline handshake reply, exiting");
         } else {
-            eprintln!("ec-rt: bridge did not send ClaimHandshake within 5 s; giving up");
+            eprintln!("ec-rt: bridge did not send ClaimHandshake within 5 s; aborting");
         }
         std::process::exit(1);
     }
@@ -91,11 +92,12 @@ fn main() {
         &mut server,
         std::time::Instant::now() + std::time::Duration::from_secs(5),
         &SIGTERM_RECEIVED,
+        "ec-rt",
     ) {
         Some(cid) => {
             server.respond(&claim_handshake_reply_frame(
                 cid,
-                &single_slave_reply(SlaveState::Ok, 0),
+                &single_slave_reply(1, SlaveState::Ok, 0),
             ));
         }
         None => {
@@ -110,7 +112,7 @@ fn main() {
     eprintln!("ec-rt: handshake ok, entering DC loop");
 
     let mut prdiv = 0u64;
-    loop {
+    'dc: loop {
         if SIGTERM_RECEIVED.load(Ordering::Acquire) {
             eprintln!("ec-rt: SIGTERM received — disabling drive and exiting");
             break;
@@ -161,8 +163,10 @@ fn main() {
                 }
                 Command::ClaimHandshake { .. } => {
                     eprintln!(
-                        "ec-rt: unexpected ClaimHandshake after handshake complete — ignoring"
+                        "ec-rt: protocol violation: ClaimHandshake after handshake \
+                         — ending session"
                     );
+                    break 'dc;
                 }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt: ignoring kind 0x{kind_raw:04x}");

@@ -13,6 +13,9 @@ use crate::wire::Command;
 /// Poll `server` for a [`Command::ClaimHandshake`] until `deadline` or until
 /// `sigterm` is set.
 ///
+/// `prefix` is prepended to diagnostic messages (e.g. `"ec-rt"` or
+/// `"ec-rt-stub"`).
+///
 /// Returns the `correlation_id` on success, `None` on timeout or SIGTERM.
 /// Any non-`ClaimHandshake` command received before the handshake is logged and
 /// dropped — the bridge must not send operational traffic before claiming.
@@ -20,13 +23,14 @@ pub fn wait_for_claim(
     server: &mut FrameServer,
     deadline: std::time::Instant,
     sigterm: &AtomicBool,
+    prefix: &str,
 ) -> Option<u32> {
     loop {
         for cmd in server.poll_commands() {
             if let Command::ClaimHandshake { correlation_id } = cmd {
                 return Some(correlation_id);
             }
-            eprintln!("ec-rt: unexpected pre-handshake command: {cmd:?}");
+            eprintln!("{prefix}: unexpected pre-handshake command: {cmd:?}");
         }
         if std::time::Instant::now() >= deadline {
             return None;
@@ -38,11 +42,16 @@ pub fn wait_for_claim(
     }
 }
 
-/// Build a [`ClaimHandshakeReply`] with a single slave entry at `slave_idx = 1`.
-pub fn single_slave_reply(state: SlaveState, fault_code: u16) -> ClaimHandshakeReply {
+/// Build a [`ClaimHandshakeReply`] with a single slave entry at the given
+/// `slave_idx`.
+pub fn single_slave_reply(
+    slave_idx: u8,
+    state: SlaveState,
+    fault_code: u16,
+) -> ClaimHandshakeReply {
     ClaimHandshakeReply {
         slave_statuses: vec![SlaveStatus {
-            slave_idx: 1,
+            slave_idx,
             state,
             fault_code,
         }],

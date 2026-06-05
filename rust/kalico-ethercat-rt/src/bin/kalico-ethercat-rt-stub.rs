@@ -47,8 +47,8 @@ fn main() {
     let mut server = FrameServer::bind(&socket).expect("bind socket");
     eprintln!("ec-rt-stub: socket {socket} (NO HARDWARE)");
 
-    // SAFETY: on_sigterm only touches a static AtomicBool; SA_RESTART keeps a
-    // second SIGTERM effective on the clean-shutdown path too.
+    // SAFETY: on_sigterm only touches a static AtomicBool; SA_RESTART (and no
+    // SA_RESETHAND) keeps a second SIGTERM on the clean-shutdown path too.
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
         sa.sa_sigaction = on_sigterm as libc::sighandler_t;
@@ -57,7 +57,7 @@ fn main() {
     }
 
     let claim_deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let cid = match wait_for_claim(&mut server, claim_deadline, &SIGTERM_RECEIVED) {
+    let cid = match wait_for_claim(&mut server, claim_deadline, &SIGTERM_RECEIVED, "ec-rt-stub") {
         Some(id) => id,
         None => {
             eprintln!("ec-rt-stub: bridge did not send ClaimHandshake within 10 s; aborting");
@@ -66,8 +66,7 @@ fn main() {
     };
 
     if let Some(slave_idx) = fail_slave {
-        let mut reply = single_slave_reply(SlaveState::Offline, 0);
-        reply.slave_statuses[0].slave_idx = slave_idx;
+        let reply = single_slave_reply(slave_idx, SlaveState::Offline, 0);
         server.respond_and_close(&claim_handshake_reply_frame(cid, &reply));
         eprintln!("ec-rt-stub: --fail-bringup: sent Offline for slave {slave_idx}, exiting");
         std::process::exit(1);
@@ -75,11 +74,11 @@ fn main() {
 
     server.respond(&claim_handshake_reply_frame(
         cid,
-        &single_slave_reply(SlaveState::Ok, 0),
+        &single_slave_reply(1, SlaveState::Ok, 0),
     ));
     eprintln!("ec-rt-stub: handshake ok, entering stub loop");
 
-    loop {
+    'session: loop {
         if SIGTERM_RECEIVED.load(Ordering::Acquire) {
             eprintln!("ec-rt-stub: SIGTERM received — exiting");
             break;
@@ -129,12 +128,11 @@ fn main() {
                     server.respond(&runtime_caps_response_frame(correlation_id, total));
                 }
                 Command::ClaimHandshake { .. } => {
-                    // One-claim contract: a second ClaimHandshake is a protocol violation.
                     eprintln!(
-                        "ec-rt-stub: protocol violation — ClaimHandshake received after handshake \
-                         complete; ending session"
+                        "ec-rt-stub: protocol violation: ClaimHandshake after handshake \
+                         — ending session"
                     );
-                    break;
+                    break 'session;
                 }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt-stub: ignoring kind 0x{kind_raw:04x}");
