@@ -56,9 +56,25 @@ fn empty_slave_list_is_hard_error() {
 
 #[test]
 fn message_kind_claim_handshake_roundtrips() {
-    let raw = MessageKind::ClaimHandshakeReply.as_u16();
+    // Both kinds must survive a from_u16(as_u16()) round-trip.
+    let raw_request = MessageKind::ClaimHandshake.as_u16();
     assert_eq!(
-        MessageKind::from_u16(raw),
+        MessageKind::from_u16(raw_request),
+        Some(MessageKind::ClaimHandshake)
+    );
+    let raw_reply = MessageKind::ClaimHandshakeReply.as_u16();
+    assert_eq!(
+        MessageKind::from_u16(raw_reply),
         Some(MessageKind::ClaimHandshakeReply)
+    );
+    // Routing contract: neither kind is an unsolicited event — the host
+    // dispatcher must route both through the correlation-id pending map.
+    assert!(
+        !MessageKind::ClaimHandshake.is_event(),
+        "ClaimHandshake must not be classified as an event"
+    );
+    assert!(
+        !MessageKind::ClaimHandshakeReply.is_event(),
+        "ClaimHandshakeReply must not be classified as an event"
     );
 }

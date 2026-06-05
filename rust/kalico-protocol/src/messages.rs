@@ -12,13 +12,13 @@ pub enum MessageKind {
     ConfigureAxesResponse = 0x0031,
     QueryRuntimeCaps = 0x0040,
     RuntimeCapsResponse = 0x0041,
+    ClaimHandshake = 0x0042,
+    ClaimHandshakeReply = 0x0043,
     PushPieces = 0x0060,
     PushPiecesResponse = 0x0061,
     FaultEvent = 0x0082,
     StatusHeartbeat = 0x0083,
     McuLog = 0x0084,
-    ClaimHandshakeReply = 0x0090,
-    ClaimHandshake = 0x0091,
 }
 
 impl MessageKind {
@@ -30,13 +30,13 @@ impl MessageKind {
             0x0031 => Self::ConfigureAxesResponse,
             0x0040 => Self::QueryRuntimeCaps,
             0x0041 => Self::RuntimeCapsResponse,
+            0x0042 => Self::ClaimHandshake,
+            0x0043 => Self::ClaimHandshakeReply,
             0x0060 => Self::PushPieces,
             0x0061 => Self::PushPiecesResponse,
             0x0082 => Self::FaultEvent,
             0x0083 => Self::StatusHeartbeat,
             0x0084 => Self::McuLog,
-            0x0090 => Self::ClaimHandshakeReply,
-            0x0091 => Self::ClaimHandshake,
             _ => return None,
         })
     }

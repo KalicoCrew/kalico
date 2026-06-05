@@ -69,7 +69,6 @@ fn main() {
                     server.respond(&runtime_caps_response_frame(correlation_id, total));
                 }
                 Command::ClaimHandshake { .. } => {
-                    // Tasks 4/5 wire this up; the stub ignores it for now.
                     eprintln!("ec-rt-stub: ClaimHandshake not yet implemented in stub");
                 }
                 Command::Unknown { kind_raw, .. } => {

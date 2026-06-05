@@ -127,9 +127,11 @@ pub fn runtime_caps_response_frame(cid: u32, total_piece_memory: u32) -> Vec<u8>
 }
 
 pub fn claim_handshake_reply_frame(cid: u32, reply: &ClaimHandshakeReply) -> Vec<u8> {
-    let mut body = Vec::new();
-    reply.encode(&mut body);
-    control_frame(MessageKind::ClaimHandshakeReply, cid, &body)
+    control_frame(
+        MessageKind::ClaimHandshakeReply,
+        cid,
+        &reply.encoded_to_vec(),
+    )
 }
 
 pub fn identify_response_frame(cid: u32, proto_version: u8) -> Vec<u8> {
