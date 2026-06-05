@@ -258,12 +258,12 @@ class PrinterExtruder:
             gcode.register_command("M109", self.cmd_M109)
             gcode.register_command("M302", self.cmd_M302)
             gcode.register_mux_command(
-                "SET_NOZZLE_DIAMETER", 
-                "EXTRUDER", 
+                "SET_NOZZLE_DIAMETER",
+                "EXTRUDER",
                 None,
                 self.cmd_default_SET_NOZZLE_DIAMETER,
-                desc=self.cmd_SET_NOZZLE_DIAMETER_help
-                )
+                desc=self.cmd_SET_NOZZLE_DIAMETER_help,
+            )
         gcode.register_mux_command(
             "ACTIVATE_EXTRUDER",
             "EXTRUDER",
@@ -272,11 +272,11 @@ class PrinterExtruder:
             desc=self.cmd_ACTIVATE_EXTRUDER_help,
         )
         gcode.register_mux_command(
-            "SET_NOZZLE_DIAMETER", 
+            "SET_NOZZLE_DIAMETER",
             "EXTRUDER",
-            self.name, 
+            self.name,
             self.cmd_SET_NOZZLE_DIAMETER,
-            desc=self.cmd_SET_NOZZLE_DIAMETER_help
+            desc=self.cmd_SET_NOZZLE_DIAMETER_help,
         )
 
     def update_move_time(self, flush_time, clear_history_time):
@@ -436,24 +436,26 @@ class PrinterExtruder:
     cmd_SET_NOZZLE_DIAMETER_help = "Set nozzle diameter"
 
     def cmd_default_SET_NOZZLE_DIAMETER(self, gcmd):
-        extruder = self.printer.lookup_object('toolhead').get_extruder()
+        extruder = self.printer.lookup_object("toolhead").get_extruder()
         extruder.cmd_SET_NOZZLE_DIAMETER(gcmd)
 
     def cmd_SET_NOZZLE_DIAMETER(self, gcmd):
-        diameter = gcmd.get_float('DIAMETER', above=.0)
-
-        toolhead = self.printer.lookup_object('toolhead')
+        diameter = gcmd.get_float("DIAMETER", above=0.0)
+        toolhead = self.printer.lookup_object("toolhead")
         toolhead.flush_step_generation()
-
         self.nozzle_diameter = diameter
-        def_max_cross_section = 4. * self.nozzle_diameter**2
+        def_max_cross_section = 4.0 * self.nozzle_diameter**2
         self.max_extrude_ratio = def_max_cross_section / self.filament_area
 
-        logging.info("Nozzle diameter changed to %.2f, max_extrude_ratio=%.6f",
-                    self.nozzle_diameter, self.max_extrude_ratio)
-        gcmd.respond_info("Nozzle diameter set to %.2fmm\n"
-                         "Max extrude ratio: %.6f"
-                         % (diameter, self.max_extrude_ratio))
+        logging.info(
+            "Nozzle diameter changed to %.2f, max_extrude_ratio=%.6f",
+            self.nozzle_diameter,
+            self.max_extrude_ratio,
+        )
+        gcmd.respond_info(
+            "Nozzle diameter set to %.2fmm\n"
+            "Max extrude ratio: %.6f" % (diameter, self.max_extrude_ratio)
+        )
 
 
 # Dummy extruder class used when a printer has no extruder at all
