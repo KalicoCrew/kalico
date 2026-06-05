@@ -68,6 +68,10 @@ fn main() {
                     let total: u32 = (AXIS_RING_CAPACITY * NUM_AXES * 32) as u32;
                     server.respond(&runtime_caps_response_frame(correlation_id, total));
                 }
+                Command::ClaimHandshake { .. } => {
+                    // Tasks 4/5 wire this up; the stub ignores it for now.
+                    eprintln!("ec-rt-stub: ClaimHandshake not yet implemented in stub");
+                }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt-stub: ignoring kind 0x{kind_raw:04x}");
                 }

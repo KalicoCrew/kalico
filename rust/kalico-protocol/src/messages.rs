@@ -18,6 +18,7 @@ pub enum MessageKind {
     StatusHeartbeat = 0x0083,
     McuLog = 0x0084,
     ClaimHandshakeReply = 0x0090,
+    ClaimHandshake = 0x0091,
 }
 
 impl MessageKind {
@@ -35,6 +36,7 @@ impl MessageKind {
             0x0083 => Self::StatusHeartbeat,
             0x0084 => Self::McuLog,
             0x0090 => Self::ClaimHandshakeReply,
+            0x0091 => Self::ClaimHandshake,
             _ => return None,
         })
     }
