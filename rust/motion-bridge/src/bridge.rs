@@ -1594,6 +1594,38 @@ impl PyMotionBridge {
         offset: f64,
         last_clock: u64,
     ) -> PyResult<()> {
+        // If the Rust periodic sync loop is running for this MCU, it is the
+        // single writer of the router clock record.  Suppress the Python-driven
+        // write to prevent two different estimators alternately re-anchoring
+        // the same projection record, which produces offset steps.
+        //
+        // We still update clock_freqs so the Rust loop can seed its estimator
+        // with the correct nominal frequency even when suppressed.
+        let dedicated_sync_active = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            mcus.get(&mcu)
+                .map(|c| c.clock_sync_stop.is_some())
+                .unwrap_or(false)
+        };
+
+        self.clock_freqs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(mcu, freq);
+
+        if dedicated_sync_active {
+            use std::sync::atomic::{AtomicBool, Ordering as AOrd};
+            static LOGGED: AtomicBool = AtomicBool::new(false);
+            if !LOGGED.swap(true, AOrd::Relaxed) {
+                log::info!(
+                    "[clocksync] mcu={mcu}: dedicated Rust sync loop active — \
+                     suppressing Python-driven set_clock_est writes to router \
+                     (single-writer discipline)"
+                );
+            }
+            return Ok(());
+        }
+
         let host_now_same_epoch: f64 = py
             .import("time")?
             .getattr("monotonic")?
@@ -1622,10 +1654,6 @@ impl PyMotionBridge {
                 host_now_same_epoch,
             )
             .map_err(router_err)?;
-        self.clock_freqs
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(mcu, freq);
         Ok(())
     }
 
