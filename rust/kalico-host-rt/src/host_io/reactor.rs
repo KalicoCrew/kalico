@@ -51,6 +51,12 @@ pub struct Reactor {
 
     pub(crate) pending_submissions: VecDeque<PendingSubmission>,
 
+    /// When `get_clock_async` is in flight: the CLOCK_MONOTONIC_RAW sent-time
+    /// captured before the frame was written to wire.  The next unsolicited
+    /// "clock" response matching this will be delivered as a PassthroughResponse
+    /// with RAW RTT stamps rather than going through the generic path.
+    pub(crate) pending_clock_sent_raw: Option<f64>,
+
     pub(crate) pending_fire_and_forget: VecDeque<Vec<u8>>,
     pub(crate) pending_outbound_order: VecDeque<PendingOutboundKind>,
     pub(crate) zero_byte_first_seen: Option<Instant>,
@@ -139,6 +145,7 @@ impl Reactor {
             state: ReactorState::Active,
             closed_via_shutdown: false,
             pending_host_fault: None,
+            pending_clock_sent_raw: None,
             pending_submissions: VecDeque::new(),
             pending_fire_and_forget: VecDeque::new(),
             pending_outbound_order: VecDeque::new(),
@@ -674,6 +681,25 @@ impl Reactor {
                             "unsolicited frame"
                         );
                     }
+                    // If this is the "clock" response for a pending get_clock_async
+                    // request, inject RAW timestamps so Python clocksync sees an
+                    // honest RTT rather than the usual half_rtt=0 artefact.
+                    if name == "clock" {
+                        if let Some(sent_raw) = self.pending_clock_sent_raw.take() {
+                            let recv_raw = crate::clock::monotonic_raw_secs();
+                            let mut stamped = params.clone();
+                            stamped.sent_time_raw = sent_raw;
+                            stamped.recv_time_raw = recv_raw;
+                            let event =
+                                crate::host_io::runtime_events::RuntimeEvent::PassthroughResponse {
+                                    name,
+                                    params: stamped,
+                                };
+                            self.dispatch_runtime_event(event);
+                            return Ok(());
+                        }
+                    }
+
                     self.interceptors.dispatch(&name, oid, &params);
 
                     if !self.try_dispatch_passthrough_response(&raw_payload) {
@@ -1066,6 +1092,25 @@ impl Reactor {
                     if is_io {
                         self.transition_closed_on_io_fault();
                     }
+                }
+            }
+            ReactorCommand::GetClockAndDeliver {
+                get_clock_bytes,
+                sent_time_raw,
+            } => {
+                self.pending_clock_sent_raw = Some(sent_time_raw);
+                if let Err(e) = self.dispatch_fire_and_forget(get_clock_bytes) {
+                    let is_io = matches!(e, TransportError::Io(_));
+                    tracing::error!(
+                        subsystem = "mcu-comms",
+                        event = "get_clock_async_send_error",
+                        error = %e,
+                        "GetClockAndDeliver dispatch failed"
+                    );
+                    if is_io {
+                        self.transition_closed_on_io_fault();
+                    }
+                    self.pending_clock_sent_raw = None;
                 }
             }
             ReactorCommand::Noop => {}

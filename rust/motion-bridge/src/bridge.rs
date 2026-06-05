@@ -1543,12 +1543,65 @@ impl PyMotionBridge {
                         MessageValue::String(s) => d.set_item(k, s)?,
                     }
                 }
+                if params.sent_time_raw != 0.0 {
+                    d.set_item("#sent_time_raw", params.sent_time_raw)?;
+                    d.set_item("#receive_time_raw", params.recv_time_raw)?;
+                }
             }
             RuntimeEvent::McuLog(_) => {
                 return Ok(None);
             }
         }
         Ok(Some(d.unbind()))
+    }
+
+    /// Send an encoded `get_clock` command and register the pending sent-time
+    /// so the reactor can stamp the unsolicited "clock" response with honest
+    /// CLOCK_MONOTONIC_RAW RTT measurements.
+    ///
+    /// Called from `serialhdl.raw_send` in bridge mode for the periodic
+    /// `_get_clock_event` loop.  Returns immediately (fire-and-forget); the
+    /// response arrives via `take_runtime_event` as a PassthroughResponse with
+    /// `sent_time_raw`/`recv_time_raw` baked in.
+    fn bridge_get_clock_async(&self, mcu_handle: u32) -> PyResult<()> {
+        use kalico_host_rt::transport::Transport;
+
+        let io = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            let conn = mcus.get(&mcu_handle).ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "bridge_get_clock_async: unknown mcu_handle {mcu_handle}"
+                ))
+            })?;
+            conn.host_io.as_ref().ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(
+                    "bridge_get_clock_async: attach_serial has not been called for this MCU",
+                )
+            })?.clone()
+        };
+
+        let parser_guard = self.parser.lock().unwrap_or_else(|p| p.into_inner());
+        let parser = parser_guard.as_ref().ok_or_else(|| {
+            pyo3::exceptions::PyRuntimeError::new_err(
+                "bridge_get_clock_async: msgproto parser not configured \
+                 (set_msgproto_dict not called)",
+            )
+        })?;
+
+        let get_clock_bytes = parser.encode("get_clock").map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "bridge_get_clock_async: encode 'get_clock': {e:?}"
+            ))
+        })?;
+
+        let sent_time_raw = kalico_host_rt::clock::monotonic_raw_secs();
+
+        io.get_clock_async(get_clock_bytes, sent_time_raw)
+            .map_err(|e| {
+                pyo3::exceptions::PyRuntimeError::new_err(format!(
+                    "bridge_get_clock_async: {e}"
+                ))
+            })
     }
 
     #[pyo3(signature = (mcu_handle, msg))]

@@ -146,8 +146,17 @@ class SerialReader:
                         ev.get("trigger_reason"),
                     )
                 ev["#name"] = name
-                ev["#sent_time"] = now
-                ev["#receive_time"] = now
+                # Use CLOCK_MONOTONIC_RAW stamps when the Rust bridge supplied
+                # them (non-zero); this happens for "clock" responses dispatched
+                # via bridge_get_clock_async so _handle_clock sees honest RTTs.
+                sent_raw = ev.get("#sent_time_raw", 0.0)
+                recv_raw = ev.get("#receive_time_raw", 0.0)
+                if sent_raw != 0.0 and recv_raw != 0.0:
+                    ev["#sent_time"] = sent_raw
+                    ev["#receive_time"] = recv_raw
+                else:
+                    ev["#sent_time"] = now
+                    ev["#receive_time"] = now
                 oid = ev.get("oid")
                 with self.lock:
                     hdl = (
@@ -517,6 +526,19 @@ class SerialReader:
             self._error("non-critical MCU is disconnected")
 
     # Command sending
+    def bridge_get_clock_async(self):
+        """Send a get_clock request through the bridge with RAW timestamp
+        capture.  Used by clocksync._get_clock_event to replace the no-op
+        raw_send path.  The response arrives via take_runtime_event as a
+        PassthroughResponse with sent_time_raw/recv_time_raw filled in."""
+        bridge = getattr(self.mcu, "_motion_bridge", None)
+        if bridge is None:
+            return
+        handle = self.mcu._bridge_handle
+        if handle is None:
+            return
+        bridge.bridge_get_clock_async(handle)
+
     def raw_send(self, cmd, minclock, reqclock, cmd_queue):
         self._check_noncritical_disconnected()
         if self.serialqueue is not None:

@@ -142,6 +142,14 @@ pub enum ReactorCommand {
             SyncSender<Result<crate::host_io::kalico_native::KalicoCallOutcome, TransportError>>,
         deadline: std::time::Instant,
     },
+    /// Send pre-encoded get_clock bytes as fire-and-forget and record
+    /// `sent_time_raw` so that when the "clock" response arrives as an
+    /// unsolicited frame the reactor can inject honest RAW timestamps and
+    /// deliver it as a PassthroughResponse runtime event.
+    GetClockAndDeliver {
+        get_clock_bytes: Vec<u8>,
+        sent_time_raw: f64,
+    },
     Shutdown,
     Noop,
     RegisterInterceptor {
@@ -597,6 +605,28 @@ impl KalicoHostIo {
         self.submission_tx
             .send(ReactorCommand::FireAndForget {
                 cmd: cmd.to_owned(),
+            })
+            .map_err(|_| TransportError::Closed)
+    }
+
+    /// Send a pre-encoded get_clock frame and tell the reactor to stamp the
+    /// matching "clock" response with CLOCK_MONOTONIC_RAW timestamps.
+    ///
+    /// `sent_time_raw` must have been captured with `monotonic_raw_secs()`
+    /// immediately before calling this method.  The reactor delivers the
+    /// response as a `PassthroughResponse { name: "clock", .. }` runtime event
+    /// with `MessageParams::sent_time_raw` and `recv_time_raw` filled in, so
+    /// the Python `_bridge_event_poller` can inject them into `#sent_time` /
+    /// `#receive_time` before dispatching to `_handle_clock`.
+    pub fn get_clock_async(
+        &self,
+        get_clock_bytes: Vec<u8>,
+        sent_time_raw: f64,
+    ) -> Result<(), TransportError> {
+        self.submission_tx
+            .send(ReactorCommand::GetClockAndDeliver {
+                get_clock_bytes,
+                sent_time_raw,
             })
             .map_err(|_| TransportError::Closed)
     }

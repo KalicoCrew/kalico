@@ -90,7 +90,14 @@ class ClockSync:
 
     # MCU clock querying (_handle_clock is invoked from background thread)
     def _get_clock_event(self, eventtime):
-        self.serial.raw_send(self.get_clock_cmd, 0, 0, self.cmd_queue)
+        # In bridge mode raw_send is a no-op (no C serialqueue). Use the
+        # dedicated bridge path that captures a RAW timestamp before the send
+        # and stamps the unsolicited "clock" response with it, giving an
+        # honest RTT for min_half_rtt tracking.
+        if hasattr(self.serial, "bridge_get_clock_async"):
+            self.serial.bridge_get_clock_async()
+        else:
+            self.serial.raw_send(self.get_clock_cmd, 0, 0, self.cmd_queue)
         self.queries_pending += 1
         # Use an unusual time for the next event so clock messages
         # don't resonate with other periodic events.
@@ -215,7 +222,7 @@ class ClockSync:
         return last_clock + clock_diff
 
     def is_active(self):
-        return True
+        return self.queries_pending <= 4
 
     def dump_debug(self):
         sample_time, clock, freq = self.clock_est
