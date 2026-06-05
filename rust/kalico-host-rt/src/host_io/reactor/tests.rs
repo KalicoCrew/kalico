@@ -504,6 +504,17 @@ fn drain_pending_surfaces_write_failure() {
 }
 
 #[test]
+fn flush_all_completions_clears_pending_clock_sent_raw() {
+    let (mut reactor, _) = test_reactor_with_inflight(&[]);
+    reactor.pending_clock_sent_raw = Some(1234.5);
+    reactor.flush_all_completions();
+    assert!(
+        reactor.pending_clock_sent_raw.is_none(),
+        "flush_all_completions must clear pending_clock_sent_raw to avoid stale RTT stamp on reconnect"
+    );
+}
+
+#[test]
 fn broken_pipe_latches_host_disconnect_fault() {
     let (_, rx) = std::sync::mpsc::channel::<crate::host_io::ReactorCommand>();
     let status_snapshot = Arc::new(arc_swap::ArcSwap::from_pointee(

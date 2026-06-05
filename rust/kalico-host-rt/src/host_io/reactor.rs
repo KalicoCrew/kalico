@@ -1139,6 +1139,7 @@ impl Reactor {
 
 impl Reactor {
     fn flush_all_completions(&mut self) {
+        self.pending_clock_sent_raw = None;
         for entry in self.awaiting_response.drain_all() {
             let _ = entry.completion.send(Err(TransportError::Closed));
         }

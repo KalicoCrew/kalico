@@ -93,6 +93,77 @@ fn wall_time_at_mcu_one_sample_returns_some_estimated() {
     );
 }
 
+/// Anchor-proximal tick → `estimated == false`.
+///
+/// We feed two dedicated samples 1 s apart with a 300µs constant RTT so that
+/// `update_fit` runs and `anchor_mcu_clock` is set to approximately
+/// `100_000_000` ticks.  Querying that exact tick must return
+/// `estimated=false` (delta_ticks ≈ 0, well within the 1 s threshold).
+#[test]
+fn wall_time_at_mcu_anchor_tick_not_estimated() {
+    let clock = MockClock::new();
+    let freq = 100_000_000.0_f64;
+    let mut est = ClockSyncEstimator::new_with_clock(freq, clock.clone());
+
+    let t0 = clock.now();
+    let rtt = Duration::from_micros(300);
+    let half_rtt_s = 0.000_150_f64;
+
+    // Two samples so update_fit runs.
+    for i in 1u64..=2 {
+        let t = i as f64;
+        let send = t0 + Duration::from_secs_f64(t);
+        let mcu_resp = ((t + half_rtt_s) * freq) as u64;
+        est.add_dedicated_sample(send, send + rtt, mcu_resp);
+        clock.advance(Duration::from_secs(1));
+    }
+
+    // The anchor sits near clock_avg ≈ 1.5 * freq + adjustment.
+    // Query the anchor tick itself (anchor_mcu_clock from the estimator).
+    let anchor = est.anchor_mcu_clock;
+    let (_, estimated) = est
+        .wall_time_at_mcu(anchor)
+        .expect("must return Some after samples");
+    assert!(
+        !estimated,
+        "tick at exact anchor_mcu_clock should not be estimated (delta_ticks=0)"
+    );
+}
+
+/// Tick more than 1 MCU-second from anchor → `estimated == true`.
+///
+/// At 100 MHz, an offset of 200_000_000 ticks = 2.0 s from the anchor;
+/// that exceeds the 1.0 s threshold so `estimated` must be true.
+#[test]
+fn wall_time_at_mcu_far_tick_is_estimated() {
+    let clock = MockClock::new();
+    let freq = 100_000_000.0_f64;
+    let mut est = ClockSyncEstimator::new_with_clock(freq, clock.clone());
+
+    let t0 = clock.now();
+    let rtt = Duration::from_micros(300);
+    let half_rtt_s = 0.000_150_f64;
+
+    for i in 1u64..=2 {
+        let t = i as f64;
+        let send = t0 + Duration::from_secs_f64(t);
+        let mcu_resp = ((t + half_rtt_s) * freq) as u64;
+        est.add_dedicated_sample(send, send + rtt, mcu_resp);
+        clock.advance(Duration::from_secs(1));
+    }
+
+    let anchor = est.anchor_mcu_clock;
+    // 2 s of ticks away from anchor.
+    let far_tick = anchor + 200_000_000;
+    let (_, estimated) = est
+        .wall_time_at_mcu(far_tick)
+        .expect("must return Some after samples");
+    assert!(
+        estimated,
+        "tick 2 MCU-seconds from anchor must be estimated (delta=2.0 > 1.0)"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Sub-task B unit tests
 //

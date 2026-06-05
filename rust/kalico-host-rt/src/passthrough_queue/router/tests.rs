@@ -434,6 +434,31 @@ fn wall_time_at_mcu_known_record_returns_wall_time() {
     );
 }
 
+/// `wall_time_at_mcu` returns `estimated == true` when the tick is more than
+/// one MCU-frequency-second from the anchor.
+///
+/// Anchor at last_clock=100_000_000 with freq=100 MHz.  A tick at
+/// 300_000_000 is 200_000_000 ticks away = 2.0 s > 1.0 s → estimated.
+#[test]
+fn wall_time_at_mcu_far_from_anchor_returns_estimated_true() {
+    let (mut router, clock) = make_router();
+    let mcu = router.claim_mcu("mcu");
+
+    let anchor_host = crate::clock::instant_to_f64(clock.now());
+    router
+        .set_clock_est(mcu, 100_000_000.0, anchor_host, 100_000_000)
+        .unwrap();
+
+    let (_, estimated) = router
+        .wall_time_at_mcu(mcu, 300_000_000)
+        .expect("must return Some when clock record is set");
+
+    assert!(
+        estimated,
+        "estimated must be true when tick is 2 MCU-seconds from anchor"
+    );
+}
+
 /// `wall_time_at_mcu` returns `None` before any clock record has been set.
 #[test]
 fn wall_time_at_mcu_no_record_returns_none() {

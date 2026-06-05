@@ -5,7 +5,7 @@
 //! CLOCK_MONOTONIC_RAW diverge (i.e. under NTP slew). On non-Linux platforms it
 //! falls back to `Instant` (CLOCK_MONOTONIC).
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Read CLOCK_MONOTONIC_RAW and return the value as seconds since an arbitrary
@@ -30,12 +30,31 @@ pub fn monotonic_raw_secs() -> f64 {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        use std::sync::OnceLock;
-        static ANCHOR: OnceLock<Instant> = OnceLock::new();
-        let anchor = ANCHOR.get_or_init(Instant::now);
-        Instant::now()
-            .saturating_duration_since(*anchor)
-            .as_secs_f64()
+        // `instant_to_f64` is signed; clamp to 0.0 here to preserve the
+        // non-negative contract (the shared anchor may be seeded slightly after
+        // the current instant under parallel test initialisation).
+        instant_to_f64(Instant::now()).max(0.0)
+    }
+}
+
+/// Convert an `Instant` to seconds relative to a stable process-lifetime anchor.
+///
+/// The anchor is initialised on first call and shared across all callers in the
+/// same process, so `instant_to_f64(a) - instant_to_f64(b)` equals
+/// `a.duration_since(b)` for any two `Instant`s — including values produced by
+/// `monotonic_raw_secs`'s non-Linux fallback, which uses the same anchor.
+///
+/// On Linux this is the companion to `monotonic_raw_secs`: use
+/// `monotonic_raw_secs()` for wire-stamp deltas and `instant_to_f64` for
+/// `Instant`-based durations; both share the same zero-point off-Linux so
+/// mixed arithmetic in `set_clock_est_rebased` is correct on all platforms.
+pub fn instant_to_f64(instant: Instant) -> f64 {
+    static ANCHOR: OnceLock<Instant> = OnceLock::new();
+    let anchor = ANCHOR.get_or_init(Instant::now);
+    if instant >= *anchor {
+        instant.duration_since(*anchor).as_secs_f64()
+    } else {
+        -(anchor.duration_since(instant).as_secs_f64())
     }
 }
 

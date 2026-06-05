@@ -79,7 +79,7 @@ pub struct ClockSyncEstimator {
     anchor_mcu_clock: u64,
 
     // Diagnostics.
-    pub residual_max_in_window: f64,
+    pub residual_ewma_us: f64,
     pub last_dedicated_sample: Option<Instant>,
 
     // For `add_dedicated_sample` age gate (same role as the old window).
@@ -105,7 +105,7 @@ impl std::fmt::Debug for ClockSyncEstimator {
             .field("prediction_variance", &self.prediction_variance)
             .field("min_half_rtt", &self.min_half_rtt)
             .field("sample_count", &self.sample_count)
-            .field("residual_max_in_window", &self.residual_max_in_window)
+            .field("residual_ewma_us", &self.residual_ewma_us)
             .field("last_dedicated_sample", &self.last_dedicated_sample)
             .finish_non_exhaustive()
     }
@@ -133,7 +133,7 @@ impl ClockSyncEstimator {
             clock_freq_estimate: initial_freq_estimate,
             anchor_host_time: 0.0,
             anchor_mcu_clock: 0,
-            residual_max_in_window: 0.0,
+            residual_ewma_us: 0.0,
             last_dedicated_sample: None,
             last_sample_recorded_at: None,
             sample_count: 0,
@@ -318,10 +318,10 @@ impl ClockSyncEstimator {
 
         // Residual quality metric: EWMA of |clock_diff| in µs.  This is the
         // per-sample prediction error, directly comparable to the old window
-        // regression's `residual_max_in_window`.
+        // regression's `residual_ewma_us`.
         if self.clock_freq_estimate > 1.0 {
             let abs_resid_us = clock_diff.abs() / self.clock_freq_estimate * 1e6;
-            self.residual_max_in_window = (1.0 - DECAY) * self.residual_max_in_window
+            self.residual_ewma_us = (1.0 - DECAY) * self.residual_ewma_us
                 + DECAY * abs_resid_us;
         }
 
@@ -407,9 +407,9 @@ impl ClockSyncEstimator {
                 required: MIN_WARMUP_SAMPLES as usize,
             });
         }
-        if self.residual_max_in_window > MAX_RESIDUAL_US_DEFAULT {
+        if self.residual_ewma_us > MAX_RESIDUAL_US_DEFAULT {
             return Err(QualityGateFailure::ResidualExceeded {
-                observed_us: self.residual_max_in_window,
+                observed_us: self.residual_ewma_us,
                 max_us: MAX_RESIDUAL_US_DEFAULT,
             });
         }

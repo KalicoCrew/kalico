@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Instant;
 
 use indexmap::IndexMap;
@@ -11,7 +11,7 @@ use super::mcu_state::{CommandQueueId, McuState, PushError};
 use super::notify::{NotifyCallback, NotifyResponse, NotifyTable};
 use super::receive_window::ReceiveWindow;
 use super::stats::{PassthroughStats, StatsCounters};
-use crate::clock::Clock;
+use crate::clock::{Clock, instant_to_f64};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct McuHandle(u32);
@@ -93,16 +93,6 @@ impl std::fmt::Debug for PassthroughRouter {
             .field("mcus", &self.mcus)
             .field("next_handle", &self.next_handle)
             .finish()
-    }
-}
-
-fn instant_to_f64(instant: Instant) -> f64 {
-    static ANCHOR: OnceLock<Instant> = OnceLock::new();
-    let anchor = ANCHOR.get_or_init(Instant::now);
-    if instant >= *anchor {
-        instant.duration_since(*anchor).as_secs_f64()
-    } else {
-        -(anchor.duration_since(instant).as_secs_f64())
     }
 }
 
