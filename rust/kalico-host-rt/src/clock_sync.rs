@@ -1,10 +1,30 @@
-use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::clock::{Clock, RealClock};
 
-pub const WINDOW: usize = 30;
+/// EWMA decay factor — mirrors klippy's `DECAY = 1/30`.
+const DECAY: f64 = 1.0 / 30.0;
+
+/// Half-RTT age coefficient — mirrors klippy's `RTT_AGE = 10µs / 3600s`.
+const RTT_AGE: f64 = 0.000_010 / (60.0 * 60.0);
+
+/// Prediction-variance is reset to `(1ms * freq)²` on a variance reset; the
+/// same formula klippy uses.
+const PREDICTION_RESET_MS: f64 = 0.001;
+
+/// Outlier gate: residual² must exceed this multiple of prediction_variance AND
+/// the absolute floor below to be considered an outlier.  Matches klippy's 25×.
+const OUTLIER_VARIANCE_MULT: f64 = 25.0;
+
+/// Absolute outlier floor: residual must also exceed 500µs × freq to gate.
+/// Matches klippy's `(0.000500 * self.mcu_freq)²`.
+const OUTLIER_ABS_FLOOR_SECS: f64 = 0.000_500;
+
+/// After how long without a progressive prediction update do we allow an
+/// "upward" outlier through (klippy: `sent_time < last_prediction_time + 10`).
+const OUTLIER_RESET_WINDOW_SECS: f64 = 10.0;
+
 pub const MIN_WARMUP_SAMPLES: u32 = 30;
 pub const MAX_RESIDUAL_US_DEFAULT: f64 = 100.0;
 pub const MAX_DRIFT_PPM_DEFAULT: f64 = 100.0;
@@ -17,6 +37,7 @@ pub enum SampleSource {
     Piggyback,
 }
 
+/// A single RTT-qualified sample fed into the estimator.
 #[derive(Debug, Clone, Copy)]
 pub struct Sample {
     pub host_time_secs: f64,
@@ -26,31 +47,66 @@ pub struct Sample {
     pub recorded_at: Instant,
 }
 
+/// EWMA-based clock frequency / offset estimator.
+///
+/// Mirrors klippy's `ClockSync._handle_clock` algorithm:
+/// - Decayed accumulators (`time_avg`, `clock_avg`, `time_variance`,
+///   `clock_covariance`) with `DECAY = 1/30`.
+/// - Prediction-variance outlier gate (25× + 500µs absolute floor).
+/// - `min_half_rtt` / `RTT_AGE` logic for minimal-RTT sample selection.
+///
+/// Public API is unchanged from the window-regression version so `bridge.rs`
+/// callers need no changes.
 pub struct ClockSyncEstimator {
     epoch: Instant,
     wall_epoch: SystemTime,
-    samples: VecDeque<Sample>,
+
+    // EWMA accumulators (klippy naming kept for auditability).
+    time_avg: f64,
+    time_variance: f64,
+    clock_avg: f64,
+    clock_covariance: f64,
+    prediction_variance: f64,
+    last_prediction_time: f64,
+
+    // min-RTT tracking.
+    min_half_rtt: f64,
+    min_rtt_time: f64,
+
+    // Derived fit exported to callers.
     pub clock_freq_estimate: f64,
     anchor_host_time: f64,
     anchor_mcu_clock: u64,
+
+    // Diagnostics.
     pub residual_max_in_window: f64,
     pub last_dedicated_sample: Option<Instant>,
+
+    // For `add_dedicated_sample` age gate (same role as the old window).
+    last_sample_recorded_at: Option<Instant>,
+
+    sample_count: u32,
     clock_sync_request_id: u32,
     clock: Arc<dyn Clock>,
+
+    /// Initial freq kept for the prediction-variance reset formula.
+    mcu_freq: f64,
 }
 
 impl std::fmt::Debug for ClockSyncEstimator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClockSyncEstimator")
             .field("epoch", &self.epoch)
-            .field("wall_epoch", &self.wall_epoch)
-            .field("samples", &self.samples)
             .field("clock_freq_estimate", &self.clock_freq_estimate)
             .field("anchor_host_time", &self.anchor_host_time)
             .field("anchor_mcu_clock", &self.anchor_mcu_clock)
+            .field("time_avg", &self.time_avg)
+            .field("clock_avg", &self.clock_avg)
+            .field("prediction_variance", &self.prediction_variance)
+            .field("min_half_rtt", &self.min_half_rtt)
+            .field("sample_count", &self.sample_count)
             .field("residual_max_in_window", &self.residual_max_in_window)
             .field("last_dedicated_sample", &self.last_dedicated_sample)
-            .field("clock_sync_request_id", &self.clock_sync_request_id)
             .finish_non_exhaustive()
     }
 }
@@ -66,14 +122,24 @@ impl ClockSyncEstimator {
         Self {
             epoch,
             wall_epoch,
-            samples: VecDeque::with_capacity(WINDOW),
+            time_avg: 0.0,
+            time_variance: 0.0,
+            clock_avg: 0.0,
+            clock_covariance: 0.0,
+            prediction_variance: (PREDICTION_RESET_MS * initial_freq_estimate).powi(2),
+            last_prediction_time: -9999.0,
+            min_half_rtt: 999_999_999.9,
+            min_rtt_time: 0.0,
             clock_freq_estimate: initial_freq_estimate,
             anchor_host_time: 0.0,
             anchor_mcu_clock: 0,
             residual_max_in_window: 0.0,
             last_dedicated_sample: None,
+            last_sample_recorded_at: None,
+            sample_count: 0,
             clock_sync_request_id: 0,
             clock,
+            mcu_freq: initial_freq_estimate,
         }
     }
 
@@ -95,6 +161,7 @@ impl ClockSyncEstimator {
         self.epoch
     }
 
+    /// Project a host-time to MCU clock using the current fit.
     pub fn mcu_time_at_host(&self, host_time_secs: f64) -> u64 {
         let delta_secs = host_time_secs - self.anchor_host_time;
         #[allow(
@@ -109,14 +176,13 @@ impl ClockSyncEstimator {
         }
     }
 
+    /// Convert an MCU tick count to a wall-clock `OffsetDateTime`.
+    /// Returns `None` before the first sample, `(time, estimated)` where
+    /// `estimated=true` means the tick is outside the observed range.
     pub fn wall_time_at_mcu(&self, mcu_ticks: u64) -> Option<(time::OffsetDateTime, bool)> {
-        if self.samples.is_empty() {
+        if self.sample_count == 0 {
             return None;
         }
-
-        let min_mcu = self.samples.iter().map(|s| s.mcu_clock).min().unwrap_or(0);
-        let max_mcu = self.samples.iter().map(|s| s.mcu_clock).max().unwrap_or(0);
-        let estimated = mcu_ticks < min_mcu || mcu_ticks > max_mcu;
 
         let freq = self.clock_freq_estimate;
         if freq.abs() < 1e-6 {
@@ -124,9 +190,13 @@ impl ClockSyncEstimator {
             return Some((dt, true));
         }
 
+        // "estimated" = extrapolation (we have no window bounds anymore, so we
+        // treat any tick that is farther than 1 freq-second from the anchor as
+        // estimated, which is a conservative proxy).
         #[allow(clippy::cast_precision_loss)]
         let delta_ticks = (mcu_ticks as f64) - (self.anchor_mcu_clock as f64);
         let host_secs = self.anchor_host_time + delta_ticks / freq;
+        let estimated = delta_ticks.abs() / freq > 1.0;
 
         let wall_time = if host_secs >= 0.0 {
             self.wall_epoch
@@ -141,6 +211,18 @@ impl ClockSyncEstimator {
         Some((time::OffsetDateTime::from(wall_time), estimated))
     }
 
+    /// Feed one RTT-qualified dedicated sample.
+    ///
+    /// `mcu_at_response` is the MCU clock value echoed in the response (i.e.
+    /// the MCU clock at the instant the firmware generated its reply, which is
+    /// approximately `send_time + half_rtt` in host time).  The one-way delay
+    /// is subtracted so the regression maps `send_time → mcu_at_send`, keeping
+    /// the y-axis consistent with piggyback samples (which also carry the
+    /// instantaneous MCU clock at the observed host time).
+    ///
+    /// The `min_half_rtt` tracker selects the best-observed RTT; both the
+    /// subtraction and the projection anchor use it so that high-RTT samples
+    /// do not distort the slope estimate.
     pub fn add_dedicated_sample(
         &mut self,
         host_send: Instant,
@@ -148,85 +230,151 @@ impl ClockSyncEstimator {
         mcu_at_response: u64,
     ) {
         let rtt = host_recv.saturating_duration_since(host_send);
-        let rtt_us = rtt.as_micros().min(u128::from(u32::MAX)) as u32;
-        let one_way_secs = rtt.as_secs_f64() / 2.0;
-        let host_time_at_send = self.host_time_at(host_send);
+        let half_rtt = rtt.as_secs_f64() / 2.0;
+        let sent_time = self.host_time_at(host_send);
+
+        // min-RTT gate (klippy: `if half_rtt < self.min_half_rtt + aged_rtt`).
+        let aged_rtt = (sent_time - self.min_rtt_time) * RTT_AGE;
+        if half_rtt < self.min_half_rtt + aged_rtt {
+            self.min_half_rtt = half_rtt;
+            self.min_rtt_time = sent_time;
+        }
+
+        // Back-correct MCU clock to the send instant using current freq estimate.
+        // Using `min_half_rtt` (not the raw `half_rtt`) mirrors klippy's approach
+        // of anchoring projections at the minimum-RTT estimate.
+        let effective_half_rtt = if self.min_half_rtt < 1.0 {
+            self.min_half_rtt
+        } else {
+            half_rtt
+        };
         #[allow(clippy::cast_sign_loss)]
-        let one_way_cycles = (one_way_secs * self.clock_freq_estimate) as u64;
+        let one_way_cycles =
+            (effective_half_rtt * self.clock_freq_estimate).max(0.0) as u64;
         let mcu_at_send = mcu_at_response.saturating_sub(one_way_cycles);
+
+        #[allow(clippy::cast_precision_loss)]
+        let feed_clock = mcu_at_send as f64;
+        self.ingest(sent_time, feed_clock, sent_time);
+
         let now = self.clock.now();
-        self.add_sample(Sample {
-            host_time_secs: host_time_at_send,
-            mcu_clock: mcu_at_send,
-            rtt_us,
-            source: SampleSource::Dedicated,
-            recorded_at: now,
-        });
         self.last_dedicated_sample = Some(now);
+        self.last_sample_recorded_at = Some(now);
     }
 
     pub fn add_piggyback_sample(&mut self, host_recv: Instant, mcu_clock_now: u64) {
-        let host_time_secs = self.host_time_at(host_recv);
-        self.add_sample(Sample {
-            host_time_secs,
-            mcu_clock: mcu_clock_now,
-            rtt_us: 0,
-            source: SampleSource::Piggyback,
-            recorded_at: self.clock.now(),
-        });
+        let sent_time = self.host_time_at(host_recv);
+        #[allow(clippy::cast_precision_loss)]
+        let feed_clock = mcu_clock_now as f64;
+        let now = self.clock.now();
+        self.ingest(sent_time, feed_clock, sent_time);
+        self.last_sample_recorded_at = Some(now);
     }
 
-    fn add_sample(&mut self, sample: Sample) {
-        if self.samples.len() == WINDOW {
-            self.samples.pop_front();
+    /// Core EWMA update — port of klippy's `_handle_clock` accumulator logic.
+    ///
+    /// `sent_time`  — host time of the send (used for outlier gating).
+    /// `feed_time`  — the x-value fed into the regression (identical to
+    ///                `sent_time` for both dedicated and piggyback callers).
+    /// `clock`      — the y-value (MCU clock ticks at `feed_time`).
+    fn ingest(&mut self, feed_time: f64, clock: f64, sent_time: f64) {
+        // First sample: seed the EWMA accumulators directly (mirrors klippy's
+        // `connect()` which initialises `time_avg` and `clock_avg` from the
+        // first `get_uptime` response before entering the EWMA loop).
+        if self.sample_count == 0 {
+            self.time_avg = feed_time;
+            self.clock_avg = clock;
+            self.prediction_variance = (PREDICTION_RESET_MS * self.mcu_freq).powi(2);
+            self.last_prediction_time = sent_time;
+            self.sample_count = 1;
+            // No variance/covariance update; need at least two points for a slope.
+            return;
         }
-        self.samples.push_back(sample);
-        self.recompute_regression();
+
+        // --- outlier gate (klippy lines ~122-155) ---
+        let exp_clock =
+            (sent_time - self.time_avg) * self.clock_freq_estimate + self.clock_avg;
+        let clock_diff = clock - exp_clock;
+        let clock_diff2 = clock_diff * clock_diff;
+        let abs_floor = (OUTLIER_ABS_FLOOR_SECS * self.mcu_freq).powi(2);
+
+        if clock_diff2 > OUTLIER_VARIANCE_MULT * self.prediction_variance
+            && clock_diff2 > abs_floor
+        {
+            if clock > exp_clock
+                && sent_time < self.last_prediction_time + OUTLIER_RESET_WINDOW_SECS
+            {
+                // High-side outlier within the reset window: skip entirely.
+                return;
+            }
+            // Reset prediction variance (klippy: variance reset path).
+            self.prediction_variance =
+                (PREDICTION_RESET_MS * self.mcu_freq).powi(2);
+        } else {
+            self.last_prediction_time = sent_time;
+            self.prediction_variance = (1.0 - DECAY)
+                * (self.prediction_variance + clock_diff2 * DECAY);
+        }
+
+        // Residual quality metric: EWMA of |clock_diff| in µs.  This is the
+        // per-sample prediction error, directly comparable to the old window
+        // regression's `residual_max_in_window`.
+        if self.clock_freq_estimate > 1.0 {
+            let abs_resid_us = clock_diff.abs() / self.clock_freq_estimate * 1e6;
+            self.residual_max_in_window = (1.0 - DECAY) * self.residual_max_in_window
+                + DECAY * abs_resid_us;
+        }
+
+        // --- EWMA accumulators (klippy lines ~157-165) ---
+        let diff_sent = feed_time - self.time_avg;
+        self.time_avg += DECAY * diff_sent;
+        self.time_variance =
+            (1.0 - DECAY) * (self.time_variance + diff_sent * diff_sent * DECAY);
+
+        let diff_clock = clock - self.clock_avg;
+        self.clock_avg += DECAY * diff_clock;
+        self.clock_covariance =
+            (1.0 - DECAY) * (self.clock_covariance + diff_sent * diff_clock * DECAY);
+
+        self.sample_count = self.sample_count.saturating_add(1);
+
+        // --- derive slope + anchor ---
+        self.update_fit();
     }
 
-    fn recompute_regression(&mut self) {
-        if self.samples.len() < 2 {
+    /// Recompute `clock_freq_estimate` and the projection anchor from the
+    /// current EWMA accumulators.  Called after every accepted sample.
+    fn update_fit(&mut self) {
+        if self.time_variance.abs() < 1e-12 {
             return;
         }
-        let n = self.samples.len() as f64;
-        let mut sum_x = 0.0_f64;
-        let mut sum_y = 0.0_f64;
-        let mut sum_xx = 0.0_f64;
-        let mut sum_xy = 0.0_f64;
-        for s in &self.samples {
-            let x = s.host_time_secs;
-            let y = s.mcu_clock as f64;
-            sum_x += x;
-            sum_y += y;
-            sum_xx += x * x;
-            sum_xy += x * y;
-        }
-        let mean_x = sum_x / n;
-        let mean_y = sum_y / n;
-        let denom = sum_xx - n * mean_x * mean_x;
-        if denom.abs() < 1e-12 {
+        let new_freq = self.clock_covariance / self.time_variance;
+        if new_freq < 1.0 {
+            // Guard against degenerate state on cold start.
             return;
         }
-        let slope = (sum_xy - n * mean_x * mean_y) / denom;
-        let offset = mean_y - slope * mean_x;
-        self.clock_freq_estimate = slope;
-        self.anchor_host_time = mean_x;
+        self.clock_freq_estimate = new_freq;
+
+        // Anchor at `time_avg + min_half_rtt` (mirrors klippy's
+        // `clock_est = (time_avg + min_half_rtt, clock_avg, new_freq)`).
+        // Use `min_half_rtt` only when it has been updated from an actual RTT
+        // measurement; the initial sentinel (999_999_999.9) must not shift the
+        // anchor.
+        let effective_min_half_rtt = if self.min_half_rtt < 1.0 {
+            self.min_half_rtt
+        } else {
+            0.0
+        };
+        self.anchor_host_time = self.time_avg + effective_min_half_rtt;
         #[allow(clippy::cast_sign_loss)]
         {
-            self.anchor_mcu_clock = if mean_y < 0.0 { 0 } else { mean_y as u64 };
+            self.anchor_mcu_clock = if self.clock_avg < 0.0 {
+                0
+            } else {
+                self.clock_avg as u64
+            };
         }
 
-        let mut max_resid_us = 0.0_f64;
-        for s in &self.samples {
-            let predicted = slope * s.host_time_secs + offset;
-            // Convert residual cycles to seconds via slope, then µs.
-            let resid_seconds = ((s.mcu_clock as f64) - predicted) / slope;
-            let resid_us = (resid_seconds * 1e6).abs();
-            if resid_us > max_resid_us {
-                max_resid_us = resid_us;
-            }
-        }
-        self.residual_max_in_window = max_resid_us;
     }
 
     pub fn drift_ppm(&self, baseline_freq: f64) -> f64 {
@@ -238,9 +386,8 @@ impl ClockSyncEstimator {
 
     pub fn last_sample_age(&self) -> Option<Duration> {
         let now = self.clock.now();
-        self.samples
-            .back()
-            .map(|s| now.saturating_duration_since(s.recorded_at))
+        self.last_sample_recorded_at
+            .map(|t| now.saturating_duration_since(t))
     }
 
     pub fn last_dedicated_sample_age(&self) -> Option<Duration> {
@@ -250,7 +397,7 @@ impl ClockSyncEstimator {
     }
 
     pub fn sample_count(&self) -> u32 {
-        self.samples.len() as u32
+        self.sample_count
     }
 
     pub fn is_quality_gate_passed(&self, baseline_freq: f64) -> Result<(), QualityGateFailure> {
