@@ -13,6 +13,7 @@ pub struct FrameServer {
     conn: Option<UnixStream>,
     demux: Demuxer,
     buf: [u8; 4096],
+    disconnected: bool,
 }
 
 impl core::fmt::Debug for FrameServer {
@@ -35,6 +36,7 @@ impl FrameServer {
             conn: None,
             demux: Demuxer::new(),
             buf: [0u8; 4096],
+            disconnected: false,
         })
     }
 
@@ -64,6 +66,7 @@ impl FrameServer {
             Ok(0) => {
                 eprintln!("ec-rt: client disconnected");
                 self.conn = None;
+                self.disconnected = true;
             }
             Ok(n) => {
                 let (frames, errs) = self.demux.feed_slice(&self.buf[..n]);
@@ -83,6 +86,7 @@ impl FrameServer {
             Err(e) => {
                 eprintln!("ec-rt: read error: {e}");
                 self.conn = None;
+                self.disconnected = true;
             }
         }
         cmds
@@ -93,7 +97,26 @@ impl FrameServer {
             if let Err(e) = stream.write_all(frame) {
                 eprintln!("ec-rt: write error: {e}");
                 self.conn = None;
+                self.disconnected = true;
             }
         }
+    }
+
+    pub fn client_connected(&self) -> bool {
+        self.conn.is_some()
+    }
+
+    pub fn client_disconnected(&self) -> bool {
+        self.disconnected
+    }
+
+    /// Sends `frame` to the connected client and then closes the connection.
+    ///
+    /// `write_all` guarantees full delivery before the socket is dropped.
+    /// Any write error is logged; the connection is closed regardless.
+    pub fn respond_and_close(&mut self, frame: &[u8]) {
+        self.respond(frame);
+        self.conn = None;
+        self.disconnected = true;
     }
 }
