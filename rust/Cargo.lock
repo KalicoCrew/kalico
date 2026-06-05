@@ -835,6 +835,7 @@ dependencies = [
  "geometry",
  "heapless",
  "kalico-host-rt",
+ "kalico-native-transport",
  "kalico-protocol",
  "libc",
  "log",

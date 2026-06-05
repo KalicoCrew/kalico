@@ -205,6 +205,7 @@ fn query_ethercat_runtime_caps(
     decode_runtime_caps_body(&body)
 }
 
+#[derive(Debug)]
 enum EndpointClaimError {
     DriveOffline { slave_idx: u8, fault_code: u16 },
     DriveFault { slave_idx: u8, fault_code: u16 },
@@ -335,8 +336,12 @@ mod claim_error_message_tests {
 
 /// Spawn the EtherCAT endpoint binary.
 ///
-/// `FrameServer::bind` already unlinks a stale socket file before binding, so
-/// no pre-spawn cleanup is needed here.
+/// The caller (`claim_ethercat_node`) removes any stale socket file at
+/// `socket_path` before calling this function. That pre-spawn removal is
+/// necessary: `FrameServer::bind` unlinks-and-rebinds on the path, but that
+/// happens *after* the process starts — between spawn and bind, a pre-existing
+/// file would let `poll_socket_ready` return immediately on existence, racing
+/// `handshake_ethercat_endpoint`'s connect ahead of the actual listener.
 fn spawn_ethercat_endpoint(
     binary: &str,
     interface: &str,
@@ -396,8 +401,31 @@ fn handshake_ethercat_endpoint(
     use kalico_protocol::codec::{Cursor, Decode};
     use kalico_protocol::messages::ClaimHandshakeReply;
 
-    let conn = UnixNativeConn::connect(socket_path)
-        .map_err(|e| EndpointClaimError::Protocol(format!("connect to {socket_path}: {e}")))?;
+    // Retry connect until the endpoint's listener is up. ConnectionRefused and
+    // NotFound both mean the endpoint hasn't bound yet (bind latency, or the
+    // endpoint is mid-unlink-and-rebind of a stale path). Every other error is
+    // immediately fatal as a Protocol error — we don't mask real failures.
+    let conn = loop {
+        match UnixNativeConn::connect(socket_path) {
+            Ok(c) => break c,
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ConnectionRefused
+                    || e.kind() == std::io::ErrorKind::NotFound =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(EndpointClaimError::Protocol(format!(
+                        "connect to {socket_path}: timed out waiting for listener ({e})"
+                    )));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => {
+                return Err(EndpointClaimError::Protocol(format!(
+                    "connect to {socket_path}: {e}"
+                )));
+            }
+        }
+    };
 
     let remaining = deadline.saturating_duration_since(Instant::now());
     let (kind, body) = conn
@@ -814,6 +842,17 @@ impl PyMotionBridge {
         endpoint_binary: &str,
         counts_per_mm: f64,
     ) -> PyResult<u32> {
+        // Remove any stale socket file left by a previous session. The bridge
+        // owns this path's lifecycle: anything already there is a dead leftover.
+        // NotFound is fine (clean slate); every other error is fatal.
+        if let Err(e) = std::fs::remove_file(socket_path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                return Err(PyRuntimeError::new_err(format!(
+                    "ethercat {label}: failed to remove stale socket {socket_path}: {e}"
+                )));
+            }
+        }
+
         let mut child =
             spawn_ethercat_endpoint(endpoint_binary, interface, socket_path, counts_per_mm)
                 .map_err(|e| {
@@ -2955,7 +2994,8 @@ mod resolve_motion_caps_tests {
 
 #[cfg(test)]
 mod ethercat_endpoint_tests {
-    use super::{poll_socket_ready, spawn_ethercat_endpoint};
+    use super::{handshake_ethercat_endpoint, poll_socket_ready, spawn_ethercat_endpoint};
+    use std::io::{Read, Write};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -3024,5 +3064,224 @@ mod ethercat_endpoint_tests {
             "poll_socket_ready should return promptly on child death, not burn the deadline; \
              elapsed={elapsed:?}"
         );
+    }
+
+    /// Build a framed ClaimHandshakeReply that `handshake_ethercat_endpoint`
+    /// can parse.  Returns the raw bytes to write onto the socket.
+    fn encode_claim_handshake_reply(correlation_id: u32) -> Vec<u8> {
+        use kalico_native_transport::frame::{CHANNEL_CONTROL, encode_frame};
+        use kalico_native_transport::wire_helpers::{
+            MESSAGE_VERSION_DEFAULT, encode_message_header,
+        };
+        use kalico_protocol::codec::Encode as _;
+        use kalico_protocol::messages::{
+            ClaimHandshakeReply, MessageKind, SlaveState, SlaveStatus,
+        };
+
+        let reply = ClaimHandshakeReply {
+            slave_statuses: vec![SlaveStatus {
+                slave_idx: 0,
+                state: SlaveState::Ok,
+                fault_code: 0,
+            }],
+        };
+        let mut payload = encode_message_header(
+            MessageKind::ClaimHandshakeReply,
+            MESSAGE_VERSION_DEFAULT,
+            correlation_id,
+        )
+        .to_vec();
+        reply.encode(&mut payload);
+        encode_frame(CHANNEL_CONTROL, &payload)
+    }
+
+    /// Parse the first framed message from `buf[..n]`, returning its
+    /// correlation_id so the reply can be correlated.
+    fn extract_correlation_id(buf: &[u8]) -> u32 {
+        use kalico_native_transport::demux::{Demuxer, Frame};
+        use kalico_native_transport::wire_helpers::decode_message_header;
+
+        let mut demux = Demuxer::new();
+        let (frames, _) = demux.feed_slice(buf);
+        for f in frames {
+            if let Frame::Kalico { payload, .. } = f {
+                if let Some((hdr, _)) = decode_message_header(&payload) {
+                    return hdr.correlation_id;
+                }
+            }
+        }
+        0
+    }
+
+    /// A stale socket file — left by a dropped listener — must not prevent
+    /// `handshake_ethercat_endpoint` from succeeding once the real listener is
+    /// up. The retry loop in `handshake_ethercat_endpoint` must connect past
+    /// the ECONNREFUSED / ENOENT window.
+    #[test]
+    fn handshake_retries_past_stale_socket_file() {
+        use std::os::unix::net::UnixListener;
+
+        // Use pid + thread-id to avoid collisions when tests run in parallel.
+        let path = format!(
+            "/tmp/kalico_test_stale_{}_handshake.sock",
+            std::process::id()
+        );
+        let _ = std::fs::remove_file(&path);
+
+        // Create a socket file that has no listener behind it (bind → drop without
+        // removing the file).  On Linux and macOS, dropping UnixListener does NOT
+        // unlink the file — assert this as a precondition so the test is
+        // self-documenting.
+        {
+            let _listener = UnixListener::bind(&path)
+                .unwrap_or_else(|e| panic!("bind for stale-file setup failed: {e}"));
+            // listener drops here; file stays
+        }
+        assert!(
+            std::path::Path::new(&path).exists(),
+            "UnixListener drop must leave the socket file — test precondition violated"
+        );
+
+        // Background thread: remove the stale file and bind a real listener,
+        // then signals via `tx` once the listener is bound.  The foreground
+        // waits for that signal before calling handshake — this eliminates the
+        // sleep-based timing dependency that flaps under parallel-test load.
+        // After writing the reply, the thread calls `shutdown(Write)` so the
+        // foreground receives a clean FIN instead of a torn-down fd.
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let path_bg = path.clone();
+        let bg = std::thread::spawn(move || {
+            let _ = std::fs::remove_file(&path_bg);
+            let listener = UnixListener::bind(&path_bg)
+                .unwrap_or_else(|e| panic!("background listener bind failed: {e}"));
+            // Signal after bind so the foreground knows the listener is up.
+            let _ = tx.send(());
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                if let Ok(n) = stream.read(&mut buf) {
+                    let cid = extract_correlation_id(&buf[..n]);
+                    let reply = encode_claim_handshake_reply(cid);
+                    let _ = stream.write_all(&reply);
+                    // Shutdown the write half — sends a clean FIN so the
+                    // foreground's kalico_call read loop exits on EOF (Closed)
+                    // *after* it has already matched the correlated reply frame
+                    // and returned Ok.  Without this, dropping the stream under
+                    // parallel load can race with the foreground's read.
+                    let _ = stream.shutdown(std::net::Shutdown::Write);
+                    // Block on a final drain read so we don't release the fd
+                    // (and any kernel-buffered data) until the foreground has
+                    // consumed everything.
+                    let _ = stream.read(&mut buf);
+                }
+            }
+        });
+
+        // Wait for the background listener to be bound (with a generous bound).
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("background listener must signal within 5 s");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let result = handshake_ethercat_endpoint(&path, deadline);
+        let _ = std::fs::remove_file(&path);
+
+        let succeeded = result.is_ok();
+        // Drop the UnixNativeConn before joining so the foreground side closes,
+        // unblocking the background thread's drain read.
+        drop(result);
+        let _ = bg.join();
+
+        assert!(succeeded, "handshake must succeed once listener is up");
+    }
+
+    /// `handshake_ethercat_endpoint` must NOT immediately return
+    /// ConnectionRefused as a fatal Protocol error when the socket path has a
+    /// dead file but no listener — it must retry until the deadline.
+    ///
+    /// Structure: the handshake call runs in a background thread while the
+    /// foreground waits 100 ms (letting the handshake hit ConnectionRefused at
+    /// least once) and then sets up the real listener.  Using a thread for the
+    /// handshake removes the timing-sensitivity of the sleep-based approach.
+    #[test]
+    fn handshake_connect_refused_is_not_immediately_fatal() {
+        use std::os::unix::net::UnixListener;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let path = format!(
+            "/tmp/kalico_test_refused_{}_handshake.sock",
+            std::process::id()
+        );
+        let _ = std::fs::remove_file(&path);
+
+        // Bind-then-drop leaves a dead socket file with no listener.
+        {
+            let _l = UnixListener::bind(&path).unwrap_or_else(|e| panic!("bind failed: {e}"));
+        }
+
+        // Flag: set by the handshake thread once it has tried at least once.
+        let tried = Arc::new(AtomicBool::new(false));
+        let tried_bg = Arc::clone(&tried);
+
+        // Channel for the foreground to signal the listener thread to stop.
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+
+        // Handshake thread: calls handshake with a 4 s deadline.
+        // The listener won't be ready for ~100 ms so it will retry.
+        let path_hs = path.clone();
+        let hs = std::thread::spawn(move || {
+            tried_bg.store(true, Ordering::SeqCst);
+            let deadline = Instant::now() + Duration::from_secs(4);
+            handshake_ethercat_endpoint(&path_hs, deadline)
+        });
+
+        // Foreground: wait until the handshake thread has started, then sleep
+        // briefly so the first connect attempt hits ConnectionRefused, then
+        // set up the real listener.
+        while !tried.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(Duration::from_millis(100));
+
+        let _ = std::fs::remove_file(&path);
+        let listener =
+            UnixListener::bind(&path).unwrap_or_else(|e| panic!("late listener bind failed: {e}"));
+
+        // Listener thread: accept one connection and serve the reply.
+        let path_lt = path.clone();
+        let lt = std::thread::spawn(move || {
+            let _ = stop_rx; // keep channel alive
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 4096];
+                if let Ok(n) = stream.read(&mut buf) {
+                    let cid = extract_correlation_id(&buf[..n]);
+                    let _ = stream.write_all(&encode_claim_handshake_reply(cid));
+                    let _ = stream.shutdown(std::net::Shutdown::Write);
+                    let _ = stream.read(&mut buf);
+                }
+            }
+            let _ = std::fs::remove_file(&path_lt);
+        });
+
+        let result = hs.join().expect("handshake thread must not panic");
+
+        let error_msg = match &result {
+            Ok(_) => None,
+            Err(e) => Some(format!("{e:?}")),
+        };
+
+        // Drop the UnixNativeConn first so the listener thread's drain read
+        // sees EOF and exits — then join the listener thread.
+        let _ = stop_tx.send(());
+        drop(result);
+        let _ = lt.join();
+
+        // The result must be Ok — or if not, must NOT be a ConnectionRefused
+        // failure, which would mean the retry loop gave up immediately.
+        if let Some(msg) = error_msg {
+            assert!(
+                !msg.to_ascii_lowercase().contains("connection refused"),
+                "handshake must retry past ConnectionRefused, not fail immediately; got: {msg}"
+            );
+        }
     }
 }

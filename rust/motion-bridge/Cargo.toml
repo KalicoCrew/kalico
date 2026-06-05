@@ -39,6 +39,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 rustfft = "6"
 heapless = { workspace = true }
+kalico-native-transport = { path = "../kalico-native-transport" }
 
 [lints]
 workspace = true
