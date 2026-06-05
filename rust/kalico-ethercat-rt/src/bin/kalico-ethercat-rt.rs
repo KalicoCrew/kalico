@@ -30,14 +30,14 @@ fn arg_val(args: &[String], key: &str) -> Option<String> {
 
 fn wait_for_claim(server: &mut FrameServer, deadline: std::time::Instant) -> Option<u32> {
     loop {
-        if std::time::Instant::now() >= deadline {
-            return None;
-        }
         for cmd in server.poll_commands() {
             if let Command::ClaimHandshake { correlation_id } = cmd {
                 return Some(correlation_id);
             }
             eprintln!("ec-rt: unexpected pre-handshake command: {cmd:?}");
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -87,13 +87,12 @@ fn main() {
         libc::signal(libc::SIGTERM, on_sigterm as libc::sighandler_t);
     }
 
-    let claim_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-
     // Bring up the drive (blocks until CiA402 operation-enabled).
     let cif = CString::new(ifname.clone()).expect("ifname must not contain NUL");
     let rc = unsafe { ffi::ec_rt_bringup(cif.as_ptr(), cycle_ns, rt_cpu, rt_prio) };
     if rc != 0 {
         eprintln!("ec-rt: bringup failed rc={rc}, sending handshake-fail then exiting");
+        let claim_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         if let Some(cid) = wait_for_claim(&mut server, claim_deadline) {
             let reply = slave1_reply(SlaveState::Offline, rc.unsigned_abs() as u16);
             server.respond_and_close(&claim_handshake_reply_frame(cid, &reply));
@@ -105,7 +104,10 @@ fn main() {
     }
     eprintln!("ec-rt: drive enabled");
 
-    match wait_for_claim(&mut server, claim_deadline) {
+    match wait_for_claim(
+        &mut server,
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+    ) {
         Some(cid) => {
             server.respond(&claim_handshake_reply_frame(
                 cid,
