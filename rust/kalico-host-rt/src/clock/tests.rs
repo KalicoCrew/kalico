@@ -23,3 +23,20 @@ fn real_clock_increases() {
     let t1 = c.now();
     assert!(t1 > t0);
 }
+
+#[test]
+fn monotonic_raw_secs_is_non_negative() {
+    let t = monotonic_raw_secs();
+    assert!(t >= 0.0, "monotonic_raw_secs must be non-negative, got {t}");
+}
+
+#[test]
+fn monotonic_raw_secs_advances() {
+    let t0 = monotonic_raw_secs();
+    std::thread::sleep(Duration::from_millis(2));
+    let t1 = monotonic_raw_secs();
+    assert!(
+        t1 > t0,
+        "monotonic_raw_secs must increase over time: t0={t0} t1={t1}"
+    );
+}

@@ -274,6 +274,7 @@ impl Reactor {
         let wire_seq = (seq & 0x0F) as u8;
         let frame = crate::host_io::wire::build_frame(&payload, wire_seq);
 
+        let sent_time_raw = crate::clock::monotonic_raw_secs();
         self.write_frame(&frame)?;
 
         let now = self.clock.now();
@@ -294,6 +295,7 @@ impl Reactor {
                 submitted_at: now,
                 deadline,
                 abandoned: false,
+                sent_time_raw,
             })?;
         tracing::trace!(
             subsystem = "mcu-comms",
@@ -642,6 +644,9 @@ impl Reactor {
                         matched_seq = entry.seq,
                         "solicited response matched"
                     );
+                    let mut params = params;
+                    params.sent_time_raw = entry.sent_time_raw;
+                    params.recv_time_raw = crate::clock::monotonic_raw_secs();
                     let _ = entry.completion.send(Ok(params));
                 } else {
                     let oid = params.fields.get("oid").and_then(|v| match v {

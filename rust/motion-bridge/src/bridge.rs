@@ -1447,6 +1447,10 @@ impl PyMotionBridge {
                 MessageValue::String(s) => d.set_item(k, s)?,
             }
         }
+        if params.sent_time_raw != 0.0 {
+            d.set_item("#sent_time_raw", params.sent_time_raw)?;
+            d.set_item("#receive_time_raw", params.recv_time_raw)?;
+        }
         Ok(d.unbind())
     }
 

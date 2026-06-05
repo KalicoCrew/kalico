@@ -574,9 +574,19 @@ class SerialReader:
                 msg,
                 response,
             )
-            now = self.reactor.monotonic()
-            params["#sent_time"] = now
-            params["#receive_time"] = now
+            # Use CLOCK_MONOTONIC_RAW timestamps if the Rust bridge supplied them
+            # (non-zero means a real RTT was measured on the wire).  Fall back to
+            # reactor.monotonic() only when both sides stamp the same instant (the
+            # old behaviour, which gives half_rtt=0 and breaks min_half_rtt).
+            sent_raw = params.get("#sent_time_raw", 0.0)
+            recv_raw = params.get("#receive_time_raw", 0.0)
+            if sent_raw != 0.0 and recv_raw != 0.0:
+                params["#sent_time"] = sent_raw
+                params["#receive_time"] = recv_raw
+            else:
+                now = self.reactor.monotonic()
+                params["#sent_time"] = now
+                params["#receive_time"] = now
             return params
         raise error("send_with_response requires motion bridge")
 
