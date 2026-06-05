@@ -221,6 +221,11 @@ fn message_for_claim_error(label: &str, interface: &str, e: &EndpointClaimError)
                 "ethercat {label}: EtherCAT bus on {interface}: no slaves responding \
                  (bringup rc=-{fault_code}) — check cable and drive power, then FIRMWARE_RESTART"
             ),
+            // 0 = no bringup rc (e.g. the stub's simulated failure) — omit the suffix.
+            0 => format!(
+                "ethercat {label}: drive (slave {slave_idx}) offline \
+                 — check drive power, then FIRMWARE_RESTART"
+            ),
             _ => format!(
                 "ethercat {label}: drive (slave {slave_idx}) offline \
                  (bringup rc=-{fault_code}) — check drive power, then FIRMWARE_RESTART"
@@ -307,7 +312,7 @@ mod claim_error_message_tests {
         assert_eq!(
             msg,
             "ethercat node_x: drive (slave 1) offline \
-             (bringup rc=-0) — check drive power, then FIRMWARE_RESTART"
+             — check drive power, then FIRMWARE_RESTART"
         );
     }
 

@@ -139,15 +139,16 @@ endpoint: rust/target/release/kalico-ethercat-rt-stub
 ### 4. Real drive (supervised)
 - Switch `endpoint:` back to the hw binary (or drop the key to use the default
   `rust/target/release/kalico-ethercat-rt`) and restart klippy.
-- **Dark drive (powered off / disconnected):** the hw endpoint detects the drive is
-  not on the bus and reports it; klippy fails the claim loudly with:
+- **Dark drive (powered off / disconnected):** with the drive as the only slave on
+  the bus, a powered-off drive means SOEM finds no slaves at all (rc=-2); klippy
+  fails the claim loudly with:
+
+  > `ethercat node_x: EtherCAT bus on eth0: no slaves responding (bringup rc=-2) — check cable and drive power, then FIRMWARE_RESTART`
+
+  If the drive IS found but fails the SAFE-OP/OP/CiA402-enable walk (rc=-3..-5),
+  you get the per-drive variant instead:
 
   > `ethercat node_x: drive (slave 1) offline (bringup rc=-{N}) — check drive power, then FIRMWARE_RESTART`
-
-  If the NIC itself can't see any slaves (cable unplugged, wrong interface), you get the
-  bus-dead variant instead:
-
-  > `ethercat node_x: EtherCAT bus on eth0: no slaves responding (bringup rc=-{1|2}) — check cable and drive power, then FIRMWARE_RESTART`
 
   Power the drive on (and/or fix the cable), then `FIRMWARE_RESTART` — klippy re-spawns
   the endpoint and the claim succeeds, reaching `ready`.
