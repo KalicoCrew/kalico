@@ -4,7 +4,7 @@ use std::thread;
 use std::time::Duration;
 
 #[test]
-fn frame_server_detects_client_disconnect() {
+fn session_ends_on_client_disconnect() {
     let socket_path = format!("/tmp/kalico-srv-disc-{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
 
@@ -27,8 +27,8 @@ fn frame_server_detects_client_disconnect() {
     }
 
     assert!(
-        !server.client_disconnected(),
-        "should not be disconnected while client is live"
+        !server.session_ended(),
+        "session must not be ended while client is live"
     );
 
     drop(client);
@@ -37,7 +37,7 @@ fn frame_server_detects_client_disconnect() {
     let eof_deadline = std::time::Instant::now() + Duration::from_secs(1);
     loop {
         let _ = server.poll_commands();
-        if server.client_disconnected() {
+        if server.session_ended() {
             break;
         }
         assert!(
@@ -47,24 +47,21 @@ fn frame_server_detects_client_disconnect() {
         thread::sleep(Duration::from_millis(1));
     }
 
-    assert!(
-        server.client_disconnected(),
-        "EOF must set disconnected flag"
-    );
+    // Loop above can only exit when session_ended() is true; no redundant assert needed.
 
     let _ = std::fs::remove_file(&socket_path);
 }
 
 #[test]
-fn frame_server_never_connected_is_not_disconnected() {
+fn never_connected_server_has_no_ended_session() {
     let socket_path = format!("/tmp/kalico-srv-noconn-{}.sock", std::process::id());
     let _ = std::fs::remove_file(&socket_path);
 
     let server = FrameServer::bind(&socket_path).expect("bind");
 
     assert!(
-        !server.client_disconnected(),
-        "a server that never accepted a client must not report disconnected"
+        !server.session_ended(),
+        "a server that never accepted a client must not report session ended"
     );
 
     let _ = std::fs::remove_file(&socket_path);
