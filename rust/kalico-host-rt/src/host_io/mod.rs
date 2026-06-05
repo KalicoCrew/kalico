@@ -142,14 +142,14 @@ pub enum ReactorCommand {
             SyncSender<Result<crate::host_io::kalico_native::KalicoCallOutcome, TransportError>>,
         deadline: std::time::Instant,
     },
-    /// Send pre-encoded get_clock bytes as fire-and-forget and record
-    /// `sent_time_raw` so that when the "clock" response arrives as an
-    /// unsolicited frame the reactor can inject honest RAW timestamps and
-    /// deliver it as a PassthroughResponse runtime event.
-    GetClockAndDeliver {
-        get_clock_bytes: Vec<u8>,
-        sent_time_raw: f64,
-    },
+    /// Encode and send `get_clock` (with the reactor's own per-MCU parser —
+    /// the bridge-level parser carries whichever MCU's dictionary was set
+    /// last and must never encode for a specific MCU). The send timestamp is
+    /// captured in the reactor immediately before the wire write; when the
+    /// "clock" response arrives as an unsolicited frame the reactor injects
+    /// honest RAW timestamps and delivers it as a PassthroughResponse
+    /// runtime event.
+    GetClockAndDeliver,
     Shutdown,
     Noop,
     RegisterInterceptor {
@@ -609,25 +609,16 @@ impl KalicoHostIo {
             .map_err(|_| TransportError::Closed)
     }
 
-    /// Send a pre-encoded get_clock frame and tell the reactor to stamp the
-    /// matching "clock" response with CLOCK_MONOTONIC_RAW timestamps.
-    ///
-    /// `sent_time_raw` must have been captured with `monotonic_raw_secs()`
-    /// immediately before calling this method.  The reactor delivers the
-    /// response as a `PassthroughResponse { name: "clock", .. }` runtime event
-    /// with `MessageParams::sent_time_raw` and `recv_time_raw` filled in, so
-    /// the Python `_bridge_event_poller` can inject them into `#sent_time` /
-    /// `#receive_time` before dispatching to `_handle_clock`.
-    pub fn get_clock_async(
-        &self,
-        get_clock_bytes: Vec<u8>,
-        sent_time_raw: f64,
-    ) -> Result<(), TransportError> {
+    /// Ask the reactor to encode+send `get_clock` and stamp the matching
+    /// "clock" response with CLOCK_MONOTONIC_RAW timestamps (send stamp
+    /// captured in the reactor immediately before the wire write). The
+    /// response is delivered as a `PassthroughResponse { name: "clock", .. }`
+    /// runtime event with `MessageParams::sent_time_raw` / `recv_time_raw`
+    /// filled in, so the Python `_bridge_event_poller` can inject them into
+    /// `#sent_time` / `#receive_time` before dispatching to `_handle_clock`.
+    pub fn get_clock_async(&self) -> Result<(), TransportError> {
         self.submission_tx
-            .send(ReactorCommand::GetClockAndDeliver {
-                get_clock_bytes,
-                sent_time_raw,
-            })
+            .send(ReactorCommand::GetClockAndDeliver)
             .map_err(|_| TransportError::Closed)
     }
 

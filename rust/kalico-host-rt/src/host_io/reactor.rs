@@ -1094,25 +1094,32 @@ impl Reactor {
                     }
                 }
             }
-            ReactorCommand::GetClockAndDeliver {
-                get_clock_bytes,
-                sent_time_raw,
-            } => {
-                self.pending_clock_sent_raw = Some(sent_time_raw);
-                if let Err(e) = self.dispatch_fire_and_forget(get_clock_bytes) {
-                    let is_io = matches!(e, TransportError::Io(_));
+            ReactorCommand::GetClockAndDeliver => match self.parser.encode("get_clock") {
+                Ok(payload) => {
+                    self.pending_clock_sent_raw = Some(crate::clock::monotonic_raw_secs());
+                    if let Err(e) = self.dispatch_fire_and_forget(payload) {
+                        let is_io = matches!(e, TransportError::Io(_));
+                        tracing::error!(
+                            subsystem = "mcu-comms",
+                            event = "get_clock_async_send_error",
+                            error = %e,
+                            "GetClockAndDeliver dispatch failed"
+                        );
+                        if is_io {
+                            self.transition_closed_on_io_fault();
+                        }
+                        self.pending_clock_sent_raw = None;
+                    }
+                }
+                Err(e) => {
                     tracing::error!(
                         subsystem = "mcu-comms",
-                        event = "get_clock_async_send_error",
-                        error = %e,
-                        "GetClockAndDeliver dispatch failed"
+                        event = "get_clock_async_encode_error",
+                        error = ?e,
+                        "GetClockAndDeliver: encode 'get_clock' failed"
                     );
-                    if is_io {
-                        self.transition_closed_on_io_fault();
-                    }
-                    self.pending_clock_sent_raw = None;
                 }
-            }
+            },
             ReactorCommand::Noop => {}
             ReactorCommand::RegisterInterceptor {
                 msg_name,
