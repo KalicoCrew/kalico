@@ -448,13 +448,15 @@ class PrinterExtruder:
         self.max_extrude_ratio = def_max_cross_section / self.filament_area
 
         logging.info(
-            "Nozzle diameter changed to %.2f, max_extrude_ratio=%.6f",
+            "Nozzle diameter for Extruder '%s' changed to %.2f, max_extrude_ratio=%.6f",
+            self.name,
             self.nozzle_diameter,
             self.max_extrude_ratio,
         )
         gcmd.respond_info(
-            "Nozzle diameter set to %.2fmm\n"
-            "Max extrude ratio: %.6f" % (diameter, self.max_extrude_ratio)
+            "Nozzle diameter for Extruder '%s' set to %.2fmm\n"
+            "Max extrude ratio: %.6f"
+            % (self.name, diameter, self.max_extrude_ratio)
         )
 
 
