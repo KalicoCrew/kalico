@@ -14,10 +14,10 @@ pub enum MessageKind {
     RuntimeCapsResponse = 0x0041,
     PushPieces = 0x0060,
     PushPiecesResponse = 0x0061,
-    ClaimHandshakeReply = 0x0090,
     FaultEvent = 0x0082,
     StatusHeartbeat = 0x0083,
     McuLog = 0x0084,
+    ClaimHandshakeReply = 0x0090,
 }
 
 impl MessageKind {
@@ -321,16 +321,13 @@ impl Decode for McuLog {
     }
 }
 
-// ClaimHandshakeReply (0x0090): sent once by the endpoint after bringup,
-// before entering the DC loop. Contains one entry per slave.
-// Fail loudly: slave_count == 0 or unknown state byte are hard DecodeError.
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+/// State of a single EtherCAT slave as reported in [`ClaimHandshakeReply`].
 pub enum SlaveState {
-    Ok      = 0x00,
+    Ok = 0x00,
     Offline = 0x01,
-    Fault   = 0x02,
+    Fault = 0x02,
 }
 
 impl SlaveState {
@@ -339,18 +336,21 @@ impl SlaveState {
             0x00 => Some(Self::Ok),
             0x01 => Some(Self::Offline),
             0x02 => Some(Self::Fault),
-            _    => None,
+            _ => None,
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlaveStatus {
-    pub slave_idx:  u8,
-    pub state:      SlaveState,
+    pub slave_idx: u8,
+    pub state: SlaveState,
     pub fault_code: u16,
 }
 
+/// Sent once by the endpoint after bringup, before entering the DC loop.
+/// Contains one entry per slave. Fail loudly: empty slave list or unknown
+/// state byte are hard `DecodeError`s.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimHandshakeReply {
     pub slave_statuses: Vec<SlaveStatus>,
@@ -371,21 +371,51 @@ impl Decode for ClaimHandshakeReply {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
         let count = get_u8(c)?;
         if count == 0 {
-            return Err(DecodeError::BadDiscriminant { field: "slave_count", raw: 0 });
+            return Err(DecodeError::EmptyArray {
+                field: "slave_statuses",
+            });
+        }
+        let entries_len =
+            (count as usize)
+                .checked_mul(4)
+                .ok_or(DecodeError::ArrayLengthExceedsBuffer {
+                    claimed: u32::from(count),
+                    available: c.remaining(),
+                })?;
+        if entries_len > c.remaining() {
+            return Err(DecodeError::ArrayLengthExceedsBuffer {
+                claimed: u32::from(count),
+                available: c.remaining(),
+            });
         }
         let mut statuses = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            let slave_idx  = get_u8(c)?;
-            let state_raw  = get_u8(c)?;
+            let slave_idx = get_u8(c)?;
+            let state_raw = get_u8(c)?;
             let state = SlaveState::from_u8(state_raw).ok_or(DecodeError::BadDiscriminant {
                 field: "SlaveState",
-                raw:   state_raw as u32,
+                raw: state_raw as u32,
             })?;
             let fault_code = get_u16(c)?;
-            statuses.push(SlaveStatus { slave_idx, state, fault_code });
+            statuses.push(SlaveStatus {
+                slave_idx,
+                state,
+                fault_code,
+            });
         }
-        Ok(Self { slave_statuses: statuses })
+        Ok(Self {
+            slave_statuses: statuses,
+        })
     }
+}
+
+#[cfg(test)]
+pub(super) fn roundtrip<T>(v: &T) -> T
+where
+    T: Encode + Decode + PartialEq + std::fmt::Debug,
+{
+    let bytes = v.encoded_to_vec();
+    T::decode(&bytes).expect("decode ok")
 }
 
 #[cfg(test)]

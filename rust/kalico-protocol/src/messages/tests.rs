@@ -1,12 +1,5 @@
+use super::roundtrip;
 use super::*;
-
-fn roundtrip<T>(v: &T) -> T
-where
-    T: Encode + Decode + PartialEq + std::fmt::Debug,
-{
-    let bytes = v.encoded_to_vec();
-    T::decode(&bytes).expect("decode ok")
-}
 
 #[test]
 fn message_kind_round_trips_via_u16() {
@@ -22,6 +15,7 @@ fn message_kind_round_trips_via_u16() {
         MessageKind::FaultEvent,
         MessageKind::StatusHeartbeat,
         MessageKind::McuLog,
+        MessageKind::ClaimHandshakeReply,
     ] {
         assert_eq!(MessageKind::from_u16(k.as_u16()), Some(k));
     }

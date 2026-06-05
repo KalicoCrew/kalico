@@ -27,6 +27,9 @@ pub enum DecodeError {
     /// A field carried a value outside its defined discriminant set
     /// (e.g. an unknown SlaveState byte). Fail loudly — never default.
     BadDiscriminant { field: &'static str, raw: u32 },
+    /// A length-prefixed array that the message requires to be non-empty
+    /// arrived empty.
+    EmptyArray { field: &'static str },
 }
 
 impl core::fmt::Display for DecodeError {
@@ -42,6 +45,9 @@ impl core::fmt::Display for DecodeError {
             }
             Self::BadDiscriminant { field, raw } => {
                 write!(f, "bad discriminant for {field}: {raw:#x}")
+            }
+            Self::EmptyArray { field } => {
+                write!(f, "required array {field} is empty")
             }
         }
     }
