@@ -24,6 +24,9 @@ pub enum DecodeError {
     /// Trailing bytes after a successful decode of a fixed-size message.
     /// Variable-size messages don't use this; they consume what they need.
     TrailingBytes { remaining: usize },
+    /// A field carried a value outside its defined discriminant set
+    /// (e.g. an unknown SlaveState byte). Fail loudly — never default.
+    BadDiscriminant { field: &'static str, raw: u32 },
 }
 
 impl core::fmt::Display for DecodeError {
@@ -36,6 +39,9 @@ impl core::fmt::Display for DecodeError {
             ),
             Self::TrailingBytes { remaining } => {
                 write!(f, "{remaining} trailing byte(s) after decode")
+            }
+            Self::BadDiscriminant { field, raw } => {
+                write!(f, "bad discriminant for {field}: {raw:#x}")
             }
         }
     }
