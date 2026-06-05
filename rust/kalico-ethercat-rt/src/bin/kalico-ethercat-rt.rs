@@ -62,7 +62,7 @@ fn main() {
     // SA_RESETHAND) keeps a second SIGTERM on the clean-shutdown path too.
     unsafe {
         let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = on_sigterm as libc::sighandler_t;
+        sa.sa_sigaction = on_sigterm as *const () as libc::sighandler_t;
         sa.sa_flags = libc::SA_RESTART;
         libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
     }
