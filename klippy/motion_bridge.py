@@ -146,8 +146,12 @@ class MotionBridgeWrapper:
     def claim_mcu(self, label, serial_path, baud):
         return self._bridge.claim_mcu(label, serial_path, baud)
 
-    def claim_ethercat_node(self, label, socket_path):
-        return self._bridge.claim_ethercat_node(label, socket_path)
+    def claim_ethercat_node(
+        self, label, socket_path, interface, endpoint, counts_per_mm
+    ):
+        return self._bridge.claim_ethercat_node(
+            label, socket_path, interface, endpoint, counts_per_mm
+        )
 
     def release_mcu(self, handle):
         return self._bridge.release_mcu(handle)

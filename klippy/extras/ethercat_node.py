@@ -83,11 +83,12 @@ class EtherCatNode:
             return
         self._counts_per_mm = self._derive_counts_per_mm()
         bridge = self.printer.lookup_object("motion_bridge")
-        # Task 7 flips this to the 5-arg spawn-on-claim signature
-        # (label, socket_path, interface, endpoint, counts_per_mm); the values
-        # are gathered and stored above so that flip is a one-line change.
         self.bridge_handle = bridge.claim_ethercat_node(
-            self.name, self.socket_path
+            self.name,
+            self.socket_path,
+            self.interface,
+            self.endpoint,
+            self._counts_per_mm,
         )
         logging.info(
             "ethercat_node %s: claimed handle=%s socket=%s interface=%s "
