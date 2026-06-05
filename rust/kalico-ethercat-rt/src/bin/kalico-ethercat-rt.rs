@@ -19,7 +19,7 @@ use kalico_protocol::messages::{ClaimHandshakeReply, SlaveState, SlaveStatus};
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn on_sigterm(_: libc::c_int) {
-    SIGTERM_RECEIVED.store(true, Ordering::SeqCst);
+    SIGTERM_RECEIVED.store(true, Ordering::Release);
 }
 
 fn arg_val(args: &[String], key: &str) -> Option<String> {
@@ -39,11 +39,14 @@ fn wait_for_claim(server: &mut FrameServer, deadline: std::time::Instant) -> Opt
         if std::time::Instant::now() >= deadline {
             return None;
         }
+        if SIGTERM_RECEIVED.load(Ordering::Acquire) {
+            return None;
+        }
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 }
 
-fn slave1_reply(state: SlaveState, fault_code: u16) -> ClaimHandshakeReply {
+fn single_slave_reply(state: SlaveState, fault_code: u16) -> ClaimHandshakeReply {
     ClaimHandshakeReply {
         slave_statuses: vec![SlaveStatus {
             slave_idx: 1,
@@ -82,9 +85,13 @@ fn main() {
     let mut server = FrameServer::bind(&socket).expect("bind socket");
     eprintln!("ec-rt: socket {socket}, cycle {cycle_us}us, counts/mm {counts_per_mm}");
 
-    // SAFETY: on_sigterm only touches a static AtomicBool.
+    // SAFETY: on_sigterm only touches a static AtomicBool; SA_RESTART (and no
+    // SA_RESETHAND) keeps a second SIGTERM on the clean-shutdown path too.
     unsafe {
-        libc::signal(libc::SIGTERM, on_sigterm as libc::sighandler_t);
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_sigterm as libc::sighandler_t;
+        sa.sa_flags = libc::SA_RESTART;
+        libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
     }
 
     // Bring up the drive (blocks until CiA402 operation-enabled).
@@ -94,7 +101,10 @@ fn main() {
         eprintln!("ec-rt: bringup failed rc={rc}, sending handshake-fail then exiting");
         let claim_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         if let Some(cid) = wait_for_claim(&mut server, claim_deadline) {
-            let reply = slave1_reply(SlaveState::Offline, rc.unsigned_abs() as u16);
+            let reply = single_slave_reply(
+                SlaveState::Offline,
+                u16::try_from(rc.unsigned_abs()).unwrap_or(u16::MAX),
+            );
             server.respond_and_close(&claim_handshake_reply_frame(cid, &reply));
             eprintln!("ec-rt: sent offline handshake reply, exiting");
         } else {
@@ -111,7 +121,7 @@ fn main() {
         Some(cid) => {
             server.respond(&claim_handshake_reply_frame(
                 cid,
-                &slave1_reply(SlaveState::Ok, 0),
+                &single_slave_reply(SlaveState::Ok, 0),
             ));
         }
         None => {
@@ -127,7 +137,7 @@ fn main() {
 
     let mut prdiv = 0u64;
     loop {
-        if SIGTERM_RECEIVED.load(Ordering::SeqCst) {
+        if SIGTERM_RECEIVED.load(Ordering::Acquire) {
             eprintln!("ec-rt: SIGTERM received — disabling drive and exiting");
             break;
         }
