@@ -30,7 +30,9 @@ pub fn build_mcu_log_hook(
 ) -> impl Fn(McuLogEvent) + Send + Sync + 'static {
     move |e: McuLogEvent| {
         let (time_str, time_estimated) = {
-            let guard = router.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let guard = router
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some((dt, estimated)) = guard.wall_time_at_mcu(mcu, e.mcu_tick) {
                 (format_time(dt), estimated)
             } else {

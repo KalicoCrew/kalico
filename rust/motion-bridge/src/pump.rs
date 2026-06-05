@@ -116,7 +116,9 @@ pub fn schedule(
                     return None;
                 }
                 let already = taken.get(k).copied().unwrap_or(0);
-                q.pieces.get(already).map(|&(ref p, host)| (*k, p.start_time, host))
+                q.pieces
+                    .get(already)
+                    .map(|&(ref p, host)| (*k, p.start_time, host))
             })
             .min_by(|(ka, _, ha), (kb, _, hb)| ha.total_cmp(hb).then(ka.cmp(kb)));
         let (k, start_ticks, _host) = match next {
@@ -374,10 +376,7 @@ mod sched_tests {
         queues.insert(AxisKey { mcu_id: 0, axis: 0 }, mcu0_q);
 
         // mcu1: host-later piece, ring has room
-        queues.insert(
-            AxisKey { mcu_id: 1, axis: 0 },
-            q_with_host(8, &[(50, 5.0)]),
-        );
+        queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with_host(8, &[(50, 5.0)]));
 
         assert!(
             matches!(
@@ -549,7 +548,10 @@ mod tests {
         let prev_end_ticks: u64 = 10_000;
         let (tick_us3, host_us3) =
             junction_jumps(prev_end_ticks, 5.0e-4, prev_end_ticks, 0.0, freq);
-        assert!((tick_us3).abs() < 1e-6, "tick gap should be zero, got {tick_us3}");
+        assert!(
+            (tick_us3).abs() < 1e-6,
+            "tick gap should be zero, got {tick_us3}"
+        );
         assert!((host_us3 - 500.0).abs() < 1e-3, "host_jump_us={host_us3}");
     }
 }
@@ -641,8 +643,8 @@ where
                                 prev_end_host,
                                 freq,
                             );
-                            let anomalous = tick_jump_us < -50.0
-                                || (tick_jump_us - host_jump_us).abs() > 50.0;
+                            let anomalous =
+                                tick_jump_us < -50.0 || (tick_jump_us - host_jump_us).abs() > 50.0;
                             if fresh_stream || !anomalous {
                                 log::debug!(
                                     "[junction] key={:?} tick_jump_us={:.1} host_jump_us={:.1} fresh={}",

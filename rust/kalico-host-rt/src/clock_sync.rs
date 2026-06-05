@@ -249,8 +249,7 @@ impl ClockSyncEstimator {
             half_rtt
         };
         #[allow(clippy::cast_sign_loss)]
-        let one_way_cycles =
-            (effective_half_rtt * self.clock_freq_estimate).max(0.0) as u64;
+        let one_way_cycles = (effective_half_rtt * self.clock_freq_estimate).max(0.0) as u64;
         let mcu_at_send = mcu_at_response.saturating_sub(one_way_cycles);
 
         #[allow(clippy::cast_precision_loss)]
@@ -292,14 +291,12 @@ impl ClockSyncEstimator {
         }
 
         // --- outlier gate (klippy lines ~122-155) ---
-        let exp_clock =
-            (sent_time - self.time_avg) * self.clock_freq_estimate + self.clock_avg;
+        let exp_clock = (sent_time - self.time_avg) * self.clock_freq_estimate + self.clock_avg;
         let clock_diff = clock - exp_clock;
         let clock_diff2 = clock_diff * clock_diff;
         let abs_floor = (OUTLIER_ABS_FLOOR_SECS * self.mcu_freq).powi(2);
 
-        if clock_diff2 > OUTLIER_VARIANCE_MULT * self.prediction_variance
-            && clock_diff2 > abs_floor
+        if clock_diff2 > OUTLIER_VARIANCE_MULT * self.prediction_variance && clock_diff2 > abs_floor
         {
             if clock > exp_clock
                 && sent_time < self.last_prediction_time + OUTLIER_RESET_WINDOW_SECS
@@ -308,12 +305,11 @@ impl ClockSyncEstimator {
                 return;
             }
             // Reset prediction variance (klippy: variance reset path).
-            self.prediction_variance =
-                (PREDICTION_RESET_MS * self.mcu_freq).powi(2);
+            self.prediction_variance = (PREDICTION_RESET_MS * self.mcu_freq).powi(2);
         } else {
             self.last_prediction_time = sent_time;
-            self.prediction_variance = (1.0 - DECAY)
-                * (self.prediction_variance + clock_diff2 * DECAY);
+            self.prediction_variance =
+                (1.0 - DECAY) * (self.prediction_variance + clock_diff2 * DECAY);
         }
 
         // Residual quality metric: EWMA of |clock_diff| in µs.  This is the
@@ -321,15 +317,13 @@ impl ClockSyncEstimator {
         // regression's `residual_ewma_us`.
         if self.clock_freq_estimate > 1.0 {
             let abs_resid_us = clock_diff.abs() / self.clock_freq_estimate * 1e6;
-            self.residual_ewma_us = (1.0 - DECAY) * self.residual_ewma_us
-                + DECAY * abs_resid_us;
+            self.residual_ewma_us = (1.0 - DECAY) * self.residual_ewma_us + DECAY * abs_resid_us;
         }
 
         // --- EWMA accumulators (klippy lines ~157-165) ---
         let diff_sent = feed_time - self.time_avg;
         self.time_avg += DECAY * diff_sent;
-        self.time_variance =
-            (1.0 - DECAY) * (self.time_variance + diff_sent * diff_sent * DECAY);
+        self.time_variance = (1.0 - DECAY) * (self.time_variance + diff_sent * diff_sent * DECAY);
 
         let diff_clock = clock - self.clock_avg;
         self.clock_avg += DECAY * diff_clock;
@@ -374,7 +368,6 @@ impl ClockSyncEstimator {
                 self.clock_avg as u64
             };
         }
-
     }
 
     pub fn drift_ppm(&self, baseline_freq: f64) -> f64 {

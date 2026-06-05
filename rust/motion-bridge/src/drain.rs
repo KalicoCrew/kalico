@@ -79,7 +79,12 @@ impl DrainSync {
                         let b = c.baseline.get(k).copied().unwrap_or(0);
                         format!(
                             "mcu{} axis{}: retired {} baseline {} delta {} / sent {}",
-                            k.0, k.1, r, b, r.saturating_sub(b), s
+                            k.0,
+                            k.1,
+                            r,
+                            b,
+                            r.saturating_sub(b),
+                            s
                         )
                     })
                     .collect();

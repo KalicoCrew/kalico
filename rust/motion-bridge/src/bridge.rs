@@ -1410,19 +1410,20 @@ impl PyMotionBridge {
     /// response arrives via `take_runtime_event` as a PassthroughResponse with
     /// `sent_time_raw`/`recv_time_raw` baked in.
     fn bridge_get_clock_async(&self, mcu_handle: u32) -> PyResult<()> {
-        let io = {
-            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            let conn = mcus.get(&mcu_handle).ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err(format!(
-                    "bridge_get_clock_async: unknown mcu_handle {mcu_handle}"
-                ))
-            })?;
-            conn.host_io.as_ref().ok_or_else(|| {
+        let io =
+            {
+                let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+                let conn = mcus.get(&mcu_handle).ok_or_else(|| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "bridge_get_clock_async: unknown mcu_handle {mcu_handle}"
+                    ))
+                })?;
+                conn.host_io.as_ref().ok_or_else(|| {
                 pyo3::exceptions::PyRuntimeError::new_err(
                     "bridge_get_clock_async: attach_serial has not been called for this MCU",
                 )
             })?.clone()
-        };
+            };
 
         io.get_clock_async().map_err(|e| {
             pyo3::exceptions::PyRuntimeError::new_err(format!("bridge_get_clock_async: {e}"))
