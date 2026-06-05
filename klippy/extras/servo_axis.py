@@ -62,6 +62,11 @@ class ServoRail:
         # [ethercat_node] object.
         self.node_name = config.get("node")
         self.rotation_distance = config.getfloat("rotation_distance", above=0.0)
+        # Encoder counts per motor revolution — drives the counts/mm the
+        # EtherCAT endpoint needs to convert host millimetres to drive counts.
+        self.encoder_counts_per_rev = config.getint(
+            "encoder_counts_per_rev", minval=1
+        )
         # Axis range. Matches PrinterRail's position_min/position_max
         # attributes, which BridgeKinematics reads directly (get_status)
         # and via get_range() (home / set_position / check_move).
@@ -146,3 +151,8 @@ class ServoRail:
     # Task 9 reads this to map the servo axis to its [ethercat_node] handle.
     def get_node_name(self):
         return self.node_name
+
+    # counts/rev / (mm/rev) = counts/mm. rotation_distance is validated
+    # above=0.0 at config time, so this never divides by zero.
+    def get_counts_per_mm(self):
+        return self.encoder_counts_per_rev / self.rotation_distance
