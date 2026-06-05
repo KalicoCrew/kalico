@@ -211,6 +211,123 @@ enum EndpointClaimError {
     Protocol(String),
 }
 
+fn message_for_claim_error(label: &str, interface: &str, e: &EndpointClaimError) -> String {
+    match e {
+        EndpointClaimError::DriveOffline {
+            slave_idx,
+            fault_code,
+        } => match fault_code {
+            1 | 2 => format!(
+                "ethercat {label}: EtherCAT bus on {interface}: no slaves responding \
+                 (bringup rc=-{fault_code}) — check cable and drive power, then FIRMWARE_RESTART"
+            ),
+            _ => format!(
+                "ethercat {label}: drive (slave {slave_idx}) offline \
+                 (bringup rc=-{fault_code}) — check drive power, then FIRMWARE_RESTART"
+            ),
+        },
+        EndpointClaimError::DriveFault {
+            slave_idx,
+            fault_code,
+        } => format!(
+            "ethercat {label}: drive (slave {slave_idx}) \
+             fault 0x{fault_code:04x} — check drive, then FIRMWARE_RESTART"
+        ),
+        EndpointClaimError::Protocol(s) => {
+            format!("ethercat {label}: endpoint protocol error — {s}")
+        }
+    }
+}
+
+#[cfg(test)]
+mod claim_error_message_tests {
+    use super::{EndpointClaimError, message_for_claim_error};
+
+    #[test]
+    fn bus_dead_ec_init_failure() {
+        let msg = message_for_claim_error(
+            "node_x",
+            "eth0",
+            &EndpointClaimError::DriveOffline {
+                slave_idx: 0,
+                fault_code: 1,
+            },
+        );
+        assert_eq!(
+            msg,
+            "ethercat node_x: EtherCAT bus on eth0: no slaves responding \
+             (bringup rc=-1) — check cable and drive power, then FIRMWARE_RESTART"
+        );
+    }
+
+    #[test]
+    fn bus_dead_no_slaves() {
+        let msg = message_for_claim_error(
+            "node_x",
+            "eth0",
+            &EndpointClaimError::DriveOffline {
+                slave_idx: 0,
+                fault_code: 2,
+            },
+        );
+        assert_eq!(
+            msg,
+            "ethercat node_x: EtherCAT bus on eth0: no slaves responding \
+             (bringup rc=-2) — check cable and drive power, then FIRMWARE_RESTART"
+        );
+    }
+
+    #[test]
+    fn drive_offline_with_rc() {
+        let msg = message_for_claim_error(
+            "node_x",
+            "eth0",
+            &EndpointClaimError::DriveOffline {
+                slave_idx: 1,
+                fault_code: 5,
+            },
+        );
+        assert_eq!(
+            msg,
+            "ethercat node_x: drive (slave 1) offline \
+             (bringup rc=-5) — check drive power, then FIRMWARE_RESTART"
+        );
+    }
+
+    #[test]
+    fn drive_offline_stub_fault_code_zero_takes_drive_branch() {
+        let msg = message_for_claim_error(
+            "node_x",
+            "eth0",
+            &EndpointClaimError::DriveOffline {
+                slave_idx: 1,
+                fault_code: 0,
+            },
+        );
+        assert_eq!(
+            msg,
+            "ethercat node_x: drive (slave 1) offline \
+             (bringup rc=-0) — check drive power, then FIRMWARE_RESTART"
+        );
+    }
+
+    #[test]
+    fn drive_fault_unchanged() {
+        let msg = message_for_claim_error(
+            "node_x",
+            "eth0",
+            &EndpointClaimError::DriveFault {
+                slave_idx: 1,
+                fault_code: 0x0021,
+            },
+        );
+        assert_eq!(
+            msg,
+            "ethercat node_x: drive (slave 1) fault 0x0021 — check drive, then FIRMWARE_RESTART"
+        );
+    }
+}
+
 /// Spawn the EtherCAT endpoint binary.
 ///
 /// `FrameServer::bind` already unlinks a stale socket file before binding, so
@@ -713,23 +830,7 @@ impl PyMotionBridge {
         let conn = handshake_ethercat_endpoint(socket_path, handshake_deadline).map_err(|e| {
             let _ = child.kill();
             let _ = child.wait();
-            let msg = match e {
-                EndpointClaimError::DriveOffline { slave_idx, .. } => format!(
-                    "ethercat {label}: drive (slave {slave_idx}) offline \
-                         — check drive power, then FIRMWARE_RESTART"
-                ),
-                EndpointClaimError::DriveFault {
-                    slave_idx,
-                    fault_code,
-                } => format!(
-                    "ethercat {label}: drive (slave {slave_idx}) \
-                         fault 0x{fault_code:04x} — check drive, then FIRMWARE_RESTART"
-                ),
-                EndpointClaimError::Protocol(s) => {
-                    format!("ethercat {label}: endpoint protocol error — {s}")
-                }
-            };
-            PyRuntimeError::new_err(msg)
+            PyRuntimeError::new_err(message_for_claim_error(label, interface, &e))
         })?;
 
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());

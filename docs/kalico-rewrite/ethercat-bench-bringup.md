@@ -142,10 +142,15 @@ endpoint: rust/target/release/kalico-ethercat-rt-stub
 - **Dark drive (powered off / disconnected):** the hw endpoint detects the drive is
   not on the bus and reports it; klippy fails the claim loudly with:
 
-  > `ethercat node_x: drive (slave 1) offline — check drive power, then FIRMWARE_RESTART`
+  > `ethercat node_x: drive (slave 1) offline (bringup rc=-{N}) — check drive power, then FIRMWARE_RESTART`
 
-  Power the drive on, then `FIRMWARE_RESTART` — klippy re-spawns the endpoint and the
-  claim succeeds, reaching `ready`.
+  If the NIC itself can't see any slaves (cable unplugged, wrong interface), you get the
+  bus-dead variant instead:
+
+  > `ethercat node_x: EtherCAT bus on eth0: no slaves responding (bringup rc=-{1|2}) — check cable and drive power, then FIRMWARE_RESTART`
+
+  Power the drive on (and/or fix the cable), then `FIRMWARE_RESTART` — klippy re-spawns
+  the endpoint and the claim succeeds, reaching `ready`.
 - **Before the first move:** the endpoint captures the rotor's current count as the
   origin at first sample, so the first commanded position maps to the actual rotor
   position — there should be **no startup jump**. If the axis lurches on the first
