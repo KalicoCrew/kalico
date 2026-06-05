@@ -12,8 +12,11 @@
 import logging
 import os
 
+from . import servo_axis
+
 # Default endpoint binary, relative to the repo root. ethercat_node.py lives at
-# <repo>/klippy/extras/, so two os.path.dirname hops off this file reach <repo>.
+# <repo>/klippy/extras/, so three os.path.dirname hops off this file reach
+# <repo> (extras -> klippy -> repo root).
 _REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
@@ -65,8 +68,10 @@ class EtherCatNode:
         # the toolhead's rails rather than printer.lookup_objects.
         toolhead = self.printer.lookup_object("toolhead")
         for rail in getattr(toolhead.get_kinematics(), "rails", ()):
-            get_node_name = getattr(rail, "get_node_name", None)
-            if get_node_name is not None and get_node_name() == self.name:
+            if (
+                isinstance(rail, servo_axis.ServoRail)
+                and rail.get_node_name() == self.name
+            ):
                 return rail.get_counts_per_mm()
         raise self.printer.config_error(
             "ethercat_node %s: no [servo_*] section with node=%s — "
