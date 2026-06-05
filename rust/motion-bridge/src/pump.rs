@@ -629,33 +629,50 @@ where
                     junction_ends.remove(&key);
                 }
                 if !pieces.is_empty() {
-                    let approx_freq: f64 = if key.mcu_id == 0 {
-                        520_000_000.0
-                    } else {
-                        180_000_000.0
-                    };
-                    let (first_entry, first_host) = &pieces[0];
-                    if let Some(&(prev_end_ticks, prev_end_host)) = junction_ends.get(&key) {
-                        let (tick_jump_us, host_jump_us) = junction_jumps(
-                            first_entry.start_time,
-                            *first_host,
-                            prev_end_ticks,
-                            prev_end_host,
-                            approx_freq,
-                        );
-                        log::warn!(
-                            "[junction] key={:?} tick_jump_us={:.1} host_jump_us={:.1} fresh={}",
-                            key,
-                            tick_jump_us,
-                            host_jump_us,
-                            fresh_stream,
-                        );
+                    // Clock not yet synced — skip junction bookkeeping; µs math is
+                    // meaningless without a real frequency and end_time needs it too.
+                    if let Some((_ack_now, freq)) = mcu_clock_of(key.mcu_id) {
+                        let (first_entry, first_host) = &pieces[0];
+                        if let Some(&(prev_end_ticks, prev_end_host)) = junction_ends.get(&key) {
+                            let (tick_jump_us, host_jump_us) = junction_jumps(
+                                first_entry.start_time,
+                                *first_host,
+                                prev_end_ticks,
+                                prev_end_host,
+                                freq,
+                            );
+                            let anomalous = tick_jump_us < -50.0
+                                || (tick_jump_us - host_jump_us).abs() > 50.0;
+                            if fresh_stream || !anomalous {
+                                log::debug!(
+                                    "[junction] key={:?} tick_jump_us={:.1} host_jump_us={:.1} fresh={}",
+                                    key,
+                                    tick_jump_us,
+                                    host_jump_us,
+                                    fresh_stream,
+                                );
+                            } else {
+                                let reason = if tick_jump_us < -50.0 {
+                                    "overlap_risk"
+                                } else {
+                                    "projection_divergence"
+                                };
+                                log::warn!(
+                                    "[junction] key={:?} tick_jump_us={:.1} host_jump_us={:.1} fresh={} reason={}",
+                                    key,
+                                    tick_jump_us,
+                                    host_jump_us,
+                                    fresh_stream,
+                                    reason,
+                                );
+                            }
+                        }
+                        let (last_entry, last_host) = pieces.last().unwrap();
+                        #[allow(clippy::cast_possible_truncation)]
+                        let last_end_ticks = last_entry.end_time(freq as f32);
+                        let last_end_host = last_host + last_entry.duration as f64;
+                        junction_ends.insert(key, (last_end_ticks, last_end_host));
                     }
-                    let (last_entry, last_host) = pieces.last().unwrap();
-                    let last_end_ticks =
-                        last_entry.end_time(approx_freq as f32);
-                    let last_end_host = last_host + last_entry.duration as f64;
-                    junction_ends.insert(key, (last_end_ticks, last_end_host));
                 }
                 let q = queues
                     .entry(key)
