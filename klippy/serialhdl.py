@@ -154,6 +154,14 @@ class SerialReader:
                 if sent_raw != 0.0 and recv_raw != 0.0:
                     ev["#sent_time"] = sent_raw
                     ev["#receive_time"] = recv_raw
+                elif name == "clock":
+                    # A clock sample without wire stamps (missed interception,
+                    # duplicate, late arrival) must be DROPPED by clocksync —
+                    # fabricating sent==recv here would feed half_rtt=0 into
+                    # min_half_rtt and permanently bias the estimate.
+                    # _handle_clock's `if not sent_time: return` does the drop.
+                    ev["#sent_time"] = 0.0
+                    ev["#receive_time"] = now
                 else:
                     ev["#sent_time"] = now
                     ev["#receive_time"] = now
