@@ -115,7 +115,9 @@ fn empty_history_matches_shape_batch_byte_identical() {
         terminal_v: 0.0,
         safety_mode: SafetyMode::TerminalKnown,
     };
-    let planned = plan_velocity(&plan_input).expect("plan_velocity should succeed");
+    let planned = plan_velocity(&plan_input)
+        .expect("plan_velocity should succeed")
+        .fitted;
     assert_eq!(planned.len(), 1);
 
     let kernels: [Option<PiecewisePolynomialKernel<f64>>; 4] = [

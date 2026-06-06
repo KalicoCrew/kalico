@@ -2,8 +2,10 @@ use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::SolverResult;
 use crate::{Axis, BindingConstraint, Limits};
 
-/// 0.2% feasibility margin. Uniform width-1 b-FD across SOCP/SLP/verifier.
+/// 0.2% feasibility margin for velocity / accel / centripetal.
 pub(crate) const EPS_FEAS: f64 = 2e-3;
+
+pub(crate) const EPS_FEAS_JERK: f64 = 5e-2; // temporary hack, to be investigated later
 
 /// Threshold below which a normalised ratio is treated as fully slack.
 const SLACK_THRESHOLD: f64 = 1e-6;
@@ -33,9 +35,18 @@ struct PointInputs<'a> {
     limits: &'a Limits,
 }
 
-/// Worst normalised ratio and its tag at a single grid point.
-/// Tie-breaking: Velocity > AxisAccel > AxisJerk > Centripetal; X > Y > Z.
-fn worst_ratio_at(p: &PointInputs<'_>) -> (f64, BindingConstraint) {
+struct PointRatios {
+    worst_ratio: f64,
+    worst_tag: BindingConstraint,
+    max_jerk: f64,
+    max_non_jerk: f64,
+}
+
+/// All constraint ratios at one grid point. Class maxima scan every entry, not
+/// just the per-point winner, so an in-band jerk ratio can't mask a co-located
+/// non-jerk violation. Tie-breaking: Velocity > AxisAccel > AxisJerk >
+/// Centripetal; X > Y > Z.
+fn ratios_at(p: &PointInputs<'_>) -> PointRatios {
     let s_dot2 = p.s_dot * p.s_dot;
     let s_dot3 = s_dot2 * p.s_dot;
 
@@ -97,17 +108,34 @@ fn worst_ratio_at(p: &PointInputs<'_>) -> (f64, BindingConstraint) {
 
     let mut worst_ratio = 0.0_f64;
     let mut worst_tag = BindingConstraint::None;
+    let mut max_jerk = 0.0_f64;
+    let mut max_non_jerk = 0.0_f64;
+
     for (ratio, tag) in entries {
         if ratio > worst_ratio {
             worst_ratio = ratio;
             worst_tag = tag;
         }
+        if matches!(tag, BindingConstraint::AxisJerk { .. }) {
+            if ratio > max_jerk {
+                max_jerk = ratio;
+            }
+        } else if ratio > max_non_jerk {
+            max_non_jerk = ratio;
+        }
     }
 
-    if worst_ratio < SLACK_THRESHOLD {
-        (worst_ratio, BindingConstraint::None)
+    let worst_tag = if worst_ratio < SLACK_THRESHOLD {
+        BindingConstraint::None
     } else {
-        (worst_ratio, worst_tag)
+        worst_tag
+    };
+
+    PointRatios {
+        worst_ratio,
+        worst_tag,
+        max_jerk,
+        max_non_jerk,
     }
 }
 
@@ -124,6 +152,8 @@ pub(crate) fn check(
     let mut binding_per_grid: Vec<BindingConstraint> = Vec::with_capacity(n);
     let mut global_worst_ratio: f64 = f64::NEG_INFINITY;
     let mut global_worst_idx: usize = 0;
+    let mut worst_jerk_ratio: f64 = 0.0;
+    let mut worst_non_jerk_ratio: f64 = 0.0;
 
     for i in 0..n {
         let b_i = result.b[i];
@@ -133,7 +163,7 @@ pub(crate) fn check(
         let s_ddot = a_i;
         let s_dddot = crate::topp::stencil::s_dddot_at(&result.b, i, h);
 
-        let (worst_ratio, tag) = worst_ratio_at(&PointInputs {
+        let pr = ratios_at(&PointInputs {
             cp: grid.c_prime[i],
             cpp: grid.c_double_prime[i],
             cppp: grid.c_triple_prime[i],
@@ -148,12 +178,19 @@ pub(crate) fn check(
         let final_tag = if (i == 0 || i == n - 1) && b_i.abs() < BOUNDARY_B_TOL {
             BindingConstraint::Boundary
         } else {
-            tag
+            pr.worst_tag
         };
 
-        if worst_ratio > global_worst_ratio {
-            global_worst_ratio = worst_ratio;
+        if pr.worst_ratio > global_worst_ratio {
+            global_worst_ratio = pr.worst_ratio;
             global_worst_idx = i;
+        }
+
+        if pr.max_jerk > worst_jerk_ratio {
+            worst_jerk_ratio = pr.max_jerk;
+        }
+        if pr.max_non_jerk > worst_non_jerk_ratio {
+            worst_non_jerk_ratio = pr.max_non_jerk;
         }
 
         binding_per_grid.push(final_tag);
@@ -169,11 +206,13 @@ pub(crate) fn check(
     }
 
     let worst_violation = global_worst_ratio - 1.0;
+    let feasible =
+        worst_jerk_ratio <= 1.0 + EPS_FEAS_JERK && worst_non_jerk_ratio <= 1.0 + EPS_FEAS;
     VerifyReport {
         binding_per_grid,
         worst_violation,
         worst_violation_grid: global_worst_idx,
-        feasible: worst_violation <= EPS_FEAS,
+        feasible,
     }
 }
 

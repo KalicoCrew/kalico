@@ -1,5 +1,5 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -9,7 +9,7 @@ use nurbs::algebra::PiecewisePolynomialKernel;
 use crate::classify::ClassifiedMove;
 use crate::config::{PlannerConfig, PlannerLimits};
 use trajectory::plan_velocity::{PlanShaper, SafetyMode};
-use trajectory::streaming::{EmitContext, ReplanContext, ShaperState};
+use trajectory::streaming::{EmitContext, ReplanContext, ReplanReport, ShaperState};
 use trajectory::{AxisShaper, EHalo, RequiredShaper, ShapedSegment, ShaperConfig};
 
 const T_IDLE: Duration = Duration::from_secs(3600);
@@ -19,6 +19,8 @@ const LEAD: f64 = 0.25;
 
 /// Safety margin for the decel-commit deadline: covers shaping + dispatch + pump + wire latency.
 const SAFETY_MARGIN: f64 = 0.050;
+
+const REPLAN_WARN_BUDGET_US: u64 = ((LEAD - SAFETY_MARGIN) * 1e6) as u64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClockBias {
@@ -87,13 +89,18 @@ pub enum DispatchError {
     ConnectionDropped(u32),
     #[error("piece pump thread is gone; cannot dispatch")]
     PumpGone,
+    #[error(
+        "planner stream starvation: segment (stream t={seg_t_start:.3}s) scheduled \
+         {gap_s:.3}s in the past; refusing to silently re-anchor — planner failed \
+         to keep ahead of playback"
+    )]
+    SegmentLate { gap_s: f64, seg_t_start: f64 },
 }
 
 #[allow(missing_debug_implementations)]
 pub struct PlannerHandle {
     sender: Sender<PlannerMsg>,
     join_handle: Option<JoinHandle<()>>,
-    error: Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: Arc<AtomicU64>,
     commit_fire_count: Arc<AtomicU32>,
 }
@@ -104,46 +111,27 @@ impl PlannerHandle {
         dispatch: Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
     ) -> Self {
         let (tx, rx) = unbounded();
-        let error = Arc::new(Mutex::new(None));
         let last_move_time_bits = Arc::new(AtomicU64::new(0u64));
         let commit_fire_count = Arc::new(AtomicU32::new(0));
 
         let shapers = shaper_config_to_axis_shapers(&config.shaper);
         let state = ShaperState::new([0.0; 4], &shapers);
 
-        let error_thread = Arc::clone(&error);
         let last_thread = Arc::clone(&last_move_time_bits);
         let commit_thread = Arc::clone(&commit_fire_count);
         let join = thread::Builder::new()
             .name("kalico-planner".to_string())
             .spawn(move || {
-                run_loop(
-                    rx,
-                    config,
-                    state,
-                    dispatch,
-                    error_thread,
-                    last_thread,
-                    commit_thread,
-                );
+                run_loop(rx, config, state, dispatch, last_thread, commit_thread);
             })
             .expect("spawn planner thread");
 
         Self {
             sender: tx,
             join_handle: Some(join),
-            error,
             last_move_time_bits,
             commit_fire_count,
         }
-    }
-
-    fn check_error(&self) -> Result<(), PlannerError> {
-        let mut guard = self.error.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(e) = guard.take() {
-            return Err(e);
-        }
-        Ok(())
     }
 
     pub fn submit_move(&self, m: ClassifiedMove) -> Result<(), PlannerError> {
@@ -155,7 +143,6 @@ impl PlannerHandle {
             feedrate_mm_s = m.segment.feedrate_mm_s,
             "planner.submit_move enter"
         );
-        self.check_error()?;
 
         // Advance before channel send so the atomic is fresh when submit_move returns.
         // CAS guards against concurrent rectification from the planner thread.
@@ -168,7 +155,6 @@ impl PlannerHandle {
     }
 
     pub fn flush(&self) -> Result<(), PlannerError> {
-        self.check_error()?;
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.sender
             .send(PlannerMsg::Flush { notify: tx })
@@ -181,17 +167,13 @@ impl PlannerHandle {
                         std::thread::sleep(deadline - now);
                     }
                 }
-                self.check_error()
+                Ok(())
             }
-            Err(_) => {
-                self.check_error()?;
-                Err(PlannerError::ChannelClosed)
-            }
+            Err(_) => Err(PlannerError::ChannelClosed),
         }
     }
 
     pub fn dwell(&self, duration_s: f64) -> Result<(), PlannerError> {
-        self.check_error()?;
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.sender
             .send(PlannerMsg::Dwell {
@@ -200,11 +182,8 @@ impl PlannerHandle {
             })
             .map_err(|_| PlannerError::ChannelClosed)?;
         match rx.recv() {
-            Ok(()) => self.check_error(),
-            Err(_) => {
-                self.check_error()?;
-                Err(PlannerError::ChannelClosed)
-            }
+            Ok(()) => Ok(()),
+            Err(_) => Err(PlannerError::ChannelClosed),
         }
     }
 
@@ -307,14 +286,26 @@ fn advance_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) {
     rectify_last_move_time(last_move_time_bits, delta);
 }
 
+fn fatal(e: &PlannerError) -> ! {
+    eprintln!("kalico planner fatal error: {e}");
+    tracing::error!(
+        subsystem = "motion",
+        event = "planner_fatal",
+        error = %e,
+        "planner encountered an unrecoverable error — aborting"
+    );
+    // abort() skips the non_blocking appender's flush; let the worker drain.
+    std::thread::sleep(Duration::from_millis(100));
+    std::process::abort();
+}
+
 fn run_commit_and_dispatch(
     state: &mut ShaperState,
     thread_state: &PlannerThreadState,
     dispatch: &Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
-    error: &Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: &AtomicU64,
     commit_fire_count: &AtomicU32,
-) -> bool {
+) {
     let t_app_before = state.t_appended;
     let t_disp_before = state.t_dispatched;
     let commit_start = Instant::now();
@@ -322,8 +313,7 @@ fn run_commit_and_dispatch(
         Ok(out) => out,
         Err(e) => {
             tracing::error!(subsystem = "motion", event = "commit_decel_error", error = ?e, "run_commit_and_dispatch: commit_decel_to_zero failed");
-            *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
-            return false;
+            fatal(&PlannerError::Shape(e));
         }
     };
     let commit_us = commit_start.elapsed().as_micros();
@@ -341,8 +331,7 @@ fn run_commit_and_dispatch(
     for s in &drained {
         if let Err(detail) = dispatch(s) {
             tracing::error!(subsystem = "motion", event = "dispatch_error", error = ?detail, "run_commit_and_dispatch: dispatch failed");
-            *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Dispatch(detail));
-            break;
+            fatal(&PlannerError::Dispatch(detail));
         }
     }
     commit_fire_count.fetch_add(1, Ordering::AcqRel);
@@ -355,7 +344,6 @@ fn run_commit_and_dispatch(
         t_disp_before,
         state.t_dispatched,
     );
-    true
 }
 
 struct PlannerThreadState {
@@ -397,7 +385,6 @@ fn run_loop(
     mut config: PlannerConfig,
     mut state: ShaperState,
     dispatch: Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
-    error: Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: Arc<AtomicU64>,
     commit_fire_count: Arc<AtomicU32>,
 ) {
@@ -458,11 +445,10 @@ fn run_loop(
             }
             Err(RecvTimeoutError::Timeout) => {
                 if state.t_dispatched < state.t_appended - 1e-12 {
-                    let _ok = run_commit_and_dispatch(
+                    run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
                         &dispatch,
-                        &error,
                         &last_move_time_bits,
                         &commit_fire_count,
                     );
@@ -487,38 +473,33 @@ fn run_loop(
                 // Commit held-back tail before inserting an idle rest-hold when clock outran plan.
                 let esc = sync_instant.map_or(0.0, |t| t.elapsed().as_secs_f64());
                 if esc > state.t_appended + 1e-6 {
-                    let committed_ok = if state.t_dispatched < state.t_appended - 1e-12 {
+                    if state.t_dispatched < state.t_appended - 1e-12 {
                         run_commit_and_dispatch(
                             &mut state,
                             &thread_state,
                             &dispatch,
-                            &error,
                             &last_move_time_bits,
                             &commit_fire_count,
-                        )
-                    } else {
-                        true
-                    };
-                    if committed_ok {
-                        state.advance_idle(esc);
+                        );
                     }
+                    state.advance_idle(esc);
                 }
 
                 let replan_start = Instant::now();
-                if let Err(e) = state.append_and_replan(m.segment, &thread_state.replan_ctx) {
-                    tracing::error!(subsystem = "motion", event = "move_arm_error", phase = "append_and_replan", error = ?e, "Move arm: append_and_replan failed");
-                    *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
-                    continue;
-                }
-                let replan_us = replan_start.elapsed().as_micros();
+                let report = match state.append_and_replan(m.segment, &thread_state.replan_ctx) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::error!(subsystem = "motion", event = "move_arm_error", phase = "append_and_replan", error = ?e, "Move arm: append_and_replan failed");
+                        fatal(&PlannerError::Shape(e));
+                    }
+                };
+                let replan_us = replan_start.elapsed().as_micros() as u64;
                 let emit_start = Instant::now();
                 let drained = match state.emit_committed(&thread_state.emit_ctx()) {
                     Ok(out) => out,
                     Err(e) => {
                         tracing::error!(subsystem = "motion", event = "move_arm_error", phase = "emit_committed", error = ?e, "Move arm: emit_committed failed");
-                        *error.lock().unwrap_or_else(|p| p.into_inner()) =
-                            Some(PlannerError::Shape(e));
-                        continue;
+                        fatal(&PlannerError::Shape(e));
                     }
                 };
                 tracing::debug!(
@@ -533,31 +514,63 @@ fn run_loop(
                     t_disp_after = state.t_dispatched,
                     "Move arm: drained"
                 );
-                let emit_us = emit_start.elapsed().as_micros();
-                let drained_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
-                log::debug!(
-                    "[planner-trace] Move dist={:.3}mm feed={:.1} nominal_s={:.6} replan_us={} emit_us={} drained={} drained_dur_s={:.6} t_app:{:.6}->{:.6} (+{:.6}) t_decel:{:.6}->{:.6} t_disp:{:.6}->{:.6}",
-                    move_dist,
-                    move_feed,
-                    nominal,
+                let emit_us = emit_start.elapsed().as_micros() as u64;
+                let ReplanReport {
+                    split_us,
+                    solve_us,
+                    rebuild_us,
+                    window_segments,
+                    plan,
+                } = report;
+                let beta_iters = plan.beta_iterations;
+                let beta_converged = plan.beta_converged;
+                tracing::debug!(
+                    subsystem = "motion",
+                    event = "replan_stats",
                     replan_us,
+                    split_us,
+                    solve_us,
+                    rebuild_us,
+                    window_segments,
+                    beta_iters,
+                    beta_converged,
                     emit_us,
-                    drained.len(),
-                    drained_dur,
-                    prior_t_appended,
-                    state.t_appended,
-                    state.t_appended - prior_t_appended,
-                    prior_t_decel,
-                    state.t_decel_start,
-                    prior_t_disp,
-                    state.t_dispatched,
+                    drained = drained.len(),
+                    dist_mm = move_dist,
+                    feed_mm_s = move_feed,
+                    nominal_s = nominal,
+                    "replan stats"
                 );
+                if replan_us > REPLAN_WARN_BUDGET_US {
+                    tracing::warn!(
+                        subsystem = "motion",
+                        event = "replan_overrun",
+                        replan_us,
+                        split_us,
+                        solve_us,
+                        rebuild_us,
+                        window_segments,
+                        beta_iters,
+                        beta_converged,
+                        emit_us,
+                        drained = drained.len(),
+                        dist_mm = move_dist,
+                        feed_mm_s = move_feed,
+                        nominal_s = nominal,
+                        "replan overran its real-time budget"
+                    );
+                }
 
                 for s in &drained {
                     if let Err(detail) = dispatch(s) {
-                        *error.lock().unwrap_or_else(|p| p.into_inner()) =
-                            Some(PlannerError::Dispatch(detail));
-                        break;
+                        tracing::error!(
+                            subsystem = "motion",
+                            event = "dispatch_error",
+                            phase = "move_arm",
+                            error = ?detail,
+                            "Move arm: dispatch failed"
+                        );
+                        fatal(&PlannerError::Dispatch(detail));
                     }
                 }
 
@@ -577,11 +590,10 @@ fn run_loop(
             PlannerMsg::Flush { notify } => {
                 // Commit held-back decel-to-zero; idempotent when already committed.
                 if state.t_dispatched < state.t_appended - 1e-12 {
-                    let _ok = run_commit_and_dispatch(
+                    run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
                         &dispatch,
-                        &error,
                         &last_move_time_bits,
                         &commit_fire_count,
                     );
@@ -604,15 +616,11 @@ fn run_loop(
             }
 
             PlannerMsg::UpdateShaper(s) => {
-                // Drain held-back tail under the old kernels before swapping.
-                // Without this the trailing tail would be shaped by a kernel it was never
-                // planned against, producing post-shape acceleration overshoot.
                 if state.t_dispatched < state.t_appended - 1e-12 {
-                    let _ok = run_commit_and_dispatch(
+                    run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
                         &dispatch,
-                        &error,
                         &last_move_time_bits,
                         &commit_fire_count,
                     );
@@ -638,11 +646,10 @@ fn run_loop(
                 // Must run before Router::set_clock_est_from_sample — calling after
                 // would shape the drained tail under the new bias.
                 if state.t_dispatched < state.t_appended - 1e-12 {
-                    let _ok = run_commit_and_dispatch(
+                    run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
                         &dispatch,
-                        &error,
                         &last_move_time_bits,
                         &commit_fire_count,
                     );

@@ -146,6 +146,86 @@ fn boundary_points_tagged_correctly() {
     );
 }
 
+/// Jerk violation at ratio 1.03 (within EPS_FEAS_JERK = 5%) must be feasible.
+#[test]
+fn jerk_ratio_1_03_is_feasible() {
+    let n = 5;
+    let length = 1.0_f64;
+    let h = length / (n - 1) as f64;
+    // Straight segment: jerk = s‴ = v·delta/h² for b = [v², v²+δ, v², v²+δ, v²],
+    // so delta = ratio·j_max·h²/v hits the target ratio exactly.
+    let v = 500.0_f64;
+    let j_max = 100_000.0_f64;
+    let target_ratio = 1.03_f64;
+    let delta = target_ratio * j_max * h * h / v;
+    let b_v2 = v * v;
+
+    let grid = dummy_straight_grid(n, length);
+    let limits = textbook_limits();
+    let b = vec![b_v2, b_v2 + delta, b_v2, b_v2 + delta, b_v2];
+    let result = SolverResult {
+        b,
+        a: vec![0.0; n],
+        status: SolverStatus::Solved,
+    };
+    let report = check(&grid, &result, &limits, h);
+    assert!(
+        report.feasible,
+        "jerk ratio 1.03 must be within EPS_FEAS_JERK (5%) and thus feasible; \
+         worst_violation = {:.4}",
+        report.worst_violation,
+    );
+}
+
+/// Jerk violation at ratio 1.06 (> EPS_FEAS_JERK = 5%) must be infeasible.
+#[test]
+fn jerk_ratio_1_06_is_infeasible() {
+    let n = 5;
+    let length = 1.0_f64;
+    let h = length / (n - 1) as f64;
+    let v = 500.0_f64;
+    let j_max = 100_000.0_f64;
+    let target_ratio = 1.06_f64;
+    let delta = target_ratio * j_max * h * h / v;
+    let b_v2 = v * v;
+
+    let grid = dummy_straight_grid(n, length);
+    let limits = textbook_limits();
+    let b = vec![b_v2, b_v2 + delta, b_v2, b_v2 + delta, b_v2];
+    let result = SolverResult {
+        b,
+        a: vec![0.0; n],
+        status: SolverStatus::Solved,
+    };
+    let report = check(&grid, &result, &limits, h);
+    assert!(
+        !report.feasible,
+        "jerk ratio 1.06 must exceed EPS_FEAS_JERK (5%) and thus be infeasible; \
+         worst_violation = {:.4}",
+        report.worst_violation,
+    );
+}
+
+/// Accel violation at ratio 1.03 must stay infeasible (tight band held).
+#[test]
+fn accel_ratio_1_03_is_infeasible() {
+    let grid = dummy_straight_grid(5, 100.0);
+    let limits = textbook_limits();
+    let result = SolverResult {
+        b: vec![10_000.0; 5], // v = 100 mm/s
+        a: vec![5_150.0; 5],  // 3% over a_max
+        status: SolverStatus::Solved,
+    };
+    let h = 100.0 / 4.0;
+    let report = check(&grid, &result, &limits, h);
+    assert!(
+        !report.feasible,
+        "accel ratio 1.03 must exceed the tight EPS_FEAS (0.2%) band and be \
+         infeasible; worst_violation = {:.4}",
+        report.worst_violation,
+    );
+}
+
 /// Centripetal constraint violation is detected.
 ///
 /// Build a grid with non-zero curvature and inject `b_i` large enough to
@@ -196,5 +276,45 @@ fn over_centripetal_profile_flagged() {
         has_centripetal,
         "expected at least one Centripetal tag, got {:?}",
         report.binding_per_grid
+    );
+}
+
+/// An in-band jerk ratio (1.04) that wins every grid point must not mask a
+/// co-located out-of-band accel violation (1.01 > 0.2%).
+#[test]
+fn jerk_riding_does_not_mask_accel_violation() {
+    let n = 5;
+    let length = 1.0_f64;
+    let h = length / (n - 1) as f64; // 0.25 mm
+
+    let v = 500.0_f64; // ride v_max so velocity ratio == 1.0
+    let j_max = 100_000.0_f64;
+    let a_max = 5_000.0_f64;
+
+    // Jerk ratio ≈ 1.04 (within EPS_FEAS_JERK = 5%) — jerk is per-point worst.
+    let jerk_ratio = 1.04_f64;
+    let delta = jerk_ratio * j_max * h * h / v;
+    let b_v2 = v * v;
+    let b = vec![b_v2, b_v2 + delta, b_v2, b_v2 + delta, b_v2];
+
+    // Accel ratio = 1.01 > EPS_FEAS (0.2%).  On a straight grid accel_x = s̈,
+    // so set a_i = 1.01 * a_max.
+    let a_val = 1.01 * a_max;
+    let a = vec![a_val; n];
+
+    let grid = dummy_straight_grid(n, length);
+    let limits = textbook_limits();
+    let result = SolverResult {
+        b,
+        a,
+        status: SolverStatus::Solved,
+    };
+
+    let report = check(&grid, &result, &limits, h);
+    assert!(
+        !report.feasible,
+        "accel ratio 1.01 must be caught even when jerk (ratio ~1.04) is the \
+         per-point worst; worst_violation = {:.4}",
+        report.worst_violation,
     );
 }

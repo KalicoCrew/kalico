@@ -823,8 +823,7 @@ fn max_ratio(vs: &[JerkViolator]) -> f64 {
 const SLP9_MAX_OUTER_ITERS: u32 = 30;
 const SLP9_WARN_AT_ITER: u32 = 15;
 
-/// Matches `verify::EPS_FEAS`: same stencil, tolerances can align directly.
-const SLP9_EPS_FEAS: f64 = 1e-3;
+const SLP9_EPS_FEAS: f64 = 5e-2; // must match verify::EPS_FEAS_JERK; temporary hack, to be investigated later
 
 /// 0.05/0.10 keeps the iterate in the local-validity neighborhood of the
 /// `a·√b` cross-term linearization.

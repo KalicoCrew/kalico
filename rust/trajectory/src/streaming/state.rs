@@ -3,11 +3,13 @@ use std::collections::VecDeque;
 use geometry::segment::{split_cubic_bezier, CubicSegment};
 use nurbs::bezier::{extract_bezier_pieces, BezierPiece};
 
+use std::time::Instant;
+
 use super::decel_finder::find_decel_start_time;
-use super::{AxisShaperQueue, ReplanContext, ShaperState, UncommittedMove};
+use super::{AxisShaperQueue, ReplanContext, ReplanReport, ShaperState, UncommittedMove};
 use crate::emit_shaped::EmitSegmentMeta;
 use crate::fit::FittedSegment;
-use crate::plan_velocity::{plan_velocity, PlanInput, PlanSegment};
+use crate::plan_velocity::{plan_velocity, PlanInput, PlanOutput, PlanSegment, PlanStats};
 use crate::AxisShaper;
 use crate::ShapeError;
 use crate::ShapedSegment;
@@ -95,7 +97,7 @@ impl ShaperState {
         &mut self,
         new_segment: CubicSegment,
         ctx: &ReplanContext,
-    ) -> Result<(), ShapeError> {
+    ) -> Result<ReplanReport, ShapeError> {
         let initial_v = self.read_path_speed_at(self.t_dispatched, ctx.fallback_initial_v);
 
         let prior_uncommitted = self.uncommitted_moves.clone();
@@ -104,6 +106,7 @@ impl ShaperState {
         let prior_planned_fitted = self.planned_fitted.clone();
         let prior_planned_meta = self.planned_meta.clone();
 
+        let split_start = Instant::now();
         let partial_split = self.split_partially_committed_at_t_dispatched();
 
         self.uncommitted_moves
@@ -131,6 +134,9 @@ impl ShaperState {
             t_start: pre_plan_t_start,
             t_end: pre_plan_t_start,
         });
+        let split_us = split_start.elapsed().as_micros() as u64;
+
+        let window_segments = self.uncommitted_moves.len();
 
         let plan_segments: Vec<PlanSegment<'_>> = self
             .uncommitted_moves
@@ -162,8 +168,9 @@ impl ShaperState {
             safety_mode: ctx.safety_mode,
         };
 
-        let fitted = match plan_velocity(&plan_input) {
-            Ok(f) => f,
+        let solve_start = Instant::now();
+        let PlanOutput { fitted, stats } = match plan_velocity(&plan_input) {
+            Ok(out) => out,
             Err(e) => {
                 self.uncommitted_moves = prior_uncommitted;
                 self.t_appended = prior_t_appended;
@@ -173,7 +180,9 @@ impl ShaperState {
                 return Err(e);
             }
         };
+        let solve_us = solve_start.elapsed().as_micros() as u64;
 
+        let rebuild_start = Instant::now();
         let time_offset = self.t_dispatched;
 
         for axis_idx in 0..3 {
@@ -213,8 +222,15 @@ impl ShaperState {
                 extrusion_per_xy_mm: m.segment.extrusion_per_xy_mm,
             })
             .collect();
+        let rebuild_us = rebuild_start.elapsed().as_micros() as u64;
 
-        Ok(())
+        Ok(ReplanReport {
+            split_us,
+            solve_us,
+            rebuild_us,
+            window_segments,
+            plan: stats,
+        })
     }
 }
 

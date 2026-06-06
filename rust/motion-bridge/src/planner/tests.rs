@@ -338,9 +338,9 @@ fn z_move_with_tiny_x_after_homing_xy_deviation_proportional() {
 
 fn capturing_dispatch() -> (
     Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
-    Arc<Mutex<Vec<(f64, f64)>>>,
+    Arc<std::sync::Mutex<Vec<(f64, f64)>>>,
 ) {
-    let log = Arc::new(Mutex::new(Vec::new()));
+    let log = Arc::new(std::sync::Mutex::new(Vec::new()));
     let l = Arc::clone(&log);
     let cb: Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync> =
         Arc::new(move |seg: &ShapedSegment| {

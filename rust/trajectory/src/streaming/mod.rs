@@ -7,9 +7,18 @@ use nurbs::bezier::BezierPiece;
 use crate::emit_shaped::EmitSegmentMeta;
 use crate::fit::FittedSegment;
 use crate::pad::EHalo;
-use crate::plan_velocity::{PlanShaper, SafetyMode};
+use crate::plan_velocity::{PlanShaper, PlanStats, SafetyMode};
 use crate::ELimits;
 use crate::ShapedSegment;
+
+#[derive(Debug, Clone, Copy)]
+pub struct ReplanReport {
+    pub split_us: u64,
+    pub solve_us: u64,
+    pub rebuild_us: u64,
+    pub window_segments: usize,
+    pub plan: PlanStats,
+}
 
 mod decel_finder;
 mod emit;
