@@ -2087,7 +2087,7 @@ impl PyMotionBridge {
             let now_ns = crate::motion_node::monotonic_ns();
             for &mcu_id in &ethercat_mcu_ids {
                 let mcu_h = mcu_handle_from_raw(mcu_id);
-                // freq=1e9: EtherCAT timestamps are CLOCK_MONOTONIC nanoseconds.
+                // freq=1e9: EtherCAT timestamps are CLOCK_MONOTONIC_RAW nanoseconds.
                 let _ = router.set_clock_est_from_sample(
                     mcu_h,
                     1_000_000_000.0_f64,
