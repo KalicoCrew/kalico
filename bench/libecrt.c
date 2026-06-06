@@ -56,6 +56,7 @@ static in_t   *g_in;
 static int64_t g_cycle_ns;
 static struct timespec g_ts;
 static int64_t g_integral;
+static int g_enabled;
 
 static void add_ts(struct timespec *ts, int64_t add) {
     int64_t ns  = add % 1000000000LL;
@@ -111,6 +112,7 @@ static int rt_exchange(int64_t *toff) {
 int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio) {
     g_cycle_ns = cycle_ns < 250000 ? 250000 : cycle_ns;
     g_integral = 0;
+    g_enabled  = 0;
     go_realtime(rt_cpu, rt_prio);
 
     if (!ec_init(ifname)) return -1;
@@ -174,6 +176,25 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     }
     if (ec_slave[0].state != EC_STATE_OPERATIONAL) return -4; /* OP not reached */
 
+    for (int64_t pc = 0; pc < 3000; pc++) {
+        uint16_t sw = g_in->statusword;
+        g_out->target_position = g_in->position_actual;
+        if (sw & 0x0008) {
+            g_out->controlword = ((pc / 10) % 2) ? 0x0080 : 0x0000; /* pulse fault reset */
+        } else if ((sw & 0x006F) == 0x0021) {
+            g_out->controlword = 0x0006;
+            rt_exchange(&toff);
+            g_enabled = 0;
+            return 0; /* parked: Ready to Switch On */
+        } else {
+            g_out->controlword = 0x0006;
+        }
+        rt_exchange(&toff);
+    }
+    return -5; /* CiA402 park timed out */
+}
+
+int ec_rt_enable(void) {
     /*
      * CiA402 enable state machine — identical to ec_spin.c's ALIGN phase.
      * Masks and values match the CiA402 state-machine table exactly:
@@ -183,6 +204,7 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
      *   sw & 0x006F == 0x0027  => Operation Enabled: return 0
      *   sw & 0x0008            => Fault: pulse fault-reset on bit 7
      */
+    int64_t toff = 0;
     for (int64_t pc = 0; pc < 3000; pc++) {
         uint16_t sw = g_in->statusword;
         g_out->target_position = g_in->position_actual;
@@ -197,6 +219,7 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
         } else if ((sw & 0x006F) == 0x0027) {
             g_out->controlword = 0x000F;
             rt_exchange(&toff);
+            g_enabled = 1;
             return 0; /* operation enabled */
         } else {
             g_out->controlword = 0x0000;
@@ -207,7 +230,12 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
 }
 
 int ec_rt_cycle(int64_t *toff_ns) {
-    g_out->controlword = 0x000F;
+    if (g_enabled) {
+        g_out->controlword = 0x000F;
+    } else {
+        g_out->controlword = 0x0006;
+        g_out->target_position = g_in->position_actual;
+    }
     return rt_exchange(toff_ns);
 }
 
@@ -218,8 +246,10 @@ uint16_t ec_rt_get_error_code(void)             { return g_in->error_code; }
 int32_t  ec_rt_get_following_error(void)        { return g_in->following_error; }
 
 void ec_rt_disable(void) {
+    g_enabled = 0;
     for (int i = 0; i < 100; i++) {
         g_out->controlword = 0x0006;
+        g_out->target_position = g_in->position_actual;
         int64_t t = 0;
         rt_exchange(&t);
     }

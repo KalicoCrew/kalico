@@ -14,6 +14,8 @@ extern "C" {
         rt_prio: c_int,
     ) -> c_int;
 
+    pub fn ec_rt_enable() -> c_int;
+
     pub fn ec_rt_cycle(toff_ns: *mut i64) -> c_int;
 
     pub fn ec_rt_set_target_position(counts: i32);

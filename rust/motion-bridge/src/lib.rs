@@ -23,6 +23,8 @@ pub mod probe_homing;
 #[doc(hidden)]
 pub mod pump;
 mod router_transport;
+#[doc(hidden)]
+pub mod servo_torque;
 mod types;
 
 use pyo3::prelude::*;

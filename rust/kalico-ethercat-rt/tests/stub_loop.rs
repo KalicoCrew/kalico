@@ -162,6 +162,7 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                         server.respond(&runtime_caps_response_frame(correlation_id, total));
                     }
                     Command::ClaimHandshake { .. } => {}
+                    Command::SetTorque { .. } => {}
                     Command::Unknown { .. } => {}
                 }
             }
@@ -179,6 +180,7 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                     | Command::Identify { .. }
                     | Command::QueryRuntimeCaps { .. }
                     | Command::ClaimHandshake { .. }
+                    | Command::SetTorque { .. }
                     | Command::PushPieces { .. } => {}
                 }
             }

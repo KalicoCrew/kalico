@@ -9,9 +9,12 @@ use kalico_ethercat_rt::claim::{parse_fail_bringup, single_slave_reply, wait_for
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::server::FrameServer;
+use kalico_ethercat_rt::torque::{
+    CommandAction, TickAction, TorqueGate, TorqueState, ERR_ENABLE_FAILED,
+};
 use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
-    runtime_caps_response_frame, status_heartbeat_frame, Command,
+    runtime_caps_response_frame, set_torque_response_frame, status_heartbeat_frame, Command,
 };
 use kalico_protocol::messages::SlaveState;
 
@@ -40,7 +43,10 @@ fn main() {
         }
     };
 
+    let fail_enable = args.iter().any(|a| a == "--fail-enable");
+
     let mut ring = AxisRing::new();
+    let mut gate = TorqueGate::new();
     let mut last_sent_retired: u32 = 0;
     let mut heartbeat_sent = false;
 
@@ -144,6 +150,41 @@ fn main() {
                     );
                     break 'session;
                 }
+                Command::SetTorque {
+                    correlation_id,
+                    msg,
+                } => {
+                    let now_ns = monotonic_ns();
+                    match gate.on_set_torque(msg.value != 0, msg.execute_at_ns, now_ns) {
+                        CommandAction::Enable => {
+                            let ok = !fail_enable;
+                            gate.enable_finished(ok);
+                            if ok {
+                                eprintln!("ec-rt-stub: torque enabled (simulated)");
+                                server.respond(&set_torque_response_frame(correlation_id, 0));
+                            } else {
+                                eprintln!("ec-rt-stub: simulated enable failure — exiting");
+                                server.respond(&set_torque_response_frame(
+                                    correlation_id,
+                                    ERR_ENABLE_FAILED,
+                                ));
+                                std::process::exit(1);
+                            }
+                        }
+                        CommandAction::ScheduleDisable => {
+                            eprintln!(
+                                "ec-rt-stub: torque disable scheduled at {} (now {now_ns})",
+                                msg.execute_at_ns
+                            );
+                            server.respond(&set_torque_response_frame(correlation_id, 0));
+                        }
+                        CommandAction::Reject { code } => {
+                            eprintln!("ec-rt-stub: SetTorque rejected code={code} — exiting");
+                            server.respond(&set_torque_response_frame(correlation_id, code));
+                            std::process::exit(1);
+                        }
+                    }
+                }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt-stub: ignoring kind 0x{kind_raw:04x}");
                 }
@@ -152,7 +193,24 @@ fn main() {
 
         let now = monotonic_ns();
 
-        let _ = ring.sample(now);
+        match gate.on_tick(now, ring.is_empty()) {
+            TickAction::None => {}
+            TickAction::ExecuteDisable => {
+                eprintln!("ec-rt-stub: scheduled torque disable executed");
+                gate.disable_finished();
+            }
+            TickAction::Fault { code } => {
+                eprintln!("ec-rt-stub: torque-gate fault code={code} — exiting");
+                server.respond(&status_heartbeat_frame(
+                    ENGINE_STATE_FAULT,
+                    &[ring.retired_count()],
+                ));
+                std::process::exit(1);
+            }
+        }
+        if gate.state() == TorqueState::Enabled {
+            let _ = ring.sample(now);
+        }
 
         if let Some(fault_val) = ring.take_fault() {
             let fault_code_u16 = (fault_val & 0xFFFF) as u16;

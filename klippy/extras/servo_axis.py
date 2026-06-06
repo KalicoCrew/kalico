@@ -75,6 +75,7 @@ class ServoRail:
             "position_max", above=self.position_min
         )
         self.position_endstop = 0.0
+        self._active_callbacks = []
 
     # -- Identity -------------------------------------------------------
     # BridgeKinematics calls get_name(short=True) (motion_toolhead.py:162,
@@ -97,6 +98,9 @@ class ServoRail:
     # case by returning 0.0).
     def get_steppers(self):
         return []
+
+    def add_active_callback(self, cb):
+        self._active_callbacks.append(cb)
 
     def get_endstops(self):
         return []
@@ -156,3 +160,30 @@ class ServoRail:
     # above=0.0 at config time, so this never divides by zero.
     def get_counts_per_mm(self):
         return self.encoder_counts_per_rev / self.rotation_distance
+
+
+class BridgeTorqueLine:
+    def __init__(self, printer, node_name):
+        self._printer = printer
+        self._node_name = node_name
+
+    def set_digital(self, print_time, value):
+        node = self._printer.lookup_object("ethercat_node " + self._node_name)
+        handle = node.get_bridge_handle()
+        if handle is None:
+            raise self._printer.command_error(
+                "servo torque: ethercat_node %s has no bridge handle"
+                % (self._node_name,)
+            )
+        bridge = self._printer.lookup_object("motion_bridge")
+        bridge.set_torque(handle, bool(value), print_time)
+
+
+def register_torque_enable(printer, config, rail):
+    from . import stepper_enable
+
+    line = BridgeTorqueLine(printer, rail.get_node_name())
+    enable = stepper_enable.StepperEnablePin(line, 0)
+    printer.load_object(config, "stepper_enable").register_motor(
+        rail.get_name(), rail, enable
+    )

@@ -9,7 +9,7 @@ use kalico_protocol::bootstrap::{IdentifyResponse, IDENTIFY_RESPONSE_BODY_LEN};
 use kalico_protocol::codec::{Decode, Encode};
 use kalico_protocol::messages::{
     ClaimHandshakeReply, MessageKind, PushPieces, PushPiecesResponse, RuntimeCapsResponse,
-    StatusHeartbeat,
+    SetTorque, SetTorqueResponse, StatusHeartbeat,
 };
 use kalico_protocol::KALICO_CHANNEL_PIECES;
 
@@ -29,6 +29,10 @@ pub enum Command {
     },
     ClaimHandshake {
         correlation_id: u32,
+    },
+    SetTorque {
+        correlation_id: u32,
+        msg: SetTorque,
     },
     Unknown {
         correlation_id: u32,
@@ -68,6 +72,13 @@ pub fn decode_command(channel: u8, payload: &[u8]) -> Result<Command, DecodeCmdE
         Some(MessageKind::ClaimHandshake) => Ok(Command::ClaimHandshake {
             correlation_id: cid,
         }),
+        Some(MessageKind::SetTorque) => {
+            let msg = SetTorque::decode(body).map_err(|_| DecodeCmdError::BadBody)?;
+            Ok(Command::SetTorque {
+                correlation_id: cid,
+                msg,
+            })
+        }
         _ => Ok(Command::Unknown {
             correlation_id: cid,
             kind_raw: hdr.kind_raw,
@@ -88,6 +99,11 @@ pub fn frame_payload(kind: MessageKind, correlation_id: u32, body: &[u8]) -> Vec
 
 pub fn control_frame(kind: MessageKind, correlation_id: u32, body: &[u8]) -> Vec<u8> {
     encode_frame(CHANNEL_CONTROL, &frame_payload(kind, correlation_id, body))
+}
+
+pub fn set_torque_response_frame(cid: u32, result: i32) -> Vec<u8> {
+    let body = SetTorqueResponse { result }.encoded_to_vec();
+    control_frame(MessageKind::SetTorqueResponse, cid, &body)
 }
 
 pub fn push_pieces_response_frame(
@@ -152,6 +168,7 @@ pub fn identify_response_frame(cid: u32, proto_version: u8) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kalico_native_transport::demux::{Demuxer, Frame};
     use kalico_native_transport::frame::decode_frame;
     use kalico_protocol::messages::{SlaveState, SlaveStatus};
 
@@ -252,5 +269,46 @@ mod tests {
         let hb = StatusHeartbeat::decode(body).unwrap();
         assert_eq!(hb.engine_state, 1);
         assert_eq!(hb.retired_counts, vec![42u32, 0u32]);
+    }
+
+    #[test]
+    fn decodes_set_torque_command() {
+        let msg = SetTorque {
+            value: 1,
+            execute_at_ns: 123_456_789,
+        };
+        let payload = frame_payload(MessageKind::SetTorque, 7, &msg.encoded_to_vec());
+        // control channel (not the pieces channel)
+        let cmd = decode_command(0, &payload[..]).expect("decode");
+        match cmd {
+            Command::SetTorque {
+                correlation_id,
+                msg: m,
+            } => {
+                assert_eq!(correlation_id, 7);
+                assert_eq!(m.value, 1);
+                assert_eq!(m.execute_at_ns, 123_456_789);
+            }
+            other => panic!("expected SetTorque, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_torque_response_frame_round_trips() {
+        let frame = set_torque_response_frame(9, -312);
+        let mut demux = Demuxer::new();
+        let (frames, errs) = demux.feed_slice(&frame);
+        assert!(errs.is_empty());
+        let Frame::Kalico { payload, .. } = &frames[0] else {
+            panic!("expected kalico frame");
+        };
+        let (hdr, body) = decode_message_header(payload).expect("header");
+        assert_eq!(
+            MessageKind::from_u16(hdr.kind_raw),
+            Some(MessageKind::SetTorqueResponse)
+        );
+        assert_eq!(hdr.correlation_id, 9);
+        let resp = SetTorqueResponse::decode(body).expect("body");
+        assert_eq!(resp.result, -312);
     }
 }

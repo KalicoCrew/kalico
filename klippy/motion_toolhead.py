@@ -149,6 +149,7 @@ class BridgeKinematics:
             )
         if has_servo:
             rail = servo_axis.ServoRail(config.getsection(servo_sec))
+            servo_axis.register_torque_enable(self._printer, config, rail)
             self.rails.append(rail)
             return
         rail = stepper.PrinterRail(config.getsection("stepper_" + axis))
@@ -438,6 +439,19 @@ class MotionToolhead(ToolHead):
                 continue
             cbs = s._active_callbacks
             s._active_callbacks = []
+            for cb in cbs:
+                cb(print_time)
+            fired = True
+        for rail in getattr(self.kin, "rails", ()):
+            if not isinstance(rail, servo_axis.ServoRail):
+                continue
+            if not rail._active_callbacks:
+                continue
+            axis_delta = (dx, dy, dz)["xyz".index(rail.axis)]
+            if abs(axis_delta) <= 1e-9:
+                continue
+            cbs = rail._active_callbacks
+            rail._active_callbacks = []
             for cb in cbs:
                 cb(print_time)
             fired = True
@@ -844,7 +858,7 @@ class MotionToolhead(ToolHead):
             if node is None:
                 continue
             handle = node.get_bridge_handle()
-            if not handle:
+            if handle is None:
                 continue
             axis_idx = servo_axis_index.get(rail.axis)
             if axis_idx is not None:

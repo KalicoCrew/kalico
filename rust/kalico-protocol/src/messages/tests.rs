@@ -231,6 +231,39 @@ fn push_pieces_kind_in_message_kind_table() {
 }
 
 #[test]
+fn set_torque_round_trips() {
+    let msg = SetTorque {
+        value: 1,
+        execute_at_ns: 0xDEAD_BEEF_CAFE_F00D,
+    };
+    let bytes = msg.encoded_to_vec();
+    assert_eq!(bytes.len(), 9, "u8 + u64 = 9 bytes");
+    let back = SetTorque::decode(&bytes).expect("decode");
+    assert_eq!(back, msg);
+}
+
+#[test]
+fn set_torque_response_round_trips() {
+    let msg = SetTorqueResponse { result: -311 };
+    let bytes = msg.encoded_to_vec();
+    assert_eq!(bytes.len(), 4, "i32 = 4 bytes");
+    let back = SetTorqueResponse::decode(&bytes).expect("decode");
+    assert_eq!(back, msg);
+}
+
+#[test]
+fn set_torque_kinds_have_stable_tags() {
+    assert_eq!(MessageKind::SetTorque.as_u16(), 0x0070);
+    assert_eq!(MessageKind::SetTorqueResponse.as_u16(), 0x0071);
+    assert_eq!(MessageKind::from_u16(0x0070), Some(MessageKind::SetTorque));
+    assert_eq!(
+        MessageKind::from_u16(0x0071),
+        Some(MessageKind::SetTorqueResponse)
+    );
+    assert!(!MessageKind::SetTorque.is_event());
+}
+
+#[test]
 fn decode_rejects_trailing_bytes() {
     let v = FaultEvent {
         fault_code: 1,

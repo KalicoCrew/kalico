@@ -785,6 +785,63 @@ impl PyMotionBridge {
         Ok(raw)
     }
 
+    fn set_torque(&self, mcu_handle: u32, value: bool, print_time: f64) -> PyResult<()> {
+        let execute_at_ns = {
+            let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
+            router
+                .host_time_to_mcu_clock(mcu_handle_from_raw(mcu_handle), print_time)
+                .map_err(|e| {
+                    PyRuntimeError::new_err(format!(
+                        "set_torque: no clock mapping for mcu {mcu_handle}: {e:?}"
+                    ))
+                })?
+        };
+        if execute_at_ns == 0 {
+            return Err(PyRuntimeError::new_err(format!(
+                "set_torque: EtherCAT clock for mcu {mcu_handle} not seeded \
+                 (init_planner not run?)"
+            )));
+        }
+        let conn = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            let mc = mcus.get(&mcu_handle).ok_or_else(|| {
+                PyRuntimeError::new_err(format!("set_torque: unknown mcu_handle {mcu_handle}"))
+            })?;
+            mc.endpoint_conn.clone().ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "set_torque: mcu {mcu_handle} ({}) is not an EtherCAT endpoint",
+                    mc.label
+                ))
+            })?
+        };
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_torque_command",
+            mcu_handle,
+            value,
+            print_time,
+            execute_at_ns,
+            "servo torque command"
+        );
+        let result = crate::servo_torque::send_set_torque(&conn, value, execute_at_ns)
+            .map_err(PyRuntimeError::new_err)?;
+        if result != 0 {
+            tracing::error!(
+                subsystem = "bridge",
+                event = "servo_torque_rejected",
+                mcu_handle,
+                value,
+                result,
+                "servo torque command rejected"
+            );
+            return Err(PyRuntimeError::new_err(format!(
+                "servo torque {} failed: endpoint result {result}",
+                if value { "enable" } else { "disable" }
+            )));
+        }
+        Ok(())
+    }
+
     fn release_mcu(&self, handle: u32) -> PyResult<()> {
         let (mut endpoint_process, endpoint_conn) = {
             let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
