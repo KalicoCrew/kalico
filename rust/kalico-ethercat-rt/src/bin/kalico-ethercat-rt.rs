@@ -146,19 +146,6 @@ fn main() {
                     };
                     let pushed = ring.push_from_bytes(msg.piece_count, &msg.pieces_bytes);
                     let now_ns = monotonic_ns();
-                    #[allow(clippy::cast_precision_loss)]
-                    let delta_ms = (now_ns as i64 - front_start_time as i64) as f64 / 1_000_000.0;
-                    eprintln!(
-                        "ec-rt: PushPieces axis={} pieces={} pushed={} head={} \
-                         now_ns={} front_start_ns={} delta_ms={:.3}",
-                        msg.axis_idx,
-                        msg.piece_count,
-                        pushed,
-                        msg.new_head,
-                        now_ns,
-                        front_start_time,
-                        delta_ms
-                    );
                     let arrival_clock = now_ns;
                     let result = if pushed == msg.piece_count {
                         0i32

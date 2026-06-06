@@ -3,7 +3,7 @@
 //! Exercises two detection paths against the stub binary:
 //!
 //! 1. **Conn EOF** (`peer_closed_set_when_server_side_closes`): SIGKILLing
-//!    the stub causes its socket FD to close; `poll_events()` reads `Ok(0)`
+//!    the stub causes its socket FD to close; the reader thread reads `Ok(0)`
 //!    and sets `peer_closed = true`.
 //! 2. **Child exit** (`detects_child_exit_on_sigkill`): `try_wait()` returns
 //!    `Some` in the supervision loop, firing the death action.
@@ -126,8 +126,6 @@ fn spawn_supervision_thread(
     thread::Builder::new()
         .name("test-ec-supervision".into())
         .spawn(move || loop {
-            conn.poll_events();
-
             if conn.peer_closed() {
                 on_death("conn EOF");
                 return;
@@ -165,7 +163,7 @@ fn assert_detected_within(detected: &AtomicBool, deadline: Instant) {
 
 // ── Test 1: peer_closed flag when server side closes ──────────────────────
 
-/// SIGKILLing the stub closes its socket FD.  `poll_events()` reads `Ok(0)`
+/// SIGKILLing the stub closes its socket FD.  The reader thread reads `Ok(0)`
 /// (EOF) and sets `peer_closed = true`.  This validates the detection flag
 /// directly, without a supervision thread.
 #[test]
@@ -180,7 +178,6 @@ fn peer_closed_set_when_server_side_closes() {
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        conn.poll_events();
         if conn.peer_closed() {
             break;
         }

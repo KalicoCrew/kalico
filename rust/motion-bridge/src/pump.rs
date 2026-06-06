@@ -1,5 +1,6 @@
 use runtime::piece_ring::PieceEntry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::Arc;
 use std::sync::Weak;
 use std::sync::mpsc::{Receiver, RecvError, RecvTimeoutError};
 use std::time::Duration;
@@ -451,7 +452,7 @@ pub fn run_pump<S, F, C, A>(
 
 pub enum McuTransport {
     Serial(Weak<kalico_host_rt::host_io::KalicoHostIo>),
-    EtherCat(std::sync::Arc<kalico_host_rt::unix_native_conn::UnixNativeConn>),
+    EtherCat(Weak<kalico_host_rt::unix_native_conn::UnixNativeConn>),
 }
 
 impl std::fmt::Debug for McuTransport {
@@ -466,6 +467,10 @@ impl std::fmt::Debug for McuTransport {
 pub struct WireSink {
     pub transports: HashMap<u32, McuTransport>,
     pub timeout: Duration,
+    /// Live per-MCU clock frequency (Hz), queried from the router per frame.
+    /// `None` while the MCU clock is not yet synced. Single source of truth for
+    /// the `[transit-diag]` µs conversion — no second freq table.
+    pub freq_of: Arc<dyn Fn(u32) -> Option<f64> + Send + Sync>,
 }
 
 impl WireSink {
@@ -475,10 +480,9 @@ impl WireSink {
     /// represent permanent connection loss (`Closed` or `Io`); all other
     /// failures map to `Err(SendError::Transient(...))`.
     ///
-    /// `WouldBlock` and `TimedOut` from the underlying socket are consumed
-    /// inside `kalico_call_on_channel`'s read loop (they become `continue`)
-    /// and never surface here as `TransportError::Io`.  `TransportError::Timeout`
-    /// (deadline exhausted) is transient — the session may still be alive.
+    /// The reader thread owns all socket reads; `WouldBlock`/`TimedOut` never
+    /// surface here.  `TransportError::Timeout` (deadline exhausted on the
+    /// caller's `recv_timeout`) is transient — the session may still be alive.
     fn call_push_pieces(
         &self,
         key: AxisKey,
@@ -529,7 +533,16 @@ impl WireSink {
                     })?;
                 b
             }
-            McuTransport::EtherCat(conn) => {
+            McuTransport::EtherCat(weak) => {
+                let conn = weak.upgrade().ok_or_else(|| {
+                    // The endpoint conn was released (last strong Arc dropped):
+                    // session is gone, treat as fatal so the pump exits rather
+                    // than spinning on a dead axis.
+                    SendError::Fatal(format!(
+                        "ethercat conn for mcu {} detached (released)",
+                        key.mcu_id
+                    ))
+                })?;
                 let (_kind, b) = conn
                     .kalico_call_on_channel(
                         kalico_protocol::KALICO_CHANNEL_PIECES,
@@ -589,14 +602,7 @@ impl PieceSink for WireSink {
 
         {
             let arrival_lead_ticks = r.front_start_time as i64 - r.arrival_clock as i64;
-            let approx_freq_hz: f64 = if r.arrival_clock > 1_000_000_000_000 {
-                1_000_000_000.0
-            } else if key.mcu_id == 0 {
-                520_000_000.0
-            } else {
-                180_000_000.0
-            };
-            let arrival_lead_us = (arrival_lead_ticks as f64 / approx_freq_hz) * 1e6;
+            let approx_freq_hz = (self.freq_of)(key.mcu_id);
             let host_send_secs = {
                 use std::time::{SystemTime, UNIX_EPOCH};
                 SystemTime::now()
@@ -606,12 +612,18 @@ impl PieceSink for WireSink {
             };
             let zero_st = host_front_start_time == 0;
             let past_arrival = arrival_lead_ticks < 0;
+            // Clock not yet synced -> the µs conversion is meaningless; render
+            // N/A. Alert gating uses arrival_lead_ticks (tick domain), so the
+            // ALERT still fires without a frequency.
+            let arrival_lead_us = approx_freq_hz
+                .map(|f| format!("{:.1}", (arrival_lead_ticks as f64 / f) * 1e6))
+                .unwrap_or_else(|| "N/A".to_owned());
             if zero_st || past_arrival {
                 log::warn!(
                     "[transit-diag] mcu={} axis={} \
                      host_front_start_time={} mcu_front_start_time={} \
                      arrival_clock={} \
-                     arrival_lead_ticks={} arrival_lead_us={:.1} \
+                     arrival_lead_ticks={} arrival_lead_us={} \
                      host_send_unix_secs={:.6} \
                      ALERT: {}",
                     key.mcu_id,
@@ -635,7 +647,7 @@ impl PieceSink for WireSink {
                     "[transit-diag] mcu={} axis={} \
                      host_front_start_time={} mcu_front_start_time={} \
                      arrival_clock={} \
-                     arrival_lead_ticks={} arrival_lead_us={:.1} \
+                     arrival_lead_ticks={} arrival_lead_us={} \
                      host_send_unix_secs={:.6}",
                     key.mcu_id,
                     key.axis,

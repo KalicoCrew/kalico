@@ -203,7 +203,6 @@ fn unix_native_conn_and_frame_server_sustain_streaming_past_ring_depth() {
         let room = AXIS_RING_CAPACITY.saturating_sub(occupancy);
 
         if room == 0 {
-            conn.poll_events();
             thread::sleep(Duration::from_millis(2));
             continue;
         }
@@ -244,8 +243,6 @@ fn unix_native_conn_and_frame_server_sustain_streaming_past_ring_depth() {
         );
 
         total_sent = batch_end;
-
-        conn.poll_events();
     }
 
     let retire_deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -261,7 +258,6 @@ fn unix_native_conn_and_frame_server_sustain_streaming_past_ring_depth() {
             break;
         }
 
-        conn.poll_events();
         thread::sleep(Duration::from_millis(2));
     }
 

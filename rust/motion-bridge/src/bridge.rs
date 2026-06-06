@@ -2161,7 +2161,7 @@ impl PyMotionBridge {
                 t.insert(id, crate::pump::McuTransport::Serial(Arc::downgrade(io)));
             }
             for (&id, conn) in &ec_conns {
-                t.insert(id, crate::pump::McuTransport::EtherCat(Arc::clone(conn)));
+                t.insert(id, crate::pump::McuTransport::EtherCat(Arc::downgrade(conn)));
             }
             t
         };
@@ -2169,12 +2169,18 @@ impl PyMotionBridge {
         let pump_timeout = Duration::from_secs(5);
         let ring_depth_table_for_pump = ring_depth_table.clone();
         let router_for_pump = Arc::clone(&self.router);
+        let router_for_freq = Arc::clone(&self.router);
         let pump_thread_handle = std::thread::Builder::new()
             .name("push-pieces-pump".into())
             .spawn(move || {
                 let sink = crate::pump::WireSink {
                     transports: wire_transports,
                     timeout: pump_timeout,
+                    freq_of: Arc::new(move |mcu_id: u32| {
+                        let r = router_for_freq.lock().unwrap_or_else(|p| p.into_inner());
+                        r.ack_clock_and_freq(mcu_handle_from_raw(mcu_id))
+                            .map(|(_, f)| f)
+                    }),
                 };
                 crate::pump::run_pump(
                     pump_rx,
@@ -2246,7 +2252,14 @@ impl PyMotionBridge {
                     }
                 }));
 
-                let conn_for_poll = Arc::clone(&conn);
+                // Weak so the supervision thread never keeps the conn (and its
+                // reader thread / socket) alive past release_mcu: when the last
+                // strong Arc drops, upgrade() fails and the thread exits quietly,
+                // letting Drop run shutdown(Both)+join. A strong Arc here would
+                // pin the reader thread until this loop happened to notice the
+                // release, leaking finished-but-unjoined readers across repeated
+                // standalone claim/release.
+                let conn_for_poll = Arc::downgrade(&conn);
                 let mcus_for_supervision = Arc::clone(&self.mcus);
                 let label_for_supervision = mcu_label.clone();
                 let on_endpoint_death: Box<dyn Fn(&str) + Send + 'static> =
@@ -2268,14 +2281,24 @@ impl PyMotionBridge {
                     .name(format!("ec-heartbeat-poll-{mcu_id}"))
                     .spawn(move || {
                         loop {
-                            conn_for_poll.poll_events();
+                            // Released conn -> exit quietly. Checked before the
+                            // peer_closed/child probes so a deliberate release
+                            // never trips EXIT_ON_FAULT: release_mcu drops the
+                            // last strong Arc, the reader sees the resulting EOF,
+                            // and without this guard the peer_closed() check below
+                            // would race-fire the abort.
+                            let Some(conn) = conn_for_poll.upgrade() else {
+                                return;
+                            };
 
                             // Supervision: check for conn EOF before checking the child,
                             // because EOF is cheaper and fires first on clean exit.
-                            if conn_for_poll.peer_closed() {
+                            // The reader thread sets peer_closed on EOF/IO; no poll here.
+                            if conn.peer_closed() {
                                 on_endpoint_death("conn EOF");
                                 return;
                             }
+                            drop(conn);
 
                             // Check child exit status with a brief mutex acquisition.
                             let child_exited = {
