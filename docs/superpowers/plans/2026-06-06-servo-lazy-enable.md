@@ -1628,7 +1628,7 @@ class BridgeTorqueLine:
     def set_digital(self, print_time, value):
         node = self._printer.lookup_object("ethercat_node " + self._node_name)
         handle = node.get_bridge_handle()
-        if not handle:
+        if handle is None:
             raise self._printer.command_error(
                 "servo torque: ethercat_node %s has no bridge handle"
                 % (self._node_name,)

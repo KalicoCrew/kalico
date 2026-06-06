@@ -98,6 +98,18 @@ def test_bridge_torque_line_fails_loudly_without_handle():
         assert "no bridge handle" in str(e)
 
 
+def test_bridge_torque_line_accepts_handle_zero():
+    # Bridge handles are claim-ordered u32 starting at 0 — the first-claimed
+    # node legitimately gets handle 0 and must not be treated as unclaimed.
+    bridge = FakeBridge()
+    printer = FakePrinter(
+        {"ethercat_node node_y": FakeNode(0), "motion_bridge": bridge}
+    )
+    line = servo_axis.BridgeTorqueLine(printer, "node_y")
+    line.set_digital(20.0, 1)
+    assert bridge.calls == [(0, True, 20.0)]
+
+
 def test_servo_rail_active_callback_contract():
     rail = servo_axis.ServoRail.__new__(servo_axis.ServoRail)
     rail._active_callbacks = []

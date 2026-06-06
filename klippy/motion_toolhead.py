@@ -845,7 +845,7 @@ class MotionToolhead(ToolHead):
             if node is None:
                 continue
             handle = node.get_bridge_handle()
-            if not handle:
+            if handle is None:
                 continue
             axis_idx = servo_axis_index.get(rail.axis)
             if axis_idx is not None:
