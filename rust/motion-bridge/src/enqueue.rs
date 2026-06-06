@@ -107,6 +107,7 @@ where
             piece_idx,
             u_start = bp.u_start,
             margin_us,
+            start_ns = start_time,
             "[dispatch-margin]"
         );
 
