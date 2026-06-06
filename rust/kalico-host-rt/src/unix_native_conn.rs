@@ -1,6 +1,6 @@
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,6 +24,10 @@ pub struct UnixNativeConn {
     state: Mutex<ConnState>,
     next_cid: AtomicU32,
     heartbeat_callback: Mutex<Option<Arc<dyn Fn(&[u32]) + Send + Sync>>>,
+    /// Set when the peer closes its end of the socket (read returns `Ok(0)`)
+    /// or a fatal read/write error occurs. Checked by the supervision thread to
+    /// detect endpoint death before the next heartbeat poll iteration.
+    peer_closed: AtomicBool,
 }
 
 impl core::fmt::Debug for UnixNativeConn {
@@ -49,7 +53,16 @@ impl UnixNativeConn {
             }),
             next_cid: AtomicU32::new(1),
             heartbeat_callback: Mutex::new(None),
+            peer_closed: AtomicBool::new(false),
         }
+    }
+
+    /// Returns `true` once the peer has closed the socket or a fatal I/O error
+    /// has been observed.  The flag is set from [`poll_events`] and from
+    /// [`kalico_call_on_channel`] / [`NativeCall::kalico_call`]; it never
+    /// resets.
+    pub fn peer_closed(&self) -> bool {
+        self.peer_closed.load(Ordering::Acquire)
     }
 
     pub fn attach_heartbeat_callback(&self, cb: Arc<dyn Fn(&[u32]) + Send + Sync>) {
@@ -74,14 +87,20 @@ impl UnixNativeConn {
         loop {
             let ConnState { stream, demux, buf } = &mut *st;
             let n = match stream.read(buf) {
-                Ok(0) => break, // EOF
+                Ok(0) => {
+                    self.peer_closed.store(true, Ordering::Release);
+                    break; // EOF
+                }
                 Ok(n) => n,
                 Err(ref e)
                     if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut =>
                 {
                     break; // nothing more right now
                 }
-                Err(_) => break,
+                Err(_) => {
+                    self.peer_closed.store(true, Ordering::Release);
+                    break;
+                }
             };
             let (frames, _errs) = demux.feed_slice(&buf[..n]);
             for f in frames {
@@ -135,7 +154,10 @@ impl UnixNativeConn {
 
         let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
 
-        st.stream.write_all(&frame).map_err(TransportError::Io)?;
+        if let Err(e) = st.stream.write_all(&frame) {
+            self.peer_closed.store(true, Ordering::Release);
+            return Err(TransportError::Io(e));
+        }
 
         st.stream
             .set_read_timeout(Some(Duration::from_millis(50)))
@@ -148,7 +170,10 @@ impl UnixNativeConn {
             }
             let ConnState { stream, demux, buf } = &mut *st;
             let n = match stream.read(buf) {
-                Ok(0) => return Err(TransportError::Closed),
+                Ok(0) => {
+                    self.peer_closed.store(true, Ordering::Release);
+                    return Err(TransportError::Closed);
+                }
                 Ok(n) => n,
                 Err(ref e)
                     if e.kind() == std::io::ErrorKind::WouldBlock
@@ -156,7 +181,10 @@ impl UnixNativeConn {
                 {
                     continue;
                 }
-                Err(e) => return Err(TransportError::Io(e)),
+                Err(e) => {
+                    self.peer_closed.store(true, Ordering::Release);
+                    return Err(TransportError::Io(e));
+                }
             };
             let (frames, _errs) = demux.feed_slice(&buf[..n]);
             for f in frames {
@@ -205,7 +233,10 @@ impl NativeCall for UnixNativeConn {
 
         let mut st = self.state.lock().unwrap_or_else(|p| p.into_inner());
 
-        st.stream.write_all(&frame).map_err(TransportError::Io)?;
+        if let Err(e) = st.stream.write_all(&frame) {
+            self.peer_closed.store(true, Ordering::Release);
+            return Err(TransportError::Io(e));
+        }
 
         st.stream
             .set_read_timeout(Some(Duration::from_millis(50)))
@@ -218,7 +249,10 @@ impl NativeCall for UnixNativeConn {
             }
             let ConnState { stream, demux, buf } = &mut *st;
             let n = match stream.read(buf) {
-                Ok(0) => return Err(TransportError::Closed),
+                Ok(0) => {
+                    self.peer_closed.store(true, Ordering::Release);
+                    return Err(TransportError::Closed);
+                }
                 Ok(n) => n,
                 Err(ref e)
                     if e.kind() == std::io::ErrorKind::WouldBlock
@@ -226,7 +260,10 @@ impl NativeCall for UnixNativeConn {
                 {
                     continue;
                 }
-                Err(e) => return Err(TransportError::Io(e)),
+                Err(e) => {
+                    self.peer_closed.store(true, Ordering::Release);
+                    return Err(TransportError::Io(e));
+                }
             };
             let (frames, _errs) = demux.feed_slice(&buf[..n]);
             for f in frames {

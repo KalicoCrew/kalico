@@ -433,7 +433,7 @@ fn require_events_dir_for_kalico_native(
 pub struct PyMotionBridge {
     router: Arc<Mutex<PassthroughRouter>>,
     parser: Arc<Mutex<Option<Arc<MsgProtoParser>>>>,
-    mcus: Mutex<HashMap<u32, McuConnection>>,
+    mcus: Arc<Mutex<HashMap<u32, McuConnection>>>,
     events: Arc<Mutex<VecDeque<BridgeEvent>>>,
     #[allow(dead_code)]
     handlers: Mutex<HashMap<(u32, String, u32), PyObject>>,
@@ -655,7 +655,7 @@ impl PyMotionBridge {
         Self {
             router: Arc::new(Mutex::new(PassthroughRouter::with_clock(clock))),
             parser: Arc::new(Mutex::new(None)),
-            mcus: Mutex::new(HashMap::new()),
+            mcus: Arc::new(Mutex::new(HashMap::new())),
             events: Arc::new(Mutex::new(VecDeque::new())),
             handlers: Mutex::new(HashMap::new()),
             planner: OnceLock::new(),
@@ -2140,6 +2140,18 @@ impl PyMotionBridge {
                         let r = router_for_pump.lock().unwrap_or_else(|p| p.into_inner());
                         r.ack_clock_and_freq(mcu_handle_from_raw(mcu_id))
                     },
+                    |key| {
+                        tracing::error!(
+                            mcu_id = key.mcu_id,
+                            axis = key.axis,
+                            "EXIT_ON_FAULT — EtherCAT transport broken-pipe in pump; \
+                             aborting klippy so systemd restarts it"
+                        );
+                        let _ = std::io::Write::flush(&mut std::io::stderr());
+                        if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
+                            std::process::abort();
+                        }
+                    },
                 );
             })
             .expect("spawn push-pieces-pump thread");
@@ -2157,6 +2169,15 @@ impl PyMotionBridge {
                     .get(&mcu_id)
                     .expect("ec_conns built from ethercat_mcu_ids")
                     .clone();
+
+                let mcu_label = {
+                    let mcus_lock = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+                    mcus_lock
+                        .get(&mcu_id)
+                        .map(|c| c.label.clone())
+                        .unwrap_or_else(|| format!("mcu-{mcu_id}"))
+                };
+
                 conn.attach_heartbeat_callback(Arc::new(move |retired: &[u32]| {
                     let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
                         crate::pump::HeartbeatMsg {
@@ -2168,12 +2189,66 @@ impl PyMotionBridge {
                         drain_hb.set_retired(mcu_id, axis as u8, r);
                     }
                 }));
+
                 let conn_for_poll = Arc::clone(&conn);
+                let mcus_for_supervision = Arc::clone(&self.mcus);
+                let label_for_supervision = mcu_label.clone();
+                let on_endpoint_death: Box<dyn Fn(&str) + Send + 'static> =
+                    Box::new(move |reason: &str| {
+                        tracing::error!(
+                            mcu_label = label_for_supervision,
+                            mcu_id,
+                            reason,
+                            "EXIT_ON_FAULT — ethercat endpoint died mid-session; \
+                             aborting klippy so systemd restarts it"
+                        );
+                        let _ = std::io::Write::flush(&mut std::io::stderr());
+                        if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
+                            std::process::abort();
+                        }
+                    });
+
                 let _ = std::thread::Builder::new()
                     .name(format!("ec-heartbeat-poll-{mcu_id}"))
                     .spawn(move || {
                         loop {
                             conn_for_poll.poll_events();
+
+                            // Supervision: check for conn EOF before checking the child,
+                            // because EOF is cheaper and fires first on clean exit.
+                            if conn_for_poll.peer_closed() {
+                                on_endpoint_death("conn EOF");
+                                return;
+                            }
+
+                            // Check child exit status with a brief mutex acquisition.
+                            let child_exited = {
+                                let mut mcus = mcus_for_supervision
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner());
+                                if let Some(c) = mcus.get_mut(&mcu_id) {
+                                    if let Some(ref mut child) = c.endpoint_process {
+                                        match child.try_wait() {
+                                            Ok(Some(status)) => {
+                                                Some(format!("child exited: {status}"))
+                                            }
+                                            Ok(None) => None,
+                                            Err(e) => Some(format!("try_wait error: {e}")),
+                                        }
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    // MCU was released — normal shutdown, exit quietly.
+                                    return;
+                                }
+                            };
+
+                            if let Some(reason) = child_exited {
+                                on_endpoint_death(&reason);
+                                return;
+                            }
+
                             std::thread::sleep(Duration::from_millis(1));
                         }
                     })

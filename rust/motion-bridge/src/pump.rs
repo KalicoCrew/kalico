@@ -445,7 +445,7 @@ mod tests {
             _pieces: &[PieceEntry],
             start_slot: u16,
             new_head: u32,
-        ) -> Result<i32, String> {
+        ) -> Result<i32, SendError> {
             self.calls.lock().unwrap().push((start_slot, new_head));
             Ok(kalico_protocol::result_codes::OK)
         }
@@ -472,7 +472,7 @@ mod tests {
         let (tx, rx) = mpsc::channel::<PumpMsg>();
         let sink_clone = sink.clone();
         let handle = std::thread::spawn(move || {
-            run_pump(rx, sink_clone, |_key| RING_DEPTH, |_mcu| None);
+            run_pump(rx, sink_clone, |_key| RING_DEPTH, |_mcu| None, |_| {});
         });
 
         tx.send(PumpMsg::Enqueue(EnqueueMsg {
@@ -576,6 +576,32 @@ pub enum PumpMsg {
     Shutdown,
 }
 
+/// Error from [`PieceSink::send_frame`].
+///
+/// `Fatal` means the transport is permanently broken and the caller must not
+/// retry — the process should abort or restart.  `Transient` means the frame
+/// was not delivered but the transport may recover; the caller can back off and
+/// retry.
+#[derive(Debug)]
+pub enum SendError {
+    /// Unrecoverable transport failure (broken pipe, connection reset, peer
+    /// closed).  Callers that receive this must invoke their fatal-fault action
+    /// immediately; retrying will not help.
+    Fatal(String),
+    /// Recoverable or non-transport error (MCU rejected the frame, ring full,
+    /// etc.).
+    Transient(String),
+}
+
+impl std::fmt::Display for SendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fatal(s) => write!(f, "fatal: {s}"),
+            Self::Transient(s) => write!(f, "transient: {s}"),
+        }
+    }
+}
+
 pub trait PieceSink: Send {
     fn send_frame(
         &self,
@@ -583,7 +609,7 @@ pub trait PieceSink: Send {
         pieces: &[PieceEntry],
         start_slot: u16,
         new_head: u32,
-    ) -> Result<i32, String>;
+    ) -> Result<i32, SendError>;
 }
 
 /// Compute the tick-domain and host-domain gaps at a batch boundary.
@@ -605,11 +631,24 @@ pub fn junction_jumps(
 
 const MAX_LEAD_SECS: f64 = 1.0;
 
-pub fn run_pump<S, F, C>(rx: Receiver<PumpMsg>, sink: S, ring_depth_of: F, mcu_clock_of: C)
-where
+/// Run the piece pump loop.
+///
+/// `on_fatal_transport` is called (at most once) when [`SendError::Fatal`] is
+/// returned by the sink, indicating an unrecoverable transport failure.  The
+/// production call site passes an `abort()`-based action; tests inject a
+/// channel-send or a flag-set so they can assert detection without terminating
+/// the process.  After the callback returns the pump loop exits.
+pub fn run_pump<S, F, C, A>(
+    rx: Receiver<PumpMsg>,
+    sink: S,
+    ring_depth_of: F,
+    mcu_clock_of: C,
+    on_fatal_transport: A,
+) where
     S: PieceSink,
     F: Fn(AxisKey) -> u32,
     C: Fn(u32) -> Option<(u64, f64)>,
+    A: Fn(AxisKey) + Send + 'static,
 {
     let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
     // Per-axis junction tracking for clock-projection jitter measurement.
@@ -772,7 +811,16 @@ where
                                 q.pushed = q.pushed.wrapping_add(n);
                                 q.advance_write_cursor(n);
                             }
-                            Err(ref e) => {
+                            Err(SendError::Fatal(ref e)) => {
+                                log::error!(
+                                    "pump send_frame FATAL transport error for {:?}: {e} \
+                                     — invoking fatal-transport action",
+                                    f.key
+                                );
+                                on_fatal_transport(f.key);
+                                return;
+                            }
+                            Err(SendError::Transient(ref e)) => {
                                 log::error!("pump send_frame failed for {:?}: {e}", f.key);
                                 break 'send;
                             }
@@ -869,6 +917,15 @@ impl WireSink {
     }
 }
 
+/// Returns `true` when an I/O error string from a transport call indicates a
+/// permanently broken connection (broken pipe, connection reset, or closed).
+fn is_fatal_transport_error(msg: &str) -> bool {
+    msg.contains("broken pipe")
+        || msg.contains("connection reset")
+        || msg.contains("transport closed")
+        || msg.contains("Transport closed")
+}
+
 impl PieceSink for WireSink {
     fn send_frame(
         &self,
@@ -876,7 +933,7 @@ impl PieceSink for WireSink {
         pieces: &[PieceEntry],
         start_slot: u16,
         new_head: u32,
-    ) -> Result<i32, String> {
+    ) -> Result<i32, SendError> {
         // schedule() caps frames at MAX_PER_FRAME (currently 32); this guards
         // against callers bypassing schedule() and hitting a silent truncation.
         debug_assert!(
@@ -886,7 +943,21 @@ impl PieceSink for WireSink {
 
         let host_front_start_time: u64 = pieces.first().map(|p| p.start_time).unwrap_or(0);
 
-        let r = self.call_push_pieces(key, pieces, start_slot, new_head)?;
+        let r = self
+            .call_push_pieces(key, pieces, start_slot, new_head)
+            .map_err(|e| {
+                // EtherCAT broken-pipe / peer-closed errors are fatal; serial and
+                // logic errors are transient (MCU rejected frame, ring full, etc.).
+                let is_ethercat = matches!(
+                    self.transports.get(&key.mcu_id),
+                    Some(McuTransport::EtherCat(_))
+                );
+                if is_ethercat && is_fatal_transport_error(&e) {
+                    SendError::Fatal(e)
+                } else {
+                    SendError::Transient(e)
+                }
+            })?;
 
         {
             let arrival_lead_ticks = r.front_start_time as i64 - r.arrival_clock as i64;
@@ -951,10 +1022,10 @@ impl PieceSink for WireSink {
         }
 
         if r.result != kalico_protocol::result_codes::OK {
-            return Err(format!(
+            return Err(SendError::Transient(format!(
                 "MCU rejected PushPieces (mcu {} axis {}): {}",
                 key.mcu_id, key.axis, r.result
-            ));
+            )));
         }
         Ok(r.result)
     }

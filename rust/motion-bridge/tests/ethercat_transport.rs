@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use motion_bridge_native::drain::DrainSync;
 use motion_bridge_native::pump::{
-    AxisKey, EnqueueMsg, HeartbeatMsg, PieceSink, PumpMsg, WireSink, run_pump,
+    AxisKey, EnqueueMsg, HeartbeatMsg, PieceSink, PumpMsg, SendError, WireSink, run_pump,
 };
 use runtime::piece_ring::PieceEntry;
 
@@ -57,7 +57,8 @@ fn wire_sink_missing_transport_is_hard_error() {
         result.is_err(),
         "missing transport must be a hard error, not silent drop"
     );
-    let msg = result.unwrap_err();
+    let err = result.unwrap_err();
+    let msg = err.to_string();
     assert!(
         msg.contains("no transport for mcu_id 99"),
         "error must name the offending mcu_id; got: {msg}"
@@ -96,7 +97,7 @@ impl PieceSink for PerMcuCountSink {
         _pieces: &[PieceEntry],
         _start_slot: u16,
         _new_head: u32,
-    ) -> Result<i32, String> {
+    ) -> Result<i32, SendError> {
         *self.calls.lock().unwrap().entry(key.mcu_id).or_insert(0) += 1;
         Ok(0)
     }
@@ -116,7 +117,7 @@ fn pump_routes_both_serial_and_ethercat_mcu_ids() {
         // mcu_clock_of: no time gate (count-only) — this test exercises routing,
         // not the arrival-lead horizon. Matches the `|_| None` stub used by the
         // other run_pump callers (pump_loop.rs, pump.rs).
-        run_pump(rx, sink, |_k| 8u32, |_| None);
+        run_pump(rx, sink, |_k| 8u32, |_| None, |_| {});
     });
 
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
