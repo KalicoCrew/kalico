@@ -2239,8 +2239,14 @@ impl PyMotionBridge {
                         .unwrap_or(0)
                 };
 
-                let msgs =
-                    crate::enqueue::enqueue_segment(seg, &mcu_configs_for_cb, t0, fresh, project);
+                let msgs = crate::enqueue::enqueue_segment(
+                    seg,
+                    &mcu_configs_for_cb,
+                    t0,
+                    fresh,
+                    host_now,
+                    project,
+                );
 
                 for m in msgs {
                     drain_disp.add_sent(m.key.mcu_id, m.key.axis, m.pieces.len() as u32);
