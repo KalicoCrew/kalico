@@ -26,10 +26,12 @@ pub enum TorqueState {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CommandAction {
     /// Run the CiA 402 enable ladder, then reply with its result and report
-    /// via `enable_finished`. `ramp_first`: a pending scheduled disable
-    /// existed (it was scheduled earlier in print-time order); execute the
-    /// disable ramp and call `disable_finished` before the ladder.
-    Enable { ramp_first: bool },
+    /// via `enable_finished`. If a scheduled disable was pending it has been
+    /// cancelled: the drive is still energized and the new motion continues
+    /// under uninterrupted torque — executing the disable early would cut
+    /// torque while prior motion may still be draining. (If the gate is
+    /// already Enabled the ladder is a single-cycle no-op on the drive.)
+    Enable,
     /// Disable accepted: reply result=0 now; the ramp runs from `on_tick`.
     ScheduleDisable,
     /// Invalid command: reply with `code`, then halt (disable + exit).
@@ -75,8 +77,10 @@ impl TorqueGate {
                     code: ERR_BAD_TORQUE_STATE,
                 };
             }
-            let ramp_first = self.pending_disable_at.take().is_some();
-            CommandAction::Enable { ramp_first }
+            // Cancel any pending disable rather than executing it early —
+            // early execution would de-energize while prior motion drains.
+            self.pending_disable_at = None;
+            CommandAction::Enable
         } else {
             if self.state != TorqueState::Enabled || self.pending_disable_at.is_some() {
                 return CommandAction::Reject {
@@ -142,10 +146,7 @@ mod tests {
     fn enable_from_parked_runs_ladder() {
         let mut g = TorqueGate::new();
         assert_eq!(g.state(), TorqueState::Parked);
-        assert_eq!(
-            g.on_set_torque(true, T0, T0 - 1),
-            CommandAction::Enable { ramp_first: false }
-        );
+        assert_eq!(g.on_set_torque(true, T0, T0 - 1), CommandAction::Enable);
         g.enable_finished(true);
         assert_eq!(g.state(), TorqueState::Enabled);
     }
@@ -229,22 +230,26 @@ mod tests {
     }
 
     #[test]
-    fn reenable_with_pending_disable_ramps_first() {
+    fn reenable_with_pending_disable_cancels_it() {
         // M84 schedules a disable; a new move's enable arrives before it is
-        // due. The earlier-scheduled disable must still happen (stepper
-        // semantics: both edges occur), so the gate orders ramp-then-ladder.
+        // due — possibly while prior motion is still draining. The pending
+        // disable is cancelled: torque stays on continuously (executing the
+        // ramp early would cut torque mid-motion).
         let mut g = TorqueGate::new();
         let _ = g.on_set_torque(true, T0, T0 - 1);
         g.enable_finished(true);
         let _ = g.on_set_torque(false, T0 + 500, T0);
+        // prior motion may still be draining (ring non-empty) — still fine
+        assert_eq!(g.on_tick(T0 + 100, false), TickAction::None);
         assert_eq!(
             g.on_set_torque(true, T0 + 600, T0 + 100),
-            CommandAction::Enable { ramp_first: true }
+            CommandAction::Enable
         );
-        g.disable_finished();
         g.enable_finished(true);
         assert_eq!(g.state(), TorqueState::Enabled);
-        // pending disable consumed — never fires
+        // the cancelled disable never fires, even past its deadline,
+        // and motion may continue across it
+        assert_eq!(g.on_tick(T0 + 1_000, false), TickAction::None);
         assert_eq!(g.on_tick(T0 + 1_000, true), TickAction::None);
     }
 

@@ -89,7 +89,10 @@ domain via the same mapping trajectory pieces already use for start times.
   `get_last_move_time()` rather than at the move's first step.
 - **`value=0` (disable)**: the DC loop executes the disable ramp when its
   clock reaches `execute_at_ns` — the exact scheduled-edge semantics of the
-  stepper pin, after M84's end-of-queue print_time + dwell.
+  stepper pin, after M84's end-of-queue print_time + dwell. If a re-enable
+  arrives while a disable is pending, the pending disable is **cancelled** —
+  torque stays on continuously; executing the disable early would de-energize
+  while prior motion may still be draining.
 
 ### Endpoint: park at Ready to Switch On (0x0006)
 

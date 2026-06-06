@@ -182,12 +182,7 @@ fn main() {
                 } => {
                     let now_ns = monotonic_ns();
                     match gate.on_set_torque(msg.value != 0, msg.execute_at_ns, now_ns) {
-                        CommandAction::Enable { ramp_first } => {
-                            if ramp_first {
-                                eprintln!("ec-rt: pending disable ramps before re-enable");
-                                unsafe { ffi::ec_rt_disable() };
-                                gate.disable_finished();
-                            }
+                        CommandAction::Enable => {
                             let rc = unsafe { ffi::ec_rt_enable() };
                             gate.enable_finished(rc == 0);
                             if rc == 0 {
