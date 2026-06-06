@@ -83,13 +83,16 @@ class EtherCatNode:
             return
         self._counts_per_mm = self._derive_counts_per_mm()
         bridge = self.printer.lookup_object("motion_bridge")
-        self.bridge_handle = bridge.claim_ethercat_node(
-            self.name,
-            self.socket_path,
-            self.interface,
-            self.endpoint,
-            self._counts_per_mm,
-        )
+        try:
+            self.bridge_handle = bridge.claim_ethercat_node(
+                self.name,
+                self.socket_path,
+                self.interface,
+                self.endpoint,
+                self._counts_per_mm,
+            )
+        except RuntimeError as e:
+            raise self.printer.config_error(str(e))
         logging.info(
             "ethercat_node %s: claimed handle=%s socket=%s interface=%s "
             "endpoint=%s counts_per_mm=%s",
