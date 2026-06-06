@@ -9,7 +9,13 @@ We are working on a complete rewrite of the motion planner and more:
   to fail loudly with a clear error code. This helps us catch bugs quicker. Example: movement segment arrives to the planner late, causing the start time to be in the past. Do not advance or pad the
   start time, raise an error instead. this way we notice the issue and have a chance to address it
 
-- Clean and self explanatory code, comments in the code only as reminders or when something is impossible to make obvious with code.
+- Comments are a failure of expression. Instead of writing one, make the code say it:
+  rename, extract, assert, or compute the value. A comment earns its line only if it
+  stops a future editor from breaking something the code can't defend (e.g. a
+  load-bearing sleep). Never restate names/signatures, doc-comment fields, narrate
+  steps, or justify decisions in code — justifications go in commit messages.
+  TODO-style markers are fine. Self-check on every diff: "what mistake does this
+  comment prevent?" — none → delete.
 
 # High level feature scope
 - Rust for new code by default; single source compiled f64 host / f32 MCU. Rust links as staticlib into Klipper's existing C MCU build, which stays C for now. **C is acceptable for low-level building blocks where Rust's borrow / aliasing abstractions misbehave or obscure debugging** — e.g., the MCU-side segment SPSC queue is a C struct in `.axi_bss` because LLVM miscompiled the borrow-projected `heapless::spsc::Consumer` pattern (2026-05-18 bench: `qlen_sd=6 qlen_ps=1` from the same `Consumer` instance across two call sites, with the Producer's enqueues visible from one site but not the other). The rule is "Rust for the engine, C where the engine's primitives need to be trivially debuggable."
