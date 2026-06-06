@@ -1,15 +1,25 @@
-//! Usage: kalico-ethercat-rt-stub [--socket PATH]
+//! Usage: kalico-ethercat-rt-stub [--socket PATH] [--fail-bringup slave=N]
+#![allow(unsafe_code)]
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 
+use kalico_ethercat_rt::claim::{parse_fail_bringup, single_slave_reply, wait_for_claim};
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::wire::{
-    identify_response_frame, push_pieces_response_frame, runtime_caps_response_frame,
-    status_heartbeat_frame, Command,
+    claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
+    runtime_caps_response_frame, status_heartbeat_frame, Command,
 };
+use kalico_protocol::messages::SlaveState;
+
+static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_sigterm(_: libc::c_int) {
+    SIGTERM_RECEIVED.store(true, Ordering::Release);
+}
 
 fn arg_val(args: &[String], key: &str) -> Option<String> {
     args.iter()
@@ -21,6 +31,15 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let socket = arg_val(&args, "--socket").unwrap_or_else(|| "/tmp/kalico-ethercat.sock".into());
 
+    let fail_slave: Option<u8> = match parse_fail_bringup(&args) {
+        Ok(v) => v,
+        Err(msg) => {
+            eprintln!("ec-rt-stub: {msg}");
+            eprintln!("Usage: kalico-ethercat-rt-stub [--socket PATH] [--fail-bringup slave=N]");
+            std::process::exit(2);
+        }
+    };
+
     let mut ring = AxisRing::new();
     let mut last_sent_retired: u32 = 0;
     let mut heartbeat_sent = false;
@@ -28,7 +47,47 @@ fn main() {
     let mut server = FrameServer::bind(&socket).expect("bind socket");
     eprintln!("ec-rt-stub: socket {socket} (NO HARDWARE)");
 
-    loop {
+    // SAFETY: on_sigterm only touches a static AtomicBool; SA_RESTART (and no
+    // SA_RESETHAND) keeps a second SIGTERM on the clean-shutdown path too.
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_sigterm as *const () as libc::sighandler_t;
+        sa.sa_flags = libc::SA_RESTART;
+        libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
+    }
+
+    let claim_deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let cid = match wait_for_claim(&mut server, claim_deadline, &SIGTERM_RECEIVED, "ec-rt-stub") {
+        Some(id) => id,
+        None => {
+            eprintln!("ec-rt-stub: bridge did not send ClaimHandshake within 10 s; aborting");
+            std::process::exit(1);
+        }
+    };
+
+    if let Some(slave_idx) = fail_slave {
+        let reply = single_slave_reply(slave_idx, SlaveState::Offline, 0);
+        server.respond_and_close(&claim_handshake_reply_frame(cid, &reply));
+        eprintln!("ec-rt-stub: --fail-bringup: sent Offline for slave {slave_idx}, exiting");
+        std::process::exit(1);
+    }
+
+    server.respond(&claim_handshake_reply_frame(
+        cid,
+        &single_slave_reply(1, SlaveState::Ok, 0),
+    ));
+    eprintln!("ec-rt-stub: handshake ok, entering stub loop");
+
+    'session: loop {
+        if SIGTERM_RECEIVED.load(Ordering::Acquire) {
+            eprintln!("ec-rt-stub: SIGTERM received — exiting");
+            break;
+        }
+        if server.session_ended() {
+            eprintln!("ec-rt-stub: bridge disconnected — exiting");
+            break;
+        }
+
         for cmd in server.poll_commands() {
             match cmd {
                 Command::Identify {
@@ -47,11 +106,21 @@ fn main() {
                         0
                     };
                     let pushed = ring.push_from_bytes(msg.piece_count, &msg.pieces_bytes);
+                    let now_ns = monotonic_ns();
+                    #[allow(clippy::cast_precision_loss)]
+                    let delta_ms = (now_ns as i64 - front_start_time as i64) as f64 / 1_000_000.0;
                     eprintln!(
-                        "ec-rt-stub: PushPieces axis={} pieces={} pushed={} head={}",
-                        msg.axis_idx, msg.piece_count, pushed, msg.new_head
+                        "ec-rt-stub: PushPieces axis={} pieces={} pushed={} head={} \
+                         now_ns={} front_start_ns={} delta_ms={:.3}",
+                        msg.axis_idx,
+                        msg.piece_count,
+                        pushed,
+                        msg.new_head,
+                        now_ns,
+                        front_start_time,
+                        delta_ms
                     );
-                    let arrival_clock = monotonic_ns();
+                    let arrival_clock = now_ns;
                     let result = if pushed == msg.piece_count {
                         0i32
                     } else {
@@ -67,6 +136,13 @@ fn main() {
                 Command::QueryRuntimeCaps { correlation_id } => {
                     let total: u32 = (AXIS_RING_CAPACITY * NUM_AXES * 32) as u32;
                     server.respond(&runtime_caps_response_frame(correlation_id, total));
+                }
+                Command::ClaimHandshake { .. } => {
+                    eprintln!(
+                        "ec-rt-stub: protocol violation: ClaimHandshake after handshake \
+                         — ending session"
+                    );
+                    break 'session;
                 }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt-stub: ignoring kind 0x{kind_raw:04x}");

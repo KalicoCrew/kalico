@@ -12,6 +12,8 @@ pub enum MessageKind {
     ConfigureAxesResponse = 0x0031,
     QueryRuntimeCaps = 0x0040,
     RuntimeCapsResponse = 0x0041,
+    ClaimHandshake = 0x0042,
+    ClaimHandshakeReply = 0x0043,
     PushPieces = 0x0060,
     PushPiecesResponse = 0x0061,
     FaultEvent = 0x0082,
@@ -28,6 +30,8 @@ impl MessageKind {
             0x0031 => Self::ConfigureAxesResponse,
             0x0040 => Self::QueryRuntimeCaps,
             0x0041 => Self::RuntimeCapsResponse,
+            0x0042 => Self::ClaimHandshake,
+            0x0043 => Self::ClaimHandshakeReply,
             0x0060 => Self::PushPieces,
             0x0061 => Self::PushPiecesResponse,
             0x0082 => Self::FaultEvent,
@@ -319,6 +323,105 @@ impl Decode for McuLog {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+/// State of a single EtherCAT slave as reported in [`ClaimHandshakeReply`].
+pub enum SlaveState {
+    Ok = 0x00,
+    Offline = 0x01,
+    Fault = 0x02,
+}
+
+impl SlaveState {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0x00 => Some(Self::Ok),
+            0x01 => Some(Self::Offline),
+            0x02 => Some(Self::Fault),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlaveStatus {
+    pub slave_idx: u8,
+    pub state: SlaveState,
+    pub fault_code: u16,
+}
+
+/// Sent once by the endpoint after bringup, before entering the DC loop.
+/// Contains one entry per slave. Fail loudly: empty slave list or unknown
+/// state byte are hard `DecodeError`s.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimHandshakeReply {
+    pub slave_statuses: Vec<SlaveStatus>,
+}
+
+impl Encode for ClaimHandshakeReply {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_u8(out, self.slave_statuses.len() as u8);
+        for s in &self.slave_statuses {
+            put_u8(out, s.slave_idx);
+            put_u8(out, s.state as u8);
+            put_u16(out, s.fault_code);
+        }
+    }
+}
+
+impl Decode for ClaimHandshakeReply {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        let count = get_u8(c)?;
+        if count == 0 {
+            return Err(DecodeError::EmptyArray {
+                field: "slave_statuses",
+            });
+        }
+        let entries_len =
+            (count as usize)
+                .checked_mul(4)
+                .ok_or(DecodeError::ArrayLengthExceedsBuffer {
+                    claimed: u32::from(count),
+                    available: c.remaining(),
+                })?;
+        if entries_len > c.remaining() {
+            return Err(DecodeError::ArrayLengthExceedsBuffer {
+                claimed: u32::from(count),
+                available: c.remaining(),
+            });
+        }
+        let mut statuses = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let slave_idx = get_u8(c)?;
+            let state_raw = get_u8(c)?;
+            let state = SlaveState::from_u8(state_raw).ok_or(DecodeError::BadDiscriminant {
+                field: "SlaveState",
+                raw: state_raw as u32,
+            })?;
+            let fault_code = get_u16(c)?;
+            statuses.push(SlaveStatus {
+                slave_idx,
+                state,
+                fault_code,
+            });
+        }
+        Ok(Self {
+            slave_statuses: statuses,
+        })
+    }
+}
+
+#[cfg(test)]
+pub(super) fn roundtrip<T>(v: &T) -> T
+where
+    T: Encode + Decode + PartialEq + std::fmt::Debug,
+{
+    let bytes = v.encoded_to_vec();
+    T::decode(&bytes).expect("decode ok")
+}
+
+#[cfg(test)]
+mod claim_handshake_tests;
 #[cfg(test)]
 mod mcu_log_tests;
 #[cfg(test)]

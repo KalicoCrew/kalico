@@ -13,6 +13,9 @@ pub struct FrameServer {
     conn: Option<UnixStream>,
     demux: Demuxer,
     buf: [u8; 4096],
+    /// Set on peer EOF, read error, write error, or deliberate `respond_and_close`.
+    /// Once true the server refuses further accept calls (one-shot session contract).
+    session_ended: bool,
 }
 
 impl core::fmt::Debug for FrameServer {
@@ -35,11 +38,13 @@ impl FrameServer {
             conn: None,
             demux: Demuxer::new(),
             buf: [0u8; 4096],
+            session_ended: false,
         })
     }
 
     fn try_accept(&mut self) {
-        if self.conn.is_none() {
+        // One-shot: once a session has ended this process accepts no further clients.
+        if self.conn.is_none() && !self.session_ended {
             match self.listener.accept() {
                 Ok((stream, _)) => {
                     // Non-blocking: a blocking read stalls the 1 ms DC loop and
@@ -64,6 +69,7 @@ impl FrameServer {
             Ok(0) => {
                 eprintln!("ec-rt: client disconnected");
                 self.conn = None;
+                self.session_ended = true;
             }
             Ok(n) => {
                 let (frames, errs) = self.demux.feed_slice(&self.buf[..n]);
@@ -83,6 +89,7 @@ impl FrameServer {
             Err(e) => {
                 eprintln!("ec-rt: read error: {e}");
                 self.conn = None;
+                self.session_ended = true;
             }
         }
         cmds
@@ -93,7 +100,31 @@ impl FrameServer {
             if let Err(e) = stream.write_all(frame) {
                 eprintln!("ec-rt: write error: {e}");
                 self.conn = None;
+                self.session_ended = true;
             }
         }
+    }
+
+    pub fn client_connected(&self) -> bool {
+        self.conn.is_some()
+    }
+
+    pub fn session_ended(&self) -> bool {
+        self.session_ended
+    }
+
+    /// Sends `frame` to the connected client and then closes the connection.
+    ///
+    /// `write_all` guarantees full delivery before the socket is dropped.
+    /// Any write error is logged; the connection is closed regardless.
+    pub fn respond_and_close(&mut self, frame: &[u8]) {
+        if self.conn.is_none() {
+            eprintln!("ec-rt: respond_and_close called with no client — frame dropped");
+            self.session_ended = true;
+            return;
+        }
+        self.respond(frame);
+        self.conn = None;
+        self.session_ended = true;
     }
 }

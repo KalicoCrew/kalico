@@ -6,7 +6,8 @@ We are working on a complete rewrite of the motion planner and more:
 
 - Fail loudly. When adding checks for unexpected things to the code, instead of trying
   to recover, unless it was discussed and agreed on explicitly, the default solution is
-  to fail loudly with a clear error code. This helps us catch bugs quicker.
+  to fail loudly with a clear error code. This helps us catch bugs quicker. Example: movement segment arrives to the planner late, causing the start time to be in the past. Do not advance or pad the
+  start time, raise an error instead. this way we notice the issue and have a chance to address it
 
 - Clean and self explanatory code, comments in the code only as reminders or when something is impossible to make obvious with code.
 

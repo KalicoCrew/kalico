@@ -27,4 +27,22 @@ clean-motion-bridge:
 	rm -f $(MOTION_BRIDGE_DEST)
 	cd rust && cargo clean -p motion-bridge
 
-.PHONY: motion-bridge clean-motion-bridge
+# Hardware EtherCAT endpoint — links bench/libecrt.a + SOEM; build on the Pi.
+# Never built in CI (CI builds without --features hw). ECRT_LIB_DIR is omitted:
+# build.rs already defaults the libecrt.a search path to bench/. SOEM_LIB_DIR
+# has no default, so it's passed (libsoem.a lives in ~/ethercat/SOEM/build).
+ethercat-endpoint-hw:
+	$(MAKE) -C bench
+	cd rust && SOEM_LIB_DIR=$(HOME)/ethercat/SOEM/build \
+		cargo build -p kalico-ethercat-rt --features hw --bin kalico-ethercat-rt --release
+
+# Capabilities so the endpoint runs unprivileged (raw socket, RT sched, mlockall).
+# sudo, once per rebuild of the binary. Not run in CI.
+setcap-ethercat:
+	sudo setcap cap_net_raw,cap_sys_nice,cap_ipc_lock+ep rust/target/release/kalico-ethercat-rt
+
+ethercat-stub:
+	cd rust && cargo build -p kalico-ethercat-rt --bin kalico-ethercat-rt-stub --release
+
+.PHONY: motion-bridge clean-motion-bridge \
+	ethercat-endpoint-hw setcap-ethercat ethercat-stub

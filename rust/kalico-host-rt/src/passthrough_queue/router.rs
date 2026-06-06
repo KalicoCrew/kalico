@@ -296,6 +296,13 @@ impl PassthroughRouter {
         offset: f64,
         last_clock: u64,
     ) -> Result<(), RouterError> {
+        log::info!(
+            "[clock-seed] set_clock_est mcu={:?} freq={:.1} offset={:.9} last_clock={}",
+            mcu,
+            freq,
+            offset,
+            last_clock
+        );
         let rec = self
             .mcus
             .get_mut(&mcu)
@@ -310,26 +317,44 @@ impl PassthroughRouter {
     ///
     /// `offset_raw` is `time_avg + min_half_rtt` in CLOCK_MONOTONIC_RAW seconds
     /// (what Python's `_handle_clock` computes and the mirror callback exports).
-    /// `host_now_raw` must be a CLOCK_MONOTONIC_RAW reading captured on the Rust
-    /// side (via `kalico_host_rt::clock::monotonic_raw_secs()`) at the same
-    /// instant as the `instant_to_f64(self.clock.now())` reading, so both sides
-    /// of the domain conversion are in RAW units and the resulting `clock_offset`
-    /// lands in the Rust `Instant` epoch used everywhere else in the router.
+    /// `host_now_raw` is accepted for API compatibility but is NOT used in the
+    /// projection — using it would embed the Python→Rust GIL-hop latency ε
+    /// directly into `clock_offset`, biasing every subsequent projection by ε
+    /// (up to tens of ms on a loaded Pi 3B).
+    ///
+    /// Instead, `CLOCK_MONOTONIC_RAW` is read here in Rust at the same instant
+    /// as `instant_to_f64(self.clock.now())`, so the conversion constant
+    /// `raw_at_anchor = raw_now - instant_now` is computed without any
+    /// cross-runtime latency and `clock_offset = offset_raw - raw_at_anchor`
+    /// is exact up to µs sample skew.
     pub fn set_clock_est_rebased(
         &mut self,
         mcu: McuHandle,
         freq: f64,
         offset_raw: f64,
         last_clock: u64,
-        host_now_raw: f64,
+        _host_now_raw: f64,
     ) -> Result<(), RouterError> {
         let bridge_now_instant = instant_to_f64(self.clock.now());
+        let bridge_now_raw = crate::clock::monotonic_raw_secs();
+        let clock_offset = offset_raw - (bridge_now_raw - bridge_now_instant);
+        log::info!(
+            "[clock-seed] set_clock_est_rebased mcu={:?} freq={:.1} offset_raw={:.9} \
+             bridge_now_raw={:.9} bridge_now_instant={:.9} clock_offset={:.9} last_clock={}",
+            mcu,
+            freq,
+            offset_raw,
+            bridge_now_raw,
+            bridge_now_instant,
+            clock_offset,
+            last_clock
+        );
         let rec = self
             .mcus
             .get_mut(&mcu)
             .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.clock_freq = freq;
-        rec.clock_offset = bridge_now_instant - (host_now_raw - offset_raw);
+        rec.clock_offset = clock_offset;
         rec.last_clock = last_clock;
         Ok(())
     }
@@ -341,12 +366,21 @@ impl PassthroughRouter {
         host_send: Instant,
         mcu_at_send: u64,
     ) -> Result<(), RouterError> {
+        let clock_offset = instant_to_f64(host_send);
+        log::info!(
+            "[clock-seed] set_clock_est_from_sample mcu={:?} freq={:.1} \
+             clock_offset={:.9} mcu_at_send={}",
+            mcu,
+            freq,
+            clock_offset,
+            mcu_at_send
+        );
         let rec = self
             .mcus
             .get_mut(&mcu)
             .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.clock_freq = freq;
-        rec.clock_offset = instant_to_f64(host_send);
+        rec.clock_offset = clock_offset;
         rec.last_clock = mcu_at_send;
         Ok(())
     }
@@ -429,6 +463,16 @@ impl PassthroughRouter {
         let delta = (host_time_secs - rec.clock_offset) * rec.clock_freq;
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let projected = rec.last_clock.wrapping_add(delta.max(0.0) as u64);
+        log::trace!(
+            "[project] host_time_to_mcu_clock mcu={:?} host_secs={:.9} clock_offset={:.9} \
+             last_clock={} clock_freq={:.1} result_ns={}",
+            mcu,
+            host_time_secs,
+            rec.clock_offset,
+            rec.last_clock,
+            rec.clock_freq,
+            projected
+        );
         Ok(projected)
     }
 

@@ -9,6 +9,7 @@ pub fn enqueue_segment<P>(
     mcu_configs: &[McuAxisConfig],
     t0: f64,
     fresh_stream: bool,
+    host_now: f64,
     project: P,
 ) -> Vec<EnqueueMsg>
 where
@@ -43,7 +44,7 @@ where
                 _ => &seg.axes[axis_idx],
             };
 
-            let pieces = flatten_axis(curve, t0, cfg.mcu_id, &project);
+            let pieces = flatten_axis(curve, t0, cfg.mcu_id, axis_idx, host_now, &project);
             if !pieces.is_empty() {
                 out.push(EnqueueMsg {
                     key: AxisKey {
@@ -64,6 +65,8 @@ fn flatten_axis<P>(
     curve: &ScalarNurbs<f64>,
     t0: f64,
     mcu_id: u32,
+    axis_idx: usize,
+    host_now: f64,
     project: &P,
 ) -> Vec<(PieceEntry, f64)>
 where
@@ -72,7 +75,7 @@ where
     let bps = nurbs::bezier::extract_bezier_pieces(curve);
     let mut out = Vec::with_capacity(bps.len());
 
-    for bp in &bps {
+    for (piece_idx, bp) in bps.iter().enumerate() {
         let bern = bp.to_bernstein();
 
         debug_assert_eq!(
@@ -96,6 +99,17 @@ where
         let host_secs = t0 + bp.u_start;
         let start_time = project(mcu_id, host_secs);
         let duration = (bp.u_end - bp.u_start) as f32;
+
+        let margin_us = (host_secs - host_now) * 1e6;
+        tracing::trace!(
+            mcu_id,
+            axis = axis_idx,
+            piece_idx,
+            u_start = bp.u_start,
+            margin_us,
+            start_ns = start_time,
+            "[dispatch-margin]"
+        );
 
         out.push((
             PieceEntry {
@@ -150,7 +164,7 @@ mod tests {
             },
         }];
 
-        let msgs = enqueue_segment(&seg_x_move(), &cfg, 100.0, true, |_mcu, hs| {
+        let msgs = enqueue_segment(&seg_x_move(), &cfg, 100.0, true, 0.0, |_mcu, hs| {
             (hs * 1_000.0) as u64
         });
 
@@ -203,7 +217,7 @@ mod tests {
             t_end: 1.0,
         };
 
-        let msgs = enqueue_segment(&seg, &cfg, 0.0, true, |_mcu, hs| (hs * 1_000.0) as u64);
+        let msgs = enqueue_segment(&seg, &cfg, 0.0, true, 0.0, |_mcu, hs| (hs * 1_000.0) as u64);
 
         let a = msgs
             .iter()

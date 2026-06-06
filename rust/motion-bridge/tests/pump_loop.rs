@@ -1,7 +1,9 @@
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
-use motion_bridge_native::pump::{AxisKey, EnqueueMsg, HeartbeatMsg, PieceSink, PumpMsg, run_pump};
+use motion_bridge_native::pump::{
+    AxisKey, EnqueueMsg, HeartbeatMsg, PieceSink, PumpMsg, SendError, run_pump,
+};
 use runtime::piece_ring::PieceEntry;
 
 struct RecordingSink(Arc<Mutex<Vec<(AxisKey, usize)>>>);
@@ -12,7 +14,7 @@ impl PieceSink for RecordingSink {
         pieces: &[PieceEntry],
         _start_slot: u16,
         _new_head: u32,
-    ) -> Result<i32, String> {
+    ) -> Result<i32, SendError> {
         self.0.lock().unwrap().push((key, pieces.len()));
         Ok(0)
     }
@@ -36,7 +38,7 @@ fn pump_stalls_on_ring_full_resumes_on_heartbeat() {
     let (tx, rx) = mpsc::channel();
     let depth = |_k: AxisKey| 2u32;
     let sink = RecordingSink(rec.clone());
-    let handle = std::thread::spawn(move || run_pump(rx, sink, depth, |_| None));
+    let handle = std::thread::spawn(move || run_pump(rx, sink, depth, |_| None, |_| {}));
 
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key: AxisKey { mcu_id: 1, axis: 0 },

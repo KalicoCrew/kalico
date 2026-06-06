@@ -3,16 +3,25 @@
 #![allow(unsafe_code)]
 
 use std::ffi::CString;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use kalico_ethercat_rt::claim::{eval_wkc, single_slave_reply, wait_for_claim, WkcDecision};
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::ffi;
 use kalico_ethercat_rt::scale::CountMap;
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::wire::{
-    identify_response_frame, push_pieces_response_frame, runtime_caps_response_frame,
-    status_heartbeat_frame, Command,
+    claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
+    runtime_caps_response_frame, status_heartbeat_frame, Command,
 };
+use kalico_protocol::messages::SlaveState;
+
+static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_sigterm(_: libc::c_int) {
+    SIGTERM_RECEIVED.store(true, Ordering::Release);
+}
 
 fn arg_val(args: &[String], key: &str) -> Option<String> {
     args.iter()
@@ -49,17 +58,71 @@ fn main() {
     let mut server = FrameServer::bind(&socket).expect("bind socket");
     eprintln!("ec-rt: socket {socket}, cycle {cycle_us}us, counts/mm {counts_per_mm}");
 
+    // SAFETY: on_sigterm only touches a static AtomicBool; SA_RESTART (and no
+    // SA_RESETHAND) keeps a second SIGTERM on the clean-shutdown path too.
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_sigterm as *const () as libc::sighandler_t;
+        sa.sa_flags = libc::SA_RESTART;
+        libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
+    }
+
     // Bring up the drive (blocks until CiA402 operation-enabled).
     let cif = CString::new(ifname.clone()).expect("ifname must not contain NUL");
     let rc = unsafe { ffi::ec_rt_bringup(cif.as_ptr(), cycle_ns, rt_cpu, rt_prio) };
     if rc != 0 {
-        eprintln!("ec-rt: bringup failed rc={rc}");
+        eprintln!("ec-rt: bringup failed rc={rc}, sending handshake-fail then exiting");
+        let claim_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        if let Some(cid) = wait_for_claim(&mut server, claim_deadline, &SIGTERM_RECEIVED, "ec-rt") {
+            let reply = single_slave_reply(
+                1,
+                SlaveState::Offline,
+                u16::try_from(rc.unsigned_abs()).unwrap_or(u16::MAX),
+            );
+            server.respond_and_close(&claim_handshake_reply_frame(cid, &reply));
+            eprintln!("ec-rt: sent offline handshake reply, exiting");
+        } else {
+            eprintln!("ec-rt: bridge did not send ClaimHandshake within 5 s; aborting");
+        }
         std::process::exit(1);
     }
-    eprintln!("ec-rt: drive enabled, entering DC loop");
+    eprintln!("ec-rt: drive enabled");
+
+    match wait_for_claim(
+        &mut server,
+        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        &SIGTERM_RECEIVED,
+        "ec-rt",
+    ) {
+        Some(cid) => {
+            server.respond(&claim_handshake_reply_frame(
+                cid,
+                &single_slave_reply(1, SlaveState::Ok, 0),
+            ));
+        }
+        None => {
+            eprintln!("ec-rt: bridge did not send ClaimHandshake within 5 s; aborting");
+            unsafe {
+                ffi::ec_rt_disable();
+                ffi::ec_rt_shutdown();
+            }
+            std::process::exit(1);
+        }
+    }
+    eprintln!("ec-rt: handshake ok, entering DC loop");
 
     let mut prdiv = 0u64;
-    loop {
+    let mut wkc_consecutive = 0u8;
+    'dc: loop {
+        if SIGTERM_RECEIVED.load(Ordering::Acquire) {
+            eprintln!("ec-rt: SIGTERM received — disabling drive and exiting");
+            break;
+        }
+        if server.session_ended() {
+            eprintln!("ec-rt: bridge disconnected — disabling drive and exiting");
+            break;
+        }
+
         for cmd in server.poll_commands() {
             match cmd {
                 Command::Identify {
@@ -78,11 +141,21 @@ fn main() {
                         0
                     };
                     let pushed = ring.push_from_bytes(msg.piece_count, &msg.pieces_bytes);
+                    let now_ns = monotonic_ns();
+                    #[allow(clippy::cast_precision_loss)]
+                    let delta_ms = (now_ns as i64 - front_start_time as i64) as f64 / 1_000_000.0;
                     eprintln!(
-                        "ec-rt: PushPieces axis={} pieces={} pushed={} head={}",
-                        msg.axis_idx, msg.piece_count, pushed, msg.new_head
+                        "ec-rt: PushPieces axis={} pieces={} pushed={} head={} \
+                         now_ns={} front_start_ns={} delta_ms={:.3}",
+                        msg.axis_idx,
+                        msg.piece_count,
+                        pushed,
+                        msg.new_head,
+                        now_ns,
+                        front_start_time,
+                        delta_ms
                     );
-                    let arrival_clock = monotonic_ns();
+                    let arrival_clock = now_ns;
                     let result = if pushed == msg.piece_count {
                         0i32
                     } else {
@@ -98,6 +171,13 @@ fn main() {
                 Command::QueryRuntimeCaps { correlation_id } => {
                     let total: u32 = (AXIS_RING_CAPACITY * NUM_AXES * 32) as u32;
                     server.respond(&runtime_caps_response_frame(correlation_id, total));
+                }
+                Command::ClaimHandshake { .. } => {
+                    eprintln!(
+                        "ec-rt: protocol violation: ClaimHandshake after handshake \
+                         — ending session"
+                    );
+                    break 'dc;
                 }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt: ignoring kind 0x{kind_raw:04x}");
@@ -129,8 +209,6 @@ fn main() {
                 ENGINE_STATE_FAULT,
                 &[current_retired],
             ));
-            last_sent_retired = current_retired;
-            heartbeat_sent = true;
 
             #[cfg(feature = "hw")]
             {
@@ -141,14 +219,36 @@ fn main() {
                 }
                 std::process::exit(1);
             }
+
+            #[cfg(not(feature = "hw"))]
+            {
+                last_sent_retired = current_retired;
+                heartbeat_sent = true;
+            }
         }
 
         let mut toff = 0i64;
         let wkc = unsafe { ffi::ec_rt_cycle(&mut toff) };
 
-        if wkc != 3 {
-            eprintln!("ec-rt: working counter {wkc} (expected 3) — bus lost, halting");
-            break;
+        match eval_wkc(wkc, 3, &mut wkc_consecutive) {
+            WkcDecision::Good => {}
+            WkcDecision::Warn(n) => {
+                eprintln!(
+                    "ec-rt: WARNING — working counter {wkc} (expected 3), \
+                     consecutive_bad={n}; tolerating (USB-NIC frame loss); \
+                     halt threshold={}",
+                    kalico_ethercat_rt::claim::WKC_CONSECUTIVE_LOSS_LIMIT
+                );
+            }
+            WkcDecision::Halt => {
+                eprintln!(
+                    "ec-rt: working counter {wkc} (expected 3), \
+                     consecutive_bad={wkc_consecutive} — bus lost after \
+                     {} consecutive bad cycles, halting",
+                    kalico_ethercat_rt::claim::WKC_CONSECUTIVE_LOSS_LIMIT
+                );
+                break;
+            }
         }
 
         let current_retired = ring.retired_count();

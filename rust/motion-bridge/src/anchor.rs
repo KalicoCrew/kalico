@@ -29,7 +29,14 @@ impl Anchor {
             }
         };
         if fresh {
+            let condition = match self.t0 {
+                None => "first",
+                Some(_) if seg_t_start + CONTIGUITY_EPS < self.last_t_end => "backward-jump",
+                Some(_) => "stall-gap",
+            };
             self.t0 = Some(host_now + self.lead_secs - seg_t_start);
+            let t0 = self.t0.unwrap();
+            tracing::info!(host_now, t0, seg_t_start, condition, "[anchor-decision]");
         }
         self.last_t_end = seg_t_end;
         (self.t0.unwrap(), fresh)

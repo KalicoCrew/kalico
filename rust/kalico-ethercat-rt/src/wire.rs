@@ -8,7 +8,8 @@ use kalico_native_transport::wire_helpers::{
 use kalico_protocol::bootstrap::{IdentifyResponse, IDENTIFY_RESPONSE_BODY_LEN};
 use kalico_protocol::codec::{Decode, Encode};
 use kalico_protocol::messages::{
-    MessageKind, PushPieces, PushPiecesResponse, RuntimeCapsResponse, StatusHeartbeat,
+    ClaimHandshakeReply, MessageKind, PushPieces, PushPiecesResponse, RuntimeCapsResponse,
+    StatusHeartbeat,
 };
 use kalico_protocol::KALICO_CHANNEL_PIECES;
 
@@ -24,6 +25,9 @@ pub enum Command {
         msg: PushPieces,
     },
     QueryRuntimeCaps {
+        correlation_id: u32,
+    },
+    ClaimHandshake {
         correlation_id: u32,
     },
     Unknown {
@@ -59,6 +63,9 @@ pub fn decode_command(channel: u8, payload: &[u8]) -> Result<Command, DecodeCmdE
             })
         }
         Some(MessageKind::QueryRuntimeCaps) => Ok(Command::QueryRuntimeCaps {
+            correlation_id: cid,
+        }),
+        Some(MessageKind::ClaimHandshake) => Ok(Command::ClaimHandshake {
             correlation_id: cid,
         }),
         _ => Ok(Command::Unknown {
@@ -119,6 +126,14 @@ pub fn runtime_caps_response_frame(cid: u32, total_piece_memory: u32) -> Vec<u8>
     control_frame(MessageKind::RuntimeCapsResponse, cid, &body)
 }
 
+pub fn claim_handshake_reply_frame(cid: u32, reply: &ClaimHandshakeReply) -> Vec<u8> {
+    control_frame(
+        MessageKind::ClaimHandshakeReply,
+        cid,
+        &reply.encoded_to_vec(),
+    )
+}
+
 pub fn identify_response_frame(cid: u32, proto_version: u8) -> Vec<u8> {
     let resp = IdentifyResponse {
         proto_version,
@@ -138,6 +153,7 @@ pub fn identify_response_frame(cid: u32, proto_version: u8) -> Vec<u8> {
 mod tests {
     use super::*;
     use kalico_native_transport::frame::decode_frame;
+    use kalico_protocol::messages::{SlaveState, SlaveStatus};
 
     #[test]
     fn decodes_identify_on_control_channel() {
@@ -189,6 +205,37 @@ mod tests {
         let r = PushPiecesResponse::decode(body).unwrap();
         assert_eq!(r.result, 0);
         assert_eq!(r.front_start_time, 1_000_000_000);
+    }
+
+    #[test]
+    fn claim_handshake_reply_frame_decodes() {
+        let reply = ClaimHandshakeReply {
+            slave_statuses: vec![SlaveStatus {
+                slave_idx: 1,
+                state: SlaveState::Ok,
+                fault_code: 0,
+            }],
+        };
+        let frame = claim_handshake_reply_frame(7, &reply);
+        let (chan, payload) = decode_frame(&frame).unwrap();
+        assert_eq!(chan, CHANNEL_CONTROL);
+        let (hdr, body) = decode_message_header(payload).unwrap();
+        assert_eq!(hdr.correlation_id, 7);
+        assert_eq!(
+            MessageKind::from_u16(hdr.kind_raw),
+            Some(MessageKind::ClaimHandshakeReply)
+        );
+        let decoded = ClaimHandshakeReply::decode(body).unwrap();
+        assert_eq!(decoded, reply);
+    }
+
+    #[test]
+    fn decode_command_yields_claim_handshake_variant() {
+        let payload = frame_payload(MessageKind::ClaimHandshake, 99, &[]);
+        match decode_command(0, &payload).unwrap() {
+            Command::ClaimHandshake { correlation_id: 99 } => {}
+            other => panic!("expected ClaimHandshake, got {other:?}"),
+        }
     }
 
     #[test]

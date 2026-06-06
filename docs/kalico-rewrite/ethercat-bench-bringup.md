@@ -1,7 +1,7 @@
 # EtherCAT servo bring-up (bench checklist)
 
-> Practical guide for bringing the EtherCAT servo axis up at the bench on the
-> `motion-node-unification` branch. Companion to
+> Practical guide for bringing the EtherCAT servo axis up at the bench.
+> Companion to
 > [`motion-node-unification.md`](motion-node-unification.md) (the design).
 > The trajectory math, fault handling, streaming, and stepper-path safety are
 > already verified off-bench (see that doc); this is the on-hardware sequence.
@@ -75,43 +75,99 @@ stepping path today.
 
 ```ini
 # The EtherCAT motion endpoint, reached over a Unix socket (NOT a Klipper MCU).
+# klippy SPAWNS the endpoint binary itself at claim time — you do not launch it.
 [ethercat_node node_x]
-socket: /tmp/kalico-ethercat.sock
+socket: /tmp/kalico-ethercat.sock   # required; the Unix socket klippy connects on
+interface: eth0                     # required; NIC the drive is wired to (raw EtherCAT)
+# endpoint: optional. Absolute or repo-relative path to the binary klippy spawns.
+#   Default: rust/target/release/kalico-ethercat-rt (the hw binary). Point this at
+#   the stub for drive-off validation (see below).
+#endpoint: rust/target/release/kalico-ethercat-rt-stub
 
 # A position-commanded servo presented as the X axis. No step/dir, no microsteps.
 [servo_x]
 protocol: ethercat            # only 'ethercat' is supported
 node: node_x                  # must match an [ethercat_node <name>]
 rotation_distance: 40         # mm of axis travel per motor revolution (your mechanics)
+encoder_counts_per_rev: 131072  # required; drive encoder counts per motor rev (A6-EC: 131072)
 position_min: 0
 position_max: 300
 ```
 
-`rotation_distance` + the drive's encoder counts/rev determine `counts_per_mm` (the `CountMap` gain on the endpoint). Get this right before the drive moves.
+`counts_per_mm = encoder_counts_per_rev / rotation_distance` — the `CountMap` gain
+the endpoint uses to convert host millimetres to drive counts. klippy derives it at
+claim time from `[servo_x]` and hands it to the spawned endpoint. Get both keys right
+before the drive moves.
 
 ## Bring-up sequence
+
+The endpoint is **spawned by klippy** at node-claim time (mcu-identify), using the
+`endpoint:` path and the derived `counts_per_mm`. There is no manual endpoint launch
+and no pre-flight script — you choose stub vs hw by setting `endpoint:`, then start
+klippy.
 
 ### 1. Deploy + flash (low risk — stepper path unchanged)
 - Commit/push the branch; pull on the Pi; build there (never cross-compile + scp).
 - Flash **both** MCUs with their respective configs (H7 from `.config.h7.bak`, F446 from `.config.f446.test`); `make clean` between them. `make -j$(nproc)`.
 - `CONFIG_MOTION_MODULE_STEPPER=y` is the default on STM32 — leave it on.
 
-### 2. Stub validation FIRST (no drive — zero hardware risk)
-Run the no-hardware endpoint and confirm the whole host path before energizing anything:
+### 2. Build the endpoint binaries (on the Pi)
 ```sh
-# on the Pi, drive OFF / disconnected:
-cargo run -p kalico-ethercat-rt --bin kalico-ethercat-rt-stub -- --socket /tmp/kalico-ethercat.sock
+# hw endpoint — links bench/libecrt.a + SOEM. Build on the Pi (never in CI):
+make -f Makefile.kalico ethercat-endpoint-hw
+# Grant capabilities so it runs unprivileged. sudo, ONCE PER REBUILD of the binary:
+make -f Makefile.kalico setcap-ethercat   # cap_net_raw, cap_sys_nice, cap_ipc_lock
+# no-hardware stub (no FFI, no setcap needed):
+make -f Makefile.kalico ethercat-stub
 ```
-- Start klippy with the config above. Confirm it reaches **`ready`**.
-- `SET_KINEMATIC_POSITION X=100`, then a small `G1 X105 F600`, `M400`.
-- Watch the stub's stderr: `PushPieces` frames arrive, `retired` counts advance, `engine_state` stays running (1), never `Fault` (3). This proves planner → bridge → transport → endpoint end-to-end with no servo.
 
-### 3. Real drive (supervised)
-- Swap to the hardware endpoint: `cargo run -p kalico-ethercat-rt --features hw --bin kalico-ethercat-rt -- ...` (needs libecrt/SOEM on the Pi).
-- **Before the first move:** the endpoint captures the rotor's current count as the origin at first sample, so the first commanded position maps to the actual rotor position — there should be **no startup jump**. If the axis lurches on the first command, stop and check `counts_per_mm` / origin capture.
+### 3. Stub validation FIRST (no drive — zero hardware risk)
+Confirm the whole host path before energizing anything. Point the node at the stub:
+```ini
+[ethercat_node node_x]
+socket: /tmp/kalico-ethercat.sock
+interface: eth0
+endpoint: rust/target/release/kalico-ethercat-rt-stub
+```
+- Start klippy. It **spawns the stub itself** at claim time — you do not launch it.
+  Confirm klippy reaches **`ready`**.
+- `SET_KINEMATIC_POSITION X=100`, then a small `G1 X105 F600`, `M400`.
+- Watch the stub's stderr (klippy redirects it): `PushPieces` frames arrive, `retired`
+  counts advance, `engine_state` stays running (1), never `Fault` (3). This proves
+  planner → bridge → transport → endpoint end-to-end with no servo.
+
+### 4. Real drive (supervised)
+- Switch `endpoint:` back to the hw binary (or drop the key to use the default
+  `rust/target/release/kalico-ethercat-rt`) and restart klippy.
+- **Dark drive (powered off / disconnected):** with the drive as the only slave on
+  the bus, a powered-off drive means SOEM finds no slaves at all (rc=-2); klippy
+  fails the claim loudly with:
+
+  > `ethercat node_x: EtherCAT bus on eth0: no slaves responding (bringup rc=-2) — check cable and drive power, then FIRMWARE_RESTART`
+
+  If the drive IS found but fails the SAFE-OP/OP/CiA402-enable walk (rc=-3..-5),
+  you get the per-drive variant instead:
+
+  > `ethercat node_x: drive (slave 1) offline (bringup rc=-{N}) — check drive power, then FIRMWARE_RESTART`
+
+  Power the drive on (and/or fix the cable), then `FIRMWARE_RESTART` — klippy re-spawns
+  the endpoint and the claim succeeds, reaching `ready`.
+- **Before the first move:** the endpoint captures the rotor's current count as the
+  origin at first sample, so the first commanded position maps to the actual rotor
+  position — there should be **no startup jump**. If the axis lurches on the first
+  command, stop and check `encoder_counts_per_rev` / `rotation_distance` / origin
+  capture.
 - Do a small supervised jog. Watch for:
   - `engine_state == Fault (3)` in the `StatusHeartbeat` → the host pump fell behind >2 ms (`PieceStartInPast`). The endpoint latches the fault and propagates it so the host can shut down; the hw binary also disables the drive. This is expected on a gross stall, not on a healthy stream.
   - `wkc != 3` → EtherCAT bus working-counter fault (drive comms), the endpoint halts.
+
+### 5. Recovery
+- Any fault or claim failure is recovered the same way: fix the cause, then
+  **`FIRMWARE_RESTART`**. klippy SIGTERMs the old endpoint (which cleanly disables the
+  drive), re-spawns it, and re-runs the claim. There is no manual pre-launch, socket
+  cleanup, or endpoint restart to do by hand.
+- The old `bench-hw-up.sh` choreography is **obsolete** — klippy owns the endpoint
+  lifecycle now. Delete that script from the bench host if it's still there.
 
 ## Fault-response reference
 - **`PieceStartInPast`** (a piece adopted >2 ms late = 2× the 1 ms DC period): the walker faults, the endpoint latches it (allocation-free atomic) and reports `engine_state=Fault` to the host. Primary response is host-coordinated shutdown (mirrors the MCU model); the hw binary additionally disables the drive as a local backstop. It does **not** silently hold the last position.
@@ -120,3 +176,4 @@ cargo run -p kalico-ethercat-rt --bin kalico-ethercat-rt-stub -- --socket /tmp/k
 ## If something's off
 - Re-run `cargo test -p kalico-ethercat-rt -p motion-bridge` on the Pi — these are the host-path regression tests.
 - The stub-level path (step 2) isolates host bugs from drive/EtherCAT bugs — always confirm it green before blaming the drive.
+- Per-piece dispatch projection diagnostics (`[dispatch-margin]` and `[project]`) are emitted at **trace** level to avoid flooding production logs. Enable them with `RUST_LOG=trace` (or a targeted filter such as `RUST_LOG=motion_bridge=trace,kalico_host_rt=trace`). `RUST_LOG` is read by the `EnvFilter` in `rust/motion-bridge/src/logging/mod.rs` at bridge startup.
