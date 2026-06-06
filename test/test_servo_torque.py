@@ -116,3 +116,59 @@ def test_servo_rail_active_callback_contract():
     fired = []
     rail.add_active_callback(fired.append)
     assert rail._active_callbacks == [fired.append]
+
+
+from klippy.motion_toolhead import MotionToolhead
+
+
+class FakeKin:
+    def __init__(self, rails):
+        self.rails = rails
+
+    def get_steppers(self):
+        return []
+
+
+def make_servo_rail(axis):
+    rail = servo_axis.ServoRail.__new__(servo_axis.ServoRail)
+    rail.axis = axis
+    rail.name = "servo_" + axis
+    rail._active_callbacks = []
+    return rail
+
+
+class FakeToolhead:
+    kinematics_name = "corexy"
+    _fire_active_callbacks = MotionToolhead._fire_active_callbacks
+
+    def __init__(self, kin):
+        self.kin = kin
+
+    def get_last_move_time(self):
+        return 42.0
+
+
+def test_servo_pass_fires_on_axis_delta_only():
+    rail = make_servo_rail("y")
+    fired = []
+    rail.add_active_callback(fired.append)
+    th = FakeToolhead(FakeKin([rail]))
+    # X-only corexy move: motor deltas nonzero, but the y-axis delta is 0 —
+    # the y-servo must NOT fire.
+    assert th._fire_active_callbacks(5.0, 0.0, 0.0, 0.0, 10.0) is False
+    assert fired == []
+    # Y move fires it once, at the given print_time, and disarms.
+    assert th._fire_active_callbacks(0.0, 3.0, 0.0, 0.0, 11.0) is True
+    assert fired == [11.0]
+    # disarmed: no double-fire
+    assert th._fire_active_callbacks(0.0, 3.0, 0.0, 0.0, 12.0) is False
+    assert fired == [11.0]
+
+
+def test_servo_pass_uses_default_print_time():
+    rail = make_servo_rail("z")
+    fired = []
+    rail.add_active_callback(fired.append)
+    th = FakeToolhead(FakeKin([rail]))
+    assert th._fire_active_callbacks(0.0, 0.0, 1.0, 0.0) is True
+    assert fired == [42.0]

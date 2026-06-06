@@ -426,6 +426,10 @@ class MotionToolhead(ToolHead):
             return False
         kin_name = (self.kinematics_name or "").lower()
         deltas = motion_kinematics.motor_deltas(kin_name, dx, dy, dz, de)
+        # Early-out is safe for the servo pass below: under cartesian the
+        # motor deltas ARE the axis deltas, and under corexy a nonzero axis
+        # delta always produces a nonzero a/b motor delta — so a zero-motor
+        # move can never carry a nonzero servo-axis delta.
         if all(abs(d) <= 1e-9 for d in deltas):
             return False
         if print_time is None:
@@ -439,6 +443,22 @@ class MotionToolhead(ToolHead):
                 continue
             cbs = s._active_callbacks
             s._active_callbacks = []
+            for cb in cbs:
+                cb(print_time)
+            fired = True
+        # Servo rails have no steppers and no motor slot; their enable gate
+        # arms on the AXIS delta (under corexy the slot deltas carry a/b
+        # motor values, which would be wrong for a direct-drive axis).
+        for rail in getattr(self.kin, "rails", ()):
+            if not isinstance(rail, servo_axis.ServoRail):
+                continue
+            if not rail._active_callbacks:
+                continue
+            axis_delta = (dx, dy, dz)["xyz".index(rail.axis)]
+            if abs(axis_delta) <= 1e-9:
+                continue
+            cbs = rail._active_callbacks
+            rail._active_callbacks = []
             for cb in cbs:
                 cb(print_time)
             fired = True
