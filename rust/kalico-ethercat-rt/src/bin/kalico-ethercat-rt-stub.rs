@@ -144,6 +144,9 @@ fn main() {
                     );
                     break 'session;
                 }
+                Command::SetTorque { .. } => {
+                    eprintln!("ec-rt-stub: SetTorque not yet handled — ignoring");
+                }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt-stub: ignoring kind 0x{kind_raw:04x}");
                 }

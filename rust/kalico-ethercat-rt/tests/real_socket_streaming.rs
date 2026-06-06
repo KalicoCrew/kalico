@@ -77,6 +77,7 @@ fn run_endpoint(socket_path: String, faulted: Arc<AtomicBool>) {
                     server.respond(&runtime_caps_response_frame(correlation_id, total));
                 }
                 Command::ClaimHandshake { .. } => {}
+                Command::SetTorque { .. } => {}
                 Command::Unknown { .. } => {}
             }
         }
