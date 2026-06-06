@@ -516,13 +516,8 @@ mod fixture_6_long_realistic_chain {
     }
 }
 
-/// Regression test for the pathological stub-segment instance:
-/// 0.6mm straight X stub entered at 25mm/s with Trident-class limits.
-///
-/// Before the fix `schedule_segment_with_tolerance(Auto)` returned
-/// `DivergedSlp` because the per-axis jerk SLP used a 0.1% acceptance band
-/// (SLP9_EPS_FEAS) that was inside the width-1 b-FD stencil's own noise floor.
-/// After the fix it must return a success status and must not reduce v_start.
+/// 0.6mm straight stub entered at 25mm/s: must solve (was phantom DivergedSlp)
+/// without reducing v_start.
 mod fixture_8_stub_25mms_no_haircut {
     use super::*;
     use temporal::{
@@ -573,7 +568,6 @@ mod fixture_8_stub_25mms_no_haircut {
             profile.status,
         );
 
-        // The profile must not haircut the entry velocity.
         let v_first = profile.samples.first().expect("non-empty profile").v;
         assert!(
             (v_first - 25.0).abs() < 0.5,
@@ -677,15 +671,8 @@ mod fixture_7_curvature_spike_intergrid_sanity {
                     ));
                 }
             }
-            // Inter-grid centripetal is checked with a 5% tolerance. The SOCP
-            // enforces the centripetal cap at grid points; between grid points
-            // the continuous b profile can overshoot by up to ~SLP9_EPS_FEAS
-            // (5%). The old 0.1% tolerance was accidentally met because the
-            // tight SLP9 band (1e-3) forced extra iterations that suppressed
-            // inter-grid b peaks. With the correct 5% jerk acceptance band,
-            // inter-grid centripetal measures 1.036 on this fixture — the
-            // 1.05 bound has real headroom; the lever for tightening it is
-            // grid density, not the acceptance band.
+            // The SOCP enforces centripetal only at grid points; inter-grid
+            // overshoot measures 1.036 on this fixture.
             if v_squared * kappa > limits.a_centripetal_max * 1.05 {
                 violations.push(format!(
                     "centripetal at u={u}: v²·κ={} > a_cent={}",

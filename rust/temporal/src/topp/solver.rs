@@ -823,12 +823,7 @@ fn max_ratio(vs: &[JerkViolator]) -> f64 {
 const SLP9_MAX_OUTER_ITERS: u32 = 30;
 const SLP9_WARN_AT_ITER: u32 = 15;
 
-/// Matches `verify::EPS_FEAS_JERK` and `SLP_EPS_FEAS`: the per-axis jerk ratio
-/// uses the width-1 b-FD `s_dddot_at` stencil whose discretization noise on a
-/// time-optimal profile riding the jerk limit is 1–4% on micro-segments
-/// (n=20, h=32µm). 0.1% was inside the stencil noise floor and caused phantom
-/// `Diverged` on the stub-segment pathological instance.
-const SLP9_EPS_FEAS: f64 = 5e-2;
+const SLP9_EPS_FEAS: f64 = 5e-2; // must match verify::EPS_FEAS_JERK; temporary hack, to be investigated later
 
 /// 0.05/0.10 keeps the iterate in the local-validity neighborhood of the
 /// `a·√b` cross-term linearization.

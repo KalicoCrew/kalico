@@ -147,28 +147,13 @@ fn boundary_points_tagged_correctly() {
 }
 
 /// Jerk violation at ratio 1.03 (within EPS_FEAS_JERK = 5%) must be feasible.
-///
-/// On a straight segment c' = [1,0,0], c'' = c''' = 0, so jerk = c' · s‴.
-/// With b = [b0, b1, b2, b3, b4] (uniform), s‴ = √b · (b'' / 2).
-/// Choosing b_uniform and h so that jerk/j_max = 1.03 exercises the jerk band.
 #[test]
 fn jerk_ratio_1_03_is_feasible() {
     let n = 5;
     let length = 1.0_f64;
-    let h = length / (n - 1) as f64; // 0.25 mm
-    // j_max[0] = 100_000 mm/s³.
-    // We want |c'·s‴| / j_max = 1.03, so s‴ = 103_000 mm/s³.
-    // s‴ = √b · (b''/2) where b'' = (b_{i-1} - 2b_i + b_{i+1}) / h².
-    // Pick b constant = v²: s‴ = √b · (0 / h²) / 2 = 0 — that's zero.
-    // Instead craft a non-flat b so the FD second-difference is nonzero.
-    // b = [v², v², v², v², v²] ← still zero FD. Need asymmetric values.
-    // Interior FD at i=2: (b[1] - 2*b[2] + b[3]) / h².
-    // Set b[2] = v², b[1] = v² + delta, b[3] = v² + delta.
-    // b'' = 2*delta / h² at i=2.
-    // s‴ = √v² * (2*delta/h²) / 2 = v * delta / h².
-    // For ratio = 1.03: v * delta / h² = 1.03 * j_max
-    //   → delta = 1.03 * j_max * h² / v.
-    // Use v = 500 mm/s (v_max), h = 0.25 mm, j_max = 100_000.
+    let h = length / (n - 1) as f64;
+    // Straight segment: jerk = s‴ = v·delta/h² for b = [v², v²+δ, v², v²+δ, v²],
+    // so delta = ratio·j_max·h²/v hits the target ratio exactly.
     let v = 500.0_f64;
     let j_max = 100_000.0_f64;
     let target_ratio = 1.03_f64;
@@ -176,7 +161,7 @@ fn jerk_ratio_1_03_is_feasible() {
     let b_v2 = v * v;
 
     let grid = dummy_straight_grid(n, length);
-    let limits = textbook_limits(); // j_max = 100_000
+    let limits = textbook_limits();
     let b = vec![b_v2, b_v2 + delta, b_v2, b_v2 + delta, b_v2];
     let result = SolverResult {
         b,
@@ -221,14 +206,11 @@ fn jerk_ratio_1_06_is_infeasible() {
     );
 }
 
-/// Acceleration violation at ratio 1.03 must be infeasible (tight band held).
-///
-/// Non-jerk constraints use EPS_FEAS = 0.2%, so a 3% accel overshoot fails.
+/// Accel violation at ratio 1.03 must stay infeasible (tight band held).
 #[test]
 fn accel_ratio_1_03_is_infeasible() {
     let grid = dummy_straight_grid(5, 100.0);
-    let limits = textbook_limits(); // a_max = 5_000
-    // a_i = 1.03 * a_max = 5_150 mm/s²; b modest so velocity is within limits.
+    let limits = textbook_limits();
     let result = SolverResult {
         b: vec![10_000.0; 5], // v = 100 mm/s
         a: vec![5_150.0; 5],  // 3% over a_max
@@ -297,20 +279,8 @@ fn over_centripetal_profile_flagged() {
     );
 }
 
-/// Regression: jerk riding the limit does NOT mask a co-located accel violation.
-///
-/// The defect this catches: before the fix, `check()` routed only the per-point
-/// worst `(ratio, tag)` into the per-class trackers.  On a jerk-riding profile
-/// jerk is the per-point winner everywhere, so the accel ratio never reached
-/// `worst_non_jerk_ratio` — a 1.01 accel overshoot silently passed.
-///
-/// Setup: straight X-only grid (c' = [1,0,0], c'' = c''' = 0).
-///   - b is non-flat so the FD stencil produces a jerk ratio of ~1.04 (within
-///     `EPS_FEAS_JERK = 5%`), making jerk the per-point winner.
-///   - a_i is set so `|c'·s̈| / a_max = 1.01`, which exceeds `EPS_FEAS = 0.2%`.
-///
-/// Expected: `feasible == false` because the accel class violates its band,
-/// even though jerk is the dominant (and technically in-band) constraint.
+/// An in-band jerk ratio (1.04) that wins every grid point must not mask a
+/// co-located out-of-band accel violation (1.01 > 0.2%).
 #[test]
 fn jerk_riding_does_not_mask_accel_violation() {
     let n = 5;

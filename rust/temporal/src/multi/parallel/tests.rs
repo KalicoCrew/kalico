@@ -49,15 +49,8 @@ fn fan_out_processes_all_dirty() {
     }
 }
 
-/// A deliberately infeasible solve with both endpoints pinned must return the
-/// failed status unmodified. The fallback must not bisect down to a different
-/// velocity, as that would create a commanded-velocity discontinuity.
-///
-/// Infeasibility is forced via the centripetal MVC pre-check: a high-curvature
-/// cubic arc with `a_centripetal_max = 2500` and `kappa ≈ 1 mm⁻¹` caps the
-/// start velocity at ~50 mm/s. Requesting `v_start = 100` triggers
-/// `BuildOutcome::Boundary` before the SOCP is built, which returns an
-/// `Infeasible` profile — a guaranteed non-success on the initial solve.
+/// Both endpoints pinned + infeasible initial solve (v_start above the
+/// centripetal MVC cap) → the failed status returns unmodified, no bisection.
 #[test]
 fn pinned_both_endpoints_returns_failed_status_unmodified() {
     // Cubic Bézier approximation of a 90° arc with radius ≈ 1.0 mm.
@@ -82,8 +75,6 @@ fn pinned_both_endpoints_returns_failed_status_unmodified() {
         scheme: GridScheme::UniformArclength,
         n: 20,
     };
-    // pin_start=true, pin_end=true: the fallback must NOT bisect or alter any
-    // velocity — failing loudly preserves the physical boundary condition.
     let profile =
         solve_with_boundary_fallback(&curved, &curved_limits, grid, 100.0, 0.0, true, true)
             .expect("must not return ScheduleError");

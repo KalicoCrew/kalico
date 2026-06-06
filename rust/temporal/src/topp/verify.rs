@@ -2,16 +2,10 @@ use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::SolverResult;
 use crate::{Axis, BindingConstraint, Limits};
 
-/// 0.2% feasibility margin for velocity, acceleration, and centripetal
-/// constraints. These use width-0 quantities (b_i, a_i) with no stencil noise.
+/// 0.2% feasibility margin for velocity / accel / centripetal.
 pub(crate) const EPS_FEAS: f64 = 2e-3;
 
-/// 5% feasibility margin for per-axis jerk constraints. The jerk ratio uses the
-/// width-1 b-FD `s_dddot_at` stencil; on a time-optimal profile riding the jerk
-/// limit the stencil's discretization noise is 1–4% (same rationale as
-/// `SLP_EPS_FEAS` in solver.rs). A 0.2% band turns FD noise into phantom
-/// infeasibility on micro-segments.
-pub(crate) const EPS_FEAS_JERK: f64 = 5e-2;
+pub(crate) const EPS_FEAS_JERK: f64 = 5e-2; // temporary hack, to be investigated later
 
 /// Threshold below which a normalised ratio is treated as fully slack.
 const SLACK_THRESHOLD: f64 = 1e-6;
@@ -41,27 +35,17 @@ struct PointInputs<'a> {
     limits: &'a Limits,
 }
 
-/// Output of [`ratios_at`]: per-point worst entry (for the binding-tag report)
-/// plus per-class maxima needed for the two-band feasibility check.
 struct PointRatios {
-    /// Overall per-point worst ratio (tie-breaking: Velocity > AxisAccel >
-    /// AxisJerk > Centripetal; X > Y > Z).
     worst_ratio: f64,
     worst_tag: BindingConstraint,
-    /// Max ratio across the three `AxisJerk` entries at this point.
     max_jerk: f64,
-    /// Max ratio across the seven non-jerk entries (velocity, accel,
-    /// centripetal) at this point.
     max_non_jerk: f64,
 }
 
-/// Compute all 10 normalised constraint ratios at a single grid point and
-/// return both the per-point winner (for `binding_per_grid` / `worst_violation`)
-/// and the per-class maxima (for the two-band feasibility check).
-///
-/// Computing the class maxima over all entries — not just the per-point winner
-/// — ensures that a co-located non-jerk violation is never hidden by a
-/// dominant-but-in-band jerk ratio.
+/// All constraint ratios at one grid point. Class maxima scan every entry, not
+/// just the per-point winner, so an in-band jerk ratio can't mask a co-located
+/// non-jerk violation. Tie-breaking: Velocity > AxisAccel > AxisJerk >
+/// Centripetal; X > Y > Z.
 fn ratios_at(p: &PointInputs<'_>) -> PointRatios {
     let s_dot2 = p.s_dot * p.s_dot;
     let s_dot3 = s_dot2 * p.s_dot;
@@ -168,8 +152,6 @@ pub(crate) fn check(
     let mut binding_per_grid: Vec<BindingConstraint> = Vec::with_capacity(n);
     let mut global_worst_ratio: f64 = f64::NEG_INFINITY;
     let mut global_worst_idx: usize = 0;
-    // Track worst jerk and non-jerk ratios independently so each is tested
-    // against its own band (stencil-noise-tolerant for jerk, tight for rest).
     let mut worst_jerk_ratio: f64 = 0.0;
     let mut worst_non_jerk_ratio: f64 = 0.0;
 
@@ -204,9 +186,6 @@ pub(crate) fn check(
             global_worst_idx = i;
         }
 
-        // Accumulate per-class maxima across ALL entries at this point (not
-        // just the per-point winner) so a co-located non-jerk violation is
-        // never hidden by a dominant-but-in-band jerk ratio.
         if pr.max_jerk > worst_jerk_ratio {
             worst_jerk_ratio = pr.max_jerk;
         }
@@ -227,7 +206,6 @@ pub(crate) fn check(
     }
 
     let worst_violation = global_worst_ratio - 1.0;
-    // Feasible when every constraint class is within its own band.
     let feasible =
         worst_jerk_ratio <= 1.0 + EPS_FEAS_JERK && worst_non_jerk_ratio <= 1.0 + EPS_FEAS;
     VerifyReport {

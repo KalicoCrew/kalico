@@ -5,8 +5,7 @@ use crate::{GridConfig, SolveStatus, TopProfile};
 use std::sync::Mutex;
 use std::thread;
 
-/// Junction-velocity precision below which bisection refinement is pointless.
-/// Sub-0.1 mm/s is sub-microsecond trajectory time.
+/// Velocity resolution below which bisection refinement is pointless.
 const BISECT_VEL_RESOLUTION_MM_S: f64 = 0.1;
 
 /// Re-solve all `dirty` segments in parallel across `n_threads` workers.
@@ -17,8 +16,7 @@ const BISECT_VEL_RESOLUTION_MM_S: f64 = 0.1;
 /// would leave every SLP-required-cuts segment dirty forever.
 ///
 /// Segment 0's `v_start` and the last segment's `v_end` are batch boundary
-/// conditions (physical machine velocity at the splice / committed safety
-/// boundary). They are pinned and must never be scaled down by the fallback.
+/// conditions: pinned, never scaled by the fallback.
 pub(crate) fn fan_out_solves(
     inputs: &[SegmentInput<'_>],
     states: &mut [SegmentState],
@@ -49,9 +47,6 @@ pub(crate) fn fan_out_solves(
                     let Some(idx) = queue.lock().unwrap().pop() else {
                         break;
                     };
-                    // Boundary conditions: segment 0's v_start and the last
-                    // segment's v_end are physical machine state / committed
-                    // safety boundaries — they must not be scaled down.
                     let pin_start = idx == 0;
                     let pin_end = idx + 1 == n_segs;
                     let r = solve_with_boundary_fallback(
@@ -93,17 +88,9 @@ pub(crate) fn fan_out_solves(
     Ok(())
 }
 
-/// Attempt to solve the segment, with a bisection fallback on the unpinned
-/// endpoint velocities when the initial solve fails.
-///
-/// `pin_start` / `pin_end`: when true the corresponding endpoint velocity is a
-/// batch boundary condition (physical machine state or committed safety
-/// boundary) and must not be altered. Pinned endpoints are passed at full
-/// value to every candidate solve; only unpinned endpoints are scaled.
-///
-/// If both endpoints are pinned and the initial solve fails, the failed profile
-/// is returned immediately — there is nothing to bisect, and silently planning
-/// at a different velocity would produce a commanded-velocity discontinuity.
+/// Solve the segment, bisecting the unpinned endpoint velocities on failure.
+/// Pinned endpoints are batch boundary conditions and are never altered; with
+/// both pinned a failed solve is returned as-is.
 #[allow(clippy::too_many_arguments)]
 fn solve_with_boundary_fallback(
     curve: &nurbs::VectorNurbs<f64, 3>,
@@ -120,12 +107,10 @@ fn solve_with_boundary_fallback(
         return Ok(initial);
     }
 
-    // With both endpoints pinned there is nothing to bisect.
     if pin_start && pin_end {
         return Ok(initial);
     }
 
-    // The endpoint magnitudes that can be scaled (unpinned ones).
     let scaled_mag = match (pin_start, pin_end) {
         (false, false) => v_start.abs().max(v_end.abs()),
         (false, true) => v_start.abs(),
@@ -138,7 +123,6 @@ fn solve_with_boundary_fallback(
     let mut best: Option<TopProfile> = None;
 
     for _ in 0..24 {
-        // Early exit: bracket resolves unpinned velocities below resolution.
         if (hi - lo) * scaled_mag < BISECT_VEL_RESOLUTION_MM_S {
             break;
         }
@@ -155,13 +139,11 @@ fn solve_with_boundary_fallback(
         }
     }
 
-    // Success path for both the unpinned and one-pinned cases.
     if let Some(profile) = best {
         return Ok(profile);
     }
 
-    // Pinned endpoints: zero-zero retry and v_max scaling must not run because
-    // they would alter the pinned velocity.
+    // The zero-zero retry and v_max ladder below would alter pinned velocities.
     if pin_start || pin_end {
         return Ok(initial);
     }
