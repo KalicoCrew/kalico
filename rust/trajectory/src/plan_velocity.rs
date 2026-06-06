@@ -5,6 +5,8 @@ use crate::{
     ShaperConfig,
 };
 
+pub use crate::beta::{PlanOutput, PlanStats};
+
 /// Boundary-future treatment for the β-medium derate test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SafetyMode {
@@ -79,8 +81,8 @@ pub struct PlanInput<'a> {
 
 /// Run the planning half of the shaper pipeline.
 ///
-/// Returns the β-converged time-domain fitted trajectory: one
-/// [`FittedSegment`] per XY-motion input segment, in the same order.
+/// Returns a [`PlanOutput`] containing the β-converged time-domain fitted trajectory
+/// and solver statistics.
 ///
 /// # Errors
 ///
@@ -88,7 +90,7 @@ pub struct PlanInput<'a> {
 /// - [`ShapeError::UnsupportedShaperOnXY`] — X or Y kernel is `None` or `Passthrough`.
 /// - [`ShapeError::UnsupportedBoundaryVelocity`] — `initial_v` or `terminal_v` is non-finite or negative.
 /// - Any error from the underlying β-medium loop.
-pub fn plan_velocity(input: &PlanInput<'_>) -> Result<Vec<FittedSegment>, ShapeError> {
+pub fn plan_velocity(input: &PlanInput<'_>) -> Result<PlanOutput, ShapeError> {
     if input.segments.is_empty() {
         return Err(ShapeError::EmptySegments);
     }

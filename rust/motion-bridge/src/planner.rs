@@ -9,7 +9,7 @@ use nurbs::algebra::PiecewisePolynomialKernel;
 use crate::classify::ClassifiedMove;
 use crate::config::{PlannerConfig, PlannerLimits};
 use trajectory::plan_velocity::{PlanShaper, SafetyMode};
-use trajectory::streaming::{EmitContext, ReplanContext, ShaperState};
+use trajectory::streaming::{EmitContext, ReplanContext, ReplanReport, ShaperState};
 use trajectory::{AxisShaper, EHalo, RequiredShaper, ShapedSegment, ShaperConfig};
 
 const T_IDLE: Duration = Duration::from_secs(3600);
@@ -19,6 +19,11 @@ const LEAD: f64 = 0.25;
 
 /// Safety margin for the decel-commit deadline: covers shaping + dispatch + pump + wire latency.
 const SAFETY_MARGIN: f64 = 0.050;
+
+/// Budget for a single replan in microseconds.
+/// LEAD (0.25 s) minus SAFETY_MARGIN (0.05 s) is the planner's real-time budget;
+/// replans exceeding this indicate the planner cannot keep ahead of the MCU playhead.
+const REPLAN_WARN_BUDGET_US: u64 = 200_000;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClockBias {
@@ -87,6 +92,12 @@ pub enum DispatchError {
     ConnectionDropped(u32),
     #[error("piece pump thread is gone; cannot dispatch")]
     PumpGone,
+    #[error(
+        "planner stream starvation: segment (stream t={seg_t_start:.3}s) scheduled \
+         {gap_s:.3}s in the past; refusing to silently re-anchor — planner failed \
+         to keep ahead of playback"
+    )]
+    SegmentLate { gap_s: f64, seg_t_start: f64 },
 }
 
 #[allow(missing_debug_implementations)]
@@ -505,12 +516,16 @@ fn run_loop(
                 }
 
                 let replan_start = Instant::now();
-                if let Err(e) = state.append_and_replan(m.segment, &thread_state.replan_ctx) {
-                    tracing::error!(subsystem = "motion", event = "move_arm_error", phase = "append_and_replan", error = ?e, "Move arm: append_and_replan failed");
-                    *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
-                    continue;
-                }
-                let replan_us = replan_start.elapsed().as_micros();
+                let report = match state.append_and_replan(m.segment, &thread_state.replan_ctx) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::error!(subsystem = "motion", event = "move_arm_error", phase = "append_and_replan", error = ?e, "Move arm: append_and_replan failed");
+                        *error.lock().unwrap_or_else(|p| p.into_inner()) =
+                            Some(PlannerError::Shape(e));
+                        continue;
+                    }
+                };
+                let replan_us = replan_start.elapsed().as_micros() as u64;
                 let emit_start = Instant::now();
                 let drained = match state.emit_committed(&thread_state.emit_ctx()) {
                     Ok(out) => out,
@@ -533,25 +548,52 @@ fn run_loop(
                     t_disp_after = state.t_dispatched,
                     "Move arm: drained"
                 );
-                let emit_us = emit_start.elapsed().as_micros();
-                let drained_dur: f64 = drained.iter().map(|s| s.t_end - s.t_start).sum();
-                log::debug!(
-                    "[planner-trace] Move dist={:.3}mm feed={:.1} nominal_s={:.6} replan_us={} emit_us={} drained={} drained_dur_s={:.6} t_app:{:.6}->{:.6} (+{:.6}) t_decel:{:.6}->{:.6} t_disp:{:.6}->{:.6}",
-                    move_dist,
-                    move_feed,
-                    nominal,
+                let emit_us = emit_start.elapsed().as_micros() as u64;
+                let ReplanReport {
+                    split_us,
+                    solve_us,
+                    rebuild_us,
+                    window_segments,
+                    plan,
+                } = report;
+                let beta_iters = plan.beta_iterations;
+                let beta_converged = plan.beta_converged;
+                tracing::debug!(
+                    subsystem = "motion",
+                    event = "replan_stats",
                     replan_us,
+                    split_us,
+                    solve_us,
+                    rebuild_us,
+                    window_segments,
+                    beta_iters,
+                    beta_converged,
                     emit_us,
-                    drained.len(),
-                    drained_dur,
-                    prior_t_appended,
-                    state.t_appended,
-                    state.t_appended - prior_t_appended,
-                    prior_t_decel,
-                    state.t_decel_start,
-                    prior_t_disp,
-                    state.t_dispatched,
+                    drained = drained.len(),
+                    dist_mm = move_dist,
+                    feed_mm_s = move_feed,
+                    nominal_s = nominal,
+                    "replan stats"
                 );
+                if replan_us > REPLAN_WARN_BUDGET_US {
+                    tracing::warn!(
+                        subsystem = "motion",
+                        event = "replan_overrun",
+                        replan_us,
+                        split_us,
+                        solve_us,
+                        rebuild_us,
+                        window_segments,
+                        beta_iters,
+                        beta_converged,
+                        emit_us,
+                        drained = drained.len(),
+                        dist_mm = move_dist,
+                        feed_mm_s = move_feed,
+                        nominal_s = nominal,
+                        "replan overran its real-time budget"
+                    );
+                }
 
                 for s in &drained {
                     if let Err(detail) = dispatch(s) {

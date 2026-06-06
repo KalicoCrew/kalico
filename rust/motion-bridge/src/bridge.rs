@@ -2297,7 +2297,11 @@ impl PyMotionBridge {
                 let (t0, fresh) = anchor_mutex
                     .lock()
                     .unwrap_or_else(|p| p.into_inner())
-                    .anchor_segment(seg.t_start, seg.t_end, host_now);
+                    .anchor_segment(seg.t_start, seg.t_end, host_now)
+                    .map_err(|late| DispatchError::SegmentLate {
+                        gap_s: late.gap_s,
+                        seg_t_start: late.seg_t_start,
+                    })?;
 
                 if fresh {
                     let r = router_for_cb.lock().unwrap_or_else(|p| p.into_inner());

@@ -64,6 +64,8 @@ pub struct PlannedBatch {
     pub global_ends: Vec<f64>,
     pub joining_status: temporal::multi::JoiningStatus,
     pub converged: bool,
+    /// Total β-loop iterations executed, including the extra re-solve at max-iters if it ran.
+    pub beta_iterations: u8,
     pub beta_warning: Option<BetaWarning>,
 }
 
@@ -78,6 +80,7 @@ pub fn plan_batch_full(
         global_ends: outcome.result.global_ends,
         joining_status: outcome.result.joining_status,
         converged: outcome.converged,
+        beta_iterations: outcome.iterations,
         beta_warning: outcome.beta_warning,
     })
 }
@@ -120,22 +123,55 @@ fn compute_batch_t_end(partition: &BatchPartition, global_ends: &[f64]) -> f64 {
     t
 }
 
+/// Solver statistics returned by [`plan_velocity_inner`].
+#[derive(Debug, Clone, Copy)]
+pub struct PlanStats {
+    /// β-loop iterations actually executed (including the extra re-solve at max-iters if it ran).
+    pub beta_iterations: u8,
+    pub beta_converged: bool,
+    pub segments: usize,
+}
+
+/// Output of [`plan_velocity_inner`]: fitted trajectory plus solver statistics.
+#[derive(Debug)]
+pub struct PlanOutput {
+    pub fitted: Vec<FittedSegment>,
+    pub stats: PlanStats,
+}
+
 pub fn plan_velocity_inner(
     input: &ShapeBatchInput<'_>,
     partition: &BatchPartition,
     safety_mode: SafetyMode,
-) -> Result<Vec<FittedSegment>, ShapeError> {
+) -> Result<PlanOutput, ShapeError> {
     if partition.runs.is_empty() {
-        return Ok(Vec::new());
+        return Ok(PlanOutput {
+            fitted: Vec::new(),
+            stats: PlanStats {
+                beta_iterations: 0,
+                beta_converged: true,
+                segments: 0,
+            },
+        });
     }
 
     let planned = plan_batch_full(input, partition, safety_mode)?;
-    Ok(planned.fitted)
+    let segments = planned.fitted.len();
+    Ok(PlanOutput {
+        fitted: planned.fitted,
+        stats: PlanStats {
+            beta_iterations: planned.beta_iterations,
+            beta_converged: planned.converged,
+            segments,
+        },
+    })
 }
 
 struct BetaIterationOutcome {
     result: BetaIterResult,
     converged: bool,
+    /// Total β-loop iterations executed.
+    iterations: u8,
     beta_warning: Option<BetaWarning>,
 }
 
@@ -174,6 +210,7 @@ fn beta_iterate_inner(
     let mut beta_warning: Option<BetaWarning> = None;
     let mut last_result: Option<BetaIterResult> = None;
     let mut converged = false;
+    let mut iterations: u8 = 0;
 
     for iteration in 0..input.beta_max_iters {
         let result = match run_one_iteration(input, partition, &planning_a_max, &kernels) {
@@ -187,6 +224,7 @@ fn beta_iterate_inner(
             }
             Err(e) => return Err(e),
         };
+        iterations = iterations.saturating_add(1);
 
         let derate_info = compute_derate(&result.peaks, &derate_machine_a_max, &result.fitted);
 
@@ -217,6 +255,7 @@ fn beta_iterate_inner(
         }
 
         if iteration == input.beta_max_iters - 1 {
+            // Extra re-solve at max-iters to get the best-effort result.
             let final_result = match run_one_iteration(input, partition, &planning_a_max, &kernels)
             {
                 Ok(result) => result,
@@ -226,6 +265,7 @@ fn beta_iterate_inner(
                     break;
                 }
             };
+            iterations = iterations.saturating_add(1);
             let final_derate = compute_derate(
                 &final_result.peaks,
                 &derate_machine_a_max,
@@ -243,12 +283,19 @@ fn beta_iterate_inner(
 
     let result = match last_result {
         Some(r) => r,
-        None => run_one_iteration(input, partition, &planning_a_max, &kernels)?,
+        None => {
+            // beta_max_iters == 0: run exactly one solve.
+            let r = run_one_iteration(input, partition, &planning_a_max, &kernels)?;
+            iterations = 1;
+            converged = true;
+            r
+        }
     };
 
     Ok(BetaIterationOutcome {
         result,
         converged,
+        iterations,
         beta_warning,
     })
 }

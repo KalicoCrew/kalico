@@ -123,10 +123,10 @@ fn nonzero_initial_v_produces_chained_profile() {
     input.initial_v = 50.0;
     input.terminal_v = 0.0;
 
-    let fitted = plan_velocity(&input).expect("plan with nonzero initial_v should succeed");
-    assert_eq!(fitted.len(), 1);
+    let out = plan_velocity(&input).expect("plan with nonzero initial_v should succeed");
+    assert_eq!(out.fitted.len(), 1);
 
-    let seg = &fitted[0];
+    let seg = &out.fitted[0];
     let mut t_eps = (seg.t_end - seg.t_start) * 1e-6;
     if t_eps <= 0.0 {
         t_eps = 1e-9;
@@ -216,9 +216,9 @@ fn returns_one_fitted_per_xy_segment() {
         feedrate_mm_s: 100.0,
     }];
     let input = default_input(&segments, SafetyMode::TerminalKnown);
-    let fitted = plan_velocity(&input).expect("plan should succeed");
-    assert_eq!(fitted.len(), 1);
-    assert!(fitted[0].t_end > fitted[0].t_start);
+    let out = plan_velocity(&input).expect("plan should succeed");
+    assert_eq!(out.fitted.len(), 1);
+    assert!(out.fitted[0].t_end > out.fitted[0].t_start);
 }
 
 #[test]
@@ -255,13 +255,13 @@ fn worst_case_future_segment_durations_monotone() {
     let worst = plan_velocity(&default_input(&segments, SafetyMode::WorstCaseFuture))
         .expect("WorstCaseFuture plan should succeed");
 
-    assert_eq!(known.len(), 2);
-    assert_eq!(worst.len(), 2);
+    assert_eq!(known.fitted.len(), 2);
+    assert_eq!(worst.fitted.len(), 2);
 
-    let dur_known_0 = known[0].t_end - known[0].t_start;
-    let dur_worst_0 = worst[0].t_end - worst[0].t_start;
-    let dur_known_1 = known[1].t_end - known[1].t_start;
-    let dur_worst_1 = worst[1].t_end - worst[1].t_start;
+    let dur_known_0 = known.fitted[0].t_end - known.fitted[0].t_start;
+    let dur_worst_0 = worst.fitted[0].t_end - worst.fitted[0].t_start;
+    let dur_known_1 = known.fitted[1].t_end - known.fitted[1].t_start;
+    let dur_worst_1 = worst.fitted[1].t_end - worst.fitted[1].t_start;
 
     assert!(
         dur_worst_0 >= dur_known_0 - 1e-9,
@@ -295,11 +295,11 @@ fn worst_case_future_is_no_faster_than_terminal_known() {
     let worst = plan_velocity(&default_input(&segments, SafetyMode::WorstCaseFuture))
         .expect("WorstCaseFuture plan should succeed");
 
-    assert_eq!(known.len(), 1);
-    assert_eq!(worst.len(), 1);
+    assert_eq!(known.fitted.len(), 1);
+    assert_eq!(worst.fitted.len(), 1);
 
-    let dur_known = known[0].t_end - known[0].t_start;
-    let dur_worst = worst[0].t_end - worst[0].t_start;
+    let dur_known = known.fitted[0].t_end - known.fitted[0].t_start;
+    let dur_worst = worst.fitted[0].t_end - worst.fitted[0].t_start;
     assert!(
         dur_worst >= dur_known - 1e-9,
         "WorstCaseFuture duration {dur_worst} must be ≥ TerminalKnown duration {dur_known}",

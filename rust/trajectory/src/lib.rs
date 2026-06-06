@@ -15,7 +15,10 @@ pub mod streaming;
 
 pub use emit_shaped::{emit_shaped, EmitSegmentMeta, PerAxisHistory};
 pub use pad::EHalo;
-pub use plan_velocity::{plan_velocity, PlanInput, PlanSegment, PlanShaper, SafetyMode};
+pub use plan_velocity::{
+    plan_velocity, PlanInput, PlanOutput, PlanSegment, PlanShaper, PlanStats, SafetyMode,
+};
+pub use streaming::ReplanReport;
 
 #[derive(Debug)]
 pub struct ShapeBatchInput<'a> {
