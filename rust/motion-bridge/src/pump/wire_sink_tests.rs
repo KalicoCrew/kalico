@@ -9,8 +9,9 @@ use std::time::Duration;
 /// (write to closed peer yields BrokenPipe).
 fn closed_conn() -> Arc<kalico_host_rt::unix_native_conn::UnixNativeConn> {
     let (client, _server) = UnixStream::pair().unwrap();
-    // Drop _server immediately: the client will see EOF / broken-pipe on
-    // the very first I/O.
+    // `_server` (not `_`) is load-bearing: the peer must outlive from_stream
+    // (setsockopt EINVAL on Darwin against a dead peer). It drops at return,
+    // so every subsequent call observes Closed / broken-pipe.
     Arc::new(
         kalico_host_rt::unix_native_conn::UnixNativeConn::from_stream(client)
             .expect("from_stream"),

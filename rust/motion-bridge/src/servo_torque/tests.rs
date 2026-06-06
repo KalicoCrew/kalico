@@ -72,8 +72,11 @@ fn surfaces_nonzero_result() {
 #[test]
 fn transport_error_is_an_err() {
     let (client, server) = UnixStream::pair().unwrap();
-    drop(server); // peer gone
+    // Construct before killing the peer: from_stream's socket setup needs a
+    // live peer (setsockopt EINVAL on Darwin otherwise). Death-after-construction
+    // is also the real failure mode this guards.
     let conn = UnixNativeConn::from_stream(client).expect("from_stream");
+    drop(server); // peer gone
     assert!(send_set_torque(&conn, true, 1).is_err());
 }
 
