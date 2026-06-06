@@ -176,3 +176,4 @@ endpoint: rust/target/release/kalico-ethercat-rt-stub
 ## If something's off
 - Re-run `cargo test -p kalico-ethercat-rt -p motion-bridge` on the Pi — these are the host-path regression tests.
 - The stub-level path (step 2) isolates host bugs from drive/EtherCAT bugs — always confirm it green before blaming the drive.
+- Per-piece dispatch projection diagnostics (`[dispatch-margin]` and `[project]`) are emitted at **trace** level to avoid flooding production logs. Enable them with `RUST_LOG=trace` (or a targeted filter such as `RUST_LOG=motion_bridge=trace,kalico_host_rt=trace`). `RUST_LOG` is read by the `EnvFilter` in `rust/motion-bridge/src/logging/mod.rs` at bridge startup.

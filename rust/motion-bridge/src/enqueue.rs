@@ -101,7 +101,7 @@ where
         let duration = (bp.u_end - bp.u_start) as f32;
 
         let margin_us = (host_secs - host_now) * 1e6;
-        tracing::info!(
+        tracing::trace!(
             mcu_id,
             axis = axis_idx,
             piece_idx,

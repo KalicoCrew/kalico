@@ -463,7 +463,7 @@ impl PassthroughRouter {
         let delta = (host_time_secs - rec.clock_offset) * rec.clock_freq;
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         let projected = rec.last_clock.wrapping_add(delta.max(0.0) as u64);
-        log::info!(
+        log::trace!(
             "[project] host_time_to_mcu_clock mcu={:?} host_secs={:.9} clock_offset={:.9} \
              last_clock={} clock_freq={:.1} result_ns={}",
             mcu,
