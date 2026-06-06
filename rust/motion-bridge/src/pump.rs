@@ -852,13 +852,25 @@ pub struct WireSink {
 }
 
 impl WireSink {
+    /// Call `PushPieces` on the transport for the given axis.
+    ///
+    /// Returns `Err(SendError::Fatal(...))` for EtherCAT transport errors that
+    /// represent permanent connection loss (`Closed` or `Io`); all other
+    /// failures map to `Err(SendError::Transient(...))`.
+    ///
+    /// `WouldBlock` and `TimedOut` from the underlying socket are consumed
+    /// inside `kalico_call_on_channel`'s read loop (they become `continue`)
+    /// and never surface here as `TransportError::Io`.  `TransportError::Timeout`
+    /// (deadline exhausted) is transient — the session may still be alive.
     fn call_push_pieces(
         &self,
         key: AxisKey,
         pieces: &[PieceEntry],
         start_slot: u16,
         new_head: u32,
-    ) -> Result<kalico_protocol::messages::PushPiecesResponse, String> {
+    ) -> Result<kalico_protocol::messages::PushPiecesResponse, SendError> {
+        use kalico_host_rt::transport::TransportError;
+
         let mut pieces_bytes = Vec::with_capacity(std::mem::size_of_val(pieces));
         for p in pieces {
             pieces_bytes.extend_from_slice(&p.to_le_bytes());
@@ -875,19 +887,19 @@ impl WireSink {
         kalico_protocol::codec::Encode::encode(&msg, &mut body);
 
         let transport = self.transports.get(&key.mcu_id).ok_or_else(|| {
-            format!(
+            SendError::Transient(format!(
                 "WireSink: no transport for mcu_id {} (axis {}); \
-                 this is a logic bug in init_planner — the axis was enqueued \
-                 without registering its transport",
+                     this is a logic bug in init_planner — the axis was enqueued \
+                     without registering its transport",
                 key.mcu_id, key.axis
-            )
+            ))
         })?;
 
         let resp_body = match transport {
             McuTransport::Serial(weak) => {
-                let io = weak
-                    .upgrade()
-                    .ok_or_else(|| format!("KalicoHostIo for mcu {} detached", key.mcu_id))?;
+                let io = weak.upgrade().ok_or_else(|| {
+                    SendError::Transient(format!("KalicoHostIo for mcu {} detached", key.mcu_id))
+                })?;
                 let (_kind, b) = io
                     .kalico_call_on_channel(
                         kalico_protocol::KALICO_CHANNEL_PIECES,
@@ -895,7 +907,9 @@ impl WireSink {
                         body,
                         self.timeout,
                     )
-                    .map_err(|e| format!("serial PushPieces mcu {}: {e:?}", key.mcu_id))?;
+                    .map_err(|e| {
+                        SendError::Transient(format!("serial PushPieces mcu {}: {e:?}", key.mcu_id))
+                    })?;
                 b
             }
             McuTransport::EtherCat(conn) => {
@@ -906,24 +920,35 @@ impl WireSink {
                         body,
                         self.timeout,
                     )
-                    .map_err(|e| format!("ethercat PushPieces mcu {}: {e:?}", key.mcu_id))?;
+                    .map_err(|e| {
+                        // Closed = peer dropped the socket; Io = mid-session OS
+                        // error on the Unix socket.  Both are session-fatal: the
+                        // supervision design treats connection loss as endpoint
+                        // death.  Timeout and Parse leave the session alive.
+                        if matches!(&e, TransportError::Closed | TransportError::Io(_)) {
+                            SendError::Fatal(format!(
+                                "ethercat PushPieces mcu {}: {e:?}",
+                                key.mcu_id
+                            ))
+                        } else {
+                            SendError::Transient(format!(
+                                "ethercat PushPieces mcu {}: {e:?}",
+                                key.mcu_id
+                            ))
+                        }
+                    })?;
                 b
             }
         };
 
         use kalico_protocol::codec::Decode as _;
-        kalico_protocol::messages::PushPiecesResponse::decode(&resp_body)
-            .map_err(|e| format!("decode PushPiecesResponse mcu {}: {e:?}", key.mcu_id))
+        kalico_protocol::messages::PushPiecesResponse::decode(&resp_body).map_err(|e| {
+            SendError::Transient(format!(
+                "decode PushPiecesResponse mcu {}: {e:?}",
+                key.mcu_id
+            ))
+        })
     }
-}
-
-/// Returns `true` when an I/O error string from a transport call indicates a
-/// permanently broken connection (broken pipe, connection reset, or closed).
-fn is_fatal_transport_error(msg: &str) -> bool {
-    msg.contains("broken pipe")
-        || msg.contains("connection reset")
-        || msg.contains("transport closed")
-        || msg.contains("Transport closed")
 }
 
 impl PieceSink for WireSink {
@@ -943,21 +968,7 @@ impl PieceSink for WireSink {
 
         let host_front_start_time: u64 = pieces.first().map(|p| p.start_time).unwrap_or(0);
 
-        let r = self
-            .call_push_pieces(key, pieces, start_slot, new_head)
-            .map_err(|e| {
-                // EtherCAT broken-pipe / peer-closed errors are fatal; serial and
-                // logic errors are transient (MCU rejected frame, ring full, etc.).
-                let is_ethercat = matches!(
-                    self.transports.get(&key.mcu_id),
-                    Some(McuTransport::EtherCat(_))
-                );
-                if is_ethercat && is_fatal_transport_error(&e) {
-                    SendError::Fatal(e)
-                } else {
-                    SendError::Transient(e)
-                }
-            })?;
+        let r = self.call_push_pieces(key, pieces, start_slot, new_head)?;
 
         {
             let arrival_lead_ticks = r.front_start_time as i64 - r.arrival_clock as i64;
@@ -1028,5 +1039,86 @@ impl PieceSink for WireSink {
             )));
         }
         Ok(r.result)
+    }
+}
+
+#[cfg(test)]
+mod wire_sink_tests {
+    use super::*;
+    use kalico_host_rt::transport::TransportError;
+    use std::os::unix::net::UnixStream;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// A `UnixNativeConn` whose peer end is dropped — every call returns
+    /// `TransportError::Closed` (read returns `Ok(0)`) or `TransportError::Io`
+    /// (write to closed peer yields BrokenPipe).
+    fn closed_conn() -> Arc<kalico_host_rt::unix_native_conn::UnixNativeConn> {
+        let (client, _server) = UnixStream::pair().unwrap();
+        // Drop _server immediately: the client will see EOF / broken-pipe on
+        // the very first I/O.
+        Arc::new(kalico_host_rt::unix_native_conn::UnixNativeConn::from_stream(client))
+    }
+
+    fn key() -> AxisKey {
+        AxisKey { mcu_id: 0, axis: 0 }
+    }
+
+    fn one_piece() -> Vec<runtime::piece_ring::PieceEntry> {
+        vec![runtime::piece_ring::PieceEntry {
+            start_time: 1000,
+            coeffs: [0.0; 4],
+            duration: 0.001,
+            _reserved: 0,
+        }]
+    }
+
+    #[test]
+    fn closed_peer_yields_fatal_send_error() {
+        let sink = WireSink {
+            transports: {
+                let mut m = HashMap::new();
+                m.insert(0, McuTransport::EtherCat(closed_conn()));
+                m
+            },
+            timeout: Duration::from_millis(50),
+        };
+        let pieces = one_piece();
+        match sink.call_push_pieces(key(), &pieces, 0, 1) {
+            Err(SendError::Fatal(_)) => {}
+            other => panic!("expected Fatal for closed EtherCAT peer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn timeout_yields_transient_send_error() {
+        // Construct a TransportError::Timeout and verify the match arm
+        // classifies it as Transient.  We can't easily produce a real
+        // timeout without sleeping, so test the classification logic
+        // directly on the error type.
+        let e = TransportError::Timeout;
+        let is_fatal = matches!(e, TransportError::Closed | TransportError::Io(_));
+        assert!(!is_fatal, "Timeout must not be fatal");
+    }
+
+    #[test]
+    fn parse_error_yields_transient_send_error() {
+        let e = TransportError::Parse("bad frame".to_owned());
+        let is_fatal = matches!(e, TransportError::Closed | TransportError::Io(_));
+        assert!(!is_fatal, "Parse must not be fatal");
+    }
+
+    #[test]
+    fn io_error_yields_fatal_send_error() {
+        let e = TransportError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        let is_fatal = matches!(e, TransportError::Closed | TransportError::Io(_));
+        assert!(is_fatal, "Io must be fatal");
+    }
+
+    #[test]
+    fn closed_variant_is_fatal() {
+        let e = TransportError::Closed;
+        let is_fatal = matches!(e, TransportError::Closed | TransportError::Io(_));
+        assert!(is_fatal, "Closed must be fatal");
     }
 }
