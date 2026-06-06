@@ -20,7 +20,6 @@ fn contiguous_segment_keeps_t0() {
 #[test]
 fn late_segment_returns_err_with_correct_gap() {
     let mut a = Anchor::new();
-    // t0 = 100.0 + 0.25; segment at stream t=1.0 scheduled for 101.25, host 104.0.
     let _ = a.anchor_segment(0.0, 1.0, 100.0).unwrap();
     let result = a.anchor_segment(1.0, 2.0, 104.0);
     let err = result.expect_err("starvation must return Err");
@@ -48,7 +47,6 @@ fn backward_jump_reanchors() {
 fn backward_jump_while_late_reanchors_silently() {
     let mut a = Anchor::new();
     let _ = a.anchor_segment(0.0, 5.0, 100.0).unwrap();
-    // seg_t_start=0.0 < last_t_end=5.0 and also "late" under the old t0.
     let result = a.anchor_segment(0.0, 1.0, 130.0);
     let (t0_new, fresh) = result.expect("backward jump must re-anchor, not error");
     assert!(fresh, "backward jump must be fresh");

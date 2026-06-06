@@ -33,10 +33,10 @@ impl Anchor {
         let reanchor = match self.t0 {
             None => true,
             Some(t0) => {
-                let backward_jump = seg_t_start + CONTIGUITY_EPS < self.last_t_end;
+                let timeline_reset = seg_t_start + CONTIGUITY_EPS < self.last_t_end;
                 let starvation = t0 + seg_t_start < host_now;
 
-                if starvation && !backward_jump {
+                if starvation && !timeline_reset {
                     let scheduled_host = t0 + seg_t_start;
                     let gap_s = host_now - scheduled_host;
                     return Err(SegmentLate {
@@ -47,8 +47,7 @@ impl Anchor {
                     });
                 }
 
-                // A backward jump is a deliberate timeline reset; it wins over "late".
-                backward_jump
+                timeline_reset
             }
         };
 

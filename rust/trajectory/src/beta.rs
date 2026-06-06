@@ -250,7 +250,6 @@ fn beta_iterate_inner(
         }
 
         if iteration == input.beta_max_iters - 1 {
-            // Extra re-solve at max-iters to get the best-effort result.
             let final_result = match run_one_iteration(input, partition, &planning_a_max, &kernels)
             {
                 Ok(result) => result,
@@ -279,7 +278,7 @@ fn beta_iterate_inner(
     let result = match last_result {
         Some(r) => r,
         None => {
-            // beta_max_iters == 0: run exactly one solve.
+            debug_assert_eq!(input.beta_max_iters, 0);
             let r = run_one_iteration(input, partition, &planning_a_max, &kernels)?;
             iterations = 1;
             converged = true;

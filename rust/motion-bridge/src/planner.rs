@@ -294,8 +294,7 @@ fn fatal(e: &PlannerError) -> ! {
         error = %e,
         "planner encountered an unrecoverable error — aborting"
     );
-    // tracing_appender uses non_blocking; sleep lets the worker drain the fatal
-    // line to disk before abort skips the WorkerGuard flush.
+    // abort() skips the non_blocking appender's flush; let the worker drain.
     std::thread::sleep(Duration::from_millis(100));
     std::process::abort();
 }
@@ -617,7 +616,6 @@ fn run_loop(
             }
 
             PlannerMsg::UpdateShaper(s) => {
-                // Drain the held-back tail under the old kernels before switching.
                 if state.t_dispatched < state.t_appended - 1e-12 {
                     run_commit_and_dispatch(
                         &mut state,
