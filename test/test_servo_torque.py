@@ -1,4 +1,6 @@
+from klippy.extras import servo_axis
 from klippy.extras.stepper_enable import EnableTracking, StepperEnablePin
+from klippy.motion_toolhead import MotionToolhead
 
 
 class FakeLine:
@@ -34,9 +36,6 @@ def test_enable_tracking_drives_torque_line_like_a_stepper():
     assert len(motor._active_callbacks) == 1
     motor._active_callbacks.pop()(14.5)
     assert line.calls[-1] == (14.5, 1)
-
-
-from klippy.extras import servo_axis
 
 
 class FakeNode:
@@ -104,9 +103,6 @@ def test_servo_rail_active_callback_contract():
     fired = []
     rail.add_active_callback(fired.append)
     assert rail._active_callbacks == [fired.append]
-
-
-from klippy.motion_toolhead import MotionToolhead
 
 
 class FakeKin:
