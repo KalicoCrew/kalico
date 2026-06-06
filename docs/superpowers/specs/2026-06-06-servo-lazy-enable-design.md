@@ -114,13 +114,20 @@ domain via the same mapping trajectory pieces already use for start times.
   wherever the shaft physically is — no snap, stepper-like position loss
   semantics (homing was cleared by motor_off anyway).
 - The Rust main loop gains the parked/enabled state and handles SetTorque.
-  The response is sent **after execution**, carrying the result code: for
-  enable, after the ladder reaches Operation Enabled (or fails); for disable,
-  after the scheduled ramp completes. The host does not block on the response
-  (fire-and-forget like `set_digital`); the existing async response path
-  surfaces failures through the fault machinery. The **stub binary**
-  implements the same command with simulated state so sim/tests cover the
-  lifecycle without hardware.
+  The response carries the result code: **for enable** it is sent after
+  execution — the ladder runs synchronously before the reply, so the result
+  reflects whether Operation Enabled was reached (or the ladder failed). **For
+  disable it is sent on acceptance** — validation passed and the ramp is
+  scheduled. The transport forces this asymmetry: `UnixNativeConn` is a
+  mutex-serialized request-reply socket that discards any frame not correlated
+  to the in-flight call, so a response emitted after a future scheduled ramp
+  would simply be dropped. Execution-time disable failures (pieces still
+  present at the deadline) therefore cannot be reported by response; they
+  surface via fault heartbeat + endpoint exit → the bridge's supervision
+  EXIT_ON_FAULT path. The host does not block on a future ramp completing; the
+  call returns once the endpoint accepts. The **stub binary** implements the
+  same command with simulated state so sim/tests cover the lifecycle without
+  hardware.
 
 ### Drive state mapping (A6-EC manual, Figure 8-3)
 
@@ -154,8 +161,12 @@ bench for stepper-like behavior.
   same rule as the planner's late-segment policy.
 - Unchanged backstops: SIGTERM → graceful `ec_rt_disable()`; SIGKILL → the
   drive's SM communication watchdog (~100 ms); WKC loss ×2 → halt.
-- Enable/disable transitions emit structured log events (`log_codes.rs`),
-  not stderr-only.
+- The bridge logs torque commands and rejections through its structured
+  tracing layer (`rust/motion-bridge/src/logging/`, JSONL pipeline; events
+  `servo_torque_command` / `servo_torque_rejected`, subsystem `bridge`) — not
+  `log_codes.rs`, which is the MCU wire-event table and is not routed for the
+  endpoint (the endpoint is not an MCU). The endpoint itself keeps stderr
+  diagnostics.
 
 ## Testing
 
@@ -164,8 +175,12 @@ bench for stepper-like behavior.
   right clock → re-enable; piece-while-parked faults; ladder-failure
   heartbeat). Extends `stub_loop` / `stub_lifecycle` /
   `endpoint_supervision`.
-- **Python/sim**: kalico-sim run — M84 → `get_status` shows
-  `servo_x: false` → next G1 re-enables; idle_timeout path.
+- **Lifecycle coverage**: the stub integration tests
+  (`rust/kalico-ethercat-rt/tests/torque_lifecycle.rs`) plus the Python unit
+  tests (`test/test_servo_torque.py`) — M84 → `get_status` shows
+  `servo_x: false` → next G1 re-enables; idle_timeout path. End-to-end
+  behavior is validated on the EtherCAT workbench (kalico-sim does not
+  exercise EtherCAT endpoints yet).
 - **Bench**: claim leaves the shaft free, first move stiffens it, M84 frees
   it (with 605Ch=0). Host-side only: bridge cdylib rebuild on the Pi, no MCU
   flash.
