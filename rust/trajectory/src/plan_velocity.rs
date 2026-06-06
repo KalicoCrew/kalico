@@ -79,7 +79,6 @@ pub struct PlanInput<'a> {
     pub safety_mode: SafetyMode,
 }
 
-/// Run the planning half of the shaper pipeline; returns a β-converged [`PlanOutput`].
 ///
 /// # Errors
 ///

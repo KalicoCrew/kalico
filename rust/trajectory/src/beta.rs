@@ -64,7 +64,6 @@ pub struct PlannedBatch {
     pub global_ends: Vec<f64>,
     pub joining_status: temporal::multi::JoiningStatus,
     pub converged: bool,
-    /// β-loop iterations executed.
     pub beta_iterations: u8,
     pub beta_warning: Option<BetaWarning>,
 }
@@ -123,16 +122,13 @@ fn compute_batch_t_end(partition: &BatchPartition, global_ends: &[f64]) -> f64 {
     t
 }
 
-/// Solver statistics returned by [`plan_velocity_inner`].
 #[derive(Debug, Clone, Copy)]
 pub struct PlanStats {
-    /// β-loop iterations executed.
     pub beta_iterations: u8,
     pub beta_converged: bool,
     pub segments: usize,
 }
 
-/// Output of [`plan_velocity_inner`]: fitted trajectory plus solver statistics.
 #[derive(Debug)]
 pub struct PlanOutput {
     pub fitted: Vec<FittedSegment>,
@@ -170,7 +166,6 @@ pub fn plan_velocity_inner(
 struct BetaIterationOutcome {
     result: BetaIterResult,
     converged: bool,
-    /// Total β-loop iterations executed.
     iterations: u8,
     beta_warning: Option<BetaWarning>,
 }

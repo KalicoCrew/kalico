@@ -1,7 +1,6 @@
 const CONTIGUITY_EPS: f64 = 1e-6;
 const DEFAULT_LEAD_SECS: f64 = 0.25;
 
-/// Segment scheduled in the past: the planner failed to stay ahead of the playhead.
 #[derive(Debug, Clone, Copy)]
 pub struct SegmentLate {
     pub scheduled_host: f64,
@@ -32,7 +31,6 @@ impl Anchor {
         host_now: f64,
     ) -> Result<(f64, bool), SegmentLate> {
         let reanchor = match self.t0 {
-            // Stream start — silent re-anchor.
             None => true,
             Some(t0) => {
                 let backward_jump = seg_t_start + CONTIGUITY_EPS < self.last_t_end;

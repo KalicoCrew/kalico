@@ -106,7 +106,6 @@ impl ShaperState {
         let prior_planned_fitted = self.planned_fitted.clone();
         let prior_planned_meta = self.planned_meta.clone();
 
-        // Stage 1: split + retain + push.
         let split_start = Instant::now();
         let partial_split = self.split_partially_committed_at_t_dispatched();
 
@@ -139,7 +138,6 @@ impl ShaperState {
 
         let window_segments = self.uncommitted_moves.len();
 
-        // Stage 2: plan_velocity (solver).
         let plan_segments: Vec<PlanSegment<'_>> = self
             .uncommitted_moves
             .iter()
@@ -184,7 +182,6 @@ impl ShaperState {
         };
         let solve_us = solve_start.elapsed().as_micros() as u64;
 
-        // Stage 3: rebuild axis pieces and metadata.
         let rebuild_start = Instant::now();
         let time_offset = self.t_dispatched;
 

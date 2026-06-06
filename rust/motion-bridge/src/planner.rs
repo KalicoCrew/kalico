@@ -286,7 +286,6 @@ fn advance_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) {
     rectify_last_move_time(last_move_time_bits, delta);
 }
 
-/// Abort the process on an unrecoverable planner error.
 fn fatal(e: &PlannerError) -> ! {
     eprintln!("kalico planner fatal error: {e}");
     tracing::error!(

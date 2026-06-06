@@ -11,7 +11,6 @@ use crate::plan_velocity::{PlanShaper, PlanStats, SafetyMode};
 use crate::ELimits;
 use crate::ShapedSegment;
 
-/// Timing and solver statistics produced by a single [`ShaperState::append_and_replan`] call.
 #[derive(Debug, Clone, Copy)]
 pub struct ReplanReport {
     pub split_us: u64,
