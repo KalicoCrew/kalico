@@ -16,6 +16,8 @@ int  ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio
 
 /* CiA402 enable ladder to Operation Enabled (torque on), target tracking
  * actual throughout so torque engages at the current shaft position.
+ * Call only after a successful ec_rt_bringup; the C trusts caller ordering
+ * (no double-enable guard — the Rust TorqueGate enforces sequencing).
  * Returns 0 on success, -5 on ladder timeout/persistent fault. */
 int  ec_rt_enable(void);
 
@@ -33,7 +35,8 @@ uint16_t ec_rt_get_statusword(void);
 uint16_t ec_rt_get_error_code(void);
 int32_t  ec_rt_get_following_error(void);
 
-/* controlword = 0x0006 (disable voltage path), held for a few cycles; leaves the cycle parked. */
+/* controlword = 0x0006 (disable voltage path), held for a few cycles;
+ * leaves the cycle parked. */
 void ec_rt_disable(void);
 
 /* dcsync0 off, back to INIT, close NIC. */

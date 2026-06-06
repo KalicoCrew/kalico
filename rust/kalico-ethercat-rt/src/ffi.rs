@@ -2,6 +2,10 @@
 //!
 //! Callers must ensure no concurrent access and that `ec_rt_bringup` has
 //! succeeded before calling any other function.
+//!
+//! Lifecycle ordering is trusted, not checked, on the C side: bringup ->
+//! enable -> (cycle while enabled) -> disable -> parked. The torque::TorqueGate
+//! state machine is the authority that enforces this sequencing.
 #![allow(unsafe_code)]
 
 use std::os::raw::{c_char, c_int};

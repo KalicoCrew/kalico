@@ -69,7 +69,8 @@ static void add_ts(struct timespec *ts, int64_t add) {
 }
 
 /*
- * DC PI jitter correction — identical algorithm to ec_spin.c's dc_sync().
+ * DC PI jitter correction — identical algorithm to the original SOEM CSP
+ * bench's dc_sync() (ec_spin.c, last at commit ad6aa80f3).
  * Uses g_integral instead of a function-local static so the integrator state
  * persists correctly across the bringup loop and the steady-state cycle calls.
  */
@@ -158,7 +159,8 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     int64_t toff = 0;
 
     /* STABILIZE: align DC for 1.5 s with target tracking actual. Matches the
-     * proven ec_spin.c STABILIZE_SEC; the Pi 3B's USB-attached NIC needs the
+     * proven STABILIZE_SEC from the original SOEM CSP bench (ec_spin.c, last
+     * at commit ad6aa80f3); the Pi 3B's USB-attached NIC needs the
      * longer window for the DC PI loop to settle before OP, else Er74.1 /
      * AL 0x0030 at the SAFE-OP->OP transition. */
     for (int64_t i = 0; i < (int64_t)(1.5e9 / g_cycle_ns); i++) {
@@ -205,7 +207,8 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
 
 int ec_rt_enable(void) {
     /*
-     * CiA402 enable state machine — identical to ec_spin.c's ALIGN phase.
+     * CiA402 enable state machine — transcribed from the original SOEM CSP
+     * bench (ec_spin.c, last at commit ad6aa80f3).
      * Masks and values match the CiA402 state-machine table exactly:
      *   sw & 0x004F == 0x0040  => Switch-On Disabled: issue 0x0006
      *   sw & 0x006F == 0x0021  => Ready-to-Switch-On: issue 0x0007
@@ -213,7 +216,7 @@ int ec_rt_enable(void) {
      *   sw & 0x006F == 0x0027  => Operation Enabled: return 0
      *   sw & 0x0008            => Fault: pulse fault-reset on bit 7
      */
-    int64_t toff = 0;
+    int64_t toff = 0; /* local: g_integral carries the persistent DC state */
     for (int64_t pc = 0; pc < 3000; pc++) {
         uint16_t sw = g_in->statusword;
         g_out->target_position = g_in->position_actual;
