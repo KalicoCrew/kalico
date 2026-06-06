@@ -807,10 +807,9 @@ impl PyMotionBridge {
             // SIGTERM: ask the endpoint to exit gracefully.
             // `libc::kill` is the only stable way to send a specific signal to
             // a child process on Unix; there is no safe std API for this.
+            // ESRCH (no such process) = already exited = fine; discard the return value.
             #[allow(unsafe_code)]
-            unsafe {
-                libc::kill(pid, libc::SIGTERM);
-            }
+            let _ = unsafe { libc::kill(pid, libc::SIGTERM) };
 
             let reap_deadline = Instant::now() + Duration::from_secs(5);
             loop {

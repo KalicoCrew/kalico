@@ -26,9 +26,9 @@ klippy owns the endpoint's lifecycle. No systemd unit, no wrapper script.
   klippy surfaces a message naming the drive, not the node:
   - endpoint failed to start (binary missing / caps not set) — infra error
     naming the binary path;
-  - bus dead — `ethercat node_x: no slaves responding on eth0`;
-  - drive offline/faulted — `ethercat node_x: drive 'x' (slave 1) offline —
-    check drive power, then FIRMWARE_RESTART`.
+  - bus dead — `ethercat node_x: EtherCAT bus on eth0: no slaves responding (bringup rc=-2) — check cable and drive power, then FIRMWARE_RESTART`;
+  - drive offline — `ethercat node_x: drive (slave 1) offline (bringup rc=-N) — check drive power, then FIRMWARE_RESTART`;
+  - drive fault — `ethercat node_x: drive (slave 1) fault 0x0021 — check drive, then FIRMWARE_RESTART`.
 - **Enable at claim, disable at release.** The drive holds torque only while
   a klippy session owns it. On klippy shutdown, `FIRMWARE_RESTART`,
   disconnect, or SIGTERM the endpoint disables the drive (controlword
