@@ -5,4 +5,5 @@ pub mod curves;
 pub mod ffi;
 pub mod scale;
 pub mod server;
+pub mod torque;
 pub mod wire;
