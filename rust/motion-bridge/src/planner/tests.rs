@@ -527,3 +527,183 @@ fn flush_then_move_dispatches_without_error() {
 
     h.shutdown();
 }
+
+/// Build a dispatch closure that fails with `DispatchError::SegmentLate` on the
+/// Nth segment (1-based) and succeeds for all others.  The `invocations` counter
+/// is incremented for every call including the failing one.
+fn failing_dispatch_on_nth(
+    fail_on: usize,
+) -> (
+    Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
+    Arc<AtomicU32>,
+) {
+    let invocations = Arc::new(AtomicU32::new(0));
+    let inv = Arc::clone(&invocations);
+    let cb: Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync> =
+        Arc::new(move |seg: &ShapedSegment| {
+            let n = inv.fetch_add(1, Ordering::SeqCst) as usize + 1;
+            if n == fail_on {
+                Err(DispatchError::SegmentLate {
+                    gap_s: 0.5,
+                    seg_t_start: seg.t_start,
+                })
+            } else {
+                Ok(())
+            }
+        });
+    (cb, invocations)
+}
+
+#[test]
+fn dispatch_error_poisons_stream_subsequent_moves_not_dispatched() {
+    // Fail on the very first segment.  After that, any further moves must not
+    // invoke the dispatch closure at all.
+    let (dispatch, invocations) = failing_dispatch_on_nth(1);
+    let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+
+    // First move — dispatch closure fires and returns the error.
+    let _ = h.submit_move(long_move());
+
+    // Spin until the error slot is populated; the dispatch closure increments the
+    // counter before returning, but the planner stores the error only after the
+    // closure returns, so spinning on the slot is the race-free wait.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "dispatch error was never stored within 5s"
+        );
+        if h.error.lock().unwrap_or_else(|p| p.into_inner()).is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    // Record how many calls happened so far (at least 1, for the failing segment).
+    let after_first = invocations.load(Ordering::SeqCst);
+    assert!(
+        after_first >= 1,
+        "dispatch was never called for the first move"
+    );
+
+    // The error slot holds exactly the first error.  Drain it now; subsequent
+    // submit_move calls would drain it themselves via check_error() and mask it.
+    let first_err = h.check_error();
+    assert!(
+        matches!(
+            first_err,
+            Err(PlannerError::Dispatch(DispatchError::SegmentLate { .. }))
+        ),
+        "expected SegmentLate error, got: {first_err:?}"
+    );
+
+    // Submit more moves.  The planner is poisoned; none of them should reach dispatch.
+    for _ in 0..3 {
+        let _ = h.submit_move(long_move());
+    }
+
+    // Give the planner time to process the dropped moves.
+    std::thread::sleep(Duration::from_millis(200));
+
+    let after_poison = invocations.load(Ordering::SeqCst);
+    assert_eq!(
+        after_poison, after_first,
+        "dispatch was called after stream was poisoned: \
+         expected {after_first} invocations, got {after_poison}"
+    );
+
+    h.shutdown();
+}
+
+#[test]
+fn stream_open_clears_poison_and_resumes_dispatch() {
+    let (dispatch, invocations) = failing_dispatch_on_nth(1);
+    let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+
+    // Trigger poison.
+    let _ = h.submit_move(long_move());
+
+    // Spin until the error slot is populated before draining it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "dispatch error was never stored within 5s"
+        );
+        if h.error.lock().unwrap_or_else(|p| p.into_inner()).is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    let after_error = invocations.load(Ordering::SeqCst);
+    assert!(after_error >= 1);
+
+    // Drain the stored error before checking that dispatch resumes.
+    let _ = h.check_error();
+
+    // Reset the stream — this must clear the poison flag.
+    h.kalico_stream_open([0.0; 4]).unwrap();
+
+    // Give the planner a moment to process the KalicoStreamOpen message.
+    std::thread::sleep(Duration::from_millis(50));
+
+    let before_resume = invocations.load(Ordering::SeqCst);
+
+    // Submit a new move after the reset; dispatch should be called again.
+    h.submit_move(long_move()).unwrap();
+    h.flush().unwrap();
+
+    let after_resume = invocations.load(Ordering::SeqCst);
+    assert!(
+        after_resume > before_resume,
+        "dispatch was not called after stream reset: \
+         before={before_resume} after={after_resume}"
+    );
+
+    h.shutdown();
+}
+
+#[test]
+fn flush_during_poisoned_state_returns_promptly() {
+    let (dispatch, _invocations) = failing_dispatch_on_nth(1);
+    let mut h = PlannerHandle::spawn(relaxed_config(), dispatch);
+
+    // Trigger poison.
+    let _ = h.submit_move(long_move());
+
+    // Spin until the error slot is populated, confirming the planner has stored it.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "dispatch error was never stored within 5s"
+        );
+        // Peek without taking: lock, check Some, unlock.
+        if h.error.lock().unwrap_or_else(|p| p.into_inner()).is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    // Drain the error so flush() itself doesn't return an error from check_error.
+    let _ = h.check_error();
+
+    let t0 = std::time::Instant::now();
+    // With a poisoned stream the Flush arm replies with None immediately.
+    // flush() receives None and skips the sleep, so it returns in well under LEAD (0.25 s).
+    let result = h.flush();
+    let elapsed = t0.elapsed();
+
+    // The result should be Ok because we already drained the stored error.
+    assert!(
+        result.is_ok(),
+        "flush returned error after error was drained: {result:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "flush blocked too long during poisoned state: {elapsed:?}"
+    );
+
+    h.shutdown();
+}

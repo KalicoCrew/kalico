@@ -318,6 +318,21 @@ fn advance_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) {
     rectify_last_move_time(last_move_time_bits, delta);
 }
 
+/// Return value for [`run_commit_and_dispatch`]: distinguishes clean completion from
+/// the two ways the function can fail, so callers can set `stream_poisoned` correctly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitOutcome {
+    /// All segments drained and dispatched without error.
+    Ok,
+    /// `commit_decel_to_zero` or `dispatch` failed; the stream timeline is now invalid.
+    Poisoned,
+}
+
+fn store_error_first_wins(error: &Arc<Mutex<Option<PlannerError>>>, e: PlannerError) {
+    let mut guard = error.lock().unwrap_or_else(|p| p.into_inner());
+    guard.get_or_insert(e);
+}
+
 fn run_commit_and_dispatch(
     state: &mut ShaperState,
     thread_state: &PlannerThreadState,
@@ -325,7 +340,7 @@ fn run_commit_and_dispatch(
     error: &Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: &AtomicU64,
     commit_fire_count: &AtomicU32,
-) -> bool {
+) -> CommitOutcome {
     let t_app_before = state.t_appended;
     let t_disp_before = state.t_dispatched;
     let commit_start = Instant::now();
@@ -333,8 +348,8 @@ fn run_commit_and_dispatch(
         Ok(out) => out,
         Err(e) => {
             tracing::error!(subsystem = "motion", event = "commit_decel_error", error = ?e, "run_commit_and_dispatch: commit_decel_to_zero failed");
-            *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Shape(e));
-            return false;
+            store_error_first_wins(error, PlannerError::Shape(e));
+            return CommitOutcome::Poisoned;
         }
     };
     let commit_us = commit_start.elapsed().as_micros();
@@ -349,10 +364,12 @@ fn run_commit_and_dispatch(
         "run_commit_and_dispatch drained"
     );
     advance_last_move_time(last_move_time_bits, batch_dur);
+    let mut outcome = CommitOutcome::Ok;
     for s in &drained {
         if let Err(detail) = dispatch(s) {
             tracing::error!(subsystem = "motion", event = "dispatch_error", error = ?detail, "run_commit_and_dispatch: dispatch failed");
-            *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(PlannerError::Dispatch(detail));
+            store_error_first_wins(error, PlannerError::Dispatch(detail));
+            outcome = CommitOutcome::Poisoned;
             break;
         }
     }
@@ -366,7 +383,7 @@ fn run_commit_and_dispatch(
         t_disp_before,
         state.t_dispatched,
     );
-    true
+    outcome
 }
 
 struct PlannerThreadState {
@@ -428,9 +445,15 @@ fn run_loop(
 
     let mut last_recv_time: Option<Instant> = None;
     let mut sync_instant: Option<Instant> = None;
+    // When true the stream timeline is invalid; moves are dropped until a stream-reset
+    // message (KalicoStreamOpen / Homing / Underrun / ForceIdle) clears the flag.
+    let mut stream_poisoned = false;
 
     loop {
-        let next_timeout = if state.t_dispatched < state.t_appended - 1e-12 {
+        // While poisoned there is nothing useful pending dispatch; use the idle timeout
+        // to avoid busy-spinning on Timeout arms (t_dispatched < t_appended stays true
+        // after a partial dispatch flush before the error occurred).
+        let next_timeout = if !stream_poisoned && state.t_dispatched < state.t_appended - 1e-12 {
             let esc = sync_instant.map_or(0.0, |t| t.elapsed().as_secs_f64());
             let remaining = (state.t_dispatched + LEAD - SAFETY_MARGIN) - esc;
             Duration::try_from_secs_f64(remaining.max(0.0)).unwrap_or(Duration::ZERO)
@@ -468,15 +491,19 @@ fn run_loop(
                 m
             }
             Err(RecvTimeoutError::Timeout) => {
-                if state.t_dispatched < state.t_appended - 1e-12 {
-                    let _ok = run_commit_and_dispatch(
+                // Skip dispatch when the stream is poisoned; there is nothing safe to send.
+                if !stream_poisoned
+                    && state.t_dispatched < state.t_appended - 1e-12
+                    && run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
                         &dispatch,
                         &error,
                         &last_move_time_bits,
                         &commit_fire_count,
-                    );
+                    ) == CommitOutcome::Poisoned
+                {
+                    stream_poisoned = true;
                 }
                 continue;
             }
@@ -485,6 +512,17 @@ fn run_loop(
 
         match msg {
             PlannerMsg::Move(m) => {
+                if stream_poisoned {
+                    tracing::debug!(
+                        subsystem = "motion",
+                        event = "move_dropped_poisoned",
+                        nominal_s = m.nominal_duration(),
+                        distance_mm = m.distance_mm,
+                        "move dropped: stream is poisoned"
+                    );
+                    continue;
+                }
+
                 // `submit_move` already advanced `last_move_time_bits` by the nominal.
                 // Rectify if actual diverges: use CAS since submit_move is a concurrent writer.
                 // Rectify against t_appended delta (not dispatched): the decel tail is held back.
@@ -498,7 +536,8 @@ fn run_loop(
                 // Commit held-back tail before inserting an idle rest-hold when clock outran plan.
                 let esc = sync_instant.map_or(0.0, |t| t.elapsed().as_secs_f64());
                 if esc > state.t_appended + 1e-6 {
-                    let committed_ok = if state.t_dispatched < state.t_appended - 1e-12 {
+                    let need_commit = state.t_dispatched < state.t_appended - 1e-12;
+                    let commit_ok = if need_commit {
                         run_commit_and_dispatch(
                             &mut state,
                             &thread_state,
@@ -506,12 +545,22 @@ fn run_loop(
                             &error,
                             &last_move_time_bits,
                             &commit_fire_count,
-                        )
+                        ) == CommitOutcome::Ok
                     } else {
                         true
                     };
-                    if committed_ok {
+                    if commit_ok {
                         state.advance_idle(esc);
+                    } else {
+                        stream_poisoned = true;
+                        tracing::debug!(
+                            subsystem = "motion",
+                            event = "move_dropped_poisoned",
+                            nominal_s = nominal,
+                            distance_mm = move_dist,
+                            "move dropped: stream is poisoned (commit before idle failed)"
+                        );
+                        continue;
                     }
                 }
 
@@ -520,8 +569,8 @@ fn run_loop(
                     Ok(r) => r,
                     Err(e) => {
                         tracing::error!(subsystem = "motion", event = "move_arm_error", phase = "append_and_replan", error = ?e, "Move arm: append_and_replan failed");
-                        *error.lock().unwrap_or_else(|p| p.into_inner()) =
-                            Some(PlannerError::Shape(e));
+                        store_error_first_wins(&error, PlannerError::Shape(e));
+                        stream_poisoned = true;
                         continue;
                     }
                 };
@@ -531,8 +580,8 @@ fn run_loop(
                     Ok(out) => out,
                     Err(e) => {
                         tracing::error!(subsystem = "motion", event = "move_arm_error", phase = "emit_committed", error = ?e, "Move arm: emit_committed failed");
-                        *error.lock().unwrap_or_else(|p| p.into_inner()) =
-                            Some(PlannerError::Shape(e));
+                        store_error_first_wins(&error, PlannerError::Shape(e));
+                        stream_poisoned = true;
                         continue;
                     }
                 };
@@ -597,10 +646,21 @@ fn run_loop(
 
                 for s in &drained {
                     if let Err(detail) = dispatch(s) {
-                        *error.lock().unwrap_or_else(|p| p.into_inner()) =
-                            Some(PlannerError::Dispatch(detail));
+                        tracing::error!(
+                            subsystem = "motion",
+                            event = "dispatch_error",
+                            phase = "move_arm",
+                            error = ?detail,
+                            "Move arm: dispatch failed"
+                        );
+                        store_error_first_wins(&error, PlannerError::Dispatch(detail));
+                        stream_poisoned = true;
                         break;
                     }
+                }
+
+                if stream_poisoned {
+                    continue;
                 }
 
                 // Capture sync_instant only on non-empty dispatch, not at append.
@@ -617,16 +677,26 @@ fn run_loop(
             }
 
             PlannerMsg::Flush { notify } => {
+                if stream_poisoned {
+                    // Stream is dead; reply immediately with no deadline so callers
+                    // do not block waiting for motion that will never complete.
+                    let _ = notify.send(None);
+                    continue;
+                }
                 // Commit held-back decel-to-zero; idempotent when already committed.
-                if state.t_dispatched < state.t_appended - 1e-12 {
-                    let _ok = run_commit_and_dispatch(
+                if state.t_dispatched < state.t_appended - 1e-12
+                    && run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
                         &dispatch,
                         &error,
                         &last_move_time_bits,
                         &commit_fire_count,
-                    );
+                    ) == CommitOutcome::Poisoned
+                {
+                    stream_poisoned = true;
+                    let _ = notify.send(None);
+                    continue;
                 }
                 let finish = sync_instant.map(|t| {
                     t + Duration::try_from_secs_f64(state.t_appended + LEAD)
@@ -636,28 +706,35 @@ fn run_loop(
             }
 
             PlannerMsg::Dwell { duration_s, notify } => {
+                // Pure time bookkeeping; apply even when poisoned so the caller unblocks.
                 advance_last_move_time(&last_move_time_bits, duration_s);
                 let _ = notify.send(());
             }
 
             PlannerMsg::UpdateLimits(l) => {
+                // Config-only change; safe to apply regardless of poison state.
                 config.limits = l;
                 thread_state.rebuild(&config);
             }
 
             PlannerMsg::UpdateShaper(s) => {
-                // Drain held-back tail under the old kernels before swapping.
-                // Without this the trailing tail would be shaped by a kernel it was never
-                // planned against, producing post-shape acceleration overshoot.
-                if state.t_dispatched < state.t_appended - 1e-12 {
-                    let _ok = run_commit_and_dispatch(
+                // Drain held-back tail under the old kernels before swapping — but only when
+                // the stream is healthy. If poisoned, the held-back tail is already invalid;
+                // skip the pre-commit drain (it would dispatch stale data) and only rebuild
+                // the config. The anchor's last_t_end is still stale so poison is NOT cleared
+                // here; only a true stream-reset path clears it.
+                if !stream_poisoned
+                    && state.t_dispatched < state.t_appended - 1e-12
+                    && run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
                         &dispatch,
                         &error,
                         &last_move_time_bits,
                         &commit_fire_count,
-                    );
+                    ) == CommitOutcome::Poisoned
+                {
+                    stream_poisoned = true;
                 }
                 config.shaper = s;
                 let shapers = shaper_config_to_axis_shapers(&config.shaper);
@@ -667,11 +744,13 @@ fn run_loop(
 
             PlannerMsg::KalicoStreamOpen { home_pos } | PlannerMsg::Homing { home_pos } => {
                 sync_instant = None;
+                stream_poisoned = false;
                 state.reset(home_pos);
             }
 
             PlannerMsg::Underrun { recovered_pos } | PlannerMsg::ForceIdle { recovered_pos } => {
                 sync_instant = None;
+                stream_poisoned = false;
                 state.reset(recovered_pos);
             }
 
@@ -679,15 +758,19 @@ fn run_loop(
                 // Pre-swap barrier: flush held-back output under the old clock bias.
                 // Must run before Router::set_clock_est_from_sample — calling after
                 // would shape the drained tail under the new bias.
-                if state.t_dispatched < state.t_appended - 1e-12 {
-                    let _ok = run_commit_and_dispatch(
+                // Skip when poisoned: the held-back tail must not be dispatched.
+                if !stream_poisoned
+                    && state.t_dispatched < state.t_appended - 1e-12
+                    && run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
                         &dispatch,
                         &error,
                         &last_move_time_bits,
                         &commit_fire_count,
-                    );
+                    ) == CommitOutcome::Poisoned
+                {
+                    stream_poisoned = true;
                 }
             }
 
