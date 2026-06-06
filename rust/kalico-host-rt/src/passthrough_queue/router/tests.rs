@@ -156,22 +156,77 @@ fn compute_ack_clock_projects_from_host_time() {
     assert!(diff <= 1, "expected ~1_000_000, got {ack1}");
 }
 
+/// `set_clock_est_rebased` advances `compute_ack_clock` with elapsed Instant time.
+///
+/// After seeding with `offset_raw` anchored at the current RAW clock, advance
+/// the mock clock by 1 s and verify `compute_ack_clock` increases by exactly
+/// `freq` ticks (within 1 tick of rounding).  The value of `host_now_raw` does
+/// not affect this — it is discarded by design.
 #[test]
-fn set_clock_est_rebased_projects_from_foreign_host_epoch() {
+fn set_clock_est_rebased_advances_with_mock_clock() {
     let (mut router, clock) = make_router();
     let mcu = router.claim_mcu("mcu");
 
+    // `offset_raw` must be in the same RAW-domain epoch as `bridge_now_raw`
+    // inside `set_clock_est_rebased`.  Capture it here so the conversion
+    // `raw_at_anchor = bridge_now_raw - bridge_now_instant` yields a small,
+    // positive number and `clock_offset` lands near the mock clock's current
+    // Instant value.
+    let offset_raw = crate::clock::monotonic_raw_secs();
+
     router
-        .set_clock_est_rebased(mcu, 1_000_000.0, 990.0, 10_000_000, 1000.0)
+        .set_clock_est_rebased(mcu, 1_000_000.0, offset_raw, 10_000_000, 0.0)
         .unwrap();
 
     let ack0 = router.compute_ack_clock(mcu).unwrap();
-    assert_eq!(ack0, 20_000_000);
 
     clock.advance(Duration::from_secs(1));
     let ack1 = router.compute_ack_clock(mcu).unwrap();
-    let diff = (ack1 as i64 - 21_000_000_i64).unsigned_abs();
-    assert!(diff <= 1, "expected ~21_000_000, got {ack1}");
+    let diff = (ack1 as i64 - ack0 as i64 - 1_000_000_i64).unsigned_abs();
+    assert!(
+        diff <= 1,
+        "ack_clock must advance by ~1_000_000 ticks per second; \
+         ack0={ack0} ack1={ack1} diff={diff}"
+    );
+}
+
+/// The `host_now_raw` argument to `set_clock_est_rebased` must not affect
+/// `compute_ack_clock` — the GIL-hop latency ε must be ε-independent.
+///
+/// Call `set_clock_est_rebased` twice in quick succession with identical
+/// parameters except `host_now_raw` differs by 50 ms.  The resulting
+/// `compute_ack_clock` values must agree within 2 ticks (real-clock jitter
+/// between the two Rust `monotonic_raw_secs()` calls, which are µs apart).
+#[test]
+fn set_clock_est_rebased_epsilon_independent() {
+    let freq = 1_000_000.0_f64;
+    let offset_raw = 990.0_f64;
+    let last_clock = 10_000_000_u64;
+
+    let (mut router_a, _clock_a) = make_router();
+    let mcu_a = router_a.claim_mcu("mcu_a");
+
+    let (mut router_b, _clock_b) = make_router();
+    let mcu_b = router_b.claim_mcu("mcu_b");
+
+    router_a
+        .set_clock_est_rebased(mcu_a, freq, offset_raw, last_clock, 1000.0)
+        .unwrap();
+
+    router_b
+        .set_clock_est_rebased(mcu_b, freq, offset_raw, last_clock, 1000.0 - 0.050)
+        .unwrap();
+
+    let ack_a = router_a.compute_ack_clock(mcu_a).unwrap();
+    let ack_b = router_b.compute_ack_clock(mcu_b).unwrap();
+
+    let diff = (ack_a as i64 - ack_b as i64).unsigned_abs();
+    assert!(
+        diff <= 2,
+        "compute_ack_clock must not vary with host_now_raw (ε-independence); \
+         host_now_raw differed by 50 ms but ack_clock differed by {diff} ticks \
+         (ack_a={ack_a} ack_b={ack_b})"
+    );
 }
 
 #[test]

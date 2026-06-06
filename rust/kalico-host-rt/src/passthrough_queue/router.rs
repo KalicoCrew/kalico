@@ -310,26 +310,32 @@ impl PassthroughRouter {
     ///
     /// `offset_raw` is `time_avg + min_half_rtt` in CLOCK_MONOTONIC_RAW seconds
     /// (what Python's `_handle_clock` computes and the mirror callback exports).
-    /// `host_now_raw` must be a CLOCK_MONOTONIC_RAW reading captured on the Rust
-    /// side (via `kalico_host_rt::clock::monotonic_raw_secs()`) at the same
-    /// instant as the `instant_to_f64(self.clock.now())` reading, so both sides
-    /// of the domain conversion are in RAW units and the resulting `clock_offset`
-    /// lands in the Rust `Instant` epoch used everywhere else in the router.
+    /// `host_now_raw` is accepted for API compatibility but is NOT used in the
+    /// projection — using it would embed the Python→Rust GIL-hop latency ε
+    /// directly into `clock_offset`, biasing every subsequent projection by ε
+    /// (up to tens of ms on a loaded Pi 3B).
+    ///
+    /// Instead, `CLOCK_MONOTONIC_RAW` is read here in Rust at the same instant
+    /// as `instant_to_f64(self.clock.now())`, so the conversion constant
+    /// `raw_at_anchor = raw_now - instant_now` is computed without any
+    /// cross-runtime latency and `clock_offset = offset_raw - raw_at_anchor`
+    /// is exact up to µs sample skew.
     pub fn set_clock_est_rebased(
         &mut self,
         mcu: McuHandle,
         freq: f64,
         offset_raw: f64,
         last_clock: u64,
-        host_now_raw: f64,
+        _host_now_raw: f64,
     ) -> Result<(), RouterError> {
         let bridge_now_instant = instant_to_f64(self.clock.now());
+        let bridge_now_raw = crate::clock::monotonic_raw_secs();
         let rec = self
             .mcus
             .get_mut(&mcu)
             .ok_or(RouterError::UnknownMcu(mcu))?;
         rec.clock_freq = freq;
-        rec.clock_offset = bridge_now_instant - (host_now_raw - offset_raw);
+        rec.clock_offset = offset_raw - (bridge_now_raw - bridge_now_instant);
         rec.last_clock = last_clock;
         Ok(())
     }
