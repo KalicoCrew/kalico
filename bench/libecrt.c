@@ -56,8 +56,6 @@ static in_t   *g_in;
 static int64_t g_cycle_ns;
 static struct timespec g_ts;
 static int64_t g_integral;
-/* 0 = parked (Ready-to-Switch-On, 0x0006), 1 = Operation Enabled (0x000F).
- * Owned by bringup/enable/disable; read by ec_rt_cycle. Single-threaded. */
 static int g_enabled;
 
 static void add_ts(struct timespec *ts, int64_t add) {
@@ -69,8 +67,7 @@ static void add_ts(struct timespec *ts, int64_t add) {
 }
 
 /*
- * DC PI jitter correction — identical algorithm to the original SOEM CSP
- * bench's dc_sync() (ec_spin.c, last at commit ad6aa80f3).
+ * DC PI jitter correction — identical algorithm to ec_spin.c's dc_sync().
  * Uses g_integral instead of a function-local static so the integrator state
  * persists correctly across the bringup loop and the steady-state cycle calls.
  */
@@ -159,8 +156,7 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     int64_t toff = 0;
 
     /* STABILIZE: align DC for 1.5 s with target tracking actual. Matches the
-     * proven STABILIZE_SEC from the original SOEM CSP bench (ec_spin.c, last
-     * at commit ad6aa80f3); the Pi 3B's USB-attached NIC needs the
+     * proven ec_spin.c STABILIZE_SEC; the Pi 3B's USB-attached NIC needs the
      * longer window for the DC PI loop to settle before OP, else Er74.1 /
      * AL 0x0030 at the SAFE-OP->OP transition. */
     for (int64_t i = 0; i < (int64_t)(1.5e9 / g_cycle_ns); i++) {
@@ -180,13 +176,6 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     }
     if (ec_slave[0].state != EC_STATE_OPERATIONAL) return -4; /* OP not reached */
 
-    /*
-     * Park at Ready-to-Switch-On. Asserting 0x0006 (Shutdown command)
-     * converges there from every CiA402 state — Switch-On Disabled takes
-     * transition 2, a leftover Operation Enabled from a crashed session
-     * takes transition 8. Faults are reset by pulsing bit 7. No torque is
-     * applied at any point; ec_rt_enable() runs the ladder on demand.
-     */
     for (int64_t pc = 0; pc < 3000; pc++) {
         uint16_t sw = g_in->statusword;
         g_out->target_position = g_in->position_actual;
@@ -207,8 +196,7 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
 
 int ec_rt_enable(void) {
     /*
-     * CiA402 enable state machine — transcribed from the original SOEM CSP
-     * bench (ec_spin.c, last at commit ad6aa80f3).
+     * CiA402 enable state machine — identical to ec_spin.c's ALIGN phase.
      * Masks and values match the CiA402 state-machine table exactly:
      *   sw & 0x004F == 0x0040  => Switch-On Disabled: issue 0x0006
      *   sw & 0x006F == 0x0021  => Ready-to-Switch-On: issue 0x0007
@@ -216,7 +204,7 @@ int ec_rt_enable(void) {
      *   sw & 0x006F == 0x0027  => Operation Enabled: return 0
      *   sw & 0x0008            => Fault: pulse fault-reset on bit 7
      */
-    int64_t toff = 0; /* local: g_integral carries the persistent DC state */
+    int64_t toff = 0;
     for (int64_t pc = 0; pc < 3000; pc++) {
         uint16_t sw = g_in->statusword;
         g_out->target_position = g_in->position_actual;

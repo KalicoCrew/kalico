@@ -105,10 +105,6 @@ class PrinterStepperEnable:
         self.register_motor(mcu_stepper.get_name(), mcu_stepper, enable)
 
     def register_motor(self, name, motor, enable):
-        # `motor` needs only add_active_callback(cb); `enable` only
-        # set_enable/set_disable. Steppers and the EtherCAT servo register
-        # through the same path — the servo's "enable pin" is a
-        # BridgeTorqueLine wrapped in a StepperEnablePin.
         self.enable_lines[name] = EnableTracking(motor, enable)
 
     def motor_off(self):

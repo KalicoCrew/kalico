@@ -43,7 +43,6 @@ fn main() {
         }
     };
 
-    // Simulated enable-ladder failure for integration tests.
     let fail_enable = args.iter().any(|a| a == "--fail-enable");
 
     let mut ring = AxisRing::new();

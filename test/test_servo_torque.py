@@ -1,11 +1,7 @@
-# Unit tests for the servo torque-gate integration with stepper_enable.
-# Plain fakes only — the classes under test are duck-typed.
 from klippy.extras.stepper_enable import EnableTracking, StepperEnablePin
 
 
 class FakeLine:
-    """set_digital-shaped recorder (the BridgeTorqueLine contract)."""
-
     def __init__(self):
         self.calls = []
 
@@ -14,8 +10,6 @@ class FakeLine:
 
 
 class FakeMotor:
-    """add_active_callback-shaped motor (MCU_stepper / ServoRail contract)."""
-
     def __init__(self):
         self._active_callbacks = []
 
@@ -30,18 +24,14 @@ def test_enable_tracking_drives_torque_line_like_a_stepper():
     line = FakeLine()
     motor = FakeMotor()
     et = EnableTracking(motor, StepperEnablePin(line, 0))
-    # construction armed the one-shot motor_enable callback
     assert len(motor._active_callbacks) == 1
-    # first activity energizes at the move's print_time
     motor._active_callbacks.pop()(12.5)
     assert line.calls == [(12.5, 1)]
     assert et.is_motor_enabled()
-    # M84 path de-energizes at the scheduled print_time and re-arms
     et.motor_disable(13.5)
     assert line.calls == [(12.5, 1), (13.5, 0)]
     assert not et.is_motor_enabled()
     assert len(motor._active_callbacks) == 1
-    # refcount: second enable cycle goes through the same line
     motor._active_callbacks.pop()(14.5)
     assert line.calls[-1] == (14.5, 1)
 
@@ -99,8 +89,6 @@ def test_bridge_torque_line_fails_loudly_without_handle():
 
 
 def test_bridge_torque_line_accepts_handle_zero():
-    # Bridge handles are claim-ordered u32 starting at 0 — the first-claimed
-    # node legitimately gets handle 0 and must not be treated as unclaimed.
     bridge = FakeBridge()
     printer = FakePrinter(
         {"ethercat_node node_y": FakeNode(0), "motion_bridge": bridge}
@@ -153,14 +141,10 @@ def test_servo_pass_fires_on_axis_delta_only():
     fired = []
     rail.add_active_callback(fired.append)
     th = FakeToolhead(FakeKin([rail]))
-    # X-only corexy move: motor deltas nonzero, but the y-axis delta is 0 —
-    # the y-servo must NOT fire.
     assert th._fire_active_callbacks(5.0, 0.0, 0.0, 0.0, 10.0) is False
     assert fired == []
-    # Y move fires it once, at the given print_time, and disarms.
     assert th._fire_active_callbacks(0.0, 3.0, 0.0, 0.0, 11.0) is True
     assert fired == [11.0]
-    # disarmed: no double-fire
     assert th._fire_active_callbacks(0.0, 3.0, 0.0, 0.0, 12.0) is False
     assert fired == [11.0]
 

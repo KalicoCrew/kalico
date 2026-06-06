@@ -1,14 +1,3 @@
-//! Torque-gate state machine shared by the hw endpoint and the stub.
-//!
-//! Pure decision logic — no I/O, no FFI, no clock reads. The caller owns the
-//! effects (CiA 402 ladder, disable ramp, heartbeat, process exit) and feeds
-//! outcomes back via `enable_finished` / `disable_finished`.
-
-/// SetTorqueResponse / fault result codes on the endpoint control channel,
-/// extending the endpoint's own -30x codes (-308 piece-start-in-past,
-/// -309 ring-full). This space is separate from the MCU `runtime::error`
-/// fault table, which reuses some of the same integers for unrelated
-/// faults on a different wire field.
 pub const ERR_ENABLE_FAILED: i32 = -310;
 pub const ERR_DISABLE_IN_PAST: i32 = -311;
 pub const ERR_BAD_TORQUE_STATE: i32 = -312;
@@ -16,38 +5,22 @@ pub const ERR_PIECES_WHILE_PARKED: i32 = -313;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TorqueState {
-    /// No torque commanded: CiA 402 Ready-to-Switch-On (controlword 0x0006).
     Parked,
-    /// Torque commanded: CiA 402 Operation Enabled (controlword 0x000F).
     Enabled,
 }
 
-/// What the caller must do in response to a SetTorque command.
 #[derive(Debug, PartialEq, Eq)]
 pub enum CommandAction {
-    /// Run the CiA 402 enable ladder, then reply with its result and report
-    /// via `enable_finished`. If a scheduled disable was pending it has been
-    /// cancelled: the drive is still energized and the new motion continues
-    /// under uninterrupted torque — executing the disable early would cut
-    /// torque while prior motion may still be draining. (If the gate is
-    /// already Enabled the ladder is a single-cycle no-op on the drive.)
     Enable,
-    /// Disable accepted: reply result=0 now; the ramp runs from `on_tick`.
     ScheduleDisable,
-    /// Invalid command: reply with `code`, then halt (disable + exit).
     Reject { code: i32 },
 }
 
-/// What the caller must do on a DC-loop tick.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TickAction {
     None,
-    /// The scheduled disable is due: run the ramp, call `disable_finished`.
     ExecuteDisable,
-    /// Pieces exist while no torque is commanded: fault `code`, halt.
-    Fault {
-        code: i32,
-    },
+    Fault { code: i32 },
 }
 
 #[derive(Debug)]
@@ -77,8 +50,6 @@ impl TorqueGate {
                     code: ERR_BAD_TORQUE_STATE,
                 };
             }
-            // Cancel any pending disable rather than executing it early —
-            // early execution would de-energize while prior motion drains.
             self.pending_disable_at = None;
             CommandAction::Enable
         } else {
@@ -97,14 +68,12 @@ impl TorqueGate {
         }
     }
 
-    /// Caller reports the enable ladder outcome.
     pub fn enable_finished(&mut self, ok: bool) {
         if ok {
             self.state = TorqueState::Enabled;
         }
     }
 
-    /// Caller reports the disable ramp has run.
     pub fn disable_finished(&mut self) {
         self.state = TorqueState::Parked;
         self.pending_disable_at = None;
@@ -192,13 +161,10 @@ mod tests {
             g.on_set_torque(false, T0 + 500, T0),
             CommandAction::ScheduleDisable
         );
-        // not due yet
         assert_eq!(g.on_tick(T0 + 499, true), TickAction::None);
-        // due, ring empty
         assert_eq!(g.on_tick(T0 + 500, true), TickAction::ExecuteDisable);
         g.disable_finished();
         assert_eq!(g.state(), TorqueState::Parked);
-        // no re-fire
         assert_eq!(g.on_tick(T0 + 501, true), TickAction::None);
     }
 
@@ -231,15 +197,10 @@ mod tests {
 
     #[test]
     fn reenable_with_pending_disable_cancels_it() {
-        // M84 schedules a disable; a new move's enable arrives before it is
-        // due — possibly while prior motion is still draining. The pending
-        // disable is cancelled: torque stays on continuously (executing the
-        // ramp early would cut torque mid-motion).
         let mut g = TorqueGate::new();
         let _ = g.on_set_torque(true, T0, T0 - 1);
         g.enable_finished(true);
         let _ = g.on_set_torque(false, T0 + 500, T0);
-        // prior motion may still be draining (ring non-empty) — still fine
         assert_eq!(g.on_tick(T0 + 100, false), TickAction::None);
         assert_eq!(
             g.on_set_torque(true, T0 + 600, T0 + 100),
@@ -247,8 +208,6 @@ mod tests {
         );
         g.enable_finished(true);
         assert_eq!(g.state(), TorqueState::Enabled);
-        // the cancelled disable never fires, even past its deadline,
-        // and motion may continue across it
         assert_eq!(g.on_tick(T0 + 1_000, false), TickAction::None);
         assert_eq!(g.on_tick(T0 + 1_000, true), TickAction::None);
     }
@@ -270,9 +229,7 @@ mod tests {
         let _ = g.on_set_torque(true, T0, T0 - 1);
         g.enable_finished(true);
         let _ = g.on_set_torque(false, T0 + 500, T0);
-        // motion still draining before the deadline is fine
         assert_eq!(g.on_tick(T0 + 100, false), TickAction::None);
-        // pieces still present AT the deadline = host bug
         assert_eq!(
             g.on_tick(T0 + 500, false),
             TickAction::Fault {

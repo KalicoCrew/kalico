@@ -215,13 +215,6 @@ impl Decode for PushPiecesResponse {
     }
 }
 
-/// Torque-gate command for a position-commanded servo endpoint.
-///
-/// `value=1` energizes: the endpoint runs the CiA 402 enable ladder on
-/// receipt — `execute_at_ns` is the ready-by deadline, not a start time.
-/// `value=0` de-energizes: the endpoint executes the disable ramp when its
-/// clock (CLOCK_MONOTONIC_RAW ns) reaches `execute_at_ns` — the scheduled-edge
-/// semantics of a stepper enable pin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SetTorque {
     pub value: u8,
@@ -244,10 +237,6 @@ impl Decode for SetTorque {
     }
 }
 
-/// Result of a [`SetTorque`] command. `result=0` means: enable — the drive
-/// reached Operation Enabled; disable — the ramp was accepted and scheduled.
-/// Nonzero is one of the -31x endpoint torque codes; every nonzero result is
-/// followed by endpoint exit (fail loudly).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SetTorqueResponse {
     pub result: i32,

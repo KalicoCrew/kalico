@@ -154,8 +154,6 @@ class MotionBridgeWrapper:
         )
 
     def set_torque(self, mcu_handle, value, print_time):
-        # RuntimeError from the bridge propagates: a failed torque command
-        # is a hard error (fail loudly), same class as a claim failure.
         self._bridge.set_torque(mcu_handle, bool(value), print_time)
 
     def release_mcu(self, handle):

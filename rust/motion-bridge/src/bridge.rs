@@ -785,11 +785,6 @@ impl PyMotionBridge {
         Ok(raw)
     }
 
-    /// Drive the EtherCAT servo torque gate. `value=true` energizes — the
-    /// endpoint runs the CiA 402 ladder on receipt, ready by `print_time`;
-    /// `value=false` schedules the disable ramp at `print_time`. Mirrors
-    /// MCU_digital_out.set_digital semantics; called by klippy's
-    /// stepper_enable stack via BridgeTorqueLine.
     fn set_torque(&self, mcu_handle: u32, value: bool, print_time: f64) -> PyResult<()> {
         let execute_at_ns = {
             let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
@@ -802,9 +797,6 @@ impl PyMotionBridge {
                 })?
         };
         if execute_at_ns == 0 {
-            // host_time_to_mcu_clock returns Ok(0) for an unseeded clock
-            // record — that means init_planner has not seeded the EtherCAT
-            // clock yet. Refuse rather than schedule "at epoch".
             return Err(PyRuntimeError::new_err(format!(
                 "set_torque: EtherCAT clock for mcu {mcu_handle} not seeded \
                  (init_planner not run?)"

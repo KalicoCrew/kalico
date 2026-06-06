@@ -1,10 +1,3 @@
-//! SetTorque transport call for EtherCAT endpoints.
-//!
-//! Blocking by design: for enable the endpoint runs the CiA 402 ladder
-//! before replying (sub-second normally; ~3 s worst case while the drive
-//! fault-resets); for disable it replies on acceptance. The caller treats
-//! any transport error or nonzero result as fatal (fail loudly).
-
 use std::time::Duration;
 
 use kalico_host_rt::native_call::NativeCall as _;
@@ -50,8 +43,6 @@ mod tests {
     use std::io::{Read, Write};
     use std::os::unix::net::UnixStream;
 
-    /// Fake endpoint: answers the first SetTorque with the given result and
-    /// records the decoded command.
     fn spawn_endpoint(peer: UnixStream, result: i32) -> std::sync::mpsc::Receiver<SetTorque> {
         spawn_endpoint_with_kind(peer, MessageKind::SetTorqueResponse, {
             let resp = SetTorqueResponse { result };
@@ -59,8 +50,6 @@ mod tests {
         })
     }
 
-    /// Fake endpoint: answers the first SetTorque with a response of the given
-    /// kind and body.
     fn spawn_endpoint_with_kind(
         mut peer: UnixStream,
         kind: MessageKind,

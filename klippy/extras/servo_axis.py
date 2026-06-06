@@ -75,10 +75,6 @@ class ServoRail:
             "position_max", above=self.position_min
         )
         self.position_endstop = 0.0
-        # One-shot activity callbacks — the MCU_stepper contract that
-        # EnableTracking (stepper_enable.py) arms motor_enable through.
-        # Fired by MotionToolhead._fire_active_callbacks' servo pass;
-        # re-armed by EnableTracking.motor_disable.
         self._active_callbacks = []
 
     # -- Identity -------------------------------------------------------
@@ -167,12 +163,6 @@ class ServoRail:
 
 
 class BridgeTorqueLine:
-    # Drive-torque gate shaped like MCU_digital_out: set_digital(print_time,
-    # value) maps 1 -> CiA 402 enable (endpoint runs the ladder on receipt,
-    # ready by print_time) and 0 -> disable ramp scheduled at print_time.
-    # Registered behind a StepperEnablePin so the entire stepper_enable
-    # stack (M84, SET_STEPPER_ENABLE, idle_timeout, get_status) drives the
-    # servo unchanged.
     def __init__(self, printer, node_name):
         self._printer = printer
         self._node_name = node_name
@@ -190,8 +180,6 @@ class BridgeTorqueLine:
 
 
 def register_torque_enable(printer, config, rail):
-    # The servo's torque gate joins stepper_enable as a first-class enable
-    # line: same EnableTracking, same StepperEnablePin, different "pin".
     from . import stepper_enable
 
     line = BridgeTorqueLine(printer, rail.get_node_name())
