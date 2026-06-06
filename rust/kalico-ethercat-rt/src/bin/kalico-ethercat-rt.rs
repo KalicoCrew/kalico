@@ -11,9 +11,12 @@ use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAUL
 use kalico_ethercat_rt::ffi;
 use kalico_ethercat_rt::scale::CountMap;
 use kalico_ethercat_rt::server::FrameServer;
+use kalico_ethercat_rt::torque::{
+    CommandAction, TickAction, TorqueGate, TorqueState, ERR_ENABLE_FAILED,
+};
 use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
-    runtime_caps_response_frame, status_heartbeat_frame, Command,
+    runtime_caps_response_frame, set_torque_response_frame, status_heartbeat_frame, Command,
 };
 use kalico_protocol::messages::SlaveState;
 
@@ -86,7 +89,7 @@ fn main() {
         }
         std::process::exit(1);
     }
-    eprintln!("ec-rt: drive enabled");
+    eprintln!("ec-rt: drive parked (Ready-to-Switch-On, no torque)");
 
     match wait_for_claim(
         &mut server,
@@ -111,6 +114,7 @@ fn main() {
     }
     eprintln!("ec-rt: handshake ok, entering DC loop");
 
+    let mut gate = TorqueGate::new();
     let mut prdiv = 0u64;
     let mut wkc_consecutive = 0u8;
     'dc: loop {
@@ -172,6 +176,60 @@ fn main() {
                     let total: u32 = (AXIS_RING_CAPACITY * NUM_AXES * 32) as u32;
                     server.respond(&runtime_caps_response_frame(correlation_id, total));
                 }
+                Command::SetTorque {
+                    correlation_id,
+                    msg,
+                } => {
+                    let now_ns = monotonic_ns();
+                    match gate.on_set_torque(msg.value != 0, msg.execute_at_ns, now_ns) {
+                        CommandAction::Enable { ramp_first } => {
+                            if ramp_first {
+                                eprintln!("ec-rt: pending disable ramps before re-enable");
+                                unsafe { ffi::ec_rt_disable() };
+                                gate.disable_finished();
+                            }
+                            let rc = unsafe { ffi::ec_rt_enable() };
+                            gate.enable_finished(rc == 0);
+                            if rc == 0 {
+                                eprintln!("ec-rt: torque enabled (CiA402 operation enabled)");
+                                server.respond(&set_torque_response_frame(correlation_id, 0));
+                            } else {
+                                eprintln!(
+                                    "ec-rt: CiA402 enable failed rc={rc} — disabling and exiting"
+                                );
+                                server.respond(&set_torque_response_frame(
+                                    correlation_id,
+                                    ERR_ENABLE_FAILED,
+                                ));
+                                unsafe {
+                                    ffi::ec_rt_disable();
+                                    ffi::ec_rt_shutdown();
+                                }
+                                std::process::exit(1);
+                            }
+                        }
+                        CommandAction::ScheduleDisable => {
+                            eprintln!(
+                                "ec-rt: torque disable scheduled at {} (now {now_ns})",
+                                msg.execute_at_ns
+                            );
+                            server.respond(&set_torque_response_frame(correlation_id, 0));
+                        }
+                        CommandAction::Reject { code } => {
+                            eprintln!(
+                                "ec-rt: SetTorque rejected code={code} \
+                                 (value={} execute_at={} now={now_ns}) — exiting",
+                                msg.value, msg.execute_at_ns
+                            );
+                            server.respond(&set_torque_response_frame(correlation_id, code));
+                            unsafe {
+                                ffi::ec_rt_disable();
+                                ffi::ec_rt_shutdown();
+                            }
+                            std::process::exit(1);
+                        }
+                    }
+                }
                 Command::ClaimHandshake { .. } => {
                     eprintln!(
                         "ec-rt: protocol violation: ClaimHandshake after handshake \
@@ -187,15 +245,41 @@ fn main() {
 
         let now = monotonic_ns();
 
-        if let Some((pos_mm, _vel_mm_s)) = ring.sample(now) {
-            let map = cmap.get_or_insert_with(|| {
-                let actual = unsafe { ffi::ec_rt_get_position_actual() };
-                CountMap::new(counts_per_mm, actual, f64::from(pos_mm))
-            });
-            let counts = map.target_counts(f64::from(pos_mm));
-            unsafe { ffi::ec_rt_set_target_position(counts) };
-        } else {
-            cmap = None;
+        match gate.on_tick(now, ring.is_empty()) {
+            TickAction::None => {}
+            TickAction::ExecuteDisable => {
+                eprintln!("ec-rt: scheduled torque disable executing");
+                unsafe { ffi::ec_rt_disable() };
+                gate.disable_finished();
+                cmap = None;
+            }
+            TickAction::Fault { code } => {
+                eprintln!(
+                    "ec-rt: torque-gate fault code={code} — pieces present without torque, exiting"
+                );
+                server.respond(&status_heartbeat_frame(
+                    ENGINE_STATE_FAULT,
+                    &[ring.retired_count()],
+                ));
+                unsafe {
+                    ffi::ec_rt_disable();
+                    ffi::ec_rt_shutdown();
+                }
+                std::process::exit(1);
+            }
+        }
+
+        if gate.state() == TorqueState::Enabled {
+            if let Some((pos_mm, _vel_mm_s)) = ring.sample(now) {
+                let map = cmap.get_or_insert_with(|| {
+                    let actual = unsafe { ffi::ec_rt_get_position_actual() };
+                    CountMap::new(counts_per_mm, actual, f64::from(pos_mm))
+                });
+                let counts = map.target_counts(f64::from(pos_mm));
+                unsafe { ffi::ec_rt_set_target_position(counts) };
+            } else {
+                cmap = None;
+            }
         }
 
         if let Some(fault_val) = ring.take_fault() {
