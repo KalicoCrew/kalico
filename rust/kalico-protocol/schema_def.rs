@@ -92,6 +92,25 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         ],
     },
     SchemaMessage {
+        type_tag: 0x0070,
+        name: "SetTorque",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "value", ty: "u8" },
+            SchemaField { name: "execute_at_ns", ty: "u64" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0071,
+        name: "SetTorqueResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+        ],
+    },
+    SchemaMessage {
         type_tag: 0x0082,
         name: "FaultEvent",
         version: 1,

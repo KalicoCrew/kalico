@@ -16,6 +16,8 @@ pub enum MessageKind {
     ClaimHandshakeReply = 0x0043,
     PushPieces = 0x0060,
     PushPiecesResponse = 0x0061,
+    SetTorque = 0x0070,
+    SetTorqueResponse = 0x0071,
     FaultEvent = 0x0082,
     StatusHeartbeat = 0x0083,
     McuLog = 0x0084,
@@ -34,6 +36,8 @@ impl MessageKind {
             0x0043 => Self::ClaimHandshakeReply,
             0x0060 => Self::PushPieces,
             0x0061 => Self::PushPiecesResponse,
+            0x0070 => Self::SetTorque,
+            0x0071 => Self::SetTorqueResponse,
             0x0082 => Self::FaultEvent,
             0x0083 => Self::StatusHeartbeat,
             0x0084 => Self::McuLog,
@@ -207,6 +211,58 @@ impl Decode for PushPiecesResponse {
             result: get_i32(c)?,
             arrival_clock: get_u64(c)?,
             front_start_time: get_u64(c)?,
+        })
+    }
+}
+
+/// Torque-gate command for a position-commanded servo endpoint.
+///
+/// `value=1` energizes: the endpoint runs the CiA 402 enable ladder on
+/// receipt — `execute_at_ns` is the ready-by deadline, not a start time.
+/// `value=0` de-energizes: the endpoint executes the disable ramp when its
+/// clock (CLOCK_MONOTONIC_RAW ns) reaches `execute_at_ns` — the scheduled-edge
+/// semantics of a stepper enable pin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetTorque {
+    pub value: u8,
+    pub execute_at_ns: u64,
+}
+
+impl Encode for SetTorque {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_u8(out, self.value);
+        put_u64(out, self.execute_at_ns);
+    }
+}
+
+impl Decode for SetTorque {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            value: get_u8(c)?,
+            execute_at_ns: get_u64(c)?,
+        })
+    }
+}
+
+/// Result of a [`SetTorque`] command. `result=0` means: enable — the drive
+/// reached Operation Enabled; disable — the ramp was accepted and scheduled.
+/// Nonzero is one of the -31x endpoint torque codes; every nonzero result is
+/// followed by endpoint exit (fail loudly).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetTorqueResponse {
+    pub result: i32,
+}
+
+impl Encode for SetTorqueResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+    }
+}
+
+impl Decode for SetTorqueResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
         })
     }
 }
