@@ -683,7 +683,9 @@ mod fixture_7_curvature_spike_intergrid_sanity {
             // (5%). The old 0.1% tolerance was accidentally met because the
             // tight SLP9 band (1e-3) forced extra iterations that suppressed
             // inter-grid b peaks. With the correct 5% jerk acceptance band,
-            // inter-grid centripetal can reach ~4-5% above the grid-point cap.
+            // inter-grid centripetal measures 1.036 on this fixture — the
+            // 1.05 bound has real headroom; the lever for tightening it is
+            // grid density, not the acceptance band.
             if v_squared * kappa > limits.a_centripetal_max * 1.05 {
                 violations.push(format!(
                     "centripetal at u={u}: v²·κ={} > a_cent={}",

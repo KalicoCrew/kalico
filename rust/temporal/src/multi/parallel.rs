@@ -155,6 +155,7 @@ fn solve_with_boundary_fallback(
         }
     }
 
+    // Success path for both the unpinned and one-pinned cases.
     if let Some(profile) = best {
         return Ok(profile);
     }
