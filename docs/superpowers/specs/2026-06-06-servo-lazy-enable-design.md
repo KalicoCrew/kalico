@@ -103,7 +103,10 @@ domain via the same mapping trajectory pieces already use for start times.
   cycle. PDO exchange and position tracking run from claim onward.
 - The CiA 402 ladder code moves from `ec_rt_bringup()` into a new
   `ec_rt_enable()` (bounded cycles; fault-reset pulsing preserved; returns
-  nonzero on timeout/fault).
+  nonzero on timeout/fault). The C side is sequence-trusting by design — no
+  double-enable or ordering guards; `TorqueGate` is the sole sequencing
+  authority, which is why its reject paths must exit the process rather
+  than recover.
 - `ec_rt_cycle()` becomes state-aware: enabled → `0x000F` + ring-driven
   target; parked → `0x0006` + target=actual.
 - `ec_rt_disable()` (the `0x0006` ramp) is unchanged and now lands in the
