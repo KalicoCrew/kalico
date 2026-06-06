@@ -58,6 +58,71 @@ pub fn single_slave_reply(
     }
 }
 
+/// Maximum number of consecutive bad working-counter cycles before the DC loop
+/// halts and exits.
+///
+/// One bad cycle is tolerated because USB-NIC adapters occasionally drop a
+/// single Ethernet frame under load; the drive's own SM communication watchdog
+/// (~100 ms typical) is the authoritative hardware backstop for sustained loss.
+/// Two consecutive bad cycles means the bus is genuinely gone and the drive is
+/// no longer receiving valid PDO exchanges.
+pub const WKC_CONSECUTIVE_LOSS_LIMIT: u8 = 2;
+
+/// Outcome of evaluating a single working-counter sample.
+#[derive(Debug, PartialEq, Eq)]
+pub enum WkcDecision {
+    /// Working counter is good; counter has been reset.
+    Good,
+    /// One or more bad cycles accumulated, but below the halt threshold.
+    /// The embedded value is the current consecutive-loss count.
+    Warn(u8),
+    /// Consecutive bad cycles reached the limit; caller must halt.
+    Halt,
+}
+
+/// Evaluate one working-counter reading against the expected value.
+///
+/// `consecutive` is the mutable counter that the caller must keep across calls.
+/// It is reset to 0 on a good cycle and incremented on a bad one.
+///
+/// # Examples
+///
+/// ```
+/// use kalico_ethercat_rt::claim::{WkcDecision, WKC_CONSECUTIVE_LOSS_LIMIT, eval_wkc};
+///
+/// let expected = 3i32;
+/// let mut consecutive = 0u8;
+///
+/// // Good cycle — counter stays 0.
+/// assert_eq!(eval_wkc(3, expected, &mut consecutive), WkcDecision::Good);
+/// assert_eq!(consecutive, 0);
+///
+/// // First bad cycle — warn, do not halt.
+/// assert_eq!(eval_wkc(-1, expected, &mut consecutive), WkcDecision::Warn(1));
+/// assert_eq!(consecutive, 1);
+///
+/// // Good cycle after one bad — counter resets.
+/// assert_eq!(eval_wkc(3, expected, &mut consecutive), WkcDecision::Good);
+/// assert_eq!(consecutive, 0);
+///
+/// // Two consecutive bad cycles — halt.
+/// eval_wkc(-1, expected, &mut consecutive);
+/// assert_eq!(eval_wkc(-1, expected, &mut consecutive), WkcDecision::Halt);
+/// ```
+pub fn eval_wkc(wkc: i32, expected: i32, consecutive: &mut u8) -> WkcDecision {
+    if wkc == expected {
+        *consecutive = 0;
+        WkcDecision::Good
+    } else {
+        *consecutive = consecutive.saturating_add(1);
+        if *consecutive >= WKC_CONSECUTIVE_LOSS_LIMIT {
+            WkcDecision::Halt
+        } else {
+            WkcDecision::Warn(*consecutive)
+        }
+    }
+}
+
 /// Parse the `--fail-bringup slave=N` argument from a flat argv slice.
 ///
 /// Returns:
@@ -99,10 +164,46 @@ pub fn parse_fail_bringup(args: &[String]) -> Result<Option<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_fail_bringup;
+    use super::{eval_wkc, parse_fail_bringup, WkcDecision};
 
     fn args(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn wkc_good_good_stays_zero() {
+        let mut c = 0u8;
+        assert_eq!(eval_wkc(3, 3, &mut c), WkcDecision::Good);
+        assert_eq!(c, 0);
+        assert_eq!(eval_wkc(3, 3, &mut c), WkcDecision::Good);
+        assert_eq!(c, 0);
+    }
+
+    #[test]
+    fn wkc_bad_then_good_resets_counter() {
+        let mut c = 0u8;
+        assert_eq!(eval_wkc(-1, 3, &mut c), WkcDecision::Warn(1));
+        assert_eq!(c, 1);
+        assert_eq!(eval_wkc(3, 3, &mut c), WkcDecision::Good);
+        assert_eq!(c, 0);
+    }
+
+    #[test]
+    fn wkc_two_consecutive_bad_halts() {
+        let mut c = 0u8;
+        assert_eq!(eval_wkc(-1, 3, &mut c), WkcDecision::Warn(1));
+        assert_eq!(eval_wkc(-1, 3, &mut c), WkcDecision::Halt);
+    }
+
+    #[test]
+    fn wkc_interleaved_bad_good_bad_good() {
+        let mut c = 0u8;
+        assert_eq!(eval_wkc(-1, 3, &mut c), WkcDecision::Warn(1));
+        assert_eq!(eval_wkc(3, 3, &mut c), WkcDecision::Good);
+        assert_eq!(c, 0, "counter must reset on good cycle");
+        assert_eq!(eval_wkc(-1, 3, &mut c), WkcDecision::Warn(1));
+        assert_eq!(eval_wkc(3, 3, &mut c), WkcDecision::Good);
+        assert_eq!(c, 0, "counter must reset again");
     }
 
     #[test]

@@ -5,7 +5,7 @@
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use kalico_ethercat_rt::claim::{single_slave_reply, wait_for_claim};
+use kalico_ethercat_rt::claim::{eval_wkc, single_slave_reply, wait_for_claim, WkcDecision};
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::ffi;
@@ -112,6 +112,7 @@ fn main() {
     eprintln!("ec-rt: handshake ok, entering DC loop");
 
     let mut prdiv = 0u64;
+    let mut wkc_consecutive = 0u8;
     'dc: loop {
         if SIGTERM_RECEIVED.load(Ordering::Acquire) {
             eprintln!("ec-rt: SIGTERM received — disabling drive and exiting");
@@ -219,9 +220,25 @@ fn main() {
         let mut toff = 0i64;
         let wkc = unsafe { ffi::ec_rt_cycle(&mut toff) };
 
-        if wkc != 3 {
-            eprintln!("ec-rt: working counter {wkc} (expected 3) — bus lost, halting");
-            break;
+        match eval_wkc(wkc, 3, &mut wkc_consecutive) {
+            WkcDecision::Good => {}
+            WkcDecision::Warn(n) => {
+                eprintln!(
+                    "ec-rt: WARNING — working counter {wkc} (expected 3), \
+                     consecutive_bad={n}; tolerating (USB-NIC frame loss); \
+                     halt threshold={}",
+                    kalico_ethercat_rt::claim::WKC_CONSECUTIVE_LOSS_LIMIT
+                );
+            }
+            WkcDecision::Halt => {
+                eprintln!(
+                    "ec-rt: working counter {wkc} (expected 3), \
+                     consecutive_bad={wkc_consecutive} — bus lost after \
+                     {} consecutive bad cycles, halting",
+                    kalico_ethercat_rt::claim::WKC_CONSECUTIVE_LOSS_LIMIT
+                );
+                break;
+            }
         }
 
         let current_retired = ring.retired_count();
