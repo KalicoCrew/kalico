@@ -823,6 +823,8 @@ impl PyMotionBridge {
             })?
         };
         tracing::info!(
+            subsystem = "bridge",
+            event = "servo_torque_command",
             mcu_handle,
             value,
             print_time,
@@ -832,7 +834,14 @@ impl PyMotionBridge {
         let result = crate::servo_torque::send_set_torque(&conn, value, execute_at_ns)
             .map_err(PyRuntimeError::new_err)?;
         if result != 0 {
-            tracing::error!(mcu_handle, value, result, "servo torque command rejected");
+            tracing::error!(
+                subsystem = "bridge",
+                event = "servo_torque_rejected",
+                mcu_handle,
+                value,
+                result,
+                "servo torque command rejected"
+            );
             return Err(PyRuntimeError::new_err(format!(
                 "servo torque {} failed: endpoint result {result}",
                 if value { "enable" } else { "disable" }

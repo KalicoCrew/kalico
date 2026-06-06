@@ -52,7 +52,20 @@ mod tests {
 
     /// Fake endpoint: answers the first SetTorque with the given result and
     /// records the decoded command.
-    fn spawn_endpoint(mut peer: UnixStream, result: i32) -> std::sync::mpsc::Receiver<SetTorque> {
+    fn spawn_endpoint(peer: UnixStream, result: i32) -> std::sync::mpsc::Receiver<SetTorque> {
+        spawn_endpoint_with_kind(peer, MessageKind::SetTorqueResponse, {
+            let resp = SetTorqueResponse { result };
+            resp.encoded_to_vec()
+        })
+    }
+
+    /// Fake endpoint: answers the first SetTorque with a response of the given
+    /// kind and body.
+    fn spawn_endpoint_with_kind(
+        mut peer: UnixStream,
+        kind: MessageKind,
+        body: Vec<u8>,
+    ) -> std::sync::mpsc::Receiver<SetTorque> {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut demux = Demuxer::new();
@@ -65,18 +78,17 @@ mod tests {
                 let (frames, _e) = demux.feed_slice(&buf[..n]);
                 for f in frames {
                     if let Frame::Kalico { payload, .. } = f {
-                        let (hdr, body) =
+                        let (hdr, _body) =
                             decode_message_header(&payload).expect("valid message header");
-                        let msg = SetTorque::decode(body).expect("valid SetTorque body");
+                        let msg = SetTorque::decode(_body).expect("valid SetTorque body");
                         let _ = tx.send(msg);
-                        let resp = SetTorqueResponse { result };
                         let mut out = encode_message_header(
-                            MessageKind::SetTorqueResponse,
+                            kind,
                             MESSAGE_VERSION_DEFAULT,
                             hdr.correlation_id,
                         )
                         .to_vec();
-                        out.extend_from_slice(&resp.encoded_to_vec());
+                        out.extend_from_slice(&body);
                         let frame = encode_frame(CHANNEL_CONTROL, &out);
                         peer.write_all(&frame).unwrap();
                         return;
@@ -113,5 +125,14 @@ mod tests {
         drop(server); // peer gone
         let conn = UnixNativeConn::from_stream(client);
         assert!(send_set_torque(&conn, true, 1).is_err());
+    }
+
+    #[test]
+    fn wrong_kind_response_is_rejected() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let _rx = spawn_endpoint_with_kind(server, MessageKind::PushPiecesResponse, vec![0u8; 20]);
+        let conn = UnixNativeConn::from_stream(client);
+        let err = send_set_torque(&conn, true, 42_000).expect_err("should error on wrong kind");
+        assert!(err.contains("unexpected response kind"));
     }
 }
