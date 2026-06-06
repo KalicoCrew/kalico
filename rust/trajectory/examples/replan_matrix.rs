@@ -73,6 +73,11 @@ fn main() {
     ];
 
     let feed = 25.0;
+    // MIN_N: grid floor override for the discretization-noise probe.
+    let min_n: usize = std::env::var("MIN_N")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(20);
     let stub_lens = [0.05_f64, 0.2, 0.5, 2.0, 10.0, 30.0];
     let entry_vs = [0.0_f64, 10.0, 20.0, 25.0];
 
@@ -100,7 +105,7 @@ fn main() {
             let input = PlanInput {
                 segments: &plan_segments,
                 grid_strategy: temporal::multi::GridStrategy::Adaptive {
-                    min_n: 20,
+                    min_n,
                     max_n: 200,
                     target_grid_spacing_mm: 0.5,
                 },
