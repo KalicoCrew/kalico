@@ -4,8 +4,11 @@
 //! effects (CiA 402 ladder, disable ramp, heartbeat, process exit) and feeds
 //! outcomes back via `enable_finished` / `disable_finished`.
 
-/// SetTorqueResponse / fault result codes. Extends the endpoint's -30x
-/// family (-308 piece-start-in-past, -309 ring-full).
+/// SetTorqueResponse / fault result codes on the endpoint control channel,
+/// extending the endpoint's own -30x codes (-308 piece-start-in-past,
+/// -309 ring-full). This space is separate from the MCU `runtime::error`
+/// fault table, which reuses some of the same integers for unrelated
+/// faults on a different wire field.
 pub const ERR_ENABLE_FAILED: i32 = -310;
 pub const ERR_DISABLE_IN_PAST: i32 = -311;
 pub const ERR_BAD_TORQUE_STATE: i32 = -312;
