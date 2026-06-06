@@ -142,6 +142,14 @@ pub enum ReactorCommand {
             SyncSender<Result<crate::host_io::kalico_native::KalicoCallOutcome, TransportError>>,
         deadline: std::time::Instant,
     },
+    /// Encode and send `get_clock` (with the reactor's own per-MCU parser —
+    /// the bridge-level parser carries whichever MCU's dictionary was set
+    /// last and must never encode for a specific MCU). The send timestamp is
+    /// captured in the reactor immediately before the wire write; when the
+    /// "clock" response arrives as an unsolicited frame the reactor injects
+    /// honest RAW timestamps and delivers it as a PassthroughResponse
+    /// runtime event.
+    GetClockAndDeliver,
     Shutdown,
     Noop,
     RegisterInterceptor {
@@ -598,6 +606,19 @@ impl KalicoHostIo {
             .send(ReactorCommand::FireAndForget {
                 cmd: cmd.to_owned(),
             })
+            .map_err(|_| TransportError::Closed)
+    }
+
+    /// Ask the reactor to encode+send `get_clock` and stamp the matching
+    /// "clock" response with CLOCK_MONOTONIC_RAW timestamps (send stamp
+    /// captured in the reactor immediately before the wire write). The
+    /// response is delivered as a `PassthroughResponse { name: "clock", .. }`
+    /// runtime event with `MessageParams::sent_time_raw` / `recv_time_raw`
+    /// filled in, so the Python `_bridge_event_poller` can inject them into
+    /// `#sent_time` / `#receive_time` before dispatching to `_handle_clock`.
+    pub fn get_clock_async(&self) -> Result<(), TransportError> {
+        self.submission_tx
+            .send(ReactorCommand::GetClockAndDeliver)
             .map_err(|_| TransportError::Closed)
     }
 

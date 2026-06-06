@@ -51,7 +51,15 @@ pub struct Reactor {
 
     pub(crate) pending_submissions: VecDeque<PendingSubmission>,
 
-    pub(crate) pending_fire_and_forget: VecDeque<Vec<u8>>,
+    /// When `get_clock_async` is in flight: the CLOCK_MONOTONIC_RAW sent-time
+    /// captured before the frame was written to wire.  The next unsolicited
+    /// "clock" response matching this will be delivered as a PassthroughResponse
+    /// with RAW RTT stamps rather than going through the generic path.
+    pub(crate) pending_clock_sent_raw: Option<f64>,
+
+    /// Queued fire-and-forget payloads; the bool marks a `get_clock` frame
+    /// whose RAW send stamp is captured at the actual wire write.
+    pub(crate) pending_fire_and_forget: VecDeque<(Vec<u8>, bool)>,
     pub(crate) pending_outbound_order: VecDeque<PendingOutboundKind>,
     pub(crate) zero_byte_first_seen: Option<Instant>,
     pub(crate) last_recv_time: Instant,
@@ -139,6 +147,7 @@ impl Reactor {
             state: ReactorState::Active,
             closed_via_shutdown: false,
             pending_host_fault: None,
+            pending_clock_sent_raw: None,
             pending_submissions: VecDeque::new(),
             pending_fire_and_forget: VecDeque::new(),
             pending_outbound_order: VecDeque::new(),
@@ -274,6 +283,7 @@ impl Reactor {
         let wire_seq = (seq & 0x0F) as u8;
         let frame = crate::host_io::wire::build_frame(&payload, wire_seq);
 
+        let sent_time_raw = crate::clock::monotonic_raw_secs();
         self.write_frame(&frame)?;
 
         let now = self.clock.now();
@@ -294,6 +304,7 @@ impl Reactor {
                 submitted_at: now,
                 deadline,
                 abandoned: false,
+                sent_time_raw,
             })?;
         tracing::trace!(
             subsystem = "mcu-comms",
@@ -316,6 +327,7 @@ impl Reactor {
     pub(crate) fn dispatch_fire_and_forget(
         &mut self,
         payload: Vec<u8>,
+        is_get_clock: bool,
     ) -> Result<(), TransportError> {
         if self.unacked_window.is_full() {
             if self.pending_fire_and_forget.len() >= PENDING_FIRE_AND_FORGET_CEILING {
@@ -325,7 +337,8 @@ impl Reactor {
                 );
                 return Err(TransportError::Backpressure);
             }
-            self.pending_fire_and_forget.push_back(payload);
+            self.pending_fire_and_forget
+                .push_back((payload, is_get_clock));
             self.pending_outbound_order
                 .push_back(PendingOutboundKind::FireAndForget);
             return Ok(());
@@ -334,7 +347,20 @@ impl Reactor {
         self.send_seq += 1;
         let wire_seq = (seq & 0x0F) as u8;
         let frame = crate::host_io::wire::build_frame(&payload, wire_seq);
-        self.write_frame(&frame)?;
+        // get_clock send stamps MUST be captured at the wire write, not at
+        // command processing: on a busy link (beacon's status stream) the
+        // frame can queue for multiple ms, and an early stamp pairs the
+        // response clock with a fictitious send time — observed as a
+        // constant +5.6ms outlier on every beacon clocksync sample.
+        if is_get_clock {
+            self.pending_clock_sent_raw = Some(crate::clock::monotonic_raw_secs());
+        }
+        if let Err(e) = self.write_frame(&frame) {
+            if is_get_clock {
+                self.pending_clock_sent_raw = None;
+            }
+            return Err(e);
+        }
         let now = self.clock.now();
         self.unacked_window
             .push(crate::host_io::window::UnackedEntry {
@@ -385,11 +411,12 @@ impl Reactor {
                     }
                 }
                 PendingOutboundKind::FireAndForget => {
-                    let Some(payload) = self.pending_fire_and_forget.pop_front() else {
+                    let Some((payload, is_get_clock)) = self.pending_fire_and_forget.pop_front()
+                    else {
                         log::error!("pending outbound order referenced missing fire-and-forget");
                         continue;
                     };
-                    if let Err(e) = self.dispatch_fire_and_forget(payload) {
+                    if let Err(e) = self.dispatch_fire_and_forget(payload, is_get_clock) {
                         if matches!(e, TransportError::Io(_)) {
                             if self.pending_host_fault.is_none() {
                                 self.pending_host_fault =
@@ -642,6 +669,9 @@ impl Reactor {
                         matched_seq = entry.seq,
                         "solicited response matched"
                     );
+                    let mut params = params;
+                    params.sent_time_raw = entry.sent_time_raw;
+                    params.recv_time_raw = crate::clock::monotonic_raw_secs();
                     let _ = entry.completion.send(Ok(params));
                 } else {
                     let oid = params.fields.get("oid").and_then(|v| match v {
@@ -669,6 +699,25 @@ impl Reactor {
                             "unsolicited frame"
                         );
                     }
+                    // If this is the "clock" response for a pending get_clock_async
+                    // request, inject RAW timestamps so Python clocksync sees an
+                    // honest RTT rather than the usual half_rtt=0 artefact.
+                    if name == "clock" {
+                        if let Some(sent_raw) = self.pending_clock_sent_raw.take() {
+                            let recv_raw = crate::clock::monotonic_raw_secs();
+                            let mut stamped = params.clone();
+                            stamped.sent_time_raw = sent_raw;
+                            stamped.recv_time_raw = recv_raw;
+                            let event =
+                                crate::host_io::runtime_events::RuntimeEvent::PassthroughResponse {
+                                    name,
+                                    params: stamped,
+                                };
+                            self.dispatch_runtime_event(event);
+                            return Ok(());
+                        }
+                    }
+
                     self.interceptors.dispatch(&name, oid, &params);
 
                     if !self.try_dispatch_passthrough_response(&raw_payload) {
@@ -977,7 +1026,7 @@ impl Reactor {
                         head = %head.join(","),
                         "FireAndForget encoded OK"
                     );
-                    if let Err(e) = self.dispatch_fire_and_forget(payload) {
+                    if let Err(e) = self.dispatch_fire_and_forget(payload, false) {
                         let is_io = matches!(e, TransportError::Io(_));
                         tracing::error!(
                             subsystem = "mcu-comms",
@@ -1002,7 +1051,7 @@ impl Reactor {
                 }
             },
             ReactorCommand::FireAndForgetTyped { payload } => {
-                if let Err(e) = self.dispatch_fire_and_forget(payload) {
+                if let Err(e) = self.dispatch_fire_and_forget(payload, false) {
                     let is_io = matches!(e, TransportError::Io(_));
                     log::warn!("FireAndForgetTyped: send error: {e}");
                     if is_io {
@@ -1063,6 +1112,34 @@ impl Reactor {
                     }
                 }
             }
+            ReactorCommand::GetClockAndDeliver => match self.parser.encode("get_clock") {
+                Ok(payload) => {
+                    // The RAW send stamp is captured inside
+                    // dispatch_fire_and_forget at the actual wire write —
+                    // never here, where the frame may still queue behind a
+                    // busy link for milliseconds.
+                    if let Err(e) = self.dispatch_fire_and_forget(payload, true) {
+                        let is_io = matches!(e, TransportError::Io(_));
+                        tracing::error!(
+                            subsystem = "mcu-comms",
+                            event = "get_clock_async_send_error",
+                            error = %e,
+                            "GetClockAndDeliver dispatch failed"
+                        );
+                        if is_io {
+                            self.transition_closed_on_io_fault();
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        subsystem = "mcu-comms",
+                        event = "get_clock_async_encode_error",
+                        error = ?e,
+                        "GetClockAndDeliver: encode 'get_clock' failed"
+                    );
+                }
+            },
             ReactorCommand::Noop => {}
             ReactorCommand::RegisterInterceptor {
                 msg_name,
@@ -1082,6 +1159,7 @@ impl Reactor {
 
 impl Reactor {
     fn flush_all_completions(&mut self) {
+        self.pending_clock_sent_raw = None;
         for entry in self.awaiting_response.drain_all() {
             let _ = entry.completion.send(Err(TransportError::Closed));
         }

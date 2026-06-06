@@ -49,8 +49,8 @@ class ClockSync:
             try:
                 cb(
                     self.clock_est[2],
-                    self.time_avg + TRANSMIT_EXTRA,
-                    self.last_clock,
+                    self.time_avg + self.min_half_rtt,
+                    int(self.clock_avg),
                 )
             except Exception:
                 logging.exception("clocksync: initial set_clock_est callback")
@@ -90,7 +90,14 @@ class ClockSync:
 
     # MCU clock querying (_handle_clock is invoked from background thread)
     def _get_clock_event(self, eventtime):
-        self.serial.raw_send(self.get_clock_cmd, 0, 0, self.cmd_queue)
+        # In bridge mode raw_send is a no-op (no C serialqueue). Use the
+        # dedicated bridge path that captures a RAW timestamp before the send
+        # and stamps the unsolicited "clock" response with it, giving an
+        # honest RTT for min_half_rtt tracking.
+        if hasattr(self.serial, "bridge_get_clock_async"):
+            self.serial.bridge_get_clock_async()
+        else:
+            self.serial.raw_send(self.get_clock_cmd, 0, 0, self.cmd_queue)
         self.queries_pending += 1
         # Use an unusual time for the next event so clock messages
         # don't resonate with other periodic events.
@@ -179,10 +186,17 @@ class ClockSync:
             new_freq,
         )
         # Mirror the regression update into the motion_bridge.
+        # Export the same triple as clock_est: (freq, time_avg+min_half_rtt,
+        # clock_avg).  TRANSMIT_EXTRA is a serialqueue scheduling bias — not a
+        # projection parameter — and must not contaminate the router anchor.
         cb = self._clock_est_callback
         if cb is not None:
             try:
-                cb(new_freq, self.time_avg + TRANSMIT_EXTRA, clock)
+                cb(
+                    new_freq,
+                    self.time_avg + self.min_half_rtt,
+                    int(self.clock_avg),
+                )
             except Exception:
                 logging.exception("clocksync: set_clock_est callback")
         # logging.debug("regr %.3f: freq=%.3f d=%d(%.3f)",
@@ -215,7 +229,7 @@ class ClockSync:
         return last_clock + clock_diff
 
     def is_active(self):
-        return True
+        return self.queries_pending <= 4
 
     def dump_debug(self):
         sample_time, clock, freq = self.clock_est

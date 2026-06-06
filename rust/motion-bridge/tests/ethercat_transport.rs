@@ -19,13 +19,16 @@ use runtime::piece_ring::PieceEntry;
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-fn piece(t: u64) -> PieceEntry {
-    PieceEntry {
-        start_time: t,
-        coeffs: [0.0; 4],
-        duration: 0.001,
-        _reserved: 0,
-    }
+fn piece(t: u64) -> (PieceEntry, f64) {
+    (
+        PieceEntry {
+            start_time: t,
+            coeffs: [0.0; 4],
+            duration: 0.001,
+            _reserved: 0,
+        },
+        t as f64,
+    )
 }
 
 // ── 1. WireSink hard error on missing transport ───────────────────────────
@@ -40,7 +43,7 @@ fn wire_sink_missing_transport_is_hard_error() {
         transports: HashMap::new(), // intentionally empty
         timeout: Duration::from_secs(1),
     };
-    let p = piece(0);
+    let (p, _) = piece(0);
     let result = sink.send_frame(
         AxisKey {
             mcu_id: 99,

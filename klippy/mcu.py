@@ -1653,12 +1653,19 @@ class MCU:
             bridge = self._motion_bridge
             handle = self._bridge_handle
 
+            reactor = self._reactor
+
             def _bridge_clock_est_cb(
-                freq, offset, last_clock, b=bridge, h=handle
+                freq, offset, last_clock, b=bridge, h=handle, r=reactor
             ):
+                host_now_raw = r.monotonic()
                 try:
                     b.set_clock_est(
-                        h, float(freq), float(offset), int(last_clock)
+                        h,
+                        float(freq),
+                        float(offset),
+                        int(last_clock),
+                        host_now_raw,
                     )
                 except Exception:
                     logging.exception("motion_bridge: set_clock_est failed")
@@ -1923,8 +1930,7 @@ class MCU:
         return
 
     def check_active(self, print_time, eventtime):
-        # Bridge mode: clock sync runs through motion_bridge; the legacy
-        # steppersync clock-calibration path no longer has work to do here.
+        self._clocksync.calibrate_clock(print_time, eventtime)
         if (
             self._clocksync.is_active()
             or self.is_fileoutput()

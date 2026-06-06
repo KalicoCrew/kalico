@@ -399,3 +399,75 @@ fn flush_does_not_fire_twice_without_new_entries() {
     router.check_flush(mcu).unwrap();
     assert_eq!(*count.lock().unwrap(), 1);
 }
+
+/// `wall_time_at_mcu` returns a real wall time when a clock record is present.
+///
+/// Anchor at now with last_clock=100_000_000 and freq=100 MHz so that
+/// mcu_tick=100_000_000 (i.e. the anchor itself) maps to "now".  The returned
+/// wall time must be within ±1 second of the current system clock, and
+/// `estimated` must be false (delta_ticks / freq = 0.0, within the 1 s window).
+#[test]
+fn wall_time_at_mcu_known_record_returns_wall_time() {
+    let (mut router, clock) = make_router();
+    let mcu = router.claim_mcu("mcu");
+
+    // Anchor: last_clock=100_000_000 ticks at "now" in the mock clock.
+    let anchor_host = instant_to_f64(clock.now());
+    router
+        .set_clock_est(mcu, 100_000_000.0, anchor_host, 100_000_000)
+        .unwrap();
+
+    let (dt, estimated) = router
+        .wall_time_at_mcu(mcu, 100_000_000)
+        .expect("must return Some when clock record is set");
+
+    // The result must be within 1 second of wall-clock now.
+    let now_unix = time::OffsetDateTime::now_utc();
+    let diff = (dt - now_unix).abs();
+    assert!(
+        diff <= time::Duration::seconds(1),
+        "wall time {dt} must be within 1 s of system clock {now_unix}"
+    );
+    assert!(
+        !estimated,
+        "estimated must be false when delta is exactly 0 ticks"
+    );
+}
+
+/// `wall_time_at_mcu` returns `estimated == true` when the tick is more than
+/// one MCU-frequency-second from the anchor.
+///
+/// Anchor at last_clock=100_000_000 with freq=100 MHz.  A tick at
+/// 300_000_000 is 200_000_000 ticks away = 2.0 s > 1.0 s → estimated.
+#[test]
+fn wall_time_at_mcu_far_from_anchor_returns_estimated_true() {
+    let (mut router, clock) = make_router();
+    let mcu = router.claim_mcu("mcu");
+
+    let anchor_host = crate::clock::instant_to_f64(clock.now());
+    router
+        .set_clock_est(mcu, 100_000_000.0, anchor_host, 100_000_000)
+        .unwrap();
+
+    let (_, estimated) = router
+        .wall_time_at_mcu(mcu, 300_000_000)
+        .expect("must return Some when clock record is set");
+
+    assert!(
+        estimated,
+        "estimated must be true when tick is 2 MCU-seconds from anchor"
+    );
+}
+
+/// `wall_time_at_mcu` returns `None` before any clock record has been set.
+#[test]
+fn wall_time_at_mcu_no_record_returns_none() {
+    let (mut router, _) = make_router();
+    let mcu = router.claim_mcu("mcu");
+
+    // No set_clock_est call — clock_freq defaults to 0.0.
+    assert!(
+        router.wall_time_at_mcu(mcu, 1_000_000_000).is_none(),
+        "must return None when no clock record has been set"
+    );
+}

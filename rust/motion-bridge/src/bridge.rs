@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
@@ -38,124 +38,13 @@ struct McuConnection {
     runtime_caps: Option<kalico_protocol::messages::RuntimeCapsResponse>,
     identify_caps: u64,
     kalico_native_supported: bool,
-    clock_sync_stop: Option<Arc<AtomicBool>>,
-    clock_sync_thread: Option<JoinHandle<()>>,
-    clock_sync_estimator:
-        Option<Arc<std::sync::RwLock<kalico_host_rt::clock_sync::ClockSyncEstimator>>>,
     ethercat_socket: Option<String>,
     endpoint_process: Option<std::process::Child>,
     endpoint_conn: Option<Arc<UnixNativeConn>>,
 }
 
-const CLOCK_SYNC_INTERVAL: Duration = Duration::from_millis(500);
-const CLOCK_SYNC_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
 /// Exceeding this means a wedged MCU — fail loudly.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
-
-fn spawn_periodic_clock_sync(
-    mcu_handle_raw: u32,
-    host_io: Arc<KalicoHostIo>,
-    router: Arc<Mutex<PassthroughRouter>>,
-    clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
-    stop: Arc<AtomicBool>,
-    estimator: Arc<std::sync::RwLock<kalico_host_rt::clock_sync::ClockSyncEstimator>>,
-) -> JoinHandle<()> {
-    use kalico_host_rt::transport::Transport;
-
-    let mcu_h = mcu_handle_from_raw(mcu_handle_raw);
-    std::thread::Builder::new()
-        .name(format!("clock-sync-mcu-{mcu_handle_raw}"))
-        .spawn(move || {
-                {
-                let initial_freq = {
-                    let guard = clock_freqs.lock().unwrap_or_else(|p| p.into_inner());
-                    guard.get(&mcu_handle_raw).copied().unwrap_or(100_000_000.0)
-                };
-                let mut est = estimator.write().unwrap_or_else(|p| p.into_inner());
-                *est = kalico_host_rt::clock_sync::ClockSyncEstimator::new(initial_freq);
-            }
-
-            std::thread::sleep(Duration::from_millis(200));
-
-            while !stop.load(Ordering::Relaxed) {
-                let request_id = {
-                    let mut est = estimator.write().unwrap_or_else(|p| p.into_inner());
-                    est.next_clock_sync_request_id()
-                };
-                let host_send = Instant::now();
-                let cmd = format!(
-                    "runtime_clock_sync_request request_id={request_id} \
-                     host_send_time_lo=0 host_send_time_hi=0"
-                );
-                if let Ok(resp) = host_io.call(
-                    &cmd,
-                    "kalico_clock_sync_response",
-                    CLOCK_SYNC_REQUEST_TIMEOUT,
-                ) {
-                    let host_recv = Instant::now();
-                    if let Some(echoed) = resp.try_get_u32("request_id") {
-                        if echoed == request_id {
-                            let lo = resp.try_get_u32("mcu_clock_lo").unwrap_or(0);
-                            let hi = resp.try_get_u32("mcu_clock_hi").unwrap_or(0);
-                            let mcu_at_response =
-                                (u64::from(hi) << 32) | u64::from(lo);
-                            // Skip uninitialised MCU clock samples (TIM5 not yet ticking).
-                            // Feeding 0 into the regression collapses slope→0 and overwrites
-                            // klippy's valid clock_freq, wedging dispatch.
-                            const MCU_CLOCK_INIT_FLOOR: u64 = 100_000_000;
-                            if mcu_at_response < MCU_CLOCK_INIT_FLOOR {
-                                use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
-                                static SKIP_COUNT: AtomicUsize = AtomicUsize::new(0);
-                                let n = SKIP_COUNT.fetch_add(1, AOrd::Relaxed);
-                                if n < 3 || n % 100 == 0 {
-                                    log::debug!(
-                                        "[bridge-trace] clock-sync skipping uninit MCU sample #{} mcu_at_response={} (TIM5 likely not yet ticking — pre-first-push)",
-                                        n, mcu_at_response,
-                                    );
-                                }
-                            } else {
-                                let (freq_est, mcu_at_send) = {
-                                    let mut est = estimator
-                                        .write()
-                                        .unwrap_or_else(|p| p.into_inner());
-                                    est.add_dedicated_sample(
-                                        host_send,
-                                        host_recv,
-                                        mcu_at_response,
-                                    );
-                                    let rtt = host_recv.saturating_duration_since(host_send);
-                                    #[allow(
-                                        clippy::cast_sign_loss,
-                                        clippy::cast_possible_truncation
-                                    )]
-                                    let one_way_cycles = (rtt.as_secs_f64()
-                                        * est.clock_freq_estimate
-                                        / 2.0) as u64;
-                                    let at_send =
-                                        mcu_at_response.saturating_sub(one_way_cycles);
-                                    (est.clock_freq_estimate, at_send)
-                                };
-                                let mut r = router.lock().unwrap_or_else(|p| p.into_inner());
-                                let _ = r.set_clock_est_from_sample(
-                                    mcu_h,
-                                    freq_est,
-                                    host_send,
-                                    mcu_at_send,
-                                );
-                            }
-                        }
-                    }
-                }
-                let mut remaining = CLOCK_SYNC_INTERVAL;
-                while remaining > Duration::ZERO && !stop.load(Ordering::Relaxed) {
-                    let chunk = remaining.min(Duration::from_millis(50));
-                    std::thread::sleep(chunk);
-                    remaining = remaining.saturating_sub(chunk);
-                }
-            }
-        })
-        .expect("clock-sync thread spawn")
-}
 
 #[derive(Debug, thiserror::Error)]
 enum RuntimeCapsError {
@@ -822,9 +711,6 @@ impl PyMotionBridge {
                 runtime_caps: None,
                 identify_caps: 0,
                 kalico_native_supported: false,
-                clock_sync_stop: None,
-                clock_sync_thread: None,
-                clock_sync_estimator: None,
                 ethercat_socket: None,
                 endpoint_process: None,
                 endpoint_conn: None,
@@ -891,9 +777,6 @@ impl PyMotionBridge {
                 runtime_caps: None,
                 identify_caps: 0,
                 kalico_native_supported: true,
-                clock_sync_stop: None,
-                clock_sync_thread: None,
-                clock_sync_estimator: None,
                 ethercat_socket: Some(socket_path.to_owned()),
                 endpoint_process: Some(child),
                 endpoint_conn: Some(Arc::new(conn)),
@@ -903,25 +786,13 @@ impl PyMotionBridge {
     }
 
     fn release_mcu(&self, handle: u32) -> PyResult<()> {
-        let (stop, join, mut endpoint_process, endpoint_conn) = {
+        let (mut endpoint_process, endpoint_conn) = {
             let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            let conn_opt = mcus.remove(&handle);
-            match conn_opt {
-                Some(mut c) => (
-                    c.clock_sync_stop.take(),
-                    c.clock_sync_thread.take(),
-                    c.endpoint_process.take(),
-                    c.endpoint_conn.take(),
-                ),
-                None => (None, None, None, None),
+            match mcus.remove(&handle) {
+                Some(mut c) => (c.endpoint_process.take(), c.endpoint_conn.take()),
+                None => (None, None),
             }
         };
-        if let Some(stop) = stop {
-            stop.store(true, Ordering::Release);
-        }
-        if let Some(join) = join {
-            let _ = join.join();
-        }
 
         // Drop our Arc on the endpoint connection so the socket closes (signals
         // session end to the endpoint). Router/pump Arcs may still be live;
@@ -1179,12 +1050,6 @@ impl PyMotionBridge {
     fn detach_serial(&self, mcu_handle: u32) -> PyResult<()> {
         let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(conn) = mcus.get_mut(&mcu_handle) {
-            if let Some(stop) = conn.clock_sync_stop.take() {
-                stop.store(true, std::sync::atomic::Ordering::Release);
-            }
-            if let Some(h) = conn.clock_sync_thread.take() {
-                let _ = h.join();
-            }
             conn.runtime_rx = None;
             conn.host_io = None;
         }
@@ -1297,12 +1162,6 @@ impl PyMotionBridge {
                     "attach_serial: unknown mcu_handle {mcu_handle} (claim_mcu not called)"
                 ))
             })?;
-            if let Some(stop) = conn.clock_sync_stop.take() {
-                stop.store(true, std::sync::atomic::Ordering::Release);
-            }
-            if let Some(h) = conn.clock_sync_thread.take() {
-                let _ = h.join();
-            }
             conn.runtime_rx = None;
             conn.host_io = None;
             conn.label.clone()
@@ -1411,63 +1270,49 @@ impl PyMotionBridge {
             .map_err(PyRuntimeError::new_err)?;
         }
 
-        let (clock_sync_stop, clock_sync_thread, clock_sync_estimator_arc) =
-            if kalico_native_supported {
-                let stop = Arc::new(AtomicBool::new(false));
-                let est_arc = Arc::new(std::sync::RwLock::new(
-                    kalico_host_rt::clock_sync::ClockSyncEstimator::new(100_000_000.0),
-                ));
-                let handle = spawn_periodic_clock_sync(
-                    mcu_handle,
-                    Arc::clone(&host_io_arc),
-                    Arc::clone(&self.router),
-                    Arc::clone(&self.clock_freqs),
-                    Arc::clone(&stop),
-                    Arc::clone(&est_arc),
-                );
-
-                let events_dir_guard = self.events_dir.lock().unwrap_or_else(|p| p.into_inner());
-                if let Some(ref dir) = *events_dir_guard {
-                    use crate::logging::writer::{
-                        DEFAULT_BACKUP_COUNT, DEFAULT_MAX_BYTES, FSYNC_INTERVAL,
-                        RotatingJsonlWriter,
-                    };
-                    let source = mcu_label.clone();
-                    let jsonl_path = dir.join(format!("{source}.jsonl"));
-                    match RotatingJsonlWriter::new(
-                        &jsonl_path,
-                        DEFAULT_MAX_BYTES,
-                        DEFAULT_BACKUP_COUNT,
-                        FSYNC_INTERVAL,
-                    ) {
-                        Ok(writer) => {
-                            let arc_writer = Arc::new(Mutex::new(writer));
-                            let hook = crate::mcu_log::build_mcu_log_hook(
-                                Arc::clone(&est_arc),
-                                arc_writer,
-                                source,
-                            );
-                            host_io_arc.set_mcu_log_hook(Box::new(hook));
-                        }
-                        Err(e) => {
-                            log::warn!(
-                                "attach_serial: mcu-log: failed to open {}: {e}",
-                                jsonl_path.display()
-                            );
-                        }
+        if kalico_native_supported {
+            // Wire the MCU log hook.  The hook timestamps MCU log events using
+            // the router's clock record — fed by Python clocksync via
+            // set_clock_est, which is the single writer for all MCUs.
+            let events_dir_guard = self.events_dir.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(ref dir) = *events_dir_guard {
+                use crate::logging::writer::{
+                    DEFAULT_BACKUP_COUNT, DEFAULT_MAX_BYTES, FSYNC_INTERVAL, RotatingJsonlWriter,
+                };
+                let source = mcu_label.clone();
+                let jsonl_path = dir.join(format!("{source}.jsonl"));
+                match RotatingJsonlWriter::new(
+                    &jsonl_path,
+                    DEFAULT_MAX_BYTES,
+                    DEFAULT_BACKUP_COUNT,
+                    FSYNC_INTERVAL,
+                ) {
+                    Ok(writer) => {
+                        let arc_writer = Arc::new(Mutex::new(writer));
+                        let mcu_h = mcu_handle_from_raw(mcu_handle);
+                        let hook = crate::mcu_log::build_mcu_log_hook(
+                            Arc::clone(&self.router),
+                            mcu_h,
+                            arc_writer,
+                            source,
+                        );
+                        host_io_arc.set_mcu_log_hook(Box::new(hook));
                     }
-                } else {
-                    unreachable!(
-                        "attach_serial: events_dir is None for a kalico-native MCU \
-                         — require_events_dir_for_kalico_native should have \
-                         rejected this call before reaching hook wiring"
-                    );
+                    Err(e) => {
+                        log::warn!(
+                            "attach_serial: mcu-log: failed to open {}: {e}",
+                            jsonl_path.display()
+                        );
+                    }
                 }
-
-                (Some(stop), Some(handle), Some(est_arc))
             } else {
-                (None, None, None)
-            };
+                unreachable!(
+                    "attach_serial: events_dir is None for a kalico-native MCU \
+                     — require_events_dir_for_kalico_native should have \
+                     rejected this call before reaching hook wiring"
+                );
+            }
+        }
 
         let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
         let conn = mcus.get_mut(&mcu_handle).ok_or_else(|| {
@@ -1478,9 +1323,6 @@ impl PyMotionBridge {
         conn.runtime_caps = runtime_caps;
         conn.identify_caps = identify_caps;
         conn.kalico_native_supported = kalico_native_supported;
-        conn.clock_sync_stop = clock_sync_stop;
-        conn.clock_sync_thread = clock_sync_thread;
-        conn.clock_sync_estimator = clock_sync_estimator_arc;
         Ok(())
     }
 
@@ -1799,6 +1641,10 @@ impl PyMotionBridge {
                 MessageValue::String(s) => d.set_item(k, s)?,
             }
         }
+        if params.sent_time_raw != 0.0 {
+            d.set_item("#sent_time_raw", params.sent_time_raw)?;
+            d.set_item("#receive_time_raw", params.recv_time_raw)?;
+        }
         Ok(d.unbind())
     }
 
@@ -1891,12 +1737,47 @@ impl PyMotionBridge {
                         MessageValue::String(s) => d.set_item(k, s)?,
                     }
                 }
+                if params.sent_time_raw != 0.0 {
+                    d.set_item("#sent_time_raw", params.sent_time_raw)?;
+                    d.set_item("#receive_time_raw", params.recv_time_raw)?;
+                }
             }
             RuntimeEvent::McuLog(_) => {
                 return Ok(None);
             }
         }
         Ok(Some(d.unbind()))
+    }
+
+    /// Ask the MCU's reactor to encode+send `get_clock` and stamp the
+    /// unsolicited "clock" response with honest CLOCK_MONOTONIC_RAW RTT
+    /// measurements. Encoding happens in the reactor with that MCU's own
+    /// dictionary — the bridge-level parser holds whichever dict was set
+    /// last and must never encode for a specific MCU.
+    ///
+    /// Called from `serialhdl` in bridge mode for the periodic
+    /// `_get_clock_event` loop.  Returns immediately (fire-and-forget); the
+    /// response arrives via `take_runtime_event` as a PassthroughResponse with
+    /// `sent_time_raw`/`recv_time_raw` baked in.
+    fn bridge_get_clock_async(&self, mcu_handle: u32) -> PyResult<()> {
+        let io =
+            {
+                let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+                let conn = mcus.get(&mcu_handle).ok_or_else(|| {
+                    pyo3::exceptions::PyRuntimeError::new_err(format!(
+                        "bridge_get_clock_async: unknown mcu_handle {mcu_handle}"
+                    ))
+                })?;
+                conn.host_io.as_ref().ok_or_else(|| {
+                pyo3::exceptions::PyRuntimeError::new_err(
+                    "bridge_get_clock_async: attach_serial has not been called for this MCU",
+                )
+            })?.clone()
+            };
+
+        io.get_clock_async().map_err(|e| {
+            pyo3::exceptions::PyRuntimeError::new_err(format!("bridge_get_clock_async: {e}"))
+        })
     }
 
     #[pyo3(signature = (mcu_handle, msg))]
@@ -1937,20 +1818,32 @@ impl PyMotionBridge {
             .map_err(|e| PyRuntimeError::new_err(format!("bridge_mark_expected_disconnect: {e}")))
     }
 
-    #[pyo3(signature = (mcu, freq, offset, last_clock))]
+    #[pyo3(signature = (mcu, freq, offset, last_clock, host_now_raw))]
     fn set_clock_est(
         &self,
-        py: Python<'_>,
+        _py: Python<'_>,
         mcu: u32,
         freq: f64,
         offset: f64,
         last_clock: u64,
+        host_now_raw: f64,
     ) -> PyResult<()> {
-        let host_now_same_epoch: f64 = py
-            .import("time")?
-            .getattr("monotonic")?
-            .call0()?
-            .extract()?;
+        // Python clocksync is the single writer of the router clock record for
+        // all MCUs (including kalico-native H7/F446 and Beacon).  The former
+        // Rust periodic sync loop has been retired — clocksync.py feeds every
+        // MCU via this path.
+        //
+        // `offset` arrives as `time_avg + min_half_rtt` in CLOCK_MONOTONIC_RAW
+        // seconds (the mirror callback now exports the faithful clock_est triple
+        // rather than TRANSMIT_EXTRA-biased values).  `host_now_raw` is captured
+        // by the Python callback as its first action (reactor.monotonic() ==
+        // CLOCK_MONOTONIC_RAW) so both sides of the epoch translation are in the
+        // same domain with no GIL-hop jitter added on the Rust side.
+        self.clock_freqs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(mcu, freq);
+
         use std::sync::atomic::{AtomicUsize, Ordering as AOrd};
         static SET_CLOCK_EST_CALLS: AtomicUsize = AtomicUsize::new(0);
         let call_n = SET_CLOCK_EST_CALLS.fetch_add(1, AOrd::Relaxed);
@@ -1971,13 +1864,9 @@ impl PyMotionBridge {
                 freq,
                 offset,
                 last_clock,
-                host_now_same_epoch,
+                host_now_raw,
             )
             .map_err(router_err)?;
-        self.clock_freqs
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(mcu, freq);
         Ok(())
     }
 
@@ -3270,9 +3159,12 @@ mod ethercat_endpoint_tests {
         };
 
         // Drop the UnixNativeConn first so the listener thread's drain read
-        // sees EOF and exits — then join the listener thread.
+        // sees EOF and exits. If the handshake never connected at all, the
+        // listener is still parked in accept() — unblock it with a throwaway
+        // connection so lt.join() cannot hang the test harness.
         let _ = stop_tx.send(());
         drop(result);
+        let _ = std::os::unix::net::UnixStream::connect(&path);
         let _ = lt.join();
 
         // The result must be Ok — or if not, must NOT be a ConnectionRefused
