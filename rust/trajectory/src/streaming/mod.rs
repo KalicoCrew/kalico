@@ -14,15 +14,10 @@ use crate::ShapedSegment;
 /// Timing and solver statistics produced by a single [`ShaperState::append_and_replan`] call.
 #[derive(Debug, Clone, Copy)]
 pub struct ReplanReport {
-    /// Time spent in the split+retain+push step (µs).
     pub split_us: u64,
-    /// Time spent inside `plan_velocity` (µs).
     pub solve_us: u64,
-    /// Time spent rebuilding axis pieces and metadata (µs).
     pub rebuild_us: u64,
-    /// Number of uncommitted moves in the window at solve time.
     pub window_segments: usize,
-    /// Solver statistics from the β-medium loop.
     pub plan: PlanStats,
 }
 

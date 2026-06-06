@@ -1,5 +1,5 @@
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -20,10 +20,7 @@ const LEAD: f64 = 0.25;
 /// Safety margin for the decel-commit deadline: covers shaping + dispatch + pump + wire latency.
 const SAFETY_MARGIN: f64 = 0.050;
 
-/// Budget for a single replan in microseconds.
-/// LEAD (0.25 s) minus SAFETY_MARGIN (0.05 s) is the planner's real-time budget;
-/// replans exceeding this indicate the planner cannot keep ahead of the MCU playhead.
-const REPLAN_WARN_BUDGET_US: u64 = 200_000;
+const REPLAN_WARN_BUDGET_US: u64 = ((LEAD - SAFETY_MARGIN) * 1e6) as u64;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClockBias {
@@ -104,7 +101,6 @@ pub enum DispatchError {
 pub struct PlannerHandle {
     sender: Sender<PlannerMsg>,
     join_handle: Option<JoinHandle<()>>,
-    error: Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: Arc<AtomicU64>,
     commit_fire_count: Arc<AtomicU32>,
 }
@@ -115,46 +111,27 @@ impl PlannerHandle {
         dispatch: Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
     ) -> Self {
         let (tx, rx) = unbounded();
-        let error = Arc::new(Mutex::new(None));
         let last_move_time_bits = Arc::new(AtomicU64::new(0u64));
         let commit_fire_count = Arc::new(AtomicU32::new(0));
 
         let shapers = shaper_config_to_axis_shapers(&config.shaper);
         let state = ShaperState::new([0.0; 4], &shapers);
 
-        let error_thread = Arc::clone(&error);
         let last_thread = Arc::clone(&last_move_time_bits);
         let commit_thread = Arc::clone(&commit_fire_count);
         let join = thread::Builder::new()
             .name("kalico-planner".to_string())
             .spawn(move || {
-                run_loop(
-                    rx,
-                    config,
-                    state,
-                    dispatch,
-                    error_thread,
-                    last_thread,
-                    commit_thread,
-                );
+                run_loop(rx, config, state, dispatch, last_thread, commit_thread);
             })
             .expect("spawn planner thread");
 
         Self {
             sender: tx,
             join_handle: Some(join),
-            error,
             last_move_time_bits,
             commit_fire_count,
         }
-    }
-
-    fn check_error(&self) -> Result<(), PlannerError> {
-        let mut guard = self.error.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(e) = guard.take() {
-            return Err(e);
-        }
-        Ok(())
     }
 
     pub fn submit_move(&self, m: ClassifiedMove) -> Result<(), PlannerError> {
@@ -166,7 +143,6 @@ impl PlannerHandle {
             feedrate_mm_s = m.segment.feedrate_mm_s,
             "planner.submit_move enter"
         );
-        self.check_error()?;
 
         // Advance before channel send so the atomic is fresh when submit_move returns.
         // CAS guards against concurrent rectification from the planner thread.
@@ -179,7 +155,6 @@ impl PlannerHandle {
     }
 
     pub fn flush(&self) -> Result<(), PlannerError> {
-        self.check_error()?;
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.sender
             .send(PlannerMsg::Flush { notify: tx })
@@ -192,17 +167,13 @@ impl PlannerHandle {
                         std::thread::sleep(deadline - now);
                     }
                 }
-                self.check_error()
+                Ok(())
             }
-            Err(_) => {
-                self.check_error()?;
-                Err(PlannerError::ChannelClosed)
-            }
+            Err(_) => Err(PlannerError::ChannelClosed),
         }
     }
 
     pub fn dwell(&self, duration_s: f64) -> Result<(), PlannerError> {
-        self.check_error()?;
         let (tx, rx) = crossbeam_channel::bounded(1);
         self.sender
             .send(PlannerMsg::Dwell {
@@ -211,11 +182,8 @@ impl PlannerHandle {
             })
             .map_err(|_| PlannerError::ChannelClosed)?;
         match rx.recv() {
-            Ok(()) => self.check_error(),
-            Err(_) => {
-                self.check_error()?;
-                Err(PlannerError::ChannelClosed)
-            }
+            Ok(()) => Ok(()),
+            Err(_) => Err(PlannerError::ChannelClosed),
         }
     }
 
@@ -318,29 +286,28 @@ fn advance_last_move_time(last_move_time_bits: &AtomicU64, delta: f64) {
     rectify_last_move_time(last_move_time_bits, delta);
 }
 
-/// Return value for [`run_commit_and_dispatch`]: distinguishes clean completion from
-/// the two ways the function can fail, so callers can set `stream_poisoned` correctly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommitOutcome {
-    /// All segments drained and dispatched without error.
-    Ok,
-    /// `commit_decel_to_zero` or `dispatch` failed; the stream timeline is now invalid.
-    Poisoned,
-}
-
-fn store_error_first_wins(error: &Arc<Mutex<Option<PlannerError>>>, e: PlannerError) {
-    let mut guard = error.lock().unwrap_or_else(|p| p.into_inner());
-    guard.get_or_insert(e);
+/// Abort the process on an unrecoverable planner error.
+fn fatal(e: &PlannerError) -> ! {
+    eprintln!("kalico planner fatal error: {e}");
+    tracing::error!(
+        subsystem = "motion",
+        event = "planner_fatal",
+        error = %e,
+        "planner encountered an unrecoverable error — aborting"
+    );
+    // tracing_appender uses non_blocking; sleep lets the worker drain the fatal
+    // line to disk before abort skips the WorkerGuard flush.
+    std::thread::sleep(Duration::from_millis(100));
+    std::process::abort();
 }
 
 fn run_commit_and_dispatch(
     state: &mut ShaperState,
     thread_state: &PlannerThreadState,
     dispatch: &Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
-    error: &Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: &AtomicU64,
     commit_fire_count: &AtomicU32,
-) -> CommitOutcome {
+) {
     let t_app_before = state.t_appended;
     let t_disp_before = state.t_dispatched;
     let commit_start = Instant::now();
@@ -348,8 +315,7 @@ fn run_commit_and_dispatch(
         Ok(out) => out,
         Err(e) => {
             tracing::error!(subsystem = "motion", event = "commit_decel_error", error = ?e, "run_commit_and_dispatch: commit_decel_to_zero failed");
-            store_error_first_wins(error, PlannerError::Shape(e));
-            return CommitOutcome::Poisoned;
+            fatal(&PlannerError::Shape(e));
         }
     };
     let commit_us = commit_start.elapsed().as_micros();
@@ -364,13 +330,10 @@ fn run_commit_and_dispatch(
         "run_commit_and_dispatch drained"
     );
     advance_last_move_time(last_move_time_bits, batch_dur);
-    let mut outcome = CommitOutcome::Ok;
     for s in &drained {
         if let Err(detail) = dispatch(s) {
             tracing::error!(subsystem = "motion", event = "dispatch_error", error = ?detail, "run_commit_and_dispatch: dispatch failed");
-            store_error_first_wins(error, PlannerError::Dispatch(detail));
-            outcome = CommitOutcome::Poisoned;
-            break;
+            fatal(&PlannerError::Dispatch(detail));
         }
     }
     commit_fire_count.fetch_add(1, Ordering::AcqRel);
@@ -383,7 +346,6 @@ fn run_commit_and_dispatch(
         t_disp_before,
         state.t_dispatched,
     );
-    outcome
 }
 
 struct PlannerThreadState {
@@ -425,7 +387,6 @@ fn run_loop(
     mut config: PlannerConfig,
     mut state: ShaperState,
     dispatch: Arc<dyn Fn(&ShapedSegment) -> Result<(), DispatchError> + Send + Sync>,
-    error: Arc<Mutex<Option<PlannerError>>>,
     last_move_time_bits: Arc<AtomicU64>,
     commit_fire_count: Arc<AtomicU32>,
 ) {
@@ -445,15 +406,9 @@ fn run_loop(
 
     let mut last_recv_time: Option<Instant> = None;
     let mut sync_instant: Option<Instant> = None;
-    // When true the stream timeline is invalid; moves are dropped until a stream-reset
-    // message (KalicoStreamOpen / Homing / Underrun / ForceIdle) clears the flag.
-    let mut stream_poisoned = false;
 
     loop {
-        // While poisoned there is nothing useful pending dispatch; use the idle timeout
-        // to avoid busy-spinning on Timeout arms (t_dispatched < t_appended stays true
-        // after a partial dispatch flush before the error occurred).
-        let next_timeout = if !stream_poisoned && state.t_dispatched < state.t_appended - 1e-12 {
+        let next_timeout = if state.t_dispatched < state.t_appended - 1e-12 {
             let esc = sync_instant.map_or(0.0, |t| t.elapsed().as_secs_f64());
             let remaining = (state.t_dispatched + LEAD - SAFETY_MARGIN) - esc;
             Duration::try_from_secs_f64(remaining.max(0.0)).unwrap_or(Duration::ZERO)
@@ -491,19 +446,14 @@ fn run_loop(
                 m
             }
             Err(RecvTimeoutError::Timeout) => {
-                // Skip dispatch when the stream is poisoned; there is nothing safe to send.
-                if !stream_poisoned
-                    && state.t_dispatched < state.t_appended - 1e-12
-                    && run_commit_and_dispatch(
+                if state.t_dispatched < state.t_appended - 1e-12 {
+                    run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
                         &dispatch,
-                        &error,
                         &last_move_time_bits,
                         &commit_fire_count,
-                    ) == CommitOutcome::Poisoned
-                {
-                    stream_poisoned = true;
+                    );
                 }
                 continue;
             }
@@ -512,17 +462,6 @@ fn run_loop(
 
         match msg {
             PlannerMsg::Move(m) => {
-                if stream_poisoned {
-                    tracing::debug!(
-                        subsystem = "motion",
-                        event = "move_dropped_poisoned",
-                        nominal_s = m.nominal_duration(),
-                        distance_mm = m.distance_mm,
-                        "move dropped: stream is poisoned"
-                    );
-                    continue;
-                }
-
                 // `submit_move` already advanced `last_move_time_bits` by the nominal.
                 // Rectify if actual diverges: use CAS since submit_move is a concurrent writer.
                 // Rectify against t_appended delta (not dispatched): the decel tail is held back.
@@ -536,32 +475,16 @@ fn run_loop(
                 // Commit held-back tail before inserting an idle rest-hold when clock outran plan.
                 let esc = sync_instant.map_or(0.0, |t| t.elapsed().as_secs_f64());
                 if esc > state.t_appended + 1e-6 {
-                    let need_commit = state.t_dispatched < state.t_appended - 1e-12;
-                    let commit_ok = if need_commit {
+                    if state.t_dispatched < state.t_appended - 1e-12 {
                         run_commit_and_dispatch(
                             &mut state,
                             &thread_state,
                             &dispatch,
-                            &error,
                             &last_move_time_bits,
                             &commit_fire_count,
-                        ) == CommitOutcome::Ok
-                    } else {
-                        true
-                    };
-                    if commit_ok {
-                        state.advance_idle(esc);
-                    } else {
-                        stream_poisoned = true;
-                        tracing::debug!(
-                            subsystem = "motion",
-                            event = "move_dropped_poisoned",
-                            nominal_s = nominal,
-                            distance_mm = move_dist,
-                            "move dropped: stream is poisoned (commit before idle failed)"
                         );
-                        continue;
                     }
+                    state.advance_idle(esc);
                 }
 
                 let replan_start = Instant::now();
@@ -569,9 +492,7 @@ fn run_loop(
                     Ok(r) => r,
                     Err(e) => {
                         tracing::error!(subsystem = "motion", event = "move_arm_error", phase = "append_and_replan", error = ?e, "Move arm: append_and_replan failed");
-                        store_error_first_wins(&error, PlannerError::Shape(e));
-                        stream_poisoned = true;
-                        continue;
+                        fatal(&PlannerError::Shape(e));
                     }
                 };
                 let replan_us = replan_start.elapsed().as_micros() as u64;
@@ -580,9 +501,7 @@ fn run_loop(
                     Ok(out) => out,
                     Err(e) => {
                         tracing::error!(subsystem = "motion", event = "move_arm_error", phase = "emit_committed", error = ?e, "Move arm: emit_committed failed");
-                        store_error_first_wins(&error, PlannerError::Shape(e));
-                        stream_poisoned = true;
-                        continue;
+                        fatal(&PlannerError::Shape(e));
                     }
                 };
                 tracing::debug!(
@@ -653,14 +572,8 @@ fn run_loop(
                             error = ?detail,
                             "Move arm: dispatch failed"
                         );
-                        store_error_first_wins(&error, PlannerError::Dispatch(detail));
-                        stream_poisoned = true;
-                        break;
+                        fatal(&PlannerError::Dispatch(detail));
                     }
-                }
-
-                if stream_poisoned {
-                    continue;
                 }
 
                 // Capture sync_instant only on non-empty dispatch, not at append.
@@ -677,26 +590,15 @@ fn run_loop(
             }
 
             PlannerMsg::Flush { notify } => {
-                if stream_poisoned {
-                    // Stream is dead; reply immediately with no deadline so callers
-                    // do not block waiting for motion that will never complete.
-                    let _ = notify.send(None);
-                    continue;
-                }
                 // Commit held-back decel-to-zero; idempotent when already committed.
-                if state.t_dispatched < state.t_appended - 1e-12
-                    && run_commit_and_dispatch(
+                if state.t_dispatched < state.t_appended - 1e-12 {
+                    run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
                         &dispatch,
-                        &error,
                         &last_move_time_bits,
                         &commit_fire_count,
-                    ) == CommitOutcome::Poisoned
-                {
-                    stream_poisoned = true;
-                    let _ = notify.send(None);
-                    continue;
+                    );
                 }
                 let finish = sync_instant.map(|t| {
                     t + Duration::try_from_secs_f64(state.t_appended + LEAD)
@@ -706,35 +608,25 @@ fn run_loop(
             }
 
             PlannerMsg::Dwell { duration_s, notify } => {
-                // Pure time bookkeeping; apply even when poisoned so the caller unblocks.
                 advance_last_move_time(&last_move_time_bits, duration_s);
                 let _ = notify.send(());
             }
 
             PlannerMsg::UpdateLimits(l) => {
-                // Config-only change; safe to apply regardless of poison state.
                 config.limits = l;
                 thread_state.rebuild(&config);
             }
 
             PlannerMsg::UpdateShaper(s) => {
-                // Drain held-back tail under the old kernels before swapping — but only when
-                // the stream is healthy. If poisoned, the held-back tail is already invalid;
-                // skip the pre-commit drain (it would dispatch stale data) and only rebuild
-                // the config. The anchor's last_t_end is still stale so poison is NOT cleared
-                // here; only a true stream-reset path clears it.
-                if !stream_poisoned
-                    && state.t_dispatched < state.t_appended - 1e-12
-                    && run_commit_and_dispatch(
+                // Drain the held-back tail under the old kernels before switching.
+                if state.t_dispatched < state.t_appended - 1e-12 {
+                    run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
                         &dispatch,
-                        &error,
                         &last_move_time_bits,
                         &commit_fire_count,
-                    ) == CommitOutcome::Poisoned
-                {
-                    stream_poisoned = true;
+                    );
                 }
                 config.shaper = s;
                 let shapers = shaper_config_to_axis_shapers(&config.shaper);
@@ -744,13 +636,11 @@ fn run_loop(
 
             PlannerMsg::KalicoStreamOpen { home_pos } | PlannerMsg::Homing { home_pos } => {
                 sync_instant = None;
-                stream_poisoned = false;
                 state.reset(home_pos);
             }
 
             PlannerMsg::Underrun { recovered_pos } | PlannerMsg::ForceIdle { recovered_pos } => {
                 sync_instant = None;
-                stream_poisoned = false;
                 state.reset(recovered_pos);
             }
 
@@ -758,19 +648,14 @@ fn run_loop(
                 // Pre-swap barrier: flush held-back output under the old clock bias.
                 // Must run before Router::set_clock_est_from_sample — calling after
                 // would shape the drained tail under the new bias.
-                // Skip when poisoned: the held-back tail must not be dispatched.
-                if !stream_poisoned
-                    && state.t_dispatched < state.t_appended - 1e-12
-                    && run_commit_and_dispatch(
+                if state.t_dispatched < state.t_appended - 1e-12 {
+                    run_commit_and_dispatch(
                         &mut state,
                         &thread_state,
                         &dispatch,
-                        &error,
                         &last_move_time_bits,
                         &commit_fire_count,
-                    ) == CommitOutcome::Poisoned
-                {
-                    stream_poisoned = true;
+                    );
                 }
             }
 

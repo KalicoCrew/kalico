@@ -79,10 +79,7 @@ pub struct PlanInput<'a> {
     pub safety_mode: SafetyMode,
 }
 
-/// Run the planning half of the shaper pipeline.
-///
-/// Returns a [`PlanOutput`] containing the β-converged time-domain fitted trajectory
-/// and solver statistics.
+/// Run the planning half of the shaper pipeline; returns a β-converged [`PlanOutput`].
 ///
 /// # Errors
 ///

@@ -64,7 +64,7 @@ pub struct PlannedBatch {
     pub global_ends: Vec<f64>,
     pub joining_status: temporal::multi::JoiningStatus,
     pub converged: bool,
-    /// Total β-loop iterations executed, including the extra re-solve at max-iters if it ran.
+    /// β-loop iterations executed.
     pub beta_iterations: u8,
     pub beta_warning: Option<BetaWarning>,
 }
@@ -126,7 +126,7 @@ fn compute_batch_t_end(partition: &BatchPartition, global_ends: &[f64]) -> f64 {
 /// Solver statistics returned by [`plan_velocity_inner`].
 #[derive(Debug, Clone, Copy)]
 pub struct PlanStats {
-    /// β-loop iterations actually executed (including the extra re-solve at max-iters if it ran).
+    /// β-loop iterations executed.
     pub beta_iterations: u8,
     pub beta_converged: bool,
     pub segments: usize,
