@@ -1846,17 +1846,21 @@ git add -A && git commit -m "fix: verification-sweep fixups" # only if anything 
 
 ---
 
-### Task 14: Bench deployment + manual validation (USER-GATED)
+### Task 14: EtherCAT-workbench deployment + manual validation (USER-GATED)
 
-Adding the SetTorque schema entries changed `SCHEMA_HASH`, so **both Trident MCUs (H7 + F446) must be reflashed** alongside the host-side rebuilds — serial identify hard-fails on hash mismatch otherwise.
+Validation happens on the **EtherCAT workbench** (its own host + A6-EC drive) — this has nothing to do with the Trident yet. The Trident becomes relevant only at merge time: adding the SetTorque schema entries changed `SCHEMA_HASH`, so when this branch lands and the Trident updates, **both its MCUs (H7 + F446) must be reflashed** (serial identify hard-fails on hash mismatch). Same rule applies to any serial MCU claimed in the EtherCAT bench's own config, if there is one.
 
-- [ ] **Step 1: Push and deploy via the flashing skill**
+- [ ] **Step 1: Push and deploy to the EtherCAT bench host**
 
-Use the `flashing-trident-mcus` skill flow (commit → push → Pi pull → build host `motion_bridge_native.so` → build + flash BOTH MCUs with their respective configs, `make clean` between). Additionally build the hw endpoint on the Pi:
+Standard bench flow — never scp binaries or source; the bench host's repo state must match what runs:
 
 ```bash
-# on the Pi, after git pull
-make -f Makefile.kalico ethercat-endpoint-hw
+# locally
+git push origin servo-lazy-enable
+# on the EtherCAT bench host, in the kalico checkout
+git fetch && git checkout servo-lazy-enable && git pull
+make -f Makefile.kalico motion-bridge            # rebuild motion_bridge_native.so
+make -f Makefile.kalico ethercat-endpoint-hw     # rebuild the hw endpoint (libecrt + SOEM)
 ```
 
 - [ ] **Step 2: Drive config prerequisite (manual, one-time)**
