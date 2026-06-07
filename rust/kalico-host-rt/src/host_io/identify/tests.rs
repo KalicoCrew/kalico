@@ -12,9 +12,7 @@ struct ScriptedPort {
 
 impl ScriptedPort {
     fn boxed(chunks: Vec<Vec<u8>>) -> Box<dyn serialport::SerialPort> {
-        Box::new(Self {
-            rx: chunks.into(),
-        })
+        Box::new(Self { rx: chunks.into() })
     }
 }
 

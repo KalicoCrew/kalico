@@ -177,28 +177,102 @@ fn boehm_insert_unweighted_single<T: Float>(
 
 pub fn refined_to_full_multiplicity<T: Float>(curve: &ScalarNurbs<T>) -> ScalarNurbs<T> {
     let p = curve.degree() as usize;
-    let mut current = curve.clone();
+    let knots = curve.knots();
+    let cps = curve.control_points();
 
-    let knots_snapshot: Vec<T> = current.knots().to_vec();
-    let mut interior: Vec<T> = Vec::new();
-    let mut i = p + 1;
-    while i < knots_snapshot.len() - p - 1 {
-        let u = knots_snapshot[i];
-        if !interior.contains(&u) {
-            interior.push(u);
-        }
-        i += 1;
+    let refinement = build_refinement_vector(knots, p);
+    if refinement.is_empty() {
+        return curve.clone();
     }
 
-    for u in interior {
-        let existing = current.knots().iter().filter(|k| **k == u).count();
-        if existing < p {
-            current = insert_knot(&current, u, p - existing)
-                .expect("refined_to_full_multiplicity: insertion should be valid");
-        }
+    let (new_knots, new_cps) = refine_knot_vect_curve(knots, cps, p, &refinement);
+
+    ScalarNurbs::try_new(curve.degree(), new_knots, new_cps)
+        .expect("refined_to_full_multiplicity: result invariants should hold")
+}
+
+fn build_refinement_vector<T: Float>(knots: &[T], p: usize) -> Vec<T> {
+    let interior_start = p + 1;
+    let interior_end = knots.len() - p - 1;
+    if interior_end <= interior_start {
+        return Vec::new();
     }
 
-    current
+    let mut x: Vec<T> = Vec::new();
+    let mut i = interior_start;
+    while i < interior_end {
+        let u = knots[i];
+        let mut s = 0usize;
+        while i + s < interior_end && knots[i + s] == u {
+            s += 1;
+        }
+        let deficit = p.saturating_sub(s);
+        for _ in 0..deficit {
+            x.push(u);
+        }
+        i += s;
+    }
+    x
+}
+
+fn refine_knot_vect_curve<T: Float>(knots: &[T], cps: &[T], p: usize, x: &[T]) -> (Vec<T>, Vec<T>) {
+    let n_pt = cps.len() - 1;
+    let n_span = cps.len();
+    let m = knots.len() - 1;
+    let r = x.len() - 1;
+
+    let a = find_knot_span(knots, p, n_span, x[0]);
+    let b = find_knot_span(knots, p, n_span, x[r]) + 1;
+
+    let new_cp_count = cps.len() + x.len();
+    let new_knot_count = knots.len() + x.len();
+
+    let mut new_cps = vec![T::ZERO; new_cp_count];
+    let mut new_knots = vec![T::ZERO; new_knot_count];
+
+    for j in 0..=(a - p) {
+        new_cps[j] = cps[j];
+    }
+    for j in (b - 1)..=n_pt {
+        new_cps[j + r + 1] = cps[j];
+    }
+    for j in 0..=a {
+        new_knots[j] = knots[j];
+    }
+    for j in (b + p)..=m {
+        new_knots[j + r + 1] = knots[j];
+    }
+
+    let mut i = b + p - 1;
+    let mut k = b + p + r;
+
+    for xi in (0..=r).rev() {
+        while x[xi] <= knots[i] && i > a {
+            new_cps[k - p - 1] = cps[i - p - 1];
+            new_knots[k] = knots[i];
+            k -= 1;
+            i -= 1;
+        }
+
+        new_cps[k - p - 1] = new_cps[k - p];
+
+        for l in 1..=p {
+            let ind = k - p + l;
+            let alpha_num = new_knots[k + l] - x[xi];
+            if alpha_num == T::ZERO {
+                new_cps[ind - 1] = new_cps[ind];
+            } else {
+                let denom = new_knots[k + l] - knots[i - p + l];
+                let alpha = alpha_num / denom;
+                new_cps[ind - 1] = alpha * new_cps[ind - 1] + (T::ONE - alpha) * new_cps[ind];
+            }
+        }
+
+        new_knots[k] = x[xi];
+        k -= 1;
+    }
+
+    (new_knots, new_cps)
 }
 
 // Tiller knot removal: Piegl & Tiller Algorithm A5.8.
