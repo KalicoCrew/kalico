@@ -525,6 +525,77 @@ fn fresh_gpio_trip_returns_continue_and_queues_event() {
     );
 }
 
+// --- Disarm-ordering contract tests ---
+//
+// These two tests pin the deliberate no-op contract for software_trip when the
+// arm is no longer active.  The homing STOP teardown path fires a HOST_REQUEST
+// trsync_trigger after the host has already disarmed the endstop; that signal
+// re-enters runtime_stop_on_trigger → software_trip.  The no-op behaviour here
+// is the one intentional exception to the project's fail-loud rule: a stale
+// relay message must not re-freeze an already-disarmed (or differently-armed)
+// endstop arm.  See the commit message for the full rationale.
+
+#[test]
+fn software_trip_on_disarmed_arm_is_a_no_op() {
+    let _guard = reset();
+    arm(sw_msg()).expect("arm");
+    assert_eq!(disarm(42), DisarmStatus::Disarmed);
+
+    let snapshot_version_before = ARM.snapshot.version.load(Ordering::Acquire);
+    assert_eq!(
+        software_trip(42, 500, &[10, 20]),
+        TripResult::NotArmed,
+        "software_trip after disarm must return NotArmed"
+    );
+    assert_eq!(
+        ARM.snapshot.version.load(Ordering::Acquire),
+        snapshot_version_before,
+        "snapshot version must not advance: no publish_snapshot call expected"
+    );
+    assert!(
+        poll_trip().is_none(),
+        "no trip event must be queued after software_trip on disarmed arm"
+    );
+    assert_eq!(
+        tick(501, [0, 0, 0], &[10, 20]),
+        TripAction::Continue,
+        "tick must not return AbortNow after no-op software_trip on disarmed arm"
+    );
+}
+
+#[test]
+fn software_trip_with_mismatched_arm_id_leaves_live_arm_intact() {
+    let _guard = reset();
+    arm(sw_msg()).expect("arm");
+
+    let snapshot_version_before = ARM.snapshot.version.load(Ordering::Acquire);
+    assert_eq!(
+        software_trip(99, 500, &[10, 20]),
+        TripResult::WrongArmId,
+        "software_trip with wrong arm_id must return WrongArmId"
+    );
+    assert_eq!(
+        ARM.snapshot.version.load(Ordering::Acquire),
+        snapshot_version_before,
+        "snapshot version must not advance: no publish_snapshot call expected"
+    );
+    assert!(
+        poll_trip().is_none(),
+        "no trip event must be queued after mismatched software_trip"
+    );
+
+    // The real arm (id=42) must still be armed and able to trip normally.
+    assert_eq!(
+        software_trip(42, 600, &[10, 20]),
+        TripResult::Tripped,
+        "the correct arm_id must still trip after a mismatched software_trip was ignored"
+    );
+    let evt = drain_trip();
+    assert_eq!(evt.arm_id, 42);
+    assert_eq!(evt.trip_source_idx, TRIP_SOURCE_SOFTWARE);
+    assert_eq!(evt.trip_clock, 600);
+}
+
 /// Same as above but for the case where software_trip arrives BEFORE
 /// the first tick past arm_clock.
 #[test]
