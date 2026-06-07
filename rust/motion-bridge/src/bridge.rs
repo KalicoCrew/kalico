@@ -23,10 +23,15 @@ use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
-struct RetainedHomingCurve {
+struct RetainedHomingPiece {
     axes: [nurbs::ScalarNurbs<f64>; 3],
-    t_start: f64,
-    t_end: f64,
+    t_abs_start: f64,
+    t_abs_end: f64,
+    t0: f64,
+}
+
+struct RetainedHomingCurve {
+    pieces: Vec<RetainedHomingPiece>,
 }
 
 struct McuConnection {
@@ -2341,6 +2346,7 @@ impl PyMotionBridge {
         let drain_disp = self.drain.clone();
         let counter_for_cb = Arc::clone(&counter);
         let homing_for_cb = Arc::clone(&self.homing);
+        let retained_curve_for_cb = Arc::clone(&self.retained_homing_curve);
 
         let dispatch: Arc<
             dyn Fn(&trajectory::ShapedSegment) -> Result<(), DispatchError> + Send + Sync,
@@ -2402,6 +2408,22 @@ impl PyMotionBridge {
                     && homing_state == crate::homing::HomingSegmentState::Active
                 {
                     homing_for_cb.record_axis_keys(&axis_keys);
+                    let piece = RetainedHomingPiece {
+                        axes: seg.axes.clone(),
+                        t_abs_start: t0 + seg.t_start,
+                        t_abs_end: t0 + seg.t_end,
+                        t0,
+                    };
+                    let mut guard = retained_curve_for_cb
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let curve = guard.get_or_insert_with(|| RetainedHomingCurve {
+                        pieces: Vec::new(),
+                    });
+                    if fresh {
+                        curve.pieces.clear();
+                    }
+                    curve.pieces.push(piece);
                 }
 
                 for m in msgs {
@@ -2847,8 +2869,8 @@ impl PyMotionBridge {
         self.fallback_clock_conversions.load(Ordering::Relaxed)
     }
 
-    #[pyo3(signature = (t,))]
-    fn get_homing_position_at_time(&self, t: f64) -> PyResult<Vec<f64>> {
+    #[pyo3(signature = (t_abs,))]
+    fn get_homing_position_at_time(&self, t_abs: f64) -> PyResult<Vec<f64>> {
         let guard = self
             .retained_homing_curve
             .lock()
@@ -2856,11 +2878,24 @@ impl PyMotionBridge {
         let curve = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("get_homing_position_at_time: no homing curve retained")
         })?;
-        let t_clamped = t.clamp(curve.t_start, curve.t_end);
-        let pos: Vec<f64> = curve
+        let pieces = &curve.pieces;
+        if pieces.is_empty() {
+            return Err(PyRuntimeError::new_err(
+                "get_homing_position_at_time: retained homing curve has no pieces",
+            ));
+        }
+        let piece = pieces
+            .iter()
+            .find(|p| t_abs <= p.t_abs_end)
+            .unwrap_or_else(|| pieces.last().unwrap());
+        let u = (t_abs - piece.t0).clamp(
+            piece.t_abs_start - piece.t0,
+            piece.t_abs_end - piece.t0,
+        );
+        let pos: Vec<f64> = piece
             .axes
             .iter()
-            .map(|axis| nurbs::eval::eval(axis, t_clamped))
+            .map(|axis| nurbs::eval::eval(axis, u))
             .collect();
         Ok(pos)
     }

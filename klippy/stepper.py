@@ -168,8 +168,7 @@ class MCU_stepper:
             bridge, "_software_trip_active", False
         ):
             try:
-                base = getattr(bridge, "_homing_print_time_base", 0.0)
-                pos_xyz = bridge.get_homing_position_at_time(print_time - base)
+                pos_xyz = bridge.get_homing_position_at_time(print_time)
             except Exception as e:
                 logging.warning(
                     "get_past_mcu_position: curve eval failed for %s: %s",

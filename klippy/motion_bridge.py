@@ -671,9 +671,6 @@ class BridgeTriggerDispatch:
             n_sinks = len(self._sink_trsyncs)
             classic_participants = []
             for j, ct in enumerate(self._classic_trsyncs):
-                report_offset = float(n_sinks + j) / n_participants
-                ct.start(arm_print_time, report_offset,
-                         self._reactor.completion(), expire_timeout)
                 mcu_handle = ct.get_mcu()._bridge_handle
                 if mcu_handle is None:
                     raise printer.command_error(
@@ -681,6 +678,9 @@ class BridgeTriggerDispatch:
                         "'%s' has no bridge handle (not a bridge MCU?)"
                         % ct.get_mcu().get_name()
                     )
+                report_offset = float(n_sinks + j) / n_participants
+                ct.start(arm_print_time, report_offset,
+                         self._reactor.completion(), expire_timeout)
                 classic_participants.append((mcu_handle, ct.get_oid()))
             sources = [(0, self._mcu, self._arm_id)]
             # kind=1 = SourceSpec::Trsync — listens for trsync_state

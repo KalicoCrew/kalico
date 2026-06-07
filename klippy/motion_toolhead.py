@@ -477,7 +477,6 @@ class MotionToolhead(ToolHead):
             self._fire_active_callbacks(
                 dx, dy, dz, 0.0, self.get_last_move_time()
             )
-            self.bridge._software_trip_active = False
             bridge_lmt_before = self.bridge.get_last_move_time()
             self.bridge.submit_homing_move(pos3, speed, arm_ids)
             self.bridge.wait_moves()
