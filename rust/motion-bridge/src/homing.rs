@@ -6,7 +6,6 @@ use crate::pump::AxisKey;
 pub const DRIP_PIECE_SECS: f64 = 0.025;
 pub const DRIP_MAX_AHEAD_SECS: f64 = 0.05;
 
-/// Returns `(lead_secs, max_piece_secs)` for the enqueue call site.
 pub fn homing_enqueue_params(homing_active: bool) -> (f64, Option<f64>) {
     if homing_active {
         (DRIP_MAX_AHEAD_SECS, Some(DRIP_PIECE_SECS))

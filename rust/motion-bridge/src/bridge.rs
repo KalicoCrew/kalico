@@ -2384,8 +2384,9 @@ impl PyMotionBridge {
                         .unwrap_or(0)
                 };
 
+                let homing_state = homing_for_cb.state();
                 let (lead_secs, max_piece_secs) = crate::homing::homing_enqueue_params(
-                    homing_for_cb.state() == crate::homing::HomingSegmentState::Active,
+                    homing_state == crate::homing::HomingSegmentState::Active,
                 );
 
                 let msgs = crate::enqueue::enqueue_segment(
@@ -2402,7 +2403,7 @@ impl PyMotionBridge {
                 let axis_keys: Vec<crate::pump::AxisKey> =
                     msgs.iter().map(|m| m.key).collect();
                 if !axis_keys.is_empty()
-                    && homing_for_cb.state() == crate::homing::HomingSegmentState::Active
+                    && homing_state == crate::homing::HomingSegmentState::Active
                 {
                     homing_for_cb.record_axis_keys(&axis_keys);
                 }
