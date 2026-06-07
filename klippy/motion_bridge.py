@@ -552,10 +552,6 @@ class BridgeTriggerDispatch:
     def add_stepper(self, mcu_stepper):
         self._stepper_oids.append(mcu_stepper.get_oid())
         self._steppers.append(mcu_stepper)
-        # Create one firmware sink trsync per distinct stepper MCU (config-time
-        # oid alloc, mirroring legacy TriggerDispatch.add_stepper). At homing
-        # start each is armed with runtime_stop_on_trigger so a relayed
-        # trsync_trigger freezes that MCU's curve evaluator.
         # Function-level import to avoid the mcu <-> motion_bridge
         # circular import (mirrors the `from . import motion_bridge as _mb`
         # pattern used on the mcu.py side).

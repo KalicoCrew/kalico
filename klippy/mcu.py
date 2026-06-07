@@ -369,9 +369,7 @@ class MCU_trsync:
         if self._mcu._bridge_drives_steppers:
             # Bridge-driven MCU: the firmware trsync is a real SINK. Arm it and
             # register the runtime_stop_on_trigger freeze signal so a relayed
-            # trsync_trigger freezes the curve evaluator. No periodic report and
-            # no expire here — TripDispatch owns trip distribution; the metered
-            # drip drain owns host-death safety.
+            # trsync_trigger freezes the curve evaluator.
             self._home_end_clock = None
             clock = self._mcu.print_time_to_clock(print_time)
             serial = self._mcu._serial
