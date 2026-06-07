@@ -279,6 +279,26 @@ fn over_centripetal_profile_flagged() {
     );
 }
 
+use crate::topp::chain::tests_support::two_segment_chain_with_junction;
+use crate::topp::verify::check_chain;
+
+#[test]
+fn junction_dual_limits_are_verified() {
+    // Junction at index 10; right side v_max = 150, left = 300. A b at the
+    // junction of 200² is legal for the 300 side but violates the 150 side —
+    // check_chain must catch it via the junction-dual pass and report
+    // infeasible at the junction index.
+    let chain = two_segment_chain_with_junction();
+    let n = chain.n_points();
+    let mut b = vec![100.0; n];
+    b[10] = 200.0_f64.powi(2);
+    let a = vec![0.0; n];
+    let result = SolverResult { b, a, status: SolverStatus::Solved };
+    let report = check_chain(&chain, &result);
+    assert!(!report.feasible, "right-side junction limits not checked");
+    assert_eq!(report.worst_violation_grid, 10);
+}
+
 /// An in-band jerk ratio (1.04) that wins every grid point must not mask a
 /// co-located out-of-band accel violation (1.01 > 0.2%).
 #[test]

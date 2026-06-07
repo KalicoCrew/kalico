@@ -136,7 +136,7 @@ pub fn schedule_segment_with_tolerance(
     let verify_report = verify::check(&arc_grid, &solver_result, limits, h_phys);
 
     Ok(output::assemble(
-        &arc_grid,
+        &arc_grid.s,
         &solver_result,
         &verify_report,
         *grid,

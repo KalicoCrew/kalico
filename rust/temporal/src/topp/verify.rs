@@ -1,3 +1,4 @@
+use crate::topp::chain::ChainGrid;
 use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::SolverResult;
 use crate::{Axis, BindingConstraint, Limits};
@@ -203,6 +204,126 @@ pub(crate) fn check(
             worst_violation_grid: 0,
             feasible: true,
         };
+    }
+
+    let worst_violation = global_worst_ratio - 1.0;
+    let feasible =
+        worst_jerk_ratio <= 1.0 + EPS_FEAS_JERK && worst_non_jerk_ratio <= 1.0 + EPS_FEAS;
+    VerifyReport {
+        binding_per_grid,
+        worst_violation,
+        worst_violation_grid: global_worst_idx,
+        feasible,
+    }
+}
+
+/// Chain-aware verifier. Sources geometry and limits per-point from the chain
+/// and uses weight-based `s‴`. After the primary scan a junction-dual pass
+/// re-evaluates every junction point against the right segment's limits — the
+/// shared grid variables (b, s_dot, s_ddot, s_dddot) are identical; only the
+/// geometry and limits differ. Both sides must satisfy their respective limits.
+pub(crate) fn check_chain(chain: &ChainGrid, result: &SolverResult) -> VerifyReport {
+    let n = chain.n_points();
+    debug_assert_eq!(result.b.len(), n);
+    debug_assert_eq!(result.a.len(), n);
+
+    if n == 0 {
+        return VerifyReport {
+            binding_per_grid: Vec::new(),
+            worst_violation: f64::NEG_INFINITY,
+            worst_violation_grid: 0,
+            feasible: true,
+        };
+    }
+
+    let mut binding_per_grid: Vec<BindingConstraint> = Vec::with_capacity(n);
+    let mut point_worst_ratio: Vec<f64> = Vec::with_capacity(n);
+    let mut global_worst_ratio: f64 = f64::NEG_INFINITY;
+    let mut global_worst_idx: usize = 0;
+    let mut worst_jerk_ratio: f64 = 0.0;
+    let mut worst_non_jerk_ratio: f64 = 0.0;
+
+    for i in 0..n {
+        let b_i = result.b[i];
+        let a_i = result.a[i];
+
+        let s_dot = b_i.max(0.0).sqrt();
+        let s_ddot = a_i;
+        let s_dddot = crate::topp::stencil::s_dddot_at_weights(&result.b, i, &chain.h_intervals);
+
+        let g = &chain.geom[i];
+        let pr = ratios_at(&PointInputs {
+            cp: g.c_prime,
+            cpp: g.c_double_prime,
+            cppp: g.c_triple_prime,
+            kappa: g.kappa,
+            b_i,
+            s_dot,
+            s_ddot,
+            s_dddot,
+            limits: chain.limits_at(i),
+        });
+
+        let final_tag = if (i == 0 || i == n - 1) && b_i.abs() < BOUNDARY_B_TOL {
+            BindingConstraint::Boundary
+        } else {
+            pr.worst_tag
+        };
+
+        if pr.worst_ratio > global_worst_ratio {
+            global_worst_ratio = pr.worst_ratio;
+            global_worst_idx = i;
+        }
+        if pr.max_jerk > worst_jerk_ratio {
+            worst_jerk_ratio = pr.max_jerk;
+        }
+        if pr.max_non_jerk > worst_non_jerk_ratio {
+            worst_non_jerk_ratio = pr.max_non_jerk;
+        }
+
+        point_worst_ratio.push(pr.worst_ratio);
+        binding_per_grid.push(final_tag);
+    }
+
+    // Junction-dual pass: each junction point must satisfy BOTH the left
+    // segment's limits (already scanned above) AND the right segment's limits
+    // (checked here). The shared grid variables b/s_dot/s_ddot/s_dddot are
+    // identical on both sides; only geometry and limits change.
+    for jd in &chain.junctions {
+        let i = jd.idx;
+        let b_i = result.b[i];
+        let a_i = result.a[i];
+
+        let s_dot = b_i.max(0.0).sqrt();
+        let s_ddot = a_i;
+        let s_dddot = crate::topp::stencil::s_dddot_at_weights(&result.b, i, &chain.h_intervals);
+
+        let pr = ratios_at(&PointInputs {
+            cp: jd.geom.c_prime,
+            cpp: jd.geom.c_double_prime,
+            cppp: jd.geom.c_triple_prime,
+            kappa: jd.geom.kappa,
+            b_i,
+            s_dot,
+            s_ddot,
+            s_dddot,
+            limits: &chain.limits[jd.limits_idx],
+        });
+
+        if pr.worst_ratio > global_worst_ratio {
+            global_worst_ratio = pr.worst_ratio;
+            global_worst_idx = i;
+        }
+        if pr.worst_ratio > point_worst_ratio[i] {
+            point_worst_ratio[i] = pr.worst_ratio;
+            binding_per_grid[i] = pr.worst_tag;
+        }
+        if pr.max_jerk > worst_jerk_ratio {
+            worst_jerk_ratio = pr.max_jerk;
+        }
+        if pr.max_non_jerk > worst_non_jerk_ratio {
+            worst_non_jerk_ratio = pr.max_non_jerk;
+        }
     }
 
     let worst_violation = global_worst_ratio - 1.0;

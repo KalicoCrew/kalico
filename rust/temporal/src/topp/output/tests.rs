@@ -1,4 +1,5 @@
 use super::*;
+use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::{SolverResult, SolverStatus};
 use crate::topp::verify::VerifyReport;
 use crate::{BindingConstraint, GridConfig, GridScheme};
@@ -46,7 +47,7 @@ fn assembles_samples_and_total_time() {
         n: 3,
     };
     let p = assemble(
-        &grid,
+        &grid.s,
         &result,
         &verify,
         cfg,

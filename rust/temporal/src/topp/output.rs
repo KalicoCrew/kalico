@@ -1,16 +1,15 @@
-use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::{SlpOutcome, SolverResult, SolverStatus};
 use crate::topp::verify::{self, VerifyReport};
 use crate::{GridConfig, GridSample, InfeasibleReason, SolveStatus, TopProfile};
 
 pub(crate) fn assemble(
-    grid: &ArclengthGrid,
+    s: &[f64],
     result: &SolverResult,
     verify: &VerifyReport,
     grid_config: GridConfig,
     slp_outcome: SlpOutcome,
 ) -> TopProfile {
-    let n = grid.s.len();
+    let n = s.len();
     debug_assert_eq!(result.b.len(), n);
     debug_assert_eq!(result.a.len(), n);
     debug_assert_eq!(verify.binding_per_grid.len(), n);
@@ -18,7 +17,7 @@ pub(crate) fn assemble(
     let mut samples = Vec::with_capacity(n);
     for i in 0..n {
         samples.push(GridSample {
-            s: grid.s[i],
+            s: s[i],
             v: result.b[i].max(0.0).sqrt(),
             a: result.a[i],
             b: result.b[i],
@@ -29,7 +28,7 @@ pub(crate) fn assemble(
     // Trapezoidal time integral: T = Σ Δs_i · 2 / (v_i + v_{i+1}).
     let mut total_time = 0.0;
     for i in 0..n - 1 {
-        let ds = grid.s[i + 1] - grid.s[i];
+        let ds = s[i + 1] - s[i];
         let v_sum = samples[i].v + samples[i + 1].v;
         if v_sum > 1e-12 {
             total_time += ds * 2.0 / v_sum;
