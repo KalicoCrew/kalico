@@ -18,7 +18,7 @@
 //! | `SecondOrder`            | `SecondOrderConeT(dim)`    |
 //! | `RotatedSecondOrder`     | (not emitted by `build()`) |
 //!
-//! `RotatedSecondOrderConeT` does not exist in Clarabel 0.11. `constraints::build()`
+//! `RotatedSecondOrderConeT` does not exist in Clarabel 0.11. `constraints::build_chain()`
 //! never emits `Cone::RotatedSecondOrder`; jerk constraints use the norm-form
 //! identity `z² ≤ u·v ↔ ||(2z, u-v)|| ≤ u+v` (standard SOC). The variant exists
 //! for exhaustiveness but `solve()` returns `SolverSetupError` if a bundle contains it.
@@ -170,7 +170,7 @@ fn build_p_zero(n_vars: usize) -> CscMatrix<f64> {
 }
 
 /// Returns `SolverSetupError` for `RotatedSecondOrder` (not in Clarabel 0.11;
-/// `build()` should never emit it).
+/// `build_chain()` should never emit it).
 fn map_clarabel_cones(
     bundle: &ConstraintBundle,
 ) -> Result<Vec<clarabel::solver::SupportedConeT<f64>>, SolverSetupError> {
@@ -183,7 +183,7 @@ fn map_clarabel_cones(
             Cone::RotatedSecondOrder => {
                 return Err(SolverSetupError::InvalidBundle(
                     "RotatedSecondOrderConeT is not supported in Clarabel 0.11; \
-                     constraints::build() should never emit it"
+                     constraints::build_chain() should never emit it"
                         .to_owned(),
                 ));
             }
