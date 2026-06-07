@@ -125,6 +125,9 @@ enum IdentifyOutcome {
     Timeout,
 }
 
+#[cfg(test)]
+mod tests;
+
 fn wait_for_klipper_frame(
     io: &mut SerialFrameIo,
     deadline: Instant,
@@ -141,6 +144,12 @@ fn wait_for_klipper_frame(
                 for e in errors {
                     log::warn!("identify stream error: {e}");
                 }
+                // Only an EMPTY frame is an ack/nak. Non-empty foreign frames
+                // (unsolicited stats / boot-time event backlog) still carry the
+                // MCU's receive seq and must update mcu_recv_abs, but treating
+                // them as NAKs — or returning before scanning the whole batch —
+                // drops the identify_response queued right behind them.
+                let mut saw_nak = false;
                 for f in frames {
                     if let Frame::Klipper(kf) = f {
                         let frame_seq_nibble = kf.seq_byte() & MESSAGE_SEQ_MASK;
@@ -148,14 +157,14 @@ fn wait_for_klipper_frame(
                         if let Some(params) = decode_identify_response(kf.bytes()) {
                             return Ok(IdentifyOutcome::Response(params));
                         }
-                        // Suppress stale ACKs (seq nibble matches what we just sent):
-                        // the real identify_response is right behind in the pipe.
-                        // A different nibble is a real NAK — caller adopts mcu_recv_abs.
-                        if sent_seq_nibble == Some(frame_seq_nibble) {
-                            continue;
+                        let is_ack_or_nak = kf.bytes().len() == MESSAGE_MIN;
+                        if is_ack_or_nak && sent_seq_nibble != Some(frame_seq_nibble) {
+                            saw_nak = true;
                         }
-                        return Ok(IdentifyOutcome::Nak);
                     }
+                }
+                if saw_nak {
+                    return Ok(IdentifyOutcome::Nak);
                 }
             }
             PollOutcome::Timeout | PollOutcome::PhantomZero => {}
