@@ -1,9 +1,3 @@
-//! Property-based tests for NURBS evaluation invariants.
-//!
-//! These hold by construction — eval at first knot returns first cp,
-//! derivative of constant is zero, etc. Catches regressions after refactors
-//! that the fixed corpus oracle wouldn't.
-
 #![cfg(feature = "host")]
 
 use proptest::prelude::*;
@@ -22,7 +16,6 @@ fn arb_curve() -> impl Strategy<Value = nurbs::ScalarNurbs<f64>> {
         arb_cp_count(p).prop_flat_map(move |n| {
             let cps = prop::collection::vec(-10.0..10.0_f64, n);
             cps.prop_map(move |cps_vec| {
-                // Build a clamped uniform knot vector.
                 let pad = p as usize + 1;
                 let interior = n.saturating_sub(p as usize + 1);
                 let mut knots = Vec::with_capacity(2 * pad + interior);

@@ -417,7 +417,6 @@ mod fixture_6_long_realistic_chain {
             px += 40.0;
         }
 
-        // Standard cubic Bézier approximation of a 90° arc: k = (4/3)(√2 − 1).
         let k = (4.0 / 3.0) * (std::f64::consts::SQRT_2 - 1.0);
         for _ in 0..2 {
             let r = 20.0_f64;
@@ -516,8 +515,6 @@ mod fixture_6_long_realistic_chain {
     }
 }
 
-/// 0.6mm straight stub entered at 25mm/s: must solve (was phantom DivergedSlp)
-/// without reducing v_start.
 mod fixture_8_stub_25mms_no_haircut {
     use super::*;
     use temporal::{
@@ -525,7 +522,6 @@ mod fixture_8_stub_25mms_no_haircut {
     };
 
     fn trident_limits() -> Limits {
-        // v_max[0] capped at feed 25 mm/s; Trident a/j/centripetal limits.
         Limits::new(
             [25.0, 1000.0, 15.0],
             [70_000.0, 70_000.0, 100.0],
@@ -536,7 +532,6 @@ mod fixture_8_stub_25mms_no_haircut {
 
     #[test]
     fn stub_returns_success_at_full_entry_velocity() {
-        // 0.6mm pure-X straight cubic Bézier (collinear degree-3).
         let stub = VectorNurbs::<f64, 3>::try_new(
             3,
             vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],

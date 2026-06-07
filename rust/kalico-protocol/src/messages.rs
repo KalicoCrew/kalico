@@ -137,8 +137,6 @@ impl Decode for RuntimeCapsResponse {
     }
 }
 
-// PushPieces (0x0060) body: axis_idx:u8, piece_count:u8, start_slot:u16, new_head:u32, pieces_bytes[piece_count*32]
-// PushPiecesResponse (0x0061) body: result:i32, arrival_clock:u64, front_start_time:u64  (20 bytes)
 #[derive(Debug, Clone, PartialEq)]
 pub struct PushPieces {
     pub axis_idx: u8,
@@ -370,7 +368,6 @@ impl Decode for McuLog {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-/// State of a single EtherCAT slave as reported in [`ClaimHandshakeReply`].
 pub enum SlaveState {
     Ok = 0x00,
     Offline = 0x01,
@@ -395,9 +392,6 @@ pub struct SlaveStatus {
     pub fault_code: u16,
 }
 
-/// Sent once by the endpoint after bringup, before entering the DC loop.
-/// Contains one entry per slave. Fail loudly: empty slave list or unknown
-/// state byte are hard `DecodeError`s.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimHandshakeReply {
     pub slave_statuses: Vec<SlaveStatus>,

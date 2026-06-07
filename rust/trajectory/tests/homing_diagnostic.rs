@@ -1,13 +1,3 @@
-//! Diagnostic: pin which knob unblocks 300 mm pure-X homing convergence.
-//!
-//! Task 1 of `docs/superpowers/plans/2026-05-05-mvp-global-scalar-jerk.md`
-//! showed the trajectory layer fails on 300 mm pure-X / 50 mm/s / smooth-MZV@50Hz
-//! / j_max=[6000;3]. This module runs a matrix of variants in one test invocation
-//! to identify which dimension (length, shaper, β iters, TOPP-RA-only) unblocks.
-//!
-//! Marked `#[ignore]` so it doesn't run by default; invoke with
-//! `cargo test -p trajectory --test homing_diagnostic -- --ignored --nocapture`.
-
 use geometry::segment::EMode;
 use nurbs::VectorNurbs;
 use temporal::multi::{BatchInput, GridStrategy, SegmentInput};
@@ -165,21 +155,11 @@ fn smooth_mzv_50() -> ShaperConfig {
 fn regression_pure_x_homing_matrix_all_variants_converge() {
     let mut results: Vec<ShapeVariantResult> = Vec::new();
 
-    // V1: TOPP-RA only at 300 mm (no shaper, no β). Pins whether TOPP-RA itself
-    // converges on this length+limits combo, independent of the shaping pipeline.
     results.push(run_topp_only("V1 topp-only 300mm", 300.0));
-
-    // V2: TOPP-RA only at 30 mm. Control — expected to pass per stall-homing-move.md.
     results.push(run_topp_only("V2 topp-only 30mm", 30.0));
-
-    // V3: TOPP-RA only at 100 mm. Length scan.
     results.push(run_topp_only("V3 topp-only 100mm", 100.0));
-
-    // V4: TOPP-RA only at 200 mm. Length scan.
     results.push(run_topp_only("V4 topp-only 200mm", 200.0));
 
-    // V5: full shape_batch at 300 mm with smooth-MZV@50Hz, β=10. The failing case
-    // from Task 1.
     results.push(run_shape_variant(
         "V5 full 300mm MZV β=10",
         300.0,
@@ -187,7 +167,6 @@ fn regression_pure_x_homing_matrix_all_variants_converge() {
         10,
     ));
 
-    // V6: same but β=30. Pins whether more β iters helps.
     results.push(run_shape_variant(
         "V6 full 300mm MZV β=30",
         300.0,
@@ -195,8 +174,6 @@ fn regression_pure_x_homing_matrix_all_variants_converge() {
         30,
     ));
 
-    // V7: full shape_batch with smooth-MZV at very high frequency (narrow kernel,
-    // approximates "no shaping"). Pins whether IS shaping is implicated.
     let narrow_mzv = ShaperConfig {
         x: RequiredShaper::SmoothMzv {
             frequency_hz: 500.0,
@@ -213,7 +190,6 @@ fn regression_pure_x_homing_matrix_all_variants_converge() {
         10,
     ));
 
-    // V8: full pipeline at 30 mm with smooth-MZV@50Hz, β=10. Control.
     results.push(run_shape_variant(
         "V8 full 30mm MZV β=10",
         30.0,
@@ -221,22 +197,18 @@ fn regression_pure_x_homing_matrix_all_variants_converge() {
         10,
     ));
 
-    // V9: 300 mm topp-only with max_n=1000 (h ≈ 0.5mm, matching V2's grid spacing).
-    // If discretization slack scales h², ratio should drop from 1.012 to ~1.002.
     results.push(run_topp_only_with_grid(
         "V9 topp-only 300mm max_n=1000",
         300.0,
         adaptive_grid_n(1000),
     ));
 
-    // V10: 300 mm topp-only with max_n=600 (h ≈ 0.5mm at requested target).
     results.push(run_topp_only_with_grid(
         "V10 topp-only 300mm max_n=600",
         300.0,
         adaptive_grid_n(600),
     ));
 
-    // Print the matrix.
     eprintln!("\n=== HOMING-FIXTURE DIAGNOSTIC MATRIX ===");
     for r in &results {
         eprintln!(
@@ -286,9 +258,6 @@ fn regression_pure_x_homing_matrix_all_variants_converge() {
             continue;
         }
         if known_failing.iter().any(|s| r.label.contains(s)) {
-            // Documented Clarabel-iter-cap fallout; not a stencil-
-            // unification regression. Pinned here so a future fix elsewhere
-            // surfaces this branch as something to clean up.
             continue;
         }
         failures.push(format!("{} → {}", r.label, r.outcome));

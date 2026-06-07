@@ -1,8 +1,3 @@
-//! `kalico-compat` — offline G-code compatibility layer.
-//!
-//! Reads legacy G-code (G0/G1/G2/G3/G5.1) and writes G5-only output
-//! consumable by the kalico live pipeline.
-
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::PathBuf;
@@ -29,7 +24,6 @@ struct Cli {
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // Read input.
     let input_name = cli.input.clone();
     let input_text = match read_input(&cli.input) {
         Ok(s) => s,
@@ -60,7 +54,6 @@ fn main() -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// Read the entire input into a `String`.
 fn read_input(path: &str) -> io::Result<String> {
     if path == "-" {
         let mut s = String::new();
@@ -71,7 +64,6 @@ fn read_input(path: &str) -> io::Result<String> {
     }
 }
 
-/// Open an output writer — either a file or stdout.
 fn open_output(path: Option<&std::path::Path>) -> io::Result<Box<dyn Write>> {
     match path {
         Some(p) => {

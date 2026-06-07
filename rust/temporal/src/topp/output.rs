@@ -26,7 +26,6 @@ pub(crate) fn assemble(
         });
     }
 
-    // Trapezoidal time integral: T = Σ Δs_i · 2 / (v_i + v_{i+1}).
     let mut total_time = 0.0;
     for i in 0..n - 1 {
         let ds = grid.s[i + 1] - grid.s[i];
@@ -46,10 +45,6 @@ pub(crate) fn assemble(
     }
 }
 
-/// Convert internal solver status into public `SolveStatus`. Overrides
-/// Clarabel-success with feasibility-failure when the verifier rejects, and
-/// promotes MaxIter/Diverged/MaxIters outcomes to SolvedInexact when the
-/// verifier accepts the iterate within EPS_FEAS.
 pub(crate) fn map_status(
     solver_status: SolverStatus,
     verify: &VerifyReport,
@@ -69,8 +64,6 @@ pub(crate) fn map_status(
             reason: InfeasibleReason::SolverInfeasible,
         },
         SolverStatus::MaxIter { residual } => {
-            // When Clarabel terminates with residual below verifier tolerance, the
-            // iterate IS feasible — promote MaxIter→SolvedInexact rather than fail.
             if residual < verify::EPS_FEAS && verify.feasible {
                 SolveStatus::SolvedInexact { residual }
             } else {
@@ -93,8 +86,6 @@ pub(crate) fn map_status(
             },
             _,
         ) if verify.feasible => {
-            // Verifier accepts the iterate despite SLP stall: the iterate IS
-            // feasible at our authoritative bar. Carry verifier's residual.
             let _ = last_max_ratio;
             SolveStatus::SolvedInexact {
                 residual: verify.worst_violation,
@@ -111,9 +102,6 @@ pub(crate) fn map_status(
             outer_iters,
         },
         (SlpOutcome::MaxIters { last_max_ratio }, _) => {
-            // When the SLP loop times out but the verifier accepts the iterate,
-            // promote to SolvedInexact (same logic as the MaxIter inner-solver
-            // promotion above).
             if verify.feasible {
                 SolveStatus::SolvedInexact {
                     residual: verify.worst_violation,

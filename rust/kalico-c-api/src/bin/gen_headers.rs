@@ -1,17 +1,3 @@
-/// Re-sort cbindgen's leading block of fieldless (untagged) C enums into a
-/// canonical, name-sorted order.
-///
-/// cbindgen 0.29.2 emits fieldless enums in filesystem-discovery order so the
-/// same source produces byte-different headers on macOS vs. Linux. This
-/// normalises that block to make header generation deterministic.
-///
-/// # Examples
-///
-/// ```
-/// let src = "preamble\n\nenum Z {\n  V = 0,\n};\ntypedef uint8_t Z;\n\nenum A {\n  W = 0,\n};\ntypedef uint8_t A;\n\ntypedef struct Foo Foo;";
-/// let out = canonicalize_untagged_enums(src);
-/// assert!(out.find("enum A").unwrap() < out.find("enum Z").unwrap());
-/// ```
 fn canonicalize_untagged_enums(src: &str) -> String {
     let mut paragraphs: Vec<&str> = src.split("\n\n").collect();
 

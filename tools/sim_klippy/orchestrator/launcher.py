@@ -1,10 +1,3 @@
-"""Spawn the two Linux MACH_LINUX klipper.elf instances that back the
-faithful sim (H7-flavored and F4-flavored configs).
-
-Each instance opens a PTY at the supplied socket path. We wait for
-both PTYs to exist before returning, so callers can immediately do
-attach_serial against them."""
-
 import dataclasses
 import os
 import pathlib
@@ -47,7 +40,6 @@ class McuHandles:
 
 
 def _ensure_shim_built(repo_root: pathlib.Path) -> pathlib.Path:
-    """Build libsim_intercept.so if missing or outdated. Returns absolute path."""
     preload_dir = repo_root / "tools" / "sim_klippy" / "preload"
     so_path = preload_dir / "libsim_intercept.so"
     src_path = preload_dir / "libsim_intercept.c"

@@ -8,17 +8,17 @@
 //      not profiling — without it engine time freezes and no segment advances.
 
 #include "autoconf.h"
-#include "generic/armcm_boot.h"     // DECL_ARMCM_IRQ
-#include "internal.h"               // CMSIS device header (TIMx, RCC, NVIC)
-#include "runtime_tick_timer.h"     // MOTION_TIM* alias
+#include "generic/armcm_boot.h"
+#include "internal.h"
+#include "runtime_tick_timer.h"
 #include "kalico_runtime.h"
-#include "generic/runtime_tick.h"   // interface contract
+#include "generic/runtime_tick.h"
 
 #if CONFIG_MACH_STM32G0
 
 extern const uint32_t runtime_clock_freq;
 
-extern void* runtime_handle;   // exposed in src/runtime_tick.c
+extern void* runtime_handle;
 
 // Stands in for DWT->CYCCNT (absent on M0+). Single-writer (the ISR); volatile
 // so runtime_cyccnt_read() observes ISR updates. Aligned-32-bit reads are
@@ -28,7 +28,6 @@ static volatile uint32_t runtime_g0_sw_cyccnt;
 #define RUNTIME_G0_CYC_PER_TICK \
     (CONFIG_CLOCK_FREQ / CONFIG_KALICO_MOTION_SAMPLE_RATE_HZ)
 
-// Rust-only entry points: must survive -fwhole-program LTO + --gc-sections.
 __attribute__((used, externally_visible))
 void
 runtime_tick_disable(void)

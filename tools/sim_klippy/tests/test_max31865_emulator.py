@@ -1,5 +1,3 @@
-"""Contract tests for the MAX31865Emulator."""
-
 import pytest
 
 from tools.sim_klippy.orchestrator.max31865_emulator import (
@@ -33,14 +31,11 @@ def test_config_write_then_read_round_trips():
     chip = MAX31865Emulator()
     # Write 0xC2 to CONFIG (bias on, autoconvert, fault clear).
     chip.transfer(bytes([0x80 | CONFIG_REG, 0xC2]))
-    # Read it back.
     reply = chip.transfer(bytes([CONFIG_REG, 0x00]))
     assert reply[1] == 0xC2
 
 
 def test_address_auto_increments_across_payload():
-    """A 3-byte read starting at RTD_MSB should walk into RTD_LSB then
-    HFAULT_MSB, mirroring the chip's hardware behavior."""
     chip = MAX31865Emulator()
     chip.set_rtd_register(0xABCD)
     reply = chip.transfer(bytes([RTD_MSB_REG, 0x00, 0x00, 0x00]))

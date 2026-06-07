@@ -70,7 +70,7 @@ fn push_from_bytes_round_trips() {
     let entry = ease_entry(0.0, 5.0, 500_000_000, 0.5);
     let bytes = entry.to_le_bytes();
     let mut all_bytes = bytes.to_vec();
-    all_bytes.extend_from_slice(&bytes); // two identical pieces
+    all_bytes.extend_from_slice(&bytes);
 
     let mut ring = AxisRing::new();
     let pushed = ring.push_from_bytes(2, &all_bytes);
@@ -339,7 +339,7 @@ fn end_time_ns_precision() {
     let entry = PieceEntry {
         start_time: start,
         coeffs: [0.0_f32; 4],
-        duration: 0.001_f32, // 1 ms
+        duration: 0.001_f32,
         _reserved: 0,
     };
 

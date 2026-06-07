@@ -8,37 +8,6 @@
 //!   `s = b_rhs - (-A_k)*x = A_k*x + b_rhs` ∈ K  ✓
 //!
 //! This negation is applied uniformly to every row of A regardless of cone type.
-//!
-//! # Cone mapping (kalico → Clarabel 0.11)
-//!
-//! | kalico `Cone`            | Clarabel `SupportedConeT`  |
-//! |--------------------------|---------------------------|
-//! | `Zero`                   | `ZeroConeT(dim)`           |
-//! | `Nonneg`                 | `NonnegativeConeT(dim)`    |
-//! | `SecondOrder`            | `SecondOrderConeT(dim)`    |
-//! | `RotatedSecondOrder`     | (not emitted by `build()`) |
-//!
-//! `RotatedSecondOrderConeT` does not exist in Clarabel 0.11. `constraints::build()`
-//! never emits `Cone::RotatedSecondOrder`; jerk constraints use the norm-form
-//! identity `z² ≤ u·v ↔ ||(2z, u-v)|| ≤ u+v` (standard SOC). The variant exists
-//! for exhaustiveness but `solve()` returns `SolverSetupError` if a bundle contains it.
-//!
-//! # Clarabel `SolverStatus` → kalico `SolverStatus`
-//!
-//! | Clarabel                         | kalico                             |
-//! |----------------------------------|------------------------------------|
-//! | `Solved`                         | `SolverStatus::Solved`             |
-//! | `AlmostSolved`                   | `SolverStatus::SolvedInexact{..}`  |
-//! | `PrimalInfeasible`               | `SolverStatus::Infeasible`         |
-//! | `DualInfeasible`                 | `SolverStatus::Infeasible`         |
-//! | `AlmostPrimalInfeasible`         | `SolverStatus::Infeasible`         |
-//! | `AlmostDualInfeasible`           | `SolverStatus::Infeasible`         |
-//! | `MaxIterations`                  | `SolverStatus::MaxIter{..}`        |
-//! | `MaxTime`                        | `SolverStatus::MaxIter{..}`        |
-//! | `NumericalError`                 | `SolverStatus::Infeasible`         |
-//! | `InsufficientProgress`           | `SolverStatus::MaxIter{..}`        |
-//! | `CallbackTerminated`             | `SolverStatus::Infeasible`         |
-//! | `Unsolved`                       | `SolverStatus::Infeasible`         |
 
 // clippy::doc_markdown fires on unicode-math and CamelCase names in docs here.
 #![allow(clippy::doc_markdown)]
@@ -51,20 +20,6 @@ use clarabel::solver::{
 
 use crate::topp::constraints::{Cone, ConstraintBundle};
 
-/// One linearized Taylor cut produced by the SLP outer loop.
-///
-/// - `PathJerk { i, b_bar }`: scalar-tangential path-jerk envelope cut. Two
-///   `Nonneg` rows encode the first-order Taylor expansion of `1/√b` at
-///   iterate `b̄_i`. Convex-down tangent ⇒ global underestimator ⇒ tightens
-///   the relaxation.
-///
-/// - `AxisJerk`: per-axis Cartesian jerk cut linearizing
-///   `j_axis = c'''·b^(3/2) + 3·c''·a·√b + c'·s⃛` at the iterate. The
-///   cross-term `a·√b` is bilinear-times-sqrt (indefinite Hessian on `(a,b)`),
-///   so the cut is a LOCAL approximation only. The L∞ trust region + accept-
-///   only-if-decrease backtracking in `slp_solve_with_axis_jerk` is what makes
-///   the SLP converge despite the non-convex linearization.
-///   Numerical identity check: `tests/step9_cut_identity.rs`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SlpCut {
     PathJerk { i: usize, b_bar: f64 },
@@ -86,7 +41,6 @@ pub(crate) struct AxisJerkCut {
     pub cp: f64,
     pub cpp: f64,
     pub cppp: f64,
-    /// `j_max[axis] · target_ratio`.
     pub j_lim_inflated: f64,
 }
 
@@ -118,7 +72,6 @@ pub(crate) enum SolverSetupError {
     InvalidBundle(String),
 }
 
-/// Zero upper-triangle CSC for Clarabel's quadratic term (pure linear objective).
 fn build_p_zero(n_vars: usize) -> CscMatrix<f64> {
     CscMatrix::<f64> {
         m: n_vars,
@@ -129,8 +82,6 @@ fn build_p_zero(n_vars: usize) -> CscMatrix<f64> {
     }
 }
 
-/// Returns `SolverSetupError` for `RotatedSecondOrder` (not in Clarabel 0.11;
-/// `build()` should never emit it).
 fn map_clarabel_cones(
     bundle: &ConstraintBundle,
 ) -> Result<Vec<clarabel::solver::SupportedConeT<f64>>, SolverSetupError> {
@@ -360,7 +311,6 @@ fn append_axis_jerk_cut_to_clarabel(
 
     let anchor_b_col = off_b + i;
 
-    // Sign-convention: A_clarabel = -A_k.
     let pos_row = *n_rows;
     push_nz(rowval, nzval, anchor_b_col, pos_row, alpha_b_anchor);
     for &(col, alpha) in &entries_extra {
@@ -613,17 +563,6 @@ fn solve_with_cuts_and_trust_region(
     Ok(extract_solution(&soln.x, n_grid, status))
 }
 
-// SLP outer iteration (Lee 2024 §III–§IV).
-//
-// The CL-2024 SOCP relaxation is demonstrably loose on curved high-jerk-load
-// segments. Lee 2024's mitigation: append a first-order Taylor cut on `1/√b`
-// at the current iterate and re-solve. Each inner SOCP stays convex; the cut
-// lies below the convex-down `1/√b` curve and thus tightens the relaxation.
-//
-// Cut placement: full-grid linearization — rebuild fresh cuts at every interior
-// grid point each iteration — converges in 1–3 iters; row count is bounded at
-// N−2 (replaced, not accumulated).
-
 /// Hard cap; Lee 2024 reports ~5–30 iterations in practice.
 const SLP_MAX_OUTER_ITERS: u32 = 50;
 
@@ -644,10 +583,7 @@ const SLP_B_CUT_FLOOR: f64 = 100.0;
 /// iterations before settling (Lee 2024: 5–30 typical).
 const SLP_WARMUP_ITERS: u32 = 8;
 
-/// Required best-so-far improvement across the trailing window.
 const SLP_MIN_IMPROVEMENT: f64 = 0.01;
-
-/// Sliding window length for the no-improvement divergence rule.
 const SLP_NO_IMPROVEMENT_WINDOW: usize = 10;
 
 #[derive(Debug, Clone, Copy)]
@@ -809,17 +745,6 @@ fn max_ratio(vs: &[JerkViolator]) -> f64 {
     vs.iter().map(|v| v.ratio).fold(0.0_f64, f64::max)
 }
 
-// Per-axis Cartesian jerk SLP outer loop.
-//
-// `j_axis = c'''·b^(3/2) + 3·c''·a·√b + c'·s⃛` has bilinear-times-sqrt
-// cross-terms (indefinite Hessian). Three mechanisms keep the SLP converging:
-//
-// 1. Active-set placement: cut only at (i, axis) pairs with ratio > 1 + ε.
-// 2. L∞ trust region: ρ_b = 0.05, ρ_a = 0.10. Expand 1.5× on accept,
-//    contract 0.5× on reject. Caps: ρ_b ∈ [0.005, 0.20], ρ_a ∈ [0.01, 0.40].
-// 3. Accept-only-if-decrease: up to MAX_BACKTRACKS=3 trust-region halvings
-//    per outer iter before falling back to solving without a TR.
-
 const SLP9_MAX_OUTER_ITERS: u32 = 30;
 const SLP9_WARN_AT_ITER: u32 = 15;
 
@@ -840,8 +765,6 @@ const SLP9_MAX_BACKTRACKS: u32 = 3;
 /// vs 0.5 (aggressive): at R≈1.24, decay=0.5 clamps target below the iterate.
 const SLP9_TARGET_DECAY: f64 = 0.85;
 
-/// Path-jerk SLP (stage 1) then per-axis-jerk SLP (stage 2). Path-jerk
-/// failures short-circuit stage 2.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn slp_solve_with_axis_jerk(
     bundle: &ConstraintBundle,

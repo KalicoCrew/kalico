@@ -1,4 +1,3 @@
-# ToolHead subclass that drives motion through the Rust bridge.
 import logging
 import os
 import struct
@@ -21,9 +20,6 @@ _MOTOR_SLOT_PREFIXES = (
 
 
 def _name_motor_slot(name):
-    """Return (slot, is_primary) for a stepper section name, or None. is_primary
-    is False for AWD partners (stepper_x1, stepper_z2, ...).
-    """
     for slot_idx, prefix in _MOTOR_SLOT_PREFIXES:
         if not name.startswith(prefix):
             continue
@@ -49,10 +45,6 @@ _KIN_CARTESIAN = 1
 
 
 def _derive_mcu_topology(axis_to_handle, kinematics_name):
-    """Map axis->MCU-handle to a list of (handle, sorted_axes, kinematics_tag),
-    one per handle. An MCU's tag is COREXY iff the printer is corexy and that
-    MCU carries both X and Y, else CARTESIAN.
-    """
     by_handle = {}
     for axis_idx, handle in axis_to_handle.items():
         by_handle.setdefault(handle, []).append(axis_idx)
@@ -69,7 +61,6 @@ def _derive_mcu_topology(axis_to_handle, kinematics_name):
 
 
 def _open_sim_control():
-    """Open the shim's control socket, or None if the shim isn't in use."""
     sock_dir = os.environ.get("KALICO_SIM_SOCK_DIR")
     if not sock_dir:
         return None
@@ -135,9 +126,6 @@ class BridgeKinematics:
         self.clear_homing_state((0, 1, 2))
 
     def _register_axis(self, config, axis, extras=()):
-        # A [servo_<axis>] section routes the axis to an EtherCAT node. ServoRail
-        # honors the rail contract but has no MCU steppers, itersolve, or
-        # _bridge_drives_steppers marker.
         servo_sec = "servo_" + axis
         stepper_sec = "stepper_" + axis
         has_servo = config.has_section(servo_sec)
@@ -165,7 +153,6 @@ class BridgeKinematics:
         self.rails.append(rail)
 
     def _axis_rails(self):
-        # Locate by name prefix (the corexy passthrough-Z rail may follow X/Y).
         out = {}
         for rail in self.rails:
             name = rail.get_name(short=True) or ""
@@ -220,7 +207,6 @@ class BridgeKinematics:
             self._check_endstops(move)
         if not move.axes_d[2]:
             return
-        # Derate velocity/accel by the Z share.
         self._check_endstops(move)
         z_ratio = move.move_d / abs(move.axes_d[2])
         move.limit_speed(
@@ -272,7 +258,6 @@ class BridgeKinematics:
         self.clear_homing_state([2])
 
     def clear_homing_state(self, axes):
-        # axes is an iterable of axis indices (mainline contract).
         for i in (0, 1, 2):
             if i in axes:
                 self.limits[i] = (1.0, -1.0)
@@ -301,10 +286,6 @@ class BridgeKinematics:
 
 
 class MotionToolhead(ToolHead):
-    """Bridge-aware ToolHead subclass; overrides only the methods where the
-    Rust bridge owns behavior (move issuance, timeline, velocity limits).
-    """
-
     def __init__(self, config):
         # Pre-super: attributes BridgeKinematics / handlers reference during
         # super().__init__.
@@ -317,7 +298,6 @@ class MotionToolhead(ToolHead):
         self.active_homing_arms = set()
         self.kinematics_name = config.get("kinematics", "")
         self.bridge._kinematics_name = self.kinematics_name
-        # Projected MCU print-time of the end of the last queued bridge move.
         self._mcu_pending_end_time = 0.0
 
         super().__init__(config)
@@ -326,7 +306,6 @@ class MotionToolhead(ToolHead):
         self.reactor.update_timer(self.flush_timer, self.reactor.NEVER)
         self.do_kick_flush_timer = False
 
-        # Bridge-only config keys (not parsed by upstream ToolHead).
         self.max_z_velocity = config.getfloat(
             "max_z_velocity", self.max_velocity, above=0.0
         )
@@ -470,7 +449,6 @@ class MotionToolhead(ToolHead):
             return
         arm_ids = list(self.active_homing_arms)
         if arm_ids:
-            # Bridge-native GPIO/sensorless path.
             pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
             dx = pos3[0] - self.commanded_pos[0]
             dy = pos3[1] - self.commanded_pos[1]
@@ -486,7 +464,6 @@ class MotionToolhead(ToolHead):
             duration = bridge_lmt_after - bridge_lmt_before
             self._bump_pending_end_time(duration)
         elif drip_completion is not None and not drip_completion.test():
-            # External probe software-trip path.
             self._drip_move_software_trip(newpos, speed, drip_completion)
         else:
             self.move(newpos, speed)
@@ -641,7 +618,6 @@ class MotionToolhead(ToolHead):
             arm_clock,
         )
 
-        # Arm + submit
         self.active_homing_arms.add(arm_id)
         self.bridge.register_homing_dispatch(arm_id, None)
         self.bridge._software_trip_active = True
@@ -709,7 +685,7 @@ class MotionToolhead(ToolHead):
             try:
                 self.bridge.endstop_disarm(mcu_handle, queue, arm_id)
             except Exception:
-                pass  # best-effort cleanup
+                pass
 
     def dwell(self, delay):
         self.bridge.submit_dwell(delay)
@@ -724,8 +700,6 @@ class MotionToolhead(ToolHead):
         self._ground_pending_end_time_after_bridge_drain()
 
     def cmd_M400(self, gcmd):
-        # Overrides the upstream M400 binding so it routes through the full
-        # motion drain instead of wait_moves().
         self.wait_moves_and_mcu()
 
     def _bridge_mcus(self):
@@ -782,7 +756,6 @@ class MotionToolhead(ToolHead):
         if self.mcu is None or duration_added <= 0.0:
             return
         est = self.mcu.estimated_print_time(self.reactor.monotonic())
-        # Re-anchor at "now" if the prior pending-end is already in the past.
         base = max(self._mcu_pending_end_time, est)
         self._mcu_pending_end_time = base + duration_added
 
@@ -813,9 +786,6 @@ class MotionToolhead(ToolHead):
         )
 
     def _init_planner(self):
-        # Topology is derived from config (axis->MCU from each stepper's
-        # _bridge_handle, tag from the kinematics name); no MCU identity is
-        # hardcoded.
         bridge_mcus = []
         for name, mcu in self.printer.lookup_objects(module="mcu"):
             handle = getattr(mcu, "_bridge_handle", None)
@@ -829,8 +799,6 @@ class MotionToolhead(ToolHead):
             )
             return
 
-        # axis -> bridge handle of the MCU driving that axis's primary stepper
-        # (AWD partners share their primary's, so only primaries contribute).
         axis_to_handle = {}
         fm = self.printer.lookup_object("force_move", None)
         if fm is not None:
@@ -846,8 +814,6 @@ class MotionToolhead(ToolHead):
                     continue
                 axis_to_handle[slot_idx] = s_handle
 
-        # Servo axes aren't steppers (absent from force_move.steppers); map each
-        # servo rail's axis to its node handle so the node joins the topology.
         servo_axis_index = {"x": _AXIS_X, "y": _AXIS_Y, "z": 2}
         for rail in getattr(self.kin, "rails", ()):
             if not isinstance(rail, servo_axis.ServoRail):
@@ -872,7 +838,6 @@ class MotionToolhead(ToolHead):
             )
             return
 
-        # Pull initial shaper params from [input_shaper] config, if present.
         shaper_type_x = "smooth_zv"
         shaper_freq_x = 0.0
         shaper_type_y = "smooth_zv"
@@ -913,10 +878,6 @@ class MotionToolhead(ToolHead):
             raise
 
     def _configure_axes_per_mcu(self, bridge_mcus):
-        """Configure each MCU's axes via the per-axis kalico_configure_axis
-        command. Motor slots map [0,1,2,3] = [x,y,z,e] (corexy x/y are A/B).
-        Steppers not on a given MCU are omitted from its bindings.
-        """
         kin = (self.kinematics_name or "").lower()
         if kin == "corexy":
             kin_tag = 0
@@ -961,7 +922,6 @@ class MotionToolhead(ToolHead):
             steps_per_mm = [0.0, 0.0, 0.0, 0.0]
             # 0=Modulated (phase stepping), 1=StepTime; overridden per slot below.
             step_modes = [1, 1, 1, 1]
-            # (motor_idx, name, oid, invert_dir) per bound stepper.
             bind_list = []
             for i in range(4):
                 on_this_mcu = []
@@ -1017,9 +977,6 @@ class MotionToolhead(ToolHead):
                             "a TMC5160 driver; found driver type with no "
                             "phase-stepping support" % stepper_name
                         )
-                    # If the stepper's phase_stepping flag and TMC5160's
-                    # _phase_stepping ever diverge, this raises tmc5160's
-                    # less-specific config_error instead of the message above.
                     bus_id, cs_pin_id = tmc.get_phase_config()
                     phase_configs.append((bus_id, cs_pin_id, i))
                     any_phase_stepping = True
@@ -1138,7 +1095,7 @@ class MotionToolhead(ToolHead):
                     name,
                 )
 
-            axis_bindings = defaultdict(list)  # axis_idx -> [(oid, invert)]
+            axis_bindings = defaultdict(list)
             for motor_idx, sname, oid, inv in bind_list:
                 axis_bindings[motor_idx].append((oid, inv))
 
@@ -1152,7 +1109,7 @@ class MotionToolhead(ToolHead):
                     if axis_idx < len(steps_per_mm)
                     else 0.0
                 )
-                if spm <= 0:  # misconfigured axis
+                if spm <= 0:
                     continue
                 microstep_distance = 1.0 / spm
                 # f32 packed as u32 bits for the wire.
@@ -1215,8 +1172,6 @@ class MotionToolhead(ToolHead):
             # TMC5160._xdirect_preload, after TMC register init.
 
     def cmd_KALICO_DIAG_DUMP(self, gcmd):
-        # Ask every kalico-capable MCU to emit its live diag snapshot; MCUs
-        # lacking the command are skipped.
         sent = []
         for name, mcu_obj in self.printer.lookup_objects(module="mcu"):
             try:
@@ -1324,7 +1279,6 @@ class MotionToolhead(ToolHead):
                 return
             except Exception as e:
                 raise gcmd.error("set_gpio_input failed: %s" % e)
-        # Fallback (Renode sim): drive the pin via the firmware command.
         if self.mcu is None:
             raise gcmd.error("no MCU available for sim endstop set_pin")
         handle = self.mcu._bridge_handle

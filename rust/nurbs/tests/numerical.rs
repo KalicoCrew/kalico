@@ -1,6 +1,3 @@
-//! Numerical conditioning tests. Verifies pathological-but-valid input
-//! produces predictable error/clamp behavior, never NaN/inf silent propagation.
-
 #![cfg(feature = "host")]
 
 #[test]
@@ -13,8 +10,6 @@ fn tiny_knot_range_evaluates_without_nan() {
 
 #[test]
 fn curvature_clamps_at_cusp_like_input() {
-    // Construct a curve where r' is near-zero by repeating control points
-    // at a point. We use a degenerate degree-2 that almost stops at u=0.5.
     let curve = nurbs::VectorNurbs::<f64, 3>::try_new(
         2,
         vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
@@ -29,7 +24,6 @@ fn curvature_clamps_at_cusp_like_input() {
 
 #[test]
 fn arc_length_builder_rejects_truly_degenerate_curve() {
-    // Construct a curve whose entire image is one point — every CP equal.
     let curve = nurbs::VectorNurbs::<f64, 3>::try_new(
         1,
         vec![0.0, 0.0, 1.0, 1.0],

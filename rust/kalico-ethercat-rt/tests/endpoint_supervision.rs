@@ -1,17 +1,3 @@
-//! Integration tests for EtherCAT endpoint death detection.
-//!
-//! Exercises two detection paths against the stub binary:
-//!
-//! 1. **Conn EOF** (`peer_closed_set_when_server_side_closes`): SIGKILLing
-//!    the stub causes its socket FD to close; the reader thread reads `Ok(0)`
-//!    and sets `peer_closed = true`.
-//! 2. **Child exit** (`detects_child_exit_on_sigkill`): `try_wait()` returns
-//!    `Some` in the supervision loop, firing the death action.
-//!
-//! The death action is an injected closure that sets an `AtomicBool`; no
-//! `abort()` is invoked, so the test runner process stays alive.  This design
-//! also means no `KALICO_NO_EXIT_ON_FAULT` env-var manipulation is needed.
-
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -23,8 +9,6 @@ use kalico_host_rt::unix_native_conn::UnixNativeConn;
 use kalico_protocol::messages::MessageKind;
 
 const STUB_BIN: &str = env!("CARGO_BIN_EXE_kalico-ethercat-rt-stub");
-
-// ── RAII child guard ───────────────────────────────────────────────────────
 
 struct ChildGuard {
     child: Option<Child>,
@@ -48,8 +32,6 @@ impl Drop for ChildGuard {
         }
     }
 }
-
-// ── Helpers ────────────────────────────────────────────────────────────────
 
 fn socket_path(tag: &str) -> String {
     format!(
@@ -114,10 +96,6 @@ fn wait_for_child_exit(child: &mut Child, deadline: Instant) {
     }
 }
 
-/// Mirrors the supervision loop from `bridge.rs` `ec-heartbeat-poll-{mcu_id}`.
-///
-/// `on_death` is called once with a short reason string; in production this
-/// invokes `tracing::error!` + `abort()`; in tests it sets a flag.
 fn spawn_supervision_thread(
     conn: Arc<UnixNativeConn>,
     mut child: Child,
@@ -161,11 +139,6 @@ fn assert_detected_within(detected: &AtomicBool, deadline: Instant) {
     }
 }
 
-// ── Test 1: peer_closed flag when server side closes ──────────────────────
-
-/// SIGKILLing the stub closes its socket FD.  The reader thread reads `Ok(0)`
-/// (EOF) and sets `peer_closed = true`.  This validates the detection flag
-/// directly, without a supervision thread.
 #[test]
 fn peer_closed_set_when_server_side_closes() {
     let (mut guard, conn, path) = spawn_and_connect("peer-closed");
@@ -191,11 +164,6 @@ fn peer_closed_set_when_server_side_closes() {
     let _ = std::fs::remove_file(&path);
 }
 
-// ── Test 2: supervision thread detects child exit via try_wait ─────────────
-
-/// SIGKILLing the stub and reaping it before handing the `Child` to the
-/// supervision thread guarantees `try_wait()` returns `Some` on the first
-/// iteration, firing the death action.
 #[test]
 fn detects_child_exit_on_sigkill() {
     let detected = Arc::new(AtomicBool::new(false));

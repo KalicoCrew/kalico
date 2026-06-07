@@ -1,18 +1,3 @@
-//! V4 — stale-header drift gate.
-//!
-//! Verifies that the Rust-side `RT_STORAGE_SIZE` (compiled into the
-//! staticlib via `runtime/build.rs`) is sized appropriately and that
-//! `RuntimeContext` fits within it. A mismatch means the build saw a
-//! `KALICO_RUNTIME_STORAGE_SIZE` value too small for the actual
-//! `RuntimeContext` size — Makefile / Kconfig / cargo-cache drift.
-//!
-//! This test is host-only (gated on `feature = "host"`) because the MCU
-//! build doesn't link Rust tests. The test exercises the same contract
-//! the FFI shim's `const_assert!` does; if `RuntimeContext` outgrew
-//! `RT_STORAGE_SIZE`, the firmware build would fail the const_assert
-//! before this test runs. We verify the constant here so host CI catches
-//! the drift loudly and with a clear message before MCU builds attempt.
-
 #![cfg(feature = "host")]
 
 use runtime::RT_STORAGE_SIZE;

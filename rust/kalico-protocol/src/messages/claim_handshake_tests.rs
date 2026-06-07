@@ -33,7 +33,6 @@ fn claim_handshake_reply_roundtrips_fault_slave() {
 
 #[test]
 fn unknown_slave_state_byte_is_hard_error() {
-    // state=0xFF is not defined; must reject, not default-to-ok.
     let mut buf = Vec::new();
     buf.push(1u8); // slave_count = 1
     buf.push(1u8); // slave_idx = 1
@@ -56,7 +55,6 @@ fn empty_slave_list_is_hard_error() {
 
 #[test]
 fn message_kind_claim_handshake_roundtrips() {
-    // Both kinds must survive a from_u16(as_u16()) round-trip.
     let raw_request = MessageKind::ClaimHandshake.as_u16();
     assert_eq!(
         MessageKind::from_u16(raw_request),

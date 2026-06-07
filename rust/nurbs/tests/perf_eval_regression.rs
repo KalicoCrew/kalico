@@ -1,37 +1,11 @@
-//! Performance-regression tests for the MCU-targeted hot-path NURBS
-//! evaluators (`eval_polynomial`, `eval_derivative`).
-//!
-//! These run on the host (cargo's standard `cargo test`) — they cannot
-//! check absolute MCU cycle counts because the host's `Duration::elapsed`
-//! is wall-clock-granular and the host CPU is enormously faster than the
-//! H7. What they CAN catch is *relative* algorithmic regressions: if
-//! someone reintroduces the 14.7-KB stack zero-init in
-//! `scalar_derivative_eval`, the windowed `eval_derivative` will collapse
-//! to near-baseline speed and these ratios will drop below threshold.
-//!
-//! The thresholds are deliberately conservative (windowed must be at
-//! least 3× faster than the materialized form) to avoid spurious failures
-//! on CI runners with a noisy thermal envelope. The on-MCU advantage is
-//! ~10-30× per the H7 measurements; if this test ever drops below 3× on
-//! the host, the on-MCU regression is much worse.
-//!
-//! Per `CLAUDE.md`'s "we cannot ship a measurably slower trajectory"
-//! constraint, these tests act as a circuit-breaker on the per-tick eval
-//! path — the planner's trajectory optimality is meaningless if the MCU
-//! evaluator can't keep up at modulation rate.
-
 use nurbs::{ScalarNurbs, eval};
 use std::time::Instant;
 
-/// Build a synthetic post-shape-like curve: degree 5, ~30 control points,
-/// non-uniform knot vector. Mirrors the shape of curves that smooth-ZV
-/// pre-bake produces from a single G5 cubic Bézier piece.
 fn synthetic_postshape_curve() -> ScalarNurbs<f64> {
     let degree = 5_u8;
     let n_cps = 30;
     let p = degree as usize;
 
-    // Clamped open knots: degree+1 zeros, interior, degree+1 ones.
     let mut knots = Vec::with_capacity(n_cps + p + 1);
     knots.resize(p + 1, 0.0_f64);
     let n_interior = n_cps - p - 1;
@@ -40,7 +14,6 @@ fn synthetic_postshape_curve() -> ScalarNurbs<f64> {
     }
     knots.resize(knots.len() + p + 1, 1.0_f64);
 
-    // Smoothly varying cps — anything non-degenerate works for timing.
     let cps: Vec<f64> = (0..n_cps)
         .map(|i| {
             let t = i as f64 / (n_cps - 1) as f64;
@@ -51,7 +24,6 @@ fn synthetic_postshape_curve() -> ScalarNurbs<f64> {
     ScalarNurbs::try_new(degree, knots, cps).unwrap()
 }
 
-/// Single-piece cubic Bézier (the live G5/G1 input shape pre-shape).
 fn cubic_bezier_curve() -> ScalarNurbs<f64> {
     ScalarNurbs::try_new(
         3,
@@ -67,16 +39,6 @@ const ITERATIONS: usize = 200_000;
 fn eval_derivative_windowed_at_least_3x_faster_than_materialized() {
     let curve = synthetic_postshape_curve();
 
-    // Pre-build the materialized degree-lowered curve once for the
-    // "reference" path (`derivative` is host-only, we'd never call it
-    // per-tick on the MCU). The per-tick cost we're protecting against
-    // is the BUILD cost on the MCU side, which the windowed form skips
-    // entirely.
-    //
-    // To make the comparison fair against the MCU's situation, we
-    // simulate "rebuild on every call" by including `derivative()` in
-    // the reference loop body. That's exactly what the prior
-    // `scalar_derivative_eval` did per tick.
     let mut sink = 0.0_f64;
     let baseline = {
         let start = Instant::now();
@@ -97,7 +59,6 @@ fn eval_derivative_windowed_at_least_3x_faster_than_materialized() {
         start.elapsed()
     };
 
-    // Touch sink to keep the optimizer honest.
     assert!(sink.is_finite(), "sink={sink}");
 
     let ratio = baseline.as_nanos() as f64 / windowed.as_nanos().max(1) as f64;
@@ -114,10 +75,6 @@ fn eval_derivative_windowed_at_least_3x_faster_than_materialized() {
 
 #[test]
 fn eval_polynomial_at_least_as_fast_as_eval_for_validated_curves() {
-    // For pre-validated curves the polynomial fast path should never be
-    // slower than going through `ScalarNurbsRef::try_new` + `eval`. It
-    // skips the O(n) knot-monotonicity sweep that `validate()` does on
-    // every `try_new` call.
     let curve = synthetic_postshape_curve();
 
     let mut sink = 0.0_f64;
@@ -161,17 +118,6 @@ fn eval_polynomial_at_least_as_fast_as_eval_for_validated_curves() {
 
 #[test]
 fn eval_polynomial_with_derivative_at_least_1_3x_faster_than_separate_calls() {
-    // Combined `eval_polynomial_with_derivative` shares find_knot_span +
-    // d-array init + the full de Boor pyramid between the value and
-    // derivative recurrences. On the H7 (degree 9, 82 cps, 92 knots) this
-    // collapses 2 + 3 per-tick eval/derivative calls into 2 combined
-    // calls, dropping motion-tick avg from ~28 us to ~20 us.
-    //
-    // On host the combined recurrence has more arithmetic ops than the
-    // separate-pass form (it carries a parallel `dd` recurrence on top of
-    // `d`), but better ILP + halved find_knot_span/init overhead +
-    // halved function-call overhead net out faster. Threshold is
-    // conservative for noisy CI hosts.
     let curve = synthetic_postshape_curve();
 
     let mut sink = 0.0_f64;
@@ -217,8 +163,6 @@ fn eval_polynomial_with_derivative_at_least_1_3x_faster_than_separate_calls() {
 
 #[test]
 fn eval_polynomial_with_derivative_matches_separate_calls_bitwise() {
-    // Bit-exact agreement (within 1e-12) between combined and separate
-    // forms. Guards against subtle algebraic divergence.
     for curve in [synthetic_postshape_curve(), cubic_bezier_curve()] {
         for i in 0..=200 {
             let u = f64::from(i) / 200.0;
@@ -246,8 +190,6 @@ fn eval_polynomial_with_derivative_matches_separate_calls_bitwise() {
 
 #[test]
 fn eval_polynomial_matches_eval_bitwise_for_polynomial_curves() {
-    // Bit-exact agreement between fast-path and validated path — guards
-    // against any future refactor that diverges the two evaluators.
     for curve in [synthetic_postshape_curve(), cubic_bezier_curve()] {
         let view = curve.as_view();
         for i in 0..=200 {

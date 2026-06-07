@@ -28,7 +28,6 @@ heater_check happy enough for boot.
 
 from typing import Dict
 
-# Register addresses
 CONFIG_REG = 0x00
 RTD_MSB_REG = 0x01
 RTD_LSB_REG = 0x02
@@ -48,13 +47,6 @@ DEFAULT_RTD_REGISTER = (DEFAULT_ADC << 1) & 0xFFFF
 
 
 class MAX31865Emulator:
-    """Single-chip MAX31865 emulator.
-
-    Each transfer is one or more bytes starting with an address byte;
-    the chip auto-increments the address for every payload byte. For
-    reads the address bit 7 is 0; for writes it is 1.
-    """
-
     def __init__(self) -> None:
         self._regs: Dict[int, int] = {
             CONFIG_REG: 0x00,
@@ -86,12 +78,7 @@ class MAX31865Emulator:
                 reply[i] = self._regs.get(cur, 0x00)
         return bytes(reply)
 
-    # ------------------------------------------------------------------
-    # Test hooks
-    # ------------------------------------------------------------------
-
     def set_rtd_register(self, raw_15bit_with_fault_bit: int) -> None:
-        """Override the RTD MSB/LSB pair (16-bit raw register layout)."""
         v = raw_15bit_with_fault_bit & 0xFFFF
         self._regs[RTD_MSB_REG] = (v >> 8) & 0xFF
         self._regs[RTD_LSB_REG] = v & 0xFF

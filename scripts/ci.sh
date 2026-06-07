@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# scripts/ci.sh — single source of truth for every CI gate.
-#
-# CI workflows call `./scripts/ci.sh <job>` for each gate; developers run
-# `./scripts/ci.sh` (everything) or `./scripts/ci.sh quick` (fast subset)
-# before pushing. Because CI and the local pre-push path execute the *same*
-# code, they cannot drift — which is what previously let `sota-motion` rot
-# (the old scripts/ci-local.sh was a hand-copied parallel definition that
-# silently disagreed with the workflows).
-#
 # Usage:
 #   ./scripts/ci.sh                 # run all gates with a summary (local)
 #   ./scripts/ci.sh quick           # fast subset: ruff + rust build/test/clippy/fmt
@@ -29,16 +20,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUST="$ROOT/rust"
 DOCKER_IMAGE="dangerklippers/klipper-build:latest"
 
-# ─── individual gates — each mirrors exactly one CI step ────────────────────
-# (run with `set -e` inside a subshell by the dispatcher, so any failing
-#  command aborts the gate and propagates a nonzero exit.)
-
 job_rust_build()  { cd "$RUST" && cargo build --workspace; }
 
 job_rust_test() {
     cd "$RUST"
-    # nextest gives process-per-test isolation (kills the shared-global-state
-    # flakiness class); doctests run separately since nextest does not run them.
     cargo nextest run --workspace --profile ci
     cargo test --workspace --doc
 }
@@ -46,7 +31,6 @@ job_rust_test() {
 job_rust_clippy() { cd "$RUST" && cargo clippy --workspace --all-targets -- -D warnings; }
 job_rust_fmt()    { cd "$RUST" && cargo fmt --all -- --check; }
 
-# The `rust-host` workflow job = build + test + clippy + fmt.
 job_rust_host()   { job_rust_build && job_rust_test && job_rust_clippy && job_rust_fmt; }
 
 job_rust_loom() {
@@ -57,12 +41,6 @@ job_rust_loom() {
         --test loom
 }
 
-# KALICO_RUNTIME_* are mandatory on bare-metal targets (build.rs panics
-# otherwise); the real firmware build gets them from Kconfig via the Makefile.
-# For this staticlib compile-check the H7/F4/G0 pair is a self-consistent value
-# set that compiles for any arch. motion-module-stepper matches what the
-# Makefile/Kconfig produce for real firmware; without it the dispatch-less MCU
-# build fires the compile_error guard in lib.rs.
 KALICO_MCU_ENV=(KALICO_RUNTIME_STORAGE_SIZE=122880 KALICO_RUNTIME_PIECE_RING_SIZE=63488)
 
 job_rust_mcu_h7() {
@@ -81,9 +59,6 @@ job_rust_mcu_f4() {
         --target thumbv7em-none-eabi
 }
 
-# G0 (Cortex-M0+, thumbv6m). CI never compiled mcu-g0 at all, and the
-# runtime_tick_g0.c FFI-drift bug was G0-only — this closes the Rust-side gap.
-# The full C link per arch is covered by ci-mcu-firmware.yaml.
 job_rust_mcu_g0() {
     cd "$RUST"
     env "${KALICO_MCU_ENV[@]}" \
@@ -92,10 +67,6 @@ job_rust_mcu_g0() {
         --target thumbv6m-none-eabi
 }
 
-# Validates the EtherCAT servo-node compile path: runtime built without
-# motion-module-stepper, so lib.rs's compile_error guard must NOT fire (host
-# builds are valid without a dispatch module). The dispatch_stepper tests are
-# fully suppressed by their #![cfg(feature = "motion-module-stepper")].
 job_rust_no_stepper() {
     cd "$RUST"
     cargo build -p runtime --no-default-features --features host
@@ -104,7 +75,6 @@ job_rust_no_stepper() {
 
 job_cbindgen_drift() {
     "$ROOT/tools/regen_headers.sh"
-    # Fail if the committed C-ABI headers differ from freshly generated ones.
     git -C "$ROOT" diff --exit-code rust/kalico-c-api/include/
 }
 
@@ -135,20 +105,7 @@ job_miri() {
 }
 
 job_panic_grep() {
-    # Asserts the NURBS de Boor evaluator (the math hot path, spec Layer 0)
-    # compiles to a panic-free release MCU build — its index invariants are
-    # proved (Piegl & Tiller A4.1) and use get_unchecked, so any bounds-check
-    # panic in a `nurbs` function is a real regression. This is a HARD gate.
-    #
-    # The full panic_bounds_check count across the rest of the build is
-    # reported for visibility but NOT gated: the remaining sites are in
-    # runtime C-API glue (kalico_runtime_configure_axes_blob — being replaced
-    # by PR #11 — and kalico_endstop_poll_trip), and gating a raw count would
-    # produce false reds on routine rustc-stable bumps. Ratchet those to a
-    # hard gate once PR #11 lands and the endstop path is proven.
     cd "$RUST"
-    # Mirror the real mcu-h7 firmware build (env + motion-module-stepper) so the
-    # panic-freedom check sees the same code the device runs.
     env "${KALICO_MCU_ENV[@]}" \
         cargo rustc -p kalico-c-api --release \
         --no-default-features \
@@ -168,8 +125,6 @@ job_panic_grep() {
     awk '/^define/{fn=$0} /panic_bounds_check/{print fn}' "${ll_files[@]}" \
         | grep -oE 'kalico_[a-z0-9_]+' | sort | uniq -c | sed 's/^/    /' || true
 
-    # Hard gate: zero panics inside any nurbs-named function (internal
-    # nurbs::* or the kalico_nurbs_* C-API exports that inline de Boor).
     local nurbs_panics
     nurbs_panics=$(awk '
         /^define/   { infn=1; fn=$0; hp=0 }
@@ -185,7 +140,6 @@ job_panic_grep() {
 }
 
 job_watchdog_canary() {
-    # Safety gate: the MCU watchdog must keep reading the runtime liveness flag.
     grep -qF 'runtime_liveness_ok' "$ROOT/src/stm32/watchdog.c"
 }
 
@@ -211,11 +165,6 @@ job_py() {
 }
 
 job_sim() {
-    # kalico-sim unit subset: in-process emulator/protocol contract tests.
-    # Hardware/Renode tests are excluded explicitly (visible, not by accident).
-    # A few sim_unit tests live at tools/ root rather than under tools/sim_klippy,
-    # so they are listed by path. The LD_PRELOAD intercept shim is built first
-    # (test_sim_control needs it; it is a trivial gcc -shared build).
     local sel="sim_unit and not needs_hardware and not needs_renode"
     local paths="tools/sim_klippy \
         tools/test_kalico_host_io_seq_wrap.py \
@@ -233,7 +182,6 @@ job_sim() {
 
 job_docs() { cd "$ROOT/docs/_kalico" && uv run mkdocs build --strict; }
 
-# ─── aggregate runner (local convenience) ──────────────────────────────────
 PASS=0; FAIL=0
 FAILED_JOBS=()
 
@@ -289,8 +237,6 @@ usage() {
     sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
 }
 
-# Enable the tracked pre-push hook (.githooks/pre-push runs `ci.sh quick`).
-# Branch-agnostic, so it also guards direct pushes to sota-motion.
 job_install_hooks() {
     cd "$ROOT"
     [ -x .githooks/pre-push ] || {
@@ -304,7 +250,6 @@ job_install_hooks() {
     echo "  disable:      git config --unset core.hooksPath"
 }
 
-# ─── dispatch ──────────────────────────────────────────────────────────────
 case "${1:-all}" in
     rust-host)        job_rust_host ;;
     rust-build)       job_rust_build ;;

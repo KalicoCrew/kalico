@@ -1,19 +1,4 @@
 #!/usr/bin/env python3
-"""TDD test: XDIRECT preload after phase stepping enable.
-
-When a TMC5160 is configured with phase_stepping=True and the stepper
-is enabled, the driver must receive a non-zero XDIRECT write BEFORE
-any motion is commanded.  Without this preload, XDIRECT stays at its
-reset value (0x00000000) and the motor outputs zero current — the
-stepper doesn't energize even though direct_mode=1 and toff>0.
-
-This test verifies the preload by checking the TMC5160 emulator's
-XDIRECT log after klippy startup + SET_KINEMATIC_POSITION (which
-triggers stepper enable) but BEFORE any G1 move.
-
-Expected: FAIL until the XDIRECT preload is implemented.
-"""
-
 import json
 import os
 import pathlib
@@ -24,9 +9,6 @@ import time
 
 import pytest
 
-# Standalone __main__ script that spawns out/klipper.elf; no pytest test
-# functions. Tagged needs_elf so it is honestly classified (and excluded
-# from the CI sim_unit selection). Run directly: `python3 <this file>`.
 pytestmark = pytest.mark.needs_elf
 
 REPO = pathlib.Path(os.environ.get("KALICO_REPO", "/work"))
@@ -164,7 +146,6 @@ def send_gcode(script, timeout=30.0):
 
 
 def read_emulator_xdirect_log(line_id):
-    """Read the XDIRECT write log from the emulator's stdout log."""
     log_path = LOGDIR / f"tmc_emu_{line_id}.log"
     if not log_path.exists():
         return []
@@ -190,7 +171,6 @@ def read_emulator_xdirect_log(line_id):
 
 
 def read_emulator_gconf_log(line_id):
-    """Read GCONF writes from the emulator's stdout log."""
     log_path = LOGDIR / f"tmc_emu_{line_id}.log"
     if not log_path.exists():
         return []
@@ -224,7 +204,6 @@ def main():
     klippy = spawn_klippy()
 
     try:
-        # ── Gate 1: GCONF.direct_mode was set ──
         print("[preload] checking GCONF.direct_mode was set on emulators")
         gconf_27 = read_emulator_gconf_log(27)
         gconf_26 = read_emulator_gconf_log(26)
@@ -242,18 +221,13 @@ def main():
             )
             return 1
 
-        # ── Gate 2: fake-home triggers stepper enable ──
         print("[preload] fake-homing: SET_KINEMATIC_POSITION X=100 Y=100 Z=10")
         resp = send_gcode("SET_KINEMATIC_POSITION X=100 Y=100 Z=10")
         print(f"  response: {resp}")
 
-        # Allow time for stepper enable callbacks to fire and SPI to settle
+        # Allow time for stepper enable callbacks to fire and SPI to settle.
         time.sleep(3.0)
 
-        # ── Gate 3: XDIRECT preloaded with non-zero current ──
-        # After stepper enable, XDIRECT must have been written with non-zero
-        # coil currents.  This is the preload that prevents zero-current
-        # silence between direct_mode enable and the first ISR write.
         print("[preload] checking XDIRECT preload on emulators")
         xd_27 = read_emulator_xdirect_log(27)
         xd_26 = read_emulator_xdirect_log(26)

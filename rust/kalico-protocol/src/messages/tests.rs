@@ -20,7 +20,6 @@ fn message_kind_round_trips_via_u16() {
     ] {
         assert_eq!(MessageKind::from_u16(k.as_u16()), Some(k));
     }
-    // Old IDs (freed by removing dead messages) must no longer decode.
     assert_eq!(MessageKind::from_u16(0x0010), None); // LoadCurveCubic
     assert_eq!(MessageKind::from_u16(0x0011), None); // LoadCurveResponse
     assert_eq!(MessageKind::from_u16(0x0020), None); // PushSegment
@@ -44,7 +43,6 @@ fn configure_axes_roundtrip() {
         steps_per_mm: [80.0, 80.0, 400.0, 415.0],
     };
     assert_eq!(roundtrip(&v), v);
-    // 4 (header bytes) + 16 (4×f32) = 20.
     assert_eq!(v.encoded_to_vec().len(), 20);
     let r = ConfigureAxesResponse { result: -7 };
     assert_eq!(roundtrip(&r), r);
@@ -84,7 +82,7 @@ fn status_heartbeat_roundtrip_empty() {
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    assert_eq!(buf.len(), 3); // 1+1+1 (num_axes=0)
+    assert_eq!(buf.len(), 3);
     let mut cursor = Cursor::new(&buf);
     let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
     assert_eq!(decoded.retired_counts.len(), 0);
@@ -99,7 +97,6 @@ fn status_heartbeat_roundtrip_with_axes() {
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    // 1 + 1 + 1 + 4*4 = 19 bytes
     assert_eq!(buf.len(), 19);
     let mut cursor = Cursor::new(&buf);
     let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
@@ -119,7 +116,6 @@ fn push_pieces_roundtrip_single() {
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    // axis_idx(1) + piece_count(1) + start_slot(2) + new_head(4) + 32 bytes pieces = 40 bytes.
     assert_eq!(buf.len(), 40);
     let mut cursor = Cursor::new(&buf);
     let decoded = PushPieces::decode_from(&mut cursor).unwrap();
@@ -142,7 +138,6 @@ fn push_pieces_v2_roundtrip_carries_slot_and_head() {
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    // axis_idx(1) + piece_count(1) + start_slot(2) + new_head(4) + 32 = 40 bytes.
     assert_eq!(buf.len(), 40);
     let mut cursor = Cursor::new(&buf);
     let decoded = PushPieces::decode_from(&mut cursor).unwrap();
@@ -160,11 +155,10 @@ fn push_pieces_roundtrip_multiple() {
         piece_count: 3,
         start_slot: 0,
         new_head: 0,
-        pieces_bytes: vec![0x42; 96], // 3 * 32 = 96
+        pieces_bytes: vec![0x42; 96],
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    // axis_idx(1) + piece_count(1) + start_slot(2) + new_head(4) + 3*32 = 104 bytes.
     assert_eq!(buf.len(), 8 + 3 * 32);
     let mut cursor = Cursor::new(&buf);
     let decoded = PushPieces::decode_from(&mut cursor).unwrap();
@@ -189,14 +183,9 @@ fn push_pieces_response_roundtrip() {
         20,
         "PushPiecesResponse body must be exactly 20 bytes"
     );
-    // Byte-level layout verification (all little-endian).
-    // result = -2 => 0xFFFFFFFE LE
     assert_eq!(&buf[0..4], &0xFFFF_FFFE_u32.to_le_bytes());
-    // arrival_clock LE
     assert_eq!(&buf[4..12], &0x0102_0304_0506_0708_u64.to_le_bytes());
-    // front_start_time LE
     assert_eq!(&buf[12..20], &0xDEAD_BEEF_CAFE_1234_u64.to_le_bytes());
-    // Full roundtrip.
     let decoded = PushPiecesResponse::decode(&buf).expect("decode ok");
     assert_eq!(decoded.result, -2);
     assert_eq!(decoded.arrival_clock, 0x0102_0304_0506_0708_u64);
@@ -205,7 +194,6 @@ fn push_pieces_response_roundtrip() {
 
 #[test]
 fn push_pieces_response_error_path_zeros() {
-    // Error-path responses (arrival_clock=0, front_start_time=0) must round-trip.
     let msg = PushPiecesResponse {
         result: -7,
         arrival_clock: 0,

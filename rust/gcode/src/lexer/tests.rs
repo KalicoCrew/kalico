@@ -114,7 +114,6 @@ fn inline_comment_is_stripped() {
 
 #[test]
 fn missing_param_value_returns_error() {
-    // "X" with no number after it — different branch from "X1.2.3"
     let toks = collect("G1 X\n");
     assert_eq!(toks.len(), 1);
     match &toks[0] {
@@ -125,7 +124,6 @@ fn missing_param_value_returns_error() {
 
 #[test]
 fn numeric_token_without_letter_returns_error() {
-    // "1.0" as a parameter — first character isn't a letter
     let toks = collect("G1 1.0\n");
     assert_eq!(toks.len(), 1);
     match &toks[0] {
@@ -136,7 +134,6 @@ fn numeric_token_without_letter_returns_error() {
 
 #[test]
 fn lowercase_param_letter_returns_error() {
-    // After Fix 1: lowercase param letters reject consistently with lowercase heads.
     let toks = collect("G1 x10\n");
     assert_eq!(toks.len(), 1);
     match &toks[0] {
@@ -147,7 +144,6 @@ fn lowercase_param_letter_returns_error() {
 
 #[test]
 fn head_with_no_number_returns_error() {
-    // "G" alone — head letter without a number portion.
     let toks = collect("G\n");
     assert_eq!(toks.len(), 1);
     match &toks[0] {

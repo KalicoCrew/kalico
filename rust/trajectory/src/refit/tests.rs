@@ -10,7 +10,6 @@ fn linear_curve(v_start: f64, v_end: f64) -> ScalarNurbs<f64> {
 fn refits_linear_passthrough_within_tolerance() {
     let input = linear_curve(0.0, 5.0);
     let output = refit_to_cubic(&input, REFIT_TOLERANCE_MM).expect("refit succeeds");
-    // Sample 33 points and compare against analytic v(u) = 5u.
     for i in 0..=32 {
         let u = (i as f64) / 32.0;
         let truth = 5.0 * u;

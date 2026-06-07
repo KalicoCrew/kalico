@@ -1,15 +1,5 @@
-"""Boot test: sim fixture brings up both MCUs, beacon, all chip stubs;
-klippy connects, registers all extras, reaches 'Printer is ready'.
-
-Failure modes that count as test failure:
-- Any klippy traceback
-- Any MCU shutdown
-- Any 'transport closed' or 'transport timed out'
-
-The "Printer is ready" string is not written to klippy.log directly —
-it only appears in the printer.state attribute exposed over the API
-socket. We poll info{} via the api socket and check the state field.
-"""
+# "Printer is ready" is not written to klippy.log — it only appears in the
+# printer.state attribute exposed over the API socket; poll info{} there.
 
 import json
 import pathlib
@@ -23,11 +13,6 @@ pytestmark = pytest.mark.needs_elf
 
 
 def _save_logs_for_inspection(sim, name: str) -> None:
-    """Copy klippy + MCU + beacon logs into /work/.local-logs/<name>/
-
-    Done in the test body so the artifacts persist past tmp_path cleanup
-    and are visible from the host (the bind mount is at /work).
-    """
     dest = pathlib.Path("/work/.local-logs") / name
     dest.mkdir(parents=True, exist_ok=True)
     if sim.klippy_log.exists():
@@ -48,7 +33,6 @@ def _save_logs_for_inspection(sim, name: str) -> None:
 
 
 def _query_state(api_socket: str, timeout: float = 5.0) -> dict:
-    """Send `info` request via the klippy api socket; return decoded reply."""
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(timeout)
     sock.connect(api_socket)
@@ -78,7 +62,6 @@ def _query_state(api_socket: str, timeout: float = 5.0) -> dict:
 
 def test_boot_clean(sim):
     try:
-        # Poll the api socket for `info` until state == "ready" or timeout.
         deadline = time.monotonic() + 30.0
         info = {}
         while time.monotonic() < deadline:
@@ -95,19 +78,15 @@ def test_boot_clean(sim):
         log = sim.klippy_log.read_text() if sim.klippy_log.exists() else ""
         last_lines = "\n".join(log.splitlines()[-80:])
 
-        # No tracebacks
         assert "Traceback" not in log, (
             f"klippy crashed during boot:\n{log[-3000:]}"
         )
-        # No MCU shutdowns mid-boot
         if "MCU '" in log and " shutdown:" in log:
             if "Command request" in log or "Emergency stop" in log:
                 pytest.fail(f"MCU shutdown during boot:\n{log[-3000:]}")
         assert "transport closed" not in log
         assert "transport timed out" not in log
 
-        # Final state must be ready (queried via API socket since the
-        # message text is in the api response, not in klippy.log).
         result = info.get("result", {}) if info else {}
         assert result.get("state") == "ready", (
             f"klippy did not reach ready (state={result.get('state')!r}, "

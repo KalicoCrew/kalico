@@ -71,8 +71,6 @@ pub(crate) fn monomial_account(cycles: u32) {
     }
 }
 
-/// Single declaration here; `tick::cyccnt_read()` delegates here to avoid
-/// a duplicate `extern "C"` symbol.
 #[inline]
 pub(crate) fn cyccnt() -> u32 {
     #[cfg(not(any(test, feature = "host")))]

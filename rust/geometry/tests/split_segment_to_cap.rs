@@ -139,7 +139,6 @@ fn pure_e_only_independent_passthrough() {
 
 #[test]
 fn closed_loop_chord_zero_splits_by_arc_length() {
-    // Cubic Bézier returning to its start point but with real arc length.
     let xyz = VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
@@ -213,9 +212,6 @@ fn invalid_cap_rejects_infinity() {
 fn rejects_independent_with_non_trivial_xyz() {
     use nurbs::ScalarNurbs;
 
-    // Construct an Independent CubicSegment with non-trivial xyz motion
-    // (long Z move). Pre-fix this would silently produce N× over-extrusion;
-    // post-fix the splitter rejects it at runtime with CannotSplitIndependent.
     let xyz = VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],

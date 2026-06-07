@@ -4,13 +4,8 @@ use crate::multi::junction::JunctionResult;
 use crate::multi::parallel::fan_out_solves;
 use crate::multi::{BatchError, JoiningStatus, SegmentInput};
 
-/// Hard cap on joining sweeps. Typical convergence is 1–3 sweeps.
 const MAX_SWEEPS: u32 = 10;
 
-/// Run forward + reverse sweep pairs, re-solving dirty segments between sweeps,
-/// until velocity propagation stabilizes or the sweep cap is reached.
-///
-/// Returns `(sweeps_used, JoiningStatus)`.
 pub(crate) fn join_until_converged(
     inputs: &[SegmentInput<'_>],
     grids: &[GridConfig],
@@ -44,7 +39,6 @@ pub(crate) fn join_until_converged(
     ))
 }
 
-/// Per-segment scratch state during joining.
 pub(crate) struct SegmentState {
     pub v_start: f64,
     pub v_end: f64,

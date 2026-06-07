@@ -16,15 +16,6 @@
 #include "serial_irq.h" // serial_enable_tx_irq
 
 #if CONFIG_MACH_STM32H7
-// H7 — sized to hold the largest kalico-native frame on the wire while
-// console_task is briefly preempted by TIM5 ISRs (40 kHz during active
-// motion). 2048 bytes is enough headroom to fit a full LoadCurve frame
-// plus a couple of clock-sync requests without dropping bytes, even
-// when console_task is starved for ~20 ms by TIM5 ISR storms in Renode
-// (sim) or real silicon TIM5 isr_n bursts. Buffer goes in AXI SRAM via
-// `.axi_bss` because the H7's 128 KB DTCM is already saturated by the
-// Rust runtime's RT_CELL curve pool.
-// Sized to uint16_t (receive_pos) to escape the 256-byte uint8_t ceiling.
 #define RX_BUFFER_SIZE 2048
 __attribute__((section(".axi_bss")))
 static uint8_t receive_buf[RX_BUFFER_SIZE];
@@ -32,20 +23,12 @@ static uint16_t receive_pos;
 typedef uint16_t receive_pos_t;
 #define read_rpos(a)    readw(a)
 #define write_rpos(a,v) writew((a),(v))
-// Sized to fit one full kalico frame (KALICO_TX_BUF_SIZE = 256 in
-// src/kalico_dispatch.c) plus headroom for a Klipper response.
 static uint8_t transmit_buf[320];
 static uint16_t transmit_pos, transmit_max;
 typedef uint16_t transmit_pos_t;
 #define read_tpos(a)    readw(a)
 #define write_tpos(a,v) writew((a),(v))
 #else
-// Non-H7 runtime targets (F4 bench) — keep DTCM buffer but at the
-// legacy 192-byte size since AXI SRAM doesn't exist on F4. F4 still
-// receives the same 700+ byte frames, but at the slower TIM5 cadence
-// (or no TIM5 at all if step_time-only motors) console_task usually
-// drains in time. If F4 starts losing bytes, revisit by moving to
-// a CCM-RAM or .ccmram section.
 #define RX_BUFFER_SIZE 192
 static uint8_t receive_buf[RX_BUFFER_SIZE], receive_pos;
 typedef uint_fast8_t receive_pos_t;
@@ -67,19 +50,12 @@ serial_rx_byte(uint_fast8_t data)
 {
     if (data == MESSAGE_SYNC) {
         sched_wake_tasks();
-    } else if (data == 0x55) {
-        // Kalico-native frame sync byte. Without this wake, a long kalico
-        // frame (e.g. 744-byte LoadCurve) can fill the 192-byte staging
-        // buffer before any of Klipper's 0x7E bytes happen to occur within
-        // the random payload, dropping bytes silently. Waking on each
-        // kalico frame start guarantees console_task gets a chance to
-        // drain into kalico_demux mid-frame.
+    } else if (data == 0x55 /* KALICO_FRAME_SYNC */) {
+        // Without a wake per kalico frame start, a long frame can fill
+        // receive_buf before a Klipper 0x7E sync byte happens to occur in
+        // its payload, dropping bytes silently mid-frame.
         sched_wake_tasks();
     } else if (receive_pos > (sizeof(receive_buf) * 3 / 4)) {
-        // Receive buffer is filling up — wake the drain task before we
-        // overflow. Threshold (3/4 full = 144 bytes) leaves headroom for
-        // a console_task scheduling latency window without triggering on
-        // every quiescent byte.
         sched_wake_tasks();
     }
     if (receive_pos >= sizeof(receive_buf))
@@ -106,11 +82,9 @@ console_task(void)
 
     kalico_demux_pump(receive_buf, rpos);
 
-    // Bytes the IRQ deposited during pump live in [rpos, now). Rebase
-    // them down to the start of receive_buf and update receive_pos
-    // atomically so a fresh IRQ doesn't write into a slot we just
-    // moved. Doing the memmove inside irq_save trades latency for the
-    // simpler invariant.
+    // The rebasing memmove must run with IRQs masked: a fresh RX IRQ
+    // between reading receive_pos and the move would write into a slot
+    // we are relocating.
     irqstatus_t flag = irq_save();
     receive_pos_t now = read_rpos(&receive_pos);
     if (now == rpos) {
@@ -124,14 +98,10 @@ console_task(void)
 }
 DECL_TASK(console_task);
 
-// Reset receive_pos on shutdown so stale bytes that were in mid-dispatch
-// when the longjmp fired are not re-processed. Same rationale as the
-// usb_cdc.c usb_shutdown handler: without this, a shutdown-triggering
-// command (e.g. emergency_stop) in the stale buffer causes an infinite
-// longjmp cycle that wedges the firmware.
-//
-// Called with IRQs disabled (from ctr_run_shutdownfuncs inside
-// run_shutdown), so the serial RX IRQ cannot race.
+// Without this reset, a stale shutdown-triggering command left in
+// receive_buf re-fires sched_shutdown's longjmp every task-loop pass,
+// wedging the MCU. Runs with IRQs already masked (ctr_run_shutdownfuncs),
+// so the RX IRQ cannot race the write.
 void
 serial_shutdown(void)
 {
@@ -175,17 +145,11 @@ console_sendf(const struct command_encoder *ce, va_list args)
     serial_enable_tx_irq();
 }
 
-// Raw byte writer used by the kalico-native transport TX path. Bytes are
-// already a complete kalico frame (sync + len + channel + payload + CRC).
-// Returns the number of bytes accepted, or -1 if there is no room. Frame
-// contents are not split across calls — caller (kalico_transport_send_frame
-// in src/kalico_dispatch.c) hands a single, complete frame.
 int
 kalico_console_write_raw(const uint8_t *buf, uint16_t len)
 {
     transmit_pos_t tpos = read_tpos(&transmit_pos);
     transmit_pos_t tmax = read_tpos(&transmit_max);
-    // Compact buffer if there's tail headroom we can reclaim.
     if (tpos && (uint32_t)tmax + (uint32_t)len > sizeof(transmit_buf)) {
         write_tpos(&transmit_max, 0);
         tpos = read_tpos(&transmit_pos);

@@ -9,7 +9,6 @@ use kalico_protocol::messages::{ClaimHandshakeReply, MessageKind, SlaveState};
 
 const STUB_BIN: &str = env!("CARGO_BIN_EXE_kalico-ethercat-rt-stub");
 
-/// RAII wrapper that kills and waits on the child unless defused.
 struct ChildGuard {
     child: Option<Child>,
 }
@@ -38,7 +37,6 @@ fn socket_path(tag: &str) -> String {
     format!("/tmp/kalico-stub-{}-{}.sock", tag, std::process::id())
 }
 
-/// Poll until the socket file appears, bounded by `deadline`.
 fn wait_for_socket(path: &str, deadline: Instant) {
     loop {
         if std::path::Path::new(path).exists() {
@@ -52,7 +50,6 @@ fn wait_for_socket(path: &str, deadline: Instant) {
     }
 }
 
-/// Send ClaimHandshake and decode the reply body into `ClaimHandshakeReply`.
 fn do_handshake(conn: &UnixNativeConn) -> ClaimHandshakeReply {
     let (kind, body) = conn
         .kalico_call(
@@ -74,8 +71,6 @@ fn do_handshake(conn: &UnixNativeConn) -> ClaimHandshakeReply {
         .expect("ClaimHandshakeReply must decode from response body")
 }
 
-/// Poll `try_wait` until the child exits or the deadline passes.
-/// Returns the `ExitStatus` on success, panics with "orphan process" on timeout.
 fn wait_for_exit(child: &mut Child, deadline: Instant) -> std::process::ExitStatus {
     loop {
         match child.try_wait().expect("try_wait must not fail") {
@@ -120,7 +115,6 @@ fn stub_claim_succeeds_and_disconnect_terminates_process() {
         reply.slave_statuses[0].state
     );
 
-    // Drop the connection — stub detects EOF and exits.
     drop(conn);
 
     let mut child = guard.defuse();

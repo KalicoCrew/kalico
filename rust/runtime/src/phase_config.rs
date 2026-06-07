@@ -1,9 +1,3 @@
-// `spi_bus_id == 0xFF` (packed raw == `0xFFFF`) means "no phase config for
-// this motor — use the existing StepPulse output path."
-//
-// `AtomicU16` from `portable_atomic` to match the `SharedState.phase_config`
-// field type; consistent type avoids a cast when callers pass
-// `&SharedState.phase_config[n]`.
 use core::sync::atomic::Ordering;
 use portable_atomic::AtomicU16;
 
@@ -13,7 +7,6 @@ pub struct PhaseConfig {
     pub cs_pin_id: u8,
 }
 
-/// Sentinel marking "no phase config installed on this motor."
 pub const NONE_SENTINEL: u16 = 0xFFFF;
 
 impl PhaseConfig {

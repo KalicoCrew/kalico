@@ -1,11 +1,3 @@
-"""Probe what G28 X does against the faithful sim.
-
-Smoke test: we want to see how far the real-config G28 X path gets
-in the sim — does klippy enter homing, what does the trsync layer do,
-and where does it stall. Real-config X uses sensorless homing via the
-TMC5160 DIAG line on stepper_x1.
-"""
-
 import json
 import pathlib
 import shutil
@@ -60,9 +52,8 @@ def _info(api_socket: str) -> dict:
 
 def test_g28_x_smoke(sim):
     try:
-        # Wait for printer state == "ready" (the api state, not just
-        # "Welcome to Kalico" log line — config init can still fail
-        # between those two markers).
+        # Poll API state, not log line: "Welcome to Kalico" precedes config init,
+        # which can still fail before the printer is actually ready.
         deadline = time.time() + 30.0
         state = None
         while time.time() < deadline:

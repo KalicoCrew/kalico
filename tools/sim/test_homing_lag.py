@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""Reproduce the homing-lag timing bug.
-
-Usage inside Docker:
-    python3 tools/sim/test_homing_lag.py --api /tmp/klippy_api --renode-monitor localhost:3335
-
-Usage standalone (if klippy + Renode already running):
-    python3 tools/sim/test_homing_lag.py --api /tmp/klippy_api --renode-monitor localhost:3335
-"""
-
 import argparse
 import json
 import socket
@@ -16,9 +7,6 @@ import time
 
 import pytest
 
-# Renode-driven __main__ script (drives a Renode monitor); no pytest test
-# functions. Tagged needs_renode so it is honestly excluded from CI. Run
-# directly: `python3 <this file> --api ... --renode-monitor ...`.
 pytestmark = pytest.mark.needs_renode
 
 
@@ -55,9 +43,7 @@ class RenodeMonitor:
         self._sock = socket.create_connection((host, int(port)), timeout=10)
         self._sock.settimeout(5)
         self._buf = b""
-        # Drain banner until first prompt
         self._read_until_prompt()
-        # Select machine
         self.cmd("mach set 0")
 
     def _read_until_prompt(self):
@@ -69,9 +55,7 @@ class RenodeMonitor:
             if not chunk:
                 break
             self._buf += chunk
-            # Renode prompt: (monitor) or (h723) followed by space
             text = self._buf.decode(errors="replace")
-            # Strip ANSI escape codes for matching
             import re
 
             clean = re.sub(r"\x1b\[[0-9;]*m", "", text)
@@ -108,11 +92,7 @@ def main():
 
     failures = []
 
-    # Test 1: Pre-tripped endstop with retract — measures post-homing delay
     print("\n=== Test 1: Pre-tripped endstop (retract timing) ===")
-    # Don't pause Renode — klippy needs the MCU responsive to send
-    # arm commands. Instead, inject the pin via Renode monitor from a
-    # background thread after a wall-clock delay, while G28 is in flight.
     import threading
 
     def delayed_gpio_inject():
@@ -137,8 +117,6 @@ def main():
     print(f"  Elapsed: {elapsed:.2f}s")
     if err:
         print(f"  Error: {err[:200]}")
-    # "Endstop still triggered after retract" is expected when the pin
-    # stays HIGH through the retract.
     if "still triggered after retract" in err:
         print("  (expected — pin stays HIGH through retract)")
     elif err:
@@ -151,10 +129,6 @@ def main():
     else:
         print(f"  Timing acceptable: {elapsed:.1f}s")
 
-    # Test 2: Post-homing responsiveness
-    # After G28 completes, measure how long the next command takes.
-    # On the real Trident, there's a multi-second delay after homing
-    # before the toolhead responds to SET_KINEMATIC_POSITION or G1.
     print("\n=== Test 2: Post-homing response time ===")
     t1 = time.time()
     r2 = gcode(args.api, "SET_KINEMATIC_POSITION X=0 Y=0 Z=0", timeout=30.0)
@@ -180,7 +154,6 @@ def main():
     else:
         print(f"  Post-homing response OK: {post_homing_elapsed:.3f}s")
 
-    # Summary
     print("\n=== Summary ===")
     if failures:
         for f in failures:

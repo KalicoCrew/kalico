@@ -1,12 +1,3 @@
-"""
-klipper-sim integration test for the redesigned stepping engine.
-
-Per the spec, step times from our engine should match mainline klipper-sim's
-within the local-linear-extrapolation tolerance: < 500 ns per step at typical
-accel (the dispatcher jitter under the mainline-style one-pulse-per-fire
-consumer).
-"""
-
 import os
 import sys
 
@@ -33,22 +24,6 @@ def klipper_sim_available():
 
 
 def run_sim(klipper_root, label):
-    """
-    Invokes klipper-sim with the specified Klipper checkout and feeds
-    TEST_GCODE. Returns list of (axis, step_time_us) tuples.
-
-    Implementation note: this calls klipper-sim's actual CLI. The exact
-    invocation depends on klipper-sim's interface — see the project
-    README. If klipper-sim is missing or its API changes, this fails
-    with a clear pointer.
-
-    Current status: klipper-sim emits trajectory CSVs sampled at 100 µs
-    (position / velocity / accel per axis), not step-pulse times. To
-    compare step times apples-to-apples we either (a) extend klipper-sim
-    to emit per-step events, or (b) post-process the trajectory CSV
-    through the same stepcompress logic Klipper uses. Neither is wired
-    yet — this stub fails loudly until that work lands.
-    """
     if not klipper_sim_available():
         raise RuntimeError(
             f"klipper-sim not found at {KLIPPER_SIM_DIR}. "
@@ -80,7 +55,7 @@ def run_sim(klipper_root, label):
 def main():
     if not klipper_sim_available():
         print(f"SKIP: klipper-sim not installed at {KLIPPER_SIM_DIR}")
-        return 0  # treat as skipped, not failed
+        return 0
 
     mainline = run_sim("/path/to/mainline/klipper", "mainline")
     ours = run_sim(THIS_FORK, "redesign")
@@ -91,7 +66,7 @@ def main():
     max_drift = 0
     for m, o in zip(mainline, ours):
         assert m[0] == o[0], f"axis mismatch: {m} vs {o}"
-        drift_ns = abs(m[1] - o[1]) * 1000  # convert µs to ns
+        drift_ns = abs(m[1] - o[1]) * 1000
         max_drift = max(max_drift, drift_ns)
     assert max_drift < 500, (
         f"max step-time drift {max_drift} ns exceeds 500 ns threshold"

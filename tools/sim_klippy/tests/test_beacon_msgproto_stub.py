@@ -1,15 +1,3 @@
-"""Unit tests for the faithful BeaconMcuStub.
-
-These tests open the PTY directly (no klippy process) and exercise the
-msgproto wire handshake so we can iterate on the stub's framing /
-identify / NVM / streaming surface without spinning up the full sim.
-
-Each test acts like a tiny mock-klippy: it encodes a known msgproto
-command, frames it with crc16-ccitt + sync-byte trailer, writes to the
-PTY slave, then reads frames back from the PTY and parses them via the
-same MessageParser.
-"""
-
 from __future__ import annotations
 
 import json
@@ -33,19 +21,10 @@ from tools.sim_klippy.orchestrator.beacon_serial_stub import (
 
 pytestmark = pytest.mark.sim_unit
 
-# ---------------------------------------------------------------------------
-# Wire helpers
-# ---------------------------------------------------------------------------
-
 
 def _frame(
     parser: msgproto.MessageParser, seq: int, msgformat: str, **kwargs
 ) -> bytes:
-    """Encode + frame a command for sending to the stub.
-
-    Mirrors `BeaconMcuStub._send_msg` but with a caller-supplied seq so
-    tests can simulate klippy's serialqueue.c sender side.
-    """
     cmd = parser.lookup_command(msgformat).encode_by_name(**kwargs)
     seq_byte = (seq & msgproto.MESSAGE_SEQ_MASK) | msgproto.MESSAGE_DEST
     payload = [msgproto.MESSAGE_MIN + len(cmd), seq_byte] + list(cmd)
@@ -56,17 +35,10 @@ def _frame(
 
 
 def _parser_with_default_messages() -> msgproto.MessageParser:
-    """Return a parser that knows only the default identify messages.
-
-    Used for the very first identify exchange before we've loaded the
-    full dictionary. msgproto.DefaultMessages already includes
-    `identify offset=%u count=%c` / `identify_response offset=%u data=%.*s`.
-    """
     return msgproto.MessageParser(warn_prefix="test: ")
 
 
 def _open_pty_writer(pty_path: str) -> int:
-    """Open the PTY symlinked at *pty_path* in read/write mode."""
     return os.open(pty_path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
 
 
@@ -76,10 +48,6 @@ def _read_frames(
     expected_name: str,
     timeout: float = 2.0,
 ) -> dict:
-    """Read PTY bytes until a frame whose ``#name`` == expected_name.
-
-    Returns the parsed parameter dict. Times out after `timeout`.
-    """
     buf = bytearray()
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -89,7 +57,6 @@ def _read_frames(
                 buf.extend(chunk)
         except (BlockingIOError, OSError):
             time.sleep(0.005)
-        # Drain whatever framed messages have arrived.
         while True:
             msglen = parser.check_packet(buf)
             if msglen == 0:
@@ -112,18 +79,12 @@ def _read_frames(
     )
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def stub(tmp_path):
     pty_path = str(tmp_path / "beacon_pty")
     log_path = str(tmp_path / "beacon_traffic.log")
     s = BeaconMcuStub(pty_path, log_path=log_path)
     s.start()
-    # Wait for symlink to appear.
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline:
         if os.path.exists(pty_path):
@@ -137,9 +98,6 @@ def stub(tmp_path):
 
 
 def test_identify_chunked_returns_full_dict(stub):
-    """Drive identify offset=N count=K until the stub returns empty data,
-    assemble the chunks, zlib-decompress, and verify the dictionary keys.
-    """
     s, pty_path = stub
     parser = _parser_with_default_messages()
     fd = _open_pty_writer(pty_path)
@@ -170,7 +128,6 @@ def test_identify_chunked_returns_full_dict(stub):
 
         assert bytes(identify_data) == IDENTIFY_BLOB
         decoded = json.loads(zlib.decompress(bytes(identify_data)).decode())
-        # Every command beacon.py looks up must be present byte-for-byte.
         for cmd in BEACON_COMMANDS:
             assert cmd in decoded["commands"], (
                 f"missing command in identify dict: {cmd!r}"
@@ -186,7 +143,6 @@ def test_identify_chunked_returns_full_dict(stub):
 
 
 def test_msgproto_frame_roundtrip_get_uptime(stub):
-    """get_uptime → uptime reply with sane 64-bit clock components."""
     s, pty_path = stub
     parser = msgproto.MessageParser()
     parser.process_identify(IDENTIFY_BLOB, decompress=True)
@@ -194,8 +150,6 @@ def test_msgproto_frame_roundtrip_get_uptime(stub):
     try:
         os.write(fd, _frame(parser, 1, "get_uptime"))
         params = _read_frames(fd, parser, "uptime", 2.0)
-        # Some elapsed time has passed, so clock should be > 0; high may
-        # still be zero on a freshly-started stub. Both must be uint32.
         assert 0 <= params["high"] <= 0xFFFFFFFF
         assert 0 <= params["clock"] <= 0xFFFFFFFF
     finally:
@@ -213,7 +167,6 @@ def test_get_config_flips_after_finalize_config(stub):
         params = _read_frames(fd, parser, "config", 2.0)
         assert params["is_config"] == 0
         assert params["crc"] == 0
-        # Send finalize_config crc=...
         os.write(
             fd, _frame(parser, 2, "finalize_config crc=%u", crc=0xDEADBEEF)
         )
@@ -228,7 +181,6 @@ def test_get_config_flips_after_finalize_config(stub):
 
 
 def test_beacon_nvm_read_returns_image_bytes(stub):
-    """A 20-byte read at offset=0 returns the model-region sentinel image."""
     s, pty_path = stub
     parser = msgproto.MessageParser()
     parser.process_identify(IDENTIFY_BLOB, decompress=True)
@@ -243,7 +195,6 @@ def test_beacon_nvm_read_returns_image_bytes(stub):
         params = _read_frames(fd, parser, "beacon_nvm_data", 2.0)
         assert params["offset"] == 0
         assert params["bytes"] == NVM_IMAGE[:20]
-        # Decoded by beacon: f_count and adc_count sentinels.
         f_count, adc_count = struct.unpack("<IH", params["bytes"][:6])
         assert f_count == 0xFFFFFFFF
         assert adc_count == 0xFFFF
@@ -308,8 +259,6 @@ def test_trsync_trigger_emits_state_with_can_trigger_zero(stub):
     parser.process_identify(IDENTIFY_BLOB, decompress=True)
     fd = _open_pty_writer(pty_path)
     try:
-        # Configure a trsync OID first (klippy does this via send_config
-        # before any trsync_start / trsync_trigger).
         os.write(fd, _frame(parser, 1, "config_trsync oid=%c", oid=3))
         os.write(
             fd,
@@ -336,7 +285,6 @@ def test_trsync_trigger_emits_state_with_can_trigger_zero(stub):
     strict=False,
 )
 def test_beacon_stream_starts_emitting_status_frames(stub):
-    """beacon_stream en=1 → beacon_status frames begin arriving."""
     s, pty_path = stub
     parser = msgproto.MessageParser()
     parser.process_identify(IDENTIFY_BLOB, decompress=True)
@@ -346,7 +294,6 @@ def test_beacon_stream_starts_emitting_status_frames(stub):
         params = _read_frames(fd, parser, "beacon_status", 2.0)
         assert params["frequency"] > 0
         assert params["temp"] != 0
-        # And we should see the counter incrementing on a second sample.
         params2 = _read_frames(fd, parser, "beacon_status", 2.0)
         assert params2["sample"] != params["sample"]
     finally:
@@ -354,10 +301,6 @@ def test_beacon_stream_starts_emitting_status_frames(stub):
 
 
 def test_identify_dict_exposes_accelerometer_surface(stub):
-    """Per the user's RevH having an LIS2DW12, identify must advertise
-    BEACON_HAS_ACCEL=1, BEACON_ACCEL_BITS, the per-scale constants, the
-    `beacon_accel_scales` enumeration, and the accel command/response
-    triples that `BeaconAccelHelper.reinit` looks up."""
     s, pty_path = stub
     parser = _parser_with_default_messages()
     fd = _open_pty_writer(pty_path)
@@ -400,9 +343,6 @@ def test_identify_dict_exposes_accelerometer_surface(stub):
 
 
 def test_beacon_accel_stream_emits_data_batches(stub):
-    """beacon_accel_stream en=1 → beacon_accel_data batches arrive
-    with non-empty 6-byte-sample payloads. Disabling the stream stops
-    new emits."""
     s, pty_path = stub
     parser = msgproto.MessageParser()
     parser.process_identify(IDENTIFY_BLOB, decompress=True)
@@ -415,11 +355,8 @@ def test_beacon_accel_stream_emits_data_batches(stub):
             ),
         )
         params = _read_frames(fd, parser, "beacon_accel_data", 2.0)
-        # 6-byte samples (xl xh yl yh zl zh).
         assert len(params["data"]) > 0
         assert len(params["data"]) % 6 == 0
-        # Two consecutive batches should have monotonically advancing
-        # start_clock — proving the loop is running, not just one shot.
         params2 = _read_frames(fd, parser, "beacon_accel_data", 2.0)
         assert params2["start_clock"] != params["start_clock"]
     finally:

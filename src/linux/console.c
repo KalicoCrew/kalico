@@ -135,16 +135,9 @@ static int receive_pos;
 void *
 console_receive_buffer(void)
 {
-    // Returns the raw RX buffer used by command_find_and_dispatch's
-    // pop_count arithmetic. Pre-demuxer-integration shape; the
-    // klipper_only_buf accumulator that briefly lived between this
-    // function and the dispatch path was removed when kalico_demux_pump
-    // landed (see docs/superpowers/specs/2026-05-06-kalico-demux-rx-wiring-design.md).
     return receive_buf;
 }
 
-// Raw byte writer used by the kalico transport TX path. Bypasses Klipper's
-// msgproto framing — the bytes are already a complete kalico frame.
 int
 kalico_console_write_raw(const uint8_t *buf, uint16_t len)
 {
@@ -178,13 +171,8 @@ console_task(void)
         && memcmp(&receive_buf[receive_pos], "FORCE_SHUTDOWN\n", 15) == 0)
         shutdown("Force shutdown command");
 
-    // Drive the kalico-native demuxer over the freshly-read bytes,
-    // dispatching klipper and kalico frames as they surface. State
-    // persists across console_task firings for partial frames.
     if (ret > 0)
         kalico_demux_pump(&receive_buf[receive_pos], (uint16_t)ret);
-    // Linux receive_buf is task-only; the demuxer fully consumes the
-    // bytes it was handed.
     receive_pos = 0;
 }
 DECL_TASK(console_task);

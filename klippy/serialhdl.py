@@ -22,8 +22,6 @@ class SerialReader:
         self.reactor = reactor
         self.warn_prefix = warn_prefix
         self.mcu = mcu
-        # The motion bridge owns wire I/O on every MCU on this fork, so
-        # the legacy C serialqueue is never allocated.
         # Serial port
         self.serial_dev = None
         self._event_poller_timer = None
@@ -73,7 +71,6 @@ class SerialReader:
                 )
 
     def _bridge_event_poller(self, eventtime):
-        """Reactor timer: drain bridge runtime events and dispatch to handlers."""
         if self.mcu is None:
             return self.reactor.NEVER
         bridge = self.mcu._motion_bridge
@@ -81,16 +78,13 @@ class SerialReader:
         if handle is None:
             return self.reactor.NEVER
         now = eventtime
-        # Drain up to 32 events per tick to avoid starving the reactor.
         for _ in range(32):
             ev = bridge.take_runtime_event(handle)
             if ev is None:
                 break
             ev_type = ev.get("type")
-            # Map event type to a msgproto-style name so existing handlers work.
             if ev_type == "status":
                 name = "kalico_status_v6"
-                # Log only on state change (engine_status, last_fault).
                 prev = getattr(self, "_last_status_state", None)
                 cur = (ev.get("engine_status"), ev.get("last_fault"))
                 if prev != cur:
@@ -110,9 +104,6 @@ class SerialReader:
             elif ev_type == "endstop_tripped":
                 name = "kalico_endstop_tripped"
             elif ev_type == "output":
-                # #output events go to the #output handler.
-                # Populate #msg from the bridge event's 'msg' field so that
-                # handle_output (which reads params["#msg"]) works correctly.
                 name = "#output"
                 ev["#name"] = "#output"
                 ev["#sent_time"] = now
@@ -131,12 +122,6 @@ class SerialReader:
                     )
                 continue
             elif ev_type == "response":
-                # Klipper-protocol Response frame the firmware emitted
-                # unsolicited (analog_in_state, trsync_state, stats, …).
-                # Bridge owns the wire so klippy's serialqueue never receives
-                # these directly — route by (name, oid) to handlers registered
-                # via register_response. Fields from the firmware are spread
-                # into ev by the bridge; preserve them for the callback.
                 name = ev.get("name", "")
                 if name == "trsync_state":
                     logging.info(
@@ -209,12 +194,6 @@ class SerialReader:
                 logging.exception(
                     "%sException in bridge event callback", self.warn_prefix
                 )
-        # Bridge events carry runtime credit and status for the Rust planner.
-        # During motion_toolhead.wait_moves(), Python releases the GIL while
-        # the planner thread blocks on producer responses, so this timer is
-        # the only Klippy-side drain path for runtime events. Keep it tight
-        # enough that bridge progress is not dependent on unrelated reactor
-        # wakeups.
         return eventtime + 0.001
 
     def _error(self, msg, *params):
@@ -404,9 +383,6 @@ class SerialReader:
 
     def connect_pipe(self, filename):
         logging.info("%sStarting connect", self.warn_prefix)
-        # Bridge mode: Rust reactor owns the FD.  Ask the bridge to open
-        # the port, run the identify handshake, and return the raw dict
-        # blob so klippy's msgparser can be populated normally.
         bridge = self.mcu._motion_bridge
         # claim_mcu may not have been called yet (it normally happens in
         # _mcu_identify after connect_pipe returns). Allocate the handle
@@ -419,11 +395,6 @@ class SerialReader:
                 0,
             )
         handle = self.mcu._bridge_handle
-        # Forward klippy's per-MCU criticality so the bridge's reactor wedge
-        # detector matches klippy's own non-critical-disconnect machinery: a
-        # non-critical MCU (e.g. the Beacon) must not abort the whole process
-        # on a transport drop. Default False (critical) if the MCU predates
-        # the attribute.
         klippy_non_critical = bool(getattr(self.mcu, "is_non_critical", False))
         logging.info(
             "%sbridge attach_serial %s (handle=%s, non_critical=%s)",
@@ -449,19 +420,12 @@ class SerialReader:
         msgparser.process_identify(identify_data)
         self.msgparser = msgparser
         self.register_response(self.handle_unknown, "#unknown")
-        # Suppress handle_default logging for status events — state
-        # changes are already logged inline in _bridge_event_poller.
         self.register_response(lambda params: None, "kalico_status_v6")
-        # Register a reactor timer that polls runtime events from the
-        # bridge and dispatches them to klippy's registered handlers.
-        # This is the inbound async path for kalico_status_v6 etc.
         self._event_poller_timer = self.reactor.register_timer(
             self._bridge_event_poller, self.reactor.NOW
         )
 
     def connect_uart(self, serialport, baud, rts=True):
-        # Bridge mode owns the wire for UART transports too; route through
-        # the same path the pipe (USB-CDC) attaches use.
         self.connect_pipe(serialport)
 
     def check_connect(self, serialport, baud, rts=True):
@@ -536,7 +500,6 @@ class SerialReader:
         return self.msgparser
 
     def get_serialqueue(self):
-        # Bridge manages the serial queue in Rust.
         return None
 
     def get_default_command_queue(self):

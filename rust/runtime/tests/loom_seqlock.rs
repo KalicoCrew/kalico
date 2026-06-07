@@ -44,11 +44,6 @@ fn loom_seqlock_writer_reader() {
         let writer_hi = hi.clone();
         let writer_seq = seq.clone();
 
-        // Single-write model — keeps loom's branching tractable. The
-        // multi-write case is a strict superset of single-write under the
-        // seqlock invariant; if a single write is coherent under all
-        // interleavings, sequences of writes are too (each new write only
-        // increments the seq counter further).
         let writer = thread::spawn(move || {
             writer_seq.store(1, Ordering::Release); // → odd
             writer_lo.store(0xCAFE_BABE, Ordering::Release);
@@ -56,10 +51,6 @@ fn loom_seqlock_writer_reader() {
             writer_seq.store(2, Ordering::Release); // → even
         });
 
-        // Reader: bounded number of retries (4 is more than enough for the
-        // single-write model). On each pass, if seq is odd or the two seq
-        // reads disagree, we conclude "still in flight" and bail; loom
-        // explores all interleavings.
         let mut observation: Option<(u32, u32)> = None;
         for _ in 0..4 {
             let s_before = seq.load(Ordering::Acquire);

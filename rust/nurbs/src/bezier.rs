@@ -114,7 +114,6 @@ impl BezierPiece<f64> {
         };
 
         if deg == 0 {
-            // Constant polynomial — no roots.
             return Vec::new();
         }
 
@@ -132,9 +131,7 @@ impl BezierPiece<f64> {
         for x in x_roots {
             let u = x + self.u_start;
             if u >= self.u_start - DOMAIN_TOL && u <= self.u_end + DOMAIN_TOL {
-                // Clamp to exact domain boundaries.
                 let u_clamped = u.clamp(self.u_start, self.u_end);
-                // Deduplicate: skip if we already have a root very close.
                 if !result
                     .iter()
                     .any(|&existing: &f64| (existing - u_clamped).abs() < DOMAIN_TOL)
@@ -266,7 +263,6 @@ fn hessenberg_qr_eigenvalues(mat: &mut [f64], n: usize, tol: f64) -> Vec<(f64, f
                     continue 'outer;
                 }
                 if k == p - 2 {
-                    // 2x2 block at bottom-right.
                     let eigs = eigenvalues_2x2(mat, n, p - 2);
                     eigenvalues.push(eigs.0);
                     eigenvalues.push(eigs.1);
@@ -298,14 +294,12 @@ fn wilkinson_shift(mat: &[f64], n: usize, p: usize) -> f64 {
         let sqrt_disc = disc.sqrt();
         let e1 = (trace + sqrt_disc) / 2.0;
         let e2 = (trace - sqrt_disc) / 2.0;
-        // Return the one closer to d = H[p-1][p-1].
         if (e1 - d).abs() < (e2 - d).abs() {
             e1
         } else {
             e2
         }
     } else {
-        // Complex eigenvalues — use the real part as shift.
         trace / 2.0
     }
 }

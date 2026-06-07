@@ -1,8 +1,3 @@
-"""Behavioral emulator for the TMC2209 stepper driver chip.
-
-Single-wire UART, CRC8 polynomial 0x07. Smaller register surface than
-the 5160. Same per-chip register dict + clear-on-read for GSTAT."""
-
 CRC8_POLY = 0x07
 
 
@@ -31,8 +26,6 @@ def _decode_uart_bits(data: bytes) -> bytes:
 
 
 def _encode_uart_bits(data: bytes) -> bytes:
-    """Wrap each logical byte with UART start (0) and stop (1) bits,
-    inverting _decode_uart_bits."""
     bitcount = len(data) * 10
     val = 0
     for i, b in enumerate(data):
@@ -59,7 +52,6 @@ def crc8(data: bytes) -> int:
     return crc
 
 
-# Register addresses
 GCONF = 0x00
 GSTAT = 0x01
 IFCNT = 0x02
@@ -87,19 +79,6 @@ class TMC2209Emulator:
         self._registers = dict(POR_DEFAULTS)
 
     def handle(self, msg: bytes) -> bytes:
-        """Process one inbound UART datagram. Returns reply bytes (10
-        for reads — 8-byte logical reply + start/stop framing — empty
-        for writes).
-
-        klippy's tmc_uart driver wraps every 4-/8-byte logical TMC2209
-        frame with UART start/stop bits before handing the buffer to
-        the firmware (see _add_serial_bits). On the wire that's 5 / 10
-        bytes; we strip the framing here and re-add it on the reply
-        path so the firmware-side tmcuart bit-bang decoder sees a real
-        UART signal."""
-        # 5 wire bytes = 4 logical bytes (read req); 10 wire bytes = 8
-        # logical (write req). Anything else is a framing protocol bug
-        # we want to surface loudly.
         if len(msg) == 5:
             decoded = _decode_uart_bits(msg)
             if len(decoded) != 4:
@@ -118,7 +97,6 @@ class TMC2209Emulator:
             msg = decoded
 
         if len(msg) == 4:
-            # read request
             # TMC2209 datasheet sync byte is 0x05; klippy actually sends
             # 0xF5 (upper nibble reserved). Accept both — only the low
             # nibble identifies the protocol.
@@ -142,13 +120,9 @@ class TMC2209Emulator:
                 ]
             )
             reply = reply_body + bytes([crc8(reply_body)])
-            # Re-encode with UART framing so the firmware-side tmcuart
-            # decoder receives a real wire signal.
             return _encode_uart_bits(reply)
 
         if len(msg) == 8:
-            # write request
-            # See read-request comment re: sync byte; same dual-nibble.
             if (msg[0] & 0x0F) != 0x05 or msg[1] != self._slave:
                 return b""
             if crc8(msg[:7]) != msg[7]:

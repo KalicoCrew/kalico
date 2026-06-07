@@ -656,8 +656,6 @@ class TMCCommandHelper:
 class TMCVirtualPinHelper:
     def __init__(self, config, mcu_tmc):
         self.printer = config.get_printer()
-        # Step 7-D: retain the config section so setup_pin can read the
-        # `homing_trip_immediately` opt-out flag for sensorless DIAG sources.
         self.config_section = config
         self.mcu_tmc = mcu_tmc
         self.fields = mcu_tmc.get_fields()
@@ -696,28 +694,11 @@ class TMCVirtualPinHelper:
             "homing:homing_move_end", self.handle_homing_move_end
         )
         self.mcu_endstop = ppins.setup_pin("endstop", self.diag_pin)
-        # Step 7-D §5.3: tag the endstop as a sensorless DIAG source so the
-        # bridge-mode home_start path picks ArmPolicy::IgnoreUntilMoving
-        # (with velocity latch) by default, and let the user opt out via
-        # `homing_trip_immediately: True` for stress / debug profiles.
-        # Bridge owns endstop dispatch unconditionally; tag the endstop
-        # as a sensorless DIAG source so the bridge home_start picks
-        # ArmPolicy::IgnoreUntilMoving (with velocity latch) by default,
-        # and let the user opt out via `homing_trip_immediately: True`
-        # for stress / debug profiles.
-        if True:
-            self.mcu_endstop._is_sensorless_diag = True
-            self.mcu_endstop._sensorless_mcu_tmc = self.mcu_tmc
-            try:
-                self.mcu_endstop._sensorless_trip_immediately = (
-                    self.config_section.getboolean(
-                        "homing_trip_immediately", False
-                    )
-                    if hasattr(self, "config_section")
-                    else False
-                )
-            except Exception:
-                self.mcu_endstop._sensorless_trip_immediately = False
+        self.mcu_endstop._is_sensorless_diag = True
+        self.mcu_endstop._sensorless_mcu_tmc = self.mcu_tmc
+        self.mcu_endstop._sensorless_trip_immediately = (
+            self.config_section.getboolean("homing_trip_immediately", False)
+        )
         return self.mcu_endstop
 
     def handle_homing_move_begin(self, hmove):

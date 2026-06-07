@@ -1,16 +1,4 @@
 #!/usr/bin/env bash
-# Launch Renode with the kalico-h723-sim machine.
-#
-# Prereqs:
-#   - renode (brew install renode) on PATH
-#   - A simulator-mode firmware build at out/klipper.elf with
-#     CONFIG_STM32_SERIAL_USART2=y. See
-#     tools/sim/sim.config and tools/sim/build_sim_firmware.sh.
-#
-# After launch, USART2 is available at tcp localhost:3334. Host tools talk
-# to it via `socket://localhost:3334` — see tools/sim/test_first_light_sim.sh.
-#
-# Pass --gui to drop --disable-gui (useful for the Renode monitor window).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

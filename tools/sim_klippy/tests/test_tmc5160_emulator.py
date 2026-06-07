@@ -14,13 +14,10 @@ pytestmark = pytest.mark.sim_unit
 
 def test_write_then_double_read_returns_value():
     chip = TMC5160Emulator()
-    # Write GLOBALSCALER (0x0B) = 128. Bit 7 of byte0 = 1 (write).
     write_req = bytes([0x80 | 0x0B, 0, 0, 0, 128])
     write_reply = chip.transfer(write_req)
     assert len(write_reply) == 5
 
-    # Latched-read: first read fetches GLOBALSCALER but returns latched
-    # PREVIOUS data; second read returns what we just fetched.
     chip.transfer(bytes([0x0B, 0, 0, 0, 0]))
     second_reply = chip.transfer(bytes([0x0B, 0, 0, 0, 0]))
     assert second_reply[1:5] == bytes([0, 0, 0, 128])
@@ -28,30 +25,28 @@ def test_write_then_double_read_returns_value():
 
 def test_globalscaler_clamps_low():
     chip = TMC5160Emulator()
-    chip.transfer(bytes([0x80 | 0x0B, 0, 0, 0, 10]))  # writes 10
+    chip.transfer(bytes([0x80 | 0x0B, 0, 0, 0, 10]))
     chip.transfer(bytes([0x0B, 0, 0, 0, 0]))
     reply = chip.transfer(bytes([0x0B, 0, 0, 0, 0]))
-    assert reply[4] == 32  # clamped to minimum
+    assert reply[4] == 32
 
 
 def test_globalscaler_clamps_high():
     chip = TMC5160Emulator()
-    chip.transfer(bytes([0x80 | 0x0B, 0, 0, 0xFF, 0xFF]))  # writes 65535
+    chip.transfer(bytes([0x80 | 0x0B, 0, 0, 0xFF, 0xFF]))
     chip.transfer(bytes([0x0B, 0, 0, 0, 0]))
     reply = chip.transfer(bytes([0x0B, 0, 0, 0, 0]))
-    assert reply[3:5] == bytes([0, 255])  # clamped to 255
+    assert reply[3:5] == bytes([0, 255])
 
 
 def test_gstat_clear_on_read():
     chip = TMC5160Emulator()
-    # Force GSTAT to a non-zero value (e.g., reset bit set as if POR)
     chip._registers[0x01] = 0x07
-    chip.transfer(bytes([0x01, 0, 0, 0, 0]))  # read 1: latches 0x07
-    first = chip.transfer(bytes([0x01, 0, 0, 0, 0]))  # read 2: returns 0x07
+    chip.transfer(bytes([0x01, 0, 0, 0, 0]))
+    first = chip.transfer(bytes([0x01, 0, 0, 0, 0]))
     assert first[1:5] == bytes([0, 0, 0, 0x07])
-    # Now GSTAT is cleared (clear-on-read fired during the first read)
-    chip.transfer(bytes([0x01, 0, 0, 0, 0]))  # read 3: latches 0
-    second = chip.transfer(bytes([0x01, 0, 0, 0, 0]))  # read 4: returns 0
+    chip.transfer(bytes([0x01, 0, 0, 0, 0]))
+    second = chip.transfer(bytes([0x01, 0, 0, 0, 0]))
     assert second[1:5] == bytes([0, 0, 0, 0])
 
 
@@ -71,19 +66,16 @@ def test_diag_callback_fires_on_threshold_cross():
     fires = []
     chip.set_diag_callback(lambda high: fires.append(high))
     chip.set_load(200)
-    chip.maybe_trigger_diag(sg_threshold=100)  # 200 >= 100 → not asserted
+    chip.maybe_trigger_diag(sg_threshold=100)
     chip.set_load(50)
-    chip.maybe_trigger_diag(sg_threshold=100)  # 50 < 100 → DIAG goes high
+    chip.maybe_trigger_diag(sg_threshold=100)
     chip.set_load(200)
-    chip.maybe_trigger_diag(sg_threshold=100)  # back high SG → DIAG low
+    chip.maybe_trigger_diag(sg_threshold=100)
     assert fires == [True, False]
 
 
 def test_ihold_irun_clamps_fields():
     chip = TMC5160Emulator()
-    # Write IHOLD_IRUN (0x10) with fields out of range:
-    # IHOLD = 0x3F (clamped to 0x1F = 31)
-    # IRUN  = 0x40 in byte 1 (0x40 << 8 = 0x4000) → clamped to 0x1F00
     chip.transfer(bytes([0x80 | 0x10, 0, 0, 0x40, 0x3F]))
     chip.transfer(bytes([0x10, 0, 0, 0, 0]))
     reply = chip.transfer(bytes([0x10, 0, 0, 0, 0]))

@@ -55,6 +55,5 @@ fn assembles_samples_and_total_time() {
     assert_eq!(p.samples.len(), 3);
     assert!((p.samples[1].v - 10.0).abs() < 1e-9);
     assert!(matches!(p.status, SolveStatus::Solved));
-    // Trapezoidal time over the two intervals: 2·5/(0+10) + 2·5/(10+0) = 2.0 s.
     assert!((p.total_time - 2.0).abs() < 1e-9);
 }

@@ -1,12 +1,3 @@
-//! Unit tests for the EtherCAT transport path:
-//!
-//! 1. `WireSink::send_frame` returns a hard error when `mcu_id` has no
-//!    transport entry (fail-loudly invariant).
-//! 2. The pump routes `EnqueueMsg`s to the correct `AxisKey` regardless of
-//!    whether the mcu_id is designated "serial" or "EtherCAT".
-//! 3. The EtherCAT heartbeat callback (as installed in `bridge::init_planner`)
-//!    advances `DrainSync` and sends `PumpMsg::Heartbeat` to the pump.
-
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -16,8 +7,6 @@ use motion_bridge_native::pump::{
     AxisKey, EnqueueMsg, HeartbeatMsg, PieceSink, PumpMsg, SendError, WireSink, run_pump,
 };
 use runtime::piece_ring::PieceEntry;
-
-// ── Helpers ───────────────────────────────────────────────────────────────
 
 fn piece(t: u64) -> (PieceEntry, f64) {
     (
@@ -31,16 +20,12 @@ fn piece(t: u64) -> (PieceEntry, f64) {
     )
 }
 
-// ── 1. WireSink hard error on missing transport ───────────────────────────
-
-/// `WireSink::send_frame` returns `Err` (not a silent drop) when `mcu_id`
-/// has no transport entry. This is the "fail loudly" invariant from CLAUDE.md.
 #[test]
 fn wire_sink_missing_transport_is_hard_error() {
     use std::collections::HashMap;
 
     let sink = WireSink {
-        transports: HashMap::new(), // intentionally empty
+        transports: HashMap::new(),
         timeout: Duration::from_secs(1),
         freq_of: Arc::new(|_| None),
     };
@@ -66,9 +51,6 @@ fn wire_sink_missing_transport_is_hard_error() {
     );
 }
 
-// ── 2. Pump routes both serial and EtherCAT mcu_ids ──────────────────────
-
-/// A `PieceSink` that records per-mcu_id call counts.
 #[derive(Clone)]
 struct PerMcuCountSink {
     calls: Arc<Mutex<std::collections::HashMap<u32, u32>>>,
@@ -104,10 +86,6 @@ impl PieceSink for PerMcuCountSink {
     }
 }
 
-/// The pump dispatches `EnqueueMsg`s for two different `mcu_id`s — one
-/// designated "serial" (mcu_id=1) and one "EtherCAT" (mcu_id=2). The sink
-/// is a counting stub; the pump does not know or care about transport type,
-/// routing only by `AxisKey.mcu_id`. Both must be serviced.
 #[test]
 fn pump_routes_both_serial_and_ethercat_mcu_ids() {
     let sink = PerMcuCountSink::new();
@@ -115,26 +93,22 @@ fn pump_routes_both_serial_and_ethercat_mcu_ids() {
 
     let (tx, rx) = mpsc::channel::<PumpMsg>();
     let handle = std::thread::spawn(move || {
-        // mcu_clock_of: no time gate (count-only) — this test exercises routing,
-        // not the arrival-lead horizon. Matches the `|_| None` stub used by the
-        // other run_pump callers (pump_loop.rs, pump.rs).
         run_pump(rx, sink, |_k| 8u32, |_| None, |_| {});
     });
 
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
-        key: AxisKey { mcu_id: 1, axis: 0 }, // "serial"
+        key: AxisKey { mcu_id: 1, axis: 0 },
         pieces: vec![piece(0)],
         fresh_stream: false,
     }))
     .unwrap();
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
-        key: AxisKey { mcu_id: 2, axis: 0 }, // "EtherCAT"
+        key: AxisKey { mcu_id: 2, axis: 0 },
         pieces: vec![piece(1)],
         fresh_stream: false,
     }))
     .unwrap();
 
-    // Spin-wait until both MCUs have been serviced (both have at least 1 send).
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
     loop {
         let c1 = counts.lock().unwrap().get(&1).copied().unwrap_or(0);
@@ -164,21 +138,13 @@ fn pump_routes_both_serial_and_ethercat_mcu_ids() {
     );
 }
 
-// ── 3. EtherCAT heartbeat callback → DrainSync + PumpMsg ─────────────────
-
-/// Simulates the heartbeat callback that `bridge::init_planner` installs for
-/// EtherCAT MCUs (via `UnixNativeConn::attach_heartbeat_callback`). The
-/// callback is a plain closure: it must (a) send `PumpMsg::Heartbeat` to the
-/// pump channel and (b) call `drain.set_retired` so `wait_drained` unblocks.
 #[test]
 fn ethercat_heartbeat_callback_advances_drain_and_pump() {
     let drain = Arc::new(DrainSync::new());
     let (pump_tx, pump_rx) = mpsc::channel::<PumpMsg>();
 
-    // Record 3 pieces sent to mcu_id=42, axis=0.
     drain.add_sent(42, 0, 3);
 
-    // This is the exact closure shape that bridge.rs installs for EtherCAT MCUs.
     let drain_hb = Arc::clone(&drain);
     let pump_tx_hb = pump_tx.clone();
     let mcu_id = 42u32;
@@ -192,15 +158,12 @@ fn ethercat_heartbeat_callback_advances_drain_and_pump() {
         }
     });
 
-    // Fire the callback with retired_counts=[3] — exactly matching sent.
     callback(&[3u32]);
 
-    // DrainSync must immediately report drained.
     drain
         .wait_drained(Duration::from_millis(100))
         .expect("drain must complete after heartbeat callback fires with retired==sent");
 
-    // Pump must have received the corresponding Heartbeat message.
     match pump_rx.recv_timeout(Duration::from_millis(100)) {
         Ok(PumpMsg::Heartbeat(hb)) => {
             assert_eq!(hb.mcu_id, 42, "Heartbeat.mcu_id must match");
@@ -215,8 +178,6 @@ fn ethercat_heartbeat_callback_advances_drain_and_pump() {
     }
 }
 
-/// Partial retirement (retired < sent) must NOT unblock the drain, but a
-/// subsequent callback with the full count must.
 #[test]
 fn ethercat_heartbeat_partial_then_full_retirement() {
     let drain = Arc::new(DrainSync::new());
@@ -237,14 +198,12 @@ fn ethercat_heartbeat_partial_then_full_retirement() {
         }
     });
 
-    // Partial retirement: 2 of 5.
     callback(&[2u32]);
     assert!(
         drain.wait_drained(Duration::from_millis(20)).is_err(),
         "drain must not unblock with partial retirement (2/5)"
     );
 
-    // Full retirement: 5 of 5.
     callback(&[5u32]);
     assert!(
         drain.wait_drained(Duration::from_millis(100)).is_ok(),

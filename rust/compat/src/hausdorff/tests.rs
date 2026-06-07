@@ -2,7 +2,6 @@ use super::*;
 
 #[test]
 fn straight_bezier_zero_distance() {
-    // Collinear Bézier from (0,0) to (10,0) — distance to that same line = 0.
     let p0 = [0.0, 0.0];
     let p1 = [10.0 / 3.0, 0.0];
     let p2 = [20.0 / 3.0, 0.0];
@@ -25,7 +24,6 @@ fn bulging_bezier_detects_deviation() {
 
 #[test]
 fn bezier_on_polyline() {
-    // Bézier that follows a 2-segment polyline closely.
     let p0 = [0.0, 0.0];
     let p1 = [3.0, 0.0];
     let p2 = [7.0, 0.0];
@@ -41,7 +39,7 @@ fn degenerate_polyline_returns_infinity() {
     let p1 = [1.0, 0.0];
     let p2 = [2.0, 0.0];
     let p3 = [3.0, 0.0];
-    let polyline: Vec<[f64; 2]> = vec![[0.0, 0.0]]; // single vertex — no segments
+    let polyline: Vec<[f64; 2]> = vec![[0.0, 0.0]];
     let d = bezier_to_polyline_hausdorff(p0, p1, p2, p3, &polyline, 1e-6);
     assert!(
         d.is_infinite(),
@@ -51,7 +49,6 @@ fn degenerate_polyline_returns_infinity() {
 
 #[test]
 fn point_to_segment_endpoints() {
-    // Point beyond the end of the segment should clamp to the endpoint.
     let d = point_to_segment_dist([5.0, 0.0], [0.0, 0.0], [3.0, 0.0]);
     assert!((d - 2.0).abs() < 1e-12, "expected 2, got {d}");
 }
@@ -77,10 +74,8 @@ fn subdivide_preserves_endpoints() {
     let p2 = [4.0, 3.0];
     let p3 = [5.0, 0.0];
     let (left, right) = subdivide(p0, p1, p2, p3);
-    // Left piece starts at p0, right piece ends at p3.
     assert!((left[0][0] - p0[0]).abs() < 1e-12);
     assert!((right[3][0] - p3[0]).abs() < 1e-12);
-    // The join point (left[3] == right[0]) should equal bezier_eval at t=0.5.
     let mid = bezier_eval(p0, p1, p2, p3, 0.5);
     assert!((left[3][0] - mid[0]).abs() < 1e-12);
     assert!((right[0][1] - mid[1]).abs() < 1e-12);

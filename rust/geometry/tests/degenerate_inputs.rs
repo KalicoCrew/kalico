@@ -1,7 +1,3 @@
-//! Degenerate input handling: empty file, single G1, comment-only file,
-//! malformed line. Each should surface through Item or Recovery without
-//! panicking.
-
 use geometry::{FitterParams, GeometryPipeline, Item, Recovery, TelemetryEvent};
 
 fn run(text: &str) -> (Vec<Item>, Vec<TelemetryEvent>) {
@@ -36,7 +32,6 @@ fn comment_only_file_with_layer() {
 fn single_g1_no_junction_emitted() {
     let (items, _) = run("G1 X10 F1500\n");
     assert_eq!(items.len(), 1);
-    // First G1 has no preceding G1, so no junction.
 }
 
 #[test]

@@ -68,7 +68,7 @@ sim_uart_lookup_fd(uint8_t oid) {
 #endif
     return -1;
 }
-#endif // CONFIG_MACH_LINUX
+#endif
 
 #if CONFIG_KALICO_SIM_TMCUART_BYPASS
 #include <stdio.h>     // snprintf
@@ -95,7 +95,7 @@ static int sim_tmcuart_lookup_fd(uint8_t oid) {
     sim_tmcuart_fds[oid] = sim_chip_socket_connect(path);
     return sim_tmcuart_fds[oid];
 }
-#endif // CONFIG_KALICO_SIM_TMCUART_BYPASS
+#endif
 
 struct tmcuart_s {
     struct timer timer;
@@ -293,7 +293,7 @@ command_tmcuart_send(uint32_t *args)
             return;
         }
     }
-#endif // CONFIG_KALICO_SIM_TMCUART_BYPASS
+#endif
     struct tmcuart_s *t = oid_lookup(args[0], command_config_tmcuart);
     if (t->flags & TU_ACTIVE)
         // Uart is busy - silently drop this request (host should retransmit)

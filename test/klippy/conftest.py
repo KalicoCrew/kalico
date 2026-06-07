@@ -10,16 +10,6 @@ import pytest
 
 
 def _native_bridge_available() -> bool:
-    """True when the PyO3 ``motion_bridge_native`` cdylib is importable.
-
-    The new motion engine routes all toolhead motion through this bridge.
-    When it is not built (e.g. CI today, where the cdylib is not compiled),
-    klippy boots on a stub that fails loud on any motion call — so the
-    integration ``.test`` cases that drive a printer cannot run. They are
-    skipped with an explicit reason (never silently passed) and light up
-    automatically once the cdylib is built. ``SHOULD_FAIL`` config-error
-    cases never reach motion, so they still run.
-    """
     try:
         from klippy import motion_bridge
     except Exception:
@@ -135,10 +125,6 @@ class KlippyTestItem(pytest.Item):
             self.add_marker(pytest.mark.xfail)
 
     def setup(self):
-        # Integration cases boot a printer and drive it; that needs the real
-        # native motion bridge. Without it, skip honestly (not silent-pass)
-        # rather than hang on the stub. Config-error (SHOULD_FAIL) cases never
-        # reach motion, so they still run.
         if not _BRIDGE_AVAILABLE and not self.should_fail:
             pytest.skip(
                 "requires native motion_bridge_native (PyO3 cdylib not built); "

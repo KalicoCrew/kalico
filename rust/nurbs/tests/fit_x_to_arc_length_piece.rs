@@ -1,12 +1,9 @@
 #![allow(clippy::cast_lossless)]
-//
-// Test corpus for `fit_x_to_arc_length_piece` per plan §Phase 2 / Task 2.3.
 
 use nurbs::algebra::{FitError, fit_x_to_arc_length_piece};
 use nurbs::{VectorNurbs, arc_length::build_arc_length_table_vector};
 
 fn cubic_straight_line() -> VectorNurbs<f64, 3> {
-    // Line from (0,0,0) to (10,0,0).
     VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
@@ -25,14 +22,12 @@ fn straight_line_fits_at_low_degree() {
     let xyz = cubic_straight_line();
     let table = build_arc_length_table_vector(&xyz, 1e-9, 64).unwrap();
     let table_ref = table.as_view();
-    // Fit a 0.5 mm piece in the middle of the line.
     let result = fit_x_to_arc_length_piece::<3>(
         &xyz, &table_ref, 4.0, 4.5, /*target_degree=*/ 3, /*max_degree=*/ 10,
         /*tolerance_mm=*/ 1e-3,
     );
     assert!(result.is_ok(), "expected Ok, got {result:?}");
     let pieces = result.unwrap();
-    // Verify each piece's u_start and u_end match the s-domain.
     for axis in 0..3 {
         assert!((pieces[axis].u_start - 4.0).abs() < 1e-9);
         assert!((pieces[axis].u_end - 4.5).abs() < 1e-9);
@@ -41,7 +36,6 @@ fn straight_line_fits_at_low_degree() {
 
 #[test]
 fn quarter_arc_fits_at_low_degree() {
-    // Cubic Bézier approximation of a quarter circle, R = 10.
     let r = 10.0;
     let k = 4.0 / 3.0 * (std::f64::consts::PI / 8.0).tan();
     let xyz = VectorNurbs::<f64, 3>::try_new(
@@ -60,7 +54,6 @@ fn quarter_arc_fits_at_low_degree() {
     let table_ref = table.as_view();
     let s_max = table.s_max();
 
-    // Fit a 0.5 mm piece in the middle of the quarter-arc.
     let result = fit_x_to_arc_length_piece::<3>(
         &xyz,
         &table_ref,
@@ -73,13 +66,11 @@ fn quarter_arc_fits_at_low_degree() {
     assert!(result.is_ok(), "quarter arc fit failed: {result:?}");
 }
 
-/// Round-1-review fix: residual verification at points NOT used during the fit.
 #[test]
 fn tight_arc_r1mm_residual_within_tolerance() {
     use nurbs::arc_length::param_from_arc_length;
     use nurbs::eval::vector_eval;
 
-    // R = 1 mm quarter arc.
     let r = 1.0;
     let k = 4.0 / 3.0 * (std::f64::consts::PI / 8.0).tan();
     let xyz = VectorNurbs::<f64, 3>::try_new(
@@ -113,7 +104,6 @@ fn tight_arc_r1mm_residual_within_tolerance() {
     )
     .expect("R=1mm fit must converge with adaptive degree");
 
-    // Verify residual at 100 points (not the 4·(d+1) the primitive itself uses).
     for i in 0..=100 {
         let t = i as f64 / 100.0;
         let s = s_lo + (s_hi - s_lo) * t;
@@ -130,7 +120,6 @@ fn tight_arc_r1mm_residual_within_tolerance() {
     }
 }
 
-/// Round-1-review fix: endpoint integrity. Chebyshev-of-2nd-kind nodes include endpoints.
 #[test]
 fn endpoint_integrity() {
     use nurbs::arc_length::param_from_arc_length;
@@ -169,21 +158,18 @@ fn endpoint_integrity() {
     }
 }
 
-/// Round-1-review fix: degenerate-input rejection.
 #[test]
 fn degenerate_input_returns_err() {
     let xyz = cubic_straight_line();
     let table = build_arc_length_table_vector(&xyz, 1e-9, 64).unwrap();
     let table_ref = table.as_view();
 
-    // s_hi <= s_lo: degenerate range.
     let result = fit_x_to_arc_length_piece::<3>(
         &xyz, &table_ref, 5.0, 4.0, /*target_degree=*/ 4, /*max_degree=*/ 10,
         /*tolerance_mm=*/ 1e-3,
     );
     assert!(matches!(result, Err(FitError::DegenerateInput { .. })));
 
-    // NaN s_lo.
     let result = fit_x_to_arc_length_piece::<3>(
         &xyz,
         &table_ref,

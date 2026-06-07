@@ -1,6 +1,3 @@
-// The fault-emit path FFI-calls the C `kalico_log_emit` (gated to the MCU/sim
-// builds). The crate denies `unsafe_code` by default; opt this module out the
-// same way the other FFI modules do (e.g. dispatch_stepper.rs).
 #![allow(unsafe_code)]
 
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -57,7 +54,7 @@ pub fn raise_step_queue_overflow(shared: &SharedState, axis_idx: usize) {
         .store(FaultCode::StepQueueOverflow.as_i32(), Ordering::Release);
     emit_fault_log(FaultCode::StepQueueOverflow, detail);
     if axis_idx < 4 {
-        #[allow(clippy::indexing_slicing)] // bound checked immediately above
+        #[allow(clippy::indexing_slicing)]
         shared.queue_overflow_count[axis_idx].fetch_add(1, Ordering::Release);
     }
 }
@@ -114,7 +111,6 @@ pub fn raise_phase_mode_not_available(shared: &SharedState, axis_idx: usize) {
     emit_fault_log(FaultCode::PhaseModeNotAvailable, detail);
 }
 
-/// Latch a `JogParametersInvalid` fault. No per-event detail.
 #[inline]
 pub fn raise_jog_parameters_invalid(shared: &SharedState) {
     let detail = 0u32;

@@ -1,65 +1,3 @@
-//! Phase 3 Task 3.4 — cross-move continuity + look-ahead replan regression
-//! tests at the **planner-bridge integration** layer (driving the planner
-//! through `PlannerHandle::submit_move` rather than calling `ShaperState`
-//! directly).
-//!
-//! These tests are the regression net for the original `2026-05-10` bug —
-//! sequential 1 mm jogs (the kind a human-typed `G1 X1` macro emits four
-//! times in a row) producing mm-scale boundary discontinuities in shaped
-//! output. The fix was the streaming-shaper rewrite (`append_and_replan` +
-//! `emit_committed`, Phase 3 Tasks 3.1 / 3.1.5 / 3.2 / 3.3); the unit-test
-//! coverage of that fix lives in
-//! `rust/trajectory/src/streaming/tests.rs`. **This file pins the same
-//! invariants from the planner thread's public API**, so a future
-//! regression at the wiring layer (e.g., a bug in `run_loop`'s replan/emit
-//! sequencing) gets caught by a test that doesn't have to know which
-//! internal helper failed.
-//!
-//! ## What the streaming pipeline actually dispatches
-//!
-//! The streaming-native path dispatches up to `t_decel_start − max_h`:
-//! the trailing decel-to-zero region of the most recent replan is held
-//! speculatively until either (a) a follow-on `Move` arrives (in which
-//! case the replan re-anchors the decel-to-zero point further out and
-//! more of the prior plan becomes committed), (b) Phase 4 Task 4.1's
-//! quiescence timer fires `T_commit` past the most recent append, or
-//! (c) Phase 4 Task 4.3's `Flush` synchronously invokes
-//! `commit_decel_to_zero` and dispatches the held-back tail before
-//! notifying the waiter (spec §3.4 lifecycle row, "Planner `Flush`":
-//! "Collapse `T_commit` → now. Commit any tentative `pending_dispatch`.
-//! Notify the flush waiter."). The tests below honour this:
-//!
-//! * "Cumulative dispatched X" assertions now expect the **exact**
-//!   submitted distance after `flush` (within the C¹ refit budget of
-//!   50 µm). Before Task 4.3 these were "approaches but does not reach"
-//!   bounds; Task 4.3 makes the exact-distance property achievable on
-//!   any `flush` regardless of the timer.
-//! * "Adjacent dispatched segments are position-continuous" remains the
-//!   primary cross-move regression assertion (the property the original
-//!   2026-05-10 bug violated).
-//!
-//! ## Tolerance budget
-//!
-//! Seam-continuity assertions use a 50 µm budget, matching the
-//! streaming-state unit tests in
-//! `rust/trajectory/src/streaming/tests.rs::
-//! emit_committed_chains_across_two_appends` (`seam_diff < 0.05`) and
-//! `t_dispatched_interior_to_move_replan_preserves_position` (`< 0.05`).
-//! The budget covers the C¹ Hermite refit's L∞ error on each side of
-//! the seam (governed by `PlannerConfig::fit_tolerance_mm`, set to
-//! `0.05 mm` in the test fixtures) plus the shaper convolution's ~1×
-//! propagation of that error. The original 2026-05-10 bug produced
-//! mm-scale boundary discontinuities — three orders of magnitude wider
-//! than this budget.
-//!
-//! ## Why integration-style, not lib-style
-//!
-//! Integration tests in `tests/` link against the `motion-bridge` rlib
-//! without going through the PyO3 cdylib path, so they do not need the
-//! `DYLD_INSERT_LIBRARIES=…libpython3.14.dylib` workaround that
-//! `cargo test -p motion-bridge --lib` requires. `cargo test -p
-//! motion-bridge --test streaming_replan` runs out of the box.
-
 use std::sync::{Arc, Mutex};
 
 // The crate is `motion-bridge` (package) but exposes its rlib under the
@@ -73,14 +11,6 @@ use trajectory::{AxisShaper, RequiredShaper, ShapedSegment, ShaperConfig};
 use nurbs::ScalarNurbs;
 use nurbs::eval::{eval_derivative, eval_polynomial};
 
-// ---------------------------------------------------------------------------
-// Test fixtures
-// ---------------------------------------------------------------------------
-
-/// Recording dispatch closure: stuffs every dispatched `ShapedSegment` into a
-/// shared `Vec` under a mutex. The planner thread is the only writer (the
-/// `run_loop` calls dispatch under its own thread; the mutex is just to
-/// serialize cross-thread reads in the test assertions).
 type Recorded = Arc<Mutex<Vec<ShapedSegment>>>;
 
 fn recording_dispatch() -> (
@@ -97,13 +27,6 @@ fn recording_dispatch() -> (
     (cb, recorded)
 }
 
-/// Planner config matching the task spec: smooth_zv 186 Hz on X & Y,
-/// passthrough on Z. The default machine limits are kept so the test
-/// faithfully exercises the production hot path. Refit tolerance is
-/// relaxed slightly above the default `5 µm` for short moves — the
-/// β-medium loop on a 1 mm move at 100 mm/s does not always meet the
-/// tight default — but the relaxation is well below the bug we are
-/// regression-testing (which produced mm-scale errors).
 fn smooth_zv_186hz_config() -> PlannerConfig {
     let mut c = PlannerConfig::default();
     c.shaper = ShaperConfig {
@@ -115,19 +38,10 @@ fn smooth_zv_186hz_config() -> PlannerConfig {
         },
         z: AxisShaper::Passthrough,
     };
-    // Match the streaming-state unit-test budget (50 µm). The original
-    // bug produced *millimeter*-scale errors, so 50 µm is plenty tight
-    // for the seam-continuity assertions while letting the β-medium loop
-    // converge on short moves.
     c.fit_tolerance_mm = 0.05;
     c
 }
 
-/// Same as `smooth_zv_186hz_config` but with more permissive limits so
-/// the short 1 mm jogs can clear β-medium even when the default machine
-/// limits derate aggressively. Used by the multi-jog tests; matches the
-/// shape `update_limits_processed_without_error` uses in the planner's
-/// own test module.
 fn relaxed_limits() -> PlannerLimits {
     PlannerLimits {
         max_velocity: 200.0,
@@ -138,13 +52,6 @@ fn relaxed_limits() -> PlannerLimits {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Commit-wait helper
-// ---------------------------------------------------------------------------
-
-/// Poll until the planner has fired at least `target` decel-commits, or panic
-/// after 5s. Deterministic replacement for a fixed sleep when waiting for the
-/// clock-derived commit deadline to fire.
 fn wait_for_commits(h: &PlannerHandle, target: u32) {
     let start = std::time::Instant::now();
     while h.commit_fire_count() < target {
@@ -157,13 +64,6 @@ fn wait_for_commits(h: &PlannerHandle, target: u32) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Segment helpers
-// ---------------------------------------------------------------------------
-
-/// Evaluate the X-axis position at parameter `u` on a shaped segment.
-/// `ShapedSegment::axes[0]` is a non-rational scalar B-spline in the time
-/// domain; the segment's `t_start..=t_end` is the valid `u` range.
 fn x_pos_at(seg: &ShapedSegment, t: f64) -> f64 {
     eval_x_at(&seg.axes[0], t)
 }
@@ -172,40 +72,21 @@ fn eval_x_at(curve: &ScalarNurbs<f64>, t: f64) -> f64 {
     eval_polynomial(curve.control_points(), curve.knots(), curve.degree(), t)
 }
 
-/// Evaluate the X-axis velocity (dx/dt) at time `t` on a shaped segment.
 fn x_vel_at(seg: &ShapedSegment, t: f64) -> f64 {
     let c = &seg.axes[0];
     eval_derivative(c.control_points(), c.knots(), c.degree(), t)
 }
 
-// ---------------------------------------------------------------------------
-// Test 1 — cross-move continuity across one boundary
-// ---------------------------------------------------------------------------
-
-/// Two sequential 1 mm pure-X moves should produce shaped output whose
-/// adjacent dispatched segments are position-continuous within refit
-/// noise (`5e-5 mm`). This is the property the original `2026-05-10` bug
-/// violated (mm-scale jumps at the boundary).
-///
-/// We submit both moves before flushing — the second `submit_move`
-/// triggers a replan over move 1's un-committed tail + move 2, which
-/// is exactly the look-ahead-replan path under test. The final `flush`
-/// then synchronously commits the trailing decel-to-zero (Phase 4
-/// Task 4.3), so the cumulative dispatched X reaches the submitted
-/// 2.0 mm exactly (within refit budget).
 #[test]
 fn cross_move_continuity_within_refit_noise() {
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // Two sequential 1 mm X moves at 100 mm/s.
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 1");
     h.submit_move(classify_and_build([1.0, 0.0, 0.0], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 2");
-    // Flush as synchronization barrier so the planner thread has
-    // definitely processed both submits before we read `recorded`.
     h.flush().expect("flush");
 
     let segs = recorded.lock().unwrap().clone();
@@ -215,24 +96,7 @@ fn cross_move_continuity_within_refit_noise() {
          this is a regression in streaming look-ahead replan",
     );
 
-    // Continuity check at every adjacent-segment seam. Each dispatched
-    // segment carries `[t_start, t_end]` in the planner's absolute time
-    // line; adjacent pairs satisfy `segs[i].t_end == segs[i+1].t_start`
-    // exactly (per `emit_committed`'s contract), so reading the X
-    // position from both sides of the seam should agree within refit
-    // noise.
-    //
-    // Refit budget breakdown:
-    //   * C¹ Hermite refit L∞ on each side of the seam: 50 µm
-    //     (matches `PlannerConfig::fit_tolerance_mm` set above).
-    //   * Shaper convolution propagates that error multiplicatively by
-    //     ~1× (the kernel integrates to 1).
-    // Budget: 50 µm — matches the streaming-state unit tests' seam
-    // tolerance in `rust/trajectory/src/streaming/tests.rs::
-    // emit_committed_chains_across_two_appends` (`seam_diff < 0.05`).
-    // The original 2026-05-10 bug produced mm-scale jumps, three orders
-    // of magnitude wider than this budget.
-    const SEAM_BUDGET_MM: f64 = 5.0e-2; // 50 µm
+    const SEAM_BUDGET_MM: f64 = 5.0e-2;
     for i in 0..segs.len().saturating_sub(1) {
         let a = &segs[i];
         let b = &segs[i + 1];
@@ -260,14 +124,6 @@ fn cross_move_continuity_within_refit_noise() {
         );
     }
 
-    // Cumulative dispatched X position must equal the submitted
-    // distance (2.0 mm) within the C¹ refit budget — Phase 4 Task 4.3
-    // makes `flush` synchronously invoke `commit_decel_to_zero`, so the
-    // held-back trailing decel-to-zero of move 2 is dispatched before
-    // `flush` returns. Prior to Task 4.3 this was a one-sided
-    // "approaches 2.0 mm" bound; tightening it to the exact submitted
-    // distance pins the new flush-commit semantics so any regression in
-    // the Flush arm's commit invocation is caught here.
     let terminal_seg = segs.last().unwrap();
     let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
     assert!(
@@ -282,34 +138,12 @@ fn cross_move_continuity_within_refit_noise() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Test 2 — four consecutive 1 mm jogs (original reproducer)
-// ---------------------------------------------------------------------------
-
-/// **Original 2026-05-10 reproducer.** Submit 4 × sequential 1 mm pure-X
-/// moves back-to-back with no quiescence between them. The replan must
-/// chain through, producing one continuous shaped trajectory (not four
-/// stop-and-go regions).
-///
-/// Assertions:
-/// * No planner error after all 4 submits + flush.
-/// * Every adjacent dispatched-segment seam is X-continuous within
-///   refit noise.
-/// * The dispatched velocity profile has **exactly one** extended
-///   near-zero region — the final decel-to-zero, which Phase 4
-///   Task 4.3 dispatches synchronously on `flush` — not four (which
-///   would mean the planner decelerated at every move boundary, the
-///   original bug).
-/// * Phase 4 Task 4.3: cumulative dispatched X reaches the submitted
-///   4.0 mm exactly (within the 50 µm refit budget), because `flush`
-///   now commits the trailing decel.
 #[test]
 fn four_consecutive_jogs_chain_continuously() {
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // Four sequential 1 mm X moves at 100 mm/s, back-to-back.
     for i in 0..4 {
         let start = [(i as f64) * 1.0, 0.0, 0.0];
         let m = classify_and_build(start, 1.0, 0.0, 0.0, 0.0, 100.0)
@@ -317,9 +151,6 @@ fn four_consecutive_jogs_chain_continuously() {
         h.submit_move(m)
             .unwrap_or_else(|e| panic!("submit move {i}: {e}"));
     }
-    // Synchronization barrier — flush does not commit the trailing
-    // decel under Phase 3 semantics, but it ensures the planner thread
-    // has processed all four `submit_move` messages.
     h.flush().expect("flush");
 
     let segs = recorded.lock().unwrap().clone();
@@ -329,10 +160,7 @@ fn four_consecutive_jogs_chain_continuously() {
          streaming look-ahead replan regressed to per-move stop-and-go",
     );
 
-    // 1. Seam continuity at every boundary. Matches the streaming-state
-    //    unit tests' 50 µm budget (the original 2026-05-10 bug produced
-    //    mm-scale jumps, 20× this budget).
-    const SEAM_BUDGET_MM: f64 = 5.0e-2; // 50 µm
+    const SEAM_BUDGET_MM: f64 = 5.0e-2;
     for i in 0..segs.len().saturating_sub(1) {
         let a = &segs[i];
         let b = &segs[i + 1];
@@ -357,24 +185,6 @@ fn four_consecutive_jogs_chain_continuously() {
         );
     }
 
-    // 2. The dispatched X position must be **monotonically non-
-    //    decreasing**. This is the load-bearing regression assertion
-    //    for the original 2026-05-10 bug:
-    //
-    //    The original bug produced mm-scale boundary discontinuities
-    //    in shaped output where X *retreated* (the planner decelerated
-    //    to zero between every jog and the cross-emission seam landed
-    //    at a different X than where the prior emit had ended). A
-    //    correct streaming replan produces a monotonically-forward
-    //    position curve for pure-forward XY moves: once dispatched, X
-    //    only ever increases.
-    //
-    //    The allowed regression tolerance is `SEAM_BUDGET_MM` (50 µm,
-    //    same as the seam-continuity assertion above) because the
-    //    cross-replan seams may produce sub-50 µm jitter in the
-    //    evaluator that doesn't constitute a real "X moved backwards"
-    //    failure mode. The original bug produced mm-scale regressions,
-    //    20× wider than this budget.
     let mut last_x: f64 = x_pos_at(&segs[0], segs[0].t_start);
     for seg in &segs {
         let n = 40;
@@ -400,18 +210,6 @@ fn four_consecutive_jogs_chain_continuously() {
         }
     }
 
-    // 3. The dispatched X velocity must remain meaningfully positive
-    //    in **interior** segments (not the first segment, which is
-    //    the smooth-shaper accel-from-rest ramp; not the last segment,
-    //    which may contain a trailing-decel approach). For interior
-    //    segments, sample the velocity at the segment midpoint and
-    //    require it stays above a small fraction of peak velocity.
-    //    The original bug had v→0 between every jog; a healthy
-    //    replan-chained profile has v in the several-mm/s range.
-    //
-    //    Threshold rationale: 1 mm/s is well below any non-pathological
-    //    cruise velocity for these test moves (peak ~10 mm/s under the
-    //    relaxed limits) and well above evaluator floating-point noise.
     if segs.len() >= 3 {
         const V_MIN_INTERIOR_MM_S: f64 = 1.0;
         for i in 1..segs.len() - 1 {
@@ -431,10 +229,6 @@ fn four_consecutive_jogs_chain_continuously() {
         }
     }
 
-    // 4. Phase 4 Task 4.3 — cumulative dispatched X equals the
-    //    submitted 4.0 mm within refit budget. The final `flush` now
-    //    synchronously commits the trailing decel-to-zero, so every
-    //    millimetre submitted reaches the wire before `flush` returns.
     let terminal_seg = segs.last().unwrap();
     let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
     assert!(
@@ -449,40 +243,18 @@ fn four_consecutive_jogs_chain_continuously() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Test 3 — flush between jogs forces commit-decel-to-zero
-// ---------------------------------------------------------------------------
-
-/// "User paused between jogs" case: submit 1 mm, flush, submit 1 mm,
-/// flush. Phase 4 Task 4.3 makes `flush` synchronously commit the
-/// trailing decel-to-zero — collapsing `T_commit → now` per spec §3.4
-/// — so each flush dispatches its move's full geometry to the wire
-/// before returning. The dispatched X velocity profile crosses zero
-/// once between the two moves (move 1's commit) and once at the end
-/// (move 2's commit).
-///
-/// Pre-Task-4.3 this test asserted "cumulative dispatched X approaches
-/// but does not reach 2.0 mm" because flush left the trailing decel
-/// speculative. The post-Task-4.3 assertion is the exact submitted
-/// distance (2.0 mm ± 50 µm) — the load-bearing property of synchronous
-/// flush-commit.
 #[test]
 fn slow_jogs_decelerate_to_zero_between() {
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // First jog + flush.
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 1");
     h.flush().expect("flush 1");
 
-    // Snapshot dispatch count after the first flush, so we can check
-    // the second submit/flush extended the trajectory rather than
-    // re-dispatching.
     let count_after_first = recorded.lock().unwrap().len();
 
-    // Second jog + flush.
     h.submit_move(classify_and_build([1.0, 0.0, 0.0], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 2");
     h.flush().expect("flush 2");
@@ -509,13 +281,11 @@ fn slow_jogs_decelerate_to_zero_between() {
     // ends at X=1.0 mm and move 2 starts from X=1.0 mm (the rest-hold is
     // zero velocity, same position). All other adjacent seams remain both
     // temporally and positionally contiguous.
-    const SEAM_BUDGET_MM: f64 = 5.0e-2; // 50 µm
-    let cross_flush = count_after_first.saturating_sub(1); // index of the boundary seam
+    const SEAM_BUDGET_MM: f64 = 5.0e-2;
+    let cross_flush = count_after_first.saturating_sub(1);
     for i in 0..segs.len().saturating_sub(1) {
         let a = &segs[i];
         let b = &segs[i + 1];
-        // Temporal contiguity: strict within each batch; relaxed at the
-        // cross-flush boundary (a gap ≥ 0 is expected there).
         if i != cross_flush {
             assert!(
                 (a.t_end - b.t_start).abs() < 1e-9,
@@ -543,11 +313,6 @@ fn slow_jogs_decelerate_to_zero_between() {
         );
     }
 
-    // Cumulative dispatched X equals the full submitted distance (2.0 mm)
-    // within refit budget. Each flush synchronously committed its move's
-    // trailing decel-to-zero, so the wire saw both jogs before the second
-    // flush returned (Task 4.3). Task 6 adds a clock-based wait on top but
-    // does not change the committed X distance.
     let terminal_seg = segs.last().unwrap();
     let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
     assert!(
@@ -561,58 +326,16 @@ fn slow_jogs_decelerate_to_zero_between() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Test 4 — replan during long cruise preserves committed position
-// ---------------------------------------------------------------------------
-
-/// Long-cruise test exercising the Task 3.1.5 split-at-s-value fix:
-/// submit a 200 mm X move (long enough to have a real cruise plateau);
-/// `emit_committed` dispatches most of accel + cruise (up to
-/// `t_decel_start − max_h`). Then submit a 100 mm follow-on X move
-/// **without an intervening flush**; the second `append_and_replan`
-/// lands `t_dispatched` interior to move 1, triggering the
-/// split-at-s-value path. (Pre-Task-4.3 this test used an intermediate
-/// `flush` only as a synchronization barrier — Phase 4 Task 4.3 turned
-/// `flush` into a force-commit, so the intermediate barrier had to go
-/// to preserve the test's look-ahead-replan-during-cruise intent.)
-///
-/// The seam in dispatched output between the first emit (move 1's
-/// pre-decel region) and the second emit (the previously-held-back
-/// trailing region of move 1 + move 2) must be position-continuous.
-/// Before Task 3.1.5 this seam had a millimetre-scale error budget;
-/// after the fix it is 50 µm — exactly the property this test pins.
-///
-/// Phase 4 Task 4.3 tightens the terminal-X assertion from "inside
-/// [200, 300+ε) mm" to "exactly 300 mm ± 50 µm", because the final
-/// `flush` now commits move 2's trailing decel-to-zero.
 #[test]
 fn replan_during_long_cruise_preserves_committed_position() {
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // Move 1: long enough to have a real cruise plateau under
-    // relaxed_limits (max_velocity = 200, max_accel = 2000):
-    // accel/decel time at 200 mm/s = 0.1 s each, distance = 10 mm each;
-    // so cruise distance = 180 mm for a 200 mm move.
     h.submit_move(classify_and_build([0.0; 3], 200.0, 0.0, 0.0, 0.0, 200.0).unwrap())
         .expect("submit move 1 (200 mm)");
-
-    // Move 2: 100 mm follow-on submitted **without an intermediate
-    // flush**. Phase 4 Task 4.3 made `flush` force-commit the trailing
-    // decel-to-zero, so a flush between moves 1 and 2 would dispatch
-    // move 1's decel to v=0 before move 2 ever lands and the
-    // split-at-s-value path would never trigger. Submitting move 2
-    // back-to-back lets it arrive at the planner before the
-    // quiescence-commit timer (`T_commit = 50 ms`) fires; move 2's
-    // `append_and_replan` then sees `t_dispatched` interior to move 1
-    // and exercises the split-at-s-value path.
     h.submit_move(classify_and_build([200.0, 0.0, 0.0], 100.0, 0.0, 0.0, 0.0, 200.0).unwrap())
         .expect("submit move 2 (100 mm)");
-
-    // Final flush — under Task 4.3 this synchronously commits the
-    // trailing decel-to-zero, so on return all 300 mm of submitted
-    // geometry is on the wire.
     h.flush().expect("synchronization flush after move 2");
 
     let segs = recorded.lock().unwrap().clone();
@@ -622,19 +345,7 @@ fn replan_during_long_cruise_preserves_committed_position() {
          streaming-emit returned empty for a known long-move case",
     );
 
-    // All adjacent dispatched-segment seams must be position-continuous
-    // within the C¹ refit budget (50 µm) — including the cross-replan
-    // seam at whichever index move 2's first emission lands (we no
-    // longer identify it explicitly; checking the uniform 50 µm bound
-    // across every seam is a strictly stronger property). Before
-    // Task 3.1.5 the cross-replan seam allowed up to **5 mm** of
-    // error; after the fix it is 50 µm, exactly the property this
-    // test pins. The streaming-state unit tests
-    // (`t_dispatched_interior_to_move_replan_preserves_position`)
-    // carry the explicit split-at-s-value coverage; this integration
-    // test re-exercises the same path through the planner-thread
-    // public API.
-    const SEAM_BUDGET_MM: f64 = 5.0e-2; // 50 µm
+    const SEAM_BUDGET_MM: f64 = 5.0e-2;
     for i in 0..segs.len().saturating_sub(1) {
         let a = &segs[i];
         let b = &segs[i + 1];
@@ -654,11 +365,6 @@ fn replan_during_long_cruise_preserves_committed_position() {
         );
     }
 
-    // Phase 4 Task 4.3 — cumulative dispatched X equals 300 mm exactly
-    // within refit budget. Pre-Task-4.3 the assertion was "inside
-    // [200, 300+ε) mm" because the final flush left move 2's trailing
-    // decel-to-zero speculative; the tighter bound pins the new
-    // synchronous flush-commit semantics.
     let terminal_seg = segs.last().unwrap();
     let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
     assert!(
@@ -673,34 +379,6 @@ fn replan_during_long_cruise_preserves_committed_position() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Phase 4 Task 4.1 — quiescence-commit timer wiring
-// ---------------------------------------------------------------------------
-
-/// Submitting a single move and then idling past the clock-derived decel-commit
-/// deadline must cause the planner thread to invoke
-/// `ShaperState::commit_decel_to_zero` exactly once. We observe the wiring
-/// via the planner-handle counter (`PlannerHandle::commit_fire_count`).
-///
-/// **Why this is sufficient as a wiring test.** Under Task 4.2 the commit
-/// handler actually dispatches the held-back trailing decel-to-zero, but
-/// this test focuses on the timer-fire counter only — the
-/// "dispatch reaches the wire" property is covered by
-/// `commit_after_quiescence_dispatches_terminal_decel` below.
-///
-/// **Task 4 clock-derived deadline.** The old fixed 50 ms `T_COMMIT` was
-/// replaced by `t_dispatched + LEAD - SAFETY_MARGIN`. For a 1 mm move at
-/// 100 mm/s, `t_dispatched ≈ 71 ms`; with `LEAD = 250 ms` and
-/// `SAFETY_MARGIN = 50 ms` the deadline fires at ≈ 271 ms after
-/// `sync_instant` (the moment of first dispatch). 500 ms from submit
-/// covers both the planner thread's processing time and the deadline with
-/// ample scheduler headroom.
-///
-/// **Phase 4 Task 4.3 note.** `flush` now also invokes
-/// `commit_decel_to_zero` synchronously. To keep this test focused on
-/// the *timer* path, we do NOT call `flush` after the submit — instead
-/// we sleep directly past the deadline. The counter increment is then
-/// solely the timer's responsibility.
 #[test]
 fn quiescence_timer_fires_after_single_move() {
     use std::time::Duration;
@@ -709,28 +387,12 @@ fn quiescence_timer_fires_after_single_move() {
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // Single 1 mm pure-X move at 100 mm/s. Short enough that
-    // `append_and_replan` completes quickly; the absolute distance is
-    // immaterial to the timer assertion (we only care that the timer
-    // re-arms on submit and fires on quiescence).
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move");
 
-    // No `flush` here — Phase 4 Task 4.3 made `flush` force-commit, so
-    // calling it would increment the counter via the Flush arm rather
-    // than the Timeout arm under test. The wall-clock sleep below
-    // covers both `append_and_replan`'s work and the clock-derived
-    // deadline window.
-
-    // Poll until the clock-derived decel-commit deadline fires (≈ 271 ms
-    // for this 1 mm move). `wait_for_commits` retries every 2 ms up to
-    // 5 s, avoiding a fixed 500 ms sleep that can be tight on slow CI.
     wait_for_commits(&h, 1);
     let fires = h.commit_fire_count();
 
-    // Once the deadline fired and t_dispatched == t_appended, the
-    // `next_timeout` guard returns `T_IDLE` (no held-back tail), so the
-    // deadline must NOT re-fire without a new submit_move.
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         h.commit_fire_count(),
@@ -742,55 +404,17 @@ fn quiescence_timer_fires_after_single_move() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Phase 4 Task 4.2 — commit_decel_to_zero dispatches the trailing decel
-// ---------------------------------------------------------------------------
-
-/// Submitting a single 1 mm move and idling past the clock-derived decel-commit
-/// deadline must dispatch the **full** `[0, t_appended]` range — including the
-/// trailing decel-to-zero region `emit_committed` deliberately held back.
-/// The cumulative final X position must reach ~1.0 mm within the C¹ refit
-/// budget (50 µm under `smooth_zv_186hz_config`).
-///
-/// This is the Phase 4 Task 4.2 acceptance test: prior to Task 4.2 the
-/// handler was a stub that returned an empty Vec and the toolhead never
-/// reached the commanded position on a pause. Post-Task-4.2 the handler
-/// shapes and dispatches the held-back tail with right-pad
-/// constant-extension at `(end_pos, v = 0)`, so the dispatched cumulative
-/// X matches the submitted distance.
-///
-/// **Task 4 clock-derived deadline.** The old fixed 50 ms `T_COMMIT` was
-/// replaced. For this 1 mm move the deadline fires at ≈ 271 ms after first
-/// dispatch. 500 ms from submit covers the processing time and the deadline
-/// with ample headroom.
-///
-/// **Phase 4 Task 4.3 note.** Since `flush` would now itself commit and
-/// pre-empt the timer path under test, we skip the sync barrier and
-/// sleep directly past the deadline. The remaining assertions (timer
-/// fired exactly once, terminal X = 1.0 mm ± 50 µm) still pin the
-/// Task 4.2 acceptance property.
 #[test]
 fn commit_after_quiescence_dispatches_terminal_decel() {
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // Single 1 mm pure-X move at 100 mm/s.
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move");
 
-    // No `flush` here — Phase 4 Task 4.3 made `flush` force-commit, so
-    // calling it would dispatch the trailing decel before the deadline
-    // got a chance. We rely on the wall-clock sleep below to give the
-    // planner thread enough time to process the move and then fire the
-    // clock-derived decel-commit deadline.
-
-    // Poll until the clock-derived decel-commit deadline fires (≈ 271 ms
-    // for this 1 mm move). `wait_for_commits` retries every 2 ms up to
-    // 5 s, avoiding a fixed 500 ms sleep that can be tight on slow CI.
     wait_for_commits(&h, 1);
 
-    // The commit timer must have fired exactly once.
     assert_eq!(
         h.commit_fire_count(),
         1,
@@ -805,10 +429,7 @@ fn commit_after_quiescence_dispatches_terminal_decel() {
          arm itself dispatched nothing",
     );
 
-    // Adjacent seam continuity across the entire dispatched output —
-    // including the seam between the last `Move`-arm dispatch and the
-    // first commit-arm dispatch.
-    const SEAM_BUDGET_MM: f64 = 5.0e-2; // 50 µm
+    const SEAM_BUDGET_MM: f64 = 5.0e-2;
     for i in 0..segs.len().saturating_sub(1) {
         let a = &segs[i];
         let b = &segs[i + 1];
@@ -830,10 +451,6 @@ fn commit_after_quiescence_dispatches_terminal_decel() {
         );
     }
 
-    // Cumulative final X position must reach ~1.0 mm. The 50 µm budget
-    // covers the C¹ Hermite refit tolerance set in
-    // `smooth_zv_186hz_config()`. Pre-Task-4.2 this would have stayed
-    // strictly < 1.0 mm because the held-back decel never dispatched.
     let terminal_seg = segs.last().unwrap();
     let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
     assert!(
@@ -848,39 +465,15 @@ fn commit_after_quiescence_dispatches_terminal_decel() {
     h.shutdown();
 }
 
-/// Submit move 1, sleep past the clock-derived decel-commit deadline so the
-/// planner commits and the toolhead comes to rest, then submit move 2. Move 2
-/// must start from rest (initial velocity ≈ 0), and the cumulative dispatched
-/// X after move 2's commit must reach ~2.0 mm.
-///
-/// This pins the cross-commit continuity invariant: a commit advances
-/// `t_dispatched = t_appended`, so the next `append_and_replan` reads
-/// `initial_v = 0` off the queue's terminal-velocity sample. The two
-/// moves then chain as two independent 0-to-cruise-to-0 profiles
-/// rather than overlapping through a junction.
-///
-/// **Task 4 clock-derived deadline.** For this 1 mm move the deadline fires
-/// at ≈ 271 ms after first dispatch. 500 ms from submit covers processing
-/// time and the deadline with ample headroom.
-///
-/// **Phase 4 Task 4.3 note.** `flush` now also commits. We avoid
-/// calling `flush` between submit + sleep so the commit-fire counter
-/// is solely incremented by the deadline (keeping this test's "the deadline
-/// committed move 1, then move 2 starts from rest" intent intact).
 #[test]
 fn commit_then_new_move_starts_from_rest() {
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // Move 1: 1 mm pure-X at 100 mm/s. No intermediate `flush` — see
-    // the Task 4.3 docstring note above.
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 1");
 
-    // Poll until move 1's clock-derived decel-commit deadline fires
-    // (≈ 271 ms for this 1 mm move). `wait_for_commits` retries every
-    // 2 ms up to 5 s, avoiding a fixed 500 ms sleep on slow CI.
     wait_for_commits(&h, 1);
     assert_eq!(
         h.commit_fire_count(),
@@ -893,7 +486,6 @@ fn commit_then_new_move_starts_from_rest() {
     let move_1_terminal_x = x_pos_at(&move_1_terminal_seg, move_1_terminal_seg.t_end);
     let move_1_dispatch_count = segs_after_move_1.len();
 
-    // Move 1's terminal X ≈ 1.0 mm (within refit budget).
     const SEAM_BUDGET_MM: f64 = 5.0e-2;
     assert!(
         (move_1_terminal_x - 1.0).abs() < SEAM_BUDGET_MM,
@@ -903,8 +495,6 @@ fn commit_then_new_move_starts_from_rest() {
         SEAM_BUDGET_MM,
     );
 
-    // Move 1's terminal velocity should be ~0 (the commit shaped through
-    // `t_appended` where TOPP-RA terminated at v = 0).
     let move_1_terminal_v = x_vel_at(&move_1_terminal_seg, move_1_terminal_seg.t_end).abs();
     assert!(
         move_1_terminal_v < 5.0,
@@ -913,13 +503,9 @@ fn commit_then_new_move_starts_from_rest() {
         move_1_terminal_v,
     );
 
-    // Move 2: 1 mm pure-X from x=1.0 at 100 mm/s. No flush — same
-    // reason as move 1 above (keep the commit count attributable to
-    // the deadline only).
     h.submit_move(classify_and_build([1.0, 0.0, 0.0], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 2");
 
-    // Poll until move 2's clock-derived decel-commit deadline fires.
     wait_for_commits(&h, 2);
     assert_eq!(
         h.commit_fire_count(),
@@ -933,8 +519,6 @@ fn commit_then_new_move_starts_from_rest() {
         "move 2 produced no additional dispatched segments",
     );
 
-    // Move 2's first dispatched segment should start at the seam with
-    // move 1's terminal — both in position and in (near-zero) velocity.
     let move_2_start_seg = &segs[move_1_dispatch_count];
     let move_2_start_x = x_pos_at(move_2_start_seg, move_2_start_seg.t_start);
     let move_2_start_v = x_vel_at(move_2_start_seg, move_2_start_seg.t_start).abs();
@@ -948,13 +532,6 @@ fn commit_then_new_move_starts_from_rest() {
         SEAM_BUDGET_MM,
     );
 
-    // Move 2 starts from rest — initial velocity should be near-zero.
-    // The threshold is wider than terminal-v because the kernel's accel
-    // ramp from rest may not be perfectly zero at the segment seam under
-    // smooth-shaper smoothing, but it should be very small. 5 mm/s is
-    // well below the 100 mm/s cruise speed; the original 2026-05-10 bug
-    // (no commit, the toolhead "continues") would have move 2 starting
-    // at full cruise velocity.
     assert!(
         move_2_start_v < 5.0,
         "move 2 initial velocity {} mm/s should be near zero — the \
@@ -962,7 +539,6 @@ fn commit_then_new_move_starts_from_rest() {
         move_2_start_v,
     );
 
-    // Cumulative terminal X must reach ~2.0 mm.
     let terminal_seg = segs.last().unwrap();
     let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
     assert!(
@@ -976,18 +552,6 @@ fn commit_then_new_move_starts_from_rest() {
     h.shutdown();
 }
 
-/// Calling `commit_decel_to_zero` twice in a row (via two deadline expirations)
-/// must be idempotent: the second call sees `t_dispatched == t_appended` and
-/// returns empty, so no segments are re-dispatched.
-///
-/// After the first commit, `next_timeout` returns `T_IDLE` (the
-/// `t_dispatched < t_appended - 1e-12` guard is false), so the deadline must
-/// NOT re-fire without a new `submit_move`. This test pins that guard is
-/// correct — sleeping past where a second deadline would have fired must not
-/// increment the counter.
-///
-/// Specifically: submit + sleep until deadline fires (commit fires once), then
-/// sleep another 300 ms and confirm the counter did not advance again.
 #[test]
 fn commit_decel_to_zero_is_idempotent_across_re_armed_timer() {
     use std::time::Duration;
@@ -996,22 +560,12 @@ fn commit_decel_to_zero_is_idempotent_across_re_armed_timer() {
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // First submit + commit. No `flush` — Phase 4 Task 4.3 made `flush`
-    // force-commit, which would conflate Flush-arm and Timeout-arm
-    // fires and break the "exactly one deadline fire" assertion this
-    // test pins.
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 1");
-    // Poll until the clock-derived deadline fires (≈ 271 ms for this 1 mm
-    // move). `wait_for_commits` retries every 2 ms up to 5 s.
     wait_for_commits(&h, 1);
     assert_eq!(h.commit_fire_count(), 1);
     let after_first_commit = recorded.lock().unwrap().len();
 
-    // Sleep again without submitting — the `t_dispatched < t_appended`
-    // guard is now false so `next_timeout = T_IDLE` and the deadline
-    // must NOT re-fire. This is the test that distinguishes the guard
-    // from a hypothetical regression where the handler silently re-dispatches.
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         h.commit_fire_count(),
@@ -1029,53 +583,16 @@ fn commit_decel_to_zero_is_idempotent_across_re_armed_timer() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Phase 4 Task 4.3 — flush synchronously commits the trailing decel
-// ---------------------------------------------------------------------------
-
-/// Submit one move, then call `flush()` immediately (no wall-clock sleep
-/// for the `T_commit` timer to fire). After `flush` returns, the
-/// cumulative dispatched X must equal the submitted distance within the
-/// C¹ refit budget (50 µm). This is the load-bearing test for Phase 4
-/// Task 4.3: `flush` must invoke `commit_decel_to_zero` synchronously
-/// — without waiting for the quiescence timer — so callers like
-/// `wait_moves`, `M400`, and homing barriers actually block until all
-/// motion is on the wire.
-///
-/// **Why this test is distinct from
-/// `commit_after_quiescence_dispatches_terminal_decel`.** That test
-/// pins the **timer** path (sleep past `T_commit`, observe a fire).
-/// This test pins the **flush** path (no sleep, observe an immediate
-/// dispatch). A regression in the Flush arm of `run_loop` — for
-/// example, reverting it to "just notify the waiter" — would fail
-/// this test while still passing the timer test (eventually).
-///
-/// Asserts:
-/// * The commit fire counter increments to 1 (the Flush arm shares
-///   the counter with the Timeout arm — both are "any commit").
-/// * Cumulative dispatched X = 1.0 mm ± 50 µm.
-/// * All adjacent-segment seams are continuous within the same 50 µm
-///   refit budget (the synchronous commit must not introduce a seam
-///   discontinuity between the Move-arm dispatch and the Flush-arm
-///   dispatch).
 #[test]
 fn flush_commits_terminal_decel_synchronously() {
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // Single 1 mm pure-X move at 100 mm/s.
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move");
-
-    // Immediate flush — no wall-clock sleep. The synchronous commit in
-    // `PlannerMsg::Flush` is the *only* mechanism that can dispatch the
-    // trailing decel-to-zero in this time budget; the `T_commit` timer
-    // (50 ms) is well above the flush round-trip.
     h.flush().expect("flush");
 
-    // The commit counter must have incremented exactly once, via the
-    // Flush arm of `run_loop`.
     assert_eq!(
         h.commit_fire_count(),
         1,
@@ -1090,9 +607,7 @@ fn flush_commits_terminal_decel_synchronously() {
          commit dropped all segments",
     );
 
-    // Adjacent-segment seam continuity across the entire dispatched
-    // output (Move-arm dispatch + Flush-arm dispatch).
-    const SEAM_BUDGET_MM: f64 = 5.0e-2; // 50 µm
+    const SEAM_BUDGET_MM: f64 = 5.0e-2;
     for i in 0..segs.len().saturating_sub(1) {
         let a = &segs[i];
         let b = &segs[i + 1];
@@ -1112,10 +627,6 @@ fn flush_commits_terminal_decel_synchronously() {
         );
     }
 
-    // Terminal dispatched X must equal the submitted 1.0 mm within
-    // refit budget. This is the property `wait_moves` actually needs:
-    // when it returns, the toolhead has been commanded the full
-    // distance.
     let terminal_seg = segs.last().unwrap();
     let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
     assert!(
@@ -1127,8 +638,6 @@ fn flush_commits_terminal_decel_synchronously() {
         SEAM_BUDGET_MM,
     );
 
-    // Terminal velocity must be ~0: the flush-commit dispatched the
-    // decel-to-zero ramp, so the toolhead is at rest at flush return.
     let terminal_v = x_vel_at(terminal_seg, terminal_seg.t_end).abs();
     assert!(
         terminal_v < 5.0,
@@ -1137,9 +646,6 @@ fn flush_commits_terminal_decel_synchronously() {
         terminal_v,
     );
 
-    // A second flush with the queue already fully committed must be a
-    // no-op (the Flush arm guards on `last_append_time.is_some()`).
-    // The commit counter stays at 1 and no new segments dispatch.
     let segs_before_second_flush = segs.len();
     h.flush().expect("second flush");
     assert_eq!(
@@ -1158,25 +664,12 @@ fn flush_commits_terminal_decel_synchronously() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Phase 5 Task 5.1 — lifecycle reset entry points
-// ---------------------------------------------------------------------------
-
-/// Spec §3.7 reset acceptance, integration layer: after a `kalico_stream_open`
-/// reset to a new home position, a follow-on `submit_move` lands the toolhead
-/// starting near the new home, NOT continuing from wherever the prior
-/// trajectory ended. The original move's contribution is fully discarded —
-/// the post-reset dispatch line starts at `new_home_x` (within the C¹ refit
-/// budget) and ends at `new_home_x + move_distance`.
 #[test]
 fn kalico_stream_open_resets_planner_state() {
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // First move: 1 mm pure-X from origin. Flush to dispatch the full
-    // geometry to the wire before the reset (Phase 4 Task 4.3 makes
-    // flush synchronously commit the trailing decel-to-zero).
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 1");
     h.flush().expect("flush move 1");
@@ -1187,15 +680,9 @@ fn kalico_stream_open_resets_planner_state() {
         "precondition: first move must produce dispatched segments before the reset",
     );
 
-    // Reset to a new home position. This is the entry point the bridge
-    // will call on `kalico_stream_open`.
     let new_home = [10.0, 20.0, 30.0, 0.0];
     h.kalico_stream_open(new_home).expect("kalico_stream_open");
 
-    // Follow-on move: 1 mm pure-X starting from the new home. The
-    // bridge's caller is expected to express moves in the reset
-    // position frame, so the `start` argument matches `new_home`. The
-    // submitted move geometry covers `X ∈ [10, 11]` at 100 mm/s.
     h.submit_move(
         classify_and_build(
             [new_home[0], new_home[1], new_home[2]],
@@ -1216,10 +703,6 @@ fn kalico_stream_open_resets_planner_state() {
         "second submit/flush produced no new dispatched segments after reset",
     );
 
-    // The first dispatched segment **after the reset** must start near
-    // `new_home[0] = 10.0` — not near `1.0` (where move 1 ended) — and
-    // not near `0.0` (where the prior timeline began). The seam budget
-    // (50 µm) covers the C¹ Hermite refit's L∞ error.
     const SEAM_BUDGET_MM: f64 = 5.0e-2;
     let post_reset_first = &segs[segs_before_reset];
     let x_start = x_pos_at(post_reset_first, post_reset_first.t_start);
@@ -1234,9 +717,6 @@ fn kalico_stream_open_resets_planner_state() {
         SEAM_BUDGET_MM,
     );
 
-    // Terminal dispatched X should be `new_home[0] + 1.0 = 11.0` mm:
-    // the post-reset move covered 1 mm and flush dispatched the
-    // trailing decel-to-zero.
     let terminal_seg = segs.last().unwrap();
     let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
     assert!(
@@ -1251,13 +731,6 @@ fn kalico_stream_open_resets_planner_state() {
     h.shutdown();
 }
 
-/// Spec §3.7 reset acceptance via the `homing` entry point. Identical
-/// shape to `kalico_stream_open_resets_planner_state`: the only
-/// difference is which `PlannerHandle` method is called. Both go
-/// through the same `ShaperState::reset` path under the hood (the
-/// run-loop's `KalicoStreamOpen | Homing` match arm collapses them);
-/// pinning both as distinct integration tests catches a regression
-/// that wires only one of the two handlers correctly.
 #[test]
 fn homing_resets_planner_state() {
     let (dispatch, recorded) = recording_dispatch();
@@ -1322,25 +795,12 @@ fn homing_resets_planner_state() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Phase 5 Task 5.2 — Underrun / ForceIdle recovery
-// ---------------------------------------------------------------------------
-
-/// Spec §3.7 ("Engine `Underrun` fault"): after a recovery reset to a new
-/// position, a follow-on `submit_move` lands the toolhead starting near
-/// `recovered_pos`. Same shape as `kalico_stream_open_resets_planner_state`,
-/// but exercises the `PlannerHandle::underrun(...)` entry point instead.
-/// This pins the planner-side handler the bridge will call once the
-/// host-derived position recovery wires up (the variant exists today; the
-/// bridge-side detection lookup is deferred per the Task 5.2 scope notes).
 #[test]
 fn underrun_recovery_resets_to_recovered_position() {
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // Submit + flush so the first move's geometry is on the wire before
-    // the recovery message arrives.
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 1");
     h.flush().expect("flush move 1");
@@ -1351,16 +811,9 @@ fn underrun_recovery_resets_to_recovered_position() {
         "precondition: first move must produce dispatched segments before the recovery",
     );
 
-    // Engine fault: the MCU stopped executing at the recovered position.
-    // Bridge-side detection (host-derived from `current_segment_id` +
-    // dispatched curve pool) lands in the bridge follow-up; here we
-    // call the entry point directly to exercise the planner-side handler.
     let recovered_pos = [5.0, 0.0, 0.0, 0.0];
     h.underrun(recovered_pos).expect("underrun");
 
-    // Follow-on move from the recovered position. The post-recovery
-    // dispatch line must start near `recovered_pos[0] = 5.0` — not near
-    // `1.0` (where move 1 ended) — within the C¹ refit budget.
     h.submit_move(
         classify_and_build(
             [recovered_pos[0], recovered_pos[1], recovered_pos[2]],
@@ -1407,11 +860,6 @@ fn underrun_recovery_resets_to_recovered_position() {
     h.shutdown();
 }
 
-/// `ForceIdle` shares the run-loop handler with `Underrun` (the two arms
-/// collapse to a single `state.reset(recovered_pos)` call). Pinning both
-/// as integration tests catches a regression that wires only one of the
-/// two variants — same rationale as `homing_resets_planner_state`
-/// duplicating the `kalico_stream_open` test.
 #[test]
 fn force_idle_recovery_resets_to_recovered_position() {
     let (dispatch, recorded) = recording_dispatch();
@@ -1456,64 +904,23 @@ fn force_idle_recovery_resets_to_recovered_position() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Phase 5 Task 5.3 — UpdateShaper drains held-back output under old kernel
-// ---------------------------------------------------------------------------
-
-/// Spec §3.7 ("Shaper config update (`update_shaper`)"): "Drain any
-/// held-back shaped output on the affected axis to wire (use old
-/// kernel), then swap kernel. Subsequent plans use new kernel."
-///
-/// Submit a move (no flush, so the trailing decel-to-zero is held
-/// speculatively), then call `update_shaper` with a different
-/// frequency. Verify:
-///
-/// 1. The commit counter incremented — `update_shaper` drained the
-///    held-back tail under the old kernel via the same commit path
-///    `Flush` / quiescence-timer / `ClockSyncRearm` use.
-/// 2. A follow-on `submit_move` + `flush` after the swap succeeds and
-///    produces dispatched segments using the new shaper config.
-///
-/// (1) is the load-bearing assertion. (2) is a smoke test that the
-/// post-swap pipeline still works end-to-end.
 #[test]
 fn update_shaper_commits_held_output_before_swap() {
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // Submit a move WITHOUT flushing — the trailing decel-to-zero stays
-    // speculative ("held back") until either the quiescence timer
-    // fires (50 ms), an explicit `Flush` arrives, or — per Task 5.3 —
-    // an `UpdateShaper` arrives.
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 1");
-    // We deliberately do NOT call `flush()` here. Pre-Task-5.3
-    // `update_shaper` re-built `ShaperState` from scratch, dropping
-    // the held-back tail without dispatching it. Post-Task-5.3 the
-    // handler must drain that tail via `commit_decel_to_zero` first
-    // — that is the property this test pins.
 
     let commit_count_before = h.commit_fire_count();
 
-    // Swap to a different shaper frequency. The actual frequency value
-    // doesn't matter for the test invariant (any swap forces the
-    // drain); we use 60 Hz to make sure the new config differs from
-    // the construction-time 186 Hz.
     let new_shaper = ShaperConfig {
         x: RequiredShaper::SmoothZv { frequency_hz: 60.0 },
         y: RequiredShaper::SmoothZv { frequency_hz: 60.0 },
         z: AxisShaper::Passthrough,
     };
     h.update_shaper(new_shaper).expect("update_shaper");
-
-    // Synchronisation barrier — `update_shaper` is fire-and-forget at
-    // the channel layer. Issuing a `flush()` here drives the run-loop
-    // to drain its inbox up to (and including) the `UpdateShaper`
-    // message before returning. The flush itself is a no-op
-    // commit-wise (the prior drain already cleared the timer), but
-    // its notify-channel round-trip guarantees the planner has
-    // processed `UpdateShaper`.
     h.flush().expect("flush as sync barrier");
 
     let commit_count_after = h.commit_fire_count();
@@ -1528,10 +935,6 @@ fn update_shaper_commits_held_output_before_swap() {
         commit_count_after,
     );
 
-    // Smoke test that the new shaper still produces dispatched output
-    // end-to-end. Post-swap the planner is fresh (the handler
-    // re-seeds `ShaperState`); `submit_move` + `flush` should produce
-    // additional segments without erroring.
     let segs_before_post_swap = recorded.lock().unwrap().len();
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("post-swap submit");
@@ -1548,24 +951,6 @@ fn update_shaper_commits_held_output_before_swap() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Phase 5 Task 5.4 — ClockSyncRearm drains held-back output before bias swap
-// ---------------------------------------------------------------------------
-
-/// Spec §3.7 ("Clock-sync re-arm"): "Flush any pending shaped output
-/// under the old clock bias to the wire, then update the bias for
-/// future dispatches. Queue content (in planner-time) is unaffected."
-///
-/// The planner-side half of the barrier is the load-bearing piece — it
-/// is the side that knows what shaped output is held back. The
-/// bias-swap itself runs on the bridge's periodic-clock-sync thread
-/// (which owns the `Router`) and is wired as a small follow-up; this
-/// test pins the planner-side commit-on-rearm contract.
-///
-/// We submit a move (no flush, so the trailing decel is held), then
-/// dispatch `PlannerMsg::ClockSyncRearm` via the
-/// `PlannerHandle::clock_sync_rearm` entry point. The commit counter
-/// must increment, indicating the held-back tail was drained.
 #[test]
 fn clock_sync_rearm_commits_old_bias_first() {
     use motion_bridge_native::planner::ClockBias;
@@ -1574,10 +959,6 @@ fn clock_sync_rearm_commits_old_bias_first() {
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // Submit a move WITHOUT flushing — same pattern as the
-    // `update_shaper_commits_held_output_before_swap` test. The
-    // trailing decel-to-zero is held back; `clock_sync_rearm` must
-    // drain it before the bias swap takes effect.
     h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
         .expect("submit move 1");
 
@@ -1590,9 +971,6 @@ fn clock_sync_rearm_commits_old_bias_first() {
         last_clock: 0,
     };
     h.clock_sync_rearm(new_bias).expect("clock_sync_rearm");
-
-    // Sync barrier so the planner has processed the rearm before we
-    // read the counters.
     h.flush().expect("flush as sync barrier");
 
     let commit_count_after = h.commit_fire_count();
@@ -1607,9 +985,6 @@ fn clock_sync_rearm_commits_old_bias_first() {
         commit_count_after,
     );
 
-    // Same smoke property as the UpdateShaper test: after the rearm
-    // the pipeline is still functional (no leftover state in the
-    // planner that breaks the next submit/flush).
     let segs_after = recorded.lock().unwrap().len();
     assert!(
         segs_after > segs_before,
@@ -1622,30 +997,6 @@ fn clock_sync_rearm_commits_old_bias_first() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Phase 6 Task 7.5 — caller-side `last_move_time_bits` advance + rectification
-// ---------------------------------------------------------------------------
-//
-// These pin spec §3.8 / §4.5: klippy reads `PlannerHandle::last_move_time()`
-// (the queued-time atomic) immediately after `submit_move` returns to
-// schedule inline events (`M106 S128`, `SET_PIN AT_TIME`, etc.) relative
-// to motion. Before Task 7.1 the atomic was only advanced inside the
-// planner thread after TOPP-RA + shaping completed, so an inline event
-// issued right after `G1 X1` saw a stale value and landed against the
-// *previous* move's print_time. Task 7.1 advances the atomic
-// **synchronously, caller-side, before the channel send** using the
-// klippy-equivalent nominal estimate (`distance / feedrate`). Task 7.2
-// rectifies if the actual TOPP-RA-shaped duration differs.
-
-/// **Task 7.5 (1).** `submit_move` must advance `last_move_time_bits`
-/// synchronously: between the `submit_move` call returning and the
-/// planner thread running, the atomic already reflects the new move's
-/// nominal duration.
-///
-/// This is the regression net for the inline-event scheduling bug — if
-/// this assertion ever flips to "no advance," any `M106`/`SET_PIN` issued
-/// right after `G1 X1` would land against the *previous* move's
-/// print_time.
 #[test]
 fn submit_move_advances_last_move_time_synchronously() {
     let (dispatch, _recorded) = recording_dispatch();
@@ -1658,7 +1009,6 @@ fn submit_move_advances_last_move_time_synchronously() {
         "fresh planner should start with last_move_time = 0.0, got {t0}",
     );
 
-    // Submit a 1 mm X move at 100 mm/s — `nominal_duration` = 0.01 s.
     let m = classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap();
     let expected_nominal = m.nominal_duration();
     assert!(
@@ -1668,9 +1018,6 @@ fn submit_move_advances_last_move_time_synchronously() {
 
     h.submit_move(m).expect("submit move");
 
-    // IMMEDIATELY read the atomic — no flush, no sleep, no sync barrier.
-    // The caller-side advance must already be visible because the
-    // `Release` store happens **before** the channel `send` returns.
     let t1 = h.last_move_time();
     let advance = t1 - t0;
     assert!(
@@ -1685,34 +1032,6 @@ fn submit_move_advances_last_move_time_synchronously() {
     h.shutdown();
 }
 
-/// **Task 7.5 (2).** A move whose actual TOPP-RA-shaped duration differs
-/// from the cruise nominal estimate must be rectified by the planner
-/// thread. After `flush` returns (the synchronization barrier), the
-/// atomic must reflect the *actual* planner-time advance — not the
-/// nominal.
-///
-/// We use a short 1 mm move at 100 mm/s. The cruise nominal estimate is
-/// `distance / feedrate = 0.01 s`. The actual TOPP-RA-shaped plan adds
-/// accel-from-zero + decel-to-zero ramps (a single move's
-/// un-committed-tail terminates at rest by construction); on the
-/// `relaxed_limits` machine those ramps make `t_appended` substantially
-/// larger than 0.01 s.
-///
-/// The assertion has two parts:
-///
-/// 1. **Lower bound** — the atomic post-flush is strictly greater than
-///    the cruise nominal. This is the rectification's job: without the
-///    rectification CAS, the atomic would equal `nominal` exactly (the
-///    caller-side advance alone) and this assertion would fail.
-///
-/// 2. **Time accounting consistency** — the atomic post-flush equals
-///    the planner-thread's accumulated print-time for the move
-///    (`t_appended` minus the rectified delta yields the original
-///    `nominal`, by construction; we cross-check by comparing the
-///    atomic against the dispatched-segments' shaped time range as a
-///    sanity floor — the shaped output's last `t_end` is `≤ t_appended`
-///    after kernel-half-support trim, so the atomic should be `≥
-///    dispatched terminus − refit slack`).
 #[test]
 fn rectification_corrects_actual_duration() {
     let (dispatch, recorded) = recording_dispatch();
@@ -1727,20 +1046,6 @@ fn rectification_corrects_actual_duration() {
 
     let post_flush = h.last_move_time();
 
-    // The atomic post-flush must strictly exceed the cruise nominal —
-    // the rectification CAS added `actual − nominal` on top of the
-    // caller-side advance. A 1 mm move starting and ending at rest
-    // cannot physically complete in `distance / feedrate` seconds (the
-    // ramps add real time on top of the cruise estimate), so the
-    // rectified atomic strictly exceeds nominal.
-    //
-    // We use a generous lower-bound multiplier (`>= 2 * nominal`)
-    // rather than asserting an exact actual: the exact value depends
-    // on β-medium iteration count + shaper kernel + refit's piecewise
-    // fitting, which is brittle to pin in a unit test. The point is
-    // "rectification fired and added non-trivial time," and 2× is
-    // already a strong floor — pre-Task-7.2 the atomic would equal
-    // `nominal` exactly (`1.0 × nominal`).
     assert!(
         post_flush >= 2.0 * nominal,
         "rectification did not correct nominal → actual: \
@@ -1751,12 +1056,6 @@ fn rectification_corrects_actual_duration() {
          not fire.",
     );
 
-    // Cross-check: the dispatched-segments' shaped-time terminus must
-    // not exceed the atomic. The shaped output's last `t_end` is
-    // `≤ t_appended` after the kernel-half-support trim that
-    // `commit_decel_to_zero` performs, so the rectified atomic (which
-    // equals `t_appended` by construction) must be `≥` the dispatched
-    // terminus.
     let segs = recorded.lock().unwrap().clone();
     assert!(
         !segs.is_empty(),
@@ -1775,12 +1074,6 @@ fn rectification_corrects_actual_duration() {
     h.shutdown();
 }
 
-/// **Task 7.5 (3).** Sequential `submit_move` calls must produce
-/// monotonically-increasing `last_move_time` readings, each captured
-/// synchronously before any planner-thread work runs. This pins the
-/// inline-event scheduling contract across multiple moves — every
-/// `submit_move` returns with the atomic reflecting "all prior moves'
-/// queued time + this move's nominal duration."
 #[test]
 fn inline_event_scheduling_uses_queued_time() {
     let (dispatch, _recorded) = recording_dispatch();
@@ -1790,7 +1083,6 @@ fn inline_event_scheduling_uses_queued_time() {
     let m1 = classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap();
     let nominal1 = m1.nominal_duration();
     h.submit_move(m1).expect("submit move 1");
-    // Capture immediately — caller-side advance must already be visible.
     let after_m1 = h.last_move_time();
 
     let m2 = classify_and_build([1.0, 0.0, 0.0], 2.0, 0.0, 0.0, 0.0, 100.0).unwrap();
@@ -1803,7 +1095,6 @@ fn inline_event_scheduling_uses_queued_time() {
     h.submit_move(m3).expect("submit move 3");
     let after_m3 = h.last_move_time();
 
-    // Strict monotonicity — each submit advanced the atomic.
     assert!(
         after_m1 < after_m2,
         "after_m1 ({after_m1}) >= after_m2 ({after_m2}); submit_move 2 did not advance the atomic",
@@ -1813,18 +1104,6 @@ fn inline_event_scheduling_uses_queued_time() {
         "after_m2 ({after_m2}) >= after_m3 ({after_m3}); submit_move 3 did not advance the atomic",
     );
 
-    // Each reading must include **at least** the cumulative nominal
-    // estimates of moves submitted so far. (The reading may exceed the
-    // pure-nominal sum if rectification has already landed for an
-    // earlier move — that's fine; the inline-event contract is "queued
-    // time is at least the nominal sum at submit_move return," spec
-    // §4.5.) Using a `>=` lower bound with floating-point slack rather
-    // than equality lets the test be order-of-arrival-agnostic
-    // between the synchronous advance and the planner's rectification.
-    //
-    // 1 µs slack matches `RECTIFICATION_TOLERANCE_S` — rectification
-    // deltas below this are skipped, so the lower bound holds with the
-    // same epsilon.
     const TIME_EPS_S: f64 = 1e-6;
     assert!(
         after_m1 + TIME_EPS_S >= nominal1,
@@ -1844,79 +1123,12 @@ fn inline_event_scheduling_uses_queued_time() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Phase 6 Task 7.3 — `wait_moves` semantics (dispatched-time ≥ queued-time)
-// ---------------------------------------------------------------------------
-
-/// **Phase 6 Task 7.3.** `wait_moves` (i.e. `PlannerHandle::flush` from the
-/// bridge layer) must block until every move that was previously
-/// `submit_move`-d has been dispatched all the way through its trailing
-/// decel-to-zero ramp.
-///
-/// This pins the **dispatched-time ≥ queued-time** invariant at the
-/// integration boundary:
-///
-/// * Under Phase 6's queued-time semantics, `last_move_time_bits` advances
-///   synchronously on every `submit_move` (caller-side advance, then
-///   rectified by the planner thread). After 4 rapid submits the atomic
-///   reflects ~`Σ nominal_durationᵢ` (modulo any rectification deltas
-///   already landed). This is the floor `wait_moves` must dispatch to.
-/// * Phase 4 Task 4.3 made `PlannerMsg::Flush` synchronously call
-///   `commit_decel_to_zero` and dispatch the held-back tail before
-///   notifying the flush waiter. So when `flush` returns, the dispatched
-///   segments cover all the way to `state.t_appended` (the planner-side
-///   queue terminus).
-///
-/// The combination is what `M400` / `wait_moves` actually need: **return
-/// only after the toolhead has been commanded through every queued
-/// segment**. The previous test `flush_commits_terminal_decel_synchronously`
-/// pinned the *terminal X position* property; this test pins the
-/// *time-domain* property — the dispatched segments cover the entire
-/// queued-time window. They are complementary regression nets.
-///
-/// ## Asymmetry between `atomic` and `dispatched_terminus`
-///
-/// The bridge atomic post-flush is **not** identical to the dispatched
-/// segments' terminus. Two separate writers advance the atomic:
-///
-/// 1. The Move arm rectifies it to `state.t_appended` (per-move).
-/// 2. `run_commit_and_dispatch` (shared by Flush + timer + UpdateShaper +
-///    ClockSyncRearm) adds the **drained batch duration** on top.
-///
-/// For the Flush path that means atomic_post_flush ≈ `state.t_appended +
-/// batch_dur`, where `batch_dur` is the held-back tail's duration. The
-/// dispatched terminus, in contrast, is at `state.t_appended` exactly.
-/// `rectification_corrects_actual_duration` covers this asymmetry from
-/// the other side (`atomic >= dispatched_terminus`); the assertion here
-/// stays focused on the **M400 semantics** — i.e. "did dispatch reach the
-/// queued-time floor we captured before flush?"
-///
-/// ## Failure modes this test catches
-///
-/// 1. `Flush` arm regresses to a bare `notify.send(())` without calling
-///    `run_commit_and_dispatch` → the dispatched terminus would stop
-///    short of `lmt_after_submits` (the held-back decel never makes it
-///    to the wire). This is the original M400 contract violation.
-/// 2. `run_commit_and_dispatch` regresses to async dispatch (e.g. some
-///    future refactor that hands segments off to a producer thread) →
-///    the notify could fire before the dispatch closure has run, and
-///    `recorded.lock().unwrap().last().t_end` would be below the
-///    pre-flush atomic.
-/// 3. The Phase 6 caller-side advance regresses to `0` (no advance until
-///    rectification fires from the planner thread) → the captured
-///    `lmt_after_submits` would be `0.0` and the test's "queued ≥ nominal
-///    floor" assertion would fail.
 #[test]
 fn wait_moves_blocks_until_dispatch_catches_up() {
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
     h.update_limits(relaxed_limits()).expect("update_limits");
 
-    // Submit 4 sequential 1 mm pure-X moves at 100 mm/s, back-to-back
-    // (no interleaved flush). Phase 6 Task 7.1's synchronous advance
-    // means each `submit_move` returns with the atomic already bumped
-    // by ~`nominal_duration`. The planner thread is free to rectify in
-    // parallel; we don't synchronize with it between submits.
     let starts = [[0.0; 3], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]];
     let mut cumulative_nominal = 0.0;
     for start in starts.iter() {
@@ -1925,13 +1137,6 @@ fn wait_moves_blocks_until_dispatch_catches_up() {
         h.submit_move(m).expect("submit move");
     }
 
-    // **Pre-flush snapshot of queued time.** Captured *after* all 4
-    // submits but *before* `flush`. Phase 6 says this reading reflects
-    // the synchronous caller-side advance for each submit. Rectification
-    // from the planner thread may or may not have landed yet — that's
-    // fine; the atomic is monotonic so any partial rectification only
-    // increases the reading. This value is the **floor** dispatch must
-    // catch up to before `flush` is allowed to return.
     let lmt_after_submits = h.last_move_time();
     assert!(
         lmt_after_submits + 1e-6 >= cumulative_nominal,
@@ -1940,14 +1145,8 @@ fn wait_moves_blocks_until_dispatch_catches_up() {
          (Phase 6 Task 7.1).",
     );
 
-    // **The barrier.** `flush` must block until the planner thread has
-    // dispatched every segment all the way through the held-back
-    // decel-to-zero (Phase 4 Task 4.3 semantics).
     h.flush().expect("flush as wait_moves barrier");
 
-    // **Post-flush snapshot.** Atomic must be monotonic across the
-    // barrier (the rectification CAS + the `run_commit_and_dispatch`
-    // post-commit advance can both only ever add to it).
     let lmt_post_flush = h.last_move_time();
     assert!(
         lmt_post_flush + 1e-9 >= lmt_after_submits,
@@ -1962,11 +1161,6 @@ fn wait_moves_blocks_until_dispatch_catches_up() {
          synchronous Flush commit dropped all segments",
     );
 
-    // **Dispatched window starts at t = 0.** The first move's planning
-    // origin is the planner's time zero, and there is no committed work
-    // before it. If this is non-zero we'd have a hole at the front of
-    // the dispatched window, which would invalidate the
-    // `last.t_end` shorthand below.
     let dispatched_start = segs.first().unwrap().t_start;
     let dispatched_terminus = segs.last().unwrap().t_end;
     assert!(
@@ -1975,21 +1169,6 @@ fn wait_moves_blocks_until_dispatch_catches_up() {
          expected ~0 (the planner's time-zero).",
     );
 
-    // **The core M400 invariant.** Dispatched time covers the pre-flush
-    // queued time (`lmt_after_submits`). Equivalently: at the moment
-    // `wait_moves` returned, the toolhead had been commanded for at
-    // least `lmt_after_submits` seconds of motion — which is the
-    // synchronously-captured queue-side time before the flush.
-    //
-    // The pre-flush atomic `lmt_after_submits` reflects ~Σ nominal +
-    // any rectification deltas that have already landed (subject to
-    // RECTIFICATION_TOLERANCE_S ≈ 1 µs). The dispatched terminus is
-    // `state.t_appended` exactly. Empirically `t_appended` is *larger*
-    // than the cruise-nominal sum (because the shaped trajectory's
-    // actual duration includes accel/decel ramps that cruise-nominal
-    // ignores); so the inequality below is generous on the "≥" side.
-    // A `<` failure means dispatch stopped short of queued — the
-    // original M400 contract violation.
     assert!(
         dispatched_terminus + 1e-6 >= lmt_after_submits,
         "dispatched_terminus ({dispatched_terminus} s) below pre-flush \
@@ -2000,10 +1179,6 @@ fn wait_moves_blocks_until_dispatch_catches_up() {
         lmt_after_submits - dispatched_terminus,
     );
 
-    // **Belt-and-braces seam check.** All adjacent dispatched segments
-    // are time-contiguous. A hole would mean dispatched time has gaps
-    // within `[0, dispatched_terminus]`, breaking the "covers the
-    // queued window" property even if the endpoints look right.
     for i in 0..segs.len().saturating_sub(1) {
         let a = &segs[i];
         let b = &segs[i + 1];
@@ -2016,11 +1191,6 @@ fn wait_moves_blocks_until_dispatch_catches_up() {
         );
     }
 
-    // **Post-flush stability under a second flush.** The queue is now
-    // fully committed; another flush must be a no-op (the
-    // `last_append_time.is_some()` guard in `run_loop`'s Flush arm).
-    // Dispatched-segment count, dispatched terminus, and the atomic
-    // stay put.
     let segs_count_before_second = segs.len();
     let lmt_before_second = h.last_move_time();
     h.flush().expect("second flush");

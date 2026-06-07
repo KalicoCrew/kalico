@@ -64,7 +64,7 @@ impl IdentifyResponse {
         out.extend_from_slice(&arr);
     }
 
-    #[allow(clippy::range_plus_one)] // `BASE..BASE+LEN` is clearer than `BASE..=BASE+LEN-1` for fixed-layout offsets
+    #[allow(clippy::range_plus_one)]
     pub fn encode_body_to_array(&self) -> [u8; IDENTIFY_RESPONSE_BODY_LEN] {
         let mut b = [0u8; IDENTIFY_RESPONSE_BODY_LEN];
         b[IDR_OFF_PROTO_VERSION] = self.proto_version;
@@ -80,7 +80,7 @@ impl IdentifyResponse {
         b
     }
 
-    #[allow(clippy::range_plus_one)] // `BASE..BASE+LEN` is clearer than `BASE..=BASE+LEN-1` for fixed-layout offsets
+    #[allow(clippy::range_plus_one)]
     pub fn decode_body(buf: &[u8]) -> Result<Self, BootstrapDecodeError> {
         if buf.len() != IDENTIFY_RESPONSE_BODY_LEN {
             return Err(BootstrapDecodeError::WrongLength {

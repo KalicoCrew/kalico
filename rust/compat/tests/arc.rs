@@ -1,6 +1,5 @@
 use compat::arc::{ArcParams, arc_endpoint_tangent, arc_start_tangent, arc_to_g5};
 
-/// Evaluate a cubic Bezier at parameter t in [0, 1].
 fn bezier_eval(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64) -> [f64; 2] {
     let u = 1.0 - t;
     let a = u * u * u;
@@ -13,7 +12,6 @@ fn bezier_eval(p0: [f64; 2], p1: [f64; 2], p2: [f64; 2], p3: [f64; 2], t: f64) -
     ]
 }
 
-/// Quarter-arc CCW from (1,0,0) to (0,1,0), center (0,0).
 #[test]
 fn quarter_arc_ccw() {
     let params = ArcParams {
@@ -44,7 +42,6 @@ fn quarter_arc_ccw() {
     );
 }
 
-/// Quarter-arc CW from (0,1,0) to (1,0,0), center (0,0).
 #[test]
 fn quarter_arc_cw() {
     let params = ArcParams {
@@ -70,7 +67,6 @@ fn quarter_arc_cw() {
     );
 }
 
-/// Full circle CCW from (1,0,0) back to (1,0,0), center (0,0).
 #[test]
 fn full_circle_ccw() {
     let params = ArcParams {
@@ -100,7 +96,6 @@ fn full_circle_ccw() {
     );
 }
 
-/// Full circle CW from (1,0,0) back to (1,0,0), center (0,0).
 #[test]
 fn full_circle_cw() {
     let params = ArcParams {
@@ -169,7 +164,6 @@ fn helical_arc() {
         last.z
     );
 
-    // Z should be monotonically increasing.
     let mut prev_z = 0.0;
     for piece in &pieces {
         assert!(
@@ -186,13 +180,13 @@ fn helical_arc() {
 #[test]
 fn radial_error_verification() {
     let r = 10.0;
-    let tol = 0.005; // 5 um
+    let tol_5um_mm = 0.005;
     let params = ArcParams {
         start: [r, 0.0, 0.0],
         end: [0.0, r, 0.0],
         center: [0.0, 0.0],
         clockwise: false,
-        tolerance_mm: tol,
+        tolerance_mm: tol_5um_mm,
     };
     let pieces = arc_to_g5(&params);
 
@@ -200,13 +194,11 @@ fn radial_error_verification() {
     let mut max_err = 0.0_f64;
 
     for piece in &pieces {
-        // Reconstruct absolute control points.
         let p0 = prev_end;
         let p1 = [p0[0] + piece.i, p0[1] + piece.j];
         let p2 = [piece.x + piece.p, piece.y + piece.q];
         let p3 = [piece.x, piece.y];
 
-        // Sample at 101 points (t = 0.0, 0.01, ..., 1.0).
         for k in 0..=100 {
             let t = f64::from(k) / 100.0;
             let pt = bezier_eval(p0, p1, p2, p3, t);
@@ -219,8 +211,8 @@ fn radial_error_verification() {
     }
 
     assert!(
-        max_err <= tol,
-        "max radial error {max_err:.6e} exceeds tolerance {tol:.6e}"
+        max_err <= tol_5um_mm,
+        "max radial error {max_err:.6e} exceeds tolerance {tol_5um_mm:.6e}"
     );
 }
 

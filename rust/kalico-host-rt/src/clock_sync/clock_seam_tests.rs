@@ -2,10 +2,6 @@ use super::*;
 use crate::clock::MockClock;
 use std::time::Duration;
 
-// ---------------------------------------------------------------------------
-// Seam / infrastructure tests (unchanged behaviour)
-// ---------------------------------------------------------------------------
-
 #[test]
 fn last_sample_age_uses_injected_clock() {
     let clock = MockClock::new();
@@ -41,12 +37,10 @@ fn wall_time_at_mcu_inside_window_returns_some() {
     let clock = MockClock::new();
     let mut est = ClockSyncEstimator::new_with_clock(100_000_000.0, clock.clone());
 
-    // Feed 30 dedicated samples with 1ms constant RTT so min_half_rtt is set.
     let t0 = clock.now();
     for i in 1..=30u64 {
         let send = t0 + Duration::from_secs(i);
         let recv = send + Duration::from_millis(1);
-        // mcu_at_response: MCU clock at the response instant (send + 0.5ms).
         let mcu_resp = i * 100_000_000 + 50_000;
         est.add_dedicated_sample(send, recv, mcu_resp);
         clock.advance(Duration::from_secs(1));
@@ -93,12 +87,6 @@ fn wall_time_at_mcu_one_sample_returns_some_estimated() {
     );
 }
 
-/// Anchor-proximal tick → `estimated == false`.
-///
-/// We feed two dedicated samples 1 s apart with a 300µs constant RTT so that
-/// `update_fit` runs and `anchor_mcu_clock` is set to approximately
-/// `100_000_000` ticks.  Querying that exact tick must return
-/// `estimated=false` (delta_ticks ≈ 0, well within the 1 s threshold).
 #[test]
 fn wall_time_at_mcu_anchor_tick_not_estimated() {
     let clock = MockClock::new();
@@ -109,7 +97,6 @@ fn wall_time_at_mcu_anchor_tick_not_estimated() {
     let rtt = Duration::from_micros(300);
     let half_rtt_s = 0.000_150_f64;
 
-    // Two samples so update_fit runs.
     for i in 1u64..=2 {
         let t = i as f64;
         let send = t0 + Duration::from_secs_f64(t);
@@ -118,8 +105,6 @@ fn wall_time_at_mcu_anchor_tick_not_estimated() {
         clock.advance(Duration::from_secs(1));
     }
 
-    // The anchor sits near clock_avg ≈ 1.5 * freq + adjustment.
-    // Query the anchor tick itself (anchor_mcu_clock from the estimator).
     let anchor = est.anchor_mcu_clock;
     let (_, estimated) = est
         .wall_time_at_mcu(anchor)
@@ -130,10 +115,6 @@ fn wall_time_at_mcu_anchor_tick_not_estimated() {
     );
 }
 
-/// Tick more than 1 MCU-second from anchor → `estimated == true`.
-///
-/// At 100 MHz, an offset of 200_000_000 ticks = 2.0 s from the anchor;
-/// that exceeds the 1.0 s threshold so `estimated` must be true.
 #[test]
 fn wall_time_at_mcu_far_tick_is_estimated() {
     let clock = MockClock::new();
@@ -153,7 +134,6 @@ fn wall_time_at_mcu_far_tick_is_estimated() {
     }
 
     let anchor = est.anchor_mcu_clock;
-    // 2 s of ticks away from anchor.
     let far_tick = anchor + 200_000_000;
     let (_, estimated) = est
         .wall_time_at_mcu(far_tick)
@@ -164,15 +144,6 @@ fn wall_time_at_mcu_far_tick_is_estimated() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Sub-task B unit tests
-//
-// All timestamps are deterministic: fixed arrays or seeded LCG.
-// No Instant::now() / SystemTime::now() used inside the test logic —
-// MockClock provides a controlled time base.
-// ---------------------------------------------------------------------------
-
-/// Seeded LCG for deterministic bounded noise (no external crate needed).
 struct Lcg(u64);
 
 impl Lcg {
@@ -188,25 +159,16 @@ impl Lcg {
         self.0
     }
 
-    /// Returns a value in [0, modulus).
     fn bounded(&mut self, modulus: u64) -> u64 {
         (self.next_u64() >> 17) % modulus
     }
 
-    /// Returns a signed offset in [-half_us, +half_us] expressed in seconds.
     fn noise_secs(&mut self, half_us: u64) -> f64 {
         let raw = self.bounded(2 * half_us + 1);
         (raw as i64 - half_us as i64) as f64 * 1e-6
     }
 }
 
-/// (a) Stationary clock + bounded noise → fitted freq within ±5ppm after warmup.
-///
-/// Stream: 120 dedicated samples at ~500ms spacing with constant 300µs RTT
-/// and ±5µs host-timing jitter.  After warmup the EWMA should track
-/// `true_freq` within 5ppm.  The tolerance is intentionally looser than the
-/// bench ±18ppm worst-case; this test guards against algorithmic regression,
-/// not hardware accuracy.
 #[test]
 fn stationary_clock_converges_within_5ppm() {
     let true_freq = 168_000_000.0_f64;
@@ -215,15 +177,13 @@ fn stationary_clock_converges_within_5ppm() {
     let mut lcg = Lcg::new(0xDEAD_BEEF_CAFE_1234);
 
     let epoch = clock.now();
-    let rtt_us = 300u64; // constant 300µs RTT
+    let rtt_us = 300u64;
     let half_rtt = rtt_us as f64 * 1e-6 / 2.0;
 
     for i in 1u64..=120 {
-        // ±5µs timing jitter on the send instant (host-side noise).
         let t_secs = i as f64 * 0.5 + lcg.noise_secs(5);
         let t_secs = t_secs.max(0.001);
 
-        // MCU clock at the response instant (send + one-way delay).
         let mcu_resp = ((t_secs + half_rtt) * true_freq) as u64;
 
         let send = epoch + Duration::from_secs_f64(t_secs);
@@ -240,14 +200,6 @@ fn stationary_clock_converges_within_5ppm() {
     );
 }
 
-/// (b) Klippy-parity outlier rejection: a high-side clock glitch within the
-///     10-second prediction reset window is silently dropped and does NOT move
-///     the projected MCU clock by more than ~1µs.
-///
-/// Klippy's gate: `clock > exp_clock && sent_time < last_prediction_time + 10`
-/// → sample is returned early (skipped).  We inject an outlier with a +5ms
-/// clock advance (840_000 ticks at 168 MHz) while the prediction window is
-/// still fresh.
 #[test]
 fn high_side_outlier_within_window_is_dropped() {
     let true_freq = 168_000_000.0_f64;
@@ -255,10 +207,9 @@ fn high_side_outlier_within_window_is_dropped() {
     let mut est = ClockSyncEstimator::new_with_clock(true_freq, clock.clone());
 
     let epoch = clock.now();
-    let rtt_dur = Duration::from_micros(300); // constant 300µs RTT
-    let half_rtt = 0.000_150; // 150µs
+    let rtt_dur = Duration::from_micros(300);
+    let half_rtt = 0.000_150;
 
-    // Warmup: 60 honest samples at 500ms spacing.
     for i in 1u64..=60 {
         let t = i as f64 * 0.5;
         let send = epoch + Duration::from_secs_f64(t);
@@ -267,17 +218,11 @@ fn high_side_outlier_within_window_is_dropped() {
         clock.advance(Duration::from_millis(500));
     }
 
-    // Probe before outlier.
     let probe_secs = 70.0_f64;
     let before = est.mcu_time_at_host(probe_secs);
 
-    // Inject a high-side outlier: MCU clock is +5ms (840_000 ticks) ahead of
-    // prediction.  `sent_time = 30.5`, `last_prediction_time ≈ 30.0` → within
-    // the 10-second window → klippy (and our port) silently drop it.
     let outlier_t = 30.5_f64;
     let send = epoch + Duration::from_secs_f64(outlier_t);
-    // Expected MCU at send ≈ 30.5 * true_freq + offset_from_regression.
-    // We add +840_000 (≈ 5ms) to make it a clear high-side outlier.
     let mcu_resp_outlier = ((outlier_t + half_rtt) * true_freq) as u64 + 840_000;
     est.add_dedicated_sample(send, send + rtt_dur, mcu_resp_outlier);
 
@@ -292,10 +237,6 @@ fn high_side_outlier_within_window_is_dropped() {
     );
 }
 
-/// (c) Cold-start: first 5 samples should yield a usable fit within 50ppm.
-///
-/// We use a constant RTT of 500µs so there is no ambiguity in what the MCU
-/// clock should be at send time.
 #[test]
 fn cold_start_within_50ppm_after_handful() {
     let true_freq = 100_000_000.0_f64;
@@ -322,12 +263,6 @@ fn cold_start_within_50ppm_after_handful() {
     );
 }
 
-/// (d) A genuine frequency step (temperature-ramp analog) is tracked within
-///     the decay time constant.
-///
-/// After 60 samples at `freq_before`, we switch to `freq_after` (+18ppm) and
-/// feed another 60 samples.  After one full decay window the fit should have
-/// converged to within 5ppm of `freq_after`.
 #[test]
 fn genuine_freq_step_tracked_within_decay_constant() {
     let freq_before = 100_000_000.0_f64;
@@ -340,20 +275,17 @@ fn genuine_freq_step_tracked_within_decay_constant() {
     let rtt_dur = Duration::from_micros(300);
     let half_rtt = 0.000_150;
 
-    let mut mcu_clock_acc = 0.0_f64; // simulate accumulating ticks
+    let mut mcu_clock_acc = 0.0_f64;
 
-    // Phase 1: 60 samples at freq_before.
     for i in 0u64..60 {
         let t = i as f64 * 0.5;
         mcu_clock_acc += 0.5 * freq_before;
         let send = epoch + Duration::from_secs_f64(t);
-        // mcu_resp is the MCU clock at the response instant (send + half_rtt).
         let mcu_resp = (mcu_clock_acc + half_rtt * freq_before) as u64;
         est.add_dedicated_sample(send, send + rtt_dur, mcu_resp);
         clock.advance(Duration::from_millis(500));
     }
 
-    // Phase 2: 60 samples at freq_after.
     let phase2_start = 60.0_f64 * 0.5;
     for i in 0u64..60 {
         let t = phase2_start + i as f64 * 0.5;

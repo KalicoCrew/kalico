@@ -1,13 +1,3 @@
-# Minimal-firmware control test for stepper hardware.
-#
-# Sends an MCU-side `diag_stepper_buzz` command that bypasses the Rust
-# motion engine entirely — just toggles step pin N times with a fixed
-# period. If this moves the motor but the engine path doesn't, the engine
-# is the only suspect.
-#
-# 2026-05-21: written to break the "engine clean but motors silent"
-# debugging dead-end after two weeks of motion-broken bench.
-
 import logging
 
 

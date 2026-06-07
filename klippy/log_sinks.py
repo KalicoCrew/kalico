@@ -1,8 +1,3 @@
-# Pluggable log sinks and the registry that fans records out to them.
-#
-# A Sink consumes a (context-enriched, message-formatted) logging.LogRecord.
-# The registry runs on the single QueueListener background thread, so sinks
-# need not be thread-safe among themselves.
 import logging
 import logging.handlers
 import os
@@ -27,9 +22,6 @@ class SinkRegistry:
         self._sinks.append(sink)
 
     def emit(self, record):
-        # Fail loudly: a sink raising (e.g. disk full) propagates so the
-        # background thread surfaces it rather than silently degrading the
-        # durable store (spec §12, fail-loudly).
         for sink in self._sinks:
             sink.emit_record(record)
 
@@ -39,8 +31,6 @@ class SinkRegistry:
 
 
 class TextSink(Sink):
-    # Stock klippy.log: a TimedRotatingFileHandler with NO formatter, so the
-    # emitted line is the raw message (identical to legacy klippy behavior).
     def __init__(self, filename, rotate_log_at_restart):
         if rotate_log_at_restart:
             self._handler = logging.handlers.TimedRotatingFileHandler(
@@ -83,11 +73,8 @@ class TextSink(Sink):
         self._handler.close()
 
 
-# Rotated files are kept UNCOMPRESSED (spec §8): the Stage-3 shipper (Vector)
-# cannot resume reading a gzipped file.
 JSONL_MAX_BYTES = 32 * 1024 * 1024
 JSONL_BACKUP_COUNT = 5
-# Periodic fsync backstop interval (spec §3/§7 relaxed-durability contract).
 JSONL_FSYNC_INTERVAL = 15.0
 
 
@@ -114,9 +101,6 @@ class JsonlSink(Sink):
         line = structured_log.serialize_record(
             structured_log.record_to_dict(record)
         )
-        # Write the already-serialized line verbatim; flush immediately for
-        # the relaxed-durability contract. A write/flush failure propagates
-        # (fail-loud, spec §12).
         stream = self._handler.stream
         if self._handler.shouldRollover(record):
             self._handler.doRollover()
@@ -124,16 +108,12 @@ class JsonlSink(Sink):
             self._last_fsync = time.monotonic()
         stream.write(line)
         stream.flush()
-        # Periodic fsync backstop: bound power-loss exposure to ~interval
-        # without paying an fsync on every record. Runs on the single
-        # QueueListener bg thread, so no extra thread or lock is needed.
         now = time.monotonic()
         if now - self._last_fsync >= self._fsync_interval:
             os.fsync(stream.fileno())
             self._last_fsync = now
 
     def close(self):
-        # Final fsync so a clean shutdown is fully durable, then close.
         stream = self._handler.stream
         if stream is not None:
             stream.flush()

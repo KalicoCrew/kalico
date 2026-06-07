@@ -1,6 +1,6 @@
 use compat::degree_elev::elevate_g51_to_g5;
 
-/// Basic 2-D case: P0=(0,0,0), P1=(3,3,0), P2=(10,0,0).
+/// P0=(0,0,0), P1=(3,3,0), P2=(10,0,0).
 ///
 /// `CP1_cubic` = (1/3)*(0,0) + (2/3)*(3,3) = (2, 2)
 /// `CP2_cubic` = (2/3)*(3,3) + (1/3)*(10,0) = (16/3, 2)
@@ -31,8 +31,6 @@ fn degree_elevation_basic() {
     assert_eq!(line.f, Some(3000.0));
 }
 
-/// Z is carried through from P2; I/J/P/Q are XY-only.
-///
 /// P0=(0,0,0), P1=(5,0,0.5), P2=(10,0,1).
 ///
 /// `CP1_cubic` = (1/3)*(0,0) + (2/3)*(5,0) = (10/3, 0)

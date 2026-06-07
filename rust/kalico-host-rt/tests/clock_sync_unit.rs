@@ -13,7 +13,7 @@ fn fresh_estimator_quality_gate_fails_under_warmup() {
 
 #[test]
 fn quality_gate_requires_recent_dedicated_sample_per_plan_decision_b() {
-    let freq = 550_000_000.0_f64; // 550 MHz baseline
+    let freq = 550_000_000.0_f64;
     let mut est = ClockSyncEstimator::new(freq);
     let epoch_offset_mcu: u64 = 1_000_000_000;
 

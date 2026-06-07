@@ -1,4 +1,3 @@
-# test/test_session_binding.py
 from klippy import structured_log
 
 

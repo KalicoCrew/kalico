@@ -295,13 +295,7 @@ class MCU_TMC_SPI_chain:
         self._phase_cs_pin_id = None
 
     def get_bus_and_cs_ids(self):
-        """Return (bus_id, cs_pin_id) as integers matching the firmware's
-        spi_setup / gpio_out_setup. Raises if either was not resolvable
-        (e.g. software SPI, missing enumeration). Used by the phase-
-        stepping bridge integration (motion_toolhead._configure_axes_per_mcu).
-        """
         if self._phase_bus_id is None and self._phase_cs_pin_id is None:
-            # First call — resolve now that the MCU has identified.
             bus_str = self.spi.bus
             pin_str = self.spi.cs_pin
             if bus_str is not None and pin_str is not None:

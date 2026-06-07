@@ -30,9 +30,8 @@ pub fn monotonic_raw_secs() -> f64 {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        // `instant_to_f64` is signed; clamp to 0.0 here to preserve the
-        // non-negative contract (the shared anchor may be seeded slightly after
-        // the current instant under parallel test initialisation).
+        // non-negative contract: anchor may be seeded slightly after the current
+        // instant under parallel test initialisation, making instant_to_f64 negative.
         instant_to_f64(Instant::now()).max(0.0)
     }
 }

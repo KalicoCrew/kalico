@@ -8,12 +8,7 @@ use geometry::segment::EMode;
 use nurbs::algebra::PiecewisePolynomialKernel;
 use nurbs::ScalarNurbs;
 
-/// Minimum position span (mm) for an axis to be eligible for beta-derate.
-/// Below this threshold the post-shape peak is dominated by shaper-boundary
-/// numerical transients, not physical acceleration.
 const MIN_AXIS_SPAN_FOR_DERATE: f64 = 0.5;
-
-/// Minimum fraction of `machine_a_max` that `planning_a_max` is allowed to reach.
 const BETA_ACCEL_MIN_RATIO: f64 = 0.02;
 
 struct AxisKernels {
@@ -343,13 +338,11 @@ fn run_one_iteration(
     let mut last_joining_status = temporal::multi::JoiningStatus::Converged;
 
     for run in &partition.runs {
-        // Build BatchInput for this run with derated limits.
         let run_segments: Vec<temporal::multi::SegmentInput<'_>> = run
             .segment_range
             .clone()
             .map(|global_idx| {
                 let orig = &input.segments[global_idx].temporal;
-                // Find the flat index of this segment in planning_a_max.
                 let flat_idx = all_xy_indices
                     .iter()
                     .position(|&i| i == global_idx)
@@ -385,7 +378,6 @@ fn run_one_iteration(
 
         match batch_output.joining_status {
             temporal::multi::JoiningStatus::Converged => {}
-            // All non-Converged statuses (including future non-exhaustive variants) are errors.
             status => {
                 use core::fmt::Write;
                 let mut detail = String::new();
@@ -481,7 +473,7 @@ fn run_one_iteration(
 
             let s_pieces = crate::reparam::build_s_of_t_pieces(profile, t_offset);
 
-            let arc_fit_tolerance = 1e-4; // mm — tight for derivative accuracy
+            let arc_fit_tolerance = 1e-4; // mm
             let composed = crate::reparam::compose_segment(
                 curve,
                 &table.as_view(),

@@ -1,7 +1,3 @@
-//! End-to-end: init the real subscriber, emit via both `log::` and `tracing::`,
-//! confirm `host-rust.jsonl` contains schema-conformant lines with the bound
-//! session/print ids. Runs in its own test process (one global subscriber).
-
 use std::path::PathBuf;
 
 #[test]
@@ -10,7 +6,6 @@ fn end_to_end_jsonl_has_schema_and_context() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
-    // init must succeed exactly once in this process.
     motion_bridge_native::logging::init_logging(&dir).expect("init");
     motion_bridge_native::logging::set_context(
         "k-1748700131-4412".to_string(),

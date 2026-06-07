@@ -1,5 +1,3 @@
-//! Production host I/O implementing [`Transport`].
-
 pub mod call_handle;
 pub mod events;
 pub mod identify;

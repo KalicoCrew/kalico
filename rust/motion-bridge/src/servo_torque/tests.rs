@@ -76,7 +76,7 @@ fn transport_error_is_an_err() {
     // live peer (setsockopt EINVAL on Darwin otherwise). Death-after-construction
     // is also the real failure mode this guards.
     let conn = UnixNativeConn::from_stream(client).expect("from_stream");
-    drop(server); // peer gone
+    drop(server);
     assert!(send_set_torque(&conn, true, 1).is_err());
 }
 

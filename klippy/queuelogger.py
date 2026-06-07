@@ -36,13 +36,11 @@ class QueueHandler(logging.Handler):
         try:
             self.queue.put_nowait(record)
         except queue.Full:
-            # Fail loudly (spec §7.1): never silently drop a durable record.
             raise LogQueueOverflow(
                 "klippy log queue overflow; logging cannot keep up"
             )
 
 
-# Polls the queue in a background thread and fans each record out to sinks.
 class QueueListener:
     def __init__(self, filename, rotate_log_at_restart, events_dir):
         self._text = log_sinks.TextSink(filename, rotate_log_at_restart)
@@ -68,18 +66,11 @@ class QueueListener:
             try:
                 self.registry.emit(record)
             except Exception as e:
-                # A sink failed (e.g. disk full). Stop draining and remember
-                # why, so stop() can surface it loudly rather than hang.
                 self._bg_exc = e
                 self._last_gasp(e)
                 break
 
     def _last_gasp(self, exc):
-        # Proactively surface a mid-run sink failure (spec §16 item 11). The
-        # drain loop is stopping, so without this the failure would only be seen
-        # at the next producer enqueue (LogQueueOverflow once the queue fills) or
-        # at shutdown (stop() re-raises _bg_exc). Best-effort and never raises —
-        # those two remain the authoritative fail-loud paths.
         msg = (
             "FATAL: kalico log sink failed; structured logging stopped: %r"
             % (exc,)
@@ -89,8 +80,6 @@ class QueueListener:
             sys.stderr.flush()
         except Exception:
             pass
-        # Also try the human-readable text log, in case the failed sink was the
-        # jsonl sink and klippy.log is still healthy (the common disk-full case).
         try:
             rec = logging.makeLogRecord(
                 {
@@ -117,7 +106,6 @@ class QueueListener:
         if self._bg_exc is not None:
             raise self._bg_exc
 
-    # --- back-compat surface used by printer.py / configfile / mcu / etc. ---
     def set_rollover_info(self, name, info):
         self._text.set_rollover_info(name, info)
 

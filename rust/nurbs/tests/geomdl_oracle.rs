@@ -45,7 +45,6 @@ fn oracle_matches_for_corpus_curves() {
                 ]
             })
             .collect();
-        // Skip rational (weighted) corpus entries — rational NURBS are no longer supported.
         if !curve_v["weights"].is_null() {
             continue;
         }

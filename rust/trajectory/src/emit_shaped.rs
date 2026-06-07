@@ -9,16 +9,12 @@ use crate::refit::{refit_to_cubic, REFIT_TOLERANCE_MM};
 use crate::shaper::shape_axis;
 use crate::{ShapeError, ShapedSegment};
 
-/// Per-axis history of prior planned `BezierPiece`s in absolute time order,
-/// immediately preceding `batch_t_start`. Slot ordering: `[X, Y, Z, E]`.
-/// Empty slices fall back to constant-extension at `batch_t_start`.
 #[derive(Debug, Clone, Copy)]
 pub struct PerAxisHistory<'a> {
     pub axes: [&'a [BezierPiece<f64>]; 4],
 }
 
 impl PerAxisHistory<'_> {
-    /// Construct an empty history (all four axes are empty slices).
     #[must_use]
     pub const fn empty() -> Self {
         Self {
@@ -33,27 +29,12 @@ impl Default for PerAxisHistory<'_> {
     }
 }
 
-/// Per-segment metadata forwarded through [`emit_shaped`] onto [`ShapedSegment`].
 #[derive(Debug, Clone, Copy)]
 pub struct EmitSegmentMeta {
     pub e_mode: geometry::segment::EMode,
     pub extrusion_per_xy_mm: f64,
 }
 
-/// Run the shaping half of the shaper pipeline.
-///
-/// For each segment in `planned`:
-/// 1. **Pad** axes 0/1/2 with neighbour data + history (left) and
-///    constant-extension at `batch_t_end` (right).
-/// 2. **Convolve** with that axis's kernel; passthrough when `None`.
-/// 3. **Refit** to cubic Bézier pieces with C¹ continuity.
-/// 4. Assemble a [`ShapedSegment`] with `meta[i]`'s e-mode metadata.
-///
-/// `kernels` slot ordering: `[X, Y, Z, E]`; only the first three slots are used.
-///
-/// # Errors
-///
-/// Forwards [`ShapeError::Algebra`] and [`ShapeError::FitFailure`].
 pub fn emit_shaped(
     planned: &[FittedSegment],
     meta: &[EmitSegmentMeta],
