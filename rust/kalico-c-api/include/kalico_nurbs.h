@@ -38,8 +38,6 @@ int32_t kalico_endstop_arm(uint32_t arm_id,
                            uint8_t stepper_count,
                            const uint8_t *steppers_ptr,
                            uintptr_t steppers_len,
-                           uint32_t grant_ticks_lo,
-                           uint32_t grant_ticks_hi,
                            uint8_t *out_status);
 
 int32_t kalico_endstop_disarm(uint32_t arm_id, uint8_t *out_status);
@@ -49,8 +47,6 @@ int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
                                  uintptr_t *out_actual_len);
 
 int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
-
-int32_t kalico_extend_deadline(uint32_t arm_id, uint32_t clock_lo, uint32_t clock_hi);
 
 float kalico_nurbs_eval_f32(const struct kalico_nurbs_ScalarNurbsRef_f32 *curve, float u);
 

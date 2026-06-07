@@ -142,21 +142,9 @@ command_runtime_arm_endstop(uint32_t *args)
     uint32_t steppers_len = args[7];
     uint8_t *steppers_ptr = command_decode_ptr(args[8]);
     uint8_t status = 2; // Rejected
-    // grant_ticks = 50 ms at MCU clock freq for Software sources.
-    uint64_t grant_ticks = 0;
-    if (sources_ptr && source_count > 0) {
-        for (uint8_t i = 0; i < source_count; i++) {
-            if (sources_ptr[(uint32_t)i * KALICO_ENDSTOP_SOURCE_RECORD_LEN] == 2) {
-                grant_ticks = (uint64_t)CONFIG_CLOCK_FREQ / 20;
-                break;
-            }
-        }
-    }
     (void)kalico_endstop_arm(arm_id, arm_clock_lo, arm_clock_hi,
                              source_count, sources_ptr, sources_len,
                              stepper_count, steppers_ptr, steppers_len,
-                             (uint32_t)grant_ticks,
-                             (uint32_t)(grant_ticks >> 32),
                              &status);
     // status: 0=Armed, 1=AlreadyTripped, 2=Rejected. Sample GPIOs only on
     // Armed; AlreadyTripped already published its snapshot.
@@ -198,17 +186,6 @@ command_runtime_software_trip(uint32_t *args)
 DECL_COMMAND(command_runtime_software_trip,
     "runtime_software_trip arm_id=%u");
 
-
-void
-command_runtime_extend_homing_deadline(uint32_t *args)
-{
-    uint32_t arm_id = args[0];
-    uint32_t clock_lo = timer_read_time();
-    uint32_t clock_hi = stats_send_time_high + (clock_lo < stats_send_time);
-    (void)kalico_extend_deadline(arm_id, clock_lo, clock_hi);
-}
-DECL_COMMAND(command_runtime_extend_homing_deadline,
-    "runtime_extend_homing_deadline arm_id=%u");
 
 // Seed the MCU engine's position origin (SET_KINEMATIC_POSITION) so prev_x/y/z
 // match the host's commanded position before the first segment, avoiding a

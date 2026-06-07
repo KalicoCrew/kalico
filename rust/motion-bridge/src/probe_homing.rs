@@ -11,7 +11,6 @@ pub enum ProbeHomingResult {
     ProbeTriggered = 0,
     SegmentRetired = 1,
     SensorFault = 2,
-    DeadlineExpired = 3,
 }
 
 const TICK_INTERVAL: Duration = Duration::from_millis(25);
@@ -20,7 +19,6 @@ pub struct ProbeHomingHandle {
     pub(crate) triggered: Arc<AtomicBool>,
     pub(crate) interceptor_id: InterceptorId,
     pub(crate) beacon_io: Arc<KalicoHostIo>,
-    pub(crate) stepper_io: Arc<KalicoHostIo>,
     pub(crate) arm_id: u32,
     pub(crate) sensor_fault_timeout: Duration,
 }
@@ -72,17 +70,13 @@ pub fn prepare_probe_homing(
         triggered,
         interceptor_id,
         beacon_io,
-        stepper_io,
         arm_id,
         sensor_fault_timeout,
     })
 }
 
 pub fn run_probe_homing(handle: &ProbeHomingHandle) -> Result<ProbeHomingResult, TransportError> {
-    let extend_cmd = format!("runtime_extend_homing_deadline arm_id={}", handle.arm_id);
-    handle.stepper_io.send_fire_and_forget(&extend_cmd)?;
-
-    run_loop(handle, &extend_cmd)
+    run_loop(handle)
 }
 
 pub fn cleanup_probe_homing(handle: ProbeHomingHandle) {
@@ -91,10 +85,7 @@ pub fn cleanup_probe_homing(handle: ProbeHomingHandle) {
         .unregister_frame_interceptor(handle.interceptor_id);
 }
 
-fn run_loop(
-    handle: &ProbeHomingHandle,
-    extend_cmd: &str,
-) -> Result<ProbeHomingResult, TransportError> {
+fn run_loop(handle: &ProbeHomingHandle) -> Result<ProbeHomingResult, TransportError> {
     let start = Instant::now();
 
     loop {
@@ -116,8 +107,6 @@ fn run_loop(
             );
             return Ok(ProbeHomingResult::SensorFault);
         }
-
-        handle.stepper_io.send_fire_and_forget(extend_cmd)?;
     }
 }
 

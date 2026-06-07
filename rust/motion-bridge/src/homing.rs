@@ -8,7 +8,6 @@ pub enum HomingSegmentState {
     Active = 1,
     Completed = 2,
     Tripped = 3,
-    DeadlineExpired = 4,
 }
 
 impl HomingSegmentState {
@@ -17,7 +16,6 @@ impl HomingSegmentState {
             1 => Self::Active,
             2 => Self::Completed,
             3 => Self::Tripped,
-            4 => Self::DeadlineExpired,
             _ => Self::Idle,
         }
     }
@@ -86,13 +84,8 @@ impl HomingState {
         }
         if let Some(evt) = runtime::endstop::poll_trip() {
             *self.pending_trip.lock().unwrap() = Some(evt);
-            if evt.trip_source_idx == runtime::endstop::TRIP_SOURCE_DEADLINE_EXPIRED {
-                self.state
-                    .store(HomingSegmentState::DeadlineExpired as u8, Ordering::Release);
-            } else {
-                self.state
-                    .store(HomingSegmentState::Tripped as u8, Ordering::Release);
-            }
+            self.state
+                .store(HomingSegmentState::Tripped as u8, Ordering::Release);
         } else {
             self.state
                 .store(HomingSegmentState::Completed as u8, Ordering::Release);
@@ -102,13 +95,8 @@ impl HomingState {
     pub fn take_trip_event(&self) -> Option<runtime::endstop::TripEvent> {
         if let Some(evt) = runtime::endstop::poll_trip() {
             *self.pending_trip.lock().unwrap() = Some(evt);
-            if evt.trip_source_idx == runtime::endstop::TRIP_SOURCE_DEADLINE_EXPIRED {
-                self.state
-                    .store(HomingSegmentState::DeadlineExpired as u8, Ordering::Release);
-            } else {
-                self.state
-                    .store(HomingSegmentState::Tripped as u8, Ordering::Release);
-            }
+            self.state
+                .store(HomingSegmentState::Tripped as u8, Ordering::Release);
         }
         self.pending_trip.lock().unwrap().take()
     }

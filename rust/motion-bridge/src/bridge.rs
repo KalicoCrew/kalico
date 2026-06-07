@@ -2563,7 +2563,6 @@ impl PyMotionBridge {
             self.homing.state(),
             crate::homing::HomingSegmentState::Completed
                 | crate::homing::HomingSegmentState::Tripped
-                | crate::homing::HomingSegmentState::DeadlineExpired
         )
     }
 
@@ -2571,7 +2570,6 @@ impl PyMotionBridge {
         match self.homing.state() {
             crate::homing::HomingSegmentState::Completed => 1,
             crate::homing::HomingSegmentState::Tripped => 2,
-            crate::homing::HomingSegmentState::DeadlineExpired => 3,
             _ => 0,
         }
     }
@@ -2588,15 +2586,6 @@ impl PyMotionBridge {
         };
         let status = params.try_get_u32("status").unwrap_or(1) as u8;
         Ok(status)
-    }
-
-    #[pyo3(signature = (mcu, arm_id))]
-    fn extend_homing_deadline(&self, mcu: u32, arm_id: u32) -> PyResult<()> {
-        let io = self.host_io_for_mcu("extend_homing_deadline", mcu)?;
-        let msg = format!("runtime_extend_homing_deadline arm_id={arm_id}");
-        io.send_fire_and_forget(&msg)
-            .map_err(|e| PyRuntimeError::new_err(format!("extend_homing_deadline: {e}")))?;
-        Ok(())
     }
 
     fn prepare_probe_homing(

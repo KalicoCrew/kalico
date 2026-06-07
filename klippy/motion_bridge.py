@@ -51,7 +51,6 @@ _STUB_MOTION_METHODS = frozenset(
         "endstop_arm",
         "endstop_disarm",
         "software_trip",
-        "extend_homing_deadline",
         "prepare_probe_homing",
         "run_probe_homing",
         "get_homing_position_at_time",
@@ -447,9 +446,6 @@ class MotionBridgeWrapper:
     def software_trip(self, mcu, arm_id, timeout_s=2.0):
         return self._bridge.software_trip(mcu, arm_id, timeout_s)
 
-    def extend_homing_deadline(self, mcu, arm_id):
-        return self._bridge.extend_homing_deadline(mcu, arm_id)
-
     def prepare_probe_homing(
         self,
         beacon_handle,
@@ -496,7 +492,6 @@ DISARM_STATUS_UNKNOWN = 2
 # Bridge-private (from get_homing_segment_reason); distinct from MCU_trsync above.
 BRIDGE_REASON_PAST_END_TIME = 1
 BRIDGE_REASON_TRIPPED = 2
-BRIDGE_REASON_DEADLINE_EXPIRED = 3
 
 SOURCE_KIND_SOFTWARE = 2
 

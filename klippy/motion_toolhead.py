@@ -685,17 +685,11 @@ class MotionToolhead(ToolHead):
             PROBE_TRIGGERED = 0
             SEGMENT_RETIRED = 1
             SENSOR_FAULT = 2
-            DEADLINE_EXPIRED = 3
 
             if result == SENSOR_FAULT:
                 raise self.printer.command_error(
                     "Probe sensor fault: no trigger during full Z "
                     "travel. Check probe wiring and threshold."
-                )
-            if result == DEADLINE_EXPIRED:
-                raise self.printer.command_error(
-                    "Homing deadline expired: MCU dead-man switch "
-                    "fired (host extension loop may have stalled)"
                 )
 
             self.bridge.wait_moves()

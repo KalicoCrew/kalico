@@ -38,37 +38,10 @@ fn from_u8_round_trips_all_variants() {
         (1, HomingSegmentState::Active),
         (2, HomingSegmentState::Completed),
         (3, HomingSegmentState::Tripped),
-        (4, HomingSegmentState::DeadlineExpired),
     ];
     for &(raw, expected) in pairs {
         assert_eq!(HomingSegmentState::from_u8(raw), expected, "raw={raw}");
     }
-    assert_eq!(HomingSegmentState::from_u8(5), HomingSegmentState::Idle);
+    assert_eq!(HomingSegmentState::from_u8(4), HomingSegmentState::Idle);
     assert_eq!(HomingSegmentState::from_u8(255), HomingSegmentState::Idle);
-}
-
-#[test]
-fn complete_if_retired_does_not_overwrite_deadline_expired() {
-    let h = HomingState::new();
-    h.begin(9);
-    h.mark_dispatched_segment(5);
-    h.state.store(
-        HomingSegmentState::DeadlineExpired as u8,
-        std::sync::atomic::Ordering::Release,
-    );
-    h.complete_if_retired(5);
-    assert_eq!(h.state(), HomingSegmentState::DeadlineExpired);
-    assert_eq!(h.take_completion_event(), None);
-}
-
-#[test]
-fn take_completion_event_does_not_fire_after_deadline_expired() {
-    let h = HomingState::new();
-    h.begin(10);
-    h.mark_dispatched_segment(6);
-    h.state.store(
-        HomingSegmentState::DeadlineExpired as u8,
-        std::sync::atomic::Ordering::Release,
-    );
-    assert_eq!(h.take_completion_event(), None);
 }

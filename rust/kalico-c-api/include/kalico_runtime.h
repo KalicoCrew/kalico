@@ -34,11 +34,8 @@ enum SourceKind {
   Physical = 0,
   TmcDiag = 1,
   /**
-   * Software-triggered source: no GPIO pin is polled. The arm uses a
-   * credit-windowed deadline mechanism instead — the host periodically
-   * calls `extend_deadline` to push the window forward; if it stops
-   * (because the probe triggered on the host side), the deadline expires
-   * and the MCU freezes the segment autonomously.
+   * Software-triggered source: no GPIO pin is polled. The MCU waits for
+   * an explicit `software_trip` call to freeze the segment.
    */
   Software = 2,
 };
@@ -83,8 +80,6 @@ int32_t kalico_endstop_arm(uint32_t arm_id,
                            uint8_t stepper_count,
                            const uint8_t *steppers_ptr,
                            uintptr_t steppers_len,
-                           uint32_t grant_ticks_lo,
-                           uint32_t grant_ticks_hi,
                            uint8_t *out_status);
 
 int32_t kalico_endstop_disarm(uint32_t arm_id, uint8_t *out_status);
@@ -94,8 +89,6 @@ int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
                                  uintptr_t *out_actual_len);
 
 int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
-
-int32_t kalico_extend_deadline(uint32_t arm_id, uint32_t clock_lo, uint32_t clock_hi);
 
 int32_t kalico_runtime_clock_sync_request(struct KalicoRuntime *rt,
                                           uint32_t request_id,

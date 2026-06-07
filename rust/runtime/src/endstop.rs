@@ -16,17 +16,10 @@ pub type PinId = u16;
 pub enum SourceKind {
     Physical = 0,
     TmcDiag = 1,
-    /// Software-triggered source: no GPIO pin is polled. The arm uses a
-    /// credit-windowed deadline mechanism instead — the host periodically
-    /// calls `extend_deadline` to push the window forward; if it stops
-    /// (because the probe triggered on the host side), the deadline expires
-    /// and the MCU freezes the segment autonomously.
+    /// Software-triggered source: no GPIO pin is polled. The MCU waits for
+    /// an explicit `software_trip` call to freeze the segment.
     Software = 2,
 }
-
-/// Sentinel written to `trip_source_idx` when the trip was caused by a
-/// deadline expiry rather than a GPIO assertion.
-pub const TRIP_SOURCE_DEADLINE_EXPIRED: u8 = 0xFF;
 
 /// Sentinel written to `trip_source_idx` when the trip was caused by an
 /// explicit `software_trip` call from the C command handler.
@@ -180,17 +173,6 @@ pub struct Arm {
     pub stepper_count: AtomicU8,
     pub stepper_oids: [AtomicU8; MAX_STEPPERS],
     pub snapshot: TripSnapshot,
-    pub deadline_active: AtomicBool,
-    /// Seqlock version for `deadline_clock` lo/hi. Writers bump to odd
-    /// before writing, then to even after. The ISR reader skips the
-    /// expiry check when it catches a mid-write (returns `Continue`
-    /// instead of spinning — spinning would deadlock since the ISR
-    /// can't yield to the command handler it preempted).
-    pub deadline_version: AtomicU32,
-    pub deadline_clock_lo: AtomicU32,
-    pub deadline_clock_hi: AtomicU32,
-    pub grant_ticks_lo: AtomicU32,
-    pub grant_ticks_hi: AtomicU32,
 }
 
 impl Arm {
@@ -214,12 +196,6 @@ impl Arm {
                 AtomicU8::new(0),
             ],
             snapshot: TripSnapshot::new(),
-            deadline_active: AtomicBool::new(false),
-            deadline_version: AtomicU32::new(0),
-            deadline_clock_lo: AtomicU32::new(0),
-            deadline_clock_hi: AtomicU32::new(0),
-            grant_ticks_lo: AtomicU32::new(0),
-            grant_ticks_hi: AtomicU32::new(0),
         }
     }
 
@@ -229,57 +205,6 @@ impl Arm {
         (hi << 32) | lo
     }
 
-    fn store_deadline_clock_seqlocked(&self, clock: u64) {
-        let v = self.deadline_version.load(Ordering::Acquire);
-        self.deadline_version.store(v | 1, Ordering::Release);
-        self.deadline_clock_lo
-            .store(clock as u32, Ordering::Release);
-        self.deadline_clock_hi
-            .store((clock >> 32) as u32, Ordering::Release);
-        self.deadline_version
-            .store(v.wrapping_add(2), Ordering::Release);
-    }
-
-    #[cfg(test)]
-    fn deadline_clock_unchecked(&self) -> u64 {
-        let lo = u64::from(self.deadline_clock_lo.load(Ordering::Acquire));
-        let hi = u64::from(self.deadline_clock_hi.load(Ordering::Acquire));
-        (hi << 32) | lo
-    }
-
-    fn try_read_deadline_clock(&self) -> Option<u64> {
-        let v1 = self.deadline_version.load(Ordering::Acquire);
-        if v1 & 1 != 0 {
-            return None;
-        }
-        let lo = u64::from(self.deadline_clock_lo.load(Ordering::Acquire));
-        let hi = u64::from(self.deadline_clock_hi.load(Ordering::Acquire));
-        let v2 = self.deadline_version.load(Ordering::Acquire);
-        if v1 != v2 {
-            return None;
-        }
-        Some((hi << 32) | lo)
-    }
-
-    fn grant_ticks(&self) -> u64 {
-        let lo = u64::from(self.grant_ticks_lo.load(Ordering::Acquire));
-        let hi = u64::from(self.grant_ticks_hi.load(Ordering::Acquire));
-        (hi << 32) | lo
-    }
-
-    fn store_grant_ticks(&self, ticks: u64) {
-        self.grant_ticks_lo.store(ticks as u32, Ordering::Release);
-        self.grant_ticks_hi
-            .store((ticks >> 32) as u32, Ordering::Release);
-    }
-
-    fn has_software_source(&self) -> bool {
-        let count = usize::from(self.source_count.load(Ordering::Acquire));
-        self.sources
-            .iter()
-            .take(count)
-            .any(|src| src.kind.load(Ordering::Acquire) == SourceKind::Software as u8)
-    }
 }
 
 impl Default for Arm {
@@ -345,9 +270,6 @@ pub struct ArmMsg {
     pub sources: [SourceConfig; MAX_SOURCES],
     pub stepper_count: u8,
     pub stepper_oids: [u8; MAX_STEPPERS],
-    /// Deadline window length in MCU clock ticks, used when at least one
-    /// source has `SourceKind::Software`. Zero means no Software sources.
-    pub grant_ticks: u64,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -437,12 +359,6 @@ fn reset_for_test() {
     ARM.stepper_count.store(0, Ordering::Release);
     ARM.snapshot.version.store(0, Ordering::Release);
     ARM.snapshot.step_count_count.store(0, Ordering::Release);
-    ARM.deadline_active.store(false, Ordering::Release);
-    ARM.deadline_version.store(0, Ordering::Release);
-    ARM.deadline_clock_lo.store(0, Ordering::Release);
-    ARM.deadline_clock_hi.store(0, Ordering::Release);
-    ARM.grant_ticks_lo.store(0, Ordering::Release);
-    ARM.grant_ticks_hi.store(0, Ordering::Release);
     TRIP_EVENT_QUEUED.store(false, Ordering::Release);
     for src in &ARM.sources {
         src.reset_latches();
@@ -495,12 +411,6 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
         .store(msg.stepper_count, Ordering::Release);
     ARM.snapshot.version.store(0, Ordering::Release);
     ARM.snapshot.step_count_count.store(0, Ordering::Release);
-
-    ARM.deadline_active.store(false, Ordering::Release);
-    ARM.deadline_version.store(0, Ordering::Release);
-    ARM.deadline_clock_lo.store(0, Ordering::Release);
-    ARM.deadline_clock_hi.store(0, Ordering::Release);
-    ARM.store_grant_ticks(msg.grant_ticks);
 
     ARM.state.store(ArmState::Armed as u8, Ordering::Release);
 
@@ -566,7 +476,6 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
 
     let source_count = usize::from(ARM.source_count.load(Ordering::Acquire));
     for (idx, src) in ARM.sources.iter().take(source_count).enumerate() {
-        // Software sources have no GPIO pin: skip to the deadline check below.
         if src.kind.load(Ordering::Acquire) == SourceKind::Software as u8 {
             continue;
         }
@@ -647,42 +556,6 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
         return TripAction::AbortNow;
     }
 
-    tick_software_deadline(clock, stepper_counts)
-}
-
-fn tick_software_deadline(clock: u64, stepper_counts: &[i32]) -> TripAction {
-    if !ARM.has_software_source() {
-        return TripAction::Continue;
-    }
-    if !ARM.deadline_active.load(Ordering::Acquire) {
-        let grant = ARM.grant_ticks();
-        ARM.store_deadline_clock_seqlocked(clock.saturating_add(grant));
-        ARM.deadline_active.store(true, Ordering::Release);
-        return TripAction::Continue;
-    }
-    let deadline = match ARM.try_read_deadline_clock() {
-        Some(d) => d,
-        None => return TripAction::Continue,
-    };
-    if clock < deadline {
-        return TripAction::Continue;
-    }
-    if ARM
-        .state
-        .compare_exchange(
-            ArmState::Armed as u8,
-            ArmState::Tripping as u8,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .is_ok()
-    {
-        publish_snapshot(clock, TRIP_SOURCE_DEADLINE_EXPIRED, stepper_counts);
-        ARM.state
-            .store(ArmState::TrippedReady as u8, Ordering::Release);
-        TRIP_EVENT_QUEUED.store(true, Ordering::Release);
-        return TripAction::AbortNow;
-    }
     TripAction::Continue
 }
 
@@ -713,20 +586,6 @@ pub fn software_trip(arm_id: u32, clock: u64, stepper_counts: &[i32]) -> TripRes
         .store(ArmState::TrippedReady as u8, Ordering::Release);
     TRIP_EVENT_QUEUED.store(true, Ordering::Release);
     TripResult::Tripped
-}
-
-pub fn extend_deadline(arm_id: u32, clock: u64) {
-    if ARM.arm_id.load(Ordering::Acquire) != arm_id {
-        return;
-    }
-    if !matches_u8(ARM.state.load(Ordering::Acquire), ArmState::Armed) {
-        return;
-    }
-    if !ARM.deadline_active.load(Ordering::Acquire) {
-        return;
-    }
-    let grant = ARM.grant_ticks();
-    ARM.store_deadline_clock_seqlocked(clock.saturating_add(grant));
 }
 
 pub fn poll_trip() -> Option<TripEvent> {

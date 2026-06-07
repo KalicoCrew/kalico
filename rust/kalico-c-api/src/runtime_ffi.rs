@@ -541,8 +541,6 @@ pub mod exports {
         stepper_count: u8,
         steppers_ptr: *const u8,
         steppers_len: usize,
-        grant_ticks_lo: u32,
-        grant_ticks_hi: u32,
         out_status: *mut u8,
     ) -> i32 {
         if out_status.is_null() {
@@ -606,7 +604,6 @@ pub mod exports {
         }
 
         let arm_clock = (u64::from(arm_clock_hi) << 32) | u64::from(arm_clock_lo);
-        let grant_ticks = (u64::from(grant_ticks_hi) << 32) | u64::from(grant_ticks_lo);
         let msg = ArmMsg {
             arm_id,
             arm_clock,
@@ -614,7 +611,6 @@ pub mod exports {
             sources,
             stepper_count,
             stepper_oids,
-            grant_ticks,
         };
 
         match runtime::endstop::arm(msg) {
@@ -665,17 +661,6 @@ pub mod exports {
             runtime::endstop::TripResult::WrongArmId => 2u8,
         };
         unsafe { *out_status = status };
-        KALICO_OK
-    }
-
-    #[unsafe(no_mangle)]
-    pub unsafe extern "C" fn kalico_extend_deadline(
-        arm_id: u32,
-        clock_lo: u32,
-        clock_hi: u32,
-    ) -> i32 {
-        let clock = (u64::from(clock_hi) << 32) | u64::from(clock_lo);
-        runtime::endstop::extend_deadline(arm_id, clock);
         KALICO_OK
     }
 
