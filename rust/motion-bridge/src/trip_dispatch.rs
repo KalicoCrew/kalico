@@ -197,5 +197,10 @@ pub fn cleanup(handle: TripDispatchHandle) {
     }
 }
 
+pub mod extension;
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod extension_tests;
