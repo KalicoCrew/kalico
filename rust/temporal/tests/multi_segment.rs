@@ -66,6 +66,7 @@ mod fixture_1_two_g1_sharp_corner {
             grid_strategy: adaptive(),
             worker_threads: 3,
             initial_velocity: 0.0,
+            initial_accel: 0.0,
             terminal_velocity: 0.0,
         };
         let output = plan_batch(input).expect("should succeed");
@@ -132,6 +133,7 @@ mod fixture_2_g1_to_g5_smooth {
             grid_strategy: adaptive(),
             worker_threads: 3,
             initial_velocity: 0.0,
+            initial_accel: 0.0,
             terminal_velocity: 0.0,
         };
         let output = plan_batch(input).expect("should succeed");
@@ -196,6 +198,7 @@ mod fixture_3_long_straight_then_corner {
             grid_strategy: adaptive(),
             worker_threads: 3,
             initial_velocity: 0.0,
+            initial_accel: 0.0,
             terminal_velocity: 0.0,
         };
         let output = plan_batch(input).expect("should succeed");
@@ -282,6 +285,7 @@ mod fixture_4_per_segment_limits_change {
             grid_strategy: adaptive(),
             worker_threads: 3,
             initial_velocity: 0.0,
+            initial_accel: 0.0,
             terminal_velocity: 0.0,
         };
         let output = plan_batch(input).expect("should succeed");
@@ -357,6 +361,7 @@ mod fixture_5_star_pattern {
             grid_strategy: adaptive(),
             worker_threads: 3,
             initial_velocity: 0.0,
+            initial_accel: 0.0,
             terminal_velocity: 0.0,
         };
         let output = plan_batch(input).expect("should succeed");
@@ -452,6 +457,7 @@ mod fixture_6_long_realistic_chain {
             grid_strategy: adaptive(),
             worker_threads: 3,
             initial_velocity: 0.0,
+            initial_accel: 0.0,
             terminal_velocity: 0.0,
         };
 

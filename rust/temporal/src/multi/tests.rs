@@ -37,6 +37,7 @@ fn plan_batch_single_segment_works() {
         },
         worker_threads: 1,
         initial_velocity: 0.0,
+        initial_accel: 0.0,
         terminal_velocity: 0.0,
     };
     let output = plan_batch(input).expect("should succeed");
@@ -76,7 +77,6 @@ fn smooth_u_turn() -> (VectorNurbs<f64, 3>, VectorNurbs<f64, 3>) {
 }
 
 #[test]
-#[ignore = "RED until the condensed-chain solver lands (Task 11)"]
 fn smooth_junction_has_no_accel_impulse() {
     let (left, right) = smooth_u_turn();
     let limits = textbook_limits();
@@ -97,6 +97,7 @@ fn smooth_junction_has_no_accel_impulse() {
         grid_strategy: GridStrategy::Fixed(32),
         worker_threads: 1,
         initial_velocity: 0.0,
+        initial_accel: 0.0,
         terminal_velocity: 0.0,
     })
     .expect("plan_batch");
@@ -161,6 +162,7 @@ fn plan_batch_threads_nonzero_initial_velocity() {
         },
         worker_threads: 1,
         initial_velocity: 50.0,
+        initial_accel: 0.0,
         terminal_velocity: 0.0,
     };
     let output = plan_batch(input).expect("nonzero initial_velocity should plan");

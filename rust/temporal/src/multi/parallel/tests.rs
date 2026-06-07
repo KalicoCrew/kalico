@@ -1,6 +1,8 @@
 use super::*;
-use crate::multi::SegmentInput;
-use crate::{GridConfig, GridScheme, Limits};
+use crate::multi::joining::ChainState;
+use crate::topp::chain::ChainGrid;
+use crate::topp::path::sample_arclength_grid;
+use crate::{Limits};
 use nurbs::VectorNurbs;
 
 fn straight() -> VectorNurbs<f64, 3> {
@@ -16,33 +18,24 @@ fn limits() -> Limits {
     Limits::new([500.0; 3], [5_000.0; 3], [100_000.0; 3], 2_500.0)
 }
 
+fn straight_chain() -> ChainGrid {
+    let grid = sample_arclength_grid(&straight(), 20).unwrap();
+    ChainGrid::from_segment_grids(vec![grid], vec![limits()])
+}
+
 #[test]
 fn fan_out_processes_all_dirty() {
-    let curves: Vec<_> = (0..4).map(|_| straight()).collect();
-    let inputs: Vec<SegmentInput> = curves
-        .iter()
-        .map(|c| SegmentInput {
-            curve: c,
-            limits: limits(),
-            trailing_junction_chord_tolerance_mm: 0.05,
-        })
-        .collect();
-    let grids = vec![
-        GridConfig {
-            scheme: GridScheme::UniformArclength,
-            n: 20
-        };
-        4
-    ];
-    let mut states: Vec<_> = (0..4)
-        .map(|_| SegmentState {
+    let chains: Vec<ChainGrid> = (0..4).map(|_| straight_chain()).collect();
+    let mut states: Vec<ChainState> = (0..4)
+        .map(|_| ChainState {
             v_start: 0.0,
             v_end: 0.0,
+            a_start: None,
             profile: None,
             dirty: true,
         })
         .collect();
-    fan_out_solves(&inputs, &mut states, &grids, 3).unwrap();
+    fan_out_solves(&chains, &mut states, 3).unwrap();
     for s in &states {
         assert!(s.profile.is_some());
         assert!(!s.dirty);
@@ -71,12 +64,11 @@ fn pinned_both_endpoints_returns_failed_status_unmodified() {
     // kappa ≈ 1/r = 1.0 mm⁻¹ → b_mvc ≈ a_cent / kappa = 2500 → v_mvc ≈ 50 mm/s.
     // v_start = 100 >> 50 → Boundary infeasibility → non-success status.
     let curved_limits = limits();
-    let grid = GridConfig {
-        scheme: GridScheme::UniformArclength,
-        n: 20,
-    };
+    let grid = sample_arclength_grid(&curved, 20).unwrap();
+    let chain = ChainGrid::from_segment_grids(vec![grid], vec![curved_limits]);
+
     let profile =
-        solve_with_boundary_fallback(&curved, &curved_limits, grid, 100.0, 0.0, true, true)
+        solve_with_boundary_fallback(&chain, 100.0, 0.0, None, true, true)
             .expect("must not return ScheduleError");
     assert!(
         !is_success(profile.status),

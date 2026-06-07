@@ -136,6 +136,7 @@ fn run_topp_only_with_grid(
         grid_strategy,
         worker_threads: 1,
         initial_velocity: 0.0,
+        initial_accel: 0.0,
         terminal_velocity: 0.0,
     });
     let wallclock = t0.elapsed().as_secs_f64();

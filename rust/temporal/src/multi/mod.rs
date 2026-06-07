@@ -26,6 +26,9 @@ pub struct BatchInput<'a> {
     pub grid_strategy: GridStrategy,
     pub worker_threads: usize,
     pub initial_velocity: f64,
+    /// Path accel at the batch start. Pinned in the SOCP only when `initial_velocity > 0`;
+    /// at a rest start it MUST be 0.0 (asserted) and the rest envelope governs.
+    pub initial_accel: f64,
     pub terminal_velocity: f64,
 }
 
@@ -61,6 +64,7 @@ pub enum JunctionBindingCap {
     Centripetal,
     GlobalVMax,
     SharpCornerChord,
+    ChainInterior,
 }
 
 #[derive(Debug, Error)]
@@ -79,10 +83,11 @@ pub enum BatchError {
 /// - [`BatchError::EmptySegments`] — `input.segments` is empty.
 /// - [`BatchError::InvalidThreads`] — `input.worker_threads` is zero.
 /// - [`BatchError::Segment`] — a segment-level [`crate::ScheduleError`] was
-///   returned by [`crate::topp::schedule_segment_with_tolerance`].
+///   returned by [`crate::topp::schedule_chain_with_tolerance`].
 pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
-    use crate::GridConfig;
-    use crate::multi::{grid, joining, junction, parallel};
+    use crate::multi::{chain, grid, joining, junction, parallel};
+    use crate::topp::chain::ChainGrid;
+    use crate::topp::path::sample_arclength_grid;
 
     if input.segments.is_empty() {
         return Err(BatchError::EmptySegments);
@@ -90,17 +95,12 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
     if input.worker_threads == 0 {
         return Err(BatchError::InvalidThreads);
     }
+    assert!(
+        input.initial_velocity > 0.0 || input.initial_accel == 0.0,
+        "rest start requires initial_accel == 0"
+    );
 
     let k = input.segments.len();
-
-    let grids: Vec<GridConfig> = input
-        .segments
-        .iter()
-        .map(|s| GridConfig {
-            scheme: crate::GridScheme::UniformArclength,
-            n: grid::compute_n(&input.grid_strategy, s.curve),
-        })
-        .collect();
 
     let junctions: Vec<junction::JunctionResult> = (0..k - 1)
         .map(|i| {
@@ -114,57 +114,108 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
         })
         .collect();
 
-    let mut states: Vec<joining::SegmentState> = (0..k)
-        .map(|i| {
-            let v_start = if i == 0 {
+    let kinds: Vec<junction::JunctionKind> = junctions.iter().map(|j| j.kind).collect();
+    let chain_ranges = chain::partition_chains(k, &kinds);
+    let n_chains = chain_ranges.len();
+
+    let chain_grids: Vec<ChainGrid> = chain_ranges
+        .iter()
+        .map(|range| {
+            let seg_grids: Result<Vec<_>, _> = range
+                .clone()
+                .map(|seg_idx| {
+                    let s = &input.segments[seg_idx];
+                    let n = grid::compute_n(&input.grid_strategy, s.curve);
+                    sample_arclength_grid(s.curve, n)
+                        .map_err(|e| BatchError::Segment(seg_idx, crate::topp::ScheduleError::PathParam(format!("{e}"))))
+                })
+                .collect();
+            let seg_limits: Vec<_> = range.clone().map(|i| input.segments[i].limits).collect();
+            seg_grids.map(|grids| ChainGrid::from_segment_grids(grids, seg_limits))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut states: Vec<joining::ChainState> = chain_ranges
+        .iter()
+        .enumerate()
+        .map(|(c, range)| {
+            let lo_c = *range.start();
+            let hi_c = *range.end();
+            let v_start = if c == 0 {
                 input.initial_velocity
             } else {
-                junctions[i - 1].v_junction
+                junctions[lo_c - 1].v_junction
             };
-            let v_end = if i == k - 1 {
+            let v_end = if c + 1 == n_chains {
                 input.terminal_velocity
             } else {
-                junctions[i].v_junction
+                junctions[hi_c].v_junction
             };
-            joining::SegmentState {
+            let a_start = if c == 0 && input.initial_velocity > 0.0 {
+                Some(input.initial_accel)
+            } else {
+                None
+            };
+            joining::ChainState {
                 v_start,
                 v_end,
+                a_start,
                 profile: None,
                 dirty: true,
             }
         })
         .collect();
 
-    parallel::fan_out_solves(input.segments, &mut states, &grids, input.worker_threads)?;
+    parallel::fan_out_solves(&chain_grids, &mut states, input.worker_threads)?;
+
+    let corner_caps: Vec<f64> = chain_ranges
+        .iter()
+        .take(n_chains - 1)
+        .map(|range| {
+            let hi_c = *range.end();
+            junctions[hi_c].v_junction
+        })
+        .collect();
 
     let (sweeps, joining_status) = joining::join_until_converged(
-        input.segments,
-        &grids,
+        &chain_grids,
         &mut states,
-        &junctions,
+        &corner_caps,
         input.worker_threads,
     )?;
 
-    let profiles: Vec<_> = states
+    // Slice each chain profile into per-segment profiles and flatten.
+    let profiles: Vec<TopProfile> = states
         .into_iter()
-        .map(|s| s.profile.expect("all profiles solved by stage 5"))
+        .zip(chain_grids.iter())
+        .flat_map(|(state, cg)| {
+            let chain_profile = state.profile.expect("all chain profiles solved by stage 5");
+            chain::slice_chain_profile(&chain_profile, &cg.segment_ranges)
+        })
         .collect();
+
     let junction_infos: Vec<JunctionInfo> = junctions
         .into_iter()
         .enumerate()
-        .map(|(i, j)| {
-            // Use the converged profile endpoint, not the upfront cap: the joining
-            // loop may have driven the velocity below the cap on short segments.
-            let v_converged = profiles[i].samples.last().map_or(0.0, |s| s.v);
+        .map(|(j, junc)| {
+            let v_junction = profiles[j].samples.last().map_or(0.0, |s| s.v);
+            let binding = if junc.kind == junction::JunctionKind::Corner {
+                junc.binding_cap
+            } else if (v_junction - junc.v_junction).abs() < 1e-3 {
+                junc.binding_cap
+            } else {
+                JunctionBindingCap::ChainInterior
+            };
             JunctionInfo {
-                between_segments: (i, i + 1),
-                v_junction: v_converged,
-                binding_cap: j.binding_cap,
-                kappa_left: j.kappa_left,
-                kappa_right: j.kappa_right,
+                between_segments: (j, j + 1),
+                v_junction,
+                binding_cap: binding,
+                kappa_left: junc.kappa_left,
+                kappa_right: junc.kappa_right,
             }
         })
         .collect();
+
     Ok(BatchOutput {
         profiles,
         junctions: junction_infos,

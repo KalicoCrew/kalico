@@ -378,6 +378,7 @@ fn run_one_iteration(
             grid_strategy: input.grid_strategy,
             worker_threads: input.worker_threads,
             initial_velocity: run_initial_v,
+            initial_accel: 0.0,
             terminal_velocity: run_terminal_v,
         };
 
