@@ -1203,3 +1203,122 @@ fn advance_idle_then_append_places_new_move_at_target() {
         "new move must start at target (now), got {m2_start} vs target {target}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Replan-boundary acceleration-carry RED test (Task 13 staging helpers)
+// ---------------------------------------------------------------------------
+
+const LOW_FREQ_HZ: f64 = 20.0;
+
+fn single_axis_harness(v_max: f64, a_max: f64) -> (ShaperState, ReplanContext) {
+    let shapers: [Option<AxisShaper>; 4] = [
+        Some(AxisShaper::SmoothZv {
+            frequency_hz: LOW_FREQ_HZ,
+        }),
+        Some(AxisShaper::SmoothZv {
+            frequency_hz: LOW_FREQ_HZ,
+        }),
+        Some(AxisShaper::Passthrough),
+        None,
+    ];
+    let state = ShaperState::new([0.0; 4], &shapers);
+
+    let limits = temporal::Limits::new(
+        [v_max, v_max, v_max],
+        [a_max, a_max, a_max],
+        [100_000.0; 3],
+        f64::MAX,
+    );
+    let ctx = ReplanContext {
+        limits,
+        kernels: [
+            Some(PlanShaper::SmoothZv {
+                frequency_hz: LOW_FREQ_HZ,
+            }),
+            Some(PlanShaper::SmoothZv {
+                frequency_hz: LOW_FREQ_HZ,
+            }),
+            Some(PlanShaper::Passthrough),
+            None,
+        ],
+        fit_tolerance_mm: 0.005,
+        beta_max_iters: 5,
+        beta_convergence_ratio: 1.02,
+        e_limits: ELimits {
+            v_max: 100.0,
+            a_max: 5_000.0,
+        },
+        junction_chord_tolerance_mm: 0.05,
+        worker_threads: 1,
+        grid_strategy: temporal::multi::GridStrategy::Fixed(40),
+        fallback_initial_v: 0.0,
+        safety_mode: SafetyMode::WorstCaseFuture,
+    };
+
+    (state, ctx)
+}
+
+fn append_x_move(state: &mut ShaperState, ctx: &ReplanContext, dist_mm: f64, feedrate: f64) {
+    let current_x = state.current_position()[0];
+    let seg = linear_x_segment(current_x, current_x + dist_mm, feedrate);
+    state.append_and_replan(seg, ctx).expect("append_x_move");
+}
+
+fn emit_partial_window(state: &mut ShaperState, _ctx: &ReplanContext) -> f64 {
+    let kernel_xy = RequiredShaper::SmoothZv {
+        frequency_hz: LOW_FREQ_HZ,
+    }
+    .to_kernel();
+    let kernels: [Option<PiecewisePolynomialKernel<f64>>; 4] =
+        [Some(kernel_xy.clone()), Some(kernel_xy), None, None];
+    let halos: Vec<EHalo> = Vec::new();
+    let emit_ctx = EmitContext {
+        kernels: &kernels,
+        e_halos: &halos,
+    };
+    let _ = state
+        .emit_committed(&emit_ctx)
+        .expect("emit_partial_window");
+    state.t_dispatched
+}
+
+fn sampled_path_accel(state: &ShaperState, t: f64) -> f64 {
+    let seg = state
+        .planned_fitted
+        .iter()
+        .find(|f| f.t_start - 1e-9 <= t && t < f.t_end + 1e-9)
+        .expect("t must be covered by planned_fitted");
+
+    let vel_nurbs = nurbs::eval::derivative(&seg.axes[0]);
+    let accel_nurbs = nurbs::eval::derivative(&vel_nurbs);
+    nurbs::eval::eval(&accel_nurbs, t)
+}
+
+#[test]
+#[ignore = "RED until the replan accel carry lands (Task 13)"]
+fn replan_boundary_carries_acceleration() {
+    // A triangular move A puts t_dispatched (= t_decel_start − max_h) in the
+    // accel ramp; the low-frequency smoothing kernel makes max_h exceed the
+    // fit-piece width so the sampled (fit-level, i.e. executed-level) accel
+    // there is monotone, not apex-blended. Appending slow B flips the new
+    // plan's free a_0 to decel — the impulse this feature kills.
+    let (mut state, ctx) = single_axis_harness(600.0, 5_000.0);
+    append_x_move(&mut state, &ctx, 50.0, 600.0);
+    let t_split = emit_partial_window(&mut state, &ctx);
+
+    let a_old = sampled_path_accel(&state, t_split);
+    assert!(
+        a_old > 0.5 * 5_000.0,
+        "precondition: t_dispatched must land mid-acceleration \
+         (got a={a_old:.0}); resize move A / lower the kernel frequency, \
+         not the assertion"
+    );
+
+    append_x_move(&mut state, &ctx, 200.0, 30.0);
+    let a_new = sampled_path_accel(&state, t_split);
+
+    assert!(
+        (a_new - a_old).abs() < 500.0,
+        "replan accel step at t_dispatched: {a_old:.0} -> {a_new:.0} mm/s²"
+    );
+}
