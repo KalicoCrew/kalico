@@ -128,125 +128,218 @@ fn build_trigger_cmd_formats_reason_endstop_hit() {
 }
 
 // ---------------------------------------------------------------------------
-// Extension liveness tests (closure-level, no reactor)
+// Extension liveness tests — through the real `prepare()` path
 // ---------------------------------------------------------------------------
 
-/// A `trsync_state can_trigger=1` report from participant 0 must produce
-/// exactly one `trsync_set_timeout` send to participant 1's io and none to
-/// participant 0's io. Mirrors what `prepare` registers, exercised directly.
-#[test]
-fn extension_report_sends_timeout_to_other_participant_only() {
-    use std::sync::Mutex;
-    use kalico_host_rt::clock::instant_to_f64;
-    use std::time::Instant;
+use std::sync::Arc;
+use kalico_host_rt::host_io::parser::{DataDictionary, MsgProtoParser};
+use kalico_host_rt::host_io::test_harness::ReactorHarness;
+use kalico_host_rt::host_io::wire;
 
+fn build_extension_parser() -> Arc<MsgProtoParser> {
+    let dict_json = serde_json::json!({
+        "commands": {
+            "trsync_set_timeout oid=%c clock=%u": 31
+        },
+        "responses": {
+            "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u": 30
+        },
+        "output": {},
+        "enumerations": {},
+        "config": {},
+        "version": "test",
+        "app": "test"
+    });
+    let dict: DataDictionary = serde_json::from_value(dict_json).expect("bad extension dict");
+    Arc::new(MsgProtoParser::from_dictionary(dict).expect("extension parser build failed"))
+}
+
+fn build_trsync_state_frame(oid: u8, can_trigger: u8, clock: u32, seq: u8) -> Vec<u8> {
+    use kalico_host_rt::host_io::parser::encode_vlq;
+    let mut payload = Vec::new();
+    encode_vlq(&mut payload, 30).unwrap();
+    encode_vlq(&mut payload, i64::from(oid)).unwrap();
+    encode_vlq(&mut payload, i64::from(can_trigger)).unwrap();
+    encode_vlq(&mut payload, 0i64).unwrap();
+    encode_vlq(&mut payload, i64::from(clock)).unwrap();
+    wire::build_frame(&payload, seq)
+}
+
+fn extract_payloads(tx_bytes: Vec<u8>) -> Vec<Vec<u8>> {
+    let mut buf = tx_bytes;
+    let mut payloads = Vec::new();
+    while let Some(pkt) = wire::extract_packet(&mut buf) {
+        let msglen = pkt[0] as usize;
+        if msglen > wire::MESSAGE_MIN {
+            payloads.push(pkt[2..msglen - 3].to_vec());
+        }
+    }
+    payloads
+}
+
+/// Poll `f()` up to `max_attempts` times with `interval` between attempts.
+/// Returns `true` if `f()` returned `true` before the limit.
+fn poll_until(f: impl Fn() -> bool, interval: std::time::Duration, max_attempts: u32) -> bool {
+    for _ in 0..max_attempts {
+        if f() {
+            return true;
+        }
+        std::thread::sleep(interval);
+    }
+    false
+}
+
+/// A `trsync_state can_trigger=1` from P0 through the REAL `prepare()` path:
+/// exactly one `trsync_set_timeout` must land on P1's wire with a clock value
+/// that is in the FUTURE of the stub's `now_ticks`.
+///
+/// This is the regression test for the zero-initialization bug: the old code
+/// initialised participants at `last_status_time=0.0 / expire_time=0.0`, which
+/// caused the first report to compute an anchor at process-start → expire in the
+/// past → a past-clock `trsync_set_timeout` → REASON_COMMS_TIMEOUT at arm.
+#[test]
+fn extension_first_report_sends_future_clock_to_other_participant() {
     const MCU_P0: u32 = 10;
     const MCU_P1: u32 = 11;
     const OID_P0: u8 = 20;
     const OID_P1: u8 = 21;
     const FREQ: f64 = 520_000_000.0;
     const EXPIRE_S: f64 = 0.25;
+    // now_ticks is large enough to be representative of real uptime.
+    const NOW_TICKS: u64 = 52_000_000_000;
 
-    let sent_p0 = Arc::new(Mutex::new(Vec::<String>::new()));
-    let sent_p1 = Arc::new(Mutex::new(Vec::<String>::new()));
+    let parser = build_extension_parser();
 
-    // Capture all `trsync_set_timeout` commands sent to each participant's io.
-    let sent_p0_cap = Arc::clone(&sent_p0);
-    let sent_p1_cap = Arc::clone(&sent_p1);
+    let p0_harness = ReactorHarness::new_with_parser(Arc::clone(&parser));
+    let p1_harness = ReactorHarness::new_with_parser(Arc::clone(&parser));
 
-    let min_extend_s = 0.8 * 0.3 * EXPIRE_S;
-    // Pre-populate expire_time so the initial report only advances participant 1.
-    // With expire_time=EXPIRE_S, participant 0's anchor is P1's silence (0.0),
-    // giving expire=EXPIRE_S which equals the existing expire_time — delta=0
-    // fails the `expire > p.expire_time` guard and P0 is not re-sent.
-    let engine = Arc::new(Mutex::new(extension::ExtensionEngine::new(
+    let (p0_io, p0_port) = p0_harness.into_background_io();
+    let (p1_io, p1_port) = p1_harness.into_background_io();
+
+    let handle = prepare(
+        vec![],
+        vec![],
+        vec![],
         vec![
-            extension::Participant { last_status_time: 0.0, expire_time: EXPIRE_S },
-            extension::Participant { last_status_time: 0.0, expire_time: 0.0 },
+            (ParticipantSpec { mcu: MCU_P0, trsync_oid: OID_P0 }, Arc::clone(&p0_io)),
+            (ParticipantSpec { mcu: MCU_P1, trsync_oid: OID_P1 }, Arc::clone(&p1_io)),
         ],
         EXPIRE_S,
-        min_extend_s,
-    )));
+        move |_| Some((NOW_TICKS, FREQ)),
+    )
+    .expect("prepare must succeed");
 
-    // Fake send tables for both participants: (mcu, oid, Arc<Mutex<Vec<String>>>)
-    let participant_ios: Vec<(u32, u8, Arc<Mutex<Vec<String>>>)> = vec![
-        (MCU_P0, OID_P0, Arc::clone(&sent_p0)),
-        (MCU_P1, OID_P1, Arc::clone(&sent_p1)),
-    ];
+    // Feed P0 a report with a clock value 0.1 s ahead of NOW_TICKS.
+    // This pushes status_time = host_now + 0.1 s, which advances the anchor
+    // for P1 by 0.1 s > min_extend_s (0.06 s), guaranteeing a send.
+    let ahead_ticks = (0.1 * FREQ) as u64;
+    let clock32 = (NOW_TICKS + ahead_ticks) as u32;
+    let frame = build_trsync_state_frame(OID_P0, 1, clock32, 1);
+    p0_port.rx.lock().unwrap().extend(frame);
 
-    // Build the closure that `prepare` would register for participant 0.
-    let engine_c = Arc::clone(&engine);
-    let participant_ios_c = participant_ios.clone();
-    let idx: usize = 0;
-    let mcu = MCU_P0;
+    let p1_got_send = poll_until(
+        || !p1_port.tx.lock().unwrap().is_empty(),
+        std::time::Duration::from_millis(5),
+        200,
+    );
+    assert!(p1_got_send, "P1 must receive a trsync_set_timeout within 1 s");
 
-    // Simulate a fixed known now_ticks so the conversion is deterministic.
-    let now_ticks: u64 = 52_000_000_000;
-    let host_now = instant_to_f64(Instant::now());
+    // P0 must NOT have sent anything to itself.
+    assert!(
+        p0_port.tx.lock().unwrap().is_empty(),
+        "P0 must not extend itself"
+    );
 
-    let clock_of = {
-        let now_ticks = now_ticks;
-        move |_: u32| -> Option<(u64, f64)> { Some((now_ticks, FREQ)) }
-    };
+    // Decode what P1 received and verify the clock is in the future.
+    let p1_tx = p1_port.tx.lock().unwrap().clone();
+    let payloads = extract_payloads(p1_tx);
+    assert_eq!(payloads.len(), 1, "exactly one trsync_set_timeout for P1");
 
-    // The closure mirrors what `prepare` registers for each participant.
-    let closure = {
-        let engine = Arc::clone(&engine_c);
-        let participant_ios = participant_ios_c.clone();
-        let clock_of = clock_of.clone();
-        move |params: &MessageParams| {
-            if params.get_u32("can_trigger") == 0 {
-                return;
-            }
-            let clock32 = params.get_u32("clock");
-            let (now_t, freq) = match clock_of(mcu) {
-                Some(v) => v,
-                None => return,
-            };
-            let report_ticks = extension::clock32_to_64(now_t, clock32);
-            let status_time =
-                extension::ticks_to_host_time(report_ticks, now_t, host_now, freq);
+    let (name, params) = parser
+        .decode_body(&payloads[0])
+        .expect("P1 payload must decode");
+    assert_eq!(name, "trsync_set_timeout");
+    assert_eq!(params.get_u32("oid"), u32::from(OID_P1));
 
-            let sends = engine
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .on_report(idx, status_time);
+    // Regression assertion: the sent clock must be strictly in the future.
+    // host_time_to_ticks(expire_t, now_ticks, host_now, freq) =
+    //   now_ticks + (expire_t - host_now) * freq
+    // With expire_t = host_now_at_prepare + EXPIRE_S ≈ host_now + EXPIRE_S,
+    // delta ≈ +EXPIRE_S * FREQ = +130_000_000 ticks > 0.
+    let clock32_sent = params.get_u32("clock");
+    let expire_ticks = extension::clock32_to_64(NOW_TICKS, clock32_sent);
+    assert!(
+        expire_ticks > NOW_TICKS,
+        "sent clock must be in the future of now_ticks \
+         (old code sent a past-clock ≈ process-start, got expire_ticks={expire_ticks} \
+         now_ticks={NOW_TICKS})"
+    );
 
-            for (target_idx, expire_t) in sends {
-                let (target_mcu, target_oid, ref cap) = participant_ios[target_idx];
-                let (target_now_t, target_freq) = match clock_of(target_mcu) {
-                    Some(v) => v,
-                    None => continue,
-                };
-                let expire_ticks = extension::host_time_to_ticks(
-                    expire_t,
-                    target_now_t,
-                    host_now,
-                    target_freq,
-                );
-                let cmd = format!(
-                    "trsync_set_timeout oid={} clock={}",
-                    target_oid,
-                    expire_ticks & 0xFFFF_FFFF
-                );
-                cap.lock().unwrap().push(cmd);
+    cleanup(handle);
+}
+
+/// Immediately after `prepare`, a single report from P0 must not produce any
+/// send with a tick value below `now_ticks` on either participant's wire.
+/// This is the direct regression guard for the zero-initialization bug.
+#[test]
+fn no_past_clock_sent_on_first_report_after_prepare() {
+    const MCU_P0: u32 = 10;
+    const MCU_P1: u32 = 11;
+    const OID_P0: u8 = 20;
+    const OID_P1: u8 = 21;
+    const FREQ: f64 = 520_000_000.0;
+    const EXPIRE_S: f64 = 0.25;
+    const NOW_TICKS: u64 = 52_000_000_000;
+
+    let parser = build_extension_parser();
+    let p0_harness = ReactorHarness::new_with_parser(Arc::clone(&parser));
+    let p1_harness = ReactorHarness::new_with_parser(Arc::clone(&parser));
+
+    let (p0_io, p0_port) = p0_harness.into_background_io();
+    let (p1_io, p1_port) = p1_harness.into_background_io();
+
+    let handle = prepare(
+        vec![],
+        vec![],
+        vec![],
+        vec![
+            (ParticipantSpec { mcu: MCU_P0, trsync_oid: OID_P0 }, Arc::clone(&p0_io)),
+            (ParticipantSpec { mcu: MCU_P1, trsync_oid: OID_P1 }, Arc::clone(&p1_io)),
+        ],
+        EXPIRE_S,
+        move |_| Some((NOW_TICKS, FREQ)),
+    )
+    .expect("prepare must succeed");
+
+    let clock32 = NOW_TICKS as u32;
+    let frame = build_trsync_state_frame(OID_P0, 1, clock32, 1);
+    p0_port.rx.lock().unwrap().extend(frame);
+
+    // Wait up to 1 s for P1 to receive anything or for the deadline to pass.
+    let _ = poll_until(
+        || !p1_port.tx.lock().unwrap().is_empty(),
+        std::time::Duration::from_millis(5),
+        200,
+    );
+
+    // Scan every trsync_set_timeout sent to either participant and assert
+    // no clock value is in the past.
+    for (label, port) in [("P0", &p0_port), ("P1", &p1_port)] {
+        let tx = port.tx.lock().unwrap().clone();
+        for payload in extract_payloads(tx) {
+            if let Ok((name, params)) = parser.decode_body(&payload) {
+                if name == "trsync_set_timeout" {
+                    let clock32_sent = params.get_u32("clock");
+                    let expire_ticks = extension::clock32_to_64(NOW_TICKS, clock32_sent);
+                    assert!(
+                        expire_ticks > NOW_TICKS,
+                        "{label}: trsync_set_timeout carried a past clock \
+                         (expire_ticks={expire_ticks} <= now_ticks={NOW_TICKS})"
+                    );
+                }
             }
         }
-    };
+    }
 
-    // Feed a report with can_trigger=1 and clock=now_ticks (low 32 bits) to
-    // produce a large enough status_time to advance past min_extend_s.
-    let clock32 = now_ticks as u32;
-    closure(&params_u32_2("can_trigger", 1, "clock", clock32));
-
-    let p0_sends = sent_p0_cap.lock().unwrap().clone();
-    let p1_sends = sent_p1_cap.lock().unwrap().clone();
-
-    assert!(p0_sends.is_empty(), "participant 0 must not extend itself; got: {p0_sends:?}");
-    assert_eq!(p1_sends.len(), 1, "exactly one trsync_set_timeout for participant 1");
-    assert!(
-        p1_sends[0].starts_with("trsync_set_timeout oid=21 clock="),
-        "send must target oid=21, got: {}",
-        p1_sends[0]
-    );
+    cleanup(handle);
 }

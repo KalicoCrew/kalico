@@ -453,6 +453,26 @@ impl ReactorHarness {
     pub fn passthrough_notify_map_len(&self) -> usize {
         self.reactor.passthrough_notify_map.len()
     }
+
+    /// Consume the harness and start the reactor in a background thread.
+    ///
+    /// Returns a `(Arc<KalicoHostIo>, FakePortHandles)` pair. The `KalicoHostIo`
+    /// is backed by the real reactor loop, so calls like
+    /// `register_frame_interceptor` and `send_fire_and_forget` work without
+    /// manual ticking. The `FakePortHandles` give test code direct access to
+    /// the inbound and outbound byte buffers.
+    ///
+    /// The reactor shuts down when the returned `KalicoHostIo` is dropped
+    /// (its `Drop` impl sends `Shutdown` and joins the thread).
+    pub fn into_background_io(self) -> (Arc<crate::host_io::KalicoHostIo>, FakePortHandles) {
+        let submission_tx = self.submission_tx.clone();
+        let port_handles = self.port_handles.clone();
+        let mut reactor = self.reactor;
+        let handle = std::thread::spawn(move || reactor.run());
+        let io =
+            crate::host_io::KalicoHostIo::from_submission_tx_for_test(submission_tx, Some(handle));
+        (io, port_handles)
+    }
 }
 
 #[cfg(test)]

@@ -707,5 +707,33 @@ impl KalicoHostIo {
     }
 }
 
+#[cfg(any(test, feature = "test-harness"))]
+impl KalicoHostIo {
+    /// Construct a minimal `KalicoHostIo` backed by the given submission
+    /// channel. The caller is responsible for running the reactor that drains
+    /// the channel (e.g. via `ReactorHarness::into_background_io`).
+    ///
+    /// `reactor_handle` must be `Some` if the caller wants the `Drop` impl to
+    /// join the reactor thread; pass `None` when the caller controls teardown.
+    pub fn from_submission_tx_for_test(
+        tx: Sender<ReactorCommand>,
+        reactor_handle: Option<std::thread::JoinHandle<()>>,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            submission_tx: tx,
+            next_call_id: AtomicU64::new(1),
+            reactor_handle,
+            status_snapshot: Arc::new(ArcSwap::from_pointee(
+                crate::host_io::runtime_events::StatusEvent::default(),
+            )),
+            parser: Arc::new(crate::host_io::parser::MsgProtoParser::new_empty()),
+            config: KalicoHostIoConfig::default(),
+            clock: Arc::new(crate::clock::RealClock),
+            raw_identify_bytes: Vec::new(),
+            is_critical: Arc::new(AtomicBool::new(false)),
+        })
+    }
+}
+
 #[cfg(test)]
 mod test_internals;

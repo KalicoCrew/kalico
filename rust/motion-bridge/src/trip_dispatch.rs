@@ -217,11 +217,15 @@ pub fn prepare(
     if !participants.is_empty() {
         // mainline: min_extend = 0.8 × report_ticks, report = 0.3 × timeout
         let min_extend_s = 0.8 * 0.3 * expire_timeout_s;
+        let host_now_at_prepare = instant_to_f64(Instant::now());
         let engine = Arc::new(std::sync::Mutex::new(
             extension::ExtensionEngine::new(
                 participants
                     .iter()
-                    .map(|_| extension::Participant { last_status_time: 0.0, expire_time: 0.0 })
+                    .map(|_| extension::Participant {
+                        last_status_time: host_now_at_prepare,
+                        expire_time: host_now_at_prepare + expire_timeout_s,
+                    })
                     .collect(),
                 expire_timeout_s,
                 min_extend_s,

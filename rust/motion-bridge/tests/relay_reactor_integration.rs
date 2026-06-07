@@ -392,12 +392,13 @@ fn trsync_state_report_extends_other_participant_timeout_through_live_reactor() 
     let p1_submission_tx: Sender<ReactorCommand> = p1.submission_tx.clone();
 
     let min_extend_s = 0.8 * 0.3 * EXPIRE_S;
-    // Pre-populate P0's expire_time so only participant 1 is extended on first
-    // report; same pattern as extension_tests.rs `engine()` helper.
+    // Mirror what `prepare` now does: initialise both participants at host_now
+    // so the first report's anchor is at host_now, not process-start.
+    let host_now = instant_to_f64(Instant::now());
     let engine = Arc::new(std::sync::Mutex::new(ExtensionEngine::new(
         vec![
-            Participant { last_status_time: 0.0, expire_time: EXPIRE_S },
-            Participant { last_status_time: 0.0, expire_time: 0.0 },
+            Participant { last_status_time: host_now, expire_time: host_now + EXPIRE_S },
+            Participant { last_status_time: host_now, expire_time: host_now + EXPIRE_S },
         ],
         EXPIRE_S,
         min_extend_s,
@@ -441,8 +442,12 @@ fn trsync_state_report_extends_other_participant_timeout_through_live_reactor() 
         }),
     );
 
-    // Feed a `trsync_state can_trigger=1` frame for participant 0.
-    let clock32 = now_ticks as u32;
+    // Feed a `trsync_state can_trigger=1` frame for participant 0 with a clock
+    // value 0.1 s ahead of now_ticks. This produces status_time = host_now + 0.1 s,
+    // which advances P1's anchor by 0.1 s > min_extend_s (0.06 s), guaranteeing
+    // exactly one send to P1 and none to P0.
+    let ahead_ticks = (0.1 * FREQ) as u64;
+    let clock32 = (now_ticks + ahead_ticks) as u32;
     let frame = build_trsync_state_frame(P0_OID, 1, clock32, 1);
     p0.feed_rx(&frame);
     p0.tick();
