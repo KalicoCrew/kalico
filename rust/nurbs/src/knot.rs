@@ -269,7 +269,7 @@ fn refine_knot_vect_curve<T: Float>(knots: &[T], cps: &[T], p: usize, x: &[T]) -
         }
 
         new_knots[k] = x[xi];
-        k = k.saturating_sub(1);
+        k -= 1;
     }
 
     (new_knots, new_cps)

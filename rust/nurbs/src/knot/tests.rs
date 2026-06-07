@@ -190,6 +190,36 @@ fn refined_to_full_multiplicity_raises_interior_knots() {
 }
 
 #[test]
+fn refined_to_full_multiplicity_is_identity_when_interior_knots_already_full() {
+    let curve = ScalarNurbs::<f64>::try_new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0],
+        vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+    )
+    .unwrap();
+
+    let refined = refined_to_full_multiplicity(&curve);
+
+    assert_eq!(refined.knots(), curve.knots());
+    assert_eq!(refined.control_points(), curve.control_points());
+}
+
+#[test]
+fn refined_to_full_multiplicity_is_identity_when_no_interior_knots() {
+    let curve = ScalarNurbs::<f64>::try_new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![0.0, 1.0, 2.0, 3.0],
+    )
+    .unwrap();
+
+    let refined = refined_to_full_multiplicity(&curve);
+
+    assert_eq!(refined.knots(), curve.knots());
+    assert_eq!(refined.control_points(), curve.control_points());
+}
+
+#[test]
 fn refined_to_full_multiplicity_matches_reference_on_mixed_multiplicity_curve() {
     let p: u8 = 3;
     let n_interior = 50usize;
