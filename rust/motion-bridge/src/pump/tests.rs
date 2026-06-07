@@ -187,54 +187,104 @@ impl PieceSink for NullSink {
 
 #[test]
 fn flush_clears_queued_pieces_and_junctions() {
+    // Strategy: gate pieces behind a narrow horizon so they remain in the queue
+    // when Flush arrives. After flushing, widen the horizon and enqueue a
+    // new probe piece. Assert the sink sees exactly the probe piece — the
+    // pre-flush pieces were cleared, not sent.
     let key = AxisKey { mcu_id: 1, axis: 0 };
     let (tx, rx) = mpsc::channel::<PumpMsg>();
-    let (done_tx, done_rx) = mpsc::channel::<()>();
+
+    // freq=1_000 ticks/s, lead_secs=0.001 → horizon = 1 tick when ack_now=0.
+    // Gated pieces start at tick 1_000 (>> horizon). Post-flush probe at tick 1.
+    let freq: f64 = 1_000.0;
+    let lead_secs: f64 = 0.001;
+    let gated_tick: u64 = 1_000;
+
+    let clock: Arc<Mutex<Option<(u64, f64)>>> = Arc::new(Mutex::new(Some((0, freq))));
+    let clock_pump = Arc::clone(&clock);
+    let sink = RecordingSink::new();
+    let sink_pump = sink.clone();
 
     let handle = std::thread::spawn(move || {
-        run_pump(rx, NullSink, |_key| 64, |_mcu| None, |_| {});
-        let _ = done_tx.send(());
+        run_pump(
+            rx,
+            sink_pump,
+            |_key| 64,
+            move |_mcu| *clock_pump.lock().unwrap(),
+            |_| {},
+        );
     });
 
-    // Enqueue 4 pieces, then flush, then enqueue again without a fresh_stream.
-    // fresh_stream=false + no junction_ends entry = no junction warning path.
-    tx.send(make_enqueue(
+    tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key,
-        (0u64..4).map(make_piece).collect(),
-        true,
-    ))
+        pieces: (0u64..4)
+            .map(|i| {
+                (
+                    PieceEntry {
+                        start_time: gated_tick + i,
+                        coeffs: [0.0; 4],
+                        duration: 0.001,
+                        _reserved: 0,
+                    },
+                    (gated_tick + i) as f64,
+                )
+            })
+            .collect(),
+        fresh_stream: true,
+        lead_secs,
+    }))
     .unwrap();
 
-    // The pump drains immediately (no clock = no horizon gate). Give it time.
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    // Give pump time to process and hit StallAhead on the gated pieces.
+    std::thread::sleep(std::time::Duration::from_millis(30));
 
-    // Enqueue without flushing to establish junction state, then flush.
-    tx.send(make_enqueue(
-        key,
-        (100u64..104).map(make_piece).collect(),
-        false,
-    ))
-    .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20));
-
+    // Flush while pieces are held behind the horizon (still in queue).
     tx.send(PumpMsg::Flush(vec![key])).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(20));
 
-    // After flush, enqueue again with fresh_stream=false. The pump must not
-    // produce a junction-overlap warn because junction_ends was cleared. We
-    // verify this indirectly: if the pump is still alive, the Flush was
-    // processed without panic (fail-loud invariant holds).
-    tx.send(make_enqueue(
+    // Widen horizon well past gated_tick. If Flush failed, the gated pieces
+    // would now be sendable and would appear in the sink.
+    *clock.lock().unwrap() = Some((gated_tick + 1_000, freq));
+
+    // Probe piece within the new horizon — gives the pump a reason to schedule.
+    tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key,
-        (200u64..202).map(make_piece).collect(),
-        false,
-    ))
+        pieces: vec![(
+            PieceEntry {
+                start_time: 1,
+                coeffs: [0.0; 4],
+                duration: 0.001,
+                _reserved: 0,
+            },
+            1.0,
+        )],
+        fresh_stream: false,
+        lead_secs,
+    }))
     .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while sink.recorded().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pump never sent the post-flush probe piece — deadlocked"
+            );
+            std::thread::yield_now();
+        }
+    }
 
     tx.send(PumpMsg::Shutdown).unwrap();
     handle.join().unwrap();
-    let _ = done_rx.try_recv();
+
+    let recorded = sink.recorded();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "sink must see only the post-flush probe piece; \
+         {} sends means the {} gated pieces survived Flush",
+        recorded.len(),
+        4
+    );
 }
 
 #[test]

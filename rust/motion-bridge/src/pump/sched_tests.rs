@@ -196,7 +196,7 @@ fn cross_mcu_host_time_ordering_bench_regression() {
 /// The globally host-earliest piece's queue having room==0 must block everything
 /// (intentional global-gating invariant).
 #[test]
-fn homing_lead_gates_release_to_50ms() {
+fn homing_lead_gates_piece_release() {
     let freq: f64 = 1_000_000.0;
     let ack_now: u64 = 0;
 
@@ -248,6 +248,77 @@ fn homing_lead_gates_release_to_50ms() {
             assert_eq!(frames[0].pieces.len(), 2, "both pieces must release under MAX_LEAD_SECS");
         }
         other => panic!("expected Send with two pieces, got {other:?}"),
+    }
+}
+
+/// Per-queue horizon: queue A has a narrow lead so its far piece is gated,
+/// queue B has MAX_LEAD_SECS so its identically-far piece releases.
+///
+/// Pins the invariant that `horizon_of` is evaluated independently per queue.
+/// A refactor that computes the horizon once from the head queue and applies it
+/// to all queues would gate B's piece incorrectly and break this test.
+#[test]
+fn cross_lead_per_queue_horizon_independent() {
+    let freq: f64 = 1_000_000.0;
+    let ack_now: u64 = 0;
+
+    // Queue A: lead_secs=0.05 → horizon = 50_000 ticks.
+    // Queue B: lead_secs=MAX_LEAD_SECS → horizon = 1_000_000 ticks.
+    // Both on mcu_id=1.
+    //
+    // Piece layout (host_time == tick/freq for simplicity):
+    //   A-inside:  tick=25_000 → within A's horizon → must send
+    //   A-beyond:  tick=75_000 → beyond A's horizon → must not send this pass
+    //   B-at-75k:  tick=75_000 → within B's horizon (1_000_000) → must send
+    let key_a = AxisKey { mcu_id: 1, axis: 0 };
+    let key_b = AxisKey { mcu_id: 1, axis: 1 };
+
+    let mut queues = BTreeMap::new();
+
+    let mut qa = q_with_host(8, &[(25_000, 0.025), (75_000, 0.075)]);
+    qa.lead_secs = 0.05;
+    queues.insert(key_a, qa);
+
+    let mut qb = q_with_host(8, &[(75_000, 0.075)]);
+    qb.lead_secs = MAX_LEAD_SECS;
+    queues.insert(key_b, qb);
+
+    let horizon_of = |_k: &AxisKey, q: &AxisQueue| -> Option<u64> {
+        Some(ack_now + (q.lead_secs * freq) as u64)
+    };
+
+    // Head is A-inside (host=0.025 is earliest, same MCU as B).
+    // Inner loop evaluates each queue's horizon independently:
+    //   A-inside (25_000 <= 50_000): sent.
+    //   A-beyond (75_000 >  50_000): gated.
+    //   B-at-75k (75_000 <= 1_000_000): sent.
+    match schedule(&queues, 255, &horizon_of) {
+        Schedule::Send(frames) => {
+            let a_frame = frames.iter().find(|f| f.key == key_a);
+            let b_frame = frames.iter().find(|f| f.key == key_b);
+
+            let a_frame = a_frame.expect("queue A must have a frame");
+            assert_eq!(
+                a_frame.pieces.len(),
+                1,
+                "A should send only the inside-50ms piece; got {} pieces",
+                a_frame.pieces.len()
+            );
+            assert_eq!(
+                a_frame.pieces[0].start_time, 25_000,
+                "A's sent piece must be the inside-horizon one"
+            );
+
+            let b_frame = b_frame.expect("queue B must have a frame (MAX_LEAD_SECS horizon)");
+            assert_eq!(
+                b_frame.pieces.len(),
+                1,
+                "B should send its piece (within MAX_LEAD_SECS horizon); got {} pieces",
+                b_frame.pieces.len()
+            );
+            assert_eq!(b_frame.pieces[0].start_time, 75_000);
+        }
+        other => panic!("expected Send with both A-inside and B pieces; got {other:?}"),
     }
 }
 
