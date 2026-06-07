@@ -4,7 +4,6 @@ use std::ops::RangeInclusive;
 
 /// Maximal runs of segments joined by Smooth junctions. `kinds[k]` is the
 /// junction between segments k and k+1.
-#[allow(dead_code)]
 pub(crate) fn partition_chains(
     n_segments: usize,
     kinds: &[JunctionKind],
@@ -26,7 +25,6 @@ pub(crate) fn partition_chains(
 /// duplicated into both neighbors; per-segment `s` is rebased to start at 0;
 /// per-segment time is the trapezoid over the slice (same formula as
 /// output::assemble).
-#[allow(dead_code)]
 pub(crate) fn slice_chain_profile(
     chain: &TopProfile,
     segment_ranges: &[(usize, usize)],
