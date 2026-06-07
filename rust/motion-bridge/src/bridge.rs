@@ -2869,36 +2869,90 @@ impl PyMotionBridge {
         self.fallback_clock_conversions.load(Ordering::Relaxed)
     }
 
-    #[pyo3(signature = (t_abs,))]
-    fn get_homing_position_at_time(&self, t_abs: f64) -> PyResult<Vec<f64>> {
+    #[pyo3(signature = (mcu, trip_clock))]
+    fn get_homing_position_at_clock(&self, mcu: u32, trip_clock: u64) -> PyResult<Vec<f64>> {
+        let t_abs = {
+            let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
+            router
+                .clock_to_host_secs(mcu_handle_from_raw(mcu), trip_clock)
+                .ok_or_else(|| {
+                    PyRuntimeError::new_err(format!(
+                        "get_homing_position_at_clock: no clock estimate for mcu {mcu} \
+                         (set_clock_est not called yet or MCU released)"
+                    ))
+                })?
+        };
         let guard = self
             .retained_homing_curve
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let curve = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("get_homing_position_at_time: no homing curve retained")
+            PyRuntimeError::new_err("get_homing_position_at_clock: no homing curve retained")
         })?;
-        let pieces = &curve.pieces;
-        if pieces.is_empty() {
-            return Err(PyRuntimeError::new_err(
-                "get_homing_position_at_time: retained homing curve has no pieces",
-            ));
-        }
-        let piece = pieces
-            .iter()
-            .find(|p| t_abs <= p.t_abs_end)
-            .unwrap_or_else(|| pieces.last().unwrap());
-        let u = (t_abs - piece.t0).clamp(
-            piece.t_abs_start - piece.t0,
-            piece.t_abs_end - piece.t0,
-        );
-        let pos: Vec<f64> = piece
-            .axes
-            .iter()
-            .map(|axis| nurbs::eval::eval(axis, u))
-            .collect();
-        Ok(pos)
+        eval_retained_curve(curve, t_abs, mcu, trip_clock)
     }
+}
+
+const PIECE_BOUNDARY_TOLERANCE: f64 = 1e-9;
+
+fn eval_retained_curve(
+    curve: &RetainedHomingCurve,
+    t_abs: f64,
+    mcu: u32,
+    trip_clock: u64,
+) -> PyResult<Vec<f64>> {
+    let pieces = &curve.pieces;
+    if pieces.is_empty() {
+        return Err(PyRuntimeError::new_err(
+            "get_homing_position_at_clock: retained homing curve has no pieces",
+        ));
+    }
+    let first = pieces.first().unwrap();
+    let last = pieces.last().unwrap();
+
+    if t_abs < first.t_abs_start - PIECE_BOUNDARY_TOLERANCE {
+        let piece_dur = first.t_abs_end - first.t_abs_start;
+        return Err(PyRuntimeError::new_err(format!(
+            "get_homing_position_at_clock: t_abs={t_abs:.9} is {:.6} s before the \
+             first retained piece window [{:.9}, {:.9}] \
+             (mcu={mcu} trip_clock={trip_clock}; piece_duration={piece_dur:.6} s) — \
+             clock domain mismatch or stale curve",
+            first.t_abs_start - t_abs,
+            first.t_abs_start,
+            first.t_abs_end,
+        )));
+    }
+
+    let piece = match pieces.iter().find(|p| {
+        t_abs <= p.t_abs_end + PIECE_BOUNDARY_TOLERANCE
+            && t_abs >= p.t_abs_start - PIECE_BOUNDARY_TOLERANCE
+    }) {
+        Some(p) => p,
+        None => {
+            let piece_dur = last.t_abs_end - last.t_abs_start;
+            let overshoot = t_abs - last.t_abs_end;
+            if overshoot > piece_dur {
+                return Err(PyRuntimeError::new_err(format!(
+                    "get_homing_position_at_clock: t_abs={t_abs:.9} overshoots last \
+                     piece end {:.9} by {overshoot:.6} s (> one piece duration {piece_dur:.6} s) \
+                     (mcu={mcu} trip_clock={trip_clock}) — clock domain mismatch or stale curve",
+                    last.t_abs_end,
+                )));
+            }
+            last
+        }
+    };
+
+    let u = (t_abs - piece.t0).clamp(
+        piece.t_abs_start - piece.t0,
+        piece.t_abs_end - piece.t0,
+    );
+    let pos: Vec<f64> = piece
+        .axes
+        .iter()
+        .map(|axis| nurbs::eval::eval(axis, u))
+        .collect();
+    Ok(pos)
 }
 
 impl PyMotionBridge {
@@ -3398,3 +3452,6 @@ mod ethercat_endpoint_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod retained_homing_curve_tests;

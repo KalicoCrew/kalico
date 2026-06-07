@@ -247,6 +247,7 @@ class BridgeKinematics:
 
     def set_position(self, newpos, homing_axes=()):
         self._toolhead.bridge._software_trip_active = False
+        self._toolhead.bridge._software_trip_clock = None
         self._toolhead.bridge.set_position(newpos[0], newpos[1], newpos[2])
         axis_rails = self._axis_rails()
         for axis_idx, rail in axis_rails.items():
@@ -458,6 +459,8 @@ class MotionToolhead(ToolHead):
         return fired
 
     def drip_move(self, newpos, speed, drip_completion):
+        self.bridge._software_trip_active = False
+        self.bridge._software_trip_clock = None
         logging.info(
             "[bridge-trace] drip_move entered: newpos=%s speed=%s "
             "drip_test=%s active_homing_arms=%s",

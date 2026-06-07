@@ -167,8 +167,23 @@ class MCU_stepper:
         if bridge is not None and getattr(
             bridge, "_software_trip_active", False
         ):
+            stash = getattr(bridge, "_software_trip_clock", None)
+            if stash is None:
+                logging.warning(
+                    "get_past_mcu_position: software_trip_active but no "
+                    "_software_trip_clock stash for %s",
+                    self.get_name(),
+                )
+                return getattr(
+                    self,
+                    "_bridge_last_trip_step_count",
+                    self.get_mcu_position(),
+                )
+            mcu_handle, trip_clock = stash
             try:
-                pos_xyz = bridge.get_homing_position_at_time(print_time)
+                pos_xyz = bridge.get_homing_position_at_clock(
+                    mcu_handle, trip_clock
+                )
             except Exception as e:
                 logging.warning(
                     "get_past_mcu_position: curve eval failed for %s: %s",

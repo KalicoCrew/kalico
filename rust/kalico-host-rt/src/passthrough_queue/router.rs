@@ -451,6 +451,24 @@ impl PassthroughRouter {
         instant_to_f64(self.clock.now())
     }
 
+    /// Convert an MCU tick count to host-anchor seconds (the `instant_to_f64`
+    /// epoch used by the router).
+    ///
+    /// Returns `None` when no clock estimate has been set for this MCU
+    /// (`clock_freq == 0.0` / `set_clock_est*` not yet called).
+    ///
+    /// The inverse of `host_time_to_mcu_clock`:
+    ///   `host_secs = clock_offset + (mcu_clock - last_clock) / clock_freq`
+    pub fn clock_to_host_secs(&self, mcu: McuHandle, mcu_clock: u64) -> Option<f64> {
+        let rec = self.mcus.get(&mcu)?;
+        if rec.clock_freq == 0.0 {
+            return None;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let delta_ticks = (mcu_clock as f64) - (rec.last_clock as f64);
+        Some(rec.clock_offset + delta_ticks / rec.clock_freq)
+    }
+
     pub fn host_time_to_mcu_clock(
         &self,
         mcu: McuHandle,

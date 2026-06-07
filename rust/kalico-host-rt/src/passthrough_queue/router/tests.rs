@@ -514,6 +514,51 @@ fn wall_time_at_mcu_far_from_anchor_returns_estimated_true() {
     );
 }
 
+/// `clock_to_host_secs` round-trips with `host_time_to_mcu_clock`.
+///
+/// Seed a 1 MHz clock anchored at last_clock=10_000_000.  Project a host time
+/// forward by 1.5 s → mcu_clock = 11_500_000.  The inverse must return the
+/// original host time within floating-point precision.
+#[test]
+fn clock_to_host_secs_round_trips() {
+    let (mut router, clock) = make_router();
+    let mcu = router.claim_mcu("mcu");
+
+    let base_host = instant_to_f64(clock.now());
+    router
+        .set_clock_est(mcu, 1_000_000.0, base_host, 10_000_000)
+        .unwrap();
+
+    let trip_host = base_host + 1.5;
+    let mcu_clock = router.host_time_to_mcu_clock(mcu, trip_host).unwrap();
+    assert_eq!(mcu_clock, 11_500_000, "forward projection must yield 11_500_000");
+
+    let recovered = router.clock_to_host_secs(mcu, mcu_clock).unwrap();
+    let diff = (recovered - trip_host).abs();
+    assert!(
+        diff < 1e-9,
+        "round-trip error too large: recovered={recovered:.12} expected={trip_host:.12} diff={diff:e}"
+    );
+}
+
+/// `clock_to_host_secs` returns `None` when no clock record has been set.
+#[test]
+fn clock_to_host_secs_no_record_returns_none() {
+    let (mut router, _) = make_router();
+    let mcu = router.claim_mcu("mcu");
+    assert!(
+        router.clock_to_host_secs(mcu, 1_000_000).is_none(),
+        "must return None when clock_freq == 0"
+    );
+}
+
+/// `clock_to_host_secs` returns `None` for an unknown MCU handle.
+#[test]
+fn clock_to_host_secs_unknown_mcu_returns_none() {
+    let (router, _) = make_router();
+    assert!(router.clock_to_host_secs(McuHandle::from_raw(999), 0).is_none());
+}
+
 /// `wall_time_at_mcu` returns `None` before any clock record has been set.
 #[test]
 fn wall_time_at_mcu_no_record_returns_none() {

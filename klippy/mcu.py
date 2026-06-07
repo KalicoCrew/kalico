@@ -808,9 +808,13 @@ class MCU_endstop:
         if trip_source == _TRIP_SOURCE_SOFTWARE:
             bridge = self._dispatch._bridge
             bridge._software_trip_active = True
+            trip_clock_val = int(evt.get("trip_clock", 0))
+            bridge._software_trip_clock = (self._mcu._bridge_handle, trip_clock_val)
             logging.info(
                 "[bridge-trace] _home_wait_bridge software trip: "
-                "curve-eval path armed"
+                "curve-eval path armed mcu=%s trip_clock=%d",
+                self._mcu._bridge_handle,
+                trip_clock_val,
             )
         else:
             for step in evt.get("steppers", []):
