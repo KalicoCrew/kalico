@@ -1,6 +1,20 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
+use crate::pump::AxisKey;
+
+pub const DRIP_PIECE_SECS: f64 = 0.025;
+pub const DRIP_MAX_AHEAD_SECS: f64 = 0.05;
+
+/// Returns `(lead_secs, max_piece_secs)` for the enqueue call site.
+pub fn homing_enqueue_params(homing_active: bool) -> (f64, Option<f64>) {
+    if homing_active {
+        (DRIP_MAX_AHEAD_SECS, Some(DRIP_PIECE_SECS))
+    } else {
+        (crate::pump::MAX_LEAD_SECS, None)
+    }
+}
+
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomingSegmentState {
@@ -27,6 +41,7 @@ pub struct HomingState {
     active_segment_id: AtomicU64,
     arm_id: AtomicU64,
     pending_trip: Mutex<Option<runtime::endstop::TripEvent>>,
+    axis_keys: Mutex<Vec<AxisKey>>,
 }
 
 impl HomingState {
@@ -36,6 +51,7 @@ impl HomingState {
             active_segment_id: AtomicU64::new(0),
             arm_id: AtomicU64::new(0),
             pending_trip: Mutex::new(None),
+            axis_keys: Mutex::new(Vec::new()),
         }
     }
 
@@ -51,8 +67,22 @@ impl HomingState {
         self.arm_id.store(u64::from(arm_id), Ordering::Release);
         self.active_segment_id.store(0, Ordering::Release);
         *self.pending_trip.lock().unwrap() = None;
+        self.axis_keys.lock().unwrap().clear();
         self.state
             .store(HomingSegmentState::Active as u8, Ordering::Release);
+    }
+
+    pub fn record_axis_keys(&self, keys: &[AxisKey]) {
+        let mut guard = self.axis_keys.lock().unwrap();
+        for &k in keys {
+            if !guard.contains(&k) {
+                guard.push(k);
+            }
+        }
+    }
+
+    pub fn take_axis_keys(&self) -> Vec<AxisKey> {
+        std::mem::take(&mut *self.axis_keys.lock().unwrap())
     }
 
     pub fn reset_to_idle(&self) {

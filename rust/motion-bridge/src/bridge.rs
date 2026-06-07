@@ -2344,6 +2344,7 @@ impl PyMotionBridge {
         let pump_tx_for_cb = pump_tx_init.clone();
         let drain_disp = self.drain.clone();
         let counter_for_cb = Arc::clone(&counter);
+        let homing_for_cb = Arc::clone(&self.homing);
 
         let dispatch: Arc<
             dyn Fn(&trajectory::ShapedSegment) -> Result<(), DispatchError> + Send + Sync,
@@ -2383,16 +2384,28 @@ impl PyMotionBridge {
                         .unwrap_or(0)
                 };
 
+                let (lead_secs, max_piece_secs) = crate::homing::homing_enqueue_params(
+                    homing_for_cb.state() == crate::homing::HomingSegmentState::Active,
+                );
+
                 let msgs = crate::enqueue::enqueue_segment(
                     seg,
                     &mcu_configs_for_cb,
                     t0,
                     fresh,
                     host_now,
-                    crate::pump::MAX_LEAD_SECS,
+                    lead_secs,
                     project,
-                    None,
+                    max_piece_secs,
                 );
+
+                let axis_keys: Vec<crate::pump::AxisKey> =
+                    msgs.iter().map(|m| m.key).collect();
+                if !axis_keys.is_empty()
+                    && homing_for_cb.state() == crate::homing::HomingSegmentState::Active
+                {
+                    homing_for_cb.record_axis_keys(&axis_keys);
+                }
 
                 for m in msgs {
                     drain_disp.add_sent(m.key.mcu_id, m.key.axis, m.pieces.len() as u32);
@@ -2461,6 +2474,7 @@ impl PyMotionBridge {
         })?;
         py.allow_threads(|| planner.flush()).map_err(planner_err)?;
         self.homing.refresh_after_wait();
+        self.flush_homing_pieces();
         Ok(())
     }
 
@@ -2473,6 +2487,7 @@ impl PyMotionBridge {
         py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT))
             .map_err(PyRuntimeError::new_err)?;
         self.homing.refresh_after_wait();
+        self.flush_homing_pieces();
         Ok(())
     }
 
@@ -2480,6 +2495,7 @@ impl PyMotionBridge {
         let Some(evt) = self.homing.take_trip_event() else {
             return Ok(None);
         };
+        self.flush_homing_pieces();
         Ok(Some(trip_event_to_pydict(py, evt)?))
     }
 
@@ -2946,6 +2962,17 @@ impl PyMotionBridge {
                 "{caller}: attach_serial has not been called for this MCU"
             ))
         })
+    }
+
+    fn flush_homing_pieces(&self) {
+        let keys = self.homing.take_axis_keys();
+        if keys.is_empty() {
+            return;
+        }
+        let guard = self.pump_tx.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(crate::pump::PumpMsg::Flush(keys));
+        }
     }
 
     fn submit_homing_move_inner(
