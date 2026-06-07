@@ -2,6 +2,8 @@
 pub mod anchor;
 mod bridge;
 #[doc(hidden)]
+pub mod trip_dispatch;
+#[doc(hidden)]
 pub mod classify;
 #[doc(hidden)]
 pub mod config;

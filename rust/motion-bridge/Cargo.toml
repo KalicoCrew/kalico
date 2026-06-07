@@ -40,6 +40,11 @@ thiserror = { workspace = true }
 rustfft = "6"
 heapless = { workspace = true }
 kalico-native-transport = { path = "../kalico-native-transport" }
+kalico-host-rt = { path = "../kalico-host-rt", features = ["test-harness"] }
+
+[[test]]
+name = "relay_reactor_integration"
+required-features = []
 
 [lints]
 workspace = true

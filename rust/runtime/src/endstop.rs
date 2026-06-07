@@ -553,7 +553,14 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
         ARM.state
             .store(ArmState::TrippedReady as u8, Ordering::Release);
         TRIP_EVENT_QUEUED.store(true, Ordering::Release);
-        return TripAction::AbortNow;
+        // DISABLED FOR TESTING: local siren. The detecting MCU intentionally
+        // does NOT self-freeze here — it only reports the trip. The cross-MCU
+        // relay (bridge reactor TripDispatch) sends trsync_trigger, which
+        // freezes via runtime_stop_on_trigger. Suppressing the local freeze
+        // lets us verify the relay on a single board. Re-enable as the
+        // same-MCU fast-path once the relay is confirmed.
+        // See docs/superpowers/specs/2026-05-31-trsync-cross-mcu-homing-design.md
+        return TripAction::Continue;
     }
 
     TripAction::Continue
