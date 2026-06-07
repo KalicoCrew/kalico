@@ -1,6 +1,6 @@
 use super::*;
-use kalico_native_transport::frame::{encode_frame, CHANNEL_CONTROL, CHANNEL_EVENTS};
-use kalico_native_transport::wire_helpers::{encode_message_header, MESSAGE_VERSION_DEFAULT};
+use kalico_native_transport::frame::{CHANNEL_CONTROL, CHANNEL_EVENTS, encode_frame};
+use kalico_native_transport::wire_helpers::{MESSAGE_VERSION_DEFAULT, encode_message_header};
 use kalico_protocol::codec::Encode;
 use std::sync::atomic::AtomicU32;
 use std::thread;
@@ -83,7 +83,10 @@ fn reader_death_wakes_waiter_with_closed() {
         "waiter was woken by death, not by deadline: {:?}",
         start.elapsed()
     );
-    assert!(conn.peer_closed(), "peer_closed must be set after reader death");
+    assert!(
+        conn.peer_closed(),
+        "peer_closed must be set after reader death"
+    );
 }
 
 fn make_heartbeat_frame(retired_counts: &[u32]) -> Vec<u8> {
@@ -94,8 +97,7 @@ fn make_heartbeat_frame(retired_counts: &[u32]) -> Vec<u8> {
     };
     let body = hb.encoded_to_vec();
     let mut payload =
-        encode_message_header(MessageKind::StatusHeartbeat, MESSAGE_VERSION_DEFAULT, 0)
-            .to_vec();
+        encode_message_header(MessageKind::StatusHeartbeat, MESSAGE_VERSION_DEFAULT, 0).to_vec();
     payload.extend_from_slice(&body);
     encode_frame(CHANNEL_EVENTS, &payload)
 }

@@ -3,7 +3,7 @@ use std::io::{self, ErrorKind, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc::{sync_channel, RecvTimeoutError, SyncSender};
+use std::sync::mpsc::{RecvTimeoutError, SyncSender, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
@@ -139,7 +139,11 @@ impl UnixNativeConn {
         let (tx, rx) = sync_channel::<CallResult>(1);
 
         {
-            let mut pending = self.shared.pending.lock().unwrap_or_else(|p| p.into_inner());
+            let mut pending = self
+                .shared
+                .pending
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             if let Some(err) = &pending.closed {
                 return Err(clone_transport_error(err));
             }
@@ -157,7 +161,11 @@ impl UnixNativeConn {
                 .unwrap_or_else(|p| p.into_inner());
             if let Err(e) = ws.write_all(frame) {
                 drop(ws);
-                let mut pending = self.shared.pending.lock().unwrap_or_else(|p| p.into_inner());
+                let mut pending = self
+                    .shared
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 pending.waiters.remove(&cid);
                 if pending.closed.is_none() {
                     pending.closed = Some(TransportError::Io(io::Error::from(e.kind())));
@@ -175,7 +183,11 @@ impl UnixNativeConn {
         match rx.recv_timeout(timeout) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => {
-                let mut pending = self.shared.pending.lock().unwrap_or_else(|p| p.into_inner());
+                let mut pending = self
+                    .shared
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 pending.waiters.remove(&cid);
                 Err(TransportError::Timeout)
             }

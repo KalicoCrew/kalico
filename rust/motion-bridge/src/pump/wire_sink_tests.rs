@@ -10,8 +10,7 @@ fn closed_conn() -> Arc<kalico_host_rt::unix_native_conn::UnixNativeConn> {
     // (setsockopt EINVAL on Darwin against a dead peer). It drops at return,
     // so every subsequent call observes Closed / broken-pipe.
     Arc::new(
-        kalico_host_rt::unix_native_conn::UnixNativeConn::from_stream(client)
-            .expect("from_stream"),
+        kalico_host_rt::unix_native_conn::UnixNativeConn::from_stream(client).expect("from_stream"),
     )
 }
 

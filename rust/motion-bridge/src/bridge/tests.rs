@@ -585,17 +585,15 @@ fn shutdown_does_not_abort_on_detached_ethercat_weak() {
     // Enqueue pieces with start_time well above the horizon (2) so schedule()
     // stalls rather than sending. The pump enters StallAhead and blocks on
     // recv_timeout(50ms) — pieces are live in the queue when shutdown() runs.
-    let pieces_to_enqueue = vec![
-        (
-            PieceEntry {
-                start_time: 1_000_000,
-                coeffs: [0.0; 4],
-                duration: 0.001,
-                _reserved: 0,
-            },
-            1.0_f64,
-        ),
-    ];
+    let pieces_to_enqueue = vec![(
+        PieceEntry {
+            start_time: 1_000_000,
+            coeffs: [0.0; 4],
+            duration: 0.001,
+            _reserved: 0,
+        },
+        1.0_f64,
+    )];
     pump_tx
         .send(PumpMsg::Enqueue(EnqueueMsg {
             key: AxisKey {
