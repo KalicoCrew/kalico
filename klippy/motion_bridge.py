@@ -51,8 +51,6 @@ _STUB_MOTION_METHODS = frozenset(
         "endstop_arm",
         "endstop_disarm",
         "software_trip",
-        "prepare_probe_homing",
-        "run_probe_homing",
         "get_homing_position_at_time",
         "take_trip_event",
         "is_homing_segment_retired",
@@ -454,30 +452,6 @@ class MotionBridgeWrapper:
     def trip_dispatch_cleanup(self, handle_id):
         return self._bridge.trip_dispatch_cleanup(handle_id)
 
-    def prepare_probe_homing(
-        self,
-        beacon_handle,
-        beacon_trsync_oid,
-        stepper_mcu_handle,
-        arm_id,
-        sensor_fault_timeout,
-    ):
-        return self._bridge.prepare_probe_homing(
-            beacon_handle,
-            beacon_trsync_oid,
-            stepper_mcu_handle,
-            arm_id,
-            sensor_fault_timeout,
-        )
-
-    def run_probe_homing(self, handle_id, move_pos, speed, stepper_oids):
-        return self._bridge.run_probe_homing(
-            handle_id,
-            move_pos,
-            speed,
-            stepper_oids,
-        )
-
     def get_homing_position_at_time(self, print_time):
         return self._bridge.get_homing_position_at_time(print_time)
 
@@ -537,6 +511,7 @@ class BridgeTriggerDispatch:
         self._handler_registered = False
         self._toolhead_arms = None  # set at start() for stop() cleanup
         self._sink_trsyncs = {}     # MCU object → MCU_trsync (firmware sink)
+        self._classic_trsyncs = []  # MCU_trsync objects on non-bridge MCUs
         self._trip_handle_id = None # TripDispatch relay handle (None=inactive)
         # Mutable cell shared with sink trsync_state handlers; cleared in
         # stop() so late-arriving trsync_state frames after teardown no-op.
@@ -567,6 +542,14 @@ class BridgeTriggerDispatch:
 
     def get_steppers(self):
         return list(self._steppers)
+
+    def add_classic_trsync(self, mcu_trsync):
+        """Register a non-bridge MCU_trsync (e.g. Beacon) as a classic source
+        and participant. Its trsync_state can_trigger=0 fans trsync_trigger to
+        all sink trsyncs; its can_trigger=1 reports keep the liveness web live.
+        Call before start().
+        """
+        self._classic_trsyncs.append(mcu_trsync)
 
     def add_source(
         self,
@@ -656,7 +639,7 @@ class BridgeTriggerDispatch:
         # race the arming window. endstop_arm can raise on ARM_STATUS_REJECTED;
         # the except block below tears the relay down so the handle never leaks.
         from .extras.danger_options import get_danger_options
-        n_participants = len(self._sink_trsyncs)
+        n_participants = len(self._sink_trsyncs) + len(self._classic_trsyncs)
         expire_timeout = get_danger_options().multi_mcu_trsync_timeout
         if n_participants == 1:
             expire_timeout = get_danger_options().single_mcu_trsync_timeout
@@ -677,9 +660,36 @@ class BridgeTriggerDispatch:
                 # REASON_COMMS_TIMEOUT expire (can_trigger=0, trigger_reason>=4)
                 # surfaces as a loud completion instead of blocking home_wait.
                 self._register_sink_timeout_handler(trsync)
+            # Arm classic (non-bridge) trsyncs (e.g. Beacon) and add them as
+            # sources and participants in TripDispatch. Their trsync_state
+            # can_trigger=0 fans trsync_trigger to all sink trsyncs; their
+            # can_trigger=1 reports extend the liveness window.
+            # A dummy completion is passed to MCU_trsync.start() so the
+            # classic trsync's _handle_trsync_state does not race our real
+            # _completion. Trip notification arrives via TripDispatch relay
+            # → kalico_endstop_tripped → _on_trip_message on the stepper MCU.
+            n_sinks = len(self._sink_trsyncs)
+            classic_participants = []
+            for j, ct in enumerate(self._classic_trsyncs):
+                report_offset = float(n_sinks + j) / n_participants
+                ct.start(arm_print_time, report_offset,
+                         self._reactor.completion(), expire_timeout)
+                mcu_handle = ct.get_mcu()._bridge_handle
+                if mcu_handle is None:
+                    raise printer.command_error(
+                        "BridgeTriggerDispatch.start: classic trsync MCU "
+                        "'%s' has no bridge handle (not a bridge MCU?)"
+                        % ct.get_mcu().get_name()
+                    )
+                classic_participants.append((mcu_handle, ct.get_oid()))
             sources = [(0, self._mcu, self._arm_id)]
+            # kind=1 = SourceSpec::Trsync — listens for trsync_state
+            # can_trigger=0 and fans trsync_trigger to sink trsyncs.
+            for mcu_handle, trsync_oid in classic_participants:
+                sources.append((1, mcu_handle, trsync_oid))
+            all_participants = sink_participants + classic_participants
             self._trip_handle_id = self._bridge.trip_dispatch_prepare(
-                sources, sink_participants, sink_participants, expire_timeout
+                sources, sink_participants, all_participants, expire_timeout
             )
 
             logging.info(
@@ -799,6 +809,17 @@ class BridgeTriggerDispatch:
                 self._reason = REASON_ENDSTOP_HIT
             if not self._completion.test():
                 self._completion.complete(self._reason)
+        # Disarm classic trsyncs (e.g. Beacon). MCU_trsync.stop() on a
+        # non-bridge MCU sends trsync_trigger HOST_REQUEST and unregisters
+        # the trsync_state response handler — normal mainline teardown.
+        for ct in self._classic_trsyncs:
+            try:
+                ct.stop()
+            except Exception:
+                logging.exception(
+                    "[bridge-trace] classic trsync stop() raised during "
+                    "BridgeTriggerDispatch.stop(); continuing teardown"
+                )
         self._bridge.unregister_homing_dispatch(self._arm_id)
         # Drop the arm_id from the toolhead registry so a later unrelated move's
         # drip_move doesn't pass it.

@@ -470,7 +470,6 @@ class MotionToolhead(ToolHead):
             return
         arm_ids = list(self.active_homing_arms)
         if arm_ids:
-            # Bridge-native GPIO/sensorless path.
             pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
             dx = pos3[0] - self.commanded_pos[0]
             dy = pos3[1] - self.commanded_pos[1]
@@ -485,225 +484,42 @@ class MotionToolhead(ToolHead):
             bridge_lmt_after = self.bridge.get_last_move_time()
             duration = bridge_lmt_after - bridge_lmt_before
             self._bump_pending_end_time(duration)
-        elif drip_completion is not None and not drip_completion.test():
-            # External probe software-trip path.
-            self._drip_move_software_trip(newpos, speed, drip_completion)
         else:
             self.move(newpos, speed)
 
     def _prepare_probe_interceptor(self, endstops):
-        """Pre-register the Rust frame interceptor for the probe's trsync, from
-        homing.py BEFORE home_start(). Stores the handle id on self for
-        _drip_move_software_trip.
+        """Wire a non-bridge (Beacon) trsync into the stepper endstop's
+        BridgeTriggerDispatch as a classic source+participant. Called from
+        homing.py BEFORE home_start() so the interceptor is armed before the
+        probe can trigger.
         """
-        self._probe_homing_handle_id = None
-        stepper_mcus = set()
-        for s in self.kin.get_steppers():
-            if s.get_name().startswith("stepper_z"):
-                stepper_mcus.add(s.get_mcu())
-        if len(stepper_mcus) != 1:
+        stepper_dispatch = None
+        for mcu_endstop, _name in endstops:
+            if getattr(mcu_endstop.get_mcu(), "_bridge_drives_steppers", False):
+                dispatch = getattr(mcu_endstop, "_dispatch", None)
+                if dispatch is not None:
+                    stepper_dispatch = dispatch
+                    break
+        if stepper_dispatch is None:
             return
-        stepper_mcu = next(iter(stepper_mcus))
-        for mcu_endstop, name in endstops:
+        for mcu_endstop, _name in endstops:
             es_mcu = mcu_endstop.get_mcu()
-            if es_mcu == stepper_mcu:
+            if getattr(es_mcu, "_bridge_drives_steppers", False):
                 continue
-            if es_mcu._bridge_handle is None:
+            if getattr(es_mcu, "_bridge_handle", None) is None:
                 continue
             trsync = getattr(
                 getattr(mcu_endstop, "_shared", None), "_trsync", None
             )
             if trsync is None:
                 continue
-            from . import motion_bridge as _mb
-
-            arm_id = _mb._alloc_arm_id()
-            nominal_dist = 250.0
-            axis_rails = self.kin._axis_rails()
-            z_rail = axis_rails.get(2)
-            if z_rail is not None:
-                z_min, z_max = z_rail.get_range()
-                nominal_dist = abs(z_max - z_min)
-            sensor_fault_timeout = nominal_dist / 5.0 + 5.0
-            handle_id = self.bridge.prepare_probe_homing(
-                es_mcu._bridge_handle,
-                trsync.get_oid(),
-                stepper_mcu._bridge_handle,
-                arm_id,
-                sensor_fault_timeout,
-            )
-            self._probe_homing_handle_id = handle_id
-            self._probe_homing_arm_id = arm_id
+            stepper_dispatch.add_classic_trsync(trsync)
             logging.info(
-                "[probe-homing] interceptor registered: handle_id=%d "
-                "beacon_handle=%s trsync_oid=%d arm_id=%d",
-                handle_id,
-                es_mcu._bridge_handle,
+                "[probe-homing] classic trsync registered: "
+                "beacon_mcu=%s trsync_oid=%d",
+                es_mcu.get_name(),
                 trsync.get_oid(),
-                arm_id,
             )
-            return
-
-    def _drip_move_software_trip(self, newpos, speed, drip_completion):
-        from . import motion_bridge as _mb
-        from . import motion_kinematics
-
-        self.bridge.wait_moves()
-        self._ground_pending_end_time_after_bridge_drain()
-
-        pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
-        dx = pos3[0] - self.commanded_pos[0]
-        dy = pos3[1] - self.commanded_pos[1]
-        dz = pos3[2] - self.commanded_pos[2]
-
-        logging.info(
-            "[diag] _drip_move_software_trip: "
-            "commanded_pos=[%.3f,%.3f,%.3f] pos3=[%.3f,%.3f,%.3f] "
-            "dx=%.6f dy=%.6f dz=%.6f",
-            self.commanded_pos[0],
-            self.commanded_pos[1],
-            self.commanded_pos[2],
-            pos3[0],
-            pos3[1],
-            pos3[2],
-            dx,
-            dy,
-            dz,
-        )
-
-        kin_name = self.kinematics_name or ""
-        motor_d = motion_kinematics.motor_deltas(kin_name, dx, dy, dz, 0.0)
-        slot_prefixes = ["stepper_x", "stepper_y", "stepper_z", "extruder"]
-        moving_steppers = []
-        for slot_idx, delta in enumerate(motor_d):
-            if abs(delta) < 1e-9:
-                continue
-            prefix = slot_prefixes[slot_idx]
-            for s in self.kin.get_steppers():
-                if s.get_name().startswith(prefix):
-                    moving_steppers.append(s)
-
-        if not moving_steppers:
-            self.move(newpos, speed)
-            return
-
-        stepper_mcus = set(s.get_mcu() for s in moving_steppers)
-        if len(stepper_mcus) > 1:
-            raise self.printer.command_error(
-                "External probe homing across multiple bridge MCUs "
-                "is not supported"
-            )
-        stepper_mcu = next(iter(stepper_mcus))
-        mcu_handle = stepper_mcu._bridge_handle
-        queue = self.bridge.alloc_command_queue(mcu_handle)
-
-        arm_id = getattr(self, "_probe_homing_arm_id", None)
-        if arm_id is None:
-            arm_id = _mb._alloc_arm_id()
-        stepper_oids = [s.get_oid() for s in moving_steppers]
-        source = (_mb.SOURCE_KIND_SOFTWARE, 0, False, 0, 1, 0, 0)
-
-        # The enable callbacks do inline TMC UART reads (~300ms for 3 Z
-        # steppers); pad so the last queue_digital_out clock stays in the future.
-        ENABLE_HEADROOM = 2.000
-        lmt = self.get_last_move_time()
-        est_now = 0.0
-        if self.mcu is not None:
-            est_now = self.mcu.estimated_print_time(self.reactor.monotonic())
-            needed = est_now + ENABLE_HEADROOM
-            if lmt < needed:
-                self.dwell(needed - lmt)
-                lmt = self.get_last_move_time()
-
-        logging.info(
-            "[probe-homing] pre-enable: "
-            "lmt=%.6f est_now=%.6f pending=%.6f stepper_mcu=%s",
-            lmt,
-            est_now,
-            self._mcu_pending_end_time,
-            stepper_mcu.get_name(),
-        )
-
-        self._fire_active_callbacks(dx, dy, dz, 0.0, lmt)
-
-        # Recompute arm_clock after callbacks — the UART traffic consumed
-        # wall-clock time, so the pre-callback lmt may now be in the past.
-        if self.mcu is not None:
-            est_now = self.mcu.estimated_print_time(self.reactor.monotonic())
-        arm_clock = int(
-            stepper_mcu.print_time_to_clock(
-                max(lmt, est_now + BUFFER_TIME_START)
-            )
-        )
-        logging.info(
-            "[probe-homing] post-enable: est_now=%.6f arm_clock=%d",
-            est_now,
-            arm_clock,
-        )
-
-        # Arm + submit
-        self.active_homing_arms.add(arm_id)
-        self.bridge.register_homing_dispatch(arm_id, None)
-        self.bridge._software_trip_active = True
-
-        bridge_lmt_before = self.bridge.get_last_move_time()
-        try:
-            self.bridge.endstop_arm(
-                mcu_handle,
-                queue,
-                arm_id,
-                arm_clock,
-                [source],
-                stepper_oids,
-            )
-            self.bridge._homing_print_time_base = bridge_lmt_before
-
-            handle_id = getattr(self, "_probe_homing_handle_id", None)
-            if handle_id is None:
-                raise self.printer.command_error(
-                    "No probe homing interceptor registered "
-                    "(call _prepare_probe_interceptor first)"
-                )
-            # arm_id from prepare — matches what the interceptor sends.
-            arm_id = self._probe_homing_arm_id
-
-            logging.info(
-                "[probe-homing] calling run_probe_homing: "
-                "handle_id=%d arm_id=%d speed=%.1f",
-                handle_id,
-                arm_id,
-                speed,
-            )
-
-            result = self.bridge.run_probe_homing(
-                handle_id,
-                pos3,
-                speed,
-                stepper_oids,
-            )
-
-            PROBE_TRIGGERED = 0
-            SEGMENT_RETIRED = 1
-            SENSOR_FAULT = 2
-
-            if result == SENSOR_FAULT:
-                raise self.printer.command_error(
-                    "Probe sensor fault: no trigger during full Z "
-                    "travel. Check probe wiring and threshold."
-                )
-
-            self.bridge.wait_moves()
-            bridge_lmt_after = self.bridge.get_last_move_time()
-            duration = bridge_lmt_after - bridge_lmt_before
-            self._bump_pending_end_time(duration)
-        finally:
-            self.bridge._software_trip_active = False
-            self.active_homing_arms.discard(arm_id)
-            self.bridge.unregister_homing_dispatch(arm_id)
-            try:
-                self.bridge.endstop_disarm(mcu_handle, queue, arm_id)
-            except Exception:
-                pass  # best-effort cleanup
 
     def dwell(self, delay):
         self.bridge.submit_dwell(delay)

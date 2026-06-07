@@ -446,8 +446,6 @@ pub struct PyMotionBridge {
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
     homing: Arc<HomingState>,
     retained_homing_curve: Arc<Mutex<Option<RetainedHomingCurve>>>,
-    probe_handles: Mutex<HashMap<u64, crate::probe_homing::ProbeHomingHandle>>,
-    probe_handle_counter: AtomicU64,
     events_dir: Mutex<Option<std::path::PathBuf>>,
 
     // ── Cross-MCU trip relay (Task 4) ────────────────────────────────────
@@ -674,8 +672,6 @@ impl PyMotionBridge {
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             homing: Arc::new(HomingState::new()),
             retained_homing_curve: Arc::new(Mutex::new(None)),
-            probe_handles: Mutex::new(HashMap::new()),
-            probe_handle_counter: AtomicU64::new(1),
             events_dir: Mutex::new(None),
             trip_dispatch_handles: Mutex::new(HashMap::new()),
             trip_dispatch_next_id: AtomicU64::new(0),
@@ -2716,84 +2712,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    /// Phase 1: register the Beacon trsync interceptor.  Call BEFORE
-    /// `home_start()` sends `beacon_home`, so the interceptor is in
-    /// place when the probe triggers.  Returns an opaque handle ID.
-    fn prepare_probe_homing(
-        &self,
-        beacon_handle: u32,
-        beacon_trsync_oid: u8,
-        stepper_mcu_handle: u32,
-        arm_id: u32,
-        sensor_fault_timeout_s: f64,
-    ) -> PyResult<u64> {
-        let beacon_io = self.host_io_for_mcu("prepare_probe_homing(beacon)", beacon_handle)?;
-        let stepper_io =
-            self.host_io_for_mcu("prepare_probe_homing(stepper)", stepper_mcu_handle)?;
-
-        let handle = crate::probe_homing::prepare_probe_homing(
-            beacon_io,
-            stepper_io,
-            beacon_trsync_oid,
-            arm_id,
-            std::time::Duration::from_secs_f64(sensor_fault_timeout_s),
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("prepare_probe_homing: {e}")))?;
-
-        let id = self.next_probe_handle_id();
-        self.probe_handles.lock().unwrap().insert(id, handle);
-        Ok(id)
-    }
-
-    #[pyo3(signature = (
-        handle_id,
-        move_pos,
-        speed,
-        stepper_oids,
-    ))]
-    fn run_probe_homing(
-        &self,
-        py: Python<'_>,
-        handle_id: u64,
-        move_pos: Vec<f64>,
-        speed: f64,
-        stepper_oids: Vec<u8>,
-    ) -> PyResult<u8> {
-        let _ = stepper_oids;
-
-        let handle = self
-            .probe_handles
-            .lock()
-            .unwrap()
-            .remove(&handle_id)
-            .ok_or_else(|| {
-                PyRuntimeError::new_err(format!("run_probe_homing: unknown handle_id {handle_id}"))
-            })?;
-
-        let seg_count_before = self.dispatched_segments.load(Ordering::Relaxed);
-        self.submit_homing_move_inner(&move_pos, speed, &[handle.arm_id])?;
-        let seg_count_after = self.dispatched_segments.load(Ordering::Relaxed);
-        tracing::info!(
-            subsystem = "homing",
-            event = "homing_move_dispatch",
-            seg_before = seg_count_before,
-            seg_after = seg_count_after,
-            dispatched = seg_count_after - seg_count_before,
-            "run_probe_homing homing move dispatched"
-        );
-
-        let result = py.allow_threads(|| crate::probe_homing::run_probe_homing(&handle));
-
-        crate::probe_homing::cleanup_probe_homing(handle);
-
-        match result {
-            Ok(r) => Ok(r as u8),
-            Err(e) => Err(PyRuntimeError::new_err(format!(
-                "run_probe_homing transport error: {e}"
-            ))),
-        }
-    }
-
     fn submit_dwell(&self, duration_s: f64) -> PyResult<()> {
         let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
@@ -2949,10 +2867,6 @@ impl PyMotionBridge {
 }
 
 impl PyMotionBridge {
-    fn next_probe_handle_id(&self) -> u64 {
-        self.probe_handle_counter.fetch_add(1, Ordering::Relaxed)
-    }
-
     fn host_io_for_mcu(&self, caller: &str, mcu: u32) -> PyResult<Arc<KalicoHostIo>> {
         let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
         let conn = mcus.get(&mcu).ok_or_else(|| {

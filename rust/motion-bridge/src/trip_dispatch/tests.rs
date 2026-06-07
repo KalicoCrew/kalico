@@ -435,6 +435,147 @@ fn participant_timeout_fan_is_one_shot() {
     cleanup(handle);
 }
 
+/// Classic source (SourceSpec::Trsync) + participant registered on the same IO
+/// for the same trsync_oid — the Beacon case. Two interceptors coexist on one IO:
+///
+/// * `can_trigger=0`: source interceptor fans `trsync_trigger` to the sink;
+///   participant interceptor also fires the fan-out (no-op — FanOut one-shot)
+///   and sets the `triggered` flag. Net result: one trigger to the sink, flag set.
+/// * `can_trigger=1`: source ignores it; participant feeds the ExtensionEngine
+///   and `trsync_set_timeout` lands on the second participant's wire.
+#[test]
+fn trsync_source_and_participant_on_same_io_trip_and_extend() {
+    const MCU_BEACON: u32 = 5;
+    const MCU_SINK: u32 = 20;
+    const MCU_EXTEND: u32 = 30;
+    const OID_BEACON: u8 = 7;
+    const OID_SINK: u8 = 8;
+    const OID_EXTEND: u8 = 9;
+    const FREQ: f64 = 520_000_000.0;
+    const EXPIRE_S: f64 = 0.25;
+    const NOW_TICKS: u64 = 52_000_000_000;
+
+    // All three MCUs share the same parser so frames decode on every harness.
+    let parser = {
+        let dict_json = serde_json::json!({
+            "commands": {
+                "trsync_set_timeout oid=%c clock=%u": 31,
+                "trsync_trigger oid=%c reason=%c": 32
+            },
+            "responses": {
+                "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u": 30
+            },
+            "output": {},
+            "enumerations": {},
+            "config": {},
+            "version": "test",
+            "app": "test"
+        });
+        let dict: kalico_host_rt::host_io::parser::DataDictionary =
+            serde_json::from_value(dict_json).expect("parser dict");
+        Arc::new(kalico_host_rt::host_io::parser::MsgProtoParser::from_dictionary(dict)
+            .expect("parser build"))
+    };
+
+    let beacon_harness = kalico_host_rt::host_io::test_harness::ReactorHarness::new_with_parser(Arc::clone(&parser));
+    let sink_harness   = kalico_host_rt::host_io::test_harness::ReactorHarness::new_with_parser(Arc::clone(&parser));
+    let extend_harness = kalico_host_rt::host_io::test_harness::ReactorHarness::new_with_parser(Arc::clone(&parser));
+
+    let (beacon_io, beacon_port) = beacon_harness.into_background_io();
+    let (sink_io,   sink_port)   = sink_harness.into_background_io();
+    let (extend_io, extend_port) = extend_harness.into_background_io();
+
+    let handle = prepare(
+        // Beacon as a Trsync source.
+        vec![(SourceSpec::Trsync { mcu: MCU_BEACON, trsync_oid: OID_BEACON }, Arc::clone(&beacon_io))],
+        // Sink: the stepper trsync that receives trsync_trigger.
+        vec![SinkSpec { mcu: MCU_SINK, trsync_oid: OID_SINK }],
+        vec![(MCU_SINK, Arc::clone(&sink_io))],
+        // Participants: Beacon (for liveness) + a second stepper participant.
+        vec![
+            (ParticipantSpec { mcu: MCU_BEACON, trsync_oid: OID_BEACON }, Arc::clone(&beacon_io)),
+            (ParticipantSpec { mcu: MCU_EXTEND, trsync_oid: OID_EXTEND }, Arc::clone(&extend_io)),
+        ],
+        EXPIRE_S,
+        move |_| Some((NOW_TICKS, FREQ)),
+    )
+    .expect("prepare must succeed");
+
+    assert!(!handle.was_triggered(), "not triggered before any frame");
+
+    // --- can_trigger=0: Beacon trips.
+    // Expect exactly one trsync_trigger to the sink; triggered flag set.
+    let frame_trip = build_trsync_state_frame(OID_BEACON, 0, NOW_TICKS as u32, 1);
+    beacon_port.rx.lock().unwrap().extend(frame_trip);
+
+    let sink_got_trigger = poll_until(
+        || !sink_port.tx.lock().unwrap().is_empty(),
+        std::time::Duration::from_millis(5),
+        200,
+    );
+    assert!(sink_got_trigger, "sink must receive trsync_trigger after Beacon can_trigger=0");
+    assert!(handle.was_triggered(), "triggered flag must be set after Beacon can_trigger=0");
+
+    let sink_tx = sink_port.tx.lock().unwrap().clone();
+    let payloads = extract_payloads(sink_tx);
+    assert_eq!(payloads.len(), 1, "exactly one trsync_trigger for sink (FanOut one-shot)");
+    let (name, params) = parser.decode_body(&payloads[0]).expect("decode sink payload");
+    assert_eq!(name, "trsync_trigger");
+    assert_eq!(params.get_u32("oid"), u32::from(OID_SINK));
+    assert_eq!(params.get_u32("reason"), u32::from(REASON_ENDSTOP_HIT));
+
+    // No extension sends must have happened yet (can_trigger=0 returns early
+    // from the participant interceptor before feeding ExtensionEngine).
+    assert!(
+        extend_port.tx.lock().unwrap().is_empty(),
+        "extend participant must not receive trsync_set_timeout on can_trigger=0"
+    );
+
+    cleanup(handle);
+
+    // --- can_trigger=1: Beacon reports liveness.
+    // A fresh handle to avoid the already-fired FanOut.
+    let handle2 = prepare(
+        vec![(SourceSpec::Trsync { mcu: MCU_BEACON, trsync_oid: OID_BEACON }, Arc::clone(&beacon_io))],
+        vec![SinkSpec { mcu: MCU_SINK, trsync_oid: OID_SINK }],
+        vec![(MCU_SINK, Arc::clone(&sink_io))],
+        vec![
+            (ParticipantSpec { mcu: MCU_BEACON, trsync_oid: OID_BEACON }, Arc::clone(&beacon_io)),
+            (ParticipantSpec { mcu: MCU_EXTEND, trsync_oid: OID_EXTEND }, Arc::clone(&extend_io)),
+        ],
+        EXPIRE_S,
+        move |_| Some((NOW_TICKS, FREQ)),
+    )
+    .expect("prepare handle2 must succeed");
+
+    // Drain stale tx from the first run.
+    sink_port.tx.lock().unwrap().clear();
+    extend_port.tx.lock().unwrap().clear();
+
+    // Feed a can_trigger=1 frame 0.1s ahead of NOW_TICKS to guarantee extension.
+    let ahead_ticks = (0.1 * FREQ) as u64;
+    let clock32 = (NOW_TICKS + ahead_ticks) as u32;
+    let frame_alive = build_trsync_state_frame(OID_BEACON, 1, clock32, 2);
+    beacon_port.rx.lock().unwrap().extend(frame_alive);
+
+    let extend_got_timeout = poll_until(
+        || !extend_port.tx.lock().unwrap().is_empty(),
+        std::time::Duration::from_millis(5),
+        200,
+    );
+    assert!(
+        extend_got_timeout,
+        "extend participant must receive trsync_set_timeout after Beacon can_trigger=1"
+    );
+    assert!(
+        sink_port.tx.lock().unwrap().is_empty(),
+        "sink must not receive trsync_trigger for can_trigger=1"
+    );
+    assert!(!handle2.was_triggered(), "no trip for can_trigger=1");
+
+    cleanup(handle2);
+}
+
 /// A `can_trigger=0` on a participant's io must NOT cause the ExtensionEngine
 /// to send a `trsync_set_timeout` — the participant path returns early before
 /// feeding the engine.

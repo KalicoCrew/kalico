@@ -68,9 +68,9 @@ pub enum SourceSpec {
     ///
     /// A `trsync_state` frame with `can_trigger == 0` can also arrive
     /// **before** the homing arm (e.g. during MCU init). The caller MUST
-    /// register the dispatch only when arming the move — mirroring
-    /// `probe_homing.rs`'s "call before home_start" contract — so that a
-    /// spurious pre-arm trip is not relayed to the sink trsyncs.
+    /// register the dispatch only when arming the move — i.e. call
+    /// `add_classic_trsync` before `BridgeTriggerDispatch.start()` but not at
+    /// init time — so that a spurious pre-arm trip is not relayed to sinks.
     Trsync { mcu: u32, trsync_oid: u8 },
 }
 

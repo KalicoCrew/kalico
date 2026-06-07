@@ -21,8 +21,6 @@ pub mod motion_node;
 #[doc(hidden)]
 pub mod planner;
 #[doc(hidden)]
-pub mod probe_homing;
-#[doc(hidden)]
 pub mod pump;
 mod router_transport;
 #[doc(hidden)]

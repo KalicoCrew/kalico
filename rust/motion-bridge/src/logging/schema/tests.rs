@@ -25,7 +25,7 @@ fn subsystem_mapping() {
         "mcu-comms"
     );
     assert_eq!(
-        subsystem_for_target("motion_bridge::probe_homing"),
+        subsystem_for_target("motion_bridge::homing"),
         "homing"
     );
     assert_eq!(subsystem_for_target("some::unknown::path"), "host-rust");
