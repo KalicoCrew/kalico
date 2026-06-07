@@ -124,12 +124,14 @@ fn pump_routes_both_serial_and_ethercat_mcu_ids() {
         key: AxisKey { mcu_id: 1, axis: 0 }, // "serial"
         pieces: vec![piece(0)],
         fresh_stream: false,
+        lead_secs: motion_bridge_native::pump::MAX_LEAD_SECS,
     }))
     .unwrap();
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key: AxisKey { mcu_id: 2, axis: 0 }, // "EtherCAT"
         pieces: vec![piece(1)],
         fresh_stream: false,
+        lead_secs: motion_bridge_native::pump::MAX_LEAD_SECS,
     }))
     .unwrap();
 

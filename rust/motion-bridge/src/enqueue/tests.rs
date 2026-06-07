@@ -35,7 +35,7 @@ fn cartesian_x_axis_yields_pieces_with_projected_start_time() {
         },
     }];
 
-    let msgs = enqueue_segment(&seg_x_move(), &cfg, 100.0, true, 0.0, |_mcu, hs| {
+    let msgs = enqueue_segment(&seg_x_move(), &cfg, 100.0, true, 0.0, crate::pump::MAX_LEAD_SECS, |_mcu, hs| {
         (hs * 1_000.0) as u64
     });
 
@@ -88,7 +88,7 @@ fn corexy_x_slot_is_x_plus_y() {
         t_end: 1.0,
     };
 
-    let msgs = enqueue_segment(&seg, &cfg, 0.0, true, 0.0, |_mcu, hs| (hs * 1_000.0) as u64);
+    let msgs = enqueue_segment(&seg, &cfg, 0.0, true, 0.0, crate::pump::MAX_LEAD_SECS, |_mcu, hs| (hs * 1_000.0) as u64);
 
     let a = msgs
         .iter()

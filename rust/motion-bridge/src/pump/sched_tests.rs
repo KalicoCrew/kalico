@@ -26,7 +26,7 @@ fn q_with(ring_depth: u32, starts: &[u64]) -> AxisQueue {
 #[test]
 fn idle_when_empty() {
     let queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
-    assert!(matches!(schedule(&queues, 255, |_| None), Schedule::Idle));
+    assert!(matches!(schedule(&queues, 255, |_: &AxisKey, _: &AxisQueue| None), Schedule::Idle));
 }
 
 #[test]
@@ -37,7 +37,7 @@ fn stalls_when_global_head_ring_full() {
     queues.insert(AxisKey { mcu_id: 1, axis: 0 }, a);
     queues.insert(AxisKey { mcu_id: 2, axis: 0 }, q_with(8, &[20]));
     assert!(matches!(
-        schedule(&queues, 255, |_| None),
+        schedule(&queues, 255, |_: &AxisKey, _: &AxisQueue| None),
         Schedule::StallFull(AxisKey { mcu_id: 1, axis: 0 })
     ));
 }
@@ -48,7 +48,7 @@ fn batches_contiguous_same_mcu_prefix_only() {
     queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[0, 3]));
     queues.insert(AxisKey { mcu_id: 1, axis: 1 }, q_with(8, &[1]));
     queues.insert(AxisKey { mcu_id: 2, axis: 0 }, q_with(8, &[2]));
-    let s = schedule(&queues, 255, |_| None);
+    let s = schedule(&queues, 255, |_: &AxisKey, _: &AxisQueue| None);
     match s {
         Schedule::Send(frames) => {
             let ax: Vec<_> = frames.iter().map(|f| (f.key, f.pieces.len())).collect();
@@ -64,7 +64,7 @@ fn batches_contiguous_same_mcu_prefix_only() {
 fn frame_cap_splits() {
     let mut queues = BTreeMap::new();
     queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[0, 1, 2, 3]));
-    let s = schedule(&queues, 2, |_| None);
+    let s = schedule(&queues, 2, |_: &AxisKey, _: &AxisQueue| None);
     match s {
         Schedule::Send(frames) => {
             assert_eq!(frames.len(), 1);
@@ -82,7 +82,7 @@ fn full_axis_does_not_block_same_mcu_sibling() {
     xq.pushed = 1;
     q.insert(AxisKey { mcu_id: 1, axis: 1 }, yq);
     q.insert(AxisKey { mcu_id: 1, axis: 0 }, xq);
-    match schedule(&q, 255, |_| None) {
+    match schedule(&q, 255, |_: &AxisKey, _: &AxisQueue| None) {
         Schedule::Send(frames) => {
             let yf = frames
                 .iter()
@@ -104,7 +104,7 @@ fn time_gate_blocks_piece_beyond_horizon() {
     let mut queues = BTreeMap::new();
     queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[100]));
     queues.insert(AxisKey { mcu_id: 1, axis: 1 }, q_with(8, &[200]));
-    match schedule(&queues, 255, |_| Some(150)) {
+    match schedule(&queues, 255, |_: &AxisKey, _: &AxisQueue| Some(150)) {
         Schedule::Send(frames) => {
             assert_eq!(frames.len(), 1, "only axis 0 should be batched");
             assert_eq!(frames[0].key, AxisKey { mcu_id: 1, axis: 0 });
@@ -120,7 +120,7 @@ fn all_beyond_horizon_returns_stall_ahead() {
     queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[1000]));
     assert!(
         matches!(
-            schedule(&queues, 255, |_| Some(500)),
+            schedule(&queues, 255, |_: &AxisKey, _: &AxisQueue| Some(500)),
             Schedule::StallAhead(AxisKey { mcu_id: 1, axis: 0 })
         ),
         "expected StallAhead when sole piece is beyond horizon"
@@ -131,7 +131,7 @@ fn all_beyond_horizon_returns_stall_ahead() {
 fn no_horizon_none_uses_count_only_gate() {
     let mut queues = BTreeMap::new();
     queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with(8, &[u64::MAX]));
-    match schedule(&queues, 255, |_| None) {
+    match schedule(&queues, 255, |_: &AxisKey, _: &AxisQueue| None) {
         Schedule::Send(frames) => {
             assert_eq!(frames.len(), 1);
             assert_eq!(frames[0].pieces.len(), 1);
@@ -171,8 +171,8 @@ fn cross_mcu_host_time_ordering_bench_regression() {
     );
 
     // mcu0 horizon covers h7_tick; mcu1 horizon does NOT cover f446_tick.
-    let horizon_of = |mcu_id: u32| -> Option<u64> {
-        if mcu_id == 0 {
+    let horizon_of = |k: &AxisKey, _q: &AxisQueue| -> Option<u64> {
+        if k.mcu_id == 0 {
             Some(h7_tick + 1_000_000)
         } else {
             Some(f446_tick - 1) // mcu1 piece is ahead of this horizon
@@ -196,6 +196,62 @@ fn cross_mcu_host_time_ordering_bench_regression() {
 /// The globally host-earliest piece's queue having room==0 must block everything
 /// (intentional global-gating invariant).
 #[test]
+fn homing_lead_gates_release_to_50ms() {
+    let freq: f64 = 1_000_000.0;
+    let ack_now: u64 = 0;
+
+    // Two pieces: first within 50ms, second beyond.
+    let piece_inside = (25_000_u64, 0.025_f64);
+    let piece_beyond = (75_000_u64, 0.075_f64);
+
+    let mut queues = BTreeMap::new();
+    let key = AxisKey { mcu_id: 1, axis: 0 };
+    let mut q = q_with_host(8, &[piece_inside, piece_beyond]);
+    q.lead_secs = 0.05;
+    queues.insert(key, q);
+
+    let horizon_of = |k: &AxisKey, q: &AxisQueue| -> Option<u64> {
+        if k.mcu_id == 1 {
+            Some(ack_now + (q.lead_secs * freq) as u64)
+        } else {
+            None
+        }
+    };
+
+    // With 50ms lead: only the first piece should release.
+    match schedule(&queues, 255, &horizon_of) {
+        Schedule::Send(frames) => {
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].pieces.len(), 1, "only the inside-50ms piece must release");
+            assert_eq!(frames[0].pieces[0].start_time, 25_000);
+        }
+        other => panic!("expected Send with one piece, got {other:?}"),
+    }
+
+    // With MAX_LEAD_SECS lead: both pieces release.
+    let mut queues2 = BTreeMap::new();
+    let mut q2 = q_with_host(8, &[piece_inside, piece_beyond]);
+    q2.lead_secs = MAX_LEAD_SECS;
+    queues2.insert(key, q2);
+
+    let horizon_of_max = |k: &AxisKey, q: &AxisQueue| -> Option<u64> {
+        if k.mcu_id == 1 {
+            Some(ack_now + (q.lead_secs * freq) as u64)
+        } else {
+            None
+        }
+    };
+
+    match schedule(&queues2, 255, &horizon_of_max) {
+        Schedule::Send(frames) => {
+            assert_eq!(frames.len(), 1);
+            assert_eq!(frames[0].pieces.len(), 2, "both pieces must release under MAX_LEAD_SECS");
+        }
+        other => panic!("expected Send with two pieces, got {other:?}"),
+    }
+}
+
+#[test]
 fn stall_full_on_globally_earliest_gates_all() {
     let mut queues = BTreeMap::new();
 
@@ -209,7 +265,7 @@ fn stall_full_on_globally_earliest_gates_all() {
 
     assert!(
         matches!(
-            schedule(&queues, 255, |_| None),
+            schedule(&queues, 255, |_: &AxisKey, _: &AxisQueue| None),
             Schedule::StallFull(AxisKey { mcu_id: 0, axis: 0 })
         ),
         "StallFull on the globally host-earliest queue must gate all issuance"

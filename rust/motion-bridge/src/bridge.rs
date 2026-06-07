@@ -2389,6 +2389,7 @@ impl PyMotionBridge {
                     t0,
                     fresh,
                     host_now,
+                    crate::pump::MAX_LEAD_SECS,
                     project,
                 );
 

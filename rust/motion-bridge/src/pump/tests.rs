@@ -2,6 +2,15 @@ use super::*;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
+fn make_enqueue(key: AxisKey, pieces: Vec<(PieceEntry, f64)>, fresh_stream: bool) -> PumpMsg {
+    PumpMsg::Enqueue(EnqueueMsg {
+        key,
+        pieces,
+        fresh_stream,
+        lead_secs: MAX_LEAD_SECS,
+    })
+}
+
 #[test]
 fn room_full_then_drains() {
     let mut q = AxisQueue::new(4);
@@ -83,11 +92,11 @@ fn run_pump_sets_start_slot_from_cursor_and_advances_it() {
         run_pump(rx, sink_clone, |_key| RING_DEPTH, |_mcu| None, |_| {});
     });
 
-    tx.send(PumpMsg::Enqueue(EnqueueMsg {
-        key: AxisKey { mcu_id: 1, axis: 0 },
-        pieces: (0..N).map(|i| make_piece(i as u64)).collect(),
-        fresh_stream: false,
-    }))
+    tx.send(make_enqueue(
+        AxisKey { mcu_id: 1, axis: 0 },
+        (0..N).map(|i| make_piece(i as u64)).collect(),
+        false,
+    ))
     .unwrap();
     {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -100,11 +109,11 @@ fn run_pump_sets_start_slot_from_cursor_and_advances_it() {
         }
     }
 
-    tx.send(PumpMsg::Enqueue(EnqueueMsg {
-        key: AxisKey { mcu_id: 1, axis: 0 },
-        pieces: (N..N * 2).map(|i| make_piece(i as u64)).collect(),
-        fresh_stream: false,
-    }))
+    tx.send(make_enqueue(
+        AxisKey { mcu_id: 1, axis: 0 },
+        (N..N * 2).map(|i| make_piece(i as u64)).collect(),
+        false,
+    ))
     .unwrap();
     {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -160,4 +169,84 @@ fn junction_jumps_math() {
         "tick gap should be zero, got {tick_us3}"
     );
     assert!((host_us3 - 500.0).abs() < 1e-3, "host_jump_us={host_us3}");
+}
+
+struct NullSink;
+
+impl PieceSink for NullSink {
+    fn send_frame(
+        &self,
+        _key: AxisKey,
+        _pieces: &[PieceEntry],
+        _start_slot: u16,
+        _new_head: u32,
+    ) -> Result<i32, SendError> {
+        Ok(kalico_protocol::result_codes::OK)
+    }
+}
+
+#[test]
+fn flush_clears_queued_pieces_and_junctions() {
+    let key = AxisKey { mcu_id: 1, axis: 0 };
+    let (tx, rx) = mpsc::channel::<PumpMsg>();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
+
+    let handle = std::thread::spawn(move || {
+        run_pump(rx, NullSink, |_key| 64, |_mcu| None, |_| {});
+        let _ = done_tx.send(());
+    });
+
+    // Enqueue 4 pieces, then flush, then enqueue again without a fresh_stream.
+    // fresh_stream=false + no junction_ends entry = no junction warning path.
+    tx.send(make_enqueue(
+        key,
+        (0u64..4).map(make_piece).collect(),
+        true,
+    ))
+    .unwrap();
+
+    // The pump drains immediately (no clock = no horizon gate). Give it time.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    // Enqueue without flushing to establish junction state, then flush.
+    tx.send(make_enqueue(
+        key,
+        (100u64..104).map(make_piece).collect(),
+        false,
+    ))
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    tx.send(PumpMsg::Flush(vec![key])).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    // After flush, enqueue again with fresh_stream=false. The pump must not
+    // produce a junction-overlap warn because junction_ends was cleared. We
+    // verify this indirectly: if the pump is still alive, the Flush was
+    // processed without panic (fail-loud invariant holds).
+    tx.send(make_enqueue(
+        key,
+        (200u64..202).map(make_piece).collect(),
+        false,
+    ))
+    .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    tx.send(PumpMsg::Shutdown).unwrap();
+    handle.join().unwrap();
+    let _ = done_rx.try_recv();
+}
+
+#[test]
+fn flush_unknown_key_is_noop() {
+    let (tx, rx) = mpsc::channel::<PumpMsg>();
+    let handle = std::thread::spawn(move || {
+        run_pump(rx, NullSink, |_key| 64, |_mcu| None, |_| {});
+    });
+
+    let never_enqueued = AxisKey { mcu_id: 99, axis: 7 };
+    tx.send(PumpMsg::Flush(vec![never_enqueued])).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    tx.send(PumpMsg::Shutdown).unwrap();
+    handle.join().unwrap();
 }

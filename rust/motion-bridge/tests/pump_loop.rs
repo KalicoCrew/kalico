@@ -44,12 +44,14 @@ fn pump_stalls_on_ring_full_resumes_on_heartbeat() {
         key: AxisKey { mcu_id: 1, axis: 0 },
         pieces: vec![p(0), p(1)],
         fresh_stream: true,
+        lead_secs: motion_bridge_native::pump::MAX_LEAD_SECS,
     }))
     .unwrap();
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key: AxisKey { mcu_id: 1, axis: 0 },
         pieces: vec![p(2)],
         fresh_stream: false,
+        lead_secs: motion_bridge_native::pump::MAX_LEAD_SECS,
     }))
     .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(50));

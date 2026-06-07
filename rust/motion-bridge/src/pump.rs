@@ -17,6 +17,7 @@ pub struct AxisQueue {
     pub retired: u32,
     pub ring_depth: u32,
     pub physical_write_cursor: u32,
+    pub lead_secs: f64,
 }
 
 impl AxisQueue {
@@ -27,6 +28,7 @@ impl AxisQueue {
             retired: 0,
             ring_depth,
             physical_write_cursor: 0,
+            lead_secs: MAX_LEAD_SECS,
         }
     }
     pub fn room(&self) -> u32 {
@@ -75,7 +77,7 @@ pub enum Schedule {
 pub fn schedule(
     queues: &BTreeMap<AxisKey, AxisQueue>,
     max_per_frame: usize,
-    horizon_of: impl Fn(u32) -> Option<u64>,
+    horizon_of: impl Fn(&AxisKey, &AxisQueue) -> Option<u64>,
 ) -> Schedule {
     let mut stall_ahead_candidate: Option<AxisKey> = None;
 
@@ -99,7 +101,7 @@ pub fn schedule(
         return Schedule::StallFull(head_key);
     }
 
-    if let Some(horizon) = horizon_of(head_key.mcu_id) {
+    if let Some(horizon) = horizon_of(&head_key, head_q) {
         if head_start_ticks > horizon {
             return Schedule::StallAhead(head_key);
         }
@@ -135,7 +137,7 @@ pub fn schedule(
             maxed.insert(k);
             continue;
         }
-        if let Some(horizon) = horizon_of(k.mcu_id) {
+        if let Some(horizon) = horizon_of(&k, q) {
             if start_ticks > horizon {
                 if stall_ahead_candidate.is_none() {
                     stall_ahead_candidate = Some(k);
@@ -180,6 +182,7 @@ pub struct EnqueueMsg {
     /// MCU-clock-domain-specific and incomparable across MCUs.
     pub pieces: Vec<(PieceEntry, f64)>,
     pub fresh_stream: bool,
+    pub lead_secs: f64,
 }
 
 pub struct HeartbeatMsg {
@@ -190,6 +193,7 @@ pub struct HeartbeatMsg {
 pub enum PumpMsg {
     Enqueue(EnqueueMsg),
     Heartbeat(HeartbeatMsg),
+    Flush(Vec<AxisKey>),
     Shutdown,
 }
 
@@ -246,7 +250,7 @@ pub fn junction_jumps(
     (tick_jump_us, host_jump_us)
 }
 
-const MAX_LEAD_SECS: f64 = 1.0;
+pub const MAX_LEAD_SECS: f64 = 1.0;
 
 /// Run the piece pump loop.
 ///
@@ -278,10 +282,19 @@ pub fn run_pump<S, F, C, A>(
      -> bool {
         match msg {
             PumpMsg::Shutdown => return false,
+            PumpMsg::Flush(keys) => {
+                for key in keys {
+                    if let Some(q) = queues.get_mut(&key) {
+                        q.pieces.clear();
+                    }
+                    junction_ends.remove(&key);
+                }
+            }
             PumpMsg::Enqueue(EnqueueMsg {
                 key,
                 pieces,
                 fresh_stream,
+                lead_secs,
             }) => {
                 if fresh_stream {
                     junction_ends.remove(&key);
@@ -335,6 +348,7 @@ pub fn run_pump<S, F, C, A>(
                 let q = queues
                     .entry(key)
                     .or_insert_with(|| AxisQueue::new(ring_depth_of(key)));
+                q.lead_secs = lead_secs;
                 q.pieces.extend(pieces);
             }
             PumpMsg::Heartbeat(HeartbeatMsg {
@@ -356,20 +370,23 @@ pub fn run_pump<S, F, C, A>(
         true
     };
 
-    let horizon_of = |mcu_id: u32| -> Option<u64> {
-        let (ack_now, freq) = mcu_clock_of(mcu_id)?;
+    let horizon_of = |k: &AxisKey, q: &AxisQueue| -> Option<u64> {
+        let (ack_now, freq) = mcu_clock_of(k.mcu_id)?;
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        Some(ack_now + (MAX_LEAD_SECS * freq) as u64)
+        Some(ack_now + (q.lead_secs * freq) as u64)
     };
 
     let mut holding_ahead = false;
 
     loop {
-        // If we are holding pieces that are time-gated, poll every 50 ms so
-        // the horizon sweeps forward (ack_now advances with the MCU clock).
-        // Otherwise block indefinitely — a heartbeat or enqueue will wake us.
+        let homing_poll = holding_ahead
+            && queues
+                .values()
+                .any(|q| q.lead_secs < 0.1 && !q.pieces.is_empty());
+        let poll_ms = if homing_poll { 10 } else { 50 };
+
         let first = if holding_ahead {
-            match rx.recv_timeout(Duration::from_millis(50)) {
+            match rx.recv_timeout(Duration::from_millis(poll_ms)) {
                 Ok(m) => Some(m),
                 Err(RecvTimeoutError::Timeout) => None,
                 Err(RecvTimeoutError::Disconnected) => return,

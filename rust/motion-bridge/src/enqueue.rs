@@ -10,6 +10,7 @@ pub fn enqueue_segment<P>(
     t0: f64,
     fresh_stream: bool,
     host_now: f64,
+    lead_secs: f64,
     project: P,
 ) -> Vec<EnqueueMsg>
 where
@@ -53,6 +54,7 @@ where
                     },
                     pieces,
                     fresh_stream,
+                    lead_secs,
                 });
             }
         }
