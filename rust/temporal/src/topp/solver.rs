@@ -846,9 +846,15 @@ const SLP9_RHO_A_MAX: f64 = 0.40;
 
 const SLP9_MAX_BACKTRACKS: u32 = 3;
 
-/// Homotopy schedule: cut RHS = `j_max · max(1+ε, R_k · decay)`. 0.85 (gentle)
+/// Homotopy schedule: cut RHS = `j_max · max(floor, R_k · decay)`. 0.85 (gentle)
 /// vs 0.5 (aggressive): at R≈1.24, decay=0.5 clamps target below the iterate.
 const SLP9_TARGET_DECAY: f64 = 0.85;
+
+/// The endgame cut target sits this fraction INSIDE the acceptance bar
+/// `1 + SLP9_EPS_FEAS`. Targeting the bar exactly makes convergence a coin
+/// flip on solve noise — observed stalls at ratio 1.0500000000422 vs the
+/// 1.05 acceptance check.
+const SLP9_TARGET_MARGIN: f64 = 1e-3;
 
 /// Path-jerk SLP (stage 1) then per-axis-jerk SLP (stage 2). Path-jerk
 /// failures short-circuit stage 2.
@@ -906,7 +912,8 @@ pub(crate) fn slp_solve_with_axis_jerk(
         }
 
         let h = bundle.h;
-        let target_ratio = (best_ratio * SLP9_TARGET_DECAY).max(1.0 + SLP9_EPS_FEAS);
+        let target_floor = (1.0 + SLP9_EPS_FEAS) * (1.0 - SLP9_TARGET_MARGIN);
+        let target_ratio = (best_ratio * SLP9_TARGET_DECAY).max(target_floor);
         let cuts = build_axis_jerk_cuts(&last_result, grid, limits, target_ratio, h);
         if cuts.is_empty() {
             return Ok((

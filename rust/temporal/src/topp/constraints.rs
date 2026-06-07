@@ -57,6 +57,27 @@ pub const B_MAX_CENT_CAP: f64 = 1e8;
 /// zero and the corresponding constraint row is skipped (vacuous).
 const COMP_FLOOR: f64 = 1e-12;
 
+/// Double-S reachable-velocity envelope from rest: returns `v²` at arc-distance
+/// `d` from the rest endpoint, under constant-jerk `J` and constant-accel `A`
+/// phases.
+///
+/// Derivation: constant-jerk from rest gives s = J·t³/6, v = J·t²/2, so
+/// v² = (6^(4/3)/4)·(J·s²)^(2/3); once a=A is reached (at s = A³/(6J²)),
+/// constant-A kinematics extend the envelope as v² = v1² + 2A·(s − s1).
+///
+/// Used by block (e2) to close the jerk-impulse hole at b→0 where block (f)'s
+/// √b weight vanishes; A/J must be the max-over-grid projected caps so the
+/// envelope over-estimates reachability (sound, never cuts the true optimum).
+pub fn rest_boundary_b_cap(d: f64, a_env: f64, j_env: f64) -> f64 {
+    let s1 = a_env * a_env * a_env / (6.0 * j_env * j_env);
+    let v1_sq = (a_env * a_env / (2.0 * j_env)).powi(2);
+    if d <= s1 {
+        (6.0_f64.powf(4.0 / 3.0) / 4.0) * (j_env * d * d).powf(2.0 / 3.0)
+    } else {
+        v1_sq + 2.0 * a_env * (d - s1)
+    }
+}
+
 /// `grid`, `limits`, and `endpoints` must share the unit system described by
 /// `scale`; the dimensioned guard constants in this file are physical (mm)
 /// values converted through `scale` at use.
@@ -83,6 +104,38 @@ pub fn build(
             }
         })
         .collect();
+
+    // Max-over-grid projected tangential acceleration and jerk caps.
+    // Each axis contributes a_max[ax] / |c'[ax]| (resp. j_max); the per-point
+    // min over active axes gives the tightest scalar bound at that grid point.
+    // The global max over all grid points ensures the envelope over-estimates
+    // reachability (sound: never cuts the true optimum).
+    let (a_env, j_env) = {
+        let mut a_env = f64::NEG_INFINITY;
+        let mut j_env = f64::NEG_INFINITY;
+        for i in 0..n {
+            let mut a_tan_i = f64::INFINITY;
+            let mut j_tan_i = f64::INFINITY;
+            let mut active = false;
+            for ax in 0..3 {
+                let g = grid.c_prime[i][ax].abs();
+                if g > COMP_FLOOR {
+                    a_tan_i = a_tan_i.min(limits.a_max[ax] / g);
+                    j_tan_i = j_tan_i.min(limits.j_max[ax] / g);
+                    active = true;
+                }
+            }
+            if active {
+                a_env = a_env.max(a_tan_i);
+                j_env = j_env.max(j_tan_i);
+            }
+        }
+        debug_assert!(
+            a_env > 0.0 && j_env > 0.0,
+            "A_env/J_env must be positive — corrupt grid tangents"
+        );
+        (a_env, j_env)
+    };
 
     let b_start = endpoints.v_start * endpoints.v_start;
     let b_end = endpoints.v_end * endpoints.v_end;
@@ -267,6 +320,42 @@ pub fn build(
             push_row(&mut a_rows, &mut b_rhs, &[(off_b + i, -1.0)], b_max_cent[i]);
         }
         cones.push((Cone::Nonneg, count));
+    }
+
+    // Block (e2): rest-boundary reachable-velocity envelope — nonneg cone.
+    // At a true rest boundary a=0 (standstill), so the double-S reachable-b
+    // envelope is the exact necessary bound; this closes the jerk-impulse hole
+    // at b→0 where block (f)'s √b weight vanishes. A_env/J_env use the
+    // max-over-grid projected caps so the envelope over-estimates reachability
+    // (sound, never cuts the true optimum). Tsujita et al. arXiv 2202.10029 §III
+    // impose exactly such per-grid reachable-envelope rows (their Eq. 17c).
+    {
+        let mut count = 0_usize;
+        if endpoints.v_start == 0.0 {
+            for i in 1..n {
+                let d = grid.s[i] - grid.s[0];
+                let cap = rest_boundary_b_cap(d, a_env, j_env);
+                if cap >= b_cap {
+                    break;
+                }
+                push_row(&mut a_rows, &mut b_rhs, &[(off_b + i, -1.0)], cap);
+                count += 1;
+            }
+        }
+        if endpoints.v_end == 0.0 {
+            for i in (0..n - 1).rev() {
+                let d = grid.s[n - 1] - grid.s[i];
+                let cap = rest_boundary_b_cap(d, a_env, j_env);
+                if cap >= b_cap {
+                    break;
+                }
+                push_row(&mut a_rows, &mut b_rhs, &[(off_b + i, -1.0)], cap);
+                count += 1;
+            }
+        }
+        if count > 0 {
+            cones.push((Cone::Nonneg, count));
+        }
     }
 
     // Block (f): scalar-tangential jerk envelope — nonneg cone, 2·(N-2) rows.
