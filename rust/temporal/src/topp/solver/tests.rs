@@ -139,6 +139,31 @@ fn axis_jerk_cut_row_norm_is_one() {
     );
 }
 
+#[test]
+fn find_jerk_violators_chain_ratio_has_no_spurious_h_factor() {
+    // Uniform grid with h=0.5. b_dd_weights returns [1/h², -2/h², 1/h²], so
+    // b_dd = (b0 - 2*b1 + b2) / h² directly — no extra h² should appear in
+    // the ratio denominator.
+    //
+    // Construction: target ratio = 1.10 (safely above the 1+SLP_EPS_FEAS=1.05 gate).
+    //   ratio = |b_dd| * sqrt(b1) / (2*J)
+    //   want 1.10 = |b_dd| * sqrt(400) / (2*100) → |b_dd| = 1.10*200/20 = 11.0
+    //   b_dd = (b0 - 2*400 + b2)/h² with h=0.5 → (b0-800+b2)/0.25 = 11.0
+    //   symmetric: b0=b2=400 + 11.0*0.25/2 = 400 + 1.375 = 401.375
+    let h = 0.5_f64;
+    let j_path = 100.0_f64;
+    let b = vec![401.375_f64, 400.0, 401.375];
+    let h_intervals = vec![h, h];
+    let violators = find_jerk_violators_chain(&b, &h_intervals, j_path);
+    assert_eq!(violators.len(), 1, "middle point should be the lone violator");
+    let got_ratio = violators[0].ratio;
+    assert!(
+        (got_ratio - 1.10).abs() < 1e-3,
+        "ratio {got_ratio} should be ≈1.10; a spurious h² divisor would give {:.4} instead",
+        got_ratio / (h * h),
+    );
+}
+
 fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
     let s: Vec<f64> = (0..n).map(|i| length * i as f64 / (n - 1) as f64).collect();
     let u = s.clone();

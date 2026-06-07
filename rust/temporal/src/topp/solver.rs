@@ -1221,8 +1221,7 @@ pub(crate) fn find_jerk_violators_chain(
         let (idx, hl, hr) = crate::topp::stencil::stencil_at(i, n, h_intervals);
         let w = crate::topp::stencil::b_dd_weights(hl, hr);
         let b_dd = w[0] * b[idx[0]] + w[1] * b[idx[1]] + w[2] * b[idx[2]];
-        let h_bar = 0.5 * (hl + hr);
-        let ratio = b_dd.abs() * bi.sqrt() / (2.0 * j_path * h_bar * h_bar);
+        let ratio = b_dd.abs() * bi.sqrt() / (2.0 * j_path);
         if ratio > 1.0 + SLP_EPS_FEAS {
             out.push(JerkViolator { i, ratio });
         }
