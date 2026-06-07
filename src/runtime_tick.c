@@ -326,9 +326,6 @@ extern void runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps);
 // the same NVIC priority as TIM5, so the kick from the TIM5 ISR is SPSC-safe
 // (see kalico_nvic_prio.h).
 
-// Mirrors per_axis_timer.rs::STEP_OUTPUT_DISABLE.
-#define KALICO_STEP_OUTPUT_DISABLE 0xFFFFFFFFu
-
 extern void step_output_timer_arm(uint32_t cycle_abs);
 extern uint32_t step_output_timer_armed_target(void);
 extern uint8_t step_output_timer_is_running(void);

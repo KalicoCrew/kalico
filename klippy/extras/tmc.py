@@ -694,19 +694,11 @@ class TMCVirtualPinHelper:
             "homing:homing_move_end", self.handle_homing_move_end
         )
         self.mcu_endstop = ppins.setup_pin("endstop", self.diag_pin)
-        if True:
-            self.mcu_endstop._is_sensorless_diag = True
-            self.mcu_endstop._sensorless_mcu_tmc = self.mcu_tmc
-            try:
-                self.mcu_endstop._sensorless_trip_immediately = (
-                    self.config_section.getboolean(
-                        "homing_trip_immediately", False
-                    )
-                    if hasattr(self, "config_section")
-                    else False
-                )
-            except Exception:
-                self.mcu_endstop._sensorless_trip_immediately = False
+        self.mcu_endstop._is_sensorless_diag = True
+        self.mcu_endstop._sensorless_mcu_tmc = self.mcu_tmc
+        self.mcu_endstop._sensorless_trip_immediately = (
+            self.config_section.getboolean("homing_trip_immediately", False)
+        )
         return self.mcu_endstop
 
     def handle_homing_move_begin(self, hmove):

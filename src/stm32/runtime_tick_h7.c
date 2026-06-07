@@ -203,7 +203,7 @@ __attribute__((used, externally_visible))
 void
 step_output_timer_arm(uint32_t cycle_abs)
 {
-    if (cycle_abs == 0xFFFFFFFFu /* KALICO_STEP_OUTPUT_DISABLE */) {
+    if (cycle_abs == KALICO_STEP_OUTPUT_DISABLE) {
         TIM3->DIER &= ~TIM_DIER_CC1IE;
         step_out_running = 0;
         return;
