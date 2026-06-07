@@ -29,6 +29,33 @@ pub fn build_extension_parser() -> Arc<MsgProtoParser> {
     Arc::new(MsgProtoParser::from_dictionary(dict).expect("extension parser build failed"))
 }
 
+/// Build a `MsgProtoParser` for participant-timeout relay tests:
+///
+/// - `trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u`
+///   (response msgid=30, emitted by participant MCU)
+/// - `trsync_set_timeout oid=%c clock=%u`
+///   (command msgid=31, sent to participant MCU by extension engine)
+/// - `trsync_trigger oid=%c reason=%c`
+///   (command msgid=32, sent to sink MCU on trip relay)
+pub fn build_trigger_relay_parser() -> Arc<MsgProtoParser> {
+    let dict_json = serde_json::json!({
+        "commands": {
+            "trsync_set_timeout oid=%c clock=%u": 31,
+            "trsync_trigger oid=%c reason=%c": 32
+        },
+        "responses": {
+            "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u": 30
+        },
+        "output": {},
+        "enumerations": {},
+        "config": {},
+        "version": "test",
+        "app": "test"
+    });
+    let dict: DataDictionary = serde_json::from_value(dict_json).expect("bad trigger relay dict");
+    Arc::new(MsgProtoParser::from_dictionary(dict).expect("trigger relay parser build failed"))
+}
+
 /// Encode a `trsync_state` frame (msgid=30).
 pub fn build_trsync_state_frame(oid: u8, can_trigger: u8, clock: u32, seq: u8) -> Vec<u8> {
     use kalico_host_rt::host_io::parser::encode_vlq;

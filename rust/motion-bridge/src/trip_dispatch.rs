@@ -255,6 +255,9 @@ pub fn prepare(
             let engine = Arc::clone(&engine);
             let clock_of = Arc::clone(&clock_of);
             let participant_io = participant_io.clone();
+            let fan = Arc::clone(&fan);
+            let triggered = Arc::clone(&triggered);
+            let sink_ios = sink_ios.clone();
             let mcu = spec.mcu;
 
             let id = match part_io.register_frame_interceptor(
@@ -262,6 +265,16 @@ pub fn prepare(
                 Some(u32::from(spec.trsync_oid)),
                 Box::new(move |params| {
                     if params.get_u32("can_trigger") == 0 {
+                        // Participant's expire timer fired (REASON_COMMS_TIMEOUT)
+                        // or was soft-tripped. Relay the trip to all sinks and
+                        // set the triggered flag, matching mainline trdispatch's
+                        // `if (!can_trigger)` broadcast branch.
+                        fan.on_trip(|mcu, cmd| {
+                            if let Some((_, io)) = sink_ios.iter().find(|(m, _)| *m == mcu) {
+                                let _ = io.send_fire_and_forget(cmd);
+                            }
+                        });
+                        triggered.store(true, Ordering::Release);
                         return;
                     }
 

@@ -135,7 +135,7 @@ use std::sync::Arc;
 use kalico_host_rt::host_io::test_harness::ReactorHarness;
 
 use crate::test_support::{
-    build_extension_parser, build_trsync_state_frame, extract_payloads,
+    build_extension_parser, build_trigger_relay_parser, build_trsync_state_frame, extract_payloads,
 };
 
 /// Poll `f()` up to `max_attempts` times with `interval` between attempts.
@@ -301,6 +301,191 @@ fn no_past_clock_sent_on_first_report_after_prepare() {
             }
         }
     }
+
+    cleanup(handle);
+}
+
+// ---------------------------------------------------------------------------
+// Participant can_trigger=0 relay tests — mainline trdispatch parity
+// ---------------------------------------------------------------------------
+
+/// A `trsync_state can_trigger=0` arriving on a PARTICIPANT's io must fan
+/// `trsync_trigger` to all sinks and set the handle's triggered flag,
+/// mirroring mainline trdispatch's `if (!can_trigger)` broadcast branch.
+#[test]
+fn participant_timeout_fans_trigger_to_sink() {
+    const MCU_PARTICIPANT: u32 = 10;
+    const MCU_SINK: u32 = 20;
+    const OID_PARTICIPANT: u8 = 5;
+    const OID_SINK: u8 = 7;
+    const FREQ: f64 = 520_000_000.0;
+    const EXPIRE_S: f64 = 0.25;
+    const NOW_TICKS: u64 = 52_000_000_000;
+
+    let parser = build_trigger_relay_parser();
+
+    let participant_harness = ReactorHarness::new_with_parser(Arc::clone(&parser));
+    let sink_harness = ReactorHarness::new_with_parser(Arc::clone(&parser));
+
+    let (participant_io, participant_port) = participant_harness.into_background_io();
+    let (sink_io, sink_port) = sink_harness.into_background_io();
+
+    let handle = prepare(
+        vec![],
+        vec![SinkSpec { mcu: MCU_SINK, trsync_oid: OID_SINK }],
+        vec![(MCU_SINK, Arc::clone(&sink_io))],
+        vec![
+            (
+                ParticipantSpec { mcu: MCU_PARTICIPANT, trsync_oid: OID_PARTICIPANT },
+                Arc::clone(&participant_io),
+            ),
+        ],
+        EXPIRE_S,
+        move |_| Some((NOW_TICKS, FREQ)),
+    )
+    .expect("prepare must succeed");
+
+    assert!(!handle.was_triggered(), "triggered must be false before any frame");
+
+    // Feed participant a trsync_state with can_trigger=0 (expire timer fired).
+    let frame = build_trsync_state_frame(OID_PARTICIPANT, 0, NOW_TICKS as u32, 1);
+    participant_port.rx.lock().unwrap().extend(frame);
+
+    let sink_got_trigger = poll_until(
+        || !sink_port.tx.lock().unwrap().is_empty(),
+        std::time::Duration::from_millis(5),
+        200,
+    );
+    assert!(sink_got_trigger, "sink must receive trsync_trigger after participant can_trigger=0");
+
+    assert!(handle.was_triggered(), "handle triggered flag must be set after participant timeout");
+
+    let sink_tx = sink_port.tx.lock().unwrap().clone();
+    let payloads = extract_payloads(sink_tx);
+    assert_eq!(payloads.len(), 1, "exactly one trsync_trigger for sink");
+
+    let (name, params) = parser
+        .decode_body(&payloads[0])
+        .expect("sink payload must decode");
+    assert_eq!(name, "trsync_trigger");
+    assert_eq!(params.get_u32("oid"), u32::from(OID_SINK));
+    assert_eq!(params.get_u32("reason"), u32::from(REASON_ENDSTOP_HIT));
+
+    cleanup(handle);
+}
+
+/// A second `can_trigger=0` from the same participant must NOT produce a
+/// second `trsync_trigger` — FanOut is one-shot.
+#[test]
+fn participant_timeout_fan_is_one_shot() {
+    const MCU_PARTICIPANT: u32 = 10;
+    const MCU_SINK: u32 = 20;
+    const OID_PARTICIPANT: u8 = 5;
+    const OID_SINK: u8 = 7;
+    const FREQ: f64 = 520_000_000.0;
+    const EXPIRE_S: f64 = 0.25;
+    const NOW_TICKS: u64 = 52_000_000_000;
+
+    let parser = build_trigger_relay_parser();
+
+    let participant_harness = ReactorHarness::new_with_parser(Arc::clone(&parser));
+    let sink_harness = ReactorHarness::new_with_parser(Arc::clone(&parser));
+
+    let (participant_io, participant_port) = participant_harness.into_background_io();
+    let (sink_io, sink_port) = sink_harness.into_background_io();
+
+    let handle = prepare(
+        vec![],
+        vec![SinkSpec { mcu: MCU_SINK, trsync_oid: OID_SINK }],
+        vec![(MCU_SINK, Arc::clone(&sink_io))],
+        vec![
+            (
+                ParticipantSpec { mcu: MCU_PARTICIPANT, trsync_oid: OID_PARTICIPANT },
+                Arc::clone(&participant_io),
+            ),
+        ],
+        EXPIRE_S,
+        move |_| Some((NOW_TICKS, FREQ)),
+    )
+    .expect("prepare must succeed");
+
+    // First can_trigger=0: should fan out.
+    let frame1 = build_trsync_state_frame(OID_PARTICIPANT, 0, NOW_TICKS as u32, 1);
+    participant_port.rx.lock().unwrap().extend(frame1);
+    let _ = poll_until(
+        || !sink_port.tx.lock().unwrap().is_empty(),
+        std::time::Duration::from_millis(5),
+        200,
+    );
+
+    // Drain sink's tx so we can detect any second send.
+    let _ = sink_port.tx.lock().unwrap().drain(..).collect::<Vec<_>>();
+
+    // Second can_trigger=0: FanOut already fired — must be a no-op.
+    let frame2 = build_trsync_state_frame(OID_PARTICIPANT, 0, NOW_TICKS as u32, 2);
+    participant_port.rx.lock().unwrap().extend(frame2);
+
+    // Wait long enough that a spurious send would have arrived.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    assert!(
+        sink_port.tx.lock().unwrap().is_empty(),
+        "second participant can_trigger=0 must not produce a second trsync_trigger"
+    );
+
+    cleanup(handle);
+}
+
+/// A `can_trigger=0` on a participant's io must NOT cause the ExtensionEngine
+/// to send a `trsync_set_timeout` — the participant path returns early before
+/// feeding the engine.
+#[test]
+fn participant_timeout_does_not_feed_extension_engine() {
+    const MCU_P0: u32 = 10;
+    const MCU_P1: u32 = 11;
+    const OID_P0: u8 = 5;
+    const OID_P1: u8 = 6;
+    const FREQ: f64 = 520_000_000.0;
+    const EXPIRE_S: f64 = 0.25;
+    const NOW_TICKS: u64 = 52_000_000_000;
+
+    let parser = build_extension_parser();
+
+    let p0_harness = ReactorHarness::new_with_parser(Arc::clone(&parser));
+    let p1_harness = ReactorHarness::new_with_parser(Arc::clone(&parser));
+
+    let (p0_io, p0_port) = p0_harness.into_background_io();
+    let (p1_io, p1_port) = p1_harness.into_background_io();
+
+    let handle = prepare(
+        vec![],
+        vec![],
+        vec![],
+        vec![
+            (ParticipantSpec { mcu: MCU_P0, trsync_oid: OID_P0 }, Arc::clone(&p0_io)),
+            (ParticipantSpec { mcu: MCU_P1, trsync_oid: OID_P1 }, Arc::clone(&p1_io)),
+        ],
+        EXPIRE_S,
+        move |_| Some((NOW_TICKS, FREQ)),
+    )
+    .expect("prepare must succeed");
+
+    // Feed P0 a trsync_state with can_trigger=0.
+    let frame = build_trsync_state_frame(OID_P0, 0, NOW_TICKS as u32, 1);
+    p0_port.rx.lock().unwrap().extend(frame);
+
+    // Wait long enough that an extension send would have arrived.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    // Neither participant must receive a trsync_set_timeout — the engine was
+    // not fed.
+    assert!(
+        p0_port.tx.lock().unwrap().is_empty(),
+        "P0 must not receive trsync_set_timeout after participant can_trigger=0"
+    );
+    assert!(
+        p1_port.tx.lock().unwrap().is_empty(),
+        "P1 must not receive trsync_set_timeout after participant can_trigger=0"
+    );
 
     cleanup(handle);
 }

@@ -538,6 +538,9 @@ class BridgeTriggerDispatch:
         self._toolhead_arms = None  # set at start() for stop() cleanup
         self._sink_trsyncs = {}     # MCU object → MCU_trsync (firmware sink)
         self._trip_handle_id = None # TripDispatch relay handle (None=inactive)
+        # Mutable cell shared with sink trsync_state handlers; cleared in
+        # stop() so late-arriving trsync_state frames after teardown no-op.
+        self._sink_handler_armed = [False]
 
     def get_oid(self):
         return self._arm_id
@@ -648,41 +651,35 @@ class BridgeTriggerDispatch:
                 % self._arm_id
             )
 
-        # Arm the per-MCU sink trsyncs and wire the cross-MCU trip relay.
-        # Each sink trsync freezes its MCU's curve evaluator when the relay
-        # sends trsync_trigger; the detecting (endstop) MCU is the source.
-        # Done BEFORE endstop_arm starts GPIO sampling so a trip can't be
-        # missed.
-        #
-        # The relay handle is prepared and the sink trsyncs are armed
-        # (firmware trsync_start + runtime_stop_on_trigger) BEFORE
-        # endstop_arm, which can raise on ARM_STATUS_REJECTED. home_start
-        # (homing.py) does not wrap this in try/except, so on a raise
-        # stop() would never run and the Rust relay handle would leak / be
-        # overwritten by the next start(). Tear the relay back down and
-        # reset the handle on any failure before re-raising. Note
-        # ARM_STATUS_ALREADY_TRIPPED is a normal completion, not an
-        # exception, so it does NOT take this cleanup path.
+        # Sink trsyncs are armed (firmware trsync_start + runtime_stop_on_trigger)
+        # and the Rust relay is prepared BEFORE endstop_arm so a GPIO trip cannot
+        # race the arming window. endstop_arm can raise on ARM_STATUS_REJECTED;
+        # the except block below tears the relay down so the handle never leaks.
         from .extras.danger_options import get_danger_options
         n_participants = len(self._sink_trsyncs)
         expire_timeout = get_danger_options().multi_mcu_trsync_timeout
         if n_participants == 1:
             expire_timeout = get_danger_options().single_mcu_trsync_timeout
+        # Re-arm the handler cell so sink trsync_state callbacks are live for
+        # this homing arm (cleared in stop()).
+        self._sink_handler_armed[0] = True
         try:
-            sinks = []
-            participants = []
+            sink_participants = []
             for i, trsync in enumerate(self._sink_trsyncs.values()):
                 trsync._bridge_arm_id = self._arm_id
                 trsync.start(
                     arm_print_time, float(i) / n_participants,
                     self._completion, expire_timeout,
                 )
-                handle = trsync.get_mcu()._bridge_handle
-                sinks.append((handle, trsync.get_oid()))
-                participants.append((handle, trsync.get_oid()))
+                mcu_handle = trsync.get_mcu()._bridge_handle
+                sink_participants.append((mcu_handle, trsync.get_oid()))
+                # Register a trsync_state handler on this sink's MCU so a
+                # REASON_COMMS_TIMEOUT expire (can_trigger=0, trigger_reason>=4)
+                # surfaces as a loud completion instead of blocking home_wait.
+                self._register_sink_timeout_handler(trsync)
             sources = [(0, self._mcu, self._arm_id)]
             self._trip_handle_id = self._bridge.trip_dispatch_prepare(
-                sources, sinks, participants, expire_timeout
+                sources, sink_participants, sink_participants, expire_timeout
             )
 
             logging.info(
@@ -734,6 +731,29 @@ class BridgeTriggerDispatch:
         self._reason = REASON_ENDSTOP_HIT
         self._completion.complete(self._reason)
 
+    def _register_sink_timeout_handler(self, trsync):
+        trsync_oid = trsync.get_oid()
+        armed_cell = self._sink_handler_armed
+        completion = self._completion
+        reactor = self._reactor
+        dispatch = self
+
+        def _on_sink_trsync_state(params):
+            if not armed_cell[0]:
+                return
+            if params.get("can_trigger", 1):
+                return
+            reason = int(params.get("trigger_reason", 0))
+            if reason < REASON_COMMS_TIMEOUT:
+                return
+            armed_cell[0] = False
+            dispatch._reason = reason
+            reactor.async_complete(completion, reason)
+
+        trsync.get_mcu().register_response(
+            _on_sink_trsync_state, "trsync_state", trsync_oid
+        )
+
     def _fire_past_end_time(self):
         # Only fire if no terminal yet (mirror _on_trip_message).
         if self._reason is not None:
@@ -742,6 +762,10 @@ class BridgeTriggerDispatch:
         self._completion.complete(self._reason)
 
     def stop(self):
+        # Neutralize sink trsync_state handlers before any other teardown so
+        # late-arriving frames from the firmware can't race _completion after
+        # we've already decided the reason.
+        self._sink_handler_armed[0] = False
         # Called from MCU_endstop.home_wait. Tear down the cross-MCU trip
         # relay first so no further trsync_triggers fire on the sinks.
         # Reset the handle BEFORE the cleanup call so a raised cleanup
