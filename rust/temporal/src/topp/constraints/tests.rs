@@ -1,7 +1,8 @@
 use super::*;
 use crate::Limits;
-use crate::topp::path::ArclengthGrid;
+use crate::topp::chain::ChainGrid;
 use crate::topp::chain::tests_support::two_segment_chain_with_junction;
+use crate::topp::path::ArclengthGrid;
 
 // -------------------------------------------------------------------------
 // Test fixtures
@@ -37,6 +38,10 @@ fn textbook_limits() -> Limits {
     }
 }
 
+fn chain_of_one(grid: ArclengthGrid, limits: Limits) -> ChainGrid {
+    ChainGrid::from_segment_grids(vec![grid], vec![limits])
+}
+
 // -------------------------------------------------------------------------
 // Test 1 (plan's test): straight line, zero endpoints → BuildOutcome::Ok
 // -------------------------------------------------------------------------
@@ -46,13 +51,10 @@ fn textbook_limits() -> Limits {
 fn straight_line_zero_endpoints_builds_ok() {
     let grid = dummy_straight_grid(10, 100.0);
     let limits = textbook_limits();
-    match build(
-        &grid,
-        &limits,
-        EndpointVelocities {
-            v_start: 0.0,
-            v_end: 0.0,
-        },
+    let chain = chain_of_one(grid, limits);
+    match build_chain(
+        &chain,
+        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => {
@@ -79,13 +81,10 @@ fn boundary_above_mvc_returns_boundary_outcome() {
     let mut grid = dummy_straight_grid(5, 10.0);
     grid.kappa = vec![0.05; 5];
     let limits = textbook_limits();
-    match build(
-        &grid,
-        &limits,
-        EndpointVelocities {
-            v_start: 60_000.0,
-            v_end: 0.0,
-        },
+    let chain = chain_of_one(grid, limits);
+    match build_chain(
+        &chain,
+        EndpointConditions { v_start: 60_000.0, v_end: 0.0, a_start: None },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc { mvc_b }) => {
@@ -106,13 +105,10 @@ fn straight_line_n_vars_and_cone_count_match_design() {
     // Expect: n_vars = 5N - 6 = 5*5 - 6 = 19.
     let grid = dummy_straight_grid(5, 100.0);
     let limits = textbook_limits();
-    let bundle = match build(
-        &grid,
-        &limits,
-        EndpointVelocities {
-            v_start: 0.0,
-            v_end: 0.0,
-        },
+    let chain = chain_of_one(grid, limits);
+    let bundle = match build_chain(
+        &chain,
+        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -213,13 +209,10 @@ fn n_eq_2_minimum_grid_no_interior_points() {
     // zero-dim cones leak into the output. Verifies that contract.
     let grid = dummy_straight_grid(2, 50.0);
     let limits = textbook_limits();
-    let bundle = match build(
-        &grid,
-        &limits,
-        EndpointVelocities {
-            v_start: 0.0,
-            v_end: 0.0,
-        },
+    let chain = chain_of_one(grid, limits);
+    let bundle = match build_chain(
+        &chain,
+        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -286,13 +279,10 @@ fn env_b_continuity_at_s1_and_scaling() {
 fn zero_endpoints_emit_envelope_rows() {
     let grid = dummy_straight_grid(10, 100.0);
     let limits = textbook_limits();
-    let bundle = match build(
-        &grid,
-        &limits,
-        EndpointVelocities {
-            v_start: 0.0,
-            v_end: 0.0,
-        },
+    let chain = chain_of_one(grid, limits);
+    let bundle = match build_chain(
+        &chain,
+        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -327,13 +317,10 @@ fn zero_endpoints_emit_envelope_rows() {
 fn nonzero_endpoints_emit_no_envelope_rows() {
     let grid = dummy_straight_grid(10, 100.0);
     let limits = textbook_limits();
-    let bundle = match build(
-        &grid,
-        &limits,
-        EndpointVelocities {
-            v_start: 100.0,
-            v_end: 100.0,
-        },
+    let chain = chain_of_one(grid, limits);
+    let bundle = match build_chain(
+        &chain,
+        EndpointConditions { v_start: 100.0, v_end: 100.0, a_start: None },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -354,55 +341,6 @@ fn nonzero_endpoints_emit_no_envelope_rows() {
 // -------------------------------------------------------------------------
 // Test 8: diagonal X=Y line yields A_env ≈ √2 · a_max (projected cap)
 // -------------------------------------------------------------------------
-
-// -------------------------------------------------------------------------
-// Test 9: chain-of-1 emits identical bundle to legacy build
-// -------------------------------------------------------------------------
-
-#[test]
-fn build_chain_of_one_emits_identical_bundle() {
-    use super::{BuildOutcome, EndpointConditions, SolverScale, build_chain};
-
-    let curve = crate::topp::chain::tests_support::line_50mm();
-    let grid = crate::topp::path::sample_arclength_grid(&curve, 16).unwrap();
-    let limits = crate::Limits {
-        v_max: [300.0; 3],
-        a_max: [5_000.0; 3],
-        j_max: [100_000.0; 3],
-        a_centripetal_max: 2_500.0,
-    };
-    let scale = SolverScale::identity();
-    let legacy = match build(
-        &grid,
-        &limits,
-        EndpointVelocities { v_start: 10.0, v_end: 0.0 },
-        &scale,
-    ) {
-        BuildOutcome::Ok(b) => b,
-        other => panic!("legacy build failed: {other:?}"),
-    };
-    let chain = crate::topp::chain::ChainGrid::from_segment_grids(vec![grid], vec![limits]);
-    let new = match build_chain(
-        &chain,
-        EndpointConditions { v_start: 10.0, v_end: 0.0, a_start: None },
-        &scale,
-    ) {
-        BuildOutcome::Ok(b) => b,
-        other => panic!("chain build failed: {other:?}"),
-    };
-    assert_eq!(legacy.n_vars, new.n_vars);
-    assert_eq!(legacy.cones, new.cones);
-    assert_eq!(legacy.b_rhs.len(), new.b_rhs.len());
-    assert_eq!(legacy.a_rows.len(), new.a_rows.len());
-    for (i, (lr, nr)) in legacy.a_rows.iter().zip(&new.a_rows).enumerate() {
-        for (j, (lv, nv)) in lr.iter().zip(nr).enumerate() {
-            assert!((lv - nv).abs() < 1e-12, "row {i} col {j}: {lv} vs {nv}");
-        }
-    }
-    for (i, (lv, nv)) in legacy.b_rhs.iter().zip(&new.b_rhs).enumerate() {
-        assert!((lv - nv).abs() < 1e-12, "rhs {i}: {lv} vs {nv}");
-    }
-}
 
 // -------------------------------------------------------------------------
 // Task 5 tests: junction dual rows
@@ -495,13 +433,10 @@ fn diagonal_line_a_env_is_projected() {
         s,
     };
     let limits = textbook_limits();
-    let bundle = match build(
-        &grid,
-        &limits,
-        EndpointVelocities {
-            v_start: 0.0,
-            v_end: 0.0,
-        },
+    let chain = chain_of_one(grid.clone(), limits);
+    let bundle = match build_chain(
+        &chain,
+        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -599,4 +534,3 @@ fn junction_dual_accel_rows_use_right_limits() {
         "missing left-side accel row (a_max=5000): {accel_rhs_at_junction:?}"
     );
 }
-

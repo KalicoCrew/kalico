@@ -1,4 +1,5 @@
 use super::*;
+use constraints::EndpointConditions;
 
 /// Straight 600 mm collinear cubic at machine-limit speed: v_max = 1000 mm/s,
 /// a_max = 50 km/s². Limits mirror the bridge's `to_temporal_limits` output for
@@ -81,4 +82,28 @@ fn schedule_segment_straight_line_returns_profile() {
     assert!(profile.samples[25].v > 100.0); // ≥ 100 mm/s
     // Total time should be finite and positive.
     assert!(profile.total_time.is_finite() && profile.total_time > 0.0);
+}
+
+#[test]
+fn schedule_chain_two_collinear_segments_solves() {
+    let chain = crate::topp::chain::tests_support::two_segment_chain_with_junction();
+    let profile = schedule_chain_with_tolerance(
+        &chain,
+        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
+        ToleranceMode::Auto,
+    )
+    .expect("setup ok");
+    assert!(
+        matches!(
+            profile.status,
+            crate::SolveStatus::Solved
+                | crate::SolveStatus::SolvedInexact { .. }
+                | crate::SolveStatus::SolvedSlp { .. }
+        ),
+        "status: {:?}",
+        profile.status
+    );
+    assert_eq!(profile.samples.len(), chain.n_points());
+    assert!(profile.samples[0].v < 1e-3);
+    assert!(profile.samples.last().unwrap().v < 1e-3);
 }

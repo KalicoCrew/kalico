@@ -1,5 +1,4 @@
 use crate::topp::chain::ChainGrid;
-use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::SolverResult;
 use crate::{Axis, BindingConstraint, Limits};
 
@@ -137,83 +136,6 @@ fn ratios_at(p: &PointInputs<'_>) -> PointRatios {
         worst_tag,
         max_jerk,
         max_non_jerk,
-    }
-}
-
-pub(crate) fn check(
-    grid: &ArclengthGrid,
-    result: &SolverResult,
-    limits: &Limits,
-    h: f64,
-) -> VerifyReport {
-    let n = grid.s.len();
-    debug_assert_eq!(result.b.len(), n);
-    debug_assert_eq!(result.a.len(), n);
-
-    let mut binding_per_grid: Vec<BindingConstraint> = Vec::with_capacity(n);
-    let mut global_worst_ratio: f64 = f64::NEG_INFINITY;
-    let mut global_worst_idx: usize = 0;
-    let mut worst_jerk_ratio: f64 = 0.0;
-    let mut worst_non_jerk_ratio: f64 = 0.0;
-
-    for i in 0..n {
-        let b_i = result.b[i];
-        let a_i = result.a[i];
-
-        let s_dot = b_i.max(0.0).sqrt();
-        let s_ddot = a_i;
-        let s_dddot = crate::topp::stencil::s_dddot_at(&result.b, i, h);
-
-        let pr = ratios_at(&PointInputs {
-            cp: grid.c_prime[i],
-            cpp: grid.c_double_prime[i],
-            cppp: grid.c_triple_prime[i],
-            kappa: grid.kappa[i],
-            b_i,
-            s_dot,
-            s_ddot,
-            s_dddot,
-            limits,
-        });
-
-        let final_tag = if (i == 0 || i == n - 1) && b_i.abs() < BOUNDARY_B_TOL {
-            BindingConstraint::Boundary
-        } else {
-            pr.worst_tag
-        };
-
-        if pr.worst_ratio > global_worst_ratio {
-            global_worst_ratio = pr.worst_ratio;
-            global_worst_idx = i;
-        }
-
-        if pr.max_jerk > worst_jerk_ratio {
-            worst_jerk_ratio = pr.max_jerk;
-        }
-        if pr.max_non_jerk > worst_non_jerk_ratio {
-            worst_non_jerk_ratio = pr.max_non_jerk;
-        }
-
-        binding_per_grid.push(final_tag);
-    }
-
-    if n == 0 {
-        return VerifyReport {
-            binding_per_grid,
-            worst_violation: f64::NEG_INFINITY,
-            worst_violation_grid: 0,
-            feasible: true,
-        };
-    }
-
-    let worst_violation = global_worst_ratio - 1.0;
-    let feasible =
-        worst_jerk_ratio <= 1.0 + EPS_FEAS_JERK && worst_non_jerk_ratio <= 1.0 + EPS_FEAS;
-    VerifyReport {
-        binding_per_grid,
-        worst_violation,
-        worst_violation_grid: global_worst_idx,
-        feasible,
     }
 }
 

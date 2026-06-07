@@ -1,5 +1,7 @@
 use super::*;
 use crate::Limits;
+use crate::topp::chain::ChainGrid;
+use crate::topp::path::ArclengthGrid;
 use crate::topp::solver::{SolverResult, SolverStatus};
 
 fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
@@ -31,17 +33,21 @@ fn textbook_limits() -> Limits {
     }
 }
 
+fn chain_of_one(grid: ArclengthGrid, limits: Limits) -> ChainGrid {
+    ChainGrid::from_segment_grids(vec![grid], vec![limits])
+}
+
 #[test]
 fn zero_profile_is_feasible() {
     let grid = dummy_straight_grid(5, 10.0);
     let limits = textbook_limits();
+    let chain = chain_of_one(grid, limits);
     let result = SolverResult {
         b: vec![0.0; 5],
         a: vec![0.0; 5],
         status: SolverStatus::Solved,
     };
-    let h = grid.s[1] - grid.s[0];
-    let report = check(&grid, &result, &limits, h);
+    let report = check_chain(&chain, &result);
     assert!(report.feasible);
     assert!(report.worst_violation < EPS_FEAS);
     assert!(
@@ -56,14 +62,14 @@ fn zero_profile_is_feasible() {
 fn over_velocity_profile_flagged() {
     let grid = dummy_straight_grid(5, 100.0);
     let limits = textbook_limits();
+    let chain = chain_of_one(grid, limits);
     // b = v² far above v_max² = 250_000 ⇒ infeasible on velocity.
     let result = SolverResult {
         b: vec![1_000_000.0; 5],
         a: vec![0.0; 5],
         status: SolverStatus::Solved,
     };
-    let h = grid.s[1] - grid.s[0];
-    let report = check(&grid, &result, &limits, h);
+    let report = check_chain(&chain, &result);
     assert!(!report.feasible);
 }
 
@@ -75,14 +81,14 @@ fn over_velocity_profile_flagged() {
 fn at_limit_velocity_is_feasible() {
     let grid = dummy_straight_grid(5, 100.0);
     let limits = textbook_limits();
+    let chain = chain_of_one(grid, limits);
     // v = 500.0 mm/s  →  b = v² = 250_000
     let result = SolverResult {
         b: vec![250_000.0; 5],
         a: vec![0.0; 5],
         status: SolverStatus::Solved,
     };
-    let h = grid.s[1] - grid.s[0];
-    let report = check(&grid, &result, &limits, h);
+    let report = check_chain(&chain, &result);
     // worst_violation should be ~0.0 (right at limit), not positive.
     assert!(
         report.feasible,
@@ -102,14 +108,14 @@ fn at_limit_velocity_is_feasible() {
 fn over_accel_profile_flagged_as_accel() {
     let grid = dummy_straight_grid(5, 100.0);
     let limits = textbook_limits();
+    let chain = chain_of_one(grid, limits);
     // v = 100 mm/s (well below limit), but a = 10_000 mm/s² > a_max = 5_000.
     let result = SolverResult {
         b: vec![10_000.0; 5], // v = 100 mm/s
         a: vec![10_000.0; 5], // s̈ = 10_000 mm/s² (2× a_max)
         status: SolverStatus::Solved,
     };
-    let h = grid.s[1] - grid.s[0];
-    let report = check(&grid, &result, &limits, h);
+    let report = check_chain(&chain, &result);
     assert!(!report.feasible, "over-accel profile should be infeasible");
     // The binding constraint at interior points must be AxisAccel{X} since
     // the tangent is purely in X on a straight grid.
@@ -126,14 +132,14 @@ fn over_accel_profile_flagged_as_accel() {
 fn boundary_points_tagged_correctly() {
     let grid = dummy_straight_grid(5, 100.0);
     let limits = textbook_limits();
+    let chain = chain_of_one(grid, limits);
     // Endpoints pinned to zero; interior at moderate velocity.
     let result = SolverResult {
         b: vec![0.0, 50_000.0, 100_000.0, 50_000.0, 0.0],
         a: vec![0.0, 1_000.0, 0.0, -1_000.0, 0.0],
         status: SolverStatus::Solved,
     };
-    let h = grid.s[1] - grid.s[0];
-    let report = check(&grid, &result, &limits, h);
+    let report = check_chain(&chain, &result);
     assert!(
         matches!(report.binding_per_grid[0], BindingConstraint::Boundary),
         "start should be Boundary, got {:?}",
@@ -162,13 +168,14 @@ fn jerk_ratio_1_03_is_feasible() {
 
     let grid = dummy_straight_grid(n, length);
     let limits = textbook_limits();
+    let chain = chain_of_one(grid, limits);
     let b = vec![b_v2, b_v2 + delta, b_v2, b_v2 + delta, b_v2];
     let result = SolverResult {
         b,
         a: vec![0.0; n],
         status: SolverStatus::Solved,
     };
-    let report = check(&grid, &result, &limits, h);
+    let report = check_chain(&chain, &result);
     assert!(
         report.feasible,
         "jerk ratio 1.03 must be within EPS_FEAS_JERK (5%) and thus feasible; \
@@ -191,13 +198,14 @@ fn jerk_ratio_1_06_is_infeasible() {
 
     let grid = dummy_straight_grid(n, length);
     let limits = textbook_limits();
+    let chain = chain_of_one(grid, limits);
     let b = vec![b_v2, b_v2 + delta, b_v2, b_v2 + delta, b_v2];
     let result = SolverResult {
         b,
         a: vec![0.0; n],
         status: SolverStatus::Solved,
     };
-    let report = check(&grid, &result, &limits, h);
+    let report = check_chain(&chain, &result);
     assert!(
         !report.feasible,
         "jerk ratio 1.06 must exceed EPS_FEAS_JERK (5%) and thus be infeasible; \
@@ -211,13 +219,13 @@ fn jerk_ratio_1_06_is_infeasible() {
 fn accel_ratio_1_03_is_infeasible() {
     let grid = dummy_straight_grid(5, 100.0);
     let limits = textbook_limits();
+    let chain = chain_of_one(grid, limits);
     let result = SolverResult {
         b: vec![10_000.0; 5], // v = 100 mm/s
         a: vec![5_150.0; 5],  // 3% over a_max
         status: SolverStatus::Solved,
     };
-    let h = 100.0 / 4.0;
-    let report = check(&grid, &result, &limits, h);
+    let report = check_chain(&chain, &result);
     assert!(
         !report.feasible,
         "accel ratio 1.03 must exceed the tight EPS_FEAS (0.2%) band and be \
@@ -255,14 +263,14 @@ fn over_centripetal_profile_flagged() {
     };
 
     let limits = textbook_limits(); // a_centripetal_max = 2_500
+    let chain = chain_of_one(grid, limits);
     // b = 5_000 → centripetal accel = b·κ = 5_000 > 2_500.
     let result = SolverResult {
         b: vec![5_000.0; n],
         a: vec![0.0; n],
         status: SolverStatus::Solved,
     };
-    let h = grid.s[1] - grid.s[0];
-    let report = check(&grid, &result, &limits, h);
+    let report = check_chain(&chain, &result);
     assert!(
         !report.feasible,
         "over-centripetal profile should be infeasible"
@@ -280,7 +288,6 @@ fn over_centripetal_profile_flagged() {
 }
 
 use crate::topp::chain::tests_support::two_segment_chain_with_junction;
-use crate::topp::verify::check_chain;
 
 #[test]
 fn junction_dual_limits_are_verified() {
@@ -328,13 +335,14 @@ fn jerk_riding_does_not_mask_accel_violation() {
 
     let grid = dummy_straight_grid(n, length);
     let limits = textbook_limits();
+    let chain = chain_of_one(grid, limits);
     let result = SolverResult {
         b,
         a,
         status: SolverStatus::Solved,
     };
 
-    let report = check(&grid, &result, &limits, h);
+    let report = check_chain(&chain, &result);
     assert!(
         !report.feasible,
         "accel ratio 1.01 must be caught even when jerk (ratio ~1.04) is the \

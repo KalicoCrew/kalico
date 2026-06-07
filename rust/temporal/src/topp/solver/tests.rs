@@ -1,6 +1,7 @@
 use super::*;
 use crate::Limits;
-use crate::topp::constraints::{BuildOutcome, EndpointVelocities, build};
+use crate::topp::chain::ChainGrid;
+use crate::topp::constraints::{BuildOutcome, EndpointConditions, build_chain};
 use crate::topp::path::ArclengthGrid;
 
 /// Verify that `append_axis_jerk_cut_to_clarabel` emits ∞-norm-normalized rows.
@@ -193,13 +194,10 @@ fn straight_line_solves_to_nontrivial_profile() {
         j_max: [100_000.0, 100_000.0, 100_000.0],
         a_centripetal_max: 2_500.0,
     };
-    let bundle = match build(
-        &grid,
-        &limits,
-        EndpointVelocities {
-            v_start: 0.0,
-            v_end: 0.0,
-        },
+    let chain = ChainGrid::from_segment_grids(vec![grid], vec![limits]);
+    let bundle = match build_chain(
+        &chain,
+        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,

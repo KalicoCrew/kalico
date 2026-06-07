@@ -187,21 +187,6 @@ fn weights_reduce_to_uniform() {
     assert!((wdd[2] - 1.0 / (h * h)).abs() < 1e-12);
 }
 
-#[test]
-fn s_dddot_weights_matches_legacy_uniform() {
-    let b = vec![100.0, 144.0, 196.0, 256.0, 324.0];
-    let h = 0.25;
-    let h_intervals = vec![h; 4];
-    for i in 0..5 {
-        let legacy = s_dddot_at(&b, i, h);
-        let general = s_dddot_at_weights(&b, i, &h_intervals);
-        assert!(
-            (legacy - general).abs() < 1e-9,
-            "i={i}: {legacy} vs {general}"
-        );
-    }
-}
-
 /// `stencil_for` dispatch.
 #[test]
 fn stencil_for_dispatches_correctly() {

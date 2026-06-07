@@ -1,11 +1,11 @@
-use temporal::topp::stencil::s_dddot_at;
 use temporal::topp::stencil::b_dd_weights;
+use temporal::topp::stencil::s_dddot_at_weights;
 
 const H: f64 = 0.4;
 const N_GRID: usize = 10;
 
 /// Direct evaluation of per-axis Cartesian jerk at the iterate `(b̄, ā)`,
-/// using the width-1 b-FD stencil for s‴.
+/// using the weight-based s‴ with uniform spacing (identical to s_dddot_at for uniform grids).
 fn j_axis_at_iterate(
     b_bars: &[f64],
     a_bars: &[f64],
@@ -14,7 +14,8 @@ fn j_axis_at_iterate(
     cpp: f64,
     cppp: f64,
 ) -> f64 {
-    let s_dddot = s_dddot_at(b_bars, i, H);
+    let uniform_h = vec![H; b_bars.len() - 1];
+    let s_dddot = s_dddot_at_weights(b_bars, i, &uniform_h);
     let b_i = b_bars[i].max(0.0);
     let s_i = b_i.sqrt();
     let s3 = b_i * s_i;
