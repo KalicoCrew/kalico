@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -437,7 +437,11 @@ pub struct PyMotionBridge {
     events: Arc<Mutex<VecDeque<BridgeEvent>>>,
     #[allow(dead_code)]
     handlers: Mutex<HashMap<(u32, String, u32), PyObject>>,
-    planner: OnceLock<PlannerHandle>,
+    // `Mutex<Option<..>>` (not `OnceLock`) so `shutdown()` can *take* the handle
+    // and join the `kalico-planner` thread. A `OnceLock` cannot be drained, so
+    // the planner thread would only be joined when the whole bridge dropped —
+    // which never happens on klippy's in-process FIRMWARE_RESTART loop.
+    planner: Mutex<Option<PlannerHandle>>,
     planner_config: Mutex<PlannerConfig>,
     commanded_pos: Mutex<[f64; 3]>,
     mcu_axis_configs: Mutex<Vec<McuAxisConfig>>,
@@ -452,6 +456,10 @@ pub struct PyMotionBridge {
     pump_tx: Mutex<Option<std::sync::mpsc::Sender<crate::pump::PumpMsg>>>,
     pump_thread: Mutex<Option<JoinHandle<()>>>,
     drain: std::sync::Arc<crate::drain::DrainSync>,
+    // Latched once `shutdown()` has run a full teardown. Subsequent calls (the
+    // Drop backstop, a second `klippy:disconnect`, the failed-connect path) see
+    // this and no-op, so double-teardown is provably safe and observable.
+    shut_down: AtomicBool,
 }
 
 pub(crate) fn build_configure_axes_body(
@@ -658,7 +666,7 @@ impl PyMotionBridge {
             mcus: Arc::new(Mutex::new(HashMap::new())),
             events: Arc::new(Mutex::new(VecDeque::new())),
             handlers: Mutex::new(HashMap::new()),
-            planner: OnceLock::new(),
+            planner: Mutex::new(None),
             planner_config: Mutex::new(PlannerConfig::default()),
             commanded_pos: Mutex::new([0.0; 3]),
             mcu_axis_configs: Mutex::new(Vec::new()),
@@ -673,6 +681,7 @@ impl PyMotionBridge {
             pump_tx: Mutex::new(None),
             pump_thread: Mutex::new(None),
             drain: std::sync::Arc::new(crate::drain::DrainSync::new()),
+            shut_down: AtomicBool::new(false),
         }
     }
 
@@ -843,13 +852,28 @@ impl PyMotionBridge {
     }
 
     fn release_mcu(&self, handle: u32) -> PyResult<()> {
-        let (mut endpoint_process, endpoint_conn) = {
+        // Pull the whole McuConnection out of the map but keep it alive (it owns
+        // `host_io`) until *after* the endpoint child is reaped. Teardown order
+        // matters: the endpoint must see session-end (socket close + SIGTERM)
+        // before we close the host_io pts fd, which is the EBUSY-relevant step.
+        //
+        // Removing from the map BEFORE closing the endpoint socket (below) is
+        // also the ec-heartbeat-poll race guard: the supervision thread confirms
+        // every EOF/child-exit fault against `mcus.get(&mcu_id)` under the lock,
+        // so by the time the socket close it observes as peer_closed() has
+        // happened, the entry is already gone and the fault is read as a clean
+        // release rather than fired into std::process::abort().
+        let Some(mut conn) = ({
             let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            match mcus.remove(&handle) {
-                Some(mut c) => (c.endpoint_process.take(), c.endpoint_conn.take()),
-                None => (None, None),
-            }
+            mcus.remove(&handle)
+        }) else {
+            // Already released — idempotent no-op (shutdown may call twice, the
+            // failed-connect path may call before any attach).
+            return Ok(());
         };
+
+        let mut endpoint_process = conn.endpoint_process.take();
+        let endpoint_conn = conn.endpoint_conn.take();
 
         // Drop our Arc on the endpoint connection so the socket closes (signals
         // session end to the endpoint). Router/pump Arcs may still be live;
@@ -890,6 +914,13 @@ impl PyMotionBridge {
             }
         }
 
+        // Endpoint is dead; now close the host_io. Dropping the McuConnection
+        // drops its `Arc<KalicoHostIo>` — the last strong ref (pump/heartbeat
+        // hold `Weak` only), so `KalicoHostIo::Drop` runs here: it sends the
+        // reactor Shutdown and joins the reactor thread, which closes the pts
+        // fd and releases TIOCEXCL — clearing the EBUSY for the next process.
+        drop(conn);
+
         let mut router = self.router.lock().unwrap_or_else(|p| p.into_inner());
         router.release_mcu(mcu_handle_from_raw(handle));
         self.handlers
@@ -899,15 +930,59 @@ impl PyMotionBridge {
         Ok(())
     }
 
+    /// The single, complete, ordered, idempotent teardown primitive.
+    ///
+    /// It is the authoritative release path on every klippy exit that can leave
+    /// state behind (`klippy:disconnect`, the failed-connect arms, and the Drop
+    /// backstop). Calling it more than once is a clean no-op — the second call
+    /// finds empty maps / `None` handles and the latched `shut_down` flag.
+    ///
+    /// Ordering — two hazards drive the order, one in each direction:
+    ///
+    ///   Hazard A (planner → pump): while the planner holds an uncommitted decel
+    ///   tail (`t_dispatched < t_appended`, true after essentially any motion),
+    ///   its `recv_timeout` fires `run_commit_and_dispatch`, whose dispatch closure
+    ///   does `pump_tx.send(..)`. If the pump's `Receiver` were already gone that
+    ///   send yields `DispatchError::PumpGone` → the planner calls `fatal()` →
+    ///   `std::process::abort()`, which skips every `Drop` — leaking the pts fd.
+    ///   Fix: join the planner BEFORE sending `PumpMsg::Shutdown`; once the
+    ///   planner thread is joined no further dispatch can fire.
+    ///
+    ///   Hazard B (pump → EtherCAT conn): the pump may still be draining
+    ///   already-queued pieces for an EtherCAT MCU after `release_mcu` drops the
+    ///   last strong `Arc<UnixNativeConn>`. In `call_push_pieces` the
+    ///   `Weak::upgrade()` then returns `None` → `SendError::Fatal` →
+    ///   `on_fatal_transport` → `std::process::abort()` — the same pts-fd leak.
+    ///   Fix: join the pump BEFORE calling `release_mcu`; once the pump thread is
+    ///   joined no send can be in flight.
+    ///
+    ///   Together: planner join → pump Shutdown + join → per-MCU release_mcu.
+    ///
+    ///   Post-join heartbeat sends: the ec-heartbeat-poll thread holds a clone of
+    ///   `pump_tx`. After the pump's `Receiver` is dropped (pump joined), those
+    ///   sends silently return `Err` and are discarded by the callback — harmless.
     fn shutdown(&self) {
-        let handles: Vec<u32> = {
-            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            mcus.keys().copied().collect()
-        };
-        for h in handles {
-            let _ = self.release_mcu(h);
+        if self.shut_down.swap(true, Ordering::SeqCst) {
+            log::debug!("bridge.shutdown() called twice (idempotent no-op)");
+            return;
         }
 
+        // Step 1 — planner: join before the pump receives Shutdown so the planner
+        // can never dispatch into a dead pump Receiver (Hazard A).
+        let planner = self
+            .planner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .take();
+        if let Some(mut p) = planner {
+            p.shutdown();
+        }
+
+        // Step 2 — pump: join before releasing MCU transports so no queued piece
+        // can hit a dead EtherCAT Weak after release_mcu drops the strong Arc
+        // (Hazard B). run_pump exits immediately on Shutdown, abandoning queued
+        // pieces — safe because the planner is already joined and no new pieces
+        // will arrive.
         let pump_join = {
             let tx = self
                 .pump_tx
@@ -923,7 +998,23 @@ impl PyMotionBridge {
                 .take()
         };
         if let Some(h) = pump_join {
-            let _ = h.join();
+            if let Err(e) = h.join() {
+                log::error!("bridge.shutdown(): push-pieces-pump join panicked: {e:?}");
+            }
+        }
+
+        // Step 3 — per-MCU release_mcu: endpoint socket/child first, then
+        // host_io fd (the EBUSY-relevant close), then router prune. The pump is
+        // already joined so no send is in flight when the strong Arc drops.
+        let handles: Vec<u32> = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            mcus.keys().copied().collect()
+        };
+        for h in handles {
+            if let Err(e) = self.release_mcu(h) {
+                // Fail loud: a release error means an fd / child may be leaked.
+                log::error!("bridge.shutdown(): release_mcu({h}) failed: {e}");
+            }
         }
     }
 
@@ -1103,6 +1194,11 @@ impl PyMotionBridge {
         Ok(())
     }
 
+    // Narrow fd-release hook for the serial arduino-reset path (MCU._disconnect
+    // → serial.disconnect()). It only nils host_io/runtime_rx for one MCU; it
+    // does NOT touch endpoint_conn/endpoint_process, so it cannot tear an
+    // EtherCAT MCU down on its own. The authoritative full teardown is
+    // `shutdown()`; detach_serial is harmless before it (shutdown is idempotent).
     fn detach_serial(&self, mcu_handle: u32) -> PyResult<()> {
         let mut mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(conn) = mcus.get_mut(&mcu_handle) {
@@ -1993,7 +2089,12 @@ impl PyMotionBridge {
         window_capacity: usize,
         beta_max_iters: u8,
     ) -> PyResult<()> {
-        if self.planner.get().is_some() {
+        if self
+            .planner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .is_some()
+        {
             return Err(PyRuntimeError::new_err("planner already initialized"));
         }
 
@@ -2161,7 +2262,10 @@ impl PyMotionBridge {
                 t.insert(id, crate::pump::McuTransport::Serial(Arc::downgrade(io)));
             }
             for (&id, conn) in &ec_conns {
-                t.insert(id, crate::pump::McuTransport::EtherCat(Arc::downgrade(conn)));
+                t.insert(
+                    id,
+                    crate::pump::McuTransport::EtherCat(Arc::downgrade(conn)),
+                );
             }
             t
         };
@@ -2281,12 +2385,13 @@ impl PyMotionBridge {
                     .name(format!("ec-heartbeat-poll-{mcu_id}"))
                     .spawn(move || {
                         loop {
-                            // Released conn -> exit quietly. Checked before the
-                            // peer_closed/child probes so a deliberate release
-                            // never trips EXIT_ON_FAULT: release_mcu drops the
-                            // last strong Arc, the reader sees the resulting EOF,
-                            // and without this guard the peer_closed() check below
-                            // would race-fire the abort.
+                            // Released conn -> exit quietly. This is the common
+                            // case: release_mcu drops the last strong Arc, the
+                            // upgrade fails, and the thread exits before probing.
+                            // The residual race — upgrading the Weak while the conn
+                            // is still strong but the MCU was already removed from
+                            // the map — is closed by the mcus-map re-check below,
+                            // which confirms every fault under the lock.
                             let Some(conn) = conn_for_poll.upgrade() else {
                                 return;
                             };
@@ -2294,36 +2399,43 @@ impl PyMotionBridge {
                             // Supervision: check for conn EOF before checking the child,
                             // because EOF is cheaper and fires first on clean exit.
                             // The reader thread sets peer_closed on EOF/IO; no poll here.
-                            if conn.peer_closed() {
-                                on_endpoint_death("conn EOF");
-                                return;
-                            }
+                            let peer_eof = conn.peer_closed();
                             drop(conn);
 
-                            // Check child exit status with a brief mutex acquisition.
-                            let child_exited = {
+                            // Both fault probes (EOF and child-exit) are confirmed
+                            // against the mcus map under one lock acquisition, so a
+                            // deliberate release can never be misread as a fault.
+                            // release_mcu removes the McuConnection from the map
+                            // BEFORE it closes the endpoint socket; that socket
+                            // close is exactly what sets peer_closed(). So if we
+                            // upgraded the Weak in the race window where the conn
+                            // was still strong but the MCU was already removed,
+                            // `mcus.get(&mcu_id)` is None here and we exit quietly
+                            // instead of firing EXIT_ON_FAULT. (The prior code fired
+                            // on_endpoint_death("conn EOF") before this guard,
+                            // aborting the process during normal teardown.)
+                            let fault_reason = {
                                 let mut mcus = mcus_for_supervision
                                     .lock()
                                     .unwrap_or_else(|p| p.into_inner());
-                                if let Some(c) = mcus.get_mut(&mcu_id) {
-                                    if let Some(ref mut child) = c.endpoint_process {
-                                        match child.try_wait() {
-                                            Ok(Some(status)) => {
-                                                Some(format!("child exited: {status}"))
-                                            }
-                                            Ok(None) => None,
-                                            Err(e) => Some(format!("try_wait error: {e}")),
-                                        }
-                                    } else {
-                                        None
-                                    }
-                                } else {
+                                let Some(c) = mcus.get_mut(&mcu_id) else {
                                     // MCU was released — normal shutdown, exit quietly.
                                     return;
+                                };
+                                if peer_eof {
+                                    Some("conn EOF".to_string())
+                                } else if let Some(ref mut child) = c.endpoint_process {
+                                    match child.try_wait() {
+                                        Ok(Some(status)) => Some(format!("child exited: {status}")),
+                                        Ok(None) => None,
+                                        Err(e) => Some(format!("try_wait error: {e}")),
+                                    }
+                                } else {
+                                    None
                                 }
                             };
 
-                            if let Some(reason) = child_exited {
+                            if let Some(reason) = fault_reason {
                                 on_endpoint_death(&reason);
                                 return;
                             }
@@ -2418,9 +2530,15 @@ impl PyMotionBridge {
             },
         );
 
-        self.planner
-            .set(PlannerHandle::spawn(cfg, dispatch))
-            .map_err(|_| PyRuntimeError::new_err("planner already initialized (raced)"))?;
+        {
+            let mut guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+            if guard.is_some() {
+                return Err(PyRuntimeError::new_err(
+                    "planner already initialized (raced)",
+                ));
+            }
+            *guard = Some(PlannerHandle::spawn(cfg, dispatch));
+        }
         Ok(())
     }
 
@@ -2449,10 +2567,13 @@ impl PyMotionBridge {
             let classified = classify::classify_and_build(pos, dx, dy, dz, de, feedrate)
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-            let planner = self.planner.get().ok_or_else(|| {
-                PyRuntimeError::new_err("planner not initialized — call init_planner first")
-            })?;
-            planner.submit_move(classified).map_err(planner_err)?;
+            {
+                let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+                let planner = guard.as_ref().ok_or_else(|| {
+                    PyRuntimeError::new_err("planner not initialized — call init_planner first")
+                })?;
+                planner.submit_move(classified).map_err(planner_err)?;
+            }
 
             let mut pos = self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
             pos[0] += dx;
@@ -2468,7 +2589,8 @@ impl PyMotionBridge {
     }
 
     fn wait_moves(&self, py: Python<'_>) -> PyResult<()> {
-        let planner = self.planner.get().ok_or_else(|| {
+        let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+        let planner = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
         })?;
         py.allow_threads(|| planner.flush()).map_err(planner_err)?;
@@ -2477,7 +2599,8 @@ impl PyMotionBridge {
     }
 
     fn drain_motion(&self, py: Python<'_>) -> PyResult<()> {
-        let planner = self.planner.get().ok_or_else(|| {
+        let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+        let planner = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
         })?;
         py.allow_threads(|| planner.flush()).map_err(planner_err)?;
@@ -2698,7 +2821,8 @@ impl PyMotionBridge {
     }
 
     fn submit_dwell(&self, duration_s: f64) -> PyResult<()> {
-        let planner = self.planner.get().ok_or_else(|| {
+        let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+        let planner = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
         })?;
         planner.dwell(duration_s).map_err(planner_err)
@@ -2709,7 +2833,8 @@ impl PyMotionBridge {
             let mut pos = self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
             *pos = [x, y, z];
         }
-        if let Some(planner) = self.planner.get() {
+        let planner_guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(planner) = planner_guard.as_ref() {
             py.allow_threads(|| planner.flush()).map_err(planner_err)?;
             {
                 let drain = self.drain.clone();
@@ -2790,7 +2915,8 @@ impl PyMotionBridge {
         let new_limits = cfg.limits;
         drop(cfg);
 
-        let planner = self.planner.get().ok_or_else(|| {
+        let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+        let planner = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
         })?;
         planner.update_limits(new_limits).map_err(planner_err)
@@ -2811,14 +2937,20 @@ impl PyMotionBridge {
             .unwrap_or_else(|p| p.into_inner())
             .shaper = shaper.clone();
 
-        let planner = self.planner.get().ok_or_else(|| {
+        let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+        let planner = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
         })?;
         planner.update_shaper(shaper).map_err(planner_err)
     }
 
     fn get_last_move_time(&self) -> f64 {
-        match self.planner.get() {
+        match self
+            .planner
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
             Some(p) => p.last_move_time(),
             None => 0.0,
         }
@@ -2848,6 +2980,17 @@ impl PyMotionBridge {
             .map(|axis| nurbs::eval::eval(axis, t_clamped))
             .collect();
         Ok(pos)
+    }
+}
+
+impl Drop for PyMotionBridge {
+    // Backstop for the true-process-exit path: SIGTERM → request_exit → the
+    // klippy loop breaks → Py_Finalize → pyo3 drops the bridge (if collected).
+    // The primary release stays the explicit `klippy:disconnect` → `shutdown()`
+    // call so it runs even under `gc.disable()` on the in-process restart loop.
+    // `shutdown()` is idempotent, so this never double-tears-down.
+    fn drop(&mut self) {
+        self.shutdown();
     }
 }
 
@@ -2906,7 +3049,8 @@ impl PyMotionBridge {
         )
         .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
 
-        let planner = self.planner.get().ok_or_else(|| {
+        let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+        let planner = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
         })?;
         if let Err(e) = planner.submit_move(classified) {
@@ -2919,6 +3063,9 @@ impl PyMotionBridge {
 
 #[cfg(test)]
 mod build_configure_axes_body_tests;
+
+#[cfg(test)]
+mod tests;
 
 fn trip_event_to_pydict(py: Python<'_>, evt: runtime::endstop::TripEvent) -> PyResult<Py<PyDict>> {
     let d = PyDict::new(py);

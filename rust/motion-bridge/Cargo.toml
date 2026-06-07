@@ -40,6 +40,11 @@ thiserror = { workspace = true }
 rustfft = "6"
 heapless = { workspace = true }
 kalico-native-transport = { path = "../kalico-native-transport" }
+# Enables KalicoHostIo::from_port_skip_identify for the teardown tests
+# (bridge/tests.rs). Cargo unions this with the normal-dep feature set when
+# building tests, so the production cdylib build is unaffected.
+kalico-host-rt = { path = "../kalico-host-rt", features = ["python-bridge", "test-harness"] }
+serialport = "4"
 
 [lints]
 workspace = true

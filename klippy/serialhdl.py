@@ -499,10 +499,15 @@ class SerialReader:
         bridge = getattr(self.mcu, "_motion_bridge", None)
         handle = getattr(self.mcu, "_bridge_handle", None)
         if bridge is not None and handle is not None:
+            # Fail loud: a silently-swallowed detach failure masks exactly the
+            # class of bug (leaked fd holding the pts in exclusive mode) that
+            # causes the next process's attach_serial to spin on EBUSY. Log for
+            # context, then re-raise so the failure surfaces.
             try:
                 bridge.detach_serial(handle)
             except Exception:
                 logging.exception("bridge detach_serial failed")
+                raise
         for pn in self.pending_notifications.values():
             pn.complete(None)
         self.pending_notifications.clear()

@@ -220,7 +220,17 @@ impl KalicoHostIo {
         let port_box: Box<dyn serialport::SerialPort> = {
             let cpath = std::ffi::CString::new(path)
                 .map_err(|e| TransportError::Io(std::io::Error::other(e)))?;
-            let fd = unsafe { libc::open(cpath.as_ptr(), libc::O_RDWR | libc::O_NOCTTY) };
+            // O_CLOEXEC: the host transport fd must never be inherited by an
+            // EtherCAT endpoint child (spawned via Command, which only sets
+            // CLOEXEC on its own pipes). An inherited copy of this pts fd would
+            // keep TIOCEXCL held even after the parent closes its copy, so the
+            // next klippy's attach_serial would still get EBUSY.
+            let fd = unsafe {
+                libc::open(
+                    cpath.as_ptr(),
+                    libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC,
+                )
+            };
             if fd < 0 {
                 return Err(TransportError::Io(std::io::Error::last_os_error()));
             }
@@ -386,6 +396,58 @@ impl KalicoHostIo {
             raw_identify_bytes,
             is_critical,
         })
+    }
+
+    /// Build a `KalicoHostIo` from an already-open port, skipping the blocking
+    /// identify handshake. The reactor still runs and owns the fd, so this is a
+    /// faithful seam for teardown tests (Drop must send Shutdown, join the
+    /// reactor, and close the fd) without needing a wire-protocol responder.
+    #[cfg(any(test, feature = "test-harness"))]
+    pub fn from_port_skip_identify(
+        port_box: Box<dyn serialport::SerialPort>,
+        config: KalicoHostIoConfig,
+    ) -> Self {
+        use crate::host_io::identify::IdentifySeqState;
+
+        let io = crate::host_io::serial_frame_io::SerialFrameIo::new(port_box);
+        let parser = Arc::new(MsgProtoParser::new_empty());
+        let (submission_tx, submission_rx) = std::sync::mpsc::channel();
+        let status_snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+        let clock: Arc<dyn crate::clock::Clock> = Arc::new(crate::clock::RealClock);
+        let identify_seq = IdentifySeqState {
+            next_send_seq_abs: 1,
+            mcu_receive_seq_abs: 0,
+        };
+
+        let reactor_parser = Arc::clone(&parser);
+        let reactor_status = Arc::clone(&status_snapshot);
+        let reactor_config = config.clone();
+        let reactor_clock = Arc::clone(&clock);
+        let is_critical = Arc::new(AtomicBool::new(false));
+        let reactor_handle = std::thread::spawn(move || {
+            let mut reactor = crate::host_io::reactor::Reactor::new_with_clock(
+                io,
+                reactor_parser,
+                submission_rx,
+                reactor_status,
+                identify_seq,
+                reactor_config,
+                reactor_clock,
+            );
+            reactor.run();
+        });
+
+        Self {
+            submission_tx,
+            next_call_id: AtomicU64::new(1),
+            reactor_handle: Some(reactor_handle),
+            status_snapshot,
+            parser,
+            config,
+            clock,
+            raw_identify_bytes: Vec::new(),
+            is_critical,
+        }
     }
 }
 

@@ -178,6 +178,7 @@ class Printer:
         self.state_message = message_startup
         self.in_shutdown_state = False
         self.run_result = None
+        self._disconnect_dispatched = False
         self.event_handlers = {}
         self.printer_modules: dict[str, PrinterModule] = {}
         self.components = SubsystemComponentCollection(self.config_error)
@@ -423,16 +424,19 @@ class Printer:
         except (self.config_error, pins.error) as e:
             logging.exception("Config error")
             self._set_state("%s\n%s" % (str(e), message_restart))
+            self._dispatch_disconnect()
             return
         except msgproto.error as e:
             logging.exception("Protocol error")
             self._set_state(self._build_protocol_error_message(e))
             util.dump_mcu_build()
+            self._dispatch_disconnect()
             return
         except mcu.error as e:
             logging.exception("MCU error during connect")
             self._set_state("%s%s" % (str(e), message_mcu_connect_error))
             util.dump_mcu_build()
+            self._dispatch_disconnect()
             return
         except Exception as e:
             logging.exception("Unhandled exception during connect")
@@ -443,6 +447,7 @@ class Printer:
                     message_restart,
                 )
             )
+            self._dispatch_disconnect()
             return
         try:
             self._set_state(message_ready)
@@ -520,7 +525,7 @@ class Printer:
                         owner,
                     )
                 logging.info("[firmware-restart-trace] all handlers done")
-            self.send_event("klippy:disconnect")
+            self._dispatch_disconnect()
         except:
             logging.exception("Unhandled exception during post run")
         return run_result
@@ -556,6 +561,29 @@ class Printer:
 
     def send_event(self, event, *params):
         return [cb(*params) for cb in self.event_handlers.get(event, [])]
+
+    def _dispatch_disconnect(self):
+        # Per-handler-guarded klippy:disconnect dispatch. Unlike the bare
+        # send_event (which aborts the whole list on the first raising handler),
+        # this guarantees every disconnect handler runs — critically
+        # MotionToolhead._handle_disconnect → bridge.shutdown(), which releases
+        # the pts fd. A sibling handler raising must never starve teardown.
+        # Scoped to this one dispatch on purpose: other send_event callers rely
+        # on exceptions propagating.
+        #
+        # One-shot per Printer lifetime: the failed-connect except arms call this
+        # and so does the post-run path, so without a latch every disconnect
+        # handler (heaters, fans, webhooks, gcode, mcu._disconnect →
+        # serialhdl.disconnect) would run twice on that path. bridge.shutdown()
+        # is idempotent, but the broader handlers are not contractually so.
+        if self._disconnect_dispatched:
+            return
+        self._disconnect_dispatched = True
+        for cb in list(self.event_handlers.get("klippy:disconnect", [])):
+            try:
+                cb()
+            except BaseException:
+                logging.exception("klippy:disconnect handler raised")
 
     def request_exit(self, result):
         if self.run_result is None:
