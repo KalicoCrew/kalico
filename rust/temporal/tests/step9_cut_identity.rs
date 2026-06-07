@@ -1,4 +1,5 @@
 use temporal::topp::stencil::s_dddot_at;
+use temporal::topp::stencil::b_dd_weights;
 
 const H: f64 = 0.4;
 const N_GRID: usize = 10;
@@ -178,4 +179,26 @@ fn row_sum_identity_holds_at_slp_b_floor() {
     let mut b_floored = b.clone();
     b_floored[i] = b[i].max(1.0);
     check_identity_at(&b_floored, &a, i, cp, cpp, cppp, "slp_b_floor");
+}
+
+#[test]
+fn axis_jerk_cut_identity_nonuniform_spacing() {
+    let (hl, hr) = (0.3, 0.7);
+    let h_intervals = [hl, hr];
+    let b_bars = [900.0, 1_000.0, 1_150.0];
+    let a_bar = 180.0;
+    let (cp, cpp, cppp) = (0.8, 0.05, 0.002);
+    let j_at = |b: [f64; 3], a: f64| -> f64 {
+        let w = b_dd_weights(hl, hr);
+        let b_dd = w[0] * b[0] + w[1] * b[1] + w[2] * b[2];
+        let s = b[1].max(0.0).sqrt();
+        cppp * s * s * s + 3.0 * cpp * a * s + cp * (s * b_dd / 2.0)
+    };
+    let f0 = j_at(b_bars, a_bar);
+    let grad = temporal::topp::axis_jerk_gradient_for_test(&b_bars, a_bar, cp, cpp, cppp, &h_intervals);
+    let db = [1.5, -2.0, 1.0];
+    let da = 0.5;
+    let pred = f0 + grad.b[0]*db[0] + grad.b[1]*db[1] + grad.b[2]*db[2] + grad.a*da;
+    let actual = j_at([b_bars[0]+db[0], b_bars[1]+db[1], b_bars[2]+db[2]], a_bar+da);
+    assert!((pred - actual).abs() < 1e-2 * actual.abs().max(1.0), "linearization off: pred {pred}, actual {actual}");
 }

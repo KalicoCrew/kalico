@@ -21,10 +21,13 @@ fn axis_jerk_cut_row_norm_is_one() {
     let cp = 1.0_f64;
     // cpp and cppp set to zero so the dominant term is cp·√b/h², which is
     // the O(N²) coefficient that caused conditioning failures.
+    let h_uniform = h;
+    let w = crate::topp::stencil::b_dd_weights(h_uniform, h_uniform);
     let cut = AxisJerkCut {
         i: 2,
         axis: 0,
-        stencil: AxisJerkStencil::Interior,
+        idx: [1, 2, 3],
+        w,
         b_bars: [b_val, b_val, b_val],
         a_bar_i: 0.0,
         cp,
@@ -56,7 +59,6 @@ fn axis_jerk_cut_row_norm_is_one() {
     let b_floor = 0.0_f64;
     append_axis_jerk_cut_to_clarabel(
         &cut,
-        h,
         b_floor,
         &mut n_rows,
         &mut rowval,

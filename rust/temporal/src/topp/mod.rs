@@ -12,6 +12,8 @@ pub(crate) mod solver;
 pub mod stencil;
 pub(crate) mod verify;
 
+pub use solver::{AxisJerkGradient, axis_jerk_gradient_for_test};
+
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum ToleranceMode {
