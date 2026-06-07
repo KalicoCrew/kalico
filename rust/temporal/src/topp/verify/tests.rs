@@ -284,19 +284,23 @@ use crate::topp::verify::check_chain;
 
 #[test]
 fn junction_dual_limits_are_verified() {
-    // Junction at index 10; right side v_max = 150, left = 300. A b at the
-    // junction of 200² is legal for the 300 side but violates the 150 side —
-    // check_chain must catch it via the junction-dual pass and report
-    // infeasible at the junction index.
+    // Smooth b: baseline v≈148 (under the right 150 cap) with a gentle bump to
+    // v≈173 at the junction. The junction point carries the LEFT (300) limit in
+    // the primary scan — fine — so its right (150) cap is enforced ONLY by the
+    // dual pass. The bump is gentle enough that the primary stencil path-jerk
+    // ratio stays <1, so the dual velocity violation is the SOLE infeasibility.
     let chain = two_segment_chain_with_junction();
     let n = chain.n_points();
-    let mut b = vec![100.0; n];
-    b[10] = 200.0_f64.powi(2);
+    let mut b = vec![22_000.0; n];
+    b[10] = 30_000.0;
     let a = vec![0.0; n];
     let result = SolverResult { b, a, status: SolverStatus::Solved };
     let report = check_chain(&chain, &result);
-    assert!(!report.feasible, "right-side junction limits not checked");
-    assert_eq!(report.worst_violation_grid, 10);
+    assert!(!report.feasible, "right-side junction velocity cap not enforced");
+    assert_eq!(
+        report.worst_violation_grid, 10,
+        "the sole violation must be the junction's right-side velocity cap"
+    );
 }
 
 /// An in-band jerk ratio (1.04) that wins every grid point must not mask a

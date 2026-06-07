@@ -217,11 +217,8 @@ pub(crate) fn check(
     }
 }
 
-/// Chain-aware verifier. Sources geometry and limits per-point from the chain
-/// and uses weight-based `s‴`. After the primary scan a junction-dual pass
-/// re-evaluates every junction point against the right segment's limits — the
-/// shared grid variables (b, s_dot, s_ddot, s_dddot) are identical; only the
-/// geometry and limits differ. Both sides must satisfy their respective limits.
+/// Chain-aware verifier. Junction points carry the LEFT segment's limits in the
+/// primary arrays; the dual pass is what enforces the right side.
 pub(crate) fn check_chain(chain: &ChainGrid, result: &SolverResult) -> VerifyReport {
     let n = chain.n_points();
     debug_assert_eq!(result.b.len(), n);
@@ -285,17 +282,12 @@ pub(crate) fn check_chain(chain: &ChainGrid, result: &SolverResult) -> VerifyRep
         binding_per_grid.push(final_tag);
     }
 
-    // Junction-dual pass: each junction point must satisfy BOTH the left
-    // segment's limits (already scanned above) AND the right segment's limits
-    // (checked here). The shared grid variables b/s_dot/s_ddot/s_dddot are
-    // identical on both sides; only geometry and limits change.
     for jd in &chain.junctions {
         let i = jd.idx;
         let b_i = result.b[i];
-        let a_i = result.a[i];
 
         let s_dot = b_i.max(0.0).sqrt();
-        let s_ddot = a_i;
+        let s_ddot = result.a[i];
         let s_dddot = crate::topp::stencil::s_dddot_at_weights(&result.b, i, &chain.h_intervals);
 
         let pr = ratios_at(&PointInputs {
