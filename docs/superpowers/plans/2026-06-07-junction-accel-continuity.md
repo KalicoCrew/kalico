@@ -52,7 +52,7 @@ Uniform reduction `hl = hr = h`: `b′ = (b_{i+1}−b_{i−1})/(2h)`, `b″ = Δ
 | `trajectory/src/plan_velocity.rs` | `PlanInput.initial_a` + validation |
 | `trajectory/src/beta.rs` | first-run `initial_accel` pass-through |
 | `trajectory/src/streaming/state.rs` | + `read_path_accel_at`; carry in `append_and_replan` |
-| `motion-bridge/src/planner/tests.rs` | RED replan-boundary test |
+| `trajectory/src/streaming/tests.rs` | RED replan-boundary test (same crate as `planned_fitted`) |
 | `temporal/src/multi/tests.rs` | RED junction-impulse test |
 
 ---
@@ -62,7 +62,7 @@ Uniform reduction `hl = hr = h`: `b′ = (b_{i+1}−b_{i−1})/(2h)`, `b″ = Δ
 **Files:**
 - Modify: `docs/superpowers/specs/2026-06-07-junction-accel-continuity-design.md`
 - Test: `rust/temporal/src/multi/tests.rs`
-- Test: `rust/motion-bridge/src/planner/tests.rs`
+- Test: `rust/trajectory/src/streaming/tests.rs`
 
 - [ ] **Step 1: Amend the spec with the rest-start carve-out** (Trap 1 was found while planning). In the "Chain edges" bullet, change:
 
@@ -190,7 +190,7 @@ fn smooth_junction_has_no_accel_impulse() {
 Run: `cargo test -p temporal --lib smooth_junction_has_no_accel_impulse -- --ignored`
 Expected: FAIL with `junction accel step <large> mm/s² — boundary accels are decoupled` (step on the order of 1e3–1e4). If it fails on geometry construction instead (tangent mismatch, plan error), fix the fixture, not the assertion.
 
-- [ ] **Step 4: Write the RED replan-boundary test.** Append to `rust/motion-bridge/src/planner/tests.rs`, following the harness used by `motion_at_velocity_limit_cruises_at_limit` (same file — `ShaperState`, `classify_and_build`, `append_and_replan`, `emit_committed`).
+- [ ] **Step 4: Write the RED replan-boundary test.** Append to `rust/trajectory/src/streaming/tests.rs` — it must live in the `trajectory` crate because `sampled_path_accel` reads `ShaperState.planned_fitted` (crate-internal; the motion-bridge crate cannot see it). That file already has the full harness: `replan_context()` (line 230), `append_and_replan` drives (lines 287-416), `CubicSegment`/`FittedSegment` fixtures.
 
 **Scenario reasoning (load-bearing — do not change the geometry without re-deriving):** the streaming machinery commits only up to `t_decel_start − max_h`, so `t_dispatched` always lands *before* the old plan's decel ramp — the impulse cannot be staged there. The divergence case is the opposite polarity: old plan still *accelerating* at `t_dispatched` (short triangular move A, apex = `t_decel_start`, smoothing shaper so `max_h > 0` puts `t_dispatched` just before the apex, `a_old ≈ +a_max`), then append a long **slow** move B (low feedrate → `per_segment_limits` caps its `v_max` far below A's speed) sized so the new optimal plan must begin shedding speed immediately: free `a_0` flips to ≈ `−a_max`. Post-fix feasibility is guaranteed by the spec's argument (the old plan's own decel-to-zero remainder is always an admissible continuation), so the pinned re-plan decelerates jerk-continuously instead of erroring.
 
@@ -223,9 +223,9 @@ fn replan_boundary_carries_acceleration() {
 }
 ```
 
-Helpers, extracted from the `peak_speed_of_single_x_move` machinery already in this file:
-- `single_axis_harness(v_max, a_max)` — the existing `ShaperState` + config construction with a **smoothing** shaper on X (so `max_h > 0`; the existing tests' shaper setup already provides one).
-- `append_x_move(&mut state, &ctx, dist_mm, feedrate)` — existing classify/append path with an X-only G5 move.
+Helpers, built from the machinery already in this file (`replan_context()`, the `append_and_replan` call patterns at lines 287-416):
+- `single_axis_harness(v_max, a_max)` — `ShaperState` + `ReplanContext` via the existing `replan_context()` pattern, with a **smoothing** shaper on X (so `max_h > 0`; `build_smooth_zv_kernel` is already imported in this file).
+- `append_x_move(&mut state, &ctx, dist_mm, feedrate)` — construct the X-only `CubicSegment` the way the existing `m1`/`m2` move fixtures do and call `state.append_and_replan(seg, &ctx)`.
 - `emit_partial_window(&mut state, &ctx) -> f64` — call `emit_committed` once (it advances `t_dispatched` to `t_decel_start − max_h` on its own; no target time is needed) and return `state.t_dispatched`.
 - `sampled_path_accel(&state, t) -> f64` — sample the **pre-shape planned profile** (`planned_fitted`: find the `FittedSegment` with `t_start ≤ t < t_end`, evaluate each axis's second derivative via `nurbs::eval`, project tangentially: `(vx·ax + vy·ay)/speed`). The pre-shape profile is what the SOCP pin governs (Task 13) — do NOT sample the shaped axes here.
 
@@ -233,14 +233,14 @@ The precondition assert makes mis-staging loud instead of silently green.
 
 - [ ] **Step 5: Run it and verify the precondition holds and the final assert fails:**
 
-Run: `cargo test -p motion-bridge --lib replan_boundary_carries_acceleration -- --ignored`
+Run: `cargo test -p trajectory --lib replan_boundary_carries_acceleration -- --ignored`
 Expected: FAIL on the final assert with `a_old ≈ +5000`, `a_new ≈ −5000`. If the precondition fails instead, resize move A (shorter → apex later relative to commit horizon) until `t_dispatched` is mid-acceleration.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-06-07-junction-accel-continuity-design.md \
-        rust/temporal/src/multi/tests.rs rust/motion-bridge/src/planner/tests.rs
+        rust/temporal/src/multi/tests.rs rust/trajectory/src/streaming/tests.rs
 git commit -m "test: RED junction-impulse and replan-accel-carry integration tests
 
 Both #[ignore]-tagged with the un-ignoring task named; both verified to
@@ -1756,7 +1756,7 @@ git commit -m "trajectory: thread initial_a from PlanInput to the first run's Ba
 
 **Files:**
 - Modify: `rust/trajectory/src/streaming/state.rs`
-- Test: `rust/trajectory/src/streaming/tests.rs`, `rust/motion-bridge/src/planner/tests.rs`
+- Test: `rust/trajectory/src/streaming/tests.rs`
 
 **Source decision (review finding, load-bearing):** the pin feeds the **pre-shape** temporal SOCP, so the accel must be sampled from the **pre-shape planned profile** — `self.planned_fitted: Vec<FittedSegment>` (time-domain fitted axes, exactly what the SOCP profile was fitted to) — NOT from the shaped axis pieces. (`read_path_speed_at` samples the shaped pieces — a pre-existing approximation convention for `v` that this task deliberately does not relitigate; the `(v, a)` pair being sourced from two layers is the same order of approximation as today's `v` alone and is documented at the call site.)
 
@@ -1842,9 +1842,9 @@ let initial_a = if initial_v > 0.0 {
 
 and `initial_a` into the `PlanInput` construction (state.rs:158-170, next to `initial_v`).
 
-- [ ] **Step 5: Un-ignore `replan_boundary_carries_acceleration`** in `motion-bridge/src/planner/tests.rs` and run:
+- [ ] **Step 5: Un-ignore `replan_boundary_carries_acceleration`** in `trajectory/src/streaming/tests.rs` and run:
 
-Run: `cargo test -p trajectory --lib streaming && cargo test -p motion-bridge --lib replan_boundary_carries_acceleration`
+Run: `cargo test -p trajectory --lib streaming && cargo test -p trajectory --lib replan_boundary_carries_acceleration`
 Expected: PASS — the new plan's accel at `t_dispatched` is pinned to the previously-planned value.
 
 - [ ] **Step 6: Commit**
