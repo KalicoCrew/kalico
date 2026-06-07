@@ -25,6 +25,15 @@ use kalico_host_rt::transport::TransportError;
 /// Reason carried by a relayed trigger. Matches `MCU_trsync.REASON_ENDSTOP_HIT`.
 pub const REASON_ENDSTOP_HIT: u8 = 1;
 
+/// Fraction of `expire_timeout_s` used as the report interval.
+/// Matches mainline Klipper's `trdispatch` reporting cadence.
+const REPORT_INTERVAL_FRACTION: f64 = 0.3;
+
+/// Guard applied to the report interval to produce the minimum extension
+/// threshold, ensuring the engine sends a new timeout before the firmware
+/// timer lapses.
+const EXTENSION_GUARD_FRACTION: f64 = 0.8;
+
 /// Identifies a sink trsync to receive `trsync_trigger` when a trip is
 /// detected. `mcu` must resolve to a `KalicoHostIo` in the `sink_ios` table
 /// passed to [`prepare`].
@@ -215,8 +224,12 @@ pub fn prepare(
     }
 
     if !participants.is_empty() {
-        // mainline: min_extend = 0.8 × report_ticks, report = 0.3 × timeout
-        let min_extend_s = 0.8 * 0.3 * expire_timeout_s;
+        assert!(
+            expire_timeout_s > 0.0 && expire_timeout_s.is_finite(),
+            "trip_dispatch::prepare: expire_timeout_s must be positive and finite, \
+             got {expire_timeout_s}"
+        );
+        let min_extend_s = EXTENSION_GUARD_FRACTION * REPORT_INTERVAL_FRACTION * expire_timeout_s;
         let host_now_at_prepare = instant_to_f64(Instant::now());
         let engine = Arc::new(std::sync::Mutex::new(
             extension::ExtensionEngine::new(

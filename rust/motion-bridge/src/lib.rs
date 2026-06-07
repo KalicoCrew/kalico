@@ -29,6 +29,8 @@ mod router_transport;
 pub mod servo_torque;
 mod types;
 
+pub mod test_support;
+
 use pyo3::prelude::*;
 
 use bridge::PyMotionBridge;

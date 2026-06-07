@@ -2646,6 +2646,15 @@ impl PyMotionBridge {
             participant_specs.push((ParticipantSpec { mcu, trsync_oid: oid }, io));
         }
 
+        if !participant_specs.is_empty()
+            && (expire_timeout_s <= 0.0 || !expire_timeout_s.is_finite())
+        {
+            return Err(PyRuntimeError::new_err(format!(
+                "trip_dispatch_prepare: expire_timeout_s must be positive and finite \
+                 when participants is non-empty, got {expire_timeout_s}"
+            )));
+        }
+
         let router = Arc::clone(&self.router);
         let clock_of = move |mcu_id: u32| {
             router
