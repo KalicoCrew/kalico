@@ -65,12 +65,26 @@ structure at junctions:
 - **Jerk block (f)** and **SLP per-axis cuts** wherever the 3-point stencil
   support crosses the junction (the shared point and its two neighbors) use
   the non-uniform second-difference stencil with RHS scaled so the bound means
-  the same `J` on both sides. This is the contract's teeth.
+  the same `J` on both sides. This is the contract's teeth. Truncation at the
+  junction is O(h) when `h_L ≠ h_R` (leading error `(h_R−h_L)/3 · b‴`) — the
+  same order as the one-sided endpoint diffs it replaces. Junction rows get
+  the same row-∞-norm scaling as axis-jerk cuts, and chain build asserts a
+  bounded `h_L/h_R` ratio — an extreme ratio is a grid-construction bug and
+  fails loudly (verifier, Claim 2).
 - **Both sides' geometry and limits apply at the shared point**: per-axis
   velocity and accel rows are emitted twice (left `c′, c″` with left `Limits`,
   right with right), plus two centripetal rows (`κ_left`, `κ_right`).
   Reproduces today's min-of-both-sides cap semantics as rows on a *variable*
-  instead of a precomputed scalar pin.
+  instead of a precomputed scalar pin. The single spanning `a_m` is *tighter*
+  than two free one-sided accels — correctly so: bounded jerk makes `s̈(t)`
+  Lipschitz, so tangential accel is continuous through any junction; the old
+  decoupled accels were the looser relaxation (verifier, Claim 1).
+- **Time chain and objective use interval-local `h_i`**: block (g/h) rows
+  become `t_i·b_i ≥ h_i²` and the `Σt` cost is built per-interval. The
+  current code hardcodes one scalar `h`; reused verbatim across a spacing
+  change it mis-costs time by `(h_local/h)²` and the optimizer slows the
+  trajectory "for free" (verifier item 5a — the one correctness hazard
+  found).
 
 Junction `v` and `a` are never explicitly represented, chosen, or propagated
 at smooth junctions — they are emergent results of the joint optimum. The
@@ -89,6 +103,14 @@ Chain edges:
   (generic `plan_batch` API, never produced by streaming) keeps today's
   velocity-pin-only semantics: accel free, no envelope.
 - **Corner edges**: `b` pinned to the swept corner velocity, accel free.
+  Free corner accel is **load-bearing**, not just physical taste: chain
+  traversal time is monotone in corner velocity *because* the accel there is
+  free (brake-down-and-replay argument), and that monotonicity is what makes
+  the min-propagation sweep exact. Pinning corner accel would make the
+  propagated state two-dimensional and break the sweep (verifier, Claim 3).
+- **Any chain edge whose pinned velocity is 0** — batch end at rest *or* a
+  corner swept down to zero — gets the (e2) envelope rows. The gate is
+  "endpoint v == 0", not "batch edge".
 
 ### SLP and scaling
 
@@ -138,6 +160,10 @@ feasible. An infeasible pin therefore indicates a planner bug and is a
 - Chain solve non-success → chain stays dirty → `StalledOnInfeasibleSegment`
   → beta errors out, as today. No new silent paths.
 - Infeasible replan-boundary pin → hard error.
+- Residual infeasibility modes after interior failures disappear (verifier,
+  Claim 4): a corner cap above what the adjacent chain can reach — covered by
+  the retained corner-endpoint bisection; a short chain infeasible with
+  *both* corner pins — fails loudly, never silently relaxed.
 - Chain latency is answered by measurement and optimization, never by
   silently degrading the formulation. If a chain ever exceeds the replan
   budget, that surfaces as an explicit follow-up (overlap splitting), not a
@@ -180,7 +206,26 @@ feasible. An infeasible pin therefore indicates a planner bug and is a
 
 ## Verification
 
-An adversarial math review (kalico-verifier) of the four load-bearing claims —
-condensation exactness/convexity, non-uniform stencil derivations,
-corner-sweep monotonicity under jerk constraints, interior-infeasibility
-removal — runs alongside this spec; findings amend it before implementation.
+Adversarial math review (kalico-verifier, 2026-06-07) of the four load-bearing
+claims. Full derivations:
+[`docs/research/condensed-smooth-chain-socp-junction.md`](../../research/condensed-smooth-chain-socp-junction.md).
+
+- **Claim 1 — condensation exactness/convexity: VERIFIED.** The attack
+  (curvature-sign-flip junction where left/right block-(d) accel intervals
+  become disjoint) lands on *tightening*, which is physically correct, not on
+  lost optimality. Residual modeling error O(h), same as today.
+- **Claim 2 — non-uniform stencils: VERIFIED with caveats**, folded into the
+  design above (O(h) truncation at `h_L ≠ h_R`, row normalization, bounded
+  spacing ratio).
+- **Claim 3 — corner-sweep monotonicity: VERIFIED with caveats.** Holds
+  because corner accel stays free (now marked load-bearing in the design).
+  Finite-N non-monotonicity (Pham, TOPP-RA) is a pre-existing caveat of
+  today's per-segment sweep, not worsened by chains.
+- **Claim 4 — interior infeasibility removal: VERIFIED with caveats**, folded
+  into Error handling (corner-cap bisection; both-pinned short chain fails
+  loudly).
+- **Item 5a — correctness hazard**: block (g/h) and the objective must use
+  interval-local `h_i`; folded into the design above.
+- Watch item: SLP trust-region/homotopy heuristics are tuned on per-segment
+  problem sizes; chain-sized behavior is covered by the testing plan's
+  fixtures and bench rather than assumed.
