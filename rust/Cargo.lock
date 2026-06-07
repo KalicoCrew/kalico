@@ -844,6 +844,7 @@ dependencies = [
  "runtime",
  "rustfft",
  "serde_json",
+ "serialport",
  "temporal",
  "thiserror 2.0.18",
  "time",

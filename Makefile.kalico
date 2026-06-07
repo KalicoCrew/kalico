@@ -20,7 +20,7 @@ MOTION_BRIDGE_SRC  = rust/target/release/libmotion_bridge_native.$(MOTION_BRIDGE
 MOTION_BRIDGE_DEST = klippy/motion_bridge_native.so
 
 motion-bridge:
-	cd rust && cargo build -p motion-bridge --release
+	cd rust && cargo build -p motion-bridge --release --features extension-module
 	cp $(MOTION_BRIDGE_SRC) $(MOTION_BRIDGE_DEST)
 
 clean-motion-bridge:

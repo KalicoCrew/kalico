@@ -6,7 +6,12 @@ use std::time::Duration;
 
 fn closed_conn() -> Arc<kalico_host_rt::unix_native_conn::UnixNativeConn> {
     let (client, _server) = UnixStream::pair().unwrap();
-    Arc::new(kalico_host_rt::unix_native_conn::UnixNativeConn::from_stream(client))
+    // `_server` (not `_`) is load-bearing: the peer must outlive from_stream
+    // (setsockopt EINVAL on Darwin against a dead peer). It drops at return,
+    // so every subsequent call observes Closed / broken-pipe.
+    Arc::new(
+        kalico_host_rt::unix_native_conn::UnixNativeConn::from_stream(client).expect("from_stream"),
+    )
 }
 
 fn key() -> AxisKey {
@@ -24,18 +29,43 @@ fn one_piece() -> Vec<runtime::piece_ring::PieceEntry> {
 
 #[test]
 fn closed_peer_yields_fatal_send_error() {
+    // Hold the strong Arc for the whole test so upgrade() succeeds and we
+    // exercise the real Closed/Io path, not the detached-conn Fatal arm.
+    let conn = closed_conn();
     let sink = WireSink {
         transports: {
             let mut m = HashMap::new();
-            m.insert(0, McuTransport::EtherCat(closed_conn()));
+            m.insert(0, McuTransport::EtherCat(Arc::downgrade(&conn)));
             m
         },
         timeout: Duration::from_millis(50),
+        freq_of: Arc::new(|_| None),
     };
     let pieces = one_piece();
     match sink.call_push_pieces(key(), &pieces, 0, 1) {
         Err(SendError::Fatal(_)) => {}
         other => panic!("expected Fatal for closed EtherCAT peer, got {other:?}"),
+    }
+}
+
+#[test]
+fn detached_ethercat_conn_yields_fatal_send_error() {
+    // The strong Arc is dropped before the call, so upgrade() fails and the
+    // released-conn path must classify as Fatal (pump exits, no spin).
+    let weak = Arc::downgrade(&closed_conn());
+    let sink = WireSink {
+        transports: {
+            let mut m = HashMap::new();
+            m.insert(0, McuTransport::EtherCat(weak));
+            m
+        },
+        timeout: Duration::from_millis(50),
+        freq_of: Arc::new(|_| None),
+    };
+    let pieces = one_piece();
+    match sink.call_push_pieces(key(), &pieces, 0, 1) {
+        Err(SendError::Fatal(_)) => {}
+        other => panic!("expected Fatal for detached EtherCAT conn, got {other:?}"),
     }
 }
 

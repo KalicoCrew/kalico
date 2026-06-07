@@ -24,6 +24,8 @@ class SerialReader:
         self.mcu = mcu
         # Serial port
         self.serial_dev = None
+        self._event_poller_timer = None
+        self._bridge_detached = False
         self.msgparser = msgproto.MessageParser(warn_prefix=warn_prefix)
         self.ffi_main, self.ffi_lib = chelper.get_ffi()
         self.serialqueue = None
@@ -419,7 +421,9 @@ class SerialReader:
         self.msgparser = msgparser
         self.register_response(self.handle_unknown, "#unknown")
         self.register_response(lambda params: None, "kalico_status_v6")
-        self.reactor.register_timer(self._bridge_event_poller, self.reactor.NOW)
+        self._event_poller_timer = self.reactor.register_timer(
+            self._bridge_event_poller, self.reactor.NOW
+        )
 
     def connect_uart(self, serialport, baud, rts=True):
         self.connect_pipe(serialport)
@@ -457,16 +461,31 @@ class SerialReader:
         )
 
     def disconnect(self):
+        # Stop the event poller BEFORE releasing the handle: a tick landing
+        # after release would take_runtime_event() an unknown handle and the
+        # resulting error would kill the reactor on the failed-connect path.
+        if self._event_poller_timer is not None:
+            self.reactor.unregister_timer(self._event_poller_timer)
+            self._event_poller_timer = None
+        # Post-disconnect sends are defined no-ops, mirroring mainline's
+        # `if self.serialqueue is None: return` contract — klippy components
+        # legitimately fire commands during the disconnect dispatch.
+        self._bridge_detached = True
         # Release the serial port through the bridge so firmware_restart's
         # arduino_reset() can open it for the DTR toggle.  Mirrors
         # mainline's disconnect() which closes the FD before the reset.
         bridge = getattr(self.mcu, "_motion_bridge", None)
         handle = getattr(self.mcu, "_bridge_handle", None)
         if bridge is not None and handle is not None:
+            # Fail loud: a silently-swallowed detach failure masks exactly the
+            # class of bug (leaked fd holding the pts in exclusive mode) that
+            # causes the next process's attach_serial to spin on EBUSY. Log for
+            # context, then re-raise so the failure surfaces.
             try:
                 bridge.detach_serial(handle)
             except Exception:
                 logging.exception("bridge detach_serial failed")
+                raise
         for pn in self.pending_notifications.values():
             pn.complete(None)
         self.pending_notifications.clear()
@@ -554,6 +573,8 @@ class SerialReader:
     def send(self, msg, minclock=0, reqclock=0):
         bridge = getattr(self.mcu, "_motion_bridge", None)
         if bridge is not None:
+            if self._bridge_detached:
+                return
             handle = self.mcu._bridge_handle
             bridge.bridge_send(handle, msg)
         elif self.serialqueue is not None:
@@ -571,6 +592,8 @@ class SerialReader:
     def send_with_response(self, msg, response):
         bridge = getattr(self.mcu, "_motion_bridge", None)
         if bridge is not None:
+            if self._bridge_detached:
+                raise error("serial connection closed")
             params = bridge.bridge_call(
                 self.mcu._bridge_handle,
                 msg,

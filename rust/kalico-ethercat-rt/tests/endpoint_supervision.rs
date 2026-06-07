@@ -104,8 +104,6 @@ fn spawn_supervision_thread(
     thread::Builder::new()
         .name("test-ec-supervision".into())
         .spawn(move || loop {
-            conn.poll_events();
-
             if conn.peer_closed() {
                 on_death("conn EOF");
                 return;
@@ -153,7 +151,6 @@ fn peer_closed_set_when_server_side_closes() {
 
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        conn.poll_events();
         if conn.peer_closed() {
             break;
         }
