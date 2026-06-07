@@ -395,22 +395,38 @@ fn a_start_pin_at_rest_panics() {
 }
 
 #[test]
-fn a_start_pin_emits_zero_cone_row() {
+fn a_start_tube_replaces_hard_pin() {
+    // With a_start=Some and v_start>0, block (a) emits only the 2 boundary
+    // equalities (no third pin row), and the tube rows appear as Nonneg rows
+    // that bound b_1 from above and below.
     let chain = two_segment_chain_with_junction();
+    let v_start = 50.0_f64;
+    let a0 = -2_000.0_f64;
     let bundle = match build_chain(
         &chain,
-        EndpointConditions { v_start: 50.0, v_end: 0.0, a_start: Some(-2_000.0) },
+        EndpointConditions { v_start, v_end: 0.0, a_start: Some(a0) },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
         other => panic!("{other:?}"),
     };
-    // Zero cone now has 3 rows (b_0, b_{N−1}, pin).
-    assert_eq!(bundle.cones[0], (Cone::Zero, 3));
-    let pin = &bundle.a_rows[2];
-    assert!((pin[1] - 1.0).abs() < 1e-12 && (pin[0] + 1.0).abs() < 1e-12);
-    let h0 = chain.h_intervals[0];
-    assert!((bundle.b_rhs[2] - (-2.0 * h0 * -2_000.0)).abs() < 1e-9);
+
+    // Zero cone must be exactly 2 rows (no hard pin).
+    assert_eq!(bundle.cones[0], (Cone::Zero, 2));
+
+    // The tube emits at least one Nonneg row touching b_1 (off_b+1 = 1).
+    // Upper rows have coefficient -1 on b_1; lower rows have +1.
+    let has_upper_at_b1 = bundle
+        .a_rows
+        .iter()
+        .zip(&bundle.b_rhs)
+        .any(|(row, &rhs)| (row[1] + 1.0).abs() < 1e-12 && rhs < v_start * v_start * 2.0);
+    let has_lower_at_b1 = bundle
+        .a_rows
+        .iter()
+        .any(|row| (row[1] - 1.0).abs() < 1e-12);
+    assert!(has_upper_at_b1, "expected tube upper row at b_1");
+    assert!(has_lower_at_b1, "expected tube lower row at b_1");
 }
 
 #[test]
@@ -533,4 +549,103 @@ fn junction_dual_accel_rows_use_right_limits() {
         accel_rhs_at_junction.iter().any(|r| (r - 5_000.0).abs() < 1e-6),
         "missing left-side accel row (a_max=5000): {accel_rhs_at_junction:?}"
     );
+}
+
+// -------------------------------------------------------------------------
+// Jerk-reachability tube: forward-simulation oracle + closed-form tests
+// -------------------------------------------------------------------------
+
+/// Ground-truth reachability by small-step forward integration. sign=+1 →
+/// accelerate hardest (upper), sign=-1 → decelerate hardest (lower). Returns
+/// v² at the first time s(t) ≥ s_target. Floors v at 0 for the decel branch.
+fn simulate_reachable_b(
+    s_target: f64,
+    v0: f64,
+    a0: f64,
+    a_max: f64,
+    j_max: f64,
+    sign: f64,
+) -> f64 {
+    let dt = 1e-6;
+    let (mut s, mut v, mut a) = (0.0_f64, v0, a0);
+    for _ in 0..50_000_000 {
+        if s >= s_target {
+            return (v * v).max(0.0);
+        }
+        let a_target = sign * a_max;
+        a = if sign > 0.0 {
+            (a + j_max * dt).min(a_target)
+        } else {
+            (a - j_max * dt).max(a_target)
+        };
+        v += a * dt;
+        if v < 0.0 {
+            v = 0.0;
+            a = a.max(0.0);
+        }
+        s += v * dt;
+        if sign < 0.0 && v <= 0.0 && s < s_target {
+            return 0.0;
+        }
+    }
+    (v * v).max(0.0)
+}
+
+#[test]
+fn boundary_tube_upper_matches_forward_sim() {
+    let (v0, a0, a_max, j_max) = (300.0, 1000.0, 50_000.0, 100_000.0);
+    for &s in &[0.5, 1.0, 2.0, 5.0, 10.0] {
+        let closed = super::boundary_reachable_b_upper(s, v0, a0, a_max, j_max);
+        let sim = simulate_reachable_b(s, v0, a0, a_max, j_max, 1.0);
+        let rel = (closed - sim).abs() / sim.max(1.0);
+        assert!(rel < 1e-3, "upper s={s}: closed {closed} vs sim {sim} (rel {rel})");
+    }
+}
+
+#[test]
+fn boundary_tube_lower_matches_forward_sim() {
+    let (v0, a0, a_max, j_max) = (300.0, 1000.0, 50_000.0, 100_000.0);
+    for &s in &[0.5, 1.0, 2.0, 5.0, 10.0] {
+        let closed = super::boundary_reachable_b_lower(s, v0, a0, a_max, j_max);
+        let sim = simulate_reachable_b(s, v0, a0, a_max, j_max, -1.0);
+        let rel = (closed - sim).abs() / sim.max(1.0);
+        assert!(rel < 2e-3, "lower s={s}: closed {closed} vs sim {sim} (rel {rel})");
+    }
+}
+
+#[test]
+fn boundary_tube_pinches_at_zero_with_slope_2a0() {
+    let (v0, a0, a_max, j_max) = (300.0, 1500.0, 50_000.0, 100_000.0);
+    let v0sq = v0 * v0;
+    assert!((super::boundary_reachable_b_upper(0.0, v0, a0, a_max, j_max) - v0sq).abs() < 1e-6);
+    assert!((super::boundary_reachable_b_lower(0.0, v0, a0, a_max, j_max) - v0sq).abs() < 1e-6);
+    let h = 1e-4;
+    let up_slope =
+        (super::boundary_reachable_b_upper(h, v0, a0, a_max, j_max) - v0sq) / h;
+    let lo_slope =
+        (super::boundary_reachable_b_lower(h, v0, a0, a_max, j_max) - v0sq) / h;
+    assert!(
+        (up_slope - 2.0 * a0).abs() < 5.0,
+        "upper slope {up_slope} vs {}",
+        2.0 * a0
+    );
+    assert!(
+        (lo_slope - 2.0 * a0).abs() < 5.0,
+        "lower slope {lo_slope} vs {}",
+        2.0 * a0
+    );
+}
+
+#[test]
+fn boundary_tube_upper_reduces_to_rest_envelope() {
+    let (a_max, j_max) = (50_000.0, 100_000.0);
+    for &s in &[0.5, 1.0, 2.0, 5.0] {
+        let tube = super::boundary_reachable_b_upper(s, 0.0, 0.0, a_max, j_max);
+        let rest = super::rest_boundary_b_cap(s, a_max, j_max);
+        let rel = (tube - rest).abs() / rest.max(1.0);
+        assert!(
+            rel < 1e-6,
+            "rest reduction s={s}: tube {tube} vs rest {rest}"
+        );
+    }
 }

@@ -1,5 +1,6 @@
 use super::*;
 use constraints::EndpointConditions;
+use crate::Limits;
 
 /// Straight 600 mm collinear cubic at machine-limit speed: v_max = 1000 mm/s,
 /// a_max = 50 km/s². Limits mirror the bridge's `to_temporal_limits` output for
@@ -82,6 +83,48 @@ fn schedule_segment_straight_line_returns_profile() {
     assert!(profile.samples[25].v > 100.0); // ≥ 100 mm/s
     // Total time should be finite and positive.
     assert!(profile.total_time.is_finite() && profile.total_time > 0.0);
+}
+
+#[test]
+fn pinned_nonzero_a_start_converges() {
+    // Reproduction case: v_start=575, a_start=2000, 100mm straight, N=100
+    // previously produced DivergedSlp{ratio≈2.0} with the hard-pin approach.
+    // The tube must make this converge.
+    let curve = VectorNurbs::<f64, 3>::try_new(
+        1,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![[0.0, 0.0, 0.0], [100.0, 0.0, 0.0]],
+    )
+    .unwrap();
+    let limits = Limits {
+        v_max: [600.0, 600.0, 600.0],
+        a_max: [50_000.0, 50_000.0, 50_000.0],
+        j_max: [100_000.0, 100_000.0, 100_000.0],
+        a_centripetal_max: 2_500.0,
+    };
+    let arc_grid = path::sample_arclength_grid(&curve, 100).unwrap();
+    let chain_grid = chain::ChainGrid::from_segment_grids(vec![arc_grid], vec![limits]);
+    let profile = schedule_chain_with_tolerance(
+        &chain_grid,
+        EndpointConditions { v_start: 575.0, v_end: 0.0, a_start: Some(2000.0) },
+        ToleranceMode::Auto,
+    )
+    .expect("setup ok");
+    assert!(
+        matches!(
+            profile.status,
+            crate::SolveStatus::Solved
+                | crate::SolveStatus::SolvedInexact { .. }
+                | crate::SolveStatus::SolvedSlp { .. }
+        ),
+        "pinned nonzero a_start must converge, got {:?}",
+        profile.status
+    );
+    let start_a = profile.samples[0].a;
+    assert!(
+        (start_a - 2000.0).abs() < 0.15 * 2000.0,
+        "start accel {start_a} not near 2000 (tube gives jerk-bounded continuity)"
+    );
 }
 
 #[test]

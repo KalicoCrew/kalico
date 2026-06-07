@@ -82,6 +82,121 @@ pub fn rest_boundary_b_cap(d: f64, a_env: f64, j_env: f64) -> f64 {
     }
 }
 
+/// Max reachable v² at arc-distance `s` from boundary state `(v0, a0)` under
+/// bounded jerk J and bounded accel A (upper reachability envelope).
+pub(crate) fn boundary_reachable_b_upper(s: f64, v0: f64, a0: f64, a_max: f64, j_max: f64) -> f64 {
+    debug_assert!(
+        a0 <= a_max * (1.0 + 1e-9),
+        "a0={a0} exceeds a_max={a_max} in boundary_reachable_b_upper"
+    );
+    let a0 = a0.min(a_max);
+
+    if s <= 0.0 {
+        return v0 * v0;
+    }
+
+    let t1 = (a_max - a0) / j_max;
+    let s1 = v0 * t1 + 0.5 * a0 * t1 * t1 + (1.0 / 6.0) * j_max * t1 * t1 * t1;
+    let v1 = v0 + a0 * t1 + 0.5 * j_max * t1 * t1;
+
+    if s <= s1 {
+        let v_t = |t: f64| -> f64 { v0 + a0 * t + 0.5 * j_max * t * t };
+        let s_t = |t: f64| -> f64 {
+            v0 * t + 0.5 * a0 * t * t + (1.0 / 6.0) * j_max * t * t * t
+        };
+        let t_guess = if v0 > 1e-12 { (s / v0).min(t1) } else { t1 * 0.5 };
+        let mut t = t_guess.clamp(0.0, t1);
+        for _ in 0..12 {
+            let vt = v_t(t);
+            if vt.abs() < 1e-15 {
+                break;
+            }
+            let step = (s_t(t) - s) / vt;
+            t = (t - step).clamp(0.0, t1);
+        }
+        v_t(t).powi(2).max(v0 * v0)
+    } else {
+        v1 * v1 + 2.0 * a_max * (s - s1)
+    }
+}
+
+/// Min reachable v² at arc-distance `s` from boundary state `(v0, a0)` under
+/// bounded jerk J and bounded accel A (lower reachability envelope, floored at 0).
+pub(crate) fn boundary_reachable_b_lower(s: f64, v0: f64, a0: f64, a_max: f64, j_max: f64) -> f64 {
+    debug_assert!(
+        a0 >= -a_max * (1.0 + 1e-9),
+        "a0={a0} below -a_max={} in boundary_reachable_b_lower",
+        -a_max
+    );
+    let a0 = a0.max(-a_max);
+
+    if s <= 0.0 {
+        return v0 * v0;
+    }
+
+    let v_ph1 = |t: f64| -> f64 { v0 + a0 * t - 0.5 * j_max * t * t };
+    let s_ph1 = |t: f64| -> f64 {
+        v0 * t + 0.5 * a0 * t * t - (1.0 / 6.0) * j_max * t * t * t
+    };
+
+    let t1_prime = (a0 + a_max) / j_max;
+
+    // Smallest positive time when v(t)=0 in phase 1: 0.5*J*t²-a0*t-v0=0
+    let t_stop_ph1 = {
+        let disc = a0 * a0 + 2.0 * j_max * v0;
+        if disc >= 0.0 && v0 > 0.0 {
+            let ts = (a0 + disc.sqrt()) / j_max;
+            if ts > 0.0 { ts } else { f64::INFINITY }
+        } else {
+            f64::INFINITY
+        }
+    };
+
+    let t_end_ph1 = t1_prime.min(t_stop_ph1);
+    let s1_prime = s_ph1(t_end_ph1);
+    let v1_prime = v_ph1(t_end_ph1).max(0.0);
+
+    if t_stop_ph1 <= t1_prime {
+        // Velocity reaches zero within phase 1.
+        let s_stop = s_ph1(t_stop_ph1);
+        if s >= s_stop {
+            return 0.0;
+        }
+        // Newton-solve in phase 1 for s < s_stop.
+        let t_guess = if v0 > 1e-12 { (s / v0).min(t_stop_ph1) } else { 0.0 };
+        let mut t = t_guess.clamp(0.0, t_stop_ph1);
+        for _ in 0..12 {
+            let vt = v_ph1(t);
+            if vt.abs() < 1e-15 {
+                break;
+            }
+            let step = (s_ph1(t) - s) / vt;
+            t = (t - step).clamp(0.0, t_stop_ph1);
+        }
+        v_ph1(t).powi(2).max(0.0)
+    } else {
+        // Phase 1 ends at -A with v1' > 0; phase 2: const-decel -A.
+        if s <= s1_prime {
+            // Still in phase 1; Newton-solve.
+            let t_guess = if v0 > 1e-12 { (s / v0).min(t1_prime) } else { 0.0 };
+            let mut t = t_guess.clamp(0.0, t1_prime);
+            for _ in 0..12 {
+                let vt = v_ph1(t);
+                if vt.abs() < 1e-15 {
+                    break;
+                }
+                let step = (s_ph1(t) - s) / vt;
+                t = (t - step).clamp(0.0, t1_prime);
+            }
+            v_ph1(t).powi(2).max(0.0)
+        } else {
+            // Phase 2: constant decel -A from (s1', v1').
+            let v_sq = (v1_prime * v1_prime - 2.0 * a_max * (s - s1_prime)).max(0.0);
+            v_sq
+        }
+    }
+}
+
 /// `chain` and `endpoints` must share the unit system described by `scale`.
 #[allow(clippy::too_many_lines)]
 pub fn build_chain(
@@ -225,22 +340,19 @@ pub fn build_chain(
             b_rhs.push(rhs);
         };
 
-    // Block (a): boundary equalities + optional a_start pin.
+    // Block (a): boundary equalities.
     {
         let mut count = 0_usize;
         push_row(&mut a_rows, &mut b_rhs, &[(off_b, 1.0)], -b_start);
         count += 1;
         push_row(&mut a_rows, &mut b_rhs, &[(off_b + n - 1, 1.0)], -b_end);
         count += 1;
-        if let Some(a0) = endpoints.a_start {
+        if endpoints.a_start.is_some() {
             assert!(
                 endpoints.v_start > 0.0,
                 "a_start pin at a rest start forces b_1 = 0 (rejected trap); \
                  rest starts use the (e2) envelope"
             );
-            // b_1 − b_0 − 2·h_0·a_0 = 0  (Zero cone; b_0 already pinned).
-            push_row(&mut a_rows, &mut b_rhs, &[(off_b + 1, 1.0), (off_b, -1.0)], -2.0 * h[0] * a0);
-            count += 1;
         }
         cones.push((Cone::Zero, count));
     }
@@ -434,6 +546,39 @@ pub fn build_chain(
                 }
                 push_row(&mut a_rows, &mut b_rhs, &[(off_b + i, -1.0)], cap);
                 count += 1;
+            }
+        }
+        if count > 0 {
+            cones.push((Cone::Nonneg, count));
+        }
+    }
+
+    // Block (e3): jerk-reachability tube from nonzero-accel start — nonneg cone.
+    // Replaces the constant-accel hard pin (old block (a) third row) with analytic
+    // upper/lower reachability bounds that give jerk-bounded accel continuity without
+    // the over-constraint that diverged the SLP on coarse grids.
+    {
+        let mut count = 0_usize;
+        if let Some(a0) = endpoints.a_start {
+            let v0 = endpoints.v_start;
+            debug_assert!(v0 > 0.0, "tube guard: v_start must be > 0 when a_start is Some");
+            for i in 1..n {
+                let si = chain.s[i] - chain.s[0];
+                let upper = boundary_reachable_b_upper(si, v0, a0, a_env, j_env);
+                let lower = boundary_reachable_b_lower(si, v0, a0, a_env, j_env);
+                let upper_dominated = upper >= b_cap;
+                let lower_vacuous = lower <= 0.0;
+                if !upper_dominated {
+                    push_row(&mut a_rows, &mut b_rhs, &[(off_b + i, -1.0)], upper);
+                    count += 1;
+                }
+                if !lower_vacuous {
+                    push_row(&mut a_rows, &mut b_rhs, &[(off_b + i, 1.0)], -lower);
+                    count += 1;
+                }
+                if upper_dominated && lower_vacuous {
+                    break;
+                }
             }
         }
         if count > 0 {
