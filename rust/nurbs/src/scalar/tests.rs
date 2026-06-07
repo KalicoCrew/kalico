@@ -39,21 +39,13 @@ fn try_new_rejects_knot_count_mismatch() {
 
 #[test]
 fn try_new_rejects_unclamped_start() {
-    let result = ScalarNurbs::<f64>::try_new(
-        1,
-        vec![0.0, 0.5, 1.0, 1.0],
-        vec![0.0, 1.0],
-    );
+    let result = ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.5, 1.0, 1.0], vec![0.0, 1.0]);
     assert!(matches!(result, Err(ConstructError::KnotsNotClamped)));
 }
 
 #[test]
 fn try_new_rejects_unclamped_end() {
-    let result = ScalarNurbs::<f64>::try_new(
-        1,
-        vec![0.0, 0.0, 0.5, 1.0],
-        vec![0.0, 1.0],
-    );
+    let result = ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 0.5, 1.0], vec![0.0, 1.0]);
     assert!(matches!(result, Err(ConstructError::KnotsNotClamped)));
 }
 

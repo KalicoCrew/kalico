@@ -142,7 +142,6 @@ def test_upstream_toolhead_method_baseline():
     )
 
 
-
 def test_no_motion_toolhead_path_calls_note_mcu_movequeue_activity():
     import inspect
 
@@ -167,7 +166,6 @@ def test_no_motion_toolhead_path_calls_note_mcu_movequeue_activity():
         "These MotionToolhead methods invoke %s, which rearms the "
         "silenced flush_timer:\n  %s" % (forbidden, offenders)
     )
-
 
 
 def test_legacy_toolhead_module_imports_without_bridge():

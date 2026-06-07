@@ -14,9 +14,7 @@ from scripts.fitter_prototype.params import FitterParams
 
 
 def test_chord_length_parameterize():
-    pts = np.array(
-        [[0.0, 0.0], [3.0, 0.0], [3.0, 4.0]]
-    )
+    pts = np.array([[0.0, 0.0], [3.0, 0.0], [3.0, 4.0]])
     t = chord_length_parameterize(pts)
     np.testing.assert_allclose(t, [0.0, 3.0 / 7.0, 1.0])
 
@@ -66,9 +64,7 @@ def test_fit_smooth_run_returns_fitted_nurbs_within_tolerance():
     pts = np.column_stack([np.cos(angles), np.sin(angles)])
     params = FitterParams(eps_chord_mm=0.025, max_refine_iter=20)
     fit = fit_smooth_run(pts, source_vertex_range=(0, 60), params=params)
-    assert (
-        fit.max_residual <= params.eps_chord_mm * 1.05
-    )
+    assert fit.max_residual <= params.eps_chord_mm * 1.05
 
 
 def test_chord_error_decreases_with_refinement():

@@ -51,10 +51,10 @@ fn rt() -> *mut kalico_c_api::KalicoRuntime {
                 kalico_c_api::kalico_runtime_configure_axis(
                     handle,
                     0,
-                    0,                               // mode = Pulse
+                    0, // mode = Pulse
                     (1.0_f32 / 160.0_f32).to_bits(),
                     64,
-                    core::ptr::null(),               // bindings_ptr — null legal when count == 0
+                    core::ptr::null(), // bindings_ptr — null legal when count == 0
                     0,
                 )
             };
@@ -74,20 +74,10 @@ fn write_piece_then_commit_head_makes_one_piece_visible() {
     piece[0..8].copy_from_slice(&7777u64.to_le_bytes());
 
     unsafe {
-        let rc = kalico_c_api::kalico_runtime_write_piece(
-            handle,
-            0,
-            0,
-            0,
-            piece.as_ptr(),
-        );
+        let rc = kalico_c_api::kalico_runtime_write_piece(handle, 0, 0, 0, piece.as_ptr());
         assert_eq!(rc, kalico_c_api::KALICO_OK, "write_piece failed: {rc}");
 
-        let rc = kalico_c_api::kalico_runtime_commit_head(
-            handle,
-            0,
-            1,
-        );
+        let rc = kalico_c_api::kalico_runtime_commit_head(handle, 0, 1);
         assert_eq!(rc, kalico_c_api::KALICO_OK, "commit_head failed: {rc}");
     }
 }
@@ -98,13 +88,7 @@ fn write_piece_rejects_unconfigured_axis() {
     let handle = rt();
     let piece = [0u8; 32];
     unsafe {
-        let rc = kalico_c_api::kalico_runtime_write_piece(
-            handle,
-            3,
-            0,
-            0,
-            piece.as_ptr(),
-        );
+        let rc = kalico_c_api::kalico_runtime_write_piece(handle, 3, 0, 0, piece.as_ptr());
         assert_eq!(rc, kalico_c_api::KALICO_ERR_INVALID_ARG);
     }
 }

@@ -215,10 +215,7 @@ fn pascal_shift_round_trip_preserves_polynomial() {
 
 #[test]
 fn single_poly_from_absolute_constructs_kernel_with_correct_polynomial() {
-    let k = PiecewisePolynomialKernel::single_poly_from_absolute(
-        vec![1.0_f64, 2.0],
-        (0.5, 1.5),
-    );
+    let k = PiecewisePolynomialKernel::single_poly_from_absolute(vec![1.0_f64, 2.0], (0.5, 1.5));
     assert_eq!(k.pieces.len(), 1);
     assert_eq!(k.pieces[0].u_start, 0.5);
     assert_eq!(k.pieces[0].u_end, 1.5);

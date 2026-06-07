@@ -60,13 +60,7 @@ fn second_init_returns_null() {
 fn null_handle_returns_null_ptr_error() {
     let piece = [0u8; 32];
     let r = unsafe {
-        kalico_c_api::kalico_runtime_write_piece(
-            std::ptr::null_mut(),
-            0,
-            0,
-            0,
-            piece.as_ptr(),
-        )
+        kalico_c_api::kalico_runtime_write_piece(std::ptr::null_mut(), 0, 0, 0, piece.as_ptr())
     };
     assert_eq!(r, kalico_c_api::KALICO_ERR_NULL_PTR);
 }

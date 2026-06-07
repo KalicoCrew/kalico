@@ -32,14 +32,7 @@ fn configure_axis_publishes_mode_and_scalars() {
     let mut e = new_engine();
 
     let binding = pulse_binding();
-    let rc = e.configure_axis(
-        0,
-        StepMode::Pulse,
-        0.0125,
-        256,
-        &[binding],
-        512,
-    );
+    let rc = e.configure_axis(0, StepMode::Pulse, 0.0125, 256, &[binding], 512);
     assert_eq!(rc, 0, "configure_axis returned non-zero");
 
     let axis = e.stepping_axes[0]

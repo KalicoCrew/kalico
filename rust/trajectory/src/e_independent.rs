@@ -87,15 +87,7 @@ pub fn schedule_e_full(
 
     let cp3 = e_at_t1 + sign * v_cruise * t_cruise / 2.0;
 
-    let cps = vec![
-        e_start,
-        e_start,
-        e_at_t1,
-        cp3,
-        e_at_t2,
-        e_end,
-        e_end,
-    ];
+    let cps = vec![e_start, e_start, e_at_t1, cp3, e_at_t2, e_end, e_end];
 
     let t1_safe = t0 + profile.t_ramp.max(1e-12);
     let t2_safe = t1_safe + t_cruise.max(1e-12);

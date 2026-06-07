@@ -7,7 +7,6 @@
     clippy::uninlined_format_args,
     clippy::doc_markdown
 )]
-
 #![cfg(feature = "loom")]
 
 #[cfg(feature = "loom")]

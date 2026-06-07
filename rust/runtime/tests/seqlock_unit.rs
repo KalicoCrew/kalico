@@ -7,7 +7,6 @@
     clippy::uninlined_format_args,
     clippy::doc_markdown
 )]
-
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use runtime::clock::{publish_widened_now, read_widened_now};

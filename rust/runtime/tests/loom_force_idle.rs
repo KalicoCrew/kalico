@@ -7,7 +7,6 @@
     clippy::uninlined_format_args,
     clippy::doc_markdown
 )]
-
 #![cfg(loom)]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

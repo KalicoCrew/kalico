@@ -80,15 +80,8 @@ fn clock_sync_returns_widened_host_clock_not_seqlock() {
     assert!(!rt.is_null());
 
     let mut mcu_clock: u64 = 0;
-    let r = unsafe {
-        kalico_c_api::kalico_runtime_clock_sync_request(
-            rt,
-            42,
-            0,
-            0,
-            &mut mcu_clock,
-        )
-    };
+    let r =
+        unsafe { kalico_c_api::kalico_runtime_clock_sync_request(rt, 42, 0, 0, &mut mcu_clock) };
     assert_eq!(r, 0, "clock_sync_request returned non-OK: {r}");
     assert_eq!(
         mcu_clock, 0,

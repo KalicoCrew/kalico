@@ -220,11 +220,11 @@ where
                     coeffs: coeffs_per_axis[axis].clone(),
                 })
                 .collect();
-            return pieces_vec.try_into().map_err(|_: Vec<_>| {
-                FitError::DegenerateInput {
+            return pieces_vec
+                .try_into()
+                .map_err(|_: Vec<_>| FitError::DegenerateInput {
                     reason: "fit_x_to_arc_length_piece: array length mismatch (unreachable)",
-                }
-            });
+                });
         }
 
         if d >= max_degree {

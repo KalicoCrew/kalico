@@ -7,7 +7,6 @@
     clippy::uninlined_format_args,
     clippy::doc_markdown
 )]
-
 #![allow(unsafe_code)]
 
 use std::cell::UnsafeCell;

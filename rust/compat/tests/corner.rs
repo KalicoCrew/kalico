@@ -17,11 +17,7 @@ fn straight_line_no_corners() {
 
 #[test]
 fn right_angle_corner() {
-    let points: Vec<[f64; 3]> = vec![
-        [0.0, 0.0, 0.0],
-        [1.0, 0.0, 0.0],
-        [1.0, 1.0, 0.0],
-    ];
+    let points: Vec<[f64; 3]> = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]];
     let corners = detect_corners(&points, 0.05);
     assert_eq!(
         corners,
@@ -63,11 +59,7 @@ fn split_straight_run() {
 
 #[test]
 fn detect_and_split_l_shape() {
-    let pts: Vec<[f64; 3]> = vec![
-        [0.0, 0.0, 0.0],
-        [5.0, 0.0, 0.0],
-        [5.0, 5.0, 0.0],
-    ];
+    let pts: Vec<[f64; 3]> = vec![[0.0, 0.0, 0.0], [5.0, 0.0, 0.0], [5.0, 5.0, 0.0]];
     let corners = detect_corners(&pts, 0.05);
     assert_eq!(corners, vec![1]);
 
