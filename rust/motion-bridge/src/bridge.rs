@@ -2602,14 +2602,18 @@ impl PyMotionBridge {
     /// `sources`: list of `(kind, mcu, id)` where kind `0` = `BridgeGpio`
     /// (`id` is `arm_id`), kind `1` = `Trsync` (`id` is `trsync_oid`).
     /// `sinks`: list of `(mcu, trsync_oid)`.
+    /// `participants`: list of `(mcu, trsync_oid)` for liveness extension.
+    /// `expire_timeout_s`: per-MCU expire window in host seconds.
     ///
     /// Returns an opaque handle id for [`trip_dispatch_cleanup`].
     fn trip_dispatch_prepare(
         &self,
         sources: Vec<(u8, u32, u32)>,
         sinks: Vec<(u32, u8)>,
+        participants: Vec<(u32, u8)>,
+        expire_timeout_s: f64,
     ) -> PyResult<u64> {
-        use crate::trip_dispatch::{self, SinkSpec, SourceSpec};
+        use crate::trip_dispatch::{self, ParticipantSpec, SinkSpec, SourceSpec};
 
         let mut src_specs = Vec::new();
         for (kind, mcu, id) in sources {
@@ -2636,8 +2640,29 @@ impl PyMotionBridge {
             sink_ios.push((*mcu, io));
         }
 
-        let handle = trip_dispatch::prepare(src_specs, sink_specs, sink_ios)
-            .map_err(|e| PyRuntimeError::new_err(format!("trip_dispatch_prepare: {e}")))?;
+        let mut participant_specs = Vec::new();
+        for (mcu, oid) in participants {
+            let io = self.host_io_for_mcu("trip_dispatch_prepare", mcu)?;
+            participant_specs.push((ParticipantSpec { mcu, trsync_oid: oid }, io));
+        }
+
+        let router = Arc::clone(&self.router);
+        let clock_of = move |mcu_id: u32| {
+            router
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .ack_clock_and_freq(mcu_handle_from_raw(mcu_id))
+        };
+
+        let handle = trip_dispatch::prepare(
+            src_specs,
+            sink_specs,
+            sink_ios,
+            participant_specs,
+            expire_timeout_s,
+            clock_of,
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("trip_dispatch_prepare: {e}")))?;
 
         let id = self.trip_dispatch_next_id.fetch_add(1, Ordering::AcqRel);
         self.trip_dispatch_handles

@@ -6,10 +6,19 @@
 //! `trsync_state` with `can_trigger==0` (classic/Beacon). Sinks are firmware
 //! trsyncs armed with `runtime_stop_on_trigger` whose signal freezes the
 //! curve evaluator.
+//!
+//! Participants (typically the same MCUs as sources/sinks) report liveness via
+//! `trsync_state` with `can_trigger==1`. Each such report feeds
+//! [`extension::ExtensionEngine`], which decides when to push a new
+//! `trsync_set_timeout` to each participant's firmware trsync. This prevents
+//! the firmware's built-in expire timer from freezing the move during a live
+//! homing sequence.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
+use kalico_host_rt::clock::instant_to_f64;
 use kalico_host_rt::host_io::{InterceptorId, KalicoHostIo};
 use kalico_host_rt::transport::TransportError;
 
@@ -21,6 +30,16 @@ pub const REASON_ENDSTOP_HIT: u8 = 1;
 /// passed to [`prepare`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SinkSpec {
+    pub mcu: u32,
+    pub trsync_oid: u8,
+}
+
+/// Identifies a trsync that participates in liveness extension. Each
+/// participant's `trsync_state can_trigger=1` reports keep every MCU's
+/// firmware expire timer pushed forward. `mcu` must resolve to a
+/// `KalicoHostIo` in the `participants` slice passed to [`prepare`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParticipantSpec {
     pub mcu: u32,
     pub trsync_oid: u8,
 }
@@ -114,6 +133,14 @@ impl TripDispatchHandle {
 /// `sink_ios` maps MCU id → `KalicoHostIo` for all sink MCUs listed in
 /// `sinks`. The fan-out sends directly via [`KalicoHostIo::send_fire_and_forget`].
 ///
+/// `participants` lists every trsync whose `can_trigger=1` reports keep the
+/// firmware expire timers extended. `expire_timeout_s` is the per-MCU expire
+/// window. `clock_of(mcu_id)` returns `(projected_now_ticks, freq)` for the
+/// named MCU, or `None` when the clock is not yet synced. An un-synced clock
+/// is warned once per participant and the extension is skipped; a homing move
+/// reaching prepare with no synced clocks will surface via this warning before
+/// the firmware timer fires.
+///
 /// # Caller contract
 ///
 /// Call `prepare` only when arming the move (never at init time), so that
@@ -130,6 +157,9 @@ pub fn prepare(
     sources: Vec<(SourceSpec, Arc<KalicoHostIo>)>,
     sinks: Vec<SinkSpec>,
     sink_ios: Vec<(u32, Arc<KalicoHostIo>)>,
+    participants: Vec<(ParticipantSpec, Arc<KalicoHostIo>)>,
+    expire_timeout_s: f64,
+    clock_of: impl Fn(u32) -> Option<(u64, f64)> + Send + Sync + 'static,
 ) -> Result<TripDispatchHandle, TransportError> {
     let triggered = Arc::new(AtomicBool::new(false));
     let fan = Arc::new(FanOut::new(sinks));
@@ -182,6 +212,107 @@ pub fn prepare(
             }
         };
         registrations.push((src_io, id));
+    }
+
+    if !participants.is_empty() {
+        // mainline: min_extend = 0.8 × report_ticks, report = 0.3 × timeout
+        let min_extend_s = 0.8 * 0.3 * expire_timeout_s;
+        let engine = Arc::new(std::sync::Mutex::new(
+            extension::ExtensionEngine::new(
+                participants
+                    .iter()
+                    .map(|_| extension::Participant { last_status_time: 0.0, expire_time: 0.0 })
+                    .collect(),
+                expire_timeout_s,
+                min_extend_s,
+            ),
+        ));
+        let clock_of = Arc::new(clock_of);
+
+        let participant_io: Vec<(u32, u8, Arc<KalicoHostIo>)> = participants
+            .iter()
+            .map(|(p, io)| (p.mcu, p.trsync_oid, Arc::clone(io)))
+            .collect();
+
+        for (idx, (spec, part_io)) in participants.into_iter().enumerate() {
+            let engine = Arc::clone(&engine);
+            let clock_of = Arc::clone(&clock_of);
+            let participant_io = participant_io.clone();
+            let mcu = spec.mcu;
+
+            let id = match part_io.register_frame_interceptor(
+                "trsync_state",
+                Some(u32::from(spec.trsync_oid)),
+                Box::new(move |params| {
+                    if params.get_u32("can_trigger") == 0 {
+                        return;
+                    }
+
+                    let clock32 = params.get_u32("clock");
+                    let (now_ticks, freq) = match clock_of(mcu) {
+                        Some(v) => v,
+                        None => {
+                            tracing::warn!(
+                                participant_idx = idx,
+                                mcu_id = mcu,
+                                "trip_dispatch: clock not synced for participant — \
+                                 extension skipped"
+                            );
+                            return;
+                        }
+                    };
+                    let host_now = instant_to_f64(Instant::now());
+                    let report_ticks =
+                        extension::clock32_to_64(now_ticks, clock32);
+                    let status_time =
+                        extension::ticks_to_host_time(report_ticks, now_ticks, host_now, freq);
+
+                    let sends = engine
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .on_report(idx, status_time);
+
+                    for (target_idx, expire_t) in sends {
+                        let (target_mcu, target_oid, ref target_io) =
+                            participant_io[target_idx];
+                        let (target_now_ticks, target_freq) = match clock_of(target_mcu) {
+                            Some(v) => v,
+                            None => {
+                                tracing::warn!(
+                                    participant_idx = target_idx,
+                                    mcu_id = target_mcu,
+                                    "trip_dispatch: clock not synced for target \
+                                     participant — extension send skipped"
+                                );
+                                continue;
+                            }
+                        };
+                        let target_host_now = instant_to_f64(Instant::now());
+                        let expire_ticks = extension::host_time_to_ticks(
+                            expire_t,
+                            target_now_ticks,
+                            target_host_now,
+                            target_freq,
+                        );
+                        let cmd = format!(
+                            "trsync_set_timeout oid={} clock={}",
+                            target_oid,
+                            expire_ticks & 0xFFFF_FFFF
+                        );
+                        let _ = target_io.send_fire_and_forget(&cmd);
+                    }
+                }),
+            ) {
+                Ok(id) => id,
+                Err(e) => {
+                    for (io, prev_id) in registrations {
+                        let _ = io.unregister_frame_interceptor(prev_id);
+                    }
+                    return Err(e);
+                }
+            };
+            registrations.push((part_io, id));
+        }
     }
 
     Ok(TripDispatchHandle { triggered, registrations })

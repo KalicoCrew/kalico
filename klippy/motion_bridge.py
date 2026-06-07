@@ -446,11 +446,18 @@ class MotionBridgeWrapper:
     def software_trip(self, mcu, arm_id, timeout_s=2.0):
         return self._bridge.software_trip(mcu, arm_id, timeout_s)
 
-    def trip_dispatch_prepare(self, sources, sinks):
-        # sources: [(kind, mcu_handle, id)]  kind 0=BridgeGpio(id=arm_id),
-        #                                    kind 1=Trsync(id=trsync_oid)
-        # sinks:   [(mcu_handle, trsync_oid)]
-        return self._bridge.trip_dispatch_prepare(sources, sinks)
+    def trip_dispatch_prepare(self, sources, sinks,
+                              participants=None, expire_timeout_s=0.25):
+        # sources:      [(kind, mcu_handle, id)]  kind 0=BridgeGpio(id=arm_id),
+        #                                         kind 1=Trsync(id=trsync_oid)
+        # sinks:        [(mcu_handle, trsync_oid)]
+        # participants: [(mcu_handle, trsync_oid)] for liveness extension
+        # expire_timeout_s: per-MCU expire window in host seconds
+        if participants is None:
+            participants = []
+        return self._bridge.trip_dispatch_prepare(
+            sources, sinks, participants, expire_timeout_s
+        )
 
     def trip_dispatch_cleanup(self, handle_id):
         return self._bridge.trip_dispatch_cleanup(handle_id)
@@ -674,7 +681,7 @@ class BridgeTriggerDispatch:
                 )
             sources = [(0, self._mcu, self._arm_id)]
             self._trip_handle_id = self._bridge.trip_dispatch_prepare(
-                sources, sinks
+                sources, sinks, participants=[], expire_timeout_s=0.25
             )
 
             logging.info(

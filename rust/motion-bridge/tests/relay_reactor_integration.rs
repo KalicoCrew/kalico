@@ -28,12 +28,17 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
+use std::time::Instant;
 
+use kalico_host_rt::clock::instant_to_f64;
 use kalico_host_rt::host_io::ReactorCommand;
 use kalico_host_rt::host_io::parser::{DataDictionary, MsgProtoParser};
 use kalico_host_rt::host_io::test_harness::ReactorHarness;
 use kalico_host_rt::host_io::wire;
 use motion_bridge_native::trip_dispatch::{FanOut, REASON_ENDSTOP_HIT, SinkSpec};
+use motion_bridge_native::trip_dispatch::extension::{
+    ExtensionEngine, Participant, clock32_to_64, host_time_to_ticks, ticks_to_host_time,
+};
 
 // ---------------------------------------------------------------------------
 // Parser helpers
@@ -65,6 +70,44 @@ fn build_test_parser() -> Arc<MsgProtoParser> {
     });
     let dict: DataDictionary = serde_json::from_value(dict_json).expect("bad test dict");
     Arc::new(MsgProtoParser::from_dictionary(dict).expect("parser build failed"))
+}
+
+/// Build a `MsgProtoParser` for the extension liveness test:
+///
+/// - `trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u`
+///   (response msgid=30, unsolicited from participant MCU)
+/// - `trsync_set_timeout oid=%c clock=%u`
+///   (command msgid=31, sent to participant MCU)
+fn build_extension_parser() -> Arc<MsgProtoParser> {
+    let dict_json = serde_json::json!({
+        "commands": {
+            "trsync_set_timeout oid=%c clock=%u": 31
+        },
+        "responses": {
+            "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u": 30
+        },
+        "output": {},
+        "enumerations": {},
+        "config": {},
+        "version": "test",
+        "app": "test"
+    });
+    let dict: DataDictionary = serde_json::from_value(dict_json).expect("bad extension test dict");
+    Arc::new(MsgProtoParser::from_dictionary(dict).expect("extension parser build failed"))
+}
+
+/// Encode a `trsync_state` frame (msgid=30) for the extension test.
+fn build_trsync_state_frame(oid: u8, can_trigger: u8, clock: u32, seq: u8) -> Vec<u8> {
+    use kalico_host_rt::host_io::parser::encode_vlq;
+
+    let mut payload = Vec::new();
+    encode_vlq(&mut payload, 30).unwrap();                    // msgid
+    encode_vlq(&mut payload, i64::from(oid)).unwrap();        // oid (%c)
+    encode_vlq(&mut payload, i64::from(can_trigger)).unwrap();// can_trigger (%c)
+    encode_vlq(&mut payload, 0).unwrap();                     // trigger_reason (%c)
+    encode_vlq(&mut payload, i64::from(clock)).unwrap();      // clock (%u)
+
+    wire::build_frame(&payload, seq)
 }
 
 /// Encode a `kalico_endstop_tripped` frame (msgid=10) with the given `arm_id`
@@ -323,5 +366,108 @@ fn second_endstop_tripped_does_not_relay_again() {
         payloads_after_second.len(),
         1,
         "second trip must NOT produce another trsync_trigger (FanOut one-shot)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Extension liveness: trsync_state can_trigger=1 → trsync_set_timeout
+// ---------------------------------------------------------------------------
+
+/// An inbound `trsync_state can_trigger=1` for participant 0 fires the
+/// extension closure and produces exactly one outbound `trsync_set_timeout`
+/// frame on participant 1's wire (oid = p1_oid), and nothing on participant
+/// 0's wire.
+#[test]
+fn trsync_state_report_extends_other_participant_timeout_through_live_reactor() {
+    const P0_OID: u8 = 20;
+    const P1_OID: u8 = 21;
+    const FREQ: f64 = 520_000_000.0;
+    const EXPIRE_S: f64 = 0.25;
+
+    let parser = build_extension_parser();
+
+    let mut p0 = ReactorHarness::new_with_parser(Arc::clone(&parser));
+    let mut p1 = ReactorHarness::new_with_parser(Arc::clone(&parser));
+
+    let p1_submission_tx: Sender<ReactorCommand> = p1.submission_tx.clone();
+
+    let min_extend_s = 0.8 * 0.3 * EXPIRE_S;
+    // Pre-populate P0's expire_time so only participant 1 is extended on first
+    // report; same pattern as extension_tests.rs `engine()` helper.
+    let engine = Arc::new(std::sync::Mutex::new(ExtensionEngine::new(
+        vec![
+            Participant { last_status_time: 0.0, expire_time: EXPIRE_S },
+            Participant { last_status_time: 0.0, expire_time: 0.0 },
+        ],
+        EXPIRE_S,
+        min_extend_s,
+    )));
+
+    // now_ticks and host_now are sampled once; the closure uses the same values
+    // so the conversion is deterministic during the synchronous test.
+    let now_ticks: u64 = 52_000_000_000;
+    let host_now = instant_to_f64(Instant::now());
+
+    // The closure for participant 0 mirrors what `prepare` registers.
+    let engine_c = Arc::clone(&engine);
+    let _interceptor_id = p0.register_interceptor(
+        "trsync_state",
+        Some(u32::from(P0_OID)),
+        Box::new(move |params| {
+            if params.get_u32("can_trigger") == 0 {
+                return;
+            }
+
+            let clock32 = params.get_u32("clock") as u32;
+            let report_ticks = clock32_to_64(now_ticks, clock32);
+            let status_time = ticks_to_host_time(report_ticks, now_ticks, host_now, FREQ);
+
+            let sends = engine_c
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .on_report(0, status_time);
+
+            for (target_idx, expire_t) in sends {
+                let expire_ticks =
+                    host_time_to_ticks(expire_t, now_ticks, host_now, FREQ);
+                let oid = if target_idx == 1 { P1_OID } else { P0_OID };
+                let cmd = format!(
+                    "trsync_set_timeout oid={} clock={}",
+                    oid,
+                    expire_ticks & 0xFFFF_FFFF
+                );
+                let _ = p1_submission_tx.send(ReactorCommand::FireAndForget { cmd });
+            }
+        }),
+    );
+
+    // Feed a `trsync_state can_trigger=1` frame for participant 0.
+    let clock32 = now_ticks as u32;
+    let frame = build_trsync_state_frame(P0_OID, 1, clock32, 1);
+    p0.feed_rx(&frame);
+    p0.tick();
+
+    // Tick participant 1 so it processes the FireAndForget and writes the wire.
+    p1.tick();
+
+    // Participant 0's wire must be empty — it must not extend itself.
+    assert!(
+        p0.tx_log().is_empty(),
+        "participant 0 must produce no outbound bytes (self-extension is forbidden)"
+    );
+
+    // Participant 1 must have one `trsync_set_timeout` frame.
+    let p1_tx = p1.tx_log();
+    assert!(!p1_tx.is_empty(), "participant 1 must have received a trsync_set_timeout");
+
+    let payloads = extract_payloads(p1_tx);
+    assert_eq!(payloads.len(), 1, "exactly one outbound frame on participant 1");
+
+    let (name, params) = parser.decode_body(&payloads[0]).expect("decode failed");
+    assert_eq!(name, "trsync_set_timeout", "outbound frame must be trsync_set_timeout");
+    assert_eq!(
+        params.get_u32("oid"),
+        u32::from(P1_OID),
+        "oid must match participant 1's oid"
     );
 }
