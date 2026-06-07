@@ -386,6 +386,7 @@ endchoice
 config RUNTIME_PIECE_RING_SIZE
     int "Piece-ring byte budget (total across all axes)"
     default 4096 if MACH_STM32G0
+    default 32768 if MACH_STM32F401
     default 63488 if RUNTIME_TARGET_LARGE
     default 63488 if RUNTIME_TARGET_SMALL
     default 63488
@@ -403,6 +404,7 @@ config KALICO_MOTION_SAMPLE_RATE_HZ
     int "Motion engine sample rate in Hz (motion-timer ISR fire rate)"
     depends on MACH_STM32H7 || MACH_STM32F4 || MACH_STM32G0 || MACH_LINUX
     default 40000 if MACH_STM32H7
+    default 10000 if MACH_STM32F401
     default 20000 if MACH_STM32F4
     default 2000 if MACH_STM32G0
     default 1000 if MACH_LINUX
@@ -455,9 +457,9 @@ config RUNTIME_STORAGE_SIZE_LARGE
     range 65536 524288
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
-      replaces RT_CELL's Rust-side #[link_section] placement). Task 18
-      measured size_of::<RuntimeContext>() = 59048 bytes (57 KB) with
-      the piece-ring model (PIECE_RING_SIZE = 63488 bytes). Default is
+      replaces RT_CELL's Rust-side #[link_section] placement). The fixed
+      (non-ring) part of RuntimeContext measures 2520 bytes on the MCU
+      build (2026-06-07); total is that plus PIECE_RING_SIZE. Default is
       122880 bytes (120 KB), providing ample headroom for piece-ring
       growth. The AXI SRAM ceiling on H7 is 320 KB; the C-side
       _Static_assert in src/runtime_storage.c enforces 2 KB headroom.
@@ -467,16 +469,18 @@ config RUNTIME_STORAGE_SIZE_LARGE
 config RUNTIME_STORAGE_SIZE_SMALL
     int "rt_storage byte ceiling (small profile, F4/G0)"
     default 57344 if MACH_STM32G0
+    default 36864 if MACH_STM32F401
     default 73728
     range 32768 131072
     help
       Byte ceiling for rt_storage (the C-declared backing buffer that
-      replaces RT_CELL's Rust-side #[link_section] placement). Task 18
-      measured size_of::<RuntimeContext>() = 59048 bytes (57 KB) with
-      the piece-ring model (PIECE_RING_SIZE = 63488 bytes). Default is
-      73728 bytes (72 KB), providing headroom for piece-ring growth on
-      F4's 128 KB SRAM. Const_assert on Rust catches RuntimeContext
-      growth at compile time.
+      replaces RT_CELL's Rust-side #[link_section] placement). The fixed
+      (non-ring) part of RuntimeContext measures 2520 bytes on the F4
+      MCU build (2026-06-07), so the floor is PIECE_RING_SIZE + ~3 KB.
+      Default is 73728 bytes (72 KB), providing headroom for piece-ring
+      growth on F4's 128 KB SRAM. F401 (64 KB SRAM total) defaults to
+      36864 to leave the C-side dynamic pool ~17 KB. Const_assert on
+      Rust catches RuntimeContext growth at compile time.
 
 config KALICO_SIM
     bool "Build for simulator (disables IWDG, enables Linux sim shims)"
