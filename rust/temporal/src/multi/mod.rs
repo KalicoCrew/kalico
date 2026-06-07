@@ -176,6 +176,7 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
 #[cfg(test)]
 mod tests;
 
+mod chain;
 mod grid;
 mod joining;
 mod junction;
