@@ -12,6 +12,7 @@ pub fn enqueue_segment<P>(
     host_now: f64,
     lead_secs: f64,
     project: P,
+    max_piece_secs: Option<f64>,
 ) -> Vec<EnqueueMsg>
 where
     P: Fn(u32, f64) -> u64,
@@ -45,7 +46,8 @@ where
                 _ => &seg.axes[axis_idx],
             };
 
-            let pieces = flatten_axis(curve, t0, cfg.mcu_id, axis_idx, host_now, &project);
+            let pieces =
+                flatten_axis(curve, t0, cfg.mcu_id, axis_idx, host_now, &project, max_piece_secs);
             if !pieces.is_empty() {
                 out.push(EnqueueMsg {
                     key: AxisKey {
@@ -70,6 +72,7 @@ fn flatten_axis<P>(
     axis_idx: usize,
     host_now: f64,
     project: &P,
+    max_piece_secs: Option<f64>,
 ) -> Vec<(PieceEntry, f64)>
 where
     P: Fn(u32, f64) -> u64,
@@ -86,45 +89,94 @@ where
             "expected cubic (degree-3) Bernstein coeffs; the pipeline is uniform-cubic per CLAUDE.md, got {}",
             bern.len()
         );
-        let mut coeffs = [0.0_f32; 4];
+
         let n = bern.len().min(4);
+        let last_f64 = if n > 0 { bern[n - 1] } else { 0.0 };
+        let mut coeffs_f64 = [last_f64; 4];
         for k in 0..n {
-            coeffs[k] = bern[k] as f32;
+            coeffs_f64[k] = bern[k];
         }
-        if n > 0 && n < 4 {
-            let last = bern[n - 1] as f32;
-            for k in n..4 {
-                coeffs[k] = last;
+
+        let duration = bp.u_end - bp.u_start;
+        let subs = match max_piece_secs {
+            Some(m) => subdivide_bernstein(coeffs_f64, duration, m),
+            None => vec![(coeffs_f64, duration)],
+        };
+
+        let mut offset = 0.0;
+        for (sub_idx, (sub_coeffs, sub_dur)) in subs.iter().enumerate() {
+            let host_secs = t0 + bp.u_start + offset;
+            let start_time = project(mcu_id, host_secs);
+
+            let mut coeffs = [0.0_f32; 4];
+            for k in 0..4 {
+                coeffs[k] = sub_coeffs[k] as f32;
             }
+            let duration_f32 = *sub_dur as f32;
+
+            let margin_us = (host_secs - host_now) * 1e6;
+            tracing::trace!(
+                mcu_id,
+                axis = axis_idx,
+                piece_idx,
+                sub_idx,
+                u_start = bp.u_start,
+                margin_us,
+                start_ns = start_time,
+                "[dispatch-margin]"
+            );
+
+            out.push((
+                PieceEntry {
+                    start_time,
+                    coeffs,
+                    duration: duration_f32,
+                    _reserved: 0,
+                },
+                host_secs,
+            ));
+
+            offset += sub_dur;
         }
-
-        let host_secs = t0 + bp.u_start;
-        let start_time = project(mcu_id, host_secs);
-        let duration = (bp.u_end - bp.u_start) as f32;
-
-        let margin_us = (host_secs - host_now) * 1e6;
-        tracing::trace!(
-            mcu_id,
-            axis = axis_idx,
-            piece_idx,
-            u_start = bp.u_start,
-            margin_us,
-            start_ns = start_time,
-            "[dispatch-margin]"
-        );
-
-        out.push((
-            PieceEntry {
-                start_time,
-                coeffs,
-                duration,
-                _reserved: 0,
-            },
-            host_secs,
-        ));
     }
 
     out
+}
+
+pub fn subdivide_bernstein(
+    coeffs: [f64; 4],
+    duration: f64,
+    max_piece_secs: f64,
+) -> Vec<([f64; 4], f64)> {
+    if duration <= max_piece_secs {
+        return vec![(coeffs, duration)];
+    }
+    let n = (duration / max_piece_secs).ceil() as usize;
+    let sub = duration / n as f64;
+    let mut out = Vec::with_capacity(n);
+    let mut rest = coeffs;
+    for i in 0..n - 1 {
+        let u = sub / (duration - i as f64 * sub);
+        let (left, right) = de_casteljau_split(rest, u);
+        out.push((left, sub));
+        rest = right;
+    }
+    out.push((rest, sub));
+    out
+}
+
+fn de_casteljau_split(c: [f64; 4], u: f64) -> ([f64; 4], [f64; 4]) {
+    let b01 = lerp(c[0], c[1], u);
+    let b12 = lerp(c[1], c[2], u);
+    let b23 = lerp(c[2], c[3], u);
+    let b012 = lerp(b01, b12, u);
+    let b123 = lerp(b12, b23, u);
+    let b = lerp(b012, b123, u);
+    ([c[0], b01, b012, b], [b, b123, b23, c[3]])
+}
+
+fn lerp(a: f64, b: f64, u: f64) -> f64 {
+    a + (b - a) * u
 }
 
 #[cfg(test)]
