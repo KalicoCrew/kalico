@@ -663,17 +663,26 @@ class BridgeTriggerDispatch:
         # reset the handle on any failure before re-raising. Note
         # ARM_STATUS_ALREADY_TRIPPED is a normal completion, not an
         # exception, so it does NOT take this cleanup path.
+        from .extras.danger_options import get_danger_options
+        n_participants = len(self._sink_trsyncs)
+        expire_timeout = get_danger_options().multi_mcu_trsync_timeout
+        if n_participants == 1:
+            expire_timeout = get_danger_options().single_mcu_trsync_timeout
         try:
             sinks = []
-            for trsync in self._sink_trsyncs.values():
+            participants = []
+            for i, trsync in enumerate(self._sink_trsyncs.values()):
                 trsync._bridge_arm_id = self._arm_id
-                trsync.start(arm_print_time, 0., self._completion, 0.)
-                sinks.append(
-                    (trsync.get_mcu()._bridge_handle, trsync.get_oid())
+                trsync.start(
+                    arm_print_time, float(i) / n_participants,
+                    self._completion, expire_timeout,
                 )
+                handle = trsync.get_mcu()._bridge_handle
+                sinks.append((handle, trsync.get_oid()))
+                participants.append((handle, trsync.get_oid()))
             sources = [(0, self._mcu, self._arm_id)]
             self._trip_handle_id = self._bridge.trip_dispatch_prepare(
-                sources, sinks, [], 0.25
+                sources, sinks, participants, expire_timeout
             )
 
             logging.info(

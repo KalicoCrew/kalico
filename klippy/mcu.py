@@ -372,11 +372,16 @@ class MCU_trsync:
             # trsync_trigger freezes the curve evaluator.
             self._home_end_clock = None
             clock = self._mcu.print_time_to_clock(print_time)
+            expire_ticks = self._mcu.seconds_to_clock(expire_timeout)
+            expire_clock = clock + expire_ticks
+            report_ticks = self._mcu.seconds_to_clock(expire_timeout * 0.3)
+            report_clock = clock + int(report_ticks * report_offset + 0.5)
             serial = self._mcu._serial
             serial.send(
-                "trsync_start oid=%d report_clock=%d report_ticks=0"
+                "trsync_start oid=%d report_clock=%d report_ticks=%d"
                 " expire_reason=%d"
-                % (self._oid, clock, self.REASON_COMMS_TIMEOUT)
+                % (self._oid, report_clock & 0xFFFFFFFF, report_ticks,
+                   self.REASON_COMMS_TIMEOUT)
             )
             arm_id = getattr(self, "_bridge_arm_id", None)
             if arm_id is None:
@@ -389,11 +394,14 @@ class MCU_trsync:
                     "runtime_stop_on_trigger arm_id=%d trsync_oid=%d"
                     % (arm_id, self._oid)
                 )
+            serial.send(
+                "trsync_set_timeout oid=%d clock=%d"
+                % (self._oid, expire_clock & 0xFFFFFFFF)
+            )
             logging.info(
-                "[trsync-diag] bridge sink armed mcu=%s oid=%d arm_id=%d",
-                self._mcu._name,
-                self._oid,
-                arm_id,
+                "[trsync-diag] bridge sink armed mcu=%s oid=%d arm_id=%d"
+                " timeout=%.3fs",
+                self._mcu._name, self._oid, arm_id, expire_timeout,
             )
             return
         # Non-bridge MCU (Beacon, Eddy): send firmware commands.
