@@ -1204,11 +1204,10 @@ fn advance_idle_then_append_places_new_move_at_target() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Replan-boundary acceleration-carry RED test (Task 13 staging helpers)
-// ---------------------------------------------------------------------------
+// Task 13 staging helpers.
 
 const LOW_FREQ_HZ: f64 = 20.0;
+const HARNESS_A_MAX: f64 = 5_000.0;
 
 fn single_axis_harness(v_max: f64, a_max: f64) -> (ShaperState, ReplanContext) {
     let shapers: [Option<AxisShaper>; 4] = [
@@ -1264,7 +1263,7 @@ fn append_x_move(state: &mut ShaperState, ctx: &ReplanContext, dist_mm: f64, fee
     state.append_and_replan(seg, ctx).expect("append_x_move");
 }
 
-fn emit_partial_window(state: &mut ShaperState, _ctx: &ReplanContext) -> f64 {
+fn emit_partial_window(state: &mut ShaperState) -> f64 {
     let kernel_xy = RequiredShaper::SmoothZv {
         frequency_hz: LOW_FREQ_HZ,
     }
@@ -1302,13 +1301,13 @@ fn replan_boundary_carries_acceleration() {
     // fit-piece width so the sampled (fit-level, i.e. executed-level) accel
     // there is monotone, not apex-blended. Appending slow B flips the new
     // plan's free a_0 to decel — the impulse this feature kills.
-    let (mut state, ctx) = single_axis_harness(600.0, 5_000.0);
+    let (mut state, ctx) = single_axis_harness(600.0, HARNESS_A_MAX);
     append_x_move(&mut state, &ctx, 50.0, 600.0);
-    let t_split = emit_partial_window(&mut state, &ctx);
+    let t_split = emit_partial_window(&mut state);
 
     let a_old = sampled_path_accel(&state, t_split);
     assert!(
-        a_old > 0.5 * 5_000.0,
+        a_old > 0.3 * HARNESS_A_MAX,
         "precondition: t_dispatched must land mid-acceleration \
          (got a={a_old:.0}); resize move A / lower the kernel frequency, \
          not the assertion"

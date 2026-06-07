@@ -118,11 +118,11 @@ fn smooth_junction_has_no_accel_impulse() {
     // Contract (b): the junction-spanning discrete jerk obeys j_max. Build
     // the spanning second difference from the two slices (junction sample
     // duplicated, so left[n-2], junction, right[1]).
-    let l = &out.profiles[0].samples;
-    let r = &out.profiles[1].samples;
-    let (bl, bj, br) = (l[l.len() - 2].b, l[l.len() - 1].b, r[1].b);
-    let hl = l[l.len() - 1].s - l[l.len() - 2].s;
-    let hr = r[1].s - r[0].s;
+    let left = &out.profiles[0].samples;
+    let right = &out.profiles[1].samples;
+    let (bl, bj, br) = (left[left.len() - 2].b, left[left.len() - 1].b, right[1].b);
+    let hl = left[left.len() - 1].s - left[left.len() - 2].s;
+    let hr = right[1].s - right[0].s;
     let d = hl * hr * (hl + hr);
     let b_dd = (2.0 * hr * bl - 2.0 * (hl + hr) * bj + 2.0 * hl * br) / d;
     let jerk = bj.max(0.0).sqrt() * b_dd / 2.0;
