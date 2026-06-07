@@ -371,6 +371,7 @@ fn run_one_iteration(
         let is_first_run = std::ptr::eq(run, &partition.runs[0]);
         let is_last_run = std::ptr::eq(run, &partition.runs[partition.runs.len() - 1]);
         let run_initial_v = if is_first_run { input.initial_v } else { 0.0 };
+        let run_initial_a = if is_first_run { input.initial_a } else { 0.0 };
         let run_terminal_v = if is_last_run { input.terminal_v } else { 0.0 };
 
         let batch_input = temporal::multi::BatchInput {
@@ -378,7 +379,7 @@ fn run_one_iteration(
             grid_strategy: input.grid_strategy,
             worker_threads: input.worker_threads,
             initial_velocity: run_initial_v,
-            initial_accel: 0.0,
+            initial_accel: run_initial_a,
             terminal_velocity: run_terminal_v,
         };
 

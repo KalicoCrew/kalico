@@ -84,6 +84,7 @@ fn jog_50mm_at_100mms_with_live_limits() {
             a_max: 5000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
     };
 
@@ -156,6 +157,7 @@ fn jog_50mm_with_higher_scv() {
             a_max: 5000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
     };
 
@@ -218,6 +220,7 @@ fn probe_with_feedrate(feedrate: f64, dist_mm: f64) -> f64 {
             a_max: 5000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
     };
     let result = trajectory::shape_batch(&input).expect("shape_batch failed");
@@ -290,6 +293,7 @@ fn jog_50mm_with_z_jmax_uncapped() {
             a_max: 5000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
     };
 
@@ -361,6 +365,7 @@ fn jog_50mm_low_accel_baseline() {
             a_max: 5000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
     };
 

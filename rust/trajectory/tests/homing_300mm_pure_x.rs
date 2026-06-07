@@ -83,6 +83,7 @@ fn homing_300mm_pure_x_at_uniform_jerk_converges() {
             a_max: 5000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
     };
 

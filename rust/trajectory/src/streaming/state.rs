@@ -164,6 +164,7 @@ impl ShaperState {
             beta_convergence_ratio: ctx.beta_convergence_ratio,
             e_limits: ctx.e_limits,
             initial_v,
+            initial_a: 0.0,
             terminal_v: 0.0,
             safety_mode: ctx.safety_mode,
         };

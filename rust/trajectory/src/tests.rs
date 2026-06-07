@@ -23,6 +23,7 @@ fn shape_batch_rejects_empty_segments() {
             a_max: 50_000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
     };
     let result = shape_batch(&input);

@@ -93,6 +93,7 @@ fn run_shape_variant(
             a_max: 5000.0,
         },
         initial_v: 0.0,
+        initial_a: 0.0,
         terminal_v: 0.0,
     };
     let t0 = std::time::Instant::now();

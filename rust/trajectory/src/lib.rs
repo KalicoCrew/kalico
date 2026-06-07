@@ -32,6 +32,8 @@ pub struct ShapeBatchInput<'a> {
     pub e_limits: ELimits,
     /// Velocity at the batch start (mm/s).
     pub initial_v: f64,
+    /// Acceleration at the batch start (mm/s²). Must be 0.0 when `initial_v` is 0.0.
+    pub initial_a: f64,
     /// Velocity at the batch end (mm/s).
     pub terminal_v: f64,
 }
@@ -125,6 +127,8 @@ pub enum ShapeError {
     UnsupportedShaperOnXY,
     #[error("unsupported boundary velocity: initial_v and terminal_v must be finite and ≥ 0.0")]
     UnsupportedBoundaryVelocity,
+    #[error("unsupported boundary accel: initial_a must be finite, and 0.0 when initial_v is 0.0")]
+    UnsupportedBoundaryAccel,
 }
 
 pub fn shape_batch(input: &ShapeBatchInput<'_>) -> Result<ShapeBatchOutput, ShapeError> {

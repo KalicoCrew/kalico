@@ -74,6 +74,8 @@ pub struct PlanInput<'a> {
     pub e_limits: ELimits,
     /// Velocity at the batch start (mm/s). Must be finite and non-negative.
     pub initial_v: f64,
+    /// Acceleration at the batch start (mm/s²). Must be finite; must be 0.0 when `initial_v` is 0.0.
+    pub initial_a: f64,
     /// Velocity at the batch end (mm/s). Must be finite and non-negative.
     pub terminal_v: f64,
     pub safety_mode: SafetyMode,
@@ -85,6 +87,7 @@ pub struct PlanInput<'a> {
 /// - [`ShapeError::EmptySegments`] — `input.segments` is empty.
 /// - [`ShapeError::UnsupportedShaperOnXY`] — X or Y kernel is `None` or `Passthrough`.
 /// - [`ShapeError::UnsupportedBoundaryVelocity`] — `initial_v` or `terminal_v` is non-finite or negative.
+/// - [`ShapeError::UnsupportedBoundaryAccel`] — `initial_a` is non-finite, or non-zero when `initial_v` is 0.0.
 /// - Any error from the underlying β-medium loop.
 pub fn plan_velocity(input: &PlanInput<'_>) -> Result<PlanOutput, ShapeError> {
     if input.segments.is_empty() {
@@ -96,6 +99,9 @@ pub fn plan_velocity(input: &PlanInput<'_>) -> Result<PlanOutput, ShapeError> {
     }
     if !input.terminal_v.is_finite() || input.terminal_v < 0.0 {
         return Err(ShapeError::UnsupportedBoundaryVelocity);
+    }
+    if !input.initial_a.is_finite() || (input.initial_v == 0.0 && input.initial_a != 0.0) {
+        return Err(ShapeError::UnsupportedBoundaryAccel);
     }
 
     let shaper = build_shaper_config(&input.kernels)?;
@@ -121,6 +127,7 @@ pub fn plan_velocity(input: &PlanInput<'_>) -> Result<PlanOutput, ShapeError> {
         beta_convergence_ratio: input.beta_convergence_ratio,
         e_limits: input.e_limits,
         initial_v: input.initial_v,
+        initial_a: input.initial_a,
         terminal_v: input.terminal_v,
     };
 
