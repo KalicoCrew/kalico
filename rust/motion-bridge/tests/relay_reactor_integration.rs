@@ -4,14 +4,21 @@
 //! # What this test proves
 //!
 //! The unit tests in `trip_dispatch/tests.rs` call relay closures directly and
-//! never touch the reactor.  This test closes the seam:
+//! never touch the reactor.  This test closes the seam using the PRODUCTION
+//! frame classification: `kalico_endstop_tripped` is registered in the `output`
+//! section of the data dictionary (matching the MCU firmware's `output()` call),
+//! which routes through `DecodedFrame::Output` in the reactor.  The bug this
+//! test exercises was that interceptors were only dispatched for `Response`
+//! frames, silently skipping all `Output` frames including
+//! `kalico_endstop_tripped`.
 //!
 //! ```text
 //! inbound wire bytes
 //!   → SerialFrameIo → KlipperFrame
 //!   → Reactor::handle_inbound_frame
 //!   → parser.decode  (real MsgProtoParser, not empty)
-//!   → InterceptorTable::dispatch
+//!   → DecodedFrame::Output branch  ← production path for kalico_endstop_tripped
+//!   → InterceptorTable::dispatch   ← interceptors now run for Output frames
 //!   → relay closure  (trip_dispatch::FanOut + arm_id filter, real code)
 //!   → submission_tx FireAndForget → sink reactor tick
 //!   → dispatch_fire_and_forget → sink wire bytes
@@ -48,21 +55,24 @@ use motion_bridge_native::trip_dispatch::{
 ///
 /// - `kalico_endstop_tripped arm_id=%u trip_clock_lo=%u trip_clock_hi=%u
 ///   trip_source_idx=%u fmt_version=%u stepper_count=%u stepper_data=%*s`
-///   (response msgid=10, unsolicited from source MCU)
+///   (**output** msgid=10 — matches production MCU firmware which uses
+///   `output("kalico_endstop_tripped ...")`, not a solicited response)
 /// - `trsync_trigger oid=%c reason=%c`
 ///   (command msgid=20, sent to sink MCU)
 ///
-/// Msgids are arbitrary — they just need to be consistent within each test's
-/// harness pair.
+/// Placing `kalico_endstop_tripped` in the `output` section is intentional:
+/// the pre-fix code only dispatched interceptors for `Response` frames, so
+/// tests using `responses` gave false confidence.  The `output` section is the
+/// production path this test must exercise.
 fn build_test_parser() -> Arc<MsgProtoParser> {
     let dict_json = serde_json::json!({
         "commands": {
             "trsync_trigger oid=%c reason=%c": 20
         },
-        "responses": {
+        "responses": {},
+        "output": {
             "kalico_endstop_tripped arm_id=%u trip_clock_lo=%u trip_clock_hi=%u trip_source_idx=%u fmt_version=%u stepper_count=%u stepper_data=%*s": 10
         },
-        "output": {},
         "enumerations": {},
         "config": {},
         "version": "test",

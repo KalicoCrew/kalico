@@ -186,6 +186,20 @@ pub fn prepare(
                 ("trsync_state", Some(u32::from(*trsync_oid)), None)
             }
         };
+        let src_mcu = match &spec {
+            SourceSpec::BridgeGpio { mcu, .. } | SourceSpec::Trsync { mcu, .. } => *mcu,
+        };
+        let sink_oids: Vec<u8> = fan.sinks.iter().map(|s| s.trsync_oid).collect();
+        tracing::info!(
+            subsystem = "trip-relay",
+            event = "interceptor_registered",
+            src_mcu,
+            msg = name,
+            ?oid_filter,
+            ?want_arm_id,
+            ?sink_oids,
+            "trip_dispatch: source interceptor registered"
+        );
         let id = match src_io.register_frame_interceptor(
             name,
             oid_filter,
@@ -193,7 +207,15 @@ pub fn prepare(
                 if let Some(want) = want_arm_id {
                     // BridgeGpio: filter by arm_id; skip if this callback is
                     // for a different arm.
-                    if params.get_u32("arm_id") != want {
+                    let got = params.get_u32("arm_id");
+                    if got != want {
+                        tracing::debug!(
+                            subsystem = "trip-relay",
+                            event = "arm_id_filtered",
+                            want,
+                            got,
+                            "trip_dispatch: kalico_endstop_tripped filtered (wrong arm_id)"
+                        );
                         return;
                     }
                 } else {
@@ -204,7 +226,22 @@ pub fn prepare(
                         return;
                     }
                 }
+                let sink_count = sink_ios.len();
+                tracing::info!(
+                    subsystem = "trip-relay",
+                    event = "relay_firing",
+                    ?want_arm_id,
+                    sink_count,
+                    "trip_dispatch: trip observed — fanning trsync_trigger to sinks"
+                );
                 fan.on_trip(|mcu, cmd| {
+                    tracing::info!(
+                        subsystem = "trip-relay",
+                        event = "trsync_trigger_sent",
+                        sink_mcu = mcu,
+                        cmd,
+                        "trip_dispatch: trsync_trigger sent to sink"
+                    );
                     if let Some((_, io)) = sink_ios.iter().find(|(m, _)| *m == mcu) {
                         let _ = io.send_fire_and_forget(cmd);
                     }
@@ -260,6 +297,19 @@ pub fn prepare(
             let sink_ios = sink_ios.clone();
             let mcu = spec.mcu;
 
+            let part_mcu = spec.mcu;
+            let part_oid = spec.trsync_oid;
+            let sink_oids_p: Vec<u8> = fan.sinks.iter().map(|s| s.trsync_oid).collect();
+            tracing::info!(
+                subsystem = "trip-relay",
+                event = "interceptor_registered",
+                src_mcu = part_mcu,
+                msg = "trsync_state",
+                oid_filter = part_oid,
+                participant_idx = idx,
+                ?sink_oids_p,
+                "trip_dispatch: participant interceptor registered"
+            );
             let id = match part_io.register_frame_interceptor(
                 "trsync_state",
                 Some(u32::from(spec.trsync_oid)),
@@ -269,7 +319,22 @@ pub fn prepare(
                         // or was soft-tripped. Relay the trip to all sinks and
                         // set the triggered flag, matching mainline trdispatch's
                         // `if (!can_trigger)` broadcast branch.
+                        tracing::info!(
+                            subsystem = "trip-relay",
+                            event = "relay_firing",
+                            participant_mcu = part_mcu,
+                            participant_oid = part_oid,
+                            "trip_dispatch: participant trsync_state can_trigger=0 \
+                             — fanning trsync_trigger to sinks"
+                        );
                         fan.on_trip(|mcu, cmd| {
+                            tracing::info!(
+                                subsystem = "trip-relay",
+                                event = "trsync_trigger_sent",
+                                sink_mcu = mcu,
+                                cmd,
+                                "trip_dispatch: trsync_trigger sent to sink (participant path)"
+                            );
                             if let Some((_, io)) = sink_ios.iter().find(|(m, _)| *m == mcu) {
                                 let _ = io.send_fire_and_forget(cmd);
                             }

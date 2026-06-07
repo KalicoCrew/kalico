@@ -739,6 +739,29 @@ impl Reactor {
                 }
             }
             crate::host_io::parser::DecodedFrame::Output { name, params } => {
+                // Output frames (MCU `output()` calls) bypass the solicited-
+                // response machinery but MUST still run through interceptors so
+                // that relay handlers registered by `trip_dispatch::prepare`
+                // (e.g. for `kalico_endstop_tripped`) can fire.  The frame is
+                // still lifted to a `RuntimeEvent` and forwarded to Python via
+                // `dispatch_runtime_event` after interceptors run.
+                let oid = params.fields.get("oid").and_then(|v| match v {
+                    crate::transport::MessageValue::U32(n) => Some(*n),
+                    crate::transport::MessageValue::I32(n) => Some(*n as u32),
+                    _ => None,
+                });
+                let interceptor_count = self.interceptors.entry_count();
+                if interceptor_count > 0 {
+                    tracing::debug!(
+                        subsystem = "trip-relay",
+                        event = "output_frame_intercepted",
+                        %name,
+                        ?oid,
+                        interceptor_count,
+                        "output frame dispatched through interceptors"
+                    );
+                }
+                self.interceptors.dispatch(&name, oid, &params);
                 let event = crate::host_io::runtime_events::RuntimeEvent::lift(&name, params);
                 self.dispatch_runtime_event(event);
             }
