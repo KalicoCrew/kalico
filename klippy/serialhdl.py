@@ -27,6 +27,7 @@ class SerialReader:
         # Serial port
         self.serial_dev = None
         self._event_poller_timer = None
+        self._bridge_detached = False
         self.msgparser = msgproto.MessageParser(warn_prefix=warn_prefix)
         self.ffi_main, self.ffi_lib = chelper.get_ffi()
         self.serialqueue = None
@@ -502,6 +503,10 @@ class SerialReader:
         if self._event_poller_timer is not None:
             self.reactor.unregister_timer(self._event_poller_timer)
             self._event_poller_timer = None
+        # Post-disconnect sends are defined no-ops, mirroring mainline's
+        # `if self.serialqueue is None: return` contract — klippy components
+        # legitimately fire commands during the disconnect dispatch.
+        self._bridge_detached = True
         # Release the serial port through the bridge so firmware_restart's
         # arduino_reset() can open it for the DTR toggle.  Mirrors
         # mainline's disconnect() which closes the FD before the reset.
@@ -605,6 +610,8 @@ class SerialReader:
     def send(self, msg, minclock=0, reqclock=0):
         bridge = getattr(self.mcu, "_motion_bridge", None)
         if bridge is not None:
+            if self._bridge_detached:
+                return
             handle = self.mcu._bridge_handle
             bridge.bridge_send(handle, msg)
         elif self.serialqueue is not None:
@@ -622,6 +629,8 @@ class SerialReader:
     def send_with_response(self, msg, response):
         bridge = getattr(self.mcu, "_motion_bridge", None)
         if bridge is not None:
+            if self._bridge_detached:
+                raise error("serial connection closed")
             params = bridge.bridge_call(
                 self.mcu._bridge_handle,
                 msg,
