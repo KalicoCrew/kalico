@@ -26,6 +26,7 @@ class SerialReader:
         # the legacy C serialqueue is never allocated.
         # Serial port
         self.serial_dev = None
+        self._event_poller_timer = None
         self.msgparser = msgproto.MessageParser(warn_prefix=warn_prefix)
         self.ffi_main, self.ffi_lib = chelper.get_ffi()
         self.serialqueue = None
@@ -453,7 +454,9 @@ class SerialReader:
         # Register a reactor timer that polls runtime events from the
         # bridge and dispatches them to klippy's registered handlers.
         # This is the inbound async path for kalico_status_v6 etc.
-        self.reactor.register_timer(self._bridge_event_poller, self.reactor.NOW)
+        self._event_poller_timer = self.reactor.register_timer(
+            self._bridge_event_poller, self.reactor.NOW
+        )
 
     def connect_uart(self, serialport, baud, rts=True):
         # Bridge mode owns the wire for UART transports too; route through
@@ -493,6 +496,12 @@ class SerialReader:
         )
 
     def disconnect(self):
+        # Stop the event poller BEFORE releasing the handle: a tick landing
+        # after release would take_runtime_event() an unknown handle and the
+        # resulting error would kill the reactor on the failed-connect path.
+        if self._event_poller_timer is not None:
+            self.reactor.unregister_timer(self._event_poller_timer)
+            self._event_poller_timer = None
         # Release the serial port through the bridge so firmware_restart's
         # arduino_reset() can open it for the DTR toggle.  Mirrors
         # mainline's disconnect() which closes the FD before the reset.
