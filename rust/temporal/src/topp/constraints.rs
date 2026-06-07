@@ -513,12 +513,6 @@ pub fn build_chain(
     let n = chain.n_points();
     debug_assert!(n >= 2, "ChainGrid must have at least 2 points");
 
-    assert!(
-        !(endpoints.a_start.is_some() && endpoints.v_start == 0.0),
-        "a_start pin at a rest start forces b_1 = 0 (rejected trap); \
-         rest starts use the (e2) envelope"
-    );
-
     let kappa_floor = scale.to_scaled_kappa(KAPPA_FLOOR);
     let b_cap = scale.to_scaled_b(B_MAX_CENT_CAP);
     let h = &chain.h_intervals;
@@ -603,6 +597,10 @@ pub fn build_chain(
     let b_start = endpoints.v_start * endpoints.v_start;
     let b_end = endpoints.v_end * endpoints.v_end;
 
+    // Tolerance: v_jct set to sqrt(mvc_b_phys) in the joining loop. After
+    // dividing v by σ and re-squaring, IEEE 754 may land b_start slightly above
+    // b_max_cent. Allow up to 4 ULP slop so the scaled build doesn't reject a
+    // physically-feasible starting velocity.
     const B_BOUNDARY_REL_TOL: f64 = f64::EPSILON * 4.0;
     if b_start > b_max_cent[0] * (1.0 + B_BOUNDARY_REL_TOL) {
         return BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc {

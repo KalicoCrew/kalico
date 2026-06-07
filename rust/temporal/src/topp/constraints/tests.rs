@@ -392,6 +392,7 @@ fn build_chain_of_one_emits_identical_bundle() {
     assert_eq!(legacy.n_vars, new.n_vars);
     assert_eq!(legacy.cones, new.cones);
     assert_eq!(legacy.b_rhs.len(), new.b_rhs.len());
+    assert_eq!(legacy.a_rows.len(), new.a_rows.len());
     for (i, (lr, nr)) in legacy.a_rows.iter().zip(&new.a_rows).enumerate() {
         for (j, (lv, nv)) in lr.iter().zip(nr).enumerate() {
             assert!((lv - nv).abs() < 1e-12, "row {i} col {j}: {lv} vs {nv}");
@@ -461,3 +462,4 @@ fn diagonal_line_a_env_is_projected() {
         "diagonal projected cap {cap_expected} must exceed axis-min cap {cap_axis_min}"
     );
 }
+
