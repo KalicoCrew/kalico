@@ -44,11 +44,13 @@ pub fn identify_handshake(
     let mut mcu_recv_abs: u64 = 0;
     let mut identify_data: Vec<u8> = Vec::new();
 
+    // Deadline-governed, never attempt-capped: a UART shared with a
+    // chattering peripheral (Neptune 3 Pro LCD on the host's USART1) can
+    // corrupt every frame for seconds, surfacing as an unbounded NAK streak.
     let chunk_deadline_per_attempt = Duration::from_millis(200);
-    let max_resync_attempts = 64usize;
 
     'outer: loop {
-        for _attempt in 0..max_resync_attempts {
+        while Instant::now() < deadline {
             let mut payload = Vec::with_capacity(16);
             payload.push(1u8); // msgid=1 = identify request (hardcoded; no dict yet)
             encode_vlq(&mut payload, identify_data.len() as i64)
@@ -101,7 +103,7 @@ pub fn identify_handshake(
             }
         }
         return Err(TransportError::Parse(
-            "identify exceeded NAK-resync attempts for one chunk".into(),
+            "identify exceeded timeout while NAK-resyncing one chunk".into(),
         ));
     }
 
