@@ -3,6 +3,7 @@ use constraints::{BoundaryInfeasibility, BuildOutcome, EndpointVelocities, build
 use nurbs::VectorNurbs;
 use scaling::SolverScale;
 
+pub mod chain;
 pub mod constraints;
 pub(crate) mod output;
 pub mod path;

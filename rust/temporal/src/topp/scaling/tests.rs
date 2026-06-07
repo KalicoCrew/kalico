@@ -221,3 +221,26 @@ fn limits_scaling_divides_all_four_families_by_sigma() {
     }
     assert!((scaled.a_centripetal_max - raw.a_centripetal_max / sigma).abs() < 1e-12);
 }
+
+#[test]
+fn chain_grid_scaling_matches_arclength_grid_scaling() {
+    let c = crate::topp::chain::tests_support::line_50mm();
+    let g = crate::topp::path::sample_arclength_grid(&c, 9).unwrap();
+    let lims = crate::Limits {
+        v_max: [1000.0; 3],
+        a_max: [50_000.0; 3],
+        j_max: [100_000.0; 3],
+        a_centripetal_max: 50_000.0,
+    };
+    let chain = crate::topp::chain::ChainGrid::from_segment_grids(vec![g.clone()], vec![lims]);
+    let scale = SolverScale::for_chain(&chain);
+    let sg = scale.scale_grid(&g);
+    let sc = scale.scale_chain_grid(&chain);
+    assert_eq!(sc.s, sg.s);
+    for i in 0..sc.n_points() {
+        assert_eq!(sc.geom[i].c_double_prime, sg.c_double_prime[i]);
+        assert_eq!(sc.geom[i].c_triple_prime, sg.c_triple_prime[i]);
+        assert_eq!(sc.geom[i].kappa, sg.kappa[i]);
+    }
+    assert!((sc.h_intervals[0] - (sg.s[1] - sg.s[0])).abs() < 1e-15);
+}

@@ -95,6 +95,51 @@ impl SolverScale {
     pub(crate) fn to_scaled_kappa(&self, kappa: f64) -> f64 {
         kappa * self.sigma()
     }
+
+    pub fn for_chain(chain: &crate::topp::chain::ChainGrid) -> Self {
+        let sigma = chain
+            .limits
+            .iter()
+            .flat_map(|l| l.v_max.iter().copied())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .fold(f64::NEG_INFINITY, f64::max);
+        if sigma <= 0.0 || !sigma.is_finite() {
+            return Self::identity();
+        }
+        Self {
+            mm_per_unit: sigma / V_TARGET_UNITS_PER_S,
+        }
+    }
+
+    pub(crate) fn scale_chain_grid(
+        &self,
+        chain: &crate::topp::chain::ChainGrid,
+    ) -> crate::topp::chain::ChainGrid {
+        let s = self.sigma();
+        let scale_geom = |g: &crate::topp::chain::PointGeom| crate::topp::chain::PointGeom {
+            c_prime: g.c_prime,
+            c_double_prime: g.c_double_prime.map(|v| v * s),
+            c_triple_prime: g.c_triple_prime.map(|v| v * s * s),
+            kappa: g.kappa * s,
+        };
+        crate::topp::chain::ChainGrid {
+            s: chain.s.iter().map(|v| v / s).collect(),
+            geom: chain.geom.iter().map(scale_geom).collect(),
+            h_intervals: chain.h_intervals.iter().map(|h| h / s).collect(),
+            limits_idx: chain.limits_idx.clone(),
+            limits: chain.limits.iter().map(|l| self.scale_limits(l)).collect(),
+            junctions: chain
+                .junctions
+                .iter()
+                .map(|j| crate::topp::chain::JunctionDual {
+                    idx: j.idx,
+                    geom: scale_geom(&j.geom),
+                    limits_idx: j.limits_idx,
+                })
+                .collect(),
+            segment_ranges: chain.segment_ranges.clone(),
+        }
+    }
 }
 
 #[cfg(test)]
