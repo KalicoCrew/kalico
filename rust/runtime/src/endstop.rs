@@ -566,7 +566,6 @@ pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> Tri
 
     let source_count = usize::from(ARM.source_count.load(Ordering::Acquire));
     for (idx, src) in ARM.sources.iter().take(source_count).enumerate() {
-        // Software sources have no GPIO pin: skip to the deadline check below.
         if src.kind.load(Ordering::Acquire) == SourceKind::Software as u8 {
             continue;
         }

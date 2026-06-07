@@ -1,5 +1,3 @@
-"""Smoke tests for the motion_bridge PyO3 extension module."""
-
 import pytest
 
 
@@ -14,9 +12,6 @@ def test_bridge_instantiates():
 
     bridge = motion_bridge.MotionBridge()
     assert bridge.version() != ""
-
-
-# ── Task 32–33: claim / release MCU ─────────────────────────────────────
 
 
 def test_claim_mcu_returns_int():
@@ -46,9 +41,6 @@ def test_release_mcu_then_alloc_fails():
         bridge.alloc_command_queue(h)
 
 
-# ── Task 34: alloc_command_queue ─────────────────────────────────────────
-
-
 def test_alloc_command_queue():
     import motion_bridge
 
@@ -68,16 +60,12 @@ def test_alloc_two_queues_distinct():
     assert q1 != q2
 
 
-# ── Task 35: passthrough_send ────────────────────────────────────────────
-
-
 def test_passthrough_send_does_not_crash():
     import motion_bridge
 
     bridge = motion_bridge.MotionBridge()
     h = bridge.claim_mcu("mcu", "/dev/ttyACM0", 250000)
     q = bridge.alloc_command_queue(h)
-    # fire-and-forget, should not raise
     bridge.passthrough_send(h, q, b"\x01\x02\x03")
 
 
@@ -90,9 +78,6 @@ def test_passthrough_send_with_clocks():
     bridge.passthrough_send(h, q, b"\xaa", min_clock=100, req_clock=200)
 
 
-# ── Task 36: passthrough_query ───────────────────────────────────────────
-
-
 def test_passthrough_query_returns_notify_id():
     import motion_bridge
 
@@ -101,10 +86,7 @@ def test_passthrough_query_returns_notify_id():
     q = bridge.alloc_command_queue(h)
     nid = bridge.passthrough_query(h, q, b"\x01")
     assert isinstance(nid, int)
-    assert nid > 0  # notify ids start at 1
-
-
-# ── Task 37: passthrough_send_wait_ack ───────────────────────────────────
+    assert nid > 0
 
 
 def test_send_wait_ack_raises_not_implemented():
@@ -117,18 +99,12 @@ def test_send_wait_ack_raises_not_implemented():
         bridge.passthrough_send_wait_ack(h, q, b"\x01", 1.0)
 
 
-# ── Task 38: passthrough_register_handler ────────────────────────────────
-
-
 def test_register_handler_does_not_crash():
     import motion_bridge
 
     bridge = motion_bridge.MotionBridge()
     h = bridge.claim_mcu("mcu", "/dev/ttyACM0", 250000)
     bridge.passthrough_register_handler(h, "get_status", 0, lambda params: None)
-
-
-# ── Task 39: passthrough_register_flush_callback ─────────────────────────
 
 
 def test_register_flush_callback_does_not_crash():
@@ -139,9 +115,6 @@ def test_register_flush_callback_does_not_crash():
     bridge.passthrough_register_flush_callback(h, lambda: None)
 
 
-# ── Task 40: poll_event ──────────────────────────────────────────────────
-
-
 def test_poll_event_returns_none_when_empty():
     import motion_bridge
 
@@ -149,20 +122,14 @@ def test_poll_event_returns_none_when_empty():
     assert bridge.poll_event() is None
 
 
-# ── Additional API: config / stats / clock ───────────────────────────────
-
-
 def test_add_config_cmd_and_begin_config_phase():
     import motion_bridge
 
     bridge = motion_bridge.MotionBridge()
     h = bridge.claim_mcu("mcu", "/dev/ttyACM0", 250000)
-    # add config command — returns True during Collecting phase
     added = bridge.add_config_cmd(h, b"\x10\x20")
     assert added is True
-    # begin config phase
     bridge.begin_config_phase(h)
-    # adding after begin_config_phase returns False
     added_after = bridge.add_config_cmd(h, b"\x30\x40")
     assert added_after is False
 
@@ -202,7 +169,6 @@ def test_set_clock_est():
 
     bridge = motion_bridge.MotionBridge()
     h = bridge.claim_mcu("mcu", "/dev/ttyACM0", 250000)
-    # Should not raise
     bridge.set_clock_est(h, 48_000_000.0, 0.0, 1000)
 
 
@@ -214,15 +180,11 @@ def test_next_config_entry_after_config_phase():
     bridge.add_config_cmd(h, b"\x01")
     bridge.add_config_cmd(h, b"\x02")
     bridge.begin_config_phase(h)
-    # Should drain the two config entries
     e1 = bridge.next_config_entry(h)
     assert e1 is not None
     e2 = bridge.next_config_entry(h)
     assert e2 is not None
     e3 = bridge.next_config_entry(h)
-    # After config entries, init entries follow (none added here)
-    # Eventually returns None
-    # (Exact behavior depends on ConfigStage internals)
 
 
 def test_extract_old_returns_dict():
@@ -236,9 +198,6 @@ def test_extract_old_returns_dict():
     assert "received" in result
     assert isinstance(result["sent"], list)
     assert isinstance(result["received"], list)
-
-
-# ── Error handling ───────────────────────────────────────────────────────
 
 
 def test_unknown_mcu_raises_runtime_error():

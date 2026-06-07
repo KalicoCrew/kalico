@@ -72,7 +72,7 @@ fn surfaces_nonzero_result() {
 #[test]
 fn transport_error_is_an_err() {
     let (client, server) = UnixStream::pair().unwrap();
-    drop(server); // peer gone
+    drop(server);
     let conn = UnixNativeConn::from_stream(client);
     assert!(send_set_torque(&conn, true, 1).is_err());
 }

@@ -1,4 +1,3 @@
-# test/test_structured_log.py
 import json
 import logging
 import sys
@@ -10,8 +9,6 @@ from klippy import structured_log as sl
 
 @pytest.fixture(autouse=True)
 def _reset_log_context():
-    # The session/print contextvars are module-level globals; reset them
-    # before AND after every test so the suite is order-independent.
     sl.clear_session()
     sl.clear_print()
     yield
@@ -29,7 +26,6 @@ def test_level_name_maps_stdlib_levels():
 
 
 def test_format_time_is_rfc3339_utc_millis_z():
-    # 2026-05-31T00:00:00Z == 1780185600 (UTC)
     out = sl.format_time(1780185600.0)
     assert out == "2026-05-31T00:00:00.000Z"
 
@@ -56,8 +52,6 @@ def test_make_session_id_shape():
 
 
 def test_get_session_unbound_is_sentinel():
-    # The autouse fixture has cleared the session var, so an unbound read
-    # returns the queryable sentinel rather than crashing.
     sl.clear_session()
     assert sl.get_session() == sl.UNBOUND_SESSION
 
@@ -91,7 +85,7 @@ def test_record_to_dict_core_fields():
     assert d["source"] == "host-py"
     assert d["session_id"] == "k-1779840000-1"
     assert d["target"] == "mod.Cls"
-    assert d["print_id"] == ""  # empty allowed
+    assert d["print_id"] == ""
 
 
 def test_record_to_dict_promotes_extra_fields():
@@ -104,8 +98,6 @@ def test_record_to_dict_promotes_extra_fields():
 
 
 def test_record_to_dict_captures_exception_traceback():
-    # logging.exception() / exc_info populates record.exc_text during format();
-    # the traceback must survive into the JSONL schema, not be dropped.
     try:
         raise ValueError("boom")
     except ValueError:
@@ -122,7 +114,6 @@ def test_record_to_dict_captures_exception_traceback():
     rec.session_id = "k-1779840000-1"
     rec.print_id = ""
     rec.source = sl.SOURCE_HOST_PY
-    # Formatter.format() is what sets exc_text; emulate the QueueHandler path.
     logging.Formatter().format(rec)
     rec.message = rec.getMessage()
     d = sl.record_to_dict(rec)
@@ -134,7 +125,6 @@ def test_serialize_is_single_line_and_round_trips():
     rec = _make_record(msg='line1\nline2\twith "quote" and \x01 ctrl')
     rec.message = rec.getMessage()
     line = sl.serialize_record(sl.record_to_dict(rec))
-    # Exactly one physical line (trailing newline only).
     assert line.endswith("\n")
     assert line.count("\n") == 1
     obj = json.loads(line)
@@ -144,7 +134,6 @@ def test_serialize_is_single_line_and_round_trips():
 def test_serialize_handles_nonjson_value():
     rec = _make_record(weird=object())
     rec.message = rec.getMessage()
-    # Must not raise; non-serializable value is stringified.
     line = sl.serialize_record(sl.record_to_dict(rec))
     assert "weird" in json.loads(line)
 
@@ -170,7 +159,7 @@ def test_context_filter_does_not_overwrite_existing_source():
     rec = logging.LogRecord("x", logging.INFO, __file__, 1, "m", (), None)
     rec.source = "sim"
     f.filter(rec)
-    assert rec.source == "sim"  # re-emitted records keep their source
+    assert rec.source == "sim"
 
 
 def test_event_emits_with_required_fields(caplog):
@@ -191,20 +180,17 @@ def test_event_requires_subsystem_and_event():
 
 
 def test_check_log_space_ok_for_tmp(tmp_path):
-    # Plenty of space in tmp; returns free bytes, does not raise.
     free = sl.check_log_space(str(tmp_path), reserve_bytes=1)
     assert free > 1
 
 
 def test_check_log_space_raises_when_below_reserve(tmp_path):
-    huge = 10**18  # 1 EB reserve cannot be satisfied
+    huge = 10**18
     with pytest.raises(sl.LogSpaceError):
         sl.check_log_space(str(tmp_path), reserve_bytes=huge)
 
 
 def test_check_log_space_does_not_create_directory(tmp_path):
-    # Pure check: probing a not-yet-existing logs dir must NOT create it; it
-    # walks up to the nearest existing ancestor for the free-space probe.
     missing = tmp_path / "logs" / "nested"
     free = sl.check_log_space(str(missing), reserve_bytes=1)
     assert free > 1
@@ -213,17 +199,14 @@ def test_check_log_space_does_not_create_directory(tmp_path):
 
 
 def test_check_log_space_below_reserve_for_missing_dir(tmp_path):
-    # The ancestor-probe path still enforces the reserve when the target dir
-    # does not exist yet, and still creates nothing.
     missing = tmp_path / "logs" / "nested"
-    huge = 10**18  # 1 EB reserve cannot be satisfied
+    huge = 10**18
     with pytest.raises(sl.LogSpaceError):
         sl.check_log_space(str(missing), reserve_bytes=huge)
     assert not missing.exists()
 
 
 def test_record_to_dict_honors_explicit_target():
-    # An explicitly-set record.target overrides the logger name in the schema.
     rec = _make_record(name="some.logger", target="motion.toolhead")
     rec.message = rec.getMessage()
     d = sl.record_to_dict(rec)
@@ -231,7 +214,6 @@ def test_record_to_dict_honors_explicit_target():
 
 
 def test_record_to_dict_defaults_target_to_logger_name():
-    # With no explicit target, the schema falls back to the logger name.
     rec = _make_record(name="some.logger")
     rec.message = rec.getMessage()
     d = sl.record_to_dict(rec)

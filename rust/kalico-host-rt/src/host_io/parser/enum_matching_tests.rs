@@ -39,11 +39,11 @@ fn first_match_in_insertion_order_wins() {
 
     let mut pin_table = IndexMap::new();
     pin_table.insert("PA0".to_string(), EnumValue::Single(0));
-    enums.insert("pin".to_string(), pin_table); // declared FIRST
+    enums.insert("pin".to_string(), pin_table);
 
     let mut step_pin_table = IndexMap::new();
     step_pin_table.insert("X_step".to_string(), EnumValue::Single(99));
-    enums.insert("step_pin".to_string(), step_pin_table); // declared SECOND
+    enums.insert("step_pin".to_string(), step_pin_table);
 
     let fields = vec![("step_pin".to_string(), FieldType::U32)];
     let wrapped = apply_enumeration_wrapping(fields, &enums);

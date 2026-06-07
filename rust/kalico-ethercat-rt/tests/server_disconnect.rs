@@ -12,7 +12,6 @@ fn session_ends_on_client_disconnect() {
 
     let client = UnixStream::connect(&socket_path).expect("connect");
 
-    // Poll until the server accepts the connection (non-blocking; bounded).
     let accept_deadline = std::time::Instant::now() + Duration::from_secs(1);
     loop {
         let _ = server.poll_commands();
@@ -33,7 +32,6 @@ fn session_ends_on_client_disconnect() {
 
     drop(client);
 
-    // Poll until EOF is observed (bounded).
     let eof_deadline = std::time::Instant::now() + Duration::from_secs(1);
     loop {
         let _ = server.poll_commands();
@@ -46,8 +44,6 @@ fn session_ends_on_client_disconnect() {
         );
         thread::sleep(Duration::from_millis(1));
     }
-
-    // Loop above can only exit when session_ended() is true; no redundant assert needed.
 
     let _ = std::fs::remove_file(&socket_path);
 }

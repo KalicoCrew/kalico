@@ -38,13 +38,11 @@ def _logical(wire: bytes) -> bytes:
 
 
 def test_crc8_known_vector():
-    """Verify a GCONF read request from slave 0 round-trips through the
-    handler at the wire level."""
     body = bytes([0x05, 0x00, 0x00])
     logical_req = body + bytes([crc8(body)])
     chip = TMC2209Emulator(slave_addr=0)
     reply_wire = chip.handle(_wire(logical_req))
-    assert len(reply_wire) == 10  # 8 logical bytes × 10 wire bits / 8 = 10
+    assert len(reply_wire) == 10
 
 
 def test_write_then_read_roundtrip_gconf():
@@ -57,9 +55,9 @@ def test_write_then_read_roundtrip_gconf():
     read_logical = read_body + bytes([crc8(read_body)])
     reply = _logical(chip.handle(_wire(read_logical)))
     assert len(reply) == 8
-    assert reply[0] == 0x05  # sync
-    assert reply[1] == 0xFF  # master addr (datasheet)
-    assert reply[2] == 0x00  # reg
+    assert reply[0] == 0x05
+    assert reply[1] == 0xFF
+    assert reply[2] == 0x00
     assert reply[3:7] == bytes([0, 0, 0, 5])
     assert reply[7] == crc8(reply[:7])
 
@@ -77,7 +75,7 @@ def test_gstat_clears_on_read():
 
 def test_wrong_slave_ignored():
     chip = TMC2209Emulator(slave_addr=0)
-    body = bytes([0x05, 0x07, 0x00])  # slave 7
+    body = bytes([0x05, 0x07, 0x00])
     msg = _wire(body + bytes([crc8(body)]))
     assert chip.handle(msg) == b""
 
@@ -85,6 +83,6 @@ def test_wrong_slave_ignored():
 def test_bad_crc_raises():
     chip = TMC2209Emulator(slave_addr=0)
     body = bytes([0x05, 0x00, 0x00])
-    bad = _wire(body + bytes([0xFF]))  # wrong CRC, valid wire framing
+    bad = _wire(body + bytes([0xFF]))
     with pytest.raises(ValueError, match="CRC"):
         chip.handle(bad)

@@ -2,7 +2,6 @@
 
 use super::*;
 
-/// Helper: build points along y = 0 at evenly-spaced x positions.
 fn collinear(xs: &[f64]) -> Vec<[f64; 3]> {
     xs.iter().map(|&x| [x, 0.0, 0.0]).collect()
 }
@@ -17,11 +16,10 @@ fn split_no_corners_returns_original() {
 
 #[test]
 fn split_one_corner_produces_two_sub_runs() {
-    // Corner at index 2; points 0..=2 and 2..=4 share point 2.
     let pts: Vec<[f64; 3]> = vec![
         [0.0, 0.0, 0.0],
         [1.0, 0.0, 0.0],
-        [1.0, 1.0, 0.0], // corner
+        [1.0, 1.0, 0.0],
         [1.0, 2.0, 0.0],
         [1.0, 3.0, 0.0],
     ];

@@ -27,7 +27,6 @@ fn tmc_cs_oid_none_sentinel() {
 
 #[test]
 fn tmc_cs_oid_zero_is_valid() {
-    // OID 0 is a real SPI device OID and must NOT be treated as "no TMC."
     let b = StepperBindingRust {
         stepper_oid: 0,
         tmc_cs_oid: 0,

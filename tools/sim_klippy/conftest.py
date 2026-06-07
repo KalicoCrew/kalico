@@ -1,5 +1,3 @@
-"""Shared pytest fixtures for the faithful-sim test suite."""
-
 from __future__ import annotations
 
 import dataclasses
@@ -32,12 +30,6 @@ _THIRD_PARTY = (
     REPO_ROOT / "tools" / "sim_klippy" / "printer_real" / "third_party_repos"
 )
 
-# Map of third-party plugins → (source path, klippy/extras link target).
-# Klippy discovers extras by walking klippy/extras/, so PYTHONPATH alone is
-# not enough; the plugin must appear as klippy/extras/<name>.py. We
-# install symlinks idempotently at fixture entry. Sources live under
-# tools/sim_klippy/printer_real/third_party_repos/, which is gitignored and
-# populated by tools/sim_klippy/fetch_plugins.sh at pinned upstream revs.
 _THIRD_PARTY_PLUGINS = {
     "beacon": _THIRD_PARTY / "beacon_klipper" / "beacon.py",
     "motors_sync": _THIRD_PARTY / "motors-sync" / "motors_sync.py",
@@ -51,7 +43,6 @@ _FETCH_SCRIPT = REPO_ROOT / "tools" / "sim_klippy" / "fetch_plugins.sh"
 
 
 def _ensure_third_party_repos() -> None:
-    """Run fetch_plugins.sh if any required plugin source is missing."""
     if all(src.exists() for src in _THIRD_PARTY_PLUGINS.values()):
         return
     if not _FETCH_SCRIPT.exists():
@@ -92,7 +83,6 @@ def _install_third_party_plugin_links() -> None:
                 pass
             link.unlink()
         elif link.exists():
-            # A real file shadows our symlink; leave it alone.
             continue
         os.symlink(src, link)
 
@@ -110,7 +100,6 @@ class SimContext:
     f4_sim_control: str
 
     def gcode(self, script: str, timeout: float = 5.0) -> dict:
-        """Send a gcode script via the klippy api socket."""
         return _send_gcode(self.api_socket, script, timeout=timeout)
 
 
@@ -147,7 +136,6 @@ def _send_gcode(api_socket: str, script: str, timeout: float = 5.0) -> dict:
 
 
 def _ensure_elfs() -> None:
-    """Raise with build instructions if either sim ELF is missing."""
     h7_elf = REPO_ROOT / "out" / "klipper-h7-sim.elf"
     f4_elf = REPO_ROOT / "out" / "klipper-f4-sim.elf"
     missing = [p for p in (h7_elf, f4_elf) if not p.exists()]
@@ -169,18 +157,6 @@ def _stage_config_dir(
     dest: pathlib.Path,
     overrides: Optional[dict] = None,
 ) -> None:
-    """Symlink or copy every entry from cfg_dir into dest.
-
-    printer.cfg is skipped — the caller writes a rendered version.
-    Symlinks in cfg_dir are resolved and re-created as absolute symlinks
-    in dest so klippy can follow them regardless of cwd.
-    Directories are symlinked, not copied, to avoid duplicating large
-    third-party trees.
-
-    .cfg files have ``overrides`` applied (if given) and are written as
-    regular files into dest so [include]d sections that reference
-    real-hardware pin / bus names work after sim substitution.
-    """
     needs_rewrite = overrides is not None
     for entry in cfg_dir.iterdir():
         if entry.name == "printer.cfg":
@@ -189,7 +165,6 @@ def _stage_config_dir(
         if target.exists() or target.is_symlink():
             continue
         if entry.is_symlink():
-            # Resolve the symlink to an absolute path and re-create it.
             resolved = entry.resolve()
             if resolved.exists():
                 os.symlink(resolved, target)
@@ -206,21 +181,6 @@ def _stage_config_dir(
 
 @pytest.fixture
 def sim_extra_overrides(request):
-    """Per-test override hook for the ``sim`` fixture.
-
-    A test can request additional ``apply_overrides``-style ``config_set``
-    injections by parametrizing this fixture indirectly:
-
-        @pytest.mark.parametrize(
-            "sim_extra_overrides",
-            [{"stepper_z.config_set": {"phase_stepping": "1"}}],
-            indirect=True,
-        )
-        def test_something(sim): ...
-
-    The default is an empty dict, which preserves the existing fixture
-    behaviour for every test that doesn't opt in.
-    """
     return getattr(request, "param", {}) or {}
 
 
@@ -242,7 +202,6 @@ def sim(tmp_path, sim_extra_overrides):
     klippy: Optional[subprocess.Popen] = None
 
     try:
-        # 1) Spawn both MCUs.
         mcus = spawn_mcus(
             h7_elf=str(REPO_ROOT / "out" / "klipper-h7-sim.elf"),
             f4_elf=str(REPO_ROOT / "out" / "klipper-f4-sim.elf"),
@@ -251,31 +210,17 @@ def sim(tmp_path, sim_extra_overrides):
             log_dir=str(log_dir),
         )
 
-        # 2) Start chip emulators.
-        # The shim (linux/runtime_tick_host.c) reads KALICO_SIM_SOCK_DIR
-        # from env (set by spawn_mcus) and binds its sim_control listener
-        # there. For SPI transfers it CONNECTS to a per-CS-pin socket at
-        # ${sock}/spi_cs_<bus>_<line>; for tmcuart it connects to
-        # ${sock}/tmcuart_<oid>. We pre-create the same directories here
-        # and bind one chip emulator per socket. ChipSocketServer unlinks
-        # any stale path before bind so leftovers from a crashed run
-        # don't block startup.
         h7_sock = tmp_path / "sim" / "h7"
         f4_sock = tmp_path / "sim" / "f4"
         h7_sock.mkdir(parents=True, exist_ok=True)
         f4_sock.mkdir(parents=True, exist_ok=True)
 
-        # H7 SPI bus 0: 5 chips, one socket per CS pin. Shim demultiplexes
-        # by currently-asserted CS pin and connects to the matching
-        # spi_cs_0_<line> socket. CS line numbers come from
-        # pin-overrides.toml [mcu_main.gpio]: PC7=5, PC6=4, PD11=6,
-        # PC4=3, PF8=40.
         h7_chips_by_cs = [
-            (5, TMC5160Emulator().transfer),  # PC7 stepper_x
-            (4, TMC5160Emulator().transfer),  # PC6 stepper_y
-            (6, TMC5160Emulator().transfer),  # PD11 stepper_x1
-            (3, TMC5160Emulator().transfer),  # PC4 stepper_y1
-            (40, MAX31865Emulator().transfer),  # PF8 extruder_rtd
+            (5, TMC5160Emulator().transfer),
+            (4, TMC5160Emulator().transfer),
+            (6, TMC5160Emulator().transfer),
+            (3, TMC5160Emulator().transfer),
+            (40, MAX31865Emulator().transfer),
         ]
         for cs_line, transfer in h7_chips_by_cs:
             path = str(h7_sock / f"spi_cs_0_{cs_line}")
@@ -283,10 +228,6 @@ def sim(tmp_path, sim_extra_overrides):
             srv.start()
             chip_servers.append(srv)
 
-        # H7 tmcuart oid=0 → ${h7_sock}/tmcuart_0 (extruder TMC2209).
-        # chunk=10 covers the longest UART-framed wire request klippy
-        # emits (8 logical bytes × 10 wire bits = 10 bytes); the emulator
-        # strips start/stop framing internally.
         chip = TMC2209Emulator(slave_addr=0)
         srv = ChipSocketServer(
             str(h7_sock / "tmcuart_0"),
@@ -296,10 +237,6 @@ def sim(tmp_path, sim_extra_overrides):
         srv.start()
         chip_servers.append(srv)
 
-        # F4 tmcuart oids 0..2 → ${f4_sock}/tmcuart_{0,1,2} for Z, Z1, Z2.
-        # Each is physically a separate chip on its own UART pin (uart_pin
-        # bottom:gpiochip0/gpio{6,3,4} in printer.cfg); all answer to
-        # slave_addr=0 because each is the only chip on its bus.
         for i in range(3):
             chip = TMC2209Emulator(slave_addr=0)
             path = str(f4_sock / f"tmcuart_{i}")
@@ -307,31 +244,23 @@ def sim(tmp_path, sim_extra_overrides):
             srv.start()
             chip_servers.append(srv)
 
-        # 3) Beacon stub.
         beacon = BeaconSerialStub(
             beacon_pty,
             log_path=str(log_dir / "beacon_traffic.log"),
         )
         beacon.start_sample_stream(z_target_mm=10.0, rate_hz=200)
 
-        # 4) Apply pin / serial overrides and render printer.cfg into tmp_path.
         overrides_path = (
             REPO_ROOT / "tools" / "sim_klippy" / "pin-overrides.toml"
         )
         overrides = load_overrides(overrides_path)
 
-        # Patch the serial mappings to point at our test-scoped socket paths
-        # (the TOML has /tmp/klipper_sim_* as defaults; tmp_path is unique).
         overrides["mcu_main.serial"] = {
             "usb-Klipper_stm32h723xx_*": h7_socket,
             "usb-Klipper_stm32f446xx_*": f4_socket,
             "usb-Beacon_*": beacon_pty,
         }
 
-        # Per-test config_set injections from the ``sim_extra_overrides``
-        # fixture. Merged after pin-overrides.toml so a test can override
-        # individual settings (e.g. ``phase_stepping`` on stepper_z) for
-        # parity with bench configs that the vendored printer.cfg lags.
         for section, kv in sim_extra_overrides.items():
             existing = overrides.setdefault(section, {})
             existing.update(kv)
@@ -341,17 +270,12 @@ def sim(tmp_path, sim_extra_overrides):
         rendered_cfg = tmp_path / "printer.cfg"
         rendered_cfg.write_text(rendered_cfg_text)
 
-        # Stage companion .cfg files so klippy can resolve [include] lines.
-        # Apply pin/bus overrides to included .cfg files — otherwise
-        # extruder.cfg etc. still reference real-hardware names like
-        # ``spi_bus: spi1`` that klippy cannot resolve.
         _stage_config_dir(
             _CFG_DIR,
             tmp_path,
             overrides=overrides,
         )
 
-        # 5) Build PYTHONPATH so klippy finds the vendored third-party plugins.
         beacon_klipper_path = _THIRD_PARTY / "beacon_klipper"
         motors_sync_path = _THIRD_PARTY / "motors-sync"
         env = os.environ.copy()
@@ -366,11 +290,8 @@ def sim(tmp_path, sim_extra_overrides):
                 ],
             )
         )
-        # Expose H7 sock_dir to klippy so cmd_KALICO_SIM_ENDSTOP_SET_PIN
-        # can open the sim_control socket (endstops are wired to H7).
         env["KALICO_SIM_SOCK_DIR"] = str(h7_sock)
 
-        # 6) Spawn klippy.
         klippy_log = log_dir / "klippy.log"
         api_socket = str(tmp_path / "klippy.sock")
         stdout_log = open(log_dir / "klippy.stdout", "wb")
@@ -390,12 +311,6 @@ def sim(tmp_path, sim_extra_overrides):
             cwd=str(REPO_ROOT),
         )
 
-        # 7) Wait until klippy finishes its connect callbacks (or
-        # exits / hits a fatal). The klippy state machine sets
-        # state_message="Printer is ready" but only exposes that via
-        # the API socket — the log contains "Welcome to Kalico" from
-        # the telemetry klippy:ready handler, which is a deterministic
-        # post-ready marker we can grep for.
         deadline = time.monotonic() + 60.0
         while time.monotonic() < deadline:
             if klippy_log.exists():
@@ -426,7 +341,6 @@ def sim(tmp_path, sim_extra_overrides):
         yield ctx
 
     finally:
-        # Teardown in reverse order: klippy → chip servers → beacon → MCUs.
         if klippy is not None and klippy.poll() is None:
             klippy.terminate()
             try:

@@ -455,8 +455,8 @@ fn t_decel_start_lands_on_actual_decel_for_cruise_move() {
     }
 
     let mut best_len_samples = 0usize;
-    let mut best_window: Option<(f64, f64, f64)> = None; // (t_start, t_end, v_avg)
-    let plateau_v_tol = 1.0f64; // mm/s — flat-enough threshold
+    let mut best_window: Option<(f64, f64, f64)> = None;
+    let plateau_v_tol = 1.0f64;
     let mut i = 0usize;
     while i < samples.len() {
         if samples[i].0 > t_decel_start {
@@ -1049,7 +1049,7 @@ fn advance_idle_is_noop_when_target_not_past_t_appended() {
     let t_app_before = state.t_appended;
     let pieces_x_before = state.axes[0].pieces.len();
 
-    state.advance_idle(state.t_appended * 0.5); // target < t_appended
+    state.advance_idle(state.t_appended * 0.5);
 
     assert!(
         (state.t_appended - t_app_before).abs() < 1e-12,

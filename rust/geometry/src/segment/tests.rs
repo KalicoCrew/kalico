@@ -31,17 +31,10 @@ fn cubic_variant_constructs() {
     assert!(matches!(seg, Segment::Cubic(_)));
 }
 
-/// **Position continuity invariant** (the headline `split_cubic_bezier`
-/// guarantee): for any `s ∈ (0, 1)` the left half evaluated at `u = 1` and
-/// the right half evaluated at `u = 0` both reproduce the original curve's
-/// value at `s`, and the global curve traversed via left-then-right
-/// matches the original at every sampled point.
 #[test]
 fn split_cubic_bezier_preserves_position_at_split_and_along_curve() {
     use nurbs::eval::vector_eval;
 
-    // A non-degenerate, non-collinear cubic Bézier in 3D. Z varies too so
-    // we exercise all three coordinates.
     let xyz = VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
@@ -57,7 +50,6 @@ fn split_cubic_bezier_preserves_position_at_split_and_along_curve() {
     for &s in &[0.1_f64, 0.25, 0.4, 0.5, 0.6, 0.75, 0.9] {
         let (left, right) = split_cubic_bezier(&xyz, s);
 
-        // Continuity at the split: left(1) == right(0) == xyz(s).
         let p_orig = vector_eval(&xyz, s);
         let p_left_end = vector_eval(&left, 1.0);
         let p_right_start = vector_eval(&right, 0.0);
@@ -76,7 +68,6 @@ fn split_cubic_bezier_preserves_position_at_split_and_along_curve() {
             );
         }
 
-        // Endpoint continuity: left(0) == xyz(0), right(1) == xyz(1).
         let p0 = vector_eval(&xyz, 0.0);
         let p1 = vector_eval(&xyz, 1.0);
         let p_left_start = vector_eval(&left, 0.0);
@@ -86,12 +77,6 @@ fn split_cubic_bezier_preserves_position_at_split_and_along_curve() {
             assert!((p_right_end[axis] - p1[axis]).abs() < 1e-12);
         }
 
-        // Along-curve fidelity: sample both halves at a sweep of internal
-        // u values and confirm the reconstructed traversal matches the
-        // original curve at the matching s-domain location.
-        //
-        // Left covers original [0, s], right covers [s, 1]. Sample 21 u
-        // values in [0, 1] for each half and remap to the original s-domain.
         for k in 0..=20 {
             let u_local = (k as f64) / 20.0;
             let u_left = u_local * s;
@@ -112,8 +97,6 @@ fn split_cubic_bezier_preserves_position_at_split_and_along_curve() {
             }
         }
 
-        // Both halves are valid single-piece cubic Béziers — same
-        // invariants `CubicSegment::try_new` enforces.
         assert_eq!(left.degree(), 3);
         assert_eq!(right.degree(), 3);
         assert_eq!(left.control_points().len(), 4);
@@ -124,7 +107,6 @@ fn split_cubic_bezier_preserves_position_at_split_and_along_curve() {
     }
 }
 
-/// `split_cubic_bezier` panics if `s` is not strictly interior.
 #[test]
 #[should_panic(expected = "strictly interior")]
 fn split_cubic_bezier_panics_on_boundary_s() {

@@ -61,7 +61,6 @@ fn try_new_accepts_valid_travel() {
 
 #[test]
 fn try_new_accepts_coupled_signed_ratio() {
-    // Negative ratio = retract-during-XY-motion / wipe / coast.
     let result = CubicSegment::try_new(
         valid_cubic_xyz(),
         EMode::CoupledToXy,
@@ -144,7 +143,6 @@ fn degree_elevation_preserves_curve() {
 
     let cubic = degree_elevate_2_to_3(&q);
 
-    // Sample 100 points; quadratic and cubic must agree to f64 round-off.
     for i in 0..=100 {
         let u = f64::from(i) / 100.0;
         let q_val = vector_eval(&q, u);
@@ -196,7 +194,6 @@ fn live_g0_then_g5_aborts_before_emitting_stale_cubic() {
     let src = "G0 X10 Y0\nG5 X20 Y0 I3 J3 P-3 Q3 F1000\n";
     let items: Vec<_> = p.process(src, &mut sink).collect();
 
-    // Must contain Item::Fatal for the G0 line.
     assert!(
         items.iter().any(|item| matches!(
             item,
@@ -208,8 +205,6 @@ fn live_g0_then_g5_aborts_before_emitting_stale_cubic() {
         "expected Item::Fatal(UnsupportedGcode), got {items:#?}"
     );
 
-    // Must NOT contain a Segment::Cubic (G5 should not have been processed
-    // because the iterator went terminal on the G0 Fatal).
     let any_cubic = items
         .iter()
         .any(|item| matches!(item, Item::Segment(Segment::Cubic(_))));
@@ -260,7 +255,6 @@ fn helical_rejection_aborts_before_subsequent_g5_can_inherit_stale_state() {
     let src = "G5 X10 Y0 Z5 I0 J3 P0 Q-3 E2 F1500\nG5 X20 Y0 I3 J3 P-3 Q3 F1500\n";
     let items: Vec<_> = p.process(src, &mut sink).collect();
 
-    // Must contain Item::Fatal for the first (helical) G5.
     assert!(
         items
             .iter()
@@ -268,8 +262,6 @@ fn helical_rejection_aborts_before_subsequent_g5_can_inherit_stale_state() {
         "expected Item::Fatal(HelicalExtrusionUnsupported), got {items:#?}"
     );
 
-    // Must NOT contain a Segment::Cubic from the second G5 — the iterator
-    // should have gone terminal on the Fatal.
     let cubic_count = items
         .iter()
         .filter(|item| matches!(item, Item::Segment(Segment::Cubic(_))))
@@ -302,7 +294,6 @@ fn g92_resets_modal_position_for_subsequent_g5() {
         })
         .expect("expected one Segment::Cubic after G92 + G5");
 
-    // P0 must be the post-G92 position, not the default origin.
     let p0 = vector_eval(&cubic.xyz, 0.0);
     assert!(
         (p0[0] - 10.0).abs() < 1e-9 && (p0[1] - 20.0).abs() < 1e-9,
@@ -318,14 +309,6 @@ fn g92_e0_resets_modal_e_for_subsequent_g5_e_delta() {
     // e_delta = 5 - state.e (whatever was there before), instead of 5 - 0.
     let mut p = GeometryPipeline::new(FitterParams::default());
     let mut sink = |_: TelemetryEvent| {};
-    // G5 X10 sets state.e implicitly via E word? Actually G5 with no E word
-    // doesn't change state.e. Set state.e via an E-only G1 first — but G1 is
-    // unsupported in live mode. So just rely on the default state.e = 0.0
-    // and verify the E delta from G92 E0 reset.
-    //
-    // Sequence: default e = 0. G92 E5 sets state.e = 5. Then G5 with E10
-    // produces e_delta = 10 - 5 = 5. The CoupledToXy classifier then computes
-    // extrusion_per_xy_mm = 5 / xy_arc_length.
     let src = "G92 E5\nG5 X10 Y0 I3 J3 P-3 Q3 E10 F1500\n";
     let items: Vec<_> = p.process(src, &mut sink).collect();
 
@@ -337,7 +320,6 @@ fn g92_e0_resets_modal_e_for_subsequent_g5_e_delta() {
         })
         .expect("expected one Segment::Cubic after G92 E + G5");
 
-    // CoupledToXy with positive ratio (10 - 5 = 5 mm of extrusion).
     assert_eq!(cubic.e_mode, EMode::CoupledToXy);
     assert!(
         cubic.extrusion_per_xy_mm > 0.0,

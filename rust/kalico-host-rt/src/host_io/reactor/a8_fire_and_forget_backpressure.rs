@@ -16,7 +16,6 @@ fn submit_one(h: &mut ReactorHarness, payload: u8) {
     );
 }
 
-/// Fill the unacked window to capacity (12 frames).
 fn fill_window(h: &mut ReactorHarness) {
     for i in 0..MAX_PENDING_BLOCKS {
         submit_one(h, i as u8);
@@ -32,14 +31,11 @@ fn a8_fire_and_forget_enqueues_under_window_full() {
 
     let tx_len_before = h.tx_log().len();
 
-    // Dispatch a fire-and-forget payload while the window is full.
     let payload = vec![0xAB, 0xCD, 0xEF];
     h.reactor
         .dispatch_fire_and_forget(payload.clone(), false)
         .expect("enqueue should not error under ceiling");
 
-    // The payload must NOT have been written to the wire — it should be
-    // sitting in the pending_fire_and_forget queue.
     assert_eq!(
         h.tx_log().len(),
         tx_len_before,
@@ -47,14 +43,9 @@ fn a8_fire_and_forget_enqueues_under_window_full() {
     );
     assert_eq!(h.reactor.pending_fire_and_forget.len(), 1);
 
-    // Free a slot by acking one outstanding frame. With send_seq starting
-    // at 1, the 12 outstanding frames carry seqs 1..=12. Acking rseq=2
-    // (wire nibble = 2) pops everything with seq < 2 → pops seq=1.
     h.feed_rx(&build_frame(&[], 2));
     h.tick();
 
-    // After the tick, drain_pending_submissions should have flushed the
-    // fire-and-forget payload to the wire.
     assert_eq!(
         h.reactor.pending_fire_and_forget.len(),
         0,
@@ -127,7 +118,6 @@ fn a8_overflow_returns_backpressure_error() {
     let mut h = ReactorHarness::new();
     fill_window(&mut h);
 
-    // Fill the pending_fire_and_forget queue to the ceiling.
     for _ in 0..PENDING_FIRE_AND_FORGET_CEILING {
         h.reactor
             .dispatch_fire_and_forget(vec![0x01], false)
@@ -138,13 +128,11 @@ fn a8_overflow_returns_backpressure_error() {
         PENDING_FIRE_AND_FORGET_CEILING,
     );
 
-    // The next payload must error with Backpressure (not silent-drop).
     let result = h.reactor.dispatch_fire_and_forget(vec![0x02], false);
     assert!(
         matches!(result, Err(TransportError::Backpressure)),
         "overflow must return Backpressure, got {result:?}",
     );
-    // Queue length is unchanged — the payload was rejected, not enqueued.
     assert_eq!(
         h.reactor.pending_fire_and_forget.len(),
         PENDING_FIRE_AND_FORGET_CEILING,

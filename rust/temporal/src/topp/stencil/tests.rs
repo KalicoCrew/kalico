@@ -16,7 +16,6 @@ fn s_dddot_at_quadratic_interior_within_machine_epsilon() {
     let n = 10;
     let b = build_b_from_polynomial(n, h, |s| alpha * s * s + beta * s + gamma);
 
-    // Expected: s‴_i = √b_i · α at all interior indices.
     for i in 1..n - 1 {
         let s = i as f64 * h;
         let b_i = alpha * s * s + beta * s + gamma;
@@ -134,7 +133,6 @@ fn s_dddot_at_boundary_quadratic_exact() {
     let n = 6;
     let b = build_b_from_polynomial(n, h, |s| alpha * s * s + gamma);
 
-    // i=0
     let b_0 = gamma;
     let expected_0 = b_0.sqrt() * alpha;
     let got_0 = s_dddot_at(&b, 0, h);
@@ -143,7 +141,6 @@ fn s_dddot_at_boundary_quadratic_exact() {
         "i=0: got {got_0}, expected {expected_0}"
     );
 
-    // i=n-1
     let s_last = (n - 1) as f64 * h;
     let b_last = alpha * s_last * s_last + gamma;
     let expected_last = b_last.sqrt() * alpha;
@@ -154,7 +151,6 @@ fn s_dddot_at_boundary_quadratic_exact() {
     );
 }
 
-/// `stencil_for` dispatch.
 #[test]
 fn stencil_for_dispatches_correctly() {
     assert_eq!(stencil_for(10, 0), SDddotStencil::StartBoundary);

@@ -1,13 +1,4 @@
 #![cfg(feature = "motion-module-stepper")]
-//! Integration smoke tests for `runtime::dispatch_stepper::dispatch_axis`.
-//!
-//! Lives in `tests/` so it can be exercised even when the broader
-//! library test build is broken by unrelated engine.rs type drift. The
-//! finer-grained `#[cfg(test)] mod tests` blocks inside
-//! `src/dispatch_stepper.rs` re-validate the same invariants once the
-//! lib-test path compiles.
-//!
-//! This test file is only meaningful with the `motion-module-stepper` feature.
 
 use core::sync::atomic::{AtomicI16, AtomicI32, AtomicU8, Ordering};
 use heapless::Vec;
@@ -54,12 +45,12 @@ fn pulse_zero_motion_no_steps_scheduled() {
         &mut axis,
         q_ptr,
         &shared,
-        /* p_end */ 0.0,
-        /* v_end */ 0.0,
-        /* p_sample_start */ 0.0,
-        /* sample_period_sec */ 25e-6,
-        /* sample_start_cycles */ 0,
-        /* cycles_per_second */ 520_000_000.0,
+        0.0,
+        0.0,
+        0.0,
+        25e-6,
+        0,
+        520_000_000.0,
     );
 
     assert_eq!(q.tail, q.head);
@@ -79,12 +70,12 @@ fn pulse_positive_motion_enqueues_n_steps() {
         &mut axis,
         q_ptr,
         &shared,
-        /* p_end */ 0.05,
-        /* v_end */ 2000.0,
-        /* p_sample_start */ 0.0,
-        /* sample_period_sec */ 25e-6,
-        /* sample_start_cycles */ 1_000,
-        /* cycles_per_second */ 520_000_000.0,
+        0.05,
+        2000.0,
+        0.0,
+        25e-6,
+        1_000,
+        520_000_000.0,
     );
 
     assert_eq!(q.tail.wrapping_sub(q.head), 4);
@@ -93,18 +84,10 @@ fn pulse_positive_motion_enqueues_n_steps() {
     assert_eq!(shared.last_error.load(Ordering::Acquire), 0);
 }
 
-/// Regression: when only some of the requested pushes fit in the queue
-/// (partial overflow), `position_count` and `last_step_count` MUST
-/// reflect the steps that landed in the queue — those WILL drive
-/// physical GPIO toggles regardless of fault state. Previously the bump
-/// happened only after the loop, so a partial-overflow desynced host
-/// position from physical reality.
 #[test]
 fn pulse_partial_push_commits_position_count_for_pushed_steps() {
     let shared = SharedState::new();
     let mut q = StepQueue::new();
-    // Leave exactly one slot free: depth 32, fill 31. The first push in
-    // dispatch_pulse succeeds, the second hits StepQueueFull.
     q.tail = (STEP_QUEUE_DEPTH as u16) - 1;
     q.head = 0;
     let mut axis = make_axis(StepMode::Pulse, 0.0125);
@@ -115,34 +98,28 @@ fn pulse_partial_push_commits_position_count_for_pushed_steps() {
         &mut axis,
         q_ptr,
         &shared,
-        /* p_end */ 0.05, // 4 microsteps requested
-        /* v_end */ 2000.0,
-        /* p_sample_start */ 0.0,
-        /* sample_period_sec */ 25e-6,
-        /* sample_start_cycles */ 1_000,
-        /* cycles_per_second */ 520_000_000.0,
+        0.05,
+        2000.0,
+        0.0,
+        25e-6,
+        1_000,
+        520_000_000.0,
     );
 
-    // Exactly one push landed — the rest overflowed.
     assert_eq!(
         q.tail.wrapping_sub(q.head),
         STEP_QUEUE_DEPTH as u16,
         "queue should be exactly full (31 prefill + 1 push)"
     );
-    // last_step_count must reflect the partial commit, not the full
-    // requested target (which would have been 4).
     assert_eq!(
         axis.last_step_count, 1,
         "last_step_count must reflect pushes that landed, not requested target"
     );
-    // position_count must bump by exactly the number of successful
-    // pushes — not 0 (the pre-fix bug) and not 4 (the requested count).
     assert_eq!(
         axis.steppers[0].position_count.load(Ordering::Acquire),
         1,
         "position_count must commit for pushed steps before fault"
     );
-    // And the fault is latched.
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
         FaultCode::StepQueueOverflow.as_i32()
@@ -153,9 +130,7 @@ fn pulse_partial_push_commits_position_count_for_pushed_steps() {
 fn pulse_queue_overflow_latches_fault() {
     let shared = SharedState::new();
     let mut q = StepQueue::new();
-    // Pre-fill the SPSC ring head/tail so any push fails immediately.
-    // STEP_QUEUE_DEPTH = 32; setting tail = 32 and head = 0 marks "full".
-    q.tail = 32;
+    q.tail = STEP_QUEUE_DEPTH as u16;
     q.head = 0;
     let mut axis = make_axis(StepMode::Pulse, 0.0125);
 
@@ -165,12 +140,12 @@ fn pulse_queue_overflow_latches_fault() {
         &mut axis,
         q_ptr,
         &shared,
-        /* p_end */ 0.0125, // 1 step
-        /* v_end */ 1000.0,
-        /* p_sample_start */ 0.0,
-        /* sample_period_sec */ 25e-6,
-        /* sample_start_cycles */ 0,
-        /* cycles_per_second */ 520_000_000.0,
+        0.0125,
+        1000.0,
+        0.0,
+        25e-6,
+        0,
+        520_000_000.0,
     );
 
     assert_eq!(
@@ -180,30 +155,24 @@ fn pulse_queue_overflow_latches_fault() {
     assert_eq!(shared.queue_overflow_count[2].load(Ordering::Acquire), 1);
 }
 
-/// A single-sample step delta beyond MAX_STEPS_PER_SAMPLE (16) is an
-/// unrecoverable baseline discontinuity (e.g. a missing position seed). It
-/// must hard-fault with `StepsPerSampleExceeded` — like `PieceStartInPast` —
-/// not silently revert and freeze the axis. `fault_detail` carries the axis
-/// index in bits 16..24 and the saturated step count in the low 16 bits.
 #[test]
 fn pulse_steps_per_sample_exceeded_hard_faults() {
     let shared = SharedState::new();
     let mut q = StepQueue::new();
     let mut axis = make_axis(StepMode::Pulse, 0.0125);
 
-    // p_end = 0.5 mm / 0.0125 = 40 microsteps from baseline 0 → 40 > 16.
     let q_ptr: *mut StepQueue = &mut q;
     dispatch_axis(
         1,
         &mut axis,
         q_ptr,
         &shared,
-        /* p_end */ 0.5,
-        /* v_end */ 0.0,
-        /* p_sample_start */ 0.0,
-        /* sample_period_sec */ 25e-6,
-        /* sample_start_cycles */ 0,
-        /* cycles_per_second */ 520_000_000.0,
+        0.5,
+        0.0,
+        0.0,
+        25e-6,
+        0,
+        520_000_000.0,
     );
 
     assert_eq!(
@@ -211,13 +180,11 @@ fn pulse_steps_per_sample_exceeded_hard_faults() {
         FaultCode::StepsPerSampleExceeded.as_i32(),
         "over-threshold delta must latch StepsPerSampleExceeded"
     );
-    // No steps emitted, baseline left unchanged (reverted before the fault).
     assert_eq!(q.tail, q.head, "no steps may be enqueued on overrun");
     assert_eq!(
         axis.last_step_count, 0,
         "baseline must not advance on fault"
     );
-    // detail = (axis 1 << 16) | abs_steps(40).
     assert_eq!(
         shared.fault_detail.load(Ordering::Acquire),
         (1u32 << 16) | 40,
@@ -231,19 +198,18 @@ fn phase_mode_updates_coil_state_no_queue_writes() {
     let mut q = StepQueue::new();
     let mut axis = make_axis(StepMode::Phase, 0.0125);
 
-    // 256 microsteps → PHASE_LUT[256] = (0, 248).
     let q_ptr: *mut StepQueue = &mut q;
     dispatch_axis(
         0,
         &mut axis,
         q_ptr,
         &shared,
-        /* p_end */ 256.0 * 0.0125,
-        /* v_end */ 0.0,
-        /* p_sample_start */ 0.0,
-        /* sample_period_sec */ 25e-6,
-        /* sample_start_cycles */ 0,
-        /* cycles_per_second */ 520_000_000.0,
+        256.0 * 0.0125,
+        0.0,
+        0.0,
+        25e-6,
+        0,
+        520_000_000.0,
     );
 
     assert_eq!(q.tail, q.head, "phase mode must not enqueue step pulses");
@@ -272,12 +238,12 @@ fn phase_mode_honors_phase_offset() {
         &mut axis,
         q_ptr,
         &shared,
-        /* p_end */ 256.0 * 0.0125,
-        /* v_end */ 0.0,
-        /* p_sample_start */ 0.0,
-        /* sample_period_sec */ 25e-6,
-        /* sample_start_cycles */ 0,
-        /* cycles_per_second */ 520_000_000.0,
+        256.0 * 0.0125,
+        0.0,
+        0.0,
+        25e-6,
+        0,
+        520_000_000.0,
     );
 
     assert_eq!(

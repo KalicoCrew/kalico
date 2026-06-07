@@ -15,7 +15,6 @@ SCRIPT_ARGS="${*:-G28 X}"
 
 docker build -q -t "$IMG" -f "$REPO/tools/sim_klippy/Dockerfile" "$REPO/tools/sim_klippy" >/dev/null
 
-# Build firmware + bridge .so + run the harness in one container invocation.
 # --tmpfs /tmp keeps the unix socket and PTY symlinks ephemeral.
 docker run --rm -i \
     -v "$REPO":$CONTAINER_HOME \

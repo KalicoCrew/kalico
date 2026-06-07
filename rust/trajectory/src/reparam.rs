@@ -111,7 +111,6 @@ pub fn compose_segment(
             let s_lo_safe = s_lo.max(0.0);
 
             if s_hi_clamped - s_lo_safe < 1e-15 {
-                // Degenerate: arc-length span is essentially zero. Emit constant.
                 let u_k = nurbs::arc_length::param_from_arc_length(table, s_lo_safe);
                 let pos = nurbs::eval::vector_eval(curve, u_k);
                 let axes: [BezierPiece<f64>; 3] = std::array::from_fn(|axis| BezierPiece {
@@ -128,8 +127,8 @@ pub fn compose_segment(
                 table,
                 s_lo_safe,
                 s_hi_clamped,
-                3, // target_degree
-                5, // max_degree
+                3,
+                5,
                 fit_tolerance,
             )
             .map_err(|detail| crate::ShapeError::FitFailure { index: k, detail })?;

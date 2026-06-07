@@ -77,8 +77,6 @@ def build_kalico_frame(
 
 
 def parse_kalico_frame(buf: bytes) -> tuple[int, int, int, bytes] | None:
-    """Walk `buf` looking for a valid kalico frame. Returns (kind, version,
-    correlation_id, body) or None if no complete frame found."""
     i = 0
     while i < len(buf):
         if buf[i] != KALICO_SYNC:

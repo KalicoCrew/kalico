@@ -22,7 +22,6 @@ fn roundtrip_various_sizes() {
 #[test]
 fn crc_mismatch_detected() {
     let mut frame = encode_frame(CHANNEL_CONTROL, b"hello kalico");
-    // Flip a payload byte; CRC was computed before the flip.
     frame[5] ^= 0xFF;
     let err = decode_frame(&frame).unwrap_err();
     assert!(matches!(err, FrameError::CrcMismatch { .. }), "{err:?}");
@@ -38,7 +37,6 @@ fn bad_sync_rejected() {
 
 #[test]
 fn len_too_small_rejected() {
-    // sync + len=2 + channel byte + bogus crc — len field below min.
     let mut buf = vec![FRAME_SYNC];
     buf.extend_from_slice(&2u16.to_le_bytes());
     buf.push(0);

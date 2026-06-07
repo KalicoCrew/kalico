@@ -8,18 +8,14 @@ fn step_queue_overflow_publishes_code_and_bumps_counter() {
         shared.last_error.load(Ordering::Acquire),
         FaultCode::StepQueueOverflow.as_i32()
     );
-    // axis_idx 2 → 2 << 16 = 0x00020000
     assert_eq!(shared.fault_detail.load(Ordering::Acquire), 0x0002_0000);
     assert_eq!(shared.queue_overflow_count[2].load(Ordering::Acquire), 1);
-    // Other axes untouched.
     assert_eq!(shared.queue_overflow_count[0].load(Ordering::Acquire), 0);
 }
 
 #[test]
 fn step_queue_overflow_out_of_range_axis_does_not_panic() {
     let shared = SharedState::new();
-    // 7 is outside the queue_overflow_count[4] range. The fault is
-    // still latched but no counter is incremented.
     raise_step_queue_overflow(&shared, 7);
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
@@ -86,7 +82,6 @@ fn jog_parameters_invalid_publishes_code_and_zero_detail() {
 #[test]
 fn piece_start_in_past_publishes_code_and_detail() {
     let shared = SharedState::new();
-    // axis 2, deficit 500 µs → detail = (2 << 16) | 500
     raise_piece_start_in_past(&shared, 2, 500);
     assert_eq!(
         shared.last_error.load(Ordering::Acquire),
@@ -112,7 +107,6 @@ fn tick_interval_exceeded_publishes_code_and_saturated_detail() {
     );
     assert_eq!(shared.fault_detail.load(Ordering::Acquire), 42);
 
-    // Saturation.
     let shared2 = SharedState::new();
     raise_tick_interval_exceeded(&shared2, 0x1_0000);
     assert_eq!(shared2.fault_detail.load(Ordering::Acquire), 0xFFFF);
@@ -143,9 +137,6 @@ fn unknown_step_mode_publishes_code_and_detail() {
     );
 }
 
-/// Prove that `emit_fault_log` compiles and links on the host build (stub path)
-/// without panicking. The call must be entirely inert — no extern symbol is
-/// referenced, no side-effect visible.
 #[test]
 fn emit_fault_log_stub_does_not_panic() {
     emit_fault_log(FaultCode::PieceStartInPast, 0x1_0000);

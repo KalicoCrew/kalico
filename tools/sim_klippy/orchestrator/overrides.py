@@ -9,7 +9,7 @@ a hook in — easier to substitute the strings up front."""
 import re
 
 try:
-    import tomllib  # py 3.11+
+    import tomllib
 except ImportError:
     import tomli as tomllib  # type: ignore
 
@@ -27,7 +27,6 @@ def _flatten(d: dict, prefix: str = "") -> dict:
         if isinstance(v, dict) and not any(
             isinstance(vv, dict) for vv in v.values()
         ):
-            # leaf table — store under the dotted key
             out[full_key] = v
         elif isinstance(v, dict):
             out.update(_flatten(v, full_key))
@@ -63,7 +62,6 @@ def _inject_section_keys(cfg_text: str, section: str, kv: dict) -> str:
     existing_keys: set = set()
 
     def _flush_with_inject(buf, hdr_idx_unused):
-        # Append injection lines for any missing keys, then the body.
         injected = []
         for k, v in kv.items():
             if k.lower() not in existing_keys:
@@ -77,10 +75,7 @@ def _inject_section_keys(cfg_text: str, section: str, kv: dict) -> str:
         line = lines[i]
         m = _SECTION_HEADER_RE.match(line.rstrip("\n"))
         if m:
-            # Closing previous section — if it was the target, flush with
-            # injections appended after the header.
             if in_target:
-                # We're moving out of target section. Inject and flush.
                 out_lines.extend(_flush_with_inject(section_body_lines, None))
                 section_body_lines = []
                 existing_keys = set()
@@ -96,10 +91,8 @@ def _inject_section_keys(cfg_text: str, section: str, kv: dict) -> str:
             i += 1
             continue
         if in_target:
-            # Track existing keys (ignore comments / blank lines).
             stripped = line.strip()
             if stripped and not stripped.startswith("#"):
-                # klippy options use "key: value" or "key = value".
                 key_match = re.match(r"^([A-Za-z0-9_]+)\s*[:=]", stripped)
                 if key_match:
                     existing_keys.add(key_match.group(1).lower())
@@ -171,7 +164,6 @@ def _replace_section_keys(cfg_text: str, section: str, kv: dict) -> str:
                     if key_l in lc_kv:
                         seen_keys.add(key_l)
                         orig_k, new_v = lc_kv[key_l]
-                        # Preserve leading indentation if any.
                         leading = line[: len(line) - len(line.lstrip())]
                         section_buf.append(
                             f"{leading}{km.group(1)}{km.group(2)}{new_v}\n"
@@ -217,8 +209,6 @@ def apply_overrides(cfg_text: str, overrides: dict) -> str:
     for pattern, sim in serial_map.items():
         regex = re.escape(pattern).replace(r"\*", r"[^\s]*")
         out = re.sub(rf"/dev/serial/by-id/{regex}", sim, out)
-    # Apply per-section config_inject tables. Dotted-key form after
-    # flattening: ``<section>.config_inject``.
     for key, table in overrides.items():
         if not isinstance(table, dict):
             continue
@@ -226,9 +216,6 @@ def apply_overrides(cfg_text: str, overrides: dict) -> str:
             continue
         section = key[: -len(".config_inject")]
         out = _inject_section_keys(out, section, table)
-    # Apply per-section ``config_set`` tables. Unlike config_inject these
-    # rewrite existing keys (and append missing ones), used to override
-    # values like ``endstop_pin`` that already appear in the source cfg.
     for key, table in overrides.items():
         if not isinstance(table, dict):
             continue

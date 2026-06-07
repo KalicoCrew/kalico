@@ -14,8 +14,7 @@ Two wire modes:
   path emits the CS byte from the active config_spi pin, and the
   orchestrator dispatches to the right per-chip emulator.
 
-Threaded model: one accept thread, one worker thread per connection.
-Sufficient for our handful of chip stubs."""
+Threaded model: one accept thread, one worker thread per connection."""
 
 from __future__ import annotations
 
@@ -113,11 +112,6 @@ class ChipSocketServer:
                 client.sendall(reply)
 
     def _recv_exactly(self, client: socket.socket, n: int) -> bytes:
-        """Receive exactly n bytes or return b'' on EOF.
-
-        Robust to TCP-style partial reads: keeps recv()'ing until n
-        bytes are accumulated. Returns b'' if the peer closes.
-        """
         buf = bytearray()
         while len(buf) < n:
             if self._stop.is_set():
@@ -125,7 +119,6 @@ class ChipSocketServer:
             try:
                 chunk = client.recv(n - len(buf))
             except socket.timeout:
-                # Allow the stop event to interrupt long-idle connections.
                 continue
             if not chunk:
                 return b""

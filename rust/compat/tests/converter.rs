@@ -87,10 +87,8 @@ fn g92_passes_through() {
 
 #[test]
 fn e_only_move() {
-    // Retraction: G1 with E but no XY motion
     let input = "G1 X10 Y0 E1.0 F1500\nG1 E0.5 F2400\n";
     let output = convert(input, "test", 5.0).unwrap();
-    // Should produce 2 G5 lines (one for XY move, one for E-only)
     let g5_count = output.lines().filter(|l| l.starts_with("G5 ")).count();
     assert!(g5_count >= 2, "expected >=2 G5 lines, got {g5_count}");
 }
@@ -103,7 +101,6 @@ fn multi_g1_sequence() {
     }
     let output = convert(&lines, "test", 5.0).unwrap();
     assert!(output.contains("G5 "));
-    // Should produce fewer G5 lines than input G1 lines (fitter combines them)
     let g5_count = output.lines().filter(|l| l.starts_with("G5 ")).count();
     assert!(g5_count <= 11, "expected <=11 G5 lines, got {g5_count}");
 }

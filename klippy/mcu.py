@@ -28,16 +28,6 @@ MAX_NOMINAL_DURATION = 3.0
 
 
 def _format_bridge_msg(cmd, data):
-    """Format a Klipper command as a string for the bridge's text-protocol
-    parser. Used by both query (CommandQueryWrapper) and fire-and-forget
-    (CommandWrapper) command paths.
-
-    Buffer fields must be hex-encoded so the parser's whitespace tokenizer
-    sees a single token and parse_hex_buffer can decode it back to bytes.
-    Klippy passes buffer payloads as bytes/bytearray (tmc_uart) or as a
-    Python list/tuple of ints (spi_transfer, tmc2130 build_cmd) — handle
-    both.
-    """
     parts = [cmd.name]
     for i, (name, _) in enumerate(cmd.param_names):
         val = data[i]
@@ -135,14 +125,7 @@ class CommandQueryWrapper:
             raise self._error(str(e))
 
     def _bridge_send(self, data):
-        """Bridge-mode send: encode as human-readable string and use bridge_call."""
         msg = _format_bridge_msg(self._cmd, data)
-        # Diag instrumentation for the 2026-05-09 bridge-call stall
-        # investigation. Logs entry/exit timing per call so the host log
-        # correlates against the reactor's [trace-write] / [trace-tick] and
-        # the MCU's diag_v1 emits. Uses logging.info so the line carries a
-        # timestamp; when the bug fires we want sub-millisecond resolution
-        # on entry/exit pairs.
         _t0 = time.monotonic()
         logging.info(
             "[py-trace] _bridge_send enter cmd=%s response=%s",
@@ -169,10 +152,6 @@ class CommandQueryWrapper:
             )
             raise self._error(str(e))
         except Exception as e:
-            # Bridge raises RuntimeError("bridge_call: transport ...") which
-            # is NOT serialhdl.error. Catch broadly so the timeout case still
-            # produces an exit line — the original handler above would let
-            # those bypass the trace and we'd see enter without exit.
             _dt_ms = (time.monotonic() - _t0) * 1000.0
             logging.info(
                 "[py-trace] _bridge_send exit EXC cmd=%s dt_ms=%.2f exc=%s msg=%s",
@@ -200,10 +179,6 @@ class CommandQueryWrapper:
         reqclock=0,
         retry=True,
     ):
-        # Bridge has no serialqueue; route preface as a fire-and-forget
-        # command (bridge_send) and the data as a request expecting a
-        # response (bridge_call). Used by SPI flows that need a bus
-        # selection before the transfer (tmc2130 chain reads/writes).
         preface_cmd.send(preface_data, minclock=minclock)
         return self._bridge_send(data)
 
@@ -318,10 +293,6 @@ class MCU_trsync:
         self._stepper_stop_cmd = mcu.lookup_command(
             "stepper_stop_on_trigger oid=%c trsync_oid=%c", cq=self._cmd_queue
         )
-        # Bridge mode: the bridge owns the serial wire for ALL MCUs, so
-        # no C serialqueue exists and trdispatch_mcu cannot be allocated.
-        # Non-bridge MCUs (Beacon, Eddy) still send firmware trsync
-        # commands in start()/stop() — just without C-level interception.
         self._trdispatch_mcu = None
 
     def _shutdown(self):
@@ -373,15 +344,9 @@ class MCU_trsync:
                 self._oid,
             )
             return
-        # Non-bridge MCU (Beacon, Eddy): send firmware commands.
-        # Skip trdispatch_mcu_setup (no C serialqueue in bridge mode)
-        # but register the Python response handler for trsync_state.
         self._home_end_clock = None
         clock = self._mcu.print_time_to_clock(print_time)
         if self._trdispatch_mcu is None:
-            # No C-level automatic timeout extension (bridge mode).
-            # Use a long initial timeout — the move will be terminated
-            # by endstop trigger or set_home_end_time, not by timeout.
             expire_timeout = max(expire_timeout, 30.0)
         expire_ticks = self._mcu.seconds_to_clock(expire_timeout)
         expire_clock = clock + expire_ticks
@@ -429,8 +394,6 @@ class MCU_trsync:
                 [self._oid, expire_clock], reqclock=clock
             )
         else:
-            # Bridge mode: raw_send is a no-op for CommandWrapper,
-            # so send text-format commands directly through the bridge.
             serial = self._mcu._serial
             serial.send(
                 "trsync_start oid=%d report_clock=%d report_ticks=%d"
@@ -456,13 +419,8 @@ class MCU_trsync:
 
     def stop(self):
         if self._mcu._bridge_drives_steppers:
-            # Bridge-driven MCU: no-op. Return REASON_ENDSTOP_HIT —
-            # safe under both Beacon's and TriggerDispatch's aggregation
-            # rules (primary trsync result dominates; secondary is only
-            # scanned for COMMS_TIMEOUT).
             self._trigger_completion = None
             return self.REASON_ENDSTOP_HIT
-        # Non-bridge MCU: full mainline path
         self._mcu.register_response(None, "trsync_state", self._oid)
         self._trigger_completion = None
         if self._mcu.is_fileoutput():
@@ -567,23 +525,9 @@ class MCU_endstop:
         self._oid = self._mcu.create_oid()
         self._home_cmd = self._query_cmd = None
         self._rest_ticks = 0
-        # Bridge-mode endstop uses BridgeTriggerDispatch (motion_bridge.py)
-        # instead of the legacy trsync-backed TriggerDispatch +
-        # endstop_home / config_endstop commands. The legacy commands are
-        # not registered for bridge MCUs since the kalico firmware does
-        # not implement them.
-        # Sensorless-DIAG opt-out flag, populated by extras/tmc.py via
-        # `homing_trip_immediately: True` config option (default False).
         self._sensorless_trip_immediately = False
-        # Velocity-axis bitmask used when arm_policy=IgnoreUntilMoving for
-        # sensorless TMC sources. Default to XY for X/Y endstops; extras
-        # (e.g. Z stepper) override before home_start.
-        self._sensorless_velocity_axis = 0x03  # X | Y
-        self._sensorless_v_min_q16 = 0  # 0 = no lower-bound gate
-        # NB: at MCU_endstop construction time the bridge has not yet
-        # identified the MCU, so `_bridge_handle` is None and we
-        # cannot allocate a bridge command queue here. Defer both
-        # the handle and the queue to BridgeTriggerDispatch.start().
+        self._sensorless_velocity_axis = 0x03
+        self._sensorless_v_min_q16 = 0
         bridge_wrapper = mcu._motion_bridge
         if bridge_wrapper is not None:
             from . import motion_bridge as _mb
@@ -593,12 +537,6 @@ class MCU_endstop:
             )
         else:
             self._dispatch = None
-        # Resolve the numeric GPIO index the firmware-side endstop
-        # sampler will read. The Linux MCU uses GPIO(port,num) =
-        # port*288+num (src/linux/internal.h::GPIO); on STM32 the
-        # pin name (e.g. "PA10") is resolved by the firmware's pin
-        # table. tmc.py overrides _bridge_gpio_index for sensorless
-        # DIAG endstops.
         self._bridge_gpio_index = self._resolve_bridge_gpio_index(
             pin_params.get("pin", "")
         )
@@ -606,18 +544,18 @@ class MCU_endstop:
     def get_mcu(self):
         return self._mcu
 
+    LINUX_GPIO_LINES_PER_CHIP = 288
+    STM32_PINS_PER_PORT = 16
+
+    SOURCE_KIND_PHYSICAL = 0
+    SOURCE_KIND_TMC_DIAG = 1
+
+    ARM_POLICY_TRIP_IMMEDIATELY = 0
+    ARM_POLICY_WAIT_FOR_CLEAR = 1
+    ARM_POLICY_IGNORE_UNTIL_MOVING = 2
+
     @staticmethod
     def _resolve_bridge_gpio_index(pin_str):
-        # Parse a pin string into the numeric pin index the firmware's
-        # `gpio_in_setup()` expects. Two namespaces:
-        #   * "gpiochipN/gpioM" (Linux MCU / sim) → port*MAX_GPIO_LINES+num
-        #     with MAX_GPIO_LINES=288 (src/linux/internal.h::GPIO).
-        #   * "P[A-I][0-15]" (STM32 — H7 / F4) → (port-'A')*16 + num
-        #     (src/stm32/internal.h::GPIO). Required for sensorless TMC
-        #     DIAG endstops on real hardware — the host hands the firmware
-        #     the same index `endstop_pin_table_populate` casts back into
-        #     `gpio_in_setup`.
-        # Returns 0 for unparseable strings (matches prior behavior).
         import re
 
         pin = pin_str.strip()
@@ -625,12 +563,14 @@ class MCU_endstop:
         if m:
             port = int(m.group(1))
             num = int(m.group(2))
-            return port * 288 + num
+            return port * MCU_endstop.LINUX_GPIO_LINES_PER_CHIP + num
         m = re.match(r"^P([A-I])(\d{1,2})$", pin)
         if m:
             num = int(m.group(2))
             if num <= 15:
-                return (ord(m.group(1)) - ord("A")) * 16 + num
+                return (
+                    ord(m.group(1)) - ord("A")
+                ) * MCU_endstop.STM32_PINS_PER_PORT + num
         return 0
 
     def add_stepper(self, stepper):
@@ -653,41 +593,28 @@ class MCU_endstop:
         return self._home_start_bridge(print_time, sample_count, triggered)
 
     def _home_start_bridge(self, print_time, sample_count, triggered):
-        # Spec §5.3: map legacy params (sample_time / rest_time ignored —
-        # bridge samples at modulation rate; sample_count → sample_n;
-        # triggered=True → TripImmediately for physical, IgnoreUntilMoving
-        # for TmcDiag unless self._sensorless_trip_immediately).
-
-        # Resolve pin: extract a numeric GPIO index plus polarity. The
-        # bridge MCU's pin namespace numbers are firmware-side; for now
-        # the pin string carries them (e.g. "PA10" or a virtual TMC pin).
-        # We pass through the pin parsing the bridge already performs.
-        # SourceKind detection: if the pin string was registered via
-        # tmc.py's TMCVirtualPinHelper, the registry sets a TmcDiag flag
-        # on the MCU_endstop. For the MVP we infer kind from a flag set
-        # by tmc.py before home_start.
-        kind = 1 if getattr(self, "_is_sensorless_diag", False) else 0
-        # active_high corresponds to legacy `triggered ^ invert` evaluating
-        # to 1: under TripImmediately we want to trip when the asserted
-        # level appears, so active_high = (triggered != invert).
+        kind = (
+            self.SOURCE_KIND_TMC_DIAG
+            if getattr(self, "_is_sensorless_diag", False)
+            else self.SOURCE_KIND_PHYSICAL
+        )
         active_high = bool((1 if triggered else 0) ^ (1 if self._invert else 0))
 
-        if kind == 1 and triggered and not self._sensorless_trip_immediately:
-            policy = 2  # IgnoreUntilMoving
+        if (
+            kind == self.SOURCE_KIND_TMC_DIAG
+            and triggered
+            and not self._sensorless_trip_immediately
+        ):
+            policy = self.ARM_POLICY_IGNORE_UNTIL_MOVING
         elif triggered:
-            policy = 0  # TripImmediately
+            policy = self.ARM_POLICY_TRIP_IMMEDIATELY
         else:
-            policy = 1  # WaitForClear
+            policy = self.ARM_POLICY_WAIT_FOR_CLEAR
 
         self._dispatch._sources = []
         self._dispatch._stepper_oids = list(
             stepper.get_oid() for stepper in self._dispatch._steppers
         )
-        # GPIO numeric index: the bridge's pin table maps the firmware
-        # name string. For Step 6 MVP, we pass 0 and rely on tmc.py /
-        # caller to have populated _bridge_gpio_index on the endstop;
-        # if absent the firmware-side will reject. Tracked as Step-7
-        # follow-up: full pin-table integration with the bridge MCU.
         gpio = int(getattr(self, "_bridge_gpio_index", 0))
         sample_n = max(1, int(sample_count))
         self._dispatch.add_source(
@@ -705,13 +632,6 @@ class MCU_endstop:
         return self._home_wait_bridge(home_end_time)
 
     def _home_wait_bridge(self, home_end_time):
-        # MCU-driven terminals: trip → REASON_ENDSTOP_HIT (via
-        # _on_trip_message); no-trip retire → REASON_PAST_END_TIME (via
-        # MotionBridgeWrapper.fire_homing_completion → _fire_past_end_time).
-        # The wall-clock deadline is a silence backstop: if the MCU has
-        # gone silent (no credit-freed, no trip event) past the expected
-        # end-time plus 1.0 s of slack, raise a distinct error so the
-        # failure mode is diagnosable.
         from . import motion_bridge as _mb
 
         eventtime = self._mcu.get_printer().get_reactor().monotonic()
@@ -730,14 +650,6 @@ class MCU_endstop:
         completion = self._dispatch._completion
         result = completion.wait(waketime=backstop)
         if result is None:
-            # MCU-silence backstop fired. Disarm and surface a distinct
-            # error — operationally this means the MCU never reported
-            # either a trip or a credit-freed past the homing segment,
-            # which is a comms / runtime fault, not a homing-not-found.
-            # Leave _reason unset so dispatch.stop() sends
-            # `runtime_disarm_endstop` to the MCU; otherwise the runtime
-            # stays in Armed state and rejects every subsequent G28 with
-            # ArmStatus::Rejected (Busy).
             self._dispatch.stop()
             cmderr = self._mcu.get_printer().command_error
             wake_eventtime = self._mcu.get_printer().get_reactor().monotonic()
@@ -760,9 +672,6 @@ class MCU_endstop:
             cmderr = self._mcu.get_printer().command_error
             raise cmderr("Communication timeout during homing")
         if reason == _mb.REASON_PAST_END_TIME:
-            # MCU told us the homing segment retired without a trip.
-            # Klippy's homing.py converts this return value of 0.0 into
-            # the standard "No trigger" error.
             return 0.0
         if reason != _mb.REASON_ENDSTOP_HIT:
             return 0.0
@@ -790,9 +699,6 @@ class MCU_endstop:
                 stepper_for.bridge_set_position_from_step_count(cnt)
         trip_clock = int(evt.get("trip_clock", 0))
         if trip_clock == 0:
-            # No MCU trip snapshot (e.g. synchronous AlreadyTripped at
-            # arm time where no tick ran). Fall back to arm_print_time as
-            # the trigger time — it's the closest we have.
             arm_pt = self._dispatch.get_arm_print_time()
             if arm_pt is not None and arm_pt > 0.0:
                 return arm_pt
@@ -1228,30 +1134,6 @@ class MCU:
         is_latched_shutdown = params["#name"] == "is_shutdown"
         if is_latched_shutdown:
             prefix = "Previous MCU '%s' shutdown: " % (self._name,)
-            # 2026-05-18 wedge recovery: an `is_shutdown` (vs `shutdown`)
-            # event means the MCU was already in shutdown state when this
-            # klippy session connected — typically because the
-            # kalico-host-rt EXIT_ON_FAULT path aborted the prior klippy
-            # via `std::process::abort()` after a transport drop, while
-            # the MCU stayed alive with the latched
-            # `SchedStatus.shutdown_status = 1` from klippy's `_shutdown()`
-            # emergency_stop. systemd restarts klippy, but without
-            # intervention the new session surfaces the latched state and
-            # the printer parks in shutdown — operator has to manually
-            # FIRMWARE_RESTART or power-cycle.
-            #
-            # Auto-trigger the firmware restart so the systemd-managed
-            # recovery is a single step: a `reset` command to each MCU
-            # (NVIC_SystemReset → SchedStatus zeroed) clears the latched
-            # flag, and the in-process klippy restart re-runs config from
-            # scratch. `_check_restart` raises on first-time attempts (it
-            # also calls `request_exit("firmware_restart")` first, so the
-            # error unwinds the connect path and the main loop picks up
-            # the new start_reason). On second-pass attempts — i.e., we
-            # already restarted via firmware_restart this session and the
-            # MCU is STILL latched — `_check_restart` returns silently,
-            # and we fall through to the normal `invoke_async_shutdown`
-            # below so the operator sees the actual failure.
             self._check_restart(
                 "MCU '%s' latched in shutdown state at connect" % (self._name,)
             )
@@ -1435,19 +1317,6 @@ class MCU:
                 % (self._name, self._shutdown_msg)
             )
         if config_params["is_shutdown"]:
-            # 2026-05-18 wedge recovery: the kalico-host-rt EXIT_ON_FAULT path
-            # aborts klippy on USB-CDC transport drop, leaving the MCUs in a
-            # latched "Command request" shutdown from klippy's own
-            # `_shutdown` emergency_stop. systemd restarts klippy, but the
-            # new session finds the MCUs still shut down and (without this
-            # path) raises here — operator has to manually FIRMWARE_RESTART
-            # or power-cycle. Auto-trigger the firmware restart so the
-            # systemd-managed recovery is a single step: a `reset` command
-            # to each MCU (NVIC_SystemReset) clears `is_shutdown`, and the
-            # in-process klippy restart re-runs config from scratch. Gated
-            # by `_check_restart`'s own check that we haven't already
-            # restarted this session, so a genuinely-stuck MCU still
-            # surfaces an error rather than looping forever.
             self._check_restart(
                 "MCU '%s' was in shutdown state at config time" % (self._name,)
             )
@@ -1527,7 +1396,6 @@ class MCU:
         move_count = config_params["move_count"]
         if move_count < self._reserved_move_slots:
             raise error("Too few moves available on MCU '%s'" % (self._name,))
-        # Bridge mode: step emission lives in Rust, no C steppersync.
         self._steppersync = None
         # Log config information
         move_msg = "Configured MCU '%s' (%d moves)" % (self._name, move_count)
@@ -1842,15 +1710,6 @@ class MCU:
                 "Unable to issue reset command on MCU '%s'", self._name
             )
             return
-        # 2026-05-18 wedge recovery: for bridge MCUs the firmware `reset`
-        # command triggers NVIC_SystemReset → USB-CDC drops at the
-        # kernel — the per-MCU Rust reactor's EXIT_ON_FAULT guard would
-        # interpret that BrokenPipe as a wedge and `std::process::abort()`
-        # the whole klippy process, breaking the in-process firmware_restart
-        # main-loop iteration. Mark the imminent drop as expected so the
-        # reactor reports `exited_gracefully()` when the drop lands. Best-
-        # effort: if the bridge can't be reached (transport already gone),
-        # fall through — we still try to send the reset command.
         try:
             if self._motion_bridge is not None:
                 self._motion_bridge.bridge_mark_expected_disconnect(
@@ -1925,8 +1784,6 @@ class MCU:
         self._flush_callbacks.append(callback)
 
     def flush_moves(self, print_time, clear_history_time):
-        # Bridge mode: step generation lives in the Rust runtime. Host-side
-        # steppersync flushing has nothing to do here.
         return
 
     def check_active(self, print_time, eventtime):

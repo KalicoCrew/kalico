@@ -1,10 +1,3 @@
-// CYCCNT widening + cycle helpers.
-//
-// `publish_widened_now` / `read_widened_now` implement the §11.4 widened-clock
-// seqlock: ARMv7-M lacks a lock-free `AtomicU64`, so a 2 × `AtomicU32` +
-// sequence-counter pattern lets the foreground reader pull the most recent
-// widened `now: u64` published by the ISR with bounded retry.
-
 // `AtomicU32` from `portable_atomic` so that `TickCounter::increment`'s
 // `fetch_add` compiles on ARMv6-M (thumbv6m / STM32G0), which has no native
 // LDREX/STREX. On thumbv7em the codegen is identical to `core::sync::atomic`.
@@ -13,9 +6,7 @@ use portable_atomic::AtomicU32;
 
 use crate::state::SharedState;
 
-/// TEST/SIM ONLY. Not a production source of truth — the firmware reads the
-/// real per-board TIM5 cadence from `runtime_sample_rate_hz` in `state.rs`.
-/// This constant exists solely so test/sim fixtures have a fixed rate.
+/// TEST/SIM ONLY — firmware reads the real cadence from `runtime_sample_rate_hz`.
 pub const TEST_ONLY_TICK_RATE_HZ: u32 = 40_000;
 
 #[derive(Debug, Default)]
@@ -127,19 +118,16 @@ pub fn publish_widened_now(shared: &SharedState, now: u64) {
         .widened_now_seq
         .load(Ordering::Relaxed)
         .wrapping_add(1);
-    // → odd (write in progress)
     shared.widened_now_seq.store(seq, Ordering::Release);
     shared.widened_now_lo.store(now as u32, Ordering::Release);
     shared
         .widened_now_hi
         .store((now >> 32) as u32, Ordering::Release);
-    // → even (write complete)
     shared
         .widened_now_seq
         .store(seq.wrapping_add(1), Ordering::Release);
 }
 
-/// Foreground reader: bounded retry per the seqlock invariant.
 #[inline]
 pub fn read_widened_now(shared: &SharedState) -> u64 {
     loop {

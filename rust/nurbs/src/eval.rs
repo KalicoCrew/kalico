@@ -1,6 +1,3 @@
-// `unsafe_code` is workspace-denied; this module is the sole exception because
-// the hot-path MCU de Boor evaluators require provably-safe index elimination
-// to avoid panic-symbol contamination in the release firmware.
 #![allow(unsafe_code)]
 
 use crate::{Float, MAX_DEGREE, MIN_PARAMETRIC_SPEED, NurbsView, VectorNurbsView, WORKSPACE_SIZE};
@@ -8,7 +5,6 @@ use crate::{Float, MAX_DEGREE, MIN_PARAMETRIC_SPEED, NurbsView, VectorNurbsView,
 #[cfg(feature = "host")]
 pub(crate) use crate::knot::find_knot_span;
 
-// MCU build needs an inline copy since knot module is host-only.
 #[cfg(not(feature = "host"))]
 #[inline]
 pub(crate) fn find_knot_span<T: Float>(knots: &[T], p: usize, n: usize, u: T) -> usize {
@@ -87,8 +83,6 @@ pub(crate) fn de_boor_inner<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) 
             } else {
                 T::ZERO
             };
-            // d[j] = (1 - alpha) * d[j-1] + alpha * d[j]
-            //      = (d[j] - d[j-1]).mul_add(alpha, d[j-1])
             let dj = unsafe { *d.get_unchecked(j) };
             let djm1 = unsafe { *d.get_unchecked(j - 1) };
             unsafe { *d.get_unchecked_mut(j) = (dj - djm1).mul_add(alpha, djm1) };
@@ -105,8 +99,6 @@ pub fn eval<T: Float, V: NurbsView<T>>(curve: &V, u: T) -> T {
     de_boor_inner(curve.control_points(), curve.knots(), curve.degree(), u)
 }
 
-/// Shared-knot vector eval across N axes. Cheaper than N independent scalar
-/// `eval` calls because knot-span lookup and alpha computation are shared.
 #[inline]
 pub fn vector_eval<T: Float, V: VectorNurbsView<T, N>, const N: usize>(curve: &V, u: T) -> [T; N] {
     debug_assert!((curve.degree() as usize) <= MAX_DEGREE);
@@ -223,7 +215,6 @@ pub fn eval_polynomial_with_derivative<T: Float>(
                     *d.get_unchecked_mut(j) = (old_d_j - old_d_jm1).mul_add(alpha, old_d_jm1);
                 }
             } else {
-                // Degenerate knot interval: freeze to alpha=0 fallback.
                 unsafe {
                     *d.get_unchecked_mut(j) = old_d_jm1;
                     *dd.get_unchecked_mut(j) = old_dd_jm1;
@@ -386,12 +377,6 @@ pub fn eval_polynomial<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T 
     de_boor_inner(cps, knots, degree, u)
 }
 
-/// Evaluate `dC/du` without materializing the degree-lowered curve. Computes
-/// only the de Boor window of derivative control points and runs one de Boor
-/// walk on a `[T; WORKSPACE_SIZE]` stack scratch.
-///
-/// Reference: Piegl & Tiller "The NURBS Book" eq. 3.7 (derivative cps),
-/// Algorithm A4.1 on the lowered knot vector.
 #[inline]
 pub fn eval_derivative<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T {
     debug_assert!((degree as usize) <= MAX_DEGREE);
@@ -405,7 +390,6 @@ pub fn eval_derivative<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T 
     }
     let new_p = p - 1;
     let new_n = n - 1;
-    // Lowered knot vector drops first and last entries; length = new_n + new_p + 1.
     let lowered_knots = &knots[1..n + p];
 
     let k = find_knot_span(lowered_knots, new_p, new_n, u);
@@ -459,8 +443,6 @@ pub fn eval_derivative<T: Float>(cps: &[T], knots: &[T], degree: u8, u: T) -> T 
     unsafe { *d.get_unchecked(new_p) }
 }
 
-/// Compute `dP/du` as a new owned NURBS via degree lowering.
-/// Reference: Piegl & Tiller "The NURBS Book" eq. 3.7 / Algorithm A3.3.
 #[cfg(feature = "host")]
 #[must_use]
 pub fn derivative<T: Float>(curve: &crate::ScalarNurbs<T>) -> crate::ScalarNurbs<T> {
@@ -491,7 +473,6 @@ pub fn derivative<T: Float>(curve: &crate::ScalarNurbs<T>) -> crate::ScalarNurbs
         .expect("degree-lowered NURBS satisfies invariants by construction")
 }
 
-/// Compute the parametric derivative of a vector NURBS as a new owned NURBS.
 #[cfg(feature = "host")]
 #[must_use]
 pub fn vector_derivative<T: Float, const N: usize>(

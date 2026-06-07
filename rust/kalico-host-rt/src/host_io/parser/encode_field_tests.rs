@@ -34,7 +34,6 @@ fn byte_field_accepts_signed_negative() {
 fn byte_field_still_rejects_truly_out_of_range() {
     use indexmap::IndexMap;
     let enums: IndexMap<String, EnumTable> = IndexMap::new();
-    // -129 and 256 are outside the signed+unsigned byte envelope.
     for v in &["-129", "256", "1000", "-1000"] {
         let mut buf = Vec::new();
         let r = encode_field_str(&mut buf, &WrappedField::Plain(FieldType::Byte), v, &enums);

@@ -3,26 +3,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::clock::{Clock, RealClock};
 
-/// EWMA decay factor — mirrors klippy's `DECAY = 1/30`.
 const DECAY: f64 = 1.0 / 30.0;
-
-/// Half-RTT age coefficient — mirrors klippy's `RTT_AGE = 10µs / 3600s`.
 const RTT_AGE: f64 = 0.000_010 / (60.0 * 60.0);
-
-/// Prediction-variance is reset to `(1ms * freq)²` on a variance reset; the
-/// same formula klippy uses.
 const PREDICTION_RESET_MS: f64 = 0.001;
-
-/// Outlier gate: residual² must exceed this multiple of prediction_variance AND
-/// the absolute floor below to be considered an outlier.  Matches klippy's 25×.
 const OUTLIER_VARIANCE_MULT: f64 = 25.0;
-
-/// Absolute outlier floor: residual must also exceed 500µs × freq to gate.
-/// Matches klippy's `(0.000500 * self.mcu_freq)²`.
 const OUTLIER_ABS_FLOOR_SECS: f64 = 0.000_500;
-
-/// After how long without a progressive prediction update do we allow an
-/// "upward" outlier through (klippy: `sent_time < last_prediction_time + 10`).
 const OUTLIER_RESET_WINDOW_SECS: f64 = 10.0;
 
 pub const MIN_WARMUP_SAMPLES: u32 = 30;
@@ -37,7 +22,6 @@ pub enum SampleSource {
     Piggyback,
 }
 
-/// A single RTT-qualified sample fed into the estimator.
 #[derive(Debug, Clone, Copy)]
 pub struct Sample {
     pub host_time_secs: f64,
@@ -47,21 +31,10 @@ pub struct Sample {
     pub recorded_at: Instant,
 }
 
-/// EWMA-based clock frequency / offset estimator.
-///
-/// Mirrors klippy's `ClockSync._handle_clock` algorithm:
-/// - Decayed accumulators (`time_avg`, `clock_avg`, `time_variance`,
-///   `clock_covariance`) with `DECAY = 1/30`.
-/// - Prediction-variance outlier gate (25× + 500µs absolute floor).
-/// - `min_half_rtt` / `RTT_AGE` logic for minimal-RTT sample selection.
-///
-/// Public API is unchanged from the window-regression version so `bridge.rs`
-/// callers need no changes.
 pub struct ClockSyncEstimator {
     epoch: Instant,
     wall_epoch: SystemTime,
 
-    // EWMA accumulators (klippy naming kept for auditability).
     time_avg: f64,
     time_variance: f64,
     clock_avg: f64,
@@ -69,27 +42,22 @@ pub struct ClockSyncEstimator {
     prediction_variance: f64,
     last_prediction_time: f64,
 
-    // min-RTT tracking.
     min_half_rtt: f64,
     min_rtt_time: f64,
 
-    // Derived fit exported to callers.
     pub clock_freq_estimate: f64,
     anchor_host_time: f64,
     anchor_mcu_clock: u64,
 
-    // Diagnostics.
     pub residual_ewma_us: f64,
     pub last_dedicated_sample: Option<Instant>,
 
-    // For `add_dedicated_sample` age gate (same role as the old window).
     last_sample_recorded_at: Option<Instant>,
 
     sample_count: u32,
     clock_sync_request_id: u32,
     clock: Arc<dyn Clock>,
 
-    /// Initial freq kept for the prediction-variance reset formula.
     mcu_freq: f64,
 }
 
@@ -161,7 +129,6 @@ impl ClockSyncEstimator {
         self.epoch
     }
 
-    /// Project a host-time to MCU clock using the current fit.
     pub fn mcu_time_at_host(&self, host_time_secs: f64) -> u64 {
         let delta_secs = host_time_secs - self.anchor_host_time;
         #[allow(
@@ -190,9 +157,6 @@ impl ClockSyncEstimator {
             return Some((dt, true));
         }
 
-        // "estimated" = extrapolation (we have no window bounds anymore, so we
-        // treat any tick that is farther than 1 freq-second from the anchor as
-        // estimated, which is a conservative proxy).
         #[allow(clippy::cast_precision_loss)]
         let delta_ticks = (mcu_ticks as f64) - (self.anchor_mcu_clock as f64);
         let host_secs = self.anchor_host_time + delta_ticks / freq;
@@ -233,16 +197,12 @@ impl ClockSyncEstimator {
         let half_rtt = rtt.as_secs_f64() / 2.0;
         let sent_time = self.host_time_at(host_send);
 
-        // min-RTT gate (klippy: `if half_rtt < self.min_half_rtt + aged_rtt`).
         let aged_rtt = (sent_time - self.min_rtt_time) * RTT_AGE;
         if half_rtt < self.min_half_rtt + aged_rtt {
             self.min_half_rtt = half_rtt;
             self.min_rtt_time = sent_time;
         }
 
-        // Back-correct MCU clock to the send instant using current freq estimate.
-        // Using `min_half_rtt` (not the raw `half_rtt`) mirrors klippy's approach
-        // of anchoring projections at the minimum-RTT estimate.
         let effective_half_rtt = if self.min_half_rtt < 1.0 {
             self.min_half_rtt
         } else {
@@ -270,27 +230,16 @@ impl ClockSyncEstimator {
         self.last_sample_recorded_at = Some(now);
     }
 
-    /// Core EWMA update — port of klippy's `_handle_clock` accumulator logic.
-    ///
-    /// `sent_time`  — host time of the send (used for outlier gating).
-    /// `feed_time`  — the x-value fed into the regression (identical to
-    ///                `sent_time` for both dedicated and piggyback callers).
-    /// `clock`      — the y-value (MCU clock ticks at `feed_time`).
     fn ingest(&mut self, feed_time: f64, clock: f64, sent_time: f64) {
-        // First sample: seed the EWMA accumulators directly (mirrors klippy's
-        // `connect()` which initialises `time_avg` and `clock_avg` from the
-        // first `get_uptime` response before entering the EWMA loop).
         if self.sample_count == 0 {
             self.time_avg = feed_time;
             self.clock_avg = clock;
             self.prediction_variance = (PREDICTION_RESET_MS * self.mcu_freq).powi(2);
             self.last_prediction_time = sent_time;
             self.sample_count = 1;
-            // No variance/covariance update; need at least two points for a slope.
             return;
         }
 
-        // --- outlier gate (klippy lines ~122-155) ---
         let exp_clock = (sent_time - self.time_avg) * self.clock_freq_estimate + self.clock_avg;
         let clock_diff = clock - exp_clock;
         let clock_diff2 = clock_diff * clock_diff;
@@ -301,10 +250,8 @@ impl ClockSyncEstimator {
             if clock > exp_clock
                 && sent_time < self.last_prediction_time + OUTLIER_RESET_WINDOW_SECS
             {
-                // High-side outlier within the reset window: skip entirely.
                 return;
             }
-            // Reset prediction variance (klippy: variance reset path).
             self.prediction_variance = (PREDICTION_RESET_MS * self.mcu_freq).powi(2);
         } else {
             self.last_prediction_time = sent_time;
@@ -312,15 +259,11 @@ impl ClockSyncEstimator {
                 (1.0 - DECAY) * (self.prediction_variance + clock_diff2 * DECAY);
         }
 
-        // Residual quality metric: EWMA of |clock_diff| in µs.  This is the
-        // per-sample prediction error, directly comparable to the old window
-        // regression's `residual_ewma_us`.
         if self.clock_freq_estimate > 1.0 {
             let abs_resid_us = clock_diff.abs() / self.clock_freq_estimate * 1e6;
             self.residual_ewma_us = (1.0 - DECAY) * self.residual_ewma_us + DECAY * abs_resid_us;
         }
 
-        // --- EWMA accumulators (klippy lines ~157-165) ---
         let diff_sent = feed_time - self.time_avg;
         self.time_avg += DECAY * diff_sent;
         self.time_variance = (1.0 - DECAY) * (self.time_variance + diff_sent * diff_sent * DECAY);
@@ -332,25 +275,19 @@ impl ClockSyncEstimator {
 
         self.sample_count = self.sample_count.saturating_add(1);
 
-        // --- derive slope + anchor ---
         self.update_fit();
     }
 
-    /// Recompute `clock_freq_estimate` and the projection anchor from the
-    /// current EWMA accumulators.  Called after every accepted sample.
     fn update_fit(&mut self) {
         if self.time_variance.abs() < 1e-12 {
             return;
         }
         let new_freq = self.clock_covariance / self.time_variance;
         if new_freq < 1.0 {
-            // Guard against degenerate state on cold start.
             return;
         }
         self.clock_freq_estimate = new_freq;
 
-        // Anchor at `time_avg + min_half_rtt` (mirrors klippy's
-        // `clock_est = (time_avg + min_half_rtt, clock_avg, new_freq)`).
         // Use `min_half_rtt` only when it has been updated from an actual RTT
         // measurement; the initial sentinel (999_999_999.9) must not shift the
         // anchor.

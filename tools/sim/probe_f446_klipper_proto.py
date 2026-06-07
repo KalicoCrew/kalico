@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""F446 sim Klipper-protocol probe: reproduce the post-tmcuart_send crash.
-
-Connects to the F446 Renode sim on USART2 (tcp localhost:3334), speaks the
-mainline Klipper protocol (0x7E framing, MESSAGE_DEST=0x10), drives the boot
-handshake klippy uses (identify → config commands → tmcuart_send), and
-watches for `is_shutdown` / firmware faults.
-
-Goal: get the F4 sim to crash the same way the bench does so we can iterate
-on a fix without bench access.
-"""
-
 from __future__ import annotations
 
 import json
@@ -19,7 +8,6 @@ import sys
 import time
 import zlib
 
-# Reuse msgproto's VLI / CRC implementations to avoid divergence.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from klippy import msgproto  # noqa: E402
 
@@ -42,10 +30,6 @@ def encode_string(val):
 
 
 def build_frame(seq, payload):
-    """Wrap `payload` bytes in a Klipper protocol frame.
-
-    seq is 0..15.
-    """
     msglen = MESSAGE_MIN + len(payload)
     if msglen > MESSAGE_MAX:
         raise ValueError(f"frame too large: {msglen}")
@@ -55,10 +39,6 @@ def build_frame(seq, payload):
 
 
 def parse_frames(buf):
-    """Yield (seq_byte, payload, raw_frame) tuples; trims consumed prefix.
-
-    Returns (frames, leftover).
-    """
     frames = []
     i = 0
     while i < len(buf):
@@ -86,7 +66,6 @@ def parse_frames(buf):
 
 
 def send_identify(s, seq, offset, count):
-    # cmd id 1, two VLI args: offset (u32), count (u8)
     body = encode_vli(1) + encode_vli(offset) + encode_vli(count)
     frame = build_frame(seq, body)
     print(
@@ -110,9 +89,6 @@ def recv_with_timeout(s, timeout_s, accumulator):
 
 
 def recv_until_frames_present(s, min_frames, max_wait_s):
-    """Drain the socket until at least `min_frames` complete Klipper frames have
-    been received, or `max_wait_s` elapses (whichever comes first).  Returns
-    the accumulator bytes."""
     accumulator = bytearray()
     deadline = time.monotonic() + max_wait_s
     while time.monotonic() < deadline:
@@ -125,8 +101,6 @@ def recv_until_frames_present(s, min_frames, max_wait_s):
             accumulator.extend(chunk)
             frames, _ = parse_frames(accumulator)
             if len(frames) >= min_frames:
-                # Short top-up: pull anything that's already buffered without
-                # blocking again.
                 try:
                     s.settimeout(0.01)
                     while True:
@@ -141,7 +115,6 @@ def recv_until_frames_present(s, min_frames, max_wait_s):
 
 
 def fetch_data_dict(s, verbose=False):
-    """Walk identify_response frames until we have the full Klipper data dictionary."""
     blob = bytearray()
     offset = 0
     seq = 0
@@ -165,7 +138,6 @@ def fetch_data_dict(s, verbose=False):
                     f"[probe]     frame[{fi}] seq=0x{sb:02x} payload={pl.hex()}"
                 )
 
-        # If MCU NAK'd (empty payload, seq != our expected ack), re-sync our seq counter
         nak_seq = None
         for sb, pl, _ in frames:
             if len(pl) == 0:
@@ -173,7 +145,6 @@ def fetch_data_dict(s, verbose=False):
                 break
         if nak_seq is not None and not any(len(pl) > 0 for sb, pl, _ in frames):
             if nak_retries < 3:
-                # MCU expects this seq; align our send-seq accordingly
                 print(f"[probe]   MCU NAK, resyncing seq to 0x{nak_seq:02x}")
                 seq = nak_seq
                 nak_retries += 1
@@ -205,7 +176,6 @@ def parse_dict(blob):
 
 
 def find_cmd(data_dict, prefix):
-    """Look up a command in the dictionary by name prefix; returns (id, format)."""
     for fmt, cid in data_dict["commands"].items():
         if fmt.startswith(prefix + " ") or fmt == prefix:
             return cid, fmt
@@ -216,7 +186,6 @@ def main():
     s = socket.create_connection(("localhost", 3334), timeout=5.0)
     s.settimeout(2.0)
 
-    # Drain any pre-existing UART noise.
     drain = bytearray()
     recv_with_timeout(s, 0.5, drain)
     if drain:
@@ -241,7 +210,6 @@ def main():
     )
     cmds_by_name = sorted(data_dict["commands"].keys())
     print(f"[probe] {len(cmds_by_name)} commands available")
-    # Show tmcuart-related commands
     for name in cmds_by_name:
         if "tmcuart" in name or "shutdown" in name:
             print(f"[probe]   cmd: {name}")
@@ -255,8 +223,6 @@ def main():
     print(f"[probe] finalize_config cmd id={fin_id}, fmt={fin_fmt}")
     print(f"[probe] allocate_oids cmd id={aoid_id}, fmt={aoid_fmt}")
 
-    # Build a reverse lookup for "responses" so we can decode async/incoming frames
-    # by cmd id.
     responses_by_id = {cid: fmt for fmt, cid in data_dict["responses"].items()}
     print(f"[probe] {len(responses_by_id)} responses in dict")
     for k in sorted(responses_by_id)[:20]:
@@ -265,15 +231,8 @@ def main():
         print("[probe] FAIL — no tmcuart_send command in dictionary")
         return 3
 
-    # Send the boot sequence klippy uses:
-    #   1. allocate_oids count=N  (N >= 1)
-    #   2. config_tmcuart oid=0 rx_pin=... pull_up=1 tx_pin=... bit_time=27500
-    #   3. finalize_config crc=...
-    #   4. tmcuart_send oid=0 write=... read=8
     print("[probe] === BOOT SEQUENCE ===")
 
-    # Continue seq from where dict-fetch left off, plus 1 (since each successful
-    # frame bumps next_sequence on the MCU).
     seq_counter = [(last_dict_seq + 1) & 0x0F]
 
     def next_seq():
@@ -292,21 +251,18 @@ def main():
         print(f"[probe] -> {label} ({len(frame)}B) {frame.hex()}")
         s.sendall(frame)
 
-    # allocate_oids count=1
     send_cmd(aoid_id, 1, label="allocate_oids count=1")
     rx = bytearray()
     recv_with_timeout(s, 1.0, rx)
     if rx:
         print(f"[probe]   <- {len(rx)} bytes: {bytes(rx).hex()[:200]}")
-    # config_tmcuart oid=0 rx_pin=PA10 (gpio=10) pull_up=1 tx_pin=PA9 (gpio=9) bit_time=27500
-    # Note: gpio encoding is (port - 'A') * 16 + pin; PA10 = 10, PA9 = 9.
+    # gpio encoding: (port - 'A') * 16 + pin; PA10 = 10, PA9 = 9
     send_cmd(cfg_id, 0, 10, 1, 9, 27500, label="config_tmcuart")
     rx = bytearray()
     recv_with_timeout(s, 1.0, rx)
     if rx:
         print(f"[probe]   <- {len(rx)} bytes: {bytes(rx).hex()[:200]}")
 
-    # finalize_config crc=0 (we don't compute it; firmware may accept anyway for early-boot)
     if fin_id is not None:
         send_cmd(fin_id, 0, label="finalize_config crc=0")
         rx = bytearray()
@@ -314,25 +270,15 @@ def main():
         if rx:
             print(f"[probe]   <- {len(rx)} bytes: {bytes(rx).hex()[:200]}")
 
-    # The actual TMC autotune sequence: tmcuart_send oid=0 write=<bytes> read=8
-    # write payload is typically [sync, slave_addr, reg, ...] e.g. [0x05, 0x00, 0x00] for GCONF read
-    # We send what klippy sends during init: register-read for GCONF (reg 0x00).
-    # Per src/tmcuart.c tmcuart_send: oid, write_len, write_data..., read_count
-    # In the cmd format string ("tmcuart_send oid=%c write=%*s read=%c"),
-    # %*s is PT_buffer = length-prefixed.
-    write_bytes = bytes(
-        [0x05, 0x00, 0x00, 0xFF]
-    )  # arbitrary TMC2209 read frame
+    write_bytes = bytes([0x05, 0x00, 0x00, 0xFF])
     print(f"[probe] -> tmcuart_send oid=0 write={write_bytes.hex()} read=8")
     send_cmd(snd_id, 0, write_bytes, 8, label="tmcuart_send oid=0 write=...")
 
-    # Watch for crash (shutdown frame, or sim hang)
     print("[probe] waiting 4s for response / crash...")
     rx = bytearray()
     recv_with_timeout(s, 4.0, rx)
     print(f"[probe]   <- {len(rx)} bytes: {bytes(rx).hex()[:400]}")
 
-    # Parse any response frames
     frames, leftover = parse_frames(rx)
     print(
         f"[probe] parsed {len(frames)} frames, {len(leftover)} bytes leftover"

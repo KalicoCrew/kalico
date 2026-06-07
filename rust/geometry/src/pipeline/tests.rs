@@ -59,10 +59,6 @@ fn tool_change_fires_telemetry() {
 
 #[test]
 fn g5_emits_cubic_segment() {
-    // Pure G5: no preceding G1 (which would be UnsupportedGcode in live).
-    // We need to seed `state.prev_g5_pq` for the implicit-tangent rule, so
-    // chain two G5s: first one with explicit I,J and P,Q, second one
-    // would inherit — but we just need one to test cubic emission.
     let items = collect("G5 X10 Y0 I3 J3 P-3 Q3\n");
     let cubic_seg = items.iter().find_map(|it| match it {
         Item::Segment(Segment::Cubic(c)) => Some(c),
@@ -77,12 +73,9 @@ fn g5_emits_cubic_segment() {
     assert!(approx(cps[1][0], 3.0) && approx(cps[1][1], 3.0));
     assert!(approx(cps[2][0], 7.0) && approx(cps[2][1], 3.0));
     assert!(approx(cps[3][0], 10.0) && approx(cps[3][1], 0.0));
-    // Knot vector [0,0,0,0,1,1,1,1].
     let knots = c.xyz.knots();
     assert_eq!(knots, &[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
-    // No E delta → Travel.
     assert_eq!(c.e_mode, crate::EMode::Travel);
-    // No JD before the G5 in the live pipeline.
     assert!(
         !items
             .iter()
@@ -99,18 +92,14 @@ fn g5_1_emits_cubic_via_degree_elevation() {
         _ => None,
     });
     let c = cubic_seg.expect("expected a Segment::Cubic from G5.1");
-    // Post-elevation invariants: degree 3, 4 CPs, clamped knots.
     assert_eq!(c.xyz.degree(), 3);
     assert_eq!(c.xyz.control_points().len(), 4);
-    // Knot vector [0,0,0,0,1,1,1,1].
     let knots = c.xyz.knots();
     assert_eq!(knots, &[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]);
-    // Endpoints preserved exactly: P0=(0,0,0), P3=(10,0,0).
     let cps = c.xyz.control_points();
     let approx = |a: f64, b: f64| (a - b).abs() < 1e-12;
     assert!(approx(cps[0][0], 0.0) && approx(cps[0][1], 0.0));
     assert!(approx(cps[3][0], 10.0) && approx(cps[3][1], 0.0));
-    // No E delta → Travel.
     assert_eq!(c.e_mode, crate::EMode::Travel);
 }
 

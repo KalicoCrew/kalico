@@ -1,18 +1,9 @@
-//! Cross-precision regression harness. Runs the same curves at f32 and f64,
-//! asserts the f32 result is within a documented bound of f64 on a representative
-//! corpus. Catches numerical regressions in the f32 codegen path that the
-//! geomdl oracle (f64 only) would miss.
-//!
-//! The bound is empirical — measure on the corpus, assert. If the bound creeps
-//! up after a refactor, you've introduced a precision regression.
-
 #![cfg(feature = "host")]
 
 const F32_VS_F64_TOLERANCE: f32 = 1e-5;
 
 #[test]
 fn vector_eval_f32_matches_f64_within_tolerance() {
-    // Cubic 3D curve.
     let degree = 3u8;
     let knots_f64 = vec![0.0_f64, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0];
     let cps_f64: Vec<[f64; 3]> = vec![

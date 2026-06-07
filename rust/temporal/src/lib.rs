@@ -42,7 +42,6 @@ pub enum BindingConstraint {
 
 #[derive(Debug, Clone, Copy)]
 pub struct GridSample {
-    /// Arclength along the segment, mm.
     pub s: f64,
     /// Path speed, mm/s (= sqrt(b)).
     pub v: f64,
@@ -97,6 +96,5 @@ pub struct TopProfile {
     pub samples: Vec<GridSample>,
     pub status: SolveStatus,
     pub grid_scheme: GridScheme,
-    /// Total trajectory time, seconds.
     pub total_time: f64,
 }

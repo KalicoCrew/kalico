@@ -22,7 +22,6 @@ fn mcu_log_encode_decode_round_trip() {
     let mut c = Cursor::new(&buf);
     let decoded = McuLog::decode_from(&mut c).expect("decode must succeed");
     assert_eq!(decoded, orig);
-    // No trailing bytes
     assert_eq!(c.remaining(), 0);
 }
 
@@ -61,9 +60,6 @@ fn mcu_log_zero_args_round_trip() {
 fn mcu_log_decode_rejects_truncated_body() {
     use crate::codec::{Cursor, Decode, DecodeError, Encode};
 
-    // Encode a valid McuLog (24 bytes) then truncate to 23: one byte short of
-    // the fixed-width layout.  decode_from must return UnexpectedEof, never a
-    // partial/garbage value.
     let orig = McuLog {
         mcu_tick: 0x0001_2345_6789_ABCD_u64,
         level: 2,
@@ -76,7 +72,6 @@ fn mcu_log_decode_rejects_truncated_body() {
     let mut buf = Vec::new();
     orig.encode(&mut buf);
     assert_eq!(buf.len(), 24, "sanity: full encode must be 24 bytes");
-
     let short = &buf[..23];
     let mut c = Cursor::new(short);
     match McuLog::decode_from(&mut c) {

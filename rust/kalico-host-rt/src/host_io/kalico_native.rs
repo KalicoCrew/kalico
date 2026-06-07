@@ -128,7 +128,6 @@ pub fn dispatch_kalico_frame(
         return lift_event_to_runtime_event(state, kind, body);
     }
 
-    // Control-channel response — route by correlation_id.
     if header.correlation_id == 0 {
         log::warn!(
             "kalico control-channel frame with correlation_id=0 (kind 0x{:04x})",

@@ -1,14 +1,4 @@
 #!/usr/bin/env python3
-"""G28 X end-to-end tests against the klippy-in-loop sim.
-
-Two scenarios:
-  - trip_path: pin already HIGH (asserted) when G28 arms the endstop;
-    bridge returns AlreadyTripped → REASON_ENDSTOP_HIT synchronously
-    and homing succeeds.
-  - notrip_path: pin LOW; the homing segment retires without a trip;
-    MCU emits credit-freed; bridge fires past-end-time;
-    homing.py raises "No trigger on x".
-"""
 
 import json
 import os
@@ -20,9 +10,6 @@ import time
 
 import pytest
 
-# Standalone __main__ script that spawns out/klipper.elf; no pytest test
-# functions. Tagged needs_elf so it is honestly classified (and excluded
-# from the CI sim_unit selection). Run directly: `python3 <this file>`.
 pytestmark = pytest.mark.needs_elf
 
 REPO = pathlib.Path(os.environ.get("KALICO_REPO", "/work"))
@@ -134,12 +121,6 @@ def run_scenario(name, trip_at_arm):
     elf = spawn_elf()
     klippy = spawn_klippy()
     try:
-        # trip_at_arm=True: pin already HIGH (asserted) when G28 arms
-        # the endstop; the bridge returns AlreadyTripped → REASON_ENDSTOP_HIT
-        # synchronously and homing succeeds.
-        # trip_at_arm=False: pin LOW; the homing segment retires without
-        # a trip; MCU emits credit-freed; bridge fires past-end-time;
-        # homing.py raises "No trigger on x".
         send_gcode(
             "KALICO_SIM_ENDSTOP_SET_PIN GPIO=20 LEVEL=%d"
             % (1 if trip_at_arm else 0)

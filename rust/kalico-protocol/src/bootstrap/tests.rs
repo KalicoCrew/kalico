@@ -45,7 +45,6 @@ fn identify_response_offsets_are_frozen() {
 
 #[test]
 fn identify_response_byte_layout() {
-    // Construct with field values that make every byte position visible.
     let build_hash: [u8; 20] = std::array::from_fn(|i| 0x40 + i as u8);
     let schema_hash: [u8; 32] = std::array::from_fn(|i| 0x60 + i as u8);
     let mcu_serial: [u8; 12] = std::array::from_fn(|i| 0xA0 + i as u8);
@@ -61,25 +60,17 @@ fn identify_response_byte_layout() {
     let bytes = m.encode_body_to_array();
     assert_eq!(bytes.len(), 81);
 
-    // Hand-rolled byte-by-byte verification.
     assert_eq!(bytes[0], 0x01);
-    // firmware_ver little-endian.
     assert_eq!(&bytes[1..5], &[0x44, 0x33, 0x22, 0x11]);
-    // build_hash verbatim.
     assert_eq!(&bytes[5..25], &build_hash);
-    // schema_hash verbatim.
     assert_eq!(&bytes[25..57], &schema_hash);
-    // reset_epoch little-endian.
     assert_eq!(&bytes[57..61], &[0xEF, 0xBE, 0xAD, 0xDE]);
-    // capabilities little-endian.
     assert_eq!(
         &bytes[61..69],
         &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01]
     );
-    // mcu_serial verbatim.
     assert_eq!(&bytes[69..81], &mcu_serial);
 
-    // Round-trip.
     assert_eq!(IdentifyResponse::decode_body(&bytes), Ok(m));
 }
 

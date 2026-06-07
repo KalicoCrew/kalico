@@ -31,8 +31,6 @@ fn make_axis(mode: StepMode, microstep_distance: f32) -> AxisConfig {
     }
 }
 
-/// Pulse mode with `p_end == p_sample_start` and matching
-/// `last_step_count` schedules zero steps and leaves the queue empty.
 #[test]
 fn pulse_zero_motion_no_steps_scheduled() {
     let shared = SharedState::new();
@@ -62,8 +60,6 @@ fn pulse_zero_motion_no_steps_scheduled() {
     );
 }
 
-/// Pulse mode with a clean +N-step displacement enqueues N entries
-/// and bumps `position_count` by exactly N for every yoked stepper.
 #[test]
 fn pulse_positive_motion_enqueues_n_steps() {
     let shared = SharedState::new();
@@ -91,8 +87,6 @@ fn pulse_positive_motion_enqueues_n_steps() {
     assert_eq!(shared.last_error.load(Ordering::Acquire), 0);
 }
 
-/// Pulse mode with `|displacement| < threshold` still schedules
-/// `|n_steps|` entries via the uniform-spacing fallback.
 #[test]
 fn pulse_below_displacement_threshold_uses_uniform_fallback() {
     let shared = SharedState::new();
@@ -121,8 +115,6 @@ fn pulse_below_displacement_threshold_uses_uniform_fallback() {
     assert_eq!(axis.last_step_count, 0);
 }
 
-/// Phase mode updates `last_coil_*`, `last_phase_target`, and
-/// `position_count` without touching the step queue.
 #[test]
 fn phase_mode_updates_coil_state_no_queue_writes() {
     let shared = SharedState::new();
@@ -154,9 +146,6 @@ fn phase_mode_updates_coil_state_no_queue_writes() {
     assert_eq!(axis.steppers[0].position_count.load(Ordering::Acquire), 256);
 }
 
-/// Phase mode ramps `phase_offset_microsteps` toward
-/// `phase_offset_target` at `max_phase_offset_ramp_per_sample` per
-/// call, clamping on the final step.
 #[test]
 fn phase_mode_ramps_offset_toward_target_at_max_per_sample() {
     let shared = SharedState::new();
@@ -193,9 +182,6 @@ fn phase_mode_ramps_offset_toward_target_at_max_per_sample() {
     }
 }
 
-/// `max_phase_offset_ramp_per_sample == 0` disables the ramp —
-/// `phase_offset_microsteps` is left untouched even when
-/// `phase_offset_target` differs.
 #[test]
 fn phase_mode_ramp_disabled_when_max_per_sample_is_zero() {
     let shared = SharedState::new();
@@ -231,9 +217,6 @@ fn phase_mode_ramp_disabled_when_max_per_sample_is_zero() {
     );
 }
 
-/// Phase mode honors `phase_offset_microsteps`: per-stepper target
-/// = axis position + offset, and `position_count` bumps by the
-/// per-stepper delta (which includes the offset).
 #[test]
 fn phase_mode_honors_phase_offset() {
     let shared = SharedState::new();
@@ -264,9 +247,6 @@ fn phase_mode_honors_phase_offset() {
     assert_eq!(axis.steppers[0].position_count.load(Ordering::Acquire), 263);
 }
 
-/// An unrecognized `StepMode` byte (e.g. 0x42) must latch `UnknownStepMode`
-/// on `shared.last_error` and encode `(axis_idx << 16) | mode` in
-/// `shared.fault_detail`. No steps must be enqueued.
 #[test]
 fn unknown_step_mode_raises_fault() {
     use crate::error::FaultCode;

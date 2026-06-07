@@ -34,4 +34,4 @@ void kalico_log_emit(uint8_t level, uint8_t subsystem, uint16_t event,
 // Foreground-only (calls runtime_widened_host_clock()).
 void kalico_log_drain(void);
 
-#endif // KALICO_LOG_H
+#endif

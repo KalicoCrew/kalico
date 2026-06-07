@@ -5,10 +5,6 @@ pub struct StepResult {
     pub n_steps: i32,
 }
 
-/// Per-axis accumulator that converts a continuous motor position (mm) into
-/// integer step pulses. Uses an `f64` accumulator internally — the H723 has a
-/// hardware double-precision FPU, so there is no penalty, and it keeps the
-/// sub-step residual accurate over millions of ticks.
 #[derive(Debug, Clone, Copy)]
 pub struct StepMotorState {
     step_accumulator: f64,
@@ -56,12 +52,6 @@ impl StepMotorState {
         self.step_accumulator = 0.0;
     }
 
-    /// Advance the accumulator to `motor_position_mm` and return the integer
-    /// step delta for this tick. The `as i32` truncation retains the sub-step
-    /// residual in the accumulator for the next tick.
-    ///
-    /// Returns `Err(())` if the burst cap (`max_steps_per_tick`) would be
-    /// exceeded — the caller should raise a fault and halt the axis.
     #[allow(clippy::result_unit_err)]
     pub fn update(&mut self, motor_position_mm: f32) -> Result<StepResult, ()> {
         let new_pos_steps = f64::from(motor_position_mm) * f64::from(self.steps_per_mm);

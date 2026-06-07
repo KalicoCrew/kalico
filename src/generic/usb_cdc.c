@@ -33,14 +33,6 @@
  ****************************************************************/
 
 static struct task_wake usb_bulk_in_wake;
-// Default sizing matches upstream Klipper. When the kalico-native transport
-// is enabled, the same TX buffer is shared with raw kalico frames (up to
-// KALICO_TX_BUF_SIZE = 256 in src/kalico_dispatch.c), so the buffer holds
-// roughly four such packets — chosen as headroom against transient host-side
-// drain stalls (the previous 320-byte sizing silently dropped both klipper
-// responses and kalico frames whenever bulk-IN drain lagged by even a single
-// frame, surfacing later as bridge_call timeouts and ring_overflow bursts).
-// The position counter widens to u16.
 static uint8_t transmit_buf[1024];
 static uint16_t transmit_pos;
 typedef uint16_t transmit_pos_t;
@@ -56,10 +48,6 @@ usb_bulk_in_task(void)
 {
     if (!sched_check_wake(&usb_bulk_in_wake))
         return;
-    // Diag heartbeat — captures the gap from the last call so we can
-    // observe foreground starvation. Threshold = 20 ms (timer ticks at
-    // CONFIG_CLOCK_FREQ; passing the µs literal is converted at the
-    // call site below).
     diag_task_heartbeat(diag_slot_usb_in_calls(),
                         diag_slot_usb_in_last_tick(),
                         diag_slot_usb_in_max_gap(),
@@ -92,9 +80,6 @@ console_sendf(const struct command_encoder *ce, va_list args)
     transmit_pos_t tpos = transmit_pos;
     uint_fast8_t max_size = READP(ce->max_size);
     if (tpos + max_size > sizeof(transmit_buf)) {
-        // Not enough space for message — silent drop. Investigation says
-        // this should NOT fire under the bridge-stall repro; counter
-        // confirms that empirically.
         diag_record_tx_drop_klipper(max_size, tpos);
         return;
     }
@@ -108,19 +93,11 @@ console_sendf(const struct command_encoder *ce, va_list args)
     usb_notify_bulk_in();
 }
 
-// Raw byte writer used by the kalico-native transport TX path. Bytes are
-// already a complete kalico frame (sync + len + channel + payload + CRC).
-// Returns the number of bytes accepted, or -1 if there is no room. Frame
-// contents are not split across calls — caller (kalico_transport_send_frame
-// in src/kalico_dispatch.c) hands a single, complete frame.
 int
 kalico_console_write_raw(const uint8_t *buf, uint16_t len)
 {
     transmit_pos_t tpos = transmit_pos;
     if ((uint32_t)tpos + (uint32_t)len > sizeof(transmit_buf)) {
-        // Silent drop — caller (kalico_transport_send_frame) ignores
-        // the -1 return per investigation §7. Counter records the event
-        // for postmortem.
         diag_record_tx_drop_kalico(len, tpos);
         return -1;
     }
@@ -141,9 +118,6 @@ static uint8_t receive_buf[128], receive_pos;
 void
 usb_notify_bulk_out(void)
 {
-    // Round 2 — count when something tries to wake the bulk-OUT drain.
-    // If this counter grows but task_invoke_count stagnates, sched_wake
-    // is being suppressed.
     (*diag_slot_notify_bulk_out())++;
     sched_wake_task(&usb_bulk_out_wake);
 }
@@ -151,16 +125,9 @@ usb_notify_bulk_out(void)
 void
 usb_bulk_out_task(void)
 {
-    // Round 2 — count every task entry, BEFORE the wake gate. If
-    // notify_bulk_out_calls grows but task_invoke_count doesn't, the
-    // task isn't being scheduled. If task_invoke_count grows but the
-    // heartbeat (after the gate) doesn't, the wake check is failing.
     (*diag_slot_task_invoke())++;
     if (!sched_check_wake(&usb_bulk_out_wake))
         return;
-    // Diag heartbeat — this is the task most likely to be starved during
-    // the bridge-call stall. Gap detection here is the smoking gun for
-    // the IRQ-storm hypothesis.
     diag_task_heartbeat(diag_slot_usb_out_calls(),
                         diag_slot_usb_out_last_tick(),
                         diag_slot_usb_out_max_gap(),
@@ -171,9 +138,6 @@ usb_bulk_out_task(void)
     if (rpos + USB_CDC_EP_BULK_OUT_SIZE <= sizeof(receive_buf)) {
         int_fast8_t ret = usb_read_bulk_out(
             &receive_buf[rpos], USB_CDC_EP_BULK_OUT_SIZE);
-        // Round 2 — distinguish "EP had data" vs "EP returned nothing".
-        // If we wake but read returns 0 every time, RXFLVL is firing
-        // without actual bulk-OUT bytes (a likely USB-stack quirk).
         if (ret > 0) (*diag_slot_read_data())++;
         else         (*diag_slot_read_zero())++;
         if (ret > 0) {
@@ -183,10 +147,6 @@ usb_bulk_out_task(void)
     } else {
         usb_notify_bulk_out();
     }
-    // Process incoming bytes: kalico-aware drain when the runtime is
-    // enabled; legacy single-block dispatch otherwise. USB receive_buf
-    // is task-only (no IRQ writer), so a blanket reset after pump is
-    // safe.
     kalico_demux_pump(receive_buf, rpos);
     receive_pos = 0;
 }
@@ -600,12 +560,9 @@ DECL_TASK(usb_ep0_task);
 void
 usb_shutdown(void)
 {
-    // Reset receive_pos so stale bytes in receive_buf are not re-processed
-    // after the longjmp that brought us here. Without this, a command in
-    // the stale buffer (e.g. emergency_stop) triggers sched_shutdown →
-    // longjmp on every task-loop iteration, wedging the firmware in an
-    // infinite longjmp cycle that prevents all new bulk-OUT processing
-    // (identify, get_config, etc.) — the MCU appears hung to the host.
+    // Without this reset, a stale shutdown-triggering command left in
+    // receive_buf re-fires sched_shutdown's longjmp every task-loop pass,
+    // wedging the MCU in an infinite longjmp cycle.
     receive_pos = 0;
     usb_notify_bulk_in();
     usb_notify_bulk_out();

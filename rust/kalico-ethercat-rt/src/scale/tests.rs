@@ -9,8 +9,8 @@ fn origin_maps_to_itself() {
 #[test]
 fn positive_delta_rounds_and_adds() {
     let m = CountMap::new(1000.0, 0, 0.0);
-    assert_eq!(m.target_counts(1.0004), 1000); // 1000.4 -> 1000
-    assert_eq!(m.target_counts(1.0006), 1001); // 1000.6 -> 1001
+    assert_eq!(m.target_counts(1.0004), 1000);
+    assert_eq!(m.target_counts(1.0006), 1001);
 }
 
 #[test]

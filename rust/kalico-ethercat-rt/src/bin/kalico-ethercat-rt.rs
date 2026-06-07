@@ -70,7 +70,6 @@ fn main() {
         libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
     }
 
-    // Bring up the drive (blocks until CiA402 operation-enabled).
     let cif = CString::new(ifname.clone()).expect("ifname must not contain NUL");
     let rc = unsafe { ffi::ec_rt_bringup(cif.as_ptr(), cycle_ns, rt_cpu, rt_prio) };
     if rc != 0 {

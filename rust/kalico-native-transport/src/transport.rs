@@ -71,11 +71,14 @@ pub struct EventMessage {
 
 #[derive(Debug, Clone)]
 pub enum EpochChange {
-    /// First identification; epoch known.
-    Established { reset_epoch: u32 },
+    Established {
+        reset_epoch: u32,
+    },
     /// MCU rebooted; old epoch -> new epoch. Bridge must invalidate slot pool.
-    Changed { old: u32, new: u32 },
-    /// Host transitioned to Faulted (schema mismatch etc).
+    Changed {
+        old: u32,
+        new: u32,
+    },
     Faulted(String),
 }
 

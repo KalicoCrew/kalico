@@ -18,10 +18,8 @@ impl FaultSink for PanicFaultSink {
 }
 
 const CLOCK_FREQ: f32 = 520_000_000.0;
-const TICK_CYCLES: u32 = 520_000_000_u32 / 40_000_u32; // 13_000
+const TICK_CYCLES: u32 = 520_000_000_u32 / 40_000_u32;
 
-/// The walker must return `None` for an empty ring — no armed piece, no
-/// entries. This is the basic idle/underrun path.
 #[test]
 fn walker_empty_ring_returns_none() {
     let mut ring = RingDescriptor::new_unconfigured();
@@ -42,12 +40,6 @@ fn walker_empty_ring_returns_none() {
     assert!(res.is_none(), "empty ring must return None");
 }
 
-/// `eval_horner` (indirectly via walker with a piece at t=0) must return
-/// (c0, c1) for the linear piece at t=0.
-///
-/// Bernstein [0.5, 1.0, 1.5, 2.0] over 0.1 s:
-///   c0 = 0.5  (P(0) must equal the first control point)
-///   c1 = 3*(1.0 - 0.5) / 0.1 = 15 mm/s  (V(0))
 #[test]
 fn walker_at_t0_returns_c0_and_c1() {
     let duration_s = 0.1_f32;

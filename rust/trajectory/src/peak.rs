@@ -23,7 +23,7 @@ pub fn peak_accel(curve: &ScalarNurbs<f64>) -> f64 {
 
         for i in 0..=n_samples {
             let t = piece.u_start + dt + interior * i as f64 / n_samples as f64;
-            let t = t.min(piece.u_end - dt); // clamp
+            let t = t.min(piece.u_end - dt);
 
             let x_prev = piece.evaluate(t - dt);
             let x_curr = piece.evaluate(t);

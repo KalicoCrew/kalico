@@ -1,7 +1,3 @@
-//! Integration tests for `KalicoNativeTransport`:
-//! * Bootstrap-ABI handshake (success).
-//! * Schema-hash mismatch -> Faulted -> subsequent calls fail.
-
 use std::time::Duration;
 
 use kalico_native_transport::frame::{CHANNEL_CONTROL, encode_frame};
@@ -43,11 +39,9 @@ fn bootstrap_handshake_success() {
     let transport = KalicoNativeTransport::with_schema_hash(host_half, host_hash, 0x01);
     let epoch_rx = transport.epoch_change_subscribe();
 
-    // Spawn a peer thread that waits for Identify, then responds.
     let peer_thread = {
         let peer = peer.clone();
         std::thread::spawn(move || {
-            // Spin briefly until host emits Identify bytes.
             let deadline = std::time::Instant::now() + Duration::from_secs(1);
             while peer.read_all_pending().is_empty() {
                 assert!(
@@ -56,7 +50,6 @@ fn bootstrap_handshake_success() {
                 );
                 std::thread::sleep(Duration::from_millis(1));
             }
-            // Use any plausible correlation_id; transport just stashes the epoch.
             let frame = make_identify_response_frame(1, host_hash, 0xCAFE_BABE);
             peer.write(&frame);
         })
@@ -68,7 +61,6 @@ fn bootstrap_handshake_success() {
         matches!(transport.state(), ConnectionState::Identified { reset_epoch } if reset_epoch == 0xCAFE_BABE)
     );
 
-    // Epoch subscriber sees Established.
     let evt = epoch_rx.recv_timeout(Duration::from_millis(50)).unwrap();
     assert!(matches!(evt, EpochChange::Established { reset_epoch } if reset_epoch == 0xCAFE_BABE));
     peer_thread.join().unwrap();
@@ -99,7 +91,6 @@ fn schema_hash_mismatch_faults() {
     assert!(matches!(err, TransportError::Faulted(_)), "{err:?}");
     assert!(matches!(transport.state(), ConnectionState::Faulted(_)));
 
-    // Subsequent call refuses.
     let err = transport
         .call(MessageKind::PushPieces, &[], Duration::from_millis(50))
         .unwrap_err();

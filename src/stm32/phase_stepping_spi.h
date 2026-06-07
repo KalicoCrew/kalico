@@ -42,8 +42,6 @@ void    phase_spi_release(void);
 uint32_t phase_spi_get_skip_count(void);
 uint32_t phase_spi_get_write_count(void);
 
-// Gate: the ISR skips XDIRECT writes until enable_writes, preventing contention
-// with the foreground TMC register init.
 void phase_stepping_enable_writes(void);
 void phase_stepping_disable_writes(void);
 
@@ -56,7 +54,7 @@ void phase_stepping_disable_writes(void);
 void spi_transfer_locked(struct spi_config config, uint8_t receive_data,
                          uint8_t len, uint8_t *data);
 #else
-#include "gpio.h" // spi_transfer
+#include "gpio.h"
 static inline void
 spi_transfer_locked(struct spi_config config, uint8_t receive_data,
                     uint8_t len, uint8_t *data)
@@ -65,4 +63,4 @@ spi_transfer_locked(struct spi_config config, uint8_t receive_data,
 }
 #endif
 
-#endif // phase_stepping_spi.h
+#endif

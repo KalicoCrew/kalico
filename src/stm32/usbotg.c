@@ -62,9 +62,6 @@ usb_irq_enable(void)
 #define OTG ((USB_OTG_GlobalTypeDef*)USB_PERIPH_BASE)
 #define OTGD ((USB_OTG_DeviceTypeDef*)(USB_PERIPH_BASE + USB_OTG_DEVICE_BASE))
 
-// Round 2 — read OTG live state for periodic diag emit. Defined here so
-// it has access to the OTG/USB_PERIPH_BASE macros above. Called from
-// foreground; reads of volatile MMIO are fine concurrently with the IRQ.
 void
 usb_diag_read_otg_state(uint32_t *gintmsk, uint32_t *gintsts)
 {
@@ -79,8 +76,6 @@ usb_diag_read_otg_state(uint32_t *gintmsk, uint32_t *gintsts)
 #define EPOUT(EP) ((USB_OTG_OUTEndpointTypeDef*)                        \
                    (USB_PERIPH_BASE + USB_OTG_OUT_ENDPOINT_BASE + ((EP) << 5)))
 
-// Round 3 — read OUT EP1 register state for periodic diag emit. Placed
-// after EPOUT macro definition so EPOUT is in scope.
 void
 usb_diag_read_out_ep(uint32_t *doepctl, uint32_t *doeptsiz, uint32_t *doepint)
 {
@@ -90,8 +85,6 @@ usb_diag_read_out_ep(uint32_t *doepctl, uint32_t *doeptsiz, uint32_t *doepint)
     *doepint  = epo->DOEPINT;
 }
 
-// Poll OTG endpoint state every foreground iteration. Safe concurrent MMIO
-// reads; captured in the prior_diag dump (prior_diag_summary_usb).
 void
 usb_diag_poll_task(void)
 {
@@ -267,7 +260,6 @@ usb_send_bulk_in(void *data, uint_fast8_t len)
         return len;
     }
     if (ctl & USB_OTG_DIEPCTL_EPENA) {
-        // Previous IN packet still pending; count for USB-CDC halt onset detection.
         extern void diag_note_usb_in_busy(void);
         diag_note_usb_in_busy();
         OTGD->DAINTMSK |= 1 << USB_CDC_EP_BULK_IN;
@@ -472,11 +464,6 @@ OTG_FS_IRQHandler(void)
             usb_notify_bulk_in();
     }
     if (!diag_handled) {
-        // OTG IRQ fired but neither RXFLVL nor IEPINT was set. Could be
-        // SOF, USBSUSP, USBRST, or a flag we don't service. Capture sts
-        // for diagnosis — if the ratio of "other" rises right when
-        // usb_bulk_out_task freezes, that's a clue to which flag we're
-        // missing.
         (*diag_slot_otg_other())++;
         *diag_slot_otg_other_sts() = sts;
     }

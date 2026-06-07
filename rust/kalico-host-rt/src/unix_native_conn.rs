@@ -89,13 +89,13 @@ impl UnixNativeConn {
             let n = match stream.read(buf) {
                 Ok(0) => {
                     self.peer_closed.store(true, Ordering::Release);
-                    break; // EOF
+                    break;
                 }
                 Ok(n) => n,
                 Err(ref e)
                     if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut =>
                 {
-                    break; // nothing more right now
+                    break;
                 }
                 Err(_) => {
                     self.peer_closed.store(true, Ordering::Release);

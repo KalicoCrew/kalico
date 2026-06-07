@@ -1,22 +1,10 @@
-# EtherCAT node — a kalico-native motion endpoint reached over a Unix socket.
-#
-# An EtherCAT node is NOT a Klipper MCU: it has no GPIO pins and is not a
-# command-queue MCU. It is the connection a [servo_<axis>] device (Part A,
-# Task 8) binds to. The node is claimed with the Rust motion_bridge during
-# the mcu-identify phase, mirroring how serial MCUs claim themselves in
-# MCU._mcu_identify; the claim returns a handle the motion toolhead reads
-# later (Task 9) when it builds the planner.
-#
-# Part A scope is motion only. DI / temperature / status are future
-# capabilities and are intentionally not implemented here.
 import logging
 import os
 
 from . import servo_axis
 
-# Default endpoint binary, relative to the repo root. ethercat_node.py lives at
-# <repo>/klippy/extras/, so three os.path.dirname hops off this file reach
-# <repo> (extras -> klippy -> repo root).
+# Default endpoint binary: ethercat_node.py lives at
+# <repo>/klippy/extras/, so three os.path.dirname hops reach <repo>.
 _REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
@@ -28,7 +16,6 @@ _DEFAULT_ENDPOINT = os.path.join(
 class EtherCatNode:
     def __init__(self, config):
         self.printer = config.get_printer()
-        # [ethercat_node node_x] -> node_x
         self.name = config.get_name().split()[-1]
         socket_path = config.get("socket").strip()
         if not socket_path:
@@ -44,8 +31,6 @@ class EtherCatNode:
                 "NIC name (e.g. eth0)" % (self.name,)
             )
         self.interface = interface
-        # Endpoint binary the bridge spawns on claim (Task 7). Stored absolute
-        # so the spawn is independent of klippy's working directory.
         self.endpoint = os.path.abspath(
             config.get("endpoint", _DEFAULT_ENDPOINT)
         )
@@ -63,9 +48,9 @@ class EtherCatNode:
         self.printer.register_event_handler("klippy:mcu_identify", self._claim)
 
     def _derive_counts_per_mm(self):
-        # Find the [servo_*] rail bound to this node. ServoRails are not printer
-        # objects (the toolhead builds them directly into kin.rails), so iterate
-        # the toolhead's rails rather than printer.lookup_objects.
+        # ServoRails are not printer objects (the toolhead builds them directly
+        # into kin.rails), so iterate the toolhead's rails rather than
+        # printer.lookup_objects.
         toolhead = self.printer.lookup_object("toolhead")
         for rail in getattr(toolhead.get_kinematics(), "rails", ()):
             if (

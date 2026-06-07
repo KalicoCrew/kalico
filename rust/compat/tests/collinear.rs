@@ -1,6 +1,5 @@
 use compat::collinear::to_collinear_g5;
 
-/// Horizontal move along X: (0,0,0) → (10,0,0).
 /// I = 10/3, J = 0, P = -10/3, Q = 0.
 #[test]
 fn collinear_simple_xy() {
@@ -17,23 +16,18 @@ fn collinear_simple_xy() {
     assert_eq!(line.f, Some(3000.0));
 }
 
-/// Z is passed through unchanged; I/J/P/Q are XY-only.
 #[test]
 fn collinear_with_z() {
     let line = to_collinear_g5([0.0, 0.0, 2.5], [0.0, 0.0, 5.0], 0.0, None);
 
-    // XY displacement is zero, so control-point offsets must all be zero.
     assert!((line.i).abs() < 1e-12);
     assert!((line.j).abs() < 1e-12);
     assert!((line.p).abs() < 1e-12);
     assert!((line.q).abs() < 1e-12);
-    // Z is passed through to the target.
     assert!((line.z - 5.0).abs() < 1e-12);
-    // Feed rate suppressed when None.
     assert_eq!(line.f, None);
 }
 
-/// Diagonal move: (5,5,1) → (8,9,1).
 /// dx = 3, dy = 4 → I = 1, J = 4/3, P = -1, Q = -4/3.
 #[test]
 fn collinear_diagonal() {
@@ -48,8 +42,6 @@ fn collinear_diagonal() {
     assert!((line.q - (-4.0 / 3.0)).abs() < 1e-12);
 }
 
-/// Zero-length XY move: start == end in XY.
-/// All control-point offsets must be ≈ 0.
 #[test]
 fn collinear_zero_length() {
     let line = to_collinear_g5([3.0, 7.0, 0.0], [3.0, 7.0, 0.0], 0.0, None);

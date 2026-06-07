@@ -27,10 +27,9 @@ struct timer {
 // faulting PC pinpoints the rogue writer.
 #define SCHED_PROTECTED __attribute__((section(".sched_protected")))
 
-// Open / close the MPU writable window over `.sched_protected`. Defined
-// in src/generic/mpu_protect.c. Re-entrancy-safe via depth counter — a
-// nested begin/end pair (e.g. sched_add_timer called from inside a
-// timer callback dispatched by timer_dispatch_many) doesn't close the
+// Open / close the MPU writable window over `.sched_protected`.
+// Re-entrancy-safe via depth counter — a nested begin/end pair (e.g.
+// sched_add_timer called from inside a timer callback) doesn't close the
 // outer window prematurely.
 void sched_writable_begin(void);
 void sched_writable_end(void);
@@ -44,13 +43,9 @@ void sched_writable_reset(void);
 // armcm_main after clock_setup, before sched_main.
 void mpu_protect_init(void);
 
-// Diagnostic ring buffer of the last N dispatched timers. Each call to
-// sched_timer_dispatch records the head timer's address and func pointer
-// at entry, BEFORE running the callback. Read on a "Rescheduled timer in
-// the past" detection so we know which timer was about to be dispatched
-// (and therefore which timer's `.next` was the source of any bogus head
-// pointer). Currently used only by armcm_timer.c's diagnostic emit; this
-// scaffolding will be removed once the rogue writer is identified.
+// Diagnostic ring buffer of the last N dispatched timers. Each entry is
+// recorded BEFORE running the callback, so a crash inside a callback leaves
+// the entry for the offending timer in the ring.
 #define SCHED_DISPATCH_HISTORY_N 6
 void sched_get_dispatch_history(uint32_t *idx,
                                 uint32_t addrs[SCHED_DISPATCH_HISTORY_N],

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-# Register addresses — TMC5160 datasheet §5
 GCONF = 0x00
 GSTAT = 0x01
 IFCNT = 0x02
@@ -33,7 +32,6 @@ DCCTRL = 0x6E
 DRV_STATUS = 0x6F
 PWMCONF = 0x70
 
-# Power-on-reset defaults (datasheet Table 6)
 POR_DEFAULTS = {
     GCONF: 0x00000000,
     GSTAT: 0x00000007,  # reset bit set on POR
@@ -48,7 +46,6 @@ POR_DEFAULTS = {
     DRV_STATUS: 0x00000000,
 }
 
-# Registers that are cleared to zero after a read
 CLEAR_ON_READ = {GSTAT}
 
 
@@ -67,17 +64,10 @@ class TMC5160Emulator:
 
     def __init__(self) -> None:
         self._registers: dict[int, int] = dict(POR_DEFAULTS)
-        # Latched-read state: stores the value captured during the last read
-        # transfer; subsequent read returns *this* value, not the current one.
         self._last_read_data: int = 0
-        # StallGuard result injected via set_load()
         self._sg_result: int = 0
         self._diag_callback: Optional[Callable[[bool], None]] = None
         self._diag_high: bool = False
-
-    # ------------------------------------------------------------------
-    # Public test-hook interface
-    # ------------------------------------------------------------------
 
     def set_load(self, sg_result: int) -> None:
         """Inject a synthetic StallGuard result (0–1023) for the next DRV_STATUS read."""
@@ -99,10 +89,6 @@ class TMC5160Emulator:
             self._diag_high = should_be_high
             if self._diag_callback is not None:
                 self._diag_callback(should_be_high)
-
-    # ------------------------------------------------------------------
-    # SPI datagram interface
-    # ------------------------------------------------------------------
 
     def transfer(self, req: bytes) -> bytes:
         """Process a 5-byte SPI datagram and return the 5-byte reply.
@@ -134,7 +120,6 @@ class TMC5160Emulator:
             self._last_read_data = self._registers.get(addr, 0)
             return bytes(5)
 
-        # Read path: return previously latched data, then capture current value
         latched = self._last_read_data
         self._last_read_data = self._do_read(addr)
         return bytes(
@@ -146,10 +131,6 @@ class TMC5160Emulator:
                 latched & 0xFF,
             ]
         )
-
-    # ------------------------------------------------------------------
-    # Internal register access with side-effects
-    # ------------------------------------------------------------------
 
     def _do_write(self, addr: int, value: int) -> None:
         """Apply write with any address-specific clamping or masking."""
@@ -163,9 +144,9 @@ class TMC5160Emulator:
             # 5 bits) and irun (bits 12-8 field, 5 bits).  Using a wider mask
             # before the clamp ensures that e.g. 0x40 (= 64) clamps to 31
             # rather than being silently zeroed by a 5-bit mask first.
-            ihold = min(31, value & 0xFF)  # bits 7-0 raw, clamp
-            irun = min(31, (value >> 8) & 0xFF)  # bits 15-8 raw, clamp
-            iholddelay = (value >> 16) & 0x0F  # bits 19-16
+            ihold = min(31, value & 0xFF)
+            irun = min(31, (value >> 8) & 0xFF)
+            iholddelay = (value >> 16) & 0x0F
             value = ihold | (irun << 8) | (iholddelay << 16)
         elif addr == CHOPCONF:
             value &= ~(0x7 << 17)  # bits 17-19 are reserved; force to 0
@@ -174,7 +155,6 @@ class TMC5160Emulator:
     def _do_read(self, addr: int) -> int:
         """Return register value, applying any read-time side-effects."""
         if addr == DRV_STATUS:
-            # Inject current SG_RESULT into low 10 bits; preserve upper bits
             base = self._registers.get(addr, 0) & ~0x03FF
             return base | self._sg_result
 

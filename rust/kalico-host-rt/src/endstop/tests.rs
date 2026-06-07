@@ -15,10 +15,10 @@ fn encode_sources_round_trip_one_source() {
     assert_eq!(buf.len(), SOURCE_RECORD_LEN);
     assert_eq!(buf[0], 1); // TmcDiag
     assert_eq!(&buf[1..3], &[0x34, 0x12]); // gpio LE
-    assert_eq!(buf[3], 1); // active_high
+    assert_eq!(buf[3], 1);
     assert_eq!(buf[4], 2); // IgnoreUntilMoving
-    assert_eq!(buf[5], 3); // sample_n
-    assert_eq!(buf[6], 0x03); // velocity_axis
+    assert_eq!(buf[5], 3);
+    assert_eq!(buf[6], 0x03);
     assert_eq!(&buf[7..11], &[0xEF, 0xBE, 0xAD, 0xDE]); // v_min_q16 LE
 }
 

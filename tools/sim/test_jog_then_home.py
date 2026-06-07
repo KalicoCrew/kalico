@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Test: SET_KINEMATIC_POSITION, 1mm jog, then G28 X."""
-
 import argparse
 import json
 import socket

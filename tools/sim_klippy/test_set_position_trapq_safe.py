@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""Inherited set_position does not corrupt the (unused) bridge trapq.
-
-Upstream ToolHead.set_position calls
-  ffi_lib.trapq_set_position(self.trapq, self.print_time, x, y, z)
-on every set_position. Under bridge mode, self.trapq is allocated (so
-hardware-init's set_trapq doesn't crash) but never has segments
-appended. We verify these writes are harmless: get_status keeps
-returning sensible values, no segfault, no exception in 20+ rapid
-SET_KINEMATIC_POSITION calls.
-
-This is the regression test for spec test §4.9, addressing the Codex
-review concern that "inherited unchanged equals beneficial" needs
-empirical verification rather than reasoning alone.
-"""
 
 import json
 import os
@@ -26,9 +12,6 @@ import time
 
 import pytest
 
-# Standalone __main__ script that spawns out/klipper.elf; no pytest test
-# functions. Tagged needs_elf so it is honestly classified (and excluded
-# from the CI sim_unit selection). Run directly: `python3 <this file>`.
 pytestmark = pytest.mark.needs_elf
 
 REPO = pathlib.Path(os.environ.get("KALICO_REPO", "/work"))

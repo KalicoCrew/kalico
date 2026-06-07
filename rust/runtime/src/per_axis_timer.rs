@@ -2,24 +2,16 @@
 
 use crate::step_queue::{N_AXIS_STEP_QUEUES, peek as queue_peek, pop as queue_pop};
 
-/// Returned when no owned queue has a pending step — tells C to disable the
-/// timer. `u32::MAX` is the sentinel; a `cycle_abs` landing exactly there costs
-/// at most one delayed step (the next producer kick re-arms).
 pub const STEP_OUTPUT_DISABLE: u32 = u32::MAX;
 
-/// Emit window: 0 means "fire only once `now >= cycle_abs`" (wrap-safe signed
-/// compare). Named so the bench can widen it if compare latency demands a lead.
 const DUE_WINDOW_CYCLES: i32 = 0;
 
-/// Steps emitted per dispatch across all owned axes. Cap exceeded → return
-/// `now` so C re-fires immediately rather than dropping the remaining work.
 pub const MAX_STEPS_PER_EVENT: u32 = 32;
 
 #[cfg(not(any(test, feature = "host")))]
 unsafe extern "C" {
     fn timer_read_time() -> u32;
     fn runtime_emit_step_pulses(axis_idx: u8, n_steps: i32);
-    // Bitmask of axes this MCU owns; bit N ⇒ axis N is scanned.
     fn kalico_step_output_owned_mask() -> u8;
 }
 
@@ -67,7 +59,6 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
             let Some(entry) = (unsafe { queue_peek(q) }) else {
                 continue;
             };
-            // Wrap-safe arrival test: emit once `now` has reached `cycle_abs`.
             let delta = entry.cycle_abs.wrapping_sub(now) as i32;
             if delta <= DUE_WINDOW_CYCLES {
                 // SAFETY: sole-consumer discipline as above.
@@ -93,7 +84,6 @@ pub extern "C" fn kalico_step_output_event() -> u32 {
     next_wake_across_owned(now, owned).unwrap_or(STEP_OUTPUT_DISABLE)
 }
 
-/// Wrap-safe minimum `cycle_abs` across all owned non-empty queues, or `None`.
 fn next_wake_across_owned(now: u32, owned: u8) -> Option<u32> {
     let mut best: Option<(i32, u32)> = None;
     for axis_idx in 0..N_AXIS_STEP_QUEUES {

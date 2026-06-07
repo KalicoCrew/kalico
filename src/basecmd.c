@@ -321,13 +321,6 @@ command_get_clock(uint32_t *args)
 }
 DECL_COMMAND_FLAGS(command_get_clock, HF_IN_SHUTDOWN, "get_clock");
 
-// Exposed (was `static`) so the kalico tick backends can compute the
-// klippy-equivalent widened MCU clock baseline when they seed the engine's
-// WidenState (the Linux host build does this in runtime_tick_enable; TIM5 is
-// armed at init now, with no count_modulated_steppers gate). `command_get_uptime`
-// reports `high = stats_send_time_high + (cur < stats_send_time)` to klippy, and
-// the engine's WidenState must match exactly or a dispatched segment's t_start is
-// widened past the firmware's `now`.
 uint32_t stats_send_time;
 uint32_t stats_send_time_high;
 

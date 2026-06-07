@@ -1,5 +1,3 @@
-//! Synchronous identify handshake.
-
 use std::time::{Duration, Instant};
 
 use crate::host_io::parser::{DataDictionary, MsgProtoParser, decode_vlq, encode_vlq};

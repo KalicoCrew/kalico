@@ -17,8 +17,6 @@ fn sentinel_unpacks_to_none() {
 
 #[test]
 fn pack_distinct_from_sentinel_for_realistic_inputs() {
-    // bus_id 0xFF is reserved as the sentinel marker; any legitimate
-    // (bus, cs) where bus != 0xFF must pack to a non-sentinel value.
     let cfg = PhaseConfig {
         spi_bus_id: 0,
         cs_pin_id: 0xFF,

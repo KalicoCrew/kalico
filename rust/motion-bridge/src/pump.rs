@@ -79,7 +79,6 @@ pub fn schedule(
 ) -> Schedule {
     let mut stall_ahead_candidate: Option<AxisKey> = None;
 
-    // Head selection: earliest host time across all non-empty queues.
     let head = queues
         .iter()
         .filter(|(_, q)| !q.pieces.is_empty())
@@ -108,7 +107,6 @@ pub fn schedule(
     let mut taken: BTreeMap<AxisKey, usize> = BTreeMap::new();
     let mut maxed: BTreeSet<AxisKey> = BTreeSet::new();
     loop {
-        // Inner batching: order candidates by host time within the same MCU prefix.
         let next = queues
             .iter()
             .filter_map(|(k, q)| {
@@ -268,7 +266,6 @@ pub fn run_pump<S, F, C, A>(
     A: Fn(AxisKey) + Send + 'static,
 {
     let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
-    // Per-axis junction tracking for clock-projection jitter measurement.
     let mut junction_ends: BTreeMap<AxisKey, (u64, f64)> = BTreeMap::new();
     const MAX_PER_FRAME: usize = 32;
 
@@ -538,10 +535,6 @@ impl WireSink {
                         self.timeout,
                     )
                     .map_err(|e| {
-                        // Closed = peer dropped the socket; Io = mid-session OS
-                        // error on the Unix socket.  Both are session-fatal: the
-                        // supervision design treats connection loss as endpoint
-                        // death.  Timeout and Parse leave the session alive.
                         if matches!(&e, TransportError::Closed | TransportError::Io(_)) {
                             SendError::Fatal(format!(
                                 "ethercat PushPieces mcu {}: {e:?}",
@@ -576,8 +569,6 @@ impl PieceSink for WireSink {
         start_slot: u16,
         new_head: u32,
     ) -> Result<i32, SendError> {
-        // schedule() caps frames at MAX_PER_FRAME (currently 32); this guards
-        // against callers bypassing schedule() and hitting a silent truncation.
         debug_assert!(
             pieces.len() <= 255,
             "PushPieces frame exceeds u8 piece_count; schedule() must cap at MAX_PER_FRAME"

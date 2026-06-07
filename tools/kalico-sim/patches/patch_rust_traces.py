@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""Inject sim diagnostic traces into Rust bridge source before compilation."""
-
 import pathlib
 import sys
 
@@ -8,10 +6,8 @@ import sys
 def patch_bridge(path):
     text = path.read_text()
 
-    # Add trace right before planner.submit_move(classified) in submit_homing_move_inner
     target = "if let Err(e) = planner.submit_move(classified) {"
     if target in text and "[sim-diag]" not in text:
-        # Replace the entire submit_move + error handling block
         old_block = (
             "if let Err(e) = planner.submit_move(classified) {\n"
             "            self.homing.reset_to_idle();\n"

@@ -62,8 +62,8 @@ def test_arc_passthrough_breaks_polyline():
 def test_carry_forward_missing_xy():
     tokens = [
         Move("G1", 0.0, 0.0, 1),
-        Move("G1", 10.0, None, 2),  # Y carries forward as 0
-        Move("G1", None, 10.0, 3),  # X carries forward as 10
+        Move("G1", 10.0, None, 2),
+        Move("G1", None, 10.0, 3),
     ]
     segs = reduce_tokens(tokens)
     poly = segs[0]
@@ -82,7 +82,5 @@ def test_zero_or_one_point_polyline_is_dropped():
     ]
     segs = reduce_tokens(tokens)
     polylines = [s for s in segs if isinstance(s, Polyline)]
-    # First sub-polyline has 1 point only → dropped.
-    # Second sub-polyline has 2 points → kept.
     assert len(polylines) == 1
     assert polylines[0].points.shape == (2, 2)

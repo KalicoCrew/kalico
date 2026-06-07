@@ -1,12 +1,4 @@
 #!/bin/bash
-# Run the homing-lag e2e test in Docker.
-#
-# First run: builds the image (~6 min for firmware + Rust).
-# Subsequent runs with only Python/script changes: instant (volume-mounted).
-#
-# Usage:
-#   bash tools/sim/run_homing_test.sh          # run test
-#   bash tools/sim/run_homing_test.sh --build   # force image rebuild
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -18,8 +10,7 @@ if [[ "${1:-}" == "--build" ]] || ! docker image inspect "$IMAGE" &>/dev/null; t
         -t "$IMAGE" "$REPO_ROOT"
 fi
 
-# Volume-mount Python sources + test scripts so changes don't need a
-# rebuild. chelper is NOT mounted — the image has its own Linux build.
+# chelper is NOT mounted — the image has its own Linux build.
 # motion_bridge_native.so is also baked into the image.
 exec docker run --rm \
     -v "$REPO_ROOT/klippy/extras:/work/klippy/extras" \

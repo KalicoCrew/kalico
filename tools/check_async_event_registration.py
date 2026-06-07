@@ -1,19 +1,8 @@
 #!/usr/bin/env python3
-"""
-Build-time invariant: kalico_* async event format strings must register
-via _DECL_OUTPUT exclusively.
-
-Reads out/klipper.dict and:
-  1. Errors (exit 1) if any KNOWN_ASYNC_EVENTS appear in 'responses'.
-  2. Warns (exit 0) if any other kalico_* names (non-_response) appear
-     in 'responses' — unexpected but not build-breaking.
-"""
-
 import json
 import sys
 
-# These four are the only kalico_* async events (spec §1.1 item 11).
-# They MUST appear in the 'output' category, never 'responses'.
+# spec §1.1 item 11
 KNOWN_ASYNC_EVENTS = {
     "kalico_credit_freed",
     "kalico_fault",
@@ -45,9 +34,6 @@ def main(dict_path: str) -> int:
         )
         return 1
 
-    # Warn about unexpected kalico_* names in responses (not in known-async list,
-    # not _response-suffixed) — may indicate a new async event was added without
-    # updating KNOWN_ASYNC_EVENTS.
     unexpected = {
         n
         for n in responses_names

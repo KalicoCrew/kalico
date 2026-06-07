@@ -7,13 +7,6 @@
     clippy::uninlined_format_args,
     clippy::doc_markdown
 )]
-
-//! SPSC properties for the Rust mirror of the C-side StepQueue.
-//!
-//! All four tests run single-threaded with a host-allocated queue; they
-//! exercise the counter / wraparound / overflow logic rather than the
-//! cross-core ordering (which is covered by the loom harness elsewhere).
-
 #![allow(unsafe_code)]
 
 use std::cell::UnsafeCell;
@@ -30,9 +23,6 @@ fn entry(cycle_abs: u32, dir: i8) -> StepEntry {
 
 #[test]
 fn fifo_order_under_random_push_pop() {
-    // Push 30 entries with strictly increasing `cycle_abs`, then pop 30
-    // and verify the consumer sees them in the same order. Capacity is
-    // 32, so 30 stays strictly within the ring without ever wrapping.
     let q = UnsafeCell::new(StepQueue::new());
     let qp = q.get();
 
@@ -53,8 +43,6 @@ fn fifo_order_under_random_push_pop() {
 
 #[test]
 fn overflow_detected_at_full_capacity() {
-    // Push 32 successfully (ring depth); the 33rd push must return
-    // `Err(StepQueueFull)` and must not corrupt the existing contents.
     let q = UnsafeCell::new(StepQueue::new());
     let qp = q.get();
 
@@ -68,9 +56,6 @@ fn overflow_detected_at_full_capacity() {
     assert_eq!(overflow, Err(StepQueueFull));
     assert_eq!(unsafe { len(qp) }, STEP_QUEUE_DEPTH as u16);
 
-    // The original 32 entries must still pop out in order — the failed
-    // push must not have clobbered slot 0 (which is what `tail & MASK`
-    // would index when `tail == 32`).
     for i in 0..STEP_QUEUE_DEPTH as u32 {
         let got = unsafe { pop(qp) }.expect("pop should yield entry");
         assert_eq!(
@@ -82,13 +67,6 @@ fn overflow_detected_at_full_capacity() {
 
 #[test]
 fn wraparound_u16_counters_correct() {
-    // Three rounds of push 25 / pop 25 keeps the live count at zero
-    // between rounds while advancing both counters by 75 in total. The
-    // 25-per-round choice ensures that across rounds `tail` and `head`
-    // each cross a multiple-of-32 boundary in slot space, so the slot
-    // index wraps mid-round and the counter wraps cleanly modulo the
-    // mask. We also verify the raw `u16` counters reach 75 (well below
-    // their `2^16` wrap, but the wrap-safe arithmetic is the same).
     let q = UnsafeCell::new(StepQueue::new());
     let qp = q.get();
 
@@ -111,8 +89,6 @@ fn wraparound_u16_counters_correct() {
         assert_eq!(unsafe { len(qp) }, 0);
     }
 
-    // After three rounds both counters have advanced to 75 and the ring
-    // is empty. Volatile reads via `len` confirm head == tail.
     assert_eq!(unsafe { len(qp) }, 0);
 }
 
