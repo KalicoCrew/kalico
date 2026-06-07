@@ -31,6 +31,7 @@
 #define KALICO_LOG_EVENT_ENDSTOP_TRSYNC_TRIGGER_CMD  3
 #define KALICO_LOG_EVENT_ENDSTOP_TRSYNC_DO_TRIGGER   4
 #define KALICO_LOG_EVENT_ENDSTOP_STOP_CB_ENTER       5
+#define KALICO_LOG_EVENT_ENDSTOP_TIM5_HALTED         7
 
 // Safe from ISR or foreground (irq_save critical section); drops on full ring,
 // never blocks. The only ABI seam — both Rust and C call it.

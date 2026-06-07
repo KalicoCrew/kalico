@@ -6,20 +6,16 @@ fn encode_sources_round_trip_one_source() {
         kind: SourceKind::TmcDiag,
         gpio: 0x1234,
         active_high: true,
-        policy: ArmPolicy::IgnoreUntilMoving,
+        policy: ArmPolicy::WaitForClear,
         sample_n: 3,
-        velocity_axis: 0x03, // X | Y
-        v_min_q16: 0xDEADBEEF,
     };
     let buf = encode_sources(&[s]).unwrap();
     assert_eq!(buf.len(), SOURCE_RECORD_LEN);
     assert_eq!(buf[0], 1); // TmcDiag
     assert_eq!(&buf[1..3], &[0x34, 0x12]); // gpio LE
     assert_eq!(buf[3], 1); // active_high
-    assert_eq!(buf[4], 2); // IgnoreUntilMoving
+    assert_eq!(buf[4], 1); // WaitForClear
     assert_eq!(buf[5], 3); // sample_n
-    assert_eq!(buf[6], 0x03); // velocity_axis
-    assert_eq!(&buf[7..11], &[0xEF, 0xBE, 0xAD, 0xDE]); // v_min_q16 LE
 }
 
 #[test]
@@ -30,8 +26,6 @@ fn encode_sources_rejects_overflow() {
         active_high: false,
         policy: ArmPolicy::TripImmediately,
         sample_n: 1,
-        velocity_axis: 0x07,
-        v_min_q16: 0,
     };
     let too_many = vec![s; MAX_SOURCES + 1];
     assert!(matches!(

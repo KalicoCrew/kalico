@@ -165,8 +165,6 @@ TIM5_IRQHandler_body(uint32_t *frame)
     runtime_sim_cyccnt += (runtime_clock_freq / 40000U);
 #endif
 
-    extern void runtime_endstop_sample_pins(void);
-    runtime_endstop_sample_pins();
 
     uint32_t before = runtime_cyccnt_read();
     if (runtime_handle) {

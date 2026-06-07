@@ -41,88 +41,149 @@ command_runtime_query_status(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_query_status, "runtime_query_status");
 
-// Sample the configured GPIOs from the modulation ISR and push results through
-// kalico_endstop_set_pin_level before runtime_handle_tick observes the table.
-// Slot count must match runtime::endstop::MAX_SOURCES.
+// Dedicated endstop poll task — the mainline src/endstop.c architecture: each
+// armed GPIO/StallGuard source gets its own sched timer that polls the pin off
+// the motion path (NOT inside the TIM5 ISR), oversample-debounces exactly like
+// mainline endstop_event/endstop_oversample_event, and on a confirmed trip
+// stops TIM5 (the motion clock) and publishes the trip via kalico_software_trip.
+// Removing detection from the motion ISR means the engine pays zero endstop
+// cost when not homing, and a trip is an imperative stop rather than a poll.
 #define KALICO_ENDSTOP_MAX_SOURCES 4
-#define KALICO_ENDSTOP_SOURCE_RECORD_LEN 11
-struct endstop_pin_slot {
-    uint8_t        active;
-    uint16_t       gpio_id;    // index into runtime PIN_LEVELS
+#define KALICO_ENDSTOP_SOURCE_RECORD_LEN 6
+
+extern void runtime_tick_disable(void);
+extern void runtime_tick_enable(void);
+extern void kalico_runtime_request_tick_baseline_reset(void);
+extern uint32_t stats_send_time;        // basecmd.c
+extern uint32_t stats_send_time_high;   // basecmd.c
+
+enum { EPF_PIN_HIGH = 1 << 0 };
+
+// Poll cadence: slow rest sampling between candidates, fast oversampling to
+// confirm — same shape as mainline. ~10 kHz rest poll, 15 µs oversample, 4
+// confirmations: ~100 µs detection latency plus a 60 µs debounce window.
+#define ENDSTOP_REST_TICKS   (timer_from_us(100))
+#define ENDSTOP_SAMPLE_TICKS (timer_from_us(15))
+
+struct endstop_poll {
+    struct timer time;
     struct gpio_in pin;
+    uint32_t nextwake;
+    uint32_t arm_id;
+    uint8_t flags;          // EPF_PIN_HIGH = asserted (triggered) pin level
+    uint8_t sample_count;
+    uint8_t trigger_count;
+    uint8_t active;
 };
-static struct endstop_pin_slot endstop_pin_table[KALICO_ENDSTOP_MAX_SOURCES];
+static struct endstop_poll endstop_polls[KALICO_ENDSTOP_MAX_SOURCES];
 
-extern int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
+static uint_fast8_t endstop_poll_oversample(struct timer *t);
 
-// stepper_idx is unused — the pin table is source-indexed, so any call samples
-// all active sources. The argument is kept for symmetry with
-// runtime_endstop_sample_one.
-static inline void
-sample_endstops_for_stepper(uint8_t stepper_idx)
+// Confirmed trip: stop the motion clock first (imperative halt), then publish
+// the trip through the software-trip path so the host learns it (and computes
+// the trigger position from the commanded trajectory at trip_clock). Runs in
+// timer-IRQ context — kalico_software_trip and runtime_tick_disable are both
+// IRQ-safe (atomics / register writes only).
+static void
+endstop_poll_fire(struct endstop_poll *e)
 {
-    (void)stepper_idx;
-    for (int i = 0; i < KALICO_ENDSTOP_MAX_SOURCES; i++) {
-        if (!endstop_pin_table[i].active)
-            continue;
-        uint8_t level = gpio_in_read(endstop_pin_table[i].pin);
-        (void)kalico_endstop_set_pin_level(endstop_pin_table[i].gpio_id, level);
+    runtime_tick_disable();
+    uint32_t clock_lo = timer_read_time();
+    uint32_t clock_hi = stats_send_time_high + (clock_lo < stats_send_time);
+    uint8_t status = 1;
+    (void)kalico_software_trip(e->arm_id, clock_lo, clock_hi, &status);
+    kalico_log_emit(KALICO_LOG_LEVEL_WARN, KALICO_LOG_SUBSYS_ENDSTOP,
+                    KALICO_LOG_EVENT_ENDSTOP_TIM5_HALTED, 0,
+                    e->arm_id, clock_lo);
+    e->active = 0;
+}
+
+static uint_fast8_t
+endstop_poll_event(struct timer *t)
+{
+    struct endstop_poll *e = container_of(t, struct endstop_poll, time);
+    uint8_t val = gpio_in_read(e->pin);
+    uint32_t nextwake = e->time.waketime + ENDSTOP_REST_TICKS;
+    if ((val ? ~e->flags : e->flags) & EPF_PIN_HIGH) {
+        // No match — keep slow-polling.
+        e->time.waketime = nextwake;
+        return SF_RESCHEDULE;
     }
+    e->nextwake = nextwake;
+    e->time.func = endstop_poll_oversample;
+    return endstop_poll_oversample(t);
 }
 
-// Called from TIM5_IRQHandler immediately before runtime_handle_tick — at most
-// KALICO_ENDSTOP_MAX_SOURCES (=4) register reads per tick.
-void
-runtime_endstop_sample_pins(void)
+static uint_fast8_t
+endstop_poll_oversample(struct timer *t)
 {
-    sample_endstops_for_stepper(0);
-}
-
-// Bound must match MAX_STEPPER_OIDS_C (runtime_tick.c) / MAX_STEPPER_OIDS
-// (rust/runtime/src/state.rs).
-__attribute__((used, visibility("default")))
-void
-runtime_endstop_sample_one(uint8_t stepper_idx)
-{
-    if (stepper_idx >= 8)   // 8 == MAX_STEPPER_OIDS_C
-        return;
-    sample_endstops_for_stepper(stepper_idx);
+    struct endstop_poll *e = container_of(t, struct endstop_poll, time);
+    uint8_t val = gpio_in_read(e->pin);
+    if ((val ? ~e->flags : e->flags) & EPF_PIN_HIGH) {
+        // No longer matching — debounce reject, back to slow poll.
+        e->time.func = endstop_poll_event;
+        e->time.waketime = e->nextwake;
+        e->trigger_count = e->sample_count;
+        return SF_RESCHEDULE;
+    }
+    uint8_t count = e->trigger_count - 1;
+    if (!count) {
+        endstop_poll_fire(e);
+        return SF_DONE;
+    }
+    e->trigger_count = count;
+    e->time.waketime += ENDSTOP_SAMPLE_TICKS;
+    return SF_RESCHEDULE;
 }
 
 static void
-endstop_pin_table_clear(void)
+endstop_polls_cancel(void)
 {
-    for (int i = 0; i < KALICO_ENDSTOP_MAX_SOURCES; i++)
-        endstop_pin_table[i].active = 0;
+    for (int i = 0; i < KALICO_ENDSTOP_MAX_SOURCES; i++) {
+        if (!endstop_polls[i].active)
+            continue;
+        sched_del_timer(&endstop_polls[i].time);
+        endstop_polls[i].active = 0;
+    }
 }
 
 // Record layout mirrors rust/kalico-c-api/src/runtime_ffi.rs::kalico_endstop_arm
-// decode: kind u8, gpio u16 LE, active_high u8, policy u8, sample_n u8,
-// velocity_axis u8, v_min_q16 u32 LE — 11 bytes.
+// decode: kind u8, gpio u16 LE, active_high u8, policy u8, sample_n u8 — 6 bytes.
 //
 // TMC DIAG outputs are open-drain (GCONF.diag1_int_pushpull==0 at reset) and
 // float LOW without a pullup, so a `^!PG9`-style config reads asserted at idle.
 // The host's pullup flag is not on the wire yet, so apply "TmcDiag → pullup,
 // Physical → no pull" here.
 static void
-endstop_pin_table_populate(uint8_t source_count, const uint8_t *sources_ptr)
+endstop_polls_arm(uint32_t arm_id, uint8_t source_count,
+                  const uint8_t *sources_ptr)
 {
-    endstop_pin_table_clear();
+    endstop_polls_cancel();
     if (!sources_ptr || source_count == 0)
         return;
     uint8_t n = source_count;
     if (n > KALICO_ENDSTOP_MAX_SOURCES)
         n = KALICO_ENDSTOP_MAX_SOURCES;
+    uint32_t now = timer_read_time();
     for (uint8_t i = 0; i < n; i++) {
         const uint8_t *r = sources_ptr + (uint32_t)i * KALICO_ENDSTOP_SOURCE_RECORD_LEN;
         uint8_t kind = r[0];   // 0=Physical, 1=TmcDiag, 2=Software
         if (kind == 2)
-            continue;   // Software: no GPIO to sample
+            continue;   // Software: trip arrives via the relay, no local poll
         uint16_t gpio_id = (uint16_t)r[1] | ((uint16_t)r[2] << 8);
+        uint8_t active_high = r[3];
+        uint8_t sample_n = r[5] ? r[5] : 1;
         int32_t pull_up = (kind == 1) ? 1 : 0;
-        endstop_pin_table[i].gpio_id = gpio_id;
-        endstop_pin_table[i].pin = gpio_in_setup((uint8_t)gpio_id, pull_up);
-        endstop_pin_table[i].active = 1;
+        struct endstop_poll *e = &endstop_polls[i];
+        e->pin = gpio_in_setup((uint8_t)gpio_id, pull_up);
+        e->flags = active_high ? EPF_PIN_HIGH : 0;
+        e->sample_count = sample_n;
+        e->trigger_count = sample_n;
+        e->arm_id = arm_id;
+        e->active = 1;
+        e->time.func = endstop_poll_event;
+        e->time.waketime = now + ENDSTOP_REST_TICKS;
+        sched_add_timer(&e->time);
     }
 }
 
@@ -149,10 +210,10 @@ command_runtime_arm_endstop(uint32_t *args)
                              source_count, sources_ptr, sources_len,
                              stepper_count, steppers_ptr, steppers_len,
                              &status);
-    // status: 0=Armed, 1=AlreadyTripped, 2=Rejected. Sample GPIOs only on
-    // Armed; AlreadyTripped already published its snapshot.
+    // status: 0=Armed, 1=AlreadyTripped, 2=Rejected. Schedule the poll task
+    // only on Armed; AlreadyTripped already published its snapshot.
     if (status == 0)
-        endstop_pin_table_populate(source_count, sources_ptr);
+        endstop_polls_arm(arm_id, source_count, sources_ptr);
     sendf("kalico_arm_endstop_response arm_id=%u status=%c", arm_id, status);
 }
 DECL_COMMAND(command_runtime_arm_endstop,
@@ -166,14 +227,16 @@ command_runtime_disarm_endstop(uint32_t *args)
     uint32_t arm_id = args[0];
     uint8_t status = 2; // Unknown
     (void)kalico_endstop_disarm(arm_id, &status);
-    // Stop sampling regardless of outcome.
-    endstop_pin_table_clear();
+    // Cancel the poll task and restart the motion clock. The baseline reset
+    // must precede re-enable so the first post-restart tick is treated as a
+    // fresh start and the gap from the stopped window doesn't fault the
+    // tick-interval guard.
+    endstop_polls_cancel();
+    kalico_runtime_request_tick_baseline_reset();
+    runtime_tick_enable();
     sendf("kalico_disarm_endstop_response arm_id=%u status=%c", arm_id, status);
 }
 DECL_COMMAND(command_runtime_disarm_endstop, "runtime_disarm_endstop arm_id=%u");
-
-extern uint32_t stats_send_time;        // basecmd.c
-extern uint32_t stats_send_time_high;   // basecmd.c
 
 void
 command_runtime_software_trip(uint32_t *args)
@@ -183,6 +246,10 @@ command_runtime_software_trip(uint32_t *args)
     uint32_t clock_hi = stats_send_time_high + (clock_lo < stats_send_time);
     uint8_t status = 1; // NotArmed default
     (void)kalico_software_trip(arm_id, clock_lo, clock_hi, &status);
+    // A confirmed trip (status==0) stops the motion clock on this MCU — the
+    // sink side of cross-MCU homing (relay → trsync_trigger → here).
+    if (status == 0)
+        runtime_tick_disable();
     sendf("kalico_software_trip_response arm_id=%u status=%c",
           arm_id, status);
 }
@@ -223,9 +290,13 @@ runtime_stop_on_trigger_cb(struct trsync_signal *tss, uint8_t reason)
                     b->arm_id, (uint32_t)reason);
     uint32_t clock_lo = timer_read_time();
     uint32_t clock_hi = stats_send_time_high + (clock_lo < stats_send_time);
-    // NotArmed default; discarded — no reply channel from trigger/IRQ context.
+    // NotArmed default; no reply channel from trigger/IRQ context.
     uint8_t status = 1;
     (void)kalico_software_trip(b->arm_id, clock_lo, clock_hi, &status);
+    // Confirmed trip stops the motion clock on this (sink) MCU — the cross-MCU
+    // freeze for relayed homing trips.
+    if (status == 0)
+        runtime_tick_disable();
 }
 
 void
@@ -276,8 +347,7 @@ DECL_COMMAND(command_runtime_stream_flush, "runtime_stream_flush");
 // Widen the MCU clock in C with command_get_uptime's formula instead of the
 // Rust FFI: runtime::stream::clock_sync_respond reads a TIM5-ISR-populated
 // seqlock that the host filters as uninitialised in the all-StepTime path.
-extern uint32_t stats_send_time;        // basecmd.c
-extern uint32_t stats_send_time_high;   // basecmd.c
+// (stats_send_time / stats_send_time_high are externed at the top of the file.)
 void
 command_runtime_clock_sync_request(uint32_t *args)
 {

@@ -26,7 +26,6 @@
 enum ArmPolicy {
   TripImmediately = 0,
   WaitForClear = 1,
-  IgnoreUntilMoving = 2,
 };
 typedef uint8_t ArmPolicy;
 
@@ -42,8 +41,6 @@ enum SourceKind {
 typedef uint8_t SourceKind;
 
 typedef struct SourceConfig SourceConfig;
-
-typedef struct VelocityAxis VelocityAxis;
 
 typedef struct KalicoRuntime {
   uint8_t _private[0];

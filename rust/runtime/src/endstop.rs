@@ -28,12 +28,14 @@ pub enum SourceKind {
 /// explicit `software_trip` call from the C command handler.
 pub const TRIP_SOURCE_SOFTWARE: u8 = 0xFE;
 
+// Mainline-style detection: trip when the pin reads the asserted value for
+// `sample_n` consecutive samples. The C poll task owns the sampling/debounce;
+// the runtime only validates and records the arm.
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ArmPolicy {
     TripImmediately = 0,
     WaitForClear = 1,
-    IgnoreUntilMoving = 2,
 }
 
 impl TryFrom<u8> for ArmPolicy {
@@ -43,36 +45,8 @@ impl TryFrom<u8> for ArmPolicy {
         match value {
             0 => Ok(Self::TripImmediately),
             1 => Ok(Self::WaitForClear),
-            2 => Ok(Self::IgnoreUntilMoving),
             other => Err(other),
         }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct VelocityAxis(u8);
-
-impl VelocityAxis {
-    pub const X: Self = Self(0x01);
-    pub const Y: Self = Self(0x02);
-    pub const Z: Self = Self(0x04);
-    pub const XY: Self = Self(Self::X.0 | Self::Y.0);
-    pub const XYZ: Self = Self(Self::X.0 | Self::Y.0 | Self::Z.0);
-
-    pub const fn bits(self) -> u8 {
-        self.0
-    }
-
-    pub const fn from_bits_truncate(bits: u8) -> Self {
-        Self(bits & Self::XYZ.0)
-    }
-
-    pub const fn contains(self, other: Self) -> bool {
-        (self.0 & other.0) == other.0
-    }
-
-    pub const fn intersects(self, other: Self) -> bool {
-        (self.0 & other.0) != 0
     }
 }
 
@@ -83,8 +57,6 @@ pub struct SourceConfig {
     pub active_high: bool,
     pub policy: ArmPolicy,
     pub sample_n: u8,
-    pub velocity_axis: VelocityAxis,
-    pub v_min_q16: u32,
 }
 
 impl SourceConfig {
@@ -94,8 +66,6 @@ impl SourceConfig {
         active_high: true,
         policy: ArmPolicy::TripImmediately,
         sample_n: 1,
-        velocity_axis: VelocityAxis::XYZ,
-        v_min_q16: 0,
     };
 }
 
@@ -106,11 +76,6 @@ pub struct Source {
     pub active_high: AtomicBool,
     pub policy: AtomicU8,
     pub sample_n: AtomicU8,
-    pub velocity_axis: AtomicU8,
-    pub v_min_q16: AtomicU32,
-    pub sample_acc: AtomicU8,
-    pub moved_above_v: AtomicBool,
-    pub cleared: AtomicBool,
 }
 
 impl Source {
@@ -121,11 +86,6 @@ impl Source {
             active_high: AtomicBool::new(true),
             policy: AtomicU8::new(ArmPolicy::TripImmediately as u8),
             sample_n: AtomicU8::new(1),
-            velocity_axis: AtomicU8::new(VelocityAxis::XYZ.bits()),
-            v_min_q16: AtomicU32::new(0),
-            sample_acc: AtomicU8::new(0),
-            moved_above_v: AtomicBool::new(false),
-            cleared: AtomicBool::new(false),
         }
     }
 
@@ -135,16 +95,6 @@ impl Source {
         self.active_high.store(cfg.active_high, Ordering::Release);
         self.policy.store(cfg.policy as u8, Ordering::Release);
         self.sample_n.store(cfg.sample_n, Ordering::Release);
-        self.velocity_axis
-            .store(cfg.velocity_axis.bits(), Ordering::Release);
-        self.v_min_q16.store(cfg.v_min_q16, Ordering::Release);
-        self.reset_latches();
-    }
-
-    fn reset_latches(&self) {
-        self.sample_acc.store(0, Ordering::Release);
-        self.moved_above_v.store(false, Ordering::Release);
-        self.cleared.store(false, Ordering::Release);
     }
 }
 
@@ -289,7 +239,6 @@ pub enum ArmError {
     InvalidSampleN,
     TooManySteppers,
     EmptySteppers,
-    InvalidVelocityAxis,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -297,12 +246,6 @@ pub enum DisarmStatus {
     Disarmed,
     AlreadyTripped,
     Unknown,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum TripAction {
-    Continue,
-    AbortNow,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -363,9 +306,6 @@ fn reset_for_test() {
     ARM.snapshot.version.store(0, Ordering::Release);
     ARM.snapshot.step_count_count.store(0, Ordering::Release);
     TRIP_EVENT_QUEUED.store(false, Ordering::Release);
-    for src in &ARM.sources {
-        src.reset_latches();
-    }
     for pin in &PIN_LEVELS {
         pin.store(false, Ordering::Release);
     }
@@ -396,9 +336,6 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
     {
         slot.configure(*cfg);
     }
-    for slot in ARM.sources.iter().skip(source_count) {
-        slot.reset_latches();
-    }
     ARM.source_count.store(msg.source_count, Ordering::Release);
 
     let stepper_count = usize::from(msg.stepper_count);
@@ -417,27 +354,9 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
 
     ARM.state.store(ArmState::Armed as u8, Ordering::Release);
 
-    let source_count = usize::from(msg.source_count);
-    for (idx, cfg) in msg.sources.iter().take(source_count).enumerate() {
-        if cfg.policy != ArmPolicy::TripImmediately {
-            continue;
-        }
-        if cfg.kind == SourceKind::Software {
-            continue;
-        }
-        let pin_high = read_pin(cfg.gpio);
-        let asserted = if cfg.active_high { pin_high } else { !pin_high };
-        if asserted {
-            ARM.state.store(ArmState::Tripping as u8, Ordering::Release);
-            let empty_counts: &[i32] = &[];
-            publish_snapshot(msg.arm_clock, idx as u8, empty_counts);
-            ARM.state
-                .store(ArmState::TrippedReady as u8, Ordering::Release);
-            TRIP_EVENT_QUEUED.store(true, Ordering::Release);
-            return Ok(ArmStatus::AlreadyTripped);
-        }
-    }
-
+    // An already-asserted pin at arm time is detected by the C poll task's
+    // first sample (mainline endstop_event behavior), not here — the runtime
+    // has no live pin level until the poll task reads the GPIO.
     Ok(ArmStatus::Armed)
 }
 
@@ -463,110 +382,6 @@ pub fn disarm(arm_id: u32) -> DisarmStatus {
         Err(state) if matches_u8(state, ArmState::Disarmed) => DisarmStatus::Disarmed,
         Err(_) => DisarmStatus::Unknown,
     }
-}
-
-pub fn tick(clock: u64, v_per_axis_q16: [u32; 3], stepper_counts: &[i32]) -> TripAction {
-    let state = ARM.state.load(Ordering::Acquire);
-    if matches_u8(state, ArmState::TrippedReady) || matches_u8(state, ArmState::Tripping) {
-        return TripAction::AbortNow;
-    }
-    if !matches_u8(state, ArmState::Armed) {
-        return TripAction::Continue;
-    }
-    if clock < ARM.arm_clock() {
-        return TripAction::Continue;
-    }
-
-    let source_count = usize::from(ARM.source_count.load(Ordering::Acquire));
-    for (idx, src) in ARM.sources.iter().take(source_count).enumerate() {
-        if src.kind.load(Ordering::Acquire) == SourceKind::Software as u8 {
-            continue;
-        }
-
-        let gpio = src.gpio.load(Ordering::Acquire);
-        let pin_high = read_pin(gpio);
-        let active_high = src.active_high.load(Ordering::Acquire);
-        let asserted = if active_high { pin_high } else { !pin_high };
-        let policy = ArmPolicy::try_from(src.policy.load(Ordering::Acquire))
-            .unwrap_or(ArmPolicy::TripImmediately);
-
-        match policy {
-            ArmPolicy::IgnoreUntilMoving => {
-                let axis =
-                    VelocityAxis::from_bits_truncate(src.velocity_axis.load(Ordering::Acquire));
-                let v_sel = max_axis_velocity(v_per_axis_q16, axis);
-                if !src.moved_above_v.load(Ordering::Acquire)
-                    && v_sel >= src.v_min_q16.load(Ordering::Acquire)
-                {
-                    src.moved_above_v.store(true, Ordering::Release);
-                }
-                if !src.moved_above_v.load(Ordering::Acquire) {
-                    src.sample_acc.store(0, Ordering::Release);
-                    continue;
-                }
-                if !asserted {
-                    src.cleared.store(true, Ordering::Release);
-                    src.sample_acc.store(0, Ordering::Release);
-                    continue;
-                }
-                if !src.cleared.load(Ordering::Acquire) {
-                    src.sample_acc.store(0, Ordering::Release);
-                    continue;
-                }
-            }
-            ArmPolicy::WaitForClear => {
-                if !asserted {
-                    src.cleared.store(true, Ordering::Release);
-                    src.sample_acc.store(0, Ordering::Release);
-                    continue;
-                }
-                if !src.cleared.load(Ordering::Acquire) {
-                    src.sample_acc.store(0, Ordering::Release);
-                    continue;
-                }
-            }
-            ArmPolicy::TripImmediately => {
-                if !asserted {
-                    src.sample_acc.store(0, Ordering::Release);
-                    continue;
-                }
-            }
-        }
-
-        let sample_acc = src.sample_acc.load(Ordering::Acquire).saturating_add(1);
-        src.sample_acc.store(sample_acc, Ordering::Release);
-        if sample_acc < src.sample_n.load(Ordering::Acquire) {
-            continue;
-        }
-
-        if ARM
-            .state
-            .compare_exchange(
-                ArmState::Armed as u8,
-                ArmState::Tripping as u8,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            return TripAction::Continue;
-        }
-
-        publish_snapshot(clock, idx as u8, stepper_counts);
-        ARM.state
-            .store(ArmState::TrippedReady as u8, Ordering::Release);
-        TRIP_EVENT_QUEUED.store(true, Ordering::Release);
-        // DISABLED FOR TESTING: local siren. The detecting MCU intentionally
-        // does NOT self-freeze here — it only reports the trip. The cross-MCU
-        // relay (bridge reactor TripDispatch) sends trsync_trigger, which
-        // freezes via runtime_stop_on_trigger. Suppressing the local freeze
-        // lets us verify the relay on a single board. Re-enable as the
-        // same-MCU fast-path once the relay is confirmed.
-        // See docs/superpowers/specs/2026-05-31-trsync-cross-mcu-homing-design.md
-        return TripAction::Continue;
-    }
-
-    TripAction::Continue
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -716,31 +531,8 @@ fn validate_arm_msg(msg: &ArmMsg) -> Result<(), ArmError> {
         if cfg.sample_n == 0 || cfg.sample_n > 8 {
             return Err(ArmError::InvalidSampleN);
         }
-        if cfg.policy == ArmPolicy::IgnoreUntilMoving && cfg.velocity_axis.bits() == 0 {
-            return Err(ArmError::InvalidVelocityAxis);
-        }
     }
     Ok(())
-}
-
-fn read_pin(gpio: PinId) -> bool {
-    PIN_LEVELS
-        .get(usize::from(gpio))
-        .is_some_and(|pin| pin.load(Ordering::Acquire))
-}
-
-fn max_axis_velocity(v_per_axis_q16: [u32; 3], axis: VelocityAxis) -> u32 {
-    let mut v = 0;
-    for (value, axis_bit) in
-        v_per_axis_q16
-            .into_iter()
-            .zip([VelocityAxis::X, VelocityAxis::Y, VelocityAxis::Z])
-    {
-        if axis.intersects(axis_bit) {
-            v = v.max(value);
-        }
-    }
-    v
 }
 
 fn publish_snapshot(clock: u64, source_idx: u8, stepper_counts: &[i32]) {

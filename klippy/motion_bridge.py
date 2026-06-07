@@ -418,8 +418,7 @@ class MotionBridgeWrapper:
         stepper_oids,
         timeout_s=2.0,
     ):
-        # `sources` is a list of 7-tuples per BridgeTriggerDispatch contract:
-        # (kind, gpio, active_high, policy, sample_n, velocity_axis, v_min_q16)
+        # `sources`: list of 5-tuples (kind, gpio, active_high, policy, sample_n).
         return self._bridge.endstop_arm(
             mcu, queue, arm_id, arm_clock, sources, stepper_oids, timeout_s
         )
@@ -502,7 +501,7 @@ class BridgeTriggerDispatch:
         self._reactor = reactor
         self._arm_id = _alloc_arm_id()
         self._completion = reactor.completion()
-        # (kind, gpio, active_high, policy, sample_n, velocity_axis, v_min_q16)
+        # 5-tuples: (kind, gpio, active_high, policy, sample_n)
         self._sources = []
         self._stepper_oids = []
         self._steppers = []
@@ -552,27 +551,8 @@ class BridgeTriggerDispatch:
         """
         self._classic_trsyncs.append(mcu_trsync)
 
-    def add_source(
-        self,
-        kind,
-        gpio,
-        active_high,
-        policy,
-        sample_n,
-        velocity_axis,
-        v_min_q16,
-    ):
-        self._sources.append(
-            (
-                kind,
-                gpio,
-                active_high,
-                policy,
-                sample_n,
-                velocity_axis,
-                v_min_q16,
-            )
-        )
+    def add_source(self, kind, gpio, active_high, policy, sample_n):
+        self._sources.append((kind, gpio, active_high, policy, sample_n))
 
     def start(self, arm_print_time, mcu_obj):
         self._arm_print_time = arm_print_time

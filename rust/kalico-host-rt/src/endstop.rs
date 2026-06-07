@@ -4,7 +4,7 @@ use std::fmt;
 use crate::host_io::parser::FieldValue;
 use crate::transport::{MessageParams, Transport, TransportError};
 
-pub const SOURCE_RECORD_LEN: usize = 11;
+pub const SOURCE_RECORD_LEN: usize = 6;
 pub const STEPPER_RECORD_LEN: usize = 1;
 pub const MAX_SOURCES: usize = 4;
 pub const MAX_STEPPERS: usize = 8;
@@ -27,7 +27,6 @@ pub enum SourceKind {
 pub enum ArmPolicy {
     TripImmediately = 0,
     WaitForClear = 1,
-    IgnoreUntilMoving = 2,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -37,8 +36,6 @@ pub struct SourceSpec {
     pub active_high: bool,
     pub policy: ArmPolicy,
     pub sample_n: u8,
-    pub velocity_axis: u8,
-    pub v_min_q16: u32,
 }
 
 #[repr(u8)]
@@ -131,8 +128,6 @@ pub fn encode_sources(sources: &[SourceSpec]) -> Result<Vec<u8>, EndstopError> {
         buf.push(if s.active_high { 1 } else { 0 });
         buf.push(s.policy as u8);
         buf.push(s.sample_n);
-        buf.push(s.velocity_axis);
-        buf.extend_from_slice(&s.v_min_q16.to_le_bytes());
     }
     Ok(buf)
 }

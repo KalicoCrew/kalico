@@ -2526,7 +2526,7 @@ impl PyMotionBridge {
         queue: u32,
         arm_id: u32,
         arm_clock: u64,
-        sources: Vec<(u8, u16, bool, u8, u8, u8, u32)>,
+        sources: Vec<(u8, u16, bool, u8, u8)>,
         stepper_oids: Vec<u8>,
         timeout_s: f64,
     ) -> PyResult<u8> {
@@ -2534,9 +2534,7 @@ impl PyMotionBridge {
         let _ = queue;
 
         let mut source_specs = Vec::with_capacity(sources.len());
-        for (kind_byte, gpio, active_high, policy_byte, sample_n, velocity_axis, v_min_q16) in
-            sources
-        {
+        for (kind_byte, gpio, active_high, policy_byte, sample_n) in sources {
             let kind = match kind_byte {
                 0 => endstop::SourceKind::Physical,
                 1 => endstop::SourceKind::TmcDiag,
@@ -2546,7 +2544,6 @@ impl PyMotionBridge {
             let policy = match policy_byte {
                 0 => endstop::ArmPolicy::TripImmediately,
                 1 => endstop::ArmPolicy::WaitForClear,
-                2 => endstop::ArmPolicy::IgnoreUntilMoving,
                 _ => return Err(PyRuntimeError::new_err("invalid arm policy")),
             };
             source_specs.push(endstop::SourceSpec {
@@ -2555,8 +2552,6 @@ impl PyMotionBridge {
                 active_high,
                 policy,
                 sample_n,
-                velocity_axis,
-                v_min_q16,
             });
         }
 

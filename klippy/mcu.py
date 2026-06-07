@@ -606,11 +606,6 @@ class MCU_endstop:
         # Sensorless-DIAG opt-out flag, populated by extras/tmc.py via
         # `homing_trip_immediately: True` config option (default False).
         self._sensorless_trip_immediately = False
-        # Velocity-axis bitmask used when arm_policy=IgnoreUntilMoving for
-        # sensorless TMC sources. Default to XY for X/Y endstops; extras
-        # (e.g. Z stepper) override before home_start.
-        self._sensorless_velocity_axis = 0x03  # X | Y
-        self._sensorless_v_min_q16 = 0  # 0 = no lower-bound gate
         # NB: at MCU_endstop construction time the bridge has not yet
         # identified the MCU, so `_bridge_handle` is None and we
         # cannot allocate a bridge command queue here. Defer both
@@ -684,10 +679,9 @@ class MCU_endstop:
         return self._home_start_bridge(print_time, sample_count, triggered)
 
     def _home_start_bridge(self, print_time, sample_count, triggered):
-        # Spec §5.3: map legacy params (sample_time / rest_time ignored —
-        # bridge samples at modulation rate; sample_count → sample_n;
-        # triggered=True → TripImmediately for physical, IgnoreUntilMoving
-        # for TmcDiag unless self._sensorless_trip_immediately).
+        # The firmware endstop poll task oversample-debounces like mainline
+        # src/endstop.c (trip after sample_n consecutive asserted reads); no
+        # velocity gate. sample_time / rest_time are owned by the poll task.
 
         # Resolve pin: extract a numeric GPIO index plus polarity. The
         # bridge MCU's pin namespace numbers are firmware-side; for now
@@ -703,12 +697,9 @@ class MCU_endstop:
         # level appears, so active_high = (triggered != invert).
         active_high = bool((1 if triggered else 0) ^ (1 if self._invert else 0))
 
-        if kind == 1 and triggered and not self._sensorless_trip_immediately:
-            policy = 2  # IgnoreUntilMoving
-        elif triggered:
-            policy = 0  # TripImmediately
-        else:
-            policy = 1  # WaitForClear
+        # Mainline has no velocity gate for sensorless homing; trip when the
+        # pin reads asserted for sample_n consecutive samples.
+        policy = 0 if triggered else 1  # TripImmediately / WaitForClear
 
         self._dispatch._sources = []
         self._dispatch._stepper_oids = list(
@@ -721,15 +712,7 @@ class MCU_endstop:
         # follow-up: full pin-table integration with the bridge MCU.
         gpio = int(getattr(self, "_bridge_gpio_index", 0))
         sample_n = max(1, int(sample_count))
-        self._dispatch.add_source(
-            kind,
-            gpio,
-            active_high,
-            policy,
-            sample_n,
-            int(self._sensorless_velocity_axis),
-            int(self._sensorless_v_min_q16),
-        )
+        self._dispatch.add_source(kind, gpio, active_high, policy, sample_n)
         return self._dispatch.start(print_time, self._mcu)
 
     def home_wait(self, home_end_time):

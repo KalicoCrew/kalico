@@ -518,10 +518,10 @@ pub mod exports {
 
     use runtime::endstop::{
         ArmMsg, ArmPolicy, ArmStatus, DisarmStatus, MAX_SOURCES, MAX_STEPPERS, SourceConfig,
-        SourceKind, VelocityAxis,
+        SourceKind,
     };
 
-    const SOURCE_RECORD_LEN: usize = 11;
+    const SOURCE_RECORD_LEN: usize = 6;
     const STEPPER_RECORD_LEN: usize = 1;
 
     pub const KALICO_TRIP_EVENT_V1_HEADER_LEN: usize = 15;
@@ -581,20 +581,15 @@ pub mod exports {
             let policy = match r[4] {
                 0 => ArmPolicy::TripImmediately,
                 1 => ArmPolicy::WaitForClear,
-                2 => ArmPolicy::IgnoreUntilMoving,
                 _ => return KALICO_ERR_NULL_PTR,
             };
             let sample_n = r[5];
-            let velocity_axis = VelocityAxis::from_bits_truncate(r[6]);
-            let v_min_q16 = u32::from_le_bytes([r[7], r[8], r[9], r[10]]);
             sources[i] = SourceConfig {
                 kind,
                 gpio,
                 active_high,
                 policy,
                 sample_n,
-                velocity_axis,
-                v_min_q16,
             };
         }
 
