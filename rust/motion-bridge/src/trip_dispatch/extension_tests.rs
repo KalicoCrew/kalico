@@ -36,11 +36,18 @@ fn participant_cannot_extend_itself() {
 #[test]
 fn silence_means_no_extension_for_anyone_anchored_to_the_silent_one() {
     let mut e = engine(3, 0.025, 0.0, 0.0);
-    e.on_report(0, 1.0);
-    e.on_report(1, 1.0);
-    let sends = e.on_report(0, 2.0);
-    assert!(sends.iter().any(|(p, t)| *p == 2 && *t > 1.0));
-    assert!(sends.iter().all(|(p, _)| *p != 0 && *p != 1));
+    // P0 reports while P1 and P2 are both silent at t=0: every participant's
+    // anchor is still 0 — nobody is extended.
+    assert!(e.on_report(0, 1.0).is_empty());
+    // P1 reports too. Now the silent P2 is the minimum holder; its anchor is
+    // the others' minimum (1.0), so P2's own expire is extended — a
+    // silent-but-alive MCU must not spuriously fire while others are proven
+    // live. P0/P1 stay anchored to P2's silence and are NOT extended: they
+    // WILL time out unless P2 speaks.
+    assert_eq!(e.on_report(1, 1.0), vec![(2, 1.0 + 0.025)]);
+    // P0 advances again; P2's anchor (min of P0=2.0, P1=1.0) is unchanged at
+    // 1.0 — same expire as already sent, so no resend (dedup, not spam).
+    assert!(e.on_report(0, 2.0).is_empty());
 }
 
 #[test]

@@ -24,10 +24,8 @@ impl ExtensionEngine {
     /// status time among the OTHERS (the minimum-holder anchors to the
     /// second minimum), so no participant ever extends itself. Sends are
     /// suppressed unless the expire advances by at least `min_extend_secs`.
-    ///
-    /// Only the reporting participant's `expire_time` is updated; non-reporting
-    /// participants' `expire_time` is intentionally not mutated so their next
-    /// extension is always computed fresh from their current anchor.
+    /// Every sent participant's `expire_time` is persisted on send (C-faithful
+    /// hysteresis dedup: a silent MCU is not re-spammed with the same expire).
     pub fn on_report(&mut self, idx: usize, status_time: f64) -> Vec<(usize, f64)> {
         self.participants[idx].last_status_time = status_time;
 
@@ -54,9 +52,7 @@ impl ExtensionEngine {
             let anchor = if i == min_idx { next_min_time } else { min_time };
             let expire = anchor + self.expire_secs;
             if expire - p.expire_time >= self.min_extend_secs && expire > p.expire_time {
-                if i == idx {
-                    p.expire_time = expire;
-                }
+                p.expire_time = expire;
                 sends.push((i, expire));
             }
         }
