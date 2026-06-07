@@ -2,6 +2,28 @@ use super::*;
 use crate::ScalarNurbs;
 use crate::eval::eval;
 
+fn reference_refined_to_full_multiplicity(curve: &ScalarNurbs<f64>) -> ScalarNurbs<f64> {
+    let p = curve.degree() as usize;
+    let mut current = curve.clone();
+    let knots_snapshot: Vec<f64> = current.knots().to_vec();
+    let mut seen: Vec<f64> = Vec::new();
+    let mut i = p + 1;
+    while i < knots_snapshot.len() - p - 1 {
+        let u = knots_snapshot[i];
+        if !seen.contains(&u) {
+            seen.push(u);
+        }
+        i += 1;
+    }
+    for u in seen {
+        let existing = current.knots().iter().filter(|k| **k == u).count();
+        if existing < p {
+            current = insert_knot(&current, u, p - existing).unwrap();
+        }
+    }
+    current
+}
+
 #[test]
 fn try_new_accepts_monotone_knots() {
     let kv = KnotVector::<f64>::try_new(vec![0.0, 0.0, 0.5, 1.0, 1.0]).unwrap();
@@ -163,6 +185,66 @@ fn refined_to_full_multiplicity_raises_interior_knots() {
         assert!(
             (before - after).abs() < 1e-10,
             "u={u}: before={before}, after={after}"
+        );
+    }
+}
+
+#[test]
+fn refined_to_full_multiplicity_matches_reference_on_mixed_multiplicity_curve() {
+    let p: u8 = 3;
+    let n_interior = 50usize;
+
+    let mut knots: Vec<f64> = vec![0.0; p as usize + 1];
+    for k in 0..n_interior {
+        let u = (k + 1) as f64 / (n_interior + 1) as f64;
+        let mult = 1 + (k % (p as usize));
+        for _ in 0..mult {
+            knots.push(u);
+        }
+    }
+    knots.extend(vec![1.0; p as usize + 1]);
+
+    let n_cps = knots.len() - p as usize - 1;
+    let cps: Vec<f64> = (0..n_cps)
+        .map(|i| {
+            let t = i as f64 / (n_cps - 1) as f64;
+            t * t - 0.5 * t + 0.1 * (i as f64 * 1.3).sin()
+        })
+        .collect();
+
+    let curve = ScalarNurbs::<f64>::try_new(p, knots, cps).unwrap();
+
+    let fast = refined_to_full_multiplicity(&curve);
+    let reference = reference_refined_to_full_multiplicity(&curve);
+
+    assert_eq!(fast.knots(), reference.knots(), "knot vectors differ");
+    assert_eq!(
+        fast.control_points().len(),
+        reference.control_points().len(),
+        "control point count differs"
+    );
+
+    for (idx, (a, b)) in fast
+        .control_points()
+        .iter()
+        .zip(reference.control_points())
+        .enumerate()
+    {
+        let rel_tol = 1e-12 * (a.abs().max(b.abs()) + 1.0);
+        assert!(
+            (a - b).abs() <= rel_tol,
+            "cp[{idx}]: fast={a:.15e} reference={b:.15e} diff={:.3e}",
+            (a - b).abs()
+        );
+    }
+
+    let sample_params: Vec<f64> = (0..=20).map(|i| i as f64 / 20.0).collect();
+    for u in sample_params {
+        let v_fast = eval(&fast.as_view(), u);
+        let v_ref = eval(&reference.as_view(), u);
+        assert!(
+            (v_fast - v_ref).abs() < 1e-12,
+            "eval mismatch at u={u}: fast={v_fast:.15e} ref={v_ref:.15e}"
         );
     }
 }

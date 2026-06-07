@@ -28,6 +28,16 @@ We are working on a complete rewrite of the motion planner and more:
 
   The `compat` crate has two callers: the offline Step-13 binary (file → file) and the live bridge (terminal/macro G1/G2/G3 conversion via `compat::collinear::to_collinear_g5`, `compat::arc::arc_to_g5`, `compat::degree_elev::elevate_g51_to_g5`). Both share the lexer.
 
+# Testing
+
+Run the Rust suite with `cargo nextest run` from `rust/`, not `cargo test`.
+`cargo test` executes the ~110 test binaries one at a time (each only
+parallelizes internally), which leaves most cores idle — the full suite takes
+~100s. `nextest` schedules every test into one global pool: same suite, ~11s.
+Use `cargo nextest run -p <crate>` or `-E 'test(<name>)'` to scope down.
+Doc-tests are the one gap — `nextest` skips them, so run `cargo test --doc`
+when you touch doc examples.
+
 # Observability / structured logging
 
 Log via the structured pipeline (`kalico_log_emit` → `events/*.jsonl`), not
