@@ -727,6 +727,24 @@ pub fn build_chain(
                 count += 1;
             }
         }
+        // Junction duals: the shared point belongs to both segments; emit the
+        // right side's per-axis velocity caps too (right geometry AND right limits).
+        for j in &chain.junctions {
+            let i = j.idx;
+            let lims = &chain.limits[j.limits_idx];
+            for ax in 0..3 {
+                let g = j.geom.c_prime[ax];
+                if g.abs() < COMP_FLOOR {
+                    continue;
+                }
+                let rhs = (lims.v_max[ax] / g).powi(2);
+                if rhs > b_cap {
+                    continue;
+                }
+                push_row(&mut a_rows, &mut b_rhs, &[(off_b + i, -1.0)], rhs);
+                count += 1;
+            }
+        }
         if count > 0 {
             cones.push((Cone::Nonneg, count));
         }
@@ -748,6 +766,39 @@ pub fn build_chain(
                     continue;
                 }
                 let a_ax = lim.a_max[ax];
+                let worst_case_lhs = gpp.abs() * b_cap_i + gp.abs() * a_cap_i;
+                if worst_case_lhs < BLOCK_D_SAFETY * a_ax {
+                    continue;
+                }
+                push_row(
+                    &mut a_rows,
+                    &mut b_rhs,
+                    &[(off_b + i, -gpp), (off_a + i, -gp)],
+                    a_ax,
+                );
+                push_row(
+                    &mut a_rows,
+                    &mut b_rhs,
+                    &[(off_b + i, gpp), (off_a + i, gp)],
+                    a_ax,
+                );
+                count += 2;
+            }
+        }
+        // Junction duals: the shared point belongs to both segments; emit the
+        // right side's per-axis accel caps too (right geometry AND right limits).
+        for j in &chain.junctions {
+            let i = j.idx;
+            let lims = &chain.limits[j.limits_idx];
+            let b_cap_i = b_max_cent[i].min(b_cap);
+            let a_cap_i = b_cap_i / (2.0 * h_bar(i));
+            for ax in 0..3 {
+                let gp = j.geom.c_prime[ax];
+                let gpp = j.geom.c_double_prime[ax];
+                if gp.abs() < COMP_FLOOR && gpp.abs() < COMP_FLOOR {
+                    continue;
+                }
+                let a_ax = lims.a_max[ax];
                 let worst_case_lhs = gpp.abs() * b_cap_i + gp.abs() * a_cap_i;
                 if worst_case_lhs < BLOCK_D_SAFETY * a_ax {
                     continue;

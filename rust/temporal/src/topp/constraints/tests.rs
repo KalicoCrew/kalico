@@ -1,6 +1,7 @@
 use super::*;
 use crate::Limits;
 use crate::topp::path::ArclengthGrid;
+use crate::topp::chain::tests_support::two_segment_chain_with_junction;
 
 // -------------------------------------------------------------------------
 // Test fixtures
@@ -401,6 +402,77 @@ fn build_chain_of_one_emits_identical_bundle() {
     for (i, (lv, nv)) in legacy.b_rhs.iter().zip(&new.b_rhs).enumerate() {
         assert!((lv - nv).abs() < 1e-12, "rhs {i}: {lv} vs {nv}");
     }
+}
+
+// -------------------------------------------------------------------------
+// Task 5 tests: junction dual rows
+// -------------------------------------------------------------------------
+
+#[test]
+fn junction_point_gets_dual_velocity_rows() {
+    let chain = two_segment_chain_with_junction();
+    let bundle = match build_chain(
+        &chain,
+        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
+        &SolverScale::identity(),
+    ) {
+        BuildOutcome::Ok(b) => b,
+        other => panic!("{other:?}"),
+    };
+    // Count rows whose ONLY nonzero is −1 at the junction b-column (off_b+10)
+    // with rhs in {300², 150²}: the left-side (block c) and right-side (dual)
+    // velocity caps must both be present.
+    let jidx = 10;
+    let mut rhs_seen = vec![];
+    for (row, rhs) in bundle.a_rows.iter().zip(&bundle.b_rhs) {
+        let nz: Vec<usize> = row
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| **v != 0.0)
+            .map(|(c, _)| c)
+            .collect();
+        if nz == vec![jidx] && (row[jidx] + 1.0).abs() < 1e-12 {
+            rhs_seen.push(*rhs);
+        }
+    }
+    assert!(
+        rhs_seen.iter().any(|r| (r - 300.0_f64.powi(2)).abs() < 1e-6),
+        "missing left-side velocity row at junction: {rhs_seen:?}"
+    );
+    assert!(
+        rhs_seen.iter().any(|r| (r - 150.0_f64.powi(2)).abs() < 1e-6),
+        "missing right-side velocity row at junction: {rhs_seen:?}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "a_start pin at a rest start")]
+fn a_start_pin_at_rest_panics() {
+    let chain = two_segment_chain_with_junction();
+    let _ = build_chain(
+        &chain,
+        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: Some(100.0) },
+        &SolverScale::identity(),
+    );
+}
+
+#[test]
+fn a_start_pin_emits_zero_cone_row() {
+    let chain = two_segment_chain_with_junction();
+    let bundle = match build_chain(
+        &chain,
+        EndpointConditions { v_start: 50.0, v_end: 0.0, a_start: Some(-2_000.0) },
+        &SolverScale::identity(),
+    ) {
+        BuildOutcome::Ok(b) => b,
+        other => panic!("{other:?}"),
+    };
+    // Zero cone now has 3 rows (b_0, b_{N−1}, pin).
+    assert_eq!(bundle.cones[0], (Cone::Zero, 3));
+    let pin = &bundle.a_rows[2];
+    assert!((pin[1] - 1.0).abs() < 1e-12 && (pin[0] + 1.0).abs() < 1e-12);
+    let h0 = chain.h_intervals[0];
+    assert!((bundle.b_rhs[2] - (-2.0 * h0 * -2_000.0)).abs() < 1e-9);
 }
 
 #[test]
