@@ -2889,7 +2889,7 @@ impl PyMotionBridge {
         let curve = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("get_homing_position_at_clock: no homing curve retained")
         })?;
-        eval_retained_curve(curve, t_abs, mcu, trip_clock)
+        eval_retained_curve(curve, t_abs, mcu, trip_clock).map_err(PyRuntimeError::new_err)
     }
 }
 
@@ -2900,19 +2900,19 @@ fn eval_retained_curve(
     t_abs: f64,
     mcu: u32,
     trip_clock: u64,
-) -> PyResult<Vec<f64>> {
+) -> Result<Vec<f64>, String> {
     let pieces = &curve.pieces;
     if pieces.is_empty() {
-        return Err(PyRuntimeError::new_err(
-            "get_homing_position_at_clock: retained homing curve has no pieces",
-        ));
+        return Err(
+            "get_homing_position_at_clock: retained homing curve has no pieces".to_owned(),
+        );
     }
     let first = pieces.first().unwrap();
     let last = pieces.last().unwrap();
 
     if t_abs < first.t_abs_start - PIECE_BOUNDARY_TOLERANCE {
         let piece_dur = first.t_abs_end - first.t_abs_start;
-        return Err(PyRuntimeError::new_err(format!(
+        return Err(format!(
             "get_homing_position_at_clock: t_abs={t_abs:.9} is {:.6} s before the \
              first retained piece window [{:.9}, {:.9}] \
              (mcu={mcu} trip_clock={trip_clock}; piece_duration={piece_dur:.6} s) — \
@@ -2920,7 +2920,7 @@ fn eval_retained_curve(
             first.t_abs_start - t_abs,
             first.t_abs_start,
             first.t_abs_end,
-        )));
+        ));
     }
 
     let piece = match pieces.iter().find(|p| {
@@ -2932,12 +2932,12 @@ fn eval_retained_curve(
             let piece_dur = last.t_abs_end - last.t_abs_start;
             let overshoot = t_abs - last.t_abs_end;
             if overshoot > piece_dur {
-                return Err(PyRuntimeError::new_err(format!(
+                return Err(format!(
                     "get_homing_position_at_clock: t_abs={t_abs:.9} overshoots last \
                      piece end {:.9} by {overshoot:.6} s (> one piece duration {piece_dur:.6} s) \
                      (mcu={mcu} trip_clock={trip_clock}) — clock domain mismatch or stale curve",
                     last.t_abs_end,
-                )));
+                ));
             }
             last
         }
