@@ -2,8 +2,9 @@ use super::*;
 
 /// Straight 600 mm collinear cubic at machine-limit speed: v_max = 1000 mm/s,
 /// a_max = 50 km/s². Limits mirror the bridge's `to_temporal_limits` output for
-/// `max_velocity=1000, max_accel=50000, scv=5` exactly (including the tiny
-/// a_centripetal_max) — the solver must produce a usable profile, not MaxIter.
+/// `max_velocity=1000, max_accel=50000, scv=5` — a_centripetal_max equals
+/// max_accel (50_000 mm/s²). κ = 0 on a straight line so the centripetal cap
+/// is never active; the solver must produce a usable profile, not MaxIter.
 #[test]
 fn schedule_segment_straight_line_at_1000mms_solves() {
     let cps = vec![
@@ -19,7 +20,7 @@ fn schedule_segment_straight_line_at_1000mms_solves() {
         v_max: [1000.0, 1000.0, 15.0],
         a_max: [50_000.0, 50_000.0, 100.0],
         j_max: [100_000.0, 100_000.0, 100_000.0],
-        a_centripetal_max: 0.001,
+        a_centripetal_max: 50_000.0,
     };
     let cfg = GridConfig {
         scheme: crate::GridScheme::UniformArclength,

@@ -669,7 +669,7 @@ fn build_replan_context(config: &PlannerConfig) -> ReplanContext {
         beta_max_iters: config.beta_max_iters,
         beta_convergence_ratio: config.beta_convergence_ratio,
         e_limits: config.e_limits,
-        junction_chord_tolerance_mm: 0.05,
+        junction_chord_tolerance_mm: config.limits.junction_deviation_mm(),
         worker_threads: config.worker_threads,
         grid_strategy: temporal::multi::GridStrategy::Adaptive {
             min_n: 20,

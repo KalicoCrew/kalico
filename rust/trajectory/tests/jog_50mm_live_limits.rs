@@ -32,15 +32,14 @@ fn x_50mm_collinear_cubic() -> VectorNurbs<f64, 3> {
 }
 
 fn live_limits() -> temporal::Limits {
-    // Mirrors planner-trace startup line on the bench:
+    // Mirrors bridge to_temporal_limits for the bench config:
     // v_max=[1000,1000,5] a_max=[70000,70000,100] j_max=[140000,140000,200]
-    // a_centripetal_max=0.000714 (square_corner_velocity=5 default,
-    // max_accel=70000)
+    // a_centripetal_max = max_accel = 70000 mm/s² (Klipper-parity mapping).
     temporal::Limits::new(
         [1000.0, 1000.0, 5.0],
         [70000.0, 70000.0, 100.0],
         [140000.0, 140000.0, 200.0],
-        5.0_f64.powi(2) / (70000.0 * 0.5),
+        70000.0,
     )
 }
 
@@ -109,15 +108,15 @@ fn jog_50mm_at_100mms_with_live_limits() {
 
 #[test]
 fn jog_50mm_with_higher_scv() {
-    // Same as above but with square_corner_velocity=70 (typical Voron setup),
-    // so a_centripetal_max = 70^2 / (70000*0.5) = 4900/35000 = 0.14 mm/s².
-    // Still tiny vs a_max but much larger than the 0.000714 default.
+    // Same as above but with square_corner_velocity=70 (typical Voron setup).
+    // a_centripetal_max = max_accel = 70000 mm/s² regardless of scv; scv
+    // enters only through junction_deviation_mm on the chord tolerance.
     let curve = x_50mm_collinear_cubic();
     let limits = temporal::Limits::new(
         [1000.0, 1000.0, 5.0],
         [70000.0, 70000.0, 100.0],
         [140000.0, 140000.0, 200.0],
-        70.0_f64.powi(2) / (70000.0 * 0.5),
+        70000.0,
     );
 
     let segments = [ShapeSegmentInput {
@@ -251,7 +250,7 @@ fn jog_50mm_with_z_jmax_uncapped() {
         [1000.0, 1000.0, 5.0],
         [70000.0, 70000.0, 1000.0],   // a_max[Z]=1000
         [140000.0, 140000.0, 2000.0], // j_max[Z]=2000 (10x current)
-        5.0_f64.powi(2) / (70000.0 * 0.5),
+        70000.0,
     );
 
     let segments = [ShapeSegmentInput {
@@ -326,7 +325,7 @@ fn jog_50mm_low_accel_baseline() {
         [300.0, 300.0, 15.0],
         [3000.0, 3000.0, 100.0],
         [6000.0, 6000.0, 200.0],
-        5.0_f64.powi(2) / (3000.0 * 0.5),
+        3000.0,
     );
 
     let segments = [ShapeSegmentInput {
