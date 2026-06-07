@@ -422,7 +422,7 @@ fn junction_point_gets_dual_velocity_rows() {
     // Count rows whose ONLY nonzero is −1 at the junction b-column (off_b+10)
     // with rhs in {300², 150²}: the left-side (block c) and right-side (dual)
     // velocity caps must both be present.
-    let jidx = 10;
+    let jidx = chain.junctions[0].idx;
     let mut rhs_seen = vec![];
     for (row, rhs) in bundle.a_rows.iter().zip(&bundle.b_rhs) {
         let nz: Vec<usize> = row
@@ -532,6 +532,71 @@ fn diagonal_line_a_env_is_projected() {
     assert!(
         cap_expected > cap_axis_min,
         "diagonal projected cap {cap_expected} must exceed axis-min cap {cap_axis_min}"
+    );
+}
+
+// -------------------------------------------------------------------------
+// Task 5 accel-dual coverage: curved junction with distinct a_max per side
+// -------------------------------------------------------------------------
+
+fn two_segment_chain_curved_junction() -> crate::topp::chain::ChainGrid {
+    use crate::topp::chain::ChainGrid;
+    use crate::topp::chain::tests_support::line;
+    use crate::topp::path::sample_arclength_grid;
+    use nurbs::VectorNurbs;
+
+    let ga = sample_arclength_grid(&line([0.0; 3], [20.0, 0.0, 0.0]), 11).unwrap();
+    let curve_b = VectorNurbs::try_new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![
+            [20.0, 0.0, 0.0],
+            [23.0, 6.0, 0.0],
+            [27.0, 6.0, 0.0],
+            [30.0, 0.0, 0.0],
+        ],
+    )
+    .unwrap();
+    let gb = sample_arclength_grid(&curve_b, 11).unwrap();
+    let lim = |a: f64| crate::Limits {
+        v_max: [300.0; 3],
+        a_max: [a; 3],
+        j_max: [100_000.0; 3],
+        a_centripetal_max: 2_500.0,
+    };
+    ChainGrid::from_segment_grids(vec![ga, gb], vec![lim(5_000.0), lim(2_000.0)])
+}
+
+#[test]
+fn junction_dual_accel_rows_use_right_limits() {
+    let chain = two_segment_chain_curved_junction();
+    let bundle = match build_chain(
+        &chain,
+        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
+        &SolverScale::identity(),
+    ) {
+        BuildOutcome::Ok(b) => b,
+        other => panic!("{other:?}"),
+    };
+    let jidx = chain.junctions[0].idx;
+    let off_a = chain.n_points();
+    let jidx_a = off_a + jidx;
+
+    let accel_rhs_at_junction: Vec<f64> = bundle
+        .a_rows
+        .iter()
+        .zip(&bundle.b_rhs)
+        .filter(|(row, _)| row[jidx_a] != 0.0)
+        .map(|(_, rhs)| *rhs)
+        .collect();
+
+    assert!(
+        accel_rhs_at_junction.iter().any(|r| (r - 2_000.0).abs() < 1e-6),
+        "missing right-side accel row (a_max=2000): {accel_rhs_at_junction:?}"
+    );
+    assert!(
+        accel_rhs_at_junction.iter().any(|r| (r - 5_000.0).abs() < 1e-6),
+        "missing left-side accel row (a_max=5000): {accel_rhs_at_junction:?}"
     );
 }
 
