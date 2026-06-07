@@ -1,3 +1,6 @@
+// FFI log calls via kalico_log_emit mirror the fault_helpers.rs pattern.
+#![allow(unsafe_code)]
+
 // `portable_atomic` so that RMW operations (`swap` on `TRIP_EVENT_QUEUED`,
 // `compare_exchange` on `ARM.state`) compile on ARMv6-M (STM32G0), which
 // has no LDREX/STREX. On thumbv7em the codegen is identical to
@@ -573,9 +576,53 @@ pub enum TripResult {
     WrongArmId,
 }
 
+#[cfg(any(not(any(test, feature = "host")), feature = "mcu-linux"))]
+unsafe extern "C" {
+    fn kalico_log_emit(level: u8, subsystem: u8, event: u16, code: u16, arg0: u32, arg1: u32);
+}
+
+/// Emit `endstop.software_trip`: arg0=arm_id passed in, arg1 packs
+/// `ARM.state` (bits 0..7), `ARM.arm_id & 0xFF` (bits 8..15),
+/// and `TripResult` discriminant 0=Tripped/1=NotArmed/2=WrongArmId (bits 24..31).
+#[inline]
+fn emit_software_trip_log(arg_arm_id: u32, armed_arm_id: u32, state: u8, result: &TripResult) {
+    use crate::log_codes::{EVENT_ENDSTOP_SOFTWARE_TRIP, SUBSYSTEM_ENDSTOP};
+    const LOG_LEVEL_DEBUG: u8 = 1;
+    let result_discriminant: u32 = match result {
+        TripResult::Tripped => 0,
+        TripResult::NotArmed => 1,
+        TripResult::WrongArmId => 2,
+    };
+    let arg1 = u32::from(state)
+        | ((armed_arm_id & 0xFF) << 8)
+        | (result_discriminant << 24);
+    #[cfg(any(not(any(test, feature = "host")), feature = "mcu-linux"))]
+    // SAFETY: kalico_log_emit is a pure C logging sink; no aliasing or
+    // ownership constraints on its arguments.
+    unsafe {
+        kalico_log_emit(
+            LOG_LEVEL_DEBUG,
+            SUBSYSTEM_ENDSTOP,
+            EVENT_ENDSTOP_SOFTWARE_TRIP,
+            0,
+            arg_arm_id,
+            arg1,
+        );
+    }
+    #[cfg(not(any(not(any(test, feature = "host")), feature = "mcu-linux")))]
+    {
+        let _ = (arg_arm_id, arg1);
+    }
+}
+
 pub fn software_trip(arm_id: u32, clock: u64, stepper_counts: &[i32]) -> TripResult {
-    if ARM.arm_id.load(Ordering::Acquire) != arm_id {
-        return TripResult::WrongArmId;
+    let armed_arm_id = ARM.arm_id.load(Ordering::Acquire);
+    let state_before = ARM.state.load(Ordering::Acquire);
+
+    if armed_arm_id != arm_id {
+        let result = TripResult::WrongArmId;
+        emit_software_trip_log(arm_id, armed_arm_id, state_before, &result);
+        return result;
     }
 
     match ARM.state.compare_exchange(
@@ -585,14 +632,20 @@ pub fn software_trip(arm_id: u32, clock: u64, stepper_counts: &[i32]) -> TripRes
         Ordering::Acquire,
     ) {
         Ok(_) => {}
-        Err(_) => return TripResult::NotArmed,
+        Err(actual_state) => {
+            let result = TripResult::NotArmed;
+            emit_software_trip_log(arm_id, armed_arm_id, actual_state, &result);
+            return result;
+        }
     }
 
     publish_snapshot(clock, TRIP_SOURCE_SOFTWARE, stepper_counts);
     ARM.state
         .store(ArmState::TrippedReady as u8, Ordering::Release);
     TRIP_EVENT_QUEUED.store(true, Ordering::Release);
-    TripResult::Tripped
+    let result = TripResult::Tripped;
+    emit_software_trip_log(arm_id, armed_arm_id, state_before, &result);
+    result
 }
 
 pub fn poll_trip() -> Option<TripEvent> {

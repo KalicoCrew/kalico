@@ -8,6 +8,7 @@
 #include "command.h"              // DECL_COMMAND, sendf, command_decode_ptr
 #include "sched.h"                // DECL_TASK
 #include "board/misc.h"           // timer_read_time
+#include "kalico_log.h"           // kalico_log_emit
 #include "kalico_runtime.h"       // FFI export prototypes
 #include "kalico_dispatch.h"      // kalico_native_emit_*
 #include "trsync.h"               // trsync_add_signal, trsync_oid_lookup
@@ -215,9 +216,11 @@ static struct runtime_stop_binding {
 static void
 runtime_stop_on_trigger_cb(struct trsync_signal *tss, uint8_t reason)
 {
-    (void)reason;
     struct runtime_stop_binding *b =
         container_of(tss, struct runtime_stop_binding, signal);
+    kalico_log_emit(KALICO_LOG_LEVEL_DEBUG, KALICO_LOG_SUBSYS_ENDSTOP,
+                    KALICO_LOG_EVENT_ENDSTOP_STOP_CB_ENTER, 0,
+                    b->arm_id, (uint32_t)reason);
     uint32_t clock_lo = timer_read_time();
     uint32_t clock_hi = stats_send_time_high + (clock_lo < stats_send_time);
     // NotArmed default; discarded — no reply channel from trigger/IRQ context.

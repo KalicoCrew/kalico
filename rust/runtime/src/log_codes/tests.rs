@@ -98,6 +98,22 @@ fn event_info_all_endstop_events() {
     let (name, tmpl) = event_info(SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_ARM_TIMEOUT);
     assert_eq!(name, "endstop.arm_timeout");
     assert!(tmpl.contains("{arg0}"));
+
+    let (name, tmpl) = event_info(SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_TRSYNC_TRIGGER_CMD);
+    assert_eq!(name, "endstop.trsync_trigger_cmd");
+    assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+    let (name, tmpl) = event_info(SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_TRSYNC_DO_TRIGGER);
+    assert_eq!(name, "endstop.trsync_do_trigger");
+    assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+    let (name, tmpl) = event_info(SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_STOP_CB_ENTER);
+    assert_eq!(name, "endstop.stop_cb_enter");
+    assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
+
+    let (name, tmpl) = event_info(SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_SOFTWARE_TRIP);
+    assert_eq!(name, "endstop.software_trip");
+    assert!(tmpl.contains("{arg0}") && tmpl.contains("{arg1}"));
 }
 
 #[test]
