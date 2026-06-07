@@ -37,7 +37,6 @@ impl HomingSegmentState {
 #[derive(Debug)]
 pub struct HomingState {
     state: AtomicU8,
-    active_segment_id: AtomicU64,
     arm_id: AtomicU64,
     pending_trip: Mutex<Option<runtime::endstop::TripEvent>>,
     axis_keys: Mutex<Vec<AxisKey>>,
@@ -47,7 +46,6 @@ impl HomingState {
     pub fn new() -> Self {
         Self {
             state: AtomicU8::new(HomingSegmentState::Idle as u8),
-            active_segment_id: AtomicU64::new(0),
             arm_id: AtomicU64::new(0),
             pending_trip: Mutex::new(None),
             axis_keys: Mutex::new(Vec::new()),
@@ -64,7 +62,6 @@ impl HomingState {
 
     pub fn begin(&self, arm_id: u32) {
         self.arm_id.store(u64::from(arm_id), Ordering::Release);
-        self.active_segment_id.store(0, Ordering::Release);
         *self.pending_trip.lock().unwrap() = None;
         self.axis_keys.lock().unwrap().clear();
         self.state
@@ -87,24 +84,6 @@ impl HomingState {
     pub fn reset_to_idle(&self) {
         self.state
             .store(HomingSegmentState::Idle as u8, Ordering::Release);
-    }
-
-    pub fn mark_dispatched_segment(&self, segment_id: u32) {
-        if self.state() == HomingSegmentState::Active {
-            self.active_segment_id
-                .store(u64::from(segment_id), Ordering::Release);
-        }
-    }
-
-    pub fn complete_if_retired(&self, retired_through_segment_id: u32) {
-        let active = self.active_segment_id.load(Ordering::Acquire);
-        if active != 0
-            && u64::from(retired_through_segment_id) >= active
-            && self.state() == HomingSegmentState::Active
-        {
-            self.state
-                .store(HomingSegmentState::Completed as u8, Ordering::Release);
-        }
     }
 
     pub fn refresh_after_wait(&self) {

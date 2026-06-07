@@ -51,33 +51,8 @@ fn begin_clears_previously_recorded_axis_keys() {
 }
 
 #[test]
-fn take_completion_event_fires_once_after_no_trip_retire() {
-    let h = HomingState::new();
-    h.begin(7);
-    h.mark_dispatched_segment(3);
-    h.complete_if_retired(3);
-    assert_eq!(h.state(), HomingSegmentState::Completed);
-    assert_eq!(h.take_completion_event(), Some(7));
-    assert_eq!(h.take_completion_event(), None);
-}
-
-#[test]
 fn take_completion_event_does_not_fire_when_idle() {
     let h = HomingState::new();
-    assert_eq!(h.take_completion_event(), None);
-}
-
-#[test]
-fn take_completion_event_does_not_fire_after_trip() {
-    let h = HomingState::new();
-    h.begin(8);
-    h.mark_dispatched_segment(2);
-    h.state.store(
-        HomingSegmentState::Tripped as u8,
-        std::sync::atomic::Ordering::Release,
-    );
-    h.complete_if_retired(2);
-    assert_eq!(h.state(), HomingSegmentState::Tripped);
     assert_eq!(h.take_completion_event(), None);
 }
 

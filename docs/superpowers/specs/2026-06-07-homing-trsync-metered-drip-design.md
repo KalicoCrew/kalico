@@ -190,7 +190,7 @@ config time (`mcu.py::add_stepper` check — retained).
 | `rust/motion-bridge/src/probe_homing.rs` | delete; Beacon folds into `TripDispatch` |
 | `rust/motion-bridge/src/enqueue.rs` | ≤ 25 ms piece subdivision for homing moves |
 | `rust/motion-bridge/src/pump.rs` | per-move-class lead horizon; 10 ms homing re-poll; `PumpMsg::Flush` |
-| `rust/motion-bridge/src/bridge.rs` / `homing.rs` | wire `HomingState` hooks (`mark_dispatched_segment` / `complete_if_retired`); flush-on-completion |
+| `rust/motion-bridge/src/bridge.rs` / `homing.rs` | natural-end completion via `refresh_after_wait` / retire polling; flush-on-completion |
 | `klippy/mcu.py` | bridge trsync arming gains report/timeout params (revise Part A's no-report arming) |
 | `klippy/motion_toolhead.py` | probe branch collapses into the common drip path |
 | `klippy/extras/homing.py` | unchanged |
