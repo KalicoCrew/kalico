@@ -3,6 +3,140 @@ use crate::Limits;
 use crate::topp::constraints::{BuildOutcome, EndpointVelocities, build};
 use crate::topp::path::ArclengthGrid;
 
+/// Verify that `append_axis_jerk_cut_to_clarabel` emits ∞-norm-normalized rows.
+///
+/// With cp=1.0, b_bars=[6.0; 3], h=1e-3 the stencil coefficients include
+/// cp·√b/h² ≈ 2.449e6 — a scale that historically wrecked QDLDL conditioning.
+/// After the fix every pushed coefficient must be ≤ 1.0 in absolute value (the
+/// row has been divided through by its ∞-norm), and the RHS values must equal
+/// the unscaled values divided by that same scale.
+#[test]
+fn axis_jerk_cut_row_norm_is_one() {
+    let n_grid = 5_usize;
+    let off_a = n_grid;
+    let n_vars = 2 * n_grid;
+
+    let h = 1e-3_f64;
+    let b_val = 6.0_f64;
+    let cp = 1.0_f64;
+    // cpp and cppp set to zero so the dominant term is cp·√b/h², which is
+    // the O(N²) coefficient that caused conditioning failures.
+    let cut = AxisJerkCut {
+        i: 2,
+        axis: 0,
+        stencil: AxisJerkStencil::Interior,
+        b_bars: [b_val, b_val, b_val],
+        a_bar_i: 0.0,
+        cp,
+        cpp: 0.0,
+        cppp: 0.0,
+        j_lim_inflated: 1_000.0,
+    };
+
+    // Compute the expected unscaled row_scale.  Interior stencil with cpp=cppp=0,
+    // a_bar=0, d2=0:
+    //   alpha_b_im1 = cp·√b / (2h²)
+    //   alpha_b_ip1 = cp·√b / (2h²)
+    //   alpha_b_i   = -cp·√b / h² + 0  (d2 = 0)
+    //   alpha_a_i   = 0
+    // So |alpha_b_i| = cp·√b/h² and the two side coefficients are half that.
+    // row_scale = cp·√b/h².
+    let s = b_val.sqrt();
+    let expected_scale = cp * s / (h * h);
+    assert!(
+        expected_scale > 1e5,
+        "test is only meaningful with large unscaled coefficients; got {expected_scale}"
+    );
+
+    let mut rowval: Vec<Vec<usize>> = vec![Vec::new(); n_vars];
+    let mut nzval: Vec<Vec<f64>> = vec![Vec::new(); n_vars];
+    let mut b_rhs: Vec<f64> = Vec::new();
+    let mut n_rows = 0_usize;
+
+    let b_floor = 0.0_f64;
+    append_axis_jerk_cut_to_clarabel(
+        &cut,
+        h,
+        b_floor,
+        &mut n_rows,
+        &mut rowval,
+        &mut nzval,
+        &mut b_rhs,
+        n_grid,
+    );
+
+    assert_eq!(n_rows, 2, "expected two rows (± pair)");
+    assert_eq!(b_rhs.len(), 2);
+
+    // Collect all non-zero coefficient magnitudes across both rows.
+    let max_coeff: f64 = nzval
+        .iter()
+        .flat_map(|col| col.iter().copied())
+        .map(f64::abs)
+        .fold(0.0_f64, f64::max);
+
+    assert!(
+        (max_coeff - 1.0).abs() < 1e-10,
+        "∞-norm of emitted rows should be 1.0, got {max_coeff}"
+    );
+
+    // RHS pair: the cut has k_const = 0 (cpp=cppp=0, d2=0, a_bar=0), so
+    // rhs_pos = j / row_scale and rhs_neg = j / row_scale — both equal.
+    let j = cut.j_lim_inflated;
+    let expected_rhs = j / expected_scale;
+    assert!(
+        (b_rhs[0] - expected_rhs).abs() < 1e-10 * expected_rhs.abs(),
+        "rhs[0] = {}, expected {expected_rhs}",
+        b_rhs[0]
+    );
+    assert!(
+        (b_rhs[1] - expected_rhs).abs() < 1e-10 * expected_rhs.abs(),
+        "rhs[1] = {}, expected {expected_rhs}",
+        b_rhs[1]
+    );
+
+    // The ± rows must have identical coefficient magnitudes (symmetry preserved).
+    let coeff_pos: Vec<f64> = nzval
+        .iter()
+        .enumerate()
+        .filter_map(|(col, entries)| {
+            let idx = entries
+                .iter()
+                .zip(rowval[col].iter())
+                .position(|(_, &r)| r == 0)?;
+            Some(entries[idx])
+        })
+        .collect();
+    let coeff_neg: Vec<f64> = nzval
+        .iter()
+        .enumerate()
+        .filter_map(|(col, entries)| {
+            let idx = entries
+                .iter()
+                .zip(rowval[col].iter())
+                .position(|(_, &r)| r == 1)?;
+            Some(entries[idx])
+        })
+        .collect();
+    assert_eq!(
+        coeff_pos.len(),
+        coeff_neg.len(),
+        "± rows must touch the same number of columns"
+    );
+    for (p, n) in coeff_pos.iter().zip(coeff_neg.iter()) {
+        assert!(
+            (p.abs() - n.abs()).abs() < 1e-14,
+            "coefficient magnitudes must match between ± rows: {p} vs {n}"
+        );
+    }
+
+    // off_a column (alpha_a_i = 0) must not appear in the output.
+    assert!(
+        rowval[off_a + cut.i].is_empty(),
+        "a_i column should be absent when cpp = 0"
+    );
+}
+
 fn dummy_straight_grid(n: usize, length: f64) -> ArclengthGrid {
     let s: Vec<f64> = (0..n).map(|i| length * i as f64 / (n - 1) as f64).collect();
     let u = s.clone();

@@ -362,25 +362,47 @@ fn append_axis_jerk_cut_to_clarabel(
 
     let anchor_b_col = off_b + i;
 
+    // Row-∞-norm scaling: cp·√b/h² grows as O(N²) with grid refinement,
+    // reaching 1.9e6 on fixture_4 (146-cut case) vs a-column coefficients ~10.
+    // A 40 000:1 in-row spread causes QDLDL to return infeasible/maxiter on
+    // every trust-region subproblem and stalls the SLP. Dividing every
+    // coefficient and both RHS values by row_scale is a feasible-set-exact
+    // transformation for Nonneg rows (positive scalar on a ≥ 0 constraint).
+    let row_scale = entries_extra
+        .iter()
+        .map(|&(_, a)| a.abs())
+        .fold(alpha_b_anchor.abs(), f64::max);
+
+    if row_scale == 0.0 {
+        // All coefficients are zero: vacuous constraint, skip both rows.
+        return;
+    }
+
+    let alpha_b_anchor_s = alpha_b_anchor / row_scale;
+    let entries_extra_s: [(usize, f64); 3] =
+        entries_extra.map(|(col, a)| (col, a / row_scale));
+    let rhs_pos = (j - k_const) / row_scale;
+    let rhs_neg = (j + k_const) / row_scale;
+
     // Sign-convention: A_clarabel = -A_k.
     let pos_row = *n_rows;
-    push_nz(rowval, nzval, anchor_b_col, pos_row, alpha_b_anchor);
-    for &(col, alpha) in &entries_extra {
+    push_nz(rowval, nzval, anchor_b_col, pos_row, alpha_b_anchor_s);
+    for &(col, alpha) in &entries_extra_s {
         if alpha != 0.0 {
             push_nz(rowval, nzval, col, pos_row, alpha);
         }
     }
-    b_rhs.push(j - k_const);
+    b_rhs.push(rhs_pos);
     *n_rows += 1;
 
     let neg_row = *n_rows;
-    push_nz(rowval, nzval, anchor_b_col, neg_row, -alpha_b_anchor);
-    for &(col, alpha) in &entries_extra {
+    push_nz(rowval, nzval, anchor_b_col, neg_row, -alpha_b_anchor_s);
+    for &(col, alpha) in &entries_extra_s {
         if alpha != 0.0 {
             push_nz(rowval, nzval, col, neg_row, -alpha);
         }
     }
-    b_rhs.push(j + k_const);
+    b_rhs.push(rhs_neg);
     *n_rows += 1;
 }
 
@@ -824,7 +846,11 @@ fn max_ratio(vs: &[JerkViolator]) -> f64 {
 // `j_axis = c'''·b^(3/2) + 3·c''·a·√b + c'·s⃛` has bilinear-times-sqrt
 // cross-terms (indefinite Hessian). Three mechanisms keep the SLP converging:
 //
-// 1. Active-set placement: cut only at (i, axis) pairs with ratio > 1 + ε.
+// 1. Wide-band cut placement: cut every (i, axis) with ratio > FRACTION·target,
+//    not just violators. Points just below the bar are free to rise above the
+//    previous best if uncut — the candidate's argmax lands at an uncut neighbor
+//    and is rejected every iteration (whack-a-mole). The RHS stays j_lim·target
+//    for all cuts, so near-active points keep their slack but cannot trade up.
 // 2. L∞ trust region: ρ_b = 0.05, ρ_a = 0.10. Expand 1.5× on accept,
 //    contract 0.5× on reject. Caps: ρ_b ∈ [0.005, 0.20], ρ_a ∈ [0.01, 0.40].
 // 3. Accept-only-if-decrease: up to MAX_BACKTRACKS=3 trust-region halvings
@@ -855,6 +881,14 @@ const SLP9_TARGET_DECAY: f64 = 0.85;
 /// flip on solve noise — observed stalls at ratio 1.0500000000422 vs the
 /// 1.05 acceptance check.
 const SLP9_TARGET_MARGIN: f64 = 1e-3;
+
+/// Cut placement threshold: place a cut at every (i, axis) whose current ratio
+/// exceeds this fraction of the homotopy target. 0.9 covers the "near-active"
+/// band that whack-a-mole exploits — the subproblem cannot trade cuts at
+/// violators for new peaks just below the bar if those neighbors are also cut.
+/// The cut RHS stays j_lim·target_ratio so each near-active point keeps its
+/// slack; only the CEILING is set, not pinned.
+const SLP9_CUT_PLACEMENT_FRACTION: f64 = 0.9;
 
 /// Path-jerk SLP (stage 1) then per-axis-jerk SLP (stage 2). Path-jerk
 /// failures short-circuit stage 2.
@@ -1057,7 +1091,7 @@ fn build_axis_jerk_cuts(
             let j = cppp * s_dot3 + 3.0 * cpp * s_dot * s_ddot + cp * s_dddot;
             let lim = limits.j_max[ax];
             let ratio = j.abs() / lim;
-            if ratio <= 1.0 + SLP9_EPS_FEAS {
+            if ratio <= SLP9_CUT_PLACEMENT_FRACTION * target_ratio {
                 continue;
             }
 
