@@ -73,6 +73,33 @@ fn clock32_reconstruction_handles_wrap() {
 }
 
 #[test]
+fn advance_exactly_min_extend_sends() {
+    // Dyadic constants make the boundary arithmetic exact in f64; mainline
+    // does this comparison in integer ticks where equality is exact, and
+    // `>=` must send at equality.
+    let mut e = engine(2, 0.5, 0.25, 0.0);
+    // P1's anchor becomes 0.25 → expire 0.75; baseline 0.5; advance is
+    // exactly min_extend (0.25) → sends.
+    assert_eq!(e.on_report(0, 0.25), vec![(1, 0.75)]);
+}
+
+#[test]
+fn suppressed_advance_does_not_persist() {
+    let mut e = engine(2, 0.025, 0.010, 0.0);
+    assert!(e.on_report(0, 0.005).is_empty());
+    let expected = 0.012_f64 + 0.025_f64;
+    let sends = e.on_report(0, 0.012);
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0].0, 1);
+    assert!((sends[0].1 - expected).abs() < 1e-12);
+}
+
+#[test]
+fn clock32_reconstruction_handles_forward_epoch_wrap() {
+    assert_eq!(clock32_to_64(0x0_FFFF_FF00, 0x0000_0100), 0x1_0000_0100);
+}
+
+#[test]
 fn tick_time_round_trip() {
     let freq = 520_000_000.0;
     let host_now = 100.0;
