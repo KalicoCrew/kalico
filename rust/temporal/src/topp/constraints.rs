@@ -648,27 +648,24 @@ pub fn build_chain(
             b_rhs.push(rhs);
         };
 
-    // Block (a): boundary equalities — zero cone.
+    // Block (a): boundary equalities + optional a_start pin.
     {
         let mut count = 0_usize;
         push_row(&mut a_rows, &mut b_rhs, &[(off_b, 1.0)], -b_start);
         count += 1;
         push_row(&mut a_rows, &mut b_rhs, &[(off_b + n - 1, 1.0)], -b_end);
         count += 1;
+        if let Some(a0) = endpoints.a_start {
+            assert!(
+                endpoints.v_start > 0.0,
+                "a_start pin at a rest start forces b_1 = 0 (rejected trap); \
+                 rest starts use the (e2) envelope"
+            );
+            // b_1 − b_0 − 2·h_0·a_0 = 0  (Zero cone; b_0 already pinned).
+            push_row(&mut a_rows, &mut b_rhs, &[(off_b + 1, 1.0), (off_b, -1.0)], -2.0 * h[0] * a0);
+            count += 1;
+        }
         cones.push((Cone::Zero, count));
-    }
-
-    // Block (a) pin: optional a_start equality — folded into the Zero cone above.
-    // Emitted as a separate Zero cone so the cone vector stays compatible with
-    // the legacy layout when a_start = None.
-    if let Some(a0) = endpoints.a_start {
-        push_row(
-            &mut a_rows,
-            &mut b_rhs,
-            &[(off_b + 1, 1.0), (off_b, -1.0)],
-            -2.0 * h[0] * a0,
-        );
-        cones.push((Cone::Zero, 1));
     }
 
     // Block (b): acceleration linkage — zero cone, N rows.
