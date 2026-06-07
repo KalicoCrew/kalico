@@ -9,11 +9,23 @@ const ALPHA_COLLINEAR_THRESHOLD: f64 = 1e-3;
 const ALPHA_REVERSAL_THRESHOLD: f64 = std::f64::consts::PI * 0.99;
 const V_JD_REVERSAL_FLOOR_MM_S: f64 = 1.0;
 
+/// Fuse threshold: junctions with tangent disagreement at or below this are
+/// chain-fused (treated G1-continuous). At 1000 mm/s a 1e-3 rad kink is a
+/// ~1 mm/s lateral step — far inside the scv impulse budget.
+const THETA_FUSE_RAD: f64 = 1e-3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum JunctionKind {
+    Smooth,
+    Corner,
+}
+
 pub(crate) struct JunctionResult {
     pub v_junction: f64,
     pub binding_cap: JunctionBindingCap,
     pub kappa_left: f64,
     pub kappa_right: f64,
+    pub kind: JunctionKind,
 }
 
 pub(crate) fn compute_junction_velocity(
@@ -25,6 +37,8 @@ pub(crate) fn compute_junction_velocity(
 ) -> JunctionResult {
     let t_left = forward_unit_tangent_at_end(left);
     let t_right = forward_unit_tangent_at_start(right);
+
+    let kind = classify_junction(&t_left, &t_right);
 
     let kappa_left = curvature_at_end(left);
     let kappa_right = curvature_at_start(right);
@@ -60,6 +74,7 @@ pub(crate) fn compute_junction_velocity(
         binding_cap: binding,
         kappa_left,
         kappa_right,
+        kind,
     }
 }
 
@@ -72,6 +87,26 @@ fn per_axis_velocity_cap(t: &[f64; 3], limits: &Limits) -> f64 {
         }
     }
     cap
+}
+
+fn classify_junction(t_left: &[f64; 3], t_right: &[f64; 3]) -> JunctionKind {
+    let left_degenerate = t_left[0].abs() + t_left[1].abs() + t_left[2].abs() < 1e-12;
+    let right_degenerate = t_right[0].abs() + t_right[1].abs() + t_right[2].abs() < 1e-12;
+    if left_degenerate || right_degenerate {
+        return JunctionKind::Corner;
+    }
+    if turn_angle(t_left, t_right) <= THETA_FUSE_RAD {
+        JunctionKind::Smooth
+    } else {
+        JunctionKind::Corner
+    }
+}
+
+fn turn_angle(t_left: &[f64; 3], t_right: &[f64; 3]) -> f64 {
+    let dot = (t_left[0] * t_right[0] + t_left[1] * t_right[1] + t_left[2] * t_right[2])
+        .clamp(-1.0, 1.0);
+    let sin_half = ((1.0 - dot) * 0.5).max(0.0).sqrt();
+    2.0 * sin_half.asin()
 }
 
 fn centripetal_cap(kappa: f64, limits: &Limits) -> f64 {
@@ -97,9 +132,7 @@ fn sharp_corner_jd_cap(
         (t_left[0] * t_right[0] + t_left[1] * t_right[1] + t_left[2] * t_right[2]).clamp(-1.0, 1.0);
 
     let cos_half_alpha = ((1.0 + dot) * 0.5).max(0.0).sqrt();
-
-    let sin_half_alpha = ((1.0 - dot) * 0.5).max(0.0).sqrt();
-    let alpha = 2.0 * sin_half_alpha.asin();
+    let alpha = turn_angle(t_left, t_right);
 
     if alpha <= ALPHA_COLLINEAR_THRESHOLD {
         return B_MAX_CENT_CAP.sqrt();

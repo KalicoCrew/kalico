@@ -1,5 +1,6 @@
 use super::*;
 use crate::multi::JunctionBindingCap;
+use crate::multi::junction::JunctionKind;
 
 fn make_state(v_start: f64, v_end: f64) -> SegmentState {
     SegmentState {
@@ -16,6 +17,7 @@ fn make_junction(v: f64) -> JunctionResult {
         binding_cap: JunctionBindingCap::Centripetal,
         kappa_left: 0.0,
         kappa_right: 0.0,
+        kind: JunctionKind::Corner,
     }
 }
 

@@ -9,6 +9,14 @@ fn textbook_limits() -> Limits {
     }
 }
 
+fn line(from: [f64; 3], to: [f64; 3]) -> VectorNurbs<f64, 3> {
+    VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![from, to]).unwrap()
+}
+
+fn lims() -> Limits {
+    textbook_limits()
+}
+
 #[test]
 fn jd_collinear_no_cap() {
     let t_x = [1.0, 0.0, 0.0];
@@ -61,4 +69,20 @@ fn compute_junction_velocity_g1_to_g1_90deg() {
         result.binding_cap,
         JunctionBindingCap::SharpCornerChord
     ));
+}
+
+#[test]
+fn collinear_junction_is_smooth() {
+    let a = line([0.0; 3], [40.0, 0.0, 0.0]);
+    let b = line([40.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
+    let r = compute_junction_velocity(&a, &b, &lims(), &lims(), 0.05);
+    assert!(matches!(r.kind, JunctionKind::Smooth));
+}
+
+#[test]
+fn right_angle_junction_is_corner() {
+    let a = line([0.0; 3], [40.0, 0.0, 0.0]);
+    let b = line([40.0, 0.0, 0.0], [40.0, 60.0, 0.0]);
+    let r = compute_junction_velocity(&a, &b, &lims(), &lims(), 0.05);
+    assert!(matches!(r.kind, JunctionKind::Corner));
 }
