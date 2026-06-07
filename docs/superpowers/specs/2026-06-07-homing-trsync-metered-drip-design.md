@@ -201,14 +201,38 @@ config time (`mcu.py::add_stepper` check — retained).
 1. **Unit**: extension algorithm against simulated report streams (min-anchor
    correctness, self-extension impossibility, hysteresis, silence → expiry);
    piece slicing (≤ 25 ms, continuity at slice boundaries); horizon gating +
-   flush.
+   flush. **Done** — `trip_dispatch/extension_tests.rs`, `enqueue/tests.rs`,
+   `pump/tests.rs` + `pump/sched_tests.rs`, `endstop/tests.rs` (software_trip
+   disarm contract), `router` clock-conversion tests.
 2. **Integration (exists, Part A)**: live-reactor relay test
-   (`relay_reactor_integration.rs`) — extend with timeout-extension cases.
+   (`relay_reactor_integration.rs`) — extended with timeout-extension cases.
+   **Done.**
 3. **Dual-MCU Renode sim**: trip on MCU A freezes MCU B via relay; silence on
-   MCU A expires MCU B via timeout.
+   MCU A expires MCU B via timeout. **Pending bench session.**
 4. **Hardware ladder**: sensorless X on H7 through the relay (siren disabled,
    free air) → Beacon + F446 Z. Current bench symptom (homing travels through
-   the crash) is diagnosed at rung 1, not speculatively.
+   the crash) is diagnosed at rung 1, not speculatively. **Pending bench
+   session.** First-success milestone is rung 1 = *stop on trigger* alone;
+   position reset (set_position drain reconciliation) and Beacon position math
+   are rung 2+.
+
+Whole-branch stop-path review (host→Rust→firmware identifier consistency,
+relay-reaches-freeze trace, liveness can't false-trip a healthy move, metered
+drip can't stall short of the switch, disarm no-op guard) passed with zero
+critical findings as of the code-complete commit.
+
+### Known follow-ups (not on the stop-path milestone)
+
+- **`set_position` drain reconciliation**: after a trip, frozen-ring
+  pushed-but-unretired pieces make `set_position`'s `drain.wait_drained` time
+  out → error at coordinate reset. Lands *after* the stop, so it does not block
+  rung 1; fix when moving to homes-and-resumes.
+- **Classic trsync 30 s initial expire window** in bridge mode
+  (`mcu.py` `max(expire_timeout, 30.0)`): wider-than-necessary arm window for
+  Beacon if `TripDispatch` is torn down without firing. Not a stop-path bug.
+- **Multi-axis homing**: `submit_homing_move_inner` uses `arm_ids.first()`;
+  `_on_trip_message` filters by arm_id correctly, but multi-arm concurrent
+  homing is unexercised. Rung-1 is single-axis.
 
 ## Out of scope / future
 
