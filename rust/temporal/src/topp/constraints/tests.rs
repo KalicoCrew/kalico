@@ -354,6 +354,54 @@ fn nonzero_endpoints_emit_no_envelope_rows() {
 // Test 8: diagonal X=Y line yields A_env ≈ √2 · a_max (projected cap)
 // -------------------------------------------------------------------------
 
+// -------------------------------------------------------------------------
+// Test 9: chain-of-1 emits identical bundle to legacy build
+// -------------------------------------------------------------------------
+
+#[test]
+fn build_chain_of_one_emits_identical_bundle() {
+    use super::{BuildOutcome, EndpointConditions, SolverScale, build_chain};
+
+    let curve = crate::topp::chain::tests_support::line_50mm();
+    let grid = crate::topp::path::sample_arclength_grid(&curve, 16).unwrap();
+    let limits = crate::Limits {
+        v_max: [300.0; 3],
+        a_max: [5_000.0; 3],
+        j_max: [100_000.0; 3],
+        a_centripetal_max: 2_500.0,
+    };
+    let scale = SolverScale::identity();
+    let legacy = match build(
+        &grid,
+        &limits,
+        EndpointVelocities { v_start: 10.0, v_end: 0.0 },
+        &scale,
+    ) {
+        BuildOutcome::Ok(b) => b,
+        other => panic!("legacy build failed: {other:?}"),
+    };
+    let chain = crate::topp::chain::ChainGrid::from_segment_grids(vec![grid], vec![limits]);
+    let new = match build_chain(
+        &chain,
+        EndpointConditions { v_start: 10.0, v_end: 0.0, a_start: None },
+        &scale,
+    ) {
+        BuildOutcome::Ok(b) => b,
+        other => panic!("chain build failed: {other:?}"),
+    };
+    assert_eq!(legacy.n_vars, new.n_vars);
+    assert_eq!(legacy.cones, new.cones);
+    assert_eq!(legacy.b_rhs.len(), new.b_rhs.len());
+    for (i, (lr, nr)) in legacy.a_rows.iter().zip(&new.a_rows).enumerate() {
+        for (j, (lv, nv)) in lr.iter().zip(nr).enumerate() {
+            assert!((lv - nv).abs() < 1e-12, "row {i} col {j}: {lv} vs {nv}");
+        }
+    }
+    for (i, (lv, nv)) in legacy.b_rhs.iter().zip(&new.b_rhs).enumerate() {
+        assert!((lv - nv).abs() < 1e-12, "rhs {i}: {lv} vs {nv}");
+    }
+}
+
 #[test]
 fn diagonal_line_a_env_is_projected() {
     let n = 5_usize;

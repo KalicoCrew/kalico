@@ -493,7 +493,14 @@ fn solve_with_cuts_and_trust_region(
 
     let mut b_rhs: Vec<f64> = bundle.b_rhs.clone();
     let j_path = bundle.j_path;
-    let h = bundle.h;
+    let h = bundle.h_intervals[0];
+    debug_assert!(
+        bundle
+            .h_intervals
+            .iter()
+            .all(|&hi| (hi - h).abs() < 1e-12),
+        "legacy SLP path requires uniform spacing"
+    );
     debug_assert!(
         j_path > 0.0 && h > 0.0,
         "bundle must carry positive j_path/h"
@@ -705,7 +712,14 @@ pub(crate) fn slp_solve(
     tol: f64,
     scale: &SolverScale,
 ) -> Result<(SolverResult, SlpOutcome), SolverSetupError> {
-    let h = bundle.h;
+    let h = bundle.h_intervals[0];
+    debug_assert!(
+        bundle
+            .h_intervals
+            .iter()
+            .all(|&hi| (hi - h).abs() < 1e-12),
+        "legacy SLP path requires uniform spacing"
+    );
     let j_path = bundle.j_path;
     debug_assert!(h > 0.0 && j_path > 0.0);
 
@@ -922,7 +936,15 @@ pub(crate) fn slp_solve_with_axis_jerk(
         _ => 0,
     };
 
-    let initial_max = max_axis_ratio(&last_result, grid, limits, bundle.h);
+    let h = bundle.h_intervals[0];
+    debug_assert!(
+        bundle
+            .h_intervals
+            .iter()
+            .all(|&hi| (hi - h).abs() < 1e-12),
+        "legacy SLP path requires uniform spacing"
+    );
+    let initial_max = max_axis_ratio(&last_result, grid, limits, h);
     if initial_max <= 1.0 + SLP9_EPS_FEAS {
         return Ok((
             last_result,
@@ -945,7 +967,6 @@ pub(crate) fn slp_solve_with_axis_jerk(
             );
         }
 
-        let h = bundle.h;
         let target_floor = (1.0 + SLP9_EPS_FEAS) * (1.0 - SLP9_TARGET_MARGIN);
         let target_ratio = (best_ratio * SLP9_TARGET_DECAY).max(target_floor);
         let cuts = build_axis_jerk_cuts(&last_result, grid, limits, target_ratio, h);
