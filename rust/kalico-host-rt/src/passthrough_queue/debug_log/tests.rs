@@ -26,7 +26,6 @@ fn sent_queue_capped_at_100() {
 
     let (sent, _) = log.extract_old();
     assert_eq!(sent.len(), DEBUG_QUEUE_SENT);
-    // Oldest entry should be seq=50 (first 50 were evicted).
     assert_eq!(sent[0].seq, 50);
     assert_eq!(sent[99].seq, 149);
 }
@@ -54,7 +53,6 @@ fn extract_old_drains_buffers() {
     assert_eq!(log.sent_count(), 0);
     assert_eq!(log.received_count(), 0);
 
-    // Second extract returns empty.
     let (sent, received) = log.extract_old();
     assert!(sent.is_empty());
     assert!(received.is_empty());

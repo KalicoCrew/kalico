@@ -1,34 +1,4 @@
 #!/usr/bin/env python3
-"""
-Renode GPIO injection + virtual-time fixture for kalico-rewrite.
-
-This is the Step 7-D deterministic simulator fixture. It intentionally uses
-Option A: a Renode monitor wrapper drives virtual time and GPIO state, while
-the firmware is touched only by a tiny CONFIG_KALICO_SIM-only validation
-command (`runtime_sim_gpio_sample`). That keeps the simulator controls outside
-production firmware and still proves the host can poll async firmware output
-through the normal Klipper msgproto path.
-
-Invocation:
-    tools/sim/build_sim_firmware.sh
-    python3 tools/test_renode_gpio_injection.py
-
-Expected runtime: roughly 20-60 seconds on Apple Silicon with Renode 1.16.
-
-What this covers:
-    - boots the existing H723 Renode sim from tools/sim/h723_sim.resc
-    - advances simulated time with exact `emulation RunFor` durations
-    - drives a GPIO input line at a precise virtual-time boundary
-    - observes both the synchronous response and async output frame emitted
-      by fixture-validation-only firmware scaffolding
-
-What this does not cover:
-    - real Step 7-D endstop arm/trip protocol (not implemented yet)
-    - hardware endstops, TMC DIAG pins, motors, or stepper position snapshots
-    - production firmware builds; the sample command exists only when
-      CONFIG_KALICO_SIM=y
-"""
-
 import argparse
 import os
 import pathlib
@@ -46,8 +16,6 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 
 from kalico_host_io import KalicoHostIO  # noqa: E402
 
-# Renode GPIO-injection fixture/harness. Boots the H723 Renode sim.
-# Tagged needs_renode so it is honestly excluded from CI (no Renode there).
 pytestmark = pytest.mark.needs_renode
 
 # Renode emits the monitor prompt `(h723)` after a command completes, but
@@ -344,8 +312,6 @@ def test_gpio_injection_fixture(args):
         parser = io.get_msgparser()
         messages = parser.get_messages()
 
-        # `get_messages()` returns `(msgid, msgtype, msgformat)` tuples;
-        # the format string is the third element.
         def _msg_fmt(m):
             if isinstance(m, str):
                 return m
@@ -371,8 +337,6 @@ def test_gpio_injection_fixture(args):
             "[gpio] initial low sample observed via response and async output"
         )
 
-        # T = 3 ms from the post-low baseline. The OnGPIO transition occurs
-        # while emulation is paused immediately after the exact RunFor window.
         renode.drive_gpio_at(0.003, "C", 13, True)
         high = sample_gpio(io, renode, sample_id=2, pin_name="PC13", pull_up=0)
         assert_sample(

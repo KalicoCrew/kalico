@@ -1,8 +1,3 @@
-//! Helpers shared between the hw endpoint and the no-hardware stub.
-//!
-//! Both binaries perform the same spawn-on-claim handshake and build the same
-//! single-slave reply shape; keeping them in one place avoids drift.
-
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use kalico_protocol::messages::{ClaimHandshakeReply, SlaveState, SlaveStatus};
@@ -42,8 +37,6 @@ pub fn wait_for_claim(
     }
 }
 
-/// Build a [`ClaimHandshakeReply`] with a single slave entry at the given
-/// `slave_idx`.
 pub fn single_slave_reply(
     slave_idx: u8,
     state: SlaveState,
@@ -68,7 +61,6 @@ pub fn single_slave_reply(
 /// no longer receiving valid PDO exchanges.
 pub const WKC_CONSECUTIVE_LOSS_LIMIT: u8 = 2;
 
-/// Outcome of evaluating a single working-counter sample.
 #[derive(Debug, PartialEq, Eq)]
 pub enum WkcDecision {
     /// Working counter is good; counter has been reset.
@@ -93,19 +85,15 @@ pub enum WkcDecision {
 /// let expected = 3i32;
 /// let mut consecutive = 0u8;
 ///
-/// // Good cycle — counter stays 0.
 /// assert_eq!(eval_wkc(3, expected, &mut consecutive), WkcDecision::Good);
 /// assert_eq!(consecutive, 0);
 ///
-/// // First bad cycle — warn, do not halt.
 /// assert_eq!(eval_wkc(-1, expected, &mut consecutive), WkcDecision::Warn(1));
 /// assert_eq!(consecutive, 1);
 ///
-/// // Good cycle after one bad — counter resets.
 /// assert_eq!(eval_wkc(3, expected, &mut consecutive), WkcDecision::Good);
 /// assert_eq!(consecutive, 0);
 ///
-/// // Two consecutive bad cycles — halt.
 /// eval_wkc(-1, expected, &mut consecutive);
 /// assert_eq!(eval_wkc(-1, expected, &mut consecutive), WkcDecision::Halt);
 /// ```

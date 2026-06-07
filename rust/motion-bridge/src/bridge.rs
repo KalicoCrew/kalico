@@ -43,7 +43,6 @@ struct McuConnection {
     endpoint_conn: Option<Arc<UnixNativeConn>>,
 }
 
-/// Exceeding this means a wedged MCU — fail loudly.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, thiserror::Error)]
@@ -223,8 +222,6 @@ mod claim_error_message_tests {
     }
 }
 
-/// Spawn the EtherCAT endpoint binary.
-///
 /// The caller (`claim_ethercat_node`) removes any stale socket file at
 /// `socket_path` before calling this function. That pre-spawn removal is
 /// necessary: `FrameServer::bind` unlinks-and-rebinds on the path, but that
@@ -247,10 +244,6 @@ fn spawn_ethercat_endpoint(
         .map_err(|e| format!("spawn {binary}: {e}"))
 }
 
-/// Poll for the socket file to appear, sleeping 20 ms between checks.
-///
-/// Early child death is detected at the call site (see `claim_ethercat_node`)
-/// between poll iterations.
 fn poll_socket_ready(
     path: &str,
     deadline: Instant,
@@ -263,8 +256,6 @@ fn poll_socket_ready(
         if Instant::now() >= deadline {
             return Err(format!("endpoint socket {path} did not appear within 15 s"));
         }
-        // Detect early process death so the user gets a fast failure rather
-        // than burning the full 15 s.
         match child.try_wait() {
             Ok(Some(status)) => {
                 return Err(format!(
@@ -728,9 +719,6 @@ impl PyMotionBridge {
         endpoint_binary: &str,
         counts_per_mm: f64,
     ) -> PyResult<u32> {
-        // Remove any stale socket file left by a previous session. The bridge
-        // owns this path's lifecycle: anything already there is a dead leftover.
-        // NotFound is fine (clean slate); every other error is fatal.
         if let Err(e) = std::fs::remove_file(socket_path) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 return Err(PyRuntimeError::new_err(format!(
@@ -876,7 +864,6 @@ impl PyMotionBridge {
                     Err(_) => break,
                 }
                 if Instant::now() >= reap_deadline {
-                    // Backstop: force-kill the endpoint.
                     let _ = child.kill();
                     let _ = child.wait();
                     log::warn!(
@@ -1327,9 +1314,6 @@ impl PyMotionBridge {
         }
 
         if kalico_native_supported {
-            // Wire the MCU log hook.  The hook timestamps MCU log events using
-            // the router's clock record — fed by Python clocksync via
-            // set_clock_est, which is the single writer for all MCUs.
             let events_dir_guard = self.events_dir.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(ref dir) = *events_dir_guard {
                 use crate::logging::writer::{
@@ -1805,16 +1789,6 @@ impl PyMotionBridge {
         Ok(Some(d.unbind()))
     }
 
-    /// Ask the MCU's reactor to encode+send `get_clock` and stamp the
-    /// unsolicited "clock" response with honest CLOCK_MONOTONIC_RAW RTT
-    /// measurements. Encoding happens in the reactor with that MCU's own
-    /// dictionary — the bridge-level parser holds whichever dict was set
-    /// last and must never encode for a specific MCU.
-    ///
-    /// Called from `serialhdl` in bridge mode for the periodic
-    /// `_get_clock_event` loop.  Returns immediately (fire-and-forget); the
-    /// response arrives via `take_runtime_event` as a PassthroughResponse with
-    /// `sent_time_raw`/`recv_time_raw` baked in.
     fn bridge_get_clock_async(&self, mcu_handle: u32) -> PyResult<()> {
         let io =
             {
@@ -1884,17 +1858,6 @@ impl PyMotionBridge {
         last_clock: u64,
         host_now_raw: f64,
     ) -> PyResult<()> {
-        // Python clocksync is the single writer of the router clock record for
-        // all MCUs (including kalico-native H7/F446 and Beacon).  The former
-        // Rust periodic sync loop has been retired — clocksync.py feeds every
-        // MCU via this path.
-        //
-        // `offset` arrives as `time_avg + min_half_rtt` in CLOCK_MONOTONIC_RAW
-        // seconds (the mirror callback now exports the faithful clock_est triple
-        // rather than TRANSMIT_EXTRA-biased values).  `host_now_raw` is captured
-        // by the Python callback as its first action (reactor.monotonic() ==
-        // CLOCK_MONOTONIC_RAW) so both sides of the epoch translation are in the
-        // same domain with no GIL-hop jitter added on the Rust side.
         self.clock_freqs
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -2270,14 +2233,11 @@ impl PyMotionBridge {
                         loop {
                             conn_for_poll.poll_events();
 
-                            // Supervision: check for conn EOF before checking the child,
-                            // because EOF is cheaper and fires first on clean exit.
                             if conn_for_poll.peer_closed() {
                                 on_endpoint_death("conn EOF");
                                 return;
                             }
 
-                            // Check child exit status with a brief mutex acquisition.
                             let child_exited = {
                                 let mut mcus = mcus_for_supervision
                                     .lock()
@@ -3048,12 +3008,8 @@ mod ethercat_endpoint_tests {
         );
     }
 
-    /// `poll_socket_ready` must detect early child death and return an error
-    /// well before the deadline rather than burning the full timeout.
     #[test]
     fn poll_socket_ready_detects_early_child_death() {
-        // Spawn a process that exits immediately with code 3.
-        // The socket path is deliberately one that will never appear.
         let mut child = std::process::Command::new("sh")
             .args(["-c", "exit 3"])
             .spawn()
@@ -3074,10 +3030,9 @@ mod ethercat_endpoint_tests {
                 }
             }
         };
-        let _ = waited; // document that the child is confirmed dead
+        let _ = waited;
 
         let socket_path = "/tmp/kalico_test_socket_that_will_never_exist_a1b2c3d4";
-        // Deadline is generous (30 s); we expect a fast error.
         let deadline = Instant::now() + Duration::from_secs(30);
         let start = Instant::now();
         let result = poll_socket_ready(socket_path, deadline, &mut child);
@@ -3096,8 +3051,6 @@ mod ethercat_endpoint_tests {
         );
     }
 
-    /// Build a framed ClaimHandshakeReply that `handshake_ethercat_endpoint`
-    /// can parse.  Returns the raw bytes to write onto the socket.
     fn encode_claim_handshake_reply(correlation_id: u32) -> Vec<u8> {
         use kalico_native_transport::frame::{CHANNEL_CONTROL, encode_frame};
         use kalico_native_transport::wire_helpers::{
@@ -3125,8 +3078,6 @@ mod ethercat_endpoint_tests {
         encode_frame(CHANNEL_CONTROL, &payload)
     }
 
-    /// Parse the first framed message from `buf[..n]`, returning its
-    /// correlation_id so the reply can be correlated.
     fn extract_correlation_id(buf: &[u8]) -> u32 {
         use kalico_native_transport::demux::{Demuxer, Frame};
         use kalico_native_transport::wire_helpers::decode_message_header;
@@ -3143,10 +3094,6 @@ mod ethercat_endpoint_tests {
         0
     }
 
-    /// A stale socket file — left by a dropped listener — must not prevent
-    /// `handshake_ethercat_endpoint` from succeeding once the real listener is
-    /// up. The retry loop in `handshake_ethercat_endpoint` must connect past
-    /// the ECONNREFUSED / ENOENT window.
     #[test]
     fn handshake_retries_past_stale_socket_file() {
         use std::os::unix::net::UnixListener;
@@ -3158,33 +3105,21 @@ mod ethercat_endpoint_tests {
         );
         let _ = std::fs::remove_file(&path);
 
-        // Create a socket file that has no listener behind it (bind → drop without
-        // removing the file).  On Linux and macOS, dropping UnixListener does NOT
-        // unlink the file — assert this as a precondition so the test is
-        // self-documenting.
         {
             let _listener = UnixListener::bind(&path)
                 .unwrap_or_else(|e| panic!("bind for stale-file setup failed: {e}"));
-            // listener drops here; file stays
         }
         assert!(
             std::path::Path::new(&path).exists(),
             "UnixListener drop must leave the socket file — test precondition violated"
         );
 
-        // Background thread: remove the stale file and bind a real listener,
-        // then signals via `tx` once the listener is bound.  The foreground
-        // waits for that signal before calling handshake — this eliminates the
-        // sleep-based timing dependency that flaps under parallel-test load.
-        // After writing the reply, the thread calls `shutdown(Write)` so the
-        // foreground receives a clean FIN instead of a torn-down fd.
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let path_bg = path.clone();
         let bg = std::thread::spawn(move || {
             let _ = std::fs::remove_file(&path_bg);
             let listener = UnixListener::bind(&path_bg)
                 .unwrap_or_else(|e| panic!("background listener bind failed: {e}"));
-            // Signal after bind so the foreground knows the listener is up.
             let _ = tx.send(());
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut buf = [0u8; 4096];
@@ -3206,7 +3141,6 @@ mod ethercat_endpoint_tests {
             }
         });
 
-        // Wait for the background listener to be bound (with a generous bound).
         rx.recv_timeout(Duration::from_secs(5))
             .expect("background listener must signal within 5 s");
 
@@ -3223,14 +3157,6 @@ mod ethercat_endpoint_tests {
         assert!(succeeded, "handshake must succeed once listener is up");
     }
 
-    /// `handshake_ethercat_endpoint` must NOT immediately return
-    /// ConnectionRefused as a fatal Protocol error when the socket path has a
-    /// dead file but no listener — it must retry until the deadline.
-    ///
-    /// Structure: the handshake call runs in a background thread while the
-    /// foreground waits 100 ms (letting the handshake hit ConnectionRefused at
-    /// least once) and then sets up the real listener.  Using a thread for the
-    /// handshake removes the timing-sensitivity of the sleep-based approach.
     #[test]
     fn handshake_connect_refused_is_not_immediately_fatal() {
         use std::os::unix::net::UnixListener;
@@ -3243,20 +3169,15 @@ mod ethercat_endpoint_tests {
         );
         let _ = std::fs::remove_file(&path);
 
-        // Bind-then-drop leaves a dead socket file with no listener.
         {
             let _l = UnixListener::bind(&path).unwrap_or_else(|e| panic!("bind failed: {e}"));
         }
 
-        // Flag: set by the handshake thread once it has tried at least once.
         let tried = Arc::new(AtomicBool::new(false));
         let tried_bg = Arc::clone(&tried);
 
-        // Channel for the foreground to signal the listener thread to stop.
         let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
 
-        // Handshake thread: calls handshake with a 4 s deadline.
-        // The listener won't be ready for ~100 ms so it will retry.
         let path_hs = path.clone();
         let hs = std::thread::spawn(move || {
             tried_bg.store(true, Ordering::SeqCst);
@@ -3264,9 +3185,6 @@ mod ethercat_endpoint_tests {
             handshake_ethercat_endpoint(&path_hs, deadline)
         });
 
-        // Foreground: wait until the handshake thread has started, then sleep
-        // briefly so the first connect attempt hits ConnectionRefused, then
-        // set up the real listener.
         while !tried.load(Ordering::SeqCst) {
             std::thread::yield_now();
         }
@@ -3276,7 +3194,6 @@ mod ethercat_endpoint_tests {
         let listener =
             UnixListener::bind(&path).unwrap_or_else(|e| panic!("late listener bind failed: {e}"));
 
-        // Listener thread: accept one connection and serve the reply.
         let path_lt = path.clone();
         let lt = std::thread::spawn(move || {
             let _ = stop_rx; // keep channel alive
@@ -3308,8 +3225,6 @@ mod ethercat_endpoint_tests {
         let _ = std::os::unix::net::UnixStream::connect(&path);
         let _ = lt.join();
 
-        // The result must be Ok — or if not, must NOT be a ConnectionRefused
-        // failure, which would mean the retry loop gave up immediately.
         if let Some(msg) = error_msg {
             assert!(
                 !msg.to_ascii_lowercase().contains("connection refused"),

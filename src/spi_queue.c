@@ -1,5 +1,3 @@
-// See spi_queue.h for the design.
-
 #include "spi_queue.h"
 
 // used,externally_visible: only the Rust staticlib references this, so

@@ -1,22 +1,16 @@
-// Cortex-M fault handler — captures the exception stack frame and fault status
-// registers into reset-surviving RAM (.bkp_bss on H7, .persistent_diag else)
-// so the next boot can report what crashed the previous run.
-
 #include <stdint.h>
 #include <string.h>
 #include "autoconf.h"
 #include "board/internal.h"
-#include "board/irq.h"        // irq_save / irq_restore for ring push
+#include "board/irq.h"
 #include "command.h"
 #include "sched.h"
-#include "kalico_log.h"       // kalico_log_emit + KALICO_LOG_* (crash-forensics emit)
+#include "kalico_log.h"
 
 extern volatile uint8_t runtime_liveness_ok;
 extern void *runtime_handle;
 extern uint32_t runtime_handle_tick_counter(void *handle);
 extern uint8_t  runtime_handle_status(void *handle);
-// Mirrors the struct in runtime_tick.c; read directly here (a separate helper
-// got LTO-stripped as its call site looked dead).
 struct rt_diag_persistent {
     uint32_t magic;
     uint32_t last_packed;
@@ -25,12 +19,11 @@ struct rt_diag_persistent {
 };
 extern volatile struct rt_diag_persistent rt_diag_persistent;
 
-// Marks "fault record valid"; chosen unlikely to occur in undefined power-on SRAM.
 #define FAULT_MAGIC 0x46415541u
 
 struct fault_record {
     uint32_t magic;
-    uint32_t exc_kind;     // 1=HardFault, 2=BusFault, 3=UsageFault, 4=MemManage
+    uint32_t exc_kind;
     uint32_t r0, r1, r2, r3, r12, lr, pc, psr;
     uint32_t cfsr, hfsr, dfsr, bfar, mmfar, afsr;
     uint32_t exc_return;
@@ -43,29 +36,23 @@ struct fault_record {
 struct live_snapshot {
     uint32_t magic;
     uint32_t live;
-    uint32_t engine_status; // 0=IDLE 1=RUNNING 2=DRAINED 3=FAULT
+    uint32_t engine_status;
     uint32_t tick_counter;
     uint32_t sample_time;
     uint32_t boot_count;
     uint32_t last_engine_running_tick;
     uint32_t samples_taken;
-    // Cross-boot freeze watchdog: TIM5 ISR latches worst stall + stacked PC/exc
-    // so a PRIMASK-freeze is identifiable after the IWDG reset.
     uint32_t worst_fg_stall_ticks;
     uint32_t worst_fg_stall_pc;
     uint32_t worst_fg_stall_exc;
     uint32_t iwdg_reset_count;
-    // Written BEFORE the call so a hung callback's addr survives the reset.
     uint32_t last_dispatch_func;
     uint32_t last_dispatch_addr;
-    // Per-run (not cross-boot max) freeze flag; survives klippy's connect-reset
-    // via BKPSRAM, which masks the immediate RCC cause. Reset at each boot-init.
     uint32_t this_run_froze;
 };
 
-// H7: .bkp_bss survives IWDG/soft reset but needs PWR->CR2.BREN +
-// RCC->AHB4ENR.BKPRAMEN (fault_handler_init). Else: .persistent_diag is a
-// NOLOAD section outside [_bss_start.._bss_end] so the boot zero-pass skips it.
+// .persistent_diag must stay a NOLOAD section outside [_bss_start.._bss_end] or
+// the boot zero-pass wipes these reset-surviving records.
 #if CONFIG_MACH_STM32H7
 __attribute__((section(".bkp_bss"), used))
 #else
@@ -80,8 +67,9 @@ __attribute__((section(".persistent_diag"), used))
 #endif
 static volatile struct live_snapshot live_snap;
 
-// H7 BKPSRAM is D-cache-backed: writes need SCB_CleanDCache_by_Addr, not just
-// __DSB() (which drains only the store buffer, not the cache lines).
+// H7 BKPSRAM is D-cache-backed: writes need SCB_CleanDCache_by_Addr; a bare
+// __DSB() drains only the store buffer, not the cache lines, so crash records
+// would be lost across reset.
 #if CONFIG_MACH_STM32H7
 static inline void
 diag_cache_clean(void)
@@ -97,43 +85,39 @@ static inline void diag_cache_clean(void) { __DSB(); }
 #endif
 
 #define DIAG_MAGIC      0x4449414Eu
-#define DIAG_RING_LEN   32           // power-of-two for cheap mask
+#define DIAG_RING_LEN   32
 #define DIAG_RING_MASK  (DIAG_RING_LEN - 1)
-// ~0.8 ms of stalled foreground at the H7 sample rate — above scheduling
-// jitter, below the IWDG timeout.
+_Static_assert((DIAG_RING_LEN & DIAG_RING_MASK) == 0,
+               "DIAG_RING_LEN must be a power of two for DIAG_RING_MASK");
 #define FG_FREEZE_REPORT_THRESHOLD 8
 
-// Event tags; a/b carry the salient values per tag.
 enum {
     DIAG_EV_NONE          = 0,
-    DIAG_EV_TIM5_LONG     = 1,   // a=duration_cycles, b=enter_time
-    DIAG_EV_OTG_LONG      = 2,   // a=duration_cycles, b=enter_time
-    DIAG_EV_USB_OUT_GAP   = 3,   // a=gap_us, b=prev_call_time
-    DIAG_EV_USB_IN_GAP    = 4,   // a=gap_us, b=prev_call_time
-    DIAG_EV_TX_DROP_KAL   = 5,   // a=len, b=transmit_pos_at_drop
-    DIAG_EV_TX_DROP_KLP   = 6,   // a=max_size, b=transmit_pos_at_drop
-    DIAG_EV_ENGINE_XITION = 7,   // a=(prev<<8)|new, b=samples_taken
-    DIAG_EV_RUST_FAULT    = 8,   // a=last_error, b=fault_detail
+    DIAG_EV_TIM5_LONG     = 1,
+    DIAG_EV_OTG_LONG      = 2,
+    DIAG_EV_USB_OUT_GAP   = 3,
+    DIAG_EV_USB_IN_GAP    = 4,
+    DIAG_EV_TX_DROP_KAL   = 5,
+    DIAG_EV_TX_DROP_KLP   = 6,
+    DIAG_EV_ENGINE_XITION = 7,
+    DIAG_EV_RUST_FAULT    = 8,
 };
 
 struct diag_event {
     uint8_t  tag;
     uint8_t  _pad0;
-    uint16_t seq;          // monotonic — distinguishes wrap from no-events
+    uint16_t seq;
     uint32_t timestamp;
     uint32_t a;
     uint32_t b;
 };
 
-// Per-IRQ DWT duration histogram: 16 buckets x 4096 cycles; bucket 15 absorbs
-// the tail. Absolute peak tracked separately in *_cycles_max.
 #define DIAG_HIST_NBUCKETS 16
 #define DIAG_HIST_SHIFT    12
 
 struct diag_counters {
     uint32_t magic;
 
-    // cycles_* in DWT units; totals are u64 to avoid silent u32 wrap.
     uint32_t tim5_irq_count;
     uint64_t tim5_irq_cycles_total;
     uint32_t tim5_irq_cycles_max;
@@ -141,14 +125,12 @@ struct diag_counters {
     uint64_t otg_irq_cycles_total;
     uint32_t otg_irq_cycles_max;
 
-    // tim5_irq_buckets: full ISR entry→exit; rt_tick_buckets: engine only.
     uint32_t tim5_irq_buckets[DIAG_HIST_NBUCKETS];
     uint32_t rt_tick_count;
     uint32_t rt_tick_cycles_max;
     uint64_t rt_tick_cycles_total;
     uint32_t rt_tick_buckets[DIAG_HIST_NBUCKETS];
 
-    // Vestigial (old scalar-eval engine; no active callers).
     uint32_t rt_eval_n;
     uint32_t rt_eval_cycles_max;
     uint64_t rt_eval_cycles_total;
@@ -156,15 +138,13 @@ struct diag_counters {
     uint32_t rt_dvel_cycles_max;
     uint64_t rt_dvel_cycles_total;
 
-    // walk = ring-walk; monomial = arm_and_load on cold-load ticks only.
     uint32_t walk_cycles_max;
     uint32_t walk_n;
     uint32_t monomial_cycles_max;
     uint32_t monomial_n;
 
-    uint32_t rt_isr_phase;  // RT_PHASE_*; survives IWDG reset
+    uint32_t rt_isr_phase;
 
-    // Per-axis [X,Y,Z]; 0/0 = idle.
     uint8_t  rt_curve_degree[3];
     uint16_t rt_curve_cps_len[3];
     uint16_t rt_curve_knots_len[3];
@@ -189,7 +169,7 @@ struct diag_counters {
 
     uint32_t ring_head;
     uint32_t ring_seq;
-    uint32_t ring_overflow; // overwritten unread entries
+    uint32_t ring_overflow;
 
     uint32_t boot_count;
 
@@ -214,15 +194,11 @@ struct diag_counters {
     uint32_t peek_empty_n;
     uint32_t peek_data_n;
 
-    // -311 block-source discriminators (DWT cycles). A fence blocker reaches
-    // ~2x TIM5 period: H7 >= 26000, F446 >= 18000.
     uint32_t systick_max_cyc;
     uint32_t stepout_max_cyc;
     uint32_t stepout_burst_max_cyc;
     uint32_t usb_burst_max_cyc;
 
-    // TIM5 inter-arrival (DWT): min ~= 2x period → clock-domain half-rate,
-    // ~= 1x → real fence. min is immune to disable/enable gaps.
     uint32_t tim5_ia_min_cyc;
     uint32_t tim5_ia_max_cyc;
     uint32_t tim5_ia_last_cyc;
@@ -252,17 +228,11 @@ __attribute__((section(".persistent_diag"), used))
 #endif
 static volatile struct diag_event diag_ring[DIAG_RING_LEN];
 
-// Prior-run snapshot, populated at boot before the persistent struct is
-// overwritten, then emitted by the report task.
 static struct diag_counters prior_diag;
 static struct diag_event    prior_ring[DIAG_RING_LEN];
 static uint32_t             prior_diag_present;
-// Live-ring snapshot for kalico_diag_emit_live; file-static to keep it off the
-// command-handler stack.
 static struct diag_event    dump_ring[DIAG_RING_LEN];
 
-// IRQ-safe (head/seq update under irq_save; volatile stores can't reorder
-// across the pair).
 void
 diag_ring_push(uint8_t tag, uint32_t a, uint32_t b)
 {
@@ -281,13 +251,10 @@ diag_ring_push(uint8_t tag, uint32_t a, uint32_t b)
     if (diag.ring_seq > DIAG_RING_LEN
         && (diag.ring_seq - DIAG_RING_LEN) > diag.ring_overflow)
         diag.ring_overflow = diag.ring_seq - DIAG_RING_LEN;
-    // Flush so the entry survives a near-future reset (cache eviction lag
-    // would otherwise lose it).
     diag_cache_clean();
     irq_restore(flag);
 }
 
-// Call at the START of a task body. event_tag=0 suppresses event emission.
 void
 diag_task_heartbeat(volatile uint32_t *calls,
                     volatile uint32_t *last_tick,
@@ -348,7 +315,7 @@ diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
     static uint32_t prev_enter;
     static uint8_t  have_prev;
     if (have_prev) {
-        uint32_t ia = enter_cycles - prev_enter;  // wrap-safe u32 DWT delta
+        uint32_t ia = enter_cycles - prev_enter;
         diag.tim5_ia_last_cyc = ia;
         if (ia > diag.tim5_ia_max_cyc)
             diag.tim5_ia_max_cyc = ia;
@@ -365,12 +332,9 @@ diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
     if (bucket >= DIAG_HIST_NBUCKETS)
         bucket = DIAG_HIST_NBUCKETS - 1;
     diag.tim5_irq_buckets[bucket]++;
-    // 26000 cyc = 50us at 520 MHz, ~8x steady-state TIM5 — a real outlier.
     if (dur > 26000u)
         diag_ring_push(DIAG_EV_TIM5_LONG, dur, enter_cycles);
 
-    // Foreground-freeze watchdog: latches worst stall + stacked PC/exc into
-    // cross-boot live_snap. fg_seen_advance excludes the boot window.
     static uint32_t fg_hb_prev;
     static uint32_t fg_stall_ticks;
     static uint8_t  fg_init;
@@ -397,7 +361,6 @@ diag_tim5_account(uint32_t enter_cycles, uint32_t exit_cycles)
     }
 }
 
-// Vestigial; no active callers.
 __attribute__((used, externally_visible))
 void
 diag_rt_eval_account(uint32_t cycles)
@@ -408,7 +371,6 @@ diag_rt_eval_account(uint32_t cycles)
         diag.rt_eval_cycles_max = cycles;
 }
 
-// axis_idx 0..=2 (X/Y/Z).
 __attribute__((used, externally_visible))
 void
 diag_rt_curve_meta(uint32_t axis_idx, uint32_t degree,
@@ -430,7 +392,6 @@ diag_rt_dvel_account(uint32_t cycles)
         diag.rt_dvel_cycles_max = cycles;
 }
 
-// Rust-only callers.
 __attribute__((used, externally_visible))
 void
 diag_walk_account(uint32_t cycles)
@@ -469,7 +430,7 @@ diag_runtime_tick_account(uint32_t cycles)
     diag.rt_tick_buckets[bucket]++;
 }
 
-void diag_usb_burst_track(uint32_t enter_cycles, uint32_t exit_cycles); // defined below
+void diag_usb_burst_track(uint32_t enter_cycles, uint32_t exit_cycles);
 
 void
 diag_otg_account(uint32_t enter_cycles, uint32_t exit_cycles)
@@ -484,9 +445,6 @@ diag_otg_account(uint32_t enter_cycles, uint32_t exit_cycles)
     diag_usb_burst_track(enter_cycles, exit_cycles);
 }
 
-// -311 block-source burst tracking: stitches back-to-back ISR invocations into
-// one fence span. Gap threshold = H7 TIM5 period (conservative upper bound so
-// F446 bursts are never falsely split).
 #define DIAG_BURST_GAP_CYC 13000u
 
 static inline void
@@ -494,7 +452,7 @@ diag_burst_fold(volatile uint32_t *max_out,
                 uint32_t *start, uint32_t *last_exit,
                 uint32_t enter_cycles, uint32_t exit_cycles)
 {
-    uint32_t gap = enter_cycles - *last_exit;  // wrap-safe
+    uint32_t gap = enter_cycles - *last_exit;
     if (*last_exit == 0 || gap > DIAG_BURST_GAP_CYC) {
         *start = enter_cycles;
     }
@@ -504,7 +462,6 @@ diag_burst_fold(volatile uint32_t *max_out,
         *max_out = span;
 }
 
-// SysTick holds PRIMASK across dispatch; only single-invocation max needed.
 void
 diag_systick_account(uint32_t enter_cycles, uint32_t exit_cycles)
 {
@@ -552,7 +509,6 @@ diag_take_snapshot(struct diag_snapshot *s)
 {
     irqstatus_t flag = irq_save();
     s->tim5_n      = diag.tim5_irq_count;
-    // u64 totals truncated to u32; the prior_diag dump emits lo/hi pairs.
     s->tim5_total  = (uint32_t)diag.tim5_irq_cycles_total;
     s->tim5_max    = diag.tim5_irq_cycles_max;
     s->otg_n       = diag.otg_irq_count;
@@ -570,7 +526,6 @@ diag_take_snapshot(struct diag_snapshot *s)
     s->tx_drops_klipper = diag.tx_drops_klipper;
     s->ring_seq      = diag.ring_seq;
     s->ring_overflow = diag.ring_overflow;
-    // Reset max trackers per interval; counts/totals stay cumulative.
     diag.tim5_irq_cycles_max = 0;
     diag.otg_irq_cycles_max  = 0;
     diag.usb_out_max_gap_ticks = 0;
@@ -655,7 +610,6 @@ diag_note_usb_in_busy(void)
     diag.usb_in_busy_n++;
 }
 
-// Written before the dispatch so a hung callback's addr survives the reset.
 void
 diag_note_dispatch(uint32_t func, uint32_t addr)
 {
@@ -698,7 +652,6 @@ uint32_t diag_get_peek_data(void)         { return diag.peek_data_n; }
 void __attribute__((noreturn, used))
 fault_capture_and_reset(uint32_t kind, uint32_t *frame, uint32_t exc_return)
 {
-    // Auto-stacked exception frame: r0, r1, r2, r3, r12, lr, pc, psr.
     fault_rec.r0  = frame[0];
     fault_rec.r1  = frame[1];
     fault_rec.r2  = frame[2];
@@ -709,8 +662,6 @@ fault_capture_and_reset(uint32_t kind, uint32_t *frame, uint32_t exc_return)
     fault_rec.psr = frame[7];
     fault_rec.exc_return = exc_return;
 
-    // ARMv6-M (Cortex-M0+) has no CFSR/fault-address registers — record zeros.
-    // SHCSR exists on both.
 #if (__CORTEX_M >= 3)
     fault_rec.cfsr  = SCB->CFSR;
     fault_rec.hfsr  = SCB->HFSR;
@@ -734,17 +685,16 @@ fault_capture_and_reset(uint32_t kind, uint32_t *frame, uint32_t exc_return)
     fault_rec.fault_count++;
     fault_rec.magic = FAULT_MAGIC;
 
-    __DSB();  // flush to SRAM before reset
+    __DSB();
     NVIC_SystemReset();
 
     for (;;);
 }
 
-#include "armcm_boot.h"  // DECL_ARMCM_IRQ
+#include "armcm_boot.h"
 
-// Naked trampolines: select MSP vs PSP from EXC_RETURN bit 2, tail-call the C
-// handler. ARMv6-M has no IT blocks / conditional MRS and a narrow B can't
-// reach across .text, so it uses branch-over + BL instead.
+// ARMv6-M has no IT blocks / conditional MRS and a narrow B can't reach across
+// .text, so the M0+ trampoline uses branch-over + BL instead of ite/mrseq.
 #if (__CORTEX_M >= 3)
 #define FAULT_TRAMPOLINE_SELECT_SP                                      \
             "tst lr, #4\n\t"                                            \
@@ -786,7 +736,6 @@ FAULT_TRAMPOLINE(UsageFault_Handler, 3, -10);
 FAULT_TRAMPOLINE(MemManage_Handler, 4, -12);
 #endif
 
-// Enable configurable fault exceptions so they don't all escalate to HardFault.
 void
 fault_handler_init(void)
 {
@@ -794,12 +743,10 @@ fault_handler_init(void)
     SCB->SHCSR |= SCB_SHCSR_USGFAULTENA_Msk
                 | SCB_SHCSR_BUSFAULTENA_Msk
                 | SCB_SHCSR_MEMFAULTENA_Msk;
-    SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;  // trap divide-by-zero
-    // Unaligned-access trap left off — unaligned half-word/word loads are common.
+    SCB->CCR |= SCB_CCR_DIV_0_TRP_Msk;
+    // Do not enable UNALIGN_TRP: unaligned half-word/word loads are common here.
 #endif
 #if CONFIG_MACH_STM32H7
-    // Backup SRAM enable (RM0468 §6.6.7): clock BKPRAM, lift write protect,
-    // enable the backup regulator, wait for BRRDY.
     RCC->AHB4ENR |= RCC_AHB4ENR_BKPRAMEN;
     PWR->CR1 |= PWR_CR1_DBP;
     PWR->CR2 |= PWR_CR2_BREN;
@@ -811,9 +758,7 @@ fault_handler_init(void)
 }
 DECL_INIT(fault_handler_init);
 
-// Emit boot diagnostic + prior-fault record on a slow timer so they survive
-// klippy reconnect; RCC reset-cause flags name resets our handler never saw.
-#include "board/misc.h"   // timer_read_time, timer_from_us
+#include "board/misc.h"
 
 static uint32_t boot_first_tick;
 static uint32_t boot_tick_initialized;
@@ -821,17 +766,13 @@ static uint32_t last_emit_tick;
 static uint32_t emits_done;
 static uint32_t reset_cause_snapshot;
 static uint32_t reset_cause_raw;
-// Prior-run live_snap, captured at boot before the current run overwrites it.
 static uint32_t prior_live_present_at_boot;
 static uint32_t saved_prior_live;
 static uint32_t saved_prior_engine;
 static uint32_t saved_prior_tick;
 static uint32_t saved_prior_last_run_tick;
 static uint32_t saved_prior_samples;
-// Per-run freeze flag of the run that just ended; gates the crash report
-// independently of the RCC reset cause.
 static uint32_t prior_run_froze;
-// Faithful only for an immediate-reset hang; best-effort addr2line target.
 static uint32_t saved_prior_last_dispatch_func;
 static uint32_t saved_prior_last_dispatch_addr;
 
@@ -868,7 +809,7 @@ fault_handler_report_task(void)
     if (!boot_tick_initialized) {
         boot_first_tick = now;
         boot_tick_initialized = 1;
-        last_emit_tick = now - timer_from_us(2000000);  // emit immediately
+        last_emit_tick = now - timer_from_us(2000000);
         reset_cause_snapshot = read_reset_cause();
         reset_cause_raw = reset_cause_snapshot;
         clear_reset_cause();
@@ -884,7 +825,6 @@ fault_handler_report_task(void)
             saved_prior_last_dispatch_func = live_snap.last_dispatch_func;
             saved_prior_last_dispatch_addr = live_snap.last_dispatch_addr;
         } else {
-            // First-ever boot: zero the cross-boot freeze record before use.
             live_snap.worst_fg_stall_ticks = 0;
             live_snap.worst_fg_stall_pc    = 0;
             live_snap.worst_fg_stall_exc   = 0;
@@ -893,7 +833,6 @@ fault_handler_report_task(void)
             live_snap.last_dispatch_addr   = 0;
             live_snap.this_run_froze       = 0;
         }
-        // IWDG resets are the foreground-freeze signature.
 #if CONFIG_MACH_STM32H7
         if (reset_cause_raw & RCC_RSR_IWDG1RSTF)
             live_snap.iwdg_reset_count++;
@@ -903,7 +842,6 @@ fault_handler_report_task(void)
 #endif
         live_snap.samples_taken = 0;
 
-        // Skipped on first power-on (magic uninitialised).
         if (diag.magic == DIAG_MAGIC) {
             prior_diag_present = 1;
             prior_diag.magic                = diag.magic;
@@ -977,7 +915,6 @@ fault_handler_report_task(void)
                 prior_ring[i].b         = diag_ring[i].b;
             }
         }
-        // Reset diag for the new run (old entries now in prior_ring).
         memset((void *)&diag, 0, sizeof(diag));
         diag.magic = DIAG_MAGIC;
         diag.boot_count = prior_diag_present ? (prior_diag.boot_count + 1) : 1;
@@ -1007,7 +944,6 @@ fault_handler_report_task(void)
         diag_cache_clean();
         return;
     }
-    // Refresh every task call so the snapshot is fresh at any crash.
     {
         uint32_t live_now = runtime_liveness_ok;
         uint8_t engine_now = 0xFF;
@@ -1023,11 +959,10 @@ fault_handler_report_task(void)
         live_snap.tick_counter = tick_now;
         live_snap.sample_time = now;
         live_snap.samples_taken++;
-        if (engine_now == 1 /* RUNNING */)
+        if (engine_now == 1)
             live_snap.last_engine_running_tick = tick_now;
         live_snap.magic = LIVE_MAGIC;
     }
-    // Emit every 2 s for the first 6 s (3 cycles covers all 32 ring entries).
     if (emits_done >= 3)
         return;
     uint32_t elapsed = now - last_emit_tick;
@@ -1037,7 +972,8 @@ fault_handler_report_task(void)
     uint32_t since_boot_us = (uint32_t)((uint64_t)(now - boot_first_tick)
                                         * 1000000u
                                         / CONFIG_CLOCK_FREQ);
-    // Free-form %u (not name=%u) so the decoder builds #msg for klippy.log.
+    // Free-form %u, not name=%u: the decoder needs this to build #msg for
+    // klippy.log; structured name=%u would break that path.
     output("boot_diag emit %u since_us %u rcc %u prior %u live %u engine %u tick %u",
            emits_done, since_boot_us, reset_cause_raw,
            (uint32_t)(fault_rec.magic == FAULT_MAGIC),
@@ -1068,7 +1004,6 @@ fault_handler_report_task(void)
                fault_rec.bfar, fault_rec.mmfar,
                fault_rec.shcsr, fault_rec.exc_return);
     }
-    // Inlined (a standalone helper got LTO-stripped).
     output("rt_diag_prior magic=%u packed=%u us=%u faults=%u",
            rt_diag_persistent.magic,
            rt_diag_persistent.last_packed,
@@ -1089,7 +1024,6 @@ fault_handler_report_task(void)
            sched_bad_add_stack2);
 
     if (prior_diag_present) {
-        // u64 totals split lo/hi (output() only knows %u); host combines.
         output("prior_diag_summary boot %u tim5_n %u tim5_max_cyc %u"
                " tim5_total_lo %u tim5_total_hi %u",
                prior_diag.boot_count,
@@ -1174,7 +1108,8 @@ fault_handler_report_task(void)
                prior_diag.tx_drops_klipper_last_max,
                prior_diag.ring_seq,
                prior_diag.ring_overflow);
-        // Histogram split lo/hi to stay within MESSAGE_MAX=64 B.
+        // Histogram split across two outputs to stay within MESSAGE_MAX=64 B;
+        // merging them overflows the wire message.
         output("prior_diag_hist_irq_lo b0 %u b1 %u b2 %u b3 %u b4 %u b5 %u b6 %u b7 %u",
                prior_diag.tim5_irq_buckets[0], prior_diag.tim5_irq_buckets[1],
                prior_diag.tim5_irq_buckets[2], prior_diag.tim5_irq_buckets[3],
@@ -1217,10 +1152,8 @@ diag_ring_tag_level(uint8_t tag)
     }
 }
 
-// Re-emit the prior-boot crash summary through the structured-log path. Call
-// once from the post-connect path (stepper.c) — the host's mcu-log hook must be
-// up first (a boot-time emit would be lost). Sources are the boot-init / SRAM
-// snapshots, unmodified by the current run.
+// Call only after the host's mcu-log hook is up (post-connect, from stepper.c);
+// a boot-time emit would be dropped before the hook exists.
 void
 kalico_diag_emit_prior_crash(void)
 {
@@ -1231,9 +1164,9 @@ kalico_diag_emit_prior_crash(void)
     iwdg = (reset_cause_snapshot & RCC_CSR_IWDGRSTF) ? 1u : 0u;
 #endif
     uint8_t had_fault = (fault_rec.magic == FAULT_MAGIC) ? 1u : 0u;
-    // Must not rely on iwdg alone: klippy's connect-reset overwrites the RCC
-    // cause with SFTRST, so a real foreground freeze shows up only via the
-    // per-run prior_run_froze flag (survives the connect-reset in BKPSRAM).
+    // klippy's connect-reset overwrites the RCC cause with SFTRST, so a real
+    // foreground freeze survives only via prior_run_froze (in BKPSRAM); do not
+    // drop it from this condition.
     uint8_t abnormal = iwdg || had_fault || prior_run_froze;
 
     kalico_log_emit(abnormal ? KALICO_LOG_LEVEL_WARN : KALICO_LOG_LEVEL_DEBUG,
@@ -1281,7 +1214,6 @@ kalico_diag_emit_prior_crash(void)
                             prior_diag.tim5_ia_min_cyc,
                             prior_diag.tim5_ia_max_cyc);
 
-            // Replay oldest-first (head = oldest); event-code == DIAG_EV_* tag.
             uint32_t head = prior_diag.ring_head & DIAG_RING_MASK;
             for (uint32_t i = 0; i < DIAG_RING_LEN; i++) {
                 uint32_t idx = (head + i) & DIAG_RING_MASK;
@@ -1295,12 +1227,11 @@ kalico_diag_emit_prior_crash(void)
     }
 }
 
-// On-demand live diag dump (KALICO_DIAG_DUMP). Reads the live diag/live_snap so
-// hiccups surface without a reset. All frames at debug level. Foreground-only.
 void
 kalico_diag_emit_live(void)
 {
-    // ISRs push to diag_ring concurrently, so snapshot under one irq_save.
+    // ISRs push to diag_ring concurrently; copy it under one irq_save so the
+    // snapshot is consistent.
     irqstatus_t flag = irq_save();
     uint32_t head          = diag.ring_head & DIAG_RING_MASK;
     uint32_t ring_seq      = diag.ring_seq;
@@ -1312,7 +1243,6 @@ kalico_diag_emit_live(void)
     }
     irq_restore(flag);
 
-    // Scalar diag reads below are aligned u32 (atomic); minor staleness is fine.
     uint32_t now = timer_read_time();
     uint32_t uptime_us = boot_tick_initialized
         ? (uint32_t)((uint64_t)(now - boot_first_tick) * 1000000u / CONFIG_CLOCK_FREQ)

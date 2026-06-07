@@ -8,8 +8,6 @@
 
 #![allow(dead_code)]
 
-// ── Subsystem IDs (u8) ──────────────────────────────────────────────────────
-
 pub const SUBSYSTEM_RUNTIME: u8 = 0;
 pub const SUBSYSTEM_MOTION: u8 = 1;
 pub const SUBSYSTEM_TICK: u8 = 2;
@@ -36,8 +34,6 @@ pub fn subsystem_name(id: u8) -> &'static str {
     }
 }
 
-// ── Event codes (u16) per subsystem ─────────────────────────────────────────
-//
 // Convention: EVENT_<SUBSYSTEM>_<NAME>. Codes are unique within each subsystem
 // but may repeat across subsystems — the (subsystem, event) pair is the key.
 // Start at 1; 0 is reserved as "no event".

@@ -1,5 +1,3 @@
-# Structured logging schema, context, and forward helper for the klippy host.
-#
 # This module never imports heavy klippy objects so it can be used from the
 # earliest point in startup (before the reactor/printer exist).
 import datetime
@@ -9,7 +7,6 @@ import os
 import shutil
 import time
 
-# A "trace" level below DEBUG (stdlib has no TRACE).
 TRACE_LEVEL = 5
 logging.addLevelName(TRACE_LEVEL, "TRACE")
 
@@ -26,7 +23,6 @@ _LEVEL_MAP = {
 
 
 def level_name(levelno):
-    # Map an arbitrary numeric level to the nearest schema level name.
     if levelno in _LEVEL_MAP:
         return _LEVEL_MAP[levelno]
     if levelno >= logging.ERROR:
@@ -41,7 +37,7 @@ def level_name(levelno):
 
 
 def format_time(created):
-    # RFC3339 UTC with millisecond precision and a trailing 'Z'.
+    # RFC3339 UTC, millisecond precision, trailing 'Z' — wire format, do not change.
     dt = datetime.datetime.fromtimestamp(created, tz=datetime.timezone.utc)
     return dt.strftime("%Y-%m-%dT%H:%M:%S.") + "%03dZ" % (
         dt.microsecond // 1000,
@@ -96,19 +92,17 @@ def get_print():
     return _print_id
 
 
-# LogRecord attributes that are stdlib bookkeeping, not schema payload.
 _STD_ATTRS = frozenset(
     logging.LogRecord("x", logging.INFO, "x", 0, "x", (), None).__dict__.keys()
 ) | {"message", "asctime", "session_id", "print_id", "source", "taskName"}
 
-# Schema fields that get a dedicated slot (everything else is free payload).
 _RESERVED_OUT = frozenset(
     ["_time", "_msg", "level", "source", "session_id", "target", "print_id"]
 )
 
 
 def record_to_dict(record):
-    # `record.message` must already be set (QueueHandler does this).
+    # record.message must already be set; QueueHandler does this before calling.
     msg = getattr(record, "message", None)
     if msg is None:
         msg = record.getMessage()
@@ -128,7 +122,6 @@ def record_to_dict(record):
     exc_text = getattr(record, "exc_text", None)
     if exc_text:
         out["exception"] = exc_text
-    # Promote any non-standard attribute (from logging `extra=`) to a field.
     for key, val in record.__dict__.items():
         if key in _STD_ATTRS or key in _RESERVED_OUT:
             continue
@@ -139,9 +132,7 @@ def record_to_dict(record):
 
 
 def serialize_record(record_dict):
-    # json.dumps escapes embedded newlines/quotes/control chars, guaranteeing
-    # exactly one physical line per record (NDJSON-safe; injection-safe for
-    # user-controlled values such as gcode comments / M117 text).
+    # json.dumps guarantees one physical line per record (NDJSON/injection-safe).
     line = json.dumps(
         record_dict, ensure_ascii=False, separators=(",", ":"), default=repr
     )
@@ -149,11 +140,7 @@ def serialize_record(record_dict):
 
 
 class ContextFilter(logging.Filter):
-    # Injected on the root logger; reads the process-global session/print, so
-    # it is correct from any thread or reactor greenlet. Never raises (raising
-    # inside logging is unsafe); an unbound session shows up as the queryable
-    # UNBOUND_SESSION sentinel, which the startup ordering invariant
-    # (printer.main) keeps us off in normal operation.
+    # Never raises — raising inside logging.Filter is unsafe.
     def filter(self, record):
         if not hasattr(record, "session_id"):
             record.session_id = get_session()
@@ -174,8 +161,6 @@ _event_logger = logging.getLogger("kalico.event")
 
 
 def event(subsystem, event, *, level=logging.INFO, msg=None, **fields):
-    # Forward helper for NEW / hot-path code: emits a fully structured record.
-    # Fail loudly (per project policy) if the required fields are missing.
     if not subsystem or not event:
         raise ValueError(
             "structured_log.event requires non-empty subsystem and event"
@@ -185,7 +170,6 @@ def event(subsystem, event, *, level=logging.INFO, msg=None, **fields):
     _event_logger.log(level, msg if msg is not None else event, extra=extra)
 
 
-# Default reserve below which we refuse to start (spec §16 tunable).
 LOG_SPACE_RESERVE_BYTES = 64 * 1024 * 1024
 
 
@@ -194,9 +178,7 @@ class LogSpaceError(Exception):
 
 
 def check_log_space(path, reserve_bytes=LOG_SPACE_RESERVE_BYTES):
-    # Pure check: never creates directories (that is the caller's job). Probe
-    # the nearest existing ancestor of `path` for free space, so the preflight
-    # works even when the logs directory has not been created yet.
+    # Never creates directories — that is the caller's job.
     probe = os.path.abspath(path)
     while not os.path.isdir(probe):
         parent = os.path.dirname(probe)

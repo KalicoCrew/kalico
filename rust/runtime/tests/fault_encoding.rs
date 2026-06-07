@@ -8,8 +8,6 @@
     clippy::doc_markdown
 )]
 
-//! `fault_detail` encoder tests. Spec §9.2.
-
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 
 use runtime::error::{
@@ -38,9 +36,6 @@ fn stream_state_violation_encoding() {
 
 #[test]
 fn invalid_curve_handle_xor_collapses_to_zero_when_match() {
-    // If observed_gen == expected_gen, the XOR collapses to 0 — which is
-    // the "no-mismatch" diagnostic value. This shouldn't happen at runtime
-    // (lookup only fails on mismatch) but the encoder shape must be sound.
     let d = encode_invalid_curve_handle(7, 0xABCD, 0xABCD);
     assert_eq!(d >> 16, 7);
     assert_eq!(d & 0xFFFF, 0);

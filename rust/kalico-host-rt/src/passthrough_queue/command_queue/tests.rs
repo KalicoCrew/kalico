@@ -8,12 +8,10 @@ fn entry(min_clock: u64, req_clock: u64) -> PassthroughEntry {
 #[test]
 fn push_routes_by_min_clock_vs_ack_clock() {
     let mut q = CommandQueue::new();
-    // ack_clock is 0, so min_clock=0 goes to ready, min_clock=10 to upcoming
     q.push(entry(0, 50));
     q.push(entry(10, 40));
 
     assert_eq!(q.peek_ready_req_clock(), Some(50));
-    // The min_clock=10 entry is not in ready
     assert_eq!(q.ready.len(), 1);
     assert_eq!(q.upcoming.len(), 1);
 }
@@ -21,7 +19,6 @@ fn push_routes_by_min_clock_vs_ack_clock() {
 #[test]
 fn ready_orders_by_req_clock_not_min_clock() {
     let mut q = CommandQueue::new();
-    // All with min_clock=0 so they go straight to ready.
     q.push(entry(0, 300));
     q.push(entry(0, 100));
     q.push(entry(0, 200));
@@ -40,13 +37,11 @@ fn promote_moves_when_min_clock_reached() {
     assert!(q.is_ready_empty());
 
     q.promote(10);
-    // Only the min_clock=10 entry should have moved
     assert_eq!(q.peek_ready_req_clock(), Some(50));
     assert_eq!(q.ready.len(), 1);
     assert_eq!(q.upcoming.len(), 1);
 
     q.promote(20);
-    // Now both are ready — and ordered by req_clock
     assert_eq!(q.pop_ready().unwrap().req_clock(), 40);
     assert_eq!(q.pop_ready().unwrap().req_clock(), 50);
 }
@@ -59,9 +54,7 @@ fn promote_preserves_min_clock_order_for_remaining() {
     q.push(entry(20, 3));
 
     q.promote(15);
-    // Only min_clock=10 promoted
     assert_eq!(q.ready.len(), 1);
-    // Remaining upcoming should still be sorted by min_clock
     assert_eq!(q.upcoming[0].min_clock(), 20);
     assert_eq!(q.upcoming[1].min_clock(), 30);
 }
@@ -85,7 +78,6 @@ fn background_entries_sort_after_normal() {
     q.push(entry(0, 100));
     q.push(entry(0, 200));
 
-    // Normal entries come out first, background last.
     assert_eq!(q.pop_ready().unwrap().req_clock(), 100);
     assert_eq!(q.pop_ready().unwrap().req_clock(), 200);
     assert_eq!(

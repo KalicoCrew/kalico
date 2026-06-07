@@ -123,9 +123,6 @@ fn host_codes_distinct_from_mcu() {
 
 #[test]
 fn fault_code_stepping_redesign_numeric_values() {
-    // §9.2 — every Step-8 stepping-redesign FaultCode variant must
-    // numerically agree with its KALICO_ERR_* twin. Reuse-of-value
-    // would silently miscategorize faults to the host.
     assert_eq!(
         FaultCode::StepQueueOverflow.as_i32(),
         KALICO_ERR_STEP_QUEUE_OVERFLOW
@@ -175,8 +172,6 @@ fn fault_code_stepping_redesign_numeric_values() {
         FaultCode::UnknownStepMode.as_i32(),
         KALICO_ERR_UNKNOWN_STEP_MODE
     );
-    // Cross-check: distinct from each other and from the existing
-    // -7..-202 range.
     assert_eq!(KALICO_ERR_STEP_QUEUE_OVERFLOW, -300);
     assert_eq!(KALICO_ERR_STEP_RATE_EXCEEDS_MCU_CEILING, -307);
     assert_eq!(KALICO_ERR_TICK_INTERVAL_EXCEEDED, -311);
@@ -197,8 +192,6 @@ fn fault_code_as_u16_round_trips_negative_codes() {
     let expected = (-160_i16) as u16;
     assert_eq!(code, expected);
 }
-
-// ── from_u16 + code_name tests (Task 4) ─────────────────────────────────────
 
 #[test]
 fn fault_code_from_u16_round_trip_positive_zero() {
@@ -232,7 +225,6 @@ fn fault_code_from_u16_sign_wrap_host_disconnect() {
 
 #[test]
 fn fault_code_from_u16_unknown_returns_none() {
-    // 0x1234 does not correspond to any FaultCode discriminant
     assert_eq!(FaultCode::from_u16(0x1234), None);
 }
 
@@ -256,7 +248,6 @@ fn code_name_tick_interval_exceeded() {
 
 #[test]
 fn from_u16_then_code_name_for_all_step8_codes() {
-    // Every Step-8 code must survive the round-trip as_u16 -> from_u16 -> code_name
     let codes = [
         FaultCode::StepQueueOverflow,
         FaultCode::SpiQueueOverflow,
@@ -287,7 +278,6 @@ fn from_u16_then_code_name_for_all_step8_codes() {
 
 #[test]
 fn from_u16_round_trip_all_variants() {
-    // Every FaultCode variant must survive as_u16 -> from_u16 intact.
     let all_codes = [
         FaultCode::None,
         FaultCode::QueueFull,
@@ -351,14 +341,11 @@ fn from_u16_round_trip_all_variants() {
         FaultCode::StepsPerSampleExceeded,
         FaultCode::TickIntervalExceeded,
     ];
-    // Verify the count matches the spec (60 total: None + 59 non-zero variants,
-    // spanning non-contiguous discriminants — we test all of them).
     for code in all_codes {
         let wire = code.as_u16();
         let recovered = FaultCode::from_u16(wire)
             .expect("from_u16 must succeed for every known FaultCode variant");
         assert_eq!(recovered, code, "round-trip mismatch for {code:?}");
-        // code_name must be non-empty for every known variant
         let name = code.code_name();
         assert!(!name.is_empty(), "code_name empty for {code:?}");
     }

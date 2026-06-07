@@ -1,6 +1,5 @@
 use compat::corner::{detect_corners, split_at_corners};
 
-/// Four collinear points along the X axis — no corners expected.
 #[test]
 fn straight_line_no_corners() {
     let points: Vec<[f64; 3]> = vec![
@@ -16,16 +15,12 @@ fn straight_line_no_corners() {
     );
 }
 
-/// L-shaped path: move +X then +Y — 90° bend at the junction.
-/// With a 1 mm segment and 0.05 mm tolerance the criterion fires.
-///
-/// L = 1.0, θ = π/2 → deviation = 1.0 * tan(π/8) ≈ 0.414 > 0.05.
 #[test]
 fn right_angle_corner() {
     let points: Vec<[f64; 3]> = vec![
-        [0.0, 0.0, 0.0], // 0
-        [1.0, 0.0, 0.0], // 1 ← interior, 90° corner
-        [1.0, 1.0, 0.0], // 2
+        [0.0, 0.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [1.0, 1.0, 0.0],
     ];
     let corners = detect_corners(&points, 0.05);
     assert_eq!(
@@ -35,16 +30,13 @@ fn right_angle_corner() {
     );
 }
 
-/// 20 points along a gentle circular arc (radius = 100 mm, total arc ≈ 10°).
-/// The per-segment deviation is well below a 0.05 mm tolerance.
 #[test]
 fn gentle_curve_no_corners() {
     use std::f64::consts::PI;
 
-    // Arc spans 10° on a circle of radius 100 mm.
     let n = 20usize;
     let radius = 100.0_f64;
-    let total_angle = 10.0_f64 * PI / 180.0; // 10° in radians
+    let total_angle = 10.0_f64 * PI / 180.0;
 
     let points: Vec<[f64; 3]> = (0..=n)
         .map(|k| {
@@ -61,8 +53,6 @@ fn gentle_curve_no_corners() {
     );
 }
 
-/// Sanity check: `split_at_corners` on a straight run with no corners returns
-/// the original points as a single sub-run.
 #[test]
 fn split_straight_run() {
     let pts: Vec<[f64; 3]> = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
@@ -71,13 +61,11 @@ fn split_straight_run() {
     assert_eq!(sub_runs[0], pts);
 }
 
-/// An L-shaped path: `detect_corners` fires, then `split_at_corners` produces
-/// two sub-runs that share the corner point.
 #[test]
 fn detect_and_split_l_shape() {
     let pts: Vec<[f64; 3]> = vec![
         [0.0, 0.0, 0.0],
-        [5.0, 0.0, 0.0], // interior — 90° corner
+        [5.0, 0.0, 0.0],
         [5.0, 5.0, 0.0],
     ];
     let corners = detect_corners(&pts, 0.05);
@@ -85,13 +73,11 @@ fn detect_and_split_l_shape() {
 
     let sub_runs = split_at_corners(&pts, &corners);
     assert_eq!(sub_runs.len(), 2);
-    // Both sub-runs share the corner point.
     #[allow(clippy::float_cmp)]
     {
         assert_eq!(sub_runs[0].last().unwrap(), &pts[1]);
         assert_eq!(sub_runs[1].first().unwrap(), &pts[1]);
     }
-    // Each sub-run has 2 points.
     assert_eq!(sub_runs[0].len(), 2);
     assert_eq!(sub_runs[1].len(), 2);
 }

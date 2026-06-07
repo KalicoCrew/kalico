@@ -2,8 +2,6 @@
 #define LIBECRT_H
 #include <stdint.h>
 
-/* All functions operate on EtherCAT slave 1 (single-drive bring-up). */
-
 /* go_realtime + ec_init + CSP/DC config + map + SAFE-OP + DC align + OP,
  * then parks at CiA402 Ready-to-Switch-On (no torque). 0 on success;
  * -1 ec_init, -2 no slaves, -3 SAFE-OP, -4 OP, -5 park timeout. */
@@ -28,7 +26,6 @@ int32_t  ec_rt_get_following_error(void);
 /* controlword = 0x0006 (disable voltage path), held for a few cycles. */
 void ec_rt_disable(void);
 
-/* dcsync0 off, back to INIT, close NIC. */
 void ec_rt_shutdown(void);
 
 #endif

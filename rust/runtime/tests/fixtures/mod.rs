@@ -1,5 +1,3 @@
-//! Shared test fixtures. Used by Surface A integration tests + Surface B
-//! FFI tests + Surface C Python validation. Spec §6.7.
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 
 use serde::Deserialize;
@@ -13,7 +11,7 @@ pub struct Fixture {
     pub weights: Vec<f32>,
     pub degree: u8,
     pub duration_us: u32,
-    pub kinematics: String, // "CoreXyAndE" or "CartesianXyzAndE"
+    pub kinematics: String,
 }
 
 #[derive(Debug, Deserialize)]

@@ -30,20 +30,14 @@ def _process_polyline(
     if len(pts) < 2:
         return out
     if len(pts) == 2:
-        # Single segment — no interior labels. The prototype skips trivial
-        # 2-point polylines (a 2-point polyline has no corners and is
-        # effectively a degenerate fit with one piece).
         return out
     labels = classify_polyline(pts, params)
 
-    # Walk along, accumulating smooth runs; emit at each non-smooth label.
-    # labels[i] corresponds to interior vertex pts[i+1].
     run_start = 0
     for i, label in enumerate(labels):
         v_idx = i + 1  # interior vertex index in pts
         if label == VertexLabel.SMOOTH:
             continue
-        # Close the current run including v_idx as its endpoint.
         if v_idx - run_start >= 2:
             run_pts = pts[run_start : v_idx + 1]
             offset = poly.line_range[0]
@@ -57,13 +51,12 @@ def _process_polyline(
                     params=params,
                 )
             )
-        # Emit corner-blend or junction-deviation at v_idx.
         prev_pt = pts[v_idx - 1]
         corner = pts[v_idx]
         next_pt = pts[v_idx + 1]
         if label == VertexLabel.SMOOTHABLE_CORNER:
             out.append(make_slot(prev_pt, corner, next_pt, params))
-        else:  # HARD_CORNER
+        else:
             t_in = corner - prev_pt
             t_out = next_pt - corner
             cos = float(
@@ -78,9 +71,8 @@ def _process_polyline(
                     angle_deg=angle,
                 )
             )
-        run_start = v_idx  # next run starts at this corner
+        run_start = v_idx
 
-    # Close the final run.
     if len(pts) - 1 - run_start >= 2:
         offset = poly.line_range[0]
         run_pts = pts[run_start:]

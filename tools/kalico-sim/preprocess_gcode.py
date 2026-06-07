@@ -33,7 +33,7 @@ SKIP_PREFIXES = (
     "CLEAN_NOZZLE",
     "CALIBRATE_Z",
     "ADAPTIVE_BED_MESH",
-    "_",  # macro helpers
+    "_",
 )
 
 
@@ -47,13 +47,11 @@ def preprocess(input_path: str, output_path: str) -> dict:
     for line in lines:
         stripped = line.strip()
 
-        # Replace PRINT_START with position initialization
         if stripped.startswith("PRINT_START"):
             out.append("SET_KINEMATIC_POSITION X=150 Y=150 Z=150\n")
             stats["replaced"] += 1
             continue
 
-        # Skip non-motion commands
         if any(stripped.startswith(p) for p in SKIP_PREFIXES):
             stats["skipped"] += 1
             continue

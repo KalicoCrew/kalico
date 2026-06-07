@@ -12,10 +12,6 @@
 #include "board/misc.h" // timer_is_before
 #include "phase_stepping_spi.h" // phase_spi_try_acquire / phase_spi_release
 
-// Spi-hang last-seen state. Written by spi_transfer_locked just before
-// shutdown(); read by runtime_tick.c's diag rotation (tag 0xD0) so the
-// stuck peripheral's register snapshot survives the shutdown via the
-// next status frame, even when output() doesn't drain.
 volatile uint32_t kalico_spi_hang_addr __attribute__((used, externally_visible));
 volatile uint32_t kalico_spi_hang_sr   __attribute__((used, externally_visible));
 volatile uint32_t kalico_spi_hang_cr1  __attribute__((used, externally_visible));
@@ -137,23 +133,6 @@ spi_prepare(struct spi_config config)
             ;
 }
 
-// Bare SPI3 transfer — caller is responsible for holding phase_spi_busy
-// and serializing access to the SPI peripheral. Used by both
-// spi_transfer (task-context, takes the lock itself) and
-// phase_stepping_write_xdirect (ISR-context, already holds the lock).
-//
-// Note: the shutdown("spi rx timeout") / shutdown("spi eot timeout")
-// calls below are __noreturn -- leaving phase_spi_busy=1 latched is
-// intentional. The ISR-side phase_stepping_write_xdirect skip path
-// remains safe during MCU halt.
-//
-// Pipelined TX-fill / RX-drain pattern uses SPI_SR_RXP (rx-packet, bit 0)
-// for per-byte rx detection in 8-bit data mode (CFG1.DSIZE=7). The earlier
-// fork variant polled SPI_SR_RXWNE | SPI_SR_RXPLVL — those only fire at
-// 32-bit word boundaries / packets, so any non-multiple-of-4 transfer
-// (e.g. MAX31865 3-byte RTD read) hung forever, surfacing as
-// "spi rx timeout" when the 100us deadline expired. Pattern matches
-// Klipper upstream src/stm32/stm32h7_spi.c.
 #define MAX_FIFO 8 // Limit tx fifo usage so rx fifo doesn't overrun
 
 void
@@ -168,18 +147,6 @@ spi_transfer_locked(struct spi_config config, uint8_t receive_data,
     spi->CR1 = SPI_CR1_SSI | SPI_CR1_SPE;
     spi->CR1 = SPI_CR1_SSI | SPI_CR1_CSTART | SPI_CR1_SPE;
 
-    // Bridge-call stall investigation (2026-05-09): bound the busy-wait
-    // loops with a deadline. The original code had no timeout — a
-    // hardware-level SPI deadlock (CS glitch, FIFO state inconsistency,
-    // MISO transient) wedged the cooperative scheduler forever, ALL
-    // tasks blocked, IWDG fired after 30s, host saw "transport
-    // closed/timeout". This converts the silent wedge into a clean
-    // shutdown with a diagnosable reason. Deadline is reset on every
-    // observed byte of forward progress so a busy bus (multi-driver
-    // pipeline) doesn't trip a false positive.
-    //
-    // Budget: 100us per pending byte. 4MHz SPI = 2us per byte clocked;
-    // 100us is 50x headroom for FIFO drain + cooperative scheduling.
     uint32_t spi_deadline = timer_read_time() + timer_from_us(100 * len);
     while (data < end) {
         uint32_t sr = spi->SR & (SPI_SR_TXP | SPI_SR_RXP);
@@ -216,7 +183,7 @@ spi_transfer_locked(struct spi_config config, uint8_t receive_data,
             kalico_spi_hang_cr1  = spi->CR1;
             kalico_spi_hang_cr2  = spi->CR2;
             kalico_spi_hang_cfg2 = spi->CFG2;
-            kalico_spi_hang_reason = (uint8_t)0x80; // bit 7 = EOT path
+            kalico_spi_hang_reason = (uint8_t)0x80;
             shutdown("spi eot timeout");
         }
     }
@@ -230,28 +197,12 @@ void
 spi_transfer(struct spi_config config, uint8_t receive_data,
              uint8_t len, uint8_t *data)
 {
-    // 2026-05-18 phase-stepping SPI3 contention: Klipper's task-context
-    // SPI access must coordinate with the TIM5-rate XDIRECT ISR. The
-    // busy-flag is per-MCU global (one SPI3 instance per H723), so we
-    // gate every spi_transfer call. Non-SPI3 transfers see the flag
-    // uncontested and acquire/release with negligible overhead (~10
-    // cycles per pair). The wait path is bounded: the TIM5 ISR releases
-    // within ~25 us of acquiring.
-    //
-    // 2026-05-19 deadlock fix: this entry point is for task-context
-    // callers only. ISR-context callers (phase_stepping_write_xdirect)
-    // already hold phase_spi_busy and MUST call spi_transfer_locked
-    // directly — otherwise the spin-acquire below loops forever against
-    // the lock the ISR itself owns, USB CDC pump starves, the H7
-    // re-enumerates, and klippy aborts via EXIT_ON_FAULT.
-    while (!phase_spi_try_acquire()) {
-        // Spin; the ISR-side write completes within one TIM5 period.
-    }
-    // spi_prepare MUST be inside the lock. The ISR's
-    // phase_stepping_write_xdirect calls spi_prepare(fast_cfg) which
-    // overwrites SPI3->CFG1 with a different MBR divisor. If the ISR
-    // fires between a caller's spi_prepare and spi_transfer, the
-    // foreground transfer runs at the wrong clock rate.
+    while (!phase_spi_try_acquire())
+        ;
+    // spi_prepare MUST stay inside the lock: the ISR's
+    // phase_stepping_write_xdirect calls spi_prepare(fast_cfg) with a
+    // different MBR divisor; hoisting this out lets the ISR fire between
+    // prepare and transfer, clocking the foreground transfer at the wrong rate.
     spi_prepare(config);
     spi_transfer_locked(config, receive_data, len, data);
     phase_spi_release();

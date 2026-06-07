@@ -1,20 +1,6 @@
-// The half-split FFI projection (see `init` below) needs raw-pointer writes
-// through `MaybeUninit` and an `unsafe impl Sync` for `RuntimeContext`; the
-// foreign symbol declarations for `runtime_clock_freq` / `irq_save` /
-// `irq_restore` also require `unsafe extern "C"`. Workspace lints deny
-// `unsafe_code` globally — this module opts out with the rationale documented
-// inline.
 #![allow(unsafe_code)]
 
 use core::cell::UnsafeCell;
-// All atomic types come from `portable-atomic` rather than `core::sync::atomic`.
-//
-// On thumbv7em it lowers to the native exclusive-monitor instructions (identical
-// codegen, zero overhead); on thumbv6m (STM32G0, no LDREX/STREX) it uses brief
-// interrupt-disable critical sections (sound — single core, per the
-// `portable_atomic_unsafe_assume_single_core` rustflag in .cargo/config.toml).
-//
-// `Ordering` and `fence` remain from `core::sync::atomic`.
 use portable_atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32, AtomicU64};
 
 use crate::clock::WidenState;
@@ -235,8 +221,7 @@ pub struct SharedState {
     pub last_push_x_handle_packed: AtomicU32,
     pub last_push_y_handle_packed: AtomicU32,
     pub last_push_consumers_remaining: AtomicU32,
-    /// `cps[0]` (start CP, mm) of the last resolved primary X curve, raw f32
-    /// bits. For a 0.5 mm X jog at X=125.0 → `0x42FA0000`.
+    /// `cps[0]` (start CP, mm) of the last resolved primary X curve, raw f32 bits.
     pub last_resolved_primary_cps_0: AtomicU32,
     /// `cps[3]` (end CP, mm) of the last resolved primary X curve, raw f32
     /// bits. Matching `cps_0` means zero displacement — indicates a planner-side bug.

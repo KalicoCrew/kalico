@@ -144,9 +144,6 @@ spi_transfer(struct spi_config config, uint8_t receive_data,
              uint8_t len, uint8_t *data)
 {
     SPI_TypeDef *spi = config.spi;
-    // Bridge-call stall investigation (2026-05-09): bound busy-waits
-    // with 100us deadlines. See stm32h7_spi.c for context. Same fix on
-    // F4 since the cooperative-scheduler wedge has the same shape.
     while (len--) {
         writeb((void*)&spi->DR, *data);
         uint32_t rxne_deadline = timer_read_time() + timer_from_us(100);

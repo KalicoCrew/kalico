@@ -23,7 +23,6 @@ def linear_curve():
 
 
 def quadratic_arc():
-    """Rational quadratic 90 degree arc from (1,0) to (0,1)."""
     c = NURBS.Curve()
     c.degree = 2
     c.ctrlptsw = [

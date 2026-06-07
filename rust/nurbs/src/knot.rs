@@ -113,7 +113,7 @@ fn boehm_insert_unweighted<T: Float>(
     cps: &[T],
     knots: &[T],
     p: usize,
-    _k: usize, // recomputed per single-insertion iteration; kept for API stability
+    _k: usize,
     u: T,
     existing: usize,
     r: usize,
@@ -225,7 +225,7 @@ pub fn remove_knot<T: Float>(
     let knots_ref = knots;
 
     let ord = p + 1;
-    let fout = (2 * r).saturating_sub(s + p) / 2; // first cp out (canonical: integer)
+    let fout = (2 * r).saturating_sub(s + p) / 2;
     let mut first = r - p;
     let mut last = r - s;
 

@@ -1,5 +1,3 @@
-//! Fault aggregator.
-
 use std::sync::mpsc::SyncSender;
 
 use crate::host_io::runtime_events::FaultEvent as RuntimeFaultEvent;

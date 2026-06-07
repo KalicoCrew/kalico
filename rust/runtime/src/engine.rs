@@ -1,10 +1,3 @@
-// Per-axis piece-ring walker engine.
-//
-// Ring layout: each axis carries a `RingDescriptor` — a borrow-free set of
-// bookkeeping integers — and all mutation goes through `&mut [PieceEntry]`
-// passed explicitly into every operation. `PieceRing<'a>` is kept for host
-// unit tests; `RingDescriptor` is used exclusively by the engine.
-
 use core::sync::atomic::{AtomicI32, AtomicU8, Ordering};
 
 use crate::clock::TickCounter;
@@ -199,13 +192,8 @@ impl Engine {
         KALICO_OK
     }
 
-    /// Reset the engine to a clean, just-initialized motion state.
-    ///
     /// Preserves `sample_period_cycles`, `cycles_per_second`, and the running
     /// `tick_counter` — resetting those would desync the ISR time base.
-    ///
-    /// The per-axis C step queues are cleared separately by the FFI caller
-    /// (`kalico_runtime_reset`).
     pub fn reset(&mut self) {
         self.ring_alloc_cursor = 0;
         self.stepping_axes = [const { None }; MAX_AXES];
@@ -350,10 +338,6 @@ impl Engine {
         0
     }
 
-    /// Legacy `configure_axis` overload without `ring_depth` — used by
-    /// `kalico_runtime_configure_axis` FFI which does not yet carry a
-    /// ring_depth field on the wire. Allocates a default region of 64
-    /// pieces per axis.
     pub fn configure_axis_legacy(
         &mut self,
         axis_idx: u8,

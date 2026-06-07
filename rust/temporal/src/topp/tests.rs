@@ -25,10 +25,8 @@ fn schedule_segment_straight_line_returns_profile() {
         profile.status,
         crate::SolveStatus::Solved | crate::SolveStatus::SolvedInexact { .. }
     ));
-    // Endpoints zero-velocity, midpoint nontrivial.
     assert!(profile.samples[0].v < 1e-3);
     assert!(profile.samples[49].v < 1e-3);
-    assert!(profile.samples[25].v > 100.0); // ≥ 100 mm/s
-    // Total time should be finite and positive.
+    assert!(profile.samples[25].v > 100.0);
     assert!(profile.total_time.is_finite() && profile.total_time > 0.0);
 }

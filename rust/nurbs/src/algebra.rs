@@ -47,7 +47,6 @@ pub fn add<T: Float>(
 ///     vec![20.0, 20.0],
 /// ).unwrap();
 /// let sum = add_with_knot_union(&x, &y).unwrap();
-/// // At u=0: 0+20=20; at u=1: 10+20=30.
 /// let v0 = nurbs::eval::eval(&sum.as_view(), 0.0_f64);
 /// let v1 = nurbs::eval::eval(&sum.as_view(), 1.0_f64);
 /// assert!((v0 - 20.0).abs() < 1e-12);
@@ -222,7 +221,6 @@ where
                 })
                 .collect();
             return pieces_vec.try_into().map_err(|_: Vec<_>| {
-                // Unreachable: built exactly D pieces.
                 FitError::DegenerateInput {
                     reason: "fit_x_to_arc_length_piece: array length mismatch (unreachable)",
                 }

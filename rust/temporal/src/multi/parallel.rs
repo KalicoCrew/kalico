@@ -5,7 +5,6 @@ use crate::{GridConfig, SolveStatus, TopProfile};
 use std::sync::Mutex;
 use std::thread;
 
-/// Velocity resolution below which bisection refinement is pointless.
 const BISECT_VEL_RESOLUTION_MM_S: f64 = 0.1;
 
 /// Re-solve all `dirty` segments in parallel across `n_threads` workers.
@@ -88,9 +87,6 @@ pub(crate) fn fan_out_solves(
     Ok(())
 }
 
-/// Solve the segment, bisecting the unpinned endpoint velocities on failure.
-/// Pinned endpoints are batch boundary conditions and are never altered; with
-/// both pinned a failed solve is returned as-is.
 #[allow(clippy::too_many_arguments)]
 fn solve_with_boundary_fallback(
     curve: &nurbs::VectorNurbs<f64, 3>,

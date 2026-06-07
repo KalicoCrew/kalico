@@ -1,24 +1,3 @@
-"""Reproduce the bridge_call stall ("transport closed" / "transport timed
-out") race on the sim. Mirrors what the user observed on real hardware
-under G28 X / linear-move flows.
-
-Hypothesis under test: tmc.py periodic stallguard query (1 Hz) racing
-against bridge_call traffic during a stepper-enable burst causes the
-reactor's awaiting_response FIFO to stall, klippy's bridge_call to time
-out or see "transport closed", and IWDG to fire downstream on the MCU.
-
-The test deliberately stresses the boundary by issuing many
-back-to-back motion commands so that:
-
-- Stepper enable fires _do_enable burst (many SPI transfers)
-- Move planner emits load_curve / push_segment via kalico_call
-- tmc.py periodic stallguard query has time to fire concurrently
-
-Run with:
-    docker run --rm -v $REPO:/work -w /work --tmpfs /tmp:exec kalico-sim \
-        python3 -m pytest tools/sim_klippy/tests/test_bridge_stall_repro.py -v
-"""
-
 import time
 
 import pytest
@@ -76,7 +55,6 @@ def test_linear_move_after_set_kinematic_position(sim):
     """
     _wait_ready(sim)
 
-    # Force-set kinematic position (no motion, no homing required).
     r = sim.gcode("SET_KINEMATIC_POSITION X=100 Y=100 Z=10", timeout=10.0)
     err = (
         (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
@@ -85,9 +63,6 @@ def test_linear_move_after_set_kinematic_position(sim):
         f"SET_KINEMATIC_POSITION already failed with bridge_call error: {r}"
     )
 
-    # Now issue a small linear move. This triggers stepper enable
-    # (-> tmc.py _do_enable burst) and a planner push (-> 2 load_curves
-    # + 1 push_segment via kalico_call).
     r = sim.gcode("G1 X101 F6000", timeout=15.0)
     err = (
         (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
@@ -108,18 +83,15 @@ def test_burst_of_linear_moves(sim):
     """
     _wait_ready(sim)
 
-    # Force position so we don't need homing.
     r = sim.gcode("SET_KINEMATIC_POSITION X=100 Y=100 Z=10", timeout=10.0)
     err = (
         (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
     )
     assert "bridge_call" not in err
 
-    # ~1.5 seconds of motion across multiple moves at moderate speed.
-    # Long enough that the 1Hz tmc-poll timer fires at least once.
     moves = [
-        "G1 X110 F6000",  # +10 mm
-        "G1 X90 F6000",  # -20 mm
+        "G1 X110 F6000",
+        "G1 X90 F6000",
         "G1 Y110 F6000",
         "G1 Y90 F6000",
         "G1 X100 Y100 F6000",
@@ -229,8 +201,6 @@ def test_same_direction_jogs_reproduce_slot_pool_exhaustion(sim):
     )
     assert not err, f"SET_KINEMATIC_POSITION failed: {r}"
 
-    # Switch to relative coords once; subsequent G1s are 1mm-X jogs.
-    # Each G1 = one ShapedSegment to F4 = one F4 slot allocation.
     r = sim.gcode("G91", timeout=5.0)
     err = (
         (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""
@@ -266,8 +236,6 @@ def test_same_direction_jogs_reproduce_slot_pool_exhaustion(sim):
         # T_COMMIT is 50 ms; 150 ms gives the timer plenty of room.
         time.sleep(0.15)
 
-    # Print the per-jog trace whether we passed or failed, so a successful
-    # repro leaves an obvious audit trail in the test output.
     print(f"[repro] jog responses (fail_idx={fail_idx}):")
     for i, r in responses:
         print(f"  jog {i}: {r}")
@@ -301,8 +269,6 @@ def test_long_move_during_tmc_poll(sim):
     )
     assert "bridge_call" not in err
 
-    # Z at moderate speed: 50 mm/min on default Z config is slow enough
-    # to give the 1Hz timer multiple chances to fire.
     r = sim.gcode("G1 Z40 F300", timeout=30.0)
     err = (
         (r.get("error") or {}).get("message", "") if isinstance(r, dict) else ""

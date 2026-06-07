@@ -49,7 +49,6 @@ fn s_of_t_uniform_velocity_is_linear() {
 
 #[test]
 fn s_of_t_endpoint_consistency() {
-    // Accelerating profile: v linearly from 0 to 100 over 10 grid points.
     let n = 11;
     let total_length = 50.0;
     let mut samples = Vec::with_capacity(n);
@@ -69,7 +68,7 @@ fn s_of_t_endpoint_consistency() {
         samples,
         status: SolveStatus::Solved,
         grid_scheme: GridScheme::UniformArclength,
-        total_time: 1.0, // not used in build_s_of_t_pieces
+        total_time: 1.0,
     };
 
     let s_pieces = build_s_of_t_pieces(&profile, 0.0);
@@ -99,7 +98,6 @@ fn s_of_t_endpoint_consistency() {
 
 #[test]
 fn s_of_t_near_zero_handling() {
-    // All velocities near zero.
     let profile = TopProfile {
         samples: vec![
             GridSample {
@@ -181,7 +179,6 @@ fn s_of_t_pieces_contiguous() {
 
 #[test]
 fn compose_straight_line_constant_velocity() {
-    // Straight line from (0,0,0) to (50,0,0), uniform velocity 500 mm/s.
     let curve = nurbs::VectorNurbs::try_new(
         1,
         vec![0.0, 0.0, 1.0, 1.0],
@@ -232,7 +229,6 @@ fn compose_straight_line_constant_velocity() {
 
 #[test]
 fn compose_diagonal_line() {
-    // Diagonal from (0,0,0) to (30,40,0): arc length = 50.
     let curve = nurbs::VectorNurbs::try_new(
         1,
         vec![0.0, 0.0, 1.0, 1.0],

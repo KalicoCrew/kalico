@@ -16,19 +16,13 @@
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
-    /// Buffer ended before the message body was fully consumed.
     UnexpectedEof,
-    /// Length-prefixed array claimed more elements than the buffer holds
-    /// (could panic-cause a huge allocation; we reject up-front).
+    /// Could panic-cause a huge allocation; we reject up-front.
     ArrayLengthExceedsBuffer { claimed: u32, available: usize },
-    /// Trailing bytes after a successful decode of a fixed-size message.
     /// Variable-size messages don't use this; they consume what they need.
     TrailingBytes { remaining: usize },
-    /// A field carried a value outside its defined discriminant set
-    /// (e.g. an unknown SlaveState byte). Fail loudly — never default.
+    /// Fail loudly — never default.
     BadDiscriminant { field: &'static str, raw: u32 },
-    /// A length-prefixed array that the message requires to be non-empty
-    /// arrived empty.
     EmptyArray { field: &'static str },
 }
 
@@ -114,8 +108,6 @@ impl<'a> Cursor<'a> {
         Ok(s)
     }
 }
-
-// ---- primitive helpers ----
 
 pub fn put_u8(out: &mut Vec<u8>, v: u8) {
     out.push(v);

@@ -1,18 +1,4 @@
 #!/usr/bin/env python3
-"""Phase 4 gate test — verify G1 X10 produces non-zero step pulses.
-
-Run from the repo root inside the Docker container:
-    python3 tools/sim_klippy/test_phase4_steps.py
-
-Uses the bridge's bridge_call() to query runtime_sim_stepper_count_query oid=0
-(X-axis stepper, OID 0 in the sim printer.cfg) after a fake-homed G1 X10.
-
-Gate: step_count > 0 after the move.  Expected: ~10 mm × steps_per_mm.
-For stepper_x: rotation_distance=40, microsteps=16, full_steps=200 →
-  steps_per_mm = (full_steps × microsteps) / rotation_distance = (200 × 16) / 40 = 80
-  10 mm → ~800 steps (corexy shares A+B so actual count may differ).
-"""
-
 import json
 import os
 import pathlib
@@ -23,9 +9,6 @@ import time
 
 import pytest
 
-# Standalone __main__ script that spawns out/klipper.elf; no pytest test
-# functions. Tagged needs_elf so it is honestly classified (and excluded
-# from the CI sim_unit selection). Run directly: `python3 <this file>`.
 pytestmark = pytest.mark.needs_elf
 
 REPO = pathlib.Path(os.environ.get("KALICO_REPO", "/work"))
@@ -64,12 +47,9 @@ SIM_SOCK_DIR = pathlib.Path("/tmp/kalico_sim_socks")
 
 
 def spawn_tmc_emulators():
-    """Spawn TMC5160 SPI register emulators for phase-stepping CS pins."""
     SIM_SOCK_DIR.mkdir(exist_ok=True)
     emu_script = REPO / "tools" / "kalico-sim" / "emulators" / "tmc5160_emu.py"
     procs = []
-    # CS pins from printer.cfg: stepper_x=gpio27 (chip0, line27),
-    # stepper_y=gpio26 (chip0, line26).
     for line in (27, 26):
         sock_path = SIM_SOCK_DIR / f"spi_cs_0_{line}"
         emu_log = open(LOGDIR / f"tmc_emu_{line}.log", "w")
@@ -78,7 +58,6 @@ def spawn_tmc_emulators():
             stdout=emu_log,
             stderr=emu_log,
         )
-        # Wait for socket to appear
         for _ in range(20):
             if sock_path.exists():
                 break
@@ -203,13 +182,6 @@ def main():
                 )
                 return 1
 
-        # The bridge schedules segments at MCU_clock_now + 100ms_lead +
-        # seg.t_start; if klippy startup pushed the MCU clock far ahead of
-        # wall-clock zero, the segment can land tens of seconds in the
-        # future. Wait long enough that a 10mm @ F1000 move (≈0.6s) plus
-        # the schedule lead has had time to drain.
-        # Poll elf log for non-zero stepper counts. Bypasses bridge_call so
-        # we get the answer even if klippy shut down on the M400 timeout.
         print("[phase4] polling elf log for motion + SPI output")
         elf_log = (
             REPO / "tools" / "sim_klippy" / ".local-logs" / "klipper_elf.log"
@@ -239,8 +211,6 @@ def main():
                 print(f"  motion + SPI observed: spi_writes={seen_spi_writes}")
                 break
 
-        # Query step counts via the KALICO_SIM_STEP_COUNT G-code command,
-        # which routes through klippy → bridge → MCU wire command.
         print("[phase4] querying axis accumulators (post-move)")
         try:
             for axis in (0, 1, 2):
@@ -255,7 +225,6 @@ def main():
         except (ConnectionRefusedError, ConnectionResetError, OSError) as e:
             print(f"  query failed (klippy disconnected): {e}")
 
-        # Extract counts from klippy log (respond_info writes there)
         log = KLIPPY_LOG.read_text() if KLIPPY_LOG.exists() else ""
         x_count = 0
         y_count = 0

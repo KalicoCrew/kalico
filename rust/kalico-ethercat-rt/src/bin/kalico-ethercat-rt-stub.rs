@@ -1,4 +1,3 @@
-//! Usage: kalico-ethercat-rt-stub [--socket PATH] [--fail-bringup slave=N]
 #![allow(unsafe_code)]
 
 use std::sync::atomic::{AtomicBool, Ordering};

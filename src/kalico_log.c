@@ -8,10 +8,10 @@
 
 #include <stdint.h>
 
-#include "board/irq.h"               // irq_save, irq_restore, irqstatus_t
-#include "board/misc.h"              // timer_read_time
-#include "kalico_dispatch.h"         // kalico_transport_send_frame, KALICO_CHANNEL_EVENTS
-#include "kalico_protocol_schema.h"  // KALICO_MSG_MCU_LOG
+#include "board/irq.h"
+#include "board/misc.h"
+#include "kalico_dispatch.h"
+#include "kalico_protocol_schema.h"
 #include "kalico_log.h"
 
 // Foreground-safe, defined in src/runtime_tick.c; no public header declares it.
@@ -55,7 +55,6 @@ kalico_log_emit(uint8_t level, uint8_t subsystem, uint16_t event,
 {
     irqstatus_t flag = irq_save();
     if ((kalico_log_head - kalico_log_tail) >= KALICO_LOG_RING_LEN) {
-        // Ring full: drop newest, account for it, never block.
         kalico_log_drops++;
         irq_restore(flag);
         return;
@@ -74,13 +73,10 @@ kalico_log_emit(uint8_t level, uint8_t subsystem, uint16_t event,
     irq_restore(flag);
 }
 
-// Widen a 32-bit tick captured <= 1 ms ago: if the captured low half exceeds
-// the current low half, the u32 wrapped since capture, so the high half is one
-// less.
 static uint64_t
 widen_log_tick(uint32_t tick)
 {
-    uint64_t now64 = runtime_widened_host_clock();   // foreground-safe
+    uint64_t now64 = runtime_widened_host_clock();
     uint32_t now_lo = (uint32_t)now64;
     uint32_t high = (uint32_t)(now64 >> 32);
     if (tick > now_lo)
@@ -136,9 +132,6 @@ send_log_frame(const struct kalico_log_entry *e)
 void
 kalico_log_drain(void)
 {
-    // Surface any entries dropped since the last drain (fail-loud), enqueued
-    // here so the loop below ships it the same cycle. If the ring is full the
-    // report itself drops and is re-counted next drain.
     irqstatus_t df = irq_save();
     uint32_t drops = kalico_log_drops;
     kalico_log_drops = 0;
@@ -162,7 +155,7 @@ kalico_log_drain(void)
 
         int rc = send_log_frame(&e);
         if (rc < 0)
-            break;                       // transmit_buf full — retry next tick
+            break;
 
         flag = irq_save();
         kalico_log_tail++;

@@ -2,9 +2,6 @@ use crate::ELimits;
 use nurbs::eval::eval as nurbs_eval;
 use nurbs::ScalarNurbs;
 
-/// Compute the duration of a trapezoidal velocity profile for an independent E segment.
-///
-/// Returns the total duration in seconds. Returns 0.0 for zero-length moves.
 pub fn schedule_e_duration(e_nurbs: &ScalarNurbs<f64>, feedrate: f64, limits: &ELimits) -> f64 {
     let total_length = e_path_length(e_nurbs);
     if total_length <= 0.0 {
@@ -13,11 +10,6 @@ pub fn schedule_e_duration(e_nurbs: &ScalarNurbs<f64>, feedrate: f64, limits: &E
     trapezoidal_duration(total_length, feedrate, limits)
 }
 
-/// Build a time-parameterized E NURBS for the final shaped-segment output.
-///
-/// Constructs a degree-2 piecewise-polynomial s(t) trapezoidal profile and
-/// maps it to `[e_start, e_end]`.
-///
 /// # Errors
 ///
 /// Returns `ShapeError::Algebra` if NURBS construction fails.
@@ -96,13 +88,13 @@ pub fn schedule_e_full(
     let cp3 = e_at_t1 + sign * v_cruise * t_cruise / 2.0;
 
     let cps = vec![
-        e_start, // cp0
-        e_start, // cp1
-        e_at_t1, // cp2
-        cp3,     // cp3
-        e_at_t2, // cp4
-        e_end,   // cp5
-        e_end,   // cp6
+        e_start,
+        e_start,
+        e_at_t1,
+        cp3,
+        e_at_t2,
+        e_end,
+        e_end,
     ];
 
     let t1_safe = t0 + profile.t_ramp.max(1e-12);

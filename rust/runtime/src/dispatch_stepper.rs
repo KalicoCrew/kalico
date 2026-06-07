@@ -1,7 +1,3 @@
-// Stepper dispatch backend — STEP/DIR pulse and TMC phase-stepping.
-//
-// Compiled only when the `motion-module-stepper` Cargo feature is active.
-
 #![allow(unsafe_code)]
 
 use core::sync::atomic::Ordering;
@@ -13,8 +9,6 @@ use crate::fault_helpers::{
 use crate::phase_lut::{PHASE_LUT, PHASE_LUT_SIZE};
 use crate::state::SharedState;
 
-// Compile-time proof that `(i32 as u32) & 0x3FF` always indexes within PHASE_LUT.
-// 0x3FF == 1023; PHASE_LUT_SIZE == 1024, so 0x3FF < PHASE_LUT_SIZE must hold.
 const _: () = assert!(
     0x3FF < PHASE_LUT_SIZE,
     "PHASE_LUT_SIZE must be > 0x3FF (1023) for the phase-mask indexing in dispatch_phase to be infallible",
@@ -311,8 +305,6 @@ fn dispatch_phase(axis_idx: usize, axis: &mut AxisConfig, shared: &SharedState, 
 
         #[allow(clippy::cast_sign_loss)]
         let phase = (target_stepper as u32) & 0x3FF;
-        // The mask guarantees phase ∈ 0..=1023 = 0..PHASE_LUT_SIZE-1; the
-        // compile-time assert above keeps this claim honest across LUT resizes.
         #[allow(clippy::indexing_slicing)] // infallible: phase < PHASE_LUT_SIZE by construction
         let (coil_a, coil_b) = PHASE_LUT[phase as usize];
 

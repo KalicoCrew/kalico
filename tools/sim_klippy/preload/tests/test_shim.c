@@ -1,9 +1,3 @@
-// Direct test harness for libsim_intercept.so. Loads the shim via
-// LD_PRELOAD (not dlopen — we rely on the constructor running in the
-// process before main() runs), then exercises each handler.
-//
-// Run via: LD_PRELOAD=../libsim_intercept.so ./test_shim
-// _GNU_SOURCE is defined via -D_GNU_SOURCE in CFLAGS.
 #include <assert.h>
 #include <fcntl.h>
 #include <linux/gpio.h>

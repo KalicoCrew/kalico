@@ -11,7 +11,7 @@
 
 #define STEP_QUEUE_DEPTH       32
 #define STEP_QUEUE_DEPTH_MASK  0x1F  // depth - 1; power-of-2 invariant
-#define N_AXIS_STEP_QUEUES     4     // A, B, Z, E
+#define N_AXIS_STEP_QUEUES     4
 
 typedef struct {
     uint32_t cycle_abs;   // low 32 bits of DWT CYCCNT; wrap-aware compare only

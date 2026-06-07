@@ -23,7 +23,6 @@ fn straight() -> VectorNurbs<f64, 3> {
 }
 
 fn arc() -> VectorNurbs<f64, 3> {
-    // Standard cubic Bézier approximation of a quarter circle: k = (4/3)(√2 − 1).
     let r = 20.0_f64;
     let k = (4.0 / 3.0) * (std::f64::consts::SQRT_2 - 1.0);
     VectorNurbs::<f64, 3>::try_new(

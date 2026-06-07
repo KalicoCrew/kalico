@@ -1,24 +1,4 @@
 #!/usr/bin/env python3
-"""Static invariants for the MotionToolhead extends-upstream refactor.
-
-Three checks, all pure-Python (no klippy boot required):
-
-1. override_surface_baseline: pin the methods MotionToolhead overrides
-   locally vs methods it inherits from ToolHead. A diff against the
-   baseline catches accidental drift in either direction (we add an
-   override that should be inherited, or upstream gains a method that
-   our override list might need to consider).
-
-2. flush_timer_silencing_invariant: verify no MotionToolhead path
-   (overridden or inherited) calls the upstream rearm method
-   `note_mcu_movequeue_activity` along a bridge code path. The
-   silenced-flush-timer guarantee depends on the rearm callers
-   (_advance_flush_time, drip_move) being either no-op'd or overridden.
-
-3. legacy_toolhead_importable: prove `klippy.toolhead` is a
-   self-contained module that imports without the bridge present.
-"""
-
 from __future__ import annotations
 
 import importlib
@@ -30,11 +10,6 @@ from klippy.toolhead import ToolHead
 
 pytestmark = pytest.mark.sim_unit
 
-# --- Test 1: override-surface baseline -------------------------------------
-
-# Methods MotionToolhead defines locally (overrides). Update this baseline
-# when intentionally changing the override surface. Any divergence triggers
-# CI failure with a diff message.
 EXPECTED_LOCAL_METHODS = frozenset(
     {
         "__init__",
@@ -86,7 +61,7 @@ def test_motion_toolhead_override_surface_matches_baseline():
         for name, value in MotionToolhead.__dict__.items()
         if callable(value) and not name.startswith("__")
     }
-    actual.add("__init__")  # always part of the baseline
+    actual.add("__init__")
     extra = actual - EXPECTED_LOCAL_METHODS
     missing = EXPECTED_LOCAL_METHODS - actual
     assert not extra and not missing, (
@@ -98,9 +73,6 @@ def test_motion_toolhead_override_surface_matches_baseline():
     )
 
 
-# Methods upstream ToolHead exposes today. If upstream gains a new
-# public-ish method, this test fails so a human reviews whether
-# MotionToolhead should override it.
 EXPECTED_TOOLHEAD_METHODS = frozenset(
     {
         "__init__",
@@ -170,22 +142,8 @@ def test_upstream_toolhead_method_baseline():
     )
 
 
-# --- Test 2: flush-timer silencing invariant -------------------------------
-
 
 def test_no_motion_toolhead_path_calls_note_mcu_movequeue_activity():
-    """Static check: no MotionToolhead method body invokes the upstream
-    flush-timer rearm method along a bridge code path.
-
-    Upstream's body of note_mcu_movequeue_activity (toolhead.py:776) runs
-    `self.reactor.update_timer(self.flush_timer, self.reactor.NOW)` which
-    would cancel our `update_timer(NEVER)` silencing. The invariant: only
-    upstream-owned paths call note_mcu_movequeue_activity, and we override
-    the two such bridge-reachable callers (drip_move, _advance_flush_time
-    indirectly via _flush_handler — both are no-op'd because our
-    flush_step_generation, drip_move, and note_mcu_movequeue_activity are
-    all overridden to no-op or replaced).
-    """
     import inspect
 
     forbidden = "note_mcu_movequeue_activity"
@@ -211,16 +169,8 @@ def test_no_motion_toolhead_path_calls_note_mcu_movequeue_activity():
     )
 
 
-# --- Test 3: legacy ToolHead module imports cleanly ------------------------
-
 
 def test_legacy_toolhead_module_imports_without_bridge():
-    """Restored upstream toolhead.py is self-contained: it imports without
-    requiring motion_bridge or any bridge-specific module. This protects
-    the "rest of the printer works as before" goal — anyone running plain
-    upstream Kalico without the bridge gets the same toolhead module as
-    mainline, byte-for-byte except for the _load_kinematics extraction.
-    """
     th = importlib.import_module("klippy.toolhead")
     assert hasattr(th, "ToolHead")
     assert hasattr(th, "LookAheadQueue")
@@ -230,5 +180,4 @@ def test_legacy_toolhead_module_imports_without_bridge():
     assert th.BUFFER_TIME_START == 0.250
     assert th.BUFFER_TIME_HIGH == 2.0
     assert th.SDS_CHECK_TIME == 0.001
-    # The extension point we added:
     assert hasattr(th.ToolHead, "_load_kinematics")

@@ -1,5 +1,3 @@
-/// One captured XDIRECT write — the three parameters of
-/// `phase_stepping_write_xdirect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct XDirectRecord {
     pub motor_idx: u8,

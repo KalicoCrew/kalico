@@ -32,7 +32,6 @@ pub enum PathSampleError {
     ArcLengthTable(String),
 }
 
-/// Build `ArclengthGrid` for a single 3D NURBS at uniform-in-`s` resolution `n`.
 pub fn sample_arclength_grid(
     curve: &VectorNurbs<f64, 3>,
     n: usize,

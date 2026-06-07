@@ -2,7 +2,6 @@ use super::*;
 use crate::ConstructError;
 
 fn linear_curve() -> ScalarNurbs<f64> {
-    // Degree-1 NURBS, 2 control points, knots {0,0,1,1}.
     ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap()
 }
 
@@ -42,7 +41,7 @@ fn try_new_rejects_knot_count_mismatch() {
 fn try_new_rejects_unclamped_start() {
     let result = ScalarNurbs::<f64>::try_new(
         1,
-        vec![0.0, 0.5, 1.0, 1.0], // not clamped at start
+        vec![0.0, 0.5, 1.0, 1.0],
         vec![0.0, 1.0],
     );
     assert!(matches!(result, Err(ConstructError::KnotsNotClamped)));
@@ -52,7 +51,7 @@ fn try_new_rejects_unclamped_start() {
 fn try_new_rejects_unclamped_end() {
     let result = ScalarNurbs::<f64>::try_new(
         1,
-        vec![0.0, 0.0, 0.5, 1.0], // not clamped at end
+        vec![0.0, 0.0, 0.5, 1.0],
         vec![0.0, 1.0],
     );
     assert!(matches!(result, Err(ConstructError::KnotsNotClamped)));
@@ -107,7 +106,6 @@ fn try_from_wire_parses_unweighted_linear() {
     buf.extend_from_slice(&0.0_f32.to_ne_bytes());
     buf.extend_from_slice(&1.0_f32.to_ne_bytes());
 
-    // Ensure 4-byte alignment by allocating into an aligned buffer
     let aligned = align_buf(&buf, 4);
     let r = ScalarNurbsRef::<f32>::try_from_wire(aligned.as_slice()).unwrap();
     assert_eq!(r.degree(), 1);
@@ -153,8 +151,6 @@ fn try_from_wire_rejects_truncated_header() {
 
 #[test]
 fn try_from_wire_rejects_has_weights_flag() {
-    // Legacy rational header (has_weights=1) must be rejected loudly, not
-    // parsed with a misaligned payload assumption.
     let buf = align_buf(
         &[
             1u8, 1, 1, 0, 4, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -186,7 +182,6 @@ impl AlignedBytes {
     }
 }
 
-/// Allocate a buffer aligned to `align` bytes containing `data`.
 fn align_buf(data: &[u8], align: usize) -> AlignedBytes {
     match align {
         4 => {

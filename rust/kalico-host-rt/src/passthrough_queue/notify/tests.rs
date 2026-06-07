@@ -14,7 +14,6 @@ fn dispatch_fires_callback_once() {
     table.dispatch(id, NotifyResponse::default());
     assert_eq!(*fired.lock().unwrap(), 1);
 
-    // Second dispatch is a no-op
     table.dispatch(id, NotifyResponse::default());
     assert_eq!(*fired.lock().unwrap(), 1);
 }

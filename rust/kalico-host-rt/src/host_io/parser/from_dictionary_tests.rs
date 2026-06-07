@@ -76,7 +76,6 @@ fn free_form_output_decodes_to_canonical_msg() {
     let mut d = empty_dict();
     d.output.insert("debug_blob %u %s".into(), 8);
     let parser = MsgProtoParser::from_dictionary(d).unwrap();
-    // Body: msgid VLQ + u32 VLQ value 5 + length-prefixed string "hi"
     let mut body = Vec::new();
     encode_vlq(&mut body, 8).unwrap(); // msgid
     encode_vlq(&mut body, 5).unwrap(); // %u value

@@ -12,10 +12,6 @@ use runtime::piece_ring::PieceEntry;
 
 const STUB_BIN: &str = env!("CARGO_BIN_EXE_kalico-ethercat-rt-stub");
 
-// ---------------------------------------------------------------------------
-// RAII helpers (copied from stub_lifecycle.rs — no shared test module exists)
-// ---------------------------------------------------------------------------
-
 struct ChildGuard {
     child: Option<Child>,
 }
@@ -92,10 +88,6 @@ fn wait_for_exit(child: &mut Child, deadline: Instant) -> std::process::ExitStat
     }
 }
 
-// ---------------------------------------------------------------------------
-// Torque-specific helpers
-// ---------------------------------------------------------------------------
-
 fn set_torque(conn: &UnixNativeConn, value: bool, execute_at_ns: u64) -> i32 {
     let body = SetTorque {
         value: u8::from(value),
@@ -140,10 +132,6 @@ fn push_one_piece(conn: &UnixNativeConn, start_time: u64) {
     let _ = conn.kalico_call(MessageKind::PushPieces, body, Duration::from_secs(5));
 }
 
-// ---------------------------------------------------------------------------
-// Helper: spawn stub + wait for socket + do handshake
-// ---------------------------------------------------------------------------
-
 fn spawn_and_claim(tag: &str, extra_args: &[&str]) -> (ChildGuard, UnixNativeConn, String) {
     let path = socket_path(tag);
     let _ = std::fs::remove_file(&path);
@@ -162,10 +150,6 @@ fn spawn_and_claim(tag: &str, extra_args: &[&str]) -> (ChildGuard, UnixNativeCon
 
     (guard, conn, path)
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn enable_acks_disable_schedules_and_parks() {

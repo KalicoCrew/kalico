@@ -16,11 +16,6 @@
 //   MOTION_TIM_RCC_ENABLE()- enable the timer's peripheral clock (the RCC
 //                            register differs per family)
 //
-// H7/F4 keep their long-standing hardcoded TIM5 in runtime_tick_{h7,f4}.c and
-// do not (yet) consume this header; it is currently the source of truth for the
-// STM32G0 backend (runtime_tick_g0.c). The TIM5 mapping is recorded here so a
-// future unification of the three backends has the full per-family table.
-
 #include "autoconf.h"
 #include "internal.h" // CMSIS device header: TIMx, RCC, *_IRQn
 
@@ -40,7 +35,7 @@
     #define MOTION_TIM_IRQn          TIM6_DAC_LPTIM1_IRQn
     #define MOTION_TIM_IRQHandler    TIM6_DAC_LPTIM1_IRQHandler
     #define MOTION_TIM_RCC_ENABLE()  do { RCC->APBENR1 |= RCC_APBENR1_TIM6EN; } while (0)
-  #else // CONFIG_KALICO_MOTION_TIMER_TIM7 (default)
+  #else
     #define MOTION_TIM               TIM7
     #define MOTION_TIM_IRQn          TIM7_LPTIM2_IRQn
     #define MOTION_TIM_IRQHandler    TIM7_LPTIM2_IRQHandler
@@ -48,12 +43,9 @@
   #endif
 
 #elif CONFIG_MACH_STM32H7 || CONFIG_MACH_STM32F4
-// Recorded for the future-unification table; H7/F4 backends still hardcode TIM5
-// today (H7 enables via RCC->APB1LENR, F4 via RCC->APB1ENR — note the
-// family-specific register, which is why those files have not been folded in).
   #define MOTION_TIM                 TIM5
   #define MOTION_TIM_IRQn            TIM5_IRQn
   #define MOTION_TIM_IRQHandler      TIM5_IRQHandler
 #endif
 
-#endif // __KALICO_RUNTIME_TICK_TIMER_H
+#endif

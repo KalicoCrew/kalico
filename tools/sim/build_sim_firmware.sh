@@ -1,24 +1,11 @@
 #!/usr/bin/env bash
-# Build a Renode-friendly firmware image at out/klipper.elf.
-#
-# Differences from the production silicon image:
-#   - CONFIG_STM32_SERIAL_USART2=y instead of CONFIG_USBSERIAL=y (Renode's
-#     OTG_HS isn't modeled; USART2 is).
-#   - CONFIG_KALICO_SIM=y to skip watchdog_init / kicks (Renode's IWDG
-#     model fires spurious resets).
-#
-# Both options are sim-only. Never flash an out/klipper.bin produced by
-# this script to real hardware — leaving IWDG armed is the only thing
-# that catches a hung MCU mid-print.
+# Never flash an out/klipper.bin produced by this script to real hardware —
+# leaving IWDG armed is the only thing that catches a hung MCU mid-print.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$REPO_ROOT"
 
-# Locate arm-gcc. Prefer the user's xpack install since brew's
-# arm-none-eabi-gcc formula ships without newlib (no <stdint.h>); the
-# cask `gcc-arm-embedded` requires sudo to install. xpack-dev-tools
-# ships a working bundle that extracts under $HOME with no privileges.
 XPACK_DIR="$HOME/.local/arm-gcc"
 XPACK_BIN="$(/bin/ls -d "$XPACK_DIR"/xpack-arm-none-eabi-gcc-*/bin 2>/dev/null | head -n1 || true)"
 
@@ -41,7 +28,6 @@ EOF
   exit 1
 fi
 
-# Apply the saved sim config and reconcile against current Kconfig.
 cp tools/sim/sim.config .config
 make olddefconfig >/dev/null
 

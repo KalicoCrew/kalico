@@ -305,7 +305,7 @@ where
                     (Some(i), Some(j), _) => (i, j),
                     (None, None, Some([prev_p, prev_q])) => (-prev_p, -prev_q),
                     (None, None, None) => {
-                        state.prev_g5_pq = None; // already None, but explicit for symmetry
+                        state.prev_g5_pq = None;
                         return Some(ReduceEvent::ParseError {
                             line_no,
                             kind: ParseErrorKind::G5MissingTangent,
@@ -492,7 +492,7 @@ where
 
 #[cfg(test)]
 #[allow(unused_imports)]
-pub use tests::*; // expose internal types to integration tests if needed
+pub use tests::*;
 
 #[cfg(test)]
 mod tests;

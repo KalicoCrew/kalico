@@ -4,13 +4,8 @@ use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A `UnixNativeConn` whose peer end is dropped — every call returns
-/// `TransportError::Closed` (read returns `Ok(0)`) or `TransportError::Io`
-/// (write to closed peer yields BrokenPipe).
 fn closed_conn() -> Arc<kalico_host_rt::unix_native_conn::UnixNativeConn> {
     let (client, _server) = UnixStream::pair().unwrap();
-    // Drop _server immediately: the client will see EOF / broken-pipe on
-    // the very first I/O.
     Arc::new(kalico_host_rt::unix_native_conn::UnixNativeConn::from_stream(client))
 }
 
@@ -46,10 +41,6 @@ fn closed_peer_yields_fatal_send_error() {
 
 #[test]
 fn timeout_yields_transient_send_error() {
-    // Construct a TransportError::Timeout and verify the match arm
-    // classifies it as Transient.  We can't easily produce a real
-    // timeout without sleeping, so test the classification logic
-    // directly on the error type.
     let e = TransportError::Timeout;
     let is_fatal = matches!(e, TransportError::Closed | TransportError::Io(_));
     assert!(!is_fatal, "Timeout must not be fatal");

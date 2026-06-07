@@ -1,6 +1,3 @@
-//! Wire helpers for the EtherCAT RT endpoint: `PushPieces` decode, response
-//! builders, and `StatusHeartbeat` event emission.
-
 use kalico_native_transport::frame::{encode_frame, CHANNEL_CONTROL, CHANNEL_EVENTS};
 use kalico_native_transport::wire_helpers::{
     decode_message_header, encode_message_header, MESSAGE_VERSION_DEFAULT,
@@ -13,7 +10,6 @@ use kalico_protocol::messages::{
 };
 use kalico_protocol::KALICO_CHANNEL_PIECES;
 
-/// A decoded control-channel command plus the correlation id to answer with.
 #[derive(Debug)]
 pub enum Command {
     Identify {

@@ -1,17 +1,8 @@
-# Tests for MotionBridgeWrapper structured-logging plumbing: init_logging is
-# called once with the events dir, the initial session context is pushed, and
-# print-state events propagate print_id to the native bridge.
-#
-# motion_bridge.py imports `motion_bridge_native` (the built .so) at module
-# load. To keep this test hermetic (no build artifact required), a fake native
-# module is injected into sys.modules before importing klippy.motion_bridge.
 import sys
 import types
 
 import pytest
 
-# Inject a stand-in for the native extension so the package-relative import in
-# klippy/motion_bridge.py resolves without the compiled .so being present.
 _fake_native_mod = types.ModuleType("klippy.motion_bridge_native")
 _fake_native_mod.MotionBridge = object
 sys.modules.setdefault("klippy.motion_bridge_native", _fake_native_mod)
@@ -65,8 +56,6 @@ def test_init_and_initial_context_pushed():
 
 
 def test_none_events_dir_skips_init_but_still_sets_context():
-    # A host with no logfile (events_dir None) must not call init_logging, but
-    # the session context is still pushed so Rust logs carry the session id.
     native = FakeNative()
     printer = FakePrinter()
     structured_log.bind_session("k-1-2")

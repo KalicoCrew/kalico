@@ -1,7 +1,3 @@
-"""launcher.spawn_mcus brings up two klipper.elf processes, returns
-handles that include the PTY socket paths, and tears them down cleanly
-on .shutdown(). After spawn returns, both PTYs must exist."""
-
 import os
 
 import pytest
@@ -30,6 +26,5 @@ def test_spawn_brings_up_both_mcus(tmp_path):
         assert handles.f4.process.poll() is None
     finally:
         handles.shutdown()
-        # Sockets cleaned up after shutdown
         assert not os.path.exists(h7_socket)
         assert not os.path.exists(f4_socket)

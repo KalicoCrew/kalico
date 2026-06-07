@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# V3 — section-placement gate for rt_storage.
-#
 # Usage: ./scripts/check_rt_storage_placement.sh out/klipper.elf
 #
 # On H7 builds: rt_storage must land in `.axi_bss` at an address in
@@ -8,9 +6,6 @@
 # On F4 builds: rt_storage must land in `.bss` (or `.bss.*`) at an address
 # in [0x20000000, 0x20020000) and must be inside the [_bss_start,_bss_end]
 # span (verified via boot-zeroing coverage cross-check).
-#
-# Codifies the previously-manual `objdump | grep RT_CELL` ritual
-# (feedback_cargo_clean_between_mcus.md).
 
 set -euo pipefail
 
@@ -20,7 +15,6 @@ if [ ! -f "$ELF" ]; then
     exit 1
 fi
 
-# Find rt_storage symbol with section name and address.
 SYM_LINE="$("${OBJDUMP:-arm-none-eabi-objdump}" -t "$ELF" | awk '/ rt_storage$/{print}')"
 if [ -z "$SYM_LINE" ]; then
     echo "ERROR: rt_storage symbol not found in $ELF" >&2
@@ -33,9 +27,6 @@ ADDR_HEX="$(echo "$SYM_LINE" | awk '{print $1}')"
 SECTION="$(echo "$SYM_LINE" | awk '{print $(NF-2)}')"
 ADDR=$((16#${ADDR_HEX#0x}))
 
-# Detect MCU family from the ELF's symbol table.
-# Heuristic: H7 builds have an _axi_bss_start symbol; F4 builds don't.
-#
 # Use awk instead of grep -q here: with `set -o pipefail`, grep -q exits
 # early when it matches, SIGPIPE-killing the upstream objdump, and the
 # pipe returns non-zero. awk reads stdin to EOF so the upstream finishes
@@ -71,7 +62,6 @@ if [ "$ADDR" -lt "$MIN_ADDR" ] || [ "$ADDR" -ge "$MAX_ADDR" ]; then
     exit 4
 fi
 
-# F4-only: verify rt_storage is inside the boot-zeroed BSS span.
 # (awk without early `exit` to avoid the pipefail + SIGPIPE issue that bit
 # the MCU-detection heuristic above. The last match wins; there's only
 # one _bss_start / _bss_end symbol so it doesn't matter.)

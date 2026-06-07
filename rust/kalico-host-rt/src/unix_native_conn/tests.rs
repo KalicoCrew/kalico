@@ -88,7 +88,6 @@ fn spawn_stub_with_event(
                 if let Frame::Kalico { payload, .. } = f {
                     let (hdr, _b) = decode_message_header(&payload).unwrap();
                     peer.write_all(&event_before_reply).unwrap();
-                    // Then send the correlated response.
                     let mut out = encode_message_header(
                         reply_kind,
                         MESSAGE_VERSION_DEFAULT,

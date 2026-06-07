@@ -1,25 +1,20 @@
-// Klipper-side lifecycle for the kalico runtime and the single definition site
-// for shared globals (runtime_handle, runtime_clock_freq, ...). Command surface
-// is in src/runtime_commands.c; per-family tick backends in src/<arch>/.
-
-#include <string.h>         // memcpy
+#include <string.h>
 #if defined(__linux__) || defined(__APPLE__)
-#include <stdio.h>          // fprintf, stderr
-#include <time.h>           // clock_gettime
+#include <stdio.h>
+#include <time.h>
 #endif
 #include "autoconf.h"
-#include "board/gpio.h"     // gpio_in_setup / gpio_in_read
-#include "board/internal.h" // NVIC_*, OTG_HS_IRQn, USART2_IRQn
-#include "board/irq.h"      // irq_save, irq_restore (Step-6 §8.5 flush)
-#include "board/misc.h"     // timer_read_time
-#include "command.h"        // DECL_COMMAND
-#include "sched.h"          // DECL_INIT, DECL_TASK
+#include "board/gpio.h"
+#include "board/internal.h"
+#include "board/irq.h"
+#include "board/misc.h"
+#include "command.h"
+#include "sched.h"
 #include "kalico_runtime.h"
-#include "kalico_dispatch.h" // kalico_native_emit_*
-#include "kalico_log.h"      // kalico_log_emit, kalico_log_drain
-#include "generic/runtime_tick.h"   // backend interface (consumer view)
-#include "generic/fault_handler.h"  // diag_record_engine_xition, diag_take_snapshot
-
+#include "kalico_dispatch.h"
+#include "kalico_log.h"
+#include "generic/runtime_tick.h"
+#include "generic/fault_handler.h"
 
 // Read from Rust via `extern "C" { static runtime_clock_freq: u32; }`;
 // used,externally_visible keeps it through -fwhole-program LTO.
@@ -31,6 +26,9 @@ const uint32_t runtime_sample_rate_hz __attribute__((used, externally_visible))
 
 
 extern volatile uint8_t runtime_liveness_ok;  // defined in src/stm32/watchdog.c
+
+#define ENGINE_STATUS_RUNNING 1
+#define ENGINE_STATUS_FAULT   3
 
 // Foreground-only; NEVER call from ISR.
 __attribute__((used, externally_visible))
@@ -58,7 +56,6 @@ struct rt_diag_persistent {
 volatile struct rt_diag_persistent rt_diag_persistent
     __attribute__((section(".persistent_diag"), used, externally_visible));
 
-// Captured at runtime_init before the current run overwrites rt_diag_persistent.
 volatile uint32_t runtime_diag_prior_boot_snapshot
     __attribute__((used, externally_visible));
 
@@ -134,7 +131,6 @@ runtime_drain_event(struct timer *t)
 void
 runtime_init(void)
 {
-    // Capture prior-boot diag before our markers overwrite it.
     extern volatile uint32_t runtime_diag_prior_magic_raw;
     extern volatile uint32_t runtime_diag_prior_packed_raw;
     runtime_diag_prior_magic_raw = rt_diag_persistent.magic;
@@ -197,12 +193,11 @@ runtime_drain(void)
     uint32_t cur_counter = runtime_handle_tick_counter(runtime_handle);
     uint32_t cur_time = timer_read_time();
     uint8_t cur_status = runtime_handle_status(runtime_handle);
-    if (cur_status == 1 /* RUNNING */) {
+    if (cur_status == ENGINE_STATUS_RUNNING) {
         if (cur_counter != last_seen_tick_counter) {
             last_seen_tick_counter = cur_counter;
             last_progress_time = cur_time;
         } else if ((cur_time - last_progress_time) > KALICO_LIVENESS_THRESHOLD_TICKS) {
-            // ISR stalled while RUNNING — stop kicking the watchdog.
             runtime_liveness_ok = 0;
         }
     } else {
@@ -210,9 +205,9 @@ runtime_drain(void)
         last_seen_tick_counter = cur_counter;
     }
 
-    if (cur_status == 3 /* FAULT */) {
+    if (cur_status == ENGINE_STATUS_FAULT) {
         runtime_liveness_ok = 0;
-        if (prev_engine_status != 3 /* FAULT */) {
+        if (prev_engine_status != ENGINE_STATUS_FAULT) {
             int32_t fault_code = runtime_handle_last_error(runtime_handle);
             uint32_t fault_detail = runtime_handle_fault_detail(runtime_handle);
             uint32_t tick_blocker_pc = runtime_handle_tick_blocker_pc(runtime_handle);

@@ -33,7 +33,7 @@ fn fifo_match_finds_oldest() {
     let (e2, _r2) = make_entry(2, "rsp", 2, Instant::now() + Duration::from_secs(60));
     a.push(e1).unwrap();
     a.push(e2).unwrap();
-    assert_eq!(a.find_match("rsp"), Some(0)); // oldest first
+    assert_eq!(a.find_match("rsp"), Some(0));
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn fifo_skips_abandoned() {
     a.push(e1).unwrap();
     a.push(e2).unwrap();
     a.mark_abandoned(1);
-    assert_eq!(a.find_match("rsp"), Some(1)); // skips abandoned 0
+    assert_eq!(a.find_match("rsp"), Some(1));
 }
 
 #[test]

@@ -1,9 +1,3 @@
-//! Synthetic G5 → reduce → split → Layer 2 sanity test.
-//!
-//! Plan §Phase 4 / Task 4.2 — exercises the full live-pipeline-to-splitter path:
-//! parse a long-enough G5 line, expect a `Segment::Cubic`, then split it via
-//! `split_segment_to_cap` and assert sub-segment count and boundary continuity.
-
 use geometry::{
     FitterParams, GeometryPipeline, Item, Segment, TelemetryEvent, split_segment_to_cap,
 };
@@ -13,9 +7,6 @@ const BOUNDARY_TOL: f64 = 1e-12;
 
 #[test]
 fn synthetic_long_g5_reduces_splits_and_plans() {
-    // 50 mm G5 endpoint span from (0,0,0) to (50,0,0), bowed +Y by I,J / P,Q so
-    // the cubic has real 2D extent (not a degenerate collinear cubic). Resulting
-    // arc length is > 50 mm so the splitter at 12.5 mm cap produces ≥ 4 children.
     let g5_input = "G5 X50 Y0 I0 J20 P0 Q20 F1000\n";
 
     let mut pipeline = GeometryPipeline::new(FitterParams::default());
@@ -37,7 +28,6 @@ fn synthetic_long_g5_reduces_splits_and_plans() {
         split.len()
     );
 
-    // Boundary continuity (round-1-review HIGH 2 tolerance).
     for w in split.windows(2) {
         let lend = vector_eval(&w[0].xyz, 1.0);
         let rstart = vector_eval(&w[1].xyz, 0.0);

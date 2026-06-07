@@ -1,7 +1,4 @@
 #define _GNU_SOURCE
-// LD_PRELOAD shim that intercepts klipper's libc syscalls and replaces
-// /dev/gpiochip*, /dev/spidev*, /sys/class/pwm/*, /sys/bus/iio/* access
-// with sim-internal state and chip emulator sockets.
 #include "libsim_intercept.h"
 
 #include <dlfcn.h>
@@ -40,14 +37,12 @@
 // last_value (under fake_slots_mtx) for the get_pwm diagnostic verb;
 // that is read-only and atomic on the supported platforms.
 
-// Verbose logging — set KALICO_SIM_SHIM_VERBOSE=1 to enable.
 static int verbose = 0;
 #define LOG(fmt, ...) do { if (verbose) fprintf(stderr, "[shim] " fmt "\n", ##__VA_ARGS__); } while (0)
 
 #include <pthread.h>
 #include <errno.h>
 
-// Per-fd slot — see spec §"Per-fd state and slot allocation"
 struct sim_fd_slot {
     enum sim_slot_kind kind;
     union {
@@ -76,14 +71,13 @@ struct sim_fd_slot {
 static struct sim_fd_slot fake_slots[MAX_FAKE_FDS];
 static pthread_mutex_t fake_slots_mtx = PTHREAD_MUTEX_INITIALIZER;
 
-// Per-line state. Indexed by [chip_id][offset].
 // Must match firmware's src/linux/internal.h: MAX_GPIO_LINES=288, 9 chips.
 #define MAX_GPIO_CHIPS 9
 #define MAX_GPIO_LINES 288
 
 struct sim_gpio_line {
     int direction;   // 0 = input, 1 = output, -1 = unconfigured
-    int value;       // 0 or 1
+    int value;
 };
 static struct sim_gpio_line gpio_lines[MAX_GPIO_CHIPS][MAX_GPIO_LINES];
 static pthread_mutex_t gpio_state_mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -97,17 +91,15 @@ static struct sim_active_cs active_cs;
 static uint16_t iio_values[MAX_IIO_CHANNELS];
 static pthread_mutex_t iio_state_mtx = PTHREAD_MUTEX_INITIALIZER;
 
-// Auto-endstop: when a step pin transitions, count steps. After N steps,
-// set the linked endstop pin to triggered. Used for simulating homing.
 #define MAX_AUTO_ENDSTOPS 8
 struct auto_endstop {
     int active;
-    int step_chip, step_line;     // step pin to monitor
-    int endstop_chip, endstop_line; // endstop pin to trigger
-    int trigger_after_steps;      // steps before trigger
-    int step_count;               // current count
+    int step_chip, step_line;
+    int endstop_chip, endstop_line;
+    int trigger_after_steps;
+    int step_count;
     int last_step_value;          // for edge detection
-    int triggered;                // set when endstop was auto-triggered
+    int triggered;
 };
 static struct auto_endstop auto_endstops[MAX_AUTO_ENDSTOPS];
 static pthread_mutex_t auto_endstop_mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -158,7 +150,6 @@ static int is_fake_fd(int fd) {
     return fd >= FAKE_FD_BASE && fd < FAKE_FD_BASE + MAX_FAKE_FDS;
 }
 
-// Real libc symbols — populated by shim_init.
 static int (*real_open)(const char *, int, ...) = NULL;
 static int (*real_openat)(int, const char *, int, ...) = NULL;
 static int (*real_close)(int) = NULL;
@@ -178,7 +169,7 @@ static int parse_kv(const char *args, const char *key, long *out) {
     snprintf(needle, sizeof(needle), "%s=", key);
     const char *p = strstr(args, needle);
     if (!p) return -1;
-    if (out == NULL) return 0;          // presence-only check
+    if (out == NULL) return 0;
     p += strlen(needle);
     char *end;
     long v = strtol(p, &end, 10);
@@ -259,7 +250,6 @@ static void control_handle_line(int client_fd, char *line) {
             send_resp(client_fd, "error: parse error\n");
             return;
         }
-        // Determine which file to read; default to "duty_cycle".
         const char *want_file = "duty_cycle";
         char want_buf[32] = {0};
         const char *p = strstr(line, "file=");
@@ -383,8 +373,6 @@ static void shim_fini(void) {
     }
 }
 
-// Path classification — returns the slot kind to allocate, or SIM_NONE
-// if the path should pass through to the real syscall.
 static enum sim_slot_kind classify_path(const char *path) {
     if (!path) return SIM_NONE;
     if (strncmp(path, "/dev/gpiochip", 13) == 0) return SIM_GPIOCHIP;
@@ -394,7 +382,6 @@ static enum sim_slot_kind classify_path(const char *path) {
     return SIM_NONE;
 }
 
-// Stubbed per-handler entries; later tasks fill in real allocation.
 static int sim_open_gpiochip(const char *path, int flags) {
     (void)flags;
     int chip_id = -1;
@@ -500,7 +487,6 @@ int openat(int dirfd, const char *path, int flags, ...) {
 
 int access(const char *path, int mode) {
     if (classify_path(path) != SIM_NONE) {
-        // Sim paths always exist if the shim is loaded.
         return 0;
     }
     return real_access(path, mode);
@@ -522,8 +508,6 @@ static int gpio_handle_get_linehandle(int chip_fd, struct gpiohandle_request *re
         errno = EINVAL;
         return -1;
     }
-    // If this line is already allocated, free the old slot first.
-    // This handles gpio_out_reset which closes and re-opens lines.
     pthread_mutex_lock(&fake_slots_mtx);
     for (int i = 1; i < MAX_FAKE_FDS; i++) {
         if (fake_slots[i].kind == SIM_GPIOLINE
@@ -560,8 +544,6 @@ static void check_auto_endstops(int chip_id, int offset, int new_value) {
         struct auto_endstop *ae = &auto_endstops[i];
         if (!ae->active) continue;
         if (ae->step_chip != chip_id || ae->step_line != offset) continue;
-        // If endstop was triggered by us, clear it after some more steps
-        // (simulates retracting away from the endstop)
         if (ae->triggered) {
             if (ae->last_step_value == 0 && new_value == 1) {
                 ae->step_count++;
@@ -576,11 +558,9 @@ static void check_auto_endstops(int chip_id, int offset, int new_value) {
             ae->last_step_value = new_value;
             continue;
         }
-        // Detect rising edge (step pulse) during approach
         if (ae->last_step_value == 0 && new_value == 1) {
             ae->step_count++;
             if (ae->step_count >= ae->trigger_after_steps) {
-                // Trigger the endstop
                 pthread_mutex_lock(&gpio_state_mtx);
                 gpio_lines[ae->endstop_chip][ae->endstop_line].value = 1;
                 pthread_mutex_unlock(&gpio_state_mtx);
@@ -618,7 +598,6 @@ static int gpio_handle_set_values(int line_fd, struct gpiohandle_data *data) {
     pthread_mutex_lock(&gpio_state_mtx);
     gpio_lines[chip_id][offset].value = v;
     slot->u.gpioline.last_value = v;
-    // Track currently-asserted CS for SPI dispatch.
     if (v == 0 && gpio_lines[chip_id][offset].direction == 1) {
         active_cs.chip_id = chip_id;
         active_cs.line_offset = offset;
@@ -630,7 +609,6 @@ static int gpio_handle_set_values(int line_fd, struct gpiohandle_data *data) {
     }
     pthread_mutex_unlock(&gpio_state_mtx);
 
-    // Check auto-endstop triggers (step counting)
     check_auto_endstops(chip_id, offset, v);
 
     return 0;
@@ -756,13 +734,11 @@ int ioctl(int fd, unsigned long req, ...) {
 
 int fcntl(int fd, int cmd, ...) {
     if (!is_fake_fd(fd)) {
-        // Pass through. Use va_arg conservatively (cmd determines arg type).
         va_list ap; va_start(ap, cmd);
         long arg = va_arg(ap, long);
         va_end(ap);
         return real_fcntl(fd, cmd, arg);
     }
-    // Fake fd — no-op for FD_CLOEXEC, F_SETFL, F_GETFL.
     (void)cmd;
     return 0;
 }
@@ -779,7 +755,6 @@ ssize_t write(int fd, const void *buf, size_t count) {
     if (!slot) { errno = EBADF; return -1; }
     switch (slot->kind) {
         case SIM_SPIDEV: {
-            // No-receive SPI write — same shape as a one-way transfer.
             int sock = spi_get_chip_socket(slot);
             if (sock < 0) return -1;
             size_t off = 0;
@@ -792,7 +767,6 @@ ssize_t write(int fd, const void *buf, size_t count) {
             return (ssize_t)count;
         }
         case SIM_PWM_FILE: {
-            // Parse the integer value klipper wrote (ASCII decimal).
             char buf2[32];
             size_t copy = count < sizeof(buf2) - 1 ? count : sizeof(buf2) - 1;
             memcpy(buf2, buf, copy);

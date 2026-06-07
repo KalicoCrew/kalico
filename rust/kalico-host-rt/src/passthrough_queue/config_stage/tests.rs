@@ -12,10 +12,8 @@ fn config_cmds_drain_before_init_cmds() {
 
     assert_eq!(cs.next_config_entry(), Some(vec![0x01]));
     assert_eq!(cs.next_config_entry(), Some(vec![0x02]));
-    // Now init commands.
     assert_eq!(cs.next_config_entry(), Some(vec![0x0A]));
     assert_eq!(cs.next_config_entry(), Some(vec![0x0B]));
-    // Done.
     assert_eq!(cs.next_config_entry(), None);
     assert_eq!(cs.phase(), ConfigStagePhase::Runtime);
 }
@@ -28,7 +26,6 @@ fn begin_config_send_transitions_correctly() {
     cs.begin_config_send();
     assert_eq!(cs.phase(), ConfigStagePhase::SendingConfig);
 
-    // With no commands, immediately transitions through to Runtime.
     assert_eq!(cs.next_config_entry(), None);
     assert_eq!(cs.phase(), ConfigStagePhase::Runtime);
 }
@@ -62,6 +59,5 @@ fn restart_cmds_are_stored_and_retrievable() {
 fn next_config_entry_returns_none_during_collecting() {
     let mut cs = ConfigStage::new();
     cs.add_config_cmd(vec![0x01]);
-    // Cannot drain without begin_config_send.
     assert_eq!(cs.next_config_entry(), None);
 }

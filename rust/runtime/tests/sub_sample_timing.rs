@@ -8,19 +8,11 @@
     clippy::doc_markdown
 )]
 
-//! Integration tests for the sub-sample step timing module.
-//!
-//! Verifies the secant-slope linear interpolation formula
-//!   t_k = (step_pos_k - P_start) · sample_period / (P_end - P_start)
-//! and the small-displacement uniform-spacing fallback.
-
 use runtime::sub_sample_timing::{
     MAX_STEPS_PER_SAMPLE, StepTimeInputs, StepTimingResult, compute_step_times,
 };
 
-// H7 nominal clock — 520 MHz.
 const CYCLES_PER_SEC: f32 = 520_000_000.0;
-// 25 µs sample period at 520 MHz → 13_000 cycles.
 const SAMPLE_PERIOD_SEC: f32 = 25e-6;
 const SAMPLE_PERIOD_CYCLES: u32 = 13_000;
 
@@ -28,9 +20,6 @@ const _: () = assert!(MAX_STEPS_PER_SAMPLE >= 16);
 
 #[test]
 fn step_times_in_sample_for_constant_velocity() {
-    // 4 steps in one 25 µs sample at constant velocity. Expected times:
-    //   t_k = (k+1)/4 * sample_period   (k = 0..4)
-    // Per-step drift bound: < 10 cycles.
     let inputs = StepTimeInputs {
         p_start: 0.0,
         p_end: 1.0,
@@ -68,7 +57,6 @@ fn step_times_in_sample_for_constant_velocity() {
 
 #[test]
 fn step_times_within_sample_for_decelerating() {
-    // All 4 step times must fall within [0, sample_period_cycles].
     let inputs = StepTimeInputs {
         p_start: 0.0,
         p_end: 1.0,
@@ -98,8 +86,6 @@ fn step_times_within_sample_for_decelerating() {
 
 #[test]
 fn falls_back_to_uniform_when_displacement_too_small() {
-    // Sub-threshold displacement (1e-4 < threshold 1e-3) → Uniform variant.
-    // Expected: uniform spacing at (k+1)/(n+1) of sample period.
     let inputs = StepTimeInputs {
         p_start: 0.0,
         p_end: 1e-4,

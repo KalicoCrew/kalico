@@ -30,8 +30,8 @@
 #include <unistd.h>
 
 static int vtime_debug = 0;
-static double vtime_speed = 100.0; // virtual/real time ratio
-static uint64_t vtime_real_t0_ns = 0; // real monotonic time at init
+static double vtime_speed = 100.0;
+static uint64_t vtime_real_t0_ns = 0;
 #define VLOG(fmt, ...) do { \
     if (vtime_debug) fprintf(stderr, "[vtime:%d] " fmt "\n", \
                              (int)getpid(), ##__VA_ARGS__); \
@@ -39,7 +39,6 @@ static uint64_t vtime_real_t0_ns = 0; // real monotonic time at init
 
 static struct vtime_shm *vshm = NULL;
 
-// Real libc symbols (forward declarations needed by helper functions)
 static int (*real_clock_gettime)(clockid_t, struct timespec *) = NULL;
 static int (*real_clock_nanosleep)(clockid_t, int, const struct timespec *,
                                    struct timespec *) = NULL;
@@ -76,7 +75,6 @@ vtime_speed_cap(void)
     return vtime_start + (uint64_t)(real_elapsed * vtime_speed);
 }
 
-// Virtual timer state: track the pending SIGALRM target time
 static struct {
     timer_t real_timer;
     int armed;
@@ -106,14 +104,12 @@ vtime_now(void)
 static uint64_t
 vtime_advance_by(uint64_t delta_ns)
 {
-    // Cap to speed limit
     uint64_t cap = vtime_speed_cap();
     uint64_t cur = vtime_now();
     uint64_t target = cur + delta_ns;
     if (target > cap) {
-        // Wait real time until we're allowed to advance
         while (vtime_speed_cap() < target) {
-            struct timespec w = { 0, 100000 }; // 100µs real
+            struct timespec w = { 0, 100000 };
             real_nanosleep(&w, NULL);
         }
     }
@@ -124,11 +120,10 @@ vtime_advance_by(uint64_t delta_ns)
 static void
 vtime_advance_to(uint64_t target_ns)
 {
-    // Cap to speed limit
     uint64_t cap = vtime_speed_cap();
     if (target_ns > cap) {
         while (vtime_speed_cap() < target_ns) {
-            struct timespec w = { 0, 100000 }; // 100µs
+            struct timespec w = { 0, 100000 };
             real_nanosleep(&w, NULL);
         }
     }
@@ -142,7 +137,6 @@ vtime_advance_to(uint64_t target_ns)
         memory_order_acq_rel, memory_order_acquire));
 }
 
-// Check if the virtual timer's target has been reached and fire SIGALRM
 static void
 vtimer_check_and_fire(void)
 {
@@ -182,7 +176,6 @@ vtime_init(void)
     real_timer_settime = dlsym(RTLD_NEXT, "timer_settime");
     real_usleep = dlsym(RTLD_NEXT, "usleep");
 
-    // Open or create the shared memory segment
     int fd = shm_open(VTIME_SHM_NAME, O_RDWR, 0);
     if (fd < 0) {
         fd = shm_open(VTIME_SHM_NAME, O_CREAT | O_RDWR, 0666);
@@ -213,21 +206,17 @@ vtime_init(void)
          (unsigned long)vtime_now(), vtime_speed);
 }
 
-// --- Intercepted functions ---
-
 int
 clock_gettime(clockid_t clk_id, struct timespec *tp)
 {
     if (!vshm || !tp)
         return real_clock_gettime(clk_id, tp);
 
-    // Intercept monotonic clocks used by Klipper
     if (clk_id == CLOCK_MONOTONIC || clk_id == CLOCK_MONOTONIC_RAW
         || clk_id == CLOCK_MONOTONIC_COARSE) {
         ns_to_ts(vtime_now(), tp);
         return 0;
     }
-    // CLOCK_REALTIME etc. pass through
     return real_clock_gettime(clk_id, tp);
 }
 
@@ -240,18 +229,14 @@ clock_nanosleep(clockid_t clk_id, int flags, const struct timespec *req,
 
     if (clk_id == CLOCK_MONOTONIC || clk_id == CLOCK_MONOTONIC_RAW) {
         if (flags & TIMER_ABSTIME) {
-            // Advance virtual clock to target time
             uint64_t target = ts_to_ns(req);
             vtime_advance_to(target);
         } else {
-            // Relative sleep — advance by delta
             uint64_t delta = ts_to_ns(req);
             if (delta > 0)
                 vtime_advance_by(delta);
         }
-        // Check if virtual timer should fire
         vtimer_check_and_fire();
-        // Yield to let other threads/processes run
         sched_yield();
         if (rem) {
             rem->tv_sec = 0;
@@ -300,7 +285,6 @@ poll(struct pollfd *fds, nfds_t nfds, int timeout_ms)
     if (!vshm)
         return real_poll(fds, nfds, timeout_ms);
 
-    // Non-blocking check first
     int ret = real_poll(fds, nfds, 0);
     if (ret != 0 || timeout_ms == 0)
         return ret;
@@ -312,8 +296,7 @@ poll(struct pollfd *fds, nfds_t nfds, int timeout_ms)
         deadline_ns = vtime_now() + (uint64_t)timeout_ms * 1000000ULL;
     }
 
-    // Busy-poll with brief real sleeps, advancing to timer targets
-    struct timespec spin = { .tv_sec = 0, .tv_nsec = 100000 }; // 100µs
+    struct timespec spin = { .tv_sec = 0, .tv_nsec = 100000 };
     for (int i = 0; i < 10000; i++) {
         ret = real_poll(fds, nfds, 0);
         if (ret != 0)
@@ -322,7 +305,6 @@ poll(struct pollfd *fds, nfds_t nfds, int timeout_ms)
         if (vtime_now() >= deadline_ns)
             return 0;
 
-        // If virtual timer is armed, advance time to it and fire
         pthread_mutex_lock(&vtimer.lock);
         if (vtimer.armed && vtimer.target_ns <= deadline_ns) {
             uint64_t target = vtimer.target_ns;
@@ -337,7 +319,6 @@ poll(struct pollfd *fds, nfds_t nfds, int timeout_ms)
 
         real_nanosleep(&spin, NULL);
     }
-    // After max spins, advance to deadline and timeout
     vtime_advance_to(deadline_ns);
     return 0;
 }
@@ -349,7 +330,6 @@ ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout,
     if (!vshm)
         return real_ppoll(fds, nfds, timeout, sigmask);
 
-    // Non-blocking check
     struct timespec zero = { 0, 0 };
     int ret = real_ppoll(fds, nfds, &zero, sigmask);
     if (ret != 0)
@@ -367,15 +347,10 @@ ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout,
         deadline_ns = vtime_now() + ts_to_ns(timeout);
     }
 
-    // Core sim scheduling loop. Timer fires are instant (no blocking);
-    // I/O waits use 1ms real poll to yield CPU. This ensures timers
-    // advance at full CPU speed while still detecting serial data.
     for (int i = 0; i < 100000; i++) {
-        // 1) Check deadline
         if (vtime_now() >= deadline_ns)
             return 0;
 
-        // 2) Fire virtual timer if due — NO blocking, instant
         pthread_mutex_lock(&vtimer.lock);
         if (vtimer.armed) {
             uint64_t target = vtimer.target_ns;
@@ -390,8 +365,6 @@ ppoll(struct pollfd *fds, nfds_t nfds, const struct timespec *timeout,
         }
         pthread_mutex_unlock(&vtimer.lock);
 
-        // 3) No timer due — check for I/O with 1ms real timeout
-        //    (yields CPU to other processes)
         struct timespec one_ms = { .tv_sec = 0, .tv_nsec = 1000000 };
         ret = real_ppoll(fds, nfds, &one_ms, sigmask);
         if (ret != 0)
@@ -415,7 +388,6 @@ select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
     if (writefds) w_copy = *writefds;
     if (exceptfds) e_copy = *exceptfds;
 
-    // Non-blocking check
     struct timeval zero = { 0, 0 };
     int ret = real_select(nfds, readfds, writefds, exceptfds, &zero);
     if (ret != 0)
@@ -434,12 +406,10 @@ select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
     }
 
     for (int i = 0; i < 30000; i++) {
-        // Restore fd_sets
         if (readfds) *readfds = r_copy;
         if (writefds) *writefds = w_copy;
         if (exceptfds) *exceptfds = e_copy;
 
-        // 1ms real timeout — yields CPU while checking for I/O
         struct timeval one_ms = { .tv_sec = 0, .tv_usec = 1000 };
         ret = real_select(nfds, readfds, writefds, exceptfds, &one_ms);
         if (ret != 0)
@@ -466,7 +436,6 @@ timer_create(clockid_t clk_id, struct sigevent *sevp, timer_t *timerid)
     // Klipper creates a CLOCK_MONOTONIC timer that fires SIGALRM.
     // We intercept this and use virtual time instead.
     if (clk_id == CLOCK_MONOTONIC) {
-        // Return a dummy timer ID — we handle dispatching ourselves
         pthread_mutex_lock(&vtimer.lock);
         vtimer.armed = 0;
         vtimer.target_ns = 0;
@@ -491,7 +460,6 @@ timer_settime(timer_t timerid, int flags, const struct itimerspec *new_value,
 
     pthread_mutex_lock(&vtimer.lock);
     if (new_value->it_value.tv_sec == 0 && new_value->it_value.tv_nsec == 0) {
-        // Disarm
         vtimer.armed = 0;
     } else if (flags & TIMER_ABSTIME) {
         vtimer.target_ns = ts_to_ns(&new_value->it_value);
@@ -502,7 +470,6 @@ timer_settime(timer_t timerid, int flags, const struct itimerspec *new_value,
     }
     pthread_mutex_unlock(&vtimer.lock);
 
-    // Immediately check if timer should fire
     vtimer_check_and_fire();
 
     return 0;

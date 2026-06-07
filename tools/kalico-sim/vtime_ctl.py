@@ -26,7 +26,6 @@ def create(start_ns: int = 1_000_000_000) -> None:
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o666)
     os.ftruncate(fd, SHM_SIZE)
     buf = mmap.mmap(fd, SHM_SIZE)
-    # Write initial state: nanos=start_ns, sleepers=0, participants=0, init=1
     struct.pack_into(_STRUCT_FMT, buf, 0, start_ns, 0, 0, 1, 0)
     buf.flush()
     buf.close()

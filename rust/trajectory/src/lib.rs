@@ -30,9 +30,7 @@ pub struct ShapeBatchInput<'a> {
     pub beta_max_iters: u8,
     pub beta_convergence_ratio: f64,
     pub e_limits: ELimits,
-    /// Velocity at the batch start (mm/s).
     pub initial_v: f64,
-    /// Velocity at the batch end (mm/s).
     pub terminal_v: f64,
 }
 

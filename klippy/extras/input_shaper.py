@@ -27,8 +27,6 @@ class InputShaperParams:
             minval=0.0,
             maxval=1.0,
         )
-        # Smooth shapers may use smoother_freq_<axis> (bleeding-edge convention).
-        # Fall back to shaper_freq_<axis> if smoother_freq is absent.
         if self.shaper_type.startswith("smooth_"):
             smoother_freq = config.getfloat(
                 "smoother_freq_" + axis, None, minval=0.0

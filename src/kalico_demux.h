@@ -5,18 +5,16 @@
 
 #include <stdint.h>
 #include "autoconf.h"
-#include "command.h" // MESSAGE_MAX
+#include "command.h"
 
 #define KALICO_DEMUX_KLIPPER_BUF_SIZE MESSAGE_MAX
-// Stages the largest inbound CONTROL frame only; pieces stream into the ring
-// and never touch this buffer.
 #define KALICO_DEMUX_KALICO_BUF_SIZE 512u
 _Static_assert(KALICO_DEMUX_KALICO_BUF_SIZE >= 64u,
                "kalico_buf too small for control frames");
 
 // Largest legal kalico frame of any channel = a full pieces frame:
 // envelope(4) + per-msg header(7) + piece header(8) + 255*32 + crc(2).
-#define KALICO_FRAME_MAX_LEN (4u + 7u + 8u + 255u * 32u + 2u) /* = 8181 */
+#define KALICO_FRAME_MAX_LEN (4u + 7u + 8u + 255u * 32u + 2u)
 _Static_assert(KALICO_FRAME_MAX_LEN >= KALICO_DEMUX_KALICO_BUF_SIZE,
                "global frame bound must cover the staging buffer");
 
@@ -44,4 +42,4 @@ const uint8_t *kalico_demux_kalico_payload(void);
 uint16_t       kalico_demux_kalico_payload_len(void);
 uint8_t        kalico_demux_kalico_channel(void);
 
-#endif // kalico_demux.h
+#endif

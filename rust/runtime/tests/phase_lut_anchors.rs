@@ -8,14 +8,6 @@
     clippy::doc_markdown
 )]
 
-//! Smoke test for the build.rs-generated `PHASE_LUT`.
-//!
-//! Lives in `tests/` rather than as a `#[cfg(test)] mod tests` inside
-//! `src/phase_lut.rs` so it can be exercised even when the broader
-//! library test build is broken (e.g. by an unrelated engine.rs type
-//! drift). The src-level unit tests cover the same anchors with finer
-//! granularity once the lib-test path compiles again.
-
 use runtime::phase_lut::{COIL_AMPLITUDE, PHASE_LUT, PHASE_LUT_SIZE};
 
 #[test]

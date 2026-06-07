@@ -54,7 +54,6 @@ fn try_from_wire_parses_3d_unweighted_linear() {
     buf.extend_from_slice(&0.0_f32.to_ne_bytes());
     buf.extend_from_slice(&1.0_f32.to_ne_bytes());
     buf.extend_from_slice(&1.0_f32.to_ne_bytes());
-    // CPs interleaved: [0,0,0], [1,2,3]
     for &v in &[0.0_f32, 0.0, 0.0, 1.0, 2.0, 3.0] {
         buf.extend_from_slice(&v.to_ne_bytes());
     }
@@ -80,7 +79,6 @@ fn try_from_wire_rejects_has_weights_flag() {
 
 #[test]
 fn try_from_wire_rejects_axis_mismatch() {
-    // Wire says axes_n=4, but type is 3.
     let mut buf = Vec::new();
     buf.extend_from_slice(&[1, 1, 0, 4]);
     buf.extend_from_slice(&4u16.to_ne_bytes());
@@ -98,7 +96,6 @@ fn try_from_wire_rejects_axis_mismatch() {
     ));
 }
 
-/// Test-only owner; same shape as `align_buf` in scalar.rs (see Task 9).
 struct AlignedBytes {
     backing: Vec<u32>,
     len: usize,

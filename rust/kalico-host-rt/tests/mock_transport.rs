@@ -196,7 +196,6 @@ impl Transport for MockTransport {
             let mut state = self.state.lock().unwrap();
             state.sent_cmds.push(cmd.to_string());
 
-            // Static responder: call synchronously, return immediately.
             if let Some(responder) = state.static_responders.get(expected_response_name) {
                 let params = responder(cmd, call_time);
                 return Ok(params);
