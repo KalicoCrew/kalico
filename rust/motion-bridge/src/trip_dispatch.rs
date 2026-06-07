@@ -235,15 +235,33 @@ pub fn prepare(
                     "trip_dispatch: trip observed — fanning trsync_trigger to sinks"
                 );
                 fan.on_trip(|mcu, cmd| {
-                    tracing::info!(
-                        subsystem = "trip-relay",
-                        event = "trsync_trigger_sent",
-                        sink_mcu = mcu,
-                        cmd,
-                        "trip_dispatch: trsync_trigger sent to sink"
-                    );
                     if let Some((_, io)) = sink_ios.iter().find(|(m, _)| *m == mcu) {
-                        let _ = io.send_fire_and_forget(cmd);
+                        match io.send_fire_and_forget(cmd) {
+                            Ok(()) => tracing::info!(
+                                subsystem = "trip-relay",
+                                event = "trsync_trigger_sent",
+                                sink_mcu = mcu,
+                                cmd,
+                                send_path = "fire_and_forget",
+                                "trip_dispatch: trsync_trigger sent to sink"
+                            ),
+                            Err(e) => tracing::error!(
+                                subsystem = "trip-relay",
+                                event = "trsync_trigger_send_error",
+                                sink_mcu = mcu,
+                                cmd,
+                                error = %e,
+                                "trip_dispatch: trsync_trigger send failed"
+                            ),
+                        }
+                    } else {
+                        tracing::error!(
+                            subsystem = "trip-relay",
+                            event = "trsync_trigger_no_io",
+                            sink_mcu = mcu,
+                            cmd,
+                            "trip_dispatch: no KalicoHostIo for sink mcu — trigger dropped"
+                        );
                     }
                 });
                 triggered.store(true, Ordering::Release);
@@ -328,15 +346,36 @@ pub fn prepare(
                              — fanning trsync_trigger to sinks"
                         );
                         fan.on_trip(|mcu, cmd| {
-                            tracing::info!(
-                                subsystem = "trip-relay",
-                                event = "trsync_trigger_sent",
-                                sink_mcu = mcu,
-                                cmd,
-                                "trip_dispatch: trsync_trigger sent to sink (participant path)"
-                            );
                             if let Some((_, io)) = sink_ios.iter().find(|(m, _)| *m == mcu) {
-                                let _ = io.send_fire_and_forget(cmd);
+                                match io.send_fire_and_forget(cmd) {
+                                    Ok(()) => tracing::info!(
+                                        subsystem = "trip-relay",
+                                        event = "trsync_trigger_sent",
+                                        sink_mcu = mcu,
+                                        cmd,
+                                        send_path = "fire_and_forget",
+                                        "trip_dispatch: trsync_trigger sent to sink \
+                                         (participant path)"
+                                    ),
+                                    Err(e) => tracing::error!(
+                                        subsystem = "trip-relay",
+                                        event = "trsync_trigger_send_error",
+                                        sink_mcu = mcu,
+                                        cmd,
+                                        error = %e,
+                                        "trip_dispatch: trsync_trigger send failed \
+                                         (participant path)"
+                                    ),
+                                }
+                            } else {
+                                tracing::error!(
+                                    subsystem = "trip-relay",
+                                    event = "trsync_trigger_no_io",
+                                    sink_mcu = mcu,
+                                    cmd,
+                                    "trip_dispatch: no KalicoHostIo for sink mcu \
+                                     — trigger dropped (participant path)"
+                                );
                             }
                         });
                         triggered.store(true, Ordering::Release);

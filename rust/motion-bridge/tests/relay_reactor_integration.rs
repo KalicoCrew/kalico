@@ -44,7 +44,8 @@ use motion_bridge_native::test_support::{
     build_extension_parser, build_trsync_state_frame, extract_payloads,
 };
 use motion_bridge_native::trip_dispatch::{
-    FanOut, ParticipantSpec, REASON_ENDSTOP_HIT, SinkSpec,
+    FanOut, ParticipantSpec, REASON_ENDSTOP_HIT, SinkSpec, SourceSpec,
+    cleanup as trip_dispatch_cleanup, prepare as trip_dispatch_prepare,
 };
 
 // ---------------------------------------------------------------------------
@@ -376,6 +377,84 @@ fn trsync_state_report_extends_other_participant_timeout_through_live_reactor() 
     );
 
     motion_bridge_native::trip_dispatch::cleanup(handle);
+}
+
+// ---------------------------------------------------------------------------
+// Self-relay: source MCU == sink MCU (sensorless homing on bridge MCU)
+// ---------------------------------------------------------------------------
+
+/// When source and sink are the SAME `KalicoHostIo` (as in sensorless homing
+/// where the H7 is both the endstop MCU and the trsync sink), the relay
+/// interceptor fires from the H7's reactor thread and sends `trsync_trigger`
+/// back via the same MCU's `submission_tx`.  The reactor processes it on the
+/// next tick and the bytes appear on the same mock wire.
+///
+/// This test would have caught the "relay fires but bridge MCU never receives
+/// command" class of bug: if the relay used the wrong send path (e.g. a stale
+/// `KalicoHostIo`, or a path that doesn't reach the reactor's `write_frame`),
+/// the trigger would not land on the wire and the assertion would fail.
+#[test]
+fn endstop_tripped_relays_trsync_trigger_when_source_and_sink_are_same_mcu() {
+    const MCU_BRIDGE: u32 = 1;
+    const SRC_ARM_ID: u32 = 7;
+    const SINK_OID: u8 = 8;
+
+    let parser = build_test_parser();
+
+    let bridge_harness = ReactorHarness::new_with_parser(Arc::clone(&parser));
+    let (bridge_io, bridge_port) = bridge_harness.into_background_io();
+
+    let handle = trip_dispatch_prepare(
+        vec![(
+            SourceSpec::BridgeGpio { mcu: MCU_BRIDGE, arm_id: SRC_ARM_ID },
+            Arc::clone(&bridge_io),
+        )],
+        vec![SinkSpec { mcu: MCU_BRIDGE, trsync_oid: SINK_OID }],
+        vec![(MCU_BRIDGE, Arc::clone(&bridge_io))],
+        vec![],
+        0.0,
+        |_| None,
+    )
+    .expect("prepare must succeed for self-relay");
+
+    assert!(!handle.was_triggered(), "not triggered before any frame");
+
+    let frame = build_endstop_tripped_frame(SRC_ARM_ID, 1);
+    bridge_port.rx.lock().unwrap().extend(frame);
+
+    let got_trigger = poll_until(
+        || !bridge_port.tx.lock().unwrap().is_empty(),
+        std::time::Duration::from_millis(5),
+        200,
+    );
+    assert!(
+        got_trigger,
+        "bridge MCU must receive trsync_trigger on its own wire after \
+         endstop trip on same MCU"
+    );
+
+    assert!(handle.was_triggered(), "handle triggered flag must be set");
+
+    let tx_bytes = bridge_port.tx.lock().unwrap().clone();
+    let payloads = extract_payloads(tx_bytes);
+    assert_eq!(payloads.len(), 1, "exactly one trsync_trigger for self-relay sink");
+
+    let (name, params) = parser
+        .decode_body(&payloads[0])
+        .expect("self-relay payload must decode");
+    assert_eq!(name, "trsync_trigger", "frame must be trsync_trigger");
+    assert_eq!(
+        params.get_u32("oid"),
+        u32::from(SINK_OID),
+        "oid must match sink oid"
+    );
+    assert_eq!(
+        params.get_u32("reason"),
+        u32::from(REASON_ENDSTOP_HIT),
+        "reason must be REASON_ENDSTOP_HIT"
+    );
+
+    trip_dispatch_cleanup(handle);
 }
 
 fn poll_until(f: impl Fn() -> bool, interval: std::time::Duration, max_attempts: u32) -> bool {
