@@ -11,7 +11,7 @@ use crate::clock::TickCounter;
 use crate::error::{KALICO_ERR_INVALID_ARG, KALICO_ERR_RING_FULL, KALICO_OK};
 use crate::fault_sink::FaultSink;
 use crate::piece_ring::PieceEntry;
-use crate::state::SharedState;
+use crate::state::{MAX_STEPPER_OIDS, SharedState};
 use crate::step::StepMotorState;
 use crate::stepping_state::{AxisState, MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
 
@@ -267,6 +267,7 @@ impl Engine {
         let now_lo = now as u32;
 
         let mut active = false;
+        let mut v_per_axis_q16 = [0u32; 3];
 
         for i in 0..(self.num_axes as usize) {
             let (p_end, v_end, p_sample_start) = {
@@ -294,6 +295,23 @@ impl Engine {
                 (p_end, v_end, p_sample_start)
             };
 
+            // Accumulate per-axis Q16 velocity for the first three axes (X/Y/Z).
+            // v_end is mm/s (f32). Q16 = v * 65536, clamped to u32::MAX.
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            if i < 3 {
+                let v_q16_f = v_end.abs() * 65536.0_f32;
+                let v_q16 = if v_q16_f >= u32::MAX as f32 {
+                    u32::MAX
+                } else {
+                    v_q16_f as u32
+                };
+                // SAFETY: i < 3 == v_per_axis_q16.len()
+                #[allow(clippy::indexing_slicing)]
+                {
+                    v_per_axis_q16[i] = v_q16;
+                }
+            }
+
             #[cfg(feature = "motion-module-stepper")]
             {
                 let Some(axis) = self.stepping_axes.get_mut(i).and_then(|s| s.as_mut()) else {
@@ -319,6 +337,24 @@ impl Engine {
                 let _ = (p_end, v_end, p_sample_start);
             }
         }
+
+        // Evaluate armed GPIO/StallGuard endstop sources now that pin levels
+        // are fresh (C sampler ran before this tick) and step counts are current
+        // (dispatch updated position_count above). Build an OID-indexed count
+        // array: publish_snapshot accesses stepper_counts[oid].
+        let mut stepper_counts = [0i32; MAX_STEPPER_OIDS];
+        for axis_opt in &self.stepping_axes {
+            let Some(axis) = axis_opt.as_ref() else {
+                continue;
+            };
+            for stepper in &axis.steppers {
+                let oid = usize::from(stepper.stepper_oid);
+                if let Some(slot) = stepper_counts.get_mut(oid) {
+                    *slot = stepper.position_count.load(Ordering::Acquire);
+                }
+            }
+        }
+        crate::endstop::tick(now, v_per_axis_q16, &stepper_counts);
 
         active
     }
