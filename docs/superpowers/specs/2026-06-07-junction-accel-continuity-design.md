@@ -94,9 +94,11 @@ backs `b_j` off automatically.
 
 Chain edges:
 
-- **Batch start**: `b_0 = v₀²` and now `a_0 = a₀` via one Zero-cone row
-  `b_1 = b_0 + 2h·a_0` (convexity untouched; verified during the
-  rest-boundary investigation).
+- **Batch start**: `b_0 = v₀²` and, **only when `v₀ > 0`**, `a_0 = a₀` via one
+  Zero-cone row `b_1 = b_0 + 2h·a_0` (convexity untouched; verified during the
+  rest-boundary investigation). At a rest start the pin would force `b_1 = 0`
+  — the same trap as the rejected terminal rest pin — so `initial_accel`
+  must be 0 there and the (e2) envelope governs instead.
 - **Batch end at rest**: terminal `v = 0` pin plus block (e2) envelope, FD
   accel free — pinning `a = 0` at rest recreates the `b_1 = 0` time-waste
   trap already rejected in the envelope work. A `terminal_velocity > 0`
