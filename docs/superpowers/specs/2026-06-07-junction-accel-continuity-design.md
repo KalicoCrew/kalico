@@ -145,10 +145,15 @@ keeps its signature as a thin wrapper.
 
 `BatchInput` gains `initial_accel: f64`. Terminal stays velocity-only:
 streaming always ends decel-to-zero and rest is governed by the envelope —
-YAGNI on `terminal_accel`. Plumbing: `read_path_speed_at` gets an accel twin
-sampling the same planned object's derivative at `t_dispatched` →
-`PlanInput`/`ShapeBatchInput.initial_a` → beta's first run → first chain's
-`a_0` pin row. Later runs start at rest (`initial_a = 0` trivially).
+YAGNI on `terminal_accel`. Plumbing: `read_path_speed_at` gets an accel twin,
+`read_path_accel_at`, sampling the **pre-shape planned profile**
+(`planned_fitted` — the fitted axes the SOCP profile produced) at
+`t_dispatched` → `PlanInput`/`ShapeBatchInput.initial_a` → beta's first run →
+first chain's `a_0` pin row. Pre-shape, not the shaped axes: the pin governs
+the pre-shape SOCP, and shaped accel includes shaper transients that would
+pin the wrong layer (`read_path_speed_at`'s shaped-`v` convention is
+pre-existing and unchanged). Later runs start at rest (`initial_a = 0`
+trivially).
 
 Feasibility: an append never edits prefix geometry and strictly extends the
 path, so the carried `(v₀, a₀)` was part of a feasible plan and remains
