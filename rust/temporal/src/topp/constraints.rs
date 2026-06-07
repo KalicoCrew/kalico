@@ -1,5 +1,6 @@
 use crate::Limits;
 use crate::topp::path::ArclengthGrid;
+use crate::topp::scaling::SolverScale;
 
 /// Cone descriptor in solver-agnostic form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,19 +57,29 @@ pub const B_MAX_CENT_CAP: f64 = 1e8;
 /// zero and the corresponding constraint row is skipped (vacuous).
 const COMP_FLOOR: f64 = 1e-12;
 
+/// `grid`, `limits`, and `endpoints` must share the unit system described by
+/// `scale`; the dimensioned guard constants in this file are physical (mm)
+/// values converted through `scale` at use.
 #[allow(clippy::too_many_lines)]
-pub fn build(grid: &ArclengthGrid, limits: &Limits, endpoints: EndpointVelocities) -> BuildOutcome {
+pub fn build(
+    grid: &ArclengthGrid,
+    limits: &Limits,
+    endpoints: EndpointVelocities,
+    scale: &SolverScale,
+) -> BuildOutcome {
     let n = grid.s.len();
     debug_assert!(n >= 2, "ArclengthGrid must have at least 2 points");
 
+    let kappa_floor = scale.to_scaled_kappa(KAPPA_FLOOR);
+    let b_cap = scale.to_scaled_b(B_MAX_CENT_CAP);
     let b_max_cent: Vec<f64> = grid
         .kappa
         .iter()
         .map(|&k| {
-            if k.abs() < KAPPA_FLOOR {
-                B_MAX_CENT_CAP
+            if k.abs() < kappa_floor {
+                b_cap
             } else {
-                (limits.a_centripetal_max / k.abs()).min(B_MAX_CENT_CAP)
+                (limits.a_centripetal_max / k.abs()).min(b_cap)
             }
         })
         .collect();
@@ -76,12 +87,17 @@ pub fn build(grid: &ArclengthGrid, limits: &Limits, endpoints: EndpointVelocitie
     let b_start = endpoints.v_start * endpoints.v_start;
     let b_end = endpoints.v_end * endpoints.v_end;
 
-    if b_start > b_max_cent[0] {
+    // Tolerance: v_jct set to sqrt(mvc_b_phys) in the joining loop. After
+    // dividing v by σ and re-squaring, IEEE 754 may land b_start slightly above
+    // b_max_cent. Allow up to 4 ULP slop so the scaled build doesn't reject a
+    // physically-feasible starting velocity.
+    const B_BOUNDARY_REL_TOL: f64 = f64::EPSILON * 4.0;
+    if b_start > b_max_cent[0] * (1.0 + B_BOUNDARY_REL_TOL) {
         return BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc {
             mvc_b: b_max_cent[0],
         });
     }
-    if b_end > b_max_cent[n - 1] {
+    if b_end > b_max_cent[n - 1] * (1.0 + B_BOUNDARY_REL_TOL) {
         return BuildOutcome::Boundary(BoundaryInfeasibility::EndAboveMvc {
             mvc_b: b_max_cent[n - 1],
         });
@@ -190,7 +206,7 @@ pub fn build(grid: &ArclengthGrid, limits: &Limits, endpoints: EndpointVelocitie
                 }
                 let v_ax = limits.v_max[ax];
                 let rhs = (v_ax / g).powi(2);
-                if rhs > B_MAX_CENT_CAP {
+                if rhs > b_cap {
                     continue;
                 }
                 push_row(&mut a_rows, &mut b_rhs, &[(off_b + i, -1.0)], rhs);
@@ -217,7 +233,7 @@ pub fn build(grid: &ArclengthGrid, limits: &Limits, endpoints: EndpointVelocitie
                     continue;
                 }
                 let a_ax = limits.a_max[ax];
-                let b_cap_i = b_max_cent[i].min(B_MAX_CENT_CAP);
+                let b_cap_i = b_max_cent[i].min(b_cap);
                 let a_cap_i = b_cap_i / (2.0 * h);
                 let worst_case_lhs = gpp.abs() * b_cap_i + gp.abs() * a_cap_i;
                 if worst_case_lhs < BLOCK_D_SAFETY * a_ax {

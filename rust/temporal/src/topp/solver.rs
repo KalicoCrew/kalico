@@ -50,6 +50,7 @@ use clarabel::solver::{
 };
 
 use crate::topp::constraints::{Cone, ConstraintBundle};
+use crate::topp::scaling::SolverScale;
 
 /// One linearized Taylor cut produced by the SLP outer loop.
 ///
@@ -181,7 +182,7 @@ fn extract_solution(x: &[f64], n_grid: usize, status: SolverStatus) -> SolverRes
 
 #[allow(dead_code)]
 pub(crate) fn solve(bundle: &ConstraintBundle) -> Result<SolverResult, SolverSetupError> {
-    solve_with_cuts(bundle, &[], 1e-8)
+    solve_with_cuts(bundle, &[], 1e-8, &SolverScale::identity())
 }
 
 /// Append one path-jerk SLP cut as two `Nonneg` rows.
@@ -257,6 +258,7 @@ fn append_path_jerk_cut_to_clarabel(
 fn append_axis_jerk_cut_to_clarabel(
     cut: &AxisJerkCut,
     h: f64,
+    b_floor: f64,
     n_rows: &mut usize,
     rowval: &mut [Vec<usize>],
     nzval: &mut [Vec<f64>],
@@ -277,7 +279,7 @@ fn append_axis_jerk_cut_to_clarabel(
     {
         AxisJerkStencil::Interior => {
             debug_assert!(i >= 1 && i + 1 < n_grid, "interior index out of range");
-            let b_anchor = cut.b_bars[1].max(SLP_B_FLOOR);
+            let b_anchor = cut.b_bars[1].max(b_floor);
             let s = b_anchor.sqrt();
             let s3 = b_anchor * s;
             let b_im1 = cut.b_bars[0];
@@ -303,7 +305,7 @@ fn append_axis_jerk_cut_to_clarabel(
         AxisJerkStencil::StartBoundary => {
             debug_assert_eq!(i, 0, "StartBoundary stencil expects i = 0");
             debug_assert!(n_grid >= 3);
-            let b_anchor = cut.b_bars[0].max(SLP_B_FLOOR);
+            let b_anchor = cut.b_bars[0].max(b_floor);
             let s = b_anchor.sqrt();
             let s3 = b_anchor * s;
             let b_1 = cut.b_bars[1];
@@ -331,7 +333,7 @@ fn append_axis_jerk_cut_to_clarabel(
         AxisJerkStencil::EndBoundary => {
             debug_assert_eq!(i, n_grid - 1, "EndBoundary stencil expects i = N-1");
             debug_assert!(n_grid >= 3);
-            let b_anchor = cut.b_bars[2].max(SLP_B_FLOOR);
+            let b_anchor = cut.b_bars[2].max(b_floor);
             let s = b_anchor.sqrt();
             let s3 = b_anchor * s;
             let b_nm3 = cut.b_bars[0];
@@ -415,8 +417,9 @@ fn solve_with_cuts(
     bundle: &ConstraintBundle,
     cuts: &[SlpCut],
     tol: f64,
+    scale: &SolverScale,
 ) -> Result<SolverResult, SolverSetupError> {
-    solve_with_cuts_and_trust_region(bundle, cuts, None, &[], &[], tol)
+    solve_with_cuts_and_trust_region(bundle, cuts, None, &[], &[], tol, scale)
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -427,6 +430,7 @@ fn solve_with_cuts_and_trust_region(
     b_bar: &[f64],
     a_bar: &[f64],
     tol: f64,
+    scale: &SolverScale,
 ) -> Result<SolverResult, SolverSetupError> {
     let n_vars = bundle.n_vars;
     let n_grid = bundle.n_grid;
@@ -472,10 +476,11 @@ fn solve_with_cuts_and_trust_region(
         j_path > 0.0 && h > 0.0,
         "bundle must carry positive j_path/h"
     );
+    let b_floor = scale.to_scaled_b(SLP_B_FLOOR);
     for cut in cuts {
         match cut {
             SlpCut::PathJerk { i, b_bar } => {
-                let b_bar_floored = b_bar.max(SLP_B_FLOOR);
+                let b_bar_floored = b_bar.max(b_floor);
                 append_path_jerk_cut_to_clarabel(
                     *i,
                     b_bar_floored,
@@ -492,6 +497,7 @@ fn solve_with_cuts_and_trust_region(
                 append_axis_jerk_cut_to_clarabel(
                     axis_cut,
                     h,
+                    b_floor,
                     &mut n_rows,
                     &mut rowval_per_col,
                     &mut nzval_per_col,
@@ -505,10 +511,12 @@ fn solve_with_cuts_and_trust_region(
     if let Some(tr) = trust_region {
         debug_assert_eq!(b_bar.len(), n_grid);
         debug_assert_eq!(a_bar.len(), n_grid);
+        let b_tr_floor = scale.to_scaled_b(B_TR_FLOOR);
+        let a_tr_floor = scale.to_scaled_accel(A_TR_FLOOR);
         let off_b = 0;
         for i in 1..n_grid.saturating_sub(1) {
             let bb = b_bar[i].max(0.0);
-            let radius = tr.rho_b * bb.max(B_TR_FLOOR);
+            let radius = tr.rho_b * bb.max(b_tr_floor);
             let lo = bb - radius;
             let hi = bb + radius;
             let row_lo = n_rows;
@@ -535,7 +543,7 @@ fn solve_with_cuts_and_trust_region(
         let off_a = n_grid;
         for i in 0..n_grid {
             let ab = a_bar[i];
-            let radius = tr.rho_a * ab.abs().max(A_TR_FLOOR);
+            let radius = tr.rho_a * ab.abs().max(a_tr_floor);
             let lo = ab - radius;
             let hi = ab + radius;
             let row_lo = n_rows;
@@ -673,13 +681,14 @@ pub(crate) enum SlpOutcome {
 pub(crate) fn slp_solve(
     bundle: &ConstraintBundle,
     tol: f64,
+    scale: &SolverScale,
 ) -> Result<(SolverResult, SlpOutcome), SolverSetupError> {
     let h = bundle.h;
     let j_path = bundle.j_path;
     debug_assert!(h > 0.0 && j_path > 0.0);
 
     let mut cuts: Vec<SlpCut> = Vec::new();
-    let mut last_result = solve_with_cuts(bundle, &cuts, tol)?;
+    let mut last_result = solve_with_cuts(bundle, &cuts, tol, scale)?;
 
     if matches!(
         last_result.status,
@@ -700,13 +709,14 @@ pub(crate) fn slp_solve(
     let initial_max = max_ratio(&violators);
     max_ratio_history.push(initial_max);
     best_ratio_history.push(initial_max);
+    let b_cut_floor = scale.to_scaled_b(SLP_B_CUT_FLOOR);
     for outer in 1..=SLP_MAX_OUTER_ITERS {
         cuts.clear();
         let mut added = 0_usize;
         let n = last_result.b.len();
         for i in 1..n - 1 {
             let b_bar = last_result.b[i];
-            if b_bar < SLP_B_CUT_FLOOR {
+            if b_bar < b_cut_floor {
                 continue;
             }
             cuts.push(SlpCut::PathJerk { i, b_bar });
@@ -721,7 +731,7 @@ pub(crate) fn slp_solve(
             ));
         }
 
-        let new_result = solve_with_cuts(bundle, &cuts, tol)?;
+        let new_result = solve_with_cuts(bundle, &cuts, tol, scale)?;
         if matches!(
             new_result.status,
             SolverStatus::Infeasible | SolverStatus::MaxIter { .. }
@@ -842,14 +852,20 @@ const SLP9_TARGET_DECAY: f64 = 0.85;
 
 /// Path-jerk SLP (stage 1) then per-axis-jerk SLP (stage 2). Path-jerk
 /// failures short-circuit stage 2.
+///
+/// `bundle`, `grid`, and `limits` must share the unit system described by
+/// `scale` (the caller nondimensionalizes before building the bundle); the
+/// dimensioned guard constants in this file are physical (mm) values
+/// converted through `scale` at use.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn slp_solve_with_axis_jerk(
     bundle: &ConstraintBundle,
     grid: &crate::topp::path::ArclengthGrid,
     limits: &crate::Limits,
     tol: f64,
+    scale: &SolverScale,
 ) -> Result<(SolverResult, SlpOutcome), SolverSetupError> {
-    let (path_result, path_outcome) = slp_solve(bundle, tol)?;
+    let (path_result, path_outcome) = slp_solve(bundle, tol, scale)?;
 
     if matches!(
         path_outcome,
@@ -889,8 +905,9 @@ pub(crate) fn slp_solve_with_axis_jerk(
             );
         }
 
+        let h = bundle.h;
         let target_ratio = (best_ratio * SLP9_TARGET_DECAY).max(1.0 + SLP9_EPS_FEAS);
-        let cuts = build_axis_jerk_cuts(&last_result, grid, limits, target_ratio, bundle.h);
+        let cuts = build_axis_jerk_cuts(&last_result, grid, limits, target_ratio, h);
         if cuts.is_empty() {
             return Ok((
                 last_result,
@@ -914,6 +931,7 @@ pub(crate) fn slp_solve_with_axis_jerk(
                 &last_result.b,
                 &last_result.a,
                 tol,
+                scale,
             )?;
             if matches!(
                 candidate.status,
@@ -921,7 +939,7 @@ pub(crate) fn slp_solve_with_axis_jerk(
             ) {
                 continue;
             }
-            let cand_ratio = max_axis_ratio(&candidate, grid, limits, bundle.h);
+            let cand_ratio = max_axis_ratio(&candidate, grid, limits, h);
             if cand_ratio < best_ratio {
                 accepted = Some(candidate);
                 best_ratio = cand_ratio;
@@ -932,12 +950,12 @@ pub(crate) fn slp_solve_with_axis_jerk(
             // Fallback: solve without TR. Common on the first per-axis iter when
             // the path-jerk iterate is far outside per-axis feasibility — no
             // point inside the TR satisfies the cut.
-            let candidate = solve_with_cuts(bundle, &cuts, tol)?;
+            let candidate = solve_with_cuts(bundle, &cuts, tol, scale)?;
             if !matches!(
                 candidate.status,
                 SolverStatus::Infeasible | SolverStatus::MaxIter { .. }
             ) {
-                let cand_ratio = max_axis_ratio(&candidate, grid, limits, bundle.h);
+                let cand_ratio = max_axis_ratio(&candidate, grid, limits, h);
                 if cand_ratio < best_ratio {
                     accepted = Some(candidate);
                     best_ratio = cand_ratio;

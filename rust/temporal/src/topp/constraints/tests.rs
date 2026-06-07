@@ -52,6 +52,7 @@ fn straight_line_zero_endpoints_builds_ok() {
             v_start: 0.0,
             v_end: 0.0,
         },
+        &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => {
             assert_eq!(b.n_grid, 10);
@@ -84,6 +85,7 @@ fn boundary_above_mvc_returns_boundary_outcome() {
             v_start: 60_000.0,
             v_end: 0.0,
         },
+        &SolverScale::identity(),
     ) {
         BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc { mvc_b }) => {
             assert!((mvc_b - 50_000.0).abs() < 1e-3);
@@ -110,6 +112,7 @@ fn straight_line_n_vars_and_cone_count_match_design() {
             v_start: 0.0,
             v_end: 0.0,
         },
+        &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
         BuildOutcome::Boundary(_) => panic!("zero endpoints should be feasible"),
@@ -209,6 +212,7 @@ fn n_eq_2_minimum_grid_no_interior_points() {
             v_start: 0.0,
             v_end: 0.0,
         },
+        &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
         BuildOutcome::Boundary(_) => panic!("zero endpoints should be feasible"),

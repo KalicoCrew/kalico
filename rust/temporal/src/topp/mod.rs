@@ -1,10 +1,12 @@
 use crate::{GridConfig, Limits, TopProfile};
 use constraints::{BoundaryInfeasibility, BuildOutcome, EndpointVelocities, build};
 use nurbs::VectorNurbs;
+use scaling::SolverScale;
 
 pub mod constraints;
 pub(crate) mod output;
 pub mod path;
+pub mod scaling;
 pub(crate) mod solver;
 pub mod stencil;
 pub(crate) mod verify;
@@ -73,14 +75,26 @@ pub fn schedule_segment_with_tolerance(
     let arc_grid = path::sample_arclength_grid(curve, grid.n)
         .map_err(|e| ScheduleError::PathParam(format!("{e}")))?;
 
-    let bundle = match build(&arc_grid, limits, EndpointVelocities { v_start, v_end }) {
+    // Nondimensionalize before building the SOCP: Clarabel's KKT conditioning
+    // degrades with v_max² in raw mm units (b = v² ≈ 1e6 at 1000 mm/s stalls
+    // InsufficientProgress); the same problem in solver units solves cleanly.
+    // The solve runs entirely in scaled units; verify and output stay physical.
+    let scale = SolverScale::for_limits(limits);
+    let scaled_grid = scale.scale_grid(&arc_grid);
+    let scaled_limits = scale.scale_limits(limits);
+    let scaled_endpoints = EndpointVelocities {
+        v_start: scale.scale_velocity(v_start),
+        v_end: scale.scale_velocity(v_end),
+    };
+
+    let bundle = match build(&scaled_grid, &scaled_limits, scaled_endpoints, &scale) {
         BuildOutcome::Ok(b) => b,
         BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc { mvc_b }) => {
             return Ok(boundary_infeasible_profile(
                 &arc_grid,
                 *grid,
                 crate::BoundarySide::Start,
-                mvc_b,
+                scale.unscale_b(mvc_b),
                 0,
             ));
         }
@@ -90,31 +104,33 @@ pub fn schedule_segment_with_tolerance(
                 &arc_grid,
                 *grid,
                 crate::BoundarySide::End,
-                mvc_b,
+                scale.unscale_b(mvc_b),
                 last,
             ));
         }
     };
 
-    let (solver_result, slp_outcome) = match tolerance {
-        ToleranceMode::Tight => solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-8)
-            .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?,
-        ToleranceMode::Fast => solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-5)
-            .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?,
+    let call_slp = |tol| {
+        solver::slp_solve_with_axis_jerk(&bundle, &scaled_grid, &scaled_limits, tol, &scale)
+            .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))
+    };
+
+    let (mut solver_result, slp_outcome) = match tolerance {
+        ToleranceMode::Tight => call_slp(1e-8)?,
+        ToleranceMode::Fast => call_slp(1e-5)?,
         ToleranceMode::Auto => {
-            let (fast_result, fast_outcome) =
-                solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-5)
-                    .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?;
+            let (fast_result, fast_outcome) = call_slp(1e-5)?;
             if solver_outcome_is_success(&fast_result, &fast_outcome) {
                 (fast_result, fast_outcome)
             } else {
-                solver::slp_solve_with_axis_jerk(&bundle, &arc_grid, limits, 1e-8)
-                    .map_err(|e| ScheduleError::SolverSetup(format!("{e}")))?
+                call_slp(1e-8)?
             }
         }
     };
 
-    let verify_report = verify::check(&arc_grid, &solver_result, limits, bundle.h);
+    scale.unscale_result(&mut solver_result);
+    let h_phys = arc_grid.s[1] - arc_grid.s[0];
+    let verify_report = verify::check(&arc_grid, &solver_result, limits, h_phys);
 
     Ok(output::assemble(
         &arc_grid,

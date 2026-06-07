@@ -39,6 +39,7 @@ fn straight_line_solves_to_nontrivial_profile() {
             v_start: 0.0,
             v_end: 0.0,
         },
+        &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
         BuildOutcome::Boundary(b) => panic!("expected Ok, got Boundary({b:?})"),
