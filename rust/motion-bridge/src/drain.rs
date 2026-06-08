@@ -34,6 +34,17 @@ impl DrainSync {
         *e = e.wrapping_add(n);
     }
 
+    /// Remove `n` pieces from `sent` that were dispatched but abandoned before
+    /// reaching the MCU (a homing trip's Flush drops the un-pushed tail). Those
+    /// pieces never retire, so they must not count toward the drained check.
+    pub fn unsend(&self, mcu: u32, axis: u8, n: u32) {
+        let mut c = self.counts.lock().unwrap_or_else(|p| p.into_inner());
+        let e = c.sent.entry((mcu, axis)).or_insert(0);
+        *e = e.wrapping_sub(n);
+        drop(c);
+        self.cv.notify_all();
+    }
+
     pub fn set_retired(&self, mcu: u32, axis: u8, retired: u32) {
         let mut c = self.counts.lock().unwrap_or_else(|p| p.into_inner());
         c.retired.insert((mcu, axis), retired);

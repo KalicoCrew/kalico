@@ -2179,6 +2179,7 @@ impl PyMotionBridge {
         let pump_timeout = Duration::from_secs(5);
         let ring_depth_table_for_pump = ring_depth_table.clone();
         let router_for_pump = Arc::clone(&self.router);
+        let drain_for_pump = self.drain.clone();
         let pump_thread_handle = std::thread::Builder::new()
             .name("push-pieces-pump".into())
             .spawn(move || {
@@ -2217,6 +2218,12 @@ impl PyMotionBridge {
                         if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
                             std::process::abort();
                         }
+                    },
+                    move |key: crate::pump::AxisKey, n: u32| {
+                        // Flush dropped `n` un-pushed pieces — remove them from
+                        // drain `sent` so the post-trip wait_drained doesn't
+                        // wait on motion that never reached the MCU.
+                        drain_for_pump.unsend(key.mcu_id, key.axis, n);
                     },
                 );
             })
@@ -2514,12 +2521,14 @@ impl PyMotionBridge {
         let Some(evt) = self.homing.take_trip_event() else {
             return Ok(None);
         };
+        // Drop the still-queued homing pieces so the pump never pushes them
+        // (un-pushed pieces are never counted as drain `sent`). The pieces
+        // already in the MCU ring are reconciled by the MCU's discard_pending
+        // at disarm, which advances `retired` to `head == sent`; the pre-home
+        // set_position's baseline then makes the post-home set_position's
+        // wait_drained balance exactly. Resetting the drain *here* would race
+        // that discard and snapshot the baseline too low — so we don't.
         self.flush_homing_pieces();
-        // The trip stopped TIM5 mid-move, so the pieces already pushed to the
-        // MCU ring will never retire. Reconcile the drain accounting now so the
-        // post-home set_position's wait_drained doesn't block on them — those
-        // pieces are intentionally abandoned, not in flight.
-        self.drain.reset();
         Ok(Some(trip_event_to_pydict(py, evt)?))
     }
 

@@ -259,18 +259,26 @@ pub const MAX_LEAD_SECS: f64 = 1.0;
 /// production call site passes an `abort()`-based action; tests inject a
 /// channel-send or a flag-set so they can assert detection without terminating
 /// the process.  After the callback returns the pump loop exits.
-pub fn run_pump<S, F, C, A>(
+pub fn run_pump<S, F, C, A, O>(
     rx: Receiver<PumpMsg>,
     sink: S,
     ring_depth_of: F,
     mcu_clock_of: C,
     on_fatal_transport: A,
+    on_abandon: O,
 ) where
     S: PieceSink,
     F: Fn(AxisKey) -> u32,
     C: Fn(u32) -> Option<(u64, f64)>,
     A: Fn(AxisKey) + Send + 'static,
+    O: Fn(AxisKey, u32),
 {
+    // `on_abandon(key, n)`: n queued pieces for `key` were dropped by Flush
+    // (a homing trip abandons the un-pushed tail). They were counted as drain
+    // `sent` at dispatch but never reach the MCU, so the caller must remove
+    // them or they become phantom `sent` that never retire — hanging the
+    // post-trip wait_drained. Pieces already pushed to the ring are NOT
+    // abandoned here; the MCU's discard_pending retires them.
     let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
     // Per-axis junction tracking for clock-projection jitter measurement.
     let mut junction_ends: BTreeMap<AxisKey, (u64, f64)> = BTreeMap::new();
@@ -285,7 +293,11 @@ pub fn run_pump<S, F, C, A>(
             PumpMsg::Flush(keys) => {
                 for key in keys {
                     if let Some(q) = queues.get_mut(&key) {
+                        let dropped = q.pieces.len() as u32;
                         q.pieces.clear();
+                        if dropped > 0 {
+                            on_abandon(key, dropped);
+                        }
                     }
                     junction_ends.remove(&key);
                 }

@@ -151,6 +151,13 @@ class MCU_stepper:
 
     def get_mcu_position(self, cmd_pos=None):
         if cmd_pos is None:
+            # A software trip halted TIM5 *at* the trigger, so the carriage's
+            # stop position is the curve-eval at trip_clock — the same value
+            # get_past_mcu_position returns. Without this, halt stays at the
+            # pre-move offset and homing's halt-start distance collapses to 0.
+            trip_pos = self._bridge_software_trip_mcu_pos()
+            if trip_pos is not None:
+                return trip_pos
             cmd_pos = self.get_commanded_position()
         mcu_pos_dist = cmd_pos + self._mcu_position_offset
         mcu_pos = mcu_pos_dist / self._step_dist
@@ -162,45 +169,44 @@ class MCU_stepper:
         mcu_pos_dist = mcu_pos * self._step_dist
         self._mcu_position_offset = mcu_pos_dist - self.get_commanded_position()
 
-    def get_past_mcu_position(self, print_time):
+    def _bridge_software_trip_mcu_pos(self):
+        # Curve-eval step position at the software-trip clock, or None when no
+        # software trip is active or the evaluation is unavailable. Actuator-
+        # agnostic: reads the commanded trajectory, not a step counter, so it
+        # holds for servo/EtherCAT axes that have no step count.
         bridge = getattr(self._mcu, "_motion_bridge", None)
-        if bridge is not None and getattr(
+        if bridge is None or not getattr(
             bridge, "_software_trip_active", False
         ):
-            stash = getattr(bridge, "_software_trip_clock", None)
-            if stash is None:
-                logging.warning(
-                    "get_past_mcu_position: software_trip_active but no "
-                    "_software_trip_clock stash for %s",
-                    self.get_name(),
-                )
-                return getattr(
-                    self,
-                    "_bridge_last_trip_step_count",
-                    self.get_mcu_position(),
-                )
-            mcu_handle, trip_clock = stash
-            try:
-                pos_xyz = bridge.get_homing_position_at_clock(
-                    mcu_handle, trip_clock
-                )
-            except Exception as e:
-                logging.warning(
-                    "get_past_mcu_position: curve eval failed for %s: %s",
-                    self.get_name(),
-                    e,
-                )
-                return getattr(
-                    self,
-                    "_bridge_last_trip_step_count",
-                    self.get_mcu_position(),
-                )
-            motor_pos = self._calc_motor_position_from_xyz(pos_xyz)
-            mcu_pos_dist = motor_pos + self._mcu_position_offset
-            mcu_pos = mcu_pos_dist / self._step_dist
-            if mcu_pos >= 0.0:
-                return int(mcu_pos + 0.5)
-            return int(mcu_pos - 0.5)
+            return None
+        stash = getattr(bridge, "_software_trip_clock", None)
+        if stash is None:
+            logging.warning(
+                "software trip active but no _software_trip_clock stash for %s",
+                self.get_name(),
+            )
+            return None
+        mcu_handle, trip_clock = stash
+        try:
+            pos_xyz = bridge.get_homing_position_at_clock(mcu_handle, trip_clock)
+        except Exception as e:
+            logging.warning(
+                "software-trip curve eval failed for %s: %s",
+                self.get_name(),
+                e,
+            )
+            return None
+        motor_pos = self._calc_motor_position_from_xyz(pos_xyz)
+        mcu_pos_dist = motor_pos + self._mcu_position_offset
+        mcu_pos = mcu_pos_dist / self._step_dist
+        if mcu_pos >= 0.0:
+            return int(mcu_pos + 0.5)
+        return int(mcu_pos - 0.5)
+
+    def get_past_mcu_position(self, print_time):
+        trip_pos = self._bridge_software_trip_mcu_pos()
+        if trip_pos is not None:
+            return trip_pos
         return getattr(
             self, "_bridge_last_trip_step_count", self.get_mcu_position()
         )

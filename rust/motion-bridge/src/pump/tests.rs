@@ -89,7 +89,7 @@ fn run_pump_sets_start_slot_from_cursor_and_advances_it() {
     let (tx, rx) = mpsc::channel::<PumpMsg>();
     let sink_clone = sink.clone();
     let handle = std::thread::spawn(move || {
-        run_pump(rx, sink_clone, |_key| RING_DEPTH, |_mcu| None, |_| {});
+        run_pump(rx, sink_clone, |_key| RING_DEPTH, |_mcu| None, |_| {}, |_, _| {});
     });
 
     tx.send(make_enqueue(
@@ -212,6 +212,7 @@ fn flush_clears_queued_pieces_and_junctions() {
             |_key| 64,
             move |_mcu| *clock_pump.lock().unwrap(),
             |_| {},
+            |_, _| {},
         );
     });
 
@@ -288,10 +289,105 @@ fn flush_clears_queued_pieces_and_junctions() {
 }
 
 #[test]
+fn on_abandon_reports_flushed_not_pushed_pieces() {
+    // The pump must report Flush-dropped (un-pushed) pieces via on_abandon so
+    // the drain can remove them from `sent` — otherwise they are phantom `sent`
+    // that never retire and hang the post-trip wait_drained. A piece that is
+    // actually pushed must NOT be reported. Mirror flush_clears_queued_pieces:
+    // gate 4 pieces behind the horizon, Flush them, then push one probe piece.
+    let key = AxisKey { mcu_id: 1, axis: 0 };
+    let (tx, rx) = mpsc::channel::<PumpMsg>();
+
+    let freq: f64 = 1_000.0;
+    let lead_secs: f64 = 0.001;
+    let gated_tick: u64 = 1_000;
+
+    let clock: Arc<Mutex<Option<(u64, f64)>>> = Arc::new(Mutex::new(Some((0, freq))));
+    let clock_pump = Arc::clone(&clock);
+    let sink = RecordingSink::new();
+    let sink_pump = sink.clone();
+    let abandoned_total = Arc::new(Mutex::new(0u32));
+    let abandoned_pump = Arc::clone(&abandoned_total);
+
+    let handle = std::thread::spawn(move || {
+        run_pump(
+            rx,
+            sink_pump,
+            |_key| 64,
+            move |_mcu| *clock_pump.lock().unwrap(),
+            |_| {},
+            move |_k: AxisKey, n: u32| {
+                *abandoned_pump.lock().unwrap() += n;
+            },
+        );
+    });
+
+    tx.send(PumpMsg::Enqueue(EnqueueMsg {
+        key,
+        pieces: (0u64..4)
+            .map(|i| {
+                (
+                    PieceEntry {
+                        start_time: gated_tick + i,
+                        coeffs: [0.0; 4],
+                        duration: 0.001,
+                        _reserved: 0,
+                    },
+                    (gated_tick + i) as f64,
+                )
+            })
+            .collect(),
+        fresh_stream: true,
+        lead_secs,
+    }))
+    .unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    tx.send(PumpMsg::Flush(vec![key])).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    *clock.lock().unwrap() = Some((gated_tick + 1_000, freq));
+
+    tx.send(PumpMsg::Enqueue(EnqueueMsg {
+        key,
+        pieces: vec![(
+            PieceEntry {
+                start_time: 1,
+                coeffs: [0.0; 4],
+                duration: 0.001,
+                _reserved: 0,
+            },
+            1.0,
+        )],
+        fresh_stream: false,
+        lead_secs,
+    }))
+    .unwrap();
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while sink.recorded().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pump never sent the post-flush probe piece — deadlocked"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    tx.send(PumpMsg::Shutdown).unwrap();
+    handle.join().unwrap();
+
+    assert_eq!(
+        *abandoned_total.lock().unwrap(),
+        4,
+        "on_abandon must report the 4 Flush-dropped pieces and not the pushed probe"
+    );
+}
+
+#[test]
 fn flush_unknown_key_is_noop() {
     let (tx, rx) = mpsc::channel::<PumpMsg>();
     let handle = std::thread::spawn(move || {
-        run_pump(rx, NullSink, |_key| 64, |_mcu| None, |_| {});
+        run_pump(rx, NullSink, |_key| 64, |_mcu| None, |_| {}, |_, _| {});
     });
 
     let never_enqueued = AxisKey { mcu_id: 99, axis: 7 };
