@@ -150,97 +150,19 @@ class MCU_stepper:
         return 0.0
 
     def get_mcu_position(self, cmd_pos=None):
-        if cmd_pos is None:
-            # A software trip halted TIM5 *at* the trigger, so the carriage's
-            # stop position is the curve-eval at trip_clock — the same value
-            # get_past_mcu_position returns. Without this, halt stays at the
-            # pre-move offset and homing's halt-start distance collapses to 0.
-            trip_pos = self._bridge_software_trip_mcu_pos()
-            if trip_pos is not None:
-                return trip_pos
-            cmd_pos = self.get_commanded_position()
-        mcu_pos_dist = cmd_pos + self._mcu_position_offset
-        mcu_pos = mcu_pos_dist / self._step_dist
-        if mcu_pos >= 0.0:
-            return int(mcu_pos + 0.5)
-        return int(mcu_pos - 0.5)
+        raise NotImplementedError(
+            "get_mcu_position: must evaluate the Rust motor-frame trajectory at "
+            "'now' (spec §2); software-trip stash + offset-constant path removed"
+        )
 
     def _set_mcu_position(self, mcu_pos):
         mcu_pos_dist = mcu_pos * self._step_dist
         self._mcu_position_offset = mcu_pos_dist - self.get_commanded_position()
 
-    def _bridge_software_trip_mcu_pos(self):
-        # Curve-eval step position at the software-trip clock, or None when no
-        # software trip is active or the evaluation is unavailable. Actuator-
-        # agnostic: reads the commanded trajectory, not a step counter, so it
-        # holds for servo/EtherCAT axes that have no step count.
-        bridge = getattr(self._mcu, "_motion_bridge", None)
-        if bridge is None or not getattr(
-            bridge, "_software_trip_active", False
-        ):
-            return None
-        stash = getattr(bridge, "_software_trip_clock", None)
-        if stash is None:
-            logging.warning(
-                "software trip active but no _software_trip_clock stash for %s",
-                self.get_name(),
-            )
-            return None
-        mcu_handle, trip_clock = stash
-        try:
-            pos_xyz = bridge.get_homing_position_at_clock(mcu_handle, trip_clock)
-        except Exception as e:
-            logging.warning(
-                "software-trip curve eval failed for %s: %s",
-                self.get_name(),
-                e,
-            )
-            return None
-        motor_pos = self._calc_motor_position_from_xyz(pos_xyz)
-        mcu_pos_dist = motor_pos + self._mcu_position_offset
-        mcu_pos = mcu_pos_dist / self._step_dist
-        if mcu_pos >= 0.0:
-            return int(mcu_pos + 0.5)
-        return int(mcu_pos - 0.5)
-
     def get_past_mcu_position(self, print_time):
-        trip_pos = self._bridge_software_trip_mcu_pos()
-        if trip_pos is not None:
-            return trip_pos
-        return getattr(
-            self, "_bridge_last_trip_step_count", self.get_mcu_position()
-        )
-
-    def _calc_motor_position_from_xyz(self, pos_xyz):
-        bridge = getattr(self._mcu, "_motion_bridge", None)
-        kin = (
-            getattr(bridge, "_kinematics_name", "cartesian")
-            if bridge
-            else "cartesian"
-        )
-        axis = self._bridge_active_axes
-        if kin == "corexy":
-            if axis in (b"x", b"+x"):
-                return pos_xyz[0] + pos_xyz[1]
-            elif axis in (b"y", b"-y"):
-                return pos_xyz[0] - pos_xyz[1]
-            else:
-                idx = {b"z": 2}.get(axis, 2)
-                return pos_xyz[idx]
-        else:
-            idx = {b"x": 0, b"+x": 0, b"y": 1, b"+y": 1, b"z": 2}.get(axis, 0)
-            return pos_xyz[idx]
-
-    def bridge_set_position_from_step_count(self, step_count):
-        # Apply an authoritative MCU step-counter snapshot (from a trip event)
-        # and retain it for get_past_mcu_position().
-        step_count = int(step_count)
-        self._bridge_last_trip_step_count = step_count
-        self._set_mcu_position(step_count)
-        logging.info(
-            "[bridge-trace] stepper trip snapshot: stepper=%s count=%d",
-            self.get_name(),
-            step_count,
+        raise NotImplementedError(
+            "get_past_mcu_position: must evaluate the Rust motor-frame trajectory at "
+            "print_time (spec §2); software-trip stash + snapshot path removed"
         )
 
     def mcu_to_commanded_position(self, mcu_pos):

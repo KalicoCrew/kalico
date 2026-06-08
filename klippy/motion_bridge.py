@@ -53,7 +53,6 @@ _STUB_MOTION_METHODS = frozenset(
         "endstop_arm",
         "endstop_disarm",
         "software_trip",
-        "get_homing_position_at_clock",
         "take_trip_event",
         "is_homing_segment_retired",
         "get_homing_segment_reason",
@@ -140,8 +139,6 @@ class MotionBridgeWrapper:
         # handler registered. The handler routes by arm_id (see
         # register_trip_handler) — one per MCU, never per dispatch.
         self._trip_handler_mcus = set()
-        self._software_trip_active = False
-        self._software_trip_clock = None
         self._homing_print_time_base = 0.0
 
     def get_bridge(self):
@@ -482,9 +479,6 @@ class MotionBridgeWrapper:
     def trip_dispatch_cleanup(self, handle_id):
         return self._bridge.trip_dispatch_cleanup(handle_id)
 
-    def get_homing_position_at_clock(self, mcu_handle, trip_clock):
-        return self._bridge.get_homing_position_at_clock(mcu_handle, trip_clock)
-
 
 # Reason codes MUST match MCU_trsync (klippy/mcu.py) so homing.py consumers see
 # no behavior change.
@@ -593,13 +587,6 @@ class BridgeTriggerDispatch:
         self._completion = self._reactor.completion()
         self._reason = None
         self._trip_event = None
-        # Clear the software-trip stash at each arm so a previous failed homing
-        # never poisons a subsequent position read.  Residual window: a failed
-        # homing between stop() and the next start() can leave the stash set, but
-        # that window is the same as the pre-existing _bridge_last_trip_step_count
-        # pattern and is cleared here on the next arm or in set_position.
-        self._bridge._software_trip_active = False
-        self._bridge._software_trip_clock = None
 
         # _bridge_handle isn't assigned until after identify (the MCU_endstop is
         # built at config phase), so refresh it (and lazily alloc the queue) here.

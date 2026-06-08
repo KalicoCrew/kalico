@@ -780,46 +780,12 @@ class MCU_endstop:
             return 0.0
         if reason != _mb.REASON_ENDSTOP_HIT:
             return 0.0
-        _TRIP_SOURCE_SOFTWARE = 0xFE
         evt = self._dispatch.get_trip_event() or {}
         logging.info("[bridge-trace] _home_wait_bridge trip_event=%s", evt)
         if evt and "trip_source_idx" not in evt:
             raise self._mcu.get_printer().command_error(
                 "_home_wait_bridge: trip event missing 'trip_source_idx' field"
             )
-        trip_source = int(evt["trip_source_idx"]) if evt else -1
-        if trip_source == _TRIP_SOURCE_SOFTWARE:
-            bridge = self._dispatch._bridge
-            bridge._software_trip_active = True
-            trip_clock_val = int(evt.get("trip_clock", 0))
-            bridge._software_trip_clock = (self._mcu._bridge_handle, trip_clock_val)
-            logging.info(
-                "[bridge-trace] _home_wait_bridge software trip: "
-                "curve-eval path armed mcu=%s trip_clock=%d",
-                self._mcu._bridge_handle,
-                trip_clock_val,
-            )
-        else:
-            for step in evt.get("steppers", []):
-                stepper_for = self._lookup_stepper_by_oid(int(step["oid"]))
-                if stepper_for is None:
-                    logging.info(
-                        "[bridge-trace] _home_wait_bridge trip stepper "
-                        "oid=%s count=%s has no host stepper",
-                        step.get("oid"),
-                        step.get("step_count"),
-                    )
-                    continue
-                cnt = int(step["step_count"])
-                logging.info(
-                    "[bridge-trace] _home_wait_bridge apply trip count "
-                    "stepper=%s oid=%s count=%d",
-                    stepper_for.get_name(),
-                    step.get("oid"),
-                    cnt,
-                )
-                if hasattr(stepper_for, "bridge_set_position_from_step_count"):
-                    stepper_for.bridge_set_position_from_step_count(cnt)
         trip_clock = int(evt.get("trip_clock", 0))
         if trip_clock == 0:
             # No MCU trip snapshot (e.g. synchronous AlreadyTripped at
@@ -830,12 +796,6 @@ class MCU_endstop:
                 return arm_pt
             return 0.0
         return self._mcu.clock_to_print_time(trip_clock)
-
-    def _lookup_stepper_by_oid(self, oid):
-        for stepper in self._dispatch._steppers:
-            if stepper.get_oid() == oid:
-                return stepper
-        return None
 
     def query_endstop(self, print_time):
         mcu_tmc = getattr(self, "_sensorless_mcu_tmc", None)

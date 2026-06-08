@@ -4,7 +4,7 @@ import os
 import struct
 from collections import defaultdict
 
-from . import motion_kinematics, stepper
+from . import stepper
 from .extras import servo_axis
 from .kinematics import extruder
 from .toolhead import BUFFER_TIME_START, Move, ToolHead
@@ -13,9 +13,8 @@ from .toolhead import BUFFER_TIME_START, Move, ToolHead
 # matches the bridge's blocking DRAIN_TIMEOUT (rust/motion-bridge/src/bridge.rs).
 DRAIN_TIMEOUT = 60.0
 
-# Slot order must match motion_kinematics.motor_deltas and
-# _configure_axes_per_mcu's slot_names. A name matching no prefix has no slot
-# (e.g. corexy passthrough-Z rails) and is skipped.
+# Slot order must match _configure_axes_per_mcu's slot_names. A name matching
+# no prefix has no slot (e.g. corexy passthrough-Z rails) and is skipped.
 _MOTOR_SLOT_PREFIXES = (
     (0, "stepper_x"),
     (1, "stepper_y"),
@@ -182,25 +181,11 @@ class BridgeKinematics:
         return [s for rail in self.rails for s in rail.get_steppers()]
 
     def calc_position(self, stepper_positions):
-        def rail_pos(rail):
-            vals = [
-                stepper_positions.get(s.get_name(), 0.0)
-                for s in rail.get_steppers()
-            ]
-            if not vals:
-                return 0.0
-            return sum(vals) / len(vals)
-
-        axis_rails = self._axis_rails()
-        if self.kinematics == "corexy":
-            a = rail_pos(axis_rails.get(0)) if 0 in axis_rails else 0.0
-            b = rail_pos(axis_rails.get(1)) if 1 in axis_rails else 0.0
-            z = rail_pos(axis_rails.get(2)) if 2 in axis_rails else 0.0
-            return [0.5 * (a + b), 0.5 * (a - b), z]
-        return [
-            rail_pos(axis_rails.get(i)) if i in axis_rails else 0.0
-            for i in (0, 1, 2)
-        ]
+        raise NotImplementedError(
+            "BridgeKinematics.calc_position: motor->toolhead transform now lives in "
+            "Rust (spec §3); call the Rust inverse kinematics instead of the deleted "
+            "host CoreXY literal"
+        )
 
     def _check_endstops(self, move):
         end_pos = move.end_pos
@@ -250,26 +235,17 @@ class BridgeKinematics:
             homing_state.home_rails([rail], forcepos, homepos)
 
     def set_position(self, newpos, homing_axes=()):
-        self._toolhead.bridge._software_trip_active = False
-        self._toolhead.bridge._software_trip_clock = None
         self._toolhead.bridge.set_position(newpos[0], newpos[1], newpos[2])
         axis_rails = self._axis_rails()
-        for axis_idx, rail in axis_rails.items():
-            if self.kinematics == "corexy" and axis_idx < 2:
-                motor_pos = (
-                    (newpos[0] + newpos[1])
-                    if axis_idx == 0
-                    else (newpos[0] - newpos[1])
-                )
-            else:
-                motor_pos = newpos[axis_idx] if axis_idx < len(newpos) else 0.0
-            for s in rail.get_steppers():
-                step_count = int(motor_pos / s.get_step_dist() + 0.5)
-                s._set_mcu_position(step_count)
         for axis in homing_axes:
             rail = axis_rails.get(axis)
             if rail is not None:
                 self.limits[axis] = rail.get_range()
+        raise NotImplementedError(
+            "BridgeKinematics.set_position: per-stepper anchor grounding unwired "
+            "— read motor positions from Rust forward kinematics (spec §3/§5); "
+            "host CoreXY literal removed"
+        )
 
     def note_z_not_homed(self):
         # [beacon] prefers this over clear_homing_state("z") when present;
@@ -321,7 +297,6 @@ class MotionToolhead(ToolHead):
             self.bridge = motion_bridge._StubBridge()
         self.active_homing_arms = set()
         self.kinematics_name = config.get("kinematics", "")
-        self.bridge._kinematics_name = self.kinematics_name
         # Projected MCU print-time of the end of the last queued bridge move.
         self._mcu_pending_end_time = 0.0
 
@@ -427,44 +402,13 @@ class MotionToolhead(ToolHead):
         self.commanded_pos[:] = move.end_pos
 
     def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
-        if self.kin is None:
-            return False
-        kin_name = (self.kinematics_name or "").lower()
-        deltas = motion_kinematics.motor_deltas(kin_name, dx, dy, dz, de)
-        if all(abs(d) <= 1e-9 for d in deltas):
-            return False
-        if print_time is None:
-            print_time = self.get_last_move_time()
-        fired = False
-        for s in self.kin.get_steppers():
-            if not s._active_callbacks:
-                continue
-            slot = _stepper_motor_slot(s)
-            if slot is None or abs(deltas[slot]) <= 1e-9:
-                continue
-            cbs = s._active_callbacks
-            s._active_callbacks = []
-            for cb in cbs:
-                cb(print_time)
-            fired = True
-        for rail in getattr(self.kin, "rails", ()):
-            if not isinstance(rail, servo_axis.ServoRail):
-                continue
-            if not rail._active_callbacks:
-                continue
-            axis_delta = (dx, dy, dz)["xyz".index(rail.axis)]
-            if abs(axis_delta) <= 1e-9:
-                continue
-            cbs = rail._active_callbacks
-            rail._active_callbacks = []
-            for cb in cbs:
-                cb(print_time)
-            fired = True
-        return fired
+        raise NotImplementedError(
+            "_fire_active_callbacks: which-motor-slot-moved must come from the "
+            "Rust forward kinematics (spec §3); host motion_kinematics.motor_deltas "
+            "removed"
+        )
 
     def drip_move(self, newpos, speed, drip_completion):
-        self.bridge._software_trip_active = False
-        self.bridge._software_trip_clock = None
         logging.info(
             "[bridge-trace] drip_move entered: newpos=%s speed=%s "
             "drip_test=%s active_homing_arms=%s",
