@@ -10,6 +10,7 @@ pub mod peak;
 pub mod plan_velocity;
 mod refit;
 mod reparam;
+mod smooth_fit;
 mod shaper;
 pub mod streaming;
 
