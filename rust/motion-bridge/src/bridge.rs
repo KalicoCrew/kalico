@@ -23,17 +23,6 @@ use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
-struct RetainedHomingPiece {
-    axes: [nurbs::ScalarNurbs<f64>; 3],
-    t_abs_start: f64,
-    t_abs_end: f64,
-    t0: f64,
-}
-
-struct RetainedHomingCurve {
-    pieces: Vec<RetainedHomingPiece>,
-}
-
 #[derive(Default)]
 struct RetainedMotorCurve {
     pieces: std::collections::HashMap<(u32, u8), Vec<RetainedMotorPiece>>,
@@ -533,7 +522,6 @@ pub struct PyMotionBridge {
     fallback_clock_conversions: Arc<AtomicU64>,
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
     homing: Arc<HomingState>,
-    retained_homing_curve: Arc<Mutex<Option<RetainedHomingCurve>>>,
     retained_motor_curve: Arc<Mutex<RetainedMotorCurve>>,
     events_dir: Mutex<Option<std::path::PathBuf>>,
 
@@ -748,6 +736,30 @@ impl PyMotionBridge {
             .unwrap_or_else(|p| p.into_inner())
             .insert((mcu, oid), slot);
     }
+
+    fn resolve_slot(&self, mcu: u32, oid: u8) -> Option<u8> {
+        self.stepper_oid_map
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&(mcu, oid))
+            .copied()
+    }
+
+    fn eval_motor_mm_at_t_abs(&self, mcu: u32, oid: u8, t_abs: f64) -> Option<f64> {
+        let slot = self.resolve_slot(mcu, oid)?;
+        self.retained_motor_curve
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .eval(mcu, slot, t_abs)
+    }
+
+    fn eval_motor_mm_now(&self, mcu: u32, oid: u8) -> Option<f64> {
+        let slot = self.resolve_slot(mcu, oid)?;
+        self.retained_motor_curve
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .endpoint(mcu, slot)
+    }
 }
 
 #[pymethods]
@@ -770,7 +782,6 @@ impl PyMotionBridge {
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             homing: Arc::new(HomingState::new()),
-            retained_homing_curve: Arc::new(Mutex::new(None)),
             retained_motor_curve: Arc::new(Mutex::new(RetainedMotorCurve::default())),
             events_dir: Mutex::new(None),
             trip_dispatch_handles: Mutex::new(HashMap::new()),
@@ -2454,7 +2465,6 @@ impl PyMotionBridge {
         let drain_disp = self.drain.clone();
         let counter_for_cb = Arc::clone(&counter);
         let homing_for_cb = Arc::clone(&self.homing);
-        let retained_curve_for_cb = Arc::clone(&self.retained_homing_curve);
         let retained_motor_curve_for_cb = Arc::clone(&self.retained_motor_curve);
 
         let dispatch: Arc<
@@ -2520,23 +2530,6 @@ impl PyMotionBridge {
                     && homing_state == crate::homing::HomingSegmentState::Active
                 {
                     homing_for_cb.record_axis_keys(&axis_keys);
-                    let piece = RetainedHomingPiece {
-                        axes: seg.axes.clone(),
-                        t_abs_start: t0 + seg.t_start,
-                        t_abs_end: t0 + seg.t_end,
-                        t0,
-                    };
-                    let mut guard = retained_curve_for_cb
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
-                    let curve = guard.get_or_insert_with(|| RetainedHomingCurve {
-                        pieces: Vec::new(),
-                    });
-                    if fresh {
-                        curve.pieces.clear();
-                    }
-                    curve.pieces.push(piece);
-
                     let t_abs_start = t0 + seg.t_start;
                     let t_abs_end = t0 + seg.t_end;
                     let mut motor_guard = retained_motor_curve_for_cb
@@ -2983,11 +2976,6 @@ impl PyMotionBridge {
             }
         }
 
-        *self
-            .retained_homing_curve
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = None;
-
         self.retained_motor_curve
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -3048,90 +3036,33 @@ impl PyMotionBridge {
         self.fallback_clock_conversions.load(Ordering::Relaxed)
     }
 
-    #[pyo3(signature = (mcu, trip_clock))]
-    fn get_homing_position_at_clock(&self, mcu: u32, trip_clock: u64) -> PyResult<Vec<f64>> {
+    #[pyo3(signature = (mcu, oid, trip_clock))]
+    fn eval_motor_position_at_clock(&self, mcu: u32, oid: u8, trip_clock: u64) -> PyResult<f64> {
         let t_abs = {
             let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
             router
                 .clock_to_host_secs(mcu_handle_from_raw(mcu), trip_clock)
                 .ok_or_else(|| {
                     PyRuntimeError::new_err(format!(
-                        "get_homing_position_at_clock: no clock estimate for mcu {mcu} \
+                        "eval_motor_position_at_clock: no clock estimate for mcu {mcu} \
                          (set_clock_est not called yet or MCU released)"
                     ))
                 })?
         };
-        let guard = self
-            .retained_homing_curve
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let curve = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("get_homing_position_at_clock: no homing curve retained")
-        })?;
-        eval_retained_curve(curve, t_abs, mcu, trip_clock).map_err(PyRuntimeError::new_err)
-    }
-}
-
-const PIECE_BOUNDARY_TOLERANCE: f64 = 1e-9;
-
-fn eval_retained_curve(
-    curve: &RetainedHomingCurve,
-    t_abs: f64,
-    mcu: u32,
-    trip_clock: u64,
-) -> Result<Vec<f64>, String> {
-    let pieces = &curve.pieces;
-    if pieces.is_empty() {
-        return Err(
-            "get_homing_position_at_clock: retained homing curve has no pieces".to_owned(),
-        );
-    }
-    let first = pieces.first().unwrap();
-    let last = pieces.last().unwrap();
-
-    if t_abs < first.t_abs_start - PIECE_BOUNDARY_TOLERANCE {
-        let piece_dur = first.t_abs_end - first.t_abs_start;
-        return Err(format!(
-            "get_homing_position_at_clock: t_abs={t_abs:.9} is {:.6} s before the \
-             first retained piece window [{:.9}, {:.9}] \
-             (mcu={mcu} trip_clock={trip_clock}; piece_duration={piece_dur:.6} s) — \
-             clock domain mismatch or stale curve",
-            first.t_abs_start - t_abs,
-            first.t_abs_start,
-            first.t_abs_end,
-        ));
+        self.eval_motor_mm_at_t_abs(mcu, oid, t_abs).ok_or_else(|| {
+            PyRuntimeError::new_err(
+                "eval_motor_position_at_clock: no retained curve for (mcu,oid)",
+            )
+        })
     }
 
-    let piece = match pieces.iter().find(|p| {
-        t_abs <= p.t_abs_end + PIECE_BOUNDARY_TOLERANCE
-            && t_abs >= p.t_abs_start - PIECE_BOUNDARY_TOLERANCE
-    }) {
-        Some(p) => p,
-        None => {
-            let piece_dur = last.t_abs_end - last.t_abs_start;
-            let overshoot = t_abs - last.t_abs_end;
-            if overshoot > piece_dur {
-                return Err(format!(
-                    "get_homing_position_at_clock: t_abs={t_abs:.9} overshoots last \
-                     piece end {:.9} by {overshoot:.6} s (> one piece duration {piece_dur:.6} s) \
-                     (mcu={mcu} trip_clock={trip_clock}) — clock domain mismatch or stale curve",
-                    last.t_abs_end,
-                ));
-            }
-            last
-        }
-    };
+    #[pyo3(signature = (mcu, oid))]
+    fn eval_motor_position_now(&self, mcu: u32, oid: u8) -> PyResult<f64> {
+        self.eval_motor_mm_now(mcu, oid).ok_or_else(|| {
+            PyRuntimeError::new_err("eval_motor_position_now: no retained curve for (mcu,oid)")
+        })
+    }
 
-    let u = (t_abs - piece.t0).clamp(
-        piece.t_abs_start - piece.t0,
-        piece.t_abs_end - piece.t0,
-    );
-    let pos: Vec<f64> = piece
-        .axes
-        .iter()
-        .map(|axis| nurbs::eval::eval(axis, u))
-        .collect();
-    Ok(pos)
 }
 
 impl PyMotionBridge {
@@ -3651,7 +3582,6 @@ impl PyMotionBridge {
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             homing: Arc::new(HomingState::new()),
-            retained_homing_curve: Arc::new(Mutex::new(None)),
             retained_motor_curve: Arc::new(Mutex::new(RetainedMotorCurve::default())),
             events_dir: Mutex::new(None),
             trip_dispatch_handles: Mutex::new(HashMap::new()),
@@ -3664,7 +3594,7 @@ impl PyMotionBridge {
 }
 
 #[cfg(test)]
-mod retained_homing_curve_tests;
+mod eval_motor_position_tests;
 
 #[cfg(test)]
 mod retained_motor_curve_tests;

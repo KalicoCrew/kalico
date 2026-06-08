@@ -67,6 +67,8 @@ _STUB_MOTION_METHODS = frozenset(
         "bridge_call",
         "bridge_send",
         "register_stepper_slot",
+        "eval_motor_position_at_clock",
+        "eval_motor_position_now",
     }
 )
 
