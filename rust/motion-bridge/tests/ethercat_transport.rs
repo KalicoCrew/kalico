@@ -117,7 +117,7 @@ fn pump_routes_both_serial_and_ethercat_mcu_ids() {
         // mcu_clock_of: no time gate (count-only) — this test exercises routing,
         // not the arrival-lead horizon. Matches the `|_| None` stub used by the
         // other run_pump callers (pump_loop.rs, pump.rs).
-        run_pump(rx, sink, |_k| 8u32, |_| None, |_| {}, |_, _| {});
+        run_pump(rx, sink, |_k| 8u32, |_| None, |_| {}, |_, _| {}, |_| {});
     });
 
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
@@ -125,6 +125,7 @@ fn pump_routes_both_serial_and_ethercat_mcu_ids() {
         pieces: vec![piece(0)],
         fresh_stream: false,
         lead_secs: motion_bridge_native::pump::MAX_LEAD_SECS,
+        drip_cohort: None,
     }))
     .unwrap();
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
@@ -132,6 +133,7 @@ fn pump_routes_both_serial_and_ethercat_mcu_ids() {
         pieces: vec![piece(1)],
         fresh_stream: false,
         lead_secs: motion_bridge_native::pump::MAX_LEAD_SECS,
+        drip_cohort: None,
     }))
     .unwrap();
 

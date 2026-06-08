@@ -351,6 +351,19 @@ impl Engine {
         out
     }
 
+    pub fn occupancy_counts(&self) -> [u32; MAX_AXES] {
+        let mut out = [0u32; MAX_AXES];
+        for (slot, entry) in out.iter_mut().zip(self.stepping_axes.iter()) {
+            if let Some(axis) = entry {
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    *slot = axis.ring.len() as u32;
+                }
+            }
+        }
+        out
+    }
+
     pub fn configure_kinematics(&mut self, k_xy: f32) -> i32 {
         if !k_xy.is_finite() || k_xy <= 0.0 {
             return -1;

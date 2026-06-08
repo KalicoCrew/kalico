@@ -22,6 +22,51 @@ use crate::dispatch::{McuAxisConfig, McuCaps, build_mcu_configs};
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
+struct HomingRun {
+    cohort: u64,
+    endstop_id: u8,
+    endstop_mcu: u32,
+    axis: u8,
+    axis_key: crate::pump::AxisKey,
+    /// All axis keys across every stepper-owning MCU.  Used to derive the Stop
+    /// broadcast target set (all MCUs halt on trip) and to Flush all axes.
+    all_axis_keys: Vec<crate::pump::AxisKey>,
+    /// Only the axes that receive homing motion pieces.  This is the drip gate's
+    /// floor set; a non-moving participant that never retires would pin the floor
+    /// at zero and deadlock the homing axis after DRIP_BUDGET pieces.
+    /// For CoreXY, add both motor axes here.
+    moving_axis_keys: Vec<crate::pump::AxisKey>,
+    /// `(trip_pos, final_pos)`: the cartesian switch location (commanded position
+    /// at the trip clock) and the overshot stopping location (commanded position
+    /// at the MCU's discard clock). The homed coordinate is
+    /// `position_endstop + (final − trip)`.
+    notify: crossbeam_channel::Sender<Result<([f64; 3], [f64; 3]), String>>,
+}
+
+/// Build the motor-space 4-vector from a single reconstructed axis motor position.
+///
+/// For a cartesian axis the motor value maps directly to the axis slot. For
+/// CoreXY the homed motor (`axis_slot`) reconstructed from the stored piece is a
+/// combined motor-A or motor-B value, and we need a round-trip back through
+/// `inverse_corexy`. We set the *other* CoreXY motor to the same value as a
+/// neutral placeholder; the caller's `kinematics::inverse(CoreXY, motor)` call
+/// will then produce the right cartesian coordinate for the homed axis only.
+///
+/// In practice v1 homes a single cartesian axis, so the code path is always the
+/// `else` branch. CoreXY support is wired correctly for future use.
+fn trip_position_to_motor_frame(
+    axis: u8,
+    motor_pos: f64,
+    _configs: &[crate::dispatch::McuAxisConfig],
+    _axis_mcu: u32,
+) -> [f64; 4] {
+    let mut frame = [0.0f64; 4];
+    if axis < 4 {
+        frame[axis as usize] = motor_pos;
+    }
+    frame
+}
+
 struct McuConnection {
     label: String,
     serial_path: String,
@@ -441,6 +486,13 @@ pub struct PyMotionBridge {
     pump_tx: Mutex<Option<std::sync::mpsc::Sender<crate::pump::PumpMsg>>>,
     pump_thread: Mutex<Option<JoinHandle<()>>>,
     drain: std::sync::Arc<crate::drain::DrainSync>,
+    active_drip_cohort: Arc<Mutex<Option<u64>>>,
+    homing_trajectory: Arc<Mutex<HashMap<crate::pump::AxisKey, Vec<runtime::piece_ring::PieceEntry>>>>,
+    homing_run: Arc<Mutex<Option<HomingRun>>>,
+    // Receiver for the in-flight homing result, polled cooperatively by
+    // home_axis_poll so the klippy reactor is never blocked for the move's
+    // duration (the trip handler fires from the reactor's own event drain).
+    homing_result: Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3]), String>>>>,
 }
 
 pub(crate) fn build_configure_axes_body(
@@ -658,6 +710,10 @@ impl PyMotionBridge {
             pump_tx: Mutex::new(None),
             pump_thread: Mutex::new(None),
             drain: std::sync::Arc::new(crate::drain::DrainSync::new()),
+            active_drip_cohort: Arc::new(Mutex::new(None)),
+            homing_trajectory: Arc::new(Mutex::new(HashMap::new())),
+            homing_run: Arc::new(Mutex::new(None)),
+            homing_result: Mutex::new(None),
         }
     }
 
@@ -1739,8 +1795,11 @@ impl PyMotionBridge {
             RuntimeEvent::Heartbeat { .. } => {
                 return Ok(None);
             }
-            RuntimeEvent::EndstopTripped(_) => {
-                return Ok(None);
+            RuntimeEvent::EndstopTrip(t) => {
+                d.set_item("type", "endstop_trip")?;
+                d.set_item("endstop_id", t.endstop_id)?;
+                d.set_item("trip_clock", t.trip_clock)?;
+                self.handle_endstop_trip(mcu_handle, t.endstop_id, t.trip_clock);
             }
             RuntimeEvent::UnknownOutput { format, msg } => {
                 d.set_item("type", "output")?;
@@ -2184,6 +2243,17 @@ impl PyMotionBridge {
                         // wait on motion that never reached the MCU.
                         drain_for_pump.unsend(key.mcu_id, key.axis, n);
                     },
+                    |msg: String| {
+                        tracing::error!(
+                            msg,
+                            "EXIT_ON_FAULT — drip cohort stalled; \
+                             aborting klippy so systemd restarts it"
+                        );
+                        let _ = std::io::Write::flush(&mut std::io::stderr());
+                        if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
+                            std::process::abort();
+                        }
+                    },
                 );
             })
             .expect("spawn push-pieces-pump thread");
@@ -2311,6 +2381,8 @@ impl PyMotionBridge {
         let pump_tx_for_cb = pump_tx_init.clone();
         let drain_disp = self.drain.clone();
         let counter_for_cb = Arc::clone(&counter);
+        let active_drip_cohort_for_cb = Arc::clone(&self.active_drip_cohort);
+        let homing_traj_for_cb = Arc::clone(&self.homing_trajectory);
 
         let dispatch: Arc<
             dyn Fn(&trajectory::ShapedSegment) -> Result<(), DispatchError> + Send + Sync,
@@ -2350,7 +2422,15 @@ impl PyMotionBridge {
                         .unwrap_or(0)
                 };
 
-                let (lead_secs, max_piece_secs) = (0.0_f64, None::<f64>);
+                let active_cohort: Option<u64> = *active_drip_cohort_for_cb
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+
+                let (lead_secs, max_piece_secs) = if active_cohort.is_some() {
+                    (0.0_f64, Some(0.025_f64))
+                } else {
+                    (0.0_f64, None::<f64>)
+                };
 
                 let msgs = crate::enqueue::enqueue_segment(
                     seg,
@@ -2363,7 +2443,17 @@ impl PyMotionBridge {
                     max_piece_secs,
                 );
 
-                for m in msgs {
+                for mut m in msgs {
+                    if let Some(cohort) = active_cohort {
+                        m.drip_cohort = Some(cohort);
+                        let mut traj = homing_traj_for_cb
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
+                        let entry = traj.entry(m.key).or_default();
+                        for (piece, _host_t) in &m.pieces {
+                            entry.push(*piece);
+                        }
+                    }
                     drain_disp.add_sent(m.key.mcu_id, m.key.axis, m.pieces.len() as u32);
                     pump_tx_for_cb
                         .send(crate::pump::PumpMsg::Enqueue(m))
@@ -2583,9 +2673,227 @@ impl PyMotionBridge {
         self.fallback_clock_conversions.load(Ordering::Relaxed)
     }
 
+    /// Perform a homing move on `axis` (0=X, 1=Y, 2=Z).
+    ///
+    /// `direction` must be +1.0 or -1.0. Blocks until the endstop trips (or a
+    /// timeout / fault fires). Returns `[x, y, z]` cartesian position at the
+    /// trip instant. Python G28 must call `set_position` with the result.
+    ///
+    /// Signature stable for the Python glue layer — do not rename or reorder
+    /// parameters without a coordinated Python update.
+    #[pyo3(signature = (axis, direction, speed_mm_s, max_travel_mm, endstop_id, endstop_mcu))]
+    #[allow(clippy::too_many_arguments)]
+    fn home_axis_start(
+        &self,
+        py: Python<'_>,
+        axis: u8,
+        direction: f64,
+        speed_mm_s: f64,
+        max_travel_mm: f64,
+        endstop_id: u8,
+        endstop_mcu: u32,
+    ) -> PyResult<()> {
+        use crate::planner::HomeDripParams;
+
+        if axis > 2 {
+            return Err(PyRuntimeError::new_err(format!(
+                "home_axis: axis {axis} out of range (0=X, 1=Y, 2=Z)"
+            )));
+        }
+
+        let planner = self.planner.get().ok_or_else(|| {
+            PyRuntimeError::new_err("home_axis: planner not initialized")
+        })?;
+
+        let (all_axis_keys, moving_axis_keys, _axis_mcu, axis_key) = {
+            let configs = self
+                .mcu_axis_configs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+
+            let mut all_keys: Vec<crate::pump::AxisKey> = Vec::new();
+            let mut found_mcu: Option<u32> = None;
+            for cfg in configs.iter() {
+                for &a in &cfg.axes {
+                    if a <= 3 {
+                        all_keys.push(crate::pump::AxisKey {
+                            mcu_id: cfg.mcu_id,
+                            axis: a as u8,
+                        });
+                    }
+                    if a == axis as usize {
+                        found_mcu = Some(cfg.mcu_id);
+                    }
+                }
+            }
+
+            let mcu = found_mcu.ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "home_axis: axis {axis} not found in mcu_axis_configs \
+                     (init_planner not called?)"
+                ))
+            })?;
+            let key = crate::pump::AxisKey {
+                mcu_id: mcu,
+                axis,
+            };
+            // For v1 cartesian homing, exactly one axis moves.
+            // CoreXY extension point: collect both motor axes here instead.
+            let moving_keys = vec![key];
+            (all_keys, moving_keys, mcu, key)
+        };
+
+        let cohort: u64 = {
+            use std::sync::atomic::AtomicU64;
+            static SEQ: AtomicU64 = AtomicU64::new(1);
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        };
+
+        let start_pos = *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
+
+        {
+            let mut traj = self.homing_trajectory.lock().unwrap_or_else(|p| p.into_inner());
+            traj.clear();
+        }
+
+        // Drain all prior motion before activating drip mode.  Ensures the homing
+        // axis queue is quiesced (retired == pushed) at DripArm time.
+        {
+            let drain = self.drain.clone();
+            py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT))
+                .map_err(PyRuntimeError::new_err)?;
+        }
+
+        {
+            let mut cohort_guard = self.active_drip_cohort.lock().unwrap_or_else(|p| p.into_inner());
+            *cohort_guard = Some(cohort);
+        }
+
+        let pump_tx = self
+            .pump_tx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or_else(|| PyRuntimeError::new_err("home_axis: pump not started"))?;
+
+        pump_tx
+            .send(crate::pump::PumpMsg::DripArm(crate::pump::DripArm {
+                cohort,
+                participants: moving_axis_keys.clone(),
+                timeout: Duration::from_secs(5),
+            }))
+            .map_err(|_| PyRuntimeError::new_err("home_axis: pump channel closed"))?;
+
+        let (result_tx, result_rx) =
+            crossbeam_channel::bounded::<Result<([f64; 3], [f64; 3]), String>>(1);
+
+        {
+            let mut run = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
+            *run = Some(HomingRun {
+                cohort,
+                endstop_id,
+                endstop_mcu,
+                axis,
+                axis_key,
+                all_axis_keys: all_axis_keys.clone(),
+                moving_axis_keys: moving_axis_keys.clone(),
+                notify: result_tx,
+            });
+        }
+
+        let home_pos_4 = [start_pos[0], start_pos[1], start_pos[2], 0.0];
+
+        let (planner_done_tx, planner_done_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
+        planner
+            .home_drip(HomeDripParams {
+                home_pos: home_pos_4,
+                start: start_pos,
+                axis,
+                direction,
+                speed_mm_s,
+                max_travel_mm,
+                cohort,
+                participants: moving_axis_keys,
+                notify: planner_done_tx,
+            })
+            .map_err(planner_err)?;
+
+        // Wait only for the (brief) dispatch ack, not the trip; blocking here is
+        // bounded by the planner's path generation, and the trip is awaited
+        // cooperatively via home_axis_poll so the reactor keeps draining events.
+        let dispatch = py.allow_threads(|| {
+            planner_done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|_| "home_axis: planner timed out dispatching homing move".to_owned())
+                .and_then(|r| r)
+        });
+        if let Err(e) = dispatch {
+            self.finish_homing();
+            return Err(PyRuntimeError::new_err(e));
+        }
+
+        *self.homing_result.lock().unwrap_or_else(|p| p.into_inner()) = Some(result_rx);
+        Ok(())
+    }
+
+    // Non-blocking poll for the homing result. Returns None while the move is in
+    // flight; the klippy G28 handler calls this from a reactor.pause loop so the
+    // reactor keeps draining events (the trip handler fires from that drain).
+    fn home_axis_poll(&self) -> PyResult<Option<([f64; 3], [f64; 3])>> {
+        let rx = {
+            let guard = self.homing_result.lock().unwrap_or_else(|p| p.into_inner());
+            match guard.as_ref() {
+                Some(rx) => rx.clone(),
+                None => {
+                    return Err(PyRuntimeError::new_err(
+                        "home_axis_poll: no homing in progress",
+                    ));
+                }
+            }
+        };
+        match rx.try_recv() {
+            Err(crossbeam_channel::TryRecvError::Empty) => Ok(None),
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                self.finish_homing();
+                Err(PyRuntimeError::new_err(
+                    "home_axis_poll: homing result channel closed",
+                ))
+            }
+            Ok(result) => {
+                self.finish_homing();
+                let (trip_pos, final_pos) = result.map_err(PyRuntimeError::new_err)?;
+                *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner()) = final_pos;
+                Ok(Some((trip_pos, final_pos)))
+            }
+        }
+    }
+
+    // Abort an in-flight homing move (timeout/cancel). Flushing the host queue
+    // and disarming halts motion within one drip window — the MCU dries out its
+    // <=DRIP_BUDGET buffered pieces; no trip handler runs.
+    fn home_abort(&self) {
+        let info = {
+            let guard = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
+            guard.as_ref().map(|r| (r.all_axis_keys.clone(), r.cohort))
+        };
+        if let Some((all_keys, cohort)) = info {
+            if let Some(tx) = self.pump_tx.lock().unwrap_or_else(|p| p.into_inner()).clone() {
+                let _ = tx.send(crate::pump::PumpMsg::Flush(all_keys));
+                let _ = tx.send(crate::pump::PumpMsg::DripDisarm(cohort));
+            }
+        }
+        self.finish_homing();
+    }
+
 }
 
 impl PyMotionBridge {
+    fn finish_homing(&self) {
+        *self.active_drip_cohort.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        *self.homing_run.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        *self.homing_result.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+
     fn host_io_for_mcu(&self, caller: &str, mcu: u32) -> PyResult<Arc<KalicoHostIo>> {
         let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
         let conn = mcus.get(&mcu).ok_or_else(|| {
@@ -2598,6 +2906,161 @@ impl PyMotionBridge {
         })
     }
 
+    fn handle_endstop_trip(&self, event_mcu: u32, endstop_id: u8, trip_clock: u64) {
+        let run_opt: Option<HomingRun> = {
+            let mut guard = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
+            guard.take()
+        };
+        let run = match run_opt {
+            None => return,
+            Some(r) => r,
+        };
+        if run.endstop_id != endstop_id || run.endstop_mcu != event_mcu {
+            let mut guard = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
+            *guard = Some(run);
+            return;
+        }
+
+        {
+            let mut cohort_guard = self
+                .active_drip_cohort
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            *cohort_guard = None;
+        }
+
+        let pump_tx_opt = self
+            .pump_tx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+
+        let mcu_ios: HashMap<u32, Arc<KalicoHostIo>> = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            mcus.iter()
+                .filter_map(|(&id, conn)| conn.host_io.as_ref().map(|io| (id, Arc::clone(io))))
+                .collect()
+        };
+
+        let router_arc = Arc::clone(&self.router);
+        let homing_traj = Arc::clone(&self.homing_trajectory);
+        let configs: Vec<McuAxisConfig> = self
+            .mcu_axis_configs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+
+        std::thread::Builder::new()
+            .name("homing-trip-handler".into())
+            .spawn(move || {
+                let stop_timeout = Duration::from_secs(3);
+
+                let stepper_mcu_ids: std::collections::HashSet<u32> = run
+                    .all_axis_keys
+                    .iter()
+                    .map(|k| k.mcu_id)
+                    .collect();
+
+                let mut stop_errors: Vec<String> = Vec::new();
+                // The homing axis MCU's drain-instant clock — used to recover the
+                // overshot final position by evaluating the stored trajectory at it.
+                let mut axis_discard_clock: Option<u64> = None;
+                for &mcu_id in &stepper_mcu_ids {
+                    let io = match mcu_ios.get(&mcu_id) {
+                        Some(io) => io.clone(),
+                        None => {
+                            stop_errors.push(format!("Stop: no host_io for mcu {mcu_id}"));
+                            continue;
+                        }
+                    };
+                    let result = io.kalico_call(
+                        kalico_protocol::MessageKind::Stop,
+                        Vec::new(),
+                        stop_timeout,
+                    );
+                    match result {
+                        Ok((_kind, body)) => {
+                            use kalico_protocol::codec::Decode as _;
+                            match kalico_protocol::messages::StopResponse::decode(&body) {
+                                Ok(resp) if resp.result != 0 => {
+                                    stop_errors.push(format!(
+                                        "Stop rejected by mcu {mcu_id}: result={}",
+                                        resp.result
+                                    ));
+                                }
+                                Ok(resp) => {
+                                    if mcu_id == run.axis_key.mcu_id {
+                                        axis_discard_clock = Some(resp.discard_clock);
+                                    }
+                                }
+                                Err(e) => {
+                                    stop_errors.push(format!(
+                                        "Stop decode failed for mcu {mcu_id}: {e:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            stop_errors.push(format!("Stop call failed for mcu {mcu_id}: {e:?}"));
+                        }
+                    }
+                }
+
+                if let Some(tx) = pump_tx_opt {
+                    let _ = tx.send(crate::pump::PumpMsg::Flush(run.all_axis_keys.clone()));
+                    let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
+                }
+
+                if !stop_errors.is_empty() {
+                    let _ = run.notify.send(Err(format!(
+                        "EndstopTrip Stop broadcast failed: {}",
+                        stop_errors.join("; ")
+                    )));
+                    return;
+                }
+
+                let discard_clock = match axis_discard_clock {
+                    Some(c) => c,
+                    None => {
+                        let _ = run.notify.send(Err(format!(
+                            "EndstopTrip: axis MCU {} did not report a discard clock",
+                            run.axis_key.mcu_id
+                        )));
+                        return;
+                    }
+                };
+
+                let axis = run.axis;
+                let axis_key = run.axis_key;
+                let kinematics = configs
+                    .iter()
+                    .find(|c| c.mcu_id == axis_key.mcu_id)
+                    .map_or(1u8, |c| c.kinematics);
+                let reconstruct_cartesian = |source_mcu: u32, clock: u64| -> Result<[f64; 3], String> {
+                    let motor_pos = crate::homing::reconstruct_axis_position(
+                        source_mcu,
+                        clock,
+                        axis_key,
+                        &router_arc,
+                        &homing_traj,
+                        &configs,
+                    )?;
+                    let motor_frame =
+                        trip_position_to_motor_frame(axis, motor_pos, &configs, axis_key.mcu_id);
+                    Ok(crate::kinematics::inverse(kinematics, motor_frame))
+                };
+
+                // Trip = switch location at the endstop MCU's trip clock (projected
+                // across clock domains if endstop != axis MCU). Final = the overshot
+                // stop at the axis MCU's own discard clock (same domain, exact).
+                let outcome = reconstruct_cartesian(run.endstop_mcu, trip_clock).and_then(|trip| {
+                    reconstruct_cartesian(axis_key.mcu_id, discard_clock)
+                        .map(|final_pos| (trip, final_pos))
+                });
+                let _ = run.notify.send(outcome);
+            })
+            .expect("spawn homing-trip-handler");
+    }
 }
 
 #[cfg(test)]

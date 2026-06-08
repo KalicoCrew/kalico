@@ -7,8 +7,9 @@ pub mod messages;
 pub use bootstrap::{Identify, IdentifyResponse};
 pub use codec::{Decode, DecodeError, Encode};
 pub use messages::{
-    ClaimHandshakeReply, FaultEvent, McuLog, MessageKind, PushPieces, PushPiecesResponse,
-    RuntimeCapsResponse, SlaveState, SlaveStatus, StatusHeartbeat,
+    ClaimHandshakeReply, EndstopTrip, FaultEvent, McuLog, MessageKind, PushPieces,
+    PushPiecesResponse, RuntimeCapsResponse, SlaveState, SlaveStatus, StatusHeartbeat, Stop,
+    StopResponse,
 };
 
 include!(concat!(env!("OUT_DIR"), "/schema_hash.rs"));

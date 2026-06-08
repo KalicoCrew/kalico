@@ -8,6 +8,7 @@ fn make_enqueue(key: AxisKey, pieces: Vec<(PieceEntry, f64)>, fresh_stream: bool
         pieces,
         fresh_stream,
         lead_secs: MAX_LEAD_SECS,
+        drip_cohort: None,
     })
 }
 
@@ -89,7 +90,7 @@ fn run_pump_sets_start_slot_from_cursor_and_advances_it() {
     let (tx, rx) = mpsc::channel::<PumpMsg>();
     let sink_clone = sink.clone();
     let handle = std::thread::spawn(move || {
-        run_pump(rx, sink_clone, |_key| RING_DEPTH, |_mcu| None, |_| {}, |_, _| {});
+        run_pump(rx, sink_clone, |_key| RING_DEPTH, |_mcu| None, |_| {}, |_, _| {}, |_| {});
     });
 
     tx.send(make_enqueue(
@@ -213,6 +214,7 @@ fn flush_clears_queued_pieces_and_junctions() {
             move |_mcu| *clock_pump.lock().unwrap(),
             |_| {},
             |_, _| {},
+            |_| {},
         );
     });
 
@@ -233,6 +235,7 @@ fn flush_clears_queued_pieces_and_junctions() {
             .collect(),
         fresh_stream: true,
         lead_secs,
+        drip_cohort: None,
     }))
     .unwrap();
 
@@ -261,6 +264,7 @@ fn flush_clears_queued_pieces_and_junctions() {
         )],
         fresh_stream: false,
         lead_secs,
+        drip_cohort: None,
     }))
     .unwrap();
     {
@@ -319,6 +323,7 @@ fn on_abandon_reports_flushed_not_pushed_pieces() {
             move |_k: AxisKey, n: u32| {
                 *abandoned_pump.lock().unwrap() += n;
             },
+            |_| {},
         );
     });
 
@@ -339,6 +344,7 @@ fn on_abandon_reports_flushed_not_pushed_pieces() {
             .collect(),
         fresh_stream: true,
         lead_secs,
+        drip_cohort: None,
     }))
     .unwrap();
 
@@ -360,6 +366,7 @@ fn on_abandon_reports_flushed_not_pushed_pieces() {
         )],
         fresh_stream: false,
         lead_secs,
+        drip_cohort: None,
     }))
     .unwrap();
     {
@@ -387,7 +394,7 @@ fn on_abandon_reports_flushed_not_pushed_pieces() {
 fn flush_unknown_key_is_noop() {
     let (tx, rx) = mpsc::channel::<PumpMsg>();
     let handle = std::thread::spawn(move || {
-        run_pump(rx, NullSink, |_key| 64, |_mcu| None, |_| {}, |_, _| {});
+        run_pump(rx, NullSink, |_key| 64, |_mcu| None, |_| {}, |_, _| {}, |_| {});
     });
 
     let never_enqueued = AxisKey { mcu_id: 99, axis: 7 };

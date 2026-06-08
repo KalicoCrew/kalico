@@ -29,15 +29,6 @@ typedef struct StepperBindingRust {
   uint8_t _pad[2];
 } StepperBindingRust;
 
-
-
-
-
-
-
-
-
-
 int32_t kalico_runtime_clock_sync_request(struct KalicoRuntime *rt,
                                           uint32_t request_id,
                                           uint32_t host_send_time_lo,
@@ -53,6 +44,12 @@ int32_t kalico_runtime_configure_axis(struct KalicoRuntime *rt,
                                       uint16_t ring_depth,
                                       const struct StepperBindingRust *bindings_ptr,
                                       uint8_t stepper_count);
+
+/**
+ * Drain abandoned ring pieces after a homing trip (TIM5 stopped mid-move),
+ * keeping the axis config + position. Caller must ensure TIM5 is stopped.
+ */
+int32_t kalico_runtime_discard_pending(struct KalicoRuntime *rt);
 
 uint32_t kalico_runtime_enqueue_success_lo(struct KalicoRuntime *rt);
 
@@ -73,6 +70,10 @@ void kalico_runtime_get_last_timing(struct KalicoRuntime *rt,
                                     uint64_t *t_start_out,
                                     uint64_t *duration_out);
 
+int32_t kalico_runtime_get_occupancy(struct KalicoRuntime *rt,
+                                     uint32_t *out_occupancy,
+                                     uintptr_t max_axes);
+
 uint32_t kalico_runtime_get_sample_period_cycles(void);
 
 uint8_t kalico_runtime_get_step_mode(struct KalicoRuntime *rt, uint8_t stepper_idx);
@@ -90,6 +91,8 @@ uint32_t kalico_runtime_last_push_consumers_remaining(struct KalicoRuntime *rt);
 uint32_t kalico_runtime_last_push_x_handle(struct KalicoRuntime *rt);
 
 uint32_t kalico_runtime_last_push_y_handle(struct KalicoRuntime *rt);
+
+uint64_t kalico_runtime_now_ticks(struct KalicoRuntime *rt);
 
 uint32_t kalico_runtime_push_seg_all_unused_lo(struct KalicoRuntime *rt);
 

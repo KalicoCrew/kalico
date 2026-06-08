@@ -45,13 +45,20 @@ pub struct McuLogEvent {
     pub host_recv: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct EndstopTripEvent {
+    pub endstop_id: u8,
+    /// Widened u64 MCU clock captured at edge detection on the endstop MCU.
+    pub trip_clock: u64,
+}
+
 #[derive(Debug, Clone)]
 pub enum RuntimeEvent {
     CreditFreed(CreditFreedEvent),
     Fault(FaultEvent),
     Status(StatusEvent),
     Trace(TraceEvent),
-    EndstopTripped(()),
+    EndstopTrip(EndstopTripEvent),
     McuLog(McuLogEvent),
     Heartbeat { retired_counts: Vec<u32> },
     UnknownOutput { format: String, msg: String },
@@ -87,7 +94,6 @@ impl RuntimeEvent {
                     .unwrap_or_default(),
                 flags: 0,
             }),
-            "kalico_endstop_tripped" => Self::EndstopTripped(()),
             _ => {
                 let msg = params.try_get_str("#msg").unwrap_or("").to_string();
                 let format = params

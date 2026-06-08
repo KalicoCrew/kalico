@@ -180,6 +180,14 @@ DECL_INIT(runtime_init);
 #define KALICO_LIVENESS_THRESHOLD_TICKS  \
     ((KALICO_LIVENESS_THRESHOLD_MS) * (CONFIG_CLOCK_FREQ / 1000))
 
+// Retirement backpressure: when an axis ring is at or below this occupancy, the
+// 1 ms drain reports each retirement immediately instead of at the 100 ms status
+// baseline, so a shallow (drip) producer is kept fed inside its window. A
+// generic flow-control threshold, set a couple of pieces above the homing drip
+// depth — the engine never knows it is homing.
+#define KALICO_FAST_STATUS_MAX_AXES 8
+#define KALICO_FAST_STATUS_RING_OCCUPANCY 4
+
 void
 runtime_drain(void)
 {
@@ -244,6 +252,37 @@ runtime_drain(void)
     prev_engine_status = cur_status;
     if (cur_status != last_seen_status) {
         last_seen_status = cur_status;
+    }
+
+    // Per-axis retirement backpressure (see KALICO_FAST_STATUS_* above). Emit a
+    // status the instant a shallow ring retires a piece. A deep ring (normal
+    // print) never trips the occupancy gate; an idle ring never retires; so
+    // neither floods the link — only the homing drip regime accelerates.
+    {
+        static uint32_t last_retired_seen[KALICO_FAST_STATUS_MAX_AXES];
+        uint32_t occ[KALICO_FAST_STATUS_MAX_AXES];
+        uint32_t retired[KALICO_FAST_STATUS_MAX_AXES];
+        uint8_t st = 0, fc = 0;
+        int32_t no = kalico_runtime_get_occupancy(runtime_handle, occ,
+                                                  KALICO_FAST_STATUS_MAX_AXES);
+        int32_t nr = kalico_runtime_get_heartbeat(runtime_handle, &st, &fc,
+                                                  retired,
+                                                  KALICO_FAST_STATUS_MAX_AXES);
+        if (no > 0 && nr > 0) {
+            int32_t n = no < nr ? no : nr;
+            uint8_t emit = 0;
+            for (int32_t i = 0; i < n; i++) {
+                if (retired[i] != last_retired_seen[i]) {
+                    if (occ[i] <= KALICO_FAST_STATUS_RING_OCCUPANCY)
+                        emit = 1;
+                    last_retired_seen[i] = retired[i];
+                }
+            }
+            if (emit) {
+                send_status_heartbeat();
+                last_status_emit_time = timer_read_time();
+            }
+        }
     }
 
     kalico_log_drain();

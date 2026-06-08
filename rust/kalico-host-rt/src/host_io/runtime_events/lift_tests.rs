@@ -43,15 +43,6 @@ fn lifts_unknown_to_catch_all() {
     }
 }
 
-#[test]
-fn lifts_endstop_tripped() {
-    let p = MessageParams::new();
-    match RuntimeEvent::lift("kalico_endstop_tripped", p) {
-        RuntimeEvent::EndstopTripped(()) => {}
-        other => panic!("expected EndstopTripped, got {:?}", other),
-    }
-}
-
 /// Spec §4.8: when the upstream decode emits the canonical
 /// `("#output", {"#msg": ..., "#format": ...})` shape (free-form path),
 /// lift must surface the firmware-side format string, not the literal

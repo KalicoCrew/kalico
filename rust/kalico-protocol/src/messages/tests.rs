@@ -277,3 +277,46 @@ fn decode_rejects_trailing_bytes() {
         other => panic!("expected TrailingBytes(1), got {other:?}"),
     }
 }
+
+#[test]
+fn stop_round_trips_empty_body() {
+    let bytes = Stop.encoded_to_vec();
+    assert!(bytes.is_empty(), "Stop body is empty");
+    let back = Stop::decode(&bytes).expect("decode");
+    assert_eq!(back, Stop);
+}
+
+#[test]
+fn stop_response_round_trips() {
+    let msg = StopResponse {
+        result: 0,
+        discard_clock: 0x0123_4567_89AB_CDEF,
+    };
+    let bytes = msg.encoded_to_vec();
+    assert_eq!(bytes.len(), 12, "i32 + u64 = 12 bytes");
+    assert_eq!(StopResponse::decode(&bytes).expect("decode"), msg);
+}
+
+#[test]
+fn stop_kinds_have_stable_tags() {
+    assert_eq!(MessageKind::Stop.as_u16(), 0x0072);
+    assert_eq!(MessageKind::StopResponse.as_u16(), 0x0073);
+    assert_eq!(MessageKind::from_u16(0x0072), Some(MessageKind::Stop));
+    assert_eq!(MessageKind::from_u16(0x0073), Some(MessageKind::StopResponse));
+    assert!(!MessageKind::Stop.is_event());
+}
+
+#[test]
+fn endstop_trip_round_trips_and_is_event() {
+    let msg = EndstopTrip {
+        endstop_id: 3,
+        trip_clock: 0x0123_4567_89AB_CDEF,
+    };
+    let bytes = msg.encoded_to_vec();
+    assert_eq!(bytes.len(), 9, "u8 + u64 = 9 bytes");
+    assert_eq!(bytes[0], 3);
+    assert_eq!(&bytes[1..9], &0x0123_4567_89AB_CDEF_u64.to_le_bytes());
+    assert_eq!(EndstopTrip::decode(&bytes).expect("decode"), msg);
+    assert!(MessageKind::EndstopTrip.is_event());
+    assert_eq!(MessageKind::EndstopTrip.as_u16(), 0x0085);
+}

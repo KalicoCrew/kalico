@@ -307,7 +307,7 @@ impl EventDispatcher {
                     cb(&retired_counts);
                 }
             }
-            RuntimeEvent::EndstopTripped(_)
+            RuntimeEvent::EndstopTrip(_)
             | RuntimeEvent::UnknownOutput { .. }
             | RuntimeEvent::PassthroughResponse { .. } => {
                 self.runtime_event_dispatcher.dispatch(event);

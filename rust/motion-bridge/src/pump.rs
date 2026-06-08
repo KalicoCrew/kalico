@@ -2,7 +2,7 @@ use runtime::piece_ring::PieceEntry;
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Weak;
 use std::sync::mpsc::{Receiver, RecvError, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct AxisKey {
@@ -73,11 +73,18 @@ pub enum Schedule {
 ///    numerically smaller and would always win, starving the H7.  The `f64`
 ///    sidecar in each `(PieceEntry, f64)` pair carries the minting host time
 ///    (`t0 + u_start`, seconds) and is the only valid cross-queue ordering key.
+///
+/// `releasable_cap_of(k)` returns the maximum additional pieces schedulable for
+/// axis `k` this pass, on top of what `room()` and `horizon_of` already allow.
+/// `usize::MAX` means no extra cap (non-cohort behaviour). Cohort axes set this
+/// to their drip budget remainder; the horizon check is bypassed for them by
+/// `horizon_of` returning `None`.
 #[must_use]
 pub fn schedule(
     queues: &BTreeMap<AxisKey, AxisQueue>,
     max_per_frame: usize,
     horizon_of: impl Fn(&AxisKey, &AxisQueue) -> Option<u64>,
+    releasable_cap_of: impl Fn(&AxisKey) -> usize,
 ) -> Schedule {
     let mut stall_ahead_candidate: Option<AxisKey> = None;
 
@@ -99,6 +106,13 @@ pub fn schedule(
 
     if head_q.room() == 0 {
         return Schedule::StallFull(head_key);
+    }
+
+    let head_cap = releasable_cap_of(&head_key);
+    if head_cap == 0 {
+        // Drip budget exhausted for the head axis — treat like StallAhead so
+        // the pump parks in timed-poll mode and re-evaluates on the next heartbeat.
+        return Schedule::StallAhead(head_key);
     }
 
     if let Some(horizon) = horizon_of(&head_key, head_q) {
@@ -133,7 +147,8 @@ pub fn schedule(
         let already = taken.get(&k).copied().unwrap_or(0);
         let q = &queues[&k];
         let room = q.room() as usize;
-        if already >= room || already >= max_per_frame {
+        let cap = releasable_cap_of(&k);
+        if already >= room || already >= max_per_frame || already >= cap {
             maxed.insert(k);
             continue;
         }
@@ -175,6 +190,26 @@ mod sched_tests;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod drip_tests;
+
+/// Max pieces a drip-cohort axis may have in flight ahead of the cohort floor.
+pub const DRIP_BUDGET: u32 = 2;
+
+/// Arms the pump's drip gate for a homing cohort.
+///
+/// All `participants` must confirm retirement of each step before the next step
+/// is released to any of them. `DRIP_BUDGET` controls how far ahead of the
+/// slowest MCU the fastest may run.
+pub struct DripArm {
+    /// Monotonic identifier for this homing run.
+    pub cohort: u64,
+    /// Every axis that must confirm each step.
+    pub participants: Vec<AxisKey>,
+    /// Per-step retirement deadline; exceeded → loud error via `on_drip_stall`.
+    pub timeout: Duration,
+}
+
 pub struct EnqueueMsg {
     pub key: AxisKey,
     /// Each entry pairs the `PieceEntry` with its minting host time (`t0 + u_start`, seconds).
@@ -183,6 +218,9 @@ pub struct EnqueueMsg {
     pub pieces: Vec<(PieceEntry, f64)>,
     pub fresh_stream: bool,
     pub lead_secs: f64,
+    /// `Some(c)` ⟹ these pieces belong to drip cohort `c` and are subject to the
+    /// confirmed-retirement budget gate. `None` ⟹ normal time-horizon streaming.
+    pub drip_cohort: Option<u64>,
 }
 
 pub struct HeartbeatMsg {
@@ -194,6 +232,11 @@ pub enum PumpMsg {
     Enqueue(EnqueueMsg),
     Heartbeat(HeartbeatMsg),
     Flush(Vec<AxisKey>),
+    /// Arms the drip gate for a new homing cohort.  Replaces any prior cohort.
+    DripArm(DripArm),
+    /// Disarms the drip gate.  The `u64` is the cohort id; ignored if it does
+    /// not match the active cohort.
+    DripDisarm(u64),
     Shutdown,
 }
 
@@ -252,6 +295,55 @@ pub fn junction_jumps(
 
 pub const MAX_LEAD_SECS: f64 = 1.0;
 
+struct DripCohort {
+    id: u64,
+    participants: BTreeSet<AxisKey>,
+    timeout: Duration,
+    /// `retired` count per participant at arm time.  Both `executed` and
+    /// `released` are measured from this zero so that `released − executed`
+    /// equals absolute in-flight regardless of pre-arm backlog.
+    baseline: BTreeMap<AxisKey, u32>,
+    /// Highest retired value seen per participant since arming.
+    /// A decrease is a regression — an MCU bug; disarm loudly on detection.
+    last_retired: BTreeMap<AxisKey, u32>,
+    /// Deadline by which `floor` must advance at least once.
+    step_deadline: Instant,
+    /// The floor value at the time `step_deadline` was last set.  Used to detect
+    /// whether floor has advanced when re-evaluating the deadline.
+    deadline_floor: u32,
+}
+
+impl DripCohort {
+    fn executed(&self, k: &AxisKey, queues: &BTreeMap<AxisKey, AxisQueue>) -> u32 {
+        let retired = queues.get(k).map_or(0, |q| q.retired);
+        let baseline = self.baseline.get(k).copied().unwrap_or(0);
+        retired.wrapping_sub(baseline)
+    }
+
+    fn released(&self, k: &AxisKey, queues: &BTreeMap<AxisKey, AxisQueue>) -> u32 {
+        let pushed = queues.get(k).map_or(0, |q| q.pushed);
+        let baseline = self.baseline.get(k).copied().unwrap_or(0);
+        pushed.wrapping_sub(baseline)
+    }
+
+    fn floor(&self, queues: &BTreeMap<AxisKey, AxisQueue>) -> u32 {
+        self.participants
+            .iter()
+            .map(|k| self.executed(k, queues))
+            .min()
+            .unwrap_or(0)
+    }
+
+    /// Returns the number of additional pieces that may be released for axis `k`
+    /// this scheduling pass.  Zero means budget-blocked.
+    fn drip_cap(&self, k: &AxisKey, queues: &BTreeMap<AxisKey, AxisQueue>) -> usize {
+        let floor = self.floor(queues);
+        let released = self.released(k, queues);
+        let ahead = released.saturating_sub(floor);
+        (DRIP_BUDGET.saturating_sub(ahead)) as usize
+    }
+}
+
 /// Run the piece pump loop.
 ///
 /// `on_fatal_transport` is called (at most once) when [`SendError::Fatal`] is
@@ -259,19 +351,26 @@ pub const MAX_LEAD_SECS: f64 = 1.0;
 /// production call site passes an `abort()`-based action; tests inject a
 /// channel-send or a flag-set so they can assert detection without terminating
 /// the process.  After the callback returns the pump loop exits.
-pub fn run_pump<S, F, C, A, O>(
+///
+/// `on_drip_stall` is called when a drip cohort's floor has not advanced within
+/// the per-step timeout.  The cohort is disarmed and the pump continues.  The
+/// caller is responsible for aborting the homing run.
+#[allow(clippy::too_many_lines)]
+pub fn run_pump<S, F, C, A, O, D>(
     rx: Receiver<PumpMsg>,
     sink: S,
     ring_depth_of: F,
     mcu_clock_of: C,
     on_fatal_transport: A,
     on_abandon: O,
+    on_drip_stall: D,
 ) where
     S: PieceSink,
     F: Fn(AxisKey) -> u32,
     C: Fn(u32) -> Option<(u64, f64)>,
     A: Fn(AxisKey) + Send + 'static,
     O: Fn(AxisKey, u32),
+    D: Fn(String) + Send,
 {
     // `on_abandon(key, n)`: n queued pieces for `key` were dropped by Flush
     // before being pushed to the ring. They were counted as drain `sent` at
@@ -282,11 +381,13 @@ pub fn run_pump<S, F, C, A, O>(
     let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
     // Per-axis junction tracking for clock-projection jitter measurement.
     let mut junction_ends: BTreeMap<AxisKey, (u64, f64)> = BTreeMap::new();
+    let mut cohort: Option<DripCohort> = None;
     const MAX_PER_FRAME: usize = 32;
 
     let apply = |msg: PumpMsg,
                  queues: &mut BTreeMap<AxisKey, AxisQueue>,
-                 junction_ends: &mut BTreeMap<AxisKey, (u64, f64)>|
+                 junction_ends: &mut BTreeMap<AxisKey, (u64, f64)>,
+                 cohort: &mut Option<DripCohort>|
      -> bool {
         match msg {
             PumpMsg::Shutdown => return false,
@@ -307,6 +408,7 @@ pub fn run_pump<S, F, C, A, O>(
                 pieces,
                 fresh_stream,
                 lead_secs,
+                drip_cohort: _drip_cohort,
             }) => {
                 if fresh_stream {
                     junction_ends.remove(&key);
@@ -376,13 +478,60 @@ pub fn run_pump<S, F, C, A, O>(
                     if let Some(q) = queues.get_mut(&key) {
                         q.retired = c;
                     }
+                    // Track retired for cohort participants directly from the heartbeat,
+                    // regardless of whether a queue exists yet.
+                    if let Some(co) = cohort {
+                        if co.participants.contains(&key) {
+                            let prev = co.last_retired.get(&key).copied().unwrap_or(0);
+                            if c < prev {
+                                on_drip_stall(format!(
+                                    "drip cohort {}: retired regression on mcu{} axis{}: \
+                                     was {prev} now {c} — MCU retired counter must not decrease",
+                                    co.id, mcu_id, axis
+                                ));
+                                *cohort = None;
+                                break;
+                            }
+                            co.last_retired.insert(key, c);
+                        }
+                    }
+                }
+            }
+            PumpMsg::DripArm(arm) => {
+                let mut baseline = BTreeMap::new();
+                let mut last_retired = BTreeMap::new();
+                for &k in &arm.participants {
+                    let retired = queues.get(&k).map_or(0, |q| q.retired);
+                    baseline.insert(k, retired);
+                    last_retired.insert(k, retired);
+                }
+                let step_deadline = Instant::now() + arm.timeout;
+                *cohort = Some(DripCohort {
+                    id: arm.cohort,
+                    participants: arm.participants.into_iter().collect(),
+                    timeout: arm.timeout,
+                    baseline,
+                    last_retired,
+                    step_deadline,
+                    deadline_floor: 0,
+                });
+            }
+            PumpMsg::DripDisarm(c) => {
+                if cohort.as_ref().map_or(false, |co| co.id == c) {
+                    *cohort = None;
                 }
             }
         }
         true
     };
 
-    let horizon_of = |k: &AxisKey, q: &AxisQueue| -> Option<u64> {
+    let horizon_of = |k: &AxisKey, q: &AxisQueue, cohort: &Option<DripCohort>| -> Option<u64> {
+        if cohort
+            .as_ref()
+            .map_or(false, |co| co.participants.contains(k))
+        {
+            return None;
+        }
         let (ack_now, freq) = mcu_clock_of(k.mcu_id)?;
         #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
         Some(ack_now + (q.lead_secs * freq) as u64)
@@ -391,13 +540,14 @@ pub fn run_pump<S, F, C, A, O>(
     let mut holding_ahead = false;
 
     loop {
-        let short_lead = holding_ahead
+        let cohort_active = cohort.is_some();
+        let short_lead = (holding_ahead || cohort_active)
             && queues
                 .values()
                 .any(|q| q.lead_secs < 0.1 && !q.pieces.is_empty());
-        let poll_ms = if short_lead { 10 } else { 50 };
+        let poll_ms: u64 = if short_lead || cohort_active { 10 } else { 50 };
 
-        let first = if holding_ahead {
+        let first = if holding_ahead || cohort_active {
             match rx.recv_timeout(Duration::from_millis(poll_ms)) {
                 Ok(m) => Some(m),
                 Err(RecvTimeoutError::Timeout) => None,
@@ -411,19 +561,64 @@ pub fn run_pump<S, F, C, A, O>(
         };
 
         if let Some(msg) = first {
-            if !apply(msg, &mut queues, &mut junction_ends) {
+            if !apply(msg, &mut queues, &mut junction_ends, &mut cohort) {
                 return;
             }
             while let Ok(m) = rx.try_recv() {
-                if !apply(m, &mut queues, &mut junction_ends) {
+                if !apply(m, &mut queues, &mut junction_ends, &mut cohort) {
                     return;
                 }
             }
         }
 
+        // Check for drip stall deadline.  Regression is detected eagerly in the
+        // Heartbeat handler; this block only checks for floor-advance timeout.
+        if let Some(ref co) = cohort {
+            let now = Instant::now();
+            let floor = co.floor(&queues);
+            if floor > co.deadline_floor {
+                let co = cohort.as_mut().unwrap();
+                co.step_deadline = now + co.timeout;
+                co.deadline_floor = floor;
+            } else if now >= co.step_deadline {
+                let co = cohort.as_ref().unwrap();
+                let lagging: Vec<String> = co
+                    .participants
+                    .iter()
+                    .filter(|k| {
+                        let released = co.released(k, &queues);
+                        released.saturating_sub(floor) >= DRIP_BUDGET
+                    })
+                    .map(|k| {
+                        format!(
+                            "mcu{} axis{}: executed {}",
+                            k.mcu_id,
+                            k.axis,
+                            co.executed(k, &queues)
+                        )
+                    })
+                    .collect();
+                let id = co.id;
+                on_drip_stall(format!(
+                    "drip cohort {id}: floor stalled at {floor} for {:?}; \
+                     budget-blocked participants: [{}]",
+                    co.timeout,
+                    lagging.join(", ")
+                ));
+                cohort = None;
+            }
+        }
+
         holding_ahead = false;
         'send: loop {
-            match schedule(&queues, MAX_PER_FRAME, &horizon_of) {
+            let cap_of: &dyn Fn(&AxisKey) -> usize = &|k: &AxisKey| {
+                cohort
+                    .as_ref()
+                    .filter(|co| co.participants.contains(k))
+                    .map_or(usize::MAX, |co| co.drip_cap(k, &queues))
+            };
+            let hz_of = |k: &AxisKey, q: &AxisQueue| horizon_of(k, q, &cohort);
+            match schedule(&queues, MAX_PER_FRAME, hz_of, cap_of) {
                 Schedule::Idle => break 'send,
                 Schedule::StallFull(_stall_key) => {
                     break 'send;
