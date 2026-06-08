@@ -134,6 +134,10 @@ class MotionBridgeWrapper:
         # arm_id → BridgeTriggerDispatch; populated by start() so the
         # credit-freed handler can fire _completion on past-end-time.
         self._homing_dispatches = {}
+        # MCU objects that already have the shared kalico_endstop_tripped
+        # handler registered. The handler routes by arm_id (see
+        # register_trip_handler) — one per MCU, never per dispatch.
+        self._trip_handler_mcus = set()
         self._software_trip_active = False
         self._software_trip_clock = None
         self._homing_print_time_base = 0.0
@@ -339,6 +343,24 @@ class MotionBridgeWrapper:
     def unregister_homing_dispatch(self, arm_id):
         self._homing_dispatches.pop(int(arm_id), None)
 
+    def register_trip_handler(self, mcu_obj):
+        # One kalico_endstop_tripped handler per MCU, routing by arm_id.
+        # Per-dispatch registration collides: register_response replaces by
+        # message name, so only the last dispatch's handler survives and its
+        # arm_id filter drops every other arm's trip — leaving re-homed axes
+        # to time out on the home_wait backstop.
+        if mcu_obj in self._trip_handler_mcus:
+            return
+        self._trip_handler_mcus.add(mcu_obj)
+        mcu_obj.register_response(
+            self._route_trip_message, "kalico_endstop_tripped"
+        )
+
+    def _route_trip_message(self, params):
+        dispatch = self._homing_dispatches.get(int(params.get("arm_id", -1)))
+        if dispatch is not None:
+            dispatch._on_trip_message(params)
+
     def fire_homing_completion(self, arm_id):
         # No-op if no dispatch is registered (race with stop).
         dispatch = self._homing_dispatches.get(int(arm_id))
@@ -508,7 +530,6 @@ class BridgeTriggerDispatch:
         self._reason = None
         self._trip_event = None
         self._arm_print_time = None
-        self._handler_registered = False
         self._toolhead_arms = None  # set at start() for stop() cleanup
         self._sink_trsyncs = {}     # MCU object → MCU_trsync (firmware sink)
         self._classic_trsyncs = []  # MCU_trsync objects on non-bridge MCUs
@@ -586,13 +607,9 @@ class BridgeTriggerDispatch:
 
         self._bridge.register_homing_dispatch(self._arm_id, self)
 
-        # Register the async handler BEFORE arming, or we race the firmware's
-        # kalico_endstop_tripped event.
-        if not self._handler_registered:
-            mcu_obj.register_response(
-                self._on_trip_message, "kalico_endstop_tripped"
-            )
-            self._handler_registered = True
+        # Register the shared (arm_id-routed) handler BEFORE arming, or we race
+        # the firmware's kalico_endstop_tripped event. Idempotent per MCU.
+        self._bridge.register_trip_handler(mcu_obj)
 
         # Register arm_id with the toolhead so its drip_move passes the right
         # arm_ids to submit_homing_move.
