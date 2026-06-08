@@ -8,6 +8,7 @@
 #include "board/armcm_boot.h" // armcm_enable_irq
 #include "board/serial_irq.h" // serial_rx_byte
 #include "command.h" // DECL_CONSTANT_STR
+#include "generic/kalico_nvic_prio.h" // KALICO_MOTION_NVIC_PRIO
 #include "internal.h" // enable_pclock
 #include "sched.h" // DECL_INIT
 
@@ -108,7 +109,7 @@ serial_init(void)
     USARTx->BRR = (((div / 16) << USART_BRR_DIV_Mantissa_Pos)
                    | ((div % 16) << USART_BRR_DIV_Fraction_Pos));
     USARTx->CR1 = CR1_FLAGS;
-    armcm_enable_irq(USARTx_IRQHandler, USARTx_IRQn, 0);
+    armcm_enable_irq(USARTx_IRQHandler, USARTx_IRQn, KALICO_MOTION_NVIC_PRIO);
 
     gpio_peripheral(GPIO_Rx, GPIO_FUNCTION(GPIO_AF_MODE), 1);
     gpio_peripheral(GPIO_Tx, GPIO_FUNCTION(GPIO_AF_MODE), 0);

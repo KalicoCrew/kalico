@@ -404,7 +404,7 @@ config KALICO_MOTION_SAMPLE_RATE_HZ
     int "Motion engine sample rate in Hz (motion-timer ISR fire rate)"
     depends on MACH_STM32H7 || MACH_STM32F4 || MACH_STM32G0 || MACH_LINUX
     default 40000 if MACH_STM32H7
-    default 10000 if MACH_STM32F401
+    default 5000 if MACH_STM32F401
     default 20000 if MACH_STM32F4
     default 2000 if MACH_STM32G0
     default 1000 if MACH_LINUX

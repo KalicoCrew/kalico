@@ -194,6 +194,11 @@ step_output_timer_arm(uint32_t cycle_abs)
     TIM2->CCR1 = TIM2->CNT + delta;
     TIM2->SR = ~TIM_SR_CC1IF;
     TIM2->DIER |= TIM_DIER_CC1IE;
+    // A 32-bit compare passed between the CNT read above and going live won't
+    // match again for a full wrap; force the handler so a re-arm can never leave
+    // step_out_running=1 with a silent timer (the consumer-stall overflow).
+    if ((int32_t)(TIM2->CNT - TIM2->CCR1) >= 0)
+        NVIC_SetPendingIRQ(TIM2_IRQn);
 }
 
 __attribute__((used, externally_visible))
