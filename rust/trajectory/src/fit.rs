@@ -27,14 +27,32 @@ pub fn fit_and_split(
 
     let fit_input = nondegenerate_composed_pieces(composed)?;
 
-    let d2_start = start_d2_override.unwrap_or_else(|| boundary_second_derivative(&fit_input));
+    let d2_start = start_d2_override.unwrap_or_else(|| boundary_second_derivative_start(&fit_input));
+    let d2_end = boundary_second_derivative_end(&fit_input);
 
-    let fitted = fit_hermite_c2_adaptive(&fit_input, tolerance, d2_start).map_err(|e| {
+    let mut fitted = fit_hermite_c2_adaptive(&fit_input, tolerance, d2_start, d2_end).map_err(|e| {
         crate::ShapeError::FitFailure {
             index: 0,
             detail: e,
         }
     })?;
+
+    // Normalize all axes to a uniform degree (the max across all pieces on any
+    // axis).  Phase-2 re-fitting produces degree-5 pieces for the last output
+    // piece while Phase-1 produces degree-4 for the others; `bezier_pieces_to_nurbs`
+    // requires a uniform degree throughout.
+    let max_degree = fitted
+        .iter()
+        .flat_map(|axis_pieces| axis_pieces.iter().map(|p| p.coeffs.len().saturating_sub(1)))
+        .max()
+        .unwrap_or(4);
+    for axis_pieces in fitted.iter_mut() {
+        for piece in axis_pieces.iter_mut() {
+            while piece.coeffs.len() <= max_degree {
+                piece.coeffs.push(0.0);
+            }
+        }
+    }
 
     let axes = [
         bezier_pieces_to_nurbs(&fitted[0]),
@@ -49,10 +67,17 @@ pub fn fit_and_split(
     })
 }
 
-fn boundary_second_derivative(composed: &[[BezierPiece<f64>; 3]]) -> [f64; 3] {
+fn boundary_second_derivative_start(composed: &[[BezierPiece<f64>; 3]]) -> [f64; 3] {
     std::array::from_fn(|axis| {
         let piece = &composed[0][axis];
         piece.differentiate().differentiate().evaluate(piece.u_start)
+    })
+}
+
+fn boundary_second_derivative_end(composed: &[[BezierPiece<f64>; 3]]) -> [f64; 3] {
+    std::array::from_fn(|axis| {
+        let piece = composed.last().unwrap()[axis].clone();
+        piece.differentiate().differentiate().evaluate(piece.u_end)
     })
 }
 
@@ -84,14 +109,22 @@ fn fit_hermite_c2_adaptive(
     composed: &[[BezierPiece<f64>; 3]],
     tolerance: f64,
     d2_start: [f64; 3],
+    d2_end: [f64; 3],
 ) -> Result<[Vec<BezierPiece<f64>>; 3], nurbs::algebra::FitError> {
     use nurbs::algebra::{fit_hermite_c1_clamped, FitError};
 
+    // Phase 1: run the original start-pin-only fit (degree-4) to get a
+    // well-behaved velocity profile.  This is unchanged from the prior
+    // single-pin implementation.
     let mut refined = composed.to_vec();
+    let mut fitted: [Vec<BezierPiece<f64>>; 3] = std::array::from_fn(|_| Vec::new());
 
     for depth in 0..=HERMITE_REFIT_MAX_SUBDIVISIONS {
         match fit_hermite_c1_clamped::<3>(&refined, tolerance, 4, Some(d2_start), None) {
-            Ok(fitted) => return Ok(fitted),
+            Ok(f) => {
+                fitted = f;
+                break;
+            }
             Err(err @ FitError::ToleranceNotReached { .. }) => {
                 if depth == HERMITE_REFIT_MAX_SUBDIVISIONS {
                     return Err(err);
@@ -102,7 +135,89 @@ fn fit_hermite_c2_adaptive(
         }
     }
 
-    unreachable!("bounded Hermite refit loop always returns before exhausting range")
+    // Phase 2: re-fit the last output piece with the end-accel pin added.
+    // We operate on the same `refined` array used by Phase 1 and locate the
+    // composed pieces that were merged into the last output piece.
+    refit_last_piece_with_end_pin(&mut fitted, &refined, tolerance, d2_end)?;
+
+    Ok(fitted)
+}
+
+fn refit_last_piece_with_end_pin(
+    fitted: &mut [Vec<BezierPiece<f64>>; 3],
+    refined: &[[BezierPiece<f64>; 3]],
+    tolerance: f64,
+    d2_end: [f64; 3],
+) -> Result<(), nurbs::algebra::FitError> {
+    use nurbs::algebra::{fit_hermite_c1_clamped, FitError};
+
+    // Find the time range of the last Phase-1 output piece (axis 0 is
+    // representative; all axes have pieces over the same time domain).
+    let last_out_start = match fitted[0].last() {
+        Some(p) => p.u_start,
+        None => return Ok(()),
+    };
+
+    // Collect the refined composed pieces that were folded into the last output
+    // piece: those whose time range falls within [last_out_start, global_end].
+    let last_refined: Vec<[BezierPiece<f64>; 3]> = refined
+        .iter()
+        .filter(|ps| ps[0].u_start >= last_out_start - 1e-12)
+        .cloned()
+        .collect();
+
+    if last_refined.is_empty() {
+        return Ok(());
+    }
+
+    // The start accel pin for Phase 2 is the composed accel at last_out_start
+    // (read from the first last-range composed piece) so that the new last
+    // piece is C2 with the preceding Phase-1 piece on its left side as well.
+    let last_d2_start: [f64; 3] = std::array::from_fn(|axis| {
+        let piece = &last_refined[0][axis];
+        piece.differentiate().differentiate().evaluate(piece.u_start)
+    });
+
+    // Re-fit the last piece range with BOTH accel pins at degree-5. degree-5
+    // is required because the both-ends pin (start + end accel) imposes 6
+    // constraints that exactly determine a degree-5 polynomial; a single
+    // both-pinned piece is numerically well-behaved for the short time span
+    // covered by the last output piece.
+    let mut refined_last = last_refined;
+    let mut last_fitted: Option<[Vec<BezierPiece<f64>>; 3]> = None;
+
+    for depth in 0..=HERMITE_REFIT_MAX_SUBDIVISIONS {
+        match fit_hermite_c1_clamped::<3>(
+            &refined_last,
+            tolerance,
+            5,
+            Some(last_d2_start),
+            Some(d2_end),
+        ) {
+            Ok(f) => {
+                last_fitted = Some(f);
+                break;
+            }
+            Err(err @ FitError::ToleranceNotReached { .. }) => {
+                if depth == HERMITE_REFIT_MAX_SUBDIVISIONS {
+                    return Err(err);
+                }
+                refined_last = split_composed_midpoints(&refined_last)?;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    if let Some(new_last) = last_fitted {
+        for axis in 0..3 {
+            // Remove the Phase-1 last piece (degree-4, end-free).
+            fitted[axis].pop();
+            // Append the re-fitted last piece(s) (degree-5, end pinned).
+            fitted[axis].extend(new_last[axis].iter().cloned());
+        }
+    }
+
+    Ok(())
 }
 
 fn split_composed_midpoints(

@@ -661,9 +661,11 @@ fn hermite_construct_poly_start_clamped(
     }
 }
 
-/// Degree-`d` (>=5) Hermite piece with end 2nd-derivative pinned.
+/// Degree-`d` (>=4) Hermite piece with end 2nd-derivative pinned.
 /// c0, c1 fixed from start; c2 is the free minimax DOF (= `c2_val`);
 /// c_{d-2}, c_{d-1}, c_d solved from f_hi, f'_hi, f''_hi.
+/// For d=4 the 3×3 system covers coefficients 2..4, and c2_val shifts the
+/// solution family (no separate free DOF for the minimax caller).
 #[cfg(feature = "host")]
 #[allow(clippy::too_many_arguments, clippy::cast_possible_wrap)]
 fn hermite_construct_poly_end_clamped(
@@ -677,7 +679,7 @@ fn hermite_construct_poly_end_clamped(
     d2_hi: f64,
     c2_val: f64,
 ) -> crate::bezier::BezierPiece<f64> {
-    if d < 5 || h.abs() < 1e-300 {
+    if d < 4 || h.abs() < 1e-300 {
         let mut coeffs = vec![0.0f64; d + 1];
         coeffs[0] = f_lo;
         if d >= 1 {
