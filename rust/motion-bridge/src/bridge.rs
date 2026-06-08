@@ -760,6 +760,11 @@ impl PyMotionBridge {
             .unwrap_or_else(|p| p.into_inner())
             .endpoint(mcu, slot)
     }
+
+    pub(crate) fn kin_tag_for(&self, mcu: u32) -> Option<u8> {
+        let cfgs = self.mcu_axis_configs.lock().unwrap_or_else(|p| p.into_inner());
+        cfgs.iter().find(|c| c.mcu_id == mcu).map(|c| c.kinematics)
+    }
 }
 
 #[pymethods]
@@ -3063,6 +3068,63 @@ impl PyMotionBridge {
         })
     }
 
+    #[pyo3(signature = (mcu, motor_a_mm, motor_b_mm))]
+    fn motor_positions_to_toolhead(
+        &self,
+        mcu: u32,
+        motor_a_mm: f64,
+        motor_b_mm: f64,
+    ) -> PyResult<Vec<f64>> {
+        let tag = self.kin_tag_for(mcu).ok_or_else(|| {
+            PyRuntimeError::new_err("motor_positions_to_toolhead: mcu not configured")
+        })?;
+        let xyz = crate::kinematics::inverse(tag, [motor_a_mm, motor_b_mm, 0.0, 0.0]);
+        Ok(vec![xyz[0], xyz[1]])
+    }
+
+    #[pyo3(signature = (mcu, dx, dy, dz))]
+    fn toolhead_delta_to_motor_slots(
+        &self,
+        mcu: u32,
+        dx: f64,
+        dy: f64,
+        dz: f64,
+    ) -> PyResult<Vec<(u8, f64)>> {
+        let tag = self.kin_tag_for(mcu).ok_or_else(|| {
+            PyRuntimeError::new_err("toolhead_delta_to_motor_slots: mcu not configured")
+        })?;
+        let m = crate::kinematics::forward(tag, [dx, dy, dz]);
+        Ok((0u8..4)
+            .filter(|&s| m[s as usize].abs() > 1e-9)
+            .map(|s| (s, m[s as usize]))
+            .collect())
+    }
+
+    #[pyo3(signature = (mcu, x, y, z))]
+    fn forward_motor_positions(
+        &self,
+        mcu: u32,
+        x: f64,
+        y: f64,
+        z: f64,
+    ) -> PyResult<Vec<(u8, f64)>> {
+        let tag = self.kin_tag_for(mcu).ok_or_else(|| {
+            PyRuntimeError::new_err("forward_motor_positions: mcu not configured")
+        })?;
+        let m = crate::kinematics::forward(tag, [x, y, z]);
+        let cfgs = self.mcu_axis_configs.lock().unwrap_or_else(|p| p.into_inner());
+        let present: Vec<usize> = cfgs
+            .iter()
+            .find(|c| c.mcu_id == mcu)
+            .map(|c| c.axes.clone())
+            .unwrap_or_default();
+        Ok(present
+            .into_iter()
+            .filter(|&s| s < 4)
+            .map(|s| (s as u8, m[s]))
+            .collect())
+    }
+
 }
 
 impl PyMotionBridge {
@@ -3601,3 +3663,6 @@ mod retained_motor_curve_tests;
 
 #[cfg(test)]
 mod stepper_oid_map_tests;
+
+#[cfg(test)]
+mod kinematics_calls_tests;

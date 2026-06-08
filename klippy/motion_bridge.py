@@ -69,6 +69,9 @@ _STUB_MOTION_METHODS = frozenset(
         "register_stepper_slot",
         "eval_motor_position_at_clock",
         "eval_motor_position_now",
+        "motor_positions_to_toolhead",
+        "toolhead_delta_to_motor_slots",
+        "forward_motor_positions",
     }
 )
 
