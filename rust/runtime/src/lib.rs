@@ -33,7 +33,6 @@ pub use sizing::RT_STORAGE_SIZE;
 pub mod clock;
 #[cfg(feature = "motion-module-stepper")]
 pub mod dispatch_stepper;
-pub mod endstop;
 pub mod engine;
 pub mod error;
 pub mod fault_helpers;

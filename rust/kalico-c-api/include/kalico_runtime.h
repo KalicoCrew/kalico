@@ -15,33 +15,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define KALICO_TRIP_EVENT_V1_HEADER_LEN 15
-
-#define KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN 1
-
-#define KALICO_TRIP_EVENT_V1_FMT_VERSION 1
-
-#define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
-
-enum ArmPolicy {
-  TripImmediately = 0,
-  WaitForClear = 1,
-};
-typedef uint8_t ArmPolicy;
-
-enum SourceKind {
-  Physical = 0,
-  TmcDiag = 1,
-  /**
-   * Software-triggered source: no GPIO pin is polled. The MCU waits for
-   * an explicit `software_trip` call to freeze the segment.
-   */
-  Software = 2,
-};
-typedef uint8_t SourceKind;
-
-typedef struct SourceConfig SourceConfig;
-
 typedef struct KalicoRuntime {
   uint8_t _private[0];
 } KalicoRuntime;
@@ -64,28 +37,6 @@ typedef struct StepperBindingRust {
 
 
 
-
-
-
-
-int32_t kalico_endstop_arm(uint32_t arm_id,
-                           uint32_t arm_clock_lo,
-                           uint32_t arm_clock_hi,
-                           uint8_t source_count,
-                           const uint8_t *sources_ptr,
-                           uintptr_t sources_len,
-                           uint8_t stepper_count,
-                           const uint8_t *steppers_ptr,
-                           uintptr_t steppers_len,
-                           uint8_t *out_status);
-
-int32_t kalico_endstop_disarm(uint32_t arm_id, uint8_t *out_status);
-
-int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
-                                 uintptr_t out_buf_len,
-                                 uintptr_t *out_actual_len);
-
-int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
 
 int32_t kalico_runtime_clock_sync_request(struct KalicoRuntime *rt,
                                           uint32_t request_id,
@@ -172,11 +123,6 @@ int32_t kalico_runtime_write_piece(struct KalicoRuntime *rt,
                                    uint16_t start_slot,
                                    uint8_t index,
                                    const uint8_t *piece_ptr);
-
-int32_t kalico_software_trip(uint32_t arm_id,
-                             uint32_t clock_lo,
-                             uint32_t clock_hi,
-                             uint8_t *out_status);
 
 extern uint32_t runtime_cyccnt_read(void);
 

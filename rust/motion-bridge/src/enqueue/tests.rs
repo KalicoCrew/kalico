@@ -35,7 +35,7 @@ fn cartesian_x_axis_yields_pieces_with_projected_start_time() {
         },
     }];
 
-    let (msgs, _motor_curves) = enqueue_segment(
+    let msgs = enqueue_segment(
         &seg_x_move(),
         &cfg,
         100.0,
@@ -44,7 +44,6 @@ fn cartesian_x_axis_yields_pieces_with_projected_start_time() {
         crate::pump::MAX_LEAD_SECS,
         |_mcu, hs| (hs * 1_000.0) as u64,
         None,
-        false,
     );
 
     let x = msgs
@@ -96,7 +95,7 @@ fn corexy_x_slot_is_x_plus_y() {
         t_end: 1.0,
     };
 
-    let (msgs, _motor_curves) = enqueue_segment(
+    let msgs = enqueue_segment(
         &seg,
         &cfg,
         0.0,
@@ -105,7 +104,6 @@ fn corexy_x_slot_is_x_plus_y() {
         crate::pump::MAX_LEAD_SECS,
         |_mcu, hs| (hs * 1_000.0) as u64,
         None,
-        false,
     );
 
     let a = msgs
@@ -197,7 +195,7 @@ fn flatten_axis_max_piece_secs_splits_long_piece() {
         t_end: 0.2,
     };
 
-    let (msgs, _motor_curves) = enqueue_segment(
+    let msgs = enqueue_segment(
         &seg,
         &cfg,
         100.0,
@@ -206,7 +204,6 @@ fn flatten_axis_max_piece_secs_splits_long_piece() {
         crate::pump::MAX_LEAD_SECS,
         |_mcu, hs| (hs * 1_000.0) as u64,
         Some(0.025),
-        false,
     );
 
     let x = msgs

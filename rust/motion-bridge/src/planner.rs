@@ -38,7 +38,6 @@ pub enum PlannerMsg {
     UpdateShaper(ShaperConfig),
     Shutdown,
     KalicoStreamOpen { home_pos: [f64; 4] },
-    Homing { home_pos: [f64; 4] },
     Underrun { recovered_pos: [f64; 4] },
     ForceIdle { recovered_pos: [f64; 4] },
     ClockSyncRearm { new_bias: ClockBias },
@@ -202,12 +201,6 @@ impl PlannerHandle {
     pub fn kalico_stream_open(&self, home_pos: [f64; 4]) -> Result<(), PlannerError> {
         self.sender
             .send(PlannerMsg::KalicoStreamOpen { home_pos })
-            .map_err(|_| PlannerError::ChannelClosed)
-    }
-
-    pub fn homing(&self, home_pos: [f64; 4]) -> Result<(), PlannerError> {
-        self.sender
-            .send(PlannerMsg::Homing { home_pos })
             .map_err(|_| PlannerError::ChannelClosed)
     }
 
@@ -428,7 +421,6 @@ fn run_loop(
                     PlannerMsg::UpdateLimits(_) => "UpdateLimits",
                     PlannerMsg::UpdateShaper(_) => "UpdateShaper",
                     PlannerMsg::KalicoStreamOpen { .. } => "KalicoStreamOpen",
-                    PlannerMsg::Homing { .. } => "Homing",
                     PlannerMsg::Underrun { .. } => "Underrun",
                     PlannerMsg::ForceIdle { .. } => "ForceIdle",
                     PlannerMsg::ClockSyncRearm { .. } => "ClockSyncRearm",
@@ -631,7 +623,7 @@ fn run_loop(
                 thread_state.rebuild(&config);
             }
 
-            PlannerMsg::KalicoStreamOpen { home_pos } | PlannerMsg::Homing { home_pos } => {
+            PlannerMsg::KalicoStreamOpen { home_pos } => {
                 sync_instant = None;
                 state.reset(home_pos);
             }

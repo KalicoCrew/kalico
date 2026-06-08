@@ -2,8 +2,6 @@
 pub mod anchor;
 mod bridge;
 #[doc(hidden)]
-pub mod trip_dispatch;
-#[doc(hidden)]
 pub mod classify;
 #[doc(hidden)]
 pub mod config;
@@ -14,8 +12,6 @@ pub mod kinematics;
 pub mod drain;
 #[doc(hidden)]
 pub mod enqueue;
-#[doc(hidden)]
-pub mod homing;
 pub mod logging;
 pub mod mcu_log;
 #[doc(hidden)]

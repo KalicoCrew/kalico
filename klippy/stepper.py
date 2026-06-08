@@ -51,7 +51,6 @@ class MCU_stepper:
         # Step-on-both-edges is the only mode the Rust runtime emits.
         self._step_both_edge = True
         self._req_step_both_edge = False
-        self._mcu_position_offset = 0.0
         self._active_callbacks = []
         # Populated by setup_itersolve from the alloc_func's first bytes arg
         # (e.g. b"z", b"+x"); queried by is_active_axis.
@@ -124,11 +123,9 @@ class MCU_stepper:
         return self._rotation_dist, self._steps_per_rotation
 
     def set_rotation_distance(self, rotation_dist):
-        mcu_pos = self.get_mcu_position()
         self._rotation_dist = rotation_dist
         self._step_dist = rotation_dist / self._steps_per_rotation
         self.set_stepper_kinematics(self._stepper_kinematics)
-        self._set_mcu_position(mcu_pos)
 
     def get_dir_inverted(self):
         return self._invert_dir, self._orig_invert_dir
@@ -149,34 +146,6 @@ class MCU_stepper:
     def get_commanded_position(self):
         return 0.0
 
-    def get_mcu_position(self, cmd_pos=None):
-        if cmd_pos is not None:
-            mcu_pos_dist = cmd_pos + self._mcu_position_offset
-        else:
-            bridge = self._mcu._motion_bridge
-            motor_mm = bridge.eval_motor_position_now(
-                self._mcu._bridge_handle, self.get_oid()
-            )
-            mcu_pos_dist = motor_mm + self._mcu_position_offset
-        mcu_pos = mcu_pos_dist / self._step_dist
-        return int(mcu_pos + 0.5) if mcu_pos >= 0.0 else int(mcu_pos - 0.5)
-
-    def _set_mcu_position(self, mcu_pos):
-        mcu_pos_dist = mcu_pos * self._step_dist
-        self._mcu_position_offset = mcu_pos_dist - self.get_commanded_position()
-
-    def get_past_mcu_position(self, print_time):
-        bridge = self._mcu._motion_bridge
-        clock = self._mcu.print_time_to_clock(print_time)
-        motor_mm = bridge.eval_motor_position_at_clock(
-            self._mcu._bridge_handle, self.get_oid(), int(clock)
-        )
-        mcu_pos = (motor_mm + self._mcu_position_offset) / self._step_dist
-        return int(mcu_pos + 0.5) if mcu_pos >= 0.0 else int(mcu_pos - 0.5)
-
-    def mcu_to_commanded_position(self, mcu_pos):
-        return mcu_pos * self._step_dist - self._mcu_position_offset
-
     def dump_steps(self, count, start_clock, end_clock):
         return ([], 0)
 
@@ -187,9 +156,6 @@ class MCU_stepper:
         old_sk = self._stepper_kinematics
         self._stepper_kinematics = sk
         return old_sk
-
-    def note_homing_end(self):
-        return
 
     def get_trapq(self):
         return self._trapq

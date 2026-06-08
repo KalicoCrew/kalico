@@ -4,24 +4,10 @@
 
 #![allow(unsafe_code)]
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 
 use crate::fault_helpers::raise_tick_interval_exceeded;
 use crate::state::SharedState;
-
-// Set by the foreground (endstop disarm) before re-enabling TIM5 after a homing
-// stop; consumed by the ISR (the sole writer of `last_tick_now`) on its next
-// tick. Without this the gap from the stopped-TIM5 window would fault the
-// inter-arrival guard on restart.
-static TICK_BASELINE_RESET: AtomicBool = AtomicBool::new(false);
-
-/// FFI: request the ISR to treat its next tick as a fresh baseline (no gap
-/// check). Called from C `command_runtime_disarm_endstop` before
-/// `runtime_tick_enable()`.
-#[unsafe(no_mangle)]
-pub extern "C" fn kalico_runtime_request_tick_baseline_reset() {
-    TICK_BASELINE_RESET.store(true, Ordering::Release);
-}
 
 #[cfg(feature = "motion-module-stepper")]
 pub use crate::dispatch_stepper::{AXIS_A, AXIS_B, AXIS_E, AXIS_Z, DISPLACEMENT_THRESHOLD_MM};
@@ -102,12 +88,6 @@ pub fn isr_sample_tick(
     // Publish unconditionally — skipping on a fault tick freezes the
     // foreground clock and pegs the scheduler.
     crate::clock::publish_widened_now(shared, now);
-
-    // A homing disarm restarted TIM5 after a stopped window — drop the stale
-    // baseline so this tick's gap isn't measured against the pre-stop time.
-    if TICK_BASELINE_RESET.swap(false, Ordering::Acquire) {
-        isr.last_tick_now = None;
-    }
 
     let after_widen = unsafe { cyccnt_read() };
     update_max(

@@ -274,11 +274,11 @@ pub fn run_pump<S, F, C, A, O>(
     O: Fn(AxisKey, u32),
 {
     // `on_abandon(key, n)`: n queued pieces for `key` were dropped by Flush
-    // (a homing trip abandons the un-pushed tail). They were counted as drain
-    // `sent` at dispatch but never reach the MCU, so the caller must remove
-    // them or they become phantom `sent` that never retire — hanging the
-    // post-trip wait_drained. Pieces already pushed to the ring are NOT
-    // abandoned here; the MCU's discard_pending retires them.
+    // before being pushed to the ring. They were counted as drain `sent` at
+    // dispatch but never reach the MCU, so the caller must remove them or they
+    // become phantom `sent` that never retire — hanging wait_drained. Pieces
+    // already pushed to the ring are NOT abandoned here; the MCU's
+    // discard_pending retires them.
     let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
     // Per-axis junction tracking for clock-projection jitter measurement.
     let mut junction_ends: BTreeMap<AxisKey, (u64, f64)> = BTreeMap::new();
@@ -391,11 +391,11 @@ pub fn run_pump<S, F, C, A, O>(
     let mut holding_ahead = false;
 
     loop {
-        let homing_poll = holding_ahead
+        let short_lead = holding_ahead
             && queues
                 .values()
                 .any(|q| q.lead_secs < 0.1 && !q.pieces.is_empty());
-        let poll_ms = if homing_poll { 10 } else { 50 };
+        let poll_ms = if short_lead { 10 } else { 50 };
 
         let first = if holding_ahead {
             match rx.recv_timeout(Duration::from_millis(poll_ms)) {

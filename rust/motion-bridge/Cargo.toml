@@ -46,9 +46,5 @@ kalico-native-transport = { path = "../kalico-native-transport" }
 kalico-host-rt = { path = "../kalico-host-rt", features = ["test-harness"] }
 motion-bridge = { path = ".", features = ["test-support"] }
 
-[[test]]
-name = "relay_reactor_integration"
-required-features = []
-
 [lints]
 workspace = true

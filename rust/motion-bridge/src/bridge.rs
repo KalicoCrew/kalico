@@ -19,113 +19,8 @@ use trajectory::{AxisShaper, ShaperConfig};
 use crate::classify;
 use crate::config::{self, PlannerConfig, PlannerLimits, parse_required_shaper};
 use crate::dispatch::{McuAxisConfig, McuCaps, build_mcu_configs};
-use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
-
-#[derive(Default)]
-struct RetainedMotorCurve {
-    pieces: std::collections::HashMap<(u32, u8), Vec<RetainedMotorPiece>>,
-}
-
-struct RetainedMotorPiece {
-    curve: nurbs::ScalarNurbs<f64>,
-    t_abs_start: f64,
-    t_abs_end: f64,
-}
-
-impl RetainedMotorCurve {
-    fn push_piece(
-        &mut self,
-        mcu: u32,
-        slot: u8,
-        curve: nurbs::ScalarNurbs<f64>,
-        t_abs_start: f64,
-        t_abs_end: f64,
-    ) {
-        self.pieces
-            .entry((mcu, slot))
-            .or_default()
-            .push(RetainedMotorPiece { curve, t_abs_start, t_abs_end });
-    }
-
-    fn clear(&mut self) {
-        self.pieces.clear();
-    }
-
-    fn eval(&self, mcu: u32, slot: u8, t_abs: f64) -> Option<f64> {
-        let v = self.pieces.get(&(mcu, slot))?;
-        let piece = v
-            .iter()
-            .find(|p| t_abs >= p.t_abs_start - 1e-9 && t_abs <= p.t_abs_end + 1e-9)
-            .or_else(|| {
-                if t_abs < v.first()?.t_abs_start {
-                    v.first()
-                } else {
-                    v.last()
-                }
-            })?;
-        let u = t_abs.clamp(piece.t_abs_start, piece.t_abs_end);
-        Some(nurbs::eval::eval(&piece.curve, u))
-    }
-
-    fn endpoint(&self, mcu: u32, slot: u8) -> Option<f64> {
-        let p = self.pieces.get(&(mcu, slot))?.last()?;
-        Some(nurbs::eval::eval(&p.curve, p.t_abs_end))
-    }
-
-    fn truncate_at(&mut self, mcu: u32, t_abs_trip: f64) {
-        for ((m, _slot), v) in self.pieces.iter_mut() {
-            if *m != mcu {
-                continue;
-            }
-            v.retain(|p| p.t_abs_start <= t_abs_trip + 1e-9);
-            if let Some(last) = v.last_mut() {
-                if last.t_abs_end > t_abs_trip {
-                    last.t_abs_end = t_abs_trip;
-                }
-            }
-        }
-    }
-
-    /// Install a degenerate constant piece for `(mcu, slot)` evaluating to
-    /// `value_mm` for all `t`. Replaces any existing pieces for that slot.
-    ///
-    /// The constant curve is a degree-3 Bézier with all four control points
-    /// equal to `value_mm`, spanning a 1 µs window anchored at `t_now`. The
-    /// `eval` clamp means any query outside `[t_now, t_now+ε]` still returns
-    /// `value_mm`, so the choice of window size is irrelevant for correctness;
-    /// 1 µs is small enough to not confuse clock arithmetic.
-    fn set_constant(&mut self, mcu: u32, slot: u8, value_mm: f64, t_now: f64) {
-        use nurbs::bezier::{BezierPiece, bezier_pieces_to_nurbs};
-        let t_end = t_now + 1e-6;
-        let curve = bezier_pieces_to_nurbs(&[BezierPiece::from_bernstein(
-            &[value_mm, value_mm, value_mm, value_mm],
-            t_now,
-            t_end,
-        )]);
-        self.pieces.insert(
-            (mcu, slot),
-            vec![RetainedMotorPiece { curve, t_abs_start: t_now, t_abs_end: t_end }],
-        );
-    }
-
-}
-
-fn rebase_to_absolute_domain(
-    curve: &nurbs::ScalarNurbs<f64>,
-    t0_anchor: f64,
-) -> nurbs::ScalarNurbs<f64> {
-    let pieces: Vec<_> = nurbs::bezier::extract_bezier_pieces(curve)
-        .into_iter()
-        .map(|mut p| {
-            p.u_start += t0_anchor;
-            p.u_end += t0_anchor;
-            p
-        })
-        .collect();
-    nurbs::bezier::bezier_pieces_to_nurbs(&pieces)
-}
 
 struct McuConnection {
     label: String,
@@ -539,20 +434,10 @@ pub struct PyMotionBridge {
     planner_config: Mutex<PlannerConfig>,
     commanded_pos: Mutex<[f64; 3]>,
     mcu_axis_configs: Mutex<Vec<McuAxisConfig>>,
-    stepper_oid_map: Mutex<HashMap<(u32, u8), u8>>,
     dispatched_segments: Arc<AtomicU64>,
     fallback_clock_conversions: Arc<AtomicU64>,
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
-    homing: Arc<HomingState>,
-    retained_motor_curve: Arc<Mutex<RetainedMotorCurve>>,
     events_dir: Mutex<Option<std::path::PathBuf>>,
-
-    // ── Cross-MCU trip relay (Task 4) ────────────────────────────────────
-    /// Active trip-dispatch handles keyed by a monotonic id returned by
-    /// `trip_dispatch_prepare`. Removed by `trip_dispatch_cleanup`.
-    trip_dispatch_handles:
-        Mutex<HashMap<u64, crate::trip_dispatch::TripDispatchHandle>>,
-    trip_dispatch_next_id: AtomicU64,
     pump_tx: Mutex<Option<std::sync::mpsc::Sender<crate::pump::PumpMsg>>>,
     pump_thread: Mutex<Option<JoinHandle<()>>>,
     drain: std::sync::Arc<crate::drain::DrainSync>,
@@ -751,60 +636,6 @@ mod ring_depth_for_axis_tests {
     }
 }
 
-impl PyMotionBridge {
-    fn insert_stepper_slot(&self, mcu: u32, oid: u8, slot: u8) {
-        self.stepper_oid_map
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert((mcu, oid), slot);
-    }
-
-    fn resolve_slot(&self, mcu: u32, oid: u8) -> Option<u8> {
-        self.stepper_oid_map
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .get(&(mcu, oid))
-            .copied()
-    }
-
-    fn eval_motor_mm_at_t_abs(&self, mcu: u32, oid: u8, t_abs: f64) -> Option<f64> {
-        let slot = self.resolve_slot(mcu, oid)?;
-        self.retained_motor_curve
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .eval(mcu, slot, t_abs)
-    }
-
-    fn eval_motor_mm_now(&self, mcu: u32, oid: u8) -> Option<f64> {
-        let slot = self.resolve_slot(mcu, oid)?;
-        self.retained_motor_curve
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .endpoint(mcu, slot)
-    }
-
-    pub(crate) fn kin_tag_for(&self, mcu: u32) -> Option<u8> {
-        let cfgs = self.mcu_axis_configs.lock().unwrap_or_else(|p| p.into_inner());
-        cfgs.iter().find(|c| c.mcu_id == mcu).map(|c| c.kinematics)
-    }
-
-    pub(crate) fn ground_constants_inner(&self, x: f64, y: f64, z: f64, t_now: f64) {
-        let configs = self.mcu_axis_configs.lock().unwrap_or_else(|p| p.into_inner());
-        let mut retained = self.retained_motor_curve.lock().unwrap_or_else(|p| p.into_inner());
-
-        for cfg in configs.iter() {
-            let tag = cfg.kinematics;
-            let motor = crate::kinematics::forward(tag, [x, y, z]);
-            for &slot_usize in &cfg.axes {
-                assert!(slot_usize < 4, "ground_constants_inner: slot index {slot_usize} out of range");
-                let slot = slot_usize as u8;
-                let value_mm = motor[slot_usize];
-                retained.set_constant(cfg.mcu_id, slot, value_mm, t_now);
-            }
-        }
-    }
-}
-
 #[pymethods]
 impl PyMotionBridge {
     #[new]
@@ -820,15 +651,10 @@ impl PyMotionBridge {
             planner_config: Mutex::new(PlannerConfig::default()),
             commanded_pos: Mutex::new([0.0; 3]),
             mcu_axis_configs: Mutex::new(Vec::new()),
-            stepper_oid_map: Mutex::new(HashMap::new()),
             dispatched_segments: Arc::new(AtomicU64::new(0)),
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
-            homing: Arc::new(HomingState::new()),
-            retained_motor_curve: Arc::new(Mutex::new(RetainedMotorCurve::default())),
             events_dir: Mutex::new(None),
-            trip_dispatch_handles: Mutex::new(HashMap::new()),
-            trip_dispatch_next_id: AtomicU64::new(0),
             pump_tx: Mutex::new(None),
             pump_thread: Mutex::new(None),
             drain: std::sync::Arc::new(crate::drain::DrainSync::new()),
@@ -837,12 +663,6 @@ impl PyMotionBridge {
 
     fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
-    }
-
-    #[pyo3(signature = (mcu, oid, slot))]
-    fn register_stepper_slot(&self, mcu: u32, oid: u8, slot: u8) -> PyResult<()> {
-        self.insert_stepper_slot(mcu, oid, slot);
-        Ok(())
     }
 
     fn init_logging(&self, events_dir: String) -> PyResult<()> {
@@ -1919,23 +1739,8 @@ impl PyMotionBridge {
             RuntimeEvent::Heartbeat { .. } => {
                 return Ok(None);
             }
-            RuntimeEvent::EndstopTripped(e) => {
-                d.set_item("type", "endstop_tripped")?;
-                d.set_item("arm_id", e.arm_id)?;
-                d.set_item("trip_clock", e.trip_clock)?;
-                d.set_item("trip_source_idx", e.trip_source_idx)?;
-                d.set_item("fmt_version", e.fmt_version)?;
-                d.set_item("stepper_count", e.stepper_count)?;
-                let steppers: Vec<Py<PyDict>> = e
-                    .steppers
-                    .iter()
-                    .map(|s| {
-                        let sd = PyDict::new(py);
-                        sd.set_item("oid", s.oid).unwrap();
-                        sd.unbind()
-                    })
-                    .collect();
-                d.set_item("steppers", steppers)?;
+            RuntimeEvent::EndstopTripped(_) => {
+                return Ok(None);
             }
             RuntimeEvent::UnknownOutput { format, msg } => {
                 d.set_item("type", "output")?;
@@ -2506,8 +2311,6 @@ impl PyMotionBridge {
         let pump_tx_for_cb = pump_tx_init.clone();
         let drain_disp = self.drain.clone();
         let counter_for_cb = Arc::clone(&counter);
-        let homing_for_cb = Arc::clone(&self.homing);
-        let retained_motor_curve_for_cb = Arc::clone(&self.retained_motor_curve);
 
         let dispatch: Arc<
             dyn Fn(&trajectory::ShapedSegment) -> Result<(), DispatchError> + Send + Sync,
@@ -2547,14 +2350,9 @@ impl PyMotionBridge {
                         .unwrap_or(0)
                 };
 
-                let homing_state = homing_for_cb.state();
-                let (lead_secs, max_piece_secs) = crate::homing::homing_enqueue_params(
-                    homing_state == crate::homing::HomingSegmentState::Active,
-                );
+                let (lead_secs, max_piece_secs) = (0.0_f64, None::<f64>);
 
-                let retain_motor_curves =
-                    homing_state == crate::homing::HomingSegmentState::Active;
-                let (msgs, motor_curves) = crate::enqueue::enqueue_segment(
+                let msgs = crate::enqueue::enqueue_segment(
                     seg,
                     &mcu_configs_for_cb,
                     t0,
@@ -2563,34 +2361,7 @@ impl PyMotionBridge {
                     lead_secs,
                     project,
                     max_piece_secs,
-                    retain_motor_curves,
                 );
-
-                let axis_keys: Vec<crate::pump::AxisKey> =
-                    msgs.iter().map(|m| m.key).collect();
-                if !axis_keys.is_empty()
-                    && homing_state == crate::homing::HomingSegmentState::Active
-                {
-                    homing_for_cb.record_axis_keys(&axis_keys);
-                    let t_abs_start = t0 + seg.t_start;
-                    let t_abs_end = t0 + seg.t_end;
-                    let mut motor_guard = retained_motor_curve_for_cb
-                        .lock()
-                        .unwrap_or_else(|p| p.into_inner());
-                    if fresh {
-                        motor_guard.clear();
-                    }
-                    for (key, rel_curve) in &motor_curves {
-                        let abs_curve = rebase_to_absolute_domain(rel_curve, t0);
-                        motor_guard.push_piece(
-                            key.mcu_id,
-                            key.axis,
-                            abs_curve,
-                            t_abs_start,
-                            t_abs_end,
-                        );
-                    }
-                }
 
                 for m in msgs {
                     drain_disp.add_sent(m.key.mcu_id, m.key.axis, m.pieces.len() as u32);
@@ -2648,19 +2419,11 @@ impl PyMotionBridge {
         })
     }
 
-    #[pyo3(signature = (newpos, speed, arm_ids))]
-    fn submit_homing_move(&self, newpos: Vec<f64>, speed: f64, arm_ids: Vec<u32>) -> PyResult<()> {
-        self.submit_homing_move_inner(&newpos, speed, &arm_ids)
-    }
-
     fn wait_moves(&self, py: Python<'_>) -> PyResult<()> {
         let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
         })?;
-        py.allow_threads(|| planner.flush()).map_err(planner_err)?;
-        self.homing.refresh_after_wait();
-        self.flush_homing_pieces();
-        Ok(())
+        py.allow_threads(|| planner.flush()).map_err(planner_err)
     }
 
     fn drain_motion(&self, py: Python<'_>) -> PyResult<()> {
@@ -2670,10 +2433,7 @@ impl PyMotionBridge {
         py.allow_threads(|| planner.flush()).map_err(planner_err)?;
         let drain = self.drain.clone();
         py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT))
-            .map_err(PyRuntimeError::new_err)?;
-        self.homing.refresh_after_wait();
-        self.flush_homing_pieces();
-        Ok(())
+            .map_err(PyRuntimeError::new_err)
     }
 
     /// Dispatch pending planner work and report whether the MCU has retired
@@ -2681,8 +2441,7 @@ impl PyMotionBridge {
     /// reactor.pause() yields so the serial link keeps flowing while motion
     /// drains. A blocking wait_drained on the reactor thread parks the only
     /// thread that services the link, so the MCU's TX backs up and its
-    /// foreground stalls — which during homing leaves a moving axis with its
-    /// endstop disarmed (see wait_moves_and_mcu in motion_toolhead.py).
+    /// foreground stalls.
     fn motion_drain_poll(&self, py: Python<'_>) -> PyResult<bool> {
         let planner = self.planner.get().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
@@ -2692,256 +2451,7 @@ impl PyMotionBridge {
     }
 
     /// Post-drain bookkeeping, run once after motion_drain_poll reports drained.
-    fn motion_drain_finalize(&self) {
-        self.homing.refresh_after_wait();
-        self.flush_homing_pieces();
-    }
-
-    fn take_trip_event(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
-        let Some(evt) = self.homing.take_trip_event() else {
-            return Ok(None);
-        };
-
-        let mcu_ids = self.homing.peek_mcu_ids();
-        let trip_clock = evt.trip_clock;
-        {
-            let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
-            let mut motor_guard = self
-                .retained_motor_curve
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            for mcu in &mcu_ids {
-                let handle = mcu_handle_from_raw(*mcu);
-                if let Some(t_abs_trip) = router.clock_to_host_secs(handle, trip_clock) {
-                    motor_guard.truncate_at(*mcu, t_abs_trip);
-                }
-                // TODO(Task4/6 wiring): if clock_to_host_secs returns None (clock not yet
-                // synced), truncation is skipped for this MCU. The motor curve retains the
-                // full-move endpoint rather than the trip point.
-            }
-        }
-
-        // Drop the still-queued homing pieces so the pump never pushes them
-        // (un-pushed pieces are never counted as drain `sent`). The pieces
-        // already in the MCU ring are reconciled by the MCU's discard_pending
-        // at disarm, which advances `retired` to `head == sent`; the pre-home
-        // set_position's baseline then makes the post-home set_position's
-        // wait_drained balance exactly. Resetting the drain *here* would race
-        // that discard and snapshot the baseline too low — so we don't.
-        self.flush_homing_pieces();
-        Ok(Some(trip_event_to_pydict(py, evt)?))
-    }
-
-    #[pyo3(signature = (mcu, queue, arm_id, arm_clock, sources, stepper_oids, timeout_s=2.0))]
-    #[allow(clippy::too_many_arguments)]
-    fn endstop_arm(
-        &self,
-        mcu: u32,
-        queue: u32,
-        arm_id: u32,
-        arm_clock: u64,
-        sources: Vec<(u8, u16, bool, u8, u8)>,
-        stepper_oids: Vec<u8>,
-        timeout_s: f64,
-    ) -> PyResult<u8> {
-        use kalico_host_rt::endstop;
-        let _ = queue;
-
-        let mut source_specs = Vec::with_capacity(sources.len());
-        for (kind_byte, gpio, active_high, policy_byte, sample_n) in sources {
-            let kind = match kind_byte {
-                0 => endstop::SourceKind::Physical,
-                1 => endstop::SourceKind::TmcDiag,
-                2 => endstop::SourceKind::Software,
-                _ => return Err(PyRuntimeError::new_err("invalid source kind")),
-            };
-            let policy = match policy_byte {
-                0 => endstop::ArmPolicy::TripImmediately,
-                1 => endstop::ArmPolicy::WaitForClear,
-                _ => return Err(PyRuntimeError::new_err("invalid arm policy")),
-            };
-            source_specs.push(endstop::SourceSpec {
-                kind,
-                gpio,
-                active_high,
-                policy,
-                sample_n,
-            });
-        }
-
-        let io = self.host_io_for_mcu("endstop_arm", mcu)?;
-        let timeout = std::time::Duration::from_secs_f64(timeout_s);
-        let status = endstop::arm_endstop_with_timeout(
-            io.as_ref(),
-            arm_id,
-            arm_clock,
-            &source_specs,
-            &stepper_oids,
-            timeout,
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("endstop_arm: {e}")))?;
-        tracing::info!(
-            subsystem = "homing",
-            event = "endstop_arm_result",
-            mcu,
-            arm_id,
-            arm_clock,
-            status = status as u8,
-            "endstop_arm result"
-        );
-        Ok(status as u8)
-    }
-
-    #[pyo3(signature = (mcu, queue, arm_id, timeout_s=2.0))]
-    fn endstop_disarm(&self, mcu: u32, queue: u32, arm_id: u32, timeout_s: f64) -> PyResult<u8> {
-        use kalico_host_rt::endstop;
-        let _ = queue;
-        let io = self.host_io_for_mcu("endstop_disarm", mcu)?;
-        let timeout = std::time::Duration::from_secs_f64(timeout_s);
-        let status = endstop::disarm_endstop_with_timeout(io.as_ref(), arm_id, timeout)
-            .map_err(|e| PyRuntimeError::new_err(format!("endstop_disarm: {e}")))?;
-        Ok(status as u8)
-    }
-
-    #[pyo3(signature = (newpos, speed, arm_ids))]
-    fn submit_homing_move_async(
-        &self,
-        newpos: Vec<f64>,
-        speed: f64,
-        arm_ids: Vec<u32>,
-    ) -> PyResult<()> {
-        self.submit_homing_move_inner(&newpos, speed, &arm_ids)
-    }
-
-    fn is_homing_segment_retired(&self) -> bool {
-        matches!(
-            self.homing.state(),
-            crate::homing::HomingSegmentState::Completed
-                | crate::homing::HomingSegmentState::Tripped
-        )
-    }
-
-    fn get_homing_segment_reason(&self) -> u8 {
-        match self.homing.state() {
-            crate::homing::HomingSegmentState::Completed => 1,
-            crate::homing::HomingSegmentState::Tripped => 2,
-            _ => 0,
-        }
-    }
-
-    #[pyo3(signature = (mcu, arm_id, timeout_s=2.0))]
-    fn software_trip(&self, mcu: u32, arm_id: u32, timeout_s: f64) -> PyResult<u8> {
-        let io = self.host_io_for_mcu("software_trip", mcu)?;
-        let timeout = std::time::Duration::from_secs_f64(timeout_s);
-        let msg = format!("runtime_software_trip arm_id={arm_id}");
-        let params = {
-            use kalico_host_rt::transport::Transport;
-            io.call(&msg, "kalico_software_trip_response", timeout)
-                .map_err(|e| PyRuntimeError::new_err(format!("software_trip: {e}")))?
-        };
-        let status = params.try_get_u32("status").unwrap_or(1) as u8;
-        Ok(status)
-    }
-
-    /// Prepare the cross-MCU trip relay for one homing move.
-    ///
-    /// `sources`: list of `(kind, mcu, id)` where kind `0` = `BridgeGpio`
-    /// (`id` is `arm_id`), kind `1` = `Trsync` (`id` is `trsync_oid`).
-    /// `sinks`: list of `(mcu, trsync_oid)`.
-    /// `participants`: list of `(mcu, trsync_oid)` for liveness extension.
-    /// `expire_timeout_s`: per-MCU expire window in host seconds.
-    ///
-    /// Returns an opaque handle id for [`trip_dispatch_cleanup`].
-    fn trip_dispatch_prepare(
-        &self,
-        sources: Vec<(u8, u32, u32)>,
-        sinks: Vec<(u32, u8)>,
-        participants: Vec<(u32, u8)>,
-        expire_timeout_s: f64,
-    ) -> PyResult<u64> {
-        use crate::trip_dispatch::{self, ParticipantSpec, SinkSpec, SourceSpec};
-
-        let mut src_specs = Vec::new();
-        for (kind, mcu, id) in sources {
-            let io = self.host_io_for_mcu("trip_dispatch_prepare", mcu)?;
-            let spec = match kind {
-                0 => SourceSpec::BridgeGpio { mcu, arm_id: id },
-                1 => SourceSpec::Trsync { mcu, trsync_oid: id as u8 },
-                other => {
-                    return Err(PyRuntimeError::new_err(format!(
-                        "trip_dispatch_prepare: bad source kind {other}"
-                    )));
-                }
-            };
-            src_specs.push((spec, io));
-        }
-
-        let sink_specs: Vec<SinkSpec> = sinks
-            .iter()
-            .map(|(mcu, oid)| SinkSpec { mcu: *mcu, trsync_oid: *oid })
-            .collect();
-        let mut sink_ios = Vec::new();
-        for (mcu, _) in &sinks {
-            let io = self.host_io_for_mcu("trip_dispatch_prepare", *mcu)?;
-            sink_ios.push((*mcu, io));
-        }
-
-        let mut participant_specs = Vec::new();
-        for (mcu, oid) in participants {
-            let io = self.host_io_for_mcu("trip_dispatch_prepare", mcu)?;
-            participant_specs.push((ParticipantSpec { mcu, trsync_oid: oid }, io));
-        }
-
-        if !participant_specs.is_empty()
-            && (expire_timeout_s <= 0.0 || !expire_timeout_s.is_finite())
-        {
-            return Err(PyRuntimeError::new_err(format!(
-                "trip_dispatch_prepare: expire_timeout_s must be positive and finite \
-                 when participants is non-empty, got {expire_timeout_s}"
-            )));
-        }
-
-        let router = Arc::clone(&self.router);
-        let clock_of = move |mcu_id: u32| {
-            router
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .ack_clock_and_freq(mcu_handle_from_raw(mcu_id))
-        };
-
-        let handle = trip_dispatch::prepare(
-            src_specs,
-            sink_specs,
-            sink_ios,
-            participant_specs,
-            expire_timeout_s,
-            clock_of,
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("trip_dispatch_prepare: {e}")))?;
-
-        let id = self.trip_dispatch_next_id.fetch_add(1, Ordering::AcqRel);
-        self.trip_dispatch_handles
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert(id, handle);
-        Ok(id)
-    }
-
-    /// Tear down the cross-MCU trip relay (unregister all interceptors).
-    ///
-    /// Idempotent: calling with an already-cleaned-up or unknown `handle_id`
-    /// is a no-op.
-    fn trip_dispatch_cleanup(&self, handle_id: u64) -> PyResult<()> {
-        if let Some(handle) = self
-            .trip_dispatch_handles
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .remove(&handle_id)
-        {
-            crate::trip_dispatch::cleanup(handle);
-        }
-        Ok(())
-    }
+    fn motion_drain_finalize(&self) {}
 
     fn submit_dwell(&self, duration_s: f64) -> PyResult<()> {
         let planner = self.planner.get().ok_or_else(|| {
@@ -3018,14 +2528,6 @@ impl PyMotionBridge {
             }
         }
 
-        {
-            let mut retained = self.retained_motor_curve
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            retained.clear();
-        }
-        self.ground_constants_inner(x, y, z, 0.0);
-
         Ok(())
     }
 
@@ -3081,95 +2583,6 @@ impl PyMotionBridge {
         self.fallback_clock_conversions.load(Ordering::Relaxed)
     }
 
-    #[pyo3(signature = (mcu, oid, trip_clock))]
-    fn eval_motor_position_at_clock(&self, mcu: u32, oid: u8, trip_clock: u64) -> PyResult<f64> {
-        let t_abs = {
-            let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
-            router
-                .clock_to_host_secs(mcu_handle_from_raw(mcu), trip_clock)
-                .ok_or_else(|| {
-                    PyRuntimeError::new_err(format!(
-                        "eval_motor_position_at_clock: no clock estimate for mcu {mcu} \
-                         (set_clock_est not called yet or MCU released)"
-                    ))
-                })?
-        };
-        self.eval_motor_mm_at_t_abs(mcu, oid, t_abs).ok_or_else(|| {
-            PyRuntimeError::new_err(
-                "eval_motor_position_at_clock: no retained curve for (mcu,oid)",
-            )
-        })
-    }
-
-    #[pyo3(signature = (mcu, oid))]
-    fn eval_motor_position_now(&self, mcu: u32, oid: u8) -> PyResult<f64> {
-        self.eval_motor_mm_now(mcu, oid).ok_or_else(|| {
-            PyRuntimeError::new_err("eval_motor_position_now: no retained curve for (mcu,oid)")
-        })
-    }
-
-    #[pyo3(signature = (mcu, motor_a_mm, motor_b_mm))]
-    fn motor_positions_to_toolhead(
-        &self,
-        mcu: u32,
-        motor_a_mm: f64,
-        motor_b_mm: f64,
-    ) -> PyResult<Vec<f64>> {
-        let tag = self.kin_tag_for(mcu).ok_or_else(|| {
-            PyRuntimeError::new_err("motor_positions_to_toolhead: mcu not configured")
-        })?;
-        let xyz = crate::kinematics::inverse(tag, [motor_a_mm, motor_b_mm, 0.0, 0.0]);
-        Ok(vec![xyz[0], xyz[1]])
-    }
-
-    #[pyo3(signature = (mcu, dx, dy, dz))]
-    fn toolhead_delta_to_motor_slots(
-        &self,
-        mcu: u32,
-        dx: f64,
-        dy: f64,
-        dz: f64,
-    ) -> PyResult<Vec<(u8, f64)>> {
-        let tag = self.kin_tag_for(mcu).ok_or_else(|| {
-            PyRuntimeError::new_err("toolhead_delta_to_motor_slots: mcu not configured")
-        })?;
-        let m = crate::kinematics::forward(tag, [dx, dy, dz]);
-        Ok((0u8..4)
-            .filter(|&s| m[s as usize].abs() > 1e-9)
-            .map(|s| (s, m[s as usize]))
-            .collect())
-    }
-
-    #[pyo3(signature = (mcu, x, y, z))]
-    fn forward_motor_positions(
-        &self,
-        mcu: u32,
-        x: f64,
-        y: f64,
-        z: f64,
-    ) -> PyResult<Vec<(u8, f64)>> {
-        let tag = self.kin_tag_for(mcu).ok_or_else(|| {
-            PyRuntimeError::new_err("forward_motor_positions: mcu not configured")
-        })?;
-        let m = crate::kinematics::forward(tag, [x, y, z]);
-        let cfgs = self.mcu_axis_configs.lock().unwrap_or_else(|p| p.into_inner());
-        let present: Vec<usize> = cfgs
-            .iter()
-            .find(|c| c.mcu_id == mcu)
-            .map(|c| c.axes.clone())
-            .unwrap_or_default();
-        Ok(present
-            .into_iter()
-            .filter(|&s| s < 4)
-            .map(|s| (s as u8, m[s]))
-            .collect())
-    }
-
-    fn ground_origin(&self) -> PyResult<()> {
-        self.ground_constants_inner(0.0, 0.0, 0.0, 0.0);
-        Ok(())
-    }
-
 }
 
 impl PyMotionBridge {
@@ -3185,88 +2598,10 @@ impl PyMotionBridge {
         })
     }
 
-    fn flush_homing_pieces(&self) {
-        let keys = self.homing.take_axis_keys();
-        if keys.is_empty() {
-            return;
-        }
-        let guard = self.pump_tx.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some(tx) = guard.as_ref() {
-            let _ = tx.send(crate::pump::PumpMsg::Flush(keys));
-        }
-    }
-
-    fn submit_homing_move_inner(
-        &self,
-        newpos: &[f64],
-        speed: f64,
-        arm_ids: &[u32],
-    ) -> PyResult<()> {
-        if newpos.len() < 3 {
-            return Err(PyRuntimeError::new_err(
-                "submit_homing_move requires newpos with at least 3 axes",
-            ));
-        }
-        let arm_id = arm_ids.first().copied().ok_or_else(|| {
-            PyRuntimeError::new_err("submit_homing_move requires at least one arm id")
-        })?;
-        self.homing.begin(arm_id);
-
-        let pos = *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
-        log::info!(
-            "[bridge-trace] submit_homing_move arm_id={} pos=[{:.3},{:.3},{:.3}] newpos=[{:.3},{:.3},{:.3}] speed={:.3}",
-            arm_id,
-            pos[0],
-            pos[1],
-            pos[2],
-            newpos[0],
-            newpos[1],
-            newpos[2],
-            speed,
-        );
-        let classified = classify::classify_and_build(
-            pos,
-            newpos[0] - pos[0],
-            newpos[1] - pos[1],
-            newpos[2] - pos[2],
-            0.0,
-            speed,
-        )
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-
-        let planner = self.planner.get().ok_or_else(|| {
-            PyRuntimeError::new_err("planner not initialized — call init_planner first")
-        })?;
-        if let Err(e) = planner.submit_move(classified) {
-            self.homing.reset_to_idle();
-            return Err(planner_err(e));
-        }
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod build_configure_axes_body_tests;
-
-fn trip_event_to_pydict(py: Python<'_>, evt: runtime::endstop::TripEvent) -> PyResult<Py<PyDict>> {
-    let d = PyDict::new(py);
-    d.set_item("arm_id", evt.arm_id)?;
-    d.set_item("trip_clock", evt.trip_clock)?;
-    d.set_item("trip_source_idx", evt.trip_source_idx)?;
-    d.set_item("stepper_count", evt.stepper_count)?;
-    let steppers: Vec<Py<PyDict>> = evt
-        .steppers
-        .iter()
-        .take(usize::from(evt.stepper_count))
-        .map(|s| {
-            let sd = PyDict::new(py);
-            sd.set_item("oid", s.oid).unwrap();
-            sd.unbind()
-        })
-        .collect();
-    d.set_item("steppers", steppers)?;
-    Ok(d.unbind())
-}
 
 #[cfg(test)]
 mod require_events_dir_tests {
@@ -3670,49 +3005,4 @@ mod ethercat_endpoint_tests {
 }
 
 #[cfg(test)]
-impl PyMotionBridge {
-    pub(crate) fn new_for_test() -> Self {
-        let clock: Arc<dyn kalico_host_rt::clock::Clock + Send + Sync> = Arc::new(RealClock);
-        Self {
-            router: Arc::new(Mutex::new(PassthroughRouter::with_clock(clock))),
-            parser: Arc::new(Mutex::new(None)),
-            mcus: Arc::new(Mutex::new(HashMap::new())),
-            events: Arc::new(Mutex::new(VecDeque::new())),
-            handlers: Mutex::new(HashMap::new()),
-            planner: OnceLock::new(),
-            planner_config: Mutex::new(PlannerConfig::default()),
-            commanded_pos: Mutex::new([0.0; 3]),
-            mcu_axis_configs: Mutex::new(Vec::new()),
-            stepper_oid_map: Mutex::new(HashMap::new()),
-            dispatched_segments: Arc::new(AtomicU64::new(0)),
-            fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
-            clock_freqs: Arc::new(Mutex::new(HashMap::new())),
-            homing: Arc::new(HomingState::new()),
-            retained_motor_curve: Arc::new(Mutex::new(RetainedMotorCurve::default())),
-            events_dir: Mutex::new(None),
-            trip_dispatch_handles: Mutex::new(HashMap::new()),
-            trip_dispatch_next_id: AtomicU64::new(0),
-            pump_tx: Mutex::new(None),
-            pump_thread: Mutex::new(None),
-            drain: std::sync::Arc::new(crate::drain::DrainSync::new()),
-        }
-    }
-}
-
-#[cfg(test)]
-mod eval_motor_position_tests;
-
-#[cfg(test)]
-mod retained_motor_curve_tests;
-
-#[cfg(test)]
-mod set_position_grounding_tests;
-
-#[cfg(test)]
-mod stepper_oid_map_tests;
-
-#[cfg(test)]
 mod kinematics_calls_tests;
-
-#[cfg(test)]
-mod ground_origin_tests;

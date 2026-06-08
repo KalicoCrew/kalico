@@ -290,41 +290,6 @@ runtime_status_drain(void)
 }
 DECL_TASK(runtime_status_drain);
 
-DECL_CTR("_DECL_OUTPUT "
-         "kalico_endstop_tripped arm_id=%u "
-         "trip_clock_lo=%u trip_clock_hi=%u "
-         "trip_source_idx=%c fmt_version=%c "
-         "stepper_count=%c stepper_data=%*s");
-
-void
-runtime_endstop_drain(void)
-{
-    if (!runtime_handle) return;
-    uint8_t buf[64];
-    size_t actual = 0;
-    int32_t r = kalico_endstop_poll_trip(buf, sizeof(buf), &actual);
-    if (r != 1 || actual < 15) return;
-    uint32_t arm_id     = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8)
-                        | ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
-    uint32_t clock_lo   = (uint32_t)buf[4] | ((uint32_t)buf[5] << 8)
-                        | ((uint32_t)buf[6] << 16) | ((uint32_t)buf[7] << 24);
-    uint32_t clock_hi   = (uint32_t)buf[8] | ((uint32_t)buf[9] << 8)
-                        | ((uint32_t)buf[10] << 16) | ((uint32_t)buf[11] << 24);
-    uint8_t source_idx  = buf[12];
-    uint8_t fmt_version = buf[13];
-    uint8_t stepper_n   = buf[14];
-    uint32_t blob_len   = (uint32_t)stepper_n * 1;
-    if (15 + blob_len > actual) return;
-    output("kalico_endstop_tripped arm_id=%u "
-           "trip_clock_lo=%u trip_clock_hi=%u "
-           "trip_source_idx=%c fmt_version=%c "
-           "stepper_count=%c stepper_data=%*s",
-           arm_id, clock_lo, clock_hi,
-           source_idx, fmt_version,
-           stepper_n, blob_len, &buf[15]);
-}
-DECL_TASK(runtime_endstop_drain);
-
 extern void runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps);
 
 // Step-output timer wiring (TIM3 on H7, TIM2 on F4). Step-output ISR runs at
