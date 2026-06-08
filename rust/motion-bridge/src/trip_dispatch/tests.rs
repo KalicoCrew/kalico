@@ -77,10 +77,8 @@ fn trsync_closure_ignores_nonzero_can_trigger() {
             if params.get_u32("arm_id") != want {
                 return;
             }
-        } else {
-            if params.get_u32("can_trigger") != 0 {
-                return;
-            }
+        } else if params.get_u32("can_trigger") != 0 {
+            return;
         }
         fan_clone.on_trip(|mcu, cmd| {
             sent_clone.lock().unwrap().push((mcu, cmd.to_string()));

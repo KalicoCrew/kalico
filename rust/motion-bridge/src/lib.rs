@@ -9,6 +9,8 @@ pub mod classify;
 pub mod config;
 #[doc(hidden)]
 pub mod dispatch;
+#[doc(hidden)]
+pub mod kinematics;
 pub mod drain;
 #[doc(hidden)]
 pub mod enqueue;
