@@ -10,7 +10,6 @@ renode --port 3335 --disable-gui \
   -e 'logLevel 0 usart2' -e 'start' &
 RENODE_PID=$!
 
-# Wait for both UART ports
 echo "Waiting for Renode UARTs..."
 until nc -z localhost 3334 2>/dev/null; do sleep 0.5; done
 until nc -z localhost 3336 2>/dev/null; do sleep 0.5; done
@@ -90,7 +89,6 @@ python3 klippy/klippy.py /tmp/homing_test.cfg \
   -a /tmp/klippy_api &
 KLIPPY_PID=$!
 
-# Wait for klippy to connect to MCU
 echo "Waiting for klippy to reach ready state..."
 for i in $(seq 1 120); do
   if grep -q 'Printer is ready\|Welcome' /tmp/logs/klippy.log 2>/dev/null; then

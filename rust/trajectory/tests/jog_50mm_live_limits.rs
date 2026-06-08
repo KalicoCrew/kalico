@@ -1,15 +1,3 @@
-//! Offline reproduction of the live "jog X 50mm @ 100mm/s" scenario observed
-//! on the user's Voron 2.4 with `max_velocity=1000`, `max_accel=70000`,
-//! `square_corner_velocity=5` (default), shaper smooth_mzv at 186Hz (X) / 122Hz
-//! (Y). The host trace showed `t_appended` advancing by ~1.45s per such move —
-//! ~2.9x the cruise-only nominal of 0.5s, with effective average velocity of
-//! ~34 mm/s instead of the commanded 100 mm/s.
-//!
-//! This test runs shape_batch with the exact same inputs the bridge sends so
-//! we can see whether plan_velocity itself produces the same expansion (bug is
-//! in the trajectory crate) or it's a streaming-state plumbing issue (bug is
-//! in motion-bridge).
-
 use geometry::segment::EMode;
 use nurbs::VectorNurbs;
 use temporal::multi::{GridStrategy, SegmentInput};
@@ -32,9 +20,6 @@ fn x_50mm_collinear_cubic() -> VectorNurbs<f64, 3> {
 }
 
 fn live_limits() -> temporal::Limits {
-    // Mirrors bridge to_temporal_limits for the bench config:
-    // v_max=[1000,1000,5] a_max=[70000,70000,100] j_max=[140000,140000,200]
-    // a_centripetal_max = max_accel = 70000 mm/s² (Klipper-parity mapping).
     temporal::Limits::new(
         [1000.0, 1000.0, 5.0],
         [70000.0, 70000.0, 100.0],
@@ -101,7 +86,6 @@ fn jog_50mm_at_100mms_with_live_limits() {
     );
     eprintln!("[probe] temporal_status={:?}", result.temporal_status);
     // No assertion — pure probe. CARGO_LOG=1 cargo test prints duration.
-    // Sane upper bound: 0.55s. Live bench saw 1.45s.
     assert!(
         duration < 5.0,
         "trajectory exploded to {duration}s — probe needs adjustment"
@@ -110,9 +94,6 @@ fn jog_50mm_at_100mms_with_live_limits() {
 
 #[test]
 fn jog_50mm_with_higher_scv() {
-    // Same as above but with square_corner_velocity=70 (typical Voron setup).
-    // a_centripetal_max = max_accel = 70000 mm/s² regardless of scv; scv
-    // enters only through junction_deviation_mm on the chord tolerance.
     let curve = x_50mm_collinear_cubic();
     let limits = temporal::Limits::new(
         [1000.0, 1000.0, 5.0],
@@ -246,16 +227,11 @@ fn sweep_feedrate() {
 
 #[test]
 fn jog_50mm_with_z_jmax_uncapped() {
-    // Same live limits but j_max[Z] = j_max[X] = 140000 to verify the
-    // path-jerk min() bug hypothesis. Per temporal/src/topp/constraints.rs:258
-    // the SOCP uses `min(j_max[X], j_max[Y], j_max[Z])` as the path-frame
-    // jerk bound, and j_max[Z]=200 (from max_z_accel=100*2) clamps even
-    // pure-X moves. If hypothesis holds, duration drops from ~1.45s to ~0.55s.
     let curve = x_50mm_collinear_cubic();
     let limits = temporal::Limits::new(
         [1000.0, 1000.0, 5.0],
-        [70000.0, 70000.0, 1000.0],   // a_max[Z]=1000
-        [140000.0, 140000.0, 2000.0], // j_max[Z]=2000 (10x current)
+        [70000.0, 70000.0, 1000.0],
+        [140000.0, 140000.0, 2000.0],
         70000.0,
     );
 
@@ -326,8 +302,6 @@ fn sweep_distance() {
 
 #[test]
 fn jog_50mm_low_accel_baseline() {
-    // Same geometry but a_max=3000 (modest), j_max=6000, scv=5 — the
-    // sim-config baseline. Should produce a ~0.5s trajectory.
     let curve = x_50mm_collinear_cubic();
     let limits = temporal::Limits::new(
         [300.0, 300.0, 15.0],

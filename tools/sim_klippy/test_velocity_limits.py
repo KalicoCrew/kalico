@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""Velocity-limit gcode commands propagate through MotionToolhead to the bridge.
-
-After the refactor, the bridge sees:
-  - M204 S2000 → bridge.update_limits(_, 2000)
-  - SET_VELOCITY_LIMIT VELOCITY=200 ACCEL=4000 → bridge.update_limits(200, 4000)
-  - SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=12 → toolhead.square_corner_velocity = 12
-  - RESET_VELOCITY_LIMIT → bridge.update_limits(orig_max_velocity, orig_max_accel)
-
-Verifies via api-server objects/query that the toolhead's status reflects each change.
-"""
-
 import json
 import os
 import pathlib
@@ -187,11 +176,6 @@ def main():
         assert st["max_velocity"] == 300.0, st
         assert st["max_accel"] == 3000.0, st
 
-        # No traceback assertion: the bridge sim is mid-bring-up (CLAUDE.md
-        # Step 7-D Phase 4) and the accumulating klippy.log contains pre-
-        # existing dispatch tracebacks unrelated to velocity-limit handling.
-        # The API-response assertions above are the actual evidence that
-        # M204 / SET_VELOCITY_LIMIT / RESET_VELOCITY_LIMIT propagate correctly.
         print(
             "OK: M204 / SET_VELOCITY_LIMIT (incl. SQUARE_CORNER_VELOCITY) / RESET_VELOCITY_LIMIT all propagated"
         )

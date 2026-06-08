@@ -1,9 +1,3 @@
-//! Lexer must reject non-finite numeric literals as `MalformedNumber`.
-//! Round-5 Codex review Claim H: pre-fix, NaN/inf strings parsed via
-//! Rust's `f64::FromStr` produced silent state poisoning (NaN-cps drop
-//! moves silently via `ZeroMotion`; subsequent `state.position = NaN`
-//! corrupts all later moves).
-
 use gcode::{ParseError, lex};
 
 fn assert_lex_rejects_as_malformed(src: &str) {
@@ -63,7 +57,6 @@ fn rejects_nan_e() {
 
 #[test]
 fn accepts_finite_floats() {
-    // Sanity: ensure we didn't break the happy path.
     let results: Vec<_> = lex("G5 X1.5 Y-2.7 I0 J3 P0 Q-3 F1000\n").collect();
     assert!(
         results.iter().all(Result::is_ok),

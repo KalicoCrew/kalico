@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""Minimal TMC5160 SPI register emulator for sim tests.
-
-Listens on a Unix socket at $KALICO_SIM_SOCK_DIR/spi_cs_<chip>_<line>.
-The sim intercept shim (libsim_intercept.so) connects when a CS pin is
-asserted and an SPI transfer occurs. Protocol: raw byte relay — the shim
-writes N bytes, the emulator reads them (TMC5160 request datagram) and
-replies with N bytes (TMC5160 response datagram).
-
-TMC5160 SPI protocol (40-bit, MSB-first):
+"""TMC5160 SPI protocol (40-bit, MSB-first):
   Request:  [RW:1 | ADDR:7] [DATA:32]
   Response: [STATUS:8] [DATA:32]
 
@@ -58,15 +50,9 @@ def _sign9(val):
 
 
 def handle_client(conn, regs, last_read, xdirect_log):
-    """Serve one SPI connection (one CS assertion).
-
-    TMC5160 SPI protocol: the response datagram always returns the value
+    """TMC5160 SPI protocol: the response datagram always returns the value
     of the register addressed by the PREVIOUS datagram (not the current
     one). `last_read[0]` tracks this across connections.
-
-    `xdirect_log` is a list of (timestamp, coil_a, coil_b) tuples
-    appended on each XDIRECT write. The test reads this via a sidecar
-    JSON file written by the emulator main loop.
     """
     conn.settimeout(0.5)
     try:

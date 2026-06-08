@@ -2,7 +2,6 @@ use crate::Limits;
 use crate::topp::chain::ChainGrid;
 use crate::topp::scaling::SolverScale;
 
-/// Cone descriptor in solver-agnostic form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cone {
     Zero,
@@ -11,7 +10,6 @@ pub enum Cone {
     RotatedSecondOrder,
 }
 
-/// Solver-agnostic constraint bundle produced by [`build_chain`].
 #[derive(Debug, Clone)]
 pub struct ConstraintBundle {
     pub n_vars: usize,
@@ -27,14 +25,12 @@ pub struct ConstraintBundle {
     pub j_path: f64,
 }
 
-/// Pre-solver boundary infeasibility (start or end velocity exceeds centripetal MVC).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BoundaryInfeasibility {
     StartAboveMvc { mvc_b: f64 },
     EndAboveMvc { mvc_b: f64 },
 }
 
-/// Result of [`build`].
 #[derive(Debug, Clone)]
 pub enum BuildOutcome {
     Ok(ConstraintBundle),

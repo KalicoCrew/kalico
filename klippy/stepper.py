@@ -17,9 +17,6 @@ class error(Exception):
 ######################################################################
 
 
-# Host-side bookkeeping shim: records pin assignments, axis membership, and
-# direction. Step generation, position tracking, and kinematics live in the
-# Rust motion engine.
 class MCU_stepper:
     def __init__(
         self,
@@ -53,8 +50,6 @@ class MCU_stepper:
         self._req_step_both_edge = False
         self._mcu_position_offset = 0.0
         self._active_callbacks = []
-        # Populated by setup_itersolve from the alloc_func's first bytes arg
-        # (e.g. b"z", b"+x"); queried by is_active_axis.
         self._bridge_active_axes = b""
         self._stepper_kinematics = None
         self._trapq = None
@@ -86,9 +81,6 @@ class MCU_stepper:
         self._req_step_both_edge = step_both_edge
 
     def setup_itersolve(self, alloc_func, *params):
-        # Callers (z_tilt_ng, quad_gantry_level, homing) still query
-        # is_active_axis; the axes the stepper drives are encoded in the
-        # alloc_func's first bytes param (b"z", b"+x" / b"-y", ...).
         for p in params:
             if isinstance(p, (bytes, bytearray)):
                 self._bridge_active_axes = bytes(p)
@@ -212,8 +204,6 @@ class MCU_stepper:
             return pos_xyz[idx]
 
     def bridge_set_position_from_step_count(self, step_count):
-        # Apply an authoritative MCU step-counter snapshot (from a trip event)
-        # and retain it for get_past_mcu_position().
         step_count = int(step_count)
         self._bridge_last_trip_step_count = step_count
         self._set_mcu_position(step_count)
@@ -252,13 +242,10 @@ class MCU_stepper:
         self._active_callbacks.append(cb)
 
     def generate_steps(self, flush_time):
-        # Drain the active-callback list so registrants don't leak references;
-        # the Rust side fires them via its own activity surface.
         if self._active_callbacks:
             self._active_callbacks = []
 
     def is_active_axis(self, axis):
-        # Membership scan so a query for "x" matches b"+x" / b"-x".
         return axis.encode() in self._bridge_active_axes
 
 
@@ -285,8 +272,6 @@ def PrinterStepper(config, units_in_radians=False):
         step_pulse_duration,
         units_in_radians,
     )
-    # Capability check is deferred to connect time (the MCU caps aren't known
-    # until after identify, which runs after config-parse).
     mcu_stepper.phase_stepping = config.getboolean("phase_stepping", False)
     for mname in ["stepper_enable", "force_move", "motion_report"]:
         m = printer.load_object(config, mname)

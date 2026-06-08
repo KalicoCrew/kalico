@@ -1,10 +1,3 @@
-"""Tests for the pin/serial override layer.
-
-Given a vendored printer.cfg-style text, applying the overrides yields
-a config where STM32 pin names are replaced with gpiochip0/gpioN
-equivalents, SPI bus names are replaced with sim_spiN, and the [mcu]
-serial line points at our sim socket."""
-
 import pytest
 
 from tools.sim_klippy.orchestrator.overrides import apply_overrides
@@ -41,7 +34,7 @@ spi_bus: spi1
     out = apply_overrides(cfg_in, overrides)
     assert "PG4" not in out
     assert "gpiochip0/gpio9" in out
-    assert "!gpiochip0/gpio10" in out  # ! prefix preserved
+    assert "!gpiochip0/gpio10" in out
     assert "spi1" not in out
     assert "sim_spi0" in out
     assert "/dev/serial/by-id/usb-Klipper" not in out
@@ -53,9 +46,8 @@ def test_word_boundary_safety():
     cfg_in = "step_pin: PA20\nother_pin: PA2\n"
     overrides = {"mcu_main.gpio": {"PA2": "gpiochip0/gpio11"}}
     out = apply_overrides(cfg_in, overrides)
-    assert "PA20" in out  # untouched
-    assert "gpiochip0/gpio11" in out  # PA2 replaced
-    # Make sure PA20 stayed PA20 and didn't become "gpiochip0/gpio110"
+    assert "PA20" in out
+    assert "gpiochip0/gpio11" in out
     assert "gpiochip0/gpio110" not in out
 
 
@@ -65,7 +57,7 @@ def test_spi_bus_word_boundary():
     overrides = {"mcu_main.spi": {"spi1": "sim_spi0"}}
     out = apply_overrides(cfg_in, overrides)
     assert "sim_spi0" in out
-    assert "spi10" in out  # untouched
+    assert "spi10" in out
 
 
 def test_config_inject_appends_missing_key():
@@ -80,7 +72,6 @@ x_offset: 0
     }
     out = apply_overrides(cfg_in, overrides)
     assert "skip_firmware_version_check: True" in out
-    # Existing keys retained.
     assert "x_offset: 0" in out
     assert "serial: /tmp/foo" in out
 
@@ -97,7 +88,6 @@ skip_firmware_version_check: False
     }
     out = apply_overrides(cfg_in, overrides)
     assert out.count("skip_firmware_version_check") == 1
-    # The user's value wins.
     assert "skip_firmware_version_check: False" in out
 
 
@@ -114,7 +104,6 @@ step_pin: PG4
         "beacon.config_inject": {"skip_firmware_version_check": "True"},
     }
     out = apply_overrides(cfg_in, overrides)
-    # The injected line must appear before [stepper_x], not after.
     beacon_pos = out.index("skip_firmware_version_check")
     stepper_pos = out.index("[stepper_x]")
     assert beacon_pos < stepper_pos

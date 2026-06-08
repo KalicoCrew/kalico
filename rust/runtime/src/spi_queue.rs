@@ -14,9 +14,7 @@
 use core::ptr;
 use core::sync::atomic::{Ordering, fence};
 
-/// Power-of-two ring depth shared with the C side; see `src/spi_queue.h`.
 pub const SPI_QUEUE_DEPTH: usize = 16;
-/// Index mask derived from the depth — `counter & MASK` is the slot index.
 pub const SPI_QUEUE_DEPTH_MASK: u16 = (SPI_QUEUE_DEPTH as u16) - 1;
 pub const N_SPI_BUSES: usize = 3;
 
@@ -77,7 +75,6 @@ impl Default for SpiQueue {
     }
 }
 
-// Layout invariants — must match the C-side struct exactly.
 const _: () = {
     assert!(core::mem::size_of::<SpiWrite>() == 8);
     assert!(core::mem::size_of::<SpiQueue>() == 136);

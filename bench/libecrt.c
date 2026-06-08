@@ -7,9 +7,6 @@
 #include <sys/mman.h>
 #include "ethercat.h"
 
-/* Drive encoder resolution for context: 131072 counts/rev (17-bit, 1:1 gear).
- * Not used here — mm->counts scaling lives on the Rust side. */
-
 /*
  * PDO layout must match the drive's active mapping exactly.
  *
@@ -93,11 +90,6 @@ static void go_realtime(int cpu, int prio) {
     if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) perror("ec_rt: SCHED_FIFO (continuing)");
 }
 
-/*
- * One PDO+DC exchange. Advances g_ts by (g_cycle_ns + *toff), sleeps to that
- * deadline, sends, receives, then computes the next DC correction into *toff.
- * Matches the send->recv->dc_sync ordering from ec_spin.c.
- */
 static int rt_exchange(int64_t *toff) {
     int64_t off = 0;
     add_ts(&g_ts, g_cycle_ns + (toff ? *toff : 0));
@@ -134,7 +126,6 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     ec_SDOwrite(1, 0x1C32, 0x02, FALSE, sizeof(cyc),     &cyc,     EC_TIMEOUTRXM);
     ec_SDOwrite(1, 0x1C33, 0x02, FALSE, sizeof(cyc),     &cyc,     EC_TIMEOUTRXM);
 
-    /* SYNC0 active BEFORE SAFE-OP (else AL 0x0030 / Er74.1 invalid DC config). */
     ec_configdc();
     ec_dcsync0(1, TRUE, (uint32_t)g_cycle_ns, (int32_t)(g_cycle_ns / 2));
     ec_config_map(&IOmap);
@@ -142,7 +133,7 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
      * be NULL/stale — bail before dereferencing it in the stabilize loop. */
     if (ec_statecheck(0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE * 4) != EC_STATE_SAFE_OP) {
         ec_close();
-        return -3; /* SAFE-OP not reached */
+        return -3;
     }
 
     g_out = (out_t *) ec_slave[1].outputs;
@@ -165,7 +156,6 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
         rt_exchange(&toff);
     }
 
-    /* Request OP and wait up to ~2 s. */
     ec_slave[0].state = EC_STATE_OPERATIONAL;
     ec_writestate(0);
     for (int64_t i = 0; i < (int64_t)(2.0e9 / g_cycle_ns); i++) {
@@ -174,7 +164,7 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
         if (i % 20 == 0) ec_readstate();
         if (ec_slave[0].state == EC_STATE_OPERATIONAL) break;
     }
-    if (ec_slave[0].state != EC_STATE_OPERATIONAL) return -4; /* OP not reached */
+    if (ec_slave[0].state != EC_STATE_OPERATIONAL) return -4;
 
     for (int64_t pc = 0; pc < 3000; pc++) {
         uint16_t sw = g_in->statusword;
@@ -185,13 +175,13 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
             g_out->controlword = 0x0006;
             rt_exchange(&toff);
             g_enabled = 0;
-            return 0; /* parked: Ready to Switch On */
+            return 0;
         } else {
             g_out->controlword = 0x0006;
         }
         rt_exchange(&toff);
     }
-    return -5; /* CiA402 park timed out */
+    return -5;
 }
 
 int ec_rt_enable(void) {
@@ -220,13 +210,13 @@ int ec_rt_enable(void) {
             g_out->controlword = 0x000F;
             rt_exchange(&toff);
             g_enabled = 1;
-            return 0; /* operation enabled */
+            return 0;
         } else {
             g_out->controlword = 0x0000;
         }
         rt_exchange(&toff);
     }
-    return -5; /* CiA402 enable timed out */
+    return -5;
 }
 
 int ec_rt_cycle(int64_t *toff_ns) {

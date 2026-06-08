@@ -12,9 +12,7 @@
 #define IWDG IWDG1
 #endif
 
-// Spec §5.7 — kalico runtime liveness gate. Foreground (runtime_drain task)
-// is the sole writer; this file only reads. __attribute__((used,
-// externally_visible)) survives Klipper's -fwhole-program --gc-sections.
+// __attribute__((used, externally_visible)) survives Klipper's -fwhole-program --gc-sections.
 volatile uint8_t runtime_liveness_ok __attribute__((used, externally_visible))
     = 1;
 
@@ -24,7 +22,7 @@ watchdog_reset(void)
 #if CONFIG_KALICO_SIM
     return;  // Renode's IWDG model misbehaves; sim build is silicon-unsafe
 #endif
-    if (!runtime_liveness_ok) return;   // kalico runtime detected liveness fault
+    if (!runtime_liveness_ok) return;
     IWDG->KR = 0xAAAA;
 }
 DECL_TASK(watchdog_reset);

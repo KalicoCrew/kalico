@@ -36,9 +36,6 @@ pub enum ScheduleError {
     SolverSetup(String),
 }
 
-/// Solver-runtime infeasibility / max-iter surface as `SolveStatus` on the
-/// returned profile, not as `ScheduleError`. `ScheduleError` is for
-/// setup-time programming errors only.
 pub fn schedule_chain_with_tolerance(
     chain: &chain::ChainGrid,
     endpoints: EndpointConditions,
@@ -135,11 +132,6 @@ pub fn schedule_chain_with_tolerance(
     ))
 }
 
-/// Equivalent to `schedule_segment_with_tolerance(..., ToleranceMode::Tight)`.
-///
-/// Solver-runtime infeasibility / max-iter surface as `SolveStatus` on the
-/// returned profile, not as `ScheduleError`. `ScheduleError` is for
-/// setup-time programming errors only.
 pub fn schedule_segment(
     curve: &VectorNurbs<f64, 3>,
     limits: &Limits,

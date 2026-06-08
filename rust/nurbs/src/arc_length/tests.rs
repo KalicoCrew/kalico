@@ -47,13 +47,11 @@ fn integrate_quadratic_matches_closed_form() {
 #[allow(clippy::float_cmp)]
 #[test]
 fn build_scalar_table_for_linear_curve() {
-    // Linear curve from 0 to 1 over u in [0, 1]: arc length = 1.
     let curve =
         crate::ScalarNurbs::try_new(1, vec![0.0_f64, 0.0, 1.0, 1.0], vec![0.0, 1.0]).unwrap();
     let table = build_arc_length_table_scalar(&curve, 1e-6, 64).unwrap();
     assert!((table.s_max() - 1.0).abs() < 1e-6);
     assert_eq!(table.u_max(), 1.0);
-    // Monotonicity check
     for w in table.s().windows(2) {
         assert!(w[1] >= w[0]);
     }
@@ -80,11 +78,7 @@ fn param_from_arc_length_interpolates_linearly() {
 #[allow(clippy::float_cmp)]
 #[test]
 fn param_from_arc_length_clamps_above_range_in_release() {
-    // In release, out-of-range queries clamp silently. In debug, this would
-    // fire a debug_assert, so the test itself uses an in-range value but
-    // relies on the clamp branch of the implementation.
     let table = ArcLengthTableRef::new(&[0.0_f64, 1.0], &[0.0, 1.0]);
-    // Use a value that exercises clamp logic without violating debug_assert.
     let v = param_from_arc_length(&table, 1.0_f64);
     assert_eq!(v, 1.0);
 }
@@ -101,7 +95,6 @@ fn arc_length_from_param_inverts_param_from_arc_length() {
 #[cfg(feature = "host")]
 #[test]
 fn build_vector_table_for_3d_linear_curve() {
-    // 3D linear curve from origin to (3, 0, 4): arc length = 5.
     let curve = crate::VectorNurbs::try_new(
         1,
         vec![0.0_f64, 0.0, 1.0, 1.0],
@@ -133,7 +126,6 @@ fn try_from_wire_parses_small_table() {
     assert_eq!(r.u(), &[0.0_f32, 0.6, 1.0]);
 }
 
-/// Test-only owner; same shape as `align_buf` in scalar.rs (Task 9).
 struct AlignedBytes {
     backing: Vec<u32>,
     len: usize,

@@ -1,16 +1,10 @@
-// Phase-stepping XDIRECT SPI writer for TMC5160 (host/sim). See
-// phase_stepping_spi.h. Follows spidev_transfer(): spi_prepare -> CS low ->
-// spi_transfer -> CS high.
-
 #include "phase_stepping_spi.h"
-#include "gpio.h"   // struct spi_config, spi_prepare, spi_transfer,
-                    // struct gpio_out, gpio_out_setup, gpio_out_write
-#include "board/irq.h" // irq_save, irq_restore, irqstatus_t
+#include "gpio.h"
+#include "board/irq.h"
 
 #define MAX_PHASE_BUSES  4
-#define MAX_PHASE_MOTORS 16   // matches Rust state::MAX_STEPPER_OIDS
+#define MAX_PHASE_MOTORS 16
 
-// SPI3 contention arbitration — see phase_stepping_spi.h.
 static volatile uint8_t  phase_spi_busy = 0;
 static volatile uint32_t phase_spi_skip_count = 0;
 static volatile uint32_t phase_spi_write_count = 0;
@@ -60,7 +54,6 @@ struct phase_motor_state {
     uint8_t configured;
 };
 
-// .bss-zeroed; configured == 0 means "not registered".
 static struct phase_bus_state  phase_buses[MAX_PHASE_BUSES];
 static struct phase_motor_state phase_motors[MAX_PHASE_MOTORS];
 
@@ -136,12 +129,12 @@ phase_stepping_write_xdirect(uint8_t motor_idx,
     };
 
     spi_prepare(phase_buses[bus_id].cfg);
-    gpio_out_write(phase_motors[motor_idx].cs, 0); // CS low
+    gpio_out_write(phase_motors[motor_idx].cs, 0);
     // Unlocked variant — we already hold phase_spi_busy; the public
     // spi_transfer would deadlock the ISR on its own lock.
     spi_transfer_locked(phase_buses[bus_id].cfg, 0,
                         sizeof(datagram), datagram);
-    gpio_out_write(phase_motors[motor_idx].cs, 1); // CS high
+    gpio_out_write(phase_motors[motor_idx].cs, 1);
 
     phase_spi_write_count++;
     phase_spi_release();

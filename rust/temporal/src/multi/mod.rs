@@ -77,13 +77,6 @@ pub enum BatchError {
     Segment(usize, crate::topp::ScheduleError),
 }
 
-/// Run the full multi-segment planning pipeline on a batch of curve segments.
-///
-/// # Errors
-/// - [`BatchError::EmptySegments`] — `input.segments` is empty.
-/// - [`BatchError::InvalidThreads`] — `input.worker_threads` is zero.
-/// - [`BatchError::Segment`] — a segment-level [`crate::ScheduleError`] was
-///   returned by [`crate::topp::schedule_chain_with_tolerance`].
 pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
     use crate::multi::{chain, grid, joining, junction, parallel};
     use crate::topp::chain::ChainGrid;

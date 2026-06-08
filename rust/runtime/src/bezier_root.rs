@@ -40,8 +40,6 @@ const EPS_INTERVAL: f32 = 1e-6;
 /// `(target-P0)/(P3-P0)` to explode; fall back to midpoint.
 const EPS_DEGENERATE_SPAN: f32 = 1e-5;
 
-/// Tolerance for "target outside [min(v_lo, v_hi), max(v_lo, v_hi)]".
-/// Tracks `EPS_CONVERGENCE`.
 const EPS_OUT_OF_RANGE: f32 = 1e-4;
 
 /// Find `t ∈ (t_low, t_high]` such that the cubic Bézier curve with

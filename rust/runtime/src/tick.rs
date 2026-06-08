@@ -1,7 +1,3 @@
-// TIM5 ISR body — clock widening, inter-arrival gap guard, and `Engine::tick`.
-// Stepper dispatch is in `dispatch_stepper` (compiled only with
-// `motion-module-stepper`).
-
 #![allow(unsafe_code)]
 
 use core::sync::atomic::Ordering;
@@ -101,15 +97,10 @@ pub fn isr_sample_tick(
         after_arm.wrapping_sub(after_widen),
     );
 
-    // Inter-arrival guard: only fires when the previous tick was active
-    // (last_tick_now == Some). Idle/boot ticks leave it None so the guard
-    // never trips during config or between moves.
     let period = isr.engine.sample_period_cycles as u64;
     if let Some(last) = isr.last_tick_now {
         let gap = now.wrapping_sub(last);
         if period != 0 && gap > period * TICK_GAP_FAULT_MULT {
-            // Integer division is intentional: `gap_ticks` is the integer
-            // count of sample periods elapsed, used as a fault detail tag.
             #[allow(clippy::integer_division)]
             let gap_ticks = (gap / period) as u32;
             // Store before the fault code latches so the host always sees
@@ -142,8 +133,6 @@ pub fn isr_sample_tick(
         body_end.wrapping_sub(after_arm),
     );
 
-    // Some only when this tick was active; idle ticks clear it so the gap
-    // check never straddles an idle gap.
     isr.last_tick_now = if active { Some(now) } else { None };
     crate::isr_phase::set_phase(crate::isr_phase::RT_PHASE_ISR_EXIT);
 }

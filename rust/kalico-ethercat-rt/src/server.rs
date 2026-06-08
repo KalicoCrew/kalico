@@ -1,5 +1,3 @@
-//! Unix-socket server for the EtherCAT DC loop.
-
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -43,7 +41,6 @@ impl FrameServer {
     }
 
     fn try_accept(&mut self) {
-        // One-shot: once a session has ended this process accepts no further clients.
         if self.conn.is_none() && !self.session_ended {
             match self.listener.accept() {
                 Ok((stream, _)) => {
@@ -113,10 +110,6 @@ impl FrameServer {
         self.session_ended
     }
 
-    /// Sends `frame` to the connected client and then closes the connection.
-    ///
-    /// `write_all` guarantees full delivery before the socket is dropped.
-    /// Any write error is logged; the connection is closed regardless.
     pub fn respond_and_close(&mut self, frame: &[u8]) {
         if self.conn.is_none() {
             eprintln!("ec-rt: respond_and_close called with no client — frame dropped");

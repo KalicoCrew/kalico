@@ -1,24 +1,4 @@
 #!/usr/bin/env python3
-# Standalone host-side I/O helper for the kalico runtime DECL_COMMAND surface.
-#
-# Spec §6 / Step-5 plan Task 25.5. This module is intentionally NOT built on
-# klippy/reactor.py + klippy/serialhdl.py:SerialReader — those require the
-# Klipper event loop to be the only owner of the serial fd, which deadlocks
-# worker-thread integrations (e.g. pytest-style `wait_for_response` calls
-# from the foreground thread that also need to drive the reactor).
-#
-# Pattern (lifted from scripts/console.py's `process_identify` flow but with
-# the reactor stripped out):
-#   1. open pyserial directly,
-#   2. spawn a background RX thread that reads bytes and feeds them to
-#      MessageParser.check_packet() / .parse(),
-#   3. dispatch parsed messages to per-name `queue.Queue` instances,
-#   4. on send, encode via MessageParser.create_command + encode_msgblock,
-#      maintain a 4-bit sequence number ourselves.
-#
-# The identify handshake is done synchronously up-front, before the RX thread
-# starts: this matches the Klipper protocol's wire-level guarantee that
-# `identify_response` packets only flow in response to `identify` queries.
 import argparse
 import logging
 import pathlib
@@ -28,23 +8,17 @@ import threading
 import time
 import zlib
 
-# msgproto.py lives in klippy/.
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "klippy"))
 
 import msgproto  # noqa: E402
 
 try:
-    import serial  # type: ignore  # pyserial
-except ImportError:  # pragma: no cover - import-time only
-    serial = None  # The user installs pyserial when running on hardware.
+    import serial  # type: ignore
+except ImportError:  # pragma: no cover
+    serial = None
 
 
-# --- Wire-level helpers ----------------------------------------------------
-
-# Per msgproto: messages start with [len, seq_with_dest, ...payload..., crc16, sync].
-# We look for SYNC bytes to delimit packets, then ask MessageParser.check_packet
-# to validate.
 _SYNC = msgproto.MESSAGE_SYNC
 
 
@@ -53,28 +27,20 @@ class HostIoError(Exception):
 
 
 class _RxBuffer:
-    """Accumulates raw bytes; emits validated packets via MessageParser.check_packet."""
-
     def __init__(self, parser):
         self._buf = bytearray()
         self._parser = parser
 
     def feed(self, chunk):
-        """Returns a list of bytes-like packets ready for `parser.parse`."""
         if not chunk:
             return []
         self._buf.extend(chunk)
         out = []
         while self._buf:
-            # MessageParser.check_packet returns:
-            #   0  → need more bytes
-            #   -1 → corrupt — drop the leading byte and resync
-            #   N>0 → valid packet of length N
             n = self._parser.check_packet(self._buf)
             if n == 0:
                 break
             if n < 0:
-                # Drop one byte and try to resync.
                 del self._buf[0]
                 continue
             pkt = bytes(self._buf[:n])
@@ -83,20 +49,7 @@ class _RxBuffer:
         return out
 
 
-# --- Public client class ---------------------------------------------------
-
-
 class KalicoHostIO:
-    """Standalone Klipper-protocol client.
-
-    Public API (per Step-5 plan Task 25.5):
-        - __init__(port, baud=250000)
-        - send(cmd_str)
-        - wait_for_response(name, timeout)
-        - collect_responses(name, count, timeout)
-        - disconnect()
-    """
-
     IDENTIFY_CHUNK = 40
     IDENTIFY_RESPONSE_DEADLINE = 0.050
 
@@ -108,54 +61,39 @@ class KalicoHostIO:
             )
         self._port = port
         self._baud = baud
-        # pyserial routes "socket://host:port" / "loop://" / etc. through
-        # serial_for_url; the bare Serial(port) constructor does not. The sim
-        # bench uses socket:// to talk to Renode's USART2 server-socket.
+        # serial_for_url handles socket:// (the sim bench's Renode USART2
+        # socket); the bare Serial() constructor does not.
         if "://" in port:
             self._ser = serial.serial_for_url(port, baud, timeout=0.1)
         else:
             self._ser = serial.Serial(port, baud, timeout=0.1)
         self._parser = msgproto.MessageParser()
-        # Pre-init parser knows DefaultMessages (identify, identify_response).
         self._seq = 0
         self._stop = threading.Event()
         self._lock = threading.Lock()
-        # Per-response-name queues for wait_for_response / collect_responses.
         self._queues = {}
         self._queues_lock = threading.Lock()
-        # Pre-handshake synchronous reader (no thread yet).
         self._rxbuf = _RxBuffer(self._parser)
-        # Run identify synchronously, then start the dispatcher thread.
         self._do_identify(identify_timeout)
         self._rx_thread = threading.Thread(
             target=self._rx_loop, name="kalico-host-io-rx", daemon=True
         )
         self._rx_thread.start()
 
-    # --- identify (synchronous, pre-thread) --------------------------------
-
     def _do_identify(self, timeout):
-        """Pull the identify_data dictionary and load it into MessageParser.
-
-        Two complications when reconnecting to a running MCU:
-        1. The OS USB-CDC buffer may hold stale identify_response chunks
-           from a prior klippy session; reading them naively makes us
-           sync to an outdated MCU seq state.
-        2. MCU's next_sequence is at whatever klippy last advanced it to
-           (only resets on MCU reset).
-        Strategy: drain stale RX bytes first, then send identify with
-        NAK-driven seq resync. NAKs (header-only length-5 packets) carry
-        the MCU's current next_sequence in their seq byte.
-        """
+        # Reconnecting to a running MCU: the USB-CDC buffer may hold stale
+        # identify_response chunks from a prior klippy session, and the MCU's
+        # next_sequence is wherever klippy last left it (only resets on MCU
+        # reset). Drain stale RX first, then resync seq from NAKs, which carry
+        # the MCU's current next_sequence in their seq byte.
         deadline = time.monotonic() + timeout
-        # Drain any stale RX bytes from earlier klippy session.
         drain_until = time.monotonic() + 0.3
         while time.monotonic() < drain_until:
             self._ser.timeout = 0.05
             n = len(self._ser.read(4096))
             if n == 0:
                 break
-        self._rxbuf = _RxBuffer(self._parser)  # reset partial-packet state
+        self._rxbuf = _RxBuffer(self._parser)
 
         identify_data = b""
         identify_decompressor = zlib.decompressobj()
@@ -194,16 +132,16 @@ class KalicoHostIO:
                 if params is not None:
                     if params.get("offset") == offset:
                         break
-                    params = None  # stale or wrong offset; retry this query
+                    params = None
                     continue
                 if (
                     offset == 0
                     and self._last_wait_saw_nak
                     and resync_attempts < 20
                 ):
-                    # Reconnect to a running MCU may start with an unknown
-                    # sequence. Honor the NAK's advertised next_sequence, but
-                    # only before the live identify walk has made progress.
+                    # Honor the NAK's advertised next_sequence only before the
+                    # identify walk has made progress (offset==0); resyncing
+                    # mid-walk would discard already-collected dictionary data.
                     sent_seq = None
                     retransmitted_same_seq = False
                     resync_attempts += 1
@@ -224,8 +162,8 @@ class KalicoHostIO:
             try:
                 identify_decompressor.decompress(data)
             except zlib.error:
-                # process_identify() will report the malformed dictionary
-                # after the receive loop; don't mask that error here.
+                # process_identify() reports the malformed dictionary after
+                # the loop; raising here would mask that clearer error.
                 pass
             if len(data) < self.IDENTIFY_CHUNK:
                 break
@@ -234,7 +172,6 @@ class KalicoHostIO:
         self._parser.process_identify(identify_data)
 
     def _drain_available_sync(self, name=None, sync_seq=False, sent_seq=None):
-        """Drain already-buffered serial bytes before writing another query."""
         found = None
         old_timeout = getattr(self._ser, "timeout", None)
         try:
@@ -254,13 +191,6 @@ class KalicoHostIO:
         return found
 
     def _wait_packet_sync(self, name, deadline, sync_seq=False, sent_seq=None):
-        """Block (in the foreground thread) until a packet of `name` arrives.
-
-        If sync_seq is True, data packets update self._seq to the MCU's
-        expected next_sequence. Header-only length-5 packets are ACK/NAK
-        frames with no msgid; classify them against sent_seq so stale ACKs
-        from the previous identify query do not rewind us at 15->0 wrap.
-        """
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -273,11 +203,10 @@ class KalicoHostIO:
                 )
                 if params is not None:
                     return params
-                # Pre-identify, drop everything else.
 
     def _handle_identify_sync_packet(self, pkt, sync_seq, sent_seq, name):
-        # NAK/bare-ack frames are MESSAGE_MIN-length with no payload; skip
-        # parse to avoid spurious "index out of range" / "Extra data" errors.
+        # NAK/bare-ack frames are MESSAGE_MIN-length with no payload; parsing
+        # them mis-decodes the CRC bytes as a msgid varint.
         if len(pkt) <= msgproto.MESSAGE_MIN:
             if sync_seq and len(pkt) >= 2:
                 mcu_next = pkt[1] & msgproto.MESSAGE_SEQ_MASK
@@ -289,18 +218,14 @@ class KalicoHostIO:
                     if mcu_next == ack_after_sent:
                         self._set_seq(mcu_next)
                     elif mcu_next != sent:
-                        # Empty frame with any other seq is a NAK carrying
-                        # the MCU's current expectation.
                         self._last_wait_saw_nak = True
                         self._set_seq(mcu_next)
-                    # mcu_next == sent is a stale ACK for the previous command.
-                    # Ignore it; accepting it rewinds seq at the 15->0 wrap.
+                    # mcu_next == sent is a stale ACK; resyncing to it rewinds
+                    # our seq across the 15->0 wrap and stalls the handshake.
             return None
         try:
             params = self._parser.parse(pkt)
         except Exception:
-            # Defensive: malformed packet during identify. Already synced seq
-            # above; drop the packet.
             return None
         if sync_seq and len(pkt) >= 2:
             self._set_seq(pkt[1] & msgproto.MESSAGE_SEQ_MASK)
@@ -308,13 +233,9 @@ class KalicoHostIO:
             return params
         return None
 
-    # --- send / encode -----------------------------------------------------
-
     def _next_seq(self):
-        # Klipper's 4-bit sequence number. Wire: (seq & 0x0F) | DEST.
-        # MCU's next_sequence starts at MESSAGE_DEST=0x10 (i.e. seq_num=0),
-        # so the very first packet we send must have seq_num=0; otherwise
-        # the MCU NAKs and silently drops it. Read-then-increment.
+        # The MCU's next_sequence starts at seq_num=0, so our first sent packet
+        # must carry seq_num=0 or the MCU NAKs and silently drops it.
         with self._lock:
             seq = self._seq
             self._seq = (self._seq + 1) & msgproto.MESSAGE_SEQ_MASK
@@ -325,7 +246,6 @@ class KalicoHostIO:
             self._seq = seq & msgproto.MESSAGE_SEQ_MASK
 
     def _send_raw(self, cmd_str, seq=None):
-        """Encode `cmd_str` via MessageParser and write the framed bytes."""
         cmd = self._parser.create_command(cmd_str)
         if not cmd:
             return None
@@ -335,15 +255,13 @@ class KalicoHostIO:
             seq &= msgproto.MESSAGE_SEQ_MASK
             with self._lock:
                 self._seq = (seq + 1) & msgproto.MESSAGE_SEQ_MASK
-        # Frame the message inline. msgproto.encode_msgblock has a latent
-        # bug where it `append`s the CRC as a 2-element list instead of
-        # `extend`ing it (Klipper itself avoids this path — production
-        # framing happens in chelper/serialqueue.c). Open-coding the
-        # framing here keeps us independent of that bug.
+        # Frame inline rather than via msgproto.encode_msgblock, which appends
+        # the CRC as a 2-element list instead of extending it (a latent bug on
+        # a path Klipper never exercises — it frames in chelper/serialqueue.c).
         msglen = msgproto.MESSAGE_MIN + len(cmd)
         seq_byte = (seq & msgproto.MESSAGE_SEQ_MASK) | msgproto.MESSAGE_DEST
         payload = [msglen, seq_byte] + list(cmd)
-        crc = msgproto.crc16_ccitt(payload)  # returns [hi, lo]
+        crc = msgproto.crc16_ccitt(payload)
         payload.extend(crc)
         payload.append(msgproto.MESSAGE_SYNC)
         self._ser.write(bytes(payload))
@@ -351,10 +269,7 @@ class KalicoHostIO:
         return seq
 
     def send(self, cmd_str):
-        """Encode + write a command. Does not wait for a response."""
         self._send_raw(cmd_str)
-
-    # --- response collection ----------------------------------------------
 
     def _ensure_queue(self, name):
         with self._queues_lock:
@@ -365,10 +280,6 @@ class KalicoHostIO:
             return q
 
     def wait_for_response(self, name, timeout):
-        """Return the next parsed dict whose `#name` matches.
-
-        Raises HostIoError on timeout.
-        """
         q = self._ensure_queue(name)
         try:
             return q.get(timeout=timeout)
@@ -379,11 +290,6 @@ class KalicoHostIO:
             )
 
     def collect_responses(self, name, count, timeout):
-        """Collect exactly `count` responses with `#name == name`.
-
-        Total wall-clock cap is `timeout` seconds; raises HostIoError if fewer
-        than `count` responses arrived.
-        """
         q = self._ensure_queue(name)
         deadline = time.monotonic() + timeout
         out = []
@@ -400,10 +306,8 @@ class KalicoHostIO:
                 continue
         return out
 
-    # --- background RX dispatcher -----------------------------------------
-
     def _rx_loop(self):
-        rxbuf = self._rxbuf  # reuse same accumulator (already drained above).
+        rxbuf = self._rxbuf
         while not self._stop.is_set():
             try:
                 self._ser.timeout = 0.1
@@ -414,11 +318,9 @@ class KalicoHostIO:
                 TypeError,
                 AttributeError,
             ) as exc:  # type: ignore[union-attr]
-                # `AttributeError` covers pyserial's socket:// URL handler:
-                # on `Serial.close()` it sets `_socket = None`, and an
-                # in-flight `read()` then explodes with
-                # `'NoneType' object has no attribute 'recv'` (instead of
-                # raising SerialException). Treat the same as a clean shutdown.
+                # AttributeError: pyserial's socket:// handler nulls _socket on
+                # close(), so an in-flight read() raises "'NoneType' has no
+                # attribute 'recv'" instead of SerialException on shutdown.
                 if self._stop.is_set():
                     return
                 logging.warning("kalico-host-io: serial read error: %s", exc)
@@ -431,36 +333,17 @@ class KalicoHostIO:
                 logging.warning("kalico-host-io: framing error: %s", exc)
                 continue
             for pkt in packets:
-                # NAK / bare-ack frames are MESSAGE_MIN-length (5 bytes:
-                # 2-byte header + 2-byte CRC + 1-byte sync, zero payload).
-                # Their `MESSAGE_HEADER_SIZE..len-TRAILER` window is empty;
-                # `_parser.parse` would mis-decode the CRC bytes as a varint
-                # msgid and either run off the end ("index out of range") or
-                # leave bytes unconsumed ("Extra data at end of message").
-                # We only consult the seq byte for resync purposes here.
-                #
-                # IMPORTANT — only NAKs (and only NAKs) advance our send-seq
-                # counter. Every MCU→host message (response, output frame,
-                # NAK) carries `MCU.next_sequence` in its seq byte, but only
-                # NAKs warrant a forced realignment: data/output frames see
-                # the seq AFTER the MCU acked previous host writes, so by
-                # the time their seq arrives our `_seq` has already been
-                # advanced past it via `_next_seq()`. Blindly clobbering
-                # `_seq` to the received value (the original 25.5 logic)
-                # creates a race where an output frame arriving between our
-                # `_next_seq()` read and the MCU's processing rewinds our
-                # counter behind what we already sent → MCU NAKs forever
-                # because every retransmit goes out at a stale seq. Skip the
-                # update on non-NAK packets entirely.
+                # Only NAKs may advance our send-seq counter. Every MCU->host
+                # frame carries next_sequence in its seq byte, but data/output
+                # frames carry the seq from AFTER the MCU acked prior writes,
+                # so _next_seq() has already moved past it; resyncing to them
+                # rewinds _seq behind what we sent and the MCU NAKs forever.
+                # Bare-ack/NAK frames are MESSAGE_MIN-length with no payload;
+                # parsing them mis-decodes the CRC bytes as a msgid varint.
                 if len(pkt) <= msgproto.MESSAGE_MIN:
                     if len(pkt) >= 2:
                         with self._lock:
                             mcu_next = pkt[1] & msgproto.MESSAGE_SEQ_MASK
-                            # Only forward jumps. If MCU is asking us to
-                            # rewind below where we are, there's an
-                            # in-flight retransmit window we can't recover
-                            # from without a real serialqueue — flag it but
-                            # don't bind ourselves to a stale value.
                             mask = msgproto.MESSAGE_SEQ_MASK
                             delta = (mcu_next - self._seq) & mask
                             if delta != 0:
@@ -469,8 +352,6 @@ class KalicoHostIO:
                 try:
                     params = self._parser.parse(pkt)
                 except Exception as exc:
-                    # Real parse failure on a non-NAK packet — this is a
-                    # genuine schema/wire bug worth surfacing. Log + skip.
                     logging.warning(
                         "kalico-host-io: parse error on pkt %s: %s",
                         pkt.hex() if hasattr(pkt, "hex") else pkt,
@@ -479,17 +360,10 @@ class KalicoHostIO:
                     continue
                 name = params.get("#name", "<noname>")
                 self._ensure_queue(name).put(params)
-                # Output-frame fan-out: `OutputFormat.parse` collapses every
-                # `output()` emit to `#name="#output"` with the rendered
-                # text in `#msg`. Tests want to wait on the *specific*
-                # frame name (e.g. `kalico_status_v6`, `kalico_credit_freed`,
-                # `kalico_fault`) — extract the leading whitespace-separated
-                # token from `#msg` and re-publish into a per-name queue,
-                # additionally promoting any `key=value` tokens to top-level
-                # dict entries so consumers can `params["retired_through..."]`
-                # the same way they would for a DECL_COMMAND response. The
-                # legacy `#output` channel stays populated for callers that
-                # want every output frame opaquely.
+                # OutputFormat.parse collapses every output() to #name="#output"
+                # with the text in #msg; re-publish under the leading token so
+                # callers can wait on a specific frame name and read its
+                # key=value fields as top-level params.
                 if name == "#output":
                     msg = params.get("#msg", "")
                     tokens = msg.split() if msg else []
@@ -501,7 +375,6 @@ class KalicoHostIO:
                             if "=" not in tok:
                                 continue
                             k, v = tok.split("=", 1)
-                            # Best-effort numeric coercion; fall back to str.
                             try:
                                 if v.startswith("0x") or v.startswith("0X"):
                                     out_params[k] = int(v, 16)
@@ -514,8 +387,6 @@ class KalicoHostIO:
                                     out_params[k] = v
                         self._ensure_queue(head).put(out_params)
 
-    # --- shutdown ---------------------------------------------------------
-
     def disconnect(self):
         self._stop.set()
         try:
@@ -524,8 +395,6 @@ class KalicoHostIO:
             pass
         if self._rx_thread.is_alive():
             self._rx_thread.join(timeout=1.0)
-
-    # --- convenience ------------------------------------------------------
 
     def get_msgparser(self):
         return self._parser
@@ -536,9 +405,6 @@ class KalicoHostIO:
     def __exit__(self, exc_type, exc, tb):
         self.disconnect()
         return False
-
-
-# --- CLI smoke test --------------------------------------------------------
 
 
 def _main():

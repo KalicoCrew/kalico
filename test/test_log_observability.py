@@ -1,6 +1,3 @@
-# Tests for the log_observability component: heartbeat emission and Vector
-# checkpoint-lag detection. No live VL/Vector — the heartbeat is asserted via a
-# capture handler on the kalico.event logger, and the lag predicate is pure.
 import logging
 
 import pytest
@@ -48,12 +45,10 @@ def test_heartbeat_emits_observability_event():
 
 
 def test_lag_within_threshold_is_ok():
-    # bytes_behind below threshold -> not stale
     assert lo.check_lag(bytes_behind=1024, threshold=1_048_576) is False
 
 
 def test_lag_over_threshold_is_flagged():
-    # bytes_behind over threshold -> stale
     assert lo.check_lag(bytes_behind=5_000_000, threshold=1_048_576) is True
 
 

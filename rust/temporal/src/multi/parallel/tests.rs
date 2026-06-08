@@ -42,12 +42,8 @@ fn fan_out_processes_all_dirty() {
     }
 }
 
-/// Both endpoints pinned + infeasible initial solve (v_start above the
-/// centripetal MVC cap) → the failed status returns unmodified, no bisection.
 #[test]
 fn pinned_both_endpoints_returns_failed_status_unmodified() {
-    // Cubic Bézier approximation of a 90° arc with radius ≈ 1.0 mm.
-    // Standard formula: k = (4/3)(√2 − 1) ≈ 0.5523.
     let k = (4.0 / 3.0) * (std::f64::consts::SQRT_2 - 1.0);
     let r = 1.0_f64;
     let curved = VectorNurbs::<f64, 3>::try_new(
@@ -61,8 +57,6 @@ fn pinned_both_endpoints_returns_failed_status_unmodified() {
         ],
     )
     .unwrap();
-    // kappa ≈ 1/r = 1.0 mm⁻¹ → b_mvc ≈ a_cent / kappa = 2500 → v_mvc ≈ 50 mm/s.
-    // v_start = 100 >> 50 → Boundary infeasibility → non-success status.
     let curved_limits = limits();
     let grid = sample_arclength_grid(&curved, 20).unwrap();
     let chain = ChainGrid::from_segment_grids(vec![grid], vec![curved_limits]);

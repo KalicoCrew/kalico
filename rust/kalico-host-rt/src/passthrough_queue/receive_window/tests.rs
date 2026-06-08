@@ -10,7 +10,6 @@ fn window_default_starts_empty() {
 
 #[test]
 fn emit_check_includes_message_max_overhead() {
-    // Window of exactly MESSAGE_MAX: one emit should be possible
     let mut w = ReceiveWindow::with_limits(100, MESSAGE_MAX);
     assert!(w.can_emit());
 
@@ -36,8 +35,6 @@ fn pending_blocks_gate() {
 
 #[test]
 fn last_ack_bytes_carry_when_acks_lag() {
-    // Window is large enough for one message + overhead, but
-    // last_ack_bytes carry tips it over.
     let mut w = ReceiveWindow::with_limits(100, MESSAGE_MAX + 20);
     w.record_emit(20);
     // need_ack_bytes=20, last_ack_bytes=0, last_ack_seq=0 < receive_seq=1
@@ -55,7 +52,6 @@ fn last_ack_bytes_carry_when_acks_lag() {
     // check: 10+64+20=94 > 84 → still blocked
     assert!(!w.can_emit());
 
-    // Another ack
     w.record_ack(10);
     // need_ack_bytes=0, last_ack_bytes=20, last_ack_seq=1 < receive_seq=3
     // check: 0+64+20=84 <= 84 ✓

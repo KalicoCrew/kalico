@@ -32,4 +32,3 @@ fn weights_reduce_to_uniform() {
     assert!((wdd[1] - (-2.0 / (h * h))).abs() < 1e-12);
     assert!((wdd[2] - 1.0 / (h * h)).abs() < 1e-12);
 }
-

@@ -1,14 +1,4 @@
 #!/usr/bin/env bash
-# Local end-to-end test of the observability pipeline — NO printer required.
-#
-# emit (real host serializers) -> events/*.jsonl -> Vector (tail+parse+ship)
-# -> VictoriaLogs -> query-logs LogsQL recipes -> durability (VL down/backfill).
-#
-# Prereq: the local rig from docs/kalico-rewrite/observability/README-local-testrig.md
-# (VictoriaLogs + Vector binaries fetched under .tools/observability/). This
-# script was validated against VictoriaLogs v1.50.0 + Vector v0.55.0.
-#
-# Run from the repo root:  bash test/observability/e2e_local.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -18,10 +8,8 @@ VL_BIN="$RIG/bin/victoria-logs-prod"
 VECTOR_BIN="$RIG/vector-arm64-apple-darwin/bin/vector"
 VL="http://127.0.0.1:9428"
 
-# Safety: only ever operate inside the gitignored rig dir.
 git -C "$ROOT" check-ignore "$RIG" >/dev/null || { echo "ABORT: $RIG not gitignored"; exit 1; }
 mkdir -p "$EVENTS"
-# Remove only the two named producer files (never a glob on a variable).
 rm -f "$EVENTS/host-py.jsonl" "$EVENTS/host-rust.jsonl"
 
 q(){ curl -s "$VL/select/logsql/query" --data-urlencode "query=$1" --data-urlencode "limit=${2:-50}"; }

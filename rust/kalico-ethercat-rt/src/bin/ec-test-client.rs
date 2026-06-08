@@ -1,5 +1,3 @@
-//! Usage: ec-test-client [--socket PATH] [--mm F] [--secs F]
-
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};

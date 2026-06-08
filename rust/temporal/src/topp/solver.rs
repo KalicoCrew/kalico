@@ -52,20 +52,6 @@ use clarabel::solver::{
 use crate::topp::constraints::{Cone, ConstraintBundle};
 use crate::topp::scaling::SolverScale;
 
-/// One linearized Taylor cut produced by the SLP outer loop.
-///
-/// - `PathJerkWeights`: weight-based path-jerk cut. `b″ = Σ_k w_k·b_{idx[k]}`
-///   (from `b_dd_weights`); rows scaled by `h̄²` so they are O(1) regardless of
-///   grid refinement. For uniform spacing the row reduces bit-exactly to the
-///   legacy 3-point second-difference form.
-///
-/// - `AxisJerk`: per-axis Cartesian jerk cut linearizing
-///   `j_axis = c'''·b^(3/2) + 3·c''·a·√b + c'·s⃛` at the iterate. The
-///   cross-term `a·√b` is bilinear-times-sqrt (indefinite Hessian on `(a,b)`),
-///   so the cut is a LOCAL approximation only. The L∞ trust region + accept-
-///   only-if-decrease backtracking in `slp_solve_with_axis_jerk_chain` is what
-///   makes the SLP converge despite the non-convex linearization.
-///   Numerical identity check: `tests/step9_cut_identity.rs`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum SlpCut {
     /// Weight-based path-jerk cut. Rows scaled by `h̄²` to stay O(1).
@@ -96,7 +82,6 @@ pub(crate) struct AxisJerkCut {
     pub cp: f64,
     pub cpp: f64,
     pub cppp: f64,
-    /// `j_max[axis] · target_ratio`.
     pub j_lim_inflated: f64,
 }
 
@@ -158,7 +143,6 @@ pub(crate) enum SolverSetupError {
     InvalidBundle(String),
 }
 
-/// Zero upper-triangle CSC for Clarabel's quadratic term (pure linear objective).
 fn build_p_zero(n_vars: usize) -> CscMatrix<f64> {
     CscMatrix::<f64> {
         m: n_vars,
@@ -169,8 +153,6 @@ fn build_p_zero(n_vars: usize) -> CscMatrix<f64> {
     }
 }
 
-/// Returns `SolverSetupError` for `RotatedSecondOrder` (not in Clarabel 0.11;
-/// `build_chain()` should never emit it).
 fn map_clarabel_cones(
     bundle: &ConstraintBundle,
 ) -> Result<Vec<clarabel::solver::SupportedConeT<f64>>, SolverSetupError> {
@@ -318,7 +300,6 @@ fn append_axis_jerk_cut_to_clarabel(
     let rhs_pos = (j - k_const) / row_scale;
     let rhs_neg = (j + k_const) / row_scale;
 
-    // Sign-convention: A_clarabel = -A_k.
     let pos_row = *n_rows;
     push_nz(rowval, nzval, anchor_b_col, pos_row, alpha_b_anchor_s);
     for &(col, alpha) in &entries_extra_s {
@@ -581,14 +562,6 @@ fn solve_with_cuts_and_trust_region(
     Ok(extract_solution(&soln.x, n_grid, status))
 }
 
-// SLP outer iteration (Lee 2024 §III–§IV).
-//
-// The CL-2024 SOCP relaxation is demonstrably loose on curved high-jerk-load
-// segments. Lee 2024's mitigation: append a first-order Taylor cut on `1/√b`
-// at the current iterate and re-solve. Each inner SOCP stays convex; the cut
-// lies below the convex-down `1/√b` curve and thus tightens the relaxation.
-// The chain path emits weight-based cuts carrying h̄² so rows stay O(1).
-
 /// Hard cap; Lee 2024 reports ~5–30 iterations in practice.
 const SLP_MAX_OUTER_ITERS: u32 = 50;
 
@@ -609,10 +582,7 @@ const SLP_B_CUT_FLOOR: f64 = 100.0;
 /// iterations before settling (Lee 2024: 5–30 typical).
 const SLP_WARMUP_ITERS: u32 = 8;
 
-/// Required best-so-far improvement across the trailing window.
 const SLP_MIN_IMPROVEMENT: f64 = 0.01;
-
-/// Sliding window length for the no-improvement divergence rule.
 const SLP_NO_IMPROVEMENT_WINDOW: usize = 10;
 
 #[derive(Debug, Clone, Copy)]
@@ -992,11 +962,6 @@ pub(crate) fn slp_solve_chain(
     ))
 }
 
-/// Path-jerk + per-axis-jerk SLP for chain grids (non-uniform spacing).
-///
-/// Clone of `slp_solve_with_axis_jerk` control flow; calls `slp_solve_chain`
-/// then `max_axis_ratio_chain` / `build_axis_jerk_cuts_chain` per iteration.
-/// Wired into the schedule entry in Task 8.
 #[allow(clippy::too_many_lines)]
 pub(crate) fn slp_solve_with_axis_jerk_chain(
     bundle: &ConstraintBundle,

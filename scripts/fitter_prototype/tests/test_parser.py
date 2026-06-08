@@ -43,7 +43,6 @@ G1 X2 Y2
 
 
 def test_parse_g0_is_marker():
-    # G0 breaks the polyline (non-extrusion travel)
     text = "G1 X1 Y1\nG0 X5 Y5\nG1 X6 Y6\n"
     tokens = parse(text)
     assert [type(t).__name__ for t in tokens] == ["Move", "Marker", "Move"]
@@ -58,7 +57,6 @@ def test_parse_strips_comments_and_blank_lines():
 
 
 def test_parse_z_change_is_marker():
-    # A move with Z change but no XY also breaks the polyline.
     text = "G1 X1 Y1\nG1 Z0.4\nG1 X2 Y2\n"
     tokens = parse(text)
     kinds = [type(t).__name__ for t in tokens]

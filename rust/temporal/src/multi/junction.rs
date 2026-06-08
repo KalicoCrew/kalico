@@ -118,8 +118,6 @@ fn centripetal_cap(kappa: f64, limits: &Limits) -> f64 {
     }
 }
 
-/// Sharp-corner JD cap.
-///
 /// Uses `cos(α/2) = sqrt((1 + dot)/2)` (half-angle identity) to avoid the
 /// `arccos(dot)`-then-`cos(α/2)` NaN trap in f64.
 fn sharp_corner_jd_cap(
@@ -175,7 +173,6 @@ fn forward_unit_tangent_at_start(curve: &VectorNurbs<f64, 3>) -> [f64; 3] {
 
 fn curvature_at_end(curve: &VectorNurbs<f64, 3>) -> f64 {
     if curve.degree() < 2 {
-        // degree-1 NURBS has zero curvature everywhere.
         return 0.0;
     }
     let u_end = *curve.knots().last().expect("knots non-empty");

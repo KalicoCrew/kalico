@@ -4,8 +4,6 @@ use temporal::topp::stencil::s_dddot_at_weights;
 const H: f64 = 0.4;
 const N_GRID: usize = 10;
 
-/// Direct evaluation of per-axis Cartesian jerk at the iterate `(b̄, ā)`,
-/// using the weight-based s‴ with uniform spacing (identical to s_dddot_at for uniform grids).
 fn j_axis_at_iterate(
     b_bars: &[f64],
     a_bars: &[f64],

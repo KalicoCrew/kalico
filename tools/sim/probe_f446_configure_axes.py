@@ -1,24 +1,4 @@
 #!/usr/bin/env python3
-"""F446 sim: send ConfigureAxes via kalico-protocol, then watch for crash.
-
-The hypothesis: configure_axes registers step_time_event timers for
-StepTime motors. step_time_event fires every 100 ms post-config, calling
-into kalico_runtime_step_ring_peek_head + arm_producer_timer_if_kicked_inline.
-If any of those FFIs / arm logic has a bug that's only reachable post-
-configure_axes, this is when F4 starts crashing on the bench.
-
-Test plan:
-  1. Boot F4 sim.
-  2. Drain UART.
-  3. Send ConfigureAxes (kalico-protocol kind=0x0030, body 20 bytes).
-  4. Watch for ConfigureAxesResponse + any subsequent shutdown / silence.
-  5. Pump for 10 seconds; emit timestamps for every received frame.
-
-If the sim crashes (sim process dies, or sim stops emitting any frames for
-> 1 s of wall-clock after the ConfigureAxesResponse), we've reproduced the
-bench bug in sim.
-"""
-
 from __future__ import annotations
 
 import socket
@@ -80,7 +60,6 @@ def parse_one_kalico_frame(buf: bytes, start: int):
 
 
 def collect_frames(buf: bytes):
-    """Yield (kind, version, correlation_id, body, raw_offset) tuples."""
     out = []
     i = 0
     while i < len(buf):
@@ -112,7 +91,6 @@ def main():
             break
     print(f"[probe] drained {len(pre)} bytes pre-existing UART")
 
-    # Build ConfigureAxes blob: Cartesian, Z only, 400 steps/mm on Z.
     kinematics = 1  # CartesianXyzAndE
     present_mask = 0x04  # bit 2 = Z
     awd_mask = 0x00
@@ -128,7 +106,6 @@ def main():
     print(f"[probe] -> ConfigureAxes ({len(frame)}B): {frame.hex()}")
     s.sendall(frame)
 
-    # Watch for response + any subsequent traffic
     rx_total = bytearray()
     last_byte_t = time.monotonic()
     last_emit_t = time.monotonic()
@@ -150,7 +127,6 @@ def main():
                 )
             last_byte_t = now
             rx_total.extend(chunk)
-        # Periodic-status report
         if time.monotonic() - last_emit_t > 1.0:
             silence = time.monotonic() - last_byte_t
             print(
@@ -163,7 +139,6 @@ def main():
                 )
                 silence_warned = True
 
-        # Parse frames and look for ConfigureAxesResponse
         frames, _ = collect_frames(bytes(rx_total))
         for (kind, ver, corr, body), off, n in frames:
             if (
@@ -177,7 +152,6 @@ def main():
                     f"[probe] +++ ConfigureAxesResponse result={result} (at offset {off}) +++"
                 )
 
-    # Final summary
     print("")
     print("=" * 60)
     print(
@@ -186,7 +160,6 @@ def main():
     print(f"[probe] Saw ConfigureAxesResponse: {saw_config_response}")
     print(f"[probe] Final silence: {time.monotonic() - last_byte_t:.2f}s")
 
-    # Decode all kalico frames we saw, count by kind
     frames, _ = collect_frames(bytes(rx_total))
     by_kind = {}
     for (kind, ver, corr, body), off, n in frames:

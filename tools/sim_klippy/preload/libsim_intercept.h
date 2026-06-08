@@ -8,7 +8,6 @@
 #define FAKE_FD_BASE 0x10000000
 #define MAX_FAKE_FDS 256
 
-// Slot kinds — see spec §"Per-fd state and slot allocation"
 enum sim_slot_kind {
     SIM_NONE = 0,
     SIM_GPIOCHIP,

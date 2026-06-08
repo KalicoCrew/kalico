@@ -1,14 +1,3 @@
-// Minimal virtual-time shim for the klippy host process.
-//
-// Only intercepts clock_gettime so klippy's get_monotonic() returns the
-// shared virtual clock. Does NOT intercept ppoll/poll/nanosleep/timer_*
-// — klippy's reactor uses real I/O waiting, which lets it respond to
-// MCU serial data immediately.
-//
-// The MCU processes load the full libvtime.so (which overrides ppoll
-// etc.) so their timer dispatch advances the virtual clock. Klippy
-// reads the same clock via this shim, keeping both sides synchronized.
-
 #define _GNU_SOURCE
 #include <dlfcn.h>
 #include <stdatomic.h>

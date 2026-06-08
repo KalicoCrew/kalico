@@ -3,8 +3,6 @@ use nurbs::bezier::BezierPiece;
 
 #[test]
 fn differentiate_quadratic() {
-    // p(t) = 3 + 2(t-1) + 5(t-1)^2  on [1, 3]
-    // p'(t) = 2 + 10(t-1)
     let p = BezierPiece::<f64> {
         u_start: 1.0,
         u_end: 3.0,

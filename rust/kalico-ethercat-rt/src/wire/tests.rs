@@ -109,7 +109,6 @@ fn decodes_set_torque_command() {
         execute_at_ns: 123_456_789,
     };
     let payload = frame_payload(MessageKind::SetTorque, 7, &msg.encoded_to_vec());
-    // control channel (not the pieces channel)
     let cmd = decode_command(0, &payload[..]).expect("decode");
     match cmd {
         Command::SetTorque {

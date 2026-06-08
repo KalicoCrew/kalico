@@ -26,7 +26,7 @@ pub enum HostEvent {
 
 #[derive(Debug)]
 pub struct TraceRing {
-    #[allow(dead_code)] // stored at construction, future use for overflow policy
+    #[allow(dead_code)]
     capacity: usize,
     sticky_overflow: bool,
     subscriber: Option<SyncSender<TraceEvent>>,

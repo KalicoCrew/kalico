@@ -1,4 +1,3 @@
-# test/test_log_sinks.py
 import json
 import logging
 
@@ -45,7 +44,6 @@ class _BoomSink(log_sinks.Sink):
 
 
 def test_registry_emit_failure_is_loud():
-    # Per spec §12 a write failure is a hard error, not silently swallowed.
     reg = log_sinks.SinkRegistry([_BoomSink()])
     with pytest.raises(OSError):
         reg.emit(_rec())
@@ -58,7 +56,7 @@ def test_text_sink_writes_stock_message_only(tmp_path):
     sink.close()
     with open(path) as f:
         content = f.read()
-    assert content == "Stats 1.0: a=1 b=2\n"  # no level/time prefix
+    assert content == "Stats 1.0: a=1 b=2\n"
 
 
 def test_text_sink_rollover_info_header(tmp_path):
@@ -94,29 +92,25 @@ def test_jsonl_sink_writes_valid_json_line(tmp_path):
 
 
 def test_jsonl_sink_flushes_each_record(tmp_path):
-    # Relaxed durability: each record is flushed to the OS immediately so it
-    # is readable without closing the file (spec §3/§7 durability contract).
     path = str(tmp_path / "host-py.jsonl")
     sink = log_sinks.JsonlSink(path)
     sink.emit_record(_rec("one"))
     with open(path) as f:
-        assert f.read().count("\n") == 1  # visible before close
+        assert f.read().count("\n") == 1
     sink.close()
 
 
 def test_jsonl_sink_periodic_fsync_backstop(tmp_path, monkeypatch):
-    # Spec §3/§7: relaxed default = flush-per-record + a periodic fsync
-    # backstop. With interval 0 every emit fsyncs; close() always fsyncs.
     calls = []
     monkeypatch.setattr(log_sinks.os, "fsync", lambda fd: calls.append(fd))
     path = str(tmp_path / "host-py.jsonl")
     sink = log_sinks.JsonlSink(path, fsync_interval=0.0)
     sink.emit_record(_rec("a"))
     sink.emit_record(_rec("b"))
-    assert len(calls) >= 2  # fsynced on each emit when interval elapsed
+    assert len(calls) >= 2
     pre_close = len(calls)
     sink.close()
-    assert len(calls) == pre_close + 1  # final fsync on close
+    assert len(calls) == pre_close + 1
 
 
 def test_jsonl_sink_default_interval_does_not_fsync_every_record(
@@ -125,10 +119,9 @@ def test_jsonl_sink_default_interval_does_not_fsync_every_record(
     calls = []
     monkeypatch.setattr(log_sinks.os, "fsync", lambda fd: calls.append(fd))
     path = str(tmp_path / "host-py.jsonl")
-    sink = log_sinks.JsonlSink(path)  # default interval (>0)
+    sink = log_sinks.JsonlSink(path)
     sink.emit_record(_rec("a"))
     sink.emit_record(_rec("b"))
-    # The two back-to-back emits are within the interval: no per-record fsync.
     assert calls == []
-    sink.close()  # close still fsyncs once
+    sink.close()
     assert len(calls) == 1

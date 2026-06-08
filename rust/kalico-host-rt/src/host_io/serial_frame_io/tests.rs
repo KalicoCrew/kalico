@@ -7,7 +7,6 @@ use kalico_native_transport::frame::{CHANNEL_CONTROL, encode_frame};
 use crate::host_io::test_harness::FakeSerialPort;
 use crate::host_io::wire::build_frame;
 
-// Helper: drain all bytes written to the fake port's TX buffer.
 fn drain_tx(handles: &crate::host_io::test_harness::FakePortHandles) -> Vec<u8> {
     let mut g = handles.tx.lock().unwrap();
     let v = g.clone();
@@ -15,7 +14,6 @@ fn drain_tx(handles: &crate::host_io::test_harness::FakePortHandles) -> Vec<u8> 
     v
 }
 
-// Helper: feed bytes into the fake port's RX buffer.
 fn feed_rx(handles: &crate::host_io::test_harness::FakePortHandles, bytes: &[u8]) {
     handles.rx.lock().unwrap().extend(bytes);
 }
@@ -58,7 +56,6 @@ fn partial_klipper_frame_survives_identify_to_reactor_handoff() {
     let complete = build_frame(&[0xAA], 0);
     let next = build_frame(&[0xBB], 1);
 
-    // Phase 1 — "identify" reads the complete frame plus the FIRST half of `next`.
     let split = next.len() / 2;
     feed_rx(&handles, &complete);
     feed_rx(&handles, &next[..split]);
@@ -80,9 +77,6 @@ fn partial_klipper_frame_survives_identify_to_reactor_handoff() {
         "phase 1 frame must match `complete`",
     );
 
-    // Phase 2 — "reactor side" feeds the remaining bytes. The Demuxer
-    // state inside SerialFrameIo must have kept the partial bytes so that
-    // `next` is completed here without losing the already-consumed prefix.
     feed_rx(&handles, &next[split..]);
 
     let outcome = io

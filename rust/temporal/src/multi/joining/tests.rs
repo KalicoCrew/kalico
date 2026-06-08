@@ -15,7 +15,6 @@ fn forward_propagates_v_end_to_next_v_start() {
     let mut states = vec![make_state(0.0, 100.0), make_state(0.0, 200.0)];
     let corner_caps = vec![150.0];
     let dirty = forward_sweep(&mut states, &corner_caps);
-    // corner_caps[0] = 150, states[0].v_end = 100; min = 100. New v_start[1] = 100.
     assert_eq!(dirty, 1);
     assert!((states[1].v_start - 100.0).abs() < 1e-6);
     assert!(states[1].dirty);
@@ -35,7 +34,6 @@ fn reverse_propagates_v_start_to_prev_v_end() {
     let mut states = vec![make_state(0.0, 200.0), make_state(100.0, 200.0)];
     let corner_caps = vec![150.0];
     let dirty = reverse_sweep(&mut states, &corner_caps);
-    // corner_caps[0] = 150, states[1].v_start = 100; min = 100. New v_end[0] = 100.
     assert_eq!(dirty, 1);
     assert!((states[0].v_end - 100.0).abs() < 1e-6);
 }
@@ -56,15 +54,10 @@ fn bidirectional_sweep_uses_lower_achieved_side() {
 
 #[test]
 fn converges_in_one_sweep_on_already_consistent() {
-    // Stub test — full plan_batch test in the integration fixtures. Direct
-    // join_until_converged requires ChainGrid setup, which is integration-test scope.
-    // Unit-test path: assert forward_sweep + reverse_sweep both no-op on a
-    // pre-balanced state.
     let mut states = vec![make_state(0.0, 150.0), make_state(150.0, 200.0)];
     let corner_caps = vec![150.0];
     let f_dirty = forward_sweep(&mut states, &corner_caps);
     let r_dirty = reverse_sweep(&mut states, &corner_caps);
     assert_eq!(f_dirty, 0);
     assert_eq!(r_dirty, 0);
-    // join_until_converged would return Converged in one sweep with no re-solves.
 }

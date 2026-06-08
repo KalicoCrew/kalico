@@ -3,13 +3,8 @@ use crate::multi::parallel::fan_out_solves;
 use crate::multi::{BatchError, JoiningStatus};
 use crate::topp::chain::ChainGrid;
 
-/// Hard cap on joining sweeps. Typical convergence is 1–3 sweeps.
 const MAX_SWEEPS: u32 = 10;
 
-/// Run forward + reverse sweep pairs, re-solving dirty chains between sweeps,
-/// until velocity propagation stabilizes or the sweep cap is reached.
-///
-/// Returns `(sweeps_used, JoiningStatus)`.
 pub(crate) fn join_until_converged(
     chain_grids: &[ChainGrid],
     states: &mut [ChainState],
@@ -42,7 +37,6 @@ pub(crate) fn join_until_converged(
     ))
 }
 
-/// Per-chain scratch state during joining.
 pub(crate) struct ChainState {
     pub v_start: f64,
     pub v_end: f64,

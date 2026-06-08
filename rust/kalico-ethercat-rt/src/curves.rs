@@ -1,5 +1,3 @@
-//! `AxisRing`: per-axis piece ring for the EtherCAT DC loop.
-
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use runtime::fault_sink::FaultSink;

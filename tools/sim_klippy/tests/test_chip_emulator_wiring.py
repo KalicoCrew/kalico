@@ -1,10 +1,3 @@
-"""End-to-end: spin up TMC5160 / TMC2209 emulators behind a
-ChipSocketServer, connect a Unix socket, exchange bytes, assert the
-chip latched the value.
-
-Catches: ChipSocketServer chunk size mismatches with the chip framing,
-threading-loop quirks, the round-trip path TMC firmware will use."""
-
 import os
 import socket
 import time
@@ -33,7 +26,6 @@ def _wait_for_socket(path, timeout=0.5):
 
 
 def test_tmc5160_via_socket():
-    """5-byte SPI: write GLOBALSCALER=200, double-read returns 200."""
     sock_path = "/tmp/test_tmc5160_via_socket"
     if os.path.exists(sock_path):
         os.unlink(sock_path)
@@ -50,7 +42,6 @@ def test_tmc5160_via_socket():
         # Latched read: first read fetches 200 into latch
         client.sendall(bytes([0x0B, 0, 0, 0, 0]))
         client.recv(5)
-        # Second read returns it
         client.sendall(bytes([0x0B, 0, 0, 0, 0]))
         reply = client.recv(5)
         assert reply[4] == 200
@@ -61,8 +52,6 @@ def test_tmc5160_via_socket():
 
 
 def test_tmc2209_via_socket_read_request():
-    """5-byte wire-form read request → 10-byte wire-form reply (UART
-    start/stop framing on each logical byte)."""
     sock_path = "/tmp/test_tmc2209_via_socket_read"
     if os.path.exists(sock_path):
         os.unlink(sock_path)

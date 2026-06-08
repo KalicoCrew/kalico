@@ -271,16 +271,7 @@ GLOBALSCALER_ERROR = (
 class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
     def __init__(self, config, mcu_tmc, direct_mode=False):
         super().__init__(config, mcu_tmc, MAX_CURRENT)
-
-        # In direct mode (phase stepping) the chip's current scaling is
-        # selected by step pulses (IRUN on a step event, decay to IHOLD
-        # via IHOLDDELAY). With no step pulses ever asserted in phase
-        # stepping, IHOLD is the effective ceiling — set both equal so
-        # the effective current is identical regardless of which the
-        # chip internally selects (protects against unexpected step
-        # events).
         self._direct_mode = direct_mode
-
         self.cs = config.getint("driver_CS", None, minval=0, maxval=31)
         gscaler, irun, ihold = self._calc_current(
             self.req_run_current, self.req_hold_current
@@ -364,7 +355,6 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
         )
         val = self.fields.set_field("globalscaler", gscaler)
         self.mcu_tmc.set_register("GLOBALSCALER", val, print_time)
-        # See __init__ comment: IHOLD = IRUN in direct mode.
         self.fields.set_field("ihold", irun if self._direct_mode else ihold)
         val = self.fields.set_field("irun", irun)
         self.mcu_tmc.set_register("IHOLD_IRUN", val, print_time)
@@ -376,18 +366,6 @@ class TMC5160CurrentHelper(tmc.BaseTMCCurrentHelper):
 
 
 def _enable_direct_mode(config, stepper_section, fields):
-    """Configure a TMC5160 for phase stepping (direct_mode=1).
-
-    Sets GCONF.direct_mode via the field collector so the value lands in
-    the connect-time SPI burst. Validates that incompatible options
-    (stealthchop_threshold > 0, microsteps != 256) are absent — raises
-    config.error on violation.
-
-    Note: ``stealthchop_threshold`` is read from the ``[tmc5160 *]``
-    section (i.e. ``config``) per existing TMCStealthchopHelper
-    convention. ``microsteps`` is read from the ``[stepper_*]`` section
-    (``stepper_section``) per TMCMicrostepHelper convention.
-    """
     # direct_mode is NOT set in the field cache here — it must be
     # written AFTER CHOPCONF (toff>0) is on the chip, or the bootstrap
     # charge pump starves. _xdirect_preload handles the sequencing.
@@ -417,16 +395,7 @@ class TMC5160:
         )
         # Allow virtual pins to be created
         tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
-        # 2026-05-18 phase-stepping integration: when the matching
-        # [stepper_*] section sets phase_stepping=True, queue
-        # GCONF.direct_mode=1 and validate incompatible options. The TMC
-        # SPI burst at klippy connect time will write the bit before any
-        # motion starts. Detected *before* the current helper is built
-        # so the helper can switch to IHOLD=IRUN mapping (direct mode
-        # uses step pulses to select between IRUN/IHOLD; with no step
-        # pulses ever asserted in phase stepping, the two must be equal
-        # to guarantee deterministic effective current).
-        stepper_name = " ".join(config.get_name().split()[1:])  # "stepper_x"
+        stepper_name = " ".join(config.get_name().split()[1:])
         if config.has_section(stepper_name):
             stepper_section = config.getsection(stepper_name)
         else:
@@ -524,19 +493,6 @@ class TMC5160:
             self.fields.set_field("tpowerdown", 255)
 
     def _xdirect_preload(self):
-        """Write XDIRECT with coil currents matching the current MSCNT phase.
-
-        Called after _init_registers() when a phase-stepping-enabled
-        TMC5160 is enabled. In direct_mode, register 0x2D is XDIRECT
-        (mapped as "XTARGET" in our register dict). Without this
-        preload, XDIRECT stays at its reset value 0x00000000 — zero
-        current in both coils — until the first ISR write.
-
-        Also gates ISR XDIRECT writes: disables them before the SPI
-        traffic (so the ISR doesn't compete with this foreground
-        register access) and re-enables after the XDIRECT write is
-        done.
-        """
         mcu_obj = self.mcu_tmc.tmc_spi.spi.get_mcu()
         try:
             disable_cmd = mcu_obj.lookup_command(
@@ -564,13 +520,11 @@ class TMC5160:
         chopconf_val = self.fields.registers.get("CHOPCONF")
         if chopconf_val is not None:
             self.mcu_tmc.set_register("CHOPCONF", chopconf_val)
-        # Now safe to enable direct_mode — chopper is running.
         gconf_val = self.fields.registers.get("GCONF", 0)
         gconf_val |= 1 << 16  # direct_mode
         gconf_val &= ~(1 << 2)  # SpreadCycle (clear en_pwm_mode)
         self.mcu_tmc.set_register("GCONF", gconf_val)
         self.fields.registers["GCONF"] = gconf_val
-        # Read the live electrical phase from the microstep counter
         mscnt = self.mcu_tmc.get_register("MSCNT") & 0x3FF
         angle = mscnt * 2.0 * math.pi / 1024.0
         coil_a = int(round(248.0 * math.cos(angle)))
@@ -586,7 +540,6 @@ class TMC5160:
             coil_b,
             xdirect_val,
         )
-        # Re-enable ISR XDIRECT writes now that foreground SPI is done
         if disable_cmd is not None:
             disable_cmd.send([])
             logging.info("TMC5160 phase_stepping_enable_spi sent")
@@ -603,21 +556,12 @@ class TMC5160:
         )
 
     def get_phase_config(self):
-        """Return (bus_id, cs_pin_id) for phase-stepping integration.
-
-        Raises if this TMC5160 is not configured for phase stepping.
-        Resolves the integer IDs lazily on first call (the MCU must
-        have completed identify before this fires, which is guaranteed
-        by motion_toolhead._configure_axes_per_mcu running in a
-        klippy:connect handler).
-        """
         if not self._phase_stepping:
             raise self.printer.config_error(
                 "get_phase_config called on a TMC5160 without "
                 "phase_stepping=True on the matching stepper section"
             )
         if self._phase_bus_id is None or self._phase_cs_pin_id is None:
-            # Lazy resolution: pull integer IDs from the now-identified MCU.
             self._phase_bus_id, self._phase_cs_pin_id = (
                 self.mcu_tmc.tmc_spi.get_bus_and_cs_ids()
             )

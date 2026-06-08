@@ -1,16 +1,3 @@
-//! Smoke-checks that header generation succeeds. This test does NOT verify
-//! drift on its own: the workspace test build activates BOTH `header-nurbs`
-//! and `header-runtime`, so cbindgen here emits the union of symbols and
-//! cannot be byte-compared against either single-feature committed header
-//! (gen-headers is feature-muxed — see src/bin/gen_headers.rs).
-//!
-//! The authoritative drift gate is `./scripts/ci.sh cbindgen-drift` (the
-//! `rust-cbindgen-drift` CI job): it regenerates each header per-feature via
-//! `tools/regen_headers.sh` and `git diff --exit-code`s them against the
-//! committed copies. Output is deterministic (`sort_by = "Name"` in both
-//! cbindgen configs + cbindgen pinned in Cargo.lock), so exact matching is
-//! reliable — the earlier "cross-platform ordering" caveat was incorrect.
-
 #[test]
 #[cfg(all(feature = "host", feature = "header-nurbs"))]
 fn nurbs_header_generates_successfully() {

@@ -32,13 +32,10 @@ const PURE_AXIS_TOLERANCE: f64 = 1e-12;
 /// shortcut. One nanometer admits every collinear-cubic the planner emits.
 const COLLINEAR_TOLERANCE: f64 = 1e-9;
 
-/// Floor for `f_prime` in the Newton denominator.
 const NEWTON_DENOMINATOR_FLOOR: f64 = 1e-18;
 
-/// Convergence threshold for the Newton step size on the normalized parameter `s ∈ [0, 1]`.
 const NEWTON_PARAM_TOLERANCE: f64 = 1e-12;
 
-/// Maximum Newton iterations before bailing.
 const NEWTON_MAX_ITERS: usize = 12;
 
 /// Residual budget for the Newton inverter's post-convergence position check.
@@ -46,7 +43,6 @@ const NEWTON_MAX_ITERS: usize = 12;
 /// genuinely-on-curve target lands well inside the budget.
 const NEWTON_RESIDUAL_MM: f64 = 0.05;
 
-/// Seed clamp band for the Newton initial guess `s_seed`.
 const NEWTON_SEED_CLAMP: f64 = 1e-6;
 
 impl ShaperState {
@@ -514,7 +510,6 @@ fn invert_cubic_bezier_xyz_to_param(
     debug_assert_eq!(curve.degree(), 3);
     debug_assert_eq!(cps.len(), 4);
 
-    // First-derivative control polygon: `3·(P_{i+1} − P_i)` for i in 0..3.
     let d1_cps: [[f64; 3]; 3] = [
         [
             3.0 * (cps[1][0] - cps[0][0]),
@@ -532,7 +527,6 @@ fn invert_cubic_bezier_xyz_to_param(
             3.0 * (cps[3][2] - cps[2][2]),
         ],
     ];
-    // Second-derivative control polygon: `2·(D1_{i+1} − D1_i)` for i in 0..2.
     let d2_cps: [[f64; 3]; 2] = [
         [
             2.0 * (d1_cps[1][0] - d1_cps[0][0]),

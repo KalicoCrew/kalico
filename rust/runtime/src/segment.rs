@@ -1,6 +1,3 @@
-/// Kinematic transform tag — identifies the motor-frame transform the MCU
-/// applies to X/Y before evaluating the Bézier pieces.
-///
 /// This discriminant is embedded in the MCU wire protocol (see
 /// `dispatch.rs:KINEMATICS_COREXY`) and must never be renumbered without a
 /// matching change on both sides of the host/MCU boundary.

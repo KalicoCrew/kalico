@@ -43,7 +43,6 @@ fn plan_batch_single_segment_works() {
     let output = plan_batch(input).expect("should succeed");
     assert_eq!(output.profiles.len(), 1);
 
-    // Single segment endpoints both 0.
     assert!(output.profiles[0].samples[0].v < 1e-3);
     assert!(output.profiles[0].samples.last().unwrap().v < 1e-3);
 }
@@ -134,14 +133,8 @@ fn smooth_junction_has_no_accel_impulse() {
     );
 }
 
-/// Step-0 plumbing contract: a non-zero `initial_velocity` reaches
-/// TOPP-RA's boundary condition and the first sample of the first
-/// (and only) segment's profile matches the requested starting speed
-/// to within the joining `ε_velocity = 1 mm/s` tolerance.
 #[test]
 fn plan_batch_threads_nonzero_initial_velocity() {
-    // 200 mm move: enough path length to feasibly start at 50 mm/s and
-    // decelerate to 0.0 under the textbook 5 km/s² limit.
     let curve = VectorNurbs::<f64, 3>::try_new(
         1,
         vec![0.0, 0.0, 1.0, 1.0],
@@ -174,7 +167,6 @@ fn plan_batch_threads_nonzero_initial_velocity() {
         "first-sample velocity {v0} must equal requested initial_velocity 50.0 mm/s \
          within the 1 mm/s joining tolerance",
     );
-    // Terminal should be at rest.
     let v_last = output.profiles[0].samples.last().unwrap().v;
     assert!(
         v_last < 1.0,

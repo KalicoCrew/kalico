@@ -1,11 +1,3 @@
-// Rust mirror of the C-side `StepQueue` (`src/step_queue.h`).
-//
-// Storage is owned by C on the MCU; on host/test builds callers construct
-// `StepQueue::new()` instances directly.
-//
-// SPSC ring of power-of-two depth (`STEP_QUEUE_DEPTH = 32`) using free-running
-// `u16` counters; slot index = `counter & STEP_QUEUE_DEPTH_MASK`.
-//
 // NON-RACING, not lock-free: single-core safety requires the producer (TIM5
 // ISR) and consumer (step-output timer ISR) to share one NVIC priority so they
 // never interleave. If that ever splits, the volatile-u16 + fence discipline is
@@ -19,7 +11,6 @@ use core::sync::atomic::{Ordering, fence};
 
 /// Power-of-two ring depth shared with the C side; see `src/step_queue.h`.
 pub const STEP_QUEUE_DEPTH: usize = 32;
-/// Index mask derived from the depth — `counter & MASK` is the slot index.
 pub const STEP_QUEUE_DEPTH_MASK: u16 = (STEP_QUEUE_DEPTH as u16) - 1;
 pub const N_AXIS_STEP_QUEUES: usize = 4;
 
@@ -37,8 +28,6 @@ pub struct StepEntry {
     pub _pad: [u8; 3],
 }
 
-/// SPSC ring of step entries. Storage is C-owned on the MCU; on host the
-/// `new()` constructor lets tests build instances directly.
 #[repr(C)]
 #[derive(Debug)]
 pub struct StepQueue {
@@ -82,9 +71,6 @@ impl Default for StepQueue {
     }
 }
 
-// Layout invariants — must match the C-side struct exactly. A future
-// refactor that changes field order or padding will fail here rather than
-// silently corrupting cross-language reads.
 const _: () = {
     assert!(core::mem::size_of::<StepEntry>() == 8);
     assert!(core::mem::size_of::<StepQueue>() == 264);
@@ -96,11 +82,6 @@ unsafe extern "C" {
     pub static step_queues: core::cell::UnsafeCell<[StepQueue; N_AXIS_STEP_QUEUES]>;
 }
 
-/// Raw pointer to the C-owned step queue for axis `i`, or null if `i` is out
-/// of range. MCU-only — host/test builds use `Engine::test_queue_ptrs` instead.
-///
-/// Concentrates the pointer arithmetic over `step_queues` in the boundary
-/// module that owns it, keeping the engine hot path free of `unsafe`.
 #[cfg(not(any(test, feature = "host")))]
 #[must_use]
 pub fn queue_for_axis(i: usize) -> *mut StepQueue {

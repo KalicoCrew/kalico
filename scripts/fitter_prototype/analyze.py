@@ -71,8 +71,9 @@ def plot_residual_histogram(segments: list[Segment], out_path: Path) -> None:
     residuals = [s.max_residual for s in segments if isinstance(s, FittedNurbs)]
     if not residuals:
         return
+    residuals_um = np.asarray(residuals) * 1e3
     fig, ax = plt.subplots(figsize=(7, 4))
-    ax.hist(np.asarray(residuals) * 1e3, bins=50)  # mm -> µm
+    ax.hist(residuals_um, bins=50)
     ax.set_xlabel("max residual per fitted run (µm)")
     ax.set_ylabel("# runs")
     ax.set_title("Fitted run residual distribution")
@@ -122,7 +123,6 @@ def plot_geometry_overlay(
     out_path: Path,
     max_runs: int = 50,
 ) -> None:
-    """First N fitted runs overlaid with corner-blend placeholders and arcs."""
     fig, ax = plt.subplots(figsize=(8, 8))
     n_drawn = 0
     for seg in segments:

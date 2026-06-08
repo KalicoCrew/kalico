@@ -214,7 +214,6 @@ fn straight_line_solves_to_nontrivial_profile() {
     );
     assert_eq!(result.b.len(), 50);
 
-    // Endpoints clamped to zero (v_start = v_end = 0).
     assert!(
         result.b[0].abs() < 1e-6,
         "b[0] should be ~0, got {}",
@@ -226,13 +225,6 @@ fn straight_line_solves_to_nontrivial_profile() {
         result.b[49]
     );
 
-    // For length=100mm, zero endpoints, v_max=500 mm/s, a_max=5000 mm/s²:
-    //   - If accel-bound throughout: b_max ≈ 2·a·s_peak where s_peak = 50mm,
-    //     so b_max ≈ 2·5000·50 = 500_000 (mm/s)².
-    //   - If velocity-bound: b_max = v_max² = 250_000 (mm/s)².
-    //   - Actual answer is min of the two regimes.
-    // Bracket the midpoint: must be substantially > 0 (not just barely-feasible)
-    // and below v_max² (the global cap).
     let b_mid = result.b[25];
     assert!(
         b_mid > 1e4,
@@ -243,10 +235,6 @@ fn straight_line_solves_to_nontrivial_profile() {
         "b[25] = {b_mid}, expected ≤ v_max² + tolerance"
     );
 
-    // Sign check: from rest, the path must be ACCELERATING in the first half
-    // and DECELERATING in the second half. A sign-flip in the constraint
-    // matrix could produce a profile where b is monotonically increasing or
-    // decreasing, which we'd miss without these checks.
     assert!(
         result.b[10] > result.b[1],
         "must accelerate from rest: b[1]={}, b[10]={}",
@@ -260,7 +248,6 @@ fn straight_line_solves_to_nontrivial_profile() {
         result.b[40]
     );
 
-    // Path acceleration sign: a > 0 in first half, a < 0 in second.
     assert!(
         result.a[5] > 0.0,
         "a[5] = {} should be positive (accelerating)",

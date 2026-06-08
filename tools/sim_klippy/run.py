@@ -1,15 +1,4 @@
 #!/usr/bin/env python3
-"""Klippy-in-loop sim launcher.
-
-Brings up a host-process klipper.elf (kalico runtime as Linux MCU) and a
-fresh klippy instance pointed at it via /tmp/klipper_sim_socket. Sends
-gcode through the api-server unix socket and captures klippy.log.
-
-Run on the Pi after `make` builds out/klipper.elf in the sim repo:
-    python3 run.py G28 X
-
-Defaults are tuned for ~/klipper-sim/repo on trident.local.
-"""
 
 import argparse
 import json
@@ -19,9 +8,6 @@ import socket
 import subprocess
 import time
 
-# Repo root: env override → script dir's grandparent → ~/klipper-sim/repo
-# Lets the same script work both inside the Docker container (where the
-# repo is mounted at /work) and on a Pi with the original layout.
 _DEFAULT_REPO = (
     pathlib.Path(os.environ.get("KALICO_REPO"))
     if os.environ.get("KALICO_REPO")
@@ -44,7 +30,6 @@ ELF_LOG = LOGDIR / "klipper_elf.log"
 
 
 def cleanup_prior():
-    """Best-effort kill of any prior sim processes + stale sockets."""
     subprocess.run(
         ["pkill", "-f", str(KLIPPER_ELF)],
         check=False,
@@ -75,7 +60,6 @@ def spawn_elf():
         stderr=subprocess.STDOUT,
         cwd=str(REPO),
     )
-    # Wait for the PTY symlink to appear.
     for _ in range(50):
         if os.path.exists(SIM_SOCKET):
             return proc
@@ -88,8 +72,6 @@ def spawn_elf():
 
 def spawn_klippy():
     env = os.environ.copy()
-    # Run klippy from the sim repo so it picks up our motion_toolhead etc.
-    # Prefer ~/klippy-env (Pi); fall back to system python3 (Docker etc.).
     klippy_python = pathlib.Path.home() / "klippy-env" / "bin" / "python"
     if not klippy_python.exists():
         import shutil
@@ -110,7 +92,6 @@ def spawn_klippy():
         env=env,
         cwd=str(REPO),
     )
-    # Wait for the api socket.
     for _ in range(150):
         if os.path.exists(KLIPPY_API):
             time.sleep(1.0)  # let the connect finish
@@ -181,7 +162,6 @@ def main():
         time.sleep(2.0)
         print(f"[sim] tail {KLIPPY_LOG}:")
         log = KLIPPY_LOG.read_text() if KLIPPY_LOG.exists() else ""
-        # Filter heartbeat noise
         for line in log.splitlines()[-200:]:
             if "kalico_status_v6" in line:
                 continue

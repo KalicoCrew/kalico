@@ -1,4 +1,3 @@
-// src/linux/sim_chip_socket.c
 #include "sim_chip_socket.h"
 #include <errno.h>
 #include <fcntl.h>
@@ -7,8 +6,8 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
-#include "command.h"  // shutdown
-#include "internal.h" // report_errno
+#include "command.h"
+#include "internal.h"
 
 #define MAX_SOCKETS 16
 

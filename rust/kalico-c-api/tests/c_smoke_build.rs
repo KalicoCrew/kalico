@@ -1,26 +1,3 @@
-//! Compiles the C smoke `main.c` against the regenerated header + the
-//! `libkalico_c_api.a` staticlib. Spec §6.3.
-//!
-//! The C source carries `_Static_assert(offsetof(TraceSample, ...))` for
-//! every ABI-relevant field — this test fails at compile-time if cbindgen
-//! drifts away from the Rust struct layout. Link success additionally
-//! verifies every `kalico_runtime_*` symbol the header declares is actually
-//! exported by the staticlib.
-//!
-//! Prerequisite: a release-mode build of `libkalico_c_api.a` must exist.
-//! `cargo test` does not invoke `cargo build` recursively (and trying to
-//! shell out to `cargo build` from inside `cargo test` would deadlock on
-//! the build lock), so we check for the artifact and skip with a clear
-//! diagnostic if it's missing — CI is expected to sequence build then test.
-//!
-//! Run manually with:
-//! ```bash
-//! cargo build -p kalico-c-api --no-default-features \
-//!     --features host,header-nurbs,header-runtime --release
-//! cargo test -p kalico-c-api --no-default-features \
-//!     --features host,header-runtime --test c_smoke_build
-//! ```
-
 #[test]
 fn c_smoke_compiles_and_links() {
     let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_string());

@@ -1,4 +1,3 @@
-# Python wrapper around the PyO3 motion_bridge native module.
 import logging
 
 try:
@@ -134,8 +133,6 @@ class MotionBridgeWrapper:
             raise ImportError("motion_bridge_native not available")
         self._bridge = _native.MotionBridge()
         self._reactor = reactor
-        # arm_id → BridgeTriggerDispatch; populated by start() so the
-        # credit-freed handler can fire _completion on past-end-time.
         self._homing_dispatches = {}
         self._software_trip_active = False
         self._homing_print_time_base = 0.0
@@ -342,7 +339,6 @@ class MotionBridgeWrapper:
         self._homing_dispatches.pop(int(arm_id), None)
 
     def fire_homing_completion(self, arm_id):
-        # No-op if no dispatch is registered (race with stop).
         dispatch = self._homing_dispatches.get(int(arm_id))
         if dispatch is not None:
             dispatch._fire_past_end_time()
@@ -524,7 +520,6 @@ class BridgeTriggerDispatch:
         self._reactor = reactor
         self._arm_id = _alloc_arm_id()
         self._completion = reactor.completion()
-        # (kind, gpio, active_high, policy, sample_n, velocity_axis, v_min_q16)
         self._sources = []
         self._stepper_oids = []
         self._steppers = []
@@ -605,8 +600,6 @@ class BridgeTriggerDispatch:
             )
             self._handler_registered = True
 
-        # Register arm_id with the toolhead so its drip_move passes the right
-        # arm_ids to submit_homing_move.
         printer = mcu_obj.get_printer()
         toolhead = printer.lookup_object("toolhead", None)
         if toolhead is not None and hasattr(toolhead, "active_homing_arms"):
@@ -655,7 +648,6 @@ class BridgeTriggerDispatch:
         self._completion.complete(self._reason)
 
     def _fire_past_end_time(self):
-        # Only fire if no terminal yet (mirror _on_trip_message).
         if self._reason is not None:
             return
         self._reason = REASON_PAST_END_TIME

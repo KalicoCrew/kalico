@@ -48,7 +48,6 @@ impl StepperRef {
     }
 }
 
-/// FFI ABI: per-stepper binding payload passed from C to Rust.
 /// Sentinel: `tmc_cs_oid == 0xFF` means "no TMC driver" (Pulse-only stepper).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -62,8 +61,6 @@ const _: () = assert!(core::mem::size_of::<StepperBindingRust>() == 4);
 
 pub const TMC_CS_OID_NONE: u8 = 0xFF;
 
-/// Per-logical-axis state for the piece-ring walker engine.
-///
 /// `mode` is atomic so the host can flip between Pulse and Phase without
 /// a stop-the-world handshake.
 #[derive(Debug)]

@@ -1,26 +1,4 @@
 #!/usr/bin/env python3
-"""gcode_move.gcode_position tracks toolhead.commanded_pos after the
-toolhead:set_position event fires.
-
-Pre-refactor MotionToolhead.set_position did NOT fire toolhead:set_position;
-gcode_move.reset_last_position (gcode_move.py:14-19, :146) never ran, so
-gcode_move drifted from the toolhead after SET_KINEMATIC_POSITION / G28.
-
-Post-refactor MotionToolhead inherits ToolHead.set_position which fires the
-event. This test confirms the state stays in sync.
-
-Scope:
-  - SET_KINEMATIC_POSITION → set_position event → gcode_move syncs.
-  - G92 → gcode-frame reset (no toolhead move; tests gcode_move alone).
-
-Out of scope (deferred until Step 7-D Phase 4 dispatch stabilizes):
-  - SET_GCODE_OFFSET MOVE=1 / PROBE / safe_z_home — these all trigger
-    manual_move which calls bridge.submit_move; that path currently fails
-    on the pre-existing load_curve transport-timeout bring-up issue. The
-    manual_move event-firing fix can't be verified end-to-end until
-    bridge dispatch lands.
-"""
-
 import json
 import os
 import pathlib
@@ -33,10 +11,6 @@ import time
 
 import pytest
 
-# This is a standalone __main__ script that spawns out/klipper.elf; it has
-# no pytest test functions. Tagged needs_elf so it is honestly classified
-# (and excluded from the CI sim_unit selection) rather than silently
-# collected as zero items. Run directly: `python3 <this file>`.
 pytestmark = pytest.mark.needs_elf
 
 REPO = pathlib.Path(os.environ.get("KALICO_REPO", "/work"))
@@ -163,7 +137,6 @@ def main():
 
     failed = False
     try:
-        # Flow 1: SET_KINEMATIC_POSITION → toolhead:set_position event → gcode_move syncs
         print("[gms] SET_KINEMATIC_POSITION X=50 Y=60 Z=10")
         send_gcode("SET_KINEMATIC_POSITION X=50 Y=60 Z=10")
         st = query_positions()
@@ -180,7 +153,6 @@ def main():
         )
         assert abs(gm_pos[1] - 60.0) < 1e-6, f"gcode_move Y: {gm_pos}"
 
-        # Flow 2: G92 X0 Y0 → gcode-frame reset (no toolhead move)
         print("[gms] G92 X0 Y0")
         send_gcode("G92 X0 Y0")
         st = query_positions()
@@ -190,7 +162,6 @@ def main():
         print(f"  gcode_move.gcode_position={gm_pos}")
         assert abs(gm_pos[0] - 0.0) < 1e-6, gm_pos
         assert abs(gm_pos[1] - 0.0) < 1e-6, gm_pos
-        # toolhead position is unchanged by G92 — it's only a gcode-frame remap.
         assert abs(th_pos[0] - 50.0) < 1e-6, th_pos
         assert abs(th_pos[1] - 60.0) < 1e-6, th_pos
 

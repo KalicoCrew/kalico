@@ -7,10 +7,8 @@ use crate::{
 
 pub use crate::beta::{PlanOutput, PlanStats};
 
-/// Boundary-future treatment for the β-medium derate test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SafetyMode {
-    /// Terminal velocity is the actual final state of the path.
     TerminalKnown,
     /// Streaming case: the terminal velocity is speculative (decel-to-zero default).
     /// β-medium derates against the worst-case-future bound by tightening the
@@ -23,11 +21,8 @@ pub enum SafetyMode {
 /// before per-axis shaper config is loaded.
 #[derive(Debug, Clone, Copy)]
 pub enum PlanShaper {
-    /// Smooth ZV at `frequency_hz`.
     SmoothZv { frequency_hz: f64 },
-    /// Smooth MZV at `frequency_hz`.
     SmoothMzv { frequency_hz: f64 },
-    /// No shaping for this axis.
     Passthrough,
 }
 
@@ -49,7 +44,6 @@ impl PlanShaper {
     }
 }
 
-/// One segment of a multi-segment planning input.
 #[derive(Debug, Clone, Copy)]
 pub struct PlanSegment<'a> {
     pub temporal: temporal::multi::SegmentInput<'a>,
@@ -60,7 +54,6 @@ pub struct PlanSegment<'a> {
     pub feedrate_mm_s: f64,
 }
 
-/// Top-level input to [`plan_velocity`].
 #[derive(Debug)]
 pub struct PlanInput<'a> {
     pub segments: &'a [PlanSegment<'a>],
@@ -72,11 +65,8 @@ pub struct PlanInput<'a> {
     pub beta_max_iters: u8,
     pub beta_convergence_ratio: f64,
     pub e_limits: ELimits,
-    /// Velocity at the batch start (mm/s). Must be finite and non-negative.
     pub initial_v: f64,
-    /// Acceleration at the batch start (mm/s²). Must be finite; must be 0.0 when `initial_v` is 0.0.
     pub initial_a: f64,
-    /// Velocity at the batch end (mm/s). Must be finite and non-negative.
     pub terminal_v: f64,
     pub safety_mode: SafetyMode,
     /// Axis-wise second derivatives to pin at the first sample of the first fitted

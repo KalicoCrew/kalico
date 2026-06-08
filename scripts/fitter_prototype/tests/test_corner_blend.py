@@ -29,11 +29,9 @@ def test_placeholder_finalize_returns_4_control_points():
     slot = make_slot(prev_pt, corner, next_pt, FitterParams())
     cps = placeholder_finalize(slot)
     assert cps.shape == (4, 2)
-    # First and last control points are 1/3 along incident segments from corner.
     np.testing.assert_allclose(cps[0], corner - slot.t_in * slot.seg_len_in / 3)
     np.testing.assert_allclose(
         cps[-1], corner + slot.t_out * slot.seg_len_out / 3
     )
-    # Middle two collapse to the corner (Pateloup default).
     np.testing.assert_allclose(cps[1], corner)
     np.testing.assert_allclose(cps[2], corner)

@@ -296,7 +296,6 @@ fn build_linear_e_curve(e_delta: f64) -> nurbs::ScalarNurbs<f64> {
         .expect("linear E curve always valid")
 }
 
-// Piegl & Tiller §5.5 degree-elevation formula for G5.1 → G5.
 #[must_use]
 pub fn degree_elevate_2_to_3(quadratic: &nurbs::VectorNurbs<f64, 3>) -> nurbs::VectorNurbs<f64, 3> {
     debug_assert_eq!(quadratic.degree(), 2);

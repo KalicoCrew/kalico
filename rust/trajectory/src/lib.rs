@@ -30,11 +30,8 @@ pub struct ShapeBatchInput<'a> {
     pub beta_max_iters: u8,
     pub beta_convergence_ratio: f64,
     pub e_limits: ELimits,
-    /// Velocity at the batch start (mm/s).
     pub initial_v: f64,
-    /// Acceleration at the batch start (mm/s²). Must be 0.0 when `initial_v` is 0.0.
     pub initial_a: f64,
-    /// Velocity at the batch end (mm/s).
     pub terminal_v: f64,
     /// Axis-wise second derivatives `[d²x/dt², d²y/dt², d²z/dt²]` to pin at the
     /// very first sample of the very first fitted segment. `None` uses the composed

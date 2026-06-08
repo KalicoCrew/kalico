@@ -1,7 +1,3 @@
-//! The lexer must never panic on arbitrary input. It must always terminate
-//! (yielding either a `Token` or a `ParseError` per non-empty line, and
-//! eventually returning `None`).
-
 use gcode::lex;
 use proptest::prelude::*;
 
@@ -56,7 +52,6 @@ proptest! {
     #[test]
     fn lexer_terminates_on_long_input(s in ".{0,16384}") {
         let count = lex(&s).count();
-        // At most one token per line; must terminate.
         prop_assert!(count <= s.lines().count());
     }
 }

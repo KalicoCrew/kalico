@@ -1,12 +1,3 @@
-//! End-to-end integration tests for G5 / G5.1 reduction.
-//! Black-box: drives `GeometryPipeline::process` against synthetic G-code
-//! strings and asserts on the public `Item` / `Segment` / `Recovery` /
-//! `TelemetryEvent` surface.
-//!
-//! Per Task 1.6 (build-order Step 7-pre), G5 / G5.1 emit `Segment::Cubic`
-//! (G5.1 via exact degree-elevation 2→3). All test inputs are G5-only
-//! (feedrate is carried on the G5 line itself via F word).
-
 use geometry::{
     CubicSegment, FitterParams, GeometryPipeline, Item, Recovery, Segment, TelemetryEvent,
 };
@@ -64,7 +55,6 @@ fn single_g5_1_emits_one_non_rational_cubic_via_degree_elevation() {
         cubics.len()
     );
     let c = cubics[0];
-    // Post-elevation: degree 3, 4 CPs, clamped knots.
     assert_eq!(c.xyz.degree(), 3);
     assert_eq!(c.xyz.control_points().len(), 4);
 }
@@ -93,8 +83,6 @@ fn g5_chain_three_lines_no_junctions_between() {
 
 #[test]
 fn g5_followed_by_g1_breaks_chain_no_junction() {
-    // G5 succeeds; G1 is rejected as UnsupportedGcode (Fatal); iterator goes
-    // terminal. No junction is emitted at any point.
     let (items, _events) = process("G5 X10 Y0 I3 J3 P-3 Q3 F1500\nG1 X20 Y0\n");
     let junctions_count = items
         .iter()
@@ -108,8 +96,6 @@ fn g5_followed_by_g1_breaks_chain_no_junction() {
 
 #[test]
 fn g5_chain_break_then_implicit_tangent_emits_recovery() {
-    // G5 → G92 (breaks chain) → G5 with no I,J → G5MissingTangent recovery.
-    // Using G92 instead of G1 because G1 is rejected as Fatal (live pipeline).
     let (items, events) = process(
         "G5 X10 Y0 I3 J3 P-3 Q3 F1500\n\
          G92 X10 Y0\n\
@@ -161,10 +147,6 @@ fn g5_1_outside_g17_plane_emits_recovery() {
 
 #[test]
 fn g5_with_z_motion_rejected_as_helical_extrusion_when_e_present() {
-    // G5 with both Z and E → helical extrusion (design-rejected by classifier).
-    // Round-5 review fix: surfaces as Item::Fatal (not Recovered) because
-    // reduce-stage commits modal state before classification — recoverable
-    // rejection would let subsequent G5s start from the rejected endpoint.
     use geometry::Fatal;
     let (items, _events) = process("G5 X10 Y0 Z0.3 E0.5 I3 J3 P-3 Q3 F1500\n");
     let helical = items
@@ -187,12 +169,10 @@ fn g5_with_z_motion_no_e_emits_travel_cubic() {
         })
         .expect("expected a Segment::Cubic");
     let cps = c.xyz.control_points();
-    // Z linearly interpolated at thirds: 0, 0.1, 0.2, 0.3.
     assert!(approx(cps[0][2], 0.0));
     assert!(approx(cps[1][2], 0.1));
     assert!(approx(cps[2][2], 0.2));
     assert!(approx(cps[3][2], 0.3));
-    // No E → Travel.
     assert_eq!(c.e_mode, geometry::EMode::Travel);
 }
 

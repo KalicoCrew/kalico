@@ -1,11 +1,7 @@
-# MCU API surface that delegates to the Rust bridge instead of the C
-# serialqueue path.
 import logging
 
 
 class MotionCommandWrapper:
-    """Stand-in for mcu.CommandWrapper that routes through the bridge."""
-
     def __init__(self, proxy, msgformat, cq):
         self._proxy = proxy
         self._msgformat = msgformat
@@ -29,8 +25,6 @@ class MotionCommandWrapper:
 
 
 class MotionQueryCommandWrapper:
-    """Stand-in for mcu.CommandQueryWrapper that routes through the bridge."""
-
     def __init__(self, proxy, msgformat, respformat, oid, cq):
         self._proxy = proxy
         self._msgformat = msgformat
@@ -63,10 +57,6 @@ class MotionQueryCommandWrapper:
 
 
 class MotionMcuProxy:
-    """MCU public API surface, delegating to the Rust bridge. Non-motion
-    peripherals flow through unchanged via the bridge's passthrough layer.
-    """
-
     def __init__(self, bridge_wrapper, name, printer):
         self._bridge = bridge_wrapper
         self._name = name
