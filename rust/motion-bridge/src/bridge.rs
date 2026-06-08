@@ -88,6 +88,26 @@ impl RetainedMotorCurve {
         }
     }
 
+    /// Install a degenerate constant piece for `(mcu, slot)` evaluating to
+    /// `value_mm` for all `t`. Replaces any existing pieces for that slot.
+    ///
+    /// The constant curve is a degree-3 Bézier with all four control points
+    /// equal to `value_mm`, spanning a 1 µs window anchored at `t_now`. The
+    /// `eval` clamp means any query outside `[t_now, t_now+ε]` still returns
+    /// `value_mm`, so the choice of window size is irrelevant for correctness;
+    /// 1 µs is small enough to not confuse clock arithmetic.
+    fn set_constant(&mut self, mcu: u32, slot: u8, value_mm: f64, t_now: f64) {
+        use nurbs::bezier::{BezierPiece, bezier_pieces_to_nurbs};
+        let t_end = t_now + 1e-6;
+        let curve = bezier_pieces_to_nurbs(&[BezierPiece::from_bernstein(
+            &[value_mm, value_mm, value_mm, value_mm],
+            t_now,
+            t_end,
+        )]);
+        self.pieces
+            .insert((mcu, slot), vec![RetainedMotorPiece { curve, t_abs_start: t_now, t_abs_end: t_end }]);
+    }
+
 }
 
 fn rebase_to_absolute_domain(
@@ -764,6 +784,30 @@ impl PyMotionBridge {
     pub(crate) fn kin_tag_for(&self, mcu: u32) -> Option<u8> {
         let cfgs = self.mcu_axis_configs.lock().unwrap_or_else(|p| p.into_inner());
         cfgs.iter().find(|c| c.mcu_id == mcu).map(|c| c.kinematics)
+    }
+
+    /// Install degenerate constant retained curves for every configured
+    /// `(mcu, slot)` so that `eval_motor_mm_now` returns the absolute motor-frame
+    /// mm for the grounded toolhead position `[x, y, z]`. Called by
+    /// `set_position` after `RetainedMotorCurve::clear`.
+    ///
+    /// Pure inherent method (no `PyResult`) so tests can call it directly.
+    pub(crate) fn ground_constants_inner(&self, x: f64, y: f64, z: f64, t_now: f64) {
+        let configs = self.mcu_axis_configs.lock().unwrap_or_else(|p| p.into_inner());
+        let mut retained = self.retained_motor_curve.lock().unwrap_or_else(|p| p.into_inner());
+
+        for cfg in configs.iter() {
+            let tag = cfg.kinematics;
+            let motor = crate::kinematics::forward(tag, [x, y, z]);
+            for &slot_usize in &cfg.axes {
+                if slot_usize >= 4 {
+                    continue;
+                }
+                let slot = slot_usize as u8;
+                let value_mm = motor[slot_usize];
+                retained.set_constant(cfg.mcu_id, slot, value_mm, t_now);
+            }
+        }
     }
 }
 
@@ -2981,10 +3025,13 @@ impl PyMotionBridge {
             }
         }
 
-        self.retained_motor_curve
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clear();
+        {
+            let mut retained = self.retained_motor_curve
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            retained.clear();
+        }
+        self.ground_constants_inner(x, y, z, 0.0);
 
         Ok(())
     }
@@ -3660,6 +3707,9 @@ mod eval_motor_position_tests;
 
 #[cfg(test)]
 mod retained_motor_curve_tests;
+
+#[cfg(test)]
+mod set_position_grounding_tests;
 
 #[cfg(test)]
 mod stepper_oid_map_tests;

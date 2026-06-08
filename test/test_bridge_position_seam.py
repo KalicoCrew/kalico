@@ -162,6 +162,7 @@ def _make_kin(rails_by_axis, bridge):
     k.limits = [(1.0, -1.0)] * 3
     k._rails_by_axis = rails_by_axis
     k._axis_rails = lambda: dict(rails_by_axis)
+    k.rails = list(rails_by_axis.values())
     return k
 
 
@@ -208,52 +209,151 @@ def test_calc_position_rail_pos_is_mean_no_double_stepdist():
 
 
 # ---------------------------------------------------------------- set_position
+#
+# Model: Rust set_position installs eval_now = absolute motor-frame mm.
+# Host set_position sets offset = 0 for all rail steppers.
+# Round-trip: get_mcu_position = round((eval_now + 0) / step_dist) = round(motor_mm/step_dist).
+# No double-count because offset does not add motor_mm a second time.
 
 
-def test_set_position_grounds_steppers_from_forward_kinematics():
+def test_set_position_delegates_to_rust_and_zeros_offset():
     native = _FakeNativeBridge()
     wrapper = _wrapper_around(native)
     mcu = _FakeMcu(wrapper, bridge_handle=4)
-    sx = _make_stepper(mcu, oid=1, step_dist=0.01)
-    sy = _make_stepper(mcu, oid=2, step_dist=0.02)
+    sx = _make_stepper(mcu, oid=1, step_dist=0.01, offset=99.0)
+    sy = _make_stepper(mcu, oid=2, step_dist=0.02, offset=77.0)
     x_rail = _FakeRail([sx])
     y_rail = _FakeRail([sy])
     kin = _make_kin({0: x_rail, 1: y_rail}, wrapper)
-    native.forward_slots = [(0, 5.0), (1, 3.0)]
-
-    captured = {}
-
-    def cap(stepper, val):
-        captured[stepper] = val
-
-    sx._set_mcu_position = lambda v: cap(sx, v)
-    sy._set_mcu_position = lambda v: cap(sy, v)
 
     kin.set_position([1.0, 2.0, 0.0], homing_axes=(0,))
 
     assert ("set_position", 1.0, 2.0, 0.0) in native.calls
-    assert ("forward", 4, 1.0, 2.0, 0.0) in native.calls
-    # 5.0 / 0.01 = 500 ; 3.0 / 0.02 = 150
-    assert captured[sx] == 500
-    assert captured[sy] == 150
+    assert sx._mcu_position_offset == 0.0, "offset must be zeroed after grounding"
+    assert sy._mcu_position_offset == 0.0, "offset must be zeroed after grounding"
     assert kin.limits[0] == (0.0, 100.0)
 
 
-def test_set_position_ignores_slot_without_rail():
+def test_set_position_no_forward_call_needed():
+    # Host no longer calls forward_motor_positions; Rust owns the constant curve.
     native = _FakeNativeBridge()
     wrapper = _wrapper_around(native)
     mcu = _FakeMcu(wrapper, bridge_handle=4)
-    sx = _make_stepper(mcu, oid=1, step_dist=0.01)
+    sx = _make_stepper(mcu, oid=1, step_dist=0.01, offset=5.0)
     x_rail = _FakeRail([sx])
     kin = _make_kin({0: x_rail}, wrapper)
-    native.forward_slots = [(0, 5.0), (2, 9.0)]  # slot 2 has no rail
-
-    captured = []
-    sx._set_mcu_position = lambda v: captured.append(v)
 
     kin.set_position([1.0, 0.0, 0.0])
 
-    assert captured == [500]
+    forward_calls = [c for c in native.calls if c[0] == "forward"]
+    assert forward_calls == [], "host must not call forward_motor_positions"
+    assert sx._mcu_position_offset == 0.0
+
+
+# ---------------------------------------------------------------- set_position round-trip
+#
+# After set_position(p), eval_motor_position_now returns motor_mm (Rust installs
+# that constant).  With offset == 0, get_mcu_position = round(motor_mm/step_dist).
+
+
+def test_set_position_round_trip_no_double_count():
+    """
+    Arithmetic proof (cartesian, step_dist=0.01):
+      toolhead p = (5.0, 3.0, 0.0)
+      forward(p) -> motor_mm = 5.0 (cartesian identity for slot 0)
+      Rust installs eval_now = 5.0 ; host sets offset = 0.0
+      get_mcu_position = round((5.0 + 0.0) / 0.01) = 500  ✓
+      (if offset were 5.0 instead: (5.0+5.0)/0.01 = 1000 — the double-count bug)
+    """
+    native = _FakeNativeBridge()
+    wrapper = _wrapper_around(native)
+    mcu = _FakeMcu(wrapper, bridge_handle=4)
+    sd = 0.01
+    sx = _make_stepper(mcu, oid=1, step_dist=sd, offset=0.0)
+    x_rail = _FakeRail([sx])
+    kin = _make_kin({0: x_rail}, wrapper)
+
+    motor_mm = 5.0
+    native.now_mm[(4, 1)] = motor_mm
+
+    kin.set_position([5.0, 0.0, 0.0])
+
+    pos = sx.get_mcu_position()
+    assert pos == 500, (
+        "round-trip failed: expected 500 (=motor_mm/step_dist), got %d — "
+        "check for double-count" % pos
+    )
+
+
+def test_set_position_round_trip_second_read_stable():
+    native = _FakeNativeBridge()
+    wrapper = _wrapper_around(native)
+    mcu = _FakeMcu(wrapper, bridge_handle=4)
+    sd = 0.02
+    sx = _make_stepper(mcu, oid=1, step_dist=sd, offset=0.0)
+    x_rail = _FakeRail([sx])
+    kin = _make_kin({0: x_rail}, wrapper)
+
+    motor_mm = 3.0
+    native.now_mm[(4, 1)] = motor_mm
+
+    kin.set_position([3.0, 0.0, 0.0])
+
+    first = sx.get_mcu_position()
+    second = sx.get_mcu_position()
+    assert first == second == 150, (
+        "second read unstable: first=%d second=%d" % (first, second)
+    )
+
+
+def test_set_position_round_trip_fractional_motor_mm():
+    """Motor position that lands between steps rounds correctly."""
+    native = _FakeNativeBridge()
+    wrapper = _wrapper_around(native)
+    mcu = _FakeMcu(wrapper, bridge_handle=4)
+    sd = 0.01
+    sx = _make_stepper(mcu, oid=1, step_dist=sd, offset=0.0)
+    x_rail = _FakeRail([sx])
+    kin = _make_kin({0: x_rail}, wrapper)
+
+    motor_mm = 10.004
+    native.now_mm[(4, 1)] = motor_mm
+
+    kin.set_position([10.004, 0.0, 0.0])
+
+    pos = sx.get_mcu_position()
+    assert pos == 1000, "10.004/0.01 = 1000.4 -> rounds to 1000"
+
+
+def test_set_position_distance_cancellation():
+    """
+    Distance halt - start cancels offset regardless of its value.
+    With offset constant across two evals:
+      halt_steps - start_steps = (eval_halt + offset - eval_start - offset)/sd
+                               = (eval_halt - eval_start) / sd
+    Verify with offset=0 (the grounded case) that the arithmetic holds.
+    """
+    native = _FakeNativeBridge()
+    wrapper = _wrapper_around(native)
+    mcu = _FakeMcu(wrapper, bridge_handle=4)
+    sd = 0.01
+    sx = _make_stepper(mcu, oid=1, step_dist=sd, offset=0.0)
+    x_rail = _FakeRail([sx])
+    kin = _make_kin({0: x_rail}, wrapper)
+
+    # Ground at start position (10 mm = 1000 steps).
+    native.now_mm[(4, 1)] = 10.0
+    kin.set_position([10.0, 0.0, 0.0])
+    start_steps = sx.get_mcu_position()
+
+    # Simulate motor moving to 15 mm (500 more steps).
+    native.now_mm[(4, 1)] = 15.0
+    halt_steps = sx.get_mcu_position()
+
+    distance_steps = halt_steps - start_steps
+    assert distance_steps == 500, (
+        "distance steps should be 500, got %d" % distance_steps
+    )
 
 
 # ---------------------------------------------------------------- _fire_active_callbacks

@@ -249,22 +249,15 @@ class BridgeKinematics:
             homing_state.home_rails([rail], forcepos, homepos)
 
     def set_position(self, newpos, homing_axes=()):
+        # Rust installs a constant retained curve per slot with eval = absolute
+        # motor-frame mm.  Offset must be 0 so get_mcu_position = eval/step_dist
+        # with no double-count.  See §5 of the homing-seam design spec.
         self._toolhead.bridge.set_position(newpos[0], newpos[1], newpos[2])
-        axis_rails = self._axis_rails()
-        mcu_handle = (
-            axis_rails[0].get_steppers()[0].get_mcu()._bridge_handle
-        )
-        slots = self._toolhead.bridge.forward_motor_positions(
-            mcu_handle, newpos[0], newpos[1], newpos[2]
-        )
-        for slot, motor_mm in slots:
-            rail = axis_rails.get(int(slot))
-            if rail is None:
-                continue
+        for rail in self.rails:
             for s in rail.get_steppers():
-                s._set_mcu_position(int(motor_mm / s.get_step_dist() + 0.5))
+                s._mcu_position_offset = 0.0
         for axis in homing_axes:
-            rail = axis_rails.get(axis)
+            rail = self._axis_rails().get(axis)
             if rail is not None:
                 self.limits[axis] = rail.get_range()
 
