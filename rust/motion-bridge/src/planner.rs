@@ -17,7 +17,7 @@ const T_IDLE: Duration = Duration::from_secs(3600);
 /// Must equal `anchor::DEFAULT_LEAD_SECS`. Keep in sync with anchor.rs.
 const LEAD: f64 = 0.25;
 
-const SAFETY_MARGIN: f64 = 0.050;
+const SAFETY_MARGIN: f64 = 0.2;
 
 const REPLAN_WARN_BUDGET_US: u64 = ((LEAD - SAFETY_MARGIN) * 1e6) as u64;
 
