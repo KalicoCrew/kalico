@@ -658,6 +658,15 @@ mod ring_depth_for_axis_tests {
     }
 }
 
+impl PyMotionBridge {
+    fn insert_stepper_slot(&self, mcu: u32, oid: u8, slot: u8) {
+        self.stepper_oid_map
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert((mcu, oid), slot);
+    }
+}
+
 #[pymethods]
 impl PyMotionBridge {
     #[new]
@@ -694,10 +703,7 @@ impl PyMotionBridge {
 
     #[pyo3(signature = (mcu, oid, slot))]
     fn register_stepper_slot(&self, mcu: u32, oid: u8, slot: u8) -> PyResult<()> {
-        self.stepper_oid_map
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .insert((mcu, oid), slot);
+        self.insert_stepper_slot(mcu, oid, slot);
         Ok(())
     }
 
