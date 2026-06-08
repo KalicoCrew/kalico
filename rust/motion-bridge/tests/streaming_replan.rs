@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use motion_bridge_native::classify::classify_and_build;
 use motion_bridge_native::config::{PlannerConfig, PlannerLimits};
 use motion_bridge_native::planner::{DispatchError, PlannerHandle};
-use trajectory::{AxisShaper, RequiredShaper, ShapedSegment, ShaperConfig};
+use trajectory::{AxisShaper, ShapedSegment, ShaperConfig};
 
 use nurbs::ScalarNurbs;
 use nurbs::eval::{eval_derivative, eval_polynomial};
@@ -30,10 +30,10 @@ fn recording_dispatch() -> (
 fn smooth_zv_186hz_config() -> PlannerConfig {
     let mut c = PlannerConfig::default();
     c.shaper = ShaperConfig {
-        x: RequiredShaper::SmoothZv {
+        x: AxisShaper::SmoothZv {
             frequency_hz: 186.0,
         },
-        y: RequiredShaper::SmoothZv {
+        y: AxisShaper::SmoothZv {
             frequency_hz: 186.0,
         },
         z: AxisShaper::Passthrough,
@@ -916,8 +916,8 @@ fn update_shaper_commits_held_output_before_swap() {
     let commit_count_before = h.commit_fire_count();
 
     let new_shaper = ShaperConfig {
-        x: RequiredShaper::SmoothZv { frequency_hz: 60.0 },
-        y: RequiredShaper::SmoothZv { frequency_hz: 60.0 },
+        x: AxisShaper::SmoothZv { frequency_hz: 60.0 },
+        y: AxisShaper::SmoothZv { frequency_hz: 60.0 },
         z: AxisShaper::Passthrough,
     };
     h.update_shaper(new_shaper).expect("update_shaper");

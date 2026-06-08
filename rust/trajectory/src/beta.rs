@@ -12,8 +12,8 @@ const MIN_AXIS_SPAN_FOR_DERATE: f64 = 0.5;
 const BETA_ACCEL_MIN_RATIO: f64 = 0.02;
 
 struct AxisKernels {
-    x: PiecewisePolynomialKernel<f64>,
-    y: PiecewisePolynomialKernel<f64>,
+    x: Option<PiecewisePolynomialKernel<f64>>,
+    y: Option<PiecewisePolynomialKernel<f64>>,
     z: Option<PiecewisePolynomialKernel<f64>>,
 }
 
@@ -82,12 +82,7 @@ pub fn plan_batch_full(
 fn build_kernel_array_from_shaper_config(
     shaper: &crate::ShaperConfig,
 ) -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
-    [
-        Some(shaper.x.to_kernel()),
-        Some(shaper.y.to_kernel()),
-        shaper.z.to_kernel(),
-        None,
-    ]
+    [shaper.x.to_kernel(), shaper.y.to_kernel(), shaper.z.to_kernel(), None]
 }
 
 fn collect_xy_meta(
@@ -544,12 +539,7 @@ fn run_one_iteration(
 fn build_kernel_array_from_axis_kernels(
     kernels: &AxisKernels,
 ) -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
-    [
-        Some(kernels.x.clone()),
-        Some(kernels.y.clone()),
-        kernels.z.clone(),
-        None,
-    ]
+    [kernels.x.clone(), kernels.y.clone(), kernels.z.clone(), None]
 }
 
 struct DerateInfo {

@@ -52,15 +52,9 @@ pub struct ELimits {
 
 #[derive(Debug, Clone)]
 pub struct ShaperConfig {
-    pub x: RequiredShaper,
-    pub y: RequiredShaper,
+    pub x: AxisShaper,
+    pub y: AxisShaper,
     pub z: AxisShaper,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum RequiredShaper {
-    SmoothZv { frequency_hz: f64 },
-    SmoothMzv { frequency_hz: f64 },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -119,8 +113,6 @@ pub enum ShapeError {
     ArcLength { index: usize, detail: String },
     #[error("empty segment buffer")]
     EmptySegments,
-    #[error("unsupported shaper configuration: Passthrough on X or Y is not supported")]
-    UnsupportedShaperOnXY,
     #[error("unsupported boundary velocity: initial_v and terminal_v must be finite and ≥ 0.0")]
     UnsupportedBoundaryVelocity,
 }

@@ -2,8 +2,7 @@ use geometry::segment::EMode;
 use nurbs::VectorNurbs;
 use temporal::multi::{GridStrategy, JoiningStatus, SegmentInput};
 use trajectory::{
-    AxisShaper, ELimits, RequiredShaper, ShapeBatchInput, ShapeError, ShapeSegmentInput,
-    ShaperConfig,
+    AxisShaper, ELimits, ShapeBatchInput, ShapeError, ShapeSegmentInput, ShaperConfig,
 };
 
 fn pure_x_300mm_collinear_cubic() -> VectorNurbs<f64, 3> {
@@ -54,8 +53,8 @@ fn homing_300mm_pure_x_at_uniform_jerk_converges() {
         },
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothMzv { frequency_hz: 50.0 },
-            y: RequiredShaper::SmoothMzv { frequency_hz: 50.0 },
+            x: AxisShaper::SmoothMzv { frequency_hz: 50.0 },
+            y: AxisShaper::SmoothMzv { frequency_hz: 50.0 },
             z: AxisShaper::Passthrough,
         },
         fit_tolerance_mm: 0.005,
