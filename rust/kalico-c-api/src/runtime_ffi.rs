@@ -525,7 +525,7 @@ pub mod exports {
     const STEPPER_RECORD_LEN: usize = 1;
 
     pub const KALICO_TRIP_EVENT_V1_HEADER_LEN: usize = 15;
-    pub const KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN: usize = 5;
+    pub const KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN: usize = 1;
     pub const KALICO_TRIP_EVENT_V1_FMT_VERSION: u8 = 1;
     pub const KALICO_TRIP_EVENT_V1_MAX_LEN: usize =
         KALICO_TRIP_EVENT_V1_HEADER_LEN + MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN;
@@ -649,7 +649,7 @@ pub mod exports {
             return KALICO_ERR_NULL_PTR;
         }
         let clock = (u64::from(clock_hi) << 32) | u64::from(clock_lo);
-        let result = runtime::endstop::software_trip(arm_id, clock, &[]);
+        let result = runtime::endstop::software_trip(arm_id, clock);
         let status = match result {
             runtime::endstop::TripResult::Tripped => 0u8,
             runtime::endstop::TripResult::NotArmed => 1u8,
@@ -690,7 +690,6 @@ pub mod exports {
         for i in 0..stepper_count {
             let off = KALICO_TRIP_EVENT_V1_HEADER_LEN + i * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN;
             buf[off] = evt.steppers[i].oid;
-            buf[off + 1..off + 5].copy_from_slice(&evt.steppers[i].step_count.to_le_bytes());
         }
         unsafe { *out_actual_len = needed };
         1

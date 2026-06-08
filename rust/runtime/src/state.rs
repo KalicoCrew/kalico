@@ -198,9 +198,6 @@ pub struct SharedState {
     /// Packed `(axis_idx << 16) | raw_mode_byte` from the most recent
     /// `dispatch_axis` call.
     pub isr_last_axis_mode_packed: AtomicU32,
-    /// Packed `(target_step_count low16 << 16) | prev_step_count low16`
-    /// from the most recent Pulse dispatch.
-    pub isr_last_step_counts_packed: AtomicU32,
     /// Raw packed `seg.x_handle` of the most recently armed segment.
     /// `0xFFFE_FFFE` = UNUSED_SENTINEL.
     pub isr_last_arm_x_handle: AtomicU32,
@@ -400,7 +397,6 @@ impl SharedState {
             isr_pulse_bad_mstep_count: AtomicU32::new(0),
             isr_phase_call_count: AtomicU32::new(0),
             isr_last_axis_mode_packed: AtomicU32::new(0),
-            isr_last_step_counts_packed: AtomicU32::new(0),
             isr_last_arm_x_handle: AtomicU32::new(0),
             isr_last_arm_x_outcome: AtomicU32::new(0),
             isr_last_arm_x_piece_count: AtomicU32::new(0),

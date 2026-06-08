@@ -6,7 +6,7 @@
 // has no LDREX/STREX. On thumbv7em the codegen is identical to
 // `core::sync::atomic`. `Ordering` stays from `core`.
 use core::sync::atomic::Ordering;
-use portable_atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicU16, AtomicU32};
+use portable_atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU32};
 
 pub const MAX_SOURCES: usize = 4;
 pub const MAX_STEPPERS: usize = 8;
@@ -172,9 +172,8 @@ pub struct TripSnapshot {
     pub trip_clock_lo: AtomicU32,
     pub trip_clock_hi: AtomicU32,
     pub trip_source_idx: AtomicU8,
-    pub step_count_count: AtomicU8,
+    pub stepper_count: AtomicU8,
     pub stepper_oids: [AtomicU8; MAX_STEPPERS],
-    pub step_counts: [AtomicI32; MAX_STEPPERS],
 }
 
 impl TripSnapshot {
@@ -184,7 +183,7 @@ impl TripSnapshot {
             trip_clock_lo: AtomicU32::new(0),
             trip_clock_hi: AtomicU32::new(0),
             trip_source_idx: AtomicU8::new(0),
-            step_count_count: AtomicU8::new(0),
+            stepper_count: AtomicU8::new(0),
             stepper_oids: [
                 AtomicU8::new(0),
                 AtomicU8::new(0),
@@ -194,16 +193,6 @@ impl TripSnapshot {
                 AtomicU8::new(0),
                 AtomicU8::new(0),
                 AtomicU8::new(0),
-            ],
-            step_counts: [
-                AtomicI32::new(0),
-                AtomicI32::new(0),
-                AtomicI32::new(0),
-                AtomicI32::new(0),
-                AtomicI32::new(0),
-                AtomicI32::new(0),
-                AtomicI32::new(0),
-                AtomicI32::new(0),
             ],
         }
     }
@@ -251,14 +240,10 @@ pub enum DisarmStatus {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct StepperSnapshot {
     pub oid: u8,
-    pub step_count: i32,
 }
 
 impl StepperSnapshot {
-    const EMPTY: Self = Self {
-        oid: 0,
-        step_count: 0,
-    };
+    const EMPTY: Self = Self { oid: 0 };
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -304,7 +289,7 @@ fn reset_for_test() {
     ARM.source_count.store(0, Ordering::Release);
     ARM.stepper_count.store(0, Ordering::Release);
     ARM.snapshot.version.store(0, Ordering::Release);
-    ARM.snapshot.step_count_count.store(0, Ordering::Release);
+    ARM.snapshot.stepper_count.store(0, Ordering::Release);
     TRIP_EVENT_QUEUED.store(false, Ordering::Release);
     for pin in &PIN_LEVELS {
         pin.store(false, Ordering::Release);
@@ -350,7 +335,7 @@ pub fn arm(msg: ArmMsg) -> Result<ArmStatus, ArmError> {
     ARM.stepper_count
         .store(msg.stepper_count, Ordering::Release);
     ARM.snapshot.version.store(0, Ordering::Release);
-    ARM.snapshot.step_count_count.store(0, Ordering::Release);
+    ARM.snapshot.stepper_count.store(0, Ordering::Release);
 
     ARM.state.store(ArmState::Armed as u8, Ordering::Release);
 
@@ -430,7 +415,7 @@ fn emit_software_trip_log(arg_arm_id: u32, armed_arm_id: u32, state: u8, result:
     }
 }
 
-pub fn software_trip(arm_id: u32, clock: u64, stepper_counts: &[i32]) -> TripResult {
+pub fn software_trip(arm_id: u32, clock: u64) -> TripResult {
     let armed_arm_id = ARM.arm_id.load(Ordering::Acquire);
     let state_before = ARM.state.load(Ordering::Acquire);
 
@@ -454,7 +439,7 @@ pub fn software_trip(arm_id: u32, clock: u64, stepper_counts: &[i32]) -> TripRes
         }
     }
 
-    publish_snapshot(clock, TRIP_SOURCE_SOFTWARE, stepper_counts);
+    publish_snapshot(clock, TRIP_SOURCE_SOFTWARE);
     ARM.state
         .store(ArmState::TrippedReady as u8, Ordering::Release);
     TRIP_EVENT_QUEUED.store(true, Ordering::Release);
@@ -482,18 +467,15 @@ pub fn poll_trip() -> Option<TripEvent> {
         let lo = u64::from(ARM.snapshot.trip_clock_lo.load(Ordering::Acquire));
         let hi = u64::from(ARM.snapshot.trip_clock_hi.load(Ordering::Acquire));
         let trip_source_idx = ARM.snapshot.trip_source_idx.load(Ordering::Acquire);
-        let stepper_count = ARM.snapshot.step_count_count.load(Ordering::Acquire);
+        let stepper_count = ARM.snapshot.stepper_count.load(Ordering::Acquire);
         let mut steppers = [StepperSnapshot::EMPTY; MAX_STEPPERS];
 
-        for (dst, (oid, count)) in steppers.iter_mut().zip(
-            ARM.snapshot
-                .stepper_oids
-                .iter()
-                .zip(ARM.snapshot.step_counts.iter()),
-        ) {
+        for (dst, oid) in steppers
+            .iter_mut()
+            .zip(ARM.snapshot.stepper_oids.iter())
+        {
             *dst = StepperSnapshot {
                 oid: oid.load(Ordering::Acquire),
-                step_count: count.load(Ordering::Acquire),
             };
         }
 
@@ -535,7 +517,7 @@ fn validate_arm_msg(msg: &ArmMsg) -> Result<(), ArmError> {
     Ok(())
 }
 
-fn publish_snapshot(clock: u64, source_idx: u8, stepper_counts: &[i32]) {
+fn publish_snapshot(clock: u64, source_idx: u8) {
     let version = ARM.snapshot.version.load(Ordering::Acquire);
     let odd = version | 1;
     ARM.snapshot.version.store(odd, Ordering::Release);
@@ -562,19 +544,8 @@ fn publish_snapshot(clock: u64, source_idx: u8, stepper_counts: &[i32]) {
     {
         dst_oid.store(oid.load(Ordering::Acquire), Ordering::Release);
     }
-    for (dst_count, oid) in ARM
-        .snapshot
-        .step_counts
-        .iter()
-        .zip(ARM.stepper_oids.iter())
-        .take(count)
-    {
-        let idx = usize::from(oid.load(Ordering::Acquire));
-        let count_value = stepper_counts.get(idx).copied().unwrap_or(0);
-        dst_count.store(count_value, Ordering::Release);
-    }
     ARM.snapshot
-        .step_count_count
+        .stepper_count
         .store(count as u8, Ordering::Release);
     ARM.snapshot
         .version

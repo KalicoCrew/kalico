@@ -1932,7 +1932,6 @@ impl PyMotionBridge {
                     .map(|s| {
                         let sd = PyDict::new(py);
                         sd.set_item("oid", s.oid).unwrap();
-                        sd.set_item("step_count", s.step_count).unwrap();
                         sd.unbind()
                     })
                     .collect();
@@ -3257,7 +3256,6 @@ fn trip_event_to_pydict(py: Python<'_>, evt: runtime::endstop::TripEvent) -> PyR
         .map(|s| {
             let sd = PyDict::new(py);
             sd.set_item("oid", s.oid).unwrap();
-            sd.set_item("step_count", s.step_count).unwrap();
             sd.unbind()
         })
         .collect();

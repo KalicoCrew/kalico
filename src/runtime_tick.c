@@ -313,7 +313,7 @@ runtime_endstop_drain(void)
     uint8_t source_idx  = buf[12];
     uint8_t fmt_version = buf[13];
     uint8_t stepper_n   = buf[14];
-    uint32_t blob_len   = (uint32_t)stepper_n * 5;
+    uint32_t blob_len   = (uint32_t)stepper_n * 1;
     if (15 + blob_len > actual) return;
     output("kalico_endstop_tripped arm_id=%u "
            "trip_clock_lo=%u trip_clock_hi=%u "

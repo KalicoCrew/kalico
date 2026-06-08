@@ -100,7 +100,7 @@ fn re_arm_while_armed_is_busy() {
 fn software_trip_transitions_armed_to_tripped_ready_and_publishes() {
     let _guard = reset();
     arm(sw_msg()).expect("arm");
-    assert_eq!(software_trip(42, 500, &[10, 20]), TripResult::Tripped);
+    assert_eq!(software_trip(42, 500), TripResult::Tripped);
     let evt = drain_trip();
     assert_eq!(evt.arm_id, 42);
     assert_eq!(evt.trip_source_idx, TRIP_SOURCE_SOFTWARE);
@@ -111,7 +111,7 @@ fn software_trip_transitions_armed_to_tripped_ready_and_publishes() {
 fn software_trip_wrong_arm_id_is_no_op() {
     let _guard = reset();
     arm(sw_msg()).expect("arm");
-    assert_eq!(software_trip(99, 500, &[10, 20]), TripResult::WrongArmId);
+    assert_eq!(software_trip(99, 500), TripResult::WrongArmId);
     assert!(matches_u8(ARM.state.load(Ordering::Acquire), ArmState::Armed));
 }
 
@@ -120,31 +120,26 @@ fn software_trip_on_non_armed_state_is_not_armed() {
     let _guard = reset();
     ARM.arm_id.store(0, Ordering::Release);
     ARM.state.store(ArmState::Disarmed as u8, Ordering::Release);
-    assert_eq!(software_trip(0, 500, &[]), TripResult::NotArmed);
+    assert_eq!(software_trip(0, 500), TripResult::NotArmed);
 }
 
 #[test]
 fn software_trip_idempotent_second_call_returns_not_armed() {
     let _guard = reset();
     arm(sw_msg()).expect("arm");
-    assert_eq!(software_trip(42, 1, &[]), TripResult::Tripped);
-    assert_eq!(software_trip(42, 2, &[]), TripResult::NotArmed);
+    assert_eq!(software_trip(42, 1), TripResult::Tripped);
+    assert_eq!(software_trip(42, 2), TripResult::NotArmed);
 }
 
 #[test]
-fn snapshot_seqlock_carries_clock_and_step_counts() {
+fn snapshot_seqlock_carries_clock_and_stepper_oids() {
     let _guard = reset();
     arm(sw_msg()).expect("arm");
-    assert_eq!(
-        software_trip(42, 0x1_0000_0002, &[123, 456]),
-        TripResult::Tripped
-    );
+    assert_eq!(software_trip(42, 0x1_0000_0002), TripResult::Tripped);
     let evt = drain_trip();
     assert_eq!(evt.trip_clock, 0x1_0000_0002);
     assert_eq!(evt.steppers[0].oid, 0);
-    assert_eq!(evt.steppers[0].step_count, 123);
     assert_eq!(evt.steppers[1].oid, 1);
-    assert_eq!(evt.steppers[1].step_count, 456);
 }
 
 // --- disarm-ordering contract: a stale relay HOST_REQUEST trsync_trigger fires
@@ -159,7 +154,7 @@ fn software_trip_on_disarmed_arm_is_a_no_op() {
 
     let snapshot_version_before = ARM.snapshot.version.load(Ordering::Acquire);
     assert_eq!(
-        software_trip(42, 500, &[10, 20]),
+        software_trip(42, 500),
         TripResult::NotArmed,
         "software_trip after disarm must return NotArmed"
     );
@@ -181,7 +176,7 @@ fn software_trip_with_mismatched_arm_id_leaves_live_arm_intact() {
 
     let snapshot_version_before = ARM.snapshot.version.load(Ordering::Acquire);
     assert_eq!(
-        software_trip(99, 500, &[10, 20]),
+        software_trip(99, 500),
         TripResult::WrongArmId,
         "software_trip with wrong arm_id must return WrongArmId"
     );
@@ -197,7 +192,7 @@ fn software_trip_with_mismatched_arm_id_leaves_live_arm_intact() {
 
     // The real arm (id=42) must still trip normally.
     assert_eq!(
-        software_trip(42, 600, &[10, 20]),
+        software_trip(42, 600),
         TripResult::Tripped,
         "the correct arm_id must still trip after a mismatched software_trip was ignored"
     );

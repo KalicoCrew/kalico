@@ -137,10 +137,6 @@ fn dispatch_pulse(
         shared
             .isr_last_p_end_bits
             .store(p_end.to_bits(), Ordering::Relaxed);
-        shared.isr_last_step_counts_packed.store(
-            ((target_step_count as u32) << 16) | ((prev_step_count as u32) & 0xFFFF),
-            Ordering::Relaxed,
-        );
     }
     axis.last_step_count = target_step_count;
 

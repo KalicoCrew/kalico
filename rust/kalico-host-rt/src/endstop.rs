@@ -6,6 +6,7 @@ use crate::transport::{MessageParams, Transport, TransportError};
 
 pub const SOURCE_RECORD_LEN: usize = 6;
 pub const STEPPER_RECORD_LEN: usize = 1;
+pub const TRIP_STEPPER_RECORD_LEN: usize = 1;
 pub const MAX_SOURCES: usize = 4;
 pub const MAX_STEPPERS: usize = 8;
 
@@ -150,7 +151,6 @@ pub struct TripEventV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TripStepperRecord {
     pub oid: u8,
-    pub step_count: i32,
 }
 
 pub fn decode_trip_event(params: &MessageParams) -> Result<TripEventV1, EndstopError> {
@@ -179,7 +179,7 @@ pub fn decode_trip_event(params: &MessageParams) -> Result<TripEventV1, EndstopE
     let blob = params
         .get_bytes("stepper_data")
         .ok_or(EndstopError::MissingField("stepper_data"))?;
-    let expected_len = usize::from(stepper_count) * 5;
+    let expected_len = usize::from(stepper_count) * TRIP_STEPPER_RECORD_LEN;
     if blob.len() != expected_len {
         return Err(EndstopError::MalformedTripEvent(
             "stepper_data length mismatch",
@@ -187,11 +187,8 @@ pub fn decode_trip_event(params: &MessageParams) -> Result<TripEventV1, EndstopE
     }
     let mut steppers = Vec::with_capacity(usize::from(stepper_count));
     for i in 0..usize::from(stepper_count) {
-        let off = i * 5;
-        let oid = blob[off];
-        let step_count =
-            i32::from_le_bytes([blob[off + 1], blob[off + 2], blob[off + 3], blob[off + 4]]);
-        steppers.push(TripStepperRecord { oid, step_count });
+        let oid = blob[i];
+        steppers.push(TripStepperRecord { oid });
     }
     Ok(TripEventV1 {
         arm_id,

@@ -17,7 +17,7 @@
 
 #define kalico_nurbs_KALICO_TRIP_EVENT_V1_HEADER_LEN 15
 
-#define kalico_nurbs_KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN 5
+#define kalico_nurbs_KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN 1
 
 #define kalico_nurbs_KALICO_TRIP_EVENT_V1_FMT_VERSION 1
 
