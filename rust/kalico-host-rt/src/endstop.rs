@@ -7,6 +7,10 @@ use crate::transport::{MessageParams, Transport, TransportError};
 pub const SOURCE_RECORD_LEN: usize = 6;
 pub const STEPPER_RECORD_LEN: usize = 1;
 pub const TRIP_STEPPER_RECORD_LEN: usize = 1;
+const _: () = assert!(
+    TRIP_STEPPER_RECORD_LEN == STEPPER_RECORD_LEN,
+    "trip-event and arm records must share the 1-byte-per-stepper wire stride"
+);
 pub const MAX_SOURCES: usize = 4;
 pub const MAX_STEPPERS: usize = 8;
 
