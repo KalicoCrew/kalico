@@ -81,6 +81,14 @@ impl HomingState {
         std::mem::take(&mut *self.axis_keys.lock().unwrap())
     }
 
+    pub fn peek_mcu_ids(&self) -> Vec<u32> {
+        let guard = self.axis_keys.lock().unwrap();
+        let mut ids: Vec<u32> = guard.iter().map(|k| k.mcu_id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    }
+
     pub fn reset_to_idle(&self) {
         self.state
             .store(HomingSegmentState::Idle as u8, Ordering::Release);

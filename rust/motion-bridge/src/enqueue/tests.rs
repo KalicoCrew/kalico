@@ -35,7 +35,7 @@ fn cartesian_x_axis_yields_pieces_with_projected_start_time() {
         },
     }];
 
-    let msgs = enqueue_segment(
+    let (msgs, _motor_curves) = enqueue_segment(
         &seg_x_move(),
         &cfg,
         100.0,
@@ -95,7 +95,7 @@ fn corexy_x_slot_is_x_plus_y() {
         t_end: 1.0,
     };
 
-    let msgs = enqueue_segment(
+    let (msgs, _motor_curves) = enqueue_segment(
         &seg,
         &cfg,
         0.0,
@@ -195,7 +195,7 @@ fn flatten_axis_max_piece_secs_splits_long_piece() {
         t_end: 0.2,
     };
 
-    let msgs = enqueue_segment(
+    let (msgs, _motor_curves) = enqueue_segment(
         &seg,
         &cfg,
         100.0,

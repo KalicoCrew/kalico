@@ -34,6 +34,95 @@ struct RetainedHomingCurve {
     pieces: Vec<RetainedHomingPiece>,
 }
 
+#[derive(Default)]
+struct RetainedMotorCurve {
+    pieces: std::collections::HashMap<(u32, u8), Vec<RetainedMotorPiece>>,
+}
+
+struct RetainedMotorPiece {
+    curve: nurbs::ScalarNurbs<f64>,
+    t_abs_start: f64,
+    t_abs_end: f64,
+    t0: f64,
+}
+
+impl RetainedMotorCurve {
+    fn push_piece(
+        &mut self,
+        mcu: u32,
+        slot: u8,
+        curve: nurbs::ScalarNurbs<f64>,
+        ts: f64,
+        te: f64,
+    ) {
+        self.pieces
+            .entry((mcu, slot))
+            .or_default()
+            .push(RetainedMotorPiece { curve, t_abs_start: ts, t_abs_end: te, t0: ts });
+    }
+
+    fn eval(&self, mcu: u32, slot: u8, t_abs: f64) -> Option<f64> {
+        let v = self.pieces.get(&(mcu, slot))?;
+        let piece = v
+            .iter()
+            .find(|p| t_abs >= p.t_abs_start - 1e-9 && t_abs <= p.t_abs_end + 1e-9)
+            .or_else(|| {
+                if t_abs < v.first()?.t_abs_start {
+                    v.first()
+                } else {
+                    v.last()
+                }
+            })?;
+        let u = t_abs.clamp(piece.t_abs_start, piece.t_abs_end);
+        Some(nurbs::eval::eval(&piece.curve, u))
+    }
+
+    fn endpoint(&self, mcu: u32, slot: u8) -> Option<f64> {
+        let p = self.pieces.get(&(mcu, slot))?.last()?;
+        Some(nurbs::eval::eval(&p.curve, p.t_abs_end))
+    }
+
+    fn truncate_at(&mut self, mcu: u32, t_abs_trip: f64) {
+        for ((m, _slot), v) in self.pieces.iter_mut() {
+            if *m != mcu {
+                continue;
+            }
+            v.retain(|p| p.t_abs_start <= t_abs_trip + 1e-9);
+            if let Some(last) = v.last_mut() {
+                if last.t_abs_end > t_abs_trip {
+                    last.t_abs_end = t_abs_trip;
+                }
+            }
+        }
+    }
+
+    fn truncate_all_at(&mut self, t_abs_trip: f64) {
+        for v in self.pieces.values_mut() {
+            v.retain(|p| p.t_abs_start <= t_abs_trip + 1e-9);
+            if let Some(last) = v.last_mut() {
+                if last.t_abs_end > t_abs_trip {
+                    last.t_abs_end = t_abs_trip;
+                }
+            }
+        }
+    }
+}
+
+fn rebase_to_absolute_domain(
+    curve: &nurbs::ScalarNurbs<f64>,
+    t0_anchor: f64,
+) -> nurbs::ScalarNurbs<f64> {
+    let pieces: Vec<_> = nurbs::bezier::extract_bezier_pieces(curve)
+        .into_iter()
+        .map(|mut p| {
+            p.u_start += t0_anchor;
+            p.u_end += t0_anchor;
+            p
+        })
+        .collect();
+    nurbs::bezier::bezier_pieces_to_nurbs(&pieces)
+}
+
 struct McuConnection {
     label: String,
     serial_path: String,
@@ -452,6 +541,7 @@ pub struct PyMotionBridge {
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
     homing: Arc<HomingState>,
     retained_homing_curve: Arc<Mutex<Option<RetainedHomingCurve>>>,
+    retained_motor_curve: Arc<Mutex<RetainedMotorCurve>>,
     events_dir: Mutex<Option<std::path::PathBuf>>,
 
     // ── Cross-MCU trip relay (Task 4) ────────────────────────────────────
@@ -688,6 +778,7 @@ impl PyMotionBridge {
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             homing: Arc::new(HomingState::new()),
             retained_homing_curve: Arc::new(Mutex::new(None)),
+            retained_motor_curve: Arc::new(Mutex::new(RetainedMotorCurve::default())),
             events_dir: Mutex::new(None),
             trip_dispatch_handles: Mutex::new(HashMap::new()),
             trip_dispatch_next_id: AtomicU64::new(0),
@@ -2371,6 +2462,7 @@ impl PyMotionBridge {
         let counter_for_cb = Arc::clone(&counter);
         let homing_for_cb = Arc::clone(&self.homing);
         let retained_curve_for_cb = Arc::clone(&self.retained_homing_curve);
+        let retained_motor_curve_for_cb = Arc::clone(&self.retained_motor_curve);
 
         let dispatch: Arc<
             dyn Fn(&trajectory::ShapedSegment) -> Result<(), DispatchError> + Send + Sync,
@@ -2415,7 +2507,7 @@ impl PyMotionBridge {
                     homing_state == crate::homing::HomingSegmentState::Active,
                 );
 
-                let msgs = crate::enqueue::enqueue_segment(
+                let (msgs, motor_curves) = crate::enqueue::enqueue_segment(
                     seg,
                     &mcu_configs_for_cb,
                     t0,
@@ -2448,6 +2540,25 @@ impl PyMotionBridge {
                         curve.pieces.clear();
                     }
                     curve.pieces.push(piece);
+
+                    let t_abs_start = t0 + seg.t_start;
+                    let t_abs_end = t0 + seg.t_end;
+                    let mut motor_guard = retained_motor_curve_for_cb
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    if fresh {
+                        motor_guard.pieces.clear();
+                    }
+                    for (key, rel_curve) in &motor_curves {
+                        let abs_curve = rebase_to_absolute_domain(rel_curve, t0);
+                        motor_guard.push_piece(
+                            key.mcu_id,
+                            key.axis,
+                            abs_curve,
+                            t_abs_start,
+                            t_abs_end,
+                        );
+                    }
                 }
 
                 for m in msgs {
@@ -2559,6 +2670,27 @@ impl PyMotionBridge {
         let Some(evt) = self.homing.take_trip_event() else {
             return Ok(None);
         };
+
+        let mcu_ids = self.homing.peek_mcu_ids();
+        let trip_clock = evt.trip_clock;
+        {
+            let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
+            let mut motor_guard = self
+                .retained_motor_curve
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            for mcu in &mcu_ids {
+                let handle = mcu_handle_from_raw(*mcu);
+                if let Some(t_abs_trip) = router.clock_to_host_secs(handle, trip_clock) {
+                    motor_guard.truncate_at(*mcu, t_abs_trip);
+                }
+                // TODO(Task4/6 wiring): if clock_to_host_secs returns None (clock not yet
+                // synced), truncation is skipped for this MCU. This should not happen during
+                // a live homing move since set_clock_est is called before arm. If it does,
+                // the motor curve retains the full-move endpoint rather than the trip point.
+            }
+        }
+
         // Drop the still-queued homing pieces so the pump never pushes them
         // (un-pushed pieces are never counted as drain `sent`). The pieces
         // already in the MCU ring are reconciled by the MCU's discard_pending
@@ -2860,6 +2992,12 @@ impl PyMotionBridge {
             .retained_homing_curve
             .lock()
             .unwrap_or_else(|p| p.into_inner()) = None;
+
+        self.retained_motor_curve
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .pieces
+            .clear();
 
         Ok(())
     }
@@ -3520,6 +3658,7 @@ impl PyMotionBridge {
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             homing: Arc::new(HomingState::new()),
             retained_homing_curve: Arc::new(Mutex::new(None)),
+            retained_motor_curve: Arc::new(Mutex::new(RetainedMotorCurve::default())),
             events_dir: Mutex::new(None),
             trip_dispatch_handles: Mutex::new(HashMap::new()),
             trip_dispatch_next_id: AtomicU64::new(0),
@@ -3532,6 +3671,9 @@ impl PyMotionBridge {
 
 #[cfg(test)]
 mod retained_homing_curve_tests;
+
+#[cfg(test)]
+mod retained_motor_curve_tests;
 
 #[cfg(test)]
 mod stepper_oid_map_tests;

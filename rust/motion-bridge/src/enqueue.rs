@@ -13,11 +13,12 @@ pub fn enqueue_segment<P>(
     lead_secs: f64,
     project: P,
     max_piece_secs: Option<f64>,
-) -> Vec<EnqueueMsg>
+) -> (Vec<EnqueueMsg>, Vec<(AxisKey, ScalarNurbs<f64>)>)
 where
     P: Fn(u32, f64) -> u64,
 {
     let mut out = Vec::new();
+    let mut motor_curves: Vec<(AxisKey, ScalarNurbs<f64>)> = Vec::new();
 
     for cfg in mcu_configs {
         let corexy = cfg_is_corexy(cfg) && AXIS_X < seg.axes.len() && AXIS_Y < seg.axes.len();
@@ -46,23 +47,26 @@ where
                 _ => &seg.axes[axis_idx],
             };
 
+            let key = AxisKey {
+                mcu_id: cfg.mcu_id,
+                axis: axis_idx as u8,
+            };
+
             let pieces =
                 flatten_axis(curve, t0, cfg.mcu_id, axis_idx, host_now, &project, max_piece_secs);
             if !pieces.is_empty() {
                 out.push(EnqueueMsg {
-                    key: AxisKey {
-                        mcu_id: cfg.mcu_id,
-                        axis: axis_idx as u8,
-                    },
+                    key,
                     pieces,
                     fresh_stream,
                     lead_secs,
                 });
+                motor_curves.push((key, curve.clone()));
             }
         }
     }
 
-    out
+    (out, motor_curves)
 }
 
 fn flatten_axis<P>(
