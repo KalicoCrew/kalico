@@ -1,8 +1,8 @@
-//! Tests for `fit_hermite_c1`.
+//! Tests for `fit_hermite_c1` and `fit_hermite_c1_clamped`.
 
 #![allow(clippy::cast_lossless, clippy::cast_possible_wrap)]
 
-use nurbs::algebra::fit_hermite_c1;
+use nurbs::algebra::{fit_hermite_c1, fit_hermite_c1_clamped};
 use nurbs::bezier::BezierPiece;
 
 /// Binomial coefficient C(n, k) — local helper since the crate's binomial is pub(crate).
@@ -364,4 +364,217 @@ fn hermite_fit_degree6_input_reduces_to_degree4() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tests for fit_hermite_c1_clamped (C2 boundary pins)
+// ---------------------------------------------------------------------------
+
+/// Evaluate the 2nd derivative of a BezierPiece at a point.
+fn d2_at(piece: &BezierPiece<f64>, u: f64) -> f64 {
+    piece.differentiate().differentiate().evaluate(u)
+}
+
+#[test]
+fn clamped_fit_pins_both_boundary_second_derivatives() {
+    // Source: f(t) = t³ on [0, 2]. Pascal-shifted at 0: coeffs = [0,0,0,1].
+    // We pin d2_start=6 and d2_end=10 (deliberately not the analytic values).
+    // The fitted polynomial must honour exactly these pins at its outer endpoints.
+    let pieces: Vec<[BezierPiece<f64>; 1]> = vec![[BezierPiece {
+        u_start: 0.0,
+        u_end: 2.0,
+        coeffs: vec![0.0, 0.0, 0.0, 1.0],
+    }]];
+
+    let d2_start_pin = 6.0_f64;
+    let d2_end_pin = 10.0_f64;
+
+    // Tolerance is 2.0: with deliberately non-analytic pins the residual will be
+    // significant, but we only need to assert the pins are honoured exactly.
+    let result = fit_hermite_c1_clamped::<1>(
+        &pieces,
+        2.0,
+        5,
+        Some([d2_start_pin]),
+        Some([d2_end_pin]),
+    )
+    .unwrap();
+
+    let first = &result[0][0];
+    let last = result[0].last().unwrap();
+
+    let got_start = d2_at(first, first.u_start);
+    let got_end = d2_at(last, last.u_end);
+
+    assert!(
+        (got_start - d2_start_pin).abs() < 1e-6,
+        "d2 at start: expected {d2_start_pin}, got {got_start}"
+    );
+    assert!(
+        (got_end - d2_end_pin).abs() < 1e-6,
+        "d2 at end: expected {d2_end_pin}, got {got_end}"
+    );
+}
+
+#[test]
+fn clamped_fit_position_residual_within_tolerance() {
+    // Source: f(t) = t² + 0.5*t on [0, 3], split into 3 unit pieces.
+    // f''(0) = 2, f''(3) = 2.
+    let pieces: Vec<[BezierPiece<f64>; 1]> = (0..3)
+        .map(|i| {
+            let s = i as f64;
+            [BezierPiece {
+                u_start: s,
+                u_end: s + 1.0,
+                coeffs: vec![s * s + 0.5 * s, 2.0 * s + 0.5, 1.0],
+            }]
+        })
+        .collect();
+
+    let tol = 0.01;
+    let result =
+        fit_hermite_c1_clamped::<1>(&pieces, tol, 5, Some([2.0_f64]), Some([2.0_f64])).unwrap();
+
+    for fitted in &result[0] {
+        let n = 40;
+        let step = (fitted.u_end - fitted.u_start) / n as f64;
+        for i in 0..=n {
+            let u = fitted.u_start + i as f64 * step;
+            let ref_val = pieces
+                .iter()
+                .find(|p| p[0].u_start <= u + 1e-12 && u <= p[0].u_end + 1e-12)
+                .map(|p| p[0].evaluate(u))
+                .unwrap_or_else(|| {
+                    pieces.last().unwrap()[0].evaluate(pieces.last().unwrap()[0].u_end)
+                });
+            let fit_val = fitted.evaluate(u);
+            assert!(
+                (ref_val - fit_val).abs() <= tol + 1e-10,
+                "at u={u}: residual {} exceeds tolerance {tol}",
+                (ref_val - fit_val).abs()
+            );
+        }
+    }
+}
+
+#[test]
+fn clamped_fit_preserves_c1_at_interior_knots() {
+    // 4 quadratic pieces; pin d2_start and d2_end.
+    // Interior piece joints must remain C1.
+    let pieces: Vec<[BezierPiece<f64>; 1]> = (0..4)
+        .map(|i| {
+            let s = i as f64;
+            [BezierPiece {
+                u_start: s,
+                u_end: s + 1.0,
+                coeffs: vec![s * s, 2.0 * s, 1.0],
+            }]
+        })
+        .collect();
+
+    // Tolerance 0.5: pin d2_end=10 is far from the analytic 2, introducing
+    // inherent position deviation that a tight tolerance would reject.
+    let result =
+        fit_hermite_c1_clamped::<1>(&pieces, 0.5, 5, Some([2.0_f64]), Some([10.0_f64])).unwrap();
+
+    for window in result[0].windows(2) {
+        let left = &window[0];
+        let right = &window[1];
+        let left_val = left.evaluate(left.u_end);
+        let right_val = right.evaluate(right.u_start);
+        assert!(
+            (left_val - right_val).abs() < 1e-9,
+            "C0 violated at interior knot {}: {left_val} vs {right_val}",
+            left.u_end
+        );
+        let left_d = left.differentiate().evaluate(left.u_end);
+        let right_d = right.differentiate().evaluate(right.u_start);
+        assert!(
+            (left_d - right_d).abs() < 1e-7,
+            "C1 violated at interior knot {}: {left_d} vs {right_d}",
+            left.u_end
+        );
+    }
+}
+
+#[test]
+fn clamped_fit_none_pins_matches_c1() {
+    // With both pins = None, clamped fit must reproduce fit_hermite_c1 values.
+    let pieces: Vec<[BezierPiece<f64>; 1]> = (0..4)
+        .map(|i| {
+            let s = i as f64;
+            [BezierPiece {
+                u_start: s,
+                u_end: s + 1.0,
+                coeffs: vec![s, 1.0],
+            }]
+        })
+        .collect();
+
+    let tol = 0.005;
+    let r_c1 = fit_hermite_c1::<1>(&pieces, tol, 4).unwrap();
+    let r_clamped = fit_hermite_c1_clamped::<1>(&pieces, tol, 4, None, None).unwrap();
+
+    assert_eq!(r_c1[0].len(), r_clamped[0].len(), "piece count must match");
+    for (p_c1, p_cl) in r_c1[0].iter().zip(r_clamped[0].iter()) {
+        for &u in &[p_c1.u_start, 0.5 * (p_c1.u_start + p_c1.u_end), p_c1.u_end] {
+            assert!(
+                (p_c1.evaluate(u) - p_cl.evaluate(u)).abs() < 1e-10,
+                "value at u={u} differs between c1 and clamped(None)"
+            );
+        }
+    }
+}
+
+#[test]
+fn clamped_fit_2d_pins_both_axes() {
+    // 2D: x(t) = t², y(t) = 2t on [0, 2].
+    // x''(0) = 2, x''(2) = 2; y''(0) = 0, y''(2) = 0.
+    let pieces: Vec<[BezierPiece<f64>; 2]> = vec![[
+        BezierPiece {
+            u_start: 0.0,
+            u_end: 2.0,
+            coeffs: vec![0.0, 0.0, 1.0],
+        },
+        BezierPiece {
+            u_start: 0.0,
+            u_end: 2.0,
+            coeffs: vec![0.0, 2.0],
+        },
+    ]];
+
+    let result = fit_hermite_c1_clamped::<2>(
+        &pieces,
+        0.05,
+        5,
+        Some([2.0_f64, 0.0_f64]),
+        Some([2.0_f64, 0.0_f64]),
+    )
+    .unwrap();
+
+    let x_first = &result[0][0];
+    let x_last = result[0].last().unwrap();
+    let y_first = &result[1][0];
+    let y_last = result[1].last().unwrap();
+
+    assert!(
+        (d2_at(x_first, x_first.u_start) - 2.0).abs() < 1e-6,
+        "x d2 at start: got {}",
+        d2_at(x_first, x_first.u_start)
+    );
+    assert!(
+        (d2_at(x_last, x_last.u_end) - 2.0).abs() < 1e-6,
+        "x d2 at end: got {}",
+        d2_at(x_last, x_last.u_end)
+    );
+    assert!(
+        d2_at(y_first, y_first.u_start).abs() < 1e-6,
+        "y d2 at start: got {}",
+        d2_at(y_first, y_first.u_start)
+    );
+    assert!(
+        d2_at(y_last, y_last.u_end).abs() < 1e-6,
+        "y d2 at end: got {}",
+        d2_at(y_last, y_last.u_end)
+    );
 }
