@@ -13,6 +13,7 @@ pub fn enqueue_segment<P>(
     lead_secs: f64,
     project: P,
     max_piece_secs: Option<f64>,
+    retain_motor_curves: bool,
 ) -> (Vec<EnqueueMsg>, Vec<(AxisKey, ScalarNurbs<f64>)>)
 where
     P: Fn(u32, f64) -> u64,
@@ -61,7 +62,9 @@ where
                     fresh_stream,
                     lead_secs,
                 });
-                motor_curves.push((key, curve.clone()));
+                if retain_motor_curves {
+                    motor_curves.push((key, curve.clone()));
+                }
             }
         }
     }

@@ -43,7 +43,6 @@ struct RetainedMotorPiece {
     curve: nurbs::ScalarNurbs<f64>,
     t_abs_start: f64,
     t_abs_end: f64,
-    t0: f64,
 }
 
 impl RetainedMotorCurve {
@@ -52,13 +51,17 @@ impl RetainedMotorCurve {
         mcu: u32,
         slot: u8,
         curve: nurbs::ScalarNurbs<f64>,
-        ts: f64,
-        te: f64,
+        t_abs_start: f64,
+        t_abs_end: f64,
     ) {
         self.pieces
             .entry((mcu, slot))
             .or_default()
-            .push(RetainedMotorPiece { curve, t_abs_start: ts, t_abs_end: te, t0: ts });
+            .push(RetainedMotorPiece { curve, t_abs_start, t_abs_end });
+    }
+
+    fn clear(&mut self) {
+        self.pieces.clear();
     }
 
     fn eval(&self, mcu: u32, slot: u8, t_abs: f64) -> Option<f64> {
@@ -96,16 +99,6 @@ impl RetainedMotorCurve {
         }
     }
 
-    fn truncate_all_at(&mut self, t_abs_trip: f64) {
-        for v in self.pieces.values_mut() {
-            v.retain(|p| p.t_abs_start <= t_abs_trip + 1e-9);
-            if let Some(last) = v.last_mut() {
-                if last.t_abs_end > t_abs_trip {
-                    last.t_abs_end = t_abs_trip;
-                }
-            }
-        }
-    }
 }
 
 fn rebase_to_absolute_domain(
@@ -2507,6 +2500,8 @@ impl PyMotionBridge {
                     homing_state == crate::homing::HomingSegmentState::Active,
                 );
 
+                let retain_motor_curves =
+                    homing_state == crate::homing::HomingSegmentState::Active;
                 let (msgs, motor_curves) = crate::enqueue::enqueue_segment(
                     seg,
                     &mcu_configs_for_cb,
@@ -2516,6 +2511,7 @@ impl PyMotionBridge {
                     lead_secs,
                     project,
                     max_piece_secs,
+                    retain_motor_curves,
                 );
 
                 let axis_keys: Vec<crate::pump::AxisKey> =
@@ -2547,7 +2543,7 @@ impl PyMotionBridge {
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
                     if fresh {
-                        motor_guard.pieces.clear();
+                        motor_guard.clear();
                     }
                     for (key, rel_curve) in &motor_curves {
                         let abs_curve = rebase_to_absolute_domain(rel_curve, t0);
@@ -2685,9 +2681,8 @@ impl PyMotionBridge {
                     motor_guard.truncate_at(*mcu, t_abs_trip);
                 }
                 // TODO(Task4/6 wiring): if clock_to_host_secs returns None (clock not yet
-                // synced), truncation is skipped for this MCU. This should not happen during
-                // a live homing move since set_clock_est is called before arm. If it does,
-                // the motor curve retains the full-move endpoint rather than the trip point.
+                // synced), truncation is skipped for this MCU. The motor curve retains the
+                // full-move endpoint rather than the trip point.
             }
         }
 
@@ -2996,7 +2991,6 @@ impl PyMotionBridge {
         self.retained_motor_curve
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .pieces
             .clear();
 
         Ok(())

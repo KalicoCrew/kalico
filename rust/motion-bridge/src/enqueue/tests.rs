@@ -44,6 +44,7 @@ fn cartesian_x_axis_yields_pieces_with_projected_start_time() {
         crate::pump::MAX_LEAD_SECS,
         |_mcu, hs| (hs * 1_000.0) as u64,
         None,
+        false,
     );
 
     let x = msgs
@@ -104,6 +105,7 @@ fn corexy_x_slot_is_x_plus_y() {
         crate::pump::MAX_LEAD_SECS,
         |_mcu, hs| (hs * 1_000.0) as u64,
         None,
+        false,
     );
 
     let a = msgs
@@ -204,6 +206,7 @@ fn flatten_axis_max_piece_secs_splits_long_piece() {
         crate::pump::MAX_LEAD_SECS,
         |_mcu, hs| (hs * 1_000.0) as u64,
         Some(0.025),
+        false,
     );
 
     let x = msgs
