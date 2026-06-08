@@ -3165,6 +3165,11 @@ impl PyMotionBridge {
             .collect())
     }
 
+    fn ground_origin(&self) -> PyResult<()> {
+        self.ground_constants_inner(0.0, 0.0, 0.0, 0.0);
+        Ok(())
+    }
+
 }
 
 impl PyMotionBridge {
@@ -3708,3 +3713,6 @@ mod stepper_oid_map_tests;
 
 #[cfg(test)]
 mod kinematics_calls_tests;
+
+#[cfg(test)]
+mod ground_origin_tests;

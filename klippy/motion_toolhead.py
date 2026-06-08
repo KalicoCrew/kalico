@@ -1033,6 +1033,8 @@ class MotionToolhead(ToolHead):
             # phase_stepping_enable_spi is sent later from
             # TMC5160._xdirect_preload, after TMC register init.
 
+        self.bridge.ground_origin()
+
     def cmd_KALICO_DIAG_DUMP(self, gcmd):
         # Ask every kalico-capable MCU to emit its live diag snapshot; MCUs
         # lacking the command are skipped.

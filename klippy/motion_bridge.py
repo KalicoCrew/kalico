@@ -72,6 +72,7 @@ _STUB_MOTION_METHODS = frozenset(
         "motor_positions_to_toolhead",
         "toolhead_delta_to_motor_slots",
         "forward_motor_positions",
+        "ground_origin",
     }
 )
 
@@ -395,6 +396,9 @@ class MotionBridgeWrapper:
 
     def forward_motor_positions(self, mcu_handle, x, y, z):
         return self._bridge.forward_motor_positions(mcu_handle, x, y, z)
+
+    def ground_origin(self):
+        return self._bridge.ground_origin()
 
     def set_msgproto_dict(self, dict_json):
         return self._bridge.set_msgproto_dict(dict_json)
