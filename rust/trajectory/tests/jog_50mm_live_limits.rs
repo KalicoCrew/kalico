@@ -1,9 +1,7 @@
 use geometry::segment::EMode;
 use nurbs::VectorNurbs;
 use temporal::multi::{GridStrategy, SegmentInput};
-use trajectory::{
-    AxisShaper, ELimits, ShapeBatchInput, ShapeSegmentInput, ShaperConfig,
-};
+use trajectory::{AxisShaper, ELimits, ShapeBatchInput, ShapeSegmentInput, ShaperConfig};
 
 fn x_50mm_collinear_cubic() -> VectorNurbs<f64, 3> {
     VectorNurbs::<f64, 3>::try_new(

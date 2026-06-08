@@ -72,12 +72,6 @@ impl Default for PlannerConfig {
     }
 }
 
-/// Parses an axis shaper from a type name and frequency.
-///
-/// - `smooth_zv` / `smooth-zv` with finite `freq > 0` → `SmoothZv`
-/// - `smooth_mzv` / `smooth-mzv` with finite `freq > 0` → `SmoothMzv`
-/// - `""` / `"none"` / `"passthrough"` (any freq), or any type with `freq ≤ 0` / non-finite → `Passthrough`
-/// - Any other non-empty type string with finite `freq > 0` → `Err(UnsupportedKind)`
 pub fn parse_axis_shaper(name: &str, freq: f64) -> Result<AxisShaper, ShaperConfigError> {
     match name {
         "" | "none" | "passthrough" => return Ok(AxisShaper::Passthrough),

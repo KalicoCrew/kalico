@@ -158,7 +158,10 @@ fn passthrough_on_x_is_valid() {
     let mut input = default_input(&segments, SafetyMode::TerminalKnown);
     input.kernels[0] = Some(PlanShaper::Passthrough);
     let result = plan_velocity(&input);
-    assert!(result.is_ok(), "passthrough on X must succeed, got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "passthrough on X must succeed, got: {result:?}"
+    );
 }
 
 #[test]
@@ -178,7 +181,10 @@ fn passthrough_on_y_is_valid() {
     let mut input = default_input(&segments, SafetyMode::TerminalKnown);
     input.kernels[1] = Some(PlanShaper::Passthrough);
     let result = plan_velocity(&input);
-    assert!(result.is_ok(), "passthrough on Y must succeed, got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "passthrough on Y must succeed, got: {result:?}"
+    );
 }
 
 #[test]
@@ -198,7 +204,10 @@ fn none_on_x_treated_as_passthrough() {
     let mut input = default_input(&segments, SafetyMode::TerminalKnown);
     input.kernels[0] = None;
     let result = plan_velocity(&input);
-    assert!(result.is_ok(), "None on X must be treated as passthrough, got: {result:?}");
+    assert!(
+        result.is_ok(),
+        "None on X must be treated as passthrough, got: {result:?}"
+    );
 }
 
 #[test]

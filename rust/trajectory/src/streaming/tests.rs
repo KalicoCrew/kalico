@@ -779,12 +779,7 @@ fn append_and_replan_rolls_back_planned_caches_on_plan_velocity_error() {
         .collect();
 
     let mut ctx_bad = ctx_good;
-    ctx_bad.limits = temporal::Limits::new(
-        [1e-10; 3],
-        [5_000.0; 3],
-        [100_000.0; 3],
-        2_500.0,
-    );
+    ctx_bad.limits = temporal::Limits::new([1e-10; 3], [5_000.0; 3], [100_000.0; 3], 2_500.0);
 
     let m_broken = linear_x_segment(200.0, 400.0, 200.0);
     let bad_result = state.append_and_replan(m_broken, &ctx_bad);

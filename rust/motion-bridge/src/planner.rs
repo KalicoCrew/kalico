@@ -679,7 +679,12 @@ fn build_replan_context(config: &PlannerConfig) -> ReplanContext {
 fn shaper_config_to_emit_kernels(
     cfg: &ShaperConfig,
 ) -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
-    [cfg.x.to_kernel(), cfg.y.to_kernel(), cfg.z.to_kernel(), None]
+    [
+        cfg.x.to_kernel(),
+        cfg.y.to_kernel(),
+        cfg.z.to_kernel(),
+        None,
+    ]
 }
 
 fn axis_to_plan(ax: AxisShaper) -> PlanShaper {

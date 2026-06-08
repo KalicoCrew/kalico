@@ -82,7 +82,12 @@ pub fn plan_batch_full(
 fn build_kernel_array_from_shaper_config(
     shaper: &crate::ShaperConfig,
 ) -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
-    [shaper.x.to_kernel(), shaper.y.to_kernel(), shaper.z.to_kernel(), None]
+    [
+        shaper.x.to_kernel(),
+        shaper.y.to_kernel(),
+        shaper.z.to_kernel(),
+        None,
+    ]
 }
 
 fn collect_xy_meta(
@@ -539,7 +544,12 @@ fn run_one_iteration(
 fn build_kernel_array_from_axis_kernels(
     kernels: &AxisKernels,
 ) -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
-    [kernels.x.clone(), kernels.y.clone(), kernels.z.clone(), None]
+    [
+        kernels.x.clone(),
+        kernels.y.clone(),
+        kernels.z.clone(),
+        None,
+    ]
 }
 
 struct DerateInfo {
