@@ -990,6 +990,25 @@ pub mod exports {
         KALICO_OK
     }
 
+    /// Drain abandoned ring pieces after a homing trip (TIM5 stopped mid-move),
+    /// keeping the axis config + position. Caller must ensure TIM5 is stopped.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_discard_pending(rt: *mut KalicoRuntime) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        // SAFETY: foreground, TIM5 stopped (post-trip); §11.2 raw-pointer projection.
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.discard_pending();
+        }
+        KALICO_OK
+    }
+
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_write_piece(
         rt: *mut KalicoRuntime,

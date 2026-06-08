@@ -54,6 +54,7 @@ DECL_COMMAND(command_runtime_query_status, "runtime_query_status");
 extern void runtime_tick_disable(void);
 extern void runtime_tick_enable(void);
 extern void kalico_runtime_request_tick_baseline_reset(void);
+extern int32_t kalico_runtime_discard_pending(void *rt);
 extern uint32_t stats_send_time;        // basecmd.c
 extern uint32_t stats_send_time_high;   // basecmd.c
 
@@ -227,13 +228,18 @@ command_runtime_disarm_endstop(uint32_t *args)
     uint32_t arm_id = args[0];
     uint8_t status = 2; // Unknown
     (void)kalico_endstop_disarm(arm_id, &status);
-    // Cancel the poll task and restart the motion clock. The baseline reset
-    // must precede re-enable so the first post-restart tick is treated as a
-    // fresh start and the gap from the stopped window doesn't fault the
-    // tick-interval guard.
     endstop_polls_cancel();
-    kalico_runtime_request_tick_baseline_reset();
-    runtime_tick_enable();
+    // status==1 (AlreadyTripped) means a trip halted TIM5 mid-move: TIM5 is
+    // stopped, so it is safe to drain the abandoned ring pieces, and we must
+    // restart the motion clock. Draining first removes the stale (now far in
+    // the past) pieces that would otherwise fault PieceStartInPast on restart;
+    // the baseline reset stops the stopped-window gap from faulting the
+    // tick-interval guard. status==0 (Disarmed, no trip) leaves TIM5 running.
+    if (status == 1) {
+        kalico_runtime_discard_pending(runtime_handle);
+        kalico_runtime_request_tick_baseline_reset();
+        runtime_tick_enable();
+    }
     sendf("kalico_disarm_endstop_response arm_id=%u status=%c", arm_id, status);
 }
 DECL_COMMAND(command_runtime_disarm_endstop, "runtime_disarm_endstop arm_id=%u");

@@ -218,6 +218,24 @@ impl Engine {
         self.last_error.store(0, Ordering::Release);
     }
 
+    /// Drain every axis ring to empty and drop the cached armed piece, keeping
+    /// the axis configuration and current position. Used by the homing-trip
+    /// recovery: the trip stopped TIM5 mid-move, so the buffered pieces are
+    /// abandoned — draining the rings makes the engine idle (no stale piece to
+    /// fault on TIM5 restart) and brings retired up to head so the host drain
+    /// reconciles. Safe only while TIM5 is stopped (no concurrent ISR).
+    pub fn discard_pending(&mut self) {
+        for axis_opt in self.stepping_axes.iter_mut() {
+            let Some(axis) = axis_opt.as_mut() else {
+                continue;
+            };
+            while axis.ring.front_slot().is_some() {
+                axis.ring.advance_counter();
+            }
+            axis.armed = None;
+        }
+    }
+
     pub fn push_pieces(
         &mut self,
         axis_idx: u8,

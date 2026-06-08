@@ -781,14 +781,20 @@ class BridgeTriggerDispatch:
                     "stop(); handle already cleared, continuing teardown",
                     handle,
                 )
-        # Disarm if no trip yet.
+        # ALWAYS disarm — even after a trip. In the bridge engine,
+        # endstop_disarm cancels the firmware poll task and restarts TIM5 (the
+        # motion clock the trip halted). A trip leaves the firmware arm tripped,
+        # so disarm returns AlreadyTripped — that still restarts TIM5 and clears
+        # the poll task, which the post-home set_position needs to drain.
+        # (Mainline can skip disarm on a trip because the tripped trsync
+        # self-stops the steppers; our stop is TIM5, restarted only by disarm.)
+        try:
+            status = self._bridge.endstop_disarm(
+                self._mcu, self._queue, self._arm_id
+            )
+        except Exception:
+            status = DISARM_STATUS_UNKNOWN
         if self._reason is None:
-            try:
-                status = self._bridge.endstop_disarm(
-                    self._mcu, self._queue, self._arm_id
-                )
-            except Exception:
-                status = DISARM_STATUS_UNKNOWN
             if status == DISARM_STATUS_DISARMED:
                 self._reason = REASON_HOST_REQUEST
             else:

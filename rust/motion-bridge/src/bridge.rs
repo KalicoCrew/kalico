@@ -2515,6 +2515,11 @@ impl PyMotionBridge {
             return Ok(None);
         };
         self.flush_homing_pieces();
+        // The trip stopped TIM5 mid-move, so the pieces already pushed to the
+        // MCU ring will never retire. Reconcile the drain accounting now so the
+        // post-home set_position's wait_drained doesn't block on them — those
+        // pieces are intentionally abandoned, not in flight.
+        self.drain.reset();
         Ok(Some(trip_event_to_pydict(py, evt)?))
     }
 
