@@ -372,6 +372,27 @@ class MotionBridgeWrapper:
         if dispatch is not None:
             dispatch._fire_past_end_time()
 
+    def eval_motor_position_now(self, mcu_handle, oid):
+        return self._bridge.eval_motor_position_now(mcu_handle, oid)
+
+    def eval_motor_position_at_clock(self, mcu_handle, oid, trip_clock):
+        return self._bridge.eval_motor_position_at_clock(
+            mcu_handle, oid, trip_clock
+        )
+
+    def motor_positions_to_toolhead(self, mcu_handle, motor_a_mm, motor_b_mm):
+        return self._bridge.motor_positions_to_toolhead(
+            mcu_handle, motor_a_mm, motor_b_mm
+        )
+
+    def toolhead_delta_to_motor_slots(self, mcu_handle, dx, dy, dz):
+        return self._bridge.toolhead_delta_to_motor_slots(
+            mcu_handle, dx, dy, dz
+        )
+
+    def forward_motor_positions(self, mcu_handle, x, y, z):
+        return self._bridge.forward_motor_positions(mcu_handle, x, y, z)
+
     def set_msgproto_dict(self, dict_json):
         return self._bridge.set_msgproto_dict(dict_json)
 

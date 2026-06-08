@@ -150,20 +150,29 @@ class MCU_stepper:
         return 0.0
 
     def get_mcu_position(self, cmd_pos=None):
-        raise NotImplementedError(
-            "get_mcu_position: must evaluate the Rust motor-frame trajectory at "
-            "'now' (spec §2); software-trip stash + offset-constant path removed"
-        )
+        if cmd_pos is not None:
+            mcu_pos_dist = cmd_pos + self._mcu_position_offset
+        else:
+            bridge = self._mcu._motion_bridge
+            motor_mm = bridge.eval_motor_position_now(
+                self._mcu._bridge_handle, self.get_oid()
+            )
+            mcu_pos_dist = motor_mm + self._mcu_position_offset
+        mcu_pos = mcu_pos_dist / self._step_dist
+        return int(mcu_pos + 0.5) if mcu_pos >= 0.0 else int(mcu_pos - 0.5)
 
     def _set_mcu_position(self, mcu_pos):
         mcu_pos_dist = mcu_pos * self._step_dist
         self._mcu_position_offset = mcu_pos_dist - self.get_commanded_position()
 
     def get_past_mcu_position(self, print_time):
-        raise NotImplementedError(
-            "get_past_mcu_position: must evaluate the Rust motor-frame trajectory at "
-            "print_time (spec §2); software-trip stash + snapshot path removed"
+        bridge = self._mcu._motion_bridge
+        clock = self._mcu.print_time_to_clock(print_time)
+        motor_mm = bridge.eval_motor_position_at_clock(
+            self._mcu._bridge_handle, self.get_oid(), int(clock)
         )
+        mcu_pos = (motor_mm + self._mcu_position_offset) / self._step_dist
+        return int(mcu_pos + 0.5) if mcu_pos >= 0.0 else int(mcu_pos - 0.5)
 
     def mcu_to_commanded_position(self, mcu_pos):
         return mcu_pos * self._step_dist - self._mcu_position_offset

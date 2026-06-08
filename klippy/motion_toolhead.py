@@ -181,11 +181,25 @@ class BridgeKinematics:
         return [s for rail in self.rails for s in rail.get_steppers()]
 
     def calc_position(self, stepper_positions):
-        raise NotImplementedError(
-            "BridgeKinematics.calc_position: motor->toolhead transform now lives in "
-            "Rust (spec §3); call the Rust inverse kinematics instead of the deleted "
-            "host CoreXY literal"
+        def rail_pos(rail):
+            vals = [
+                stepper_positions.get(s.get_name(), 0.0)
+                for s in rail.get_steppers()
+            ]
+            if not vals:
+                return 0.0
+            return sum(vals) / len(vals)
+
+        axis_rails = self._axis_rails()
+        x_rail = axis_rails.get(0)
+        a = rail_pos(x_rail) if x_rail is not None else 0.0
+        b = rail_pos(axis_rails.get(1)) if 1 in axis_rails else 0.0
+        z = rail_pos(axis_rails.get(2)) if 2 in axis_rails else 0.0
+        mcu_handle = x_rail.get_steppers()[0].get_mcu()._bridge_handle
+        xy = self._toolhead.bridge.motor_positions_to_toolhead(
+            mcu_handle, a, b
         )
+        return [xy[0], xy[1], z]
 
     def _check_endstops(self, move):
         end_pos = move.end_pos
@@ -237,15 +251,22 @@ class BridgeKinematics:
     def set_position(self, newpos, homing_axes=()):
         self._toolhead.bridge.set_position(newpos[0], newpos[1], newpos[2])
         axis_rails = self._axis_rails()
+        mcu_handle = (
+            axis_rails[0].get_steppers()[0].get_mcu()._bridge_handle
+        )
+        slots = self._toolhead.bridge.forward_motor_positions(
+            mcu_handle, newpos[0], newpos[1], newpos[2]
+        )
+        for slot, motor_mm in slots:
+            rail = axis_rails.get(int(slot))
+            if rail is None:
+                continue
+            for s in rail.get_steppers():
+                s._set_mcu_position(int(motor_mm / s.get_step_dist() + 0.5))
         for axis in homing_axes:
             rail = axis_rails.get(axis)
             if rail is not None:
                 self.limits[axis] = rail.get_range()
-        raise NotImplementedError(
-            "BridgeKinematics.set_position: per-stepper anchor grounding unwired "
-            "— read motor positions from Rust forward kinematics (spec §3/§5); "
-            "host CoreXY literal removed"
-        )
 
     def note_z_not_homed(self):
         # [beacon] prefers this over clear_homing_state("z") when present;
@@ -402,11 +423,44 @@ class MotionToolhead(ToolHead):
         self.commanded_pos[:] = move.end_pos
 
     def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
-        raise NotImplementedError(
-            "_fire_active_callbacks: which-motor-slot-moved must come from the "
-            "Rust forward kinematics (spec §3); host motion_kinematics.motor_deltas "
-            "removed"
+        if self.kin is None:
+            return False
+        mcu_handle = (
+            self.kin._axis_rails()[0].get_steppers()[0].get_mcu()._bridge_handle
         )
+        moved = self.bridge.toolhead_delta_to_motor_slots(
+            mcu_handle, dx, dy, dz
+        )
+        moved_slots = {int(slot) for slot, _ in moved}
+        if not moved_slots:
+            return False
+        if print_time is None:
+            print_time = self.get_last_move_time()
+        fired = False
+        for s in self.kin.get_steppers():
+            if not s._active_callbacks:
+                continue
+            if _stepper_motor_slot(s) not in moved_slots:
+                continue
+            cbs = s._active_callbacks
+            s._active_callbacks = []
+            for cb in cbs:
+                cb(print_time)
+            fired = True
+        for rail in getattr(self.kin, "rails", ()):
+            if not isinstance(rail, servo_axis.ServoRail):
+                continue
+            if not rail._active_callbacks:
+                continue
+            axis_delta = (dx, dy, dz)["xyz".index(rail.axis)]
+            if abs(axis_delta) <= 1e-9:
+                continue
+            cbs = rail._active_callbacks
+            rail._active_callbacks = []
+            for cb in cbs:
+                cb(print_time)
+            fired = True
+        return fired
 
     def drip_move(self, newpos, speed, drip_completion):
         logging.info(
