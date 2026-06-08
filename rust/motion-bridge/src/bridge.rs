@@ -17,7 +17,7 @@ use kalico_host_rt::unix_native_conn::UnixNativeConn;
 use trajectory::{AxisShaper, ShaperConfig};
 
 use crate::classify;
-use crate::config::{self, PlannerConfig, PlannerLimits, parse_required_shaper};
+use crate::config::{self, PlannerConfig, PlannerLimits, parse_axis_shaper};
 use crate::dispatch::{McuAxisConfig, McuCaps, build_mcu_configs};
 use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
@@ -382,8 +382,8 @@ fn build_shaper_config(
     freq_y: f64,
 ) -> Result<ShaperConfig, crate::config::ShaperConfigError> {
     Ok(ShaperConfig {
-        x: parse_required_shaper(type_x, freq_x)?,
-        y: parse_required_shaper(type_y, freq_y)?,
+        x: parse_axis_shaper(type_x, freq_x)?,
+        y: parse_axis_shaper(type_y, freq_y)?,
         z: AxisShaper::Passthrough,
     })
 }

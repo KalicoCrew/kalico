@@ -1,9 +1,6 @@
 use crate::fit::FittedSegment;
 use crate::partition::partition_batch;
-use crate::{
-    AxisShaper, ELimits, RequiredShaper, ShapeBatchInput, ShapeError, ShapeSegmentInput,
-    ShaperConfig,
-};
+use crate::{AxisShaper, ELimits, ShapeBatchInput, ShapeError, ShapeSegmentInput, ShaperConfig};
 
 pub use crate::beta::{PlanOutput, PlanStats};
 
@@ -27,14 +24,6 @@ pub enum PlanShaper {
 }
 
 impl PlanShaper {
-    fn into_required(self) -> Result<RequiredShaper, ShapeError> {
-        match self {
-            Self::SmoothZv { frequency_hz } => Ok(RequiredShaper::SmoothZv { frequency_hz }),
-            Self::SmoothMzv { frequency_hz } => Ok(RequiredShaper::SmoothMzv { frequency_hz }),
-            Self::Passthrough => Err(ShapeError::UnsupportedShaperOnXY),
-        }
-    }
-
     fn into_axis(self) -> AxisShaper {
         match self {
             Self::SmoothZv { frequency_hz } => AxisShaper::SmoothZv { frequency_hz },
@@ -74,7 +63,6 @@ pub struct PlanInput<'a> {
 /// # Errors
 ///
 /// - [`ShapeError::EmptySegments`] — `input.segments` is empty.
-/// - [`ShapeError::UnsupportedShaperOnXY`] — X or Y kernel is `None` or `Passthrough`.
 /// - [`ShapeError::UnsupportedBoundaryVelocity`] — `initial_v` or `terminal_v` is non-finite or negative.
 /// - Any error from the underlying β-medium loop.
 pub fn plan_velocity(input: &PlanInput<'_>) -> Result<PlanOutput, ShapeError> {
@@ -89,7 +77,7 @@ pub fn plan_velocity(input: &PlanInput<'_>) -> Result<PlanOutput, ShapeError> {
         return Err(ShapeError::UnsupportedBoundaryVelocity);
     }
 
-    let shaper = build_shaper_config(&input.kernels)?;
+    let shaper = build_shaper_config(&input.kernels);
     let segments: Vec<ShapeSegmentInput<'_>> = input
         .segments
         .iter()
@@ -119,15 +107,11 @@ pub fn plan_velocity(input: &PlanInput<'_>) -> Result<PlanOutput, ShapeError> {
     crate::beta::plan_velocity_inner(&shape_input, &partition, input.safety_mode)
 }
 
-fn build_shaper_config(kernels: &[Option<PlanShaper>; 4]) -> Result<ShaperConfig, ShapeError> {
-    let x = kernels[0]
-        .ok_or(ShapeError::UnsupportedShaperOnXY)?
-        .into_required()?;
-    let y = kernels[1]
-        .ok_or(ShapeError::UnsupportedShaperOnXY)?
-        .into_required()?;
+fn build_shaper_config(kernels: &[Option<PlanShaper>; 4]) -> ShaperConfig {
+    let x = kernels[0].map_or(AxisShaper::Passthrough, PlanShaper::into_axis);
+    let y = kernels[1].map_or(AxisShaper::Passthrough, PlanShaper::into_axis);
     let z = kernels[2].map_or(AxisShaper::Passthrough, PlanShaper::into_axis);
-    Ok(ShaperConfig { x, y, z })
+    ShaperConfig { x, y, z }
 }
 
 #[cfg(test)]

@@ -2,8 +2,7 @@ use geometry::segment::EMode;
 use nurbs::VectorNurbs;
 use temporal::multi::{BatchInput, GridStrategy, SegmentInput};
 use trajectory::{
-    AxisShaper, ELimits, RequiredShaper, ShapeBatchInput, ShapeError, ShapeSegmentInput,
-    ShaperConfig,
+    AxisShaper, ELimits, ShapeBatchInput, ShapeError, ShapeSegmentInput, ShaperConfig,
 };
 
 fn pure_x_collinear_cubic(start_x: f64) -> VectorNurbs<f64, 3> {
@@ -145,8 +144,8 @@ fn run_topp_only_with_grid(
 
 fn smooth_mzv_50() -> ShaperConfig {
     ShaperConfig {
-        x: RequiredShaper::SmoothMzv { frequency_hz: 50.0 },
-        y: RequiredShaper::SmoothMzv { frequency_hz: 50.0 },
+        x: AxisShaper::SmoothMzv { frequency_hz: 50.0 },
+        y: AxisShaper::SmoothMzv { frequency_hz: 50.0 },
         z: AxisShaper::Passthrough,
     }
 }
@@ -175,10 +174,10 @@ fn regression_pure_x_homing_matrix_all_variants_converge() {
     ));
 
     let narrow_mzv = ShaperConfig {
-        x: RequiredShaper::SmoothMzv {
+        x: AxisShaper::SmoothMzv {
             frequency_hz: 500.0,
         },
-        y: RequiredShaper::SmoothMzv {
+        y: AxisShaper::SmoothMzv {
             frequency_hz: 500.0,
         },
         z: AxisShaper::Passthrough,

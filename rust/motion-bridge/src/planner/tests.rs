@@ -86,8 +86,8 @@ fn update_shaper_processed_without_error() {
     let mut h = PlannerHandle::spawn(PlannerConfig::default(), dispatch);
 
     let shaper = ShaperConfig {
-        x: trajectory::RequiredShaper::SmoothZv { frequency_hz: 60.0 },
-        y: trajectory::RequiredShaper::SmoothZv { frequency_hz: 60.0 },
+        x: trajectory::AxisShaper::SmoothZv { frequency_hz: 60.0 },
+        y: trajectory::AxisShaper::SmoothZv { frequency_hz: 60.0 },
         z: trajectory::AxisShaper::Passthrough,
     };
     h.update_shaper(shaper).unwrap();
@@ -123,10 +123,10 @@ fn z_only_move_after_homing_xy_shaped_axes_are_constant() {
     use crate::classify::classify_and_build;
 
     let shaper_cfg = ShaperConfig {
-        x: trajectory::RequiredShaper::SmoothMzv {
+        x: trajectory::AxisShaper::SmoothMzv {
             frequency_hz: 186.0,
         },
-        y: trajectory::RequiredShaper::SmoothMzv {
+        y: trajectory::AxisShaper::SmoothMzv {
             frequency_hz: 122.0,
         },
         z: trajectory::AxisShaper::Passthrough,
@@ -242,10 +242,10 @@ fn z_move_with_tiny_x_after_homing_xy_deviation_proportional() {
     use crate::classify::classify_and_build;
 
     let shaper_cfg = ShaperConfig {
-        x: RequiredShaper::SmoothMzv {
+        x: AxisShaper::SmoothMzv {
             frequency_hz: 186.0,
         },
-        y: RequiredShaper::SmoothMzv {
+        y: AxisShaper::SmoothMzv {
             frequency_hz: 122.0,
         },
         z: AxisShaper::Passthrough,
@@ -406,10 +406,10 @@ fn z_only_move_no_prior_xy_motion() {
     use crate::classify::classify_and_build;
 
     let shaper_cfg = ShaperConfig {
-        x: RequiredShaper::SmoothMzv {
+        x: AxisShaper::SmoothMzv {
             frequency_hz: 186.0,
         },
-        y: RequiredShaper::SmoothMzv {
+        y: AxisShaper::SmoothMzv {
             frequency_hz: 122.0,
         },
         z: AxisShaper::Passthrough,
