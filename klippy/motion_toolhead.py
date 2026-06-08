@@ -9,6 +9,10 @@ from .extras import servo_axis
 from .kinematics import extruder
 from .toolhead import BUFFER_TIME_START, Move, ToolHead
 
+# Upper bound on the reactor-yielding motion-drain wait in wait_moves_and_mcu;
+# matches the bridge's blocking DRAIN_TIMEOUT (rust/motion-bridge/src/bridge.rs).
+DRAIN_TIMEOUT = 60.0
+
 # Slot order must match motion_kinematics.motor_deltas and
 # _configure_axes_per_mcu's slot_names. A name matching no prefix has no slot
 # (e.g. corexy passthrough-Z rails) and is skipped.
@@ -532,7 +536,22 @@ class MotionToolhead(ToolHead):
         self.bridge.wait_moves()
 
     def wait_moves_and_mcu(self):
-        self.bridge.drain_motion()
+        # Poll the drain and yield via reactor.pause() rather than parking in a
+        # blocking drain_motion(): the reactor thread is the only one servicing
+        # the MCU link in bridge mode, so a multi-second block here starves the
+        # link, stalls the MCU foreground, and — mid-homing — leaves a moving
+        # axis with its endstop disarmed (carriage crashes). reactor.pause keeps
+        # the link alive while motion drains.
+        deadline = self.reactor.monotonic() + DRAIN_TIMEOUT
+        while not self.bridge.motion_drain_poll():
+            now = self.reactor.monotonic()
+            if now >= deadline:
+                raise self.printer.command_error(
+                    "wait_moves_and_mcu: motion drain timed out after %.0fs"
+                    % (DRAIN_TIMEOUT,)
+                )
+            self.reactor.pause(now + 0.010)
+        self.bridge.motion_drain_finalize()
         self._ground_pending_end_time_after_bridge_drain()
 
     def cmd_M400(self, gcmd):

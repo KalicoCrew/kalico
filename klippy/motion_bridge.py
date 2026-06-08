@@ -35,6 +35,8 @@ _STUB_MOTION_METHODS = frozenset(
         "submit_dwell",
         "wait_moves",
         "drain_motion",
+        "motion_drain_poll",
+        "motion_drain_finalize",
         "set_position",
         "get_last_move_time",
         "update_limits",
@@ -408,6 +410,12 @@ class MotionBridgeWrapper:
 
     def drain_motion(self):
         return self._bridge.drain_motion()
+
+    def motion_drain_poll(self):
+        return self._bridge.motion_drain_poll()
+
+    def motion_drain_finalize(self):
+        return self._bridge.motion_drain_finalize()
 
     def submit_dwell(self, duration_s):
         return self._bridge.submit_dwell(duration_s)

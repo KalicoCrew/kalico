@@ -2517,6 +2517,27 @@ impl PyMotionBridge {
         Ok(())
     }
 
+    /// Dispatch pending planner work and report whether the MCU has retired
+    /// everything sent — WITHOUT blocking. The caller polls this between
+    /// reactor.pause() yields so the serial link keeps flowing while motion
+    /// drains. A blocking wait_drained on the reactor thread parks the only
+    /// thread that services the link, so the MCU's TX backs up and its
+    /// foreground stalls — which during homing leaves a moving axis with its
+    /// endstop disarmed (see wait_moves_and_mcu in motion_toolhead.py).
+    fn motion_drain_poll(&self, py: Python<'_>) -> PyResult<bool> {
+        let planner = self.planner.get().ok_or_else(|| {
+            PyRuntimeError::new_err("planner not initialized — call init_planner first")
+        })?;
+        py.allow_threads(|| planner.flush()).map_err(planner_err)?;
+        Ok(self.drain.is_drained_now())
+    }
+
+    /// Post-drain bookkeeping, run once after motion_drain_poll reports drained.
+    fn motion_drain_finalize(&self) {
+        self.homing.refresh_after_wait();
+        self.flush_homing_pieces();
+    }
+
     fn take_trip_event(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
         let Some(evt) = self.homing.take_trip_event() else {
             return Ok(None);

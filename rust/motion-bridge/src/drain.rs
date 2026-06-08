@@ -63,6 +63,14 @@ impl DrainSync {
         self.cv.notify_all();
     }
 
+    /// Non-blocking drained check, for callers that poll from a reactor loop
+    /// instead of parking a thread in `wait_drained` (which would starve the
+    /// serial link the MCU depends on).
+    pub fn is_drained_now(&self) -> bool {
+        let c = self.counts.lock().unwrap_or_else(|p| p.into_inner());
+        Self::is_drained(&c)
+    }
+
     fn is_drained(c: &Counts) -> bool {
         c.sent.iter().all(|(k, &s)| {
             let r = c.retired.get(k).copied().unwrap_or(0);
