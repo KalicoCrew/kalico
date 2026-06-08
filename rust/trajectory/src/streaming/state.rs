@@ -99,6 +99,13 @@ impl ShaperState {
         ctx: &ReplanContext,
     ) -> Result<ReplanReport, ShapeError> {
         let initial_v = self.read_path_speed_at(self.t_dispatched, ctx.fallback_initial_v);
+        let a_max_path = ctx.limits.a_max.iter().copied().fold(f64::MAX, f64::min);
+        let initial_a = if initial_v > 0.0 {
+            self.read_path_accel_at(self.t_dispatched, 0.0)
+                .clamp(-a_max_path, a_max_path)
+        } else {
+            0.0
+        };
 
         let prior_uncommitted = self.uncommitted_moves.clone();
         let prior_t_appended = self.t_appended;
@@ -164,7 +171,7 @@ impl ShaperState {
             beta_convergence_ratio: ctx.beta_convergence_ratio,
             e_limits: ctx.e_limits,
             initial_v,
-            initial_a: 0.0,
+            initial_a,
             terminal_v: 0.0,
             safety_mode: ctx.safety_mode,
         };
@@ -236,6 +243,47 @@ impl ShaperState {
 }
 
 impl ShaperState {
+    /// Tangential (path) acceleration of the PRE-SHAPE planned profile at time
+    /// `t`: a_path = (v⃗·a⃗)/|v⃗| over the planned_fitted XY axes. This is the
+    /// quantity the temporal SOCP's a_0 pin governs — the shaped axes include
+    /// shaper transients and would pin the wrong layer. Below SPEED_FLOOR the
+    /// tangential direction is undefined; standstill implies a_path = 0, so the
+    /// fallback is returned.
+    pub(crate) fn read_path_accel_at(&self, t: f64, fallback: f64) -> f64 {
+        const SPEED_FLOOR: f64 = 1e-9;
+        let Some(seg) = self
+            .planned_fitted
+            .iter()
+            .find(|s| s.t_start <= t && t < s.t_end)
+            .or_else(|| {
+                self.planned_fitted
+                    .last()
+                    .filter(|s| (t - s.t_end).abs() <= TIME_LOOKUP_TOLERANCE)
+            })
+        else {
+            return fallback;
+        };
+        let d = |axis: usize| -> (f64, f64) {
+            if seg.axes[axis].degree() < 1 {
+                return (0.0, 0.0);
+            }
+            let d1 = nurbs::eval::derivative(&seg.axes[axis]);
+            if d1.degree() < 1 {
+                return (nurbs::eval::eval(&d1, t), 0.0);
+            }
+            let d2 = nurbs::eval::derivative(&d1);
+            (nurbs::eval::eval(&d1, t), nurbs::eval::eval(&d2, t))
+        };
+        let (vx, ax) = d(0);
+        let (vy, ay) = d(1);
+        let speed = (vx * vx + vy * vy).sqrt();
+        if speed < SPEED_FLOOR {
+            fallback
+        } else {
+            (vx * ax + vy * ay) / speed
+        }
+    }
+
     pub(crate) fn read_path_speed_at(&self, t: f64, fallback: f64) -> f64 {
         let vx = self.axis_velocity_at(0, t);
         let vy = self.axis_velocity_at(1, t);

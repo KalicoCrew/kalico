@@ -1204,9 +1204,72 @@ fn advance_idle_then_append_places_new_move_at_target() {
     );
 }
 
+// Task 13 unit tests for `read_path_accel_at`.
+
+#[test]
+fn read_path_accel_at_matches_analytic() {
+    // x(t) = 5t² on t ∈ [0,1] → vx = 10t, ax = 10.
+    // BezierPiece coeffs are monomial: p(u) = Σ coeffs[k]*(u-u_start)^k.
+    // So coeffs = [0.0, 0.0, 5.0] encodes 5t².
+    let x_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0, 0.0, 5.0],
+    }]);
+    let y_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0],
+    }]);
+    let z_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0],
+    }]);
+    let mut state = ShaperState::new([0.0; 4], &[None; 4]);
+    state.planned_fitted = vec![FittedSegment {
+        axes: [x_nurbs, y_nurbs, z_nurbs],
+        t_start: 0.0,
+        t_end: 1.0,
+    }];
+    let a = state.read_path_accel_at(0.5, f64::NAN);
+    assert!(
+        (a - 10.0).abs() < 1e-9,
+        "expected tangential accel = 10 at t=0.5, got {a}"
+    );
+}
+
+#[test]
+fn read_path_accel_at_zero_speed_returns_fallback() {
+    let x_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0, 0.0, 5.0],
+    }]);
+    let y_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0],
+    }]);
+    let z_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: 0.0,
+        u_end: 1.0,
+        coeffs: vec![0.0],
+    }]);
+    let mut state = ShaperState::new([0.0; 4], &[None; 4]);
+    state.planned_fitted = vec![FittedSegment {
+        axes: [x_nurbs, y_nurbs, z_nurbs],
+        t_start: 0.0,
+        t_end: 1.0,
+    }];
+    // At t=0: vx = 0, vy = 0 → speed = 0 → below SPEED_FLOOR → fallback.
+    let a = state.read_path_accel_at(0.0, 0.0);
+    assert_eq!(a, 0.0);
+}
+
 // Task 13 staging helpers.
 
-const LOW_FREQ_HZ: f64 = 20.0;
+const LOW_FREQ_HZ: f64 = 13.0;
 const HARNESS_A_MAX: f64 = 5_000.0;
 
 fn single_axis_harness(v_max: f64, a_max: f64) -> (ShaperState, ReplanContext) {
@@ -1293,19 +1356,32 @@ fn sampled_path_accel(state: &ShaperState, t: f64) -> f64 {
     nurbs::eval::eval(&accel_nurbs, t)
 }
 
+/// 2 ms past t_split: far enough inside the first fitted piece to avoid the
+/// Hermite left-endpoint artifact while remaining within the narrow accel ramp
+/// (total ramp ≈ 120 ms for 50 mm F600 at a_max = 5 000 mm/s²).
+const ACCEL_SAMPLE_OFFSET: f64 = 0.002;
+
 #[test]
-#[ignore = "RED until the replan accel carry lands (Task 13)"]
 fn replan_boundary_carries_acceleration() {
-    // A triangular move A puts t_dispatched (= t_decel_start − max_h) in the
-    // accel ramp; the low-frequency smoothing kernel makes max_h exceed the
-    // fit-piece width so the sampled (fit-level, i.e. executed-level) accel
-    // there is monotone, not apex-blended. Appending slow B flips the new
-    // plan's free a_0 to decel — the impulse this feature kills.
+    // Scenario: move A is 50 mm at F600 (≈ 10 mm/s/s ramp, triangular profile);
+    // 13 Hz SmoothZV makes max_h ≈ 30.9 ms so t_dispatched = t_decel_start − max_h
+    // lands in the accel ramp where tangential accel ≈ +3 800 mm/s² > 1 500.
+    // Appending slow move B (F30, 200 mm) would — without the carry — cause the
+    // new plan to start decelerating immediately from t_dispatched, producing an
+    // impulse. With initial_a pinned to the sampled value the new plan continues
+    // at the same acceleration; the impulse vanishes.
+    //
+    // Acceleration is compared at t_split + ACCEL_SAMPLE_OFFSET on BOTH plans to
+    // avoid the Hermite left-boundary artifact: after the replan, t_split is the
+    // exact left end of the new fitted segment, where the piecewise polynomial
+    // second derivative is systematically lower than initial_a (finite-jerk SOCP
+    // pushes velocities above the constant-accel prediction at s1, making p''(t_start)
+    // < a0). Two milliseconds inside the segment the artifact is gone.
     let (mut state, ctx) = single_axis_harness(600.0, HARNESS_A_MAX);
     append_x_move(&mut state, &ctx, 50.0, 600.0);
     let t_split = emit_partial_window(&mut state);
 
-    let a_old = sampled_path_accel(&state, t_split);
+    let a_old = sampled_path_accel(&state, t_split + ACCEL_SAMPLE_OFFSET);
     assert!(
         a_old > 0.3 * HARNESS_A_MAX,
         "precondition: t_dispatched must land mid-acceleration \
@@ -1314,10 +1390,10 @@ fn replan_boundary_carries_acceleration() {
     );
 
     append_x_move(&mut state, &ctx, 200.0, 30.0);
-    let a_new = sampled_path_accel(&state, t_split);
+    let a_new = sampled_path_accel(&state, t_split + ACCEL_SAMPLE_OFFSET);
 
     assert!(
         (a_new - a_old).abs() < 500.0,
-        "replan accel step at t_dispatched: {a_old:.0} -> {a_new:.0} mm/s²"
+        "replan accel step at t_dispatched+2ms: {a_old:.0} -> {a_new:.0} mm/s²"
     );
 }
