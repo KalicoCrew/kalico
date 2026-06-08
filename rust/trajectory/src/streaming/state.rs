@@ -100,11 +100,14 @@ impl ShaperState {
     ) -> Result<ReplanReport, ShapeError> {
         let initial_v = self.read_path_speed_at(self.t_dispatched, ctx.fallback_initial_v);
         let a_max_path = ctx.limits.a_max.iter().copied().fold(f64::MAX, f64::min);
-        let initial_a = if initial_v > 0.0 {
-            self.read_path_accel_at(self.t_dispatched, 0.0)
-                .clamp(-a_max_path, a_max_path)
+        let (initial_a, start_d2_override) = if initial_v > 0.0 {
+            let axis_accels = self.read_axis_accels_at(self.t_dispatched);
+            let path_a = self
+                .read_path_accel_at(self.t_dispatched, 0.0)
+                .clamp(-a_max_path, a_max_path);
+            (path_a, axis_accels)
         } else {
-            0.0
+            (0.0, None)
         };
 
         let prior_uncommitted = self.uncommitted_moves.clone();
@@ -174,6 +177,7 @@ impl ShaperState {
             initial_a,
             terminal_v: 0.0,
             safety_mode: ctx.safety_mode,
+            start_d2_override,
         };
 
         let solve_start = Instant::now();
@@ -282,6 +286,34 @@ impl ShaperState {
         } else {
             (vx * ax + vy * ay) / speed
         }
+    }
+
+    /// Axis-wise second derivatives `[d²x/dt², d²y/dt², d²z/dt²]` of the
+    /// PRE-SHAPE planned_fitted polynomial at time `t`. Returns `None` when `t`
+    /// is not covered by any fitted segment or when any axis polynomial has
+    /// degree < 2.
+    pub(crate) fn read_axis_accels_at(&self, t: f64) -> Option<[f64; 3]> {
+        let seg = self
+            .planned_fitted
+            .iter()
+            .find(|s| s.t_start <= t && t < s.t_end)
+            .or_else(|| {
+                self.planned_fitted
+                    .last()
+                    .filter(|s| (t - s.t_end).abs() <= TIME_LOOKUP_TOLERANCE)
+            })?;
+        let accel = std::array::from_fn(|axis| {
+            if seg.axes[axis].degree() < 2 {
+                return 0.0;
+            }
+            let d1 = nurbs::eval::derivative(&seg.axes[axis]);
+            if d1.degree() < 1 {
+                return 0.0;
+            }
+            let d2 = nurbs::eval::derivative(&d1);
+            nurbs::eval::eval(&d2, t)
+        });
+        Some(accel)
     }
 
     pub(crate) fn read_path_speed_at(&self, t: f64, fallback: f64) -> f64 {

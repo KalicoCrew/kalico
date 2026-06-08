@@ -95,6 +95,7 @@ fn run_shape_variant(
         initial_v: 0.0,
         initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
     let t0 = std::time::Instant::now();
     let result = trajectory::shape_batch(&input);

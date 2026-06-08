@@ -1356,11 +1356,6 @@ fn sampled_path_accel(state: &ShaperState, t: f64) -> f64 {
     nurbs::eval::eval(&accel_nurbs, t)
 }
 
-/// 2 ms past t_split: far enough inside the first fitted piece to avoid the
-/// Hermite left-endpoint artifact while remaining within the narrow accel ramp
-/// (total ramp ≈ 120 ms for 50 mm F600 at a_max = 5 000 mm/s²).
-const ACCEL_SAMPLE_OFFSET: f64 = 0.002;
-
 #[test]
 fn replan_boundary_carries_acceleration() {
     // Scenario: move A is 50 mm at F600 (≈ 10 mm/s/s ramp, triangular profile);
@@ -1368,32 +1363,25 @@ fn replan_boundary_carries_acceleration() {
     // lands in the accel ramp where tangential accel ≈ +3 800 mm/s² > 1 500.
     // Appending slow move B (F30, 200 mm) would — without the carry — cause the
     // new plan to start decelerating immediately from t_dispatched, producing an
-    // impulse. With initial_a pinned to the sampled value the new plan continues
-    // at the same acceleration; the impulse vanishes.
-    //
-    // Acceleration is compared at t_split + ACCEL_SAMPLE_OFFSET on BOTH plans to
-    // avoid the Hermite left-boundary artifact: after the replan, t_split is the
-    // exact left end of the new fitted segment, where the piecewise polynomial
-    // second derivative is systematically lower than initial_a (finite-jerk SOCP
-    // pushes velocities above the constant-accel prediction at s1, making p''(t_start)
-    // < a0). Two milliseconds inside the segment the artifact is gone.
+    // impulse. The C2-continuous replan (axis-wise d2 pinned from old plan at
+    // t_dispatched) makes the new fitted polynomial start with the same second
+    // derivative as the old one, so the step at the replan boundary is ~0.
     let (mut state, ctx) = single_axis_harness(600.0, HARNESS_A_MAX);
     append_x_move(&mut state, &ctx, 50.0, 600.0);
     let t_split = emit_partial_window(&mut state);
 
-    let a_old = sampled_path_accel(&state, t_split + ACCEL_SAMPLE_OFFSET);
+    let a_old = sampled_path_accel(&state, t_split);
     assert!(
         a_old > 0.3 * HARNESS_A_MAX,
         "precondition: t_dispatched must land mid-acceleration \
-         (got a={a_old:.0}); resize move A / lower the kernel frequency, \
-         not the assertion"
+         (got a={a_old:.0}); resize move A or lower the kernel frequency"
     );
 
     append_x_move(&mut state, &ctx, 200.0, 30.0);
-    let a_new = sampled_path_accel(&state, t_split + ACCEL_SAMPLE_OFFSET);
+    let a_new = sampled_path_accel(&state, t_split);
 
     assert!(
-        (a_new - a_old).abs() < 500.0,
-        "replan accel step at t_dispatched+2ms: {a_old:.0} -> {a_new:.0} mm/s²"
+        (a_new - a_old).abs() < 100.0,
+        "replan accel step at t_dispatched: {a_old:.0} -> {a_new:.0} mm/s²"
     );
 }

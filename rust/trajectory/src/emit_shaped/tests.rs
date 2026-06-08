@@ -115,6 +115,7 @@ fn empty_history_matches_shape_batch_byte_identical() {
         initial_a: 0.0,
         terminal_v: 0.0,
         safety_mode: SafetyMode::TerminalKnown,
+        start_d2_override: None,
     };
     let planned = plan_velocity(&plan_input)
         .expect("plan_velocity should succeed")
@@ -175,6 +176,7 @@ fn empty_history_matches_shape_batch_byte_identical() {
         initial_v: 0.0,
         initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
     let reference = crate::shape_batch(&shape_input).expect("shape_batch should succeed");
 

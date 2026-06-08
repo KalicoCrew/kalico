@@ -50,6 +50,7 @@ fn default_input<'a>(segments: &'a [PlanSegment<'a>], safety: SafetyMode) -> Pla
         initial_a: 0.0,
         terminal_v: 0.0,
         safety_mode: safety,
+        start_d2_override: None,
     }
 }
 

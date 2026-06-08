@@ -67,6 +67,7 @@ fn single_straight_line_converges() {
         initial_v: 0.0,
         initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = crate::shape_batch(&input).expect("should succeed");
@@ -140,6 +141,7 @@ fn two_segments_with_e_gap() {
         initial_v: 0.0,
         initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = crate::shape_batch(&input).expect("should succeed");
@@ -214,6 +216,7 @@ fn all_e_gaps_output() {
         initial_v: 0.0,
         initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = crate::shape_batch(&input).expect("should succeed");

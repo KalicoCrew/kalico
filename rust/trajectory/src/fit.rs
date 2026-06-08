@@ -14,6 +14,7 @@ pub struct FittedSegment {
 pub fn fit_and_split(
     composed: &[[BezierPiece<f64>; 3]],
     tolerance: f64,
+    start_d2_override: Option<[f64; 3]>,
 ) -> Result<FittedSegment, crate::ShapeError> {
     use nurbs::bezier::bezier_pieces_to_nurbs;
 
@@ -26,7 +27,9 @@ pub fn fit_and_split(
 
     let fit_input = nondegenerate_composed_pieces(composed)?;
 
-    let fitted = fit_hermite_c1_adaptive(&fit_input, tolerance, 4).map_err(|e| {
+    let d2_start = start_d2_override.unwrap_or_else(|| boundary_second_derivative(&fit_input));
+
+    let fitted = fit_hermite_c2_adaptive(&fit_input, tolerance, d2_start).map_err(|e| {
         crate::ShapeError::FitFailure {
             index: 0,
             detail: e,
@@ -43,6 +46,13 @@ pub fn fit_and_split(
         axes,
         t_start,
         t_end,
+    })
+}
+
+fn boundary_second_derivative(composed: &[[BezierPiece<f64>; 3]]) -> [f64; 3] {
+    std::array::from_fn(|axis| {
+        let piece = &composed[0][axis];
+        piece.differentiate().differentiate().evaluate(piece.u_start)
     })
 }
 
@@ -70,17 +80,17 @@ fn nondegenerate_composed_pieces(
     Ok(filtered)
 }
 
-fn fit_hermite_c1_adaptive(
+fn fit_hermite_c2_adaptive(
     composed: &[[BezierPiece<f64>; 3]],
     tolerance: f64,
-    target_degree: u8,
+    d2_start: [f64; 3],
 ) -> Result<[Vec<BezierPiece<f64>>; 3], nurbs::algebra::FitError> {
-    use nurbs::algebra::{fit_hermite_c1, FitError};
+    use nurbs::algebra::{fit_hermite_c1_clamped, FitError};
 
     let mut refined = composed.to_vec();
 
     for depth in 0..=HERMITE_REFIT_MAX_SUBDIVISIONS {
-        match fit_hermite_c1::<3>(&refined, tolerance, target_degree) {
+        match fit_hermite_c1_clamped::<3>(&refined, tolerance, 4, Some(d2_start), None) {
             Ok(fitted) => return Ok(fitted),
             Err(err @ FitError::ToleranceNotReached { .. }) => {
                 if depth == HERMITE_REFIT_MAX_SUBDIVISIONS {

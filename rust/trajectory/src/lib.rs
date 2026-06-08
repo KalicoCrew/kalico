@@ -36,6 +36,12 @@ pub struct ShapeBatchInput<'a> {
     pub initial_a: f64,
     /// Velocity at the batch end (mm/s).
     pub terminal_v: f64,
+    /// Axis-wise second derivatives `[d²x/dt², d²y/dt², d²z/dt²]` to pin at the
+    /// very first sample of the very first fitted segment. `None` uses the composed
+    /// polynomial's own boundary curvature. Set by the streaming state to the
+    /// old plan's derivatives at `t_dispatched` so the new plan achieves exact C2
+    /// continuity at the replan boundary.
+    pub start_d2_override: Option<[f64; 3]>,
 }
 
 #[derive(Debug, Clone, Copy)]

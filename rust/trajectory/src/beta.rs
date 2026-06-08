@@ -491,7 +491,13 @@ fn run_one_iteration(
                 arc_fit_tolerance,
             )?;
 
-            let mut seg_fitted = crate::fit::fit_and_split(&composed, input.fit_tolerance_mm)?;
+            let seg_d2_override = if run_idx == 0 && local_idx == 0 {
+                input.start_d2_override
+            } else {
+                None
+            };
+            let mut seg_fitted =
+                crate::fit::fit_and_split(&composed, input.fit_tolerance_mm, seg_d2_override)?;
             seg_fitted.t_start = s_pieces.t_start;
             seg_fitted.t_end = s_pieces.t_end;
 

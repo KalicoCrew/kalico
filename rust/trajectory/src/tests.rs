@@ -25,6 +25,7 @@ fn shape_batch_rejects_empty_segments() {
         initial_v: 0.0,
         initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
     let result = shape_batch(&input);
     assert!(matches!(result, Err(ShapeError::EmptySegments)));

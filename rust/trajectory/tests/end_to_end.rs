@@ -82,6 +82,7 @@ fn shape_batch_straight_line() {
         initial_v: 0.0,
         initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = trajectory::shape_batch(&input).expect("shape_batch should succeed");
@@ -155,6 +156,7 @@ fn shape_batch_short_low_velocity_line_refits_at_five_microns() {
         initial_v: 0.0,
         initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = trajectory::shape_batch(&input)
@@ -223,6 +225,7 @@ fn shape_batch_two_segments() {
         initial_v: 0.0,
         initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = trajectory::shape_batch(&input).expect("shape_batch should succeed");
@@ -318,6 +321,7 @@ fn shape_batch_with_retraction() {
         initial_v: 0.0,
         initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = trajectory::shape_batch(&input).expect("shape_batch should succeed");
@@ -394,6 +398,7 @@ fn shape_batch_beta_warning() {
         initial_v: 0.0,
         initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let output = trajectory::shape_batch(&input);
@@ -445,6 +450,7 @@ fn shape_batch_empty_input() {
         initial_v: 0.0,
         initial_a: 0.0,
         terminal_v: 0.0,
+        start_d2_override: None,
     };
 
     let result = trajectory::shape_batch(&input);

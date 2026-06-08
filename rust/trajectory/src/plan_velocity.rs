@@ -79,6 +79,9 @@ pub struct PlanInput<'a> {
     /// Velocity at the batch end (mm/s). Must be finite and non-negative.
     pub terminal_v: f64,
     pub safety_mode: SafetyMode,
+    /// Axis-wise second derivatives to pin at the first sample of the first fitted
+    /// segment. Forwarded verbatim to [`ShapeBatchInput::start_d2_override`].
+    pub start_d2_override: Option<[f64; 3]>,
 }
 
 ///
@@ -129,6 +132,7 @@ pub fn plan_velocity(input: &PlanInput<'_>) -> Result<PlanOutput, ShapeError> {
         initial_v: input.initial_v,
         initial_a: input.initial_a,
         terminal_v: input.terminal_v,
+        start_d2_override: input.start_d2_override,
     };
 
     let partition = partition_batch(&segments, &input.e_limits);
