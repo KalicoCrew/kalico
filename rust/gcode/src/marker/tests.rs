@@ -10,7 +10,6 @@ fn matches_orca_layer_change() {
         match_comment(";LAYER:0"),
         Some(MarkerKind::LayerChange { layer: Some(0) })
     );
-    // OrcaSlicer / PrusaSlicer emit `;LAYER_CHANGE` without a number.
     assert_eq!(
         match_comment(";LAYER_CHANGE"),
         Some(MarkerKind::LayerChange { layer: None })
@@ -19,8 +18,6 @@ fn matches_orca_layer_change() {
 
 #[test]
 fn matches_prusa_layer() {
-    // PrusaSlicer also emits ;LAYER_CHANGE (handled in matches_orca_layer_change).
-    // Cura-style numbered marker:
     assert_eq!(
         match_comment(";LAYER:12"),
         Some(MarkerKind::LayerChange { layer: Some(12) })

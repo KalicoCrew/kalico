@@ -12,20 +12,13 @@ use geometry::segment::EMode;
 use nurbs::{ScalarNurbs, VectorNurbs};
 use temporal::multi::{GridStrategy, SegmentInput};
 use trajectory::{
-    AxisShaper, ELimits, RequiredShaper, ShapeBatchInput, ShapeError, ShapeSegmentInput,
-    ShaperConfig,
+    AxisShaper, ELimits, ShapeBatchInput, ShapeError, ShapeSegmentInput, ShaperConfig,
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Build a degree-1 (linear) vector NURBS from `from` to `to`.
 fn make_straight_line(from: [f64; 3], to: [f64; 3]) -> VectorNurbs<f64, 3> {
     VectorNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![from, to]).unwrap()
 }
 
-/// Default dynamic limits for test segments.
 fn default_limits() -> temporal::Limits {
     temporal::Limits::new(
         [500.0; 3],     // v_max
@@ -37,8 +30,8 @@ fn default_limits() -> temporal::Limits {
 
 fn test_shaper_config() -> ShaperConfig {
     ShaperConfig {
-        x: RequiredShaper::SmoothZv { frequency_hz: 10.0 },
-        y: RequiredShaper::SmoothZv { frequency_hz: 10.0 },
+        x: AxisShaper::SmoothZv { frequency_hz: 10.0 },
+        y: AxisShaper::SmoothZv { frequency_hz: 10.0 },
         z: AxisShaper::Passthrough,
     }
 }
@@ -49,10 +42,6 @@ fn default_e_limits() -> ELimits {
         a_max: 5_000.0,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Test 1: Straight-line end-to-end
-// ---------------------------------------------------------------------------
 
 #[test]
 fn shape_batch_straight_line() {
@@ -85,11 +74,9 @@ fn shape_batch_straight_line() {
 
     let output = trajectory::shape_batch(&input).expect("shape_batch should succeed");
 
-    // One output segment.
     assert_eq!(output.segments.len(), 1);
 
     let seg = &output.segments[0];
-    // Positive duration.
     assert!(
         seg.t_end > seg.t_start,
         "t_end={} must be > t_start={}",
@@ -100,14 +87,10 @@ fn shape_batch_straight_line() {
     {
         assert_eq!(seg.t_start, 0.0);
     }
-    // EMode preserved.
     assert_eq!(seg.e_mode, EMode::CoupledToXy);
-    // Extrusion ratio forwarded.
     assert!((seg.extrusion_per_xy_mm - 0.04).abs() < 1e-12);
-    // No independent E.
     assert!(seg.e_independent.is_none());
 
-    // Shaped axes are non-trivial ScalarNurbs.
     for (axis_idx, axis_nurbs) in seg.axes.iter().enumerate() {
         assert!(
             axis_nurbs.control_points().len() >= 2,
@@ -143,8 +126,8 @@ fn shape_batch_short_low_velocity_line_refits_at_five_microns() {
         grid_strategy: GridStrategy::Fixed(25),
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothZv { frequency_hz: 50.0 },
-            y: RequiredShaper::SmoothZv { frequency_hz: 50.0 },
+            x: AxisShaper::SmoothZv { frequency_hz: 50.0 },
+            y: AxisShaper::SmoothZv { frequency_hz: 50.0 },
             z: AxisShaper::Passthrough,
         },
         fit_tolerance_mm: 0.005,
@@ -164,10 +147,6 @@ fn shape_batch_short_low_velocity_line_refits_at_five_microns() {
     assert!(seg.t_start.abs() < 1e-12);
     assert!(seg.t_end.is_finite());
 }
-
-// ---------------------------------------------------------------------------
-// Test 2: Two contiguous segments
-// ---------------------------------------------------------------------------
 
 // TOPP-RA joining produces platform-dependent results at 10 Hz shaper with
 // multi-segment batches (passes macOS, stalls on Linux CI). The same code
@@ -224,14 +203,11 @@ fn shape_batch_two_segments() {
 
     let output = trajectory::shape_batch(&input).expect("shape_batch should succeed");
 
-    // Two output segments.
     assert_eq!(output.segments.len(), 2);
 
-    // Both CoupledToXy.
     assert_eq!(output.segments[0].e_mode, EMode::CoupledToXy);
     assert_eq!(output.segments[1].e_mode, EMode::CoupledToXy);
 
-    // Each has positive duration.
     for (i, seg) in output.segments.iter().enumerate() {
         assert!(
             seg.t_end > seg.t_start,
@@ -241,7 +217,6 @@ fn shape_batch_two_segments() {
         );
     }
 
-    // Times are contiguous: seg[0].t_end == seg[1].t_start within tolerance.
     let gap = (output.segments[0].t_end - output.segments[1].t_start).abs();
     assert!(
         gap < 1e-9,
@@ -252,19 +227,13 @@ fn shape_batch_two_segments() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Test 3: Mixed mode with E gap (retraction)
-// ---------------------------------------------------------------------------
-
 #[test]
 #[cfg_attr(target_os = "linux", ignore)]
 fn shape_batch_with_retraction() {
-    // [CoupledToXy, Independent(retraction), CoupledToXy]
     let curve1 = make_straight_line([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
     let curve_hold = make_straight_line([50.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
     let curve2 = make_straight_line([50.0, 0.0, 0.0], [100.0, 0.0, 0.0]);
 
-    // Retraction E NURBS: 5mm retraction from 10.0 to 5.0.
     let e_retract = ScalarNurbs::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![10.0, 5.0]).unwrap();
 
     let segments = [
@@ -318,19 +287,16 @@ fn shape_batch_with_retraction() {
 
     let output = trajectory::shape_batch(&input).expect("shape_batch should succeed");
 
-    // Three output segments in correct order.
     assert_eq!(output.segments.len(), 3);
     assert_eq!(output.segments[0].e_mode, EMode::CoupledToXy);
     assert_eq!(output.segments[1].e_mode, EMode::Independent);
     assert_eq!(output.segments[2].e_mode, EMode::CoupledToXy);
 
-    // Middle segment has independent E NURBS populated.
     assert!(
         output.segments[1].e_independent.is_some(),
         "independent E segment should have e_independent populated"
     );
 
-    // Time ordering: each segment starts at or after the previous ends.
     assert!(
         output.segments[0].t_end <= output.segments[1].t_start + 1e-9,
         "seg[0].t_end={} should be <= seg[1].t_start={}",
@@ -344,7 +310,6 @@ fn shape_batch_with_retraction() {
         output.segments[2].t_start
     );
 
-    // All segments have positive duration.
     for (i, seg) in output.segments.iter().enumerate() {
         assert!(
             seg.t_end > seg.t_start,
@@ -355,15 +320,8 @@ fn shape_batch_with_retraction() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Test 4: Beta warning path
-// ---------------------------------------------------------------------------
-
 #[test]
 fn shape_batch_beta_warning() {
-    // Use beta_max_iters=1 — the pipeline returns Ok with a warning
-    // when the post-shape peaks may exceed machine limits. Callers MUST
-    // check beta_warning before streaming the trajectory to the MCU.
     let curve = make_straight_line([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
 
     let segments = [ShapeSegmentInput {
@@ -393,7 +351,6 @@ fn shape_batch_beta_warning() {
 
     let output = trajectory::shape_batch(&input);
 
-    // Must succeed — non-convergence is a warning, not an error.
     assert!(
         output.is_ok(),
         "shape_batch with beta_max_iters=1 should return Ok, got: {:?}",
@@ -404,9 +361,6 @@ fn shape_batch_beta_warning() {
     assert_eq!(output.segments.len(), 1);
     assert!(output.segments[0].t_end > output.segments[0].t_start);
 
-    // Safety contract: when beta_max_iters is artificially low,
-    // beta_warning MUST be Some so callers know the trajectory may
-    // exceed machine limits. Callers must check this before arming.
     if output.beta_warning.is_some() {
         let w = output.beta_warning.as_ref().unwrap();
         assert!(w.worst_ratio > 0.0, "worst_ratio must be positive");
@@ -415,16 +369,7 @@ fn shape_batch_beta_warning() {
             "segments_exceeding must be non-empty when warning is present"
         );
     }
-    // Note: for a simple straight-line at low frequency, the shaper
-    // may not amplify acceleration, so convergence in 1 iteration is
-    // possible. The test validates the contract: if the warning IS
-    // present, it must be well-formed. A separate test with a
-    // high-curvature fixture should force the warning path.
 }
-
-// ---------------------------------------------------------------------------
-// Test 5: Empty input
-// ---------------------------------------------------------------------------
 
 #[test]
 fn shape_batch_empty_input() {

@@ -45,8 +45,8 @@ def main():
     coeffs, t_sm = get_zv_smoother_local(30.0)
     import scipy.integrate as si
 
-    a = 100.0  # input acceleration
-    t_end = 0.5  # input duration
+    a = 100.0
+    t_end = 0.5
 
     def x_input(t):
         return 0.5 * a * t * t if 0 <= t <= t_end else 0.0

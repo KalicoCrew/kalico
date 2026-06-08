@@ -1,71 +1,4 @@
 #!/usr/bin/env python3
-"""tools/measure_m1_host_stall.py — Spec §7.3 M1 host-stall soak runner.
-
-**Status: SCAFFOLD — user-run on Pi 5 hardware.** Per the Step-6 plan
-(Phase 15.1), the subagent ships this script and a placeholder doc;
-the actual 8-hour soak runs on the user's Pi 5 against a representative
-production load. Results land in
-`docs/research/step6-buffer-budget-measurements.md`.
-
-What this measures
-==================
-
-M1 (spec §7.3) bounds the worst-case host stall — the maximum duration
-between segment-push-completion events as observed by the producer side
-of the SPSC. Goal: validate that the buffer budget chosen in
-`rust/kalico-host-rt/src/...` (default ~ MIN_SEGMENT_DURATION_MS × N)
-is large enough to absorb the actual host-side jitter on a Pi 5 8 GB
-running Bookworm desktop + Mainsail (rendering an active trace UI) +
-Moonraker WebSocket + journald active logging.
-
-The script measures wall-clock time between consecutive successful
-`kalico_push_segment` round-trips (push → push_response). On a healthy
-Pi 5 + USB-CDC link, p50 should be sub-millisecond; the long tail is
-what we care about.
-
-Recommended workload
-====================
-
-Run this in parallel with:
-
-  - `glxgears` or any GPU-rendered foreground app (Mainsail dashboard
-    page open in a Chromium tab counts).
-  - A `journalctl -f` session writing to disk.
-  - Periodic `apt-get` / `apt update` in a cron-equivalent loop.
-  - A tcpdump trace — Moonraker WebSocket traffic mimics this load.
-
-The point is to capture the CFS-scheduled, page-fault-y, IRQ-coalescing
-worst case the host sees during a real print on a non-RT kernel.
-
-Output
-======
-
-Logs every second to stderr; on completion writes a JSON report with
-p50/p95/p99/p99.9/p99.99/max latencies in microseconds. The user copies
-the relevant lines into
-`docs/research/step6-buffer-budget-measurements.md`.
-
-Usage
-=====
-
-```bash
-# Pre-flight: build and flash production firmware on H723.
-# Then on the Pi 5 (NOT the dev host):
-python3 tools/measure_m1_host_stall.py \
-    --port /dev/ttyACM0 --hours 8 \
-    --report /tmp/m1-host-stall-$(date +%Y%m%d).json
-```
-
-Curve
-=====
-
-Pushes back-to-back tiny segments referencing a scalar X curve loaded
-once at startup with the production `kalico_load_curve` ABI. Each
-segment is 1 ms long; when the queue fills the producer blocks on
-`push_response` until the engine retires a slot — the time between
-`io.send` and `wait_for_response` returning IS the host stall.
-"""
-
 import argparse
 import json
 import pathlib
@@ -78,14 +11,11 @@ from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
 
 CLOCK_FREQ = 520_000_000  # H723 default
 TICK_HZ = 40_000
-ONE_TICK_CYCLES = CLOCK_FREQ // TICK_HZ  # 13_000
+ONE_TICK_CYCLES = CLOCK_FREQ // TICK_HZ
+FIVE_SECONDS_CYCLES = 5 * CLOCK_FREQ
+TEN_SECONDS_CYCLES = 10 * CLOCK_FREQ
 
-# 100 ms per segment. Queue capacity is 8 (rust/runtime/src/queue.rs:1),
-# so the prefilled 7 + steady-state pushing gives ~700 ms of buffer in
-# flight — large enough that normal Pi-5 jitter (CFS scheduling, page
-# faults, journald writes) doesn't underrun the engine while we measure
-# host-side push latency.
-SEG_TICKS = 4000  # 100 ms per segment
+SEG_TICKS = 4000
 FORMAT_VERSION_V1 = 1
 UNUSED_HANDLE = 0xFFFEFFFE
 E_MODE_TRAVEL = 2
@@ -96,11 +26,6 @@ def floats_to_blob(values):
 
 
 def load_stall_curve(io, slot=1, timeout=5.0):
-    """Load a tiny scalar curve via the current production ABI.
-
-    The old soak used `runtime_load_fixture_curve`; production firmware now
-    exposes only `kalico_load_curve`, so this keeps M1 on the real ABI.
-    """
     cps = [0.0, 0.33333334, 0.6666667, 1.0]
     knots = [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
     io.send(
@@ -137,7 +62,6 @@ def push_segment(io, seg_id, x_handle, t_start_ticks, t_end_ticks, timeout=5.0):
 
 
 def read_mcu_clock(io):
-    """Sample widened MCU clock via §12.1 clock_sync_request."""
     io.send(
         "kalico_clock_sync_request request_id=1 host_send_time_lo=0 "
         "host_send_time_hi=0"
@@ -193,7 +117,6 @@ def main():
     print(f"[m1] connecting {args.port} @ {args.baud}", file=sys.stderr)
     io = KalicoHostIO(args.port, args.baud)
     try:
-        # Load one production scalar X curve and open stream once.
         rc, fixture_handle = load_stall_curve(io, slot=1)
         if rc != 0:
             raise SystemExit(f"FAIL: load_curve rc={rc} — abort soak")
@@ -203,18 +126,15 @@ def main():
 
         seg_cycles = SEG_TICKS * ONE_TICK_CYCLES
         next_seg_id = 1
-        # Anchor t_start_base ahead of widened_now. read_mcu_clock returns 0
-        # before the engine ISR has ticked (TIM5 only fires after the first
-        # push, §4.4); on a fresh boot we use a generous absolute offset of
-        # 10 s so the priming segment is in the MCU's future.
+        # read_mcu_clock returns 0 before the engine ISR has ticked (TIM5 only
+        # fires after the first push, §4.4); on a fresh boot use a generous
+        # absolute offset so the priming segment is in the MCU's future.
         mcu_now = read_mcu_clock(io)
         t_start_base = max(
-            mcu_now + 5 * CLOCK_FREQ,  # +5 s ahead of widened_now
-            10 * CLOCK_FREQ,  # at least 10 s of absolute uptime
+            mcu_now + FIVE_SECONDS_CYCLES,
+            TEN_SECONDS_CYCLES,
         )
 
-        # Initial fill so the engine has something to chew on while we
-        # measure steady-state push latency.
         # Engine queue capacity = 8 (heapless::spsc::Queue<Segment, 8>); we
         # prefill 7 so there's one free slot for the first steady-state push.
         for prefill in range(7):
@@ -233,7 +153,6 @@ def main():
         if stream_arm(io, t_start_base, 2 * ONE_TICK_CYCLES) != 0:
             raise SystemExit("FAIL: stream_arm")
 
-        # Steady-state measurement loop.
         last_log = time.monotonic()
         while time.monotonic() < end_at:
             t_start = t_start_base + (next_seg_id - 1) * seg_cycles
@@ -249,9 +168,6 @@ def main():
                 )
             except HostIoError as exc:
                 push_failures += 1
-                # Pause and retry — this is exactly the kind of stall
-                # we're measuring for, but if it repeats >100 times
-                # something is structurally wrong.
                 if push_failures > 100:
                     raise SystemExit(
                         f"FAIL: push timeouts > 100 — abort: {exc}"
@@ -259,7 +175,6 @@ def main():
                 time.sleep(0.1)
                 continue
             if rc != 0:
-                # Backpressure or fault — fault aborts.
                 io.send("runtime_query_status")
                 try:
                     s = io.wait_for_response("kalico_status", 1.0)
@@ -270,7 +185,6 @@ def main():
                         )
                 except HostIoError:
                     pass
-                # Otherwise rate-limit and retry.
                 time.sleep(0.001)
                 continue
             samples_us.append(dt * 1e6)

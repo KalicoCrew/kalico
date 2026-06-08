@@ -7,8 +7,6 @@ pub struct BezierPieceMonomial {
     pub duration: f32,
 }
 
-/// Convert Bernstein control points [b0, b1, b2, b3] to monomial form.
-///
 /// Identities for cubic Bezier:
 ///   c0 = b0
 ///   c1 = 3·(b1 - b0)
@@ -27,8 +25,6 @@ pub fn bernstein_to_monomial(bp: [f32; 4]) -> BezierPieceMonomial {
     }
 }
 
-/// Bernstein control points → seconds-domain monomial form.
-///
 /// Wraps [`bernstein_to_monomial`] with a duration rescale: `c_k' = c_k / d^k`.
 /// Evaluating at `t_sec ∈ [0, duration]` produces the same position as the
 /// unit-interval evaluation at `τ = t_sec / duration`.

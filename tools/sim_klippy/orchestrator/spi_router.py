@@ -1,29 +1,9 @@
-"""Dispatcher that routes (cs, payload) frames to per-CS chip emulators.
-
-Used as the framed-mode handler for ``ChipSocketServer`` when a single
-sim SPI bus carries multiple chips. Each chip emulator registers itself
-on the CS value reported by the firmware (the chardev gpio offset of the
-chip's CS pin); transfers arriving on an unmapped CS raise ``KeyError``
-so a misconfigured wiring blows up loudly rather than silently
-mis-dispatching.
-"""
-
 from typing import Callable, Dict
 
 ChipHandler = Callable[[bytes], bytes]
 
 
 class SpiRouter:
-    """Per-CS dispatcher for framed-mode ChipSocketServer.
-
-    Usage::
-
-        router = SpiRouter()
-        router.attach(5, tmc_x.transfer)   # PC7 → chardev offset 5
-        router.attach(40, max31865.transfer)  # PF8 → chardev offset 40
-        server = ChipSocketServer(path, router, framed=True)
-    """
-
     def __init__(self) -> None:
         self._chips: Dict[int, ChipHandler] = {}
 

@@ -1,6 +1,3 @@
-// Host-process tick driver: a pthread calls kalico_runtime_tick_sample at the
-// motion sample rate, mirroring the H7 TIM5_IRQHandler. MACH_LINUX only.
-
 #include "generic/runtime_tick.h"
 
 #include <dlfcn.h>
@@ -15,17 +12,16 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "autoconf.h" // CONFIG_CLOCK_FREQ
+#include "autoconf.h"
 #include "kalico_runtime.h"
 #include "sched.h"
-#include "step_queue.h" // StepQueue, step_queues[], N_AXIS_STEP_QUEUES
+#include "step_queue.h"
 
 extern void *runtime_handle;
 
 // On H7 this is the IWDG flag; the Linux build has no IWDG, so default ok=1.
 volatile uint8_t runtime_liveness_ok = 1;
 
-// Maps the H7's CONFIG_KALICO_SIM cycle counter onto the host-derived one.
 volatile uint32_t runtime_sim_cyccnt = 0;
 
 // No TIM5 exception frame on the host; Rust -311 externs resolve to 0.
@@ -57,8 +53,8 @@ host_monotonic_ns(void)
     return s * 1000000000ULL + (uint64_t)(ns + (ns < 0 ? 1000000000 : 0));
 }
 
-extern uint32_t timer_read_time(void); // src/linux/timer.c
-extern uint64_t timer_read_time_u64(void); // src/linux/timer.c
+extern uint32_t timer_read_time(void);
+extern uint64_t timer_read_time_u64(void);
 
 __attribute__((used)) uint32_t
 runtime_cyccnt_read(void)
@@ -76,8 +72,6 @@ runtime_host_widened_clock_now(void)
 }
 
 #if CONFIG_KALICO_SIM
-// Matches printer_real/config after pin-overrides.toml: X(motor0)=PG4→gpio18,
-// Y(motor1)=PF11→gpio7, Z(motor2)=PG0→gpio15.
 static const int step_gpio_lines[N_AXIS_STEP_QUEUES] = { 18, 7, 15, -1 };
 
 static void (*sim_notify_step)(int chip, int line, int32_t n_steps);
@@ -121,8 +115,6 @@ host_tick_main(void *arg)
         kalico_runtime_tick_sample(runtime_handle);
 
         // Must drain every tick or the queue overflows (StepQueueOverflow).
-        // Sim notifies the auto-endstop shim to count pulses; raw STEP/DIR GPIO
-        // output on a real Linux MCU is not wired here (SPI phase-stepping is).
         for (int axis = 0; axis < N_AXIS_STEP_QUEUES; axis++) {
             StepQueue *q = &step_queues[axis];
             while (q->head != q->tail) {
@@ -158,13 +150,12 @@ runtime_tick_init(void)
     pthread_attr_destroy(&attr);
     if (rc != 0) {
         fprintf(stderr, "kalico_host_tick: pthread_create failed: %d\n", rc);
-        // Reset so a later runtime_tick_init can retry.
         atomic_store(&host_tick_thread_started, 0);
     }
 }
 
-extern uint32_t stats_send_time_high; // src/basecmd.c
-extern uint32_t stats_send_time;      // src/basecmd.c (exposed 2026-05-11)
+extern uint32_t stats_send_time_high;
+extern uint32_t stats_send_time;
 
 __attribute__((used)) void
 runtime_tick_enable(void)
@@ -178,8 +169,6 @@ runtime_tick_enable(void)
         uint32_t high = stats_send_time_high + (low < stats_send_time);
         uint64_t baseline = ((uint64_t)high) << 32 | (uint64_t)low;
         runtime_handle_seed_widen(runtime_handle, baseline);
-        // On the MCU the engine resolves step_queues via a C extern; on the
-        // host it must be installed explicitly.
         kalico_runtime_install_step_queues(runtime_handle,
                                            (uint8_t *)step_queues);
     }
@@ -192,8 +181,6 @@ runtime_tick_disable(void)
     atomic_store_explicit(&host_tick_enabled, 0, memory_order_release);
 }
 
-// The pthread loop drains step_queues inline, so the kick is a no-op here.
-// Stubs satisfy the extern references; `used` keeps them through --gc-sections.
 static uint32_t host_step_out_target;
 
 __attribute__((used)) void

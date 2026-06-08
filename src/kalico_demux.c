@@ -3,10 +3,10 @@
 #include <stdio.h>
 #include <string.h>
 #include "kalico_demux.h"
-#include "board/misc.h" // crc16_ccitt, bootloader_request
-#include "command.h"    // command_find_and_dispatch
-#include "kalico_dispatch.h" // kalico_dispatch_frame
-#include "sched.h"      // DECL_INIT
+#include "board/misc.h"
+#include "command.h"
+#include "kalico_dispatch.h"
+#include "sched.h"
 
 #define KLIPPER_LEN_MIN          5
 #define KLIPPER_LEN_MAX          64
@@ -149,15 +149,10 @@ kalico_demux_feed_byte(uint8_t b)
             }
             kalico_total_len = (uint16_t)total;
         }
-        // Pieces stream straight into the ring instead of accumulating in
-        // kalico_buf; the channel byte (and thus this branch) is reached at
-        // pos==4, by which point kalico_total_len is known.
         if (kalico_pos == 4 && kalico_buf[3] == KALICO_CHANNEL_PIECES
             && kalico_total_len > 0) {
             pieces_payload_remaining =
                 (uint16_t)(kalico_total_len - KALICO_FRAME_OVERHEAD);
-            // Seed CRC over [len_lo, len_hi, channel]; payload folded as it
-            // streams in (DEMUX_S_PIECES below).
             pieces_crc = 0xffff;
             pieces_crc = crc16_ccitt_update(pieces_crc, kalico_buf[1]);
             pieces_crc = crc16_ccitt_update(pieces_crc, kalico_buf[2]);
@@ -167,8 +162,6 @@ kalico_demux_feed_byte(uint8_t b)
             state = DEMUX_S_PIECES;
             return KALICO_DEMUX_OUT_NONE;
         }
-        // Non-pieces frames accumulate in kalico_buf and must fit it; reject
-        // an oversized control frame at pos==4 before the per-byte guard hits.
         if (kalico_pos == 4 && kalico_buf[3] != KALICO_CHANNEL_PIECES
             && kalico_total_len > KALICO_DEMUX_KALICO_BUF_SIZE) {
             state = DEMUX_S_WAITING;
@@ -294,15 +287,12 @@ kalico_demux_pump(const uint8_t *buf, uint16_t len)
                 fflush(stderr);
             }
 #endif
-            // The 32-byte sentinel reassembles into klipper_buf regardless of
-            // transport fragmentation, so checking here is the only
-            // fragmentation-proof location.
             const uint8_t *kbuf = kalico_demux_klipper_buf();
             uint8_t klen = kalico_demux_klipper_len();
             if (CONFIG_HAVE_BOOTLOADER_REQUEST && klen == 32
                 && !memcmp(kbuf,
                            " \x1c Request Serial Bootloader!! ~", 32))
-                bootloader_request();   // does not return
+                bootloader_request();
             uint_fast8_t pop_count;
             command_find_and_dispatch(
                 (uint8_t *)kbuf, klen, &pop_count);

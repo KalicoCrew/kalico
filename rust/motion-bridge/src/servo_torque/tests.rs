@@ -53,7 +53,7 @@ fn spawn_endpoint_with_kind(
 fn round_trips_enable_and_result() {
     let (client, server) = UnixStream::pair().unwrap();
     let rx = spawn_endpoint(server, 0);
-    let conn = UnixNativeConn::from_stream(client);
+    let conn = UnixNativeConn::from_stream(client).expect("from_stream");
     let result = send_set_torque(&conn, true, 42_000).expect("call");
     assert_eq!(result, 0);
     let seen = rx.recv().expect("endpoint saw the command");
@@ -65,15 +65,18 @@ fn round_trips_enable_and_result() {
 fn surfaces_nonzero_result() {
     let (client, server) = UnixStream::pair().unwrap();
     let _rx = spawn_endpoint(server, -312);
-    let conn = UnixNativeConn::from_stream(client);
+    let conn = UnixNativeConn::from_stream(client).expect("from_stream");
     assert_eq!(send_set_torque(&conn, false, 99).expect("call"), -312);
 }
 
 #[test]
 fn transport_error_is_an_err() {
     let (client, server) = UnixStream::pair().unwrap();
-    drop(server); // peer gone
-    let conn = UnixNativeConn::from_stream(client);
+    // Construct before killing the peer: from_stream's socket setup needs a
+    // live peer (setsockopt EINVAL on Darwin otherwise). Death-after-construction
+    // is also the real failure mode this guards.
+    let conn = UnixNativeConn::from_stream(client).expect("from_stream");
+    drop(server);
     assert!(send_set_torque(&conn, true, 1).is_err());
 }
 
@@ -81,7 +84,7 @@ fn transport_error_is_an_err() {
 fn wrong_kind_response_is_rejected() {
     let (client, server) = UnixStream::pair().unwrap();
     let _rx = spawn_endpoint_with_kind(server, MessageKind::PushPiecesResponse, vec![0u8; 20]);
-    let conn = UnixNativeConn::from_stream(client);
+    let conn = UnixNativeConn::from_stream(client).expect("from_stream");
     let err = send_set_torque(&conn, true, 42_000).expect_err("should error on wrong kind");
     assert!(err.contains("unexpected response kind"));
 }

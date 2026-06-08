@@ -1,16 +1,11 @@
 use crate::fit::FittedSegment;
 use crate::partition::partition_batch;
-use crate::{
-    AxisShaper, ELimits, RequiredShaper, ShapeBatchInput, ShapeError, ShapeSegmentInput,
-    ShaperConfig,
-};
+use crate::{AxisShaper, ELimits, ShapeBatchInput, ShapeError, ShapeSegmentInput, ShaperConfig};
 
 pub use crate::beta::{PlanOutput, PlanStats};
 
-/// Boundary-future treatment for the β-medium derate test.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SafetyMode {
-    /// Terminal velocity is the actual final state of the path.
     TerminalKnown,
     /// Streaming case: the terminal velocity is speculative (decel-to-zero default).
     /// β-medium derates against the worst-case-future bound by tightening the
@@ -23,23 +18,12 @@ pub enum SafetyMode {
 /// before per-axis shaper config is loaded.
 #[derive(Debug, Clone, Copy)]
 pub enum PlanShaper {
-    /// Smooth ZV at `frequency_hz`.
     SmoothZv { frequency_hz: f64 },
-    /// Smooth MZV at `frequency_hz`.
     SmoothMzv { frequency_hz: f64 },
-    /// No shaping for this axis.
     Passthrough,
 }
 
 impl PlanShaper {
-    fn into_required(self) -> Result<RequiredShaper, ShapeError> {
-        match self {
-            Self::SmoothZv { frequency_hz } => Ok(RequiredShaper::SmoothZv { frequency_hz }),
-            Self::SmoothMzv { frequency_hz } => Ok(RequiredShaper::SmoothMzv { frequency_hz }),
-            Self::Passthrough => Err(ShapeError::UnsupportedShaperOnXY),
-        }
-    }
-
     fn into_axis(self) -> AxisShaper {
         match self {
             Self::SmoothZv { frequency_hz } => AxisShaper::SmoothZv { frequency_hz },
@@ -49,7 +33,6 @@ impl PlanShaper {
     }
 }
 
-/// One segment of a multi-segment planning input.
 #[derive(Debug, Clone, Copy)]
 pub struct PlanSegment<'a> {
     pub temporal: temporal::multi::SegmentInput<'a>,
@@ -60,7 +43,6 @@ pub struct PlanSegment<'a> {
     pub feedrate_mm_s: f64,
 }
 
-/// Top-level input to [`plan_velocity`].
 #[derive(Debug)]
 pub struct PlanInput<'a> {
     pub segments: &'a [PlanSegment<'a>],
@@ -72,9 +54,7 @@ pub struct PlanInput<'a> {
     pub beta_max_iters: u8,
     pub beta_convergence_ratio: f64,
     pub e_limits: ELimits,
-    /// Velocity at the batch start (mm/s). Must be finite and non-negative.
     pub initial_v: f64,
-    /// Velocity at the batch end (mm/s). Must be finite and non-negative.
     pub terminal_v: f64,
     pub safety_mode: SafetyMode,
 }
@@ -83,7 +63,6 @@ pub struct PlanInput<'a> {
 /// # Errors
 ///
 /// - [`ShapeError::EmptySegments`] — `input.segments` is empty.
-/// - [`ShapeError::UnsupportedShaperOnXY`] — X or Y kernel is `None` or `Passthrough`.
 /// - [`ShapeError::UnsupportedBoundaryVelocity`] — `initial_v` or `terminal_v` is non-finite or negative.
 /// - Any error from the underlying β-medium loop.
 pub fn plan_velocity(input: &PlanInput<'_>) -> Result<PlanOutput, ShapeError> {
@@ -98,7 +77,7 @@ pub fn plan_velocity(input: &PlanInput<'_>) -> Result<PlanOutput, ShapeError> {
         return Err(ShapeError::UnsupportedBoundaryVelocity);
     }
 
-    let shaper = build_shaper_config(&input.kernels)?;
+    let shaper = build_shaper_config(&input.kernels);
     let segments: Vec<ShapeSegmentInput<'_>> = input
         .segments
         .iter()
@@ -128,15 +107,11 @@ pub fn plan_velocity(input: &PlanInput<'_>) -> Result<PlanOutput, ShapeError> {
     crate::beta::plan_velocity_inner(&shape_input, &partition, input.safety_mode)
 }
 
-fn build_shaper_config(kernels: &[Option<PlanShaper>; 4]) -> Result<ShaperConfig, ShapeError> {
-    let x = kernels[0]
-        .ok_or(ShapeError::UnsupportedShaperOnXY)?
-        .into_required()?;
-    let y = kernels[1]
-        .ok_or(ShapeError::UnsupportedShaperOnXY)?
-        .into_required()?;
+fn build_shaper_config(kernels: &[Option<PlanShaper>; 4]) -> ShaperConfig {
+    let x = kernels[0].map_or(AxisShaper::Passthrough, PlanShaper::into_axis);
+    let y = kernels[1].map_or(AxisShaper::Passthrough, PlanShaper::into_axis);
     let z = kernels[2].map_or(AxisShaper::Passthrough, PlanShaper::into_axis);
-    Ok(ShaperConfig { x, y, z })
+    ShaperConfig { x, y, z }
 }
 
 #[cfg(test)]

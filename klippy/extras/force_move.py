@@ -13,7 +13,6 @@ BUZZ_RADIANS_VELOCITY = BUZZ_RADIANS_DISTANCE / 0.250
 STALL_TIME = 0.100
 
 
-# Calculate a move's accel_t, cruise_t, and cruise_v
 def calc_move_time(dist, speed, accel):
     axis_r = 1.0
     if dist < 0.0:
@@ -41,7 +40,6 @@ class ForceMove:
         self.trapq_append = lambda *a: None
         self.trapq_finalize_moves = lambda *a: None
         self.stepper_kinematics = None
-        # Register commands
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command(
             "STEPPER_BUZZ",
@@ -133,7 +131,6 @@ class ForceMove:
     cmd_STEPPER_BUZZ_help = "Oscillate a given stepper to help id it"
 
     def cmd_STEPPER_BUZZ(self, gcmd):
-        # Bridge mode owns motion; STEPPER_BUZZ is not yet wired through.
         raise gcmd.error(
             "STEPPER_BUZZ is not yet supported under the new "
             "motion path until Phase 5"
@@ -155,7 +152,6 @@ class ForceMove:
     cmd_FORCE_MOVE_help = "Manually move a stepper; invalidates kinematics"
 
     def cmd_FORCE_MOVE(self, gcmd):
-        # Bridge mode owns motion; FORCE_MOVE is not yet wired through.
         raise gcmd.error(
             "FORCE_MOVE is not yet supported under the new "
             "motion path until Phase 5"

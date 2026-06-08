@@ -28,8 +28,6 @@ pub enum ScheduleError {
     SolverSetup(String),
 }
 
-/// Equivalent to `schedule_segment_with_tolerance(..., ToleranceMode::Tight)`.
-///
 /// Solver-runtime infeasibility / max-iter surface as `SolveStatus` on the
 /// returned profile, not as `ScheduleError`. `ScheduleError` is for
 /// setup-time programming errors only.

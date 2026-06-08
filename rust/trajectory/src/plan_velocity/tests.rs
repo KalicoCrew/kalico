@@ -142,7 +142,7 @@ fn nonzero_initial_v_produces_chained_profile() {
 }
 
 #[test]
-fn rejects_passthrough_on_x() {
+fn passthrough_on_x_is_valid() {
     let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
     let segments = [PlanSegment {
         temporal: temporal::multi::SegmentInput {
@@ -158,11 +158,14 @@ fn rejects_passthrough_on_x() {
     let mut input = default_input(&segments, SafetyMode::TerminalKnown);
     input.kernels[0] = Some(PlanShaper::Passthrough);
     let result = plan_velocity(&input);
-    assert!(matches!(result, Err(ShapeError::UnsupportedShaperOnXY)));
+    assert!(
+        result.is_ok(),
+        "passthrough on X must succeed, got: {result:?}"
+    );
 }
 
 #[test]
-fn rejects_passthrough_on_y() {
+fn passthrough_on_y_is_valid() {
     let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
     let segments = [PlanSegment {
         temporal: temporal::multi::SegmentInput {
@@ -178,11 +181,14 @@ fn rejects_passthrough_on_y() {
     let mut input = default_input(&segments, SafetyMode::TerminalKnown);
     input.kernels[1] = Some(PlanShaper::Passthrough);
     let result = plan_velocity(&input);
-    assert!(matches!(result, Err(ShapeError::UnsupportedShaperOnXY)));
+    assert!(
+        result.is_ok(),
+        "passthrough on Y must succeed, got: {result:?}"
+    );
 }
 
 #[test]
-fn rejects_none_on_x() {
+fn none_on_x_treated_as_passthrough() {
     let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
     let segments = [PlanSegment {
         temporal: temporal::multi::SegmentInput {
@@ -198,7 +204,31 @@ fn rejects_none_on_x() {
     let mut input = default_input(&segments, SafetyMode::TerminalKnown);
     input.kernels[0] = None;
     let result = plan_velocity(&input);
-    assert!(matches!(result, Err(ShapeError::UnsupportedShaperOnXY)));
+    assert!(
+        result.is_ok(),
+        "None on X must be treated as passthrough, got: {result:?}"
+    );
+}
+
+#[test]
+fn all_passthrough_produces_fitted_output() {
+    let curve = straight_linear([0.0, 0.0, 0.0], [50.0, 0.0, 0.0]);
+    let segments = [PlanSegment {
+        temporal: temporal::multi::SegmentInput {
+            curve: &curve,
+            limits: default_limits(),
+            trailing_junction_chord_tolerance_mm: 0.05,
+        },
+        e_mode: EMode::CoupledToXy,
+        extrusion_per_xy_mm: 0.04,
+        e_independent: None,
+        feedrate_mm_s: 100.0,
+    }];
+    let mut input = default_input(&segments, SafetyMode::TerminalKnown);
+    input.kernels = [None, None, None, None];
+    let out = plan_velocity(&input).expect("all-passthrough plan must succeed");
+    assert_eq!(out.fitted.len(), 1);
+    assert!(out.fitted[0].t_end > out.fitted[0].t_start);
 }
 
 #[test]

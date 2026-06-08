@@ -1,24 +1,4 @@
 #!/usr/bin/env bash
-# Task 12 — Renode Phase-2 gate test runner.
-#
-# Boots the existing Renode H723 simulation in the background, waits for
-# USART2 (tcp://localhost:3334) to come up, then runs the
-# `tools/test_renode_phase2_gate.py` harness, which validates the wire-
-# level Phase-2 motion-bridge contract end-to-end against the simulated
-# firmware. See that file's docstring for what is and is not verified.
-#
-# Prereqs:
-#   - renode on PATH (brew install renode)
-#   - Sim firmware built: tools/sim/build_sim_firmware.sh
-#   - PyO3 motion_bridge cdylib built:
-#       make -f Makefile.kalico motion-bridge
-#
-# Naming/placement: this lives next to `run_sim.sh` and
-# `build_sim_firmware.sh` (the existing Renode-sim driver scripts) rather
-# than in `scripts/` (which is mostly Python utilities). Keeps the sim
-# entrypoints together.
-#
-# Exit code: 0 on PASS, non-zero on FAIL.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -31,7 +11,6 @@ PORT="${PORT:-socket://localhost:3334}"
 mkdir -p "${LOG_DIR}"
 SIM_LOG="${LOG_DIR}/renode-$(date +%Y%m%d-%H%M%S).log"
 
-# Pre-flight checks.
 if [[ ! -f out/klipper.elf ]]; then
   echo "error: out/klipper.elf not found. Run tools/sim/build_sim_firmware.sh first." >&2
   exit 2
@@ -45,11 +24,9 @@ if ! command -v renode >/dev/null 2>&1; then
   exit 2
 fi
 
-# Stop any leftover Renode from a prior run (best-effort).
 pkill -f renode 2>/dev/null || true
 sleep 1
 
-# Launch Renode in the background.
 # Note: setsid is Linux-only; on macOS we rely on pkill -f renode for cleanup.
 echo "[gate] launching Renode (log=${SIM_LOG}) ..."
 set +e
@@ -71,7 +48,6 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Wait for the USART2 TCP bridge to accept connections.
 echo "[gate] waiting up to ${SIM_BOOT_DELAY_S}s for ${PORT} ..."
 deadline=$(( $(date +%s) + SIM_BOOT_DELAY_S ))
 ready=0
@@ -90,7 +66,6 @@ if [[ ${ready} -ne 1 ]]; then
 fi
 echo "[gate] sim ready, running harness ..."
 
-# Run the gate harness. PYTHONPATH so motion_bridge.so is importable.
 export PYTHONPATH="${REPO_ROOT}/klippy:${REPO_ROOT}/tools:${PYTHONPATH:-}"
 python3 "${REPO_ROOT}/tools/test_renode_phase2_gate.py" --port "${PORT}"
 RC=$?

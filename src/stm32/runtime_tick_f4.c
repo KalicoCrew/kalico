@@ -1,19 +1,15 @@
-// STM32F4-specific TIM5 init + IRQ handler. Mirrors runtime_tick_h7.c; the
-// family-level difference is the RCC clock-enable register (F4's single APB1ENR
-// vs H7's split APB1LENR).
-
 #include "autoconf.h"
-#include "generic/armcm_boot.h" // DECL_ARMCM_IRQ
-#include "internal.h"          // STM32-internal helpers — TIM5, RCC, DWT
+#include "generic/armcm_boot.h"
+#include "internal.h"
 #include "kalico_runtime.h"
-#include "generic/runtime_tick.h"   // interface contract
-#include "generic/kalico_nvic_prio.h" // KALICO_MOTION_NVIC_PRIO
+#include "generic/runtime_tick.h"
+#include "generic/kalico_nvic_prio.h"
 
 #if CONFIG_MACH_STM32F4
 
 extern const uint32_t runtime_clock_freq;
 
-extern void* runtime_handle;   // exposed in src/runtime_tick.c
+extern void* runtime_handle;
 
 static void step_output_timer_init(void);
 
@@ -56,7 +52,6 @@ __attribute__((used, externally_visible))
 void
 runtime_tick_enable(void)
 {
-    // Idempotent; normally a no-op on STM32 (CEN already set).
     if (TIM5->CR1 & TIM_CR1_CEN) {
         return;
     }
@@ -95,7 +90,6 @@ runtime_tick_init(void)
     // see kalico_nvic_prio.h).
     NVIC_SetPriority(TIM5_IRQn, KALICO_MOTION_NVIC_PRIO);
 
-    // Free-runs from boot.
     TIM5->EGR  = TIM_EGR_UG;
     TIM5->SR   = ~TIM_SR_UIF;
     TIM5->CR1 |= TIM_CR1_CEN;
@@ -111,7 +105,6 @@ volatile uint32_t *tim5_exc_frame __attribute__((used, externally_visible));
 __attribute__((used))
 static void TIM5_IRQHandler_body(uint32_t *frame);
 
-// Select MSP vs PSP from EXC_RETURN bit 2, stash the frame base, tail-call body.
 __attribute__((naked))
 void
 TIM5_IRQHandler(void)
@@ -173,9 +166,6 @@ TIM5_IRQHandler_body(uint32_t *frame)
 
 DECL_ARMCM_IRQ(TIM5_IRQHandler, TIM5_IRQn);
 
-// Step-output timer: TIM2 (32-bit GP timer on F446; 32-bit reach needs no
-// chaining). CC1 one-shot wake; NVIC priority = KALICO_MOTION_NVIC_PRIO (same as
-// TIM5). step_out_clkdiv (= 2) scales DWT deltas to TIM2 ticks.
 static volatile uint32_t step_out_target;
 static volatile uint8_t  step_out_running;
 static uint32_t          step_out_clkdiv = 1;
@@ -185,7 +175,7 @@ __attribute__((used, externally_visible))
 void
 step_output_timer_arm(uint32_t cycle_abs)
 {
-    if (cycle_abs == 0xFFFFFFFFu /* KALICO_STEP_OUTPUT_DISABLE */) {
+    if (cycle_abs == KALICO_STEP_OUTPUT_DISABLE) {
         TIM2->DIER &= ~TIM_DIER_CC1IE;
         step_out_running = 0;
         return;
@@ -193,15 +183,20 @@ step_output_timer_arm(uint32_t cycle_abs)
     step_out_target = cycle_abs;
     step_out_running = 1;
     uint32_t now = runtime_cyccnt_read();
-    uint32_t dwt_delta = cycle_abs - now;          // wrap-safe; >2^31 ⇒ already due
+    uint32_t dwt_delta = cycle_abs - now;
     if ((int32_t)dwt_delta <= 0)
         dwt_delta = step_out_clkdiv;
     uint32_t delta = dwt_delta / step_out_clkdiv;
     if (delta == 0)
         delta = 1;
     TIM2->CCR1 = TIM2->CNT + delta;
-    TIM2->SR = ~TIM_SR_CC1IF;          // clear stale compare flag
+    TIM2->SR = ~TIM_SR_CC1IF;
     TIM2->DIER |= TIM_DIER_CC1IE;
+    // A 32-bit compare passed between the CNT read above and going live won't
+    // match again for a full wrap; force the handler so a re-arm can never leave
+    // step_out_running=1 with a silent timer (the consumer-stall overflow).
+    if ((int32_t)(TIM2->CNT - TIM2->CCR1) >= 0)
+        NVIC_SetPendingIRQ(TIM2_IRQn);
 }
 
 __attribute__((used, externally_visible))
@@ -232,7 +227,7 @@ step_output_timer_init(void)
     TIM2->ARR = 0xFFFFFFFFu;
     TIM2->CCMR1 = 0;
     TIM2->CCR1 = 0;
-    TIM2->DIER = 0;                     // CC1IE enabled only when armed
+    TIM2->DIER = 0;
     TIM2->CR1 = TIM_CR1_ARPE;
     TIM2->EGR = TIM_EGR_UG;
     TIM2->SR = 0;
@@ -252,7 +247,7 @@ TIM2_IRQHandler(void)
     extern void diag_stepout_account(uint32_t enter, uint32_t exit);
     uint32_t diag_enter = DWT->CYCCNT;
 
-    TIM2->SR = ~TIM_SR_CC1IF;           // ack the compare match
+    TIM2->SR = ~TIM_SR_CC1IF;
 
     extern uint32_t kalico_step_output_event(void);
     uint32_t next = kalico_step_output_event();

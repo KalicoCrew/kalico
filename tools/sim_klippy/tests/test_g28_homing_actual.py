@@ -1,26 +1,3 @@
-"""End-to-end G28 X / G28 Y homing against the real-config sim.
-
-Trades sensorless fidelity for full coverage of the trsync / bridge /
-runtime / homing-past-end-time pipeline. The X and Y endstops are
-remapped from ``tmc5160_*:virtual_endstop`` onto regular gpiochip lines
-by ``pin-overrides.toml`` (see [stepper_x.config_set] /
-[stepper_y.config_set] there). Tests poke those lines via the
-LD_PRELOAD shim's control socket — same path the runtime samples for
-endstop state.
-
-Two scenarios per axis:
-
-- AlreadyTripped: pre-trip the pin HIGH before G28; klippy's trsync
-  sees the endstop as already tripped at arm time, fires
-  REASON_ENDSTOP_HIT synchronously, homing succeeds.
-- NoTrigger: leave the pin LOW; the homing segment retires without a
-  trip and the past-end-time mechanism raises "No trigger on x" (or y).
-
-Sensorless-specific stuff (SG_RESULT thresholds, DIAG callback timing
-in the TMC5160 emulator) is exercised by test_sensorless_trigger.py
-and works on real hardware. This test is about the homing pipeline.
-"""
-
 import json
 import socket
 import time
@@ -111,7 +88,6 @@ def _set_pin(sim, line: int, value: int) -> None:
     [("x", X_ENDSTOP_LINE, "G28 X"), ("y", Y_ENDSTOP_LINE, "G28 Y")],
 )
 def test_g28_already_tripped(sim, axis, line, gcode):
-    """Pin HIGH at arm time → AlreadyTripped → homing succeeds."""
     _wait_ready(sim)
     _set_pin(sim, line, 1)
 
@@ -139,7 +115,6 @@ def test_g28_already_tripped(sim, axis, line, gcode):
     [("x", X_ENDSTOP_LINE, "G28 X"), ("y", Y_ENDSTOP_LINE, "G28 Y")],
 )
 def test_g28_no_trigger(sim, axis, line, gcode):
-    """Pin LOW for the entire homing move → past-end-time → No trigger."""
     _wait_ready(sim)
     _set_pin(sim, line, 0)
 

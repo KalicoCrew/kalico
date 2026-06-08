@@ -1,16 +1,6 @@
-// Hardened piece-ring walker — per-axis walk+eval loop shared by the MCU
-// stepper engine and any other motion node.
-//
-// Walk/load split: only the LANDED piece (the one whose window contains `now`)
-// is monomialised; walked-past pieces are retired without calling `to_monomial`.
-// `to_monomial` is the dominant cost on the hot path; calling it for every
-// expired piece is an O(walk-depth) waste — do not revert this split.
-
 use crate::fault_sink::FaultSink;
 use crate::piece_ring::{PieceEntry, RingDescriptor};
 
-/// ISR's cached working copy of the currently-armed piece: monomial
-/// coefficients plus the piece's MCU-clock window.
 #[derive(Debug, Clone, Copy)]
 pub struct ArmedPiece {
     pub mono_coeffs: [f32; 4],
@@ -19,14 +9,6 @@ pub struct ArmedPiece {
     pub piece_end_cycles: u64,
 }
 
-/// Advance the axis to the correct piece for `now`, returning
-/// `(position, velocity)` if an active piece exists.
-///
-/// Two invariants must be preserved:
-/// - Walk/load split: only the landed piece is monomialised.
-/// - Fault-check runs BEFORE the `now < end` window return in
-///   `get_piece_for_time`; inverting the order silently drops the
-///   cold-adoption fault.
 #[inline]
 pub fn get_position_and_velocity<F: FaultSink>(
     armed: &mut Option<ArmedPiece>,
@@ -87,15 +69,9 @@ pub fn get_position_and_velocity<F: FaultSink>(
     ))
 }
 
-/// Walk the ring to the entry whose window contains `now`, retiring elapsed
-/// entries WITHOUT monomialising them. Returns the physical slot index of the
-/// landed piece, or `None` when the ring is empty.
-///
-/// Hard-faults `PieceStartInPast` when a freshly adopted piece's start is
-/// more than `drift_budget + sample_period_cycles` in the past.
-///
-/// CRITICAL: the fault-check runs BEFORE the `now < end` window return so
-/// that a cold-adopted front is always checked.
+// CRITICAL: the fault-check runs BEFORE the `now < end` window return so
+// that a cold-adopted front is always checked; inverting this order silently
+// drops the deficit fault for the first piece after a ring refill.
 #[inline]
 fn get_piece_for_time<F: FaultSink>(
     ring: &mut RingDescriptor,

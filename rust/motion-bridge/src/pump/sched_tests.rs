@@ -1,6 +1,5 @@
 use super::*;
 
-/// Build a queue from (tick_start, host_time) pairs.
 fn q_with_host(ring_depth: u32, starts: &[(u64, f64)]) -> AxisQueue {
     let mut q = AxisQueue::new(ring_depth);
     for &(s, h) in starts {
@@ -17,7 +16,6 @@ fn q_with_host(ring_depth: u32, starts: &[(u64, f64)]) -> AxisQueue {
     q
 }
 
-/// Convenience wrapper for single-MCU tests where host_time == tick as f64.
 fn q_with(ring_depth: u32, starts: &[u64]) -> AxisQueue {
     let pairs: Vec<(u64, f64)> = starts.iter().map(|&s| (s, s as f64)).collect();
     q_with_host(ring_depth, &pairs)
@@ -41,7 +39,7 @@ fn idle_when_empty() {
 fn stalls_when_global_head_ring_full() {
     let mut queues = BTreeMap::new();
     let mut a = q_with(2, &[10]);
-    a.pushed = 2; // full
+    a.pushed = 2;
     queues.insert(AxisKey { mcu_id: 1, axis: 0 }, a);
     queues.insert(AxisKey { mcu_id: 2, axis: 0 }, q_with(8, &[20]));
     assert!(matches!(
@@ -163,18 +161,16 @@ fn cross_mcu_host_time_ordering_bench_regression() {
     let f446_tick: u64 = 4_790_000_000_000;
     let h7_tick: u64 = 13_800_000_000_000;
 
-    // mcu1 (F446): numerically smaller tick, but host time is far in the future
-    let f446_host: f64 = 1_000.0; // far future, beyond any horizon
-    // mcu0 (H7): numerically larger tick, but host time is now-ish
-    let h7_host: f64 = 1.0; // near present
+    let f446_host: f64 = 1_000.0;
+    let h7_host: f64 = 1.0;
 
     let mut queues = BTreeMap::new();
     queues.insert(
-        AxisKey { mcu_id: 1, axis: 2 }, // F446, Z axis
+        AxisKey { mcu_id: 1, axis: 2 },
         q_with_host(8, &[(f446_tick, f446_host)]),
     );
     queues.insert(
-        AxisKey { mcu_id: 0, axis: 0 }, // H7, X axis
+        AxisKey { mcu_id: 0, axis: 0 },
         q_with_host(8, &[(h7_tick, h7_host)]),
     );
 
@@ -183,7 +179,7 @@ fn cross_mcu_host_time_ordering_bench_regression() {
         if k.mcu_id == 0 {
             Some(h7_tick + 1_000_000)
         } else {
-            Some(f446_tick - 1) // mcu1 piece is ahead of this horizon
+            Some(f446_tick - 1)
         }
     };
 
@@ -201,8 +197,6 @@ fn cross_mcu_host_time_ordering_bench_regression() {
     }
 }
 
-/// The globally host-earliest piece's queue having room==0 must block everything
-/// (intentional global-gating invariant).
 #[test]
 fn homing_lead_gates_piece_release() {
     let freq: f64 = 1_000_000.0;
@@ -334,12 +328,10 @@ fn cross_lead_per_queue_horizon_independent() {
 fn stall_full_on_globally_earliest_gates_all() {
     let mut queues = BTreeMap::new();
 
-    // mcu0: host-earliest piece, but ring is full
     let mut mcu0_q = q_with_host(2, &[(100, 1.0)]);
-    mcu0_q.pushed = 2; // full
+    mcu0_q.pushed = 2;
     queues.insert(AxisKey { mcu_id: 0, axis: 0 }, mcu0_q);
 
-    // mcu1: host-later piece, ring has room
     queues.insert(AxisKey { mcu_id: 1, axis: 0 }, q_with_host(8, &[(50, 5.0)]));
 
     assert!(

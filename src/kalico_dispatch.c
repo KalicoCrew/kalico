@@ -3,10 +3,10 @@
 #include <string.h>
 #include "kalico_dispatch.h"
 #include "kalico_demux.h"
-#include "kalico_protocol_schema.h" // KALICO_MSG_*, KALICO_SCHEMA_HASH
-#include "board/misc.h"             // crc16_ccitt
-#include "board/irq.h"              // irq_save / irq_restore
-#include "sched.h"                  // DECL_INIT
+#include "kalico_protocol_schema.h"
+#include "board/misc.h"
+#include "board/irq.h"
+#include "sched.h"
 #include "autoconf.h"
 
 #include "kalico_runtime.h"
@@ -121,7 +121,6 @@ handle_identify(uint32_t correlation_id, const uint8_t *body, uint16_t body_len)
         return;
     uint8_t proto_version = body[0];
     if (proto_version != KALICO_PROTO_VERSION) {
-        // Bootstrap ABI is frozen; other protos must use their own type tag.
         return;
     }
 
@@ -163,7 +162,7 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
     extern void runtime_diag_progress(uint32_t tag, uint32_t stage, uint32_t value);
     (void)channel;
     if (payload_len < PER_MESSAGE_HEADER_LEN) {
-        runtime_diag_progress(0xCD, 1, payload_len);  // too-short frame
+        runtime_diag_progress(0xCD, 1, payload_len);
         return;
     }
     uint16_t kind = (uint16_t)payload[0] | ((uint16_t)payload[1] << 8);
@@ -199,7 +198,7 @@ handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
                           uint16_t body_len)
 {
     (void)body;
-    (void)body_len; // request body is empty
+    (void)body_len;
     uint8_t payload[PER_MESSAGE_HEADER_LEN + 4];
     encode_message_header(payload, KALICO_MSG_RUNTIME_CAPS_RESPONSE,
                           MESSAGE_VERSION_DEFAULT, correlation_id);
@@ -230,8 +229,8 @@ handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body,
 // rejected anyway by the piece_count self-check in piece_sink_commit.
 #define PIECE_SINK_MAX_PIECES 0xFFu
 
-extern uint32_t stats_send_time;        // basecmd.c
-extern uint32_t stats_send_time_high;   // basecmd.c
+extern uint32_t stats_send_time;
+extern uint32_t stats_send_time_high;
 uint32_t timer_read_time(void);
 
 // PushPiecesResponse body (must match Rust decode):
@@ -328,8 +327,6 @@ piece_sink_feed(uint8_t b)
     piece_sink.scratch[piece_off] = b;
     piece_sink.bytes_seen = i + 1;
     if (piece_off == PIECE_ENTRY_LEN - 1) {
-        // Capture the first piece's start_time (bytes 0..8 LE) before the
-        // increment.
         if (piece_sink.pieces_seen == 0) {
             piece_sink.first_start_time =
                 (uint64_t)piece_sink.scratch[0]
@@ -361,14 +358,11 @@ piece_sink_commit(void)
     uint32_t clk_hi = stats_send_time_high + (clk_lo < stats_send_time);
     uint64_t arrival_clock = ((uint64_t)clk_hi << 32) | (uint64_t)clk_lo;
 
-    // Reached only after the demuxer verified the frame CRC.
     if (!runtime_handle) {
         send_push_pieces_response(piece_sink.correlation_id,
                                   KALICO_ERR_NOT_INIT, 0, 0);
         return;
     }
-    // Truncated/malformed frame that still matched a too-short CRC: don't
-    // advance the frontier.
     if (!piece_sink.header_parsed) {
         send_push_pieces_response(0, KALICO_ERR_INVALID_CURVE, 0, 0);
         return;

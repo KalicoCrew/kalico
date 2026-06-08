@@ -63,3 +63,7 @@ tools/sim_klippy/printer_real/third_party_repos/
 
 # Local observability test rig (VictoriaLogs + Vector binaries + scratch data)
 .tools/
+
+# Local test-bench notes (passwords, mDNS hostnames, board-specific quirks).
+# Not checked in — they describe physical hardware on a specific desk.
+test-benches/

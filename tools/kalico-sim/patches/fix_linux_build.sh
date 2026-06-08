@@ -28,12 +28,8 @@ set -euo pipefail
 
 REPO_ROOT="${1:-/kalico}"
 
-# ---------------------------------------------------------------------------
-# Fix 1 — Linux stubs for mpu_protect / armcm_timer symbols
-# ---------------------------------------------------------------------------
 STUB_FILE="$REPO_ROOT/src/linux/fault_handler_stub.c"
 
-# Guard: only append if the marker comment is absent.
 if grep -q "sched_writable_begin" "$STUB_FILE" 2>/dev/null; then
     echo "fix_linux_build: MPU/timer stubs already present, skipping."
 else
@@ -61,7 +57,7 @@ else
 // exist for the initialiser to link.  The implementation matches the real
 // Cortex-M version exactly: reschedule the wrap timer 0xffffff ticks out.
 
-#include "sched.h" // struct timer, SF_RESCHEDULE
+#include "sched.h"
 
 void sched_writable_begin(void) {}
 void sched_writable_end(void) {}
@@ -82,12 +78,8 @@ uint32_t diag_get_rt_tick_count(void) { return 0; }
 EOF
 fi
 
-# ---------------------------------------------------------------------------
-# Fix 2 — rename kalico_runtime_modulated_tick call site
-# ---------------------------------------------------------------------------
 TICK_FILE="$REPO_ROOT/src/linux/runtime_tick_host.c"
 
-# Guard: only patch if the old symbol is still present.
 if grep -q "kalico_runtime_modulated_tick" "$TICK_FILE" 2>/dev/null; then
     echo "fix_linux_build: renaming kalico_runtime_modulated_tick in $TICK_FILE"
     sed -i \
@@ -97,15 +89,11 @@ else
     echo "fix_linux_build: runtime_tick_host.c already uses kalico_runtime_tick_sample, skipping."
 fi
 
-# ---------------------------------------------------------------------------
-# Fix 3 — disable "timer in the past" shutdown for MACH_LINUX
-# ---------------------------------------------------------------------------
-# On real MCU hardware this check catches runaway timers — the hardware
-# timer ISR fires reliably so a timer >100ms late is genuinely broken.
-# On MACH_LINUX with virtual time, the MCU's virtual clock advances at
-# CPU speed and can race arbitrarily far ahead of klippy's clock
-# estimate. No fixed threshold is large enough. The check is not useful
-# in the sim — disable it entirely.
+# On real MCU hardware the timer-in-past check catches runaway timers — the
+# hardware ISR fires reliably so a timer >100ms late is genuinely broken.
+# On MACH_LINUX with virtual time, the MCU's virtual clock advances at CPU
+# speed and can race arbitrarily far ahead of klippy's clock estimate. No
+# fixed threshold is large enough — disable the check entirely in the sim.
 TIMER_FILE="$REPO_ROOT/src/linux/timer.c"
 
 if grep -q 'try_shutdown("Rescheduled timer in the past")' "$TIMER_FILE" 2>/dev/null; then
@@ -115,8 +103,7 @@ else
     echo "fix_linux_build: timer-in-past check already disabled, skipping."
 fi
 
-# Also disable "Timer too close" in sched.c — same root cause: vtime
-# clock jumps can make newly-scheduled timers appear to be in the past.
+# Same vtime-clock-race root cause applies to "Timer too close" in sched.c.
 SCHED_FILE="$REPO_ROOT/src/sched.c"
 
 if grep -q 'try_shutdown("Timer too close")' "$SCHED_FILE" 2>/dev/null; then
@@ -126,14 +113,9 @@ else
     echo "fix_linux_build: timer-too-close check already disabled, skipping."
 fi
 
-# ---------------------------------------------------------------------------
-# Fix 4 — bypass console_wake gate so serial reads survive runtime tick
-# ---------------------------------------------------------------------------
-# Belt-and-suspenders alongside virtual time. On MACH_LINUX without vtime,
-# the runtime tick monopolizes the cooperative scheduler and irq_wait()
-# never reaches ppoll, so console_wake is never set. With vtime this is
-# less critical (ppoll gets I/O priority), but removing the gate is cheap
-# insurance — one extra EWOULDBLOCK read() per task round.
+# On MACH_LINUX without vtime, the runtime tick monopolizes the cooperative
+# scheduler and irq_wait() never reaches ppoll, so console_wake is never set.
+# Removing the gate costs one extra EWOULDBLOCK read() per task round.
 CONSOLE_FILE="$REPO_ROOT/src/linux/console.c"
 
 if grep -q 'sched_check_wake(&console_wake)' "$CONSOLE_FILE" 2>/dev/null; then
@@ -143,26 +125,17 @@ else
     echo "fix_linux_build: console_wake gate already removed, skipping."
 fi
 
-# ---------------------------------------------------------------------------
-# Fix 5 — trace handle_push_segment entry in kalico_dispatch.c
-# ---------------------------------------------------------------------------
 DISPATCH_FILE="$REPO_ROOT/src/kalico_dispatch.c"
 if grep -q 'handle_push_segment_calls_total' "$DISPATCH_FILE" 2>/dev/null && \
    ! grep -q 'mcu-push-diag' "$DISPATCH_FILE" 2>/dev/null; then
     echo "fix_linux_build: adding push_segment + kalico_dispatch traces"
-    # Add push trace right after the counter increment
     sed -i 's/handle_push_segment_calls_total++;/handle_push_segment_calls_total++; fprintf(stderr, "[mcu-push-diag] push total=%u body_len=%u\\n", handle_push_segment_calls_total, body_len); fflush(stderr);/' "$DISPATCH_FILE"
-    # Add kalico_dispatch_frame trace — insert after body_len is defined
-    # so both 'kind' and 'body_len' are in scope for the fprintf.
     if grep -q 'kalico_dispatch_frame' "$DISPATCH_FILE" && ! grep -q 'mcu-kalico-diag' "$DISPATCH_FILE"; then
         sed -i '/uint16_t body_len = payload_len - PER_MESSAGE_HEADER_LEN;/a\
     fprintf(stderr, "[mcu-kalico-diag] dispatch kind=0x%04x body_len=%u\\n", kind, body_len); fflush(stderr);' "$DISPATCH_FILE"
     fi
 fi
 
-# ---------------------------------------------------------------------------
-# Fix 4 — phase stepping SPI support on MACH_LINUX
-# ---------------------------------------------------------------------------
 PHASE_SRC="$REPO_ROOT/src/linux/phase_stepping_spi.c"
 PHASE_HDR="$REPO_ROOT/src/linux/phase_stepping_spi.h"
 

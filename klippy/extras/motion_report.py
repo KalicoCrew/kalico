@@ -104,7 +104,6 @@ class PrinterMotionReport:
             "steppers": [],
             "trapq": [],
         }
-        # Register handlers
         self.printer.register_event_handler("klippy:connect", self._connect)
 
     def register_stepper(self, config, mcu_stepper):
@@ -115,11 +114,7 @@ class PrinterMotionReport:
         self.last_status["steppers"] = list(sorted(self.steppers.keys()))
         self.last_status["trapq"] = []
 
-    # Status reporting
     def get_status(self, eventtime):
-        # Live-position reporting was trapq-based and retired with the C
-        # trapq; the bridge owns motion state. Status keeps its shape with
-        # the initial (zero) values.
         return self.last_status
 
 

@@ -1,8 +1,8 @@
 use super::*;
 use crate::fit::FittedSegment;
 use crate::{
-    plan_velocity, AxisShaper, ELimits, PlanInput, PlanSegment, PlanShaper, RequiredShaper,
-    SafetyMode, ShapeBatchInput, ShapeSegmentInput, ShaperConfig,
+    plan_velocity, AxisShaper, ELimits, PlanInput, PlanSegment, PlanShaper, SafetyMode,
+    ShapeBatchInput, ShapeSegmentInput, ShaperConfig,
 };
 use geometry::segment::EMode;
 use nurbs::bezier::{bezier_pieces_to_nurbs, extract_bezier_pieces};
@@ -30,10 +30,10 @@ fn default_e_limits() -> ELimits {
 
 fn default_shaper_config() -> ShaperConfig {
     ShaperConfig {
-        x: RequiredShaper::SmoothZv {
+        x: AxisShaper::SmoothZv {
             frequency_hz: 180.0,
         },
-        y: RequiredShaper::SmoothZv {
+        y: AxisShaper::SmoothZv {
             frequency_hz: 120.0,
         },
         z: AxisShaper::Passthrough,
@@ -121,18 +121,14 @@ fn empty_history_matches_shape_batch_byte_identical() {
     assert_eq!(planned.len(), 1);
 
     let kernels: [Option<PiecewisePolynomialKernel<f64>>; 4] = [
-        Some(
-            RequiredShaper::SmoothZv {
-                frequency_hz: 180.0,
-            }
-            .to_kernel(),
-        ),
-        Some(
-            RequiredShaper::SmoothZv {
-                frequency_hz: 120.0,
-            }
-            .to_kernel(),
-        ),
+        AxisShaper::SmoothZv {
+            frequency_hz: 180.0,
+        }
+        .to_kernel(),
+        AxisShaper::SmoothZv {
+            frequency_hz: 120.0,
+        }
+        .to_kernel(),
         None,
         None,
     ];

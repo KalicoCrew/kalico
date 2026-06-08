@@ -1,6 +1,3 @@
-//! Cross-check our convolve against scipy/Klipper-derived numerical reference.
-//! Reference file: `tests/data/klipper_smooth_zv_reference.json`.
-//!
 //! Note on file location: the plan called for `rust/tests/`, but the workspace
 //! `Cargo.toml` is workspace-only (no `[lib]`/`[[bin]]`), so there is no
 //! workspace-level test crate. This integration test lives in `rust/nurbs/tests/`
@@ -37,8 +34,6 @@ fn convolve_matches_scipy_reference_for_smooth_zv_kernel() {
     let accel = v["input_accel"].as_f64().unwrap();
     let t_end = v["input_t_end"].as_f64().unwrap();
 
-    // Build the input as a quadratic NURBS: x(t) = 0.5 * a * t^2 on [0, t_end].
-    // In Pascal-shifted-at-u_start=0 monomial basis, this is simply [0, 0, 0.5*a].
     let mono = nurbs::BezierPiece::<f64> {
         u_start: 0.0,
         u_end: t_end,

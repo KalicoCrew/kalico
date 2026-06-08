@@ -2,6 +2,28 @@ use super::*;
 use crate::ScalarNurbs;
 use crate::eval::eval;
 
+fn reference_refined_to_full_multiplicity(curve: &ScalarNurbs<f64>) -> ScalarNurbs<f64> {
+    let p = curve.degree() as usize;
+    let mut current = curve.clone();
+    let knots_snapshot: Vec<f64> = current.knots().to_vec();
+    let mut seen: Vec<f64> = Vec::new();
+    let mut i = p + 1;
+    while i < knots_snapshot.len() - p - 1 {
+        let u = knots_snapshot[i];
+        if !seen.contains(&u) {
+            seen.push(u);
+        }
+        i += 1;
+    }
+    for u in seen {
+        let existing = current.knots().iter().filter(|k| **k == u).count();
+        if existing < p {
+            current = insert_knot(&current, u, p - existing).unwrap();
+        }
+    }
+    current
+}
+
 #[test]
 fn try_new_accepts_monotone_knots() {
     let kv = KnotVector::<f64>::try_new(vec![0.0, 0.0, 0.5, 1.0, 1.0]).unwrap();
@@ -27,11 +49,8 @@ fn try_new_rejects_too_short() {
 #[test]
 fn find_knot_span_returns_correct_span() {
     let knots = [0.0_f64, 0.0, 0.5, 1.0, 1.0];
-    // degree 1, n = 3 cps. Span at u=0.25 is 1 (between knots[1]=0.0 and knots[2]=0.5).
     assert_eq!(find_knot_span(&knots, 1, 3, 0.25), 1);
-    // u >= knots[n] returns n-1.
     assert_eq!(find_knot_span(&knots, 1, 3, 1.0), 2);
-    // u <= knots[p] returns p.
     assert_eq!(find_knot_span(&knots, 1, 3, 0.0), 1);
 }
 
@@ -52,18 +71,15 @@ fn multiplicity_at_counts_repeated_knots() {
 
 #[test]
 fn remove_knot_returns_zero_when_tolerance_not_met() {
-    // A real C^0 corner at u=0.5: knot at multiplicity 2 (== degree), and
-    // CPs chosen so removal would visibly displace.
     let curve = ScalarNurbs::<f64>::try_new(
         2,
         vec![0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0],
-        vec![0.0, 1.0, 5.0, 0.0, 1.0], // sharp jump at the corner
+        vec![0.0, 1.0, 5.0, 0.0, 1.0],
     )
     .unwrap();
 
     let (result, removed) = remove_knot(&curve, 0.5, 1, 1e-9);
     assert_eq!(removed, 0);
-    // Curve unchanged.
     assert_eq!(result.knots(), curve.knots());
 }
 
@@ -85,11 +101,6 @@ fn remove_knot_undoes_insertion_within_tolerance() {
 
 #[test]
 fn remove_knot_undoes_insertion_for_cubic_with_irregular_cps() {
-    // Cubic curve, irregular non-symmetric, non-linear CPs so any indexing
-    // bug yields a numerically distinct wrong answer. Inner loop runs more
-    // than once for p=3. With 5 cps and degree 3 we need one interior knot
-    // (n + p + 1 = 9 knots), placed away from the insertion point so the
-    // removal target is a fresh single-multiplicity knot.
     let curve = ScalarNurbs::<f64>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 0.7, 1.0, 1.0, 1.0, 1.0],
@@ -139,7 +150,6 @@ fn remove_knot_two_round_trips_for_cubic_with_irregular_cps() {
     let (recovered, count) = remove_knot(&inserted_twice, 0.4, 2, 1e-10);
 
     assert_eq!(count, 2);
-    // Knot vector should be byte-identical post round-trip.
     assert_eq!(recovered.knots(), curve.knots());
     assert_eq!(
         recovered.control_points().len(),
@@ -156,7 +166,6 @@ fn remove_knot_two_round_trips_for_cubic_with_irregular_cps() {
 
 #[test]
 fn refined_to_full_multiplicity_raises_interior_knots() {
-    // Cubic with one interior knot at 0.5 (multiplicity 1).
     let curve = ScalarNurbs::<f64>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0, 1.0],
@@ -166,7 +175,6 @@ fn refined_to_full_multiplicity_raises_interior_knots() {
 
     let refined = refined_to_full_multiplicity(&curve);
 
-    // Interior knot 0.5 should now have multiplicity = degree = 3.
     assert_eq!(
         refined.knots(),
         &[0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0]
@@ -177,6 +185,96 @@ fn refined_to_full_multiplicity_raises_interior_knots() {
         assert!(
             (before - after).abs() < 1e-10,
             "u={u}: before={before}, after={after}"
+        );
+    }
+}
+
+#[test]
+fn refined_to_full_multiplicity_is_identity_when_interior_knots_already_full() {
+    let curve = ScalarNurbs::<f64>::try_new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 1.0, 1.0, 1.0, 1.0],
+        vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+    )
+    .unwrap();
+
+    let refined = refined_to_full_multiplicity(&curve);
+
+    assert_eq!(refined.knots(), curve.knots());
+    assert_eq!(refined.control_points(), curve.control_points());
+}
+
+#[test]
+fn refined_to_full_multiplicity_is_identity_when_no_interior_knots() {
+    let curve = ScalarNurbs::<f64>::try_new(
+        3,
+        vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        vec![0.0, 1.0, 2.0, 3.0],
+    )
+    .unwrap();
+
+    let refined = refined_to_full_multiplicity(&curve);
+
+    assert_eq!(refined.knots(), curve.knots());
+    assert_eq!(refined.control_points(), curve.control_points());
+}
+
+#[test]
+fn refined_to_full_multiplicity_matches_reference_on_mixed_multiplicity_curve() {
+    let p: u8 = 3;
+    let n_interior = 50usize;
+
+    let mut knots: Vec<f64> = vec![0.0; p as usize + 1];
+    for k in 0..n_interior {
+        let u = (k + 1) as f64 / (n_interior + 1) as f64;
+        let mult = 1 + (k % (p as usize));
+        for _ in 0..mult {
+            knots.push(u);
+        }
+    }
+    knots.extend(vec![1.0; p as usize + 1]);
+
+    let n_cps = knots.len() - p as usize - 1;
+    let cps: Vec<f64> = (0..n_cps)
+        .map(|i| {
+            let t = i as f64 / (n_cps - 1) as f64;
+            t * t - 0.5 * t + 0.1 * (i as f64 * 1.3).sin()
+        })
+        .collect();
+
+    let curve = ScalarNurbs::<f64>::try_new(p, knots, cps).unwrap();
+
+    let fast = refined_to_full_multiplicity(&curve);
+    let reference = reference_refined_to_full_multiplicity(&curve);
+
+    assert_eq!(fast.knots(), reference.knots(), "knot vectors differ");
+    assert_eq!(
+        fast.control_points().len(),
+        reference.control_points().len(),
+        "control point count differs"
+    );
+
+    for (idx, (a, b)) in fast
+        .control_points()
+        .iter()
+        .zip(reference.control_points())
+        .enumerate()
+    {
+        let rel_tol = 1e-12 * (a.abs().max(b.abs()) + 1.0);
+        assert!(
+            (a - b).abs() <= rel_tol,
+            "cp[{idx}]: fast={a:.15e} reference={b:.15e} diff={:.3e}",
+            (a - b).abs()
+        );
+    }
+
+    let sample_params: Vec<f64> = (0..=20).map(|i| i as f64 / 20.0).collect();
+    for u in sample_params {
+        let v_fast = eval(&fast.as_view(), u);
+        let v_ref = eval(&reference.as_view(), u);
+        assert!(
+            (v_fast - v_ref).abs() < 1e-12,
+            "eval mismatch at u={u}: fast={v_fast:.15e} ref={v_ref:.15e}"
         );
     }
 }
@@ -194,16 +292,11 @@ fn insert_knot_multifold_at_existing_preserves_evaluation_for_failing_case() {
     )
     .unwrap();
 
-    // r=1 path (path A: two single insertions).
     let path_a = insert_knot(&insert_knot(&curve, 0.1, 1).unwrap(), 0.1, 1).unwrap();
-
-    // r=2 path (path B: one double insertion).
     let path_b = insert_knot(&curve, 0.1, 2).unwrap();
 
-    // Knot vectors must match.
     assert_eq!(path_a.knots(), path_b.knots());
 
-    // Control points must match (the regression).
     for (i, (a, b)) in path_a
         .control_points()
         .iter()
@@ -216,7 +309,6 @@ fn insert_knot_multifold_at_existing_preserves_evaluation_for_failing_case() {
         );
     }
 
-    // And eval must match the baseline.
     let baseline = eval(&curve.as_view(), 0.1);
     assert!((eval(&path_a.as_view(), 0.1) - baseline).abs() < 1e-12);
     assert!((eval(&path_b.as_view(), 0.1) - baseline).abs() < 1e-12);
@@ -224,7 +316,6 @@ fn insert_knot_multifold_at_existing_preserves_evaluation_for_failing_case() {
 
 #[test]
 fn insert_knot_at_existing_multiplicity_preserves_evaluation() {
-    // Quadratic curve with interior knot at 0.5 (multiplicity 1).
     let curve = ScalarNurbs::<f64>::try_new(
         2,
         vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
@@ -232,7 +323,6 @@ fn insert_knot_at_existing_multiplicity_preserves_evaluation() {
     )
     .unwrap();
 
-    // Insert one more at u=0.5: existing=1 + 1 = 2 == degree, allowed.
     let inserted = insert_knot(&curve, 0.5, 1).unwrap();
     assert_eq!(inserted.knots(), &[0.0, 0.0, 0.0, 0.5, 0.5, 1.0, 1.0, 1.0]);
 
@@ -248,7 +338,6 @@ fn insert_knot_at_existing_multiplicity_preserves_evaluation() {
 
 #[test]
 fn insert_knot_rejects_multiplicity_exceeded() {
-    // Quadratic curve with interior knot at 0.5 (multiplicity 1, so we can add 1 more).
     let curve = ScalarNurbs::<f64>::try_new(
         2,
         vec![0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
@@ -256,7 +345,6 @@ fn insert_knot_rejects_multiplicity_exceeded() {
     )
     .unwrap();
 
-    // Insert 2 more at u=0.5: existing=1 + 2 = 3 > degree 2.
     let result = insert_knot(&curve, 0.5, 2);
     assert!(matches!(
         result,
@@ -284,14 +372,12 @@ fn insert_knot_rejects_clamped_boundary() {
 
 #[test]
 fn insert_knot_into_simple_curve_preserves_evaluation() {
-    // Linear curve from 0 to 2 over [0, 1]. Insert knot at u=0.5.
     let curve = ScalarNurbs::<f64>::try_new(1, vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 2.0]).unwrap();
 
     let inserted = insert_knot(&curve, 0.5, 1).unwrap();
 
     assert_eq!(inserted.knots(), &[0.0, 0.0, 0.5, 1.0, 1.0]);
-    assert_eq!(inserted.control_points().len(), 3); // was 2, now 3
-    // Geometric invariance: eval at sample points unchanged.
+    assert_eq!(inserted.control_points().len(), 3);
     for u in [0.0, 0.1, 0.25, 0.5, 0.75, 1.0] {
         let before = eval(&curve.as_view(), u);
         let after = eval(&inserted.as_view(), u);

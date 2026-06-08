@@ -1,4 +1,3 @@
-# Python wrapper around the PyO3 motion_bridge native module.
 import logging
 
 try:
@@ -401,4 +400,3 @@ class MotionBridgeWrapper:
 
     def dispatched_segment_count(self):
         return self._bridge.dispatched_segment_count()
-

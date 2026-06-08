@@ -401,12 +401,9 @@ impl PassthroughRouter {
         if rec.clock_freq == 0.0 {
             return None;
         }
-        // Project the tick into the Instant epoch used throughout the router.
         #[allow(clippy::cast_precision_loss)]
         let delta_ticks = (mcu_ticks as f64) - (rec.last_clock as f64);
         let mcu_host_instant = rec.clock_offset + delta_ticks / rec.clock_freq;
-        // Anchor Instant epoch → wall time via the gap between the projection
-        // point and the current instant.
         let now_instant = instant_to_f64(self.clock.now());
         let delta_from_now = mcu_host_instant - now_instant;
         let wall_now = std::time::SystemTime::now();

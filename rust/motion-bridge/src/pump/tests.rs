@@ -17,9 +17,9 @@ fn room_full_then_drains() {
     let mut q = AxisQueue::new(4);
     assert_eq!(q.room(), 4);
     q.pushed = 4;
-    assert_eq!(q.room(), 0); // full
+    assert_eq!(q.room(), 0);
     q.retired = 1;
-    assert_eq!(q.room(), 1); // one freed
+    assert_eq!(q.room(), 1);
 }
 
 #[test]
@@ -151,17 +151,14 @@ fn run_pump_sets_start_slot_from_cursor_and_advances_it() {
 
 #[test]
 fn junction_jumps_math() {
-    // Exact gap: first piece starts exactly where previous ended.
     let (tick_us, host_us) = junction_jumps(2000, 2.0e-3, 1000, 1.0e-3, 1_000_000.0);
     assert!((tick_us - 1000.0).abs() < 1e-6, "tick_jump_us={tick_us}");
     assert!((host_us - 1000.0).abs() < 1e-6, "host_jump_us={host_us}");
 
-    // Overlap (negative jump).
     let (tick_us2, host_us2) = junction_jumps(900, 0.9e-3, 1000, 1.0e-3, 1_000_000.0);
     assert!(tick_us2 < 0.0, "overlap should be negative tick jump");
     assert!(host_us2 < 0.0, "overlap should be negative host jump");
 
-    // Cross-domain divergence: tick gap == 0 µs but host gap == 500 µs.
     let freq = 520_000_000.0_f64;
     let prev_end_ticks: u64 = 10_000;
     let (tick_us3, host_us3) = junction_jumps(prev_end_ticks, 5.0e-4, prev_end_ticks, 0.0, freq);

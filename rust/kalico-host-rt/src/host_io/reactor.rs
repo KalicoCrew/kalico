@@ -1,5 +1,3 @@
-//! Single-thread poll-reactor.
-
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -391,8 +389,6 @@ impl Reactor {
                         completion,
                         p.deadline,
                     ) {
-                        // Propagate the transport error itself, not a
-                        // misleading DispatcherTimeout.
                         let is_io = matches!(e, TransportError::Io(_));
                         let _ = p.completion.send(Err(e));
                         if is_io {
@@ -699,9 +695,6 @@ impl Reactor {
                             "unsolicited frame"
                         );
                     }
-                    // If this is the "clock" response for a pending get_clock_async
-                    // request, inject RAW timestamps so Python clocksync sees an
-                    // honest RTT rather than the usual half_rtt=0 artefact.
                     if name == "clock" {
                         if let Some(sent_raw) = self.pending_clock_sent_raw.take() {
                             let recv_raw = crate::clock::monotonic_raw_secs();

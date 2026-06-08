@@ -30,10 +30,6 @@ class ClockSync:
         self.clock_avg = self.clock_covariance = 0.0
         self.prediction_variance = 0.0
         self.last_prediction_time = 0.0
-        # Optional callback invoked whenever the regression updates the
-        # (freq, offset, last_clock) estimate.  Used to mirror the clock
-        # estimate into the motion_bridge so it can convert print-time to
-        # MCU clocks without falling back to the t*1e6 stub.
         self._clock_est_callback = None
 
     def set_clock_est_callback(self, cb):
@@ -42,9 +38,6 @@ class ClockSync:
         # thread-safe; the motion_bridge wrapper hands the values to a
         # Mutex-guarded Rust router.
         self._clock_est_callback = cb
-        # If we already have a regression (post-connect refresh), push
-        # the current value so the consumer doesn't have to wait for the
-        # next clock sample.
         if cb is not None and self.last_clock:
             try:
                 cb(
@@ -90,10 +83,6 @@ class ClockSync:
 
     # MCU clock querying (_handle_clock is invoked from background thread)
     def _get_clock_event(self, eventtime):
-        # In bridge mode raw_send is a no-op (no C serialqueue). Use the
-        # dedicated bridge path that captures a RAW timestamp before the send
-        # and stamps the unsolicited "clock" response with it, giving an
-        # honest RTT for min_half_rtt tracking.
         if hasattr(self.serial, "bridge_get_clock_async"):
             self.serial.bridge_get_clock_async()
         else:
@@ -185,10 +174,8 @@ class ClockSync:
             self.clock_avg,
             new_freq,
         )
-        # Mirror the regression update into the motion_bridge.
-        # Export the same triple as clock_est: (freq, time_avg+min_half_rtt,
-        # clock_avg).  TRANSMIT_EXTRA is a serialqueue scheduling bias — not a
-        # projection parameter — and must not contaminate the router anchor.
+        # TRANSMIT_EXTRA is a serialqueue scheduling bias — not a projection
+        # parameter — and must not contaminate the router anchor.
         cb = self._clock_est_callback
         if cb is not None:
             try:

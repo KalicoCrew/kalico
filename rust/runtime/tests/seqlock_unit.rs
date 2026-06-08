@@ -7,14 +7,6 @@
     clippy::uninlined_format_args,
     clippy::doc_markdown
 )]
-
-//! Host-target unit tests for the §11.4 widened-clock seqlock.
-//!
-//! Loom coverage of concurrent-thread interleavings lives in
-//! `loom_seqlock.rs` (Task 1.4). This file is the round-trip /
-//! zero-initial-read / repeated-write sanity suite that runs on the regular
-//! host test target.
-
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use runtime::clock::{publish_widened_now, read_widened_now};
@@ -41,8 +33,6 @@ fn seqlock_zero_initial_read() {
 
 #[test]
 fn seqlock_multiple_writes() {
-    // Confirm the seq counter winds even/odd correctly across many writes
-    // and the reader observes the final value once the writer settles.
     let shared = SharedState::new();
     for i in 0u64..1000 {
         publish_widened_now(&shared, i.wrapping_mul(0x1234_5678));
@@ -64,7 +54,6 @@ fn seqlock_value_with_high_word_set() {
 
 #[test]
 fn seqlock_back_to_back_reads_consistent() {
-    // Two reads with no intervening write must agree.
     let shared = SharedState::new();
     publish_widened_now(&shared, 0xBADD_F00D_5EED_FACE);
     let a = read_widened_now(&shared);

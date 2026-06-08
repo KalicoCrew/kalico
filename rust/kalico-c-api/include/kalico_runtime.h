@@ -20,7 +20,6 @@ typedef struct KalicoRuntime {
 } KalicoRuntime;
 
 /**
- * FFI ABI: per-stepper binding payload passed from C to Rust.
  * Sentinel: `tmc_cs_oid == 0xFF` means "no TMC driver" (Pulse-only stepper).
  */
 typedef struct StepperBindingRust {

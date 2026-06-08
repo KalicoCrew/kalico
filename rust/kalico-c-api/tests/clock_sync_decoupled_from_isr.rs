@@ -24,7 +24,6 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-// Host-side stubs. Same set as init_once.rs plus the new one we're testing.
 #[unsafe(no_mangle)]
 pub static runtime_clock_freq: u32 = 520_000_000;
 
@@ -77,27 +76,12 @@ pub extern "C" fn runtime_emit_step_pulses(_axis_idx: u8, _n_steps: i32) {}
 
 #[test]
 fn clock_sync_returns_widened_host_clock_not_seqlock() {
-    // Spin up the runtime. `runtime_handle_create` runs the half-split
-    // init; clock-sync is part of the foreground surface, no segment
-    // dispatch needed.
     let rt = kalico_c_api::runtime_handle_create();
     assert!(!rt.is_null());
 
-    // Issue a clock-sync request. The returned `mcu_clock` must be the
-    // inline-widened value (timer_read_time + stats_send_time_high), NOT
-    // the §11.4 seqlock (which is zero at this point because no ISR tick
-    // has run on this host build). With all stubs returning 0, the
-    // widened clock is 0.
     let mut mcu_clock: u64 = 0;
-    let r = unsafe {
-        kalico_c_api::kalico_runtime_clock_sync_request(
-            rt,
-            42, // request_id (echoed; we don't care here)
-            0,  // host_send_time_lo (foreground unused)
-            0,  // host_send_time_hi (foreground unused)
-            &mut mcu_clock,
-        )
-    };
+    let r =
+        unsafe { kalico_c_api::kalico_runtime_clock_sync_request(rt, 42, 0, 0, &mut mcu_clock) };
     assert_eq!(r, 0, "clock_sync_request returned non-OK: {r}");
     assert_eq!(
         mcu_clock, 0,
@@ -105,7 +89,6 @@ fn clock_sync_returns_widened_host_clock_not_seqlock() {
          timer_read_time + stats_send_time_high widening (0 with host stubs)."
     );
 
-    // Second call — still returns the inline-widened value (0 with stubs).
     let r2 =
         unsafe { kalico_c_api::kalico_runtime_clock_sync_request(rt, 43, 0, 0, &mut mcu_clock) };
     assert_eq!(r2, 0);

@@ -1,5 +1,3 @@
-"""Pytest for sim_control_client.py against a running shim."""
-
 import os
 import subprocess
 import time
@@ -53,15 +51,12 @@ def test_ping(shim_under_sleep):
 def test_set_and_get_gpio(shim_under_sleep):
     with SimControlClient(shim_under_sleep) as c:
         c.set_gpio_input(chip=0, line=20, value=1)
-        # Note: set_gpio_input updates the shared GPIO table; reading
-        # back via get_gpio_output reads the same table.
         assert c.get_gpio_output(chip=0, line=20) == 1
 
 
 def test_set_adc(shim_under_sleep):
     with SimControlClient(shim_under_sleep) as c:
         c.set_adc(channel=3, value=2048)
-        # No direct getter for ADC — verify by absence of error.
 
 
 def test_unknown_verb(shim_under_sleep):

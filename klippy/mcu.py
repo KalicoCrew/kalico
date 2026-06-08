@@ -28,16 +28,6 @@ MAX_NOMINAL_DURATION = 3.0
 
 
 def _format_bridge_msg(cmd, data):
-    """Format a Klipper command as a string for the bridge's text-protocol
-    parser. Used by both query (CommandQueryWrapper) and fire-and-forget
-    (CommandWrapper) command paths.
-
-    Buffer fields must be hex-encoded so the parser's whitespace tokenizer
-    sees a single token and parse_hex_buffer can decode it back to bytes.
-    Klippy passes buffer payloads as bytes/bytearray (tmc_uart) or as a
-    Python list/tuple of ints (spi_transfer, tmc2130 build_cmd) — handle
-    both.
-    """
     parts = [cmd.name]
     for i, (name, _) in enumerate(cmd.param_names):
         val = data[i]
@@ -135,14 +125,7 @@ class CommandQueryWrapper:
             raise self._error(str(e))
 
     def _bridge_send(self, data):
-        """Bridge-mode send: encode as human-readable string and use bridge_call."""
         msg = _format_bridge_msg(self._cmd, data)
-        # Diag instrumentation for the 2026-05-09 bridge-call stall
-        # investigation. Logs entry/exit timing per call so the host log
-        # correlates against the reactor's [trace-write] / [trace-tick] and
-        # the MCU's diag_v1 emits. Uses logging.info so the line carries a
-        # timestamp; when the bug fires we want sub-millisecond resolution
-        # on entry/exit pairs.
         _t0 = time.monotonic()
         logging.info(
             "[py-trace] _bridge_send enter cmd=%s response=%s",
@@ -169,10 +152,6 @@ class CommandQueryWrapper:
             )
             raise self._error(str(e))
         except Exception as e:
-            # Bridge raises RuntimeError("bridge_call: transport ...") which
-            # is NOT serialhdl.error. Catch broadly so the timeout case still
-            # produces an exit line — the original handler above would let
-            # those bypass the trace and we'd see enter without exit.
             _dt_ms = (time.monotonic() - _t0) * 1000.0
             logging.info(
                 "[py-trace] _bridge_send exit EXC cmd=%s dt_ms=%.2f exc=%s msg=%s",
@@ -200,10 +179,6 @@ class CommandQueryWrapper:
         reqclock=0,
         retry=True,
     ):
-        # Bridge has no serialqueue; route preface as a fire-and-forget
-        # command (bridge_send) and the data as a request expecting a
-        # response (bridge_call). Used by SPI flows that need a bus
-        # selection before the transfer (tmc2130 chain reads/writes).
         preface_cmd.send(preface_data, minclock=minclock)
         return self._bridge_send(data)
 
@@ -318,10 +293,6 @@ class MCU_trsync:
         self._stepper_stop_cmd = mcu.lookup_command(
             "stepper_stop_on_trigger oid=%c trsync_oid=%c", cq=self._cmd_queue
         )
-        # Bridge mode: the bridge owns the serial wire for ALL MCUs, so
-        # no C serialqueue exists and trdispatch_mcu cannot be allocated.
-        # Non-bridge MCUs (Beacon, Eddy) still send firmware trsync
-        # commands in start()/stop() — just without C-level interception.
         self._trdispatch_mcu = None
 
     def _shutdown(self):
@@ -404,15 +375,9 @@ class MCU_trsync:
                 self._mcu._name, self._oid, arm_id, expire_timeout,
             )
             return
-        # Non-bridge MCU (Beacon, Eddy): send firmware commands.
-        # Skip trdispatch_mcu_setup (no C serialqueue in bridge mode)
-        # but register the Python response handler for trsync_state.
         self._home_end_clock = None
         clock = self._mcu.print_time_to_clock(print_time)
         if self._trdispatch_mcu is None:
-            # No C-level automatic timeout extension (bridge mode).
-            # Use a long initial timeout — the move will be terminated
-            # by endstop trigger or set_home_end_time, not by timeout.
             expire_timeout = max(expire_timeout, 30.0)
         expire_ticks = self._mcu.seconds_to_clock(expire_timeout)
         expire_clock = clock + expire_ticks
@@ -460,8 +425,6 @@ class MCU_trsync:
                 [self._oid, expire_clock], reqclock=clock
             )
         else:
-            # Bridge mode: raw_send is a no-op for CommandWrapper,
-            # so send text-format commands directly through the bridge.
             serial = self._mcu._serial
             serial.send(
                 "trsync_start oid=%d report_clock=%d report_ticks=%d"
@@ -487,13 +450,8 @@ class MCU_trsync:
 
     def stop(self):
         if self._mcu._bridge_drives_steppers:
-            # Bridge-driven MCU: no-op. Return REASON_ENDSTOP_HIT —
-            # safe under both Beacon's and TriggerDispatch's aggregation
-            # rules (primary trsync result dominates; secondary is only
-            # scanned for COMMS_TIMEOUT).
             self._trigger_completion = None
             return self.REASON_ENDSTOP_HIT
-        # Non-bridge MCU: full mainline path
         self._mcu.register_response(None, "trsync_state", self._oid)
         self._trigger_completion = None
         if self._mcu.is_fileoutput():
@@ -1005,30 +963,6 @@ class MCU:
         is_latched_shutdown = params["#name"] == "is_shutdown"
         if is_latched_shutdown:
             prefix = "Previous MCU '%s' shutdown: " % (self._name,)
-            # 2026-05-18 wedge recovery: an `is_shutdown` (vs `shutdown`)
-            # event means the MCU was already in shutdown state when this
-            # klippy session connected — typically because the
-            # kalico-host-rt EXIT_ON_FAULT path aborted the prior klippy
-            # via `std::process::abort()` after a transport drop, while
-            # the MCU stayed alive with the latched
-            # `SchedStatus.shutdown_status = 1` from klippy's `_shutdown()`
-            # emergency_stop. systemd restarts klippy, but without
-            # intervention the new session surfaces the latched state and
-            # the printer parks in shutdown — operator has to manually
-            # FIRMWARE_RESTART or power-cycle.
-            #
-            # Auto-trigger the firmware restart so the systemd-managed
-            # recovery is a single step: a `reset` command to each MCU
-            # (NVIC_SystemReset → SchedStatus zeroed) clears the latched
-            # flag, and the in-process klippy restart re-runs config from
-            # scratch. `_check_restart` raises on first-time attempts (it
-            # also calls `request_exit("firmware_restart")` first, so the
-            # error unwinds the connect path and the main loop picks up
-            # the new start_reason). On second-pass attempts — i.e., we
-            # already restarted via firmware_restart this session and the
-            # MCU is STILL latched — `_check_restart` returns silently,
-            # and we fall through to the normal `invoke_async_shutdown`
-            # below so the operator sees the actual failure.
             self._check_restart(
                 "MCU '%s' latched in shutdown state at connect" % (self._name,)
             )
@@ -1212,19 +1146,6 @@ class MCU:
                 % (self._name, self._shutdown_msg)
             )
         if config_params["is_shutdown"]:
-            # 2026-05-18 wedge recovery: the kalico-host-rt EXIT_ON_FAULT path
-            # aborts klippy on USB-CDC transport drop, leaving the MCUs in a
-            # latched "Command request" shutdown from klippy's own
-            # `_shutdown` emergency_stop. systemd restarts klippy, but the
-            # new session finds the MCUs still shut down and (without this
-            # path) raises here — operator has to manually FIRMWARE_RESTART
-            # or power-cycle. Auto-trigger the firmware restart so the
-            # systemd-managed recovery is a single step: a `reset` command
-            # to each MCU (NVIC_SystemReset) clears `is_shutdown`, and the
-            # in-process klippy restart re-runs config from scratch. Gated
-            # by `_check_restart`'s own check that we haven't already
-            # restarted this session, so a genuinely-stuck MCU still
-            # surfaces an error rather than looping forever.
             self._check_restart(
                 "MCU '%s' was in shutdown state at config time" % (self._name,)
             )
@@ -1304,7 +1225,6 @@ class MCU:
         move_count = config_params["move_count"]
         if move_count < self._reserved_move_slots:
             raise error("Too few moves available on MCU '%s'" % (self._name,))
-        # Bridge mode: step emission lives in Rust, no C steppersync.
         self._steppersync = None
         # Log config information
         move_msg = "Configured MCU '%s' (%d moves)" % (self._name, move_count)
@@ -1618,15 +1538,6 @@ class MCU:
                 "Unable to issue reset command on MCU '%s'", self._name
             )
             return
-        # 2026-05-18 wedge recovery: for bridge MCUs the firmware `reset`
-        # command triggers NVIC_SystemReset → USB-CDC drops at the
-        # kernel — the per-MCU Rust reactor's EXIT_ON_FAULT guard would
-        # interpret that BrokenPipe as a wedge and `std::process::abort()`
-        # the whole klippy process, breaking the in-process firmware_restart
-        # main-loop iteration. Mark the imminent drop as expected so the
-        # reactor reports `exited_gracefully()` when the drop lands. Best-
-        # effort: if the bridge can't be reached (transport already gone),
-        # fall through — we still try to send the reset command.
         try:
             if self._motion_bridge is not None:
                 self._motion_bridge.bridge_mark_expected_disconnect(
@@ -1701,8 +1612,6 @@ class MCU:
         self._flush_callbacks.append(callback)
 
     def flush_moves(self, print_time, clear_history_time):
-        # Bridge mode: step generation lives in the Rust runtime. Host-side
-        # steppersync flushing has nothing to do here.
         return
 
     def check_active(self, print_time, eventtime):

@@ -15,33 +15,12 @@
 #include "command.h" // shutdown
 #include "sched.h" // sched_check_periodic
 
-// Forward declarations of the timer-event handlers that own each foundation
-// timer in SchedState. Defined below.
 static uint_fast8_t periodic_event(struct timer *t);
 static uint_fast8_t sentinel_event(struct timer *t);
 static uint_fast8_t deleted_event(struct timer *t);
 
-// Forward declaration of the wrap-event handler that drives wrap_timer. The
-// implementation is CPU-specific (it pokes SysTick) and lives in
-// src/generic/armcm_timer.c.
 extern uint_fast8_t timer_wrap_event(struct timer *t);
 
-// All scheduler foundation state lives in a single struct, placed in the
-// MPU-protected `.sched_protected` linker section. New scheduler-foundation
-// state added in future MUST go into this struct — there is no separate
-// per-variable attribute that can be forgotten. mpu_protect_init() marks
-// the section read-only at boot; sched_writable_begin() / sched_writable_end()
-// toggle it RW for the brief window each sched.c writer needs. Any other
-// code (Rust runtime, foreground tasks, IRQs) writing here will fault into
-// MemManage_Handler — that captures the offending PC, so we identify
-// the rogue writer immediately rather than chasing downstream corruption.
-//
-// Status flags (tasks_status / tasks_busy / shutdown_status / shutdown_reason)
-// are deliberately kept OUTSIDE this struct in SchedFlags below. They get
-// written from the hot run_tasks loop at very high frequency, and the
-// observed corruption has only ever hit timer_list / last_insert / the
-// foundation timers — never the flags. Keeping flags unprotected avoids
-// thousands of unnecessary MPU toggles per second.
 static struct sched_protected_state {
     struct timer periodic_timer;
     struct timer sentinel_timer;
@@ -61,14 +40,11 @@ static struct sched_protected_state {
     .last_insert = &SchedState.periodic_timer,
 };
 
-// Status / shutdown flags — high-frequency writes, no MPU protection.
 static struct {
     int8_t tasks_status, tasks_busy;
     uint8_t shutdown_status, shutdown_reason;
 } SchedFlags;
 
-// Expose the wrap_timer address to armcm_timer.c::timer_reset, which
-// schedules it when SysTick can't cover a full 100 ms in one shot.
 struct timer *
 sched_get_wrap_timer(void)
 {
@@ -88,9 +64,6 @@ periodic_event(struct timer *t)
 {
     // Make sure the stats task runs periodically
     sched_wake_tasks();
-    // Reschedule timer. Writes to MPU-protected SchedState — caller chain
-    // (SysTick_Handler → timer_dispatch_many) opens the protection window
-    // around the dispatch loop, so no per-write toggle here.
     SchedState.periodic_timer.waketime += timer_from_us(100000);
     SchedState.sentinel_timer.waketime =
         SchedState.periodic_timer.waketime + 0x80000000;
@@ -108,16 +81,8 @@ sentinel_event(struct timer *t)
     shutdown("sentinel timer called");
 }
 
-// Largest number of timers insert_timer's walk should ever traverse. A
-// well-formed list ends at the sentinel_timer (waketime = max), so the walk
-// always breaks within the live timer count (a handful). This bound is far
-// above any real count; exceeding it means the list is corrupt (a bad/cyclic
-// `.next` pointer — e.g. a stray write into a `struct timer`).
 #define SCHED_INSERT_MAX_WALK 1024u
 
-// Captured for the corruption hunt: the pos pointer the walk was traversing
-// when it ran away, and a count of how many times the guard tripped. Persisted
-// in .bss (survives the try_shutdown longjmp; readable while shut down).
 volatile uint32_t sched_insert_corrupt_pos;
 volatile uint32_t sched_insert_corrupt_count;
 
@@ -143,7 +108,7 @@ insert_timer(struct timer *pos, struct timer *t, uint32_t waketime)
         if (unlikely(++walk > SCHED_INSERT_MAX_WALK)) {
             sched_insert_corrupt_pos = (uint32_t)pos;
             sched_insert_corrupt_count++;
-            sched_writable_end();  // mirror try_shutdown sites: close RW window
+            sched_writable_end();
             try_shutdown("insert_timer: scheduler timer list corrupt");
         }
     }
@@ -169,7 +134,6 @@ sched_walk_chain(uint32_t addrs[SCHED_CHAIN_WALK_N],
         *steps = i + 1;
         if (nx == &SchedState.sentinel_timer)
             return;
-        // Sanity: stop walking if nx is clearly unusable.
         uint32_t nu = (uint32_t)nx;
         if (nu == 0 || (nu & 3u) != 0u
             || nu < 0x20000010u || nu >= 0x20020000u)
@@ -178,23 +142,6 @@ sched_walk_chain(uint32_t addrs[SCHED_CHAIN_WALK_N],
     }
 }
 
-// Diagnostic: latch the first caller of sched_add_timer that ever
-// passed a pointer matching a heuristic "bogus" range. Kept around so
-// the fault_handler_report_task can still emit the latched fields if a
-// future regression surfaces; the actual block is OFF (`return 0;`).
-//
-// 2026-05-19: the heuristic ranges were `transmit_buf` (serial_irq.c)
-// and `batch_buf` (runtime_tick.c) — both scratch byte buffers no real
-// `struct timer` should occupy. The hardcoded addresses drifted with
-// the LTO layout: at this build `runtime_producer_timer` landed at
-// `0x200012ec`, inside the hardcoded `batch_buf` range `[0x20000be8,
-// 0x20001600)`. sched.c then blocked the producer timer's first
-// `sched_add_timer`, runtime_producer_event never fired, and the engine
-// wedged at Idle with segments queued but never consumed (test
-// `sim_motion_jogs::g1_x50_emits_step_pulses_on_sim`). Whatever
-// originally motivated this guard (commit df94e73b2) is long-since
-// fixed by the producer-timer atomicity work in commits 65d5295e6 and
-// a8e21cd41; the heuristic is now pure liability.
 volatile uint32_t sched_bad_add_caller __attribute__((used));
 volatile uint32_t sched_bad_add_value  __attribute__((used));
 
@@ -205,11 +152,6 @@ addr_looks_bogus_for_timer(uint32_t p)
     return 0;
 }
 
-// Capture additional context for the rogue sched_add_timer caller: the
-// LR via __builtin_return_address(0) (may be scrambled by LTO inlining)
-// PLUS three words near the current SP. The stack words often contain
-// saved LRs from the call chain above sched_add_timer — addr2line on
-// each gives us the inlined call path back through the rogue site.
 volatile uint32_t sched_bad_add_stack0 __attribute__((used));
 volatile uint32_t sched_bad_add_stack1 __attribute__((used));
 volatile uint32_t sched_bad_add_stack2 __attribute__((used));
@@ -220,12 +162,6 @@ void
 sched_add_timer(struct timer *add)
 {
     if (addr_looks_bogus_for_timer((uint32_t)add)) {
-        // Block the bogus add — refusing the call leaves the timer chain
-        // intact, so klippy can keep operating long enough for the
-        // diagnostic emit (in armcm_timer.c on a future rsched_past, or
-        // via the periodic fault_handler_report_task) to surface what
-        // we know. Count occurrences too — if a single caller is
-        // repeatedly passing junk we'd see it spike.
         sched_bad_add_blocked_count++;
         if (!sched_bad_add_caller) {
             sched_bad_add_caller = (uint32_t)__builtin_return_address(0);
@@ -294,9 +230,6 @@ sched_del_timer(struct timer *del)
     irq_restore(flag);
 }
 
-// Diagnostic ring of the last few dispatched timers. Filled at the entry
-// of sched_timer_dispatch, before t->func runs. Read via
-// sched_get_dispatch_history. See sched.h for semantics.
 static volatile uint32_t sched_dispatch_history_addr[SCHED_DISPATCH_HISTORY_N];
 static volatile uint32_t sched_dispatch_history_func[SCHED_DISPATCH_HISTORY_N];
 static volatile uint32_t sched_dispatch_history_idx;
@@ -313,7 +246,6 @@ sched_get_dispatch_history(uint32_t *idx,
     }
 }
 
-// Most-recently-dispatched scheduler timer func, or 0. Cold path (fault only).
 // `used, externally_visible`: Rust-only caller; attribute prevents --gc-sections
 // from dropping the section before the Rust archive reference resolves.
 __attribute__((used, externally_visible))
@@ -327,24 +259,15 @@ sched_last_dispatched_func(void)
 }
 
 // Invoke the next timer - called from board hardware irq code.
-// Caller (timer_dispatch_many in armcm_timer.c) is responsible for holding
-// the MPU writable window open across the dispatch loop — we do not toggle
-// per-call here to avoid jitter on the hot path.
 unsigned int
 sched_timer_dispatch(void)
 {
     // Invoke timer callback
     struct timer *t = SchedState.timer_list;
-    // Diagnostic: ring-buffer the dispatched timer's (addr, func) BEFORE
-    // invoking its callback. On a "Rescheduled timer in past" trigger,
-    // the most-recent entries identify which timer struct fed a bogus
-    // `.next` value into SchedState.timer_list.
     uint32_t hidx = sched_dispatch_history_idx;
     sched_dispatch_history_addr[hidx % SCHED_DISPATCH_HISTORY_N] = (uint32_t)t;
     sched_dispatch_history_func[hidx % SCHED_DISPATCH_HISTORY_N] = (uint32_t)t->func;
     sched_dispatch_history_idx = hidx + 1;
-    // Mirror into cross-boot-persistent diag so a callback that hangs (PRIMASK
-    // held -> full freeze -> IWDG reset) is identifiable after the reset.
     extern void diag_note_dispatch(uint32_t func, uint32_t addr);
     diag_note_dispatch((uint32_t)t->func, (uint32_t)t);
 

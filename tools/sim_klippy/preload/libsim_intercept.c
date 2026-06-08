@@ -1,8 +1,3 @@
-// LD_PRELOAD shim that intercepts klipper's libc syscalls and replaces
-// /dev/gpiochip*, /dev/spidev*, /sys/class/pwm/*, /sys/bus/iio/* access
-// with sim-internal state and chip emulator sockets.
-//
-// See docs/superpowers/specs/2026-05-08-syscall-shim-design.md
 #include "libsim_intercept.h"
 
 #include <dlfcn.h>
@@ -41,14 +36,12 @@
 // last_value (under fake_slots_mtx) for the get_pwm diagnostic verb;
 // that is read-only and atomic on the supported platforms.
 
-// Verbose logging — set KALICO_SIM_SHIM_VERBOSE=1 to enable.
 static int verbose = 0;
 #define LOG(fmt, ...) do { if (verbose) fprintf(stderr, "[shim] " fmt "\n", ##__VA_ARGS__); } while (0)
 
 #include <pthread.h>
 #include <errno.h>
 
-// Per-fd slot — see spec §"Per-fd state and slot allocation"
 struct sim_fd_slot {
     enum sim_slot_kind kind;
     union {
@@ -77,14 +70,13 @@ struct sim_fd_slot {
 static struct sim_fd_slot fake_slots[MAX_FAKE_FDS];
 static pthread_mutex_t fake_slots_mtx = PTHREAD_MUTEX_INITIALIZER;
 
-// Per-line state. Indexed by [chip_id][offset].
 // Must match firmware's src/linux/internal.h: MAX_GPIO_LINES=288, 9 chips.
 #define MAX_GPIO_CHIPS 9
 #define MAX_GPIO_LINES 288
 
 struct sim_gpio_line {
-    int direction;   // 0 = input, 1 = output, -1 = unconfigured
-    int value;       // 0 or 1
+    int direction;
+    int value;
 };
 static struct sim_gpio_line gpio_lines[MAX_GPIO_CHIPS][MAX_GPIO_LINES];
 static pthread_mutex_t gpio_state_mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -138,7 +130,6 @@ static int is_fake_fd(int fd) {
     return fd >= FAKE_FD_BASE && fd < FAKE_FD_BASE + MAX_FAKE_FDS;
 }
 
-// Real libc symbols — populated by shim_init.
 static int (*real_open)(const char *, int, ...) = NULL;
 static int (*real_openat)(int, const char *, int, ...) = NULL;
 static int (*real_close)(int) = NULL;
@@ -239,7 +230,6 @@ static void control_handle_line(int client_fd, char *line) {
             send_resp(client_fd, "error: parse error\n");
             return;
         }
-        // Determine which file to read; default to "duty_cycle".
         const char *want_file = "duty_cycle";
         char want_buf[32] = {0};
         const char *p = strstr(line, "file=");
@@ -363,8 +353,6 @@ static void shim_fini(void) {
     }
 }
 
-// Path classification — returns the slot kind to allocate, or SIM_NONE
-// if the path should pass through to the real syscall.
 static enum sim_slot_kind classify_path(const char *path) {
     if (!path) return SIM_NONE;
     if (strncmp(path, "/dev/gpiochip", 13) == 0) return SIM_GPIOCHIP;
@@ -374,7 +362,6 @@ static enum sim_slot_kind classify_path(const char *path) {
     return SIM_NONE;
 }
 
-// Stubbed per-handler entries; later tasks fill in real allocation.
 static int sim_open_gpiochip(const char *path, int flags) {
     (void)flags;
     int chip_id = -1;
@@ -480,7 +467,6 @@ int openat(int dirfd, const char *path, int flags, ...) {
 
 int access(const char *path, int mode) {
     if (classify_path(path) != SIM_NONE) {
-        // Sim paths always exist if the shim is loaded.
         return 0;
     }
     return real_access(path, mode);
@@ -535,7 +521,6 @@ static int gpio_handle_set_values(int line_fd, struct gpiohandle_data *data) {
     pthread_mutex_lock(&gpio_state_mtx);
     gpio_lines[chip_id][offset].value = v;
     slot->u.gpioline.last_value = v;
-    // Track currently-asserted CS for SPI dispatch.
     // CS is active-low: the chip is selected when the line goes LOW (v==0),
     // and deselected when the line goes HIGH (v==1).
     if (v == 0 && gpio_lines[chip_id][offset].direction == 1) {
@@ -677,7 +662,6 @@ int fcntl(int fd, int cmd, ...) {
         va_end(ap);
         return real_fcntl(fd, cmd, arg);
     }
-    // Fake fd — no-op for FD_CLOEXEC, F_SETFL, F_GETFL.
     (void)cmd;
     return 0;
 }
@@ -694,7 +678,6 @@ ssize_t write(int fd, const void *buf, size_t count) {
     if (!slot) { errno = EBADF; return -1; }
     switch (slot->kind) {
         case SIM_SPIDEV: {
-            // No-receive SPI write — same shape as a one-way transfer.
             int sock = spi_get_chip_socket(slot);
             if (sock < 0) return -1;
             size_t off = 0;
@@ -707,7 +690,6 @@ ssize_t write(int fd, const void *buf, size_t count) {
             return (ssize_t)count;
         }
         case SIM_PWM_FILE: {
-            // Parse the integer value klipper wrote (ASCII decimal).
             char buf2[32];
             size_t copy = count < sizeof(buf2) - 1 ? count : sizeof(buf2) - 1;
             memcpy(buf2, buf, copy);

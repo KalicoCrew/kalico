@@ -37,4 +37,4 @@ _Static_assert(
     "AXI SRAM overflow: RT_STORAGE_SIZE too large for AXI region "
     "(after summing other .axi_bss occupants + headroom)"
 );
-#endif // CONFIG_MACH_STM32H7
+#endif

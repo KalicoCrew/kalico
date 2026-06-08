@@ -142,4 +142,4 @@ uint32_t diag_get_tx_drops_klipper(void);
 }
 #endif
 
-#endif // __GENERIC_FAULT_HANDLER_H
+#endif

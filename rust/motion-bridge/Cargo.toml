@@ -14,7 +14,7 @@ name = "motion_bridge_native"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = { version = "0.24", features = ["extension-module", "abi3-py39"] }
+pyo3 = { version = "0.24", features = ["abi3-py39"] }
 kalico-host-rt = { path = "../kalico-host-rt", features = ["python-bridge"] }
 kalico-protocol = { path = "../kalico-protocol" }
 trajectory = { path = "../trajectory" }
@@ -38,13 +38,22 @@ thiserror = { workspace = true }
 
 [features]
 test-support = []
+# extension-module leaves libpython symbols undefined (resolved by the host
+# process). Test binaries are standalone executables and MUST NOT enable it,
+# or the Linux link fails on PyErr_Print. The production cdylib enables it
+# via Makefile.kalico.
+extension-module = ["pyo3/extension-module"]
 
 [dev-dependencies]
 rustfft = "6"
 heapless = { workspace = true }
 kalico-native-transport = { path = "../kalico-native-transport" }
-kalico-host-rt = { path = "../kalico-host-rt", features = ["test-harness"] }
+# Enables KalicoHostIo::from_port_skip_identify for the teardown tests
+# (bridge/tests.rs). Cargo unions this with the normal-dep feature set when
+# building tests, so the production cdylib build is unaffected.
+kalico-host-rt = { path = "../kalico-host-rt", features = ["python-bridge", "test-harness"] }
 motion-bridge = { path = ".", features = ["test-support"] }
+serialport = "4"
 
 [lints]
 workspace = true

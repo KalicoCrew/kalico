@@ -15,7 +15,6 @@
 
 DECL_CONSTANT("CLOCK_FREQ", CONFIG_CLOCK_FREQ);
 
-// Return the number of clock ticks for a given number of microseconds
 uint32_t
 timer_from_us(uint32_t us)
 {
@@ -45,7 +44,6 @@ timer_is_before(uint32_t time1, uint32_t time2)
 volatile uint32_t timer_last_diff;
 #endif
 
-// Set the next irq time
 static void
 timer_set_diff(uint32_t value)
 {
@@ -68,14 +66,12 @@ timer_set_diff(uint32_t value)
     SysTick->LOAD = 0;
 }
 
-// Return the current time (in absolute clock ticks).
-//
 // Under CONFIG_KALICO_SIM (Renode), DWT->CYCCNT is unmodeled and reads as
 // 0. Fork to the software CYCCNT (runtime_sim_cyccnt, bumped from the TIM5
 // ISR by cycles-per-tick per fire — see src/stm32/runtime_tick_h7.c) so
 // timer_dispatch_many() and the engine's widen state both observe forward
-// progress. Per Step-6 plan Phase 0 Task 0.1 + Task 0.3. Production builds
-// (CONFIG_KALICO_SIM=n) read the hardware register directly. NEVER flash
+// progress. Production builds (CONFIG_KALICO_SIM=n) read the hardware register
+// directly. NEVER flash
 // a CONFIG_KALICO_SIM=y image to silicon — IWDG-disable + software CYCCNT
 // is a debugging build only.
 // `used, externally_visible` keeps the out-of-line copy alive under
@@ -94,7 +90,6 @@ timer_read_time(void)
 #endif
 }
 
-// Activate timer dispatch as soon as possible
 void
 timer_kick(void)
 {
@@ -103,7 +98,6 @@ timer_kick(void)
     SCB->ICSR = SCB_ICSR_PENDSTSET_Msk;
 }
 
-// Implement simple early-boot delay mechanism
 void
 udelay(uint32_t usecs)
 {
@@ -117,11 +111,6 @@ udelay(uint32_t usecs)
         ;
 }
 
-// Wrap-event handler. Drives SchedState.wrap_timer on CPUs whose SysTick
-// LOAD register can't cover a full 100 ms period. The struct itself lives
-// in sched.c (inside SchedState, MPU-protected); we just provide the
-// callback. Caller (timer_dispatch_many's dispatch loop) holds the
-// .sched_protected MPU window open, so the waketime write is permitted.
 uint_fast8_t
 timer_wrap_event(struct timer *t)
 {
@@ -142,15 +131,12 @@ DECL_SHUTDOWN(timer_reset);
 void
 timer_init(void)
 {
-    // Enable Debug Watchpoint and Trace (DWT) for its 32bit timer
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
     DWT->CYCCNT = 0;
 
-    // Schedule a recurring timer on fast cpus
     timer_reset();
 
-    // Enable SysTick
     irqstatus_t flag = irq_save();
     NVIC_SetPriority(SysTick_IRQn, KALICO_SCHED_NVIC_PRIO);
     SysTick->CTRL = (SysTick_CTRL_CLKSOURCE_Msk | SysTick_CTRL_TICKINT_Msk
@@ -166,8 +152,6 @@ static uint32_t timer_repeat_until;
 #define TIMER_MIN_TRY_TICKS 90
 #define TIMER_DEFER_REPEAT_TICKS timer_from_us(5)
 
-// Invoke timers
-//
 // The dispatch loop opens the .sched_protected MPU window once at entry
 // and closes it before each return. sched_timer_dispatch (called inside
 // the loop) and periodic_event / sentinel_event / deleted_event / the
@@ -179,27 +163,17 @@ timer_dispatch_many(void)
     uint32_t tru = timer_repeat_until;
     sched_writable_begin();
     for (;;) {
-        // Run the next software timer
         uint32_t next = sched_timer_dispatch();
 
         uint32_t now = timer_read_time();
         int32_t diff = next - now;
         if (diff > (int32_t)TIMER_MIN_TRY_TICKS) {
-            // Schedule next timer normally.
             sched_writable_end();
             return diff;
         }
 
         if (unlikely(timer_is_before(tru, now))) {
-            // Check if there are too many repeat timers
             if (diff < (int32_t)(-timer_from_us(1000))) {
-                // Emit the last N dispatched (addr, func) pairs so the
-                // host log identifies which timer fed the bogus `.next`
-                // into SchedState.timer_list. addr2line on `f*` names
-                // the timer event handler; the `a*` heap address tells
-                // us which struct instance owned the bad pointer.
-                // Split into two output lines because Klipper's MESSAGE_MAX
-                // (64 B) doesn't fit all 6 (addr, func) pairs in one msg.
                 uint32_t hidx;
                 uint32_t haddrs[SCHED_DISPATCH_HISTORY_N];
                 uint32_t hfuncs[SCHED_DISPATCH_HISTORY_N];
@@ -211,16 +185,12 @@ timer_dispatch_many(void)
                        haddrs[1], hfuncs[1],
                        haddrs[2], hfuncs[2],
                        (int32_t)(diff / (int32_t)timer_from_us(1)));
+                // Split: MESSAGE_MAX (64 B) can't fit all 6 (addr, func) pairs.
                 output("rsched_past_more a3 %u f3 %u a4 %u f4 %u"
                        " a5 %u f5 %u",
                        haddrs[3], hfuncs[3],
                        haddrs[4], hfuncs[4],
                        haddrs[5], hfuncs[5]);
-                // First sched_add_timer caller that passed a pointer
-                // into the known scratch ranges. Zero if no such call
-                // happened (then the corruption isn't via sched_add_timer's
-                // public API, and we have to look at .next field writes
-                // elsewhere).
                 extern volatile uint32_t sched_bad_add_caller;
                 extern volatile uint32_t sched_bad_add_value;
                 extern volatile uint32_t sched_bad_add_stack0;
@@ -234,9 +204,6 @@ timer_dispatch_many(void)
                        sched_bad_add_stack0,
                        sched_bad_add_stack1,
                        sched_bad_add_stack2);
-                // Walk the chain forward from periodic_timer. First entry
-                // whose `n*` (the .next pointer) is in scratch range
-                // identifies the timer whose .next was corrupted.
                 uint32_t cwa[SCHED_CHAIN_WALK_N];
                 uint32_t cwn[SCHED_CHAIN_WALK_N];
                 uint32_t cws;
@@ -263,7 +230,6 @@ timer_dispatch_many(void)
             timer_repeat_until = tru = now + TIMER_REPEAT_TICKS;
         }
 
-        // Next timer in the past or near future - wait for it to be ready
         irq_enable();
         while (unlikely(diff > 0))
             diff = next - timer_read_time();
@@ -271,7 +237,6 @@ timer_dispatch_many(void)
     }
 }
 
-// IRQ handler
 void __visible __aligned(16) // aligning helps stabilize perf benchmarks
 SysTick_Handler(void)
 {

@@ -36,15 +36,10 @@ from __future__ import annotations
 import json
 import zlib
 
-# ---------------------------------------------------------------------------
-# Wire format strings — keep byte-exact with beacon.py / klippy core.
-# ---------------------------------------------------------------------------
-
 # msgid 0 = identify_response, msgid 1 = identify (per msgproto.DefaultMessages).
 # Everything below uses a contiguous id range starting at 2.
 
 CORE_COMMANDS = [
-    # Klippy core MCU bring-up.
     "get_uptime",
     "get_clock",
     "get_config",
@@ -104,33 +99,19 @@ CORE_RESPONSES = [
     "is_shutdown static_string_id=%hu",
     "pong data=%*s",
     "debug_result val=%u",
-    # trsync_state — sent by firmware on every report tick and on
-    # trigger. klippy's MCU_trsync._handle_trsync_state is the consumer.
     "trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u",
 ]
 
 BEACON_RESPONSES = [
-    # beacon_data — streaming frequency samples. beacon.py reads:
-    #   params["data"], params["samples"], params["start_clock"], params["delta_clock"]
-    # The data buffer contains delta-compressed frequency counts.
     "beacon_data data=%*s samples=%c start_clock=%u delta_clock=%u",
-    # beacon_status — thermal telemetry. beacon.py reads:
-    #   params["mcu_temp"], params["supply_voltage"], params["coil_temp"], params["status"]
     "beacon_status mcu_temp=%u supply_voltage=%u coil_temp=%u status=%u",
-    # beacon_contact — contact detection event. Sent unsolicited on
-    # nozzle contact. beacon.py stores as last_contact_msg.
     "beacon_contact triggered=%c clock=%u sample=%i frequency=%u",
     "beacon_nvm_data bytes=%*s offset=%hu",
     "beacon_contact_state triggered=%c detect_clock=%u",
-    # Accelerometer responses.
     "beacon_accel_data start_clock=%u delta_clock=%u data=%*s",
     "beacon_accel_state errors=%u",
 ]
 
-
-# ---------------------------------------------------------------------------
-# Constants reported via msgparser.get_constants() and friends.
-# ---------------------------------------------------------------------------
 
 # Beacon uses a 20 MHz tick rate; the real firmware reports CLOCK_FREQ=20000000.
 CLOCK_FREQ = 20_000_000
@@ -164,20 +145,13 @@ CONFIG = {
 
 
 def build_identify_dict() -> dict:
-    """Return the un-compressed identify dictionary as a Python dict.
+    """Build the identify dictionary.
 
-    Klippy's MessageParser.process_identify zlib-decompresses the bytes
-    we ship via identify_response, then json.loads them. The structure
-    here mirrors what the firmware build pipeline produces.
-
-    Klippy's _init_messages also re-runs lookup_params with these
-    enumerations, so any pin-typed argument needs the ``pin`` enum to
-    resolve. Beacon firmware has no pin-typed arguments, but we expose
-    a single trivial ``pin`` range to keep the schema valid for the
-    common klippy code path.
+    Klippy's _init_messages re-runs lookup_params with the enumerations here,
+    so any pin-typed argument needs the ``pin`` enum to resolve. Beacon firmware
+    has no pin-typed arguments, but we expose a single trivial ``pin`` range to
+    keep the schema valid for the common klippy code path.
     """
-    # Reserve msgid 0 / 1 for the default messages baked into msgproto.
-    # Build the commands / responses dictionaries with stable ascending ids.
     next_id = 2
     commands: dict = {}
     responses: dict = {}
@@ -186,9 +160,6 @@ def build_identify_dict() -> dict:
         commands[fmt] = next_id
         next_id += 1
     for fmt in CORE_RESPONSES + BEACON_RESPONSES:
-        # identify_response is already id 0 in msgproto.DefaultMessages, but
-        # listing it here too is harmless — _init_messages just rewrites
-        # the by-id table with our id, which we keep at 0.
         if fmt.startswith("identify_response"):
             responses[fmt] = 0
             continue
@@ -222,11 +193,8 @@ def build_identify_dict() -> dict:
 
 
 def build_identify_blob() -> bytes:
-    """Return the wire-format identify blob (zlib-compressed JSON)."""
     raw = json.dumps(build_identify_dict()).encode("utf-8")
     return zlib.compress(raw)
 
 
-# Cached at import time so the stub can serve identify chunks without
-# rebuilding the dict on every fixture instantiation.
 IDENTIFY_BLOB = build_identify_blob()

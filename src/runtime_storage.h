@@ -1,10 +1,3 @@
-// Backing storage for the Kalico runtime engine (RuntimeContext). C owns
-// linker-section placement on the MCU (mcu-c-rust-boundary.md rule B2).
-//
-// RT_STORAGE_SIZE flows from Kconfig and is read identically by rust/runtime/
-// build.rs, so both sides agree; the Rust-side const_assert backstops the
-// lower bound.
-
 #ifndef KALICO_RUNTIME_STORAGE_H
 #define KALICO_RUNTIME_STORAGE_H
 
@@ -21,4 +14,4 @@
 
 extern uint8_t rt_storage[RT_STORAGE_SIZE];
 
-#endif // KALICO_RUNTIME_STORAGE_H
+#endif

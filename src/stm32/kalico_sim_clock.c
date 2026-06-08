@@ -1,7 +1,6 @@
 // Software CYCCNT for sim builds (CONFIG_KALICO_SIM=y): Renode's H7 model
 // returns 0 for DWT->CYCCNT, so the TIM5 ISR bumps this counter to give the
-// widening loop forward progress. NEVER ship in production firmware — this is
-// an IWDG-disabled debug build only.
+// widening loop forward progress.
 
 #include "autoconf.h"
 

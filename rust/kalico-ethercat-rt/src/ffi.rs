@@ -1,5 +1,3 @@
-//! Raw bindings to the C SOEM shim (`bench/libecrt`).
-//!
 //! Callers must ensure no concurrent access and that `ec_rt_bringup` has
 //! succeeded before calling any other function.
 #![allow(unsafe_code)]

@@ -11,10 +11,8 @@
 pub const MOTOR_PERIOD: usize = 1024;
 pub const CURRENT_AMPLITUDE: i16 = 248;
 
-/// Size of the [`PHASE_LUT`] sinusoid table (one electrical cycle = 1024 microsteps).
 pub const PHASE_LUT_SIZE: usize = MOTOR_PERIOD;
 
-/// Peak coil current amplitude used by [`PHASE_LUT`].
 pub const COIL_AMPLITUDE: i16 = CURRENT_AMPLITUDE;
 
 include!(concat!(env!("OUT_DIR"), "/phase_lut_table.rs"));

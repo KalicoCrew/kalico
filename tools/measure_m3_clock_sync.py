@@ -1,77 +1,9 @@
 #!/usr/bin/env python3
-"""tools/measure_m3_clock_sync.py — Spec §7.3 M3 clock-sync residual soak.
+"""Spec §7.3 M3 clock-sync residual soak.
 
-**Status: SCAFFOLD — user-run on H723 (and ideally a parallel F4x or sim
-F4x) for 24h.** The subagent ships this script and a placeholder doc;
-the actual 24-hour soak runs against the user's flashed boards. Results
-land in `docs/research/step6-buffer-budget-measurements.md`.
-
-What this measures
-==================
-
-M3 (spec §7.3) bounds the worst-case clock-sync estimator state during a
-multi-day soak: the residual of the sliding-window regression
-(`residual_max_in_window`), the drift vs the configured `clock_freq`
-baseline, and the freshness of the most recent dedicated (RTT-aware)
-sample. The Step-6 ARMING quality gate (`§12.4` + Plan-decision B)
-refuses to issue `runtime_stream_arm` when:
-
-  - `residual_max_in_window > MAX_RESIDUAL_US` (default 100 µs), or
-  - `|drift_ppm| > MAX_DRIFT_PPM`              (default 100 ppm), or
-  - `last_sample_age > MAX_SAMPLE_AGE_MS`      (default 2000 ms), or
-  - `last_dedicated_sample_age > MAX_RTT_AGE_MS` (default 500 ms).
-
-This soak validates the threshold defaults are realistic on actual
-silicon: that healthy hardware never trips the gates during a multi-hour
-print. If the runner observes the gate tripping outside artificial
-fault-injection conditions, the user updates the default constants in
-`rust/kalico-host-rt/src/clock_sync.rs` accordingly.
-
-Outputs
-=======
-
-  - JSON report: 24h cumulative max-residual / max-drift-ppm / 99.99
-    sample-age across both MCUs. Also captures hourly-window
-    distributions so the user can see whether the worst is uniform or
-    correlated with thermal cycles.
-
-Multi-MCU note
-==============
-
-The Step-6 multi-MCU sync architecture has the host running ONE
-`ClockSyncEstimator` per MCU. In production, MCU1 = H723 (Octopus Pro)
-+ MCU2 = F4x (Octopus). This runner is parameterized:
-
-  - `--port-h723 /dev/ttyACM0` — required.
-  - `--port-f4x  /dev/ttyACM1` — optional. If absent, runs single-MCU
-    against H723 only and the report flags "F4x: not_run". Per Step-5
-    plan, F4x integration is a parallel workstream; the gate threshold
-    validation can land on H723 alone and the F4x re-run happens once
-    that workstream catches up.
-
-The runner does NOT use the in-tree Rust `ClockSyncEstimator` — Python
-re-implements the regression here so the runner stays self-contained.
-The Python re-implementation matches the spec; it does not need to
-match the Rust implementation byte-for-byte (the report records both
-the constants from `clock_sync.rs` AND the Python computed values, so
-divergence is visible).
-
-Usage
-=====
-
-```bash
-# H723-only 24h:
-python3 tools/measure_m3_clock_sync.py \
-    --port-h723 /dev/ttyACM0 \
-    --hours 24 \
-    --report /tmp/m3-clock-sync-$(date +%Y%m%d).json
-
-# Both MCUs:
-python3 tools/measure_m3_clock_sync.py \
-    --port-h723 /dev/ttyACM0 --baud-h723 250000 \
-    --port-f4x  /dev/ttyACM1 --baud-f4x  250000 \
-    --hours 24 --report m3.json
-```
+Usage:
+    python3 tools/measure_m3_clock_sync.py --port-h723 /dev/ttyACM0 --hours 24 --report m3.json
+    python3 tools/measure_m3_clock_sync.py --port-h723 /dev/ttyACM0 --port-f4x /dev/ttyACM1 --hours 24 --report m3.json
 """
 
 import argparse
@@ -87,34 +19,23 @@ from kalico_host_io import HostIoError, KalicoHostIO  # noqa: E402
 
 # Spec §12.2 — sliding-window depth.
 WINDOW = 30
-# Sample period. Picking 100ms means we fill the window in ~3s and have
-# enough samples for the regression to settle quickly.
 SAMPLE_PERIOD_S = 0.1
 
 
 class ClockSyncWindow:
-    """Lightweight Python re-implementation of the host-side sliding-window
-    clock-sync regression. Spec §12.2/§12.4. Not bit-identical to the
-    Rust impl in `rust/kalico-host-rt/src/clock_sync.rs`; the Rust impl
-    is the source of truth and ships with the production stack — this
-    is for soak-driver introspection only.
-    """
+    """Sliding-window clock-sync regression (Spec §12.2/§12.4). Not bit-identical to
+    `rust/kalico-host-rt/src/clock_sync.rs`; the Rust impl is the source of truth."""
 
     def __init__(self, baseline_freq):
         self.baseline_freq = baseline_freq
         self.samples = collections.deque(maxlen=WINDOW)
         self.epoch_t = time.monotonic()
-        # Latest computed values:
         self.freq = baseline_freq
         self.residual_max_us = 0.0
         self.last_sample_age_s = math.inf
         self.last_dedicated_sample_age_s = math.inf
 
     def add(self, host_send_t, host_recv_t, mcu_at_response):
-        """Record a dedicated round-trip sample.
-
-        Backs out half the RTT to estimate MCU-clock at host_send_t.
-        """
         rtt_s = max(host_recv_t - host_send_t, 0.0)
         one_way_cycles = (rtt_s / 2.0) * self.freq
         mcu_at_send = mcu_at_response - one_way_cycles
@@ -136,7 +57,6 @@ class ClockSyncWindow:
         slope = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys)) / denom
         offset = mean_y - slope * mean_x
         self.freq = slope
-        # Residual max in µs.
         max_resid_us = 0.0
         for x, y in zip(xs, ys):
             predicted = slope * x + offset
@@ -145,7 +65,6 @@ class ClockSyncWindow:
             if r > max_resid_us:
                 max_resid_us = r
         self.residual_max_us = max_resid_us
-        # Sample ages.
         latest = self.samples[-1][2]
         self.last_sample_age_s = time.monotonic() - latest
         self.last_dedicated_sample_age_s = self.last_sample_age_s
@@ -157,9 +76,6 @@ class ClockSyncWindow:
 
 
 def issue_clock_sync(io):
-    """Issue one kalico_clock_sync_request and return
-    (host_send_t, host_recv_t, mcu_at_response_u64).
-    """
     host_send_t = time.monotonic()
     io.send(
         "kalico_clock_sync_request request_id=1 "

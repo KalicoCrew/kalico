@@ -58,14 +58,6 @@ fn extract_packet_resyncs_past_oversized_msglen_byte() {
     );
 }
 
-/// `send_typed`'s encoding path is exactly `parser.encode_typed`. The
-/// channel-send + reactor handler portion is exercised by
-/// `reactor::fire_and_forget_typed_routing`. Here we pin the encoding
-/// equivalence: the bytes a hypothetical `send_typed` would push into
-/// `ReactorCommand::FireAndForgetTyped { payload }` are identical to the
-/// bytes `call_typed` would push into `SubmitTyped { payload }` for the
-/// same args. This is what makes "fire-and-forget version of call_typed"
-/// a meaningful claim.
 #[test]
 fn send_typed_payload_matches_call_typed_payload() {
     use crate::host_io::parser::{DataDictionary, FieldValue, MsgProtoParser};
@@ -90,16 +82,13 @@ fn send_typed_payload_matches_call_typed_payload() {
         ("slot", FieldValue::U16(7)),
         ("degree", FieldValue::Byte(3)),
     ];
-    // What `send_typed` would put in the FireAndForgetTyped payload.
     let send_typed_payload = parser
         .encode_typed("kalico_load_curve_begin", &args)
         .expect("encode_typed");
-    // What `call_typed` would put in the SubmitTyped payload.
     let call_typed_payload = parser
         .encode_typed("kalico_load_curve_begin", &args)
         .expect("encode_typed");
     assert_eq!(send_typed_payload, call_typed_payload);
-    // And it must be non-empty (sanity: we actually exercised encoding).
     assert!(!send_typed_payload.is_empty());
 }
 

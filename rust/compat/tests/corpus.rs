@@ -1,31 +1,7 @@
-//! Corpus-scale integration tests for the compat converter.
-//!
-//! Corpora are generated deterministically in memory — no fixture files.
-//! The generators produce the same byte-for-byte output on every run, which
-//! satisfies the reproducibility requirement without any repo bloat.
-
 use std::time::Instant;
 
-// ---------------------------------------------------------------------------
-// Corpus generators
-// ---------------------------------------------------------------------------
-
-/// Generate a large straight-line raster corpus (~160k G1 moves).
-///
-/// The output is a valid G-code string that the converter must fully reduce to
-/// G5-only output.  Pattern:
-///   - 4-line header (G21 / G90 / M82 / G92 E0) plus a layer-change marker
-///     and a Z-lift move
-///   - 160,080 G1 XY moves: X alternates 220.000 / 0.000; Y increments by
-///     0.300 each line; E accumulates by 0.0500 each line starting at 0.0500;
-///     F3000 on every line (constant feedrate, so the converter never needs to
-///     re-emit it)
-///
-/// At 160k moves this is a meaningful throughput stress: the <30 s gate has
-/// real headroom on a modern host.
 fn gen_straight_line_raster() -> String {
     const MOVE_COUNT: u32 = 160_080;
-    // Each line is at most ~40 bytes; pre-allocate generously.
     let mut out = String::with_capacity(MOVE_COUNT as usize * 40 + 256);
 
     out.push_str("; Synthetic straight-line corpus — generated at test time\n");
@@ -38,13 +14,10 @@ fn gen_straight_line_raster() -> String {
     out.push_str("G1 Z0.200 F600\n");
 
     for i in 0..MOVE_COUNT {
-        // X alternates: even → 220.000, odd → 0.000
         let x = if i % 2 == 0 { 220.0_f64 } else { 0.0_f64 };
         let y = f64::from(i) * 0.300;
         let e = f64::from(i + 1) * 0.0500;
 
-        // Use fixed-point formatting matching the original fixture.
-        // Y and E grow large so we let them print naturally at 4 decimal places.
         use std::fmt::Write as _;
         let _ = writeln!(out, "G1 X{x:.3} Y{y:.3} E{e:.4} F3000");
     }
@@ -52,13 +25,6 @@ fn gen_straight_line_raster() -> String {
     out
 }
 
-/// Four-arc cycle: one full clockwise circle centred at (110, 110) r=50.
-///
-/// Starting position: (160, 110).  The four quarter-arcs are:
-///   (160,110) → (110,160)  I=-50 J=0
-///   (110,160) → (60,110)   I=0   J=-50
-///   (60,110)  → (110,60)   I=50  J=0
-///   (110,60)  → (160,110)  I=0   J=50
 const ARC_CYCLE: &[([f64; 2], [f64; 2]); 4] = &[
     ([110.0, 160.0], [-50.0, 0.0]),
     ([60.0, 110.0], [0.0, -50.0]),
@@ -66,22 +32,10 @@ const ARC_CYCLE: &[([f64; 2], [f64; 2]); 4] = &[
     ([160.0, 110.0], [0.0, 50.0]),
 ];
 
-/// Generate a large arc-fitted corpus (~100k G2 arcs + travel moves).
-///
-/// Pattern:
-///   - Same 4-line header plus layer-change and Z-lift
-///   - 25,000 cycles; each cycle is:
-///     `G1 X160.000 Y110.000 F3000`  (travel back to circle start)
-///     followed by 4 G2 quarter-arc moves (one full revolution, CW)
-///   - E accumulates by 0.1000 per G2 arc, reaching E=10000.0000 at the end
-///   - G1 travel moves carry no E (pure repositioning)
-///
-/// The converter must reduce all G2 arcs and G1 moves to G5-only output.
 fn gen_arc_circle() -> String {
     const CYCLE_COUNT: u32 = 25_000;
     const ARCS_PER_CYCLE: u32 = 4;
-    let total_arcs = CYCLE_COUNT * ARCS_PER_CYCLE; // 100_000
-    // Each arc line ≤ ~55 bytes; each G1 travel ≤ ~30 bytes.
+    let total_arcs = CYCLE_COUNT * ARCS_PER_CYCLE;
     let capacity = (total_arcs as usize) * 55 + (CYCLE_COUNT as usize) * 30 + 256;
     let mut out = String::with_capacity(capacity);
 
@@ -98,7 +52,6 @@ fn gen_arc_circle() -> String {
     let mut arc_index: u32 = 0;
 
     for _ in 0..CYCLE_COUNT {
-        // Travel back to the circle start position.
         out.push_str("G1 X160.000 Y110.000 F3000\n");
 
         for &([ex, ey], [i, j]) in ARC_CYCLE {
@@ -110,10 +63,6 @@ fn gen_arc_circle() -> String {
 
     out
 }
-
-// ---------------------------------------------------------------------------
-// Shared assertion helpers
-// ---------------------------------------------------------------------------
 
 fn assert_no_legacy_gcode(output: &str) {
     for line in output.lines() {
@@ -136,10 +85,6 @@ fn convert_generated(gcode: &str, label: &str) -> String {
     compat::converter::convert(gcode, label, 5.0)
         .unwrap_or_else(|e| panic!("conversion of {label} failed: {e}"))
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn generated_straight_line_converts() {

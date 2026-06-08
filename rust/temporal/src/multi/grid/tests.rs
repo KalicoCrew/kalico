@@ -21,7 +21,7 @@ fn adaptive_short_segment_floors_to_min_n() {
     let curve = VectorNurbs::<f64, 3>::try_new(
         1,
         vec![0.0, 0.0, 1.0, 1.0],
-        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], // 1 mm
+        vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
     )
     .unwrap();
     let strategy = GridStrategy::Adaptive {
@@ -29,7 +29,6 @@ fn adaptive_short_segment_floors_to_min_n() {
         max_n: 200,
         target_grid_spacing_mm: 0.5,
     };
-    // 1mm / 0.5mm = 2; clamped to min_n = 10.
     assert_eq!(compute_n(&strategy, &curve), 10);
 }
 
@@ -46,7 +45,6 @@ fn adaptive_typical_segment_scales_with_arclength() {
         max_n: 200,
         target_grid_spacing_mm: 0.5,
     };
-    // 50mm / 0.5mm = 100.
     assert_eq!(compute_n(&strategy, &curve_50), 100);
 }
 
@@ -63,17 +61,15 @@ fn adaptive_long_segment_caps_to_max_n() {
         max_n: 200,
         target_grid_spacing_mm: 0.5,
     };
-    // 200mm / 0.5mm = 400; clamped to max_n = 200.
     assert_eq!(compute_n(&strategy, &curve_200mm), 200);
 }
 
 #[test]
 fn adaptive_zero_length_segment_floors_to_min_n() {
-    // Degenerate G1 with two identical control points — no path length.
     let curve = VectorNurbs::<f64, 3>::try_new(
         1,
         vec![0.0, 0.0, 1.0, 1.0],
-        vec![[10.0, 0.0, 0.0], [10.0, 0.0, 0.0]], // zero-length
+        vec![[10.0, 0.0, 0.0], [10.0, 0.0, 0.0]],
     )
     .unwrap();
     let strategy = GridStrategy::Adaptive {
@@ -81,6 +77,5 @@ fn adaptive_zero_length_segment_floors_to_min_n() {
         max_n: 200,
         target_grid_spacing_mm: 0.5,
     };
-    // 0 / 0.5 = 0 → ceil 0 → clamp to min_n = 10.
     assert_eq!(compute_n(&strategy, &curve), 10);
 }

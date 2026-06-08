@@ -11,7 +11,6 @@ fn restrict_single_piece() {
     let curve = bezier_pieces_to_nurbs(&[piece]);
     let restricted = restrict_to_domain(&curve, 1.0, 3.0).unwrap();
     let pieces = extract_bezier_pieces(&restricted);
-    // p(u) = 1 + 2*(u - 0) + 3*(u - 0)^2 = 1 + 2u + 3u^2
     for &u in &[1.0, 1.5, 2.0, 2.5, 3.0] {
         let original: f64 = 1.0 + 2.0 * u + 3.0 * u * u;
         let val = pieces

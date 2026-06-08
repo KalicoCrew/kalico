@@ -1,7 +1,3 @@
-"""SensorlessTrigger tracks step counts → mm position → SG_RESULT.
-When position approaches the wall, SG_RESULT drops; once below SGTHRS
-the chip's DIAG callback fires."""
-
 import pytest
 
 from tools.sim_klippy.orchestrator.sensorless_trigger import SensorlessTrigger
@@ -35,7 +31,7 @@ def test_diag_low_when_far_from_wall():
     counter.count = 0
     trigger.tick()
     assert chip._diag_high is False
-    assert fired == []  # no transition
+    assert fired == []
 
 
 def test_diag_asserts_at_endstop():
@@ -85,9 +81,6 @@ def test_diag_clears_when_retreating():
 
 
 def test_negative_homing_direction():
-    """If homing_direction = -1 (toward decreasing step count) then
-    motion moves position negative; wall at endstop_mm = 0 would be
-    reached from positive starting position."""
     chip = TMC5160Emulator()
     counter = _StepCounter()
     trigger = SensorlessTrigger(
@@ -99,17 +92,6 @@ def test_negative_homing_direction():
         sg_threshold=80,
         homing_direction=-1,
     )
-    # Start far from wall: imagine position is 300 mm. Step counter
-    # at 0 means "no steps yet from initial". With negative direction,
-    # the initial position counts as far from wall_mm=0.
-    # Actually: SensorlessTrigger uses `delta_steps * mm_per_step *
-    # direction` for position relative to start. So at counter=0,
-    # position=0; if endstop_mm = -300 and direction = -1, the wall
-    # is reached at counter = 24000 (24000 steps in -direction
-    # means position = -300, distance to wall (-300) = 0).
-    # For simplicity here just test that with endstop_mm=0 and
-    # direction=-1, we never reach the wall (always at distance 0
-    # initially → DIAG high).
     counter.count = 0
     trigger.tick()
     # distance_to_wall = endstop_mm - position_mm = 0 - 0 = 0 → SG = 0

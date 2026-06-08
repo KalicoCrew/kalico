@@ -156,12 +156,6 @@ fn compute_ack_clock_projects_from_host_time() {
     assert!(diff <= 1, "expected ~1_000_000, got {ack1}");
 }
 
-/// `set_clock_est_rebased` advances `compute_ack_clock` with elapsed Instant time.
-///
-/// After seeding with `offset_raw` anchored at the current RAW clock, advance
-/// the mock clock by 1 s and verify `compute_ack_clock` increases by exactly
-/// `freq` ticks (within 1 tick of rounding).  The value of `host_now_raw` does
-/// not affect this — it is discarded by design.
 #[test]
 fn set_clock_est_rebased_advances_with_mock_clock() {
     let (mut router, clock) = make_router();
@@ -190,13 +184,6 @@ fn set_clock_est_rebased_advances_with_mock_clock() {
     );
 }
 
-/// The `host_now_raw` argument to `set_clock_est_rebased` must not affect
-/// `compute_ack_clock` — the GIL-hop latency ε must be ε-independent.
-///
-/// Call `set_clock_est_rebased` twice in quick succession with identical
-/// parameters except `host_now_raw` differs by 50 ms.  The resulting
-/// `compute_ack_clock` values must agree within 2 ticks (real-clock jitter
-/// between the two Rust `monotonic_raw_secs()` calls, which are µs apart).
 #[test]
 fn set_clock_est_rebased_epsilon_independent() {
     let freq = 1_000_000.0_f64;
@@ -455,18 +442,11 @@ fn flush_does_not_fire_twice_without_new_entries() {
     assert_eq!(*count.lock().unwrap(), 1);
 }
 
-/// `wall_time_at_mcu` returns a real wall time when a clock record is present.
-///
-/// Anchor at now with last_clock=100_000_000 and freq=100 MHz so that
-/// mcu_tick=100_000_000 (i.e. the anchor itself) maps to "now".  The returned
-/// wall time must be within ±1 second of the current system clock, and
-/// `estimated` must be false (delta_ticks / freq = 0.0, within the 1 s window).
 #[test]
 fn wall_time_at_mcu_known_record_returns_wall_time() {
     let (mut router, clock) = make_router();
     let mcu = router.claim_mcu("mcu");
 
-    // Anchor: last_clock=100_000_000 ticks at "now" in the mock clock.
     let anchor_host = instant_to_f64(clock.now());
     router
         .set_clock_est(mcu, 100_000_000.0, anchor_host, 100_000_000)
@@ -476,7 +456,6 @@ fn wall_time_at_mcu_known_record_returns_wall_time() {
         .wall_time_at_mcu(mcu, 100_000_000)
         .expect("must return Some when clock record is set");
 
-    // The result must be within 1 second of wall-clock now.
     let now_unix = time::OffsetDateTime::now_utc();
     let diff = (dt - now_unix).abs();
     assert!(
@@ -489,11 +468,6 @@ fn wall_time_at_mcu_known_record_returns_wall_time() {
     );
 }
 
-/// `wall_time_at_mcu` returns `estimated == true` when the tick is more than
-/// one MCU-frequency-second from the anchor.
-///
-/// Anchor at last_clock=100_000_000 with freq=100 MHz.  A tick at
-/// 300_000_000 is 200_000_000 ticks away = 2.0 s > 1.0 s → estimated.
 #[test]
 fn wall_time_at_mcu_far_from_anchor_returns_estimated_true() {
     let (mut router, clock) = make_router();
@@ -565,7 +539,6 @@ fn wall_time_at_mcu_no_record_returns_none() {
     let (mut router, _) = make_router();
     let mcu = router.claim_mcu("mcu");
 
-    // No set_clock_est call — clock_freq defaults to 0.0.
     assert!(
         router.wall_time_at_mcu(mcu, 1_000_000_000).is_none(),
         "must return None when no clock record has been set"

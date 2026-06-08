@@ -7,7 +7,7 @@ from typing import Optional, Union
 
 @dataclass
 class Move:
-    kind: str  # "G1"  (G0 is emitted as Marker — see below)
+    kind: str
     x: Optional[float]
     y: Optional[float]
     line_no: int
@@ -15,7 +15,7 @@ class Move:
 
 @dataclass
 class Arc:
-    kind: str  # "G2" or "G3"
+    kind: str
     x: Optional[float]
     y: Optional[float]
     i: Optional[float]
@@ -25,7 +25,7 @@ class Arc:
 
 @dataclass
 class Marker:
-    reason: str  # "G0", "M104", "Z_only", "G92", etc.
+    reason: str
     line_no: int
 
 
@@ -57,7 +57,6 @@ def parse(text: str) -> list[Token]:
             x = params.get("X")
             y = params.get("Y")
             if x is None and y is None:
-                # Z-only or E-only move: marker, breaks polyline
                 tokens.append(Marker(reason="Z_only", line_no=line_no))
             else:
                 tokens.append(Move(kind="G1", x=x, y=y, line_no=line_no))

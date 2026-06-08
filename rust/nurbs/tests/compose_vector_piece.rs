@@ -1,13 +1,9 @@
-// Test loop indices are i32 by default; the workspace-pedantic
-// `clippy::cast_lossless` would otherwise force `f64::from(i)` rewrites that
-// the plan specifies should land verbatim.
 #![allow(clippy::cast_lossless)]
 
 use nurbs::AlgebraError;
 use nurbs::algebra::compose_vector_piece;
 use nurbs::bezier::BezierPiece;
 
-/// Identity composition: outer ∘ identity = outer.
 #[test]
 fn identity_composition_returns_outer() {
     let outer_x = BezierPiece::<f64> {
@@ -34,7 +30,6 @@ fn identity_composition_returns_outer() {
 
     let composed = compose_vector_piece::<3>(&[&outer_x, &outer_y, &outer_z], &inner).unwrap();
 
-    // Sample at 100 points and check.
     for i in 0..=100 {
         let t = i as f64 / 100.0;
         let composed_x = composed[0].evaluate(t);
@@ -58,7 +53,6 @@ fn identity_composition_returns_outer() {
     }
 }
 
-/// Linear inner: outer ∘ linear-rescaling = outer composed with rescaling.
 #[test]
 fn linear_inner_is_parameter_rescaling() {
     let outer = BezierPiece::<f64> {
@@ -78,11 +72,10 @@ fn linear_inner_is_parameter_rescaling() {
         coeffs: outer.coeffs.clone(),
     };
 
-    // outer's domain after composition with [0, 0.5]-mapping inner is [0, 0.5].
     let composed = compose_vector_piece::<1>(&[&outer_subdomain], &inner).unwrap();
 
     for i in 0..=50 {
-        let t = i as f64 / 100.0; // t in [0, 0.5]
+        let t = i as f64 / 100.0;
         let composed_val = composed[0].evaluate(t);
         let expected = outer_subdomain.evaluate(inner.evaluate(t));
         assert!(
@@ -92,7 +85,6 @@ fn linear_inner_is_parameter_rescaling() {
     }
 }
 
-/// Cubic outer × quadratic inner = degree-6 polynomial in t.
 #[test]
 fn cubic_outer_quadratic_inner_yields_degree_6() {
     // outer(s) = 1 + s + s² + s³ on s ∈ [0, 1].
@@ -131,16 +123,15 @@ fn cubic_outer_quadratic_inner_yields_degree_6() {
 
 #[test]
 fn rejects_mismatched_inner_outer_endpoints() {
-    // Outer on s ∈ [0, 1]; inner maps t ∈ [0, 1] → s ∈ [0, 0.5] (deliberate mismatch).
     let outer = BezierPiece::<f64> {
         u_start: 0.0,
-        u_end: 1.0, // <-- mismatch: outer expects s ∈ [0, 1]
+        u_end: 1.0,
         coeffs: vec![0.0, 1.0, 0.0, 1.0],
     };
     let inner = BezierPiece::<f64> {
         u_start: 0.0,
         u_end: 1.0,
-        coeffs: vec![0.0, 0.5], // inner(t) = 0.5·t maps to [0, 0.5], NOT [0, 1]
+        coeffs: vec![0.0, 0.5],
     };
 
     let result = compose_vector_piece::<1>(&[&outer], &inner);

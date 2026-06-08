@@ -1,7 +1,6 @@
 #![allow(clippy::float_cmp)]
 use compat::modal::{ModalState, Plane};
 
-/// Default construction matches power-on state.
 #[test]
 fn initial_state() {
     let s = ModalState::new();
@@ -16,7 +15,6 @@ fn initial_state() {
     assert!(s.prev_tangent.is_none());
 }
 
-/// G90 mode: explicit XYZ values are taken as absolute coordinates.
 #[test]
 fn resolve_position_absolute() {
     let mut s = ModalState::new();
@@ -27,7 +25,6 @@ fn resolve_position_absolute() {
     assert_eq!(end, [5.0, 15.0, 25.0]);
 }
 
-/// G91 mode: values are added to the current position.
 #[test]
 fn resolve_position_relative() {
     let mut s = ModalState::new();
@@ -40,20 +37,17 @@ fn resolve_position_relative() {
     assert!((end[2] - 30.5).abs() < 1e-12);
 }
 
-/// Absent parameters inherit from the current position in both G90 and G91.
 #[test]
 fn resolve_position_modal_inherit() {
     let mut s = ModalState::new();
     s.position = [3.0, 7.0, 1.5];
 
-    // G90: absent axes stay at current absolute position.
     s.absolute_xyz = true;
     let end_abs = s.resolve_position(Some(9.0), None, None);
     assert!((end_abs[0] - 9.0).abs() < 1e-12);
     assert!((end_abs[1] - 7.0).abs() < 1e-12);
     assert!((end_abs[2] - 1.5).abs() < 1e-12);
 
-    // G91: absent axes contribute 0 delta → same as current position.
     s.absolute_xyz = false;
     let end_rel = s.resolve_position(None, Some(2.0), None);
     assert!((end_rel[0] - 3.0).abs() < 1e-12);
@@ -61,7 +55,6 @@ fn resolve_position_modal_inherit() {
     assert!((end_rel[2] - 1.5).abs() < 1e-12);
 }
 
-/// M82 (absolute E): the parameter is taken as-is.
 #[test]
 fn resolve_e_absolute() {
     let mut s = ModalState::new();
@@ -72,7 +65,6 @@ fn resolve_e_absolute() {
     assert_eq!(result, Some(12.0));
 }
 
-/// M83 (relative E): the parameter is added to the current `input_e` accumulator.
 #[test]
 fn resolve_e_relative() {
     let mut s = ModalState::new();
@@ -83,7 +75,6 @@ fn resolve_e_relative() {
     assert_eq!(result, Some(8.0));
 }
 
-/// A missing E word resolves to None regardless of mode.
 #[test]
 fn resolve_e_absent() {
     let mut s = ModalState::new();
@@ -96,7 +87,6 @@ fn resolve_e_absent() {
     assert_eq!(s.resolve_input_e(None), None);
 }
 
-/// Endpoint displaced in XY from current position → `has_xy_motion` returns true.
 #[test]
 fn has_xy_motion_true() {
     let mut s = ModalState::new();
@@ -106,15 +96,11 @@ fn has_xy_motion_true() {
     assert!(s.has_xy_motion(&[1.0, 2.01, 3.0]));
 }
 
-/// Endpoint only differs in Z (or is identical) → `has_xy_motion` returns false.
 #[test]
 fn has_xy_motion_false() {
     let mut s = ModalState::new();
     s.position = [1.0, 2.0, 3.0];
 
-    // Same XY, different Z.
     assert!(!s.has_xy_motion(&[1.0, 2.0, 10.0]));
-
-    // Exactly the same point.
     assert!(!s.has_xy_motion(&[1.0, 2.0, 3.0]));
 }

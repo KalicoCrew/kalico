@@ -13,7 +13,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
-# Handle worktrees: resolve the common git dir to find the main repo.
 GIT_DIR="$(cd "$REPO_ROOT" && git rev-parse --git-common-dir 2>/dev/null || echo "$REPO_ROOT/.git")"
 MAIN_REPO="$(cd "$GIT_DIR/.." 2>/dev/null && pwd || echo "$REPO_ROOT")"
 
@@ -85,10 +84,6 @@ if [[ -n "$BRANCH" ]]; then
         -f "$BUILD_CTX/tools/kalico-sim/Dockerfile" \
         "$BUILD_CTX"
 else
-    # For HEAD: use the repo root directly as build context.
-    # The .dockerignore at the repo root keeps the context clean.
-    # Docker's layer cache works against file content, so unchanged
-    # layers are reused across successive builds on the same tree.
     echo "Building Docker image '$IMAGE_TAG' from repo root ..."
     # shellcheck disable=SC2086
     docker build \

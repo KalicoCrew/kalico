@@ -1,24 +1,13 @@
-# Host self-observability for the structured-logging pipeline (spec §12).
-#
-# Because "the store is down" is exactly the case that cannot self-report, the
-# host emits a periodic heartbeat record (queryable to confirm end-to-end
-# health) and checks that the shipper (Vector) is keeping up (checkpoint lag
-# bounded). A silent pipeline stall is itself a reportable fault — surfaced
-# loudly via a text-log warning plus a queryable observability event.
-#
-# Loaded on-by-default (printer.py extras list); no user config required.
 import logging
 
 from .. import structured_log
 
-HEARTBEAT_INTERVAL = 30.0  # seconds between heartbeats (tunable)
-LAG_CHECK_INTERVAL = 60.0  # seconds between lag checks
-LAG_THRESHOLD_BYTES = 8 * 1024 * 1024  # bytes-behind-EOF before "stale"
+HEARTBEAT_INTERVAL = 30.0
+LAG_CHECK_INTERVAL = 60.0
+LAG_THRESHOLD_BYTES = 8 * 1024 * 1024
 
 
 def emit_heartbeat():
-    # One structured heartbeat record. Querying for it confirms the whole
-    # path (emit -> jsonl -> Vector -> VL) is live.
     structured_log.event(
         "observability",
         "heartbeat",
@@ -28,9 +17,6 @@ def emit_heartbeat():
 
 
 def check_lag(bytes_behind, threshold=LAG_THRESHOLD_BYTES):
-    # Pure predicate: True == stale (lag strictly exceeds threshold). Kept
-    # side-effect free so it is unit-testable; the component wraps it with
-    # logging.
     return bytes_behind > threshold
 
 
@@ -54,14 +40,6 @@ class LogObservability:
         return eventtime + HEARTBEAT_INTERVAL
 
     def _vector_bytes_behind(self):
-        # Best-effort: how far the shipper is behind the events files. Returns
-        # the byte gap, or None if checkpoint state is unavailable (Vector not
-        # installed / not running) — None is treated as "unknown", not stale.
-        #
-        # The concrete Vector-checkpoint diff is wired against the deployed
-        # Vector data_dir layout on the printer (a Trident-only follow-up in
-        # the Stage 3 plan). Until then this returns None so the heartbeat is
-        # the active liveness signal and no false "stale" is raised.
         return None
 
     def _lag_timer(self, eventtime):

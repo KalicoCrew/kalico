@@ -11,15 +11,14 @@ use crate::config::{PlannerConfig, PlannerLimits};
 use crate::pump::AxisKey;
 use trajectory::plan_velocity::{PlanShaper, SafetyMode};
 use trajectory::streaming::{EmitContext, ReplanContext, ReplanReport, ShaperState};
-use trajectory::{AxisShaper, EHalo, RequiredShaper, ShapedSegment, ShaperConfig};
+use trajectory::{AxisShaper, EHalo, ShapedSegment, ShaperConfig};
 
 const T_IDLE: Duration = Duration::from_secs(3600);
 
 /// Must equal `anchor::DEFAULT_LEAD_SECS`. Keep in sync with anchor.rs.
 const LEAD: f64 = 0.25;
 
-/// Safety margin for the decel-commit deadline: covers shaping + dispatch + pump + wire latency.
-const SAFETY_MARGIN: f64 = 0.050;
+const SAFETY_MARGIN: f64 = 0.2;
 
 const REPLAN_WARN_BUDGET_US: u64 = ((LEAD - SAFETY_MARGIN) * 1e6) as u64;
 
@@ -284,8 +283,6 @@ impl Drop for PlannerHandle {
     }
 }
 
-/// Below this magnitude the `actual − nominal` delta is indistinguishable from
-/// floating-point noise (well below the MCU tick rate ~10 µs).
 const RECTIFICATION_TOLERANCE_S: f64 = 1e-6;
 
 const RECTIFICATION_CAS_MAX_ATTEMPTS: usize = 100;
@@ -499,7 +496,6 @@ fn run_loop(
                 let move_dist = m.distance_mm;
                 let move_feed = m.segment.feedrate_mm_s;
 
-                // Commit held-back tail before inserting an idle rest-hold when clock outran plan.
                 let esc = sync_instant.map_or(0.0, |t| t.elapsed().as_secs_f64());
                 if esc > state.t_appended + 1e-6 {
                     if state.t_dispatched < state.t_appended - 1e-12 {
@@ -617,7 +613,6 @@ fn run_loop(
             }
 
             PlannerMsg::Flush { notify } => {
-                // Commit held-back decel-to-zero; idempotent when already committed.
                 if state.t_dispatched < state.t_appended - 1e-12 {
                     run_commit_and_dispatch(
                         &mut state,
@@ -775,31 +770,11 @@ fn shaper_config_to_emit_kernels(
     cfg: &ShaperConfig,
 ) -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
     [
-        Some(required_to_kernel(cfg.x)),
-        Some(required_to_kernel(cfg.y)),
+        cfg.x.to_kernel(),
+        cfg.y.to_kernel(),
         cfg.z.to_kernel(),
         None,
     ]
-}
-
-fn required_to_kernel(req: RequiredShaper) -> PiecewisePolynomialKernel<f64> {
-    req.to_kernel()
-}
-
-fn shaper_config_to_plan_shapers(cfg: &ShaperConfig) -> [Option<PlanShaper>; 4] {
-    [
-        Some(required_to_plan(cfg.x)),
-        Some(required_to_plan(cfg.y)),
-        Some(axis_to_plan(cfg.z)),
-        None,
-    ]
-}
-
-fn required_to_plan(req: RequiredShaper) -> PlanShaper {
-    match req {
-        RequiredShaper::SmoothZv { frequency_hz } => PlanShaper::SmoothZv { frequency_hz },
-        RequiredShaper::SmoothMzv { frequency_hz } => PlanShaper::SmoothMzv { frequency_hz },
-    }
 }
 
 fn axis_to_plan(ax: AxisShaper) -> PlanShaper {
@@ -810,20 +785,17 @@ fn axis_to_plan(ax: AxisShaper) -> PlanShaper {
     }
 }
 
-fn shaper_config_to_axis_shapers(cfg: &ShaperConfig) -> [Option<AxisShaper>; 4] {
+fn shaper_config_to_plan_shapers(cfg: &ShaperConfig) -> [Option<PlanShaper>; 4] {
     [
-        Some(required_to_axis(cfg.x)),
-        Some(required_to_axis(cfg.y)),
-        Some(cfg.z),
+        Some(axis_to_plan(cfg.x)),
+        Some(axis_to_plan(cfg.y)),
+        Some(axis_to_plan(cfg.z)),
         None,
     ]
 }
 
-fn required_to_axis(req: RequiredShaper) -> AxisShaper {
-    match req {
-        RequiredShaper::SmoothZv { frequency_hz } => AxisShaper::SmoothZv { frequency_hz },
-        RequiredShaper::SmoothMzv { frequency_hz } => AxisShaper::SmoothMzv { frequency_hz },
-    }
+fn shaper_config_to_axis_shapers(cfg: &ShaperConfig) -> [Option<AxisShaper>; 4] {
+    [Some(cfg.x), Some(cfg.y), Some(cfg.z), None]
 }
 
 #[cfg(test)]

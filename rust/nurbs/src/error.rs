@@ -1,6 +1,3 @@
-//! Per-module error types with From-conversions to top-level `NurbsError`.
-//! See spec §Substrate / Error taxonomy.
-
 use crate::Float;
 use core::fmt;
 

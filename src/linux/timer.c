@@ -115,9 +115,6 @@ timer_read_time(void)
     return t;
 }
 
-// Sim-only: return the current time as u64, no wrap. Used by the kalico
-// runtime's widen-state seeding so the engine's `now` agrees with Klipper's
-// widened MCU clock from the very first tick.
 uint64_t
 timer_read_time_u64(void)
 {
@@ -164,9 +161,6 @@ timer_dispatch(void)
         if (unlikely(!repeat_count)) {
             // Check if there are too many repeat timers
             if (diff < (int32_t)(-timer_from_us(100000))) {
-                // Diagnostic: write to a file so it survives even when
-                // journald stderr is suppressed. Include the dispatch
-                // history ring so we can see which timer fed the bad next.
                 uint32_t dbg_now_lo = timer_read_time();
                 uint64_t dbg_now_hi = timer_read_time_u64();
                 uint32_t dh_idx;

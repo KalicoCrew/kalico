@@ -1,8 +1,3 @@
-"""Contract test for chip_socket_server: clients connect via Unix socket,
-send arbitrary bytes, the registered handler returns its reply bytes
-back. Wire layout is fully driven by the chip emulator — the server is
-just a synchronous request/response framer over the socket."""
-
 import os
 import socket
 import time
@@ -22,7 +17,7 @@ def test_echo_handler_round_trips():
         os.unlink(sock_path)
 
     def echo_handler(req: bytes) -> bytes:
-        return req[::-1]  # reverse, so we can tell handler ran
+        return req[::-1]
 
     server = ChipSocketServer(sock_path, echo_handler, chunk=4)
     server.start()
@@ -44,8 +39,6 @@ def test_echo_handler_round_trips():
 
 
 def test_framed_dispatches_by_cs_byte():
-    """Framed mode: server reads [cs][len][payload], hands (cs, payload)
-    to the handler, frames the reply as [len][reply]."""
     sock_path = "/tmp/test_chip_socket_framed_dispatch"
     if os.path.exists(sock_path):
         os.unlink(sock_path)
@@ -54,7 +47,6 @@ def test_framed_dispatches_by_cs_byte():
 
     def handler(cs: int, payload: bytes) -> bytes:
         seen.append((cs, payload))
-        # Echo with cs in the first byte so the test can verify dispatch.
         return bytes([cs]) + payload[1:]
 
     server = ChipSocketServer(sock_path, handler, framed=True)
@@ -88,13 +80,12 @@ def test_framed_dispatches_by_cs_byte():
 
 
 def test_framed_partial_read_recovery():
-    """Frame split across multiple sends: server must reassemble."""
     sock_path = "/tmp/test_chip_socket_framed_partial"
     if os.path.exists(sock_path):
         os.unlink(sock_path)
 
     def handler(cs: int, payload: bytes) -> bytes:
-        return payload  # echo
+        return payload
 
     server = ChipSocketServer(sock_path, handler, framed=True)
     server.start()
@@ -105,7 +96,6 @@ def test_framed_partial_read_recovery():
             time.sleep(0.01)
         client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         client.connect(sock_path)
-        # Send the frame in three chunks with small delays.
         client.sendall(bytes([7]))
         time.sleep(0.02)
         client.sendall(bytes([3, 0xAA]))
@@ -123,8 +113,6 @@ def test_framed_partial_read_recovery():
 
 
 def test_handler_with_empty_reply_does_not_send():
-    """For TMC2209 writes (8-byte request, no reply), handler returns b''.
-    Server must not send anything in that case."""
     sock_path = "/tmp/test_chip_socket_no_reply"
     if os.path.exists(sock_path):
         os.unlink(sock_path)

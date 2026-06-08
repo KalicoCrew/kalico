@@ -1,7 +1,6 @@
 use runtime::segment::KinematicTag;
 use std::collections::{HashMap, HashSet};
 
-// KINEMATICS_COREXY must equal KinematicTag::CoreXyAndE's wire discriminant; assertion below pins this.
 pub const KINEMATICS_COREXY: u8 = KinematicTag::CoreXyAndE as u8;
 
 const _: () = assert!(

@@ -24,7 +24,6 @@ fn parse_curve(v: &Value) -> nurbs::ScalarNurbs<f64> {
         .iter()
         .map(|x| x.as_f64().unwrap())
         .collect();
-    // Rational (weighted) curves are no longer supported; all corpus entries are non-rational.
     assert!(
         v["weights"].is_null(),
         "algebra_oracle: unexpected weighted curve in corpus"

@@ -68,7 +68,6 @@ impl McuState {
     }
 
     pub fn pop_next(&mut self) -> Option<PassthroughEntry> {
-        // Check whether any queue has a non-background ready entry.
         let has_non_bg = self
             .queues
             .values()

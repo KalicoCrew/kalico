@@ -1,12 +1,5 @@
 use crate::monomial::bernstein_to_monomial_with_duration;
 
-/// Borrow-free logical descriptor for a ring region within a shared
-/// `[PieceEntry]` backing store.
-///
-/// Avoids splitting a single `UnsafeCell<[PieceEntry; N]>` into N disjoint
-/// `&mut` borrows without unsafe. Every operation takes the backing store by
-/// explicit `&mut [PieceEntry]` parameter instead.
-///
 /// ## Cursor invariants (ISR/host safety boundary)
 ///
 /// - `head` — monotonic valid frontier (wrapping u32). Advanced **only** by
@@ -70,12 +63,6 @@ impl RingDescriptor {
         self.len() == self.ring_depth
     }
 
-    /// Write one entry to an absolute physical slot. Does **not** advance
-    /// `head`; the slot becomes visible only after a subsequent
-    /// [`commit_head`][Self::commit_head] call.
-    ///
-    /// Out-of-range writes (including `ring_depth == 0`) are silent no-ops —
-    /// the caller must bound writes via `commit_head` flow control.
     #[inline]
     pub fn write_slot(&self, storage: &mut [PieceEntry], physical_slot: usize, entry: PieceEntry) {
         if self.ring_depth == 0 || physical_slot >= self.ring_depth {
@@ -95,8 +82,6 @@ impl RingDescriptor {
         }
     }
 
-    /// Advance the valid frontier to `new_head`, monotonically within ring
-    /// capacity. Rejects behind-retired values (huge wrapping distance).
     #[inline]
     pub fn commit_head(&mut self, new_head: u32) {
         let cur = self.head.wrapping_sub(self.retired);
@@ -106,9 +91,6 @@ impl RingDescriptor {
         }
     }
 
-    /// Append `entry` at the next free slot and immediately commit the new head.
-    ///
-    /// Returns `Err(())` if the ring is full or unconfigured.
     #[inline]
     pub fn push(&mut self, storage: &mut [PieceEntry], entry: PieceEntry) -> Result<(), ()> {
         if self.is_full() || self.ring_depth == 0 {
@@ -120,7 +102,6 @@ impl RingDescriptor {
         Ok(())
     }
 
-    /// Physical storage index of the front (consumer) entry, or `None` if empty.
     #[inline]
     pub fn front_slot(&self) -> Option<usize> {
         if self.is_empty() {
@@ -129,9 +110,6 @@ impl RingDescriptor {
         Some(self.ring_offset + self.tail)
     }
 
-    /// Peek the front entry without removing it.
-    ///
-    /// Returns `None` if the ring is empty. Reads from `tail` — no division on the hot path.
     #[inline]
     pub fn peek<'s>(&self, storage: &'s [PieceEntry]) -> Option<&'s PieceEntry> {
         if self.is_empty() {
@@ -140,10 +118,6 @@ impl RingDescriptor {
         storage.get(self.ring_offset + self.tail)
     }
 
-    /// Advance the retire cursor by one. No-op when empty or unconfigured.
-    ///
-    /// Both cursors advance together so the invariant `tail == retired %
-    /// ring_depth` is preserved without a division.
     #[inline]
     pub fn advance_counter(&mut self) {
         if self.ring_depth == 0 || self.is_empty() {
@@ -156,10 +130,7 @@ impl RingDescriptor {
         }
     }
 
-    /// Discard all visible entries by advancing the retire cursor to `head`,
-    /// so the consumer will not re-arm an aborted timeline after `force_idle`.
     /// Touches only consumer-owned cursors (`retired`, `tail`) — never `head`.
-    /// No-op when unconfigured. Preserves `tail == retired % ring_depth`.
     #[inline]
     pub fn drain(&mut self) {
         if self.ring_depth == 0 {
@@ -175,20 +146,10 @@ impl RingDescriptor {
     }
 }
 
-/// A fixed-capacity SPSC ring buffer for [`PieceEntry`] values.
-///
-/// Ownership convention:
-/// - The **producer** (foreground code) calls [`push`][PieceRing::push].
-/// - The **consumer** (40 kHz ISR) calls [`peek`][PieceRing::peek] and
-///   [`pop`][PieceRing::pop].
-///
 /// No lock-free synchronisation is performed — the caller is responsible for
 /// ensuring that the producer and consumer do not run concurrently (single
 /// core MCU with preemption disabled around push, or ISR-only consumer that
 /// only reads after a fence).
-///
-/// Storage is provided by the caller so the struct is suitable for `no_std`
-/// environments with no heap allocator.
 ///
 /// # Example
 ///
@@ -292,9 +253,6 @@ impl<'a> PieceRing<'a> {
     }
 }
 
-/// A single cubic Bézier piece in Bernstein form, ready to be loaded into the
-/// MCU ISR ring buffer.
-///
 /// Layout contract (C ABI, matches the corresponding C struct):
 ///
 /// ```text
@@ -320,7 +278,6 @@ impl<'a> PieceRing<'a> {
 ///     _reserved: 0,
 /// };
 /// let (pos, vel) = entry.to_monomial();
-/// // pos[1] ≈ 100.0 mm/s (linear ramp rescaled to seconds domain)
 /// assert!((pos[1] - 100.0).abs() < 1e-3);
 /// ```
 #[derive(Clone, Copy, Debug)]
@@ -348,8 +305,6 @@ impl PieceEntry {
         (m.coeffs, m.vel_coeffs)
     }
 
-    /// Compute the MCU clock cycle at which this piece ends.
-    ///
     /// `end = start_time + ⌊duration × clock_freq⌋`
     ///
     /// The cast truncates toward zero — the ISR advances to the next piece when
@@ -362,9 +317,6 @@ impl PieceEntry {
         self.start_time + cycles
     }
 
-    /// Serialize to the 32-byte little-endian wire form. Field order matches
-    /// the `#[repr(C, align(8))]` layout.
-    ///
     /// # Example
     ///
     /// ```rust

@@ -12,10 +12,6 @@
     unsafe_op_in_unsafe_fn
 )]
 
-// A bare-metal motion node must have at least one dispatch module active.
-// Host builds (feature = "host") and test builds are valid without a dispatch
-// module (e.g. the EtherCAT servo node links runtime with --no-default-features
-// --features host and defines its own dispatch logic externally).
 #[cfg(all(
     not(feature = "host"),
     not(test),

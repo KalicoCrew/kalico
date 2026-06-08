@@ -10,7 +10,7 @@ from scripts.fitter_prototype.parser import Arc, Marker, Move, Token
 
 @dataclass
 class Polyline:
-    points: np.ndarray  # shape (n, 2)
+    points: np.ndarray
     line_range: tuple[int, int]
 
 
@@ -54,8 +54,6 @@ def reduce_tokens(tokens: list[Token]) -> list[GeometricSegment]:
         if isinstance(tok, Move):
             new_x = tok.x if tok.x is not None else cur_x
             new_y = tok.y if tok.y is not None else cur_y
-            # If starting a new polyline after an arc, prepend the arc's
-            # endpoint.
             if not accum and last_was_arc:
                 accum.append((cur_x, cur_y))
                 line_lo = tok.line_no
