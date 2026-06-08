@@ -764,6 +764,7 @@ class MotionToolhead(ToolHead):
                 for sname, s in on_this_mcu:
                     inv = 1 if getattr(s, "_invert_dir", False) else 0
                     bind_list.append((i, sname, s.get_oid(), inv))
+                    self.bridge.register_stepper_slot(mcu_handle, s.get_oid(), i)
             # One (bus_id, cs_pin_id, slot_idx) per physical phase-stepped motor;
             # AWD partners share slot_idx but get their own entry so each
             # TMC5160's XDIRECT register is written. Empty = no phase stepping.

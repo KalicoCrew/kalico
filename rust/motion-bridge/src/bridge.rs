@@ -446,6 +446,7 @@ pub struct PyMotionBridge {
     planner_config: Mutex<PlannerConfig>,
     commanded_pos: Mutex<[f64; 3]>,
     mcu_axis_configs: Mutex<Vec<McuAxisConfig>>,
+    stepper_oid_map: std::sync::Mutex<std::collections::HashMap<(u32, u8), u8>>,
     dispatched_segments: Arc<AtomicU64>,
     fallback_clock_conversions: Arc<AtomicU64>,
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
@@ -672,6 +673,7 @@ impl PyMotionBridge {
             planner_config: Mutex::new(PlannerConfig::default()),
             commanded_pos: Mutex::new([0.0; 3]),
             mcu_axis_configs: Mutex::new(Vec::new()),
+            stepper_oid_map: std::sync::Mutex::new(std::collections::HashMap::new()),
             dispatched_segments: Arc::new(AtomicU64::new(0)),
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
@@ -688,6 +690,15 @@ impl PyMotionBridge {
 
     fn version(&self) -> &'static str {
         env!("CARGO_PKG_VERSION")
+    }
+
+    #[pyo3(signature = (mcu, oid, slot))]
+    fn register_stepper_slot(&self, mcu: u32, oid: u8, slot: u8) -> PyResult<()> {
+        self.stepper_oid_map
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert((mcu, oid), slot);
+        Ok(())
     }
 
     fn init_logging(&self, events_dir: String) -> PyResult<()> {
@@ -3484,4 +3495,37 @@ mod ethercat_endpoint_tests {
 }
 
 #[cfg(test)]
+impl PyMotionBridge {
+    pub(crate) fn new_for_test() -> Self {
+        let clock: Arc<dyn kalico_host_rt::clock::Clock + Send + Sync> = Arc::new(RealClock);
+        Self {
+            router: Arc::new(Mutex::new(PassthroughRouter::with_clock(clock))),
+            parser: Arc::new(Mutex::new(None)),
+            mcus: Arc::new(Mutex::new(HashMap::new())),
+            events: Arc::new(Mutex::new(VecDeque::new())),
+            handlers: Mutex::new(HashMap::new()),
+            planner: OnceLock::new(),
+            planner_config: Mutex::new(PlannerConfig::default()),
+            commanded_pos: Mutex::new([0.0; 3]),
+            mcu_axis_configs: Mutex::new(Vec::new()),
+            stepper_oid_map: std::sync::Mutex::new(std::collections::HashMap::new()),
+            dispatched_segments: Arc::new(AtomicU64::new(0)),
+            fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
+            clock_freqs: Arc::new(Mutex::new(HashMap::new())),
+            homing: Arc::new(HomingState::new()),
+            retained_homing_curve: Arc::new(Mutex::new(None)),
+            events_dir: Mutex::new(None),
+            trip_dispatch_handles: Mutex::new(HashMap::new()),
+            trip_dispatch_next_id: AtomicU64::new(0),
+            pump_tx: Mutex::new(None),
+            pump_thread: Mutex::new(None),
+            drain: std::sync::Arc::new(crate::drain::DrainSync::new()),
+        }
+    }
+}
+
+#[cfg(test)]
 mod retained_homing_curve_tests;
+
+#[cfg(test)]
+mod stepper_oid_map_tests;
