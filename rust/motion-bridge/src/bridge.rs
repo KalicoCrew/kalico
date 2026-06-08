@@ -104,8 +104,10 @@ impl RetainedMotorCurve {
             t_now,
             t_end,
         )]);
-        self.pieces
-            .insert((mcu, slot), vec![RetainedMotorPiece { curve, t_abs_start: t_now, t_abs_end: t_end }]);
+        self.pieces.insert(
+            (mcu, slot),
+            vec![RetainedMotorPiece { curve, t_abs_start: t_now, t_abs_end: t_end }],
+        );
     }
 
 }
@@ -786,12 +788,6 @@ impl PyMotionBridge {
         cfgs.iter().find(|c| c.mcu_id == mcu).map(|c| c.kinematics)
     }
 
-    /// Install degenerate constant retained curves for every configured
-    /// `(mcu, slot)` so that `eval_motor_mm_now` returns the absolute motor-frame
-    /// mm for the grounded toolhead position `[x, y, z]`. Called by
-    /// `set_position` after `RetainedMotorCurve::clear`.
-    ///
-    /// Pure inherent method (no `PyResult`) so tests can call it directly.
     pub(crate) fn ground_constants_inner(&self, x: f64, y: f64, z: f64, t_now: f64) {
         let configs = self.mcu_axis_configs.lock().unwrap_or_else(|p| p.into_inner());
         let mut retained = self.retained_motor_curve.lock().unwrap_or_else(|p| p.into_inner());
@@ -800,9 +796,7 @@ impl PyMotionBridge {
             let tag = cfg.kinematics;
             let motor = crate::kinematics::forward(tag, [x, y, z]);
             for &slot_usize in &cfg.axes {
-                if slot_usize >= 4 {
-                    continue;
-                }
+                assert!(slot_usize < 4, "ground_constants_inner: slot index {slot_usize} out of range");
                 let slot = slot_usize as u8;
                 let value_mm = motor[slot_usize];
                 retained.set_constant(cfg.mcu_id, slot, value_mm, t_now);

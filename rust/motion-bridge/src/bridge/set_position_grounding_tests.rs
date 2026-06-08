@@ -71,7 +71,6 @@ fn grounded_curve_evals_to_constant_at_any_time() {
     let b = make_corexy_bridge();
     b.ground_constants_inner(10.0, 4.0, 3.0, 1000.0);
 
-    let slot_a_oid = 10u8;
     let mcu = 1u32;
     let slot = 0u8;
 
@@ -87,7 +86,6 @@ fn grounded_curve_evals_to_constant_at_any_time() {
             (v - 14.0).abs() < 1e-9,
             "slot A at t={t}: expected 14.0, got {v}"
         );
-        let _ = slot_a_oid;
     }
 }
 
