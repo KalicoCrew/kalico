@@ -425,19 +425,18 @@ class MotionToolhead(ToolHead):
     def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
         if self.kin is None:
             return False
-        mcu_handle = (
-            self.kin._axis_rails()[0].get_steppers()[0].get_mcu()._bridge_handle
-        )
-        moved = self.bridge.toolhead_delta_to_motor_slots(
-            mcu_handle, dx, dy, dz
-        )
-        moved_slots = {int(slot) for slot, _ in moved}
-        if not moved_slots:
-            return False
+        steppers = self.kin.get_steppers()
+        moved_slots = set()
+        if steppers:
+            mcu_handle = steppers[0].get_mcu()._bridge_handle
+            moved = self.bridge.toolhead_delta_to_motor_slots(
+                mcu_handle, dx, dy, dz
+            )
+            moved_slots = {int(slot) for slot, _ in moved}
         if print_time is None:
             print_time = self.get_last_move_time()
         fired = False
-        for s in self.kin.get_steppers():
+        for s in steppers:
             if not s._active_callbacks:
                 continue
             if _stepper_motor_slot(s) not in moved_slots:

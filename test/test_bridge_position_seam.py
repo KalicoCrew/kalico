@@ -48,9 +48,9 @@ class _FakeNativeBridge:
 _fake_native_mod.MotionBridge = _FakeNativeBridge
 sys.modules.setdefault("klippy.motion_bridge_native", _fake_native_mod)
 
-from klippy.motion_bridge import MotionBridgeWrapper  # noqa: E402
-from klippy import stepper as stepper_mod  # noqa: E402
 from klippy import motion_toolhead as mth  # noqa: E402
+from klippy import stepper as stepper_mod  # noqa: E402
+from klippy.motion_bridge import MotionBridgeWrapper  # noqa: E402
 
 
 def _wrapper_around(native):
