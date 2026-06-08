@@ -372,6 +372,9 @@ class MotionBridgeWrapper:
         if dispatch is not None:
             dispatch._fire_past_end_time()
 
+    def register_stepper_slot(self, mcu_handle, oid, slot):
+        return self._bridge.register_stepper_slot(mcu_handle, oid, slot)
+
     def eval_motor_position_now(self, mcu_handle, oid):
         return self._bridge.eval_motor_position_now(mcu_handle, oid)
 
