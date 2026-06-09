@@ -58,11 +58,10 @@ pins registry (`ppins.parse_pin`). Two cases on the resolved chip:
 - **Bridge MCU** → today's GPIO path, unchanged: build a `config_endstop`
   entry directly.
 - **Virtual endstop provider** → the chip object must implement
-  `setup_bridge_endstop(pin_params, allocator)`, returning the same entry
-  shape (`endstop_id`, `mcu`, `oid`, `state_cmd`, `query_cmd`, `invert`). The
-  provider validates its own pin-name string (e.g. probe accepts only
-  `z_virtual_endstop`) and rejects `^`/`!` modifiers on the virtual pin —
-  those belong on the provider's own pin option.
+  `setup_bridge_endstop(pin_params, axis)`, returning its `BridgeEndstop`.
+  The provider validates its own pin-name string (e.g. probe accepts only
+  `z_virtual_endstop` on the Z axis) and rejects `^`/`!` modifiers on the
+  virtual pin — those belong on the provider's own pin option.
 
 A chip that is neither a bridge MCU nor a provider, or a provider chip whose
 section is missing, is a hard config error. Ordering is safe: all config
@@ -75,7 +74,7 @@ same as GPIO axes — `QUERY_ENDSTOPS` on the Neptune shows `x`, `y`, `z`
 
 Provider interface, duck-typed like mainline's `setup_pin`:
 
-- `setup_bridge_endstop(pin_params)` — required. Validates the request and
+- `setup_bridge_endstop(pin_params, axis)` — required. Validates the request and
   returns the provider's already-built entry; it does not create it. The
   entry must exist independently of homing, because a provider may be
   configured without backing any axis (e.g. `[probe]` alongside a GPIO Z
@@ -168,7 +167,7 @@ unused-option check rejects legacy options (`activate_gcode`,
 
 - `QUERY_PROBE` — raw pin read, reports `probe: open` / `probe: TRIGGERED`,
   stores `last_query`.
-- `PROBE` — multi-sample descent loop, reports `Result is z=…`, stores
+- `PROBE` — multi-sample descent loop, reports `probe at X,Y is z=…`, stores
   `last_z_result`.
 - `PROBE_ACCURACY` — N samples at the current position (`SAMPLES` default
   10, matching mainline), reports max/min/range/average/median/stddev.
