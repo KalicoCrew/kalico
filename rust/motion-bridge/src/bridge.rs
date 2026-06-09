@@ -472,6 +472,8 @@ pub struct PyMotionBridge {
         Arc<Mutex<HashMap<crate::pump::AxisKey, Vec<runtime::piece_ring::PieceEntry>>>>,
     homing_run: Arc<Mutex<Option<HomingRun>>>,
     homing_result: Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3]), String>>>>,
+    homing_settled_at_ns: Arc<std::sync::atomic::AtomicU64>,
+    latched_drive_fault: Arc<Mutex<HashMap<u32, u16>>>,
     // Latched once `shutdown()` has run a full teardown. Subsequent calls (the
     // Drop backstop, a second `klippy:disconnect`, the failed-connect path) see
     // this and no-op, so double-teardown is provably safe and observable.
@@ -697,6 +699,8 @@ impl PyMotionBridge {
             homing_trajectory: Arc::new(Mutex::new(HashMap::new())),
             homing_run: Arc::new(Mutex::new(None)),
             homing_result: Mutex::new(None),
+            homing_settled_at_ns: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            latched_drive_fault: Arc::new(Mutex::new(HashMap::new())),
             shut_down: AtomicBool::new(false),
         }
     }
@@ -938,6 +942,14 @@ impl PyMotionBridge {
             )));
         }
         Ok(())
+    }
+
+    fn take_drive_fault(&self, mcu_handle: u32) -> PyResult<Option<u16>> {
+        Ok(self
+            .latched_drive_fault
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&mcu_handle))
     }
 
     fn release_mcu(&self, handle: u32) -> PyResult<()> {
@@ -2413,6 +2425,9 @@ impl PyMotionBridge {
                 let homing_run_hb = Arc::clone(&self.homing_run);
                 let active_cohort_hb = Arc::clone(&self.active_drip_cohort);
                 let pump_tx_fault = pump_tx_init.clone();
+                let homing_settled_hb = Arc::clone(&self.homing_settled_at_ns);
+                let latched_fault_hb = Arc::clone(&self.latched_drive_fault);
+                let mcu_label_hb = mcu_label.clone();
                 conn.attach_heartbeat_callback(Arc::new(move |hb: &kalico_protocol::messages::StatusHeartbeat| {
                     if hb.fault_code != 0 {
                         let run_opt = {
@@ -2432,6 +2447,14 @@ impl PyMotionBridge {
                         };
                         match run_opt {
                             Some(run) => {
+                                homing_settled_hb.store(
+                                    crate::motion_node::monotonic_ns(),
+                                    Ordering::Release,
+                                );
+                                latched_fault_hb
+                                    .lock()
+                                    .unwrap_or_else(|p| p.into_inner())
+                                    .insert(mcu_id, hb.fault_code);
                                 *active_cohort_hb
                                     .lock()
                                     .unwrap_or_else(|p| p.into_inner()) = None;
@@ -2446,8 +2469,28 @@ impl PyMotionBridge {
                                 )));
                             }
                             None => {
+                                let now_ns = crate::motion_node::monotonic_ns();
+                                let settled_at =
+                                    homing_settled_hb.load(Ordering::Acquire);
+                                if crate::homing::post_homing_fault_is_benign(
+                                    now_ns, settled_at,
+                                ) {
+                                    tracing::error!(
+                                        mcu_id,
+                                        mcu_label = %mcu_label_hb,
+                                        fault_code = hb.fault_code,
+                                        "drive fault right after homing trip — \
+                                         latched for G28 to report"
+                                    );
+                                    latched_fault_hb
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .insert(mcu_id, hb.fault_code);
+                                    return;
+                                }
                                 tracing::error!(
                                     mcu_id,
+                                    mcu_label = %mcu_label_hb,
                                     fault_code = hb.fault_code,
                                     "EXIT_ON_FAULT — ethercat drive fault outside homing; \
                                      aborting klippy so systemd restarts it"
@@ -3138,6 +3181,9 @@ impl PyMotionBridge {
             *guard = Some(run);
             return;
         }
+
+        self.homing_settled_at_ns
+            .store(crate::motion_node::monotonic_ns(), Ordering::Release);
 
         {
             let mut cohort_guard = self

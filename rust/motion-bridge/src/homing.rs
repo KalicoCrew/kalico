@@ -220,5 +220,9 @@ pub fn route_drive_fault(fault_mcu: u32, homing_axis_mcu: Option<u32>) -> DriveF
     }
 }
 
+pub fn post_homing_fault_is_benign(now_ns: u64, settled_at_ns: u64) -> bool {
+    settled_at_ns != 0 && now_ns.saturating_sub(settled_at_ns) < 2_000_000_000
+}
+
 #[cfg(test)]
 mod tests;

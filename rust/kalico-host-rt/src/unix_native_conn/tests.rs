@@ -167,8 +167,6 @@ fn heartbeat_event_during_call_invokes_callback() {
     }
 }
 
-/// Streams a fixed heartbeat continuously (no reply path). Returns a stop
-/// flag the caller sets to terminate the writer + drop the socket.
 fn make_heartbeat_frame_full(engine_state: u8, fault_code: u16, retired_counts: &[u32]) -> Vec<u8> {
     let hb = StatusHeartbeat {
         engine_state,
@@ -226,6 +224,8 @@ fn dispatch_frame_passes_fault_code_to_callback() {
     stop.store(true, Ordering::Release);
 }
 
+/// Streams a fixed heartbeat continuously (no reply path). Returns a stop
+/// flag the caller sets to terminate the writer + drop the socket.
 fn spawn_heartbeat_stream(peer: UnixStream, retired: &[u32]) -> Arc<AtomicBool> {
     let hb = make_heartbeat_frame(retired);
     let stop = Arc::new(AtomicBool::new(false));
