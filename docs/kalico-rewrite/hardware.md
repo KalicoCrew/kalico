@@ -16,8 +16,11 @@ EtherCAT attached at the moment — it drives the Neptune over USB serial).
 - Elegoo Neptune 3 Pro bedslinger, ZNP Robin Nano DW v2.2 board
 - MCU: STM32F401RCT6 (84 MHz Cortex-M4F, 256 KB flash, 64 KB SRAM, no CCM),
   8 MHz HSE, MS35775 step/dir drivers (no UART/SPI config)
-- Host: Pi 3 (4 cores, 1 GB) running MainsailOS; klippy talks USART1
-  (PA10/PA9) through the board's onboard CH340 at 250000 baud → `/dev/ttyUSB0`
+- Host: Raspberry Pi 5 Model B Rev 1.1 (4-core Cortex-A76, 4 GB) on Debian 13
+  (trixie); klippy talks USART1 (PA10/PA9) through the board's onboard CH340 at
+  500000 baud → `/dev/ttyUSB0`. The host is fast — when the drip can't keep a move
+  fed, the bottleneck is the F401 MCU foreground (84 MHz, sharing CPU with the
+  sample ISR + status emission + piece ingestion), not the Pi.
 - Flashing (ST-Link V2 over SWD, **NRST wire left disconnected**): app at
   `0x8008000`, stock ZNP 32 KiB bootloader kept (SD-card `ZNP_ROBIN_NANO.bin` is
   the recovery path). The X-min endstop is on **PA13 (= SWDIO)**, and the NRST

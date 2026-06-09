@@ -150,8 +150,9 @@ should skip endstop-object setup; position_endstop/range come from config.
 ## UPDATE (2026-06-09 ~04:52) — 50ms drip experiment REVERTED; bench clean + confirmed
 - Tried 50ms drip pieces to cure lead erosion → REGRESSED (homes stopped completing on the
   bench; spurious non-participant-axis PieceStartInPast). Reverted to 25ms (commit 9e28eb357).
-  Lesson: the slow-host lead-erosion robustness is NOT a quick piece-size tweak; leave it as a
-  documented follow-up (DRIP_BUDGET / pump-poll-latency / faster host are the real levers).
+  Lesson: the lead-erosion robustness is NOT a quick piece-size tweak; leave it as a documented
+  follow-up. Levers are F401-MCU-side (the host is a fast Pi 5): reduce drip-time MCU foreground
+  load, or raise DRIP_BUDGET. NOT "faster host".
 - Also: a run of faulting homes can leave the F401 in a degraded state where even a SPEED=5
   home then shuts down. A board power-cycle (Plug 2 off/on; udev auto-restarts klippy) fully
   resets it. After power-cycle + locate-switch, SPEED=5 home is clean again (set X=-6.0170).
@@ -169,13 +170,18 @@ should skip endstop-object setup; position_endstop/range come from config.
 - CEILING + a ROBUSTNESS caveat (honest): SPEED=40 reliably faults PieceStartInPast (deficit
   39.6ms). And even at SPEED=8 it is NOT 100% — ~7/8 homes clean, but a longer/unlucky one
   faults PieceStartInPast too (drip lead erodes over the move: transit lead drifts ~70ms→29ms
-  as the Pi-3 drip-release loop slips vs real-time; a long move erodes toward the 75ms margin
-  → intermittent late piece). So: homing WORKS and is REPEATABLE (demonstrated: 5 clean homes
-  @5mm/s 11um, 7 clean @8mm/s 5um), but is not yet 100%-robust on this slow host. Root = Pi-3
-  can't perfectly sustain the 40-piece/s drip release. Fixes (follow-up, pick one): raise
-  DRIP_BUDGET (more lead margin, at the cost of a bigger crash-safety bound), tighten the pump
-  cohort-poll latency (<10ms), bigger drip pieces (fewer/s), or a faster host (Pi 4/5).
-  config homing_speed=50 needs this. Not blocking the demonstrated goal.
+  → a long move erodes toward the 75ms margin → intermittent late piece). So: homing WORKS and
+  is REPEATABLE (demonstrated: 5 clean homes @5mm/s 11um, 7 clean @8mm/s 5um), but is not yet
+  100%-robust.
+  *** CORRECTION (host is a Pi 5, not Pi 3 — see below): the bottleneck is the F401 MCU, NOT
+  the host. The Pi 5 keeps up easily; the F401 (84MHz) shares CPU between the sample ISR, the
+  accelerated status emission (my runtime_drain occupancy code, ~40/s), the 1kHz endstop poll,
+  and piece ingestion, and the retire->release->arrive loop slips on the MCU side. ***
+  Fixes (follow-up): reduce F401 foreground load during drip (cheaper/rarer status emission;
+  lighter endstop poll; faster piece ingestion), or raise DRIP_BUDGET (more lead margin, bigger
+  crash bound). "faster host" is NOT a fix — it's already a Pi 5. Why it's speed-dependent
+  (25 ok, 40 not) when the piece RATE is speed-independent (40/s) is still unclear — needs MCU
+  instrumentation. config homing_speed=50 needs this. Not blocking the demonstrated goal.
 - Bench currently: klippy ready, firmware = seed_position build, .so = reorder build, all
   services normal. So the deployed bench has BOTH high-speed fixes.
 
