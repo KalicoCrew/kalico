@@ -6,7 +6,8 @@
 import collections
 import logging
 
-from klippy import stepper
+from klippy import pins, stepper
+from klippy.bridge_endstop import BridgeEndstop, allocate_provider_id
 
 ######################################################################
 # Field helpers
@@ -652,11 +653,10 @@ class TMCCommandHelper:
 ######################################################################
 
 
-# Helper class for "sensorless homing"
+# Stallguard virtual endstop provider for sensorless homing
 class TMCVirtualPinHelper:
     def __init__(self, config, mcu_tmc):
         self.printer = config.get_printer()
-        self.config_section = config
         self.mcu_tmc = mcu_tmc
         self.fields = mcu_tmc.get_fields()
         if self.fields.lookup_register("diag0_stall") is not None:
@@ -672,43 +672,39 @@ class TMCVirtualPinHelper:
         self.mcu_endstop = None
         self.en_pwm = False
         self.pwmthrs = self.coolthrs = self.thigh = 0
-        # Register virtual_endstop pin
         name_parts = config.get_name().split()
         ppins = self.printer.lookup_object("pins")
         ppins.register_chip("%s_%s" % (name_parts[0], name_parts[-1]), self)
 
-    def setup_pin(self, pin_type, pin_params):
-        # Validate pin
-        ppins = self.printer.lookup_object("pins")
-        if pin_type != "endstop" or pin_params["pin"] != "virtual_endstop":
-            raise ppins.error("tmc virtual endstop only useful as endstop")
+    def setup_bridge_endstop(self, pin_params, axis):
+        if pin_params["pin"] != "virtual_endstop":
+            raise pins.error(
+                "tmc drivers only provide the virtual pin 'virtual_endstop',"
+                " not '%s'" % (pin_params["pin"],)
+            )
         if pin_params["invert"] or pin_params["pullup"]:
-            raise ppins.error("Can not pullup/invert tmc virtual pin")
+            raise pins.error("Can not pullup/invert tmc virtual endstop")
         if self.diag_pin is None:
-            raise ppins.error("tmc virtual endstop requires diag pin config")
-        # Setup for sensorless homing
-        self.printer.register_event_handler(
-            "homing:homing_move_begin", self.handle_homing_move_begin
-        )
-        self.printer.register_event_handler(
-            "homing:homing_move_end", self.handle_homing_move_end
-        )
-        self.mcu_endstop = ppins.setup_pin("endstop", self.diag_pin)
-        self.mcu_endstop._is_sensorless_diag = True
-        self.mcu_endstop._sensorless_mcu_tmc = self.mcu_tmc
-        self.mcu_endstop._sensorless_trip_immediately = (
-            self.config_section.getboolean("homing_trip_immediately", False)
-        )
+            raise pins.error("tmc virtual endstop requires diag pin config")
+        if self.mcu_endstop is None:
+            ppins = self.printer.lookup_object("pins")
+            diag_params = ppins.parse_pin(
+                self.diag_pin, can_invert=True, can_pullup=True
+            )
+            if not hasattr(diag_params["chip"], "create_oid"):
+                raise pins.error(
+                    "tmc diag pin '%s' must be a GPIO pin on an MCU"
+                    % (self.diag_pin,)
+                )
+            self.mcu_endstop = BridgeEndstop(
+                diag_params, allocate_provider_id(self.printer)
+            )
         return self.mcu_endstop
 
-    def handle_homing_move_begin(self, hmove):
-        if self.mcu_endstop not in hmove.get_mcu_endstops():
-            return
+    def trip_move_begin(self, entry):
         self.arm()
 
-    def handle_homing_move_end(self, hmove):
-        if self.mcu_endstop not in hmove.get_mcu_endstops():
-            return
+    def trip_move_end(self, entry):
         self.disarm()
 
     def arm(self):
