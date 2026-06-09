@@ -10,12 +10,8 @@ We are working on a complete rewrite of the motion planner and more:
   start time, raise an error instead. this way we notice the issue and have a chance to address it
 
 - Comments are a failure of expression. Instead of writing one, make the code say it:
-  rename, extract, assert, or compute the value. A comment earns its line only if it
-  stops a future editor from breaking something the code can't defend (e.g. a
-  load-bearing sleep). Never restate names/signatures, doc-comment fields, narrate
-  steps, or justify decisions in code — justifications go in commit messages.
-  TODO-style markers are fine. Self-check on every diff: "what mistake does this
-  comment prevent?" — none → delete.
+  rename, extract, assert, or compute the value. If you need a comment it means you need to make the code better. 
+  TODO-style markers are fine. If you notice some useless pre-existing comments in the file you are editing - remove them.
 
 - Unit tests live in a separate file from the tested code.
 
