@@ -75,8 +75,8 @@ same as GPIO axes — `QUERY_ENDSTOPS` on the Neptune shows `x`, `y`, `z`
 Provider interface, duck-typed like mainline's `setup_pin`:
 
 - `setup_bridge_endstop(pin_params, axis)` — required. Validates the request and
-  returns the provider's already-built entry; it does not create it. The
-  entry must exist independently of homing, because a provider may be
+  returns the provider's already-built `BridgeEndstop`; it does not create it.
+  The endstop must exist independently of homing, because a provider may be
   configured without backing any axis (e.g. `[probe]` alongside a GPIO Z
   endstop, probe used only for `PROBE`/`PROBE_ACCURACY`).
 - `get_position_endstop()` — optional trigger-height override. Probe returns

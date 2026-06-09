@@ -105,7 +105,6 @@ struct auto_endstop {
     long wall_steps;
     long pos;
     int toward_sign;
-    int last_step_value;          // for edge detection (GPIO step path)
     int triggered;
 };
 static struct auto_endstop auto_endstops[MAX_AUTO_ENDSTOPS];
@@ -118,10 +117,10 @@ static void iio_init(void) {
     // X→gpio18, Y→gpio7, Z→gpio15. Endstops: X→gpio200, Y→gpio201,
     // Z→gpio202, plus a second Z-linked line gpio203 for probe pins so a
     // config can have both a plain Z endstop and a motion-triggered probe.
-    auto_endstops[0] = (struct auto_endstop){1, 0,18, 0,200, 50, 0, 0, 0, 0};
-    auto_endstops[1] = (struct auto_endstop){1, 0,7,  0,201, 50, 0, 0, 0, 0};
-    auto_endstops[2] = (struct auto_endstop){1, 0,15, 0,202, 50, 0, 0, 0, 0};
-    auto_endstops[3] = (struct auto_endstop){1, 0,15, 0,203, 50, 0, 0, 0, 0};
+    auto_endstops[0] = (struct auto_endstop){1, 0,18, 0,200, 50, 0, 0, 0};
+    auto_endstops[1] = (struct auto_endstop){1, 0,7,  0,201, 50, 0, 0, 0};
+    auto_endstops[2] = (struct auto_endstop){1, 0,15, 0,202, 50, 0, 0, 0};
+    auto_endstops[3] = (struct auto_endstop){1, 0,15, 0,203, 50, 0, 0, 0};
 }
 
 static int alloc_fake_fd(enum sim_slot_kind kind) {
@@ -568,23 +567,6 @@ static void auto_endstop_advance(int chip_id, int offset, long delta) {
     pthread_mutex_unlock(&auto_endstop_mtx);
 }
 
-// Direction-blind fallback for firmware that toggles step pins through
-// the GPIO ioctl path; every rising edge counts as one step toward the
-// wall.
-static void check_auto_endstops(int chip_id, int offset, int new_value) {
-    int rising = 0;
-    pthread_mutex_lock(&auto_endstop_mtx);
-    for (int i = 0; i < MAX_AUTO_ENDSTOPS; i++) {
-        struct auto_endstop *ae = &auto_endstops[i];
-        if (!ae->active) continue;
-        if (ae->step_chip != chip_id || ae->step_line != offset) continue;
-        if (ae->last_step_value == 0 && new_value == 1) rising = 1;
-        ae->last_step_value = new_value;
-    }
-    pthread_mutex_unlock(&auto_endstop_mtx);
-    if (rising) auto_endstop_advance(chip_id, offset, 1);
-}
-
 // Exported entry point for the MCU tick thread to notify the auto-endstop
 // of step pulses without going through the GPIO ioctl path. The tick
 // thread populates the Rust step queues and calls this for each step
@@ -617,8 +599,6 @@ static int gpio_handle_set_values(int line_fd, struct gpiohandle_data *data) {
         active_cs.valid = 0;
     }
     pthread_mutex_unlock(&gpio_state_mtx);
-
-    check_auto_endstops(chip_id, offset, v);
 
     return 0;
 }

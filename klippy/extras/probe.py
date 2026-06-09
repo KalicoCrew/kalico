@@ -131,7 +131,11 @@ class PrinterProbe:
             -1.0,
             speed,
             max_travel,
-            {"endstop": self._endstop, "provider": None},
+            {
+                "endstop": self._endstop,
+                "provider": self,
+                "trigger_height": None,
+            },
         )
         newpos = list(toolhead.get_position())
         newpos[Z_AXIS] = final_pos[Z_AXIS]
