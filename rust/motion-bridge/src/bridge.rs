@@ -2890,7 +2890,10 @@ impl PyMotionBridge {
                 participants: moving_axis_keys,
                 notify: planner_done_tx,
             })
-            .map_err(planner_err)?;
+            .map_err(|e| {
+                self.finish_homing();
+                planner_err(e)
+            })?;
 
         let dispatch = py.allow_threads(|| {
             planner_done_rx

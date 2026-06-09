@@ -91,14 +91,20 @@ static struct sim_active_cs active_cs;
 static uint16_t iio_values[MAX_IIO_CHANNELS];
 static pthread_mutex_t iio_state_mtx = PTHREAD_MUTEX_INITIALIZER;
 
+// Each auto-endstop models a wall 'wall_steps' steps from the boot
+// position along the step queue feeding 'step_line'. The approach
+// direction is latched at the first wall crossing; the endstop GPIO is
+// asserted exactly while the position is at or past the wall, so
+// homing retracts clear it and repeated probe descents trigger at the
+// same height.
 #define MAX_AUTO_ENDSTOPS 8
 struct auto_endstop {
     int active;
     int step_chip, step_line;
     int endstop_chip, endstop_line;
-    int trigger_after_steps;
-    int step_count;
-    int last_step_value;          // for edge detection
+    long wall_steps;
+    long pos;
+    int toward_sign;
     int triggered;
 };
 static struct auto_endstop auto_endstops[MAX_AUTO_ENDSTOPS];
@@ -107,12 +113,14 @@ static pthread_mutex_t auto_endstop_mtx = PTHREAD_MUTEX_INITIALIZER;
 __attribute__((constructor(101)))
 static void iio_init(void) {
     for (int i = 0; i < MAX_IIO_CHANNELS; i++) iio_values[i] = DEFAULT_ADC_VALUE;
-    // Auto-endstop mappings matching printer_real/config after pin-overrides:
-    // X: step PG4→gpio18, endstop→gpio200; Y: step PF11→gpio7, endstop→gpio201;
-    // Z: step PG0→gpio15, endstop→gpio202. Trigger after 50 steps.
+    // Step-queue lines (see src/linux/runtime_tick_host.c step_gpio_lines):
+    // X→gpio18, Y→gpio7, Z→gpio15. Endstops: X→gpio200, Y→gpio201,
+    // Z→gpio202, plus a second Z-linked line gpio203 for probe pins so a
+    // config can have both a plain Z endstop and a motion-triggered probe.
     auto_endstops[0] = (struct auto_endstop){1, 0,18, 0,200, 50, 0, 0, 0};
     auto_endstops[1] = (struct auto_endstop){1, 0,7,  0,201, 50, 0, 0, 0};
     auto_endstops[2] = (struct auto_endstop){1, 0,15, 0,202, 50, 0, 0, 0};
+    auto_endstops[3] = (struct auto_endstop){1, 0,15, 0,203, 50, 0, 0, 0};
 }
 
 static int alloc_fake_fd(enum sim_slot_kind kind) {
@@ -538,37 +546,23 @@ static int gpio_handle_get_linehandle(int chip_fd, struct gpiohandle_request *re
     return 0;
 }
 
-static void check_auto_endstops(int chip_id, int offset, int new_value) {
+static void auto_endstop_advance(int chip_id, int offset, long delta) {
     pthread_mutex_lock(&auto_endstop_mtx);
     for (int i = 0; i < MAX_AUTO_ENDSTOPS; i++) {
         struct auto_endstop *ae = &auto_endstops[i];
         if (!ae->active) continue;
         if (ae->step_chip != chip_id || ae->step_line != offset) continue;
-        if (ae->triggered) {
-            if (ae->last_step_value == 0 && new_value == 1) {
-                ae->step_count++;
-                if (ae->step_count >= 10) { // clear after 10 retract steps
-                    pthread_mutex_lock(&gpio_state_mtx);
-                    gpio_lines[ae->endstop_chip][ae->endstop_line].value = 0;
-                    pthread_mutex_unlock(&gpio_state_mtx);
-                    ae->triggered = 0;
-                    ae->step_count = 0;
-                }
-            }
-            ae->last_step_value = new_value;
-            continue;
+        ae->pos += delta;
+        if (ae->toward_sign == 0 && labs(ae->pos) >= ae->wall_steps)
+            ae->toward_sign = (ae->pos > 0) ? 1 : -1;
+        int trig = ae->toward_sign != 0
+                   && ae->toward_sign * ae->pos >= ae->wall_steps;
+        if (trig != ae->triggered) {
+            ae->triggered = trig;
+            pthread_mutex_lock(&gpio_state_mtx);
+            gpio_lines[ae->endstop_chip][ae->endstop_line].value = trig;
+            pthread_mutex_unlock(&gpio_state_mtx);
         }
-        if (ae->last_step_value == 0 && new_value == 1) {
-            ae->step_count++;
-            if (ae->step_count >= ae->trigger_after_steps) {
-                pthread_mutex_lock(&gpio_state_mtx);
-                gpio_lines[ae->endstop_chip][ae->endstop_line].value = 1;
-                pthread_mutex_unlock(&gpio_state_mtx);
-                ae->triggered = 1;
-                ae->step_count = 0;
-            }
-        }
-        ae->last_step_value = new_value;
     }
     pthread_mutex_unlock(&auto_endstop_mtx);
 }
@@ -576,14 +570,11 @@ static void check_auto_endstops(int chip_id, int offset, int new_value) {
 // Exported entry point for the MCU tick thread to notify the auto-endstop
 // of step pulses without going through the GPIO ioctl path. The tick
 // thread populates the Rust step queues and calls this for each step
-// via dlsym(RTLD_DEFAULT, "sim_intercept_notify_step").
+// via dlsym(RTLD_DEFAULT, "sim_intercept_notify_step"). n_steps is
+// signed: the sign carries the step direction.
 __attribute__((visibility("default")))
 void sim_intercept_notify_step(int chip, int line, int32_t n_steps) {
-    int count = (n_steps < 0) ? -n_steps : n_steps;
-    for (int i = 0; i < count; i++) {
-        check_auto_endstops(chip, line, 1); // rising edge
-        check_auto_endstops(chip, line, 0); // falling edge (reset for next)
-    }
+    auto_endstop_advance(chip, line, (long)n_steps);
 }
 
 static int gpio_handle_set_values(int line_fd, struct gpiohandle_data *data) {
@@ -608,8 +599,6 @@ static int gpio_handle_set_values(int line_fd, struct gpiohandle_data *data) {
         active_cs.valid = 0;
     }
     pthread_mutex_unlock(&gpio_state_mtx);
-
-    check_auto_endstops(chip_id, offset, v);
 
     return 0;
 }
