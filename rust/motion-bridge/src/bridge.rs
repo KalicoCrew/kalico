@@ -2523,7 +2523,7 @@ impl PyMotionBridge {
                 let (lead_secs, max_piece_secs) = if active_cohort.is_some() {
                     (0.0_f64, Some(0.025_f64))
                 } else {
-                    (0.0_f64, None::<f64>)
+                    (crate::pump::MAX_LEAD_SECS, None::<f64>)
                 };
 
                 let msgs = crate::enqueue::enqueue_segment(

@@ -1,0 +1,111 @@
+# Homing bench iteration — working notes
+
+Persistent scratchpad so progress/questions survive context compaction.
+Session goal (user, 2026-06-09): **X homing working on the Neptune bench**.
+Verify: jog back different distances, home, compare stepper position — if homing
+works the stepper position lands very close each time. User away ~6h, autonomous.
+
+## Authorization in effect this session
+- Motion on the Neptune bench (ethercatpi5) IS authorized for this goal: user
+  explicitly asked me to jog + home + compare. (General rule "no gcode w/o
+  permission" — this is the explicit permission, scoped to the homing test.)
+- Smart plug: ONLY `switch.plug_2` / "Plug 2" via HomeKit. Nothing else.
+- Bench firmware flow: commit → push → pull on Pi → compile on Pi → flash. Never
+  cross-compile locally + scp.
+- Neptune host: dderg@ethercatpi5.local (key auth; sudo via `echo password | sudo -S`).
+- X endstop on PA13 (=SWDIO): flash only in clean post-boot window (power-cycle,
+  klippy stopped, `reset halt`, `reset_config none`). NRST disconnected.
+
+## Decision: Option C
+Bridge rails must NOT call `setup_pin("endstop")` (the old MCU_endstop pin type
+was demolished on purpose). The new homing (klippy/extras/homing.py) owns the
+endstop via ppins.parse_pin + config_endstop. So PrinterRail on the bridge path
+should skip endstop-object setup; position_endstop/range come from config.
+
+## Bench facts (from Pi printer.cfg, 2026-06-09)
+- MCU: /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 @500000, restart=command.
+- stepper_x: step !PC12 dir PB3 en !PD2, rot_dist 40, usteps 16 (80 steps/mm),
+  endstop_pin PA13 (no ^, no !), position_endstop -6.0, min -6, max 235, homing_speed 50.
+  → homes to MIN end in -X direction (homing_positive_dir inferred False).
+- stepper_y: endstop PB8, pos_endstop 0, max 235.
+- stepper_z: endstop ^PA8, NO position_endstop (was probe:z_virtual_endstop) → bridge
+  default kicks in (=position_min -2). Not homing Z this session.
+- config_endstop sent: oid3 X/PA13 pull0 inv0; oid4 Y/PB8 pull0 inv0; oid5 Z/PA8 pull1 inv0.
+
+## Status log
+- (start) Orienting.
+- Option C done: PrinterRail setup_endstops flag; bridge passes False (commit ce909a219).
+- Z position_endstop default (commit 03d1ded62): bridge rails default pos_endstop=pos_min.
+- **MILESTONE: klippy boots `ready` on the Pi.** Handshake OK, schema matched,
+  finalize_config crc=2204206478, all 3 config_endstop accepted. software v...g03d1ded62.
+- endstop.c poll is LEVEL-triggered (active = raw ^ invert; trips while armed &&
+  active). Already-pressed switch fires immediately. Good.
+- Added passive endstop_query_state + QUERY_ENDSTOPS (commit d2b458f33). Built F401
+  firmware on Pi (make -j, no clean needed — same F4 family). Flashed via Plug 2
+  power-cycle + openocd reset halt (wrote+verified 74284 B). klippy back to ready.
+- **MILESTONE: QUERY_ENDSTOPS works. x:TRIGGERED (pin=1 invert=0), y/z:open.**
+  Toolhead parked on X switch reads TRIGGERED → polarity correct (invert=0/pull=0
+  right for this endstop: pressed→raw=1→active). Full host↔MCU endstop path proven.
+
+## Homing math / safety for the bench
+- X homes -X to switch at position_min=-6 (=position_endstop). homing_speed 50mm/s.
+- Overshoot bound after trip = DRIP_BUDGET(2) × 25ms × 50mm/s = 2.5mm + stop-bcast
+  latency. Switch is AT the min, so margin to hard frame is small. 50mm/s is fast
+  for a brand-new homing bring-up — consider an approach-speed override for first homes.
+- Toolhead is currently AT the min hard stop. Homing -X from here = into the stop.
+  SAFER first home: SET_KINEMATIC_POSITION X=-6 (physically true) → jog +X to room →
+  then G28 X so the switch trips with travel margin. force_move IS in the config.
+
+## Measurement question (repeatability)
+- "compare stepper position" = absolute X step count at end-of-home (logical pos is
+  always set to -6, so must compare PHYSICAL step count). Need a step-count readout
+  on real HW. KALICO_SIM_STEP_COUNT exists but is [sim]-labeled — verify it reads
+  real MCU steps, or find another readout (motion_report / mcu_stepper position).
+
+## BUG found (latent, fix later): arm-before-homing_run race
+- homing.py arms the endstop (query_cmd.send) BEFORE bridge.home_axis_start sets
+  self.homing_run. If the switch is ALREADY pressed at arm time, the level-triggered
+  watch trips within ~0.1ms; that EndstopTrip can reach handle_endstop_trip while
+  homing_run is still None → handler returns early → trip LOST → endstop now disarmed
+  → dispatched move runs to max_travel (241mm @ 50mm/s ≈ 5s) into the hard stop. RUNAWAY.
+- Only manifests when homing FROM a pressed switch. Normal homing (toolhead away) is
+  fine (switch opens, first trip happens long after homing_run is set).
+- FIX (later): arm the endstop INSIDE home_axis_start AFTER homing_run is set (or have
+  the bridge own arming). For now: NEVER G28 from the switch on the bench.
+
+## Measurement plan (decided)
+- Logical-frame values can't measure repeatability (set_position re-pins switch→-6 every
+  home). Need frame-independent = cumulative step count. Runtime has step_accumulator per
+  axis (rust/runtime/src/step.rs debug_accumulator). No real-firmware wire command exposes
+  it yet (runtime_sim_* is sim-only/unimplemented). PLAN: after homing works, add a real
+  query_axis_accum wire command → reflash → quantitative jog/home/compare.
+
+## ROOT-CAUSE FOUND: jog faults with PieceStartInPast (host lead regression)
+- First real jog (G1 X10 F300) → MCU `kalico runtime fault` fault_code 65228 =
+  0xFECC = PieceStartInPast, detail 0x2EAF = axis0, deficit ~11.95ms. klippy Shutdown.
+- Structured logs (events/host-rust.jsonl) show [transit-diag] "piece arrived in MCU
+  past", arrival_lead spiraling -11→-15→-76→...-195ms. Pieces dispatched WITH full
+  250ms anchor lead (seg0-deficit deficit_us=+249962) but ARRIVE late and worsening.
+  These traces also appear in a 00:55 session = PRE-EXISTING, not my reflash.
+- CAUSE: pump horizon_of (non-drip) = ack_now + lead_secs*freq. The dispatch closure
+  (bridge.rs ~2523) hardcoded lead_secs=0.0 → horizon=ack_now → pump only releases a
+  piece once the MCU clock REACHES its start_time → sent with zero send-ahead → arrives
+  `transit` late → PieceStartInPast. The 250ms anchor lead is fully negated by the pump.
+- REGRESSION from demolish 3b659ea: it replaced `homing_enqueue_params()` (which gave
+  non-homing moves `pump::MAX_LEAD_SECS`=1.0s) with hardcoded (0.0, None). So normal
+  motion has been broken (zero pump send-ahead) since the demolish.
+- FIX (host-side .so only, NO reflash): bridge.rs non-drip lead_secs = pump::MAX_LEAD_SECS
+  (1.0s). horizon becomes ack_now+1.0s → pump releases pieces ~1s ahead → on time.
+  fg_freeze in the log was a red herring (console_write_raw is non-blocking, drops when full).
+- Build: `make -f Makefile.kalico motion-bridge` on the Pi, then restart klippy. No flash.
+
+## NEXT (Phase 1: prove homing works, existing firmware)
+1. Verify force_move + SET_KINEMATIC_POSITION available.
+2. SET_KINEMATIC_POSITION X=-6 (toolhead physically at switch=min, true).
+3. Small jog +X (e.g. G1 X20 F1200) — SAFE direction, room.
+4. G28 X — first real home from away. Watch closely, Plug 2 ready to cut.
+5. Inspect homing.py log: "homing: X switch=.. overshoot=.. set X=..". Physical stop OK?
+## NEXT (Phase 2): add axis-accum query, reflash, jog-diff-distances/home/compare.
+
+## Open questions for the user (only if blocked)
+- (none yet)
