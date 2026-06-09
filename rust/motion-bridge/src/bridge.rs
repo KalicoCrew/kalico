@@ -3094,6 +3094,15 @@ impl PyMotionBridge {
                     .map(|k| k.mcu_id)
                     .collect();
 
+                // Stop the drip BEFORE clearing the MCU rings: otherwise the pump can
+                // release queued cohort pieces during the Stop round-trip, and one can
+                // land in a just-cleared ring and later execute from the re-anchored
+                // seed as a one-sample jump (StepsPerSampleExceeded, worse at speed).
+                if let Some(tx) = pump_tx_opt {
+                    let _ = tx.send(crate::pump::PumpMsg::Flush(run.all_axis_keys.clone()));
+                    let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
+                }
+
                 let mut stop_errors: Vec<String> = Vec::new();
                 // The homing axis MCU's drain-instant clock — used to recover the
                 // overshot final position by evaluating the stored trajectory at it.
@@ -3137,11 +3146,6 @@ impl PyMotionBridge {
                             stop_errors.push(format!("Stop call failed for mcu {mcu_id}: {e:?}"));
                         }
                     }
-                }
-
-                if let Some(tx) = pump_tx_opt {
-                    let _ = tx.send(crate::pump::PumpMsg::Flush(run.all_axis_keys.clone()));
-                    let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
                 }
 
                 if !stop_errors.is_empty() {
