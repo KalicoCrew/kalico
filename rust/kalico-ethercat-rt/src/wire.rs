@@ -5,8 +5,9 @@ use kalico_native_transport::wire_helpers::{
 use kalico_protocol::bootstrap::{IdentifyResponse, IDENTIFY_RESPONSE_BODY_LEN};
 use kalico_protocol::codec::{Decode, Encode};
 use kalico_protocol::messages::{
-    ClaimHandshakeReply, MessageKind, PushPieces, PushPiecesResponse, RuntimeCapsResponse,
-    SetTorque, SetTorqueResponse, StatusHeartbeat, StopResponse,
+    ClaimHandshakeReply, MessageKind, PushPieces, PushPiecesResponse, RestoreDriveLimitsResponse,
+    RuntimeCapsResponse, SetDriveLimits, SetDriveLimitsResponse, SetTorque, SetTorqueResponse,
+    StatusHeartbeat, StopResponse,
 };
 use kalico_protocol::KALICO_CHANNEL_PIECES;
 
@@ -31,6 +32,13 @@ pub enum Command {
         msg: SetTorque,
     },
     Stop {
+        correlation_id: u32,
+    },
+    SetDriveLimits {
+        correlation_id: u32,
+        msg: SetDriveLimits,
+    },
+    RestoreDriveLimits {
         correlation_id: u32,
     },
     Unknown {
@@ -79,6 +87,16 @@ pub fn decode_command(channel: u8, payload: &[u8]) -> Result<Command, DecodeCmdE
             })
         }
         Some(MessageKind::Stop) => Ok(Command::Stop {
+            correlation_id: cid,
+        }),
+        Some(MessageKind::SetDriveLimits) => {
+            let msg = SetDriveLimits::decode(body).map_err(|_| DecodeCmdError::BadBody)?;
+            Ok(Command::SetDriveLimits {
+                correlation_id: cid,
+                msg,
+            })
+        }
+        Some(MessageKind::RestoreDriveLimits) => Ok(Command::RestoreDriveLimits {
             correlation_id: cid,
         }),
         _ => Ok(Command::Unknown {
@@ -132,10 +150,20 @@ pub fn push_pieces_response_frame(
     control_frame(MessageKind::PushPiecesResponse, cid, &body)
 }
 
-pub fn status_heartbeat_frame(engine_state: u8, retired_counts: &[u32]) -> Vec<u8> {
+pub fn set_drive_limits_response_frame(cid: u32, result: i32) -> Vec<u8> {
+    let body = SetDriveLimitsResponse { result }.encoded_to_vec();
+    control_frame(MessageKind::SetDriveLimitsResponse, cid, &body)
+}
+
+pub fn restore_drive_limits_response_frame(cid: u32, result: i32) -> Vec<u8> {
+    let body = RestoreDriveLimitsResponse { result }.encoded_to_vec();
+    control_frame(MessageKind::RestoreDriveLimitsResponse, cid, &body)
+}
+
+pub fn status_heartbeat_frame(engine_state: u8, fault_code: u16, retired_counts: &[u32]) -> Vec<u8> {
     let hb = StatusHeartbeat {
         engine_state,
-        fault_code: 0,
+        fault_code,
         retired_counts: retired_counts.to_vec(),
     };
     let body = hb.encoded_to_vec();

@@ -13,8 +13,8 @@ use kalico_ethercat_rt::torque::{
 };
 use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
-    runtime_caps_response_frame, set_torque_response_frame, status_heartbeat_frame,
-    stop_response_frame, Command,
+    restore_drive_limits_response_frame, runtime_caps_response_frame, set_drive_limits_response_frame,
+    set_torque_response_frame, status_heartbeat_frame, stop_response_frame, Command,
 };
 use kalico_protocol::messages::SlaveState;
 
@@ -191,6 +191,17 @@ fn main() {
                         }
                     }
                 }
+                Command::SetDriveLimits { correlation_id, msg } => {
+                    eprintln!(
+                        "ec-rt-stub: SetDriveLimits ferr={} tq={}",
+                        msg.following_error_counts, msg.max_torque_tenth_pct
+                    );
+                    server.respond(&set_drive_limits_response_frame(correlation_id, 0));
+                }
+                Command::RestoreDriveLimits { correlation_id } => {
+                    eprintln!("ec-rt-stub: RestoreDriveLimits");
+                    server.respond(&restore_drive_limits_response_frame(correlation_id, 0));
+                }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt-stub: ignoring kind 0x{kind_raw:04x}");
                 }
@@ -209,6 +220,7 @@ fn main() {
                 eprintln!("ec-rt-stub: torque-gate fault code={code} — exiting");
                 server.respond(&status_heartbeat_frame(
                     ENGINE_STATE_FAULT,
+                    0,
                     &[ring.retired_count()],
                 ));
                 std::process::exit(1);
@@ -227,6 +239,7 @@ fn main() {
             let current_retired = ring.retired_count();
             server.respond(&status_heartbeat_frame(
                 ENGINE_STATE_FAULT,
+                (fault_val & 0xFFFF) as u16,
                 &[current_retired],
             ));
             last_sent_retired = current_retired;
@@ -237,7 +250,7 @@ fn main() {
         let should_emit = !heartbeat_sent || current_retired != last_sent_retired;
         if should_emit {
             let engine_state: u8 = if ring.is_empty() { 0 } else { 1 };
-            server.respond(&status_heartbeat_frame(engine_state, &[current_retired]));
+            server.respond(&status_heartbeat_frame(engine_state, 0, &[current_retired]));
             last_sent_retired = current_retired;
             heartbeat_sent = true;
             if current_retired != 0 {
