@@ -1,17 +1,10 @@
 import logging
 
+from klippy.bridge_endstop import AXIS_ENDSTOP_IDS, BridgeEndstop
+
 HOMING_POLL_PERIOD = 0.001
-HOMING_TIMEOUT = 30.0
-
-
-class _BridgeEndstop:
-    def __init__(self, entry):
-        self._entry = entry
-
-    def query_endstop(self, print_time):
-        entry = self._entry
-        params = entry["state_cmd"].send([entry["oid"]])
-        return params["pin_value"] ^ entry["invert"]
+TRIP_DEADLINE_MARGIN = 5.0
+NO_MOVEMENT_EPSILON = 0.005
 
 
 class Homing:
@@ -24,24 +17,33 @@ class Homing:
             section = "stepper_" + axis_name
             if not config.has_section(section):
                 continue
-            endstop_pin = config.getsection(section).get("endstop_pin", None)
-            if endstop_pin is None or "virtual_endstop" in endstop_pin:
+            stepper_config = config.getsection(section)
+            endstop_pin = stepper_config.get("endstop_pin", None)
+            if endstop_pin is None:
                 continue
             pin_params = ppins.parse_pin(
                 endstop_pin, can_invert=True, can_pullup=True
             )
-            mcu = pin_params["chip"]
-            entry = {
-                "endstop_id": axis_index,
-                "mcu": mcu,
-                "oid": mcu.create_oid(),
-                "pin": pin_params["pin"],
-                "pullup": pin_params["pullup"],
-                "invert": pin_params["invert"],
-                "query_cmd": None,
-            }
+            chip = pin_params["chip"]
+            if hasattr(chip, "setup_bridge_endstop"):
+                entry = self._provider_entry(
+                    stepper_config, axis_index, chip, pin_params
+                )
+            elif hasattr(chip, "create_oid"):
+                entry = {
+                    "endstop": BridgeEndstop(
+                        pin_params, AXIS_ENDSTOP_IDS[axis_index]
+                    ),
+                    "provider": None,
+                    "trigger_height": None,
+                }
+            else:
+                raise config.error(
+                    "endstop_pin '%s' in [%s]: chip '%s' is neither an MCU"
+                    " nor a virtual endstop provider"
+                    % (endstop_pin, section, pin_params["chip_name"])
+                )
             self._axes[axis_index] = entry
-            mcu.register_config_callback(self._make_build_config(entry))
 
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command("G28", self.cmd_G28, desc="Home")
@@ -54,31 +56,25 @@ class Homing:
         query_endstops = self.printer.load_object(config, "query_endstops")
         for axis_index in sorted(self._axes):
             query_endstops.register_endstop(
-                _BridgeEndstop(self._axes[axis_index]), "xyz"[axis_index]
+                self._axes[axis_index]["endstop"], "xyz"[axis_index]
             )
 
-    def _make_build_config(self, entry):
-        def build_config():
-            entry["mcu"].add_config_cmd(
-                "config_endstop oid=%d endstop_id=%d pin=%s pull_up=%d invert=%d"
-                % (
-                    entry["oid"],
-                    entry["endstop_id"],
-                    entry["pin"],
-                    entry["pullup"],
-                    entry["invert"],
+    def _provider_entry(self, stepper_config, axis_index, chip, pin_params):
+        endstop = chip.setup_bridge_endstop(pin_params, axis_index)
+        trigger_height = None
+        if hasattr(chip, "get_position_endstop"):
+            trigger_height = chip.get_position_endstop()
+            if stepper_config.get("position_endstop", None) is not None:
+                raise stepper_config.error(
+                    "[%s] must not set position_endstop: its virtual endstop"
+                    " '%s' supplies the trigger height"
+                    % (stepper_config.get_name(), pin_params["chip_name"])
                 )
-            )
-            entry["query_cmd"] = entry["mcu"].lookup_command(
-                "query_endstop oid=%c rest_ticks=%u"
-            )
-            entry["state_cmd"] = entry["mcu"].lookup_query_command(
-                "endstop_query_state oid=%c",
-                "endstop_state oid=%c armed=%c pin_value=%c",
-                oid=entry["oid"],
-            )
-
-        return build_config
+        return {
+            "endstop": endstop,
+            "provider": chip,
+            "trigger_height": trigger_height,
+        }
 
     def cmd_G28(self, gcmd):
         requested = [
@@ -128,12 +124,9 @@ class Homing:
             raise gcmd.error("G28: no rail for axis %s" % ("XYZ"[axis],))
         hi = rail.get_homing_info()
         pos_min, pos_max = rail.get_range()
-        endstop_mcu = getattr(entry["mcu"], "_bridge_handle", None)
-        if endstop_mcu is None:
-            raise gcmd.error(
-                "G28: endstop MCU for axis %s is not attached to the bridge"
-                % ("XYZ"[axis],)
-            )
+        trigger_height = entry["trigger_height"]
+        if trigger_height is None:
+            trigger_height = hi.position_endstop
         direction = 1.0 if hi.positive_dir else -1.0
         speed = speed_override if speed_override is not None else hi.speed
         max_travel = (
@@ -142,56 +135,93 @@ class Homing:
             else abs(pos_max - pos_min)
         )
 
-        state = entry["state_cmd"].send([entry["oid"]])
-        if state["pin_value"] ^ entry["invert"]:
-            raise gcmd.error(
-                "G28 %s: endstop already triggered — move the axis off the "
-                "switch before homing" % ("XYZ"[axis],)
-            )
-
-        toolhead.wait_moves()
         stepper_enable = self.printer.lookup_object("stepper_enable")
         for s in rail.get_steppers():
             stepper_enable.motor_debug_enable(s.get_name(), True)
 
-        rest_ticks = entry["mcu"].seconds_to_clock(HOMING_POLL_PERIOD)
-        entry["query_cmd"].send([entry["oid"], rest_ticks])
-
-        bridge.home_axis_start(
-            axis, direction, speed, max_travel, entry["endstop_id"], endstop_mcu
+        trip_pos, final_pos = self.trip_move(
+            gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry
         )
-        reactor = self.printer.get_reactor()
-        deadline = reactor.monotonic() + HOMING_TIMEOUT
-        result = None
-        while result is None:
-            try:
-                result = bridge.home_axis_poll()
-            except Exception as e:
-                bridge.home_abort()
-                raise gcmd.error("G28 %s failed: %s" % ("XYZ"[axis], e))
-            if result is not None:
-                break
-            if reactor.monotonic() > deadline:
-                bridge.home_abort()
-                raise gcmd.error(
-                    "G28 %s: timed out waiting for endstop trip"
-                    % ("XYZ"[axis],)
-                )
-            reactor.pause(reactor.monotonic() + 0.010)
-        trip_pos, final_pos = result
 
         overshoot = final_pos[axis] - trip_pos[axis]
         newpos = list(toolhead.get_position())
-        newpos[axis] = hi.position_endstop + overshoot
+        newpos[axis] = trigger_height + overshoot
         toolhead.set_position(newpos, homing_axes=[axis])
         logging.info(
-            "homing: %s switch=%.4f overshoot=%+.4f set %s=%.4f",
+            "homing: %s trigger=%.4f overshoot=%+.4f set %s=%.4f",
             "XYZ"[axis],
-            hi.position_endstop,
+            trigger_height,
             overshoot,
             "XYZ"[axis],
             newpos[axis],
         )
+        if hi.retract_dist:
+            retractpos = list(toolhead.get_position())
+            retractpos[axis] -= direction * hi.retract_dist
+            toolhead.move(retractpos, hi.retract_speed)
+            toolhead.wait_moves()
+
+    def trip_move(
+        self, gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry
+    ):
+        endstop = entry["endstop"]
+        endstop_mcu = endstop.bridge_mcu_handle()
+        if endstop_mcu is None:
+            raise gcmd.error(
+                "trip_move: endstop MCU for axis %s is not attached to the"
+                " bridge" % ("XYZ"[axis],)
+            )
+        if endstop.is_triggered():
+            raise gcmd.error(
+                "%s endstop already triggered — move off the trigger before"
+                " homing or probing" % ("XYZ"[axis],)
+            )
+        toolhead.wait_moves()
+        start_axis_pos = toolhead.get_position()[axis]
+        provider = entry["provider"]
+        if provider is not None and hasattr(provider, "trip_move_begin"):
+            provider.trip_move_begin(entry)
+        try:
+            endstop.arm(HOMING_POLL_PERIOD)
+            bridge.home_axis_start(
+                axis,
+                direction,
+                speed,
+                max_travel,
+                endstop.endstop_id,
+                endstop_mcu,
+            )
+            reactor = self.printer.get_reactor()
+            deadline = (
+                reactor.monotonic() + max_travel / speed + TRIP_DEADLINE_MARGIN
+            )
+            while True:
+                try:
+                    result = bridge.home_axis_poll()
+                except Exception as e:
+                    bridge.home_abort()
+                    raise gcmd.error(
+                        "%s trip move failed: %s" % ("XYZ"[axis], e)
+                    )
+                if result is not None:
+                    break
+                if reactor.monotonic() > deadline:
+                    bridge.home_abort()
+                    raise gcmd.error(
+                        "%s endstop did not trigger within %.1fmm of travel"
+                        % ("XYZ"[axis], max_travel)
+                    )
+                reactor.pause(reactor.monotonic() + 0.010)
+        finally:
+            if provider is not None and hasattr(provider, "trip_move_end"):
+                provider.trip_move_end(entry)
+        trip_pos, final_pos = result
+        if abs(trip_pos[axis] - start_axis_pos) < NO_MOVEMENT_EPSILON:
+            raise gcmd.error(
+                "%s endstop triggered prior to movement — trigger is stuck"
+                " or miswired" % ("XYZ"[axis],)
+            )
+        return trip_pos, final_pos
 
 
 def load_config(config):
