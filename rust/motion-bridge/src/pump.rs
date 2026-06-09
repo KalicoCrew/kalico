@@ -193,7 +193,14 @@ mod tests;
 mod drip_tests;
 
 /// Max pieces a drip-cohort axis may have in flight ahead of the cohort floor.
-pub const DRIP_BUDGET: u32 = 2;
+///
+/// The drip-release margin per piece is `(DRIP_BUDGET - 1) * piece_secs` minus the
+/// retire→release→arrive round-trip latency; a piece that arrives after its start
+/// faults PieceStartInPast. On the slow USB-serial bench (Pi 3 + F401) that
+/// round-trip peaks near 30 ms against 25 ms pieces, so budget 2 (25 ms margin) is
+/// too tight. Budget 4 buys 75 ms of margin; in-flight motion stays bounded at
+/// `DRIP_BUDGET * piece_secs * v_home` (sub-mm at bring-up homing speeds).
+pub const DRIP_BUDGET: u32 = 4;
 
 /// Arms the pump's drip gate for a homing cohort.
 ///

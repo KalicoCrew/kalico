@@ -110,6 +110,14 @@ should skip endstop-object setup; position_endstop/range come from config.
   zero lead → late. FIX: lead_secs=MAX_LEAD_SECS in both branches (commit pending).
   Participants still bounded by DRIP_BUDGET (horizon_of None ignores lead_secs).
 
+- 2nd KALICO_HOME (after cohort lead fix) → PieceStartInPast on axis 0 (X, the drip
+  participant), deficit only 3.9ms (0xF2D). Drip retire-signal IS working (else deficit
+  ~100ms). Budget-2 drip margin (25ms) just under the Pi-3 round-trip (~29ms). FIX:
+  DRIP_BUDGET 2→4 (75ms margin). In-flight bound = budget×25ms×v; 0.8mm at 8mm/s test
+  speed. NOTE: at production homing_speed=50, budget 4 = 5mm overshoot — revisit with
+  lower cohort-poll latency or two-stage homing for high-speed (overshoot is accounted
+  in set_position, so it's not a position error, just physical travel past the switch).
+
 ## NEXT (Phase 1: prove homing works, existing firmware)
 1. Verify force_move + SET_KINEMATIC_POSITION available.
 2. SET_KINEMATIC_POSITION X=-6 (toolhead physically at switch=min, true).
