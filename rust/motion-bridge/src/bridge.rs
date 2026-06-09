@@ -3021,10 +3021,23 @@ impl PyMotionBridge {
             .unwrap_or_else(|p| p.into_inner())
             .clone();
 
-        let mcu_ios: HashMap<u32, Arc<KalicoHostIo>> = {
+        enum StopTransport {
+            Serial(Arc<KalicoHostIo>),
+            EtherCat(Arc<UnixNativeConn>),
+        }
+
+        let transports: HashMap<u32, StopTransport> = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             mcus.iter()
-                .filter_map(|(&id, conn)| conn.host_io.as_ref().map(|io| (id, Arc::clone(io))))
+                .filter_map(|(&id, conn)| {
+                    if let Some(io) = conn.host_io.as_ref() {
+                        Some((id, StopTransport::Serial(Arc::clone(io))))
+                    } else {
+                        conn.endpoint_conn
+                            .as_ref()
+                            .map(|ec| (id, StopTransport::EtherCat(Arc::clone(ec))))
+                    }
+                })
                 .collect()
         };
 
@@ -3049,64 +3062,47 @@ impl PyMotionBridge {
                     let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
                 }
 
-                let mut stop_errors: Vec<String> = Vec::new();
-                let mut axis_discard_clock: Option<u64> = None;
-                for &mcu_id in &stepper_mcu_ids {
-                    let io = match mcu_ios.get(&mcu_id) {
-                        Some(io) => io.clone(),
-                        None => {
-                            stop_errors.push(format!("Stop: no host_io for mcu {mcu_id}"));
-                            continue;
-                        }
+                let stop_call = |mcu_id: u32| -> Result<
+                    kalico_protocol::messages::StopResponse,
+                    String,
+                > {
+                    use kalico_host_rt::native_call::NativeCall as _;
+                    use kalico_protocol::codec::Decode as _;
+                    let transport = transports
+                        .get(&mcu_id)
+                        .ok_or_else(|| format!("Stop: no transport for mcu {mcu_id}"))?;
+                    let (_kind, body) = match transport {
+                        StopTransport::Serial(io) => io
+                            .kalico_call(
+                                kalico_protocol::MessageKind::Stop,
+                                Vec::new(),
+                                stop_timeout,
+                            )
+                            .map_err(|e| {
+                                format!("Stop call failed for mcu {mcu_id}: {e:?}")
+                            })?,
+                        StopTransport::EtherCat(conn) => conn
+                            .kalico_call(
+                                kalico_protocol::MessageKind::Stop,
+                                Vec::new(),
+                                stop_timeout,
+                            )
+                            .map_err(|e| {
+                                format!("Stop call failed for mcu {mcu_id}: {e:?}")
+                            })?,
                     };
-                    let result = io.kalico_call(
-                        kalico_protocol::MessageKind::Stop,
-                        Vec::new(),
-                        stop_timeout,
-                    );
-                    match result {
-                        Ok((_kind, body)) => {
-                            use kalico_protocol::codec::Decode as _;
-                            match kalico_protocol::messages::StopResponse::decode(&body) {
-                                Ok(resp) if resp.result != 0 => {
-                                    stop_errors.push(format!(
-                                        "Stop rejected by mcu {mcu_id}: result={}",
-                                        resp.result
-                                    ));
-                                }
-                                Ok(resp) => {
-                                    if mcu_id == run.axis_key.mcu_id {
-                                        axis_discard_clock = Some(resp.discard_clock);
-                                    }
-                                }
-                                Err(e) => {
-                                    stop_errors.push(format!(
-                                        "Stop decode failed for mcu {mcu_id}: {e:?}"
-                                    ));
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            stop_errors.push(format!("Stop call failed for mcu {mcu_id}: {e:?}"));
-                        }
-                    }
-                }
+                    kalico_protocol::messages::StopResponse::decode(&body)
+                        .map_err(|e| format!("Stop decode failed for mcu {mcu_id}: {e:?}"))
+                };
 
-                if !stop_errors.is_empty() {
-                    let _ = run.notify.send(Err(format!(
-                        "EndstopTrip Stop broadcast failed: {}",
-                        stop_errors.join("; ")
-                    )));
-                    return;
-                }
-
-                let discard_clock = match axis_discard_clock {
-                    Some(c) => c,
-                    None => {
-                        let _ = run.notify.send(Err(format!(
-                            "EndstopTrip: axis MCU {} did not report a discard clock",
-                            run.axis_key.mcu_id
-                        )));
+                let discard_clock = match crate::homing::broadcast_stop(
+                    &stepper_mcu_ids,
+                    run.axis_key.mcu_id,
+                    stop_call,
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = run.notify.send(Err(e));
                         return;
                     }
                 };

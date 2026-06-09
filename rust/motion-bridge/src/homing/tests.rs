@@ -276,3 +276,69 @@ fn multiple_pieces_trip_in_second_piece() {
         "midpoint of 50..100mm second piece should be ~75mm, got {pos:.4}"
     );
 }
+
+mod broadcast_stop_tests {
+    use crate::homing::broadcast_stop;
+    use kalico_protocol::messages::StopResponse;
+    use std::collections::HashSet;
+
+    #[test]
+    fn collects_discard_clock_from_the_axis_mcu() {
+        let ids: HashSet<u32> = [1, 2].into_iter().collect();
+        let clock = broadcast_stop(&ids, 2, |mcu_id| {
+            Ok(StopResponse {
+                result: 0,
+                discard_clock: u64::from(mcu_id) * 100,
+            })
+        })
+        .unwrap();
+        assert_eq!(clock, 200);
+    }
+
+    #[test]
+    fn missing_transport_fails_loudly() {
+        let ids: HashSet<u32> = [1, 7].into_iter().collect();
+        let err = broadcast_stop(&ids, 1, |mcu_id| {
+            if mcu_id == 7 {
+                Err("Stop: no transport for mcu 7".to_owned())
+            } else {
+                Ok(StopResponse {
+                    result: 0,
+                    discard_clock: 42,
+                })
+            }
+        })
+        .unwrap_err();
+        assert!(err.contains("no transport for mcu 7"), "got: {err}");
+        assert!(err.contains("Stop broadcast failed"), "got: {err}");
+    }
+
+    #[test]
+    fn rejected_result_is_an_error() {
+        let ids: HashSet<u32> = [1].into_iter().collect();
+        let err = broadcast_stop(&ids, 1, |_| {
+            Ok(StopResponse {
+                result: -5,
+                discard_clock: 0,
+            })
+        })
+        .unwrap_err();
+        assert!(
+            err.contains("Stop rejected by mcu 1: result=-5"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn axis_mcu_without_a_discard_clock_is_an_error() {
+        let ids: HashSet<u32> = [2].into_iter().collect();
+        let err = broadcast_stop(&ids, 9, |_| {
+            Ok(StopResponse {
+                result: 0,
+                discard_clock: 5,
+            })
+        })
+        .unwrap_err();
+        assert!(err.contains("did not report a discard clock"), "got: {err}");
+    }
+}
