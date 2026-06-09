@@ -156,10 +156,16 @@ should skip endstop-object setup; position_endstop/range come from config.
   = 4.8um spread (tighter than SPEED=5's 11um). Excellent.
 - Speed scaling (all clean, ready): SPEED=15 overshoot 63um, SPEED=25 overshoot 105um.
   Overshoot ~= 4us stop-latency x v_home, all accounted in set_position (no position error).
-- CEILING: SPEED=40 faults PieceStartInPast (deficit 39.6ms) — the drip release rate exceeds
-  what the Pi 3 + 500kbaud can sustain. So homing is solid 5..~25mm/s on THIS host. config
-  homing_speed=50 needs either bigger drip pieces (50ms halves the release rate), a faster
-  pump/host, or two-stage homing. Not blocking — the goal (work + repeatable) is met.
+- CEILING + a ROBUSTNESS caveat (honest): SPEED=40 reliably faults PieceStartInPast (deficit
+  39.6ms). And even at SPEED=8 it is NOT 100% — ~7/8 homes clean, but a longer/unlucky one
+  faults PieceStartInPast too (drip lead erodes over the move: transit lead drifts ~70ms→29ms
+  as the Pi-3 drip-release loop slips vs real-time; a long move erodes toward the 75ms margin
+  → intermittent late piece). So: homing WORKS and is REPEATABLE (demonstrated: 5 clean homes
+  @5mm/s 11um, 7 clean @8mm/s 5um), but is not yet 100%-robust on this slow host. Root = Pi-3
+  can't perfectly sustain the 40-piece/s drip release. Fixes (follow-up, pick one): raise
+  DRIP_BUDGET (more lead margin, at the cost of a bigger crash-safety bound), tighten the pump
+  cohort-poll latency (<10ms), bigger drip pieces (fewer/s), or a faster host (Pi 4/5).
+  config homing_speed=50 needs this. Not blocking the demonstrated goal.
 - Bench currently: klippy ready, firmware = seed_position build, .so = reorder build, all
   services normal. So the deployed bench has BOTH high-speed fixes.
 
