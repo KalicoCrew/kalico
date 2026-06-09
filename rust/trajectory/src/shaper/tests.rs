@@ -199,33 +199,3 @@ fn eval_at(pieces: &[BezierPiece<f64>], t: f64) -> f64 {
     }
     panic!("t={t} not in any piece");
 }
-
-#[test]
-fn shaped_signal_eval_matches_convolve_output_samples() {
-    use crate::kernel::build_smooth_zv_kernel;
-    use nurbs::bezier::{bezier_pieces_to_nurbs, BezierPiece};
-    use nurbs::eval::eval;
-
-    // Smooth input s(t) on [0, 0.5].
-    let t_end = 0.5_f64;
-    let s = bezier_pieces_to_nurbs(&[BezierPiece {
-        u_start: 0.0,
-        u_end: t_end,
-        coeffs: vec![0.0, 0.0, 300.0 / t_end.powi(2), -200.0 / t_end.powi(3)],
-    }]);
-    let kernel = build_smooth_zv_kernel(0.8025 / 40.0);
-
-    let linear = shape_axis(&s, &kernel, 0.0, t_end);
-    let sig = ShapedSignal::new(&s, &kernel, 0.0, t_end);
-
-    // The dense-linear output samples lie on the smooth convolution: ShapedSignal
-    // must agree with the linear curve at its own knots (where linear == fir_at).
-    for &u in linear.knots().iter() {
-        if u >= 0.0 && u <= t_end {
-            assert!(
-                (sig.eval(u) - eval(&linear.as_view(), u)).abs() < 1e-9,
-                "mismatch at u={u}",
-            );
-        }
-    }
-}

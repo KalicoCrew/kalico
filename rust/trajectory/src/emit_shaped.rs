@@ -5,8 +5,7 @@ use nurbs::ScalarNurbs;
 use crate::beta::kernel_half_support;
 use crate::fit::FittedSegment;
 use crate::pad::{pad_segment_axis_with_history, EHalo};
-use crate::refit::{refit_to_cubic, REFIT_TOLERANCE_MM};
-use crate::shaper::shape_axis;
+use crate::refit::REFIT_TOLERANCE_MM;
 use crate::{ShapeError, ShapedSegment};
 
 #[derive(Debug, Clone, Copy)]
@@ -72,7 +71,7 @@ pub fn emit_shaped(
                 true
             };
 
-            let mut axis_shaped = if axis_is_constant {
+            let axis_shaped = if axis_is_constant {
                 fitted.axes[axis].clone()
             } else if let Some(kernel) = kernels[axis].as_ref() {
                 let padded = pad_segment_axis_with_history(
@@ -85,20 +84,24 @@ pub fn emit_shaped(
                     batch_t_start,
                     batch_t_end,
                 );
-                shape_axis(&padded, kernel, t_start, t_end)
+                let exact = nurbs::algebra::convolve(&padded, kernel)
+                    .map_err(|detail| ShapeError::Algebra { index: seg_idx, detail })?;
+                crate::smooth_fit::fit_c2_cubic(
+                    &|t| nurbs::eval::eval(&exact.as_view(), t),
+                    t_start,
+                    t_end,
+                    REFIT_TOLERANCE_MM,
+                )
+                .map_err(|e| ShapeError::FitFailure {
+                    index: seg_idx,
+                    detail: nurbs::algebra::FitError::ToleranceNotReached {
+                        achieved_mm: e.achieved_mm,
+                        at_degree: 3,
+                    },
+                })?
             } else {
                 fitted.axes[axis].clone()
             };
-
-            if !axis_is_constant {
-                axis_shaped =
-                    refit_to_cubic(&axis_shaped, REFIT_TOLERANCE_MM).map_err(|detail| {
-                        ShapeError::FitFailure {
-                            index: seg_idx,
-                            detail,
-                        }
-                    })?;
-            }
 
             shaped_axes[axis] = Some(axis_shaped);
         }

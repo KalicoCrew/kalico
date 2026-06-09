@@ -123,53 +123,6 @@ fn convolve_discrete(
     bezier_pieces_to_nurbs(&pieces)
 }
 
-pub struct ShapedSignal<'a> {
-    input_samples: Vec<f64>,
-    input_lo: f64,
-    dt_in: f64,
-    n_input: usize,
-    kernel: &'a PiecewisePolynomialKernel<f64>,
-    k_lo: f64,
-    k_hi: f64,
-}
-
-impl<'a> ShapedSignal<'a> {
-    pub fn new(
-        padded: &ScalarNurbs<f64>,
-        kernel: &'a PiecewisePolynomialKernel<f64>,
-        t_start: f64,
-        t_end: f64,
-    ) -> Self {
-        let (k_lo, k_hi) = kernel.support();
-        let kernel_width = k_hi - k_lo;
-        let dt_in = kernel_width / (INPUT_SAMPLES_PER_KERNEL_WIDTH as f64);
-        let input_lo = t_start + k_lo;
-        let input_hi = t_end + k_hi;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let n_input = ((input_hi - input_lo) / dt_in).ceil() as usize + 1;
-        let input_samples = (0..n_input)
-            .map(|i| eval_clamped(padded, input_lo + (i as f64) * dt_in))
-            .collect();
-        Self { input_samples, input_lo, dt_in, n_input, kernel, k_lo, k_hi }
-    }
-
-    pub fn eval(&self, t: f64) -> f64 {
-        let j_lo_f = (t - self.k_hi - self.input_lo) / self.dt_in;
-        let j_hi_f = (t - self.k_lo - self.input_lo) / self.dt_in;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let j_lo = (j_lo_f.floor() as isize).max(0) as usize;
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let j_hi = ((j_hi_f.ceil() as isize) + 1).min(self.n_input as isize) as usize;
-        let mut acc = 0.0_f64;
-        for j in j_lo..j_hi {
-            let t_j = self.input_lo + (j as f64) * self.dt_in;
-            let w = eval_kernel(self.kernel, t - t_j);
-            acc += self.input_samples[j] * w * self.dt_in;
-        }
-        acc
-    }
-}
-
 #[cfg(test)]
 mod tests;
 
