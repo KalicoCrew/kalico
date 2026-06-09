@@ -6,7 +6,7 @@
 
 from klippy import Printer
 from klippy.configfile import ConfigWrapper
-from klippy.extras.probe import GcodeNozzleScrubber, PrinterProbe, RetryPolicy
+from klippy.extras.probe import PrinterProbe
 from klippy.gcode import GCodeCommand, GCodeDispatch
 from klippy.toolhead import ToolHead
 
@@ -106,6 +106,8 @@ class NozzleCleanup:
             desc=self.cmd_NOZZLE_CLEANUP_help,
         )
         self.options = NozzleCleanupOptions(config)
+        from klippy.extras.probe import GcodeNozzleScrubber, RetryPolicy
+
         self.retry_policy: RetryPolicy = RetryPolicy(config)
         self.nozzle_scrubber: GcodeNozzleScrubber = GcodeNozzleScrubber(config)
 
