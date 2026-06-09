@@ -92,6 +92,12 @@ rotation_distance: 40         # mm of axis travel per motor revolution (your mec
 encoder_counts_per_rev: 131072  # required; drive encoder counts per motor rev (A6-EC: 131072)
 position_min: 0
 position_max: 300
+# Homing (optional). With these set, G28 homes the servo axis against a GPIO
+# endstop on any bridge MCU; without endstop_pin the axis has no endstop and
+# G28 on it fails loudly.
+#endstop_pin: PA13             # pin on the MCU that carries the switch
+#position_endstop: 0           # must equal position_min or position_max
+#homing_speed: 50
 ```
 
 `counts_per_mm = encoder_counts_per_rev / rotation_distance` — the `CountMap` gain
