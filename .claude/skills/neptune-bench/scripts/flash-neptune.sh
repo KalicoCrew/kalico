@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # flash-neptune.sh — pull, build, and flash the Neptune 3 Pro bench F401 from the Mac.
 #
-# Orchestrates the whole bench reflash documented in docs/kalico-rewrite/hardware.md:
-#   pull homing-rework on the Pi -> build F401 firmware -> hold klippy down so PA13
+# Orchestrates the whole bench reflash:
+#   pull the branch on the Pi -> build F401 firmware -> hold klippy down so PA13
 #   stays SWDIO -> power-cycle (HomeKit Plug 2) for a fresh boot -> openocd flash over
 #   ST-Link (NRST disconnected, software reset) -> restore auto-restart + bring klippy up.
 #
