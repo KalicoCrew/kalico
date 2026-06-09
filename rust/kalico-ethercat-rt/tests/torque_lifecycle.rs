@@ -2,12 +2,13 @@ use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use kalico_ethercat_rt::torque::ERR_PIECES_WHILE_FAULTED;
 use kalico_host_rt::native_call::NativeCall;
 use kalico_host_rt::unix_native_conn::UnixNativeConn;
 use kalico_protocol::codec::{Cursor, Decode, Encode};
 use kalico_protocol::messages::{
-    ClaimHandshakeReply, MessageKind, PushPieces, RestoreDriveLimitsResponse, SetDriveLimits,
-    SetDriveLimitsResponse, SetTorque, SetTorqueResponse, StopResponse,
+    ClaimHandshakeReply, MessageKind, PushPieces, PushPiecesResponse, RestoreDriveLimitsResponse,
+    SetDriveLimits, SetDriveLimitsResponse, SetTorque, SetTorqueResponse, StopResponse,
 };
 use runtime::piece_ring::PieceEntry;
 
@@ -127,7 +128,7 @@ fn now_ns() -> u64 {
     kalico_ethercat_rt::clock::monotonic_ns()
 }
 
-fn push_one_piece(conn: &UnixNativeConn, start_time: u64) {
+fn push_one_piece(conn: &UnixNativeConn, start_time: u64) -> i32 {
     let entry = PieceEntry {
         start_time,
         coeffs: [0.0_f32; 4],
@@ -144,7 +145,12 @@ fn push_one_piece(conn: &UnixNativeConn, start_time: u64) {
         pieces_bytes,
     };
     let body = msg.encoded_to_vec();
-    let _ = conn.kalico_call(MessageKind::PushPieces, body, Duration::from_secs(5));
+    let (_, resp) = conn
+        .kalico_call(MessageKind::PushPieces, body, Duration::from_secs(5))
+        .expect("PushPieces call must succeed");
+    PushPiecesResponse::decode(&resp)
+        .expect("PushPiecesResponse must decode")
+        .result
 }
 
 fn spawn_and_claim(tag: &str, extra_args: &[&str]) -> (ChildGuard, UnixNativeConn, String) {
@@ -357,7 +363,19 @@ fn simulated_drive_fault_parks_keeps_serving_and_recovers() {
     assert_eq!(r, 0);
     push_one_piece(&conn, now_ns());
 
-    thread::sleep(Duration::from_millis(100));
+    let fault_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(
+            Instant::now() < fault_deadline,
+            "stub never simulated the drive fault"
+        );
+        let result = push_one_piece(&conn, now_ns() + 60_000_000_000);
+        match result {
+            0 => thread::sleep(Duration::from_millis(20)),
+            ERR_PIECES_WHILE_FAULTED => break,
+            other => panic!("unexpected PushPieces result while polling for fault: {other}"),
+        }
+    }
 
     let r = set_torque(&conn, true, now_ns() + 50_000_000);
     assert_eq!(
