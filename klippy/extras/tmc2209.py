@@ -58,7 +58,9 @@ class TMC2209:
         self.fields.set_field("pdn_disable", True)
         self.fields.set_field("senddelay", 2)  # Avoid tx errors on shared uart
         # Allow virtual pins to be created
-        tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
+        vph = tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
+        self.setup_sensorless_homing = vph.arm
+        self.clear_sensorless_homing = vph.disarm
         # Register commands
         current_helper = tmc2130.TMC2130CurrentHelper(config, self.mcu_tmc)
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)

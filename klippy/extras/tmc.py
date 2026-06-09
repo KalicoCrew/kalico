@@ -704,6 +704,20 @@ class TMCVirtualPinHelper:
     def handle_homing_move_begin(self, hmove):
         if self.mcu_endstop not in hmove.get_mcu_endstops():
             return
+        self.arm()
+
+    def handle_homing_move_end(self, hmove):
+        if self.mcu_endstop not in hmove.get_mcu_endstops():
+            return
+        self.disarm()
+
+    def arm(self):
+        # Apply the configured stallguard threshold
+        if self.fields.lookup_register("sgthrs", None) is not None:
+            sg_val = self.fields.set_field(
+                "sgthrs", self.fields.get_field("sgthrs")
+            )
+            self.mcu_tmc.set_register("SGTHRS", sg_val)
         # Enable/disable stealthchop
         self.pwmthrs = self.fields.get_field("tpwmthrs")
         reg = self.fields.lookup_register("en_pwm_mode", None)
@@ -731,9 +745,7 @@ class TMCVirtualPinHelper:
             th_val = self.fields.set_field("thigh", 0)
             self.mcu_tmc.set_register(reg, th_val)
 
-    def handle_homing_move_end(self, hmove):
-        if self.mcu_endstop not in hmove.get_mcu_endstops():
-            return
+    def disarm(self):
         # Restore stealthchop/spreadcycle
         reg = self.fields.lookup_register("en_pwm_mode", None)
         if reg is None:

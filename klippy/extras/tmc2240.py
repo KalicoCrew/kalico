@@ -398,7 +398,9 @@ class TMC2240:
                 config, Registers, self.fields, TMC_FREQUENCY
             )
         # Allow virtual pins to be created
-        tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
+        vph = tmc.TMCVirtualPinHelper(config, self.mcu_tmc)
+        self.setup_sensorless_homing = vph.arm
+        self.clear_sensorless_homing = vph.disarm
         # Register commands
         current_helper = TMC2240CurrentHelper(config, self.mcu_tmc)
         cmdhelper = tmc.TMCCommandHelper(config, self.mcu_tmc, current_helper)

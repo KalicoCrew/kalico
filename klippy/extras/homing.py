@@ -112,6 +112,18 @@ class Homing:
             gcmd, toolhead, bridge, kin, axis, entry, speed, max_travel
         )
 
+    def _sensorless_drivers(self, rail):
+        names = {s.get_name() for s in rail.get_steppers()}
+        drivers = []
+        for name, obj in self.printer.lookup_objects():
+            if not name.startswith("tmc"):
+                continue
+            if name.split()[-1] not in names:
+                continue
+            if hasattr(obj, "setup_sensorless_homing"):
+                drivers.append(obj)
+        return drivers
+
     def _home_axis(
         self,
         gcmd,
@@ -154,30 +166,46 @@ class Homing:
         for s in rail.get_steppers():
             stepper_enable.motor_debug_enable(s.get_name(), True)
 
-        rest_ticks = entry["mcu"].seconds_to_clock(HOMING_POLL_PERIOD)
-        entry["query_cmd"].send([entry["oid"], rest_ticks])
-
-        bridge.home_axis_start(
-            axis, direction, speed, max_travel, entry["endstop_id"], endstop_mcu
+        drivers = (
+            self._sensorless_drivers(rail)
+            if hi.use_sensorless_homing
+            else []
         )
-        reactor = self.printer.get_reactor()
-        deadline = reactor.monotonic() + HOMING_TIMEOUT
-        result = None
-        while result is None:
-            try:
-                result = bridge.home_axis_poll()
-            except Exception as e:
-                bridge.home_abort()
-                raise gcmd.error("G28 %s failed: %s" % ("XYZ"[axis], e))
-            if result is not None:
-                break
-            if reactor.monotonic() > deadline:
-                bridge.home_abort()
-                raise gcmd.error(
-                    "G28 %s: timed out waiting for endstop trip"
-                    % ("XYZ"[axis],)
-                )
-            reactor.pause(reactor.monotonic() + 0.010)
+        for driver in drivers:
+            driver.setup_sensorless_homing()
+        try:
+            rest_ticks = entry["mcu"].seconds_to_clock(HOMING_POLL_PERIOD)
+            entry["query_cmd"].send([entry["oid"], rest_ticks])
+
+            bridge.home_axis_start(
+                axis,
+                direction,
+                speed,
+                max_travel,
+                entry["endstop_id"],
+                endstop_mcu,
+            )
+            reactor = self.printer.get_reactor()
+            deadline = reactor.monotonic() + HOMING_TIMEOUT
+            result = None
+            while result is None:
+                try:
+                    result = bridge.home_axis_poll()
+                except Exception as e:
+                    bridge.home_abort()
+                    raise gcmd.error("G28 %s failed: %s" % ("XYZ"[axis], e))
+                if result is not None:
+                    break
+                if reactor.monotonic() > deadline:
+                    bridge.home_abort()
+                    raise gcmd.error(
+                        "G28 %s: timed out waiting for endstop trip"
+                        % ("XYZ"[axis],)
+                    )
+                reactor.pause(reactor.monotonic() + 0.010)
+        finally:
+            for driver in drivers:
+                driver.clear_sensorless_homing()
         trip_pos, final_pos = result
 
         overshoot = final_pos[axis] - trip_pos[axis]
