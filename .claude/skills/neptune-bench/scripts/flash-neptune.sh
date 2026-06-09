@@ -55,7 +55,9 @@ restore_bench() {
 # ---------------------------------------------------------------------------
 if git rev-parse --abbrev-ref "$BRANCH" >/dev/null 2>&1; then
   ahead=$(git rev-list --count "origin/$BRANCH..$BRANCH" 2>/dev/null || echo '?')
-  dirty=$(git status --porcelain 2>/dev/null | grep -c .)
+  # grep -c exits 1 on a clean tree; without `|| true` that kills the script
+  # under `set -e`/`pipefail` before anything prints.
+  dirty=$(git status --porcelain 2>/dev/null | grep -c . || true)
   say "Reminder: $ahead unpushed commit(s) on '$BRANCH', and $dirty uncommitted file(s) locally."
   say "The Pi flashes origin/$BRANCH — push first if you want local work on the board."
 fi
