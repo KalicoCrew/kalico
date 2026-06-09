@@ -396,7 +396,7 @@ send_status_heartbeat(void)
     if (n < 0)
         return;
 
-    // Body = engine_state(1) + fault_code(1) + num_axes(1) + n*u32; max 35 B.
+    // Body = engine_state(1) + fault_code(2) + num_axes(1) + n*u32; max 36 B.
     uint8_t payload[KALICO_TX_BUF_SIZE];
     int off = 0;
     payload[off++] = (uint8_t)(KALICO_MSG_STATUS_HEARTBEAT & 0xFF);
@@ -408,6 +408,7 @@ send_status_heartbeat(void)
     payload[off++] = 0;
     payload[off++] = st;
     payload[off++] = fc;
+    payload[off++] = 0;  // fault_code high byte (LE u16; fc is u8 from runtime)
     payload[off++] = (uint8_t)n;
     for (int i = 0; i < n; i++) {
         uint32_t v = counts[i];

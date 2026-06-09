@@ -128,6 +128,41 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         ],
     },
     SchemaMessage {
+        type_tag: 0x0074,
+        name: "SetDriveLimits",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "following_error_counts", ty: "u32" },
+            SchemaField { name: "max_torque_tenth_pct", ty: "u16" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0075,
+        name: "SetDriveLimitsResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0076,
+        name: "RestoreDriveLimits",
+        version: 1,
+        channel: "control",
+        fields: &[],
+    },
+    SchemaMessage {
+        type_tag: 0x0077,
+        name: "RestoreDriveLimitsResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+        ],
+    },
+    SchemaMessage {
         type_tag: 0x0082,
         name: "FaultEvent",
         version: 1,
@@ -145,10 +180,8 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         channel: "events",
         fields: &[
             SchemaField { name: "engine_state", ty: "u8" },
-            SchemaField { name: "fault_code", ty: "u8" },
+            SchemaField { name: "fault_code", ty: "u16" },
             SchemaField { name: "num_axes", ty: "u8" },
-            // retired_counts: num_axes × u32 — variable-length, length-prefixed
-            // by num_axes on the wire.
             SchemaField { name: "retired_counts", ty: "array<u32>" },
         ],
     },
