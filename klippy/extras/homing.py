@@ -1,16 +1,3 @@
-# Cross-MCU native homing: G28 driven by the Rust motion bridge.
-#
-# Auto-loaded by the bridge toolhead (it is the only homing path, not an opt-in
-# extra). At setup it stands up an endstop watch for every axis that has a real
-# endstop_pin (skipping probe:virtual endstops); G28 homes whichever axes are
-# requested — or all of them — by looping one parameterized call per axis. The
-# endstop MCU reports the trip timestamp; the bridge drips the move, broadcasts
-# the stop, and reconstructs (in mm, from the commanded trajectory) both the
-# switch location and the overshot stop, then sets position_endstop + overshoot.
-#
-# Cartesian only for now: each axis maps to one motor. CoreXY (homing X moves
-# both motors) needs both motor keys in the drip cohort and is a follow-on.
-
 import logging
 
 # Endstop poll period while homing. The trip clock is captured at the poll that
@@ -52,14 +39,14 @@ class Homing:
             mcu.register_config_callback(self._make_build_config(entry))
 
         gcode = self.printer.lookup_object("gcode")
-        gcode.register_command("G28", self.cmd_G28, desc="Home (kalico native)")
-        gcode.register_command(
-            "KALICO_HOME",
-            self.cmd_KALICO_HOME,
-            desc="Home one axis with optional SPEED/MAX_TRAVEL (bring-up)",
-        )
+        gcode.register_command("G28", self.cmd_G28, desc="Home")
         gcode.register_command(
             "QUERY_ENDSTOPS", self.cmd_QUERY_ENDSTOPS, desc="Report endstop states"
+        )
+        gcode.register_command(
+            "_HOME_TEST",
+            self.cmd_HOME_TEST,
+            desc="Bench only: home one axis with override SPEED/MAX_TRAVEL",
         )
 
     def cmd_QUERY_ENDSTOPS(self, gcmd):
@@ -116,28 +103,24 @@ class Homing:
             entry = self._axes.get(axis)
             if entry is None:
                 raise gcmd.error(
-                    "G28: axis %s has no native endstop "
-                    "(probe-based homing is not supported yet)" % ("XYZ"[axis],)
+                    "G28: axis %s has no endstop" % ("XYZ"[axis],)
                 )
             self._home_axis(gcmd, toolhead, bridge, kin, axis, entry)
 
-    def cmd_KALICO_HOME(self, gcmd):
-        # Extended command (supports KEY=VALUE) for bring-up: bounded speed/travel.
+    def cmd_HOME_TEST(self, gcmd):
         axis_name = gcmd.get("AXIS").upper()
         if axis_name not in ("X", "Y", "Z"):
-            raise gcmd.error("KALICO_HOME: AXIS must be X, Y, or Z")
+            raise gcmd.error("_HOME_TEST: AXIS must be X, Y, or Z")
         axis = "XYZ".index(axis_name)
         entry = self._axes.get(axis)
         if entry is None:
-            raise gcmd.error("KALICO_HOME: axis %s has no endstop" % axis_name)
+            raise gcmd.error("_HOME_TEST: axis %s has no endstop" % axis_name)
         speed = gcmd.get_float("SPEED", None, above=0.0)
         max_travel = gcmd.get_float("MAX_TRAVEL", None, above=0.0)
         toolhead = self.printer.lookup_object("toolhead")
         bridge = self.printer.lookup_object("motion_bridge")
         kin = toolhead.get_kinematics()
-        self._home_axis(
-            gcmd, toolhead, bridge, kin, axis, entry, speed, max_travel
-        )
+        self._home_axis(gcmd, toolhead, bridge, kin, axis, entry, speed, max_travel)
 
     def _home_axis(
         self,
