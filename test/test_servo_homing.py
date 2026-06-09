@@ -1,5 +1,6 @@
 import pytest
 
+from klippy.extras import homing as homing_mod
 from klippy.extras import servo_axis
 
 
@@ -32,3 +33,70 @@ def test_get_homing_info_reflects_homing_config():
     assert hi.speed == 50.0
     assert hi.position_endstop == -6.0
     assert hi.positive_dir is False
+
+
+class FakeSectionsConfig:
+    def __init__(self, sections):
+        self._sections = sections
+
+    def has_section(self, name):
+        return name in self._sections
+
+
+def test_endstop_section_finds_stepper():
+    cfg = FakeSectionsConfig({"stepper_x"})
+    assert homing_mod._endstop_section(cfg, "x") == "stepper_x"
+
+
+def test_endstop_section_finds_servo():
+    cfg = FakeSectionsConfig({"servo_x"})
+    assert homing_mod._endstop_section(cfg, "x") == "servo_x"
+
+
+def test_endstop_section_none_when_axis_absent():
+    cfg = FakeSectionsConfig({"stepper_y"})
+    assert homing_mod._endstop_section(cfg, "x") is None
+
+
+class FakeStepperEnable:
+    def __init__(self):
+        self.calls = []
+
+    def motor_debug_enable(self, name, enable):
+        self.calls.append((name, enable))
+
+
+class FakeStepper:
+    def __init__(self, name):
+        self._name = name
+
+    def get_name(self):
+        return self._name
+
+
+class FakeRail:
+    def __init__(self, steppers, name):
+        self._steppers = steppers
+        self._name = name
+
+    def get_steppers(self):
+        return self._steppers
+
+    def get_name(self, short=False):
+        return self._name
+
+
+def test_enable_homing_motors_enables_each_stepper():
+    se = FakeStepperEnable()
+    rail = FakeRail(
+        [FakeStepper("stepper_x"), FakeStepper("stepper_x1")], "stepper_x"
+    )
+    homing_mod._enable_homing_motors(se, rail)
+    assert se.calls == [("stepper_x", True), ("stepper_x1", True)]
+
+
+def test_enable_homing_motors_enables_servo_rail_by_name():
+    se = FakeStepperEnable()
+    rail = FakeRail([], "servo_x")
+    homing_mod._enable_homing_motors(se, rail)
+    assert se.calls == [("servo_x", True)]

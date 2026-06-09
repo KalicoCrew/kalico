@@ -7,6 +7,23 @@ TRIP_DEADLINE_MARGIN = 5.0
 NO_MOVEMENT_EPSILON = 0.005
 
 
+def _endstop_section(config, axis_name):
+    for prefix in ("stepper_", "servo_"):
+        section = prefix + axis_name
+        if config.has_section(section):
+            return section
+    return None
+
+
+def _enable_homing_motors(stepper_enable, rail):
+    steppers = rail.get_steppers()
+    if not steppers:
+        stepper_enable.motor_debug_enable(rail.get_name(), True)
+        return
+    for s in steppers:
+        stepper_enable.motor_debug_enable(s.get_name(), True)
+
+
 class Homing:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -14,11 +31,11 @@ class Homing:
 
         self._axes = {}
         for axis_index, axis_name in enumerate("xyz"):
-            section = "stepper_" + axis_name
-            if not config.has_section(section):
+            section = _endstop_section(config, axis_name)
+            if section is None:
                 continue
-            stepper_config = config.getsection(section)
-            endstop_pin = stepper_config.get("endstop_pin", None)
+            axis_config = config.getsection(section)
+            endstop_pin = axis_config.get("endstop_pin", None)
             if endstop_pin is None:
                 continue
             pin_params = ppins.parse_pin(
@@ -27,7 +44,7 @@ class Homing:
             chip = pin_params["chip"]
             if hasattr(chip, "setup_bridge_endstop"):
                 entry = self._provider_entry(
-                    stepper_config, axis_index, chip, pin_params
+                    axis_config, axis_index, chip, pin_params
                 )
             elif hasattr(chip, "create_oid"):
                 entry = {
@@ -59,16 +76,16 @@ class Homing:
                 self._axes[axis_index]["endstop"], "xyz"[axis_index]
             )
 
-    def _provider_entry(self, stepper_config, axis_index, chip, pin_params):
+    def _provider_entry(self, axis_config, axis_index, chip, pin_params):
         endstop = chip.setup_bridge_endstop(pin_params, axis_index)
         trigger_height = None
         if hasattr(chip, "get_position_endstop"):
             trigger_height = chip.get_position_endstop()
-            if stepper_config.get("position_endstop", None) is not None:
-                raise stepper_config.error(
+            if axis_config.get("position_endstop", None) is not None:
+                raise axis_config.error(
                     "[%s] must not set position_endstop: its virtual endstop"
                     " '%s' supplies the trigger height"
-                    % (stepper_config.get_name(), pin_params["chip_name"])
+                    % (axis_config.get_name(), pin_params["chip_name"])
                 )
         return {
             "endstop": endstop,
@@ -136,8 +153,7 @@ class Homing:
         )
 
         stepper_enable = self.printer.lookup_object("stepper_enable")
-        for s in rail.get_steppers():
-            stepper_enable.motor_debug_enable(s.get_name(), True)
+        _enable_homing_motors(stepper_enable, rail)
 
         trip_pos, final_pos = self.trip_move(
             gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry
