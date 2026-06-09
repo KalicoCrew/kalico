@@ -118,6 +118,14 @@ should skip endstop-object setup; position_endstop/range come from config.
   lower cohort-poll latency or two-stage homing for high-speed (overshoot is accounted
   in set_position, so it's not a position error, just physical travel past the switch).
 
+- 3rd KALICO_HOME (budget=4) STILL faulted. transit ALERTs: Y/Z (non-participant)
+  arriving -98..-181ms late, X -3..-39ms. ROOT: cohort dispatch applies max_piece_secs
+  =0.025 to ALL axes → each constant non-moving axis (Y/Z/E) subdivides into ~90
+  identical 25ms pieces → ~270-piece burst floods the 500kbaud link → X drip pieces
+  queue behind them and arrive late. budget bump can't beat link congestion.
+  FIX: subdivide_bernstein skips constant axes (all coeffs equal) → 1 piece each, not 90.
+  Kept budget=4 for margin; fixed 2 drip_tests to be budget-relative (were hardcoded 2).
+
 ## NEXT (Phase 1: prove homing works, existing firmware)
 1. Verify force_move + SET_KINEMATIC_POSITION available.
 2. SET_KINEMATIC_POSITION X=-6 (toolhead physically at switch=min, true).

@@ -71,18 +71,18 @@ fn drip_cap_steady_state_allows_exactly_budget() {
     assert_eq!(co.drip_cap(&ka, &queues), (DRIP_BUDGET - 1) as usize);
     assert_eq!(co.drip_cap(&kb, &queues), (DRIP_BUDGET - 1) as usize);
 
-    // Simulate: both axes pushed 2 pieces total (released=2, floor=0).
-    queues.get_mut(&ka).unwrap().pushed = 2;
-    queues.get_mut(&kb).unwrap().pushed = 2;
-    // ahead = 2 - 0 = 2 = DRIP_BUDGET → cap = 0
+    // Simulate: both axes pushed DRIP_BUDGET pieces (released=DRIP_BUDGET, floor=0).
+    queues.get_mut(&ka).unwrap().pushed = DRIP_BUDGET;
+    queues.get_mut(&kb).unwrap().pushed = DRIP_BUDGET;
+    // ahead = DRIP_BUDGET - 0 = DRIP_BUDGET → cap = 0
     assert_eq!(co.drip_cap(&ka, &queues), 0);
     assert_eq!(co.drip_cap(&kb, &queues), 0);
 
     // MCU retires 1 piece on each axis: floor advances to 1.
     queues.get_mut(&ka).unwrap().retired = 1;
     queues.get_mut(&kb).unwrap().retired = 1;
-    // executed(a) = retired(1) - baseline(0) = 1, likewise b → floor = 1
-    // ahead(a) = released(2) - floor(1) = 1 → cap = 1
+    // executed = retired(1) - baseline(0) = 1 → floor = 1
+    // ahead(a) = released(DRIP_BUDGET) - floor(1) = DRIP_BUDGET-1 → cap = 1
     assert_eq!(co.drip_cap(&ka, &queues), 1);
     assert_eq!(co.drip_cap(&kb, &queues), 1);
 }
@@ -469,43 +469,45 @@ fn arm_with_pre_arm_backlog_bounds_absolute_in_flight() {
     let ka = AxisKey { mcu_id: 0, axis: 0 };
 
     let mut queues = BTreeMap::new();
-    // Pre-arm state: 3 pieces in flight.
-    queues.insert(ka, make_queue(64, 10, 7));
+    // Pre-arm state: DRIP_BUDGET+1 pieces in flight (backlog exceeds budget).
+    let retired0 = 7u32;
+    let backlog = DRIP_BUDGET + 1;
+    queues.insert(ka, make_queue(64, retired0 + backlog, retired0));
 
     let co = arm_cohort(1, vec![ka], Duration::from_secs(5), &queues);
 
-    // Baseline must be set to retired-at-arm (7), not pushed.
+    // Baseline must be set to retired-at-arm, not pushed.
     assert_eq!(
         co.baseline.get(&ka).copied().unwrap_or(0),
-        7,
+        retired0,
         "baseline must be the retired count at arm"
     );
 
-    // At arm: released = 10-7 = 3, executed = 7-7 = 0, floor = 0.
-    // DRIP_BUDGET=2, so cap = max(0, 2-(3-0)) = 0 — backlog exceeds budget.
+    // At arm: released = backlog, executed = 0, floor = 0.
+    // cap = max(0, DRIP_BUDGET - backlog) = 0 — backlog exceeds budget.
     assert_eq!(co.drip_cap(&ka, &queues), 0, "gate must block when pre-arm backlog >= DRIP_BUDGET");
 
-    // Absolute in-flight at arm = pushed - retired = 3. Must not grow.
+    // Absolute in-flight at arm = pushed - retired = backlog. Must not grow.
     let in_flight_at_arm = queues[&ka].pushed.wrapping_sub(queues[&ka].retired);
-    assert_eq!(in_flight_at_arm, 3);
+    assert_eq!(in_flight_at_arm, backlog);
 
-    // MCU retires one piece: retired=8. executed=1, released=3, ahead=2 → still capped.
-    queues.get_mut(&ka).unwrap().retired = 8;
-    assert_eq!(co.drip_cap(&ka, &queues), 0, "still capped at retired=8");
+    // Retire one piece: in-flight drains to DRIP_BUDGET; ahead == DRIP_BUDGET → still capped.
+    queues.get_mut(&ka).unwrap().retired = retired0 + 1;
+    assert_eq!(co.drip_cap(&ka, &queues), 0, "still capped while ahead >= DRIP_BUDGET");
     let in_flight = queues[&ka].pushed.wrapping_sub(queues[&ka].retired);
     assert!(in_flight <= in_flight_at_arm, "in-flight must not grow: {in_flight} > {in_flight_at_arm}");
 
-    // MCU retires another: retired=9. executed=2, released=3, ahead=1 → cap=1.
-    queues.get_mut(&ka).unwrap().retired = 9;
-    assert_eq!(co.drip_cap(&ka, &queues), 1, "one slot opens when backlog drains to < DRIP_BUDGET");
+    // Retire another: in-flight = DRIP_BUDGET-1, ahead = DRIP_BUDGET-1 → one slot opens.
+    queues.get_mut(&ka).unwrap().retired = retired0 + 2;
+    assert_eq!(co.drip_cap(&ka, &queues), 1, "one slot opens when backlog drains below DRIP_BUDGET");
     let in_flight = queues[&ka].pushed.wrapping_sub(queues[&ka].retired);
     assert!(in_flight <= in_flight_at_arm, "in-flight must not grow: {in_flight} > {in_flight_at_arm}");
 
-    // If we push one new piece (pushed=11): released=4, executed=2, ahead=2 → cap=0 again.
-    queues.get_mut(&ka).unwrap().pushed = 11;
+    // Push one new piece to fill the reopened slot: ahead back to DRIP_BUDGET → cap 0.
+    queues.get_mut(&ka).unwrap().pushed += 1;
     assert_eq!(co.drip_cap(&ka, &queues), 0, "cap returns to 0 after new piece fills the reopened slot");
     let in_flight = queues[&ka].pushed.wrapping_sub(queues[&ka].retired);
-    assert_eq!(in_flight, 2, "absolute in-flight is now 2 = DRIP_BUDGET, never 3+1");
+    assert_eq!(in_flight, DRIP_BUDGET, "absolute in-flight is now DRIP_BUDGET, never backlog+1");
 }
 
 // ── Test 10: MCU reboot (retired→0) triggers regression disarm ───────────────
