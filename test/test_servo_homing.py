@@ -219,3 +219,60 @@ def test_post_trip_fault_check_skips_non_servo():
     bridge = FakeFaultBridge(0x8611)
     homing_mod._check_servo_drive_fault(FakeGcmd(), bridge, 0, None)
     assert bridge.taken == []
+
+
+class FakeServoBridge(FakeLimitsBridge):
+    def __init__(self, fault=None):
+        super().__init__()
+        self._fault = fault
+
+    def take_drive_fault(self, handle):
+        self.calls.append(("take_fault", handle))
+        return self._fault
+
+
+def run_guarded_trip(bridge, se, servo_handle, servo_limits, trip):
+    rail = FakeRail([], "servo_x")
+    return homing_mod._run_servo_guarded_trip(
+        FakeGcmd(), bridge, 0, se, rail, servo_handle, servo_limits, trip
+    )
+
+
+def test_guarded_trip_failure_disables_servo_motor_and_reraises():
+    bridge = FakeServoBridge()
+    se = FakeStepperEnable()
+
+    def trip():
+        raise RuntimeError("trip move failed")
+
+    with pytest.raises(RuntimeError, match="trip move failed"):
+        run_guarded_trip(bridge, se, 7, (8192, 500), trip)
+    assert se.calls == [("servo_x", False)]
+
+
+def test_guarded_trip_latched_fault_disables_servo_motor():
+    bridge = FakeServoBridge(fault=0x8611)
+    se = FakeStepperEnable()
+    with pytest.raises(RuntimeError, match="drive fault 0x8611"):
+        run_guarded_trip(bridge, se, 7, (8192, 500), lambda: (1.0, 2.0))
+    assert se.calls == [("servo_x", False)]
+
+
+def test_guarded_trip_success_keeps_servo_motor_enabled():
+    bridge = FakeServoBridge()
+    se = FakeStepperEnable()
+    result = run_guarded_trip(bridge, se, 7, (8192, 500), lambda: (1.0, 2.0))
+    assert result == (1.0, 2.0)
+    assert se.calls == []
+
+
+def test_guarded_trip_stepper_rail_failure_skips_servo_disable():
+    bridge = FakeServoBridge()
+    se = FakeStepperEnable()
+
+    def trip():
+        raise RuntimeError("trip move failed")
+
+    with pytest.raises(RuntimeError, match="trip move failed"):
+        run_guarded_trip(bridge, se, None, None, trip)
+    assert se.calls == []

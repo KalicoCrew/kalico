@@ -46,6 +46,20 @@ def _servo_drive_limits(bridge, handle, limits):
     bridge.restore_drive_limits(handle)
 
 
+def _run_servo_guarded_trip(
+    gcmd, bridge, axis, stepper_enable, rail, servo_handle, servo_limits, trip
+):
+    try:
+        with _servo_drive_limits(bridge, servo_handle, servo_limits):
+            result = trip()
+        _check_servo_drive_fault(gcmd, bridge, axis, servo_handle)
+    except BaseException:
+        if servo_handle is not None:
+            stepper_enable.motor_debug_enable(rail.get_name(), False)
+        raise
+    return result
+
+
 def _check_servo_drive_fault(gcmd, bridge, axis, servo_handle):
     if servo_handle is None:
         return
@@ -197,11 +211,18 @@ class Homing:
             servo_handle = node.get_bridge_handle()
             servo_limits = rail.get_homing_drive_limits()
 
-        with _servo_drive_limits(bridge, servo_handle, servo_limits):
-            trip_pos, final_pos = self.trip_move(
+        trip_pos, final_pos = _run_servo_guarded_trip(
+            gcmd,
+            bridge,
+            axis,
+            stepper_enable,
+            rail,
+            servo_handle,
+            servo_limits,
+            lambda: self.trip_move(
                 gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry
-            )
-        _check_servo_drive_fault(gcmd, bridge, axis, servo_handle)
+            ),
+        )
 
         overshoot = final_pos[axis] - trip_pos[axis]
         newpos = list(toolhead.get_position())
