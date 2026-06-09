@@ -6,7 +6,8 @@ use kalico_host_rt::native_call::NativeCall;
 use kalico_host_rt::unix_native_conn::UnixNativeConn;
 use kalico_protocol::codec::{Cursor, Decode, Encode};
 use kalico_protocol::messages::{
-    ClaimHandshakeReply, MessageKind, PushPieces, SetTorque, SetTorqueResponse, StopResponse,
+    ClaimHandshakeReply, MessageKind, PushPieces, RestoreDriveLimitsResponse, SetDriveLimits,
+    SetDriveLimitsResponse, SetTorque, SetTorqueResponse, StopResponse,
 };
 use runtime::piece_ring::PieceEntry;
 
@@ -305,6 +306,64 @@ fn stop_while_parked_succeeds_and_keeps_session() {
 
     let r = set_torque(&conn, true, now_ns() + 50_000_000);
     assert_eq!(r, 0, "enable after Stop must return 0 (session alive), got {r}");
+
+    drop(conn);
+    let _ = guard.defuse().wait();
+    let _ = std::fs::remove_file(&path);
+}
+
+fn set_drive_limits(conn: &UnixNativeConn, counts: u32, tenth_pct: u16) -> i32 {
+    let body = SetDriveLimits {
+        following_error_counts: counts,
+        max_torque_tenth_pct: tenth_pct,
+    }
+    .encoded_to_vec();
+    let (kind, resp) = conn
+        .kalico_call(MessageKind::SetDriveLimits, body, Duration::from_secs(5))
+        .expect("SetDriveLimits call must succeed");
+    assert_eq!(kind, MessageKind::SetDriveLimitsResponse);
+    SetDriveLimitsResponse::decode(&resp).expect("decode").result
+}
+
+fn restore_drive_limits(conn: &UnixNativeConn) -> i32 {
+    let (kind, resp) = conn
+        .kalico_call(
+            MessageKind::RestoreDriveLimits,
+            Vec::new(),
+            Duration::from_secs(5),
+        )
+        .expect("RestoreDriveLimits call must succeed");
+    assert_eq!(kind, MessageKind::RestoreDriveLimitsResponse);
+    RestoreDriveLimitsResponse::decode(&resp).expect("decode").result
+}
+
+#[test]
+fn drive_limits_set_and_restore_round_trip() {
+    let (mut guard, conn, path) = spawn_and_claim("limits-rt", &[]);
+    assert_eq!(set_drive_limits(&conn, 8192, 500), 0);
+    assert_eq!(restore_drive_limits(&conn), 0);
+    assert_eq!(set_drive_limits(&conn, 4096, 300), 0);
+    drop(conn);
+    let _ = guard.defuse().wait();
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn simulated_drive_fault_parks_keeps_serving_and_recovers() {
+    let (mut guard, conn, path) =
+        spawn_and_claim("drive-fault", &["--drive-fault-after-pieces", "1"]);
+
+    let r = set_torque(&conn, true, now_ns() + 50_000_000);
+    assert_eq!(r, 0);
+    push_one_piece(&conn, now_ns());
+
+    thread::sleep(Duration::from_millis(100));
+
+    let r = set_torque(&conn, true, now_ns() + 50_000_000);
+    assert_eq!(
+        r, 0,
+        "enable from Faulted must run the ladder and return 0, got {r}"
+    );
 
     drop(conn);
     let _ = guard.defuse().wait();
