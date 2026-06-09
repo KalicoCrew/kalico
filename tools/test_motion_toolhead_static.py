@@ -18,6 +18,11 @@ EXPECTED_LOCAL_METHODS = frozenset(
         "_fire_active_callbacks",
         "drip_move",
         "dwell",
+        # Bridge-mode idle_timeout wiring: the bridge owns the timeline, so it
+        # must source check_busy from its own pending-end-time and emit
+        # toolhead:sync_print_time itself — upstream's emitters are dead here.
+        "check_busy",
+        "_sync_print_time",
         "wait_moves",
         "flush_step_generation",
         "get_last_move_time",

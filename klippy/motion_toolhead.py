@@ -345,6 +345,7 @@ class MotionToolhead(ToolHead):
             self.bridge.get_last_move_time() - bridge_lmt_before
         )
         self.commanded_pos[:] = move.end_pos
+        self._sync_print_time()
 
     def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
         if self.kin is None:
@@ -384,6 +385,7 @@ class MotionToolhead(ToolHead):
         self.bridge.submit_dwell(delay)
         if delay > 0.0:
             self._bump_pending_end_time(delay)
+            self._sync_print_time()
 
     def wait_moves(self):
         self.bridge.wait_moves()
@@ -453,6 +455,24 @@ class MotionToolhead(ToolHead):
         est = self.mcu.estimated_print_time(self.reactor.monotonic())
         base = max(self._mcu_pending_end_time, est)
         self._mcu_pending_end_time = base + duration_added
+
+    def check_busy(self, eventtime):
+        est_print_time = self.mcu.estimated_print_time(eventtime)
+        print_time = self._mcu_pending_end_time
+        lookahead_empty = print_time <= est_print_time
+        return print_time, est_print_time, lookahead_empty
+
+    def _sync_print_time(self):
+        if self.mcu is None:
+            return
+        curtime = self.reactor.monotonic()
+        est_print_time = self.mcu.estimated_print_time(curtime)
+        self.printer.send_event(
+            "toolhead:sync_print_time",
+            curtime,
+            est_print_time,
+            self._mcu_pending_end_time,
+        )
 
     def note_mcu_movequeue_activity(self, mq_time, set_step_gen_time=False):
         # No-op: upstream's body would re-arm the silenced flush_timer.
