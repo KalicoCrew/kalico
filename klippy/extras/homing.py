@@ -10,6 +10,23 @@ NO_MOVEMENT_EPSILON = 0.005
 class Homing:
     def __init__(self, config):
         self.printer = config.get_printer()
+        self._config = config
+        self._axes = None
+
+        gcode = self.printer.lookup_object("gcode")
+        gcode.register_command("G28", self.cmd_G28, desc="Home")
+        gcode.register_command(
+            "_HOME_TEST",
+            self.cmd_HOME_TEST,
+            desc="Bench only: home one axis with override SPEED/MAX_TRAVEL",
+        )
+
+    def resolve_endstops(self):
+        if self._config is None:
+            raise self.printer.config_error(
+                "homing: resolve_endstops called twice"
+            )
+        config, self._config = self._config, None
         ppins = self.printer.lookup_object("pins")
 
         self._axes = {}
@@ -45,14 +62,6 @@ class Homing:
                 )
             self._axes[axis_index] = entry
 
-        gcode = self.printer.lookup_object("gcode")
-        gcode.register_command("G28", self.cmd_G28, desc="Home")
-        gcode.register_command(
-            "_HOME_TEST",
-            self.cmd_HOME_TEST,
-            desc="Bench only: home one axis with override SPEED/MAX_TRAVEL",
-        )
-
         query_endstops = self.printer.load_object(config, "query_endstops")
         for axis_index in sorted(self._axes):
             query_endstops.register_endstop(
@@ -77,6 +86,8 @@ class Homing:
         }
 
     def cmd_G28(self, gcmd):
+        if self._axes is None:
+            raise gcmd.error("G28: homing endstops were never resolved")
         requested = [
             i for i, a in enumerate("XYZ") if gcmd.get(a, None) is not None
         ]
@@ -92,6 +103,8 @@ class Homing:
             self._home_axis(gcmd, toolhead, bridge, kin, axis, entry)
 
     def cmd_HOME_TEST(self, gcmd):
+        if self._axes is None:
+            raise gcmd.error("_HOME_TEST: homing endstops were never resolved")
         axis_name = gcmd.get("AXIS").upper()
         if axis_name not in ("X", "Y", "Z"):
             raise gcmd.error("_HOME_TEST: AXIS must be X, Y, or Z")

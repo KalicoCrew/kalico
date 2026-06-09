@@ -99,7 +99,7 @@ class BridgeKinematics:
 
         self.limits = [(1.0, -1.0)] * 3
 
-        self._printer.load_object(config, "homing")
+        self._printer.load_object(config, "homing").resolve_endstops()
 
         self._printer.register_event_handler(
             "stepper_enable:motor_off",
