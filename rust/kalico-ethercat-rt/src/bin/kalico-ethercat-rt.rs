@@ -387,6 +387,8 @@ fn main() {
             ring.reset();
             cmap = None;
             server.respond(&status_heartbeat_frame(0, drive_err, &[ring.retired_count()]));
+            last_sent_retired = ring.retired_count();
+            heartbeat_sent = true;
         }
 
         match eval_wkc(wkc, 3, &mut wkc_consecutive) {

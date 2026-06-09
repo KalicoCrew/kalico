@@ -248,6 +248,8 @@ fn main() {
                         ring.reset();
                         eprintln!("ec-rt-stub: drive fault simulated after {sampled_pieces} pieces");
                         server.respond(&status_heartbeat_frame(0, 0x8611, &[ring.retired_count()]));
+                        last_sent_retired = ring.retired_count();
+                        heartbeat_sent = true;
                     }
                 }
             }
