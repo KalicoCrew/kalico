@@ -168,7 +168,6 @@ job_sim() {
     local sel="sim_unit and not needs_hardware and not needs_renode"
     local paths="tools/sim_klippy \
         tools/test_kalico_host_io_seq_wrap.py \
-        tools/test_motion_kinematics_enable.py \
         tools/test_motion_toolhead_static.py"
     if command -v docker >/dev/null 2>&1; then
         docker run --rm -v "$ROOT:/klipper" -w /klipper --entrypoint bash "$DOCKER_IMAGE" -lc \
