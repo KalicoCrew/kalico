@@ -66,12 +66,20 @@ pins registry (`ppins.parse_pin`). Two cases on the resolved chip:
 
 A chip that is neither a bridge MCU nor a provider, or a provider chip whose
 section is missing, is a hard config error. Ordering is safe: all config
-sections (and thus provider chip registration) load before the toolhead
-modules that load `homing`.
+sections (and thus provider chip registration and entry building) load
+before the toolhead modules that load `homing`.
+
+Provider-backed axes register with `query_endstops` under their axis name,
+same as GPIO axes — `QUERY_ENDSTOPS` on the Neptune shows `x`, `y`, `z`
+(the probe pin) and `probe` (registered by the probe itself).
 
 Provider interface, duck-typed like mainline's `setup_pin`:
 
-- `setup_bridge_endstop(pin_params, allocator)` — required.
+- `setup_bridge_endstop(pin_params)` — required. Validates the request and
+  returns the provider's already-built entry; it does not create it. The
+  entry must exist independently of homing, because a provider may be
+  configured without backing any axis (e.g. `[probe]` alongside a GPIO Z
+  endstop, probe used only for `PROBE`/`PROBE_ACCURACY`).
 - `get_position_endstop()` — optional trigger-height override. Probe returns
   `z_offset`. When an override exists and the stepper section *also* sets
   `position_endstop`, that is a hard config error (mainline silently ignores
@@ -83,10 +91,12 @@ Provider interface, duck-typed like mainline's `setup_pin`:
 
 ### Endstop-id allocation
 
-The per-axis hardcoded `endstop_id = axis_index` becomes a host-side
-allocator owned by `homing.py`. Axis GPIO endstops register first (keeping
-0–2 in practice, which keeps trip logs readable); providers get the next free
-id. The bridge treats ids as opaque, so nothing changes below Python.
+Ids 0–2 stay statically reserved for the axes (as today — keeps trip logs
+readable). Providers draw from a shared allocator starting at 3. The
+allocator lives with the shared entry-builder helper extracted from
+`homing.py` — not inside `Homing` — because providers build their entries at
+their own config-load time, before `homing` loads. The bridge treats ids as
+opaque, so nothing changes below Python.
 
 ### Shared trip-move primitive
 
@@ -160,8 +170,8 @@ unused-option check rejects legacy options (`activate_gcode`,
   stores `last_query`.
 - `PROBE` — multi-sample descent loop, reports `Result is z=…`, stores
   `last_z_result`.
-- `PROBE_ACCURACY` — N samples at the current position, reports
-  max/min/range/average/median/stddev.
+- `PROBE_ACCURACY` — N samples at the current position (`SAMPLES` default
+  10, matching mainline), reports max/min/range/average/median/stddev.
 - All accept the standard per-call overrides (`PROBE_SPEED`, `SAMPLES`,
   `SAMPLE_RETRACT_DIST`, `SAMPLES_TOLERANCE`, `SAMPLES_TOLERANCE_RETRIES`,
   `SAMPLES_RESULT`, `LIFT_SPEED`).
@@ -219,7 +229,9 @@ and `get_position_endstop()` exposed for `homing.py` now and bed_mesh later.
   endstop string validation, allocator.
 - **kalico-sim**: Neptune-shaped config (`[probe]` +
   `probe:z_virtual_endstop`) running `G28`, `PROBE`, `PROBE_ACCURACY`,
-  `QUERY_PROBE`; failure cases: missing `[probe]`, `PROBE` while unhomed,
-  `position_endstop` conflict, retract behavior on all axes.
+  `QUERY_PROBE`; a `[probe]`-with-GPIO-Z-endstop config (probe used for
+  `PROBE` only, no virtual endstop); failure cases: missing `[probe]`,
+  `PROBE` while unhomed, `position_endstop` conflict, retract behavior on
+  all axes.
 - **Bench**: flash the Neptune, confirm clean boot, then (per-command
   user go-ahead) `G28`, `QUERY_PROBE`, `PROBE_ACCURACY`.
