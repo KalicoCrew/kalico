@@ -20,7 +20,12 @@ fn stub_configs(mcu_id: u32, axes: Vec<usize>) -> Vec<McuAxisConfig> {
     }]
 }
 
-fn make_linear_piece(start_time: u64, duration_secs: f32, pos_start: f32, pos_end: f32) -> PieceEntry {
+fn make_linear_piece(
+    start_time: u64,
+    duration_secs: f32,
+    pos_start: f32,
+    pos_end: f32,
+) -> PieceEntry {
     PieceEntry {
         start_time,
         coeffs: [pos_start, pos_start, pos_end, pos_end],
@@ -42,12 +47,8 @@ fn router_with_clock(mcu_id: u32, freq: f64) -> Arc<Mutex<PassthroughRouter>> {
         mcu_id,
         "handle must equal mcu_id for test correctness"
     );
-    let _ = router.set_clock_est_from_sample(
-        handle,
-        freq,
-        std::time::Instant::now(),
-        1_000_000_000,
-    );
+    let _ =
+        router.set_clock_est_from_sample(handle, freq, std::time::Instant::now(), 1_000_000_000);
     Arc::new(Mutex::new(router))
 }
 
@@ -113,14 +114,8 @@ fn same_mcu_trip_clock_exact_reconstruction() {
 
     let trip_clock = piece_start + duration_ticks / 2;
 
-    let result = reconstruct_axis_position(
-        MCU_ID,
-        trip_clock,
-        key,
-        &router,
-        &homing_traj,
-        &configs,
-    );
+    let result =
+        reconstruct_axis_position(MCU_ID, trip_clock, key, &router, &homing_traj, &configs);
     let pos = result.expect("same-MCU reconstruction must succeed");
 
     assert!(
@@ -148,14 +143,8 @@ fn trip_at_piece_start_returns_start_position() {
     map.insert(key, vec![piece]);
     let homing_traj = Arc::new(Mutex::new(map));
 
-    let result = reconstruct_axis_position(
-        MCU_ID,
-        piece_start,
-        key,
-        &router,
-        &homing_traj,
-        &configs,
-    );
+    let result =
+        reconstruct_axis_position(MCU_ID, piece_start, key, &router, &homing_traj, &configs);
     let pos = result.expect("trip at piece start must succeed");
     assert!(
         (pos - 10.0).abs() < 0.5,
@@ -185,14 +174,7 @@ fn trip_outside_trajectory_window_errors() {
 
     #[allow(clippy::cast_possible_truncation)]
     let way_after = piece_start + (duration_secs as f64 * FREQ) as u64 + 9_999_999;
-    let result = reconstruct_axis_position(
-        MCU_ID,
-        way_after,
-        key,
-        &router,
-        &homing_traj,
-        &configs,
-    );
+    let result = reconstruct_axis_position(MCU_ID, way_after, key, &router, &homing_traj, &configs);
     assert!(
         result.is_err(),
         "trip after trajectory window must error, got: {result:?}"
@@ -224,14 +206,7 @@ fn trip_before_trajectory_window_errors() {
     let homing_traj = Arc::new(Mutex::new(map));
 
     let before = piece_start - 1;
-    let result = reconstruct_axis_position(
-        MCU_ID,
-        before,
-        key,
-        &router,
-        &homing_traj,
-        &configs,
-    );
+    let result = reconstruct_axis_position(MCU_ID, before, key, &router, &homing_traj, &configs);
     assert!(
         result.is_err(),
         "trip before trajectory window must error, got: {result:?}"
@@ -253,7 +228,8 @@ fn no_trajectory_pieces_errors() {
     let homing_traj: Arc<Mutex<HashMap<AxisKey, Vec<PieceEntry>>>> =
         Arc::new(Mutex::new(HashMap::new()));
 
-    let result = reconstruct_axis_position(MCU_ID, 12_345_678, key, &router, &homing_traj, &configs);
+    let result =
+        reconstruct_axis_position(MCU_ID, 12_345_678, key, &router, &homing_traj, &configs);
     assert!(
         result.is_err(),
         "missing trajectory must error, got: {result:?}"
@@ -292,14 +268,8 @@ fn multiple_pieces_trip_in_second_piece() {
     let homing_traj = Arc::new(Mutex::new(map));
 
     let trip_clock = piece2_start + duration_ticks / 2;
-    let result = reconstruct_axis_position(
-        MCU_ID,
-        trip_clock,
-        key,
-        &router,
-        &homing_traj,
-        &configs,
-    );
+    let result =
+        reconstruct_axis_position(MCU_ID, trip_clock, key, &router, &homing_traj, &configs);
     let pos = result.expect("trip in second piece must succeed");
     assert!(
         (pos - 75.0).abs() < 1.0,

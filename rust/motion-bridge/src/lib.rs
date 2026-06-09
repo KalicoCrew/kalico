@@ -7,13 +7,13 @@ pub mod classify;
 pub mod config;
 #[doc(hidden)]
 pub mod dispatch;
+pub mod drain;
+#[doc(hidden)]
+pub mod enqueue;
 #[doc(hidden)]
 pub mod homing;
 #[doc(hidden)]
 pub mod kinematics;
-pub mod drain;
-#[doc(hidden)]
-pub mod enqueue;
 pub mod logging;
 pub mod mcu_log;
 #[doc(hidden)]

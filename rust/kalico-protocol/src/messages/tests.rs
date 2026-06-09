@@ -290,7 +290,10 @@ fn stop_kinds_have_stable_tags() {
     assert_eq!(MessageKind::Stop.as_u16(), 0x0072);
     assert_eq!(MessageKind::StopResponse.as_u16(), 0x0073);
     assert_eq!(MessageKind::from_u16(0x0072), Some(MessageKind::Stop));
-    assert_eq!(MessageKind::from_u16(0x0073), Some(MessageKind::StopResponse));
+    assert_eq!(
+        MessageKind::from_u16(0x0073),
+        Some(MessageKind::StopResponse)
+    );
     assert!(!MessageKind::Stop.is_event());
 }
 

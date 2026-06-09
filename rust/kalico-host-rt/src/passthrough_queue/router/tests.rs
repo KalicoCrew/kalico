@@ -500,7 +500,10 @@ fn clock_to_host_secs_round_trips() {
 
     let trip_host = base_host + 1.5;
     let mcu_clock = router.host_time_to_mcu_clock(mcu, trip_host).unwrap();
-    assert_eq!(mcu_clock, 11_500_000, "forward projection must yield 11_500_000");
+    assert_eq!(
+        mcu_clock, 11_500_000,
+        "forward projection must yield 11_500_000"
+    );
 
     let recovered = router.clock_to_host_secs(mcu, mcu_clock).unwrap();
     let diff = (recovered - trip_host).abs();
@@ -523,7 +526,11 @@ fn clock_to_host_secs_no_record_returns_none() {
 #[test]
 fn clock_to_host_secs_unknown_mcu_returns_none() {
     let (router, _) = make_router();
-    assert!(router.clock_to_host_secs(McuHandle::from_raw(999), 0).is_none());
+    assert!(
+        router
+            .clock_to_host_secs(McuHandle::from_raw(999), 0)
+            .is_none()
+    );
 }
 
 #[test]

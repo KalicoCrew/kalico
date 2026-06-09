@@ -51,8 +51,15 @@ where
                 axis: axis_idx as u8,
             };
 
-            let pieces =
-                flatten_axis(curve, t0, cfg.mcu_id, axis_idx, host_now, &project, max_piece_secs);
+            let pieces = flatten_axis(
+                curve,
+                t0,
+                cfg.mcu_id,
+                axis_idx,
+                host_now,
+                &project,
+                max_piece_secs,
+            );
             if !pieces.is_empty() {
                 out.push(EnqueueMsg {
                     key,

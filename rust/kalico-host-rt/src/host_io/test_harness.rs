@@ -286,7 +286,6 @@ impl ReactorHarness {
         rx
     }
 
-
     pub fn register_interceptor(
         &mut self,
         msg_name: &str,
@@ -307,7 +306,6 @@ impl ReactorHarness {
             .recv()
             .expect("reply_rx recv failed in register_interceptor")
     }
-
 
     pub fn install_passthrough_router(
         &mut self,

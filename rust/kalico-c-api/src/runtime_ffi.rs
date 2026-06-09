@@ -516,7 +516,6 @@ pub mod exports {
         KALICO_OK
     }
 
-
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_set_step_mode(
         rt: *mut KalicoRuntime,

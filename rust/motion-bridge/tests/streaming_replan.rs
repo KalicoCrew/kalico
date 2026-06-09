@@ -731,7 +731,6 @@ fn kalico_stream_open_resets_planner_state() {
     h.shutdown();
 }
 
-
 #[test]
 fn underrun_recovery_resets_to_recovered_position() {
     let (dispatch, recorded) = recording_dispatch();

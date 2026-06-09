@@ -461,7 +461,8 @@ pub struct PyMotionBridge {
     pump_thread: Mutex<Option<JoinHandle<()>>>,
     drain: std::sync::Arc<crate::drain::DrainSync>,
     active_drip_cohort: Arc<Mutex<Option<u64>>>,
-    homing_trajectory: Arc<Mutex<HashMap<crate::pump::AxisKey, Vec<runtime::piece_ring::PieceEntry>>>>,
+    homing_trajectory:
+        Arc<Mutex<HashMap<crate::pump::AxisKey, Vec<runtime::piece_ring::PieceEntry>>>>,
     homing_run: Arc<Mutex<Option<HomingRun>>>,
     homing_result: Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3]), String>>>>,
     // Latched once `shutdown()` has run a full teardown. Subsequent calls (the
@@ -2514,9 +2515,7 @@ impl PyMotionBridge {
                 for mut m in msgs {
                     if let Some(cohort) = active_cohort {
                         m.drip_cohort = Some(cohort);
-                        let mut traj = homing_traj_for_cb
-                            .lock()
-                            .unwrap_or_else(|p| p.into_inner());
+                        let mut traj = homing_traj_for_cb.lock().unwrap_or_else(|p| p.into_inner());
                         let entry = traj.entry(m.key).or_default();
                         for (piece, _host_t) in &m.pieces {
                             entry.push(*piece);
@@ -2776,9 +2775,9 @@ impl PyMotionBridge {
         }
 
         let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
-        let planner = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("home_axis: planner not initialized")
-        })?;
+        let planner = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("home_axis: planner not initialized"))?;
 
         let (all_axis_keys, moving_axis_keys, _axis_mcu, axis_key) = {
             let configs = self
@@ -2808,10 +2807,7 @@ impl PyMotionBridge {
                      (init_planner not called?)"
                 ))
             })?;
-            let key = crate::pump::AxisKey {
-                mcu_id: mcu,
-                axis,
-            };
+            let key = crate::pump::AxisKey { mcu_id: mcu, axis };
             let moving_keys = vec![key];
             (all_keys, moving_keys, mcu, key)
         };
@@ -2825,7 +2821,10 @@ impl PyMotionBridge {
         let start_pos = *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
 
         {
-            let mut traj = self.homing_trajectory.lock().unwrap_or_else(|p| p.into_inner());
+            let mut traj = self
+                .homing_trajectory
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             traj.clear();
         }
 
@@ -2836,7 +2835,10 @@ impl PyMotionBridge {
         }
 
         {
-            let mut cohort_guard = self.active_drip_cohort.lock().unwrap_or_else(|p| p.into_inner());
+            let mut cohort_guard = self
+                .active_drip_cohort
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
             *cohort_guard = Some(cohort);
         }
 
@@ -2874,7 +2876,8 @@ impl PyMotionBridge {
 
         let home_pos_4 = [start_pos[0], start_pos[1], start_pos[2], 0.0];
 
-        let (planner_done_tx, planner_done_rx) = crossbeam_channel::bounded::<Result<(), String>>(1);
+        let (planner_done_tx, planner_done_rx) =
+            crossbeam_channel::bounded::<Result<(), String>>(1);
         planner
             .home_drip(HomeDripParams {
                 home_pos: home_pos_4,
@@ -2939,14 +2942,18 @@ impl PyMotionBridge {
             guard.as_ref().map(|r| (r.all_axis_keys.clone(), r.cohort))
         };
         if let Some((all_keys, cohort)) = info {
-            if let Some(tx) = self.pump_tx.lock().unwrap_or_else(|p| p.into_inner()).clone() {
+            if let Some(tx) = self
+                .pump_tx
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+            {
                 let _ = tx.send(crate::pump::PumpMsg::Flush(all_keys));
                 let _ = tx.send(crate::pump::PumpMsg::DripDisarm(cohort));
             }
         }
         self.finish_homing();
     }
-
 }
 
 impl Drop for PyMotionBridge {
@@ -2962,7 +2969,10 @@ impl Drop for PyMotionBridge {
 
 impl PyMotionBridge {
     fn finish_homing(&self) {
-        *self.active_drip_cohort.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        *self
+            .active_drip_cohort
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
         *self.homing_run.lock().unwrap_or_else(|p| p.into_inner()) = None;
         *self.homing_result.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
@@ -3028,11 +3038,8 @@ impl PyMotionBridge {
             .spawn(move || {
                 let stop_timeout = Duration::from_secs(3);
 
-                let stepper_mcu_ids: std::collections::HashSet<u32> = run
-                    .all_axis_keys
-                    .iter()
-                    .map(|k| k.mcu_id)
-                    .collect();
+                let stepper_mcu_ids: std::collections::HashSet<u32> =
+                    run.all_axis_keys.iter().map(|k| k.mcu_id).collect();
 
                 if let Some(tx) = pump_tx_opt {
                     let _ = tx.send(crate::pump::PumpMsg::Flush(run.all_axis_keys.clone()));
@@ -3107,7 +3114,9 @@ impl PyMotionBridge {
                     .iter()
                     .find(|c| c.mcu_id == axis_key.mcu_id)
                     .map_or(1u8, |c| c.kinematics);
-                let reconstruct_cartesian = |source_mcu: u32, clock: u64| -> Result<[f64; 3], String> {
+                let reconstruct_cartesian = |source_mcu: u32,
+                                             clock: u64|
+                 -> Result<[f64; 3], String> {
                     let motor_pos = crate::homing::reconstruct_axis_position(
                         source_mcu,
                         clock,

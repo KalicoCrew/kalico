@@ -220,7 +220,11 @@ fn homing_lead_gates_piece_release() {
     match schedule(&queues, 255, &horizon_of, no_cap) {
         Schedule::Send(frames) => {
             assert_eq!(frames.len(), 1);
-            assert_eq!(frames[0].pieces.len(), 1, "only the inside-50ms piece must release");
+            assert_eq!(
+                frames[0].pieces.len(),
+                1,
+                "only the inside-50ms piece must release"
+            );
             assert_eq!(frames[0].pieces[0].start_time, 25_000);
         }
         other => panic!("expected Send with one piece, got {other:?}"),
@@ -242,7 +246,11 @@ fn homing_lead_gates_piece_release() {
     match schedule(&queues2, 255, &horizon_of_max, no_cap) {
         Schedule::Send(frames) => {
             assert_eq!(frames.len(), 1);
-            assert_eq!(frames[0].pieces.len(), 2, "both pieces must release under MAX_LEAD_SECS");
+            assert_eq!(
+                frames[0].pieces.len(),
+                2,
+                "both pieces must release under MAX_LEAD_SECS"
+            );
         }
         other => panic!("expected Send with two pieces, got {other:?}"),
     }

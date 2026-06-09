@@ -46,7 +46,6 @@ fn arm_cohort(
     }
 }
 
-
 #[test]
 fn drip_cap_steady_state_allows_exactly_budget() {
     let ka = AxisKey { mcu_id: 0, axis: 0 };
@@ -77,7 +76,6 @@ fn drip_cap_steady_state_allows_exactly_budget() {
     assert_eq!(co.drip_cap(&kb, &queues), 1);
 }
 
-
 #[test]
 fn drip_stalled_participant_freezes_all_at_budget() {
     let ka = AxisKey { mcu_id: 0, axis: 0 };
@@ -91,18 +89,41 @@ fn drip_stalled_participant_freezes_all_at_budget() {
 
     queues.get_mut(&ka).unwrap().pushed = DRIP_BUDGET;
     queues.get_mut(&kb).unwrap().pushed = DRIP_BUDGET;
-    assert_eq!(co.drip_cap(&ka, &queues), 0, "A must be frozen when floor = 0");
-    assert_eq!(co.drip_cap(&kb, &queues), 0, "B must be frozen when floor = 0");
+    assert_eq!(
+        co.drip_cap(&ka, &queues),
+        0,
+        "A must be frozen when floor = 0"
+    );
+    assert_eq!(
+        co.drip_cap(&kb, &queues),
+        0,
+        "B must be frozen when floor = 0"
+    );
 
     queues.get_mut(&kb).unwrap().retired = 1;
-    assert_eq!(co.drip_cap(&ka, &queues), 0, "A must stay frozen until A retires");
-    assert_eq!(co.drip_cap(&kb, &queues), 0, "B stays frozen while A has not advanced floor");
+    assert_eq!(
+        co.drip_cap(&ka, &queues),
+        0,
+        "A must stay frozen until A retires"
+    );
+    assert_eq!(
+        co.drip_cap(&kb, &queues),
+        0,
+        "B stays frozen while A has not advanced floor"
+    );
 
     queues.get_mut(&ka).unwrap().retired = 1;
-    assert_eq!(co.drip_cap(&ka, &queues), 1, "A unfreeze once floor advances");
-    assert_eq!(co.drip_cap(&kb, &queues), 1, "B unfreeze once floor advances");
+    assert_eq!(
+        co.drip_cap(&ka, &queues),
+        1,
+        "A unfreeze once floor advances"
+    );
+    assert_eq!(
+        co.drip_cap(&kb, &queues),
+        1,
+        "B unfreeze once floor advances"
+    );
 }
-
 
 #[test]
 fn drip_budget_bounds_total_pushed_beyond_floor() {
@@ -156,7 +177,6 @@ fn drip_budget_bounds_total_pushed_beyond_floor() {
     }
 }
 
-
 #[test]
 fn retired_regression_triggers_on_drip_stall() {
     let ka = AxisKey { mcu_id: 3, axis: 2 };
@@ -205,7 +225,11 @@ fn retired_regression_triggers_on_drip_stall() {
     handle.join().unwrap();
 
     let msgs = stall_msgs.lock().unwrap();
-    assert_eq!(msgs.len(), 1, "expected exactly one drip stall error, got: {msgs:?}");
+    assert_eq!(
+        msgs.len(),
+        1,
+        "expected exactly one drip stall error, got: {msgs:?}"
+    );
     assert!(
         msgs[0].contains("regression"),
         "error must mention 'regression'; got: {}",
@@ -236,7 +260,6 @@ impl PieceSink for NullSink {
         Ok(kalico_protocol::result_codes::OK)
     }
 }
-
 
 #[test]
 fn non_cohort_axis_streams_freely_while_cohort_armed() {
@@ -289,7 +312,6 @@ fn non_cohort_axis_streams_freely_while_cohort_armed() {
         other => panic!("expected Send with free_axis piece; got {other:?}"),
     }
 }
-
 
 #[test]
 fn drip_stall_timeout_fires_when_floor_stuck() {
@@ -354,22 +376,13 @@ fn drip_stall_timeout_fires_when_floor_stuck() {
     );
 }
 
-
 #[test]
 fn drip_disarm_clears_cohort() {
     let ka = AxisKey { mcu_id: 0, axis: 0 };
     let (tx, rx) = std::sync::mpsc::channel::<PumpMsg>();
 
     let handle = std::thread::spawn(move || {
-        run_pump(
-            rx,
-            NullSink,
-            |_| 64,
-            |_| None,
-            |_| {},
-            |_, _| {},
-            |_| {},
-        );
+        run_pump(rx, NullSink, |_| 64, |_| None, |_| {}, |_, _| {}, |_| {});
     });
 
     tx.send(PumpMsg::DripArm(DripArm {
@@ -414,25 +427,50 @@ fn arm_with_pre_arm_backlog_bounds_absolute_in_flight() {
         "baseline must be the retired count at arm"
     );
 
-    assert_eq!(co.drip_cap(&ka, &queues), 0, "gate must block when pre-arm backlog >= DRIP_BUDGET");
+    assert_eq!(
+        co.drip_cap(&ka, &queues),
+        0,
+        "gate must block when pre-arm backlog >= DRIP_BUDGET"
+    );
 
     let in_flight_at_arm = queues[&ka].pushed.wrapping_sub(queues[&ka].retired);
     assert_eq!(in_flight_at_arm, backlog);
 
     queues.get_mut(&ka).unwrap().retired = retired0 + 1;
-    assert_eq!(co.drip_cap(&ka, &queues), 0, "still capped while ahead >= DRIP_BUDGET");
+    assert_eq!(
+        co.drip_cap(&ka, &queues),
+        0,
+        "still capped while ahead >= DRIP_BUDGET"
+    );
     let in_flight = queues[&ka].pushed.wrapping_sub(queues[&ka].retired);
-    assert!(in_flight <= in_flight_at_arm, "in-flight must not grow: {in_flight} > {in_flight_at_arm}");
+    assert!(
+        in_flight <= in_flight_at_arm,
+        "in-flight must not grow: {in_flight} > {in_flight_at_arm}"
+    );
 
     queues.get_mut(&ka).unwrap().retired = retired0 + 2;
-    assert_eq!(co.drip_cap(&ka, &queues), 1, "one slot opens when backlog drains below DRIP_BUDGET");
+    assert_eq!(
+        co.drip_cap(&ka, &queues),
+        1,
+        "one slot opens when backlog drains below DRIP_BUDGET"
+    );
     let in_flight = queues[&ka].pushed.wrapping_sub(queues[&ka].retired);
-    assert!(in_flight <= in_flight_at_arm, "in-flight must not grow: {in_flight} > {in_flight_at_arm}");
+    assert!(
+        in_flight <= in_flight_at_arm,
+        "in-flight must not grow: {in_flight} > {in_flight_at_arm}"
+    );
 
     queues.get_mut(&ka).unwrap().pushed += 1;
-    assert_eq!(co.drip_cap(&ka, &queues), 0, "cap returns to 0 after new piece fills the reopened slot");
+    assert_eq!(
+        co.drip_cap(&ka, &queues),
+        0,
+        "cap returns to 0 after new piece fills the reopened slot"
+    );
     let in_flight = queues[&ka].pushed.wrapping_sub(queues[&ka].retired);
-    assert_eq!(in_flight, DRIP_BUDGET, "absolute in-flight is now DRIP_BUDGET, never backlog+1");
+    assert_eq!(
+        in_flight, DRIP_BUDGET,
+        "absolute in-flight is now DRIP_BUDGET, never backlog+1"
+    );
 }
 
 #[test]
@@ -483,14 +521,17 @@ fn mcu_reboot_retired_to_zero_triggers_regression() {
     handle.join().unwrap();
 
     let msgs = stall_msgs.lock().unwrap();
-    assert_eq!(msgs.len(), 1, "expected exactly one drip stall/regression error; got: {msgs:?}");
+    assert_eq!(
+        msgs.len(),
+        1,
+        "expected exactly one drip stall/regression error; got: {msgs:?}"
+    );
     assert!(
         msgs[0].contains("regression"),
         "error must mention 'regression'; got: {}",
         msgs[0]
     );
 }
-
 
 #[test]
 fn drip_disarm_wrong_cohort_id_is_noop() {

@@ -146,9 +146,7 @@ pub fn reconstruct_axis_position(
         let cfg = configs
             .iter()
             .find(|c| c.mcu_id == axis_mcu)
-            .ok_or_else(|| {
-                ReconstructError::UnknownClockFreq { mcu_id: axis_mcu }.to_string()
-            })?;
+            .ok_or_else(|| ReconstructError::UnknownClockFreq { mcu_id: axis_mcu }.to_string())?;
         let _ = cfg;
         let router_guard = router.lock().unwrap_or_else(|p| p.into_inner());
         let axis_handle = crate::types::mcu_handle_from_raw(axis_mcu);
@@ -163,12 +161,11 @@ pub fn reconstruct_axis_position(
     }
 
     let traj = homing_traj.lock().unwrap_or_else(|p| p.into_inner());
-    let pieces = traj.get(&axis_key).ok_or_else(|| {
-        ReconstructError::NoTrajectoryPieces(axis_key).to_string()
-    })?;
+    let pieces = traj
+        .get(&axis_key)
+        .ok_or_else(|| ReconstructError::NoTrajectoryPieces(axis_key).to_string())?;
 
-    eval_piece_at_clock(pieces, axis_clock, clock_freq, trip_clock)
-        .map_err(|e| e.to_string())
+    eval_piece_at_clock(pieces, axis_clock, clock_freq, trip_clock).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

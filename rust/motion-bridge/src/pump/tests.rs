@@ -90,7 +90,15 @@ fn run_pump_sets_start_slot_from_cursor_and_advances_it() {
     let (tx, rx) = mpsc::channel::<PumpMsg>();
     let sink_clone = sink.clone();
     let handle = std::thread::spawn(move || {
-        run_pump(rx, sink_clone, |_key| RING_DEPTH, |_mcu| None, |_| {}, |_, _| {}, |_| {});
+        run_pump(
+            rx,
+            sink_clone,
+            |_key| RING_DEPTH,
+            |_mcu| None,
+            |_| {},
+            |_, _| {},
+            |_| {},
+        );
     });
 
     tx.send(make_enqueue(
@@ -375,10 +383,21 @@ fn on_abandon_reports_flushed_not_pushed_pieces() {
 fn flush_unknown_key_is_noop() {
     let (tx, rx) = mpsc::channel::<PumpMsg>();
     let handle = std::thread::spawn(move || {
-        run_pump(rx, NullSink, |_key| 64, |_mcu| None, |_| {}, |_, _| {}, |_| {});
+        run_pump(
+            rx,
+            NullSink,
+            |_key| 64,
+            |_mcu| None,
+            |_| {},
+            |_, _| {},
+            |_| {},
+        );
     });
 
-    let never_enqueued = AxisKey { mcu_id: 99, axis: 7 };
+    let never_enqueued = AxisKey {
+        mcu_id: 99,
+        axis: 7,
+    };
     tx.send(PumpMsg::Flush(vec![never_enqueued])).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(20));
     tx.send(PumpMsg::Shutdown).unwrap();
