@@ -153,7 +153,7 @@ fn decodes_stop_command() {
 
 #[test]
 fn stop_response_frame_round_trips() {
-    let frame = stop_response_frame(5, 0, 123_456_789);
+    let frame = stop_response_frame(5, -311, 123_456_789);
     let (chan, payload) = decode_frame(&frame).unwrap();
     assert_eq!(chan, CHANNEL_CONTROL);
     let (hdr, body) = decode_message_header(payload).unwrap();
@@ -163,6 +163,6 @@ fn stop_response_frame_round_trips() {
         Some(MessageKind::StopResponse)
     );
     let r = StopResponse::decode(body).unwrap();
-    assert_eq!(r.result, 0);
+    assert_eq!(r.result, -311);
     assert_eq!(r.discard_clock, 123_456_789);
 }
