@@ -206,5 +206,19 @@ where
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriveFaultRoute {
+    HomingError,
+    Fatal,
+}
+
+pub fn route_drive_fault(fault_mcu: u32, homing_axis_mcu: Option<u32>) -> DriveFaultRoute {
+    if homing_axis_mcu == Some(fault_mcu) {
+        DriveFaultRoute::HomingError
+    } else {
+        DriveFaultRoute::Fatal
+    }
+}
+
 #[cfg(test)]
 mod tests;

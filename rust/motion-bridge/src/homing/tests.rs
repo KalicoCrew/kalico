@@ -277,6 +277,25 @@ fn multiple_pieces_trip_in_second_piece() {
     );
 }
 
+mod drive_fault_routing_tests {
+    use crate::homing::{DriveFaultRoute, route_drive_fault};
+
+    #[test]
+    fn homing_active_on_faulting_mcu_routes_to_homing_error() {
+        assert_eq!(route_drive_fault(7, Some(7)), DriveFaultRoute::HomingError);
+    }
+
+    #[test]
+    fn homing_on_other_mcu_is_fatal() {
+        assert_eq!(route_drive_fault(7, Some(3)), DriveFaultRoute::Fatal);
+    }
+
+    #[test]
+    fn idle_fault_is_fatal() {
+        assert_eq!(route_drive_fault(7, None), DriveFaultRoute::Fatal);
+    }
+}
+
 mod broadcast_stop_tests {
     use crate::homing::broadcast_stop;
     use kalico_protocol::messages::StopResponse;
