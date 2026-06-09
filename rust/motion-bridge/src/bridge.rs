@@ -2996,6 +2996,14 @@ impl PyMotionBridge {
         let start_pos = *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
 
         {
+            let mut latched = self
+                .latched_drive_fault
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            latched.remove(&axis_key.mcu_id);
+        }
+
+        {
             let mut traj = self
                 .homing_trajectory
                 .lock()
