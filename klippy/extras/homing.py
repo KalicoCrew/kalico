@@ -1,3 +1,4 @@
+import contextlib
 import logging
 
 from klippy.bridge_endstop import AXIS_ENDSTOP_IDS, BridgeEndstop
@@ -22,6 +23,38 @@ def _enable_homing_motors(stepper_enable, rail):
         return
     for s in steppers:
         stepper_enable.motor_debug_enable(s.get_name(), True)
+
+
+@contextlib.contextmanager
+def _servo_drive_limits(bridge, handle, limits):
+    if handle is None or limits is None:
+        yield
+        return
+    bridge.set_drive_limits(handle, limits[0], limits[1])
+    try:
+        yield
+    except BaseException:
+        try:
+            bridge.restore_drive_limits(handle)
+        except Exception:
+            logging.warning(
+                "homing: restore_drive_limits failed while handling a"
+                " homing error",
+                exc_info=True,
+            )
+        raise
+    bridge.restore_drive_limits(handle)
+
+
+def _check_servo_drive_fault(gcmd, bridge, axis, servo_handle):
+    if servo_handle is None:
+        return
+    fault = bridge.take_drive_fault(servo_handle)
+    if fault is not None:
+        raise gcmd.error(
+            "%s homing: drive fault 0x%04x at endstop contact — "
+            "following-error/torque limit exceeded" % ("XYZ"[axis], fault)
+        )
 
 
 class Homing:
@@ -155,9 +188,20 @@ class Homing:
         stepper_enable = self.printer.lookup_object("stepper_enable")
         _enable_homing_motors(stepper_enable, rail)
 
-        trip_pos, final_pos = self.trip_move(
-            gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry
-        )
+        servo_handle = None
+        servo_limits = None
+        if hasattr(rail, "get_node_name"):
+            node = self.printer.lookup_object(
+                "ethercat_node " + rail.get_node_name()
+            )
+            servo_handle = node.get_bridge_handle()
+            servo_limits = rail.get_homing_drive_limits()
+
+        with _servo_drive_limits(bridge, servo_handle, servo_limits):
+            trip_pos, final_pos = self.trip_move(
+                gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry
+            )
+        _check_servo_drive_fault(gcmd, bridge, axis, servo_handle)
 
         overshoot = final_pos[axis] - trip_pos[axis]
         newpos = list(toolhead.get_position())

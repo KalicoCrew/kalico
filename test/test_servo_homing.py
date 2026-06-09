@@ -100,3 +100,122 @@ def test_enable_homing_motors_enables_servo_rail_by_name():
     rail = FakeRail([], "servo_x")
     homing_mod._enable_homing_motors(se, rail)
     assert se.calls == [("servo_x", True)]
+
+
+def make_homing_servo_rail():
+    rail = servo_axis.ServoRail.__new__(servo_axis.ServoRail)
+    rail.axis = "x"
+    rail.name = "servo_x"
+    rail.rotation_distance = 40.0
+    rail.encoder_counts_per_rev = 131072
+    rail.homing_following_error = 2.5
+    rail.homing_max_torque = 50.0
+    rail.following_error = None
+    rail.max_torque = None
+    return rail
+
+
+def test_homing_drive_limits_convert_units():
+    rail = make_homing_servo_rail()
+    counts, tenth_pct = rail.get_homing_drive_limits()
+    assert counts == 8192
+    assert tenth_pct == 500
+
+
+def test_session_drive_limits_none_when_unconfigured():
+    rail = make_homing_servo_rail()
+    assert rail.get_session_drive_limits() == (None, None)
+
+
+def test_session_drive_limits_convert_units():
+    rail = make_homing_servo_rail()
+    rail.following_error = 5.0
+    rail.max_torque = 120.0
+    assert rail.get_session_drive_limits() == (16384, 1200)
+
+
+class FakeLimitsBridge:
+    def __init__(self):
+        self.calls = []
+
+    def set_drive_limits(self, handle, counts, tenth_pct):
+        self.calls.append(("set", handle, counts, tenth_pct))
+
+    def restore_drive_limits(self, handle):
+        self.calls.append(("restore", handle))
+
+
+def test_homing_limits_guard_sets_and_restores():
+    bridge = FakeLimitsBridge()
+    with homing_mod._servo_drive_limits(bridge, 7, (8192, 500)):
+        assert bridge.calls == [("set", 7, 8192, 500)]
+    assert bridge.calls == [("set", 7, 8192, 500), ("restore", 7)]
+
+
+def test_homing_limits_guard_restores_on_error():
+    bridge = FakeLimitsBridge()
+    try:
+        with homing_mod._servo_drive_limits(bridge, 7, (8192, 500)):
+            raise RuntimeError("trip move failed")
+    except RuntimeError:
+        pass
+    assert bridge.calls[-1] == ("restore", 7)
+
+
+def test_homing_limits_guard_noop_without_limits():
+    bridge = FakeLimitsBridge()
+    with homing_mod._servo_drive_limits(bridge, None, None):
+        pass
+    assert bridge.calls == []
+
+
+class FailingRestoreBridge(FakeLimitsBridge):
+    def restore_drive_limits(self, handle):
+        raise OSError("endpoint gone")
+
+
+def test_homing_limits_guard_restore_failure_raises_on_success_path():
+    bridge = FailingRestoreBridge()
+    with pytest.raises(OSError, match="endpoint gone"):
+        with homing_mod._servo_drive_limits(bridge, 7, (8192, 500)):
+            pass
+
+
+def test_homing_limits_guard_restore_failure_does_not_mask_body_error():
+    bridge = FailingRestoreBridge()
+    with pytest.raises(RuntimeError, match="trip move failed"):
+        with homing_mod._servo_drive_limits(bridge, 7, (8192, 500)):
+            raise RuntimeError("trip move failed")
+
+
+class FakeGcmd:
+    error = RuntimeError
+
+
+class FakeFaultBridge:
+    def __init__(self, fault):
+        self._fault = fault
+        self.taken = []
+
+    def take_drive_fault(self, handle):
+        self.taken.append(handle)
+        return self._fault
+
+
+def test_post_trip_fault_check_raises_on_fault():
+    bridge = FakeFaultBridge(0x8611)
+    with pytest.raises(RuntimeError, match="drive fault 0x8611"):
+        homing_mod._check_servo_drive_fault(FakeGcmd(), bridge, 0, 7)
+    assert bridge.taken == [7]
+
+
+def test_post_trip_fault_check_passes_without_fault():
+    bridge = FakeFaultBridge(None)
+    homing_mod._check_servo_drive_fault(FakeGcmd(), bridge, 0, 7)
+    assert bridge.taken == [7]
+
+
+def test_post_trip_fault_check_skips_non_servo():
+    bridge = FakeFaultBridge(0x8611)
+    homing_mod._check_servo_drive_fault(FakeGcmd(), bridge, 0, None)
+    assert bridge.taken == []
