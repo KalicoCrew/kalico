@@ -347,9 +347,16 @@ fn run_one_iteration(
                     .iter()
                     .position(|&i| i == global_idx)
                     .unwrap();
+                let mut seg_a_max = planning_a_max[flat_idx];
+                if flat_idx == 0 && input.initial_v > 0.0 {
+                    let committed = input.initial_a.abs();
+                    for ax in 0..3 {
+                        seg_a_max[ax] = seg_a_max[ax].max(committed.min(orig.limits.a_max[ax]));
+                    }
+                }
                 let derated_limits = temporal::Limits::new(
                     orig.limits.v_max,
-                    planning_a_max[flat_idx],
+                    seg_a_max,
                     orig.limits.j_max,
                     orig.limits.a_centripetal_max,
                 );
