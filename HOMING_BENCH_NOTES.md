@@ -138,6 +138,59 @@ should skip endstop-object setup; position_endstop/range come from config.
 - If still resetting: the foreground hog is elsewhere (my runtime_drain occupancy-status
   emission, or piece processing). Next would be firmware-side profiling/reduction (reflash).
 
+- After flood+poll fixes: drip dispatches the FULL move (102 pieces, 14.9mm, all +lead,
+  no fault, no IWDG). But NO trip ever fired → toolhead had DRIFTED ~40mm +X across my
+  probe jogs (each +25 jog > each -14 home → net +X drift). MAX_TRAVEL=14 couldn't reach.
+- **TRIP MECHANISM CONFIRMED WORKING**: jogged -X in 8mm steps with the armed watch; at
+  logical X=60 (40mm of -X travel) the switch TRIGGERED and the watch LATCHED (armed 1→0).
+  The endstop fires correctly on press. The only reason homing didn't complete was the
+  toolhead being out of MAX_TRAVEL range. Toolhead now AT the switch.
+- Plan: SET X=-6 (at switch) → jog +X off → KALICO_HOME with MAX_TRAVEL that reaches it.
+
+## ★★★ HEADLINE: X HOMING WORKS ★★★ (2026-06-09 ~03:56)
+KALICO_HOME AXIS=X SPEED=8 MAX_TRAVEL=20 from X=10 (16mm to switch):
+- Tripped at the switch, reconstructed position = **-6.0336** = position_endstop(-6) +
+  overshoot(-33um). homed=xyz. The trip→broadcast-Stop→reconstruct→set_position pipeline
+  works end-to-end. 33um overshoot at 8mm/s is an excellent, sensible result.
+- THEN klippy shut down with a SEPARATE fault (see remaining bug). The home itself succeeded.
+
+## Bugs fixed this session (all committed to homing-rework)
+1. ce909a219 Option C: PrinterRail setup_endstops flag; bridge skips MCU_endstop → boots.
+2. 03d1ded62 bridge rails default position_endstop=position_min (Z had none).
+3. d2b458f33 passive endstop_query_state + QUERY_ENDSTOPS (FIRMWARE — flashed).
+4. 31865933c KALICO_HOME bring-up cmd + refuse-home-when-triggered guard + SPEED/MAX_TRAVEL.
+5. 34856e94f **pump lead regression** (demolish hardcoded lead_secs=0.0; restored MAX_LEAD_SECS) → basic motion works.
+6. 88b3f559d cohort non-participant lead (Y/Z faulted during X home).
+7. 9fcda7698 don't subdivide constant axes (Y/Z/E flood of 270 pieces → 3).
+8. 289f32ed9 DRIP_BUDGET 2→4 (slow-host drip margin).
+9. 89de7ffa5 endstop poll 10kHz→1kHz (HOMING_POLL_PERIOD; MCU foreground unload).
+Only #3 needed a reflash; the rest are host .so / Python (klippy restart). Firmware on the
+bench = commit d2b458f33 (rom 28%, has endstop_query_state). Schema hash unchanged throughout.
+
+## ★ REMAINING BUG: post-home re-anchor StepsPerSampleExceeded (fault 65226=-310, detail 45)
+After a SUCCESSFUL home sets position to -6.0336, the MCU faults StepsPerSampleExceeded
+(detail 45 = ~0.56mm / 45-step jump in one sample) → klippy shuts down. This blocks chaining
+homes for the jog/home/compare repeatability test.
+- seed() (rust/runtime/src/step.rs:42) is a pure accumulator relabel (no steps), and the
+  accumulator after homing (~-480 steps ≈ -6mm) matches the seed (-6.0336). So the jump is
+  from a PIECE's update() (step.rs:56, the |delta|>max_steps_per_tick check).
+- HYPOTHESIS: a post-trip piece executes with a position discontinuity vs the seed. Either
+  (a) the DRIP_BUDGET in-flight pieces past the trip aren't fully discarded before set_position's
+  seed, or (b) bridge.set_position (bridge.rs:2666) order: flush()→wait_drained→kalico_stream_open
+  →seed; if discard_pending reset the accumulator and a stale piece runs before the seed, delta
+  from 0→-6 jumps. Need to read handle_stop/discard_pending's accumulator handling + the trip
+  handler's Flush vs the MCU ring race.
+- WORKAROUND for repeatability test if unfixed: each home gives a correct result before the
+  shutdown; restart klippy between homes, re-locate switch, jog different distance, home, record
+  the reconstructed final/overshoot. Tight overshoot clustering = repeatable.
+
+## How to position the toolhead (no step readout on real FW)
+The toolhead position drifts across attempts (homes move -X, my probe jogs move +X). To LOCATE
+the switch: arm is set by a prior home (or it persists); jog -X in small steps (normal G1, which
+is reliable) and watch QUERY_ENDSTOPS armed flag — it latches 1→0 when the toolhead crosses the
+switch (TRIGGERED). Then SET_KINEMATIC_POSITION X=-6 (at switch), jog +X off, home. Done at 03:55:
+toolhead was ~40mm +X of the switch; located it at the 8mm step.
+
 ## NEXT (Phase 1: prove homing works, existing firmware)
 1. Verify force_move + SET_KINEMATIC_POSITION available.
 2. SET_KINEMATIC_POSITION X=-6 (toolhead physically at switch=min, true).
