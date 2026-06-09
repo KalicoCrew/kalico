@@ -986,7 +986,6 @@ pub mod exports {
             return 0;
         }
         let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: read-only SharedState atomics/seqlock; no &mut.
         unsafe {
             let shared_ptr: *const SharedState = core::ptr::addr_of!((*ctx).shared);
             runtime::clock::read_widened_now(&*shared_ptr)
@@ -1006,7 +1005,6 @@ pub mod exports {
             return KALICO_ERR_NOT_INIT;
         }
         let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: reads u32 ring head/retired fields; aligned single-instruction reads on Cortex-M.
         unsafe {
             let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             let engine = &(*isr_ptr).engine;

@@ -29,10 +29,6 @@ fn make_linear_piece(start_time: u64, duration_secs: f32, pos_start: f32, pos_en
     }
 }
 
-/// Create a router where `mcu_id` maps to the corresponding `McuHandle`.
-///
-/// `claim_mcu` assigns handles 0, 1, 2… sequentially.  We claim `mcu_id + 1`
-/// dummy MCUs and use the last one so the handle's raw value equals `mcu_id`.
 fn router_with_clock(mcu_id: u32, freq: f64) -> Arc<Mutex<PassthroughRouter>> {
     let clock: Arc<dyn kalico_host_rt::clock::Clock + Send + Sync> =
         Arc::new(kalico_host_rt::clock::RealClock);

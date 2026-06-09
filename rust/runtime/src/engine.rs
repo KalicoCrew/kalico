@@ -206,12 +206,6 @@ impl Engine {
         self.last_error.store(0, Ordering::Release);
     }
 
-    /// Drain every axis ring to empty and drop the cached armed piece, keeping
-    /// the axis configuration and current position. Used by the homing-trip
-    /// recovery: the trip stopped TIM5 mid-move, so the buffered pieces are
-    /// abandoned — draining the rings makes the engine idle (no stale piece to
-    /// fault on TIM5 restart) and brings retired up to head so the host drain
-    /// reconciles. Safe only while TIM5 is stopped (no concurrent ISR).
     pub fn discard_pending(&mut self) {
         for axis_opt in self.stepping_axes.iter_mut() {
             let Some(axis) = axis_opt.as_mut() else {
@@ -503,12 +497,6 @@ impl Engine {
             let Some(axis) = axis_opt.as_mut() else {
                 continue;
             };
-            // Re-anchoring invalidates any pending pieces: they belong to the old
-            // stream and would execute from the freshly-seeded position, stepping
-            // the difference in one sample (StepsPerSampleExceeded). This matters
-            // after a homing trip, where a drip straggler can land in the ring
-            // between the Stop's discard and this seed. Drain + disarm like
-            // discard_pending so the new anchor starts clean.
             while axis.ring.front_slot().is_some() {
                 axis.ring.advance_counter();
             }

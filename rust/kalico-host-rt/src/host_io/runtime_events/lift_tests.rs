@@ -43,10 +43,6 @@ fn lifts_unknown_to_catch_all() {
     }
 }
 
-/// Spec §4.8: when the upstream decode emits the canonical
-/// `("#output", {"#msg": ..., "#format": ...})` shape (free-form path),
-/// lift must surface the firmware-side format string, not the literal
-/// "#output" routing tag.
 #[test]
 fn lifts_unknown_recovers_format_from_pseudo_field() {
     let mut p = MessageParams::new();

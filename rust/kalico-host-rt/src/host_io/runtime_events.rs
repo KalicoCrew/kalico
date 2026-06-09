@@ -48,7 +48,6 @@ pub struct McuLogEvent {
 #[derive(Debug, Clone, Copy)]
 pub struct EndstopTripEvent {
     pub endstop_id: u8,
-    /// Widened u64 MCU clock captured at edge detection on the endstop MCU.
     pub trip_clock: u64,
 }
 

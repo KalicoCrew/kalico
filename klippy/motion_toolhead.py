@@ -245,7 +245,6 @@ class MotionToolhead(ToolHead):
             self.bridge = motion_bridge._StubBridge()
         self.kinematics_name = config.get("kinematics", "")
         self.bridge._kinematics_name = self.kinematics_name
-        # Projected MCU print-time of the end of the last queued bridge move.
         self._mcu_pending_end_time = 0.0
 
         super().__init__(config)

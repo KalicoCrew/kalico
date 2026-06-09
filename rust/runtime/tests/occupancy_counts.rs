@@ -47,9 +47,6 @@ fn occupancy_tracks_pushed_and_retired_pieces() {
     e.push_pieces(0, &[zero_entry(), zero_entry(), zero_entry()], &mut storage);
     assert_eq!(e.occupancy_counts()[0], 3);
 
-    // retired_counts and occupancy_counts are complementary views of the
-    // same ring: retired advances only when the ISR pops, so after a push
-    // the occupancy should equal the number pushed.
     assert_eq!(e.retired_counts()[0], 0);
 }
 

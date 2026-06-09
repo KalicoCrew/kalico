@@ -260,8 +260,6 @@ impl Decode for SetTorqueResponse {
     }
 }
 
-/// Unconditional ring flush (host → MCU). Empty body — the handler discards
-/// pending pieces and disarms; it carries no homing semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stop;
 
@@ -278,8 +276,6 @@ impl Decode for Stop {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StopResponse {
     pub result: i32,
-    /// MCU clock at the discard instant; the host evaluates the homing
-    /// trajectory at this tick to recover the final (overshot) position.
     pub discard_clock: u64,
 }
 
@@ -411,8 +407,6 @@ impl Decode for McuLog {
     }
 }
 
-/// Endstop trip (MCU → host, events channel). `trip_clock` is the widened u64
-/// MCU clock captured at edge detection — see `src/endstop.c`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndstopTrip {
     pub endstop_id: u8,

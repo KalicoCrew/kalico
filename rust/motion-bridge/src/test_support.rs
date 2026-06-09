@@ -5,12 +5,6 @@ use std::sync::Arc;
 use kalico_host_rt::host_io::parser::{DataDictionary, MsgProtoParser};
 use kalico_host_rt::host_io::wire;
 
-/// Build a `MsgProtoParser` for extension liveness tests:
-///
-/// - `trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u`
-///   (response msgid=30, unsolicited from participant MCU)
-/// - `trsync_set_timeout oid=%c clock=%u`
-///   (command msgid=31, sent to participant MCU)
 pub fn build_extension_parser() -> Arc<MsgProtoParser> {
     let dict_json = serde_json::json!({
         "commands": {
@@ -29,14 +23,6 @@ pub fn build_extension_parser() -> Arc<MsgProtoParser> {
     Arc::new(MsgProtoParser::from_dictionary(dict).expect("extension parser build failed"))
 }
 
-/// Build a `MsgProtoParser` for participant-timeout relay tests:
-///
-/// - `trsync_state oid=%c can_trigger=%c trigger_reason=%c clock=%u`
-///   (response msgid=30, emitted by participant MCU)
-/// - `trsync_set_timeout oid=%c clock=%u`
-///   (command msgid=31, sent to participant MCU by extension engine)
-/// - `trsync_trigger oid=%c reason=%c`
-///   (command msgid=32, sent to sink MCU on trip relay)
 pub fn build_trigger_relay_parser() -> Arc<MsgProtoParser> {
     let dict_json = serde_json::json!({
         "commands": {
@@ -56,7 +42,6 @@ pub fn build_trigger_relay_parser() -> Arc<MsgProtoParser> {
     Arc::new(MsgProtoParser::from_dictionary(dict).expect("trigger relay parser build failed"))
 }
 
-/// Encode a `trsync_state` frame (msgid=30).
 pub fn build_trsync_state_frame(oid: u8, can_trigger: u8, clock: u32, seq: u8) -> Vec<u8> {
     use kalico_host_rt::host_io::parser::encode_vlq;
     let mut payload = Vec::new();
@@ -68,7 +53,6 @@ pub fn build_trsync_state_frame(oid: u8, can_trigger: u8, clock: u32, seq: u8) -
     wire::build_frame(&payload, seq)
 }
 
-/// Extract message payloads from raw outbound wire bytes.
 pub fn extract_payloads(tx_bytes: Vec<u8>) -> Vec<Vec<u8>> {
     let mut buf = tx_bytes;
     let mut payloads = Vec::new();

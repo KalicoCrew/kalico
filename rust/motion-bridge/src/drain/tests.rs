@@ -87,33 +87,21 @@ fn post_reset_partial_retired_not_drained() {
     );
 }
 
-/// Homing-trip reconciliation: the full move is dispatched (`sent`), but the
-/// trip pushes only a prefix to the MCU; the un-pushed tail is dropped by Flush
-/// and reported via `unsend`. The MCU's discard_pending advances `retired` to
-/// `head` (= the pushed prefix). Without `unsend`, `sent` overshoots the
-/// reachable `retired` forever and wait_drained hangs.
 #[test]
 fn trip_unsend_reconciles_with_discard() {
     let d = DrainSync::new();
 
-    // Pre-home set_position baselines the stream at cumulative 1000.
     d.set_retired(0, 0, 1000);
     d.reset();
 
-    // Home dispatches the full 200-piece move.
     d.add_sent(0, 0, 200);
-    // Pump pushed 120 to the MCU before the trip; 80 stayed queued. The MCU has
-    // executed 80 so far. Not drained — and never would be without unsend.
     d.set_retired(0, 0, 1080);
     assert!(
         d.wait_drained(Duration::from_millis(20)).is_err(),
         "mid-trip: 200 sent vs delta 80 — not drained"
     );
 
-    // Flush drops the 80 un-pushed pieces.
     d.unsend(0, 0, 80);
-    // discard_pending retires the 40 in-ring-but-unexecuted pieces: the MCU
-    // cumulative reaches head = 1000 + 120 = 1120.
     d.set_retired(0, 0, 1120);
     assert!(
         d.wait_drained(Duration::from_millis(20)).is_ok(),
@@ -121,7 +109,6 @@ fn trip_unsend_reconciles_with_discard() {
     );
 }
 
-/// Multi-axis: all axes must be drained before wait_drained returns Ok.
 #[test]
 fn multi_axis_all_must_drain() {
     let d = DrainSync::new();

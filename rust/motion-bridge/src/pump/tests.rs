@@ -185,15 +185,9 @@ impl PieceSink for NullSink {
 
 #[test]
 fn flush_clears_queued_pieces_and_junctions() {
-    // Strategy: gate pieces behind a narrow horizon so they remain in the queue
-    // when Flush arrives. After flushing, widen the horizon and enqueue a
-    // new probe piece. Assert the sink sees exactly the probe piece — the
-    // pre-flush pieces were cleared, not sent.
     let key = AxisKey { mcu_id: 1, axis: 0 };
     let (tx, rx) = mpsc::channel::<PumpMsg>();
 
-    // freq=1_000 ticks/s, lead_secs=0.001 → horizon = 1 tick when ack_now=0.
-    // Gated pieces start at tick 1_000 (>> horizon). Post-flush probe at tick 1.
     let freq: f64 = 1_000.0;
     let lead_secs: f64 = 0.001;
     let gated_tick: u64 = 1_000;
@@ -236,18 +230,13 @@ fn flush_clears_queued_pieces_and_junctions() {
     }))
     .unwrap();
 
-    // Give pump time to process and hit StallAhead on the gated pieces.
     std::thread::sleep(std::time::Duration::from_millis(30));
 
-    // Flush while pieces are held behind the horizon (still in queue).
     tx.send(PumpMsg::Flush(vec![key])).unwrap();
     std::thread::sleep(std::time::Duration::from_millis(20));
 
-    // Widen horizon well past gated_tick. If Flush failed, the gated pieces
-    // would now be sendable and would appear in the sink.
     *clock.lock().unwrap() = Some((gated_tick + 1_000, freq));
 
-    // Probe piece within the new horizon — gives the pump a reason to schedule.
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key,
         pieces: vec![(
@@ -291,11 +280,6 @@ fn flush_clears_queued_pieces_and_junctions() {
 
 #[test]
 fn on_abandon_reports_flushed_not_pushed_pieces() {
-    // The pump must report Flush-dropped (un-pushed) pieces via on_abandon so
-    // the drain can remove them from `sent` — otherwise they are phantom `sent`
-    // that never retire and hang the post-trip wait_drained. A piece that is
-    // actually pushed must NOT be reported. Mirror flush_clears_queued_pieces:
-    // gate 4 pieces behind the horizon, Flush them, then push one probe piece.
     let key = AxisKey { mcu_id: 1, axis: 0 };
     let (tx, rx) = mpsc::channel::<PumpMsg>();
 

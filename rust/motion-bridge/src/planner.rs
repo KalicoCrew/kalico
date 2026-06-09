@@ -29,7 +29,6 @@ pub struct ClockBias {
     pub last_clock: u64,
 }
 
-/// Parameters for a drip-gated homing move.
 pub struct HomeDripParams {
     pub home_pos: [f64; 4],
     pub start: [f64; 3],

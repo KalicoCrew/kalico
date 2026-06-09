@@ -9,7 +9,7 @@
 #include "board/irq.h" // irq_disable
 #include "board/misc.h" // timer_read_time
 #include "command.h" // DECL_COMMAND
-#include "kalico_log.h" // kalico_log_emit
+#include "kalico_log.h"
 #include "sched.h" // struct timer
 #include "trsync.h" // trsync_do_trigger
 

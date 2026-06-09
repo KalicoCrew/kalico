@@ -769,12 +769,6 @@ impl KalicoHostIo {
 
 #[cfg(any(test, feature = "test-harness"))]
 impl KalicoHostIo {
-    /// Construct a minimal `KalicoHostIo` backed by the given submission
-    /// channel. The caller is responsible for running the reactor that drains
-    /// the channel (e.g. via `ReactorHarness::into_background_io`).
-    ///
-    /// `reactor_handle` must be `Some` if the caller wants the `Drop` impl to
-    /// join the reactor thread; pass `None` when the caller controls teardown.
     pub fn from_submission_tx_for_test(
         tx: Sender<ReactorCommand>,
         reactor_handle: Option<std::thread::JoinHandle<()>>,

@@ -10,7 +10,6 @@ pub fn inverse_corexy(motor_a: f64, motor_b: f64) -> (f64, f64) {
     (0.5 * (motor_a + motor_b), 0.5 * (motor_a - motor_b))
 }
 
-/// Cartesian toolhead position -> per-slot motor position (E left to caller).
 pub fn forward(tag: u8, xyz: [f64; 3]) -> [f64; 4] {
     if tag == KINEMATICS_COREXY {
         let (a, b) = forward_corexy(xyz[0], xyz[1]);
@@ -20,7 +19,6 @@ pub fn forward(tag: u8, xyz: [f64; 3]) -> [f64; 4] {
     }
 }
 
-/// Per-slot motor position -> Cartesian toolhead position.
 pub fn inverse(tag: u8, motor: [f64; 4]) -> [f64; 3] {
     if tag == KINEMATICS_COREXY {
         let (x, y) = inverse_corexy(motor[0], motor[1]);

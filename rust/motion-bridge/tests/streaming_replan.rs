@@ -731,17 +731,7 @@ fn kalico_stream_open_resets_planner_state() {
     h.shutdown();
 }
 
-// ---------------------------------------------------------------------------
-// Phase 5 Task 5.2 — Underrun / ForceIdle recovery
-// ---------------------------------------------------------------------------
 
-/// Spec §3.7 ("Engine `Underrun` fault"): after a recovery reset to a new
-/// position, a follow-on `submit_move` lands the toolhead starting near
-/// `recovered_pos`. Same shape as `kalico_stream_open_resets_planner_state`,
-/// but exercises the `PlannerHandle::underrun(...)` entry point instead.
-/// This pins the planner-side handler the bridge will call once the
-/// host-derived position recovery wires up (the variant exists today; the
-/// bridge-side detection lookup is deferred per the Task 5.2 scope notes).
 #[test]
 fn underrun_recovery_resets_to_recovered_position() {
     let (dispatch, recorded) = recording_dispatch();

@@ -186,8 +186,6 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
     case KALICO_MSG_STOP:
         handle_stop(correlation_id);
         return;
-    // PUSH_PIECES never reaches here — pieces arrive on KALICO_CHANNEL_PIECES
-    // and stream into the ring via the demuxer's piece-sink path.
     default:
         return;
     }
@@ -442,8 +440,6 @@ kalico_native_emit_fault_event(uint16_t fault_code, uint32_t fault_detail,
     kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
 }
 
-// EndstopTrip event body (must match Rust decode): endstop_id u8 |
-// trip_clock u64_le = 9 bytes. Async event (correlation_id = 0).
 void
 kalico_native_emit_endstop_trip(uint8_t endstop_id, uint64_t trip_clock)
 {
@@ -457,10 +453,6 @@ kalico_native_emit_endstop_trip(uint8_t endstop_id, uint64_t trip_clock)
     kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
 }
 
-// StopResponse body (must match Rust decode): result i32_le | discard_clock
-// u64_le = 12 bytes. discard_clock is the widened MCU clock at the drain instant
-// — the host evaluates the homing trajectory there to recover the overshot
-// final position (hardware-agnostic: commanded motion, not actuator counts).
 static void
 send_stop_response(uint32_t correlation_id, int32_t result, uint64_t discard_clock)
 {
@@ -477,13 +469,6 @@ send_stop_response(uint32_t correlation_id, int32_t result, uint64_t discard_clo
     kalico_transport_send_frame(KALICO_CHANNEL_CONTROL, payload, sizeof(payload));
 }
 
-// Unconditional ring flush. Empties every axis ring and disarms the current
-// piece so the always-running sample tick finds nothing to execute — the hot
-// path needs no homing awareness. irq_save() blocks the TIM5 sample ISR for the
-// bounded drain (kalico_runtime_discard_pending's no-concurrent-ISR contract);
-// TIM5 keeps running after, so the widened clock and heartbeat stay live. The
-// reply carries the drain-instant clock and is sent after the drain, so a host
-// ack means "flushed and quiesced".
 static void
 handle_stop(uint32_t correlation_id)
 {

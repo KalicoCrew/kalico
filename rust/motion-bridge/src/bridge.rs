@@ -28,32 +28,11 @@ struct HomingRun {
     endstop_mcu: u32,
     axis: u8,
     axis_key: crate::pump::AxisKey,
-    /// All axis keys across every stepper-owning MCU.  Used to derive the Stop
-    /// broadcast target set (all MCUs halt on trip) and to Flush all axes.
     all_axis_keys: Vec<crate::pump::AxisKey>,
-    /// Only the axes that receive homing motion pieces.  This is the drip gate's
-    /// floor set; a non-moving participant that never retires would pin the floor
-    /// at zero and deadlock the homing axis after DRIP_BUDGET pieces.
-    /// For CoreXY, add both motor axes here.
     moving_axis_keys: Vec<crate::pump::AxisKey>,
-    /// `(trip_pos, final_pos)`: the cartesian switch location (commanded position
-    /// at the trip clock) and the overshot stopping location (commanded position
-    /// at the MCU's discard clock). The homed coordinate is
-    /// `position_endstop + (final − trip)`.
     notify: crossbeam_channel::Sender<Result<([f64; 3], [f64; 3]), String>>,
 }
 
-/// Build the motor-space 4-vector from a single reconstructed axis motor position.
-///
-/// For a cartesian axis the motor value maps directly to the axis slot. For
-/// CoreXY the homed motor (`axis_slot`) reconstructed from the stored piece is a
-/// combined motor-A or motor-B value, and we need a round-trip back through
-/// `inverse_corexy`. We set the *other* CoreXY motor to the same value as a
-/// neutral placeholder; the caller's `kinematics::inverse(CoreXY, motor)` call
-/// will then produce the right cartesian coordinate for the homed axis only.
-///
-/// In practice v1 homes a single cartesian axis, so the code path is always the
-/// `else` branch. CoreXY support is wired correctly for future use.
 fn trip_position_to_motor_frame(
     axis: u8,
     motor_pos: f64,
@@ -484,9 +463,6 @@ pub struct PyMotionBridge {
     active_drip_cohort: Arc<Mutex<Option<u64>>>,
     homing_trajectory: Arc<Mutex<HashMap<crate::pump::AxisKey, Vec<runtime::piece_ring::PieceEntry>>>>,
     homing_run: Arc<Mutex<Option<HomingRun>>>,
-    // Receiver for the in-flight homing result, polled cooperatively by
-    // home_axis_poll so the klippy reactor is never blocked for the move's
-    // duration (the trip handler fires from the reactor's own event drain).
     homing_result: Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3]), String>>>>,
     // Latched once `shutdown()` has run a full teardown. Subsequent calls (the
     // Drop backstop, a second `klippy:disconnect`, the failed-connect path) see
@@ -2311,9 +2287,6 @@ impl PyMotionBridge {
                         }
                     },
                     move |key: crate::pump::AxisKey, n: u32| {
-                        // Flush dropped `n` un-pushed pieces — remove them from
-                        // drain `sent` so the post-trip wait_drained doesn't
-                        // wait on motion that never reached the MCU.
                         drain_for_pump.unsend(key.mcu_id, key.axis, n);
                     },
                     |msg: String| {
@@ -2520,11 +2493,6 @@ impl PyMotionBridge {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner());
 
-                // lead_secs is the pump's max send-ahead horizon for axes gated by
-                // horizon_of. Drip participants ignore it (horizon_of returns None;
-                // DRIP_BUDGET bounds their in-flight motion), but a homing move still
-                // emits constant pieces for every OTHER axis, and those need the full
-                // lead or they arrive late (PieceStartInPast). So MAX_LEAD_SECS always.
                 let max_piece_secs = if active_cohort.is_some() {
                     Some(0.025_f64)
                 } else {
@@ -2637,12 +2605,6 @@ impl PyMotionBridge {
             .map_err(PyRuntimeError::new_err)
     }
 
-    /// Dispatch pending planner work and report whether the MCU has retired
-    /// everything sent — WITHOUT blocking. The caller polls this between
-    /// reactor.pause() yields so the serial link keeps flowing while motion
-    /// drains. A blocking wait_drained on the reactor thread parks the only
-    /// thread that services the link, so the MCU's TX backs up and its
-    /// foreground stalls.
     fn motion_drain_poll(&self, py: Python<'_>) -> PyResult<bool> {
         let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
         let planner = guard.as_ref().ok_or_else(|| {
@@ -2652,7 +2614,6 @@ impl PyMotionBridge {
         Ok(self.drain.is_drained_now())
     }
 
-    /// Post-drain bookkeeping, run once after motion_drain_poll reports drained.
     fn motion_drain_finalize(&self) {}
 
     fn submit_dwell(&self, duration_s: f64) -> PyResult<()> {
@@ -2794,14 +2755,6 @@ impl PyMotionBridge {
         self.fallback_clock_conversions.load(Ordering::Relaxed)
     }
 
-    /// Perform a homing move on `axis` (0=X, 1=Y, 2=Z).
-    ///
-    /// `direction` must be +1.0 or -1.0. Blocks until the endstop trips (or a
-    /// timeout / fault fires). Returns `[x, y, z]` cartesian position at the
-    /// trip instant. Python G28 must call `set_position` with the result.
-    ///
-    /// Signature stable for the Python glue layer — do not rename or reorder
-    /// parameters without a coordinated Python update.
     #[pyo3(signature = (axis, direction, speed_mm_s, max_travel_mm, endstop_id, endstop_mcu))]
     #[allow(clippy::too_many_arguments)]
     fn home_axis_start(
@@ -2859,8 +2812,6 @@ impl PyMotionBridge {
                 mcu_id: mcu,
                 axis,
             };
-            // For v1 cartesian homing, exactly one axis moves.
-            // CoreXY extension point: collect both motor axes here instead.
             let moving_keys = vec![key];
             (all_keys, moving_keys, mcu, key)
         };
@@ -2878,8 +2829,6 @@ impl PyMotionBridge {
             traj.clear();
         }
 
-        // Drain all prior motion before activating drip mode.  Ensures the homing
-        // axis queue is quiesced (retired == pushed) at DripArm time.
         {
             let drain = self.drain.clone();
             py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT))
@@ -2940,9 +2889,6 @@ impl PyMotionBridge {
             })
             .map_err(planner_err)?;
 
-        // Wait only for the (brief) dispatch ack, not the trip; blocking here is
-        // bounded by the planner's path generation, and the trip is awaited
-        // cooperatively via home_axis_poll so the reactor keeps draining events.
         let dispatch = py.allow_threads(|| {
             planner_done_rx
                 .recv_timeout(Duration::from_secs(5))
@@ -2958,9 +2904,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    // Non-blocking poll for the homing result. Returns None while the move is in
-    // flight; the klippy G28 handler calls this from a reactor.pause loop so the
-    // reactor keeps draining events (the trip handler fires from that drain).
     fn home_axis_poll(&self) -> PyResult<Option<([f64; 3], [f64; 3])>> {
         let rx = {
             let guard = self.homing_result.lock().unwrap_or_else(|p| p.into_inner());
@@ -2990,9 +2933,6 @@ impl PyMotionBridge {
         }
     }
 
-    // Abort an in-flight homing move (timeout/cancel). Flushing the host queue
-    // and disarming halts motion within one drip window — the MCU dries out its
-    // <=DRIP_BUDGET buffered pieces; no trip handler runs.
     fn home_abort(&self) {
         let info = {
             let guard = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
@@ -3094,18 +3034,12 @@ impl PyMotionBridge {
                     .map(|k| k.mcu_id)
                     .collect();
 
-                // Stop the drip BEFORE clearing the MCU rings: otherwise the pump can
-                // release queued cohort pieces during the Stop round-trip, and one can
-                // land in a just-cleared ring and later execute from the re-anchored
-                // seed as a one-sample jump (StepsPerSampleExceeded, worse at speed).
                 if let Some(tx) = pump_tx_opt {
                     let _ = tx.send(crate::pump::PumpMsg::Flush(run.all_axis_keys.clone()));
                     let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
                 }
 
                 let mut stop_errors: Vec<String> = Vec::new();
-                // The homing axis MCU's drain-instant clock — used to recover the
-                // overshot final position by evaluating the stored trajectory at it.
                 let mut axis_discard_clock: Option<u64> = None;
                 for &mcu_id in &stepper_mcu_ids {
                     let io = match mcu_ios.get(&mcu_id) {
@@ -3187,9 +3121,6 @@ impl PyMotionBridge {
                     Ok(crate::kinematics::inverse(kinematics, motor_frame))
                 };
 
-                // Trip = switch location at the endstop MCU's trip clock (projected
-                // across clock domains if endstop != axis MCU). Final = the overshot
-                // stop at the axis MCU's own discard clock (same domain, exact).
                 let outcome = reconstruct_cartesian(run.endstop_mcu, trip_clock).and_then(|trip| {
                     reconstruct_cartesian(axis_key.mcu_id, discard_clock)
                         .map(|final_pos| (trip, final_pos))

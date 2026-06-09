@@ -1,20 +1,10 @@
-// Cross-MCU homing endstop watch.
-//
-// Polls a digital input in the cooperative foreground (no EXTI — a second async
-// context would race the TIM5 sample ISR and the widened-clock seqlock). On the
-// active edge it captures the exact widened u64 MCU clock at detection — not at
-// emit, so transport/CRC latency cannot smear the trip time the host uses to
-// reconstruct position — and ships a single EndstopTrip event on the events
-// channel. The host turns that event into the stop broadcast; this MCU does not
-// touch its own motion. This is the only firmware code that knows "homing".
-
-#include "basecmd.h"        // oid_alloc, oid_lookup, foreach_oid
-#include "board/gpio.h"     // struct gpio_in, gpio_in_setup, gpio_in_read
-#include "board/misc.h"     // timer_read_time
-#include "command.h"        // DECL_COMMAND, shutdown
-#include "sched.h"          // struct timer, sched_add_timer, sched_del_timer
-#include "kalico_runtime.h" // kalico_runtime_now_ticks
-#include "kalico_dispatch.h" // kalico_native_emit_endstop_trip
+#include "basecmd.h"
+#include "board/gpio.h"
+#include "board/misc.h"
+#include "command.h"
+#include "sched.h"
+#include "kalico_runtime.h"
+#include "kalico_dispatch.h"
 
 extern void *runtime_handle;
 
@@ -55,9 +45,6 @@ command_config_endstop(uint32_t *args)
     e->armed = 0;
     e->time.func = endstop_event;
 
-    // Reject two endstops bound to the same physical pin. foreach_oid resets
-    // per connection (the host reallocates oids on connect), so this never
-    // false-trips across reconnects.
     uint8_t oid;
     struct endstop *other;
     foreach_oid(oid, other, command_config_endstop) {
@@ -68,9 +55,6 @@ command_config_endstop(uint32_t *args)
 DECL_COMMAND(command_config_endstop,
              "config_endstop oid=%c endstop_id=%c pin=%u pull_up=%c invert=%c");
 
-// Arm (or, with rest_ticks==0, disarm) the watch. Polling starts immediately —
-// the trip clock is captured at edge detection, so the start instant is
-// irrelevant and we avoid depending on a host/MCU clock correspondence.
 void
 command_query_endstop(uint32_t *args)
 {
@@ -88,8 +72,6 @@ command_query_endstop(uint32_t *args)
 DECL_COMMAND(command_query_endstop,
              "query_endstop oid=%c rest_ticks=%u");
 
-// Passive read of the current pin state — no arming, no trip, no motion. Used
-// for QUERY_ENDSTOPS and for verifying endstop polarity during bring-up.
 void
 command_endstop_query_state(uint32_t *args)
 {

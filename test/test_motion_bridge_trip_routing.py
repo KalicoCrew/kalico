@@ -1,16 +1,3 @@
-# Regression tests for MotionBridgeWrapper's kalico_endstop_tripped routing.
-#
-# Each per-rail BridgeTriggerDispatch used to register its own _on_trip_message
-# for the shared "kalico_endstop_tripped" message name. register_response
-# replaces by name, so only the last-registered dispatch's handler survived;
-# its arm_id filter then dropped every other arm's trip. Re-homing an axis
-# after another axis had homed routed the trip to the wrong (last) dispatch and
-# the correct home_wait completion never fired — it timed out on the backstop
-# ("MCU silent past expected end-time"). The wrapper now registers ONE handler
-# per MCU that routes by arm_id.
-#
-# motion_bridge.py imports the native .so at load; inject a stand-in so the
-# import resolves without a build artifact.
 import sys
 import types
 
@@ -38,8 +25,6 @@ class FakeDispatch:
 
 
 def _new_wrapper():
-    # Bypass __init__ (which constructs the native bridge) — exercise only the
-    # routing/registry surface.
     w = MotionBridgeWrapper.__new__(MotionBridgeWrapper)
     w._homing_dispatches = {}
     w._trip_handler_mcus = set()

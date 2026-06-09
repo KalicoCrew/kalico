@@ -189,12 +189,6 @@ impl ReactorHarness {
         }
     }
 
-    /// Like [`new`] but uses an explicit parser.
-    ///
-    /// Use this when the test needs to inject inbound frames that the reactor
-    /// must decode (e.g. `kalico_endstop_tripped` for relay interceptor tests).
-    /// The harness otherwise starts with an empty parser that cannot decode any
-    /// msgid and will silently drop all inbound data frames.
     pub fn new_with_parser(parser: Arc<MsgProtoParser>) -> Self {
         let (port, port_handles) = FakeSerialPort::new();
         let clock = MockClock::new();
@@ -217,9 +211,6 @@ impl ReactorHarness {
         }
     }
 
-    /// Construct a harness with an explicit `IdentifySeqState`, simulating
-    /// a reactor coming up after identify burned a non-zero number of
-    /// sequences. Used by the H7 regression test (spec §3.3, §5.2).
     pub fn new_with_seq_state(seq: IdentifySeqState) -> Self {
         let (port, port_handles) = FakeSerialPort::new();
         let clock = MockClock::new();
@@ -295,15 +286,7 @@ impl ReactorHarness {
         rx
     }
 
-    // ── Interceptor helpers (used by relay integration tests) ──────────────
 
-    /// Register a frame interceptor on the harness reactor synchronously.
-    ///
-    /// Sends `ReactorCommand::RegisterInterceptor`, ticks once to process it,
-    /// then reads the allocated [`InterceptorId`] from the reply channel.
-    /// Mirrors what [`kalico_host_rt::host_io::KalicoHostIo::register_frame_interceptor`]
-    /// does against a live background reactor, but works on the single-threaded
-    /// test harness.
     pub fn register_interceptor(
         &mut self,
         msg_name: &str,
@@ -319,16 +302,13 @@ impl ReactorHarness {
                 reply: reply_tx,
             })
             .expect("submission_tx send failed in register_interceptor");
-        // Tick once so the reactor processes the RegisterInterceptor command.
         self.reactor.tick_once();
         reply_rx
             .recv()
             .expect("reply_rx recv failed in register_interceptor")
     }
 
-    // ── Passthrough-router helpers (used by external integration tests) ──
 
-    /// Install a passthrough router for the given MCU handle.
     pub fn install_passthrough_router(
         &mut self,
         router: crate::passthrough_queue::PassthroughRouter,
@@ -454,16 +434,6 @@ impl ReactorHarness {
         self.reactor.passthrough_notify_map.len()
     }
 
-    /// Consume the harness and start the reactor in a background thread.
-    ///
-    /// Returns a `(Arc<KalicoHostIo>, FakePortHandles)` pair. The `KalicoHostIo`
-    /// is backed by the real reactor loop, so calls like
-    /// `register_frame_interceptor` and `send_fire_and_forget` work without
-    /// manual ticking. The `FakePortHandles` give test code direct access to
-    /// the inbound and outbound byte buffers.
-    ///
-    /// The reactor shuts down when the returned `KalicoHostIo` is dropped
-    /// (its `Drop` impl sends `Shutdown` and joins the thread).
     pub fn into_background_io(self) -> (Arc<crate::host_io::KalicoHostIo>, FakePortHandles) {
         let submission_tx = self.submission_tx.clone();
         let port_handles = self.port_handles.clone();

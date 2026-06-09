@@ -35,10 +35,6 @@ command_runtime_query_status(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_query_status, "runtime_query_status");
 
-// Seed the MCU engine's position origin (SET_KINEMATIC_POSITION) so prev_x/y/z
-// match the host's commanded position before the first segment, avoiding a
-// huge first-segment delta. Positions are Q16.16 fixed-point (mm * 65536).
-// Fire-and-forget; the following PushSegment provides sequencing.
 void
 command_runtime_seed_position(uint32_t *args)
 {
@@ -67,9 +63,6 @@ command_runtime_stream_flush(uint32_t *args)
 }
 DECL_COMMAND(command_runtime_stream_flush, "runtime_stream_flush");
 
-// Widen the MCU clock in C with command_get_uptime's formula instead of the
-// Rust FFI: runtime::stream::clock_sync_respond reads a TIM5-ISR-populated
-// seqlock that the host filters as uninitialised in the all-StepTime path.
 extern uint32_t stats_send_time;
 extern uint32_t stats_send_time_high;
 void

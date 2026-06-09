@@ -154,11 +154,6 @@ pub fn subdivide_bernstein(
     if duration <= max_piece_secs {
         return vec![(coeffs, duration)];
     }
-    // A constant axis carries no motion to meter, so one piece suffices. A homing
-    // move emits a curve for every axis but only the homing axis moves; without
-    // this guard each constant axis is split into duration/max_piece_secs identical
-    // pieces, flooding the link and delaying the drip axis's own pieces (they then
-    // arrive past their start_time → PieceStartInPast).
     let c0 = coeffs[0];
     if coeffs.iter().all(|&c| (c - c0).abs() <= 1e-9) {
         return vec![(coeffs, duration)];

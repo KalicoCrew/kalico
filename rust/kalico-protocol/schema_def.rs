@@ -124,8 +124,6 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         channel: "control",
         fields: &[
             SchemaField { name: "result", ty: "i32" },
-            // MCU clock at the discard instant — the host evaluates the homing
-            // trajectory here to get the final (overshot) commanded position.
             SchemaField { name: "discard_clock", ty: "u64" },
         ],
     },

@@ -40,10 +40,6 @@ pub enum ReconstructError {
     UnknownClockFreq { mcu_id: u32 },
 }
 
-/// Evaluate a cubic Bernstein polynomial at parameter `u` in [0, 1].
-///
-/// Bernstein coefficients are stored in `coeffs` as `[b0, b1, b2, b3]`
-/// where `p(u) = Σ C(3,k) * (1-u)^(3-k) * u^k * b_k`.
 #[inline]
 pub fn eval_bernstein_cubic(coeffs: [f32; 4], u: f64) -> f64 {
     let v = 1.0 - u;
@@ -55,11 +51,6 @@ pub fn eval_bernstein_cubic(coeffs: [f32; 4], u: f64) -> f64 {
     v * v * v * b0 + 3.0 * v * v * u * b1 + 3.0 * v * u * u * b2 + u * u * u * b3
 }
 
-/// Find the axis position at `axis_clock` using stored trajectory pieces.
-///
-/// The piece whose window `[start_time, start_time + duration*freq)` contains
-/// `axis_clock` is identified; Bernstein coefficients are evaluated at
-/// `u = (axis_clock - start_time) / (duration * freq)`.
 fn eval_piece_at_clock(
     pieces: &[PieceEntry],
     axis_clock: u64,
@@ -105,11 +96,6 @@ fn eval_piece_at_clock(
     })
 }
 
-/// Reconstruct the motor-space position of `axis_key` at the instant `trip_clock`
-/// fired on `endstop_mcu`.
-///
-/// Same-MCU: `axis_clock = trip_clock` (no conversion needed, exact).
-/// Cross-MCU: project `trip_clock` to host seconds, then back to axis MCU ticks.
 pub fn reconstruct_axis_position(
     endstop_mcu: u32,
     trip_clock: u64,

@@ -74,12 +74,6 @@ pub enum Schedule {
 ///    numerically smaller and would always win, starving the H7.  The `f64`
 ///    sidecar in each `(PieceEntry, f64)` pair carries the minting host time
 ///    (`t0 + u_start`, seconds) and is the only valid cross-queue ordering key.
-///
-/// `releasable_cap_of(k)` returns the maximum additional pieces schedulable for
-/// axis `k` this pass, on top of what `room()` and `horizon_of` already allow.
-/// `usize::MAX` means no extra cap (non-cohort behaviour). Cohort axes set this
-/// to their drip budget remainder; the horizon check is bypassed for them by
-/// `horizon_of` returning `None`.
 #[must_use]
 pub fn schedule(
     queues: &BTreeMap<AxisKey, AxisQueue>,
@@ -110,8 +104,6 @@ pub fn schedule(
 
     let head_cap = releasable_cap_of(&head_key);
     if head_cap == 0 {
-        // Drip budget exhausted for the head axis — treat like StallAhead so
-        // the pump parks in timed-poll mode and re-evaluates on the next heartbeat.
         return Schedule::StallAhead(head_key);
     }
 
@@ -192,27 +184,11 @@ mod tests;
 #[cfg(test)]
 mod drip_tests;
 
-/// Max pieces a drip-cohort axis may have in flight ahead of the cohort floor.
-///
-/// The drip-release margin per piece is `(DRIP_BUDGET - 1) * piece_secs` minus the
-/// retire→release→arrive round-trip latency; a piece that arrives after its start
-/// faults PieceStartInPast. On the slow USB-serial bench (Pi 3 + F401) that
-/// round-trip peaks near 30 ms against 25 ms pieces, so budget 2 (25 ms margin) is
-/// too tight. Budget 4 buys 75 ms of margin; in-flight motion stays bounded at
-/// `DRIP_BUDGET * piece_secs * v_home` (sub-mm at bring-up homing speeds).
 pub const DRIP_BUDGET: u32 = 4;
 
-/// Arms the pump's drip gate for a homing cohort.
-///
-/// All `participants` must confirm retirement of each step before the next step
-/// is released to any of them. `DRIP_BUDGET` controls how far ahead of the
-/// slowest MCU the fastest may run.
 pub struct DripArm {
-    /// Monotonic identifier for this homing run.
     pub cohort: u64,
-    /// Every axis that must confirm each step.
     pub participants: Vec<AxisKey>,
-    /// Per-step retirement deadline; exceeded → loud error via `on_drip_stall`.
     pub timeout: Duration,
 }
 
@@ -224,8 +200,6 @@ pub struct EnqueueMsg {
     pub pieces: Vec<(PieceEntry, f64)>,
     pub fresh_stream: bool,
     pub lead_secs: f64,
-    /// `Some(c)` ⟹ these pieces belong to drip cohort `c` and are subject to the
-    /// confirmed-retirement budget gate. `None` ⟹ normal time-horizon streaming.
     pub drip_cohort: Option<u64>,
 }
 
@@ -238,10 +212,7 @@ pub enum PumpMsg {
     Enqueue(EnqueueMsg),
     Heartbeat(HeartbeatMsg),
     Flush(Vec<AxisKey>),
-    /// Arms the drip gate for a new homing cohort.  Replaces any prior cohort.
     DripArm(DripArm),
-    /// Disarms the drip gate.  The `u64` is the cohort id; ignored if it does
-    /// not match the active cohort.
     DripDisarm(u64),
     Shutdown,
 }
@@ -305,17 +276,9 @@ struct DripCohort {
     id: u64,
     participants: BTreeSet<AxisKey>,
     timeout: Duration,
-    /// `retired` count per participant at arm time.  Both `executed` and
-    /// `released` are measured from this zero so that `released − executed`
-    /// equals absolute in-flight regardless of pre-arm backlog.
     baseline: BTreeMap<AxisKey, u32>,
-    /// Highest retired value seen per participant since arming.
-    /// A decrease is a regression — an MCU bug; disarm loudly on detection.
     last_retired: BTreeMap<AxisKey, u32>,
-    /// Deadline by which `floor` must advance at least once.
     step_deadline: Instant,
-    /// The floor value at the time `step_deadline` was last set.  Used to detect
-    /// whether floor has advanced when re-evaluating the deadline.
     deadline_floor: u32,
 }
 
@@ -340,8 +303,6 @@ impl DripCohort {
             .unwrap_or(0)
     }
 
-    /// Returns the number of additional pieces that may be released for axis `k`
-    /// this scheduling pass.  Zero means budget-blocked.
     fn drip_cap(&self, k: &AxisKey, queues: &BTreeMap<AxisKey, AxisQueue>) -> usize {
         let floor = self.floor(queues);
         let released = self.released(k, queues);
@@ -357,10 +318,6 @@ impl DripCohort {
 /// production call site passes an `abort()`-based action; tests inject a
 /// channel-send or a flag-set so they can assert detection without terminating
 /// the process.  After the callback returns the pump loop exits.
-///
-/// `on_drip_stall` is called when a drip cohort's floor has not advanced within
-/// the per-step timeout.  The cohort is disarmed and the pump continues.  The
-/// caller is responsible for aborting the homing run.
 #[allow(clippy::too_many_lines)]
 pub fn run_pump<S, F, C, A, O, D>(
     rx: Receiver<PumpMsg>,
@@ -378,12 +335,6 @@ pub fn run_pump<S, F, C, A, O, D>(
     O: Fn(AxisKey, u32),
     D: Fn(String) + Send,
 {
-    // `on_abandon(key, n)`: n queued pieces for `key` were dropped by Flush
-    // before being pushed to the ring. They were counted as drain `sent` at
-    // dispatch but never reach the MCU, so the caller must remove them or they
-    // become phantom `sent` that never retire — hanging wait_drained. Pieces
-    // already pushed to the ring are NOT abandoned here; the MCU's
-    // discard_pending retires them.
     let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
     let mut junction_ends: BTreeMap<AxisKey, (u64, f64)> = BTreeMap::new();
     let mut cohort: Option<DripCohort> = None;
@@ -483,8 +434,6 @@ pub fn run_pump<S, F, C, A, O, D>(
                     if let Some(q) = queues.get_mut(&key) {
                         q.retired = c;
                     }
-                    // Track retired for cohort participants directly from the heartbeat,
-                    // regardless of whether a queue exists yet.
                     if let Some(co) = cohort {
                         if co.participants.contains(&key) {
                             let prev = co.last_retired.get(&key).copied().unwrap_or(0);
@@ -576,8 +525,6 @@ pub fn run_pump<S, F, C, A, O, D>(
             }
         }
 
-        // Check for drip stall deadline.  Regression is detected eagerly in the
-        // Heartbeat handler; this block only checks for floor-advance timeout.
         if let Some(ref co) = cohort {
             let now = Instant::now();
             let floor = co.floor(&queues);

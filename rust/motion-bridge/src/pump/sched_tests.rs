@@ -21,7 +21,6 @@ fn q_with(ring_depth: u32, starts: &[u64]) -> AxisQueue {
     q_with_host(ring_depth, &pairs)
 }
 
-/// No-cohort cap: every axis is uncapped.
 fn no_cap(_: &AxisKey) -> usize {
     usize::MAX
 }
@@ -174,7 +173,6 @@ fn cross_mcu_host_time_ordering_bench_regression() {
         q_with_host(8, &[(h7_tick, h7_host)]),
     );
 
-    // mcu0 horizon covers h7_tick; mcu1 horizon does NOT cover f446_tick.
     let horizon_of = |k: &AxisKey, _q: &AxisQueue| -> Option<u64> {
         if k.mcu_id == 0 {
             Some(h7_tick + 1_000_000)
@@ -202,7 +200,6 @@ fn homing_lead_gates_piece_release() {
     let freq: f64 = 1_000_000.0;
     let ack_now: u64 = 0;
 
-    // Two pieces: first within 50ms, second beyond.
     let piece_inside = (25_000_u64, 0.025_f64);
     let piece_beyond = (75_000_u64, 0.075_f64);
 
@@ -220,7 +217,6 @@ fn homing_lead_gates_piece_release() {
         }
     };
 
-    // With 50ms lead: only the first piece should release.
     match schedule(&queues, 255, &horizon_of, no_cap) {
         Schedule::Send(frames) => {
             assert_eq!(frames.len(), 1);
@@ -230,7 +226,6 @@ fn homing_lead_gates_piece_release() {
         other => panic!("expected Send with one piece, got {other:?}"),
     }
 
-    // With MAX_LEAD_SECS lead: both pieces release.
     let mut queues2 = BTreeMap::new();
     let mut q2 = q_with_host(8, &[piece_inside, piece_beyond]);
     q2.lead_secs = MAX_LEAD_SECS;
@@ -253,25 +248,11 @@ fn homing_lead_gates_piece_release() {
     }
 }
 
-/// Per-queue horizon: queue A has a narrow lead so its far piece is gated,
-/// queue B has MAX_LEAD_SECS so its identically-far piece releases.
-///
-/// Pins the invariant that `horizon_of` is evaluated independently per queue.
-/// A refactor that computes the horizon once from the head queue and applies it
-/// to all queues would gate B's piece incorrectly and break this test.
 #[test]
 fn cross_lead_per_queue_horizon_independent() {
     let freq: f64 = 1_000_000.0;
     let ack_now: u64 = 0;
 
-    // Queue A: lead_secs=0.05 → horizon = 50_000 ticks.
-    // Queue B: lead_secs=MAX_LEAD_SECS → horizon = 1_000_000 ticks.
-    // Both on mcu_id=1.
-    //
-    // Piece layout (host_time == tick/freq for simplicity):
-    //   A-inside:  tick=25_000 → within A's horizon → must send
-    //   A-beyond:  tick=75_000 → beyond A's horizon → must not send this pass
-    //   B-at-75k:  tick=75_000 → within B's horizon (1_000_000) → must send
     let key_a = AxisKey { mcu_id: 1, axis: 0 };
     let key_b = AxisKey { mcu_id: 1, axis: 1 };
 
@@ -289,11 +270,6 @@ fn cross_lead_per_queue_horizon_independent() {
         Some(ack_now + (q.lead_secs * freq) as u64)
     };
 
-    // Head is A-inside (host=0.025 is earliest, same MCU as B).
-    // Inner loop evaluates each queue's horizon independently:
-    //   A-inside (25_000 <= 50_000): sent.
-    //   A-beyond (75_000 >  50_000): gated.
-    //   B-at-75k (75_000 <= 1_000_000): sent.
     match schedule(&queues, 255, &horizon_of, no_cap) {
         Schedule::Send(frames) => {
             let a_frame = frames.iter().find(|f| f.key == key_a);
