@@ -5,6 +5,7 @@
 #include "kalico_demux.h"
 #include "kalico_protocol_schema.h"
 #include "board/misc.h"
+#include "board/irq.h"
 #include "sched.h"
 #include "autoconf.h"
 
@@ -30,6 +31,7 @@ static uint8_t tx_buf[KALICO_TX_BUF_SIZE];
 static uint32_t reset_epoch;
 
 static void handle_query_runtime_caps(uint32_t correlation_id, const uint8_t *body, uint16_t body_len);
+static void handle_stop(uint32_t correlation_id);
 
 #if defined(__linux__) || defined(__APPLE__)
 #include <fcntl.h>
@@ -180,6 +182,9 @@ kalico_dispatch_frame(uint8_t channel, const uint8_t *payload,
         return;
     case KALICO_MSG_QUERY_RUNTIME_CAPS:
         handle_query_runtime_caps(correlation_id, body, body_len);
+        return;
+    case KALICO_MSG_STOP:
+        handle_stop(correlation_id);
         return;
     default:
         return;
@@ -433,4 +438,47 @@ kalico_native_emit_fault_event(uint16_t fault_code, uint32_t fault_detail,
     b[8] = (uint8_t)((segment_id >> 16) & 0xFF);
     b[9] = (uint8_t)((segment_id >> 24) & 0xFF);
     kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
+}
+
+void
+kalico_native_emit_endstop_trip(uint8_t endstop_id, uint64_t trip_clock)
+{
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 9];
+    encode_message_header(payload, KALICO_MSG_ENDSTOP_TRIP,
+                          MESSAGE_VERSION_DEFAULT, 0);
+    uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
+    b[0] = endstop_id;
+    for (int i = 0; i < 8; i++)
+        b[1 + i] = (uint8_t)((trip_clock >> (8 * i)) & 0xFF);
+    kalico_transport_send_frame(KALICO_CHANNEL_EVENTS, payload, sizeof(payload));
+}
+
+static void
+send_stop_response(uint32_t correlation_id, int32_t result, uint64_t discard_clock)
+{
+    uint8_t payload[PER_MESSAGE_HEADER_LEN + 12];
+    encode_message_header(payload, KALICO_MSG_STOP_RESPONSE,
+                          MESSAGE_VERSION_DEFAULT, correlation_id);
+    uint8_t *b = &payload[PER_MESSAGE_HEADER_LEN];
+    b[0] = (uint8_t)(result & 0xFF);
+    b[1] = (uint8_t)((result >> 8) & 0xFF);
+    b[2] = (uint8_t)((result >> 16) & 0xFF);
+    b[3] = (uint8_t)((result >> 24) & 0xFF);
+    for (int i = 0; i < 8; i++)
+        b[4 + i] = (uint8_t)((discard_clock >> (8 * i)) & 0xFF);
+    kalico_transport_send_frame(KALICO_CHANNEL_CONTROL, payload, sizeof(payload));
+}
+
+static void
+handle_stop(uint32_t correlation_id)
+{
+    int32_t rc = KALICO_ERR_NOT_INIT;
+    uint64_t discard_clock = 0;
+    if (runtime_handle) {
+        irqstatus_t flag = irq_save();
+        rc = kalico_runtime_discard_pending(runtime_handle);
+        discard_clock = kalico_runtime_now_ticks(runtime_handle);
+        irq_restore(flag);
+    }
+    send_stop_response(correlation_id, rc, discard_clock);
 }

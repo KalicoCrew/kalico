@@ -26,7 +26,7 @@ pub fn format_time(t: OffsetDateTime) -> String {
 pub fn subsystem_for_target(target: &str) -> &'static str {
     if target.contains("clock") {
         "clocksync"
-    } else if target.contains("probe_homing") || target.contains("homing") {
+    } else if target.contains("homing") {
         "homing"
     } else if target.contains("planner") {
         "motion"

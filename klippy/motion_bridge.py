@@ -1,5 +1,3 @@
-import logging
-
 try:
     from . import motion_bridge_native as _native
 except ImportError:
@@ -34,6 +32,8 @@ _STUB_MOTION_METHODS = frozenset(
         "submit_dwell",
         "wait_moves",
         "drain_motion",
+        "motion_drain_poll",
+        "motion_drain_finalize",
         "set_position",
         "get_last_move_time",
         "update_limits",
@@ -45,18 +45,6 @@ _STUB_MOTION_METHODS = frozenset(
         "register_phase_motor",
         "get_mcu_capabilities",
         "ring_depth_for_axis",
-        "submit_homing_move",
-        "submit_homing_move_async",
-        "endstop_arm",
-        "endstop_disarm",
-        "software_trip",
-        "extend_homing_deadline",
-        "prepare_probe_homing",
-        "run_probe_homing",
-        "get_homing_position_at_time",
-        "take_trip_event",
-        "is_homing_segment_retired",
-        "get_homing_segment_reason",
         "claim_mcu",
         "claim_ethercat_node",
         "release_mcu",
@@ -133,9 +121,6 @@ class MotionBridgeWrapper:
             raise ImportError("motion_bridge_native not available")
         self._bridge = _native.MotionBridge()
         self._reactor = reactor
-        self._homing_dispatches = {}
-        self._software_trip_active = False
-        self._homing_print_time_base = 0.0
 
     def get_bridge(self):
         return self._bridge
@@ -322,26 +307,11 @@ class MotionBridgeWrapper:
     def on_credit_freed(
         self, mcu_handle, retired_through_segment_id, free_slots
     ):
-        """Returns (n_released, completed_arm_id_or_None); completed_arm_id is
-        set when a homing segment retired without a trip — the caller fires the
-        matching dispatch's _completion.
-        """
         return self._bridge.on_credit_freed(
             mcu_handle,
             retired_through_segment_id,
             free_slots,
         )
-
-    def register_homing_dispatch(self, arm_id, dispatch):
-        self._homing_dispatches[int(arm_id)] = dispatch
-
-    def unregister_homing_dispatch(self, arm_id):
-        self._homing_dispatches.pop(int(arm_id), None)
-
-    def fire_homing_completion(self, arm_id):
-        dispatch = self._homing_dispatches.get(int(arm_id))
-        if dispatch is not None:
-            dispatch._fire_past_end_time()
 
     def set_msgproto_dict(self, dict_json):
         return self._bridge.set_msgproto_dict(dict_json)
@@ -385,11 +355,36 @@ class MotionBridgeWrapper:
     def drain_motion(self):
         return self._bridge.drain_motion()
 
+    def motion_drain_poll(self):
+        return self._bridge.motion_drain_poll()
+
+    def motion_drain_finalize(self):
+        return self._bridge.motion_drain_finalize()
+
     def submit_dwell(self, duration_s):
         return self._bridge.submit_dwell(duration_s)
 
     def set_position(self, x, y, z):
         return self._bridge.set_position(x, y, z)
+
+    def home_axis_start(
+        self,
+        axis,
+        direction,
+        speed_mm_s,
+        max_travel_mm,
+        endstop_id,
+        endstop_mcu,
+    ):
+        return self._bridge.home_axis_start(
+            axis, direction, speed_mm_s, max_travel_mm, endstop_id, endstop_mcu
+        )
+
+    def home_axis_poll(self):
+        return self._bridge.home_axis_poll()
+
+    def home_abort(self):
+        return self._bridge.home_abort()
 
     def update_limits(self, max_velocity, max_accel):
         return self._bridge.update_limits(max_velocity, max_accel)
@@ -405,282 +400,3 @@ class MotionBridgeWrapper:
 
     def dispatched_segment_count(self):
         return self._bridge.dispatched_segment_count()
-
-    def endstop_arm(
-        self,
-        mcu,
-        queue,
-        arm_id,
-        arm_clock,
-        sources,
-        stepper_oids,
-        timeout_s=2.0,
-    ):
-        # `sources` is a list of 7-tuples per BridgeTriggerDispatch contract:
-        # (kind, gpio, active_high, policy, sample_n, velocity_axis, v_min_q16)
-        return self._bridge.endstop_arm(
-            mcu, queue, arm_id, arm_clock, sources, stepper_oids, timeout_s
-        )
-
-    def endstop_disarm(self, mcu, queue, arm_id, timeout_s=2.0):
-        return self._bridge.endstop_disarm(mcu, queue, arm_id, timeout_s)
-
-    def submit_homing_move(self, newpos, speed, arm_ids):
-        return self._bridge.submit_homing_move(newpos, speed, arm_ids)
-
-    def take_trip_event(self):
-        return self._bridge.take_trip_event()
-
-    def submit_homing_move_async(self, newpos, speed, arm_ids):
-        return self._bridge.submit_homing_move_async(newpos, speed, arm_ids)
-
-    def is_homing_segment_retired(self):
-        return self._bridge.is_homing_segment_retired()
-
-    def get_homing_segment_reason(self):
-        return self._bridge.get_homing_segment_reason()
-
-    def software_trip(self, mcu, arm_id, timeout_s=2.0):
-        return self._bridge.software_trip(mcu, arm_id, timeout_s)
-
-    def extend_homing_deadline(self, mcu, arm_id):
-        return self._bridge.extend_homing_deadline(mcu, arm_id)
-
-    def prepare_probe_homing(
-        self,
-        beacon_handle,
-        beacon_trsync_oid,
-        stepper_mcu_handle,
-        arm_id,
-        sensor_fault_timeout,
-    ):
-        return self._bridge.prepare_probe_homing(
-            beacon_handle,
-            beacon_trsync_oid,
-            stepper_mcu_handle,
-            arm_id,
-            sensor_fault_timeout,
-        )
-
-    def run_probe_homing(self, handle_id, move_pos, speed, stepper_oids):
-        return self._bridge.run_probe_homing(
-            handle_id,
-            move_pos,
-            speed,
-            stepper_oids,
-        )
-
-    def get_homing_position_at_time(self, print_time):
-        return self._bridge.get_homing_position_at_time(print_time)
-
-
-# Reason codes MUST match MCU_trsync (klippy/mcu.py) so homing.py consumers see
-# no behavior change.
-REASON_ENDSTOP_HIT = 1
-REASON_HOST_REQUEST = 2
-REASON_PAST_END_TIME = 3
-REASON_COMMS_TIMEOUT = 4
-
-ARM_STATUS_ARMED = 0
-ARM_STATUS_ALREADY_TRIPPED = 1
-ARM_STATUS_REJECTED = 2
-
-DISARM_STATUS_DISARMED = 0
-DISARM_STATUS_ALREADY_TRIPPED = 1
-DISARM_STATUS_UNKNOWN = 2
-
-# Bridge-private (from get_homing_segment_reason); distinct from MCU_trsync above.
-BRIDGE_REASON_PAST_END_TIME = 1
-BRIDGE_REASON_TRIPPED = 2
-BRIDGE_REASON_DEADLINE_EXPIRED = 3
-
-SOURCE_KIND_SOFTWARE = 2
-
-
-_ARM_ID_COUNTER = [1]
-
-
-def _alloc_arm_id():
-    arm_id = _ARM_ID_COUNTER[0]
-    _ARM_ID_COUNTER[0] = (arm_id + 1) & 0xFFFFFFFF
-    if _ARM_ID_COUNTER[0] == 0:
-        _ARM_ID_COUNTER[0] = 1
-    return arm_id
-
-
-class BridgeTriggerDispatch:
-    """Bridge-mode replacement for klippy/mcu.py:TriggerDispatch; mirrors its
-    surface so home_start / home_wait callers don't change.
-    """
-
-    def __init__(self, bridge, mcu, queue, reactor):
-        self._bridge = bridge
-        self._mcu = mcu
-        self._queue = queue
-        self._reactor = reactor
-        self._arm_id = _alloc_arm_id()
-        self._completion = reactor.completion()
-        self._sources = []
-        self._stepper_oids = []
-        self._steppers = []
-        self._reason = None
-        self._trip_event = None
-        self._arm_print_time = None
-        self._handler_registered = False
-        self._toolhead_arms = None
-
-    def get_oid(self):
-        return self._arm_id
-
-    def get_command_queue(self):
-        return self._queue
-
-    def get_arm_id(self):
-        return self._arm_id
-
-    def add_stepper(self, mcu_stepper):
-        self._stepper_oids.append(mcu_stepper.get_oid())
-        self._steppers.append(mcu_stepper)
-
-    def get_steppers(self):
-        return list(self._steppers)
-
-    def add_source(
-        self,
-        kind,
-        gpio,
-        active_high,
-        policy,
-        sample_n,
-        velocity_axis,
-        v_min_q16,
-    ):
-        self._sources.append(
-            (
-                kind,
-                gpio,
-                active_high,
-                policy,
-                sample_n,
-                velocity_axis,
-                v_min_q16,
-            )
-        )
-
-    def start(self, arm_print_time, mcu_obj):
-        self._arm_print_time = arm_print_time
-        arm_clock = int(mcu_obj.print_time_to_clock(arm_print_time))
-        # ReactorCompletion is single-shot, so allocate a fresh one (and reset
-        # per-arm state) each arm; otherwise homing's second pass inherits the
-        # first's completed state, drip_move early-returns without moving, and
-        # check_no_movement reports "Endstop still triggered after retract".
-        self._completion = self._reactor.completion()
-        self._reason = None
-        self._trip_event = None
-
-        # _bridge_handle isn't assigned until after identify (the MCU_endstop is
-        # built at config phase), so refresh it (and lazily alloc the queue) here.
-        if self._mcu is None:
-            self._mcu = getattr(mcu_obj, "_bridge_handle", None)
-            if self._mcu is None:
-                raise mcu_obj.get_printer().command_error(
-                    "BridgeTriggerDispatch: MCU bridge handle not yet "
-                    "assigned (identify phase incomplete?)"
-                )
-        if self._queue is None:
-            self._queue = self._bridge.alloc_command_queue(self._mcu)
-
-        self._bridge.register_homing_dispatch(self._arm_id, self)
-
-        # Register the async handler BEFORE arming, or we race the firmware's
-        # kalico_endstop_tripped event.
-        if not self._handler_registered:
-            mcu_obj.register_response(
-                self._on_trip_message, "kalico_endstop_tripped"
-            )
-            self._handler_registered = True
-
-        printer = mcu_obj.get_printer()
-        toolhead = printer.lookup_object("toolhead", None)
-        if toolhead is not None and hasattr(toolhead, "active_homing_arms"):
-            self._toolhead_arms = toolhead.active_homing_arms
-            self._toolhead_arms.add(self._arm_id)
-
-        logging.info(
-            "[bridge-trace] endstop_arm arm_id=%s sources=%s steppers=%s",
-            self._arm_id,
-            self._sources,
-            self._stepper_oids,
-        )
-        status = self._bridge.endstop_arm(
-            self._mcu,
-            self._queue,
-            self._arm_id,
-            arm_clock,
-            self._sources,
-            self._stepper_oids,
-        )
-        logging.info("[bridge-trace] endstop_arm status=%s", status)
-        if status == ARM_STATUS_ALREADY_TRIPPED:
-            # Pin asserted at arm time; arm() published a trip snapshot — fetch
-            # it so home_wait can return a real trigger time.
-            self._trip_event = self._bridge.take_trip_event() or {}
-            self._reason = REASON_ENDSTOP_HIT
-            self._completion.complete(self._reason)
-        elif status == ARM_STATUS_REJECTED:
-            raise printer.command_error(
-                "runtime_arm_endstop rejected (status=%d)" % status
-            )
-        return self._completion
-
-    def _on_trip_message(self, params):
-        # Filter on arm_id (concurrent dispatch instances share the response).
-        if int(params.get("arm_id", -1)) != self._arm_id:
-            return
-        if self._reason is not None:
-            return
-        # Real hardware carries the trip snapshot in params; native tests queue
-        # it in the bridge runtime. Prefer params so stepper snapshots survive.
-        self._trip_event = dict(params)
-        if "steppers" not in self._trip_event:
-            self._trip_event = self._bridge.take_trip_event()
-        self._reason = REASON_ENDSTOP_HIT
-        self._completion.complete(self._reason)
-
-    def _fire_past_end_time(self):
-        if self._reason is not None:
-            return
-        self._reason = REASON_PAST_END_TIME
-        self._completion.complete(self._reason)
-
-    def stop(self):
-        if self._reason is None:
-            try:
-                status = self._bridge.endstop_disarm(
-                    self._mcu, self._queue, self._arm_id
-                )
-            except Exception:
-                status = DISARM_STATUS_UNKNOWN
-            if status == DISARM_STATUS_DISARMED:
-                self._reason = REASON_HOST_REQUEST
-            else:
-                # AlreadyTripped on race — take the queued event.
-                self._trip_event = self._bridge.take_trip_event()
-                self._reason = REASON_ENDSTOP_HIT
-            if not self._completion.test():
-                self._completion.complete(self._reason)
-        self._bridge.unregister_homing_dispatch(self._arm_id)
-        # Drop the arm_id from the toolhead registry so a later unrelated move's
-        # drip_move doesn't pass it.
-        if self._toolhead_arms is not None:
-            self._toolhead_arms.discard(self._arm_id)
-            self._toolhead_arms = None
-        return self._reason
-
-    def get_trip_event(self):
-        if self._trip_event is None and self._reason == REASON_ENDSTOP_HIT:
-            self._trip_event = self._bridge.take_trip_event()
-        return self._trip_event
-
-    def get_arm_print_time(self):
-        return self._arm_print_time

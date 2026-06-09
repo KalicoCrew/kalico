@@ -34,16 +34,6 @@ pub struct TraceEvent {
 }
 
 #[derive(Debug, Clone)]
-pub struct EndstopTrippedEvent {
-    pub arm_id: u32,
-    pub trip_clock: u64,
-    pub trip_source_idx: u8,
-    pub fmt_version: u8,
-    pub stepper_count: u8,
-    pub steppers: Vec<crate::endstop::TripStepperRecord>,
-}
-
-#[derive(Debug, Clone)]
 pub struct McuLogEvent {
     pub mcu_tick: u64,
     pub level: u8,
@@ -55,13 +45,19 @@ pub struct McuLogEvent {
     pub host_recv: Instant,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct EndstopTripEvent {
+    pub endstop_id: u8,
+    pub trip_clock: u64,
+}
+
 #[derive(Debug, Clone)]
 pub enum RuntimeEvent {
     CreditFreed(CreditFreedEvent),
     Fault(FaultEvent),
     Status(StatusEvent),
     Trace(TraceEvent),
-    EndstopTripped(EndstopTrippedEvent),
+    EndstopTrip(EndstopTripEvent),
     McuLog(McuLogEvent),
     Heartbeat { retired_counts: Vec<u32> },
     UnknownOutput { format: String, msg: String },
@@ -97,32 +93,6 @@ impl RuntimeEvent {
                     .unwrap_or_default(),
                 flags: 0,
             }),
-            "kalico_endstop_tripped" => {
-                let fmt_version = params.get_u32("fmt_version") as u8;
-                let stepper_count = params.get_u32("stepper_count") as u8;
-                match crate::endstop::decode_trip_event(&params) {
-                    Ok(evt) => Self::EndstopTripped(EndstopTrippedEvent {
-                        arm_id: evt.arm_id,
-                        trip_clock: evt.trip_clock,
-                        trip_source_idx: evt.trip_source_idx,
-                        fmt_version,
-                        stepper_count,
-                        steppers: evt.steppers,
-                    }),
-                    Err(_) => {
-                        let lo = u64::from(params.get_u32("trip_clock_lo"));
-                        let hi = u64::from(params.get_u32("trip_clock_hi"));
-                        Self::EndstopTripped(EndstopTrippedEvent {
-                            arm_id: params.get_u32("arm_id"),
-                            trip_clock: (hi << 32) | lo,
-                            trip_source_idx: params.get_u32("trip_source_idx") as u8,
-                            fmt_version,
-                            stepper_count,
-                            steppers: Vec::new(),
-                        })
-                    }
-                }
-            }
             _ => {
                 let msg = params.try_get_str("#msg").unwrap_or("").to_string();
                 let format = params

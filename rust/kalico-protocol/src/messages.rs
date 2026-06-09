@@ -18,9 +18,12 @@ pub enum MessageKind {
     PushPiecesResponse = 0x0061,
     SetTorque = 0x0070,
     SetTorqueResponse = 0x0071,
+    Stop = 0x0072,
+    StopResponse = 0x0073,
     FaultEvent = 0x0082,
     StatusHeartbeat = 0x0083,
     McuLog = 0x0084,
+    EndstopTrip = 0x0085,
 }
 
 impl MessageKind {
@@ -38,9 +41,12 @@ impl MessageKind {
             0x0061 => Self::PushPiecesResponse,
             0x0070 => Self::SetTorque,
             0x0071 => Self::SetTorqueResponse,
+            0x0072 => Self::Stop,
+            0x0073 => Self::StopResponse,
             0x0082 => Self::FaultEvent,
             0x0083 => Self::StatusHeartbeat,
             0x0084 => Self::McuLog,
+            0x0085 => Self::EndstopTrip,
             _ => return None,
         })
     }
@@ -255,6 +261,41 @@ impl Decode for SetTorqueResponse {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Stop;
+
+impl Encode for Stop {
+    fn encode(&self, _out: &mut Vec<u8>) {}
+}
+
+impl Decode for Stop {
+    fn decode_from(_c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StopResponse {
+    pub result: i32,
+    pub discard_clock: u64,
+}
+
+impl Encode for StopResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+        put_u64(out, self.discard_clock);
+    }
+}
+
+impl Decode for StopResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
+            discard_clock: get_u64(c)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FaultEvent {
     pub fault_code: u16,
     pub fault_detail: u32,
@@ -362,6 +403,28 @@ impl Decode for McuLog {
             code: get_u16(c)?,
             seq: get_u16(c)?,
             args: [get_u32(c)?, get_u32(c)?],
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndstopTrip {
+    pub endstop_id: u8,
+    pub trip_clock: u64,
+}
+
+impl Encode for EndstopTrip {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_u8(out, self.endstop_id);
+        put_u64(out, self.trip_clock);
+    }
+}
+
+impl Decode for EndstopTrip {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            endstop_id: get_u8(c)?,
+            trip_clock: get_u64(c)?,
         })
     }
 }

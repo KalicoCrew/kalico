@@ -10,11 +10,11 @@ use kalico_native_transport::{
     encode_identify,
 };
 use kalico_protocol::{
-    Decode, FaultEvent as KFaultEvent, McuLog as KMcuLog, MessageKind, PROTO_VERSION, SCHEMA_HASH,
-    StatusHeartbeat as KStatusHeartbeat,
+    Decode, EndstopTrip as KEndstopTrip, FaultEvent as KFaultEvent, McuLog as KMcuLog, MessageKind,
+    PROTO_VERSION, SCHEMA_HASH, StatusHeartbeat as KStatusHeartbeat,
 };
 
-use crate::host_io::runtime_events::{FaultEvent, McuLogEvent, RuntimeEvent};
+use crate::host_io::runtime_events::{EndstopTripEvent, FaultEvent, McuLogEvent, RuntimeEvent};
 use crate::transport::TransportError;
 
 #[derive(Debug)]
@@ -264,6 +264,16 @@ fn lift_event_to_runtime_event(
             })),
             Err(e) => {
                 log::warn!("kalico McuLog decode failed: {e:?}");
+                KalicoDispatchResult::Ignored
+            }
+        },
+        MessageKind::EndstopTrip => match KEndstopTrip::decode(body) {
+            Ok(t) => KalicoDispatchResult::Event(RuntimeEvent::EndstopTrip(EndstopTripEvent {
+                endstop_id: t.endstop_id,
+                trip_clock: t.trip_clock,
+            })),
+            Err(e) => {
+                log::warn!("kalico EndstopTrip decode failed: {e:?}");
                 KalicoDispatchResult::Ignored
             }
         },

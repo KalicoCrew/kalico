@@ -111,6 +111,23 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         ],
     },
     SchemaMessage {
+        type_tag: 0x0072,
+        name: "Stop",
+        version: 1,
+        channel: "control",
+        fields: &[],
+    },
+    SchemaMessage {
+        type_tag: 0x0073,
+        name: "StopResponse",
+        version: 2,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+            SchemaField { name: "discard_clock", ty: "u64" },
+        ],
+    },
+    SchemaMessage {
         type_tag: 0x0082,
         name: "FaultEvent",
         version: 1,
@@ -149,6 +166,16 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
             SchemaField { name: "seq", ty: "u16" },
             SchemaField { name: "arg0", ty: "u32" },
             SchemaField { name: "arg1", ty: "u32" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0085,
+        name: "EndstopTrip",
+        version: 1,
+        channel: "events",
+        fields: &[
+            SchemaField { name: "endstop_id", ty: "u8" },
+            SchemaField { name: "trip_clock", ty: "u64" },
         ],
     },
 ];

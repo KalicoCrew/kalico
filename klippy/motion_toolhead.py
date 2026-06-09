@@ -3,14 +3,13 @@ import os
 import struct
 from collections import defaultdict
 
-from . import motion_kinematics, stepper
+from . import stepper
 from .extras import servo_axis
 from .kinematics import extruder
 from .toolhead import BUFFER_TIME_START, Move, ToolHead
 
-# Slot order must match motion_kinematics.motor_deltas and
-# _configure_axes_per_mcu's slot_names. A name matching no prefix has no slot
-# (e.g. corexy passthrough-Z rails) and is skipped.
+DRAIN_TIMEOUT = 60.0
+
 _MOTOR_SLOT_PREFIXES = (
     (0, "stepper_x"),
     (1, "stepper_y"),
@@ -77,12 +76,6 @@ def _open_sim_control():
 
 
 class BridgeKinematics:
-    """Host-side homed/range enforcement for the bridge planner. Each axis's
-    (low, high) limit starts inverted (1.0, -1.0) = "unhomed" and is replaced
-    by the rail range once set_position runs with that axis in homing_axes;
-    check_move raises "Must home axis first" while the sentinel stands.
-    """
-
     supports_dual_carriage = False
 
     def __init__(self, toolhead, config):
@@ -101,22 +94,13 @@ class BridgeKinematics:
             axes = "xyz"
         for axis in axes:
             self._register_axis(config, axis, extras=("1",))
-        if kin_name == "corexy" and len(self.rails) >= 2:
-            x_endstop = self.rails[0].get_endstops()[0][0]
-            y_endstop = self.rails[1].get_endstops()[0][0]
-            for s in self.rails[1].get_steppers():
-                x_endstop.add_stepper(s)
-            for s in self.rails[0].get_steppers():
-                y_endstop.add_stepper(s)
-        # Z is independent in corexy but still dispatched to the Z MCU; register
-        # its rails so config validation and homing work.
         if kin_name == "corexy" and config.has_section("stepper_z"):
             self._register_axis(config, "z", extras=("1", "2", "3"))
 
-        # low > high means "unhomed" (the "Must home axis first" path).
         self.limits = [(1.0, -1.0)] * 3
 
-        # Clear homed state on de-energize (M84 / shutdown) so G1s re-home.
+        self._printer.load_object(config, "homing")
+
         self._printer.register_event_handler(
             "stepper_enable:motor_off",
             self._handle_motor_off,
@@ -149,7 +133,6 @@ class BridgeKinematics:
             mcu_stepper.setup_itersolve(
                 "cartesian_stepper_alloc", axis.encode()
             )
-            mcu_stepper.get_mcu()._bridge_drives_steppers = True
         self.rails.append(rail)
 
     def _axis_rails(self):
@@ -175,15 +158,10 @@ class BridgeKinematics:
             return sum(vals) / len(vals)
 
         axis_rails = self._axis_rails()
-        if self.kinematics == "corexy":
-            a = rail_pos(axis_rails.get(0)) if 0 in axis_rails else 0.0
-            b = rail_pos(axis_rails.get(1)) if 1 in axis_rails else 0.0
-            z = rail_pos(axis_rails.get(2)) if 2 in axis_rails else 0.0
-            return [0.5 * (a + b), 0.5 * (a - b), z]
-        return [
-            rail_pos(axis_rails.get(i)) if i in axis_rails else 0.0
-            for i in (0, 1, 2)
-        ]
+        x = rail_pos(axis_rails.get(0)) if 0 in axis_rails else 0.0
+        y = rail_pos(axis_rails.get(1)) if 1 in axis_rails else 0.0
+        z = rail_pos(axis_rails.get(2)) if 2 in axis_rails else 0.0
+        return [x, y, z]
 
     def _check_endstops(self, move):
         end_pos = move.end_pos
@@ -214,41 +192,10 @@ class BridgeKinematics:
             self._toolhead.max_z_accel * z_ratio,
         )
 
-    def home(self, homing_state):
-        axis_rails = self._axis_rails()
-        for axis in homing_state.get_axes():
-            rail = axis_rails.get(axis)
-            if rail is None:
-                continue
-            position_min, position_max = rail.get_range()
-            hi = rail.get_homing_info()
-            homepos = [None, None, None, None]
-            homepos[axis] = hi.position_endstop
-            forcepos = list(homepos)
-            if hi.positive_dir:
-                forcepos[axis] -= 1.5 * (hi.position_endstop - position_min)
-            else:
-                forcepos[axis] += 1.5 * (position_max - hi.position_endstop)
-            homing_state.home_rails([rail], forcepos, homepos)
-
     def set_position(self, newpos, homing_axes=()):
-        self._toolhead.bridge._software_trip_active = False
         self._toolhead.bridge.set_position(newpos[0], newpos[1], newpos[2])
-        axis_rails = self._axis_rails()
-        for axis_idx, rail in axis_rails.items():
-            if self.kinematics == "corexy" and axis_idx < 2:
-                motor_pos = (
-                    (newpos[0] + newpos[1])
-                    if axis_idx == 0
-                    else (newpos[0] - newpos[1])
-                )
-            else:
-                motor_pos = newpos[axis_idx] if axis_idx < len(newpos) else 0.0
-            for s in rail.get_steppers():
-                step_count = int(motor_pos / s.get_step_dist() + 0.5)
-                s._set_mcu_position(step_count)
         for axis in homing_axes:
-            rail = axis_rails.get(axis)
+            rail = self._axis_rails().get(axis)
             if rail is not None:
                 self.limits[axis] = rail.get_range()
 
@@ -295,7 +242,6 @@ class MotionToolhead(ToolHead):
             from . import motion_bridge
 
             self.bridge = motion_bridge._StubBridge()
-        self.active_homing_arms = set()
         self.kinematics_name = config.get("kinematics", "")
         self.bridge._kinematics_name = self.kinematics_name
         self._mcu_pending_end_time = 0.0
@@ -403,18 +349,11 @@ class MotionToolhead(ToolHead):
     def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
         if self.kin is None:
             return False
-        kin_name = (self.kinematics_name or "").lower()
-        deltas = motion_kinematics.motor_deltas(kin_name, dx, dy, dz, de)
-        if all(abs(d) <= 1e-9 for d in deltas):
-            return False
         if print_time is None:
             print_time = self.get_last_move_time()
         fired = False
         for s in self.kin.get_steppers():
             if not s._active_callbacks:
-                continue
-            slot = _stepper_motor_slot(s)
-            if slot is None or abs(deltas[slot]) <= 1e-9:
                 continue
             cbs = s._active_callbacks
             s._active_callbacks = []
@@ -437,255 +376,9 @@ class MotionToolhead(ToolHead):
         return fired
 
     def drip_move(self, newpos, speed, drip_completion):
-        logging.info(
-            "[bridge-trace] drip_move entered: newpos=%s speed=%s "
-            "drip_test=%s active_homing_arms=%s",
-            list(newpos),
-            speed,
-            (drip_completion.test() if drip_completion is not None else None),
-            sorted(self.active_homing_arms),
-        )
         if drip_completion is not None and drip_completion.test():
             return
-        arm_ids = list(self.active_homing_arms)
-        if arm_ids:
-            pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
-            dx = pos3[0] - self.commanded_pos[0]
-            dy = pos3[1] - self.commanded_pos[1]
-            dz = pos3[2] - self.commanded_pos[2]
-            self._fire_active_callbacks(
-                dx, dy, dz, 0.0, self.get_last_move_time()
-            )
-            self.bridge._software_trip_active = False
-            bridge_lmt_before = self.bridge.get_last_move_time()
-            self.bridge.submit_homing_move(pos3, speed, arm_ids)
-            self.bridge.wait_moves()
-            bridge_lmt_after = self.bridge.get_last_move_time()
-            duration = bridge_lmt_after - bridge_lmt_before
-            self._bump_pending_end_time(duration)
-        elif drip_completion is not None and not drip_completion.test():
-            self._drip_move_software_trip(newpos, speed, drip_completion)
-        else:
-            self.move(newpos, speed)
-
-    def _prepare_probe_interceptor(self, endstops):
-        """Pre-register the Rust frame interceptor for the probe's trsync, from
-        homing.py BEFORE home_start(). Stores the handle id on self for
-        _drip_move_software_trip.
-        """
-        self._probe_homing_handle_id = None
-        stepper_mcus = set()
-        for s in self.kin.get_steppers():
-            if s.get_name().startswith("stepper_z"):
-                stepper_mcus.add(s.get_mcu())
-        if len(stepper_mcus) != 1:
-            return
-        stepper_mcu = next(iter(stepper_mcus))
-        for mcu_endstop, name in endstops:
-            es_mcu = mcu_endstop.get_mcu()
-            if es_mcu == stepper_mcu:
-                continue
-            if es_mcu._bridge_handle is None:
-                continue
-            trsync = getattr(
-                getattr(mcu_endstop, "_shared", None), "_trsync", None
-            )
-            if trsync is None:
-                continue
-            from . import motion_bridge as _mb
-
-            arm_id = _mb._alloc_arm_id()
-            nominal_dist = 250.0
-            axis_rails = self.kin._axis_rails()
-            z_rail = axis_rails.get(2)
-            if z_rail is not None:
-                z_min, z_max = z_rail.get_range()
-                nominal_dist = abs(z_max - z_min)
-            sensor_fault_timeout = nominal_dist / 5.0 + 5.0
-            handle_id = self.bridge.prepare_probe_homing(
-                es_mcu._bridge_handle,
-                trsync.get_oid(),
-                stepper_mcu._bridge_handle,
-                arm_id,
-                sensor_fault_timeout,
-            )
-            self._probe_homing_handle_id = handle_id
-            self._probe_homing_arm_id = arm_id
-            logging.info(
-                "[probe-homing] interceptor registered: handle_id=%d "
-                "beacon_handle=%s trsync_oid=%d arm_id=%d",
-                handle_id,
-                es_mcu._bridge_handle,
-                trsync.get_oid(),
-                arm_id,
-            )
-            return
-
-    def _drip_move_software_trip(self, newpos, speed, drip_completion):
-        from . import motion_bridge as _mb
-        from . import motion_kinematics
-
-        self.bridge.wait_moves()
-        self._ground_pending_end_time_after_bridge_drain()
-
-        pos3 = list(newpos[:3]) + [0.0] * max(0, 3 - len(newpos[:3]))
-        dx = pos3[0] - self.commanded_pos[0]
-        dy = pos3[1] - self.commanded_pos[1]
-        dz = pos3[2] - self.commanded_pos[2]
-
-        logging.info(
-            "[diag] _drip_move_software_trip: "
-            "commanded_pos=[%.3f,%.3f,%.3f] pos3=[%.3f,%.3f,%.3f] "
-            "dx=%.6f dy=%.6f dz=%.6f",
-            self.commanded_pos[0],
-            self.commanded_pos[1],
-            self.commanded_pos[2],
-            pos3[0],
-            pos3[1],
-            pos3[2],
-            dx,
-            dy,
-            dz,
-        )
-
-        kin_name = self.kinematics_name or ""
-        motor_d = motion_kinematics.motor_deltas(kin_name, dx, dy, dz, 0.0)
-        slot_prefixes = ["stepper_x", "stepper_y", "stepper_z", "extruder"]
-        moving_steppers = []
-        for slot_idx, delta in enumerate(motor_d):
-            if abs(delta) < 1e-9:
-                continue
-            prefix = slot_prefixes[slot_idx]
-            for s in self.kin.get_steppers():
-                if s.get_name().startswith(prefix):
-                    moving_steppers.append(s)
-
-        if not moving_steppers:
-            self.move(newpos, speed)
-            return
-
-        stepper_mcus = set(s.get_mcu() for s in moving_steppers)
-        if len(stepper_mcus) > 1:
-            raise self.printer.command_error(
-                "External probe homing across multiple bridge MCUs "
-                "is not supported"
-            )
-        stepper_mcu = next(iter(stepper_mcus))
-        mcu_handle = stepper_mcu._bridge_handle
-        queue = self.bridge.alloc_command_queue(mcu_handle)
-
-        arm_id = getattr(self, "_probe_homing_arm_id", None)
-        if arm_id is None:
-            arm_id = _mb._alloc_arm_id()
-        stepper_oids = [s.get_oid() for s in moving_steppers]
-        source = (_mb.SOURCE_KIND_SOFTWARE, 0, False, 0, 1, 0, 0)
-
-        # The enable callbacks do inline TMC UART reads (~300ms for 3 Z
-        # steppers); pad so the last queue_digital_out clock stays in the future.
-        ENABLE_HEADROOM = 2.000
-        lmt = self.get_last_move_time()
-        est_now = 0.0
-        if self.mcu is not None:
-            est_now = self.mcu.estimated_print_time(self.reactor.monotonic())
-            needed = est_now + ENABLE_HEADROOM
-            if lmt < needed:
-                self.dwell(needed - lmt)
-                lmt = self.get_last_move_time()
-
-        logging.info(
-            "[probe-homing] pre-enable: "
-            "lmt=%.6f est_now=%.6f pending=%.6f stepper_mcu=%s",
-            lmt,
-            est_now,
-            self._mcu_pending_end_time,
-            stepper_mcu.get_name(),
-        )
-
-        self._fire_active_callbacks(dx, dy, dz, 0.0, lmt)
-
-        # Recompute arm_clock after callbacks — the UART traffic consumed
-        # wall-clock time, so the pre-callback lmt may now be in the past.
-        if self.mcu is not None:
-            est_now = self.mcu.estimated_print_time(self.reactor.monotonic())
-        arm_clock = int(
-            stepper_mcu.print_time_to_clock(
-                max(lmt, est_now + BUFFER_TIME_START)
-            )
-        )
-        logging.info(
-            "[probe-homing] post-enable: est_now=%.6f arm_clock=%d",
-            est_now,
-            arm_clock,
-        )
-
-        self.active_homing_arms.add(arm_id)
-        self.bridge.register_homing_dispatch(arm_id, None)
-        self.bridge._software_trip_active = True
-
-        bridge_lmt_before = self.bridge.get_last_move_time()
-        try:
-            self.bridge.endstop_arm(
-                mcu_handle,
-                queue,
-                arm_id,
-                arm_clock,
-                [source],
-                stepper_oids,
-            )
-            self.bridge._homing_print_time_base = bridge_lmt_before
-
-            handle_id = getattr(self, "_probe_homing_handle_id", None)
-            if handle_id is None:
-                raise self.printer.command_error(
-                    "No probe homing interceptor registered "
-                    "(call _prepare_probe_interceptor first)"
-                )
-            # arm_id from prepare — matches what the interceptor sends.
-            arm_id = self._probe_homing_arm_id
-
-            logging.info(
-                "[probe-homing] calling run_probe_homing: "
-                "handle_id=%d arm_id=%d speed=%.1f",
-                handle_id,
-                arm_id,
-                speed,
-            )
-
-            result = self.bridge.run_probe_homing(
-                handle_id,
-                pos3,
-                speed,
-                stepper_oids,
-            )
-
-            PROBE_TRIGGERED = 0
-            SEGMENT_RETIRED = 1
-            SENSOR_FAULT = 2
-            DEADLINE_EXPIRED = 3
-
-            if result == SENSOR_FAULT:
-                raise self.printer.command_error(
-                    "Probe sensor fault: no trigger during full Z "
-                    "travel. Check probe wiring and threshold."
-                )
-            if result == DEADLINE_EXPIRED:
-                raise self.printer.command_error(
-                    "Homing deadline expired: MCU dead-man switch "
-                    "fired (host extension loop may have stalled)"
-                )
-
-            self.bridge.wait_moves()
-            bridge_lmt_after = self.bridge.get_last_move_time()
-            duration = bridge_lmt_after - bridge_lmt_before
-            self._bump_pending_end_time(duration)
-        finally:
-            self.bridge._software_trip_active = False
-            self.active_homing_arms.discard(arm_id)
-            self.bridge.unregister_homing_dispatch(arm_id)
-            try:
-                self.bridge.endstop_disarm(mcu_handle, queue, arm_id)
-            except Exception:
-                pass
+        self.move(newpos, speed)
 
     def dwell(self, delay):
         self.bridge.submit_dwell(delay)
@@ -696,7 +389,16 @@ class MotionToolhead(ToolHead):
         self.bridge.wait_moves()
 
     def wait_moves_and_mcu(self):
-        self.bridge.drain_motion()
+        deadline = self.reactor.monotonic() + DRAIN_TIMEOUT
+        while not self.bridge.motion_drain_poll():
+            now = self.reactor.monotonic()
+            if now >= deadline:
+                raise self.printer.command_error(
+                    "wait_moves_and_mcu: motion drain timed out after %.0fs"
+                    % (DRAIN_TIMEOUT,)
+                )
+            self.reactor.pause(now + 0.010)
+        self.bridge.motion_drain_finalize()
         self._ground_pending_end_time_after_bridge_drain()
 
     def cmd_M400(self, gcmd):
@@ -726,10 +428,6 @@ class MotionToolhead(ToolHead):
         self._ground_pending_end_time_after_bridge_drain()
 
     def get_last_move_time(self):
-        # Return the MCU print-time of the end of the last queued move (callers
-        # like homing.py:home_wait need it for the backstop deadline). Project
-        # the pending bridge duration onto the MCU clock; if nothing is pending
-        # past the current clock, the floor wins.
         est = 0.0
         if self.mcu is not None:
             est = self.mcu.estimated_print_time(self.reactor.monotonic())
@@ -737,9 +435,6 @@ class MotionToolhead(ToolHead):
         if self._mcu_pending_end_time > est:
             return max(self._mcu_pending_end_time, floor)
         return floor
-
-    def note_homing_end(self):
-        self._ground_pending_end_time_after_bridge_drain()
 
     def _ground_pending_end_time_after_bridge_drain(self):
         # wait_moves() means dispatched, not executed; ground subsequent

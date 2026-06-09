@@ -1,136 +1,171 @@
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HomingSegmentState {
-    Idle = 0,
-    Active = 1,
-    Completed = 2,
-    Tripped = 3,
-    DeadlineExpired = 4,
+use runtime::piece_ring::PieceEntry;
+
+use crate::dispatch::McuAxisConfig;
+use crate::pump::AxisKey;
+use kalico_host_rt::passthrough_queue::PassthroughRouter;
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReconstructError {
+    #[error(
+        "clock unsynced: {description} (endstop_mcu={endstop_mcu}, \
+         axis_mcu={axis_mcu}, trip_clock={trip_clock})"
+    )]
+    ClockUnsynced {
+        description: String,
+        endstop_mcu: u32,
+        axis_mcu: u32,
+        trip_clock: u64,
+    },
+
+    #[error(
+        "endstop trip clock outside all stored trajectory pieces \
+         (trip_clock={trip_clock}, axis_clock={axis_clock}, \
+         window_start={window_start}, window_end={window_end}) — \
+         stale/mis-synced clock or trip from a prior stream"
+    )]
+    EndstopTripOutsideTrajectory {
+        trip_clock: u64,
+        axis_clock: u64,
+        window_start: u64,
+        window_end: u64,
+    },
+
+    #[error("no trajectory pieces recorded for axis {0:?} — was HomeDrip dispatched?")]
+    NoTrajectoryPieces(AxisKey),
+
+    #[error("MCU clock frequency unknown for mcu {mcu_id}")]
+    UnknownClockFreq { mcu_id: u32 },
 }
 
-impl HomingSegmentState {
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => Self::Active,
-            2 => Self::Completed,
-            3 => Self::Tripped,
-            4 => Self::DeadlineExpired,
-            _ => Self::Idle,
-        }
-    }
+#[inline]
+pub fn eval_bernstein_cubic(coeffs: [f32; 4], u: f64) -> f64 {
+    let v = 1.0 - u;
+    let b0 = coeffs[0] as f64;
+    let b1 = coeffs[1] as f64;
+    let b2 = coeffs[2] as f64;
+    let b3 = coeffs[3] as f64;
+    v * v * v * b0 + 3.0 * v * v * u * b1 + 3.0 * v * u * u * b2 + u * u * u * b3
 }
 
-#[derive(Debug)]
-pub struct HomingState {
-    state: AtomicU8,
-    active_segment_id: AtomicU64,
-    arm_id: AtomicU64,
-    pending_trip: Mutex<Option<runtime::endstop::TripEvent>>,
-}
-
-impl HomingState {
-    pub fn new() -> Self {
-        Self {
-            state: AtomicU8::new(HomingSegmentState::Idle as u8),
-            active_segment_id: AtomicU64::new(0),
-            arm_id: AtomicU64::new(0),
-            pending_trip: Mutex::new(None),
-        }
+fn eval_piece_at_clock(
+    pieces: &[PieceEntry],
+    axis_clock: u64,
+    clock_freq: f64,
+    trip_clock: u64,
+) -> Result<f64, ReconstructError> {
+    if pieces.is_empty() {
+        return Err(ReconstructError::EndstopTripOutsideTrajectory {
+            trip_clock,
+            axis_clock,
+            window_start: 0,
+            window_end: 0,
+        });
     }
 
-    pub fn state(&self) -> HomingSegmentState {
-        HomingSegmentState::from_u8(self.state.load(Ordering::Acquire))
-    }
+    let window_start = pieces.first().map(|p| p.start_time).unwrap_or(0);
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let window_end = pieces
+        .last()
+        .map(|p| p.end_time(clock_freq as f32))
+        .unwrap_or(0);
 
-    pub fn state_u8(&self) -> u8 {
-        self.state.load(Ordering::Acquire)
-    }
-
-    pub fn begin(&self, arm_id: u32) {
-        self.arm_id.store(u64::from(arm_id), Ordering::Release);
-        self.active_segment_id.store(0, Ordering::Release);
-        *self.pending_trip.lock().unwrap() = None;
-        self.state
-            .store(HomingSegmentState::Active as u8, Ordering::Release);
-    }
-
-    pub fn reset_to_idle(&self) {
-        self.state
-            .store(HomingSegmentState::Idle as u8, Ordering::Release);
-    }
-
-    pub fn mark_dispatched_segment(&self, segment_id: u32) {
-        if self.state() == HomingSegmentState::Active {
-            self.active_segment_id
-                .store(u64::from(segment_id), Ordering::Release);
-        }
-    }
-
-    pub fn complete_if_retired(&self, retired_through_segment_id: u32) {
-        let active = self.active_segment_id.load(Ordering::Acquire);
-        if active != 0
-            && u64::from(retired_through_segment_id) >= active
-            && self.state() == HomingSegmentState::Active
-        {
-            self.state
-                .store(HomingSegmentState::Completed as u8, Ordering::Release);
-        }
-    }
-
-    pub fn refresh_after_wait(&self) {
-        if self.state() != HomingSegmentState::Active {
-            return;
-        }
-        if let Some(evt) = runtime::endstop::poll_trip() {
-            *self.pending_trip.lock().unwrap() = Some(evt);
-            if evt.trip_source_idx == runtime::endstop::TRIP_SOURCE_DEADLINE_EXPIRED {
-                self.state
-                    .store(HomingSegmentState::DeadlineExpired as u8, Ordering::Release);
+    for piece in pieces {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let piece_end = piece.end_time(clock_freq as f32);
+        if axis_clock >= piece.start_time && axis_clock < piece_end {
+            let duration_ticks = (piece.duration as f64) * clock_freq;
+            let u = if duration_ticks > 0.0 {
+                ((axis_clock - piece.start_time) as f64) / duration_ticks
             } else {
-                self.state
-                    .store(HomingSegmentState::Tripped as u8, Ordering::Release);
-            }
-        } else {
-            self.state
-                .store(HomingSegmentState::Completed as u8, Ordering::Release);
+                0.0
+            };
+            let u_clamped = u.clamp(0.0, 1.0);
+            return Ok(eval_bernstein_cubic(piece.coeffs, u_clamped));
         }
     }
 
-    pub fn take_trip_event(&self) -> Option<runtime::endstop::TripEvent> {
-        if let Some(evt) = runtime::endstop::poll_trip() {
-            *self.pending_trip.lock().unwrap() = Some(evt);
-            if evt.trip_source_idx == runtime::endstop::TRIP_SOURCE_DEADLINE_EXPIRED {
-                self.state
-                    .store(HomingSegmentState::DeadlineExpired as u8, Ordering::Release);
-            } else {
-                self.state
-                    .store(HomingSegmentState::Tripped as u8, Ordering::Release);
-            }
-        }
-        self.pending_trip.lock().unwrap().take()
-    }
-
-    pub fn take_completion_event(&self) -> Option<u32> {
-        if self.state() != HomingSegmentState::Completed {
-            return None;
-        }
-        let arm = self.arm_id.swap(0, Ordering::AcqRel);
-        if arm == 0 {
-            return None;
-        }
-        self.state
-            .store(HomingSegmentState::Idle as u8, Ordering::Release);
-        Some(arm as u32)
-    }
+    Err(ReconstructError::EndstopTripOutsideTrajectory {
+        trip_clock,
+        axis_clock,
+        window_start,
+        window_end,
+    })
 }
 
-impl Default for HomingState {
-    fn default() -> Self {
-        Self::new()
+#[allow(clippy::implicit_hasher)]
+pub fn reconstruct_axis_position(
+    endstop_mcu: u32,
+    trip_clock: u64,
+    axis_key: AxisKey,
+    router: &Arc<Mutex<PassthroughRouter>>,
+    homing_traj: &Arc<Mutex<HashMap<AxisKey, Vec<PieceEntry>>>>,
+    configs: &[McuAxisConfig],
+) -> Result<f64, String> {
+    let axis_mcu = axis_key.mcu_id;
+
+    let axis_clock = if axis_mcu == endstop_mcu {
+        trip_clock
+    } else {
+        let router_guard = router.lock().unwrap_or_else(|p| p.into_inner());
+        let endstop_handle = crate::types::mcu_handle_from_raw(endstop_mcu);
+        let axis_handle = crate::types::mcu_handle_from_raw(axis_mcu);
+
+        let host_trip = router_guard
+            .clock_to_host_secs(endstop_handle, trip_clock)
+            .ok_or_else(|| {
+                ReconstructError::ClockUnsynced {
+                    description: format!(
+                        "clock_to_host_secs returned None for endstop_mcu {endstop_mcu}"
+                    ),
+                    endstop_mcu,
+                    axis_mcu,
+                    trip_clock,
+                }
+                .to_string()
+            })?;
+
+        router_guard
+            .host_time_to_mcu_clock(axis_handle, host_trip)
+            .map_err(|e| {
+                ReconstructError::ClockUnsynced {
+                    description: format!(
+                        "host_time_to_mcu_clock failed for axis_mcu {axis_mcu}: {e:?}"
+                    ),
+                    endstop_mcu,
+                    axis_mcu,
+                    trip_clock,
+                }
+                .to_string()
+            })?
+    };
+
+    let clock_freq = {
+        let cfg = configs
+            .iter()
+            .find(|c| c.mcu_id == axis_mcu)
+            .ok_or_else(|| ReconstructError::UnknownClockFreq { mcu_id: axis_mcu }.to_string())?;
+        let _ = cfg;
+        let router_guard = router.lock().unwrap_or_else(|p| p.into_inner());
+        let axis_handle = crate::types::mcu_handle_from_raw(axis_mcu);
+        router_guard
+            .ack_clock_and_freq(axis_handle)
+            .map(|(_, freq)| freq)
+            .unwrap_or(0.0)
+    };
+
+    if clock_freq == 0.0 {
+        return Err(ReconstructError::UnknownClockFreq { mcu_id: axis_mcu }.to_string());
     }
+
+    let traj = homing_traj.lock().unwrap_or_else(|p| p.into_inner());
+    let pieces = traj
+        .get(&axis_key)
+        .ok_or_else(|| ReconstructError::NoTrajectoryPieces(axis_key).to_string())?;
+
+    eval_piece_at_clock(pieces, axis_clock, clock_freq, trip_clock).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

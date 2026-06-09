@@ -19,14 +19,31 @@ use trajectory::{AxisShaper, ShaperConfig};
 use crate::classify;
 use crate::config::{self, PlannerConfig, PlannerLimits, parse_axis_shaper};
 use crate::dispatch::{McuAxisConfig, McuCaps, build_mcu_configs};
-use crate::homing::HomingState;
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
-struct RetainedHomingCurve {
-    axes: [nurbs::ScalarNurbs<f64>; 3],
-    t_start: f64,
-    t_end: f64,
+struct HomingRun {
+    cohort: u64,
+    endstop_id: u8,
+    endstop_mcu: u32,
+    axis: u8,
+    axis_key: crate::pump::AxisKey,
+    all_axis_keys: Vec<crate::pump::AxisKey>,
+    moving_axis_keys: Vec<crate::pump::AxisKey>,
+    notify: crossbeam_channel::Sender<Result<([f64; 3], [f64; 3]), String>>,
+}
+
+fn trip_position_to_motor_frame(
+    axis: u8,
+    motor_pos: f64,
+    _configs: &[crate::dispatch::McuAxisConfig],
+    _axis_mcu: u32,
+) -> [f64; 4] {
+    let mut frame = [0.0f64; 4];
+    if axis < 4 {
+        frame[axis as usize] = motor_pos;
+    }
+    frame
 }
 
 struct McuConnection {
@@ -439,14 +456,15 @@ pub struct PyMotionBridge {
     dispatched_segments: Arc<AtomicU64>,
     fallback_clock_conversions: Arc<AtomicU64>,
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
-    homing: Arc<HomingState>,
-    retained_homing_curve: Arc<Mutex<Option<RetainedHomingCurve>>>,
-    probe_handles: Mutex<HashMap<u64, crate::probe_homing::ProbeHomingHandle>>,
-    probe_handle_counter: AtomicU64,
     events_dir: Mutex<Option<std::path::PathBuf>>,
     pump_tx: Mutex<Option<std::sync::mpsc::Sender<crate::pump::PumpMsg>>>,
     pump_thread: Mutex<Option<JoinHandle<()>>>,
     drain: std::sync::Arc<crate::drain::DrainSync>,
+    active_drip_cohort: Arc<Mutex<Option<u64>>>,
+    homing_trajectory:
+        Arc<Mutex<HashMap<crate::pump::AxisKey, Vec<runtime::piece_ring::PieceEntry>>>>,
+    homing_run: Arc<Mutex<Option<HomingRun>>>,
+    homing_result: Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3]), String>>>>,
     // Latched once `shutdown()` has run a full teardown. Subsequent calls (the
     // Drop backstop, a second `klippy:disconnect`, the failed-connect path) see
     // this and no-op, so double-teardown is provably safe and observable.
@@ -664,14 +682,14 @@ impl PyMotionBridge {
             dispatched_segments: Arc::new(AtomicU64::new(0)),
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
-            homing: Arc::new(HomingState::new()),
-            retained_homing_curve: Arc::new(Mutex::new(None)),
-            probe_handles: Mutex::new(HashMap::new()),
-            probe_handle_counter: AtomicU64::new(1),
             events_dir: Mutex::new(None),
             pump_tx: Mutex::new(None),
             pump_thread: Mutex::new(None),
             drain: std::sync::Arc::new(crate::drain::DrainSync::new()),
+            active_drip_cohort: Arc::new(Mutex::new(None)),
+            homing_trajectory: Arc::new(Mutex::new(HashMap::new())),
+            homing_run: Arc::new(Mutex::new(None)),
+            homing_result: Mutex::new(None),
             shut_down: AtomicBool::new(false),
         }
     }
@@ -1834,24 +1852,11 @@ impl PyMotionBridge {
             RuntimeEvent::Heartbeat { .. } => {
                 return Ok(None);
             }
-            RuntimeEvent::EndstopTripped(e) => {
-                d.set_item("type", "endstop_tripped")?;
-                d.set_item("arm_id", e.arm_id)?;
-                d.set_item("trip_clock", e.trip_clock)?;
-                d.set_item("trip_source_idx", e.trip_source_idx)?;
-                d.set_item("fmt_version", e.fmt_version)?;
-                d.set_item("stepper_count", e.stepper_count)?;
-                let steppers: Vec<Py<PyDict>> = e
-                    .steppers
-                    .iter()
-                    .map(|s| {
-                        let sd = PyDict::new(py);
-                        sd.set_item("oid", s.oid).unwrap();
-                        sd.set_item("step_count", s.step_count).unwrap();
-                        sd.unbind()
-                    })
-                    .collect();
-                d.set_item("steppers", steppers)?;
+            RuntimeEvent::EndstopTrip(t) => {
+                d.set_item("type", "endstop_trip")?;
+                d.set_item("endstop_id", t.endstop_id)?;
+                d.set_item("trip_clock", t.trip_clock)?;
+                self.handle_endstop_trip(mcu_handle, t.endstop_id, t.trip_clock);
             }
             RuntimeEvent::UnknownOutput { format, msg } => {
                 d.set_item("type", "output")?;
@@ -2236,6 +2241,7 @@ impl PyMotionBridge {
         let pump_timeout = Duration::from_secs(5);
         let ring_depth_table_for_pump = ring_depth_table.clone();
         let router_for_pump = Arc::clone(&self.router);
+        let drain_for_pump = self.drain.clone();
         let router_for_freq = Arc::clone(&self.router);
         let pump_thread_handle = std::thread::Builder::new()
             .name("push-pieces-pump".into())
@@ -2274,6 +2280,20 @@ impl PyMotionBridge {
                             mcu_id = key.mcu_id,
                             axis = key.axis,
                             "EXIT_ON_FAULT — EtherCAT transport broken-pipe in pump; \
+                             aborting klippy so systemd restarts it"
+                        );
+                        let _ = std::io::Write::flush(&mut std::io::stderr());
+                        if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
+                            std::process::abort();
+                        }
+                    },
+                    move |key: crate::pump::AxisKey, n: u32| {
+                        drain_for_pump.unsend(key.mcu_id, key.axis, n);
+                    },
+                    |msg: String| {
+                        tracing::error!(
+                            msg,
+                            "EXIT_ON_FAULT — drip cohort stalled; \
                              aborting klippy so systemd restarts it"
                         );
                         let _ = std::io::Write::flush(&mut std::io::stderr());
@@ -2429,6 +2449,8 @@ impl PyMotionBridge {
         let pump_tx_for_cb = pump_tx_init.clone();
         let drain_disp = self.drain.clone();
         let counter_for_cb = Arc::clone(&counter);
+        let active_drip_cohort_for_cb = Arc::clone(&self.active_drip_cohort);
+        let homing_traj_for_cb = Arc::clone(&self.homing_trajectory);
 
         let dispatch: Arc<
             dyn Fn(&trajectory::ShapedSegment) -> Result<(), DispatchError> + Send + Sync,
@@ -2468,16 +2490,37 @@ impl PyMotionBridge {
                         .unwrap_or(0)
                 };
 
+                let active_cohort: Option<u64> = *active_drip_cohort_for_cb
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+
+                let max_piece_secs = if active_cohort.is_some() {
+                    Some(0.025_f64)
+                } else {
+                    None::<f64>
+                };
+                let lead_secs = crate::pump::MAX_LEAD_SECS;
+
                 let msgs = crate::enqueue::enqueue_segment(
                     seg,
                     &mcu_configs_for_cb,
                     t0,
                     fresh,
                     host_now,
+                    lead_secs,
                     project,
+                    max_piece_secs,
                 );
 
-                for m in msgs {
+                for mut m in msgs {
+                    if let Some(cohort) = active_cohort {
+                        m.drip_cohort = Some(cohort);
+                        let mut traj = homing_traj_for_cb.lock().unwrap_or_else(|p| p.into_inner());
+                        let entry = traj.entry(m.key).or_default();
+                        for (piece, _host_t) in &m.pieces {
+                            entry.push(*piece);
+                        }
+                    }
                     drain_disp.add_sent(m.key.mcu_id, m.key.axis, m.pieces.len() as u32);
                     pump_tx_for_cb
                         .send(crate::pump::PumpMsg::Enqueue(m))
@@ -2542,19 +2585,12 @@ impl PyMotionBridge {
         })
     }
 
-    #[pyo3(signature = (newpos, speed, arm_ids))]
-    fn submit_homing_move(&self, newpos: Vec<f64>, speed: f64, arm_ids: Vec<u32>) -> PyResult<()> {
-        self.submit_homing_move_inner(&newpos, speed, &arm_ids)
-    }
-
     fn wait_moves(&self, py: Python<'_>) -> PyResult<()> {
         let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
         let planner = guard.as_ref().ok_or_else(|| {
             PyRuntimeError::new_err("planner not initialized — call init_planner first")
         })?;
-        py.allow_threads(|| planner.flush()).map_err(planner_err)?;
-        self.homing.refresh_after_wait();
-        Ok(())
+        py.allow_threads(|| planner.flush()).map_err(planner_err)
     }
 
     fn drain_motion(&self, py: Python<'_>) -> PyResult<()> {
@@ -2565,219 +2601,19 @@ impl PyMotionBridge {
         py.allow_threads(|| planner.flush()).map_err(planner_err)?;
         let drain = self.drain.clone();
         py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT))
-            .map_err(PyRuntimeError::new_err)?;
-        self.homing.refresh_after_wait();
-        Ok(())
+            .map_err(PyRuntimeError::new_err)
     }
 
-    fn take_trip_event(&self, py: Python<'_>) -> PyResult<Option<Py<PyDict>>> {
-        let Some(evt) = self.homing.take_trip_event() else {
-            return Ok(None);
-        };
-        Ok(Some(trip_event_to_pydict(py, evt)?))
+    fn motion_drain_poll(&self, py: Python<'_>) -> PyResult<bool> {
+        let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+        let planner = guard.as_ref().ok_or_else(|| {
+            PyRuntimeError::new_err("planner not initialized — call init_planner first")
+        })?;
+        py.allow_threads(|| planner.flush()).map_err(planner_err)?;
+        Ok(self.drain.is_drained_now())
     }
 
-    #[pyo3(signature = (mcu, queue, arm_id, arm_clock, sources, stepper_oids, timeout_s=2.0))]
-    #[allow(clippy::too_many_arguments)]
-    fn endstop_arm(
-        &self,
-        mcu: u32,
-        queue: u32,
-        arm_id: u32,
-        arm_clock: u64,
-        sources: Vec<(u8, u16, bool, u8, u8, u8, u32)>,
-        stepper_oids: Vec<u8>,
-        timeout_s: f64,
-    ) -> PyResult<u8> {
-        use kalico_host_rt::endstop;
-        let _ = queue;
-
-        let mut source_specs = Vec::with_capacity(sources.len());
-        for (kind_byte, gpio, active_high, policy_byte, sample_n, velocity_axis, v_min_q16) in
-            sources
-        {
-            let kind = match kind_byte {
-                0 => endstop::SourceKind::Physical,
-                1 => endstop::SourceKind::TmcDiag,
-                2 => endstop::SourceKind::Software,
-                _ => return Err(PyRuntimeError::new_err("invalid source kind")),
-            };
-            let policy = match policy_byte {
-                0 => endstop::ArmPolicy::TripImmediately,
-                1 => endstop::ArmPolicy::WaitForClear,
-                2 => endstop::ArmPolicy::IgnoreUntilMoving,
-                _ => return Err(PyRuntimeError::new_err("invalid arm policy")),
-            };
-            source_specs.push(endstop::SourceSpec {
-                kind,
-                gpio,
-                active_high,
-                policy,
-                sample_n,
-                velocity_axis,
-                v_min_q16,
-            });
-        }
-
-        let io = self.host_io_for_mcu("endstop_arm", mcu)?;
-        let timeout = std::time::Duration::from_secs_f64(timeout_s);
-        let status = endstop::arm_endstop_with_timeout(
-            io.as_ref(),
-            arm_id,
-            arm_clock,
-            &source_specs,
-            &stepper_oids,
-            timeout,
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("endstop_arm: {e}")))?;
-        tracing::info!(
-            subsystem = "homing",
-            event = "endstop_arm_result",
-            mcu,
-            arm_id,
-            arm_clock,
-            status = status as u8,
-            "endstop_arm result"
-        );
-        Ok(status as u8)
-    }
-
-    #[pyo3(signature = (mcu, queue, arm_id, timeout_s=2.0))]
-    fn endstop_disarm(&self, mcu: u32, queue: u32, arm_id: u32, timeout_s: f64) -> PyResult<u8> {
-        use kalico_host_rt::endstop;
-        let _ = queue;
-        let io = self.host_io_for_mcu("endstop_disarm", mcu)?;
-        let timeout = std::time::Duration::from_secs_f64(timeout_s);
-        let status = endstop::disarm_endstop_with_timeout(io.as_ref(), arm_id, timeout)
-            .map_err(|e| PyRuntimeError::new_err(format!("endstop_disarm: {e}")))?;
-        Ok(status as u8)
-    }
-
-    #[pyo3(signature = (newpos, speed, arm_ids))]
-    fn submit_homing_move_async(
-        &self,
-        newpos: Vec<f64>,
-        speed: f64,
-        arm_ids: Vec<u32>,
-    ) -> PyResult<()> {
-        self.submit_homing_move_inner(&newpos, speed, &arm_ids)
-    }
-
-    fn is_homing_segment_retired(&self) -> bool {
-        matches!(
-            self.homing.state(),
-            crate::homing::HomingSegmentState::Completed
-                | crate::homing::HomingSegmentState::Tripped
-                | crate::homing::HomingSegmentState::DeadlineExpired
-        )
-    }
-
-    fn get_homing_segment_reason(&self) -> u8 {
-        match self.homing.state() {
-            crate::homing::HomingSegmentState::Completed => 1,
-            crate::homing::HomingSegmentState::Tripped => 2,
-            crate::homing::HomingSegmentState::DeadlineExpired => 3,
-            _ => 0,
-        }
-    }
-
-    #[pyo3(signature = (mcu, arm_id, timeout_s=2.0))]
-    fn software_trip(&self, mcu: u32, arm_id: u32, timeout_s: f64) -> PyResult<u8> {
-        let io = self.host_io_for_mcu("software_trip", mcu)?;
-        let timeout = std::time::Duration::from_secs_f64(timeout_s);
-        let msg = format!("runtime_software_trip arm_id={arm_id}");
-        let params = {
-            use kalico_host_rt::transport::Transport;
-            io.call(&msg, "kalico_software_trip_response", timeout)
-                .map_err(|e| PyRuntimeError::new_err(format!("software_trip: {e}")))?
-        };
-        let status = params.try_get_u32("status").unwrap_or(1) as u8;
-        Ok(status)
-    }
-
-    #[pyo3(signature = (mcu, arm_id))]
-    fn extend_homing_deadline(&self, mcu: u32, arm_id: u32) -> PyResult<()> {
-        let io = self.host_io_for_mcu("extend_homing_deadline", mcu)?;
-        let msg = format!("runtime_extend_homing_deadline arm_id={arm_id}");
-        io.send_fire_and_forget(&msg)
-            .map_err(|e| PyRuntimeError::new_err(format!("extend_homing_deadline: {e}")))?;
-        Ok(())
-    }
-
-    fn prepare_probe_homing(
-        &self,
-        beacon_handle: u32,
-        beacon_trsync_oid: u8,
-        stepper_mcu_handle: u32,
-        arm_id: u32,
-        sensor_fault_timeout_s: f64,
-    ) -> PyResult<u64> {
-        let beacon_io = self.host_io_for_mcu("prepare_probe_homing(beacon)", beacon_handle)?;
-        let stepper_io =
-            self.host_io_for_mcu("prepare_probe_homing(stepper)", stepper_mcu_handle)?;
-
-        let handle = crate::probe_homing::prepare_probe_homing(
-            beacon_io,
-            stepper_io,
-            beacon_trsync_oid,
-            arm_id,
-            std::time::Duration::from_secs_f64(sensor_fault_timeout_s),
-        )
-        .map_err(|e| PyRuntimeError::new_err(format!("prepare_probe_homing: {e}")))?;
-
-        let id = self.next_probe_handle_id();
-        self.probe_handles.lock().unwrap().insert(id, handle);
-        Ok(id)
-    }
-
-    #[pyo3(signature = (
-        handle_id,
-        move_pos,
-        speed,
-        stepper_oids,
-    ))]
-    fn run_probe_homing(
-        &self,
-        py: Python<'_>,
-        handle_id: u64,
-        move_pos: Vec<f64>,
-        speed: f64,
-        stepper_oids: Vec<u8>,
-    ) -> PyResult<u8> {
-        let _ = stepper_oids;
-
-        let handle = self
-            .probe_handles
-            .lock()
-            .unwrap()
-            .remove(&handle_id)
-            .ok_or_else(|| {
-                PyRuntimeError::new_err(format!("run_probe_homing: unknown handle_id {handle_id}"))
-            })?;
-
-        let seg_count_before = self.dispatched_segments.load(Ordering::Relaxed);
-        self.submit_homing_move_inner(&move_pos, speed, &[handle.arm_id])?;
-        let seg_count_after = self.dispatched_segments.load(Ordering::Relaxed);
-        tracing::info!(
-            subsystem = "homing",
-            event = "homing_move_dispatch",
-            seg_before = seg_count_before,
-            seg_after = seg_count_after,
-            dispatched = seg_count_after - seg_count_before,
-            "run_probe_homing homing move dispatched"
-        );
-
-        let result = py.allow_threads(|| crate::probe_homing::run_probe_homing(&handle));
-
-        crate::probe_homing::cleanup_probe_homing(handle);
-
-        match result {
-            Ok(r) => Ok(r as u8),
-            Err(e) => Err(PyRuntimeError::new_err(format!(
-                "run_probe_homing transport error: {e}"
-            ))),
-        }
-    }
+    fn motion_drain_finalize(&self) {}
 
     fn submit_dwell(&self, duration_s: f64) -> PyResult<()> {
         let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
@@ -2856,11 +2692,6 @@ impl PyMotionBridge {
             }
         }
 
-        *self
-            .retained_homing_curve
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = None;
-
         Ok(())
     }
 
@@ -2923,22 +2754,205 @@ impl PyMotionBridge {
         self.fallback_clock_conversions.load(Ordering::Relaxed)
     }
 
-    #[pyo3(signature = (t,))]
-    fn get_homing_position_at_time(&self, t: f64) -> PyResult<Vec<f64>> {
-        let guard = self
-            .retained_homing_curve
+    #[pyo3(signature = (axis, direction, speed_mm_s, max_travel_mm, endstop_id, endstop_mcu))]
+    #[allow(clippy::too_many_arguments)]
+    fn home_axis_start(
+        &self,
+        py: Python<'_>,
+        axis: u8,
+        direction: f64,
+        speed_mm_s: f64,
+        max_travel_mm: f64,
+        endstop_id: u8,
+        endstop_mcu: u32,
+    ) -> PyResult<()> {
+        use crate::planner::HomeDripParams;
+
+        if axis > 2 {
+            return Err(PyRuntimeError::new_err(format!(
+                "home_axis: axis {axis} out of range (0=X, 1=Y, 2=Z)"
+            )));
+        }
+
+        let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+        let planner = guard
+            .as_ref()
+            .ok_or_else(|| PyRuntimeError::new_err("home_axis: planner not initialized"))?;
+
+        let (all_axis_keys, moving_axis_keys, _axis_mcu, axis_key) = {
+            let configs = self
+                .mcu_axis_configs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+
+            let mut all_keys: Vec<crate::pump::AxisKey> = Vec::new();
+            let mut found_mcu: Option<u32> = None;
+            for cfg in configs.iter() {
+                for &a in &cfg.axes {
+                    if a <= 3 {
+                        all_keys.push(crate::pump::AxisKey {
+                            mcu_id: cfg.mcu_id,
+                            axis: a as u8,
+                        });
+                    }
+                    if a == axis as usize {
+                        found_mcu = Some(cfg.mcu_id);
+                    }
+                }
+            }
+
+            let mcu = found_mcu.ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "home_axis: axis {axis} not found in mcu_axis_configs \
+                     (init_planner not called?)"
+                ))
+            })?;
+            let key = crate::pump::AxisKey { mcu_id: mcu, axis };
+            let moving_keys = vec![key];
+            (all_keys, moving_keys, mcu, key)
+        };
+
+        let cohort: u64 = {
+            use std::sync::atomic::AtomicU64;
+            static SEQ: AtomicU64 = AtomicU64::new(1);
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        };
+
+        let start_pos = *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
+
+        {
+            let mut traj = self
+                .homing_trajectory
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            traj.clear();
+        }
+
+        {
+            let drain = self.drain.clone();
+            py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT))
+                .map_err(PyRuntimeError::new_err)?;
+        }
+
+        {
+            let mut cohort_guard = self
+                .active_drip_cohort
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            *cohort_guard = Some(cohort);
+        }
+
+        let pump_tx = self
+            .pump_tx
             .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let curve = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("get_homing_position_at_time: no homing curve retained")
-        })?;
-        let t_clamped = t.clamp(curve.t_start, curve.t_end);
-        let pos: Vec<f64> = curve
-            .axes
-            .iter()
-            .map(|axis| nurbs::eval::eval(axis, t_clamped))
-            .collect();
-        Ok(pos)
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .ok_or_else(|| PyRuntimeError::new_err("home_axis: pump not started"))?;
+
+        pump_tx
+            .send(crate::pump::PumpMsg::DripArm(crate::pump::DripArm {
+                cohort,
+                participants: moving_axis_keys.clone(),
+                timeout: Duration::from_secs(5),
+            }))
+            .map_err(|_| PyRuntimeError::new_err("home_axis: pump channel closed"))?;
+
+        let (result_tx, result_rx) =
+            crossbeam_channel::bounded::<Result<([f64; 3], [f64; 3]), String>>(1);
+
+        {
+            let mut run = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
+            *run = Some(HomingRun {
+                cohort,
+                endstop_id,
+                endstop_mcu,
+                axis,
+                axis_key,
+                all_axis_keys: all_axis_keys.clone(),
+                moving_axis_keys: moving_axis_keys.clone(),
+                notify: result_tx,
+            });
+        }
+
+        let home_pos_4 = [start_pos[0], start_pos[1], start_pos[2], 0.0];
+
+        let (planner_done_tx, planner_done_rx) =
+            crossbeam_channel::bounded::<Result<(), String>>(1);
+        planner
+            .home_drip(HomeDripParams {
+                home_pos: home_pos_4,
+                start: start_pos,
+                axis,
+                direction,
+                speed_mm_s,
+                max_travel_mm,
+                cohort,
+                participants: moving_axis_keys,
+                notify: planner_done_tx,
+            })
+            .map_err(planner_err)?;
+
+        let dispatch = py.allow_threads(|| {
+            planner_done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|_| "home_axis: planner timed out dispatching homing move".to_owned())
+                .and_then(|r| r)
+        });
+        if let Err(e) = dispatch {
+            self.finish_homing();
+            return Err(PyRuntimeError::new_err(e));
+        }
+
+        *self.homing_result.lock().unwrap_or_else(|p| p.into_inner()) = Some(result_rx);
+        Ok(())
+    }
+
+    fn home_axis_poll(&self) -> PyResult<Option<([f64; 3], [f64; 3])>> {
+        let rx = {
+            let guard = self.homing_result.lock().unwrap_or_else(|p| p.into_inner());
+            match guard.as_ref() {
+                Some(rx) => rx.clone(),
+                None => {
+                    return Err(PyRuntimeError::new_err(
+                        "home_axis_poll: no homing in progress",
+                    ));
+                }
+            }
+        };
+        match rx.try_recv() {
+            Err(crossbeam_channel::TryRecvError::Empty) => Ok(None),
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                self.finish_homing();
+                Err(PyRuntimeError::new_err(
+                    "home_axis_poll: homing result channel closed",
+                ))
+            }
+            Ok(result) => {
+                self.finish_homing();
+                let (trip_pos, final_pos) = result.map_err(PyRuntimeError::new_err)?;
+                *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner()) = final_pos;
+                Ok(Some((trip_pos, final_pos)))
+            }
+        }
+    }
+
+    fn home_abort(&self) {
+        let info = {
+            let guard = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
+            guard.as_ref().map(|r| (r.all_axis_keys.clone(), r.cohort))
+        };
+        if let Some((all_keys, cohort)) = info {
+            if let Some(tx) = self
+                .pump_tx
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+            {
+                let _ = tx.send(crate::pump::PumpMsg::Flush(all_keys));
+                let _ = tx.send(crate::pump::PumpMsg::DripDisarm(cohort));
+            }
+        }
+        self.finish_homing();
     }
 }
 
@@ -2954,8 +2968,13 @@ impl Drop for PyMotionBridge {
 }
 
 impl PyMotionBridge {
-    fn next_probe_handle_id(&self) -> u64 {
-        self.probe_handle_counter.fetch_add(1, Ordering::Relaxed)
+    fn finish_homing(&self) {
+        *self
+            .active_drip_cohort
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = None;
+        *self.homing_run.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        *self.homing_result.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
 
     fn host_io_for_mcu(&self, caller: &str, mcu: u32) -> PyResult<Arc<KalicoHostIo>> {
@@ -2970,53 +2989,154 @@ impl PyMotionBridge {
         })
     }
 
-    fn submit_homing_move_inner(
-        &self,
-        newpos: &[f64],
-        speed: f64,
-        arm_ids: &[u32],
-    ) -> PyResult<()> {
-        if newpos.len() < 3 {
-            return Err(PyRuntimeError::new_err(
-                "submit_homing_move requires newpos with at least 3 axes",
-            ));
+    fn handle_endstop_trip(&self, event_mcu: u32, endstop_id: u8, trip_clock: u64) {
+        let run_opt: Option<HomingRun> = {
+            let mut guard = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
+            guard.take()
+        };
+        let run = match run_opt {
+            None => return,
+            Some(r) => r,
+        };
+        if run.endstop_id != endstop_id || run.endstop_mcu != event_mcu {
+            let mut guard = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
+            *guard = Some(run);
+            return;
         }
-        let arm_id = arm_ids.first().copied().ok_or_else(|| {
-            PyRuntimeError::new_err("submit_homing_move requires at least one arm id")
-        })?;
-        self.homing.begin(arm_id);
 
-        let pos = *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
-        log::info!(
-            "[bridge-trace] submit_homing_move arm_id={} pos=[{:.3},{:.3},{:.3}] newpos=[{:.3},{:.3},{:.3}] speed={:.3}",
-            arm_id,
-            pos[0],
-            pos[1],
-            pos[2],
-            newpos[0],
-            newpos[1],
-            newpos[2],
-            speed,
-        );
-        let classified = classify::classify_and_build(
-            pos,
-            newpos[0] - pos[0],
-            newpos[1] - pos[1],
-            newpos[2] - pos[2],
-            0.0,
-            speed,
-        )
-        .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
-
-        let guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
-        let planner = guard.as_ref().ok_or_else(|| {
-            PyRuntimeError::new_err("planner not initialized — call init_planner first")
-        })?;
-        if let Err(e) = planner.submit_move(classified) {
-            self.homing.reset_to_idle();
-            return Err(planner_err(e));
+        {
+            let mut cohort_guard = self
+                .active_drip_cohort
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            *cohort_guard = None;
         }
-        Ok(())
+
+        let pump_tx_opt = self
+            .pump_tx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+
+        let mcu_ios: HashMap<u32, Arc<KalicoHostIo>> = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            mcus.iter()
+                .filter_map(|(&id, conn)| conn.host_io.as_ref().map(|io| (id, Arc::clone(io))))
+                .collect()
+        };
+
+        let router_arc = Arc::clone(&self.router);
+        let homing_traj = Arc::clone(&self.homing_trajectory);
+        let configs: Vec<McuAxisConfig> = self
+            .mcu_axis_configs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+
+        std::thread::Builder::new()
+            .name("homing-trip-handler".into())
+            .spawn(move || {
+                let stop_timeout = Duration::from_secs(3);
+
+                let stepper_mcu_ids: std::collections::HashSet<u32> =
+                    run.all_axis_keys.iter().map(|k| k.mcu_id).collect();
+
+                if let Some(tx) = pump_tx_opt {
+                    let _ = tx.send(crate::pump::PumpMsg::Flush(run.all_axis_keys.clone()));
+                    let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
+                }
+
+                let mut stop_errors: Vec<String> = Vec::new();
+                let mut axis_discard_clock: Option<u64> = None;
+                for &mcu_id in &stepper_mcu_ids {
+                    let io = match mcu_ios.get(&mcu_id) {
+                        Some(io) => io.clone(),
+                        None => {
+                            stop_errors.push(format!("Stop: no host_io for mcu {mcu_id}"));
+                            continue;
+                        }
+                    };
+                    let result = io.kalico_call(
+                        kalico_protocol::MessageKind::Stop,
+                        Vec::new(),
+                        stop_timeout,
+                    );
+                    match result {
+                        Ok((_kind, body)) => {
+                            use kalico_protocol::codec::Decode as _;
+                            match kalico_protocol::messages::StopResponse::decode(&body) {
+                                Ok(resp) if resp.result != 0 => {
+                                    stop_errors.push(format!(
+                                        "Stop rejected by mcu {mcu_id}: result={}",
+                                        resp.result
+                                    ));
+                                }
+                                Ok(resp) => {
+                                    if mcu_id == run.axis_key.mcu_id {
+                                        axis_discard_clock = Some(resp.discard_clock);
+                                    }
+                                }
+                                Err(e) => {
+                                    stop_errors.push(format!(
+                                        "Stop decode failed for mcu {mcu_id}: {e:?}"
+                                    ));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            stop_errors.push(format!("Stop call failed for mcu {mcu_id}: {e:?}"));
+                        }
+                    }
+                }
+
+                if !stop_errors.is_empty() {
+                    let _ = run.notify.send(Err(format!(
+                        "EndstopTrip Stop broadcast failed: {}",
+                        stop_errors.join("; ")
+                    )));
+                    return;
+                }
+
+                let discard_clock = match axis_discard_clock {
+                    Some(c) => c,
+                    None => {
+                        let _ = run.notify.send(Err(format!(
+                            "EndstopTrip: axis MCU {} did not report a discard clock",
+                            run.axis_key.mcu_id
+                        )));
+                        return;
+                    }
+                };
+
+                let axis = run.axis;
+                let axis_key = run.axis_key;
+                let kinematics = configs
+                    .iter()
+                    .find(|c| c.mcu_id == axis_key.mcu_id)
+                    .map_or(1u8, |c| c.kinematics);
+                let reconstruct_cartesian = |source_mcu: u32,
+                                             clock: u64|
+                 -> Result<[f64; 3], String> {
+                    let motor_pos = crate::homing::reconstruct_axis_position(
+                        source_mcu,
+                        clock,
+                        axis_key,
+                        &router_arc,
+                        &homing_traj,
+                        &configs,
+                    )?;
+                    let motor_frame =
+                        trip_position_to_motor_frame(axis, motor_pos, &configs, axis_key.mcu_id);
+                    Ok(crate::kinematics::inverse(kinematics, motor_frame))
+                };
+
+                let outcome = reconstruct_cartesian(run.endstop_mcu, trip_clock).and_then(|trip| {
+                    reconstruct_cartesian(axis_key.mcu_id, discard_clock)
+                        .map(|final_pos| (trip, final_pos))
+                });
+                let _ = run.notify.send(outcome);
+            })
+            .expect("spawn homing-trip-handler");
     }
 }
 
@@ -3025,27 +3145,6 @@ mod build_configure_axes_body_tests;
 
 #[cfg(test)]
 mod tests;
-
-fn trip_event_to_pydict(py: Python<'_>, evt: runtime::endstop::TripEvent) -> PyResult<Py<PyDict>> {
-    let d = PyDict::new(py);
-    d.set_item("arm_id", evt.arm_id)?;
-    d.set_item("trip_clock", evt.trip_clock)?;
-    d.set_item("trip_source_idx", evt.trip_source_idx)?;
-    d.set_item("stepper_count", evt.stepper_count)?;
-    let steppers: Vec<Py<PyDict>> = evt
-        .steppers
-        .iter()
-        .take(usize::from(evt.stepper_count))
-        .map(|s| {
-            let sd = PyDict::new(py);
-            sd.set_item("oid", s.oid).unwrap();
-            sd.set_item("step_count", s.step_count).unwrap();
-            sd.unbind()
-        })
-        .collect();
-    d.set_item("steppers", steppers)?;
-    Ok(d.unbind())
-}
 
 #[cfg(test)]
 mod require_events_dir_tests {
@@ -3402,3 +3501,6 @@ mod ethercat_endpoint_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod kinematics_calls_tests;

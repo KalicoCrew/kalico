@@ -12,6 +12,8 @@ pub mod drain;
 pub mod enqueue;
 #[doc(hidden)]
 pub mod homing;
+#[doc(hidden)]
+pub mod kinematics;
 pub mod logging;
 pub mod mcu_log;
 #[doc(hidden)]
@@ -19,13 +21,13 @@ pub mod motion_node;
 #[doc(hidden)]
 pub mod planner;
 #[doc(hidden)]
-pub mod probe_homing;
-#[doc(hidden)]
 pub mod pump;
 mod router_transport;
 #[doc(hidden)]
 pub mod servo_torque;
 mod types;
+
+pub mod test_support;
 
 use pyo3::prelude::*;
 

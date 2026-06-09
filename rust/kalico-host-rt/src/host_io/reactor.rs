@@ -732,6 +732,23 @@ impl Reactor {
                 }
             }
             crate::host_io::parser::DecodedFrame::Output { name, params } => {
+                let oid = params.fields.get("oid").and_then(|v| match v {
+                    crate::transport::MessageValue::U32(n) => Some(*n),
+                    crate::transport::MessageValue::I32(n) => Some(*n as u32),
+                    _ => None,
+                });
+                let interceptor_count = self.interceptors.entry_count();
+                if interceptor_count > 0 {
+                    tracing::debug!(
+                        subsystem = "trip-relay",
+                        event = "output_frame_intercepted",
+                        %name,
+                        ?oid,
+                        interceptor_count,
+                        "output frame dispatched through interceptors"
+                    );
+                }
+                self.interceptors.dispatch(&name, oid, &params);
                 let event = crate::host_io::runtime_events::RuntimeEvent::lift(&name, params);
                 self.dispatch_runtime_event(event);
             }

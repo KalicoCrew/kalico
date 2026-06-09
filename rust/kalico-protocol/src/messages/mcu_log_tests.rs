@@ -30,7 +30,11 @@ fn mcu_log_is_event_kind() {
     assert!(MessageKind::McuLog.is_event());
     assert_eq!(MessageKind::McuLog.as_u16(), 0x0084);
     assert_eq!(MessageKind::from_u16(0x0084), Some(MessageKind::McuLog));
-    assert_eq!(MessageKind::from_u16(0x0085), None);
+    assert_eq!(
+        MessageKind::from_u16(0x0085),
+        Some(MessageKind::EndstopTrip)
+    );
+    assert_eq!(MessageKind::from_u16(0x0086), None);
 }
 
 #[test]

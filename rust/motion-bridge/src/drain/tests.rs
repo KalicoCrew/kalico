@@ -88,6 +88,28 @@ fn post_reset_partial_retired_not_drained() {
 }
 
 #[test]
+fn trip_unsend_reconciles_with_discard() {
+    let d = DrainSync::new();
+
+    d.set_retired(0, 0, 1000);
+    d.reset();
+
+    d.add_sent(0, 0, 200);
+    d.set_retired(0, 0, 1080);
+    assert!(
+        d.wait_drained(Duration::from_millis(20)).is_err(),
+        "mid-trip: 200 sent vs delta 80 — not drained"
+    );
+
+    d.unsend(0, 0, 80);
+    d.set_retired(0, 0, 1120);
+    assert!(
+        d.wait_drained(Duration::from_millis(20)).is_ok(),
+        "after unsend(80) + discard to head: delta 120 == sent 120 — drained"
+    );
+}
+
+#[test]
 fn multi_axis_all_must_drain() {
     let d = DrainSync::new();
     d.add_sent(0, 0, 17474);
