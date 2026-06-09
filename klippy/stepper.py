@@ -250,19 +250,23 @@ class PrinterRail:
         need_position_minmax=True,
         default_position_endstop=None,
         units_in_radians=False,
+        setup_endstops=True,
     ):
         self.stepper_units_in_radians = units_in_radians
         self.steppers = []
         self.endstops = []
         self.endstop_map = {}
+        self._setup_endstops = setup_endstops
         self.add_extra_stepper(config)
         mcu_stepper = self.steppers[0]
         self._tmc_current_helpers = None
         self.get_name = mcu_stepper.get_name
         self.get_commanded_position = mcu_stepper.get_commanded_position
         self.calc_position_from_coord = mcu_stepper.calc_position_from_coord
-        mcu_endstop = self.endstops[0][0]
-        if hasattr(mcu_endstop, "get_position_endstop"):
+        mcu_endstop = self.endstops[0][0] if self.endstops else None
+        if mcu_endstop is not None and hasattr(
+            mcu_endstop, "get_position_endstop"
+        ):
             self.position_endstop = mcu_endstop.get_position_endstop()
         elif default_position_endstop is None:
             self.position_endstop = config.getfloat("position_endstop")
@@ -391,6 +395,11 @@ class PrinterRail:
     def add_extra_stepper(self, config):
         stepper = PrinterStepper(config, self.stepper_units_in_radians)
         self.steppers.append(stepper)
+        if not self._setup_endstops:
+            # Bridge-driven rails: homing owns the endstop watch (see
+            # klippy/extras/homing.py); the demolished trsync MCU_endstop pin
+            # type no longer exists, so the rail carries no endstop object.
+            return
         if self.endstops and config.get("endstop_pin", None) is None:
             self.endstops[0][0].add_stepper(stepper)
             return

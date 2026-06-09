@@ -135,7 +135,9 @@ class BridgeKinematics:
             servo_axis.register_torque_enable(self._printer, config, rail)
             self.rails.append(rail)
             return
-        rail = stepper.PrinterRail(config.getsection("stepper_" + axis))
+        rail = stepper.PrinterRail(
+            config.getsection("stepper_" + axis), setup_endstops=False
+        )
         for suffix in extras:
             extra_name = "stepper_" + axis + suffix
             if config.has_section(extra_name):
