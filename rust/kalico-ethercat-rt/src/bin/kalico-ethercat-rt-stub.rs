@@ -13,7 +13,8 @@ use kalico_ethercat_rt::torque::{
 };
 use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
-    runtime_caps_response_frame, set_torque_response_frame, status_heartbeat_frame, Command,
+    runtime_caps_response_frame, set_torque_response_frame, status_heartbeat_frame,
+    stop_response_frame, Command,
 };
 use kalico_protocol::messages::SlaveState;
 
@@ -141,6 +142,12 @@ fn main() {
                 Command::QueryRuntimeCaps { correlation_id } => {
                     let total: u32 = (AXIS_RING_CAPACITY * NUM_AXES * 32) as u32;
                     server.respond(&runtime_caps_response_frame(correlation_id, total));
+                }
+                Command::Stop { correlation_id } => {
+                    let now_ns = monotonic_ns();
+                    ring.reset();
+                    eprintln!("ec-rt-stub: Stop — ring discarded, discard_clock={now_ns}");
+                    server.respond(&stop_response_frame(correlation_id, 0, now_ns));
                 }
                 Command::ClaimHandshake { .. } => {
                     eprintln!(
