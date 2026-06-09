@@ -44,10 +44,6 @@ int32_t kalico_runtime_configure_axis(struct KalicoRuntime *rt,
                                       const struct StepperBindingRust *bindings_ptr,
                                       uint8_t stepper_count);
 
-/**
- * Drain abandoned ring pieces after a homing trip (TIM5 stopped mid-move),
- * keeping the axis config + position. Caller must ensure TIM5 is stopped.
- */
 int32_t kalico_runtime_discard_pending(struct KalicoRuntime *rt);
 
 uint32_t kalico_runtime_enqueue_success_lo(struct KalicoRuntime *rt);

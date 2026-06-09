@@ -15,38 +15,11 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define kalico_nurbs_KALICO_TRIP_EVENT_V1_HEADER_LEN 15
-
-#define kalico_nurbs_KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN 1
-
-#define kalico_nurbs_KALICO_TRIP_EVENT_V1_FMT_VERSION 1
-
-#define kalico_nurbs_KALICO_TRIP_EVENT_V1_MAX_LEN (kalico_nurbs_KALICO_TRIP_EVENT_V1_HEADER_LEN + (kalico_nurbs_MAX_STEPPERS * kalico_nurbs_KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
-
 typedef struct kalico_nurbs_ArcLengthTableRef_f32 kalico_nurbs_ArcLengthTableRef_f32;
 
 typedef struct kalico_nurbs_ScalarNurbsRef_f32 kalico_nurbs_ScalarNurbsRef_f32;
 
 typedef struct kalico_nurbs_VectorNurbsRef_f32__3 kalico_nurbs_VectorNurbsRef_f32__3;
-
-int32_t kalico_endstop_arm(uint32_t arm_id,
-                           uint32_t arm_clock_lo,
-                           uint32_t arm_clock_hi,
-                           uint8_t source_count,
-                           const uint8_t *sources_ptr,
-                           uintptr_t sources_len,
-                           uint8_t stepper_count,
-                           const uint8_t *steppers_ptr,
-                           uintptr_t steppers_len,
-                           uint8_t *out_status);
-
-int32_t kalico_endstop_disarm(uint32_t arm_id, uint8_t *out_status);
-
-int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
-                                 uintptr_t out_buf_len,
-                                 uintptr_t *out_actual_len);
-
-int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
 
 float kalico_nurbs_eval_f32(const struct kalico_nurbs_ScalarNurbsRef_f32 *curve, float u);
 
@@ -75,6 +48,8 @@ int32_t kalico_runtime_configure_axis(kalico_nurbs_KalicoRuntime *rt,
                                       const kalico_nurbs_StepperBindingRust *bindings_ptr,
                                       uint8_t stepper_count);
 
+int32_t kalico_runtime_discard_pending(kalico_nurbs_KalicoRuntime *rt);
+
 uint32_t kalico_runtime_enqueue_success_lo(kalico_nurbs_KalicoRuntime *rt);
 
 double kalico_runtime_get_axis_accumulator(kalico_nurbs_KalicoRuntime *rt, uint8_t oid);
@@ -94,6 +69,10 @@ void kalico_runtime_get_last_timing(kalico_nurbs_KalicoRuntime *rt,
                                     uint64_t *t_start_out,
                                     uint64_t *duration_out);
 
+int32_t kalico_runtime_get_occupancy(kalico_nurbs_KalicoRuntime *rt,
+                                     uint32_t *out_occupancy,
+                                     uintptr_t max_axes);
+
 uint32_t kalico_runtime_get_sample_period_cycles(void);
 
 uint8_t kalico_runtime_get_step_mode(kalico_nurbs_KalicoRuntime *rt, uint8_t stepper_idx);
@@ -111,6 +90,8 @@ uint32_t kalico_runtime_last_push_consumers_remaining(kalico_nurbs_KalicoRuntime
 uint32_t kalico_runtime_last_push_x_handle(kalico_nurbs_KalicoRuntime *rt);
 
 uint32_t kalico_runtime_last_push_y_handle(kalico_nurbs_KalicoRuntime *rt);
+
+uint64_t kalico_runtime_now_ticks(kalico_nurbs_KalicoRuntime *rt);
 
 uint32_t kalico_runtime_push_seg_all_unused_lo(kalico_nurbs_KalicoRuntime *rt);
 
@@ -146,11 +127,6 @@ int32_t kalico_runtime_write_piece(kalico_nurbs_KalicoRuntime *rt,
                                    uint16_t start_slot,
                                    uint8_t index,
                                    const uint8_t *piece_ptr);
-
-int32_t kalico_software_trip(uint32_t arm_id,
-                             uint32_t clock_lo,
-                             uint32_t clock_hi,
-                             uint8_t *out_status);
 
 int32_t runtime_handle_check_blob_version(const uint8_t *payload_ptr, uint32_t payload_len);
 
