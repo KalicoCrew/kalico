@@ -26,8 +26,19 @@ EtherCAT attached at the moment — it drives the Neptune over USB serial).
   a GPIO (killing SWDIO) and the idle firmware parks in WFI with AHB gated, so
   you cannot attach to the running target. Flash in the clean post-boot window
   instead (verified 2026-06-09):
-  1. stop klippy so it can't reconfigure PA13:
-     `sudo systemctl stop klipper klipper-mcu`
+  1. **Hold klippy down so it can't reconfigure PA13.** It reconnects two ways and
+     BOTH must be suppressed or the flash fails with "init mode failed (unable to
+     connect to the target)" the moment klippy re-grabs PA13 as GPIO:
+     - systemd `Restart=always` on klipper.service, and
+     - a udev rule `99-klipper-mcu-autorestart.rules` that restarts klipper the
+       instant the CH340 (`1a86:7523`) tty re-appears after the power-cycle.
+
+         sudo systemctl stop klipper moonraker
+         printf '[Service]\nRestart=no\n' | \
+           sudo tee /etc/systemd/system/klipper.service.d/norestart.conf
+         sudo systemctl daemon-reload
+         sudo mv /etc/udev/rules.d/99-klipper-mcu-autorestart.rules{,.disabled}
+         sudo udevadm control --reload-rules
   2. power-cycle the printer for a fresh boot (HomeKit `Plug 2 OFF` then
      `Plug 2 ON`) — PA13 stays SWDIO while no host is connected
   3. openocd: `reset_config none` (no NRST → software reset), `reset halt` to
@@ -40,6 +51,11 @@ EtherCAT attached at the moment — it drives the Neptune over USB serial).
            -c "verify_image out/klipper.bin 0x8008000" \
            -c "reset run" -c "shutdown"
 
-  4. restart klippy: `sudo systemctl start klipper klipper-mcu`
+  4. restore the auto-restart machinery and bring klippy back:
+
+         sudo mv /etc/udev/rules.d/99-klipper-mcu-autorestart.rules{.disabled,}
+         sudo rm /etc/systemd/system/klipper.service.d/norestart.conf
+         sudo systemctl daemon-reload && sudo udevadm control --reload-rules
+         sudo systemctl start moonraker klipper
 - Runtime profile: rt_storage 36864, piece ring 32768, sample rate 10 kHz
   (F401 Kconfig defaults)
