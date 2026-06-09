@@ -52,6 +52,11 @@ class Homing:
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command("G28", self.cmd_G28, desc="Home (kalico native)")
         gcode.register_command(
+            "KALICO_HOME",
+            self.cmd_KALICO_HOME,
+            desc="Home one axis with optional SPEED/MAX_TRAVEL (bring-up)",
+        )
+        gcode.register_command(
             "QUERY_ENDSTOPS", self.cmd_QUERY_ENDSTOPS, desc="Report endstop states"
         )
 
@@ -98,6 +103,7 @@ class Homing:
         return build_config
 
     def cmd_G28(self, gcmd):
+        # G28 uses the legacy G-code parser (no KEY=VALUE) — bare axis flags only.
         requested = [i for i, a in enumerate("XYZ") if gcmd.get(a, None) is not None]
         if not requested:
             requested = sorted(self._axes.keys())
@@ -113,7 +119,35 @@ class Homing:
                 )
             self._home_axis(gcmd, toolhead, bridge, kin, axis, entry)
 
-    def _home_axis(self, gcmd, toolhead, bridge, kin, axis, entry):
+    def cmd_KALICO_HOME(self, gcmd):
+        # Extended command (supports KEY=VALUE) for bring-up: bounded speed/travel.
+        axis_name = gcmd.get("AXIS").upper()
+        if axis_name not in ("X", "Y", "Z"):
+            raise gcmd.error("KALICO_HOME: AXIS must be X, Y, or Z")
+        axis = "XYZ".index(axis_name)
+        entry = self._axes.get(axis)
+        if entry is None:
+            raise gcmd.error("KALICO_HOME: axis %s has no endstop" % axis_name)
+        speed = gcmd.get_float("SPEED", None, above=0.0)
+        max_travel = gcmd.get_float("MAX_TRAVEL", None, above=0.0)
+        toolhead = self.printer.lookup_object("toolhead")
+        bridge = self.printer.lookup_object("motion_bridge")
+        kin = toolhead.get_kinematics()
+        self._home_axis(
+            gcmd, toolhead, bridge, kin, axis, entry, speed, max_travel
+        )
+
+    def _home_axis(
+        self,
+        gcmd,
+        toolhead,
+        bridge,
+        kin,
+        axis,
+        entry,
+        speed_override=None,
+        max_travel_override=None,
+    ):
         rail = kin._axis_rails().get(axis)
         if rail is None:
             raise gcmd.error("G28: no rail for axis %s" % ("XYZ"[axis],))
@@ -126,9 +160,11 @@ class Homing:
                 % ("XYZ"[axis],)
             )
         direction = 1.0 if hi.positive_dir else -1.0
-        speed = gcmd.get_float("SPEED", hi.speed, above=0.0)
-        max_travel = gcmd.get_float(
-            "MAX_TRAVEL", abs(pos_max - pos_min), above=0.0
+        speed = speed_override if speed_override is not None else hi.speed
+        max_travel = (
+            max_travel_override
+            if max_travel_override is not None
+            else abs(pos_max - pos_min)
         )
 
         # Refuse to home from an already-triggered switch: the level-armed watch
