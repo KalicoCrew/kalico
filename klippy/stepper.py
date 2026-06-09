@@ -4,7 +4,6 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections
-import logging
 import math
 
 
@@ -130,7 +129,10 @@ class MCU_stepper:
         self._mcu.get_printer().send_event("stepper:set_dir_inverted", self)
 
     def calc_position_from_coord(self, coord):
-        return 0.0
+        raise error(
+            "MCU_stepper.calc_position_from_coord is host step generation; "
+            "motion runs on the bridge runtime engine"
+        )
 
     def set_position(self, coord):
         return
@@ -250,35 +252,20 @@ class PrinterRail:
         need_position_minmax=True,
         default_position_endstop=None,
         units_in_radians=False,
-        setup_endstops=True,
     ):
         self.stepper_units_in_radians = units_in_radians
         self.steppers = []
         self.endstops = []
-        self.endstop_map = {}
-        self._setup_endstops = setup_endstops
         self.add_extra_stepper(config)
         mcu_stepper = self.steppers[0]
         self._tmc_current_helpers = None
         self.get_name = mcu_stepper.get_name
         self.get_commanded_position = mcu_stepper.get_commanded_position
         self.calc_position_from_coord = mcu_stepper.calc_position_from_coord
-        mcu_endstop = self.endstops[0][0] if self.endstops else None
-        if mcu_endstop is not None and hasattr(
-            mcu_endstop, "get_position_endstop"
-        ):
-            self.position_endstop = mcu_endstop.get_position_endstop()
-        elif default_position_endstop is None:
-            if self._setup_endstops:
-                self.position_endstop = config.getfloat("position_endstop")
-            else:
-                # Bridge rail: an axis we may never home through config (e.g. a
-                # Z that used to be probe:z_virtual_endstop) need not pin down
-                # position_endstop. Default to position_min; configured axes
-                # (X/Y here) still read their explicit value.
-                self.position_endstop = config.getfloat(
-                    "position_endstop", config.getfloat("position_min", 0.0)
-                )
+        if default_position_endstop is None:
+            self.position_endstop = config.getfloat(
+                "position_endstop", config.getfloat("position_min", 0.0)
+            )
         else:
             self.position_endstop = config.getfloat(
                 "position_endstop", default_position_endstop
@@ -404,42 +391,6 @@ class PrinterRail:
     def add_extra_stepper(self, config):
         stepper = PrinterStepper(config, self.stepper_units_in_radians)
         self.steppers.append(stepper)
-        if not self._setup_endstops:
-            # Bridge-driven rails: homing owns the endstop watch (see
-            # klippy/extras/homing.py); the demolished trsync MCU_endstop pin
-            # type no longer exists, so the rail carries no endstop object.
-            return
-        if self.endstops and config.get("endstop_pin", None) is None:
-            self.endstops[0][0].add_stepper(stepper)
-            return
-        endstop_pin = config.get("endstop_pin")
-        printer = config.get_printer()
-        ppins = printer.lookup_object("pins")
-        pin_params = ppins.parse_pin(endstop_pin, True, True)
-        pin_name = "%s:%s" % (pin_params["chip_name"], pin_params["pin"])
-        endstop = self.endstop_map.get(pin_name, None)
-        if endstop is None:
-            mcu_endstop = ppins.setup_pin("endstop", endstop_pin)
-            self.endstop_map[pin_name] = {
-                "endstop": mcu_endstop,
-                "invert": pin_params["invert"],
-                "pullup": pin_params["pullup"],
-            }
-            name = stepper.get_name(short=True)
-            self.endstops.append((mcu_endstop, name))
-            query_endstops = printer.load_object(config, "query_endstops")
-            query_endstops.register_endstop(mcu_endstop, name)
-        else:
-            mcu_endstop = endstop["endstop"]
-            changed_invert = pin_params["invert"] != endstop["invert"]
-            changed_pullup = pin_params["pullup"] != endstop["pullup"]
-            if changed_invert or changed_pullup:
-                raise error(
-                    "Printer rail %s shared endstop pin %s "
-                    "must specify the same pullup/invert settings"
-                    % (self.get_name(), pin_name)
-                )
-        mcu_endstop.add_stepper(stepper)
 
     def setup_itersolve(self, alloc_func, *params):
         for stepper in self.steppers:

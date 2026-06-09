@@ -1,5 +1,3 @@
-import logging
-
 try:
     from . import motion_bridge_native as _native
 except ImportError:
@@ -372,15 +370,11 @@ class MotionBridgeWrapper:
     def home_axis_start(
         self, axis, direction, speed_mm_s, max_travel_mm, endstop_id, endstop_mcu
     ):
-        # Dispatch the drip homing move; returns immediately. Poll for the
-        # result with home_axis_poll so the reactor keeps draining events.
         return self._bridge.home_axis_start(
             axis, direction, speed_mm_s, max_travel_mm, endstop_id, endstop_mcu
         )
 
     def home_axis_poll(self):
-        # None while in flight; (trip_pos, final_pos) once the endstop tripped,
-        # each [x, y, z] in mm. Raises on failure.
         return self._bridge.home_axis_poll()
 
     def home_abort(self):

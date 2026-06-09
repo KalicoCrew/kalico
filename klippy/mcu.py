@@ -337,131 +337,41 @@ class MCU_trsync:
         self, print_time, report_offset, trigger_completion, expire_timeout
     ):
         self._trigger_completion = trigger_completion
-        if self._mcu._bridge_drives_steppers:
-            # Bridge-driven MCU: the firmware trsync is a real SINK. Arm it and
-            # register the runtime_stop_on_trigger freeze signal so a relayed
-            # trsync_trigger freezes the curve evaluator.
-            self._home_end_clock = None
-            clock = self._mcu.print_time_to_clock(print_time)
-            expire_ticks = self._mcu.seconds_to_clock(expire_timeout)
-            expire_clock = clock + expire_ticks
-            report_ticks = self._mcu.seconds_to_clock(expire_timeout * 0.3)
-            report_clock = clock + int(report_ticks * report_offset + 0.5)
-            serial = self._mcu._serial
-            serial.send(
-                "trsync_start oid=%d report_clock=%d report_ticks=%d"
-                " expire_reason=%d"
-                % (self._oid, report_clock & 0xFFFFFFFF, report_ticks,
-                   self.REASON_COMMS_TIMEOUT)
-            )
-            arm_id = getattr(self, "_bridge_arm_id", None)
-            if arm_id is None:
-                raise self._mcu.error(
-                    "bridge MCU_trsync.start: _bridge_arm_id not set "
-                    "(homing glue must assign it before start)"
-                )
-            if self._steppers:
-                serial.send(
-                    "runtime_stop_on_trigger arm_id=%d trsync_oid=%d"
-                    % (arm_id, self._oid)
-                )
-            serial.send(
-                "trsync_set_timeout oid=%d clock=%d"
-                % (self._oid, expire_clock & 0xFFFFFFFF)
-            )
-            logging.info(
-                "[trsync-diag] bridge sink armed mcu=%s oid=%d arm_id=%d"
-                " timeout=%.3fs",
-                self._mcu._name, self._oid, arm_id, expire_timeout,
-            )
-            return
         self._home_end_clock = None
         clock = self._mcu.print_time_to_clock(print_time)
-        if self._trdispatch_mcu is None:
-            expire_timeout = max(expire_timeout, 30.0)
         expire_ticks = self._mcu.seconds_to_clock(expire_timeout)
         expire_clock = clock + expire_ticks
         report_ticks = self._mcu.seconds_to_clock(expire_timeout * 0.3)
         report_clock = clock + int(report_ticks * report_offset + 0.5)
-        min_extend_ticks = int(report_ticks * 0.8 + 0.5)
-        if self._trdispatch_mcu is not None:
-            ffi_main, ffi_lib = chelper.get_ffi()
-            ffi_lib.trdispatch_mcu_setup(
-                self._trdispatch_mcu,
-                clock,
-                expire_clock,
-                expire_ticks,
-                min_extend_ticks,
-            )
-        self._mcu.register_response(
-            self._handle_trsync_state, "trsync_state", self._oid
+        serial = self._mcu._serial
+        serial.send(
+            "trsync_start oid=%d report_clock=%d report_ticks=%d"
+            " expire_reason=%d"
+            % (self._oid, report_clock & 0xFFFFFFFF, report_ticks,
+               self.REASON_COMMS_TIMEOUT)
         )
-        logging.info(
-            "[trsync-diag] start mcu=%s oid=%d bridge_drives=%s "
-            "print_time=%.6f clock=%d expire_clock=%d "
-            "expire_timeout=%.1f steppers=%s",
-            self._mcu._name,
-            self._oid,
-            self._mcu._bridge_drives_steppers,
-            print_time,
-            clock,
-            expire_clock,
-            expire_timeout,
-            [s.get_name() for s in self._steppers],
+        arm_id = getattr(self, "_bridge_arm_id", None)
+        if arm_id is None:
+            raise self._mcu.error(
+                "bridge MCU_trsync.start: _bridge_arm_id not set "
+                "(homing glue must assign it before start)"
+            )
+        if self._steppers:
+            serial.send(
+                "runtime_stop_on_trigger arm_id=%d trsync_oid=%d"
+                % (arm_id, self._oid)
+            )
+        serial.send(
+            "trsync_set_timeout oid=%d clock=%d"
+            % (self._oid, expire_clock & 0xFFFFFFFF)
         )
-        if self._trdispatch_mcu is not None:
-            self._trsync_start_cmd.send(
-                [
-                    self._oid,
-                    report_clock,
-                    report_ticks,
-                    self.REASON_COMMS_TIMEOUT,
-                ],
-                reqclock=clock,
-            )
-            for s in self._steppers:
-                self._stepper_stop_cmd.send([s.get_oid(), self._oid])
-            self._trsync_set_timeout_cmd.send(
-                [self._oid, expire_clock], reqclock=clock
-            )
-        else:
-            serial = self._mcu._serial
-            serial.send(
-                "trsync_start oid=%d report_clock=%d report_ticks=%d"
-                " expire_reason=%d"
-                % (
-                    self._oid,
-                    report_clock,
-                    report_ticks,
-                    self.REASON_COMMS_TIMEOUT,
-                )
-            )
-            for s in self._steppers:
-                serial.send(
-                    "stepper_stop_on_trigger oid=%d trsync_oid=%d"
-                    % (s.get_oid(), self._oid)
-                )
-            serial.send(
-                "trsync_set_timeout oid=%d clock=%d" % (self._oid, expire_clock)
-            )
 
     def set_home_end_time(self, home_end_time):
         self._home_end_clock = self._mcu.print_time_to_clock(home_end_time)
 
     def stop(self):
-        if self._mcu._bridge_drives_steppers:
-            self._trigger_completion = None
-            return self.REASON_ENDSTOP_HIT
-        self._mcu.register_response(None, "trsync_state", self._oid)
         self._trigger_completion = None
-        if self._mcu.is_fileoutput():
-            return self.REASON_ENDSTOP_HIT
-        params = self._trsync_query_cmd.send(
-            [self._oid, self.REASON_HOST_REQUEST]
-        )
-        for s in self._steppers:
-            s.note_homing_end()
-        return params["trigger_reason"]
+        return self.REASON_ENDSTOP_HIT
 
 
 class TriggerDispatch:
@@ -501,29 +411,10 @@ class TriggerDispatch:
         return [s for trsync in self._trsyncs for s in trsync.get_steppers()]
 
     def start(self, print_time):
-        if self._mcu._bridge_drives_steppers:
-            raise error(
-                "TriggerDispatch.start(): probe on bridge-driven MCU "
-                "'%s' is not supported — probe must be on a separate "
-                "board" % (self._mcu._name,)
-            )
-        reactor = self._mcu.get_printer().get_reactor()
-        self._trigger_completion = reactor.completion()
-        expire_timeout = get_danger_options().multi_mcu_trsync_timeout
-        if len(self._trsyncs) == 1:
-            expire_timeout = get_danger_options().single_mcu_trsync_timeout
-        for i, trsync in enumerate(self._trsyncs):
-            report_offset = float(i) / len(self._trsyncs)
-            trsync.start(
-                print_time,
-                report_offset,
-                self._trigger_completion,
-                expire_timeout,
-            )
-        etrsync = self._trsyncs[0]
-        ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.trdispatch_start(self._trdispatch, etrsync.REASON_HOST_REQUEST)
-        return self._trigger_completion
+        raise error(
+            "TriggerDispatch.start(): probe homing is not supported on the "
+            "bridge motion engine"
+        )
 
     def wait_end(self, end_time):
         etrsync = self._trsyncs[0]
@@ -533,18 +424,10 @@ class TriggerDispatch:
         self._trigger_completion.wait()
 
     def stop(self):
-        if self._mcu._bridge_drives_steppers:
-            raise error(
-                "TriggerDispatch.stop(): probe on bridge-driven MCU "
-                "'%s' is not supported" % (self._mcu._name,)
-            )
-        ffi_main, ffi_lib = chelper.get_ffi()
-        ffi_lib.trdispatch_stop(self._trdispatch)
-        res = [trsync.stop() for trsync in self._trsyncs]
-        err_res = [r for r in res if r >= MCU_trsync.REASON_COMMS_TIMEOUT]
-        if err_res:
-            return err_res[0]
-        return res[0]
+        raise error(
+            "TriggerDispatch.stop(): probe homing is not supported on the "
+            "bridge motion engine"
+        )
 
 
 class MCU_digital_out:
@@ -834,7 +717,6 @@ class MCU:
         if self._name.startswith("mcu "):
             self._name = self._name[4:]
         self._motion_bridge = printer.lookup_object("motion_bridge", None)
-        self._bridge_drives_steppers = False
         self._bridge_handle = None
         # Serial port
         wp = "mcu '%s': " % (self._name)

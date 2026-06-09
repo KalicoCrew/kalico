@@ -8,12 +8,8 @@ from .extras import servo_axis
 from .kinematics import extruder
 from .toolhead import BUFFER_TIME_START, Move, ToolHead
 
-# Upper bound on the reactor-yielding motion-drain wait in wait_moves_and_mcu;
-# matches the bridge's blocking DRAIN_TIMEOUT (rust/motion-bridge/src/bridge.rs).
 DRAIN_TIMEOUT = 60.0
 
-# Slot order must match _configure_axes_per_mcu's slot_names. A name matching
-# no prefix has no slot (e.g. corexy passthrough-Z rails) and is skipped.
 _MOTOR_SLOT_PREFIXES = (
     (0, "stepper_x"),
     (1, "stepper_y"),
@@ -99,8 +95,6 @@ class BridgeKinematics:
             axes = "xyz"
         for axis in axes:
             self._register_axis(config, axis, extras=("1",))
-        # Z is independent in corexy but still dispatched to the Z MCU; register
-        # its rails so config validation works.
         if kin_name == "corexy" and config.has_section("stepper_z"):
             self._register_axis(config, "z", extras=("1", "2", "3"))
 
@@ -108,7 +102,6 @@ class BridgeKinematics:
 
         self._printer.load_object(config, "homing")
 
-        # Clear homed state on de-energize (M84 / shutdown).
         self._printer.register_event_handler(
             "stepper_enable:motor_off",
             self._handle_motor_off,
@@ -132,9 +125,7 @@ class BridgeKinematics:
             servo_axis.register_torque_enable(self._printer, config, rail)
             self.rails.append(rail)
             return
-        rail = stepper.PrinterRail(
-            config.getsection("stepper_" + axis), setup_endstops=False
-        )
+        rail = stepper.PrinterRail(config.getsection("stepper_" + axis))
         for suffix in extras:
             extra_name = "stepper_" + axis + suffix
             if config.has_section(extra_name):
@@ -143,7 +134,6 @@ class BridgeKinematics:
             mcu_stepper.setup_itersolve(
                 "cartesian_stepper_alloc", axis.encode()
             )
-            mcu_stepper.get_mcu()._bridge_drives_steppers = True
         self.rails.append(rail)
 
     def _axis_rails(self):
@@ -401,10 +391,6 @@ class MotionToolhead(ToolHead):
         self.bridge.wait_moves()
 
     def wait_moves_and_mcu(self):
-        # Poll the drain and yield via reactor.pause() rather than parking in a
-        # blocking drain_motion(): the reactor thread is the only one servicing
-        # the MCU link in bridge mode, so a multi-second block here starves the
-        # link. reactor.pause keeps the link alive while motion drains.
         deadline = self.reactor.monotonic() + DRAIN_TIMEOUT
         while not self.bridge.motion_drain_poll():
             now = self.reactor.monotonic()
