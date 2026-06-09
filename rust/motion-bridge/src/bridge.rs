@@ -3021,21 +3021,16 @@ impl PyMotionBridge {
             .unwrap_or_else(|p| p.into_inner())
             .clone();
 
-        enum StopTransport {
-            Serial(Arc<KalicoHostIo>),
-            EtherCat(Arc<UnixNativeConn>),
-        }
-
-        let transports: HashMap<u32, StopTransport> = {
+        let transports: HashMap<u32, Arc<dyn kalico_host_rt::native_call::NativeCall>> = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             mcus.iter()
                 .filter_map(|(&id, conn)| {
                     if let Some(io) = conn.host_io.as_ref() {
-                        Some((id, StopTransport::Serial(Arc::clone(io))))
+                        Some((id, Arc::clone(io) as Arc<dyn kalico_host_rt::native_call::NativeCall>))
                     } else {
                         conn.endpoint_conn
                             .as_ref()
-                            .map(|ec| (id, StopTransport::EtherCat(Arc::clone(ec))))
+                            .map(|ec| (id, Arc::clone(ec) as Arc<dyn kalico_host_rt::native_call::NativeCall>))
                     }
                 })
                 .collect()
@@ -3062,35 +3057,22 @@ impl PyMotionBridge {
                     let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
                 }
 
+                use kalico_host_rt::native_call::NativeCall as _;
+                use kalico_protocol::codec::Decode as _;
                 let stop_call = |mcu_id: u32| -> Result<
                     kalico_protocol::messages::StopResponse,
                     String,
                 > {
-                    use kalico_host_rt::native_call::NativeCall as _;
-                    use kalico_protocol::codec::Decode as _;
                     let transport = transports
                         .get(&mcu_id)
                         .ok_or_else(|| format!("Stop: no transport for mcu {mcu_id}"))?;
-                    let (_kind, body) = match transport {
-                        StopTransport::Serial(io) => io
-                            .kalico_call(
-                                kalico_protocol::MessageKind::Stop,
-                                Vec::new(),
-                                stop_timeout,
-                            )
-                            .map_err(|e| {
-                                format!("Stop call failed for mcu {mcu_id}: {e:?}")
-                            })?,
-                        StopTransport::EtherCat(conn) => conn
-                            .kalico_call(
-                                kalico_protocol::MessageKind::Stop,
-                                Vec::new(),
-                                stop_timeout,
-                            )
-                            .map_err(|e| {
-                                format!("Stop call failed for mcu {mcu_id}: {e:?}")
-                            })?,
-                    };
+                    let (_kind, body) = transport
+                        .kalico_call(
+                            kalico_protocol::MessageKind::Stop,
+                            Vec::new(),
+                            stop_timeout,
+                        )
+                        .map_err(|e| format!("Stop call failed for mcu {mcu_id}: {e:?}"))?;
                     kalico_protocol::messages::StopResponse::decode(&body)
                         .map_err(|e| format!("Stop decode failed for mcu {mcu_id}: {e:?}"))
                 };
