@@ -160,6 +160,11 @@ impl ShaperState {
             })
             .collect();
 
+        let boundary_v_cap = plan_segments
+            .first()
+            .map_or(f64::INFINITY, |s| boundary_path_speed_cap(s));
+        let initial_v = initial_v.min(boundary_v_cap);
+
         let plan_input = PlanInput {
             segments: &plan_segments,
             grid_strategy: ctx.grid_strategy,
@@ -653,6 +658,31 @@ fn shift_nurbs_in_time(curve: &nurbs::ScalarNurbs<f64>, dt: f64) -> nurbs::Scala
         })
         .collect();
     bezier_pieces_to_nurbs(&pieces)
+}
+
+/// Per-axis velocity MVC at the segment's start: `minₐₓ v_max[ax]/|tangent[ax]|`,
+/// the exact cap the SOCP enforces at node 0. Used to clamp a replan's committed
+/// `initial_v` so reconstruction ripple just over the cap can't pin an
+/// infeasible boundary velocity.
+fn boundary_path_speed_cap(seg: &PlanSegment<'_>) -> f64 {
+    use nurbs::eval::{vector_derivative, vector_eval};
+    let curve = seg.temporal.curve;
+    let u0 = curve.knots()[0];
+    let d1 = vector_derivative(curve);
+    let tan = vector_eval(&d1.as_view(), u0);
+    let mag = (tan[0] * tan[0] + tan[1] * tan[1] + tan[2] * tan[2]).sqrt();
+    if mag < 1e-12 {
+        return f64::INFINITY;
+    }
+    let v_max = seg.temporal.limits.v_max;
+    let mut cap = f64::INFINITY;
+    for ax in 0..3 {
+        let dir = (tan[ax] / mag).abs();
+        if dir > 1e-12 {
+            cap = cap.min(v_max[ax] / dir);
+        }
+    }
+    cap
 }
 
 fn per_segment_limits(
