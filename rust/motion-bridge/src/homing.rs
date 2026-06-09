@@ -43,7 +43,6 @@ pub enum ReconstructError {
 #[inline]
 pub fn eval_bernstein_cubic(coeffs: [f32; 4], u: f64) -> f64 {
     let v = 1.0 - u;
-    let u = u;
     let b0 = coeffs[0] as f64;
     let b1 = coeffs[1] as f64;
     let b2 = coeffs[2] as f64;
@@ -96,6 +95,7 @@ fn eval_piece_at_clock(
     })
 }
 
+#[allow(clippy::implicit_hasher)]
 pub fn reconstruct_axis_position(
     endstop_mcu: u32,
     trip_clock: u64,
