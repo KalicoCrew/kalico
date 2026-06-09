@@ -269,7 +269,16 @@ class PrinterRail:
         ):
             self.position_endstop = mcu_endstop.get_position_endstop()
         elif default_position_endstop is None:
-            self.position_endstop = config.getfloat("position_endstop")
+            if self._setup_endstops:
+                self.position_endstop = config.getfloat("position_endstop")
+            else:
+                # Bridge rail: an axis we may never home through config (e.g. a
+                # Z that used to be probe:z_virtual_endstop) need not pin down
+                # position_endstop. Default to position_min; configured axes
+                # (X/Y here) still read their explicit value.
+                self.position_endstop = config.getfloat(
+                    "position_endstop", config.getfloat("position_min", 0.0)
+                )
         else:
             self.position_endstop = config.getfloat(
                 "position_endstop", default_position_endstop
