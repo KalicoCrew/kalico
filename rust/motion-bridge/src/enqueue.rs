@@ -66,7 +66,6 @@ where
                     pieces,
                     fresh_stream,
                     lead_secs,
-                    drip_cohort: None,
                 });
             }
         }

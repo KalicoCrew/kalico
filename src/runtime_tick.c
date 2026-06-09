@@ -177,7 +177,8 @@ DECL_INIT(runtime_init);
     ((KALICO_LIVENESS_THRESHOLD_MS) * (CONFIG_CLOCK_FREQ / 1000))
 
 #define KALICO_FAST_STATUS_MAX_AXES 8
-#define KALICO_FAST_STATUS_RING_OCCUPANCY 4
+#define KALICO_FAST_STATUS_RETIREMENT_MIN_TICKS \
+    ((uint32_t)((CONFIG_CLOCK_FREQ) / 100))
 
 void
 runtime_drain(void)
@@ -191,8 +192,6 @@ runtime_drain(void)
                         timer_from_us(50000),
                         0); // no event tag — idle gaps are normal
 
-    // Liveness acts only on RUNNING; other states refresh the anchor so a
-    // transition INTO RUNNING doesn't trip on a stale anchor.
     uint32_t cur_counter = runtime_handle_tick_counter(runtime_handle);
     uint32_t cur_time = timer_read_time();
     uint8_t cur_status = runtime_handle_status(runtime_handle);
@@ -219,9 +218,6 @@ runtime_drain(void)
         }
     }
 
-    // Fresh nonzero last_error → emit + Klipper shutdown. shutdown() is safe in
-    // foreground (DECL_TASK) but NOT from ISR. last_acted_error suppresses
-    // re-emit on the post-longjmp trailing pass.
     static int32_t last_acted_error;
     int32_t cur_error = runtime_handle_last_error(runtime_handle);
     if (cur_error != 0 && cur_error != last_acted_error) {
@@ -230,7 +226,6 @@ runtime_drain(void)
         uint32_t tick_blocker_pc = runtime_handle_tick_blocker_pc(runtime_handle);
         kalico_native_emit_fault_event((uint16_t)cur_error, fdetail,
                                        tick_blocker_pc);
-        // Persist before shutdown resets the USB stack.
         diag_ring_push(DIAG_EV_RUST_FAULT, (uint32_t)cur_error, fdetail);
         runtime_liveness_ok = 0;
         shutdown("kalico runtime fault");
@@ -246,27 +241,23 @@ runtime_drain(void)
 
     {
         static uint32_t last_retired_seen[KALICO_FAST_STATUS_MAX_AXES];
-        uint32_t occ[KALICO_FAST_STATUS_MAX_AXES];
         uint32_t retired[KALICO_FAST_STATUS_MAX_AXES];
         uint8_t st = 0, fc = 0;
-        int32_t no = kalico_runtime_get_occupancy(runtime_handle, occ,
-                                                  KALICO_FAST_STATUS_MAX_AXES);
         int32_t nr = kalico_runtime_get_heartbeat(runtime_handle, &st, &fc,
                                                   retired,
                                                   KALICO_FAST_STATUS_MAX_AXES);
-        if (no > 0 && nr > 0) {
-            int32_t n = no < nr ? no : nr;
-            uint8_t emit = 0;
-            for (int32_t i = 0; i < n; i++) {
+        if (nr > 0) {
+            uint8_t any_advanced = 0;
+            for (int32_t i = 0; i < nr; i++) {
                 if (retired[i] != last_retired_seen[i]) {
-                    if (occ[i] <= KALICO_FAST_STATUS_RING_OCCUPANCY)
-                        emit = 1;
+                    any_advanced = 1;
                     last_retired_seen[i] = retired[i];
                 }
             }
-            if (emit) {
+            uint32_t elapsed = cur_time - last_status_emit_time;
+            if (any_advanced && elapsed >= KALICO_FAST_STATUS_RETIREMENT_MIN_TICKS) {
                 send_status_heartbeat();
-                last_status_emit_time = timer_read_time();
+                last_status_emit_time = cur_time;
             }
         }
     }

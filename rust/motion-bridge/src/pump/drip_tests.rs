@@ -241,7 +241,6 @@ fn stall_detection_fires_when_floor_stuck() {
             .collect(),
         fresh_stream: false,
         lead_secs: MAX_LEAD_SECS,
-        drip_cohort: Some(55),
     }))
     .unwrap();
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
@@ -251,7 +250,6 @@ fn stall_detection_fires_when_floor_stuck() {
             .collect(),
         fresh_stream: false,
         lead_secs: MAX_LEAD_SECS,
-        drip_cohort: Some(55),
     }))
     .unwrap();
 
@@ -361,7 +359,6 @@ fn retired_regression_triggers_on_drip_stall() {
         pieces: (0..5).map(|i| make_piece(i as u64)).collect(),
         fresh_stream: false,
         lead_secs: MAX_LEAD_SECS,
-        drip_cohort: None,
     }))
     .unwrap();
     std::thread::sleep(Duration::from_millis(50));
@@ -506,7 +503,6 @@ fn drip_disarm_clears_cohort() {
         pieces: (0..10).map(|i| make_piece(i as u64)).collect(),
         fresh_stream: false,
         lead_secs: MAX_LEAD_SECS,
-        drip_cohort: None,
     }))
     .unwrap();
 
@@ -562,7 +558,6 @@ fn mcu_reboot_retired_to_zero_triggers_regression() {
         pieces: (0..5).map(|i| make_piece(i as u64)).collect(),
         fresh_stream: false,
         lead_secs: MAX_LEAD_SECS,
-        drip_cohort: None,
     }))
     .unwrap();
     std::thread::sleep(Duration::from_millis(50));
@@ -634,6 +629,154 @@ fn record_retired_with_nothing_tracked_is_desync() {
     assert!(
         result.is_err(),
         "a retirement with no pre-arm credit and nothing released must be a desync"
+    );
+}
+
+/// Fix A: participant window-blocked (cap 0), non-participant on same MCU has
+/// pending pieces inside horizon → schedule must emit non-participant frames,
+/// not report StallAhead.
+#[test]
+fn cap_zero_participant_does_not_block_non_participant_same_mcu() {
+    const PIECE_DUR: f32 = 0.010;
+    let participant = AxisKey { mcu_id: 0, axis: 0 };
+    let bystander = AxisKey { mcu_id: 0, axis: 1 };
+
+    let mut queues = BTreeMap::new();
+    let mut qp = make_queue(64, 0, 0);
+    qp.pieces.push_back(make_piece_dur(5, PIECE_DUR));
+    queues.insert(participant, qp);
+
+    let mut qb = make_queue(64, 0, 0);
+    qb.pieces.push_back(make_piece_dur(10, PIECE_DUR));
+    queues.insert(bystander, qb);
+
+    let mut co = arm_cohort(1, vec![participant], Duration::from_secs(5), &queues);
+
+    let pieces_to_fill = (DRIP_WINDOW_SECS / PIECE_DUR as f64).ceil() as usize;
+    for _ in 0..pieces_to_fill {
+        co.record_released(participant, std::iter::once(PIECE_DUR as f64));
+    }
+    assert_eq!(
+        co.drip_cap(&participant, &queues),
+        0,
+        "participant window must be full"
+    );
+
+    let cap_of = |k: &AxisKey| -> usize {
+        if co.participants.contains(k) {
+            co.drip_cap(k, &queues)
+        } else {
+            usize::MAX
+        }
+    };
+    let hz_of = |_k: &AxisKey, _q: &AxisQueue| -> Option<u64> { None };
+
+    match schedule(&queues, 32, hz_of, cap_of) {
+        Schedule::Send(frames) => {
+            assert!(
+                frames.iter().any(|f| f.key == bystander),
+                "bystander must send while participant is cap-gated"
+            );
+            assert!(
+                !frames.iter().any(|f| f.key == participant),
+                "cap-gated participant must not appear in frames"
+            );
+        }
+        other => panic!("expected Send(bystander); got {other:?}"),
+    }
+}
+
+/// A cap-gated participant holding the globally-oldest mint time must not
+/// break frame-building for a releasable queue on ANOTHER MCU.
+#[test]
+fn cap_gated_participant_does_not_block_other_mcu() {
+    const PIECE_DUR: f32 = 0.010;
+    let participant = AxisKey { mcu_id: 0, axis: 0 };
+    let other_mcu = AxisKey { mcu_id: 1, axis: 2 };
+
+    let mut queues = BTreeMap::new();
+    // Participant's pending piece carries the OLDEST host mint time.
+    let mut qp = make_queue(64, 0, 0);
+    qp.pieces.push_back(make_piece_dur(5, PIECE_DUR));
+    queues.insert(participant, qp);
+
+    let mut qz = make_queue(64, 0, 0);
+    qz.pieces.push_back(make_piece_dur(10, PIECE_DUR));
+    queues.insert(other_mcu, qz);
+
+    let mut co = arm_cohort(1, vec![participant], Duration::from_secs(5), &queues);
+    let pieces_to_fill = (DRIP_WINDOW_SECS / PIECE_DUR as f64).ceil() as usize;
+    for _ in 0..pieces_to_fill {
+        co.record_released(participant, std::iter::once(PIECE_DUR as f64));
+    }
+    assert_eq!(co.drip_cap(&participant, &queues), 0);
+
+    let cap_of = |k: &AxisKey| -> usize {
+        if co.participants.contains(k) {
+            co.drip_cap(k, &queues)
+        } else {
+            usize::MAX
+        }
+    };
+    let hz_of = |_k: &AxisKey, _q: &AxisQueue| -> Option<u64> { None };
+
+    match schedule(&queues, 32, hz_of, cap_of) {
+        Schedule::Send(frames) => {
+            assert!(
+                frames.iter().any(|f| f.key == other_mcu),
+                "other-MCU queue must send while the participant is cap-gated"
+            );
+            assert!(
+                !frames.iter().any(|f| f.key == participant),
+                "cap-gated participant must not appear in frames"
+            );
+        }
+        other => panic!("expected Send(other_mcu); got {other:?}"),
+    }
+}
+
+/// Fix A: all queues cap-gated (all participants, window full) → StallAhead
+/// is still reported so the pump knows to poll for retirement progress.
+#[test]
+fn all_queues_cap_gated_reports_stall_ahead() {
+    const PIECE_DUR: f32 = 0.010;
+    let ka = AxisKey { mcu_id: 0, axis: 0 };
+    let kb = AxisKey { mcu_id: 0, axis: 1 };
+
+    let mut queues = BTreeMap::new();
+    let mut qa = make_queue(64, 0, 0);
+    qa.pieces.push_back(make_piece_dur(5, PIECE_DUR));
+    queues.insert(ka, qa);
+
+    let mut qb = make_queue(64, 0, 0);
+    qb.pieces.push_back(make_piece_dur(10, PIECE_DUR));
+    queues.insert(kb, qb);
+
+    let mut co = arm_cohort(1, vec![ka, kb], Duration::from_secs(5), &queues);
+
+    let pieces_to_fill = (DRIP_WINDOW_SECS / PIECE_DUR as f64).ceil() as usize;
+    for _ in 0..pieces_to_fill {
+        co.record_released(ka, std::iter::once(PIECE_DUR as f64));
+        co.record_released(kb, std::iter::once(PIECE_DUR as f64));
+    }
+    assert_eq!(co.drip_cap(&ka, &queues), 0);
+    assert_eq!(co.drip_cap(&kb, &queues), 0);
+
+    let cap_of = |k: &AxisKey| -> usize {
+        if co.participants.contains(k) {
+            co.drip_cap(k, &queues)
+        } else {
+            usize::MAX
+        }
+    };
+    let hz_of = |_k: &AxisKey, _q: &AxisQueue| -> Option<u64> { None };
+
+    assert!(
+        matches!(
+            schedule(&queues, 32, hz_of, cap_of),
+            Schedule::StallAhead(_)
+        ),
+        "all queues cap-gated must still produce StallAhead"
     );
 }
 

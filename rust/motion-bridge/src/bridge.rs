@@ -2512,9 +2512,8 @@ impl PyMotionBridge {
                     max_piece_secs,
                 );
 
-                for mut m in msgs {
-                    if let Some(cohort) = active_cohort {
-                        m.drip_cohort = Some(cohort);
+                for m in msgs {
+                    if active_cohort.is_some() {
                         let mut traj = homing_traj_for_cb.lock().unwrap_or_else(|p| p.into_inner());
                         let entry = traj.entry(m.key).or_default();
                         for (piece, _host_t) in &m.pieces {

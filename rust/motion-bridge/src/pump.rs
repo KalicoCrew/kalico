@@ -64,11 +64,19 @@ pub enum Schedule {
 ///
 /// ## Invariants preserved
 ///
-/// 1. **Global gating is intentional.** A stalled MCU (StallFull / StallAhead)
-///    gates issuance to all other MCUs — cross-MCU issue-side coherence requires
-///    that a blocked MCU is never overtaken.
+/// 1. **StallFull gates all MCUs.** When the globally-earliest piece belongs to
+///    a ring-full queue, no other queue may advance — cross-MCU issue-side
+///    coherence requires that a hardware-blocked MCU is never overtaken.
 ///
-/// 2. **Ordering must use host time.** `start_time` values are raw MCU clock
+/// 2. **Cap-gated (drip cohort) queues are skipped, not globally-gating.**
+///    When the globally-earliest piece has `releasable_cap_of == 0` (drip window
+///    full), that queue is excluded from this round and the search continues
+///    among remaining queues in host-time order.  Non-participant queues are
+///    never blocked by a participant's drip window.  Only when every non-empty
+///    queue is either cap-gated or horizon-gated does the function report
+///    `StallAhead`.
+///
+/// 3. **Ordering must use host time.** `start_time` values are raw MCU clock
 ///    ticks in per-MCU clock domains (H7: ~520 MHz / own epoch; F446: ~180 MHz /
 ///    own epoch). Comparing ticks across MCUs is meaningless; F446 values are
 ///    numerically smaller and would always win, starving the H7.  The `f64`
@@ -82,39 +90,53 @@ pub fn schedule(
     releasable_cap_of: impl Fn(&AxisKey) -> usize,
 ) -> Schedule {
     let mut stall_ahead_candidate: Option<AxisKey> = None;
+    let mut cap_skipped: BTreeSet<AxisKey> = BTreeSet::new();
 
-    let head = queues
-        .iter()
-        .filter(|(_, q)| !q.pieces.is_empty())
-        .min_by(|(ka, qa), (kb, qb)| {
-            let ha = qa.pieces.front().unwrap().1;
-            let hb = qb.pieces.front().unwrap().1;
-            ha.total_cmp(&hb).then(ka.cmp(kb))
-        });
-    let (&head_key, head_q) = match head {
-        None => return Schedule::Idle,
-        Some(h) => h,
-    };
-    let (head_entry, _head_host) = head_q.pieces.front().unwrap();
-    let head_start_ticks = head_entry.start_time;
+    let head_key = loop {
+        let candidate = queues
+            .iter()
+            .filter(|(k, q)| !q.pieces.is_empty() && !cap_skipped.contains(*k))
+            .min_by(|(ka, qa), (kb, qb)| {
+                let ha = qa.pieces.front().unwrap().1;
+                let hb = qb.pieces.front().unwrap().1;
+                ha.total_cmp(&hb).then(ka.cmp(kb))
+            });
+        let (&k, q) = match candidate {
+            None => {
+                if let Some(k) = stall_ahead_candidate {
+                    return Schedule::StallAhead(k);
+                }
+                return Schedule::Idle;
+            }
+            Some(c) => c,
+        };
 
-    if head_q.room() == 0 {
-        return Schedule::StallFull(head_key);
-    }
-
-    let head_cap = releasable_cap_of(&head_key);
-    if head_cap == 0 {
-        return Schedule::StallAhead(head_key);
-    }
-
-    if let Some(horizon) = horizon_of(&head_key, head_q) {
-        if head_start_ticks > horizon {
-            return Schedule::StallAhead(head_key);
+        if q.room() == 0 {
+            return Schedule::StallFull(k);
         }
-    }
+
+        if releasable_cap_of(&k) == 0 {
+            if stall_ahead_candidate.is_none() {
+                stall_ahead_candidate = Some(k);
+            }
+            cap_skipped.insert(k);
+            continue;
+        }
+
+        let head_start_ticks = q.pieces.front().unwrap().0.start_time;
+        if let Some(horizon) = horizon_of(&k, q) {
+            if head_start_ticks > horizon {
+                return Schedule::StallAhead(k);
+            }
+        }
+
+        break k;
+    };
 
     let mut taken: BTreeMap<AxisKey, usize> = BTreeMap::new();
-    let mut maxed: BTreeSet<AxisKey> = BTreeSet::new();
+    // Seed with the cap-gated keys: a window-blocked participant must not
+    // reach the cross-MCU break below and abort the round for everyone else.
+    let mut maxed: BTreeSet<AxisKey> = cap_skipped;
     loop {
         let next = queues
             .iter()
@@ -200,7 +222,6 @@ pub struct EnqueueMsg {
     pub pieces: Vec<(PieceEntry, f64)>,
     pub fresh_stream: bool,
     pub lead_secs: f64,
-    pub drip_cohort: Option<u64>,
 }
 
 pub struct HeartbeatMsg {
@@ -463,7 +484,6 @@ pub fn run_pump<S, F, C, A, O, D>(
                 pieces,
                 fresh_stream,
                 lead_secs,
-                drip_cohort: _drip_cohort,
             }) => {
                 if fresh_stream {
                     junction_ends.remove(&key);
