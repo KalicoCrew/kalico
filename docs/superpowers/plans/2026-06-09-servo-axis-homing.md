@@ -717,12 +717,14 @@ def _enable_homing_motors(stepper_enable, rail):
         stepper_enable.motor_debug_enable(s.get_name(), True)
 ```
 
-In `Homing.__init__`, replace:
+In `Homing.__init__` (post-rebase shape — PR #34 introduced `BridgeEndstop` entries and an `stepper_config` local), replace:
 
 ```python
             section = "stepper_" + axis_name
             if not config.has_section(section):
                 continue
+            stepper_config = config.getsection(section)
+            endstop_pin = stepper_config.get("endstop_pin", None)
 ```
 
 with:
@@ -731,7 +733,11 @@ with:
             section = _endstop_section(config, axis_name)
             if section is None:
                 continue
+            axis_config = config.getsection(section)
+            endstop_pin = axis_config.get("endstop_pin", None)
 ```
+
+and rename the remaining `stepper_config` uses in `__init__` to `axis_config` (the `_provider_entry(stepper_config, ...)` call site and its parameter name follow the rename; a servo section can never reach the provider branch in practice — its pin lives on an MCU chip — but the name should not lie). The `BridgeEndstop(pin_params, AXIS_ENDSTOP_IDS[axis_index])` construction is section-agnostic and stays unchanged.
 
 In `_home_axis`, replace:
 
