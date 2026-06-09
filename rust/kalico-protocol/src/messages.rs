@@ -412,7 +412,7 @@ impl Decode for McuLog {
 }
 
 /// Endstop trip (MCU → host, events channel). `trip_clock` is the widened u64
-/// MCU clock captured at edge detection — see `src/kalico_endstop.c`.
+/// MCU clock captured at edge detection — see `src/endstop.c`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EndstopTrip {
     pub endstop_id: u8,

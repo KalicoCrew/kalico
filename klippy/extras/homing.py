@@ -19,7 +19,7 @@ HOMING_POLL_PERIOD = 0.0001
 HOMING_TIMEOUT = 30.0
 
 
-class KalicoHoming:
+class Homing:
     def __init__(self, config):
         self.printer = config.get_printer()
         ppins = self.printer.lookup_object("pins")
@@ -55,7 +55,7 @@ class KalicoHoming:
     def _make_build_config(self, entry):
         def build_config():
             entry["mcu"].add_config_cmd(
-                "config_kalico_endstop oid=%d endstop_id=%d pin=%s pull_up=%d invert=%d"
+                "config_endstop oid=%d endstop_id=%d pin=%s pull_up=%d invert=%d"
                 % (
                     entry["oid"],
                     entry["endstop_id"],
@@ -65,7 +65,7 @@ class KalicoHoming:
                 )
             )
             entry["query_cmd"] = entry["mcu"].lookup_command(
-                "query_kalico_endstop oid=%c rest_ticks=%u"
+                "query_endstop oid=%c rest_ticks=%u"
             )
 
         return build_config
@@ -135,7 +135,7 @@ class KalicoHoming:
         newpos[axis] = hi.position_endstop + overshoot
         toolhead.set_position(newpos, homing_axes=[axis])
         logging.info(
-            "kalico_homing: %s switch=%.4f overshoot=%+.4f set %s=%.4f",
+            "homing: %s switch=%.4f overshoot=%+.4f set %s=%.4f",
             "XYZ"[axis],
             hi.position_endstop,
             overshoot,
@@ -145,4 +145,4 @@ class KalicoHoming:
 
 
 def load_config(config):
-    return KalicoHoming(config)
+    return Homing(config)

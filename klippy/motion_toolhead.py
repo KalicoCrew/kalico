@@ -109,7 +109,7 @@ class BridgeKinematics:
         # Native homing is intrinsic to the bridge motion path, not an opt-in
         # section: load it here so G28 and the per-axis endstop watches come up
         # automatically.
-        self._printer.load_object(config, "kalico_homing")
+        self._printer.load_object(config, "homing")
 
         # Clear homed state on de-energize (M84 / shutdown).
         self._printer.register_event_handler(

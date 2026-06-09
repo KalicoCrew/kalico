@@ -18,7 +18,7 @@
 
 extern void *runtime_handle;
 
-struct kalico_endstop {
+struct endstop {
     struct timer time;
     uint32_t rest_ticks;
     uint32_t pin_id;
@@ -29,9 +29,9 @@ struct kalico_endstop {
 };
 
 static uint_fast8_t
-kalico_endstop_event(struct timer *t)
+endstop_event(struct timer *t)
 {
-    struct kalico_endstop *e = container_of(t, struct kalico_endstop, time);
+    struct endstop *e = container_of(t, struct endstop, time);
     uint8_t raw = gpio_in_read(e->pin) ? 1 : 0;
     uint8_t active = raw ^ e->invert;
     if (active && e->armed) {
@@ -45,38 +45,36 @@ kalico_endstop_event(struct timer *t)
 }
 
 void
-command_config_kalico_endstop(uint32_t *args)
+command_config_endstop(uint32_t *args)
 {
-    struct kalico_endstop *e = oid_alloc(
-        args[0], command_config_kalico_endstop, sizeof(*e));
+    struct endstop *e = oid_alloc(args[0], command_config_endstop, sizeof(*e));
     e->endstop_id = args[1];
     e->pin_id = args[2];
     e->pin = gpio_in_setup(args[2], args[3]);
     e->invert = args[4] ? 1 : 0;
     e->armed = 0;
-    e->time.func = kalico_endstop_event;
+    e->time.func = endstop_event;
 
     // Reject two endstops bound to the same physical pin. foreach_oid resets
     // per connection (the host reallocates oids on connect), so this never
     // false-trips across reconnects.
     uint8_t oid;
-    struct kalico_endstop *other;
-    foreach_oid(oid, other, command_config_kalico_endstop) {
+    struct endstop *other;
+    foreach_oid(oid, other, command_config_endstop) {
         if (other != e && other->pin_id == e->pin_id)
-            shutdown("kalico_endstop: duplicate pin");
+            shutdown("endstop: duplicate pin");
     }
 }
-DECL_COMMAND(command_config_kalico_endstop,
-             "config_kalico_endstop oid=%c endstop_id=%c pin=%u pull_up=%c"
-             " invert=%c");
+DECL_COMMAND(command_config_endstop,
+             "config_endstop oid=%c endstop_id=%c pin=%u pull_up=%c invert=%c");
 
 // Arm (or, with rest_ticks==0, disarm) the watch. Polling starts immediately —
 // the trip clock is captured at edge detection, so the start instant is
 // irrelevant and we avoid depending on a host/MCU clock correspondence.
 void
-command_query_kalico_endstop(uint32_t *args)
+command_query_endstop(uint32_t *args)
 {
-    struct kalico_endstop *e = oid_lookup(args[0], command_config_kalico_endstop);
+    struct endstop *e = oid_lookup(args[0], command_config_endstop);
     sched_del_timer(&e->time);
     e->rest_ticks = args[1];
     if (!e->rest_ticks) {
@@ -87,5 +85,5 @@ command_query_kalico_endstop(uint32_t *args)
     e->time.waketime = timer_read_time() + e->rest_ticks;
     sched_add_timer(&e->time);
 }
-DECL_COMMAND(command_query_kalico_endstop,
-             "query_kalico_endstop oid=%c rest_ticks=%u");
+DECL_COMMAND(command_query_endstop,
+             "query_endstop oid=%c rest_ticks=%u");
