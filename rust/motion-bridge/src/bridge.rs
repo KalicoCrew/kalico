@@ -2938,23 +2938,98 @@ impl PyMotionBridge {
         }
     }
 
-    fn home_abort(&self) {
-        let info = {
-            let guard = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
-            guard.as_ref().map(|r| (r.all_axis_keys.clone(), r.cohort))
-        };
-        if let Some((all_keys, cohort)) = info {
-            if let Some(tx) = self
-                .pump_tx
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone()
-            {
-                let _ = tx.send(crate::pump::PumpMsg::Flush(all_keys));
-                let _ = tx.send(crate::pump::PumpMsg::DripDisarm(cohort));
-            }
+    fn home_abort(&self, py: Python<'_>) {
+        struct AbortContext {
+            all_axis_keys: Vec<crate::pump::AxisKey>,
+            cohort: u64,
+            axis_key: crate::pump::AxisKey,
+            axis: u8,
         }
+
+        let ctx = {
+            let guard = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
+            guard.as_ref().map(|r| AbortContext {
+                all_axis_keys: r.all_axis_keys.clone(),
+                cohort: r.cohort,
+                axis_key: r.axis_key,
+                axis: r.axis,
+            })
+        };
+
+        let Some(ctx) = ctx else {
+            self.finish_homing();
+            return;
+        };
+
+        if let Some(tx) = self
+            .pump_tx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
+            let _ = tx.send(crate::pump::PumpMsg::Flush(ctx.all_axis_keys));
+            let _ = tx.send(crate::pump::PumpMsg::DripDisarm(ctx.cohort));
+        }
+
         self.finish_homing();
+
+        let final_motor_pos =
+            crate::homing::trajectory_final_position(ctx.axis_key, &self.homing_trajectory);
+
+        let final_motor_pos = match final_motor_pos {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(
+                    "home_abort: cannot reconcile position after aborted homing move \
+                     (trajectory store empty or missing for axis {:?}): {e} — \
+                     commanded_pos is STALE; a firmware restart is required to \
+                     recover a consistent position",
+                    ctx.axis_key
+                );
+                return;
+            }
+        };
+
+        let drain = self.drain.clone();
+        let drain_result = py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT));
+        if let Err(e) = drain_result {
+            tracing::error!(
+                "home_abort: drain timed out after aborted homing move — \
+                 commanded_pos is STALE; a firmware restart is required: {e}"
+            );
+            return;
+        }
+
+        let configs = self
+            .mcu_axis_configs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let kinematics = configs
+            .iter()
+            .find(|c| c.mcu_id == ctx.axis_key.mcu_id)
+            .map_or(1u8, |c| c.kinematics);
+        drop(configs);
+
+        let motor_frame =
+            trip_position_to_motor_frame(ctx.axis, final_motor_pos, &[], ctx.axis_key.mcu_id);
+        let cartesian = crate::kinematics::inverse(kinematics, motor_frame);
+
+        let planner_guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(planner) = planner_guard.as_ref() {
+            let open_result =
+                planner.kalico_stream_open([cartesian[0], cartesian[1], cartesian[2], 0.0]);
+            if let Err(e) = open_result {
+                tracing::error!(
+                    "home_abort: kalico_stream_open failed after drain — \
+                     commanded_pos is STALE; a firmware restart is required: {e:?}"
+                );
+                return;
+            }
+            self.drain.reset();
+        }
+        drop(planner_guard);
+
+        *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner()) = cartesian;
     }
 }
 
