@@ -1,17 +1,9 @@
 import logging
 
+from klippy.bridge_endstop import AXIS_ENDSTOP_IDS, BridgeEndstop
+
 HOMING_POLL_PERIOD = 0.001
 HOMING_TIMEOUT = 30.0
-
-
-class _BridgeEndstop:
-    def __init__(self, entry):
-        self._entry = entry
-
-    def query_endstop(self, print_time):
-        entry = self._entry
-        params = entry["state_cmd"].send([entry["oid"]])
-        return params["pin_value"] ^ entry["invert"]
 
 
 class Homing:
@@ -30,18 +22,13 @@ class Homing:
             pin_params = ppins.parse_pin(
                 endstop_pin, can_invert=True, can_pullup=True
             )
-            mcu = pin_params["chip"]
-            entry = {
-                "endstop_id": axis_index,
-                "mcu": mcu,
-                "oid": mcu.create_oid(),
-                "pin": pin_params["pin"],
-                "pullup": pin_params["pullup"],
-                "invert": pin_params["invert"],
-                "query_cmd": None,
+            self._axes[axis_index] = {
+                "endstop": BridgeEndstop(
+                    pin_params, AXIS_ENDSTOP_IDS[axis_index]
+                ),
+                "provider": None,
+                "trigger_height": None,
             }
-            self._axes[axis_index] = entry
-            mcu.register_config_callback(self._make_build_config(entry))
 
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command("G28", self.cmd_G28, desc="Home")
@@ -54,31 +41,8 @@ class Homing:
         query_endstops = self.printer.load_object(config, "query_endstops")
         for axis_index in sorted(self._axes):
             query_endstops.register_endstop(
-                _BridgeEndstop(self._axes[axis_index]), "xyz"[axis_index]
+                self._axes[axis_index]["endstop"], "xyz"[axis_index]
             )
-
-    def _make_build_config(self, entry):
-        def build_config():
-            entry["mcu"].add_config_cmd(
-                "config_endstop oid=%d endstop_id=%d pin=%s pull_up=%d invert=%d"
-                % (
-                    entry["oid"],
-                    entry["endstop_id"],
-                    entry["pin"],
-                    entry["pullup"],
-                    entry["invert"],
-                )
-            )
-            entry["query_cmd"] = entry["mcu"].lookup_command(
-                "query_endstop oid=%c rest_ticks=%u"
-            )
-            entry["state_cmd"] = entry["mcu"].lookup_query_command(
-                "endstop_query_state oid=%c",
-                "endstop_state oid=%c armed=%c pin_value=%c",
-                oid=entry["oid"],
-            )
-
-        return build_config
 
     def cmd_G28(self, gcmd):
         requested = [
@@ -128,7 +92,8 @@ class Homing:
             raise gcmd.error("G28: no rail for axis %s" % ("XYZ"[axis],))
         hi = rail.get_homing_info()
         pos_min, pos_max = rail.get_range()
-        endstop_mcu = getattr(entry["mcu"], "_bridge_handle", None)
+        endstop = entry["endstop"]
+        endstop_mcu = endstop.bridge_mcu_handle()
         if endstop_mcu is None:
             raise gcmd.error(
                 "G28: endstop MCU for axis %s is not attached to the bridge"
@@ -142,8 +107,7 @@ class Homing:
             else abs(pos_max - pos_min)
         )
 
-        state = entry["state_cmd"].send([entry["oid"]])
-        if state["pin_value"] ^ entry["invert"]:
+        if endstop.is_triggered():
             raise gcmd.error(
                 "G28 %s: endstop already triggered — move the axis off the "
                 "switch before homing" % ("XYZ"[axis],)
@@ -154,11 +118,10 @@ class Homing:
         for s in rail.get_steppers():
             stepper_enable.motor_debug_enable(s.get_name(), True)
 
-        rest_ticks = entry["mcu"].seconds_to_clock(HOMING_POLL_PERIOD)
-        entry["query_cmd"].send([entry["oid"], rest_ticks])
+        endstop.arm(HOMING_POLL_PERIOD)
 
         bridge.home_axis_start(
-            axis, direction, speed, max_travel, entry["endstop_id"], endstop_mcu
+            axis, direction, speed, max_travel, endstop.endstop_id, endstop_mcu
         )
         reactor = self.printer.get_reactor()
         deadline = reactor.monotonic() + HOMING_TIMEOUT

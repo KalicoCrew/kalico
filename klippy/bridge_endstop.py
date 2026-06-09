@@ -1,4 +1,5 @@
-PROVIDER_ID_FIRST = 3
+AXIS_ENDSTOP_IDS = (0, 1, 2)
+PROVIDER_ID_FIRST = len(AXIS_ENDSTOP_IDS)
 ENDSTOP_ID_MAX = 255
 
 _ALLOCATOR_OBJECT = "bridge_endstop_allocator"
@@ -36,6 +37,11 @@ class BridgeEndstop:
 
     def arm(self, poll_period):
         rest_ticks = self.mcu.seconds_to_clock(poll_period)
+        if rest_ticks <= 0:
+            raise ValueError(
+                "endstop %d (pin %s): arm rest_ticks must be positive"
+                % (self.endstop_id, self.pin)
+            )
         self._query_cmd.send([self.oid, rest_ticks])
 
     def query_endstop(self, print_time):

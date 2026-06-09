@@ -1,3 +1,5 @@
+import pytest
+
 from klippy.bridge_endstop import (
     PROVIDER_ID_FIRST,
     BridgeEndstop,
@@ -99,7 +101,15 @@ def test_query_endstop_matches_is_triggered():
     mcu = FakeMcu()
     endstop = _connected(mcu, BridgeEndstop(_pin_params(mcu), 3))
     mcu.state_cmd.response = {"oid": 0, "armed": 0, "pin_value": 1}
-    assert endstop.query_endstop(0.0) is True
+    assert endstop.query_endstop(0.0) is endstop.is_triggered() is True
+
+
+def test_arm_zero_period_rejected():
+    mcu = FakeMcu()
+    endstop = _connected(mcu, BridgeEndstop(_pin_params(mcu), 3))
+    with pytest.raises(ValueError, match="rest_ticks"):
+        endstop.arm(0.0)
+    assert mcu.query_cmd.sent == []
 
 
 def test_provider_ids_allocate_sequentially():
