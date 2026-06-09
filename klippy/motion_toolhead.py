@@ -76,7 +76,6 @@ def _open_sim_control():
 
 
 class BridgeKinematics:
-
     supports_dual_carriage = False
 
     def __init__(self, toolhead, config):

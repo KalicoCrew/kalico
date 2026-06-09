@@ -27,7 +27,9 @@ class Homing:
             endstop_pin = config.getsection(section).get("endstop_pin", None)
             if endstop_pin is None or "virtual_endstop" in endstop_pin:
                 continue
-            pin_params = ppins.parse_pin(endstop_pin, can_invert=True, can_pullup=True)
+            pin_params = ppins.parse_pin(
+                endstop_pin, can_invert=True, can_pullup=True
+            )
             mcu = pin_params["chip"]
             entry = {
                 "endstop_id": axis_index,
@@ -79,7 +81,9 @@ class Homing:
         return build_config
 
     def cmd_G28(self, gcmd):
-        requested = [i for i, a in enumerate("XYZ") if gcmd.get(a, None) is not None]
+        requested = [
+            i for i, a in enumerate("XYZ") if gcmd.get(a, None) is not None
+        ]
         if not requested:
             requested = sorted(self._axes.keys())
         toolhead = self.printer.lookup_object("toolhead")
@@ -88,9 +92,7 @@ class Homing:
         for axis in requested:
             entry = self._axes.get(axis)
             if entry is None:
-                raise gcmd.error(
-                    "G28: axis %s has no endstop" % ("XYZ"[axis],)
-                )
+                raise gcmd.error("G28: axis %s has no endstop" % ("XYZ"[axis],))
             self._home_axis(gcmd, toolhead, bridge, kin, axis, entry)
 
     def cmd_HOME_TEST(self, gcmd):
@@ -106,7 +108,9 @@ class Homing:
         toolhead = self.printer.lookup_object("toolhead")
         bridge = self.printer.lookup_object("motion_bridge")
         kin = toolhead.get_kinematics()
-        self._home_axis(gcmd, toolhead, bridge, kin, axis, entry, speed, max_travel)
+        self._home_axis(
+            gcmd, toolhead, bridge, kin, axis, entry, speed, max_travel
+        )
 
     def _home_axis(
         self,
@@ -170,7 +174,8 @@ class Homing:
             if reactor.monotonic() > deadline:
                 bridge.home_abort()
                 raise gcmd.error(
-                    "G28 %s: timed out waiting for endstop trip" % ("XYZ"[axis],)
+                    "G28 %s: timed out waiting for endstop trip"
+                    % ("XYZ"[axis],)
                 )
             reactor.pause(reactor.monotonic() + 0.010)
         trip_pos, final_pos = result

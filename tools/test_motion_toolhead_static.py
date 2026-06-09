@@ -41,14 +41,10 @@ EXPECTED_LOCAL_METHODS = frozenset(
         # Bridge-mode overrides of the upstream lifecycle / motion surface.
         # MotionToolhead drives motion through the native bridge instead of
         # the legacy trapq/stepcompress path, so it overrides connection
-        # teardown, homing/probe interception, drip software-endstop trips,
-        # and the bridge-drain end-time bookkeeping.
+        # teardown and the bridge-drain end-time bookkeeping.
         "_handle_disconnect",
-        "_prepare_probe_interceptor",
-        "_drip_move_software_trip",
         "wait_moves_and_mcu",
         "_bridge_mcus",
-        "note_homing_end",
         "_ground_pending_end_time_after_bridge_drain",
         "_bump_pending_end_time",
     }

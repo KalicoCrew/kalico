@@ -10,7 +10,15 @@ import numpy as np
 
 from klippy import mcu
 from klippy.configfile import ConfigWrapper
-from klippy.extras.homing import PrinterHoming
+
+try:
+    from klippy.extras.homing import PrinterHoming
+except ImportError:
+
+    class PrinterHoming:
+        pass
+
+
 from klippy.extras.probe import PrinterProbe
 from klippy.gcode import GCodeCommand
 

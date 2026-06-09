@@ -368,7 +368,13 @@ class MotionBridgeWrapper:
         return self._bridge.set_position(x, y, z)
 
     def home_axis_start(
-        self, axis, direction, speed_mm_s, max_travel_mm, endstop_id, endstop_mcu
+        self,
+        axis,
+        direction,
+        speed_mm_s,
+        max_travel_mm,
+        endstop_id,
+        endstop_mcu,
     ):
         return self._bridge.home_axis_start(
             axis, direction, speed_mm_s, max_travel_mm, endstop_id, endstop_mcu

@@ -347,8 +347,12 @@ class MCU_trsync:
         serial.send(
             "trsync_start oid=%d report_clock=%d report_ticks=%d"
             " expire_reason=%d"
-            % (self._oid, report_clock & 0xFFFFFFFF, report_ticks,
-               self.REASON_COMMS_TIMEOUT)
+            % (
+                self._oid,
+                report_clock & 0xFFFFFFFF,
+                report_ticks,
+                self.REASON_COMMS_TIMEOUT,
+            )
         )
         arm_id = getattr(self, "_bridge_arm_id", None)
         if arm_id is None:
