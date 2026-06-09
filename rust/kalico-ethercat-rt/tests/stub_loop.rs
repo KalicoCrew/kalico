@@ -163,6 +163,7 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                     }
                     Command::ClaimHandshake { .. } => {}
                     Command::SetTorque { .. } => {}
+                    Command::Stop { .. } => {}
                     Command::Unknown { .. } => {}
                 }
             }
@@ -181,6 +182,7 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                     | Command::QueryRuntimeCaps { .. }
                     | Command::ClaimHandshake { .. }
                     | Command::SetTorque { .. }
+                    | Command::Stop { .. }
                     | Command::PushPieces { .. } => {}
                 }
             }

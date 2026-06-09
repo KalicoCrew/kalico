@@ -1,7 +1,7 @@
 use super::*;
 use kalico_native_transport::demux::{Demuxer, Frame};
 use kalico_native_transport::frame::decode_frame;
-use kalico_protocol::messages::{SlaveState, SlaveStatus};
+use kalico_protocol::messages::{SlaveState, SlaveStatus, StopResponse};
 
 #[test]
 fn decodes_identify_on_control_channel() {
@@ -140,4 +140,29 @@ fn set_torque_response_frame_round_trips() {
     assert_eq!(hdr.correlation_id, 9);
     let resp = SetTorqueResponse::decode(body).expect("body");
     assert_eq!(resp.result, -312);
+}
+
+#[test]
+fn decodes_stop_command() {
+    let payload = frame_payload(MessageKind::Stop, 11, &[]);
+    match decode_command(0, &payload).unwrap() {
+        Command::Stop { correlation_id: 11 } => {}
+        other => panic!("expected Stop, got {other:?}"),
+    }
+}
+
+#[test]
+fn stop_response_frame_round_trips() {
+    let frame = stop_response_frame(5, 0, 123_456_789);
+    let (chan, payload) = decode_frame(&frame).unwrap();
+    assert_eq!(chan, CHANNEL_CONTROL);
+    let (hdr, body) = decode_message_header(payload).unwrap();
+    assert_eq!(hdr.correlation_id, 5);
+    assert_eq!(
+        MessageKind::from_u16(hdr.kind_raw),
+        Some(MessageKind::StopResponse)
+    );
+    let r = StopResponse::decode(body).unwrap();
+    assert_eq!(r.result, 0);
+    assert_eq!(r.discard_clock, 123_456_789);
 }

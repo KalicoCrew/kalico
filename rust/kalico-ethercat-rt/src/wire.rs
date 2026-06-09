@@ -6,7 +6,7 @@ use kalico_protocol::bootstrap::{IdentifyResponse, IDENTIFY_RESPONSE_BODY_LEN};
 use kalico_protocol::codec::{Decode, Encode};
 use kalico_protocol::messages::{
     ClaimHandshakeReply, MessageKind, PushPieces, PushPiecesResponse, RuntimeCapsResponse,
-    SetTorque, SetTorqueResponse, StatusHeartbeat,
+    SetTorque, SetTorqueResponse, StatusHeartbeat, StopResponse,
 };
 use kalico_protocol::KALICO_CHANNEL_PIECES;
 
@@ -29,6 +29,9 @@ pub enum Command {
     SetTorque {
         correlation_id: u32,
         msg: SetTorque,
+    },
+    Stop {
+        correlation_id: u32,
     },
     Unknown {
         correlation_id: u32,
@@ -75,6 +78,9 @@ pub fn decode_command(channel: u8, payload: &[u8]) -> Result<Command, DecodeCmdE
                 msg,
             })
         }
+        Some(MessageKind::Stop) => Ok(Command::Stop {
+            correlation_id: cid,
+        }),
         _ => Ok(Command::Unknown {
             correlation_id: cid,
             kind_raw: hdr.kind_raw,
@@ -95,6 +101,15 @@ pub fn frame_payload(kind: MessageKind, correlation_id: u32, body: &[u8]) -> Vec
 
 pub fn control_frame(kind: MessageKind, correlation_id: u32, body: &[u8]) -> Vec<u8> {
     encode_frame(CHANNEL_CONTROL, &frame_payload(kind, correlation_id, body))
+}
+
+pub fn stop_response_frame(cid: u32, result: i32, discard_clock: u64) -> Vec<u8> {
+    let body = StopResponse {
+        result,
+        discard_clock,
+    }
+    .encoded_to_vec();
+    control_frame(MessageKind::StopResponse, cid, &body)
 }
 
 pub fn set_torque_response_frame(cid: u32, result: i32) -> Vec<u8> {

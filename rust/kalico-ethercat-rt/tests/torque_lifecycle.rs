@@ -6,7 +6,7 @@ use kalico_host_rt::native_call::NativeCall;
 use kalico_host_rt::unix_native_conn::UnixNativeConn;
 use kalico_protocol::codec::{Cursor, Decode, Encode};
 use kalico_protocol::messages::{
-    ClaimHandshakeReply, MessageKind, PushPieces, SetTorque, SetTorqueResponse,
+    ClaimHandshakeReply, MessageKind, PushPieces, SetTorque, SetTorqueResponse, StopResponse,
 };
 use runtime::piece_ring::PieceEntry;
 
@@ -86,6 +86,20 @@ fn wait_for_exit(child: &mut Child, deadline: Instant) -> std::process::ExitStat
             }
         }
     }
+}
+
+fn send_stop(conn: &UnixNativeConn) -> (i32, u64) {
+    let (kind, resp) = conn
+        .kalico_call(MessageKind::Stop, Vec::new(), Duration::from_secs(5))
+        .expect("Stop call must succeed");
+    assert_eq!(
+        kind,
+        MessageKind::StopResponse,
+        "expected StopResponse, got 0x{:04x}",
+        kind.as_u16()
+    );
+    let r = StopResponse::decode(&resp).expect("StopResponse must decode");
+    (r.result, r.discard_clock)
 }
 
 fn set_torque(conn: &UnixNativeConn, value: bool, execute_at_ns: u64) -> i32 {
@@ -273,5 +287,55 @@ fn fail_enable_flag_returns_310_and_exits() {
 
     let mut child = guard.defuse();
     wait_for_exit(&mut child, Instant::now() + Duration::from_secs(4));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn stop_while_parked_succeeds_and_keeps_session() {
+    let (mut guard, conn, path) = spawn_and_claim("stop-parked", &[]);
+
+    let t0 = now_ns();
+    let (result, discard_clock) = send_stop(&conn);
+    let t1 = now_ns();
+    assert_eq!(result, 0, "Stop while parked must return 0, got {result}");
+    assert!(
+        discard_clock >= t0 && discard_clock <= t1,
+        "discard_clock {discard_clock} outside [{t0}, {t1}]"
+    );
+
+    let r = set_torque(&conn, true, now_ns() + 50_000_000);
+    assert_eq!(r, 0, "enable after Stop must return 0 (session alive), got {r}");
+
+    drop(conn);
+    let _ = guard.defuse().wait();
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn stop_discards_queued_pieces() {
+    let (mut guard, conn, path) = spawn_and_claim("stop-discard", &[]);
+
+    let r = set_torque(&conn, true, now_ns() + 50_000_000);
+    assert_eq!(r, 0, "enable must return 0, got {r}");
+
+    push_one_piece(&conn, now_ns() + 10_000_000_000);
+
+    let (result, _clock) = send_stop(&conn);
+    assert_eq!(result, 0, "Stop mid-stream must return 0, got {result}");
+
+    let r = set_torque(&conn, false, now_ns() + 200_000_000);
+    assert_eq!(r, 0, "scheduling disable after Stop must return 0, got {r}");
+
+    thread::sleep(Duration::from_millis(400));
+
+    let r = set_torque(&conn, true, now_ns() + 50_000_000);
+    assert_eq!(
+        r, 0,
+        "re-enable must return 0 — nonzero means pieces survived Stop \
+         and the scheduled disable faulted, got {r}"
+    );
+
+    drop(conn);
+    let _ = guard.defuse().wait();
     let _ = std::fs::remove_file(&path);
 }
