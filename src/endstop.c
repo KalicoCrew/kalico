@@ -87,3 +87,14 @@ command_query_endstop(uint32_t *args)
 }
 DECL_COMMAND(command_query_endstop,
              "query_endstop oid=%c rest_ticks=%u");
+
+// Passive read of the current pin state — no arming, no trip, no motion. Used
+// for QUERY_ENDSTOPS and for verifying endstop polarity during bring-up.
+void
+command_endstop_query_state(uint32_t *args)
+{
+    struct endstop *e = oid_lookup(args[0], command_config_endstop);
+    uint8_t raw = gpio_in_read(e->pin) ? 1 : 0;
+    sendf("endstop_state oid=%c armed=%c pin_value=%c", args[0], e->armed, raw);
+}
+DECL_COMMAND(command_endstop_query_state, "endstop_query_state oid=%c");

@@ -51,6 +51,28 @@ class Homing:
 
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command("G28", self.cmd_G28, desc="Home (kalico native)")
+        gcode.register_command(
+            "QUERY_ENDSTOPS", self.cmd_QUERY_ENDSTOPS, desc="Report endstop states"
+        )
+
+    def cmd_QUERY_ENDSTOPS(self, gcmd):
+        parts = []
+        for axis_index in sorted(self._axes.keys()):
+            entry = self._axes[axis_index]
+            params = entry["state_cmd"].send([entry["oid"]])
+            raw = params["pin_value"]
+            triggered = raw ^ entry["invert"]
+            parts.append(
+                "%s:%s (pin=%d invert=%d armed=%d)"
+                % (
+                    "xyz"[axis_index],
+                    "TRIGGERED" if triggered else "open",
+                    raw,
+                    entry["invert"],
+                    params["armed"],
+                )
+            )
+        gcmd.respond_info("\n".join(parts) if parts else "no endstops configured")
 
     def _make_build_config(self, entry):
         def build_config():
@@ -66,6 +88,11 @@ class Homing:
             )
             entry["query_cmd"] = entry["mcu"].lookup_command(
                 "query_endstop oid=%c rest_ticks=%u"
+            )
+            entry["state_cmd"] = entry["mcu"].lookup_query_command(
+                "endstop_query_state oid=%c",
+                "endstop_state oid=%c armed=%c pin_value=%c",
+                oid=entry["oid"],
             )
 
         return build_config
