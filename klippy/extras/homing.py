@@ -1,9 +1,5 @@
 import logging
 
-# Endstop poll period while homing. The trip clock is captured at the poll that
-# detects the edge, so this bounds the switch-location error (period x speed):
-# 1 ms x 50 mm/s = 50 um, well under a layer. A far tighter period (e.g. 100 us)
-# floods the MCU foreground timer dispatch and starves the watchdog-reload task.
 HOMING_POLL_PERIOD = 0.001
 HOMING_TIMEOUT = 30.0
 
@@ -32,7 +28,6 @@ class Homing:
         self.printer = config.get_printer()
         ppins = self.printer.lookup_object("pins")
 
-        # axis_index -> per-axis endstop watch state.
         self._axes = {}
         for axis_index, axis_name in enumerate("xyz"):
             section = "stepper_" + axis_name
@@ -41,8 +36,6 @@ class Homing:
             endstop_pin = config.getsection(section).get("endstop_pin", None)
             if endstop_pin is None or "virtual_endstop" in endstop_pin:
                 continue
-            # parse_pin resolves chip+pin without reserving, so it coexists with
-            # the rail's own endstop_pin reservation.
             pin_params = ppins.parse_pin(endstop_pin, can_invert=True, can_pullup=True)
             mcu = pin_params["chip"]
             entry = {
@@ -95,7 +88,6 @@ class Homing:
         return build_config
 
     def cmd_G28(self, gcmd):
-        # G28 uses the legacy G-code parser (no KEY=VALUE) — bare axis flags only.
         requested = [i for i, a in enumerate("XYZ") if gcmd.get(a, None) is not None]
         if not requested:
             requested = sorted(self._axes.keys())
@@ -155,9 +147,6 @@ class Homing:
             else abs(pos_max - pos_min)
         )
 
-        # Refuse to home from an already-triggered switch: the level-armed watch
-        # would trip before home_axis_start registers the run, the trip would be
-        # dropped, and the move would run to max_travel into the hard stop.
         state = entry["state_cmd"].send([entry["oid"]])
         if state["pin_value"] ^ entry["invert"]:
             raise gcmd.error(
@@ -165,21 +154,14 @@ class Homing:
                 "switch before homing" % ("XYZ"[axis],)
             )
 
-        # Quiesce prior motion. The drip move bypasses the toolhead motion
-        # queue, so the trapq active-callback that normally energizes a stepper
-        # never fires — energize the rail explicitly or the MCU steps a disabled
-        # driver and the axis never reaches the switch.
         toolhead.wait_moves()
         stepper_enable = self.printer.lookup_object("stepper_enable")
         for s in rail.get_steppers():
             stepper_enable.motor_debug_enable(s.get_name(), True)
 
-        # Arm the endstop poll before the move starts.
         rest_ticks = entry["mcu"].seconds_to_clock(HOMING_POLL_PERIOD)
         entry["query_cmd"].send([entry["oid"], rest_ticks])
 
-        # Dispatch the drip move, then poll cooperatively so the reactor keeps
-        # draining the trip event and servicing heaters during the move.
         bridge.home_axis_start(
             axis, direction, speed, max_travel, entry["endstop_id"], endstop_mcu
         )
