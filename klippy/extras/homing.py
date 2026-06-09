@@ -139,27 +139,51 @@ class Homing:
         for s in rail.get_steppers():
             stepper_enable.motor_debug_enable(s.get_name(), True)
 
-        trip_pos, final_pos = self.trip_move(
-            gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry
-        )
+        self._set_homing_current(toolhead, rail, pre_homing=True)
+        try:
+            trip_pos, final_pos = self.trip_move(
+                gcmd,
+                toolhead,
+                bridge,
+                axis,
+                direction,
+                speed,
+                max_travel,
+                entry,
+            )
 
-        overshoot = final_pos[axis] - trip_pos[axis]
-        newpos = list(toolhead.get_position())
-        newpos[axis] = trigger_height + overshoot
-        toolhead.set_position(newpos, homing_axes=[axis])
-        logging.info(
-            "homing: %s trigger=%.4f overshoot=%+.4f set %s=%.4f",
-            "XYZ"[axis],
-            trigger_height,
-            overshoot,
-            "XYZ"[axis],
-            newpos[axis],
-        )
-        if hi.retract_dist:
-            retractpos = list(toolhead.get_position())
-            retractpos[axis] -= direction * hi.retract_dist
-            toolhead.move(retractpos, hi.retract_speed)
-            toolhead.wait_moves()
+            overshoot = final_pos[axis] - trip_pos[axis]
+            newpos = list(toolhead.get_position())
+            newpos[axis] = trigger_height + overshoot
+            toolhead.set_position(newpos, homing_axes=[axis])
+            logging.info(
+                "homing: %s trigger=%.4f overshoot=%+.4f set %s=%.4f",
+                "XYZ"[axis],
+                trigger_height,
+                overshoot,
+                "XYZ"[axis],
+                newpos[axis],
+            )
+            if hi.retract_dist:
+                retractpos = list(toolhead.get_position())
+                retractpos[axis] -= direction * hi.retract_dist
+                toolhead.move(retractpos, hi.retract_speed)
+                toolhead.wait_moves()
+        finally:
+            self._set_homing_current(toolhead, rail, pre_homing=False)
+
+    def _set_homing_current(self, toolhead, rail, pre_homing):
+        print_time = toolhead.get_last_move_time()
+        dwell_time = 0.0
+        for current_helper in rail.get_tmc_current_helpers():
+            if current_helper is None:
+                continue
+            dwell_time = max(
+                dwell_time,
+                current_helper.set_current_for_homing(print_time, pre_homing),
+            )
+        if dwell_time:
+            toolhead.dwell(dwell_time)
 
     def trip_move(
         self, gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry
