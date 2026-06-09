@@ -126,6 +126,18 @@ should skip endstop-object setup; position_endstop/range come from config.
   FIX: subdivide_bernstein skips constant axes (all coeffs equal) → 1 piece each, not 90.
   Kept budget=4 for margin; fixed 2 drip_tests to be budget-relative (were hardcoded 2).
 
+- After flood fix: homing DRIP FLOWS (X arrives +30..70ms lead, no PieceStartInPast),
+  move progresses, BUT crawls (16mm in 7s = ~1/3 speed) then the MCU IWDG-watchdog-
+  RESETS (mcu.jsonl: "mcu reset ... iwdg_resets=3", TIM5 inter-arrival max 18715cyc vs
+  ~8400 nominal). klippy PID unchanged = not a host crash; MCU reboots → moonraker
+  "Disconnected" → klippy reconnects. So the MCU foreground is overloaded/freezing
+  during sustained homing, starving the watchdog-reload task.
+- Suspect 1 (host-side, testing): HOMING_POLL_PERIOD was 0.0001 (100us=10kHz endstop
+  poll, 0.8um precision — absurd). 10kHz foreground timer floods the dispatch. Cut to
+  0.001 (1kHz, 50um@50mm/s). If IWDG resets stop → that was it.
+- If still resetting: the foreground hog is elsewhere (my runtime_drain occupancy-status
+  emission, or piece processing). Next would be firmware-side profiling/reduction (reflash).
+
 ## NEXT (Phase 1: prove homing works, existing firmware)
 1. Verify force_move + SET_KINEMATIC_POSITION available.
 2. SET_KINEMATIC_POSITION X=-6 (toolhead physically at switch=min, true).

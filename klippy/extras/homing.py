@@ -14,8 +14,10 @@
 import logging
 
 # Endstop poll period while homing. The trip clock is captured at the poll that
-# detects the edge, so this bounds the switch-location error (period x speed).
-HOMING_POLL_PERIOD = 0.0001
+# detects the edge, so this bounds the switch-location error (period x speed):
+# 1 ms x 50 mm/s = 50 um, well under a layer. A far tighter period (e.g. 100 us)
+# floods the MCU foreground timer dispatch and starves the watchdog-reload task.
+HOMING_POLL_PERIOD = 0.001
 HOMING_TIMEOUT = 30.0
 
 
