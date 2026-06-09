@@ -85,9 +85,14 @@ The bridge's EtherCAT heartbeat handler gains fault_code awareness:
   `"drive fault 0x%04x during homing — following-error/torque limit
   exceeded (endstop failure?)"`. `homing.py`'s poll loop already turns
   channel errors into a G28 error + `home_abort`; the printer stays up.
-- Heartbeat with `fault_code != 0` with **no homing run active** → the
-  existing fatal path (a drive fault mid-print is a real emergency;
-  session shutdown stays correct).
+- Heartbeat with `fault_code != 0` with **no homing run active** → split
+  by recency: within 2 s of a homing trip being taken, the fault is the
+  same physical event racing the endstop trip (hard contact can trip both
+  the switch and the deviation window) — it is latched per-MCU instead of
+  aborting, and `homing.py` consumes it via the bridge's
+  `take_drive_fault(handle)` right after the trip move, turning it into
+  the same G28 error. Outside that window (idle / printing) the fatal
+  abort stays — a drive fault mid-print is a real emergency.
 
 Recovery after a homing fault: the next servo enable (any move or G28)
 runs the CiA 402 ladder, which already pulses fault reset — no

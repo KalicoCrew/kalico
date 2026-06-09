@@ -843,7 +843,22 @@ def _servo_drive_limits(bridge, handle, limits):
             trip_pos, final_pos = self.trip_move(
                 gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry
             )
+        if servo_handle is not None:
+            fault = bridge.take_drive_fault(servo_handle)
+            if fault is not None:
+                raise gcmd.error(
+                    "%s homing: drive fault 0x%04x at endstop contact — "
+                    "following-error/torque limit exceeded" % ("XYZ"[axis], fault)
+                )
 ```
+
+(`take_drive_fault` exists from the race-fix commit `bae5096fc`: a trip and a
+deviation fault can be the same physical contact; the bridge latches the
+late-arriving fault for exactly this check. Add a test with a fake bridge
+returning a fault → the error raises; returning None → no error. The
+`_servo_drive_limits` restore must also be raise-safe when the body raised:
+restore inside `except BaseException` → log restore failures at warning and
+re-raise the original; on the success path a restore failure raises normally.)
 
 - [ ] **Step 8.3: Verify green** — `python3 -m pytest test/test_servo_homing.py test/test_servo_torque.py -v`; `ruff check` on the three files.
 - [ ] **Step 8.4: Commit** — `klippy: homing-scoped servo drive limits (config, conversion, trip-move wrap)`
