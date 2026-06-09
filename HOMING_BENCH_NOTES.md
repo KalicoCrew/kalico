@@ -99,6 +99,17 @@ should skip endstop-object setup; position_endstop/range come from config.
   fg_freeze in the log was a red herring (console_write_raw is non-blocking, drops when full).
 - Build: `make -f Makefile.kalico motion-bridge` on the Pi, then restart klippy. No flash.
 
+- **MILESTONE: basic motion works after the lead fix.** G1 X10 F300 completed, klippy
+  stayed ready, X switch went open (toolhead physically moved +X, correct direction),
+  position=10. 191 motion-bridge tests pass. Next: first G28 X.
+
+- First KALICO_HOME → SAME PieceStartInPast but on axis 1 (Y), deficit 11.4ms
+  (fault_detail 0x12CB4). During X homing the cohort dispatch branch still set
+  lead_secs=0.0 for ALL axes. X (drip participant) is fine (horizon_of=None,
+  DRIP_BUDGET governs) but the constant Y/Z/E pieces a homing move also emits got
+  zero lead → late. FIX: lead_secs=MAX_LEAD_SECS in both branches (commit pending).
+  Participants still bounded by DRIP_BUDGET (horizon_of None ignores lead_secs).
+
 ## NEXT (Phase 1: prove homing works, existing firmware)
 1. Verify force_move + SET_KINEMATIC_POSITION available.
 2. SET_KINEMATIC_POSITION X=-6 (toolhead physically at switch=min, true).

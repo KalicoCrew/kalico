@@ -2520,11 +2520,17 @@ impl PyMotionBridge {
                     .lock()
                     .unwrap_or_else(|p| p.into_inner());
 
-                let (lead_secs, max_piece_secs) = if active_cohort.is_some() {
-                    (0.0_f64, Some(0.025_f64))
+                // lead_secs is the pump's max send-ahead horizon for axes gated by
+                // horizon_of. Drip participants ignore it (horizon_of returns None;
+                // DRIP_BUDGET bounds their in-flight motion), but a homing move still
+                // emits constant pieces for every OTHER axis, and those need the full
+                // lead or they arrive late (PieceStartInPast). So MAX_LEAD_SECS always.
+                let max_piece_secs = if active_cohort.is_some() {
+                    Some(0.025_f64)
                 } else {
-                    (crate::pump::MAX_LEAD_SECS, None::<f64>)
+                    None::<f64>
                 };
+                let lead_secs = crate::pump::MAX_LEAD_SECS;
 
                 let msgs = crate::enqueue::enqueue_segment(
                     seg,
