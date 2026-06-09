@@ -16,6 +16,18 @@ _homing_info = collections.namedtuple(
 )
 
 
+def infer_positive_dir(config, axis, position_endstop, position_min, position_max):
+    if position_endstop == position_min:
+        return False
+    if position_endstop == position_max:
+        return True
+    raise config.error(
+        "servo_%s: position_endstop %.3f must equal position_min (%.3f) "
+        "or position_max (%.3f)"
+        % (axis, position_endstop, position_min, position_max)
+    )
+
+
 class ServoRail:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -41,7 +53,21 @@ class ServoRail:
         self.position_max = config.getfloat(
             "position_max", above=self.position_min
         )
-        self.position_endstop = 0.0
+        self.endstop_pin = config.get("endstop_pin", None)
+        if self.endstop_pin is None:
+            self.position_endstop = 0.0
+            self.homing_speed = 0.0
+            self.homing_positive_dir = False
+        else:
+            self.position_endstop = config.getfloat("position_endstop")
+            self.homing_speed = config.getfloat("homing_speed", 5.0, above=0.0)
+            self.homing_positive_dir = infer_positive_dir(
+                config,
+                self.axis,
+                self.position_endstop,
+                self.position_min,
+                self.position_max,
+            )
         self._active_callbacks = []
 
     def get_name(self, short=False):
@@ -71,11 +97,11 @@ class ServoRail:
 
     def get_homing_info(self):
         return _homing_info(
-            speed=0.0,
+            speed=self.homing_speed,
             position_endstop=self.position_endstop,
             retract_speed=0.0,
             retract_dist=0.0,
-            positive_dir=False,
+            positive_dir=self.homing_positive_dir,
             second_homing_speed=0.0,
             use_sensorless_homing=False,
             min_home_dist=0.0,
