@@ -18,9 +18,6 @@ EXPECTED_LOCAL_METHODS = frozenset(
         "_fire_active_callbacks",
         "drip_move",
         "dwell",
-        # Bridge-mode idle_timeout wiring: the bridge owns the timeline, so it
-        # must source check_busy from its own pending-end-time and emit
-        # toolhead:sync_print_time itself — upstream's emitters are dead here.
         "check_busy",
         "_sync_print_time",
         "wait_moves",
@@ -38,15 +35,8 @@ EXPECTED_LOCAL_METHODS = frozenset(
         "cmd_KALICO_SIM_AXIS_STEPS",
         "cmd_KALICO_SIM_AXIS_ACCUM",
         "cmd_KALICO_SIM_ENDSTOP_SET_PIN",
-        # M400 (wait-for-moves) and KALICO_DIAG_DUMP (live MCU diag
-        # snapshot to the structured-log store) are bridge-mode gcode
-        # commands owned by MotionToolhead.
         "cmd_M400",
         "cmd_KALICO_DIAG_DUMP",
-        # Bridge-mode overrides of the upstream lifecycle / motion surface.
-        # MotionToolhead drives motion through the native bridge instead of
-        # the legacy trapq/stepcompress path, so it overrides connection
-        # teardown and the bridge-drain end-time bookkeeping.
         "_handle_disconnect",
         "wait_moves_and_mcu",
         "_bridge_mcus",
