@@ -1112,6 +1112,7 @@ enable_force_move: True
 
 PROBE_TEST_VARIANTS = (
     "virtual",
+    "safe-z",
     "gpio-z",
     "no-probe",
     "conflict",
@@ -1152,6 +1153,15 @@ z_offset: 1.5
 speed: 5
 x_offset: 24.0
 y_offset: 5.0
+"""
+
+    safe_z_section = ""
+    if variant == "safe-z":
+        safe_z_section = """
+[safe_z_home]
+home_xy_position: 125, 125
+z_hop: 10
+z_hop_speed: 15
 """
     return f"""\
 [mcu]
@@ -1198,7 +1208,7 @@ rotation_distance: 4
 position_min: -5
 position_max: 250
 homing_speed: 5
-{probe_section}
+{safe_z_section}{probe_section}
 [input_shaper]
 shaper_freq_x: 50
 shaper_freq_y: 50
@@ -1238,7 +1248,7 @@ def _log_tail_since(klippy_log: pathlib.Path, offset: int) -> tuple:
     return data[offset:].decode(errors="replace"), len(data)
 
 
-def _query_toolhead_z(api_socket: str) -> Optional[float]:
+def _query_toolhead_position(api_socket: str) -> Optional[list]:
     status = query_status(api_socket)
     pos = (
         status.get("result", {})
@@ -1246,6 +1256,11 @@ def _query_toolhead_z(api_socket: str) -> Optional[float]:
         .get("toolhead", {})
         .get("position")
     )
+    return list(pos) if pos else None
+
+
+def _query_toolhead_z(api_socket: str) -> Optional[float]:
+    pos = _query_toolhead_position(api_socket)
     if pos and len(pos) >= 3:
         return float(pos[2])
     return None
@@ -1302,10 +1317,15 @@ def run_probe_test(
                 )
                 log.info("H7 MCU spawned (pid=%d)", mcus[0].process.pid)
 
+            cfg_text = _generate_probe_config(h7_pty, str(gcode_dir), variant)
             cfg_path = tmp / "printer.cfg"
-            cfg_path.write_text(
-                _generate_probe_config(h7_pty, str(gcode_dir), variant)
-            )
+            cfg_path.write_text(cfg_text)
+            if variant == "safe-z":
+                check(
+                    "config-safe-z-before-probe",
+                    cfg_text.index("[safe_z_home]") < cfg_text.index("[probe]"),
+                    "generated config must order [safe_z_home] above [probe]",
+                )
 
             env = os.environ.copy()
             if expect_boot_error is None:
@@ -1388,7 +1408,7 @@ def run_probe_test(
                 homing_lines = [
                     l.strip() for l in out.split("\n") if "homing: " in l
                 ]
-                if variant == "virtual":
+                if variant in ("virtual", "safe-z"):
                     check(
                         "g28-z-trigger-height",
                         any(
@@ -1398,12 +1418,29 @@ def run_probe_test(
                         homing_lines,
                     )
                 z = _query_toolhead_z(api_socket)
-                expected_z = 6.5 if variant == "virtual" else 5.0
+                if variant == "safe-z":
+                    expected_z = 10.0
+                elif variant == "virtual":
+                    expected_z = 6.5
+                else:
+                    expected_z = 5.0
                 check(
                     "post-home-retract-z",
                     z is not None and abs(z - expected_z) < 0.1,
                     "z=%s expected ~%.1f" % (z, expected_z),
                 )
+                if variant == "safe-z":
+                    pos = _query_toolhead_position(api_socket)
+                    xy_ok = (
+                        pos is not None
+                        and abs(pos[0] - 125.0) < 0.5
+                        and abs(pos[1] - 125.0) < 0.5
+                    )
+                    check(
+                        "g28-at-safe-xy",
+                        xy_ok,
+                        "position=%s expected x,y~125,125" % (pos,),
+                    )
 
                 resp = send_gcode(api_socket, "PROBE", timeout=90)
                 out, offset = _log_tail_since(klippy_log, offset)
