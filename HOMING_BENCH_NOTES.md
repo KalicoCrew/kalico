@@ -147,6 +147,16 @@ should skip endstop-object setup; position_endstop/range come from config.
   toolhead being out of MAX_TRAVEL range. Toolhead now AT the switch.
 - Plan: SET X=-6 (at switch) → jog +X off → KALICO_HOME with MAX_TRAVEL that reaches it.
 
+## UPDATE (2026-06-09 ~04:52) — 50ms drip experiment REVERTED; bench clean + confirmed
+- Tried 50ms drip pieces to cure lead erosion → REGRESSED (homes stopped completing on the
+  bench; spurious non-participant-axis PieceStartInPast). Reverted to 25ms (commit 9e28eb357).
+  Lesson: the slow-host lead-erosion robustness is NOT a quick piece-size tweak; leave it as a
+  documented follow-up (DRIP_BUDGET / pump-poll-latency / faster host are the real levers).
+- Also: a run of faulting homes can leave the F401 in a degraded state where even a SPEED=5
+  home then shuts down. A board power-cycle (Plug 2 off/on; udev auto-restarts klippy) fully
+  resets it. After power-cycle + locate-switch, SPEED=5 home is clean again (set X=-6.0170).
+- BENCH NOW: fresh MCU, 25ms build (HEAD), klippy ready, homing confirmed working. Good state.
+
 ## UPDATE (2026-06-09 ~04:40) — SPEED=8 FIXED + speed range characterized
 - The SPEED>=8 StepsPerSampleExceeded WAS the straggler after all. Fix = trip handler sends
   Flush+DripDisarm to the pump BEFORE the Stop broadcast (commit 36253592c, host .so only),
