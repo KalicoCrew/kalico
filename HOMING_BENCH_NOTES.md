@@ -147,6 +147,26 @@ should skip endstop-object setup; position_endstop/range come from config.
   toolhead being out of MAX_TRAVEL range. Toolhead now AT the switch.
 - Plan: SET X=-6 (at switch) → jog +X off → KALICO_HOME with MAX_TRAVEL that reaches it.
 
+## ★★★★★ GOAL MET: X HOMING WORKS + REPEATABLE ★★★★★ (2026-06-09 ~04:10)
+Repeatability test PASSED. 5 homes at SPEED=5 from different jog-back distances, all clean
+(klippy stayed ready, NO shutdowns), all switch=-6.0000:
+  jog_back 10mm -> set X=-6.0260 (overshoot 26um)
+  jog_back 20mm -> set X=-6.0220 (22um)
+  jog_back 35mm -> set X=-6.0230 (23um)
+  jog_back 50mm -> set X=-6.0150 (15um)
+  jog_back 15mm -> set X=-6.0220 (22um)
+Homed position spread = 11 microns (~0.9 steps @ 80 steps/mm) across 10-50mm approaches.
+"the stepper position will be very close" — confirmed. Trip detection lands at the physical
+switch every time; the 11um spread is just drip-stop overshoot jitter (15-26um).
+
+### SPEED note (real follow-up bug)
+SPEED=5 homes complete cleanly. SPEED=8 homes succeed (set -6.0336) but then the MCU faults
+StepsPerSampleExceeded (axis0, 45 steps=0.56mm) → shutdown. Higher homing speed = larger
+in-flight overshoot at the trip-stop, which trips the per-sample step cap on the re-anchor.
+So bench homing is solid at <=5mm/s; >=8mm/s needs the re-anchor/overshoot bug fixed (or a
+lower per-piece velocity at the stop). config homing_speed=50 will need this fixed + likely
+two-stage homing. For now KALICO_HOME AXIS=X SPEED=5 works perfectly.
+
 ## ★★★ HEADLINE: X HOMING WORKS ★★★ (2026-06-09 ~03:56)
 KALICO_HOME AXIS=X SPEED=8 MAX_TRAVEL=20 from X=10 (16mm to switch):
 - Tripped at the switch, reconstructed position = **-6.0336** = position_endstop(-6) +
