@@ -17,19 +17,33 @@ class Homing:
             section = "stepper_" + axis_name
             if not config.has_section(section):
                 continue
-            endstop_pin = config.getsection(section).get("endstop_pin", None)
-            if endstop_pin is None or "virtual_endstop" in endstop_pin:
+            stepper_config = config.getsection(section)
+            endstop_pin = stepper_config.get("endstop_pin", None)
+            if endstop_pin is None:
                 continue
             pin_params = ppins.parse_pin(
                 endstop_pin, can_invert=True, can_pullup=True
             )
-            self._axes[axis_index] = {
-                "endstop": BridgeEndstop(
-                    pin_params, AXIS_ENDSTOP_IDS[axis_index]
-                ),
-                "provider": None,
-                "trigger_height": None,
-            }
+            chip = pin_params["chip"]
+            if hasattr(chip, "setup_bridge_endstop"):
+                entry = self._provider_entry(
+                    stepper_config, axis_index, chip, pin_params
+                )
+            elif hasattr(chip, "create_oid"):
+                entry = {
+                    "endstop": BridgeEndstop(
+                        pin_params, AXIS_ENDSTOP_IDS[axis_index]
+                    ),
+                    "provider": None,
+                    "trigger_height": None,
+                }
+            else:
+                raise config.error(
+                    "endstop_pin '%s' in [%s]: chip '%s' is neither an MCU"
+                    " nor a virtual endstop provider"
+                    % (endstop_pin, section, pin_params["chip_name"])
+                )
+            self._axes[axis_index] = entry
 
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command("G28", self.cmd_G28, desc="Home")
@@ -44,6 +58,23 @@ class Homing:
             query_endstops.register_endstop(
                 self._axes[axis_index]["endstop"], "xyz"[axis_index]
             )
+
+    def _provider_entry(self, stepper_config, axis_index, chip, pin_params):
+        endstop = chip.setup_bridge_endstop(pin_params, axis_index)
+        trigger_height = None
+        if hasattr(chip, "get_position_endstop"):
+            trigger_height = chip.get_position_endstop()
+            if stepper_config.get("position_endstop", None) is not None:
+                raise stepper_config.error(
+                    "[%s] must not set position_endstop: its virtual endstop"
+                    " '%s' supplies the trigger height"
+                    % (stepper_config.get_name(), pin_params["chip_name"])
+                )
+        return {
+            "endstop": endstop,
+            "provider": chip,
+            "trigger_height": trigger_height,
+        }
 
     def cmd_G28(self, gcmd):
         requested = [
