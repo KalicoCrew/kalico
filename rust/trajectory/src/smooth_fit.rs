@@ -80,5 +80,68 @@ fn solve_tridiagonal(a: &[f64], b: &[f64], c: &[f64], d: &[f64]) -> Vec<f64> {
     x
 }
 
+use nurbs::bezier::bezier_pieces_to_nurbs;
+use nurbs::ScalarNurbs;
+
+const MAX_KNOTS: usize = 4096;
+const SAMPLES_PER_INTERVAL: usize = 16;
+
+#[derive(Debug)]
+pub struct FitError {
+    pub achieved_mm: f64,
+}
+
+/// Adaptive clamped C2 cubic-spline fit of `f` on `[t_start, t_end]` to
+/// `tolerance`. Knots are inserted at the worst-error location until the max
+/// deviation (sampled within intervals) is within tolerance. End slopes are
+/// taken from finite differences of `f`. Fails loudly if `MAX_KNOTS` is
+/// exhausted before tolerance is met.
+pub fn fit_c2_cubic<F: Fn(f64) -> f64>(
+    f: &F,
+    t_start: f64,
+    t_end: f64,
+    tolerance: f64,
+) -> Result<ScalarNurbs<f64>, FitError> {
+    let span = t_end - t_start;
+    debug_assert!(span > 0.0 && tolerance > 0.0);
+
+    let fd = (span * 1e-4).max(f64::MIN_POSITIVE);
+    let yp0 = (f(t_start + fd) - f(t_start)) / fd;
+    let ypn = (f(t_end) - f(t_end - fd)) / fd;
+
+    // Start with start, midpoint, end so the first spline is non-degenerate.
+    let mut knots = vec![t_start, t_start + 0.5 * span, t_end];
+
+    loop {
+        let values: Vec<f64> = knots.iter().map(|&t| f(t)).collect();
+        let pieces = build_clamped_spline(&knots, &values, yp0, ypn);
+
+        // Find the interval with the worst sampled error and the t of that max.
+        let mut worst_err = 0.0_f64;
+        let mut worst_t = f64::NAN;
+        let mut worst_interval = 0usize;
+        for (i, p) in pieces.iter().enumerate() {
+            let (a, b) = (knots[i], knots[i + 1]);
+            for s in 1..SAMPLES_PER_INTERVAL {
+                let t = a + (b - a) * (s as f64 / SAMPLES_PER_INTERVAL as f64);
+                let e = (p.evaluate(t) - f(t)).abs();
+                if e > worst_err {
+                    worst_err = e;
+                    worst_t = t;
+                    worst_interval = i;
+                }
+            }
+        }
+
+        if worst_err <= tolerance {
+            return Ok(bezier_pieces_to_nurbs(&pieces));
+        }
+        if knots.len() >= MAX_KNOTS || !worst_t.is_finite() {
+            return Err(FitError { achieved_mm: worst_err });
+        }
+        knots.insert(worst_interval + 1, worst_t);
+    }
+}
+
 #[cfg(test)]
 mod tests;

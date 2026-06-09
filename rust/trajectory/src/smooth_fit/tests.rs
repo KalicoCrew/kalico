@@ -43,3 +43,26 @@ fn clamped_spline_interpolates_and_is_c2() {
         );
     }
 }
+
+use nurbs::bezier::extract_bezier_pieces;
+use nurbs::eval::eval;
+
+#[test]
+fn fit_c2_cubic_matches_smooth_fn_with_few_pieces() {
+    // Target: a smooth bump on [0, 1]. Fit to 0.1 um tolerance.
+    let f = |t: f64| (3.0 * t).sin() * (1.0 - t) * t;
+    let tol = 1e-4;
+    let curve = fit_c2_cubic(&f, 0.0, 1.0, tol).expect("fit succeeds");
+
+    // Accuracy sampled densely WITHIN pieces (not just at knots).
+    for i in 0..=2000 {
+        let t = i as f64 / 2000.0;
+        assert!(
+            (eval(&curve.as_view(), t) - f(t)).abs() <= tol,
+            "error at t={t}",
+        );
+    }
+    // Compactness: a smooth bump needs few pieces, nowhere near hundreds.
+    let n = extract_bezier_pieces(&curve).len();
+    assert!(n < 40, "expected few pieces, got {n}");
+}
