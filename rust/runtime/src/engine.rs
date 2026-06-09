@@ -503,6 +503,16 @@ impl Engine {
             let Some(axis) = axis_opt.as_mut() else {
                 continue;
             };
+            // Re-anchoring invalidates any pending pieces: they belong to the old
+            // stream and would execute from the freshly-seeded position, stepping
+            // the difference in one sample (StepsPerSampleExceeded). This matters
+            // after a homing trip, where a drip straggler can land in the ring
+            // between the Stop's discard and this seed. Drain + disarm like
+            // discard_pending so the new anchor starts clean.
+            while axis.ring.front_slot().is_some() {
+                axis.ring.advance_counter();
+            }
+            axis.armed = None;
             let axis_pos_mm = motor_positions.get(i).copied().unwrap_or(0.0);
             let microstep_distance = axis.microstep_distance;
             if !microstep_distance.is_finite() || microstep_distance <= 0.0 {
