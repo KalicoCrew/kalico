@@ -174,8 +174,9 @@ fn unix_native_conn_and_frame_server_sustain_streaming_past_ring_depth() {
 
     {
         let lr = Arc::clone(&last_retired);
-        conn.attach_heartbeat_callback(Arc::new(move |retired: &[u32]| {
-            if let Some(&v) = retired.first() {
+        conn.attach_heartbeat_callback(Arc::new(
+            move |hb: &kalico_protocol::messages::StatusHeartbeat| {
+                if let Some(&v) = hb.retired_counts.first() {
                 let mut prev = lr.load(Ordering::Acquire);
                 loop {
                     if v <= prev {

@@ -147,8 +147,8 @@ fn heartbeat_event_during_call_invokes_callback() {
     let conn = UnixNativeConn::from_stream(client).expect("from_stream");
     let last_retired = Arc::new(AtomicU32::new(0));
     let lr = Arc::clone(&last_retired);
-    conn.attach_heartbeat_callback(Arc::new(move |retired: &[u32]| {
-        if let Some(&v) = retired.first() {
+    conn.attach_heartbeat_callback(Arc::new(move |hb: &StatusHeartbeat| {
+        if let Some(&v) = hb.retired_counts.first() {
             lr.store(v, Ordering::SeqCst);
         }
     }));
@@ -169,6 +169,63 @@ fn heartbeat_event_during_call_invokes_callback() {
 
 /// Streams a fixed heartbeat continuously (no reply path). Returns a stop
 /// flag the caller sets to terminate the writer + drop the socket.
+fn make_heartbeat_frame_full(engine_state: u8, fault_code: u16, retired_counts: &[u32]) -> Vec<u8> {
+    let hb = StatusHeartbeat {
+        engine_state,
+        fault_code,
+        retired_counts: retired_counts.to_vec(),
+    };
+    let body = hb.encoded_to_vec();
+    let mut payload =
+        encode_message_header(MessageKind::StatusHeartbeat, MESSAGE_VERSION_DEFAULT, 0).to_vec();
+    payload.extend_from_slice(&body);
+    encode_frame(CHANNEL_EVENTS, &payload)
+}
+
+#[test]
+fn dispatch_frame_passes_fault_code_to_callback() {
+    let (client, server) = UnixStream::pair().unwrap();
+    let hb_frame = make_heartbeat_frame_full(2, 0x8611, &[5u32]);
+    let stop = {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_w = Arc::clone(&stop);
+        thread::spawn(move || {
+            let mut peer = server;
+            while !stop_w.load(Ordering::Acquire) {
+                if peer.write_all(&hb_frame).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+        stop
+    };
+
+    let conn = UnixNativeConn::from_stream(client).expect("from_stream");
+    let received = Arc::new(Mutex::new(None::<StatusHeartbeat>));
+    let recv_w = Arc::clone(&received);
+    conn.attach_heartbeat_callback(Arc::new(move |hb: &StatusHeartbeat| {
+        let mut g = recv_w.lock().unwrap_or_else(|p| p.into_inner());
+        *g = Some(hb.clone());
+    }));
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        {
+            let g = received.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(ref hb) = *g {
+                assert_eq!(hb.engine_state, 2);
+                assert_eq!(hb.fault_code, 0x8611);
+                assert_eq!(hb.retired_counts, vec![5u32]);
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "heartbeat callback never fired");
+        thread::sleep(Duration::from_millis(1));
+    }
+    stop.store(true, Ordering::Release);
+}
+
 fn spawn_heartbeat_stream(peer: UnixStream, retired: &[u32]) -> Arc<AtomicBool> {
     let hb = make_heartbeat_frame(retired);
     let stop = Arc::new(AtomicBool::new(false));
@@ -197,8 +254,8 @@ fn heartbeat_callback_fires_with_no_call_in_flight() {
     let conn = UnixNativeConn::from_stream(client).expect("from_stream");
     let last_retired = Arc::new(AtomicU32::new(0));
     let lr = Arc::clone(&last_retired);
-    conn.attach_heartbeat_callback(Arc::new(move |retired: &[u32]| {
-        if let Some(&v) = retired.first() {
+    conn.attach_heartbeat_callback(Arc::new(move |hb: &StatusHeartbeat| {
+        if let Some(&v) = hb.retired_counts.first() {
             lr.store(v, Ordering::SeqCst);
         }
     }));

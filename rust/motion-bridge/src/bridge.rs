@@ -2327,14 +2327,14 @@ impl PyMotionBridge {
                         .unwrap_or_else(|| format!("mcu-{mcu_id}"))
                 };
 
-                conn.attach_heartbeat_callback(Arc::new(move |retired: &[u32]| {
+                conn.attach_heartbeat_callback(Arc::new(move |hb: &kalico_protocol::messages::StatusHeartbeat| {
                     let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
                         crate::pump::HeartbeatMsg {
                             mcu_id,
-                            retired_counts: retired.to_vec(),
+                            retired_counts: hb.retired_counts.clone(),
                         },
                     ));
-                    for (axis, &r) in retired.iter().enumerate() {
+                    for (axis, &r) in hb.retired_counts.iter().enumerate() {
                         drain_hb.set_retired(mcu_id, axis as u8, r);
                     }
                 }));
