@@ -147,6 +147,29 @@ should skip endstop-object setup; position_endstop/range come from config.
   toolhead being out of MAX_TRAVEL range. Toolhead now AT the switch.
 - Plan: SET X=-6 (at switch) → jog +X off → KALICO_HOME with MAX_TRAVEL that reaches it.
 
+## FINAL STATUS (2026-06-09 ~04:30) — read me first
+- GOAL MET: X homing works on the Neptune bench, repeatable to ~11um (see test below).
+  Use `KALICO_HOME AXIS=X SPEED=5 MAX_TRAVEL=<reaches switch>`. SPEED<=5 is clean.
+- Bench state: WORKING. klippy ready, firmware = latest build (5ab9d7446 code, stale
+  version string gd2b458f33 because only Rust changed — the 71964B flashed binary IS new,
+  vs old 74284B). Restart=always + udev autorestart rule both RESTORED to normal.
+- Firmware flashing gotcha (cost me ~30min): a udev rule
+  /etc/udev/rules.d/99-klipper-mcu-autorestart.rules restarts klipper the instant the CH340
+  tty re-appears, AND systemd Restart=always. BOTH must be suppressed to hold klippy down so
+  PA13 stays SWDIO. Procedure that worked: stop klipper+moonraker; add drop-in
+  /etc/systemd/system/klipper.service.d/norestart.conf [Service]Restart=no + daemon-reload;
+  mv the udev rule to .disabled + udevadm control --reload-rules; THEN power-cycle + openocd.
+  Restore both after. (hardware.md flash section should be updated with this.)
+- OPEN BUG (high-speed homing): SPEED>=8 home SUCCEEDS (sets correct pos) then the F401
+  faults StepsPerSampleExceeded (code -310, detail 45 = axis0, 45 steps = 0.5625mm jump,
+  DETERMINISTIC) → shutdown. SPEED=5 (overshoot ~22um) never faults; SPEED=8 (overshoot ~22um
+  too, but more in-flight) always does. The seed_position ring-clear (commit 5ab9d7446) did
+  NOT fix it (so it's not a straggler in the ring at seed time) — that commit is still a
+  correct re-anchor-hygiene improvement, just not THIS fix. To crack: add MCU-side logging in
+  rust/runtime/src/step.rs update() of (new_pos_steps, step_accumulator, axis) when the
+  per-tick cap trips, reflash, home at SPEED=8, read the exact discontinuity. config
+  homing_speed=50 will need this fixed (likely two-stage homing too).
+
 ## ★★★★★ GOAL MET: X HOMING WORKS + REPEATABLE ★★★★★ (2026-06-09 ~04:10)
 Repeatability test PASSED. 5 homes at SPEED=5 from different jog-back distances, all clean
 (klippy stayed ready, NO shutdowns), all switch=-6.0000:
