@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import pathlib
+import re
 import signal
 import socket
 import struct
@@ -1109,6 +1110,393 @@ enable_force_move: True
 """
 
 
+PROBE_TEST_VARIANTS = (
+    "virtual",
+    "gpio-z",
+    "no-probe",
+    "conflict",
+    "pullup",
+)
+
+PROBE_TEST_BOOT_ERRORS = {
+    "no-probe": "Unknown pin chip name 'probe'",
+    "conflict": "must not set position_endstop",
+    "pullup": "Can not pullup/invert probe virtual endstop",
+}
+
+
+def _generate_probe_config(h7_pty: str, gcode_dir: str, variant: str) -> str:
+    """Auto-endstop walls (libsim_intercept.c): X steps→gpio200,
+    Y steps→gpio201, Z steps→gpio202 and gpio203."""
+    if variant == "gpio-z":
+        z_endstop = "endstop_pin: ^gpiochip0/gpio202\nposition_endstop: 0"
+        probe_pin = "gpiochip0/gpio203"
+    elif variant == "pullup":
+        z_endstop = "endstop_pin: ^probe:z_virtual_endstop"
+        probe_pin = "gpiochip0/gpio202"
+    elif variant == "conflict":
+        z_endstop = (
+            "endstop_pin: probe:z_virtual_endstop\nposition_endstop: 1.0"
+        )
+        probe_pin = "gpiochip0/gpio202"
+    else:
+        z_endstop = "endstop_pin: probe:z_virtual_endstop"
+        probe_pin = "gpiochip0/gpio202"
+
+    probe_section = ""
+    if variant != "no-probe":
+        probe_section = f"""
+[probe]
+pin: {probe_pin}
+z_offset: 1.5
+speed: 5
+x_offset: 24.0
+y_offset: 5.0
+"""
+    return f"""\
+[mcu]
+serial: {h7_pty}
+
+[printer]
+kinematics: cartesian
+max_velocity: 100
+max_accel: 1000
+max_z_velocity: 10
+max_z_accel: 30
+
+[stepper_x]
+step_pin: gpiochip0/gpio0
+dir_pin: gpiochip0/gpio1
+enable_pin: !gpiochip0/gpio2
+microsteps: 16
+rotation_distance: 40
+endstop_pin: ^gpiochip0/gpio200
+position_min: 0
+position_endstop: 0
+position_max: 250
+homing_speed: 10
+
+[stepper_y]
+step_pin: gpiochip0/gpio3
+dir_pin: gpiochip0/gpio4
+enable_pin: !gpiochip0/gpio5
+microsteps: 16
+rotation_distance: 40
+endstop_pin: ^gpiochip0/gpio201
+position_min: 0
+position_endstop: 0
+position_max: 250
+homing_speed: 10
+
+[stepper_z]
+step_pin: gpiochip0/gpio6
+dir_pin: gpiochip0/gpio7
+enable_pin: !gpiochip0/gpio8
+microsteps: 16
+rotation_distance: 4
+{z_endstop}
+position_min: -5
+position_max: 250
+homing_speed: 5
+{probe_section}
+[input_shaper]
+shaper_freq_x: 50
+shaper_freq_y: 50
+shaper_type: smooth_mzv
+
+[virtual_sdcard]
+path: {gcode_dir}
+
+[force_move]
+enable_force_move: True
+"""
+
+
+def _wait_for_log_text(
+    klippy_log: pathlib.Path,
+    klippy_proc: subprocess.Popen,
+    needle: str,
+    timeout: float = 60.0,
+) -> Optional[str]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if klippy_log.exists():
+            for line in klippy_log.read_text(errors="replace").split("\n"):
+                if needle in line:
+                    return line.strip()
+        if klippy_proc.poll() is not None and klippy_log.exists():
+            for line in klippy_log.read_text(errors="replace").split("\n"):
+                if needle in line:
+                    return line.strip()
+            return None
+        time.sleep(0.2)
+    return None
+
+
+def _log_tail_since(klippy_log: pathlib.Path, offset: int) -> tuple:
+    data = klippy_log.read_bytes() if klippy_log.exists() else b""
+    return data[offset:].decode(errors="replace"), len(data)
+
+
+def _query_toolhead_z(api_socket: str) -> Optional[float]:
+    status = query_status(api_socket)
+    pos = (
+        status.get("result", {})
+        .get("status", {})
+        .get("toolhead", {})
+        .get("position")
+    )
+    if pos and len(pos) >= 3:
+        return float(pos[2])
+    return None
+
+
+def run_probe_test(
+    repo_root: pathlib.Path,
+    variant: str,
+    timeout: float = 600.0,
+    verbose: bool = False,
+) -> int:
+    checks = []
+
+    def check(name, ok, detail):
+        checks.append((name, bool(ok), detail))
+        log.info("CHECK %-28s %s  %s", name, "PASS" if ok else "FAIL", detail)
+
+    with tempfile.TemporaryDirectory(prefix="kalico_probe_") as tmpdir:
+        tmp = pathlib.Path(tmpdir)
+        log_dir = tmp / "logs"
+        log_dir.mkdir(parents=True)
+        gcode_dir = tmp / "gcodes"
+        gcode_dir.mkdir(parents=True)
+        klippy_log = log_dir / "klippy.log"
+        api_socket = str(tmp / "klippy.sock")
+
+        shim_so, vtime_so = ensure_shims_built(repo_root)
+        vtime_create(start_ns=1_000_000_000)
+
+        mcus = []
+        klippy_proc = None
+        expect_boot_error = PROBE_TEST_BOOT_ERRORS.get(variant)
+
+        try:
+            h7_pty = str(tmp / "klipper_sim_h7")
+            if expect_boot_error is None:
+                h7_sock_dir = tmp / "sim" / "h7"
+                h7_sock_dir.mkdir(parents=True)
+                h7_elf = repo_root / "out" / "klipper-h7-sim.elf"
+                if not h7_elf.exists():
+                    print("ERROR: missing out/klipper-h7-sim.elf")
+                    return 1
+                mcus.append(
+                    spawn_mcu(
+                        "h7",
+                        h7_elf,
+                        h7_pty,
+                        str(log_dir / "h7.log"),
+                        str(h7_sock_dir),
+                        shim_so,
+                        vtime_so,
+                        verbose,
+                    )
+                )
+                log.info("H7 MCU spawned (pid=%d)", mcus[0].process.pid)
+
+            cfg_path = tmp / "printer.cfg"
+            cfg_path.write_text(
+                _generate_probe_config(h7_pty, str(gcode_dir), variant)
+            )
+
+            env = os.environ.copy()
+            if expect_boot_error is None:
+                env["KALICO_SIM_SOCK_DIR"] = str(tmp / "sim" / "h7")
+            klippy_proc = subprocess.Popen(
+                [
+                    "python3",
+                    str(repo_root / "klippy" / "klippy.py"),
+                    str(cfg_path),
+                    "-l",
+                    str(klippy_log),
+                    "-a",
+                    api_socket,
+                ],
+                env=env,
+                stdout=open(log_dir / "klippy.stdout", "wb"),
+                stderr=subprocess.STDOUT,
+                cwd=str(repo_root),
+            )
+            log.info(
+                "Klippy spawned (pid=%d), variant=%s", klippy_proc.pid, variant
+            )
+
+            if expect_boot_error is not None:
+                line = _wait_for_log_text(
+                    klippy_log, klippy_proc, expect_boot_error, timeout=60
+                )
+                check(
+                    "boot-error[%s]" % variant,
+                    line is not None,
+                    line
+                    or "expected '%s' not found in klippy.log"
+                    % expect_boot_error,
+                )
+                ready = klippy_log.exists() and (
+                    b"Printer is ready" in klippy_log.read_bytes()
+                )
+                check(
+                    "boot-error-not-ready",
+                    not ready,
+                    "klippy did not reach ready"
+                    if not ready
+                    else "klippy reached ready despite config error",
+                )
+            else:
+                ready = wait_for_klippy_ready(
+                    klippy_log, klippy_proc, timeout=120
+                )
+                check(
+                    "boot-ready",
+                    ready,
+                    "Printer is ready" if ready else "klippy failed to start",
+                )
+                if not ready:
+                    raise RuntimeError("klippy not ready")
+
+                offset = len(klippy_log.read_bytes())
+
+                resp = send_gcode(api_socket, "QUERY_PROBE", timeout=30)
+                out, offset = _log_tail_since(klippy_log, offset)
+                check(
+                    "query-probe-open",
+                    "probe: open" in out and not resp.get("error"),
+                    [l.strip() for l in out.split("\n") if "probe:" in l][:1]
+                    or resp,
+                )
+
+                resp = send_gcode(api_socket, "PROBE", timeout=60)
+                err = str(resp.get("error", ""))
+                check(
+                    "probe-before-home-rejected",
+                    "Must home before probe" in err,
+                    err or resp,
+                )
+
+                _, offset = _log_tail_since(klippy_log, offset)
+                resp = send_gcode(api_socket, "G28", timeout=180)
+                out, offset = _log_tail_since(klippy_log, offset)
+                check("g28", not resp.get("error"), resp.get("error") or "ok")
+                homing_lines = [
+                    l.strip() for l in out.split("\n") if "homing: " in l
+                ]
+                if variant == "virtual":
+                    check(
+                        "g28-z-trigger-height",
+                        any(
+                            "homing: Z trigger=1.5000" in l
+                            for l in homing_lines
+                        ),
+                        homing_lines,
+                    )
+                z = _query_toolhead_z(api_socket)
+                expected_z = 6.5 if variant == "virtual" else 5.0
+                check(
+                    "post-home-retract-z",
+                    z is not None and abs(z - expected_z) < 0.1,
+                    "z=%s expected ~%.1f" % (z, expected_z),
+                )
+
+                resp = send_gcode(api_socket, "PROBE", timeout=90)
+                out, offset = _log_tail_since(klippy_log, offset)
+                probe_lines = [
+                    l.strip() for l in out.split("\n") if " is z=" in l
+                ]
+                expected_probe_z = 1.5 if variant != "gpio-z" else 0.0
+                probe_z = None
+                if probe_lines:
+                    m = re.search(r"is z=(-?\d+\.?\d*)", probe_lines[-1])
+                    if m:
+                        probe_z = float(m.group(1))
+                check(
+                    "probe",
+                    not resp.get("error")
+                    and probe_z is not None
+                    and abs(probe_z - expected_probe_z) < 0.25,
+                    probe_lines or resp.get("error") or resp,
+                )
+
+                resp = send_gcode(
+                    api_socket, "PROBE_ACCURACY SAMPLES=3", timeout=180
+                )
+                out, offset = _log_tail_since(klippy_log, offset)
+                acc_lines = [
+                    l.strip()
+                    for l in out.split("\n")
+                    if "probe accuracy results" in l
+                ]
+                acc_ok = False
+                if acc_lines and not resp.get("error"):
+                    m = re.search(r"range (\d+\.?\d*)", acc_lines[-1])
+                    acc_ok = m is not None and float(m.group(1)) < 0.25
+                check(
+                    "probe-accuracy",
+                    acc_ok,
+                    acc_lines or resp.get("error") or resp,
+                )
+
+                resp = send_gcode(api_socket, "QUERY_PROBE", timeout=30)
+                out, offset = _log_tail_since(klippy_log, offset)
+                check(
+                    "query-probe-open-after",
+                    "probe: open" in out and not resp.get("error"),
+                    [l.strip() for l in out.split("\n") if "probe:" in l][:1]
+                    or resp,
+                )
+
+                shutdown = (
+                    b"shutdown:" in klippy_log.read_bytes()
+                    if klippy_log.exists()
+                    else False
+                )
+                check(
+                    "no-shutdown",
+                    not shutdown,
+                    "clean" if not shutdown else "printer shut down",
+                )
+
+        except Exception as e:
+            check("exception", False, repr(e))
+        finally:
+            if klippy_proc and klippy_proc.poll() is None:
+                klippy_proc.terminate()
+                try:
+                    klippy_proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    klippy_proc.kill()
+            for mcu in mcus:
+                if mcu.process.poll() is None:
+                    mcu.process.send_signal(signal.SIGTERM)
+            for mcu in mcus:
+                try:
+                    mcu.process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    mcu.process.kill()
+            vtime_destroy()
+
+            print("\n" + "=" * 60)
+            print(f"PROBE TEST RESULT (variant={variant})")
+            print("=" * 60)
+            failed = [c for c in checks if not c[1]]
+            for name, ok, detail in checks:
+                print(f"  {'PASS' if ok else 'FAIL'}  {name}: {detail}")
+            print("=" * 60)
+            if failed and klippy_log.exists():
+                print("\n--- klippy.log tail ---")
+                print(klippy_log.read_text(errors="replace")[-4000:])
+                print("--- end klippy.log ---")
+
+    return 1 if [c for c in checks if not c[1]] else 0
+
+
 def _generate_minimal_config(
     h7_pty: str, f4_pty: str, gcode_dir: str = "/tmp/kalico_sim_gcodes"
 ) -> str:
@@ -1497,6 +1885,11 @@ def main():
         help="Run beacon Z homing test (dual-MCU CoreXY + beacon proximity)",
     )
     parser.add_argument(
+        "--probe-test",
+        choices=PROBE_TEST_VARIANTS,
+        help="Run [probe] / virtual endstop validation for one variant",
+    )
+    parser.add_argument(
         "--repo",
         type=str,
         default=str(REPO_ROOT),
@@ -1521,6 +1914,16 @@ def main():
     repo = pathlib.Path(args.repo)
     gcode = pathlib.Path(args.gcode) if args.gcode else None
     config = pathlib.Path(args.config) if args.config else None
+
+    if args.probe_test:
+        sys.exit(
+            run_probe_test(
+                repo_root=repo,
+                variant=args.probe_test,
+                timeout=args.timeout,
+                verbose=args.verbose,
+            )
+        )
 
     if args.mode == "batch":
         if not gcode:
