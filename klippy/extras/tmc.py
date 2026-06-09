@@ -284,12 +284,6 @@ class TMCCommandHelper:
         self._post_enable_cb = None
         self.stepper_enable = self.printer.load_object(config, "stepper_enable")
         self.printer.register_event_handler(
-            "stepper:sync_mcu_position", self._handle_sync_mcu_pos
-        )
-        self.printer.register_event_handler(
-            "stepper:set_sdir_inverted", self._handle_sync_mcu_pos
-        )
-        self.printer.register_event_handler(
             "klippy:mcu_identify", self._handle_mcu_identify
         )
         self.printer.register_event_handler(
@@ -418,46 +412,15 @@ class TMCCommandHelper:
                 % (prev_cur, prev_hold_cur, prev_home_cur)
             )
 
-    # Stepper phase tracking
+    # Host-side stepper phase tracking died with host step generation: the
+    # bridge runtime owns step counts, so a driver-phase-to-step-count offset
+    # cannot be computed here. mcu_phase_offset stays None ("phase unknown"),
+    # which every consumer (angle, endstop_phase) already handles.
     def _get_phases(self):
         return (256 >> self.fields.get_field("mres")) * 4
 
     def get_phase_offset(self):
         return self.mcu_phase_offset, self._get_phases()
-
-    def _query_phase(self):
-        field_name = "mscnt"
-        if self.fields.lookup_register(field_name, None) is None:
-            # TMC2660 uses MSTEP
-            field_name = "mstep"
-        reg = self.mcu_tmc.get_register(self.fields.lookup_register(field_name))
-        return self.fields.get_field(field_name, reg)
-
-    def _handle_sync_mcu_pos(self, stepper):
-        if stepper.get_name() != self.stepper_name:
-            return
-        try:
-            driver_phase = self._query_phase()
-        except self.printer.command_error as e:
-            logging.info("Unable to obtain tmc %s phase", self.stepper_name)
-            self.mcu_phase_offset = None
-            enable_line = self.stepper_enable.lookup_enable(self.stepper_name)
-            if enable_line.is_motor_enabled():
-                raise
-            return
-        if not stepper.get_dir_inverted()[0]:
-            driver_phase = 1023 - driver_phase
-        phases = self._get_phases()
-        phase = int(float(driver_phase) / 1024 * phases + 0.5) % phases
-        moff = (phase - stepper.get_mcu_position()) % phases
-        if self.mcu_phase_offset is not None and self.mcu_phase_offset != moff:
-            logging.warning(
-                "Stepper %s phase change (was %d now %d)",
-                self.stepper_name,
-                self.mcu_phase_offset,
-                moff,
-            )
-        self.mcu_phase_offset = moff
 
     # Stepper enable/disable tracking
     def _do_enable(self, print_time):
@@ -468,25 +431,8 @@ class TMCCommandHelper:
             self._init_registers()
             if self._post_enable_cb is not None:
                 self._post_enable_cb()
-            if self._post_enable_cb is not None:
-                did_reset = False
-            else:
-                did_reset = self.echeck_helper.start_checks()
-            if did_reset:
-                self.mcu_phase_offset = None
-            # Calculate phase offset
-            if self.mcu_phase_offset is not None:
-                return
-            gcode = self.printer.lookup_object("gcode")
-            with gcode.get_mutex():
-                if self.mcu_phase_offset is not None:
-                    return
-                logging.info(
-                    "Pausing toolhead to calculate %s phase offset",
-                    self.stepper_name,
-                )
-                self.printer.lookup_object("toolhead").wait_moves()
-                self._handle_sync_mcu_pos(self.stepper)
+            if self._post_enable_cb is None:
+                self.echeck_helper.start_checks()
         except (self.printer.command_error, RuntimeError) as e:
             self.printer.invoke_shutdown(
                 "TMC %s _do_enable failed: %s" % (self.stepper_name, e)
@@ -541,19 +487,8 @@ class TMCCommandHelper:
             self._init_registers()
             if self._post_enable_cb is not None:
                 self._post_enable_cb()
-            if self._post_enable_cb is not None:
-                did_reset = False
-            else:
-                did_reset = self.echeck_helper.start_checks()
-            if did_reset:
-                self.mcu_phase_offset = None
-            if self.mcu_phase_offset is not None:
-                return
-            logging.info(
-                "Calculating %s phase offset (bridge mode, inline)",
-                self.stepper_name,
-            )
-            self._handle_sync_mcu_pos(self.stepper)
+            if self._post_enable_cb is None:
+                self.echeck_helper.start_checks()
         except (self.printer.command_error, RuntimeError) as e:
             self.printer.invoke_shutdown(
                 "TMC %s _do_enable_bridge failed: %s" % (self.stepper_name, e)
