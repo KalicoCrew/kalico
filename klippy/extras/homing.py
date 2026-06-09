@@ -9,18 +9,9 @@ class _BridgeEndstop:
         self._entry = entry
 
     def query_endstop(self, print_time):
-        return bool(self.query_state(print_time)["triggered"])
-
-    def query_state(self, print_time):
         entry = self._entry
         params = entry["state_cmd"].send([entry["oid"]])
-        invert = entry["invert"]
-        return {
-            "triggered": bool(params["pin_value"] ^ invert),
-            "pin": params["pin_value"],
-            "invert": invert,
-            "armed": params["armed"],
-        }
+        return params["pin_value"] ^ entry["invert"]
 
 
 class Homing:

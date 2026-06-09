@@ -48,31 +48,13 @@ class QueryEndstops:
     cmd_QUERY_ENDSTOPS_help = "Report on the status of each endstop"
 
     def cmd_QUERY_ENDSTOPS(self, gcmd):
+        # Query the endstops
         print_time = self.printer.lookup_object("toolhead").get_last_move_time()
         self.last_state = [
             (name, mcu_endstop.query_endstop(print_time))
             for mcu_endstop, name in self.endstops
         ]
-        if gcmd.get_int("VERBOSE", 0):
-            lines = []
-            for mcu_endstop, name in self.endstops:
-                if hasattr(mcu_endstop, "query_state"):
-                    s = mcu_endstop.query_state(print_time)
-                    lines.append(
-                        "%s:%s (pin=%d invert=%d armed=%d)"
-                        % (
-                            name,
-                            "TRIGGERED" if s["triggered"] else "open",
-                            s["pin"],
-                            s["invert"],
-                            s["armed"],
-                        )
-                    )
-                else:
-                    t = mcu_endstop.query_endstop(print_time)
-                    lines.append("%s:%s" % (name, ["open", "TRIGGERED"][not not t]))
-            gcmd.respond_raw("\n".join(lines))
-            return
+        # Report results
         msg = " ".join(
             [
                 "%s:%s" % (name, ["open", "TRIGGERED"][not not t])
