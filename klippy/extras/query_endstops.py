@@ -54,6 +54,26 @@ class QueryEndstops:
             (name, mcu_endstop.query_endstop(print_time))
             for mcu_endstop, name in self.endstops
         ]
+        if gcmd.get_int("VERBOSE", 0):
+            lines = []
+            for mcu_endstop, name in self.endstops:
+                if hasattr(mcu_endstop, "query_state"):
+                    s = mcu_endstop.query_state(print_time)
+                    lines.append(
+                        "%s:%s (pin=%d invert=%d armed=%d)"
+                        % (
+                            name,
+                            "TRIGGERED" if s["triggered"] else "open",
+                            s["pin"],
+                            s["invert"],
+                            s["armed"],
+                        )
+                    )
+                else:
+                    t = mcu_endstop.query_endstop(print_time)
+                    lines.append("%s:%s" % (name, ["open", "TRIGGERED"][not not t]))
+            gcmd.respond_raw("\n".join(lines))
+            return
         # Report results
         msg = " ".join(
             [

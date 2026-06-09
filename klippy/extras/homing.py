@@ -8,6 +8,25 @@ HOMING_POLL_PERIOD = 0.001
 HOMING_TIMEOUT = 30.0
 
 
+class _BridgeEndstop:
+    def __init__(self, entry):
+        self._entry = entry
+
+    def query_endstop(self, print_time):
+        return bool(self.query_state(print_time)["triggered"])
+
+    def query_state(self, print_time):
+        entry = self._entry
+        params = entry["state_cmd"].send([entry["oid"]])
+        invert = entry["invert"]
+        return {
+            "triggered": bool(params["pin_value"] ^ invert),
+            "pin": params["pin_value"],
+            "invert": invert,
+            "armed": params["armed"],
+        }
+
+
 class Homing:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -41,32 +60,16 @@ class Homing:
         gcode = self.printer.lookup_object("gcode")
         gcode.register_command("G28", self.cmd_G28, desc="Home")
         gcode.register_command(
-            "QUERY_ENDSTOPS", self.cmd_QUERY_ENDSTOPS, desc="Report endstop states"
-        )
-        gcode.register_command(
             "_HOME_TEST",
             self.cmd_HOME_TEST,
             desc="Bench only: home one axis with override SPEED/MAX_TRAVEL",
         )
 
-    def cmd_QUERY_ENDSTOPS(self, gcmd):
-        parts = []
-        for axis_index in sorted(self._axes.keys()):
-            entry = self._axes[axis_index]
-            params = entry["state_cmd"].send([entry["oid"]])
-            raw = params["pin_value"]
-            triggered = raw ^ entry["invert"]
-            parts.append(
-                "%s:%s (pin=%d invert=%d armed=%d)"
-                % (
-                    "xyz"[axis_index],
-                    "TRIGGERED" if triggered else "open",
-                    raw,
-                    entry["invert"],
-                    params["armed"],
-                )
+        query_endstops = self.printer.load_object(config, "query_endstops")
+        for axis_index in sorted(self._axes):
+            query_endstops.register_endstop(
+                _BridgeEndstop(self._axes[axis_index]), "xyz"[axis_index]
             )
-        gcmd.respond_info("\n".join(parts) if parts else "no endstops configured")
 
     def _make_build_config(self, entry):
         def build_config():
@@ -162,8 +165,16 @@ class Homing:
                 "switch before homing" % ("XYZ"[axis],)
             )
 
-        # Quiesce prior motion, then arm the endstop poll before the move starts.
+        # Quiesce prior motion. The drip move bypasses the toolhead motion
+        # queue, so the trapq active-callback that normally energizes a stepper
+        # never fires — energize the rail explicitly or the MCU steps a disabled
+        # driver and the axis never reaches the switch.
         toolhead.wait_moves()
+        stepper_enable = self.printer.lookup_object("stepper_enable")
+        for s in rail.get_steppers():
+            stepper_enable.motor_debug_enable(s.get_name(), True)
+
+        # Arm the endstop poll before the move starts.
         rest_ticks = entry["mcu"].seconds_to_clock(HOMING_POLL_PERIOD)
         entry["query_cmd"].send([entry["oid"], rest_ticks])
 
