@@ -126,7 +126,20 @@ class Homing:
                 % ("XYZ"[axis],)
             )
         direction = 1.0 if hi.positive_dir else -1.0
-        max_travel = abs(pos_max - pos_min)
+        speed = gcmd.get_float("SPEED", hi.speed, above=0.0)
+        max_travel = gcmd.get_float(
+            "MAX_TRAVEL", abs(pos_max - pos_min), above=0.0
+        )
+
+        # Refuse to home from an already-triggered switch: the level-armed watch
+        # would trip before home_axis_start registers the run, the trip would be
+        # dropped, and the move would run to max_travel into the hard stop.
+        state = entry["state_cmd"].send([entry["oid"]])
+        if state["pin_value"] ^ entry["invert"]:
+            raise gcmd.error(
+                "G28 %s: endstop already triggered — move the axis off the "
+                "switch before homing" % ("XYZ"[axis],)
+            )
 
         # Quiesce prior motion, then arm the endstop poll before the move starts.
         toolhead.wait_moves()
@@ -136,7 +149,7 @@ class Homing:
         # Dispatch the drip move, then poll cooperatively so the reactor keeps
         # draining the trip event and servicing heaters during the move.
         bridge.home_axis_start(
-            axis, direction, hi.speed, max_travel, entry["endstop_id"], endstop_mcu
+            axis, direction, speed, max_travel, entry["endstop_id"], endstop_mcu
         )
         reactor = self.printer.get_reactor()
         deadline = reactor.monotonic() + HOMING_TIMEOUT
