@@ -2525,8 +2525,14 @@ impl PyMotionBridge {
                 // DRIP_BUDGET bounds their in-flight motion), but a homing move still
                 // emits constant pieces for every OTHER axis, and those need the full
                 // lead or they arrive late (PieceStartInPast). So MAX_LEAD_SECS always.
+                // 50 ms drip pieces (20/s) instead of 25 ms (40/s): the host's
+                // per-piece retire->release->send loop slips ~2 ms/piece on a slow
+                // Pi-3 + 500 kbaud link, so at 40/s the anchor lead erodes over a long
+                // move and a piece eventually arrives past its start (PieceStartInPast).
+                // At 20/s the loop keeps up with margin. In-flight motion stays bounded
+                // at DRIP_BUDGET * piece_secs * v_home (collision safety).
                 let max_piece_secs = if active_cohort.is_some() {
-                    Some(0.025_f64)
+                    Some(0.05_f64)
                 } else {
                     None::<f64>
                 };
