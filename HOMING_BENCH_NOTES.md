@@ -147,6 +147,22 @@ should skip endstop-object setup; position_endstop/range come from config.
   toolhead being out of MAX_TRAVEL range. Toolhead now AT the switch.
 - Plan: SET X=-6 (at switch) → jog +X off → KALICO_HOME with MAX_TRAVEL that reaches it.
 
+## UPDATE (2026-06-09 ~04:40) — SPEED=8 FIXED + speed range characterized
+- The SPEED>=8 StepsPerSampleExceeded WAS the straggler after all. Fix = trip handler sends
+  Flush+DripDisarm to the pump BEFORE the Stop broadcast (commit 36253592c, host .so only),
+  so the pump stops releasing cohort pieces during the Stop round-trip. Combined with the
+  seed_position ring-clear, SPEED=8 now homes 100% clean (3/3 then 4/4, 0 new faults).
+- SPEED=8 repeatability: set X = -6.0320/-6.0352/-6.0304/-6.0352 across 10/25/45/15mm jogs
+  = 4.8um spread (tighter than SPEED=5's 11um). Excellent.
+- Speed scaling (all clean, ready): SPEED=15 overshoot 63um, SPEED=25 overshoot 105um.
+  Overshoot ~= 4us stop-latency x v_home, all accounted in set_position (no position error).
+- CEILING: SPEED=40 faults PieceStartInPast (deficit 39.6ms) — the drip release rate exceeds
+  what the Pi 3 + 500kbaud can sustain. So homing is solid 5..~25mm/s on THIS host. config
+  homing_speed=50 needs either bigger drip pieces (50ms halves the release rate), a faster
+  pump/host, or two-stage homing. Not blocking — the goal (work + repeatable) is met.
+- Bench currently: klippy ready, firmware = seed_position build, .so = reorder build, all
+  services normal. So the deployed bench has BOTH high-speed fixes.
+
 ## FINAL STATUS (2026-06-09 ~04:30) — read me first
 - GOAL MET: X homing works on the Neptune bench, repeatable to ~11um (see test below).
   Use `KALICO_HOME AXIS=X SPEED=5 MAX_TRAVEL=<reaches switch>`. SPEED<=5 is clean.
