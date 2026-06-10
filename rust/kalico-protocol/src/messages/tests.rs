@@ -17,6 +17,10 @@ fn message_kind_round_trips_via_u16() {
         MessageKind::McuLog,
         MessageKind::ClaimHandshakeReply,
         MessageKind::ClaimHandshake,
+        MessageKind::SdoRead,
+        MessageKind::SdoReadResponse,
+        MessageKind::SdoWrite,
+        MessageKind::SdoWriteResponse,
     ] {
         assert_eq!(MessageKind::from_u16(k.as_u16()), Some(k));
     }

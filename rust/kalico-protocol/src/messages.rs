@@ -272,6 +272,7 @@ pub const ERR_SDO_UNSUPPORTED_SIZE: i32 = -801;
 pub const ERR_SDO_VERIFY_MISMATCH: i32 = -802;
 pub const ERR_SDO_TRANSPORT: i32 = -803;
 pub const ERR_SDO_VALUE_RANGE: i32 = -804;
+pub const SDO_SIZE_PROBE: u8 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SdoRead {
@@ -306,9 +307,7 @@ impl Encode for SdoReadResponse {
     fn encode(&self, out: &mut Vec<u8>) {
         put_i32(out, self.result);
         put_u8(out, self.size);
-        for b in self.data {
-            put_u8(out, b);
-        }
+        out.extend_from_slice(&self.data);
     }
 }
 
@@ -322,7 +321,6 @@ impl Decode for SdoReadResponse {
     }
 }
 
-/// `size == 0` requests an endpoint-side probe (SDO upload discovers the width).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SdoWrite {
     pub index: u16,
@@ -351,22 +349,18 @@ impl Decode for SdoWrite {
     }
 }
 
-/// `size`/`data` carry the post-write readback so a verify mismatch
-/// reports what the drive actually settled on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SdoWriteResponse {
     pub result: i32,
-    pub size: u8,
-    pub data: [u8; 4],
+    pub readback_size: u8,
+    pub readback_data: [u8; 4],
 }
 
 impl Encode for SdoWriteResponse {
     fn encode(&self, out: &mut Vec<u8>) {
         put_i32(out, self.result);
-        put_u8(out, self.size);
-        for b in self.data {
-            put_u8(out, b);
-        }
+        put_u8(out, self.readback_size);
+        out.extend_from_slice(&self.readback_data);
     }
 }
 
@@ -374,8 +368,8 @@ impl Decode for SdoWriteResponse {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             result: get_i32(c)?,
-            size: get_u8(c)?,
-            data: [get_u8(c)?, get_u8(c)?, get_u8(c)?, get_u8(c)?],
+            readback_size: get_u8(c)?,
+            readback_data: [get_u8(c)?, get_u8(c)?, get_u8(c)?, get_u8(c)?],
         })
     }
 }

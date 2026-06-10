@@ -20,6 +20,7 @@ fn sdo_read_roundtrip() {
         subindex: 3,
     };
     assert_eq!(roundtrip(&msg), msg);
+    assert_eq!(msg.encoded_to_vec().len(), 3);
 }
 
 #[test]
@@ -30,6 +31,7 @@ fn sdo_read_response_roundtrip() {
         data: [0x64, 0x00, 0x00, 0x00],
     };
     assert_eq!(roundtrip(&msg), msg);
+    assert_eq!(msg.encoded_to_vec().len(), 9);
 }
 
 #[test]
@@ -41,14 +43,16 @@ fn sdo_write_roundtrip_negative_value() {
         value: -4096,
     };
     assert_eq!(roundtrip(&msg), msg);
+    assert_eq!(msg.encoded_to_vec().len(), 12);
 }
 
 #[test]
 fn sdo_write_response_roundtrip() {
     let msg = SdoWriteResponse {
         result: ERR_SDO_VERIFY_MISMATCH,
-        size: 2,
-        data: [0xF4, 0x01, 0x00, 0x00],
+        readback_size: 2,
+        readback_data: [0xF4, 0x01, 0x00, 0x00],
     };
     assert_eq!(roundtrip(&msg), msg);
+    assert_eq!(msg.encoded_to_vec().len(), 9);
 }
