@@ -35,7 +35,7 @@ pub struct ChainGrid {
     pub segment_ranges: Vec<(usize, usize)>,
 }
 
-const MAX_JUNCTION_SPACING_RATIO: f64 = 16.0;
+pub(crate) const MAX_JUNCTION_SPACING_RATIO: f64 = 16.0;
 
 impl ChainGrid {
     /// Concatenate per-segment grids into one chain. Adjacent grids must be

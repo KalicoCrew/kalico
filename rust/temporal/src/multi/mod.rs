@@ -81,6 +81,7 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
     use crate::multi::{chain, grid, joining, junction, parallel};
     use crate::topp::chain::ChainGrid;
     use crate::topp::path::sample_arclength_grid;
+    use nurbs::VectorNurbs;
 
     if input.segments.is_empty() {
         return Err(BatchError::EmptySegments);
@@ -111,15 +112,26 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
     let chain_ranges = chain::partition_chains(k, &kinds);
     let n_chains = chain_ranges.len();
 
+    let grid_max_n = match input.grid_strategy {
+        GridStrategy::Adaptive { max_n, .. } => Some(max_n),
+        GridStrategy::Fixed(_) => None,
+    };
+
     let chain_grids: Vec<ChainGrid> = chain_ranges
         .iter()
         .map(|range| {
+            let chain_curves: Vec<&VectorNurbs<f64, 3>> =
+                range.clone().map(|i| input.segments[i].curve).collect();
+            let mut ns: Vec<usize> = chain_curves
+                .iter()
+                .map(|c| grid::compute_n(&input.grid_strategy, c))
+                .collect();
+            grid::reconcile_junction_n(&mut ns, &chain_curves, grid_max_n);
             let seg_grids: Result<Vec<_>, _> = range
                 .clone()
-                .map(|seg_idx| {
-                    let s = &input.segments[seg_idx];
-                    let n = grid::compute_n(&input.grid_strategy, s.curve);
-                    sample_arclength_grid(s.curve, n).map_err(|e| {
+                .zip(ns)
+                .map(|(seg_idx, n)| {
+                    sample_arclength_grid(input.segments[seg_idx].curve, n).map_err(|e| {
                         BatchError::Segment(
                             seg_idx,
                             crate::topp::ScheduleError::PathParam(format!("{e}")),
