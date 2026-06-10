@@ -4,7 +4,11 @@ use crate::{BindingConstraint, GridSample, GridScheme, SolveStatus, TopProfile};
 
 #[test]
 fn partition_splits_only_at_corners() {
-    let kinds = [JunctionKind::Smooth, JunctionKind::Corner, JunctionKind::Smooth];
+    let kinds = [
+        JunctionKind::Smooth,
+        JunctionKind::Corner,
+        JunctionKind::Smooth,
+    ];
     let chains = partition_chains(4, &kinds);
     assert_eq!(chains, vec![0..=1, 2..=3]);
 }

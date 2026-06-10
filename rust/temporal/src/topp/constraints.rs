@@ -15,12 +15,12 @@ pub struct ConstraintBundle {
     pub n_vars: usize,
     pub n_grid: usize,
     pub cones: Vec<(Cone, usize)>,
-    /// Dense constraint matrix `A`, row-major. Standard form: `Ax + b_rhs ∈ K`.
+
     pub a_rows: Vec<Vec<f64>>,
     pub b_rhs: Vec<f64>,
     pub objective: Vec<f64>,
     pub b_max_cent: Vec<f64>,
-    /// Per-interval arclength spacing, len `n_grid − 1`.
+
     pub h_intervals: Vec<f64>,
     pub j_path: f64,
 }
@@ -29,6 +29,10 @@ pub struct ConstraintBundle {
 pub enum BoundaryInfeasibility {
     StartAboveMvc { mvc_b: f64 },
     EndAboveMvc { mvc_b: f64 },
+
+    EndBelowMinReachable { min_b: f64 },
+
+    EndAboveMaxReachable { max_b: f64 },
 }
 
 #[derive(Debug, Clone)]
@@ -37,9 +41,6 @@ pub enum BuildOutcome {
     Boundary(BoundaryInfeasibility),
 }
 
-/// Chain-edge boundary conditions. `a_start = Some(_)` is only legal with
-/// `v_start > 0` — pinning accel at a rest start forces `b_1 = 0` (the
-/// rejected rest-pin trap); `build_chain` panics on it as a caller bug.
 #[derive(Debug, Clone, Copy)]
 pub struct EndpointConditions {
     pub v_start: f64,
@@ -47,27 +48,12 @@ pub struct EndpointConditions {
     pub a_start: Option<f64>,
 }
 
-/// Numerical floor on κ; below this the path is treated as locally straight.
 pub const KAPPA_FLOOR: f64 = 1e-12;
 
-/// Cap on `b_max_cent` to guard against κ ≈ 0 noise.
 pub const B_MAX_CENT_CAP: f64 = 1e8;
 
-/// Threshold below which an axis tangent or curvature component is considered
-/// zero and the corresponding constraint row is skipped (vacuous).
-const COMP_FLOOR: f64 = 1e-12;
+pub(crate) const COMP_FLOOR: f64 = 1e-12;
 
-/// Double-S reachable-velocity envelope from rest: returns `v²` at arc-distance
-/// `d` from the rest endpoint, under constant-jerk `J` and constant-accel `A`
-/// phases.
-///
-/// Derivation: constant-jerk from rest gives s = J·t³/6, v = J·t²/2, so
-/// v² = (6^(4/3)/4)·(J·s²)^(2/3); once a=A is reached (at s = A³/(6J²)),
-/// constant-A kinematics extend the envelope as v² = v1² + 2A·(s − s1).
-///
-/// Used by block (e2) to close the jerk-impulse hole at b→0 where block (f)'s
-/// √b weight vanishes; A/J must be the max-over-grid projected caps so the
-/// envelope over-estimates reachability (sound, never cuts the true optimum).
 pub fn rest_boundary_b_cap(d: f64, a_env: f64, j_env: f64) -> f64 {
     let s1 = a_env * a_env * a_env / (6.0 * j_env * j_env);
     let v1_sq = (a_env * a_env / (2.0 * j_env)).powi(2);
@@ -78,8 +64,6 @@ pub fn rest_boundary_b_cap(d: f64, a_env: f64, j_env: f64) -> f64 {
     }
 }
 
-/// Max reachable v² at arc-distance `s` from boundary state `(v0, a0)` under
-/// bounded jerk J and bounded accel A (upper reachability envelope).
 pub(crate) fn boundary_reachable_b_upper(s: f64, v0: f64, a0: f64, a_max: f64, j_max: f64) -> f64 {
     debug_assert!(
         a0 <= a_max * (1.0 + 1e-9),
@@ -97,10 +81,12 @@ pub(crate) fn boundary_reachable_b_upper(s: f64, v0: f64, a0: f64, a_max: f64, j
 
     if s <= s1 {
         let v_t = |t: f64| -> f64 { v0 + a0 * t + 0.5 * j_max * t * t };
-        let s_t = |t: f64| -> f64 {
-            v0 * t + 0.5 * a0 * t * t + (1.0 / 6.0) * j_max * t * t * t
+        let s_t = |t: f64| -> f64 { v0 * t + 0.5 * a0 * t * t + (1.0 / 6.0) * j_max * t * t * t };
+        let t_guess = if v0 > 1e-12 {
+            (s / v0).min(t1)
+        } else {
+            t1 * 0.5
         };
-        let t_guess = if v0 > 1e-12 { (s / v0).min(t1) } else { t1 * 0.5 };
         let mut t = t_guess.clamp(0.0, t1);
         for _ in 0..12 {
             let vt = v_t(t);
@@ -116,8 +102,6 @@ pub(crate) fn boundary_reachable_b_upper(s: f64, v0: f64, a0: f64, a_max: f64, j
     }
 }
 
-/// Min reachable v² at arc-distance `s` from boundary state `(v0, a0)` under
-/// bounded jerk J and bounded accel A (lower reachability envelope, floored at 0).
 pub(crate) fn boundary_reachable_b_lower(s: f64, v0: f64, a0: f64, a_max: f64, j_max: f64) -> f64 {
     debug_assert!(
         a0 >= -a_max * (1.0 + 1e-9),
@@ -131,13 +115,10 @@ pub(crate) fn boundary_reachable_b_lower(s: f64, v0: f64, a0: f64, a_max: f64, j
     }
 
     let v_ph1 = |t: f64| -> f64 { v0 + a0 * t - 0.5 * j_max * t * t };
-    let s_ph1 = |t: f64| -> f64 {
-        v0 * t + 0.5 * a0 * t * t - (1.0 / 6.0) * j_max * t * t * t
-    };
+    let s_ph1 = |t: f64| -> f64 { v0 * t + 0.5 * a0 * t * t - (1.0 / 6.0) * j_max * t * t * t };
 
     let t1_prime = (a0 + a_max) / j_max;
 
-    // Smallest positive time when v(t)=0 in phase 1: 0.5*J*t²-a0*t-v0=0
     let t_stop_ph1 = {
         let disc = a0 * a0 + 2.0 * j_max * v0;
         if disc >= 0.0 && v0 > 0.0 {
@@ -153,13 +134,16 @@ pub(crate) fn boundary_reachable_b_lower(s: f64, v0: f64, a0: f64, a_max: f64, j
     let v1_prime = v_ph1(t_end_ph1).max(0.0);
 
     if t_stop_ph1 <= t1_prime {
-        // Velocity reaches zero within phase 1.
         let s_stop = s_ph1(t_stop_ph1);
         if s >= s_stop {
             return 0.0;
         }
-        // Newton-solve in phase 1 for s < s_stop.
-        let t_guess = if v0 > 1e-12 { (s / v0).min(t_stop_ph1) } else { 0.0 };
+
+        let t_guess = if v0 > 1e-12 {
+            (s / v0).min(t_stop_ph1)
+        } else {
+            0.0
+        };
         let mut t = t_guess.clamp(0.0, t_stop_ph1);
         for _ in 0..12 {
             let vt = v_ph1(t);
@@ -171,10 +155,12 @@ pub(crate) fn boundary_reachable_b_lower(s: f64, v0: f64, a0: f64, a_max: f64, j
         }
         v_ph1(t).powi(2).max(0.0)
     } else {
-        // Phase 1 ends at -A with v1' > 0; phase 2: const-decel -A.
         if s <= s1_prime {
-            // Still in phase 1; Newton-solve.
-            let t_guess = if v0 > 1e-12 { (s / v0).min(t1_prime) } else { 0.0 };
+            let t_guess = if v0 > 1e-12 {
+                (s / v0).min(t1_prime)
+            } else {
+                0.0
+            };
             let mut t = t_guess.clamp(0.0, t1_prime);
             for _ in 0..12 {
                 let vt = v_ph1(t);
@@ -186,16 +172,12 @@ pub(crate) fn boundary_reachable_b_lower(s: f64, v0: f64, a0: f64, a_max: f64, j
             }
             v_ph1(t).powi(2).max(0.0)
         } else {
-            // Phase 2: constant decel -A from (s1', v1').
             let v_sq = (v1_prime * v1_prime - 2.0 * a_max * (s - s1_prime)).max(0.0);
             v_sq
         }
     }
 }
 
-/// Tightest pure-`b` ceiling from the per-axis velocity caps at one point:
-/// `min_ax (v_max_ax / |c'_ax|)²` over active axes. `c'` is unscaled and
-/// `v_max` is in `scale` units, matching the SOCP's velocity rows and `b`.
 fn velocity_mvc_b(c_prime: &[f64; 3], v_max: &[f64; 3]) -> f64 {
     let mut bound = f64::INFINITY;
     for ax in 0..3 {
@@ -208,7 +190,6 @@ fn velocity_mvc_b(c_prime: &[f64; 3], v_max: &[f64; 3]) -> f64 {
     bound
 }
 
-/// `chain` and `endpoints` must share the unit system described by `scale`.
 #[allow(clippy::too_many_lines)]
 pub fn build_chain(
     chain: &ChainGrid,
@@ -302,11 +283,6 @@ pub fn build_chain(
     let b_start = endpoints.v_start * endpoints.v_start;
     let b_end = endpoints.v_end * endpoints.v_end;
 
-    // The MVC at an endpoint is the tightest of every pure-`b` ceiling, not just
-    // the centripetal one: a straight move has unbounded centripetal `b` yet the
-    // per-axis velocity cap `|c'_ax|·√b ≤ v_max_ax` still binds. Pinning a
-    // `v_start` above it makes node 0 infeasible, and the SOCP answers with a
-    // frozen garbage profile instead of failing — so reject it here.
     let mvc_start = b_max_cent[0].min(velocity_mvc_b(
         &chain.geom[0].c_prime,
         &chain.limits_at(0).v_max,
@@ -316,16 +292,31 @@ pub fn build_chain(
         &chain.limits_at(n - 1).v_max,
     ));
 
-    // Tolerance: v_jct set to sqrt(mvc_b_phys) in the joining loop. After
-    // dividing v by σ and re-squaring, IEEE 754 may land b_start slightly above
-    // the MVC. Allow up to 4 ULP slop so the scaled build doesn't reject a
-    // physically-feasible starting velocity.
     const B_BOUNDARY_REL_TOL: f64 = f64::EPSILON * 4.0;
     if b_start > mvc_start * (1.0 + B_BOUNDARY_REL_TOL) {
         return BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc { mvc_b: mvc_start });
     }
     if b_end > mvc_end * (1.0 + B_BOUNDARY_REL_TOL) {
         return BuildOutcome::Boundary(BoundaryInfeasibility::EndAboveMvc { mvc_b: mvc_end });
+    }
+
+    let s_total = chain.s.last().copied().unwrap_or(0.0);
+    if let Some(a0) = endpoints.a_start {
+        let a0_clamped = a0.clamp(-a_env, a_env);
+        let max_b_end =
+            boundary_reachable_b_upper(s_total, endpoints.v_start, a0_clamped, a_env, j_env);
+        if b_end > max_b_end * (1.0 + B_BOUNDARY_REL_TOL) {
+            return BuildOutcome::Boundary(BoundaryInfeasibility::EndAboveMaxReachable {
+                max_b: max_b_end,
+            });
+        }
+        let min_b_end =
+            boundary_reachable_b_lower(s_total, endpoints.v_start, a0_clamped, a_env, j_env);
+        if b_end < min_b_end * (1.0 - B_BOUNDARY_REL_TOL) {
+            return BuildOutcome::Boundary(BoundaryInfeasibility::EndBelowMinReachable {
+                min_b: min_b_end,
+            });
+        }
     }
 
     let n_b = n;
@@ -361,7 +352,6 @@ pub fn build_chain(
             b_rhs.push(rhs);
         };
 
-    // Block (a): boundary equalities.
     {
         let mut count = 0_usize;
         push_row(&mut a_rows, &mut b_rhs, &[(off_b, 1.0)], -b_start);
@@ -378,10 +368,9 @@ pub fn build_chain(
         cones.push((Cone::Zero, count));
     }
 
-    // Block (b): acceleration linkage — zero cone, N rows.
     {
         let count = n;
-        // Edge i=0: a_0 = (b_1 - b_0) / (2·h[0])
+
         push_row(
             &mut a_rows,
             &mut b_rhs,
@@ -406,7 +395,7 @@ pub fn build_chain(
                 0.0,
             );
         }
-        // Edge i=n-1: a_{n-1} = (b_{n-1} - b_{n-2}) / (2·h[n-2])
+
         push_row(
             &mut a_rows,
             &mut b_rhs,
@@ -420,7 +409,6 @@ pub fn build_chain(
         cones.push((Cone::Zero, count));
     }
 
-    // Block (c): per-axis velocity upper bound — nonneg cone.
     {
         let mut count = 0_usize;
         for i in 0..n {
@@ -439,8 +427,7 @@ pub fn build_chain(
                 count += 1;
             }
         }
-        // Junction duals: the shared point belongs to both segments; emit the
-        // right side's per-axis velocity caps too (right geometry AND right limits).
+
         for j in &chain.junctions {
             let i = j.idx;
             let lims = &chain.limits[j.limits_idx];
@@ -462,9 +449,7 @@ pub fn build_chain(
         }
     }
 
-    // Block (d): per-axis acceleration two-sided — nonneg cone.
     {
-        /// Skip rows whose worst-case LHS falls below this fraction of a_max.
         const BLOCK_D_SAFETY: f64 = 0.1;
         let mut count = 0_usize;
         for i in 0..n {
@@ -497,8 +482,7 @@ pub fn build_chain(
                 count += 2;
             }
         }
-        // Junction duals: the shared point belongs to both segments; emit the
-        // right side's per-axis accel caps too (right geometry AND right limits).
+
         for j in &chain.junctions {
             let i = j.idx;
             let lims = &chain.limits[j.limits_idx];
@@ -535,7 +519,6 @@ pub fn build_chain(
         }
     }
 
-    // Block (e): centripetal upper bound — nonneg cone, N rows.
     {
         let count = n;
         for i in 0..n {
@@ -544,7 +527,6 @@ pub fn build_chain(
         cones.push((Cone::Nonneg, count));
     }
 
-    // Block (e2): rest-boundary reachable-velocity envelope — nonneg cone.
     {
         let mut count = 0_usize;
         if endpoints.v_start == 0.0 {
@@ -574,15 +556,14 @@ pub fn build_chain(
         }
     }
 
-    // Block (e3): jerk-reachability tube from nonzero-accel start — nonneg cone.
-    // Replaces the constant-accel hard pin (old block (a) third row) with analytic
-    // upper/lower reachability bounds that give jerk-bounded accel continuity without
-    // the over-constraint that diverged the SLP on coarse grids.
     {
         let mut count = 0_usize;
         if let Some(a0) = endpoints.a_start {
             let v0 = endpoints.v_start;
-            debug_assert!(v0 > 0.0, "tube guard: v_start must be > 0 when a_start is Some");
+            debug_assert!(
+                v0 > 0.0,
+                "tube guard: v_start must be > 0 when a_start is Some"
+            );
             for i in 1..n {
                 let si = chain.s[i] - chain.s[0];
                 let upper = boundary_reachable_b_upper(si, v0, a0, a_env, j_env);
@@ -607,7 +588,6 @@ pub fn build_chain(
         }
     }
 
-    // Block (f): scalar-tangential jerk envelope — nonneg cone, 2·(N-2) rows.
     {
         let mut count = 0_usize;
         for k in 0..n_interior {
@@ -635,7 +615,6 @@ pub fn build_chain(
         }
     }
 
-    // Block (g): x1, x2 nonnegativity — nonneg cone, 2·(N-2) rows.
     {
         let mut count = 0_usize;
         for k in 0..n_interior {
@@ -648,7 +627,6 @@ pub fn build_chain(
         }
     }
 
-    // Block (h): SOC chain encoding t_i · b_i ≥ h_bar² — standard SOC.
     {
         let b_idx = |k: usize| -> usize { off_b + k + 1 };
 

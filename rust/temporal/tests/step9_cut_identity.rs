@@ -194,10 +194,17 @@ fn axis_jerk_cut_identity_nonuniform_spacing() {
         cppp * s * s * s + 3.0 * cpp * a * s + cp * (s * b_dd / 2.0)
     };
     let f0 = j_at(b_bars, a_bar);
-    let grad = temporal::topp::axis_jerk_gradient_for_test(&b_bars, a_bar, cp, cpp, cppp, &h_intervals);
+    let grad =
+        temporal::topp::axis_jerk_gradient_for_test(&b_bars, a_bar, cp, cpp, cppp, &h_intervals);
     let db = [1.5, -2.0, 1.0];
     let da = 0.5;
-    let pred = f0 + grad.b[0]*db[0] + grad.b[1]*db[1] + grad.b[2]*db[2] + grad.a*da;
-    let actual = j_at([b_bars[0]+db[0], b_bars[1]+db[1], b_bars[2]+db[2]], a_bar+da);
-    assert!((pred - actual).abs() < 1e-2 * actual.abs().max(1.0), "linearization off: pred {pred}, actual {actual}");
+    let pred = f0 + grad.b[0] * db[0] + grad.b[1] * db[1] + grad.b[2] * db[2] + grad.a * da;
+    let actual = j_at(
+        [b_bars[0] + db[0], b_bars[1] + db[1], b_bars[2] + db[2]],
+        a_bar + da,
+    );
+    assert!(
+        (pred - actual).abs() < 1e-2 * actual.abs().max(1.0),
+        "linearization off: pred {pred}, actual {actual}"
+    );
 }

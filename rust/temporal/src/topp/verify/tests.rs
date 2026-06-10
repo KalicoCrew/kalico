@@ -269,9 +269,16 @@ fn junction_dual_limits_are_verified() {
     let mut b = vec![22_000.0; n];
     b[10] = 30_000.0;
     let a = vec![0.0; n];
-    let result = SolverResult { b, a, status: SolverStatus::Solved };
+    let result = SolverResult {
+        b,
+        a,
+        status: SolverStatus::Solved,
+    };
     let report = check_chain(&chain, &result);
-    assert!(!report.feasible, "right-side junction velocity cap not enforced");
+    assert!(
+        !report.feasible,
+        "right-side junction velocity cap not enforced"
+    );
     assert_eq!(
         report.worst_violation_grid, 10,
         "the sole violation must be the junction's right-side velocity cap"

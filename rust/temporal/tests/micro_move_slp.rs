@@ -28,7 +28,10 @@ fn micro_move_below_cut_floor_is_not_max_iter_slp() {
     let profile = schedule_segment(
         &curve,
         &limits,
-        &GridConfig { scheme: GridScheme::UniformArclength, n: 20 },
+        &GridConfig {
+            scheme: GridScheme::UniformArclength,
+            n: 20,
+        },
         0.0,
         4e-4_f64,
     )

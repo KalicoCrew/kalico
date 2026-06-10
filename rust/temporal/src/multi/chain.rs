@@ -35,7 +35,10 @@ pub(crate) fn slice_chain_profile(
             let s0 = chain.samples[lo].s;
             let samples: Vec<GridSample> = chain.samples[lo..=hi]
                 .iter()
-                .map(|smp| GridSample { s: smp.s - s0, ..*smp })
+                .map(|smp| GridSample {
+                    s: smp.s - s0,
+                    ..*smp
+                })
                 .collect();
             let mut total_time = 0.0;
             for w in samples.windows(2) {

@@ -736,3 +736,55 @@ mod fixture_7_curvature_spike_intergrid_sanity {
         v[0].mul_add(v[0], v[1].mul_add(v[1], v[2] * v[2])).sqrt()
     }
 }
+
+mod fixture_9_kinematic_boundary_end_no_oscillation {
+    use super::*;
+
+    #[test]
+    fn fixture_9() {
+        let seg0 = VectorNurbs::<f64, 3>::try_new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![[0.0, 0.0, 0.0], [5.0, 0.0, 0.0]],
+        )
+        .unwrap();
+        let seg1 = VectorNurbs::<f64, 3>::try_new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![[5.0, 0.0, 0.0], [5.0, 200.0, 0.0]],
+        )
+        .unwrap();
+        let limits = textbook_limits();
+        let segments = [
+            SegmentInput {
+                curve: &seg0,
+                limits,
+                trailing_junction_chord_tolerance_mm: 0.05,
+            },
+            SegmentInput {
+                curve: &seg1,
+                limits,
+                trailing_junction_chord_tolerance_mm: 0.05,
+            },
+        ];
+        let input = BatchInput {
+            segments: &segments,
+            grid_strategy: adaptive(),
+            worker_threads: 1,
+            initial_velocity: 400.0,
+            initial_accel: 0.0,
+            terminal_velocity: 0.0,
+        };
+        let output = plan_batch(input).expect("plan_batch must not return BatchError");
+
+        assert!(
+            !matches!(
+                output.joining_status,
+                JoiningStatus::CappedAtMaxSweeps { .. }
+            ),
+            "join loop must not oscillate (CappedAtMaxSweeps) when chain 0 cannot \
+             decelerate to the corner velocity; got {:?}",
+            output.joining_status,
+        );
+    }
+}

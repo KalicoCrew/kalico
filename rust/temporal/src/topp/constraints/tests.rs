@@ -45,7 +45,11 @@ fn straight_line_zero_endpoints_builds_ok() {
     let chain = chain_of_one(grid, limits);
     match build_chain(
         &chain,
-        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: None,
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => {
@@ -68,7 +72,11 @@ fn boundary_above_mvc_returns_boundary_outcome() {
     let chain = chain_of_one(grid, limits);
     match build_chain(
         &chain,
-        EndpointConditions { v_start: 60_000.0, v_end: 0.0, a_start: None },
+        EndpointConditions {
+            v_start: 60_000.0,
+            v_end: 0.0,
+            a_start: None,
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc { mvc_b }) => {
@@ -90,7 +98,11 @@ fn start_above_per_axis_velocity_cap_is_boundary_infeasible() {
     let chain = chain_of_one(grid, limits);
     match build_chain(
         &chain,
-        EndpointConditions { v_start: 200.56, v_end: 0.0, a_start: None },
+        EndpointConditions {
+            v_start: 200.56,
+            v_end: 0.0,
+            a_start: None,
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc { mvc_b }) => {
@@ -108,7 +120,11 @@ fn end_above_per_axis_velocity_cap_is_boundary_infeasible() {
     let chain = chain_of_one(grid, limits);
     match build_chain(
         &chain,
-        EndpointConditions { v_start: 0.0, v_end: 250.0, a_start: None },
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 250.0,
+            a_start: None,
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Boundary(BoundaryInfeasibility::EndAboveMvc { mvc_b }) => {
@@ -126,7 +142,11 @@ fn straight_line_n_vars_and_cone_count_match_design() {
     let chain = chain_of_one(grid, limits);
     let bundle = match build_chain(
         &chain,
-        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: None,
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -182,7 +202,11 @@ fn n_eq_2_minimum_grid_no_interior_points() {
     let chain = chain_of_one(grid, limits);
     let bundle = match build_chain(
         &chain,
-        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: None,
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -250,7 +274,11 @@ fn zero_endpoints_emit_envelope_rows() {
     let chain = chain_of_one(grid, limits);
     let bundle = match build_chain(
         &chain,
-        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: None,
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -269,7 +297,10 @@ fn zero_endpoints_emit_envelope_rows() {
     // Old nonneg count for zero-endpoint N=10 X-line without (e2):
     //   (c) 10, (d) 20, (e) 10, (f) 16, (g) 16 = 72.
     // Block (e2) adds > 0 rows (both endpoints at rest).
-    assert!(nonneg_rows > 72, "expected envelope rows to be added, nonneg={nonneg_rows}");
+    assert!(
+        nonneg_rows > 72,
+        "expected envelope rows to be added, nonneg={nonneg_rows}"
+    );
 
     // Dimension consistency holds.
     let total_cone_dim: usize = bundle.cones.iter().map(|(_, d)| d).sum();
@@ -288,7 +319,11 @@ fn nonzero_endpoints_emit_no_envelope_rows() {
     let chain = chain_of_one(grid, limits);
     let bundle = match build_chain(
         &chain,
-        EndpointConditions { v_start: 100.0, v_end: 100.0, a_start: None },
+        EndpointConditions {
+            v_start: 100.0,
+            v_end: 100.0,
+            a_start: None,
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -319,7 +354,11 @@ fn junction_point_gets_dual_velocity_rows() {
     let chain = two_segment_chain_with_junction();
     let bundle = match build_chain(
         &chain,
-        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: None,
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -342,11 +381,15 @@ fn junction_point_gets_dual_velocity_rows() {
         }
     }
     assert!(
-        rhs_seen.iter().any(|r| (r - 300.0_f64.powi(2)).abs() < 1e-6),
+        rhs_seen
+            .iter()
+            .any(|r| (r - 300.0_f64.powi(2)).abs() < 1e-6),
         "missing left-side velocity row at junction: {rhs_seen:?}"
     );
     assert!(
-        rhs_seen.iter().any(|r| (r - 150.0_f64.powi(2)).abs() < 1e-6),
+        rhs_seen
+            .iter()
+            .any(|r| (r - 150.0_f64.powi(2)).abs() < 1e-6),
         "missing right-side velocity row at junction: {rhs_seen:?}"
     );
 }
@@ -357,7 +400,11 @@ fn a_start_pin_at_rest_panics() {
     let chain = two_segment_chain_with_junction();
     let _ = build_chain(
         &chain,
-        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: Some(100.0) },
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: Some(100.0),
+        },
         &SolverScale::identity(),
     );
 }
@@ -372,7 +419,11 @@ fn a_start_tube_replaces_hard_pin() {
     let a0 = -2_000.0_f64;
     let bundle = match build_chain(
         &chain,
-        EndpointConditions { v_start, v_end: 0.0, a_start: Some(a0) },
+        EndpointConditions {
+            v_start,
+            v_end: 0.0,
+            a_start: Some(a0),
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -389,10 +440,7 @@ fn a_start_tube_replaces_hard_pin() {
         .iter()
         .zip(&bundle.b_rhs)
         .any(|(row, &rhs)| (row[1] + 1.0).abs() < 1e-12 && rhs < v_start * v_start * 2.0);
-    let has_lower_at_b1 = bundle
-        .a_rows
-        .iter()
-        .any(|row| (row[1] - 1.0).abs() < 1e-12);
+    let has_lower_at_b1 = bundle.a_rows.iter().any(|row| (row[1] - 1.0).abs() < 1e-12);
     assert!(has_upper_at_b1, "expected tube upper row at b_1");
     assert!(has_lower_at_b1, "expected tube lower row at b_1");
 }
@@ -420,7 +468,11 @@ fn diagonal_line_a_env_is_projected() {
     let chain = chain_of_one(grid.clone(), limits);
     let bundle = match build_chain(
         &chain,
-        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: None,
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -443,7 +495,9 @@ fn diagonal_line_a_env_is_projected() {
     // cap_expected = v1² + 2·A_env·(d1 - s1).
     let _ = bundle; // bundle used only to verify Ok; formula verified analytically
     assert!(
-        (cap_expected - (limits.v_max[0] * sqrt2).powi(2)).abs() / (limits.v_max[0] * sqrt2).powi(2) < 1.0,
+        (cap_expected - (limits.v_max[0] * sqrt2).powi(2)).abs()
+            / (limits.v_max[0] * sqrt2).powi(2)
+            < 1.0,
         "projected cap for diagonal should be in v_max range: cap={cap_expected}"
     );
     // More precisely: cap must be strictly larger than the axis-min cap.
@@ -491,7 +545,11 @@ fn junction_dual_accel_rows_use_right_limits() {
     let chain = two_segment_chain_curved_junction();
     let bundle = match build_chain(
         &chain,
-        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: None,
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,
@@ -510,11 +568,15 @@ fn junction_dual_accel_rows_use_right_limits() {
         .collect();
 
     assert!(
-        accel_rhs_at_junction.iter().any(|r| (r - 2_000.0).abs() < 1e-6),
+        accel_rhs_at_junction
+            .iter()
+            .any(|r| (r - 2_000.0).abs() < 1e-6),
         "missing right-side accel row (a_max=2000): {accel_rhs_at_junction:?}"
     );
     assert!(
-        accel_rhs_at_junction.iter().any(|r| (r - 5_000.0).abs() < 1e-6),
+        accel_rhs_at_junction
+            .iter()
+            .any(|r| (r - 5_000.0).abs() < 1e-6),
         "missing left-side accel row (a_max=5000): {accel_rhs_at_junction:?}"
     );
 }
@@ -526,14 +588,7 @@ fn junction_dual_accel_rows_use_right_limits() {
 /// Ground-truth reachability by small-step forward integration. sign=+1 →
 /// accelerate hardest (upper), sign=-1 → decelerate hardest (lower). Returns
 /// v² at the first time s(t) ≥ s_target. Floors v at 0 for the decel branch.
-fn simulate_reachable_b(
-    s_target: f64,
-    v0: f64,
-    a0: f64,
-    a_max: f64,
-    j_max: f64,
-    sign: f64,
-) -> f64 {
+fn simulate_reachable_b(s_target: f64, v0: f64, a0: f64, a_max: f64, j_max: f64, sign: f64) -> f64 {
     let dt = 1e-6;
     let (mut s, mut v, mut a) = (0.0_f64, v0, a0);
     for _ in 0..50_000_000 {
@@ -566,7 +621,10 @@ fn boundary_tube_upper_matches_forward_sim() {
         let closed = super::boundary_reachable_b_upper(s, v0, a0, a_max, j_max);
         let sim = simulate_reachable_b(s, v0, a0, a_max, j_max, 1.0);
         let rel = (closed - sim).abs() / sim.max(1.0);
-        assert!(rel < 1e-3, "upper s={s}: closed {closed} vs sim {sim} (rel {rel})");
+        assert!(
+            rel < 1e-3,
+            "upper s={s}: closed {closed} vs sim {sim} (rel {rel})"
+        );
     }
 }
 
@@ -577,7 +635,10 @@ fn boundary_tube_lower_matches_forward_sim() {
         let closed = super::boundary_reachable_b_lower(s, v0, a0, a_max, j_max);
         let sim = simulate_reachable_b(s, v0, a0, a_max, j_max, -1.0);
         let rel = (closed - sim).abs() / sim.max(1.0);
-        assert!(rel < 2e-3, "lower s={s}: closed {closed} vs sim {sim} (rel {rel})");
+        assert!(
+            rel < 2e-3,
+            "lower s={s}: closed {closed} vs sim {sim} (rel {rel})"
+        );
     }
 }
 
@@ -588,10 +649,8 @@ fn boundary_tube_pinches_at_zero_with_slope_2a0() {
     assert!((super::boundary_reachable_b_upper(0.0, v0, a0, a_max, j_max) - v0sq).abs() < 1e-6);
     assert!((super::boundary_reachable_b_lower(0.0, v0, a0, a_max, j_max) - v0sq).abs() < 1e-6);
     let h = 1e-4;
-    let up_slope =
-        (super::boundary_reachable_b_upper(h, v0, a0, a_max, j_max) - v0sq) / h;
-    let lo_slope =
-        (super::boundary_reachable_b_lower(h, v0, a0, a_max, j_max) - v0sq) / h;
+    let up_slope = (super::boundary_reachable_b_upper(h, v0, a0, a_max, j_max) - v0sq) / h;
+    let lo_slope = (super::boundary_reachable_b_lower(h, v0, a0, a_max, j_max) - v0sq) / h;
     assert!(
         (up_slope - 2.0 * a0).abs() < 5.0,
         "upper slope {up_slope} vs {}",
@@ -601,6 +660,72 @@ fn boundary_tube_pinches_at_zero_with_slope_2a0() {
         (lo_slope - 2.0 * a0).abs() < 5.0,
         "lower slope {lo_slope} vs {}",
         2.0 * a0
+    );
+}
+
+#[test]
+fn signed_a0_mid_brake_not_end_below_min_reachable() {
+    let a_max = 350.0_f64;
+    let j_max = 10_000.0_f64;
+    let v_start = 15.0_f64;
+
+    let s_stop_a0_zero = {
+        let t = (2.0 * v_start / j_max).sqrt();
+        v_start * t - (1.0 / 6.0) * j_max * t * t * t
+    };
+    let s_stop_full_brake = {
+        let a0 = -a_max;
+        let disc = a0 * a0 + 2.0 * j_max * v_start;
+        let t = (a0 + disc.sqrt()) / j_max;
+        v_start * t + 0.5 * a0 * t * t - (1.0 / 6.0) * j_max * t * t * t
+    };
+
+    let s_total = (s_stop_full_brake + s_stop_a0_zero) * 0.5;
+
+    let a_start_signed = -a_max * 0.9;
+
+    let min_b_zero_a0 = boundary_reachable_b_lower(s_total, v_start, 0.0, a_max, j_max);
+    let min_b_signed = boundary_reachable_b_lower(s_total, v_start, a_start_signed, a_max, j_max);
+    assert!(
+        min_b_zero_a0 > 0.0,
+        "precondition: a0=0 overestimates min_b as {min_b_zero_a0}"
+    );
+    assert!(
+        min_b_signed <= 0.0,
+        "signed a0 min_b should be 0 (already stopping): {min_b_signed}"
+    );
+
+    let sim_lower = simulate_reachable_b(s_total, v_start, a_start_signed, a_max, j_max, -1.0);
+    assert!(
+        sim_lower <= 1e-3,
+        "forward-sim oracle confirms stop is reachable: {sim_lower}"
+    );
+
+    let n = 10_usize;
+    let mut grid = dummy_straight_grid(n, s_total);
+    grid.c_prime = vec![[0.0, 0.0, 1.0]; n];
+    let limits = Limits {
+        v_max: [500.0, 500.0, v_start + 1.0],
+        a_max: [a_max; 3],
+        j_max: [j_max; 3],
+        a_centripetal_max: 25_000.0,
+    };
+    let chain = chain_of_one(grid, limits);
+    let outcome = build_chain(
+        &chain,
+        EndpointConditions {
+            v_start,
+            v_end: 0.0,
+            a_start: Some(a_start_signed),
+        },
+        &SolverScale::identity(),
+    );
+    assert!(
+        !matches!(
+            outcome,
+            BuildOutcome::Boundary(BoundaryInfeasibility::EndBelowMinReachable { .. })
+        ),
+        "mid-brake replan boundary must not be falsely rejected: {outcome:?}"
     );
 }
 

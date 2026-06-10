@@ -1,6 +1,6 @@
 use super::*;
-use constraints::EndpointConditions;
 use crate::Limits;
+use constraints::EndpointConditions;
 
 /// Straight 600 mm collinear cubic at machine-limit speed: v_max = 1000 mm/s,
 /// a_max = 50 km/s². Limits mirror the bridge's `to_temporal_limits` output for
@@ -104,7 +104,11 @@ fn pinned_nonzero_a_start_converges() {
     let chain_grid = chain::ChainGrid::from_segment_grids(vec![arc_grid], vec![limits]);
     let profile = schedule_chain_with_tolerance(
         &chain_grid,
-        EndpointConditions { v_start: 575.0, v_end: 0.0, a_start: Some(2000.0) },
+        EndpointConditions {
+            v_start: 575.0,
+            v_end: 0.0,
+            a_start: Some(2000.0),
+        },
         ToleranceMode::Auto,
     )
     .expect("setup ok");
@@ -130,7 +134,11 @@ fn schedule_chain_two_collinear_segments_solves() {
     let chain = crate::topp::chain::tests_support::two_segment_chain_with_junction();
     let profile = schedule_chain_with_tolerance(
         &chain,
-        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: None,
+        },
         ToleranceMode::Auto,
     )
     .expect("setup ok");

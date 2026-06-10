@@ -53,12 +53,7 @@ fn smooth_u_turn() -> (VectorNurbs<f64, 3>, VectorNurbs<f64, 3>) {
     let left = VectorNurbs::<f64, 3>::try_new(
         3,
         vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
-        vec![
-            [0.0, 0.0, 0.0],
-            [k, 0.0, 0.0],
-            [r, r - k, 0.0],
-            [r, r, 0.0],
-        ],
+        vec![[0.0, 0.0, 0.0], [k, 0.0, 0.0], [r, r - k, 0.0], [r, r, 0.0]],
     )
     .unwrap();
     let right = VectorNurbs::<f64, 3>::try_new(

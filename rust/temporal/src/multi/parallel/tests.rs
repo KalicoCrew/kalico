@@ -1,8 +1,8 @@
 use super::*;
+use crate::Limits;
 use crate::multi::joining::ChainState;
 use crate::topp::chain::ChainGrid;
 use crate::topp::path::sample_arclength_grid;
-use crate::{Limits};
 use nurbs::VectorNurbs;
 
 fn straight() -> VectorNurbs<f64, 3> {
@@ -75,9 +75,8 @@ fn pinned_both_endpoints_returns_failed_status_unmodified() {
     let grid = sample_arclength_grid(&curved, 20).unwrap();
     let chain = ChainGrid::from_segment_grids(vec![grid], vec![curved_limits]);
 
-    let profile =
-        solve_with_boundary_fallback(&chain, 100.0, 0.0, None, true, true)
-            .expect("must not return ScheduleError");
+    let profile = solve_with_boundary_fallback(&chain, 100.0, 0.0, None, true, true)
+        .expect("must not return ScheduleError");
     assert!(
         !is_success(profile.status),
         "with both endpoints pinned and an infeasible problem the fallback \

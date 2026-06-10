@@ -113,11 +113,7 @@ pub fn axis_jerk_gradient_for_test(
         + 3.0 * cpp * a_bar / (2.0 * s.max(f64::MIN_POSITIVE))
         + cp * (w[1] * s / 2.0 + b_dd / (4.0 * s.max(f64::MIN_POSITIVE)));
     AxisJerkGradient {
-        b: [
-            cp * s * w[0] / 2.0,
-            anchor_coeff,
-            cp * s * w[2] / 2.0,
-        ],
+        b: [cp * s * w[0] / 2.0, anchor_coeff, cp * s * w[2] / 2.0],
         a: 3.0 * cpp * s,
     }
 }
@@ -295,8 +291,7 @@ fn append_axis_jerk_cut_to_clarabel(
     }
 
     let alpha_b_anchor_s = alpha_b_anchor / row_scale;
-    let entries_extra_s: [(usize, f64); 3] =
-        entries_extra.map(|(col, a)| (col, a / row_scale));
+    let entries_extra_s: [(usize, f64); 3] = entries_extra.map(|(col, a)| (col, a / row_scale));
     let rhs_pos = (j - k_const) / row_scale;
     let rhs_neg = (j + k_const) / row_scale;
 
@@ -915,8 +910,7 @@ pub(crate) fn slp_solve_chain(
         }
         last_result = new_result;
 
-        let new_violators =
-            find_jerk_violators_chain(&last_result.b, &bundle.h_intervals, j_path);
+        let new_violators = find_jerk_violators_chain(&last_result.b, &bundle.h_intervals, j_path);
         if new_violators.is_empty() {
             return Ok((last_result, SlpOutcome::Converged { outer_iters: outer }));
         }

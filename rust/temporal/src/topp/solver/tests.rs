@@ -156,7 +156,11 @@ fn find_jerk_violators_chain_ratio_has_no_spurious_h_factor() {
     let b = vec![401.375_f64, 400.0, 401.375];
     let h_intervals = vec![h, h];
     let violators = find_jerk_violators_chain(&b, &h_intervals, j_path);
-    assert_eq!(violators.len(), 1, "middle point should be the lone violator");
+    assert_eq!(
+        violators.len(),
+        1,
+        "middle point should be the lone violator"
+    );
     let got_ratio = violators[0].ratio;
     assert!(
         (got_ratio - 1.10).abs() < 1e-3,
@@ -197,7 +201,11 @@ fn straight_line_solves_to_nontrivial_profile() {
     let chain = ChainGrid::from_segment_grids(vec![grid], vec![limits]);
     let bundle = match build_chain(
         &chain,
-        EndpointConditions { v_start: 0.0, v_end: 0.0, a_start: None },
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: 0.0,
+            a_start: None,
+        },
         &SolverScale::identity(),
     ) {
         BuildOutcome::Ok(b) => b,

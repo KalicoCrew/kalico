@@ -103,8 +103,8 @@ fn classify_junction(t_left: &[f64; 3], t_right: &[f64; 3]) -> JunctionKind {
 }
 
 fn turn_angle(t_left: &[f64; 3], t_right: &[f64; 3]) -> f64 {
-    let dot = (t_left[0] * t_right[0] + t_left[1] * t_right[1] + t_left[2] * t_right[2])
-        .clamp(-1.0, 1.0);
+    let dot =
+        (t_left[0] * t_right[0] + t_left[1] * t_right[1] + t_left[2] * t_right[2]).clamp(-1.0, 1.0);
     let sin_half = ((1.0 - dot) * 0.5).max(0.0).sqrt();
     2.0 * sin_half.asin()
 }

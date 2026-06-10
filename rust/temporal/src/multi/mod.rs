@@ -119,8 +119,12 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
                 .map(|seg_idx| {
                     let s = &input.segments[seg_idx];
                     let n = grid::compute_n(&input.grid_strategy, s.curve);
-                    sample_arclength_grid(s.curve, n)
-                        .map_err(|e| BatchError::Segment(seg_idx, crate::topp::ScheduleError::PathParam(format!("{e}"))))
+                    sample_arclength_grid(s.curve, n).map_err(|e| {
+                        BatchError::Segment(
+                            seg_idx,
+                            crate::topp::ScheduleError::PathParam(format!("{e}")),
+                        )
+                    })
                 })
                 .collect();
             let seg_limits: Vec<_> = range.clone().map(|i| input.segments[i].limits).collect();

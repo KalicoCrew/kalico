@@ -17,9 +17,6 @@ pub(crate) fn join_until_converged(
             if states.iter().all(|s| !s.dirty) {
                 return Ok((sweep, JoiningStatus::Converged));
             }
-            // Velocities stable but some chains still have dirty=true from a
-            // non-success solver status. schedule_chain is deterministic, so
-            // re-solving with unchanged inputs would produce the same result.
             let last_dirty_count = states.iter().filter(|s| s.dirty).count();
             return Ok((
                 sweep,
@@ -45,11 +42,6 @@ pub(crate) struct ChainState {
     pub dirty: bool,
 }
 
-/// Propagate each corner junction as a simultaneous two-sided cap:
-/// `v_j = min(corner_caps[k], v_left_end, v_right_start)`.
-///
-/// Avoids directional overwrite oscillation. `corner_caps[k]` is the cap
-/// between chain k and chain k+1.
 pub(crate) fn bidirectional_junction_sweep(
     states: &mut [ChainState],
     corner_caps: &[f64],
@@ -92,8 +84,6 @@ pub(crate) fn forward_sweep(states: &mut [ChainState], corner_caps: &[f64]) -> u
     dirty_count
 }
 
-/// Empty-buffer guard: returns 0 when `states.len() < 2` to prevent usize
-/// underflow on `0..states.len() - 1`.
 #[cfg(test)]
 pub(crate) fn reverse_sweep(states: &mut [ChainState], corner_caps: &[f64]) -> usize {
     const EPS_VEL: f64 = 1e-3;

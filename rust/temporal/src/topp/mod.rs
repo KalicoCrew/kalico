@@ -67,7 +67,6 @@ pub fn schedule_chain_with_tolerance(
         }
     }
 
-    // Nondimensionalize before building the SOCP.
     let scale = SolverScale::for_chain(chain);
     let scaled = scale.scale_chain_grid(chain);
     let scaled_endpoints = EndpointConditions {
@@ -92,6 +91,24 @@ pub fn schedule_chain_with_tolerance(
                 &chain.s,
                 crate::BoundarySide::End,
                 scale.unscale_b(mvc_b),
+                last,
+            ));
+        }
+        BuildOutcome::Boundary(BoundaryInfeasibility::EndBelowMinReachable { min_b }) => {
+            let last = chain.s.len() - 1;
+            return Ok(min_reachable_infeasible_profile(
+                &chain.s,
+                crate::BoundarySide::End,
+                scale.unscale_b(min_b),
+                last,
+            ));
+        }
+        BuildOutcome::Boundary(BoundaryInfeasibility::EndAboveMaxReachable { max_b }) => {
+            let last = chain.s.len() - 1;
+            return Ok(max_reachable_infeasible_profile(
+                &chain.s,
+                crate::BoundarySide::End,
+                scale.unscale_b(max_b),
                 last,
             ));
         }
@@ -122,8 +139,6 @@ pub fn schedule_chain_with_tolerance(
         &chain.s,
         &solver_result,
         &verify_report,
-        // GridConfig is used only for grid_scheme in the output; use UniformArclength
-        // as the canonical scheme tag (the chain may be multi-segment).
         GridConfig {
             scheme: crate::GridScheme::UniformArclength,
             n: chain.n_points(),
@@ -142,9 +157,6 @@ pub fn schedule_segment(
     schedule_segment_with_tolerance(curve, limits, grid, v_start, v_end, ToleranceMode::Tight)
 }
 
-/// Solver-runtime infeasibility / max-iter surface as `SolveStatus` on the
-/// returned profile, not as `ScheduleError`. `ScheduleError` is for
-/// setup-time programming errors only.
 pub fn schedule_segment_with_tolerance(
     curve: &VectorNurbs<f64, 3>,
     limits: &Limits,
@@ -175,7 +187,11 @@ pub fn schedule_segment_with_tolerance(
     let chain = chain::ChainGrid::from_segment_grids(vec![arc_grid], vec![*limits]);
     schedule_chain_with_tolerance(
         &chain,
-        EndpointConditions { v_start, v_end, a_start: None },
+        EndpointConditions {
+            v_start,
+            v_end,
+            a_start: None,
+        },
         tolerance,
     )
 }
@@ -211,6 +227,62 @@ fn boundary_infeasible_profile(
         status: SolveStatus::Infeasible {
             at_grid,
             reason: InfeasibleReason::BoundaryAboveMVC { side, mvc_b },
+        },
+        grid_scheme: crate::GridScheme::UniformArclength,
+        total_time: f64::INFINITY,
+    }
+}
+
+fn max_reachable_infeasible_profile(
+    s: &[f64],
+    side: crate::BoundarySide,
+    max_b: f64,
+    at_grid: usize,
+) -> TopProfile {
+    use crate::{BindingConstraint, GridSample, InfeasibleReason, SolveStatus};
+    let samples = s
+        .iter()
+        .map(|&si| GridSample {
+            s: si,
+            v: max_b.max(0.0).sqrt(),
+            a: 0.0,
+            b: max_b,
+            binding: BindingConstraint::Boundary,
+        })
+        .collect();
+    TopProfile {
+        samples,
+        status: SolveStatus::Infeasible {
+            at_grid,
+            reason: InfeasibleReason::BoundaryAboveMaxReachable { side, max_b },
+        },
+        grid_scheme: crate::GridScheme::UniformArclength,
+        total_time: f64::INFINITY,
+    }
+}
+
+fn min_reachable_infeasible_profile(
+    s: &[f64],
+    side: crate::BoundarySide,
+    min_b: f64,
+    at_grid: usize,
+) -> TopProfile {
+    use crate::{BindingConstraint, GridSample, InfeasibleReason, SolveStatus};
+    let samples = s
+        .iter()
+        .map(|&si| GridSample {
+            s: si,
+            v: min_b.max(0.0).sqrt(),
+            a: 0.0,
+            b: min_b,
+            binding: BindingConstraint::Boundary,
+        })
+        .collect();
+    TopProfile {
+        samples,
+        status: SolveStatus::Infeasible {
+            at_grid,
+            reason: InfeasibleReason::BoundaryBelowMinReachable { side, min_b },
         },
         grid_scheme: crate::GridScheme::UniformArclength,
         total_time: f64::INFINITY,

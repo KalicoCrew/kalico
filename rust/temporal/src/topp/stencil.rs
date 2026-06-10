@@ -15,7 +15,11 @@ pub fn stencil_at(i: usize, n: usize, h_intervals: &[f64]) -> ([usize; 3], f64, 
     if i == 0 {
         ([0, 1, 2], h_intervals[0], h_intervals[1])
     } else if i == n - 1 {
-        ([n - 3, n - 2, n - 1], h_intervals[n - 3], h_intervals[n - 2])
+        (
+            [n - 3, n - 2, n - 1],
+            h_intervals[n - 3],
+            h_intervals[n - 2],
+        )
     } else {
         ([i - 1, i, i + 1], h_intervals[i - 1], h_intervals[i])
     }

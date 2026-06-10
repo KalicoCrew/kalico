@@ -43,11 +43,11 @@ pub enum BindingConstraint {
 #[derive(Debug, Clone, Copy)]
 pub struct GridSample {
     pub s: f64,
-    /// Path speed, mm/s (= sqrt(b)).
+
     pub v: f64,
-    /// Path acceleration, mm/s² (= s̈).
+
     pub a: f64,
-    /// Raw SOCP primal `b = ṡ²`.
+
     pub b: f64,
     pub binding: BindingConstraint,
 }
@@ -62,6 +62,10 @@ pub enum BoundarySide {
 #[derive(Debug, Clone, Copy)]
 pub enum InfeasibleReason {
     BoundaryAboveMVC { side: BoundarySide, mvc_b: f64 },
+
+    BoundaryBelowMinReachable { side: BoundarySide, min_b: f64 },
+
+    BoundaryAboveMaxReachable { side: BoundarySide, max_b: f64 },
     SolverInfeasible,
 }
 

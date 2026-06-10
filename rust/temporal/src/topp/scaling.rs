@@ -53,7 +53,11 @@ impl SolverScale {
             u: grid.u.clone(),
             c: grid.c.iter().map(|p| p.map(|v| v / s)).collect(),
             c_prime: grid.c_prime.clone(),
-            c_double_prime: grid.c_double_prime.iter().map(|p| p.map(|v| v * s)).collect(),
+            c_double_prime: grid
+                .c_double_prime
+                .iter()
+                .map(|p| p.map(|v| v * s))
+                .collect(),
             c_triple_prime: grid
                 .c_triple_prime
                 .iter()
