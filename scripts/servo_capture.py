@@ -5,6 +5,7 @@ Prints following-error, overshoot/settling, and torque-saturation metrics;
 --fft prints resonance peaks (notch-filter candidates); --plot opens a
 time-series dashboard.
 """
+
 import argparse
 import json
 import sys
@@ -93,9 +94,13 @@ def compute_metrics(data, settle_band, torque_limit, fs=1000.0):
         post_end = segs[idx + 1][0] if idx + 1 < len(segs) else len(ferr)
         post = ferr[e:post_end]
         settle_sample = _settle_index(post, settle_band, hold)
-        overshoot_end = settle_sample if settle_sample is not None else len(post)
+        overshoot_end = (
+            settle_sample if settle_sample is not None else len(post)
+        )
         settle_ms = (
-            float(settle_sample) * ms_per_sample if settle_sample is not None else None
+            float(settle_sample) * ms_per_sample
+            if settle_sample is not None
+            else None
         )
         moves.append(
             {
@@ -174,7 +179,9 @@ def _print_metrics(m, counts_per_mm):
     )
     for mv in m["moves"]:
         settle = (
-            "%.1f ms" % mv["settle_ms"] if mv["settle_ms"] is not None else "NEVER"
+            "%.1f ms" % mv["settle_ms"]
+            if mv["settle_ms"] is not None
+            else "NEVER"
         )
         print(
             "move %d [%.1f..%.1f ms]: ferr peak %.0f counts (%.4f mm), "
@@ -196,14 +203,28 @@ def _print_metrics(m, counts_per_mm):
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("capture", help="path to a .scap capture file")
-    p.add_argument("--settle-band", type=int, default=50,
-                   help="settling band in encoder counts (default 50)")
-    p.add_argument("--torque-limit", type=int, default=900,
-                   help="saturation threshold, per-mille of rated (default 900)")
-    p.add_argument("--fft", action="store_true",
-                   help="print resonance peaks from the moving-segment PSD")
-    p.add_argument("--plot", action="store_true",
-                   help="show a time-series dashboard (requires matplotlib)")
+    p.add_argument(
+        "--settle-band",
+        type=int,
+        default=50,
+        help="settling band in encoder counts (default 50)",
+    )
+    p.add_argument(
+        "--torque-limit",
+        type=int,
+        default=900,
+        help="saturation threshold, per-mille of rated (default 900)",
+    )
+    p.add_argument(
+        "--fft",
+        action="store_true",
+        help="print resonance peaks from the moving-segment PSD",
+    )
+    p.add_argument(
+        "--plot",
+        action="store_true",
+        help="show a time-series dashboard (requires matplotlib)",
+    )
     args = p.parse_args(argv)
 
     header, data = load_capture(args.capture)
@@ -230,8 +251,13 @@ def _plot(header, data, fs):
     fig, axes = plt.subplots(3, 1, sharex=True, figsize=(12, 8))
     axes[0].plot(t, data["position_demand"], label="demand (6062h)")
     axes[0].plot(t, data["position_actual"], label="actual (6064h)")
-    axes[0].plot(t, data["target_counts"], label="host target (607Ah)",
-                 linestyle="--", alpha=0.6)
+    axes[0].plot(
+        t,
+        data["target_counts"],
+        label="host target (607Ah)",
+        linestyle="--",
+        alpha=0.6,
+    )
     axes[0].set_ylabel("counts")
     axes[0].legend(loc="upper right")
     axes[1].plot(t, data["following_error"], color="tab:red")
@@ -241,8 +267,9 @@ def _plot(header, data, fs):
     axes[2].set_xlabel("time (s)")
     moving = (data["flags"] & FLAG_MOTION_ACTIVE) != 0
     for ax in axes:
-        ax.fill_between(t, *ax.get_ylim(), where=moving, alpha=0.08,
-                        color="tab:blue")
+        ax.fill_between(
+            t, *ax.get_ylim(), where=moving, alpha=0.08, color="tab:blue"
+        )
     fig.suptitle(header["drives"][0]["name"] + " — " + header["started_utc"])
     plt.show()
 

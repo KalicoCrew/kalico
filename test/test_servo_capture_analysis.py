@@ -325,10 +325,17 @@ def test_fs_1khz_values_unchanged(tmp_path):
     path, _ = synth_capture(tmp_path)
     _, data = sc.load_capture(path)
     m_default = sc.compute_metrics(data, settle_band=10, torque_limit=900)
-    m_explicit = sc.compute_metrics(data, settle_band=10, torque_limit=900, fs=1000.0)
-    assert m_default["moves"][0]["start_ms"] == m_explicit["moves"][0]["start_ms"]
+    m_explicit = sc.compute_metrics(
+        data, settle_band=10, torque_limit=900, fs=1000.0
+    )
+    assert (
+        m_default["moves"][0]["start_ms"] == m_explicit["moves"][0]["start_ms"]
+    )
     assert m_default["moves"][0]["end_ms"] == m_explicit["moves"][0]["end_ms"]
-    assert m_default["moves"][0]["settle_ms"] == m_explicit["moves"][0]["settle_ms"]
+    assert (
+        m_default["moves"][0]["settle_ms"]
+        == m_explicit["moves"][0]["settle_ms"]
+    )
     # Values should be numeric (sample index == ms at 1 kHz)
     assert m_default["moves"][0]["start_ms"] == 1000.0
     assert m_default["moves"][0]["end_ms"] == 2000.0
