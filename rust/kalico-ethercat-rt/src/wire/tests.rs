@@ -88,7 +88,7 @@ fn decode_command_yields_claim_handshake_variant() {
 
 #[test]
 fn status_heartbeat_frame_on_events_channel() {
-    let frame = status_heartbeat_frame(1, &[42u32, 0u32]);
+    let frame = status_heartbeat_frame(1, &[42u32, 0u32], 0);
     let (chan, payload) = decode_frame(&frame).unwrap();
     assert_eq!(chan, CHANNEL_EVENTS);
     let (hdr, body) = decode_message_header(payload).unwrap();

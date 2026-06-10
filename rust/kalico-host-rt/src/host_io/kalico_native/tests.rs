@@ -11,6 +11,7 @@ fn status_heartbeat_lifts_to_runtime_event() {
         engine_state: 1,
         fault_code: 0,
         retired_counts: vec![7, 0, 3],
+        ff_saturation_count: 0,
     };
     let mut body = Vec::new();
     hb.encode(&mut body);

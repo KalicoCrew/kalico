@@ -203,6 +203,7 @@ fn main() {
                 server.respond(&status_heartbeat_frame(
                     ENGINE_STATE_FAULT,
                     &[ring.retired_count()],
+                    0,
                 ));
                 std::process::exit(1);
             }
@@ -221,6 +222,7 @@ fn main() {
             server.respond(&status_heartbeat_frame(
                 ENGINE_STATE_FAULT,
                 &[current_retired],
+                0,
             ));
             last_sent_retired = current_retired;
             heartbeat_sent = true;
@@ -230,7 +232,7 @@ fn main() {
         let should_emit = !heartbeat_sent || current_retired != last_sent_retired;
         if should_emit {
             let engine_state: u8 = if ring.is_empty() { 0 } else { 1 };
-            server.respond(&status_heartbeat_frame(engine_state, &[current_retired]));
+            server.respond(&status_heartbeat_frame(engine_state, &[current_retired], 0));
             last_sent_retired = current_retired;
             heartbeat_sent = true;
             if current_retired != 0 {

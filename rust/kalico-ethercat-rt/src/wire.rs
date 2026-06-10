@@ -117,11 +117,16 @@ pub fn push_pieces_response_frame(
     control_frame(MessageKind::PushPiecesResponse, cid, &body)
 }
 
-pub fn status_heartbeat_frame(engine_state: u8, retired_counts: &[u32]) -> Vec<u8> {
+pub fn status_heartbeat_frame(
+    engine_state: u8,
+    retired_counts: &[u32],
+    ff_saturation_count: u32,
+) -> Vec<u8> {
     let hb = StatusHeartbeat {
         engine_state,
         fault_code: 0,
         retired_counts: retired_counts.to_vec(),
+        ff_saturation_count,
     };
     let body = hb.encoded_to_vec();
     let payload = {
