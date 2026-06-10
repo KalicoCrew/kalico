@@ -82,7 +82,10 @@ class ServoCapture:
         )
         started_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         bridge = self.printer.lookup_object("motion_bridge")
-        bridge.start_servo_capture(handle, path, started_utc, servo)
+        try:
+            bridge.start_servo_capture(handle, path, started_utc, servo)
+        except RuntimeError as e:
+            raise gcmd.error("SERVO_CAPTURE: start failed: %s" % (e,))
         self.active = (servo, path)
         gcmd.respond_info("Servo capture started: %s" % (path,))
 

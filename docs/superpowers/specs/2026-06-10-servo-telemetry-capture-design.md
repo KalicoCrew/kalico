@@ -62,11 +62,12 @@ New SDO writes in the existing PRE-OP block (after `ec_config_init`, before
 `ec_config_map`), required at every power-on because the drive does not
 persist PDO mapping in EEPROM:
 
-1. Write 0 to 1A00h:00 (clear mapping).
-2. Write the ten mapping entries to 1A00h:01..0A (`603F0010h` …
+1. Write 0 to 1C13h:00, write 0x1A00 to 1C13h:01, write 1 to 1C13h:00
+   (the manual's documented group-then-objects order).
+2. Write 0 to 1A00h:00 (clear mapping).
+3. Write the ten mapping entries to 1A00h:01..0A (`603F0010h` …
    `60620020h`).
-3. Write 10 to 1A00h:00.
-4. Write 0 to 1C13h:00, write 0x1A00 to 1C13h:01, write 1 to 1C13h:00.
+4. Write 10 to 1A00h:00.
 
 ### Hardening
 
@@ -215,7 +216,7 @@ command object lives in `klippy/extras/servo_capture.py`, auto-loaded by
 
 ### Usage rhythm (documented, plus reference macro)
 
-`SERVO_CAPTURE START` → test moves → `M400` → `SERVO_CAPTURE STOP`.
+`SERVO_CAPTURE_START` → test moves → `M400` → `SERVO_CAPTURE_STOP`.
 START/STOP execute when the G-code runs but queued moves execute later;
 without `M400` the STOP lands while motion is still playing out. One line in
 the docs and a reference tuning macro kill the footgun.

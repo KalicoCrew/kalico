@@ -30,8 +30,9 @@ SERVO_CAPTURE_STOP
 - `SERVO=` names the `[ethercat_node]` to capture. With exactly one node
   configured it can be omitted; with several it is required. Comma lists
   (`SERVO=a,b`) are rejected: multi-servo capture requires all drives on one
-  endpoint and is not implemented yet (the file format already carries a
-  drives array, so it is a wire change, not a format change).
+  endpoint and is not implemented yet (the header's `drives` array anticipates
+  it, but adding a second drive block grows the record — a wire change plus a
+  format version bump).
 - One capture at a time. A second `SERVO_CAPTURE_START` errors with the path
   of the active capture; `SERVO_CAPTURE_STOP` without one errors too.
 - A healthy STOP prints the file path, sample count, and duration. If the

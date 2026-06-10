@@ -214,3 +214,14 @@ def test_start_rejects_name_with_trailing_newline():
     with pytest.raises(RuntimeError):
         gcode.commands["SERVO_CAPTURE_START"](FakeGcmd(NAME="evil\n"))
     assert bridge.start_calls == []
+
+
+def test_start_bridge_failure_is_command_error_not_shutdown():
+    class FailingBridge(FakeBridge):
+        def start_servo_capture(self, handle, path, started_utc, drive_name):
+            raise RuntimeError("endpoint result -322")
+
+    sc, gcode, _ = make_capture(bridge=FailingBridge())
+    with pytest.raises(RuntimeError, match="start failed.*-322"):
+        gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    assert sc.active is None
