@@ -182,8 +182,8 @@ fn capture_start_records_stop_produces_consistent_file() {
         "header must contain \"version\":1; header={header:?}"
     );
     assert!(
-        header.contains("\"record_size\":31"),
-        "header must contain \"record_size\":31; header={header:?}"
+        header.contains(&format!("\"record_size\":{RECORD_SIZE}")),
+        "header must contain \"record_size\":{RECORD_SIZE}; header={header:?}"
     );
 
     let body = &contents[newline_pos + 1..];
