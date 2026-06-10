@@ -134,14 +134,15 @@ where
     let mut out = Vec::with_capacity(merged.len() * 8);
 
     for (piece_idx, (coeffs_f64, duration, u_start)) in merged.iter().enumerate() {
-        let constant = is_constant_piece(coeffs_f64);
-        let subs: Vec<([f64; 4], f64)> = if constant {
-            vec![(*coeffs_f64, *duration)]
-        } else {
-            match max_piece_secs {
-                Some(m) => subdivide_bernstein(*coeffs_f64, *duration, m),
-                None => vec![(*coeffs_f64, *duration)],
-            }
+        // max_piece_secs is set only for homing (drip) enqueues, where
+        // constants must subdivide like movers: a whole-move coalesced
+        // constant never retires until the move ends, which both pins the
+        // cohort's retirement watchdog at zero and exempts that axis from
+        // the drip leash. Outside homing constants stay whole (the
+        // coalescing exists to keep follower traffic off the wire).
+        let subs: Vec<([f64; 4], f64)> = match max_piece_secs {
+            Some(m) => subdivide_bernstein(*coeffs_f64, *duration, m),
+            None => vec![(*coeffs_f64, *duration)],
         };
 
         let mut sub_offset = 0.0_f64;

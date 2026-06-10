@@ -29,7 +29,6 @@ struct HomingRun {
     axis: u8,
     axis_key: crate::pump::AxisKey,
     all_axis_keys: Vec<crate::pump::AxisKey>,
-    moving_axis_keys: Vec<crate::pump::AxisKey>,
     notify: crossbeam_channel::Sender<Result<([f64; 3], [f64; 3]), String>>,
 }
 
@@ -2508,7 +2507,14 @@ impl PyMotionBridge {
                 } else {
                     None::<f64>
                 };
-                let lead_secs = crate::pump::MAX_LEAD_SECS;
+                // Homing pieces get the dead-man leash: at most DRIP_WINDOW
+                // of trajectory may sit on an MCU, so a dead host strands at
+                // most that much unsupervised motion.
+                let lead_secs = if active_cohort.is_some() {
+                    crate::pump::DRIP_WINDOW_SECS
+                } else {
+                    crate::pump::MAX_LEAD_SECS
+                };
 
                 let msgs = crate::enqueue::enqueue_segment(
                     seg,
@@ -2787,7 +2793,7 @@ impl PyMotionBridge {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("home_axis: planner not initialized"))?;
 
-        let (all_axis_keys, moving_axis_keys, _axis_mcu, axis_key) = {
+        let (all_axis_keys, _axis_mcu, axis_key) = {
             let configs = self
                 .mcu_axis_configs
                 .lock()
@@ -2816,8 +2822,7 @@ impl PyMotionBridge {
                 ))
             })?;
             let key = crate::pump::AxisKey { mcu_id: mcu, axis };
-            let moving_keys = vec![key];
-            (all_keys, moving_keys, mcu, key)
+            (all_keys, mcu, key)
         };
 
         let cohort: u64 = {
@@ -2860,7 +2865,9 @@ impl PyMotionBridge {
         pump_tx
             .send(crate::pump::PumpMsg::DripArm(crate::pump::DripArm {
                 cohort,
-                participants: moving_axis_keys.clone(),
+                // EVERY streamed axis is dripped during homing — the pump
+                // fail-louds on any enqueue outside this set.
+                participants: all_axis_keys.clone(),
                 timeout: Duration::from_secs(5),
             }))
             .map_err(|_| PyRuntimeError::new_err("home_axis: pump channel closed"))?;
@@ -2877,7 +2884,6 @@ impl PyMotionBridge {
                 axis,
                 axis_key,
                 all_axis_keys: all_axis_keys.clone(),
-                moving_axis_keys: moving_axis_keys.clone(),
                 notify: result_tx,
             });
         }
@@ -2895,7 +2901,7 @@ impl PyMotionBridge {
                 speed_mm_s,
                 max_travel_mm,
                 cohort,
-                participants: moving_axis_keys,
+                participants: all_axis_keys.clone(),
                 notify: planner_done_tx,
             })
             .map_err(|e| {

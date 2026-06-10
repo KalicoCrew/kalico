@@ -196,6 +196,43 @@ with secondary restore errors (`6eb0ea0c7`).
       restore failed promptly, no 15s reactor freezes anywhere in the
       trace.
 
+12. **Drip starvation on long homing moves** (bench 2026-06-10 15:34,
+    two -308s: axis1 deficit 21.9ms, then axis0 23.7ms). Telemetry: one
+    corexy motor released at ~995ms arrival leads (the plain 1s
+    horizon), the other drip-paced with leads decaying 239→36→−21.7ms
+    until a piece landed in the past. Two defects: (a) cohort
+    participants were `vec![AxisKey{mcu, cartesian_axis}]` — ONE key;
+    on corexy an X home drives both A and B, so one motor free-ran
+    with no dead-man bound while the other was paced; (b) the paced
+    motor's release followed the retirement-feedback floor, which
+    carries 30–40ms of reporting latency (heartbeat cadence + pump
+    poll + USB) and slips behind real time — with only a 50ms window
+    the runway erodes to zero on any move long enough. Short homes
+    finish before the lead is gone; long homes crash deterministically.
+
+    Fix — drip EVERYTHING, paced by the clock, enforced structurally:
+    - Participants are now `all_axis_keys` (every streamed axis), and
+      the pump hard-aborts the cohort if an enqueue arrives for a
+      non-participant while homing owns motion — free-running an axis
+      during homing is structurally impossible, not just unintended.
+    - Pacing moved from retirement feedback to the MCU-clock horizon:
+      homing enqueues carry `lead_secs = DRIP_WINDOW_SECS` and release
+      through the same horizon mechanism as normal moves. The dead-man
+      bound is identical (≤ window of trajectory queued; host death
+      strands ≤ window × speed of unsupervised travel) but release
+      tracks the clock by construction — no feedback lag to
+      accumulate. An unsynced clock during a cohort releases nothing
+      (stall + watchdog abort) rather than free-running.
+    - Follower constants subdivide (≤25ms) during cohort enqueues
+      instead of coalescing into one whole-move piece, so every axis
+      genuinely drips and retires continuously.
+    - The retirement floor remains as a WATCHDOG only (stalled floor ⇒
+      abort homing loudly); `drip_cap`/`ahead_durations`/
+      `pre_arm_in_flight` bookkeeping deleted.
+    - `DRIP_WINDOW_SECS` 0.050 → 0.100 (10mm @100mm/s unsupervised-
+      travel bound; one USB hiccup of tolerance — a pure safety dial
+      now that pacing no longer eats the window).
+
 ## Simulator status (kalico-sim, full mode)
 
 A G28-cycling G-code (home, re-home, post-home move, home again) FAILS in

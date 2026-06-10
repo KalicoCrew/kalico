@@ -206,7 +206,13 @@ mod tests;
 #[cfg(test)]
 mod drip_tests;
 
-pub const DRIP_WINDOW_SECS: f64 = 0.050;
+/// How far ahead of the MCU clock homing pieces may be released. This is the
+/// dead-man's bound: if the host dies mid-homing, the MCU runs out of queued
+/// trajectory within this window (window × homing speed of unsupervised
+/// travel). Release is paced against the MCU clock estimate, NOT retirement
+/// feedback — feedback pacing accumulates reporting latency and starved long
+/// homing moves into PieceStartInPast (bench 2026-06-10 15:34, two -308s).
+pub const DRIP_WINDOW_SECS: f64 = 0.100;
 
 pub struct DripArm {
     pub cohort: u64,
@@ -300,6 +306,12 @@ pub fn junction_jumps(
 
 pub const MAX_LEAD_SECS: f64 = 1.0;
 
+/// Homing cohort bookkeeping. Release PACING is not here — every participant
+/// is paced by the MCU-clock horizon (its queue's `lead_secs`, set to
+/// [`DRIP_WINDOW_SECS`] by the homing enqueue path). The cohort's jobs are:
+/// fail loudly if anything tries to stream a non-participant axis while
+/// homing owns motion, and watchdog the retirement floor so a dead MCU
+/// aborts the homing run instead of hanging it.
 struct DripCohort {
     id: u64,
     participants: BTreeSet<AxisKey>,
@@ -308,14 +320,6 @@ struct DripCohort {
     last_retired: BTreeMap<AxisKey, u32>,
     step_deadline: Instant,
     deadline_floor: u32,
-    /// Durations (seconds) of pieces released since cohort arm but not yet retired,
-    /// one deque per participant. Front = oldest released. Popped as retirements arrive.
-    ahead_durations: BTreeMap<AxisKey, VecDeque<f64>>,
-    /// Total trajectory seconds released since cohort arm, per participant.
-    released_total_secs: BTreeMap<AxisKey, f64>,
-    /// Number of pieces that were in flight at arm time (pushed but not yet retired).
-    /// Retirements of these pre-arm pieces must be drained before touching ahead_durations.
-    pre_arm_in_flight: BTreeMap<AxisKey, u32>,
 }
 
 impl DripCohort {
@@ -331,110 +335,6 @@ impl DripCohort {
             .map(|k| self.executed(k, queues))
             .min()
             .unwrap_or(0)
-    }
-
-    fn ahead_time_secs(&self, k: &AxisKey) -> f64 {
-        self.ahead_durations
-            .get(k)
-            .map_or(0.0, |dq| dq.iter().sum())
-    }
-
-    fn executed_time_secs(&self, k: &AxisKey) -> f64 {
-        let released = self.released_total_secs.get(k).copied().unwrap_or(0.0);
-        released - self.ahead_time_secs(k)
-    }
-
-    fn floor_time_secs(&self) -> f64 {
-        self.participants
-            .iter()
-            .map(|k| self.executed_time_secs(k))
-            .fold(f64::INFINITY, f64::min)
-    }
-
-    fn ahead_of_floor_secs(&self, k: &AxisKey) -> f64 {
-        let floor = self.floor_time_secs();
-        if !floor.is_finite() {
-            return self.ahead_time_secs(k);
-        }
-        let released = self.released_total_secs.get(k).copied().unwrap_or(0.0);
-        released - floor
-    }
-
-    /// Returns how many next-pending pieces in `q.pieces` may be released for `k`,
-    /// keeping `k` at most DRIP_WINDOW_SECS of trajectory time ahead of the
-    /// slowest participant's executed time (cross-participant lockstep, time-
-    /// denominated; reduces to gating on `k`'s own retirement when `k` is the
-    /// only participant).
-    ///
-    /// At least one piece is always allowed when ahead-time < DRIP_WINDOW_SECS,
-    /// so a single piece whose duration exceeds the window cannot wedge the feed.
-    fn drip_cap(&self, k: &AxisKey, queues: &BTreeMap<AxisKey, AxisQueue>) -> usize {
-        let ahead_secs = self.ahead_of_floor_secs(k);
-        if ahead_secs >= DRIP_WINDOW_SECS {
-            return 0;
-        }
-        let q = match queues.get(k) {
-            Some(q) => q,
-            None => return 1,
-        };
-        let remaining = DRIP_WINDOW_SECS - ahead_secs;
-        let mut cap = 0usize;
-        let mut accumulated = 0.0f64;
-        for (i, (piece, _host)) in q.pieces.iter().enumerate() {
-            let dur = piece.duration as f64;
-            if i == 0 || accumulated + dur <= remaining {
-                cap += 1;
-                accumulated += dur;
-            } else {
-                break;
-            }
-        }
-        cap
-    }
-
-    fn record_released(&mut self, k: AxisKey, durations: impl Iterator<Item = f64>) {
-        let dq = self.ahead_durations.entry(k).or_default();
-        let total = self.released_total_secs.entry(k).or_default();
-        for d in durations {
-            dq.push_back(d);
-            *total += d;
-        }
-    }
-
-    /// Advance the retirement tracking for `k` from `prev_retired` to `new_retired`,
-    /// draining pre-arm in-flight credits first, then popping the corresponding
-    /// entries from `ahead_durations`.
-    ///
-    /// Returns `Err` if more post-arm retirements are claimed than entries exist in
-    /// the deque, which indicates a bookkeeping desync and must be treated as a
-    /// fatal cohort error.
-    fn record_retired(
-        &mut self,
-        k: &AxisKey,
-        prev_retired: u32,
-        new_retired: u32,
-    ) -> Result<(), ()> {
-        let mut delta = new_retired.wrapping_sub(prev_retired) as usize;
-        if delta == 0 {
-            return Ok(());
-        }
-        let pre_arm = self.pre_arm_in_flight.get_mut(k);
-        if let Some(remaining_pre_arm) = pre_arm {
-            if *remaining_pre_arm >= delta as u32 {
-                *remaining_pre_arm -= delta as u32;
-                return Ok(());
-            }
-            delta -= *remaining_pre_arm as usize;
-            *remaining_pre_arm = 0;
-        }
-        let dq = self.ahead_durations.entry(*k).or_default();
-        if delta > dq.len() {
-            return Err(());
-        }
-        for _ in 0..delta {
-            dq.pop_front();
-        }
-        Ok(())
     }
 }
 
@@ -492,6 +392,23 @@ pub fn run_pump<S, F, C, A, O, D>(
                 fresh_stream,
                 lead_secs,
             }) => {
+                if let Some(co) = cohort.as_ref() {
+                    // Homing owns motion: every streamed axis must be dripped.
+                    // A non-participant enqueue is a host sequencing bug —
+                    // abort the homing run and drop the pieces rather than
+                    // let anything free-run while position is unknown.
+                    if !co.participants.contains(&key) {
+                        let id = co.id;
+                        on_drip_stall(format!(
+                            "drip cohort {id}: enqueue for non-participant \
+                             mcu{} axis{} during active cohort — homing must \
+                             drip every axis",
+                            key.mcu_id, key.axis
+                        ));
+                        *cohort = None;
+                        return true;
+                    }
+                }
                 if fresh_stream {
                     junction_ends.remove(&key);
                 }
@@ -572,16 +489,6 @@ pub fn run_pump<S, F, C, A, O, D>(
                                 *cohort = None;
                                 break;
                             }
-                            if co.record_retired(&key, prev, c).is_err() {
-                                let id = co.id;
-                                on_drip_stall(format!(
-                                    "drip cohort {id}: duration deque desync on mcu{mcu_id} \
-                                     axis{axis}: MCU retired more pieces than were tracked — \
-                                     ahead_durations queue underflowed"
-                                ));
-                                *cohort = None;
-                                break;
-                            }
                             co.last_retired.insert(key, c);
                         }
                     }
@@ -590,16 +497,10 @@ pub fn run_pump<S, F, C, A, O, D>(
             PumpMsg::DripArm(arm) => {
                 let mut baseline = BTreeMap::new();
                 let mut last_retired = BTreeMap::new();
-                let mut ahead_durations = BTreeMap::new();
-                let mut pre_arm_in_flight = BTreeMap::new();
                 for &k in &arm.participants {
-                    let q = queues.get(&k);
-                    let retired = q.map_or(0, |q| q.retired);
-                    let pushed = q.map_or(0, |q| q.pushed);
+                    let retired = queues.get(&k).map_or(0, |q| q.retired);
                     baseline.insert(k, retired);
                     last_retired.insert(k, retired);
-                    ahead_durations.insert(k, VecDeque::new());
-                    pre_arm_in_flight.insert(k, pushed.wrapping_sub(retired));
                 }
                 let step_deadline = Instant::now() + arm.timeout;
                 *cohort = Some(DripCohort {
@@ -610,9 +511,6 @@ pub fn run_pump<S, F, C, A, O, D>(
                     last_retired,
                     step_deadline,
                     deadline_floor: 0,
-                    ahead_durations,
-                    released_total_secs: BTreeMap::new(),
-                    pre_arm_in_flight,
                 });
             }
             PumpMsg::DripDisarm(c) => {
@@ -627,16 +525,26 @@ pub fn run_pump<S, F, C, A, O, D>(
         true
     };
 
+    // Cohort participants are paced by the SAME clock horizon as normal
+    // moves — their queues carry lead_secs = DRIP_WINDOW_SECS from the homing
+    // enqueue path. An unsynced clock during homing releases nothing
+    // (horizon 0): better to stall and trip the watchdog than to free-run an
+    // axis while position is unknown.
     let horizon_of = |k: &AxisKey, q: &AxisQueue, cohort: &Option<DripCohort>| -> Option<u64> {
-        if cohort
-            .as_ref()
-            .map_or(false, |co| co.participants.contains(k))
-        {
-            return None;
+        match mcu_clock_of(k.mcu_id) {
+            Some((ack_now, freq)) =>
+            {
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                Some(ack_now + (q.lead_secs * freq) as u64)
+            }
+            None if cohort
+                .as_ref()
+                .map_or(false, |co| co.participants.contains(k)) =>
+            {
+                Some(0)
+            }
+            None => None,
         }
-        let (ack_now, freq) = mcu_clock_of(k.mcu_id)?;
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        Some(ack_now + (q.lead_secs * freq) as u64)
     };
 
     let mut holding_ahead = false;
@@ -685,21 +593,20 @@ pub fn run_pump<S, F, C, A, O, D>(
                 let lagging: Vec<String> = co
                     .participants
                     .iter()
-                    .filter(|k| co.ahead_of_floor_secs(k) >= DRIP_WINDOW_SECS)
                     .map(|k| {
                         format!(
-                            "mcu{} axis{}: executed {} ahead_secs={:.3}",
+                            "mcu{} axis{}: executed {} queued {}",
                             k.mcu_id,
                             k.axis,
                             co.executed(k, &queues),
-                            co.ahead_of_floor_secs(k),
+                            queues.get(k).map_or(0, |q| q.pieces.len()),
                         )
                     })
                     .collect();
                 let id = co.id;
                 on_drip_stall(format!(
                     "drip cohort {id}: floor stalled at {floor} for {:?}; \
-                     window-blocked participants: [{}]",
+                     participants: [{}]",
                     co.timeout,
                     lagging.join(", ")
                 ));
@@ -709,14 +616,8 @@ pub fn run_pump<S, F, C, A, O, D>(
 
         holding_ahead = false;
         'send: loop {
-            let cap_of: &dyn Fn(&AxisKey) -> usize = &|k: &AxisKey| {
-                cohort
-                    .as_ref()
-                    .filter(|co| co.participants.contains(k))
-                    .map_or(usize::MAX, |co| co.drip_cap(k, &queues))
-            };
             let hz_of = |k: &AxisKey, q: &AxisQueue| horizon_of(k, q, &cohort);
-            match schedule(&queues, MAX_PER_FRAME, hz_of, cap_of) {
+            match schedule(&queues, MAX_PER_FRAME, hz_of, |_| usize::MAX) {
                 Schedule::Idle => break 'send,
                 Schedule::StallFull(_stall_key) => {
                     break 'send;
@@ -743,14 +644,6 @@ pub fn run_pump<S, F, C, A, O, D>(
                         };
                         match sink.send_frame(f.key, &f.pieces, f.start_slot, new_head) {
                             Ok(_) => {
-                                if let Some(co) = cohort.as_mut() {
-                                    if co.participants.contains(&f.key) {
-                                        co.record_released(
-                                            f.key,
-                                            f.pieces.iter().map(|p| p.duration as f64),
-                                        );
-                                    }
-                                }
                                 let q = queues.get_mut(&f.key).expect("planned key exists");
                                 for _ in 0..f.pieces.len() {
                                     q.pieces.pop_front();
