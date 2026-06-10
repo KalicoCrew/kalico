@@ -1,0 +1,17 @@
+[package]
+name = "servo-ident"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license.workspace = true
+
+[[bin]]
+name = "servo-ident"
+path = "src/bin/servo-ident.rs"
+
+[[bin]]
+name = "servo-excite"
+path = "src/bin/servo-excite.rs"
+
+[lints]
+workspace = true

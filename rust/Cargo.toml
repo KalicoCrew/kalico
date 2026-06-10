@@ -13,6 +13,7 @@ members = [
     "kalico-native-transport",
     "kalico-protocol",
     "kalico-ethercat-rt",
+    "servo-ident",
 ]
 exclude = ["gcode/fuzz"]
 resolver = "2"
