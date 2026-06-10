@@ -220,7 +220,14 @@ class Homing:
             servo_handle,
             servo_limits,
             lambda: self.trip_move(
-                gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry
+                gcmd,
+                toolhead,
+                bridge,
+                axis,
+                direction,
+                speed,
+                max_travel,
+                entry,
             ),
         )
 

@@ -152,7 +152,9 @@ class MotionBridgeWrapper:
             max_torque_tenth_pct,
         )
 
-    def set_drive_limits(self, mcu_handle, following_error_counts, max_torque_tenth_pct):
+    def set_drive_limits(
+        self, mcu_handle, following_error_counts, max_torque_tenth_pct
+    ):
         return self._bridge.set_drive_limits(
             mcu_handle, following_error_counts, max_torque_tenth_pct
         )
