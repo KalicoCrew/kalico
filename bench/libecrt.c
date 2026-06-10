@@ -49,6 +49,7 @@ typedef struct {
     int32_t  position_demand;
 } in_t;
 #pragma pack(pop)
+_Static_assert(sizeof(in_t) == 32, "entries[] maps 32 bytes; in_t must match field-for-field, in order");
 
 static char    IOmap[4096];
 static out_t  *g_out;
@@ -102,6 +103,14 @@ static void go_realtime(int cpu, int prio) {
  * step ① configure the mapping GROUP (1C13h): clear count, pre-write 0x1A00
  * to 1C13h:01, write count 1; step ② configure the mapping OBJECTS (1A00h):
  * clear count, write entries 1..10, write count 10. */
+static int sdo_write_checked(uint16_t index, uint8_t sub, int size, void *value) {
+    if (ec_SDOwrite(1, index, sub, FALSE, size, value, EC_TIMEOUTRXM) <= 0) {
+        fprintf(stderr, "ec_rt: remap SDO write %04Xh:%02Xh failed\n", index, sub);
+        return -1;
+    }
+    return 0;
+}
+
 static int map_tx_pdo_1a00(void) {
     static const uint32_t entries[10] = {
         0x603F0010, /* error_code       u16 */
@@ -119,15 +128,15 @@ static int map_tx_pdo_1a00(void) {
     uint8_t  count  = 10;
     uint16_t assign = 0x1A00;
     uint8_t  one    = 1;
-    if (ec_SDOwrite(1, 0x1C13, 0x00, FALSE, sizeof(zero8),  &zero8,  EC_TIMEOUTRXM) <= 0) return -1;
-    if (ec_SDOwrite(1, 0x1C13, 0x01, FALSE, sizeof(assign), &assign, EC_TIMEOUTRXM) <= 0) return -1;
-    if (ec_SDOwrite(1, 0x1C13, 0x00, FALSE, sizeof(one),    &one,    EC_TIMEOUTRXM) <= 0) return -1;
-    if (ec_SDOwrite(1, 0x1A00, 0x00, FALSE, sizeof(zero8),  &zero8,  EC_TIMEOUTRXM) <= 0) return -1;
+    if (sdo_write_checked(0x1C13, 0x00, sizeof(zero8),  &zero8)  != 0) return -1;
+    if (sdo_write_checked(0x1C13, 0x01, sizeof(assign), &assign) != 0) return -1;
+    if (sdo_write_checked(0x1C13, 0x00, sizeof(one),    &one)    != 0) return -1;
+    if (sdo_write_checked(0x1A00, 0x00, sizeof(zero8),  &zero8)  != 0) return -1;
     for (int i = 0; i < 10; i++) {
         uint32_t v = entries[i];
-        if (ec_SDOwrite(1, 0x1A00, (uint8_t)(i + 1), FALSE, sizeof(v), &v, EC_TIMEOUTRXM) <= 0) return -1;
+        if (sdo_write_checked(0x1A00, (uint8_t)(i + 1), sizeof(v), &v) != 0) return -1;
     }
-    if (ec_SDOwrite(1, 0x1A00, 0x00, FALSE, sizeof(count),  &count,  EC_TIMEOUTRXM) <= 0) return -1;
+    if (sdo_write_checked(0x1A00, 0x00, sizeof(count),  &count)  != 0) return -1;
     return 0;
 }
 

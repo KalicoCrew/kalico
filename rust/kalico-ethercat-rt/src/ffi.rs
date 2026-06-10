@@ -17,6 +17,11 @@ pub struct EcTelemetry {
     pub target_position: i32,
 }
 
+const _: () = assert!(
+    core::mem::size_of::<EcTelemetry>() == 24,
+    "EcTelemetry layout must match ec_telemetry_t in bench/libecrt.h"
+);
+
 extern "C" {
     pub fn ec_rt_bringup(
         ifname: *const c_char,
