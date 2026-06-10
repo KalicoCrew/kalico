@@ -80,6 +80,9 @@ fn run_endpoint(socket_path: String, faulted: Arc<AtomicBool>) {
                 Command::SetTorque { .. } => {}
                 Command::Stop { .. } => {}
                 Command::SetDriveLimits { .. } | Command::RestoreDriveLimits { .. } => {}
+                Command::SdoRead { .. } | Command::SdoWrite { .. } => {
+                    todo!("wired in the endpoint task")
+                }
                 Command::Unknown { .. } => {}
             }
         }

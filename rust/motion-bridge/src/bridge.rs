@@ -479,7 +479,6 @@ pub struct PyMotionBridge {
         Arc<Mutex<HashMap<crate::pump::AxisKey, Vec<runtime::piece_ring::PieceEntry>>>>,
     homing_run: Arc<Mutex<Option<HomingRun>>>,
     homing_result: Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3]), String>>>>,
-    homing_settled_at_ns: Arc<std::sync::atomic::AtomicU64>,
     latched_drive_fault: Arc<Mutex<HashMap<u32, u16>>>,
     // Latched once `shutdown()` has run a full teardown. Subsequent calls (the
     // Drop backstop, a second `klippy:disconnect`, the failed-connect path) see
@@ -706,7 +705,6 @@ impl PyMotionBridge {
             homing_trajectory: Arc::new(Mutex::new(HashMap::new())),
             homing_run: Arc::new(Mutex::new(None)),
             homing_result: Mutex::new(None),
-            homing_settled_at_ns: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             latched_drive_fault: Arc::new(Mutex::new(HashMap::new())),
             shut_down: AtomicBool::new(false),
         }
@@ -862,18 +860,7 @@ impl PyMotionBridge {
                  (init_planner not run?)"
             )));
         }
-        let conn = {
-            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            let mc = mcus.get(&mcu_handle).ok_or_else(|| {
-                PyRuntimeError::new_err(format!("set_torque: unknown mcu_handle {mcu_handle}"))
-            })?;
-            mc.endpoint_conn.clone().ok_or_else(|| {
-                PyRuntimeError::new_err(format!(
-                    "set_torque: mcu {mcu_handle} ({}) is not an EtherCAT endpoint",
-                    mc.label
-                ))
-            })?
-        };
+        let conn = self.ethercat_conn(mcu_handle, "set_torque")?;
         tracing::info!(
             subsystem = "bridge",
             event = "servo_torque_command",
@@ -981,6 +968,79 @@ impl PyMotionBridge {
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .remove(&mcu_handle))
+    }
+
+    fn sdo_read(&self, mcu_handle: u32, index: u16, subindex: u8) -> PyResult<(u8, u32)> {
+        let conn = self.ethercat_conn(mcu_handle, "sdo_read")?;
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_sdo_read",
+            mcu_handle,
+            index,
+            subindex,
+            "servo SDO read"
+        );
+        let r = crate::servo_sdo::send_sdo_read(&conn, index, subindex)
+            .map_err(PyRuntimeError::new_err)?;
+        if r.result != 0 {
+            tracing::error!(
+                subsystem = "bridge",
+                event = "servo_sdo_read_failed",
+                mcu_handle,
+                index,
+                subindex,
+                result = r.result,
+                "servo SDO read failed"
+            );
+            return Err(PyRuntimeError::new_err(format!(
+                "SDO read 0x{index:04x}.{subindex}: {}",
+                crate::servo_sdo::failure_text(r.result)
+            )));
+        }
+        Ok((r.size, u32::from_le_bytes(r.data)))
+    }
+
+    fn sdo_write(
+        &self,
+        mcu_handle: u32,
+        index: u16,
+        subindex: u8,
+        size: u8,
+        value: i64,
+    ) -> PyResult<(u8, u32)> {
+        let conn = self.ethercat_conn(mcu_handle, "sdo_write")?;
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_sdo_write",
+            mcu_handle,
+            index,
+            subindex,
+            size,
+            value,
+            "servo SDO write"
+        );
+        let r = crate::servo_sdo::send_sdo_write(&conn, index, subindex, size, value)
+            .map_err(PyRuntimeError::new_err)?;
+        if r.result != 0 {
+            tracing::error!(
+                subsystem = "bridge",
+                event = "servo_sdo_write_failed",
+                mcu_handle,
+                index,
+                subindex,
+                size,
+                value,
+                result = r.result,
+                "servo SDO write failed"
+            );
+            let readback = u32::from_le_bytes(r.readback_data);
+            return Err(PyRuntimeError::new_err(format!(
+                "SDO write 0x{index:04x}.{subindex} = {value} (size {size}): {} \
+                 (drive reports raw 0x{readback:x})",
+                crate::servo_sdo::failure_text(r.result)
+            )));
+        }
+        Ok((r.readback_size, u32::from_le_bytes(r.readback_data)))
     }
 
     fn release_mcu(&self, handle: u32) -> PyResult<()> {
@@ -2450,7 +2510,6 @@ impl PyMotionBridge {
                 let homing_run_hb = Arc::clone(&self.homing_run);
                 let active_cohort_hb = Arc::clone(&self.active_drip_cohort);
                 let pump_tx_fault = pump_tx_init.clone();
-                let homing_settled_hb = Arc::clone(&self.homing_settled_at_ns);
                 let latched_fault_hb = Arc::clone(&self.latched_drive_fault);
                 let mcu_label_hb = mcu_label.clone();
                 conn.attach_heartbeat_callback(Arc::new(
@@ -2473,10 +2532,6 @@ impl PyMotionBridge {
                             };
                             match run_opt {
                                 Some(run) => {
-                                    homing_settled_hb.store(
-                                        crate::motion_node::monotonic_ns(),
-                                        Ordering::Release,
-                                    );
                                     latched_fault_hb
                                         .lock()
                                         .unwrap_or_else(|p| p.into_inner())
@@ -2495,34 +2550,17 @@ impl PyMotionBridge {
                                     )));
                                 }
                                 None => {
-                                    let now_ns = crate::motion_node::monotonic_ns();
-                                    let settled_at = homing_settled_hb.load(Ordering::Acquire);
-                                    if crate::homing::post_homing_fault_is_benign(
-                                        now_ns, settled_at,
-                                    ) {
+                                    let prev = latched_fault_hb
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .insert(mcu_id, hb.fault_code);
+                                    if prev != Some(hb.fault_code) {
                                         tracing::error!(
                                             mcu_id,
                                             mcu_label = %mcu_label_hb,
                                             fault_code = hb.fault_code,
-                                            "drive fault right after homing trip — \
-                                             latched for G28 to report"
+                                            "ethercat drive fault — latched for klippy to report"
                                         );
-                                        latched_fault_hb
-                                            .lock()
-                                            .unwrap_or_else(|p| p.into_inner())
-                                            .insert(mcu_id, hb.fault_code);
-                                        return;
-                                    }
-                                    tracing::error!(
-                                        mcu_id,
-                                        mcu_label = %mcu_label_hb,
-                                        fault_code = hb.fault_code,
-                                        "EXIT_ON_FAULT — ethercat drive fault outside homing; \
-                                         aborting klippy so systemd restarts it"
-                                    );
-                                    let _ = std::io::Write::flush(&mut std::io::stderr());
-                                    if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
-                                        std::process::abort();
                                     }
                                 }
                             }
@@ -3274,6 +3312,19 @@ impl PyMotionBridge {
         *self.homing_result.lock().unwrap_or_else(|p| p.into_inner()) = None;
     }
 
+    fn ethercat_conn(&self, mcu_handle: u32, what: &str) -> PyResult<Arc<UnixNativeConn>> {
+        let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+        let mc = mcus.get(&mcu_handle).ok_or_else(|| {
+            PyRuntimeError::new_err(format!("{what}: unknown mcu_handle {mcu_handle}"))
+        })?;
+        mc.endpoint_conn.clone().ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "{what}: mcu {mcu_handle} ({}) is not an EtherCAT endpoint",
+                mc.label
+            ))
+        })
+    }
+
     fn host_io_for_mcu(&self, caller: &str, mcu: u32) -> PyResult<Arc<KalicoHostIo>> {
         let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
         let conn = mcus.get(&mcu).ok_or_else(|| {
@@ -3300,9 +3351,6 @@ impl PyMotionBridge {
             *guard = Some(run);
             return;
         }
-
-        self.homing_settled_at_ns
-            .store(crate::motion_node::monotonic_ns(), Ordering::Release);
 
         {
             let mut cohort_guard = self

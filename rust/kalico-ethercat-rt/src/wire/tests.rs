@@ -2,8 +2,8 @@ use super::*;
 use kalico_native_transport::demux::{Demuxer, Frame};
 use kalico_native_transport::frame::decode_frame;
 use kalico_protocol::messages::{
-    RestoreDriveLimitsResponse, SetDriveLimits, SetDriveLimitsResponse, SlaveState, SlaveStatus,
-    StopResponse,
+    RestoreDriveLimitsResponse, SdoRead, SdoReadResponse, SdoWrite, SdoWriteResponse,
+    SetDriveLimits, SetDriveLimitsResponse, SlaveState, SlaveStatus, StopResponse,
 };
 
 #[test]
@@ -230,4 +230,82 @@ fn stop_response_frame_round_trips() {
     let r = StopResponse::decode(body).unwrap();
     assert_eq!(r.result, -311);
     assert_eq!(r.discard_clock, 123_456_789);
+}
+
+#[test]
+fn decodes_sdo_read_command() {
+    let msg = SdoRead {
+        index: 0x2002,
+        subindex: 1,
+    };
+    let payload = frame_payload(MessageKind::SdoRead, 9, &msg.encoded_to_vec());
+    match decode_command(0, &payload).unwrap() {
+        Command::SdoRead {
+            correlation_id: 9,
+            msg: m,
+        } => assert_eq!(m, msg),
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
+fn decodes_sdo_write_command() {
+    let msg = SdoWrite {
+        index: 0x2003,
+        subindex: 0,
+        size: 0,
+        value: -42,
+    };
+    let payload = frame_payload(MessageKind::SdoWrite, 10, &msg.encoded_to_vec());
+    match decode_command(0, &payload).unwrap() {
+        Command::SdoWrite {
+            correlation_id: 10,
+            msg: m,
+        } => assert_eq!(m, msg),
+        other => panic!("wrong variant: {other:?}"),
+    }
+}
+
+#[test]
+fn sdo_response_frames_decode_back() {
+    let frame = sdo_read_response_frame(
+        11,
+        &SdoReadResponse {
+            result: 0,
+            size: 2,
+            data: [0x64, 0, 0, 0],
+        },
+    );
+    let (chan, payload) = decode_frame(&frame).unwrap();
+    assert_eq!(chan, CHANNEL_CONTROL);
+    let (hdr, body) = decode_message_header(payload).unwrap();
+    assert_eq!(hdr.correlation_id, 11);
+    assert_eq!(
+        MessageKind::from_u16(hdr.kind_raw),
+        Some(MessageKind::SdoReadResponse)
+    );
+    let r = SdoReadResponse::decode(body).unwrap();
+    assert_eq!((r.result, r.size, r.data), (0, 2, [0x64, 0, 0, 0]));
+
+    let frame = sdo_write_response_frame(
+        12,
+        &SdoWriteResponse {
+            result: -802,
+            readback_size: 2,
+            readback_data: [0xF4, 0x01, 0, 0],
+        },
+    );
+    let (chan, payload) = decode_frame(&frame).unwrap();
+    assert_eq!(chan, CHANNEL_CONTROL);
+    let (hdr, body) = decode_message_header(payload).unwrap();
+    assert_eq!(hdr.correlation_id, 12);
+    assert_eq!(
+        MessageKind::from_u16(hdr.kind_raw),
+        Some(MessageKind::SdoWriteResponse)
+    );
+    let r = SdoWriteResponse::decode(body).unwrap();
+    assert_eq!(
+        (r.result, r.readback_size, r.readback_data),
+        (-802, 2, [0xF4, 0x01, 0, 0])
+    );
 }

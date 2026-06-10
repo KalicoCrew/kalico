@@ -266,6 +266,7 @@ class Homing:
                 retractpos[axis] -= direction * hi.retract_dist
                 toolhead.move(retractpos, hi.retract_speed)
                 toolhead.wait_moves()
+            _check_servo_drive_fault(gcmd, bridge, axis, servo_handle)
         except BaseException:
             try:
                 self._set_homing_current(toolhead, rail, pre_homing=False)

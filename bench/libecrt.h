@@ -35,4 +35,14 @@ void ec_rt_disable(void);
 
 void ec_rt_shutdown(void);
 
+/* SDO upload from slave 1. On entry *size is the buffer capacity; on success
+ * it holds the object's byte count. Returns 0 on success, -1 on failure with
+ * *abort_code holding the CoE abort code (0 = transport-level failure). */
+int ec_rt_sdo_read(uint16_t index, uint8_t sub, uint8_t *buf, int *size,
+                   uint32_t *abort_code);
+
+/* SDO download to slave 1. Same return/abort_code convention. */
+int ec_rt_sdo_write(uint16_t index, uint8_t sub, const uint8_t *buf, int size,
+                    uint32_t *abort_code);
+
 #endif

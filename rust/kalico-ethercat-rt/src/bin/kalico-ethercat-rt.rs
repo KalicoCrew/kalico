@@ -10,17 +10,18 @@ use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::ffi;
 use kalico_ethercat_rt::scale::CountMap;
+use kalico_ethercat_rt::sdo::{execute_sdo_read, execute_sdo_write, SdoBus};
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::torque::{
     CommandAction, TickAction, TorqueGate, TorqueState, ERR_ENABLE_FAILED, ERR_PIECES_WHILE_FAULTED,
 };
 use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
-    restore_drive_limits_response_frame, runtime_caps_response_frame,
-    set_drive_limits_response_frame, set_torque_response_frame, status_heartbeat_frame,
-    stop_response_frame, Command,
+    restore_drive_limits_response_frame, runtime_caps_response_frame, sdo_read_response_frame,
+    sdo_write_response_frame, set_drive_limits_response_frame, set_torque_response_frame,
+    status_heartbeat_frame, stop_response_frame, Command,
 };
-use kalico_protocol::messages::SlaveState;
+use kalico_protocol::messages::{SlaveState, ERR_SDO_TRANSPORT, ERR_SDO_UNSUPPORTED_SIZE};
 
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
 
@@ -32,6 +33,56 @@ fn arg_val(args: &[String], key: &str) -> Option<String> {
     args.iter()
         .position(|a| a == key)
         .and_then(|i| args.get(i + 1).cloned())
+}
+
+struct FfiSdoBus;
+
+fn ffi_sdo_error(abort: u32) -> i32 {
+    if abort == 0 {
+        return ERR_SDO_TRANSPORT;
+    }
+    debug_assert!(
+        abort < 0x8000_0000,
+        "CoE abort code 0x{abort:08x} would collide with local error codes as i32"
+    );
+    abort as i32
+}
+
+impl SdoBus for FfiSdoBus {
+    fn read(&mut self, index: u16, subindex: u8) -> Result<(u8, [u8; 4]), i32> {
+        let mut buf = [0u8; 8];
+        let mut size: std::os::raw::c_int = buf.len() as std::os::raw::c_int;
+        let mut abort: u32 = 0;
+        let rc = unsafe {
+            ffi::ec_rt_sdo_read(index, subindex, buf.as_mut_ptr(), &mut size, &mut abort)
+        };
+        if rc != 0 {
+            return Err(ffi_sdo_error(abort));
+        }
+        if !(1..=4).contains(&size) {
+            return Err(ERR_SDO_UNSUPPORTED_SIZE);
+        }
+        let mut data = [0u8; 4];
+        data[..size as usize].copy_from_slice(&buf[..size as usize]);
+        Ok((size as u8, data))
+    }
+
+    fn write(&mut self, index: u16, subindex: u8, bytes: &[u8]) -> Result<(), i32> {
+        let mut abort: u32 = 0;
+        let rc = unsafe {
+            ffi::ec_rt_sdo_write(
+                index,
+                subindex,
+                bytes.as_ptr(),
+                bytes.len() as std::os::raw::c_int,
+                &mut abort,
+            )
+        };
+        if rc != 0 {
+            return Err(ffi_sdo_error(abort));
+        }
+        Ok(())
+    }
 }
 
 fn main() {
@@ -153,8 +204,10 @@ fn main() {
     eprintln!("ec-rt: handshake ok, entering DC loop");
 
     let mut gate = TorqueGate::new();
+    let mut sdo_bus = FfiSdoBus;
     let mut prdiv = 0u64;
     let mut wkc_consecutive = 0u8;
+    let mut latched_drive_err: u16 = 0;
     'dc: loop {
         if SIGTERM_RECEIVED.load(Ordering::Acquire) {
             eprintln!("ec-rt: SIGTERM received — disabling drive and exiting");
@@ -314,6 +367,32 @@ fn main() {
                     }
                     server.respond(&restore_drive_limits_response_frame(correlation_id, rc));
                 }
+                Command::SdoRead {
+                    correlation_id,
+                    msg,
+                } => {
+                    let resp = execute_sdo_read(&mut sdo_bus, &msg);
+                    if resp.result != 0 {
+                        eprintln!(
+                            "ec-rt: SdoRead 0x{:04x}.{} failed result={}",
+                            msg.index, msg.subindex, resp.result
+                        );
+                    }
+                    server.respond(&sdo_read_response_frame(correlation_id, &resp));
+                }
+                Command::SdoWrite {
+                    correlation_id,
+                    msg,
+                } => {
+                    let resp = execute_sdo_write(&mut sdo_bus, &msg);
+                    if resp.result != 0 {
+                        eprintln!(
+                            "ec-rt: SdoWrite 0x{:04x}.{} value={} size={} failed result={}",
+                            msg.index, msg.subindex, msg.value, msg.size, resp.result
+                        );
+                    }
+                    server.respond(&sdo_write_response_frame(correlation_id, &resp));
+                }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt: ignoring kind 0x{kind_raw:04x}");
                 }
@@ -401,6 +480,7 @@ fn main() {
             gate.on_drive_fault();
             ring.reset();
             cmap = None;
+            latched_drive_err = drive_err;
             server.respond(&status_heartbeat_frame(
                 0,
                 drive_err,
@@ -459,6 +539,13 @@ fn main() {
                 ring.is_empty() as u8 ^ 1,
                 current_retired,
             );
+            if gate.state() == TorqueState::Faulted {
+                server.respond(&status_heartbeat_frame(
+                    0,
+                    latched_drive_err,
+                    &[current_retired],
+                ));
+            }
         }
     }
 

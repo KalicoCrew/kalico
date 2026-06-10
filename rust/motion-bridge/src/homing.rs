@@ -226,19 +226,15 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriveFaultRoute {
     HomingError,
-    Fatal,
+    LatchForKlippy,
 }
 
 pub fn route_drive_fault(fault_mcu: u32, homing_axis_mcu: Option<u32>) -> DriveFaultRoute {
     if homing_axis_mcu == Some(fault_mcu) {
         DriveFaultRoute::HomingError
     } else {
-        DriveFaultRoute::Fatal
+        DriveFaultRoute::LatchForKlippy
     }
-}
-
-pub fn post_homing_fault_is_benign(now_ns: u64, settled_at_ns: u64) -> bool {
-    settled_at_ns != 0 && now_ns.saturating_sub(settled_at_ns) < 2_000_000_000
 }
 
 #[cfg(test)]
