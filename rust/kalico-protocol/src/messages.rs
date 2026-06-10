@@ -20,6 +20,10 @@ pub enum MessageKind {
     SetTorqueResponse = 0x0071,
     Stop = 0x0072,
     StopResponse = 0x0073,
+    SdoRead = 0x0074,
+    SdoReadResponse = 0x0075,
+    SdoWrite = 0x0076,
+    SdoWriteResponse = 0x0077,
     FaultEvent = 0x0082,
     StatusHeartbeat = 0x0083,
     McuLog = 0x0084,
@@ -43,6 +47,10 @@ impl MessageKind {
             0x0071 => Self::SetTorqueResponse,
             0x0072 => Self::Stop,
             0x0073 => Self::StopResponse,
+            0x0074 => Self::SdoRead,
+            0x0075 => Self::SdoReadResponse,
+            0x0076 => Self::SdoWrite,
+            0x0077 => Self::SdoWriteResponse,
             0x0082 => Self::FaultEvent,
             0x0083 => Self::StatusHeartbeat,
             0x0084 => Self::McuLog,
@@ -256,6 +264,118 @@ impl Decode for SetTorqueResponse {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             result: get_i32(c)?,
+        })
+    }
+}
+
+pub const ERR_SDO_UNSUPPORTED_SIZE: i32 = -801;
+pub const ERR_SDO_VERIFY_MISMATCH: i32 = -802;
+pub const ERR_SDO_TRANSPORT: i32 = -803;
+pub const ERR_SDO_VALUE_RANGE: i32 = -804;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdoRead {
+    pub index: u16,
+    pub subindex: u8,
+}
+
+impl Encode for SdoRead {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_u16(out, self.index);
+        put_u8(out, self.subindex);
+    }
+}
+
+impl Decode for SdoRead {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            index: get_u16(c)?,
+            subindex: get_u8(c)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdoReadResponse {
+    pub result: i32,
+    pub size: u8,
+    pub data: [u8; 4],
+}
+
+impl Encode for SdoReadResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+        put_u8(out, self.size);
+        for b in self.data {
+            put_u8(out, b);
+        }
+    }
+}
+
+impl Decode for SdoReadResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
+            size: get_u8(c)?,
+            data: [get_u8(c)?, get_u8(c)?, get_u8(c)?, get_u8(c)?],
+        })
+    }
+}
+
+/// `size == 0` requests an endpoint-side probe (SDO upload discovers the width).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdoWrite {
+    pub index: u16,
+    pub subindex: u8,
+    pub size: u8,
+    pub value: i64,
+}
+
+impl Encode for SdoWrite {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_u16(out, self.index);
+        put_u8(out, self.subindex);
+        put_u8(out, self.size);
+        put_u64(out, self.value as u64);
+    }
+}
+
+impl Decode for SdoWrite {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            index: get_u16(c)?,
+            subindex: get_u8(c)?,
+            size: get_u8(c)?,
+            value: get_u64(c)? as i64,
+        })
+    }
+}
+
+/// `size`/`data` carry the post-write readback so a verify mismatch
+/// reports what the drive actually settled on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdoWriteResponse {
+    pub result: i32,
+    pub size: u8,
+    pub data: [u8; 4],
+}
+
+impl Encode for SdoWriteResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+        put_u8(out, self.size);
+        for b in self.data {
+            put_u8(out, b);
+        }
+    }
+}
+
+impl Decode for SdoWriteResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
+            size: get_u8(c)?,
+            data: [get_u8(c)?, get_u8(c)?, get_u8(c)?, get_u8(c)?],
         })
     }
 }
@@ -526,5 +646,7 @@ where
 mod claim_handshake_tests;
 #[cfg(test)]
 mod mcu_log_tests;
+#[cfg(test)]
+mod sdo_tests;
 #[cfg(test)]
 mod tests;
