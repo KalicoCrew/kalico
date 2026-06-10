@@ -1433,6 +1433,7 @@ def run_probe_test(
                     pos = _query_toolhead_position(api_socket)
                     xy_ok = (
                         pos is not None
+                        and len(pos) >= 2
                         and abs(pos[0] - 125.0) < 0.5
                         and abs(pos[1] - 125.0) < 0.5
                     )
