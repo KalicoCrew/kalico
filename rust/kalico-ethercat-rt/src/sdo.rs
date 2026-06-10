@@ -117,7 +117,7 @@ impl DictSdoBus {
 
 impl SdoBus for DictSdoBus {
     fn read(&mut self, index: u16, subindex: u8) -> Result<(u8, [u8; 4]), i32> {
-        self.read_count += 1;
+        self.read_count = self.read_count.wrapping_add(1);
         match self.objects.get(&(index, subindex)) {
             Some(o) => Ok((o.size, o.value)),
             None => Err(COE_ABORT_NOT_FOUND),
