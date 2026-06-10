@@ -12,7 +12,7 @@ fn test_dict() -> DictSdoBus {
                 size: 2,
                 value: [100, 0, 0, 0],
                 read_only: false,
-                clamp_max: None,
+                unsigned_clamp_max: None,
             },
         ),
         (
@@ -21,7 +21,7 @@ fn test_dict() -> DictSdoBus {
                 size: 2,
                 value: [0, 0, 0, 0],
                 read_only: false,
-                clamp_max: Some(500),
+                unsigned_clamp_max: Some(500),
             },
         ),
         (
@@ -30,7 +30,7 @@ fn test_dict() -> DictSdoBus {
                 size: 4,
                 value: [0; 4],
                 read_only: false,
-                clamp_max: None,
+                unsigned_clamp_max: None,
             },
         ),
         (
@@ -39,7 +39,7 @@ fn test_dict() -> DictSdoBus {
                 size: 2,
                 value: [0x37, 0x02, 0, 0],
                 read_only: true,
-                clamp_max: None,
+                unsigned_clamp_max: None,
             },
         ),
     ])
@@ -160,7 +160,11 @@ fn clamped_write_reports_verify_mismatch_with_settled_bytes() {
     );
     assert_eq!(resp.result, ERR_SDO_VERIFY_MISMATCH);
     assert_eq!(resp.readback_size, 2);
-    assert_eq!(resp.readback_data, [0xF4, 0x01, 0, 0], "drive settled on 500");
+    assert_eq!(
+        resp.readback_data,
+        [0xF4, 0x01, 0, 0],
+        "drive settled on 500"
+    );
 }
 
 #[test]
@@ -199,4 +203,46 @@ fn probe_reporting_oversized_object_is_rejected() {
         },
     );
     assert_eq!(resp.result, ERR_SDO_UNSUPPORTED_SIZE);
+}
+
+#[test]
+fn typed_write_to_unknown_object_surfaces_abort_code() {
+    let mut bus = test_dict();
+    let resp = execute_sdo_write(
+        &mut bus,
+        &SdoWrite {
+            index: 0x7777,
+            subindex: 0,
+            size: 2,
+            value: 1,
+        },
+    );
+    assert_eq!(resp.result, COE_ABORT_NOT_FOUND);
+    assert_eq!(resp.readback_size, 0);
+    assert_eq!(resp.readback_data, [0; 4]);
+}
+
+#[test]
+fn verify_read_failure_surfaces_its_code() {
+    struct WriteOkReadFailBus;
+    impl SdoBus for WriteOkReadFailBus {
+        fn read(&mut self, _index: u16, _subindex: u8) -> Result<(u8, [u8; 4]), i32> {
+            Err(-999)
+        }
+        fn write(&mut self, _index: u16, _subindex: u8, _bytes: &[u8]) -> Result<(), i32> {
+            Ok(())
+        }
+    }
+    let resp = execute_sdo_write(
+        &mut WriteOkReadFailBus,
+        &SdoWrite {
+            index: 0x2002,
+            subindex: 0,
+            size: 2,
+            value: 1,
+        },
+    );
+    assert_eq!(resp.result, -999);
+    assert_eq!(resp.readback_size, 0);
+    assert_eq!(resp.readback_data, [0; 4]);
 }

@@ -12,7 +12,8 @@ pub const COE_ABORT_LENGTH_MISMATCH: i32 = 0x0607_0010;
 
 /// Errors are result codes: > 0 CoE abort code, < 0 local ERR_SDO_* constant.
 /// `read` must only report sizes 1..=4 packed little-endian into the array
-/// (a larger reported size means the object is unsupported, not truncated data).
+/// (a larger reported size means the object is unsupported, not truncated data;
+/// bytes beyond the reported size are unspecified and ignored by the executor).
 pub trait SdoBus {
     fn read(&mut self, index: u16, subindex: u8) -> Result<(u8, [u8; 4]), i32>;
     fn write(&mut self, index: u16, subindex: u8, bytes: &[u8]) -> Result<(), i32>;
@@ -73,7 +74,7 @@ pub fn execute_sdo_write(bus: &mut dyn SdoBus, msg: &SdoWrite) -> SdoWriteRespon
     }
     match bus.read(msg.index, msg.subindex) {
         Ok((rb_size, rb_data)) => {
-            if rb_size == size && rb_data == bytes {
+            if rb_size == size && rb_data[..usize::from(size)] == bytes[..usize::from(size)] {
                 SdoWriteResponse {
                     result: 0,
                     readback_size: size,
@@ -95,7 +96,7 @@ pub struct DictObject {
     pub size: u8,
     pub value: [u8; 4],
     pub read_only: bool,
-    pub clamp_max: Option<u32>,
+    pub unsigned_clamp_max: Option<u32>,
 }
 
 /// In-memory object dictionary: the stub endpoint's fake drive, and the
@@ -106,7 +107,7 @@ pub struct DictSdoBus {
 }
 
 impl DictSdoBus {
-    pub fn new(objects: Vec<((u16, u8), DictObject)>) -> Self {
+    pub fn new(objects: impl IntoIterator<Item = ((u16, u8), DictObject)>) -> Self {
         Self {
             objects: objects.into_iter().collect(),
             read_count: 0,
@@ -136,7 +137,7 @@ impl SdoBus for DictSdoBus {
         }
         let mut v = [0u8; 4];
         v[..bytes.len()].copy_from_slice(bytes);
-        if let Some(max) = o.clamp_max {
+        if let Some(max) = o.unsigned_clamp_max {
             if u32::from_le_bytes(v) > max {
                 v = max.to_le_bytes();
             }
