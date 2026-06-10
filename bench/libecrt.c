@@ -235,6 +235,39 @@ uint16_t ec_rt_get_statusword(void)             { return g_in->statusword; }
 uint16_t ec_rt_get_error_code(void)             { return g_in->error_code; }
 int32_t  ec_rt_get_following_error(void)        { return g_in->following_error; }
 
+static uint32_t ec_rt_pop_abort_code(void) {
+    uint32_t code = 0;
+    while (ec_iserror()) {
+        ec_errort err;
+        if (!ec_poperror(&err)) break;
+        if (err.Etype == EC_ERR_TYPE_SDO_ERROR) code = err.AbortCode;
+    }
+    return code;
+}
+
+int ec_rt_sdo_read(uint16_t index, uint8_t sub, uint8_t *buf, int *size,
+                   uint32_t *abort_code) {
+    *abort_code = 0;
+    int wkc = ec_SDOread(1, index, sub, FALSE, size, buf, EC_TIMEOUTRXM);
+    if (wkc <= 0) {
+        *abort_code = ec_rt_pop_abort_code();
+        return -1;
+    }
+    return 0;
+}
+
+int ec_rt_sdo_write(uint16_t index, uint8_t sub, const uint8_t *buf, int size,
+                    uint32_t *abort_code) {
+    *abort_code = 0;
+    int wkc = ec_SDOwrite(1, index, sub, FALSE, size, (void *)buf,
+                          EC_TIMEOUTRXM);
+    if (wkc <= 0) {
+        *abort_code = ec_rt_pop_abort_code();
+        return -1;
+    }
+    return 0;
+}
+
 void ec_rt_disable(void) {
     g_enabled = 0;
     for (int i = 0; i < 100; i++) {
