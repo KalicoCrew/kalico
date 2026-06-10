@@ -151,7 +151,7 @@ static int pdo_remap(void) {
 
 /* FF sources to "communication" (60B1h/60B2h) at 100.0% scale.
  * C01.13 -> 0x2001:14h, C01.14 -> 0x2001:15h, C01.16 -> 0x2001:17h,
- * C01.17 -> 0x2001:18h (group C01 = index 2001h, subindex = param + 1). */
+ * C01.17 -> 0x2001:18h (group C01 = index 2001h, subindex = hex param + 1). */
 static int ff_routing(void) {
     uint16_t src = 5, pct = 1000;
     int ok = 1;
