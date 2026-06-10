@@ -524,6 +524,36 @@ fn clock_to_host_secs_no_record_returns_none() {
 }
 
 #[test]
+fn print_time_to_host_secs_matches_clock_conversion() {
+    let (mut router, clock) = make_router();
+    let mcu = router.claim_mcu("mcu");
+
+    let base_host = instant_to_f64(clock.now());
+    router
+        .set_clock_est(mcu, 1_000_000.0, base_host, 10_000_000)
+        .unwrap();
+
+    let via_print_time = router.print_time_to_host_secs(mcu, 11.5).unwrap();
+    let via_clock = router.clock_to_host_secs(mcu, 11_500_000).unwrap();
+    let diff = (via_print_time - via_clock).abs();
+    assert!(
+        diff < 1e-9,
+        "print_time conversion must equal clock conversion: \
+         via_print_time={via_print_time:.12} via_clock={via_clock:.12}"
+    );
+}
+
+#[test]
+fn print_time_to_host_secs_unsynced_returns_none() {
+    let (mut router, _) = make_router();
+    let mcu = router.claim_mcu("mcu");
+    assert!(
+        router.print_time_to_host_secs(mcu, 1.0).is_none(),
+        "must return None when clock_freq == 0"
+    );
+}
+
+#[test]
 fn clock_to_host_secs_unknown_mcu_returns_none() {
     let (router, _) = make_router();
     assert!(
