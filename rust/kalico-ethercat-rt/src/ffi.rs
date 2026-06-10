@@ -4,6 +4,19 @@
 
 use std::os::raw::{c_char, c_int};
 
+/// Mirror of `ec_telemetry_t` in bench/libecrt.h — natural (unpacked) C layout.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct EcTelemetry {
+    pub error_code: u16,
+    pub statusword: u16,
+    pub position_actual: i32,
+    pub torque_actual: i16,
+    pub following_error: i32,
+    pub position_demand: i32,
+    pub target_position: i32,
+}
+
 extern "C" {
     pub fn ec_rt_bringup(
         ifname: *const c_char,
@@ -29,4 +42,6 @@ extern "C" {
     pub fn ec_rt_disable();
 
     pub fn ec_rt_shutdown();
+
+    pub fn ec_rt_get_telemetry(out: *mut EcTelemetry);
 }
