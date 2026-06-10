@@ -83,6 +83,19 @@ pub fn sym_eig_extremes(a: &[f64], n: usize) -> (f64, f64) {
     }
     let mut lo = f64::INFINITY;
     let mut hi = f64::NEG_INFINITY;
+    #[cfg(debug_assertions)]
+    {
+        let mut residual_off = 0.0;
+        for p in 0..n {
+            for q in (p + 1)..n {
+                residual_off += m[p * n + q] * m[p * n + q];
+            }
+        }
+        assert!(
+            residual_off < 1e-24,
+            "sym_eig_extremes: Jacobi did not converge in 64 sweeps (n={n})"
+        );
+    }
     for i in 0..n {
         lo = lo.min(m[i * n + i]);
         hi = hi.max(m[i * n + i]);
