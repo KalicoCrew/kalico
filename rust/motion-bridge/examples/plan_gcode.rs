@@ -9,13 +9,13 @@ use motion_bridge_native::classify::{ClassifyError, classify_and_build};
 use motion_bridge_native::config::{PlannerConfig, PlannerLimits};
 use motion_bridge_native::planner::{DispatchError, PlannerHandle};
 use nurbs::bezier::extract_bezier_pieces;
-use trajectory::{AxisShaper, RequiredShaper, ShapedSegment, ShaperConfig};
+use trajectory::{AxisShaper, ShapedSegment, ShaperConfig};
 
 fn trident_config() -> PlannerConfig {
     let mut c = PlannerConfig::default();
     c.shaper = ShaperConfig {
-        x: RequiredShaper::SmoothZv { frequency_hz: 55.4 },
-        y: RequiredShaper::SmoothZv { frequency_hz: 39.2 },
+        x: AxisShaper::SmoothZv { frequency_hz: 55.4 },
+        y: AxisShaper::SmoothZv { frequency_hz: 39.2 },
         z: AxisShaper::Passthrough,
     };
     c

@@ -1329,12 +1329,12 @@ fn append_x_move(state: &mut ShaperState, ctx: &ReplanContext, dist_mm: f64, fee
 }
 
 fn emit_partial_window(state: &mut ShaperState) -> f64 {
-    let kernel_xy = RequiredShaper::SmoothZv {
+    let kernel_xy = crate::AxisShaper::SmoothZv {
         frequency_hz: LOW_FREQ_HZ,
     }
     .to_kernel();
     let kernels: [Option<PiecewisePolynomialKernel<f64>>; 4] =
-        [Some(kernel_xy.clone()), Some(kernel_xy), None, None];
+        [kernel_xy.clone(), kernel_xy, None, None];
     let halos: Vec<EHalo> = Vec::new();
     let emit_ctx = EmitContext {
         kernels: &kernels,
