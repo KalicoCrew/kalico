@@ -502,6 +502,11 @@ class MotionToolhead(ToolHead):
         # first Z enable minutes after boot).
         max_queue_time = max(self.print_time, self._mcu_pending_end_time)
         for m in self.all_mcus:
+            # A disconnected non-critical MCU (e.g. an absent accelerometer
+            # board) has a frozen clocksync; calibrate_clock on it computes
+            # adjusted_freq = 0 and the next pass divides by it.
+            if getattr(m, "non_critical_disconnected", False):
+                continue
             m.check_active(max_queue_time, eventtime)
         return False, "print_time=%.3f buffer_time=0.000 print_stall=%d" % (
             self.print_time,
