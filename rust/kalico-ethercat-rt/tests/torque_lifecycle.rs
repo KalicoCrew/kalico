@@ -2,11 +2,13 @@ use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use kalico_ethercat_rt::torque::ERR_PIECES_WHILE_FAULTED;
 use kalico_host_rt::native_call::NativeCall;
 use kalico_host_rt::unix_native_conn::UnixNativeConn;
 use kalico_protocol::codec::{Cursor, Decode, Encode};
 use kalico_protocol::messages::{
-    ClaimHandshakeReply, MessageKind, PushPieces, SetTorque, SetTorqueResponse, StopResponse,
+    ClaimHandshakeReply, MessageKind, PushPieces, PushPiecesResponse, RestoreDriveLimitsResponse,
+    SetDriveLimits, SetDriveLimitsResponse, SetTorque, SetTorqueResponse, StopResponse,
 };
 use runtime::piece_ring::PieceEntry;
 
@@ -126,7 +128,7 @@ fn now_ns() -> u64 {
     kalico_ethercat_rt::clock::monotonic_ns()
 }
 
-fn push_one_piece(conn: &UnixNativeConn, start_time: u64) {
+fn push_one_piece(conn: &UnixNativeConn, start_time: u64) -> i32 {
     let entry = PieceEntry {
         start_time,
         coeffs: [0.0_f32; 4],
@@ -143,7 +145,12 @@ fn push_one_piece(conn: &UnixNativeConn, start_time: u64) {
         pieces_bytes,
     };
     let body = msg.encoded_to_vec();
-    let _ = conn.kalico_call(MessageKind::PushPieces, body, Duration::from_secs(5));
+    let (_, resp) = conn
+        .kalico_call(MessageKind::PushPieces, body, Duration::from_secs(5))
+        .expect("PushPieces call must succeed");
+    PushPiecesResponse::decode(&resp)
+        .expect("PushPiecesResponse must decode")
+        .result
 }
 
 fn spawn_and_claim(tag: &str, extra_args: &[&str]) -> (ChildGuard, UnixNativeConn, String) {
@@ -304,7 +311,84 @@ fn stop_while_parked_succeeds_and_keeps_session() {
     );
 
     let r = set_torque(&conn, true, now_ns() + 50_000_000);
-    assert_eq!(r, 0, "enable after Stop must return 0 (session alive), got {r}");
+    assert_eq!(
+        r, 0,
+        "enable after Stop must return 0 (session alive), got {r}"
+    );
+
+    drop(conn);
+    let _ = guard.defuse().wait();
+    let _ = std::fs::remove_file(&path);
+}
+
+fn set_drive_limits(conn: &UnixNativeConn, counts: u32, tenth_pct: u16) -> i32 {
+    let body = SetDriveLimits {
+        following_error_counts: counts,
+        max_torque_tenth_pct: tenth_pct,
+    }
+    .encoded_to_vec();
+    let (kind, resp) = conn
+        .kalico_call(MessageKind::SetDriveLimits, body, Duration::from_secs(5))
+        .expect("SetDriveLimits call must succeed");
+    assert_eq!(kind, MessageKind::SetDriveLimitsResponse);
+    SetDriveLimitsResponse::decode(&resp)
+        .expect("decode")
+        .result
+}
+
+fn restore_drive_limits(conn: &UnixNativeConn) -> i32 {
+    let (kind, resp) = conn
+        .kalico_call(
+            MessageKind::RestoreDriveLimits,
+            Vec::new(),
+            Duration::from_secs(5),
+        )
+        .expect("RestoreDriveLimits call must succeed");
+    assert_eq!(kind, MessageKind::RestoreDriveLimitsResponse);
+    RestoreDriveLimitsResponse::decode(&resp)
+        .expect("decode")
+        .result
+}
+
+#[test]
+fn drive_limits_set_and_restore_round_trip() {
+    let (mut guard, conn, path) = spawn_and_claim("limits-rt", &[]);
+    assert_eq!(set_drive_limits(&conn, 8192, 500), 0);
+    assert_eq!(restore_drive_limits(&conn), 0);
+    assert_eq!(set_drive_limits(&conn, 4096, 300), 0);
+    drop(conn);
+    let _ = guard.defuse().wait();
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn simulated_drive_fault_parks_keeps_serving_and_recovers() {
+    let (mut guard, conn, path) =
+        spawn_and_claim("drive-fault", &["--drive-fault-after-pieces", "1"]);
+
+    let r = set_torque(&conn, true, now_ns() + 50_000_000);
+    assert_eq!(r, 0);
+    push_one_piece(&conn, now_ns());
+
+    let fault_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        assert!(
+            Instant::now() < fault_deadline,
+            "stub never simulated the drive fault"
+        );
+        let result = push_one_piece(&conn, now_ns() + 60_000_000_000);
+        match result {
+            0 => thread::sleep(Duration::from_millis(20)),
+            ERR_PIECES_WHILE_FAULTED => break,
+            other => panic!("unexpected PushPieces result while polling for fault: {other}"),
+        }
+    }
+
+    let r = set_torque(&conn, true, now_ns() + 50_000_000);
+    assert_eq!(
+        r, 0,
+        "enable from Faulted must run the ladder and return 0, got {r}"
+    );
 
     drop(conn);
     let _ = guard.defuse().wait();

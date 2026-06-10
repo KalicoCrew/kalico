@@ -3,7 +3,9 @@
 ## Problem
 
 The homing rework (`klippy/extras/homing.py` + the bridge trip-run machinery)
-only supports GPIO endstops declared directly in `[stepper_*]` sections. Any
+only supports GPIO endstops declared directly in `[stepper_*]` sections
+(`[servo_*]` sections gained the same GPIO-endstop support with the
+servo-axis-homing work; this doc's problem statement predates it). Any
 `endstop_pin` containing `virtual_endstop` is silently skipped, so the axis
 ends up with no endstop and `G28` hard-fails. Concretely, the Neptune bench
 configures `[stepper_z] endstop_pin: probe:z_virtual_endstop`, and the stock

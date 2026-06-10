@@ -389,25 +389,25 @@ send_status_heartbeat(void)
         return;
 
     uint8_t st = 0;
-    uint8_t fc = 0;
+    uint16_t fc = 0;
     uint32_t counts[8];
     int32_t n = kalico_runtime_get_heartbeat(runtime_handle,
                                              &st, &fc, counts, 8);
     if (n < 0)
         return;
 
-    // Body = engine_state(1) + fault_code(1) + num_axes(1) + n*u32; max 35 B.
     uint8_t payload[KALICO_TX_BUF_SIZE];
     int off = 0;
     payload[off++] = (uint8_t)(KALICO_MSG_STATUS_HEARTBEAT & 0xFF);
     payload[off++] = (uint8_t)((KALICO_MSG_STATUS_HEARTBEAT >> 8) & 0xFF);
     payload[off++] = MESSAGE_VERSION_DEFAULT;
-    payload[off++] = 0;  // correlation_id = 0 (async event)
+    payload[off++] = 0;
     payload[off++] = 0;
     payload[off++] = 0;
     payload[off++] = 0;
     payload[off++] = st;
-    payload[off++] = fc;
+    payload[off++] = (uint8_t)(fc & 0xFF);
+    payload[off++] = (uint8_t)((fc >> 8) & 0xFF);
     payload[off++] = (uint8_t)n;
     for (int i = 0; i < n; i++) {
         uint32_t v = counts[i];

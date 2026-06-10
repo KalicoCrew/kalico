@@ -60,7 +60,7 @@ uint32_t kalico_runtime_get_dispatcher_floor_cycles(void);
 
 int32_t kalico_runtime_get_heartbeat(kalico_nurbs_KalicoRuntime *rt,
                                      uint8_t *out_engine_state,
-                                     uint8_t *out_fault_code,
+                                     uint16_t *out_fault_code,
                                      uint32_t *out_retired,
                                      uintptr_t max_axes);
 

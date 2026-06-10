@@ -7,7 +7,9 @@ BRANCH="${2:-sota-motion}"
 REQUIRED_CHECKS=(
   # ci-rust-runtime.yaml
   changes
-  rust-host
+  rust-test
+  rust-clippy
+  rust-fmt
   rust-loom
   rust-mcu-h7
   rust-mcu-f4

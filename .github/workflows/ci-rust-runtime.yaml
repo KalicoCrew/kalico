@@ -40,7 +40,27 @@ jobs:
               - 'scripts/ci.sh'
               - '.github/workflows/ci-rust-runtime.yaml'
 
-  rust-host:
+  rust-test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev lld
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: test
+      - name: test (nextest + doctests)
+        run: ./scripts/ci.sh rust-test
+
+  rust-clippy:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
@@ -51,15 +71,26 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libudev-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: nextest
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust
-      - name: build + test (nextest) + clippy + fmt
-        run: ./scripts/ci.sh rust-host
+          key: clippy
+      - name: clippy
+        run: ./scripts/ci.sh rust-clippy
+
+  rust-fmt:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: fmt --check
+        run: ./scripts/ci.sh rust-fmt
 
   # Step-6 §11.4 / §11.3 loom tests for half-split SPSC, widened-clock
   # seqlock, force_idle handshake, and curve-pool alloc race. Loom
