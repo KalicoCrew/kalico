@@ -433,3 +433,14 @@ class MotionBridgeWrapper:
 
     def dispatched_segment_count(self):
         return self._bridge.dispatched_segment_count()
+
+    def motion_state_at(self, mcu, clock=None, print_time=None):
+        if (clock is None) == (print_time is None):
+            raise ValueError(
+                "motion_state_at: specify exactly one of clock= or print_time="
+            )
+        if print_time is not None:
+            clock = mcu.print_time_to_clock(print_time)
+        return self._bridge.motion_state_at_clock(
+            mcu._bridge_handle, int(clock), self._reactor.monotonic()
+        )

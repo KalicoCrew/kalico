@@ -3241,6 +3241,75 @@ impl PyMotionBridge {
         }
         self.finish_homing();
     }
+
+    #[pyo3(signature = (source_mcu, clock, host_now))]
+    fn motion_state_at_clock(
+        &self,
+        source_mcu: u32,
+        clock: u64,
+        host_now: f64,
+    ) -> PyResult<std::collections::HashMap<String, (f64, f64, f64)>> {
+        const AXIS_NAMES: [&str; 4] = ["x", "y", "z", "e"];
+        let configs: Vec<crate::dispatch::McuAxisConfig> = self
+            .mcu_axis_configs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if configs.is_empty() {
+            return Err(PyRuntimeError::new_err(
+                "motion_state_at: no axes configured on the bridge",
+            ));
+        }
+        let resolved: Vec<(crate::pump::AxisKey, u64, u64)> = {
+            let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
+            let source_handle = crate::types::mcu_handle_from_raw(source_mcu);
+            let mut acc = Vec::new();
+            for cfg in &configs {
+                let target_handle = crate::types::mcu_handle_from_raw(cfg.mcu_id);
+                let axis_clock = crate::motion_history::clock_between_mcus(
+                    &router,
+                    source_handle,
+                    target_handle,
+                    clock,
+                )
+                .map_err(PyRuntimeError::new_err)?;
+                let now_clock = router
+                    .host_time_to_mcu_clock(target_handle, host_now)
+                    .map_err(|e| {
+                        PyRuntimeError::new_err(format!(
+                            "motion_state_at: clock unsynced for mcu {}: {e:?}",
+                            cfg.mcu_id
+                        ))
+                    })?;
+                for &axis in &cfg.axes {
+                    let key = crate::pump::AxisKey {
+                        mcu_id: cfg.mcu_id,
+                        axis: axis as u8,
+                    };
+                    acc.push((key, axis_clock, now_clock));
+                }
+            }
+            acc
+        };
+        let store = self
+            .motion_history
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut out = std::collections::HashMap::new();
+        for (key, axis_clock, now_clock) in resolved {
+            let st = store
+                .state_at_clock(key, axis_clock, Some(now_clock))
+                .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+            let name = AXIS_NAMES.get(key.axis as usize).ok_or_else(|| {
+                PyRuntimeError::new_err(format!("motion_state_at: unnamed axis {}", key.axis))
+            })?;
+            out.insert(
+                (*name).to_string(),
+                (st.position, st.velocity, st.acceleration),
+            );
+        }
+        Ok(out)
+    }
 }
 
 impl Drop for PyMotionBridge {
