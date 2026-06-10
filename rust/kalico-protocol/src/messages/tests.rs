@@ -398,9 +398,8 @@ fn put_get_str_round_trip() {
 #[test]
 fn get_str_rejects_truncated_buffer() {
     use crate::codec::{Cursor, get_str};
-    // length prefix claims 10 bytes, only 2 present
-    let buf = [10u8, 0, b'a', b'b'];
-    let mut c = Cursor::new(&buf);
+    let length_prefix_overruns_payload = [10u8, 0, b'a', b'b'];
+    let mut c = Cursor::new(&length_prefix_overruns_payload);
     assert!(get_str(&mut c).is_err());
 }
 

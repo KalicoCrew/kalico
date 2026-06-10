@@ -129,6 +129,16 @@ def test_double_start_rejected_in_klippy():
         gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
 
 
+def assert_fresh_start_possible(gcode):
+    gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+
+
+def vanish_node(sc):
+    fake_node = sc.printer.lookup_objects("ethercat_node")[0][1]
+    fake_node._h = None
+    return fake_node
+
+
 def test_stop_without_start_rejected():
     sc, gcode, bridge = make_capture()
     with pytest.raises(RuntimeError):
@@ -151,8 +161,7 @@ def test_stop_overflow_raises_with_failed_filename():
     gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
     with pytest.raises(RuntimeError, match="failed.scap"):
         gcode.commands["SERVO_CAPTURE_STOP"](FakeGcmd())
-    # state cleared: a new capture can start
-    gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    assert_fresh_start_possible(gcode)
 
 
 def test_start_without_bridge_handle_fails_loudly():
@@ -165,15 +174,12 @@ def test_start_without_bridge_handle_fails_loudly():
 def test_stop_after_node_vanished_clears_state_and_skips_bridge():
     sc, gcode, bridge = make_capture()
     gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
-    # Simulate node vanishing after start
-    fake_node = sc.printer.lookup_objects("ethercat_node")[0][1]
-    fake_node._h = None
+    fake_node = vanish_node(sc)
     with pytest.raises(RuntimeError, match="vanished"):
         gcode.commands["SERVO_CAPTURE_STOP"](FakeGcmd())
     assert bridge.stop_calls == []
-    # State must be cleared so a fresh start is possible
     fake_node._h = 7
-    gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    assert_fresh_start_possible(gcode)
     assert len(bridge.start_calls) == 2
 
 

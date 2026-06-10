@@ -2,14 +2,20 @@
 #define LIBECRT_H
 #include <stdint.h>
 
-/* go_realtime + ec_init + TxPDO remap (variable 1A00h) + CSP/DC config + map
- * + SAFE-OP + DC align + OP, then parks at CiA402 Ready-to-Switch-On (no
- * torque). 0 on success; -1 ec_init, -2 no slaves, -3 SAFE-OP, -4 OP,
- * -5 park timeout, -6 TxPDO remap SDO write failed, -7 mapped PDO sizes
- * disagree with out_t/in_t. */
+#define EC_RT_ERR_EC_INIT         (-1)
+#define EC_RT_ERR_NO_SLAVES       (-2)
+#define EC_RT_ERR_SAFE_OP_TIMEOUT (-3)
+#define EC_RT_ERR_OP_TIMEOUT      (-4)
+#define EC_RT_ERR_CIA402_TIMEOUT  (-5)
+#define EC_RT_ERR_PDO_REMAP       (-6)
+#define EC_RT_ERR_PDO_SIZE        (-7)
+#define EC_RT_ERR_PREOP_TIMEOUT   (-8)
+#define EC_RT_ERR_INIT_TIMEOUT    (-9)
+
+/* Brings slave 1 to OPERATIONAL and parks it at CiA402 Ready-to-Switch-On
+ * (no torque); ec_rt_enable() applies torque. 0 or an EC_RT_ERR_* above. */
 int  ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio);
 
-/* CiA402 ladder to Operation Enabled. 0 on success, -5 on timeout/fault. */
 int  ec_rt_enable(void);
 
 /* One steady-state DC cycle: sleep to next deadline, send+recv process data,
@@ -25,9 +31,6 @@ uint16_t ec_rt_get_statusword(void);
 uint16_t ec_rt_get_error_code(void);
 int32_t  ec_rt_get_following_error(void);
 
-/* One-shot snapshot of servo-loop fields only; touch-probe and I/O state
- * stay on the per-field accessors. Includes the staged commanded target
- * (out_t), so a 1 kHz capture costs one FFI hop per cycle. */
 typedef struct {
     uint16_t error_code;
     uint16_t statusword;
@@ -50,8 +53,6 @@ int ec_rt_write_limits(uint32_t ferr_counts, uint16_t torque_tenth_pct);
 /* controlword = 0x0006 (disable voltage path), held for a few cycles. */
 void ec_rt_disable(void);
 
-/* Re-reads AL state of slave 1 and prints state + ALstatuscode to stderr.
- * Diagnostic for WKC-loss halts: names why the drive left OP. */
 void ec_rt_dump_al_state(void);
 
 void ec_rt_shutdown(void);

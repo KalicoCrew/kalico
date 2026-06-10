@@ -4,7 +4,6 @@
 
 use std::os::raw::{c_char, c_int};
 
-/// Mirror of `ec_telemetry_t` in bench/libecrt.h — natural (unpacked) C layout.
 #[repr(C)]
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct EcTelemetry {

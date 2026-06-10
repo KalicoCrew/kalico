@@ -972,9 +972,6 @@ impl PyMotionBridge {
         Ok(())
     }
 
-    /// Returns (result, samples, overflow_cycle or None). result != 0 means
-    /// the capture failed (e.g. -323 ring overflow) and the file was renamed
-    /// to .failed.scap — the caller phrases the user-facing error.
     fn stop_servo_capture(&self, mcu_handle: u32) -> PyResult<(i32, u64, Option<u64>)> {
         let conn = self.ethercat_conn(mcu_handle, "stop_servo_capture")?;
         tracing::info!(

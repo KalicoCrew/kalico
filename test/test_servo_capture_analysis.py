@@ -15,6 +15,12 @@ _spec = importlib.util.spec_from_file_location("servo_capture_script", _SCRIPT)
 sc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(sc)
 
+FLAG_TORQUE_ENABLED = 1
+FLAG_MOTION_ACTIVE = 2
+DECAY_AMP_COUNTS = 150.0
+DECAY_TAU_S = 0.05
+SATURATED_TORQUE = 950
+
 CHANNELS = [
     {"name": "cycle_index", "dtype": "u64", "offset": 0},
     {"name": "flags", "dtype": "u8", "offset": 8},
@@ -36,14 +42,16 @@ def synth_capture(tmp_path, n=4000, move=(1000, 2000), freq_hz=80.0):
     ferr = np.zeros(n)
     ms, me = move
     ferr[ms:me] = 200.0 * np.sin(2 * np.pi * freq_hz * t[ms:me])
-    decay = 150.0 * np.exp(-(t[me:] - t[me]) / 0.05)
+    decay = DECAY_AMP_COUNTS * np.exp(-(t[me:] - t[me]) / DECAY_TAU_S)
     ferr[me:] = decay * np.cos(2 * np.pi * 30.0 * (t[me:] - t[me]))
     flags = np.zeros(n, dtype=np.uint8)
-    flags[:] = 1  # torque enabled
-    flags[ms:me] |= 2  # motion active
-    target = np.cumsum(np.where(flags & 2, 100, 0)).astype(np.int64)
+    flags[:] = FLAG_TORQUE_ENABLED
+    flags[ms:me] |= FLAG_MOTION_ACTIVE
+    target = np.cumsum(np.where(flags & FLAG_MOTION_ACTIVE, 100, 0)).astype(
+        np.int64
+    )
     torque = np.zeros(n, dtype=np.int16)
-    torque[ms:me] = 950  # saturated during the move
+    torque[ms:me] = SATURATED_TORQUE
 
     header = {
         "version": 1,
@@ -96,9 +104,9 @@ def test_refuses_failed_capture(tmp_path):
 
 def test_truncated_file_parses_to_last_whole_record(tmp_path):
     path, _ = synth_capture(tmp_path)
-    size = os.path.getsize(path)
+    partial_last_record = os.path.getsize(path) - 17
     with open(path, "r+b") as f:
-        f.truncate(size - 17)  # kill part of the last record
+        f.truncate(partial_last_record)
     _, data = sc.load_capture(path)
     assert len(data) == 3999
 
@@ -131,9 +139,16 @@ def test_resonance_peak_detected_at_80hz(tmp_path):
 def test_settling_time_in_expected_range(tmp_path):
     path, _ = synth_capture(tmp_path)
     _, data = sc.load_capture(path)
-    m = sc.compute_metrics(data, settle_band=10, torque_limit=900)
-    # 150*exp(-t/0.05) crosses 10 counts at t = 0.05*ln(15) ~ 135 ms
-    assert 80 <= m["moves"][0]["settle_ms"] <= 300
+    settle_band = 10
+    m = sc.compute_metrics(data, settle_band=settle_band, torque_limit=900)
+    decay_crosses_band_ms = (
+        1000.0 * DECAY_TAU_S * np.log(DECAY_AMP_COUNTS / settle_band)
+    )
+    assert (
+        0.6 * decay_crosses_band_ms
+        <= m["moves"][0]["settle_ms"]
+        <= 2.2 * decay_crosses_band_ms
+    )
 
 
 def test_torque_saturation_fraction(tmp_path):
@@ -147,10 +162,7 @@ def test_drive_vs_recomputed_error_consistent(tmp_path):
     path, _ = synth_capture(tmp_path)
     _, data = sc.load_capture(path)
     m = sc.compute_metrics(data, settle_band=10, torque_limit=900)
-    assert m["ferr_crosscheck_max"] == 0  # synth file is self-consistent
-
-
-# ── Fix 1: empty capture ────────────────────────────────────────────────────
+    assert m["ferr_crosscheck_max"] == 0, "synth file must be self-consistent"
 
 
 def _write_header_only(tmp_path):
@@ -182,30 +194,30 @@ def test_empty_capture_compute_metrics_raises(tmp_path):
         sc.compute_metrics(data, settle_band=10, torque_limit=900)
 
 
-# ── Fix 2: per-move post window clamped at next segment ─────────────────────
+MOVE0_WITH_DECAYING_ERROR = slice(1000, 1500)
+DWELL_BETWEEN_MOVES = slice(1500, 1530)
+MOVE1_WITH_PERSISTENT_ERROR = slice(1530, 2000)
 
 
 def synth_two_move_capture(tmp_path):
-    """Two consecutive moves separated by a short dwell.
-
-    Move 0 (samples 1000..1500): small error that decays to zero within the dwell.
-    Move 1 (samples 1530..2000): large 500-count error that persists.
-    """
     n = 3000
     fs = 1000.0
     t = np.arange(n) / fs
+    m0, dwell, m1 = (
+        MOVE0_WITH_DECAYING_ERROR,
+        DWELL_BETWEEN_MOVES,
+        MOVE1_WITH_PERSISTENT_ERROR,
+    )
 
     ferr = np.zeros(n)
-    # Move 0: modest error, decays fast in the 30-sample dwell (1500..1530)
-    ferr[1000:1500] = 80.0 * np.sin(2 * np.pi * 40.0 * t[1000:1500])
-    ferr[1500:1530] = 5.0 * np.exp(-np.arange(30) / 5.0)  # dies in dwell
-    # Move 1: big constant-ish error
-    ferr[1530:2000] = 500.0
+    ferr[m0] = 80.0 * np.sin(2 * np.pi * 40.0 * t[m0])
+    ferr[dwell] = 5.0 * np.exp(-np.arange(dwell.stop - dwell.start) / 5.0)
+    ferr[m1] = 500.0
 
     flags = np.zeros(n, dtype=np.uint8)
-    flags[:] = 1
-    flags[1000:1500] |= 2
-    flags[1530:2000] |= 2
+    flags[:] = FLAG_TORQUE_ENABLED
+    flags[m0] |= FLAG_MOTION_ACTIVE
+    flags[m1] |= FLAG_MOTION_ACTIVE
 
     target = np.cumsum(np.where(flags & 2, 100, 0)).astype(np.int64)
     torque = np.zeros(n, dtype=np.int16)
@@ -248,30 +260,29 @@ def test_per_move_post_window_not_contaminated(tmp_path):
     m = sc.compute_metrics(data, settle_band=50, torque_limit=900)
     assert len(m["moves"]) == 2
     move0 = m["moves"][0]
-    # Without the fix, overshoot for move 0 would be 500 (stolen from move 1).
     assert move0["overshoot"] < 50, (
         "move 0 overshoot contaminated by move 1 error: %s" % move0["overshoot"]
     )
-    # settle_ms must be a small number or None — NOT larger than the 30-sample dwell
+    dwell_ms_at_1khz = DWELL_BETWEEN_MOVES.stop - DWELL_BETWEEN_MOVES.start
     if move0["settle_ms"] is not None:
-        assert move0["settle_ms"] <= 30
+        assert move0["settle_ms"] <= dwell_ms_at_1khz
 
 
-# ── Fix 3: fs-aware ms conversion ───────────────────────────────────────────
+MOVE_AT_500HZ = slice(200, 400)
 
 
 def synth_500hz_capture(tmp_path):
-    """500 Hz capture (cycle_ns=2_000_000). 1000 records; move at samples 200..400."""
     n = 1000
     fs = 500.0
     t = np.arange(n) / fs
+    mv = MOVE_AT_500HZ
 
     ferr = np.zeros(n)
-    ferr[200:400] = 100.0 * np.sin(2 * np.pi * 20.0 * t[200:400])
+    ferr[mv] = 100.0 * np.sin(2 * np.pi * 20.0 * t[mv])
 
     flags = np.zeros(n, dtype=np.uint8)
-    flags[:] = 1
-    flags[200:400] |= 2
+    flags[:] = FLAG_TORQUE_ENABLED
+    flags[mv] |= FLAG_MOTION_ACTIVE
 
     target = np.cumsum(np.where(flags & 2, 100, 0)).astype(np.int64)
     torque = np.zeros(n, dtype=np.int16)
@@ -311,13 +322,14 @@ def synth_500hz_capture(tmp_path):
 def test_fs_aware_ms_at_500hz(tmp_path):
     path = synth_500hz_capture(tmp_path)
     _, data = sc.load_capture(path)
-    fs = 1e9 / 2_000_000  # 500.0
+    fs = 1e9 / 2_000_000
     m = sc.compute_metrics(data, settle_band=10, torque_limit=900, fs=fs)
     move = m["moves"][0]
-    # sample 200 at 500 Hz → 200 * (1000/500) = 400.0 ms
-    assert move["start_ms"] == pytest.approx(400.0)
-    # sample 400 at 500 Hz → 400 * (1000/500) = 800.0 ms
-    assert move["end_ms"] == pytest.approx(800.0)
+    ms_per_sample = 1000.0 / fs
+    assert move["start_ms"] == pytest.approx(
+        MOVE_AT_500HZ.start * ms_per_sample
+    )
+    assert move["end_ms"] == pytest.approx(MOVE_AT_500HZ.stop * ms_per_sample)
 
 
 def test_fs_1khz_values_unchanged(tmp_path):
@@ -336,17 +348,15 @@ def test_fs_1khz_values_unchanged(tmp_path):
         m_default["moves"][0]["settle_ms"]
         == m_explicit["moves"][0]["settle_ms"]
     )
-    # Values should be numeric (sample index == ms at 1 kHz)
     assert m_default["moves"][0]["start_ms"] == 1000.0
     assert m_default["moves"][0]["end_ms"] == 2000.0
 
 
-# ── Fix 4: offset assertion in load_capture ──────────────────────────────────
-
-
 def test_load_capture_offset_mismatch_raises(tmp_path):
-    bad_channels = [dict(c) for c in CHANNELS]
-    bad_channels[1] = dict(bad_channels[1], offset=999)  # flags offset wrong
+    channels_with_wrong_flags_offset = [dict(c) for c in CHANNELS]
+    channels_with_wrong_flags_offset[1] = dict(
+        channels_with_wrong_flags_offset[1], offset=999
+    )
     header = {
         "version": 1,
         "cycle_ns": 1_000_000,
@@ -354,7 +364,7 @@ def test_load_capture_offset_mismatch_raises(tmp_path):
         "started_utc": "2026-06-10T12:00:00Z",
         "started_mono_ns": 0,
         "drives": [{"name": "x", "counts_per_mm": 3276.8}],
-        "channels": bad_channels,
+        "channels": channels_with_wrong_flags_offset,
     }
     path = os.path.join(str(tmp_path), "bad_offset.scap")
     with open(path, "wb") as f:

@@ -8,26 +8,13 @@
 #include "ethercat.h"
 
 /*
- * PDO layout must match the drive's active mapping exactly.
- *
- * RxPDO 0x1701 (12 bytes):
+ * out_t mirrors the drive's fixed RxPDO 0x1701:
  *   controlword      6040  uint16
  *   target_position  607A  int32
  *   touch_probe_fn   60B8  uint16
  *   phys_outputs     60FE:01 uint32
- *
- * TxPDO 0x1A00 (32 bytes) — variable mapping, rewritten via SDO at every
- * bringup (drive does not persist PDO mapping across power cycles):
- *   error_code       603F  uint16
- *   statusword       6041  uint16
- *   position_actual  6064  int32
- *   torque_actual    6077  int16
- *   following_error  60F4  int32
- *   tp_status        60B9  uint16
- *   tp1_pos          60BA  int32
- *   tp2_pos          60BC  int32
- *   digital_inputs   60FD  uint32
- *   position_demand  6062  int32
+ * in_t mirrors the variable TxPDO 0x1A00 written by
+ * remap_volatile_tx_pdo_1a00() below.
  */
 #pragma pack(push, 1)
 typedef struct {
@@ -49,7 +36,9 @@ typedef struct {
     int32_t  position_demand;
 } in_t;
 #pragma pack(pop)
-_Static_assert(sizeof(in_t) == 32, "entries[] maps 32 bytes; in_t must match field-for-field, in order");
+_Static_assert(sizeof(in_t) == 32,
+               "rewrite_1a00_entry_table() maps 32 bytes; in_t must match "
+               "field-for-field, in order");
 
 static char    IOmap[4096];
 static out_t  *g_out;
@@ -94,63 +83,68 @@ static void go_realtime(int cpu, int prio) {
     if (sched_setscheduler(0, SCHED_FIFO, &sp) != 0) perror("ec_rt: SCHED_FIFO (continuing)");
 }
 
-/* The drive's fixed TxPDO 1B01h cannot carry 6062h; the variable TPDO 1A00h
- * (max 10 objects / 40 bytes) can. Mapping is RAM-only on the drive, so it
- * must be rewritten in PRE-OP at every bringup. Entry format per CoE:
- * index<<16 | subindex<<8 | bit-length.
- *
- * Order follows the A6-EC manual's documented PDO configuration sequence:
- * step ① configure the mapping GROUP (1C13h): clear count, pre-write 0x1A00
- * to 1C13h:01, write count 1; step ② configure the mapping OBJECTS (1A00h):
- * clear count, write entries 1..10, write count 10. */
-static int map_tx_pdo_1a00(void) {
-    static const uint32_t entries[10] = {
-        0x603F0010, /* error_code       u16 */
-        0x60410010, /* statusword       u16 */
-        0x60640020, /* position_actual  i32 */
-        0x60770010, /* torque_actual    i16 */
-        0x60F40020, /* following_error  i32 */
-        0x60B90010, /* tp_status        u16 */
-        0x60BA0020, /* tp1_pos          i32 */
-        0x60BC0020, /* tp2_pos          i32 */
-        0x60FD0020, /* digital_inputs   u32 */
-        0x60620020, /* position_demand  i32 */
-    };
-    uint8_t  zero8  = 0;
-    uint8_t  count  = 10;
-    uint16_t assign = 0x1A00;
-    uint8_t  one    = 1;
-    uint32_t abort  = 0;
+#define COE_ENTRY(index, sub, bits) \
+    (((uint32_t)(index) << 16) | ((uint32_t)(sub) << 8) | (uint32_t)(bits))
 
-    if (ec_rt_sdo_write(0x1C13, 0x00, &zero8,  sizeof(zero8),  &abort) != 0) {
-        fprintf(stderr, "ec_rt: remap SDO write 1C13h:00 failed abort=0x%08x\n", abort);
-        return -1;
-    }
-    if (ec_rt_sdo_write(0x1C13, 0x01, (uint8_t*)&assign, sizeof(assign), &abort) != 0) {
-        fprintf(stderr, "ec_rt: remap SDO write 1C13h:01 failed abort=0x%08x\n", abort);
-        return -1;
-    }
-    if (ec_rt_sdo_write(0x1C13, 0x00, &one,    sizeof(one),    &abort) != 0) {
-        fprintf(stderr, "ec_rt: remap SDO write 1C13h:00 (count=1) failed abort=0x%08x\n", abort);
-        return -1;
-    }
-    if (ec_rt_sdo_write(0x1A00, 0x00, &zero8,  sizeof(zero8),  &abort) != 0) {
-        fprintf(stderr, "ec_rt: remap SDO write 1A00h:00 (clear) failed abort=0x%08x\n", abort);
-        return -1;
-    }
-    for (int i = 0; i < 10; i++) {
-        uint32_t v = entries[i];
-        if (ec_rt_sdo_write(0x1A00, (uint8_t)(i + 1), (uint8_t*)&v, sizeof(v), &abort) != 0) {
-            fprintf(stderr, "ec_rt: remap SDO write 1A00h:%02Xh failed abort=0x%08x\n",
-                    i + 1, abort);
-            return -1;
-        }
-    }
-    if (ec_rt_sdo_write(0x1A00, 0x00, &count,  sizeof(count),  &abort) != 0) {
-        fprintf(stderr, "ec_rt: remap SDO write 1A00h:00 (count=10) failed abort=0x%08x\n", abort);
+#define TXPDO_ERROR_CODE      COE_ENTRY(0x603F, 0x00, 16)
+#define TXPDO_STATUSWORD      COE_ENTRY(0x6041, 0x00, 16)
+#define TXPDO_POSITION_ACTUAL COE_ENTRY(0x6064, 0x00, 32)
+#define TXPDO_TORQUE_ACTUAL   COE_ENTRY(0x6077, 0x00, 16)
+#define TXPDO_FOLLOWING_ERROR COE_ENTRY(0x60F4, 0x00, 32)
+#define TXPDO_TP_STATUS       COE_ENTRY(0x60B9, 0x00, 16)
+#define TXPDO_TP1_POS         COE_ENTRY(0x60BA, 0x00, 32)
+#define TXPDO_TP2_POS         COE_ENTRY(0x60BC, 0x00, 32)
+#define TXPDO_DIGITAL_INPUTS  COE_ENTRY(0x60FD, 0x00, 32)
+#define TXPDO_POSITION_DEMAND COE_ENTRY(0x6062, 0x00, 32)
+
+static int remap_write(uint16_t index, uint8_t sub, const void *buf, int size) {
+    uint32_t abort = 0;
+    if (ec_rt_sdo_write(index, sub, buf, size, &abort) != 0) {
+        fprintf(stderr, "ec_rt: remap SDO write %04Xh:%02Xh failed abort=0x%08x\n",
+                index, sub, abort);
         return -1;
     }
     return 0;
+}
+
+static int point_group_1c13_at_pdo_0x1a00(void) {
+    uint8_t  no_pdos  = 0;
+    uint8_t  one_pdo  = 1;
+    uint16_t pdo_1a00 = 0x1A00;
+    if (remap_write(0x1C13, 0x00, &no_pdos,  sizeof(no_pdos))  != 0) return -1;
+    if (remap_write(0x1C13, 0x01, &pdo_1a00, sizeof(pdo_1a00)) != 0) return -1;
+    return remap_write(0x1C13, 0x00, &one_pdo, sizeof(one_pdo));
+}
+
+static int rewrite_1a00_entry_table(void) {
+    static const uint32_t entries[] = {
+        TXPDO_ERROR_CODE,
+        TXPDO_STATUSWORD,
+        TXPDO_POSITION_ACTUAL,
+        TXPDO_TORQUE_ACTUAL,
+        TXPDO_FOLLOWING_ERROR,
+        TXPDO_TP_STATUS,
+        TXPDO_TP1_POS,
+        TXPDO_TP2_POS,
+        TXPDO_DIGITAL_INPUTS,
+        TXPDO_POSITION_DEMAND,
+    };
+    uint8_t no_entries  = 0;
+    uint8_t all_entries = sizeof(entries) / sizeof(entries[0]);
+    if (remap_write(0x1A00, 0x00, &no_entries, sizeof(no_entries)) != 0) return -1;
+    for (uint8_t i = 0; i < all_entries; i++) {
+        if (remap_write(0x1A00, (uint8_t)(i + 1), &entries[i], sizeof(entries[i])) != 0)
+            return -1;
+    }
+    return remap_write(0x1A00, 0x00, &all_entries, sizeof(all_entries));
+}
+
+/* The fixed TxPDO 1B01h cannot carry position_demand (6062h); only the
+ * variable 1A00h can, and the drive holds that mapping in RAM only. Group
+ * before objects is the A6-EC manual's required write order. */
+static int remap_volatile_tx_pdo_1a00(void) {
+    if (point_group_1c13_at_pdo_0x1a00() != 0) return -1;
+    return rewrite_1a00_entry_table();
 }
 
 static int rt_exchange(int64_t *toff) {
@@ -164,53 +158,52 @@ static int rt_exchange(int64_t *toff) {
     return wkc;
 }
 
+static int await_slave_state(uint16_t wanted, const char *name, int err) {
+    ec_slave[1].state = wanted;
+    ec_writestate(1);
+    if (ec_statecheck(1, wanted & ~EC_STATE_ACK, EC_TIMEOUTSTATE * 4)
+        != (wanted & ~EC_STATE_ACK)) {
+        fprintf(stderr, "ec_rt: slave 1 did not reach %s (state=0x%02x al=0x%04x)\n",
+                name, ec_slave[1].state, ec_slave[1].ALstatuscode);
+        return err;
+    }
+    return 0;
+}
+
+/* A session that dies mid-OP leaves live SM/DC state in the drive; skipping
+ * this reset lets the next OP come up exchanging process data at WKC 1. */
+static int restore_power_on_equivalent_state(void) {
+    int rc = await_slave_state(EC_STATE_INIT + EC_STATE_ACK, "INIT",
+                               EC_RT_ERR_INIT_TIMEOUT);
+    if (rc != 0) return rc;
+    return await_slave_state(EC_STATE_PRE_OP, "PRE-OP", EC_RT_ERR_PREOP_TIMEOUT);
+}
+
 int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio) {
     g_cycle_ns = cycle_ns < 250000 ? 250000 : cycle_ns;
     g_integral = 0;
     g_enabled  = 0;
     go_realtime(rt_cpu, rt_prio);
 
-    if (!ec_init(ifname)) return -1;
-    if (ec_config_init(FALSE) <= 0) { ec_close(); return -2; }
+    if (!ec_init(ifname)) return EC_RT_ERR_EC_INIT;
+    if (ec_config_init(FALSE) <= 0) { ec_close(); return EC_RT_ERR_NO_SLAVES; }
 
-    /* A previous session that died mid-OP leaves the drive with live SM, DC
-     * and mailbox state; without a full reset the next OP reaches state
-     * OPERATIONAL but exchanges process data at WKC 1 instead of 3. Bounce
-     * through INIT (acking any latched AL error) so every bringup starts
-     * from the same state as a fresh power-on, then wait for PRE-OP — the
-     * mailbox is not writable until the slave actually arrives there. */
-    ec_slave[1].state = EC_STATE_INIT + EC_STATE_ACK;
-    ec_writestate(1);
-    if (ec_statecheck(1, EC_STATE_INIT, EC_TIMEOUTSTATE * 4) != EC_STATE_INIT) {
-        fprintf(stderr, "ec_rt: slave 1 did not reach INIT (state=0x%02x al=0x%04x)\n",
-                ec_slave[1].state, ec_slave[1].ALstatuscode);
-        ec_close();
-        return -9;
-    }
-    ec_slave[1].state = EC_STATE_PRE_OP;
-    ec_writestate(1);
-    if (ec_statecheck(1, EC_STATE_PRE_OP, EC_TIMEOUTSTATE * 4) != EC_STATE_PRE_OP) {
-        fprintf(stderr, "ec_rt: slave 1 did not reach PRE-OP (state=0x%02x al=0x%04x)\n",
-                ec_slave[1].state, ec_slave[1].ALstatuscode);
-        ec_close();
-        return -8;
-    }
+    int reset_rc = restore_power_on_equivalent_state();
+    if (reset_rc != 0) { ec_close(); return reset_rc; }
 
-    if (map_tx_pdo_1a00() != 0) { ec_close(); return -6; }
+    if (remap_volatile_tx_pdo_1a00() != 0) { ec_close(); return EC_RT_ERR_PDO_REMAP; }
 
-    /*
-     * SDO bring-up order is identical to ec_spin.c and must be preserved
-     * exactly: mode first, then both sync-type subindices, then cycle-time
-     * subindices.  The drive requires SYNC0 active before SAFE-OP
-     * (else AL 0x0030 / Er74.1).
-     */
-    int8_t  opmode  = 8;                       /* CSP */
-    uint16_t sync_dc = 2;                      /* DC SYNC0 */
+    /* Write order matters: mode, both sync types, then cycle times. The
+     * drive requires SYNC0 active before SAFE-OP (else AL 0x0030 / Er74.1). */
+    int8_t  opmode_csp = 8;
+    uint16_t sync_type_dc_sync0 = 2;
     uint32_t cyc    = (uint32_t)g_cycle_ns;
 
-    ec_SDOwrite(1, 0x6060, 0x00, FALSE, sizeof(opmode),  &opmode,  EC_TIMEOUTRXM);
-    ec_SDOwrite(1, 0x1C32, 0x01, FALSE, sizeof(sync_dc), &sync_dc, EC_TIMEOUTRXM);
-    ec_SDOwrite(1, 0x1C33, 0x01, FALSE, sizeof(sync_dc), &sync_dc, EC_TIMEOUTRXM);
+    ec_SDOwrite(1, 0x6060, 0x00, FALSE, sizeof(opmode_csp), &opmode_csp, EC_TIMEOUTRXM);
+    ec_SDOwrite(1, 0x1C32, 0x01, FALSE, sizeof(sync_type_dc_sync0),
+                &sync_type_dc_sync0, EC_TIMEOUTRXM);
+    ec_SDOwrite(1, 0x1C33, 0x01, FALSE, sizeof(sync_type_dc_sync0),
+                &sync_type_dc_sync0, EC_TIMEOUTRXM);
     ec_SDOwrite(1, 0x1C32, 0x02, FALSE, sizeof(cyc),     &cyc,     EC_TIMEOUTRXM);
     ec_SDOwrite(1, 0x1C33, 0x02, FALSE, sizeof(cyc),     &cyc,     EC_TIMEOUTRXM);
     uint16_t ferr_timeout_ms = 0;
@@ -226,13 +219,13 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
                 (unsigned)ec_slave[1].Obytes, (unsigned)ec_slave[1].Ibytes,
                 sizeof(out_t), sizeof(in_t));
         ec_close();
-        return -7;
+        return EC_RT_ERR_PDO_SIZE;
     }
     /* If SAFE-OP is not reached, PDOs are not mapped and ec_slave[1].outputs may
      * be NULL/stale — bail before dereferencing it in the stabilize loop. */
     if (ec_statecheck(0, EC_STATE_SAFE_OP, EC_TIMEOUTSTATE * 4) != EC_STATE_SAFE_OP) {
         ec_close();
-        return -3;
+        return EC_RT_ERR_SAFE_OP_TIMEOUT;
     }
 
     g_out = (out_t *) ec_slave[1].outputs;
@@ -263,7 +256,7 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
         if (i % 20 == 0) ec_readstate();
         if (ec_slave[0].state == EC_STATE_OPERATIONAL) break;
     }
-    if (ec_slave[0].state != EC_STATE_OPERATIONAL) return -4;
+    if (ec_slave[0].state != EC_STATE_OPERATIONAL) return EC_RT_ERR_OP_TIMEOUT;
 
     for (int64_t pc = 0; pc < 3000; pc++) {
         uint16_t sw = g_in->statusword;
@@ -280,7 +273,7 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
         }
         rt_exchange(&toff);
     }
-    return -5;
+    return EC_RT_ERR_CIA402_TIMEOUT;
 }
 
 int ec_rt_enable(void) {
@@ -315,7 +308,7 @@ int ec_rt_enable(void) {
         }
         rt_exchange(&toff);
     }
-    return -5;
+    return EC_RT_ERR_CIA402_TIMEOUT;
 }
 
 int ec_rt_cycle(int64_t *toff_ns) {

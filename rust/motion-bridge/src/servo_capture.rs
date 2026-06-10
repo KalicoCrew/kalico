@@ -7,8 +7,6 @@ use kalico_protocol::messages::{
     MessageKind, StartCapture, StartCaptureResponse, StopCapture, StopCaptureResponse,
 };
 
-// Capture start/stop only touch the command path (no CiA402 ladder); a stop
-// additionally joins the writer thread, which flushes at most one fsync.
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub fn send_start_capture(
