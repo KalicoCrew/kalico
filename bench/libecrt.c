@@ -103,14 +103,6 @@ static void go_realtime(int cpu, int prio) {
  * step ① configure the mapping GROUP (1C13h): clear count, pre-write 0x1A00
  * to 1C13h:01, write count 1; step ② configure the mapping OBJECTS (1A00h):
  * clear count, write entries 1..10, write count 10. */
-static int sdo_write_checked(uint16_t index, uint8_t sub, int size, void *value) {
-    if (ec_SDOwrite(1, index, sub, FALSE, size, value, EC_TIMEOUTRXM) <= 0) {
-        fprintf(stderr, "ec_rt: remap SDO write %04Xh:%02Xh failed\n", index, sub);
-        return -1;
-    }
-    return 0;
-}
-
 static int map_tx_pdo_1a00(void) {
     static const uint32_t entries[10] = {
         0x603F0010, /* error_code       u16 */
@@ -128,15 +120,36 @@ static int map_tx_pdo_1a00(void) {
     uint8_t  count  = 10;
     uint16_t assign = 0x1A00;
     uint8_t  one    = 1;
-    if (sdo_write_checked(0x1C13, 0x00, sizeof(zero8),  &zero8)  != 0) return -1;
-    if (sdo_write_checked(0x1C13, 0x01, sizeof(assign), &assign) != 0) return -1;
-    if (sdo_write_checked(0x1C13, 0x00, sizeof(one),    &one)    != 0) return -1;
-    if (sdo_write_checked(0x1A00, 0x00, sizeof(zero8),  &zero8)  != 0) return -1;
+    uint32_t abort  = 0;
+
+    if (ec_rt_sdo_write(0x1C13, 0x00, &zero8,  sizeof(zero8),  &abort) != 0) {
+        fprintf(stderr, "ec_rt: remap SDO write 1C13h:00 failed abort=0x%08x\n", abort);
+        return -1;
+    }
+    if (ec_rt_sdo_write(0x1C13, 0x01, (uint8_t*)&assign, sizeof(assign), &abort) != 0) {
+        fprintf(stderr, "ec_rt: remap SDO write 1C13h:01 failed abort=0x%08x\n", abort);
+        return -1;
+    }
+    if (ec_rt_sdo_write(0x1C13, 0x00, &one,    sizeof(one),    &abort) != 0) {
+        fprintf(stderr, "ec_rt: remap SDO write 1C13h:00 (count=1) failed abort=0x%08x\n", abort);
+        return -1;
+    }
+    if (ec_rt_sdo_write(0x1A00, 0x00, &zero8,  sizeof(zero8),  &abort) != 0) {
+        fprintf(stderr, "ec_rt: remap SDO write 1A00h:00 (clear) failed abort=0x%08x\n", abort);
+        return -1;
+    }
     for (int i = 0; i < 10; i++) {
         uint32_t v = entries[i];
-        if (sdo_write_checked(0x1A00, (uint8_t)(i + 1), sizeof(v), &v) != 0) return -1;
+        if (ec_rt_sdo_write(0x1A00, (uint8_t)(i + 1), (uint8_t*)&v, sizeof(v), &abort) != 0) {
+            fprintf(stderr, "ec_rt: remap SDO write 1A00h:%02Xh failed abort=0x%08x\n",
+                    i + 1, abort);
+            return -1;
+        }
     }
-    if (sdo_write_checked(0x1A00, 0x00, sizeof(count),  &count)  != 0) return -1;
+    if (ec_rt_sdo_write(0x1A00, 0x00, &count,  sizeof(count),  &abort) != 0) {
+        fprintf(stderr, "ec_rt: remap SDO write 1A00h:00 (count=10) failed abort=0x%08x\n", abort);
+        return -1;
+    }
     return 0;
 }
 
@@ -177,6 +190,9 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     ec_SDOwrite(1, 0x1C33, 0x01, FALSE, sizeof(sync_dc), &sync_dc, EC_TIMEOUTRXM);
     ec_SDOwrite(1, 0x1C32, 0x02, FALSE, sizeof(cyc),     &cyc,     EC_TIMEOUTRXM);
     ec_SDOwrite(1, 0x1C33, 0x02, FALSE, sizeof(cyc),     &cyc,     EC_TIMEOUTRXM);
+    uint16_t ferr_timeout_ms = 0;
+    ec_SDOwrite(1, 0x6066, 0x00, FALSE, sizeof(ferr_timeout_ms),
+                &ferr_timeout_ms, EC_TIMEOUTRXM);
 
     ec_configdc();
     ec_dcsync0(1, TRUE, (uint32_t)g_cycle_ns, (int32_t)(g_cycle_ns / 2));
@@ -303,6 +319,67 @@ void ec_rt_get_telemetry(ec_telemetry_t *out) {
     out->following_error = g_in->following_error;
     out->position_demand = g_in->position_demand;
     out->target_position = g_out->target_position;
+}
+
+int ec_rt_read_limits(uint32_t *ferr_counts, uint16_t *ferr_timeout_ms,
+                      uint16_t *torque_tenth_pct)
+{
+    int sz = sizeof(*ferr_counts);
+    if (ec_SDOread(1, 0x6065, 0x00, FALSE, &sz, ferr_counts, EC_TIMEOUTRXM) <= 0)
+        return -1;
+    sz = sizeof(*ferr_timeout_ms);
+    if (ec_SDOread(1, 0x6066, 0x00, FALSE, &sz, ferr_timeout_ms, EC_TIMEOUTRXM) <= 0)
+        return -2;
+    sz = sizeof(*torque_tenth_pct);
+    if (ec_SDOread(1, 0x6072, 0x00, FALSE, &sz, torque_tenth_pct, EC_TIMEOUTRXM) <= 0)
+        return -3;
+    return 0;
+}
+
+int ec_rt_write_limits(uint32_t ferr_counts, uint16_t torque_tenth_pct)
+{
+    if (ec_SDOwrite(1, 0x6065, 0x00, FALSE, sizeof(ferr_counts), &ferr_counts,
+                    EC_TIMEOUTRXM) <= 0)
+        return -1;
+    if (ec_SDOwrite(1, 0x6072, 0x00, FALSE, sizeof(torque_tenth_pct),
+                    &torque_tenth_pct, EC_TIMEOUTRXM) <= 0)
+        return -2;
+    return 0;
+}
+
+static uint32_t ec_rt_pop_abort_code(void) {
+    uint32_t code = 0;
+    while (ec_iserror()) {
+        ec_errort err;
+        if (!ec_poperror(&err)) break;
+        if (err.Etype == EC_ERR_TYPE_SDO_ERROR && code == 0) code = err.AbortCode;
+    }
+    return code;
+}
+
+int ec_rt_sdo_read(uint16_t index, uint8_t sub, uint8_t *buf, int *size,
+                   uint32_t *abort_code) {
+    ec_rt_pop_abort_code();
+    *abort_code = 0;
+    int wkc = ec_SDOread(1, index, sub, FALSE, size, buf, EC_TIMEOUTRXM);
+    if (wkc <= 0) {
+        *abort_code = ec_rt_pop_abort_code();
+        return -1;
+    }
+    return 0;
+}
+
+int ec_rt_sdo_write(uint16_t index, uint8_t sub, const uint8_t *buf, int size,
+                    uint32_t *abort_code) {
+    ec_rt_pop_abort_code();
+    *abort_code = 0;
+    int wkc = ec_SDOwrite(1, index, sub, FALSE, size, (void *)buf,
+                          EC_TIMEOUTRXM);
+    if (wkc <= 0) {
+        *abort_code = ec_rt_pop_abort_code();
+        return -1;
+    }
+    return 0;
 }
 
 void ec_rt_disable(void) {

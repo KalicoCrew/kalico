@@ -55,6 +55,12 @@ _STUB_MOTION_METHODS = frozenset(
         "set_msgproto_dict",
         "bridge_call",
         "bridge_send",
+        "set_torque",
+        "set_drive_limits",
+        "restore_drive_limits",
+        "take_drive_fault",
+        "sdo_read",
+        "sdo_write",
     }
 )
 
@@ -129,11 +135,37 @@ class MotionBridgeWrapper:
         return self._bridge.claim_mcu(label, serial_path, baud)
 
     def claim_ethercat_node(
-        self, label, socket_path, interface, endpoint, counts_per_mm
+        self,
+        label,
+        socket_path,
+        interface,
+        endpoint,
+        counts_per_mm,
+        following_error_counts=None,
+        max_torque_tenth_pct=None,
     ):
         return self._bridge.claim_ethercat_node(
-            label, socket_path, interface, endpoint, counts_per_mm
+            label,
+            socket_path,
+            interface,
+            endpoint,
+            counts_per_mm,
+            following_error_counts,
+            max_torque_tenth_pct,
         )
+
+    def set_drive_limits(
+        self, mcu_handle, following_error_counts, max_torque_tenth_pct
+    ):
+        return self._bridge.set_drive_limits(
+            mcu_handle, following_error_counts, max_torque_tenth_pct
+        )
+
+    def restore_drive_limits(self, mcu_handle):
+        return self._bridge.restore_drive_limits(mcu_handle)
+
+    def take_drive_fault(self, mcu_handle):
+        return self._bridge.take_drive_fault(mcu_handle)
 
     def set_torque(self, mcu_handle, value, print_time):
         self._bridge.set_torque(mcu_handle, bool(value), print_time)
@@ -145,6 +177,12 @@ class MotionBridgeWrapper:
 
     def stop_servo_capture(self, mcu_handle):
         return self._bridge.stop_servo_capture(mcu_handle)
+
+    def sdo_read(self, mcu_handle, index, subindex):
+        return self._bridge.sdo_read(mcu_handle, index, subindex)
+
+    def sdo_write(self, mcu_handle, index, subindex, size, value):
+        return self._bridge.sdo_write(mcu_handle, index, subindex, size, value)
 
     def release_mcu(self, handle):
         return self._bridge.release_mcu(handle)

@@ -92,12 +92,67 @@ rotation_distance: 40         # mm of axis travel per motor revolution (your mec
 encoder_counts_per_rev: 131072  # required; drive encoder counts per motor rev (A6-EC: 131072)
 position_min: 0
 position_max: 300
+# Homing (optional). With these set, G28 homes the servo axis against a GPIO
+# endstop on any bridge MCU; without endstop_pin the axis has no endstop and
+# G28 on it fails loudly.
+#endstop_pin: PA13             # pin on the MCU that carries the switch
+#position_endstop: 0           # must equal position_min or position_max
+#homing_speed: 50
+#homing_retract_dist: 5        # back-off after endstop contact (default 5, 0 disables)
+#homing_retract_speed: 50      # back-off speed (default: homing_speed)
+# Drive protection (homing-scoped: written to 6065h/6072h around each G28,
+# restored after; a trip de-energizes the drive and fails the G28 loudly):
+#homing_following_error: 2.5   # mm of commanded-vs-actual deviation (default 2.5)
+#homing_max_torque: 50         # % of rated torque during homing (default 50)
+# Session-wide variants (written once at bringup; unset = drive defaults):
+#following_error: 10
+#max_torque: 150
 ```
 
 `counts_per_mm = encoder_counts_per_rev / rotation_distance` — the `CountMap` gain
 the endpoint uses to convert host millimetres to drive counts. klippy derives it at
 claim time from `[servo_x]` and hands it to the spawned endpoint. Get both keys right
 before the drive moves.
+
+## Drive parameters (SDO)
+
+Drive tuning lives in config, not drive EEPROM. `params:` entries on `[servo_*]`
+are raw CoE object addresses pushed to drive RAM (never EEPROM) on every claim,
+after bringup succeeds and before the claim is reported healthy. Each write is
+read back; a mismatch (drive clamped or rejected the value) fails the claim with
+the offending address, the value written, and what the drive settled on.
+
+```ini
+[servo_x]
+# ... options above ...
+params:
+    0x2002.0: 100          # size probed via SDO upload (one extra mailbox round-trip)
+    0x2003.0: u16 250      # explicit type (u8/u16/u32/i8/i16/i32) skips the probe
+    0x2010.1: i32 -4096
+```
+
+Ad-hoc access while tuning:
+
+```
+SERVO_PARAM SERVO=servo_x GET=0x2002.0
+SERVO_PARAM SERVO=servo_x GET=0x2002.0 TYPE=i16
+SERVO_PARAM SERVO=servo_x SET=0x2002.0 VALUE=100 TYPE=u16
+```
+
+GET without `TYPE=` prints raw hex plus both unsigned and signed decimal
+interpretations. SET reads the value back and reports what the drive settled on.
+Objects wider than 4 bytes (strings, segmented transfers) are unsupported and
+fail loudly. SDO traffic is mailbox traffic — it rides between DC cycles, fast
+but not deterministic; anything needing hard-real-time parameter changes gets
+mapped into the PDO instead.
+
+To deliberately persist parameters to drive EEPROM, SET the drive's
+store-parameters object (CiA 301 object 0x1010 — check the A6-EC manual for the
+magic value) — kalico never does this implicitly.
+
+The stub endpoint serves a small fake object dictionary (0x2002.0, 0x2003.0
+clamping at 500, 0x2010.1, 0x6041.0 read-only), so the whole path — claim-push,
+verify-mismatch claim failure, SERVO_PARAM — can be validated drive-off.
 
 ## Bring-up sequence
 

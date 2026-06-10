@@ -92,6 +92,44 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         ],
     },
     SchemaMessage {
+        type_tag: 0x0068,
+        name: "StartCapture",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "path", ty: "string" },
+            SchemaField { name: "started_utc", ty: "string" },
+            SchemaField { name: "drive_name", ty: "string" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0069,
+        name: "StartCaptureResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x006A,
+        name: "StopCapture",
+        version: 1,
+        channel: "control",
+        fields: &[],
+    },
+    SchemaMessage {
+        type_tag: 0x006B,
+        name: "StopCaptureResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+            SchemaField { name: "samples", ty: "u64" },
+            SchemaField { name: "overflow_cycle", ty: "u64" },
+        ],
+    },
+    SchemaMessage {
         type_tag: 0x0070,
         name: "SetTorque",
         version: 1,
@@ -129,18 +167,17 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
     },
     SchemaMessage {
         type_tag: 0x0074,
-        name: "StartCapture",
+        name: "SetDriveLimits",
         version: 1,
         channel: "control",
         fields: &[
-            SchemaField { name: "path", ty: "string" },
-            SchemaField { name: "started_utc", ty: "string" },
-            SchemaField { name: "drive_name", ty: "string" },
+            SchemaField { name: "following_error_counts", ty: "u32" },
+            SchemaField { name: "max_torque_tenth_pct", ty: "u16" },
         ],
     },
     SchemaMessage {
         type_tag: 0x0075,
-        name: "StartCaptureResponse",
+        name: "SetDriveLimitsResponse",
         version: 1,
         channel: "control",
         fields: &[
@@ -149,20 +186,34 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
     },
     SchemaMessage {
         type_tag: 0x0076,
-        name: "StopCapture",
+        name: "RestoreDriveLimits",
         version: 1,
         channel: "control",
         fields: &[],
     },
     SchemaMessage {
         type_tag: 0x0077,
-        name: "StopCaptureResponse",
+        name: "RestoreDriveLimitsResponse",
         version: 1,
         channel: "control",
         fields: &[
             SchemaField { name: "result", ty: "i32" },
-            SchemaField { name: "samples", ty: "u64" },
-            SchemaField { name: "overflow_cycle", ty: "u64" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0078,
+        name: "ResumeStream",
+        version: 1,
+        channel: "control",
+        fields: &[],
+    },
+    SchemaMessage {
+        type_tag: 0x0079,
+        name: "ResumeStreamResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
         ],
     },
     SchemaMessage {
@@ -183,10 +234,8 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         channel: "events",
         fields: &[
             SchemaField { name: "engine_state", ty: "u8" },
-            SchemaField { name: "fault_code", ty: "u8" },
+            SchemaField { name: "fault_code", ty: "u16" },
             SchemaField { name: "num_axes", ty: "u8" },
-            // retired_counts: num_axes × u32 — variable-length, length-prefixed
-            // by num_axes on the wire.
             SchemaField { name: "retired_counts", ty: "array<u32>" },
         ],
     },

@@ -1,3 +1,4 @@
+import contextlib
 import logging
 
 from klippy.bridge_endstop import AXIS_ENDSTOP_IDS, BridgeEndstop
@@ -7,18 +8,98 @@ TRIP_DEADLINE_MARGIN = 5.0
 NO_MOVEMENT_EPSILON = 0.005
 
 
+def _endstop_section(config, axis_name):
+    for prefix in ("stepper_", "servo_"):
+        section = prefix + axis_name
+        if config.has_section(section):
+            return section
+    return None
+
+
+def _enable_homing_motors(stepper_enable, rail):
+    steppers = rail.get_steppers()
+    if not steppers:
+        stepper_enable.motor_debug_enable(rail.get_name(), True)
+        return
+    for s in steppers:
+        stepper_enable.motor_debug_enable(s.get_name(), True)
+
+
+@contextlib.contextmanager
+def _servo_drive_limits(bridge, handle, limits):
+    if handle is None or limits is None:
+        yield
+        return
+    bridge.set_drive_limits(handle, limits[0], limits[1])
+    try:
+        yield
+    except BaseException:
+        try:
+            bridge.restore_drive_limits(handle)
+        except Exception:
+            logging.warning(
+                "homing: restore_drive_limits failed while handling a"
+                " homing error",
+                exc_info=True,
+            )
+        raise
+    bridge.restore_drive_limits(handle)
+
+
+def _run_servo_guarded_trip(
+    gcmd, bridge, axis, stepper_enable, rail, servo_handle, servo_limits, trip
+):
+    try:
+        with _servo_drive_limits(bridge, servo_handle, servo_limits):
+            result = trip()
+        _check_servo_drive_fault(gcmd, bridge, axis, servo_handle)
+    except BaseException:
+        if servo_handle is not None:
+            stepper_enable.motor_debug_enable(rail.get_name(), False)
+        raise
+    return result
+
+
+def _check_servo_drive_fault(gcmd, bridge, axis, servo_handle):
+    if servo_handle is None:
+        return
+    fault = bridge.take_drive_fault(servo_handle)
+    if fault is not None:
+        raise gcmd.error(
+            "%s homing: drive fault 0x%04x at endstop contact — "
+            "following-error/torque limit exceeded" % ("XYZ"[axis], fault)
+        )
+
+
 class Homing:
     def __init__(self, config):
         self.printer = config.get_printer()
+        self._config = config
+        self._axes = None
+
+        gcode = self.printer.lookup_object("gcode")
+        gcode.register_command("G28", self.cmd_G28, desc="Home")
+        gcode.register_command(
+            "_HOME_TEST",
+            self.cmd_HOME_TEST,
+            desc="Bench only: home one axis with override SPEED/MAX_TRAVEL",
+        )
+
+    def resolve_endstops(self):
+        if self._config is None:
+            raise self.printer.config_error(
+                "homing: resolve_endstops called twice"
+            )
+        config, self._config = self._config, None
         ppins = self.printer.lookup_object("pins")
 
         self._axes = {}
         for axis_index, axis_name in enumerate("xyz"):
-            section = "stepper_" + axis_name
-            if not config.has_section(section):
+            section = _endstop_section(config, axis_name)
+            if section is None:
                 continue
-            stepper_config = config.getsection(section)
-            endstop_pin = stepper_config.get("endstop_pin", None)
+            axis_config = config.getsection(section)
+            endstop_pin = axis_config.get("endstop_pin", None)
             if endstop_pin is None:
                 continue
             pin_params = ppins.parse_pin(
@@ -27,7 +108,7 @@ class Homing:
             chip = pin_params["chip"]
             if hasattr(chip, "setup_bridge_endstop"):
                 entry = self._provider_entry(
-                    stepper_config, axis_index, chip, pin_params
+                    axis_config, axis_index, chip, pin_params
                 )
             elif hasattr(chip, "create_oid"):
                 entry = {
@@ -45,30 +126,22 @@ class Homing:
                 )
             self._axes[axis_index] = entry
 
-        gcode = self.printer.lookup_object("gcode")
-        gcode.register_command("G28", self.cmd_G28, desc="Home")
-        gcode.register_command(
-            "_HOME_TEST",
-            self.cmd_HOME_TEST,
-            desc="Bench only: home one axis with override SPEED/MAX_TRAVEL",
-        )
-
         query_endstops = self.printer.load_object(config, "query_endstops")
         for axis_index in sorted(self._axes):
             query_endstops.register_endstop(
                 self._axes[axis_index]["endstop"], "xyz"[axis_index]
             )
 
-    def _provider_entry(self, stepper_config, axis_index, chip, pin_params):
+    def _provider_entry(self, axis_config, axis_index, chip, pin_params):
         endstop = chip.setup_bridge_endstop(pin_params, axis_index)
         trigger_height = None
         if hasattr(chip, "get_position_endstop"):
             trigger_height = chip.get_position_endstop()
-            if stepper_config.get("position_endstop", None) is not None:
-                raise stepper_config.error(
+            if axis_config.get("position_endstop", None) is not None:
+                raise axis_config.error(
                     "[%s] must not set position_endstop: its virtual endstop"
                     " '%s' supplies the trigger height"
-                    % (stepper_config.get_name(), pin_params["chip_name"])
+                    % (axis_config.get_name(), pin_params["chip_name"])
                 )
         return {
             "endstop": endstop,
@@ -77,6 +150,8 @@ class Homing:
         }
 
     def cmd_G28(self, gcmd):
+        if self._axes is None:
+            raise gcmd.error("G28: homing endstops were never resolved")
         requested = [
             i for i, a in enumerate("XYZ") if gcmd.get(a, None) is not None
         ]
@@ -92,6 +167,8 @@ class Homing:
             self._home_axis(gcmd, toolhead, bridge, kin, axis, entry)
 
     def cmd_HOME_TEST(self, gcmd):
+        if self._axes is None:
+            raise gcmd.error("_HOME_TEST: homing endstops were never resolved")
         axis_name = gcmd.get("AXIS").upper()
         if axis_name not in ("X", "Y", "Z"):
             raise gcmd.error("_HOME_TEST: AXIS must be X, Y, or Z")
@@ -136,30 +213,83 @@ class Homing:
         )
 
         stepper_enable = self.printer.lookup_object("stepper_enable")
-        for s in rail.get_steppers():
-            stepper_enable.motor_debug_enable(s.get_name(), True)
+        homing_deltas = [0.0, 0.0, 0.0]
+        homing_deltas[axis] = 1.0
+        for active_rail in kin.active_rails(*homing_deltas):
+            _enable_homing_motors(stepper_enable, active_rail)
 
-        trip_pos, final_pos = self.trip_move(
-            gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry
-        )
+        servo_handle = None
+        servo_limits = None
+        if hasattr(rail, "get_node_name"):
+            node = self.printer.lookup_object(
+                "ethercat_node " + rail.get_node_name()
+            )
+            servo_handle = node.get_bridge_handle()
+            servo_limits = rail.get_homing_drive_limits()
 
-        overshoot = final_pos[axis] - trip_pos[axis]
-        newpos = list(toolhead.get_position())
-        newpos[axis] = trigger_height + overshoot
-        toolhead.set_position(newpos, homing_axes=[axis])
-        logging.info(
-            "homing: %s trigger=%.4f overshoot=%+.4f set %s=%.4f",
-            "XYZ"[axis],
-            trigger_height,
-            overshoot,
-            "XYZ"[axis],
-            newpos[axis],
-        )
-        if hi.retract_dist:
-            retractpos = list(toolhead.get_position())
-            retractpos[axis] -= direction * hi.retract_dist
-            toolhead.move(retractpos, hi.retract_speed)
-            toolhead.wait_moves()
+        self._set_homing_current(toolhead, rail, pre_homing=True)
+        try:
+            trip_pos, final_pos = _run_servo_guarded_trip(
+                gcmd,
+                bridge,
+                axis,
+                stepper_enable,
+                rail,
+                servo_handle,
+                servo_limits,
+                lambda: self.trip_move(
+                    gcmd,
+                    toolhead,
+                    bridge,
+                    axis,
+                    direction,
+                    speed,
+                    max_travel,
+                    entry,
+                ),
+            )
+
+            overshoot = final_pos[axis] - trip_pos[axis]
+            newpos = list(toolhead.get_position())
+            newpos[axis] = trigger_height + overshoot
+            toolhead.set_position(newpos, homing_axes=[axis])
+            logging.info(
+                "homing: %s trigger=%.4f overshoot=%+.4f set %s=%.4f",
+                "XYZ"[axis],
+                trigger_height,
+                overshoot,
+                "XYZ"[axis],
+                newpos[axis],
+            )
+            if hi.retract_dist:
+                retractpos = list(toolhead.get_position())
+                retractpos[axis] -= direction * hi.retract_dist
+                toolhead.move(retractpos, hi.retract_speed)
+                toolhead.wait_moves()
+            _check_servo_drive_fault(gcmd, bridge, axis, servo_handle)
+        except BaseException:
+            try:
+                self._set_homing_current(toolhead, rail, pre_homing=False)
+            except Exception:
+                logging.exception(
+                    "homing: current restore failed during error unwind"
+                )
+            raise
+        else:
+            self._set_homing_current(toolhead, rail, pre_homing=False)
+
+    def _set_homing_current(self, toolhead, rail, pre_homing):
+        print_time = toolhead.get_last_move_time()
+        dwell_time = 0.0
+        for current_helper in rail.get_tmc_current_helpers():
+            if current_helper is None:
+                continue
+            dwell_time = max(
+                dwell_time,
+                current_helper.set_current_for_homing(print_time, pre_homing),
+            )
+        if dwell_time:
+            toolhead.dwell(dwell_time)
 
     def trip_move(
         self, gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry

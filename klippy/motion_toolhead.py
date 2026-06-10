@@ -99,7 +99,7 @@ class BridgeKinematics:
 
         self.limits = [(1.0, -1.0)] * 3
 
-        self._printer.load_object(config, "homing")
+        self._printer.load_object(config, "homing").resolve_endstops()
 
         self._printer.register_event_handler(
             "stepper_enable:motor_off",
@@ -146,6 +146,24 @@ class BridgeKinematics:
 
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
+
+    def active_rails(self, dx, dy, dz):
+        moved = {
+            axis: abs(delta) > 1e-9 for axis, delta in zip("xyz", (dx, dy, dz))
+        }
+        coupled = dict(moved)
+        if self.kinematics == "corexy":
+            coupled["x"] = coupled["y"] = moved["x"] or moved["y"]
+        elif self.kinematics == "hybrid_corexy":
+            coupled["x"] = moved["x"] or moved["y"]
+        active = []
+        for rail in self.rails:
+            if isinstance(rail, servo_axis.ServoRail):
+                if moved[rail.axis]:
+                    active.append(rail)
+            elif coupled[rail.get_name(short=True)[0]]:
+                active.append(rail)
+        return active
 
     def calc_position(self, stepper_positions):
         def rail_pos(rail):
@@ -337,8 +355,7 @@ class MotionToolhead(ToolHead):
             de,
             feedrate,
         )
-        enable_print_time = self.get_last_move_time()
-        self._fire_active_callbacks(dx, dy, dz, de, enable_print_time)
+        self._fire_active_callbacks()
         bridge_lmt_before = self.bridge.get_last_move_time()
         self.bridge.submit_move(dx, dy, dz, de, feedrate)
         self._bump_pending_end_time(
@@ -347,32 +364,25 @@ class MotionToolhead(ToolHead):
         self.commanded_pos[:] = move.end_pos
         self._sync_print_time()
 
-    def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
+    def _fire_active_callbacks(self):
         if self.kin is None:
             return False
-        if print_time is None:
-            print_time = self.get_last_move_time()
         fired = False
-        for s in self.kin.get_steppers():
-            if not s._active_callbacks:
+        servo_rails = [
+            rail
+            for rail in getattr(self.kin, "rails", ())
+            if isinstance(rail, servo_axis.ServoRail)
+        ]
+        # Motion pieces stream to every queue, including servo axes that hold
+        # still — so every motor must be powered the moment any motion starts,
+        # or the ec-rt torque gate faults on pieces-while-parked.
+        for owner in list(self.kin.get_steppers()) + servo_rails:
+            if not owner._active_callbacks:
                 continue
-            cbs = s._active_callbacks
-            s._active_callbacks = []
+            cbs = owner._active_callbacks
+            owner._active_callbacks = []
             for cb in cbs:
-                cb(print_time)
-            fired = True
-        for rail in getattr(self.kin, "rails", ()):
-            if not isinstance(rail, servo_axis.ServoRail):
-                continue
-            if not rail._active_callbacks:
-                continue
-            axis_delta = (dx, dy, dz)["xyz".index(rail.axis)]
-            if abs(axis_delta) <= 1e-9:
-                continue
-            cbs = rail._active_callbacks
-            rail._active_callbacks = []
-            for cb in cbs:
-                cb(print_time)
+                cb(self.get_last_move_time())
             fired = True
         return fired
 
@@ -495,6 +505,11 @@ class MotionToolhead(ToolHead):
         self.bridge.update_limits(self.max_velocity, self.max_accel)
 
     def stats(self, eventtime):
+        max_queue_time = max(self.print_time, self._mcu_pending_end_time)
+        for m in self.all_mcus:
+            if getattr(m, "non_critical_disconnected", False):
+                continue
+            m.check_active(max_queue_time, eventtime)
         return False, "print_time=%.3f buffer_time=0.000 print_stall=%d" % (
             self.print_time,
             self.print_stall,

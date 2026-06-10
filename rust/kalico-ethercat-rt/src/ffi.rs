@@ -44,6 +44,30 @@ extern "C" {
 
     pub fn ec_rt_get_following_error() -> i32;
 
+    pub fn ec_rt_read_limits(
+        ferr_counts: *mut u32,
+        ferr_timeout_ms: *mut u16,
+        torque_tenth_pct: *mut u16,
+    ) -> c_int;
+
+    pub fn ec_rt_write_limits(ferr_counts: u32, torque_tenth_pct: u16) -> c_int;
+
+    pub fn ec_rt_sdo_read(
+        index: u16,
+        sub: u8,
+        buf: *mut u8,
+        size: *mut c_int,
+        abort_code: *mut u32,
+    ) -> c_int;
+
+    pub fn ec_rt_sdo_write(
+        index: u16,
+        sub: u8,
+        buf: *const u8,
+        size: c_int,
+        abort_code: *mut u32,
+    ) -> c_int;
+
     pub fn ec_rt_disable();
 
     pub fn ec_rt_shutdown();

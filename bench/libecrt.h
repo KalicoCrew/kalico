@@ -40,9 +40,26 @@ typedef struct {
 
 void ec_rt_get_telemetry(ec_telemetry_t *out);
 
+/* SDO-read 6065h/6066h/6072h. 0 on success; -1/-2/-3 per failing object. */
+int ec_rt_read_limits(uint32_t *ferr_counts, uint16_t *ferr_timeout_ms,
+                      uint16_t *torque_tenth_pct);
+
+/* SDO-write 6065h and 6072h. 0 on success; -1/-2 per failing object. */
+int ec_rt_write_limits(uint32_t ferr_counts, uint16_t torque_tenth_pct);
+
 /* controlword = 0x0006 (disable voltage path), held for a few cycles. */
 void ec_rt_disable(void);
 
 void ec_rt_shutdown(void);
+
+/* SDO upload from slave 1. On entry *size is the buffer capacity; on success
+ * it holds the object's byte count. Returns 0 on success, -1 on failure with
+ * *abort_code holding the CoE abort code (0 = transport-level failure). */
+int ec_rt_sdo_read(uint16_t index, uint8_t sub, uint8_t *buf, int *size,
+                   uint32_t *abort_code);
+
+/* SDO download to slave 1. Same return/abort_code convention. */
+int ec_rt_sdo_write(uint16_t index, uint8_t sub, const uint8_t *buf, int size,
+                    uint32_t *abort_code);
 
 #endif

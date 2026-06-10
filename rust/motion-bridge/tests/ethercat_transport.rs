@@ -101,7 +101,6 @@ fn pump_routes_both_serial_and_ethercat_mcu_ids() {
         pieces: vec![piece(0)],
         fresh_stream: false,
         lead_secs: motion_bridge_native::pump::MAX_LEAD_SECS,
-        drip_cohort: None,
     }))
     .unwrap();
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
@@ -109,7 +108,6 @@ fn pump_routes_both_serial_and_ethercat_mcu_ids() {
         pieces: vec![piece(1)],
         fresh_stream: false,
         lead_secs: motion_bridge_native::pump::MAX_LEAD_SECS,
-        drip_cohort: None,
     }))
     .unwrap();
 

@@ -3,8 +3,9 @@
 # Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import collections
 import math
+
+from .rail import BaseRail
 
 
 class error(Exception):
@@ -245,7 +246,7 @@ def parse_step_distance(config, units_in_radians=None, note_valid=False):
 ######################################################################
 
 
-class PrinterRail:
+class PrinterRail(BaseRail):
     def __init__(
         self,
         config,
@@ -253,6 +254,7 @@ class PrinterRail:
         default_position_endstop=None,
         units_in_radians=False,
     ):
+        super().__init__()
         self.stepper_units_in_radians = units_in_radians
         self.steppers = []
         self.endstops = []
@@ -277,10 +279,7 @@ class PrinterRail:
         )
 
         if need_position_minmax:
-            self.position_min = config.getfloat("position_min", 0.0)
-            self.position_max = config.getfloat(
-                "position_max", above=self.position_min
-            )
+            self._parse_position_range(config)
         else:
             self.position_min = 0.0
             self.position_max = self.position_endstop
@@ -296,7 +295,7 @@ class PrinterRail:
             "use_sensorless_homing", endstop_is_virtual
         )
 
-        self.homing_speed = config.getfloat("homing_speed", 5.0, above=0.0)
+        self._parse_homing_speeds(config)
 
         default_second_homing_speed = self.homing_speed / 2.0
         if self.use_sensorless_homing:
@@ -304,12 +303,6 @@ class PrinterRail:
 
         self.second_homing_speed = config.getfloat(
             "second_homing_speed", default_second_homing_speed, above=0.0
-        )
-        self.homing_retract_speed = config.getfloat(
-            "homing_retract_speed", self.homing_speed, above=0.0
-        )
-        self.homing_retract_dist = config.getfloat(
-            "homing_retract_dist", 5.0, minval=0.0
         )
         self.homing_positive_dir = config.getboolean(
             "homing_positive_dir", None
@@ -351,36 +344,6 @@ class PrinterRail:
                 s.get_tmc_current_helper() for s in self.steppers
             ]
         return self._tmc_current_helpers
-
-    def get_range(self):
-        return self.position_min, self.position_max
-
-    def get_homing_info(self):
-        homing_info = collections.namedtuple(
-            "homing_info",
-            [
-                "speed",
-                "position_endstop",
-                "retract_speed",
-                "retract_dist",
-                "positive_dir",
-                "second_homing_speed",
-                "use_sensorless_homing",
-                "min_home_dist",
-                "accel",
-            ],
-        )(
-            self.homing_speed,
-            self.position_endstop,
-            self.homing_retract_speed,
-            self.homing_retract_dist,
-            self.homing_positive_dir,
-            self.second_homing_speed,
-            self.use_sensorless_homing,
-            self.min_home_dist,
-            self.homing_accel,
-        )
-        return homing_info
 
     def get_steppers(self):
         return list(self.steppers)

@@ -48,6 +48,8 @@ int32_t kalico_runtime_discard_pending(struct KalicoRuntime *rt);
 
 uint32_t kalico_runtime_enqueue_success_lo(struct KalicoRuntime *rt);
 
+int32_t kalico_runtime_gate_pieces(struct KalicoRuntime *rt);
+
 double kalico_runtime_get_axis_accumulator(struct KalicoRuntime *rt, uint8_t oid);
 
 float kalico_runtime_get_axis_motor(struct KalicoRuntime *rt, uint8_t oid);
@@ -56,7 +58,7 @@ uint32_t kalico_runtime_get_dispatcher_floor_cycles(void);
 
 int32_t kalico_runtime_get_heartbeat(struct KalicoRuntime *rt,
                                      uint8_t *out_engine_state,
-                                     uint8_t *out_fault_code,
+                                     uint16_t *out_fault_code,
                                      uint32_t *out_retired,
                                      uintptr_t max_axes);
 
@@ -115,6 +117,8 @@ int32_t kalico_runtime_set_stepper_offset(struct KalicoRuntime *rt,
 int32_t kalico_runtime_stream_flush(struct KalicoRuntime *rt, uint32_t *out_credit_epoch);
 
 void kalico_runtime_tick_sample(struct KalicoRuntime *rt);
+
+int32_t kalico_runtime_ungate_pieces(struct KalicoRuntime *rt);
 
 int32_t kalico_runtime_write_piece(struct KalicoRuntime *rt,
                                    uint8_t axis_idx,

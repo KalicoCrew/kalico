@@ -5,6 +5,7 @@ pub mod curves;
 #[cfg(feature = "hw")]
 pub mod ffi;
 pub mod scale;
+pub mod sdo;
 pub mod server;
 pub mod torque;
 pub mod wire;
