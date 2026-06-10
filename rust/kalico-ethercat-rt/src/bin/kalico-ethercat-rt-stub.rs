@@ -7,17 +7,18 @@ use std::time::Duration;
 use kalico_ethercat_rt::claim::{parse_fail_bringup, single_slave_reply, wait_for_claim};
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
+use kalico_ethercat_rt::sdo::{execute_sdo_read, execute_sdo_write, DictObject, DictSdoBus};
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::torque::{
     CommandAction, TickAction, TorqueGate, TorqueState, ERR_ENABLE_FAILED, ERR_PIECES_WHILE_FAULTED,
 };
 use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
-    restore_drive_limits_response_frame, runtime_caps_response_frame,
-    set_drive_limits_response_frame, set_torque_response_frame, status_heartbeat_frame,
-    stop_response_frame, Command,
+    restore_drive_limits_response_frame, resume_stream_response_frame, runtime_caps_response_frame,
+    sdo_read_response_frame, sdo_write_response_frame, set_drive_limits_response_frame,
+    set_torque_response_frame, status_heartbeat_frame, stop_response_frame, Command,
 };
-use kalico_protocol::messages::SlaveState;
+use kalico_protocol::messages::{SdoReadResponse, SlaveState};
 
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
 
@@ -29,6 +30,49 @@ fn arg_val(args: &[String], key: &str) -> Option<String> {
     args.iter()
         .position(|a| a == key)
         .and_then(|i| args.get(i + 1).cloned())
+}
+
+const STUB_PROBE_COUNTER_INDEX: u16 = 0x5FFF;
+
+fn stub_object_dictionary() -> DictSdoBus {
+    DictSdoBus::new([
+        (
+            (0x2002, 0),
+            DictObject {
+                size: 2,
+                value: [100, 0, 0, 0],
+                read_only: false,
+                unsigned_clamp_max: None,
+            },
+        ),
+        (
+            (0x2003, 0),
+            DictObject {
+                size: 2,
+                value: [0, 0, 0, 0],
+                read_only: false,
+                unsigned_clamp_max: Some(500),
+            },
+        ),
+        (
+            (0x2010, 1),
+            DictObject {
+                size: 4,
+                value: [0; 4],
+                read_only: false,
+                unsigned_clamp_max: None,
+            },
+        ),
+        (
+            (0x6041, 0),
+            DictObject {
+                size: 2,
+                value: [0x37, 0x02, 0, 0],
+                read_only: true,
+                unsigned_clamp_max: None,
+            },
+        ),
+    ])
 }
 
 fn main() {
@@ -50,6 +94,7 @@ fn main() {
 
     let mut ring = AxisRing::new();
     let mut gate = TorqueGate::new();
+    let mut sdo_bus = stub_object_dictionary();
     let mut last_sent_retired: u32 = 0;
     let mut heartbeat_sent = false;
     let mut sampled_pieces: u32 = 0;
@@ -166,6 +211,9 @@ fn main() {
                     eprintln!("ec-rt-stub: Stop — ring discarded, discard_clock={now_ns}");
                     server.respond(&stop_response_frame(correlation_id, 0, now_ns));
                 }
+                Command::ResumeStream { correlation_id } => {
+                    server.respond(&resume_stream_response_frame(correlation_id, 0));
+                }
                 Command::ClaimHandshake { .. } => {
                     eprintln!(
                         "ec-rt-stub: protocol violation: ClaimHandshake after handshake \
@@ -220,6 +268,38 @@ fn main() {
                 Command::RestoreDriveLimits { correlation_id } => {
                     eprintln!("ec-rt-stub: RestoreDriveLimits stored={stored_limits:?}");
                     server.respond(&restore_drive_limits_response_frame(correlation_id, 0));
+                }
+                Command::SdoRead {
+                    correlation_id,
+                    msg,
+                } => {
+                    let resp = if msg.index == STUB_PROBE_COUNTER_INDEX {
+                        SdoReadResponse {
+                            result: 0,
+                            size: 4,
+                            data: sdo_bus.read_count.to_le_bytes(),
+                        }
+                    } else {
+                        execute_sdo_read(&mut sdo_bus, &msg)
+                    };
+                    if resp.result != 0 {
+                        eprintln!(
+                            "ec-rt-stub: SdoRead 0x{:04x}.{} failed result={}",
+                            msg.index, msg.subindex, resp.result
+                        );
+                    }
+                    server.respond(&sdo_read_response_frame(correlation_id, &resp));
+                }
+                Command::SdoWrite {
+                    correlation_id,
+                    msg,
+                } => {
+                    let resp = execute_sdo_write(&mut sdo_bus, &msg);
+                    eprintln!(
+                        "ec-rt-stub: SdoWrite 0x{:04x}.{} value={} size={} -> result={}",
+                        msg.index, msg.subindex, msg.value, msg.size, resp.result
+                    );
+                    server.respond(&sdo_write_response_frame(correlation_id, &resp));
                 }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt-stub: ignoring kind 0x{kind_raw:04x}");
