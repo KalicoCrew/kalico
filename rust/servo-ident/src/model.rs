@@ -1,4 +1,3 @@
-/// Velocity threshold below which Coulomb friction gates off (mm/s).
 pub const COULOMB_DEADBAND_MM_S: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,11 +46,13 @@ impl Structure {
         match self {
             Structure::CartesianScalar => {
                 assert_eq!(motor, 0);
+                assert!(!acc.is_empty() && !vel.is_empty(), "scalar row needs 1 acc and 1 vel sample, got {} and {}", acc.len(), vel.len());
                 let (cf, cr) = coulomb_cols(vel[0]);
                 vec![acc[0], vel[0], cf, cr]
             }
             Structure::CoreXY => {
                 assert!(motor < 2);
+                assert!(acc.len() >= 2 && vel.len() >= 2, "corexy row needs 2 acc and 2 vel samples, got {} and {}", acc.len(), vel.len());
                 let other = 1 - motor;
                 let (cf, cr) = coulomb_cols(vel[motor]);
                 #[allow(clippy::indexing_slicing)]
