@@ -817,18 +817,7 @@ impl PyMotionBridge {
                  (init_planner not run?)"
             )));
         }
-        let conn = {
-            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
-            let mc = mcus.get(&mcu_handle).ok_or_else(|| {
-                PyRuntimeError::new_err(format!("set_torque: unknown mcu_handle {mcu_handle}"))
-            })?;
-            mc.endpoint_conn.clone().ok_or_else(|| {
-                PyRuntimeError::new_err(format!(
-                    "set_torque: mcu {mcu_handle} ({}) is not an EtherCAT endpoint",
-                    mc.label
-                ))
-            })?
-        };
+        let conn = self.ethercat_conn(mcu_handle, "set_torque")?;
         tracing::info!(
             subsystem = "bridge",
             event = "servo_torque_command",
@@ -855,6 +844,50 @@ impl PyMotionBridge {
             )));
         }
         Ok(())
+    }
+
+    fn start_servo_capture(
+        &self,
+        mcu_handle: u32,
+        path: String,
+        started_utc: String,
+        drive_name: String,
+    ) -> PyResult<()> {
+        let conn = self.ethercat_conn(mcu_handle, "start_servo_capture")?;
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_capture_start",
+            mcu_handle,
+            path,
+            "servo capture start"
+        );
+        let result =
+            crate::servo_capture::send_start_capture(&conn, &path, &started_utc, &drive_name)
+                .map_err(PyRuntimeError::new_err)?;
+        if result != 0 {
+            return Err(PyRuntimeError::new_err(format!(
+                "servo capture start failed: endpoint result {result}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn stop_servo_capture(&self, mcu_handle: u32) -> PyResult<(i32, u64, Option<u64>)> {
+        let conn = self.ethercat_conn(mcu_handle, "stop_servo_capture")?;
+        let resp = crate::servo_capture::send_stop_capture(&conn)
+            .map_err(PyRuntimeError::new_err)?;
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_capture_stop",
+            mcu_handle,
+            result = resp.result,
+            samples = resp.samples,
+            "servo capture stop"
+        );
+        let overflow = (resp.overflow_cycle
+            != kalico_protocol::messages::StopCaptureResponse::NO_OVERFLOW)
+            .then_some(resp.overflow_cycle);
+        Ok((resp.result, resp.samples, overflow))
     }
 
     fn release_mcu(&self, handle: u32) -> PyResult<()> {
@@ -2978,6 +3011,19 @@ impl PyMotionBridge {
             .unwrap_or_else(|p| p.into_inner()) = None;
         *self.homing_run.lock().unwrap_or_else(|p| p.into_inner()) = None;
         *self.homing_result.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    }
+
+    fn ethercat_conn(&self, mcu_handle: u32, ctx: &str) -> PyResult<Arc<UnixNativeConn>> {
+        let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+        let mc = mcus.get(&mcu_handle).ok_or_else(|| {
+            PyRuntimeError::new_err(format!("{ctx}: unknown mcu_handle {mcu_handle}"))
+        })?;
+        mc.endpoint_conn.clone().ok_or_else(|| {
+            PyRuntimeError::new_err(format!(
+                "{ctx}: mcu {mcu_handle} ({}) is not an EtherCAT endpoint",
+                mc.label
+            ))
+        })
     }
 
     fn host_io_for_mcu(&self, caller: &str, mcu: u32) -> PyResult<Arc<KalicoHostIo>> {
