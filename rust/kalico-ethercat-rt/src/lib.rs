@@ -1,3 +1,4 @@
+pub mod capture;
 pub mod claim;
 pub mod clock;
 pub mod curves;
