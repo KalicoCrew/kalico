@@ -385,14 +385,39 @@ fn sample_reports_acceleration_consistent_with_velocity_slope() {
     let t0: u64 = 1_000_000_000;
     let dur: f32 = 1.0;
 
+    // ease_entry(0.0, 10.0, ...) → coeffs=[0,0,10,10], duration=1.0
+    // Bernstein→monomial: c1=0, c2=30, c3=−20
+    // vel_coeffs: vc0=0, vc1=60, vc2=−60  →  v(t) = 60t − 60t²
+    // a(t) = 60 − 120t  →  a(0.25) = 30.0 mm/s²
+    const EXPECTED_ACCEL_AT_QUARTER: f32 = 30.0;
+
     ring.push_entry(ease_entry(0.0, 10.0, t0, dur)).unwrap();
 
-    let dt = 1_000_000_u64;
-    let (_, v0, a0) = ring.sample(t0).expect("in piece at t0");
-    let (_, v1, _) = ring.sample(t0 + dt).expect("in piece at t0+dt");
-    let fd = (v1 - v0) / (dt as f32 / 1.0e9);
+    // Arm the piece first so the fault-tolerance window check passes for all
+    // subsequent samples (armed path bypasses the start-in-past check).
+    ring.sample(t0).expect("arm piece at t0");
+
+    let eval_ns: u64 = t0 + 250_000_000;
+    let half_dt_ns: u64 = 500_000;
+
+    let (_, v_lo, _) = ring
+        .sample(eval_ns - half_dt_ns)
+        .expect("in piece at eval−0.5ms");
+    let (_, _, a_mid) = ring.sample(eval_ns).expect("in piece at eval point");
+    let (_, v_hi, _) = ring
+        .sample(eval_ns + half_dt_ns)
+        .expect("in piece at eval+0.5ms");
+
+    let dt_s = (2 * half_dt_ns) as f32 / 1.0e9;
+    let fd = (v_hi - v_lo) / dt_s;
+
     assert!(
-        (a0 - fd).abs() <= 0.05 * fd.abs().max(1.0),
-        "eval_accel={a0} vs finite-diff={fd}"
+        (a_mid - fd).abs() <= 0.01 * fd.abs().max(1.0),
+        "eval_accel={a_mid} vs central-diff={fd}"
+    );
+
+    assert!(
+        (a_mid - EXPECTED_ACCEL_AT_QUARTER).abs() <= 0.1,
+        "eval_accel={a_mid} vs closed-form={EXPECTED_ACCEL_AT_QUARTER}"
     );
 }
