@@ -46,8 +46,9 @@ class EtherCatNode:
         # runs on "klippy:connect" — so the handle is populated before the
         # planner is built. This mirrors MCU._mcu_identify's claim_mcu call.
         self.printer.register_event_handler("klippy:mcu_identify", self._claim)
+        self.printer.load_object(config, "servo_param")
 
-    def _derive_counts_per_mm(self):
+    def _find_rail(self):
         # ServoRails are not printer objects (the toolhead builds them directly
         # into kin.rails), so iterate the toolhead's rails rather than
         # printer.lookup_objects.
@@ -57,7 +58,7 @@ class EtherCatNode:
                 isinstance(rail, servo_axis.ServoRail)
                 and rail.get_node_name() == self.name
             ):
-                return rail.get_counts_per_mm()
+                return rail
         raise self.printer.config_error(
             "ethercat_node %s: no [servo_*] section with node=%s — "
             "cannot derive counts_per_mm" % (self.name, self.name)
@@ -66,7 +67,8 @@ class EtherCatNode:
     def _claim(self):
         if self.bridge_handle is not None:
             return
-        self._counts_per_mm = self._derive_counts_per_mm()
+        rail = self._find_rail()
+        self._counts_per_mm = rail.get_counts_per_mm()
         bridge = self.printer.lookup_object("motion_bridge")
         try:
             self.bridge_handle = bridge.claim_ethercat_node(
@@ -88,6 +90,31 @@ class EtherCatNode:
             self.endpoint,
             self._counts_per_mm,
         )
+        self._push_drive_params(rail)
+
+    def _push_drive_params(self, rail):
+        params = rail.get_sdo_params()
+        if not params:
+            return
+        bridge = self.printer.lookup_object("motion_bridge")
+        for index, subindex, size, value in params:
+            try:
+                bridge.sdo_write(
+                    self.bridge_handle, index, subindex, size, value
+                )
+            except RuntimeError as e:
+                raise self.printer.config_error(
+                    "ethercat_node %s: claim-time drive param "
+                    "0x%04x.%d = %d failed: %s"
+                    % (self.name, index, subindex, value, e)
+                )
+            logging.info(
+                "ethercat_node %s: drive param 0x%04x.%d = %d pushed",
+                self.name,
+                index,
+                subindex,
+                value,
+            )
 
     def get_bridge_handle(self):
         return self.bridge_handle

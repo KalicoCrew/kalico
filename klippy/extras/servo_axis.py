@@ -1,5 +1,7 @@
 import collections
 
+from . import servo_param
+
 _homing_info = collections.namedtuple(
     "homing_info",
     [
@@ -43,6 +45,12 @@ class ServoRail:
         )
         self.position_endstop = 0.0
         self._active_callbacks = []
+        try:
+            self.sdo_params = servo_param.parse_params_block(
+                config.get("params", "")
+            )
+        except ValueError as e:
+            raise config.error("servo_%s params: %s" % (self.axis, e))
 
     def get_name(self, short=False):
         if short:
@@ -93,6 +101,9 @@ class ServoRail:
 
     def get_counts_per_mm(self):
         return self.encoder_counts_per_rev / self.rotation_distance
+
+    def get_sdo_params(self):
+        return self.sdo_params
 
 
 class BridgeTorqueLine:

@@ -239,3 +239,60 @@ def test_cmd_propagates_bridge_failure():
         sp.cmd_SERVO_PARAM(
             FakeGcmd({"SERVO": "servo_x", "SET": "0x6041.0", "VALUE": "1"})
         )
+
+
+from klippy.extras import ethercat_node
+
+
+class FakeConfigError(Exception):
+    pass
+
+
+def make_node_for_claim(bridge, rail):
+    node = ethercat_node.EtherCatNode.__new__(ethercat_node.EtherCatNode)
+    node.name = "node_x"
+    node.bridge_handle = 5
+    node.printer = FakePrinter(
+        {
+            "toolhead": FakeToolhead(FakeKin([rail])),
+            "motion_bridge": bridge,
+        }
+    )
+    node.printer.config_error = FakeConfigError
+    return node
+
+
+def make_rail_with_params(params):
+    rail = servo_axis.ServoRail.__new__(servo_axis.ServoRail)
+    rail.name = "servo_x"
+    rail.axis = "x"
+    rail.node_name = "node_x"
+    rail.sdo_params = params
+    return rail
+
+
+def test_claim_push_writes_params_in_order():
+    bridge = FakeBridge()
+    rail = make_rail_with_params([(0x2002, 0, 0, 100), (0x2003, 0, 2, 250)])
+    node = make_node_for_claim(bridge, rail)
+    node._push_drive_params(rail)
+    assert bridge.writes == [(5, 0x2002, 0, 0, 100), (5, 0x2003, 0, 2, 250)]
+
+
+def test_claim_push_failure_is_config_error_with_address():
+    class FailingBridge(FakeBridge):
+        def sdo_write(self, *args):
+            raise RuntimeError("readback mismatch")
+
+    rail = make_rail_with_params([(0x2003, 0, 2, 600)])
+    node = make_node_for_claim(FailingBridge(), rail)
+    with pytest.raises(FakeConfigError, match="0x2003.0"):
+        node._push_drive_params(rail)
+
+
+def test_claim_push_no_params_is_noop():
+    bridge = FakeBridge()
+    rail = make_rail_with_params([])
+    node = make_node_for_claim(bridge, rail)
+    node._push_drive_params(rail)
+    assert bridge.writes == []
