@@ -106,40 +106,23 @@ pub fn reconstruct_axis_position(
 ) -> Result<f64, String> {
     let axis_mcu = axis_key.mcu_id;
 
-    let axis_clock = if axis_mcu == endstop_mcu {
-        trip_clock
-    } else {
+    let axis_clock = {
         let router_guard = router.lock().unwrap_or_else(|p| p.into_inner());
-        let endstop_handle = crate::types::mcu_handle_from_raw(endstop_mcu);
-        let axis_handle = crate::types::mcu_handle_from_raw(axis_mcu);
-
-        let host_trip = router_guard
-            .clock_to_host_secs(endstop_handle, trip_clock)
-            .ok_or_else(|| {
-                ReconstructError::ClockUnsynced {
-                    description: format!(
-                        "clock_to_host_secs returned None for endstop_mcu {endstop_mcu}"
-                    ),
-                    endstop_mcu,
-                    axis_mcu,
-                    trip_clock,
-                }
-                .to_string()
-            })?;
-
-        router_guard
-            .host_time_to_mcu_clock(axis_handle, host_trip)
-            .map_err(|e| {
-                ReconstructError::ClockUnsynced {
-                    description: format!(
-                        "host_time_to_mcu_clock failed for axis_mcu {axis_mcu}: {e:?}"
-                    ),
-                    endstop_mcu,
-                    axis_mcu,
-                    trip_clock,
-                }
-                .to_string()
-            })?
+        crate::motion_history::clock_between_mcus(
+            &router_guard,
+            crate::types::mcu_handle_from_raw(endstop_mcu),
+            crate::types::mcu_handle_from_raw(axis_mcu),
+            trip_clock,
+        )
+        .map_err(|description| {
+            ReconstructError::ClockUnsynced {
+                description,
+                endstop_mcu,
+                axis_mcu,
+                trip_clock,
+            }
+            .to_string()
+        })?
     };
 
     let clock_freq = {

@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
+use kalico_host_rt::passthrough_queue::{McuHandle, PassthroughRouter};
 use runtime::piece_ring::PieceEntry;
 
 use crate::pump::AxisKey;
@@ -208,6 +209,23 @@ impl HistoryStore {
         }
         Ok(hold.hold_state())
     }
+}
+
+pub fn clock_between_mcus(
+    router: &PassthroughRouter,
+    source: McuHandle,
+    target: McuHandle,
+    clock: u64,
+) -> Result<u64, String> {
+    if source == target {
+        return Ok(clock);
+    }
+    let host_secs = router
+        .clock_to_host_secs(source, clock)
+        .ok_or_else(|| format!("clock_to_host_secs returned None for source mcu {source:?}"))?;
+    router
+        .host_time_to_mcu_clock(target, host_secs)
+        .map_err(|e| format!("host_time_to_mcu_clock failed for target mcu {target:?}: {e:?}"))
 }
 
 #[cfg(test)]

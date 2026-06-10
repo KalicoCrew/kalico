@@ -1,7 +1,42 @@
+use std::sync::Arc;
+
+use kalico_host_rt::passthrough_queue::PassthroughRouter;
 use runtime::piece_ring::PieceEntry;
 
 use crate::motion_history::{HISTORY_CAPACITY, HistoryError, HistoryPiece, HistoryStore};
 use crate::pump::AxisKey;
+
+fn stub_router_two_mcus() -> PassthroughRouter {
+    let clock: Arc<dyn kalico_host_rt::clock::Clock + Send + Sync> =
+        Arc::new(kalico_host_rt::clock::RealClock);
+    let mut router = PassthroughRouter::with_clock(clock);
+    let h0 = router.claim_mcu("mcu-0");
+    assert_eq!(h0.raw(), 0);
+    let h1 = router.claim_mcu("mcu-1");
+    let h2 = router.claim_mcu("mcu-2");
+    assert_eq!(h1.raw(), 1);
+    assert_eq!(h2.raw(), 2);
+    router
+        .set_clock_est(h1, 1_000_000.0, 0.0, 0)
+        .expect("set_clock_est mcu-1");
+    router
+        .set_clock_est(h2, 3_000_000.0, 0.0, 0)
+        .expect("set_clock_est mcu-2");
+    router
+}
+
+#[test]
+fn clock_between_mcus_round_trips_through_host_secs() {
+    let router = stub_router_two_mcus();
+    let got = crate::motion_history::clock_between_mcus(
+        &router,
+        crate::types::mcu_handle_from_raw(1),
+        crate::types::mcu_handle_from_raw(2),
+        1_000_000,
+    )
+    .unwrap();
+    assert_eq!(got, 3_000_000);
+}
 
 const FREQ: u32 = 520_000_000;
 
