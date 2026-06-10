@@ -471,6 +471,7 @@ pub struct PyMotionBridge {
     active_drip_cohort: Arc<Mutex<Option<u64>>>,
     homing_trajectory:
         Arc<Mutex<HashMap<crate::pump::AxisKey, Vec<runtime::piece_ring::PieceEntry>>>>,
+    motion_history: Arc<Mutex<crate::motion_history::HistoryStore>>,
     homing_run: Arc<Mutex<Option<HomingRun>>>,
     homing_result: Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3]), String>>>>,
     homing_settled_at_ns: Arc<std::sync::atomic::AtomicU64>,
@@ -699,6 +700,7 @@ impl PyMotionBridge {
             drain: std::sync::Arc::new(crate::drain::DrainSync::new()),
             active_drip_cohort: Arc::new(Mutex::new(None)),
             homing_trajectory: Arc::new(Mutex::new(HashMap::new())),
+            motion_history: Arc::new(Mutex::new(crate::motion_history::HistoryStore::default())),
             homing_run: Arc::new(Mutex::new(None)),
             homing_result: Mutex::new(None),
             homing_settled_at_ns: Arc::new(std::sync::atomic::AtomicU64::new(0)),
@@ -2667,6 +2669,8 @@ impl PyMotionBridge {
         let counter_for_cb = Arc::clone(&counter);
         let active_drip_cohort_for_cb = Arc::clone(&self.active_drip_cohort);
         let homing_traj_for_cb = Arc::clone(&self.homing_trajectory);
+        let motion_history_for_cb = Arc::clone(&self.motion_history);
+        let nominal_freqs_for_cb = Arc::clone(&self.nominal_clock_freqs);
 
         let dispatch: Arc<
             dyn Fn(&trajectory::ShapedSegment) -> Result<(), DispatchError> + Send + Sync,
@@ -2728,7 +2732,22 @@ impl PyMotionBridge {
                     max_piece_secs,
                 );
 
+                let nominal_freqs = nominal_freqs_for_cb
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone();
                 for mut m in msgs {
+                    let nominal_freq = *nominal_freqs
+                        .get(&m.key.mcu_id)
+                        .ok_or(DispatchError::MissingNominalFreq(m.key.mcu_id))?;
+                    {
+                        let mut store = motion_history_for_cb
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner());
+                        for (piece, _host_t) in &m.pieces {
+                            store.record(m.key, piece, nominal_freq);
+                        }
+                    }
                     if let Some(cohort) = active_cohort {
                         m.drip_cohort = Some(cohort);
                         let mut traj = homing_traj_for_cb.lock().unwrap_or_else(|p| p.into_inner());
@@ -2839,7 +2858,8 @@ impl PyMotionBridge {
         planner.dwell(duration_s).map_err(planner_err)
     }
 
-    fn set_position(&self, py: Python<'_>, x: f64, y: f64, z: f64) -> PyResult<()> {
+    #[pyo3(signature = (x, y, z, host_now))]
+    fn set_position(&self, py: Python<'_>, x: f64, y: f64, z: f64, host_now: f64) -> PyResult<()> {
         {
             let mut pos = self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
             *pos = [x, y, z];
@@ -2905,6 +2925,46 @@ impl PyMotionBridge {
                         s.mcu_id
                     ))
                 })?;
+            }
+        }
+
+        {
+            let configs: Vec<crate::dispatch::McuAxisConfig> = self
+                .mcu_axis_configs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone();
+            let positions = [x, y, z];
+            let rebases: Vec<(crate::pump::AxisKey, u64, f64)> = {
+                let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
+                configs
+                    .iter()
+                    .flat_map(|cfg| {
+                        let handle = crate::types::mcu_handle_from_raw(cfg.mcu_id);
+                        let now_clock =
+                            router.host_time_to_mcu_clock(handle, host_now).unwrap_or(0);
+                        cfg.axes
+                            .iter()
+                            .filter(|&&a| a < 3)
+                            .map(move |&axis| {
+                                let key = crate::pump::AxisKey {
+                                    mcu_id: cfg.mcu_id,
+                                    axis: axis as u8,
+                                };
+                                (key, now_clock, positions[axis])
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect()
+            };
+            {
+                let mut store = self
+                    .motion_history
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
+                for (key, now_clock, pos) in rebases {
+                    store.rebase_axis(key, now_clock, pos);
+                }
             }
         }
 

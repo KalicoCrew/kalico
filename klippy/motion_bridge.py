@@ -398,7 +398,7 @@ class MotionBridgeWrapper:
         return self._bridge.submit_dwell(duration_s)
 
     def set_position(self, x, y, z):
-        return self._bridge.set_position(x, y, z)
+        return self._bridge.set_position(x, y, z, self._reactor.monotonic())
 
     def home_axis_start(
         self,
