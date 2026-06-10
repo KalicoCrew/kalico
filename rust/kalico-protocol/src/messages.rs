@@ -20,6 +20,10 @@ pub enum MessageKind {
     SetTorqueResponse = 0x0071,
     Stop = 0x0072,
     StopResponse = 0x0073,
+    SetDriveLimits = 0x0074,
+    SetDriveLimitsResponse = 0x0075,
+    RestoreDriveLimits = 0x0076,
+    RestoreDriveLimitsResponse = 0x0077,
     SdoRead = 0x0078,
     SdoReadResponse = 0x0079,
     SdoWrite = 0x007A,
@@ -47,6 +51,10 @@ impl MessageKind {
             0x0071 => Self::SetTorqueResponse,
             0x0072 => Self::Stop,
             0x0073 => Self::StopResponse,
+            0x0074 => Self::SetDriveLimits,
+            0x0075 => Self::SetDriveLimitsResponse,
+            0x0076 => Self::RestoreDriveLimits,
+            0x0077 => Self::RestoreDriveLimitsResponse,
             0x0078 => Self::SdoRead,
             0x0079 => Self::SdoReadResponse,
             0x007A => Self::SdoWrite,
@@ -410,6 +418,79 @@ impl Decode for StopResponse {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetDriveLimits {
+    pub following_error_counts: u32,
+    pub max_torque_tenth_pct: u16,
+}
+
+impl Encode for SetDriveLimits {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_u32(out, self.following_error_counts);
+        put_u16(out, self.max_torque_tenth_pct);
+    }
+}
+
+impl Decode for SetDriveLimits {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            following_error_counts: get_u32(c)?,
+            max_torque_tenth_pct: get_u16(c)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SetDriveLimitsResponse {
+    pub result: i32,
+}
+
+impl Encode for SetDriveLimitsResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+    }
+}
+
+impl Decode for SetDriveLimitsResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestoreDriveLimits;
+
+impl Encode for RestoreDriveLimits {
+    fn encode(&self, _out: &mut Vec<u8>) {}
+}
+
+impl Decode for RestoreDriveLimits {
+    fn decode_from(_c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestoreDriveLimitsResponse {
+    pub result: i32,
+}
+
+impl Encode for RestoreDriveLimitsResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+    }
+}
+
+impl Decode for RestoreDriveLimitsResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FaultEvent {
     pub fault_code: u16,
     pub fault_detail: u32,
@@ -437,14 +518,14 @@ impl Decode for FaultEvent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StatusHeartbeat {
     pub engine_state: u8,
-    pub fault_code: u8,
+    pub fault_code: u16,
     pub retired_counts: Vec<u32>,
 }
 
 impl Encode for StatusHeartbeat {
     fn encode(&self, out: &mut Vec<u8>) {
         put_u8(out, self.engine_state);
-        put_u8(out, self.fault_code);
+        put_u16(out, self.fault_code);
         let num_axes = self.retired_counts.len() as u8;
         put_u8(out, num_axes);
         for &count in &self.retired_counts {
@@ -456,7 +537,7 @@ impl Encode for StatusHeartbeat {
 impl Decode for StatusHeartbeat {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
         let engine_state = get_u8(c)?;
-        let fault_code = get_u8(c)?;
+        let fault_code = get_u16(c)?;
         let num_axes = get_u8(c)?;
         let counts_len =
             (num_axes as usize)

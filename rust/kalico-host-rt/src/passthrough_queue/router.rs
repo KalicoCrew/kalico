@@ -458,6 +458,19 @@ impl PassthroughRouter {
         Some(rec.clock_offset + delta_ticks / rec.clock_freq)
     }
 
+    pub fn print_time_to_host_secs(
+        &self,
+        reference_mcu: McuHandle,
+        print_time: f64,
+    ) -> Option<f64> {
+        let rec = self.mcus.get(&reference_mcu)?;
+        if rec.clock_freq == 0.0 {
+            return None;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        Some(rec.clock_offset + print_time - (rec.last_clock as f64) / rec.clock_freq)
+    }
+
     pub fn host_time_to_mcu_clock(
         &self,
         mcu: McuHandle,

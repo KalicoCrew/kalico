@@ -69,6 +69,9 @@ class EtherCatNode:
             return
         rail = self._find_rail()
         self._counts_per_mm = rail.get_counts_per_mm()
+        following_error_counts, max_torque_tenth_pct = (
+            rail.get_session_drive_limits()
+        )
         bridge = self.printer.lookup_object("motion_bridge")
         try:
             self.bridge_handle = bridge.claim_ethercat_node(
@@ -77,6 +80,8 @@ class EtherCatNode:
                 self.interface,
                 self.endpoint,
                 self._counts_per_mm,
+                following_error_counts,
+                max_torque_tenth_pct,
             )
         except RuntimeError as e:
             raise self.printer.config_error(str(e))

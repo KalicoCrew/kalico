@@ -250,15 +250,22 @@ fn spawn_ethercat_endpoint(
     interface: &str,
     socket_path: &str,
     counts_per_mm: f64,
+    following_error_counts: Option<u32>,
+    max_torque_tenth_pct: Option<u16>,
 ) -> Result<std::process::Child, String> {
-    std::process::Command::new(binary)
-        .arg(interface)
+    let mut cmd = std::process::Command::new(binary);
+    cmd.arg(interface)
         .arg("--socket")
         .arg(socket_path)
         .arg("--counts-per-mm")
-        .arg(counts_per_mm.to_string())
-        .spawn()
-        .map_err(|e| format!("spawn {binary}: {e}"))
+        .arg(counts_per_mm.to_string());
+    if let Some(ferr) = following_error_counts {
+        cmd.arg("--following-error-counts").arg(ferr.to_string());
+    }
+    if let Some(tq) = max_torque_tenth_pct {
+        cmd.arg("--max-torque-tenth-pct").arg(tq.to_string());
+    }
+    cmd.spawn().map_err(|e| format!("spawn {binary}: {e}"))
 }
 
 fn poll_socket_ready(
@@ -465,6 +472,8 @@ pub struct PyMotionBridge {
         Arc<Mutex<HashMap<crate::pump::AxisKey, Vec<runtime::piece_ring::PieceEntry>>>>,
     homing_run: Arc<Mutex<Option<HomingRun>>>,
     homing_result: Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3]), String>>>>,
+    homing_settled_at_ns: Arc<std::sync::atomic::AtomicU64>,
+    latched_drive_fault: Arc<Mutex<HashMap<u32, u16>>>,
     // Latched once `shutdown()` has run a full teardown. Subsequent calls (the
     // Drop backstop, a second `klippy:disconnect`, the failed-connect path) see
     // this and no-op, so double-teardown is provably safe and observable.
@@ -690,6 +699,8 @@ impl PyMotionBridge {
             homing_trajectory: Arc::new(Mutex::new(HashMap::new())),
             homing_run: Arc::new(Mutex::new(None)),
             homing_result: Mutex::new(None),
+            homing_settled_at_ns: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            latched_drive_fault: Arc::new(Mutex::new(HashMap::new())),
             shut_down: AtomicBool::new(false),
         }
     }
@@ -737,7 +748,7 @@ impl PyMotionBridge {
         Ok(raw)
     }
 
-    #[pyo3(signature = (label, socket_path, interface, endpoint_binary, counts_per_mm))]
+    #[pyo3(signature = (label, socket_path, interface, endpoint_binary, counts_per_mm, following_error_counts=None, max_torque_tenth_pct=None))]
     fn claim_ethercat_node(
         &self,
         label: &str,
@@ -745,6 +756,8 @@ impl PyMotionBridge {
         interface: &str,
         endpoint_binary: &str,
         counts_per_mm: f64,
+        following_error_counts: Option<u32>,
+        max_torque_tenth_pct: Option<u16>,
     ) -> PyResult<u32> {
         if let Err(e) = std::fs::remove_file(socket_path) {
             if e.kind() != std::io::ErrorKind::NotFound {
@@ -754,13 +767,17 @@ impl PyMotionBridge {
             }
         }
 
-        let mut child =
-            spawn_ethercat_endpoint(endpoint_binary, interface, socket_path, counts_per_mm)
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!(
-                        "ethercat {label}: endpoint failed to start — {e}"
-                    ))
-                })?;
+        let mut child = spawn_ethercat_endpoint(
+            endpoint_binary,
+            interface,
+            socket_path,
+            counts_per_mm,
+            following_error_counts,
+            max_torque_tenth_pct,
+        )
+        .map_err(|e| {
+            PyRuntimeError::new_err(format!("ethercat {label}: endpoint failed to start — {e}"))
+        })?;
 
         let socket_deadline = Instant::now() + Duration::from_secs(15);
         if let Err(detail) = poll_socket_ready(socket_path, socket_deadline, &mut child) {
@@ -801,10 +818,31 @@ impl PyMotionBridge {
     }
 
     fn set_torque(&self, mcu_handle: u32, value: bool, print_time: f64) -> PyResult<()> {
+        let reference_mcu = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            *mcus
+                .iter()
+                .find(|(_, mc)| mc.label == "mcu")
+                .map(|(raw, _)| raw)
+                .ok_or_else(|| {
+                    PyRuntimeError::new_err(
+                        "set_torque: no MCU labeled 'mcu' claimed — \
+                         cannot resolve the print_time reference clock",
+                    )
+                })?
+        };
         let execute_at_ns = {
             let router = self.router.lock().unwrap_or_else(|p| p.into_inner());
+            let host_secs = router
+                .print_time_to_host_secs(mcu_handle_from_raw(reference_mcu), print_time)
+                .ok_or_else(|| {
+                    PyRuntimeError::new_err(format!(
+                        "set_torque: reference mcu {reference_mcu} clock not synced — \
+                         cannot convert print_time {print_time}"
+                    ))
+                })?;
             router
-                .host_time_to_mcu_clock(mcu_handle_from_raw(mcu_handle), print_time)
+                .host_time_to_mcu_clock(mcu_handle_from_raw(mcu_handle), host_secs)
                 .map_err(|e| {
                     PyRuntimeError::new_err(format!(
                         "set_torque: no clock mapping for mcu {mcu_handle}: {e:?}"
@@ -844,6 +882,87 @@ impl PyMotionBridge {
             )));
         }
         Ok(())
+    }
+
+    fn set_drive_limits(
+        &self,
+        mcu_handle: u32,
+        following_error_counts: u32,
+        max_torque_tenth_pct: u16,
+    ) -> PyResult<()> {
+        let conn = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            let mc = mcus.get(&mcu_handle).ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "set_drive_limits: unknown mcu_handle {mcu_handle}"
+                ))
+            })?;
+            mc.endpoint_conn.clone().ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "set_drive_limits: mcu {mcu_handle} ({}) is not an EtherCAT endpoint",
+                    mc.label
+                ))
+            })?
+        };
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_drive_limits",
+            mcu_handle,
+            following_error_counts,
+            max_torque_tenth_pct,
+            "servo drive limits set"
+        );
+        let result = crate::servo_torque::send_drive_limits(
+            &conn,
+            following_error_counts,
+            max_torque_tenth_pct,
+        )
+        .map_err(PyRuntimeError::new_err)?;
+        if result != 0 {
+            return Err(PyRuntimeError::new_err(format!(
+                "set_drive_limits: SDO write failed: endpoint result {result}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn restore_drive_limits(&self, mcu_handle: u32) -> PyResult<()> {
+        let conn = {
+            let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
+            let mc = mcus.get(&mcu_handle).ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "restore_drive_limits: unknown mcu_handle {mcu_handle}"
+                ))
+            })?;
+            mc.endpoint_conn.clone().ok_or_else(|| {
+                PyRuntimeError::new_err(format!(
+                    "restore_drive_limits: mcu {mcu_handle} ({}) is not an EtherCAT endpoint",
+                    mc.label
+                ))
+            })?
+        };
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_drive_limits",
+            mcu_handle,
+            "servo drive limits restored"
+        );
+        let result = crate::servo_torque::send_restore_drive_limits(&conn)
+            .map_err(PyRuntimeError::new_err)?;
+        if result != 0 {
+            return Err(PyRuntimeError::new_err(format!(
+                "restore_drive_limits: SDO write failed: endpoint result {result}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn take_drive_fault(&self, mcu_handle: u32) -> PyResult<Option<u16>> {
+        Ok(self
+            .latched_drive_fault
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&mcu_handle))
     }
 
     fn sdo_read(&self, mcu_handle: u32, index: u16, subindex: u8) -> PyResult<(u8, u32)> {
@@ -2389,17 +2508,98 @@ impl PyMotionBridge {
                         .unwrap_or_else(|| format!("mcu-{mcu_id}"))
                 };
 
-                conn.attach_heartbeat_callback(Arc::new(move |retired: &[u32]| {
-                    let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
-                        crate::pump::HeartbeatMsg {
-                            mcu_id,
-                            retired_counts: retired.to_vec(),
-                        },
-                    ));
-                    for (axis, &r) in retired.iter().enumerate() {
-                        drain_hb.set_retired(mcu_id, axis as u8, r);
-                    }
-                }));
+                let homing_run_hb = Arc::clone(&self.homing_run);
+                let active_cohort_hb = Arc::clone(&self.active_drip_cohort);
+                let pump_tx_fault = pump_tx_init.clone();
+                let homing_settled_hb = Arc::clone(&self.homing_settled_at_ns);
+                let latched_fault_hb = Arc::clone(&self.latched_drive_fault);
+                let mcu_label_hb = mcu_label.clone();
+                conn.attach_heartbeat_callback(Arc::new(
+                    move |hb: &kalico_protocol::messages::StatusHeartbeat| {
+                        if hb.fault_code != 0 {
+                            let run_opt = {
+                                let mut guard =
+                                    homing_run_hb.lock().unwrap_or_else(|p| p.into_inner());
+                                match guard.as_ref().map(|r| r.axis_key.mcu_id) {
+                                    Some(axis_mcu)
+                                        if crate::homing::route_drive_fault(
+                                            mcu_id,
+                                            Some(axis_mcu),
+                                        ) == crate::homing::DriveFaultRoute::HomingError =>
+                                    {
+                                        guard.take()
+                                    }
+                                    _ => None,
+                                }
+                            };
+                            match run_opt {
+                                Some(run) => {
+                                    homing_settled_hb.store(
+                                        crate::motion_node::monotonic_ns(),
+                                        Ordering::Release,
+                                    );
+                                    latched_fault_hb
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .insert(mcu_id, hb.fault_code);
+                                    *active_cohort_hb.lock().unwrap_or_else(|p| p.into_inner()) =
+                                        None;
+                                    let _ = pump_tx_fault.send(crate::pump::PumpMsg::Flush(
+                                        run.all_axis_keys.clone(),
+                                    ));
+                                    let _ = pump_tx_fault
+                                        .send(crate::pump::PumpMsg::DripDisarm(run.cohort));
+                                    let _ = run.notify.send(Err(format!(
+                                        "drive fault 0x{:04x} during homing — \
+                                     following-error/torque limit exceeded (endstop failure?)",
+                                        hb.fault_code
+                                    )));
+                                }
+                                None => {
+                                    let now_ns = crate::motion_node::monotonic_ns();
+                                    let settled_at = homing_settled_hb.load(Ordering::Acquire);
+                                    if crate::homing::post_homing_fault_is_benign(
+                                        now_ns, settled_at,
+                                    ) {
+                                        tracing::error!(
+                                            mcu_id,
+                                            mcu_label = %mcu_label_hb,
+                                            fault_code = hb.fault_code,
+                                            "drive fault right after homing trip — \
+                                             latched for G28 to report"
+                                        );
+                                        latched_fault_hb
+                                            .lock()
+                                            .unwrap_or_else(|p| p.into_inner())
+                                            .insert(mcu_id, hb.fault_code);
+                                        return;
+                                    }
+                                    tracing::error!(
+                                        mcu_id,
+                                        mcu_label = %mcu_label_hb,
+                                        fault_code = hb.fault_code,
+                                        "EXIT_ON_FAULT — ethercat drive fault outside homing; \
+                                         aborting klippy so systemd restarts it"
+                                    );
+                                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                                    if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
+                                        std::process::abort();
+                                    }
+                                }
+                            }
+                            return;
+                        }
+                        let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
+                            crate::pump::HeartbeatMsg {
+                                mcu_id,
+                                retired_counts: hb.retired_counts.clone(),
+                            },
+                        ));
+                        for (axis, &r) in hb.retired_counts.iter().enumerate() {
+                            drain_hb.set_retired(mcu_id, axis as u8, r);
+                        }
+                    },
+                ));
 
                 // Weak so the supervision thread never keeps the conn (and its
                 // reader thread / socket) alive past release_mcu: when the last
@@ -2883,6 +3083,14 @@ impl PyMotionBridge {
         let start_pos = *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner());
 
         {
+            let mut latched = self
+                .latched_drive_fault
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            latched.remove(&axis_key.mcu_id);
+        }
+
+        {
             let mut traj = self
                 .homing_trajectory
                 .lock()
@@ -3082,6 +3290,9 @@ impl PyMotionBridge {
             return;
         }
 
+        self.homing_settled_at_ns
+            .store(crate::motion_node::monotonic_ns(), Ordering::Release);
+
         {
             let mut cohort_guard = self
                 .active_drip_cohort
@@ -3096,10 +3307,24 @@ impl PyMotionBridge {
             .unwrap_or_else(|p| p.into_inner())
             .clone();
 
-        let mcu_ios: HashMap<u32, Arc<KalicoHostIo>> = {
+        let transports: HashMap<u32, Arc<dyn kalico_host_rt::native_call::NativeCall>> = {
             let mcus = self.mcus.lock().unwrap_or_else(|p| p.into_inner());
             mcus.iter()
-                .filter_map(|(&id, conn)| conn.host_io.as_ref().map(|io| (id, Arc::clone(io))))
+                .filter_map(|(&id, conn)| {
+                    if let Some(io) = conn.host_io.as_ref() {
+                        Some((
+                            id,
+                            Arc::clone(io) as Arc<dyn kalico_host_rt::native_call::NativeCall>,
+                        ))
+                    } else {
+                        conn.endpoint_conn.as_ref().map(|ec| {
+                            (
+                                id,
+                                Arc::clone(ec) as Arc<dyn kalico_host_rt::native_call::NativeCall>,
+                            )
+                        })
+                    }
+                })
                 .collect()
         };
 
@@ -3124,64 +3349,32 @@ impl PyMotionBridge {
                     let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
                 }
 
-                let mut stop_errors: Vec<String> = Vec::new();
-                let mut axis_discard_clock: Option<u64> = None;
-                for &mcu_id in &stepper_mcu_ids {
-                    let io = match mcu_ios.get(&mcu_id) {
-                        Some(io) => io.clone(),
-                        None => {
-                            stop_errors.push(format!("Stop: no host_io for mcu {mcu_id}"));
-                            continue;
-                        }
+                use kalico_host_rt::native_call::NativeCall as _;
+                use kalico_protocol::codec::Decode as _;
+                let stop_call =
+                    |mcu_id: u32| -> Result<kalico_protocol::messages::StopResponse, String> {
+                        let transport = transports
+                            .get(&mcu_id)
+                            .ok_or_else(|| format!("Stop: no transport for mcu {mcu_id}"))?;
+                        let (_kind, body) = transport
+                            .kalico_call(
+                                kalico_protocol::MessageKind::Stop,
+                                Vec::new(),
+                                stop_timeout,
+                            )
+                            .map_err(|e| format!("Stop call failed for mcu {mcu_id}: {e:?}"))?;
+                        kalico_protocol::messages::StopResponse::decode(&body)
+                            .map_err(|e| format!("Stop decode failed for mcu {mcu_id}: {e:?}"))
                     };
-                    let result = io.kalico_call(
-                        kalico_protocol::MessageKind::Stop,
-                        Vec::new(),
-                        stop_timeout,
-                    );
-                    match result {
-                        Ok((_kind, body)) => {
-                            use kalico_protocol::codec::Decode as _;
-                            match kalico_protocol::messages::StopResponse::decode(&body) {
-                                Ok(resp) if resp.result != 0 => {
-                                    stop_errors.push(format!(
-                                        "Stop rejected by mcu {mcu_id}: result={}",
-                                        resp.result
-                                    ));
-                                }
-                                Ok(resp) => {
-                                    if mcu_id == run.axis_key.mcu_id {
-                                        axis_discard_clock = Some(resp.discard_clock);
-                                    }
-                                }
-                                Err(e) => {
-                                    stop_errors.push(format!(
-                                        "Stop decode failed for mcu {mcu_id}: {e:?}"
-                                    ));
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            stop_errors.push(format!("Stop call failed for mcu {mcu_id}: {e:?}"));
-                        }
-                    }
-                }
 
-                if !stop_errors.is_empty() {
-                    let _ = run.notify.send(Err(format!(
-                        "EndstopTrip Stop broadcast failed: {}",
-                        stop_errors.join("; ")
-                    )));
-                    return;
-                }
-
-                let discard_clock = match axis_discard_clock {
-                    Some(c) => c,
-                    None => {
-                        let _ = run.notify.send(Err(format!(
-                            "EndstopTrip: axis MCU {} did not report a discard clock",
-                            run.axis_key.mcu_id
-                        )));
+                let discard_clock = match crate::homing::broadcast_stop(
+                    &stepper_mcu_ids,
+                    run.axis_key.mcu_id,
+                    stop_call,
+                ) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = run.notify.send(Err(e));
                         return;
                     }
                 };
@@ -3341,6 +3534,8 @@ mod ethercat_endpoint_tests {
             "eth0",
             "/tmp/test.sock",
             1.0,
+            None,
+            None,
         );
         assert!(result.is_err(), "expected Err for nonexistent binary");
         let msg = result.unwrap_err();

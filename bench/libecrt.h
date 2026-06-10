@@ -23,6 +23,13 @@ uint16_t ec_rt_get_statusword(void);
 uint16_t ec_rt_get_error_code(void);
 int32_t  ec_rt_get_following_error(void);
 
+/* SDO-read 6065h/6066h/6072h. 0 on success; -1/-2/-3 per failing object. */
+int ec_rt_read_limits(uint32_t *ferr_counts, uint16_t *ferr_timeout_ms,
+                      uint16_t *torque_tenth_pct);
+
+/* SDO-write 6065h and 6072h. 0 on success; -1/-2 per failing object. */
+int ec_rt_write_limits(uint32_t ferr_counts, uint16_t torque_tenth_pct);
+
 /* controlword = 0x0006 (disable voltage path), held for a few cycles. */
 void ec_rt_disable(void);
 
