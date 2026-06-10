@@ -21,7 +21,7 @@ Four deliverables:
    loop, drained by a writer thread into a file under
    `~/printer_data/logs/servo_captures/`.
 3. **Protocol + klippy surface** — `StartCapture`/`StopCapture` wire commands;
-   `SERVO_CAPTURE START/STOP` G-code command.
+   `SERVO_CAPTURE_START`/`SERVO_CAPTURE_STOP` G-code commands.
 4. **Offline analysis** — `scripts/servo_capture.py`.
 
 Out of scope: live streaming/plotting, automatic gain tuning, capture of
@@ -135,6 +135,16 @@ rejects `.failed.scap` files. A silently gappy capture poisons every FFT and fit
 downstream. At ~30 bytes × 1 kHz the writer never legitimately falls behind,
 so overflow means something is genuinely wrong — fail loudly.
 
+### Error codes
+
+`ERR_CAPTURE_ACTIVE` (-320), `ERR_CAPTURE_NOT_ACTIVE` (-321),
+`ERR_CAPTURE_FILE` (-322), `ERR_CAPTURE_OVERFLOW` (-323),
+`ERR_CAPTURE_BAD_ARG` (-324). All loud, all distinct. On any failure the
+writer preserves the records-written count, so the stop response reports how
+many records reached disk before the failure. Start validates `drive_name`
+and `started_utc` for JSON safety (the header is emitted without an escaping
+serializer) and returns `ERR_CAPTURE_BAD_ARG` before touching disk.
+
 ### Crash survivability
 
 Records are fixed-size and the writer fsyncs periodically, so a capture
@@ -167,28 +177,39 @@ version bump plus new channel descriptors; old captures keep parsing.
 
 ### Wire commands (alongside `SetTorque`/`PushPieces` in `wire.rs`)
 
-- `StartCapture { path, started_utc } → StartCaptureResponse { result }`
+- `StartCapture { path, started_utc, drive_name } → StartCaptureResponse { result }`
 - `StopCapture → StopCaptureResponse { result, samples, overflow_cycle }`
 
-Error codes follow the existing negative-code convention (`-31x` family):
-capture-already-active, no-capture-active, file-open-failed,
-ring-overflow-occurred. All loud, all distinct.
+Error codes follow the existing negative-code convention: the `-32x` capture
+family listed in §2. The wire carries a single `drive_name`; the file format
+(header `drives` array) is multi-drive ready, and the wire message grows to a
+drive list when a multi-slave endpoint exists.
+
+Adding message kinds changes `SCHEMA_HASH` (generated from
+`rust/kalico-protocol/schema_def.rs`), so rollout requires reflashing BOTH
+MCUs together with the host rebuild — a stale MCU fails the schema handshake.
 
 ### Motion-bridge (PyO3)
 
-`start_servo_capture(path)` / `stop_servo_capture()` encode the wire messages
-over the existing Unix-socket session, mirroring `set_torque()`.
+`start_servo_capture(handle, path, started_utc, drive_name)` /
+`stop_servo_capture(handle)` encode the wire messages over the existing
+Unix-socket session, mirroring `set_torque()`.
 
-### Klippy G-code command
+### Klippy G-code commands
 
-`SERVO_CAPTURE START [SERVO=<name>[,<name>…]] [NAME=<tag>]` and
-`SERVO_CAPTURE STOP`, registered in `klippy/extras/ethercat_node.py` (where
-the endpoint handle lives).
+`SERVO_CAPTURE_START [SERVO=<name>] [NAME=<tag>]` and `SERVO_CAPTURE_STOP` —
+two commands, not one with a subcommand, because klippy extended G-code
+parameters must be `KEY=VALUE` and a bare `START` token does not parse. The
+command object lives in `klippy/extras/servo_capture.py`, auto-loaded by
+`ethercat_node` via `printer.load_object` (the endpoint handle stays in
+`ethercat_node.py`; the capture commands look it up).
 
-- `SERVO=` defaults to the only configured servo; with multiple names, all
-  must share one endpoint, else a command error.
+- `SERVO=` defaults to the only configured servo and is required with
+  multiple `[ethercat_node]` sections. Comma lists (`SERVO=a,b`) error as
+  not-implemented: multi-servo capture requires all drives on one endpoint.
 - `NAME=` tags the filename:
-  `servo_captures/<tag>_<YYYYMMDD_HHMMSS>.scap` (default tag `capture`).
+  `servo_captures/<tag>_<YYYYMMDD_HHMMSS>.scap` (default tag `capture`),
+  restricted to `[A-Za-z0-9_-]+`.
 - STOP prints to the console: file path, sample count, duration, and overflow
   status (a failed capture prints as an error).
 
@@ -210,7 +231,8 @@ phases from the motion-active flag, then reports per move and overall:
   between the two is itself a finding (exposes the drive's interpolation /
   reporting delay).
 - **Overshoot and settling time** — error excursion after motion-active
-  falls; time until error stays within `--settle-band` (counts).
+  falls; time until error stays within `--settle-band` (counts). Each move's
+  post window is clamped at the next move's start.
 - **Torque saturation** — % of samples at/above `--torque-limit` (per-mille
   of rated).
 - **`--fft`** — Welch PSD of following error over moving segments, top peaks
@@ -219,6 +241,8 @@ phases from the motion-active flag, then reports per move and overall:
   with move segments shaded.
 
 Metrics print in both counts and mm (via `counts_per_mm` from the header).
+All timing is fs-aware — the sample rate comes from the header's `cycle_ns`,
+never an assumed 1 kHz.
 
 ## 6. Testing
 
