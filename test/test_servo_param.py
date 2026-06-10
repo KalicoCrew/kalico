@@ -296,3 +296,53 @@ def test_claim_push_no_params_is_noop():
     node = make_node_for_claim(bridge, rail)
     node._push_drive_params(rail)
     assert bridge.writes == []
+
+
+class FakeReactor:
+    NEVER = 9999999999999999.0
+
+    def monotonic(self):
+        return 100.0
+
+
+class FakeFaultPollBridge:
+    def __init__(self, fault=None):
+        self._fault = fault
+        self.taken = []
+
+    def take_drive_fault(self, handle):
+        self.taken.append(handle)
+        fault, self._fault = self._fault, None
+        return fault
+
+
+def make_node_for_fault_poll(bridge):
+    node = ethercat_node.EtherCatNode.__new__(ethercat_node.EtherCatNode)
+    node.name = "node_x"
+    node.bridge_handle = 5
+    printer = FakePrinter({"motion_bridge": bridge})
+    printer.reactor = FakeReactor()
+    printer.get_reactor = lambda: printer.reactor
+    printer.shutdown_msgs = []
+    printer.invoke_shutdown = printer.shutdown_msgs.append
+    node.printer = printer
+    return node
+
+
+def test_fault_poll_rearms_when_drive_is_healthy():
+    bridge = FakeFaultPollBridge(fault=None)
+    node = make_node_for_fault_poll(bridge)
+    waketime = node._poll_drive_fault(7.0)
+    assert waketime == 7.0 + ethercat_node.DRIVE_FAULT_POLL_PERIOD
+    assert bridge.taken == [5]
+    assert node.printer.shutdown_msgs == []
+
+
+def test_fault_poll_shuts_down_klippy_on_latched_fault():
+    bridge = FakeFaultPollBridge(fault=0x8611)
+    node = make_node_for_fault_poll(bridge)
+    waketime = node._poll_drive_fault(7.0)
+    assert waketime == FakeReactor.NEVER
+    assert len(node.printer.shutdown_msgs) == 1
+    assert "0x8611" in node.printer.shutdown_msgs[0]
+    assert "node_x" in node.printer.shutdown_msgs[0]

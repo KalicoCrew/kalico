@@ -277,36 +277,6 @@ fn multiple_pieces_trip_in_second_piece() {
     );
 }
 
-mod post_homing_fault_window_tests {
-    use crate::homing::post_homing_fault_is_benign;
-
-    #[test]
-    fn zero_stamp_is_not_benign() {
-        assert!(!post_homing_fault_is_benign(1_000_000_000, 0));
-    }
-
-    #[test]
-    fn within_window_is_benign() {
-        let settled = 10_000_000_000u64;
-        let now = settled + 1_999_999_999;
-        assert!(post_homing_fault_is_benign(now, settled));
-    }
-
-    #[test]
-    fn outside_window_is_not_benign() {
-        let settled = 10_000_000_000u64;
-        let now = settled + 2_000_000_000;
-        assert!(!post_homing_fault_is_benign(now, settled));
-    }
-
-    #[test]
-    fn now_before_settled_is_benign_via_saturating_sub() {
-        let settled = 10_000_000_000u64;
-        let now = settled - 1;
-        assert!(post_homing_fault_is_benign(now, settled));
-    }
-}
-
 mod drive_fault_routing_tests {
     use crate::homing::{DriveFaultRoute, route_drive_fault};
 
@@ -316,13 +286,16 @@ mod drive_fault_routing_tests {
     }
 
     #[test]
-    fn homing_on_other_mcu_is_fatal() {
-        assert_eq!(route_drive_fault(7, Some(3)), DriveFaultRoute::Fatal);
+    fn homing_on_other_mcu_latches_for_klippy() {
+        assert_eq!(
+            route_drive_fault(7, Some(3)),
+            DriveFaultRoute::LatchForKlippy
+        );
     }
 
     #[test]
-    fn idle_fault_is_fatal() {
-        assert_eq!(route_drive_fault(7, None), DriveFaultRoute::Fatal);
+    fn idle_fault_latches_for_klippy() {
+        assert_eq!(route_drive_fault(7, None), DriveFaultRoute::LatchForKlippy);
     }
 }
 

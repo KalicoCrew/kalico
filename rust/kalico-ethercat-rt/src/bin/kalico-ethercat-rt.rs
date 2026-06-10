@@ -207,6 +207,7 @@ fn main() {
     let mut sdo_bus = FfiSdoBus;
     let mut prdiv = 0u64;
     let mut wkc_consecutive = 0u8;
+    let mut latched_drive_err: u16 = 0;
     'dc: loop {
         if SIGTERM_RECEIVED.load(Ordering::Acquire) {
             eprintln!("ec-rt: SIGTERM received — disabling drive and exiting");
@@ -479,6 +480,7 @@ fn main() {
             gate.on_drive_fault();
             ring.reset();
             cmap = None;
+            latched_drive_err = drive_err;
             server.respond(&status_heartbeat_frame(
                 0,
                 drive_err,
@@ -537,6 +539,13 @@ fn main() {
                 ring.is_empty() as u8 ^ 1,
                 current_retired,
             );
+            if gate.state() == TorqueState::Faulted {
+                server.respond(&status_heartbeat_frame(
+                    0,
+                    latched_drive_err,
+                    &[current_retired],
+                ));
+            }
         }
     }
 

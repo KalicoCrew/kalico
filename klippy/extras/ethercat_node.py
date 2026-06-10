@@ -12,6 +12,8 @@ _DEFAULT_ENDPOINT = os.path.join(
     _REPO_ROOT, "rust", "target", "release", "kalico-ethercat-rt"
 )
 
+DRIVE_FAULT_POLL_PERIOD = 1.0
+
 
 class EtherCatNode:
     def __init__(self, config):
@@ -96,6 +98,22 @@ class EtherCatNode:
             self._counts_per_mm,
         )
         self._push_drive_params(rail)
+        reactor = self.printer.get_reactor()
+        reactor.register_timer(
+            self._poll_drive_fault,
+            reactor.monotonic() + DRIVE_FAULT_POLL_PERIOD,
+        )
+
+    def _poll_drive_fault(self, eventtime):
+        bridge = self.printer.lookup_object("motion_bridge")
+        fault = bridge.take_drive_fault(self.bridge_handle)
+        if fault is None:
+            return eventtime + DRIVE_FAULT_POLL_PERIOD
+        self.printer.invoke_shutdown(
+            "EtherCAT drive fault 0x%04x on node %s — drive parked by the"
+            " realtime endpoint" % (fault, self.name)
+        )
+        return self.printer.get_reactor().NEVER
 
     def _push_drive_params(self, rail):
         params = rail.get_sdo_params()

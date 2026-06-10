@@ -261,6 +261,7 @@ class Homing:
             retractpos[axis] -= direction * hi.retract_dist
             toolhead.move(retractpos, hi.retract_speed)
             toolhead.wait_moves()
+        _check_servo_drive_fault(gcmd, bridge, axis, servo_handle)
 
     def trip_move(
         self, gcmd, toolhead, bridge, axis, direction, speed, max_travel, entry
