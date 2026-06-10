@@ -96,7 +96,12 @@ static void go_realtime(int cpu, int prio) {
 /* The drive's fixed TxPDO 1B01h cannot carry 6062h; the variable TPDO 1A00h
  * (max 10 objects / 40 bytes) can. Mapping is RAM-only on the drive, so it
  * must be rewritten in PRE-OP at every bringup. Entry format per CoE:
- * index<<16 | subindex<<8 | bit-length. */
+ * index<<16 | subindex<<8 | bit-length.
+ *
+ * Order follows the A6-EC manual's documented PDO configuration sequence:
+ * step ① configure the mapping GROUP (1C13h): clear count, pre-write 0x1A00
+ * to 1C13h:01, write count 1; step ② configure the mapping OBJECTS (1A00h):
+ * clear count, write entries 1..10, write count 10. */
 static int map_tx_pdo_1a00(void) {
     static const uint32_t entries[10] = {
         0x603F0010, /* error_code       u16 */
@@ -114,15 +119,15 @@ static int map_tx_pdo_1a00(void) {
     uint8_t  count  = 10;
     uint16_t assign = 0x1A00;
     uint8_t  one    = 1;
-    if (ec_SDOwrite(1, 0x1A00, 0x00, FALSE, sizeof(zero8), &zero8, EC_TIMEOUTRXM) <= 0) return -1;
+    if (ec_SDOwrite(1, 0x1C13, 0x00, FALSE, sizeof(zero8),  &zero8,  EC_TIMEOUTRXM) <= 0) return -1;
+    if (ec_SDOwrite(1, 0x1C13, 0x01, FALSE, sizeof(assign), &assign, EC_TIMEOUTRXM) <= 0) return -1;
+    if (ec_SDOwrite(1, 0x1C13, 0x00, FALSE, sizeof(one),    &one,    EC_TIMEOUTRXM) <= 0) return -1;
+    if (ec_SDOwrite(1, 0x1A00, 0x00, FALSE, sizeof(zero8),  &zero8,  EC_TIMEOUTRXM) <= 0) return -1;
     for (int i = 0; i < 10; i++) {
         uint32_t v = entries[i];
         if (ec_SDOwrite(1, 0x1A00, (uint8_t)(i + 1), FALSE, sizeof(v), &v, EC_TIMEOUTRXM) <= 0) return -1;
     }
     if (ec_SDOwrite(1, 0x1A00, 0x00, FALSE, sizeof(count),  &count,  EC_TIMEOUTRXM) <= 0) return -1;
-    if (ec_SDOwrite(1, 0x1C13, 0x00, FALSE, sizeof(zero8),  &zero8,  EC_TIMEOUTRXM) <= 0) return -1;
-    if (ec_SDOwrite(1, 0x1C13, 0x01, FALSE, sizeof(assign), &assign, EC_TIMEOUTRXM) <= 0) return -1;
-    if (ec_SDOwrite(1, 0x1C13, 0x00, FALSE, sizeof(one),    &one,    EC_TIMEOUTRXM) <= 0) return -1;
     return 0;
 }
 
