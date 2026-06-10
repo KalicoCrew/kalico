@@ -883,8 +883,8 @@ impl PyMotionBridge {
             mcu_handle,
             "servo capture stop"
         );
-        let resp = crate::servo_capture::send_stop_capture(&conn)
-            .map_err(PyRuntimeError::new_err)?;
+        let resp =
+            crate::servo_capture::send_stop_capture(&conn).map_err(PyRuntimeError::new_err)?;
         tracing::info!(
             subsystem = "bridge",
             event = "servo_capture_stopped",

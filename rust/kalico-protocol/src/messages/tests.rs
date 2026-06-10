@@ -314,7 +314,7 @@ fn endstop_trip_round_trips_and_is_event() {
 
 #[test]
 fn put_get_str_round_trip() {
-    use crate::codec::{get_str, put_str, Cursor};
+    use crate::codec::{Cursor, get_str, put_str};
     let mut buf = Vec::new();
     put_str(&mut buf, "servo_captures/x_20260610.scap");
     put_str(&mut buf, "");
@@ -325,7 +325,7 @@ fn put_get_str_round_trip() {
 
 #[test]
 fn get_str_rejects_truncated_buffer() {
-    use crate::codec::{get_str, Cursor};
+    use crate::codec::{Cursor, get_str};
     // length prefix claims 10 bytes, only 2 present
     let buf = [10u8, 0, b'a', b'b'];
     let mut c = Cursor::new(&buf);
@@ -334,7 +334,7 @@ fn get_str_rejects_truncated_buffer() {
 
 #[test]
 fn get_str_rejects_invalid_utf8() {
-    use crate::codec::{get_str, Cursor};
+    use crate::codec::{Cursor, get_str};
     let buf = [2u8, 0, 0xff, 0xfe];
     let mut c = Cursor::new(&buf);
     assert!(get_str(&mut c).is_err());
@@ -366,7 +366,7 @@ fn stop_capture_response_round_trip() {
 
 #[test]
 fn get_str_zero_length_decodes_to_empty() {
-    use crate::codec::{get_str, Cursor};
+    use crate::codec::{Cursor, get_str};
     let buf = [0u8, 0];
     let mut c = Cursor::new(&buf);
     assert_eq!(get_str(&mut c).unwrap(), "");

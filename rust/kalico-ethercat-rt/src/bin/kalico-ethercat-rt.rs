@@ -242,7 +242,8 @@ fn main() {
                         correlation_id,
                         out.result,
                         out.samples,
-                        out.overflow_cycle.unwrap_or(StopCaptureResponse::NO_OVERFLOW),
+                        out.overflow_cycle
+                            .unwrap_or(StopCaptureResponse::NO_OVERFLOW),
                     ));
                 }
                 Command::ClaimHandshake { .. } => {

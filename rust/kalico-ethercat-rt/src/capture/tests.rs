@@ -199,7 +199,11 @@ fn pushes_after_overflow_are_ignored() {
     }
     gate_tx.send(()).unwrap();
     let out = cap.stop();
-    assert_eq!(out.overflow_cycle, Some(2), "first refused cycle is recorded");
+    assert_eq!(
+        out.overflow_cycle,
+        Some(2),
+        "first refused cycle is recorded"
+    );
     let failed = path.with_extension("failed.scap");
     std::fs::remove_file(&failed).unwrap();
 }
@@ -215,7 +219,9 @@ fn writer_death_latches_file_error() {
     let (start_result, writer_done) = cap.start_writer_fails(cfg(&path));
     assert_eq!(start_result, 0);
 
-    writer_done.recv().expect("writer must signal done before failing");
+    writer_done
+        .recv()
+        .expect("writer must signal done before failing");
 
     for i in 0..3u64 {
         cap.push(record(i));

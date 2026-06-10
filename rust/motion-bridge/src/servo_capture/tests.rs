@@ -53,7 +53,11 @@ fn spawn_stop_endpoint(
     peer: UnixStream,
     resp: StopCaptureResponse,
 ) -> std::sync::mpsc::Receiver<()> {
-    spawn_stop_endpoint_with_kind(peer, MessageKind::StopCaptureResponse, resp.encoded_to_vec())
+    spawn_stop_endpoint_with_kind(
+        peer,
+        MessageKind::StopCaptureResponse,
+        resp.encoded_to_vec(),
+    )
 }
 
 fn spawn_stop_endpoint_with_kind(
@@ -96,8 +100,7 @@ fn start_capture_round_trips_fields_and_result() {
     let rx = spawn_start_endpoint(server, 0);
     let conn = UnixNativeConn::from_stream(client).expect("from_stream");
     let result =
-        send_start_capture(&conn, "/tmp/cap.scap", "2026-06-10T00:00:00Z", "axis_x")
-            .expect("call");
+        send_start_capture(&conn, "/tmp/cap.scap", "2026-06-10T00:00:00Z", "axis_x").expect("call");
     assert_eq!(result, 0);
     let seen = rx.recv().expect("endpoint saw the command");
     assert_eq!(seen.path, "/tmp/cap.scap");
@@ -111,8 +114,7 @@ fn start_capture_surfaces_nonzero_result() {
     let _rx = spawn_start_endpoint(server, -324);
     let conn = UnixNativeConn::from_stream(client).expect("from_stream");
     assert_eq!(
-        send_start_capture(&conn, "/tmp/cap.scap", "2026-06-10T00:00:00Z", "axis_x")
-            .expect("call"),
+        send_start_capture(&conn, "/tmp/cap.scap", "2026-06-10T00:00:00Z", "axis_x").expect("call"),
         -324
     );
 }
@@ -122,23 +124,17 @@ fn start_capture_transport_error_is_err() {
     let (client, server) = UnixStream::pair().unwrap();
     let conn = UnixNativeConn::from_stream(client).expect("from_stream");
     drop(server);
-    assert!(
-        send_start_capture(&conn, "/tmp/cap.scap", "2026-06-10T00:00:00Z", "axis_x").is_err()
-    );
+    assert!(send_start_capture(&conn, "/tmp/cap.scap", "2026-06-10T00:00:00Z", "axis_x").is_err());
 }
 
 #[test]
 fn start_capture_wrong_kind_response_is_rejected() {
     let (client, server) = UnixStream::pair().unwrap();
-    let _rx = spawn_start_endpoint_with_kind(
-        server,
-        MessageKind::PushPiecesResponse,
-        vec![0u8; 20],
-    );
+    let _rx =
+        spawn_start_endpoint_with_kind(server, MessageKind::PushPiecesResponse, vec![0u8; 20]);
     let conn = UnixNativeConn::from_stream(client).expect("from_stream");
-    let err =
-        send_start_capture(&conn, "/tmp/cap.scap", "2026-06-10T00:00:00Z", "axis_x")
-            .expect_err("should error on wrong kind");
+    let err = send_start_capture(&conn, "/tmp/cap.scap", "2026-06-10T00:00:00Z", "axis_x")
+        .expect_err("should error on wrong kind");
     assert!(err.contains("unexpected response kind"));
 }
 

@@ -12,7 +12,9 @@ use kalico_protocol::messages::{
     StopCaptureResponse,
 };
 
-use kalico_ethercat_rt::capture::{ERR_CAPTURE_ACTIVE, ERR_CAPTURE_FILE, ERR_CAPTURE_NOT_ACTIVE, RECORD_SIZE};
+use kalico_ethercat_rt::capture::{
+    ERR_CAPTURE_ACTIVE, ERR_CAPTURE_FILE, ERR_CAPTURE_NOT_ACTIVE, RECORD_SIZE,
+};
 
 const STUB_BIN: &str = env!("CARGO_BIN_EXE_kalico-ethercat-rt-stub");
 
@@ -44,11 +46,7 @@ fn socket_path(tag: &str) -> String {
 }
 
 fn capture_file(tag: &str) -> String {
-    format!(
-        "/tmp/kalico-capture-it-{}-{}.scap",
-        tag,
-        std::process::id()
-    )
+    format!("/tmp/kalico-capture-it-{}-{}.scap", tag, std::process::id())
 }
 
 fn wait_for_socket(path: &str, deadline: Instant) {
@@ -153,7 +151,11 @@ fn capture_start_records_stop_produces_consistent_file() {
     thread::sleep(Duration::from_millis(500));
 
     let resp = stop_capture(&conn);
-    assert_eq!(resp.result, 0, "StopCapture result must be 0, got {}", resp.result);
+    assert_eq!(
+        resp.result, 0,
+        "StopCapture result must be 0, got {}",
+        resp.result
+    );
     assert!(
         resp.samples > 100,
         "expected >100 samples after 500 ms, got {}",
@@ -175,8 +177,7 @@ fn capture_start_records_stop_produces_consistent_file() {
         .iter()
         .position(|&b| b == b'\n')
         .expect("capture file must contain a header newline");
-    let header = std::str::from_utf8(&contents[..newline_pos])
-        .expect("header must be valid UTF-8");
+    let header = std::str::from_utf8(&contents[..newline_pos]).expect("header must be valid UTF-8");
     assert!(
         header.contains("\"version\":1"),
         "header must contain \"version\":1; header={header:?}"
@@ -196,8 +197,7 @@ fn capture_start_records_stop_produces_consistent_file() {
     );
     let file_records = body.len() / RECORD_SIZE;
     assert_eq!(
-        file_records,
-        resp.samples as usize,
+        file_records, resp.samples as usize,
         "file record count {file_records} must equal samples {} from StopCaptureResponse",
         resp.samples
     );
@@ -221,8 +221,7 @@ fn double_start_rejected_without_killing_first_capture() {
 
     let rc2 = start_capture(&conn, &path2);
     assert_eq!(
-        rc2,
-        ERR_CAPTURE_ACTIVE,
+        rc2, ERR_CAPTURE_ACTIVE,
         "second StartCapture must return ERR_CAPTURE_ACTIVE ({ERR_CAPTURE_ACTIVE}), got {rc2}"
     );
 

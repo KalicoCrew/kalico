@@ -176,10 +176,7 @@ impl Capture {
     }
 
     #[cfg(test)]
-    pub(crate) fn start_writer_fails(
-        &mut self,
-        cfg: CaptureConfig,
-    ) -> (i32, Receiver<()>) {
+    pub(crate) fn start_writer_fails(&mut self, cfg: CaptureConfig) -> (i32, Receiver<()>) {
         let (done_tx, done_rx) = sync_channel(1);
         let result = self.start_inner(cfg, WriterHook::FailAfterHeader(done_tx));
         (result, done_rx)
