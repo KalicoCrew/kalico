@@ -19,7 +19,7 @@ def _parse_int(text):
 
 def parse_address(text):
     parts = text.strip().split(".")
-    if len(parts) != 2:
+    if len(parts) != 2 or not parts[0].lower().startswith("0x"):
         raise ValueError("address %r: expected 0xINDEX.SUB" % (text,))
     try:
         index = int(parts[0], 16)
@@ -92,6 +92,8 @@ def parse_params_block(text):
 
 
 def format_value(index, subindex, size, raw, type_token):
+    if not 1 <= size <= 4:
+        raise ValueError("SDO object size %d outside 1..4" % (size,))
     bits = 8 * size
     unsigned = raw & ((1 << bits) - 1)
     signed = unsigned - (1 << bits) if unsigned >> (bits - 1) else unsigned
@@ -179,10 +181,10 @@ class ServoParam:
                 rb_size, rb_raw = bridge.sdo_write(
                     handle, index, subindex, size, value
                 )
-                gcmd.respond_info(
-                    "set "
-                    + format_value(index, subindex, rb_size, rb_raw, type_token)
+                settled = format_value(
+                    index, subindex, rb_size, rb_raw, type_token
                 )
+                gcmd.respond_info("set " + settled)
         except ValueError as e:
             raise gcmd.error("SERVO_PARAM: %s" % (e,))
         except RuntimeError as e:

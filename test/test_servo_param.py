@@ -9,7 +9,7 @@ def test_parse_address():
 
 
 @pytest.mark.parametrize(
-    "bad", ["2002", "0x2002.0.1", "0x12345.0", "0x2002.300", "x.y"]
+    "bad", ["2002", "2002.0", "0x2002.0.1", "0x12345.0", "0x2002.300", "x.y"]
 )
 def test_parse_address_rejects(bad):
     with pytest.raises(ValueError):
@@ -17,7 +17,8 @@ def test_parse_address_rejects(bad):
 
 
 def test_parse_param_entry_probed():
-    assert servo_param.parse_param_entry("0x2002.0: 100") == (0x2002, 0, 0, 100)
+    entry = servo_param.parse_param_entry("0x2002.0: 100")
+    assert entry == (0x2002, 0, 0, 100)
 
 
 def test_parse_param_entry_typed():
