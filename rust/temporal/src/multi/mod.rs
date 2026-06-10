@@ -126,8 +126,13 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
                 .iter()
                 .map(|c| grid::compute_n(&input.grid_strategy, c))
                 .collect();
-            grid::reconcile_junction_n(&mut ns, &chain_curves, grid_max_n);
-            let absorbed = grid::classify_absorbed(&ns, &chain_curves);
+            let absorbed = grid::classify_absorbed(&ns, &chain_curves, grid_max_n);
+            grid::reconcile_junction_n(&mut ns, &chain_curves, grid_max_n, &absorbed);
+            for (n, &a) in ns.iter_mut().zip(&absorbed) {
+                if a {
+                    *n = 2;
+                }
+            }
             let seg_grids: Result<Vec<_>, _> = range
                 .clone()
                 .zip(ns)

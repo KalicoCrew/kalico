@@ -38,33 +38,52 @@ pub(crate) fn compute_n(strategy: &GridStrategy, curve: &VectorNurbs<f64, 3>) ->
 /// This never increases n beyond `max_n` and never decreases n below 2, so
 /// the resulting grids are always valid inputs to `sample_arclength_grid`.
 /// `Fixed` grids are left unchanged.
-/// Returns a boolean mask (same length as `ns` / `curves`) indicating which
-/// segments must be absorbed — contributing no interior grid nodes to the chain
-/// because even at `ns[i]` (post-reconcile, capped at `max_n`) the junction
-/// spacing ratio with a neighbor would exceed `MAX_JUNCTION_SPACING_RATIO`.
 ///
-/// Only interior segments (index > 0 and < len-1) are ever marked for
-/// absorption; edge segments have nowhere to fold into and are left unchanged.
-pub(crate) fn classify_absorbed(ns: &[usize], curves: &[&VectorNurbs<f64, 3>]) -> Vec<bool> {
+/// Returns a mask of segments to absorb — contributing no grid nodes to the
+/// chain — because their spacing deficit is length-determined: even with the
+/// segment at n=2 (one interval spanning its whole arclength) and its
+/// neighbor refined to `max_n`, the junction ratio exceeds
+/// `MAX_JUNCTION_SPACING_RATIO`. Runs on the natural (pre-reconcile) node
+/// counts; reconciliation afterwards must skip absorbed segments, otherwise
+/// it inflates a neighbor's n chasing a segment that will not exist in the
+/// grid. At least one segment always stays non-absorbed.
+pub(crate) fn classify_absorbed(
+    ns: &[usize],
+    curves: &[&VectorNurbs<f64, 3>],
+    max_n: Option<usize>,
+) -> Vec<bool> {
     let n = ns.len();
     let mut absorbed = vec![false; n];
-    if n < 3 {
+    if n < 2 {
         return absorbed;
     }
     let lengths: Vec<f64> = curves
         .iter()
         .map(|c| control_polygon_length_mm(c))
         .collect();
-    let h = |n_seg: usize, l: f64| -> f64 { if n_seg <= 1 { l } else { l / (n_seg - 1) as f64 } };
-    for i in 1..n - 1 {
-        let h_i = h(ns[i], lengths[i]);
-        let h_left = h(ns[i - 1], lengths[i - 1]);
-        let h_right = h(ns[i + 1], lengths[i + 1]);
-        let ratio_left = if h_i > 0.0 { h_left / h_i } else { f64::INFINITY };
-        let ratio_right = if h_i > 0.0 { h_right / h_i } else { f64::INFINITY };
-        if ratio_left > MAX_JUNCTION_SPACING_RATIO || ratio_right > MAX_JUNCTION_SPACING_RATIO {
+    let h = |n_seg: usize, l: f64| -> f64 {
+        if n_seg <= 1 {
+            l
+        } else {
+            l / (n_seg - 1) as f64
+        }
+    };
+    let finest = |i: usize| -> f64 { h(max_n.unwrap_or(ns[i]), lengths[i]) };
+    for i in 0..n {
+        let unresolvable = |nb: usize| -> bool {
+            lengths[i] <= 0.0 || finest(nb) / lengths[i] > MAX_JUNCTION_SPACING_RATIO
+        };
+        let left_bad = i > 0 && unresolvable(i - 1);
+        let right_bad = i + 1 < n && unresolvable(i + 1);
+        if left_bad || right_bad {
             absorbed[i] = true;
         }
+    }
+    if absorbed.iter().all(|&a| a) {
+        let longest = (0..n)
+            .max_by(|&a, &b| lengths[a].total_cmp(&lengths[b]))
+            .unwrap();
+        absorbed[longest] = false;
     }
     absorbed
 }
@@ -73,9 +92,12 @@ pub(crate) fn reconcile_junction_n(
     ns: &mut [usize],
     curves: &[&VectorNurbs<f64, 3>],
     max_n: Option<usize>,
+    absorbed: &[bool],
 ) {
     debug_assert_eq!(ns.len(), curves.len());
-    if ns.len() < 2 {
+    debug_assert_eq!(ns.len(), absorbed.len());
+    let live: Vec<usize> = (0..ns.len()).filter(|&i| !absorbed[i]).collect();
+    if live.len() < 2 {
         return;
     }
 
@@ -129,26 +151,16 @@ pub(crate) fn reconcile_junction_n(
             }
         };
 
-    for i in 0..ns.len() - 1 {
-        let (left, right) = ns.split_at_mut(i + 1);
-        reconcile_pair(
-            &mut left[i],
-            &mut right[0],
-            lengths[i],
-            lengths[i + 1],
-            max_n,
-        );
+    for w in live.windows(2) {
+        let (i, j) = (w[0], w[1]);
+        let (left, right) = ns.split_at_mut(j);
+        reconcile_pair(&mut left[i], &mut right[0], lengths[i], lengths[j], max_n);
     }
 
-    for i in (0..ns.len() - 1).rev() {
-        let (left, right) = ns.split_at_mut(i + 1);
-        reconcile_pair(
-            &mut left[i],
-            &mut right[0],
-            lengths[i],
-            lengths[i + 1],
-            max_n,
-        );
+    for w in live.windows(2).rev() {
+        let (i, j) = (w[0], w[1]);
+        let (left, right) = ns.split_at_mut(j);
+        reconcile_pair(&mut left[i], &mut right[0], lengths[i], lengths[j], max_n);
     }
 }
 

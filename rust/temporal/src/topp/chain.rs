@@ -59,10 +59,12 @@ impl ChainGrid {
         assert!(!grids.is_empty(), "empty chain");
 
         for j_idx in 1..grids.len() {
-            if absorbed[j_idx] || absorbed[j_idx - 1] {
+            if absorbed[j_idx] {
                 continue;
             }
-            let prev_non_absorbed = (0..j_idx).rev().find(|&k| !absorbed[k]).unwrap_or(0);
+            let Some(prev_non_absorbed) = (0..j_idx).rev().find(|&k| !absorbed[k]) else {
+                continue;
+            };
             let hl = grids[prev_non_absorbed].s[1] - grids[prev_non_absorbed].s[0];
             let hr = grids[j_idx].s[1] - grids[j_idx].s[0];
             let ratio = (hl / hr).max(hr / hl);
