@@ -80,6 +80,12 @@ fn is_constant_piece(coeffs: &[f64; 4]) -> bool {
         && coeffs[2].to_bits() == coeffs[3].to_bits()
 }
 
+struct MergedPiece {
+    coeffs: [f64; 4],
+    duration: f64,
+    curve_u_start: f64,
+}
+
 fn flatten_axis<P>(
     curve: &ScalarNurbs<f64>,
     t0: f64,
@@ -93,13 +99,7 @@ where
     P: Fn(u32, f64) -> u64,
 {
     let bps = nurbs::bezier::extract_bezier_pieces(curve);
-    // (coeffs, duration, u_start): u_start is bp.u_start in CURVE time — curves
-    // are not 0-based (a dispatched stream's segments continue in trajectory
-    // time), so emitted host times must be t0 + u_start, never an accumulator
-    // restarted at zero. Getting this wrong shifts every piece of every
-    // non-first segment into the MCU's past (bench: PieceStartInPast,
-    // deficit saturated).
-    let mut merged: Vec<([f64; 4], f64, f64)> = Vec::with_capacity(bps.len());
+    let mut merged: Vec<MergedPiece> = Vec::with_capacity(bps.len());
 
     for bp in bps.iter() {
         let bern = bp.to_bernstein();
@@ -122,32 +122,32 @@ where
 
         if is_constant_piece(&coeffs_f64) {
             if let Some(last) = merged.last_mut() {
-                if is_constant_piece(&last.0) && last.0[0].to_bits() == coeffs_f64[0].to_bits() {
-                    last.1 += duration;
+                if is_constant_piece(&last.coeffs)
+                    && last.coeffs[0].to_bits() == coeffs_f64[0].to_bits()
+                {
+                    last.duration += duration;
                     continue;
                 }
             }
         }
-        merged.push((coeffs_f64, duration, bp.u_start));
+        merged.push(MergedPiece {
+            coeffs: coeffs_f64,
+            duration,
+            curve_u_start: bp.u_start,
+        });
     }
 
     let mut out = Vec::with_capacity(merged.len() * 8);
 
-    for (piece_idx, (coeffs_f64, duration, u_start)) in merged.iter().enumerate() {
-        // max_piece_secs is set only for homing (drip) enqueues, where
-        // constants must subdivide like movers: a whole-move coalesced
-        // constant never retires until the move ends, which both pins the
-        // cohort's retirement watchdog at zero and exempts that axis from
-        // the drip leash. Outside homing constants stay whole (the
-        // coalescing exists to keep follower traffic off the wire).
+    for (piece_idx, mp) in merged.iter().enumerate() {
         let subs: Vec<([f64; 4], f64)> = match max_piece_secs {
-            Some(m) => subdivide_bernstein(*coeffs_f64, *duration, m),
-            None => vec![(*coeffs_f64, *duration)],
+            Some(m) => subdivide_bernstein(mp.coeffs, mp.duration, m),
+            None => vec![(mp.coeffs, mp.duration)],
         };
 
         let mut sub_offset = 0.0_f64;
         for (sub_idx, (sub_coeffs, sub_dur)) in subs.iter().enumerate() {
-            let host_secs = t0 + u_start + sub_offset;
+            let host_secs = t0 + mp.curve_u_start + sub_offset;
             let start_time = project(mcu_id, host_secs);
 
             let mut coeffs = [0.0_f32; 4];
@@ -191,10 +191,6 @@ pub fn subdivide_bernstein(
     max_piece_secs: f64,
 ) -> Vec<([f64; 4], f64)> {
     if duration <= max_piece_secs {
-        return vec![(coeffs, duration)];
-    }
-    let c0 = coeffs[0];
-    if coeffs.iter().all(|&c| (c - c0).abs() <= 1e-9) {
         return vec![(coeffs, duration)];
     }
     let n = (duration / max_piece_secs).ceil() as usize;

@@ -399,11 +399,6 @@ fn flush_unknown_key_is_noop() {
     handle.join().unwrap();
 }
 
-/// The homing trip sequence relies on this ordering: once Barrier acks,
-/// every preceding Flush has been applied, so the pump can never again
-/// emit pieces for the flushed axes (the MCU-side Stop discard is then
-/// complete by construction). Messages are buffered before the pump
-/// starts so the Enqueue/Flush/Barrier arrive in one drain pass.
 #[test]
 fn barrier_ack_means_flushed_axes_emit_nothing() {
     let key = AxisKey { mcu_id: 1, axis: 0 };

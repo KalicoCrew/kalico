@@ -380,11 +380,6 @@ class MotionToolhead(ToolHead):
                 cbs = holder._active_callbacks
                 holder._active_callbacks = []
                 for cb in cbs:
-                    # A callback may block for ~100ms of synchronous TMC
-                    # register init (UART), so each one gets a freshly
-                    # computed print_time: a single shared value goes
-                    # stale and schedules later enable-pin writes in the
-                    # MCU's past ("Timer too close", bench 2026-06-10).
                     cb(self.get_last_move_time())
                 fired = True
         return fired
@@ -508,16 +503,8 @@ class MotionToolhead(ToolHead):
         self.bridge.update_limits(self.max_velocity, self.max_accel)
 
     def stats(self, eventtime):
-        # check_active drives SecondarySync.calibrate_clock — without this
-        # call every second, a secondary MCU's print-time mapping freezes at
-        # its connect-time slew and drifts ~ms per second until the first
-        # clock-scheduled command lands in its past ("Timer too close" on the
-        # first Z enable minutes after boot).
         max_queue_time = max(self.print_time, self._mcu_pending_end_time)
         for m in self.all_mcus:
-            # A disconnected non-critical MCU (e.g. an absent accelerometer
-            # board) has a frozen clocksync; calibrate_clock on it computes
-            # adjusted_freq = 0 and the next pass divides by it.
             if getattr(m, "non_critical_disconnected", False):
                 continue
             m.check_active(max_queue_time, eventtime)

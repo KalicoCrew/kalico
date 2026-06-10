@@ -168,10 +168,6 @@ pub fn reconstruct_axis_position(
     eval_piece_at_clock(pieces, axis_clock, clock_freq, trip_clock).map_err(|e| e.to_string())
 }
 
-/// Returns the endpoint of the last Bernstein piece in the trajectory store for
-/// `axis_key`, i.e. `coeffs[3]` of the final piece evaluated at `u = 1`.
-///
-/// Fails loudly when the store is empty — callers must not guess a position.
 #[allow(clippy::implicit_hasher)]
 pub fn trajectory_final_position(
     axis_key: AxisKey,

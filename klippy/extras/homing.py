@@ -173,8 +173,6 @@ class Homing:
                 toolhead.move(retractpos, hi.retract_speed)
                 toolhead.wait_moves()
         except BaseException:
-            # The primary error must reach the operator; a failed current
-            # restore during the unwind is logged, not raised over it.
             try:
                 self._set_homing_current(toolhead, rail, pre_homing=False)
             except Exception:

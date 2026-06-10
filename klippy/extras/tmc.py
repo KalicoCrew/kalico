@@ -412,10 +412,6 @@ class TMCCommandHelper:
                 % (prev_cur, prev_hold_cur, prev_home_cur)
             )
 
-    # Host-side stepper phase tracking died with host step generation: the
-    # bridge runtime owns step counts, so a driver-phase-to-step-count offset
-    # cannot be computed here. mcu_phase_offset stays None ("phase unknown"),
-    # which every consumer (angle, endstop_phase) already handles.
     def _get_phases(self):
         return (256 >> self.fields.get_field("mres")) * 4
 
@@ -588,7 +584,6 @@ class TMCCommandHelper:
 ######################################################################
 
 
-# Stallguard virtual endstop provider for sensorless homing
 class TMCVirtualPinHelper:
     def __init__(self, config, mcu_tmc):
         self.printer = config.get_printer()
@@ -643,7 +638,6 @@ class TMCVirtualPinHelper:
         self.disarm()
 
     def arm(self):
-        # Apply the configured stallguard threshold
         if self.fields.lookup_register("sgthrs", None) is not None:
             sg_val = self.fields.set_field(
                 "sgthrs", self.fields.get_field("sgthrs")

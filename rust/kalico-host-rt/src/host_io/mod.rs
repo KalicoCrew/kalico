@@ -56,8 +56,6 @@ impl Default for KalicoHostIoConfig {
         Self {
             trace_capacity: 256,
             host_event_capacity: 64,
-            // Sized so a klippy reactor stalled in one 15s bridge_call doesn't
-            // drop sensor PassthroughResponses (~17 events/s on the bench).
             runtime_event_capacity: 512,
             default_call_timeout: Duration::from_millis(100),
             identify_timeout: Duration::from_millis(15_000),
@@ -379,8 +377,6 @@ impl KalicoHostIo {
                     "EXIT_ON_FAULT — transport closed via IO error on CRITICAL MCU; aborting klippy so systemd restarts it"
                 );
                 let _ = std::io::Write::flush(&mut std::io::stderr());
-                // abort() skips the non_blocking appender's flush; let the worker drain
-                // or the EXIT_ON_FAULT reason dies with the process (silent SIGABRT).
                 std::thread::sleep(std::time::Duration::from_millis(100));
                 if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
                     std::process::abort();

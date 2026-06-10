@@ -107,9 +107,6 @@ def test_x_move_does_not_enable_z_steppers():
 
 
 def test_each_enable_callback_gets_fresh_print_time():
-    # Each callback may block ~100ms in synchronous TMC UART init; a
-    # shared print_time would schedule later enable-pin writes in the
-    # MCU's past (bench 2026-06-10: "Timer too close" on stepper_z2).
     kin = make_kin("corexy")
     fired = []
     for rail in kin.rails:

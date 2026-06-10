@@ -55,10 +55,6 @@ pub struct Engine {
     pub(crate) step_state: [StepMotorState; MAX_AXES],
     pub(crate) last_motors: [f32; MAX_AXES],
     pub tick_caches: crate::stepping_state::TickCaches,
-    /// Set by the homing Stop (`gate_pieces`): head commits are refused until
-    /// the host resumes the stream, so a piece frame racing the Stop discard
-    /// can never publish into the ring and execute from the halted position.
-    /// Foreground-only — the ISR never reads it (a gated ring is simply empty).
     pieces_gated: bool,
     #[cfg(any(test, feature = "host"))]
     test_queue_ptrs: [*mut crate::step_queue::StepQueue; MAX_AXES],
@@ -226,17 +222,11 @@ impl Engine {
         }
     }
 
-    /// Homing Stop: discard everything queued and refuse head commits until
-    /// [`Self::ungate_pieces`]. Idempotent — a second Stop re-discards.
     pub fn gate_pieces(&mut self) {
         self.discard_pending();
         self.pieces_gated = true;
     }
 
-    /// Lift the Stop gate after the host has reconciled position and proven
-    /// (pump barrier) that no old-stream piece can still arrive. Discards
-    /// defensively. Resuming a stream that was never gated is a host
-    /// sequencing bug — fail loudly.
     pub fn ungate_pieces(&mut self) -> i32 {
         if !self.pieces_gated {
             return crate::error::KALICO_ERR_STREAM_STATE_VIOLATION;

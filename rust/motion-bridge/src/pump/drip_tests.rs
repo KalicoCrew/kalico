@@ -65,9 +65,6 @@ impl PieceSink for CountingSink {
     }
 }
 
-/// Stall detection: fires when the retirement floor stops advancing for the
-/// cohort timeout. With no MCU clock available, cohort participants release
-/// nothing (horizon 0), so the floor never moves and the watchdog must fire.
 #[test]
 fn stall_detection_fires_when_floor_stuck() {
     let ka = AxisKey { mcu_id: 0, axis: 0 };
@@ -126,9 +123,6 @@ fn stall_detection_fires_when_floor_stuck() {
     );
 }
 
-/// "Not even possible to free-run anything": while a cohort is armed, an
-/// enqueue for an axis outside the participant set aborts the homing run
-/// and the pieces are dropped, never sent.
 #[test]
 fn non_participant_enqueue_aborts_cohort_and_drops_pieces() {
     let participant = AxisKey { mcu_id: 0, axis: 0 };
@@ -183,10 +177,6 @@ fn non_participant_enqueue_aborts_cohort_and_drops_pieces() {
     );
 }
 
-/// Cohort participants are paced by the MCU clock horizon: pieces starting
-/// within `lead_secs` of the clock release immediately; pieces beyond it are
-/// held until the clock advances. This is the dead-man leash — release
-/// tracks the clock, never retirement feedback.
 #[test]
 fn participant_release_tracks_mcu_clock_horizon() {
     let ka = AxisKey { mcu_id: 0, axis: 0 };
@@ -201,7 +191,6 @@ fn participant_release_tracks_mcu_clock_horizon() {
             rx,
             sink_clone,
             |_| 64,
-            // freq 1000 ticks/sec: DRIP_WINDOW_SECS=0.1 -> horizon now+100.
             move |_| Some((*clock_for_pump.lock().unwrap(), 1000.0)),
             |_| {},
             |_, _| {},
@@ -250,8 +239,6 @@ fn participant_release_tracks_mcu_clock_horizon() {
     handle.join().unwrap();
 }
 
-/// Without a synced MCU clock, a cohort participant releases NOTHING —
-/// better to stall (and trip the watchdog) than free-run during homing.
 #[test]
 fn unsynced_clock_releases_nothing_for_participants() {
     let ka = AxisKey { mcu_id: 0, axis: 0 };
@@ -287,7 +274,6 @@ fn unsynced_clock_releases_nothing_for_participants() {
     );
 }
 
-/// Retired-regression detection survives the cohort simplification.
 #[test]
 fn retired_regression_triggers_on_drip_stall() {
     let ka = AxisKey { mcu_id: 3, axis: 2 };
@@ -341,7 +327,6 @@ fn retired_regression_triggers_on_drip_stall() {
     );
 }
 
-/// An MCU reboot mid-homing zeroes its retired counter — must abort loudly.
 #[test]
 fn mcu_reboot_retired_to_zero_triggers_regression() {
     let ka = AxisKey { mcu_id: 1, axis: 0 };
@@ -431,7 +416,6 @@ fn drip_disarm_clears_cohort() {
     }))
     .unwrap();
     tx.send(PumpMsg::DripDisarm(31)).unwrap();
-    // After disarm the outsider may stream freely again.
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key: outsider,
         pieces: vec![make_piece(1)],
@@ -470,7 +454,6 @@ fn drip_disarm_wrong_cohort_id_is_noop() {
     }))
     .unwrap();
     tx.send(PumpMsg::DripDisarm(999)).unwrap();
-    // Cohort 31 must still be armed: outsider enqueue aborts it.
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key: outsider,
         pieces: vec![make_piece(1)],

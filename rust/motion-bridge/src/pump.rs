@@ -68,13 +68,11 @@ pub enum Schedule {
 ///    a ring-full queue, no other queue may advance — cross-MCU issue-side
 ///    coherence requires that a hardware-blocked MCU is never overtaken.
 ///
-/// 2. **Cap-gated (drip cohort) queues are skipped, not globally-gating.**
-///    When the globally-earliest piece has `releasable_cap_of == 0` (drip window
-///    full), that queue is excluded from this round and the search continues
-///    among remaining queues in host-time order.  Non-participant queues are
-///    never blocked by a participant's drip window.  Only when every non-empty
-///    queue is either cap-gated or horizon-gated does the function report
-///    `StallAhead`.
+/// 2. **Cap-gated queues are skipped, not globally-gating.** When the
+///    globally-earliest piece has `releasable_cap_of == 0`, that queue is
+///    excluded from this round and the search continues among remaining
+///    queues in host-time order. A horizon-blocked head, by contrast,
+///    returns `StallAhead` immediately.
 ///
 /// 3. **Ordering must use host time.** `start_time` values are raw MCU clock
 ///    ticks in per-MCU clock domains (H7: ~520 MHz / own epoch; F446: ~180 MHz /
@@ -134,8 +132,6 @@ pub fn schedule(
     };
 
     let mut taken: BTreeMap<AxisKey, usize> = BTreeMap::new();
-    // Seed with the cap-gated keys: a window-blocked participant must not
-    // reach the cross-MCU break below and abort the round for everyone else.
     let mut maxed: BTreeSet<AxisKey> = cap_skipped;
     loop {
         let next = queues
@@ -206,12 +202,6 @@ mod tests;
 #[cfg(test)]
 mod drip_tests;
 
-/// How far ahead of the MCU clock homing pieces may be released. This is the
-/// dead-man's bound: if the host dies mid-homing, the MCU runs out of queued
-/// trajectory within this window (window × homing speed of unsupervised
-/// travel). Release is paced against the MCU clock estimate, NOT retirement
-/// feedback — feedback pacing accumulates reporting latency and starved long
-/// homing moves into PieceStartInPast (bench 2026-06-10 15:34, two -308s).
 pub const DRIP_WINDOW_SECS: f64 = 0.100;
 
 pub struct DripArm {
@@ -241,12 +231,6 @@ pub enum PumpMsg {
     Flush(Vec<AxisKey>),
     DripArm(DripArm),
     DripDisarm(u64),
-    /// Acknowledged once every preceding message has been applied and no
-    /// send batch is in progress. Senders that must guarantee the pump can
-    /// no longer emit pieces for flushed axes (the homing Stop sequence)
-    /// wait on this before issuing the MCU-side discard: a piece written
-    /// to the wire after the discard executes from the halted position
-    /// (bench 2026-06-10: -310, 740 steps — one drip window at 100mm/s).
     Barrier(std::sync::mpsc::SyncSender<()>),
     Shutdown,
 }
@@ -306,12 +290,6 @@ pub fn junction_jumps(
 
 pub const MAX_LEAD_SECS: f64 = 1.0;
 
-/// Homing cohort bookkeeping. Release PACING is not here — every participant
-/// is paced by the MCU-clock horizon (its queue's `lead_secs`, set to
-/// [`DRIP_WINDOW_SECS`] by the homing enqueue path). The cohort's jobs are:
-/// fail loudly if anything tries to stream a non-participant axis while
-/// homing owns motion, and watchdog the retirement floor so a dead MCU
-/// aborts the homing run instead of hanging it.
 struct DripCohort {
     id: u64,
     participants: BTreeSet<AxisKey>,
@@ -393,10 +371,6 @@ pub fn run_pump<S, F, C, A, O, D>(
                 lead_secs,
             }) => {
                 if let Some(co) = cohort.as_ref() {
-                    // Homing owns motion: every streamed axis must be dripped.
-                    // A non-participant enqueue is a host sequencing bug —
-                    // abort the homing run and drop the pieces rather than
-                    // let anything free-run while position is unknown.
                     if !co.participants.contains(&key) {
                         let id = co.id;
                         on_drip_stall(format!(
@@ -525,11 +499,6 @@ pub fn run_pump<S, F, C, A, O, D>(
         true
     };
 
-    // Cohort participants are paced by the SAME clock horizon as normal
-    // moves — their queues carry lead_secs = DRIP_WINDOW_SECS from the homing
-    // enqueue path. An unsynced clock during homing releases nothing
-    // (horizon 0): better to stall and trip the watchdog than to free-run an
-    // axis while position is unknown.
     let horizon_of = |k: &AxisKey, q: &AxisQueue, cohort: &Option<DripCohort>| -> Option<u64> {
         match mcu_clock_of(k.mcu_id) {
             Some((ack_now, freq)) =>

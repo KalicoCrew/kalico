@@ -1171,12 +1171,6 @@ impl Reactor {
 }
 
 impl Reactor {
-    /// A shutdown MCU answers every command with `is_shutdown`, which
-    /// matches no waiting call by name — without this, each pending and
-    /// future call rides out its full timeout serially (observed as a
-    /// frozen klippy reactor, 15s per call). Failing everything now keeps
-    /// the failure prompt; the `shutdown`/`is_shutdown` frame itself still
-    /// flows through the passthrough path so klippy can report the reason.
     fn fail_pending_on_mcu_shutdown(
         &mut self,
         response_name: &str,

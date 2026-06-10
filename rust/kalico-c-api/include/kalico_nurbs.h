@@ -52,11 +52,6 @@ int32_t kalico_runtime_discard_pending(kalico_nurbs_KalicoRuntime *rt);
 
 uint32_t kalico_runtime_enqueue_success_lo(kalico_nurbs_KalicoRuntime *rt);
 
-/**
- * Homing Stop: discard queued pieces and gate head commits until
- * `kalico_runtime_ungate_pieces`. Call under `irq_save` like
- * `kalico_runtime_discard_pending`.
- */
 int32_t kalico_runtime_gate_pieces(kalico_nurbs_KalicoRuntime *rt);
 
 double kalico_runtime_get_axis_accumulator(kalico_nurbs_KalicoRuntime *rt, uint8_t oid);
@@ -129,11 +124,6 @@ int32_t kalico_runtime_stream_flush(kalico_nurbs_KalicoRuntime *rt, uint32_t *ou
 
 void kalico_runtime_tick_sample(kalico_nurbs_KalicoRuntime *rt);
 
-/**
- * Lift the Stop gate (discarding defensively). Returns
- * `KALICO_ERR_STREAM_STATE_VIOLATION` if the stream was never gated —
- * a host sequencing bug.
- */
 int32_t kalico_runtime_ungate_pieces(kalico_nurbs_KalicoRuntime *rt);
 
 int32_t kalico_runtime_write_piece(kalico_nurbs_KalicoRuntime *rt,

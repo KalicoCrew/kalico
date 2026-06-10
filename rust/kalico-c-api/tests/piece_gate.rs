@@ -1,9 +1,3 @@
-//! The homing Stop gate: after `kalico_runtime_gate_pieces`, head commits are
-//! refused (`KALICO_ERR_STREAM_HALTED`) so a piece frame racing the Stop
-//! discard can never publish into the ring and execute from the halted
-//! position (bench 2026-06-10: -310, 740 steps — one drip window at 100mm/s).
-//! `kalico_runtime_ungate_pieces` lifts the gate; lifting an open gate is a
-//! host sequencing bug and fails loudly.
 #![allow(unsafe_code, non_upper_case_globals)]
 
 use std::sync::{Mutex, OnceLock};

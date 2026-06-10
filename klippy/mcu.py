@@ -495,12 +495,6 @@ class MCU_digital_out:
             raise self._printer.command_error(
                 f"Cannot set pin on disconnected MCU '{self._mcu.get_name()}'"
             )
-        # Fail loudly on the host instead of letting a stale print_time
-        # reach the MCU as "Timer too close" (which shuts it down and
-        # requires a firmware restart). Every legitimate caller schedules
-        # with >=100ms of lead; arriving here with less means a host code
-        # path held the timestamp across blocking work (bench 2026-06-10:
-        # stepper enable vs inline TMC UART init).
         est = self._mcu.estimated_print_time(
             self._printer.get_reactor().monotonic()
         )

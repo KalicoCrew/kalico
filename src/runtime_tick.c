@@ -221,7 +221,6 @@ runtime_drain(void)
     }
 
     // shutdown() is safe in foreground (DECL_TASK) but NOT from ISR.
-    // last_acted_error suppresses re-emit on the post-longjmp trailing pass.
     static int32_t last_acted_error;
     int32_t cur_error = runtime_handle_last_error(runtime_handle);
     if (cur_error != 0 && cur_error != last_acted_error) {
@@ -251,10 +250,6 @@ runtime_drain(void)
         int32_t nr = kalico_runtime_get_heartbeat(runtime_handle, &st, &fc,
                                                   retired,
                                                   KALICO_FAST_STATUS_MAX_AXES);
-        // pending_advance is sticky across drain passes: a retirement that
-        // lands inside the rate-limit window must still produce a heartbeat
-        // on a later pass, or the host's drip floor stalls until the 100ms
-        // periodic when no further retirement follows (end of a homing move).
         static uint8_t pending_advance;
         if (nr > 0) {
             for (int32_t i = 0; i < nr; i++) {

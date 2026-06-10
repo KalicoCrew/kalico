@@ -32,6 +32,14 @@ struct HomingRun {
     notify: crossbeam_channel::Sender<Result<([f64; 3], [f64; 3]), String>>,
 }
 
+fn abort_after_tracing_appender_drains() {
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
+        std::process::abort();
+    }
+}
+
 fn trip_position_to_motor_frame(
     axis: u8,
     motor_pos: f64,
@@ -2281,13 +2289,7 @@ impl PyMotionBridge {
                             "EXIT_ON_FAULT — EtherCAT transport broken-pipe in pump; \
                              aborting klippy so systemd restarts it"
                         );
-                        let _ = std::io::Write::flush(&mut std::io::stderr());
-                        // abort() skips the non_blocking appender's flush; let the worker drain
-                        // or the EXIT_ON_FAULT reason dies with the process (silent SIGABRT).
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
-                            std::process::abort();
-                        }
+                        abort_after_tracing_appender_drains();
                     },
                     move |key: crate::pump::AxisKey, n: u32| {
                         drain_for_pump.unsend(key.mcu_id, key.axis, n);
@@ -2298,13 +2300,7 @@ impl PyMotionBridge {
                             "EXIT_ON_FAULT — drip cohort stalled; \
                              aborting klippy so systemd restarts it"
                         );
-                        let _ = std::io::Write::flush(&mut std::io::stderr());
-                        // abort() skips the non_blocking appender's flush; let the worker drain
-                        // or the EXIT_ON_FAULT reason dies with the process (silent SIGABRT).
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
-                            std::process::abort();
-                        }
+                        abort_after_tracing_appender_drains();
                     },
                 );
             })
@@ -2363,13 +2359,7 @@ impl PyMotionBridge {
                             "EXIT_ON_FAULT — ethercat endpoint died mid-session; \
                              aborting klippy so systemd restarts it"
                         );
-                        let _ = std::io::Write::flush(&mut std::io::stderr());
-                        // abort() skips the non_blocking appender's flush; let the worker drain
-                        // or the EXIT_ON_FAULT reason dies with the process (silent SIGABRT).
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
-                            std::process::abort();
-                        }
+                        abort_after_tracing_appender_drains();
                     });
 
                 let _ = std::thread::Builder::new()
@@ -2507,9 +2497,6 @@ impl PyMotionBridge {
                 } else {
                     None::<f64>
                 };
-                // Homing pieces get the dead-man leash: at most DRIP_WINDOW
-                // of trajectory may sit on an MCU, so a dead host strands at
-                // most that much unsupervised motion.
                 let lead_secs = if active_cohort.is_some() {
                     crate::pump::DRIP_WINDOW_SECS
                 } else {
@@ -2865,8 +2852,6 @@ impl PyMotionBridge {
         pump_tx
             .send(crate::pump::PumpMsg::DripArm(crate::pump::DripArm {
                 cohort,
-                // EVERY streamed axis is dripped during homing — the pump
-                // fail-louds on any enqueue outside this set.
                 participants: all_axis_keys.clone(),
                 timeout: Duration::from_secs(5),
             }))
@@ -3239,12 +3224,6 @@ impl PyMotionBridge {
                         .map(|final_pos| (trip, final_pos))
                 });
 
-                // Stop gated the MCUs' piece streams. Lift the gate only after
-                // the pump barrier proves no old-stream piece can still be
-                // emitted — this ordering, not Stop timing, is what closes the
-                // straggler race (bug 11). On failure the gate stays latched:
-                // every later commit is refused loudly and a firmware restart
-                // recovers.
                 let outcome = outcome.and_then(|positions| {
                     if let Some(tx) = pump_tx_opt.as_ref() {
                         let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);

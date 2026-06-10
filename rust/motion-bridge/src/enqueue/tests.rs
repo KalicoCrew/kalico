@@ -325,7 +325,6 @@ fn constant_follower_axis_merges_all_knots_to_one_piece() {
 
 #[test]
 fn motion_constant_motion_merges_only_the_constant_run() {
-    // C0-connected: motion rises from 0→3, constant hold at 3, then motion rises from 3→6.
     let motion_up: [f64; 4] = [0.0, 1.0, 2.0, 3.0];
     let const_at_3: [f64; 4] = [3.0, 3.0, 3.0, 3.0];
     let motion_up2: [f64; 4] = [3.0, 4.0, 5.0, 6.0];
@@ -396,11 +395,6 @@ fn motion_constant_motion_merges_only_the_constant_run() {
 
 #[test]
 fn constant_runs_at_different_values_do_not_merge_across_motion_boundary() {
-    // C0-connected: hold at 2, then hold at 2 (same), then hold at 2 (same), then a jump
-    // is not possible without a motion piece — so: two same-value runs separated by a
-    // single motion transition piece, verifying that the transition is not merged with either.
-    // const@2 + const@2 → merged to one; const@5 + const@5 → merged to one.
-    // We need them truly C0: the motion piece connects them endpoint-to-endpoint.
     let const_a: [f64; 4] = [2.0, 2.0, 2.0, 2.0];
     let transition: [f64; 4] = [2.0, 3.0, 4.0, 5.0];
     let const_b: [f64; 4] = [5.0, 5.0, 5.0, 5.0];
@@ -484,7 +478,7 @@ fn constant_runs_at_different_values_do_not_merge_across_motion_boundary() {
 }
 
 #[test]
-fn constant_piece_is_never_subdivided_regardless_of_max_piece_secs() {
+fn constant_run_subdivides_under_max_piece_secs_after_merging() {
     let n_knots = 20;
     let piece_dur = 0.005_f64;
     let total = n_knots as f64 * piece_dur;
@@ -499,15 +493,16 @@ fn constant_piece_is_never_subdivided_regardless_of_max_piece_secs() {
         t_end: total,
     };
 
+    let max_piece = 0.025_f64;
     let msgs = enqueue_segment(
         &seg,
         &axis_cfg_single(0),
         0.0,
         true,
         0.0,
-        crate::pump::MAX_LEAD_SECS,
+        crate::pump::DRIP_WINDOW_SECS,
         |_, hs| (hs * 1e9) as u64,
-        Some(0.001),
+        Some(max_piece),
     );
 
     let axis = msgs
@@ -515,17 +510,30 @@ fn constant_piece_is_never_subdivided_regardless_of_max_piece_secs() {
         .find(|m| m.key == AxisKey { mcu_id: 1, axis: 0 })
         .expect("axis 0 must be present");
 
-    assert_eq!(
-        axis.pieces.len(),
-        1,
-        "merged constant piece must not be subdivided regardless of max_piece_secs, got {}",
+    let min_expected = (total / max_piece).floor() as usize;
+    assert!(
+        axis.pieces.len() >= min_expected,
+        "a homing follower's constant run must drip in <= max_piece_secs \
+         pieces (a whole-move piece never retires, pinning the cohort \
+         watchdog and escaping the dead-man leash); got {} pieces",
         axis.pieces.len()
     );
+    let sum: f64 = axis.pieces.iter().map(|(p, _)| p.duration as f64).sum();
     assert!(
-        (axis.pieces[0].0.duration as f64 - total).abs() < 1e-6,
-        "duration must equal total {total}, got {}",
-        axis.pieces[0].0.duration
+        (sum - total).abs() < 1e-5,
+        "durations must sum to {total}, got {sum}"
     );
+    for (p, _) in &axis.pieces {
+        assert!(p.duration as f64 <= max_piece + 1e-6);
+        assert!(p.coeffs.iter().all(|&c| (f64::from(c) - 3.0).abs() < 1e-6));
+    }
+}
+
+#[test]
+fn constant_at_or_under_max_piece_secs_stays_whole() {
+    let subs = subdivide_bernstein([2.0; 4], 0.020, 0.025);
+    assert_eq!(subs.len(), 1);
+    assert_eq!(subs[0], ([2.0; 4], 0.020));
 }
 
 fn shifted_axis(pieces_bern: &[([f64; 4], f64)], u_base: f64) -> ScalarNurbs<f64> {
@@ -539,10 +547,6 @@ fn shifted_axis(pieces_bern: &[([f64; 4], f64)], u_base: f64) -> ScalarNurbs<f64
     nurbs::bezier::bezier_pieces_to_nurbs(&pieces)
 }
 
-/// Curves are not 0-based: a later segment's Bézier u_start continues the
-/// stream's trajectory time. Emitted host times must be t0 + bp.u_start —
-/// an accumulator restarted at zero shifts every piece into the MCU's past
-/// (bench: PieceStartInPast, deficit saturated).
 #[test]
 fn nonzero_curve_base_preserves_host_times() {
     const U_BASE: f64 = 10.0;

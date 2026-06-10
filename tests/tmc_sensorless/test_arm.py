@@ -132,7 +132,6 @@ def test_arm_writes_threshold_and_forces_stealthchop():
     written = {reg for reg, _ in mcu_tmc.writes}
     assert {"SGTHRS", "GCONF", "TPWMTHRS", "TCOOLTHRS"} <= written
     assert fields.get_field("sgthrs") == 75
-    # stallguard4 driver: stealthchop forced on for homing
     assert fields.get_field("en_spreadcycle") == 0
     assert fields.get_field("tpwmthrs") == 0
     assert fields.get_field("tcoolthrs") == 0xFFFFF
@@ -162,7 +161,6 @@ def test_arm_on_driver_without_sgthrs_register_skips_threshold_write():
     helper.arm()
 
     assert "SGTHRS" not in {reg for reg, _ in mcu_tmc.writes}
-    # earlier driver: stealthchop disabled and diag stall routed to the pin
     assert fields.get_field("en_pwm_mode") == 0
     assert fields.get_field("diag1_stall") == 1
 

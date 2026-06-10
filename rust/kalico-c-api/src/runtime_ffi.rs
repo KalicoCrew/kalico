@@ -817,9 +817,6 @@ pub mod exports {
         KALICO_OK
     }
 
-    /// Homing Stop: discard queued pieces and gate head commits until
-    /// `kalico_runtime_ungate_pieces`. Call under `irq_save` like
-    /// `kalico_runtime_discard_pending`.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_gate_pieces(rt: *mut KalicoRuntime) -> i32 {
         if rt.is_null() {
@@ -836,9 +833,6 @@ pub mod exports {
         KALICO_OK
     }
 
-    /// Lift the Stop gate (discarding defensively). Returns
-    /// `KALICO_ERR_STREAM_STATE_VIOLATION` if the stream was never gated —
-    /// a host sequencing bug.
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_ungate_pieces(rt: *mut KalicoRuntime) -> i32 {
         if rt.is_null() {

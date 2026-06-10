@@ -400,13 +400,12 @@ send_status_heartbeat(void)
     if (n < 0)
         return;
 
-    // Body = engine_state(1) + fault_code(1) + num_axes(1) + n*u32; max 35 B.
     uint8_t payload[KALICO_TX_BUF_SIZE];
     int off = 0;
     payload[off++] = (uint8_t)(KALICO_MSG_STATUS_HEARTBEAT & 0xFF);
     payload[off++] = (uint8_t)((KALICO_MSG_STATUS_HEARTBEAT >> 8) & 0xFF);
     payload[off++] = MESSAGE_VERSION_DEFAULT;
-    payload[off++] = 0;  // correlation_id = 0 (async event)
+    payload[off++] = 0;
     payload[off++] = 0;
     payload[off++] = 0;
     payload[off++] = 0;
