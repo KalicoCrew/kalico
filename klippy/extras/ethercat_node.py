@@ -57,20 +57,15 @@ class EtherCatNode:
                 return rail
         raise self.printer.config_error(
             "ethercat_node %s: no [servo_*] section with node=%s — "
-            "cannot derive counts_per_mm" % (self.name, self.name)
+            "cannot locate the servo rail" % (self.name, self.name)
         )
-
-    def _derive_counts_per_mm(self):
-        return self._find_servo_rail().get_counts_per_mm()
-
-    def _derive_ff_config(self):
-        return self._find_servo_rail().get_ff_config()
 
     def _claim(self):
         if self.bridge_handle is not None:
             return
-        self._counts_per_mm = self._derive_counts_per_mm()
-        velocity_ff, dynamics_profile, ff_torque_clamp = self._derive_ff_config()
+        rail = self._find_servo_rail()
+        self._counts_per_mm = rail.get_counts_per_mm()
+        velocity_ff, dynamics_profile, ff_torque_clamp = rail.get_ff_config()
         bridge = self.printer.lookup_object("motion_bridge")
         try:
             self.bridge_handle = bridge.claim_ethercat_node(
