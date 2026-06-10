@@ -1,4 +1,9 @@
-#![allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+#![allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::float_cmp,
+)]
 
 use runtime::motion_core::{eval_accel, eval_horner};
 use runtime::piece_ring::PieceEntry;
@@ -16,7 +21,7 @@ fn entry() -> PieceEntry {
 fn accel_matches_velocity_finite_difference() {
     let (mono, vel) = entry().to_monomial();
     let cps = 1.0e9_f32;
-    let start = 5_000_000_u64;
+    let start = entry().start_time;
     for &t_s in &[0.0_f32, 0.05, 0.2, 0.45] {
         let now = start + (t_s * cps) as u64;
         let h_cycles = 1_000_u64;
@@ -33,7 +38,7 @@ fn accel_matches_velocity_finite_difference() {
 }
 
 #[test]
-fn accel_is_linear_in_time() {
+fn accel_has_no_quadratic_term() {
     let (_, vel) = entry().to_monomial();
     let cps = 1.0e9_f32;
     let a0 = eval_accel(&vel, 0, 0, cps);
