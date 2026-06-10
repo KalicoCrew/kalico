@@ -125,6 +125,14 @@ pub enum ShapeError {
     UnsupportedBoundaryVelocity,
     #[error("unsupported boundary accel: initial_a must be finite, and 0.0 when initial_v is 0.0")]
     UnsupportedBoundaryAccel,
+    #[error(
+        "witness fallback (rung 3) failed — single-segment rest-to-rest plan unsolvable; \
+         rung1: {rung1}; rung3: {rung3}"
+    )]
+    WitnessFallbackFailed {
+        rung1: Box<ShapeError>,
+        rung3: Box<ShapeError>,
+    },
 }
 
 pub fn shape_batch(input: &ShapeBatchInput<'_>) -> Result<ShapeBatchOutput, ShapeError> {

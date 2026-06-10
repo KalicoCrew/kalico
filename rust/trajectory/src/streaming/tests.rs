@@ -1557,3 +1557,118 @@ fn split_remnant_corner_infeasibility_recovered() {
         "replanned window must extend past t_dispatched",
     );
 }
+
+#[test]
+fn witness_fallback_rung3_fires_when_rung1_and_rung2_both_infeasible() {
+    let shapers: [Option<AxisShaper>; 4] = [
+        Some(AxisShaper::Passthrough),
+        Some(AxisShaper::Passthrough),
+        Some(AxisShaper::Passthrough),
+        None,
+    ];
+
+    let tight_limits = temporal::Limits::new(
+        [300.0, 300.0, 5.0],
+        [5_000.0, 5_000.0, 350.0],
+        [10_000.0; 3],
+        5_000.0,
+    );
+    let ctx = ReplanContext {
+        limits: tight_limits,
+        kernels: [
+            Some(PlanShaper::Passthrough),
+            Some(PlanShaper::Passthrough),
+            Some(PlanShaper::Passthrough),
+            None,
+        ],
+        fit_tolerance_mm: 0.005,
+        beta_max_iters: 5,
+        beta_convergence_ratio: 1.02,
+        e_limits: ELimits {
+            v_max: 100.0,
+            a_max: 5_000.0,
+        },
+        junction_chord_tolerance_mm: 0.05,
+        worker_threads: 1,
+        grid_strategy: temporal::multi::GridStrategy::Adaptive {
+            min_n: 20,
+            max_n: 200,
+            target_grid_spacing_mm: 0.5,
+        },
+        fallback_initial_v: 270.0,
+        safety_mode: SafetyMode::WorstCaseFuture,
+    };
+
+    let mut state = ShaperState::new([0.0; 4], &shapers);
+
+    let seg_a = linear_x_segment(0.0, 300.0, 300.0);
+    let report_a = state
+        .append_and_replan(seg_a, &ctx)
+        .expect("long-cruise seg_A must plan");
+    assert_eq!(
+        report_a.fallback_rung, 1,
+        "seg_A should plan on rung 1 (no fallback)",
+    );
+
+    state.t_dispatched = state.t_appended + 1.0;
+
+    let seg_b = linear_x_segment(300.0, 300.5, 300.0);
+    let report_b = state.append_and_replan(seg_b, &ctx).expect(
+        "rung-3 must recover: t_dispatched is past the planned domain so split=None, \
+             fallback_initial_v=270 makes the 0.5 mm window infeasible from non-zero v \
+             (braking distance 270²/(2×5000)=7.29 mm >> 0.5 mm), but rest-to-rest is feasible",
+    );
+
+    assert_eq!(
+        report_b.fallback_rung, 3,
+        "seg_B must use rung-3 fallback: split=None and high initial_v makes rung-1 infeasible, \
+         rung-2 is skipped (not a Replace split), rung-3 plans the new segment alone from rest",
+    );
+
+    assert_eq!(
+        state.uncommitted_moves.len(),
+        1,
+        "rung-3 keeps only the new segment in the window",
+    );
+
+    let new_move_t_start = state.uncommitted_moves[0].t_start;
+    let t_appended_before_set = state.t_dispatched - 1.0;
+    assert!(
+        (new_move_t_start - t_appended_before_set).abs() < 1e-9,
+        "rung-3 must anchor the new segment at the prior witness end ({:.6}); \
+         got t_start = {:.6}",
+        t_appended_before_set,
+        new_move_t_start,
+    );
+
+    assert!(
+        state.planned_fitted.len() == 1,
+        "rung-3 produces exactly one fitted segment (the new move)",
+    );
+
+    let kernels = replan_kernels_piecewise();
+    let halos: Vec<EHalo> = Vec::new();
+    let ctx_emit = EmitContext {
+        kernels: &kernels,
+        e_halos: &halos,
+    };
+    state
+        .commit_decel_to_zero(&ctx_emit)
+        .expect("commit_decel_to_zero after rung-3 must not error");
+}
+
+#[test]
+fn rung1_success_does_not_activate_fallback() {
+    let mut state = ShaperState::new([0.0; 4], &replan_shapers());
+    let ctx = replan_context();
+
+    let seg = linear_x_segment(0.0, 50.0, 100.0);
+    let report = state
+        .append_and_replan(seg, &ctx)
+        .expect("normal feasible append must succeed");
+
+    assert_eq!(
+        report.fallback_rung, 1,
+        "a straightforward feasible window must plan on rung 1 without fallback",
+    );
+}

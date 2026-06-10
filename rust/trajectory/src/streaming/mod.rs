@@ -18,6 +18,9 @@ pub struct ReplanReport {
     pub rebuild_us: u64,
     pub window_segments: usize,
     pub plan: PlanStats,
+    /// Which fallback rung resolved the plan: 1 = full window succeeded, 2 = Replace-remnant
+    /// dropped, 3 = witness preserved and new segment planned alone from rest.
+    pub fallback_rung: u8,
 }
 
 mod decel_finder;

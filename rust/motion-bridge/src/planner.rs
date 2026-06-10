@@ -545,9 +545,21 @@ fn run_loop(
                     rebuild_us,
                     window_segments,
                     plan,
+                    fallback_rung,
                 } = report;
                 let beta_iters = plan.beta_iterations;
                 let beta_converged = plan.beta_converged;
+                if fallback_rung > 1 {
+                    tracing::warn!(
+                        subsystem = "motion",
+                        event = "replan_fallback",
+                        fallback_rung,
+                        window_segments,
+                        dist_mm = move_dist,
+                        feed_mm_s = move_feed,
+                        "replan used fallback rung"
+                    );
+                }
                 tracing::debug!(
                     subsystem = "motion",
                     event = "replan_stats",
@@ -556,6 +568,7 @@ fn run_loop(
                     solve_us,
                     rebuild_us,
                     window_segments,
+                    fallback_rung,
                     beta_iters,
                     beta_converged,
                     emit_us,
@@ -574,6 +587,7 @@ fn run_loop(
                         solve_us,
                         rebuild_us,
                         window_segments,
+                        fallback_rung,
                         beta_iters,
                         beta_converged,
                         emit_us,

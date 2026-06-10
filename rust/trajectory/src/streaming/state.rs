@@ -181,76 +181,41 @@ impl ShaperState {
         };
 
         let solve_start = Instant::now();
-        let (PlanOutput { fitted, stats }, time_offset) = match plan_velocity(&plan_input) {
-            Ok(out) => (out, self.t_dispatched),
-            Err(e) => {
-                let retry = was_replace_split.then(|| {
-                    self.uncommitted_moves.pop_front();
-                    let retry_time_offset = prior_uncommitted[0].t_end;
-                    let retry_initial_v =
-                        self.read_path_speed_at(retry_time_offset, ctx.fallback_initial_v);
-                    let retry_segments: Vec<PlanSegment<'_>> = self
-                        .uncommitted_moves
-                        .iter()
-                        .map(|m| PlanSegment {
-                            temporal: temporal::multi::SegmentInput {
-                                curve: &m.segment.xyz,
-                                limits: per_segment_limits(
-                                    &m.segment.xyz,
-                                    ctx.limits,
-                                    m.segment.feedrate_mm_s,
-                                ),
-                                trailing_junction_chord_tolerance_mm: ctx
-                                    .junction_chord_tolerance_mm,
-                            },
-                            e_mode: m.segment.e_mode,
-                            extrusion_per_xy_mm: m.segment.extrusion_per_xy_mm,
-                            e_independent: m.segment.e_independent.as_ref(),
-                            feedrate_mm_s: m.segment.feedrate_mm_s,
-                        })
-                        .collect();
-                    let retry_boundary_v_cap = retry_segments
-                        .first()
-                        .map_or(f64::INFINITY, |s| boundary_path_speed_cap(s));
-                    let retry_iv = retry_initial_v.min(retry_boundary_v_cap);
-                    let retry_iv = if retry_iv < REST_THRESHOLD_MM_S {
-                        0.0
+        let (PlanOutput { fitted, stats }, time_offset, fallback_rung) =
+            match plan_velocity(&plan_input) {
+                Ok(out) => (out, self.t_dispatched, 1u8),
+                Err(rung1_err) => {
+                    if let Some(rung2_out) =
+                        try_rung2(was_replace_split, &prior_uncommitted, self, ctx)
+                    {
+                        let (out, offset) = rung2_out;
+                        (out, offset, 2u8)
                     } else {
-                        retry_iv
-                    };
-                    let retry_input = PlanInput {
-                        segments: &retry_segments,
-                        grid_strategy: ctx.grid_strategy,
-                        worker_threads: ctx.worker_threads,
-                        kernels: ctx.kernels,
-                        fit_tolerance_mm: ctx.fit_tolerance_mm,
-                        beta_max_iters: ctx.beta_max_iters,
-                        beta_convergence_ratio: ctx.beta_convergence_ratio,
-                        e_limits: ctx.e_limits,
-                        initial_v: retry_iv,
-                        initial_a: 0.0,
-                        terminal_v: 0.0,
-                        safety_mode: ctx.safety_mode,
-                        start_d2_override: None,
-                    };
-                    plan_velocity(&retry_input)
-                        .ok()
-                        .map(|out| (out, retry_time_offset))
-                });
-
-                match retry.flatten() {
-                    Some((retry_out, retry_time_offset)) => (retry_out, retry_time_offset),
-                    None => {
-                        self.uncommitted_moves = prior_uncommitted;
-                        self.t_appended = prior_t_appended;
-                        self.t_decel_start = prior_t_decel_start;
-                        self.planned_fitted = prior_planned_fitted;
-                        self.planned_meta = prior_planned_meta;
-                        return Err(e);
+                        match try_rung3(
+                            self,
+                            &prior_uncommitted,
+                            prior_t_appended,
+                            prior_t_decel_start,
+                            &prior_planned_fitted,
+                            &prior_planned_meta,
+                            ctx,
+                        ) {
+                            Ok((out, offset)) => (out, offset, 3u8),
+                            Err(rung3_err) => {
+                                self.uncommitted_moves = prior_uncommitted;
+                                self.t_appended = prior_t_appended;
+                                self.t_decel_start = prior_t_decel_start;
+                                self.planned_fitted = prior_planned_fitted;
+                                self.planned_meta = prior_planned_meta;
+                                return Err(ShapeError::WitnessFallbackFailed {
+                                    rung1: Box::new(rung1_err),
+                                    rung3: Box::new(rung3_err),
+                                });
+                            }
+                        }
                     }
                 }
-            }
-        };
+            };
         let solve_us = solve_start.elapsed().as_micros() as u64;
 
         let rebuild_start = Instant::now();
@@ -300,6 +265,7 @@ impl ShaperState {
             rebuild_us,
             window_segments,
             plan: stats,
+            fallback_rung,
         })
     }
 }
@@ -542,6 +508,133 @@ impl ShaperState {
             pieces.extend(shifted);
         }
     }
+}
+
+fn try_rung2(
+    was_replace_split: bool,
+    prior_uncommitted: &std::collections::VecDeque<UncommittedMove>,
+    state: &mut ShaperState,
+    ctx: &ReplanContext,
+) -> Option<(crate::plan_velocity::PlanOutput, f64)> {
+    if !was_replace_split {
+        return None;
+    }
+
+    state.uncommitted_moves.pop_front();
+    let retry_time_offset = prior_uncommitted[0].t_end;
+
+    let retry_initial_v = state.read_path_speed_at(retry_time_offset, ctx.fallback_initial_v);
+
+    let retry_segments: Vec<PlanSegment<'_>> = state
+        .uncommitted_moves
+        .iter()
+        .map(|m| PlanSegment {
+            temporal: temporal::multi::SegmentInput {
+                curve: &m.segment.xyz,
+                limits: per_segment_limits(&m.segment.xyz, ctx.limits, m.segment.feedrate_mm_s),
+                trailing_junction_chord_tolerance_mm: ctx.junction_chord_tolerance_mm,
+            },
+            e_mode: m.segment.e_mode,
+            extrusion_per_xy_mm: m.segment.extrusion_per_xy_mm,
+            e_independent: m.segment.e_independent.as_ref(),
+            feedrate_mm_s: m.segment.feedrate_mm_s,
+        })
+        .collect();
+
+    let retry_boundary_v_cap = retry_segments
+        .first()
+        .map_or(f64::INFINITY, |s| boundary_path_speed_cap(s));
+    let retry_iv = {
+        const REST_THRESHOLD_MM_S: f64 = 0.1;
+        let raw = retry_initial_v.min(retry_boundary_v_cap);
+        if raw < REST_THRESHOLD_MM_S {
+            0.0
+        } else {
+            raw
+        }
+    };
+
+    let retry_input = PlanInput {
+        segments: &retry_segments,
+        grid_strategy: ctx.grid_strategy,
+        worker_threads: ctx.worker_threads,
+        kernels: ctx.kernels,
+        fit_tolerance_mm: ctx.fit_tolerance_mm,
+        beta_max_iters: ctx.beta_max_iters,
+        beta_convergence_ratio: ctx.beta_convergence_ratio,
+        e_limits: ctx.e_limits,
+        initial_v: retry_iv,
+        initial_a: 0.0,
+        terminal_v: 0.0,
+        safety_mode: ctx.safety_mode,
+        start_d2_override: None,
+    };
+
+    plan_velocity(&retry_input)
+        .ok()
+        .map(|out| (out, retry_time_offset))
+}
+
+fn try_rung3(
+    state: &mut ShaperState,
+    _prior_uncommitted: &std::collections::VecDeque<UncommittedMove>,
+    prior_t_appended: f64,
+    prior_t_decel_start: f64,
+    prior_planned_fitted: &[FittedSegment],
+    prior_planned_meta: &[crate::emit_shaped::EmitSegmentMeta],
+    ctx: &ReplanContext,
+) -> Result<(crate::plan_velocity::PlanOutput, f64), ShapeError> {
+    let new_move = state
+        .uncommitted_moves
+        .back()
+        .expect("uncommitted_moves must be non-empty — new segment was just pushed")
+        .clone();
+
+    state.uncommitted_moves = {
+        let mut single = std::collections::VecDeque::with_capacity(1);
+        single.push_back(UncommittedMove {
+            segment: new_move.segment.clone(),
+            t_start: prior_t_appended,
+            t_end: prior_t_appended,
+        });
+        single
+    };
+
+    state.t_appended = prior_t_appended;
+    state.t_decel_start = prior_t_decel_start;
+    state.planned_fitted = prior_planned_fitted.to_vec();
+    state.planned_meta = prior_planned_meta.to_vec();
+
+    let seg = state.uncommitted_moves.back().unwrap();
+    let rung3_segments = [PlanSegment {
+        temporal: temporal::multi::SegmentInput {
+            curve: &seg.segment.xyz,
+            limits: per_segment_limits(&seg.segment.xyz, ctx.limits, seg.segment.feedrate_mm_s),
+            trailing_junction_chord_tolerance_mm: ctx.junction_chord_tolerance_mm,
+        },
+        e_mode: seg.segment.e_mode,
+        extrusion_per_xy_mm: seg.segment.extrusion_per_xy_mm,
+        e_independent: seg.segment.e_independent.as_ref(),
+        feedrate_mm_s: seg.segment.feedrate_mm_s,
+    }];
+
+    let rung3_input = PlanInput {
+        segments: &rung3_segments,
+        grid_strategy: ctx.grid_strategy,
+        worker_threads: ctx.worker_threads,
+        kernels: ctx.kernels,
+        fit_tolerance_mm: ctx.fit_tolerance_mm,
+        beta_max_iters: ctx.beta_max_iters,
+        beta_convergence_ratio: ctx.beta_convergence_ratio,
+        e_limits: ctx.e_limits,
+        initial_v: 0.0,
+        initial_a: 0.0,
+        terminal_v: 0.0,
+        safety_mode: ctx.safety_mode,
+        start_d2_override: None,
+    };
+
+    plan_velocity(&rung3_input).map(|out| (out, prior_t_appended))
 }
 
 enum PartialCommitSplit {
