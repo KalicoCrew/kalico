@@ -662,6 +662,33 @@ class Heater:
                 "pid_ki": ki,
                 "pid_kd": kd,
             }
+            if control == "dual_loop_pid":
+                # The inner loop has its own gains, default to the values from
+                # the current profile when not overridden on the command line.
+                inner_kp = self._check_value_gcmd(
+                    "INNER_KP",
+                    current_profile.get("inner_pid_kp"),
+                    gcmd,
+                    float,
+                    False,
+                )
+                inner_ki = self._check_value_gcmd(
+                    "INNER_KI",
+                    current_profile.get("inner_pid_ki"),
+                    gcmd,
+                    float,
+                    False,
+                )
+                inner_kd = self._check_value_gcmd(
+                    "INNER_KD",
+                    current_profile.get("inner_pid_kd"),
+                    gcmd,
+                    float,
+                    False,
+                )
+                temp_profile["inner_pid_kp"] = inner_kp
+                temp_profile["inner_pid_ki"] = inner_ki
+                temp_profile["inner_pid_kd"] = inner_kd
             temp_control = self.outer_instance.lookup_control(
                 temp_profile, load_clean
             )
@@ -674,10 +701,13 @@ class Heater:
             )
             if smooth_time is not None:
                 msg += "Smooth Time: %.3f\n" % smooth_time
-            msg += (
-                "pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f\n"
-                "have been set as current profile." % (kp, ki, kd)
-            )
+            msg += "pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f\n" % (kp, ki, kd)
+            if control == "dual_loop_pid":
+                msg += (
+                    "inner_pid_Kp=%.3f inner_pid_Ki=%.3f "
+                    "inner_pid_Kd=%.3f\n" % (inner_kp, inner_ki, inner_kd)
+                )
+            msg += "have been set as current profile."
             self.outer_instance.gcode.respond_info(msg)
             self.save_profile(profile_name=profile_name, verbose=True)
 
@@ -695,16 +725,27 @@ class Heater:
                 else temp_profile["smooth_time"]
             )
             name = temp_profile["name"]
-            self.outer_instance.gcode.respond_info(
+            msg = (
                 "PID Parameters:\n"
                 "Target: %.2f,\n"
                 "Tolerance: %.4f\n"
                 "Control: %s\n"
                 "Smooth Time: %.3f\n"
                 "pid_Kp=%.3f pid_Ki=%.3f pid_Kd=%.3f\n"
-                "name: %s"
-                % (target, tolerance, control, smooth_time, kp, ki, kd, name)
+                % (target, tolerance, control, smooth_time, kp, ki, kd)
             )
+            if control == "dual_loop_pid":
+                msg += (
+                    "inner_pid_Kp=%.3f inner_pid_Ki=%.3f "
+                    "inner_pid_Kd=%.3f\n"
+                    % (
+                        temp_profile["inner_pid_kp"],
+                        temp_profile["inner_pid_ki"],
+                        temp_profile["inner_pid_kd"],
+                    )
+                )
+            msg += "name: %s" % name
+            self.outer_instance.gcode.respond_info(msg)
 
         def save_profile(self, profile_name=None, gcmd=None, verbose=True):
             temp_profile = self.outer_instance.get_control().get_profile()
@@ -815,6 +856,16 @@ class Heater:
                         profile["pid_kd"],
                     )
                 )
+                if profile["control"] == "dual_loop_pid":
+                    msg += (
+                        "Inner PID Parameters: inner_pid_Kp=%.3f "
+                        "inner_pid_Ki=%.3f inner_pid_Kd=%.3f\n"
+                        % (
+                            profile["inner_pid_kp"],
+                            profile["inner_pid_ki"],
+                            profile["inner_pid_kd"],
+                        )
+                    )
                 self.outer_instance.gcode.respond_info(msg)
 
         def remove_profile(self, profile_name, gcmd, verbose):
