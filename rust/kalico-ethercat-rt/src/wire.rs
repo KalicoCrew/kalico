@@ -6,7 +6,8 @@ use kalico_protocol::bootstrap::{IdentifyResponse, IDENTIFY_RESPONSE_BODY_LEN};
 use kalico_protocol::codec::{Decode, Encode};
 use kalico_protocol::messages::{
     ClaimHandshakeReply, MessageKind, PushPieces, PushPiecesResponse, RestoreDriveLimitsResponse,
-    RuntimeCapsResponse, SetDriveLimits, SetDriveLimitsResponse, SetTorque, SetTorqueResponse,
+    ResumeStreamResponse, RuntimeCapsResponse, SdoRead, SdoReadResponse, SdoWrite,
+    SdoWriteResponse, SetDriveLimits, SetDriveLimitsResponse, SetTorque, SetTorqueResponse,
     StatusHeartbeat, StopResponse,
 };
 use kalico_protocol::KALICO_CHANNEL_PIECES;
@@ -34,12 +35,23 @@ pub enum Command {
     Stop {
         correlation_id: u32,
     },
+    ResumeStream {
+        correlation_id: u32,
+    },
     SetDriveLimits {
         correlation_id: u32,
         msg: SetDriveLimits,
     },
     RestoreDriveLimits {
         correlation_id: u32,
+    },
+    SdoRead {
+        correlation_id: u32,
+        msg: SdoRead,
+    },
+    SdoWrite {
+        correlation_id: u32,
+        msg: SdoWrite,
     },
     Unknown {
         correlation_id: u32,
@@ -89,6 +101,9 @@ pub fn decode_command(channel: u8, payload: &[u8]) -> Result<Command, DecodeCmdE
         Some(MessageKind::Stop) => Ok(Command::Stop {
             correlation_id: cid,
         }),
+        Some(MessageKind::ResumeStream) => Ok(Command::ResumeStream {
+            correlation_id: cid,
+        }),
         Some(MessageKind::SetDriveLimits) => {
             let msg = SetDriveLimits::decode(body).map_err(|_| DecodeCmdError::BadBody)?;
             Ok(Command::SetDriveLimits {
@@ -99,6 +114,20 @@ pub fn decode_command(channel: u8, payload: &[u8]) -> Result<Command, DecodeCmdE
         Some(MessageKind::RestoreDriveLimits) => Ok(Command::RestoreDriveLimits {
             correlation_id: cid,
         }),
+        Some(MessageKind::SdoRead) => {
+            let msg = SdoRead::decode(body).map_err(|_| DecodeCmdError::BadBody)?;
+            Ok(Command::SdoRead {
+                correlation_id: cid,
+                msg,
+            })
+        }
+        Some(MessageKind::SdoWrite) => {
+            let msg = SdoWrite::decode(body).map_err(|_| DecodeCmdError::BadBody)?;
+            Ok(Command::SdoWrite {
+                correlation_id: cid,
+                msg,
+            })
+        }
         _ => Ok(Command::Unknown {
             correlation_id: cid,
             kind_raw: hdr.kind_raw,
@@ -130,9 +159,22 @@ pub fn stop_response_frame(cid: u32, result: i32, discard_clock: u64) -> Vec<u8>
     control_frame(MessageKind::StopResponse, cid, &body)
 }
 
+pub fn resume_stream_response_frame(cid: u32, result: i32) -> Vec<u8> {
+    let body = ResumeStreamResponse { result }.encoded_to_vec();
+    control_frame(MessageKind::ResumeStreamResponse, cid, &body)
+}
+
 pub fn set_torque_response_frame(cid: u32, result: i32) -> Vec<u8> {
     let body = SetTorqueResponse { result }.encoded_to_vec();
     control_frame(MessageKind::SetTorqueResponse, cid, &body)
+}
+
+pub fn sdo_read_response_frame(cid: u32, resp: &SdoReadResponse) -> Vec<u8> {
+    control_frame(MessageKind::SdoReadResponse, cid, &resp.encoded_to_vec())
+}
+
+pub fn sdo_write_response_frame(cid: u32, resp: &SdoWriteResponse) -> Vec<u8> {
+    control_frame(MessageKind::SdoWriteResponse, cid, &resp.encoded_to_vec())
 }
 
 pub fn push_pieces_response_frame(

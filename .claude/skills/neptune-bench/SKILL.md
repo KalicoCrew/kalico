@@ -5,8 +5,11 @@ description: Use when you need the Neptune 3 Pro test bench's address (ssh/host 
 
 # Neptune 3 Pro test bench
 
-Secondary bring-up bench. Elegoo Neptune 3 Pro bedslinger, ZNP Robin Nano DW v2.2,
-STM32F401RCT6. ST-Link/SWD flash with NRST disconnected.
+Secondary bring-up bench — and the **EtherCAT servo bench**: the X axis is an
+A6-EC servo drive (`[ethercat_node node_x]` over `eth0`, `[servo_x]` with
+131072 counts/rev), not a stepper. Y/Z/E remain steppers on the stock board.
+Elegoo Neptune 3 Pro bedslinger, ZNP Robin Nano DW v2.2, STM32F401RCT6.
+ST-Link/SWD flash with NRST disconnected.
 
 | | |
 |---|---|
@@ -15,6 +18,7 @@ STM32F401RCT6. ST-Link/SWD flash with NRST disconnected.
 | **Sudo password** | `password` |
 | **Smart plug** | macOS Shortcuts `Plug 2 ON` / `Plug 2 OFF` (run from the Mac) |
 | **MCU serial** | `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0` @ 500000 |
+| **EtherCAT servo** | X axis, A6-EC drive, `node_x` on `eth0`, socket `/tmp/kalico-ethercat.sock` |
 
 ## Flashing — `scripts/flash-neptune.sh`
 

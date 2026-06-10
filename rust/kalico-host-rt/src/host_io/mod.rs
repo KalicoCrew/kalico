@@ -56,7 +56,7 @@ impl Default for KalicoHostIoConfig {
         Self {
             trace_capacity: 256,
             host_event_capacity: 64,
-            runtime_event_capacity: 64,
+            runtime_event_capacity: 512,
             default_call_timeout: Duration::from_millis(100),
             identify_timeout: Duration::from_millis(15_000),
             default_dispatcher_timeout: Duration::from_secs(30),
@@ -377,6 +377,7 @@ impl KalicoHostIo {
                     "EXIT_ON_FAULT — transport closed via IO error on CRITICAL MCU; aborting klippy so systemd restarts it"
                 );
                 let _ = std::io::Write::flush(&mut std::io::stderr());
+                std::thread::sleep(std::time::Duration::from_millis(100));
                 if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
                     std::process::abort();
                 }

@@ -59,6 +59,8 @@ _STUB_MOTION_METHODS = frozenset(
         "set_drive_limits",
         "restore_drive_limits",
         "take_drive_fault",
+        "sdo_read",
+        "sdo_write",
     }
 )
 
@@ -167,6 +169,12 @@ class MotionBridgeWrapper:
 
     def set_torque(self, mcu_handle, value, print_time):
         self._bridge.set_torque(mcu_handle, bool(value), print_time)
+
+    def sdo_read(self, mcu_handle, index, subindex):
+        return self._bridge.sdo_read(mcu_handle, index, subindex)
+
+    def sdo_write(self, mcu_handle, index, subindex, size, value):
+        return self._bridge.sdo_write(mcu_handle, index, subindex, size, value)
 
     def release_mcu(self, handle):
         return self._bridge.release_mcu(handle)

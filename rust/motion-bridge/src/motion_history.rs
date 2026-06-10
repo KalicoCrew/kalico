@@ -158,6 +158,10 @@ impl HistoryStore {
         self.endpoints.get(&key).map_or(0, |e| e.clock)
     }
 
+    pub fn final_position(&self, key: AxisKey) -> Option<f64> {
+        self.endpoints.get(&key).map(|e| e.position)
+    }
+
     pub fn state_at_clock(
         &self,
         key: AxisKey,

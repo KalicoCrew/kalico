@@ -61,6 +61,16 @@ pub fn reconstruct_axis_position(
         .map_err(|e| e.to_string())
 }
 
+pub fn trajectory_final_position(
+    axis_key: AxisKey,
+    history: &Arc<Mutex<crate::motion_history::HistoryStore>>,
+) -> Result<f64, String> {
+    let store = history.lock().unwrap_or_else(|p| p.into_inner());
+    store.final_position(axis_key).ok_or_else(|| {
+        format!("trajectory_final_position: no recorded motion for axis {axis_key:?}")
+    })
+}
+
 pub fn broadcast_stop<S, F>(
     mcu_ids: &std::collections::HashSet<u32, S>,
     axis_mcu: u32,
@@ -101,19 +111,15 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriveFaultRoute {
     HomingError,
-    Fatal,
+    LatchForKlippy,
 }
 
 pub fn route_drive_fault(fault_mcu: u32, homing_axis_mcu: Option<u32>) -> DriveFaultRoute {
     if homing_axis_mcu == Some(fault_mcu) {
         DriveFaultRoute::HomingError
     } else {
-        DriveFaultRoute::Fatal
+        DriveFaultRoute::LatchForKlippy
     }
-}
-
-pub fn post_homing_fault_is_benign(now_ns: u64, settled_at_ns: u64) -> bool {
-    settled_at_ns != 0 && now_ns.saturating_sub(settled_at_ns) < 2_000_000_000
 }
 
 #[cfg(test)]

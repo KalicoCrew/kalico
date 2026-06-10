@@ -1,6 +1,6 @@
 from klippy.extras import servo_axis
 from klippy.extras.stepper_enable import EnableTracking, StepperEnablePin
-from klippy.motion_toolhead import MotionToolhead
+from klippy.motion_toolhead import BridgeKinematics, MotionToolhead
 
 
 class FakeLine:
@@ -106,6 +106,9 @@ def test_servo_rail_active_callback_contract():
 
 
 class FakeKin:
+    kinematics = "corexy"
+    active_rails = BridgeKinematics.active_rails
+
     def __init__(self, rails):
         self.rails = rails
 
@@ -137,16 +140,16 @@ def test_servo_fires_on_any_motion_regardless_of_its_own_axis():
     fired = []
     rail.add_active_callback(fired.append)
     th = FakeToolhead(FakeKin([rail]))
-    assert th._fire_active_callbacks(11.0) is True
-    assert fired == [11.0]
-    assert th._fire_active_callbacks(12.0) is False
-    assert fired == [11.0]
+    assert th._fire_active_callbacks() is True
+    assert fired == [42.0]
+    assert th._fire_active_callbacks() is False
+    assert fired == [42.0]
     rail.add_active_callback(fired.append)
-    assert th._fire_active_callbacks(13.0) is True
-    assert fired == [11.0, 13.0]
+    assert th._fire_active_callbacks() is True
+    assert fired == [42.0, 42.0]
 
 
-def test_servo_pass_uses_default_print_time():
+def test_servo_pass_uses_toolhead_print_time():
     rail = make_servo_rail("z")
     fired = []
     rail.add_active_callback(fired.append)

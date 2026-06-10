@@ -5,7 +5,7 @@ use runtime::piece_ring::PieceEntry;
 use kalico_host_rt::passthrough_queue::PassthroughRouter;
 
 use crate::dispatch::{AXIS_X, AXIS_Z};
-use crate::homing::reconstruct_axis_position;
+use crate::homing::{reconstruct_axis_position, trajectory_final_position};
 use crate::motion_history::{HistoryStore, eval_bernstein_cubic};
 use crate::pump::AxisKey;
 
@@ -280,34 +280,85 @@ fn trip_before_homing_window_is_rejected() {
     );
 }
 
-mod post_homing_fault_window_tests {
-    use crate::homing::post_homing_fault_is_benign;
+#[test]
+fn trajectory_final_position_single_piece() {
+    let key = AxisKey {
+        mcu_id: 10,
+        axis: AXIS_X as u8,
+    };
+    let piece = make_linear_piece(1_000_000, 0.025, 5.0, 45.0);
+    let mut store = HistoryStore::default();
+    store.record(key, &piece, FREQ);
 
-    #[test]
-    fn zero_stamp_is_not_benign() {
-        assert!(!post_homing_fault_is_benign(1_000_000_000, 0));
-    }
+    let pos =
+        trajectory_final_position(key, &shared(store)).expect("single-piece store must succeed");
+    assert!(
+        (pos - 45.0).abs() < 1e-4,
+        "final position must equal last coeffs[3]=45.0, got {pos:.6}"
+    );
+}
 
-    #[test]
-    fn within_window_is_benign() {
-        let settled = 10_000_000_000u64;
-        let now = settled + 1_999_999_999;
-        assert!(post_homing_fault_is_benign(now, settled));
-    }
+#[test]
+fn trajectory_final_position_multi_piece_takes_last() {
+    let key = AxisKey {
+        mcu_id: 11,
+        axis: AXIS_X as u8,
+    };
+    let piece1 = make_linear_piece(1_000_000, 0.025, 0.0, 50.0);
+    let piece2 = make_linear_piece(5_500_000, 0.025, 50.0, 82.5);
+    let mut store = HistoryStore::default();
+    store.record(key, &piece1, FREQ);
+    store.record(key, &piece2, FREQ);
 
-    #[test]
-    fn outside_window_is_not_benign() {
-        let settled = 10_000_000_000u64;
-        let now = settled + 2_000_000_000;
-        assert!(!post_homing_fault_is_benign(now, settled));
-    }
+    let pos =
+        trajectory_final_position(key, &shared(store)).expect("multi-piece store must succeed");
+    assert!(
+        (pos - 82.5).abs() < 1e-4,
+        "final position must equal last piece's coeffs[3]=82.5, got {pos:.6}"
+    );
+}
 
-    #[test]
-    fn now_before_settled_is_benign_via_saturating_sub() {
-        let settled = 10_000_000_000u64;
-        let now = settled - 1;
-        assert!(post_homing_fault_is_benign(now, settled));
-    }
+#[test]
+fn trajectory_final_position_missing_key_errors() {
+    let key = AxisKey {
+        mcu_id: 12,
+        axis: AXIS_X as u8,
+    };
+    let store = HistoryStore::default();
+
+    let result = trajectory_final_position(key, &shared(store));
+    assert!(
+        result.is_err(),
+        "missing key must return Err, got: {result:?}"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("no recorded motion") || msg.contains("no trajectory"),
+        "error must mention missing pieces, got: {msg}"
+    );
+}
+
+#[test]
+fn trajectory_final_position_constant_piece() {
+    let key = AxisKey {
+        mcu_id: 13,
+        axis: AXIS_Z as u8,
+    };
+    let piece = runtime::piece_ring::PieceEntry {
+        start_time: 0,
+        coeffs: [99.0_f32; 4],
+        duration: 0.01,
+        _reserved: 0,
+    };
+    let mut store = HistoryStore::default();
+    store.record(key, &piece, FREQ);
+
+    let pos =
+        trajectory_final_position(key, &shared(store)).expect("constant-piece store must succeed");
+    assert!(
+        (pos - 99.0).abs() < 1e-4,
+        "constant piece endpoint must be 99.0, got {pos:.6}"
+    );
 }
 
 mod drive_fault_routing_tests {
@@ -319,13 +370,16 @@ mod drive_fault_routing_tests {
     }
 
     #[test]
-    fn homing_on_other_mcu_is_fatal() {
-        assert_eq!(route_drive_fault(7, Some(3)), DriveFaultRoute::Fatal);
+    fn homing_on_other_mcu_latches_for_klippy() {
+        assert_eq!(
+            route_drive_fault(7, Some(3)),
+            DriveFaultRoute::LatchForKlippy
+        );
     }
 
     #[test]
-    fn idle_fault_is_fatal() {
-        assert_eq!(route_drive_fault(7, None), DriveFaultRoute::Fatal);
+    fn idle_fault_latches_for_klippy() {
+        assert_eq!(route_drive_fault(7, None), DriveFaultRoute::LatchForKlippy);
     }
 }
 

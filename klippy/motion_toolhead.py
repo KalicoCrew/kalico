@@ -147,6 +147,24 @@ class BridgeKinematics:
     def get_steppers(self):
         return [s for rail in self.rails for s in rail.get_steppers()]
 
+    def active_rails(self, dx, dy, dz):
+        moved = {
+            axis: abs(delta) > 1e-9 for axis, delta in zip("xyz", (dx, dy, dz))
+        }
+        coupled = dict(moved)
+        if self.kinematics == "corexy":
+            coupled["x"] = coupled["y"] = moved["x"] or moved["y"]
+        elif self.kinematics == "hybrid_corexy":
+            coupled["x"] = moved["x"] or moved["y"]
+        active = []
+        for rail in self.rails:
+            if isinstance(rail, servo_axis.ServoRail):
+                if moved[rail.axis]:
+                    active.append(rail)
+            elif coupled[rail.get_name(short=True)[0]]:
+                active.append(rail)
+        return active
+
     def calc_position(self, stepper_positions):
         def rail_pos(rail):
             vals = [
@@ -342,8 +360,7 @@ class MotionToolhead(ToolHead):
             de,
             feedrate,
         )
-        enable_print_time = self.get_last_move_time()
-        self._fire_active_callbacks(enable_print_time)
+        self._fire_active_callbacks()
         bridge_lmt_before = self.bridge.get_last_move_time()
         self.bridge.submit_move(dx, dy, dz, de, feedrate)
         self._bump_pending_end_time(
@@ -352,11 +369,9 @@ class MotionToolhead(ToolHead):
         self.commanded_pos[:] = move.end_pos
         self._sync_print_time()
 
-    def _fire_active_callbacks(self, print_time=None):
+    def _fire_active_callbacks(self):
         if self.kin is None:
             return False
-        if print_time is None:
-            print_time = self.get_last_move_time()
         fired = False
         servo_rails = [
             rail
@@ -372,7 +387,7 @@ class MotionToolhead(ToolHead):
             cbs = owner._active_callbacks
             owner._active_callbacks = []
             for cb in cbs:
-                cb(print_time)
+                cb(self.get_last_move_time())
             fired = True
         return fired
 
@@ -495,6 +510,11 @@ class MotionToolhead(ToolHead):
         self.bridge.update_limits(self.max_velocity, self.max_accel)
 
     def stats(self, eventtime):
+        max_queue_time = max(self.print_time, self._mcu_pending_end_time)
+        for m in self.all_mcus:
+            if getattr(m, "non_critical_disconnected", False):
+                continue
+            m.check_active(max_queue_time, eventtime)
         return False, "print_time=%.3f buffer_time=0.000 print_stall=%d" % (
             self.print_time,
             self.print_stall,

@@ -24,6 +24,12 @@ pub enum MessageKind {
     SetDriveLimitsResponse = 0x0075,
     RestoreDriveLimits = 0x0076,
     RestoreDriveLimitsResponse = 0x0077,
+    ResumeStream = 0x0078,
+    ResumeStreamResponse = 0x0079,
+    SdoRead = 0x007C,
+    SdoReadResponse = 0x007D,
+    SdoWrite = 0x007E,
+    SdoWriteResponse = 0x007F,
     FaultEvent = 0x0082,
     StatusHeartbeat = 0x0083,
     McuLog = 0x0084,
@@ -51,6 +57,12 @@ impl MessageKind {
             0x0075 => Self::SetDriveLimitsResponse,
             0x0076 => Self::RestoreDriveLimits,
             0x0077 => Self::RestoreDriveLimitsResponse,
+            0x0078 => Self::ResumeStream,
+            0x0079 => Self::ResumeStreamResponse,
+            0x007C => Self::SdoRead,
+            0x007D => Self::SdoReadResponse,
+            0x007E => Self::SdoWrite,
+            0x007F => Self::SdoWriteResponse,
             0x0082 => Self::FaultEvent,
             0x0083 => Self::StatusHeartbeat,
             0x0084 => Self::McuLog,
@@ -268,6 +280,112 @@ impl Decode for SetTorqueResponse {
     }
 }
 
+pub const ERR_SDO_UNSUPPORTED_SIZE: i32 = -801;
+pub const ERR_SDO_VERIFY_MISMATCH: i32 = -802;
+pub const ERR_SDO_TRANSPORT: i32 = -803;
+pub const ERR_SDO_VALUE_RANGE: i32 = -804;
+pub const SDO_SIZE_PROBE: u8 = 0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdoRead {
+    pub index: u16,
+    pub subindex: u8,
+}
+
+impl Encode for SdoRead {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_u16(out, self.index);
+        put_u8(out, self.subindex);
+    }
+}
+
+impl Decode for SdoRead {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            index: get_u16(c)?,
+            subindex: get_u8(c)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdoReadResponse {
+    pub result: i32,
+    pub size: u8,
+    pub data: [u8; 4],
+}
+
+impl Encode for SdoReadResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+        put_u8(out, self.size);
+        out.extend_from_slice(&self.data);
+    }
+}
+
+impl Decode for SdoReadResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
+            size: get_u8(c)?,
+            data: [get_u8(c)?, get_u8(c)?, get_u8(c)?, get_u8(c)?],
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdoWrite {
+    pub index: u16,
+    pub subindex: u8,
+    pub size: u8,
+    pub value: i64,
+}
+
+impl Encode for SdoWrite {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_u16(out, self.index);
+        put_u8(out, self.subindex);
+        put_u8(out, self.size);
+        put_u64(out, self.value as u64);
+    }
+}
+
+impl Decode for SdoWrite {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            index: get_u16(c)?,
+            subindex: get_u8(c)?,
+            size: get_u8(c)?,
+            value: get_u64(c)? as i64,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SdoWriteResponse {
+    pub result: i32,
+    pub readback_size: u8,
+    pub readback_data: [u8; 4],
+}
+
+impl Encode for SdoWriteResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+        put_u8(out, self.readback_size);
+        out.extend_from_slice(&self.readback_data);
+    }
+}
+
+impl Decode for SdoWriteResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
+            readback_size: get_u8(c)?,
+            readback_data: [get_u8(c)?, get_u8(c)?, get_u8(c)?, get_u8(c)?],
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stop;
 
@@ -369,6 +487,38 @@ impl Encode for RestoreDriveLimitsResponse {
 }
 
 impl Decode for RestoreDriveLimitsResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeStream;
+
+impl Encode for ResumeStream {
+    fn encode(&self, _out: &mut Vec<u8>) {}
+}
+
+impl Decode for ResumeStream {
+    fn decode_from(_c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeStreamResponse {
+    pub result: i32,
+}
+
+impl Encode for ResumeStreamResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+    }
+}
+
+impl Decode for ResumeStreamResponse {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             result: get_i32(c)?,
@@ -607,5 +757,7 @@ where
 mod claim_handshake_tests;
 #[cfg(test)]
 mod mcu_log_tests;
+#[cfg(test)]
+mod sdo_tests;
 #[cfg(test)]
 mod tests;

@@ -114,6 +114,46 @@ the endpoint uses to convert host millimetres to drive counts. klippy derives it
 claim time from `[servo_x]` and hands it to the spawned endpoint. Get both keys right
 before the drive moves.
 
+## Drive parameters (SDO)
+
+Drive tuning lives in config, not drive EEPROM. `params:` entries on `[servo_*]`
+are raw CoE object addresses pushed to drive RAM (never EEPROM) on every claim,
+after bringup succeeds and before the claim is reported healthy. Each write is
+read back; a mismatch (drive clamped or rejected the value) fails the claim with
+the offending address, the value written, and what the drive settled on.
+
+```ini
+[servo_x]
+# ... options above ...
+params:
+    0x2002.0: 100          # size probed via SDO upload (one extra mailbox round-trip)
+    0x2003.0: u16 250      # explicit type (u8/u16/u32/i8/i16/i32) skips the probe
+    0x2010.1: i32 -4096
+```
+
+Ad-hoc access while tuning:
+
+```
+SERVO_PARAM SERVO=servo_x GET=0x2002.0
+SERVO_PARAM SERVO=servo_x GET=0x2002.0 TYPE=i16
+SERVO_PARAM SERVO=servo_x SET=0x2002.0 VALUE=100 TYPE=u16
+```
+
+GET without `TYPE=` prints raw hex plus both unsigned and signed decimal
+interpretations. SET reads the value back and reports what the drive settled on.
+Objects wider than 4 bytes (strings, segmented transfers) are unsupported and
+fail loudly. SDO traffic is mailbox traffic — it rides between DC cycles, fast
+but not deterministic; anything needing hard-real-time parameter changes gets
+mapped into the PDO instead.
+
+To deliberately persist parameters to drive EEPROM, SET the drive's
+store-parameters object (CiA 301 object 0x1010 — check the A6-EC manual for the
+magic value) — kalico never does this implicitly.
+
+The stub endpoint serves a small fake object dictionary (0x2002.0, 0x2003.0
+clamping at 500, 0x2010.1, 0x6041.0 read-only), so the whole path — claim-push,
+verify-mismatch claim failure, SERVO_PARAM — can be validated drive-off.
+
 ## Bring-up sequence
 
 The endpoint is **spawned by klippy** at node-claim time (mcu-identify), using the

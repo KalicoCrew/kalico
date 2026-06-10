@@ -1,4 +1,22 @@
+import collections
+
 from ..rail import BaseRail
+from . import servo_param
+
+_homing_info = collections.namedtuple(
+    "homing_info",
+    [
+        "speed",
+        "position_endstop",
+        "retract_speed",
+        "retract_dist",
+        "positive_dir",
+        "second_homing_speed",
+        "use_sensorless_homing",
+        "min_home_dist",
+        "accel",
+    ],
+)
 
 
 def infer_positive_dir(
@@ -70,6 +88,12 @@ class ServoRail(BaseRail):
             "max_torque", None, above=0.0, maxval=400.0
         )
         self._active_callbacks = []
+        try:
+            self.sdo_params = servo_param.parse_params_block(
+                config.get("params", "")
+            )
+        except ValueError as e:
+            raise config.error("servo_%s params: %s" % (self.axis, e))
 
     def get_name(self, short=False):
         if short:
@@ -104,6 +128,9 @@ class ServoRail(BaseRail):
 
     def get_counts_per_mm(self):
         return self.encoder_counts_per_rev / self.rotation_distance
+
+    def get_sdo_params(self):
+        return self.sdo_params
 
     def get_homing_drive_limits(self):
         counts_per_mm = self.encoder_counts_per_rev / self.rotation_distance
