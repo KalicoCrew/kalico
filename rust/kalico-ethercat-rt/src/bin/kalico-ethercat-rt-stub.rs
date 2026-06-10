@@ -4,6 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 
+use kalico_ethercat_rt::capture::{
+    Capture, CaptureConfig, CaptureRecord, DriveSample, FLAG_MOTION_ACTIVE, FLAG_TORQUE_ENABLED,
+};
 use kalico_ethercat_rt::claim::{parse_fail_bringup, single_slave_reply, wait_for_claim};
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
@@ -13,9 +16,10 @@ use kalico_ethercat_rt::torque::{
 };
 use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
-    runtime_caps_response_frame, set_torque_response_frame, status_heartbeat_frame, Command,
+    runtime_caps_response_frame, set_torque_response_frame, start_capture_response_frame,
+    status_heartbeat_frame, stop_capture_response_frame, Command,
 };
-use kalico_protocol::messages::SlaveState;
+use kalico_protocol::messages::{SlaveState, StopCaptureResponse};
 
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
 
@@ -46,6 +50,8 @@ fn main() {
 
     let mut ring = AxisRing::new();
     let mut gate = TorqueGate::new();
+    let mut capture = Capture::new();
+    let mut cycle_index: u64 = 0;
     let mut last_sent_retired: u32 = 0;
     let mut heartbeat_sent = false;
 
@@ -184,6 +190,34 @@ fn main() {
                         }
                     }
                 }
+                Command::StartCapture {
+                    correlation_id,
+                    msg,
+                } => {
+                    let rc = capture.start(CaptureConfig {
+                        path: msg.path.clone(),
+                        started_utc: msg.started_utc.clone(),
+                        drive_name: msg.drive_name.clone(),
+                        cycle_ns: 1_000_000,
+                        counts_per_mm: 3276.8,
+                        started_mono_ns: monotonic_ns(),
+                    });
+                    eprintln!("ec-rt-stub: StartCapture path={} rc={rc}", msg.path);
+                    server.respond(&start_capture_response_frame(correlation_id, rc));
+                }
+                Command::StopCapture { correlation_id } => {
+                    let out = capture.stop();
+                    eprintln!(
+                        "ec-rt-stub: StopCapture result={} samples={} overflow={:?}",
+                        out.result, out.samples, out.overflow_cycle
+                    );
+                    server.respond(&stop_capture_response_frame(
+                        correlation_id,
+                        out.result,
+                        out.samples,
+                        out.overflow_cycle.unwrap_or(StopCaptureResponse::NO_OVERFLOW),
+                    ));
+                }
                 Command::Unknown { kind_raw, .. } => {
                     eprintln!("ec-rt-stub: ignoring kind 0x{kind_raw:04x}");
                 }
@@ -207,8 +241,34 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        let motion_active = gate.state() == TorqueState::Enabled && !ring.is_empty();
         if gate.state() == TorqueState::Enabled {
             let _ = ring.sample(now);
+        }
+
+        cycle_index += 1;
+        if capture.is_active() {
+            let pos = i32::try_from((cycle_index % 100_000) * 10).unwrap_or(0);
+            let mut flags = 0u8;
+            if gate.state() == TorqueState::Enabled {
+                flags |= FLAG_TORQUE_ENABLED;
+            }
+            if motion_active {
+                flags |= FLAG_MOTION_ACTIVE;
+            }
+            capture.push(CaptureRecord {
+                cycle_index,
+                flags,
+                drive: DriveSample {
+                    target_counts: pos,
+                    position_demand: pos,
+                    position_actual: pos - 3,
+                    following_error: 3,
+                    torque_actual: 100,
+                    statusword: 0x0627,
+                    error_code: 0,
+                },
+            });
         }
 
         if let Some(fault_val) = ring.take_fault() {
