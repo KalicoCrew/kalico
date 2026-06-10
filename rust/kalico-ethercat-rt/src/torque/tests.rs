@@ -94,10 +94,7 @@ fn reenable_with_pending_disable_cancels_it() {
     g.enable_finished(true);
     let _ = g.on_set_torque(false, T0 + 500);
     assert_eq!(g.on_tick(T0 + 100, false), TickAction::None);
-    assert_eq!(
-        g.on_set_torque(true, T0 + 600),
-        CommandAction::Enable
-    );
+    assert_eq!(g.on_set_torque(true, T0 + 600), CommandAction::Enable);
     g.enable_finished(true);
     assert_eq!(g.state(), TorqueState::Enabled);
     assert_eq!(g.on_tick(T0 + 1_000, false), TickAction::None);
@@ -133,12 +130,9 @@ fn pieces_at_disable_time_fault() {
 #[test]
 fn drive_fault_parks_in_faulted_and_clears_pending_disable() {
     let mut g = TorqueGate::new();
-    assert_eq!(g.on_set_torque(true, 0, 0), CommandAction::Enable);
+    assert_eq!(g.on_set_torque(true, 0), CommandAction::Enable);
     g.enable_finished(true);
-    assert_eq!(
-        g.on_set_torque(false, 100, 50),
-        CommandAction::ScheduleDisable
-    );
+    assert_eq!(g.on_set_torque(false, 100), CommandAction::ScheduleDisable);
     g.on_drive_fault();
     assert_eq!(g.state(), TorqueState::Faulted);
     assert_eq!(g.on_tick(200, true), TickAction::None);
@@ -155,7 +149,7 @@ fn faulted_tick_with_pieces_is_not_a_fault() {
 fn enable_from_faulted_recovers() {
     let mut g = TorqueGate::new();
     g.on_drive_fault();
-    assert_eq!(g.on_set_torque(true, 0, 0), CommandAction::Enable);
+    assert_eq!(g.on_set_torque(true, 0), CommandAction::Enable);
     g.enable_finished(true);
     assert_eq!(g.state(), TorqueState::Enabled);
 }
@@ -164,10 +158,7 @@ fn enable_from_faulted_recovers() {
 fn disable_from_faulted_schedules_and_lands_parked() {
     let mut g = TorqueGate::new();
     g.on_drive_fault();
-    assert_eq!(
-        g.on_set_torque(false, 100, 50),
-        CommandAction::ScheduleDisable
-    );
+    assert_eq!(g.on_set_torque(false, 100), CommandAction::ScheduleDisable);
     assert_eq!(g.on_tick(150, true), TickAction::ExecuteDisable);
     g.disable_finished();
     assert_eq!(g.state(), TorqueState::Parked);

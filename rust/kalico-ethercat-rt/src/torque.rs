@@ -44,8 +44,6 @@ impl TorqueGate {
         self.state
     }
 
-    /// `not_before_ns` is an ordering token, not a deadline: a disable whose
-    /// time has already passed executes on the next tick.
     pub fn on_set_torque(&mut self, value: bool, not_before_ns: u64) -> CommandAction {
         if value {
             if self.state == TorqueState::Enabled && self.pending_disable_at.is_none() {

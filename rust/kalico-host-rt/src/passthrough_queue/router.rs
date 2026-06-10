@@ -458,9 +458,6 @@ impl PassthroughRouter {
         Some(rec.clock_offset + delta_ticks / rec.clock_freq)
     }
 
-    /// Klippy `print_time` is the reference MCU's extended clock divided by its
-    /// frequency, so it converts exactly like `clock_to_host_secs` with
-    /// `mcu_clock = print_time * clock_freq`.
     pub fn print_time_to_host_secs(
         &self,
         reference_mcu: McuHandle,

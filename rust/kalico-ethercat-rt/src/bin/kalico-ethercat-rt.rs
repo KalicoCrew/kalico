@@ -214,46 +214,21 @@ fn main() {
                 Command::SetTorque {
                     correlation_id,
                     msg,
-                } => {
-                    match gate.on_set_torque(msg.value != 0, msg.execute_at_ns) {
-                        CommandAction::Enable => {
-                            let rc = unsafe { ffi::ec_rt_enable() };
-                            gate.enable_finished(rc == 0);
-                            if rc == 0 {
-                                eprintln!("ec-rt: torque enabled (CiA402 operation enabled)");
-                                server.respond(&set_torque_response_frame(correlation_id, 0));
-                            } else {
-                                eprintln!(
-                                    "ec-rt: CiA402 enable failed rc={rc} — disabling and exiting"
-                                );
-                                server.respond(&set_torque_response_frame(
-                                    correlation_id,
-                                    ERR_ENABLE_FAILED,
-                                ));
-                                unsafe {
-                                    ffi::ec_rt_disable();
-                                    ffi::ec_rt_shutdown();
-                                }
-                                std::process::exit(1);
-                            }
-                        }
-                        CommandAction::ScheduleDisable => {
-                            eprintln!(
-                                "ec-rt: torque disable scheduled at {} (now {})",
-                                msg.execute_at_ns,
-                                monotonic_ns()
-                            );
+                } => match gate.on_set_torque(msg.value != 0, msg.execute_at_ns) {
+                    CommandAction::Enable => {
+                        let rc = unsafe { ffi::ec_rt_enable() };
+                        gate.enable_finished(rc == 0);
+                        if rc == 0 {
+                            eprintln!("ec-rt: torque enabled (CiA402 operation enabled)");
                             server.respond(&set_torque_response_frame(correlation_id, 0));
-                        }
-                        CommandAction::Reject { code } => {
+                        } else {
                             eprintln!(
-                                "ec-rt: SetTorque rejected code={code} \
-                                 (value={} execute_at={} now={}) — exiting",
-                                msg.value,
-                                msg.execute_at_ns,
-                                monotonic_ns()
+                                "ec-rt: CiA402 enable failed rc={rc} — disabling and exiting"
                             );
-                            server.respond(&set_torque_response_frame(correlation_id, code));
+                            server.respond(&set_torque_response_frame(
+                                correlation_id,
+                                ERR_ENABLE_FAILED,
+                            ));
                             unsafe {
                                 ffi::ec_rt_disable();
                                 ffi::ec_rt_shutdown();
@@ -261,7 +236,30 @@ fn main() {
                             std::process::exit(1);
                         }
                     }
-                }
+                    CommandAction::ScheduleDisable => {
+                        eprintln!(
+                            "ec-rt: torque disable scheduled at {} (now {})",
+                            msg.execute_at_ns,
+                            monotonic_ns()
+                        );
+                        server.respond(&set_torque_response_frame(correlation_id, 0));
+                    }
+                    CommandAction::Reject { code } => {
+                        eprintln!(
+                            "ec-rt: SetTorque rejected code={code} \
+                                 (value={} execute_at={} now={}) — exiting",
+                            msg.value,
+                            msg.execute_at_ns,
+                            monotonic_ns()
+                        );
+                        server.respond(&set_torque_response_frame(correlation_id, code));
+                        unsafe {
+                            ffi::ec_rt_disable();
+                            ffi::ec_rt_shutdown();
+                        }
+                        std::process::exit(1);
+                    }
+                },
                 Command::Stop { correlation_id } => {
                     let now_ns = monotonic_ns();
                     ring.reset();

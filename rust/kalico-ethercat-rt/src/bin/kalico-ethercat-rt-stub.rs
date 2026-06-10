@@ -176,38 +176,36 @@ fn main() {
                 Command::SetTorque {
                     correlation_id,
                     msg,
-                } => {
-                    match gate.on_set_torque(msg.value != 0, msg.execute_at_ns) {
-                        CommandAction::Enable => {
-                            let ok = !fail_enable;
-                            gate.enable_finished(ok);
-                            if ok {
-                                eprintln!("ec-rt-stub: torque enabled (simulated)");
-                                server.respond(&set_torque_response_frame(correlation_id, 0));
-                            } else {
-                                eprintln!("ec-rt-stub: simulated enable failure — exiting");
-                                server.respond(&set_torque_response_frame(
-                                    correlation_id,
-                                    ERR_ENABLE_FAILED,
-                                ));
-                                std::process::exit(1);
-                            }
-                        }
-                        CommandAction::ScheduleDisable => {
-                            eprintln!(
-                                "ec-rt-stub: torque disable scheduled at {} (now {})",
-                                msg.execute_at_ns,
-                                monotonic_ns()
-                            );
+                } => match gate.on_set_torque(msg.value != 0, msg.execute_at_ns) {
+                    CommandAction::Enable => {
+                        let ok = !fail_enable;
+                        gate.enable_finished(ok);
+                        if ok {
+                            eprintln!("ec-rt-stub: torque enabled (simulated)");
                             server.respond(&set_torque_response_frame(correlation_id, 0));
-                        }
-                        CommandAction::Reject { code } => {
-                            eprintln!("ec-rt-stub: SetTorque rejected code={code} — exiting");
-                            server.respond(&set_torque_response_frame(correlation_id, code));
+                        } else {
+                            eprintln!("ec-rt-stub: simulated enable failure — exiting");
+                            server.respond(&set_torque_response_frame(
+                                correlation_id,
+                                ERR_ENABLE_FAILED,
+                            ));
                             std::process::exit(1);
                         }
                     }
-                }
+                    CommandAction::ScheduleDisable => {
+                        eprintln!(
+                            "ec-rt-stub: torque disable scheduled at {} (now {})",
+                            msg.execute_at_ns,
+                            monotonic_ns()
+                        );
+                        server.respond(&set_torque_response_frame(correlation_id, 0));
+                    }
+                    CommandAction::Reject { code } => {
+                        eprintln!("ec-rt-stub: SetTorque rejected code={code} — exiting");
+                        server.respond(&set_torque_response_frame(correlation_id, code));
+                        std::process::exit(1);
+                    }
+                },
                 Command::SetDriveLimits {
                     correlation_id,
                     msg,
