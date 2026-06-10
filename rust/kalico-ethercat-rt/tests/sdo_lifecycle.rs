@@ -2,6 +2,7 @@ use std::process::{Child, Command};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use kalico_ethercat_rt::sdo::{COE_ABORT_NOT_FOUND, COE_ABORT_READ_ONLY};
 use kalico_host_rt::native_call::NativeCall;
 use kalico_host_rt::unix_native_conn::UnixNativeConn;
 use kalico_protocol::codec::{Decode, Encode};
@@ -11,8 +12,6 @@ use kalico_protocol::messages::{
 };
 
 const STUB_BIN: &str = env!("CARGO_BIN_EXE_kalico-ethercat-rt-stub");
-const COE_ABORT_READ_ONLY: i32 = 0x0601_0002;
-const COE_ABORT_NOT_FOUND: i32 = 0x0602_0000;
 
 struct ChildGuard {
     child: Option<Child>,
@@ -85,7 +84,7 @@ fn sdo_write(
 
 fn probe_count(conn: &UnixNativeConn) -> u32 {
     let r = sdo_read(conn, 0x5FFF, 0);
-    assert_eq!(r.result, 0);
+    assert_eq!((r.result, r.size), (0, 4));
     u32::from_le_bytes(r.data)
 }
 
