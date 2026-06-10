@@ -149,8 +149,7 @@ class BridgeKinematics:
 
     def active_rails(self, dx, dy, dz):
         moved = {
-            axis: abs(delta) > 1e-9
-            for axis, delta in zip("xyz", (dx, dy, dz))
+            axis: abs(delta) > 1e-9 for axis, delta in zip("xyz", (dx, dy, dz))
         }
         coupled = dict(moved)
         if self.kinematics == "corexy":
