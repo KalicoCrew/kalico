@@ -127,6 +127,7 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
                 .map(|c| grid::compute_n(&input.grid_strategy, c))
                 .collect();
             grid::reconcile_junction_n(&mut ns, &chain_curves, grid_max_n);
+            let absorbed = grid::classify_absorbed(&ns, &chain_curves);
             let seg_grids: Result<Vec<_>, _> = range
                 .clone()
                 .zip(ns)
@@ -140,7 +141,9 @@ pub fn plan_batch(input: BatchInput<'_>) -> Result<BatchOutput, BatchError> {
                 })
                 .collect();
             let seg_limits: Vec<_> = range.clone().map(|i| input.segments[i].limits).collect();
-            seg_grids.map(|grids| ChainGrid::from_segment_grids(grids, seg_limits))
+            seg_grids.map(|grids| {
+                ChainGrid::from_segment_grids_with_absorbed(grids, seg_limits, &absorbed)
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
 

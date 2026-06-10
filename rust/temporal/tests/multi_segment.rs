@@ -861,6 +861,87 @@ mod fixture_10_near_zero_length_middle_segment_smooth_chain {
     }
 }
 
+mod fixture_11_nanometer_dust_segment_smooth_chain {
+    use super::*;
+
+    #[test]
+    fn dust_segment_plans_without_panic() {
+        let seg0 = VectorNurbs::<f64, 3>::try_new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![[0.0, 0.0, 0.0], [12.3, 0.0, 0.0]],
+        )
+        .unwrap();
+        let dust = VectorNurbs::<f64, 3>::try_new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![[12.3, 0.0, 0.0], [12.3001, 0.0, 0.0]],
+        )
+        .unwrap();
+        let seg2 = VectorNurbs::<f64, 3>::try_new(
+            1,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![[12.3001, 0.0, 0.0], [24.6001, 0.0, 0.0]],
+        )
+        .unwrap();
+        let limits = textbook_limits();
+        let segments = [
+            SegmentInput {
+                curve: &seg0,
+                limits,
+                trailing_junction_chord_tolerance_mm: 0.05,
+            },
+            SegmentInput {
+                curve: &dust,
+                limits,
+                trailing_junction_chord_tolerance_mm: 0.05,
+            },
+            SegmentInput {
+                curve: &seg2,
+                limits,
+                trailing_junction_chord_tolerance_mm: 0.05,
+            },
+        ];
+        let input = BatchInput {
+            segments: &segments,
+            grid_strategy: GridStrategy::Adaptive {
+                min_n: 20,
+                max_n: 200,
+                target_grid_spacing_mm: 0.5,
+            },
+            worker_threads: 1,
+            initial_velocity: 0.0,
+            initial_accel: 0.0,
+            terminal_velocity: 0.0,
+        };
+        let output = plan_batch(input).expect("plan_batch must not panic or error");
+
+        assert_eq!(
+            output.profiles.len(),
+            3,
+            "must produce one profile per segment"
+        );
+        assert!(
+            output.profiles.iter().all(|p| p.total_time.is_finite()),
+            "all profiles must have finite total_time"
+        );
+        let statuses_ok = output.profiles.iter().all(|p| {
+            matches!(
+                p.status,
+                temporal::SolveStatus::Solved
+                    | temporal::SolveStatus::SolvedInexact { .. }
+                    | temporal::SolveStatus::SolvedSlp { .. }
+                    | temporal::SolveStatus::MaxIter { .. }
+            )
+        });
+        assert!(
+            statuses_ok,
+            "all profiles must be solved; got {:?}",
+            output.profiles.iter().map(|p| p.status).collect::<Vec<_>>()
+        );
+    }
+}
+
 mod fixture_9_kinematic_boundary_end_no_oscillation {
     use super::*;
 

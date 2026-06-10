@@ -38,6 +38,37 @@ pub(crate) fn compute_n(strategy: &GridStrategy, curve: &VectorNurbs<f64, 3>) ->
 /// This never increases n beyond `max_n` and never decreases n below 2, so
 /// the resulting grids are always valid inputs to `sample_arclength_grid`.
 /// `Fixed` grids are left unchanged.
+/// Returns a boolean mask (same length as `ns` / `curves`) indicating which
+/// segments must be absorbed — contributing no interior grid nodes to the chain
+/// because even at `ns[i]` (post-reconcile, capped at `max_n`) the junction
+/// spacing ratio with a neighbor would exceed `MAX_JUNCTION_SPACING_RATIO`.
+///
+/// Only interior segments (index > 0 and < len-1) are ever marked for
+/// absorption; edge segments have nowhere to fold into and are left unchanged.
+pub(crate) fn classify_absorbed(ns: &[usize], curves: &[&VectorNurbs<f64, 3>]) -> Vec<bool> {
+    let n = ns.len();
+    let mut absorbed = vec![false; n];
+    if n < 3 {
+        return absorbed;
+    }
+    let lengths: Vec<f64> = curves
+        .iter()
+        .map(|c| control_polygon_length_mm(c))
+        .collect();
+    let h = |n_seg: usize, l: f64| -> f64 { if n_seg <= 1 { l } else { l / (n_seg - 1) as f64 } };
+    for i in 1..n - 1 {
+        let h_i = h(ns[i], lengths[i]);
+        let h_left = h(ns[i - 1], lengths[i - 1]);
+        let h_right = h(ns[i + 1], lengths[i + 1]);
+        let ratio_left = if h_i > 0.0 { h_left / h_i } else { f64::INFINITY };
+        let ratio_right = if h_i > 0.0 { h_right / h_i } else { f64::INFINITY };
+        if ratio_left > MAX_JUNCTION_SPACING_RATIO || ratio_right > MAX_JUNCTION_SPACING_RATIO {
+            absorbed[i] = true;
+        }
+    }
+    absorbed
+}
+
 pub(crate) fn reconcile_junction_n(
     ns: &mut [usize],
     curves: &[&VectorNurbs<f64, 3>],

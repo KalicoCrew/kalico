@@ -38,16 +38,32 @@ pub struct ChainGrid {
 pub(crate) const MAX_JUNCTION_SPACING_RATIO: f64 = 16.0;
 
 impl ChainGrid {
+    pub fn from_segment_grids(grids: Vec<ArclengthGrid>, limits: Vec<Limits>) -> Self {
+        let n = grids.len();
+        Self::from_segment_grids_with_absorbed(grids, limits, &vec![false; n])
+    }
+
     /// Concatenate per-segment grids into one chain. Adjacent grids must be
     /// geometrically continuous (the caller guarantees tangent continuity —
-    /// that's what made them one chain). Panics on empty input: an empty
-    /// chain is a caller bug.
-    pub fn from_segment_grids(grids: Vec<ArclengthGrid>, limits: Vec<Limits>) -> Self {
+    /// that's what made them one chain). Segments marked in `absorbed` have
+    /// their arclength folded into a single degenerate interval shared with
+    /// the preceding segment; they contribute no interior grid nodes. Panics
+    /// on empty input: an empty chain is a caller bug.
+    pub fn from_segment_grids_with_absorbed(
+        grids: Vec<ArclengthGrid>,
+        limits: Vec<Limits>,
+        absorbed: &[bool],
+    ) -> Self {
         assert_eq!(grids.len(), limits.len());
+        assert_eq!(grids.len(), absorbed.len());
         assert!(!grids.is_empty(), "empty chain");
 
         for j_idx in 1..grids.len() {
-            let hl = grids[j_idx - 1].s[1] - grids[j_idx - 1].s[0];
+            if absorbed[j_idx] || absorbed[j_idx - 1] {
+                continue;
+            }
+            let prev_non_absorbed = (0..j_idx).rev().find(|&k| !absorbed[k]).unwrap_or(0);
+            let hl = grids[prev_non_absorbed].s[1] - grids[prev_non_absorbed].s[0];
             let hr = grids[j_idx].s[1] - grids[j_idx].s[0];
             let ratio = (hl / hr).max(hr / hl);
             assert!(
@@ -69,11 +85,20 @@ impl ChainGrid {
         for (seg, g) in grids.iter().enumerate() {
             let n = g.s.len();
             debug_assert!(n >= 2);
-            let h_seg = g.s[1] - g.s[0];
-            let start_point = if seg == 0 { 0 } else { 1 };
-            let range_start = if seg == 0 { 0 } else { s.len() - 1 };
 
-            if seg > 0 {
+            if absorbed[seg] {
+                let pinned = if s.is_empty() { 0 } else { s.len() - 1 };
+                segment_ranges.push((pinned, pinned));
+                s_offset += g.total_length;
+                continue;
+            }
+
+            let h_seg = g.s[1] - g.s[0];
+            let is_first_real = s.is_empty();
+            let start_point = if is_first_real { 0 } else { 1 };
+            let range_start = if is_first_real { 0 } else { s.len() - 1 };
+
+            if !is_first_real {
                 junctions.push(JunctionDual {
                     idx: s.len() - 1,
                     geom: point_geom(g, 0),
