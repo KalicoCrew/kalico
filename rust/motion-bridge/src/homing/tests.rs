@@ -6,7 +6,7 @@ use runtime::piece_ring::PieceEntry;
 use kalico_host_rt::passthrough_queue::PassthroughRouter;
 
 use crate::dispatch::{AXIS_X, AXIS_Z, McuAxisConfig, McuCaps};
-use crate::homing::{eval_bernstein_cubic, reconstruct_axis_position};
+use crate::homing::{eval_bernstein_cubic, reconstruct_axis_position, trajectory_final_position};
 use crate::pump::AxisKey;
 
 fn stub_configs(mcu_id: u32, axes: Vec<usize>) -> Vec<McuAxisConfig> {
@@ -274,6 +274,89 @@ fn multiple_pieces_trip_in_second_piece() {
     assert!(
         (pos - 75.0).abs() < 1.0,
         "midpoint of 50..100mm second piece should be ~75mm, got {pos:.4}"
+    );
+}
+
+#[test]
+fn trajectory_final_position_single_piece() {
+    let key = AxisKey {
+        mcu_id: 10,
+        axis: AXIS_X as u8,
+    };
+    let piece = make_linear_piece(1_000_000, 0.025, 5.0, 45.0);
+    let mut map = HashMap::new();
+    map.insert(key, vec![piece]);
+    let homing_traj = Arc::new(Mutex::new(map));
+
+    let pos =
+        trajectory_final_position(key, &homing_traj).expect("single-piece store must succeed");
+    assert!(
+        (pos - 45.0).abs() < 1e-4,
+        "final position must equal last coeffs[3]=45.0, got {pos:.6}"
+    );
+}
+
+#[test]
+fn trajectory_final_position_multi_piece_takes_last() {
+    let key = AxisKey {
+        mcu_id: 11,
+        axis: AXIS_X as u8,
+    };
+    let piece1 = make_linear_piece(1_000_000, 0.025, 0.0, 50.0);
+    let piece2 = make_linear_piece(5_500_000, 0.025, 50.0, 82.5);
+    let mut map = HashMap::new();
+    map.insert(key, vec![piece1, piece2]);
+    let homing_traj = Arc::new(Mutex::new(map));
+
+    let pos = trajectory_final_position(key, &homing_traj).expect("multi-piece store must succeed");
+    assert!(
+        (pos - 82.5).abs() < 1e-4,
+        "final position must equal last piece's coeffs[3]=82.5, got {pos:.6}"
+    );
+}
+
+#[test]
+fn trajectory_final_position_missing_key_errors() {
+    let key = AxisKey {
+        mcu_id: 12,
+        axis: AXIS_X as u8,
+    };
+    let homing_traj: Arc<Mutex<HashMap<AxisKey, Vec<PieceEntry>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    let result = trajectory_final_position(key, &homing_traj);
+    assert!(
+        result.is_err(),
+        "missing key must return Err, got: {result:?}"
+    );
+    let msg = result.unwrap_err();
+    assert!(
+        msg.contains("NoTrajectoryPieces") || msg.contains("no trajectory"),
+        "error must mention missing pieces, got: {msg}"
+    );
+}
+
+#[test]
+fn trajectory_final_position_constant_piece() {
+    let key = AxisKey {
+        mcu_id: 13,
+        axis: AXIS_Z as u8,
+    };
+    let piece = PieceEntry {
+        start_time: 0,
+        coeffs: [99.0_f32; 4],
+        duration: 0.01,
+        _reserved: 0,
+    };
+    let mut map = HashMap::new();
+    map.insert(key, vec![piece]);
+    let homing_traj = Arc::new(Mutex::new(map));
+
+    let pos =
+        trajectory_final_position(key, &homing_traj).expect("constant-piece store must succeed");
+    assert!(
+        (pos - 99.0).abs() < 1e-4,
+        "constant piece endpoint must be 99.0, got {pos:.6}"
     );
 }
 

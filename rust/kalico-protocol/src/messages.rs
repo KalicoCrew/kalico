@@ -24,10 +24,12 @@ pub enum MessageKind {
     SetDriveLimitsResponse = 0x0075,
     RestoreDriveLimits = 0x0076,
     RestoreDriveLimitsResponse = 0x0077,
-    SdoRead = 0x0078,
-    SdoReadResponse = 0x0079,
-    SdoWrite = 0x007A,
-    SdoWriteResponse = 0x007B,
+    ResumeStream = 0x0078,
+    ResumeStreamResponse = 0x0079,
+    SdoRead = 0x007C,
+    SdoReadResponse = 0x007D,
+    SdoWrite = 0x007E,
+    SdoWriteResponse = 0x007F,
     FaultEvent = 0x0082,
     StatusHeartbeat = 0x0083,
     McuLog = 0x0084,
@@ -55,10 +57,12 @@ impl MessageKind {
             0x0075 => Self::SetDriveLimitsResponse,
             0x0076 => Self::RestoreDriveLimits,
             0x0077 => Self::RestoreDriveLimitsResponse,
-            0x0078 => Self::SdoRead,
-            0x0079 => Self::SdoReadResponse,
-            0x007A => Self::SdoWrite,
-            0x007B => Self::SdoWriteResponse,
+            0x0078 => Self::ResumeStream,
+            0x0079 => Self::ResumeStreamResponse,
+            0x007C => Self::SdoRead,
+            0x007D => Self::SdoReadResponse,
+            0x007E => Self::SdoWrite,
+            0x007F => Self::SdoWriteResponse,
             0x0082 => Self::FaultEvent,
             0x0083 => Self::StatusHeartbeat,
             0x0084 => Self::McuLog,
@@ -483,6 +487,38 @@ impl Encode for RestoreDriveLimitsResponse {
 }
 
 impl Decode for RestoreDriveLimitsResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeStream;
+
+impl Encode for ResumeStream {
+    fn encode(&self, _out: &mut Vec<u8>) {}
+}
+
+impl Decode for ResumeStream {
+    fn decode_from(_c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeStreamResponse {
+    pub result: i32,
+}
+
+impl Encode for ResumeStreamResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+    }
+}
+
+impl Decode for ResumeStreamResponse {
     fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
         Ok(Self {
             result: get_i32(c)?,

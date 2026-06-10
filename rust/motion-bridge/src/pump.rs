@@ -64,11 +64,17 @@ pub enum Schedule {
 ///
 /// ## Invariants preserved
 ///
-/// 1. **Global gating is intentional.** A stalled MCU (StallFull / StallAhead)
-///    gates issuance to all other MCUs — cross-MCU issue-side coherence requires
-///    that a blocked MCU is never overtaken.
+/// 1. **StallFull gates all MCUs.** When the globally-earliest piece belongs to
+///    a ring-full queue, no other queue may advance — cross-MCU issue-side
+///    coherence requires that a hardware-blocked MCU is never overtaken.
 ///
-/// 2. **Ordering must use host time.** `start_time` values are raw MCU clock
+/// 2. **Cap-gated queues are skipped, not globally-gating.** When the
+///    globally-earliest piece has `releasable_cap_of == 0`, that queue is
+///    excluded from this round and the search continues among remaining
+///    queues in host-time order. A horizon-blocked head, by contrast,
+///    returns `StallAhead` immediately.
+///
+/// 3. **Ordering must use host time.** `start_time` values are raw MCU clock
 ///    ticks in per-MCU clock domains (H7: ~520 MHz / own epoch; F446: ~180 MHz /
 ///    own epoch). Comparing ticks across MCUs is meaningless; F446 values are
 ///    numerically smaller and would always win, starving the H7.  The `f64`
@@ -82,39 +88,51 @@ pub fn schedule(
     releasable_cap_of: impl Fn(&AxisKey) -> usize,
 ) -> Schedule {
     let mut stall_ahead_candidate: Option<AxisKey> = None;
+    let mut cap_skipped: BTreeSet<AxisKey> = BTreeSet::new();
 
-    let head = queues
-        .iter()
-        .filter(|(_, q)| !q.pieces.is_empty())
-        .min_by(|(ka, qa), (kb, qb)| {
-            let ha = qa.pieces.front().unwrap().1;
-            let hb = qb.pieces.front().unwrap().1;
-            ha.total_cmp(&hb).then(ka.cmp(kb))
-        });
-    let (&head_key, head_q) = match head {
-        None => return Schedule::Idle,
-        Some(h) => h,
-    };
-    let (head_entry, _head_host) = head_q.pieces.front().unwrap();
-    let head_start_ticks = head_entry.start_time;
+    let head_key = loop {
+        let candidate = queues
+            .iter()
+            .filter(|(k, q)| !q.pieces.is_empty() && !cap_skipped.contains(*k))
+            .min_by(|(ka, qa), (kb, qb)| {
+                let ha = qa.pieces.front().unwrap().1;
+                let hb = qb.pieces.front().unwrap().1;
+                ha.total_cmp(&hb).then(ka.cmp(kb))
+            });
+        let (&k, q) = match candidate {
+            None => {
+                if let Some(k) = stall_ahead_candidate {
+                    return Schedule::StallAhead(k);
+                }
+                return Schedule::Idle;
+            }
+            Some(c) => c,
+        };
 
-    if head_q.room() == 0 {
-        return Schedule::StallFull(head_key);
-    }
-
-    let head_cap = releasable_cap_of(&head_key);
-    if head_cap == 0 {
-        return Schedule::StallAhead(head_key);
-    }
-
-    if let Some(horizon) = horizon_of(&head_key, head_q) {
-        if head_start_ticks > horizon {
-            return Schedule::StallAhead(head_key);
+        if q.room() == 0 {
+            return Schedule::StallFull(k);
         }
-    }
+
+        if releasable_cap_of(&k) == 0 {
+            if stall_ahead_candidate.is_none() {
+                stall_ahead_candidate = Some(k);
+            }
+            cap_skipped.insert(k);
+            continue;
+        }
+
+        let head_start_ticks = q.pieces.front().unwrap().0.start_time;
+        if let Some(horizon) = horizon_of(&k, q) {
+            if head_start_ticks > horizon {
+                return Schedule::StallAhead(k);
+            }
+        }
+
+        break k;
+    };
 
     let mut taken: BTreeMap<AxisKey, usize> = BTreeMap::new();
-    let mut maxed: BTreeSet<AxisKey> = BTreeSet::new();
+    let mut maxed: BTreeSet<AxisKey> = cap_skipped;
     loop {
         let next = queues
             .iter()
@@ -184,7 +202,7 @@ mod tests;
 #[cfg(test)]
 mod drip_tests;
 
-pub const DRIP_BUDGET: u32 = 4;
+pub const DRIP_WINDOW_SECS: f64 = 0.100;
 
 pub struct DripArm {
     pub cohort: u64,
@@ -200,7 +218,6 @@ pub struct EnqueueMsg {
     pub pieces: Vec<(PieceEntry, f64)>,
     pub fresh_stream: bool,
     pub lead_secs: f64,
-    pub drip_cohort: Option<u64>,
 }
 
 pub struct HeartbeatMsg {
@@ -214,6 +231,7 @@ pub enum PumpMsg {
     Flush(Vec<AxisKey>),
     DripArm(DripArm),
     DripDisarm(u64),
+    Barrier(std::sync::mpsc::SyncSender<()>),
     Shutdown,
 }
 
@@ -289,25 +307,12 @@ impl DripCohort {
         retired.wrapping_sub(baseline)
     }
 
-    fn released(&self, k: &AxisKey, queues: &BTreeMap<AxisKey, AxisQueue>) -> u32 {
-        let pushed = queues.get(k).map_or(0, |q| q.pushed);
-        let baseline = self.baseline.get(k).copied().unwrap_or(0);
-        pushed.wrapping_sub(baseline)
-    }
-
     fn floor(&self, queues: &BTreeMap<AxisKey, AxisQueue>) -> u32 {
         self.participants
             .iter()
             .map(|k| self.executed(k, queues))
             .min()
             .unwrap_or(0)
-    }
-
-    fn drip_cap(&self, k: &AxisKey, queues: &BTreeMap<AxisKey, AxisQueue>) -> usize {
-        let floor = self.floor(queues);
-        let released = self.released(k, queues);
-        let ahead = released.saturating_sub(floor);
-        (DRIP_BUDGET.saturating_sub(ahead)) as usize
     }
 }
 
@@ -364,8 +369,20 @@ pub fn run_pump<S, F, C, A, O, D>(
                 pieces,
                 fresh_stream,
                 lead_secs,
-                drip_cohort: _drip_cohort,
             }) => {
+                if let Some(co) = cohort.as_ref() {
+                    if !co.participants.contains(&key) {
+                        let id = co.id;
+                        on_drip_stall(format!(
+                            "drip cohort {id}: enqueue for non-participant \
+                             mcu{} axis{} during active cohort — homing must \
+                             drip every axis",
+                            key.mcu_id, key.axis
+                        ));
+                        *cohort = None;
+                        return true;
+                    }
+                }
                 if fresh_stream {
                     junction_ends.remove(&key);
                 }
@@ -475,20 +492,28 @@ pub fn run_pump<S, F, C, A, O, D>(
                     *cohort = None;
                 }
             }
+            PumpMsg::Barrier(ack) => {
+                let _ = ack.send(());
+            }
         }
         true
     };
 
     let horizon_of = |k: &AxisKey, q: &AxisQueue, cohort: &Option<DripCohort>| -> Option<u64> {
-        if cohort
-            .as_ref()
-            .map_or(false, |co| co.participants.contains(k))
-        {
-            return None;
+        match mcu_clock_of(k.mcu_id) {
+            Some((ack_now, freq)) =>
+            {
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                Some(ack_now + (q.lead_secs * freq) as u64)
+            }
+            None if cohort
+                .as_ref()
+                .map_or(false, |co| co.participants.contains(k)) =>
+            {
+                Some(0)
+            }
+            None => None,
         }
-        let (ack_now, freq) = mcu_clock_of(k.mcu_id)?;
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        Some(ack_now + (q.lead_secs * freq) as u64)
     };
 
     let mut holding_ahead = false;
@@ -537,23 +562,20 @@ pub fn run_pump<S, F, C, A, O, D>(
                 let lagging: Vec<String> = co
                     .participants
                     .iter()
-                    .filter(|k| {
-                        let released = co.released(k, &queues);
-                        released.saturating_sub(floor) >= DRIP_BUDGET
-                    })
                     .map(|k| {
                         format!(
-                            "mcu{} axis{}: executed {}",
+                            "mcu{} axis{}: executed {} queued {}",
                             k.mcu_id,
                             k.axis,
-                            co.executed(k, &queues)
+                            co.executed(k, &queues),
+                            queues.get(k).map_or(0, |q| q.pieces.len()),
                         )
                     })
                     .collect();
                 let id = co.id;
                 on_drip_stall(format!(
                     "drip cohort {id}: floor stalled at {floor} for {:?}; \
-                     budget-blocked participants: [{}]",
+                     participants: [{}]",
                     co.timeout,
                     lagging.join(", ")
                 ));
@@ -563,14 +585,8 @@ pub fn run_pump<S, F, C, A, O, D>(
 
         holding_ahead = false;
         'send: loop {
-            let cap_of: &dyn Fn(&AxisKey) -> usize = &|k: &AxisKey| {
-                cohort
-                    .as_ref()
-                    .filter(|co| co.participants.contains(k))
-                    .map_or(usize::MAX, |co| co.drip_cap(k, &queues))
-            };
             let hz_of = |k: &AxisKey, q: &AxisQueue| horizon_of(k, q, &cohort);
-            match schedule(&queues, MAX_PER_FRAME, hz_of, cap_of) {
+            match schedule(&queues, MAX_PER_FRAME, hz_of, |_| usize::MAX) {
                 Schedule::Idle => break 'send,
                 Schedule::StallFull(_stall_key) => {
                     break 'send;

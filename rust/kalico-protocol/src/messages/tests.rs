@@ -290,6 +290,37 @@ fn stop_response_round_trips() {
 }
 
 #[test]
+fn resume_stream_round_trips_empty_body() {
+    let bytes = ResumeStream.encoded_to_vec();
+    assert!(bytes.is_empty(), "ResumeStream body is empty");
+    let back = ResumeStream::decode(&bytes).expect("decode");
+    assert_eq!(back, ResumeStream);
+}
+
+#[test]
+fn resume_stream_response_round_trips() {
+    let msg = ResumeStreamResponse { result: -142 };
+    let bytes = msg.encoded_to_vec();
+    assert_eq!(bytes.len(), 4, "i32 = 4 bytes");
+    assert_eq!(ResumeStreamResponse::decode(&bytes).expect("decode"), msg);
+}
+
+#[test]
+fn resume_stream_kinds_have_stable_tags() {
+    assert_eq!(MessageKind::ResumeStream.as_u16(), 0x0078);
+    assert_eq!(MessageKind::ResumeStreamResponse.as_u16(), 0x0079);
+    assert_eq!(
+        MessageKind::from_u16(0x0078),
+        Some(MessageKind::ResumeStream)
+    );
+    assert_eq!(
+        MessageKind::from_u16(0x0079),
+        Some(MessageKind::ResumeStreamResponse)
+    );
+    assert!(!MessageKind::ResumeStream.is_event());
+}
+
+#[test]
 fn stop_kinds_have_stable_tags() {
     assert_eq!(MessageKind::Stop.as_u16(), 0x0072);
     assert_eq!(MessageKind::StopResponse.as_u16(), 0x0073);

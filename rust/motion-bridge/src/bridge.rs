@@ -29,8 +29,15 @@ struct HomingRun {
     axis: u8,
     axis_key: crate::pump::AxisKey,
     all_axis_keys: Vec<crate::pump::AxisKey>,
-    moving_axis_keys: Vec<crate::pump::AxisKey>,
     notify: crossbeam_channel::Sender<Result<([f64; 3], [f64; 3]), String>>,
+}
+
+fn abort_after_tracing_appender_drains() {
+    let _ = std::io::Write::flush(&mut std::io::stderr());
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
+        std::process::abort();
+    }
 }
 
 fn trip_position_to_motor_frame(
@@ -2461,10 +2468,7 @@ impl PyMotionBridge {
                             "EXIT_ON_FAULT — EtherCAT transport broken-pipe in pump; \
                              aborting klippy so systemd restarts it"
                         );
-                        let _ = std::io::Write::flush(&mut std::io::stderr());
-                        if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
-                            std::process::abort();
-                        }
+                        abort_after_tracing_appender_drains();
                     },
                     move |key: crate::pump::AxisKey, n: u32| {
                         drain_for_pump.unsend(key.mcu_id, key.axis, n);
@@ -2475,10 +2479,7 @@ impl PyMotionBridge {
                             "EXIT_ON_FAULT — drip cohort stalled; \
                              aborting klippy so systemd restarts it"
                         );
-                        let _ = std::io::Write::flush(&mut std::io::stderr());
-                        if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
-                            std::process::abort();
-                        }
+                        abort_after_tracing_appender_drains();
                     },
                 );
             })
@@ -2596,10 +2597,7 @@ impl PyMotionBridge {
                             "EXIT_ON_FAULT — ethercat endpoint died mid-session; \
                              aborting klippy so systemd restarts it"
                         );
-                        let _ = std::io::Write::flush(&mut std::io::stderr());
-                        if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
-                            std::process::abort();
-                        }
+                        abort_after_tracing_appender_drains();
                     });
 
                 let _ = std::thread::Builder::new()
@@ -2737,7 +2735,11 @@ impl PyMotionBridge {
                 } else {
                     None::<f64>
                 };
-                let lead_secs = crate::pump::MAX_LEAD_SECS;
+                let lead_secs = if active_cohort.is_some() {
+                    crate::pump::DRIP_WINDOW_SECS
+                } else {
+                    crate::pump::MAX_LEAD_SECS
+                };
 
                 let msgs = crate::enqueue::enqueue_segment(
                     seg,
@@ -2750,9 +2752,8 @@ impl PyMotionBridge {
                     max_piece_secs,
                 );
 
-                for mut m in msgs {
-                    if let Some(cohort) = active_cohort {
-                        m.drip_cohort = Some(cohort);
+                for m in msgs {
+                    if active_cohort.is_some() {
                         let mut traj = homing_traj_for_cb.lock().unwrap_or_else(|p| p.into_inner());
                         let entry = traj.entry(m.key).or_default();
                         for (piece, _host_t) in &m.pieces {
@@ -3017,7 +3018,7 @@ impl PyMotionBridge {
             .as_ref()
             .ok_or_else(|| PyRuntimeError::new_err("home_axis: planner not initialized"))?;
 
-        let (all_axis_keys, moving_axis_keys, _axis_mcu, axis_key) = {
+        let (all_axis_keys, _axis_mcu, axis_key) = {
             let configs = self
                 .mcu_axis_configs
                 .lock()
@@ -3046,8 +3047,7 @@ impl PyMotionBridge {
                 ))
             })?;
             let key = crate::pump::AxisKey { mcu_id: mcu, axis };
-            let moving_keys = vec![key];
-            (all_keys, moving_keys, mcu, key)
+            (all_keys, mcu, key)
         };
 
         let cohort: u64 = {
@@ -3098,7 +3098,7 @@ impl PyMotionBridge {
         pump_tx
             .send(crate::pump::PumpMsg::DripArm(crate::pump::DripArm {
                 cohort,
-                participants: moving_axis_keys.clone(),
+                participants: all_axis_keys.clone(),
                 timeout: Duration::from_secs(5),
             }))
             .map_err(|_| PyRuntimeError::new_err("home_axis: pump channel closed"))?;
@@ -3115,7 +3115,6 @@ impl PyMotionBridge {
                 axis,
                 axis_key,
                 all_axis_keys: all_axis_keys.clone(),
-                moving_axis_keys: moving_axis_keys.clone(),
                 notify: result_tx,
             });
         }
@@ -3133,7 +3132,7 @@ impl PyMotionBridge {
                 speed_mm_s,
                 max_travel_mm,
                 cohort,
-                participants: moving_axis_keys,
+                participants: all_axis_keys.clone(),
                 notify: planner_done_tx,
             })
             .map_err(|e| {
@@ -3185,23 +3184,110 @@ impl PyMotionBridge {
         }
     }
 
-    fn home_abort(&self) {
-        let info = {
+    fn home_abort(&self, py: Python<'_>) {
+        struct AbortContext {
+            all_axis_keys: Vec<crate::pump::AxisKey>,
+            cohort: u64,
+            axis_key: crate::pump::AxisKey,
+            axis: u8,
+        }
+
+        let ctx = {
             let guard = self.homing_run.lock().unwrap_or_else(|p| p.into_inner());
-            guard.as_ref().map(|r| (r.all_axis_keys.clone(), r.cohort))
+            guard.as_ref().map(|r| AbortContext {
+                all_axis_keys: r.all_axis_keys.clone(),
+                cohort: r.cohort,
+                axis_key: r.axis_key,
+                axis: r.axis,
+            })
         };
-        if let Some((all_keys, cohort)) = info {
-            if let Some(tx) = self
-                .pump_tx
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone()
-            {
-                let _ = tx.send(crate::pump::PumpMsg::Flush(all_keys));
-                let _ = tx.send(crate::pump::PumpMsg::DripDisarm(cohort));
+
+        let Some(ctx) = ctx else {
+            self.finish_homing();
+            return;
+        };
+
+        if let Some(tx) = self
+            .pump_tx
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
+            let _ = tx.send(crate::pump::PumpMsg::Flush(ctx.all_axis_keys));
+            let _ = tx.send(crate::pump::PumpMsg::DripDisarm(ctx.cohort));
+            let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+            let _ = tx.send(crate::pump::PumpMsg::Barrier(ack_tx));
+            let barrier =
+                py.allow_threads(move || ack_rx.recv_timeout(std::time::Duration::from_secs(1)));
+            if barrier.is_err() {
+                tracing::error!(
+                    "home_abort: pump did not acknowledge the flush barrier — \
+                     commanded_pos is STALE; a firmware restart is required"
+                );
+                self.finish_homing();
+                return;
             }
         }
+
         self.finish_homing();
+
+        let final_motor_pos =
+            crate::homing::trajectory_final_position(ctx.axis_key, &self.homing_trajectory);
+
+        let final_motor_pos = match final_motor_pos {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(
+                    "home_abort: cannot reconcile position after aborted homing move \
+                     (trajectory store empty or missing for axis {:?}): {e} — \
+                     commanded_pos is STALE; a firmware restart is required to \
+                     recover a consistent position",
+                    ctx.axis_key
+                );
+                return;
+            }
+        };
+
+        let drain = self.drain.clone();
+        let drain_result = py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT));
+        if let Err(e) = drain_result {
+            tracing::error!(
+                "home_abort: drain timed out after aborted homing move — \
+                 commanded_pos is STALE; a firmware restart is required: {e}"
+            );
+            return;
+        }
+
+        let configs = self
+            .mcu_axis_configs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let kinematics = configs
+            .iter()
+            .find(|c| c.mcu_id == ctx.axis_key.mcu_id)
+            .map_or(1u8, |c| c.kinematics);
+        drop(configs);
+
+        let motor_frame =
+            trip_position_to_motor_frame(ctx.axis, final_motor_pos, &[], ctx.axis_key.mcu_id);
+        let cartesian = crate::kinematics::inverse(kinematics, motor_frame);
+
+        let planner_guard = self.planner.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(planner) = planner_guard.as_ref() {
+            let open_result =
+                planner.kalico_stream_open([cartesian[0], cartesian[1], cartesian[2], 0.0]);
+            if let Err(e) = open_result {
+                tracing::error!(
+                    "home_abort: kalico_stream_open failed after drain — \
+                     commanded_pos is STALE; a firmware restart is required: {e:?}"
+                );
+                return;
+            }
+            self.drain.reset();
+        }
+        drop(planner_guard);
+
+        *self.commanded_pos.lock().unwrap_or_else(|p| p.into_inner()) = cartesian;
     }
 }
 
@@ -3317,7 +3403,7 @@ impl PyMotionBridge {
                 let stepper_mcu_ids: std::collections::HashSet<u32> =
                     run.all_axis_keys.iter().map(|k| k.mcu_id).collect();
 
-                if let Some(tx) = pump_tx_opt {
+                if let Some(tx) = pump_tx_opt.as_ref() {
                     let _ = tx.send(crate::pump::PumpMsg::Flush(run.all_axis_keys.clone()));
                     let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
                 }
@@ -3377,6 +3463,43 @@ impl PyMotionBridge {
                 let outcome = reconstruct_cartesian(run.endstop_mcu, trip_clock).and_then(|trip| {
                     reconstruct_cartesian(axis_key.mcu_id, discard_clock)
                         .map(|final_pos| (trip, final_pos))
+                });
+
+                let outcome = outcome.and_then(|positions| {
+                    if let Some(tx) = pump_tx_opt.as_ref() {
+                        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+                        let _ = tx.send(crate::pump::PumpMsg::Barrier(ack_tx));
+                        if ack_rx.recv_timeout(Duration::from_secs(1)).is_err() {
+                            return Err("EndstopTrip: pump did not acknowledge the flush barrier \
+                                 before stream resume"
+                                .into());
+                        }
+                    }
+                    for &mcu_id in &stepper_mcu_ids {
+                        let transport = transports.get(&mcu_id).ok_or_else(|| {
+                            format!("ResumeStream: no transport for mcu {mcu_id}")
+                        })?;
+                        let (_kind, body) = transport
+                            .kalico_call(
+                                kalico_protocol::MessageKind::ResumeStream,
+                                Vec::new(),
+                                stop_timeout,
+                            )
+                            .map_err(|e| {
+                                format!("ResumeStream call failed for mcu {mcu_id}: {e:?}")
+                            })?;
+                        let resp = kalico_protocol::messages::ResumeStreamResponse::decode(&body)
+                            .map_err(|e| {
+                            format!("ResumeStream decode failed for mcu {mcu_id}: {e:?}")
+                        })?;
+                        if resp.result != 0 {
+                            return Err(format!(
+                                "ResumeStream rejected by mcu {mcu_id}: result={}",
+                                resp.result
+                            ));
+                        }
+                    }
+                    Ok(positions)
                 });
                 let _ = run.notify.send(outcome);
             })

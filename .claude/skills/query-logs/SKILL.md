@@ -27,7 +27,12 @@ curl -s "$VL/select/logsql/query" \
   Absolute range (rarely needed): `_time:[2026-06-01T00:00:00Z, 2026-06-02T00:00:00Z]`.
 - VL renders all field values as **strings** in the output (it's a logs store), but
   numeric range filters still work at query time (see the numeric recipe below).
-- Health check: `curl -s "$VL/health"` → `OK`.
+- **Check VL is up BEFORE interpreting any result** (hard rule): `curl -s "$VL/health"`
+  must print `OK`. With `curl -s`, a dead VL produces **empty output that is
+  indistinguishable from "no matching records"** — on 2026-06-10 this made an
+  uninstalled VL read as "clean boot" for weeks. An empty query result is only
+  meaningful after a passing health check; a non-zero curl exit or empty `/health`
+  means *pipeline down*, and the answer lives in the raw JSONL instead.
 
 ## The schema (fields you filter on)
 
@@ -92,6 +97,22 @@ q 'subsystem:=observability event:=heartbeat _time:10m | sort by (_time) desc' 1
 # a logged shipper-lag warning, if any:
 q 'subsystem:=observability event:=shipper_lag _time:6h | sort by (_time) desc' 5
 ```
+
+Service-level check (run on the printer; both must be `active`):
+
+```bash
+systemctl is-active victorialogs vector
+journalctl -u victorialogs -u vector --no-pager | tail -20   # why, if not
+```
+
+On the printers the stack lives in `~/observability/` (binaries
+`victoria-logs-prod` v1.50.0 + `vector` 0.55.0, unit files, `vector.toml`,
+data dirs) with the units symlinked into systemd via
+`sudo systemctl enable --now /home/<user>/observability/*.service` —
+chosen because the printer sudoers only passwordless-allows `systemctl`.
+If the units don't exist at all, the stack was never installed on that
+host: deploy per `config/observability/*.service` headers (adapt `User=`
+and the `/home/pi/printer_data` path in `vector.toml`).
 
 The on-disk JSONL is the source of truth regardless — if VL is empty but a print
 just failed, the records are still in `~/printer_data/logs/events/*.jsonl` and VL
