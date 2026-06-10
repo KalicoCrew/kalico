@@ -12,7 +12,6 @@ use crate::fit::FittedSegment;
 use crate::plan_velocity::{plan_velocity, PlanInput, PlanOutput, PlanSegment, PlanStats};
 use crate::AxisShaper;
 use crate::ShapeError;
-use crate::ShapedSegment;
 
 const TIME_LOOKUP_TOLERANCE: f64 = 1e-12;
 
@@ -45,7 +44,6 @@ impl ShaperState {
             t_decel_start: 0.0,
             t_shaped: 0.0,
             t_dispatched: 0.0,
-            pending_dispatch: Vec::new(),
             planned_fitted: Vec::new(),
             planned_meta: Vec::new(),
         }
@@ -56,23 +54,12 @@ impl ShaperState {
             reseed_axis_queue(axis, home_pos[i]);
         }
         self.uncommitted_moves.clear();
-        self.pending_dispatch.clear();
         self.planned_fitted.clear();
         self.planned_meta.clear();
         self.t_appended = 0.0;
         self.t_decel_start = 0.0;
         self.t_shaped = 0.0;
         self.t_dispatched = 0.0;
-    }
-
-    pub fn append_batch(&mut self, fitted: &FittedSegment) -> Result<(), nurbs::AlgebraError> {
-        let shaped = shape_single_segment(fitted, &self.axes)?;
-        self.pending_dispatch.push(shaped);
-        Ok(())
-    }
-
-    pub fn drain_committed(&mut self) -> Vec<ShapedSegment> {
-        std::mem::take(&mut self.pending_dispatch)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -374,10 +361,6 @@ impl ShaperState {
             "advance_idle requires fully-committed state: t_dispatched {} != t_appended {}",
             self.t_dispatched,
             self.t_appended,
-        );
-        debug_assert!(
-            self.pending_dispatch.is_empty(),
-            "advance_idle requires pending_dispatch drained before advancing",
         );
         let hold_start = self.t_appended;
         let hold_end = target_t;
@@ -911,50 +894,4 @@ fn reseed_axis_queue(axis: &mut AxisShaperQueue, home_pos: f64) {
             coeffs: vec![home_pos],
         });
     }
-}
-
-fn shape_single_segment(
-    fitted: &FittedSegment,
-    axes: &[AxisShaperQueue; 4],
-) -> Result<ShapedSegment, nurbs::AlgebraError> {
-    use crate::pad::pad_segment_axis;
-    use crate::refit::{refit_to_cubic, REFIT_TOLERANCE_MM};
-    use crate::shaper::shape_axis;
-
-    let t_start = fitted.t_start;
-    let t_end = fitted.t_end;
-
-    let fitted_slice = std::slice::from_ref(fitted);
-
-    let mut shaped_axes: [Option<nurbs::ScalarNurbs<f64>>; 3] = [None, None, None];
-
-    for axis in 0..3 {
-        let q = &axes[axis];
-        let axis_shaped = if let Some(kernel) = q.kernel.as_ref() {
-            let padded = pad_segment_axis(0, axis, fitted_slice, &[], q.h, t_start, t_end);
-            shape_axis(&padded, kernel, t_start, t_end)
-        } else {
-            fitted.axes[axis].clone()
-        };
-
-        let refit = refit_to_cubic(&axis_shaped, REFIT_TOLERANCE_MM).map_err(|_| {
-            nurbs::AlgebraError::NotImplemented(
-                "streaming::append_batch: refit_to_cubic failed (Phase 1 shim)",
-            )
-        })?;
-        shaped_axes[axis] = Some(refit);
-    }
-
-    Ok(ShapedSegment {
-        axes: [
-            shaped_axes[0].take().unwrap(),
-            shaped_axes[1].take().unwrap(),
-            shaped_axes[2].take().unwrap(),
-        ],
-        e_mode: geometry::segment::EMode::CoupledToXy,
-        extrusion_per_xy_mm: 0.0,
-        e_independent: None,
-        t_start,
-        t_end,
-    })
 }

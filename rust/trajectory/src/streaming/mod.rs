@@ -9,7 +9,6 @@ use crate::fit::FittedSegment;
 use crate::pad::EHalo;
 use crate::plan_velocity::{PlanShaper, PlanStats, SafetyMode};
 use crate::ELimits;
-use crate::ShapedSegment;
 
 #[derive(Debug, Clone, Copy)]
 pub struct ReplanReport {
@@ -88,8 +87,6 @@ pub struct ShaperState {
     pub t_shaped: f64,
     /// Latest absolute time for which a shaped sample has been dispatched to the wire.
     pub t_dispatched: f64,
-
-    pub pending_dispatch: Vec<ShapedSegment>,
 
     pub(crate) planned_fitted: Vec<FittedSegment>,
     /// Per-segment metadata parallel to `planned_fitted`.

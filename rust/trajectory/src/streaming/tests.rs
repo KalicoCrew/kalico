@@ -10,117 +10,12 @@
 use geometry::segment::CubicSegment;
 use nurbs::algebra::PiecewisePolynomialKernel;
 use nurbs::bezier::{bezier_pieces_to_nurbs, BezierPiece};
-use nurbs::ScalarNurbs;
 
 use super::{EmitContext, ReplanContext, ShaperState};
 use crate::fit::FittedSegment;
-use crate::kernel::build_smooth_zv_kernel;
-use crate::pad::{pad_segment_axis, EHalo};
+use crate::pad::EHalo;
 use crate::plan_velocity::{PlanShaper, SafetyMode};
-use crate::refit::{refit_to_cubic, REFIT_TOLERANCE_MM};
-use crate::shaper::shape_axis;
 use crate::{AxisShaper, ELimits};
-
-fn linear_segment() -> FittedSegment {
-    let x_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
-        u_start: 0.0,
-        u_end: 1.0,
-        coeffs: vec![0.0, 10.0],
-    }]);
-    let y_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
-        u_start: 0.0,
-        u_end: 1.0,
-        coeffs: vec![0.0],
-    }]);
-    let z_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
-        u_start: 0.0,
-        u_end: 1.0,
-        coeffs: vec![0.0],
-    }]);
-    FittedSegment {
-        axes: [x_nurbs, y_nurbs, z_nurbs],
-        t_start: 0.0,
-        t_end: 1.0,
-    }
-}
-
-fn assert_nurbs_near_equal(a: &ScalarNurbs<f64>, b: &ScalarNurbs<f64>, label: &str) {
-    assert_eq!(a.degree(), b.degree(), "{label}: degree differs");
-    assert_eq!(
-        a.knots().len(),
-        b.knots().len(),
-        "{label}: knot count differs"
-    );
-    let max_knot_diff = a
-        .knots()
-        .iter()
-        .zip(b.knots().iter())
-        .map(|(ka, kb)| (ka - kb).abs())
-        .fold(0.0_f64, f64::max);
-    assert!(
-        max_knot_diff < 1e-12,
-        "{label}: knots differ by {max_knot_diff:.2e}",
-    );
-    assert_eq!(
-        a.control_points().len(),
-        b.control_points().len(),
-        "{label}: control point count differs",
-    );
-    let max_cp_diff = a
-        .control_points()
-        .iter()
-        .zip(b.control_points().iter())
-        .map(|(ca, cb)| (ca - cb).abs())
-        .fold(0.0_f64, f64::max);
-    assert!(
-        max_cp_diff < 1e-12,
-        "{label}: control points differ by {max_cp_diff:.2e} mm",
-    );
-}
-
-#[test]
-#[allow(clippy::float_cmp)]
-fn shim_matches_direct_pipeline_for_single_linear_move() {
-    let fitted = linear_segment();
-    let freq = 60.0;
-    let h = 0.8025 / freq / 2.0;
-    let kernel = build_smooth_zv_kernel(0.8025 / freq);
-
-    let shapers: [Option<AxisShaper>; 4] = [
-        Some(AxisShaper::SmoothZv { frequency_hz: freq }),
-        Some(AxisShaper::SmoothZv { frequency_hz: freq }),
-        Some(AxisShaper::Passthrough),
-        Some(AxisShaper::Passthrough),
-    ];
-    let mut state = ShaperState::new([0.0, 0.0, 0.0, 0.0], &shapers);
-    state.append_batch(&fitted).expect("shim should succeed");
-    let shim_out = state.drain_committed();
-    assert_eq!(shim_out.len(), 1, "shim should emit exactly one segment");
-    let shim_seg = &shim_out[0];
-
-    assert!(state.pending_dispatch.is_empty());
-    assert!(state.drain_committed().is_empty());
-
-    let fitted_slice = std::slice::from_ref(&fitted);
-
-    let x_padded = pad_segment_axis(0, 0, fitted_slice, &[], h, 0.0, 1.0);
-    let x_shaped = shape_axis(&x_padded, &kernel, 0.0, 1.0);
-    let x_refit = refit_to_cubic(&x_shaped, REFIT_TOLERANCE_MM).unwrap();
-
-    let y_padded = pad_segment_axis(0, 1, fitted_slice, &[], h, 0.0, 1.0);
-    let y_shaped = shape_axis(&y_padded, &kernel, 0.0, 1.0);
-    let y_refit = refit_to_cubic(&y_shaped, REFIT_TOLERANCE_MM).unwrap();
-
-    let z_passthrough = fitted.axes[2].clone();
-    let z_refit = refit_to_cubic(&z_passthrough, REFIT_TOLERANCE_MM).unwrap();
-
-    assert_nurbs_near_equal(&shim_seg.axes[0], &x_refit, "X");
-    assert_nurbs_near_equal(&shim_seg.axes[1], &y_refit, "Y");
-    assert_nurbs_near_equal(&shim_seg.axes[2], &z_refit, "Z");
-
-    assert_eq!(shim_seg.t_start, 0.0);
-    assert_eq!(shim_seg.t_end, 1.0);
-}
 
 #[test]
 #[allow(clippy::float_cmp)]
@@ -162,7 +57,6 @@ fn new_seeds_axis_queues_with_rest_extension() {
     assert_eq!(state.t_decel_start, 0.0);
     assert_eq!(state.t_shaped, 0.0);
     assert_eq!(state.t_dispatched, 0.0);
-    assert!(state.pending_dispatch.is_empty());
 }
 
 #[test]
@@ -972,7 +866,6 @@ fn reset_after_motion_clears_state_and_reseeds_at_home() {
     assert_eq!(state.t_shaped, fresh.t_shaped);
     assert_eq!(state.t_dispatched, fresh.t_dispatched);
     assert!(state.uncommitted_moves.is_empty());
-    assert!(state.pending_dispatch.is_empty());
     assert!(state.planned_fitted.is_empty());
     assert!(state.planned_meta.is_empty());
 
