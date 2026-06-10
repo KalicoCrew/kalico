@@ -642,7 +642,9 @@ def run_simulation(
 
                 ms_error = None
                 if isinstance(resp, dict) and resp.get("error"):
-                    ms_error = f"KALICO_SIM_MOTION_STATE failed: {resp['error']}"
+                    ms_error = (
+                        f"KALICO_SIM_MOTION_STATE failed: {resp['error']}"
+                    )
                 elif "shutdown:" in klippy_content.lower():
                     for line in klippy_content.split("\n"):
                         if "shutdown:" in line.lower():
