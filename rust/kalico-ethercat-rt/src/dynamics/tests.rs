@@ -77,7 +77,10 @@ fn rejects_each_invariant_violation() {
         Err(ProfileError::NotPositiveDefinite)
     ));
     let nan = SCALAR.replace("viscous = [0.0045]", "viscous = [nan]");
-    assert!(DynamicsModel::from_toml_str(&nan).is_err());
+    assert!(matches!(
+        DynamicsModel::from_toml_str(&nan),
+        Err(ProfileError::NotFinite(_))
+    ));
     assert!(matches!(
         DynamicsModel::from_toml_str("not toml ["),
         Err(ProfileError::Parse(_))
