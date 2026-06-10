@@ -45,6 +45,7 @@ toml = "0.8"
 
 [dev-dependencies]
 kalico-host-rt = { path = "../kalico-host-rt" }
+servo-ident = { path = "../servo-ident" }
 
 [lints]
 workspace = true

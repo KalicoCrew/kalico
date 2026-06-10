@@ -675,6 +675,7 @@ dependencies = [
  "log",
  "runtime",
  "serde",
+ "servo-ident",
  "toml 0.8.23",
 ]
 
