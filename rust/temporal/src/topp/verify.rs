@@ -21,6 +21,8 @@ pub(crate) struct VerifyReport {
     pub worst_violation: f64,
     pub worst_violation_grid: usize,
     pub feasible: bool,
+    pub worst_jerk_ratio: f64,
+    pub worst_non_jerk_ratio: f64,
 }
 
 struct PointInputs<'a> {
@@ -152,6 +154,8 @@ pub(crate) fn check_chain(chain: &ChainGrid, result: &SolverResult) -> VerifyRep
             worst_violation: f64::NEG_INFINITY,
             worst_violation_grid: 0,
             feasible: true,
+            worst_jerk_ratio: 0.0,
+            worst_non_jerk_ratio: 0.0,
         };
     }
 
@@ -248,6 +252,8 @@ pub(crate) fn check_chain(chain: &ChainGrid, result: &SolverResult) -> VerifyRep
         worst_violation,
         worst_violation_grid: global_worst_idx,
         feasible,
+        worst_jerk_ratio,
+        worst_non_jerk_ratio,
     }
 }
 

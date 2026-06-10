@@ -41,6 +41,8 @@ fn assembles_samples_and_total_time() {
         worst_violation: 0.0,
         worst_violation_grid: 0,
         feasible: true,
+        worst_jerk_ratio: 0.0,
+        worst_non_jerk_ratio: 0.0,
     };
     let cfg = GridConfig {
         scheme: GridScheme::UniformArclength,
@@ -76,6 +78,8 @@ fn infeasible_solve_reports_infinite_time() {
         worst_violation: 1.0,
         worst_violation_grid: 0,
         feasible: false,
+        worst_jerk_ratio: 1.0,
+        worst_non_jerk_ratio: 2.0,
     };
     let cfg = GridConfig {
         scheme: GridScheme::UniformArclength,

@@ -2,6 +2,8 @@ use crate::topp::solver::{SlpOutcome, SolverResult, SolverStatus};
 use crate::topp::verify::{self, VerifyReport};
 use crate::{GridConfig, GridSample, InfeasibleReason, SolveStatus, TopProfile};
 
+const SLP_STALL_JERK_ACCEPT: f64 = 1.15;
+
 pub(crate) fn assemble(
     s: &[f64],
     result: &SolverResult,
@@ -80,6 +82,11 @@ pub(crate) fn map_status(
         }
     };
 
+    let slp_stall_accepted = |last_max_ratio: f64| -> bool {
+        last_max_ratio <= SLP_STALL_JERK_ACCEPT
+            && verify.worst_non_jerk_ratio <= 1.0 + verify::EPS_FEAS
+    };
+
     match (slp_outcome, &base) {
         (
             SlpOutcome::Converged { outer_iters },
@@ -103,14 +110,26 @@ pub(crate) fn map_status(
                 outer_iters,
             },
             _,
+        ) if slp_stall_accepted(last_max_ratio) => {
+            let _ = outer_iters;
+            SolveStatus::SolvedInexact {
+                residual: last_max_ratio - 1.0,
+            }
+        }
+        (
+            SlpOutcome::Diverged {
+                last_max_ratio,
+                outer_iters,
+            },
+            _,
         ) => SolveStatus::DivergedSlp {
             last_max_ratio,
             outer_iters,
         },
         (SlpOutcome::MaxIters { last_max_ratio }, _) => {
-            if verify.feasible {
+            if verify.feasible || slp_stall_accepted(last_max_ratio) {
                 SolveStatus::SolvedInexact {
-                    residual: verify.worst_violation,
+                    residual: verify.worst_violation.max(last_max_ratio - 1.0),
                 }
             } else {
                 SolveStatus::MaxIterSlp { last_max_ratio }
