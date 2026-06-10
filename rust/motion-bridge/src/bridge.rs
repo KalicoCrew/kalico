@@ -30,6 +30,7 @@ struct HomingRun {
     axis_key: crate::pump::AxisKey,
     all_axis_keys: Vec<crate::pump::AxisKey>,
     moving_axis_keys: Vec<crate::pump::AxisKey>,
+    window_start_clock: u64,
     notify: crossbeam_channel::Sender<Result<([f64; 3], [f64; 3]), String>>,
 }
 
@@ -469,8 +470,6 @@ pub struct PyMotionBridge {
     pump_thread: Mutex<Option<JoinHandle<()>>>,
     drain: std::sync::Arc<crate::drain::DrainSync>,
     active_drip_cohort: Arc<Mutex<Option<u64>>>,
-    homing_trajectory:
-        Arc<Mutex<HashMap<crate::pump::AxisKey, Vec<runtime::piece_ring::PieceEntry>>>>,
     motion_history: Arc<Mutex<crate::motion_history::HistoryStore>>,
     homing_run: Arc<Mutex<Option<HomingRun>>>,
     homing_result: Mutex<Option<crossbeam_channel::Receiver<Result<([f64; 3], [f64; 3]), String>>>>,
@@ -699,7 +698,6 @@ impl PyMotionBridge {
             pump_thread: Mutex::new(None),
             drain: std::sync::Arc::new(crate::drain::DrainSync::new()),
             active_drip_cohort: Arc::new(Mutex::new(None)),
-            homing_trajectory: Arc::new(Mutex::new(HashMap::new())),
             motion_history: Arc::new(Mutex::new(crate::motion_history::HistoryStore::default())),
             homing_run: Arc::new(Mutex::new(None)),
             homing_result: Mutex::new(None),
@@ -2668,7 +2666,6 @@ impl PyMotionBridge {
         let drain_disp = self.drain.clone();
         let counter_for_cb = Arc::clone(&counter);
         let active_drip_cohort_for_cb = Arc::clone(&self.active_drip_cohort);
-        let homing_traj_for_cb = Arc::clone(&self.homing_trajectory);
         let motion_history_for_cb = Arc::clone(&self.motion_history);
         let nominal_freqs_for_cb = Arc::clone(&self.nominal_clock_freqs);
 
@@ -2750,11 +2747,6 @@ impl PyMotionBridge {
                     }
                     if let Some(cohort) = active_cohort {
                         m.drip_cohort = Some(cohort);
-                        let mut traj = homing_traj_for_cb.lock().unwrap_or_else(|p| p.into_inner());
-                        let entry = traj.entry(m.key).or_default();
-                        for (piece, _host_t) in &m.pieces {
-                            entry.push(*piece);
-                        }
                     }
                     drain_disp.add_sent(m.key.mcu_id, m.key.axis, m.pieces.len() as u32);
                     pump_tx_for_cb
@@ -3105,18 +3097,18 @@ impl PyMotionBridge {
         }
 
         {
-            let mut traj = self
-                .homing_trajectory
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
-            traj.clear();
-        }
-
-        {
             let drain = self.drain.clone();
             py.allow_threads(|| drain.wait_drained(DRAIN_TIMEOUT))
                 .map_err(PyRuntimeError::new_err)?;
         }
+
+        let window_start_clock = {
+            let store = self
+                .motion_history
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            store.last_endpoint_clock(axis_key)
+        };
 
         {
             let mut cohort_guard = self
@@ -3154,6 +3146,7 @@ impl PyMotionBridge {
                 axis_key,
                 all_axis_keys: all_axis_keys.clone(),
                 moving_axis_keys: moving_axis_keys.clone(),
+                window_start_clock,
                 notify: result_tx,
             });
         }
@@ -3399,7 +3392,7 @@ impl PyMotionBridge {
         };
 
         let router_arc = Arc::clone(&self.router);
-        let homing_traj = Arc::clone(&self.homing_trajectory);
+        let history_arc = Arc::clone(&self.motion_history);
         let configs: Vec<McuAxisConfig> = self
             .mcu_axis_configs
             .lock()
@@ -3463,8 +3456,8 @@ impl PyMotionBridge {
                         clock,
                         axis_key,
                         &router_arc,
-                        &homing_traj,
-                        &configs,
+                        &history_arc,
+                        run.window_start_clock,
                     )?;
                     let motor_frame =
                         trip_position_to_motor_frame(axis, motor_pos, &configs, axis_key.mcu_id);
