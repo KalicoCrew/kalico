@@ -74,6 +74,12 @@ where
     out
 }
 
+fn is_constant_piece(coeffs: &[f64; 4]) -> bool {
+    coeffs[0].to_bits() == coeffs[1].to_bits()
+        && coeffs[1].to_bits() == coeffs[2].to_bits()
+        && coeffs[2].to_bits() == coeffs[3].to_bits()
+}
+
 fn flatten_axis<P>(
     curve: &ScalarNurbs<f64>,
     t0: f64,
@@ -87,9 +93,10 @@ where
     P: Fn(u32, f64) -> u64,
 {
     let bps = nurbs::bezier::extract_bezier_pieces(curve);
-    let mut out = Vec::with_capacity(bps.len());
+    let mut merged: Vec<([f64; 4], f64, f64)> = Vec::with_capacity(bps.len());
 
-    for (piece_idx, bp) in bps.iter().enumerate() {
+    let mut piece_offset = 0.0_f64;
+    for bp in bps.iter() {
         let bern = bp.to_bernstein();
 
         debug_assert_eq!(
@@ -107,14 +114,39 @@ where
         }
 
         let duration = bp.u_end - bp.u_start;
-        let subs = match max_piece_secs {
-            Some(m) => subdivide_bernstein(coeffs_f64, duration, m),
-            None => vec![(coeffs_f64, duration)],
+        let u_start_in_curve = piece_offset;
+        piece_offset += duration;
+
+        if is_constant_piece(&coeffs_f64) {
+            if let Some(last) = merged.last_mut() {
+                if is_constant_piece(&last.0) && last.0[0].to_bits() == coeffs_f64[0].to_bits() {
+                    last.1 += duration;
+                    continue;
+                }
+            }
+            merged.push((coeffs_f64, duration, u_start_in_curve));
+        } else {
+            merged.push((coeffs_f64, duration, u_start_in_curve));
+        }
+    }
+
+    let mut out = Vec::with_capacity(merged.len() * 8);
+    let mut curve_offset = 0.0_f64;
+
+    for (piece_idx, (coeffs_f64, duration, _)) in merged.iter().enumerate() {
+        let constant = is_constant_piece(coeffs_f64);
+        let subs: Vec<([f64; 4], f64)> = if constant {
+            vec![(*coeffs_f64, *duration)]
+        } else {
+            match max_piece_secs {
+                Some(m) => subdivide_bernstein(*coeffs_f64, *duration, m),
+                None => vec![(*coeffs_f64, *duration)],
+            }
         };
 
-        let mut offset = 0.0;
+        let mut sub_offset = 0.0_f64;
         for (sub_idx, (sub_coeffs, sub_dur)) in subs.iter().enumerate() {
-            let host_secs = t0 + bp.u_start + offset;
+            let host_secs = t0 + curve_offset + sub_offset;
             let start_time = project(mcu_id, host_secs);
 
             let mut coeffs = [0.0_f32; 4];
@@ -129,7 +161,7 @@ where
                 axis = axis_idx,
                 piece_idx,
                 sub_idx,
-                u_start = bp.u_start,
+                u_start = host_secs - t0,
                 margin_us,
                 start_ns = start_time,
                 "[dispatch-margin]"
@@ -145,8 +177,10 @@ where
                 host_secs,
             ));
 
-            offset += sub_dur;
+            sub_offset += sub_dur;
         }
+
+        curve_offset += duration;
     }
 
     out

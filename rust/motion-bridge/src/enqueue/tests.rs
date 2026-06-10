@@ -2,6 +2,29 @@ use super::*;
 use crate::dispatch::{KINEMATICS_COREXY, McuCaps};
 use geometry::segment::EMode;
 
+fn constant_axis(value: f64, n_pieces: usize, piece_dur: f64) -> ScalarNurbs<f64> {
+    let bern = [value; 4];
+    let mut pieces = Vec::with_capacity(n_pieces);
+    let mut u = 0.0_f64;
+    for _ in 0..n_pieces {
+        let u_end = u + piece_dur;
+        pieces.push(nurbs::bezier::BezierPiece::from_bernstein(&bern, u, u_end));
+        u = u_end;
+    }
+    nurbs::bezier::bezier_pieces_to_nurbs(&pieces)
+}
+
+fn multi_piece_axis(pieces_bern: &[([f64; 4], f64)]) -> ScalarNurbs<f64> {
+    let mut pieces = Vec::with_capacity(pieces_bern.len());
+    let mut u = 0.0_f64;
+    for (bern, dur) in pieces_bern {
+        let u_end = u + dur;
+        pieces.push(nurbs::bezier::BezierPiece::from_bernstein(bern, u, u_end));
+        u = u_end;
+    }
+    nurbs::bezier::bezier_pieces_to_nurbs(&pieces)
+}
+
 fn linear_axis(p0: f64, p1: f64) -> ScalarNurbs<f64> {
     let d = p1 - p0;
     let bern = [p0, p0 + d / 3.0, p0 + 2.0 * d / 3.0, p1];
@@ -235,4 +258,272 @@ fn flatten_axis_max_piece_secs_splits_long_piece() {
             w[1] - w[0]
         );
     }
+}
+
+fn axis_cfg_single(axis: usize) -> Vec<McuAxisConfig> {
+    vec![McuAxisConfig {
+        mcu_id: 1,
+        axes: vec![axis],
+        kinematics: 1,
+        caps: McuCaps {
+            total_piece_memory: 62 * 1024,
+        },
+    }]
+}
+
+#[test]
+fn constant_follower_axis_merges_all_knots_to_one_piece() {
+    let n_knots = 50;
+    let piece_dur = 0.43e-3_f64;
+    let total = n_knots as f64 * piece_dur;
+    let curve = constant_axis(5.0, n_knots, piece_dur);
+
+    let seg = ShapedSegment {
+        axes: [curve, linear_axis(0.0, 0.0), linear_axis(0.0, 0.0)],
+        e_mode: EMode::Travel,
+        extrusion_per_xy_mm: 0.0,
+        e_independent: None,
+        t_start: 0.0,
+        t_end: total,
+    };
+
+    let msgs = enqueue_segment(
+        &seg,
+        &axis_cfg_single(0),
+        0.0,
+        true,
+        0.0,
+        crate::pump::MAX_LEAD_SECS,
+        |_, hs| (hs * 1e9) as u64,
+        Some(0.025),
+    );
+
+    let axis = msgs
+        .iter()
+        .find(|m| m.key == AxisKey { mcu_id: 1, axis: 0 })
+        .expect("axis 0 must be present");
+
+    assert_eq!(
+        axis.pieces.len(),
+        1,
+        "{n_knots} constant knot pieces must merge to exactly 1 piece, got {}",
+        axis.pieces.len()
+    );
+
+    let (piece, host_secs) = &axis.pieces[0];
+    assert_eq!(*host_secs, 0.0, "merged piece host_secs must be t0=0");
+    assert!(
+        (piece.duration as f64 - total).abs() < 1e-9,
+        "merged duration must equal sum of knot durations {total}, got {}",
+        piece.duration
+    );
+    assert!(
+        piece.coeffs.iter().all(|&c| (c - 5.0_f32).abs() < 1e-5),
+        "all coefficients must equal the constant value 5.0"
+    );
+}
+
+#[test]
+fn motion_constant_motion_merges_only_the_constant_run() {
+    // C0-connected: motion rises from 0→3, constant hold at 3, then motion rises from 3→6.
+    let motion_up: [f64; 4] = [0.0, 1.0, 2.0, 3.0];
+    let const_at_3: [f64; 4] = [3.0, 3.0, 3.0, 3.0];
+    let motion_up2: [f64; 4] = [3.0, 4.0, 5.0, 6.0];
+    let dur = 0.01_f64;
+
+    let curve = multi_piece_axis(&[
+        (motion_up, dur),
+        (const_at_3, dur),
+        (const_at_3, dur),
+        (const_at_3, dur),
+        (motion_up2, dur),
+    ]);
+
+    let seg = ShapedSegment {
+        axes: [curve, linear_axis(0.0, 0.0), linear_axis(0.0, 0.0)],
+        e_mode: EMode::Travel,
+        extrusion_per_xy_mm: 0.0,
+        e_independent: None,
+        t_start: 0.0,
+        t_end: 5.0 * dur,
+    };
+
+    let msgs = enqueue_segment(
+        &seg,
+        &axis_cfg_single(0),
+        0.0,
+        true,
+        0.0,
+        crate::pump::MAX_LEAD_SECS,
+        |_, hs| (hs * 1e9) as u64,
+        None,
+    );
+
+    let axis = msgs
+        .iter()
+        .find(|m| m.key == AxisKey { mcu_id: 1, axis: 0 })
+        .expect("axis 0 must be present");
+
+    assert_eq!(
+        axis.pieces.len(),
+        3,
+        "motion + merged-constant + motion = 3 pieces, got {}",
+        axis.pieces.len()
+    );
+
+    let (_, host0) = axis.pieces[0];
+    let (merged, host1) = axis.pieces[1];
+    let (_, host2) = axis.pieces[2];
+
+    assert!(
+        (host0 - 0.0).abs() < 1e-12,
+        "first piece host_secs must be 0.0"
+    );
+    assert!(
+        (host1 - dur).abs() < 1e-12,
+        "constant run starts at t=dur, got {host1}"
+    );
+    assert!(
+        (merged.duration as f64 - 3.0 * dur).abs() < 1e-6,
+        "merged constant run duration must be 3*dur, got {}",
+        merged.duration
+    );
+    assert!(
+        (host2 - 4.0 * dur).abs() < 1e-12,
+        "second motion piece host_secs must be 4*dur, got {host2}"
+    );
+}
+
+#[test]
+fn constant_runs_at_different_values_do_not_merge_across_motion_boundary() {
+    // C0-connected: hold at 2, then hold at 2 (same), then hold at 2 (same), then a jump
+    // is not possible without a motion piece — so: two same-value runs separated by a
+    // single motion transition piece, verifying that the transition is not merged with either.
+    // const@2 + const@2 → merged to one; const@5 + const@5 → merged to one.
+    // We need them truly C0: the motion piece connects them endpoint-to-endpoint.
+    let const_a: [f64; 4] = [2.0, 2.0, 2.0, 2.0];
+    let transition: [f64; 4] = [2.0, 3.0, 4.0, 5.0];
+    let const_b: [f64; 4] = [5.0, 5.0, 5.0, 5.0];
+    let dur = 0.01_f64;
+
+    let curve = multi_piece_axis(&[
+        (const_a, dur),
+        (const_a, dur),
+        (transition, dur),
+        (const_b, dur),
+        (const_b, dur),
+    ]);
+
+    let seg = ShapedSegment {
+        axes: [curve, linear_axis(0.0, 0.0), linear_axis(0.0, 0.0)],
+        e_mode: EMode::Travel,
+        extrusion_per_xy_mm: 0.0,
+        e_independent: None,
+        t_start: 0.0,
+        t_end: 4.0 * dur,
+    };
+
+    let msgs = enqueue_segment(
+        &seg,
+        &axis_cfg_single(0),
+        0.0,
+        true,
+        0.0,
+        crate::pump::MAX_LEAD_SECS,
+        |_, hs| (hs * 1e9) as u64,
+        None,
+    );
+
+    let axis = msgs
+        .iter()
+        .find(|m| m.key == AxisKey { mcu_id: 1, axis: 0 })
+        .expect("axis 0 must be present");
+
+    assert_eq!(
+        axis.pieces.len(),
+        3,
+        "const@2×2 + motion + const@5×2 → 3 pieces (two merged constant runs + one motion), got {}",
+        axis.pieces.len()
+    );
+
+    let (pa, _) = axis.pieces[0];
+    let (pb, _) = axis.pieces[1];
+    let (pc, _) = axis.pieces[2];
+
+    assert!(
+        (pa.coeffs[0] - 2.0_f32).abs() < 1e-5,
+        "first merged run must hold value 2.0, got {}",
+        pa.coeffs[0]
+    );
+    assert!(
+        (pa.duration as f64 - 2.0 * dur).abs() < 1e-9,
+        "first merged duration must be 2*dur, got {}",
+        pa.duration
+    );
+
+    assert!(
+        pb.coeffs.windows(2).all(|w| (w[0] - w[1]).abs() > 1e-5),
+        "middle piece (transition) must not be constant"
+    );
+    assert!(
+        (pb.duration as f64 - dur).abs() < 1e-9,
+        "transition piece duration must be 1*dur, got {}",
+        pb.duration
+    );
+
+    assert!(
+        (pc.coeffs[0] - 5.0_f32).abs() < 1e-5,
+        "second merged run must hold value 5.0, got {}",
+        pc.coeffs[0]
+    );
+    assert!(
+        (pc.duration as f64 - 2.0 * dur).abs() < 1e-9,
+        "second merged duration must be 2*dur, got {}",
+        pc.duration
+    );
+}
+
+#[test]
+fn constant_piece_is_never_subdivided_regardless_of_max_piece_secs() {
+    let n_knots = 20;
+    let piece_dur = 0.005_f64;
+    let total = n_knots as f64 * piece_dur;
+    let curve = constant_axis(3.0, n_knots, piece_dur);
+
+    let seg = ShapedSegment {
+        axes: [curve, linear_axis(0.0, 0.0), linear_axis(0.0, 0.0)],
+        e_mode: EMode::Travel,
+        extrusion_per_xy_mm: 0.0,
+        e_independent: None,
+        t_start: 0.0,
+        t_end: total,
+    };
+
+    let msgs = enqueue_segment(
+        &seg,
+        &axis_cfg_single(0),
+        0.0,
+        true,
+        0.0,
+        crate::pump::MAX_LEAD_SECS,
+        |_, hs| (hs * 1e9) as u64,
+        Some(0.001),
+    );
+
+    let axis = msgs
+        .iter()
+        .find(|m| m.key == AxisKey { mcu_id: 1, axis: 0 })
+        .expect("axis 0 must be present");
+
+    assert_eq!(
+        axis.pieces.len(),
+        1,
+        "merged constant piece must not be subdivided regardless of max_piece_secs, got {}",
+        axis.pieces.len()
+    );
+    assert!(
+        (axis.pieces[0].0.duration as f64 - total).abs() < 1e-6,
+        "duration must equal total {total}, got {}",
+        axis.pieces[0].0.duration
+    );
 }
