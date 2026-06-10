@@ -17,9 +17,9 @@ use kalico_ethercat_rt::torque::{
 };
 use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
-    restore_drive_limits_response_frame, runtime_caps_response_frame, sdo_read_response_frame,
-    sdo_write_response_frame, set_drive_limits_response_frame, set_torque_response_frame,
-    status_heartbeat_frame, stop_response_frame, Command,
+    restore_drive_limits_response_frame, resume_stream_response_frame, runtime_caps_response_frame,
+    sdo_read_response_frame, sdo_write_response_frame, set_drive_limits_response_frame,
+    set_torque_response_frame, status_heartbeat_frame, stop_response_frame, Command,
 };
 use kalico_protocol::messages::{SlaveState, ERR_SDO_TRANSPORT, ERR_SDO_UNSUPPORTED_SIZE};
 
@@ -319,6 +319,9 @@ fn main() {
                     cmap = None;
                     eprintln!("ec-rt: Stop — ring discarded, discard_clock={now_ns}");
                     server.respond(&stop_response_frame(correlation_id, 0, now_ns));
+                }
+                Command::ResumeStream { correlation_id } => {
+                    server.respond(&resume_stream_response_frame(correlation_id, 0));
                 }
                 Command::ClaimHandshake { .. } => {
                     eprintln!(

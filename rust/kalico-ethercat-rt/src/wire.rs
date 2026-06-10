@@ -6,8 +6,9 @@ use kalico_protocol::bootstrap::{IdentifyResponse, IDENTIFY_RESPONSE_BODY_LEN};
 use kalico_protocol::codec::{Decode, Encode};
 use kalico_protocol::messages::{
     ClaimHandshakeReply, MessageKind, PushPieces, PushPiecesResponse, RestoreDriveLimitsResponse,
-    RuntimeCapsResponse, SdoRead, SdoReadResponse, SdoWrite, SdoWriteResponse, SetDriveLimits,
-    SetDriveLimitsResponse, SetTorque, SetTorqueResponse, StatusHeartbeat, StopResponse,
+    ResumeStreamResponse, RuntimeCapsResponse, SdoRead, SdoReadResponse, SdoWrite,
+    SdoWriteResponse, SetDriveLimits, SetDriveLimitsResponse, SetTorque, SetTorqueResponse,
+    StatusHeartbeat, StopResponse,
 };
 use kalico_protocol::KALICO_CHANNEL_PIECES;
 
@@ -32,6 +33,9 @@ pub enum Command {
         msg: SetTorque,
     },
     Stop {
+        correlation_id: u32,
+    },
+    ResumeStream {
         correlation_id: u32,
     },
     SetDriveLimits {
@@ -97,6 +101,9 @@ pub fn decode_command(channel: u8, payload: &[u8]) -> Result<Command, DecodeCmdE
         Some(MessageKind::Stop) => Ok(Command::Stop {
             correlation_id: cid,
         }),
+        Some(MessageKind::ResumeStream) => Ok(Command::ResumeStream {
+            correlation_id: cid,
+        }),
         Some(MessageKind::SetDriveLimits) => {
             let msg = SetDriveLimits::decode(body).map_err(|_| DecodeCmdError::BadBody)?;
             Ok(Command::SetDriveLimits {
@@ -150,6 +157,11 @@ pub fn stop_response_frame(cid: u32, result: i32, discard_clock: u64) -> Vec<u8>
     }
     .encoded_to_vec();
     control_frame(MessageKind::StopResponse, cid, &body)
+}
+
+pub fn resume_stream_response_frame(cid: u32, result: i32) -> Vec<u8> {
+    let body = ResumeStreamResponse { result }.encoded_to_vec();
+    control_frame(MessageKind::ResumeStreamResponse, cid, &body)
 }
 
 pub fn set_torque_response_frame(cid: u32, result: i32) -> Vec<u8> {
