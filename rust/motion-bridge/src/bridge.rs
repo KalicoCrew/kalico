@@ -872,17 +872,26 @@ impl PyMotionBridge {
         Ok(())
     }
 
+    /// Returns (result, samples, overflow_cycle or None). result != 0 means
+    /// the capture failed (e.g. -323 ring overflow) and the file was renamed
+    /// to .failed.scap — the caller phrases the user-facing error.
     fn stop_servo_capture(&self, mcu_handle: u32) -> PyResult<(i32, u64, Option<u64>)> {
         let conn = self.ethercat_conn(mcu_handle, "stop_servo_capture")?;
-        let resp = crate::servo_capture::send_stop_capture(&conn)
-            .map_err(PyRuntimeError::new_err)?;
         tracing::info!(
             subsystem = "bridge",
             event = "servo_capture_stop",
             mcu_handle,
+            "servo capture stop"
+        );
+        let resp = crate::servo_capture::send_stop_capture(&conn)
+            .map_err(PyRuntimeError::new_err)?;
+        tracing::info!(
+            subsystem = "bridge",
+            event = "servo_capture_stopped",
+            mcu_handle,
             result = resp.result,
             samples = resp.samples,
-            "servo capture stop"
+            "servo capture stopped"
         );
         let overflow = (resp.overflow_cycle
             != kalico_protocol::messages::StopCaptureResponse::NO_OVERFLOW)

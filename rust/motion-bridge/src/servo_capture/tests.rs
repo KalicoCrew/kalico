@@ -108,12 +108,12 @@ fn start_capture_round_trips_fields_and_result() {
 #[test]
 fn start_capture_surfaces_nonzero_result() {
     let (client, server) = UnixStream::pair().unwrap();
-    let _rx = spawn_start_endpoint(server, -1);
+    let _rx = spawn_start_endpoint(server, -324);
     let conn = UnixNativeConn::from_stream(client).expect("from_stream");
     assert_eq!(
         send_start_capture(&conn, "/tmp/cap.scap", "2026-06-10T00:00:00Z", "axis_x")
             .expect("call"),
-        -1
+        -324
     );
 }
 
