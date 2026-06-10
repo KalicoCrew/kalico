@@ -41,6 +41,9 @@ class BaseRail:
     def get_range(self):
         return self.position_min, self.position_max
 
+    def get_tmc_current_helpers(self):
+        return []
+
     def get_homing_info(self):
         return HomingInfo(
             speed=self.homing_speed,

@@ -18,7 +18,7 @@ use trajectory::{AxisShaper, ShaperConfig};
 
 use crate::classify;
 use crate::config::{self, PlannerConfig, PlannerLimits, parse_axis_shaper};
-use crate::dispatch::{McuAxisConfig, McuCaps, build_mcu_configs};
+use crate::dispatch::{AXIS_E, McuAxisConfig, McuCaps, build_mcu_configs};
 use crate::planner::{DispatchError, PlannerError, PlannerHandle};
 use crate::types::{cq_id_from_raw, mcu_handle_from_raw, stats_to_pydict};
 
@@ -532,6 +532,63 @@ pub(crate) fn build_configure_axes_body(
 
 pub(crate) fn axis_ring_depth(total_pieces: u32, num_axes: u32) -> u32 {
     (total_pieces / num_axes.max(1)).max(1)
+}
+
+pub(crate) fn drip_cohort_participants(configs: &[McuAxisConfig]) -> Vec<crate::pump::AxisKey> {
+    configs
+        .iter()
+        .flat_map(|cfg| {
+            cfg.axes
+                .iter()
+                .filter(|&&a| a < AXIS_E)
+                .map(move |&a| crate::pump::AxisKey {
+                    mcu_id: cfg.mcu_id,
+                    axis: a as u8,
+                })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod drip_cohort_participants_tests {
+    use super::drip_cohort_participants;
+    use crate::dispatch::{AXIS_E, AXIS_X, AXIS_Y, AXIS_Z, McuAxisConfig, McuCaps};
+    use crate::pump::AxisKey;
+
+    fn cfg(mcu_id: u32, axes: Vec<usize>) -> McuAxisConfig {
+        McuAxisConfig {
+            mcu_id,
+            axes,
+            caps: McuCaps {
+                total_piece_memory: 0,
+            },
+            kinematics: 1,
+        }
+    }
+
+    #[test]
+    fn excludes_the_extruder_so_the_homing_floor_can_advance() {
+        let configs = vec![cfg(0, vec![AXIS_Y, AXIS_Z, AXIS_E]), cfg(1, vec![AXIS_X])];
+        let participants = drip_cohort_participants(&configs);
+        assert_eq!(
+            participants,
+            vec![
+                AxisKey {
+                    mcu_id: 0,
+                    axis: AXIS_Y as u8
+                },
+                AxisKey {
+                    mcu_id: 0,
+                    axis: AXIS_Z as u8
+                },
+                AxisKey {
+                    mcu_id: 1,
+                    axis: AXIS_X as u8
+                },
+            ]
+        );
+        assert!(participants.iter().all(|k| k.axis != AXIS_E as u8));
+    }
 }
 
 #[cfg(test)]
@@ -3077,21 +3134,11 @@ impl PyMotionBridge {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
 
-            let mut all_keys: Vec<crate::pump::AxisKey> = Vec::new();
-            let mut found_mcu: Option<u32> = None;
-            for cfg in configs.iter() {
-                for &a in &cfg.axes {
-                    if a <= 3 {
-                        all_keys.push(crate::pump::AxisKey {
-                            mcu_id: cfg.mcu_id,
-                            axis: a as u8,
-                        });
-                    }
-                    if a == axis as usize {
-                        found_mcu = Some(cfg.mcu_id);
-                    }
-                }
-            }
+            let all_keys = drip_cohort_participants(&configs);
+            let found_mcu = configs
+                .iter()
+                .find(|cfg| cfg.axes.iter().any(|&a| a == axis as usize))
+                .map(|cfg| cfg.mcu_id);
 
             let mcu = found_mcu.ok_or_else(|| {
                 PyRuntimeError::new_err(format!(

@@ -2,9 +2,9 @@ use super::*;
 use kalico_native_transport::demux::{Demuxer, Frame};
 use kalico_native_transport::frame::decode_frame;
 use kalico_protocol::messages::{
-    RestoreDriveLimitsResponse, SdoRead, SdoReadResponse, SdoWrite, SdoWriteResponse,
-    SetDriveLimits, SetDriveLimitsResponse, SlaveState, SlaveStatus, StartCapture,
-    StartCaptureResponse, StopCaptureResponse, StopResponse,
+    RestoreDriveLimitsResponse, ResumeStreamResponse, SdoRead, SdoReadResponse, SdoWrite,
+    SdoWriteResponse, SetDriveLimits, SetDriveLimitsResponse, SlaveState, SlaveStatus,
+    StartCapture, StartCaptureResponse, StopCaptureResponse, StopResponse,
 };
 
 #[test]
@@ -224,6 +224,29 @@ fn decodes_stop_command() {
         Command::Stop { correlation_id: 11 } => {}
         other => panic!("expected Stop, got {other:?}"),
     }
+}
+
+#[test]
+fn decodes_resume_stream_command() {
+    let payload = frame_payload(MessageKind::ResumeStream, 12, &[]);
+    match decode_command(0, &payload).unwrap() {
+        Command::ResumeStream { correlation_id: 12 } => {}
+        other => panic!("expected ResumeStream, got {other:?}"),
+    }
+}
+
+#[test]
+fn resume_stream_response_frame_round_trips() {
+    let frame = resume_stream_response_frame(7, 0);
+    let (chan, payload) = decode_frame(&frame).unwrap();
+    assert_eq!(chan, CHANNEL_CONTROL);
+    let (hdr, body) = decode_message_header(payload).unwrap();
+    assert_eq!(hdr.correlation_id, 7);
+    assert_eq!(
+        MessageKind::from_u16(hdr.kind_raw),
+        Some(MessageKind::ResumeStreamResponse)
+    );
+    assert_eq!(ResumeStreamResponse::decode(body).unwrap().result, 0);
 }
 
 #[test]

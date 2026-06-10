@@ -166,6 +166,7 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                     Command::StartCapture { .. } => {}
                     Command::StopCapture { .. } => {}
                     Command::Stop { .. } => {}
+                    Command::ResumeStream { .. } => {}
                     Command::SetDriveLimits { .. } | Command::RestoreDriveLimits { .. } => {}
                     Command::SdoRead { .. } | Command::SdoWrite { .. } => {
                         todo!("wired in the endpoint task")
@@ -191,6 +192,7 @@ fn push_pieces_and_heartbeat_closes_the_loop() {
                     | Command::StartCapture { .. }
                     | Command::StopCapture { .. }
                     | Command::Stop { .. }
+                    | Command::ResumeStream { .. }
                     | Command::SetDriveLimits { .. }
                     | Command::RestoreDriveLimits { .. }
                     | Command::SdoRead { .. }
