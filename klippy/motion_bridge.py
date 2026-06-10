@@ -226,6 +226,9 @@ class MotionBridgeWrapper:
             handle, freq, offset, last_clock, host_now_raw
         )
 
+    def set_nominal_clock_freq(self, mcu_handle, freq_hz):
+        return self._bridge.set_nominal_clock_freq(mcu_handle, int(freq_hz))
+
     def bridge_get_clock_async(self, handle):
         return self._bridge.bridge_get_clock_async(handle)
 

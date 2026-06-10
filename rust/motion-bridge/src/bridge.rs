@@ -463,6 +463,7 @@ pub struct PyMotionBridge {
     dispatched_segments: Arc<AtomicU64>,
     fallback_clock_conversions: Arc<AtomicU64>,
     clock_freqs: Arc<Mutex<HashMap<u32, f64>>>,
+    nominal_clock_freqs: Arc<Mutex<HashMap<u32, u32>>>,
     events_dir: Mutex<Option<std::path::PathBuf>>,
     pump_tx: Mutex<Option<std::sync::mpsc::Sender<crate::pump::PumpMsg>>>,
     pump_thread: Mutex<Option<JoinHandle<()>>>,
@@ -691,6 +692,7 @@ impl PyMotionBridge {
             dispatched_segments: Arc::new(AtomicU64::new(0)),
             fallback_clock_conversions: Arc::new(AtomicU64::new(0)),
             clock_freqs: Arc::new(Mutex::new(HashMap::new())),
+            nominal_clock_freqs: Arc::new(Mutex::new(HashMap::new())),
             events_dir: Mutex::new(None),
             pump_tx: Mutex::new(None),
             pump_thread: Mutex::new(None),
@@ -2106,6 +2108,20 @@ impl PyMotionBridge {
                 host_now_raw,
             )
             .map_err(router_err)?;
+        Ok(())
+    }
+
+    #[pyo3(signature = (mcu, freq_hz))]
+    fn set_nominal_clock_freq(&self, mcu: u32, freq_hz: u32) -> PyResult<()> {
+        if freq_hz == 0 {
+            return Err(PyRuntimeError::new_err(
+                "set_nominal_clock_freq: freq_hz must be nonzero",
+            ));
+        }
+        self.nominal_clock_freqs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(mcu, freq_hz);
         Ok(())
     }
 
