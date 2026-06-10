@@ -1,5 +1,13 @@
 # Bridge-Compatible External Probe Homing
 
+> **SUPERSEDED (2026-06-10)** by
+> [`beacon-fork-survey.md`](beacon-fork-survey.md). Written before the
+> homing rewrite (PR #34); its premises — mainline `drip_move`/`home_wait`
+> flow, unmodified beacon.py, Piece A's `_bridge_drives_steppers` flag —
+> no longer hold (Piece A was implemented and demolished in 45f0fe737).
+> Piece B (credit-window deadman) and Piece C (retained-curve trigger-time
+> evaluation) carry forward into the new sub-project specs.
+
 ## Problem
 
 External probes (Beacon, Cartographer, Eddy) follow mainline Klipper's homing
