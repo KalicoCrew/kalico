@@ -25,8 +25,9 @@ uint16_t ec_rt_get_statusword(void);
 uint16_t ec_rt_get_error_code(void);
 int32_t  ec_rt_get_following_error(void);
 
-/* One-shot snapshot of the full TxPDO feedback plus the staged commanded
- * target (out_t), so a 1 kHz capture costs one FFI hop per cycle. */
+/* One-shot snapshot of the servo-loop TxPDO feedback (omits tp_status,
+ * tp1/tp2_pos, digital_inputs) plus the staged commanded target (out_t),
+ * so a 1 kHz capture costs one FFI hop per cycle. */
 typedef struct {
     uint16_t error_code;
     uint16_t statusword;
