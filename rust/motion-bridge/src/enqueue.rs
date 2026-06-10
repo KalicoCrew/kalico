@@ -93,9 +93,14 @@ where
     P: Fn(u32, f64) -> u64,
 {
     let bps = nurbs::bezier::extract_bezier_pieces(curve);
+    // (coeffs, duration, u_start): u_start is bp.u_start in CURVE time — curves
+    // are not 0-based (a dispatched stream's segments continue in trajectory
+    // time), so emitted host times must be t0 + u_start, never an accumulator
+    // restarted at zero. Getting this wrong shifts every piece of every
+    // non-first segment into the MCU's past (bench: PieceStartInPast,
+    // deficit saturated).
     let mut merged: Vec<([f64; 4], f64, f64)> = Vec::with_capacity(bps.len());
 
-    let mut piece_offset = 0.0_f64;
     for bp in bps.iter() {
         let bern = bp.to_bernstein();
 
@@ -114,8 +119,6 @@ where
         }
 
         let duration = bp.u_end - bp.u_start;
-        let u_start_in_curve = piece_offset;
-        piece_offset += duration;
 
         if is_constant_piece(&coeffs_f64) {
             if let Some(last) = merged.last_mut() {
@@ -124,16 +127,13 @@ where
                     continue;
                 }
             }
-            merged.push((coeffs_f64, duration, u_start_in_curve));
-        } else {
-            merged.push((coeffs_f64, duration, u_start_in_curve));
         }
+        merged.push((coeffs_f64, duration, bp.u_start));
     }
 
     let mut out = Vec::with_capacity(merged.len() * 8);
-    let mut curve_offset = 0.0_f64;
 
-    for (piece_idx, (coeffs_f64, duration, _)) in merged.iter().enumerate() {
+    for (piece_idx, (coeffs_f64, duration, u_start)) in merged.iter().enumerate() {
         let constant = is_constant_piece(coeffs_f64);
         let subs: Vec<([f64; 4], f64)> = if constant {
             vec![(*coeffs_f64, *duration)]
@@ -146,7 +146,7 @@ where
 
         let mut sub_offset = 0.0_f64;
         for (sub_idx, (sub_coeffs, sub_dur)) in subs.iter().enumerate() {
-            let host_secs = t0 + curve_offset + sub_offset;
+            let host_secs = t0 + u_start + sub_offset;
             let start_time = project(mcu_id, host_secs);
 
             let mut coeffs = [0.0_f32; 4];
@@ -179,8 +179,6 @@ where
 
             sub_offset += sub_dur;
         }
-
-        curve_offset += duration;
     }
 
     out

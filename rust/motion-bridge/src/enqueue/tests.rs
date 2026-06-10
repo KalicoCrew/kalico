@@ -527,3 +527,75 @@ fn constant_piece_is_never_subdivided_regardless_of_max_piece_secs() {
         axis.pieces[0].0.duration
     );
 }
+
+fn shifted_axis(pieces_bern: &[([f64; 4], f64)], u_base: f64) -> ScalarNurbs<f64> {
+    let mut pieces = Vec::with_capacity(pieces_bern.len());
+    let mut u = u_base;
+    for (bern, dur) in pieces_bern {
+        let u_end = u + dur;
+        pieces.push(nurbs::bezier::BezierPiece::from_bernstein(bern, u, u_end));
+        u = u_end;
+    }
+    nurbs::bezier::bezier_pieces_to_nurbs(&pieces)
+}
+
+/// Curves are not 0-based: a later segment's Bézier u_start continues the
+/// stream's trajectory time. Emitted host times must be t0 + bp.u_start —
+/// an accumulator restarted at zero shifts every piece into the MCU's past
+/// (bench: PieceStartInPast, deficit saturated).
+#[test]
+fn nonzero_curve_base_preserves_host_times() {
+    const U_BASE: f64 = 10.0;
+    let curve = shifted_axis(
+        &[
+            ([5.0; 4], 0.4),
+            ([5.0; 4], 0.4),
+            ([1.0, 2.0, 3.0, 4.0], 0.2),
+        ],
+        U_BASE,
+    );
+    let total = 1.0;
+
+    let seg = ShapedSegment {
+        axes: [curve, linear_axis(0.0, 0.0), linear_axis(0.0, 0.0)],
+        e_mode: EMode::Travel,
+        extrusion_per_xy_mm: 0.0,
+        e_independent: None,
+        t_start: U_BASE,
+        t_end: U_BASE + total,
+    };
+
+    let t0 = 100.0;
+    let msgs = enqueue_segment(
+        &seg,
+        &axis_cfg_single(0),
+        t0,
+        true,
+        0.0,
+        crate::pump::MAX_LEAD_SECS,
+        |_, hs| (hs * 1e9) as u64,
+        None,
+    );
+    let axis = msgs
+        .iter()
+        .find(|m| m.key == AxisKey { mcu_id: 1, axis: 0 })
+        .expect("axis 0 must be present");
+
+    assert_eq!(
+        axis.pieces.len(),
+        2,
+        "two constant knots merge, motion stays"
+    );
+    let host0 = axis.pieces[0].1;
+    let host1 = axis.pieces[1].1;
+    assert!(
+        (host0 - (t0 + U_BASE)).abs() < 1e-9,
+        "merged constant must start at t0 + u_base = {}, got {host0}",
+        t0 + U_BASE
+    );
+    assert!(
+        (host1 - (t0 + U_BASE + 0.8)).abs() < 1e-9,
+        "motion piece must start at t0 + u_base + 0.8 = {}, got {host1}",
+        t0 + U_BASE + 0.8
+    );
+}
