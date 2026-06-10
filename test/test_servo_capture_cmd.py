@@ -77,7 +77,8 @@ class FakeGcmd:
 def make_capture(nodes=None, bridge=None):
     gcode = FakeGcode()
     objs = {"gcode": gcode, "motion_bridge": bridge or FakeBridge()}
-    for name, handle in (nodes or {"x": 7}).items():
+    resolved_nodes = {"x": 7} if nodes is None else nodes
+    for name, handle in resolved_nodes.items():
         objs["ethercat_node " + name] = FakeNode(handle)
     printer = FakePrinter(objs)
     sc = servo_capture.ServoCapture(FakeConfig(printer))
@@ -158,4 +159,58 @@ def test_start_without_bridge_handle_fails_loudly():
     sc, gcode, bridge = make_capture(nodes={"x": None})
     with pytest.raises(RuntimeError, match="no bridge handle"):
         gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    assert bridge.start_calls == []
+
+
+def test_stop_after_node_vanished_clears_state_and_skips_bridge():
+    sc, gcode, bridge = make_capture()
+    gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    # Simulate node vanishing after start
+    fake_node = sc.printer.lookup_objects("ethercat_node")[0][1]
+    fake_node._h = None
+    with pytest.raises(RuntimeError, match="vanished"):
+        gcode.commands["SERVO_CAPTURE_STOP"](FakeGcmd())
+    assert bridge.stop_calls == []
+    # State must be cleared so a fresh start is possible
+    fake_node._h = 7
+    gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    assert len(bridge.start_calls) == 2
+
+
+def test_multiple_servos_require_servo_param():
+    sc, gcode, bridge = make_capture(nodes={"a": 1, "b": 2})
+    with pytest.raises(RuntimeError, match="SERVO= is required"):
+        gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    assert bridge.start_calls == []
+    gcode.commands["SERVO_CAPTURE_START"](FakeGcmd(SERVO="b"))
+    assert len(bridge.start_calls) == 1
+    assert bridge.start_calls[0][0] == 2
+    assert bridge.start_calls[0][3] == "b"
+
+
+def test_no_nodes_configured_errors():
+    sc, gcode, bridge = make_capture(nodes={})
+    with pytest.raises(RuntimeError, match=r"no \[ethercat_node\]"):
+        gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    assert bridge.start_calls == []
+
+
+def test_stop_failure_message_includes_code_and_cycle():
+    bridge = FakeBridge(stop_result=(-323, 999, 4096))
+    sc, gcode, _ = make_capture(bridge=bridge)
+    gcode.commands["SERVO_CAPTURE_START"](FakeGcmd())
+    expected_path = bridge.start_calls[0][1]
+    failed_path = expected_path[: expected_path.rfind(".scap")] + ".failed.scap"
+    with pytest.raises(RuntimeError) as exc_info:
+        gcode.commands["SERVO_CAPTURE_STOP"](FakeGcmd())
+    msg = str(exc_info.value)
+    assert "-323" in msg
+    assert "4096" in msg
+    assert failed_path in msg
+
+
+def test_start_rejects_name_with_trailing_newline():
+    sc, gcode, bridge = make_capture()
+    with pytest.raises(RuntimeError):
+        gcode.commands["SERVO_CAPTURE_START"](FakeGcmd(NAME="evil\n"))
     assert bridge.start_calls == []

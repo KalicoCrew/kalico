@@ -65,7 +65,7 @@ class ServoCapture:
                 "SERVO_CAPTURE: capture already active (%s)" % (self.active[1],)
             )
         tag = gcmd.get("NAME", "capture")
-        if not NAME_RE.match(tag):
+        if not NAME_RE.fullmatch(tag):
             raise gcmd.error(
                 "SERVO_CAPTURE: NAME must match [A-Za-z0-9_-]+, got %r" % (tag,)
             )
