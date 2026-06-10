@@ -93,9 +93,7 @@ def _boot_through_config_phase(config_text):
                 if proc.poll() is not None:
                     time.sleep(0.5)
                     return (
-                        log.read_text(errors="replace")
-                        if log.exists()
-                        else ""
+                        log.read_text(errors="replace") if log.exists() else ""
                     )
                 time.sleep(0.2)
             raise AssertionError(
