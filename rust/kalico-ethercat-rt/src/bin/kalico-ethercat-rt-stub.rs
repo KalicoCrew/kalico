@@ -23,6 +23,9 @@ use kalico_protocol::messages::{SlaveState, StopCaptureResponse};
 
 static SIGTERM_RECEIVED: AtomicBool = AtomicBool::new(false);
 
+const STUB_CYCLE_NS: i64 = 1_000_000;
+const STUB_COUNTS_PER_MM: f64 = 3_276.8;
+
 extern "C" fn on_sigterm(_: libc::c_int) {
     SIGTERM_RECEIVED.store(true, Ordering::Release);
 }
@@ -198,8 +201,8 @@ fn main() {
                         path: msg.path.clone(),
                         started_utc: msg.started_utc.clone(),
                         drive_name: msg.drive_name.clone(),
-                        cycle_ns: 1_000_000,
-                        counts_per_mm: 3276.8,
+                        cycle_ns: STUB_CYCLE_NS,
+                        counts_per_mm: STUB_COUNTS_PER_MM,
                         started_mono_ns: monotonic_ns(),
                     });
                     eprintln!("ec-rt-stub: StartCapture path={} rc={rc}", msg.path);
@@ -241,14 +244,17 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        let motion_active = gate.state() == TorqueState::Enabled && !ring.is_empty();
-        if gate.state() == TorqueState::Enabled {
-            let _ = ring.sample(now);
-        }
+        let sampled_pos = if gate.state() == TorqueState::Enabled {
+            ring.sample(now)
+        } else {
+            None
+        };
+        let motion_active = gate.state() == TorqueState::Enabled && sampled_pos.is_some();
 
         cycle_index += 1;
         if capture.is_active() {
-            let pos = i32::try_from((cycle_index % 100_000) * 10).unwrap_or(0);
+            #[allow(clippy::cast_possible_truncation)]
+            let pos = ((cycle_index % 100_000) * 10) as i32;
             let mut flags = 0u8;
             if gate.state() == TorqueState::Enabled {
                 flags |= FLAG_TORQUE_ENABLED;
