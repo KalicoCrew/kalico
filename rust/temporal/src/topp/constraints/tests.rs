@@ -79,6 +79,46 @@ fn boundary_above_mvc_returns_boundary_outcome() {
 }
 
 #[test]
+fn start_above_per_axis_velocity_cap_is_boundary_infeasible() {
+    // Straight line (kappa = 0): centripetal MVC is effectively unbounded, so
+    // only the per-axis velocity cap binds. A v_start a hair above v_max (the
+    // streaming-replan ripple that crashed the bridge) must be caught here, not
+    // handed to the SOCP to emit a frozen garbage profile.
+    let grid = dummy_straight_grid(10, 100.0);
+    let mut limits = textbook_limits();
+    limits.v_max = [200.0, 300.0, 15.0];
+    let chain = chain_of_one(grid, limits);
+    match build_chain(
+        &chain,
+        EndpointConditions { v_start: 200.56, v_end: 0.0, a_start: None },
+        &SolverScale::identity(),
+    ) {
+        BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc { mvc_b }) => {
+            assert!((mvc_b - 200.0 * 200.0).abs() < 1e-6, "mvc_b = {mvc_b}");
+        }
+        other => panic!("expected StartAboveMvc, got {other:?}"),
+    }
+}
+
+#[test]
+fn end_above_per_axis_velocity_cap_is_boundary_infeasible() {
+    let grid = dummy_straight_grid(10, 100.0);
+    let mut limits = textbook_limits();
+    limits.v_max = [200.0, 300.0, 15.0];
+    let chain = chain_of_one(grid, limits);
+    match build_chain(
+        &chain,
+        EndpointConditions { v_start: 0.0, v_end: 250.0, a_start: None },
+        &SolverScale::identity(),
+    ) {
+        BuildOutcome::Boundary(BoundaryInfeasibility::EndAboveMvc { mvc_b }) => {
+            assert!((mvc_b - 200.0 * 200.0).abs() < 1e-6, "mvc_b = {mvc_b}");
+        }
+        other => panic!("expected EndAboveMvc, got {other:?}"),
+    }
+}
+
+#[test]
 #[allow(clippy::float_cmp, clippy::manual_range_contains)]
 fn straight_line_n_vars_and_cone_count_match_design() {
     let grid = dummy_straight_grid(5, 100.0);

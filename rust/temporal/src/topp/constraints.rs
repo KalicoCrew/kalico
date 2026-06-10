@@ -193,6 +193,21 @@ pub(crate) fn boundary_reachable_b_lower(s: f64, v0: f64, a0: f64, a_max: f64, j
     }
 }
 
+/// Tightest pure-`b` ceiling from the per-axis velocity caps at one point:
+/// `min_ax (v_max_ax / |c'_ax|)²` over active axes. `c'` is unscaled and
+/// `v_max` is in `scale` units, matching the SOCP's velocity rows and `b`.
+fn velocity_mvc_b(c_prime: &[f64; 3], v_max: &[f64; 3]) -> f64 {
+    let mut bound = f64::INFINITY;
+    for ax in 0..3 {
+        let g = c_prime[ax].abs();
+        if g > COMP_FLOOR {
+            let vb = v_max[ax] / g;
+            bound = bound.min(vb * vb);
+        }
+    }
+    bound
+}
+
 /// `chain` and `endpoints` must share the unit system described by `scale`.
 #[allow(clippy::too_many_lines)]
 pub fn build_chain(
@@ -287,20 +302,30 @@ pub fn build_chain(
     let b_start = endpoints.v_start * endpoints.v_start;
     let b_end = endpoints.v_end * endpoints.v_end;
 
+    // The MVC at an endpoint is the tightest of every pure-`b` ceiling, not just
+    // the centripetal one: a straight move has unbounded centripetal `b` yet the
+    // per-axis velocity cap `|c'_ax|·√b ≤ v_max_ax` still binds. Pinning a
+    // `v_start` above it makes node 0 infeasible, and the SOCP answers with a
+    // frozen garbage profile instead of failing — so reject it here.
+    let mvc_start = b_max_cent[0].min(velocity_mvc_b(
+        &chain.geom[0].c_prime,
+        &chain.limits_at(0).v_max,
+    ));
+    let mvc_end = b_max_cent[n - 1].min(velocity_mvc_b(
+        &chain.geom[n - 1].c_prime,
+        &chain.limits_at(n - 1).v_max,
+    ));
+
     // Tolerance: v_jct set to sqrt(mvc_b_phys) in the joining loop. After
     // dividing v by σ and re-squaring, IEEE 754 may land b_start slightly above
-    // b_max_cent. Allow up to 4 ULP slop so the scaled build doesn't reject a
+    // the MVC. Allow up to 4 ULP slop so the scaled build doesn't reject a
     // physically-feasible starting velocity.
     const B_BOUNDARY_REL_TOL: f64 = f64::EPSILON * 4.0;
-    if b_start > b_max_cent[0] * (1.0 + B_BOUNDARY_REL_TOL) {
-        return BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc {
-            mvc_b: b_max_cent[0],
-        });
+    if b_start > mvc_start * (1.0 + B_BOUNDARY_REL_TOL) {
+        return BuildOutcome::Boundary(BoundaryInfeasibility::StartAboveMvc { mvc_b: mvc_start });
     }
-    if b_end > b_max_cent[n - 1] * (1.0 + B_BOUNDARY_REL_TOL) {
-        return BuildOutcome::Boundary(BoundaryInfeasibility::EndAboveMvc {
-            mvc_b: b_max_cent[n - 1],
-        });
+    if b_end > mvc_end * (1.0 + B_BOUNDARY_REL_TOL) {
+        return BuildOutcome::Boundary(BoundaryInfeasibility::EndAboveMvc { mvc_b: mvc_end });
     }
 
     let n_b = n;
