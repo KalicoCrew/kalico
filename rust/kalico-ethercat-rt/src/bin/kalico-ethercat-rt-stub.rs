@@ -177,8 +177,7 @@ fn main() {
                     correlation_id,
                     msg,
                 } => {
-                    let now_ns = monotonic_ns();
-                    match gate.on_set_torque(msg.value != 0, msg.execute_at_ns, now_ns) {
+                    match gate.on_set_torque(msg.value != 0, msg.execute_at_ns) {
                         CommandAction::Enable => {
                             let ok = !fail_enable;
                             gate.enable_finished(ok);
@@ -196,8 +195,9 @@ fn main() {
                         }
                         CommandAction::ScheduleDisable => {
                             eprintln!(
-                                "ec-rt-stub: torque disable scheduled at {} (now {now_ns})",
-                                msg.execute_at_ns
+                                "ec-rt-stub: torque disable scheduled at {} (now {})",
+                                msg.execute_at_ns,
+                                monotonic_ns()
                             );
                             server.respond(&set_torque_response_frame(correlation_id, 0));
                         }

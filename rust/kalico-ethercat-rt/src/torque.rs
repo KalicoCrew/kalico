@@ -1,5 +1,4 @@
 pub const ERR_ENABLE_FAILED: i32 = -310;
-pub const ERR_DISABLE_IN_PAST: i32 = -311;
 pub const ERR_BAD_TORQUE_STATE: i32 = -312;
 pub const ERR_PIECES_WHILE_PARKED: i32 = -313;
 pub const ERR_PIECES_WHILE_FAULTED: i32 = -314;
@@ -45,7 +44,9 @@ impl TorqueGate {
         self.state
     }
 
-    pub fn on_set_torque(&mut self, value: bool, execute_at_ns: u64, now_ns: u64) -> CommandAction {
+    /// `not_before_ns` is an ordering token, not a deadline: a disable whose
+    /// time has already passed executes on the next tick.
+    pub fn on_set_torque(&mut self, value: bool, not_before_ns: u64) -> CommandAction {
         if value {
             if self.state == TorqueState::Enabled && self.pending_disable_at.is_none() {
                 return CommandAction::Reject {
@@ -63,12 +64,7 @@ impl TorqueGate {
                     code: ERR_BAD_TORQUE_STATE,
                 };
             }
-            if execute_at_ns <= now_ns {
-                return CommandAction::Reject {
-                    code: ERR_DISABLE_IN_PAST,
-                };
-            }
-            self.pending_disable_at = Some(execute_at_ns);
+            self.pending_disable_at = Some(not_before_ns);
             CommandAction::ScheduleDisable
         }
     }

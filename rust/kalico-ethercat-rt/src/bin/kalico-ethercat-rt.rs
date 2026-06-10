@@ -215,8 +215,7 @@ fn main() {
                     correlation_id,
                     msg,
                 } => {
-                    let now_ns = monotonic_ns();
-                    match gate.on_set_torque(msg.value != 0, msg.execute_at_ns, now_ns) {
+                    match gate.on_set_torque(msg.value != 0, msg.execute_at_ns) {
                         CommandAction::Enable => {
                             let rc = unsafe { ffi::ec_rt_enable() };
                             gate.enable_finished(rc == 0);
@@ -240,16 +239,19 @@ fn main() {
                         }
                         CommandAction::ScheduleDisable => {
                             eprintln!(
-                                "ec-rt: torque disable scheduled at {} (now {now_ns})",
-                                msg.execute_at_ns
+                                "ec-rt: torque disable scheduled at {} (now {})",
+                                msg.execute_at_ns,
+                                monotonic_ns()
                             );
                             server.respond(&set_torque_response_frame(correlation_id, 0));
                         }
                         CommandAction::Reject { code } => {
                             eprintln!(
                                 "ec-rt: SetTorque rejected code={code} \
-                                 (value={} execute_at={} now={now_ns}) — exiting",
-                                msg.value, msg.execute_at_ns
+                                 (value={} execute_at={} now={}) — exiting",
+                                msg.value,
+                                msg.execute_at_ns,
+                                monotonic_ns()
                             );
                             server.respond(&set_torque_response_frame(correlation_id, code));
                             unsafe {
