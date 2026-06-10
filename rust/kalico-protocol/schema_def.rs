@@ -128,6 +128,44 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         ],
     },
     SchemaMessage {
+        type_tag: 0x0074,
+        name: "StartCapture",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "path", ty: "string" },
+            SchemaField { name: "started_utc", ty: "string" },
+            SchemaField { name: "drive_name", ty: "string" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0075,
+        name: "StartCaptureResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+        ],
+    },
+    SchemaMessage {
+        type_tag: 0x0076,
+        name: "StopCapture",
+        version: 1,
+        channel: "control",
+        fields: &[],
+    },
+    SchemaMessage {
+        type_tag: 0x0077,
+        name: "StopCaptureResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+            SchemaField { name: "samples", ty: "u64" },
+            SchemaField { name: "overflow_cycle", ty: "u64" },
+        ],
+    },
+    SchemaMessage {
         type_tag: 0x0082,
         name: "FaultEvent",
         version: 1,
