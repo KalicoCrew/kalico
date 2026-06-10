@@ -235,18 +235,22 @@ uint16_t ec_rt_get_statusword(void)             { return g_in->statusword; }
 uint16_t ec_rt_get_error_code(void)             { return g_in->error_code; }
 int32_t  ec_rt_get_following_error(void)        { return g_in->following_error; }
 
+/* Drains the SOEM error list, returning the FIRST SDO abort code found —
+ * the entry pushed by the transaction that just failed; later entries are
+ * retries or unrelated noise. */
 static uint32_t ec_rt_pop_abort_code(void) {
     uint32_t code = 0;
     while (ec_iserror()) {
         ec_errort err;
         if (!ec_poperror(&err)) break;
-        if (err.Etype == EC_ERR_TYPE_SDO_ERROR) code = err.AbortCode;
+        if (err.Etype == EC_ERR_TYPE_SDO_ERROR && code == 0) code = err.AbortCode;
     }
     return code;
 }
 
 int ec_rt_sdo_read(uint16_t index, uint8_t sub, uint8_t *buf, int *size,
                    uint32_t *abort_code) {
+    ec_rt_pop_abort_code(); /* discard stale errors from earlier operations */
     *abort_code = 0;
     int wkc = ec_SDOread(1, index, sub, FALSE, size, buf, EC_TIMEOUTRXM);
     if (wkc <= 0) {
@@ -258,6 +262,7 @@ int ec_rt_sdo_read(uint16_t index, uint8_t sub, uint8_t *buf, int *size,
 
 int ec_rt_sdo_write(uint16_t index, uint8_t sub, const uint8_t *buf, int size,
                     uint32_t *abort_code) {
+    ec_rt_pop_abort_code(); /* discard stale errors from earlier operations */
     *abort_code = 0;
     int wkc = ec_SDOwrite(1, index, sub, FALSE, size, (void *)buf,
                           EC_TIMEOUTRXM);
