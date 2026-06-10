@@ -263,7 +263,11 @@ fn run_reader(shared: Arc<Shared>, mut stream: UnixStream) {
     }
 }
 
-fn route_frame(shared: &Shared, frame: Frame, cb: Option<&(dyn Fn(&StatusHeartbeat) + Send + Sync)>) {
+fn route_frame(
+    shared: &Shared,
+    frame: Frame,
+    cb: Option<&(dyn Fn(&StatusHeartbeat) + Send + Sync)>,
+) {
     let Frame::Kalico { channel, payload } = &frame else {
         return;
     };

@@ -902,9 +902,12 @@ impl PyMotionBridge {
             max_torque_tenth_pct,
             "servo drive limits set"
         );
-        let result =
-            crate::servo_torque::send_drive_limits(&conn, following_error_counts, max_torque_tenth_pct)
-                .map_err(PyRuntimeError::new_err)?;
+        let result = crate::servo_torque::send_drive_limits(
+            &conn,
+            following_error_counts,
+            max_torque_tenth_pct,
+        )
+        .map_err(PyRuntimeError::new_err)?;
         if result != 0 {
             return Err(PyRuntimeError::new_err(format!(
                 "set_drive_limits: SDO write failed: endpoint result {result}"
@@ -2428,91 +2431,92 @@ impl PyMotionBridge {
                 let homing_settled_hb = Arc::clone(&self.homing_settled_at_ns);
                 let latched_fault_hb = Arc::clone(&self.latched_drive_fault);
                 let mcu_label_hb = mcu_label.clone();
-                conn.attach_heartbeat_callback(Arc::new(move |hb: &kalico_protocol::messages::StatusHeartbeat| {
-                    if hb.fault_code != 0 {
-                        let run_opt = {
-                            let mut guard =
-                                homing_run_hb.lock().unwrap_or_else(|p| p.into_inner());
-                            match guard.as_ref().map(|r| r.axis_key.mcu_id) {
-                                Some(axis_mcu)
-                                    if crate::homing::route_drive_fault(
-                                        mcu_id,
-                                        Some(axis_mcu),
-                                    ) == crate::homing::DriveFaultRoute::HomingError =>
-                                {
-                                    guard.take()
+                conn.attach_heartbeat_callback(Arc::new(
+                    move |hb: &kalico_protocol::messages::StatusHeartbeat| {
+                        if hb.fault_code != 0 {
+                            let run_opt = {
+                                let mut guard =
+                                    homing_run_hb.lock().unwrap_or_else(|p| p.into_inner());
+                                match guard.as_ref().map(|r| r.axis_key.mcu_id) {
+                                    Some(axis_mcu)
+                                        if crate::homing::route_drive_fault(
+                                            mcu_id,
+                                            Some(axis_mcu),
+                                        ) == crate::homing::DriveFaultRoute::HomingError =>
+                                    {
+                                        guard.take()
+                                    }
+                                    _ => None,
                                 }
-                                _ => None,
-                            }
-                        };
-                        match run_opt {
-                            Some(run) => {
-                                homing_settled_hb.store(
-                                    crate::motion_node::monotonic_ns(),
-                                    Ordering::Release,
-                                );
-                                latched_fault_hb
-                                    .lock()
-                                    .unwrap_or_else(|p| p.into_inner())
-                                    .insert(mcu_id, hb.fault_code);
-                                *active_cohort_hb
-                                    .lock()
-                                    .unwrap_or_else(|p| p.into_inner()) = None;
-                                let _ = pump_tx_fault
-                                    .send(crate::pump::PumpMsg::Flush(run.all_axis_keys.clone()));
-                                let _ = pump_tx_fault
-                                    .send(crate::pump::PumpMsg::DripDisarm(run.cohort));
-                                let _ = run.notify.send(Err(format!(
-                                    "drive fault 0x{:04x} during homing — \
-                                     following-error/torque limit exceeded (endstop failure?)",
-                                    hb.fault_code
-                                )));
-                            }
-                            None => {
-                                let now_ns = crate::motion_node::monotonic_ns();
-                                let settled_at =
-                                    homing_settled_hb.load(Ordering::Acquire);
-                                if crate::homing::post_homing_fault_is_benign(
-                                    now_ns, settled_at,
-                                ) {
-                                    tracing::error!(
-                                        mcu_id,
-                                        mcu_label = %mcu_label_hb,
-                                        fault_code = hb.fault_code,
-                                        "drive fault right after homing trip — \
-                                         latched for G28 to report"
+                            };
+                            match run_opt {
+                                Some(run) => {
+                                    homing_settled_hb.store(
+                                        crate::motion_node::monotonic_ns(),
+                                        Ordering::Release,
                                     );
                                     latched_fault_hb
                                         .lock()
                                         .unwrap_or_else(|p| p.into_inner())
                                         .insert(mcu_id, hb.fault_code);
-                                    return;
+                                    *active_cohort_hb.lock().unwrap_or_else(|p| p.into_inner()) =
+                                        None;
+                                    let _ = pump_tx_fault.send(crate::pump::PumpMsg::Flush(
+                                        run.all_axis_keys.clone(),
+                                    ));
+                                    let _ = pump_tx_fault
+                                        .send(crate::pump::PumpMsg::DripDisarm(run.cohort));
+                                    let _ = run.notify.send(Err(format!(
+                                        "drive fault 0x{:04x} during homing — \
+                                     following-error/torque limit exceeded (endstop failure?)",
+                                        hb.fault_code
+                                    )));
                                 }
-                                tracing::error!(
-                                    mcu_id,
-                                    mcu_label = %mcu_label_hb,
-                                    fault_code = hb.fault_code,
-                                    "EXIT_ON_FAULT — ethercat drive fault outside homing; \
-                                     aborting klippy so systemd restarts it"
-                                );
-                                let _ = std::io::Write::flush(&mut std::io::stderr());
-                                if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
-                                    std::process::abort();
+                                None => {
+                                    let now_ns = crate::motion_node::monotonic_ns();
+                                    let settled_at = homing_settled_hb.load(Ordering::Acquire);
+                                    if crate::homing::post_homing_fault_is_benign(
+                                        now_ns, settled_at,
+                                    ) {
+                                        tracing::error!(
+                                            mcu_id,
+                                            mcu_label = %mcu_label_hb,
+                                            fault_code = hb.fault_code,
+                                            "drive fault right after homing trip — \
+                                             latched for G28 to report"
+                                        );
+                                        latched_fault_hb
+                                            .lock()
+                                            .unwrap_or_else(|p| p.into_inner())
+                                            .insert(mcu_id, hb.fault_code);
+                                        return;
+                                    }
+                                    tracing::error!(
+                                        mcu_id,
+                                        mcu_label = %mcu_label_hb,
+                                        fault_code = hb.fault_code,
+                                        "EXIT_ON_FAULT — ethercat drive fault outside homing; \
+                                         aborting klippy so systemd restarts it"
+                                    );
+                                    let _ = std::io::Write::flush(&mut std::io::stderr());
+                                    if std::env::var_os("KALICO_NO_EXIT_ON_FAULT").is_none() {
+                                        std::process::abort();
+                                    }
                                 }
                             }
+                            return;
                         }
-                        return;
-                    }
-                    let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
-                        crate::pump::HeartbeatMsg {
-                            mcu_id,
-                            retired_counts: hb.retired_counts.clone(),
-                        },
-                    ));
-                    for (axis, &r) in hb.retired_counts.iter().enumerate() {
-                        drain_hb.set_retired(mcu_id, axis as u8, r);
-                    }
-                }));
+                        let _ = pump_tx_hb.send(crate::pump::PumpMsg::Heartbeat(
+                            crate::pump::HeartbeatMsg {
+                                mcu_id,
+                                retired_counts: hb.retired_counts.clone(),
+                            },
+                        ));
+                        for (axis, &r) in hb.retired_counts.iter().enumerate() {
+                            drain_hb.set_retired(mcu_id, axis as u8, r);
+                        }
+                    },
+                ));
 
                 // Weak so the supervision thread never keeps the conn (and its
                 // reader thread / socket) alive past release_mcu: when the last
@@ -3212,11 +3216,17 @@ impl PyMotionBridge {
             mcus.iter()
                 .filter_map(|(&id, conn)| {
                     if let Some(io) = conn.host_io.as_ref() {
-                        Some((id, Arc::clone(io) as Arc<dyn kalico_host_rt::native_call::NativeCall>))
+                        Some((
+                            id,
+                            Arc::clone(io) as Arc<dyn kalico_host_rt::native_call::NativeCall>,
+                        ))
                     } else {
-                        conn.endpoint_conn
-                            .as_ref()
-                            .map(|ec| (id, Arc::clone(ec) as Arc<dyn kalico_host_rt::native_call::NativeCall>))
+                        conn.endpoint_conn.as_ref().map(|ec| {
+                            (
+                                id,
+                                Arc::clone(ec) as Arc<dyn kalico_host_rt::native_call::NativeCall>,
+                            )
+                        })
                     }
                 })
                 .collect()
@@ -3245,23 +3255,21 @@ impl PyMotionBridge {
 
                 use kalico_host_rt::native_call::NativeCall as _;
                 use kalico_protocol::codec::Decode as _;
-                let stop_call = |mcu_id: u32| -> Result<
-                    kalico_protocol::messages::StopResponse,
-                    String,
-                > {
-                    let transport = transports
-                        .get(&mcu_id)
-                        .ok_or_else(|| format!("Stop: no transport for mcu {mcu_id}"))?;
-                    let (_kind, body) = transport
-                        .kalico_call(
-                            kalico_protocol::MessageKind::Stop,
-                            Vec::new(),
-                            stop_timeout,
-                        )
-                        .map_err(|e| format!("Stop call failed for mcu {mcu_id}: {e:?}"))?;
-                    kalico_protocol::messages::StopResponse::decode(&body)
-                        .map_err(|e| format!("Stop decode failed for mcu {mcu_id}: {e:?}"))
-                };
+                let stop_call =
+                    |mcu_id: u32| -> Result<kalico_protocol::messages::StopResponse, String> {
+                        let transport = transports
+                            .get(&mcu_id)
+                            .ok_or_else(|| format!("Stop: no transport for mcu {mcu_id}"))?;
+                        let (_kind, body) = transport
+                            .kalico_call(
+                                kalico_protocol::MessageKind::Stop,
+                                Vec::new(),
+                                stop_timeout,
+                            )
+                            .map_err(|e| format!("Stop call failed for mcu {mcu_id}: {e:?}"))?;
+                        kalico_protocol::messages::StopResponse::decode(&body)
+                            .map_err(|e| format!("Stop decode failed for mcu {mcu_id}: {e:?}"))
+                    };
 
                 let discard_clock = match crate::homing::broadcast_stop(
                     &stepper_mcu_ids,

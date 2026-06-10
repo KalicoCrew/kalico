@@ -311,7 +311,10 @@ fn stop_while_parked_succeeds_and_keeps_session() {
     );
 
     let r = set_torque(&conn, true, now_ns() + 50_000_000);
-    assert_eq!(r, 0, "enable after Stop must return 0 (session alive), got {r}");
+    assert_eq!(
+        r, 0,
+        "enable after Stop must return 0 (session alive), got {r}"
+    );
 
     drop(conn);
     let _ = guard.defuse().wait();
@@ -328,7 +331,9 @@ fn set_drive_limits(conn: &UnixNativeConn, counts: u32, tenth_pct: u16) -> i32 {
         .kalico_call(MessageKind::SetDriveLimits, body, Duration::from_secs(5))
         .expect("SetDriveLimits call must succeed");
     assert_eq!(kind, MessageKind::SetDriveLimitsResponse);
-    SetDriveLimitsResponse::decode(&resp).expect("decode").result
+    SetDriveLimitsResponse::decode(&resp)
+        .expect("decode")
+        .result
 }
 
 fn restore_drive_limits(conn: &UnixNativeConn) -> i32 {
@@ -340,7 +345,9 @@ fn restore_drive_limits(conn: &UnixNativeConn) -> i32 {
         )
         .expect("RestoreDriveLimits call must succeed");
     assert_eq!(kind, MessageKind::RestoreDriveLimitsResponse);
-    RestoreDriveLimitsResponse::decode(&resp).expect("decode").result
+    RestoreDriveLimitsResponse::decode(&resp)
+        .expect("decode")
+        .result
 }
 
 #[test]

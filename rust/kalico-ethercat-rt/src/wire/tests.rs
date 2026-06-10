@@ -202,10 +202,7 @@ fn drive_limits_response_frames_round_trip() {
         MessageKind::from_u16(hdr.kind_raw),
         Some(MessageKind::RestoreDriveLimitsResponse)
     );
-    assert_eq!(
-        RestoreDriveLimitsResponse::decode(body).unwrap().result,
-        0
-    );
+    assert_eq!(RestoreDriveLimitsResponse::decode(body).unwrap().result, 0);
     assert_eq!(hdr.correlation_id, 7);
 }
 

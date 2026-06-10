@@ -160,7 +160,11 @@ pub fn restore_drive_limits_response_frame(cid: u32, result: i32) -> Vec<u8> {
     control_frame(MessageKind::RestoreDriveLimitsResponse, cid, &body)
 }
 
-pub fn status_heartbeat_frame(engine_state: u8, fault_code: u16, retired_counts: &[u32]) -> Vec<u8> {
+pub fn status_heartbeat_frame(
+    engine_state: u8,
+    fault_code: u16,
+    retired_counts: &[u32],
+) -> Vec<u8> {
     let hb = StatusHeartbeat {
         engine_state,
         fault_code,

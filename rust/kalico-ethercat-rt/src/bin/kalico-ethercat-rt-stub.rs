@@ -9,13 +9,13 @@ use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::torque::{
-    CommandAction, TickAction, TorqueGate, TorqueState, ERR_ENABLE_FAILED,
-    ERR_PIECES_WHILE_FAULTED,
+    CommandAction, TickAction, TorqueGate, TorqueState, ERR_ENABLE_FAILED, ERR_PIECES_WHILE_FAULTED,
 };
 use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
-    restore_drive_limits_response_frame, runtime_caps_response_frame, set_drive_limits_response_frame,
-    set_torque_response_frame, status_heartbeat_frame, stop_response_frame, Command,
+    restore_drive_limits_response_frame, runtime_caps_response_frame,
+    set_drive_limits_response_frame, set_torque_response_frame, status_heartbeat_frame,
+    stop_response_frame, Command,
 };
 use kalico_protocol::messages::SlaveState;
 
@@ -45,8 +45,8 @@ fn main() {
     };
 
     let fail_enable = args.iter().any(|a| a == "--fail-enable");
-    let drive_fault_after: Option<u32> = arg_val(&args, "--drive-fault-after-pieces")
-        .and_then(|s| s.parse().ok());
+    let drive_fault_after: Option<u32> =
+        arg_val(&args, "--drive-fault-after-pieces").and_then(|s| s.parse().ok());
 
     let mut ring = AxisRing::new();
     let mut gate = TorqueGate::new();
@@ -121,14 +121,16 @@ fn main() {
                             0,
                         ));
                     } else {
-                        let front_start_time = if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8 {
+                        let front_start_time = if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8
+                        {
                             u64::from_le_bytes(msg.pieces_bytes[0..8].try_into().unwrap_or([0; 8]))
                         } else {
                             0
                         };
                         let pushed = ring.push_from_bytes(msg.piece_count, &msg.pieces_bytes);
                         #[allow(clippy::cast_precision_loss)]
-                        let delta_ms = (now_ns as i64 - front_start_time as i64) as f64 / 1_000_000.0;
+                        let delta_ms =
+                            (now_ns as i64 - front_start_time as i64) as f64 / 1_000_000.0;
                         eprintln!(
                             "ec-rt-stub: PushPieces axis={} pieces={} pushed={} head={} \
                              now_ns={} front_start_ns={} delta_ms={:.3}",
@@ -141,7 +143,11 @@ fn main() {
                             delta_ms
                         );
                         let arrival_clock = now_ns;
-                        let result = if pushed == msg.piece_count { 0i32 } else { -309 };
+                        let result = if pushed == msg.piece_count {
+                            0i32
+                        } else {
+                            -309
+                        };
                         server.respond(&push_pieces_response_frame(
                             correlation_id,
                             result,
@@ -202,7 +208,10 @@ fn main() {
                         }
                     }
                 }
-                Command::SetDriveLimits { correlation_id, msg } => {
+                Command::SetDriveLimits {
+                    correlation_id,
+                    msg,
+                } => {
                     stored_limits = Some((msg.following_error_counts, msg.max_torque_tenth_pct));
                     eprintln!(
                         "ec-rt-stub: SetDriveLimits ferr={} tq={}",
@@ -246,7 +255,9 @@ fn main() {
                         drive_fault_fired = true;
                         gate.on_drive_fault();
                         ring.reset();
-                        eprintln!("ec-rt-stub: drive fault simulated after {sampled_pieces} pieces");
+                        eprintln!(
+                            "ec-rt-stub: drive fault simulated after {sampled_pieces} pieces"
+                        );
                         server.respond(&status_heartbeat_frame(0, 0x8611, &[ring.retired_count()]));
                         last_sent_retired = ring.retired_count();
                         heartbeat_sent = true;

@@ -12,13 +12,13 @@ use kalico_ethercat_rt::ffi;
 use kalico_ethercat_rt::scale::CountMap;
 use kalico_ethercat_rt::server::FrameServer;
 use kalico_ethercat_rt::torque::{
-    CommandAction, TickAction, TorqueGate, TorqueState, ERR_ENABLE_FAILED,
-    ERR_PIECES_WHILE_FAULTED,
+    CommandAction, TickAction, TorqueGate, TorqueState, ERR_ENABLE_FAILED, ERR_PIECES_WHILE_FAULTED,
 };
 use kalico_ethercat_rt::wire::{
     claim_handshake_reply_frame, identify_response_frame, push_pieces_response_frame,
-    restore_drive_limits_response_frame, runtime_caps_response_frame, set_drive_limits_response_frame,
-    set_torque_response_frame, status_heartbeat_frame, stop_response_frame, Command,
+    restore_drive_limits_response_frame, runtime_caps_response_frame,
+    set_drive_limits_response_frame, set_torque_response_frame, status_heartbeat_frame,
+    stop_response_frame, Command,
 };
 use kalico_protocol::messages::SlaveState;
 
@@ -106,8 +106,10 @@ fn main() {
             std::process::exit(1);
         }
         eprintln!("ec-rt: drive limits at bringup: 6065h={ferr} counts, 6066h={tmo} ms, 6072h={tq} (0.1%)");
-        let cli_ferr: Option<u32> = arg_val(&args, "--following-error-counts").and_then(|s| s.parse().ok());
-        let cli_tq: Option<u16> = arg_val(&args, "--max-torque-tenth-pct").and_then(|s| s.parse().ok());
+        let cli_ferr: Option<u32> =
+            arg_val(&args, "--following-error-counts").and_then(|s| s.parse().ok());
+        let cli_tq: Option<u16> =
+            arg_val(&args, "--max-torque-tenth-pct").and_then(|s| s.parse().ok());
         let run = (cli_ferr.unwrap_or(ferr), cli_tq.unwrap_or(tq));
         if cli_ferr.is_some() || cli_tq.is_some() {
             let rc = unsafe { ffi::ec_rt_write_limits(run.0, run.1) };
@@ -119,7 +121,10 @@ fn main() {
                 }
                 std::process::exit(1);
             }
-            eprintln!("ec-rt: session limits applied: 6065h={} 6072h={}", run.0, run.1);
+            eprintln!(
+                "ec-rt: session limits applied: 6065h={} 6072h={}",
+                run.0, run.1
+            );
         }
         run
     };
@@ -181,14 +186,19 @@ fn main() {
                             0,
                         ));
                     } else {
-                        let front_start_time = if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8 {
+                        let front_start_time = if msg.piece_count > 0 && msg.pieces_bytes.len() >= 8
+                        {
                             u64::from_le_bytes(msg.pieces_bytes[0..8].try_into().unwrap_or([0; 8]))
                         } else {
                             0
                         };
                         let pushed = ring.push_from_bytes(msg.piece_count, &msg.pieces_bytes);
                         let arrival_clock = now_ns;
-                        let result = if pushed == msg.piece_count { 0i32 } else { -309 };
+                        let result = if pushed == msg.piece_count {
+                            0i32
+                        } else {
+                            -309
+                        };
                         server.respond(&push_pieces_response_frame(
                             correlation_id,
                             result,
@@ -264,7 +274,10 @@ fn main() {
                     );
                     break 'dc;
                 }
-                Command::SetDriveLimits { correlation_id, msg } => {
+                Command::SetDriveLimits {
+                    correlation_id,
+                    msg,
+                } => {
                     let rc = unsafe {
                         ffi::ec_rt_write_limits(
                             msg.following_error_counts,
@@ -382,11 +395,17 @@ fn main() {
 
         let drive_err = unsafe { ffi::ec_rt_get_error_code() };
         if drive_err != 0 && gate.state() != TorqueState::Faulted {
-            eprintln!("ec-rt: DRIVE FAULT err=0x{drive_err:04x} — parking, reporting via heartbeat");
+            eprintln!(
+                "ec-rt: DRIVE FAULT err=0x{drive_err:04x} — parking, reporting via heartbeat"
+            );
             gate.on_drive_fault();
             ring.reset();
             cmap = None;
-            server.respond(&status_heartbeat_frame(0, drive_err, &[ring.retired_count()]));
+            server.respond(&status_heartbeat_frame(
+                0,
+                drive_err,
+                &[ring.retired_count()],
+            ));
             last_sent_retired = ring.retired_count();
             heartbeat_sent = true;
         }

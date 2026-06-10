@@ -201,9 +201,8 @@ where
             errors.join("; ")
         ));
     }
-    axis_discard_clock.ok_or_else(|| {
-        format!("EndstopTrip: axis MCU {axis_mcu} did not report a discard clock")
-    })
+    axis_discard_clock
+        .ok_or_else(|| format!("EndstopTrip: axis MCU {axis_mcu} did not report a discard clock"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -134,7 +134,10 @@ fn drive_fault_parks_in_faulted_and_clears_pending_disable() {
     let mut g = TorqueGate::new();
     assert_eq!(g.on_set_torque(true, 0, 0), CommandAction::Enable);
     g.enable_finished(true);
-    assert_eq!(g.on_set_torque(false, 100, 50), CommandAction::ScheduleDisable);
+    assert_eq!(
+        g.on_set_torque(false, 100, 50),
+        CommandAction::ScheduleDisable
+    );
     g.on_drive_fault();
     assert_eq!(g.state(), TorqueState::Faulted);
     assert_eq!(g.on_tick(200, true), TickAction::None);

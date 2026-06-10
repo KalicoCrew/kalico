@@ -177,18 +177,20 @@ fn unix_native_conn_and_frame_server_sustain_streaming_past_ring_depth() {
         conn.attach_heartbeat_callback(Arc::new(
             move |hb: &kalico_protocol::messages::StatusHeartbeat| {
                 if let Some(&v) = hb.retired_counts.first() {
-                let mut prev = lr.load(Ordering::Acquire);
-                loop {
-                    if v <= prev {
-                        break;
-                    }
-                    match lr.compare_exchange_weak(prev, v, Ordering::AcqRel, Ordering::Acquire) {
-                        Ok(_) => break,
-                        Err(cur) => prev = cur,
+                    let mut prev = lr.load(Ordering::Acquire);
+                    loop {
+                        if v <= prev {
+                            break;
+                        }
+                        match lr.compare_exchange_weak(prev, v, Ordering::AcqRel, Ordering::Acquire)
+                        {
+                            Ok(_) => break,
+                            Err(cur) => prev = cur,
+                        }
                     }
                 }
-            }
-        }));
+            },
+        ));
     }
 
     let mut total_sent: usize = 0;
