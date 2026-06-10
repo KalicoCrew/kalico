@@ -110,6 +110,19 @@ with secondary restore errors (`6eb0ea0c7`).
    (`5ed168da5`-adjacent) so a stalled reactor doesn't shed sensor
    responses within four seconds.
 
+## Simulator status (kalico-sim, full mode)
+
+A G28-cycling G-code (home, re-home, post-home move, home again) FAILS in
+docker full mode with varying timing faults (-308 deficits of a few ms,
+-311 tick gaps), even `--privileged`, with non-deterministic survival
+times. The pre-tonight baseline image (`kalico-sim-homing-probe-fixed`)
+fails identically — pre-existing, matching the skill's own table
+("sota-motion: full mode FAIL — catches timing bug"). The kalico-native
+engine's realtime deadlines don't survive docker-VM scheduling jitter;
+full-mode sim validation of homing likely needs the libvtime virtual-clock
+shim wired into the kalico runtime tick. Separate workstream — the real
+H723 homed repeatably tonight where the sim faults.
+
 ## Known deviations left open (documented, not blocking)
 
 - `motion_toolhead._fire_active_callbacks` enables ALL kinematic steppers on
