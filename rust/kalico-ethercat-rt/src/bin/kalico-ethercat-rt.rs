@@ -53,7 +53,13 @@ fn main() {
     let velocity_ff = args.iter().any(|a| a == "--velocity-ff");
     let torque_clamp_tenths: i16 = arg_val(&args, "--torque-clamp-pct")
         .and_then(|s| s.parse::<f64>().ok())
-        .map(|pct| (pct * 10.0) as i16)
+        .map(|pct| {
+            if !(pct > 0.0 && pct <= 400.0) {
+                eprintln!("ec-rt: --torque-clamp-pct {pct} outside (0, 400]");
+                std::process::exit(1);
+            }
+            (pct * 10.0) as i16
+        })
         .unwrap_or(300);
     let dynamics = arg_val(&args, "--dynamics-profile").map(|path| {
         let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
