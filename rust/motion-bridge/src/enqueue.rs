@@ -106,7 +106,7 @@ where
 
         assert!(
             !bern.is_empty() && bern.len() <= 4,
-            "piece {piece_idx}: {} Bernstein coeffs — truncating above-cubic pieces silently \
+            "{} Bernstein coeffs — truncating above-cubic pieces silently \
              corrupts the dispatched polynomial (Neptune fault -310, 299 steps/sample); \
              the pipeline is uniform-cubic per CLAUDE.md",
             bern.len()
