@@ -40,9 +40,7 @@ DUAL_LOOP_PID_INNER_TARGET_DEPRECATED_OPTION = "inner_max_temp"
 
 
 def lookup_dual_loop_pid_inner_target_temp(config):
-    inner_target_temp = config.getfloat(
-        DUAL_LOOP_PID_INNER_TARGET_OPTION, None
-    )
+    inner_target_temp = config.getfloat(DUAL_LOOP_PID_INNER_TARGET_OPTION, None)
     inner_max_temp = config.getfloat(
         DUAL_LOOP_PID_INNER_TARGET_DEPRECATED_OPTION, None
     )
@@ -716,12 +714,21 @@ class Heater:
             self.outer_instance.configfile.set(
                 section_name, "pid_version", PID_PROFILE_VERSION
             )
+            is_dual_loop = temp_profile["control"] == "dual_loop_pid"
             for key, (type, placeholder) in PID_PROFILE_OPTIONS.items():
                 value = temp_profile[key]
                 if value is not None:
                     self.outer_instance.configfile.set(
                         section_name, key, placeholder % value
                     )
+                # Mirror the inner/secondary loop keys read in _init_profile
+                if is_dual_loop and key in ("pid_kp", "pid_ki", "pid_kd"):
+                    inner_key = "inner_" + key
+                    inner_value = temp_profile.get(inner_key)
+                    if inner_value is not None:
+                        self.outer_instance.configfile.set(
+                            section_name, inner_key, placeholder % inner_value
+                        )
             temp_profile["name"] = profile_name
             self.profiles[profile_name] = temp_profile
             if verbose:
