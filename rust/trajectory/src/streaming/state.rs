@@ -481,6 +481,31 @@ impl ShaperState {
             }
         }
 
+        if let Some(back) = pieces.back() {
+            if back.u_end < time_offset - TIME_LOOKUP_TOLERANCE {
+                let bridge_start = back.u_end;
+                let bridge_val = back.evaluate(bridge_start);
+                let degree = back.degree().max(1);
+                let mut coeffs = vec![0.0f64; degree + 1];
+                coeffs[0] = bridge_val;
+                pieces.push_back(BezierPiece {
+                    u_start: bridge_start,
+                    u_end: time_offset,
+                    coeffs,
+                });
+            }
+        }
+
+        debug_assert!(
+            pieces
+                .back()
+                .map_or(true, |p| p.u_end >= time_offset - TIME_LOOKUP_TOLERANCE),
+            "axis {} pieces deque ends at {:.12} but new plan starts at {:.12} — gap is unreachable after bridging",
+            axis_idx,
+            pieces.back().map_or(f64::NAN, |p| p.u_end),
+            time_offset,
+        );
+
         for f in fitted {
             let axis_nurbs = &f.axes[axis_idx];
             let shifted = extract_bezier_pieces(axis_nurbs).into_iter().map(|mut p| {

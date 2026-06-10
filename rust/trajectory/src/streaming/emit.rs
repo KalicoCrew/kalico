@@ -36,11 +36,15 @@ impl ShaperState {
             return Ok(Vec::new());
         }
 
+        let window_start = self
+            .planned_fitted
+            .first()
+            .map_or(self.t_dispatched, |f| f.t_start.max(self.t_dispatched));
         let history_storage: [Vec<BezierPiece<f64>>; 4] = std::array::from_fn(|axis_idx| {
             self.axes[axis_idx]
                 .pieces
                 .iter()
-                .filter(|p| p.u_start < self.t_dispatched + T_EPSILON)
+                .filter(|p| p.u_start < window_start + T_EPSILON)
                 .cloned()
                 .collect()
         });

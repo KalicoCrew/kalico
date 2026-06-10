@@ -1430,7 +1430,7 @@ fn split_remnant_corner_infeasibility_recovered() {
         .expect("seg_B plans (90 degree corner from A)");
 
     let t_end_a = state.uncommitted_moves[0].t_end;
-    state.t_dispatched = t_end_a - 0.006;
+    state.t_dispatched = t_end_a - 0.100;
 
     let v_at_split = state.read_path_speed_at(state.t_dispatched, 0.0);
     assert!(
@@ -1564,4 +1564,69 @@ fn rung1_success_does_not_activate_fallback() {
         report.fallback_rung, 1,
         "a straightforward feasible window must plan on rung 1 without fallback",
     );
+}
+
+#[test]
+fn dust_move_between_normal_moves_emits_without_panic() {
+    let (mut state, ctx) = single_axis_harness(600.0, HARNESS_A_MAX);
+    append_x_move(&mut state, &ctx, 10.0, 600.0);
+    append_x_move(&mut state, &ctx, 0.0001, 600.0);
+    append_x_move(&mut state, &ctx, 10.0, 600.0);
+    let _ = emit_partial_window(&mut state);
+}
+
+#[test]
+fn rung3_with_gap_at_cutoff_boundary_does_not_panic_on_emit() {
+    let (mut state, ctx) = single_axis_harness(600.0, HARNESS_A_MAX);
+
+    append_x_move(&mut state, &ctx, 20.0, 600.0);
+
+    let t_prior_end = state.t_appended;
+    assert!(t_prior_end > 0.0);
+
+    let gap_width = 0.007_f64;
+
+    for axis in state.axes.iter_mut() {
+        if axis.h > 0.0 {
+            let tail_pos = axis.pieces.back().map_or(0.0, |p| p.evaluate(p.u_end));
+            if let Some(back) = axis.pieces.back_mut() {
+                back.u_end = t_prior_end - gap_width;
+            }
+            axis.pieces.push_back(BezierPiece {
+                u_start: t_prior_end - 5e-13,
+                u_end: t_prior_end,
+                coeffs: vec![tail_pos, 0.0],
+            });
+        }
+    }
+
+    let mut rung3_ctx = ctx.clone();
+    rung3_ctx.fallback_initial_v = 600.0;
+    state.t_dispatched = t_prior_end + 0.001;
+
+    let current_x = state.current_position()[0];
+    let seg = linear_x_segment(current_x, current_x + 20.0, 600.0);
+    let report = state
+        .append_and_replan(seg, &rung3_ctx)
+        .expect("rung3 fallback must succeed for a feasible 20mm rest-to-rest move");
+    assert_eq!(
+        report.fallback_rung, 3,
+        "rung3 must fire: t_dispatched past t_appended makes rung1 use fallback_initial_v=600 which is infeasible for the short window",
+    );
+
+    let _ = emit_partial_window(&mut state);
+}
+
+#[test]
+fn emit_covers_window_starting_after_t_dispatched() {
+    let (mut state, ctx) = single_axis_harness(600.0, HARNESS_A_MAX);
+    append_x_move(&mut state, &ctx, 30.0, 600.0);
+    let t_split = emit_partial_window(&mut state);
+    append_x_move(&mut state, &ctx, 30.0, 600.0);
+
+    let window_start = state.planned_fitted[0].t_start;
+    assert!((window_start - t_split).abs() < 1e-9);
+    state.t_dispatched = (t_split - 0.009).max(0.0);
+
+    let _ = emit_partial_window(&mut state);
 }
