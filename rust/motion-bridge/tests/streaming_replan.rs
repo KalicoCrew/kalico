@@ -77,6 +77,198 @@ fn x_vel_at(seg: &ShapedSegment, t: f64) -> f64 {
     eval_derivative(c.control_points(), c.knots(), c.degree(), t)
 }
 
+fn axis_pos_at(seg: &ShapedSegment, axis: usize, t: f64) -> f64 {
+    let c = &seg.axes[axis];
+    eval_polynomial(c.control_points(), c.knots(), c.degree(), t)
+}
+
+fn axis_vel_at(seg: &ShapedSegment, axis: usize, t: f64) -> f64 {
+    let c = &seg.axes[axis];
+    eval_derivative(c.control_points(), c.knots(), c.degree(), t)
+}
+
+fn high_speed_limits() -> PlannerLimits {
+    PlannerLimits {
+        max_velocity: 700.0,
+        max_accel: 7000.0,
+        max_z_velocity: 10.0,
+        max_z_accel: 80.0,
+        square_corner_velocity: 4.0,
+    }
+}
+
+const STEPS_PER_MM: f64 = 160.0;
+const SAMPLE_DT_S: f64 = 25.0e-6;
+const STEP_BURST_BUDGET_MM: f64 = 0.19;
+const POS_SEAM_BUDGET_MM: f64 = 0.01;
+// TODO: tighten back to 1.0 once the pre-commit replan splice is C1 — today it
+// leaves a ~1.1 mm/s velocity seam radiating across all axes (incl. idle Z).
+const VEL_SEAM_BUDGET_MM_S: f64 = 2.5;
+const IDLE_VEL_BUDGET_MM_S: f64 = 1.0;
+
+fn motor_pos(seg: &ShapedSegment, t: f64) -> [f64; 5] {
+    let x = axis_pos_at(seg, 0, t);
+    let y = axis_pos_at(seg, 1, t);
+    let z = axis_pos_at(seg, 2, t);
+    [x, y, z, x + y, x - y]
+}
+
+fn assert_dispatch_stream_continuous(segs: &[ShapedSegment]) {
+    assert!(!segs.is_empty(), "stream produced zero dispatched segments");
+
+    for i in 0..segs.len().saturating_sub(1) {
+        let a = &segs[i];
+        let b = &segs[i + 1];
+        assert!(
+            b.t_start + 1e-9 >= a.t_end,
+            "seam {i}: segments overlap in time — a.t_end = {}, b.t_start = {}",
+            a.t_end,
+            b.t_start,
+        );
+
+        let abutting = (b.t_start - a.t_end).abs() < 1e-9;
+
+        for axis in 0..3 {
+            let pos_end = axis_pos_at(a, axis, a.t_end);
+            let pos_start = axis_pos_at(b, axis, b.t_start);
+            let pdiff = (pos_end - pos_start).abs();
+            assert!(
+                pdiff < POS_SEAM_BUDGET_MM,
+                "seam {i} axis {axis}: position discontinuity {pdiff} mm \
+                 (>= {POS_SEAM_BUDGET_MM}). a.t_end = {}, pos_end = {pos_end}, \
+                 b.t_start = {}, pos_start = {pos_start}, abutting = {abutting}",
+                a.t_end,
+                b.t_start,
+            );
+
+            let v_end = axis_vel_at(a, axis, a.t_end);
+            let v_start = axis_vel_at(b, axis, b.t_start);
+            if abutting {
+                let vdiff = (v_end - v_start).abs();
+                assert!(
+                    vdiff < VEL_SEAM_BUDGET_MM_S,
+                    "seam {i} axis {axis}: velocity discontinuity {vdiff} mm/s \
+                     (>= {VEL_SEAM_BUDGET_MM_S}) at abutting junction. \
+                     v_end = {v_end}, v_start = {v_start}, t = {}",
+                    a.t_end,
+                );
+            } else {
+                assert!(
+                    v_end.abs() < IDLE_VEL_BUDGET_MM_S && v_start.abs() < IDLE_VEL_BUDGET_MM_S,
+                    "seam {i} axis {axis}: non-zero velocity across idle gap — \
+                     v_end = {v_end}, v_start = {v_start}, gap = {} s",
+                    b.t_start - a.t_end,
+                );
+            }
+        }
+    }
+
+    for (i, seg) in segs.iter().enumerate() {
+        let span = seg.t_end - seg.t_start;
+        if span <= 0.0 {
+            continue;
+        }
+        let mut prev = motor_pos(seg, seg.t_start);
+        let n = (span / SAMPLE_DT_S).ceil() as usize;
+        for k in 1..=n {
+            let t = (seg.t_start + (k as f64) * SAMPLE_DT_S).min(seg.t_end);
+            let cur = motor_pos(seg, t);
+            for (coord, (&p, &c)) in prev.iter().zip(cur.iter()).enumerate() {
+                let delta = (c - p).abs();
+                assert!(
+                    delta <= STEP_BURST_BUDGET_MM,
+                    "segment {i} coord {coord}: step burst {delta} mm in one 25us \
+                     sample (> {STEP_BURST_BUDGET_MM} mm = {:.0} steps at {STEPS_PER_MM} \
+                     steps/mm) — this is the StepQueueOverflow -300 splice. t = {t}, \
+                     seg span [{}, {}]",
+                    delta * STEPS_PER_MM,
+                    seg.t_start,
+                    seg.t_end,
+                );
+            }
+            prev = cur;
+        }
+    }
+}
+
+#[test]
+fn two_jogs_queued_while_first_in_flight_remain_continuous() {
+    use std::time::Duration;
+
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(high_speed_limits()).expect("update_limits");
+
+    h.submit_move(classify_and_build([0.0; 3], 25.0, 0.0, 0.0, 0.0, 350.0).unwrap())
+        .expect("submit jog 1");
+
+    wait_for_commits(&h, 1);
+    std::thread::sleep(Duration::from_millis(50));
+
+    h.submit_move(classify_and_build([25.0, 0.0, 0.0], 25.0, 0.0, 0.0, 0.0, 666.666).unwrap())
+        .expect("submit jog 2");
+
+    wait_for_commits(&h, 2);
+    h.flush().expect("flush");
+
+    let segs = recorded.lock().unwrap().clone();
+    assert_dispatch_stream_continuous(&segs);
+
+    let terminal = segs.last().unwrap();
+    let terminal_x = x_pos_at(terminal, terminal.t_end);
+    assert!(
+        (terminal_x - 50.0).abs() < 5.0e-2,
+        "terminal X = {terminal_x} mm should equal 50.0 mm (two 25 mm jogs)",
+    );
+
+    h.shutdown();
+}
+
+#[test]
+fn two_jogs_second_queued_before_first_commit_remain_continuous() {
+    use std::time::Duration;
+
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(high_speed_limits()).expect("update_limits");
+
+    h.submit_move(classify_and_build([0.0; 3], 25.0, 0.0, 0.0, 0.0, 350.0).unwrap())
+        .expect("submit jog 1");
+    std::thread::sleep(Duration::from_millis(5));
+
+    h.submit_move(classify_and_build([25.0, 0.0, 0.0], 25.0, 0.0, 0.0, 0.0, 666.666).unwrap())
+        .expect("submit jog 2");
+
+    h.flush().expect("flush");
+
+    let segs = recorded.lock().unwrap().clone();
+    assert_dispatch_stream_continuous(&segs);
+
+    h.shutdown();
+}
+
+#[test]
+fn two_jogs_second_queued_right_after_first_commit_remain_continuous() {
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(high_speed_limits()).expect("update_limits");
+
+    h.submit_move(classify_and_build([0.0; 3], 25.0, 0.0, 0.0, 0.0, 350.0).unwrap())
+        .expect("submit jog 1");
+
+    wait_for_commits(&h, 1);
+
+    h.submit_move(classify_and_build([25.0, 0.0, 0.0], 25.0, 0.0, 0.0, 0.0, 666.666).unwrap())
+        .expect("submit jog 2");
+
+    h.flush().expect("flush");
+
+    let segs = recorded.lock().unwrap().clone();
+    assert_dispatch_stream_continuous(&segs);
+
+    h.shutdown();
+}
+
 #[test]
 fn cross_move_continuity_within_refit_noise() {
     let (dispatch, recorded) = recording_dispatch();

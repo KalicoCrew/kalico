@@ -1,8 +1,8 @@
 use std::env;
 use std::fs;
 use std::process;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use motion_bridge_native::classify::{ClassifyError, classify_and_build};
@@ -153,7 +153,8 @@ fn main() {
     let mut submitted: u64 = 0;
     let mut skipped_zero: u64 = 0;
     let mut skipped_other: u64 = 0;
-    let mut unknown_g_counts: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+    let mut unknown_g_counts: std::collections::BTreeMap<u32, u64> =
+        std::collections::BTreeMap::new();
 
     let wall_start = Instant::now();
 
@@ -201,19 +202,20 @@ fn main() {
                         continue;
                     }
 
-                    let classified = match classify_and_build(start, dx, dy, dz, 0.0, pos.feedrate_mm_s) {
-                        Ok(m) => m,
-                        Err(ClassifyError::ZeroDisplacement) => {
-                            skipped_zero += 1;
-                            continue;
-                        }
-                        Err(e) => {
-                            eprintln!(
-                                "error: move {submitted} (line {line_no}): classify failed: {e}"
-                            );
-                            process::exit(1);
-                        }
-                    };
+                    let classified =
+                        match classify_and_build(start, dx, dy, dz, 0.0, pos.feedrate_mm_s) {
+                            Ok(m) => m,
+                            Err(ClassifyError::ZeroDisplacement) => {
+                                skipped_zero += 1;
+                                continue;
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "error: move {submitted} (line {line_no}): classify failed: {e}"
+                                );
+                                process::exit(1);
+                            }
+                        };
 
                     if let Err(e) = h.submit_move(classified) {
                         fatal_planner(e, submitted, line_no);
@@ -289,7 +291,9 @@ fn main() {
             let total = stats.pieces_total[ax].load(Ordering::Relaxed);
             let max = stats.pieces_max[ax].load(Ordering::Relaxed);
             let mean = total as f64 / seg_count as f64;
-            println!("  axis {label}: mean {mean:.1} pieces/seg, max {max} pieces/seg, total {total}");
+            println!(
+                "  axis {label}: mean {mean:.1} pieces/seg, max {max} pieces/seg, total {total}"
+            );
         }
     }
 }
@@ -323,8 +327,6 @@ fn parse_args(args: &[String]) -> (String, Option<u64>) {
 }
 
 fn fatal_planner(e: motion_bridge_native::planner::PlannerError, move_idx: u64, line_no: u32) -> ! {
-    eprintln!(
-        "error: planner error after move {move_idx} (line {line_no}): {e}"
-    );
+    eprintln!("error: planner error after move {move_idx} (line {line_no}): {e}");
     process::exit(1);
 }

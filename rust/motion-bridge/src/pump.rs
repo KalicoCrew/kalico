@@ -290,6 +290,46 @@ pub fn junction_jumps(
 
 pub const MAX_LEAD_SECS: f64 = 1.0;
 
+#[derive(Clone, Copy)]
+struct JunctionEnd {
+    end_ticks: u64,
+    end_host: f64,
+    end_pos: f32,
+}
+
+pub const JUNCTION_POSITION_LOG_MM: f32 = 0.0125;
+pub const JUNCTION_POSITION_FATAL_MM: f32 = 0.1;
+
+/// A position jump between the last dispatched piece and the next one is the
+/// host-side image of MCU fault -300/-310 (the step burst that killed the
+/// Trident two-jog test, 2026-06-10): the MCU will emit |Δpos|·steps_per_mm
+/// steps in one 25µs sample into a 32-deep queue. Dying here, before the push,
+/// preserves both endpoint values; the MCU fault preserves neither.
+fn check_junction_position_continuity(
+    key: AxisKey,
+    prev_end_pos: f32,
+    next_start_pos: f32,
+    prev_end_host: f64,
+    next_start_host: f64,
+) {
+    let jump = (next_start_pos - prev_end_pos).abs();
+    if jump >= JUNCTION_POSITION_FATAL_MM {
+        panic!(
+            "junction position discontinuity on mcu{} axis{}: prev piece ends at \
+             {prev_end_pos} (host t={prev_end_host:.6}), next starts at \
+             {next_start_pos} (host t={next_start_host:.6}), |Δ|={jump}mm — \
+             this becomes a one-sample step burst on the MCU (fault -300/-310)",
+            key.mcu_id, key.axis
+        );
+    }
+    if jump >= JUNCTION_POSITION_LOG_MM {
+        log::error!(
+            "[junction-pos] key={key:?} prev_end={prev_end_pos} next_start={next_start_pos} \
+             jump_mm={jump} prev_end_host={prev_end_host:.6} next_start_host={next_start_host:.6}"
+        );
+    }
+}
+
 struct DripCohort {
     id: u64,
     participants: BTreeSet<AxisKey>,
@@ -341,13 +381,13 @@ pub fn run_pump<S, F, C, A, O, D>(
     D: Fn(String) + Send,
 {
     let mut queues: BTreeMap<AxisKey, AxisQueue> = BTreeMap::new();
-    let mut junction_ends: BTreeMap<AxisKey, (u64, f64)> = BTreeMap::new();
+    let mut junction_ends: BTreeMap<AxisKey, JunctionEnd> = BTreeMap::new();
     let mut cohort: Option<DripCohort> = None;
     const MAX_PER_FRAME: usize = 32;
 
     let apply = |msg: PumpMsg,
                  queues: &mut BTreeMap<AxisKey, AxisQueue>,
-                 junction_ends: &mut BTreeMap<AxisKey, (u64, f64)>,
+                 junction_ends: &mut BTreeMap<AxisKey, JunctionEnd>,
                  cohort: &mut Option<DripCohort>|
      -> bool {
         match msg {
@@ -391,7 +431,19 @@ pub fn run_pump<S, F, C, A, O, D>(
                     // meaningless without a real frequency and end_time needs it too.
                     if let Some((_ack_now, freq)) = mcu_clock_of(key.mcu_id) {
                         let (first_entry, first_host) = &pieces[0];
-                        if let Some(&(prev_end_ticks, prev_end_host)) = junction_ends.get(&key) {
+                        if let Some(&JunctionEnd {
+                            end_ticks: prev_end_ticks,
+                            end_host: prev_end_host,
+                            end_pos: prev_end_pos,
+                        }) = junction_ends.get(&key)
+                        {
+                            check_junction_position_continuity(
+                                key,
+                                prev_end_pos,
+                                first_entry.coeffs[0],
+                                prev_end_host,
+                                *first_host,
+                            );
                             let (tick_jump_us, host_jump_us) = junction_jumps(
                                 first_entry.start_time,
                                 *first_host,
@@ -429,7 +481,14 @@ pub fn run_pump<S, F, C, A, O, D>(
                         #[allow(clippy::cast_possible_truncation)]
                         let last_end_ticks = last_entry.end_time(freq as f32);
                         let last_end_host = last_host + last_entry.duration as f64;
-                        junction_ends.insert(key, (last_end_ticks, last_end_host));
+                        junction_ends.insert(
+                            key,
+                            JunctionEnd {
+                                end_ticks: last_end_ticks,
+                                end_host: last_end_host,
+                                end_pos: last_entry.coeffs[3],
+                            },
+                        );
                     }
                 }
                 let q = queues
