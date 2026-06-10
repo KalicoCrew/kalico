@@ -251,7 +251,7 @@ fn main() {
         }
 
         if gate.state() == TorqueState::Enabled {
-            if let Some((pos_mm, _vel_mm_s)) = ring.sample(now) {
+            if let Some((pos_mm, _vel_mm_s, _acc_mm_s2)) = ring.sample(now) {
                 let map = cmap.get_or_insert_with(|| {
                     let actual = unsafe { ffi::ec_rt_get_position_actual() };
                     CountMap::new(counts_per_mm, actual, f64::from(pos_mm))

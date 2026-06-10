@@ -17,10 +17,10 @@ fn ring_walk_eval_single_piece() {
 
     ring.push_entry(ease_entry(0.0, 10.0, t0, dur)).unwrap();
 
-    let (pos_start, _vel) = ring.sample(t0).unwrap();
+    let (pos_start, _vel, _acc) = ring.sample(t0).unwrap();
     assert!((pos_start - 0.0).abs() < 1e-3, "start pos={pos_start}");
 
-    let (pos_mid, _vel) = ring.sample(t0 + 500_000_000).unwrap();
+    let (pos_mid, _vel, _acc) = ring.sample(t0 + 500_000_000).unwrap();
     assert!((pos_mid - 5.0).abs() < 0.2, "mid pos={pos_mid}");
 
     let pos_after = ring.sample(t0 + 2_000_000_000);
@@ -43,18 +43,18 @@ fn ring_walk_two_pieces_contiguous() {
     ring.push_entry(ease_entry(10.0, 0.0, t0 + dur_ns, dur_s))
         .unwrap();
 
-    let (pos_start, _) = ring.sample(t0).unwrap();
+    let (pos_start, _, _) = ring.sample(t0).unwrap();
     assert!((pos_start - 0.0).abs() < 1e-3, "start pos={pos_start}");
     assert_eq!(ring.retired_count(), 0);
 
-    let (pos_boundary, _) = ring.sample(t0 + dur_ns).unwrap();
+    let (pos_boundary, _, _) = ring.sample(t0 + dur_ns).unwrap();
     assert!(
         (pos_boundary - 10.0).abs() < 0.1,
         "pos at piece0 end={pos_boundary}"
     );
     assert_eq!(ring.retired_count(), 1, "piece 0 retired at boundary");
 
-    let (pos_p1_near_end, _) = ring.sample(t0 + 2 * dur_ns - 1).unwrap();
+    let (pos_p1_near_end, _, _) = ring.sample(t0 + 2 * dur_ns - 1).unwrap();
     assert!(
         (pos_p1_near_end - 0.0).abs() < 0.1,
         "piece1 near-end pos={pos_p1_near_end}"
@@ -168,7 +168,7 @@ fn no_jump_at_origin_capture() {
     })
     .unwrap();
 
-    let (sampled_pos, _vel) = ring.sample(t0).expect("sample at t0 must return Some");
+    let (sampled_pos, _vel, _acc) = ring.sample(t0).expect("sample at t0 must return Some");
     assert!(
         (sampled_pos - pos_mm).abs() < 1e-4_f32,
         "sample at t0 must return b0={pos_mm:.4}, got {sampled_pos:.6}"
@@ -213,7 +213,7 @@ fn piece_boundary_c0_c1_continuity() {
     })
     .unwrap();
 
-    let (pos_before, vel_before) = ring
+    let (pos_before, vel_before, _) = ring
         .sample(boundary_ns - 1)
         .expect("sample before boundary must return Some");
     assert_eq!(
@@ -222,7 +222,7 @@ fn piece_boundary_c0_c1_continuity() {
         "no fault expected for in-window piece 0 sample"
     );
 
-    let (pos_after, vel_after) = ring
+    let (pos_after, vel_after, _) = ring
         .sample(boundary_ns + 1)
         .expect("sample after boundary must return Some");
     assert_eq!(
@@ -377,4 +377,22 @@ fn fault_then_in_window_recovers() {
     let r2 = ring.sample(now2);
     assert!(r2.is_some(), "in-window piece must return Some after reset");
     assert_eq!(ring.take_fault(), None, "no fault for in-window piece");
+}
+
+#[test]
+fn sample_reports_acceleration_consistent_with_velocity_slope() {
+    let mut ring = AxisRing::new();
+    let t0: u64 = 1_000_000_000;
+    let dur: f32 = 1.0;
+
+    ring.push_entry(ease_entry(0.0, 10.0, t0, dur)).unwrap();
+
+    let dt = 1_000_000_u64;
+    let (_, v0, a0) = ring.sample(t0).expect("in piece at t0");
+    let (_, v1, _) = ring.sample(t0 + dt).expect("in piece at t0+dt");
+    let fd = (v1 - v0) / (dt as f32 / 1.0e9);
+    assert!(
+        (a0 - fd).abs() <= 0.05 * fd.abs().max(1.0),
+        "eval_accel={a0} vs finite-diff={fd}"
+    );
 }
