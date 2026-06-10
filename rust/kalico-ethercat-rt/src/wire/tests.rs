@@ -1,7 +1,9 @@
 use super::*;
 use kalico_native_transport::demux::{Demuxer, Frame};
 use kalico_native_transport::frame::decode_frame;
-use kalico_protocol::messages::{SlaveState, SlaveStatus};
+use kalico_protocol::messages::{
+    SlaveState, SlaveStatus, StartCapture, StartCaptureResponse, StopCaptureResponse,
+};
 
 #[test]
 fn decodes_identify_on_control_channel() {
@@ -140,4 +142,75 @@ fn set_torque_response_frame_round_trips() {
     assert_eq!(hdr.correlation_id, 9);
     let resp = SetTorqueResponse::decode(body).expect("body");
     assert_eq!(resp.result, -312);
+}
+
+#[test]
+fn decode_start_capture_command() {
+    let msg = StartCapture {
+        path: "/tmp/t.scap".into(),
+        started_utc: "2026-06-10T12:00:00Z".into(),
+        drive_name: "x".into(),
+    };
+    let payload = frame_payload(MessageKind::StartCapture, 77, &msg.encoded_to_vec());
+    match decode_command(0, &payload).unwrap() {
+        Command::StartCapture {
+            correlation_id,
+            msg: m,
+        } => {
+            assert_eq!(correlation_id, 77);
+            assert_eq!(m.path, "/tmp/t.scap");
+            assert_eq!(m.started_utc, "2026-06-10T12:00:00Z");
+            assert_eq!(m.drive_name, "x");
+        }
+        other => panic!("expected StartCapture, got {other:?}"),
+    }
+}
+
+#[test]
+fn decode_stop_capture_command() {
+    let payload = frame_payload(MessageKind::StopCapture, 78, &[]);
+    match decode_command(0, &payload).unwrap() {
+        Command::StopCapture { correlation_id: 78 } => {}
+        other => panic!("expected StopCapture, got {other:?}"),
+    }
+}
+
+#[test]
+fn start_capture_response_frame_round_trips() {
+    let frame = start_capture_response_frame(11, 0);
+    let mut demux = Demuxer::new();
+    let (frames, errs) = demux.feed_slice(&frame);
+    assert!(errs.is_empty());
+    let Frame::Kalico { payload, .. } = &frames[0] else {
+        panic!("expected kalico frame");
+    };
+    let (hdr, body) = decode_message_header(payload).expect("header");
+    assert_eq!(
+        MessageKind::from_u16(hdr.kind_raw),
+        Some(MessageKind::StartCaptureResponse)
+    );
+    assert_eq!(hdr.correlation_id, 11);
+    let resp = StartCaptureResponse::decode(body).expect("body");
+    assert_eq!(resp.result, 0);
+}
+
+#[test]
+fn stop_capture_response_frame_round_trips() {
+    let frame = stop_capture_response_frame(9, -323, 1234, 567);
+    let mut demux = Demuxer::new();
+    let (frames, errs) = demux.feed_slice(&frame);
+    assert!(errs.is_empty());
+    let Frame::Kalico { payload, .. } = &frames[0] else {
+        panic!("expected kalico frame");
+    };
+    let (hdr, body) = decode_message_header(payload).expect("header");
+    assert_eq!(
+        MessageKind::from_u16(hdr.kind_raw),
+        Some(MessageKind::StopCaptureResponse)
+    );
+    assert_eq!(hdr.correlation_id, 9);
+    let resp = StopCaptureResponse::decode(body).expect("body");
+    assert_eq!(resp.result, -323);
+    assert_eq!(resp.samples, 1234);
+    assert_eq!(resp.overflow_cycle, 567);
 }
