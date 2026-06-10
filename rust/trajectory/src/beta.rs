@@ -711,7 +711,7 @@ fn assemble_with_e_gaps(
         let t_gap_end = t_gap_start + eg.duration;
 
         let const_axes = std::array::from_fn(|axis| {
-            constant_nurbs(eg.xyz_position[axis], t_gap_start, t_gap_end)
+            constant_cubic_nurbs(eg.xyz_position[axis], t_gap_start, t_gap_end)
         });
 
         let e_scheduled = seg_input
@@ -773,7 +773,7 @@ fn assemble_e_only_output(
         let t_end = t_start + eg.duration;
 
         let const_axes =
-            std::array::from_fn(|axis| constant_nurbs(eg.xyz_position[axis], t_start, t_end));
+            std::array::from_fn(|axis| constant_cubic_nurbs(eg.xyz_position[axis], t_start, t_end));
 
         let e_scheduled = seg_input
             .e_independent
@@ -812,18 +812,20 @@ pub(crate) fn kernel_half_support(kernel: &PiecewisePolynomialKernel<f64>) -> f6
     (hi - lo) / 2.0
 }
 
-fn constant_nurbs(value: f64, t_start: f64, t_end: f64) -> ScalarNurbs<f64> {
+pub(crate) fn constant_cubic_nurbs(value: f64, t_start: f64, t_end: f64) -> ScalarNurbs<f64> {
     let t_end_safe = if t_end <= t_start {
         t_start + 1e-12
     } else {
         t_end
     };
     ScalarNurbs::try_new(
-        1,
-        vec![t_start, t_start, t_end_safe, t_end_safe],
-        vec![value, value],
+        3,
+        vec![
+            t_start, t_start, t_start, t_start, t_end_safe, t_end_safe, t_end_safe, t_end_safe,
+        ],
+        vec![value, value, value, value],
     )
-    .expect("constant NURBS construction should never fail")
+    .expect("constant cubic NURBS construction should never fail")
 }
 
 #[cfg(test)]

@@ -1337,3 +1337,213 @@ fn wait_moves_blocks_until_dispatch_catches_up() {
 
     h.shutdown();
 }
+
+#[test]
+fn two_jog_replan_segments_survive_corexy_motor_union() {
+    use motion_bridge_native::dispatch::{KINEMATICS_COREXY, McuAxisConfig, McuCaps};
+    use motion_bridge_native::enqueue::enqueue_segment;
+    use motion_bridge_native::pump::MAX_LEAD_SECS;
+
+    let corexy_cfg = McuAxisConfig {
+        mcu_id: 0,
+        axes: vec![0, 1],
+        kinematics: KINEMATICS_COREXY,
+        caps: McuCaps {
+            total_piece_memory: 1 << 20,
+        },
+    };
+
+    let mut cfg = PlannerConfig::default();
+    cfg.shaper = ShaperConfig {
+        x: AxisShaper::SmoothZv {
+            frequency_hz: 186.0,
+        },
+        y: AxisShaper::Passthrough,
+        z: AxisShaper::Passthrough,
+    };
+    cfg.fit_tolerance_mm = 0.05;
+
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(cfg, dispatch);
+    h.update_limits(high_speed_limits()).expect("update_limits");
+
+    h.submit_move(classify_and_build([0.0; 3], 25.0, 0.0, 0.0, 0.0, 350.0).unwrap())
+        .expect("submit jog 1");
+
+    wait_for_commits(&h, 1);
+
+    h.submit_move(classify_and_build([25.0, 0.0, 0.0], 25.0, 0.0, 0.0, 0.0, 666.666).unwrap())
+        .expect("submit jog 2");
+
+    wait_for_commits(&h, 2);
+    h.flush().expect("flush");
+
+    let segs = recorded.lock().unwrap().clone();
+    assert!(
+        !segs.is_empty(),
+        "two-jog replan produced zero dispatched segments"
+    );
+
+    for (i, seg) in segs.iter().enumerate() {
+        assert_eq!(
+            seg.axes[0].degree(),
+            seg.axes[1].degree(),
+            "segment {i}: X degree {} != Y degree {} — CoreXY motor union will panic",
+            seg.axes[0].degree(),
+            seg.axes[1].degree(),
+        );
+    }
+
+    for (i, seg) in segs.iter().enumerate() {
+        let _msgs = enqueue_segment(
+            seg,
+            std::slice::from_ref(&corexy_cfg),
+            0.0,
+            i == 0,
+            0.0,
+            MAX_LEAD_SECS,
+            |_mcu, host_secs| (host_secs.max(0.0) * 1e6) as u64,
+            None,
+        );
+    }
+
+    h.shutdown();
+}
+
+fn corexy_cfg_both_smooth_zv() -> motion_bridge_native::dispatch::McuAxisConfig {
+    use motion_bridge_native::dispatch::{KINEMATICS_COREXY, McuAxisConfig, McuCaps};
+    McuAxisConfig {
+        mcu_id: 0,
+        axes: vec![0, 1],
+        kinematics: KINEMATICS_COREXY,
+        caps: McuCaps {
+            total_piece_memory: 1 << 20,
+        },
+    }
+}
+
+fn check_degree_equality_and_enqueue(segs: &[ShapedSegment], label: &str) {
+    use motion_bridge_native::enqueue::enqueue_segment;
+    use motion_bridge_native::pump::MAX_LEAD_SECS;
+
+    let corexy_cfg = corexy_cfg_both_smooth_zv();
+
+    for (i, seg) in segs.iter().enumerate() {
+        assert_eq!(
+            seg.axes[0].degree(),
+            seg.axes[1].degree(),
+            "{label}: segment {i} X degree {} != Y degree {} — CoreXY motor-union \
+             add_with_knot_union panics with KnotMismatch \
+             (constant-Y not refit to cubic)",
+            seg.axes[0].degree(),
+            seg.axes[1].degree(),
+        );
+    }
+
+    for (i, seg) in segs.iter().enumerate() {
+        let _msgs = enqueue_segment(
+            seg,
+            std::slice::from_ref(&corexy_cfg),
+            0.0,
+            i == 0,
+            0.0,
+            MAX_LEAD_SECS,
+            |_mcu, host_secs| (host_secs.max(0.0) * 1e6) as u64,
+            None,
+        );
+    }
+}
+
+#[test]
+fn three_pure_x_jogs_in_flight_corexy_degree_invariant() {
+    use std::time::Duration;
+
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(high_speed_limits()).expect("update_limits");
+
+    h.submit_move(classify_and_build([295.0, 0.0, 0.0], -20.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit jog 1");
+
+    std::thread::sleep(Duration::from_millis(50));
+
+    h.submit_move(classify_and_build([275.0, 0.0, 0.0], -25.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit jog 2");
+
+    std::thread::sleep(Duration::from_millis(50));
+
+    h.submit_move(classify_and_build([250.0, 0.0, 0.0], -25.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit jog 3");
+
+    h.flush().expect("flush");
+
+    let segs = recorded.lock().unwrap().clone();
+    assert!(
+        !segs.is_empty(),
+        "three pure-X jogs produced zero dispatched segments"
+    );
+
+    check_degree_equality_and_enqueue(&segs, "three_pure_x_jogs_in_flight");
+    h.shutdown();
+}
+
+#[test]
+fn three_pure_x_jogs_from_rest_with_quiescence_corexy_degree_invariant() {
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(high_speed_limits()).expect("update_limits");
+
+    h.submit_move(classify_and_build([295.0, 0.0, 0.0], -20.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit jog 1");
+    h.flush().expect("flush 1");
+
+    h.submit_move(classify_and_build([275.0, 0.0, 0.0], -25.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit jog 2");
+    h.flush().expect("flush 2");
+
+    h.submit_move(classify_and_build([250.0, 0.0, 0.0], -25.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit jog 3");
+    h.flush().expect("flush 3");
+
+    let segs = recorded.lock().unwrap().clone();
+    assert!(
+        !segs.is_empty(),
+        "three pure-X rest-then-jog submits produced zero dispatched segments"
+    );
+
+    check_degree_equality_and_enqueue(&segs, "three_pure_x_jogs_from_rest_with_quiescence");
+    h.shutdown();
+}
+
+#[test]
+fn three_pure_x_jogs_quiescence_timer_corexy_degree_invariant() {
+    use std::time::Duration;
+
+    let (dispatch, recorded) = recording_dispatch();
+    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
+    h.update_limits(high_speed_limits()).expect("update_limits");
+
+    h.submit_move(classify_and_build([295.0, 0.0, 0.0], -20.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit jog 1");
+    wait_for_commits(&h, 1);
+
+    h.submit_move(classify_and_build([275.0, 0.0, 0.0], -25.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit jog 2");
+    wait_for_commits(&h, 2);
+
+    h.submit_move(classify_and_build([250.0, 0.0, 0.0], -25.0, 0.0, 0.0, 0.0, 100.0).unwrap())
+        .expect("submit jog 3");
+    wait_for_commits(&h, 3);
+
+    std::thread::sleep(Duration::from_millis(50));
+    h.flush().expect("flush");
+
+    let segs = recorded.lock().unwrap().clone();
+    assert!(
+        !segs.is_empty(),
+        "three pure-X quiescence-commit jogs produced zero dispatched segments"
+    );
+
+    check_degree_equality_and_enqueue(&segs, "three_pure_x_jogs_quiescence_timer");
+    h.shutdown();
+}

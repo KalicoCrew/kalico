@@ -67,14 +67,13 @@ pub fn emit_shaped(
 
         for axis in 0..3 {
             let cps = fitted.axes[axis].control_points();
-            let axis_is_constant = if let Some(&first) = cps.first() {
-                cps.iter().all(|c| (*c - first).abs() < 1e-12)
-            } else {
-                true
-            };
+            let &first = cps.first().unwrap_or_else(|| {
+                panic!("emit_shaped: seg {seg_idx} axis {axis} has empty control points — fitter produced a degenerate FittedSegment")
+            });
+            let axis_is_constant = cps.iter().all(|c| (*c - first).abs() < 1e-12);
 
             let axis_shaped = if axis_is_constant {
-                fitted.axes[axis].clone()
+                crate::beta::constant_cubic_nurbs(first, t_start, t_end)
             } else if let Some(kernel) = kernels[axis].as_ref() {
                 let padded = pad_segment_axis_with_history(
                     seg_idx,

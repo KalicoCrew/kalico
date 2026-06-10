@@ -1,11 +1,11 @@
 use super::*;
-use crate::fit::FittedSegment;
+use crate::fit::{fit_and_split, FittedSegment};
 use crate::{
     plan_velocity, AxisShaper, ELimits, PlanInput, PlanSegment, PlanShaper, SafetyMode,
     ShapeBatchInput, ShapeSegmentInput, ShaperConfig,
 };
 use geometry::segment::EMode;
-use nurbs::bezier::{bezier_pieces_to_nurbs, extract_bezier_pieces};
+use nurbs::bezier::{bezier_pieces_to_nurbs, extract_bezier_pieces, BezierPiece};
 use nurbs::VectorNurbs;
 
 fn straight_linear(start: [f64; 3], end: [f64; 3]) -> VectorNurbs<f64, 3> {
@@ -316,5 +316,120 @@ fn empty_history_pad_matches_legacy() {
         );
         let legacy = crate::pad::pad_segment_axis(0, axis, &fitted, &[], t_sm_half, 0.0, 1.0);
         assert_nurbs_near_equal(&with_history, &legacy, &format!("axis {axis}"));
+    }
+}
+
+#[test]
+fn constant_y_axis_emits_cubic_matching_moving_x_corexy_degree_invariant() {
+    // Regression: when the fitter produces a degree-5 FittedSegment and Y is
+    // bitwise-constant, emit_shaped returned the fitter's native degree-5 curve
+    // for Y while fitting X to degree-3 via fit_c2_cubic. The degree mismatch
+    // caused add_with_knot_union to return KnotMismatch and panicked at
+    // motion-bridge/src/enqueue.rs:30 on any CoreXY dispatch.
+    //
+    // Trigger condition: pure-X jogs queued back-to-back while the first is
+    // in flight; the terminal-decel splice rebuilds Y as bitwise-constant.
+
+    let x_composed: Vec<[BezierPiece<f64>; 3]> = (0..4)
+        .map(|i| {
+            let s = f64::from(i);
+            [
+                BezierPiece {
+                    u_start: s,
+                    u_end: s + 1.0,
+                    coeffs: vec![s * 10.0, 10.0, 0.5, 0.1],
+                },
+                BezierPiece {
+                    u_start: s,
+                    u_end: s + 1.0,
+                    coeffs: vec![0.0],
+                },
+                BezierPiece {
+                    u_start: s,
+                    u_end: s + 1.0,
+                    coeffs: vec![0.0],
+                },
+            ]
+        })
+        .collect();
+
+    let fitted_from_fitter =
+        fit_and_split(&x_composed, 0.005, None).expect("fit_and_split must succeed");
+
+    let degree5_x = &fitted_from_fitter.axes[0];
+    assert!(
+        degree5_x.degree() >= 4,
+        "expected fitter to produce degree >= 4 for X, got {}",
+        degree5_x.degree(),
+    );
+
+    let y_constant_val = 25.0_f64;
+    let degree5_constant_y = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: fitted_from_fitter.t_start,
+        u_end: fitted_from_fitter.t_end,
+        coeffs: vec![y_constant_val, 0.0, 0.0, 0.0, 0.0, 0.0],
+    }]);
+    assert_eq!(
+        degree5_constant_y.degree(),
+        degree5_x.degree(),
+        "test setup: Y must be same degree as X to match the live crash precondition",
+    );
+
+    let constant_cps = degree5_constant_y.control_points();
+    let all_equal = constant_cps
+        .iter()
+        .all(|c| (c - constant_cps[0]).abs() < 1e-12);
+    assert!(
+        all_equal,
+        "test setup: Y control points must be bitwise-constant to trigger the bug branch",
+    );
+
+    let constant_z = bezier_pieces_to_nurbs(&[BezierPiece {
+        u_start: fitted_from_fitter.t_start,
+        u_end: fitted_from_fitter.t_end,
+        coeffs: vec![0.0; degree5_x.degree() as usize + 1],
+    }]);
+
+    let fitted = FittedSegment {
+        axes: [degree5_x.clone(), degree5_constant_y, constant_z],
+        t_start: fitted_from_fitter.t_start,
+        t_end: fitted_from_fitter.t_end,
+    };
+
+    let kernels: [Option<PiecewisePolynomialKernel<f64>>; 4] = [
+        AxisShaper::SmoothZv {
+            frequency_hz: 186.0,
+        }
+        .to_kernel(),
+        None,
+        None,
+        None,
+    ];
+    let meta = [EmitSegmentMeta {
+        e_mode: EMode::CoupledToXy,
+        extrusion_per_xy_mm: 0.04,
+    }];
+
+    let emitted = emit_shaped(
+        &[fitted],
+        &meta,
+        &kernels,
+        &[],
+        &PerAxisHistory::empty(),
+        fitted_from_fitter.t_start,
+        fitted_from_fitter.t_end,
+    )
+    .expect("emit_shaped must not return an error");
+
+    for (i, seg) in emitted.iter().enumerate() {
+        assert_eq!(
+            seg.axes[0].degree(),
+            seg.axes[1].degree(),
+            "segment {i}: X degree {} != Y degree {} — CoreXY motor-union \
+             add_with_knot_union will panic with KnotMismatch (constant-Y \
+             axis must be refit to cubic, not returned as-is from the fitter)",
+            seg.axes[0].degree(),
+            seg.axes[1].degree(),
+        );
     }
 }
