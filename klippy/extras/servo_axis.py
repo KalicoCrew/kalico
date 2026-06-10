@@ -37,6 +37,11 @@ class ServoRail:
         self.encoder_counts_per_rev = config.getint(
             "encoder_counts_per_rev", minval=1
         )
+        self.velocity_ff = config.getboolean("velocity_ff", False)
+        self.dynamics_profile = config.get("dynamics_profile", None)
+        self.ff_torque_clamp = config.getfloat(
+            "ff_torque_clamp", 30.0, above=0.0, maxval=400.0
+        )
         self.position_min = config.getfloat("position_min", 0.0)
         self.position_max = config.getfloat(
             "position_max", above=self.position_min
@@ -93,6 +98,9 @@ class ServoRail:
 
     def get_counts_per_mm(self):
         return self.encoder_counts_per_rev / self.rotation_distance
+
+    def get_ff_config(self):
+        return (self.velocity_ff, self.dynamics_profile, self.ff_torque_clamp)
 
 
 class BridgeTorqueLine:

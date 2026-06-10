@@ -250,15 +250,25 @@ fn spawn_ethercat_endpoint(
     interface: &str,
     socket_path: &str,
     counts_per_mm: f64,
+    velocity_ff: bool,
+    dynamics_profile: Option<&str>,
+    torque_clamp_pct: f64,
 ) -> Result<std::process::Child, String> {
-    std::process::Command::new(binary)
-        .arg(interface)
+    let mut cmd = std::process::Command::new(binary);
+    cmd.arg(interface)
         .arg("--socket")
         .arg(socket_path)
         .arg("--counts-per-mm")
         .arg(counts_per_mm.to_string())
-        .spawn()
-        .map_err(|e| format!("spawn {binary}: {e}"))
+        .arg("--torque-clamp-pct")
+        .arg(torque_clamp_pct.to_string());
+    if velocity_ff {
+        cmd.arg("--velocity-ff");
+    }
+    if let Some(p) = dynamics_profile {
+        cmd.arg("--dynamics-profile").arg(p);
+    }
+    cmd.spawn().map_err(|e| format!("spawn {binary}: {e}"))
 }
 
 fn poll_socket_ready(
@@ -737,7 +747,7 @@ impl PyMotionBridge {
         Ok(raw)
     }
 
-    #[pyo3(signature = (label, socket_path, interface, endpoint_binary, counts_per_mm))]
+    #[pyo3(signature = (label, socket_path, interface, endpoint_binary, counts_per_mm, velocity_ff, dynamics_profile, torque_clamp_pct))]
     fn claim_ethercat_node(
         &self,
         label: &str,
@@ -745,6 +755,9 @@ impl PyMotionBridge {
         interface: &str,
         endpoint_binary: &str,
         counts_per_mm: f64,
+        velocity_ff: bool,
+        dynamics_profile: Option<String>,
+        torque_clamp_pct: f64,
     ) -> PyResult<u32> {
         if let Err(e) = std::fs::remove_file(socket_path) {
             if e.kind() != std::io::ErrorKind::NotFound {
@@ -754,13 +767,20 @@ impl PyMotionBridge {
             }
         }
 
-        let mut child =
-            spawn_ethercat_endpoint(endpoint_binary, interface, socket_path, counts_per_mm)
-                .map_err(|e| {
-                    PyRuntimeError::new_err(format!(
-                        "ethercat {label}: endpoint failed to start — {e}"
-                    ))
-                })?;
+        let mut child = spawn_ethercat_endpoint(
+            endpoint_binary,
+            interface,
+            socket_path,
+            counts_per_mm,
+            velocity_ff,
+            dynamics_profile.as_deref(),
+            torque_clamp_pct,
+        )
+        .map_err(|e| {
+            PyRuntimeError::new_err(format!(
+                "ethercat {label}: endpoint failed to start — {e}"
+            ))
+        })?;
 
         let socket_deadline = Instant::now() + Duration::from_secs(15);
         if let Err(detail) = poll_socket_ready(socket_path, socket_deadline, &mut child) {
@@ -3266,6 +3286,9 @@ mod ethercat_endpoint_tests {
             "eth0",
             "/tmp/test.sock",
             1.0,
+            false,
+            None,
+            30.0,
         );
         assert!(result.is_err(), "expected Err for nonexistent binary");
         let msg = result.unwrap_err();

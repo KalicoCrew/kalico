@@ -47,26 +47,30 @@ class EtherCatNode:
         # planner is built. This mirrors MCU._mcu_identify's claim_mcu call.
         self.printer.register_event_handler("klippy:mcu_identify", self._claim)
 
-    def _derive_counts_per_mm(self):
-        # ServoRails are not printer objects (the toolhead builds them directly
-        # into kin.rails), so iterate the toolhead's rails rather than
-        # printer.lookup_objects.
+    def _find_servo_rail(self):
         toolhead = self.printer.lookup_object("toolhead")
         for rail in getattr(toolhead.get_kinematics(), "rails", ()):
             if (
                 isinstance(rail, servo_axis.ServoRail)
                 and rail.get_node_name() == self.name
             ):
-                return rail.get_counts_per_mm()
+                return rail
         raise self.printer.config_error(
             "ethercat_node %s: no [servo_*] section with node=%s — "
             "cannot derive counts_per_mm" % (self.name, self.name)
         )
 
+    def _derive_counts_per_mm(self):
+        return self._find_servo_rail().get_counts_per_mm()
+
+    def _derive_ff_config(self):
+        return self._find_servo_rail().get_ff_config()
+
     def _claim(self):
         if self.bridge_handle is not None:
             return
         self._counts_per_mm = self._derive_counts_per_mm()
+        velocity_ff, dynamics_profile, ff_torque_clamp = self._derive_ff_config()
         bridge = self.printer.lookup_object("motion_bridge")
         try:
             self.bridge_handle = bridge.claim_ethercat_node(
@@ -75,18 +79,25 @@ class EtherCatNode:
                 self.interface,
                 self.endpoint,
                 self._counts_per_mm,
+                velocity_ff,
+                dynamics_profile,
+                ff_torque_clamp,
             )
         except RuntimeError as e:
             raise self.printer.config_error(str(e))
         logging.info(
             "ethercat_node %s: claimed handle=%s socket=%s interface=%s "
-            "endpoint=%s counts_per_mm=%s",
+            "endpoint=%s counts_per_mm=%s velocity_ff=%s "
+            "dynamics_profile=%s ff_torque_clamp=%s",
             self.name,
             self.bridge_handle,
             self.socket_path,
             self.interface,
             self.endpoint,
             self._counts_per_mm,
+            velocity_ff,
+            dynamics_profile,
+            ff_torque_clamp,
         )
 
     def get_bridge_handle(self):

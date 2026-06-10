@@ -129,10 +129,25 @@ class MotionBridgeWrapper:
         return self._bridge.claim_mcu(label, serial_path, baud)
 
     def claim_ethercat_node(
-        self, label, socket_path, interface, endpoint, counts_per_mm
+        self,
+        label,
+        socket_path,
+        interface,
+        endpoint,
+        counts_per_mm,
+        velocity_ff,
+        dynamics_profile,
+        torque_clamp_pct,
     ):
         return self._bridge.claim_ethercat_node(
-            label, socket_path, interface, endpoint, counts_per_mm
+            label,
+            socket_path,
+            interface,
+            endpoint,
+            counts_per_mm,
+            velocity_ff,
+            dynamics_profile,
+            torque_clamp_pct,
         )
 
     def set_torque(self, mcu_handle, value, print_time):
