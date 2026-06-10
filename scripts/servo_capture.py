@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-# Analyze a servo telemetry capture (.scap) produced by SERVO_CAPTURE_START.
-# Prints following-error, overshoot/settling, and torque-saturation metrics;
-# --fft prints resonance peaks (notch-filter candidates); --plot opens a
-# time-series dashboard.
+"""Analyze a servo telemetry capture (.scap) produced by SERVO_CAPTURE_START.
+
+Prints following-error, overshoot/settling, and torque-saturation metrics;
+--fft prints resonance peaks (notch-filter candidates); --plot opens a
+time-series dashboard.
+"""
 import argparse
 import json
 import sys
@@ -35,6 +37,13 @@ def load_capture(path):
         dtype = np.dtype(
             [(c["name"], DTYPE_MAP[c["dtype"]]) for c in header["channels"]]
         )
+        for c in header["channels"]:
+            actual = dtype.fields[c["name"]][1]
+            if actual != c["offset"]:
+                raise SystemExit(
+                    "channel %r declared offset %d but numpy computed %d"
+                    % (c["name"], c["offset"], actual)
+                )
         if dtype.itemsize != header["record_size"]:
             raise SystemExit(
                 "channel descriptor (%d bytes) disagrees with record_size %d"
@@ -47,6 +56,8 @@ def load_capture(path):
 
 
 def motion_segments(flags):
+    if not len(flags):
+        return []
     moving = (flags & FLAG_MOTION_ACTIVE) != 0
     edges = np.flatnonzero(np.diff(moving.astype(np.int8)))
     bounds = np.concatenate(([0], edges + 1, [len(moving)]))
@@ -66,7 +77,11 @@ def _settle_index(err, band, hold):
     return int(ok[0]) if len(ok) else None
 
 
-def compute_metrics(data, settle_band, torque_limit):
+def compute_metrics(data, settle_band, torque_limit, fs=1000.0):
+    if not len(data):
+        raise SystemExit("capture contains no records")
+    ms_per_sample = 1000.0 / fs
+    hold = int(round(SETTLE_HOLD_MS * fs / 1000.0))
     ferr = data["following_error"].astype(np.float64)
     recomputed = data["target_counts"].astype(np.int64) - data[
         "position_actual"
@@ -75,20 +90,24 @@ def compute_metrics(data, settle_band, torque_limit):
     moves = []
     for idx, (s, e) in enumerate(segs):
         move_err = ferr[s:e]
-        post = ferr[e:]
-        settle = _settle_index(post, settle_band, SETTLE_HOLD_MS)
-        overshoot_end = settle if settle is not None else len(post)
+        post_end = segs[idx + 1][0] if idx + 1 < len(segs) else len(ferr)
+        post = ferr[e:post_end]
+        settle_sample = _settle_index(post, settle_band, hold)
+        overshoot_end = settle_sample if settle_sample is not None else len(post)
+        settle_ms = (
+            float(settle_sample) * ms_per_sample if settle_sample is not None else None
+        )
         moves.append(
             {
                 "move": idx,
-                "start_ms": s,
-                "end_ms": e,
+                "start_ms": float(s) * ms_per_sample,
+                "end_ms": float(e) * ms_per_sample,
                 "ferr_peak": float(np.max(np.abs(move_err))),
                 "ferr_rms": float(np.sqrt(np.mean(move_err**2))),
                 "overshoot": float(np.max(np.abs(post[:overshoot_end])))
                 if overshoot_end > 0
                 else 0.0,
-                "settle_ms": settle,
+                "settle_ms": settle_ms,
             }
         )
     torque = np.abs(data["torque_actual"].astype(np.int64))
@@ -100,9 +119,7 @@ def compute_metrics(data, settle_band, torque_limit):
         ),
         "ferr_crosscheck_max": int(
             np.max(np.abs(recomputed - ferr.astype(np.int64)))
-        )
-        if len(data)
-        else 0,
+        ),
     }
 
 
@@ -145,7 +162,7 @@ def top_peaks(freqs, psd, count=5):
     return [(float(freqs[i]), float(psd[i])) for i in ranked]
 
 
-def _print_metrics(header, m, counts_per_mm):
+def _print_metrics(m, counts_per_mm):
     print("capture: %d samples, %d move(s)" % (m["samples"], len(m["moves"])))
     print(
         "torque saturation: %.1f%% of samples at/above limit"
@@ -157,10 +174,10 @@ def _print_metrics(header, m, counts_per_mm):
     )
     for mv in m["moves"]:
         settle = (
-            "%d ms" % mv["settle_ms"] if mv["settle_ms"] is not None else "NEVER"
+            "%.1f ms" % mv["settle_ms"] if mv["settle_ms"] is not None else "NEVER"
         )
         print(
-            "move %d [%d..%d ms]: ferr peak %.0f counts (%.4f mm), "
+            "move %d [%.1f..%.1f ms]: ferr peak %.0f counts (%.4f mm), "
             "rms %.1f counts (%.4f mm), overshoot %.0f counts, settle %s"
             % (
                 mv["move"],
@@ -192,8 +209,8 @@ def main(argv=None):
     header, data = load_capture(args.capture)
     fs = 1e9 / header["cycle_ns"]
     counts_per_mm = header["drives"][0]["counts_per_mm"]
-    m = compute_metrics(data, args.settle_band, args.torque_limit)
-    _print_metrics(header, m, counts_per_mm)
+    m = compute_metrics(data, args.settle_band, args.torque_limit, fs=fs)
+    _print_metrics(m, counts_per_mm)
 
     if args.fft:
         freqs, psd = moving_psd(data, motion_segments(data["flags"]), fs)
