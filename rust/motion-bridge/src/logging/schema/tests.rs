@@ -24,9 +24,6 @@ fn subsystem_mapping() {
         subsystem_for_target("kalico_host_rt::host_io::reactor"),
         "mcu-comms"
     );
-    assert_eq!(
-        subsystem_for_target("motion_bridge::probe_homing"),
-        "homing"
-    );
+    assert_eq!(subsystem_for_target("motion_bridge::homing"), "homing");
     assert_eq!(subsystem_for_target("some::unknown::path"), "host-rust");
 }

@@ -8,6 +8,14 @@ fn default_config_has_sensible_values() {
 }
 
 #[test]
+fn default_config_shaper_is_passthrough() {
+    let c = PlannerConfig::default();
+    assert!(matches!(c.shaper.x, AxisShaper::Passthrough));
+    assert!(matches!(c.shaper.y, AxisShaper::Passthrough));
+    assert!(matches!(c.shaper.z, AxisShaper::Passthrough));
+}
+
+#[test]
 fn temporal_limits_converts() {
     let l = PlannerLimits {
         max_velocity: 300.0,
@@ -63,21 +71,43 @@ fn a_centripetal_max_is_max_accel_not_length() {
 #[test]
 fn parse_shaper_types() {
     assert!(matches!(
-        parse_required_shaper("smooth_mzv", 50.0),
-        Ok(RequiredShaper::SmoothMzv { frequency_hz }) if (frequency_hz - 50.0).abs() < 1e-9
+        parse_axis_shaper("smooth_mzv", 50.0),
+        Ok(AxisShaper::SmoothMzv { frequency_hz }) if (frequency_hz - 50.0).abs() < 1e-9
     ));
-    assert!(parse_required_shaper("ei", 50.0).is_err());
+    assert!(parse_axis_shaper("smooth_zv", 50.0).is_ok());
+    assert!(parse_axis_shaper("ei", 50.0).is_err());
 
-    let err = parse_required_shaper("smooth_zv", 0.0)
-        .unwrap_err()
-        .to_string();
-    assert!(
-        err.contains("shaper_freq"),
-        "error must name the field, got: {err}"
-    );
+    // freq ≤ 0 or non-finite → Passthrough, not an error
+    assert!(matches!(
+        parse_axis_shaper("smooth_zv", 0.0),
+        Ok(AxisShaper::Passthrough)
+    ));
+    assert!(matches!(
+        parse_axis_shaper("smooth_mzv", -1.0),
+        Ok(AxisShaper::Passthrough)
+    ));
+    assert!(matches!(
+        parse_axis_shaper("smooth_zv", f64::NAN),
+        Ok(AxisShaper::Passthrough)
+    ));
+    assert!(matches!(
+        parse_axis_shaper("smooth_zv", f64::INFINITY),
+        Ok(AxisShaper::Passthrough)
+    ));
+}
 
-    assert!(parse_required_shaper("smooth_mzv", -1.0).is_err());
-
-    assert!(parse_required_shaper("smooth_zv", f64::NAN).is_err());
-    assert!(parse_required_shaper("smooth_zv", f64::INFINITY).is_err());
+#[test]
+fn parse_explicit_passthrough_names() {
+    assert!(matches!(
+        parse_axis_shaper("", 0.0),
+        Ok(AxisShaper::Passthrough)
+    ));
+    assert!(matches!(
+        parse_axis_shaper("none", 50.0),
+        Ok(AxisShaper::Passthrough)
+    ));
+    assert!(matches!(
+        parse_axis_shaper("passthrough", 50.0),
+        Ok(AxisShaper::Passthrough)
+    ));
 }

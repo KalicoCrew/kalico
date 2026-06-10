@@ -176,6 +176,9 @@ DECL_INIT(runtime_init);
 #define KALICO_LIVENESS_THRESHOLD_TICKS  \
     ((KALICO_LIVENESS_THRESHOLD_MS) * (CONFIG_CLOCK_FREQ / 1000))
 
+#define KALICO_FAST_STATUS_MAX_AXES 8
+#define KALICO_FAST_STATUS_RING_OCCUPANCY 4
+
 void
 runtime_drain(void)
 {
@@ -241,6 +244,34 @@ runtime_drain(void)
         last_seen_status = cur_status;
     }
 
+    {
+        static uint32_t last_retired_seen[KALICO_FAST_STATUS_MAX_AXES];
+        uint32_t occ[KALICO_FAST_STATUS_MAX_AXES];
+        uint32_t retired[KALICO_FAST_STATUS_MAX_AXES];
+        uint8_t st = 0;
+        uint16_t fc = 0;
+        int32_t no = kalico_runtime_get_occupancy(runtime_handle, occ,
+                                                  KALICO_FAST_STATUS_MAX_AXES);
+        int32_t nr = kalico_runtime_get_heartbeat(runtime_handle, &st, &fc,
+                                                  retired,
+                                                  KALICO_FAST_STATUS_MAX_AXES);
+        if (no > 0 && nr > 0) {
+            int32_t n = no < nr ? no : nr;
+            uint8_t emit = 0;
+            for (int32_t i = 0; i < n; i++) {
+                if (retired[i] != last_retired_seen[i]) {
+                    if (occ[i] <= KALICO_FAST_STATUS_RING_OCCUPANCY)
+                        emit = 1;
+                    last_retired_seen[i] = retired[i];
+                }
+            }
+            if (emit) {
+                send_status_heartbeat();
+                last_status_emit_time = timer_read_time();
+            }
+        }
+    }
+
     kalico_log_drain();
 }
 DECL_TASK(runtime_drain);
@@ -284,41 +315,6 @@ runtime_status_drain(void)
 #endif
 }
 DECL_TASK(runtime_status_drain);
-
-DECL_CTR("_DECL_OUTPUT "
-         "kalico_endstop_tripped arm_id=%u "
-         "trip_clock_lo=%u trip_clock_hi=%u "
-         "trip_source_idx=%c fmt_version=%c "
-         "stepper_count=%c stepper_data=%*s");
-
-void
-runtime_endstop_drain(void)
-{
-    if (!runtime_handle) return;
-    uint8_t buf[64];
-    size_t actual = 0;
-    int32_t r = kalico_endstop_poll_trip(buf, sizeof(buf), &actual);
-    if (r != 1 || actual < 15) return;
-    uint32_t arm_id     = (uint32_t)buf[0] | ((uint32_t)buf[1] << 8)
-                        | ((uint32_t)buf[2] << 16) | ((uint32_t)buf[3] << 24);
-    uint32_t clock_lo   = (uint32_t)buf[4] | ((uint32_t)buf[5] << 8)
-                        | ((uint32_t)buf[6] << 16) | ((uint32_t)buf[7] << 24);
-    uint32_t clock_hi   = (uint32_t)buf[8] | ((uint32_t)buf[9] << 8)
-                        | ((uint32_t)buf[10] << 16) | ((uint32_t)buf[11] << 24);
-    uint8_t source_idx  = buf[12];
-    uint8_t fmt_version = buf[13];
-    uint8_t stepper_n   = buf[14];
-    uint32_t blob_len   = (uint32_t)stepper_n * 5;
-    if (15 + blob_len > actual) return;
-    output("kalico_endstop_tripped arm_id=%u "
-           "trip_clock_lo=%u trip_clock_hi=%u "
-           "trip_source_idx=%c fmt_version=%c "
-           "stepper_count=%c stepper_data=%*s",
-           arm_id, clock_lo, clock_hi,
-           source_idx, fmt_version,
-           stepper_n, blob_len, &buf[15]);
-}
-DECL_TASK(runtime_endstop_drain);
 
 extern void runtime_emit_step_pulses(uint8_t motor_idx, int32_t n_steps);
 

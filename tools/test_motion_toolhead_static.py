@@ -18,6 +18,8 @@ EXPECTED_LOCAL_METHODS = frozenset(
         "_fire_active_callbacks",
         "drip_move",
         "dwell",
+        "check_busy",
+        "_sync_print_time",
         "wait_moves",
         "flush_step_generation",
         "get_last_move_time",
@@ -33,22 +35,11 @@ EXPECTED_LOCAL_METHODS = frozenset(
         "cmd_KALICO_SIM_AXIS_STEPS",
         "cmd_KALICO_SIM_AXIS_ACCUM",
         "cmd_KALICO_SIM_ENDSTOP_SET_PIN",
-        # M400 (wait-for-moves) and KALICO_DIAG_DUMP (live MCU diag
-        # snapshot to the structured-log store) are bridge-mode gcode
-        # commands owned by MotionToolhead.
         "cmd_M400",
         "cmd_KALICO_DIAG_DUMP",
-        # Bridge-mode overrides of the upstream lifecycle / motion surface.
-        # MotionToolhead drives motion through the native bridge instead of
-        # the legacy trapq/stepcompress path, so it overrides connection
-        # teardown, homing/probe interception, drip software-endstop trips,
-        # and the bridge-drain end-time bookkeeping.
         "_handle_disconnect",
-        "_prepare_probe_interceptor",
-        "_drip_move_software_trip",
         "wait_moves_and_mcu",
         "_bridge_mcus",
-        "note_homing_end",
         "_ground_pending_end_time_after_bridge_drain",
         "_bump_pending_end_time",
     }

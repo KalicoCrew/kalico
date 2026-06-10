@@ -1,9 +1,7 @@
 use geometry::segment::EMode;
 use nurbs::VectorNurbs;
 use temporal::multi::{GridStrategy, SegmentInput};
-use trajectory::{
-    AxisShaper, ELimits, RequiredShaper, ShapeBatchInput, ShapeSegmentInput, ShaperConfig,
-};
+use trajectory::{AxisShaper, ELimits, ShapeBatchInput, ShapeSegmentInput, ShaperConfig};
 
 fn x_50mm_collinear_cubic() -> VectorNurbs<f64, 3> {
     VectorNurbs::<f64, 3>::try_new(
@@ -53,10 +51,10 @@ fn jog_50mm_at_100mms_with_live_limits() {
         },
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothMzv {
+            x: AxisShaper::SmoothMzv {
                 frequency_hz: 186.0,
             },
-            y: RequiredShaper::SmoothMzv {
+            y: AxisShaper::SmoothMzv {
                 frequency_hz: 122.0,
             },
             z: AxisShaper::Passthrough,
@@ -123,10 +121,10 @@ fn jog_50mm_with_higher_scv() {
         },
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothMzv {
+            x: AxisShaper::SmoothMzv {
                 frequency_hz: 186.0,
             },
-            y: RequiredShaper::SmoothMzv {
+            y: AxisShaper::SmoothMzv {
                 frequency_hz: 122.0,
             },
             z: AxisShaper::Passthrough,
@@ -187,10 +185,10 @@ fn probe_with_feedrate(feedrate: f64, dist_mm: f64) -> f64 {
         },
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothMzv {
+            x: AxisShaper::SmoothMzv {
                 frequency_hz: 186.0,
             },
-            y: RequiredShaper::SmoothMzv {
+            y: AxisShaper::SmoothMzv {
                 frequency_hz: 122.0,
             },
             z: AxisShaper::Passthrough,
@@ -256,10 +254,10 @@ fn jog_50mm_with_z_jmax_uncapped() {
         },
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothMzv {
+            x: AxisShaper::SmoothMzv {
                 frequency_hz: 186.0,
             },
-            y: RequiredShaper::SmoothMzv {
+            y: AxisShaper::SmoothMzv {
                 frequency_hz: 122.0,
             },
             z: AxisShaper::Passthrough,
@@ -331,8 +329,8 @@ fn jog_50mm_low_accel_baseline() {
         },
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothMzv { frequency_hz: 50.0 },
-            y: RequiredShaper::SmoothMzv { frequency_hz: 50.0 },
+            x: AxisShaper::SmoothMzv { frequency_hz: 50.0 },
+            y: AxisShaper::SmoothMzv { frequency_hz: 50.0 },
             z: AxisShaper::Passthrough,
         },
         fit_tolerance_mm: 0.005,

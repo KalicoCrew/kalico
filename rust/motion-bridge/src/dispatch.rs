@@ -70,7 +70,7 @@ pub fn cfg_is_corexy(cfg: &McuAxisConfig) -> bool {
 
 pub fn motor_frame_xy(cfg: &McuAxisConfig, x: f64, y: f64) -> (f64, f64) {
     if cfg_is_corexy(cfg) {
-        (x + y, x - y)
+        crate::kinematics::forward_corexy(x, y)
     } else {
         (x, y)
     }

@@ -82,7 +82,7 @@ fn status_heartbeat_roundtrip_empty() {
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    assert_eq!(buf.len(), 3);
+    assert_eq!(buf.len(), 4);
     let mut cursor = Cursor::new(&buf);
     let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
     assert_eq!(decoded.retired_counts.len(), 0);
@@ -97,7 +97,7 @@ fn status_heartbeat_roundtrip_with_axes() {
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    assert_eq!(buf.len(), 19);
+    assert_eq!(buf.len(), 20);
     let mut cursor = Cursor::new(&buf);
     let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
     assert_eq!(decoded.engine_state, 1);
@@ -264,4 +264,87 @@ fn decode_rejects_trailing_bytes() {
         Err(DecodeError::TrailingBytes { remaining: 1 }) => {}
         other => panic!("expected TrailingBytes(1), got {other:?}"),
     }
+}
+
+#[test]
+fn stop_round_trips_empty_body() {
+    let bytes = Stop.encoded_to_vec();
+    assert!(bytes.is_empty(), "Stop body is empty");
+    let back = Stop::decode(&bytes).expect("decode");
+    assert_eq!(back, Stop);
+}
+
+#[test]
+fn stop_response_round_trips() {
+    let msg = StopResponse {
+        result: 0,
+        discard_clock: 0x0123_4567_89AB_CDEF,
+    };
+    let bytes = msg.encoded_to_vec();
+    assert_eq!(bytes.len(), 12, "i32 + u64 = 12 bytes");
+    assert_eq!(StopResponse::decode(&bytes).expect("decode"), msg);
+}
+
+#[test]
+fn stop_kinds_have_stable_tags() {
+    assert_eq!(MessageKind::Stop.as_u16(), 0x0072);
+    assert_eq!(MessageKind::StopResponse.as_u16(), 0x0073);
+    assert_eq!(MessageKind::from_u16(0x0072), Some(MessageKind::Stop));
+    assert_eq!(
+        MessageKind::from_u16(0x0073),
+        Some(MessageKind::StopResponse)
+    );
+    assert!(!MessageKind::Stop.is_event());
+}
+
+#[test]
+fn set_drive_limits_round_trips() {
+    let msg = SetDriveLimits {
+        following_error_counts: 8192,
+        max_torque_tenth_pct: 500,
+    };
+    let bytes = msg.encoded_to_vec();
+    let decoded = SetDriveLimits::decode(&bytes).unwrap();
+    assert_eq!(decoded, msg);
+}
+
+#[test]
+fn drive_limits_responses_round_trip() {
+    let r = SetDriveLimitsResponse { result: -315 };
+    assert_eq!(
+        SetDriveLimitsResponse::decode(&r.encoded_to_vec()).unwrap(),
+        r
+    );
+    let r = RestoreDriveLimitsResponse { result: 0 };
+    assert_eq!(
+        RestoreDriveLimitsResponse::decode(&r.encoded_to_vec()).unwrap(),
+        r
+    );
+}
+
+#[test]
+fn drive_limits_message_kinds_round_trip() {
+    for kind in [
+        MessageKind::SetDriveLimits,
+        MessageKind::SetDriveLimitsResponse,
+        MessageKind::RestoreDriveLimits,
+        MessageKind::RestoreDriveLimitsResponse,
+    ] {
+        assert_eq!(MessageKind::from_u16(kind.as_u16()), Some(kind));
+    }
+}
+
+#[test]
+fn endstop_trip_round_trips_and_is_event() {
+    let msg = EndstopTrip {
+        endstop_id: 3,
+        trip_clock: 0x0123_4567_89AB_CDEF,
+    };
+    let bytes = msg.encoded_to_vec();
+    assert_eq!(bytes.len(), 9, "u8 + u64 = 9 bytes");
+    assert_eq!(bytes[0], 3);
+    assert_eq!(&bytes[1..9], &0x0123_4567_89AB_CDEF_u64.to_le_bytes());
+    assert_eq!(EndstopTrip::decode(&bytes).expect("decode"), msg);
+    assert!(MessageKind::EndstopTrip.is_event());
+    assert_eq!(MessageKind::EndstopTrip.as_u16(), 0x0085);
 }

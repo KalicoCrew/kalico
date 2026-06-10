@@ -7,10 +7,10 @@ fn shape_batch_rejects_empty_segments() {
         grid_strategy: temporal::multi::GridStrategy::Fixed(100),
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothZv {
+            x: AxisShaper::SmoothZv {
                 frequency_hz: 180.0,
             },
-            y: RequiredShaper::SmoothMzv {
+            y: AxisShaper::SmoothMzv {
                 frequency_hz: 120.0,
             },
             z: AxisShaper::Passthrough,

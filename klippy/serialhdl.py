@@ -381,7 +381,7 @@ class SerialReader:
             )
             self.disconnect()
 
-    def connect_pipe(self, filename):
+    def connect_pipe(self, filename, baud=0):
         logging.info("%sStarting connect", self.warn_prefix)
         bridge = self.mcu._motion_bridge
         # claim_mcu may not have been called yet (it normally happens in
@@ -392,7 +392,7 @@ class SerialReader:
             self.mcu._bridge_handle = bridge.claim_mcu(
                 self.mcu._name,
                 filename,
-                0,
+                baud,
             )
         handle = self.mcu._bridge_handle
         klippy_non_critical = bool(getattr(self.mcu, "is_non_critical", False))
@@ -406,7 +406,7 @@ class SerialReader:
         bridge.attach_serial(
             handle,
             filename,
-            0,
+            baud,
             timeout_s=30.0,
             klippy_non_critical=klippy_non_critical,
         )
@@ -426,7 +426,7 @@ class SerialReader:
         )
 
     def connect_uart(self, serialport, baud, rts=True):
-        self.connect_pipe(serialport)
+        self.connect_pipe(serialport, baud)
 
     def check_connect(self, serialport, baud, rts=True):
         serial_dev = serial.Serial(baudrate=baud, timeout=0, exclusive=False)

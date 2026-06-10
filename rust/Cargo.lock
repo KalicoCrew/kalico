@@ -839,6 +839,7 @@ dependencies = [
  "kalico-protocol",
  "libc",
  "log",
+ "motion-bridge",
  "nurbs",
  "pyo3",
  "runtime",

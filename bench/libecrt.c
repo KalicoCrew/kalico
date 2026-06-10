@@ -125,6 +125,9 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     ec_SDOwrite(1, 0x1C33, 0x01, FALSE, sizeof(sync_dc), &sync_dc, EC_TIMEOUTRXM);
     ec_SDOwrite(1, 0x1C32, 0x02, FALSE, sizeof(cyc),     &cyc,     EC_TIMEOUTRXM);
     ec_SDOwrite(1, 0x1C33, 0x02, FALSE, sizeof(cyc),     &cyc,     EC_TIMEOUTRXM);
+    uint16_t ferr_timeout_ms = 0;
+    ec_SDOwrite(1, 0x6066, 0x00, FALSE, sizeof(ferr_timeout_ms),
+                &ferr_timeout_ms, EC_TIMEOUTRXM);
 
     ec_configdc();
     ec_dcsync0(1, TRUE, (uint32_t)g_cycle_ns, (int32_t)(g_cycle_ns / 2));
@@ -234,6 +237,32 @@ int32_t  ec_rt_get_position_actual(void)        { return g_in->position_actual; 
 uint16_t ec_rt_get_statusword(void)             { return g_in->statusword; }
 uint16_t ec_rt_get_error_code(void)             { return g_in->error_code; }
 int32_t  ec_rt_get_following_error(void)        { return g_in->following_error; }
+
+int ec_rt_read_limits(uint32_t *ferr_counts, uint16_t *ferr_timeout_ms,
+                      uint16_t *torque_tenth_pct)
+{
+    int sz = sizeof(*ferr_counts);
+    if (ec_SDOread(1, 0x6065, 0x00, FALSE, &sz, ferr_counts, EC_TIMEOUTRXM) <= 0)
+        return -1;
+    sz = sizeof(*ferr_timeout_ms);
+    if (ec_SDOread(1, 0x6066, 0x00, FALSE, &sz, ferr_timeout_ms, EC_TIMEOUTRXM) <= 0)
+        return -2;
+    sz = sizeof(*torque_tenth_pct);
+    if (ec_SDOread(1, 0x6072, 0x00, FALSE, &sz, torque_tenth_pct, EC_TIMEOUTRXM) <= 0)
+        return -3;
+    return 0;
+}
+
+int ec_rt_write_limits(uint32_t ferr_counts, uint16_t torque_tenth_pct)
+{
+    if (ec_SDOwrite(1, 0x6065, 0x00, FALSE, sizeof(ferr_counts), &ferr_counts,
+                    EC_TIMEOUTRXM) <= 0)
+        return -1;
+    if (ec_SDOwrite(1, 0x6072, 0x00, FALSE, sizeof(torque_tenth_pct),
+                    &torque_tenth_pct, EC_TIMEOUTRXM) <= 0)
+        return -2;
+    return 0;
+}
 
 void ec_rt_disable(void) {
     g_enabled = 0;

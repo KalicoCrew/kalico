@@ -14,7 +14,17 @@ from .. import chelper, toolhead
 from ..gcode import CommandError
 from ..kinematics import extruder
 from ..stepper import LookupMultiRail
-from .homing import Homing, HomingMove
+
+try:
+    from .homing import Homing, HomingMove
+except ImportError:
+
+    class Homing:
+        pass
+
+    class HomingMove:
+        pass
+
 
 SERVO_NAME = "servo tr_servo"
 SELECTOR_STEPPER_NAME = "stepper_tr_selector"

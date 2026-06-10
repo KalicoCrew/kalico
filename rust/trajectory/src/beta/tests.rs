@@ -13,10 +13,10 @@ fn default_limits() -> temporal::Limits {
 
 fn default_shaper_config() -> ShaperConfig {
     ShaperConfig {
-        x: crate::RequiredShaper::SmoothZv {
+        x: crate::AxisShaper::SmoothZv {
             frequency_hz: 180.0,
         },
-        y: crate::RequiredShaper::SmoothZv {
+        y: crate::AxisShaper::SmoothZv {
             frequency_hz: 120.0,
         },
         z: crate::AxisShaper::Passthrough,

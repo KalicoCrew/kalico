@@ -3,9 +3,9 @@
 # Copyright (C) 2016-2025  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import collections
-import logging
 import math
+
+from .rail import BaseRail
 
 
 class error(Exception):
@@ -48,7 +48,6 @@ class MCU_stepper:
         # Step-on-both-edges is the only mode the Rust runtime emits.
         self._step_both_edge = True
         self._req_step_both_edge = False
-        self._mcu_position_offset = 0.0
         self._active_callbacks = []
         self._bridge_active_axes = b""
         self._stepper_kinematics = None
@@ -116,11 +115,9 @@ class MCU_stepper:
         return self._rotation_dist, self._steps_per_rotation
 
     def set_rotation_distance(self, rotation_dist):
-        mcu_pos = self.get_mcu_position()
         self._rotation_dist = rotation_dist
         self._step_dist = rotation_dist / self._steps_per_rotation
         self.set_stepper_kinematics(self._stepper_kinematics)
-        self._set_mcu_position(mcu_pos)
 
     def get_dir_inverted(self):
         return self._invert_dir, self._orig_invert_dir
@@ -133,88 +130,16 @@ class MCU_stepper:
         self._mcu.get_printer().send_event("stepper:set_dir_inverted", self)
 
     def calc_position_from_coord(self, coord):
-        return 0.0
+        raise error(
+            "MCU_stepper.calc_position_from_coord is host step generation; "
+            "motion runs on the bridge runtime engine"
+        )
 
     def set_position(self, coord):
         return
 
     def get_commanded_position(self):
         return 0.0
-
-    def get_mcu_position(self, cmd_pos=None):
-        if cmd_pos is None:
-            cmd_pos = self.get_commanded_position()
-        mcu_pos_dist = cmd_pos + self._mcu_position_offset
-        mcu_pos = mcu_pos_dist / self._step_dist
-        if mcu_pos >= 0.0:
-            return int(mcu_pos + 0.5)
-        return int(mcu_pos - 0.5)
-
-    def _set_mcu_position(self, mcu_pos):
-        mcu_pos_dist = mcu_pos * self._step_dist
-        self._mcu_position_offset = mcu_pos_dist - self.get_commanded_position()
-
-    def get_past_mcu_position(self, print_time):
-        bridge = getattr(self._mcu, "_motion_bridge", None)
-        if bridge is not None and getattr(
-            bridge, "_software_trip_active", False
-        ):
-            try:
-                base = getattr(bridge, "_homing_print_time_base", 0.0)
-                pos_xyz = bridge.get_homing_position_at_time(print_time - base)
-            except Exception as e:
-                logging.warning(
-                    "get_past_mcu_position: curve eval failed for %s: %s",
-                    self.get_name(),
-                    e,
-                )
-                return getattr(
-                    self,
-                    "_bridge_last_trip_step_count",
-                    self.get_mcu_position(),
-                )
-            motor_pos = self._calc_motor_position_from_xyz(pos_xyz)
-            mcu_pos_dist = motor_pos + self._mcu_position_offset
-            mcu_pos = mcu_pos_dist / self._step_dist
-            if mcu_pos >= 0.0:
-                return int(mcu_pos + 0.5)
-            return int(mcu_pos - 0.5)
-        return getattr(
-            self, "_bridge_last_trip_step_count", self.get_mcu_position()
-        )
-
-    def _calc_motor_position_from_xyz(self, pos_xyz):
-        bridge = getattr(self._mcu, "_motion_bridge", None)
-        kin = (
-            getattr(bridge, "_kinematics_name", "cartesian")
-            if bridge
-            else "cartesian"
-        )
-        axis = self._bridge_active_axes
-        if kin == "corexy":
-            if axis in (b"x", b"+x"):
-                return pos_xyz[0] + pos_xyz[1]
-            elif axis in (b"y", b"-y"):
-                return pos_xyz[0] - pos_xyz[1]
-            else:
-                idx = {b"z": 2}.get(axis, 2)
-                return pos_xyz[idx]
-        else:
-            idx = {b"x": 0, b"+x": 0, b"y": 1, b"+y": 1, b"z": 2}.get(axis, 0)
-            return pos_xyz[idx]
-
-    def bridge_set_position_from_step_count(self, step_count):
-        step_count = int(step_count)
-        self._bridge_last_trip_step_count = step_count
-        self._set_mcu_position(step_count)
-        logging.info(
-            "[bridge-trace] stepper trip snapshot: stepper=%s count=%d",
-            self.get_name(),
-            step_count,
-        )
-
-    def mcu_to_commanded_position(self, mcu_pos):
-        return mcu_pos * self._step_dist - self._mcu_position_offset
 
     def dump_steps(self, count, start_clock, end_clock):
         return ([], 0)
@@ -226,9 +151,6 @@ class MCU_stepper:
         old_sk = self._stepper_kinematics
         self._stepper_kinematics = sk
         return old_sk
-
-    def note_homing_end(self):
-        return
 
     def get_trapq(self):
         return self._trapq
@@ -324,7 +246,7 @@ def parse_step_distance(config, units_in_radians=None, note_valid=False):
 ######################################################################
 
 
-class PrinterRail:
+class PrinterRail(BaseRail):
     def __init__(
         self,
         config,
@@ -332,21 +254,20 @@ class PrinterRail:
         default_position_endstop=None,
         units_in_radians=False,
     ):
+        super().__init__()
         self.stepper_units_in_radians = units_in_radians
         self.steppers = []
         self.endstops = []
-        self.endstop_map = {}
         self.add_extra_stepper(config)
         mcu_stepper = self.steppers[0]
         self._tmc_current_helpers = None
         self.get_name = mcu_stepper.get_name
         self.get_commanded_position = mcu_stepper.get_commanded_position
         self.calc_position_from_coord = mcu_stepper.calc_position_from_coord
-        mcu_endstop = self.endstops[0][0]
-        if hasattr(mcu_endstop, "get_position_endstop"):
-            self.position_endstop = mcu_endstop.get_position_endstop()
-        elif default_position_endstop is None:
-            self.position_endstop = config.getfloat("position_endstop")
+        if default_position_endstop is None:
+            self.position_endstop = config.getfloat(
+                "position_endstop", config.getfloat("position_min", 0.0)
+            )
         else:
             self.position_endstop = config.getfloat(
                 "position_endstop", default_position_endstop
@@ -358,10 +279,7 @@ class PrinterRail:
         )
 
         if need_position_minmax:
-            self.position_min = config.getfloat("position_min", 0.0)
-            self.position_max = config.getfloat(
-                "position_max", above=self.position_min
-            )
+            self._parse_position_range(config)
         else:
             self.position_min = 0.0
             self.position_max = self.position_endstop
@@ -377,7 +295,7 @@ class PrinterRail:
             "use_sensorless_homing", endstop_is_virtual
         )
 
-        self.homing_speed = config.getfloat("homing_speed", 5.0, above=0.0)
+        self._parse_homing_speeds(config)
 
         default_second_homing_speed = self.homing_speed / 2.0
         if self.use_sensorless_homing:
@@ -385,12 +303,6 @@ class PrinterRail:
 
         self.second_homing_speed = config.getfloat(
             "second_homing_speed", default_second_homing_speed, above=0.0
-        )
-        self.homing_retract_speed = config.getfloat(
-            "homing_retract_speed", self.homing_speed, above=0.0
-        )
-        self.homing_retract_dist = config.getfloat(
-            "homing_retract_dist", 5.0, minval=0.0
         )
         self.homing_positive_dir = config.getboolean(
             "homing_positive_dir", None
@@ -433,36 +345,6 @@ class PrinterRail:
             ]
         return self._tmc_current_helpers
 
-    def get_range(self):
-        return self.position_min, self.position_max
-
-    def get_homing_info(self):
-        homing_info = collections.namedtuple(
-            "homing_info",
-            [
-                "speed",
-                "position_endstop",
-                "retract_speed",
-                "retract_dist",
-                "positive_dir",
-                "second_homing_speed",
-                "use_sensorless_homing",
-                "min_home_dist",
-                "accel",
-            ],
-        )(
-            self.homing_speed,
-            self.position_endstop,
-            self.homing_retract_speed,
-            self.homing_retract_dist,
-            self.homing_positive_dir,
-            self.second_homing_speed,
-            self.use_sensorless_homing,
-            self.min_home_dist,
-            self.homing_accel,
-        )
-        return homing_info
-
     def get_steppers(self):
         return list(self.steppers)
 
@@ -472,37 +354,6 @@ class PrinterRail:
     def add_extra_stepper(self, config):
         stepper = PrinterStepper(config, self.stepper_units_in_radians)
         self.steppers.append(stepper)
-        if self.endstops and config.get("endstop_pin", None) is None:
-            self.endstops[0][0].add_stepper(stepper)
-            return
-        endstop_pin = config.get("endstop_pin")
-        printer = config.get_printer()
-        ppins = printer.lookup_object("pins")
-        pin_params = ppins.parse_pin(endstop_pin, True, True)
-        pin_name = "%s:%s" % (pin_params["chip_name"], pin_params["pin"])
-        endstop = self.endstop_map.get(pin_name, None)
-        if endstop is None:
-            mcu_endstop = ppins.setup_pin("endstop", endstop_pin)
-            self.endstop_map[pin_name] = {
-                "endstop": mcu_endstop,
-                "invert": pin_params["invert"],
-                "pullup": pin_params["pullup"],
-            }
-            name = stepper.get_name(short=True)
-            self.endstops.append((mcu_endstop, name))
-            query_endstops = printer.load_object(config, "query_endstops")
-            query_endstops.register_endstop(mcu_endstop, name)
-        else:
-            mcu_endstop = endstop["endstop"]
-            changed_invert = pin_params["invert"] != endstop["invert"]
-            changed_pullup = pin_params["pullup"] != endstop["pullup"]
-            if changed_invert or changed_pullup:
-                raise error(
-                    "Printer rail %s shared endstop pin %s "
-                    "must specify the same pullup/invert settings"
-                    % (self.get_name(), pin_name)
-                )
-        mcu_endstop.add_stepper(stepper)
 
     def setup_itersolve(self, alloc_func, *params):
         for stepper in self.steppers:

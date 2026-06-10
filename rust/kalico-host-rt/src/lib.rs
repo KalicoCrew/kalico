@@ -1,6 +1,5 @@
 pub mod clock;
 pub mod clock_sync;
-pub mod endstop;
 pub mod fault;
 pub mod host_io;
 pub mod native_call;

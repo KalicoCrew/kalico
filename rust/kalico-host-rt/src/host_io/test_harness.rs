@@ -189,6 +189,28 @@ impl ReactorHarness {
         }
     }
 
+    pub fn new_with_parser(parser: Arc<MsgProtoParser>) -> Self {
+        let (port, port_handles) = FakeSerialPort::new();
+        let clock = MockClock::new();
+        let (submission_tx, submission_rx) = std::sync::mpsc::channel();
+        let status_snapshot = Arc::new(ArcSwap::from_pointee(StatusEvent::default()));
+        let config = KalicoHostIoConfig::default();
+        let reactor = Reactor::new_for_tests(
+            port,
+            parser,
+            submission_rx,
+            status_snapshot,
+            config,
+            clock.clone(),
+        );
+        Self {
+            reactor,
+            clock,
+            port_handles,
+            submission_tx,
+        }
+    }
+
     pub fn new_with_seq_state(seq: IdentifySeqState) -> Self {
         let (port, port_handles) = FakeSerialPort::new();
         let clock = MockClock::new();
@@ -262,6 +284,27 @@ impl ReactorHarness {
             deadline,
         );
         rx
+    }
+
+    pub fn register_interceptor(
+        &mut self,
+        msg_name: &str,
+        oid: Option<u32>,
+        callback: Box<dyn Fn(&crate::transport::MessageParams) + Send + Sync>,
+    ) -> crate::host_io::InterceptorId {
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel(1);
+        self.submission_tx
+            .send(crate::host_io::ReactorCommand::RegisterInterceptor {
+                msg_name: msg_name.to_owned(),
+                oid,
+                callback: crate::host_io::interceptor::InterceptorCallback(callback),
+                reply: reply_tx,
+            })
+            .expect("submission_tx send failed in register_interceptor");
+        self.reactor.tick_once();
+        reply_rx
+            .recv()
+            .expect("reply_rx recv failed in register_interceptor")
     }
 
     pub fn install_passthrough_router(
@@ -387,6 +430,16 @@ impl ReactorHarness {
 
     pub fn passthrough_notify_map_len(&self) -> usize {
         self.reactor.passthrough_notify_map.len()
+    }
+
+    pub fn into_background_io(self) -> (Arc<crate::host_io::KalicoHostIo>, FakePortHandles) {
+        let submission_tx = self.submission_tx.clone();
+        let port_handles = self.port_handles.clone();
+        let mut reactor = self.reactor;
+        let handle = std::thread::spawn(move || reactor.run());
+        let io =
+            crate::host_io::KalicoHostIo::from_submission_tx_for_test(submission_tx, Some(handle));
+        (io, port_handles)
     }
 }
 

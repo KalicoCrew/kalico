@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use motion_bridge_native::classify::classify_and_build;
 use motion_bridge_native::config::{PlannerConfig, PlannerLimits};
 use motion_bridge_native::planner::{DispatchError, PlannerHandle};
-use trajectory::{AxisShaper, RequiredShaper, ShapedSegment, ShaperConfig};
+use trajectory::{AxisShaper, ShapedSegment, ShaperConfig};
 
 use nurbs::ScalarNurbs;
 use nurbs::eval::{eval_derivative, eval_polynomial};
@@ -30,10 +30,10 @@ fn recording_dispatch() -> (
 fn smooth_zv_186hz_config() -> PlannerConfig {
     let mut c = PlannerConfig::default();
     c.shaper = ShaperConfig {
-        x: RequiredShaper::SmoothZv {
+        x: AxisShaper::SmoothZv {
             frequency_hz: 186.0,
         },
-        y: RequiredShaper::SmoothZv {
+        y: AxisShaper::SmoothZv {
             frequency_hz: 186.0,
         },
         z: AxisShaper::Passthrough,
@@ -732,70 +732,6 @@ fn kalico_stream_open_resets_planner_state() {
 }
 
 #[test]
-fn homing_resets_planner_state() {
-    let (dispatch, recorded) = recording_dispatch();
-    let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
-    h.update_limits(relaxed_limits()).expect("update_limits");
-
-    h.submit_move(classify_and_build([0.0; 3], 1.0, 0.0, 0.0, 0.0, 100.0).unwrap())
-        .expect("submit move 1");
-    h.flush().expect("flush move 1");
-
-    let segs_before_reset = recorded.lock().unwrap().len();
-    assert!(
-        segs_before_reset > 0,
-        "precondition: first move must produce dispatched segments before the reset",
-    );
-
-    let new_home = [50.0, 60.0, 70.0, 0.0];
-    h.homing(new_home).expect("homing");
-
-    h.submit_move(
-        classify_and_build(
-            [new_home[0], new_home[1], new_home[2]],
-            1.0,
-            0.0,
-            0.0,
-            0.0,
-            100.0,
-        )
-        .unwrap(),
-    )
-    .expect("submit move 2");
-    h.flush().expect("flush move 2");
-
-    let segs = recorded.lock().unwrap().clone();
-    assert!(
-        segs.len() > segs_before_reset,
-        "second submit/flush produced no new dispatched segments after homing reset",
-    );
-
-    const SEAM_BUDGET_MM: f64 = 5.0e-2;
-    let post_reset_first = &segs[segs_before_reset];
-    let x_start = x_pos_at(post_reset_first, post_reset_first.t_start);
-    assert!(
-        (x_start - new_home[0]).abs() < SEAM_BUDGET_MM,
-        "post-homing first dispatched X = {} mm; expected {} mm \
-         (the new home position) within {} mm",
-        x_start,
-        new_home[0],
-        SEAM_BUDGET_MM,
-    );
-
-    let terminal_seg = segs.last().unwrap();
-    let terminal_x = x_pos_at(terminal_seg, terminal_seg.t_end);
-    assert!(
-        (terminal_x - (new_home[0] + 1.0)).abs() < SEAM_BUDGET_MM,
-        "terminal dispatched X = {} mm; expected {} mm within {} mm",
-        terminal_x,
-        new_home[0] + 1.0,
-        SEAM_BUDGET_MM,
-    );
-
-    h.shutdown();
-}
-
-#[test]
 fn underrun_recovery_resets_to_recovered_position() {
     let (dispatch, recorded) = recording_dispatch();
     let mut h = PlannerHandle::spawn(smooth_zv_186hz_config(), dispatch);
@@ -916,8 +852,8 @@ fn update_shaper_commits_held_output_before_swap() {
     let commit_count_before = h.commit_fire_count();
 
     let new_shaper = ShaperConfig {
-        x: RequiredShaper::SmoothZv { frequency_hz: 60.0 },
-        y: RequiredShaper::SmoothZv { frequency_hz: 60.0 },
+        x: AxisShaper::SmoothZv { frequency_hz: 60.0 },
+        y: AxisShaper::SmoothZv { frequency_hz: 60.0 },
         z: AxisShaper::Passthrough,
     };
     h.update_shaper(new_shaper).expect("update_shaper");

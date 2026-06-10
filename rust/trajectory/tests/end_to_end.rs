@@ -12,8 +12,7 @@ use geometry::segment::EMode;
 use nurbs::{ScalarNurbs, VectorNurbs};
 use temporal::multi::{GridStrategy, SegmentInput};
 use trajectory::{
-    AxisShaper, ELimits, RequiredShaper, ShapeBatchInput, ShapeError, ShapeSegmentInput,
-    ShaperConfig,
+    AxisShaper, ELimits, ShapeBatchInput, ShapeError, ShapeSegmentInput, ShaperConfig,
 };
 
 fn make_straight_line(from: [f64; 3], to: [f64; 3]) -> VectorNurbs<f64, 3> {
@@ -31,8 +30,8 @@ fn default_limits() -> temporal::Limits {
 
 fn test_shaper_config() -> ShaperConfig {
     ShaperConfig {
-        x: RequiredShaper::SmoothZv { frequency_hz: 10.0 },
-        y: RequiredShaper::SmoothZv { frequency_hz: 10.0 },
+        x: AxisShaper::SmoothZv { frequency_hz: 10.0 },
+        y: AxisShaper::SmoothZv { frequency_hz: 10.0 },
         z: AxisShaper::Passthrough,
     }
 }
@@ -129,8 +128,8 @@ fn shape_batch_short_low_velocity_line_refits_at_five_microns() {
         grid_strategy: GridStrategy::Fixed(25),
         worker_threads: 1,
         shaper: ShaperConfig {
-            x: RequiredShaper::SmoothZv { frequency_hz: 50.0 },
-            y: RequiredShaper::SmoothZv { frequency_hz: 50.0 },
+            x: AxisShaper::SmoothZv { frequency_hz: 50.0 },
+            y: AxisShaper::SmoothZv { frequency_hz: 50.0 },
             z: AxisShaper::Passthrough,
         },
         fit_tolerance_mm: 0.005,

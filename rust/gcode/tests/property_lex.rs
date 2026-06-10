@@ -30,8 +30,6 @@ proptest! {
                     prop_assert!(line_no >= 1 && line_no <= line_count,
                         "line_no {line_no} out of range 1..={line_count}");
                 }
-                // Token is non_exhaustive; ParseError doesn't expose line_no uniformly;
-                // both arms exist purely for the no-panic guarantee.
                 Ok(_) | Err(_) => {}
             }
         }

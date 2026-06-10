@@ -61,6 +61,11 @@ pub const EVENT_TICK_UNDERRUN: u16 = 2;
 
 pub const EVENT_ENDSTOP_TRIP: u16 = 1;
 pub const EVENT_ENDSTOP_ARM_TIMEOUT: u16 = 2;
+pub const EVENT_ENDSTOP_TRSYNC_TRIGGER_CMD: u16 = 3;
+pub const EVENT_ENDSTOP_TRSYNC_DO_TRIGGER: u16 = 4;
+pub const EVENT_ENDSTOP_STOP_CB_ENTER: u16 = 5;
+pub const EVENT_ENDSTOP_SOFTWARE_TRIP: u16 = 6;
+pub const EVENT_ENDSTOP_TIM5_HALTED: u16 = 7;
 
 // diag subsystem events (codes mirror MCU DIAG_EV_* tag values 1..=8)
 pub const EVENT_DIAG_TIM5_LONG: u16 = 1;
@@ -188,6 +193,26 @@ pub fn event_info(subsystem: u8, event: u16) -> (&'static str, &'static str) {
         (SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_ARM_TIMEOUT) => {
             ("endstop.arm_timeout", "endstop arm timeout arm={arg0}")
         }
+        (SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_TRSYNC_TRIGGER_CMD) => (
+            "endstop.trsync_trigger_cmd",
+            "trsync_trigger cmd oid={arg0} reason={arg1}",
+        ),
+        (SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_TRSYNC_DO_TRIGGER) => (
+            "endstop.trsync_do_trigger",
+            "trsync_do_trigger flags={arg0} reason={arg1}",
+        ),
+        (SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_STOP_CB_ENTER) => (
+            "endstop.stop_cb_enter",
+            "runtime_stop_on_trigger_cb arm_id={arg0} reason={arg1}",
+        ),
+        (SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_SOFTWARE_TRIP) => (
+            "endstop.software_trip",
+            "software_trip arg_arm_id={arg0} state_result={arg1}",
+        ),
+        (SUBSYSTEM_ENDSTOP, EVENT_ENDSTOP_TIM5_HALTED) => (
+            "endstop.tim5_halted",
+            "poll task tripped — TIM5 halted arm_id={arg0} trip_clock={arg1}",
+        ),
         _ => ("unknown", ""),
     }
 }

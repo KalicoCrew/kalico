@@ -44,27 +44,6 @@ fn lifts_unknown_to_catch_all() {
 }
 
 #[test]
-fn lifts_endstop_tripped() {
-    let mut p = MessageParams::new();
-    p.insert("arm_id", MessageValue::U32(42));
-    p.insert("trip_clock_lo", MessageValue::U32(0xDEAD_BEEF));
-    p.insert("trip_clock_hi", MessageValue::U32(0x0000_0001));
-    p.insert("trip_source_idx", MessageValue::U32(2));
-    p.insert("fmt_version", MessageValue::U32(1));
-    p.insert("stepper_count", MessageValue::U32(3));
-    match RuntimeEvent::lift("kalico_endstop_tripped", p) {
-        RuntimeEvent::EndstopTripped(e) => {
-            assert_eq!(e.arm_id, 42);
-            assert_eq!(e.trip_clock, (1u64 << 32) | 0xDEAD_BEEFu64);
-            assert_eq!(e.trip_source_idx, 2);
-            assert_eq!(e.fmt_version, 1);
-            assert_eq!(e.stepper_count, 3);
-        }
-        other => panic!("expected EndstopTripped, got {:?}", other),
-    }
-}
-
-#[test]
 fn lifts_unknown_recovers_format_from_pseudo_field() {
     let mut p = MessageParams::new();
     p.insert("#msg", MessageValue::String("debug 5 hi".into()));

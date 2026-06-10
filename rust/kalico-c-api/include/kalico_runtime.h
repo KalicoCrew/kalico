@@ -15,39 +15,6 @@
 #include <stdint.h>
 #include <stdlib.h>
 
-#define KALICO_TRIP_EVENT_V1_HEADER_LEN 15
-
-#define KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN 5
-
-#define KALICO_TRIP_EVENT_V1_FMT_VERSION 1
-
-#define KALICO_TRIP_EVENT_V1_MAX_LEN (KALICO_TRIP_EVENT_V1_HEADER_LEN + (MAX_STEPPERS * KALICO_TRIP_EVENT_V1_PER_STEPPER_LEN))
-
-enum ArmPolicy {
-  TripImmediately = 0,
-  WaitForClear = 1,
-  IgnoreUntilMoving = 2,
-};
-typedef uint8_t ArmPolicy;
-
-enum SourceKind {
-  Physical = 0,
-  TmcDiag = 1,
-  /**
-   * Software-triggered source: no GPIO pin is polled. The arm uses a
-   * credit-windowed deadline mechanism instead — the host periodically
-   * calls `extend_deadline` to push the window forward; if it stops
-   * (because the probe triggered on the host side), the deadline expires
-   * and the MCU freezes the segment autonomously.
-   */
-  Software = 2,
-};
-typedef uint8_t SourceKind;
-
-typedef struct SourceConfig SourceConfig;
-
-typedef struct VelocityAxis VelocityAxis;
-
 typedef struct KalicoRuntime {
   uint8_t _private[0];
 } KalicoRuntime;
@@ -60,41 +27,6 @@ typedef struct StepperBindingRust {
   uint8_t tmc_cs_oid;
   uint8_t _pad[2];
 } StepperBindingRust;
-
-
-
-
-
-
-
-
-
-
-
-
-
-int32_t kalico_endstop_arm(uint32_t arm_id,
-                           uint32_t arm_clock_lo,
-                           uint32_t arm_clock_hi,
-                           uint8_t source_count,
-                           const uint8_t *sources_ptr,
-                           uintptr_t sources_len,
-                           uint8_t stepper_count,
-                           const uint8_t *steppers_ptr,
-                           uintptr_t steppers_len,
-                           uint32_t grant_ticks_lo,
-                           uint32_t grant_ticks_hi,
-                           uint8_t *out_status);
-
-int32_t kalico_endstop_disarm(uint32_t arm_id, uint8_t *out_status);
-
-int32_t kalico_endstop_poll_trip(uint8_t *out_buf,
-                                 uintptr_t out_buf_len,
-                                 uintptr_t *out_actual_len);
-
-int32_t kalico_endstop_set_pin_level(uint16_t gpio, uint8_t level);
-
-int32_t kalico_extend_deadline(uint32_t arm_id, uint32_t clock_lo, uint32_t clock_hi);
 
 int32_t kalico_runtime_clock_sync_request(struct KalicoRuntime *rt,
                                           uint32_t request_id,
@@ -112,6 +44,8 @@ int32_t kalico_runtime_configure_axis(struct KalicoRuntime *rt,
                                       const struct StepperBindingRust *bindings_ptr,
                                       uint8_t stepper_count);
 
+int32_t kalico_runtime_discard_pending(struct KalicoRuntime *rt);
+
 uint32_t kalico_runtime_enqueue_success_lo(struct KalicoRuntime *rt);
 
 double kalico_runtime_get_axis_accumulator(struct KalicoRuntime *rt, uint8_t oid);
@@ -122,7 +56,7 @@ uint32_t kalico_runtime_get_dispatcher_floor_cycles(void);
 
 int32_t kalico_runtime_get_heartbeat(struct KalicoRuntime *rt,
                                      uint8_t *out_engine_state,
-                                     uint8_t *out_fault_code,
+                                     uint16_t *out_fault_code,
                                      uint32_t *out_retired,
                                      uintptr_t max_axes);
 
@@ -130,6 +64,10 @@ void kalico_runtime_get_last_timing(struct KalicoRuntime *rt,
                                     uint64_t *now_out,
                                     uint64_t *t_start_out,
                                     uint64_t *duration_out);
+
+int32_t kalico_runtime_get_occupancy(struct KalicoRuntime *rt,
+                                     uint32_t *out_occupancy,
+                                     uintptr_t max_axes);
 
 uint32_t kalico_runtime_get_sample_period_cycles(void);
 
@@ -148,6 +86,8 @@ uint32_t kalico_runtime_last_push_consumers_remaining(struct KalicoRuntime *rt);
 uint32_t kalico_runtime_last_push_x_handle(struct KalicoRuntime *rt);
 
 uint32_t kalico_runtime_last_push_y_handle(struct KalicoRuntime *rt);
+
+uint64_t kalico_runtime_now_ticks(struct KalicoRuntime *rt);
 
 uint32_t kalico_runtime_push_seg_all_unused_lo(struct KalicoRuntime *rt);
 
@@ -181,11 +121,6 @@ int32_t kalico_runtime_write_piece(struct KalicoRuntime *rt,
                                    uint16_t start_slot,
                                    uint8_t index,
                                    const uint8_t *piece_ptr);
-
-int32_t kalico_software_trip(uint32_t arm_id,
-                             uint32_t clock_lo,
-                             uint32_t clock_hi,
-                             uint8_t *out_status);
 
 extern uint32_t runtime_cyccnt_read(void);
 

@@ -18,7 +18,6 @@
 #include "step_queue.h"
 
 extern void *runtime_handle;
-extern void runtime_endstop_sample_pins(void);
 
 // On H7 this is the IWDG flag; the Linux build has no IWDG, so default ok=1.
 volatile uint8_t runtime_liveness_ok = 1;
@@ -111,10 +110,6 @@ host_tick_main(void *arg)
             continue;
         if (!runtime_handle)
             continue;
-
-#if !CONFIG_KALICO_SIM
-        runtime_endstop_sample_pins();
-#endif
 
         (void)runtime_cyccnt_read();
         kalico_runtime_tick_sample(runtime_handle);

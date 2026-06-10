@@ -144,9 +144,6 @@ fn lowercase_param_letter_returns_error() {
 
 #[test]
 fn multibyte_whitespace_after_head_letter_returns_error() {
-    // proptest shrink: "A\u{85}0\t" — NEL is 2-byte Unicode whitespace; the
-    // lexer must not slice mid-character when the head number does not
-    // immediately follow the letter.
     let toks = collect("A\u{85}0\t");
     assert_eq!(toks.len(), 1);
     match &toks[0] {

@@ -19,7 +19,7 @@ use crate::pad::{pad_segment_axis, EHalo};
 use crate::plan_velocity::{PlanShaper, SafetyMode};
 use crate::refit::{refit_to_cubic, REFIT_TOLERANCE_MM};
 use crate::shaper::shape_axis;
-use crate::{AxisShaper, ELimits, RequiredShaper};
+use crate::{AxisShaper, ELimits};
 
 fn linear_segment() -> FittedSegment {
     let x_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
@@ -179,18 +179,20 @@ fn required_shaper_h_matches_axis_shaper_h() {
     ];
     let state = ShaperState::new([0.0; 4], &shapers);
 
-    let kernel_x = RequiredShaper::SmoothZv {
+    let kernel_x = AxisShaper::SmoothZv {
         frequency_hz: 186.0,
     }
-    .to_kernel();
+    .to_kernel()
+    .unwrap();
     let (lo_x, hi_x) = kernel_x.support();
     let expected_h_x = (hi_x - lo_x) / 2.0;
     assert!((state.axes[0].h - expected_h_x).abs() < 1e-15);
 
-    let kernel_y = RequiredShaper::SmoothMzv {
+    let kernel_y = AxisShaper::SmoothMzv {
         frequency_hz: 122.0,
     }
-    .to_kernel();
+    .to_kernel()
+    .unwrap();
     let (lo_y, hi_y) = kernel_y.support();
     let expected_h_y = (hi_y - lo_y) / 2.0;
     assert!((state.axes[1].h - expected_h_y).abs() < 1e-15);
@@ -216,8 +218,8 @@ fn replan_kernels_planshaper() -> [Option<PlanShaper>; 4] {
 
 fn replan_kernels_piecewise() -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
     [
-        Some(RequiredShaper::SmoothMzv { frequency_hz: 60.0 }.to_kernel()),
-        Some(RequiredShaper::SmoothMzv { frequency_hz: 60.0 }.to_kernel()),
+        AxisShaper::SmoothMzv { frequency_hz: 60.0 }.to_kernel(),
+        AxisShaper::SmoothMzv { frequency_hz: 60.0 }.to_kernel(),
         None,
         None,
     ]
@@ -777,7 +779,7 @@ fn append_and_replan_rolls_back_planned_caches_on_plan_velocity_error() {
         .collect();
 
     let mut ctx_bad = ctx_good;
-    ctx_bad.kernels[0] = Some(PlanShaper::Passthrough);
+    ctx_bad.limits = temporal::Limits::new([1e-10; 3], [5_000.0; 3], [100_000.0; 3], 2_500.0);
 
     let m_broken = linear_x_segment(200.0, 400.0, 200.0);
     let bad_result = state.append_and_replan(m_broken, &ctx_bad);

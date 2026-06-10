@@ -93,19 +93,23 @@ fn pump_routes_both_serial_and_ethercat_mcu_ids() {
 
     let (tx, rx) = mpsc::channel::<PumpMsg>();
     let handle = std::thread::spawn(move || {
-        run_pump(rx, sink, |_k| 8u32, |_| None, |_| {});
+        run_pump(rx, sink, |_k| 8u32, |_| None, |_| {}, |_, _| {}, |_| {});
     });
 
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key: AxisKey { mcu_id: 1, axis: 0 },
         pieces: vec![piece(0)],
         fresh_stream: false,
+        lead_secs: motion_bridge_native::pump::MAX_LEAD_SECS,
+        drip_cohort: None,
     }))
     .unwrap();
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key: AxisKey { mcu_id: 2, axis: 0 },
         pieces: vec![piece(1)],
         fresh_stream: false,
+        lead_secs: motion_bridge_native::pump::MAX_LEAD_SECS,
+        drip_cohort: None,
     }))
     .unwrap();
 

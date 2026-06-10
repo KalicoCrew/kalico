@@ -2,6 +2,16 @@ use super::*;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
+fn make_enqueue(key: AxisKey, pieces: Vec<(PieceEntry, f64)>, fresh_stream: bool) -> PumpMsg {
+    PumpMsg::Enqueue(EnqueueMsg {
+        key,
+        pieces,
+        fresh_stream,
+        lead_secs: MAX_LEAD_SECS,
+        drip_cohort: None,
+    })
+}
+
 #[test]
 fn room_full_then_drains() {
     let mut q = AxisQueue::new(4);
@@ -80,14 +90,22 @@ fn run_pump_sets_start_slot_from_cursor_and_advances_it() {
     let (tx, rx) = mpsc::channel::<PumpMsg>();
     let sink_clone = sink.clone();
     let handle = std::thread::spawn(move || {
-        run_pump(rx, sink_clone, |_key| RING_DEPTH, |_mcu| None, |_| {});
+        run_pump(
+            rx,
+            sink_clone,
+            |_key| RING_DEPTH,
+            |_mcu| None,
+            |_| {},
+            |_, _| {},
+            |_| {},
+        );
     });
 
-    tx.send(PumpMsg::Enqueue(EnqueueMsg {
-        key: AxisKey { mcu_id: 1, axis: 0 },
-        pieces: (0..N).map(|i| make_piece(i as u64)).collect(),
-        fresh_stream: false,
-    }))
+    tx.send(make_enqueue(
+        AxisKey { mcu_id: 1, axis: 0 },
+        (0..N).map(|i| make_piece(i as u64)).collect(),
+        false,
+    ))
     .unwrap();
     {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -100,11 +118,11 @@ fn run_pump_sets_start_slot_from_cursor_and_advances_it() {
         }
     }
 
-    tx.send(PumpMsg::Enqueue(EnqueueMsg {
-        key: AxisKey { mcu_id: 1, axis: 0 },
-        pieces: (N..N * 2).map(|i| make_piece(i as u64)).collect(),
-        fresh_stream: false,
-    }))
+    tx.send(make_enqueue(
+        AxisKey { mcu_id: 1, axis: 0 },
+        (N..N * 2).map(|i| make_piece(i as u64)).collect(),
+        false,
+    ))
     .unwrap();
     {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
@@ -157,4 +175,231 @@ fn junction_jumps_math() {
         "tick gap should be zero, got {tick_us3}"
     );
     assert!((host_us3 - 500.0).abs() < 1e-3, "host_jump_us={host_us3}");
+}
+
+struct NullSink;
+
+impl PieceSink for NullSink {
+    fn send_frame(
+        &self,
+        _key: AxisKey,
+        _pieces: &[PieceEntry],
+        _start_slot: u16,
+        _new_head: u32,
+    ) -> Result<i32, SendError> {
+        Ok(kalico_protocol::result_codes::OK)
+    }
+}
+
+#[test]
+fn flush_clears_queued_pieces_and_junctions() {
+    let key = AxisKey { mcu_id: 1, axis: 0 };
+    let (tx, rx) = mpsc::channel::<PumpMsg>();
+
+    let freq: f64 = 1_000.0;
+    let lead_secs: f64 = 0.001;
+    let gated_tick: u64 = 1_000;
+
+    let clock: Arc<Mutex<Option<(u64, f64)>>> = Arc::new(Mutex::new(Some((0, freq))));
+    let clock_pump = Arc::clone(&clock);
+    let sink = RecordingSink::new();
+    let sink_pump = sink.clone();
+
+    let handle = std::thread::spawn(move || {
+        run_pump(
+            rx,
+            sink_pump,
+            |_key| 64,
+            move |_mcu| *clock_pump.lock().unwrap(),
+            |_| {},
+            |_, _| {},
+            |_| {},
+        );
+    });
+
+    tx.send(PumpMsg::Enqueue(EnqueueMsg {
+        key,
+        pieces: (0u64..4)
+            .map(|i| {
+                (
+                    PieceEntry {
+                        start_time: gated_tick + i,
+                        coeffs: [0.0; 4],
+                        duration: 0.001,
+                        _reserved: 0,
+                    },
+                    (gated_tick + i) as f64,
+                )
+            })
+            .collect(),
+        fresh_stream: true,
+        lead_secs,
+        drip_cohort: None,
+    }))
+    .unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(30));
+
+    tx.send(PumpMsg::Flush(vec![key])).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+
+    *clock.lock().unwrap() = Some((gated_tick + 1_000, freq));
+
+    tx.send(PumpMsg::Enqueue(EnqueueMsg {
+        key,
+        pieces: vec![(
+            PieceEntry {
+                start_time: 1,
+                coeffs: [0.0; 4],
+                duration: 0.001,
+                _reserved: 0,
+            },
+            1.0,
+        )],
+        fresh_stream: false,
+        lead_secs,
+        drip_cohort: None,
+    }))
+    .unwrap();
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while sink.recorded().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pump never sent the post-flush probe piece — deadlocked"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    tx.send(PumpMsg::Shutdown).unwrap();
+    handle.join().unwrap();
+
+    let recorded = sink.recorded();
+    assert_eq!(
+        recorded.len(),
+        1,
+        "sink must see only the post-flush probe piece; \
+         {} sends means the {} gated pieces survived Flush",
+        recorded.len(),
+        4
+    );
+}
+
+#[test]
+fn on_abandon_reports_flushed_not_pushed_pieces() {
+    let key = AxisKey { mcu_id: 1, axis: 0 };
+    let (tx, rx) = mpsc::channel::<PumpMsg>();
+
+    let freq: f64 = 1_000.0;
+    let lead_secs: f64 = 0.001;
+    let gated_tick: u64 = 1_000;
+
+    let clock: Arc<Mutex<Option<(u64, f64)>>> = Arc::new(Mutex::new(Some((0, freq))));
+    let clock_pump = Arc::clone(&clock);
+    let sink = RecordingSink::new();
+    let sink_pump = sink.clone();
+    let abandoned_total = Arc::new(Mutex::new(0u32));
+    let abandoned_pump = Arc::clone(&abandoned_total);
+
+    let handle = std::thread::spawn(move || {
+        run_pump(
+            rx,
+            sink_pump,
+            |_key| 64,
+            move |_mcu| *clock_pump.lock().unwrap(),
+            |_| {},
+            move |_k: AxisKey, n: u32| {
+                *abandoned_pump.lock().unwrap() += n;
+            },
+            |_| {},
+        );
+    });
+
+    tx.send(PumpMsg::Enqueue(EnqueueMsg {
+        key,
+        pieces: (0u64..4)
+            .map(|i| {
+                (
+                    PieceEntry {
+                        start_time: gated_tick + i,
+                        coeffs: [0.0; 4],
+                        duration: 0.001,
+                        _reserved: 0,
+                    },
+                    (gated_tick + i) as f64,
+                )
+            })
+            .collect(),
+        fresh_stream: true,
+        lead_secs,
+        drip_cohort: None,
+    }))
+    .unwrap();
+
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    tx.send(PumpMsg::Flush(vec![key])).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    *clock.lock().unwrap() = Some((gated_tick + 1_000, freq));
+
+    tx.send(PumpMsg::Enqueue(EnqueueMsg {
+        key,
+        pieces: vec![(
+            PieceEntry {
+                start_time: 1,
+                coeffs: [0.0; 4],
+                duration: 0.001,
+                _reserved: 0,
+            },
+            1.0,
+        )],
+        fresh_stream: false,
+        lead_secs,
+        drip_cohort: None,
+    }))
+    .unwrap();
+    {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while sink.recorded().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pump never sent the post-flush probe piece — deadlocked"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    tx.send(PumpMsg::Shutdown).unwrap();
+    handle.join().unwrap();
+
+    assert_eq!(
+        *abandoned_total.lock().unwrap(),
+        4,
+        "on_abandon must report the 4 Flush-dropped pieces and not the pushed probe"
+    );
+}
+
+#[test]
+fn flush_unknown_key_is_noop() {
+    let (tx, rx) = mpsc::channel::<PumpMsg>();
+    let handle = std::thread::spawn(move || {
+        run_pump(
+            rx,
+            NullSink,
+            |_key| 64,
+            |_mcu| None,
+            |_| {},
+            |_, _| {},
+            |_| {},
+        );
+    });
+
+    let never_enqueued = AxisKey {
+        mcu_id: 99,
+        axis: 7,
+    };
+    tx.send(PumpMsg::Flush(vec![never_enqueued])).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    tx.send(PumpMsg::Shutdown).unwrap();
+    handle.join().unwrap();
 }

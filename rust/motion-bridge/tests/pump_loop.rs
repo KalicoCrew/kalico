@@ -38,18 +38,23 @@ fn pump_stalls_on_ring_full_resumes_on_heartbeat() {
     let (tx, rx) = mpsc::channel();
     let depth = |_k: AxisKey| 2u32;
     let sink = RecordingSink(rec.clone());
-    let handle = std::thread::spawn(move || run_pump(rx, sink, depth, |_| None, |_| {}));
+    let handle =
+        std::thread::spawn(move || run_pump(rx, sink, depth, |_| None, |_| {}, |_, _| {}, |_| {}));
 
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key: AxisKey { mcu_id: 1, axis: 0 },
         pieces: vec![p(0), p(1)],
         fresh_stream: true,
+        lead_secs: motion_bridge_native::pump::MAX_LEAD_SECS,
+        drip_cohort: None,
     }))
     .unwrap();
     tx.send(PumpMsg::Enqueue(EnqueueMsg {
         key: AxisKey { mcu_id: 1, axis: 0 },
         pieces: vec![p(2)],
         fresh_stream: false,
+        lead_secs: motion_bridge_native::pump::MAX_LEAD_SECS,
+        drip_cohort: None,
     }))
     .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(50));

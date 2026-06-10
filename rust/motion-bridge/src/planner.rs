@@ -8,16 +8,17 @@ use nurbs::algebra::PiecewisePolynomialKernel;
 
 use crate::classify::ClassifiedMove;
 use crate::config::{PlannerConfig, PlannerLimits};
+use crate::pump::AxisKey;
 use trajectory::plan_velocity::{PlanShaper, SafetyMode};
 use trajectory::streaming::{EmitContext, ReplanContext, ReplanReport, ShaperState};
-use trajectory::{AxisShaper, EHalo, RequiredShaper, ShapedSegment, ShaperConfig};
+use trajectory::{AxisShaper, EHalo, ShapedSegment, ShaperConfig};
 
 const T_IDLE: Duration = Duration::from_secs(3600);
 
 /// Must equal `anchor::DEFAULT_LEAD_SECS`. Keep in sync with anchor.rs.
 const LEAD: f64 = 0.25;
 
-const SAFETY_MARGIN: f64 = 0.050;
+const SAFETY_MARGIN: f64 = 0.2;
 
 const REPLAN_WARN_BUDGET_US: u64 = ((LEAD - SAFETY_MARGIN) * 1e6) as u64;
 
@@ -26,6 +27,33 @@ pub struct ClockBias {
     pub freq: f64,
     pub offset_s: f64,
     pub last_clock: u64,
+}
+
+pub struct HomeDripParams {
+    pub home_pos: [f64; 4],
+    pub start: [f64; 3],
+    pub axis: u8,
+    pub direction: f64,
+    pub speed_mm_s: f64,
+    pub max_travel_mm: f64,
+    pub cohort: u64,
+    pub participants: Vec<AxisKey>,
+    pub notify: crossbeam_channel::Sender<Result<(), String>>,
+}
+
+impl std::fmt::Debug for HomeDripParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HomeDripParams")
+            .field("home_pos", &self.home_pos)
+            .field("start", &self.start)
+            .field("axis", &self.axis)
+            .field("direction", &self.direction)
+            .field("speed_mm_s", &self.speed_mm_s)
+            .field("max_travel_mm", &self.max_travel_mm)
+            .field("cohort", &self.cohort)
+            .field("participants", &self.participants)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug)]
@@ -37,10 +65,10 @@ pub enum PlannerMsg {
     UpdateShaper(ShaperConfig),
     Shutdown,
     KalicoStreamOpen { home_pos: [f64; 4] },
-    Homing { home_pos: [f64; 4] },
     Underrun { recovered_pos: [f64; 4] },
     ForceIdle { recovered_pos: [f64; 4] },
     ClockSyncRearm { new_bias: ClockBias },
+    HomeDrip(HomeDripParams),
 }
 
 #[derive(Debug)]
@@ -204,12 +232,6 @@ impl PlannerHandle {
             .map_err(|_| PlannerError::ChannelClosed)
     }
 
-    pub fn homing(&self, home_pos: [f64; 4]) -> Result<(), PlannerError> {
-        self.sender
-            .send(PlannerMsg::Homing { home_pos })
-            .map_err(|_| PlannerError::ChannelClosed)
-    }
-
     pub fn underrun(&self, recovered_pos: [f64; 4]) -> Result<(), PlannerError> {
         self.sender
             .send(PlannerMsg::Underrun { recovered_pos })
@@ -219,6 +241,12 @@ impl PlannerHandle {
     pub fn force_idle(&self, recovered_pos: [f64; 4]) -> Result<(), PlannerError> {
         self.sender
             .send(PlannerMsg::ForceIdle { recovered_pos })
+            .map_err(|_| PlannerError::ChannelClosed)
+    }
+
+    pub fn home_drip(&self, p: HomeDripParams) -> Result<(), PlannerError> {
+        self.sender
+            .send(PlannerMsg::HomeDrip(p))
             .map_err(|_| PlannerError::ChannelClosed)
     }
 
@@ -425,11 +453,11 @@ fn run_loop(
                     PlannerMsg::UpdateLimits(_) => "UpdateLimits",
                     PlannerMsg::UpdateShaper(_) => "UpdateShaper",
                     PlannerMsg::KalicoStreamOpen { .. } => "KalicoStreamOpen",
-                    PlannerMsg::Homing { .. } => "Homing",
                     PlannerMsg::Underrun { .. } => "Underrun",
                     PlannerMsg::ForceIdle { .. } => "ForceIdle",
                     PlannerMsg::ClockSyncRearm { .. } => "ClockSyncRearm",
                     PlannerMsg::Shutdown => "Shutdown",
+                    PlannerMsg::HomeDrip(_) => "HomeDrip",
                 };
                 tracing::debug!(
                     subsystem = "motion",
@@ -626,7 +654,7 @@ fn run_loop(
                 thread_state.rebuild(&config);
             }
 
-            PlannerMsg::KalicoStreamOpen { home_pos } | PlannerMsg::Homing { home_pos } => {
+            PlannerMsg::KalicoStreamOpen { home_pos } => {
                 sync_instant = None;
                 state.reset(home_pos);
             }
@@ -652,6 +680,61 @@ fn run_loop(
             }
 
             PlannerMsg::Shutdown => return,
+
+            PlannerMsg::HomeDrip(p) => {
+                sync_instant = None;
+                state.reset(p.home_pos);
+
+                let (dx, dy, dz) = match p.axis {
+                    0 => (p.direction * p.max_travel_mm, 0.0, 0.0),
+                    1 => (0.0, p.direction * p.max_travel_mm, 0.0),
+                    2 => (0.0, 0.0, p.direction * p.max_travel_mm),
+                    other => {
+                        let _ = p.notify.send(Err(format!(
+                            "HomeDrip: unsupported axis {other} (only 0/1/2 supported)"
+                        )));
+                        continue;
+                    }
+                };
+
+                let move_result =
+                    crate::classify::classify_and_build(p.start, dx, dy, dz, 0.0, p.speed_mm_s);
+                let classified = match move_result {
+                    Ok(m) => m,
+                    Err(e) => {
+                        let _ = p.notify.send(Err(format!("HomeDrip classify: {e}")));
+                        continue;
+                    }
+                };
+
+                let result = (|| -> Result<(), String> {
+                    state
+                        .append_and_replan(classified.segment, &thread_state.replan_ctx)
+                        .map_err(|e| format!("HomeDrip replan: {e:?}"))?;
+
+                    let committed = state
+                        .emit_committed(&thread_state.emit_ctx())
+                        .map_err(|e| format!("HomeDrip emit_committed: {e:?}"))?;
+                    let decel = state
+                        .commit_decel_to_zero(&thread_state.emit_ctx())
+                        .map_err(|e| format!("HomeDrip commit_decel_to_zero: {e:?}"))?;
+
+                    let total_dur: f64 = committed
+                        .iter()
+                        .chain(decel.iter())
+                        .map(|s| s.t_end - s.t_start)
+                        .sum();
+                    advance_last_move_time(&last_move_time_bits, total_dur);
+                    commit_fire_count.fetch_add(1, Ordering::AcqRel);
+
+                    for seg in committed.iter().chain(decel.iter()) {
+                        dispatch(seg).map_err(|e| format!("HomeDrip dispatch: {e}"))?;
+                    }
+                    Ok(())
+                })();
+
+                let _ = p.notify.send(result);
+            }
         }
     }
 }
@@ -680,31 +763,11 @@ fn shaper_config_to_emit_kernels(
     cfg: &ShaperConfig,
 ) -> [Option<PiecewisePolynomialKernel<f64>>; 4] {
     [
-        Some(required_to_kernel(cfg.x)),
-        Some(required_to_kernel(cfg.y)),
+        cfg.x.to_kernel(),
+        cfg.y.to_kernel(),
         cfg.z.to_kernel(),
         None,
     ]
-}
-
-fn required_to_kernel(req: RequiredShaper) -> PiecewisePolynomialKernel<f64> {
-    req.to_kernel()
-}
-
-fn shaper_config_to_plan_shapers(cfg: &ShaperConfig) -> [Option<PlanShaper>; 4] {
-    [
-        Some(required_to_plan(cfg.x)),
-        Some(required_to_plan(cfg.y)),
-        Some(axis_to_plan(cfg.z)),
-        None,
-    ]
-}
-
-fn required_to_plan(req: RequiredShaper) -> PlanShaper {
-    match req {
-        RequiredShaper::SmoothZv { frequency_hz } => PlanShaper::SmoothZv { frequency_hz },
-        RequiredShaper::SmoothMzv { frequency_hz } => PlanShaper::SmoothMzv { frequency_hz },
-    }
 }
 
 fn axis_to_plan(ax: AxisShaper) -> PlanShaper {
@@ -715,20 +778,17 @@ fn axis_to_plan(ax: AxisShaper) -> PlanShaper {
     }
 }
 
-fn shaper_config_to_axis_shapers(cfg: &ShaperConfig) -> [Option<AxisShaper>; 4] {
+fn shaper_config_to_plan_shapers(cfg: &ShaperConfig) -> [Option<PlanShaper>; 4] {
     [
-        Some(required_to_axis(cfg.x)),
-        Some(required_to_axis(cfg.y)),
-        Some(cfg.z),
+        Some(axis_to_plan(cfg.x)),
+        Some(axis_to_plan(cfg.y)),
+        Some(axis_to_plan(cfg.z)),
         None,
     ]
 }
 
-fn required_to_axis(req: RequiredShaper) -> AxisShaper {
-    match req {
-        RequiredShaper::SmoothZv { frequency_hz } => AxisShaper::SmoothZv { frequency_hz },
-        RequiredShaper::SmoothMzv { frequency_hz } => AxisShaper::SmoothMzv { frequency_hz },
-    }
+fn shaper_config_to_axis_shapers(cfg: &ShaperConfig) -> [Option<AxisShaper>; 4] {
+    [Some(cfg.x), Some(cfg.y), Some(cfg.z), None]
 }
 
 #[cfg(test)]

@@ -24,11 +24,6 @@ pub fn identify_handshake(
 ) -> Result<(MsgProtoParser, Vec<u8>, IdentifySeqState), TransportError> {
     let deadline = Instant::now() + timeout;
 
-    // Write 70 × 0x7E before draining: flushes any partial frame in the MCU
-    // demuxer caused by TTY ECHO being on during USB enumeration (cooked mode
-    // echoes our own unsolicited frames back to the device, corrupting the
-    // demux state machine). 63 bytes is enough to overflow any partial frame;
-    // 70 is conservative and idempotent on a clean demuxer.
     io.write_all(&[MESSAGE_SYNC; 70])?;
     io.flush()?;
 
@@ -44,15 +39,12 @@ pub fn identify_handshake(
     let mut mcu_recv_abs: u64 = 0;
     let mut identify_data: Vec<u8> = Vec::new();
 
-    // Deadline-governed, never attempt-capped: a UART shared with a
-    // chattering peripheral (Neptune 3 Pro LCD on the host's USART1) can
-    // corrupt every frame for seconds, surfacing as an unbounded NAK streak.
     let chunk_deadline_per_attempt = Duration::from_millis(200);
 
     'outer: loop {
         while Instant::now() < deadline {
             let mut payload = Vec::with_capacity(16);
-            payload.push(1u8); // msgid=1 = identify request (hardcoded; no dict yet)
+            payload.push(1u8);
             encode_vlq(&mut payload, identify_data.len() as i64)
                 .expect("identify offset is u32-range");
             encode_vlq(&mut payload, i64::from(IDENTIFY_CHUNK))
@@ -144,11 +136,6 @@ fn wait_for_klipper_frame(
                 for e in errors {
                     log::warn!("identify stream error: {e}");
                 }
-                // Only an EMPTY frame is an ack/nak. Non-empty foreign frames
-                // (unsolicited stats / boot-time event backlog) still carry the
-                // MCU's receive seq and must update mcu_recv_abs, but treating
-                // them as NAKs — or returning before scanning the whole batch —
-                // drops the identify_response queued right behind them.
                 let mut saw_nak = false;
                 for f in frames {
                     if let Frame::Klipper(kf) = f {

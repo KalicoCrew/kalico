@@ -207,7 +207,6 @@ class MotionMcuProxy:
         from . import mcu as mcu_mod
 
         pcs = {
-            "endstop": mcu_mod.MCU_endstop,
             "digital_out": mcu_mod.MCU_digital_out,
             "pwm": mcu_mod.MCU_pwm,
             "adc": mcu_mod.MCU_adc,

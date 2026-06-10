@@ -4,7 +4,7 @@ use crate::clock::TickCounter;
 use crate::error::{KALICO_ERR_INVALID_ARG, KALICO_ERR_RING_FULL, KALICO_OK};
 use crate::fault_sink::FaultSink;
 use crate::piece_ring::PieceEntry;
-use crate::state::SharedState;
+use crate::state::{MAX_STEPPER_OIDS, SharedState};
 use crate::step::StepMotorState;
 use crate::stepping_state::{AxisState, MAX_AXES, StepMode, StepperBindingRust, TMC_CS_OID_NONE};
 
@@ -206,6 +206,18 @@ impl Engine {
         self.last_error.store(0, Ordering::Release);
     }
 
+    pub fn discard_pending(&mut self) {
+        for axis_opt in self.stepping_axes.iter_mut() {
+            let Some(axis) = axis_opt.as_mut() else {
+                continue;
+            };
+            while axis.ring.front_slot().is_some() {
+                axis.ring.advance_counter();
+            }
+            axis.armed = None;
+        }
+    }
+
     pub fn push_pieces(
         &mut self,
         axis_idx: u8,
@@ -316,6 +328,19 @@ impl Engine {
         for (slot, entry) in out.iter_mut().zip(self.stepping_axes.iter()) {
             if let Some(axis) = entry {
                 *slot = axis.ring.retired_count();
+            }
+        }
+        out
+    }
+
+    pub fn occupancy_counts(&self) -> [u32; MAX_AXES] {
+        let mut out = [0u32; MAX_AXES];
+        for (slot, entry) in out.iter_mut().zip(self.stepping_axes.iter()) {
+            if let Some(axis) = entry {
+                #[allow(clippy::cast_possible_truncation)]
+                {
+                    *slot = axis.ring.len() as u32;
+                }
             }
         }
         out
@@ -472,6 +497,10 @@ impl Engine {
             let Some(axis) = axis_opt.as_mut() else {
                 continue;
             };
+            while axis.ring.front_slot().is_some() {
+                axis.ring.advance_counter();
+            }
+            axis.armed = None;
             let axis_pos_mm = motor_positions.get(i).copied().unwrap_or(0.0);
             let microstep_distance = axis.microstep_distance;
             if !microstep_distance.is_finite() || microstep_distance <= 0.0 {

@@ -218,6 +218,7 @@ ENV TZ=UTC
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
+    libpython3.12t64 \
     python3-pip \
     python3-cffi \
     python3-greenlet \

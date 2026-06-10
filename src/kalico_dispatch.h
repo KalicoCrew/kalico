@@ -24,6 +24,8 @@ void kalico_native_emit_fault_event(uint16_t fault_code,
                                     uint32_t fault_detail,
                                     uint32_t segment_id);
 
+void kalico_native_emit_endstop_trip(uint8_t endstop_id, uint64_t trip_clock);
+
 void send_status_heartbeat(void);
 
 #endif

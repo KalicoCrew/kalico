@@ -1,18 +1,10 @@
 use temporal::Limits;
 use thiserror::Error;
-use trajectory::{AxisShaper, ELimits, RequiredShaper, ShaperConfig};
+use trajectory::{AxisShaper, ELimits, ShaperConfig};
 
 #[derive(Debug, Error)]
 pub enum ShaperConfigError {
-    #[error(
-        "shaper frequency must be finite and > 0 Hz, got {value}; \
-         check shaper_freq_x / shaper_freq_y in printer.cfg \
-         (sim configs commonly set 0 to disable shaping — there is no passthrough \
-         for X/Y today; use a real frequency, e.g. 50)"
-    )]
-    InvalidFrequency { value: f64 },
-
-    #[error("unsupported shaper type for MVP: '{kind}'. Use smooth_zv or smooth_mzv")]
+    #[error("unsupported shaper type: '{kind}'. Use smooth_zv or smooth_mzv")]
     UnsupportedKind { kind: String },
 }
 
@@ -67,8 +59,8 @@ impl Default for PlannerConfig {
                 square_corner_velocity: 5.0,
             },
             shaper: ShaperConfig {
-                x: RequiredShaper::SmoothMzv { frequency_hz: 50.0 },
-                y: RequiredShaper::SmoothMzv { frequency_hz: 50.0 },
+                x: AxisShaper::Passthrough,
+                y: AxisShaper::Passthrough,
                 z: AxisShaper::Passthrough,
             },
             e_limits: ELimits {
@@ -84,13 +76,19 @@ impl Default for PlannerConfig {
     }
 }
 
-pub fn parse_required_shaper(name: &str, freq: f64) -> Result<RequiredShaper, ShaperConfigError> {
-    if !freq.is_finite() || freq <= 0.0 {
-        return Err(ShaperConfigError::InvalidFrequency { value: freq });
-    }
+pub fn parse_axis_shaper(name: &str, freq: f64) -> Result<AxisShaper, ShaperConfigError> {
     match name {
-        "smooth_zv" | "smooth-zv" => Ok(RequiredShaper::SmoothZv { frequency_hz: freq }),
-        "smooth_mzv" | "smooth-mzv" => Ok(RequiredShaper::SmoothMzv { frequency_hz: freq }),
+        "" | "none" | "passthrough" => return Ok(AxisShaper::Passthrough),
+        _ => {}
+    }
+
+    if !freq.is_finite() || freq <= 0.0 {
+        return Ok(AxisShaper::Passthrough);
+    }
+
+    match name {
+        "smooth_zv" | "smooth-zv" => Ok(AxisShaper::SmoothZv { frequency_hz: freq }),
+        "smooth_mzv" | "smooth-mzv" => Ok(AxisShaper::SmoothMzv { frequency_hz: freq }),
         other => Err(ShaperConfigError::UnsupportedKind {
             kind: other.to_string(),
         }),

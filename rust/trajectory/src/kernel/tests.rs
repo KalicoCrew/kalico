@@ -84,7 +84,9 @@ fn kernel_peak_at_center() {
 #[test]
 fn smooth_zv_support_width() {
     let f = 150.0;
-    let kernel = crate::RequiredShaper::SmoothZv { frequency_hz: f }.to_kernel();
+    let kernel = crate::AxisShaper::SmoothZv { frequency_hz: f }
+        .to_kernel()
+        .unwrap();
     let (lo, hi) = kernel.support();
     let expected_t_sm = 0.8025 / f;
     assert!((hi - lo - expected_t_sm).abs() < 1e-12);
@@ -93,7 +95,9 @@ fn smooth_zv_support_width() {
 #[test]
 fn smooth_mzv_support_width() {
     let f = 120.0;
-    let kernel = crate::RequiredShaper::SmoothMzv { frequency_hz: f }.to_kernel();
+    let kernel = crate::AxisShaper::SmoothMzv { frequency_hz: f }
+        .to_kernel()
+        .unwrap();
     let (lo, hi) = kernel.support();
     let expected_t_sm = 0.95625 / f;
     assert!((hi - lo - expected_t_sm).abs() < 1e-12);

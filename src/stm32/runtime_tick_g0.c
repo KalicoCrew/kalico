@@ -118,8 +118,6 @@ MOTION_TIM_IRQHandler(void)
     runtime_g0_sw_cyccnt += RUNTIME_G0_CYC_PER_TICK;
     uint32_t diag_enter = runtime_g0_sw_cyccnt;
 
-    extern void runtime_endstop_sample_pins(void);
-    runtime_endstop_sample_pins();
 
     uint32_t before = runtime_cyccnt_read();
     if (runtime_handle) {

@@ -5,7 +5,12 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import logging
 
-from klippy.mcu import MCU_endstop
+try:
+    from klippy.mcu import MCU_endstop
+except ImportError:
+
+    class MCU_endstop:
+        pass
 
 
 class ZCalibrationHelper:
