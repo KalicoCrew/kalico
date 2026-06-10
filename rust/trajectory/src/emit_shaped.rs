@@ -1,5 +1,6 @@
 use nurbs::algebra::PiecewisePolynomialKernel;
 use nurbs::bezier::BezierPiece;
+use nurbs::eval::eval as nurbs_eval;
 use nurbs::ScalarNurbs;
 
 use crate::beta::kernel_half_support;
@@ -100,7 +101,20 @@ pub fn emit_shaped(
                     },
                 })?
             } else {
-                fitted.axes[axis].clone()
+                let passthrough = fitted.axes[axis].clone();
+                crate::smooth_fit::fit_c2_cubic(
+                    &|t| nurbs_eval(&passthrough, t),
+                    t_start,
+                    t_end,
+                    SMOOTH_FIT_TOLERANCE_MM,
+                )
+                .map_err(|e| ShapeError::FitFailure {
+                    index: seg_idx,
+                    detail: nurbs::algebra::FitError::ToleranceNotReached {
+                        achieved_mm: e.achieved_mm,
+                        at_degree: 3,
+                    },
+                })?
             };
 
             shaped_axes[axis] = Some(axis_shaped);
