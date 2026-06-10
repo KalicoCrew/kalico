@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn duplicate_knot_produces_nan_without_guard() {
+    let knots = vec![0.0_f64, 0.5, 0.5, 1.0];
+    let values = vec![0.0_f64, 0.5, 0.5, 1.0];
+    let pieces = build_clamped_spline(&knots, &values, 0.0, 0.0);
+    let degenerate = pieces
+        .iter()
+        .any(|p| p.coeffs.iter().any(|c| !c.is_finite()));
+    assert!(
+        degenerate,
+        "duplicate knot must produce NaN coefficients — this documents why the guard is needed"
+    );
+}
+
+#[test]
+fn duplicate_knot_guard_no_panic_finite_error() {
+    let f = |t: f64| (1.0_f64 / (1.0 + ((t - 0.5) / 1e-5).powi(2))).sqrt();
+    let result = fit_c2_cubic(&f, 0.0, 1.0, 1e-12);
+    match result {
+        Err(FitError { achieved_mm }) => {
+            assert!(
+                achieved_mm.is_finite() && achieved_mm > 0.0,
+                "achieved_mm must be finite and positive, got {achieved_mm}"
+            );
+        }
+        Ok(ref curve) => {
+            for i in 0..=100 {
+                let t = i as f64 / 100.0;
+                let v = eval(curve, t);
+                assert!(
+                    v.is_finite(),
+                    "fit_c2_cubic returned Ok but spline evaluates to NaN/inf at t={t}: {v}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn thomas_solves_known_system() {
     // Tridiagonal system:
     // [ 2 1 0 ] [x0]   [3]

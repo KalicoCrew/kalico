@@ -136,7 +136,23 @@ pub fn fit_c2_cubic<F: Fn(f64) -> f64>(
                 achieved_mm: worst_err,
             });
         }
-        knots.insert(worst_interval + 1, worst_t);
+
+        let interval_lo = knots[worst_interval];
+        let interval_hi = knots[worst_interval + 1];
+        let interval_h = interval_hi - interval_lo;
+        let left_gap = worst_t - interval_lo;
+        let right_gap = interval_hi - worst_t;
+        if left_gap < interval_h * 1e-9 || right_gap < interval_h * 1e-9 {
+            let mid = interval_lo + 0.5 * interval_h;
+            if mid <= interval_lo || mid >= interval_hi {
+                return Err(FitError {
+                    achieved_mm: worst_err,
+                });
+            }
+            knots.insert(worst_interval + 1, mid);
+        } else {
+            knots.insert(worst_interval + 1, worst_t);
+        }
     }
 }
 
