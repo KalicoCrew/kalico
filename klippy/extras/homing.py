@@ -169,7 +169,17 @@ class Homing:
                 retractpos[axis] -= direction * hi.retract_dist
                 toolhead.move(retractpos, hi.retract_speed)
                 toolhead.wait_moves()
-        finally:
+        except BaseException:
+            # The primary error must reach the operator; a failed current
+            # restore during the unwind is logged, not raised over it.
+            try:
+                self._set_homing_current(toolhead, rail, pre_homing=False)
+            except Exception:
+                logging.exception(
+                    "homing: current restore failed during error unwind"
+                )
+            raise
+        else:
             self._set_homing_current(toolhead, rail, pre_homing=False)
 
     def _set_homing_current(self, toolhead, rail, pre_homing):
