@@ -138,3 +138,19 @@ pub fn eval_horner(
     let v = vel[0] + t * (vel[1] + t * vel[2]);
     (p, v)
 }
+
+#[inline]
+pub fn eval_accel(
+    vel: &[f32; 3],
+    piece_start_cycles: u64,
+    now: u64,
+    cycles_per_second: f32,
+) -> f32 {
+    let elapsed_cycles = now.saturating_sub(piece_start_cycles);
+    let t = if cycles_per_second > 0.0 {
+        elapsed_cycles as f32 / cycles_per_second
+    } else {
+        0.0_f32
+    };
+    vel[1] + 2.0 * t * vel[2]
+}
