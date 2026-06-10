@@ -1,6 +1,6 @@
 import pytest
 
-from klippy.extras import servo_param
+from klippy.extras import ethercat_node, servo_axis, servo_param
 
 
 def test_parse_address():
@@ -83,9 +83,6 @@ def test_format_value_typed_shows_one():
         servo_param.format_value(0x2010, 1, 4, 100, "u32")
         == "0x2010.1 = 0x00000064 (u32: 100)"
     )
-
-
-from klippy.extras import servo_axis
 
 
 class FakeGcmd:
@@ -239,9 +236,6 @@ def test_cmd_propagates_bridge_failure():
         sp.cmd_SERVO_PARAM(
             FakeGcmd({"SERVO": "servo_x", "SET": "0x6041.0", "VALUE": "1"})
         )
-
-
-from klippy.extras import ethercat_node
 
 
 class FakeConfigError(Exception):
