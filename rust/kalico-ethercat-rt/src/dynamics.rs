@@ -94,9 +94,8 @@ impl DynamicsModel {
         assert_eq!(acc_mm_s2.len(), self.n);
         assert_eq!(vel_mm_s.len(), self.n);
         assert!(axis < self.n);
-        let inertial: f32 = (0..self.n)
-            .map(|j| self.mass[axis * self.n + j] * acc_mm_s2[j])
-            .sum();
+        let row = &self.mass[axis * self.n..][..self.n];
+        let inertial: f32 = row.iter().zip(acc_mm_s2.iter()).map(|(m, a)| m * a).sum();
         let v = vel_mm_s[axis];
         let coulomb = if v > self.deadband {
             self.coulomb_fwd[axis]
@@ -130,6 +129,8 @@ fn cholesky_is_pd(m: &[f64], n: usize) -> bool {
 }
 
 pub fn clamp_torque(raw_tenths_pct: f32, limit_tenths_pct: i16, saturation_count: &mut u32) -> i16 {
+    assert!(raw_tenths_pct.is_finite(), "non-finite torque FF");
+    assert!(limit_tenths_pct > 0, "torque clamp limit must be positive");
     let lim = f32::from(limit_tenths_pct);
     if raw_tenths_pct > lim {
         *saturation_count += 1;

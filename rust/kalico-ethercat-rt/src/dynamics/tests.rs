@@ -26,6 +26,7 @@ fit_rms_residual = [0.5, 0.5]
 fn parses_scalar_profile() {
     let m = DynamicsModel::from_toml_str(SCALAR).unwrap();
     assert_eq!(m.n, 1);
+    assert_eq!(m.axes, ["x"]);
 }
 
 #[test]
@@ -81,10 +82,29 @@ fn rejects_each_invariant_violation() {
         DynamicsModel::from_toml_str(&nan),
         Err(ProfileError::NotFinite(_))
     ));
+    let nan_deadband = SCALAR.replace("coulomb_deadband_mm_s = 0.5", "coulomb_deadband_mm_s = nan");
+    assert!(matches!(
+        DynamicsModel::from_toml_str(&nan_deadband),
+        Err(ProfileError::NotFinite(_))
+    ));
     assert!(matches!(
         DynamicsModel::from_toml_str("not toml ["),
         Err(ProfileError::Parse(_))
     ));
+}
+
+#[test]
+#[should_panic(expected = "non-finite torque FF")]
+fn clamp_panics_on_nan() {
+    let mut sat = 0u32;
+    let _ = clamp_torque(f32::NAN, 300, &mut sat);
+}
+
+#[test]
+#[should_panic(expected = "torque clamp limit must be positive")]
+fn clamp_panics_on_nonpositive_limit() {
+    let mut sat = 0u32;
+    let _ = clamp_torque(0.0, 0, &mut sat);
 }
 
 #[test]
