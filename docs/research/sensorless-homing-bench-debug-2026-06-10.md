@@ -82,27 +82,45 @@ around homing (`637c2e3a8`) — `set_current_for_homing` had no callers since
 the homing rework — and a finally-block that masked primary homing errors
 with secondary restore errors (`6eb0ea0c7`).
 
-## Open bug: post-home retract enables Z with a bad print_time
+7. **Secondary-MCU clocksync never calibrated** (`28d5dddc3` + guard
+   `5ed168da5`) — the "Timer too close" root cause. `MotionToolhead.stats()`
+   overrode upstream's and dropped the `check_active()` loop, the only
+   caller of `SecondarySync.calibrate_clock`. The bottom MCU's print-time
+   mapping froze at its connect-time calibration, whose slewing freq
+   (`clock_adj=(-1.584, 179700425.5)` vs true 180000693) loses **1.67ms per
+   second, forever**. Nothing notices while idle because no clock-scheduled
+   command flows to a quiet secondary MCU (bed off ⇒ no PWM re-issues,
+   analog self-schedules MCU-side, tmcuart is unscheduled). The first one
+   since boot is the Z motor-enable fired by the post-home retract
+   (`_fire_active_callbacks` fires pending enables for ALL steppers, not
+   just movers); once uptime exceeded ~2.5 minutes it landed >0.25s in the
+   bottom's past → "Timer too close" → shutdown → every later bottom call
+   blocked 15s (the MCU answers `is_shutdown`, which matches no waiter) →
+   reactor frozen → the rest of the 00:15/02:15 symptom set. Fix restores
+   `check_active` (also restoring lost-communication detection), skipping
+   disconnected non-critical MCUs whose frozen clocksync makes
+   `calibrate_clock` divide by zero.
 
-Twice observed (02:15 and 03:5x UTC runs): the homing itself succeeds, then
-the retract move — the first toolhead move of the session — fires the
-pending motor-enable callbacks of ALL kinematic steppers
-(`motion_toolhead._fire_active_callbacks`: no per-axis filtering), including
-stepper_z/z1/z2 on the bottom MCU. The bottom rejects the enable-pin command
-with **"Timer too close"** (scheduled in its past) and shuts down; the
-subsequent z-driver tmcuart writes then block 15s each
-(`TMC stepper_z2 _do_enable_bridge failed: bridge_call: transport timed
-out`) and klippy transitions to shutdown. Intermittent — the 01:12 success
-survived its retract.
+8. **Endstop trip emitted from timer/IRQ context** (`77d77bee1`).
+   `endstop_event` called `kalico_native_emit_endstop_trip` directly from
+   the timer, racing the shared `tx_buf` and USB transmit cursor against
+   foreground senders. The trip clock is still captured in the timer
+   (accuracy unchanged); the transport write moved to a `DECL_TASK`,
+   mainline's trsync shape. Plus: runtime-event subscriber channel 64→512
+   (`5ed168da5`-adjacent) so a stalled reactor doesn't shed sensor
+   responses within four seconds.
 
-Suspects, unverified: `enable_print_time = get_last_move_time()` is floored
-on the MAIN MCU's estimated print time; the mapping of that print_time into
-the bottom's clock domain (secondary clocksync, `clock_adj`) may be stale or
-skewed right after a homing sequence. Next step: log the computed
-print_time, the bottom's `print_time_to_clock` result, and the bottom's
-actual clock at receipt; compare against the H7's. Also decide whether
-firing enables for axes that don't move is correct at all (upstream enables
-lazily per moving stepper).
+## Known deviations left open (documented, not blocking)
+
+- `motion_toolhead._fire_active_callbacks` enables ALL kinematic steppers on
+  any move (upstream enables lazily per stepping motor). Harmless since the
+  clocksync fix, but Z holds current after any XY move. A correct filter
+  needs kinematics knowledge (corexy X-only ⇒ both A and B motors).
+- `kalico-host-rt` response matching (`AwaitingResponse::find_match`) matches
+  by response name only; concurrent same-name calls (three tmcuart polls)
+  rely on FIFO ordering and eviction timing.
+- The `homing.py` G28 is single-pass (no slow second approach). Canonical
+  for sensorless; revisit if switch-based homing accuracy matters later.
 
 ## Diagnostics playbook that worked
 
