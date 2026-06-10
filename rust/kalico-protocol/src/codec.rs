@@ -34,6 +34,7 @@ pub enum DecodeError {
     EmptyArray {
         field: &'static str,
     },
+    BadUtf8,
 }
 
 impl core::fmt::Display for DecodeError {
@@ -53,6 +54,7 @@ impl core::fmt::Display for DecodeError {
             Self::EmptyArray { field } => {
                 write!(f, "required array {field} is empty")
             }
+            Self::BadUtf8 => f.write_str("string bytes are not valid UTF-8"),
         }
     }
 }
@@ -171,6 +173,26 @@ pub fn get_i32(c: &mut Cursor<'_>) -> Result<i32, DecodeError> {
 pub fn get_f32(c: &mut Cursor<'_>) -> Result<f32, DecodeError> {
     let s = c.take(4)?;
     Ok(f32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+}
+
+/// u16-LE length prefix + UTF-8 bytes.
+pub fn put_str(out: &mut Vec<u8>, s: &str) {
+    let bytes = s.as_bytes();
+    assert!(
+        bytes.len() <= u16::MAX as usize,
+        "wire string exceeds u16 length prefix"
+    );
+    put_u16(out, bytes.len() as u16);
+    out.extend_from_slice(bytes);
+}
+
+pub fn get_str(c: &mut Cursor<'_>) -> Result<String, DecodeError> {
+    let len = get_u16(c)? as usize;
+    let mut bytes = vec![0u8; len];
+    for b in &mut bytes {
+        *b = get_u8(c)?;
+    }
+    String::from_utf8(bytes).map_err(|_| DecodeError::BadUtf8)
 }
 
 /// Read a `u32_le`-length-prefixed `f32` array. Validates that the claimed
