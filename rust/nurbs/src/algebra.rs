@@ -332,8 +332,7 @@ pub fn fit_hermite_c1_clamped<const D: usize>(
     }
 
     let n = pieces.len();
-    let mut result: [Vec<crate::bezier::BezierPiece<f64>>; D] =
-        std::array::from_fn(|_| Vec::new());
+    let mut result: [Vec<crate::bezier::BezierPiece<f64>>; D] = std::array::from_fn(|_| Vec::new());
 
     hermite_fit_recursive_clamped::<D>(
         pieces,
@@ -458,20 +457,16 @@ fn hermite_fit_one_piece_clamped<const D: usize>(
     }
 
     match (pin_start, pin_end) {
-        (Some(d2s), Some(d2e)) => {
-            std::array::from_fn(|axis| {
-                let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
-                hermite_construct_poly_both_clamped(
-                    f_lo, df_lo, f_hi, df_hi, u_lo, h, d2s[axis], d2e[axis],
-                )
-            })
-        }
-        (Some(d2s), None) => {
-            std::array::from_fn(|axis| {
-                let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
-                hermite_construct_poly(f_lo, df_lo, f_hi, df_hi, u_lo, h, d, d2s[axis] * 0.5)
-            })
-        }
+        (Some(d2s), Some(d2e)) => std::array::from_fn(|axis| {
+            let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+            hermite_construct_poly_both_clamped(
+                f_lo, df_lo, f_hi, df_hi, u_lo, h, d2s[axis], d2e[axis],
+            )
+        }),
+        (Some(d2s), None) => std::array::from_fn(|axis| {
+            let (f_lo, df_lo, f_hi, df_hi) = constraints[axis];
+            hermite_construct_poly(f_lo, df_lo, f_hi, df_hi, u_lo, h, d, d2s[axis] * 0.5)
+        }),
         (None, Some(d2e)) => {
             if d <= 3 {
                 return std::array::from_fn(|axis| {
@@ -746,8 +741,7 @@ fn hermite_construct_poly_end_clamped(
     let m21 = b * (b - 1.0);
     let m22 = e * (e - 1.0);
 
-    let det = m00 * (m11 * m22 - m12 * m21)
-        - m01 * (m10 * m22 - m12 * m20)
+    let det = m00 * (m11 * m22 - m12 * m21) - m01 * (m10 * m22 - m12 * m20)
         + m02 * (m10 * m21 - m11 * m20);
 
     let h_a = h.powi((d - 2) as i32);
@@ -762,16 +756,13 @@ fn hermite_construct_poly_end_clamped(
         };
     }
 
-    let q = (rhs0 * (m11 * m22 - m12 * m21)
-        - rhs1 * (m01 * m22 - m02 * m21)
+    let q = (rhs0 * (m11 * m22 - m12 * m21) - rhs1 * (m01 * m22 - m02 * m21)
         + rhs2 * (m01 * m12 - m02 * m11))
         / det;
-    let r = (m00 * (rhs1 * m22 - rhs2 * m12)
-        - rhs0 * (m10 * m22 - m12 * m20)
+    let r = (m00 * (rhs1 * m22 - rhs2 * m12) - rhs0 * (m10 * m22 - m12 * m20)
         + m02 * (m10 * rhs2 - rhs1 * m20))
         / det;
-    let s = (m00 * (m11 * rhs2 - rhs1 * m21)
-        - m01 * (m10 * rhs2 - rhs1 * m20)
+    let s = (m00 * (m11 * rhs2 - rhs1 * m21) - m01 * (m10 * rhs2 - rhs1 * m20)
         + rhs0 * (m10 * m21 - m11 * m20))
         / det;
 

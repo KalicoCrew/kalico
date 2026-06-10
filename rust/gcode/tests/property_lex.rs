@@ -60,4 +60,3 @@ proptest! {
         prop_assert!(count <= s.lines().count());
     }
 }
-

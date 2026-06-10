@@ -334,14 +334,9 @@ fn clamped_fit_pins_both_boundary_second_derivatives() {
 
     // Tolerance is 2.0: with deliberately non-analytic pins the residual will be
     // significant, but we only need to assert the pins are honoured exactly.
-    let result = fit_hermite_c1_clamped::<1>(
-        &pieces,
-        2.0,
-        5,
-        Some([d2_start_pin]),
-        Some([d2_end_pin]),
-    )
-    .unwrap();
+    let result =
+        fit_hermite_c1_clamped::<1>(&pieces, 2.0, 5, Some([d2_start_pin]), Some([d2_end_pin]))
+            .unwrap();
 
     let first = &result[0][0];
     let last = result[0].last().unwrap();
@@ -579,14 +574,9 @@ fn adversarial_nonpolynomial_asymmetric_pins() {
     let d2_end_pin = -0.8_f64; // different sign and magnitude, also not analytic 0
 
     let tol = 0.15; // generous: residual from non-polynomial input + pin deviation
-    let result = fit_hermite_c1_clamped::<1>(
-        &pieces,
-        tol,
-        5,
-        Some([d2_start_pin]),
-        Some([d2_end_pin]),
-    )
-    .expect("adversarial clamped fit must succeed");
+    let result =
+        fit_hermite_c1_clamped::<1>(&pieces, tol, 5, Some([d2_start_pin]), Some([d2_end_pin]))
+            .expect("adversarial clamped fit must succeed");
 
     // 1. Pins are exact at outer endpoints.
     let first = &result[0][0];
@@ -636,7 +626,9 @@ fn adversarial_nonpolynomial_asymmetric_pins() {
                 .iter()
                 .find(|p| p[0].u_start <= u + 1e-12 && u <= p[0].u_end + 1e-12)
                 .map(|p| p[0].evaluate(u))
-                .unwrap_or_else(|| pieces.last().unwrap()[0].evaluate(pieces.last().unwrap()[0].u_end));
+                .unwrap_or_else(|| {
+                    pieces.last().unwrap()[0].evaluate(pieces.last().unwrap()[0].u_end)
+                });
             let fit_val = fitted_piece.evaluate(u);
             assert!(
                 (ref_val - fit_val).abs() <= tol + 1e-10,
