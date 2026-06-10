@@ -63,9 +63,11 @@ if git rev-parse --abbrev-ref "$BRANCH" >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1. Pull + build F401 firmware on the Pi.
+# 1. Pull + build on the Pi: F401 firmware AND the host-side pyo3 cdylib.
+#    klippy imports klippy/motion_bridge_native.so — a stale cdylib against new
+#    klippy Python crashes at runtime (AttributeError on new bridge methods).
 # ---------------------------------------------------------------------------
-say "Pulling $BRANCH and building F401 firmware on the Pi..."
+say "Pulling $BRANCH and building F401 firmware + motion-bridge cdylib on the Pi..."
 pi bash -se <<EOF || die "pull/build failed"
 set -euo pipefail
 cd $REPO
@@ -76,6 +78,9 @@ grep -q '^CONFIG_MACH_STM32F401=y' .config || { echo "ERROR: .config is not an F
 make -j\$(nproc)
 test -f out/klipper.bin || { echo "ERROR: out/klipper.bin missing after build"; exit 1; }
 ls -l out/klipper.bin
+make -f Makefile.kalico motion-bridge -j\$(nproc)
+test -f klippy/motion_bridge_native.so || { echo "ERROR: motion_bridge_native.so missing after build"; exit 1; }
+ls -l klippy/motion_bridge_native.so
 EOF
 
 # ---------------------------------------------------------------------------
