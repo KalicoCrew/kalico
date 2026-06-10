@@ -7,11 +7,19 @@ All times UTC. Every finding below is bench-verified; commit hashes on
 
 ## Outcome
 
-Sensorless X homing works end-to-end: stallguard arms via the provider hooks,
-DIAG trips, position reconstructs. Three full successes recorded
-(`homing: X trigger=300.0000 overshoot=+0.108/+0.110`), reproducible once the
-chain of engine bugs below was cleared. One bug remains open (post-home
-retract kills the bottom MCU — see "Open").
+Sensorless X homing works end-to-end and survives the full cycle: stallguard
+arms via the provider hooks, DIAG trips, Stop discards + gates, position
+reconstructs, stream resumes, retract runs. Final bench validation
+(2026-06-10 ~16:05 UTC, after bug 12): two consecutive long homes from
+200mm away (`trigger=300.0000 overshoot=+0.060/+0.620`), each followed by
+chained jog-backs — homing clean. All 12 bugs below are fixed and deployed.
+
+A crash while *jogging* (not homing) remains: `planner stream starvation:
+segment scheduled 0.005s in the past; refusing to silently re-anchor`,
+preceded by `replan overran its real-time budget` on each chained jog move
+— the streaming-replan path missing its real-time budget on move joins.
+Pre-existing, reproducible before this branch's changes, separate
+workstream (planner replan performance), tracked under "Known deviations".
 
 ## Fault-detail decoding gotcha (cost us hours)
 
@@ -254,6 +262,10 @@ H723 homed repeatably tonight where the sim faults.
   is_shutdown matching no waiter — is fixed by bug 10's fail-fast.)
 - The `homing.py` G28 is single-pass (no slow second approach). Canonical
   for sensorless; revisit if switch-based homing accuracy matters later.
+- Streaming replan overruns its real-time budget on chained jog moves
+  (`replan overran its real-time budget` → eventually `planner stream
+  starvation ... 0.005s in the past` abort). Not a homing defect — the
+  planner replan path needs a performance pass (separate workstream).
 
 ## Diagnostics playbook that worked
 
