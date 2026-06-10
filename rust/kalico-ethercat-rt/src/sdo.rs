@@ -6,9 +6,9 @@ use kalico_protocol::messages::{
 };
 
 pub const MAX_SDO_BYTES: u8 = 4;
-pub const COE_ABORT_READ_ONLY: i32 = 0x0601_0002_u32 as i32;
-pub const COE_ABORT_NOT_FOUND: i32 = 0x0602_0000_u32 as i32;
-pub const COE_ABORT_LENGTH_MISMATCH: i32 = 0x0607_0010_u32 as i32;
+pub const COE_ABORT_READ_ONLY: i32 = 0x0601_0002;
+pub const COE_ABORT_NOT_FOUND: i32 = 0x0602_0000;
+pub const COE_ABORT_LENGTH_MISMATCH: i32 = 0x0607_0010;
 
 /// Errors are result codes: > 0 CoE abort code, < 0 local ERR_SDO_* constant.
 /// `read` must only report sizes 1..=4 packed little-endian into the array
