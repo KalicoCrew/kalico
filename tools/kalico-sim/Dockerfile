@@ -193,7 +193,8 @@ RUN set -e; \
     fi; \
     make olddefconfig 2>/dev/null || true; \
     make clean && make -j$(nproc); \
-    cp out/klipper.elf /sim_elfs/klipper-f4-sim.elf
+    cp out/klipper.elf /sim_elfs/klipper-f4-sim.elf; \
+    cp out/klipper.dict /sim_elfs/klipper.dict
 
 # Build klippy chelper .so
 RUN cd klippy && python3 chelper/__init__.py
