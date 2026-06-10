@@ -78,6 +78,8 @@ fn run_endpoint(socket_path: String, faulted: Arc<AtomicBool>) {
                 }
                 Command::ClaimHandshake { .. } => {}
                 Command::SetTorque { .. } => {}
+                Command::Stop { .. } => {}
+                Command::SetDriveLimits { .. } | Command::RestoreDriveLimits { .. } => {}
                 Command::Unknown { .. } => {}
             }
         }
@@ -92,7 +94,7 @@ fn run_endpoint(socket_path: String, faulted: Arc<AtomicBool>) {
             let current_retired = ring.retired_count();
             if current_retired != last_sent_retired {
                 let engine_state: u8 = if ring.is_empty() { 0 } else { 1 };
-                server.respond(&status_heartbeat_frame(engine_state, &[current_retired]));
+                server.respond(&status_heartbeat_frame(engine_state, 0, &[current_retired]));
                 last_sent_retired = current_retired;
             }
 
@@ -103,6 +105,7 @@ fn run_endpoint(socket_path: String, faulted: Arc<AtomicBool>) {
             let engine_state: u8 = 0;
             server.respond(&status_heartbeat_frame(
                 engine_state,
+                0,
                 &[ring.retired_count()],
             ));
             break;
@@ -171,20 +174,23 @@ fn unix_native_conn_and_frame_server_sustain_streaming_past_ring_depth() {
 
     {
         let lr = Arc::clone(&last_retired);
-        conn.attach_heartbeat_callback(Arc::new(move |retired: &[u32]| {
-            if let Some(&v) = retired.first() {
-                let mut prev = lr.load(Ordering::Acquire);
-                loop {
-                    if v <= prev {
-                        break;
-                    }
-                    match lr.compare_exchange_weak(prev, v, Ordering::AcqRel, Ordering::Acquire) {
-                        Ok(_) => break,
-                        Err(cur) => prev = cur,
+        conn.attach_heartbeat_callback(Arc::new(
+            move |hb: &kalico_protocol::messages::StatusHeartbeat| {
+                if let Some(&v) = hb.retired_counts.first() {
+                    let mut prev = lr.load(Ordering::Acquire);
+                    loop {
+                        if v <= prev {
+                            break;
+                        }
+                        match lr.compare_exchange_weak(prev, v, Ordering::AcqRel, Ordering::Acquire)
+                        {
+                            Ok(_) => break,
+                            Err(cur) => prev = cur,
+                        }
                     }
                 }
-            }
-        }));
+            },
+        ));
     }
 
     let mut total_sent: usize = 0;

@@ -82,7 +82,7 @@ fn status_heartbeat_roundtrip_empty() {
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    assert_eq!(buf.len(), 3);
+    assert_eq!(buf.len(), 4);
     let mut cursor = Cursor::new(&buf);
     let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
     assert_eq!(decoded.retired_counts.len(), 0);
@@ -97,7 +97,7 @@ fn status_heartbeat_roundtrip_with_axes() {
     };
     let mut buf = Vec::new();
     msg.encode(&mut buf);
-    assert_eq!(buf.len(), 19);
+    assert_eq!(buf.len(), 20);
     let mut cursor = Cursor::new(&buf);
     let decoded = StatusHeartbeat::decode_from(&mut cursor).unwrap();
     assert_eq!(decoded.engine_state, 1);
@@ -303,14 +303,14 @@ fn resume_stream_response_round_trips() {
 
 #[test]
 fn resume_stream_kinds_have_stable_tags() {
-    assert_eq!(MessageKind::ResumeStream.as_u16(), 0x0074);
-    assert_eq!(MessageKind::ResumeStreamResponse.as_u16(), 0x0075);
+    assert_eq!(MessageKind::ResumeStream.as_u16(), 0x0078);
+    assert_eq!(MessageKind::ResumeStreamResponse.as_u16(), 0x0079);
     assert_eq!(
-        MessageKind::from_u16(0x0074),
+        MessageKind::from_u16(0x0078),
         Some(MessageKind::ResumeStream)
     );
     assert_eq!(
-        MessageKind::from_u16(0x0075),
+        MessageKind::from_u16(0x0079),
         Some(MessageKind::ResumeStreamResponse)
     );
     assert!(!MessageKind::ResumeStream.is_event());
@@ -326,6 +326,43 @@ fn stop_kinds_have_stable_tags() {
         Some(MessageKind::StopResponse)
     );
     assert!(!MessageKind::Stop.is_event());
+}
+
+#[test]
+fn set_drive_limits_round_trips() {
+    let msg = SetDriveLimits {
+        following_error_counts: 8192,
+        max_torque_tenth_pct: 500,
+    };
+    let bytes = msg.encoded_to_vec();
+    let decoded = SetDriveLimits::decode(&bytes).unwrap();
+    assert_eq!(decoded, msg);
+}
+
+#[test]
+fn drive_limits_responses_round_trip() {
+    let r = SetDriveLimitsResponse { result: -315 };
+    assert_eq!(
+        SetDriveLimitsResponse::decode(&r.encoded_to_vec()).unwrap(),
+        r
+    );
+    let r = RestoreDriveLimitsResponse { result: 0 };
+    assert_eq!(
+        RestoreDriveLimitsResponse::decode(&r.encoded_to_vec()).unwrap(),
+        r
+    );
+}
+
+#[test]
+fn drive_limits_message_kinds_round_trip() {
+    for kind in [
+        MessageKind::SetDriveLimits,
+        MessageKind::SetDriveLimitsResponse,
+        MessageKind::RestoreDriveLimits,
+        MessageKind::RestoreDriveLimitsResponse,
+    ] {
+        assert_eq!(MessageKind::from_u16(kind.as_u16()), Some(kind));
+    }
 }
 
 #[test]

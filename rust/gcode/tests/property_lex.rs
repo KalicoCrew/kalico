@@ -1,9 +1,13 @@
 use gcode::lex;
 use proptest::prelude::*;
+use proptest::test_runner::FileFailurePersistence;
 
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: 1024,
+        failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
+            "proptest-regressions/property_lex.txt",
+        ))),
         ..Default::default()
     })]
 

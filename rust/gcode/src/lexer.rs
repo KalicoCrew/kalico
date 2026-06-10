@@ -50,7 +50,9 @@ fn tokenize_command_line(line: &str, line_no: u32) -> Result<Token, ParseError> 
     let after_letter_idx = chars.next().map_or(line.len(), |(i, _)| i);
     let after_letter = &line[after_letter_idx..];
 
-    let head_number_str = after_letter.split_whitespace().next().unwrap_or("");
+    let head_number_str = after_letter
+        .find(char::is_whitespace)
+        .map_or(after_letter, |ws_idx| &after_letter[..ws_idx]);
     let (major, minor) =
         parse_head_number(head_number_str).ok_or_else(|| ParseError::UnrecognizedHead {
             line_no,

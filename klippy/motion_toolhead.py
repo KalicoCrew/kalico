@@ -99,7 +99,7 @@ class BridgeKinematics:
 
         self.limits = [(1.0, -1.0)] * 3
 
-        self._printer.load_object(config, "homing")
+        self._printer.load_object(config, "homing").resolve_endstops()
 
         self._printer.register_event_handler(
             "stepper_enable:motor_off",
@@ -356,7 +356,7 @@ class MotionToolhead(ToolHead):
             de,
             feedrate,
         )
-        self._fire_active_callbacks(dx, dy, dz, de)
+        self._fire_active_callbacks()
         bridge_lmt_before = self.bridge.get_last_move_time()
         self.bridge.submit_move(dx, dy, dz, de, feedrate)
         self._bump_pending_end_time(
@@ -365,23 +365,26 @@ class MotionToolhead(ToolHead):
         self.commanded_pos[:] = move.end_pos
         self._sync_print_time()
 
-    def _fire_active_callbacks(self, dx, dy, dz, de):
+    def _fire_active_callbacks(self):
         if self.kin is None:
             return False
         fired = False
-        for rail in self.kin.active_rails(dx, dy, dz):
-            if isinstance(rail, servo_axis.ServoRail):
-                holders = (rail,)
-            else:
-                holders = rail.get_steppers()
-            for holder in holders:
-                if not holder._active_callbacks:
-                    continue
-                cbs = holder._active_callbacks
-                holder._active_callbacks = []
-                for cb in cbs:
-                    cb(self.get_last_move_time())
-                fired = True
+        servo_rails = [
+            rail
+            for rail in getattr(self.kin, "rails", ())
+            if isinstance(rail, servo_axis.ServoRail)
+        ]
+        # Motion pieces stream to every queue, including servo axes that hold
+        # still — so every motor must be powered the moment any motion starts,
+        # or the ec-rt torque gate faults on pieces-while-parked.
+        for owner in list(self.kin.get_steppers()) + servo_rails:
+            if not owner._active_callbacks:
+                continue
+            cbs = owner._active_callbacks
+            owner._active_callbacks = []
+            for cb in cbs:
+                cb(self.get_last_move_time())
+            fired = True
         return fired
 
     def drip_move(self, newpos, speed, drip_completion):

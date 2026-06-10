@@ -246,7 +246,8 @@ runtime_drain(void)
     {
         static uint32_t last_retired_seen[KALICO_FAST_STATUS_MAX_AXES];
         uint32_t retired[KALICO_FAST_STATUS_MAX_AXES];
-        uint8_t st = 0, fc = 0;
+        uint8_t st = 0;
+        uint16_t fc = 0;
         int32_t nr = kalico_runtime_get_heartbeat(runtime_handle, &st, &fc,
                                                   retired,
                                                   KALICO_FAST_STATUS_MAX_AXES);

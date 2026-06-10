@@ -135,17 +135,18 @@ class FakeToolhead:
         return 42.0
 
 
-def test_servo_pass_fires_on_axis_delta_only():
-    rail = make_servo_rail("y")
+def test_servo_fires_on_any_motion_regardless_of_its_own_axis():
+    rail = make_servo_rail("x")
     fired = []
     rail.add_active_callback(fired.append)
     th = FakeToolhead(FakeKin([rail]))
-    assert th._fire_active_callbacks(5.0, 0.0, 0.0, 0.0) is False
-    assert fired == []
-    assert th._fire_active_callbacks(0.0, 3.0, 0.0, 0.0) is True
+    assert th._fire_active_callbacks() is True
     assert fired == [42.0]
-    assert th._fire_active_callbacks(0.0, 3.0, 0.0, 0.0) is False
+    assert th._fire_active_callbacks() is False
     assert fired == [42.0]
+    rail.add_active_callback(fired.append)
+    assert th._fire_active_callbacks() is True
+    assert fired == [42.0, 42.0]
 
 
 def test_servo_pass_uses_toolhead_print_time():
@@ -153,5 +154,5 @@ def test_servo_pass_uses_toolhead_print_time():
     fired = []
     rail.add_active_callback(fired.append)
     th = FakeToolhead(FakeKin([rail]))
-    assert th._fire_active_callbacks(0.0, 0.0, 1.0, 0.0) is True
+    assert th._fire_active_callbacks() is True
     assert fired == [42.0]

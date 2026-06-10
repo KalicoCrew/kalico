@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Usage:
 #   ./scripts/ci.sh                 # run all gates with a summary (local)
-#   ./scripts/ci.sh quick           # fast subset: ruff + rust build/test/clippy/fmt
+#   ./scripts/ci.sh quick           # fast subset: ruff + rust test/clippy/fmt
 #   ./scripts/ci.sh install-hooks   # enable the pre-push hook (runs `quick` per push)
 #   ./scripts/ci.sh <job>           # run one gate, exit with its status (CI)
 #
@@ -20,18 +20,30 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUST="$ROOT/rust"
 DOCKER_IMAGE="dangerklippers/klipper-build:latest"
 
+# Linux-only: env RUSTFLAGS replaces (does not merge with) the per-target
+# rustflags in rust/.cargo/config.toml, so widening this past the host target
+# would drop the macOS cdylib `-undefined dynamic_lookup` and the cross-build
+# target-cpu/--nmagic flags.
+host_cargo() {
+    if [ "$(uname -s)" = Linux ] && command -v ld.lld >/dev/null 2>&1; then
+        RUSTFLAGS="-Clink-arg=-fuse-ld=lld" cargo "$@"
+    else
+        cargo "$@"
+    fi
+}
+
 job_rust_build()  { cd "$RUST" && cargo build --workspace; }
 
 job_rust_test() {
     cd "$RUST"
-    cargo nextest run --workspace --profile ci
-    cargo test --workspace --doc
+    host_cargo nextest run --workspace --profile ci
+    host_cargo test --workspace --doc
 }
 
 job_rust_clippy() { cd "$RUST" && cargo clippy --workspace --all-targets -- -D warnings; }
 job_rust_fmt()    { cd "$RUST" && cargo fmt --all -- --check; }
 
-job_rust_host()   { job_rust_build && job_rust_test && job_rust_clippy && job_rust_fmt; }
+job_rust_host()   { job_rust_test && job_rust_clippy && job_rust_fmt; }
 
 job_rust_loom() {
     cd "$RUST"
@@ -205,7 +217,6 @@ run_check() {
 run_all() {
     local quick="${1:-false}"
     run_check "ruff"            job_ruff
-    run_check "rust-build"      job_rust_build
     run_check "rust-test"       job_rust_test
     run_check "rust-clippy"     job_rust_clippy
     run_check "rust-fmt"        job_rust_fmt

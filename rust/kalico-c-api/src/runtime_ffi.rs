@@ -976,7 +976,7 @@ pub mod exports {
     pub unsafe extern "C" fn kalico_runtime_get_heartbeat(
         rt: *mut KalicoRuntime,
         out_engine_state: *mut u8,
-        out_fault_code: *mut u8,
+        out_fault_code: *mut u16,
         out_retired: *mut u32,
         max_axes: usize,
     ) -> i32 {
@@ -991,13 +991,12 @@ pub mod exports {
             return KALICO_ERR_NOT_INIT;
         }
         let ctx = rt.cast::<RuntimeContext>();
-        // SAFETY: §11.2 shared-borrow on IsrState; retired_counts() reads u32 fields written only by ISR — aligned u32 read is single-instruction on Cortex-M.
         unsafe {
             let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
             let engine = &(*isr_ptr).engine;
 
             let engine_state = engine.status() as u8;
-            let fault_code = (engine.last_error() as u32 & 0xFF) as u8;
+            let fault_code = (engine.last_error() as u32 & 0xFFFF) as u16;
             let num_axes = engine.num_axes as usize;
             let counts = engine.retired_counts();
             let n_write = num_axes.min(max_axes);

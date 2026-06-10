@@ -32,6 +32,9 @@ class FakeKin:
         self.kinematics = kinematics
         self.rails = rails
 
+    def get_steppers(self):
+        return [s for rail in self.rails for s in rail.get_steppers()]
+
 
 def make_kin(kinematics):
     rails = [
@@ -80,32 +83,6 @@ class FakeToolhead:
         return self._clock
 
 
-def test_x_move_does_not_enable_z_steppers():
-    kin = make_kin("corexy")
-    fired = {}
-    for rail in kin.rails:
-        for s in rail.get_steppers():
-            name = s.get_name()
-            s.add_active_callback(
-                lambda pt, name=name: fired.setdefault(name, pt)
-            )
-    th = FakeToolhead(kin)
-    assert th._fire_active_callbacks(5.0, 0.0, 0.0, 0.0) is True
-    assert sorted(fired) == [
-        "stepper_x",
-        "stepper_x1",
-        "stepper_y",
-        "stepper_y1",
-    ]
-    z_callbacks = [
-        s._active_callbacks
-        for rail in kin.rails
-        if rail.get_name(short=True) == "z"
-        for s in rail.get_steppers()
-    ]
-    assert all(z_callbacks), "z callbacks must stay armed for a later z move"
-
-
 def test_each_enable_callback_gets_fresh_print_time():
     kin = make_kin("corexy")
     fired = []
@@ -113,7 +90,7 @@ def test_each_enable_callback_gets_fresh_print_time():
         for s in rail.get_steppers():
             s.add_active_callback(fired.append)
     th = FakeToolhead(kin)
-    th._fire_active_callbacks(5.0, 0.0, 0.0, 0.0)
-    assert len(fired) == 4
-    assert len(set(fired)) == 4, "print_time must be recomputed per callback"
+    th._fire_active_callbacks()
+    assert len(fired) == 6
+    assert len(set(fired)) == 6, "print_time must be recomputed per callback"
     assert fired == sorted(fired)

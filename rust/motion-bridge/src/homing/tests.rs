@@ -359,3 +359,118 @@ fn trajectory_final_position_constant_piece() {
         "constant piece endpoint must be 99.0, got {pos:.6}"
     );
 }
+
+mod post_homing_fault_window_tests {
+    use crate::homing::post_homing_fault_is_benign;
+
+    #[test]
+    fn zero_stamp_is_not_benign() {
+        assert!(!post_homing_fault_is_benign(1_000_000_000, 0));
+    }
+
+    #[test]
+    fn within_window_is_benign() {
+        let settled = 10_000_000_000u64;
+        let now = settled + 1_999_999_999;
+        assert!(post_homing_fault_is_benign(now, settled));
+    }
+
+    #[test]
+    fn outside_window_is_not_benign() {
+        let settled = 10_000_000_000u64;
+        let now = settled + 2_000_000_000;
+        assert!(!post_homing_fault_is_benign(now, settled));
+    }
+
+    #[test]
+    fn now_before_settled_is_benign_via_saturating_sub() {
+        let settled = 10_000_000_000u64;
+        let now = settled - 1;
+        assert!(post_homing_fault_is_benign(now, settled));
+    }
+}
+
+mod drive_fault_routing_tests {
+    use crate::homing::{DriveFaultRoute, route_drive_fault};
+
+    #[test]
+    fn homing_active_on_faulting_mcu_routes_to_homing_error() {
+        assert_eq!(route_drive_fault(7, Some(7)), DriveFaultRoute::HomingError);
+    }
+
+    #[test]
+    fn homing_on_other_mcu_is_fatal() {
+        assert_eq!(route_drive_fault(7, Some(3)), DriveFaultRoute::Fatal);
+    }
+
+    #[test]
+    fn idle_fault_is_fatal() {
+        assert_eq!(route_drive_fault(7, None), DriveFaultRoute::Fatal);
+    }
+}
+
+mod broadcast_stop_tests {
+    use crate::homing::broadcast_stop;
+    use kalico_protocol::messages::StopResponse;
+    use std::collections::HashSet;
+
+    #[test]
+    fn collects_discard_clock_from_the_axis_mcu() {
+        let ids: HashSet<u32> = [1, 2].into_iter().collect();
+        let clock = broadcast_stop(&ids, 2, |mcu_id| {
+            Ok(StopResponse {
+                result: 0,
+                discard_clock: u64::from(mcu_id) * 100,
+            })
+        })
+        .unwrap();
+        assert_eq!(clock, 200);
+    }
+
+    #[test]
+    fn missing_transport_fails_loudly() {
+        let ids: HashSet<u32> = [1, 7].into_iter().collect();
+        let err = broadcast_stop(&ids, 1, |mcu_id| {
+            if mcu_id == 7 {
+                Err("Stop: no transport for mcu 7".to_owned())
+            } else {
+                Ok(StopResponse {
+                    result: 0,
+                    discard_clock: 42,
+                })
+            }
+        })
+        .unwrap_err();
+        assert!(err.contains("no transport for mcu 7"), "got: {err}");
+        assert!(err.contains("Stop broadcast failed"), "got: {err}");
+    }
+
+    #[test]
+    fn rejected_result_is_an_error() {
+        let ids: HashSet<u32> = [1].into_iter().collect();
+        let err = broadcast_stop(&ids, 1, |_| {
+            Ok(StopResponse {
+                result: -5,
+                discard_clock: 0,
+            })
+        })
+        .unwrap_err();
+        assert!(
+            err.contains("Stop rejected by mcu 1: result=-5"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn axis_mcu_without_a_discard_clock_is_an_error() {
+        let ids: HashSet<u32> = [2].into_iter().collect();
+        let err = broadcast_stop(&ids, 9, |_| {
+            Ok(StopResponse {
+                result: 0,
+                discard_clock: 5,
+            })
+        })
+        .unwrap_err();
+        assert!(err.contains("did not report a discard clock"), "got: {err}");
+    }
+}
