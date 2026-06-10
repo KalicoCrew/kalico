@@ -173,9 +173,22 @@ int ec_rt_bringup(const char *ifname, int64_t cycle_ns, int rt_cpu, int rt_prio)
     if (!ec_init(ifname)) return -1;
     if (ec_config_init(FALSE) <= 0) { ec_close(); return -2; }
 
-    /* ec_config_init only REQUESTS PRE-OP. A drive left in SAFE-OP/OP by a
-     * previous aborted session transitions down slowly; writing the mailbox
-     * before it arrives times out with abort=0. Wait for PRE-OP explicitly. */
+    /* A previous session that died mid-OP leaves the drive with live SM, DC
+     * and mailbox state; without a full reset the next OP reaches state
+     * OPERATIONAL but exchanges process data at WKC 1 instead of 3. Bounce
+     * through INIT (acking any latched AL error) so every bringup starts
+     * from the same state as a fresh power-on, then wait for PRE-OP — the
+     * mailbox is not writable until the slave actually arrives there. */
+    ec_slave[1].state = EC_STATE_INIT + EC_STATE_ACK;
+    ec_writestate(1);
+    if (ec_statecheck(1, EC_STATE_INIT, EC_TIMEOUTSTATE * 4) != EC_STATE_INIT) {
+        fprintf(stderr, "ec_rt: slave 1 did not reach INIT (state=0x%02x al=0x%04x)\n",
+                ec_slave[1].state, ec_slave[1].ALstatuscode);
+        ec_close();
+        return -9;
+    }
+    ec_slave[1].state = EC_STATE_PRE_OP;
+    ec_writestate(1);
     if (ec_statecheck(1, EC_STATE_PRE_OP, EC_TIMEOUTSTATE * 4) != EC_STATE_PRE_OP) {
         fprintf(stderr, "ec_rt: slave 1 did not reach PRE-OP (state=0x%02x al=0x%04x)\n",
                 ec_slave[1].state, ec_slave[1].ALstatuscode);
