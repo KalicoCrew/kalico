@@ -130,6 +130,49 @@ fn pieces_at_disable_time_fault() {
 }
 
 #[test]
+fn drive_fault_parks_in_faulted_and_clears_pending_disable() {
+    let mut g = TorqueGate::new();
+    assert_eq!(g.on_set_torque(true, 0, 0), CommandAction::Enable);
+    g.enable_finished(true);
+    assert_eq!(
+        g.on_set_torque(false, 100, 50),
+        CommandAction::ScheduleDisable
+    );
+    g.on_drive_fault();
+    assert_eq!(g.state(), TorqueState::Faulted);
+    assert_eq!(g.on_tick(200, true), TickAction::None);
+}
+
+#[test]
+fn faulted_tick_with_pieces_is_not_a_fault() {
+    let mut g = TorqueGate::new();
+    g.on_drive_fault();
+    assert_eq!(g.on_tick(0, false), TickAction::None);
+}
+
+#[test]
+fn enable_from_faulted_recovers() {
+    let mut g = TorqueGate::new();
+    g.on_drive_fault();
+    assert_eq!(g.on_set_torque(true, 0, 0), CommandAction::Enable);
+    g.enable_finished(true);
+    assert_eq!(g.state(), TorqueState::Enabled);
+}
+
+#[test]
+fn disable_from_faulted_schedules_and_lands_parked() {
+    let mut g = TorqueGate::new();
+    g.on_drive_fault();
+    assert_eq!(
+        g.on_set_torque(false, 100, 50),
+        CommandAction::ScheduleDisable
+    );
+    assert_eq!(g.on_tick(150, true), TickAction::ExecuteDisable);
+    g.disable_finished();
+    assert_eq!(g.state(), TorqueState::Parked);
+}
+
+#[test]
 fn enabled_idle_ticks_are_quiet() {
     let mut g = TorqueGate::new();
     let _ = g.on_set_torque(true, T0, T0 - 1);

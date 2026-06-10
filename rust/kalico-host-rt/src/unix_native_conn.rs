@@ -19,7 +19,7 @@ use crate::native_call::NativeCall;
 use crate::transport::TransportError;
 
 type CallResult = Result<(MessageKind, Vec<u8>), TransportError>;
-type HeartbeatCallback = Arc<dyn Fn(&[u32]) + Send + Sync>;
+type HeartbeatCallback = Arc<dyn Fn(&StatusHeartbeat) + Send + Sync>;
 
 struct Pending {
     waiters: HashMap<u32, SyncSender<CallResult>>,
@@ -263,7 +263,11 @@ fn run_reader(shared: Arc<Shared>, mut stream: UnixStream) {
     }
 }
 
-fn route_frame(shared: &Shared, frame: Frame, cb: Option<&(dyn Fn(&[u32]) + Send + Sync)>) {
+fn route_frame(
+    shared: &Shared,
+    frame: Frame,
+    cb: Option<&(dyn Fn(&StatusHeartbeat) + Send + Sync)>,
+) {
     let Frame::Kalico { channel, payload } = &frame else {
         return;
     };
@@ -293,7 +297,7 @@ fn route_frame(shared: &Shared, frame: Frame, cb: Option<&(dyn Fn(&[u32]) + Send
     let _ = tx.send(result);
 }
 
-fn dispatch_frame(frame: Frame, cb: Option<&(dyn Fn(&[u32]) + Send + Sync)>) -> usize {
+fn dispatch_frame(frame: Frame, cb: Option<&(dyn Fn(&StatusHeartbeat) + Send + Sync)>) -> usize {
     let Frame::Kalico { channel, payload } = frame else {
         return 0;
     };
@@ -310,7 +314,7 @@ fn dispatch_frame(frame: Frame, cb: Option<&(dyn Fn(&[u32]) + Send + Sync)>) -> 
         return 0;
     };
     if let Some(cb) = cb {
-        cb(&hb.retired_counts);
+        cb(&hb);
     }
     1
 }

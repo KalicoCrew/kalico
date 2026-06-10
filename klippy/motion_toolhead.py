@@ -338,7 +338,7 @@ class MotionToolhead(ToolHead):
             feedrate,
         )
         enable_print_time = self.get_last_move_time()
-        self._fire_active_callbacks(dx, dy, dz, de, enable_print_time)
+        self._fire_active_callbacks(enable_print_time)
         bridge_lmt_before = self.bridge.get_last_move_time()
         self.bridge.submit_move(dx, dy, dz, de, feedrate)
         self._bump_pending_end_time(
@@ -347,30 +347,25 @@ class MotionToolhead(ToolHead):
         self.commanded_pos[:] = move.end_pos
         self._sync_print_time()
 
-    def _fire_active_callbacks(self, dx, dy, dz, de, print_time=None):
+    def _fire_active_callbacks(self, print_time=None):
         if self.kin is None:
             return False
         if print_time is None:
             print_time = self.get_last_move_time()
         fired = False
-        for s in self.kin.get_steppers():
-            if not s._active_callbacks:
+        servo_rails = [
+            rail
+            for rail in getattr(self.kin, "rails", ())
+            if isinstance(rail, servo_axis.ServoRail)
+        ]
+        # Motion pieces stream to every queue, including servo axes that hold
+        # still — so every motor must be powered the moment any motion starts,
+        # or the ec-rt torque gate faults on pieces-while-parked.
+        for owner in list(self.kin.get_steppers()) + servo_rails:
+            if not owner._active_callbacks:
                 continue
-            cbs = s._active_callbacks
-            s._active_callbacks = []
-            for cb in cbs:
-                cb(print_time)
-            fired = True
-        for rail in getattr(self.kin, "rails", ()):
-            if not isinstance(rail, servo_axis.ServoRail):
-                continue
-            if not rail._active_callbacks:
-                continue
-            axis_delta = (dx, dy, dz)["xyz".index(rail.axis)]
-            if abs(axis_delta) <= 1e-9:
-                continue
-            cbs = rail._active_callbacks
-            rail._active_callbacks = []
+            cbs = owner._active_callbacks
+            owner._active_callbacks = []
             for cb in cbs:
                 cb(print_time)
             fired = True

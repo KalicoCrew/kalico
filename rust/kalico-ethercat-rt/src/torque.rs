@@ -2,11 +2,13 @@ pub const ERR_ENABLE_FAILED: i32 = -310;
 pub const ERR_DISABLE_IN_PAST: i32 = -311;
 pub const ERR_BAD_TORQUE_STATE: i32 = -312;
 pub const ERR_PIECES_WHILE_PARKED: i32 = -313;
+pub const ERR_PIECES_WHILE_FAULTED: i32 = -314;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TorqueState {
     Parked,
     Enabled,
+    Faulted,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -53,7 +55,10 @@ impl TorqueGate {
             self.pending_disable_at = None;
             CommandAction::Enable
         } else {
-            if self.state != TorqueState::Enabled || self.pending_disable_at.is_some() {
+            let can_disable = (self.state == TorqueState::Enabled
+                || self.state == TorqueState::Faulted)
+                && self.pending_disable_at.is_none();
+            if !can_disable {
                 return CommandAction::Reject {
                     code: ERR_BAD_TORQUE_STATE,
                 };
@@ -66,6 +71,11 @@ impl TorqueGate {
             self.pending_disable_at = Some(execute_at_ns);
             CommandAction::ScheduleDisable
         }
+    }
+
+    pub fn on_drive_fault(&mut self) {
+        self.state = TorqueState::Faulted;
+        self.pending_disable_at = None;
     }
 
     pub fn enable_finished(&mut self, ok: bool) {
