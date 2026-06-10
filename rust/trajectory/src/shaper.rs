@@ -150,12 +150,21 @@ impl<'a> ShapedSignal<'a> {
         let input_samples = (0..n_input)
             .map(|i| eval_clamped(padded, input_lo + (i as f64) * dt_in))
             .collect();
-        Self { input_samples, input_lo, dt_in, n_input, kernel, k_lo, k_hi }
+        Self {
+            input_samples,
+            input_lo,
+            dt_in,
+            n_input,
+            kernel,
+            k_lo,
+            k_hi,
+        }
     }
 
     pub fn eval(&self, t: f64) -> f64 {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let j_lo = (((t - self.k_hi - self.input_lo) / self.dt_in).floor() as isize).max(0) as usize;
+        let j_lo =
+            (((t - self.k_hi - self.input_lo) / self.dt_in).floor() as isize).max(0) as usize;
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let j_hi = ((((t - self.k_lo - self.input_lo) / self.dt_in).ceil() as isize) + 1)
             .min(self.n_input as isize) as usize;

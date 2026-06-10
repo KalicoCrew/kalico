@@ -79,7 +79,7 @@ fn assert_nurbs_near_equal(a: &ScalarNurbs<f64>, b: &ScalarNurbs<f64>, label: &s
 }
 
 #[test]
-#[allow(clippy::float_cmp)] // Time bounds and cursor zeros are exact-by-construction.
+#[allow(clippy::float_cmp)]
 fn shim_matches_direct_pipeline_for_single_linear_move() {
     let fitted = linear_segment();
     let freq = 60.0;
@@ -123,7 +123,7 @@ fn shim_matches_direct_pipeline_for_single_linear_move() {
 }
 
 #[test]
-#[allow(clippy::float_cmp)] // Cursor zeros and h=0 for passthrough are exact-by-construction.
+#[allow(clippy::float_cmp)]
 fn new_seeds_axis_queues_with_rest_extension() {
     let shapers: [Option<AxisShaper>; 4] = [
         Some(AxisShaper::SmoothZv {
@@ -254,6 +254,37 @@ fn linear_x_segment(start_x: f64, end_x: f64, feedrate: f64) -> CubicSegment {
 
     let p0 = [start_x, 0.0, 0.0];
     let p3 = [end_x, 0.0, 0.0];
+    let lerp = |t: f64| -> [f64; 3] {
+        [
+            p0[0] + (p3[0] - p0[0]) * t,
+            p0[1] + (p3[1] - p0[1]) * t,
+            p0[2] + (p3[2] - p0[2]) * t,
+        ]
+    };
+    let cps = vec![p0, lerp(1.0 / 3.0), lerp(2.0 / 3.0), p3];
+    let xyz = VectorNurbs::<f64, 3>::try_new(3, vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], cps)
+        .unwrap();
+    CubicSegment::try_new(
+        xyz,
+        EMode::Travel,
+        0.0,
+        None,
+        feedrate,
+        SourceRange {
+            start_line: 0,
+            end_line: 0,
+        },
+        None,
+    )
+    .unwrap()
+}
+
+fn linear_y_segment(start_y: f64, end_y: f64, feedrate: f64) -> CubicSegment {
+    use geometry::segment::{EMode, SourceRange};
+    use nurbs::VectorNurbs;
+
+    let p0 = [0.0, start_y, 0.0];
+    let p3 = [0.0, end_y, 0.0];
     let lerp = |t: f64| -> [f64; 3] {
         [
             p0[0] + (p3[0] - p0[0]) * t,
@@ -745,7 +776,7 @@ fn read_axis_value_at(state: &ShaperState, axis_idx: usize, t: f64) -> Option<f6
 }
 
 #[test]
-#[allow(clippy::float_cmp)] // Byte-equivalence rollback check requires exact comparison.
+#[allow(clippy::float_cmp)]
 fn append_and_replan_rolls_back_planned_caches_on_plan_velocity_error() {
     let mut state = ShaperState::new([0.0; 4], &replan_shapers());
     let ctx_good = replan_context();
@@ -1206,13 +1237,8 @@ fn advance_idle_then_append_places_new_move_at_target() {
     );
 }
 
-// Task 13 unit tests for `read_path_accel_at`.
-
 #[test]
 fn read_path_accel_at_matches_analytic() {
-    // x(t) = 5t² on t ∈ [0,1] → vx = 10t, ax = 10.
-    // BezierPiece coeffs are monomial: p(u) = Σ coeffs[k]*(u-u_start)^k.
-    // So coeffs = [0.0, 0.0, 5.0] encodes 5t².
     let x_nurbs = bezier_pieces_to_nurbs(&[BezierPiece {
         u_start: 0.0,
         u_end: 1.0,
@@ -1264,12 +1290,10 @@ fn read_path_accel_at_zero_speed_returns_fallback() {
         t_start: 0.0,
         t_end: 1.0,
     }];
-    // At t=0: vx = 0, vy = 0 → speed = 0 → below SPEED_FLOOR → fallback.
+
     let a = state.read_path_accel_at(0.0, 0.0);
     assert_eq!(a, 0.0);
 }
-
-// Task 13 staging helpers.
 
 const LOW_FREQ_HZ: f64 = 13.0;
 const HARNESS_A_MAX: f64 = 5_000.0;
@@ -1360,14 +1384,6 @@ fn sampled_path_accel(state: &ShaperState, t: f64) -> f64 {
 
 #[test]
 fn replan_boundary_carries_acceleration() {
-    // Scenario: move A is 50 mm at F600 (≈ 10 mm/s/s ramp, triangular profile);
-    // 13 Hz SmoothZV makes max_h ≈ 30.9 ms so t_dispatched = t_decel_start − max_h
-    // lands in the accel ramp where tangential accel ≈ +3 800 mm/s² > 1 500.
-    // Appending slow move B (F30, 200 mm) would — without the carry — cause the
-    // new plan to start decelerating immediately from t_dispatched, producing an
-    // impulse. The C2-continuous replan (axis-wise d2 pinned from old plan at
-    // t_dispatched) makes the new fitted polynomial start with the same second
-    // derivative as the old one, so the step at the replan boundary is ~0.
     let (mut state, ctx) = single_axis_harness(600.0, HARNESS_A_MAX);
     append_x_move(&mut state, &ctx, 50.0, 600.0);
     let t_split = emit_partial_window(&mut state);
@@ -1385,5 +1401,159 @@ fn replan_boundary_carries_acceleration() {
     assert!(
         (a_new - a_old).abs() < 100.0,
         "replan accel step at t_dispatched: {a_old:.0} -> {a_new:.0} mm/s²"
+    );
+}
+
+#[test]
+fn replan_with_positive_boundary_accel_and_short_first_segment_succeeds() {
+    let shapers: [Option<AxisShaper>; 4] = [
+        Some(AxisShaper::SmoothZv {
+            frequency_hz: LOW_FREQ_HZ,
+        }),
+        Some(AxisShaper::SmoothZv {
+            frequency_hz: LOW_FREQ_HZ,
+        }),
+        Some(AxisShaper::Passthrough),
+        None,
+    ];
+
+    let limits = temporal::Limits::new([300.0; 3], [5_000.0; 3], [10_000.0; 3], f64::MAX);
+    let ctx = ReplanContext {
+        limits,
+        kernels: [
+            Some(PlanShaper::SmoothZv {
+                frequency_hz: LOW_FREQ_HZ,
+            }),
+            Some(PlanShaper::SmoothZv {
+                frequency_hz: LOW_FREQ_HZ,
+            }),
+            Some(PlanShaper::Passthrough),
+            None,
+        ],
+        fit_tolerance_mm: 0.005,
+        beta_max_iters: 5,
+        beta_convergence_ratio: 1.02,
+        e_limits: ELimits {
+            v_max: 100.0,
+            a_max: 5_000.0,
+        },
+        junction_chord_tolerance_mm: 0.05,
+        worker_threads: 1,
+
+        grid_strategy: temporal::multi::GridStrategy::Fixed(10),
+        fallback_initial_v: 0.0,
+        safety_mode: SafetyMode::WorstCaseFuture,
+    };
+
+    let mut state = ShaperState::new([0.0; 4], &shapers);
+
+    let m1 = linear_x_segment(0.0, 3.0, 300.0);
+    state.append_and_replan(m1, &ctx).expect("move 1");
+
+    let t_boundary = state.t_appended * 0.10;
+    assert!(t_boundary > 0.0, "t_boundary must be positive");
+    state.t_dispatched = t_boundary;
+
+    let initial_a_at_boundary = state.read_path_accel_at(t_boundary, 0.0);
+    assert!(
+        initial_a_at_boundary > 0.0,
+        "precondition: boundary must land mid-acceleration (got {:.1} mm/s²); \
+         t_boundary is at {:.4} s of total {:.4} s",
+        initial_a_at_boundary,
+        t_boundary,
+        state.t_appended,
+    );
+
+    let initial_v_at_boundary = state.read_path_speed_at(t_boundary, 0.0);
+    assert!(
+        initial_v_at_boundary > 0.1,
+        "precondition: boundary velocity must exceed rest threshold (got {:.4} mm/s)",
+        initial_v_at_boundary,
+    );
+
+    let m2 = linear_x_segment(3.0, 6.0, 300.0);
+    state
+        .append_and_replan(m2, &ctx)
+        .expect("replan from positive-accel boundary with short first segment must succeed");
+
+    assert!(
+        state.t_appended > t_boundary,
+        "replanned window must extend past the boundary",
+    );
+}
+
+fn corner_context_passthrough() -> ReplanContext {
+    let limits = temporal::Limits::new(
+        [300.0, 300.0, 5.0],
+        [5_000.0, 5_000.0, 350.0],
+        [10_000.0; 3],
+        5_000.0,
+    );
+    ReplanContext {
+        limits,
+        kernels: [
+            Some(PlanShaper::Passthrough),
+            Some(PlanShaper::Passthrough),
+            Some(PlanShaper::Passthrough),
+            None,
+        ],
+        fit_tolerance_mm: 0.005,
+        beta_max_iters: 5,
+        beta_convergence_ratio: 1.02,
+        e_limits: ELimits {
+            v_max: 100.0,
+            a_max: 5_000.0,
+        },
+        junction_chord_tolerance_mm: 0.05,
+        worker_threads: 1,
+        grid_strategy: temporal::multi::GridStrategy::Adaptive {
+            min_n: 20,
+            max_n: 200,
+            target_grid_spacing_mm: 0.5,
+        },
+        fallback_initial_v: 0.0,
+        safety_mode: SafetyMode::WorstCaseFuture,
+    }
+}
+
+#[test]
+fn split_remnant_corner_infeasibility_recovered() {
+    let shapers: [Option<AxisShaper>; 4] = [
+        Some(AxisShaper::Passthrough),
+        Some(AxisShaper::Passthrough),
+        Some(AxisShaper::Passthrough),
+        None,
+    ];
+
+    let ctx = corner_context_passthrough();
+    let mut state = ShaperState::new([0.0; 4], &shapers);
+
+    let seg_a = linear_x_segment(0.0, 5.0, 300.0);
+    state.append_and_replan(seg_a, &ctx).expect("seg_A plans");
+
+    let seg_b = linear_y_segment(0.0, 5.0, 300.0);
+    state
+        .append_and_replan(seg_b, &ctx)
+        .expect("seg_B plans (90 degree corner from A)");
+
+    let t_end_a = state.uncommitted_moves[0].t_end;
+    state.t_dispatched = t_end_a - 0.006;
+
+    let v_at_split = state.read_path_speed_at(state.t_dispatched, 0.0);
+    assert!(
+        v_at_split > 5.1,
+        "precondition: velocity {v_at_split:.1} mm/s at t_dispatched must exceed the \
+         junction velocity (~5.0 mm/s for this 90-degree corner) so the split remnant \
+         is physically unable to brake to the junction speed; got {v_at_split:.1} mm/s",
+    );
+
+    let seg_c = linear_x_segment(5.0, 10.0, 300.0);
+    state
+        .append_and_replan(seg_c, &ctx)
+        .expect("planning must recover when split remnant cannot satisfy corner exit velocity");
+
+    assert!(
+        state.t_appended > state.t_dispatched,
+        "replanned window must extend past t_dispatched",
     );
 }

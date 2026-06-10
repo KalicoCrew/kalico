@@ -10,8 +10,8 @@ pub mod peak;
 pub mod plan_velocity;
 mod refit;
 mod reparam;
-mod smooth_fit;
 mod shaper;
+mod smooth_fit;
 pub mod streaming;
 
 pub use emit_shaped::{emit_shaped, EmitSegmentMeta, PerAxisHistory};

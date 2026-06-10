@@ -379,13 +379,13 @@ fn junction_accel_step_before_vs_after_both_pin() {
     // Taylor coefficients of sin(t) at 0: t - t^3/6 + t^5/120 - t^7/5040
     // Pascal-shifted at 0 these are the raw coefficients:
     let sin_coeffs = vec![
-        0.0_f64,           // c0 = sin(0)
-        1.0,               // c1 = cos(0)
-        0.0,               // c2 = -sin(0)/2! = 0
-        -1.0 / 6.0,        // c3 = -cos(0)/3! = -1/6
-        0.0,               // c4 = sin(0)/4! = 0
-        1.0 / 120.0,       // c5 = cos(0)/5! = 1/120
-        0.0,               // c6 = -sin(0)/6! = 0  (actually 0 due to sin series)
+        0.0_f64,     // c0 = sin(0)
+        1.0,         // c1 = cos(0)
+        0.0,         // c2 = -sin(0)/2! = 0
+        -1.0 / 6.0,  // c3 = -cos(0)/3! = -1/6
+        0.0,         // c4 = sin(0)/4! = 0
+        1.0 / 120.0, // c5 = cos(0)/5! = 1/120
+        0.0,         // c6 = -sin(0)/6! = 0  (actually 0 due to sin series)
     ];
 
     let composed_seg0: Vec<[BezierPiece<f64>; 3]> = vec![[
@@ -417,14 +417,9 @@ fn junction_accel_step_before_vs_after_both_pin() {
 
     // "Before": start-pin-only fit at degree-4.  The fitter is free to choose
     // any end d2 it likes in order to minimise position residual.
-    let before_fit = fit_hermite_c1_clamped::<3>(
-        &composed_seg0,
-        0.005,
-        4,
-        Some(composed_d2_start),
-        None,
-    )
-    .unwrap();
+    let before_fit =
+        fit_hermite_c1_clamped::<3>(&composed_seg0, 0.005, 4, Some(composed_d2_start), None)
+            .unwrap();
     let before_end_d2 = {
         let p = before_fit[0].last().unwrap();
         p.differentiate().differentiate().evaluate(p.u_end)

@@ -19,7 +19,9 @@ fn thomas_solves_known_system() {
 #[test]
 fn clamped_spline_interpolates_and_is_c2() {
     // Fit f(t) = sin(t) on [0, PI] with 5 equal knots, clamped to f'=cos at ends.
-    let knots: Vec<f64> = (0..5).map(|i| std::f64::consts::PI * i as f64 / 4.0).collect();
+    let knots: Vec<f64> = (0..5)
+        .map(|i| std::f64::consts::PI * i as f64 / 4.0)
+        .collect();
     let values: Vec<f64> = knots.iter().map(|t| t.sin()).collect();
     let yp0 = 0.0_f64.cos();
     let ypn = std::f64::consts::PI.cos();

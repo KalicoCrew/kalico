@@ -46,12 +46,7 @@ fn build_clamped_spline(knots: &[f64], y: &[f64], yp0: f64, ypn: f64) -> Vec<Bez
             BezierPiece {
                 u_start: knots[i],
                 u_end: knots[i + 1],
-                coeffs: vec![
-                    y[i],
-                    bi,
-                    mm[i] / 2.0,
-                    (mm[i + 1] - mm[i]) / (6.0 * h[i]),
-                ],
+                coeffs: vec![y[i], bi, mm[i] / 2.0, (mm[i + 1] - mm[i]) / (6.0 * h[i])],
             }
         })
         .collect()
@@ -137,7 +132,9 @@ pub fn fit_c2_cubic<F: Fn(f64) -> f64>(
             return Ok(bezier_pieces_to_nurbs(&pieces));
         }
         if knots.len() >= MAX_KNOTS || !worst_t.is_finite() {
-            return Err(FitError { achieved_mm: worst_err });
+            return Err(FitError {
+                achieved_mm: worst_err,
+            });
         }
         knots.insert(worst_interval + 1, worst_t);
     }

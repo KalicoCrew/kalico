@@ -27,15 +27,17 @@ pub fn fit_and_split(
 
     let fit_input = nondegenerate_composed_pieces(composed)?;
 
-    let d2_start = start_d2_override.unwrap_or_else(|| boundary_second_derivative_start(&fit_input));
+    let d2_start =
+        start_d2_override.unwrap_or_else(|| boundary_second_derivative_start(&fit_input));
     let d2_end = boundary_second_derivative_end(&fit_input);
 
-    let mut fitted = fit_hermite_c2_adaptive(&fit_input, tolerance, d2_start, d2_end).map_err(|e| {
-        crate::ShapeError::FitFailure {
-            index: 0,
-            detail: e,
-        }
-    })?;
+    let mut fitted =
+        fit_hermite_c2_adaptive(&fit_input, tolerance, d2_start, d2_end).map_err(|e| {
+            crate::ShapeError::FitFailure {
+                index: 0,
+                detail: e,
+            }
+        })?;
 
     // Normalize all axes to a uniform degree (the max across all pieces on any
     // axis).  Phase-2 re-fitting produces degree-5 pieces for the last output
@@ -70,7 +72,10 @@ pub fn fit_and_split(
 fn boundary_second_derivative_start(composed: &[[BezierPiece<f64>; 3]]) -> [f64; 3] {
     std::array::from_fn(|axis| {
         let piece = &composed[0][axis];
-        piece.differentiate().differentiate().evaluate(piece.u_start)
+        piece
+            .differentiate()
+            .differentiate()
+            .evaluate(piece.u_start)
     })
 }
 
@@ -175,7 +180,10 @@ fn refit_last_piece_with_end_pin(
     // piece is C2 with the preceding Phase-1 piece on its left side as well.
     let last_d2_start: [f64; 3] = std::array::from_fn(|axis| {
         let piece = &last_refined[0][axis];
-        piece.differentiate().differentiate().evaluate(piece.u_start)
+        piece
+            .differentiate()
+            .differentiate()
+            .evaluate(piece.u_start)
     });
 
     // Re-fit the last piece range with BOTH accel pins at degree-5. degree-5
