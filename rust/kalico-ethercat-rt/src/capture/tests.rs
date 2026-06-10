@@ -84,7 +84,14 @@ fn header_is_one_json_line_describing_the_record() {
         "\"started_mono_ns\":7",
         "\"name\":\"x\"",
         "\"counts_per_mm\":3276.8",
+        "{\"name\":\"cycle_index\",\"dtype\":\"u64\",\"offset\":0}",
+        "{\"name\":\"flags\",\"dtype\":\"u8\",\"offset\":8}",
+        "{\"name\":\"target_counts\",\"dtype\":\"i32\",\"offset\":9}",
+        "{\"name\":\"position_demand\",\"dtype\":\"i32\",\"offset\":13}",
+        "{\"name\":\"position_actual\",\"dtype\":\"i32\",\"offset\":17}",
         "{\"name\":\"following_error\",\"dtype\":\"i32\",\"offset\":21}",
+        "{\"name\":\"torque_actual\",\"dtype\":\"i16\",\"offset\":25}",
+        "{\"name\":\"statusword\",\"dtype\":\"u16\",\"offset\":27}",
         "{\"name\":\"error_code\",\"dtype\":\"u16\",\"offset\":29}",
     ] {
         assert!(h.contains(needle), "header missing {needle}: {h}");
@@ -194,5 +201,28 @@ fn pushes_after_overflow_are_ignored() {
     let out = cap.stop();
     assert_eq!(out.overflow_cycle, Some(2), "first refused cycle is recorded");
     let failed = path.with_extension("failed.scap");
+    std::fs::remove_file(&failed).unwrap();
+}
+
+#[test]
+fn writer_death_latches_file_error() {
+    let path = tmp_path("wdeath");
+    let _ = std::fs::remove_file(&path);
+    let failed = path.with_extension("failed.scap");
+    let _ = std::fs::remove_file(&failed);
+
+    let mut cap = Capture::with_capacity(4);
+    let (start_result, writer_done) = cap.start_writer_fails(cfg(&path));
+    assert_eq!(start_result, 0);
+
+    writer_done.recv().expect("writer must signal done before failing");
+
+    for i in 0..3u64 {
+        cap.push(record(i));
+    }
+    let out = cap.stop();
+    assert_eq!(out.result, ERR_CAPTURE_FILE);
+    assert!(!path.exists(), "failed capture must not keep .scap name");
+    assert!(failed.exists(), "failed capture must be renamed");
     std::fs::remove_file(&failed).unwrap();
 }

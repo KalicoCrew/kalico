@@ -16,6 +16,16 @@ pub const RECORD_SIZE: usize = 31;
 pub const FLAG_TORQUE_ENABLED: u8 = 1 << 0;
 pub const FLAG_MOTION_ACTIVE: u8 = 1 << 1;
 
+const OFF_CYCLE_INDEX: usize = 0;
+const OFF_FLAGS: usize = 8;
+const OFF_TARGET_COUNTS: usize = 9;
+const OFF_POSITION_DEMAND: usize = 13;
+const OFF_POSITION_ACTUAL: usize = 17;
+const OFF_FOLLOWING_ERROR: usize = 21;
+const OFF_TORQUE_ACTUAL: usize = 25;
+const OFF_STATUSWORD: usize = 27;
+const OFF_ERROR_CODE: usize = 29;
+
 const WRITER_SYNC_INTERVAL: Duration = Duration::from_secs(1);
 const WRITER_RECV_TIMEOUT: Duration = Duration::from_millis(100);
 
@@ -56,15 +66,20 @@ pub struct StopOutcome {
 
 pub fn encode_record(r: &CaptureRecord) -> [u8; RECORD_SIZE] {
     let mut b = [0u8; RECORD_SIZE];
-    b[0..8].copy_from_slice(&r.cycle_index.to_le_bytes());
-    b[8] = r.flags;
-    b[9..13].copy_from_slice(&r.drive.target_counts.to_le_bytes());
-    b[13..17].copy_from_slice(&r.drive.position_demand.to_le_bytes());
-    b[17..21].copy_from_slice(&r.drive.position_actual.to_le_bytes());
-    b[21..25].copy_from_slice(&r.drive.following_error.to_le_bytes());
-    b[25..27].copy_from_slice(&r.drive.torque_actual.to_le_bytes());
-    b[27..29].copy_from_slice(&r.drive.statusword.to_le_bytes());
-    b[29..31].copy_from_slice(&r.drive.error_code.to_le_bytes());
+    b[OFF_CYCLE_INDEX..OFF_CYCLE_INDEX + 8].copy_from_slice(&r.cycle_index.to_le_bytes());
+    b[OFF_FLAGS] = r.flags;
+    b[OFF_TARGET_COUNTS..OFF_TARGET_COUNTS + 4]
+        .copy_from_slice(&r.drive.target_counts.to_le_bytes());
+    b[OFF_POSITION_DEMAND..OFF_POSITION_DEMAND + 4]
+        .copy_from_slice(&r.drive.position_demand.to_le_bytes());
+    b[OFF_POSITION_ACTUAL..OFF_POSITION_ACTUAL + 4]
+        .copy_from_slice(&r.drive.position_actual.to_le_bytes());
+    b[OFF_FOLLOWING_ERROR..OFF_FOLLOWING_ERROR + 4]
+        .copy_from_slice(&r.drive.following_error.to_le_bytes());
+    b[OFF_TORQUE_ACTUAL..OFF_TORQUE_ACTUAL + 2]
+        .copy_from_slice(&r.drive.torque_actual.to_le_bytes());
+    b[OFF_STATUSWORD..OFF_STATUSWORD + 2].copy_from_slice(&r.drive.statusword.to_le_bytes());
+    b[OFF_ERROR_CODE..OFF_ERROR_CODE + 2].copy_from_slice(&r.drive.error_code.to_le_bytes());
     b
 }
 
@@ -74,22 +89,31 @@ fn json_string_safe(s: &str) -> bool {
 }
 
 pub fn header_json(cfg: &CaptureConfig) -> String {
+    let mut channels = String::new();
+    for (name, dtype, offset) in [
+        ("cycle_index", "u64", OFF_CYCLE_INDEX),
+        ("flags", "u8", OFF_FLAGS),
+        ("target_counts", "i32", OFF_TARGET_COUNTS),
+        ("position_demand", "i32", OFF_POSITION_DEMAND),
+        ("position_actual", "i32", OFF_POSITION_ACTUAL),
+        ("following_error", "i32", OFF_FOLLOWING_ERROR),
+        ("torque_actual", "i16", OFF_TORQUE_ACTUAL),
+        ("statusword", "u16", OFF_STATUSWORD),
+        ("error_code", "u16", OFF_ERROR_CODE),
+    ] {
+        if !channels.is_empty() {
+            channels.push(',');
+        }
+        channels.push_str(&format!(
+            "{{\"name\":\"{name}\",\"dtype\":\"{dtype}\",\"offset\":{offset}}}"
+        ));
+    }
     format!(
         concat!(
             "{{\"version\":1,\"cycle_ns\":{},\"record_size\":{},",
             "\"started_utc\":\"{}\",\"started_mono_ns\":{},",
             "\"drives\":[{{\"name\":\"{}\",\"counts_per_mm\":{}}}],",
-            "\"channels\":[",
-            "{{\"name\":\"cycle_index\",\"dtype\":\"u64\",\"offset\":0}},",
-            "{{\"name\":\"flags\",\"dtype\":\"u8\",\"offset\":8}},",
-            "{{\"name\":\"target_counts\",\"dtype\":\"i32\",\"offset\":9}},",
-            "{{\"name\":\"position_demand\",\"dtype\":\"i32\",\"offset\":13}},",
-            "{{\"name\":\"position_actual\",\"dtype\":\"i32\",\"offset\":17}},",
-            "{{\"name\":\"following_error\",\"dtype\":\"i32\",\"offset\":21}},",
-            "{{\"name\":\"torque_actual\",\"dtype\":\"i16\",\"offset\":25}},",
-            "{{\"name\":\"statusword\",\"dtype\":\"u16\",\"offset\":27}},",
-            "{{\"name\":\"error_code\",\"dtype\":\"u16\",\"offset\":29}}",
-            "]}}\n",
+            "\"channels\":[{}]}}\n",
         ),
         cfg.cycle_ns,
         RECORD_SIZE,
@@ -97,12 +121,20 @@ pub fn header_json(cfg: &CaptureConfig) -> String {
         cfg.started_mono_ns,
         cfg.drive_name,
         cfg.counts_per_mm,
+        channels,
     )
+}
+
+enum WriterHook {
+    None,
+    Gate(Receiver<()>),
+    #[cfg(test)]
+    FailAfterHeader(SyncSender<()>),
 }
 
 struct ActiveCapture {
     tx: SyncSender<CaptureRecord>,
-    writer: JoinHandle<Result<u64, String>>,
+    writer: JoinHandle<Result<u64, (u64, String)>>,
     path: PathBuf,
     failure: Option<(u64, i32)>,
 }
@@ -135,15 +167,25 @@ impl Capture {
     }
 
     pub fn start(&mut self, cfg: CaptureConfig) -> i32 {
-        self.start_inner(cfg, None)
+        self.start_inner(cfg, WriterHook::None)
     }
 
     #[cfg(test)]
     pub(crate) fn start_gated(&mut self, cfg: CaptureConfig, gate: Receiver<()>) -> i32 {
-        self.start_inner(cfg, Some(gate))
+        self.start_inner(cfg, WriterHook::Gate(gate))
     }
 
-    fn start_inner(&mut self, cfg: CaptureConfig, gate: Option<Receiver<()>>) -> i32 {
+    #[cfg(test)]
+    pub(crate) fn start_writer_fails(
+        &mut self,
+        cfg: CaptureConfig,
+    ) -> (i32, Receiver<()>) {
+        let (done_tx, done_rx) = sync_channel(1);
+        let result = self.start_inner(cfg, WriterHook::FailAfterHeader(done_tx));
+        (result, done_rx)
+    }
+
+    fn start_inner(&mut self, cfg: CaptureConfig, hook: WriterHook) -> i32 {
         if self.active.is_some() {
             return ERR_CAPTURE_ACTIVE;
         }
@@ -164,7 +206,7 @@ impl Capture {
         let (tx, rx) = sync_channel(self.capacity);
         let writer = std::thread::Builder::new()
             .name("capture-writer".into())
-            .spawn(move || writer_thread(rx, file, header, gate))
+            .spawn(move || writer_thread(rx, file, header, hook))
             .expect("spawn capture writer thread");
         self.active = Some(ActiveCapture {
             tx,
@@ -210,15 +252,15 @@ impl Capture {
         }
         let samples = match written {
             Ok(n) => n,
-            Err(_) if result == 0 => {
+            Err((n, _)) if result == 0 => {
                 result = ERR_CAPTURE_FILE;
-                0
+                n
             }
-            Err(_) => 0,
+            Err((n, _)) => n,
         };
         if result != 0 {
             let failed = active.path.with_extension("failed.scap");
-            if std::fs::rename(&active.path, &failed).is_err() && result == ERR_CAPTURE_OVERFLOW {
+            if std::fs::rename(&active.path, &failed).is_err() {
                 result = ERR_CAPTURE_FILE;
             }
         }
@@ -234,12 +276,20 @@ fn writer_thread(
     rx: Receiver<CaptureRecord>,
     mut file: File,
     header: String,
-    gate: Option<Receiver<()>>,
-) -> Result<u64, String> {
+    hook: WriterHook,
+) -> Result<u64, (u64, String)> {
     file.write_all(header.as_bytes())
-        .map_err(|e| format!("capture header write: {e}"))?;
-    if let Some(g) = gate {
-        let _ = g.recv();
+        .map_err(|e| (0u64, format!("capture header write: {e}")))?;
+    match hook {
+        WriterHook::None => {}
+        WriterHook::Gate(g) => {
+            let _ = g.recv();
+        }
+        #[cfg(test)]
+        WriterHook::FailAfterHeader(done_tx) => {
+            let _ = done_tx.send(());
+            return Err((0, "injected".into()));
+        }
     }
     let mut written = 0u64;
     let mut last_sync = Instant::now();
@@ -247,7 +297,7 @@ fn writer_thread(
         match rx.recv_timeout(WRITER_RECV_TIMEOUT) {
             Ok(r) => {
                 file.write_all(&encode_record(&r))
-                    .map_err(|e| format!("capture record write: {e}"))?;
+                    .map_err(|e| (written, format!("capture record write: {e}")))?;
                 written += 1;
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
@@ -255,12 +305,12 @@ fn writer_thread(
         }
         if last_sync.elapsed() >= WRITER_SYNC_INTERVAL {
             file.sync_data()
-                .map_err(|e| format!("capture fsync: {e}"))?;
+                .map_err(|e| (written, format!("capture fsync: {e}")))?;
             last_sync = Instant::now();
         }
     }
     file.sync_data()
-        .map_err(|e| format!("capture final fsync: {e}"))?;
+        .map_err(|e| (written, format!("capture final fsync: {e}")))?;
     Ok(written)
 }
 
