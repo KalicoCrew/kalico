@@ -20,6 +20,22 @@ pub fn wait_for_claim(
     sigterm: &AtomicBool,
     prefix: &str,
 ) -> Option<u32> {
+    wait_for_claim_pumping(server, deadline, sigterm, prefix, &mut || {
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    })
+}
+
+/// `pump` runs once per poll iteration in place of a sleep. With a live
+/// EtherCAT bus it must issue one parked process-data cycle: a slave in OP
+/// drops to SAFE-OP (drive panel ErC11) if cyclic frames pause longer than
+/// its SM watchdog while we wait for the bridge handshake.
+pub fn wait_for_claim_pumping(
+    server: &mut FrameServer,
+    deadline: std::time::Instant,
+    sigterm: &AtomicBool,
+    prefix: &str,
+    pump: &mut dyn FnMut(),
+) -> Option<u32> {
     loop {
         for cmd in server.poll_commands() {
             if let Command::ClaimHandshake { correlation_id } = cmd {
@@ -33,7 +49,7 @@ pub fn wait_for_claim(
         if sigterm.load(Ordering::Acquire) {
             return None;
         }
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        pump();
     }
 }
 

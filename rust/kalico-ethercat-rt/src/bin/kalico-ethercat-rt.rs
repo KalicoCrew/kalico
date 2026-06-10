@@ -5,7 +5,9 @@
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use kalico_ethercat_rt::claim::{eval_wkc, single_slave_reply, wait_for_claim, WkcDecision};
+use kalico_ethercat_rt::claim::{
+    eval_wkc, single_slave_reply, wait_for_claim, wait_for_claim_pumping, WkcDecision,
+};
 use kalico_ethercat_rt::clock::monotonic_ns;
 use kalico_ethercat_rt::curves::{AxisRing, AXIS_RING_CAPACITY, ENGINE_STATE_FAULT, NUM_AXES};
 use kalico_ethercat_rt::ffi;
@@ -143,6 +145,13 @@ fn main() {
     }
     eprintln!("ec-rt: drive parked (Ready-to-Switch-On, no torque)");
 
+    let park_pump = |cycles: usize| {
+        let mut toff = 0i64;
+        for _ in 0..cycles {
+            unsafe { ffi::ec_rt_park_cycle(&mut toff) };
+        }
+    };
+
     let run_limits: (u32, u16) = {
         let mut ferr = 0u32;
         let mut tmo = 0u16;
@@ -156,6 +165,7 @@ fn main() {
             }
             std::process::exit(1);
         }
+        park_pump(4);
         eprintln!("ec-rt: drive limits at bringup: 6065h={ferr} counts, 6066h={tmo} ms, 6072h={tq} (0.1%)");
         let cli_ferr: Option<u32> =
             arg_val(&args, "--following-error-counts").and_then(|s| s.parse().ok());
@@ -172,6 +182,7 @@ fn main() {
                 }
                 std::process::exit(1);
             }
+            park_pump(4);
             eprintln!(
                 "ec-rt: session limits applied: 6065h={} 6072h={}",
                 run.0, run.1
@@ -180,11 +191,15 @@ fn main() {
         run
     };
 
-    match wait_for_claim(
+    match wait_for_claim_pumping(
         &mut server,
         std::time::Instant::now() + std::time::Duration::from_secs(5),
         &SIGTERM_RECEIVED,
         "ec-rt",
+        &mut || {
+            let mut toff = 0i64;
+            unsafe { ffi::ec_rt_park_cycle(&mut toff) };
+        },
     ) {
         Some(cid) => {
             server.respond(&claim_handshake_reply_frame(
@@ -504,10 +519,15 @@ fn main() {
                 );
             }
             WkcDecision::Halt => {
+                let mut al_state = 0u16;
+                let mut al_code = 0u16;
+                unsafe { ffi::ec_rt_al_status(&mut al_state, &mut al_code) };
                 eprintln!(
                     "ec-rt: working counter {wkc} (expected 3), \
                      consecutive_bad={wkc_consecutive} — bus lost after \
-                     {} consecutive bad cycles, halting",
+                     {} consecutive bad cycles, halting \
+                     (slave AL state=0x{al_state:02x} status_code=0x{al_code:04x}; \
+                     0x001b=SM watchdog, 0x001a/0x002c/0x0030=DC sync)",
                     kalico_ethercat_rt::claim::WKC_CONSECUTIVE_LOSS_LIMIT
                 );
                 break;
