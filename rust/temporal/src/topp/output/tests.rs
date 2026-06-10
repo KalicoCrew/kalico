@@ -58,3 +58,36 @@ fn assembles_samples_and_total_time() {
     assert!(matches!(p.status, SolveStatus::Solved));
     assert!((p.total_time - 2.0).abs() < 1e-9);
 }
+
+#[test]
+fn infeasible_solve_reports_infinite_time() {
+    // An infeasible solver answer is garbage primal values that traverse the
+    // path at near-zero speed, which would integrate to an enormous-but-finite
+    // time and read downstream as a real (slow) trajectory. An infeasible solve
+    // must report INFINITY so nothing mistakes it for a schedulable move.
+    let grid = dummy_grid(3, 50.0);
+    let result = SolverResult {
+        b: vec![4e-5, 2e-5, 1e-9],
+        a: vec![0.0, 0.0, 0.0],
+        status: SolverStatus::Infeasible,
+    };
+    let verify = VerifyReport {
+        binding_per_grid: vec![BindingConstraint::None; 3],
+        worst_violation: 1.0,
+        worst_violation_grid: 0,
+        feasible: false,
+    };
+    let cfg = GridConfig {
+        scheme: GridScheme::UniformArclength,
+        n: 3,
+    };
+    let p = assemble(
+        &grid.s,
+        &result,
+        &verify,
+        cfg,
+        SlpOutcome::Converged { outer_iters: 0 },
+    );
+    assert!(matches!(p.status, SolveStatus::Infeasible { .. }));
+    assert!(p.total_time.is_infinite(), "total_time = {}", p.total_time);
+}

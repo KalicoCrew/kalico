@@ -36,9 +36,16 @@ pub(crate) fn assemble(
         }
     }
 
+    let status = map_status(result.status, verify, slp_outcome);
+    let total_time = if matches!(status, SolveStatus::Infeasible { .. }) {
+        f64::INFINITY
+    } else {
+        total_time
+    };
+
     TopProfile {
         samples,
-        status: map_status(result.status, verify, slp_outcome),
+        status,
         grid_scheme: grid_config.scheme,
         total_time,
     }

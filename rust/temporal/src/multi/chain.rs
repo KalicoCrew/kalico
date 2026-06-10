@@ -47,6 +47,9 @@ pub(crate) fn slice_chain_profile(
                     ds / 1e-9_f64.max(w[0].v.max(w[1].v))
                 };
             }
+            if matches!(chain.status, crate::SolveStatus::Infeasible { .. }) {
+                total_time = f64::INFINITY;
+            }
             TopProfile {
                 samples,
                 status: chain.status,
