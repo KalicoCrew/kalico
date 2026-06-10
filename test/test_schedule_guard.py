@@ -1,6 +1,6 @@
 import pytest
 
-from klippy.mcu import MCU_digital_out, MIN_SCHEDULE_LEAD
+from klippy.mcu import MIN_SCHEDULE_LEAD, MCU_digital_out
 
 
 class FakeReactor:
