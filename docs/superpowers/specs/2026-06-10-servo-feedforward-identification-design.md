@@ -109,6 +109,7 @@ Linear least squares of measured per-motor torque against the model above.
    viscous = [0.0045]         # b per motor
    coulomb_fwd = [1.2]        # c per motor, forward
    coulomb_rev = [-1.1]       # c per motor, reverse
+   coulomb_deadband_mm_s = 0.5  # velocity window where Coulomb term is zero
    fit_rms_residual = [0.8]   # 0.1% rated — fit quality, fail loudly if absurd
    ```
 

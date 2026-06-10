@@ -92,7 +92,17 @@ rotation_distance: 40         # mm of axis travel per motor revolution (your mec
 encoder_counts_per_rev: 131072  # required; drive encoder counts per motor rev (A6-EC: 131072)
 position_min: 0
 position_max: 300
+#velocity_ff: True              # stream 60B1h velocity feedforward
+#dynamics_profile: dynamics_x.toml  # enables 60B2h torque feedforward
+#ff_torque_clamp: 30.0          # torque-offset clamp, % of rated
 ```
+
+Bring-up now performs the **variable PDO remap** (1600h/1A00h via SDO in
+PRE-OP; exit rc -6 on failure) and the **FF-routing SDO writes** (C01.13/16 =
+5, C01.14/17 = 1000; exit rc -7 on failure) before the DC stabilize loop.
+Both are rewritten on every claim — they are not EEPROM-retained. See
+[`servo-feedforward.md`](servo-feedforward.md) for the FF config keys and
+identification workflow.
 
 `counts_per_mm = encoder_counts_per_rev / rotation_distance` — the `CountMap` gain
 the endpoint uses to convert host millimetres to drive counts. klippy derives it at
