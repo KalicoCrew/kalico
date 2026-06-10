@@ -1,22 +1,9 @@
-import collections
-
-_homing_info = collections.namedtuple(
-    "homing_info",
-    [
-        "speed",
-        "position_endstop",
-        "retract_speed",
-        "retract_dist",
-        "positive_dir",
-        "second_homing_speed",
-        "use_sensorless_homing",
-        "min_home_dist",
-        "accel",
-    ],
-)
+from ..rail import BaseRail
 
 
-def infer_positive_dir(config, axis, position_endstop, position_min, position_max):
+def infer_positive_dir(
+    config, axis, position_endstop, position_min, position_max
+):
     if position_endstop == position_min:
         return False
     if position_endstop == position_max:
@@ -28,8 +15,9 @@ def infer_positive_dir(config, axis, position_endstop, position_min, position_ma
     )
 
 
-class ServoRail:
+class ServoRail(BaseRail):
     def __init__(self, config):
+        super().__init__()
         self.printer = config.get_printer()
         self.name = config.get_name()
         self.axis = self.name.split("_", 1)[1]
@@ -49,20 +37,19 @@ class ServoRail:
         self.encoder_counts_per_rev = config.getint(
             "encoder_counts_per_rev", minval=1
         )
-        self.position_min = config.getfloat("position_min", 0.0)
-        self.position_max = config.getfloat(
-            "position_max", above=self.position_min
-        )
+        self._parse_position_range(config)
         self.endstop_pin = config.get("endstop_pin", None)
         if self.endstop_pin is None:
             self.position_endstop = 0.0
             self.homing_speed = 0.0
+            self.homing_retract_dist = 0.0
+            self.homing_retract_speed = 0.0
             self.homing_positive_dir = False
             self.homing_following_error = 0.0
             self.homing_max_torque = 0.0
         else:
             self.position_endstop = config.getfloat("position_endstop")
-            self.homing_speed = config.getfloat("homing_speed", 5.0, above=0.0)
+            self._parse_homing_speeds(config)
             self.homing_positive_dir = infer_positive_dir(
                 config,
                 self.axis,
@@ -76,7 +63,9 @@ class ServoRail:
             self.homing_max_torque = config.getfloat(
                 "homing_max_torque", 50.0, above=0.0, maxval=400.0
             )
-        self.following_error = config.getfloat("following_error", None, above=0.0)
+        self.following_error = config.getfloat(
+            "following_error", None, above=0.0
+        )
         self.max_torque = config.getfloat(
             "max_torque", None, above=0.0, maxval=400.0
         )
@@ -102,22 +91,6 @@ class ServoRail:
     def add_extra_stepper(self, config):
         raise config.error(
             "servo_%s does not support extra steppers" % self.axis
-        )
-
-    def get_range(self):
-        return self.position_min, self.position_max
-
-    def get_homing_info(self):
-        return _homing_info(
-            speed=self.homing_speed,
-            position_endstop=self.position_endstop,
-            retract_speed=0.0,
-            retract_dist=0.0,
-            positive_dir=self.homing_positive_dir,
-            second_homing_speed=0.0,
-            use_sensorless_homing=False,
-            min_home_dist=0.0,
-            accel=None,
         )
 
     def set_position(self, coord):

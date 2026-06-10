@@ -24,15 +24,88 @@ def test_infer_positive_dir_mid_range_is_config_error():
         servo_axis.infer_positive_dir(cfg, "x", 100.0, -6.0, 235.0)
 
 
+class FakeRailConfig:
+    error = RuntimeError
+    _UNSET = object()
+
+    def __init__(self, name, options):
+        self._name = name
+        self._options = dict(options)
+
+    def get_printer(self):
+        return None
+
+    def get_name(self):
+        return self._name
+
+    def get(self, option, default=_UNSET):
+        return self._lookup(option, default)
+
+    def getfloat(
+        self, option, default=_UNSET, above=None, minval=None, maxval=None
+    ):
+        return self._lookup(option, default)
+
+    def getint(self, option, default=_UNSET, minval=None, maxval=None):
+        return self._lookup(option, default)
+
+    def _lookup(self, option, default):
+        if option in self._options:
+            return self._options[option]
+        if default is FakeRailConfig._UNSET:
+            raise RuntimeError("missing required option %r" % (option,))
+        return default
+
+
+SERVO_Z_OPTIONS = {
+    "protocol": "ethercat",
+    "node": "z_drive",
+    "rotation_distance": 40.0,
+    "encoder_counts_per_rev": 131072,
+    "position_min": -6.0,
+    "position_max": 235.0,
+    "endstop_pin": "ec_z:endstop",
+    "position_endstop": -6.0,
+}
+
+
+def make_servo_rail(extra=(), drop=()):
+    options = dict(SERVO_Z_OPTIONS)
+    options.update(extra)
+    for key in drop:
+        options.pop(key)
+    return servo_axis.ServoRail(FakeRailConfig("servo_z", options))
+
+
 def test_get_homing_info_reflects_homing_config():
-    rail = servo_axis.ServoRail.__new__(servo_axis.ServoRail)
-    rail.position_endstop = -6.0
-    rail.homing_speed = 50.0
-    rail.homing_positive_dir = False
+    rail = make_servo_rail(extra={"homing_speed": 50.0})
     hi = rail.get_homing_info()
     assert hi.speed == 50.0
     assert hi.position_endstop == -6.0
     assert hi.positive_dir is False
+
+
+def test_homing_info_reflects_retract_config():
+    rail = make_servo_rail(
+        extra={"homing_retract_dist": 3.0, "homing_retract_speed": 10.0}
+    )
+    hi = rail.get_homing_info()
+    assert hi.retract_dist == 3.0
+    assert hi.retract_speed == 10.0
+
+
+def test_retract_defaults_match_stepper_rail():
+    rail = make_servo_rail(extra={"homing_speed": 50.0})
+    hi = rail.get_homing_info()
+    assert hi.retract_dist == 5.0
+    assert hi.retract_speed == 50.0
+
+
+def test_no_endstop_pin_means_zero_retract():
+    rail = make_servo_rail(drop=("endstop_pin", "position_endstop"))
+    hi = rail.get_homing_info()
+    assert hi.retract_dist == 0.0
+    assert rail.second_homing_speed == 0.0
 
 
 class FakeSectionsConfig:
