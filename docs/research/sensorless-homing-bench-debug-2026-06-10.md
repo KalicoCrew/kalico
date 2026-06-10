@@ -153,13 +153,31 @@ with secondary restore errors (`6eb0ea0c7`).
     the pump wrote to the wire *after* the Stop frame landed in the
     empty ring and executed from the halted position: a ~46ms position
     jump. Intermittent because the window is only a pump send-batch in
-    flight at trip time (homes 1–3 that evening passed). Fix:
-    `PumpMsg::Barrier(ack)` — the trip handler (and `home_abort`) now
-    waits for the pump to acknowledge the flush before issuing Stop;
-    after the ack the pump's queues for those axes are empty and it can
-    never emit another piece for them, so the discard is complete by
-    construction. The -310 steps/sample check remains the loud backstop
-    for any future discontinuity (it is what caught this).
+    flight at trip time (homes 1–3 that evening passed).
+
+    Fix (v2 — the first cut barriered the pump *before* Stop, which
+    delayed the halt; Stop must stay a single immediate USB write):
+    **Stop now gates the stream MCU-side.** `handle_stop` →
+    `kalico_runtime_gate_pieces`: discard + refuse `commit_head`
+    (`KALICO_ERR_STREAM_HALTED`, -142) until resume. A straggler frame
+    bounces at the head-commit (foreground, per-USB-frame) — the TIM5
+    ISR is untouched; a gated ring is simply an empty ring, which is a
+    path the ISR already takes. The host lifts the gate with the new
+    `ResumeStream` control message (0x0074/0x0075) only after (a) a
+    `PumpMsg::Barrier` ack proves the pump can never emit another
+    old-stream piece and (b) position is reconciled — both on the
+    latency-free resume side. If reconcile fails the gate stays
+    latched: every later commit is refused loudly, matching the
+    existing "firmware restart required" semantics. Rejected
+    stragglers surface as pump `send_frame failed ... -142` error
+    logs (bounded — the Flush already in the channel clears them).
+    Note: deliberately NOT a TIM5 stop — the 64-bit engine clock is
+    published by the TIM5 ISR (seqlock, `clock.rs`) widening a 32-bit
+    counter that wraps every 8.26s on the H7; a paused tick misses
+    wraps if the pause ever exceeds that, silently corrupting the
+    time base, and would also need -311-watchdog and liveness
+    suppression. The -310 steps/sample check remains the loud
+    backstop for any future discontinuity (it is what caught this).
 
     Side findings from the same session, settled:
     - The 13:19:07 "USB drop + both-MCU reset" was a **commanded

@@ -20,6 +20,8 @@ pub enum MessageKind {
     SetTorqueResponse = 0x0071,
     Stop = 0x0072,
     StopResponse = 0x0073,
+    ResumeStream = 0x0074,
+    ResumeStreamResponse = 0x0075,
     FaultEvent = 0x0082,
     StatusHeartbeat = 0x0083,
     McuLog = 0x0084,
@@ -43,6 +45,8 @@ impl MessageKind {
             0x0071 => Self::SetTorqueResponse,
             0x0072 => Self::Stop,
             0x0073 => Self::StopResponse,
+            0x0074 => Self::ResumeStream,
+            0x0075 => Self::ResumeStreamResponse,
             0x0082 => Self::FaultEvent,
             0x0083 => Self::StatusHeartbeat,
             0x0084 => Self::McuLog,
@@ -291,6 +295,38 @@ impl Decode for StopResponse {
         Ok(Self {
             result: get_i32(c)?,
             discard_clock: get_u64(c)?,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeStream;
+
+impl Encode for ResumeStream {
+    fn encode(&self, _out: &mut Vec<u8>) {}
+}
+
+impl Decode for ResumeStream {
+    fn decode_from(_c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumeStreamResponse {
+    pub result: i32,
+}
+
+impl Encode for ResumeStreamResponse {
+    fn encode(&self, out: &mut Vec<u8>) {
+        put_i32(out, self.result);
+    }
+}
+
+impl Decode for ResumeStreamResponse {
+    fn decode_from(c: &mut Cursor<'_>) -> Result<Self, DecodeError> {
+        Ok(Self {
+            result: get_i32(c)?,
         })
     }
 }

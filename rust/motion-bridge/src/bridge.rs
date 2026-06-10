@@ -3139,19 +3139,9 @@ impl PyMotionBridge {
                 let stepper_mcu_ids: std::collections::HashSet<u32> =
                     run.all_axis_keys.iter().map(|k| k.mcu_id).collect();
 
-                if let Some(tx) = pump_tx_opt {
+                if let Some(tx) = pump_tx_opt.as_ref() {
                     let _ = tx.send(crate::pump::PumpMsg::Flush(run.all_axis_keys.clone()));
                     let _ = tx.send(crate::pump::PumpMsg::DripDisarm(run.cohort));
-                    let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
-                    let _ = tx.send(crate::pump::PumpMsg::Barrier(ack_tx));
-                    if ack_rx.recv_timeout(Duration::from_secs(1)).is_err() {
-                        let _ = run.notify.send(Err(
-                            "EndstopTrip: pump did not acknowledge the flush barrier — \
-                             cannot Stop while the pump may still emit pieces"
-                                .into(),
-                        ));
-                        return;
-                    }
                 }
 
                 let mut stop_errors: Vec<String> = Vec::new();
@@ -3241,6 +3231,50 @@ impl PyMotionBridge {
                 let outcome = reconstruct_cartesian(run.endstop_mcu, trip_clock).and_then(|trip| {
                     reconstruct_cartesian(axis_key.mcu_id, discard_clock)
                         .map(|final_pos| (trip, final_pos))
+                });
+
+                // Stop gated the MCUs' piece streams. Lift the gate only after
+                // the pump barrier proves no old-stream piece can still be
+                // emitted — this ordering, not Stop timing, is what closes the
+                // straggler race (bug 11). On failure the gate stays latched:
+                // every later commit is refused loudly and a firmware restart
+                // recovers.
+                let outcome = outcome.and_then(|positions| {
+                    if let Some(tx) = pump_tx_opt.as_ref() {
+                        let (ack_tx, ack_rx) = std::sync::mpsc::sync_channel(1);
+                        let _ = tx.send(crate::pump::PumpMsg::Barrier(ack_tx));
+                        if ack_rx.recv_timeout(Duration::from_secs(1)).is_err() {
+                            return Err("EndstopTrip: pump did not acknowledge the flush barrier \
+                                 before stream resume"
+                                .into());
+                        }
+                    }
+                    for &mcu_id in &stepper_mcu_ids {
+                        let io = mcu_ios
+                            .get(&mcu_id)
+                            .ok_or_else(|| format!("ResumeStream: no host_io for mcu {mcu_id}"))?;
+                        let (_kind, body) = io
+                            .kalico_call(
+                                kalico_protocol::MessageKind::ResumeStream,
+                                Vec::new(),
+                                stop_timeout,
+                            )
+                            .map_err(|e| {
+                                format!("ResumeStream call failed for mcu {mcu_id}: {e:?}")
+                            })?;
+                        use kalico_protocol::codec::Decode as _;
+                        let resp = kalico_protocol::messages::ResumeStreamResponse::decode(&body)
+                            .map_err(|e| {
+                            format!("ResumeStream decode failed for mcu {mcu_id}: {e:?}")
+                        })?;
+                        if resp.result != 0 {
+                            return Err(format!(
+                                "ResumeStream rejected by mcu {mcu_id}: result={}",
+                                resp.result
+                            ));
+                        }
+                    }
+                    Ok(positions)
                 });
                 let _ = run.notify.send(outcome);
             })

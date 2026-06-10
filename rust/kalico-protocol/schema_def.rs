@@ -128,6 +128,22 @@ const SCHEMA_MESSAGES: &[SchemaMessage] = &[
         ],
     },
     SchemaMessage {
+        type_tag: 0x0074,
+        name: "ResumeStream",
+        version: 1,
+        channel: "control",
+        fields: &[],
+    },
+    SchemaMessage {
+        type_tag: 0x0075,
+        name: "ResumeStreamResponse",
+        version: 1,
+        channel: "control",
+        fields: &[
+            SchemaField { name: "result", ty: "i32" },
+        ],
+    },
+    SchemaMessage {
         type_tag: 0x0082,
         name: "FaultEvent",
         version: 1,

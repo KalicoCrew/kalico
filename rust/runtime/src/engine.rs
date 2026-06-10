@@ -55,6 +55,11 @@ pub struct Engine {
     pub(crate) step_state: [StepMotorState; MAX_AXES],
     pub(crate) last_motors: [f32; MAX_AXES],
     pub tick_caches: crate::stepping_state::TickCaches,
+    /// Set by the homing Stop (`gate_pieces`): head commits are refused until
+    /// the host resumes the stream, so a piece frame racing the Stop discard
+    /// can never publish into the ring and execute from the halted position.
+    /// Foreground-only — the ISR never reads it (a gated ring is simply empty).
+    pieces_gated: bool,
     #[cfg(any(test, feature = "host"))]
     test_queue_ptrs: [*mut crate::step_queue::StepQueue; MAX_AXES],
 }
@@ -74,6 +79,7 @@ impl Engine {
             step_state: [StepMotorState::default(); MAX_AXES],
             last_motors: [0.0; MAX_AXES],
             tick_caches: crate::stepping_state::TickCaches::new(),
+            pieces_gated: false,
             #[cfg(any(test, feature = "host"))]
             test_queue_ptrs: [core::ptr::null_mut(); MAX_AXES],
         }
@@ -113,6 +119,7 @@ impl Engine {
             addr_of_mut!((*ptr).step_state).write([StepMotorState::default(); MAX_AXES]);
             addr_of_mut!((*ptr).last_motors).write([0.0; MAX_AXES]);
             addr_of_mut!((*ptr).tick_caches).write(crate::stepping_state::TickCaches::new());
+            addr_of_mut!((*ptr).pieces_gated).write(false);
             #[cfg(any(test, feature = "host"))]
             addr_of_mut!((*ptr).test_queue_ptrs).write([core::ptr::null_mut(); MAX_AXES]);
         }
@@ -204,6 +211,7 @@ impl Engine {
         self.status
             .store(RuntimeStatus::Idle as u8, Ordering::Release);
         self.last_error.store(0, Ordering::Release);
+        self.pieces_gated = false;
     }
 
     pub fn discard_pending(&mut self) {
@@ -216,6 +224,30 @@ impl Engine {
             }
             axis.armed = None;
         }
+    }
+
+    /// Homing Stop: discard everything queued and refuse head commits until
+    /// [`Self::ungate_pieces`]. Idempotent — a second Stop re-discards.
+    pub fn gate_pieces(&mut self) {
+        self.discard_pending();
+        self.pieces_gated = true;
+    }
+
+    /// Lift the Stop gate after the host has reconciled position and proven
+    /// (pump barrier) that no old-stream piece can still arrive. Discards
+    /// defensively. Resuming a stream that was never gated is a host
+    /// sequencing bug — fail loudly.
+    pub fn ungate_pieces(&mut self) -> i32 {
+        if !self.pieces_gated {
+            return crate::error::KALICO_ERR_STREAM_STATE_VIOLATION;
+        }
+        self.discard_pending();
+        self.pieces_gated = false;
+        crate::error::KALICO_OK
+    }
+
+    pub fn pieces_gated(&self) -> bool {
+        self.pieces_gated
     }
 
     pub fn push_pieces(

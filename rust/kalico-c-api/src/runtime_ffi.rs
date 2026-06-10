@@ -817,6 +817,43 @@ pub mod exports {
         KALICO_OK
     }
 
+    /// Homing Stop: discard queued pieces and gate head commits until
+    /// `kalico_runtime_ungate_pieces`. Call under `irq_save` like
+    /// `kalico_runtime_discard_pending`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_gate_pieces(rt: *mut KalicoRuntime) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.gate_pieces();
+        }
+        KALICO_OK
+    }
+
+    /// Lift the Stop gate (discarding defensively). Returns
+    /// `KALICO_ERR_STREAM_STATE_VIOLATION` if the stream was never gated —
+    /// a host sequencing bug.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn kalico_runtime_ungate_pieces(rt: *mut KalicoRuntime) -> i32 {
+        if rt.is_null() {
+            return KALICO_ERR_NULL_PTR;
+        }
+        if !INIT_DONE.load(Ordering::Acquire) {
+            return KALICO_ERR_NOT_INIT;
+        }
+        let ctx = rt.cast::<RuntimeContext>();
+        unsafe {
+            let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            (*isr_ptr).engine.ungate_pieces()
+        }
+    }
+
     #[unsafe(no_mangle)]
     pub unsafe extern "C" fn kalico_runtime_write_piece(
         rt: *mut KalicoRuntime,
@@ -874,6 +911,9 @@ pub mod exports {
         // SAFETY: §11.2 foreground-only. ring.head is a plain u32 written only by foreground; on single-core ARMv7E-M exception entry/return are memory barriers — no explicit fence needed.
         unsafe {
             let isr_ptr: *mut IsrState = UnsafeCell::raw_get(core::ptr::addr_of!((*ctx).isr));
+            if (*isr_ptr).engine.pieces_gated() {
+                return runtime::error::KALICO_ERR_STREAM_HALTED;
+            }
             let Some(axis) = (*isr_ptr)
                 .engine
                 .stepping_axes
