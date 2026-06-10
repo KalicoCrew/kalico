@@ -259,3 +259,45 @@ fn straight_line_solves_to_nontrivial_profile() {
         result.a[44]
     );
 }
+
+/// Regression: `slp_solve_chain` must return `Converged`, not `MaxIters`, when
+/// all interior b values are below `SLP_B_CUT_FLOOR` (no cuts placeable).
+///
+/// `j_max = [1,1,1]` ensures the FD-estimated path-jerk ratio exceeds 1.05 on
+/// the initial SOCP solution while `a_centripetal_max = 1.0` caps peak b far
+/// below `SLP_B_CUT_FLOOR = 100.0`, making `added == 0` guaranteed. The old
+/// code returned `MaxIters`; the fix returns `Converged`.
+#[test]
+fn slp_solve_chain_zero_cuts_placeable_is_converged_not_max_iters() {
+    let grid = dummy_straight_grid(20, 0.03_f64);
+    let limits = Limits {
+        v_max: [300.0, 300.0, 15.0],
+        a_max: [5_000.0, 5_000.0, 350.0],
+        j_max: [1.0, 1.0, 1.0],
+        a_centripetal_max: 1.0,
+    };
+    let chain = ChainGrid::from_segment_grids(vec![grid], vec![limits]);
+    let scale = crate::topp::scaling::SolverScale::for_chain(&chain);
+    let scaled = scale.scale_chain_grid(&chain);
+    let bundle = match build_chain(
+        &scaled,
+        EndpointConditions {
+            v_start: 0.0,
+            v_end: scale.scale_velocity(4e-4_f64),
+            a_start: None,
+        },
+        &scale,
+    ) {
+        BuildOutcome::Ok(b) => b,
+        BuildOutcome::Boundary(b) => panic!("unexpected boundary infeasibility: {b:?}"),
+    };
+
+    let (_result, outcome) =
+        slp_solve_chain(&bundle, 1e-8, &scale).expect("slp_solve_chain setup must succeed");
+
+    assert!(
+        !matches!(outcome, SlpOutcome::MaxIters { .. }),
+        "slp_solve_chain with zero cuts placeable must not return MaxIters \
+         (all b < SLP_B_CUT_FLOOR → converged-by-floor); got {outcome:?}",
+    );
+}

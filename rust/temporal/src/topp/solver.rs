@@ -898,12 +898,7 @@ pub(crate) fn slp_solve_chain(
             added += 1;
         }
         if added == 0 {
-            return Ok((
-                best_result,
-                SlpOutcome::MaxIters {
-                    last_max_ratio: best_ratio_so_far,
-                },
-            ));
+            return Ok((best_result, SlpOutcome::Converged { outer_iters: outer }));
         }
 
         let new_result = solve_with_cuts(bundle, &cuts, tol, scale)?;
