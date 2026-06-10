@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::sync_channel;
 
 use super::*;
@@ -23,7 +23,7 @@ fn record(cycle: u64) -> CaptureRecord {
     }
 }
 
-fn cfg(path: &PathBuf) -> CaptureConfig {
+fn cfg(path: &Path) -> CaptureConfig {
     CaptureConfig {
         path: path.to_str().unwrap().to_owned(),
         started_utc: "2026-06-10T12:00:00Z".to_owned(),
